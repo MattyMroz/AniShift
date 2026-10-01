@@ -62,6 +62,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   offers belong to its server session, so choosing on the main control connection would refuse them.
   `interrupt_reads` invalidates that interaction. Batch download uses the main connection and survives
   disconnect. Episode mutations take an explicit `command_id`; retain it when recovering a lost response.
+  An unanswered REFUSED call drops its connection and the next call reconnects; nothing is resent.
+  A lost observation makes `StateController` call the parent's `disconnect()` before reconnecting;
+  it closes only idle channels, never a call in flight. Only an answered refusal ends a D batch;
+  an unanswered error keeps its command ID for Enter replay.
 - Processing uses `StateController._processing_rows` for rendering, selection, actions and
   counts. A processing request plus `RichRunProgress.group_active` must prove started,
   nonterminal work; the owner's `accepted` state can already contain executing tasks.

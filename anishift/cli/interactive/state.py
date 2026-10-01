@@ -889,6 +889,7 @@ class StateController:
 
     def _watch(self) -> None:
         while not self._stop.is_set():
+            lost: bool = True
             try:
                 session: ResidentSession = self._parent.new_session()
                 self._session = session
@@ -897,10 +898,13 @@ class StateController:
                         break
                     self._receive(session, frame)
             except (AniShiftError, ControlError, OSError, ValueError, TypeError) as error:
+                lost = isinstance(error, OSError) or (isinstance(error, ControlError) and not error.answered)
                 with self._lock:
                     self._notify(refusal_text(error))
                     self._notice_persistent = self._tab == _Tab.FILES
             finally:
+                if lost and not self._stop.is_set():
+                    self._parent.disconnect()
                 if self._session is not None:
                     self._session.close()
                 with self._lock:

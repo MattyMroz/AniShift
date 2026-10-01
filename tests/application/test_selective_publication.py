@@ -802,6 +802,8 @@ def test_episode_states_follow_an_episode_from_ordering_to_its_ready_set(setup: 
             (f"ready/{_NAMES[0]}",),
             (),
         )
+        (setup.root / "ready").mkdir(exist_ok=True)
+        (setup.root / "ready" / _NAMES[0]).write_bytes(_VIDEO)
         assert owner._on_owner(lambda: owner._save(replace(owner._state, ready_groups=(record,))))
         ready: dict[str, object] = _status(owner)
 

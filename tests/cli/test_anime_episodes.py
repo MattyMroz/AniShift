@@ -1492,6 +1492,62 @@ def test_episode_problem_reason_overrides_ordinary_state_label(reason: str, labe
     assert label in _frame(controller)
 
 
+class _LostBatchOwner(_Owner):
+    def __init__(self, problem: ControlError) -> None:
+        super().__init__()
+        self.problem: ControlError = problem
+
+    def episode_download(self, keys: Sequence[EpisodeKey], *, command_id: str) -> EpisodeBatch:
+        self.batches.append((tuple(keys), command_id))
+        if len(self.batches) == 1:
+            raise self.problem
+        return EpisodeBatch(
+            command_id, "fixture", tuple(keys), "completed", (EpisodeResult(keys[0], "admitted", "a1", "o1"),)
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("answered", [False, True])
+def test_a_lost_batch_response_keeps_its_command_for_enter_while_a_refusal_ends_it(
+    monkeypatch: pytest.MonkeyPatch, *, answered: bool
+) -> None:
+    monkeypatch.setattr(anime_module, "_BATCH_POLL_S", 0.0)
+    owner: _LostBatchOwner = _LostBatchOwner(ControlError("closed", code=ControlErrorCode.REFUSED, answered=answered))
+    controller: AnimeController = _owner_controller(owner)
+    _key(controller, "text:d")
+    deadline: float = time.monotonic() + 10
+    while controller._batch_running and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not controller._batch_running
+    if answered:
+        assert controller._pending_batch is None
+        assert controller._notice.startswith("Nie zlecono")
+        return
+    assert controller._pending_batch is not None
+    assert controller._notice == "Wynik nieznany · Enter sprawdź wynik"
+    _key(controller, "enter")
+    while controller._pending_batch is not None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert [command for _keys, command in owner.batches] == [owner.batches[0][1]] * 2
+    assert controller._pending_batch is None
+
+
+@pytest.mark.unit
+def test_ready_episode_with_a_missing_result_reads_as_downloadable_and_keeps_its_repeat_offer() -> None:
+    owner: _ChoiceOwner = _ChoiceOwner()
+    owner.statuses[1] = EpisodeStatus(EpisodeKey(1, 1), "not_ordered", "result_missing", "admission-1")
+    controller: AnimeController = _owner_controller(owner)
+    lines: list[str] = _frame(controller).splitlines()
+    header: str = next(line for line in lines if "Stan" in line)
+    row: str = next(line for line in lines if "Episode 1 " in line)
+    assert row[header.index("Stan") :].strip() == "Do pobrania"
+    _key(controller, "text:p")
+    deadline: float = time.monotonic() + 10
+    while ("repeat", 1) not in owner.calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ("repeat", 1) in owner.calls
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("state", ["ordered", "downloading", "processing"])
 @pytest.mark.parametrize("key", ["space", "text:d"])

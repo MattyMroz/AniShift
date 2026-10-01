@@ -5,7 +5,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
@@ -42,6 +42,7 @@ from anishift.platform.local_control import (
     ControlErrorCode,
     ControlResponse,
     connect,
+    connect_or_start,
     control_endpoint,
     read_instance,
 )
@@ -202,6 +203,7 @@ class _Channel:
         payload: Mapping[str, object],
         *,
         instance_id: str | None = None,
+        command_id: str | None = None,
         timeout_s: float | None = None,
     ) -> Mapping[str, object]:
         self.sent.append(payload)
@@ -279,6 +281,167 @@ def test_close_returns_during_an_unanswered_episode_read_and_closes_its_channel(
         reply.set()
         reader.join(_TIMEOUT_S)
     assert not reader.is_alive()
+
+
+class _LostChannel(_Channel):
+    def __init__(self, problem: ControlError) -> None:
+        super().__init__()
+        self._problem: ControlError = problem
+
+    def call(
+        self,
+        kind: str,
+        payload: Mapping[str, object],
+        *,
+        instance_id: str | None = None,
+        command_id: str | None = None,
+        timeout_s: float | None = None,
+    ) -> Mapping[str, object]:
+        self.sent.append(payload)
+        raise self._problem
+
+
+@pytest.mark.parametrize(
+    ("problem", "reopened"),
+    [
+        (ControlError("lost", code=ControlErrorCode.REFUSED), True),
+        (ControlError("refused", code=ControlErrorCode.REFUSED, answered=True), False),
+        (ControlError("late", code=ControlErrorCode.INTERNAL), False),
+        (ControlError("large", code=ControlErrorCode.REFUSED, reason="request_too_large"), False),
+    ],
+)
+@pytest.mark.parametrize("catalog", [False, True])
+def test_only_a_lost_connection_is_replaced_on_the_next_call(
+    tmp_path: Path, problem: ControlError, *, reopened: bool, catalog: bool
+) -> None:
+    lost: _LostChannel = _LostChannel(problem)
+    healthy: _Channel = _Channel()
+    channels: list[_Channel] = [_Channel(), lost, healthy] if catalog else [lost, healthy]
+    session: ResidentSession = ResidentSession(tmp_path, lambda: cast("ControlClient", channels.pop(0)))
+
+    def read() -> object:
+        return session.episodes(1) if catalog else session.command("status")
+
+    with pytest.raises(ControlError):
+        read()
+    assert lost.closed.is_set() is reopened
+    if reopened:
+        read()
+        assert len(healthy.sent) == 1
+    else:
+        with pytest.raises(ControlError):
+            read()
+        assert len(lost.sent) == 2
+        assert channels == [healthy]
+
+
+def test_disconnect_reopens_both_channels_on_the_next_call_but_never_after_close(tmp_path: Path) -> None:
+    opened: list[_Channel] = []
+
+    def connect_channel() -> ControlClient:
+        opened.append(_Channel())
+        return cast("ControlClient", opened[-1])
+
+    session: ResidentSession = ResidentSession(tmp_path, connect_channel)
+    session.episodes(1)
+    session.disconnect()
+    assert all(channel.closed.is_set() for channel in opened)
+    session.command("status")
+    session.episodes(1)
+    assert [len(channel.sent) for channel in opened] == [0, 1, 1, 1]
+    session.close()
+    session.disconnect()
+    with pytest.raises(ControlError, match="closed"):
+        session.command("status")
+    assert len(opened) == 4
+
+
+@pytest.mark.parametrize("catalog", [False, True])
+def test_disconnect_leaves_a_call_in_flight_to_finish_on_its_own_connection(tmp_path: Path, *, catalog: bool) -> None:
+    reply: threading.Event = threading.Event()
+    busy: _Channel = _Channel(reply)
+    channels: list[_Channel] = [_Channel(), busy] if catalog else [busy]
+    session: ResidentSession = ResidentSession(tmp_path, lambda: cast("ControlClient", channels.pop(0)))
+    results: list[object] = []
+
+    def call() -> None:
+        results.append(session.episodes(1) if catalog else session.command("episode_download"))
+
+    caller: threading.Thread = threading.Thread(target=call)
+    caller.start()
+    try:
+        assert busy.calling.wait(_TIMEOUT_S)
+        session.disconnect()
+        assert not busy.closed.is_set()
+    finally:
+        reply.set()
+        caller.join(_TIMEOUT_S)
+    assert not caller.is_alive()
+    assert len(results) == 1
+    assert not busy.closed.is_set()
+
+
+def _serve_resident(state_dir: Path) -> threading.Thread:
+    ready: threading.Event = threading.Event()
+    thread: threading.Thread = threading.Thread(
+        target=lambda: run_resident(
+            _as_service(_Service(state_dir / "workspace")), state_dir=state_dir, on_ready=ready.set
+        ),
+        daemon=True,
+    )
+    thread.start()
+    assert ready.wait(timeout=_TIMEOUT_S)
+    return thread
+
+
+def _stop_resident(state_dir: Path, thread: threading.Thread) -> None:
+    stopper: ControlClient | None = connect(state_dir)
+    if stopper is not None:
+        try:
+            stopper.call("shutdown")
+        finally:
+            stopper.close()
+    thread.join(timeout=_TIMEOUT_S)
+    assert not thread.is_alive()
+
+
+def test_a_panel_session_reaches_a_restarted_resident_and_observes_it_again(tmp_path: Path) -> None:
+    residents: list[threading.Thread] = [_serve_resident(tmp_path)]
+
+    def opened() -> ControlClient:
+        return connect_or_start(tmp_path, spawn=lambda: residents.append(_serve_resident(tmp_path)))
+
+    lazy: ResidentSession = ResidentSession(tmp_path, opened)
+    notified: ResidentSession = ResidentSession(tmp_path, opened)
+    try:
+        first: object = lazy.command("status")["instance_id"]
+        assert notified.command("status")["instance_id"] == first
+        observer: ResidentSession = notified.new_session()
+        frames: Iterator[Mapping[str, object]] = observer.observe()
+        assert next(frames)["event"] == "state_changed"
+        _stop_resident(tmp_path, residents[0])
+        list(frames)
+        observer.close()
+        notified.disconnect()
+        second: object = notified.command("status")["instance_id"]
+        assert second != first
+        with pytest.raises(ControlError) as lost:
+            lazy.command("status")
+        assert not lost.value.answered
+        assert lazy.command("status")["instance_id"] == second
+        resumed: ResidentSession = notified.new_session()
+        try:
+            restored: Mapping[str, object] = next(resumed.observe())
+        finally:
+            resumed.close()
+        payload: object = restored["payload"]
+        assert isinstance(payload, Mapping)
+        assert (restored["event"], payload["instance_id"]) == ("state_changed", second)
+        assert len(residents) == 2
+    finally:
+        lazy.close()
+        notified.close()
+        _stop_resident(tmp_path, residents[-1])
 
 
 def test_a_second_resident_is_refused_and_records_no_instance(tmp_path: Path) -> None:

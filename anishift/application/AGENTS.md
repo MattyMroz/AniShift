@@ -303,6 +303,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   remain untouched; known replaced assignments retain their files and lose only their active scope.
   New content waits for the previous scope's applied revision. `automation.py`
   Unsettled or problematic predecessors project `waiting_previous_transfer` in `episode_states`.
+  A ready episode whose `ReadyGroup.main_result` (or source video without one) is gone projects
+  `not_ordered` + `result_missing` in `episode_states` only, never mutating state; D then repeats it
+  without excluding the previous release. While that release's unfinished transfer still holds the
+  previous assignment (its file stays reserved), D refuses with `pack_in_progress`. `automation.py`
 - `episode_file_choose` reads a fresh file map, checks its revision and exact index/path/size, then saves
   the video and exact-stem sidecars with the receipt before selection. Recheck receipt on the owner after
   the read to settle concurrent retries idempotently. Never reuse a video from an older assignment.

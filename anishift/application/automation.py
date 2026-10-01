@@ -4028,12 +4028,30 @@ class AutomationOwner:
 
     def _episode_status(self, key: EpisodeKey, legacy: tuple[LegacyScope, ...]) -> EpisodeStatus:
         matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = self._episode_assignments(key)
-        if not matches:
-            return self._legacy_episode_status(key, legacy)
-        transfer: AcquisitionConfirmation
-        assignment: EpisodeAssignment
-        transfer, assignment = matches[-1]
-        return self._assignment_status(transfer, assignment)
+        status: EpisodeStatus = (
+            self._assignment_status(*matches[-1]) if matches else self._legacy_episode_status(key, legacy)
+        )
+        if not self._ready_result_missing(status):
+            return status
+        return EpisodeStatus(
+            key, "not_ordered", "result_missing", status.admission_id, status.operation_id, status.uncertain
+        )
+
+    def _ready_result_missing(self, status: EpisodeStatus) -> bool:
+        """Whether a ready episode's recorded main result, or its source video without one, is gone from disk."""
+        if status.state != "ready":
+            return False
+        ready: ReadyGroup | None = next(
+            (item for item in self._state.ready_groups if item.set_id == status.set_id), None
+        )
+        if ready is None:
+            return False
+        names: tuple[str, ...] = (
+            (ready.main_result,)
+            if ready.main_result is not None
+            else tuple(name for name in ready.sources if Path(name).suffix.casefold() in VIDEO_SOURCE_SUFFIXES)
+        )
+        return bool(names) and all(file_identity(self._service.workspace_root, name) is None for name in names)
 
     def _assignment_status(self, transfer: AcquisitionConfirmation, assignment: EpisodeAssignment) -> EpisodeStatus:
         key: EpisodeKey = EpisodeKey(assignment.choice.anilist_id, assignment.choice.number)
@@ -4498,12 +4516,13 @@ class AutomationOwner:
         legacy: tuple[LegacyScope, ...] | None = self._legacy_scopes()
         if legacy is None:
             return EpisodeResult(key, "legacy_unreadable")
-        if self._episode_status(key, legacy).active:
+        status: EpisodeStatus = self._episode_status(key, legacy)
+        if status.active:
             return EpisodeResult(key, "episode_in_progress")
         matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = self._episode_assignments(key)
         previous: str | None = matches[-1][1].admission_id if matches else None
         conflict: tuple[str, ...] = self._episode_conflicts(key)
-        if previous or conflict:
+        if (previous or conflict) and status.reason != "result_missing":
             offer = self._repeat_episode_offer(offer)
         candidate: RankedCandidate | None = None if offer.suggestion is None else offer.candidates[offer.suggestion]
         if (
@@ -4513,6 +4532,13 @@ class AutomationOwner:
         ):
             return EpisodeResult(key, "no_suggestion")
         choice: EpisodeChoice = _episode_choice(key, candidate, target, confirmed=False)
+        if status.reason == "result_missing" and any(
+            item.info_hash == choice.reference.info_hash
+            and item.state not in {AcquisitionState.COMPLETE, AcquisitionState.FAILED}
+            and any(assignment.admission_id == previous for assignment in item.assignments)
+            for item in self._state.acquisitions
+        ):
+            return EpisodeResult(key, "pack_in_progress")
         response: ControlResponse = self._admit_episode(
             f"{command_id}:episode:{key.number}", choice, previous=previous, conflict=conflict
         )

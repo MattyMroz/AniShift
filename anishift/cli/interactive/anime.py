@@ -96,6 +96,8 @@ EPISODE_REASON_LABELS: Final[dict[str, str]] = {
     "publication_failed": "Błąd eksportu",
     "waiting_previous_transfer": "Czeka na stare",
     "publication_missing": "Brak pliku",
+    "result_missing": "Do pobrania",
+    "pack_in_progress": "Czeka na paczkę",
 }
 """Shared column labels for owner batch and episode status reasons."""
 
@@ -857,7 +859,11 @@ class AnimeController:
         if key == "enter" and status is not None and status.reason == "episode_file_unresolved":
             if status.admission_id is not None:
                 self._start_files(status.admission_id)
-        elif key.casefold() == "text:p" and status is not None and status.state != "not_ordered":
+        elif (
+            key.casefold() == "text:p"
+            and status is not None
+            and (status.state != "not_ordered" or status.admission_id is not None)
+        ):
             self._start_owner_offer(episode, repeat=True)
         elif key.casefold() == "text:i":
             self._inspect_episode(episode)
@@ -1017,7 +1023,9 @@ class AnimeController:
             logger.warning("Anime episode download failed", error_class=type(problem).__name__)
             with self._lock:
                 self._batch_running = False
-                refused: bool = isinstance(problem, ControlError) and problem.code is ControlErrorCode.REFUSED
+                refused: bool = (
+                    isinstance(problem, ControlError) and problem.answered and problem.code is ControlErrorCode.REFUSED
+                )
                 if refused:
                     self._pending_batch = None
                     self._sending.difference_update(keys)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -2702,3 +2702,52 @@ def test_every_list_tab_pins_heading_and_keys_and_centers_its_content(
     finally:
         controller.close()
         controller._thread.join(5)
+
+
+@pytest.mark.parametrize(
+    ("ending", "lost"),
+    [
+        ("stream_end", True),
+        ("unanswered", True),
+        ("answered", False),
+        ("invalid", False),
+    ],
+)
+def test_lost_observation_drops_the_panel_connections_before_reconnecting(
+    monkeypatch: pytest.MonkeyPatch, ending: str, *, lost: bool
+) -> None:
+    monkeypatch.setattr(state_module, "_RECONNECT_S", 0.01)
+    observed: list[int] = []
+    disconnects: list[int] = []
+
+    class Session:
+        def new_session(self) -> ResidentSession:
+            return cast("ResidentSession", self)
+
+        def observe(self, *, panel: bool = False) -> Iterator[Mapping[str, object]]:
+            assert panel
+            observed.append(len(disconnects))
+            if ending == "unanswered":
+                raise ControlError("lost", code=ControlErrorCode.REFUSED)
+            if ending == "answered":
+                raise ControlError("refused", code=ControlErrorCode.REFUSED, answered=True)
+            if ending == "invalid":
+                raise ValueError(ending)
+            return iter(())
+
+        def disconnect(self) -> None:
+            disconnects.append(len(observed))
+
+        def close(self) -> None:
+            pass
+
+    controller: StateController = StateController(cast("ResidentSession", Session()), lambda: None)
+    try:
+        deadline: float = monotonic() + 5
+        while len(observed) < 3 and monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        controller.close()
+        controller._thread.join(5)
+    assert len(observed) >= 3
+    assert observed[1:3] == ([1, 2] if lost else [0, 0])

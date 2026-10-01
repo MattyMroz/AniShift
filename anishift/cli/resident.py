@@ -66,7 +66,7 @@ class ResidentSession:
     def __init__(self, workspace_root: Path, connect: Callable[[], ControlClient]) -> None:
         self.workspace_root: Path = workspace_root
         self._connect: Callable[[], ControlClient] = connect
-        self._client: ControlClient = connect()
+        self._client: ControlClient | None = connect()
         self._client_id: str = token_hex(16)
         self._lock: threading.Lock = threading.Lock()
         self._reserved: tuple[str, ...] = ()
@@ -531,11 +531,33 @@ class ResidentSession:
         """Detach the panel and release editing ownership without cancelling a run."""
         with self._state_lock:
             self._closed = True
+            client: ControlClient | None = self._client
             catalog: ControlClient | None = self._catalog
-        self._client.close()
-        for other in (self._events, catalog):
+        for other in (client, self._events, catalog):
             if other is not None:
                 other.close()
+
+    def disconnect(self) -> None:
+        """Close idle command and catalogue connections so their next call reaches the current resident."""
+        dropped: list[ControlClient] = []
+        if self._lock.acquire(blocking=False):
+            try:
+                with self._state_lock:
+                    if self._client is not None:
+                        dropped.append(self._client)
+                    self._client = None
+            finally:
+                self._lock.release()
+        if self._catalog_lock.acquire(blocking=False):
+            try:
+                with self._state_lock:
+                    if self._catalog is not None:
+                        dropped.append(self._catalog)
+                    self._catalog = None
+            finally:
+                self._catalog_lock.release()
+        for client in dropped:
+            client.close()
 
     def _call(
         self,
@@ -546,12 +568,40 @@ class ResidentSession:
         command_id: str | None = None,
     ) -> Mapping[str, object]:
         with self._lock:
-            return self._client.call(
-                kind,
-                {"client_id": self._client_id, **(payload or {})},
-                instance_id=instance_id,
-                command_id=command_id,
-            )
+            client: ControlClient = self._command_channel()
+            try:
+                return client.call(
+                    kind,
+                    {"client_id": self._client_id, **(payload or {})},
+                    instance_id=instance_id,
+                    command_id=command_id,
+                )
+            except ControlError as error:
+                if _connection_lost(error):
+                    self._drop(client)
+                raise
+
+    def _command_channel(self) -> ControlClient:
+        with self._state_lock:
+            if self._closed:
+                raise ControlError(_SESSION_CLOSED, code=ControlErrorCode.REFUSED)
+            if self._client is not None:
+                return self._client
+        opened: ControlClient = self._connect()
+        with self._state_lock:
+            if not self._closed:
+                self._client = opened
+                return opened
+        opened.close()
+        raise ControlError(_SESSION_CLOSED, code=ControlErrorCode.REFUSED)
+
+    def _drop(self, client: ControlClient) -> None:
+        with self._state_lock:
+            if self._client is client:
+                self._client = None
+            if self._catalog is client:
+                self._catalog = None
+        client.close()
 
     def _episode_read(
         self, payload: Mapping[str, object], cancel: CancellationToken | None = None
@@ -565,7 +615,12 @@ class ResidentSession:
             token.raise_if_cancelled()
             with self._state_lock:
                 self._require_current(interrupts)
-            return channel.call("acquisition", payload, timeout_s=episode_read_timeout_s())
+            try:
+                return channel.call("acquisition", payload, timeout_s=episode_read_timeout_s())
+            except ControlError as error:
+                if _connection_lost(error):
+                    self._drop(channel)
+                raise
 
     def _episode_interaction(
         self,
@@ -579,13 +634,18 @@ class ResidentSession:
             interrupts: int = self._interrupts
         with self._catalog_lock:
             channel: ControlClient = self._catalog_channel(interrupts)
-            return channel.call(
-                kind,
-                payload,
-                instance_id=instance_id,
-                command_id=command_id,
-                timeout_s=episode_read_timeout_s(),
-            )
+            try:
+                return channel.call(
+                    kind,
+                    payload,
+                    instance_id=instance_id,
+                    command_id=command_id,
+                    timeout_s=episode_read_timeout_s(),
+                )
+            except ControlError as error:
+                if _connection_lost(error):
+                    self._drop(channel)
+                raise
 
     def _catalog_channel(self, interrupts: int) -> ControlClient:
         with self._state_lock:
@@ -640,3 +700,7 @@ class ResidentSession:
             ),
             paused=answer.get("state") == "paused",
         )
+
+
+def _connection_lost(error: ControlError) -> bool:
+    return not error.answered and error.code is ControlErrorCode.REFUSED and error.reason != "request_too_large"

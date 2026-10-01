@@ -242,6 +242,8 @@ def test_legacy_completed_episode_uses_its_ready_group(tmp_path: Path) -> None:
     store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
     store.save(WatchState(acquisitions=(old,), ready_groups=(ready,)))
     with _running(_episode_service(tmp_path), store, inspect_transfers=False) as owner:
+        (owner._service.workspace_root / "ready").mkdir(parents=True, exist_ok=True)
+        (owner._service.workspace_root / "ready" / name).write_bytes(b"video")
         response: ControlResponse = owner.handle(_request("episode_states", {"anilist_id": _S1, "numbers": [4]}))
         states: tuple[EpisodeStatus, ...] = decode_view(tuple[EpisodeStatus, ...], response.result["items"])
         assert states[0].state == "ready"
@@ -367,6 +369,116 @@ def test_download_batch_repeats_completed_episode_and_preserves_previous_files(t
         assert owner.state.acquisitions[2].assignments[0].choice.number == 5
         assert _batch(owner, (4, 5), "repeat-mixed") == batch
         assert len(owner.state.acquisitions) == 3
+
+
+def _ready_episode(
+    owner: AutomationOwner, state: AcquisitionState, *, present: bool
+) -> tuple[EpisodeAssignment, ReadyGroup]:
+    assert _download(owner, (4,), "original").ok
+    _until(lambda: _batch(owner, (4,), "original").state == "completed")
+    old: AcquisitionConfirmation = owner.state.acquisitions[0]
+    filename: str = str(_stream(4).file_name)
+    assignment: EpisodeAssignment = replace(
+        old.assignments[0], files=((0, filename, 123),), file_map="revision", group_id="episode-4"
+    )
+    other: EpisodeAssignment = replace(
+        old.assignments[0],
+        admission_id="other",
+        choice=replace(old.assignments[0].choice, number=5),
+        files=((1, "Slime - 05.mkv", 456),),
+        file_map="revision",
+    )
+    ready: ReadyGroup = ReadyGroup(
+        "episode-4",
+        "ready-episode-4",
+        "Slime - 04",
+        "",
+        "Slime - 04",
+        WorkflowTarget.VIDEO,
+        ("ready/Slime - 04.mkv",),
+        ("ready/Slime - 04.pl.mkv",),
+        "ready/Slime - 04.pl.mkv",
+    )
+    transfer: AcquisitionConfirmation = replace(
+        old,
+        state=state,
+        assignments=(assignment,) if state is AcquisitionState.COMPLETE else (assignment, other),
+        required_files=(filename,),
+        complete_files=(filename,),
+        cleaned=state is AcquisitionState.COMPLETE,
+    )
+    (owner._service.workspace_root / "ready").mkdir(parents=True, exist_ok=True)
+    (owner._service.workspace_root / "ready" / "Slime - 04.mkv").write_bytes(b"source")
+    if present:
+        (owner._service.workspace_root / "ready" / "Slime - 04.pl.mkv").write_bytes(b"result")
+    assert owner._on_owner(lambda: owner._save(replace(owner.state, acquisitions=(transfer,), ready_groups=(ready,))))
+    return assignment, ready
+
+
+def _episode_state(owner: AutomationOwner) -> EpisodeStatus:
+    response: ControlResponse = owner.handle(_request("episode_states", {"anilist_id": _S1, "numbers": [4]}))
+    return decode_view(tuple[EpisodeStatus, ...], response.result["items"])[0]
+
+
+def _download_reason(owner: AutomationOwner, command: str) -> str:
+    assert _download(owner, (4,), command).ok
+    _until(lambda: _batch(owner, (4,), command).state == "completed")
+    return _batch(owner, (4,), command).results[0].reason
+
+
+@pytest.mark.parametrize("present", [True, False])
+def test_ready_episode_without_its_main_result_returns_to_download_and_d_reorders_the_same_release(
+    tmp_path: Path, *, present: bool
+) -> None:
+    streams: _Streams = _Streams()
+    streams.answers = {(41024, 4): (_stream(4),)}
+    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
+    service: AcquisitionService = _episode_service(tmp_path, streams=streams)
+    with _running(service, store, inspect_transfers=False) as owner:
+        assignment, ready = _ready_episode(owner, AcquisitionState.COMPLETE, present=present)
+        status: EpisodeStatus = _episode_state(owner)
+        assert owner.state.ready_groups == (ready,)
+        reason: str = _download_reason(owner, "again")
+        if present:
+            assert (status.state, status.reason, status.set_id) == ("ready", None, "episode-4")
+            assert reason == "no_suggestion"
+            assert len(owner.state.acquisitions) == 1
+            return
+        assert (status.state, status.reason, status.admission_id) == (
+            "not_ordered",
+            "result_missing",
+            assignment.admission_id,
+        )
+        assert reason == "admitted"
+        assert len(owner.state.acquisitions) == 2
+        assert owner.state.acquisitions[0].assignments[0].replaced
+        repeated: EpisodeAssignment = owner.state.acquisitions[1].assignments[0]
+        assert repeated.previous_admission_id == assignment.admission_id
+        assert repeated.choice.reference.info_hash == "a" * 40
+        assert owner.state.ready_groups == (ready,)
+        assert _download_reason(owner, "duplicate") == "episode_in_progress"
+        assert len(owner.state.acquisitions) == 2
+
+
+def test_missing_result_waits_for_its_unfinished_pack_and_reorders_after_it_finishes(tmp_path: Path) -> None:
+    streams: _Streams = _Streams()
+    streams.answers = {(41024, 4): (_stream(4),)}
+    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
+    service: AcquisitionService = _episode_service(tmp_path, streams=streams)
+    with _running(service, store, inspect_transfers=False) as owner:
+        assignment, _ready = _ready_episode(owner, AcquisitionState.ACCEPTED, present=False)
+        held: AcquisitionConfirmation = owner.state.acquisitions[0]
+        assert (_episode_state(owner).state, _episode_state(owner).reason) == ("not_ordered", "result_missing")
+        assert _download_reason(owner, "while-pack") == "pack_in_progress"
+        assert owner.state.acquisitions == (held,)
+        finished: AcquisitionConfirmation = replace(held, state=AcquisitionState.COMPLETE, cleaned=True)
+        assert owner._on_owner(lambda: owner._save(replace(owner.state, acquisitions=(finished,))))
+        assert _download_reason(owner, "after-pack") == "admitted"
+        assert len(owner.state.acquisitions) == 2
+        assert owner.state.acquisitions[1].operation_id != held.operation_id
+        repeated: EpisodeAssignment = owner.state.acquisitions[1].assignments[0]
+        assert repeated.previous_admission_id == assignment.admission_id
+        assert repeated.choice.reference.info_hash == "a" * 40
 
 
 def test_download_batch_does_not_repeat_an_active_order(tmp_path: Path) -> None:

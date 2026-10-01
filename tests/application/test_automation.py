@@ -1019,7 +1019,9 @@ def test_download_failure_and_dedup_cross_owner_ipc_and_qbittorrent_http(  # noq
             calls: tuple[str, ...] = tuple(paths)
             state_path: Path = tmp_path / "control" / WATCH_STATE_FILE_NAME
             modified: int = state_path.stat().st_mtime_ns
-            replay: Mapping[str, object] = session._client.call("download", first.payload, command_id=first.command_id)
+            replay: Mapping[str, object] = session._command_channel().call(
+                "download", first.payload, command_id=first.command_id
+            )
             assert replay == saved.command_receipts[0].outcome
             assert replay == {"count": 1, "directory": str(tmp_path)}
             assert responses[-1] == ControlResponse.succeeded(dict(saved.command_receipts[0].outcome))
