@@ -243,6 +243,9 @@ def test_repeated_pause_preserves_ownership_of_an_unsent_resume(setup: _Setup, m
         _until(lambda: bool(setup.network.metadata_added))
         setup.network.deliver(_HASH)
         _until(lambda: owner.state.acquisitions[0].content_started)
+        owner._on_owner(
+            lambda: owner._replace_acquisition(replace(owner.state.acquisitions[0], origin=RequestOrigin.BACKGROUND))
+        )
         assert owner.handle(_request("set_auto", {"enabled": False}, command_id="pause-1")).ok
         _until(lambda: owner.state.acquisitions[0].action_sent and not owner.state.acquisitions[0].action_pending)
         monkeypatch.setattr(setup.network, "torrents", gated)
@@ -405,9 +408,19 @@ def test_an_episode_whose_video_another_episode_holds_is_bound_without_files(set
     assert setup.network.selections == [(_HASH, frozenset({0, 1}))]
 
 
-@pytest.mark.parametrize("boundary", ["sent", "uncertain", "bound", "selected", "started"])
+@pytest.mark.parametrize(
+    ("boundary", "paused"),
+    [
+        ("sent", False),
+        ("uncertain", False),
+        ("uncertain", True),
+        ("bound", False),
+        ("selected", False),
+        ("started", False),
+    ],
+)
 def test_a_restart_at_every_boundary_adds_and_admits_once_and_starts_only_selected_files(
-    setup: _Setup, boundary: str
+    setup: _Setup, boundary: str, paused: bool
 ) -> None:
     owners: list[AutomationOwner] = []
 
@@ -440,6 +453,8 @@ def test_a_restart_at_every_boundary_adds_and_admits_once_and_starts_only_select
     setup.network.lose_metadata_response = False
     if boundary in {"sent", "uncertain"}:
         setup.network.deliver(_HASH)
+    if paused:
+        setup.store.save(replace(_state(setup), policy=AutomationPolicy(auto_enabled=False)))
     with _running(setup) as owner:
         replay: ControlResponse = owner.admit_episode("admit-1", _choice(3))
         _until(_starts(setup))
@@ -447,6 +462,8 @@ def test_a_restart_at_every_boundary_adds_and_admits_once_and_starts_only_select
         _until(lambda: setup.network.info_calls > polled + 2)
 
     assert replay.ok
+    assert (interrupted.state is AcquisitionState.UNCERTAIN) is (boundary == "uncertain")
+    assert _state(setup).policy.auto_enabled is not paused
     assert interrupted.content_started is (boundary == "started")
     assert len(setup.network.metadata_added) == 1
     assert len(_state(setup).acquisitions) == 1
@@ -456,14 +473,14 @@ def test_a_restart_at_every_boundary_adds_and_admits_once_and_starts_only_select
     assert setup.network.unapproved_starts == []
 
 
-def test_status_and_a_global_pause_answer_while_metadata_is_awaited(setup: _Setup) -> None:
+def test_manual_metadata_and_content_continue_under_automation_pause_without_duplicate_start(setup: _Setup) -> None:
     with _running(setup) as owner:
         assert owner.admit_episode("admit-1", _choice(3)).ok
         _until(lambda: _view(owner)["state"] == AcquisitionState.ACCEPTED.value)
         status: ControlResponse = owner.handle(_request("status", command_id="status-1"))
         paused: ControlResponse = owner.handle(_request("set_auto", {"enabled": False}, command_id="pause-1"))
         setup.network.deliver(_HASH)
-        time.sleep(0.2)
+        _until(_starts(setup))
         during_pause: tuple[list[tuple[str, frozenset[int]]], list[str]] = (
             list(setup.network.selections),
             list(setup.network.started),
@@ -475,7 +492,8 @@ def test_status_and_a_global_pause_answer_while_metadata_is_awaited(setup: _Setu
     assert [item["info_hash"] for item in cast("list[dict[str, object]]", status.result["acquisitions"])] == [_HASH]
     assert paused.ok
     assert resumed.ok
-    assert during_pause == ([], [])
+    assert during_pause == ([(_HASH, frozenset({0, 1}))], [_HASH])
+    assert setup.network.started == [_HASH]
     assert setup.network.actions == []
     assert setup.network.selections == [(_HASH, frozenset({0, 1}))]
     assert setup.network.unapproved_starts == []
@@ -656,7 +674,7 @@ def test_a_finished_transfer_with_an_unselected_joined_episode_is_neither_comple
     assert setup.network.selections[-1] == (_HASH, frozenset({0, 1, 2, 3}))
 
 
-def test_a_global_pause_stops_running_content_whose_joined_episode_is_not_selected_yet(setup: _Setup) -> None:
+def test_automation_pause_does_not_claim_a_manual_transfer_awaiting_its_new_selection(setup: _Setup) -> None:
     with _running(setup) as owner:
         assert owner.admit_episode("admit-1", _choice(3)).ok
         _until(lambda: bool(setup.network.metadata_added))
@@ -669,8 +687,8 @@ def test_a_global_pause_stops_running_content_whose_joined_episode_is_not_select
         action: object = _view(owner)["action"]
 
     assert paused.ok
-    assert action == "stop"
-    assert _state(setup).pause_owned_transfers == (_HASH,)
+    assert action is None
+    assert _state(setup).pause_owned_transfers == ()
 
 
 def test_an_unsaved_acceptance_is_reconciled_from_the_client_without_a_second_add(setup: _Setup) -> None:
@@ -760,6 +778,9 @@ def test_the_end_of_a_global_pause_never_restarts_a_selection_whose_priorities_c
         _until(lambda: bool(setup.network.metadata_added))
         setup.network.deliver(_HASH)
         _until(_starts(setup))
+        owner._on_owner(
+            lambda: owner._replace_acquisition(replace(owner.state.acquisitions[0], origin=RequestOrigin.BACKGROUND))
+        )
         owner.handle(_request("set_auto", {"enabled": False}, command_id="pause-1"))
         _until(lambda: (_HASH, "stop") in setup.network.actions and not _view(owner)["action_pending"])
         setup.network.per_hash[_HASH] = tuple(replace(item, priority=1) for item in setup.network.per_hash[_HASH])
@@ -891,7 +912,7 @@ def test_a_cancel_recorded_after_a_round_began_keeps_that_worker_from_selecting_
     ("kind", "payload"),
     [("set_auto", {"enabled": False}), ("transfer", {"info_hash": _HASH, "action": "cancel"})],
 )
-def test_a_pause_or_cancel_accepted_during_the_fresh_client_check_keeps_the_selection_from_starting(
+def test_fresh_manual_selection_survives_automation_pause_but_respects_cancel(
     setup: _Setup, kind: str, payload: dict[str, object]
 ) -> None:
     owners: list[AutomationOwner] = []
@@ -915,15 +936,15 @@ def test_a_pause_or_cancel_accepted_during_the_fresh_client_check_keeps_the_sele
 
     assert answers[0].ok
     assert setup.network.selections == [(_HASH, frozenset({0, 1}))]
-    assert setup.network.started == []
-    assert _stored(setup).content_started is False
+    assert setup.network.started == ([_HASH] if kind == "set_auto" else [])
+    assert _stored(setup).content_started is (kind == "set_auto")
 
 
 @pytest.mark.parametrize(
     ("kind", "payload"),
     [("set_auto", {"enabled": False}), ("transfer", {"info_hash": _HASH, "action": "cancel"})],
 )
-def test_a_pause_or_cancel_accepted_during_the_fresh_resume_check_keeps_the_selection_stopped(
+def test_fresh_manual_resume_survives_automation_pause_but_respects_cancel(
     setup: _Setup, kind: str, payload: dict[str, object]
 ) -> None:
     answers: list[ControlResponse] = []
@@ -951,5 +972,5 @@ def test_a_pause_or_cancel_accepted_during_the_fresh_resume_check_keeps_the_sele
 
     assert resumed.ok
     assert answers[0].ok
-    assert setup.network.started == [_HASH]
-    assert (_HASH, "resume") not in setup.network.actions
+    assert setup.network.started == ([_HASH, _HASH] if kind == "set_auto" else [_HASH])
+    assert ((_HASH, "resume") in setup.network.actions) is (kind == "set_auto")

@@ -464,7 +464,7 @@ def test_failed_cleanup_exhausts_bounded_retries_and_restarts_its_budget_after_r
         data: Path = _download(setup, owner)
         _until(lambda: _current(owner).problem == automation_module._CLEANUP_FAILED)
         _until(lambda: len(attempts) == automation_module._FINALIZE_ATTEMPTS)
-        assert owner._on_owner(owner._pending_completion) == ()
+        _until(lambda: owner._on_owner(owner._pending_completion) == ())
         assert owner.admit_episode(
             "admit-2", replace(_choice(4), reference=replace(_choice(4).reference, info_hash="next"))
         ).ok
@@ -617,6 +617,57 @@ def test_only_the_ordered_episode_enters_one_real_auto_run_across_restart(
     assert not data.parent.exists()
     assert status["state"] == "ready"
     assert setup.network.selections == [(_HASH, frozenset({0, 1}))]
+
+
+@pytest.mark.parametrize("pause_before", [False, True])
+def test_manual_download_reaches_library_under_pause_and_resume_deduplicates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pause_before: bool
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    monkeypatch.setattr(watch_module, "QUIET_S", 0.02)
+    monkeypatch.setattr(watch_module, "SCAN_INTERVAL_S", 0.01)
+    setup: _ProcessingSetup = _ProcessingSetup(_SelectiveNetwork(), WatchStateStore(tmp_path / "state.json"), tmp_path)
+    subtitles: bytes = b"1\n00:00:00,000 --> 00:00:01,000\nHello\n"
+    name: str = "Neko to Ryuu - 03.srt"
+    with _running(setup) as owner:
+        if pause_before:
+            assert owner.handle(_request("set_auto", {"enabled": False}, command_id="pause")).ok
+        assert owner.admit_episode("admit", _choice(3)).ok
+        _until(lambda: bool(setup.network.metadata_added))
+        setup.network.deliver(
+            _HASH,
+            (
+                TorrentFile(0, f"Pack/{_NAMES[0]}", len(_VIDEO), 0.0, 1),
+                TorrentFile(1, f"Pack/{name}", len(subtitles), 0.0, 1),
+            ),
+        )
+        _until(_starts(setup))
+        if not pause_before:
+            assert owner.handle(_request("set_auto", {"enabled": False}, command_id="pause")).ok
+        assert owner.state.pause_owned_transfers == ()
+        data: Path = setup.network.metadata_added[0][2] / "Pack"
+        data.mkdir(parents=True, exist_ok=True)
+        (data / _NAMES[0]).write_bytes(_VIDEO)
+        (data / name).write_bytes(subtitles)
+        unrelated: Path = tmp_path / "unrelated.srt"
+        unrelated.write_bytes(subtitles)
+        unrelated_video: Path = tmp_path / "unrelated.mkv"
+        unrelated_video.write_bytes(_VIDEO)
+        owner.files_changed(DirectoryChange(paths=(unrelated, unrelated_video)))
+        setup.network.finish(_HASH)
+        _until(lambda: bool(owner.state.ready_groups) and _settled(owner))
+        assert not owner.state.policy.auto_enabled
+        assert len(owner.state.requests) == 1
+        assert owner.state.requests[0].state is RequestState.SUCCEEDED
+        assert not owner.state.requests[0].automatic
+        assert setup.network.actions == []
+        assert (tmp_path / "ready" / name).read_bytes() == subtitles
+        manual_id: str = owner.state.requests[0].request_id
+        assert owner.handle(_request("set_auto", {"enabled": True}, command_id="resume")).ok
+        _until(lambda: len(owner.state.requests) == 2)
+        assert sum(item.request_id == manual_id for item in owner.state.requests) == 1
+        assert len(setup.network.metadata_added) == 1
+        assert setup.network.started == [_HASH]
 
 
 @pytest.mark.parametrize("incomplete", ["size", "sidecar", "progress", "checking"])

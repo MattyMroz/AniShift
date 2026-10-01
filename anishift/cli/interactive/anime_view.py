@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final
 
+from rich.console import Console
+from rich.spinner import Spinner
 from rich.text import Text
 
-from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeSnapshot, NoticeKind, TextPoint
+from anishift.cli.interactive.anime_state import (
+    AnimeRow,
+    AnimeScreen,
+    AnimeSnapshot,
+    NoticeKind,
+    TextPoint,
+    query_left,
+)
+from anishift.cli.interactive.menu import append_wrapped_row, pack_keys
 from anishift.text.graphemes import split_graphemes
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -16,16 +27,39 @@ MIN_COLUMNS: Final[int] = 50
 """Minimum supported terminal width."""
 
 WIDE_COLUMNS: Final[int] = 80
-"""Width at which the keyboard footer occupies one row."""
+"""Widest text budget used for wrapped details and editors."""
 
-HEADER_ROWS: Final[int] = 5
-"""Fixed first data-row offset, independent of selection and feedback."""
+_CONTEXT_ROWS: Final[int] = 2
+"""Rows opening a table or list block: the context line and the global status or a blank line."""
 
-MIN_ROWS: Final[int] = 12
+_QUERY_TITLE: Final[str] = "ANIME"
+"""Heading above the search field and its search progress, as in the classic search box."""
+
+_QUERY_HEADING_ROWS: Final[int] = 2
+"""Rows above the search field: its heading and one blank line."""
+
+HEADER_ROWS: Final[int] = _CONTEXT_ROWS + 1
+"""Rows above table data: the context rows and the column labels."""
+
+FOOTER_ROWS: Final[int] = 5
+"""Rows pinned at the bottom: selection summary, two notice lines and two key lines."""
+
+_NOTICE_ROWS: Final[int] = 2
+"""Most lines a notice or full title may occupy above the key lines."""
+
+MIN_ROWS: Final[int] = HEADER_ROWS + 1 + FOOTER_ROWS
 """Minimum height retaining a data row and all footer regions."""
 
-SPINNER: Final[str] = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-"""Braille spinner advancing at ten frames per second without changing geometry."""
+_MARGIN: Final[int] = 4
+"""Cells kept free around centered blocks."""
+
+NAVIGATION_KEYS: Final[tuple[str, ...]] = ("←→ widok", "↑↓ wybierz")
+"""Navigation hints appended to table screens and dropped first when space runs out."""
+
+_LIST_SCREENS: Final[frozenset[AnimeScreen]] = frozenset(
+    {AnimeScreen.DETAILS, AnimeScreen.FILES, AnimeScreen.BUSY, AnimeScreen.PROBLEM}
+)
+"""Screens rendering one plain text column instead of a table."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,25 +106,51 @@ class AnimeFrame:
         return "\n".join("".join(line).strip() for line in lines.values()).strip()
 
 
+@dataclass(frozen=True, slots=True)
+class _Table:
+    labels: tuple[str, ...]
+    values: Callable[[AnimeRow], tuple[str, ...]]
+    prefix: int
+    title: int
+    minimums: tuple[int, ...] = (0, 0, 0, 0)
+
+
 class _Canvas:
-    def __init__(self, columns: int, rows: int) -> None:
-        self.columns: int = columns
-        self.lines: list[Text] = [Text(" " * columns, style="anime_base") for _ in range(rows)]
+    def __init__(self, width: int, rows: int) -> None:
+        self.width: int = width
+        self.top: int = 0
+        self.left: int = 0
+        self.columns: int = width
+        self.lines: list[Text] = [Text(" " * width) for _ in range(rows)]
         self.regions: list[tuple[int, int, str]] = []
 
-    def put(self, row: int, column: int, value: str, style: str = "anime_text", *, selectable: bool = False) -> None:
-        if not 0 <= row < len(self.lines) or column >= self.columns:
+    def place(self, columns: int) -> None:
+        self.columns = max(min(columns, self.width - _MARGIN), 1)
+        self.left = (self.width - self.columns) // 2
+
+    def put(self, row: int, column: int, value: str, style: str = "white_bold", *, selectable: bool = False) -> None:
+        if column >= self.columns:
             return
-        value = fit(value, self.columns - column)
+        self.write(row, self.left + column, Text(fit(value, self.columns - column), style), selectable=selectable)
+
+    def center(self, row: int, value: Text, *, selectable: bool = False) -> None:
+        shown: Text = value.copy()
+        if shown.cell_len > self.width - 2:
+            shown = Text(fit(shown.plain, self.width - 2), value.style)
+        self.write(row, (self.width - shown.cell_len) // 2, shown, selectable=selectable)
+
+    def write(self, row: int, column: int, value: Text, *, selectable: bool) -> None:
+        if not 0 <= row < len(self.lines) or not value.plain:
+            return
         line: Text = self.lines[row]
         prefix: Text = line[: _character_offset(line.plain, column)]
-        prefix.append(value, style)
-        prefix.append(line[_character_offset(line.plain, column + Text(value).cell_len) :])
+        prefix.append_text(value)
+        prefix.append_text(line[_character_offset(line.plain, column + value.cell_len) :])
         self.lines[row] = prefix
         if selectable:
-            self.regions.append((row, column, value))
+            self.regions.append((row, column, value.plain))
 
-    def finish(self, visible: int, selection: tuple[TextPoint, TextPoint] | None) -> AnimeFrame:
+    def finish(self, visible: int, selection: tuple[TextPoint, TextPoint] | None, first_row: int = 0) -> AnimeFrame:
         cells: list[TextCell] = []
         offsets: list[int] = []
         offset: int = 0
@@ -114,9 +174,9 @@ class _Canvas:
                 cell_column += width
                 index += len(grapheme)
         text: Text = Text("\n").join(self.lines)
-        frame: AnimeFrame = AnimeFrame(text, tuple(cells), visible)
+        frame: AnimeFrame = AnimeFrame(text, tuple(cells), visible, first_row)
         for cell in frame.selected_cells(selection):
-            text.stylize("anime_selection", cell.start, cell.end)
+            text.stylize("reverse", cell.start, cell.end)
         return frame
 
 
@@ -147,172 +207,241 @@ def _character_offset(value: str, column: int) -> int:
     return index
 
 
+def visible_rows(rows: int) -> int:
+    """Return how many data rows fit in a block of ``rows`` terminal rows."""
+    return max(rows - HEADER_ROWS - FOOTER_ROWS, 1)
+
+
 def render_anime(snapshot: AnimeSnapshot, columns: int, rows: int, now: float) -> AnimeFrame:
-    """Render one immutable snapshot using the caller's clock and terminal geometry."""
-    canvas: _Canvas = _Canvas(max(columns, 1), max(rows, 1))
+    """Render ``rows`` lines: content centered above the keys, info and keys pinned to the bottom."""
+    width: int = max(columns, 1)
     if columns < MIN_COLUMNS or rows < MIN_ROWS:
-        canvas.put(0, 0, "Powiększ terminal do 50 x 12", "anime_warning")
-        return canvas.finish(0, None)
-    canvas.put(0, 1, " Anime ", "anime_tab")
-    canvas.put(0, 10, "Subskrypcje  Przetwarzanie  Biblioteka", "anime_muted")
-    canvas.put(1, 0, "─" * columns, "anime_border")
-    if snapshot.screen is not AnimeScreen.QUERY:
-        canvas.put(2, 2, snapshot.title, "anime_heading", selectable=True)
-    key_rows: int = 1 if columns >= WIDE_COLUMNS else 2
-    footer: int = rows - key_rows - 3
-    visible: int = max(footer - HEADER_ROWS, 0)
-    if snapshot.screen is AnimeScreen.QUERY:
-        _query(canvas, snapshot, footer)
+        small: _Canvas = _Canvas(width, 1)
+        small.center(0, Text("Powiększ terminal do 50 x 12", "warning"))
+        return small.finish(0, None)
+    keys: tuple[str, ...] = _key_lines(snapshot, width - _MARGIN)
+    visible: int = visible_rows(rows)
+    shown: int = len(snapshot.items[snapshot.offset : snapshot.offset + visible])
+    query: bool = snapshot.screen is AnimeScreen.QUERY
+    heading: int = _QUERY_HEADING_ROWS if query else _CONTEXT_ROWS if snapshot.screen in _LIST_SCREENS else HEADER_ROWS
+    height: int = heading + (1 if query else max(shown, 1))
+    canvas: _Canvas = _Canvas(width, rows)
+    start: int = max(min((rows - len(keys) - height) // 2, rows - FOOTER_ROWS - height), 0)
+    canvas.top = start + heading
+    if not query:
+        canvas.center(start, Text(snapshot.title, "white_bold"), selectable=True)
+        canvas.center(start + 1, Text(snapshot.global_status, "warning"))
+    title_width: int = 0
+    if query:
+        _query(canvas, snapshot)
+    elif snapshot.screen in _LIST_SCREENS:
+        title_width = _list(canvas, snapshot, visible)
     else:
-        _table(canvas, snapshot, visible, now)
-    canvas.put(footer, 0, "─" * columns, "anime_border")
-    _footer(canvas, snapshot, footer, key_rows)
-    return canvas.finish(visible, snapshot.selection)
+        title_width = _table(canvas, snapshot, visible, now)
+    _footer(canvas, snapshot, keys, title_width)
+    return canvas.finish(visible, snapshot.selection, canvas.top)
 
 
-def _query(canvas: _Canvas, snapshot: AnimeSnapshot, footer: int) -> None:
-    width: int = min(canvas.columns - 6, 54)
-    column: int = (canvas.columns - width) // 2 if snapshot.centered_query else 2
-    row: int = min(max(4, footer // 2 - 1) if snapshot.centered_query else 4, footer - 4)
-    canvas.put(row, column, "Szukaj anime", "anime_muted")
-    canvas.put(row + 1, column, "┌" + "─" * (width - 2) + "┐", "anime_accent")
-    canvas.put(row + 2, column, "│" + " " * (width - 2) + "│", "anime_accent")
-    canvas.put(row + 3, column, "└" + "─" * (width - 2) + "┘", "anime_accent")
-    _field(canvas, row + 2, column + 2, snapshot, width - 4)
-
-
-def _field(canvas: _Canvas, row: int, column: int, snapshot: AnimeSnapshot, width: int) -> None:
-    editor_text: Text = Text(snapshot.field)
-    prefix: int = Text(snapshot.field[: snapshot.field_cursor]).cell_len
-    offset: int = max(prefix - width + 1, 0)
-    start: int = _character_offset(editor_text.plain, offset)
-    value: str = fit(snapshot.field[start:], width)
-    canvas.put(row, column, value, selectable=True)
-    if not snapshot.query_focused and not snapshot.editing_range:
+def _query(canvas: _Canvas, snapshot: AnimeSnapshot) -> None:
+    canvas.center(canvas.top - _QUERY_HEADING_ROWS, Text(_QUERY_TITLE, "white_bold"))
+    if snapshot.busy:
+        canvas.center(canvas.top, Text(snapshot.busy, "brand_accent"))
         return
-    if snapshot.field_selection is not None:
-        selection_start, selection_end = snapshot.field_selection
-        left: int = column + max(Text(snapshot.field[:selection_start]).cell_len - offset, 0)
-        right: int = column + min(Text(snapshot.field[:selection_end]).cell_len - offset, width)
-        canvas.lines[row].stylize(
-            "anime_selection",
-            _character_offset(canvas.lines[row].plain, left),
-            _character_offset(canvas.lines[row].plain, max(right, left)),
+    left: int = query_left(canvas.width, snapshot.field)
+    canvas.write(canvas.top, left, Text("> ", "brand_accent" if snapshot.query_focused else "gray"), selectable=False)
+    canvas.write(canvas.top, left + 2, (snapshot.rendered_field or Text(snapshot.field)).copy(), selectable=True)
+
+
+def _list(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int) -> int:
+    items: tuple[AnimeRow, ...] = snapshot.items[snapshot.offset : snapshot.offset + visible]
+    prefix: int = 2 if snapshot.screen is AnimeScreen.FILES else 0
+    canvas.place(max((Text(item.title).cell_len for item in items), default=0) + prefix)
+    for index, item in enumerate(items):
+        if prefix and index + snapshot.offset == snapshot.cursor:
+            canvas.put(canvas.top + index, 0, _pointer(active=True), "brand_accent")
+        canvas.put(canvas.top + index, prefix, item.title, selectable=True)
+    return canvas.columns - prefix
+
+
+def _spec(screen: AnimeScreen) -> _Table:
+    if screen in {AnimeScreen.ENTRIES, AnimeScreen.TITLES}:
+        return _Table(
+            ("Premiera", "Tytuł", "Typ", "Status"), lambda item: (item.date, item.title, item.kind, item.status), 2, 1
         )
-    cursor: int = column + prefix - offset
-    canvas.lines[row].stylize(
-        "reverse",
-        _character_offset(canvas.lines[row].plain, cursor),
-        _character_offset(canvas.lines[row].plain, cursor + 1),
+    if screen is AnimeScreen.RELEASES:
+        return _Table(
+            ("Wydanie", "Obraz", "Język", "Seedy"),
+            lambda item: (item.title, item.image, item.language, item.seeds.rjust(5)),
+            8,
+            0,
+            (0, 5, Text("PL · MultiSub").cell_len, 5),
+        )
+    return _Table(
+        ("Nr", "Tytuł", "Emisja", "Stan"), lambda item: (item.number, item.title, item.date, item.status), 6, 1
     )
 
 
-def _columns(screen: AnimeScreen, width: int) -> tuple[tuple[str, int], ...]:
-    if screen is AnimeScreen.ENTRIES:
-        return (("Premiera", 2), ("Tytuł", 13), ("Typ", width - 21), ("Status", width - 13))
-    if screen is AnimeScreen.RELEASES:
-        return (("Wydanie", 8), ("Obraz", width - 26), ("Język", width - 19), ("Seedy", width - 9))
-    return (("Nr", 6), ("Tytuł", 11), ("Emisja", width - 28), ("Stan", width - 17))
+def _values(snapshot: AnimeSnapshot, item: AnimeRow, now: float) -> list[str]:
+    values: list[str] = list(_spec(snapshot.screen).values(item))
+    if snapshot.screen is AnimeScreen.EPISODES and item.key in snapshot.searching:
+        values[-1] = f"{spinner_frame(now)} szukam"
+    return values
 
 
-def _table(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int, now: float) -> None:
-    if snapshot.screen is AnimeScreen.DETAILS:
-        for index, item in enumerate(snapshot.items[snapshot.offset : snapshot.offset + visible]):
-            canvas.put(HEADER_ROWS + index, 2, item.title, selectable=True)
-        return
-    columns: tuple[tuple[str, int], ...] = _columns(snapshot.screen, canvas.columns)
-    for label, column in columns:
-        canvas.put(4, column, label, "anime_muted")
+def _widths(snapshot: AnimeSnapshot, spec: _Table, limit: int, now: float) -> list[int]:
+    widths: list[int] = [
+        max(Text(label).cell_len, minimum) for label, minimum in zip(spec.labels, spec.minimums, strict=True)
+    ]
+    for item in snapshot.items:
+        for position, value in enumerate(_values(snapshot, item, now)):
+            widths[position] = max(widths[position], Text(value).cell_len)
+    total: int = spec.prefix + sum(widths) + 2 * (len(widths) - 1)
+    if total > limit:
+        widths[spec.title] = max(widths[spec.title] - (total - limit), Text(spec.labels[spec.title]).cell_len)
+    return widths
+
+
+def _table(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int, now: float) -> int:
+    spec: _Table = _spec(snapshot.screen)
+    widths: list[int] = _widths(snapshot, spec, canvas.width - _MARGIN, now)
+    canvas.place(spec.prefix + sum(widths) + 2 * (len(widths) - 1))
+    starts: list[int] = []
+    column: int = spec.prefix
+    for position, label in enumerate(spec.labels):
+        starts.append(column)
+        canvas.put(canvas.top - 1, column, label, "gray")
+        column += widths[position] + 2
     for index, item in enumerate(snapshot.items[snapshot.offset : snapshot.offset + visible], snapshot.offset):
-        _item(canvas, snapshot, item, index, now)
+        _item(canvas, snapshot, item, index, now, tuple(zip(starts, widths, strict=True)))
+    return widths[spec.title]
 
 
-def _item(
+def _pointer(*, active: bool) -> str:
+    pointer: Text = Text()
+    append_wrapped_row(pointer, 0, ("",), active, "")
+    return pointer.plain.rstrip("\n")
+
+
+def _item(  # noqa: PLR0913
     canvas: _Canvas,
     snapshot: AnimeSnapshot,
     item: AnimeRow,
     index: int,
     now: float,
+    columns: tuple[tuple[int, int], ...],
 ) -> None:
-    row: int = HEADER_ROWS + index - snapshot.offset
-    columns: tuple[tuple[str, int], ...] = _columns(snapshot.screen, canvas.columns)
-    style: str = "anime_active" if index == snapshot.cursor else "anime_base"
-    if dict(snapshot.flashes).get(item.key, 0) > now:
-        style = "anime_flash"
-    canvas.lines[row] = Text(" " * canvas.columns, style=style)
-    canvas.put(row, 0, ">" if index == snapshot.cursor else " ", style)
+    row: int = canvas.top + index - snapshot.offset
+    active: bool = index == snapshot.cursor and item.navigable
+    canvas.put(row, 0, _pointer(active=active), "brand_accent" if active else "white_bold")
     if snapshot.screen in {AnimeScreen.EPISODES, AnimeScreen.RELEASES}:
         canvas.put(
             row,
-            3 if snapshot.screen is AnimeScreen.RELEASES else 2,
-            ("[x]" if item.key in snapshot.selected else "[ ]") if item.eligible else "   ",
-            "anime_accent" if item.key in snapshot.selected else "anime_muted",
+            4 if snapshot.screen is AnimeScreen.RELEASES else 2,
+            "[x]" if item.key in snapshot.selected else "[ ]" if item.eligible else "   ",
+            "brand_accent" if item.key in snapshot.selected else "gray",
         )
-    status: str = f"{SPINNER[int(now * 10) % len(SPINNER)]} szukam" if item.key in snapshot.searching else item.status
-    values: tuple[str, ...] = (item.number, item.title, item.date, status)
-    if snapshot.screen is AnimeScreen.ENTRIES:
-        values = (item.date, item.title, item.kind, item.status)
-    elif snapshot.screen is AnimeScreen.RELEASES:
-        values = (item.title, item.image, item.language, item.seeds.rjust(5))
-        canvas.put(row, 1, "!" if item.uncertain else "*" if item.suggested else " ", "anime_warning")
-    for position, ((_, column), value) in enumerate(zip(columns, values, strict=True)):
-        gap: int = 2 if snapshot.screen is AnimeScreen.RELEASES else 1
-        end: int = columns[position + 1][1] - gap if position + 1 < len(columns) else canvas.columns - 1
-        color: str = "anime_success" if value in {"Zlecono", "Pobrano"} else "anime_text"
-        if item.key in snapshot.searching and value == status:
-            color = "anime_accent"
-        if value in {"Brak wydania", "Nie wyemitowano", "Nieznany", "Problem"}:
-            color = "anime_warning"
+    if snapshot.screen is AnimeScreen.RELEASES:
+        canvas.put(row, 2, "!" if item.uncertain else "*" if item.suggested else " ", "warning")
+    searching: bool = item.key in snapshot.searching
+    values: list[str] = _values(snapshot, item, now)
+    for position, ((start, width), value) in enumerate(zip(columns, values, strict=True)):
+        status: bool = position == len(values) - 1
         canvas.put(
             row,
-            column,
-            fit(value, end - column),
-            color,
-            selectable=item.key not in snapshot.searching or value != status,
+            start,
+            fit(value, width),
+            _value_style(value, active=active, item=item, searching=searching and status),
+            selectable=not (searching and status),
         )
 
 
-def _footer(canvas: _Canvas, snapshot: AnimeSnapshot, footer: int, key_rows: int) -> None:
+def _value_style(value: str, *, active: bool, item: AnimeRow, searching: bool) -> str:
+    if not item.navigable or value == "Nie wyemitowano":
+        return "gray"
+    if value.startswith("Błąd"):
+        return "error"
+    if value in {"Brak wydania", "Nieznany", "Problem"}:
+        return "warning"
+    if searching:
+        return "brand_accent"
+    if value in {"Zlecono", "Pobrano", "Gotowe"}:
+        return "success"
+    return "brand_accent" if active else "white_bold"
+
+
+def _footer(canvas: _Canvas, snapshot: AnimeSnapshot, keys: tuple[str, ...], title_width: int) -> None:
     selected: list[str] = [item.number for item in snapshot.items if item.key in snapshot.selected]
-    summary: str = f"Zaznaczone: {len(selected)} ({', '.join(selected)})" if selected else ""
-    if snapshot.screen is AnimeScreen.EPISODES:
-        canvas.put(footer + 1, 1, summary, "anime_accent")
-    notice: str = snapshot.notice
-    if not notice and snapshot.items:
-        item: AnimeRow = snapshot.items[snapshot.cursor]
-        notice = item.detail or item.status
-        columns: tuple[tuple[str, int], ...] = _columns(snapshot.screen, canvas.columns)
-        position: int = 0 if snapshot.screen is AnimeScreen.RELEASES else 1
-        gap: int = 2 if snapshot.screen is AnimeScreen.RELEASES else 1
-        title_width: int = columns[position + 1][1] - columns[position][1] - gap
-        if snapshot.screen is AnimeScreen.DETAILS:
-            title_width = canvas.columns - 2
-        if not notice and Text(item.title).cell_len > title_width:
-            notice = item.title
-    color: str = {
-        NoticeKind.INFO: "anime_muted",
-        NoticeKind.SUCCESS: "anime_success",
-        NoticeKind.WARNING: "anime_warning",
-    }[snapshot.notice_kind]
-    canvas.put(footer + 2, 1, notice, color, selectable=True)
-    keys: tuple[str, ...] = _keys(snapshot.screen, key_rows)
+    summary: Text = Text(
+        f"Zaznaczone: {len(selected)} ({', '.join(selected)})"
+        if selected and snapshot.screen is AnimeScreen.EPISODES
+        else "",
+        style="brand_accent",
+    )
     if snapshot.editing_range:
-        canvas.put(footer + 1, 1, "Zakres: " + " " * (canvas.columns - 9), "anime_accent")
-        _field(canvas, footer + 1, 9, snapshot, canvas.columns - 10)
-        keys = ("Enter zastosuj | Esc anuluj",)
-    for index, value in enumerate(keys):
-        canvas.put(footer + 3 + index, 1, value, "anime_muted")
+        summary = Text("Zakres: ", style="brand_accent")
+        summary.append_text(snapshot.rendered_field or Text(snapshot.field))
+    summary.truncate(canvas.width - _MARGIN, overflow="ellipsis")
+    notice: str = snapshot.notice
+    if not notice and snapshot.items and snapshot.screen is not AnimeScreen.QUERY:
+        item: AnimeRow = snapshot.items[snapshot.cursor]
+        full_name: bool = Text(item.title).cell_len > title_width and (
+            snapshot.screen is AnimeScreen.RELEASES or not item.detail
+        )
+        notice = item.title if full_name else item.detail
+    color: str = {
+        NoticeKind.INFO: "gray",
+        NoticeKind.SUCCESS: "success",
+        NoticeKind.WARNING: "warning",
+    }[snapshot.notice_kind]
+    lines: list[str] = _notice_lines(notice, canvas.width - _MARGIN)
+    bottom: int = len(canvas.lines) - len(keys)
+    canvas.center(bottom - len(lines) - 1, summary, selectable=True)
+    for index, line in enumerate(lines):
+        canvas.center(bottom - len(lines) + index, Text(line, style=color), selectable=True)
+    for index, line in enumerate(keys):
+        canvas.center(bottom + index, Text(line, style="gray"))
 
 
-def _keys(screen: AnimeScreen, rows: int) -> tuple[str, ...]:
+def _notice_lines(notice: str, width: int) -> list[str]:
+    if not notice:
+        return []
+    lines: list[str] = [line.plain for line in Text(notice).wrap(Console(width=width), width)]
+    if len(lines) > _NOTICE_ROWS:
+        lines = [*lines[: _NOTICE_ROWS - 1], fit(" ".join(lines[_NOTICE_ROWS - 1 :]), width)]
+    return lines
+
+
+def _key_lines(snapshot: AnimeSnapshot, width: int) -> tuple[str, ...]:
+    keys: tuple[str, ...] = snapshot.controls or _keys(snapshot.screen)
+    navigation: tuple[str, ...] = NAVIGATION_KEYS
+    if snapshot.editing_range:
+        keys, navigation = ("Enter zastosuj · Esc anuluj",), ()
+    if snapshot.screen is AnimeScreen.QUERY:
+        navigation = ()
+    segments: list[str] = [
+        "Esc wróć" if segment == "Esc" else segment
+        for key in keys
+        for segment in key.replace(" | ", " · ").split(" · ")
+    ]
+    return pack_keys([*segments, *navigation], width, optional=tuple(reversed(NAVIGATION_KEYS)))
+
+
+def _keys(screen: AnimeScreen) -> tuple[str, ...]:
     if screen is AnimeScreen.QUERY:
-        return ("Enter szukaj",)
+        return ("Enter szukaj · Tab widok · Esc wróć",)
     if screen is AnimeScreen.ENTRIES:
-        return ("Enter odcinki | / szukaj | ? więcej | Esc",)
+        return ("Enter odcinki · / szukaj · ? więcej · Esc wróć",)
+    if screen is AnimeScreen.TITLES:
+        return ("Enter wybierz · / szukaj · Esc wróć",)
     if screen is AnimeScreen.RELEASES:
-        return ("Space zaznacz | D pobierz | ? więcej | Esc",)
+        return ("Space zaznacz · D pobierz · ? więcej · Esc wróć",)
     if screen is AnimeScreen.DETAILS:
-        return ("C kopiuj | Ctrl+C kopiuj zaznaczenie | Esc",)
-    if rows == 1:
-        return ("Space zaznacz | D pobierz | I wydania | P ponownie | ? więcej | Esc",)
-    return ("Space zaznacz | D pobierz | I wydania", "P ponownie | ? więcej | Esc")
+        return ("C kopiuj · Ctrl+C kopiuj zaznaczenie · Esc wróć",)
+    return ("Space zaznacz · D pobierz · I wydania · P ponownie · ? więcej · Esc wróć",)
+
+
+def spinner_frame(now: float) -> str:
+    """Render Rich's dots animation at ten frames per second from an explicit clock."""
+    spinner: Spinner = Spinner("dots", speed=0.8)
+    spinner.start_time = 0
+    return str(spinner.render(now))

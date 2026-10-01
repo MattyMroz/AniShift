@@ -255,9 +255,8 @@ def test_panel_executes_only_selected_episodes_through_the_resident(tmp_path: Pa
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("early", [False, True])
-def test_global_resume_finishes_the_same_real_graph_without_repeating_its_translation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, early: bool
+def test_global_pause_lets_a_started_user_graph_finish_without_repeating_its_translation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("ANISHIFT_WORKSPACE_ROOT", str(tmp_path))
@@ -277,23 +276,13 @@ def test_global_resume_finishes_the_same_real_graph_without_repeating_its_transl
             run_id: str = session.start(preview)
             assert entered.wait(1.0)
             session.command("set_auto", {"enabled": False})
-            assert session.command("status")["pausing"] is True
-            if early:
-                time.sleep(0.1)
-                session.command("set_auto", {"enabled": True})
             release.set()
-            if not early:
-                assert _wait_for_resident(session, lambda state: state["paused"] is True)
-                assert store.load().requests[0].state is RequestState.PAUSED
-                assert store.load().markers == ()
-                paused_status: Mapping[str, object] = session.command("status")
-                assert paused_status["material_counts"] == {"downloading": 0, "processing": 0, "waiting": 1}
-                assert cast("list[dict[str, object]]", paused_status["materials"])[0]["state"] == "paused"
-                session.command("set_auto", {"enabled": True})
             assert _wait_for_resident(
                 session,
                 lambda _state: session.command("run_result", {"run_id": run_id})["state"] == "succeeded",
             )
+            assert session.command("status")["paused"] is True
+            assert store.load().requests[0].state is RequestState.SUCCEEDED
             assert len(translation.calls) == 1
             assert len(store.load().requests) == 1
             assert store.load().requests[0].attempts == 1
@@ -590,7 +579,7 @@ def test_failed_regeneration_stays_in_processing_beside_the_old_confirmed_librar
 
 
 @pytest.mark.integration
-def test_history_retry_discloses_multigroup_scope_respects_pause_and_releases_reservations(
+def test_history_retry_discloses_multigroup_scope_under_pause_and_releases_reservations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _PALANTIR_TOKEN)
@@ -608,7 +597,7 @@ def test_history_retry_discloses_multigroup_scope_respects_pause_and_releases_re
             session.command("set_auto", {"enabled": False})
             controller.handle_key("text:p")
             assert _wait_for_resident(session, lambda _status: not controller._busy)
-            assert "AniShift jest wstrzymany" in controller.render(120, 40).plain
+            assert "Dokończ całe zapisane zlecenie · 2 materiałów" in controller.render(120, 40).plain
             assert _wait_for_resident(session, lambda status: status["reservations"] == [])
             assert store.load().requests[0].attempts == 1
             session.command("set_auto", {"enabled": True})
@@ -748,7 +737,7 @@ def test_panel_settings_and_manual_return_preserve_idle_processing_without_waiti
 
 
 @pytest.mark.integration
-def test_restarting_a_paused_owner_preserves_the_graph_and_only_resume_finishes_its_products(
+def test_restarting_a_paused_owner_keeps_the_finished_user_graph_without_rerunning_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
@@ -769,8 +758,10 @@ def test_restarting_a_paused_owner_preserves_the_graph_and_only_resume_finishes_
             assert entered.wait(1.0)
             session.command("set_auto", {"enabled": False})
             release.set()
-            assert _wait_for_resident(session, lambda state: state["paused"] is True)
-            assert store.load().requests[0].state is RequestState.PAUSED
+            assert _wait_for_resident(
+                session,
+                lambda _state: session.command("run_result", {"run_id": run_id})["state"] == "succeeded",
+            )
     finally:
         release.set()
         service.close()
@@ -779,12 +770,7 @@ def test_restarting_a_paused_owner_preserves_the_graph_and_only_resume_finishes_
         with _panel_owner(restarted, tmp_path) as (session, store):
             assert session.command("status")["paused"] is True
             assert restarted.active_run_ids() == ()
-            assert store.load().products == ()
-            session.command("set_auto", {"enabled": True})
-            assert _wait_for_resident(
-                session,
-                lambda _state: session.command("run_result", {"run_id": run_id})["state"] == "succeeded",
-            )
+            assert session.command("run_result", {"run_id": run_id})["state"] == "succeeded"
             assert len(translation.calls) == 1
             assert len(store.load().requests) == 1
             assert store.load().requests[0].attempts == 1

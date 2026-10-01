@@ -331,6 +331,58 @@ def test_batch_source_failure_does_not_prevent_the_next_episode(tmp_path: Path) 
         assert _download(owner, (4,), "batch").reason == "command_reused"
 
 
+@pytest.mark.parametrize("paused", [False, True])
+def test_download_batch_repeats_completed_episode_and_preserves_previous_files(tmp_path: Path, paused: bool) -> None:
+    streams: _Streams = _Streams()
+    streams.answers = {(41024, 4): (_stream(4),), (41024, 5): (_stream(5, "c"),)}
+    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
+    service: AcquisitionService = _episode_service(tmp_path, streams=streams)
+    with _running(service, store, inspect_transfers=False) as owner:
+        assert owner.handle(_request("set_auto", {"enabled": not paused}, command_id="policy")).ok
+        assert _download(owner, (4,), "original").ok
+        _until(lambda: _batch(owner, (4,), "original").state == "completed")
+        old: AcquisitionConfirmation = owner.state.acquisitions[0]
+        filename: str = str(_stream(4).file_name)
+        assignment: EpisodeAssignment = replace(old.assignments[0], files=((0, filename, 123),), file_map="revision")
+        complete: AcquisitionConfirmation = replace(
+            old,
+            state=AcquisitionState.COMPLETE,
+            assignments=(assignment,),
+            required_files=(filename,),
+            complete_files=(filename,),
+        )
+        assert owner._on_owner(lambda: owner._save(replace(owner.state, acquisitions=(complete,))))
+        streams.answers[(41024, 4)] = (_stream(4), _stream(4, "b"))
+        assert _download(owner, (4, 5), "repeat-mixed").ok
+        _until(lambda: _batch(owner, (4, 5), "repeat-mixed").state == "completed")
+        batch: EpisodeBatch = _batch(owner, (4, 5), "repeat-mixed")
+        assert [result.reason for result in batch.results] == ["admitted", "admitted"]
+        kept: EpisodeAssignment = owner.state.acquisitions[0].assignments[0]
+        assert kept.files == assignment.files
+        assert kept.replaced
+        repeated: EpisodeAssignment = owner.state.acquisitions[1].assignments[0]
+        assert repeated.previous_admission_id == assignment.admission_id
+        assert repeated.choice.reference.info_hash == "b" * 40
+        assert repeated.choice.number == 4
+        assert owner.state.acquisitions[2].assignments[0].choice.number == 5
+        assert _batch(owner, (4, 5), "repeat-mixed") == batch
+        assert len(owner.state.acquisitions) == 3
+
+
+def test_download_batch_does_not_repeat_an_active_order(tmp_path: Path) -> None:
+    streams: _Streams = _Streams()
+    streams.answers = {(41024, 4): (_stream(4),)}
+    with _running(
+        _episode_service(tmp_path, streams=streams), WatchStateStore(tmp_path / "state.json"), inspect_transfers=False
+    ) as owner:
+        assert _download(owner, (4,), "first").ok
+        _until(lambda: _batch(owner, (4,), "first").state == "completed")
+        assert _download(owner, (4,), "second").ok
+        _until(lambda: _batch(owner, (4,), "second").state == "completed")
+        assert _batch(owner, (4,), "second").results[0].reason == "episode_in_progress"
+        assert len(owner.state.acquisitions) == 1
+
+
 def test_source_validation_failure_only_fails_its_episode_and_continues_the_batch(tmp_path: Path) -> None:
     streams: _Streams = _Streams()
     streams.answers = {(41024, 5): (_stream(5),)}
@@ -359,7 +411,7 @@ def test_unexpected_batch_failure_preserves_prior_results_and_durably_interrupts
     service: AcquisitionService = _episode_service(tmp_path, streams=streams)
     store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
     with _running(service, store) as owner:
-        monkeypatch.setattr(owner, "admit_episode", refuse)
+        monkeypatch.setattr(owner, "_admit_episode", refuse)
         assert _download(owner, (4, 5)).ok
         _until(lambda: _batch(owner, (4, 5)).state == "interrupted")
         batch: EpisodeBatch = _batch(owner, (4, 5))
@@ -855,7 +907,7 @@ def test_mapping_never_reuses_a_video_held_by_a_replaced_assignment(tmp_path: Pa
         assert result.assignments[0].files == transfer.assignments[0].files
 
 
-def test_pausing_a_batch_stops_before_reading_its_next_episode(tmp_path: Path) -> None:
+def test_pausing_automation_keeps_reading_every_episode_of_a_manual_batch(tmp_path: Path) -> None:
     streams: _Streams = _Streams()
     streams.answers = {(41024, 4): (_stream(4),), (41024, 5): (_stream(5),)}
     finished: threading.Event = threading.Event()
@@ -872,9 +924,10 @@ def test_pausing_a_batch_stops_before_reading_its_next_episode(tmp_path: Path) -
         assert _download(owner, (4, 5)).ok
         assert finished.wait(_TIMEOUT_S)
         batch: EpisodeBatch = _batch(owner, (4, 5))
-        assert batch.state == "interrupted"
-        assert [item.key.number for item in batch.results] == [4]
-        assert len(streams.asked) == 1
+        assert batch.state == "completed"
+        assert [item.key.number for item in batch.results] == [4, 5]
+        assert all(item.reason == "admitted" for item in batch.results)
+        assert len(streams.asked) == 2
 
 
 @pytest.mark.parametrize(

@@ -495,6 +495,13 @@ class AcquisitionConfirmation:
     cleaned: bool = False
 
     @property
+    def manual(self) -> bool:
+        """Whether an explicit user order or explicit reacquire owns this transfer independently of automation."""
+        return self.origin is RequestOrigin.USER and (
+            self.subscription_id is None or self.previous_operation_id is not None
+        )
+
+    @property
     def selective(self) -> bool:
         """Whether this transfer was admitted per catalogue episode instead of as a legacy release."""
         return bool(self.assignments)
@@ -925,9 +932,10 @@ def auto_admissible(  # noqa: PLR0913 - every admission condition stays an expli
     requested_products: frozenset[ProductKind],
     *,
     succeeded_groups: Mapping[str, frozenset[str]] | None = None,
+    explicit: bool = False,
 ) -> bool:
     """Whether Auto may take this source version, with successful groups keyed by request ID."""
-    if not policy.effective_auto(directory):
+    if not explicit and not policy.effective_auto(directory):
         return False
     if _reservation(state, group_id) is not None:
         return False

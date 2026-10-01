@@ -9,7 +9,6 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Final, cast
@@ -62,7 +61,7 @@ from anishift.application.planning import ExecutionPlan
 from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.watch_state import WatchStateStore
 from anishift.cli.interactive import anime as anime_module
-from anishift.cli.interactive.anime import _ENTRY_ONLY_RELEASES, _REASON_TEXTS, AnimeController, _Screen
+from anishift.cli.interactive.anime import _REASON_TEXTS, AnimeController, _Screen
 from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
 from anishift.config.presets import default_preset_file
@@ -212,12 +211,12 @@ def test_episode_flow_keeps_noncontiguous_selection_and_rereads_episodes_only_on
     catalog: _Catalog = _Catalog()
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    for key in ("space", "down", "down", "enter", "text:d"):
+    for key in ("space", "down", "down", "space", "text:i"):
         _key(controller, key)
-    assert catalog.calls[-2:] == [("offer", 1), ("offer", 3)]
+    assert catalog.calls[-1] == ("offer", 3)
     assert "Pobierz (" not in _frame(controller)
     calls: list[tuple[str, int]] = catalog.calls.copy()
-    for key in ("down", "text:i", "enter", "escape", "escape"):
+    for key in ("text:i", "enter", "escape", "escape"):
         _key(controller, key)
     assert _at(controller) is _Screen.EPISODES
     assert controller._episode_marks == {1, 3}
@@ -240,11 +239,36 @@ def test_search_opens_entries_directly_when_every_result_is_a_displayed_franchis
     for key in ("text:/", "text:slime", "enter"):
         _key(controller, key)
     assert _at(controller) is _Screen.ENTRIES
-    assert controller._positions[_Screen.ENTRIES] == 1
+    assert controller._positions[_Screen.ENTRIES] == 0
     assert catalog.calls == [("titles", 5), ("franchise", 2)]
-    assert "Esc wróć" in _frame(controller)
+    assert "Esc" in _frame(controller)
     _key(controller, "escape")
     assert _at(controller) is _Screen.QUERY
+
+
+@pytest.mark.unit
+def test_franchise_status_names_every_entry_and_starts_on_the_first_released_one() -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.titles = (replace(_title(), anilist_id=3), _title())
+    catalog.view = Franchise(
+        3,
+        (
+            replace(_entry(3), status="NOT_YET_RELEASED"),
+            replace(_entry(2), status="RELEASING"),
+            _entry(1),
+        ),
+        (),
+        True,
+    )
+    controller: AnimeController = _controller(catalog)
+    for key in ("text:/", "text:slime", "enter"):
+        _key(controller, key)
+    assert _at(controller) is _Screen.ENTRIES
+    frame: str = _frame(controller)
+    assert all(label in frame for label in ("zapowiedź", "w emisji", "zakończone"))
+    assert [item.status for item in controller._view.items] == ["zapowiedź", "w emisji", "zakończone"]
+    assert [item.navigable for item in controller._view.items] == [False, True, True]
+    assert controller._view.cursor == 1
 
 
 @pytest.mark.unit
@@ -319,9 +343,11 @@ def test_unmapped_skipped_entry_keeps_its_known_episode_list(movie: bool) -> Non
     assert catalog.calls[-1] == ("episodes", 1)
     assert "Brak mapowania" not in _frame(controller)
     _key(controller, "text:d")
-    assert _at(controller) is _Screen.RESULTS
-    assert catalog.filters == [None if movie else EpisodeRange(Decimal(1), Decimal(1))]
-    assert [choice.release.info_hash for group in controller._groups for choice in group.choices] == ["1"]
+    assert _at(controller) is _Screen.EPISODES
+    assert not catalog.filters
+    _key(controller, "text:i")
+    assert _at(controller) is _Screen.OFFER
+    assert catalog.calls[-1] == ("offer", 1)
     _key(controller, "escape")
     assert _at(controller) is _Screen.EPISODES
 
@@ -352,7 +378,7 @@ def test_overgeared_without_mapping_uses_anilist_rows_and_explicit_nyaa_preview(
     assert controller._episode_screen_count() == 12
     frame: str = controller.render(width, 40).plain
     assert "Overgeared" in frame
-    assert "Nie zamówiono" in frame
+    assert "Nie zamówiono" not in frame
     assert "Nie wyemitowano" in frame
     assert "Odcinek 1" in frame
     assert "Odcinek 12" in frame
@@ -364,23 +390,27 @@ def test_overgeared_without_mapping_uses_anilist_rows_and_explicit_nyaa_preview(
     assert not catalog.filters
     for key in ("home", "text:d"):
         _key(controller, key)
-    assert _at(controller) is _Screen.RESULTS
-    assert catalog.filters == [EpisodeRange(Decimal(1), Decimal(1))]
-    assert not any(operation == "offer" for operation, _ in catalog.calls)
+    assert _at(controller) is _Screen.EPISODES
+    assert not catalog.filters
+    _key(controller, "text:i")
+    assert catalog.calls[-1] == ("offer", 1)
     _key(controller, "escape")
     assert _at(controller) is _Screen.EPISODES
 
 
 @pytest.mark.unit
-def test_unmapped_entry_without_any_episode_data_retains_the_nyaa_escape_route() -> None:
+def test_unmapped_entry_without_any_episode_data_refuses_actions_without_fallback() -> None:
     catalog: _GroupCatalog = _GroupCatalog()
     catalog.view = Franchise(1, (_entry(),), (), True)
     catalog.listing = replace(catalog.listing, kitsu_id=None, episodes=(), specials=())
     controller: AnimeController = _controller(catalog)
     for key in ("paste:slime", "enter"):
         _key(controller, key)
-    assert _at(controller) is _Screen.RESULTS
-    assert catalog.filters == [None]
+    assert _at(controller) is _Screen.EPISODES
+    for key in ("text:d", "text:i", "text:p", "text:g"):
+        _key(controller, key)
+    assert "Nie znam odcinków tego wpisu" in _frame(controller)
+    assert catalog.filters == []
 
 
 @pytest.mark.unit
@@ -414,23 +444,22 @@ def test_unmapped_preview_filters_exact_selected_numbers_and_returns_to_episode_
         _key(controller, "down")
         catalog.titles = (replace(_title(), anilist_id=2),)
     _key(controller, "enter")
-    for key in ("space", "down", "down", "space", "text:d"):
+    for key in ("space", "down", "down", "space", "text:i"):
         _key(controller, key)
-    assert _at(controller) is _Screen.RESULTS
-    assert {choice.episode for group in controller._groups for choice in group.choices} == {Decimal(1), Decimal(3)}
-    assert catalog.calls[-1] == ("releases", 2 if related else 1)
-    assert catalog.filters == [EpisodeRange(Decimal(1), Decimal(3))]
+    assert _at(controller) is _Screen.OFFER
+    assert catalog.calls[-1] == ("offer", 3)
+    assert not catalog.filters
     _key(controller, "escape")
     assert _at(controller) is _Screen.EPISODES
     assert controller._episode_marks == {1, 3}
-    for key in ("text:a", "text:a", "home", "text:d"):
+    for key in ("text:a", "text:a", "home", "text:i"):
         _key(controller, key)
-    assert {choice.episode for group in controller._groups for choice in group.choices} == {Decimal(1)}
-    assert len(catalog.filters) == 2
+    assert catalog.calls[-1] == ("offer", 1)
+    assert not catalog.filters
 
 
 @pytest.mark.unit
-def test_unmapped_sequel_looks_up_full_title_before_reading_absolute_episode_numbers() -> None:
+def test_unmapped_sequel_inspects_its_episode_without_legacy_title_resolution() -> None:
     sequel: TitleCandidate = replace(
         _title(), anilist_id=2, romaji="Slime 2", episodes=12, prequel_ids=(1,), synonyms=("Slime Second Season",)
     )
@@ -460,19 +489,18 @@ def test_unmapped_sequel_looks_up_full_title_before_reading_absolute_episode_num
     catalog.view = Franchise(1, (_entry(), replace(_entry(2), romaji=sequel.romaji)), (), True)
     catalog.listing = replace(catalog.listing, kitsu_id=None, specials=())
     controller: AnimeController = _controller(catalog)
-    for key in ("paste:slime", "enter", "down", "enter", "text:d"):
+    for key in ("paste:slime", "enter", "down", "enter", "text:i"):
         _key(controller, key)
-    assert _at(controller) is _Screen.RESULTS
-    assert catalog.calls[-2:] == [("titles", len(sequel.romaji)), ("releases", 2)]
-    assert [choice.release.info_hash for group in controller._groups for choice in group.choices] == ["13"]
-    assert controller._context == SeasonContext(2, 12, 12)
+    assert _at(controller) is _Screen.OFFER
+    assert catalog.calls[-2:] == [("episodes", 2), ("offer", 1)]
+    assert not catalog.filters
     _key(controller, "escape")
     assert _at(controller) is _Screen.EPISODES
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("unavailable", ["missing", "failed", "entry"])
-def test_unmapped_preview_without_a_resolved_title_shows_a_notice(unavailable: str) -> None:
+def test_unmapped_preview_does_not_depend_on_legacy_title_resolution(unavailable: str) -> None:
     class Titles(_GroupCatalog):
         def find_titles(self, query: str) -> tuple[TitleCandidate, ...]:
             if unavailable == "failed" and self.calls:
@@ -486,50 +514,42 @@ def test_unmapped_preview_without_a_resolved_title_shows_a_notice(unavailable: s
         _key(controller, key)
     if unavailable == "entry":
         controller._entry = None
-    _key(controller, "text:d")
+    _key(controller, "text:i")
     assert not catalog.filters
-    if unavailable == "failed":
-        assert _at(controller) is _Screen.PROBLEM
-        assert controller._problem_return is _Screen.EPISODES
-        assert _ENTRY_ONLY_RELEASES not in _frame(controller)
-        _key(controller, "escape")
-        assert _at(controller) is _Screen.EPISODES
-    else:
-        assert _at(controller) is _Screen.EPISODES
-        assert _ENTRY_ONLY_RELEASES in _frame(controller)
+    assert _at(controller) is _Screen.OFFER
+    assert catalog.calls[-1] == ("offer", 1)
 
 
 @pytest.mark.unit
-def test_unmapped_preview_then_groups_restores_the_search_phrase_episode_range() -> None:
+def test_unmapped_preview_return_preserves_draft_and_group_shortcut_is_absent() -> None:
     catalog: _GroupCatalog = _GroupCatalog()
     catalog.view = Franchise(1, (_entry(),), (), True)
     catalog.listing = replace(catalog.listing, kitsu_id=None, specials=())
     controller: AnimeController = _controller(catalog)
-    for key in ("paste:slime 4-6", "enter", "text:d", "escape", "text:g"):
+    for key in ("paste:slime 4-6", "enter", "space", "text:i", "escape", "text:g"):
         _key(controller, key)
-    assert _at(controller) is _Screen.RESULTS
-    assert catalog.filters == [EpisodeRange(Decimal(1), Decimal(1)), EpisodeRange(Decimal(4), Decimal(6))]
+    assert _at(controller) is _Screen.EPISODES
+    assert controller._episode_marks == {1}
+    assert not catalog.filters
 
 
 @pytest.mark.unit
-def test_cancelled_unmapped_title_lookup_does_not_start_release_search() -> None:
+def test_cancelled_unmapped_offer_read_does_not_start_release_search() -> None:
     started: threading.Event = threading.Event()
     release: threading.Event = threading.Event()
 
     class Titles(_GroupCatalog):
-        def find_titles(self, query: str) -> tuple[TitleCandidate, ...]:
-            if self.calls:
-                started.set()
-                assert release.wait(10)
-                return (replace(_title(), anilist_id=2),)
-            return super().find_titles(query)
+        def offer(self, key: EpisodeKey) -> EpisodeOffer:
+            started.set()
+            assert release.wait(10)
+            return _offer(key)
 
     catalog: Titles = Titles()
     catalog.listing = replace(catalog.listing, kitsu_id=None, specials=())
     controller: AnimeController = _controller(catalog)
     for key in ("paste:slime", "enter", "down", "enter"):
         _key(controller, key)
-    controller.handle_key("text:d")
+    controller.handle_key("text:i")
     worker: threading.Thread | None = controller._worker
     assert worker is not None
     try:
@@ -544,7 +564,7 @@ def test_cancelled_unmapped_title_lookup_does_not_start_release_search() -> None
 
 
 @pytest.mark.unit
-def test_skipped_entry_keeps_groups_and_subscription_route_reachable() -> None:
+def test_skipped_entry_has_no_groups_or_subscription_creation_route() -> None:
     catalog: _GroupCatalog = _GroupCatalog()
     catalog.view = Franchise(1, (_entry(),), (), True)
     catalog.listing = replace(catalog.listing, specials=(), kitsu_id=10)
@@ -552,17 +572,12 @@ def test_skipped_entry_keeps_groups_and_subscription_route_reachable() -> None:
     for key in ("paste:slime", "enter"):
         _key(controller, key)
     assert _at(controller) is _Screen.EPISODES
-    assert "G grupy" in _frame(controller)
-    _key(controller, "text:s")
-    assert controller._notice == "Subskrypcje: użyj G grupy"
-    assert "Subskrypcje: użyj G grupy" in _frame(controller)
-    _key(controller, "text:g")
-    assert _at(controller) is _Screen.RESULTS
-    assert catalog.calls[-1] == ("releases", 1)
-    assert "O subskrybuj" in _frame(controller)
-    _key(controller, "escape")
+    for key in ("text:s", "text:g", "text:o"):
+        _key(controller, key)
     assert _at(controller) is _Screen.EPISODES
-    assert "G grupy" in _frame(controller)
+    assert not catalog.filters
+    assert "G grupy" not in _frame(controller)
+    assert "O subskrybuj" not in _frame(controller)
 
 
 @pytest.mark.unit
@@ -585,7 +600,7 @@ def test_skipped_entry_catalogue_failure_returns_to_entries_and_allows_retry(bac
     assert "Lista odcinków niedostępna" in _frame(controller)
     assert controller.handle_key(back).value == "continue"
     assert _at(controller) is _Screen.ENTRIES
-    assert "G grupy" in _frame(controller)
+    assert "G grupy" not in _frame(controller)
     _key(controller, "enter")
     assert _at(controller) is _Screen.EPISODES
     _key(controller, "escape")
@@ -644,10 +659,17 @@ def test_episode_range_interrupt_copies_selected_text_before_closing() -> None:
     controller: AnimeController = _controller(_Catalog())
     _open(controller)
     app: Application[None] = Application(input=DummyInput(), output=DummyOutput())
+    copied: list[str] = []
+
+    def copy(text: str) -> bool:
+        copied.append(text)
+        return True
+
+    controller._panel._clipboard = copy
     with set_app(app):
         for key in ("text:z", "text:1-3", "select-all", "interrupt"):
             _key(controller, key)
-        assert app.clipboard.get_data().text == "1-3"
+        assert copied == ["1-3"]
         assert controller._range == "1-3"
         assert controller.input_focused
         assert not controller._episode_marks
@@ -693,7 +715,7 @@ def test_episode_marks_compress_only_contiguous_numbers() -> None:
     _open(controller)
     for key in ("text:z", "text:1-3,6", "enter"):
         _key(controller, key)
-    assert "Zaznaczone (4): 1–3, 6" in _frame(controller)
+    assert "Zaznaczone: 4 (1, 2, 3, 6)" in _frame(controller)
 
 
 @pytest.mark.unit
@@ -708,7 +730,7 @@ def test_search_lists_titles_when_a_result_is_outside_the_displayed_franchise() 
     _key(controller, "enter")
     assert _at(controller) is _Screen.ENTRIES
     assert catalog.calls == [("titles", 5), ("franchise", 1)]
-    assert "Esc tytuły" in _frame(controller)
+    assert "Esc" in _frame(controller)
     _key(controller, "escape")
     assert _at(controller) is _Screen.TITLES
 
@@ -740,7 +762,7 @@ def test_titles_kept_after_search_open_entries_on_the_selected_entry() -> None:
     for key in ("text:/", "text:slime", "enter", "enter"):
         _key(controller, key)
     assert _at(controller) is _Screen.ENTRIES
-    assert controller._positions[_Screen.ENTRIES] == 1
+    assert controller._positions[_Screen.ENTRIES] == 0
     assert catalog.calls == [("titles", 5), ("franchise", 1)]
 
 
@@ -795,23 +817,23 @@ def test_escape_while_the_franchise_loads_cancels_its_expansion() -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(("moves", "searched"), [((), True), (("down",), False)])
-def test_entry_releases_open_only_for_an_entry_found_by_the_search(moves: tuple[str, ...], searched: bool) -> None:
+def test_entry_group_shortcut_never_opens_legacy_catalog(moves: tuple[str, ...], searched: bool) -> None:
+    del searched
     catalog: _Catalog = _Catalog()
     catalog.view = Franchise(1, (_entry(1), _entry(7)), (), True)
     controller: AnimeController = _controller(catalog)
     for key in ("text:/", "text:slime", "enter", *moves, "text:g"):
         _key(controller, key)
-    assert (catalog.calls[-1] == ("releases", 1)) is searched
-    assert _at(controller) is (_Screen.PROBLEM if searched else _Screen.ENTRIES)
-    assert ("G działa dla tytułów z wyników wyszukiwania" in _frame(controller)) is not searched
+    assert not any(operation == "releases" for operation, _ in catalog.calls)
+    assert _at(controller) is _Screen.ENTRIES
 
 
 @pytest.mark.unit
-def test_entry_group_shortcut_follows_available_search_results() -> None:
+def test_entry_group_shortcut_is_absent_for_all_search_results() -> None:
     controller: AnimeController = _controller(_Catalog())
     for key in ("paste:slime", "enter"):
         _key(controller, key)
-    assert "G grupy" in _frame(controller)
+    assert "G grupy" not in _frame(controller)
     _key(controller, "down")
     assert "G grupy" not in _frame(controller)
 
@@ -828,7 +850,7 @@ def test_a_toggles_every_aired_episode_and_the_label_counts_marks() -> None:
     assert "Zaznaczone" not in _frame(controller)
     _key(controller, "text:a")
     assert controller._episode_marks == {1, 2, 3, 4}
-    assert "Zaznaczone (4): 1–4" in _frame(controller)
+    assert "Zaznaczone: 4 (1, 2, 3, 4)" in _frame(controller)
     _key(controller, "text:A")
     assert controller._episode_marks == set()
     for key in ("down", "space", "text:a"):
@@ -848,18 +870,18 @@ def test_other_releases_always_show_aligned_seeds(width: int, unsupported: bool)
     catalog.offer_read = lambda key: _offer(key, (seeded, first))
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    for key in ("text:d", "text:i"):
+    for key in ("text:i", "text:i"):
         _key(controller, key)
     lines: list[str] = controller.render(width, 40).plain.splitlines()
     header: str = next(line for line in lines if "Wydanie" in line and "Seedy" in line)
     known: str = next(line for line in lines if "321" in line)
     unknown: str = next(line for line in lines if "[Group]" in line and "321" not in line)
-    assert header.index("Seedy") == known.index("321")
-    assert unknown[header.index("Seedy")] == "?"
+    assert header.index("Seedy") + 5 == known.index("321") + 3
+    assert unknown[header.index("Seedy") + 4] == "?"
     if unsupported:
-        assert "PL · MultiSub" in known
-        assert "1080p (.avi)" in known[header.index("Obraz") : header.index("Język")]
-        assert "format nieobsługiwany (.avi)" in " ".join(" ".join(lines).split())
+        assert "PL" in known
+        assert "1080p" in known[header.index("Obraz") : header.index("Język")]
+        assert "format nieobsługiwany (.avi)" in controller._view.items[0].detail
     assert all(Text(line).cell_len <= width for line in lines)
 
 
@@ -877,7 +899,7 @@ def test_release_views_keep_decision_columns_and_put_size_in_details(width: int,
     catalog.offer_read = lambda key: _offer(key, (item,))
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    for key in ("text:d", "text:i"):
+    for key in ("text:i", "text:i"):
         _key(controller, key)
         lines: list[str] = controller.render(width, 24).plain.splitlines()
         header: str = next(line for line in lines if "Obraz" in line)
@@ -885,41 +907,45 @@ def test_release_views_keep_decision_columns_and_put_size_in_details(width: int,
         assert "Język" in header
         assert "Rozm" not in header
         assert "Tożsamość" not in header
-        if key == "text:d" and verdict is IdentityVerdict.MISMATCH:
+        if controller._screen is _Screen.OFFER and verdict is IdentityVerdict.MISMATCH:
             continue
         row: str = next(line for line in lines if "1080p" in line)
-        assert "PL · MultiSub" in row
+        assert "PL" in row
         assert "321" in row
-        assert any("Rozmiar: 1.4 GB" in line for line in lines)
+        assert "Rozmiar: 1.4 GB" in controller._view.items[0].detail
         assert "indeks:" not in " ".join(lines)
         assert "platforma: —" not in " ".join(lines)
         if verdict is IdentityVerdict.INSUFFICIENT:
-            assert "niepewne" in row
+            assert "!" in row
         if verdict is IdentityVerdict.MISMATCH:
-            assert "niezgodne" in row
+            assert "!" in row
 
 
 @pytest.mark.unit
-def test_offer_language_width_follows_the_longest_visible_suggestion() -> None:
+def test_offer_columns_remain_fixed_when_language_changes() -> None:
     catalog: _Catalog = _Catalog()
     item: RankedCandidate = replace(_candidate(), stream=replace(_candidate().stream, seeders=321))
     catalog.offer_read = lambda key: _offer(key, (item,))
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    _key(controller, "text:d")
+    _key(controller, "text:i")
     lines: list[str] = controller.render(50, 24).plain.splitlines()
     compact: str = next(line for line in lines if "Obraz" in line)
-    reason: str = next(line.strip() for line in lines if "zgodny:" in line)
+    _key(controller, "text:?")
+    assert "zgodny:" in controller.render(50, 24).plain
+    _key(controller, "escape")
     _key(controller, "text:i")
-    assert reason in controller.render(50, 24).plain
+    _key(controller, "text:?")
+    assert "zgodny:" in controller.render(50, 24).plain
+    _key(controller, "escape")
     for key in ("escape", "escape"):
         _key(controller, key)
     item = replace(item, facts=replace(item.facts, polish=True, multisub=True))
-    _key(controller, "text:d")
+    _key(controller, "text:i")
     lines = controller.render(50, 24).plain.splitlines()
     expanded: str = next(line for line in lines if "Obraz" in line)
-    assert expanded.index("Obraz") < compact.index("Obraz")
-    assert "PL · MultiSub" in "\n".join(lines)
+    assert expanded.index("Obraz") == compact.index("Obraz")
+    assert "PL" in "\n".join(lines)
     assert "321" in "\n".join(lines)
 
 
@@ -961,8 +987,7 @@ def test_invalid_episode_range_preserves_selection_and_command_letters_only_edit
     _key(controller, "enter")
     assert controller._episode_marks == {1}
     assert len(catalog.calls) == 3
-    if "30" in typed:
-        assert "Brak odcinka 30 w tym wpisie" in _frame(controller)
+    assert "Zakres:" in _frame(controller)
 
 
 @pytest.mark.unit
@@ -1048,7 +1073,7 @@ def test_preview_without_marks_uses_highlighted_episode_and_future_episode_is_no
         _key(controller, key)
     assert controller._episode_marks == set()
     assert "E6 jeszcze nie wyemitowano" in _frame(controller)
-    for key in ("home", "down", "text:d"):
+    for key in ("home", "down", "text:i"):
         _key(controller, key)
     assert catalog.calls[-1] == ("offer", 2)
     assert controller._offer_numbers == (2,)
@@ -1068,7 +1093,7 @@ def test_movie_has_one_film_row_and_only_previews_its_first_episode_when_mapped(
     assert controller._listing is not None
     assert [item.number for item in controller._listing.episodes] == [1]
     assert "Film" in _frame(controller)
-    _key(controller, "text:d")
+    _key(controller, "text:i")
     assert [call for call in catalog.calls if call[0] == "offer"] == [("offer", 1)]
     _key(controller, "escape")
     _key(controller, "escape")
@@ -1092,11 +1117,11 @@ def test_leaving_incremental_offer_drops_late_result_and_sends_no_remaining_requ
     controller: AnimeController = _controller(catalog)
     _open(controller)
     controller.handle_key("text:a")
-    controller.handle_key("text:d")
+    controller.handle_key("down")
+    controller.handle_key("text:i")
     worker: threading.Thread | None = controller._worker
     try:
         assert entered.wait(5)
-        assert "[Group]" in _frame(controller)
         assert "Szukam…" in _frame(controller)
         controller.cancel() if leave == "cancel" else controller.handle_key(leave)
         before: str = _frame(controller)
@@ -1105,7 +1130,7 @@ def test_leaving_incremental_offer_drops_late_result_and_sends_no_remaining_requ
         assert worker is not None
         worker.join(5)
     assert _frame(controller) == before
-    assert catalog.calls[-2:] == [("offer", 1), ("offer", 2)]
+    assert catalog.calls[-1] == ("offer", 2)
     assert 2 not in controller._offers
 
 
@@ -1116,10 +1141,10 @@ def test_offer_verdict_labels_uncertainty_and_empty_suggestion_are_explicit(verd
     catalog.offer_read = lambda key: _offer(key, (_candidate(verdict),))
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    _key(controller, "text:d")
+    _key(controller, "text:i")
     frame: str = _frame(controller)
-    assert ("niepewne ·" in frame) is (verdict is IdentityVerdict.INSUFFICIENT)
-    assert ("Brak pasującego wydania E1" in frame) is (verdict is IdentityVerdict.MISMATCH)
+    assert ("!" in frame) is (verdict is IdentityVerdict.INSUFFICIENT)
+    assert ("Brak wydania" in frame) is (verdict is IdentityVerdict.MISMATCH)
     reason: str = "niepewny: Brak wskazanego pliku."
     if verdict is IdentityVerdict.INSUFFICIENT:
         assert reason in frame
@@ -1146,7 +1171,7 @@ def test_other_releases_hide_low_resolutions_only_with_a_matching_high_release(h
     )
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    _key(controller, "text:d")
+    _key(controller, "text:i")
     _key(controller, "text:i")
     assert [item.facts.resolution for item in controller._release_candidates] == (
         [2160, None] if high_verdict is IdentityVerdict.MATCH else [2160, 720, 480, 1440, None]
@@ -1160,7 +1185,7 @@ def test_unsupported_high_resolution_match_does_not_hide_a_supported_lower_match
     catalog.offer_read = lambda key: _offer(key, (avi, _candidate(resolution=720)))
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    _key(controller, "text:d")
+    _key(controller, "text:i")
     _key(controller, "text:i")
     assert [item.facts.resolution for item in controller._release_candidates] == [1080, 720]
 
@@ -1198,7 +1223,7 @@ def test_episode_scroll_preserves_selection_and_keyboard_follows_cursor() -> Non
     assert controller._episode_marks == {1}
     _key(controller, "down")
     frame: str = controller.render(50, 12).plain
-    assert "\u276f [ ]  2" in frame
+    assert "\u276f [ ] 2" in frame
     assert controller._positions[_Screen.EPISODES] == 1
     assert len(catalog.calls) == 3
 
@@ -1214,23 +1239,24 @@ def test_catalogue_headers_name_the_work_and_columns_align_at_both_widths(width:
     _open(controller)
     _key(controller, "escape")
     entries: str = controller.render(width, 40).plain
-    assert "Anime \u203a Slime" in entries
-    assert all(label in entries for label in ("Rok", "Tytuł", "Typ", "Status"))
+    assert "\u203a" not in entries
+    assert "ANIME" in (line.strip() for line in entries.splitlines())
+    assert all(label in entries for label in ("Premiera", "Tytuł", "Typ", "Status"))
     _key(controller, "enter")
     episodes: list[str] = controller.render(width, 40).plain.splitlines()
     header: str = next(line for line in episodes if "Stan" in line)
-    episode: str = next(line for line in episodes if "Nie zamówiono" in line)
-    assert header.index("Stan") == episode.index("Nie zamówiono")
-    _key(controller, "text:d")
+    episode: str = next(line for line in episodes if "Episode 1" in line)
+    assert episode[header.index("Stan") :].strip() == ""
+    _key(controller, "text:i")
     offers: list[str] = controller.render(width, 40).plain.splitlines()
-    assert any("Plik:" in line for line in offers)
-    header = next(line for line in offers if "Sugerowane" in line)
-    offered: str = next(line for line in offers if "E1" in line and "1080p" in line and "Powód" not in line)
+    assert "Plik:" in controller._view.items[0].detail
+    header = next(line for line in offers if "Wydanie" in line)
+    offered: str = next(line for line in offers if "1080p" in line)
     assert header.index("Obraz") == offered.index("1080p")
     _key(controller, "text:i")
     candidates: list[str] = controller.render(width, 40).plain.splitlines()
-    assert candidates[0] == ""
-    assert "Inne wydania \u203a Slime \u203a E1" in candidates[1]
+    title: str = next(line for line in candidates if line.strip())
+    assert "ANIME \u203a Slime" in title
     header = next(line for line in candidates if "Wydanie" in line and "Seedy" in line)
     image_column: int = Text(header[: header.index("Obraz")]).cell_len
     release_rows: list[str] = [line for line in candidates if "1080p" in line]
@@ -1252,18 +1278,18 @@ def test_candidate_reason_and_file_details_remain_complete_at_fifty_columns() ->
     catalog.offer_read = lambda key: _offer(key, (candidate,))
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    _key(controller, "text:d")
+    _key(controller, "text:i")
     _key(controller, "text:i")
     frame: str = controller.render(50, 24).plain
     normalized: str = " ".join(frame.split())
     assert _REASON_TEXTS[reason] not in normalized
-    assert f"Plik: {filename} · Rozmiar: ?" in normalized
+    assert f"Plik: {filename} · Rozmiar: ?" in controller._view.items[0].detail
     _key(controller, "text:?")
     assert _REASON_TEXTS[reason] in " ".join(controller.render(50, 24).plain.split())
     _key(controller, "escape")
     assert _at(controller) is _Screen.CANDIDATES
     assert all(Text(line).cell_len <= 50 for line in frame.splitlines())
-    assert "Esc podgląd" in frame
+    assert "Esc" in frame
 
 
 class _Owner(_Catalog):
@@ -1272,6 +1298,7 @@ class _Owner(_Catalog):
         self.release: threading.Event = threading.Event()
         self.batches: list[tuple[tuple[EpisodeKey, ...], str]] = []
         self.admitted: set[int] = {2}
+        self.refused_reason: str = "no_suggestion"
 
     def episode_states(self, anilist_id: int, numbers: Sequence[int]) -> tuple[EpisodeStatus, ...]:
         return tuple(
@@ -1293,7 +1320,7 @@ class _Owner(_Catalog):
             return EpisodeBatch(command_id, "fixture", tuple(keys), "accepted")
         results: tuple[EpisodeResult, ...] = (
             EpisodeResult(keys[0], "admitted", "a1", "o1"),
-            EpisodeResult(keys[1], "no_suggestion"),
+            EpisodeResult(keys[1], self.refused_reason),
         )
         self.admitted.add(keys[0].number)
         return EpisodeBatch(command_id, "fixture", tuple(keys), "completed", results)
@@ -1311,7 +1338,7 @@ class _Owner(_Catalog):
         ("ready", "Gotowe"),
         ("possibly_admitted", "Już zlecone?"),
         ("future_state", "Zlecono"),
-        ("not_ordered", "Nie zamówiono"),
+        ("not_ordered", ""),
     ],
 )
 def test_owner_episode_states_have_explicit_labels(monkeypatch: pytest.MonkeyPatch, state: str, label: str) -> None:
@@ -1326,16 +1353,29 @@ def test_owner_episode_states_have_explicit_labels(monkeypatch: pytest.MonkeyPat
     )
     _open(controller)
 
-    assert re.search(rf"1\s+Episode 1\s+.*{re.escape(label)}", _frame(controller))
-    assert ("Nie zamówiono" in _frame(controller)) is (state == "not_ordered")
+    lines: list[str] = _frame(controller).splitlines()
+    header: str = next(line for line in lines if "Stan" in line)
+    row: str = next(line for line in lines if "Episode 1 " in line)
+    assert row[header.index("Stan") :].strip() == label
+    assert "Nie zamówiono" not in "\n".join(lines)
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("reason", "status", "cause"),
+    [
+        ("no_suggestion", "Brak wydania", "Brak wydania"),
+        ("TORRENT_SOURCE_FAILED", "Błąd źródła", "Źródło wydań nie odpowiada"),
+        ("shutting_down", "Nie zlecono", "AniShift się kończy"),
+        ("acquisition_unavailable", "Niedostępne", "Pobieranie jest niedostępne w tej sesji"),
+    ],
+)
 def test_download_orders_marked_episodes_through_the_owner_and_stays_on_the_list(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, reason: str, status: str, cause: str
 ) -> None:
     monkeypatch.setattr(anime_module, "_BATCH_POLL_S", 0.0)
     owner: _Owner = _Owner()
+    owner.refused_reason = reason
     controller: AnimeController = AnimeController(
         cast("AppService", SimpleNamespace(acquisition=None)), lambda: None, resident=cast("ResidentSession", owner)
     )
@@ -1343,8 +1383,11 @@ def test_download_orders_marked_episodes_through_the_owner_and_stays_on_the_list
     assert re.search(r"2\s+Episode 2\s+.*Zlecono", _frame(controller))
     for key in ("space", "down", "down", "space", "text:d"):
         _key(controller, key)
+    pending: str = _frame(controller)
     assert _at(controller) is _Screen.EPISODES
-    assert "szukam" in _frame(controller)
+    assert "szukam" in pending
+    assert re.search(r"\[x\]\s+1\s+Episode 1", pending)
+    assert re.search(r"\[x\]\s+3\s+Episode 3", pending)
     assert controller._episode_marks == {1, 3}
     owner.release.set()
     deadline: float = time.monotonic() + 10
@@ -1352,10 +1395,11 @@ def test_download_orders_marked_episodes_through_the_owner_and_stays_on_the_list
         time.sleep(0.01)
     frame: str = _frame(controller)
     assert _at(controller) is _Screen.EPISODES
-    assert "Zlecono E1" in frame
+    assert "Zlecono 1" in frame
     assert re.search(r"1\s+Episode 1\s+.*Zlecono", frame)
-    assert re.search(r"3\s+Episode 3\s+.*Nie zamówiono", frame)
-    assert "E3: Brak wydania" in frame
+    assert not re.search(r"\[x\]\s+1\s+Episode 1", frame)
+    assert re.search(rf"\[x\]\s+3\s+Episode 3\s+.*{status}", frame)
+    assert f"nie zlecono 3: {cause}" in frame
     assert [keys for keys, _ in owner.batches] == [(EpisodeKey(1, 1), EpisodeKey(1, 3))] * 2
     assert len({command_id for _, command_id in owner.batches}) == 1
     assert controller._episode_marks == {3}
@@ -1449,14 +1493,14 @@ def test_episode_problem_reason_overrides_ordinary_state_label(reason: str, labe
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("state", ["ordered", "possibly_admitted", "ready"])
+@pytest.mark.parametrize("state", ["ordered", "downloading", "processing"])
 @pytest.mark.parametrize("key", ["space", "text:d"])
-def test_only_possible_admission_uses_the_uncertain_repeat_notice(state: str, key: str) -> None:
+def test_active_episode_does_not_submit_and_explains_where_to_cancel(state: str, key: str) -> None:
     owner: _ChoiceOwner = _ChoiceOwner()
     owner.statuses[1] = EpisodeStatus(EpisodeKey(1, 1), state)
     controller: AnimeController = _owner_controller(owner)
     _key(controller, key)
-    assert controller._notice == ("Już zlecone? · P ponów" if state == "possibly_admitted" else "Odcinek już zlecony")
+    assert controller._notice == "W toku · C anuluj w Przetwarzaniu"
     assert not owner.batches
 
 
@@ -1486,7 +1530,7 @@ def test_repeat_requires_inspected_conflict_and_separate_identity_consent(
     if verdict is not IdentityVerdict.MATCH:
         assert _at(controller) is _Screen.PROBLEM
         assert not owner.choices
-        assert "Enter potwierdź" in controller.render(50, 24).plain
+        assert "Enter pobierz mimo to" in controller.render(50, 24).plain
         _key(controller, "escape" if cancel else "enter")
     assert len(owner.choices) == (0 if cancel else 1)
     if not cancel:
@@ -1579,9 +1623,12 @@ def test_fresh_panel_reads_admitted_and_unordered_states_beyond_first_hundred() 
     owner.statuses[101] = EpisodeStatus(EpisodeKey(1, 101), "ordered")
     controller: AnimeController = _owner_controller(owner)
     _key(controller, "end")
-    assert "Nie zamówiono" in controller.render(50, 24).plain
+    frame: str = controller.render(50, 24).plain
+    assert "102" in frame
+    assert "Nie zamówiono" not in frame
+    assert controller._episode_states[EpisodeKey(1, 102)].state == "not_ordered"
     _key(controller, "up")
-    assert "P ponów" in controller.render(50, 24).plain
+    assert "P ponownie" in controller.render(50, 24).plain
     _key(controller, "text:a")
     assert 101 not in controller._episode_marks
     assert 102 in controller._episode_marks
@@ -1612,7 +1659,6 @@ def test_episode_batch_survives_navigation_without_late_view_change(
     while controller._sending and time.monotonic() < deadline:
         time.sleep(0.01)
     assert not controller._sending
-    panel.poll()
     assert controller._screen is screen
     assert panel._tab == tab
     assert len(owner.batches) == 2
@@ -1654,8 +1700,8 @@ def test_owner_refresh_removes_newly_admitted_marks_and_retains_uncertain_file_p
     assert not controller._episode_marks
     frame: str = controller.render(50, 24).plain
     assert "Enter wskaż plik" in frame
-    assert "P ponów" in frame
-    assert "Space zaznacz" not in frame
+    assert "P ponownie" in frame
+    assert "Space zaznacz" in frame
     _key(controller, "text:d")
     assert not owner.batches
     assert not owner.choices
@@ -1758,7 +1804,7 @@ def test_episode_footer_wraps_only_between_complete_shortcuts() -> None:
     lines: list[str] = controller.render(50, 24).plain.splitlines()
     assert all(
         any(hint in line for line in lines)
-        for hint in ("Space zaznacz", "A wszystkie/żadne", "Z zakres", "D pobierz", "I wybierz wydanie", "Esc wpisy")
+        for hint in ("Space zaznacz", "D pobierz", "I wydania", "P ponownie", "? więcej", "Esc")
     )
 
 
@@ -1778,7 +1824,8 @@ def test_local_offer_defect_logs_class_and_fails_the_entire_preview() -> None:
     try:
         _open(controller)
         _key(controller, "text:a")
-        _key(controller, "text:d")
+        _key(controller, "down")
+        _key(controller, "text:i")
         assert controller._screen is _Screen.PROBLEM
         assert "Rezydent nie wykonał polecenia." in _frame(controller)
         assert not controller._offers
@@ -1812,7 +1859,7 @@ def test_only_internal_command_failed_on_new_operations_suggests_restart(
     catalog.offer_read = refused
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    _key(controller, "text:d")
+    _key(controller, "text:i")
     assert ("Rezydent nie wykonał polecenia." in _frame(controller)) is restart
     assert "private-payload" not in _frame(controller)
 
@@ -2114,7 +2161,16 @@ def test_slime_fixture_flows_from_query_to_s1e4_preview_without_admission(tmp_pa
     now: list[float] = [datetime(2026, 9, 29, tzinfo=UTC).timestamp()]
     with _running_panel(tmp_path, ["ok"], sent, now, remote=remote) as (controller, _, _):
         _open(controller)
-        for key in ("down", "down", "down", "text:d"):
+        _key(controller, "escape")
+        assert controller._franchise is not None
+        index: int = next(i for i, entry in enumerate(controller._franchise.entries) if entry.anilist_id == 101280)
+        _key(controller, "home")
+        for _ in range(index):
+            _key(controller, "down")
+        _key(controller, "enter")
+        assert controller._listing is not None
+        assert controller._listing.anilist_id == 101280
+        for key in ("down", "down", "down", "text:i"):
             _key(controller, key)
         assert controller._offers[4].suggestion is not None
         offer: EpisodeOffer = controller._offers[4]
@@ -2122,7 +2178,9 @@ def test_slime_fixture_flows_from_query_to_s1e4_preview_without_admission(tmp_pa
         assert offer.candidates[offer.suggestion].identity.verdict is IdentityVerdict.MATCH
         assert "Szukam…" not in _frame(controller)
         _key(controller, "text:i")
+        _key(controller, "text:?")
         assert "zgodny" in _frame(controller)
+        _key(controller, "escape")
         assert any("/stream/series/kitsu:41024:4.json" in url for url in sent)
         neighbours: list[IdentityVerdict] = [
             item.identity.verdict
@@ -2166,12 +2224,12 @@ def test_movie_entry_previews_through_movie_endpoint_without_admission(tmp_path:
     now: list[float] = [datetime(2026, 9, 29, tzinfo=UTC).timestamp()]
     with _running_panel(tmp_path, ["movie"], sent, now, remote=remote) as (controller, _, _):
         _open(controller)
-        assert "Tylko podgląd wydań" in _frame(controller)
+        assert "Film" in _frame(controller)
         assert controller._listing is not None
         assert len(controller._listing.episodes) == 1
-        _key(controller, "text:d")
+        _key(controller, "text:i")
         assert controller._offers[1].key == EpisodeKey(139498, 1)
-        assert "Brak wydań w źródle" in _frame(controller)
+        assert "Brak wydania" in _frame(controller)
         assert "torrentio.strem.fun/stream/movie/kitsu:99.json" in sent
         assert not any("/stream/series/" in url for url in sent)
 
@@ -2187,7 +2245,7 @@ def test_http_429_reaches_panel_with_source_deadline_and_no_fallback(
     sent: list[str] = []
     now: list[float] = [datetime(2026, 9, 29, tzinfo=UTC).timestamp()]
     with _running_panel(tmp_path, [provider], sent, now, remote=remote) as (controller, panel, _):
-        for key in ("text:/", "text:slime", "enter", "enter", "enter", "down", "down", "down", "text:d"):
+        for key in ("text:/", "text:slime", "enter", "enter", "enter", "down", "down", "down", "text:i"):
             _key(controller, key)
             if controller._screen is _Screen.PROBLEM:
                 break
@@ -2223,11 +2281,11 @@ def test_owner_offer_defect_reaches_problem_with_error_class_and_without_suggest
         with _running_panel(tmp_path, ["ok"], sent, now, remote=True) as (controller, _, acquisition):
             _open(controller)
 
-            def broken(key: EpisodeKey) -> EpisodeOffer:
+            def broken(key: EpisodeKey) -> tuple[EpisodeOffer, dict[str, object]]:
                 raise ValueError("private-payload")
 
-            monkeypatch.setattr(acquisition, "offer", broken)
-            _key(controller, "text:d")
+            monkeypatch.setattr(acquisition, "prepare_episode", broken)
+            _key(controller, "text:i")
             assert controller._screen is _Screen.PROBLEM
             assert "Rezydent nie wykonał polecenia." in _frame(controller)
             assert not controller._offers
@@ -2249,8 +2307,8 @@ def test_oversized_owner_offer_reports_problem_and_same_connection_remains_usabl
         _open(controller)
         item: RankedCandidate = _candidate()
         item = replace(item, stream=replace(item.stream, release="x" * (1024 * 1024)))
-        monkeypatch.setattr(acquisition, "offer", lambda key: _offer(key, (item,)))
-        _key(controller, "text:d")
+        monkeypatch.setattr(acquisition, "prepare_episode", lambda key: (_offer(key, (item,)), {}))
+        _key(controller, "text:i")
         assert "Odpowiedź rezydenta jest za duża" in _frame(controller)
         assert not controller._offers
         assert controller._resident is not None

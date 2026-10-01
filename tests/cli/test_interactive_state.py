@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Final, cast
 
 import pytest
+from rich.text import Text
 
 import anishift.application.automation as automation_module
 from anishift.application import (
@@ -547,6 +548,51 @@ def test_live_new_admission_starts_zero_and_reconnect_preserves_last_display_val
         controller._thread.join(5)
 
 
+@pytest.mark.parametrize("stage", ["processing", "downloaded"])
+@pytest.mark.parametrize("automatic", [False, True])
+def test_global_pause_marks_only_automatic_processing_as_held(
+    monkeypatch: pytest.MonkeyPatch, stage: str, *, automatic: bool
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    monkeypatch.setattr("anishift.cli.interactive.progress.time.monotonic", lambda: 100.0)
+    session: ResidentSession = cast("ResidentSession", SimpleNamespace(command=lambda *args: {"subscriptions": []}))
+    controller: StateController = StateController(session, lambda: None)
+    item: dict[str, object] = (
+        {
+            "material_id": "run-group",
+            "name": "Episode.mkv",
+            "stage": "processing",
+            "group_id": "run-group",
+            "run_id": "run",
+            "state": "accepted",
+            "automatic": automatic,
+        }
+        if stage == "processing"
+        else {
+            "material_id": "operation",
+            "name": "Episode.mkv",
+            "stage": "waiting",
+            "reason": "preparing",
+            "acquisition_id": "operation",
+            "acquisition_state": "complete",
+            "automatic": automatic,
+        }
+    )
+    payload: dict[str, object] = {
+        "paused": True,
+        "materials": [item],
+        "requests": [{"request_id": "run", "state": "accepted"}] if stage == "processing" else [],
+    }
+    try:
+        controller._receive(session, {"event": "state_changed", "payload": payload})
+        frame: str = controller.render(120, 24).plain
+        assert ("Wstrzymano" in frame) is automatic
+        assert ("Przygotowanie" in frame) is not automatic
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
 @pytest.mark.parametrize("columns", [80, 120])
 def test_download_numeric_display_retains_samples_and_freezes_until_verified_resume(
     monkeypatch: pytest.MonkeyPatch, columns: int
@@ -727,10 +773,10 @@ def test_processing_hides_uncertain_downloads_and_handoffs_without_changing_live
 @pytest.mark.parametrize(
     ("snapshot", "action", "status"),
     [
-        ({"auto_enabled": True}, "O Zatrzymaj AniShift", "Praca"),
-        ({"auto_enabled": False}, "O Wznów AniShift", "Wstrzymano"),
-        ({"auto_enabled": False, "pausing": True}, "O Wznów AniShift", "Zatrzymywanie"),
-        ({"auto_enabled": False, "pause_incomplete": True}, "O Wznów AniShift", "Pauza niepełna"),
+        ({"auto_enabled": True}, "O wstrzymaj automat", "Praca"),
+        ({"auto_enabled": False}, "O wznów automat", "Automat wstrzymany"),
+        ({"auto_enabled": False, "pausing": True}, "O wznów automat", "Zatrzymywanie"),
+        ({"auto_enabled": False, "pause_incomplete": True}, "O wznów automat", "Pauza niepełna"),
     ],
 )
 def test_processing_footer_names_the_explicit_owner_action_and_current_pause_state(
@@ -747,6 +793,7 @@ def test_processing_footer_names_the_explicit_owner_action_and_current_pause_sta
         frame: str = controller.render(80, 24).plain
         assert action in frame
         assert f"Przetwarzanie 0 · {status}" in frame
+        assert "AniShift wstrzymany" not in frame
         controller.handle_key("text:o")
         assert calls == [("set_auto", {"enabled": not snapshot["auto_enabled"]})]
     finally:
@@ -2162,6 +2209,28 @@ def test_visible_subscription_list_and_card_tick_from_snapshot_and_accept_resche
         controller._thread.join(5)
 
 
+@pytest.mark.parametrize("tab", [0, 1, 2, 3])
+def test_compact_panel_keeps_heading_and_tabs_without_blank_lines(monkeypatch: pytest.MonkeyPatch, tab: int) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller._tab = tab
+    controller._connected = True
+    try:
+        lines: list[str] = controller.render(50, 12).plain.splitlines()
+        assert lines[0].strip() == "PANEL"
+        assert lines[1].strip()
+        assert "PANEL" not in lines[1]
+        assert len(lines) <= 12
+        assert all(Text(line).cell_len <= 50 for line in lines)
+        spaced: list[str] = controller.render(50, 16).plain.splitlines()
+        assert spaced[0].strip() == "PANEL"
+        assert not spaced[1].strip()
+        assert spaced[2].strip() == lines[1].strip()
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
 def test_subscription_projection_prefers_the_nearest_future_selected_unfulfilled_episode() -> None:
     now: datetime = datetime(2026, 9, 17, tzinfo=UTC)
     subscription: Subscription = Subscription(
@@ -2197,7 +2266,7 @@ def _assert_list_fills_available_rows(controller: StateController) -> None:
         {"series": f"Series {index}", "enabled": False, "group": "Group", "next_episode": 1} for index in range(20)
     )
     frame: str = controller.render(80, 24).plain
-    assert sum("● " in line or "○ " in line for line in frame.splitlines()) == 16
+    assert sum("● " in line or "○ " in line for line in frame.splitlines()) == 15
     assert frame.splitlines()[3] == ""
     assert "Space aktywność" in frame
     assert len(frame.splitlines()) <= 24
@@ -2478,7 +2547,10 @@ def _recording_renderer(renderers: list[_PanelRenderer]) -> Callable[..., _Panel
         key_handler: Callable[[str], None],
         idle_handler: Callable[[], None] | None = None,
         scroll_handler: Callable[[int], None] | None = None,
+        *,
+        mouse_handler: object = None,
     ) -> _PanelRenderer:
+        del mouse_handler
         renderer: _PanelRenderer = _PanelRenderer(frame_provider, key_handler, idle_handler, scroll_handler)
         renderers.append(renderer)
         return renderer
@@ -2579,3 +2651,33 @@ def test_an_end_with_settings_open_persists_them_first_and_finishes_every_other_
     application._finish_session()
 
     assert calls == expected
+
+
+@pytest.mark.parametrize(("columns", "rows"), [(80, 24), (120, 30)])
+@pytest.mark.parametrize("tab", [1, 2, 3])
+def test_every_list_tab_pins_heading_and_keys_and_centers_its_content(
+    monkeypatch: pytest.MonkeyPatch, tab: int, columns: int, rows: int
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    try:
+        controller._tab = tab
+        controller._connected = True
+        controller._snapshot = {"auto_enabled": True}
+        controller._subscriptions = [{"series": "Slime Season 4", "group": "SubsPlease", "enabled": True}]
+        lines: list[str] = controller.render(columns, rows).plain.splitlines()
+        occupied: list[int] = [index for index, line in enumerate(lines) if line.strip()]
+        keys: int = len(lines)
+        while keys - 1 in occupied:
+            keys -= 1
+        content: list[int] = [index for index in occupied if 3 < index < keys]
+        left: int = min(len(lines[index]) - len(lines[index].lstrip()) for index in content)
+        right: int = columns - max(len(lines[index].rstrip()) for index in content)
+        assert len(lines) == rows - 1
+        assert lines[0].strip() == "PANEL"
+        assert "Subskrypcje" in lines[2]
+        assert abs((content[0] - 4) - (keys - content[-1] - 1)) <= 1
+        assert abs(left - right) <= 1
+    finally:
+        controller.close()
+        controller._thread.join(5)

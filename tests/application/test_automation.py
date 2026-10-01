@@ -517,33 +517,35 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
 ) -> None:
     sent: list[str] = []
     now: list[float] = [1000.0]
-    feed: str = (
-        '<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel><item>'
-        "<title>[SubsPlease] Fixture - 01 (1080p)</title>"
-        "<link>https://nyaa.si/download/1.torrent</link>"
-        "<nyaa:infoHash>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</nyaa:infoHash>"
-        "<nyaa:seeders>10</nyaa:seeders><pubDate>Sat, 05 Sep 2026 19:51:11 -0000</pubDate>"
-        "</item></channel></rss>"
-    )
 
     def respond(request: httpx.Request) -> httpx.Response:
         sent.append(request.url.host)
-        assert request.url.host in {"graphql.anilist.co", "nyaa.si"}
-        if scenario == "internal":
-            raise RuntimeError("private-provider-payload")
-        if scenario == "planning":
-            raise PlanningError(context=ErrorContext(code=ErrorCode.IO_ERROR, message="private-provider-payload"))
-        if scenario == "io":
-            raise OSError("private-provider-payload")
-        if request.url.host == "nyaa.si":
+        assert request.url.host in {"graphql.anilist.co", "api.ani.zip", "torrentio.strem.fun"}
+        if request.url.host == "api.ani.zip":
             return httpx.Response(
-                503 if scenario == "source_failed" else 200, text=feed, headers={"Content-Type": "application/rss+xml"}
+                200,
+                json={
+                    "mappings": {"kitsu_id": 10, "type": "TV"},
+                    "episodeCount": 1,
+                    "episodes": {"1": {"episodeNumber": 1, "seasonNumber": 1}},
+                },
             )
+        if request.url.host == "torrentio.strem.fun":
+            return httpx.Response(503)
+        failures: dict[str, Exception] = {
+            "internal": RuntimeError("private-provider-payload"),
+            "planning": PlanningError(
+                context=ErrorContext(code=ErrorCode.IO_ERROR, message="private-provider-payload")
+            ),
+            "io": OSError("private-provider-payload"),
+        }
+        if scenario in failures:
+            raise failures[scenario]
         body: dict[str, object] = {
             "data": {
                 "Page": {
                     "media": []
-                    if scenario in {"empty", "source_failed"}
+                    if scenario == "empty"
                     else [
                         {
                             "id": 1,
@@ -559,6 +561,21 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
         }
         if scenario == "catalog_failed":
             body = {"errors": [{"message": "private-provider-payload"}]}
+        if scenario == "source_failed":
+            node: dict[str, object] = {
+                "id": 1,
+                "type": "ANIME",
+                "format": "TV",
+                "title": {"romaji": "Fixture"},
+                "status": "FINISHED",
+                "episodes": 1,
+                "relations": {"edges": []},
+                "airingSchedule": {
+                    "pageInfo": {"currentPage": 1, "hasNextPage": False},
+                    "nodes": [{"episode": 1, "airingAt": 1}],
+                },
+            }
+            body = {"data": {"Page": {"media": [node]}, "Media": node}}
         return httpx.Response(
             200, headers={"Content-Encoding": "gzip"}, stream=httpx.ByteStream(gzip.compress(json.dumps(body).encode()))
         )
@@ -581,6 +598,8 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
             parse_name=parse_release_name,
             title_catalog=AniListCatalog(http),
             request_control=control,
+            episode_catalog=AniZipCatalog(http),
+            stream_source=TorrentioSource(http),
         )
         service: AppService = _real_service(tmp_path, acquisition=acquisition)
         owner: AutomationOwner = _owner(service, WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME))
@@ -595,7 +614,7 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
             captured.append,
             format="{message} {extra}",
             level="WARNING",
-            filter=lambda record: record["extra"].get("command_kind") == "acquisition",
+            filter=lambda record: record["extra"].get("command_kind") in {"acquisition", "episode_offer"},
         )
         try:
             controller.handle_key("enter")
@@ -605,11 +624,19 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
             if worker is not None:
                 worker.join(_TIMEOUT_S)
                 assert not worker.is_alive()
+            if scenario == "source_failed":
+                controller.handle_key("text:i")
+                worker = controller._worker
+                assert worker is not None
+                worker.join(_TIMEOUT_S)
+                assert not worker.is_alive()
             frame: str = controller.render(120, 30).plain
             assert "private-provider-payload" not in frame
             if scenario == "titles":
-                assert "Enter odcinki" in frame
-                assert sent == ["graphql.anilist.co", "graphql.anilist.co"]
+                assert "Nr" in frame
+                assert "Nie wyemitowano" in frame
+                assert "Brak terminów emisji (AniList)" in frame
+                assert sent == ["graphql.anilist.co", "graphql.anilist.co", "api.ani.zip", "graphql.anilist.co"]
             elif scenario == "catalog_failed":
                 assert "AniList nie odpowiada" in frame
                 assert sent == ["graphql.anilist.co"]
@@ -617,7 +644,13 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
                 assert "TITLE_CATALOG_FAILED" in "".join(captured)
             elif scenario == "source_failed":
                 assert "Źródło wydań nie odpowiada" in frame
-                assert sent == ["graphql.anilist.co", "graphql.anilist.co", "nyaa.si"]
+                assert sent == [
+                    "graphql.anilist.co",
+                    "graphql.anilist.co",
+                    "api.ani.zip",
+                    "graphql.anilist.co",
+                    "torrentio.strem.fun",
+                ]
                 assert "TorrentSourceError" in "".join(captured)
                 assert "TORRENT_SOURCE_FAILED" in "".join(captured)
                 assert "command_id" in "".join(captured)
@@ -629,10 +662,8 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
                 ]
                 assert expected_class in "".join(captured)
             else:
-                assert "SubsPlease" in frame
-                assert "wyniki dla hasła" in frame
-                assert sent[-2:] == ["nyaa.si", "nyaa.si"]
-                assert controller._groups[0].newest == datetime(2026, 9, 5, 19, 51, 11, tzinfo=UTC)
+                assert "Nie znaleziono tytułu" in frame
+                assert sent == ["graphql.anilist.co", "graphql.anilist.co"]
             assert not owner.state.acquisitions
             assert all(value not in "".join(captured) for value in ("private-provider-payload", "Fixture", "https://"))
         finally:
@@ -643,15 +674,6 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
             thread.join(_TIMEOUT_S)
             service.close()
         assert not thread.is_alive()
-
-
-def _anime_enter(controller: AnimeController, key: str = "enter") -> str:
-    controller.handle_key(key)
-    worker: threading.Thread | None = controller._worker
-    if worker is not None:
-        worker.join(_TIMEOUT_S)
-        assert not worker.is_alive()
-    return controller.render(160, 30).plain
 
 
 @pytest.mark.integration
@@ -755,7 +777,7 @@ def test_async_url_add_is_observed_once_through_owner_ipc_before_content_starts(
         assert saved.state is AcquisitionState.ACCEPTED
         assert saved.file_layout == ((0, "09.mkv", 4),)
         assert not saved.content_started
-        assert store.load().policy.auto_enabled
+        assert store.load().acquisitions[-1].manual or store.load().policy.auto_enabled
         started.set()
         return httpx.Response(200)
 
@@ -849,7 +871,8 @@ def test_async_url_add_is_observed_once_through_owner_ipc_before_content_starts(
                 assert saved.acquisitions[0].state is AcquisitionState.ACCEPTED
             calls: tuple[str, ...] = tuple(paths)
             time.sleep(0.1)
-            assert tuple(paths) == calls
+            assert paths.count("add") == calls.count("add")
+            assert paths.count("resume") == calls.count("resume")
             if scenario != "shutdown":
 
                 def refuse_inventory() -> tuple[SourceGroup, ...]:
@@ -865,7 +888,8 @@ def test_async_url_add_is_observed_once_through_owner_ipc_before_content_starts(
                 )
                 assert state_path.stat().st_mtime_ns == stamp
                 assert store.load() == saved
-                assert tuple(paths) == calls
+                assert paths.count("add") == calls.count("add")
+                assert paths.count("resume") == calls.count("resume")
             if scenario == "exhausted":
                 assert reads == 3
                 assert all(item.state is AcquisitionState.UNCERTAIN for item in saved.acquisitions)
@@ -884,16 +908,16 @@ def test_async_url_add_is_observed_once_through_owner_ipc_before_content_starts(
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
-    ("scenario", "expected", "reason"),
+    ("scenario", "reason"),
     [
-        ("unavailable", "qBittorrent nie odpowiada", "TORRENT_CLIENT_UNAVAILABLE"),
-        ("unauthorized", "qBittorrent odrzucił logowanie", "TORRENT_CLIENT_UNAUTHORIZED"),
-        ("refused", "qBittorrent odrzucił żądanie", "TORRENT_CLIENT_REFUSED"),
-        ("accepted", "Przyjęto 1 zamówień · pobieranie w prywatnym kliencie AniShift", ""),
+        ("unavailable", "TORRENT_CLIENT_UNAVAILABLE"),
+        ("unauthorized", "TORRENT_CLIENT_UNAUTHORIZED"),
+        ("refused", "TORRENT_CLIENT_REFUSED"),
+        ("accepted", ""),
     ],
 )
-def test_anime_download_failure_and_dedup_cross_owner_ipc_and_qbittorrent_http(  # noqa: PLR0915
-    tmp_path: Path, scenario: str, expected: str, reason: str
+def test_download_failure_and_dedup_cross_owner_ipc_and_qbittorrent_http(  # noqa: PLR0915
+    tmp_path: Path, scenario: str, reason: str
 ) -> None:
     network: _TorrentNetwork = _TorrentNetwork()
     store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
@@ -958,7 +982,6 @@ def test_anime_download_failure_and_dedup_cross_owner_ipc_and_qbittorrent_http( 
         endpoint: str = control_endpoint(tmp_path)
         server: ControlServer = ControlServer(endpoint, key, handle, on_disconnect=owner.disconnect)
         session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
-        controller: AnimeController = AnimeController(service, lambda: None, resident=session)
         captured: list[str] = []
         handler_id: int = loguru_logger.add(
             captured.append,
@@ -967,13 +990,15 @@ def test_anime_download_failure_and_dedup_cross_owner_ipc_and_qbittorrent_http( 
             filter=lambda record: record["extra"].get("command_kind") == "download",
         )
         try:
-            controller.handle_key("enter")
-            controller.handle_key("text:Neko")
-            assert "SubsPlease" in _anime_enter(controller)
-            _anime_enter(controller)
-            controller.handle_key("space")
-            frame: str = _anime_enter(controller, "text:d")
-            assert expected in frame
+            catalog: ReleaseCatalog = session.search("Neko")
+            choices: tuple[ReleaseChoice, ...] = catalog.groups[0].choices
+            assert len(choices) == 2
+            if failing:
+                with pytest.raises(ControlError) as error:
+                    session.download(choices[:1])
+                assert error.value.reason == reason
+            else:
+                assert session.download(choices[:1]).count == 1
             first: ControlRequest = requests[0]
             saved: WatchState = store.load()
             assert len(saved.acquisitions) == 1
@@ -982,9 +1007,6 @@ def test_anime_download_failure_and_dedup_cross_owner_ipc_and_qbittorrent_http( 
             if failing:
                 assert responses[0].code is ControlErrorCode.INTERNAL
                 assert responses[0].reason == reason
-                assert "Sprawdź prywatny klient AniShift i log" in frame
-                assert "Web UI" not in frame
-                assert ".env" not in frame
                 assert "TorrentClientError" in "".join(captured)
                 assert first.command_id in "".join(captured)
                 assert reason in "".join(captured)
@@ -1005,38 +1027,25 @@ def test_anime_download_failure_and_dedup_cross_owner_ipc_and_qbittorrent_http( 
             assert paths.count("/api/v2/torrents/add") == calls.count("/api/v2/torrents/add")
             assert store.load() == saved
             if failing:
-                _anime_enter(controller)
-            else:
-                controller.cancel()
-                controller.handle_key("space")
-            duplicate: str = _anime_enter(controller, "text:d")
-            assert "Wysłano 0 do" not in duplicate
-            if failing:
-                assert "Przyjęto: 0 · już przyjęte: 0 · wynik przekazania niepotwierdzony: 1" in duplicate
-                assert "Sprawdź prywatny klient AniShift i log" in duplicate
+                with pytest.raises(ControlError) as duplicate:
+                    session.download(choices[:1])
+                assert duplicate.value.reason == "download_recorded"
                 assert responses[-1].reason == "download_recorded"
             else:
-                assert "Zamówienia już zapisane · sprawdź prywatny klient AniShift" in duplicate
+                assert session.download(choices[:1]).count == 0
                 assert responses[-1].ok
                 assert responses[-1].result == {"count": 0, "directory": str(tmp_path)}
-            assert controller.render(160, 30).plain == duplicate
             assert paths.count("/api/v2/torrents/add") == calls.count("/api/v2/torrents/add")
-            if failing:
-                _anime_enter(controller)
-            else:
-                controller.cancel()
-            controller.handle_key("text:a")
             failing = False
-            mixed: str = _anime_enter(controller, "text:d")
             if scenario == "accepted":
-                assert "Przyjęto 1 zamówień · pobieranie w prywatnym kliencie AniShift" in mixed
+                assert session.download(choices).count == 1
                 assert responses[-1].ok
                 assert responses[-1].result["count"] == 1
             else:
-                assert "Przyjęto: 1 · już przyjęte: 0 · wynik przekazania niepotwierdzony: 1" in mixed
-                assert "Sprawdź prywatny klient AniShift i log" in mixed
+                with pytest.raises(ControlError) as mixed:
+                    session.download(choices)
+                assert mixed.value.reason == "download_recorded"
                 assert responses[-1].reason == "download_recorded"
-            assert controller.render(160, 30).plain == mixed
             assert paths.count("/api/v2/torrents/add") == 2
             assert store.load().acquisitions[0] == saved.acquisitions[0]
             assert len(store.load().acquisitions) == 2
@@ -4046,6 +4055,32 @@ def test_a_stopped_transfer_reserves_flat_names_before_its_content_is_started(tm
     assert running.state is AcquisitionState.ACCEPTED
 
 
+@pytest.mark.parametrize(("subscription", "automatic"), [(None, False), ("a", True)])
+def test_a_downloaded_episode_row_carries_the_origin_of_its_order(
+    tmp_path: Path, subscription: str | None, *, automatic: bool
+) -> None:
+    service, store, _ = _library(tmp_path)
+    item: AcquisitionConfirmation = AcquisitionConfirmation(
+        "operation-9",
+        "9",
+        "",
+        ("09.mkv",),
+        AcquisitionState.COMPLETE,
+        RequestOrigin.USER,
+        subscription,
+        "9",
+        _MOMENT.isoformat(),
+        file_layout=((0, "09.mkv", 4),),
+        complete_files=("09.mkv",),
+    )
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=False), acquisitions=(item,)))
+    owner: AutomationOwner = _owner(service, store)
+
+    rows: list[dict[str, object]] = list(owner._download_materials(item).values())
+
+    assert [(row["stage"], row["reason"], row["automatic"]) for row in rows] == [("waiting", "preparing", automatic)]
+
+
 def test_a_transfer_whose_names_are_not_reserved_yet_defers_the_resume_a_client_asked_for(tmp_path: Path) -> None:
     service, store, _ = _library(tmp_path)
     network: _TorrentNetwork = _TorrentNetwork()
@@ -5484,6 +5519,7 @@ def _accepted_transfer(
     *,
     layout: tuple[FileReservation, ...] = (),
     started: bool = False,
+    origin: RequestOrigin = RequestOrigin.BACKGROUND,
 ) -> AcquisitionConfirmation:
     return AcquisitionConfirmation(
         f"operation-{info_hash}",
@@ -5491,7 +5527,7 @@ def _accepted_transfer(
         "",
         (),
         AcquisitionState.ACCEPTED,
-        RequestOrigin.USER,
+        origin,
         None,
         info_hash,
         _MOMENT.isoformat(),
@@ -5939,10 +5975,11 @@ def _pausable(
         WatchState(
             policy=AutomationPolicy(auto_enabled=True),
             acquisitions=(
-                replace(mine, subscription_id=subscription_id),
+                replace(mine, subscription_id=subscription_id, origin=RequestOrigin.BACKGROUND),
                 replace(
                     _accepted_transfer("10", layout=((0, "10.mkv", 4),), started=True),
                     requested_action="stop",
+                    origin=RequestOrigin.BACKGROUND,
                 ),
             ),
         )
@@ -5975,7 +6012,7 @@ def test_one_pause_stops_the_schedule_the_polling_and_records_only_the_transfers
 
     state: WatchState = store.load()
     assert state.pause_owned_transfers == ("9",)
-    assert service.paused == [True]
+    assert service.paused == []
     assert ("10", "stop") not in network.actions
 
 
@@ -5999,7 +6036,7 @@ def test_a_resume_restarts_only_the_transfers_that_pause_stopped(
     assert state.pause_owned_transfers == ()
     assert ("10", "resume") not in network.actions
     assert hand_stopped.requested_action == "stop"
-    assert service.paused == [True, False]
+    assert service.paused == []
 
 
 def test_a_resume_leaves_the_transfer_of_a_disabled_subscription_stopped(
@@ -6048,8 +6085,8 @@ def test_repeating_pause_and_resume_never_touches_the_separately_stopped_transfe
     assert hand_stopped.requested_action == "stop"
 
 
-def test_a_paused_resident_refuses_an_explicit_start_and_an_explicit_download(tmp_path: Path) -> None:
-    service, store, _ = _library(tmp_path)
+def test_a_paused_resident_admits_an_explicit_start_as_user_work(tmp_path: Path) -> None:
+    service, store, group_id = _library(tmp_path)
     store.save(WatchState(policy=AutomationPolicy(auto_enabled=False)))
     owner: AutomationOwner = _owner(service, store)
     thread: threading.Thread = _serving(owner)
@@ -6065,17 +6102,21 @@ def test_a_paused_resident_refuses_an_explicit_start_and_an_explicit_download(tm
                 command_id="start-1",
             )
         )
-        _chosen, download = owner._accept_download(_request("download", {}, command_id="download-1"), (), {})
+        materials: list[dict[str, object]] = cast(
+            "list[dict[str, object]]", owner.handle(_request("status", {}, command_id="status-1")).result["materials"]
+        )
     finally:
+        for run_id in tuple(service.active):
+            service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
 
-    assert started.code is ControlErrorCode.REFUSED
-    assert started.reason == RefusalReason.PAUSED.value
-    assert download.code is ControlErrorCode.REFUSED
-    assert download.reason == RefusalReason.PAUSED.value
-    assert service.submitted == []
-    assert store.load().requests == ()
+    assert not thread.is_alive()
+    assert started.ok
+    assert [row["automatic"] for row in materials if row.get("stage") == "processing"] == [False]
+    assert len(service.submitted) == 1
+    assert [item.automatic for item in store.load().requests] == [False]
+    assert store.load().policy.auto_enabled is False
 
 
 def test_a_late_subscription_result_is_refused_by_a_pause_that_landed_during_the_search(tmp_path: Path) -> None:
@@ -6116,7 +6157,7 @@ def test_a_stored_pause_is_still_a_pause_after_a_restart(tmp_path: Path) -> None
 
     assert answer.result["paused"] is True
     assert answer.result["auto_enabled"] is False
-    assert service.paused == [True]
+    assert service.paused == []
     assert admissions == [False]
 
 
@@ -6380,7 +6421,9 @@ def test_paused_broadcast_and_ipc_wait_for_completed_transfer_release_http(
         pending: AcquisitionConfirmation = replace(
             _accepted_transfer("9"), requested_action="stop", action_pending=True, action_id="stop-test"
         )
-        store.save(WatchState(policy=AutomationPolicy(auto_enabled=False), acquisitions=(completed, pending)))
+        store.save(
+            WatchState(policy=AutomationPolicy(auto_enabled=False), acquisitions=(_accepted_transfer("10"), pending))
+        )
         owner: AutomationOwner = _owner(service, store)
         owner.attach_broadcast(lambda frame, terminal: frames.append(frame))
         thread: threading.Thread = _serving(owner)
@@ -6389,6 +6432,8 @@ def test_paused_broadcast_and_ipc_wait_for_completed_transfer_release_http(
         server: ControlServer = ControlServer(endpoint, key, owner.handle, on_disconnect=owner.disconnect)
         panel: ControlClient = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
         try:
+            owner._on_owner(lambda: owner._replace_acquisition(completed))
+            owner._on_owner(owner._finalize_transfers)
             assert releasing.wait(_TIMEOUT_S)
             assert panel.call("status")["pausing"] is True
             assert not any(cast("Mapping[str, object]", frame["payload"])["paused"] for frame in frames)
@@ -6794,6 +6839,18 @@ def _pause_flags(owner: AutomationOwner) -> tuple[object, object, object]:
     return result["paused"], result["pausing"], result["pause_incomplete"]
 
 
+def _as_background(owner: AutomationOwner) -> None:
+    def convert() -> bool:
+        current: AcquisitionConfirmation = owner.state.acquisitions[0]
+        if current.origin is RequestOrigin.BACKGROUND:
+            return True
+        if owner._transfers_inspecting:
+            return False
+        return owner._replace_acquisition(replace(current, origin=RequestOrigin.BACKGROUND))
+
+    assert _await(lambda: owner._on_owner(convert))
+
+
 def _acquisition_fields(owner: AutomationOwner, field: str) -> list[object]:
     rows: object = owner.handle(_request("status", command_id=f"status-{field}")).result["acquisitions"]
     return [row[field] for row in cast("list[Mapping[str, object]]", rows)]
@@ -6950,7 +7007,7 @@ def test_a_pause_waits_for_a_relocation_in_flight_and_settles_with_a_parked_one(
     store.save(
         WatchState(
             policy=AutomationPolicy(auto_enabled=True),
-            acquisitions=(_owned(("Book.txt",), (), RequestOrigin.USER, size, directory="audiobook"),),
+            acquisitions=(_owned(("Book.txt",), (), RequestOrigin.BACKGROUND, size, directory="audiobook"),),
         )
     )
     journal: _GatedReadyStore = _GatedReadyStore(tmp_path / "control" / "relocations", tmp_path)
@@ -7443,6 +7500,7 @@ def test_global_pause_settles_a_public_resume_waiting_for_metadata_after_the_tra
         )
         assert downloaded.ok
         assert _acquisition_fields(owner, "state") == [AcquisitionState.ACCEPTED.value]
+        _as_background(owner)
         info_hash: str = network.added[0]
         if state is AcquisitionState.FAILED:
             assert owner.handle(_request("transfer", {"info_hash": info_hash, "action": "cancel"})).ok
@@ -7516,6 +7574,7 @@ def test_a_pause_of_an_uncertain_resume_waits_for_stop_and_reports_a_refusal(
         ).ok
         info_hash: str = network.added[0]
         transfer: TorrentInfo = network.tracked.pop(info_hash)
+        _as_background(owner)
         assert _await(lambda: _acquisition_fields(owner, "state") == [AcquisitionState.UNCERTAIN.value])
         network.before_action = stop_returning_transfer
         assert owner.handle(

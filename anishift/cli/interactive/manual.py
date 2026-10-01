@@ -44,6 +44,7 @@ from anishift.application import (
     preview_plan,
 )
 from anishift.application.events import sanitize_event_message
+from anishift.cli.interactive.anime_view import spinner_frame
 from anishift.cli.interactive.menu import (
     append_row as _append_row,
 )
@@ -1216,7 +1217,7 @@ class ManualController:
         return self._finish(content, columns, rows, _INPUT_HINT)
 
     def _render_busy(self, columns: int, rows: int) -> Text:
-        spinner: str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[int(time.monotonic() * 10) % 10]
+        spinner: str = spinner_frame(time.monotonic())
         line: str = f"{spinner} Sprawdzanie pliku…"
         content: Text = _header("TRYB RĘCZNY", columns, rows, 2)
         left: int = max((columns - len(line)) // 2, 0)

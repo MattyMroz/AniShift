@@ -15,11 +15,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 
 ## Pułapki
 
-- `interactive/anime_panel.py`, `anime_state.py` and `anime_view.py` are the P1 presentation
-  boundary, exercised through the offline `scripts/tmp/anime_panel_demo.py`; the live Anime/G
-  controller is not switched yet. Rows and admission results come from an injected adapter.
+- `interactive/anime_panel.py`, `anime_state.py` and `anime_view.py` render every live
+  `AnimeController` screen. The controller projects owner views and delegates input to the panel.
   The pure renderer receives a snapshot and clock; its text hit map excludes tabs, markers,
-  checkboxes and borders. Selection summaries and range editing reserve bottom rows.
+  checkboxes and padding. Selection summaries and range editing reserve bottom rows.
   `anime_clipboard.py` sends BOM-prefixed UTF-16LE bytes to Windows `clip.exe`.
   Selected-text Ctrl+C/C precedes navigation; unselected Ctrl+C keeps back/blur semantics.
   `_WheelControl` converts Prompt Toolkit character positions to terminal cells before the
@@ -56,9 +55,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   „Dokończ poprzednią pracę” w Ręcznym wymaga tego samego zakresu grup co zapisane zlecenie;
   `plan_resume` odczytuje zweryfikowany pozostały graf, a Start zachowuje ID zlecenia.
   Pełne recovery po zabiciu aktywnego procesu pozostaje osobnym zakresem P08.
-- Ekran Anime w trybie rezydenta używa `ResidentSession` także do katalogu, wydań,
-  pobrania i dodania subskrypcji. Nie twórz w tym ekranie drugiego klienta HTTP ani
-  lokalnego zapisu subskrypcji; receipt i admission pobrań należą do ownera.
+- Anime uses `ResidentSession` for catalogue reads, offers and episode downloads.
+  It has no group catalogue or subscription-creation route. Existing subscriptions retain
+  their own editing and checking tab. Receipts and admissions belong to the owner.
 - `ResidentSession.episode_offer/episode_choose` share the interruptible catalogue connection:
   offers belong to its server session, so choosing on the main control connection would refuse them.
   `interrupt_reads` invalidates that interaction. Batch download uses the main connection and survives
@@ -73,8 +72,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   Recorded downloads also appear, using measured transfer bars and static metadata/pause/problem labels.
   Uncertain acquisitions are excluded from download/handoff rows regardless of cached transfer state;
   live admitted processing remains governed by its request and events. Filtered rows lose their timers.
-  Explicit Anime admission is consumed once by the visible panel's idle loop; navigation
-  invalidates late completions. Recorded hashes come from owner snapshots, never a UI store.
+  Anime admission updates its episode rows without changing tabs. Recorded hashes come
+  from owner snapshots, never a UI store.
   Terminal work is reached through History, and recycling/relocation actions through Library.
   Progress labels come from the preview's source names, with `Materiał` for absent/ID-only
   legacy labels. `interactive/state.py`, `interactive/progress.py`, `interactive/anime.py`
@@ -95,8 +94,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   refusals survive unrelated snapshots but not a changed selection/view; late action results
   cannot overwrite a newer context. `interactive/state.py`, `resident.py`
 - P prepares the owner's retry proposal; confirmation transfers local work to Manual with
-  owner revalidation, or admits an explicit remote repeat. Pause permits History reads and
-  validated result opening, but blocks new work. `interactive/state.py`, `interactive/app.py`
+  owner revalidation, or admits an explicit remote repeat. Pause never blocks P; under pause only
+  rows with owner-projected `automatic` (request origin, or `AcquisitionConfirmation.manual` for
+  downloads) show `Wstrzymano` and freeze their timers; a missing field counts as automatic. `interactive/state.py`, `interactive/app.py`
 - `run_interactive(service, batch=...)` zwraca kod wyjścia jak `run --preset` i po wyniku odlicza
   10 s w `_handle_idle`, dowolny klawisz zamyka; `interrupt` w partii anuluje run i kończy kodem 4.
   Test buduje aplikację ręcznie? Ustaw też `_batch` i `_closing_at`. `interactive/app.py`
@@ -167,31 +167,44 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   zewnętrzne przez `AppService`, waliduje przez `plan_manual()` i przekazuje zaakceptowany
   plan do tej samej ścieżki wykonania oraz postępu co Auto.
   `interactive/app.py`, `interactive/settings.py`, `interactive/manual.py`, `run.py`
-- `AnimeController` jest właścicielem stanu Anime. Enter na TITLES otwiera ENTRIES → EPISODES →
-  OFFER → CANDIDATES przez `franchise`/`episodes`/`offer`; ta droga służy wyłącznie do podglądu.
-  ENTRIES to jedna płaska lista malejąco po premierze, bez nagłówków grup; EPISODES nie pokazuje
-  dodatków. W trybie rezydenta D na zmapowanym wpisie zleca zaznaczone (albo podświetlony) odcinki
-  przez `ResidentSession.episode_download` w osobnym wątku, zostaje na liście, pokazuje spinner
-  w kolumnie Stan i odczytuje wynik z receipt tego samego `command_id`; I otwiera OFFER. Stan
-  odcinków po wejściu pochodzi z `episode_states`. Pierwszy wiersz stopki jest zawsze wydany
-  (zaznaczenie, notka, niepotwierdzony termin), więc lista się nie przesuwa.
-  Po wyszukiwaniu `_find_titles` od razu czyta franczyzę pierwszego wyniku; TITLES pojawia się
-  (`_titles_shown`) tylko, gdy któryś wynik nie jest w `Franchise.entries` — nie w `FranchiseGraph.nodes`,
-  bo niewidoczne węzły byłyby wtedy nieosiągalne. Esc z ENTRIES wraca do TITLES albo QUERY według
-  `_titles_shown`. `_entries_skipped` skips ENTRIES whenever the opened franchise is complete and has
-  exactly one entry, from the search or from TITLES; Esc then returns to TITLES or QUERY by
-  `_titles_shown`. An episode-read failure clears skipping and returns to ENTRIES. New search resets it. Kolejność TITLES i ENTRIES liczy wyłącznie `premiere_order` z fasady.
-  `G` otwiera dawną drogę RESULTS z pobieraniem i subskrypcjami, także z ENTRIES dla wpisu obecnego
-  w `_candidates`. G also works on EPISODES when `_entries_skipped` is true and that entry is among
-  search results, including missing mapping; the footer advertises it only then. Leaving RESULTS
-  returns to EPISODES in this case. `StateController` przekazuje
-  klawisze i przewijanie. Sieć działa w wątku `anishift-anime`; Esc lub zmiana zakładki unieważnia
-  spóźnione wyniki przez licznik generacji i zatrzymuje kolejne zapytania ofert. Esc z BUSY anuluje też
-  `_work_cancel`, a w trybie rezydenta zamyka kanał katalogu (`interrupt_reads`); owner anuluje wtedy
-  rozwijanie franczyzy tej sesji przed kolejnym żądaniem AniList. Nowa franczyza zawsze ustawia kursor
-  ENTRIES na wybranym wpisie (`_adopt_franchise`), także gdy zostaje TITLES. `render()` nie robi I/O.
-  `_HOME_MENU_ROWS` i `_HOME_CHROME_ROWS` liczą rzeczywiste wiersze menu.
-  `interactive/anime.py`, `interactive/state.py`, `interactive/prompts.py`
+- `AnimeController` owns catalogue navigation and owner command correlation. `StateController`
+  renders the same PANEL heading and tabs for every tab pinned to the top (below 16 rows without
+  blank lines, below 12 without PANEL); the episode title column yields width so Stan stays whole; key hints are pinned
+  to the bottom above the status line, and only the content between them is centered vertically
+  and by its actual cell width. `_anime_top` is the heading height for mouse hit-testing.
+  `anime_view` returns a body of exactly the given rows: notice and summary sit directly above
+  the keys, the table keeps its position when they change, and `AnimeFrame.first_row` locates
+  the first data row. Columns are sized from content, using the shared menu pointer,
+  `pack_keys` footer and existing theme roles.
+  Key hints pack into at most two lines without duplicates; navigation hints drop first.
+  Never introduce an Anime-specific palette, background, tab strip or separators. Render performs
+  no I/O. `AnimePanel` owns text selection,
+  copying and row interactions. Mouse events travel through `app` → `state` → `AnimePanel`.
+  TITLES is skipped only when every result belongs to visible `Franchise.entries`; one complete,
+  released entry can skip ENTRIES. Premiere ordering uses the application facade. The initial
+  cursor is the first selectable row; announcements remain visible but cannot be opened.
+  D submits at most 100 keys and stays on the episode list. Pending mutations are blocked;
+  I reads only the cursor. Owner events and receipts correlate by command ID and episode key.
+  Each admitted result clears its mark without a background flash; marks keep `[x]` while sending
+  and after a refusal, whose Stan label and notice name the owner's reason.
+  A truncated release name is shown in full in the notice; its details stay under `?`. Unknown results retain their exact
+  ID/payload for Enter replay; a fresh controller reads `episode_states` instead. Esc/Tab discard
+  late catalogue navigation but never cancel an admitted batch. Anime never gates D/I/P on the
+  global pause and shows no pause notice; only an owner refusal is reported, keeping marks.
+  O toggles automation explicitly and never resubmits a refused download.
+  On table and list screens the context line sits directly above the column labels, separated by
+  the global-status row (blank unless set); context and table form one block centered between
+  tabs and keys, and a scrolling table keeps the context fixed above its labels.
+  The search screen, and work started from it (`_busy_return` QUERY), has no context line: it centers
+  the `4dc8f61` block `ANIME`, one blank line, then `> ` plus `TextInput.render` at
+  `anime_state.query_left` (a 32-cell box centered until the text widens it) or the blue busy sentence.
+  The context names the current screen: `_shown_entry` (episodes/releases of that entry) is set
+  when an entry opens and cleared by the `_screen` setter on QUERY/TITLES/ENTRIES, which show
+  `Anime`. `_entry` only remembers the last entry for a fast reopen and never drives the text.
+- Every aired, inactive episode remains selectable, including ready, downloaded and failed ones.
+  D submits new and repeated keys together through the owner's durable batch. The owner reuses
+  repeat candidate exclusion and protected admission replacement. Active ordered/downloading/processing
+  rows show cancellation guidance instead of submitting duplicate work. P remains the explicit offer view.
 - Zakres odcinków zastępuje zaznaczenia i przyjmuje nieciągłe numery całkowite; nawigacja i powroty
   z podglądu zachowują zaznaczenia oraz kursor. Film ma jeden wiersz Film i `EpisodeKey(id, 1)`;
   podgląd wymaga mapowania. Enter na kandydacie nic nie robi. `interactive/anime.py`
@@ -203,31 +216,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `state_changed`, albo lokalnego `AcquisitionService.blocked_until`. Terminy Nyaa i Torrentio są
   osobne. Awaria harmonogramu zachowuje listę odcinków i ostrzeżenie; jawne ponowne wejście ponawia
   odczyt harmonogramu. Renderowanie odliczania nie ponawia zapytań. `interactive/anime.py`, `interactive/state.py`
-- `O` w wynikach Anime przygotowuje draft subskrypcji PODŚWIETLONEGO odcinka, nie zaznaczonych wierszy: paczka, brak numeru
-  albo `other_season` daje wyłącznie jednolinijkową notkę zamiast stopki, kasowaną następnym
-  klawiszem. Panel otwiera wybór numerów; dopiero Enter przyjmuje zakres przez ownera.
-  Po wyborze tytułu `O` używa PODŚWIETLONEJ grupy. `interactive/anime.py`, `interactive/state.py`
-- Pusta lista wyników nie jest ślepym zaułkiem: przy `filtered > 0` nazywa filtr, a `F` i `Esc`
-  działają jak na pełnej liście. `Esc` z wyników wraca do TITLES, gdy kandydaci są w pamięci, a do
-  ENTRIES, gdy TITLES pominięto (`_titles_shown`), albo EPISODES po pominięciu ENTRIES
-  (`_entries_skipped`) — dlatego nowe hasło czyści `_candidates`. Teksty błędów tłumaczy `_PROBLEM_TEXTS`
-  (`ErrorCode` → polskie zdanie), a nie warstwa domenowa. `interactive/anime.py`
-- Anime opens a group locally; Enter/Space toggles a release and explicit Download submits
-  only the open group's draft. Each numbered episode has at most one pending variant;
-  explicit replacement shows a notice, and bulk selection preserves an existing choice.
-  `A` and `Z` skip packs, other-season releases and owner-recorded hashes. `Z` opens the range prompt; `S`
-  przestawia grupy LOKALNIE przez `order_groups` fasady — bez sieci, bez drugiej reguły porządku,
-  a znaczniki wracają po `info_hash`, nie po numerze wiersza —
-  a `F` powtarza `search_title` bez filtra. Nowe pobrania i subskrypcje używają płaskiego
-  roota workspace, bez katalogu `candidate.folder_title()`. `interactive/anime.py`
-- Tylko poprawny pusty wynik AniList uruchamia wyszukiwanie wpisanego hasła na Nyaa, z trwałą
-  notką w stopce i powrotem przez Esc do QUERY. Awaria AniList, także 429, otwiera PROBLEM bez
-  zapytań Nyaa. Brak mapowania ani.zip również nie uruchamia Nyaa. Notka jest osobna od `_notice`,
-  które znika po następnym klawiszu. Wyniki są sortowane po seedach; `_show_results` otrzymuje
-  `_Listing` z faktyczną kolejnością, aby podpowiedź `S` była zgodna. Błąd `season_context` zachowuje
-  wyszukiwanie z trwałą notką o niedostępnej numeracji. Stopkę mierz przed wyliczeniem wysokości
-  listy przez `_visible_window(..., reserved)`, aby dłuższe podpowiedzi nie wypychały klatki poza ekran.
-  `interactive/anime.py`
+- Empty AniList results show `Nie znaleziono tytułu`; no Nyaa fallback opens. Missing ani.zip
+  mapping retains the domain's AniList episode rows. D/I use the ordinary episode APIs.
+  `anime_view.spinner_frame` is the shared Rich dots animation for Anime and Manual.
 - `SettingsController.render()` korzysta wyłącznie z lokalnego, odświeżonego snapshotu;
   nie wykonuj w nim I/O ani wywołań sieciowych, bo renderer odświeża klatkę cyklicznie.
   Katalog modeli jest tylko do odczytu, a probe działa wyłącznie po jawnej akcji.
@@ -243,9 +234,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   AnimeController owns input focus: the first character or paste activates the idle query and
   inserts its text; Enter and `/` also activate it. This implicit activation is query-only. Focused
   arrows edit, Enter submits, and Esc or unselected Ctrl+C blurs without clearing.
-  Selected Ctrl+C copies without blurring. Range/group prompts open focused. The catalogue episode
-  range closes on one Esc or unselected Ctrl+C without applying; legacy range/group prompts still
-  blur first and close on the second Esc. Panel derives arrow routing from
+  Selected Ctrl+C copies without blurring. Range prompts open focused and close on one Esc or
+  unselected Ctrl+C without applying. Panel derives arrow routing from
   that focus; Tab/Backtab always switch, preserving drafts but blurring inputs and
   invalidating late completions. Only focused fields render a caret or selection;
   the shared block caret highlights the existing grapheme, or one trailing space at

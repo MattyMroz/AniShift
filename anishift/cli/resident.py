@@ -10,7 +10,6 @@ from secrets import token_hex
 from typing import TYPE_CHECKING, Final
 
 from anishift.application import (
-    CatalogOrder,
     DeletionPreview,
     DownloadReceipt,
     EpisodeBatch,
@@ -20,7 +19,6 @@ from anishift.application import (
     EpisodeListing,
     EpisodeOffer,
     EpisodeOfferView,
-    EpisodeRange,
     EpisodeStatus,
     Franchise,
     HistoryEvent,
@@ -33,7 +31,6 @@ from anishift.application import (
     ReleaseCatalog,
     ReleaseChoice,
     RetryProposal,
-    SeasonContext,
     StreamCandidate,
     Subscription,
     SubscriptionOrder,
@@ -211,39 +208,6 @@ class ResidentSession:
         """Read releases through the owner's shared request limits."""
         return decode_view(ReleaseCatalog, self._call("acquisition", {"operation": "search", "query": query}))
 
-    def season_context(self, candidate: TitleCandidate) -> SeasonContext:
-        """Resolve season numbering at the owner."""
-        return decode_view(
-            SeasonContext,
-            self._call(
-                "acquisition",
-                {"operation": "season", "candidate": encode_view(candidate)},
-            ),
-        )
-
-    def search_title(
-        self,
-        candidate: TitleCandidate,
-        *,
-        episodes: EpisodeRange | None = None,
-        order: CatalogOrder = CatalogOrder.NEWEST,
-        context: SeasonContext | None = None,
-    ) -> ReleaseCatalog:
-        """Search the selected title and episode range without a second network client."""
-        return decode_view(
-            ReleaseCatalog,
-            self._call(
-                "acquisition",
-                {
-                    "operation": "releases",
-                    "candidate": encode_view(candidate),
-                    "order": order.value,
-                    "episodes": encode_view(episodes) if episodes is not None else None,
-                    "context": encode_view(context) if context is not None else None,
-                },
-            ),
-        )
-
     def franchise(self, anilist_id: int, *, cancel: CancellationToken | None = None) -> Franchise:
         """Read the franchise view of one entry through the owner; `interrupt_reads` stops its expansion."""
         token: CancellationToken = cancel or NeverCancelledToken()
@@ -412,17 +376,6 @@ class ResidentSession:
     def command(self, kind: str, payload: Mapping[str, object] | None = None) -> Mapping[str, object]:
         """Send a validated user action through the owner's command boundary."""
         return self._call(kind, payload)
-
-    def acquisition_states(self, hashes: Sequence[str]) -> list[Mapping[str, object]]:
-        """Read durable states only for the currently displayed release hashes."""
-        rows: list[Mapping[str, object]] = []
-        for start in range(0, len(hashes), 1000):
-            values: object = self._call("acquisition_states", {"hashes": list(hashes[start : start + 1000])}).get(
-                "items"
-            )
-            if isinstance(values, list):
-                rows.extend(value for value in values if isinstance(value, Mapping))
-        return rows
 
     def observe(self, *, panel: bool = False) -> Iterator[Mapping[str, object]]:
         """Subscribe before reading the snapshot so concurrent progress is not lost."""

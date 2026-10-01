@@ -84,6 +84,7 @@ def test_selected_pack_survives_owner_and_qb_restart_to_two_library_results_with
         start: float = time.monotonic()
         times["E1:D"] = 0.0
         with resident(tmp_path, receiver, catalog) as (owner, service, client):
+            client.call("set_auto", {"enabled": False}, command_id="pause-before-download")
             _download(client, 1)
             wait_for(lambda: bool(receiver.torrents("AniShift")), "one magnet admitted")
             _record(owner.state, times, start)
@@ -129,6 +130,7 @@ def test_selected_pack_survives_owner_and_qb_restart_to_two_library_results_with
         times["qb_restarted"] = round(time.monotonic() - start, 4)
         seed.set_preferences({"up_limit": 0})
         with resident(tmp_path, receiver, catalog) as (owner, service, client):
+            assert owner.state.policy.auto_enabled is False
             _download(client, 1)
             _download(client, 3)
             assert service.discover().groups == ()
@@ -215,6 +217,11 @@ def test_selected_pack_survives_owner_and_qb_restart_to_two_library_results_with
             status = client.call("status")
             assert len(cast("list[object]", status["library"])) == 2
             assert WatchStateStore(tmp_path / "watch/state.json").load().acquisitions == state.acquisitions
+            client.call("set_auto", {"enabled": True}, command_id="resume-after-library")
+            _download(client, 1)
+            _download(client, 3)
+            assert len(owner.state.requests) == 2
+            assert len(owner.state.acquisitions) == 1
         adds: list[httpx.Request] = [item for item in receiver_requests if item.url.path.endswith("/torrents/add")]
         assert len(adds) == 1
         magnet: str = parse_qs(adds[0].content.decode())["urls"][0]

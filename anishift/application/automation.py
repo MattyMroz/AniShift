@@ -834,8 +834,6 @@ class AutomationOwner:
         self._reconcile_subscription_sources()
         self._report_preflight()
         self._service.set_background_admission(self._state.policy.auto_enabled)
-        if not self._state.policy.auto_enabled:
-            self._service.pause_runs()
         self._prepare_transfers()
         self._schedule_transfers()
         self._schedule_subscriptions()
@@ -875,16 +873,14 @@ class AutomationOwner:
             self._queue.put(lambda: self._prepared_client(problem))
 
     def _recover_acquisition_confirmations(self, acquisition: AcquisitionService) -> None:
-        needed: bool = self._on_owner(
-            lambda: (
-                self._working()
-                and any(
-                    item.state in {AcquisitionState.PENDING_SEND, AcquisitionState.UNCERTAIN}
-                    for item in self._state.acquisitions
-                )
+        scope: frozenset[str] = self._on_owner(
+            lambda: frozenset(
+                item.operation_id
+                for item in self._state.acquisitions
+                if item.state in {AcquisitionState.PENDING_SEND, AcquisitionState.UNCERTAIN} and self._working(item)
             )
         )
-        if not needed:
+        if not scope:
             return
         with acquisition.requests("recovery"):
             present: frozenset[str] = acquisition.queued_hashes()
@@ -892,14 +888,15 @@ class AutomationOwner:
                 lambda: frozenset(
                     item.info_hash
                     for item in self._state.acquisitions
-                    if item.state is AcquisitionState.UNCERTAIN
+                    if item.operation_id in scope
+                    and item.state is AcquisitionState.UNCERTAIN
                     and item.selective
                     and item.client_confirmed
                     and item.info_hash not in present
                 )
             )
             removed: frozenset[str] = acquisition.finalizable_hashes(missing) - acquisition.released_hashes(missing)
-        self._on_owner(lambda: self._reconcile_acquisitions(present, removed=removed))
+        self._on_owner(lambda: self._reconcile_acquisitions(present, removed=removed, scope=scope))
 
     def _prepared_client(self, problem: str | None) -> None:
         self._active_io -= 1
@@ -979,7 +976,9 @@ class AutomationOwner:
             self._restore_paused()
             self._refresh_automatic()
             self._publish_state()
-            if workspace.pending_paths and self._state.policy.auto_enabled:
+            if workspace.pending_paths and (
+                self._state.policy.auto_enabled or any(item.manual for item in self._state.acquisitions)
+            ):
                 self._inspection_at = time.monotonic() + self._scan_interval_s
         self._inspect_changes()
 
@@ -998,7 +997,7 @@ class AutomationOwner:
     def _inspect_changes(self) -> None:
         if self._inspecting or self._shutting_down:
             return
-        if not self._state.policy.auto_enabled and not self._files_queued:
+        if not self._state.policy.auto_enabled and not self._files_queued and self._inspection_at is None:
             return
         if self._inspection_at is not None and time.monotonic() < self._inspection_at:
             return
@@ -1086,7 +1085,7 @@ class AutomationOwner:
         if any(receipt.pending is not None for receipt in self._state.command_receipts):
             return
         workspace: InspectedWorkspace | None = self._library
-        if self._shutting_down or not self._state.policy.auto_enabled or workspace is None or not workspace.groups:
+        if self._shutting_down or workspace is None or not workspace.groups:
             return
         try:
             self._admit_library(workspace)
@@ -1114,6 +1113,7 @@ class AutomationOwner:
                 _group_fingerprint(group),
                 self._automatic_products(group, preset),
                 succeeded_groups=succeeded_groups,
+                explicit=self._file_origin(group, downloaded=True) is RequestOrigin.USER,
             )
             and not self._confirmed_absence_completes(group, preset)
         )
@@ -1187,7 +1187,7 @@ class AutomationOwner:
             source_selection=SourceSelection.AUTO,
             session_id=None,
             rebuild=None,
-            automatic=True,
+            automatic=self._file_origin(group, downloaded=True) is not RequestOrigin.USER,
             recipe=self._state.recipes,
         )
         command: ControlRequest = ControlRequest(command_id=f"auto-{token_hex(_ID_BYTES)}", kind="start", payload={})
@@ -1197,12 +1197,12 @@ class AutomationOwner:
             with self._files_lock:
                 self._fresh_sources.difference_update(artifact.path for artifact in group.artifacts)
 
-    def _file_origin(self, group: InspectedSourceGroup) -> RequestOrigin | None:
+    def _file_origin(self, group: InspectedSourceGroup, *, downloaded: bool = False) -> RequestOrigin | None:
         paths: set[Path | None] = {artifact.path for artifact in group.artifacts}
         for acquisition in reversed(self._state.acquisitions):
             for assignment in acquisition.assignments:
                 if assignment.group_id is not None and assignment.group_id == group.group_id:
-                    return acquisition.origin
+                    return RequestOrigin.USER if acquisition.manual else RequestOrigin.BACKGROUND
                 publication: EpisodePublication | None = assignment.publication
                 if publication is not None and any(
                     self._service.workspace_root / item.name in paths for item in publication.files
@@ -1210,7 +1210,9 @@ class AutomationOwner:
                     complete: bool = publication.handed_off and all(
                         self._service.workspace_root / item.name in paths for item in publication.files
                     )
-                    return acquisition.origin if complete else None
+                    if not complete:
+                        return None
+                    return RequestOrigin.USER if acquisition.manual else RequestOrigin.BACKGROUND
         for acquisition in reversed(self._state.acquisitions):
             directory: Path = self._service.workspace_root / acquisition.directory
             owned: frozenset[str] = frozenset(
@@ -1218,9 +1220,15 @@ class AutomationOwner:
             )
             if not owned:
                 continue
-            return acquisition.origin if owned <= frozenset(acquisition.complete_files) else None
+            if not owned <= frozenset(acquisition.complete_files):
+                return None
+            return RequestOrigin.USER if acquisition.manual else RequestOrigin.BACKGROUND
         with self._files_lock:
-            return RequestOrigin.USER if self._fresh_sources.intersection(paths) else RequestOrigin.BACKGROUND
+            return (
+                RequestOrigin.USER
+                if not downloaded and self._fresh_sources.intersection(paths)
+                else RequestOrigin.BACKGROUND
+            )
 
     def _dispatch(self, command: _Command) -> None:  # noqa: PLR0911
         request: ControlRequest = command.request
@@ -1658,6 +1666,7 @@ class AutomationOwner:
                 group_ids=list(request.group_ids),
                 active=request.state in _ACTIVE_STATES,
                 problem=request.problem,
+                automatic=request.automatic,
             )
             materials[group_id] = row
         for group in () if self._library is None else self._library.groups:
@@ -1675,6 +1684,7 @@ class AutomationOwner:
                 "stage": "waiting",
                 "reason": None if readiness.reason is None else readiness.reason.value,
                 "active": False,
+                "automatic": True,
             }
         return list(materials.values())
 
@@ -1774,6 +1784,7 @@ class AutomationOwner:
             "state": None if transfer is None else transfer.state,
             "active": active and acquisition.state is AcquisitionState.ACCEPTED and not acquisition.problem,
             "problem": acquisition.problem,
+            "automatic": not acquisition.manual,
         }
         if acquisition.selective and acquisition.assignments:
             return self._selective_materials(acquisition, common, measured)
@@ -2463,7 +2474,20 @@ class AutomationOwner:
         return ControlResponse.refused(ControlErrorCode.REFUSED, "The library operation is unavailable", reason=reason)
 
     def _pausing(self) -> bool:
-        return not self._state.policy.auto_enabled and (self._settling() or self._transfers_at is not None)
+        if self._state.policy.auto_enabled:
+            return False
+        if not any(
+            item.manual and (_polled(item, selective=self._selective_client()) or _transfer_action(item))
+            for item in self._state.acquisitions
+        ):
+            return self._settling() or self._transfers_at is not None
+        active: frozenset[str] = frozenset(self._service.active_run_ids())
+        return (
+            any(item.automatic and item.request_id in active for item in self._state.requests)
+            or self._subscriptions_checking
+            or any(_transfer_action(item) for item in self._state.acquisitions if not item.manual)
+            or (self._completion_inflight and any(not item.manual for item in self._pending_completion()))
+        )
 
     def _pause_incomplete(self) -> bool:
         """Answer whether this pause reached its boundary leaving a transfer it could not stop."""
@@ -2505,8 +2529,7 @@ class AutomationOwner:
         return ControlResponse.succeeded(outcome)
 
     def _pause_work(self) -> None:
-        """Hold the whole flow: no new admission, no schedule and every own working transfer stopped."""
-        self._service.pause_runs()
+        """Hold automation while explicit user orders keep their admission and transfer lifecycle."""
         self._subscriptions_at = None
         self._settle_at = None
         self._inspection_at = None
@@ -2515,7 +2538,6 @@ class AutomationOwner:
 
     def _resume_work(self) -> None:
         """Take up exactly the work this pause stopped, without reviving separately disabled entries."""
-        self._service.resume_runs()
         if self._transfers is not None:
             self._transfers.reset_clock()
         self._prepare_transfers()
@@ -2537,6 +2559,9 @@ class AutomationOwner:
         stopped: frozenset[str] = frozenset(paused)
         acquisitions: list[AcquisitionConfirmation] = []
         for item in state.acquisitions:
+            if item.manual:
+                acquisitions.append(item)
+                continue
             updated: AcquisitionConfirmation = item
             terminal: bool = item.state in {AcquisitionState.COMPLETE, AcquisitionState.FAILED}
             unsent_resume: bool = item.requested_action == "resume" and item.action_pending and not item.action_sent
@@ -2591,6 +2616,7 @@ class AutomationOwner:
             )
             and item.requested_action not in {"stop", "cancel"}
             and (not item.selective or item.applied_revision > 0)
+            and not item.manual
         )
 
     def _enabled_subscriptions(self) -> frozenset[str] | None:
@@ -2604,11 +2630,15 @@ class AutomationOwner:
             return frozenset()
 
     def _restore_paused(self) -> None:
-        if not self._working() or self._library is None:
+        if self._shutting_down or self._library is None:
             return
         active: frozenset[str] = frozenset(self._service.active_run_ids())
         paused: tuple[ProcessingRequest, ...] = tuple(
-            item for item in self._state.requests if item.state is RequestState.PAUSED and item.request_id not in active
+            item
+            for item in self._state.requests
+            if item.state is RequestState.PAUSED
+            and item.request_id not in active
+            and (self._state.policy.auto_enabled or not item.automatic)
         )
         if not paused or self._recovering:
             return
@@ -2944,8 +2974,6 @@ class AutomationOwner:
     def _start(self, request: ControlRequest) -> ControlResponse:
         if self._shutting_down:
             return _refuse(RefusalReason.SHUTTING_DOWN)
-        if not self._state.policy.auto_enabled:
-            return _refuse(RefusalReason.PAUSED)
         client_id: str | None = _text(request.payload, "client_id")
         preview_id: str | None = _text(request.payload, "preview_id")
         if client_id is None or preview_id is None:
@@ -3592,8 +3620,12 @@ class AutomationOwner:
         return self._on_owner(lambda: self._download_summary(choices, chosen, response))
 
     def _confirm_download(self, acquisition: AcquisitionService, hashes: frozenset[str]) -> None:
-        for present in acquisition.observe_added(hashes, may_observe=lambda: self._on_owner(self._working)):
+        observed: Callable[[], bool] = partial(self._observed, hashes)
+        for present in acquisition.observe_added(hashes, may_observe=lambda: self._on_owner(observed)):
             self._on_owner(partial(self._reconcile_acquisitions, present))
+
+    def _observed(self, hashes: frozenset[str]) -> bool:
+        return any(self._working(item) for item in self._state.acquisitions if item.info_hash in hashes)
 
     def _download_summary(
         self,
@@ -3630,8 +3662,6 @@ class AutomationOwner:
             return (), ControlResponse.succeeded(dict(receipt.outcome))
         if self._shutting_down or not self._finish_pending_commands():
             return (), _refuse(RefusalReason.SHUTTING_DOWN)
-        if not self._state.policy.auto_enabled:
-            return (), _refuse(RefusalReason.PAUSED)
         existing: set[str] = {item.info_hash for item in self._state.acquisitions}
         unique: dict[str, ReleaseChoice] = {choice.release.info_hash.casefold(): choice for choice in choices}
         if all(self._admitted_elsewhere(scopes.get(key)) for key in unique):
@@ -3933,7 +3963,7 @@ class AutomationOwner:
             if receipt.outcome.get("selection") != _episode_command_signature(request):
                 return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, "command_reused")
             return ControlResponse.succeeded(dict(receipt.outcome))
-        if not self._working():
+        if not self._working(transfer):
             return _refuse(RefusalReason.PAUSED)
         current: AcquisitionConfirmation | None = self._confirmation(transfer.operation_id)
         if (
@@ -4239,13 +4269,7 @@ class AutomationOwner:
             return ControlResponse.refused(
                 ControlErrorCode.STALE_PREVIEW, "The episode interaction expired", "offer_expired"
             )
-        repeating: bool = previous is not None or bool(conflict)
-        candidates: tuple[RankedCandidate, ...] = tuple(
-            item
-            for item in offer.candidates
-            if not repeating or not self._excluded_episode_pair(offer.key, item.stream)
-        )
-        filtered: EpisodeOffer = replace(offer, candidates=candidates, suggestion=suggestion(candidates))
+        filtered: EpisodeOffer = self._repeat_episode_offer(offer) if previous or conflict else offer
         unknown: bool = bool(conflict) or any(
             not assignment.files and assignment.video_path is None
             for _item, assignment in self._episode_assignments(offer.key)
@@ -4253,6 +4277,12 @@ class AutomationOwner:
         view: EpisodeOfferView = EpisodeOfferView(generation, self._instance_id, filtered, previous, conflict, unknown)
         self._episode_offers[session] = view, target
         return ControlResponse.succeeded(encode_view(view))
+
+    def _repeat_episode_offer(self, offer: EpisodeOffer) -> EpisodeOffer:
+        candidates: tuple[RankedCandidate, ...] = tuple(
+            item for item in offer.candidates if not self._excluded_episode_pair(offer.key, item.stream)
+        )
+        return replace(offer, candidates=candidates, suggestion=suggestion(candidates))
 
     def _excluded_episode_pair(self, key: EpisodeKey, stream: StreamCandidate) -> bool:
         for _transfer, assignment in self._episode_assignments(key):
@@ -4358,8 +4388,6 @@ class AutomationOwner:
             return ControlResponse.succeeded(encode_view(batch))
         if self._shutting_down:
             return _refuse(RefusalReason.SHUTTING_DOWN)
-        if not self._state.policy.auto_enabled:
-            return _refuse(RefusalReason.PAUSED)
         if self._service.acquisition is None:
             return _invalid("No acquisition service is configured")
         batch = EpisodeBatch(request.command_id, self._instance_id, keys, "accepted")
@@ -4406,7 +4434,7 @@ class AutomationOwner:
 
     def _advance_episode_batch(self, batch: EpisodeBatch) -> None:
         for key in batch.keys:
-            if not self._on_owner(self._working):
+            if self._on_owner(lambda: self._shutting_down):
                 break
             self._publish(
                 {"event": "episode_searching", "payload": {"command_id": batch.command_id, "key": encode_view(key)}},
@@ -4457,6 +4485,26 @@ class AutomationOwner:
         except (AniShiftError, OSError, ValueError) as problem:
             logger.warning("Episode batch lookup failed", error_class=type(problem).__name__)
             return EpisodeResult(key, failure_code(problem) or "source_failed")
+        try:
+            return self._on_owner(partial(self._admit_download_offer, command_id, offer, target))
+        except (AniShiftError, OSError) as problem:
+            logger.warning("Episode batch admission failed", error_class=type(problem).__name__)
+            return EpisodeResult(key, failure_code(problem) or "source_failed")
+
+    def _admit_download_offer(
+        self, command_id: str, offer: EpisodeOffer, target: Mapping[str, object]
+    ) -> EpisodeResult:
+        key: EpisodeKey = offer.key
+        legacy: tuple[LegacyScope, ...] | None = self._legacy_scopes()
+        if legacy is None:
+            return EpisodeResult(key, "legacy_unreadable")
+        if self._episode_status(key, legacy).active:
+            return EpisodeResult(key, "episode_in_progress")
+        matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = self._episode_assignments(key)
+        previous: str | None = matches[-1][1].admission_id if matches else None
+        conflict: tuple[str, ...] = self._episode_conflicts(key)
+        if previous or conflict:
+            offer = self._repeat_episode_offer(offer)
         candidate: RankedCandidate | None = None if offer.suggestion is None else offer.candidates[offer.suggestion]
         if (
             candidate is None
@@ -4464,18 +4512,16 @@ class AutomationOwner:
             or candidate.facts.supported is False
         ):
             return EpisodeResult(key, "no_suggestion")
-        try:
-            choice: EpisodeChoice = _episode_choice(offer.key, candidate, target, confirmed=False)
-            response: ControlResponse = self.admit_episode(f"{command_id}:episode:{key.number}", choice)
-            return EpisodeResult(
-                key,
-                "admitted" if response.ok else response.reason or "admission_failed",
-                str(response.result["admission_id"]) if response.ok else None,
-                str(response.result["operation_id"]) if response.ok else None,
-            )
-        except (AniShiftError, OSError) as problem:
-            logger.warning("Episode batch admission failed", error_class=type(problem).__name__)
-            return EpisodeResult(key, failure_code(problem) or "source_failed")
+        choice: EpisodeChoice = _episode_choice(key, candidate, target, confirmed=False)
+        response: ControlResponse = self._admit_episode(
+            f"{command_id}:episode:{key.number}", choice, previous=previous, conflict=conflict
+        )
+        return EpisodeResult(
+            key,
+            "admitted" if response.ok else response.reason or "admission_failed",
+            str(response.result["admission_id"]) if response.ok else None,
+            str(response.result["operation_id"]) if response.ok else None,
+        )
 
     def _admit_episode(
         self,
@@ -4582,8 +4628,6 @@ class AutomationOwner:
     ) -> ControlResponse | None:
         if self._shutting_down or not self._finish_pending_commands():
             return _refuse(RefusalReason.SHUTTING_DOWN)
-        if not self._state.policy.auto_enabled:
-            return _refuse(RefusalReason.PAUSED)
         legacy: tuple[LegacyScope, ...] | None = self._legacy_scopes()
         if legacy is None:
             return ControlResponse.refused(ControlErrorCode.REFUSED, _LEGACY_UNREADABLE, "legacy_unreadable")
@@ -4665,9 +4709,18 @@ class AutomationOwner:
         self._schedule_transfers()
         return service.record_check(subscription, confirmed, offered, checked)
 
-    def _reconcile_acquisitions(self, present: frozenset[str], *, removed: frozenset[str] = frozenset()) -> None:
+    def _reconcile_acquisitions(
+        self,
+        present: frozenset[str],
+        *,
+        removed: frozenset[str] = frozenset(),
+        scope: frozenset[str] | None = None,
+    ) -> None:
         acquisitions: list[AcquisitionConfirmation] = []
         for item in self._state.acquisitions:
+            if scope is not None and item.operation_id not in scope:
+                acquisitions.append(item)
+                continue
             if (
                 item.info_hash in removed
                 and item.state is AcquisitionState.UNCERTAIN
@@ -4697,7 +4750,7 @@ class AutomationOwner:
         self._transfers_delay = PANEL_TRANSFER_CHECK_INTERVAL_S if self._panels else TRANSFER_CHECK_INTERVAL_S
         if (
             self._transfers_at is not None
-            and self._working()
+            and any(self._working(item) for item in self._state.acquisitions)
             and not any(_transfer_action(item) for item in self._state.acquisitions)
         ):
             self._transfers_at = max(time.monotonic(), self._transfers_at + self._transfers_delay - previous)
@@ -4708,7 +4761,7 @@ class AutomationOwner:
         working: bool = self._state.policy.auto_enabled
         selective: bool = self._selective_client()
         active: bool = self._transfers is not None and any(
-            (_polled(item, selective=selective) and working) or _transfer_action(item)
+            (_polled(item, selective=selective) and self._working(item)) or _transfer_action(item)
             for item in self._state.acquisitions
         )
         pending: bool = bool(self._pending_completion()) or any(
@@ -4730,7 +4783,7 @@ class AutomationOwner:
         acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
             item
             for item in (() if self._transfers is None else self._state.acquisitions)
-            if (_polled(item, selective=selective) and self._working()) or _transfer_action(item)
+            if (_polled(item, selective=selective) and self._working(item)) or _transfer_action(item)
         )
         self._transfers_at = None
         if not acquisitions:
@@ -4763,7 +4816,7 @@ class AutomationOwner:
 
     def _may_start_content(self, item: AcquisitionConfirmation) -> bool:
         return (
-            self._working()
+            self._working(item)
             and not self._protected_acquisition(item)
             and any(
                 row.operation_id == item.operation_id
@@ -4785,8 +4838,10 @@ class AutomationOwner:
             paths.intersection((Path(acquisition.directory) / name).as_posix() for name in _assigned_files(acquisition))
         )
 
-    def _working(self) -> bool:
-        return self._state.policy.auto_enabled and not self._shutting_down
+    def _working(self, acquisition: AcquisitionConfirmation | None = None) -> bool:
+        return not self._shutting_down and (
+            self._state.policy.auto_enabled or (acquisition is not None and acquisition.manual)
+        )
 
     def _inspect_transfers(
         self,
@@ -5004,7 +5059,7 @@ class AutomationOwner:
             current is None
             or current.state is not AcquisitionState.ADMITTED
             or not current.active_assignments
-            or not self._working()
+            or not self._working(current)
         ):
             return None
         sent: AcquisitionConfirmation = replace(
@@ -5284,7 +5339,7 @@ class AutomationOwner:
             or not _selection_confirmed(current)
             or current.action_pending
             or current.requested_action in {"stop", "cancel"}
-            or not self._working()
+            or not self._working(current)
         ):
             return None
         assignment: EpisodeAssignment | None = next(
@@ -5943,11 +5998,11 @@ class AutomationOwner:
             return ControlResponse.refused(ControlErrorCode.REFUSED, _TRANSFER_NOT_STARTED, "transfer_not_started")
         if self._shutting_down:
             return _refuse(RefusalReason.SHUTTING_DOWN)
-        if action == "resume" and not self._state.policy.auto_enabled:
-            return _refuse(RefusalReason.PAUSED)
         current: AcquisitionConfirmation = next(
             item for item in reversed(self._state.acquisitions) if item.info_hash == info_hash
         )
+        if action == "resume" and not self._working(current):
+            return _refuse(RefusalReason.PAUSED)
         if action == "stop" and current.selective and current.applied_revision == 0:
             return _refuse(RefusalReason.TRANSFER_METADATA_PENDING)
         acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
@@ -6416,8 +6471,8 @@ class AutomationOwner:
         return self._retry_proposal(identifier, inventory)
 
     def _retry_proposal(self, identifier: str, inventory: tuple[SourceGroup, ...]) -> ControlResponse:
-        if not self._working():
-            return _refuse(RefusalReason.PAUSED)
+        if self._shutting_down:
+            return _refuse(RefusalReason.SHUTTING_DOWN)
         group_id: str = next(
             (item.group_id for item in self._state.ready_groups if item.set_id == identifier), identifier
         )
@@ -6601,8 +6656,8 @@ class AutomationOwner:
     def _reacquire_refusal(  # noqa: PLR0911 - explicit refusal reasons preserve admission evidence
         self, previous: AcquisitionConfirmation, inventory: tuple[SourceGroup, ...]
     ) -> ControlResponse | None:
-        if not self._working():
-            return _refuse(RefusalReason.PAUSED)
+        if self._shutting_down:
+            return _refuse(RefusalReason.SHUTTING_DOWN)
         if self._protected_acquisition(previous):
             return self._library_refusal("library_deleting")
         if previous.nyaa_release_id is None:
@@ -7180,7 +7235,12 @@ def _pause_stop(item: AcquisitionConfirmation) -> bool:
 
 def _unstopped_pause(item: AcquisitionConfirmation) -> bool:
     """Keep a failed stop visible even when an explicit transfer command replaced the global pause action."""
-    return item.requested_action in {"stop", "cancel"} and not item.action_pending and item.problem is not None
+    return (
+        not item.manual
+        and item.requested_action in {"stop", "cancel"}
+        and not item.action_pending
+        and item.problem is not None
+    )
 
 
 def _fresh_transfer_states(

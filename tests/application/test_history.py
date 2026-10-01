@@ -362,11 +362,15 @@ def test_admission_only_retains_source_qualified_public_references(tmp_path: Pat
     assert not thread.is_alive()
 
 
-@pytest.mark.parametrize("failure", ["none", "before_send", "after_send", "wrong_hash"])
+@pytest.mark.parametrize(
+    ("failure", "paused"),
+    [("none", False), ("none", True), ("before_send", False), ("after_send", False), ("wrong_hash", False)],
+)
 def test_explicit_reacquire_retains_deleted_subscription_provenance_and_never_resends_receipt(  # noqa: PLR0915
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     failure: str,
+    paused: bool,
 ) -> None:
     monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
     network: _TorrentNetwork = _TorrentNetwork()
@@ -394,7 +398,7 @@ def test_explicit_reacquire_retains_deleted_subscription_provenance_and_never_re
         nyaa_release_id=12,
         release_title=release.title,
     )
-    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(original,)))
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=not paused), acquisitions=(original,)))
     command = _request("reacquire", {"operation_id": "previous"}, command_id="repeat-once")
 
     def fail_before_send(*_args: object) -> None:
@@ -818,7 +822,10 @@ def test_history_view_search_hotkeys_and_validated_open_remain_read_only_under_p
             assert opened == ([product] if change == "none" else [])
             controller.handle_key("text:p")
             assert _await(lambda: not controller._busy)
-            assert "AniShift jest wstrzymany" in controller.render(80, 24).plain
+            assert "Popraw wybrany lokalny materiał w Ręcznym" in controller.render(80, 24).plain
+            controller.handle_key("escape")
+            assert "Popraw wybrany lokalny materiał w Ręcznym" not in controller.render(80, 24).plain
+            assert controller._history_open
             controller.handle_key("escape")
             assert not controller._history_open
             assert controller._tab == state_module._Tab.PROGRESS

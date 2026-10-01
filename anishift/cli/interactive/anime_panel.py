@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
-from typing import Final
 
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from rich.text import Text
 
+from anishift.application.episode_commands import MAX_EPISODE_KEYS
 from anishift.cli.interactive.anime_clipboard import copy_text
 from anishift.cli.interactive.anime_state import (
     FLASH_SECONDS,
@@ -18,13 +18,8 @@ from anishift.cli.interactive.anime_state import (
     NoticeKind,
     TextPoint,
 )
-from anishift.cli.interactive.anime_view import HEADER_ROWS, AnimeFrame, render_anime
+from anishift.cli.interactive.anime_view import AnimeFrame, render_anime
 from anishift.cli.interactive.text_input import TextInput
-
-# ── Constants ─────────────────────────────────────────────────────────────────
-
-_BATCH_LIMIT: Final[int] = 100
-"""Maximum number of episode keys submitted by one explicit action."""
 
 
 class AnimePanel:
@@ -54,7 +49,7 @@ class AnimePanel:
         self._size = (columns, rows)
         now: float = self._clock()
         self.state.flashes = {key: deadline for key, deadline in self.state.flashes.items() if deadline > now}
-        self._frame = render_anime(self.state.snapshot(), columns, rows, now)
+        self._frame = render_anime(self.state.snapshot(columns), columns, rows, now)
         return self._frame.text
 
     def switch_state(self, state: AnimeViewState) -> None:
@@ -75,7 +70,7 @@ class AnimePanel:
         self.state.screen = screen
         self.state.title = title
         self.state.items = items
-        self.state.cursor = 0
+        self.state.cursor = next((index for index, item in enumerate(items) if item.navigable), 0)
         self.state.offset = 0
         self.state.selection = None
         self._clear_notice()
@@ -86,7 +81,7 @@ class AnimePanel:
         """Route normalized terminal keys, giving selected-text copying priority."""
         letter: str = key.removeprefix("text:").lower()
         self._clear_notice()
-        if (key in {"interrupt", "copy"} or letter == "c") and self._copy(key):
+        if (key in {"interrupt", "copy"} or letter == "c") and self.copy(key):
             return
         if self._edit(key):
             return
@@ -124,7 +119,8 @@ class AnimePanel:
             return True
         return self.state.query.handle(key)
 
-    def _copy(self, key: str) -> bool:
+    def copy(self, key: str) -> bool:
+        """Copy painted selection or the current row before navigation handles the key."""
         if key not in {"interrupt", "copy"} and (
             self.state.screen is AnimeScreen.QUERY or self.state.range_input is not None
         ):
@@ -162,7 +158,13 @@ class AnimePanel:
         }
         if key not in destinations:
             return False
-        self.state.cursor = max(0, min(destinations[key], len(self.state.items) - 1))
+        available: list[int] = [index for index, item in enumerate(self.state.items) if item.navigable]
+        if not available:
+            return True
+        target: int = max(0, min(destinations[key], len(self.state.items) - 1))
+        direction: int = -1 if key in {"up", "pageup", "end"} else 1
+        beyond: list[int] = [index for index in available if (index - target) * direction >= 0]
+        self.state.cursor = min(beyond, key=lambda index: abs(index - target)) if beyond else self.state.cursor
         self.state.offset = min(self.state.offset, self.state.cursor)
         self.state.offset = max(self.state.offset, self.state.cursor - visible + 1)
         self.state.selection = None
@@ -179,7 +181,9 @@ class AnimePanel:
             self._download()
         elif letter == "p" and self.state.searching:
             self.state.notice = "Trwa wyszukiwanie wydań"
-        elif key == "enter" or letter in {"i", "p", "?", "/", "g"}:
+        elif key == "enter" or letter in {"i", "p", "?", "/"}:
+            if self.state.items and not self.state.items[self.state.cursor].navigable:
+                return
             keys: tuple[str, ...] = (self.state.items[self.state.cursor].key,) if self.state.items else ()
             self._action(letter, keys)
 
@@ -191,14 +195,15 @@ class AnimePanel:
             return
         chosen: tuple[AnimeRow, ...] = tuple(item for item in self.state.items if item.key in self.state.selected)
         chosen = chosen or (self.state.items[self.state.cursor],)
-        if len(chosen) > _BATCH_LIMIT:
+        if len(chosen) > MAX_EPISODE_KEYS:
             self.state.notice = "Limit: 100 odcinków | Z zmień zakres"
             return
         if any(not item.eligible for item in chosen):
             refused: AnimeRow = next(item for item in chosen if not item.eligible)
             self.state.notice = refused.refusal
-            return
-        self._action("download", tuple(item.key for item in chosen))
+        eligible: tuple[str, ...] = tuple(item.key for item in chosen if item.eligible)
+        if eligible:
+            self._action("download", eligible)
 
     def searching(self, keys: tuple[str, ...]) -> None:
         """Mark only an active request as pending; never infer an admission."""
@@ -208,14 +213,12 @@ class AnimePanel:
         self.state.notice = "Szukam wydań…"
         self.state.notice_kind = NoticeKind.INFO
 
-    def result(self, key: str, *, admitted: bool) -> None:
+    def result(self, key: str, *, admitted: bool, status: str = "Brak wydania", cause: str = "") -> None:
         """Apply one confirmed result and expire its acknowledgement independently."""
-        self.state.batch_results[key] = admitted
+        self.state.batch_results[key] = None if admitted else cause
         self.state.searching.discard(key)
         self.state.items = tuple(
-            replace(item, status="Zlecono" if admitted else "Brak wydania", eligible=not admitted)
-            if item.key == key
-            else item
+            replace(item, status="Zlecono" if admitted else status, eligible=not admitted) if item.key == key else item
             for item in self.state.items
         )
         if admitted:
@@ -224,8 +227,14 @@ class AnimePanel:
         successes: list[str] = []
         failures: list[str] = []
         for item in self.state.items:
-            if item.key in self.state.batch_results:
-                (successes if self.state.batch_results[item.key] else failures).append(item.number or item.title)
+            if item.key not in self.state.batch_results:
+                continue
+            label: str = item.number or item.title
+            refused: str | None = self.state.batch_results[item.key]
+            if refused is None:
+                successes.append(label)
+            else:
+                failures.append(f"{label}: {refused}" if refused else label)
         parts: list[str] = []
         if successes:
             parts.append("Zlecono " + ", ".join(successes))
@@ -265,8 +274,8 @@ class AnimePanel:
             self._anchor = None
 
     def _click(self, point: TextPoint) -> None:
-        if self._frame is None or not HEADER_ROWS <= point.row < HEADER_ROWS + self._frame.visible:
+        if self._frame is None or not self._frame.first_row <= point.row < self._frame.first_row + self._frame.visible:
             return
-        index: int = point.row - HEADER_ROWS + self.state.offset
-        if index < len(self.state.items):
+        index: int = point.row - self._frame.first_row + self.state.offset
+        if index < len(self.state.items) and self.state.items[index].navigable:
             self.state.cursor = index

@@ -9,6 +9,7 @@ from unittest.mock import Mock
 import pytest
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
+from rich.console import Console
 from rich.text import Text
 
 from anishift.cli.interactive import anime_clipboard
@@ -22,6 +23,7 @@ from anishift.cli.interactive.anime_state import (
     TextPoint,
 )
 from anishift.cli.interactive.anime_view import AnimeFrame, TextCell, render_anime
+from anishift.cli.interactive.palette import BRAND_THEME
 from anishift.cli.interactive.prompts import _WheelControl
 from anishift.cli.interactive.text_input import TextInput
 
@@ -44,19 +46,25 @@ def panel() -> tuple[AnimePanel, Mock, Mock]:
     return AnimePanel(state, action, lambda: 10.0, clipboard), action, clipboard
 
 
+def first_row(view: AnimePanel, width: int = 80) -> int:
+    return render_anime(view.state.snapshot(), width, 24, 0).first_row
+
+
 @pytest.mark.parametrize("width", [50, 80, 120])
 def test_selection_and_results_preserve_row_positions_and_footer(width: int) -> None:
     view: AnimePanel
     view, _, _ = panel()
     before: list[str] = view.frame(width, 24).plain.splitlines()
+    top: int = first_row(view, width)
     view.handle("space")
     view.handle("down")
     view.handle("space")
     selected: list[str] = view.frame(width, 24).plain.splitlines()
-    assert "Zaznaczone: 2 (1, 3)" in selected[-3 if width >= 80 else -4]
-    assert all("Zaznaczone" not in line for line in selected[:5])
-    assert "Zaż" in before[5]
-    assert "Zaż" in selected[5]
+    summary: int = next(index for index, line in enumerate(selected) if "Zaznaczone: 2 (1, 3)" in line)
+    assert summary >= top + len(rows())
+    assert first_row(view, width) == top
+    assert "Zaż" in before[top]
+    assert "Zaż" in selected[top]
     view.searching(("one", "three"))
     busy: str = view.frame(width, 24).plain
     assert "⠋ szukam" in busy
@@ -64,10 +72,10 @@ def test_selection_and_results_preserve_row_positions_and_footer(width: int) -> 
     view.result("one", admitted=True)
     assert view.state.selected == {"three"}
     assert view.state.searching == {"three"}
-    assert "Zlecono" in view.frame(width, 24).plain.splitlines()[5]
+    assert "Zlecono" in view.frame(width, 24).plain.splitlines()[top]
     assert before[-1] == selected[-1]
     assert all(Text(line).cell_len == width for line in selected)
-    assert len(selected) == 24
+    assert len(selected) == len(before) == 24
 
 
 def test_space_all_range_and_batch_download_use_exact_keys() -> None:
@@ -95,6 +103,27 @@ def mouse(view: AnimePanel, kind: MouseEventType, x: int, y: int) -> None:
     view.mouse(MouseEvent(Point(x, y), kind, MouseButton.LEFT, frozenset()))
 
 
+@pytest.mark.parametrize("width", [50, 80, 120])
+@pytest.mark.parametrize("query", ["", "slime", "日本e\u0301"])
+def test_query_keeps_the_classic_heading_and_prompt_box_without_a_context_line(width: int, query: str) -> None:
+    state: AnimeViewState = AnimeViewState(query=TextInput(query), query_focused=True)
+    frame: AnimeFrame = render_anime(state.snapshot(width), width, 24, 0)
+    lines: list[str] = frame.text.plain.splitlines()
+    row: int = frame.first_row
+    assert lines[row - 2].index("ANIME") == (width - len("ANIME")) // 2
+    assert not "".join(lines[: row - 2]).strip()
+    assert not lines[row - 1].strip()
+    left: int = max((width - min(max(len(query) + 3, 32), width)) // 2, 0)
+    assert lines[row][left : left + 2] == "> "
+    assert not lines[row][:left].strip()
+    field: Text = state.query.render(width - left - 3, focused=True)
+    cells: tuple[TextCell, ...] = tuple(cell for cell in frame.cells if cell.point.row == row)
+    assert cells[0].point.column == left + 2
+    assert "".join(cell.text for cell in cells) == field.plain
+    assert frame.selected_text((TextPoint(row, left), TextPoint(row, width - 1))) == query
+    assert any(span.style == "reverse" for span in frame.text.spans)
+
+
 @pytest.mark.parametrize("key", ["interrupt", "text:c", "text:C"])
 def test_multiline_mouse_copy_excludes_chrome_and_retains_unicode(key: str) -> None:
     view: AnimePanel
@@ -102,11 +131,12 @@ def test_multiline_mouse_copy_excludes_chrome_and_retains_unicode(key: str) -> N
     clipboard: Mock
     view, action, clipboard = panel()
     view.frame(80, 24)
+    top: int = first_row(view)
     mouse(view, MouseEventType.MOUSE_DOWN, 0, 0)
-    mouse(view, MouseEventType.MOUSE_MOVE, 79, 7)
-    mouse(view, MouseEventType.MOUSE_UP, 79, 7)
+    mouse(view, MouseEventType.MOUSE_MOVE, 79, top + 4)
+    mouse(view, MouseEventType.MOUSE_UP, 79, top + 4)
     highlighted: Text = view.frame(80, 24)
-    assert any(span.style == "anime_selection" for span in highlighted.spans)
+    assert any(span.style == "reverse" for span in highlighted.spans)
     view.handle(key)
     value: str = clipboard.call_args.args[0]
     assert "Zażółć 日本語" in value
@@ -123,10 +153,11 @@ def test_click_clears_mouse_selection_and_unselected_interrupt_returns() -> None
     clipboard: Mock
     view, action, clipboard = panel()
     view.frame(80, 24)
-    mouse(view, MouseEventType.MOUSE_DOWN, 11, 5)
-    mouse(view, MouseEventType.MOUSE_UP, 20, 6)
-    mouse(view, MouseEventType.MOUSE_DOWN, 11, 6)
-    mouse(view, MouseEventType.MOUSE_UP, 11, 6)
+    top: int = first_row(view)
+    mouse(view, MouseEventType.MOUSE_DOWN, 13, top)
+    mouse(view, MouseEventType.MOUSE_UP, 22, top + 1)
+    mouse(view, MouseEventType.MOUSE_DOWN, 13, top + 1)
+    mouse(view, MouseEventType.MOUSE_UP, 13, top + 1)
     assert view.state.selection is None
     view.handle("text:c")
     assert view.state.cursor == 1
@@ -143,19 +174,20 @@ def test_cjk_hit_testing_preserves_whole_graphemes_and_columns() -> None:
     japanese: TextCell = next(cell for cell in frame.cells if cell.text == "日")
     selection: tuple[TextPoint, TextPoint] = (japanese.point, TextPoint(japanese.point.row, japanese.point.column + 1))
     assert frame.selected_text(selection) == "日"
-    assert frame.text.plain.splitlines()[5].index("01.09.2026") < 52
-    assert Text(frame.text.plain.splitlines()[5]).cell_len == 80
+    assert frame.text.plain.splitlines()[frame.first_row].index("01.09.2026") < 52
+    assert Text(frame.text.plain.splitlines()[frame.first_row]).cell_len == 80
 
 
-def test_flash_expires_without_erasing_confirmed_status() -> None:
+def test_confirmed_status_has_no_temporary_background_style() -> None:
     view: AnimePanel
     view, _, _ = panel()
     view.result("one", admitted=True)
     snapshot: AnimeSnapshot = view.state.snapshot()
     first: AnimeFrame = render_anime(snapshot, 80, 24, 10.0)
     expired: AnimeFrame = render_anime(snapshot, 80, 24, 10.41)
-    assert any(span.style == "anime_flash" for span in first.text.spans)
-    assert not any(span.style == "anime_flash" for span in expired.text.spans)
+    assert first.text.spans == expired.text.spans
+    console: Console = Console(theme=BRAND_THEME)
+    assert all(first.text.get_style_at_offset(console, index).bgcolor is None for index in range(len(first.text)))
     assert first.text.plain == expired.text.plain
     assert "Zlecono" in expired.text.plain
 
@@ -166,9 +198,37 @@ def test_release_columns_keep_seeds_and_no_repeat_shortcut(width: int) -> None:
         replace(item, image="1080p", language="MultiSub", seeds="312") for item in rows()
     )
     frame: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", items), width, 24, 0)
-    assert "1080p  MultiSub    312" in frame.text.plain.splitlines()[5]
+    assert "1080p  MultiSub         312" in frame.text.plain.splitlines()[frame.first_row + 2]
     assert "P ponownie" not in frame.text.plain
     assert all(Text(line).cell_len == width for line in frame.text.plain.splitlines())
+
+
+@pytest.mark.parametrize("rows_count", [12, 24])
+def test_narrow_episode_table_keeps_the_full_state_label(rows_count: int) -> None:
+    items: tuple[AnimeRow, ...] = tuple(replace(item, title=item.title * 4) for item in rows())
+    frame: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.EPISODES, "Slime", items, cursor=3), 50, rows_count, 0)
+    lines: list[str] = frame.text.plain.splitlines()
+    header: str = lines[frame.first_row - 1]
+    assert "Tytuł" in header
+    assert "Stan" in header
+    assert any("Nie wyemitowano" in line for line in lines[frame.first_row :])
+    assert all(Text(line).cell_len == 50 for line in lines)
+
+
+@pytest.mark.parametrize("width", [50, 80])
+def test_truncated_release_name_is_shown_in_full_without_moving_the_table(width: int) -> None:
+    name: str = "[SubsPlease] Tensei shitara Slime Datta Ken - 01 (1080p) [ABCDEF12].mkv"
+    short: AnimeRow = AnimeRow("one", "Short", image="1080p", language="PL", seeds="312", detail="Rozmiar: 1 GB")
+    long: AnimeRow = replace(short, title=name)
+    plain: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", (short,)), width, 24, 0)
+    frame: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", (long,)), width, 24, 0)
+    lines: list[str] = frame.text.plain.splitlines()
+    assert name not in lines[frame.first_row]
+    assert name in " ".join(" ".join(lines[frame.first_row + 1 :]).split())
+    assert "Rozmiar: 1 GB" not in frame.text.plain
+    assert "Rozmiar: 1 GB" in plain.text.plain
+    assert frame.first_row == plain.first_row
+    assert all(Text(line).cell_len == width for line in lines)
 
 
 def test_mouse_callback_is_forwarded_by_shared_terminal_control() -> None:
@@ -221,17 +281,16 @@ def test_query_letters_never_invoke_download_or_select_all() -> None:
     action.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "selection",
-    [
-        (TextPoint(5, 11), TextPoint(6, 19)),
-        (TextPoint(6, 19), TextPoint(5, 11)),
-    ],
-)
-def test_selection_direction_does_not_change_copied_text(selection: tuple[TextPoint, TextPoint]) -> None:
+@pytest.mark.parametrize("reverse", [False, True])
+def test_selection_direction_does_not_change_copied_text(*, reverse: bool) -> None:
     frame: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.EPISODES, "Slime", rows()), 80, 24, 0)
-    assert frame.selected_text(selection).startswith("Zażółć 日本語")
-    assert frame.selected_text(selection).endswith("A Promise")
+    lines: list[str] = frame.text.plain.splitlines()
+    row: int = frame.first_row
+    start: TextPoint = TextPoint(row, lines[row].index("Zaż"))
+    end: TextPoint = TextPoint(row + 1, lines[row + 1].index("A Promise") + len("A Promise") - 1)
+    adjusted: tuple[TextPoint, TextPoint] = (end, start) if reverse else (start, end)
+    assert frame.selected_text(adjusted).startswith("Zażółć 日本語")
+    assert frame.selected_text(adjusted).endswith("A Promise")
 
 
 def test_failed_result_keeps_selection_and_has_no_success_flash() -> None:
@@ -382,7 +441,104 @@ def test_unhandled_mouse_events_do_not_read_frame_or_request_redraw(button: Mous
     text.assert_not_called()
 
 
-def test_footer_is_empty_until_content_needs_explanation() -> None:
-    snapshot: AnimeSnapshot = AnimeSnapshot(AnimeScreen.EPISODES, "Slime", rows())
-    assert not render_anime(snapshot, 80, 24, 0).text.plain.splitlines()[-2].strip()
+@pytest.mark.parametrize("status", ["", "w emisji", "Zlecono", "Nie wyemitowano"])
+def test_footer_is_empty_until_content_needs_explanation(status: str) -> None:
+    snapshot: AnimeSnapshot = AnimeSnapshot(
+        AnimeScreen.EPISODES, "Slime", (replace(rows()[0], status=status), *rows()[1:])
+    )
+    assert not render_anime(snapshot, 80, 24, 0).text.plain.splitlines()[-3].strip()
     assert "Zażółć 日本語" in render_anime(snapshot, 50, 24, 0).text.plain.splitlines()[-3]
+
+
+def test_announcement_uses_existing_gray_for_every_visible_character() -> None:
+    snapshot: AnimeSnapshot = AnimeSnapshot(
+        AnimeScreen.ENTRIES,
+        "Slime",
+        (
+            AnimeRow("future", "Season 5", date="2027", kind="TV", status="zapowiedź", navigable=False),
+            AnimeRow("current", "Season 4", date="2026", kind="TV", status="w emisji"),
+        ),
+        cursor=1,
+    )
+    console: Console = Console(theme=BRAND_THEME)
+    frame: AnimeFrame = render_anime(snapshot, 80, 24, 0)
+    lines: list[Text] = list(frame.text.split("\n"))
+    row: int = frame.first_row
+    assert all(
+        lines[row].get_style_at_offset(console, index).color == BRAND_THEME.styles["gray"].color
+        for index, character in enumerate(lines[row].plain)
+        if not character.isspace()
+    )
+    assert "\u276f" not in lines[row].plain
+    assert lines[row + 1].plain.lstrip().startswith("\u276f")
+
+
+def _blank_margins(lines: list[str], columns: int) -> tuple[int, int, int, int]:
+    occupied: list[int] = [index for index, line in enumerate(lines) if line.strip()]
+    keys: int = len(lines)
+    while keys - 1 in occupied:
+        keys -= 1
+    content: list[int] = [index for index in occupied if index < keys]
+    left: int = min(len(lines[index]) - len(lines[index].lstrip()) for index in content)
+    right: int = columns - max(Text(lines[index].rstrip()).cell_len for index in content)
+    return content[0], keys - content[-1] - 1, left, right
+
+
+@pytest.mark.parametrize(("columns", "height"), [(80, 20), (120, 26)])
+@pytest.mark.parametrize("screen", [AnimeScreen.QUERY, AnimeScreen.ENTRIES, AnimeScreen.EPISODES])
+def test_content_is_centered_between_top_and_bottom_pinned_keys(screen: AnimeScreen, columns: int, height: int) -> None:
+    state: AnimeViewState = AnimeViewState(
+        screen=screen,
+        title="Slime",
+        items=() if screen is AnimeScreen.QUERY else rows()[:2],
+        query=TextInput("slime"),
+    )
+    frame: AnimeFrame = render_anime(state.snapshot(columns), columns, height, 0)
+    lines: list[str] = frame.text.plain.splitlines()
+    above, below, left, right = _blank_margins(lines, columns)
+    heading: int = frame.first_row - (2 if screen is AnimeScreen.QUERY else 3)
+    assert lines[heading].strip() == ("ANIME" if screen is AnimeScreen.QUERY else "Slime")
+    assert not lines[heading + 1].strip()
+    assert above == heading
+    assert len(lines) == height
+    assert lines[-1].strip()
+    assert abs(above - below) <= 1
+    assert screen is AnimeScreen.QUERY or abs(left - right) <= 1
+
+
+@pytest.mark.parametrize("offset", [0, 6, 16])
+def test_a_scrolled_long_table_keeps_its_context_above_the_column_labels(offset: int) -> None:
+    items: tuple[AnimeRow, ...] = tuple(
+        AnimeRow(str(number), f"Odcinek {number}", number=str(number), date="01.09.2026") for number in range(1, 21)
+    )
+    title: str = "Anime \u203a That Time I Got Reincarnated as a Slime Season 4 (2026)"
+    snapshot: AnimeSnapshot = AnimeSnapshot(AnimeScreen.EPISODES, title, items, cursor=offset, offset=offset)
+    frame: AnimeFrame = render_anime(snapshot, 50, 12, 0)
+    lines: list[str] = frame.text.plain.splitlines()
+    assert frame.first_row == 3
+    assert lines[0].strip().startswith("Anime \u203a That Time")
+    assert lines[0].strip().endswith("…")
+    assert lines[0].count("…") == 1
+    assert "Emisja" in lines[2]
+    assert f"Odcinek {offset + 1}" in lines[frame.first_row]
+
+
+def test_long_title_uses_two_bottom_lines_without_moving_the_table() -> None:
+    title: str = " ".join(f"Słowo{index}" for index in range(18))
+    items: tuple[AnimeRow, ...] = (*rows()[:2], AnimeRow("long", title, number="9", date="01.10.2026"))
+    plain: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.EPISODES, "Slime", items), 80, 24, 0)
+    long: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.EPISODES, "Slime", items, cursor=2), 80, 24, 0)
+    lines: list[str] = long.text.plain.splitlines()
+    assert long.first_row == plain.first_row
+    assert title not in lines[long.first_row + 2]
+    assert f"{lines[-4].strip()} {lines[-3].strip()}" == title
+    assert plain.text.plain.splitlines()[: plain.first_row] == lines[: long.first_row]
+
+
+def test_cursor_highlights_a_ready_row_and_keeps_its_green_state() -> None:
+    items: tuple[AnimeRow, ...] = (replace(rows()[1], status="Gotowe"), rows()[0])
+    frame: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.EPISODES, "Slime", items), 80, 24, 0)
+    styles: dict[str, str] = {frame.text.plain[span.start : span.end]: str(span.style) for span in frame.text.spans}
+    assert styles["A Promise"] == "brand_accent"
+    assert styles["Gotowe"] == "success"
+    assert styles["\u276f "] == "brand_accent"

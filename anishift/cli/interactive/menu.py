@@ -93,6 +93,31 @@ def append_wrapped_row(content: Text, left: int, lines: Sequence[str | Text], ac
         append_row(content, left, label, active and index == 0, marker if index == 0 else " " * len(marker))
 
 
+def pack_keys(keys: Sequence[str], width: int, *, optional: Sequence[str] = (), limit: int = 2) -> tuple[str, ...]:
+    """Pack key hints into at most ``limit`` lines, dropping ``optional`` hints before cutting the rest."""
+    unique: list[str] = list(dict.fromkeys(segment for key in keys for segment in key.split(" · ") if segment))
+    lines: list[str] = _pack(unique, width)
+    for dropped in optional:
+        if len(lines) <= limit:
+            break
+        unique = [segment for segment in unique if segment != dropped]
+        lines = _pack(unique, width)
+    if len(lines) > limit:
+        lines = [*lines[: limit - 1], truncate_right(" · ".join(lines[limit - 1 :]), width)]
+    return tuple(lines)
+
+
+def _pack(segments: Sequence[str], width: int) -> list[str]:
+    lines: list[str] = []
+    for segment in segments:
+        joined: str = f"{lines[-1]} · {segment}" if lines else segment
+        if lines and Text(joined).cell_len <= width:
+            lines[-1] = joined
+        else:
+            lines.append(truncate_right(segment, width))
+    return lines
+
+
 def with_footer(content: Text, hints: Sequence[str | Text], columns: int, rows: int) -> Text:
     """Pin centered keyboard hints above the shared application status line."""
     width: int = max(columns - 2, 1)

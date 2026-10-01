@@ -74,6 +74,11 @@ class EpisodeStatus:
     uncertain: bool = False
     set_id: str | None = None
 
+    @property
+    def active(self) -> bool:
+        """Whether the owner reports an unfinished order, transfer or processing run."""
+        return self.state in {"ordered", "downloading", "processing"}
+
 
 def validate_episode_keys(keys: tuple[EpisodeKey, ...]) -> None:
     """Require one bounded, unique, positive episode range belonging to one catalogue entry."""

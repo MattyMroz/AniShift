@@ -283,7 +283,7 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   metadanych (`METADATA_TIMEOUT_S`) liczy się w pamięci na próbę; jawne resume zaczyna nową
   (`restart_idle`). Resume bez potwierdzonej selekcji nigdy nie wysyła `resume` do klienta: w `metaDL`
   pobieranie metadanych trwa, zatrzymany transfer bez metadanych dostaje `_METADATA_STOPPED` (znane
-  ograniczenie E2: brak ponownego add). Pauza zatrzymuje każdy transfer z `applied_revision > 0`.
+  ograniczenie E2: brak ponownego add). Automation pause stops only nonmanual transfers with `applied_revision > 0`.
   Selektywne `PENDING_SEND` jest uzgadniane z klientem bez ponownego add: niewidoczny hash dostaje do
   `_SEND_CHECKS` odczytów, potem `UNCERTAIN` z `_SEND_UNCONFIRMED`, a resume sprawdza go od nowa.
   `automation.py`, `transfers.py`
@@ -372,10 +372,17 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   automatycznego zlecenia, ale jawne zlecenie tego pliku nadal działa. Dotychczasowe
   `BACKGROUND` zawsze podlega temu wyjątkowi.
   `scheduler_runtime.py`, `scheduler.py`
-- Globalna pauza (`AutomationPolicy.auto_enabled == False`) jest szersza od wyjątków katalogów:
-  `GraphCoordinator.pause()` wstrzymuje dopuszczanie wszystkich zleceń, więc pod pauzą nie
-  przechodzi też jawny start ani jawne pobranie. `resume()` zwalnia dopuszczanie, chyba że
-  koordynator już się zamyka. `scheduler.py`, `service.py`, `automation.py`
+- Automation pause (`AutomationPolicy.auto_enabled == False`) gates subscription checks, repeats,
+  subscription retries and automatic workspace admission through `set_background_admission`, never
+  `pause_runs`. Owner-requested work is never refused for pause: Start, Manual, panel retry and
+  reacquire, and D. An acquisition is manual when `AcquisitionConfirmation.manual` proves USER origin
+  without a subscription or as an explicit reacquire. Startup recovery and add confirmation cover only
+  confirmations `_working` accepts, so manual transfers recover under pause.
+  Episode batches, metadata, selection, content and publication of manual downloads continue under
+  pause. Their proven files reuse ordinary admission checks with `explicit=True` and submit
+  `automatic=False`; fresh workspace USER priority alone grants no exemption. Resume retains the
+  existing request/receipt deduplication and only restarts pause-owned automatic transfers.
+  `control.py`, `automation.py`, `scheduler.py`
 - Wątek `anishift-coordinator` istnieje tylko wtedy, gdy koordynator ma zlecenia:
   `submit` go startuje, pusta runda zamyka executory i kończy wątek, `close()` anuluje
   resztę i dołącza go. Bezczynny koordynator nie budzi się (licznik `wakeups`).

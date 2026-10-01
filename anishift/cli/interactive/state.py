@@ -13,6 +13,8 @@ from types import MappingProxyType
 from typing import Final
 
 from natsort import os_sorted
+from prompt_toolkit.data_structures import Point
+from prompt_toolkit.mouse_events import MouseEvent
 from rich.console import Console
 from rich.text import Text
 
@@ -29,12 +31,11 @@ from anishift.application import (
 )
 from anishift.application.events import RunEvent, sanitize_event_message
 from anishift.cli.interactive.anime import EPISODE_REASON_LABELS, AnimeController, AnimeResult
+from anishift.cli.interactive.anime_view import NAVIGATION_KEYS
 from anishift.cli.interactive.menu import (
     append_wrapped_row,
-    fit_entries,
-    left_padding,
+    pack_keys,
     visible_window,
-    with_footer,
     wrap_entries,
 )
 from anishift.cli.interactive.progress import ObservedProgressTimer, RichRunProgress, render_material_progress
@@ -80,8 +81,11 @@ _HISTORY_PROBLEMS: Final[dict[str, str]] = {
 _TABS: Final[tuple[str, ...]] = ("Anime", "Subskrypcje", "Przetwarzanie", "Biblioteka")
 """Views of the same resident snapshot, switched without network requests."""
 
-_MINIMUM_HEADER_ROWS: Final[int] = 12
-"""Minimum height retaining the heading as well as tabs and actions."""
+_MINIMUM_HEADER_ROWS: Final[int] = 16
+"""Minimum height retaining blank lines around the PANEL heading and tabs."""
+
+_MINIMUM_TITLE_ROWS: Final[int] = 12
+"""Minimum height retaining the PANEL heading above the tabs."""
 
 _RECONNECT_S: Final[float] = 2.0
 """Delay before reconnecting a lost panel event stream."""
@@ -251,7 +255,7 @@ class StateController:
         self._offsets: dict[int, int] = {}
         self._follow_cursor: dict[int, bool] = {}
         self._anime: AnimeController | None = None
-        self._anime_return: int = _Tab.ANIME
+        self._anime_top: int = 0
         self._draft: SubscriptionDraft | None = None
         self._connected: bool = False
         self._busy: bool = False
@@ -499,16 +503,6 @@ class StateController:
             self._anime = controller
             controller.refresh_provider_locks(_rows(self._snapshot.get("provider_locks")))
 
-    def poll(self) -> None:
-        """Consume an initiating Anime completion on the visible panel's event loop."""
-        with self._lock:
-            if self._anime is None or self._tab != _Tab.ANIME:
-                return
-            notice: str | None = self._anime.take_downloaded()
-            if notice is not None:
-                self.show_processing()
-                self._notify(notice)
-
     def suspend(self) -> None:
         """Invalidate child completion navigation when the enclosing panel is hidden."""
         with self._lock:
@@ -532,6 +526,21 @@ class StateController:
             return len(_TABS) + 1
         return self._tab
 
+    def mouse(self, event: MouseEvent) -> None:
+        """Forward Anime cell coordinates without changing other tabs."""
+        with self._lock:
+            if self._tab != _Tab.ANIME or self._anime is None:
+                return
+            self._anime.mouse(
+                MouseEvent(
+                    Point(event.position.x, event.position.y - self._anime_top),
+                    event.event_type,
+                    event.button,
+                    event.modifiers,
+                )
+            )
+        self._invalidate()
+
     def scroll(self, direction: int) -> None:
         """Move the visible list without changing its selected identity."""
         with self._lock:
@@ -553,17 +562,11 @@ class StateController:
             self._switch_tab((self._tab + (-1 if key in {"left", "backtab"} else 1)) % len(_TABS))
             self._invalidate()
             return StateResult.CONTINUE
+        if key.casefold() == "text:o" and not anime.input_focused:
+            return self._action_key("o")
         result: AnimeResult = anime.handle_key(key)
-        if result is AnimeResult.SUBSCRIBE:
-            self._draft = anime.take_draft()
-            self._follow_cursor[len(_TABS)] = True
-            self._switch_tab(_Tab.SUBSCRIPTIONS)
-        elif result is AnimeResult.HOME:
-            if self._anime_return == _Tab.SUBSCRIPTIONS:
-                self._switch_tab(_Tab.SUBSCRIPTIONS)
-                self._anime_return = _Tab.ANIME
-            else:
-                return StateResult.HOME
+        if result is AnimeResult.HOME:
+            return StateResult.HOME
         self._invalidate()
         return StateResult.CONTINUE
 
@@ -617,9 +620,7 @@ class StateController:
         future_from: Decimal | None = draft.future_from
 
         def apply(session: ResidentSession) -> None:
-            if draft.order is not None:
-                session.follow(draft.order, selected=selected, future_from=future_from)
-            elif draft.subscription is not None:
+            if draft.subscription is not None:
                 session.set_range(draft.subscription.subscription_id, selected=selected, future_from=future_from)
             with self._lock:
                 if generation == self._view_generation and self._draft is draft:
@@ -644,9 +645,6 @@ class StateController:
             self._command("set_auto", {"enabled": not self._snapshot.get("auto_enabled", False)})
         elif key == "f" and self._tab == _Tab.SUBSCRIPTIONS:
             self._command("subscriptions_check")
-        elif key == "d" and self._tab == _Tab.SUBSCRIPTIONS:
-            self._anime_return = _Tab.SUBSCRIPTIONS
-            self._switch_tab(_Tab.ANIME)
         elif self._tab == _Tab.SUBSCRIPTIONS and self._subscriptions and key in {"w", "x"}:
             item: Mapping[str, object] = self._subscriptions[min(self._selected, len(self._subscriptions) - 1)]
             kind: str = (
@@ -912,7 +910,7 @@ class StateController:
             if self._stop.wait(_RECONNECT_S):
                 break
 
-    def _receive(self, session: ResidentSession, frame: Mapping[str, object]) -> None:  # noqa: PLR0912, PLR0915
+    def _receive(self, session: ResidentSession, frame: Mapping[str, object]) -> None:  # noqa: C901, PLR0912, PLR0915
         payload: object = frame.get("payload")
         if frame.get("event") == "panel_open":
             with self._lock:
@@ -921,6 +919,14 @@ class StateController:
             return
         if not isinstance(payload, Mapping):
             return
+        event: str = str(frame.get("event", ""))
+        if self._anime is not None and event in {
+            "episode_searching",
+            "episode_result",
+            "episode_batch",
+            "control_problem",
+        }:
+            self._anime.receive(event, payload)
         if frame.get("event") == "control_problem":
             with self._lock:
                 self._notify("Widok nieaktualny: odpowiedź przekracza limit.")
@@ -941,10 +947,6 @@ class StateController:
                 refresh_episodes: bool = self._tab == _Tab.ANIME and payload != self._snapshot
             if anime is not None and refresh_episodes:
                 anime.refresh_episode_states()
-            hashes: tuple[str, ...] = anime.acquisition_hashes() if anime is not None else ()
-            acquisition_states: list[Mapping[str, object]] = (
-                session.acquisition_states(hashes) if anime is not None else []
-            )
             draft: SubscriptionDraft | None = self._draft
             work: Mapping[str, object] = self._draft_work(session, draft)
             with self._lock:
@@ -957,7 +959,6 @@ class StateController:
                 self._snapshot = payload
                 self._select_library_target(payload)
                 if self._anime is not None and self._anime is anime:
-                    self._anime.refresh_acquisitions(acquisition_states, hashes=hashes)
                     self._anime.refresh_provider_locks(_rows(payload.get("provider_locks")))
                 if self._details is previous_details:
                     self._details = details
@@ -1093,75 +1094,89 @@ class StateController:
                 self._runs[run_id] = (snapshot.preview.preview_id, restored)
 
     def render(self, columns: int, rows: int) -> Text:
-        """Render tabs with the shared selectable list."""
+        """Pin heading and tabs to the top and the body's keys above the status line."""
         with self._lock:
-            content: Text = Text()
-            if rows >= _MINIMUM_HEADER_ROWS:
-                content.append(" " * max((columns - 5) // 2, 0) + "PANEL\n\n", style="white_bold")
-            tabs: Text = self._tabs(columns)
-            content.append(" " * max((columns - tabs.cell_len) // 2, 0))
-            content.append_text(tabs)
-            anime: bool = self._tab == _Tab.ANIME and self._anime is not None
-            content.append("\n" if anime or rows < _MINIMUM_HEADER_ROWS else "\n\n")
-            heading_rows: int = content.plain.count("\n")
-            if anime and self._anime is not None:
-                status: str = self._global_status()
-                status_rows: int = len(Text(status).wrap(Console(width=max(columns - 2, 1)), max(columns - 2, 1)))
-                content.append_text(self._anime.render(columns, max(rows - heading_rows - status_rows, 1)))
-                return with_footer(content, (status,), columns, rows)
-            entries: list[tuple[str | Text, bool | None]] = (
-                [(label, checked) for label, checked in self._draft.entries()]
-                if self._draft is not None and self._retry is None
-                else self._entries(max(columns - 8, 1))
+            budget: int = max(rows - 1, 1)
+            spaced: bool = rows >= _MINIMUM_HEADER_ROWS
+            heading: list[Text] = []
+            if rows >= _MINIMUM_TITLE_ROWS:
+                heading.append(_centered(Text("PANEL", style="white_bold"), columns))
+            if spaced:
+                heading.append(Text())
+            heading.append(_centered(self._tabs(columns), columns))
+            if spaced:
+                heading.append(Text())
+            area: int = max(budget - len(heading), 1)
+            body: Text = (
+                self._anime.render(columns, area)
+                if self._tab == _Tab.ANIME and self._anime is not None
+                else self._list_body(columns, area)
             )
-            selected: int = (
-                self._draft.cursor
-                if self._draft is not None and self._retry is None
-                else min(self._selected, max(len(entries) - 1, 0))
+            self._anime_top = len(heading)
+            return Text("\n").join([*heading, *body.split("\n", allow_blank=True)])
+
+    def _list_body(self, columns: int, rows: int) -> Text:
+        entries: list[tuple[str | Text, bool | None]] = (
+            [(label, checked) for label, checked in self._draft.entries()]
+            if self._draft is not None and self._retry is None
+            else self._entries(max(columns - 8, 1))
+        )
+        selected: int = (
+            self._draft.cursor
+            if self._draft is not None and self._retry is None
+            else min(self._selected, max(len(entries) - 1, 0))
+        )
+        if self._draft is None and self._retry is None:
+            self._selected = selected
+        console: Console = Console(width=max(columns - 2, 1))
+        footer: list[Text] = [
+            line
+            for hint in self._view_footer(max(columns - 4, 1))
+            if hint
+            for line in (hint if isinstance(hint, Text) else Text(hint, style="gray")).wrap(
+                console, max(columns - 2, 1)
             )
-            if self._draft is None and self._retry is None:
-                self._selected = selected
-            labels: tuple[str, ...] = fit_entries(
-                tuple(label.plain if isinstance(label, Text) else label for label, _ in entries), columns
+        ]
+        footer = footer[: max(rows - 2, 1)]
+        wrapped: tuple[tuple[str | Text, ...], ...] = wrap_entries(tuple(label for label, _ in entries), columns)
+        remaining: int = max(rows - 1 - len(footer), 1)
+        start, end = visible_window(len(entries), selected, remaining + 7, heights=tuple(map(len, wrapped)))
+        viewport: int = self._viewport()
+        if self._follow_cursor.get(viewport, True):
+            self._offsets[viewport] = start
+        else:
+            start = min(self._offsets.get(viewport, 0), max(len(entries) - 1, 0))
+            end = len(entries)
+        content: Text = Text()
+        markers: int = 2 if any(checked is not None for _label, checked in entries) else 0
+        widths: list[int] = [
+            line.cell_len if isinstance(line, Text) else Text(line).cell_len for lines in wrapped for line in lines
+        ]
+        left: int = max((columns - 2 - markers - max(widths, default=0)) // 2, 0)
+        for index in range(start, end):
+            if remaining <= 0:
+                break
+            checked: bool | None = entries[index][1]
+            marker: str = "" if checked is None else ("● " if checked else "○ ")
+            lines: tuple[str | Text, ...] = wrapped[index][:remaining]
+            append_wrapped_row(content, left, lines, index == selected, marker)
+            remaining -= len(lines)
+        if not entries:
+            empty: str = (
+                "Brak aktywnego przetwarzania"
+                if self._tab == _Tab.PROGRESS and not self._history_open
+                else "Brak pozycji"
             )
-            console: Console = Console(width=max(columns - 2, 1))
-            footer: list[Text] = [
-                line
-                for hint in self._view_footer()
-                if hint
-                for line in (hint if isinstance(hint, Text) else Text(hint, style="gray")).wrap(
-                    console, max(columns - 2, 1)
-                )
-            ]
-            footer = footer[: max(rows - heading_rows - 2, 1)]
-            wrapped: tuple[tuple[str | Text, ...], ...] = wrap_entries(tuple(label for label, _ in entries), columns)
-            remaining: int = max(rows - 1 - len(footer) - heading_rows, 1)
-            start, end = visible_window(len(labels), selected, remaining + 7, heights=tuple(map(len, wrapped)))
-            viewport: int = self._viewport()
-            if self._follow_cursor.get(viewport, True):
-                self._offsets[viewport] = start
-            else:
-                start = min(self._offsets.get(viewport, 0), max(len(entries) - 1, 0))
-                end = len(entries)
-            left: int = left_padding(columns, labels)
-            for index in range(start, end):
-                if remaining <= 0:
-                    break
-                checked: bool | None = entries[index][1]
-                marker: str = "" if checked is None else ("● " if checked else "○ ")
-                lines: tuple[str | Text, ...] = wrapped[index][:remaining]
-                append_wrapped_row(content, left, lines, index == selected, marker)
-                remaining -= len(lines)
-            if not entries:
-                empty: str = (
-                    "Brak aktywnego przetwarzania"
-                    if self._tab == _Tab.PROGRESS and not self._history_open
-                    else "Brak pozycji"
-                )
-                if self._tab == _Tab.PROGRESS and self._history_open and self._history_problem:
-                    empty = "Historia niedostępna"
-                content.append(" " * max((columns - len(empty)) // 2, 0) + empty + "\n", style="gray")
-            return with_footer(content, footer, columns, rows)
+            if self._tab == _Tab.PROGRESS and self._history_open and self._history_problem:
+                empty = "Historia niedostępna"
+            content.append_text(_centered(Text(empty, style="gray"), columns))
+        body: list[Text] = list(content.split("\n"))
+        area: int = rows - len(footer)
+        top: int = max((area - len(body)) // 2, 0)
+        padding: list[Text] = [Text() for _ in range(max(area - top - len(body), 0))]
+        return Text("\n").join(
+            [*(Text() for _ in range(top)), *body, *padding, *(_centered(line, columns) for line in footer)]
+        )
 
     def _tabs(self, columns: int = 120) -> Text:
         tabs: Text = Text()
@@ -1173,7 +1188,7 @@ class StateController:
             return Text(f"← {_TABS[self._tab]} ({self._tab + 1}/{len(_TABS)}) →", style="brand_accent")
         return tabs
 
-    def _view_footer(self) -> list[str | Text]:
+    def _view_footer(self, width: int) -> list[str | Text]:
         if self._retry is not None:
             return ["Enter przygotuj · Esc anuluj", self._notice, self._global_status()]
         if self._tab == _Tab.PROGRESS and self._history_open:
@@ -1205,9 +1220,9 @@ class StateController:
                 self._notice,
                 self._global_status(),
             ]
-        return self._footer()
+        return self._footer(width)
 
-    def _footer(self) -> list[str | Text]:
+    def _footer(self, width: int) -> list[str | Text]:
         result: list[str | Text] = []
         if self._notice and (self._tab != _Tab.FILES or self._notice_persistent):
             result.append(self._notice.rstrip("."))
@@ -1219,23 +1234,27 @@ class StateController:
             return [
                 *result,
                 "↑↓ pliki · Enter otwórz plik · F folder · Delete usuń · Ctrl+Z cofnij · Esc wróć",
+                self._global_status() if self._snapshot.get("auto_enabled") is False else "",
             ]
         relocations: list[Mapping[str, object]] = _relocation_problems(self._snapshot)
         if self._tab == _Tab.FILES and relocations:
             names: str = ", ".join(_safe_text(item["name"]) for item in relocations)
             result.append(f"P ponów przenoszenie do biblioteki · {names}")
-        hints: tuple[str | Text, ...] = (
-            "Tab widok",
-            "Space aktywność · Enter odcinki · D dodaj · X usuń · F sprawdź",
+        hints: tuple[str, ...] = (
+            "",
+            "Space aktywność · Enter odcinki · X usuń · F sprawdź",
             "H historia · M ręczny · "
-            + ("O Zatrzymaj AniShift" if self._snapshot.get("auto_enabled") else "O Wznów AniShift")
+            + ("O wstrzymaj automat" if self._snapshot.get("auto_enabled") else "O wznów automat")
             + " · U ustawienia",
             "Enter otwórz · F folder · D szczegóły · Delete usuń · Ctrl+Z cofnij",
         )
-        result.append("←→ widok · ↑↓ wybierz · Esc wróć")
-        result.append(hints[self._tab])
+        result.extend(
+            pack_keys(
+                (hints[self._tab], *NAVIGATION_KEYS, "Esc wróć"), width, optional=tuple(reversed(NAVIGATION_KEYS))
+            )
+        )
         result.append(self._processing_hint() if self._tab == _Tab.PROGRESS else "")
-        if self._tab != _Tab.FILES:
+        if self._tab != _Tab.FILES or self._snapshot.get("auto_enabled") is False:
             result.append(self._global_status())
         return result
 
@@ -1256,7 +1275,7 @@ class StateController:
     def _global_status(self) -> str:
         counts: object = self._snapshot.get("material_counts", {})
         values: Mapping[str, object] = counts if isinstance(counts, Mapping) else {}
-        status: str = "Praca" if self._snapshot.get("auto_enabled") else "Wstrzymano"
+        status: str = "Praca" if self._snapshot.get("auto_enabled") else "Automat wstrzymany"
         if self._snapshot.get("pausing"):
             status = "Zatrzymywanie"
         if self._snapshot.get("pause_incomplete"):
@@ -1310,7 +1329,7 @@ class StateController:
         for item in self._processing_rows():
             if item.get("stage") == "processing":
                 status: str | None = (
-                    "Brak odczytu" if not self._connected else ("Wstrzymano" if self._snapshot.get("paused") else None)
+                    "Brak odczytu" if not self._connected else ("Wstrzymano" if self._held(item) else None)
                 )
                 line: Text = self._runs[str(item["run_id"])][1].render_group(
                     str(item["group_id"]), columns, status=status
@@ -1331,9 +1350,15 @@ class StateController:
             entries.append((line, None))
         return entries
 
+    def _held(self, item: Mapping[str, object]) -> bool:
+        return bool(self._snapshot.get("paused")) and item.get("automatic") is not False
+
     def _observe_downloads(self) -> None:
-        for _preview, progress in self._runs.values():
-            progress.observe_activity(active=self._connected and not self._snapshot.get("paused"))
+        manual: set[str] = {
+            str(item.get("run_id")) for item in self._processing_rows() if item.get("automatic") is False
+        }
+        for run_id, (_preview, progress) in self._runs.items():
+            progress.observe_activity(active=self._connected and (not self._snapshot.get("paused") or run_id in manual))
         current: dict[str, ObservedProgressTimer] = {}
         for item in self._processing_rows():
             if item.get("stage") == "processing":
@@ -1363,7 +1388,7 @@ class StateController:
         if item.get("reason") == "finalization_failed":
             return "Finalizacja", None
         if item.get("stage") == "waiting":
-            return ("Wstrzymano" if self._snapshot.get("paused") else "Przygotowanie"), None
+            return ("Wstrzymano" if self._held(item) else "Przygotowanie"), None
         if item.get("problem"):
             return "Wymaga uwagi", None
         if item.get("reason") == "waiting_previous_transfer":
@@ -1471,6 +1496,12 @@ def _subscription_term(item: Mapping[str, object], now: datetime | None = None) 
     if item.get("calendar_problem"):
         term += " · Kalendarz niedostępny"
     return term
+
+
+def _centered(line: Text, columns: int) -> Text:
+    result: Text = Text(" " * max((columns - line.cell_len) // 2, 0))
+    result.append_text(line)
+    return result
 
 
 def _rows(value: object) -> list[Mapping[str, object]]:

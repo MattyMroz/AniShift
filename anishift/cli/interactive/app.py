@@ -9,6 +9,7 @@ from enum import StrEnum
 from time import monotonic
 from typing import Final
 
+from prompt_toolkit.mouse_events import MouseEvent
 from rich.text import Text
 
 from anishift import __version__
@@ -204,6 +205,7 @@ class _InteractiveApplication:
             self._handle_key,
             self._handle_idle,
             self._handle_scroll,
+            mouse_handler=self._handle_mouse,
         )
         self._mascot: MascotController = MascotController(self._renderer.invalidate)
 
@@ -325,8 +327,6 @@ class _InteractiveApplication:
         self._renderer.exit()
 
     def _handle_idle(self) -> None:
-        if self._mode is _ViewMode.STATE and self._state is not None:
-            self._state.poll()
         if self._state is not None and self._state.finished():
             self._renderer.exit()
             return
@@ -351,6 +351,10 @@ class _InteractiveApplication:
             controller.flush_pending()
         if closing_at is not None and monotonic() >= closing_at:
             self._renderer.exit()
+
+    def _handle_mouse(self, event: MouseEvent) -> None:
+        if self._mode is _ViewMode.STATE and self._state is not None:
+            self._state.mouse(event)
 
     def _handle_scroll(self, direction: int) -> None:
         with self._lock:

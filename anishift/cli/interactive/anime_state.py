@@ -8,6 +8,8 @@ from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Final
 
+from rich.text import Text
+
 from anishift.cli.interactive.text_input import TextInput
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -15,15 +17,30 @@ from anishift.cli.interactive.text_input import TextInput
 FLASH_SECONDS: Final[float] = 0.4
 """Duration of the acknowledgement highlight after a confirmed admission."""
 
+_QUERY_CELLS: Final[int] = 32
+"""Width of the centered search box before the typed text widens it."""
+
+_RANGE_COLUMNS: Final[int] = 80
+"""Widest terminal width used to size the episode range editor."""
+
+
+def query_left(columns: int, text: str) -> int:
+    """Return the prompt column of a search box centered on at least 32 cells."""
+    return max((columns - min(max(len(text) + 3, _QUERY_CELLS), columns)) // 2, 0)
+
 
 class AnimeScreen(StrEnum):
     """Identify the presentation without owning catalogue or transfer state."""
 
     QUERY = "query"
+    TITLES = "titles"
     ENTRIES = "entries"
     EPISODES = "episodes"
     RELEASES = "releases"
     DETAILS = "details"
+    FILES = "files"
+    BUSY = "busy"
+    PROBLEM = "problem"
 
 
 class NoticeKind(StrEnum):
@@ -51,6 +68,8 @@ class AnimeRow:
     eligible: bool = True
     suggested: bool = False
     uncertain: bool = False
+    navigable: bool = True
+    refusal_text: str = ""
 
     @property
     def copy_text(self) -> str:
@@ -73,8 +92,10 @@ class AnimeRow:
     @property
     def refusal(self) -> str:
         """Explain why an ineligible row cannot be selected or downloaded."""
-        return self.detail or (
-            "Nie wyemitowano" if self.status == "Nie wyemitowano" else "Zlecono | P pobierz ponownie"
+        return (
+            self.refusal_text
+            or self.detail
+            or ("Nie wyemitowano" if self.status == "Nie wyemitowano" else "Zlecono | P pobierz ponownie")
         )
 
 
@@ -105,8 +126,11 @@ class AnimeSnapshot:
     field_selection: tuple[int, int] | None = None
     query_focused: bool = True
     editing_range: bool = False
-    centered_query: bool = False
     selection: tuple[TextPoint, TextPoint] | None = None
+    controls: tuple[str, ...] = ()
+    global_status: str = ""
+    rendered_field: Text | None = None
+    busy: str = ""
 
 
 @dataclass(slots=True)
@@ -114,7 +138,7 @@ class AnimeViewState:
     """Keep transient input, cursor and feedback independently of the owner."""
 
     screen: AnimeScreen = AnimeScreen.QUERY
-    title: str = "Anime"
+    title: str = "ANIME"
     items: tuple[AnimeRow, ...] = ()
     cursor: int = 0
     offset: int = 0
@@ -123,14 +147,16 @@ class AnimeViewState:
     flashes: dict[str, float] = field(default_factory=dict)
     notice: str = ""
     notice_kind: NoticeKind = NoticeKind.INFO
-    batch_results: dict[str, bool] = field(default_factory=dict)
+    batch_results: dict[str, str | None] = field(default_factory=dict)
     query: TextInput = field(default_factory=TextInput)
     range_input: TextInput | None = None
-    centered_query: bool = False
     query_focused: bool = True
     selection: tuple[TextPoint, TextPoint] | None = None
+    controls: tuple[str, ...] = ()
+    global_status: str = ""
+    busy: str = ""
 
-    def snapshot(self) -> AnimeSnapshot:
+    def snapshot(self, width: int = 80) -> AnimeSnapshot:
         """Freeze local values without changing state or reading a clock."""
         editor: TextInput = self.range_input or self.query
         return AnimeSnapshot(
@@ -149,8 +175,16 @@ class AnimeViewState:
             field_selection=editor.selection_range,
             query_focused=self.query_focused,
             editing_range=self.range_input is not None,
-            centered_query=self.centered_query,
             selection=self.selection,
+            controls=self.controls,
+            global_status=self.global_status,
+            rendered_field=editor.render(
+                max(min(width, _RANGE_COLUMNS) - 12, 1)
+                if self.range_input is not None
+                else max(width - query_left(width, editor.text) - 3, 1),
+                focused=self.query_focused or self.range_input is not None,
+            ),
+            busy=self.busy,
         )
 
     def toggle(self) -> None:
