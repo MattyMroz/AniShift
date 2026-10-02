@@ -264,6 +264,71 @@ def test_a_command_can_execute_after_its_client_times_out_without_an_answer(tmp_
         server.close()
 
 
+def test_a_timed_out_client_never_takes_the_late_answer_as_the_next_result(tmp_path: Path) -> None:
+    release: threading.Event = threading.Event()
+    answered: threading.Event = threading.Event()
+
+    def delayed(request: ControlRequest) -> ControlResponse:
+        if request.payload.get("echo") != "first":
+            return _echo(request)
+        assert release.wait(_TIMEOUT_S)
+        answered.set()
+        return ControlResponse.refused(ControlErrorCode.REFUSED, "first only", "first_only")
+
+    server, endpoint, key = _serving(_state_dir(tmp_path), delayed)
+    client: ControlClient = ControlClient(endpoint, key, timeout_s=0.1)
+    try:
+        with pytest.raises(ControlError) as timeout:
+            client.call("echo", {"echo": "first"})
+        release.set()
+        assert answered.wait(_TIMEOUT_S)
+        with pytest.raises(ControlError) as later:
+            client.call("echo", {"echo": "second"}, timeout_s=_TIMEOUT_S)
+    finally:
+        release.set()
+        client.close()
+        server.close()
+
+    assert later.value.reason != "first_only"
+    assert not later.value.answered
+    assert later.value.connection_lost
+    assert timeout.value.connection_lost
+
+
+@pytest.mark.parametrize(
+    ("frame", "answered", "lost"),
+    [
+        ({"command_id": "other", "ok": False, "error": {"code": "refused", "message": "x"}}, False, True),
+        ({"command_id": "other", "ok": True, "result": {}}, False, True),
+        ({"command_id": "", "ok": False, "error": {"code": "invalid_payload", "message": "x"}}, True, False),
+        ({"command_id": "", "ok": True, "result": {}}, False, True),
+        ({"command_id": "mine", "ok": False, "error": {"code": "refused", "message": "x"}}, True, False),
+    ],
+)
+def test_an_answer_belongs_to_the_command_only_by_its_identity(
+    frame: Mapping[str, object], *, answered: bool, lost: bool
+) -> None:
+    with pytest.raises(ControlError) as problem:
+        local_control._accepted_result(frame, "mine")
+
+    assert problem.value.answered is answered
+    assert problem.value.connection_lost is lost
+
+
+@pytest.mark.parametrize(
+    ("problem", "lost"),
+    [
+        (ControlError("timeout", code=ControlErrorCode.INTERNAL), True),
+        (ControlError("closed", code=ControlErrorCode.REFUSED), True),
+        (ControlError("large", code=ControlErrorCode.REFUSED, reason="request_too_large"), False),
+        (ControlError("refused", code=ControlErrorCode.REFUSED, answered=True), False),
+        (ControlError("failed", code=ControlErrorCode.INTERNAL, answered=True), False),
+    ],
+)
+def test_only_an_unanswered_transport_failure_loses_the_connection(problem: ControlError, *, lost: bool) -> None:
+    assert problem.connection_lost is lost
+
+
 def test_a_flooded_subscriber_receives_merged_events_instead_of_every_frame(tmp_path: Path) -> None:
     state_dir: Path = _state_dir(tmp_path)
     server, endpoint, key = _serving(state_dir)

@@ -6,7 +6,7 @@ Pakiet aplikacji. Composition root i hierarchia błędów tutaj; reszta w moduł
 
 - `application/` — czysty model produktu, planowanie i wykonawcze use case'y
 - `cli/` — Typer entry point, jedyne wejście: subkomendy techniczne i `run --preset`
-- `services/` — domeny audio, extraction, llm, subtitles, translation i tts
+- `services/` — domeny audio, catalog, extraction, llm, subtitles, torrents, translation i tts
 - `text/` — bezdomenowe granice Unicode, skróty i segmentacja grafemów
 - `setup/` — pobieranie i instalacja zewnętrznych binarek
 - `platform/` — kod zależny od systemu (binarki, wykrycie OS)

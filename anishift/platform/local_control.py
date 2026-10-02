@@ -130,6 +130,9 @@ _RESPONSE_TOO_LARGE: Final[str] = "Response too large"
 _RESPONSE_TOO_LARGE_REASON: Final[str] = "response_too_large"
 """Machine-readable reason of an answer refused for its size."""
 
+_REQUEST_TOO_LARGE_REASON: Final[str] = "request_too_large"
+"""Machine-readable reason of a request refused before it was sent."""
+
 _ACCEPT_JOIN_S: Final[float] = 5.0
 """Wait for the accept thread to notice that the server is closing."""
 
@@ -189,6 +192,11 @@ class ControlError(AniShiftError):
         self.code: ControlErrorCode = code
         self.reason: str = reason
         self.answered: bool = answered
+
+    @property
+    def connection_lost(self) -> bool:
+        """Whether the connection that raised this error can no longer carry another command."""
+        return not self.answered and self.reason != _REQUEST_TOO_LARGE_REASON
 
 
 @dataclass(frozen=True, slots=True)
@@ -526,21 +534,26 @@ class ControlClient:
         instance_id: str | None = None,
         timeout_s: float | None = None,
     ) -> Mapping[str, object]:
-        """Send one command and return its result, waiting *timeout_s* instead of the connection default."""
+        """Send one command and return its result; a lost answer closes this connection for good."""
         if self._subscribed:
             msg = "A subscribed connection carries events, not commands"
             raise ControlError(msg, code=ControlErrorCode.REFUSED)
         identity: str = command_id if command_id is not None else _new_command_id()
-        self._send(
-            {
-                "v": PROTOCOL_VERSION,
-                "command_id": identity,
-                "instance_id": instance_id,
-                "kind": kind,
-                "payload": dict(payload) if payload is not None else {},
-            }
-        )
-        return _accepted_result(self._receive(timeout_s), identity)
+        try:
+            self._send(
+                {
+                    "v": PROTOCOL_VERSION,
+                    "command_id": identity,
+                    "instance_id": instance_id,
+                    "kind": kind,
+                    "payload": dict(payload) if payload is not None else {},
+                }
+            )
+            return _accepted_result(self._receive(timeout_s), identity)
+        except ControlError as problem:
+            if problem.connection_lost:
+                self.close()
+            raise
 
     def subscribe(self) -> None:
         """Turn this connection into the event stream of the resident."""
@@ -570,7 +583,7 @@ class ControlClient:
         encoded: bytes = _encode_frame(frame)
         if len(encoded) > MAX_FRAME_BYTES:
             message: str = "The request exceeds the frame limit"
-            raise ControlError(message, code=ControlErrorCode.REFUSED, reason="request_too_large")
+            raise ControlError(message, code=ControlErrorCode.REFUSED, reason=_REQUEST_TOO_LARGE_REASON)
         try:
             self._connection.send_bytes(encoded)
         except (OSError, ValueError) as problem:
@@ -873,6 +886,10 @@ def _error_frame(command_id: str, code: ControlErrorCode, message: str, reason: 
 
 
 def _accepted_result(frame: Mapping[str, object], command_id: str) -> Mapping[str, object]:
+    answered_id: object = frame.get("command_id")
+    if answered_id != command_id and not (answered_id == "" and frame.get("ok") is False):
+        msg = "The resident answered a different command"
+        raise ControlError(msg, code=ControlErrorCode.INVALID_PAYLOAD)
     if frame.get("ok") is not True:
         error: object = frame.get("error")
         code: str = error.get("code", "") if isinstance(error, dict) else ""
@@ -886,9 +903,6 @@ def _accepted_result(frame: Mapping[str, object], command_id: str) -> Mapping[st
             answered=True,
             details=details if isinstance(details, dict) else None,
         )
-    if frame.get("command_id") != command_id:
-        msg = "The resident answered a different command"
-        raise ControlError(msg, code=ControlErrorCode.INVALID_PAYLOAD, answered=True)
     result: object = frame.get("result")
     if not isinstance(result, dict):
         msg = "The resident answered without a result document"

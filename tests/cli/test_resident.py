@@ -40,10 +40,13 @@ from anishift.platform.local_control import (
     ControlClient,
     ControlError,
     ControlErrorCode,
+    ControlRequest,
     ControlResponse,
+    ControlServer,
     connect,
     connect_or_start,
     control_endpoint,
+    ensure_authkey,
     read_instance,
 )
 from anishift.platform.process_lock import ProcessLock
@@ -306,7 +309,7 @@ class _LostChannel(_Channel):
     [
         (ControlError("lost", code=ControlErrorCode.REFUSED), True),
         (ControlError("refused", code=ControlErrorCode.REFUSED, answered=True), False),
-        (ControlError("late", code=ControlErrorCode.INTERNAL), False),
+        (ControlError("late", code=ControlErrorCode.INTERNAL), True),
         (ControlError("large", code=ControlErrorCode.REFUSED, reason="request_too_large"), False),
     ],
 )
@@ -333,6 +336,41 @@ def test_only_a_lost_connection_is_replaced_on_the_next_call(
             read()
         assert len(lost.sent) == 2
         assert channels == [healthy]
+
+
+def test_a_command_after_a_timed_out_answer_reconnects_and_receives_its_own_result(tmp_path: Path) -> None:
+    release: threading.Event = threading.Event()
+    late: threading.Event = threading.Event()
+
+    def answer(request: ControlRequest) -> ControlResponse:
+        if request.payload.get("order") != "first":
+            return ControlResponse.succeeded({"order": request.payload.get("order")})
+        assert release.wait(_TIMEOUT_S)
+        late.set()
+        return ControlResponse.refused(ControlErrorCode.REFUSED, "first only", "first_only")
+
+    endpoint: str = control_endpoint(tmp_path)
+    key: bytes = ensure_authkey(tmp_path)
+    server: ControlServer = ControlServer(endpoint, key, answer)
+    timeouts: list[float] = [0.2]
+    session: ResidentSession = ResidentSession(
+        tmp_path, lambda: ControlClient(endpoint, key, timeout_s=timeouts.pop() if timeouts else _TIMEOUT_S)
+    )
+    try:
+        with pytest.raises(ControlError) as timeout:
+            session.command("probe", {"order": "first"})
+        release.set()
+        assert late.wait(_TIMEOUT_S)
+        second: Mapping[str, object] = session.command("probe", {"order": "second"})
+        third: Mapping[str, object] = session.command("probe", {"order": "third"})
+    finally:
+        release.set()
+        session.close()
+        server.close()
+
+    assert not timeout.value.answered
+    assert second["order"] == "second"
+    assert third["order"] == "third"
 
 
 def test_disconnect_reopens_both_channels_on_the_next_call_but_never_after_close(tmp_path: Path) -> None:

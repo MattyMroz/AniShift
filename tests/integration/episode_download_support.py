@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import socket
 import subprocess
-import sys
 import threading
 import time
 import wave
@@ -14,6 +13,7 @@ from typing import Any
 
 import httpx
 import pytest
+from conftest import hidden_window_options
 
 from anishift.application.acquisition import AcquisitionService
 from anishift.application.automation import AutomationOwner
@@ -155,7 +155,7 @@ def _port() -> int:
 
 
 @contextmanager
-def private_client(  # noqa: PLR0915
+def private_client(
     root: Path,
     monkeypatch: pytest.MonkeyPatch,
     requests: list[httpx.Request],
@@ -178,12 +178,7 @@ def private_client(  # noqa: PLR0915
     def hidden(command: Sequence[str], **kwargs: Any) -> subprocess.Popen[bytes]:
         if f"--profile={root}" not in command:
             return launch(command, **kwargs)
-        if sys.platform == "win32":
-            startup: subprocess.STARTUPINFO = subprocess.STARTUPINFO()
-            startup.dwFlags = subprocess.STARTF_USESHOWWINDOW
-            startup.wShowWindow = subprocess.SW_HIDE
-            kwargs["startupinfo"] = startup
-        child: subprocess.Popen[bytes] = launch(command, **kwargs)
+        child: subprocess.Popen[bytes] = launch(command, **kwargs, **hidden_window_options())
         children.append(child)
         return child
 

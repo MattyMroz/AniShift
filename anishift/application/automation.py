@@ -100,6 +100,7 @@ from anishift.application.episode_commands import (
     EpisodeFile,
     EpisodeFiles,
     EpisodeOfferView,
+    EpisodeReason,
     EpisodeResult,
     EpisodeStatus,
     validate_episode_keys,
@@ -321,7 +322,13 @@ _TRANSFER_NOT_STARTED: Final[str] = "This episode is admitted but its transfer h
 """Reason returned when a client action targets an admission that has no transfer lifecycle."""
 
 _MATERIAL_PROBLEM_REASONS: Final[frozenset[str]] = frozenset(
-    {"transfer_failed", "publication_failed", "publication_missing", "finalization_failed", "episode_file_unresolved"}
+    {
+        EpisodeReason.TRANSFER_FAILED,
+        EpisodeReason.PUBLICATION_FAILED,
+        EpisodeReason.PUBLICATION_MISSING,
+        EpisodeReason.FINALIZATION_FAILED,
+        EpisodeReason.EPISODE_FILE_UNRESOLVED,
+    }
 )
 """Episode reasons that describe a material error rather than ordinary waiting or preparation."""
 
@@ -1247,7 +1254,9 @@ class AutomationOwner:
             if request.kind == "episode_file_choose" and receipt.outcome.get("selection") != _episode_command_signature(
                 request
             ):
-                command.answer(ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, "command_reused"))
+                command.answer(
+                    ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, EpisodeReason.COMMAND_REUSED)
+                )
                 return
             if request.kind == "shutdown":
                 self._begin_shutdown()
@@ -3897,14 +3906,16 @@ class AutomationOwner:
             return _invalid("Episode states require 1-100 unique positive numbers of one entry")
         legacy: tuple[LegacyScope, ...] | None = self._legacy_scopes()
         if legacy is None:
-            return ControlResponse.refused(ControlErrorCode.REFUSED, _LEGACY_UNREADABLE, "legacy_unreadable")
+            return ControlResponse.refused(
+                ControlErrorCode.REFUSED, _LEGACY_UNREADABLE, EpisodeReason.LEGACY_UNREADABLE
+            )
         return ControlResponse.succeeded({"items": [encode_view(self._episode_status(key, legacy)) for key in keys]})
 
     def _episode_files_command(self, request: ControlRequest) -> ControlResponse:
         receipt: CommandReceipt | None = self._on_owner(lambda: self._receipt(request))
         if receipt is not None:
             if receipt.outcome.get("selection") != _episode_command_signature(request):
-                return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, "command_reused")
+                return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, EpisodeReason.COMMAND_REUSED)
             return ControlResponse.succeeded(dict(receipt.outcome))
         admission: str | None = _text(request.payload, "admission_id")
         current: tuple[AcquisitionConfirmation, EpisodeAssignment] | None = self._on_owner(
@@ -3961,7 +3972,7 @@ class AutomationOwner:
         receipt: CommandReceipt | None = self._receipt(request)
         if receipt is not None:
             if receipt.outcome.get("selection") != _episode_command_signature(request):
-                return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, "command_reused")
+                return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, EpisodeReason.COMMAND_REUSED)
             return ControlResponse.succeeded(dict(receipt.outcome))
         if not self._working(transfer):
             return _refuse(RefusalReason.PAUSED)
@@ -4034,7 +4045,7 @@ class AutomationOwner:
         if not self._ready_result_missing(status):
             return status
         return EpisodeStatus(
-            key, "not_ordered", "result_missing", status.admission_id, status.operation_id, status.uncertain
+            key, "not_ordered", EpisodeReason.RESULT_MISSING, status.admission_id, status.operation_id, status.uncertain
         )
 
     def _ready_result_missing(self, status: EpisodeStatus) -> bool:
@@ -4058,16 +4069,16 @@ class AutomationOwner:
         uncertain: bool = assignment.choice.verdict is not IdentityVerdict.MATCH
         if _handed_off(assignment):
             return self._handed_off_status(key, transfer, assignment, uncertain=uncertain)
-        reason: str | None = "transfer_failed" if transfer.problem is not None else None
+        reason: str | None = EpisodeReason.TRANSFER_FAILED if transfer.problem is not None else None
         complete: frozenset[str] = frozenset(transfer.complete_files)
         downloaded: bool = bool(assignment.files) and all(path in complete for _index, path, _size in assignment.files)
         if downloaded:
             if assignment.publication is not None and assignment.publication.problem is not None:
-                reason = "publication_failed"
+                reason = EpisodeReason.PUBLICATION_FAILED
         elif not self._replacement_ready(transfer):
-            reason = "waiting_previous_transfer"
+            reason = EpisodeReason.WAITING_PREVIOUS_TRANSFER
         if assignment.mapped and not assignment.files:
-            reason = "episode_file_unresolved"
+            reason = EpisodeReason.EPISODE_FILE_UNRESOLVED
         state, reason, _set_id = self._lifecycle_status(transfer, None, downloaded=downloaded, reason=reason)
         return EpisodeStatus(key, state, reason, assignment.admission_id, transfer.operation_id, uncertain)
 
@@ -4087,7 +4098,7 @@ class AutomationOwner:
             and publication is not None
             and any(file_stamp(self._service.workspace_root / item.name) != item.stamp for item in publication.files)
         ):
-            reason = "publication_missing"
+            reason = EpisodeReason.PUBLICATION_MISSING
         return EpisodeStatus(key, state, reason, assignment.admission_id, transfer.operation_id, uncertain, set_id)
 
     def _lifecycle_status(
@@ -4107,7 +4118,7 @@ class AutomationOwner:
             (item for item in reversed(self._state.requests) if group_id in item.group_ids), None
         )
         if (transfer.state is AcquisitionState.COMPLETE and transfer.problem) or group_id in self._ready_problems:
-            reason = "finalization_failed"
+            reason = EpisodeReason.FINALIZATION_FAILED
         if request is not None:
             if group_id in self._succeeded_groups(request):
                 return "ready", reason, group_id
@@ -4116,7 +4127,7 @@ class AutomationOwner:
         if transfer.state in {AcquisitionState.FAILED, AcquisitionState.UNCERTAIN} or (
             transfer.problem and transfer.state is not AcquisitionState.COMPLETE
         ):
-            return "processing_failed", reason or "transfer_failed", None
+            return "processing_failed", reason or EpisodeReason.TRANSFER_FAILED, None
         if downloaded or transfer.state is AcquisitionState.COMPLETE:
             return "downloaded", reason, None
         started: bool = transfer.content_started and (not transfer.selective or _selection_confirmed(transfer))
@@ -4155,7 +4166,9 @@ class AutomationOwner:
             result: EpisodeResult | None = next((item for item in batch.results if item.key == key), None)
             if result is not None:
                 return EpisodeStatus(
-                    key, "processing_failed" if result.reason == "transfer_recorded" else "not_ordered", result.reason
+                    key,
+                    "processing_failed" if result.reason == AdmissionConflict.TRANSFER_RECORDED else "not_ordered",
+                    result.reason,
                 )
         return EpisodeStatus(key, "not_ordered")
 
@@ -4238,7 +4251,7 @@ class AutomationOwner:
             listing: EpisodeListing = acquisition.episodes(key.anilist_id)
             if not any(item.number == key.number and item.aired for item in listing.episodes):
                 return ControlResponse.refused(
-                    ControlErrorCode.REFUSED, "This episode has not aired", "episode_not_aired"
+                    ControlErrorCode.REFUSED, "This episode has not aired", EpisodeReason.EPISODE_NOT_AIRED
                 )
             offer: EpisodeOffer
             target: dict[str, object]
@@ -4263,7 +4276,7 @@ class AutomationOwner:
             latest: EpisodeAssignment = matches[-1][1]
             if previous is not None and previous != latest.admission_id:
                 return ControlResponse.refused(
-                    ControlErrorCode.STALE_PREVIEW, "The previous admission changed", "episode_changed"
+                    ControlErrorCode.STALE_PREVIEW, "The previous admission changed", EpisodeReason.EPISODE_CHANGED
                 )
             previous = latest.admission_id
         if repeating and not matches and not conflict:
@@ -4339,7 +4352,7 @@ class AutomationOwner:
         signature: str = _episode_command_signature(request)
         if receipt is not None:
             if receipt.outcome.get("selection") != signature:
-                return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, "command_reused")
+                return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, EpisodeReason.COMMAND_REUSED)
             return ControlResponse.succeeded(dict(receipt.outcome))
         if request.instance_id not in {None, self._instance_id}:
             return ControlResponse.refused(ControlErrorCode.STALE_INSTANCE, _STALE_INSTANCE)
@@ -4371,7 +4384,7 @@ class AutomationOwner:
             )
         if (view.previous_admission_id or view.conflict) and conflict != view.conflict:
             return ControlResponse.refused(
-                ControlErrorCode.STALE_PREVIEW, "The episode conflict changed", "episode_changed"
+                ControlErrorCode.STALE_PREVIEW, "The episode conflict changed", EpisodeReason.EPISODE_CHANGED
             )
         response: ControlResponse = self._admit_episode(
             request.command_id,
@@ -4396,10 +4409,10 @@ class AutomationOwner:
         )
         if receipt is not None:
             if receipt.outcome.get("kind") != "episode_download":
-                return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, "command_reused")
+                return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, EpisodeReason.COMMAND_REUSED)
             batch = decode_view(EpisodeBatch, json.loads(str(receipt.outcome["batch"])))
             if batch.keys != keys:
-                return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, "command_reused")
+                return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, EpisodeReason.COMMAND_REUSED)
             if batch.state == "accepted" and batch.instance_id != self._instance_id:
                 batch = replace(batch, state="interrupted")
             batch = self._recover_episode_results(batch)
@@ -4430,13 +4443,18 @@ class AutomationOwner:
         receipts: dict[str, CommandReceipt] = {item.command_id: item for item in self._state.command_receipts}
         for key in batch.keys:
             receipt: CommandReceipt | None = receipts.get(f"{batch.command_id}:episode:{key.number}")
-            if key not in known and receipt is not None:
-                known[key] = EpisodeResult(
+            if key in known or receipt is None:
+                continue
+            known[key] = (
+                EpisodeResult(
                     key,
-                    "admitted",
+                    EpisodeReason.ADMITTED,
                     str(receipt.outcome["admission_id"]),
                     str(receipt.outcome["operation_id"]),
                 )
+                if _admits(receipt, key)
+                else EpisodeResult(key, EpisodeReason.COMMAND_REUSED)
+            )
         return replace(batch, results=tuple(known[key] for key in batch.keys if key in known))
 
     def _run_episode_batch(self, batch: EpisodeBatch) -> None:
@@ -4486,7 +4504,7 @@ class AutomationOwner:
     def _download_episode(self, command_id: str, key: EpisodeKey) -> EpisodeResult:
         acquisition: AcquisitionService | None = self._service.acquisition
         if acquisition is None:
-            return EpisodeResult(key, "acquisition_unavailable")
+            return EpisodeResult(key, EpisodeReason.ACQUISITION_UNAVAILABLE)
         try:
             with (
                 acquisition.episode_requests(),
@@ -4496,18 +4514,18 @@ class AutomationOwner:
             ):
                 listing: EpisodeListing = acquisition.episodes(key.anilist_id)
                 if not any(item.number == key.number and item.aired for item in listing.episodes):
-                    return EpisodeResult(key, "episode_not_aired")
+                    return EpisodeResult(key, EpisodeReason.EPISODE_NOT_AIRED)
                 offer: EpisodeOffer
                 target: dict[str, object]
                 offer, target = acquisition.prepare_episode(key)
         except (AniShiftError, OSError, ValueError) as problem:
             logger.warning("Episode batch lookup failed", error_class=type(problem).__name__)
-            return EpisodeResult(key, failure_code(problem) or "source_failed")
+            return EpisodeResult(key, failure_code(problem) or EpisodeReason.SOURCE_FAILED)
         try:
             return self._on_owner(partial(self._admit_download_offer, command_id, offer, target))
         except (AniShiftError, OSError) as problem:
             logger.warning("Episode batch admission failed", error_class=type(problem).__name__)
-            return EpisodeResult(key, failure_code(problem) or "source_failed")
+            return EpisodeResult(key, failure_code(problem) or EpisodeReason.SOURCE_FAILED)
 
     def _admit_download_offer(
         self, command_id: str, offer: EpisodeOffer, target: Mapping[str, object]
@@ -4515,14 +4533,14 @@ class AutomationOwner:
         key: EpisodeKey = offer.key
         legacy: tuple[LegacyScope, ...] | None = self._legacy_scopes()
         if legacy is None:
-            return EpisodeResult(key, "legacy_unreadable")
+            return EpisodeResult(key, EpisodeReason.LEGACY_UNREADABLE)
         status: EpisodeStatus = self._episode_status(key, legacy)
         if status.active:
-            return EpisodeResult(key, "episode_in_progress")
+            return EpisodeResult(key, EpisodeReason.EPISODE_IN_PROGRESS)
         matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = self._episode_assignments(key)
         previous: str | None = matches[-1][1].admission_id if matches else None
         conflict: tuple[str, ...] = self._episode_conflicts(key)
-        if (previous or conflict) and status.reason != "result_missing":
+        if (previous or conflict) and status.reason != EpisodeReason.RESULT_MISSING:
             offer = self._repeat_episode_offer(offer)
         candidate: RankedCandidate | None = None if offer.suggestion is None else offer.candidates[offer.suggestion]
         if (
@@ -4530,21 +4548,21 @@ class AutomationOwner:
             or candidate.identity.verdict is IdentityVerdict.MISMATCH
             or candidate.facts.supported is False
         ):
-            return EpisodeResult(key, "no_suggestion")
+            return EpisodeResult(key, EpisodeReason.NO_SUGGESTION)
         choice: EpisodeChoice = _episode_choice(key, candidate, target, confirmed=False)
-        if status.reason == "result_missing" and any(
+        if status.reason == EpisodeReason.RESULT_MISSING and any(
             item.info_hash == choice.reference.info_hash
             and item.state not in {AcquisitionState.COMPLETE, AcquisitionState.FAILED}
             and any(assignment.admission_id == previous for assignment in item.assignments)
             for item in self._state.acquisitions
         ):
-            return EpisodeResult(key, "pack_in_progress")
+            return EpisodeResult(key, EpisodeReason.PACK_IN_PROGRESS)
         response: ControlResponse = self._admit_episode(
             f"{command_id}:episode:{key.number}", choice, previous=previous, conflict=conflict
         )
         return EpisodeResult(
             key,
-            "admitted" if response.ok else response.reason or "admission_failed",
+            EpisodeReason.ADMITTED if response.ok else response.reason or EpisodeReason.ADMISSION_FAILED,
             str(response.result["admission_id"]) if response.ok else None,
             str(response.result["operation_id"]) if response.ok else None,
         )
@@ -4562,8 +4580,8 @@ class AutomationOwner:
             (item for item in self._state.command_receipts if item.command_id == command_id), None
         )
         if receipt is not None:
-            if (receipt.outcome.get("anilist_id"), receipt.outcome.get("number")) != (choice.anilist_id, choice.number):
-                return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, "command_reused")
+            if not _admits(receipt, EpisodeKey(choice.anilist_id, choice.number)):
+                return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, EpisodeReason.COMMAND_REUSED)
             return ControlResponse.succeeded(dict(receipt.outcome))
         refusal: ControlResponse | None = self._admission_refusal(choice, previous=previous, conflict=conflict)
         if refusal is not None:
@@ -4656,12 +4674,14 @@ class AutomationOwner:
             return _refuse(RefusalReason.SHUTTING_DOWN)
         legacy: tuple[LegacyScope, ...] | None = self._legacy_scopes()
         if legacy is None:
-            return ControlResponse.refused(ControlErrorCode.REFUSED, _LEGACY_UNREADABLE, "legacy_unreadable")
+            return ControlResponse.refused(
+                ControlErrorCode.REFUSED, _LEGACY_UNREADABLE, EpisodeReason.LEGACY_UNREADABLE
+            )
         key: EpisodeKey = EpisodeKey(choice.anilist_id, choice.number)
         matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = self._episode_assignments(key)
         if previous is not None and (not matches or matches[-1][1].admission_id != previous):
             return ControlResponse.refused(
-                ControlErrorCode.STALE_PREVIEW, "The episode admission changed", "episode_changed"
+                ControlErrorCode.STALE_PREVIEW, "The episode admission changed", EpisodeReason.EPISODE_CHANGED
             )
         duplicate: AdmissionConflict | None = episode_conflict(self._state, choice.anilist_id, choice.number, legacy)
         if previous is not None or (conflict and not matches):
@@ -7394,6 +7414,11 @@ def _taken_name(path: Path) -> bool:
     except OSError:
         return True
     return True
+
+
+def _admits(receipt: CommandReceipt, key: EpisodeKey) -> bool:
+    """Whether a receipt under an episode command identifier records the admission of that episode."""
+    return (receipt.outcome.get("anilist_id"), receipt.outcome.get("number")) == (key.anilist_id, key.number)
 
 
 def _file_identity(path: Path) -> tuple[int, int]:

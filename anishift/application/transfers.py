@@ -35,7 +35,6 @@ __all__ = [
     "flat_layout",
     "flat_names",
     "reserved_stem",
-    "selection_union",
     "video_sidecars",
 ]
 
@@ -399,19 +398,6 @@ def video_sidecars(files: Sequence[TorrentFile], video: TorrentFile) -> tuple[To
             and torrent_relative_path(item.name).suffix.casefold() in suffixes
         )
     )
-
-
-def selection_union(files: Sequence[TorrentFile], selections: Sequence[Sequence[TorrentFile]]) -> frozenset[int]:
-    """Combine admitted episode sets without letting a stale file identity select another path."""
-    file_map_revision(files)
-    identities: set[tuple[int, str, int]] = {(item.index, item.name, item.size) for item in files}
-    selected: set[tuple[int, str, int]] = {
-        (item.index, item.name, item.size) for selection in selections for item in selection
-    }
-    if not selected <= identities:
-        msg = "The selection no longer matches the torrent file map"
-        raise ValueError(msg)
-    return frozenset(index for index, _name, _size in selected)
 
 
 def flat_layout(files: Sequence[TorrentFile], reserved: frozenset[str]) -> tuple[FileReservation, ...]:

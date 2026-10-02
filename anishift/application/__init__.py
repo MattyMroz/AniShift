@@ -86,6 +86,7 @@ from anishift.application.cancellation import CancellationToken, EventCancellati
 from anishift.application.control import (
     AcquisitionConfirmation,
     AcquisitionState,
+    AdmissionConflict,
     AutomationPolicy,
     CommandReceipt,
     ManualHandledMarker,
@@ -105,6 +106,7 @@ from anishift.application.episode_commands import (
     EpisodeFile,
     EpisodeFiles,
     EpisodeOfferView,
+    EpisodeReason,
     EpisodeResult,
     EpisodeStatus,
 )
@@ -193,6 +195,7 @@ __all__ = [
     "AcquisitionConfirmation",
     "AcquisitionService",
     "AcquisitionState",
+    "AdmissionConflict",
     "AiringSource",
     "AppService",
     "Artifact",
@@ -227,6 +230,7 @@ __all__ = [
     "EpisodeOrder",
     "EpisodeRange",
     "EpisodeReading",
+    "EpisodeReason",
     "EpisodeResult",
     "EpisodeState",
     "EpisodeStatus",

@@ -27,13 +27,22 @@ from anishift.application.control import (
     AcquisitionState,
     AdmissionSource,
     AutomationPolicy,
+    CommandReceipt,
     EpisodeAssignment,
     LegacyScope,
     ReadyGroup,
+    RefusalReason,
     WatchState,
 )
 from anishift.application.control_views import decode_view, encode_view
-from anishift.application.episode_commands import EpisodeBatch, EpisodeFiles, EpisodeOfferView, EpisodeStatus
+from anishift.application.episode_commands import (
+    EpisodeBatch,
+    EpisodeFiles,
+    EpisodeOfferView,
+    EpisodeReason,
+    EpisodeResult,
+    EpisodeStatus,
+)
 from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.episode_selection import EpisodeKey, StreamCandidate
 from anishift.application.intents import RequestOrigin
@@ -43,6 +52,7 @@ from anishift.application.transfers import TransferInspector, file_map_revision
 from anishift.application.watch_state import WatchStateStore
 from anishift.application.workflows import WorkflowTarget
 from anishift.cli.resident import ResidentSession
+from anishift.errors import ErrorCode
 from anishift.platform.local_control import (
     ControlClient,
     ControlError,
@@ -250,6 +260,61 @@ def test_legacy_completed_episode_uses_its_ready_group(tmp_path: Path) -> None:
         assert states[0].set_id == group_id
 
 
+def test_episode_batch_reasons_cross_ipc_as_their_plain_string_values() -> None:
+    reasons: tuple[str, ...] = (
+        EpisodeReason.NO_SUGGESTION,
+        ErrorCode.TORRENT_SOURCE_FAILED.value,
+        RefusalReason.SHUTTING_DOWN,
+        "reason_from_a_newer_owner",
+    )
+    batch: EpisodeBatch = EpisodeBatch(
+        "batch",
+        "instance",
+        tuple(EpisodeKey(_S1, number) for number in range(1, 5)),
+        "completed",
+        tuple(EpisodeResult(EpisodeKey(_S1, number), reason) for number, reason in enumerate(reasons, start=1)),
+    )
+    payload: str = json.dumps(encode_view(batch))
+    decoded: EpisodeBatch = decode_view(EpisodeBatch, json.loads(payload))
+
+    assert [item.reason for item in decoded.results] == [str(reason) for reason in reasons]
+    assert all(type(item.reason) is str for item in decoded.results)
+    assert '"reason": "no_suggestion"' in payload
+
+
+def test_a_historical_batch_receipt_keeps_the_source_failure_and_owner_refusal_of_each_episode(
+    tmp_path: Path,
+) -> None:
+    keys: tuple[EpisodeKey, ...] = (EpisodeKey(_S1, 4), EpisodeKey(_S1, 5))
+    recorded: str = json.dumps(
+        {
+            "command_id": "old-batch",
+            "instance_id": "old-instance",
+            "keys": [{"anilist_id": _S1, "number": 4}, {"anilist_id": _S1, "number": 5}],
+            "state": "completed",
+            "results": [
+                {"key": {"anilist_id": _S1, "number": 4}, "reason": "TORRENT_SOURCE_FAILED"},
+                {"key": {"anilist_id": _S1, "number": 5}, "reason": "shutting_down"},
+            ],
+        }
+    )
+    receipt: CommandReceipt = CommandReceipt(
+        "old-batch", datetime(2026, 1, 1, tzinfo=UTC).isoformat(), {"kind": "episode_download", "batch": recorded}
+    )
+    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
+    store.save(WatchState(command_receipts=(receipt,)))
+    with _running(_episode_service(tmp_path), store, inspect_transfers=False) as owner:
+        response: ControlResponse = owner.handle(
+            _request("episode_states", {"anilist_id": _S1, "numbers": [key.number for key in keys]})
+        )
+        states: tuple[EpisodeStatus, ...] = decode_view(tuple[EpisodeStatus, ...], response.result["items"])
+
+    assert [(item.state, item.reason) for item in states] == [
+        ("not_ordered", "TORRENT_SOURCE_FAILED"),
+        ("not_ordered", "shutting_down"),
+    ]
+
+
 def test_legacy_order_without_transfer_remains_possibly_admitted(tmp_path: Path) -> None:
     library: _Library = _legacy_library(tmp_path)
     subscription: Subscription = _subscribe(library, anilist_id=_ENTRY)
@@ -331,6 +396,33 @@ def test_batch_source_failure_does_not_prevent_the_next_episode(tmp_path: Path) 
         batch: EpisodeBatch = _batch(owner, (4, 5))
         assert [item.reason for item in batch.results] == ["source_failed", "admitted"]
         assert _download(owner, (4,), "batch").reason == "command_reused"
+
+
+def test_a_foreign_receipt_under_an_episode_identifier_reads_as_reused_without_admission(tmp_path: Path) -> None:
+    streams: _Streams = _Streams()
+    streams.answers = {(41024, 4): (_stream(4),)}
+    searching: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+
+    def before(_number: int) -> None:
+        searching.set()
+        assert release.wait(_TIMEOUT_S)
+
+    streams.before = before
+    with _running(_episode_service(tmp_path, streams=streams), WatchStateStore(tmp_path / "state.json")) as owner:
+        try:
+            assert owner.handle(_request("set_auto", {"enabled": False}, command_id="batch:episode:4")).ok
+            assert _download(owner, (4,)).ok
+            assert searching.wait(_TIMEOUT_S)
+            pending: EpisodeBatch = _batch(owner, (4,))
+        finally:
+            release.set()
+        _until(lambda: _batch(owner, (4,)).state == "completed")
+        batch: EpisodeBatch = _batch(owner, (4,))
+        assert owner.state.acquisitions == ()
+    assert pending.state == "accepted"
+    assert [item.reason for item in pending.results] == [EpisodeReason.COMMAND_REUSED]
+    assert [item.reason for item in batch.results] == [EpisodeReason.COMMAND_REUSED]
 
 
 @pytest.mark.parametrize("paused", [False, True])

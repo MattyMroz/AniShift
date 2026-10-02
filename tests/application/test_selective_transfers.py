@@ -7,7 +7,7 @@ import pytest
 
 from anishift.application.acquisition_staging import staged_file, staging_path, torrent_relative_path
 from anishift.application.control import TorrentioReference
-from anishift.application.transfers import episode_files, file_map_revision, selection_union, video_sidecars
+from anishift.application.transfers import episode_files, file_map_revision, video_sidecars
 from anishift.services.torrents import TorrentFile
 
 pytestmark = pytest.mark.unit
@@ -74,19 +74,15 @@ def test_sidecars_require_exact_stem_and_directory_and_supported_extensions() ->
     )
     files: tuple[TorrentFile, ...] = tuple(_file(index, name) for index, name in enumerate(names))
     assert video_sidecars(files, files[0]) == files[:6]
-    assert selection_union(files, (files[:3], files[2:6])) == frozenset(range(6))
 
 
-def test_selection_union_preserves_both_episode_sets_and_rejects_stale_identity() -> None:
+def test_file_map_revision_ignores_progress_and_order_but_changes_with_file_identity() -> None:
     files: tuple[TorrentFile, ...] = (_file(0, "E01.mkv"), _file(2, "E01.ass"), _file(5, "E03.mkv"))
-    assert selection_union(files, (files[:2], files[2:])) == {0, 2, 5}
     assert file_map_revision(files) == file_map_revision(
         tuple(replace(item, priority=1, progress=0.5) for item in reversed(files))
     )
     for changed in (replace(files[0], name="E02.mkv"), replace(files[0], size=99), replace(files[0], index=9)):
         assert file_map_revision((changed, *files[1:])) != file_map_revision(files)
-        with pytest.raises(ValueError, match="no longer matches"):
-            selection_union(files, ((changed,),))
 
 
 @pytest.mark.parametrize(

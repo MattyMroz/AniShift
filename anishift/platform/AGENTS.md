@@ -11,7 +11,9 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
 - `ManagedQBittorrent` dowodzi własności przez PID, czas utworzenia, własną binarkę
   i katalog profilu potwierdzony w API. GUI przejęte przez użytkownika blokuje automatyczne
   zamknięcie. Zwolnienie ukończonego torrenta zachowuje media (`deleteFiles=false`).
-- `ManagedQBittorrent.released_hashes()` reads and validates only the existing `process.json`.
+- `ManagedQBittorrent.released_hashes()` reads and validates only the existing `process.json`,
+  under the manager thread lock but never the process lock: on Windows an unlocked read and the
+  `_save` replace fail each other with `PermissionError`.
   Do not replace it with `_load()`: that path can initialize the profile and change ACLs.
   New download admission invalidates the matching release receipt.
 - Metadata admission refuses existing client entries and requires persisted hash ownership;

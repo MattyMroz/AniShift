@@ -577,7 +577,7 @@ class ResidentSession:
                     command_id=command_id,
                 )
             except ControlError as error:
-                if _connection_lost(error):
+                if error.connection_lost:
                     self._drop(client)
                 raise
 
@@ -618,7 +618,7 @@ class ResidentSession:
             try:
                 return channel.call("acquisition", payload, timeout_s=episode_read_timeout_s())
             except ControlError as error:
-                if _connection_lost(error):
+                if error.connection_lost:
                     self._drop(channel)
                 raise
 
@@ -643,7 +643,7 @@ class ResidentSession:
                     timeout_s=episode_read_timeout_s(),
                 )
             except ControlError as error:
-                if _connection_lost(error):
+                if error.connection_lost:
                     self._drop(channel)
                 raise
 
@@ -700,7 +700,3 @@ class ResidentSession:
             ),
             paused=answer.get("state") == "paused",
         )
-
-
-def _connection_lost(error: ControlError) -> bool:
-    return not error.answered and error.code is ControlErrorCode.REFUSED and error.reason != "request_too_large"

@@ -20,6 +20,7 @@ from rich.text import Text
 
 from anishift.application import (
     AcquisitionService,
+    AdmissionConflict,
     AppService,
     EpisodeBatch,
     EpisodeFile,
@@ -28,6 +29,7 @@ from anishift.application import (
     EpisodeListing,
     EpisodeOffer,
     EpisodeOfferView,
+    EpisodeReason,
     EpisodeResult,
     EpisodeStatus,
     Franchise,
@@ -82,24 +84,27 @@ _BATCH_WAIT_S: Final[float] = 180.0
 """Longest time the panel follows one episode batch before leaving it to the owner."""
 
 EPISODE_REASON_LABELS: Final[dict[str, str]] = {
-    "admitted": "Zlecono",
-    "no_suggestion": "Brak wydania",
-    "episode_not_aired": "Nie wyemitowano",
-    "episode_admitted": "Zlecono",
-    "episode_in_progress": "W toku · C anuluj w Przetwarzaniu",
-    "episode_possibly_admitted": "Już zlecone?",
-    "transfer_recorded": "Konflikt hasha",
-    "source_failed": "Błąd źródła",
-    "legacy_unreadable": "Błąd zleceń",
-    "episode_file_unresolved": "Wskaż plik",
-    "transfer_failed": "Błąd pobierania",
-    "publication_failed": "Błąd eksportu",
-    "waiting_previous_transfer": "Czeka na stare",
-    "publication_missing": "Brak pliku",
-    "result_missing": "Do pobrania",
-    "pack_in_progress": "Czeka na paczkę",
+    EpisodeReason.ADMITTED: "Zlecono",
+    EpisodeReason.NO_SUGGESTION: "Brak wydania",
+    EpisodeReason.EPISODE_NOT_AIRED: "Nie wyemitowano",
+    AdmissionConflict.ADMITTED: "Zlecono",
+    EpisodeReason.EPISODE_IN_PROGRESS: "W toku",
+    AdmissionConflict.POSSIBLY_ADMITTED: "Już zlecone?",
+    AdmissionConflict.TRANSFER_RECORDED: "Konflikt hasha",
+    EpisodeReason.SOURCE_FAILED: "Błąd źródła",
+    EpisodeReason.LEGACY_UNREADABLE: "Błąd zleceń",
+    EpisodeReason.EPISODE_FILE_UNRESOLVED: "Wskaż plik",
+    EpisodeReason.TRANSFER_FAILED: "Błąd pobierania",
+    EpisodeReason.PUBLICATION_FAILED: "Błąd eksportu",
+    EpisodeReason.WAITING_PREVIOUS_TRANSFER: "Czeka na stare",
+    EpisodeReason.PUBLICATION_MISSING: "Brak pliku",
+    EpisodeReason.RESULT_MISSING: "Do pobrania",
+    EpisodeReason.PACK_IN_PROGRESS: "Czeka na paczkę",
 }
 """Shared column labels for owner batch and episode status reasons."""
+
+_IN_PROGRESS_HINT: Final[str] = "W toku · C anuluj w Przetwarzaniu"
+"""Notice naming where an active episode can be cancelled instead of ordered again."""
 
 _EPISODE_ADMITTED: Final[str] = "Odcinek już zlecony"
 """Notice shown when the owner refuses an already admitted episode."""
@@ -644,10 +649,12 @@ class AnimeController:
             )
             label: str = _episode_status_label(status) if status else ""
             if not label:
-                label = "Do pobrania" if episode.aired else "Nie wyemitowano"
+                label = EPISODE_REASON_LABELS[
+                    EpisodeReason.RESULT_MISSING if episode.aired else EpisodeReason.EPISODE_NOT_AIRED
+                ]
             film: bool = self._entry is not None and self._entry.format == "MOVIE"
             detail: str = ""
-            if status is not None and status.reason == "episode_file_unresolved":
+            if status is not None and status.reason == EpisodeReason.EPISODE_FILE_UNRESOLVED:
                 detail = "Nie ustalono pliku w paczce · Enter wskaż plik"
             elif episode.airs_at_fallback:
                 detail = f"E{episode.number}: termin emisji niepotwierdzony (ani.zip)"
@@ -856,7 +863,7 @@ class AnimeController:
             return
         episode: ListedEpisode = listing.episodes[self._positions.get(_Screen.EPISODES, 0)]
         status: EpisodeStatus | None = self._episode_states.get(EpisodeKey(listing.anilist_id, episode.number))
-        if key == "enter" and status is not None and status.reason == "episode_file_unresolved":
+        if key == "enter" and status is not None and status.reason == EpisodeReason.EPISODE_FILE_UNRESOLVED:
             if status.admission_id is not None:
                 self._start_files(status.admission_id)
         elif (
@@ -952,19 +959,19 @@ class AnimeController:
         self._sending.discard(result.key)
         self._episode_states[result.key] = EpisodeStatus(
             result.key,
-            "ordered" if result.reason == "admitted" else "not_ordered",
-            None if result.reason == "admitted" else result.reason,
+            "ordered" if result.reason == EpisodeReason.ADMITTED else "not_ordered",
+            None if result.reason == EpisodeReason.ADMITTED else result.reason,
             result.admission_id,
             result.operation_id,
         )
         if self._listing is None or self._listing.anilist_id != result.key.anilist_id:
             return
-        if result.reason == "admitted":
+        if result.reason == EpisodeReason.ADMITTED:
             self._episode_marks.discard(result.key.number)
         if self._screen is not _Screen.EPISODES or self._details_open:
             return
         self._sync_view()
-        if result.reason == "admitted":
+        if result.reason == EpisodeReason.ADMITTED:
             self._panel.result(str(result.key.number), admitted=True)
         else:
             status, cause = _refused_result(result.reason)
@@ -987,7 +994,7 @@ class AnimeController:
             remaining: str = ", ".join(
                 f"E{key.number}"
                 for key in batch.keys
-                if key not in self._batch_results or self._batch_results[key].reason != "admitted"
+                if key not in self._batch_results or self._batch_results[key].reason != EpisodeReason.ADMITTED
             )
             if remaining:
                 self._notice = f"Nie zlecono {remaining} · zaznacz je ponownie"
@@ -995,7 +1002,7 @@ class AnimeController:
 
     def _ordered_episode_notice(self, episode: ListedEpisode) -> str:
         del episode
-        return EPISODE_REASON_LABELS["episode_in_progress"]
+        return _IN_PROGRESS_HINT
 
     def _episode_available(self, episode: ListedEpisode) -> bool:
         if self._listing is None or not episode.aired:
@@ -1650,13 +1657,17 @@ def _stated(problem: AniShiftError | OSError | ValueError) -> tuple[str, str]:  
 def _refused_result(reason: str) -> tuple[str, str]:
     """Return the Stan label and notice cause of one episode the owner did not admit."""
     known: str | None = EPISODE_REASON_LABELS.get(reason)
+    if reason == EpisodeReason.EPISODE_IN_PROGRESS:
+        return EPISODE_REASON_LABELS[reason], _IN_PROGRESS_HINT
     if known is not None:
         return known, known
-    if reason == "acquisition_unavailable":
+    if reason == EpisodeReason.ACQUISITION_UNAVAILABLE:
         return "Niedostępne", _UNAVAILABLE
     refusal: ControlError = ControlError(reason, code=ControlErrorCode.REFUSED, reason=reason, answered=True)
     status: str = (
-        EPISODE_REASON_LABELS["source_failed"] if reason == ErrorCode.TORRENT_SOURCE_FAILED.value else "Nie zlecono"
+        EPISODE_REASON_LABELS[EpisodeReason.SOURCE_FAILED]
+        if reason == ErrorCode.TORRENT_SOURCE_FAILED.value
+        else "Nie zlecono"
     )
     return status, _stated(refusal)[0]
 

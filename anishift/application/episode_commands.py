@@ -1,6 +1,7 @@
 """Bounded episode command views and admission payloads shared by the owner and its clients."""
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Final
 
 from anishift.application.episode_selection import EpisodeKey, EpisodeOffer
@@ -9,6 +10,29 @@ from anishift.application.episode_selection import EpisodeKey, EpisodeOffer
 
 MAX_EPISODE_KEYS: Final[int] = 100
 """Maximum unique episodes of one entry accepted by one command or state read."""
+
+
+class EpisodeReason(StrEnum):
+    """Owner-local reason of one episode result or status; other reasons reuse existing error enums."""
+
+    ADMITTED = "admitted"
+    ACQUISITION_UNAVAILABLE = "acquisition_unavailable"
+    EPISODE_NOT_AIRED = "episode_not_aired"
+    SOURCE_FAILED = "source_failed"
+    LEGACY_UNREADABLE = "legacy_unreadable"
+    EPISODE_IN_PROGRESS = "episode_in_progress"
+    NO_SUGGESTION = "no_suggestion"
+    PACK_IN_PROGRESS = "pack_in_progress"
+    ADMISSION_FAILED = "admission_failed"
+    TRANSFER_FAILED = "transfer_failed"
+    PUBLICATION_FAILED = "publication_failed"
+    WAITING_PREVIOUS_TRANSFER = "waiting_previous_transfer"
+    EPISODE_FILE_UNRESOLVED = "episode_file_unresolved"
+    PUBLICATION_MISSING = "publication_missing"
+    FINALIZATION_FAILED = "finalization_failed"
+    RESULT_MISSING = "result_missing"
+    EPISODE_CHANGED = "episode_changed"
+    COMMAND_REUSED = "command_reused"
 
 
 @dataclass(frozen=True, slots=True)

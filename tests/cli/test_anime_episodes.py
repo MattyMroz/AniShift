@@ -20,6 +20,7 @@ from prompt_toolkit.application import Application
 from prompt_toolkit.application.current import set_app
 from prompt_toolkit.input import DummyInput
 from prompt_toolkit.output import DummyOutput
+from rich.cells import cell_len
 from rich.text import Text
 
 from anishift.application import (
@@ -35,6 +36,7 @@ from anishift.application import (
     EpisodeOffer,
     EpisodeOfferView,
     EpisodeRange,
+    EpisodeReason,
     EpisodeStatus,
     Franchise,
     FranchiseEntry,
@@ -61,7 +63,8 @@ from anishift.application.planning import ExecutionPlan
 from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.watch_state import WatchStateStore
 from anishift.cli.interactive import anime as anime_module
-from anishift.cli.interactive.anime import _REASON_TEXTS, AnimeController, _Screen
+from anishift.cli.interactive import anime_view
+from anishift.cli.interactive.anime import _REASON_TEXTS, EPISODE_REASON_LABELS, AnimeController, _Screen
 from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
 from anishift.config.presets import default_preset_file
@@ -1492,6 +1495,36 @@ def test_episode_problem_reason_overrides_ordinary_state_label(reason: str, labe
     assert label in _frame(controller)
 
 
+_UNLABELLED_REASONS: Final[frozenset[EpisodeReason]] = frozenset(
+    {
+        EpisodeReason.ACQUISITION_UNAVAILABLE,
+        EpisodeReason.ADMISSION_FAILED,
+        EpisodeReason.FINALIZATION_FAILED,
+        EpisodeReason.EPISODE_CHANGED,
+        EpisodeReason.COMMAND_REUSED,
+    }
+)
+
+
+@pytest.mark.unit
+def test_every_owner_reason_has_a_stan_label_or_an_explicit_fallback() -> None:
+    assert {reason for reason in EpisodeReason if reason not in EPISODE_REASON_LABELS} == _UNLABELLED_REASONS
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("reason", [*EpisodeReason, *EPISODE_REASON_LABELS, "reason_from_a_newer_owner"])
+def test_every_refused_stan_label_fits_its_column(reason: str) -> None:
+    assert cell_len(anime_module._refused_result(reason)[0]) <= anime_view._EPISODE_STATUS_WIDTH
+
+
+@pytest.mark.unit
+def test_an_episode_in_progress_keeps_a_short_stan_and_names_cancellation_in_the_notice() -> None:
+    assert anime_module._refused_result(EpisodeReason.EPISODE_IN_PROGRESS) == (
+        "W toku",
+        "W toku · C anuluj w Przetwarzaniu",
+    )
+
+
 class _LostBatchOwner(_Owner):
     def __init__(self, problem: ControlError) -> None:
         super().__init__()
@@ -1507,19 +1540,28 @@ class _LostBatchOwner(_Owner):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("answered", [False, True])
+@pytest.mark.parametrize(
+    ("problem", "ended"),
+    [
+        (ControlError("closed", code=ControlErrorCode.REFUSED), False),
+        (ControlError("timeout", code=ControlErrorCode.INTERNAL), False),
+        (ControlError("foreign", code=ControlErrorCode.INVALID_PAYLOAD), False),
+        (ControlError("failed", code=ControlErrorCode.INTERNAL, answered=True), False),
+        (ControlError("refused", code=ControlErrorCode.REFUSED, answered=True), True),
+    ],
+)
 def test_a_lost_batch_response_keeps_its_command_for_enter_while_a_refusal_ends_it(
-    monkeypatch: pytest.MonkeyPatch, *, answered: bool
+    monkeypatch: pytest.MonkeyPatch, problem: ControlError, *, ended: bool
 ) -> None:
     monkeypatch.setattr(anime_module, "_BATCH_POLL_S", 0.0)
-    owner: _LostBatchOwner = _LostBatchOwner(ControlError("closed", code=ControlErrorCode.REFUSED, answered=answered))
+    owner: _LostBatchOwner = _LostBatchOwner(problem)
     controller: AnimeController = _owner_controller(owner)
     _key(controller, "text:d")
     deadline: float = time.monotonic() + 10
     while controller._batch_running and time.monotonic() < deadline:
         time.sleep(0.01)
     assert not controller._batch_running
-    if answered:
+    if ended:
         assert controller._pending_batch is None
         assert controller._notice.startswith("Nie zlecono")
         return

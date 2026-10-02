@@ -15,6 +15,7 @@ from typing import Final, cast
 
 import httpx
 import pytest
+from conftest import hidden_window_options
 
 from anishift.platform import qbittorrent_process as processes
 from anishift.platform.binaries import Binary, bundled_binary_path, external_bin_root
@@ -167,6 +168,40 @@ def test_finalizable_hashes_requires_a_matching_managed_process_or_release_evide
         assert manager.finalizable_hashes(frozenset({"a", "b", "foreign"})) == (
             frozenset({"a", "b"}) if ownership == "owned" else frozenset({"b"})
         )
+
+
+def test_released_hashes_and_a_concurrent_receipt_save_never_block_each_other(tmp_path: Path) -> None:
+    root: Path = tmp_path / "profile"
+    root.mkdir()
+    failures: list[str] = []
+    stop: threading.Event = threading.Event()
+    with httpx.Client() as http:
+        manager: ManagedQBittorrent = ManagedQBittorrent(root, http=http, bin_root=tmp_path / "bin")
+        manager._save(processes._ProcessState(released=frozenset({"a"})))
+
+        def save_repeatedly() -> None:
+            port: int = 0
+            while not stop.is_set():
+                port += 1
+                try:
+                    with manager._lock:
+                        manager._save(processes._ProcessState(port=port, released=frozenset({"a"})))
+                except PermissionError:
+                    failures.append("save")
+
+        writer: threading.Thread = threading.Thread(target=save_repeatedly)
+        writer.start()
+        try:
+            deadline: float = time.monotonic() + 1.0
+            while time.monotonic() < deadline and not failures:
+                try:
+                    assert manager.released_hashes(frozenset({"a", "b"})) == {"a"}
+                except PermissionError:
+                    failures.append("read")
+        finally:
+            stop.set()
+            writer.join(_TIMEOUT_S)
+    assert failures == []
 
 
 def test_process_exit_can_outlast_startup_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -363,7 +398,7 @@ def test_private_clients_download_concurrently_reconnect_and_stop_independently(
         else:
             occupied.close()
             monkeypatch.setattr(processes, "_START_TIMEOUT_S", 15.0)
-        child: subprocess.Popen[bytes] = launch(command, **kwargs)
+        child: subprocess.Popen[bytes] = launch(command, **kwargs, **hidden_window_options())
         children.append(child)
         return child
 

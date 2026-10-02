@@ -177,7 +177,7 @@ class WorkspaceInspector:
     def _inspect_cached(self, source: SourceGroup, *, cancel: CancellationToken) -> _CachedInspection:
         cancel.raise_if_cancelled()
         fingerprints: dict[str, tuple[str, int, int]] = {
-            artifact.artifact_id: _file_stamp(artifact.path) for artifact in source.artifacts
+            artifact.artifact_id: path_stamp(artifact.path) for artifact in source.artifacts
         }
         previous: _CachedInspection | None = self._cache.get(source.group_id)
         busy: tuple[Artifact, ...] = tuple(
@@ -538,7 +538,8 @@ class WorkspaceInspector:
         )
 
 
-def _file_stamp(path: Path | None) -> tuple[str, int, int]:
+def path_stamp(path: Path | None) -> tuple[str, int, int]:
+    """Return the path, size and modification time of one artifact, with ``-1`` sizes for an unreadable file."""
     if path is None:
         return "", 0, 0
     try:

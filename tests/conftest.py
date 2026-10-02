@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -15,6 +17,15 @@ DATA_DIR: Final[Path] = Path(__file__).resolve().parent / "data"
 MM_AVH_TEMP: Final[Path] = _REPO_ROOT.parent / "mm_avh_working_space" / "temp"
 
 TRACKS_DATASET: Final[Path] = MM_AVH_TEMP / "dataset.json"
+
+
+def hidden_window_options() -> dict[str, object]:
+    if sys.platform == "win32":
+        startup: subprocess.STARTUPINFO = subprocess.STARTUPINFO()
+        startup.dwFlags = subprocess.STARTF_USESHOWWINDOW
+        startup.wShowWindow = subprocess.SW_HIDE
+        return {"startupinfo": startup}
+    return {}
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: Iterable[pytest.Item]) -> None:

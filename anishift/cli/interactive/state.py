@@ -20,6 +20,7 @@ from rich.text import Text
 
 from anishift.application import (
     DeletionPreview,
+    EpisodeReason,
     HistoryEvent,
     LibraryFileIdentity,
     LibrarySet,
@@ -898,7 +899,7 @@ class StateController:
                         break
                     self._receive(session, frame)
             except (AniShiftError, ControlError, OSError, ValueError, TypeError) as error:
-                lost = isinstance(error, OSError) or (isinstance(error, ControlError) and not error.answered)
+                lost = isinstance(error, OSError) or (isinstance(error, ControlError) and error.connection_lost)
                 with self._lock:
                     self._notify(refusal_text(error))
                     self._notice_persistent = self._tab == _Tab.FILES
@@ -1392,14 +1393,14 @@ class StateController:
     def _download_progress(self, item: Mapping[str, object]) -> tuple[str, float | None]:  # noqa: PLR0911
         fraction: object = item.get("progress")
         measured: float | None = float(fraction) if isinstance(fraction, (int, float)) else None
-        if item.get("reason") == "finalization_failed":
+        if item.get("reason") == EpisodeReason.FINALIZATION_FAILED:
             return "Finalizacja", None
         if item.get("stage") == "waiting":
             return ("Wstrzymano" if self._held(item) else "Przygotowanie"), None
         if item.get("problem"):
             return "Wymaga uwagi", None
-        if item.get("reason") == "waiting_previous_transfer":
-            return EPISODE_REASON_LABELS["waiting_previous_transfer"], None
+        if item.get("reason") == EpisodeReason.WAITING_PREVIOUS_TRANSFER:
+            return EPISODE_REASON_LABELS[EpisodeReason.WAITING_PREVIOUS_TRANSFER], None
         if not self._connected or self._snapshot.get("transfers_problem"):
             return "Brak odczytu", None
         state: object = item.get("state")
@@ -1446,7 +1447,10 @@ class StateController:
             if item.get("acquisition_state") in {"pending_send", "accepted", "complete"}
             and (
                 item.get("stage") == "download"
-                or (item.get("stage") == "waiting" and item.get("reason") in {"preparing", "finalization_failed"})
+                or (
+                    item.get("stage") == "waiting"
+                    and item.get("reason") in {"preparing", EpisodeReason.FINALIZATION_FAILED}
+                )
             )
         ]
         preparing: list[Mapping[str, object]] = [

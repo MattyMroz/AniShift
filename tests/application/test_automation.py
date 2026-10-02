@@ -154,6 +154,8 @@ from anishift.services.tts import SpeechBatch, SpeechBatchResult
 
 _TIMEOUT_S: Final[float] = 5.0
 
+_SHARING_VIOLATION: Final[int] = 32
+
 _INSTANCE: Final[str] = "instance-1"
 
 _CLIENT: Final[str] = "panel-1"
@@ -3860,6 +3862,19 @@ def _await(condition: Callable[[], bool]) -> bool:
     return condition()
 
 
+def _unlink_when_released(path: Path) -> None:
+    deadline: float = time.monotonic() + _TIMEOUT_S
+    while True:
+        try:
+            path.unlink()
+        except PermissionError as problem:
+            if getattr(problem, "winerror", None) != _SHARING_VIOLATION or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
+        else:
+            return
+
+
 def _settled_starts(service: _Service, expected: int) -> int:
     deadline: float = time.monotonic() + 0.4
     while len(service.submitted) <= expected and time.monotonic() < deadline:
@@ -5337,7 +5352,7 @@ def test_resident_repeat_preserves_a_local_source_and_allows_remote_repeat_after
         assert subscriptions.list()[0].repeats == ()
         assert store.load().acquisitions == (confirmation,)
         assert network.added == []
-        source.unlink()
+        _unlink_when_released(source)
         repeated: Subscription = session.repeat(item.subscription_id, (Decimal(9),))
         assert len(repeated.repeats) == 1
         assert store.load().acquisitions == (confirmation,)

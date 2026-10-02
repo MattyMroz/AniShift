@@ -19,7 +19,7 @@ from anishift.application.cancellation import CancellationToken, EventCancellati
 from anishift.application.control_payloads import decode_overrides
 from anishift.application.discovery import DiscoveryIndex, DiscoveryResult
 from anishift.application.events import RunEventSink
-from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace, WorkspaceInspector
+from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace, WorkspaceInspector, path_stamp
 from anishift.application.intents import (
     AutoPreset,
     ExternalAudioRole,
@@ -1108,17 +1108,7 @@ def _settle(handle: RunHandle, result: RunResult | None, failure: BaseException 
 
 
 def _workspace_fingerprint(discovery: DiscoveryResult) -> WorkspaceFingerprint:
-    return tuple(_file_identity(artifact.path) for group in discovery.groups for artifact in group.artifacts)
-
-
-def _file_identity(path: Path | None) -> tuple[str, int, int]:
-    if path is None:
-        return "", 0, 0
-    try:
-        status: os.stat_result = path.stat()
-    except OSError:
-        return path.as_posix(), -1, -1
-    return path.as_posix(), status.st_size, status.st_mtime_ns
+    return tuple(path_stamp(artifact.path) for group in discovery.groups for artifact in group.artifacts)
 
 
 def _commit_if_active(token: CancellationToken, action: Callable[[], None]) -> None:

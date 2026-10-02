@@ -40,21 +40,20 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `interactive/state.py`, `interactive/app.py`
 - Rezydent uruchamia `DirectoryWatch` przed pierwszym uzgodnieniem biblioteki i zamyka go przed
   zwolnieniem blokady. Zdarzenia i kontrola trafiają do tego samego właściciela; tylko inspekcja
-  działa w puli I/O. Stare `run_daemon` pozostaje domyślne do przełączenia w P08. `watch.py`
+  działa w puli I/O. `watch.py`
 - `spawn_resident()` startuje `pythonw -m anishift.cli.main watch resident` z
   `DETACHED_PROCESS | CREATE_NO_WINDOW` i strumieniami do `DEVNULL`; poza Windows
   `start_new_session=True`. `watch.py`
 - `resident_status()` nie startuje rezydenta — czyta `instance.json` i próbuje `status`; tylko
   udana odpowiedź dowodzi działania. `open_control()` jest jedynym miejscem, które uruchamia
   rezydenta na żądanie klienta. `control.py`
-- Ukryte `anishift --resident` podłącza istniejący panel do rezydenta przed domyślnym
-  przełączeniem w P08. Auto, Ręczny i regeneracja korzystają wtedy z `ResidentSession`;
+- Panel zawsze łączy się z rezydentem; ukryte flagi `--resident` niczego nie zmieniają
+  (`del resident` w `main.py`). Auto, Ręczny i regeneracja korzystają z `ResidentSession`;
   panel dostaje `PlanPreview`, nie graf wykonania. Oddzielna sesja edycji chroni wybrane
   grupy od zaznaczenia do Start lub Esc. Wyjście z panelu odłącza go bez anulowania runu.
   Zewnętrzne źródła są ponownie rejestrowane przy podglądzie po odświeżeniu biblioteki.
   „Dokończ poprzednią pracę” w Ręcznym wymaga tego samego zakresu grup co zapisane zlecenie;
   `plan_resume` odczytuje zweryfikowany pozostały graf, a Start zachowuje ID zlecenia.
-  Pełne recovery po zabiciu aktywnego procesu pozostaje osobnym zakresem P08.
 - Anime uses `ResidentSession` for catalogue reads, offers and episode downloads.
   It has no group catalogue or subscription-creation route. Existing subscriptions retain
   their own editing and checking tab. Receipts and admissions belong to the owner.
@@ -62,7 +61,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   offers belong to its server session, so choosing on the main control connection would refuse them.
   `interrupt_reads` invalidates that interaction. Batch download uses the main connection and survives
   disconnect. Episode mutations take an explicit `command_id`; retain it when recovering a lost response.
-  An unanswered REFUSED call drops its connection and the next call reconnects; nothing is resent.
+  `ControlError.connection_lost` (EOF/OSError, timeout odpowiedzi, obcy `command_id`; nie
+  `request_too_large`) zamyka połączenie klienta w `ControlClient.call`; kolejne wywołanie łączy się
+  od nowa i niczego nie wysyła ponownie. Spóźniona odpowiedź ginie z połączeniem — wynik odzyskuje
+  się przez receipt, powtarzając polecenie z tym samym `command_id`. `platform/local_control.py`
   A lost observation makes `StateController` call the parent's `disconnect()` before reconnecting;
   it closes only idle channels, never a call in flight. Only an answered refusal ends a D batch;
   an unanswered error keeps its command ID for Enter replay.
