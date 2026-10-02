@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
 from anishift.application.control import (
@@ -22,6 +24,7 @@ from anishift.application.control import (
     EpisodeAssignment,
     EpisodeChoice,
     EpisodePublication,
+    LegacyOrder,
     LegacyScope,
     ManualHandledMarker,
     NarrationTimeline,
@@ -45,6 +48,7 @@ from anishift.application.control import (
 )
 from anishift.application.control_payloads import decode_intent, encode_intent
 from anishift.application.episode_identity import IdentityVerdict
+from anishift.application.episode_selection import AniZipMapping, ListedEpisode, ListedSpecial
 from anishift.application.intents import (
     GroupIntent,
     ProductKind,
@@ -52,14 +56,23 @@ from anishift.application.intents import (
     RequestOrigin,
     TranslationAction,
 )
-from anishift.application.subscriptions import SUBSCRIPTIONS_FILE_NAME
+from anishift.application.subscription_migration import migrate
+from anishift.application.subscription_targets import (
+    PauseReason,
+    SubscriptionCheck,
+    SubscriptionProblem,
+    SubscriptionRecord,
+    SubscriptionTarget,
+    TargetState,
+)
+from anishift.application.subscriptions import SUBSCRIPTIONS_FILE_NAME, Subscription, decode_subscriptions
 from anishift.application.workflows import WorkflowTarget
 from anishift.errors import ConfigError, ErrorCode, ErrorContext
 from anishift.paths import run_journal_dir, watch_dir
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from anishift.application.control import (
         CommandOutcome,
@@ -91,8 +104,10 @@ _BACKUP_SUFFIX: Final[str] = ".bak"
 _SCHEMA_BACKUP_TEMPLATE: Final[str] = ".v{version}.bak"
 """Ending of the copy kept from a document an older schema wrote, before it is rewritten."""
 
-_MIGRATION_BACKUP_SUFFIX: Final[str] = ".e2-migration.bak"
-"""Ending of the byte-identical copies kept of both owner files before the first schema 3 write."""
+_MIGRATION_BACKUP_SUFFIXES: Final[Mapping[int, str]] = MappingProxyType(
+    {3: ".e2-migration.bak", 4: ".e3-migration.bak"}
+)
+"""Ending of the byte-identical copies kept of both owner files before the first write of each schema."""
 
 _SCHEMA_ONE: Final[int] = 1
 """Schema this build still reads and migrates once, filling the sections it never wrote."""
@@ -100,8 +115,87 @@ _SCHEMA_ONE: Final[int] = 1
 _SCHEMA_TWO: Final[int] = 2
 """Schema this build still reads and migrates once, marking every acquisition as legacy."""
 
-_SUPPORTED_SCHEMA_VERSIONS: Final[frozenset[int]] = frozenset({_SCHEMA_ONE, _SCHEMA_TWO, WATCH_STATE_SCHEMA_VERSION})
+_SCHEMA_THREE: Final[int] = 3
+"""Schema this build still reads and migrates once, moving the subscription file into the state."""
+
+_SUPPORTED_SCHEMA_VERSIONS: Final[frozenset[int]] = frozenset(
+    {_SCHEMA_ONE, _SCHEMA_TWO, _SCHEMA_THREE, WATCH_STATE_SCHEMA_VERSION}
+)
 """Schema versions of the automation state this build still reads."""
+
+_SCHEMA_FOUR_SECTIONS: Final[tuple[str, ...]] = ("subscriptions", "removed_subscription", "legacy_orders")
+"""Root sections schema 4 added, which every schema 4 document must carry and no older one may."""
+
+_SUBSCRIPTION_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "subscription_id",
+        "anilist_id",
+        "kitsu_id",
+        "mapping",
+        "title",
+        "subscribed_at",
+        "cut",
+        "paused",
+        "pause_reason",
+        "migrated_at",
+        "review_pending",
+        "merged_from",
+        "problem",
+        "catalog_status",
+        "episode_count",
+        "refreshed_at",
+        "checked_at",
+        "last_check",
+        "targets",
+        "migrated_from",
+    }
+)
+"""Keys a serialized subscription must carry."""
+
+_TARGET_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "number",
+        "due_at",
+        "state",
+        "attempts",
+        "tried",
+        "admission_id",
+        "reason",
+        "notified_late",
+        "check_skipped",
+    }
+)
+"""Keys a serialized subscription target must carry."""
+
+_CHECK_KEYS: Final[frozenset[str]] = frozenset(
+    {"checked_at", "number", "matching", "uncertain", "mismatched", "outcome"}
+)
+"""Keys a serialized subscription check must carry."""
+
+_MAPPING_KEYS: Final[frozenset[str]] = frozenset(
+    {"kitsu_id", "catalog_type", "episode_count", "episodes", "specials", "raw_episodes"}
+)
+"""Keys a serialized episode mapping must carry."""
+
+_LISTED_EPISODE_KEYS: Final[frozenset[str]] = frozenset(
+    {"number", "title", "airs_at", "season", "episode", "absolute", "aired", "airs_at_fallback"}
+)
+"""Keys a serialized mapped episode must carry."""
+
+_LISTED_SPECIAL_KEYS: Final[frozenset[str]] = frozenset({"key", "title", "airs_on"})
+"""Keys a serialized mapped extra must carry."""
+
+_LEGACY_ORDER_KEYS: Final[frozenset[str]] = frozenset({"anilist_id", "number", "reference", "operation_id", "complete"})
+"""Keys a serialized legacy order must carry."""
+
+_SUBSCRIPTIONS_INVALID_MESSAGE: Final[str] = "Subscriptions file is invalid, so the automation state was not migrated"
+"""Sentence shown when the former subscription file cannot be read for the migration."""
+
+_SUBSCRIPTIONS_INVALID_SUGGESTION: Final[str] = (
+    "Restore config/subscriptions.json.e3-migration.bak or config/subscriptions.json.v<n>.bak "
+    "and start the resident again"
+)
+"""Only recovery a user can perform before the subscription file is migrated."""
 
 _SCHEMA_THREE_ACQUISITION_FIELDS: Final[tuple[str, ...]] = (
     "assignments",
@@ -308,9 +402,16 @@ def _fresh_state() -> WatchState:
 class WatchStateStore:
     """Reads and writes the automation state without ever answering with an empty one."""
 
-    def __init__(self, path: Path, *, subscriptions_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        subscriptions_path: Path | None = None,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
         self._path: Path = path
         self._readable: bool = False
+        self._clock: Callable[[], datetime] = clock
         self._subscriptions_path: Path = (
             subscriptions_path if subscriptions_path is not None else path.parent.parent / SUBSCRIPTIONS_FILE_NAME
         )
@@ -330,21 +431,27 @@ class WatchStateStore:
         """Read the stored automation state, migrating an older schema once, never answering empty."""
         self._readable = False
         try:
-            text: str = self._path.read_text(encoding="utf-8")
+            content: bytes = self._path.read_bytes()
         except FileNotFoundError:
-            return _fresh_state()
-        except (OSError, UnicodeDecodeError) as problem:
+            return self._migrate_without_state()
+        except OSError as problem:
             raise _invalid_file() from problem
-        stored: WatchState = _parse(text)
+        try:
+            stored: WatchState = _parse(content.decode("utf-8"))
+        except UnicodeDecodeError as problem:
+            raise _invalid_file() from problem
         self._readable = True
         if stored.schema_version == WATCH_STATE_SCHEMA_VERSION:
             return stored
-        return self._upgrade(text, stored)
+        return self._upgrade(content, stored)
 
     def save(self, state: WatchState) -> None:
         """Persist *state*, keeping the last readable version as a backup beside it."""
         if not self._path.exists():
-            self._preserve_before_migration()
+            self._preserve_before_migration(0, {self._path: None, self._subscriptions_path: self._legacy_bytes()})
+        self._write(state)
+
+    def _write(self, state: WatchState) -> None:
         payload: str = json.dumps(_encode_state(state), indent=2, ensure_ascii=False) + "\n"
         self._path.parent.mkdir(parents=True, exist_ok=True)
         temporary: Path = self._path.with_name(f"{self._path.name}{_TEMPORARY_SUFFIX}")
@@ -356,45 +463,76 @@ class WatchStateStore:
         temporary.replace(self._path)
         self._readable = True
 
-    def _upgrade(self, text: str, stored: WatchState) -> WatchState:
-        backup: Path = self._path.with_name(
-            f"{self._path.name}{_SCHEMA_BACKUP_TEMPLATE.format(version=stored.schema_version)}"
+    def _upgrade(self, content: bytes, stored: WatchState) -> WatchState:
+        legacy_content: bytes | None = self._legacy_bytes()
+        migrated: WatchState = self._migrated(stored, legacy_content)
+        _keep_backup(
+            self._path.with_name(f"{self._path.name}{_SCHEMA_BACKUP_TEMPLATE.format(version=stored.schema_version)}"),
+            content,
         )
-        if not backup.exists():
-            backup.write_text(text, encoding="utf-8", newline="\n")
-        self._preserve_before_migration()
-        migrated: WatchState = replace(stored, schema_version=WATCH_STATE_SCHEMA_VERSION)
-        self.save(migrated)
+        self._preserve_before_migration(
+            stored.schema_version, {self._path: content, self._subscriptions_path: legacy_content}
+        )
+        self._write_migrated(migrated)
         findings: tuple[PreflightFinding, ...] = preflight(migrated)
         logger.info(
             "Automation state migrated",
             stored_schema=stored.schema_version,
             schema=WATCH_STATE_SCHEMA_VERSION,
+            subscriptions=len(migrated.subscriptions),
+            legacy_orders=len(migrated.legacy_orders),
             findings=tuple(sorted({finding.kind.value for finding in findings})),
         )
         return migrated
 
-    def _preserve_before_migration(self) -> None:
-        for source in (self._path, self._subscriptions_path):
-            backup: Path = source.with_name(f"{source.name}{_MIGRATION_BACKUP_SUFFIX}")
-            try:
-                if backup.exists():
-                    continue
-                content: bytes = source.read_bytes()
-            except FileNotFoundError:
-                logger.info("No file to preserve before the automation state migration", file=source.name)
+    def _migrate_without_state(self) -> WatchState:
+        legacy_content: bytes | None = self._legacy_bytes()
+        if legacy_content is None:
+            return _fresh_state()
+        migrated: WatchState = self._migrated(_fresh_state(), legacy_content)
+        self._preserve_before_migration(0, {self._path: None, self._subscriptions_path: legacy_content})
+        self._write_migrated(migrated)
+        logger.info(
+            "Subscriptions migrated into a new automation state",
+            subscriptions=len(migrated.subscriptions),
+            legacy_orders=len(migrated.legacy_orders),
+        )
+        return migrated
+
+    def _migrated(self, stored: WatchState, legacy_content: bytes | None) -> WatchState:
+        legacy: tuple[Subscription, ...] = _decode_legacy(legacy_content)
+        try:
+            migrated: WatchState = migrate(stored, legacy, self._clock())
+            return _decode_state(json.loads(json.dumps(_encode_state(migrated))))
+        except (KeyError, TypeError, ValueError) as problem:
+            raise _subscriptions_invalid() from problem
+
+    def _write_migrated(self, state: WatchState) -> None:
+        try:
+            self._write(state)
+        except OSError as problem:
+            raise _migration_blocked() from problem
+
+    def _legacy_bytes(self) -> bytes | None:
+        try:
+            return self._subscriptions_path.read_bytes()
+        except FileNotFoundError:
+            return None
+        except OSError as problem:
+            raise _subscriptions_invalid() from problem
+
+    def _preserve_before_migration(self, stored_version: int, sources: Mapping[Path, bytes | None]) -> None:
+        pending: tuple[tuple[Path, bytes | None], ...] = tuple(
+            (source.with_name(f"{source.name}{suffix}"), content)
+            for version, suffix in _MIGRATION_BACKUP_SUFFIXES.items()
+            if stored_version < version
+            for source, content in sources.items()
+        )
+        for backup, content in pending:
+            if content is None:
+                logger.info("No file to preserve before the automation state migration", file=backup.name)
                 continue
-            except OSError as problem:
-                raise _migration_blocked() from problem
-            temporary: Path = backup.with_name(f"{backup.name}{_TEMPORARY_SUFFIX}")
-            try:
-                with temporary.open("wb") as handle:
-                    handle.write(content)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                temporary.replace(backup)
-            except OSError as problem:
-                raise _migration_blocked() from problem
+            _keep_backup(backup, content)
 
     def _back_up(self) -> None:
         try:
@@ -437,6 +575,46 @@ def _migration_blocked() -> ConfigError:
     )
 
 
+def _subscriptions_invalid() -> ConfigError:
+    return ConfigError(
+        context=ErrorContext(
+            code=ErrorCode.CONFIG_INVALID,
+            message=_SUBSCRIPTIONS_INVALID_MESSAGE,
+            suggestion=_SUBSCRIPTIONS_INVALID_SUGGESTION,
+        )
+    )
+
+
+def _decode_legacy(content: bytes | None) -> tuple[Subscription, ...]:
+    if content is None:
+        return ()
+    try:
+        return decode_subscriptions(content.decode("utf-8"))
+    except (ConfigError, UnicodeDecodeError) as problem:
+        raise _subscriptions_invalid() from problem
+
+
+def _keep_backup(backup: Path, content: bytes) -> None:
+    try:
+        present: bool = backup.exists()
+    except OSError as problem:
+        raise _migration_blocked() from problem
+    if not present:
+        _write_backup(backup, content)
+
+
+def _write_backup(backup: Path, content: bytes) -> None:
+    temporary: Path = backup.with_name(f"{backup.name}{_TEMPORARY_SUFFIX}")
+    try:
+        with temporary.open("wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(backup)
+    except OSError as problem:
+        raise _migration_blocked() from problem
+
+
 def _encode_state(state: WatchState) -> dict[str, object]:
     return {
         "schema_version": WATCH_STATE_SCHEMA_VERSION,
@@ -453,6 +631,11 @@ def _encode_state(state: WatchState) -> dict[str, object]:
         "ready_groups": [_encode_ready_group(item) for item in state.ready_groups],
         "pause_owned_transfers": list(state.pause_owned_transfers),
         "pending_deletions": [_encode_pending_deletion(item) for item in state.pending_deletions],
+        "subscriptions": [_encode_subscription(item) for item in state.subscriptions],
+        "removed_subscription": (
+            None if state.removed_subscription is None else _encode_subscription(state.removed_subscription)
+        ),
+        "legacy_orders": [_encode_legacy_order(item) for item in state.legacy_orders],
     }
 
 
@@ -703,6 +886,7 @@ def _decode_state(raw: object) -> WatchState:
     stored: dict[str, object] = dict(_strict_mapping(raw, "automation state"))
     schema_version: int = _schema_version(stored)
     added: _SchemaTwoFacts = _schema_two_facts(stored, schema_version)
+    subscriptions: _SchemaFourFacts = _schema_four_facts(stored, schema_version)
     document: dict[str, object] = _strict_object(stored, _ROOT_KEYS, "automation state")
     return WatchState(
         schema_version=schema_version,
@@ -710,6 +894,9 @@ def _decode_state(raw: object) -> WatchState:
         ready_groups=added.ready_groups,
         pause_owned_transfers=added.pause_owned_transfers,
         pending_deletions=added.pending_deletions,
+        subscriptions=subscriptions.subscriptions,
+        removed_subscription=subscriptions.removed_subscription,
+        legacy_orders=subscriptions.legacy_orders,
         policy=_decode_policy(document["policy"]),
         reservations=tuple(_decode_reservation(item) for item in _list(document["reservations"], "reservations")),
         markers=tuple(_decode_marker(item) for item in _list(document["markers"], "markers")),
@@ -722,7 +909,7 @@ def _decode_state(raw: object) -> WatchState:
             _decode_provider_lock(item) for item in _list(document["provider_locks"], "provider_locks")
         ),
         command_receipts=tuple(
-            _decode_receipt(item) for item in _list(document["command_receipts"], "command_receipts")
+            _decode_receipt(item, schema_version) for item in _list(document["command_receipts"], "command_receipts")
         ),
         notified=frozenset(_decode_notification(item) for item in _list(document["notified"], "notified")),
     )
@@ -753,6 +940,230 @@ def _schema_two_facts(document: dict[str, object], schema_version: int) -> _Sche
         pending_deletions=tuple(
             _decode_pending_deletion(item) for item in _list(sections["pending_deletions"], "pending deletions")
         ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _SchemaFourFacts:
+    """Sections schema 4 added, either read from the document or empty for an older one."""
+
+    subscriptions: tuple[SubscriptionRecord, ...] = ()
+    removed_subscription: SubscriptionRecord | None = None
+    legacy_orders: tuple[LegacyOrder, ...] = ()
+
+
+def _schema_four_facts(document: dict[str, object], schema_version: int) -> _SchemaFourFacts:
+    sections: dict[str, object] = {key: document.pop(key) for key in _SCHEMA_FOUR_SECTIONS if key in document}
+    if schema_version < WATCH_STATE_SCHEMA_VERSION:
+        if sections:
+            msg = "An automation state older than schema 4 cannot carry the sections schema 4 added"
+            raise ValueError(msg)
+        return _SchemaFourFacts()
+    if frozenset(sections) != frozenset(_SCHEMA_FOUR_SECTIONS):
+        msg = "A schema 4 automation state is missing a section it must carry"
+        raise ValueError(msg)
+    removed: object = sections["removed_subscription"]
+    return _SchemaFourFacts(
+        subscriptions=tuple(_decode_subscription(item) for item in _list(sections["subscriptions"], "subscriptions")),
+        removed_subscription=None if removed is None else _decode_subscription(removed),
+        legacy_orders=tuple(_decode_legacy_order(item) for item in _list(sections["legacy_orders"], "legacy orders")),
+    )
+
+
+def _encode_subscription(record: SubscriptionRecord) -> dict[str, object]:
+    check: SubscriptionCheck | None = record.last_check
+    return {
+        "subscription_id": record.subscription_id,
+        "anilist_id": record.anilist_id,
+        "kitsu_id": record.kitsu_id,
+        "mapping": None if record.mapping is None else _encode_mapping(record.mapping),
+        "title": record.title,
+        "subscribed_at": record.subscribed_at,
+        "cut": record.cut,
+        "paused": record.paused,
+        "pause_reason": None if record.pause_reason is None else record.pause_reason.value,
+        "migrated_at": record.migrated_at,
+        "review_pending": record.review_pending,
+        "merged_from": list(record.merged_from),
+        "problem": None if record.problem is None else record.problem.value,
+        "catalog_status": record.catalog_status,
+        "episode_count": record.episode_count,
+        "refreshed_at": record.refreshed_at,
+        "checked_at": record.checked_at,
+        "last_check": None
+        if check is None
+        else {
+            "checked_at": check.checked_at,
+            "number": check.number,
+            "matching": check.matching,
+            "uncertain": check.uncertain,
+            "mismatched": check.mismatched,
+            "outcome": check.outcome,
+        },
+        "targets": [
+            {
+                "number": item.number,
+                "due_at": item.due_at,
+                "state": item.state.value,
+                "attempts": item.attempts,
+                "tried": list(item.tried),
+                "admission_id": item.admission_id,
+                "reason": item.reason,
+                "notified_late": item.notified_late,
+                "check_skipped": item.check_skipped,
+            }
+            for item in record.targets
+        ],
+        "migrated_from": record.migrated_from,
+    }
+
+
+def _encode_mapping(mapping: AniZipMapping) -> dict[str, object]:
+    return {
+        "kitsu_id": mapping.kitsu_id,
+        "catalog_type": mapping.catalog_type,
+        "episode_count": mapping.episode_count,
+        "episodes": [
+            {
+                "number": item.number,
+                "title": item.title,
+                "airs_at": None if item.airs_at is None else item.airs_at.isoformat(),
+                "season": item.season,
+                "episode": item.episode,
+                "absolute": item.absolute,
+                "aired": item.aired,
+                "airs_at_fallback": item.airs_at_fallback,
+            }
+            for item in mapping.episodes
+        ],
+        "specials": [
+            {
+                "key": item.key,
+                "title": item.title,
+                "airs_on": None if item.airs_on is None else item.airs_on.isoformat(),
+            }
+            for item in mapping.specials
+        ],
+        "raw_episodes": {key: dict(value) for key, value in mapping.raw_episodes.items()},
+    }
+
+
+def _encode_legacy_order(order: LegacyOrder) -> dict[str, object]:
+    return {
+        "anilist_id": order.anilist_id,
+        "number": order.number,
+        "reference": order.reference,
+        "operation_id": order.operation_id,
+        "complete": order.complete,
+    }
+
+
+def _decode_subscription(raw: object) -> SubscriptionRecord:
+    document: dict[str, object] = _strict_object(raw, _SUBSCRIPTION_KEYS, "subscription")
+    reason: str | None = _optional_text(document, "pause_reason")
+    problem: str | None = _optional_text(document, "problem")
+    mapping: object = document["mapping"]
+    check: object = document["last_check"]
+    return SubscriptionRecord(
+        subscription_id=_text(document, "subscription_id"),
+        anilist_id=_optional_whole(document, "anilist_id"),
+        kitsu_id=_optional_whole(document, "kitsu_id"),
+        mapping=None if mapping is None else _decode_mapping(mapping),
+        title=_text(document, "title"),
+        subscribed_at=_text(document, "subscribed_at"),
+        cut=_optional_whole(document, "cut"),
+        paused=_flag(document, "paused"),
+        pause_reason=None if reason is None else PauseReason(reason),
+        migrated_at=_optional_text(document, "migrated_at"),
+        review_pending=_flag(document, "review_pending"),
+        merged_from=_decode_texts(document["merged_from"], "merged subscriptions"),
+        problem=None if problem is None else SubscriptionProblem(problem),
+        catalog_status=_optional_text(document, "catalog_status"),
+        episode_count=_optional_whole(document, "episode_count"),
+        refreshed_at=_optional_text(document, "refreshed_at"),
+        checked_at=_optional_text(document, "checked_at"),
+        last_check=None if check is None else _decode_check(check),
+        targets=tuple(_decode_target(item) for item in _list(document["targets"], "subscription targets")),
+        migrated_from=_optional_text(document, "migrated_from"),
+    )
+
+
+def _decode_check(raw: object) -> SubscriptionCheck:
+    document: dict[str, object] = _strict_object(raw, _CHECK_KEYS, "subscription check")
+    return SubscriptionCheck(
+        checked_at=_text(document, "checked_at"),
+        number=_optional_whole(document, "number"),
+        matching=_whole(document, "matching"),
+        uncertain=_whole(document, "uncertain"),
+        mismatched=_whole(document, "mismatched"),
+        outcome=_text(document, "outcome"),
+    )
+
+
+def _decode_target(raw: object) -> SubscriptionTarget:
+    document: dict[str, object] = _strict_object(raw, _TARGET_KEYS, "subscription target")
+    return SubscriptionTarget(
+        number=_whole(document, "number"),
+        due_at=_optional_text(document, "due_at"),
+        state=TargetState(_text(document, "state")),
+        attempts=_whole(document, "attempts"),
+        tried=_decode_texts(document["tried"], "tried release files"),
+        admission_id=_optional_text(document, "admission_id"),
+        reason=_optional_text(document, "reason"),
+        notified_late=_flag(document, "notified_late"),
+        check_skipped=_flag(document, "check_skipped"),
+    )
+
+
+def _decode_mapping(raw: object) -> AniZipMapping:
+    document: dict[str, object] = _strict_object(raw, _MAPPING_KEYS, "episode mapping")
+    episodes: list[ListedEpisode] = []
+    for entry in _list(document["episodes"], "mapped episodes"):
+        item: dict[str, object] = _strict_object(entry, _LISTED_EPISODE_KEYS, "mapped episode")
+        airs_at: str | None = _optional_text(item, "airs_at")
+        episodes.append(
+            ListedEpisode(
+                number=_whole(item, "number"),
+                title=_optional_text(item, "title"),
+                airs_at=None if airs_at is None else datetime.fromisoformat(airs_at),
+                season=_optional_whole(item, "season"),
+                episode=_optional_whole(item, "episode"),
+                absolute=_optional_whole(item, "absolute"),
+                aired=_flag(item, "aired"),
+                airs_at_fallback=_flag(item, "airs_at_fallback"),
+            )
+        )
+    specials: list[ListedSpecial] = []
+    for entry in _list(document["specials"], "mapped extras"):
+        item = _strict_object(entry, _LISTED_SPECIAL_KEYS, "mapped extra")
+        airs_on: str | None = _optional_text(item, "airs_on")
+        specials.append(
+            ListedSpecial(
+                key=_text(item, "key"),
+                title=_optional_text(item, "title"),
+                airs_on=None if airs_on is None else date.fromisoformat(airs_on),
+            )
+        )
+    raw_episodes: dict[str, object] = _strict_mapping(document["raw_episodes"], "raw mapped episodes")
+    return AniZipMapping(
+        kitsu_id=_optional_whole(document, "kitsu_id"),
+        catalog_type=_optional_text(document, "catalog_type"),
+        episode_count=_optional_whole(document, "episode_count"),
+        episodes=tuple(episodes),
+        specials=tuple(specials),
+        max_age_s=None,
+        raw_episodes={key: _strict_mapping(value, "raw mapped episode") for key, value in raw_episodes.items()},
+    )
+
+
+def _decode_legacy_order(raw: object) -> LegacyOrder:
+    document: dict[str, object] = _strict_object(raw, _LEGACY_ORDER_KEYS, "legacy order")
+    return LegacyOrder(
+        anilist_id=_whole(document, "anilist_id"),
+        number=_optional_whole(document, "number"),
+        reference=_text(document, "reference"),
+        operation_id=_optional_text(document, "operation_id"),
+        complete=_flag(document, "complete"),
     )
 
 
@@ -999,7 +1410,7 @@ def _schema_three_identity(
     document: dict[str, object], schema_version: int
 ) -> tuple[tuple[EpisodeAssignment, ...], LegacyScope | None, tuple[int, int], tuple[tuple[str, ...], bool]]:
     fields: dict[str, object] = {key: document.pop(key) for key in _SCHEMA_THREE_ACQUISITION_FIELDS if key in document}
-    if schema_version != WATCH_STATE_SCHEMA_VERSION:
+    if schema_version < _SCHEMA_THREE:
         if fields:
             msg = "An acquisition confirmation older than schema 3 cannot carry episode identity"
             raise ValueError(msg)
@@ -1158,13 +1569,16 @@ def _decode_provider_lock(raw: object) -> ProviderLock:
     )
 
 
-def _decode_receipt(raw: object) -> CommandReceipt:
+def _decode_receipt(raw: object, schema_version: int) -> CommandReceipt:
     document: dict[str, object] = dict(_strict_mapping(raw, "command receipt"))
     pending: object = document.pop("pending", None)
     document = _strict_object(document, _RECEIPT_KEYS, "command receipt")
     if pending is not None and not isinstance(pending, str):
         msg = "A pending command kind must be text"
         raise TypeError(msg)
+    if schema_version == WATCH_STATE_SCHEMA_VERSION and pending not in {None, "cancel"}:
+        msg = "A schema 4 command receipt can only wait for a cancellation"
+        raise ValueError(msg)
     return CommandReceipt(
         command_id=_text(document, "command_id"),
         accepted_at=_text(document, "accepted_at"),
@@ -1272,6 +1686,11 @@ def _optional_text(document: Mapping[str, object], key: str) -> str | None:
 
 def _whole(document: Mapping[str, object], key: str) -> int:
     return _as_whole(document[key], key)
+
+
+def _optional_whole(document: Mapping[str, object], key: str) -> int | None:
+    value: object = document[key]
+    return None if value is None else _as_whole(value, key)
 
 
 def _flag(document: Mapping[str, object], key: str) -> bool:

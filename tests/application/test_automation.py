@@ -8,10 +8,9 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import closing, contextmanager, nullcontext
+from contextlib import closing, nullcontext
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Final, cast
@@ -100,20 +99,7 @@ from anishift.application.results import GroupResult, GroupStatus, RunResult
 from anishift.application.scheduler import RunHandle
 from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.service import AppService, AutoPresetDraft
-from anishift.application.subscriptions import (
-    CheckOutcome,
-    CheckRecorder,
-    EpisodeOrder,
-    EpisodeState,
-    Subscription,
-    SubscriptionAdmission,
-    SubscriptionEnd,
-    SubscriptionOrder,
-    SubscriptionService,
-    SubscriptionStore,
-    SubscriptionUpdater,
-    subscription_id,
-)
+from anishift.application.subscription_targets import PauseReason, SubscriptionRecord
 from anishift.application.tts_handler import TtsProgressObserver
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
 from anishift.application.workflows import WorkflowTarget
@@ -306,79 +292,6 @@ class _TorrentNetwork:
         return self.per_hash.get(info_hash, self.entries)
 
 
-class _Subscriptions:
-    def __init__(self) -> None:
-        self.entries: list[SimpleNamespace] = [
-            SimpleNamespace(
-                subscription_id="a",
-                anilist_id=None,
-                series="Series",
-                group="Group",
-                next_episode="3",
-                enabled=True,
-                end_state=SimpleNamespace(value="active"),
-            )
-        ]
-        self.checks: int = 0
-        self.stored_ranges: list[tuple[tuple[Decimal, ...], Decimal | None]] = []
-        self.ordered_again: list[tuple[Decimal, ...]] = []
-        self.due_at: datetime | None = None
-
-    def list(self) -> tuple[SimpleNamespace, ...]:
-        return tuple(self.entries)
-
-    def set_range(self, subscription_id: str, *, selected: Sequence[Decimal], future_from: Decimal | None) -> None:
-        del subscription_id
-        self.stored_ranges.append((tuple(selected), future_from))
-
-    def repeat(
-        self,
-        subscription_id: str,
-        numbers: Sequence[Decimal],
-        *,
-        command_id: str | None = None,
-        requested_at: str | None = None,
-    ) -> None:
-        del command_id, requested_at
-        del subscription_id
-        self.ordered_again.append(tuple(numbers))
-
-    def next_check_at(self, policy: AutomationPolicy) -> datetime | None:
-        del policy
-        return self.due_at
-
-    def reconcile_sources(self, confirmations: Sequence[AcquisitionConfirmation]) -> None:
-        del confirmations
-
-    def check_due(
-        self,
-        policy: AutomationPolicy,
-        *,
-        admit: SubscriptionAdmission | None = None,
-        record: CheckRecorder | None = None,
-        update: SubscriptionUpdater | None = None,
-        refresh_calendar: bool = False,
-    ) -> tuple[CheckOutcome, ...]:
-        del policy, admit, record, update, refresh_calendar
-        self.checks += 1
-        subscription: Subscription = Subscription(
-            "s1", "Series Group", "Series", "Group", Decimal(3), 1080, frozenset(), _MOMENT.isoformat(), None
-        )
-        return (CheckOutcome(subscription, downloaded=2),)
-
-    def enable(self, subscription_id: str) -> SimpleNamespace:
-        del subscription_id
-        return SimpleNamespace(enabled=True)
-
-    def disable(self, subscription_id: str) -> SimpleNamespace:
-        del subscription_id
-        return SimpleNamespace(enabled=False)
-
-    def remove(self, subscription_id: str) -> bool:
-        del subscription_id
-        return True
-
-
 class _Service:
     def __init__(
         self,
@@ -386,10 +299,8 @@ class _Service:
         *,
         discovered: object,
         plan: ExecutionPlan,
-        subscriptions: _Subscriptions | None = None,
     ) -> None:
         self.workspace_root: Path = workspace_root
-        self.subscriptions: _Subscriptions | None = subscriptions
         self.acquisition: AcquisitionService | None = None
         self._discovered: object = discovered
         self._plan: ExecutionPlan = plan
@@ -1064,7 +975,7 @@ def test_download_failure_and_dedup_cross_owner_ipc_and_qbittorrent_http(  # noq
 
 
 @pytest.mark.integration
-def test_panel_search_download_and_follow_use_the_resident_and_durable_receipts(tmp_path: Path) -> None:
+def test_panel_search_and_download_use_the_resident_and_durable_receipts(tmp_path: Path) -> None:
     network: _TorrentNetwork = _TorrentNetwork()
     acquisition: AcquisitionService = AcquisitionService(
         source=network,
@@ -1072,12 +983,7 @@ def test_panel_search_download_and_follow_use_the_resident_and_durable_receipts(
         workspace_root=tmp_path,
         parse_name=parse_release_name,
     )
-    subscriptions: SubscriptionService = SubscriptionService(
-        store=SubscriptionStore(tmp_path / "subscriptions.json"),
-        acquisition=acquisition,
-        clock=lambda: _MOMENT,
-    )
-    service: AppService = _real_service(tmp_path, acquisition=acquisition, subscriptions=subscriptions)
+    service: AppService = _real_service(tmp_path, acquisition=acquisition)
     store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
     owner: AutomationOwner = _owner(service, store)
     thread: threading.Thread = _serving(owner)
@@ -1095,11 +1001,6 @@ def test_panel_search_download_and_follow_use_the_resident_and_durable_receipts(
         receipt: DownloadReceipt = session.download(choices)
         assert receipt.count == 2
         assert session.download(choices).count == 0
-        subscription: Subscription = session.follow(
-            SubscriptionOrder("Neko to Ryuu", "SubsPlease", "neko", Decimal(20))
-        )
-        assert subscription.added_by_command is not None
-        assert subscription.subscription_id == subscriptions.list()[0].subscription_id
         assert all(item.origin is RequestOrigin.USER for item in store.load().acquisitions)
         assert all(item.pending is None for item in store.load().command_receipts)
         assert network.added == [choice.release.info_hash for choice in choices]
@@ -1164,78 +1065,6 @@ def test_transfer_action_survives_restart_and_receipt_replay_does_not_repeat_it(
     finally:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
-    assert not thread.is_alive()
-
-
-@pytest.mark.parametrize("ranged", [False, True])
-@pytest.mark.parametrize("identified", [False, True])
-def test_subscription_addition_replays_after_its_confirmation_could_not_be_saved(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    ranged: bool,
-    identified: bool,
-) -> None:
-    network: _TorrentNetwork = _TorrentNetwork()
-    acquisition: AcquisitionService = AcquisitionService(
-        source=network,
-        client=cast("TorrentClient", network),
-        workspace_root=tmp_path,
-        parse_name=parse_release_name,
-    )
-    subscriptions: SubscriptionService = SubscriptionService(
-        store=SubscriptionStore(tmp_path / "subscriptions.json"),
-        acquisition=acquisition,
-        clock=lambda: _MOMENT,
-    )
-    service: AppService = _real_service(tmp_path, acquisition=acquisition, subscriptions=subscriptions)
-    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    save: Callable[[WatchState], None] = store.save
-
-    def fail_confirmation(state: WatchState) -> None:
-        if state.command_receipts and all(item.pending is None for item in state.command_receipts):
-            raise OSError("Injected confirmation failure")
-        save(state)
-
-    order: SubscriptionOrder = SubscriptionOrder(
-        "Neko to Ryuu", "SubsPlease", "neko", Decimal(20), anilist_id=101 if identified else None
-    )
-    payload: dict[str, object] = {"order": encode_view(order)}
-    if ranged:
-        payload.update(selected=["3", "7.5", "8"], future_from=None)
-    command: ControlRequest = _request("subscription_add", payload)
-    try:
-        with monkeypatch.context() as failure:
-            failure.setattr(store, "save", fail_confirmation)
-            assert not owner.handle(command).ok
-        assert subscriptions.list()[0].generation == (2 if ranged else 1)
-        assert store.load().command_receipts[0].pending == "subscription_add"
-        accepted_id: object = store.load().command_receipts[0].outcome["subscription_id"]
-        assert accepted_id == subscriptions.list()[0].subscription_id
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-    restored: AutomationOwner = _owner(service, store)
-    thread = _serving(restored)
-    try:
-        assert restored.handle(command).ok
-        assert restored.handle(command).ok
-        assert subscriptions.list()[0].generation == (2 if ranged else 1)
-        assert subscriptions.list()[0].subscription_id == accepted_id
-        if ranged:
-            assert {item.number for item in subscriptions.list()[0].episodes if item.selected} == {
-                Decimal(3),
-                Decimal("7.5"),
-                Decimal(8),
-            }
-            assert subscriptions.list()[0].future_from is None
-        assert network.added == []
-        assert store.load().command_receipts[0].pending is None
-    finally:
-        restored.request_shutdown()
-        thread.join(_TIMEOUT_S)
-        service.close()
     assert not thread.is_alive()
 
 
@@ -1591,7 +1420,7 @@ def _library(tmp_path: Path) -> tuple[_Service, WatchStateStore, str]:
     workspace = real.discover()
     group_id: str = workspace.groups[0].group_id
     plan: ExecutionPlan = real.plan_auto((group_id,), _PRESET)
-    service = _Service(tmp_path, discovered=workspace, plan=plan, subscriptions=_Subscriptions())
+    service = _Service(tmp_path, discovered=workspace, plan=plan)
     return service, WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME), group_id
 
 
@@ -1599,7 +1428,6 @@ def _real_service(
     tmp_path: Path,
     *,
     acquisition: AcquisitionService | None = None,
-    subscriptions: SubscriptionService | None = None,
 ) -> AppService:
     def unused(
         run_root: Path,
@@ -1619,7 +1447,6 @@ def _real_service(
         preset_saver=lambda value: None,
         settings_saver=lambda value: None,
         acquisition=acquisition,
-        subscriptions=subscriptions,
     )
 
 
@@ -2489,28 +2316,6 @@ def test_active_deletion_excludes_processing_and_expires_scope_after_a_survivor_
         service.close()
 
 
-def _subscription_library(tmp_path: Path) -> tuple[AppService, WatchStateStore, _TorrentNetwork, Subscription]:
-    network: _TorrentNetwork = _TorrentNetwork()
-    acquisition: AcquisitionService = AcquisitionService(
-        source=network,
-        client=cast("TorrentClient", network),
-        workspace_root=tmp_path,
-        parse_name=parse_release_name,
-    )
-    subscriptions: SubscriptionService = SubscriptionService(
-        store=SubscriptionStore(tmp_path / "subscriptions.json"),
-        acquisition=acquisition,
-        sleep=lambda _: None,
-    )
-    subscription: Subscription = subscriptions.add("Neko to Ryuu", "SubsPlease", query="neko", first_episode=Decimal(9))
-    return (
-        _real_service(tmp_path, acquisition=acquisition, subscriptions=subscriptions),
-        WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME),
-        network,
-        subscription,
-    )
-
-
 def _started(owner: AutomationOwner) -> str:
     preview: ControlResponse = owner.handle(
         _request("preview", {"client_id": _CLIENT, "preset_id": "preview"}, command_id="preview-1")
@@ -2566,57 +2371,6 @@ def test_cancellation_never_reaches_the_run_when_acceptance_cannot_be_saved(
         service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
-    assert not thread.is_alive()
-
-
-@pytest.mark.parametrize("fail_confirmation", [False, True])
-def test_subscription_changes_survive_the_gap_between_intent_and_confirmation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, fail_confirmation: bool
-) -> None:
-    service, store, _, subscription = _subscription_library(tmp_path)
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    save: Callable[[WatchState], None] = store.save
-    command: ControlRequest = _request("subscription_disable", {"subscription_id": subscription.subscription_id})
-
-    def fail_save(state: WatchState) -> None:
-        pending: bool = any(receipt.pending is not None for receipt in state.command_receipts)
-        if pending != fail_confirmation:
-            raise OSError("Injected write failure")
-        save(state)
-
-    try:
-        with monkeypatch.context() as failure:
-            failure.setattr(store, "save", fail_save)
-            answer: ControlResponse = owner.handle(command)
-        assert not answer.ok
-        assert service.subscriptions is not None
-        assert service.subscriptions.list()[0].enabled is not fail_confirmation
-        assert bool(store.load().command_receipts) is fail_confirmation
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-    assert not thread.is_alive()
-    restored: AutomationOwner = _owner(service, store)
-    updates: list[Mapping[str, object]] = []
-
-    def record_update(frame: Mapping[str, object], terminal: bool) -> None:
-        del terminal
-        updates.append(frame)
-
-    restored.attach_broadcast(record_update)
-    thread = _serving(restored)
-    try:
-        assert restored.handle(command).ok
-        assert restored.handle(command).ok
-        assert service.subscriptions.list()[0].enabled is False
-        assert any(frame.get("event") == "state_changed" for frame in updates)
-        assert service.subscriptions.list()[0].generation == subscription.generation + 1
-        assert all(receipt.pending is None for receipt in store.load().command_receipts)
-    finally:
-        restored.request_shutdown()
-        thread.join(_TIMEOUT_S)
-        service.close()
     assert not thread.is_alive()
 
 
@@ -3109,6 +2863,18 @@ def test_a_terminal_run_fault_is_recorded_as_a_failed_request(tmp_path: Path, fa
 
 def test_status_reports_the_instance_the_switch_and_the_subscription_counts(tmp_path: Path) -> None:
     service, store, _ = _library(tmp_path)
+    active: SubscriptionRecord = SubscriptionRecord(
+        subscription_id="a",
+        anilist_id=1,
+        title="Series",
+        subscribed_at=_MOMENT.isoformat(),
+        cut=0,
+        merged_from=(),
+    )
+    paused: SubscriptionRecord = replace(
+        active, subscription_id="b", anilist_id=2, paused=True, pause_reason=PauseReason.USER
+    )
+    store.save(replace(store.load(), subscriptions=(active, paused)))
     owner: AutomationOwner = _owner(service, store)
     thread: threading.Thread = _serving(owner)
     try:
@@ -3120,7 +2886,7 @@ def test_status_reports_the_instance_the_switch_and_the_subscription_counts(tmp_
 
     assert answer.result["instance_id"] == _INSTANCE
     assert answer.result["auto_enabled"] is True
-    assert answer.result["subscriptions"] == {"enabled": 1, "disabled": 0}
+    assert answer.result["subscriptions"] == {"enabled": 1, "disabled": 1}
 
 
 def test_a_paused_request_keeps_its_intent_without_marking_manual_work_complete(tmp_path: Path) -> None:
@@ -3181,169 +2947,6 @@ def test_reloading_settings_reaches_the_facade(tmp_path: Path) -> None:
 
     assert answer.ok
     assert service.reloads == 1
-
-
-def test_a_subscription_check_runs_off_the_owner_thread(tmp_path: Path) -> None:
-    service, store, _ = _library(tmp_path)
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    try:
-        answer: ControlResponse = owner.handle(_request("subscriptions_check", command_id="check-1"))
-    finally:
-        owner.request_shutdown()
-        thread.join(timeout=_TIMEOUT_S)
-
-    assert answer.ok
-    assert {key: answer.result[key] for key in ("checked", "downloaded", "problems")} == {
-        "checked": 1,
-        "downloaded": 2,
-        "problems": 0,
-    }
-    outcomes: object = answer.result["outcomes"]
-    assert isinstance(outcomes, list)
-    assert len(outcomes) == 1
-    assert service.subscriptions is not None
-    assert service.subscriptions.checks == 1
-
-
-@pytest.mark.parametrize("phase", ["search", "add"])
-@pytest.mark.parametrize("action", ["disable", "remove", "shutdown", "pause"])
-def test_subscription_control_blocks_late_adds_and_keeps_admitted_transfers(  # noqa: PLR0915
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    phase: str,
-    action: str,
-) -> None:
-    service, store, network, subscription = _subscription_library(tmp_path)
-    entered: threading.Event = threading.Event()
-    release: threading.Event = threading.Event()
-    saves: list[str] = []
-    save: Callable[[WatchState], None] = store.save
-
-    def saving(state: WatchState) -> None:
-        saves.append(threading.current_thread().name)
-        save(state)
-
-    def blocked() -> None:
-        if phase == "add":
-            persisted: WatchState = store.load()
-            assert len(persisted.acquisitions) == 1
-            assert persisted.acquisitions[0].state is AcquisitionState.PENDING_SEND
-            assert persisted.acquisitions[0].info_hash == "9"
-        entered.set()
-        assert release.wait(_TIMEOUT_S)
-
-    monkeypatch.setattr(store, "save", saving)
-    if phase == "search":
-        network.before_search = blocked
-    else:
-        network.before_add = blocked
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    answers: list[ControlResponse] = []
-    checking: threading.Thread = threading.Thread(
-        target=lambda: answers.append(owner.handle(_request("subscriptions_check", command_id="check")))
-    )
-    checking.start()
-    try:
-        assert entered.wait(_TIMEOUT_S)
-        kind: str = {"shutdown": "shutdown", "pause": "set_auto"}.get(action, f"subscription_{action}")
-        payload: dict[str, object] = (
-            {"enabled": False} if action == "pause" else {"subscription_id": subscription.subscription_id}
-        )
-        changed: ControlResponse = owner.handle(_request(kind, payload))
-        assert changed.ok
-        if action == "shutdown":
-            assert thread.is_alive()
-    finally:
-        release.set()
-        checking.join(_TIMEOUT_S)
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-        service.close()
-
-    assert not thread.is_alive()
-    assert not checking.is_alive()
-    assert len(answers) == 1
-    assert answers[0].ok
-    assert network.added == (["9"] if phase == "add" else [])
-    assert set(saves) == {"anishift-owner"}
-    acquisitions: tuple[AcquisitionConfirmation, ...] = store.load().acquisitions
-    assert len(acquisitions) == (1 if phase == "add" else 0)
-    if acquisitions:
-        assert acquisitions[0].state is AcquisitionState.ACCEPTED
-    if action == "pause":
-        assert store.load().policy.auto_enabled is False
-        assert all(item.state == "stoppedDL" for item in network.tracked.values())
-        assert network.started == []
-
-
-@pytest.mark.parametrize("remove", [False, True])
-@pytest.mark.parametrize("retained", [False, True])
-def test_a_restart_reconciles_a_lost_add_response_without_adding_again(
-    tmp_path: Path, *, remove: bool, retained: bool
-) -> None:
-    service, store, network, subscription = _subscription_library(tmp_path)
-    network.releases = network.releases[:1]
-    network.lose_response = True
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    try:
-        answer: ControlResponse = owner.handle(_request("subscriptions_check", command_id="check"))
-        assert answer.ok
-        assert answer.result["problems"] == 1
-        if remove:
-            assert owner.handle(_request("subscription_remove", {"subscription_id": subscription.subscription_id})).ok
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-    assert not thread.is_alive()
-    uncertain: tuple[AcquisitionConfirmation, ...] = store.load().acquisitions
-    assert len(uncertain) == 1
-    assert uncertain[0].state is AcquisitionState.UNCERTAIN
-    network.lose_response = False
-    if not retained:
-        network.tracked.clear()
-        network.releases = (replace(network.releases[0], info_hash="replacement-9"),)
-    owner = _owner(service, store)
-    thread = _serving(owner)
-    try:
-        answer = owner.handle(_request("subscriptions_check", command_id="recheck"))
-        assert answer.ok
-        assert answer.result["downloaded"] == 0
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-        service.close()
-
-    assert not thread.is_alive()
-    assert network.added == ["9"]
-    confirmed: tuple[AcquisitionConfirmation, ...] = store.load().acquisitions
-    assert confirmed[0].operation_id == uncertain[0].operation_id
-    assert confirmed[0].state is (AcquisitionState.ACCEPTED if retained else AcquisitionState.UNCERTAIN)
-
-
-def test_a_failed_acquisition_journal_save_prevents_the_add(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    service, store, network, _ = _subscription_library(tmp_path)
-    owner: AutomationOwner = _owner(service, store)
-
-    def refuse(state: WatchState) -> None:
-        del state
-        raise OSError("no disk")
-
-    monkeypatch.setattr(store, "save", refuse)
-    thread: threading.Thread = _serving(owner)
-    try:
-        answer: ControlResponse = owner.handle(_request("subscriptions_check", command_id="check"))
-        assert not answer.ok
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-        service.close()
-
-    assert not thread.is_alive()
-    assert not network.added
-    assert not store.load().acquisitions
 
 
 def test_accepted_transfer_waits_for_file_completion_then_enters_auto_once(
@@ -3797,7 +3400,7 @@ def test_an_image_arriving_in_cover_invalidates_the_preview_of_its_own_group(tmp
     workspace = real.discover()
     assert [group.source.stem for group in workspace.groups] == ["Episode"]
     plan: ExecutionPlan = real.plan_auto((workspace.groups[0].group_id,), _PRESET)
-    service = _Service(tmp_path, discovered=workspace, plan=plan, subscriptions=_Subscriptions())
+    service = _Service(tmp_path, discovered=workspace, plan=plan)
     store: WatchStateStore = WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME)
     owner: AutomationOwner = _owner(service, store)
     thread: threading.Thread = _serving(owner)
@@ -3918,7 +3521,7 @@ def _two_sources(tmp_path: Path) -> tuple[_Service, WatchStateStore, dict[str, s
     workspace = real.discover()
     groups: dict[str, str] = {group.source.stem: group.group_id for group in workspace.groups}
     plan: ExecutionPlan = real.plan_auto((groups["Film"],), _PRESET)
-    service = _Service(tmp_path, discovered=workspace, plan=plan, subscriptions=_Subscriptions())
+    service = _Service(tmp_path, discovered=workspace, plan=plan)
     return service, WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME), groups
 
 
@@ -4135,94 +3738,6 @@ def test_a_transfer_whose_names_are_not_reserved_yet_defers_the_resume_a_client_
     assert network.actions == [("9", "resume")]
     assert settled.action_pending is False
     assert settled.problem is None
-
-
-def test_the_stored_range_of_a_subscription_is_applied_once_for_a_repeated_command(tmp_path: Path) -> None:
-    service, store, _ = _library(tmp_path)
-    subscriptions: _Subscriptions = cast("_Subscriptions", service.subscriptions)
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    command: ControlRequest = _request(
-        "subscription_range",
-        {"subscription_id": "a", "selected": ["3", "8"], "future_from": "12"},
-    )
-    try:
-        answer: ControlResponse = owner.handle(command)
-        again: ControlResponse = owner.handle(command)
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-    assert not thread.is_alive()
-    assert answer.ok, answer.message
-    assert again.result == answer.result
-    assert subscriptions.stored_ranges == [((Decimal(3), Decimal(8)), Decimal(12))]
-    assert all(item.pending is None for item in store.load().command_receipts)
-
-
-def test_a_repeat_command_orders_the_named_episodes_again(tmp_path: Path) -> None:
-    service, store, _ = _library(tmp_path)
-    subscriptions: _Subscriptions = cast("_Subscriptions", service.subscriptions)
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    try:
-        answer: ControlResponse = owner.handle(
-            _request("subscription_repeat", {"subscription_id": "a", "episodes": ["7.5", "9"]})
-        )
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-    assert not thread.is_alive()
-    assert answer.ok, answer.message
-    assert subscriptions.ordered_again == [(Decimal("7.5"), Decimal(9))]
-    assert all(item.pending is None for item in store.load().command_receipts)
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"subscription_id": "a", "selected": ["nine"]},
-        {"subscription_id": "a", "selected": ["0"]},
-        {"subscription_id": "a", "selected": "3"},
-        {"subscription_id": "a", "selected": ["3"], "future_from": "later"},
-        {"subscription_id": "unknown", "selected": ["3"]},
-        {"selected": ["3"]},
-    ],
-)
-def test_a_range_command_without_valid_numbers_of_a_followed_subscription_is_refused(
-    tmp_path: Path,
-    payload: dict[str, object],
-) -> None:
-    service, store, _ = _library(tmp_path)
-    subscriptions: _Subscriptions = cast("_Subscriptions", service.subscriptions)
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    try:
-        answer: ControlResponse = owner.handle(_request("subscription_range", payload))
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-    assert not thread.is_alive()
-    assert not answer.ok
-    assert subscriptions.stored_ranges == []
-    assert store.load().command_receipts == ()
-
-
-@pytest.mark.parametrize("episodes", [[], ["nine"], ["-2"]])
-def test_a_repeat_command_without_valid_episode_numbers_is_refused(tmp_path: Path, episodes: list[str]) -> None:
-    service, store, _ = _library(tmp_path)
-    subscriptions: _Subscriptions = cast("_Subscriptions", service.subscriptions)
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    try:
-        answer: ControlResponse = owner.handle(
-            _request("subscription_repeat", {"subscription_id": "a", "episodes": episodes})
-        )
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-    assert not thread.is_alive()
-    assert not answer.ok
-    assert subscriptions.ordered_again == []
 
 
 def test_the_status_names_the_library_group_each_transfer_owns(tmp_path: Path) -> None:
@@ -4475,76 +3990,6 @@ def test_processing_projection_retries_an_unavailable_terminal_checkpoint(
         owner._pool.shutdown(wait=True)
 
 
-def test_subscription_list_keeps_valid_rows_when_one_saved_airing_is_malformed(tmp_path: Path) -> None:
-    service, store, network, subscription = _subscription_library(tmp_path)
-    subscriptions: SubscriptionStore = SubscriptionStore(tmp_path / "subscriptions.json")
-    subscriptions.save(
-        (
-            replace(subscription, episodes=(EpisodeOrder(Decimal(9), airing_at="not-a-date"),)),
-            replace(
-                subscription,
-                subscription_id="valid",
-                series="Valid series",
-                episodes=(EpisodeOrder(Decimal(9), airing_at="2030-01-01T21:00:00+00:00"),),
-            ),
-        )
-    )
-    before: bytes = (tmp_path / "subscriptions.json").read_bytes()
-    store.save(WatchState(policy=AutomationPolicy(auto_enabled=False)))
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    try:
-        response: ControlResponse = owner.handle(_request("subscriptions_list"))
-        assert response.ok
-        rows: list[dict[str, object]] = cast("list[dict[str, object]]", response.result["subscriptions"])
-        assert {row["subscription_id"]: row["airing_at"] for row in rows} == {
-            subscription.subscription_id: None,
-            "valid": "2030-01-01T21:00:00+00:00",
-        }
-        assert all("episodes" not in row and "work_states" not in row for row in rows)
-        details: ControlResponse = owner.handle(
-            _request("subscription_get", {"subscription_id": subscription.subscription_id})
-        )
-        assert cast("list[dict[str, object]]", details.result["episodes"])[0]["airing_at"] == "not-a-date"
-        assert (tmp_path / "subscriptions.json").read_bytes() == before
-        assert network.added == []
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-        service.close()
-
-
-def test_subscription_list_projects_the_nearest_selected_unfinished_airing(tmp_path: Path) -> None:
-    service, store, network, subscription = _subscription_library(tmp_path)
-    SubscriptionStore(tmp_path / "subscriptions.json").save(
-        (
-            replace(
-                subscription,
-                episodes=(
-                    EpisodeOrder(Decimal(1), airing_at="2030-01-01T18:00:00+00:00", selected=False),
-                    EpisodeOrder(Decimal(2), airing_at="2030-01-01T19:00:00+00:00", state=EpisodeState.COMPLETE),
-                    EpisodeOrder(Decimal(3), airing_at="2030-01-01T21:00:00+00:00"),
-                    EpisodeOrder(Decimal(4), airing_at="2030-01-01T22:00:00+02:00"),
-                ),
-            ),
-        )
-    )
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    try:
-        response: ControlResponse = owner.handle(_request("subscriptions_list"))
-        assert response.ok
-        assert (
-            cast("list[dict[str, object]]", response.result["subscriptions"])[0]["airing_at"]
-            == "2030-01-01T22:00:00+02:00"
-        )
-        assert network.added == []
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-        service.close()
-
-
 @pytest.mark.integration
 def test_library_retry_after_refused_deletion_only_relocates(  # noqa: PLR0915
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -4652,93 +4097,6 @@ class _FailedTts:
 
     def close(self) -> None:
         return
-
-
-@pytest.mark.integration
-@pytest.mark.parametrize("tts_failed", [False, True])
-def test_subscription_card_uses_product_completion_and_keeps_download_memory_after_restart(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tts_failed: bool
-) -> None:
-    monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", "isolated-test-token")
-    network: _TorrentNetwork = _TorrentNetwork()
-    acquisition: AcquisitionService = AcquisitionService(
-        source=network,
-        client=cast("TorrentClient", network),
-        workspace_root=tmp_path,
-        parse_name=parse_release_name,
-    )
-    subscriptions: SubscriptionService = SubscriptionService(
-        store=SubscriptionStore(tmp_path / ".subscriptions.json"),
-        acquisition=acquisition,
-        clock=lambda: _MOMENT,
-    )
-    subscription: Subscription = subscriptions.add("Neko to Ryuu", "SubsPlease", query="neko", first_episode=Decimal(9))
-    subscriptions.set_range(subscription.subscription_id, selected=(Decimal(9),), future_from=None)
-    write_media_source(tmp_path / "09.mkv")
-    files: tuple[str, ...] = ("09.srt", "09.mkv")
-    owned: AcquisitionConfirmation = replace(
-        _owned(files, files, RequestOrigin.USER, 0, directory=""),
-        state=AcquisitionState.COMPLETE,
-        subscription_id=subscription.subscription_id,
-        file_layout=tuple((index, name, (tmp_path / name).stat().st_size) for index, name in enumerate(files)),
-    )
-    subscriptions.reconcile_sources((owned,))
-    store: WatchStateStore = WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME)
-    store.save(WatchState(acquisitions=(owned,)))
-    tts: _FailedTts = _FailedTts()
-    service: AppService = _processing_service(
-        tmp_path,
-        FakeTranslationService(),
-        inspector=WorkspaceInspector(FakeMediaProbe()),
-        acquisition=acquisition,
-        subscriptions=subscriptions,
-        tts=tts,
-    )
-    with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, store):
-        group_id: str = session.discover().groups[0].group_id
-        session.reserve((group_id,))
-        session.command("set_auto", {"enabled": True})
-        products: frozenset[ProductKind] = frozenset(
-            {ProductKind.SPOKEN_PL, ProductKind.NARRATION_AUDIO} if tts_failed else {ProductKind.SPOKEN_PL}
-        )
-        preview: PlanPreview = session.plan_manual((GroupIntent(group_id, RunMode.MANUAL, ProductIntent(products)),))
-        result: RunResult = session.execute(preview, CollectingRunSink())
-        assert result.succeeded is not tts_failed
-        assert tts.calls == int(tts_failed)
-        session.command("set_auto", {"enabled": False})
-    if not tts_failed:
-        for product in store.load().products:
-            (tmp_path / product.path).unlink()
-    restarted: AppService = _processing_service(
-        tmp_path,
-        FakeTranslationService(),
-        inspector=WorkspaceInspector(FakeMediaProbe()),
-        acquisition=acquisition,
-        subscriptions=subscriptions,
-        tts=tts,
-    )
-    with closing(restarted), _panel_owner(restarted, tmp_path, ready=True) as (session, store):
-        controller: StateController = StateController(session, lambda: None)
-        try:
-            assert _await(lambda: controller._connected)
-            controller.handle_key("left")
-            controller.handle_key("enter")
-            assert _await(lambda: not controller._busy)
-            frame: str = controller.render(120, 40).plain
-            assert ("● 9 · pobrano · błąd przetwarzania" if tts_failed else "○ 9 · ukończono produkty") in frame
-            controller.handle_key("text:a")
-            controller.handle_key("enter")
-            assert _await(lambda: not controller._busy)
-            current: Subscription = subscriptions.list()[0]
-            assert current.episodes[0].acquisition_id == owned.operation_id
-            assert current.episodes[0].state.value == "complete"
-            assert current.repeats == ()
-            assert network.added == []
-            assert len(store.load().requests) == 1
-            assert len(_material_rows(session)) == int(tts_failed)
-        finally:
-            controller.close()
-            controller._thread.join(_TIMEOUT_S)
 
 
 def _relocating_owner(tmp_path: Path, service: AppService, store: WatchStateStore) -> AutomationOwner:
@@ -4975,439 +4333,6 @@ def test_a_transfer_that_released_its_file_lets_the_deferred_source_reach_ready(
     assert list(audiobook.iterdir()) == []
     assert store.load().ready_groups[0].pending_sources == ()
     assert store.load().ready_groups[0].sources == ("ready/Book.txt",)
-
-
-@pytest.mark.integration
-def test_the_panel_stores_a_whole_range_and_repeats_an_episode_through_the_resident(tmp_path: Path) -> None:
-    network: _TorrentNetwork = _TorrentNetwork()
-    acquisition: AcquisitionService = AcquisitionService(
-        source=network,
-        client=cast("TorrentClient", network),
-        workspace_root=tmp_path,
-        parse_name=parse_release_name,
-    )
-    subscriptions: SubscriptionService = SubscriptionService(
-        store=SubscriptionStore(tmp_path / "subscriptions.json"),
-        acquisition=acquisition,
-        clock=lambda: _MOMENT,
-    )
-    service: AppService = _real_service(tmp_path, acquisition=acquisition, subscriptions=subscriptions)
-    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    key: bytes = os.urandom(32)
-    server: ControlServer = ControlServer(control_endpoint(tmp_path), key, owner.handle, on_disconnect=owner.disconnect)
-    session: ResidentSession = ResidentSession(
-        tmp_path,
-        lambda: ControlClient(control_endpoint(tmp_path), key, timeout_s=_TIMEOUT_S),
-    )
-    try:
-        followed: Subscription = session.follow(SubscriptionOrder("Neko to Ryuu", "SubsPlease", "neko", Decimal(20)))
-        stored: Subscription = session.set_range(
-            followed.subscription_id, selected=(Decimal(9), Decimal(10)), future_from=Decimal(11)
-        )
-        repeated: Subscription = session.repeat(followed.subscription_id, (Decimal(9),))
-    finally:
-        session.close()
-        server.close()
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-        service.close()
-    assert not thread.is_alive()
-    assert stored.future_from == Decimal(11)
-    assert {item.number for item in stored.episodes if item.selected} == {Decimal(9), Decimal(10)}
-    assert stored.generation > followed.generation
-    assert repeated.generation > stored.generation
-    assert next(item.repeat_id for item in repeated.episodes if item.number == Decimal(9)) is not None
-    assert next(item.number for item in repeated.repeats) == Decimal(9)
-    assert all(item.pending is None for item in store.load().command_receipts)
-
-
-@contextmanager
-def _calendar_resident(
-    root: Path,
-    network: _TorrentNetwork,
-    moments: list[datetime],
-    respond: Callable[[httpx.Request], httpx.Response],
-) -> Iterator[tuple[ResidentSession, SubscriptionService, WatchStateStore, httpx.Client]]:
-    control: RequestControl = RequestControl(
-        httpx.MockTransport(respond),
-        clock=lambda: moments[0].timestamp(),  # noqa: PLW0108 - the clock value changes between requests
-        sleep=lambda delay: moments.__setitem__(0, moments[0] + timedelta(seconds=delay)),
-    )
-    http: httpx.Client = httpx.Client(transport=control)
-    acquisition: AcquisitionService = AcquisitionService(
-        source=network,
-        client=cast("TorrentClient", network),
-        workspace_root=root,
-        parse_name=parse_release_name,
-        title_catalog=AniListCatalog(http),
-        request_control=control,
-    )
-    subscriptions: SubscriptionService = SubscriptionService(
-        store=SubscriptionStore(root / "subscriptions.json"), acquisition=acquisition, clock=lambda: moments[0]
-    )
-    service: AppService = _real_service(root, acquisition=acquisition, subscriptions=subscriptions)
-    store: WatchStateStore = WatchStateStore(root / "control" / WATCH_STATE_FILE_NAME)
-    owner: AutomationOwner = AutomationOwner(service, store, instance_id=_INSTANCE, clock=lambda: moments[0])
-    thread: threading.Thread = _serving(owner)
-    key: bytes = os.urandom(32)
-    server: ControlServer = ControlServer(control_endpoint(root), key, owner.handle, on_disconnect=owner.disconnect)
-    session: ResidentSession = ResidentSession(
-        root, lambda: ControlClient(control_endpoint(root), key, timeout_s=_TIMEOUT_S)
-    )
-    try:
-        yield session, subscriptions, store, http
-    finally:
-        session.close()
-        server.close()
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-        service.close()
-        http.close()
-    assert not thread.is_alive()
-
-
-@pytest.mark.integration
-def test_one_resident_order_downloads_backlog_then_only_due_eight_across_restart_and_cooldown(tmp_path: Path) -> None:
-    moments: list[datetime] = [_MOMENT]
-    dates: dict[int, datetime] = {number: _MOMENT + timedelta(days=(number - 8) * 7 + 30) for number in range(8, 13)}
-    dates.update({number: _MOMENT - timedelta(days=(8 - number) * 7) for number in range(1, 8)})
-    calendars: list[datetime] = []
-    searches: list[datetime] = []
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        if request.url.host == "nyaa.si":
-            return httpx.Response(429, headers={"Retry-After": "120"})
-        assert request.url.host == "graphql.anilist.co"
-        calendars.append(moments[0])
-        return httpx.Response(
-            200,
-            json={
-                "data": {
-                    "Media": {
-                        "id": 1,
-                        "status": "RELEASING",
-                        "episodes": 12,
-                        "airingSchedule": {
-                            "pageInfo": {"currentPage": 1, "hasNextPage": False},
-                            "nodes": [
-                                {"episode": number, "airingAt": int(date.timestamp())} for number, date in dates.items()
-                            ],
-                        },
-                    }
-                }
-            },
-        )
-
-    network: _TorrentNetwork = _TorrentNetwork()
-    network.releases = tuple(
-        replace(
-            network.releases[0],
-            title=f"[SubsPlease] Neko to Ryuu - {number:02d} (1080p)",
-            torrent_url=f"https://example.test/{number}.torrent",
-            info_hash=str(number),
-        )
-        for number in range(1, 13)
-    )
-    network.before_search = lambda: searches.append(moments[0])
-    WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME).save(
-        WatchState(policy=AutomationPolicy(auto_enabled=True))
-    )
-    with _calendar_resident(tmp_path, network, moments, respond) as (session, subscriptions, store, http):
-        followed: Subscription = session.follow(
-            SubscriptionOrder("Neko to Ryuu", "SubsPlease", "neko", Decimal(2), anilist_id=1),
-            selected=tuple(Decimal(number) for number in range(2, 13)),
-            future_from=None,
-        )
-        assert _await(lambda: len(subscriptions.list()[0].taken_episodes) == 6)
-        assert network.added == ["2", "3", "4", "5", "6", "7"]
-        session.command("set_auto", {"enabled": False})
-        moments[0] += timedelta(days=1)
-        dates[8] = moments[0] + timedelta(hours=1)
-        session.command("set_auto", {"enabled": True})
-        assert _await(lambda: subscriptions.list()[0].episodes[6].airing_at == dates[8].isoformat())
-        assert len(searches) == 1
-        session.command("set_auto", {"enabled": False})
-        moments[0] = dates[8] + timedelta(hours=3)
-        assert http.get("https://nyaa.si/").status_code == 429
-        assert store.load().provider_locks[0].provider == "nyaa"
-    with _calendar_resident(tmp_path, network, moments, respond) as (session, subscriptions, store, _http):
-        assert subscriptions.list()[0].subscription_id == followed.subscription_id
-        assert subscriptions.list()[0].future_from is None
-        session.command("set_auto", {"enabled": True})
-        session.command("subscriptions_check")
-        assert network.added == ["2", "3", "4", "5", "6", "7"]
-        assert len(searches) == 1
-        moments[0] += timedelta(seconds=120)
-        session.command("subscriptions_check")
-        assert _await(lambda: len(subscriptions.list()[0].taken_episodes) == 7)
-        assert network.added == ["2", "3", "4", "5", "6", "7", "8"]
-        assert {item.episode for item in store.load().acquisitions} == {str(number) for number in range(2, 9)}
-        assert all(item.selected for item in subscriptions.list()[0].episodes)
-
-
-@pytest.mark.parametrize("provider_failed", [False, True])
-def test_manual_calendar_limiter_preserves_saved_dates_and_prior_errors_across_resident_restart(
-    tmp_path: Path, provider_failed: bool
-) -> None:
-    moments: list[datetime] = [_MOMENT]
-    airing: datetime = _MOMENT + timedelta(days=30)
-    calls: list[httpx.Request] = []
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        calls.append(request)
-        assert request.url.host == "graphql.anilist.co"
-        return httpx.Response(
-            429 if provider_failed else 200,
-            headers={"Retry-After": "86400"},
-            json={
-                "data": {
-                    "Media": {
-                        "id": 1,
-                        "status": "RELEASING",
-                        "episodes": 1,
-                        "airingSchedule": {
-                            "pageInfo": {"currentPage": 1, "hasNextPage": False},
-                            "nodes": [{"episode": 1, "airingAt": int(airing.timestamp())}],
-                        },
-                    }
-                }
-            },
-        )
-
-    path: Path = tmp_path / "subscriptions.json"
-    SubscriptionStore(path).save(
-        (
-            Subscription(
-                subscription_id("Neko to Ryuu", "SubsPlease"),
-                "neko",
-                "Neko to Ryuu",
-                "SubsPlease",
-                Decimal(1),
-                1080,
-                frozenset(),
-                _MOMENT.isoformat(),
-                None,
-                anilist_id=1,
-                season_episodes=1,
-                calendar_checked_at=_MOMENT.isoformat(),
-                calendar_status="RELEASING",
-                episodes=(
-                    EpisodeOrder(
-                        Decimal(1),
-                        airing_at=airing.isoformat(),
-                        due_at=(airing + timedelta(hours=3)).isoformat(),
-                        window_until=(airing + timedelta(hours=75)).isoformat(),
-                    ),
-                ),
-            ),
-        )
-    )
-    WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME).save(
-        WatchState(policy=AutomationPolicy(auto_enabled=True))
-    )
-    network: _TorrentNetwork = _TorrentNetwork()
-    with _calendar_resident(tmp_path, network, moments, respond) as (session, subscriptions, store, _http):
-        first: Mapping[str, object] = session.command("subscriptions_check")
-        assert first["checked"] == 1
-        assert first["problems"] == int(provider_failed)
-        saved: Subscription = subscriptions.list()[0]
-        assert saved.calendar_problem == (ErrorCode.TITLE_CATALOG_FAILED if provider_failed else None)
-        assert saved.calendar_attempts == int(provider_failed)
-        before: bytes = path.read_bytes()
-        second: Mapping[str, object] = session.command("subscriptions_check")
-        assert second["problems"] == 1
-        outcomes: object = second["outcomes"]
-        assert isinstance(outcomes, list)
-        outcome: CheckOutcome = decode_view(CheckOutcome, outcomes[0])
-        assert outcome.problem == "calendar_cooldown"
-        assert outcome.subscription == saved
-        assert path.read_bytes() == before
-        assert len(calls) == 1
-        assert store.load().provider_locks[0].provider == "anilist"
-    with _calendar_resident(tmp_path, network, moments, respond) as (session, subscriptions, _store, _http):
-        assert subscriptions.list() == (saved,)
-        controller: StateController = StateController(session, lambda: None)
-        try:
-            assert _await(lambda: controller._connected and bool(controller._subscriptions))
-            controller.handle_key("left")
-            controller.handle_key("text:f")
-            assert _await(lambda: not controller._busy)
-            frame: str = controller.render(160, 40).plain
-            assert "Emisja za" in frame
-            assert controller._subscriptions[0]["airing_at"] == airing.isoformat()
-            assert ("Kalendarz niedostępny" in frame) is provider_failed
-            assert "F sprawdź" in frame
-            assert subscriptions.list() == (saved,)
-            assert path.read_bytes() == before
-            assert len(calls) == 1
-            assert network.added == []
-        finally:
-            controller.close()
-            controller._thread.join(_TIMEOUT_S)
-
-
-def test_resident_keeps_known_seasons_separate_and_refuses_raw_ambiguity_before_a_receipt(tmp_path: Path) -> None:
-    network: _TorrentNetwork = _TorrentNetwork()
-    moments: list[datetime] = [_MOMENT]
-    WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME).save(
-        WatchState(policy=AutomationPolicy(auto_enabled=False))
-    )
-    with _calendar_resident(tmp_path, network, moments, lambda _request: httpx.Response(500)) as (
-        session,
-        subscriptions,
-        store,
-        _http,
-    ):
-        first: Subscription = session.follow(
-            SubscriptionOrder("Neko to Ryuu", "SubsPlease", "first", Decimal(1), anilist_id=101),
-            selected=(Decimal(1),),
-        )
-        second: Subscription = session.follow(
-            SubscriptionOrder("Neko to Ryuu", "SubsPlease", "second", Decimal(1), anilist_id=202),
-            selected=(Decimal(2),),
-            future_from=None,
-        )
-        assert second.subscription_id != first.subscription_id
-        assert len(subscriptions.list()) == 2
-        assert first in subscriptions.list()
-        receipts: int = len(store.load().command_receipts)
-        with pytest.raises(ControlError) as caught:
-            session.follow(SubscriptionOrder("Neko to Ryuu", "SubsPlease", "second", Decimal(1)))
-        assert caught.value.reason == "subscription_season_ambiguous"
-        assert second in subscriptions.list()
-        assert len(store.load().command_receipts) == receipts
-        assert network.added == []
-    with _calendar_resident(tmp_path, network, moments, lambda _request: httpx.Response(500)) as (
-        session,
-        subscriptions,
-        store,
-        _http,
-    ):
-        with pytest.raises(ControlError) as paused:
-            session.repeat(second.subscription_id, (Decimal(2),))
-        assert paused.value.reason == "paused"
-        session.command("subscription_disable", {"subscription_id": first.subscription_id})
-        session.command("subscription_disable", {"subscription_id": second.subscription_id})
-        first = subscriptions.list()[0]
-        session.command("set_auto", {"enabled": True})
-        repeated: Subscription = session.repeat(second.subscription_id, (Decimal(2),))
-        assert first in subscriptions.list()
-        assert repeated.subscription_id == second.subscription_id
-        assert len(repeated.repeats) == 1
-        assert repeated.taken == frozenset()
-        assert len(subscriptions.list()) == 2
-        assert store.load().acquisitions == ()
-
-
-def test_resident_repeat_preserves_a_local_source_and_allows_remote_repeat_after_its_removal(tmp_path: Path) -> None:
-    network: _TorrentNetwork = _TorrentNetwork()
-    moments: list[datetime] = [_MOMENT]
-    subscriptions: SubscriptionService = SubscriptionService(
-        store=SubscriptionStore(tmp_path / "subscriptions.json"),
-        acquisition=AcquisitionService(
-            source=network,
-            client=cast("TorrentClient", network),
-            workspace_root=tmp_path,
-            parse_name=parse_release_name,
-        ),
-        clock=lambda: moments[0],
-    )
-    item: Subscription = subscriptions.add("Neko to Ryuu", "SubsPlease", query="neko", first_episode=Decimal(9))
-    source: Path = tmp_path / "09.txt"
-    source.write_text("source", encoding="utf-8")
-    confirmation: AcquisitionConfirmation = AcquisitionConfirmation(
-        "old-operation",
-        "old-hash",
-        "",
-        ("09.txt",),
-        AcquisitionState.COMPLETE,
-        RequestOrigin.USER,
-        item.subscription_id,
-        "9",
-        _MOMENT.isoformat(),
-        complete_files=("09.txt",),
-    )
-    WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME).save(
-        WatchState(policy=AutomationPolicy(auto_enabled=False), acquisitions=(confirmation,))
-    )
-    with _calendar_resident(tmp_path, network, moments, lambda _request: httpx.Response(500)) as (
-        session,
-        subscriptions,
-        store,
-        _http,
-    ):
-        with pytest.raises(ControlError) as paused:
-            session.repeat(item.subscription_id, (Decimal(9), Decimal(10)))
-        assert paused.value.reason == "paused"
-        session.command("subscription_disable", {"subscription_id": item.subscription_id})
-        session.command("set_auto", {"enabled": True})
-        receipts: int = len(store.load().command_receipts)
-        with pytest.raises(ControlError) as caught:
-            session.repeat(item.subscription_id, (Decimal(9), Decimal(10)))
-        assert caught.value.reason == "subscription_source_available"
-        assert caught.value.context.details == {"episodes": ["9"]}
-        assert len(store.load().command_receipts) == receipts
-        assert subscriptions.list()[0].repeats == ()
-        assert store.load().acquisitions == (confirmation,)
-        assert network.added == []
-        _unlink_when_released(source)
-        repeated: Subscription = session.repeat(item.subscription_id, (Decimal(9),))
-        assert len(repeated.repeats) == 1
-        assert store.load().acquisitions == (confirmation,)
-
-
-def test_resident_repeat_downloads_an_expired_old_episode_in_a_fresh_window(tmp_path: Path) -> None:
-    network: _TorrentNetwork = _TorrentNetwork()
-    moments: list[datetime] = [_MOMENT]
-    WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME).save(
-        WatchState(policy=AutomationPolicy(auto_enabled=False))
-    )
-    expired: Subscription = Subscription(
-        subscription_id("Neko to Ryuu", "SubsPlease"),
-        "neko",
-        "Neko to Ryuu",
-        "SubsPlease",
-        Decimal(9),
-        1080,
-        frozenset(),
-        (_MOMENT - timedelta(days=30)).isoformat(),
-        None,
-        anilist_id=1,
-        end_state=SubscriptionEnd.MISSING,
-        episodes=(EpisodeOrder(Decimal(9), state=EpisodeState.EXPIRED, attempts=3),),
-    )
-    SubscriptionStore(tmp_path / "subscriptions.json").save((expired,))
-
-    def respond(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "data": {
-                    "Media": {
-                        "id": 1,
-                        "status": "FINISHED",
-                        "episodes": 9,
-                        "airingSchedule": {
-                            "pageInfo": {"currentPage": 1, "hasNextPage": False},
-                            "nodes": [{"episode": 9, "airingAt": int((_MOMENT - timedelta(days=30)).timestamp())}],
-                        },
-                    }
-                }
-            },
-        )
-
-    with _calendar_resident(tmp_path, network, moments, respond) as (session, subscriptions, _store, _http):
-        with pytest.raises(ControlError) as paused:
-            session.repeat(expired.subscription_id, (Decimal(9),))
-        assert paused.value.reason == "paused"
-        session.command("set_auto", {"enabled": True})
-        repeated: Subscription = session.repeat(expired.subscription_id, (Decimal(9),))
-        assert repeated.episodes[0].requested_at == _MOMENT.isoformat()
-        assert _await(lambda: subscriptions.list()[0].taken_episodes == ("9",))
-        assert network.added == ["9"]
-        assert subscriptions.list()[0].episodes[0].window_until == (_MOMENT + timedelta(hours=72)).isoformat()
 
 
 def test_two_transfers_of_one_file_name_reserve_separate_names_beside_ready_and_deleted_files(tmp_path: Path) -> None:
@@ -5980,6 +4905,7 @@ def _pausable(
     monkeypatch: pytest.MonkeyPatch,
     *,
     subscription_id: str | None = None,
+    subscriptions: tuple[SubscriptionRecord, ...] = (),
 ) -> tuple[AutomationOwner, _TorrentNetwork, WatchStateStore, _Service]:
     monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
     service, store, _ = _library(tmp_path)
@@ -5991,6 +4917,7 @@ def _pausable(
     store.save(
         WatchState(
             policy=AutomationPolicy(auto_enabled=True),
+            subscriptions=subscriptions,
             acquisitions=(
                 replace(mine, subscription_id=subscription_id, origin=RequestOrigin.BACKGROUND),
                 replace(
@@ -6021,7 +4948,6 @@ def test_one_pause_stops_the_schedule_the_polling_and_records_only_the_transfers
         settled: int = network.info_calls
         time.sleep(0.3)
         assert network.info_calls == settled
-        assert owner._subscriptions_at is None
         assert owner._transfers_at is None
     finally:
         owner.request_shutdown()
@@ -6056,24 +4982,39 @@ def test_a_resume_restarts_only_the_transfers_that_pause_stopped(
     assert service.paused == []
 
 
-def test_a_resume_leaves_the_transfer_of_a_disabled_subscription_stopped(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("followed", "paused"),
+    [("a", True), ("old", True), ("gone", False), ("a", False), ("old", False)],
+)
+def test_a_resume_takes_up_only_the_transfer_of_a_followed_active_subscription(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, followed: str, paused: bool
 ) -> None:
-    owner, network, store, service = _pausable(tmp_path, monkeypatch, subscription_id="a")
-    assert service.subscriptions is not None
-    service.subscriptions.entries[0].enabled = False
+    record: SubscriptionRecord = SubscriptionRecord(
+        subscription_id="a",
+        anilist_id=1,
+        title="Series",
+        subscribed_at=_MOMENT.isoformat(),
+        cut=0,
+        merged_from=("old",),
+        paused=paused,
+        pause_reason=PauseReason.USER if paused else None,
+    )
+    owner, network, store, _ = _pausable(tmp_path, monkeypatch, subscription_id=followed, subscriptions=(record,))
+    resumed: bool = followed != "gone" and not paused
     thread: threading.Thread = _serving(owner)
     try:
         assert _await(lambda: network.info_calls > 1)
         assert _switched(owner, enabled=False, command_id="pause-1")
         assert _await(lambda: ("9", "stop") in network.actions)
         assert _switched(owner, enabled=True, command_id="resume-1")
+        if resumed:
+            assert _await(lambda: ("9", "resume") in network.actions)
         time.sleep(0.2)
     finally:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
 
-    assert ("9", "resume") not in network.actions
+    assert (("9", "resume") in network.actions) is resumed
     assert store.load().pause_owned_transfers == ()
 
 
@@ -6134,30 +5075,6 @@ def test_a_paused_resident_admits_an_explicit_start_as_user_work(tmp_path: Path)
     assert len(service.submitted) == 1
     assert [item.automatic for item in store.load().requests] == [False]
     assert store.load().policy.auto_enabled is False
-
-
-def test_a_late_subscription_result_is_refused_by_a_pause_that_landed_during_the_search(tmp_path: Path) -> None:
-    service, store, network, subscription = _subscription_library(tmp_path)
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-
-    def pause_during_search() -> None:
-        _switched(owner, enabled=False, command_id="pause-1")
-
-    network.before_search = pause_during_search
-    try:
-        assert _switched(owner, enabled=True, command_id="resume-0")
-        answer: ControlResponse = owner.handle(_request("subscriptions_check", command_id="check-1"))
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-
-    state: WatchState = store.load()
-    assert answer.ok
-    assert state.policy.auto_enabled is False
-    assert network.added == []
-    assert state.acquisitions == ()
-    assert subscription.enabled is True
 
 
 def test_a_stored_pause_is_still_a_pause_after_a_restart(tmp_path: Path) -> None:
@@ -6227,22 +5144,6 @@ def test_a_client_that_cannot_be_prepared_is_reported_without_stopping_the_resid
     assert answer.result["transfers_problem"] is not None
 
 
-def test_an_empty_subscription_orders_nothing_while_the_resident_works(tmp_path: Path) -> None:
-    service, store, network, _ = _subscription_library(tmp_path)
-    network.releases = ()
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    try:
-        assert _switched(owner, enabled=True, command_id="resume-0")
-        assert owner.handle(_request("subscriptions_check", command_id="check-1")).ok
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-
-    assert network.added == []
-    assert store.load().acquisitions == ()
-
-
 def _qbittorrent_replies(root: Path) -> Callable[[httpx.Request], httpx.Response]:
     def respond(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/torrents/info"):
@@ -6283,11 +5184,9 @@ def _measured_acquisition(
     return management
 
 
-def _idle_counts(
-    control: RequestControl, service: _Service, subscriptions: _Subscriptions, management: _TorrentNetwork
-) -> tuple[int, int, int, int]:
+def _idle_counts(control: RequestControl, service: _Service, management: _TorrentNetwork) -> tuple[int, int, int]:
     requests: int = sum(int(cast("int", item["count"])) for item in control.counts())
-    return (requests, service.discover_calls, subscriptions.checks, management.resume_calls)
+    return (requests, service.discover_calls, management.resume_calls)
 
 
 @pytest.mark.integration
@@ -6477,9 +5376,6 @@ def test_a_full_pause_stops_every_real_request_and_probe_that_a_live_panel_canno
 ) -> None:
     monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
     service, store, _ = _library(tmp_path)
-    subscriptions: _Subscriptions | None = service.subscriptions
-    assert subscriptions is not None
-    subscriptions.due_at = _MOMENT + timedelta(hours=1)
     control: RequestControl = RequestControl(httpx.MockTransport(_qbittorrent_replies(tmp_path)))
     http: httpx.Client = httpx.Client(transport=control)
     management: _TorrentNetwork = _measured_acquisition(tmp_path, service, http, control)
@@ -6501,22 +5397,22 @@ def test_a_full_pause_stops_every_real_request_and_probe_that_a_live_panel_canno
     reader: threading.Thread = threading.Thread(target=lambda: frames.extend(stream.events()), daemon=True)
     reader.start()
     try:
-        assert _await(lambda: _idle_counts(control, service, subscriptions, management)[0] > 1)
+        assert _await(lambda: _idle_counts(control, service, management)[0] > 1)
         assert panel.call("set_auto", {"enabled": False})["auto_enabled"] is False
         assert _await(lambda: ("9", "stop") in management.actions)
         assert _await(lambda: panel.call("status")["paused"] is True)
-        watched: tuple[int, int, int, int] = _idle_counts(control, service, subscriptions, management)
+        watched: tuple[int, int, int] = _idle_counts(control, service, management)
         time.sleep(0.4)
-        assert _idle_counts(control, service, subscriptions, management) == watched
+        assert _idle_counts(control, service, management) == watched
         for index in range(3):
             assert panel.call("status", command_id=f"status-{index}")["paused"] is True
-        assert _idle_counts(control, service, subscriptions, management) == watched
+        assert _idle_counts(control, service, management) == watched
         assert frames != []
         panel.close()
         stream.close()
         assert _await(lambda: not reader.is_alive())
         time.sleep(0.4)
-        assert _idle_counts(control, service, subscriptions, management) == watched
+        assert _idle_counts(control, service, management) == watched
     finally:
         panel.close()
         stream.close()
@@ -6526,7 +5422,7 @@ def test_a_full_pause_stops_every_real_request_and_probe_that_a_live_panel_canno
         http.close()
 
     assert watched[0] > 1
-    assert watched[3] > 0
+    assert watched[2] > 0
     assert store.load().pause_owned_transfers == ("9",)
 
 
@@ -6536,9 +5432,6 @@ def test_a_settled_working_resident_polls_nothing_while_its_schedule_stays_armed
 ) -> None:
     monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
     service, store, _ = _library(tmp_path)
-    subscriptions: _Subscriptions | None = service.subscriptions
-    assert subscriptions is not None
-    subscriptions.due_at = _MOMENT + timedelta(hours=1)
     control: RequestControl = RequestControl(httpx.MockTransport(_qbittorrent_replies(tmp_path)))
     http: httpx.Client = httpx.Client(transport=control)
     management: _TorrentNetwork = _measured_acquisition(tmp_path, service, http, control)
@@ -6553,17 +5446,15 @@ def test_a_settled_working_resident_polls_nothing_while_its_schedule_stays_armed
         owner._on_owner(lambda: owner._save(replace(owner.state, acquisitions=(replace(finished, state=state),))))
         assert owner.handle(_request("panel_attach", session_id="panel")).ok
         time.sleep(0.3)
-        measured: tuple[int, int, int, int] = _idle_counts(control, service, subscriptions, management)
+        measured: tuple[int, int, int] = _idle_counts(control, service, management)
         time.sleep(0.4)
-        assert _idle_counts(control, service, subscriptions, management) == measured
-        armed: float | None = owner._subscriptions_at
+        assert _idle_counts(control, service, management) == measured
     finally:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
         http.close()
 
-    assert measured == (0, 0, 0, 0)
-    assert armed is not None
+    assert measured == (0, 0, 0)
 
 
 def test_pausing_is_reported_until_the_started_work_reaches_its_boundary(tmp_path: Path) -> None:
@@ -6734,10 +5625,9 @@ def test_a_confirmed_pause_already_carries_its_recorded_stop_in_the_stored_state
     assert stopped.action_pending is True
 
 
-def test_a_full_pause_refuses_a_client_resume_and_a_manual_subscription_check(tmp_path: Path) -> None:
+def test_a_full_pause_refuses_a_client_resume(tmp_path: Path) -> None:
     service, store, _ = _library(tmp_path)
     network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.5, 1),))
-    subscriptions: _Subscriptions = cast("_Subscriptions", service.subscriptions)
     store.save(
         WatchState(
             policy=AutomationPolicy(auto_enabled=False),
@@ -6750,7 +5640,6 @@ def test_a_full_pause_refuses_a_client_resume_and_a_manual_subscription_check(tm
         resumed: ControlResponse = owner.handle(
             _request("transfer", {"info_hash": "9", "action": "resume"}, command_id="resume-1")
         )
-        checked: ControlResponse = owner.handle(_request("subscriptions_check", command_id="check-1"))
         browsed: ControlResponse = owner.handle(
             _request("acquisition", {"operation": "search", "query": "Neko"}, command_id="browse-1")
         )
@@ -6763,11 +5652,8 @@ def test_a_full_pause_refuses_a_client_resume_and_a_manual_subscription_check(tm
 
     assert resumed.code is ControlErrorCode.REFUSED
     assert resumed.reason == RefusalReason.PAUSED.value
-    assert checked.code is ControlErrorCode.REFUSED
-    assert checked.reason == RefusalReason.PAUSED.value
     assert browsed.ok
     assert stopped.ok
-    assert subscriptions.checks == 0
     assert network.added == []
     assert [item for item in network.actions if item[1] == "resume"] == []
     assert store.load().acquisitions[0].requested_action == "stop"

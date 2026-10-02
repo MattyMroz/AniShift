@@ -6,9 +6,8 @@ import os
 import signal
 import subprocess
 import sys
-from decimal import Decimal
+from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Final, NoReturn, cast
 from unittest.mock import Mock
 
@@ -16,7 +15,7 @@ import pytest
 from typer.testing import CliRunner, Result
 
 from anishift import bootstrap
-from anishift.application import AppService, CheckOutcome, Subscription, encode_view
+from anishift.application import AppService, SubscriptionRow, encode_view
 from anishift.cli import control as cli_control
 from anishift.cli import interactive as interactive_package
 from anishift.cli import watch as cli_watch
@@ -423,39 +422,65 @@ def test_qbit_setup_reports_an_install_failure_without_a_traceback(monkeypatch: 
     assert "Traceback" not in result.output
 
 
-def _service_with_subscriptions(subscriptions: object) -> AppService:
-    return cast("AppService", SimpleNamespace(subscriptions=subscriptions))
+class _Resident:
+    def __init__(self, answer: object) -> None:
+        self.answer: object = answer
+        self.calls: list[tuple[str, object]] = []
+        self.closed: bool = False
+
+    def call(self, kind: str, payload: object = None) -> object:
+        self.calls.append((kind, payload))
+        if isinstance(self.answer, BaseException):
+            raise self.answer
+        return self.answer
+
+    def close(self) -> None:
+        self.closed = True
 
 
-def _followed(series: str, group: str, episode: int, checked: str | None) -> Subscription:
-    return Subscription(
+def _resident(monkeypatch: pytest.MonkeyPatch, answer: object) -> _Resident:
+    resident: _Resident = _Resident(answer)
+    monkeypatch.setattr(cli_control, "open_control", lambda _state_dir: resident)
+    return resident
+
+
+def test_subs_list_prints_one_row_per_followed_season_from_the_resident(monkeypatch: pytest.MonkeyPatch) -> None:
+    row: SubscriptionRow = SubscriptionRow(
         subscription_id="ab12cd34ef56",
-        series=series,
-        group=group,
-        next_episode=Decimal(episode),
-        checked_at=checked,
-        query=series,
-        min_resolution=1080,
-        taken=frozenset(),
-        added_at="2026-09-13T00:00:00+00:00",
+        anilist_id=500,
+        title="Neko to Ryuu",
+        from_number=3,
+        downloaded=2,
+        targets_total=None,
+        due_at=None,
+        paused=False,
+        pause_reason=None,
+        problem=None,
+        review_pending=True,
     )
-
-
-def test_subs_list_prints_one_row_per_followed_series(monkeypatch: pytest.MonkeyPatch) -> None:
-    followed: tuple[Subscription, ...] = (_followed("Neko to Ryuu", "SubsPlease", 12, None),)
-    service: AppService = _service_with_subscriptions(SimpleNamespace(list=lambda: followed))
-    monkeypatch.setattr(bootstrap, "production_service", lambda **kwargs: service)
+    rows: tuple[SubscriptionRow, ...] = (
+        row,
+        replace(
+            row, subscription_id="cd34", title="Oshi no Ko", from_number=None, targets_total=12, review_pending=False
+        ),
+        replace(row, subscription_id="ef56", paused=True, pause_reason="migrated_missing"),
+    )
+    resident: _Resident = _resident(monkeypatch, {"subscriptions": [encode_view(row) for row in rows]})
 
     result: Result = CliRunner().invoke(cli_main.app, ["subs", "list"])
 
     assert result.exit_code == 0
-    assert result.output.strip() == "ab12cd34ef56 [SubsPlease] Neko to Ryuu · next: 12 · checked: never"
+    assert result.output.splitlines() == [
+        "ab12cd34ef56 Neko to Ryuu · from: 3 · downloaded: 2 · migrated, review pending",
+        "cd34 Oshi no Ko · from: ? · downloaded: 2/12 · active",
+        "ef56 Neko to Ryuu · from: 3 · downloaded: 2 · paused (migrated_missing)",
+    ]
+    assert resident.calls == [("subscriptions_list", None)]
+    assert resident.closed
 
 
 def test_subs_list_states_when_nothing_is_followed(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        bootstrap, "production_service", lambda: _service_with_subscriptions(SimpleNamespace(list=lambda: ()))
-    )
+    _resident(monkeypatch, {"subscriptions": []})
 
     result: Result = CliRunner().invoke(cli_main.app, ["subs", "list"])
 
@@ -463,47 +488,39 @@ def test_subs_list_states_when_nothing_is_followed(monkeypatch: pytest.MonkeyPat
     assert result.output.strip() == "No followed series."
 
 
+def test_subs_remove_asks_the_resident_and_names_the_restore_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    resident: _Resident = _resident(monkeypatch, {"removed": True})
+
+    result: Result = CliRunner().invoke(cli_main.app, ["subs", "remove", "ab12cd34ef56"])
+
+    assert result.exit_code == 0
+    assert resident.calls == [("subscription_remove", {"subscription_id": "ab12cd34ef56"})]
+    assert "Ctrl+Z" in result.output
+
+
 def test_subs_remove_reports_an_unknown_id(monkeypatch: pytest.MonkeyPatch) -> None:
-    removed: list[str] = []
-
-    def remove(subscription_id: str) -> bool:
-        removed.append(subscription_id)
-        return False
-
-    monkeypatch.setattr(
-        cli_main, "_resident_call", lambda kind, payload: {"removed": remove(payload["subscription_id"])}
-    )
-
-    monkeypatch.setattr(
-        bootstrap, "production_service", lambda: _service_with_subscriptions(SimpleNamespace(remove=remove))
+    _resident(
+        monkeypatch,
+        ControlError("The subscription no longer exists", reason="subscription_missing", answered=True),
     )
 
     result: Result = CliRunner().invoke(cli_main.app, ["subs", "remove", "zzz"])
 
     assert result.exit_code == cli_main.EXIT_REFUSED
-    assert removed == ["zzz"]
-    assert "No followed series has that id." in result.output
+    assert "The subscription no longer exists" in result.output
+    assert "Traceback" not in result.output
 
 
-def test_subs_check_prints_downloads_and_problems_per_series(monkeypatch: pytest.MonkeyPatch) -> None:
-    outcomes: tuple[CheckOutcome, ...] = (
-        CheckOutcome(subscription=_followed("Neko to Ryuu", "SubsPlease", 12, "x"), downloaded=2, problem=""),
-        CheckOutcome(subscription=_followed("Oshi no Ko", "DKB", 3, "x"), downloaded=0, problem="Nyaa timed out"),
-    )
-    service: AppService = _service_with_subscriptions(SimpleNamespace(check_all=lambda: outcomes))
-    monkeypatch.setattr(cli_main, "_resident_call", lambda kind: {"outcomes": [encode_view(item) for item in outcomes]})
-    monkeypatch.setattr(bootstrap, "production_service", lambda **kwargs: service)
+def test_subs_check_is_not_offered(monkeypatch: pytest.MonkeyPatch) -> None:
+    resident: _Resident = _resident(monkeypatch, {})
 
     result: Result = CliRunner().invoke(cli_main.app, ["subs", "check"])
 
-    assert result.exit_code == 0
-    assert result.output.splitlines() == [
-        "[SubsPlease] Neko to Ryuu: downloaded 2",
-        "[DKB] Oshi no Ko: Nyaa timed out",
-    ]
+    assert result.exit_code != 0
+    assert resident.calls == []
 
 
-@pytest.mark.parametrize("command", [["subs", "list"], ["subs", "check"], ["subs", "remove", "ab12cd34ef56"]])
+@pytest.mark.parametrize("command", [["subs", "list"], ["subs", "remove", "ab12cd34ef56"]])
 def test_subs_states_a_broken_store_without_a_traceback(
     monkeypatch: pytest.MonkeyPatch,
     command: list[str],
@@ -517,9 +534,7 @@ def test_subs_states_a_broken_store_without_a_traceback(
             ),
         )
 
-    store: SimpleNamespace = SimpleNamespace(list=refuse, check_all=refuse, remove=refuse)
     monkeypatch.setattr(cli_control, "open_control", refuse)
-    monkeypatch.setattr(bootstrap, "production_service", lambda: _service_with_subscriptions(store))
 
     result: Result = CliRunner().invoke(cli_main.app, command)
 
@@ -527,11 +542,3 @@ def test_subs_states_a_broken_store_without_a_traceback(
     assert "Subscriptions file is invalid" in result.output
     assert "Fix or delete config/subscriptions.json" in result.output
     assert "Traceback" not in result.output
-
-
-def test_subs_refuses_a_session_without_subscriptions(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(bootstrap, "production_service", lambda: _service_with_subscriptions(None))
-
-    result: Result = CliRunner().invoke(cli_main.app, ["subs", "list"])
-
-    assert result.exit_code == cli_main.EXIT_REFUSED

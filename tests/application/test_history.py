@@ -7,7 +7,6 @@ from collections.abc import Callable
 from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 from pathlib import Path
 from typing import cast
 
@@ -47,13 +46,6 @@ from anishift.application.history import HistoryEvent, HistoryJournal, HistoryKi
 from anishift.application.intents import AutoPreset, ProductIntent, ProductKind, RequestOrigin
 from anishift.application.ready import ReadyMove, ReadyStore
 from anishift.application.service import AppService
-from anishift.application.subscriptions import (
-    EpisodeOrder,
-    EpisodeState,
-    Subscription,
-    SubscriptionService,
-    SubscriptionStore,
-)
 from anishift.application.watch_state import WatchStateStore
 from anishift.cli.interactive.manual import ManualController, materialize_intent
 from anishift.cli.interactive.state import StateController, StateResult
@@ -392,7 +384,7 @@ def test_explicit_reacquire_retains_deleted_subscription_provenance_and_never_re
         (),
         AcquisitionState.COMPLETE,
         RequestOrigin.USER,
-        "removed",
+        None,
         "2",
         datetime.now(UTC).isoformat(),
         nyaa_release_id=12,
@@ -535,7 +527,17 @@ def test_owner_startup_rotates_history_without_losing_problem_ready_or_download_
         service.close()
 
 
-def test_legacy_acquisition_cannot_be_retried_by_inventing_a_release_reference(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("subscription_id", "reference", "reason"),
+    [
+        (None, None, "retry_reference_missing"),
+        ("old-subscription", 12, "legacy_subscription_retry"),
+        ("old-subscription", None, "legacy_subscription_retry"),
+    ],
+)
+def test_legacy_acquisition_cannot_be_retried_remotely(
+    tmp_path: Path, subscription_id: str | None, reference: int | None, reason: str
+) -> None:
     network: _TorrentNetwork = _TorrentNetwork()
     acquisition: AcquisitionService = AcquisitionService(
         source=network,
@@ -552,17 +554,19 @@ def test_legacy_acquisition_cannot_be_retried_by_inventing_a_release_reference(t
         (),
         AcquisitionState.COMPLETE,
         RequestOrigin.USER,
-        "removed",
+        subscription_id,
         "2",
         datetime.now(UTC).isoformat(),
+        nyaa_release_id=reference,
+        release_title=None if reference is None else "[Group] Show - 02 (1080p).mkv",
     )
     store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(original,)))
     owner: AutomationOwner = _owner(service, store)
     thread: threading.Thread = _serving(owner)
     try:
         proposal: ControlResponse = owner.handle(_request("retry_prepare", {"material_id": "old"}))
-        assert proposal.reason == "retry_reference_missing"
-        assert not owner.handle(_request("reacquire", {"operation_id": "old"})).ok
+        assert proposal.reason == reason
+        assert owner.handle(_request("reacquire", {"operation_id": "old"})).reason == reason
         assert owner.state.command_receipts == ()
         assert owner.state.acquisitions == (original,)
         assert network.added == []
@@ -675,7 +679,7 @@ def test_history_retry_render_and_back_preserve_selected_material_and_tab_contex
 
 
 @pytest.mark.parametrize("ready", [False, True])
-def test_single_highlight_subscription_retry_opens_actual_selected_manual_after_relocation(
+def test_single_highlight_retry_of_an_old_subscription_material_opens_actual_selected_manual_after_relocation(
     tmp_path: Path,
     *,
     ready: bool,
@@ -690,28 +694,6 @@ def test_single_highlight_subscription_retry_opens_actual_selected_manual_after_
         parse_name=parse_release_name,
         torrent_management=cast("TorrentManagement", network),
     )
-    subscription: Subscription = Subscription(
-        "series",
-        "query",
-        "Series",
-        "Group",
-        Decimal(2),
-        1080,
-        frozenset({"old"}),
-        datetime.now(UTC).isoformat(),
-        None,
-        enabled=False,
-        episodes=(
-            EpisodeOrder(Decimal(2), state=EpisodeState.COMPLETE, acquisition_id="old"),
-            EpisodeOrder(Decimal(3), state=EpisodeState.COMPLETE, acquisition_id="gone"),
-        ),
-        future_from=None,
-    )
-    subscriptions: SubscriptionService = SubscriptionService(
-        store=SubscriptionStore(tmp_path / ".subscriptions.json"),
-        acquisition=acquisition,
-    )
-    SubscriptionStore(tmp_path / ".subscriptions.json").save((subscription,))
     confirmation: AcquisitionConfirmation = AcquisitionConfirmation(
         "old",
         "old",
@@ -732,21 +714,17 @@ def test_single_highlight_subscription_retry_opens_actual_selected_manual_after_
     )
     translation: FakeTranslationService = FakeTranslationService()
     preset: AutoPreset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL})))
-    service: AppService = _service(tmp_path, translation, acquisition=acquisition, subscriptions=subscriptions)
+    service: AppService = _service(tmp_path, translation, acquisition=acquisition)
     with closing(service), _panel_owner(service, tmp_path, ready=ready) as (session, store):
         groups: tuple[str, ...] = tuple(
             group.group_id for group in session.discover().groups if group.source.stem == "Book"
         )
         session.reserve(groups)
         assert session.execute(session.plan_auto(groups, preset), CollectingRunSink()).succeeded
-        with pytest.raises(ControlError) as mixed:
-            session.subscription_retry_proposal("series", (Decimal(2), Decimal(3)))
-        assert mixed.value.reason == "retry_choose_one"
         controller: StateController = StateController(session, lambda: None)
         try:
             assert _wait_for_resident(session, lambda _status: controller._connected)
-            controller.handle_key("left")
-            controller.handle_key("enter")
+            controller.handle_key("text:h")
             assert _await(lambda: not controller._busy)
             controller.handle_key("text:p")
             assert _await(lambda: not controller._busy)
@@ -768,7 +746,6 @@ def test_single_highlight_subscription_retry_opens_actual_selected_manual_after_
             controller._thread.join(5)
         assert len(translation.calls) == 1
         assert network.added == []
-        assert subscriptions.list()[0].repeats == ()
 
 
 @pytest.mark.parametrize("change", ["none", "missing", "replaced"])

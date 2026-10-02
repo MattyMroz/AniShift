@@ -5,8 +5,6 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 from pathlib import Path
 from time import monotonic
 from types import SimpleNamespace
@@ -17,7 +15,6 @@ from rich.text import Text
 
 import anishift.application.automation as automation_module
 from anishift.application import (
-    AcquisitionService,
     AppService,
     DeletionPreview,
     GroupIntent,
@@ -28,7 +25,7 @@ from anishift.application import (
     RunEvent,
     RunEventKind,
     RunMode,
-    Subscription,
+    SubscriptionRow,
     TaskKind,
     TaskState,
 )
@@ -38,11 +35,9 @@ from anishift.application.control_views import (
     PlanPreview,
     PreviewGroup,
     PreviewTask,
-    RetryProposal,
     RunProgressSnapshot,
     encode_view,
 )
-from anishift.application.subscriptions import EpisodeOrder, EpisodeState, SubscriptionService, SubscriptionStore
 from anishift.cli.exit_codes import EXIT_SUCCESS
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive import state as state_module
@@ -50,7 +45,6 @@ from anishift.cli.interactive.mascot import MascotController
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.settings import SettingsController
 from anishift.cli.interactive.state import StateController, StateResult, refusal_text
-from anishift.cli.interactive.subscriptions import SubscriptionDraft
 from anishift.cli.resident import ResidentSession
 from anishift.platform.local_control import (
     ControlClient,
@@ -399,49 +393,6 @@ def test_local_admitted_material_is_preparing_before_progress_restore_and_first_
         item["state"] = "succeeded"
         controller._runs.clear()
         assert controller._processing_rows() == []
-    finally:
-        controller.close()
-        controller._thread.join(5)
-
-
-@pytest.mark.unit
-def test_deleted_open_subscription_does_not_interrupt_state_events(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(StateController, "_watch", lambda self: None)
-    subscription: Subscription = Subscription(
-        "series",
-        "query",
-        "Series",
-        "Group",
-        Decimal(1),
-        1080,
-        frozenset(),
-        "2026-09-16",
-        None,
-        episodes=(EpisodeOrder(Decimal(1), state=EpisodeState.COMPLETE),),
-    )
-    requests: list[str] = []
-
-    def command(kind: str, payload: Mapping[str, object] | None = None) -> Mapping[str, object]:
-        requests.append(kind)
-        if kind == "subscription_get":
-            assert payload == {"subscription_id": "series"}
-            raise ControlError("Unknown subscription", code=ControlErrorCode.INVALID_PAYLOAD, answered=True)
-        assert kind == "subscriptions_list"
-        return {"subscriptions": []}
-
-    session: ResidentSession = cast("ResidentSession", SimpleNamespace(command=command))
-    controller: StateController = StateController(session, lambda: None)
-    draft: SubscriptionDraft = SubscriptionDraft.from_subscription(subscription, {"1": "completed"})
-    controller._draft = draft
-    try:
-        for enabled in (True, False):
-            payload: dict[str, object] = {"auto_enabled": enabled}
-            controller._receive(session, {"event": "state_changed", "payload": payload})
-            assert controller._connected
-            assert controller._snapshot == payload
-            assert controller._draft is draft
-            assert draft.completed == {Decimal(1)}
-        assert requests == ["subscriptions_list", "subscription_get"] * 2
     finally:
         controller.close()
         controller._thread.join(5)
@@ -1117,21 +1068,8 @@ def test_processing_excludes_saved_downloads_regardless_of_client_measurement(
             return ControlResponse.succeeded(
                 {
                     "subscriptions": [
-                        {
-                            "subscription_id": "series",
-                            "series": "Example",
-                            "enabled": True,
-                            "group": "SubsPlease",
-                            "next_episode": "22",
-                            "end_state": "active",
-                        },
-                        {
-                            "subscription_id": "other",
-                            "series": "Other",
-                            "enabled": False,
-                            "group": "Group",
-                            "next_episode": "1",
-                        },
+                        encode_view(_row("series", "Example", from_number=22)),
+                        encode_view(_row("other", "Other", paused=True)),
                     ]
                 }
             )
@@ -1157,11 +1095,11 @@ def test_processing_excludes_saved_downloads_regardless_of_client_measurement(
         assert all(len(line) <= 80 for line in frame.splitlines())
         controller.handle_key("left")
         frame = controller.render(80, 24).plain
-        assert "[SubsPlease] · Brak terminu" in frame
-        assert "● Example" in frame
-        assert "X usuń" in frame
-        assert "Space aktywność" in frame
-        assert "pobieraj nowe" not in frame
+        assert "D Dodaj subskrypcję · Aktywne: 1" in frame
+        assert "Example · od 22 · Pobrano 1/?" in frame
+        assert "Sprawdzam przeniesioną subskrypcję" in frame
+        assert "Wstrzymana · W wznów" in frame
+        assert "Del usuń" in frame
         _assert_wrapping_navigation(controller)
         _assert_list_fills_available_rows(controller)
         _assert_title_wraps(controller)
@@ -1180,18 +1118,46 @@ def test_processing_excludes_saved_downloads_regardless_of_client_measurement(
         controller._thread.join(5)
 
 
+def _row(subscription_id: str, title: str, *, from_number: int | None = 1, paused: bool = False) -> SubscriptionRow:
+    return SubscriptionRow(
+        subscription_id=subscription_id,
+        anilist_id=None,
+        title=title,
+        from_number=from_number,
+        downloaded=1,
+        targets_total=None,
+        due_at=None,
+        paused=paused,
+        pause_reason="user" if paused else None,
+        problem=None,
+        review_pending=not paused,
+    )
+
+
 def _assert_wrapping_navigation(controller: StateController) -> None:
     controller.handle_key("up")
-    assert controller._selected == 1
-    assert "\u276f ○ Other" in controller.render(80, 24).plain
+    assert controller._selected == 2
+    assert "\u276f Other" in controller.render(80, 24).plain
     controller.handle_key("down")
+    assert controller._selected == 0
+
+
+def _assert_list_fills_available_rows(controller: StateController) -> None:
+    controller._subscriptions.extend(encode_view(_row(f"s{index}", f"Series {index}")) for index in range(20))
+    frame: str = controller.render(80, 24).plain
+    assert len(frame.splitlines()) <= 24
+    assert "Series 0" in frame
+    controller.handle_key("end")
+    assert controller._selected == 22
+    assert "Series 19" in controller.render(80, 24).plain
+    controller.handle_key("home")
     assert controller._selected == 0
 
 
 def _assert_title_wraps(controller: StateController) -> None:
     controller._subscriptions[0] = {
         **controller._subscriptions[0],
-        "series": "A very long anime title " * 10 + "Finale",
+        "title": "A very long anime title " * 10 + "Finale",
     }
     frame: str = controller.render(80, 24).plain
     assert "Finale" in frame
@@ -1701,23 +1667,16 @@ def test_an_unanswered_command_does_not_claim_refusal_or_logged_failure(code: Co
     )
 
 
-def test_subscription_refusals_translate_machine_reasons_and_name_only_affected_numbers() -> None:
-    ambiguous: str = refusal_text(ControlError("unrelated message", reason="subscription_season_ambiguous"))
-    available: str = refusal_text(
-        ControlError(
-            "another unrelated message", reason="subscription_source_available", details={"episodes": ["7.5", "9"]}
-        )
-    )
-
-    assert ambiguous == "Nie można jednoznacznie rozpoznać sezonu · wybierz go z katalogu AniList"
-    assert available == "Źródło jest dostępne · użyj Ręcznego, aby je przetworzyć · odcinki: 7.5, 9"
-    assert "Przetwarzaniu" not in available
-
-
-def test_a_calendar_failure_is_visible_with_its_existing_manual_recovery_key() -> None:
-    assert state_module._subscription_term({"calendar_problem": "title_catalog_failed"}) == (
-        "Brak terminu · Kalendarz niedostępny · F: sprawdź ponownie"
-    )
+@pytest.mark.parametrize(
+    ("reason", "text"),
+    [
+        ("subscription_missing", "Tej subskrypcji już nie ma"),
+        ("nothing_to_restore", "Brak usuniętej subskrypcji do przywrócenia"),
+        ("subscription_exists", "Ten sezon jest już subskrybowany"),
+    ],
+)
+def test_subscription_refusals_translate_machine_reasons(reason: str, text: str) -> None:
+    assert refusal_text(ControlError("unrelated message", reason=reason, details={"episodes": ["9"]})) == text
 
 
 def _await(condition: Callable[[], bool], refreshed: threading.Event) -> None:
@@ -1843,274 +1802,6 @@ def test_library_return_keeps_identity_and_detached_scroll_after_an_inactive_ref
         controller._thread.join(5)
 
 
-@pytest.mark.parametrize("action", ["escape", "enter", "text:p"])
-def test_subscription_card_keeps_completed_facts_and_requires_explicit_repeat(
-    monkeypatch: pytest.MonkeyPatch, action: str
-) -> None:
-    monkeypatch.setattr(StateController, "_watch", lambda self: None)
-    subscription: Subscription = Subscription(
-        "series",
-        "query",
-        "Series",
-        "Group",
-        Decimal(8),
-        1080,
-        frozenset({"old-hash"}),
-        "2026-09-16",
-        None,
-        episodes=(
-            EpisodeOrder(Decimal(3), state=EpisodeState.COMPLETE, info_hash="old-hash", acquisition_id="old"),
-            EpisodeOrder(Decimal("7.5")),
-            EpisodeOrder(Decimal(8)),
-        ),
-        future_from=Decimal(9),
-    )
-    repeated: list[tuple[str, tuple[Decimal, ...]]] = []
-
-    def repeat(identifier: str, numbers: tuple[Decimal, ...]) -> Subscription:
-        repeated.append((identifier, numbers))
-        return replace(subscription, episodes=(replace(subscription.episodes[0], state=EpisodeState.DUE),))
-
-    session: ResidentSession = cast(
-        "ResidentSession",
-        SimpleNamespace(
-            command=lambda kind, payload: {**encode_view(subscription), "work_states": {"3": "completed"}},
-            repeat=repeat,
-            subscription_retry_proposal=lambda identifier, numbers: RetryProposal(
-                identifier, "subscription", subscription_id=identifier, episodes=numbers
-            ),
-            close=lambda: None,
-        ),
-    )
-    controller: StateController = StateController(
-        cast("ResidentSession", SimpleNamespace(new_session=lambda: session)), lambda: None
-    )
-    controller._tab = state_module._Tab.SUBSCRIPTIONS
-    controller._subscriptions = [{"subscription_id": "series", "series": "Series", "group": "Group"}]
-    try:
-        controller.handle_key("enter")
-        _await_state_action(controller)
-        assert "○ 3 · ukończono produkty" in controller.render(80, 24).plain
-        controller.handle_key("text:a")
-        assert "○ 3 · ukończono produkty" in controller.render(80, 24).plain
-        controller.handle_key("space")
-        controller.handle_key(action)
-        _await_state_action(controller)
-        if action == "text:p":
-            assert repeated == []
-            controller.handle_key("enter")
-            _await_state_action(controller)
-        assert repeated == ([("series", (Decimal(3),))] if action == "text:p" else [])
-        assert subscription.episodes[0].acquisition_id == "old"
-        assert subscription.episodes[0].state is EpisodeState.COMPLETE
-        if action == "enter":
-            assert "wymagają jawnego P Ponów" in controller.render(80, 24).plain
-        elif action == "escape":
-            assert controller._draft is None
-        else:
-            assert controller._draft is not None
-            assert not controller._draft.completed
-            assert "Przyjęto ponowienie: 3" in controller.render(120, 24).plain
-            assert "Enter stosuje pozostały zakres" in controller.render(120, 24).plain
-    finally:
-        controller.close()
-        controller._thread.join(5)
-
-
-@pytest.mark.parametrize("finish", ["enter", "escape"])
-def test_repeat_preserves_mixed_draft_until_separate_range_confirmation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, finish: str
-) -> None:
-    monkeypatch.setattr(StateController, "_watch", lambda self: None)
-    store: SubscriptionStore = SubscriptionStore(tmp_path / "subscriptions.json")
-    original: Subscription = Subscription(
-        "series",
-        "query",
-        "Series",
-        "Group",
-        Decimal(1),
-        1080,
-        frozenset(),
-        "2026-09-16",
-        None,
-        episodes=(
-            EpisodeOrder(Decimal(1)),
-            EpisodeOrder(Decimal(2), selected=False),
-            EpisodeOrder(Decimal(3), state=EpisodeState.COMPLETE, acquisition_id="old"),
-        ),
-        future_from=Decimal(4),
-    )
-    store.save((original,))
-    service: SubscriptionService = SubscriptionService(store=store, acquisition=cast("AcquisitionService", object()))
-    commands: list[str] = []
-    refused: bool = True
-
-    def handle(request: ControlRequest) -> ControlResponse:
-        commands.append(request.kind)
-        current: Subscription = service.list()[0]
-        if request.kind == "subscription_get":
-            return ControlResponse.succeeded(
-                {
-                    **encode_view(current),
-                    "work_states": {"3": "completed" if current.episodes[2].state is EpisodeState.COMPLETE else "due"},
-                }
-            )
-        if request.kind in {"subscription_retry_prepare", "subscription_repeat"} and refused:
-            return ControlResponse.refused(ControlErrorCode.REFUSED, "Refused", RefusalReason.PAUSED.value)
-        if request.kind == "subscription_retry_prepare":
-            return ControlResponse.succeeded(
-                encode_view(RetryProposal("series", "subscription", subscription_id="series", episodes=(Decimal(3),)))
-            )
-        if request.kind == "subscription_repeat":
-            assert request.payload["episodes"] == ["3"]
-            return ControlResponse.succeeded(encode_view(service.repeat("series", (Decimal(3),))))
-        if request.kind == "subscription_range":
-            assert request.payload["selected"] == ["2", "3"]
-            assert request.payload["future_from"] is None
-            return ControlResponse.succeeded(
-                encode_view(service.set_range("series", selected=(Decimal(2), Decimal(3)), future_from=None))
-            )
-        result: dict[str, object] = (
-            {"subscriptions": [{"subscription_id": "series"}]} if request.kind == "subscriptions_list" else {}
-        )
-        return ControlResponse.succeeded(result)
-
-    key: bytes = os.urandom(32)
-    endpoint: str = control_endpoint(tmp_path)
-    server: ControlServer = ControlServer(endpoint, key, handle)
-    session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
-    controller: StateController = StateController(session, lambda: None)
-    controller._tab = state_module._Tab.SUBSCRIPTIONS
-    controller._subscriptions = [{"subscription_id": "series"}]
-    try:
-        controller.handle_key("enter")
-        _await_state_action(controller)
-        for action in ("space", "down", "space", "down", "space", "end", "space", "enter"):
-            controller.handle_key(action)
-        draft: SubscriptionDraft | None = controller._draft
-        assert draft is not None
-        assert draft.selected == {Decimal(2), Decimal(3)}
-        assert draft.future_from is None
-        assert "subscription_range" not in commands
-        controller.handle_key("text:p")
-        _await_state_action(controller)
-        assert controller._draft is draft
-        assert draft.completed == {Decimal(3)}
-        assert draft.selected == {Decimal(2), Decimal(3)}
-        assert draft.future_from is None
-        assert store.load() == (original,)
-        refused = False
-        _finish_mixed_draft_repeat(controller, session, store, commands, finish)
-    finally:
-        controller.close()
-        controller._thread.join(5)
-        session.close()
-        server.close()
-
-
-@pytest.mark.parametrize("leave", ["escape", "close"])
-def test_late_repeat_result_does_not_change_a_cancelled_subscription_draft(
-    monkeypatch: pytest.MonkeyPatch, leave: str
-) -> None:
-    monkeypatch.setattr(StateController, "_watch", lambda self: None)
-    subscription: Subscription = Subscription(
-        "series",
-        "query",
-        "Series",
-        "Group",
-        Decimal(1),
-        1080,
-        frozenset(),
-        "2026-09-16",
-        None,
-        episodes=(EpisodeOrder(Decimal(1), state=EpisodeState.COMPLETE),),
-    )
-    entered: threading.Event = threading.Event()
-    release: threading.Event = threading.Event()
-
-    def repeat(identifier: str, numbers: tuple[Decimal, ...]) -> Subscription:
-        assert identifier == "series"
-        assert numbers == (Decimal(1),)
-        entered.set()
-        assert release.wait(5)
-        return replace(subscription, generation=subscription.generation + 1)
-
-    session: ResidentSession = cast(
-        "ResidentSession",
-        SimpleNamespace(
-            repeat=repeat,
-            close=lambda: None,
-            subscription_retry_proposal=lambda identifier, numbers: RetryProposal(
-                identifier, "subscription", subscription_id=identifier, episodes=numbers
-            ),
-        ),
-    )
-    controller: StateController = StateController(
-        cast("ResidentSession", SimpleNamespace(new_session=lambda: session)), lambda: None
-    )
-    draft: SubscriptionDraft = SubscriptionDraft.from_subscription(subscription, {"1": "completed"})
-    controller._draft = draft
-    try:
-        controller.handle_key("space")
-        controller.handle_key("text:p")
-        _await_state_action(controller)
-        controller.handle_key("enter")
-        assert entered.wait(5)
-        if leave == "close":
-            controller.close()
-        else:
-            controller.handle_key("escape")
-        release.set()
-        _await_state_action(controller)
-        assert draft.subscription == subscription
-        assert draft.completed == {Decimal(1)}
-        assert draft.states[Decimal(1)] == "completed"
-    finally:
-        release.set()
-        _await_state_action(controller)
-        controller.close()
-        controller._thread.join(5)
-
-
-def _finish_mixed_draft_repeat(
-    controller: StateController, session: ResidentSession, store: SubscriptionStore, commands: list[str], finish: str
-) -> None:
-    draft: SubscriptionDraft | None = controller._draft
-    assert draft is not None
-    controller.handle_key("text:p")
-    _await_state_action(controller)
-    assert store.load()[0].repeats == ()
-    controller.handle_key("enter")
-    _await_state_action(controller)
-    accepted: Subscription = store.load()[0]
-    assert len(accepted.repeats) == 1
-    assert accepted.episodes[0].selected
-    assert not accepted.episodes[1].selected
-    assert accepted.future_from == Decimal(4)
-    assert controller._draft is draft
-    assert draft.subscription == accepted
-    assert not draft.completed
-    assert draft.states[Decimal(3)] == "due"
-    assert "Enter stosuje pozostały zakres" in controller.render(120, 24).plain
-    controller._receive(session, {"event": "state_changed", "payload": {"auto_enabled": True}})
-    assert draft.selected == {Decimal(2), Decimal(3)}
-    assert draft.future_from is None
-    assert commands.count("subscription_repeat") == 1
-    controller.handle_key(finish)
-    _await_state_action(controller)
-    assert controller._draft is None
-    saved: Subscription = store.load()[0]
-    assert len(saved.repeats) == 1
-    assert saved.repeats[0].previous_acquisition_id == "old"
-    if finish == "enter":
-        assert {item.number for item in saved.episodes if item.selected} == {Decimal(2), Decimal(3)}
-        assert saved.future_from is None
-        assert commands.count("subscription_range") == 1
-    else:
-        assert saved == accepted
-        assert "subscription_range" not in commands
-
-
 def test_history_does_not_address_hidden_processing_rows_or_drop_a_search_during_loading(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2157,79 +1848,6 @@ def test_history_does_not_address_hidden_processing_rows_or_drop_a_search_during
         controller._thread.join(5)
 
 
-def test_subscription_countdown_compares_instants_across_timezones() -> None:
-    now: datetime = datetime.fromisoformat("2026-10-01T21:11:51+02:00")
-    assert state_module._subscription_term({"airing_at": "2026-10-03T23:30:00+00:00"}, now) == (
-        "Emisja za 02d 04:18:09"
-    )
-
-
-@pytest.mark.parametrize("offset", [-10, 0, 1, 188289])
-def test_subscription_clock_never_treats_airing_as_output_readiness(offset: int) -> None:
-    now: datetime = datetime(2026, 9, 17, tzinfo=UTC)
-    item: dict[str, object] = {"airing_at": (now + timedelta(seconds=offset)).isoformat(), "airing_episode": "7.5"}
-    term: str = state_module._subscription_term(item, now)
-    assert term.startswith("Odc. 7.5 · ")
-    assert ("Czeka na wydanie" in term) is (offset <= 0)
-    assert "gotow" not in term.casefold()
-    assert "-" not in term
-    if offset == 188289:
-        assert "02d 04:18:09" in term
-    item["calendar_problem"] = "title_catalog_failed"
-    assert state_module._subscription_term(item, now) == term + " · Kalendarz niedostępny"
-
-
-@pytest.mark.parametrize(("columns", "rows"), [(120, 40), (80, 24), (40, 10)])
-def test_visible_subscription_list_and_card_tick_from_snapshot_and_accept_rescheduled_dates_without_io(
-    monkeypatch: pytest.MonkeyPatch, columns: int, rows: int
-) -> None:
-    moments: list[datetime] = [datetime(2026, 9, 17, tzinfo=UTC)]
-
-    class Clock(datetime):
-        @classmethod
-        def now(cls, tz: object = None) -> Clock:
-            del tz
-            return cls.fromisoformat(moments[0].isoformat())
-
-    monkeypatch.setattr(state_module, "datetime", Clock)
-    monkeypatch.setattr(StateController, "_watch", lambda self: None)
-    controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
-    subscription: Subscription = Subscription(
-        "series",
-        "query",
-        "Series",
-        "Group",
-        Decimal(8),
-        1080,
-        frozenset(),
-        "2026-09-17",
-        None,
-        episodes=(EpisodeOrder(Decimal(8), airing_at=(moments[0] + timedelta(seconds=188289)).isoformat()),),
-    )
-    item: dict[str, object] = automation_module._subscription_view(subscription, moments[0])
-    controller._subscriptions = [item]
-    controller._tab = 1
-    controller._connected = True
-    try:
-        assert "02d 04:18:09" in controller.render(columns, rows).plain
-        moments[0] += timedelta(seconds=1)
-        assert "02d 04:18:08" in controller.render(columns, rows).plain
-        controller._draft = SubscriptionDraft.from_subscription(subscription)
-        frame: str = controller.render(columns, rows).plain
-        assert "02d 04:18:08" in frame
-        assert "Enter zastosuj" in frame
-        assert len(frame.splitlines()) <= rows
-        item["airing_at"] = (moments[0] + timedelta(seconds=10)).isoformat()
-        assert "00d 00:00:10" in controller.render(columns, rows).plain
-        moments[0] += timedelta(seconds=10)
-        assert "Czeka na wydanie" in controller.render(columns, rows).plain
-        item["airing_at"] = None
-        assert "Brak terminu" in controller.render(columns, rows).plain
-    finally:
-        controller.close()
-        controller._thread.join(5)
-
-
 @pytest.mark.parametrize("tab", [0, 1, 2, 3])
 def test_compact_panel_keeps_heading_and_tabs_without_blank_lines(monkeypatch: pytest.MonkeyPatch, tab: int) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
@@ -2250,51 +1868,6 @@ def test_compact_panel_keeps_heading_and_tabs_without_blank_lines(monkeypatch: p
     finally:
         controller.close()
         controller._thread.join(5)
-
-
-def test_subscription_projection_prefers_the_nearest_future_selected_unfulfilled_episode() -> None:
-    now: datetime = datetime(2026, 9, 17, tzinfo=UTC)
-    subscription: Subscription = Subscription(
-        "series",
-        "query",
-        "Series",
-        "Group",
-        Decimal(2),
-        1080,
-        frozenset(),
-        "2026-09-17",
-        None,
-        episodes=(
-            EpisodeOrder(Decimal(2), state=EpisodeState.DUE, airing_at=(now - timedelta(days=30)).isoformat()),
-            EpisodeOrder(Decimal(3), state=EpisodeState.DUE, airing_at=(now - timedelta(days=20)).isoformat()),
-            EpisodeOrder(Decimal(4), selected=False, airing_at=(now + timedelta(days=1)).isoformat()),
-            EpisodeOrder(Decimal(5), state=EpisodeState.COMPLETE, airing_at=(now + timedelta(days=2)).isoformat()),
-            EpisodeOrder(Decimal("7.5"), airing_at=(now + timedelta(days=3)).isoformat()),
-            EpisodeOrder(Decimal(8), airing_at=(now + timedelta(days=10)).isoformat()),
-        ),
-    )
-    projection: dict[str, object] = automation_module._subscription_view(subscription, now)
-    assert projection["airing_episode"] == "7.5"
-    assert projection["airing_at"] == (now + timedelta(days=3)).isoformat()
-    past: dict[str, object] = automation_module._subscription_view(
-        replace(subscription, episodes=subscription.episodes[:2]), now
-    )
-    assert past["airing_episode"] == "3"
-
-
-def _assert_list_fills_available_rows(controller: StateController) -> None:
-    controller._subscriptions.extend(
-        {"series": f"Series {index}", "enabled": False, "group": "Group", "next_episode": 1} for index in range(20)
-    )
-    frame: str = controller.render(80, 24).plain
-    assert sum("● " in line or "○ " in line for line in frame.splitlines()) == 15
-    assert frame.splitlines()[3] == ""
-    assert "Space aktywność" in frame
-    assert len(frame.splitlines()) <= 24
-    controller.handle_key("end")
-    assert controller._selected == 21
-    controller.handle_key("home")
-    assert controller._selected == 0
 
 
 @pytest.mark.parametrize("inactive", [False, True])
@@ -2377,9 +1950,7 @@ def test_each_panel_tab_retains_contextual_actions_and_owner_counts_at_feasible_
             }
         ],
     }
-    controller._subscriptions = [
-        {"series": "Title", "group": "Group", "enabled": True, "airing_at": "2026-10-03T18:30:00+00:00"}
-    ]
+    controller._subscriptions = [encode_view(_row("series", "Title"))]
     try:
         frame: str = interactive_app._fit_frame(
             controller.render(columns, rows), "test", "workspace", columns, rows
@@ -2391,12 +1962,11 @@ def test_each_panel_tab_retains_contextual_actions_and_owner_counts_at_feasible_
         else:
             assert ("Przetwarzanie 0 · Praca" if tab == 2 else "↓ 2 · Przetwarzanie 3 · Czeka 4 · Praca") in frame
         assert "←→ widok" in frame
-        assert ("Enter odcinki", "H historia", "Delete usuń")[tab - 1] in frame
+        assert ("D dodaj", "H historia", "Delete usuń")[tab - 1] in frame
         assert len(frame.splitlines()) <= rows
         assert all(len(line) <= columns for line in frame.splitlines())
-        if tab == 1:
-            expected: str = state_module._subscription_term(controller._subscriptions[0])
-            assert expected in frame
+        if tab == 1 and rows >= 24:
+            assert "Title" in frame
     finally:
         controller.close()
         controller._thread.join(5)
@@ -2685,16 +2255,18 @@ def test_every_list_tab_pins_heading_and_keys_and_centers_its_content(
         controller._tab = tab
         controller._connected = True
         controller._snapshot = {"auto_enabled": True}
-        controller._subscriptions = [{"series": "Slime Season 4", "group": "SubsPlease", "enabled": True}]
+        controller._subscriptions = [encode_view(_row("slime", "Slime Season 4"))]
         lines: list[str] = controller.render(columns, rows).plain.splitlines()
         occupied: list[int] = [index for index, line in enumerate(lines) if line.strip()]
-        keys: int = len(lines)
+        keys: int = occupied[-1] + 1
         while keys - 1 in occupied:
             keys -= 1
         content: list[int] = [index for index in occupied if 3 < index < keys]
         left: int = min(len(lines[index]) - len(lines[index].lstrip()) for index in content)
         right: int = columns - max(len(lines[index].rstrip()) for index in content)
         assert len(lines) == rows - 1
+        assert occupied[-1] == len(lines) - (2 if tab == 3 else 1)
+        assert ("Praca" in lines[-1]) is (tab != 3)
         assert lines[0].strip() == "PANEL"
         assert "Subskrypcje" in lines[2]
         assert abs((content[0] - 4) - (keys - content[-1] - 1)) <= 1

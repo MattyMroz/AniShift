@@ -23,8 +23,8 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 ## Owner i stan rezydenta
 
 - `AutomationOwner` (`automation.py`) jest jedynym autorem `WatchState`: wątek `anishift-owner`
-  zdejmuje polecenia z kolejki, a `preview` i `subscriptions_check` idą na pulę `anishift-owner-io`,
-  więc `set_auto` nie czeka na skan ani sieć. Pętla śpi na kolejce bez timeoutu — bezczynny
+  zdejmuje polecenia z kolejki, a `preview` idzie na pulę `anishift-owner-io`,
+  więc `set_auto` nie czeka na skan. Pętla śpi na kolejce bez timeoutu — bezczynny
   rezydent nie wykonuje pracy.
 - Polecenie mutujące zapisuje stan RAZEM z `CommandReceipt` PRZED pozytywną odpowiedzią; nieudany
   zapis daje `INTERNAL` i zero skutku, a powtórzony `command_id` zwraca zapisany wynik bez drugiego
@@ -43,7 +43,7 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   zawodzi; polecenia sterowania nadal zapisują stan przed potwierdzeniem. Pętla ownera kończy się dopiero, gdy po `shutdown` nie ma aktywnych runów ani zleceń
   nierozliczonych przez ownera (`_drained`); samo `active_run_ids()` nie wystarcza, bo run bywa
   zdjęty z rejestru fasady przed zapisem stanu końcowego. Drain czeka też na dopuszczenia pobrań
-  i wyniki subskrypcji wracające z puli I/O.
+  i inne wyniki wracające z puli I/O.
 - `shutdown` zamyka dopuszczanie tasków; aktywne zadania kończą się bez anulowania, reszta grafu
   dostaje `PAUSED`, a staging zatrzymanych runów jest chroniony przed cleanup.
   `scheduler.py`, `service.py`, `sessions.py`
@@ -65,8 +65,8 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   biblioteki. Rezerwację kluczuje `group_id` (`fingerprint` tylko unieważnia podgląd), a marker
   ręcznej obsługi para `(group_id, source_fingerprint)` z `watch.py`, więc publikacja produktu nie
   unieważnia decyzji użytkownika. `control.py`
-- Pauza automatyzacji (`auto_enabled == False`) blokuje sprawdzanie subskrypcji, powtórki, ponowienia
-  subskrypcji i automatyczne dopuszczenie workspace przez `set_background_admission`, nigdy
+- Pauza automatyzacji (`auto_enabled == False`) blokuje powtórki i automatyczne dopuszczenie
+  workspace przez `set_background_admission`, nigdy
   `pause_runs`. Praca zlecona przez użytkownika nie jest odrzucana: Start, Ręczny, ponowienie i
   ponowne pobranie z panelu oraz D. Pobranie jest ręczne, gdy `AcquisitionConfirmation.manual`
   dowodzi pochodzenia USER bez subskrypcji albo jawnego ponownego pobrania. Recovery przy starcie
@@ -85,14 +85,16 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `state.json.bak` (bez parsowania po udanym `load()`/`save()` tej instancji; nieznany plik wymaga
   walidacji), potem `replace`. Uszkodzony JSON, nieznany klucz i nieobsługiwana wersja dają
   `ConfigError`, nigdy pustego stanu; brak pliku to stan domyślny z działającą automatyzacją, a
-  zapisana pauza pozostaje pauzą. `WATCH_STATE_SCHEMA_VERSION` to `3`; loader przyjmuje 1-3, starszy
+  zapisana pauza pozostaje pauzą. `WATCH_STATE_SCHEMA_VERSION` to `4`; loader przyjmuje 1-4, starszy
   plik migruje raz z kopią `state.json.v<wersja>.bak`, więc drugi `load()` nie zmienia bajtów.
-  Przed pierwszym zapisem schematu 3 (także przy pierwszym `save()` bez `state.json`) kopiuje bajt
-  w bajt `state.json` i `subscriptions.json` do `*.e2-migration.bak`: istniejącej kopii nie nadpisuje,
-  brak subskrypcji tylko loguje, a błąd kopii to `ConfigError` `IO_ERROR` bez zapisu nowego formatu.
+  Przed pierwszym zapisem schematu 3 i schematu 4 (także przy pierwszym `save()` bez `state.json`)
+  kopiuje bajt w bajt `state.json` i `subscriptions.json` do `*.e2-migration.bak` i
+  `*.e3-migration.bak`: istniejącej kopii nie nadpisuje, brak pliku tylko loguje, a błąd kopii to
+  `ConfigError` `IO_ERROR` bez zapisu nowego formatu.
   Walidacja jest wersjonowana: dokument 2+ musi mieć sekcje `recipes`, `ready_groups`,
   `pause_owned_transfers`, `pending_deletions`, `complete_files`, dokument 1 żadnej z nich;
-  potwierdzenie wersji 3 musi mieć `assignments` i `legacy_scope`, starsze nie mogą. Migracja nadaje
+  dokument 4 musi mieć `subscriptions`, `removed_subscription` i `legacy_orders`, starsze nie mogą;
+  potwierdzenie wersji 3+ musi mieć `assignments` i `legacy_scope`, starsze nie mogą. Migracja nadaje
   `complete_files` z `required_files` tylko potwierdzeniom `COMPLETE`. Trwałe ścieżki `ReadyGroup` i
   `PendingDeletion` przechodzą przez `require_relative_paths`. Opcjonalne `PendingDeletion.restore`
   jest w schemacie 2; czytniki sprzed Undo odrzucają je po pierwszym Undo. Nie usuwaj dowodów
@@ -147,10 +149,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   swojego hasha; po `COMPLETE` albo `FAILED` dostaje nową operację i staging. Przed ponownym dodaniem
   tego samego hasha zwolnij poprzedni wpis klienta; stare klucze pozostają chronione. Hashe legacy
   i kilka niedokończonych transferów odmawiają z `transfer_recorded`.
-- Konflikt liczy `control.episode_conflict`: klucz → `episode_admitted`, `LegacyScope` zapisany albo
-  odczytany z subskrypcji (taken, ORDERED/COMPLETE, stare potwierdzenia) → `episode_possibly_admitted`.
-  Polecenie `download` (stare wydania wg grup) i subskrypcje nie mają klucza odcinka, bo przed
-  przyjęciem brak nazwy pliku dla H1; dostają `LegacyScope(ID, numer lokalny)` i odmawiają wobec
+- Konflikt liczy `control.episode_conflict`: klucz → `episode_admitted`, `LegacyScope` zapisany w
+  potwierdzeniu albo w `WatchState.legacy_orders` → `episode_possibly_admitted`.
+  Polecenie `download` (stare wydania wg grup) nie ma klucza odcinka, bo przed
+  przyjęciem brak nazwy pliku dla H1; dostaje `LegacyScope(ID, numer lokalny)` i odmawia wobec
   przyjęć kluczowych (`legacy_conflict`), także przy powtórzeniu. Wywołujący `download` podaje ID
   tytułu i offset sezonu; nieznany offset daje zakres całego ID. Zapisane numery są lokalne — offset
   odejmuje się tylko od surowego numeru wydania bez odczytu sezonu. `automation.py`, `control.py`
@@ -222,7 +224,7 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   hasha i innej wersji tego samego numeru. Zwykłe dopuszczenie chroni każdy zapisany hash, także
   nieudanych pobrań; jawne ponowne pobranie zachowuje stare potwierdzenie i koreluje nową próbę.
   Usunięcie subskrypcji nie usuwa potwierdzenia. Obecność hasha w kliencie oznacza `ACCEPTED`,
-  nigdy kompletność pliku. `automation.py`, `subscriptions.py`
+  nigdy kompletność pliku. `automation.py`
 - `acquisition_staging.py` wylicza `temp/.acquisition/<operation_id>/data` z podanego workspace i
   nie tworzy markera runu. Ścieżki Windows i przodków od podanego katalogu w dół sprawdzaj pod kątem
   dowiązań przed I/O; junction powyżej workspace jest poza tą granicą. Helpery nie przyjmują pracy
@@ -268,41 +270,23 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - `season_context` liczy sezony, nie wpisy: `PrequelEntry.cour` (`Part N`/`Cour N`) podnosi offset,
   nie indeks, a kandydat będący cour zostaje w sezonie poprzednika. `acquisition.py`,
   `services/catalog/anilist.py`
-- `Subscription` trzyma `directory` (folder biblioteki niezależny od serii w nazwie wydania),
-  `season_index`/`episode_offset`/`season_episodes` i `taken_episodes` (numery jako teksty
-  dziesiętne). Pola spoza pierwotnej dziewiątki są opcjonalne przy odczycie; zapis jest pełny.
-- `SCHEMA_VERSION` to `4`; loader przyjmuje 1-4, starszy plik migruje raz z kopią
-  `subscriptions.json.v<wersja>.bak`, więc drugi `load()` nie zmienia bajtów. Każdy numer z
-  `taken_episodes` staje się `EpisodeOrder(..., ORDERED)` bez hasha — `taken` dowodzi przekazania
-  klientowi, nigdy kompletnego pliku. Kod sprzed schematu 2 odrzuca nowszy plik (`ConfigError`), więc
-  cofnięcie wersji wymaga przywrócenia `subscriptions.json.v1.bak` i restartu czuwania.
-  `resolve_subscription_id` (owner i `add`) zachowuje ID rozpoznanego sezonu; nowe sezony AniList
-  dostają deterministyczne ID z sezonem. Niepowiązany wpis nie nadpisuje znanego sezonu; przyjęte
-  receipt i późniejsze powiązanie zachowują pierwotne ID i historię. `subscriptions.py`
-- Rezydent planuje `check_due` według zapisanych terminów odcinków. Niepowiązane wpisy szukają
-  wydań co godzinę; próby powiązania respektują opóźnienia i budżet retry. Kalendarz ma osobny trwały
-  budżet i błąd; jego awaria nie blokuje wydań o potwierdzonym terminie. HIATUS i najbliższa data
-  dalej niż dobę oznaczają dobowe odświeżanie; daty bliskie i nieznane używają
-  `recheck_interval_s`. Jawne sprawdzenie pozwala na jedną próbę po wyczerpaniu budżetu, respektując
-  blokadę dostawcy.
-- `requested_at` zapisuje jawny wybór, a `awaiting_airing` oczekiwanie na konkretną emisję: początek
-  sezonu ani liczba odcinków nie otwierają wszystkich okien. Jawny numer bez daty może mieć
-  ograniczone okno, jeśli nic nie wskazuje na przyszłą emisję. HIATUS zachowuje przyszły zamiar;
-  FINISHED/CANCELLED nie otwierają okien nieemitowanych numerów. Terminalne okno nie odradza się po
-  restarcie ani powtórzeniu receipt.
-- `subscription_add` zapisuje receipt przed zmianą drugiego pliku; `added_by_command` pozwala
-  dokończyć potwierdzenie bez ponownego podniesienia generacji. Ręczne `download` zapisuje receipt
-  i hashe przed wysłaniem. Panel prowadzi wyszukiwanie i odczyty katalogu przez ownera.
-- `enable`/`disable`/`set_anilist_id` są idempotentne: bez zmiany wartości nie zapisują i nie
-  podnoszą `generation`, ze zmianą podnoszą o 1. `check_all` pomija wpisy wyłączone i z
-  `end_state != ACTIVE`; `check` wyłączonego wpisu zwraca `CheckOutcome` z problemem bez źródła.
-- `subscription_id` i `_matches` porównują serię w postaci znormalizowanej (`normalize_series`,
-  `series_forms`), nie surowy zapis wydania, bo etykieta grupy to pierwszy napotkany zapis.
-- `next_episode` przesuwa się do PIERWSZEGO całkowitego numeru w górę, którego nie ma w
-  `taken_episodes` ani wśród odcinków z bieżącego sprawdzenia — nigdy za lukę. Numer ułamkowy (7.5)
-  trafia do `taken_episodes`, ale licznika nie rusza. Gdy wyszukanie nie ma odcinka `next_episode`,
-  `check` dokłada jedno zapytanie `"{query} NN"`; jego awaria jest logowana i nie przerywa
-  sprawdzenia, bo główne wyszukanie już się udało. `subscriptions.py`
+- Subskrypcje żyją w `WatchState.subscriptions` jako `SubscriptionRecord`; wiersze, limit
+  `MAX_SUBSCRIPTIONS` (100) i kolejność listy (`display_order`: problem, termin, bez terminu,
+  pauza) mają jedno źródło w `subscription_targets.py`. Owner obsługuje tylko `subscriptions_list`,
+  `subscription_get` i `subscription_pause/resume/remove/restore`; każdy inny rodzaj `subscription*`
+  to `UNKNOWN_COMMAND`. Mutacja zapisuje receipt razem ze stanem. `removed_subscription` trzyma jedną
+  usuniętą subskrypcję dla Ctrl+Z; przywrócenie odmawia `subscription_exists` albo
+  `subscription_limit` i zachowuje ją. Wznowienie czyści `pause_reason`. `automation.py`
+- `config/subscriptions.json` jest zamrożonym plikiem poprzedniej wersji: owner go nigdy nie
+  zapisuje, a `subscriptions.py` służy tylko do jego dekodowania (schemat 1-4). Migracja stanu do
+  schematu 4 przenosi go czystym `subscription_migration.migrate` do rekordów i `legacy_orders`
+  (referencje konfliktów starych zamówień) i rozlicza oczekujące receipt dawnych poleceń
+  subskrypcji. Wynik powstaje i przechodzi walidację przed kopiami; uszkodzony lub nieczytelny plik
+  daje `ConfigError` `CONFIG_INVALID` z podpowiedzią przywrócenia kopii, bez zmiany obu plików.
+  `watch_state.py`, `subscription_migration.py`
+- Pobranie starej subskrypcji nie ma zdalnego ponowienia z Historii (`legacy_subscription_retry`);
+  lokalne wznowienie i przebudowa działają. Ręczne `download` zapisuje receipt i hashe przed
+  wysłaniem. Panel prowadzi wyszukiwanie i odczyty katalogu przez ownera. `automation.py`
 - `RequestControl` opakowuje wspólny transport HTTP metadanych i qBittorrenta: liczy rzeczywiste
   wywołania, współdzieli aktywne odczyty i blokady dostawców; trwałe terminy blokad zapisuje owner.
   Budżet operacji obejmuje zagnieżdżone zapytania, bez retry transportu. `services/http_requests.py`

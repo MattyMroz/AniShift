@@ -18,13 +18,7 @@ from anishift.utils.logger import get_logger
 from anishift.utils.rich_console import StatusType, console, get_status_icon
 
 if TYPE_CHECKING:
-    from anishift.application import (
-        AppService,
-        CheckOutcome,
-        RunResult,
-        Subscription,
-        SubscriptionService,
-    )
+    from anishift.application import AppService, RunResult, SubscriptionRow
     from anishift.application.events import RunEvent
     from anishift.cli.control import ResidentStatus
     from anishift.cli.run import AutoRunRefusal
@@ -109,29 +103,17 @@ _AUTOSTART_ENABLED: Final[str] = "Autostart is on; the watch runs now and after 
 _AUTOSTART_DISABLED: Final[str] = "Autostart is off; the running watch was asked to stop."
 """Confirmation printed once the logon task is gone and a stop was requested."""
 
-_QBIT_ABSENT: Final[str] = "This session has no torrent client composed."
-"""Refusal stated when the facade was built without the acquisition boundary."""
-
 _WATCH_SUGGESTION: Final[str] = "Run `anishift autostart enable` so the library is watched now and after every logon"
 """Advice printed by the doctor when nothing watches the library."""
 
 _SUBS_EMPTY: Final[str] = "No followed series."
 """Line printed when the subscription list is empty."""
 
-_SUBS_ROW: Final[str] = "{id} [{group}] {series} · next: {episode} · checked: {checked}"
-"""One list row per followed series."""
+_SUBS_ROW: Final[str] = "{id} {title} · from: {start} · downloaded: {downloaded} · {state}"
+"""One list row per followed season."""
 
-_SUBS_REMOVED: Final[str] = "Removed."
-"""Confirmation printed once a followed series is gone."""
-
-_SUBS_UNKNOWN: Final[str] = "No followed series has that id."
-"""Refusal printed when the id to remove does not exist."""
-
-_SUBS_CHECKED: Final[str] = "[{group}] {series}: downloaded {count}"
-"""Result row of one manual check."""
-
-_SUBS_PROBLEM: Final[str] = "[{group}] {series}: {problem}"
-"""Result row of one manual check that failed."""
+_SUBS_REMOVED: Final[str] = "Removed; `Ctrl+Z` in the Subscriptions panel restores it."
+"""Confirmation printed once a followed season is gone."""
 
 
 def _print_doctor_report(results: list[CheckResult]) -> None:
@@ -358,66 +340,43 @@ def qbit_setup() -> None:
 
 @subs_app.command("list")
 def subs_list() -> None:
-    """List every followed series with its next episode and last check."""
-    subscriptions: SubscriptionService = _subscriptions(_composed_service())
-    try:
-        followed: tuple[Subscription, ...] = subscriptions.list()
-    except AniShiftError as problem:
-        _refuse_command(problem)
-    if not followed:
+    """List every followed season with its first episode, downloads and state."""
+    from anishift.application import SubscriptionRow, decode_view  # noqa: PLC0415
+
+    raw: object = _resident_call("subscriptions_list").get("subscriptions", [])
+    rows: tuple[SubscriptionRow, ...] = (
+        tuple(decode_view(SubscriptionRow, item) for item in raw) if isinstance(raw, list) else ()
+    )
+    if not rows:
         typer.echo(_SUBS_EMPTY)
         return
-    for entry in followed:
-        row: str = _SUBS_ROW.format(
-            id=entry.subscription_id,
-            group=entry.group,
-            series=entry.series,
-            episode=entry.next_episode,
-            checked=entry.checked_at or "never",
+    for row in rows:
+        line: str = _SUBS_ROW.format(
+            id=row.subscription_id,
+            title=row.title,
+            start="?" if row.from_number is None else row.from_number,
+            downloaded=row.downloaded if row.targets_total is None else f"{row.downloaded}/{row.targets_total}",
+            state=_subscription_state(row),
         )
-        typer.echo(_safe(row))
+        typer.echo(_safe(line))
 
 
 @subs_app.command("remove")
 def subs_remove(
     subscription_id: Annotated[str, typer.Argument(help="Id shown by `anishift subs list`.")],
 ) -> None:
-    """Stop following one series; downloaded files stay where they are."""
-    removed: bool = bool(_resident_call("subscription_remove", {"subscription_id": subscription_id}).get("removed"))
-    if not removed:
-        typer.echo(_SUBS_UNKNOWN)
-        raise typer.Exit(code=EXIT_REFUSED)
+    """Stop following one season; downloaded files and running downloads stay."""
+    _resident_call("subscription_remove", {"subscription_id": subscription_id})
     typer.echo(_SUBS_REMOVED)
 
 
-@subs_app.command("check")
-def subs_check() -> None:
-    """Check every followed series now and queue the new episodes."""
-    from anishift.application import CheckOutcome, decode_view  # noqa: PLC0415
-
-    response: Mapping[str, object] = _resident_call("subscriptions_check")
-    raw: object = response.get("outcomes", [])
-    outcomes: tuple[CheckOutcome, ...] = (
-        tuple(decode_view(CheckOutcome, item) for item in raw) if isinstance(raw, list) else ()
-    )
-    if not outcomes:
-        typer.echo(_SUBS_EMPTY)
-        return
-    for outcome in outcomes:
-        entry: Subscription = outcome.subscription
-        if outcome.problem:
-            typer.echo(_safe(_SUBS_PROBLEM.format(group=entry.group, series=entry.series, problem=outcome.problem)))
-            continue
-        typer.echo(_safe(_SUBS_CHECKED.format(group=entry.group, series=entry.series, count=outcome.downloaded)))
-
-
-def _subscriptions(service: AppService) -> SubscriptionService:
-    """Return the composed subscription boundary or refuse with one sentence."""
-    subscriptions: SubscriptionService | None = service.subscriptions
-    if subscriptions is None:
-        typer.echo(_QBIT_ABSENT)
-        raise typer.Exit(code=EXIT_REFUSED)
-    return subscriptions
+def _subscription_state(row: SubscriptionRow) -> str:
+    """Name the state of one listed season in a single English phrase."""
+    if row.paused:
+        return f"paused ({row.pause_reason})"
+    if row.problem is not None:
+        return f"problem: {row.problem}"
+    return "migrated, review pending" if row.review_pending else "active"
 
 
 def _automation_checks() -> list[CheckResult]:

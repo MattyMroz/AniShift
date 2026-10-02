@@ -55,8 +55,11 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   „Dokończ poprzednią pracę” w Ręcznym wymaga tego samego zakresu grup co zapisane zlecenie;
   `plan_resume` odczytuje zweryfikowany pozostały graf, a Start zachowuje ID zlecenia.
 - Anime uses `ResidentSession` for catalogue reads, offers and episode downloads.
-  It has no group catalogue or subscription-creation route. Existing subscriptions retain
-  their own editing and checking tab. Receipts and admissions belong to the owner.
+  It has no group catalogue or subscription-creation route. Receipts and admissions belong to the owner.
+- The Subscriptions tab in `StateController` renders owner `subscriptions_list` rows and only sends
+  pause/resume, remove and Ctrl+Z restore; add and search show `Dostępne po aktualizacji`. Its
+  global banner keeps a fixed row above the list, reserved even when empty. `anishift subs` offers
+  only `list` and `remove` through the owner. `interactive/state.py`, `main.py`
 - `ResidentSession.episode_offer/episode_choose` share the interruptible catalogue connection:
   offers belong to its server session, so choosing on the main control connection would refuse them.
   `interrupt_reads` invalidates that interaction. Batch download uses the main connection and survives
@@ -248,8 +251,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   end of input, without inserting a character into the text.
   `interactive/text_input.py`, `interactive/state.py`, `interactive/anime.py`
 - Edycja pól tekstowych ma jeden model `interactive/text_input.py`, oparty na `Buffer`
-  i `Document` Prompt Toolkit. Wyszukiwarka, zakres odcinków, ścieżki Manual, ustawienia
-  i formularz subskrypcji używają tego samego kursora, zaznaczenia, kasowania i undo.
+  i `Document` Prompt Toolkit. Wyszukiwarka, zakres odcinków, ścieżki Manual i ustawienia
+  używają tego samego kursora, zaznaczenia, kasowania i undo.
   Nie dopisuj osobnych operacji na stringach w kontrolerach. Kopiowanie zaznaczenia
   ma pierwszeństwo przed wyjściem przez Ctrl+C; walidacja i moment zapisu należą do pola.
 - Nieudany zapis zachowuje `_pending` i widoczny błąd; idle nie ponawia go co klatkę.

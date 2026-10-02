@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from anishift.application.cancellation import CancellationToken
     from anishift.application.discovery import DiscoveryResult
     from anishift.application.service import AppService
-    from anishift.application.subscriptions import SubscriptionService
     from anishift.services.torrents import Release
 
 __all__ = ["AppContext", "bootstrap", "create_app_service", "production_service"]
@@ -84,7 +83,6 @@ def create_app_service(context: AppContext, *, managed_torrents: bool = False) -
             lambda: service.current_settings(),  # noqa: PLW0108 - defers the lookup until the service exists
         ),
         acquisition=acquisition,
-        subscriptions=_subscription_service(acquisition),
     )
     return service
 
@@ -137,19 +135,6 @@ def _acquisition_service(context: AppContext, *, managed_torrents: bool = False)
         episode_catalog=AniZipCatalog(http),
         stream_source=TorrentioSource(http),
     )
-
-
-def _subscription_service(acquisition: AcquisitionService) -> SubscriptionService:
-    """Wire the followed-series store beside the panel preferences onto the acquisition boundary."""
-    from anishift.application.subscriptions import (  # noqa: PLC0415
-        SUBSCRIPTIONS_FILE_NAME,
-        SubscriptionService,
-        SubscriptionStore,
-    )
-    from anishift.paths import config_dir  # noqa: PLC0415
-
-    store: SubscriptionStore = SubscriptionStore(config_dir() / SUBSCRIPTIONS_FILE_NAME)
-    return SubscriptionService(store=store, acquisition=acquisition)
 
 
 def _prepare_workspace_binaries(discovery: DiscoveryResult, cancel: CancellationToken) -> None:

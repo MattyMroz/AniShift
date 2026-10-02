@@ -570,7 +570,6 @@ def test_panel_query_requires_focus_and_preserves_text_across_tabs(
         for key in ("tab", "backtab"):
             panel.handle_key(key)
         assert panel.render(*size).plain == frame
-        assert panel._draft is None
         assert len(frame.splitlines()) <= size[1]
         assert all(Text(line).cell_len <= size[0] for line in frame.splitlines())
     finally:

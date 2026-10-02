@@ -47,6 +47,8 @@ _TIMESTAMP: str = "2026-09-08T12:00:00+00:00"
 
 _FINGERPRINT: SourceFingerprint = (("episode-01.mkv", 1024, 111),)
 
+_SCHEMA_FOUR_SECTIONS: tuple[str, ...] = ("subscriptions", "removed_subscription", "legacy_orders")
+
 _SCHEMA_TWO_SECTIONS: tuple[str, ...] = ("recipes", "ready_groups", "pause_owned_transfers", "pending_deletions")
 
 _SCHEMA_THREE_FIELDS: tuple[str, ...] = (
@@ -181,6 +183,8 @@ def _schema_two_document(tmp_path: Path, state: WatchState) -> dict[str, object]
     _store(tmp_path).save(state)
     document: dict[str, object] = json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
     document["schema_version"] = 2
+    for key in _SCHEMA_FOUR_SECTIONS:
+        document.pop(key)
     for acquisition in document["acquisitions"]:  # type: ignore[attr-defined]
         for key in _SCHEMA_THREE_FIELDS:
             acquisition.pop(key)
@@ -704,9 +708,8 @@ def test_migration_keeps_an_earlier_migration_copy(tmp_path: Path) -> None:
 
 
 def test_a_copy_that_cannot_be_made_blocks_the_first_schema_three_write(tmp_path: Path) -> None:
-    subscriptions: Path = tmp_path / "subscriptions.json"
-    subscriptions.mkdir()
-    store: WatchStateStore = WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME, subscriptions_path=subscriptions)
+    store, subscriptions = _owner_files(tmp_path)
+    (tmp_path / f"{subscriptions.name}.e2-migration.bak.tmp").mkdir()
     original: str = _write_schema_one(tmp_path, _state())
 
     with pytest.raises(ConfigError) as failure:
@@ -729,9 +732,8 @@ def test_the_first_write_without_a_state_preserves_existing_subscriptions_once(t
 
 
 def test_a_copy_that_cannot_be_made_blocks_the_first_write_without_a_state(tmp_path: Path) -> None:
-    subscriptions: Path = tmp_path / "subscriptions.json"
-    subscriptions.mkdir()
-    store: WatchStateStore = WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME, subscriptions_path=subscriptions)
+    store, subscriptions = _owner_files(tmp_path)
+    (tmp_path / f"{subscriptions.name}.e2-migration.bak.tmp").mkdir()
 
     with pytest.raises(ConfigError) as failure:
         store.save(_state())

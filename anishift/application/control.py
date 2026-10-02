@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
@@ -22,6 +23,8 @@ from anishift.application.workflows import WorkflowTarget
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
+    from anishift.application.subscription_targets import SubscriptionRecord
+
 __all__ = [
     "WATCH_STATE_SCHEMA_VERSION",
     "AcquisitionConfirmation",
@@ -37,6 +40,7 @@ __all__ = [
     "FileObjectIdentities",
     "FileReservation",
     "FileStamp",
+    "LegacyOrder",
     "LegacyScope",
     "ManualHandledMarker",
     "NarrationTimeline",
@@ -62,6 +66,7 @@ __all__ = [
     "compact_acquisition",
     "episode_conflict",
     "legacy_conflict",
+    "legacy_number",
     "mark_manual_handled",
     "preflight",
     "record_command",
@@ -76,7 +81,7 @@ __all__ = [
 REMOVED_FROM_CLIENT: Final[str] = "removed_from_client"
 """Terminal reason for a previously acknowledged transfer missing from its managed client."""
 
-WATCH_STATE_SCHEMA_VERSION: Final[int] = 3
+WATCH_STATE_SCHEMA_VERSION: Final[int] = 4
 """Current schema of the persisted automation state."""
 
 type SourceFingerprint = tuple[tuple[str, int, int], ...]
@@ -463,6 +468,41 @@ class LegacyScope:
 
 
 @dataclass(frozen=True, slots=True)
+class LegacyOrder:
+    """One order of the former subscription file, materialized with its conflict reference."""
+
+    anilist_id: int
+    number: int | None
+    reference: str
+    operation_id: str | None
+    complete: bool
+
+    def __post_init__(self) -> None:
+        if not self.reference or (self.operation_id is not None and not self.operation_id):
+            msg = "A legacy order requires its conflict reference and, when recorded, its operation"
+            raise ValueError(msg)
+        LegacyScope(self.anilist_id, self.number)
+
+    @property
+    def scope(self) -> LegacyScope:
+        """Catalogue entry and local episode this order may cover."""
+        return LegacyScope(self.anilist_id, self.number)
+
+
+def legacy_number(value: str | Decimal | None) -> int | None:
+    """Return a recorded season-local episode as a catalogue number, or nothing when it cannot be one."""
+    if value is None:
+        return None
+    try:
+        number: Decimal = Decimal(value)
+    except InvalidOperation:
+        return None
+    if not number.is_finite() or number != number.to_integral_value() or number < 1:
+        return None
+    return int(number)
+
+
+@dataclass(frozen=True, slots=True)
 class AcquisitionConfirmation:
     """What is known about one release handed to the torrent client."""
 
@@ -836,6 +876,16 @@ class WatchState:
     ready_groups: tuple[ReadyGroup, ...] = ()
     pause_owned_transfers: tuple[str, ...] = ()
     pending_deletions: tuple[PendingDeletion, ...] = ()
+    subscriptions: tuple[SubscriptionRecord, ...] = ()
+    removed_subscription: SubscriptionRecord | None = None
+    legacy_orders: tuple[LegacyOrder, ...] = ()
+
+    def __post_init__(self) -> None:
+        identities: tuple[str, ...] = tuple(item.subscription_id for item in self.subscriptions)
+        entries: tuple[int, ...] = tuple(item.anilist_id for item in self.subscriptions if item.anilist_id is not None)
+        if len(set(identities)) != len(identities) or len(set(entries)) != len(entries):
+            msg = "Every subscription has its own identity and follows its own catalogue entry"
+            raise ValueError(msg)
 
 
 def require_relative_paths(paths: Iterable[str], label: str) -> None:
@@ -948,23 +998,19 @@ def auto_admissible(  # noqa: PLR0913 - every admission condition stays an expli
     return not _manual_blocks(state, group_id, fingerprint, requested_products)
 
 
-def episode_conflict(
-    state: WatchState,
-    anilist_id: int,
-    number: int,
-    legacy: Iterable[LegacyScope] = (),
-) -> AdmissionConflict | None:
-    """Why admitting *number* of *anilist_id* would repeat an order, with *legacy* read beside the ledger."""
+def episode_conflict(state: WatchState, anilist_id: int, number: int) -> AdmissionConflict | None:
+    """Why admitting *number* of *anilist_id* would repeat an order recorded in *state*."""
     if any(
         item.choice.anilist_id == anilist_id and item.choice.number == number
         for acquisition in state.acquisitions
         for item in acquisition.protected_assignments
     ):
         return AdmissionConflict.ADMITTED
-    recorded: tuple[LegacyScope, ...] = tuple(
-        item.legacy_scope for item in state.acquisitions if item.legacy_scope is not None
+    recorded: tuple[LegacyScope, ...] = (
+        *(item.legacy_scope for item in state.acquisitions if item.legacy_scope is not None),
+        *(item.scope for item in state.legacy_orders),
     )
-    if any(scope.covers(anilist_id, number) for scope in (*recorded, *legacy)):
+    if any(scope.covers(anilist_id, number) for scope in recorded):
         return AdmissionConflict.POSSIBLY_ADMITTED
     return None
 

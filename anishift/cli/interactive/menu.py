@@ -75,13 +75,22 @@ def visible_window(count: int, selected: int, rows: int, *, heights: Sequence[in
 
 
 def wrap_entries(entries: Sequence[str | Text], columns: int) -> tuple[tuple[str | Text, ...], ...]:
-    """Wrap plain labels through Rich while retaining measured progress rows intact."""
+    """Wrap plain labels through Rich, indenting continuations like their line, keeping progress rows intact."""
     width: int = max(columns - 8, 1)
     console: Console = Console(width=width)
     return tuple(
-        (label,) if isinstance(label, Text) else tuple(line.plain for line in Text(label).wrap(console, width)) or ("",)
-        for label in entries
+        (label,) if isinstance(label, Text) else _wrap_label(label, console, width) or ("",) for label in entries
     )
+
+
+def _wrap_label(label: str, console: Console, width: int) -> tuple[str, ...]:
+    lines: list[str] = []
+    for paragraph in label.split("\n"):
+        text: str = paragraph.lstrip(" ")
+        indent: str = paragraph[: len(paragraph) - len(text)]
+        room: int = max(width - len(indent), 1)
+        lines.extend(f"{indent}{line.plain}" for line in Text(text).wrap(console, room))
+    return tuple(lines)
 
 
 def append_wrapped_row(content: Text, left: int, lines: Sequence[str | Text], active: bool, marker: str) -> None:

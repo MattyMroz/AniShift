@@ -12,7 +12,6 @@ import httpx
 import pytest
 
 from anishift.application.acquisition import AcquisitionService, CatalogOrder
-from anishift.application.subscriptions import SUBSCRIPTIONS_FILE_NAME, SubscriptionService, SubscriptionStore
 from anishift.services.catalog import AniListCatalog, AniZipCatalog
 from anishift.services.torrents import QBittorrentClient, TorrentioSource, parse_release_name, search_releases
 from anishift.services.torrents.categories import SEARCH_CATEGORIES
@@ -218,9 +217,7 @@ class FakeQBittorrent:
 @dataclass(frozen=True, slots=True)
 class Composed:
     acquisition: AcquisitionService
-    subscriptions: SubscriptionService
     client: FakeQBittorrent
-    store: SubscriptionStore
     workspace_root: Path
     nyaa_queries: list[tuple[str, str]]
     hosts: list[str] = field(default_factory=list)
@@ -280,12 +277,9 @@ def _build(
         episode_catalog=AniZipCatalog(http),
         stream_source=TorrentioSource(http),
     )
-    store: SubscriptionStore = SubscriptionStore(tmp_path / "config" / SUBSCRIPTIONS_FILE_NAME)
     return Composed(
         acquisition=acquisition,
-        subscriptions=SubscriptionService(store=store, acquisition=acquisition),
         client=client,
-        store=store,
         workspace_root=workspace_root,
         nyaa_queries=queries,
         hosts=hosts,

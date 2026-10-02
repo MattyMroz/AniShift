@@ -46,7 +46,8 @@ from anishift.application.control_views import encode_view
 from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.intents import RequestOrigin
 from anishift.application.service import AppService
-from anishift.application.subscriptions import Subscription, SubscriptionService, SubscriptionStore
+from anishift.application.subscription_migration import migrate
+from anishift.application.subscriptions import Subscription, SubscriptionStore
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
 from anishift.cli.resident import ResidentSession
 from anishift.platform.local_control import (
@@ -72,7 +73,6 @@ class _Library:
     service: AppService
     store: WatchStateStore
     network: _TorrentNetwork
-    subscriptions: SubscriptionService
     listing: Path
 
 
@@ -107,14 +107,10 @@ def _library(tmp_path: Path, *releases: Release, managed: bool = False) -> _Libr
         torrent_management=cast("TorrentManagement", network) if managed else None,
     )
     listing: Path = tmp_path / "subscriptions.json"
-    subscriptions: SubscriptionService = SubscriptionService(
-        store=SubscriptionStore(listing), acquisition=acquisition, sleep=lambda _: None
-    )
     return _Library(
-        _real_service(tmp_path, acquisition=acquisition, subscriptions=subscriptions),
+        _real_service(tmp_path, acquisition=acquisition),
         WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME, subscriptions_path=listing),
         network,
-        subscriptions,
         listing,
     )
 
@@ -164,18 +160,23 @@ def _download(
 
 
 def _subscribe(library: _Library, *, anilist_id: int | None, first: int = 3) -> Subscription:
-    return library.subscriptions.add(
-        "Neko to Ryuu",
-        "SubsPlease",
+    subscription: Subscription = Subscription(
+        subscription_id="neko-subsplease",
         query="neko",
-        first_episode=Decimal(first),
-        context=_SEASON,
+        series="Neko to Ryuu",
+        group="SubsPlease",
+        next_episode=Decimal(first),
+        min_resolution=1080,
+        taken=frozenset(),
+        added_at="2026-09-01T12:00:00+00:00",
+        checked_at=None,
+        season_index=_SEASON.index,
+        episode_offset=_SEASON.offset,
+        season_episodes=_SEASON.episodes,
         anilist_id=anilist_id,
     )
-
-
-def _check(owner: AutomationOwner, command_id: str) -> ControlResponse:
-    return owner.handle(_request("subscriptions_check", command_id=command_id))
+    SubscriptionStore(library.listing).save([subscription])
+    return subscription
 
 
 def _admitted(store: WatchStateStore) -> list[tuple[int, int]]:
@@ -393,55 +394,6 @@ def test_a_legacy_download_of_the_admitted_stream_is_deduplicated_without_any_en
     assert library.network.added == []
 
 
-def test_a_linked_subscription_after_the_gate_orders_its_neighbour_but_not_the_admitted_episode(
-    tmp_path: Path,
-) -> None:
-    library: _Library = _library(tmp_path, _release(27), _release(28))
-    _subscribe(library, anilist_id=_ENTRY)
-    with _running(library) as owner:
-        assert owner.admit_episode("admit-1", _choice(3)).ok
-        assert _check(owner, "check-1").ok
-
-    assert library.network.added == ["g28"]
-    legacy: list[AcquisitionConfirmation] = [item for item in library.store.load().acquisitions if not item.selective]
-    assert [item.legacy_scope for item in legacy] == [LegacyScope(_ENTRY, 4)]
-
-
-def test_the_gate_after_a_linked_subscription_refuses_the_ordered_episode(tmp_path: Path) -> None:
-    library: _Library = _library(tmp_path, _release(27))
-    _subscribe(library, anilist_id=_ENTRY)
-    with _running(library) as owner:
-        assert _check(owner, "check-1").ok
-        same: ControlResponse = owner.admit_episode("admit-1", _choice(3))
-        neighbour: ControlResponse = owner.admit_episode("admit-2", _choice(4))
-
-    assert library.network.added == ["g27"]
-    assert (same.ok, same.reason) == (False, "episode_possibly_admitted")
-    assert neighbour.ok
-
-
-def test_a_subscription_without_an_entry_still_orders_another_stream_of_the_admitted_episode(
-    tmp_path: Path,
-) -> None:
-    library: _Library = _library(tmp_path, _release(27))
-    _subscribe(library, anilist_id=None)
-    with _running(library) as owner:
-        assert owner.admit_episode("admit-1", _choice(3)).ok
-        assert _check(owner, "check-1").ok
-
-    assert library.network.added == ["g27"]
-
-
-def test_a_subscription_without_an_entry_skips_the_admitted_stream(tmp_path: Path) -> None:
-    library: _Library = _library(tmp_path, _release(27, "t500-3"))
-    _subscribe(library, anilist_id=None)
-    with _running(library) as owner:
-        assert owner.admit_episode("admit-1", _choice(3)).ok
-        assert _check(owner, "check-1").ok
-
-    assert library.network.added == []
-
-
 @pytest.mark.parametrize(
     ("taken", "blocked", "passing"),
     [(("3",), 3, 4), (("7.5",), 9, None)],
@@ -494,7 +446,13 @@ def test_an_older_subscription_order_is_scoped_through_its_subscription_at_the_g
         episode="5",
         updated_at="2026-09-08T12:00:00+00:00",
     )
-    library.store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(older,)))
+    library.store.save(
+        migrate(
+            WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(older,)),
+            (subscription,),
+            datetime(2026, 9, 9, tzinfo=UTC),
+        )
+    )
     with _running(library) as owner:
         answer: ControlResponse = owner.admit_episode("admit-1", _choice(5))
 
@@ -631,16 +589,3 @@ def test_a_stored_action_on_an_admission_never_reaches_the_client_poller(tmp_pat
 
     assert library.network.actions == [("g9", "stop")]
     assert library.store.load().acquisitions[0].state is AcquisitionState.ADMITTED
-
-
-def test_a_subscription_repeat_of_an_admitted_episode_orders_nothing(tmp_path: Path) -> None:
-    library: _Library = _library(tmp_path, _release(27), _release(28))
-    subscription: Subscription = _subscribe(library, anilist_id=_ENTRY)
-    with _running(library) as owner:
-        assert owner.admit_episode("admit-1", _choice(3)).ok
-        assert _check(owner, "check-1").ok
-        library.subscriptions.repeat(subscription.subscription_id, (Decimal(3),))
-        assert _check(owner, "check-2").ok
-
-    assert library.network.added == ["g28"]
-    assert _admitted(library.store) == [(_ENTRY, 3)]

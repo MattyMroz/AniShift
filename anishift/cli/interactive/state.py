@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Mapping
-from contextlib import suppress
 from datetime import UTC, datetime
-from decimal import Decimal
 from enum import IntEnum, StrEnum
 from pathlib import Path
 from types import MappingProxyType
@@ -27,7 +25,6 @@ from anishift.application import (
     RefusalReason,
     RetryProposal,
     RunProgressSnapshot,
-    Subscription,
     decode_view,
 )
 from anishift.application.events import RunEvent, sanitize_event_message
@@ -40,7 +37,6 @@ from anishift.cli.interactive.menu import (
     wrap_entries,
 )
 from anishift.cli.interactive.progress import ObservedProgressTimer, RichRunProgress, render_material_progress
-from anishift.cli.interactive.subscriptions import SubscriptionDraft
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError
@@ -59,6 +55,7 @@ _RETRY_PROBLEMS: Final[dict[str, str]] = {
     ),
     "retry_source_available": "Źródło jest już lokalnie; ponownie wybierz Ponów, aby przygotować Ręczny",
     "retry_acquisition_pending": "Wcześniejsze przekazanie nadal wymaga uzgodnienia; nie dodano drugiego pobrania",
+    "legacy_subscription_retry": "Pobierz ten odcinek ponownie z Anime (P)",
 }
 """Actionable retry refusals without claiming missing source bytes can be recovered."""
 
@@ -143,11 +140,30 @@ _CONTROL_PROBLEMS: Final[Mapping[ControlErrorCode, str]] = MappingProxyType(
 
 _SUBSCRIPTION_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
     {
-        "subscription_season_ambiguous": "Nie można jednoznacznie rozpoznać sezonu · wybierz go z katalogu AniList",
-        "subscription_source_available": "Źródło jest dostępne · użyj Ręcznego, aby je przetworzyć",
+        "subscription_missing": "Tej subskrypcji już nie ma",
+        "nothing_to_restore": "Brak usuniętej subskrypcji do przywrócenia",
+        "subscription_exists": "Ten sezon jest już subskrybowany",
+        "subscription_limit": "Osiągnięto limit subskrypcji; usuń jedną, aby przywrócić",
     }
 )
 """Polish subscription refusals selected by machine reason rather than application prose."""
+
+_SUBSCRIPTION_LATER: Final[str] = "Dostępne po aktualizacji"
+"""Notice for subscription actions this version does not offer yet."""
+
+_SUBSCRIPTION_PAUSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "user": "Wstrzymana",
+        "migrated_due": "Wstrzymana — przeniesiona; zaległe odcinki",
+        "migrated_missing": "Wstrzymana — zakończona przez starą wersję",
+    }
+)
+"""Polish second-row text for each reason a subscription waits for the user."""
+
+_SUBSCRIPTION_ISSUES: Final[Mapping[str, str]] = MappingProxyType(
+    {"season_unrecognized": "Nie rozpoznano sezonu — usuń i dodaj ponownie"}
+)
+"""Polish second-row text for each problem that stops a whole subscription."""
 
 _LIBRARY_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -198,12 +214,8 @@ def refusal_text(problem: BaseException) -> str:
     reason: str = problem.reason if isinstance(problem, ControlError) else ""
     if reason in _RETRY_PROBLEMS:
         return _RETRY_PROBLEMS[reason]
-    if reason in _SUBSCRIPTION_PROBLEMS and isinstance(problem, ControlError):
-        numbers: object = problem.context.details.get("episodes")
-        suffix: str = ""
-        if isinstance(numbers, list) and all(isinstance(number, str) for number in numbers):
-            suffix = f" · odcinki: {_safe_text(', '.join(numbers))}"
-        return _SUBSCRIPTION_PROBLEMS[reason] + suffix
+    if reason in _SUBSCRIPTION_PROBLEMS:
+        return _SUBSCRIPTION_PROBLEMS[reason]
     fallback: str = _safe_text(str(problem))
     if isinstance(problem, ControlError):
         fallback = (
@@ -248,6 +260,7 @@ class StateController:
         self._library_notice: str = ""
         self._snapshot: Mapping[str, object] = {}
         self._subscriptions: list[Mapping[str, object]] = []
+        self._subscriptions_problem: str = ""
         self._runs: dict[str, tuple[str, RichRunProgress]] = {}
         self._download_timers: dict[str, ObservedProgressTimer] = {}
         self._tab: int = _Tab.PROGRESS
@@ -257,7 +270,6 @@ class StateController:
         self._follow_cursor: dict[int, bool] = {}
         self._anime: AnimeController | None = None
         self._anime_top: int = 0
-        self._draft: SubscriptionDraft | None = None
         self._connected: bool = False
         self._busy: bool = False
         self._notice: str = "Łączenie z procesem w tle…"
@@ -314,7 +326,6 @@ class StateController:
             self._history_open = False
             self._history_input = None
             self._retry = None
-            self._draft = None
             self._switch_tab(_Tab.FILES)
             target: object = navigation.get("set_id")
             self._library_target = target if isinstance(target, str) else None
@@ -369,7 +380,7 @@ class StateController:
         """Navigate the shared list or submit one explicit action."""
         with self._lock:
             self._library_target = None
-            if self._tab == _Tab.FILES and key in {
+            if self._tab in {_Tab.FILES, _Tab.SUBSCRIPTIONS} and key in {
                 "up",
                 "down",
                 "home",
@@ -390,9 +401,6 @@ class StateController:
                 return self._retry_key(key)
             if self._tab == _Tab.ANIME and self._anime is not None:
                 return self._anime_key(key)
-            if self._draft is not None:
-                self._draft_key(key)
-                return StateResult.CONTINUE
             if self._modal_key(key) or self._history_navigation(key):
                 return StateResult.CONTINUE
             return self._list_key(key)
@@ -429,8 +437,8 @@ class StateController:
                 self._selected = 0 if key == "home" else count - 1
             else:
                 self._selected = (self._selected + (-1 if key == "up" else 1)) % count
-        elif key in {"space", "enter"} and self._tab == _Tab.SUBSCRIPTIONS:
-            return self._subscription_key(key)
+        elif key in {"space", "enter", "delete", "undo"} and self._tab == _Tab.SUBSCRIPTIONS:
+            self._subscription_key(key)
         elif key == "enter" and self._tab == _Tab.FILES:
             self._file_action("open")
         elif key == "delete" and self._tab == _Tab.FILES:
@@ -450,11 +458,27 @@ class StateController:
             return True
         return False
 
-    def _subscription_key(self, key: str) -> StateResult:
-        if key == "space":
-            return self._action_key("w")
-        self._open_subscription()
-        return StateResult.CONTINUE
+    def _subscription_key(self, key: str) -> None:
+        if key == "undo":
+            self._work(lambda session: session.command("subscription_restore"), success="")
+            return
+        row: Mapping[str, object] | None = (
+            self._subscriptions[self._selected - 1] if 0 < self._selected <= len(self._subscriptions) else None
+        )
+        if key in {"text:d", "text:f"} or (key == "enter" and row is None):
+            self._notify(_SUBSCRIPTION_LATER)
+            return
+        if row is None or key == "enter":
+            return
+        payload: dict[str, object] = {"subscription_id": row["subscription_id"]}
+        if key in {"delete", "text:x"}:
+            removed: str = f"Usunięto {_safe_text(row.get('title', ''))} · Ctrl+Z cofnij"
+            self._work(
+                lambda session: session.command("subscription_remove", payload), success=removed, persistent=True
+            )
+            return
+        kind: str = "subscription_resume" if row.get("paused") else "subscription_pause"
+        self._work(lambda session: session.command(kind, payload), success="")
 
     def _details_key(self, key: str) -> None:
         if key in {"escape", "interrupt", "backspace"}:
@@ -521,8 +545,6 @@ class StateController:
         self._selected = self._positions.get(tab, 0)
 
     def _viewport(self) -> int:
-        if self._draft is not None:
-            return len(_TABS)
         if self._details is not None:
             return len(_TABS) + 1
         return self._tab
@@ -571,64 +593,6 @@ class StateController:
         self._invalidate()
         return StateResult.CONTINUE
 
-    def _open_subscription(self) -> None:
-        if not self._subscriptions:
-            return
-        identifier: str = str(self._subscriptions[min(self._selected, len(self._subscriptions) - 1)]["subscription_id"])
-        generation: int = self._view_generation
-
-        def load(session: ResidentSession) -> None:
-            payload: Mapping[str, object] = session.command("subscription_get", {"subscription_id": identifier})
-            subscription: Subscription = decode_view(Subscription, payload)
-            work_states: object = payload.get("work_states")
-            with self._lock:
-                if generation == self._view_generation and not self._stop.is_set():
-                    self._draft = SubscriptionDraft.from_subscription(
-                        subscription, work_states if isinstance(work_states, Mapping) else None
-                    )
-                    self._follow_cursor[len(_TABS)] = True
-
-        self._work(load)
-
-    def _draft_key(self, key: str) -> None:
-        draft: SubscriptionDraft | None = self._draft
-        if draft is None:
-            return
-        if key in {"escape", "interrupt"}:
-            self._draft = None
-            self._view_generation += 1
-        elif key.casefold() == "text:p" and draft.subscription is not None:
-            repeated: tuple[Decimal, ...] = tuple(sorted(draft.selected & draft.completed))
-            if not repeated and draft.cursor < len(draft.numbers):
-                repeated = (draft.numbers[draft.cursor],)
-            if repeated:
-                identifier: str = draft.subscription.subscription_id
-                self._prepare_retry(lambda session: session.subscription_retry_proposal(identifier, repeated))
-        elif key == "enter":
-            repeating: tuple[Decimal, ...] = tuple(sorted(draft.selected & draft.completed))
-            if repeating:
-                self._notify("Ukończone numery wymagają jawnego P Ponów")
-            else:
-                self._apply_draft(draft)
-        else:
-            self._follow_cursor[self._viewport()] = True
-            draft.handle_key(key)
-        self._invalidate()
-
-    def _apply_draft(self, draft: SubscriptionDraft) -> None:
-        generation: int = self._view_generation
-        selected: tuple[Decimal, ...] = tuple(sorted(draft.selected))
-        future_from: Decimal | None = draft.future_from
-
-        def apply(session: ResidentSession) -> None:
-            if draft.subscription is not None:
-                session.set_range(draft.subscription.subscription_id, selected=selected, future_from=future_from)
-            with self._lock:
-                if generation == self._view_generation and self._draft is draft:
-                    self._draft = None
-
-        self._work(apply)
-
     def _action_key(self, key: str) -> StateResult:
         navigation: dict[str, StateResult] = {
             "u": StateResult.SETTINGS,
@@ -644,16 +608,8 @@ class StateController:
             self._load_history()
         elif key == "o":
             self._command("set_auto", {"enabled": not self._snapshot.get("auto_enabled", False)})
-        elif key == "f" and self._tab == _Tab.SUBSCRIPTIONS:
-            self._command("subscriptions_check")
-        elif self._tab == _Tab.SUBSCRIPTIONS and self._subscriptions and key in {"w", "x"}:
-            item: Mapping[str, object] = self._subscriptions[min(self._selected, len(self._subscriptions) - 1)]
-            kind: str = (
-                "subscription_remove"
-                if key == "x"
-                else ("subscription_disable" if item.get("enabled") else "subscription_enable")
-            )
-            self._command(kind, {"subscription_id": item["subscription_id"]})
+        elif self._tab == _Tab.SUBSCRIPTIONS and key in {"d", "f", "w", "x"}:
+            self._subscription_key(f"text:{key}")
         elif self._tab == _Tab.PROGRESS and not self._history_open:
             self._processing_action(key)
         elif self._tab == _Tab.FILES:
@@ -762,39 +718,13 @@ class StateController:
         elif key == "enter":
             self._retry = None
             generation: int = self._view_generation
-            success: str = (
-                f"Przyjęto ponowienie: {', '.join(f'{number.normalize():f}' for number in proposal.episodes)}"
-                " · Enter stosuje pozostały zakres"
-                if proposal.action == "subscription"
-                else "Polecenie przyjęte"
-            )
-            self._work(lambda session: self._execute_repeat(session, proposal, generation), success=success)
+            self._work(lambda session: self._execute_repeat(session, proposal, generation))
         self._invalidate()
         return StateResult.CONTINUE
 
     def _execute_repeat(self, session: ResidentSession, proposal: RetryProposal, generation: int) -> None:
         if proposal.action == "reacquire" and proposal.operation_id is not None:
             session.reacquire(proposal.operation_id)
-        elif proposal.action == "subscription" and proposal.subscription_id is not None:
-            subscription: Subscription = session.repeat(proposal.subscription_id, proposal.episodes)
-            with self._lock:
-                if generation != self._view_generation or self._stop.is_set():
-                    return
-                draft: SubscriptionDraft | None = self._draft
-                if (
-                    draft is not None
-                    and draft.subscription is not None
-                    and draft.subscription.subscription_id == subscription.subscription_id
-                ):
-                    draft.subscription = subscription
-                    draft.completed = draft.completed.difference(proposal.episodes)
-                    draft.states.update(
-                        {
-                            item.number: item.state.value
-                            for item in subscription.episodes
-                            if item.number in proposal.episodes
-                        }
-                    )
         else:
             msg = "Nieaktualne ponowienie; wybierz materiał jeszcze raz"
             raise ValueError(msg)
@@ -844,7 +774,13 @@ class StateController:
     def _command(self, kind: str, payload: Mapping[str, object] | None = None) -> None:
         self._work(lambda session: session.command(kind, payload))
 
-    def _work(self, action: Callable[[ResidentSession], object], *, success: str = "Polecenie przyjęte") -> None:
+    def _work(
+        self,
+        action: Callable[[ResidentSession], object],
+        *,
+        success: str = "Polecenie przyjęte",
+        persistent: bool = False,
+    ) -> None:
         if self._busy:
             if self._tab != _Tab.FILES:
                 self._notify("Poprzednia czynność jeszcze trwa; możesz przejść do ustawień")
@@ -854,6 +790,7 @@ class StateController:
         threading.Thread(
             target=self._perform,
             args=(action, success, self._view_generation),
+            kwargs={"persistent": persistent},
             name="anishift-state-action",
             daemon=True,
         ).start()
@@ -863,6 +800,8 @@ class StateController:
         action: Callable[[ResidentSession], object],
         success: str = "Polecenie przyjęte",
         generation: int | None = None,
+        *,
+        persistent: bool = False,
     ) -> None:
         session: ResidentSession | None = None
         context: tuple[str, str] | None = None
@@ -876,6 +815,7 @@ class StateController:
             with self._lock:
                 if generation == self._view_generation and context == self._library_context():
                     self._notify("" if self._tab == _Tab.FILES else success)
+                    self._notice_persistent = persistent
         except (AniShiftError, ControlError, OSError, ValueError) as error:
             with self._lock:
                 if generation == self._view_generation and context == self._library_context():
@@ -915,7 +855,7 @@ class StateController:
             if self._stop.wait(_RECONNECT_S):
                 break
 
-    def _receive(self, session: ResidentSession, frame: Mapping[str, object]) -> None:  # noqa: C901, PLR0912, PLR0915
+    def _receive(self, session: ResidentSession, frame: Mapping[str, object]) -> None:  # noqa: PLR0912, PLR0915
         payload: object = frame.get("payload")
         if frame.get("event") == "panel_open":
             with self._lock:
@@ -938,9 +878,8 @@ class StateController:
             self._invalidate()
             return
         if frame.get("event") == "state_changed":
-            subscriptions: list[Mapping[str, object]] = _rows(
-                session.command("subscriptions_list").get("subscriptions")
-            )
+            listing: Mapping[str, object] = session.command("subscriptions_list")
+            subscriptions: list[Mapping[str, object]] = _rows(listing.get("subscriptions"))
             with self._lock:
                 previous_processing: list[str] = self._processing_row_ids()
             self._restore_progress(session, payload)
@@ -952,13 +891,13 @@ class StateController:
                 refresh_episodes: bool = self._tab == _Tab.ANIME and payload != self._snapshot
             if anime is not None and refresh_episodes:
                 anime.refresh_episode_states()
-            draft: SubscriptionDraft | None = self._draft
-            work: Mapping[str, object] = self._draft_work(session, draft)
             with self._lock:
                 context: tuple[str, str] | None = self._library_context()
                 if payload != self._snapshot:
                     self._state_version += 1
-                self._preserve_tab_selection(_Tab.SUBSCRIPTIONS, self._subscriptions, subscriptions, "subscription_id")
+                self._preserve_tab_selection(
+                    _Tab.SUBSCRIPTIONS, [{}, *self._subscriptions], [{}, *subscriptions], "subscription_id"
+                )
                 self._preserve_processing_selection(previous_processing, self._processing_row_ids(payload))
                 self._preserve_library_selection(payload)
                 self._snapshot = payload
@@ -970,9 +909,7 @@ class StateController:
                     if previous_details is not None and details is None:
                         self._selected = self._detail_selection
                 self._subscriptions = subscriptions
-                states: object = work.get("work_states")
-                if self._draft is draft and draft is not None and isinstance(states, Mapping):
-                    draft.refresh_work_states(states)
+                self._subscriptions_problem = str(listing.get("problem") or "")
                 self._connected = True
                 self._observe_downloads()
                 if self._notice_version < self._state_version and not self._notice_persistent:
@@ -985,17 +922,6 @@ class StateController:
         elif frame.get("event") == "run_event":
             self._receive_progress(session, decode_view(RunEvent, payload))
         self._invalidate()
-
-    @staticmethod
-    def _draft_work(session: ResidentSession, draft: SubscriptionDraft | None) -> Mapping[str, object]:
-        if draft is None or draft.subscription is None:
-            return {}
-        try:
-            return session.command("subscription_get", {"subscription_id": draft.subscription.subscription_id})
-        except ControlError as error:
-            if error.code is not ControlErrorCode.INVALID_PAYLOAD:
-                raise
-            return {}
 
     def _receive_progress(self, session: ResidentSession, event: RunEvent) -> None:
         with self._lock:
@@ -1121,17 +1047,9 @@ class StateController:
             return Text("\n").join([*heading, *body.split("\n", allow_blank=True)])
 
     def _list_body(self, columns: int, rows: int) -> Text:
-        entries: list[tuple[str | Text, bool | None]] = (
-            [(label, checked) for label, checked in self._draft.entries()]
-            if self._draft is not None and self._retry is None
-            else self._entries(max(columns - 8, 1))
-        )
-        selected: int = (
-            self._draft.cursor
-            if self._draft is not None and self._retry is None
-            else min(self._selected, max(len(entries) - 1, 0))
-        )
-        if self._draft is None and self._retry is None:
+        entries: list[tuple[str | Text, bool | None]] = self._entries(max(columns - 8, 1))
+        selected: int = min(self._selected, max(len(entries) - 1, 0))
+        if self._retry is None:
             self._selected = selected
         console: Console = Console(width=max(columns - 2, 1))
         footer: list[Text] = [
@@ -1142,9 +1060,15 @@ class StateController:
                 console, max(columns - 2, 1)
             )
         ]
-        footer = footer[: max(rows - 2, 1)]
+        status: Text = Text(self._global_status(max(columns - 4, 1)), style="gray") if self._shows_status() else Text()
+        footer = [*footer, status][: max(rows - 2, 1)]
+        banner: list[Text] = (
+            [_centered(Text(self._subscription_banner(), style="warning"), columns)]
+            if self._tab == _Tab.SUBSCRIPTIONS and self._retry is None
+            else []
+        )
         wrapped: tuple[tuple[str | Text, ...], ...] = wrap_entries(tuple(label for label, _ in entries), columns)
-        remaining: int = max(rows - 1 - len(footer), 1)
+        remaining: int = max(rows - 1 - len(footer) - len(banner), 1)
         heights: tuple[int, ...] = tuple(map(len, wrapped))
         start, end = visible_window(len(entries), selected, remaining + 7, heights=heights)
         viewport: int = self._viewport()
@@ -1178,7 +1102,7 @@ class StateController:
             if self._tab == _Tab.PROGRESS and self._history_open and self._history_problem:
                 empty = "Historia niedostępna"
             content.append_text(_centered(Text(empty, style="gray"), columns))
-        body: list[Text] = list(content.split("\n"))
+        body: list[Text] = [*banner, *content.split("\n")]
         area: int = rows - len(footer)
         top: int = max((area - len(body)) // 2, 0)
         padding: list[Text] = [Text() for _ in range(max(area - top - len(body), 0))]
@@ -1198,35 +1122,15 @@ class StateController:
 
     def _view_footer(self, width: int) -> list[str | Text]:
         if self._retry is not None:
-            return ["Enter przygotuj · Esc anuluj", self._notice, self._global_status()]
+            return ["Enter przygotuj · Esc anuluj", self._notice]
         if self._tab == _Tab.PROGRESS and self._history_open:
             if self._history_input is not None:
-                return [
-                    self._history_input.render(100),
-                    "Enter szukaj · Esc anuluj",
-                    self._history_problem,
-                    self._global_status(),
-                ]
+                return [self._history_input.render(100), "Enter szukaj · Esc anuluj", self._history_problem]
             return [
                 "Historia · ostatnie 30 dni",
                 "Enter otwórz · P Ponów · S szukaj · Esc bieżące",
                 self._history_problem,
                 self._notice,
-                self._global_status(),
-            ]
-        if self._draft is not None:
-            identifier: str | None = (
-                None if self._draft.subscription is None else self._draft.subscription.subscription_id
-            )
-            subscription: Mapping[str, object] = next(
-                (item for item in self._subscriptions if item.get("subscription_id") == identifier), {}
-            )
-            return [
-                "Space wybór · Enter zastosuj · Esc odrzuć · A zwykłe · P Ponów",
-                _subscription_term(subscription),
-                self._draft.name,
-                self._notice,
-                self._global_status(),
             ]
         return self._footer(width)
 
@@ -1242,7 +1146,6 @@ class StateController:
             return [
                 *result,
                 "↑↓ pliki · Enter otwórz plik · F folder · Delete usuń · Ctrl+Z cofnij · Esc wróć",
-                self._global_status() if self._snapshot.get("auto_enabled") is False else "",
             ]
         relocations: list[Mapping[str, object]] = _relocation_problems(self._snapshot)
         if self._tab == _Tab.FILES and relocations:
@@ -1250,7 +1153,7 @@ class StateController:
             result.append(f"P ponów przenoszenie do biblioteki · {names}")
         hints: tuple[str, ...] = (
             "",
-            "Space aktywność · Enter odcinki · X usuń · F sprawdź",
+            self._subscription_hint(),
             "H historia · M ręczny · "
             + ("O wstrzymaj automat" if self._snapshot.get("auto_enabled") else "O wznów automat")
             + " · U ustawienia",
@@ -1262,9 +1165,21 @@ class StateController:
             )
         )
         result.append(self._processing_hint() if self._tab == _Tab.PROGRESS else "")
-        if self._tab != _Tab.FILES or self._snapshot.get("auto_enabled") is False:
-            result.append(self._global_status())
         return result
+
+    def _subscription_hint(self) -> str:
+        row: Mapping[str, object] | None = (
+            self._subscriptions[self._selected - 1] if 0 < self._selected <= len(self._subscriptions) else None
+        )
+        toggle: str = "W wznów" if row is not None and row.get("paused") else "W wstrzymaj"
+        return f"D dodaj · {toggle} · F szukaj · Del usuń · Ctrl+Z cofnij"
+
+    def _subscription_banner(self) -> str:
+        if self._subscriptions_problem:
+            return "Monitoring nie działa: nie można zapisać stanu"
+        if self._snapshot.get("auto_enabled") is False:
+            return "AniShift wstrzymany — subskrypcje czekają"
+        return ""
 
     def _processing_hint(self) -> str:
         materials: list[Mapping[str, object]] = self._processing_rows()
@@ -1280,7 +1195,12 @@ class StateController:
         count: int = len(scope) if isinstance(scope, list) else 1
         return f"C anuluj całe zlecenie · {count} materiałów"
 
-    def _global_status(self) -> str:
+    def _shows_status(self) -> bool:
+        if self._retry is not None or (self._tab == _Tab.PROGRESS and self._history_open):
+            return True
+        return (self._details is None and self._tab != _Tab.FILES) or self._snapshot.get("auto_enabled") is False
+
+    def _global_status(self, width: int) -> str:
         counts: object = self._snapshot.get("material_counts", {})
         values: Mapping[str, object] = counts if isinstance(counts, Mapping) else {}
         status: str = "Praca" if self._snapshot.get("auto_enabled") else "Automat wstrzymany"
@@ -1288,12 +1208,16 @@ class StateController:
             status = "Zatrzymywanie"
         if self._snapshot.get("pause_incomplete"):
             status = "Pauza niepełna"
-        if self._tab == _Tab.PROGRESS:
-            return f"Przetwarzanie {len(self._processing_rows())} · {status}"
-        return (
-            f"↓ {values.get('downloading', 0)} · Przetwarzanie {values.get('processing', 0)}"
-            f" · Czeka {values.get('waiting', 0)} · {status}"
+        counted: tuple[str, ...] = (
+            (f"Przetwarzanie {len(self._processing_rows())}",)
+            if self._tab == _Tab.PROGRESS
+            else (
+                f"↓ {values.get('downloading', 0)}",
+                f"Przetwarzanie {values.get('processing', 0)}",
+                f"Czeka {values.get('waiting', 0)}",
+            )
         )
+        return pack_keys((*counted, status), width, optional=tuple(reversed(counted)), limit=1)[0]
 
     def _entries(self, columns: int) -> list[tuple[str | Text, bool | None]]:
         if self._retry is not None:
@@ -1301,7 +1225,6 @@ class StateController:
                 "resume": f"Dokończ całe zapisane zlecenie · {len(self._retry.group_ids)} materiałów · podgląd",
                 "manual": "Popraw wybrany lokalny materiał w Ręcznym · wybór zakresu przebudowy",
                 "reacquire": "Pobierz ponownie zachowane wydanie · nowe jawne zamówienie",
-                "subscription": "Ponów wskazany zakres internetowy · nowe jawne zamówienie",
             }
             return [(labels.get(self._retry.action, "Nieznana droga ponowienia"), None)]
         if self._tab == _Tab.PROGRESS and self._history_open:
@@ -1320,14 +1243,10 @@ class StateController:
         if self._tab == _Tab.PROGRESS:
             return self._processing_entries(columns)
         if self._tab == _Tab.SUBSCRIPTIONS:
-            return [
-                (
-                    f"{_safe_text(item.get('series', ''))} [{_safe_text(item.get('group', ''))}]"
-                    f" · {_subscription_term(item)}",
-                    bool(item.get("enabled")),
-                )
-                for item in self._subscriptions
-            ]
+            now: datetime = datetime.now(UTC)
+            active: int = sum(1 for item in self._subscriptions if not item.get("paused"))
+            add: str = "D Dodaj subskrypcję · " + (f"Aktywne: {active}" if self._subscriptions else "Brak subskrypcji")
+            return [(add, None), *((_subscription_entry(item, now), None) for item in self._subscriptions)]
         if self._tab == _Tab.FILES:
             entries = [(_safe_text(item.get("name", "")), None) for item in _library_rows(self._snapshot)]
         return entries
@@ -1477,36 +1396,39 @@ class StateController:
         ]
 
 
-def _subscription_term(item: Mapping[str, object], now: datetime | None = None) -> str:
-    airing: object = item.get("airing_at")
-    moment: datetime | None = None
-    if isinstance(airing, str):
-        with suppress(ValueError):
-            moment = datetime.fromisoformat(airing)
-    if moment is None or moment.tzinfo is None:
-        return (
-            "Brak terminu · Kalendarz niedostępny · F: sprawdź ponownie"
-            if item.get("calendar_problem")
-            else "Brak terminu"
-        )
-    remaining: float = (moment - (now if now is not None else datetime.now(UTC))).total_seconds()
-    seconds: int = max(1, int(remaining)) if remaining > 0 else 0
-    days: int
-    hours: int
-    minutes: int
-    remainder: int
-    days, remainder = divmod(seconds, 86400)
-    hours, remainder = divmod(remainder, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    term: str = (
-        f"Emisja za {days:02d}d {hours:02d}:{minutes:02d}:{seconds:02d}" if remaining > 0 else "Czeka na wydanie"
+def _subscription_entry(row: Mapping[str, object], now: datetime) -> str:
+    total: object = row.get("targets_total")
+    start: object = row.get("from_number")
+    return (
+        f"{_safe_text(row.get('title', ''))} · od {'?' if start is None else _safe_text(start)}"
+        f" · Pobrano {_safe_text(row.get('downloaded', 0))}/{'?' if total is None else _safe_text(total)}"
+        f"\n  {_subscription_state(row, now)}"
     )
-    number: object = item.get("airing_episode")
-    if number is not None:
-        term = f"Odc. {_safe_text(number)} · {term}"
-    if item.get("calendar_problem"):
-        term += " · Kalendarz niedostępny"
-    return term
+
+
+def _subscription_state(row: Mapping[str, object], now: datetime) -> str:
+    problem: object = row.get("problem")
+    if problem is not None:
+        return _SUBSCRIPTION_ISSUES.get(str(problem), "Wymaga uwagi")
+    if row.get("paused"):
+        return f"{_SUBSCRIPTION_PAUSES.get(str(row.get('pause_reason')), 'Wstrzymana')} · W wznów"
+    if row.get("review_pending"):
+        return "Sprawdzam przeniesioną subskrypcję"
+    due: object = row.get("due_at")
+    if not isinstance(due, str):
+        return "Termin nieznany"
+    remaining: int = int((datetime.fromisoformat(due) - now).total_seconds())
+    if remaining > 0:
+        days, rest = divmod(remaining, 86400)
+        hours, rest = divmod(rest, 3600)
+        clock: str = f"{hours:02d}:{rest // 60:02d}:{rest % 60:02d}"
+        return f"Emisja za {days} d {clock}" if days else f"Emisja za {clock}"
+    waited: int = -remaining
+    days_waited: int = waited // 86400
+    since: str = f"{waited // 3600} h" if waited // 3600 else f"{waited // 60} min"
+    if days_waited:
+        since = "1 dzień" if days_waited == 1 else f"{days_waited} dni"
+    return f"Czeka na wydanie (od {since})"
 
 
 def _centered(line: Text, columns: int) -> Text:

@@ -65,7 +65,6 @@ from anishift.application.scheduler import RunHandle
 from anishift.application.scheduler_contracts import ResourceLimits, TaskHandler, extraction_worker_count
 from anishift.application.scheduler_runtime import extraction_group_ids
 from anishift.application.service import AppService, AutoPresetDraft
-from anishift.application.subscriptions import SubscriptionService
 from anishift.application.tts_handler import TtsExecutor
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
 from anishift.application.workflows import WorkflowTarget
@@ -124,7 +123,6 @@ def _service(  # noqa: PLR0913 - one builder for every service variant the tests
     catalog_loader: Callable[[], ModelCatalog] | None = None,
     prepare_workspace: Callable[[DiscoveryResult, CancellationToken], None] | None = None,
     acquisition: AcquisitionService | None = None,
-    subscriptions: SubscriptionService | None = None,
     tts: TtsExecutor | None = None,
 ) -> AppService:
     stored: list[AutoPresetFile] = preset_store if preset_store is not None else [default_preset_file()]
@@ -161,7 +159,6 @@ def _service(  # noqa: PLR0913 - one builder for every service variant the tests
         catalog_loader=catalog_loader or _catalog,
         prepare_workspace=prepare_workspace,
         acquisition=acquisition,
-        subscriptions=subscriptions,
     )
 
 
