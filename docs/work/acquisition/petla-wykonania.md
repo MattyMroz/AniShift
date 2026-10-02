@@ -32,8 +32,18 @@ review; nie testować z właścicielem kodu, którego rezydent nie załadował.
 | --- | --- | --- |
 | 1 | Panel Anime P2/P3 (D9–D16) → review `astra` → commit | zrobione (`b68f4a9`, D9–D21) |
 | 2 | Restart rezydenta, test orkiestratora na żywo według scenariusza §11 `e2-pobieranie.md` | zrobione (`971dc3b`, wynik w `outcomes/e2.md`) |
-| 3 | F8: odbiór H2 właściciela, poprawki z odbioru w pętli 2–5 | czeka na właściciela (lista kroków w `outcomes/e2.md`) |
-| 4 | `outcomes/e2.md`, AGENTS, status E2 | zrobione (status `PENDING HUMAN`) |
+| 3 | F8: odbiór H2 właściciela, poprawki z odbioru w pętli 2–5 | zrobione (właściciel zatwierdził 2026-10-02) |
+| 4 | `outcomes/e2.md`, AGENTS, status E2 | zrobione (status `ACCEPTED`) |
 | 5 | Audyt całości i plan refaktoryzacji do akceptacji właściciela | plan zrobiony (`plans/e2-refaktoryzacja.md`, review `astra` PASS) |
 | 6 | Etap A planu refaktoryzacji (A1–A6) według decyzji orkiestratora → review `astra` → commit | zrobione (`3a7d801`, review `astra` FAIL → FAIL → PASS, test na żywo po restarcie) |
 | 7 | Etapy B/C/D planu refaktoryzacji | w planach E3 i E5 |
+
+## E3 — subskrypcje (od 2026-10-02)
+
+Ta sama pętla co w E2. Polecenie właściciela: `opus55` koduje i iteruje sam, aż uzna etap za gotowy do commita; dopiero wtedy `astra` recenzuje całość; findingi wracają do `opus55`; `astra` weryfikuje; pętla trwa do PASS; potem commit, restart rezydenta i test na żywo. Bierzemy to, co już mamy (owner, IPC, WatchState, panel Anime, `SubscriptionService`, H1, rejestr decyzji), i doprowadzamy subskrypcje do działania.
+
+| Nr | Etap | Stan |
+| --- | --- | --- |
+| 1 | Plan E3 (`plans/e3-subskrypcje.md`) na stanie po E2, z decyzjami B1/C1 z `plans/e2-refaktoryzacja.md` → review `astra` | czeka |
+| 2 | Fazy wykonania planu E3, każda w pętli `opus55` → `astra` → commit → test na żywo | czeka |
+| 3 | `outcomes/e3.md`, H3 właściciela (tydzień bez dotykania) | czeka |
