@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from test_episode_selection import _fixture_graph, _fixture_mapping
 
 from anishift.application.control import (
     WATCH_STATE_SCHEMA_VERSION,
@@ -38,7 +39,9 @@ from anishift.application.control import (
     WatchState,
 )
 from anishift.application.episode_identity import IdentityVerdict
+from anishift.application.episode_selection import AniZipMapping, FranchiseGraph, identity_target
 from anishift.application.intents import ProductKind, RebuildRequest, RequestOrigin, TranslationAction
+from anishift.application.subscription_targets import SubscriptionRecord
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore, watch_state_path
 from anishift.application.workflows import WorkflowTarget
 from anishift.errors import ConfigError, ErrorCode
@@ -779,6 +782,26 @@ def test_an_uncertain_suggestion_preserves_the_absence_of_explicit_confirmation(
     choice: EpisodeChoice = replace(_selective().assignments[0].choice, deviation_confirmed=False)
     assert choice.verdict is IdentityVerdict.INSUFFICIENT
     assert not choice.deviation_confirmed
+
+
+def test_a_saved_episode_mapping_loads_equal_and_builds_the_same_identity_target_for_every_number(
+    tmp_path: Path,
+) -> None:
+    season: int = 182205
+    mapping: AniZipMapping = replace(_fixture_mapping(season), max_age_s=None)
+    record: SubscriptionRecord = SubscriptionRecord(
+        "s", season, "Slime", _TIMESTAMP, 0, kitsu_id=mapping.kitsu_id, mapping=mapping
+    )
+    store: WatchStateStore = _store(tmp_path)
+    store.save(replace(_state(), subscriptions=(record,)))
+    loaded: AniZipMapping | None = store.load().subscriptions[0].mapping
+    graph: FranchiseGraph = _fixture_graph(101280)
+    assert loaded == mapping
+    assert loaded is not None
+    assert json.dumps(loaded.raw_episodes) == json.dumps(mapping.raw_episodes)
+    assert [identity_target(graph, season, loaded, number) for number in range(1, 30)] == [
+        identity_target(graph, season, mapping, number) for number in range(1, 30)
+    ]
 
 
 def test_the_state_lives_beside_the_other_watch_files() -> None:

@@ -9,7 +9,7 @@ import time
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, fields, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum, auto
 from functools import partial
 from hashlib import sha256
@@ -25,7 +25,7 @@ from anishift.application.acquisition import (
     ReleaseChoice,
     SeasonContext,
 )
-from anishift.application.acquisition_decisions import admission_decision, append_decision
+from anishift.application.acquisition_decisions import admission_decision, append_decision, candidate_proposal
 from anishift.application.acquisition_staging import (
     SetPublication,
     clean_staging,
@@ -137,12 +137,22 @@ from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
 from anishift.application.selection import ready_group_ids, resolve_readiness
 from anishift.application.subscription_migration import legacy_reference
 from anishift.application.subscription_targets import (
+    AIRING_STATUSES,
     MAX_SUBSCRIPTIONS,
     PauseReason,
+    SubscriptionCheck,
+    SubscriptionProblem,
     SubscriptionRecord,
+    SubscriptionRow,
     SubscriptionTarget,
     TargetState,
+    anilist_date,
+    cut_point,
     display_order,
+    eligible,
+    merge_listing,
+    next_check_at,
+    search_targets,
     subscription_row,
 )
 from anishift.application.transfers import (
@@ -170,7 +180,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from contextlib import AbstractContextManager
 
-    from anishift.application.acquisition import AcquisitionService, ReleaseChoice
+    from anishift.application.acquisition import AcquisitionService, ListingRead, ReleaseChoice
     from anishift.application.artifacts import Artifact, SourceGroup
     from anishift.application.control import (
         CommandOutcome,
@@ -179,6 +189,7 @@ if TYPE_CHECKING:
         SettingsSnapshot,
         SourceFingerprint,
     )
+    from anishift.application.episode_selection import Franchise, FranchiseEntry
     from anishift.application.events import RunEvent
     from anishift.application.inspection import InspectedSourceGroup
     from anishift.application.intents import ProductKind
@@ -403,9 +414,27 @@ _SUBSCRIPTION_KINDS: Final[frozenset[str]] = frozenset(
         "subscription_resume",
         "subscription_remove",
         "subscription_restore",
+        "subscription_add",
+        "subscription_check",
     }
 )
 """Subscription commands this owner performs; every other subscription kind is unknown."""
+
+_ATTEMPTS_ENABLED: Final[bool] = False
+"""Whether a subscription check may admit the candidate it chooses instead of only proposing it."""
+
+_SUBSCRIPTION_PROVIDERS: Final[tuple[str, ...]] = ("anilist", "anizip", "torrentio")
+"""Providers whose cooldown postpones a subscription check instead of counting as a source failure."""
+
+_SUBSCRIPTION_REFUSALS: Final[Mapping[str, str]] = {
+    "subscription_exists": "This season is already subscribed",
+    "subscription_limit": "The subscription limit is reached",
+    "subscription_not_airing": "This entry has no future episodes",
+    "subscription_cut_unknown": "The episodes aired so far are unknown",
+    "source_failed": "The catalogue could not be read",
+    "acquisition_unavailable": "No acquisition service is configured",
+}
+"""Messages of subscription refusals, keyed by the reason clients translate."""
 
 _NOT_PLANNABLE: Final[str] = "The sources cannot be planned into an executable run"
 """Reason returned when planning fails or the plan carries a blocking problem."""
@@ -427,6 +456,8 @@ _MUTATING_KINDS: Final[frozenset[str]] = frozenset(
         "subscription_resume",
         "subscription_remove",
         "subscription_restore",
+        "subscription_add",
+        "subscription_check",
         "download",
         "reacquire",
         "transfer",
@@ -456,6 +487,7 @@ _SLOW_KINDS: Final[frozenset[str]] = frozenset(
         "deletion_validate",
         "deletion_start",
         "deletion_retry",
+        "subscription_add",
     }
 )
 """Commands performed on the pool, because they scan the library or reach the network."""
@@ -562,6 +594,15 @@ class _Inspected:
 
 
 @dataclass(frozen=True, slots=True)
+class _SubscriptionRead:
+    checked_at: datetime
+    read: ListingRead | None
+    offers: tuple[tuple[int, EpisodeOffer, dict[str, object]], ...] = ()
+    failure: tuple[str, datetime | None] | None = None
+    failed_number: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class _NotificationTarget:
     set_id: str
     product: ProductConfirmation
@@ -586,9 +627,15 @@ class AutomationOwner:
         scan_interval_s: float = SCAN_INTERVAL_S,
         recycler: Callable[[Path, tuple[int, int, int, int]], RecycleResult] | None = None,
         restorer: Callable[[RestoreRequest, bool], RecycleResult] | None = None,
+        subscription_shadow: bool = False,
     ) -> None:
         """Load the persisted state and prepare the owner thread and its pool."""
         self._service: AppService = service
+        self._admits: bool = not subscription_shadow and _ATTEMPTS_ENABLED
+        self._subscriptions_at: float | None = None
+        self._subscription_checks: set[str] = set()
+        self._subscription_requests: set[str] = set()
+        self._subscription_retries: dict[str, tuple[int, datetime]] = {}
         self._store: WatchStateStore = store
         self._instance_id: str = instance_id
         self._clock: Clock = clock
@@ -842,6 +889,7 @@ class AutomationOwner:
         self._record_history(WatchState(), recovering=True)
         self._restore_provider_locks()
         self._finish_pending_commands()
+        self._schedule_subscriptions()
         self._report_preflight()
         self._service.set_background_admission(self._state.policy.auto_enabled)
         self._prepare_transfers()
@@ -920,7 +968,7 @@ class AutomationOwner:
             try:
                 deadlines: tuple[float, ...] = tuple(
                     deadline
-                    for deadline in (self._settle_at, self._transfers_at, self._inspection_at)
+                    for deadline in (self._settle_at, self._transfers_at, self._inspection_at, self._subscriptions_at)
                     if deadline is not None
                 )
                 timeout: float | None = max(0.0, min(deadlines) - time.monotonic()) if deadlines else None
@@ -929,6 +977,7 @@ class AutomationOwner:
                 self._inspect_changes()
                 self._refresh_automatic()
                 self._poll_transfers()
+                self._poll_subscriptions()
                 continue
             except KeyboardInterrupt:
                 item = None
@@ -950,6 +999,7 @@ class AutomationOwner:
             else:
                 self._dispatch(item)
             self._poll_transfers()
+            self._poll_subscriptions()
             if self._drained():
                 return
 
@@ -2535,6 +2585,7 @@ class AutomationOwner:
         elif changed:
             self._resume_work()
         self._refresh_automatic()
+        self._schedule_subscriptions()
         self._publish_state()
         return ControlResponse.succeeded(outcome)
 
@@ -3350,6 +3401,7 @@ class AutomationOwner:
         self._settle_at = None
         self._transfers_at = None
         self._inspection_at = None
+        self._subscriptions_at = None
         self._service.set_background_admission(False)
         self._service.drain()
         logger.info("The resident is shutting down", active_runs=len(self._service.active_run_ids()))
@@ -3358,13 +3410,15 @@ class AutomationOwner:
     def _subscription_command(self, request: ControlRequest) -> ControlResponse:
         if request.kind not in _SUBSCRIPTION_KINDS:
             return ControlResponse.refused(ControlErrorCode.UNKNOWN_COMMAND, _UNKNOWN_COMMAND)
+        if request.kind == "subscription_add":
+            return self._add_subscription(request)
         if request.kind == "subscriptions_list":
             return ControlResponse.succeeded(
                 {
                     "subscriptions": [
                         encode_view(subscription_row(item)) for item in display_order(self._state.subscriptions)
                     ],
-                    "shadow": False,
+                    "shadow": not self._admits,
                     "problem": self._subscriptions_problem,
                 }
             )
@@ -3378,11 +3432,13 @@ class AutomationOwner:
             return ControlResponse.refused(
                 ControlErrorCode.REFUSED, "The subscription no longer exists", "subscription_missing"
             )
-        if request.kind == "subscription_get":
-            return ControlResponse.succeeded(_subscription_details(record))
         return self._change_subscription(request, record)
 
     def _change_subscription(self, request: ControlRequest, record: SubscriptionRecord) -> ControlResponse:
+        if request.kind == "subscription_get":
+            return ControlResponse.succeeded(_subscription_details(record))
+        if request.kind == "subscription_check":
+            return self._request_subscription_check(request, record)
         if request.kind == "subscription_remove":
             return self._commit_subscriptions(
                 request,
@@ -3413,13 +3469,9 @@ class AutomationOwner:
             or (removed.anilist_id is not None and item.anilist_id == removed.anilist_id)
             for item in self._state.subscriptions
         ):
-            return ControlResponse.refused(
-                ControlErrorCode.REFUSED, "This season is already subscribed", "subscription_exists"
-            )
+            return _subscription_refused("subscription_exists")
         if len(self._state.subscriptions) >= MAX_SUBSCRIPTIONS:
-            return ControlResponse.refused(
-                ControlErrorCode.REFUSED, "The subscription limit is reached", "subscription_limit"
-            )
+            return _subscription_refused("subscription_limit")
         return self._commit_subscriptions(
             request,
             (*self._state.subscriptions, removed),
@@ -3439,8 +3491,324 @@ class AutomationOwner:
         if refusal is not None:
             return refusal
         logger.info("Subscription changed", command_kind=request.kind, subscriptions=len(subscriptions))
+        self._schedule_subscriptions()
         self._publish_state()
         return ControlResponse.succeeded(dict(outcome))
+
+    def _add_subscription(self, request: ControlRequest) -> ControlResponse:
+        acquisition: AcquisitionService | None = self._service.acquisition
+        anilist_id: object = request.payload.get("anilist_id")
+        if acquisition is None or type(anilist_id) is not int or anilist_id < 1:
+            return _invalid("A subscription requires an acquisition service and a positive AniList ID")
+        refusal: ControlResponse | None = self._on_owner(partial(self._subscription_refusal, request, anilist_id))
+        if refusal is not None:
+            return refusal
+        now: datetime = self._clock()
+        try:
+            with acquisition.episode_requests():
+                read: ListingRead = acquisition.read_listing(anilist_id)
+                franchise: Franchise = acquisition.franchise(anilist_id)
+        except (AniShiftError, OSError, ValueError) as error:
+            logger.warning("Subscription source read failed", error_class=type(error).__name__)
+            return _subscription_refused(EpisodeReason.SOURCE_FAILED)
+        entry: FranchiseEntry | None = next((item for item in franchise.entries if item.anilist_id == anilist_id), None)
+        draft: SubscriptionRecord | str = _subscription_draft(read, entry, now)
+        if isinstance(draft, str):
+            return _subscription_refused(draft)
+        return self._on_owner(partial(self._commit_new_subscription, request, draft))
+
+    def _subscription_refusal(self, request: ControlRequest, anilist_id: int) -> ControlResponse | None:
+        receipt: CommandReceipt | None = self._receipt(request)
+        if receipt is not None:
+            return ControlResponse.succeeded(dict(receipt.outcome))
+        if self._shutting_down or not self._finish_pending_commands():
+            return _refuse(RefusalReason.SHUTTING_DOWN)
+        if any(item.anilist_id == anilist_id for item in self._state.subscriptions):
+            return _subscription_refused("subscription_exists")
+        if len(self._state.subscriptions) >= MAX_SUBSCRIPTIONS:
+            return _subscription_refused("subscription_limit")
+        return None
+
+    def _commit_new_subscription(self, request: ControlRequest, record: SubscriptionRecord) -> ControlResponse:
+        refusal: ControlResponse | None = self._subscription_refusal(request, record.anilist_id or 0)
+        if refusal is not None:
+            return refusal
+        return self._commit_subscriptions(
+            request,
+            (*self._state.subscriptions, record),
+            self._state.removed_subscription,
+            {"subscription_id": record.subscription_id, "from_number": subscription_row(record).from_number},
+        )
+
+    def _request_subscription_check(self, request: ControlRequest, record: SubscriptionRecord) -> ControlResponse:
+        acquisition: AcquisitionService | None = self._service.acquisition
+        if acquisition is None or record.anilist_id is None:
+            return _subscription_refused(EpisodeReason.ACQUISITION_UNAVAILABLE)
+        if self._shutting_down:
+            return _refuse(RefusalReason.SHUTTING_DOWN)
+        checking: bool = record.subscription_id in self._subscription_checks
+        outcome: CommandOutcome = {"subscription_id": record.subscription_id, "checking": True}
+        refusal: ControlResponse | None = self._commit(request, self._state, outcome)
+        if refusal is not None:
+            return refusal
+        self._subscription_requests.add(record.subscription_id)
+        if not checking:
+            self._start_subscription_checks((record.subscription_id,), manual=True)
+        return ControlResponse.succeeded(dict(outcome))
+
+    def _schedule_subscriptions(self) -> None:
+        if self._shutting_down or self._service.acquisition is None or not self._state.policy.auto_enabled:
+            self._subscriptions_at = None
+            return
+        now: datetime = self._clock()
+        moments: list[datetime] = [
+            moment
+            for item in self._state.subscriptions
+            if item.subscription_id not in self._subscription_checks
+            and (moment := self._subscription_due(item, now)) is not None
+        ]
+        self._subscriptions_at = time.monotonic() + max(0.0, (min(moments) - now).total_seconds()) if moments else None
+
+    def _subscription_due(self, record: SubscriptionRecord, now: datetime) -> datetime | None:
+        moment: datetime | None = next_check_at(record, now)
+        retry: tuple[int, datetime] | None = self._subscription_retries.get(record.subscription_id)
+        return moment if moment is None or retry is None else max(moment, retry[1])
+
+    def _poll_subscriptions(self) -> None:
+        if self._subscriptions_at is None or time.monotonic() < self._subscriptions_at:
+            return
+        self._subscriptions_at = None
+        if self._shutting_down or self._service.acquisition is None or not self._state.policy.auto_enabled:
+            return
+        now: datetime = self._clock()
+        due: tuple[str, ...] = tuple(
+            item.subscription_id
+            for item in self._state.subscriptions
+            if item.subscription_id not in self._subscription_checks
+            and (moment := self._subscription_due(item, now)) is not None
+            and moment <= now
+        )
+        if due:
+            self._start_subscription_checks(due, manual=False)
+            return
+        self._schedule_subscriptions()
+
+    def _start_subscription_checks(self, identifiers: tuple[str, ...], *, manual: bool) -> None:
+        self._subscription_checks.update(identifiers)
+        self._active_io += 1
+        self._pool.submit(partial(self._check_subscriptions, identifiers, manual=manual))
+
+    def _check_subscriptions(self, identifiers: tuple[str, ...], *, manual: bool) -> None:
+        try:
+            for identifier in identifiers:
+                result: _SubscriptionRead | None = None
+                try:
+                    result = self._read_subscription(identifier, manual=manual)
+                except Exception as problem:  # noqa: BLE001 - one faulty subscription never stops the others (S-12)
+                    logger.warning(
+                        "Subscription check failed", subscription_id=identifier, error_class=type(problem).__name__
+                    )
+                try:
+                    self._on_owner(partial(self._finish_subscription_check, identifier, result))
+                except Exception as problem:  # noqa: BLE001 - one faulty subscription never stops the others (S-12)
+                    logger.warning(
+                        "Subscription check not recorded",
+                        subscription_id=identifier,
+                        error_class=type(problem).__name__,
+                    )
+        finally:
+            self._queue.put(partial(self._subscriptions_checked, identifiers))
+
+    def _subscriptions_checked(self, identifiers: tuple[str, ...]) -> None:
+        self._active_io -= 1
+        self._subscription_checks.difference_update(identifiers)
+        self._schedule_subscriptions()
+
+    def _subscription_snapshot(
+        self, identifier: str
+    ) -> tuple[SubscriptionRecord, int, tuple[LegacyScope, ...], bool] | None:
+        record: SubscriptionRecord | None = self._subscription(identifier)
+        if record is None or record.anilist_id is None:
+            return None
+        scopes: tuple[LegacyScope, ...] = tuple(item.scope for item in self._state.legacy_orders)
+        return record, record.anilist_id, scopes, self._state.policy.auto_enabled
+
+    def _subscription(self, identifier: str) -> SubscriptionRecord | None:
+        return next((item for item in self._state.subscriptions if item.subscription_id == identifier), None)
+
+    def _read_subscription(self, identifier: str, *, manual: bool) -> _SubscriptionRead | None:
+        acquisition: AcquisitionService | None = self._service.acquisition
+        snapshot: tuple[SubscriptionRecord, int, tuple[LegacyScope, ...], bool] | None = self._on_owner(
+            partial(self._subscription_snapshot, identifier)
+        )
+        if acquisition is None or snapshot is None:
+            return None
+        record, anilist_id, scopes, automatic = snapshot
+        now: datetime = self._clock()
+        try:
+            with acquisition.episode_requests():
+                read: ListingRead = acquisition.read_listing(anilist_id, saved=record.mapping)
+        except (AniShiftError, OSError, ValueError) as error:
+            return _SubscriptionRead(now, None, (), self._subscription_failure(acquisition, error, now))
+        preview: SubscriptionRecord = merge_listing(record, read, now, scopes)
+        if not automatic or not _searchable(preview):
+            return _SubscriptionRead(now, read)
+        offers: list[tuple[int, EpisodeOffer, dict[str, object]]] = []
+        for target in search_targets(preview, now, manual=manual):
+            try:
+                with acquisition.episode_requests():
+                    offer, identity = acquisition.prepare_episode(
+                        EpisodeKey(anilist_id, target.number), mapping=read.mapping
+                    )
+            except (AniShiftError, OSError, ValueError) as error:
+                failure: tuple[str, datetime | None] = self._subscription_failure(acquisition, error, now)
+                return _SubscriptionRead(now, read, tuple(offers), failure, target.number)
+            offers.append((target.number, offer, identity))
+        return _SubscriptionRead(now, read, tuple(offers))
+
+    def _subscription_failure(
+        self, acquisition: AcquisitionService, error: BaseException, now: datetime
+    ) -> tuple[str, datetime | None]:
+        until: float = acquisition.blocked_until(_SUBSCRIPTION_PROVIDERS)
+        limited: bool = until > now.timestamp()
+        logger.warning("Subscription source failed", error_class=type(error).__name__, rate_limited=limited)
+        return ("rate_limited", datetime.fromtimestamp(until, UTC)) if limited else ("source_failed", None)
+
+    def _finish_subscription_check(self, identifier: str, result: _SubscriptionRead | None) -> None:
+        requested: bool = identifier in self._subscription_requests
+        self._subscription_requests.discard(identifier)
+        current: SubscriptionRecord | None = self._subscription(identifier)
+        if current is None:
+            logger.info("Subscription check dropped", subscription_id=identifier)
+            return
+        now: datetime = self._clock() if result is None else result.checked_at
+        evidence: list[tuple[str, dict[str, object]]] = []
+        updated: SubscriptionRecord = current
+        if result is not None and result.read is not None:
+            updated = merge_listing(current, result.read, now, (item.scope for item in self._state.legacy_orders))
+            evidence.append(("check", _mapping_check(current, result.read)))
+        check: SubscriptionCheck = self._subscription_outcome(updated, result, now, evidence)
+        updated = replace(updated, last_check=check)
+        if result is not None and result.failure is None:
+            updated = replace(updated, checked_at=now.astimezone(UTC).isoformat())
+        self._retry_subscription(updated, result, now)
+        saved: bool = self._save(
+            replace(
+                self._state,
+                subscriptions=tuple(updated if item is current else item for item in self._state.subscriptions),
+            )
+        )
+        if not saved:
+            self._subscriptions_problem = _STATE_NOT_SAVED
+            self._retry_subscription(updated, None, now)
+        elif self._subscriptions_problem == _STATE_NOT_SAVED:
+            self._subscriptions_problem = None
+        journal: Path = self._store.history_path().with_name("decisions.jsonl")
+        for kind, payload in evidence:
+            append_decision(journal, kind, payload, entry="subscription" if self._admits else "shadow")
+        if requested:
+            self._publish(
+                {
+                    "event": "subscription_checked",
+                    "payload": {"subscription_id": identifier, "last_check": encode_view(check)},
+                },
+                terminal=False,
+            )
+        self._publish_state()
+
+    def _subscription_outcome(
+        self,
+        record: SubscriptionRecord,
+        result: _SubscriptionRead | None,
+        now: datetime,
+        evidence: list[tuple[str, dict[str, object]]],
+    ) -> SubscriptionCheck:
+        if result is None:
+            return _failed_check(record, now, None, "source_failed")
+        searchable: bool = self._state.policy.auto_enabled and _searchable(record)
+        taken: frozenset[str] = self._taken_pairs(record)
+        first: SubscriptionCheck | None = None
+        for number, offer, identity in result.offers:
+            target: SubscriptionTarget | None = next((item for item in record.targets if item.number == number), None)
+            chosen: RankedCandidate | None = (
+                next((item for item in offer.candidates if eligible(item, target, taken)), None)
+                if searchable and target is not None and target.state is TargetState.DUE
+                else None
+            )
+            counts: dict[str, int] = offer.counts
+            outcome: str = "proposed" if chosen is not None else "no_match" if offer.candidates else "no_candidates"
+            logger.info(
+                "Subscription checked",
+                subscription_id=record.subscription_id,
+                number=number,
+                match=counts.get(IdentityVerdict.MATCH.value, 0),
+                uncertain=counts.get(IdentityVerdict.INSUFFICIENT.value, 0),
+                mismatch=counts.get(IdentityVerdict.MISMATCH.value, 0),
+                decision=outcome,
+            )
+            if result.read is not None:
+                evidence.append(("check", _offer_check(record, offer, target, chosen, result.read.listing)))
+            if chosen is not None and target is not None:
+                proposal: dict[str, object] = candidate_proposal(chosen, identity)
+                evidence.append(
+                    ("proposal", {**proposal, **_subscription_key(record, number), "due_at": target.due_at})
+                )
+            first = first or SubscriptionCheck(
+                now.astimezone(UTC).isoformat(),
+                number,
+                counts.get(IdentityVerdict.MATCH.value, 0),
+                counts.get(IdentityVerdict.INSUFFICIENT.value, 0),
+                counts.get(IdentityVerdict.MISMATCH.value, 0),
+                outcome,
+            )
+        if result.failure is not None:
+            evidence.append(
+                (
+                    "check",
+                    {
+                        **_subscription_key(record, result.failed_number),
+                        "source": "ani.zip" if result.read is None else "torrentio",
+                        "result": "429" if result.failure[0] == "rate_limited" else "error",
+                    },
+                )
+            )
+            return _failed_check(record, now, result.failed_number, result.failure[0])
+        return first or SubscriptionCheck(
+            now.astimezone(UTC).isoformat(), None, 0, 0, 0, "nothing_due" if searchable else "refreshed"
+        )
+
+    def _taken_pairs(self, record: SubscriptionRecord) -> frozenset[str]:
+        admissions: frozenset[str] = frozenset(
+            target.admission_id
+            for item in self._state.subscriptions
+            for target in item.targets
+            if target.admission_id is not None and item is not record
+        )
+        return frozenset(
+            f"{assignment.choice.reference.info_hash}:{'' if index is None else index}".casefold()
+            for transfer in self._state.acquisitions
+            for assignment in transfer.assignments
+            if assignment.admission_id in admissions
+            for index in (assignment.choice.reference.file_index,)
+        )
+
+    def _retry_subscription(self, record: SubscriptionRecord, result: _SubscriptionRead | None, now: datetime) -> None:
+        identifier: str = record.subscription_id
+        failure: tuple[str, datetime | None] | None = ("source_failed", None) if result is None else result.failure
+        pending: bool = record.review_pending or record.problem is SubscriptionProblem.CATALOG_CONFLICT
+        if failure is None and not pending:
+            self._subscription_retries.pop(identifier, None)
+            return
+        attempts: int = self._subscription_retries.get(identifier, (0, now))[0] + 1
+        delays: tuple[int, ...] = self._state.policy.retry_delays_s
+        retry_at: datetime = now + timedelta(seconds=delays[min(attempts, len(delays)) - 1])
+        schedule_retry: datetime | None = (
+            None if result is None or result.read is None else result.read.listing.schedule_retry_at
+        )
+        for moment in (failure[1] if failure is not None else None, schedule_retry if pending else None):
+            if moment is not None:
+                retry_at = max(retry_at, moment)
+        self._subscription_retries[identifier] = (attempts, retry_at)
 
     def _subscription_source_present(self, acquisition: AcquisitionConfirmation) -> bool:
         targets: dict[str, WorkflowTarget] = self._recorded_targets()
@@ -3796,11 +4164,34 @@ class AutomationOwner:
     def _episode_status(self, key: EpisodeKey) -> EpisodeStatus:
         matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = self._episode_assignments(key)
         status: EpisodeStatus = self._assignment_status(*matches[-1]) if matches else self._legacy_episode_status(key)
+        if status.state == "not_ordered" and status.reason is None and not status.uncertain:
+            return self._target_status(status)
         if not self._ready_result_missing(status):
             return status
         return EpisodeStatus(
             key, "not_ordered", EpisodeReason.RESULT_MISSING, status.admission_id, status.operation_id, status.uncertain
         )
+
+    def _target_status(self, status: EpisodeStatus) -> EpisodeStatus:
+        """Show an unordered episode as awaiting its airing or release when an unpaused subscription targets it."""
+        target: SubscriptionTarget | None = next(
+            (
+                item
+                for record in self._state.subscriptions
+                if record.anilist_id == status.key.anilist_id and not record.paused
+                for item in record.targets
+                if item.number == status.key.number
+            ),
+            None,
+        )
+        if target is None or target.state not in {TargetState.AWAITING_AIRING, TargetState.DUE}:
+            return status
+        reason: EpisodeReason = (
+            EpisodeReason.SUBSCRIPTION_AWAITING_RELEASE
+            if target.state is TargetState.DUE
+            else EpisodeReason.SUBSCRIPTION_AWAITING_AIRING
+        )
+        return replace(status, reason=reason)
 
     def _ready_result_missing(self, status: EpisodeStatus) -> bool:
         """Whether a ready episode's recorded main result, or its source video without one, is gone from disk."""
@@ -6997,11 +7388,9 @@ def _requested_groups(workspace: InspectedWorkspace, payload: Mapping[str, objec
 def _subscription_details(record: SubscriptionRecord) -> dict[str, object]:
     numbers: tuple[int, ...] = tuple(item.number for item in record.targets)
     problem: SubscriptionTarget | None = next((item for item in record.targets if item.reason is not None), None)
-    beyond: tuple[int, ...] = (
-        () if record.episode_count is None else tuple(number for number in numbers if number > record.episode_count)
-    )
+    row: SubscriptionRow = subscription_row(record)
     return {
-        "row": encode_view(subscription_row(record)),
+        "row": encode_view(row),
         "subscribed_at": record.subscribed_at,
         "migrated_at": record.migrated_at,
         "catalog_status": record.catalog_status,
@@ -7010,8 +7399,70 @@ def _subscription_details(record: SubscriptionRecord) -> dict[str, object]:
         "first_target": min(numbers, default=None),
         "last_target": max(numbers, default=None),
         "problem_target": None if problem is None else encode_view(problem),
-        "beyond_count": max(beyond, default=None),
+        "beyond_count": row.beyond_count,
         "last_check": None if record.last_check is None else encode_view(record.last_check),
+        "specials": [] if record.mapping is None else [encode_view(item) for item in record.mapping.specials],
+    }
+
+
+def _subscription_draft(read: ListingRead, entry: FranchiseEntry | None, now: datetime) -> SubscriptionRecord | str:
+    if read.listing.status not in AIRING_STATUSES:
+        return "subscription_not_airing"
+    cut: int | None = cut_point(read.listing, now)
+    if cut is None:
+        return "subscription_cut_unknown"
+    if not read.live or entry is None:
+        return EpisodeReason.SOURCE_FAILED
+    record: SubscriptionRecord = SubscriptionRecord(
+        token_hex(_ID_BYTES), entry.anilist_id, entry.english or entry.romaji, now.astimezone(UTC).isoformat(), cut
+    )
+    return merge_listing(record, read, now)
+
+
+def _searchable(record: SubscriptionRecord) -> bool:
+    return not record.paused and not record.review_pending and record.problem is None
+
+
+def _subscription_refused(reason: str) -> ControlResponse:
+    return ControlResponse.refused(ControlErrorCode.REFUSED, _SUBSCRIPTION_REFUSALS.get(reason, reason), reason)
+
+
+def _subscription_key(record: SubscriptionRecord, number: int | None) -> dict[str, object]:
+    return {"subscription_id": record.subscription_id, "key": {"anilist_id": record.anilist_id, "number": number}}
+
+
+def _failed_check(record: SubscriptionRecord, now: datetime, number: int | None, outcome: str) -> SubscriptionCheck:
+    logger.info("Subscription checked", subscription_id=record.subscription_id, number=number, decision=outcome)
+    return SubscriptionCheck(now.astimezone(UTC).isoformat(), number, 0, 0, 0, outcome)
+
+
+def _mapping_check(record: SubscriptionRecord, read: ListingRead) -> dict[str, object]:
+    measured: bool = any(row.get("length") is not None for row in read.mapping.raw_episodes.values())
+    return {
+        **_subscription_key(record, None),
+        "source": "ani.zip",
+        "result": ("length" if measured else "no_length") if read.live else "error",
+        "mapping_source": "live" if read.live else "snapshot",
+    }
+
+
+def _offer_check(
+    record: SubscriptionRecord,
+    offer: EpisodeOffer,
+    target: SubscriptionTarget | None,
+    chosen: RankedCandidate | None,
+    listing: EpisodeListing,
+) -> dict[str, object]:
+    aired: datetime | None = next(
+        (anilist_date(item) for item in listing.episodes if item.number == offer.key.number), None
+    )
+    return {
+        **_subscription_key(record, offer.key.number),
+        "source": "torrentio",
+        "due_at": None if target is None else target.due_at,
+        "aired_at": None if aired is None else aired.isoformat(),
+        "result": "match" if chosen is not None else "candidates" if offer.candidates else "none",
+        "excluded": 0 if target is None else len(target.tried),
     }
 
 

@@ -56,10 +56,14 @@ if TYPE_CHECKING:
         TranslationModelOption,
     )
     from anishift.application.subscription_targets import (
+        AIRING_STATUSES,
         PauseReason,
         SubscriptionProblem,
         SubscriptionRow,
         TargetState,
+        anilist_date,
+        cut_point,
+        is_target,
     )
     from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
     from anishift.services.catalog import TitleCandidate, TitleCatalogError, TitleStatus
@@ -181,6 +185,7 @@ from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger
 from anishift.application.workflows import WorkflowTarget
 
 __all__ = [
+    "AIRING_STATUSES",
     "PRIMARY_SOURCE_SUFFIXES",
     "SCAN_INTERVAL_S",
     "TRANSLATE_PRODUCTS",
@@ -317,11 +322,14 @@ __all__ = [
     "WorkerNotificationKind",
     "WorkflowTarget",
     "WorkspaceInspector",
+    "anilist_date",
+    "cut_point",
     "decode_view",
     "encode_intent",
     "encode_view",
     "episode_read_timeout_s",
     "group_is_ready",
+    "is_target",
     "legal_narration_timelines",
     "legal_products",
     "order_groups",
@@ -355,6 +363,10 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "SubscriptionProblem": ("anishift.application.subscription_targets", "SubscriptionProblem"),
     "SubscriptionRow": ("anishift.application.subscription_targets", "SubscriptionRow"),
     "TargetState": ("anishift.application.subscription_targets", "TargetState"),
+    "AIRING_STATUSES": ("anishift.application.subscription_targets", "AIRING_STATUSES"),
+    "anilist_date": ("anishift.application.subscription_targets", "anilist_date"),
+    "cut_point": ("anishift.application.subscription_targets", "cut_point"),
+    "is_target": ("anishift.application.subscription_targets", "is_target"),
     "WatchStateStore": ("anishift.application.watch_state", "WatchStateStore"),
     "ReadyStore": ("anishift.application.ready", "ReadyStore"),
     "WATCH_STATE_FILE_NAME": ("anishift.application.watch_state", "WATCH_STATE_FILE_NAME"),

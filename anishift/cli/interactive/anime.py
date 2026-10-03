@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from functools import partial
 from math import ceil
@@ -50,6 +50,7 @@ from anishift.application.events import sanitize_event_message
 from anishift.cli.interactive.anime_panel import AnimePanel
 from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeViewState, NoticeKind
 from anishift.cli.interactive.anime_view import WIDE_COLUMNS, visible_rows
+from anishift.cli.interactive.subscription_texts import SubscriptionDraft, check_text, row_state, subscription_draft
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError, ErrorCode
@@ -73,6 +74,30 @@ _LOADING_ENTRIES: Final[str] = "Wczytuję wpisy…"
 
 _SENDING: Final[str] = "Wysyłam…"
 """Sentence shown while the torrent client takes the chosen releases."""
+
+_ADDING: Final[str] = "Dodaję subskrypcję…"
+"""Sentence shown while the owner reads the season and saves a new subscription."""
+
+_DRAFT_ADD: Final[str] = "[ Dodaj subskrypcję ]"
+"""Draft button that sends the subscription to the owner."""
+
+_DRAFT_CANCEL: Final[str] = "[ Anuluj ]"
+"""Draft button that returns to the screen the draft was opened from."""
+
+_SUBSCRIBED: Final[str] = "Ten sezon jest już subskrybowany · Enter pokaż"
+"""Draft line of a season already followed, leading to its details."""
+
+_NOT_AIRING: Final[str] = "Ten wpis nie ma przyszłych odcinków"
+"""Notice for S on an entry that cannot be subscribed."""
+
+_ANNOUNCED: Final[str] = "Zapowiedź · odcinków jeszcze nie ma · S subskrybuj"
+"""Notice for Enter on an announced entry, which opens nothing."""
+
+_EXTRA_FORMATS: Final[frozenset[str]] = frozenset({"OVA", "SPECIAL"})
+"""AniList formats U08 lists as related extras of the subscribed season."""
+
+_WIDE_SUBSCRIPTION_KEYS: Final[int] = 60
+"""Terminal width from which U08 key hints use their full labels."""
 
 _MAX_BATCH: Final[int] = MAX_EPISODE_KEYS
 """Most episodes one D press sends to the owner, matching its batch limit."""
@@ -100,6 +125,8 @@ EPISODE_REASON_LABELS: Final[dict[str, str]] = {
     EpisodeReason.PUBLICATION_MISSING: "Brak pliku",
     EpisodeReason.RESULT_MISSING: "Do pobrania",
     EpisodeReason.PACK_IN_PROGRESS: "Czeka na paczkę",
+    EpisodeReason.SUBSCRIPTION_AWAITING_AIRING: "Czeka na emisję",
+    EpisodeReason.SUBSCRIPTION_AWAITING_RELEASE: "Czeka na wydanie",
 }
 """Shared column labels for owner batch and episode status reasons."""
 
@@ -264,10 +291,11 @@ _REASON_TEXTS: Final[dict[str, str]] = {
 
 
 class AnimeResult(StrEnum):
-    """Signal whether the anime controller stays open or returns Home."""
+    """Signal whether the anime controller stays open, returns Home or returns to the subscription list."""
 
     CONTINUE = "continue"
     HOME = "home"
+    SUBSCRIPTIONS = "subscriptions"
 
 
 class _Screen(StrEnum):
@@ -279,6 +307,7 @@ class _Screen(StrEnum):
     EPISODES = "episodes"
     OFFER = "offer"
     CANDIDATES = "candidates"
+    DRAFT = "draft"
 
 
 class AnimeController:
@@ -313,6 +342,19 @@ class AnimeController:
         self._suggestion: str = ""
         self._problem_return: _Screen = _Screen.QUERY
         self._clock: Callable[[], float] = time
+        self._show_list: Callable[[str | None], None] | None = None
+        self._subscription_command: tuple[str, Mapping[str, object]] | None = None
+        self._subscribed: dict[int, Mapping[str, object]] = {}
+        self._paused: bool = False
+        self._from_subscriptions: bool = False
+        self._subscription: Mapping[str, object] | None = None
+        self._subscription_details: Mapping[str, object] = {}
+        self._draft: SubscriptionDraft | None = None
+        self._draft_id: int = 0
+        self._draft_title: str = ""
+        self._draft_return: _Screen = _Screen.QUERY
+        self._draft_cursor: str = ""
+        self._draft_command: str = ""
         self._initialize_episode_state()
         self._view: AnimeViewState = AnimeViewState(query=self._query_input, query_focused=False)
         self._panel: AnimePanel = AnimePanel(self._view, self._panel_action, self._now)
@@ -394,13 +436,291 @@ class AnimeController:
                 result = AnimeResult.CONTINUE
             elif self._screen is _Screen.BUSY:
                 result = self._handle_busy(key)
-            elif self._screen in {_Screen.ENTRIES, _Screen.EPISODES, _Screen.OFFER, _Screen.CANDIDATES}:
-                self._panel.handle(key)
-                self._adopt_view_input()
-                result = AnimeResult.CONTINUE
+            elif self._screen in {_Screen.ENTRIES, _Screen.EPISODES, _Screen.OFFER, _Screen.CANDIDATES, _Screen.DRAFT}:
+                result = self._subscription_key(key) or self._panel_key(key)
             else:
                 result = self._handle_problem(key)
         return result
+
+    def _panel_key(self, key: str) -> AnimeResult:
+        self._panel.handle(key)
+        self._adopt_view_input()
+        return AnimeResult.CONTINUE
+
+    def link_subscriptions(self, show_list: Callable[[str | None], None]) -> None:
+        """Receive the panel callback that opens the subscription list, optionally on one row."""
+        with self._lock:
+            self._show_list = show_list
+
+    def refresh_subscriptions(self, rows: Sequence[Mapping[str, object]], *, paused: bool) -> None:
+        """Project the owner's subscription rows used by drafts and the open subscription header."""
+        with self._lock:
+            self._subscribed = {key: row for row in rows if isinstance(key := row.get("anilist_id"), int)}
+            self._paused = paused
+            if self._subscription is not None:
+                identifier: object = self._subscription.get("subscription_id")
+                self._subscription = next(
+                    (row for row in rows if row.get("subscription_id") == identifier), self._subscription
+                )
+
+    def take_subscription_command(self) -> tuple[str, Mapping[str, object]] | None:
+        """Hand one subscription command chosen in the details to the panel, which owns command workers."""
+        with self._lock:
+            command: tuple[str, Mapping[str, object]] | None = self._subscription_command
+            self._subscription_command = None
+            return command
+
+    def start_subscription_search(self) -> None:
+        """Open the title search on behalf of the subscription list, to which Esc returns."""
+        with self._lock:
+            self._generation += 1
+            self._subscription = None
+            self._from_subscriptions = True
+            self._details_open = False
+            self._screen = _Screen.QUERY
+            self._input_focused = True
+
+    def open_subscription(self, row: Mapping[str, object]) -> None:
+        """Show the episodes of one followed season under its subscription header."""
+        with self._lock:
+            self._open_subscription(row)
+
+    def _open_subscription(self, row: Mapping[str, object]) -> None:
+        self._subscription = row
+        self._subscription_details = {}
+        self._from_subscriptions = True
+        self._details_open = False
+        self._episode_marks.clear()
+        self._positions[_Screen.EPISODES] = 0
+        self._offsets[_Screen.EPISODES] = 0
+        generation: int = self._start_work("Wczytuję odcinki…", _Screen.QUERY)
+        self._spawn(self._load_subscription, (row, generation, self._work_cancel))
+
+    def subscription_checked(self, subscription_id: str, check: Mapping[str, object]) -> None:
+        """Show a finished check in the header of the open subscription."""
+        with self._lock:
+            if self._subscription is None or self._subscription.get("subscription_id") != subscription_id:
+                return
+            self._subscription_details = {**self._subscription_details, "last_check": check}
+            self._notice = ""
+
+    def _subscription_key(self, key: str) -> AnimeResult | None:
+        row: Mapping[str, object] | None = self._subscription
+        if row is None or self._screen is not _Screen.EPISODES:
+            return None
+        folded: str = key.casefold()
+        kind: str | None = {
+            "text:w": "subscription_resume" if row.get("paused") else "subscription_pause",
+            "text:f": "subscription_check",
+            "text:x": "subscription_remove",
+            "delete": "subscription_remove",
+        }.get(folded)
+        if kind is not None:
+            self._subscription_command = (kind, row)
+            self._notice = "Sprawdzam…" if kind == "subscription_check" else ""
+        if kind == "subscription_remove" or key in {"escape", "interrupt"}:
+            self._leave_subscriptions()
+            return AnimeResult.SUBSCRIPTIONS
+        return None if kind is None else AnimeResult.CONTINUE
+
+    def _leave_subscriptions(self) -> None:
+        self._generation += 1
+        self._subscription = None
+        self._from_subscriptions = False
+        self._screen = _Screen.QUERY
+
+    def _load_subscription(self, row: Mapping[str, object], generation: int, cancel: EventCancellationToken) -> None:
+        anilist_id: object = row.get("anilist_id")
+        if self._resident is None or self._acquisition is None or not isinstance(anilist_id, int):
+            self._fail(generation, _UNAVAILABLE, "", _Screen.QUERY)
+            return
+        try:
+            details: Mapping[str, object] = self._resident.command(
+                "subscription_get", {"subscription_id": row.get("subscription_id")}
+            )
+            franchise: Franchise = self._acquisition.franchise(anilist_id, cancel=cancel)
+        except Exception as problem:  # noqa: BLE001 - the UI worker reports a failed command without a partial view
+            self._catalog_failure(generation, problem, _Screen.QUERY, "anilist")
+            return
+        entry: FranchiseEntry | None = next((item for item in franchise.entries if item.anilist_id == anilist_id), None)
+        if entry is None:
+            self._fail(generation, "Katalog nie zawiera już tego wpisu", "", _Screen.QUERY)
+            return
+        with self._lock:
+            if generation != self._generation:
+                return
+            self._subscription_details = details
+            self._adopt_franchise(franchise)
+            self._entries_skipped = False
+            self._entry = entry
+            self._shown_entry = entry
+            self._listing = None
+        self._load_episodes(entry, generation)
+
+    def _start_draft(self) -> None:
+        anilist_id, title, listing = self._draft_source()
+        if anilist_id is None:
+            return
+        self._draft_return = self._screen
+        self._draft_command = uuid4().hex
+        self._draft_id = anilist_id
+        self._draft_title = title
+        if anilist_id in self._subscribed or listing is not None:
+            self._open_draft(listing)
+            return
+        generation: int = self._start_work("Wczytuję odcinki…", self._screen)
+        self._spawn(self._load_draft, (anilist_id, generation))
+
+    def _draft_source(self) -> tuple[int | None, str, EpisodeListing | None]:
+        if self._screen is _Screen.TITLES and self._candidates:
+            candidate: TitleCandidate = self._candidates[self._highlighted]
+            return candidate.anilist_id, candidate.english or candidate.romaji, None
+        if self._screen is _Screen.ENTRIES and self._franchise is not None and self._franchise.entries:
+            entry: FranchiseEntry = self._franchise.entries[self._positions.get(_Screen.ENTRIES, 0)]
+            return entry.anilist_id, entry.english or entry.romaji, None
+        if self._screen is _Screen.EPISODES and self._listing is not None and self._entry is not None:
+            return self._listing.anilist_id, self._entry.english or self._entry.romaji, self._listing
+        return None, "", None
+
+    def _load_draft(self, anilist_id: int, generation: int) -> None:
+        if self._acquisition is None:
+            return
+        try:
+            listing: EpisodeListing = self._acquisition.episodes(anilist_id)
+        except Exception as problem:  # noqa: BLE001 - the UI worker reports a failed command without a partial view
+            self._catalog_failure(generation, problem, self._draft_return, "anizip")
+            return
+        with self._lock:
+            if generation != self._generation:
+                return
+            self._worker = None
+            self._open_draft(listing)
+        self._invalidate()
+
+    def _open_draft(self, listing: EpisodeListing | None) -> None:
+        self._screen = self._draft_return
+        if self._draft_id not in self._subscribed:
+            draft: SubscriptionDraft | None = (
+                None
+                if listing is None
+                else subscription_draft(listing, self._draft_title, self._moment(), paused=self._paused)
+            )
+            if draft is None:
+                self._notice = _NOT_AIRING
+                self._notice_kind = NoticeKind.WARNING
+                return
+            self._draft = draft
+        else:
+            self._draft = None
+        self._draft_cursor = ""
+        self._offsets[_Screen.DRAFT] = 0
+        self._follow_cursor = True
+        self._screen = _Screen.DRAFT
+
+    def _draft_rows(self) -> tuple[AnimeRow, ...]:
+        if self._draft is None:
+            return (AnimeRow("title", _safe(self._draft_title), navigable=False), AnimeRow("show", _SUBSCRIBED))
+        lines: tuple[AnimeRow, ...] = tuple(
+            AnimeRow(f"line{index}.{piece}", wrapped.plain, navigable=bool(wrapped.plain))
+            for index, value in enumerate(self._draft.lines)
+            for piece, wrapped in enumerate(
+                Text(value).wrap(Console(width=self._columns - 4), self._columns - 4) or (Text(),)
+            )
+        )
+        buttons: tuple[AnimeRow, ...] = (
+            (AnimeRow("add", _DRAFT_ADD), AnimeRow("cancel", _DRAFT_CANCEL))
+            if self._draft.addable
+            else (AnimeRow("cancel", _DRAFT_CANCEL),)
+        )
+        return (*lines, AnimeRow("gap", "", navigable=False), *buttons)
+
+    def _draft_key(self, key: str) -> None:
+        if key in {"escape", "interrupt"}:
+            self._screen = self._draft_return
+            return
+        if key != "enter" or not self._view.items:
+            return
+        chosen: str = self._view.items[self._view.cursor].key
+        if chosen == "cancel":
+            self._screen = self._draft_return
+        elif chosen == "show" and self._draft_id in self._subscribed:
+            self._open_subscription(self._subscribed[self._draft_id])
+        elif chosen == "add" and self._resident is not None:
+            generation: int = self._start_work(_ADDING, _Screen.DRAFT, sending=True)
+            self._spawn(self._add_subscription, (self._draft_id, self._draft_command, generation))
+
+    def _add_subscription(self, anilist_id: int, command_id: str, generation: int) -> None:
+        if self._resident is None:
+            return
+        try:
+            answer: Mapping[str, object] = self._resident.subscription_add(anilist_id, command_id=command_id)
+        except (AniShiftError, OSError, ValueError) as problem:
+            with self._lock:
+                if generation != self._generation:
+                    return
+                self._worker = None
+                self._screen = _Screen.DRAFT
+                self._notice = _stated(problem)[0]
+                self._notice_kind = NoticeKind.WARNING
+            self._invalidate()
+            return
+        identifier: object = answer.get("subscription_id")
+        with self._lock:
+            if generation != self._generation:
+                return
+            self._worker = None
+            self._from_subscriptions = False
+            self._screen = self._draft_return
+            show_list: Callable[[str | None], None] | None = self._show_list
+        if show_list is not None:
+            show_list(identifier if isinstance(identifier, str) else None)
+        self._invalidate()
+
+    def _sync_subscription_view(self) -> None:
+        if self._screen is _Screen.DRAFT:
+            self._view.title = "Nowa subskrypcja"
+            self._view.controls = ("Enter wybierz · Esc anuluj",)
+            keys: list[str] = [item.key for item in self._view.items]
+            wanted: str = self._draft_cursor if self._draft_cursor in keys else self._draft_cursor.split(".")[0] + ".0"
+            if wanted not in keys:
+                wanted = next((key for key in keys if key in {"add", "cancel", "show"}), "")
+            if wanted in keys:
+                self._view.cursor = keys.index(wanted)
+                self._positions[_Screen.DRAFT] = self._view.cursor
+            if self._view.items and not self._view.items[self._view.cursor].navigable:
+                self._view.cursor = next(
+                    (index for index, item in enumerate(self._view.items) if item.navigable), self._view.cursor
+                )
+        if self._screen is not _Screen.EPISODES or self._subscription is None:
+            return
+        summary, checked = self._subscription_header()
+        self._view.title = f"Subskrypcje \u203a {_safe(str(self._subscription.get('title', '')))}"
+        self._view.global_status = summary
+        self._view.notice = self._view.notice or checked
+        toggle: str = "W wznów" if self._subscription.get("paused") else "W wstrzymaj"
+        wide: bool = self._columns >= _WIDE_SUBSCRIPTION_KEYS
+        self._view.controls = (
+            f"Space{' zaznacz' if wide else ''} · D pobierz · I wydania · P ponownie",
+            f"{toggle} · F szukaj{' teraz' if wide else ''} · X usuń · Esc lista",
+        )
+
+    def _moment(self) -> datetime:
+        return datetime.fromtimestamp(self._clock(), UTC)
+
+    def _subscription_header(self) -> tuple[str, str]:
+        row: Mapping[str, object] = self._subscription or {}
+        total: object = row.get("targets_total")
+        start: object = row.get("from_number")
+        summary: str = (
+            f"Od odc. {'?' if start is None else start} · Pobrano {row.get('downloaded', 0)}/"
+            f"{'?' if total is None else total} · {row_state(row, self._moment())}"
+        )
+        check: object = self._subscription_details.get("last_check")
+        if not isinstance(check, Mapping):
+            return summary, ""
+        moment: object = check.get("checked_at")
+        at: str = datetime.fromisoformat(moment).astimezone().strftime("%H:%M") if isinstance(moment, str) else "—"
+        return summary, f"Ostatnie sprawdzenie {at}: {check_text(check)}"
 
     def _now(self) -> float:
         return self._clock()
@@ -414,6 +734,8 @@ class AnimeController:
             self._positions[self._screen] = self._view.cursor
         if self._screen is _Screen.EPISODES:
             self._episode_marks = {int(key) for key in self._view.selected}
+        if self._screen is _Screen.DRAFT and self._view.items:
+            self._draft_cursor = self._view.items[self._view.cursor].key
         self._range_input = self._view.range_input
         self._input_focused = (
             self._view.query_focused if self._screen is _Screen.QUERY else self._range_input is not None
@@ -486,6 +808,10 @@ class AnimeController:
         elif action == "/":
             self._screen = _Screen.QUERY
             self._input_focused = True
+        elif self._screen is _Screen.DRAFT:
+            self._draft_key(key)
+        elif key == "text:s":
+            self._start_draft()
         elif self._screen is _Screen.TITLES:
             self._handle_titles(key)
         else:
@@ -502,6 +828,7 @@ class AnimeController:
             _Screen.CANDIDATES: AnimeScreen.RELEASES,
             _Screen.BUSY: AnimeScreen.QUERY if self._busy_return is _Screen.QUERY else AnimeScreen.BUSY,
             _Screen.PROBLEM: AnimeScreen.PROBLEM,
+            _Screen.DRAFT: AnimeScreen.DRAFT,
         }
         screen: AnimeScreen = screens.get(self._screen, AnimeScreen.DETAILS)
         previous_cursor: int = self._view.cursor
@@ -550,6 +877,8 @@ class AnimeController:
                 self._view.global_status = "Nie można potwierdzić odmienności wydania"
         elif self._screen is _Screen.ENTRIES and self._franchise is not None and not self._franchise.complete:
             self._view.notice = self._notice or "Lista niepełna"
+        else:
+            self._sync_subscription_view()
         if self._details_open:
             item: AnimeRow | None = self._view.items[self._view.cursor] if self._view.items else None
             self._view.screen = AnimeScreen.DETAILS
@@ -583,7 +912,6 @@ class AnimeController:
                     date=_year_label(item.year),
                     kind=_format_label(item.format),
                     status=_ENTRY_STATUSES.get(item.status.value, ""),
-                    navigable=item.status is not TitleStatus.NOT_YET_RELEASED,
                 )
                 for item in self._candidates
             )
@@ -596,7 +924,6 @@ class AnimeController:
                         date=_year_label(item.year),
                         kind=_format_label(item.format),
                         status=_ENTRY_STATUSES.get(item.status, ""),
-                        navigable=item.status != "NOT_YET_RELEASED",
                     )
                     for item in self._franchise.entries
                 )
@@ -604,7 +931,9 @@ class AnimeController:
                 else ()
             )
         if self._screen is _Screen.EPISODES:
-            return self._episode_rows()
+            return self._episode_rows() + self._special_rows()
+        if self._screen is _Screen.DRAFT:
+            return self._draft_rows()
         if self._screen is _Screen.OFFER and self._files is not None:
             return tuple(AnimeRow(str(item.index), f"{item.path} · {item.size:,} B") for item in self._files.files)
         if self._screen in {_Screen.OFFER, _Screen.CANDIDATES}:
@@ -639,11 +968,12 @@ class AnimeController:
         return ()
 
     def _episode_rows(self) -> tuple[AnimeRow, ...]:
-        if self._listing is None or not self._listing.episodes:
+        shown: tuple[ListedEpisode, ...] = self._shown_episodes()
+        if self._listing is None or not shown:
             self._view.notice = self._notice or "Nie znam odcinków tego wpisu"
             return ()
         rows: list[AnimeRow] = []
-        for episode in self._listing.episodes:
+        for episode in shown:
             status: EpisodeStatus | None = self._episode_states.get(
                 EpisodeKey(self._listing.anilist_id, episode.number)
             )
@@ -682,9 +1012,90 @@ class AnimeController:
             )
         return tuple(rows)
 
+    def _shown_episodes(self) -> tuple[ListedEpisode, ...]:
+        if self._listing is None:
+            return ()
+        first: object = self._subscription_details.get("first_target")
+        last: object = self._subscription_details.get("last_target")
+        if self._subscription is None or not isinstance(first, int) or not isinstance(last, int):
+            return self._listing.episodes
+        known: set[int] = {item.number for item in self._listing.episodes}
+        return (
+            *self._listing.episodes,
+            *(
+                ListedEpisode(number, aired=self._target_aired(EpisodeKey(self._listing.anilist_id, number)))
+                for number in range(first, last + 1)
+                if number not in known
+            ),
+        )
+
+    def _target_aired(self, key: EpisodeKey) -> bool:
+        status: EpisodeStatus | None = self._episode_states.get(key)
+        return status is None or status.reason != EpisodeReason.SUBSCRIPTION_AWAITING_AIRING
+
+    def _related_extras(self) -> tuple[FranchiseEntry, ...]:
+        if self._subscription is None or self._listing is None or self._franchise is None:
+            return ()
+        anilist_id: int = self._listing.anilist_id
+        related: set[int] = {
+            item.target_id if item.source_id == anilist_id else item.source_id
+            for item in self._franchise.relations
+            if anilist_id in {item.source_id, item.target_id}
+        }
+        return tuple(
+            item for item in self._franchise.entries if item.anilist_id in related and item.format in _EXTRA_FORMATS
+        )
+
+    def _special_rows(self) -> tuple[AnimeRow, ...]:
+        if self._subscription is None or self._listing is None:
+            return ()
+        extras: tuple[FranchiseEntry, ...] = self._related_extras()
+        if not self._listing.specials and not extras:
+            return ()
+        return (
+            AnimeRow(
+                "specials", "Dodatki tego sezonu · pobierasz je osobno z listy wpisów", eligible=False, navigable=False
+            ),
+            *(
+                AnimeRow(
+                    f"special:{item.key}",
+                    _safe(item.title or item.key),
+                    number=item.key,
+                    date=item.airs_on.strftime("%d.%m.%Y") if item.airs_on else "—",
+                    eligible=False,
+                    navigable=False,
+                )
+                for item in self._listing.specials
+            ),
+            *(
+                AnimeRow(
+                    f"related:{item.anilist_id}",
+                    _safe(item.english or item.romaji),
+                    number=item.format or "",
+                    date=str(item.year or "—"),
+                    status="Enter otwórz",
+                    eligible=False,
+                )
+                for item in extras
+            ),
+        )
+
+    def _open_extra(self, anilist_id: int) -> None:
+        if self._franchise is None:
+            return
+        self._positions[_Screen.ENTRIES] = next(
+            index for index, item in enumerate(self._franchise.entries) if item.anilist_id == anilist_id
+        )
+        self._subscription = None
+        self._subscription_details = {}
+        self._from_subscriptions = False
+        self._entries_skipped = False
+        self._start_episodes()
+
     def cancel(self) -> None:
         """Blur retained inputs and discard the result of network work still in flight."""
         with self._lock:
+            self._from_subscriptions = self._from_subscriptions and self._subscription is not None
             self._input_focused = False
             self._generation += 1
             self._offers_running = False
@@ -728,9 +1139,16 @@ class AnimeController:
             return key not in {"escape", "interrupt"}
         return editor.handle(key)
 
+    def _back_out(self) -> AnimeResult:
+        if not self._from_subscriptions:
+            return AnimeResult.HOME
+        self._from_subscriptions = False
+        self._subscription = None
+        return AnimeResult.SUBSCRIPTIONS
+
     def _handle_query(self, key: str) -> AnimeResult:
         if key in {"escape", "interrupt"}:
-            return AnimeResult.HOME
+            return self._back_out()
         if key == "enter" and self._query.strip():
             self._start_search(self._query.strip())
         return AnimeResult.CONTINUE
@@ -790,10 +1208,11 @@ class AnimeController:
                 _Screen.EPISODES,
                 _Screen.OFFER,
                 _Screen.CANDIDATES,
+                _Screen.DRAFT,
             }:
                 self._screen = self._problem_return
                 return AnimeResult.CONTINUE
-            return AnimeResult.HOME
+            return self._back_out()
         if key != "enter":
             return AnimeResult.CONTINUE
         self._screen = self._problem_return
@@ -835,7 +1254,7 @@ class AnimeController:
         if self._screen is _Screen.ENTRIES:
             return len(self._franchise.entries) if self._franchise else 0
         if self._screen is _Screen.EPISODES:
-            return len(self._listing.episodes) if self._listing else 0
+            return len(self._shown_episodes())
         if self._screen is _Screen.OFFER:
             return len(self._files.files) if self._files is not None else len(self._offer_numbers)
         return len(self._release_candidates)
@@ -861,7 +1280,14 @@ class AnimeController:
         listing: EpisodeListing | None = self._listing
         if listing is None:
             return
-        episode: ListedEpisode = listing.episodes[self._positions.get(_Screen.EPISODES, 0)]
+        shown: tuple[ListedEpisode, ...] = self._shown_episodes()
+        position: int = self._positions.get(_Screen.EPISODES, 0)
+        if position >= len(shown):
+            extra: str = self._special_rows()[position - len(shown)].key
+            if key == "enter" and extra.startswith("related:"):
+                self._open_extra(int(extra.removeprefix("related:")))
+            return
+        episode: ListedEpisode = shown[position]
         status: EpisodeStatus | None = self._episode_states.get(EpisodeKey(listing.anilist_id, episode.number))
         if key == "enter" and status is not None and status.reason == EpisodeReason.EPISODE_FILE_UNRESOLVED:
             if status.admission_id is not None:
@@ -896,7 +1322,7 @@ class AnimeController:
             return
         keys: tuple[EpisodeKey, ...] = tuple(
             EpisodeKey(listing.anilist_id, item.number)
-            for item in listing.episodes
+            for item in self._shown_episodes()
             if item.number in selected and self._episode_available(item)
         )
         if not keys:
@@ -1061,6 +1487,7 @@ class AnimeController:
     def _start_franchise(self) -> None:
         candidate: TitleCandidate = self._candidates[self._highlighted]
         if candidate.status is TitleStatus.NOT_YET_RELEASED:
+            self._notice = _ANNOUNCED
             return
         if self._franchise is not None and self._franchise.selected_id == candidate.anilist_id:
             self._open_entries(self._franchise)
@@ -1115,6 +1542,7 @@ class AnimeController:
             return
         entry: FranchiseEntry = self._franchise.entries[self._positions.get(_Screen.ENTRIES, 0)]
         if entry.status == "NOT_YET_RELEASED":
+            self._notice = _ANNOUNCED
             return
         same: bool = self._entry == entry and self._listing is not None
         self._entry = entry
@@ -1129,6 +1557,10 @@ class AnimeController:
 
     def _read_episode_states(self, listing: EpisodeListing) -> dict[EpisodeKey, EpisodeStatus]:
         numbers: list[int] = [item.number for item in listing.episodes if item.aired]
+        first: object = self._subscription_details.get("first_target")
+        last: object = self._subscription_details.get("last_target")
+        if self._subscription is not None and isinstance(first, int) and isinstance(last, int):
+            numbers = sorted({*numbers, *range(first, last + 1)})
         if self._resident is None or not numbers:
             return {}
         try:
@@ -1164,10 +1596,9 @@ class AnimeController:
                 listing = replace(listing, episodes=(film,))
             self._listing = listing
             self._stale = False
-            self._episode_marks.intersection_update(item.number for item in listing.episodes)
-            self._positions[_Screen.EPISODES] = min(
-                self._positions.get(_Screen.EPISODES, 0), max(len(listing.episodes) - 1, 0)
-            )
+            shown: tuple[ListedEpisode, ...] = self._shown_episodes()
+            self._episode_marks.intersection_update(item.number for item in shown)
+            self._positions[_Screen.EPISODES] = min(self._positions.get(_Screen.EPISODES, 0), max(len(shown) - 1, 0))
             self._follow_cursor = True
             self._screen = _Screen.EPISODES
             self._worker = None

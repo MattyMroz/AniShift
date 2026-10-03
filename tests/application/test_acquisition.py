@@ -31,6 +31,7 @@ from anishift.application.acquisition import (
     ClientStatus,
     DownloadReceipt,
     EpisodeReading,
+    ListingRead,
     ReleaseCatalog,
     ReleaseChoice,
     SeasonContext,
@@ -65,6 +66,7 @@ from anishift.services.catalog import (
     TitleCatalogError,
     TitleStatus,
 )
+from anishift.services.catalog.anizip import AniZipCatalog
 from anishift.services.http_requests import RequestControl
 from anishift.services.torrents import Release, ReleaseName, TorrentFile, TorrentInfo
 from anishift.services.torrents.categories import (
@@ -1297,6 +1299,50 @@ def test_ani_zip_mapping_is_remembered_for_its_max_age_and_otherwise_fifteen_min
     clock.now += 840
     service.episodes(_S1)
     assert episodes.asked == [_S1, _S4, _S4, _S1]
+
+
+class _FailingEpisodes(_EpisodeCatalog):
+    def mapping(self, anilist_id: int) -> AniZipMapping:
+        self.asked.append(anilist_id)
+        raise TitleCatalogError(context=ErrorContext(code=ErrorCode.EPISODE_CATALOG_FAILED, message="down"))
+
+
+def test_a_failed_ani_zip_read_builds_the_listing_from_the_saved_mapping_and_fails_without_one(
+    tmp_path: Path,
+) -> None:
+    saved: AniZipMapping = _fixture_mapping(_S1)
+    service: AcquisitionService = _episode_service(tmp_path, episodes=_FailingEpisodes({}))
+    read: ListingRead = service.read_listing(_S1, saved=saved)
+    assert (read.mapping, read.live, len(read.listing.episodes)) == (saved, False, 24)
+    with pytest.raises(TitleCatalogError):
+        service.read_listing(_S1)
+
+
+def test_an_ani_zip_404_through_the_real_catalog_keeps_the_saved_mapping_as_a_snapshot(tmp_path: Path) -> None:
+    saved: AniZipMapping = _fixture_mapping(_S1)
+    with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(404))) as http:
+        service: AcquisitionService = _episode_service(tmp_path, episodes=AniZipCatalog(http))  # type: ignore[arg-type]
+        snapshot: ListingRead = service.read_listing(_S1, saved=saved)
+        unsaved: ListingRead = _episode_service(tmp_path, episodes=AniZipCatalog(http)).read_listing(_S1)  # type: ignore[arg-type]
+    assert (snapshot.mapping, snapshot.live) == (saved, False)
+    assert (unsaved.mapping.kitsu_id, unsaved.live) == (None, False)
+
+
+def test_a_live_ani_zip_read_is_live_and_replaces_the_saved_mapping(tmp_path: Path) -> None:
+    saved: AniZipMapping = replace(_fixture_mapping(_S1), episode_count=1)
+    read: ListingRead = _episode_service(tmp_path).read_listing(_S1, saved=saved)
+    assert (read.mapping, read.live) == (_fixture_mapping(_S1), True)
+
+
+def test_prepare_episode_with_a_given_mapping_asks_ani_zip_nothing_and_assesses_against_it(tmp_path: Path) -> None:
+    mapping: AniZipMapping = _fixture_mapping(_S1)
+    episodes: _EpisodeCatalog = _EpisodeCatalog({_S1: replace(mapping, max_age_s=0)})
+    service: AcquisitionService = _episode_service(tmp_path, episodes=episodes)
+    service.franchise(_S1)
+    offer, target = service.prepare_episode(EpisodeKey(_S1, 4), mapping=mapping)
+    assert episodes.asked == []
+    assert target == identity_target(_fixture_graph(_S1), _S1, mapping, 4)
+    assert offer.candidates
 
 
 def test_a_refetched_incomplete_graph_never_replaces_the_complete_one(tmp_path: Path) -> None:

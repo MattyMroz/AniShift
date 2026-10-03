@@ -31,6 +31,7 @@ from anishift.cli import watch as watch_module
 from anishift.cli.exit_codes import EXIT_INCOMPLETE, EXIT_REFUSED, EXIT_SUCCESS
 from anishift.cli.resident import ResidentSession
 from anishift.cli.watch import RESIDENT_LOCK_FILE_NAME, run_resident, spawn_resident
+from anishift.config.settings import Settings
 from anishift.platform import autostart
 from anishift.platform import tray as tray_module
 from anishift.platform.autostart import AutostartStatus, resident_command
@@ -93,6 +94,9 @@ class _Service:
     def retain_runs(self, run_ids):
         del run_ids
 
+    def current_settings(self):
+        return SimpleNamespace(subscription_shadow=False)
+
 
 state_dir = Path(sys.argv[1])
 ready = Path(sys.argv[2])
@@ -128,6 +132,9 @@ class _Service:
 
     def retain_runs(self, run_ids: Sequence[str]) -> None:
         del run_ids
+
+    def current_settings(self) -> Settings:
+        return Settings.model_construct()
 
 
 def _as_service(service: _Service) -> AppService:

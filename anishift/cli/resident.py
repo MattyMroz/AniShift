@@ -311,6 +311,10 @@ class ResidentSession:
             raise TypeError(msg)
         return tuple(decode_view(EpisodeStatus, item) for item in items)
 
+    def subscription_add(self, anilist_id: int, *, command_id: str) -> Mapping[str, object]:
+        """Ask the owner to follow one airing season; a repeated *command_id* returns the first answer."""
+        return self._call("subscription_add", {"anilist_id": anilist_id}, command_id=command_id)
+
     def command(self, kind: str, payload: Mapping[str, object] | None = None) -> Mapping[str, object]:
         """Send a validated user action through the owner's command boundary."""
         return self._call(kind, payload)

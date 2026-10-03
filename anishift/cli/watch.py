@@ -340,6 +340,7 @@ def run_resident(  # noqa: PLR0913 - every resident timing seam stays an explici
             scan_interval_s=scan_interval_s,
             recycler=recycle_file,
             restorer=restore_file,
+            subscription_shadow=service.current_settings().subscription_shadow,
         )
         endpoint: str = control_endpoint(state_dir)
         clear_endpoint(endpoint)

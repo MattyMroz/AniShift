@@ -67,6 +67,7 @@ __all__ = [
     "DownloadReceipt",
     "EpisodeCatalog",
     "EpisodeReading",
+    "ListingRead",
     "ReleaseCatalog",
     "ReleaseChoice",
     "SeasonContext",
@@ -374,6 +375,15 @@ class DownloadReceipt:
 
     count: int
     directory: Path
+
+
+@dataclass(frozen=True, slots=True)
+class ListingRead:
+    """One episode list with the exact mapping it was built from and whether that mapping was read live."""
+
+    listing: EpisodeListing
+    mapping: AniZipMapping
+    live: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -763,13 +773,28 @@ class AcquisitionService:
 
     def episodes(self, anilist_id: int) -> EpisodeListing:
         """Return the episode list, keeping ani.zip data when the airing schedule is unavailable."""
+        return self.read_listing(anilist_id).listing
+
+    def read_listing(self, anilist_id: int, *, saved: AniZipMapping | None = None) -> ListingRead:
+        """Read the episode list once, building it from *saved* when ani.zip fails or names no Kitsu entry."""
         now: float = self._clock()
-        mapping: AniZipMapping = self._mapping(anilist_id, now)
+        mapping: AniZipMapping
+        fetched: bool = True
+        try:
+            mapping = self._mapping(anilist_id, now)
+        except AniShiftError, OSError, ValueError:
+            if saved is None:
+                raise
+            mapping, fetched = saved, False
+        live: bool = fetched and mapping.kitsu_id is not None
+        if not live and saved is not None:
+            mapping = saved
+            logger.info("Episode mapping snapshot used", provider="anizip")
         schedule: SeasonAiring | None
         failed: bool
         schedule, failed = self._schedule(anilist_id, now)
         retry: float = self.blocked_until(("anilist",)) if failed else 0.0
-        return episode_listing(
+        listing: EpisodeListing = episode_listing(
             anilist_id,
             mapping,
             schedule.status.value if schedule is not None else self._known_status(anilist_id),
@@ -781,16 +806,20 @@ class AcquisitionService:
             schedule_warning=_SCHEDULE_WARNING if failed else None,
             schedule_retry_at=datetime.fromtimestamp(retry, UTC) if retry > now else None,
         )
+        return ListingRead(listing, mapping, live)
 
     def offer(self, key: EpisodeKey) -> EpisodeOffer:
         """Rank the live stream candidates of one episode against its remembered identity."""
         return self.prepare_episode(key)[0]
 
-    def prepare_episode(self, key: EpisodeKey) -> tuple[EpisodeOffer, dict[str, object]]:
-        """Read one live offer together with the exact target used to assess its candidates."""
+    def prepare_episode(
+        self, key: EpisodeKey, *, mapping: AniZipMapping | None = None
+    ) -> tuple[EpisodeOffer, dict[str, object]]:
+        """Read one live offer and its exact target, assessing against *mapping* instead of ani.zip when given."""
         now: float = self._clock()
         graph: FranchiseGraph = self._context_graph(key.anilist_id, now)
-        mapping: AniZipMapping = self._mapping(key.anilist_id, now)
+        if mapping is None:
+            mapping = self._mapping(key.anilist_id, now)
         movie: bool = graph.nodes[key.anilist_id].get("format") == _MOVIE_FORMAT
         if movie and key.number != 1:
             msg = "A movie has only its first row"

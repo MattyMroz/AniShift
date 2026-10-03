@@ -511,13 +511,82 @@ def test_subs_remove_reports_an_unknown_id(monkeypatch: pytest.MonkeyPatch) -> N
     assert "Traceback" not in result.output
 
 
-def test_subs_check_is_not_offered(monkeypatch: pytest.MonkeyPatch) -> None:
-    resident: _Resident = _resident(monkeypatch, {})
+class _Answers(_Resident):
+    def __init__(self, answers: list[object]) -> None:
+        super().__init__(None)
+        self.answers: list[object] = answers
 
-    result: Result = CliRunner().invoke(cli_main.app, ["subs", "check"])
+    def call(self, kind: str, payload: object = None) -> object:
+        self.calls.append((kind, payload))
+        return self.answers.pop(0)
 
-    assert result.exit_code != 0
-    assert resident.calls == []
+
+_OLD_CHECK: dict[str, object] = {
+    "checked_at": "2026-10-03T10:00:00+00:00",
+    "number": 22,
+    "matching": 1,
+    "uncertain": 0,
+    "mismatched": 0,
+    "outcome": "proposed",
+}
+
+
+def test_subs_check_waits_for_the_new_result_and_prints_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    new: dict[str, object] = {**_OLD_CHECK, "checked_at": "2026-10-03T12:00:00+00:00", "number": 23, "matching": 0}
+    new["outcome"] = "no_match"
+    resident: _Answers = _Answers(
+        [{"last_check": _OLD_CHECK}, {"checking": True}, {"last_check": _OLD_CHECK}, {"last_check": new}]
+    )
+    monkeypatch.setattr(cli_control, "open_control", lambda _state_dir: resident)
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["subs", "check", "ab12cd34ef56"])
+
+    payload: dict[str, object] = {"subscription_id": "ab12cd34ef56"}
+    assert result.exit_code == 0
+    assert result.output.strip() == "Checked E23: 0 matching, 0 uncertain, 0 mismatched · no match"
+    assert [call for call, _ in resident.calls] == [
+        "subscription_get",
+        "subscription_check",
+        "subscription_get",
+        "subscription_get",
+    ]
+    assert all(sent == payload for _, sent in resident.calls)
+
+
+def test_subs_check_names_a_list_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    refreshed: dict[str, object] = {**_OLD_CHECK, "number": None, "matching": 0, "outcome": "refreshed"}
+    resident: _Answers = _Answers([{"last_check": None}, {"checking": True}, {"last_check": refreshed}])
+    monkeypatch.setattr(cli_control, "open_control", lambda _state_dir: resident)
+    monkeypatch.setattr("time.sleep", lambda _seconds: None)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["subs", "check", "ab12"])
+
+    assert result.output.strip() == "Checked the list: 0 matching, 0 uncertain, 0 mismatched · refreshed"
+
+
+def test_subs_check_states_a_check_still_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    resident: _Answers = _Answers([{"last_check": None}, {"checking": True}])
+    monkeypatch.setattr(cli_control, "open_control", lambda _state_dir: resident)
+    monkeypatch.setattr(cli_main, "_SUBS_CHECK_WAIT_S", 0.0)
+
+    result: Result = CliRunner().invoke(cli_main.app, ["subs", "check", "ab12"])
+
+    assert result.exit_code == cli_main.EXIT_INCOMPLETE
+    assert "still running" in result.output
+
+
+def test_subs_check_reports_an_unknown_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    _resident(
+        monkeypatch,
+        ControlError("The subscription no longer exists", reason="subscription_missing", answered=True),
+    )
+
+    result: Result = CliRunner().invoke(cli_main.app, ["subs", "check", "zzz"])
+
+    assert result.exit_code == cli_main.EXIT_REFUSED
+    assert "The subscription no longer exists" in result.output
+    assert "Traceback" not in result.output
 
 
 @pytest.mark.parametrize("command", [["subs", "list"], ["subs", "remove", "ab12cd34ef56"]])

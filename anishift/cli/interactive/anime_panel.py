@@ -183,7 +183,7 @@ class AnimePanel:
             self._download()
         elif letter == "p" and self.state.searching:
             self.state.notice = "Trwa wyszukiwanie wydań"
-        elif key == "enter" or letter in {"i", "p", "?", "/"}:
+        elif key == "enter" or letter in {"i", "p", "s", "?", "/"}:
             if self.state.items and not self.state.items[self.state.cursor].navigable:
                 return
             keys: tuple[str, ...] = (self.state.items[self.state.cursor].key,) if self.state.items else ()

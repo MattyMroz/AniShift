@@ -33,6 +33,8 @@ class EpisodeReason(StrEnum):
     RESULT_MISSING = "result_missing"
     EPISODE_CHANGED = "episode_changed"
     COMMAND_REUSED = "command_reused"
+    SUBSCRIPTION_AWAITING_AIRING = "subscription_awaiting_airing"
+    SUBSCRIPTION_AWAITING_RELEASE = "subscription_awaiting_release"
 
 
 @dataclass(frozen=True, slots=True)

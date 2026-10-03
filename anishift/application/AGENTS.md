@@ -272,9 +272,15 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `services/catalog/anilist.py`
 - Subskrypcje żyją w `WatchState.subscriptions` jako `SubscriptionRecord`; wiersze, limit
   `MAX_SUBSCRIPTIONS` (100) i kolejność listy (`display_order`: problem, termin, bez terminu,
-  pauza) mają jedno źródło w `subscription_targets.py`. Owner obsługuje tylko `subscriptions_list`,
-  `subscription_get` i `subscription_pause/resume/remove/restore`; każdy inny rodzaj `subscription*`
-  to `UNKNOWN_COMMAND`. Mutacja zapisuje receipt razem ze stanem. `removed_subscription` trzyma jedną
+  pauza) mają jedno źródło w `subscription_targets.py`; tam też są reguły celów (`cut_point`,
+  `is_target`, `merge_listing`) i terminów (`next_search_at`, `next_check_at`). Owner obsługuje
+  `subscriptions_list`, `subscription_get`, `subscription_add`, `subscription_check` i
+  `subscription_pause/resume/remove/restore`; każdy inny rodzaj `subscription*` to
+  `UNKNOWN_COMMAND`. Mutacja zapisuje receipt razem ze stanem. Sprawdzenie biegnie w puli I/O,
+  jedno na subskrypcję, z izolacją wyjątków; jeden `read_listing` (ze zapisanym mapowaniem jako
+  fallback) zasila `prepare_episode(mapping=…)` każdego celu. Wynik trafia do `last_check` i
+  `decisions.jsonl`; `checked_at` zmienia tylko udane sprawdzenie. Owner nie przyjmuje prób
+  (`_admits` wymaga `_ATTEMPTS_ENABLED`), więc `subscriptions_list.shadow` jest zawsze prawdą. `removed_subscription` trzyma jedną
   usuniętą subskrypcję dla Ctrl+Z; przywrócenie odmawia `subscription_exists` albo
   `subscription_limit` i zachowuje ją. Wznowienie czyści `pause_reason`. `automation.py`
 - `config/subscriptions.json` jest zamrożonym plikiem poprzedniej wersji: owner go nigdy nie

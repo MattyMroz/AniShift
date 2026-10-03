@@ -110,6 +110,9 @@ class Settings(BaseSettings):
     qbittorrent_username: str = Field(default="", description="qBittorrent Web UI user name", repr=False)
     qbittorrent_password: str = Field(default="", description="qBittorrent Web UI password", repr=False)
 
+    # Subscriptions
+    subscription_shadow: bool = Field(default=False, description="Record subscription proposals without admitting")
+
     # Workspace
     workspace_root: str = Field(default="", description="Workspace root override", repr=False)
 

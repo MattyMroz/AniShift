@@ -312,7 +312,7 @@ def test_a_session_without_the_acquisition_boundary_reports_it_and_escape_return
 
 
 @pytest.mark.parametrize("width", [50, 80, 120])
-def test_live_franchise_starts_on_first_selectable_skips_announcement_and_wraps(width: int) -> None:
+def test_live_franchise_starts_on_first_released_reaches_announcement_and_wraps(width: int) -> None:
     owner: _Owner = _Owner()
     owner.franchise_view = Franchise(1, (_entry(1, 2018), _entry(4), _entry(5, 2027, "NOT_YET_RELEASED")), (), True)
     controller: AnimeController = _controller(owner)
@@ -322,11 +322,15 @@ def test_live_franchise_starts_on_first_selectable_skips_announcement_and_wraps(
     frame: str = controller.render(width, 24).plain
     assert frame.index("2027") < frame.index("2026") < frame.index("2018")
     assert controller._positions[_Screen.ENTRIES] == 1
-    for key in ("home", "pageup"):
-        controller.handle_key(key)
-        assert controller._positions[_Screen.ENTRIES] == 1
+    controller.handle_key("home")
+    assert controller._positions[_Screen.ENTRIES] == 0
+    controller.handle_key("enter")
+    assert controller._screen is _Screen.ENTRIES
+    assert "odcinków jeszcze nie ma" in controller.render(width, 24).plain
     controller.handle_key("up")
     assert controller._positions[_Screen.ENTRIES] == 2
+    controller.handle_key("down")
+    assert controller._positions[_Screen.ENTRIES] == 0
     controller.handle_key("down")
     assert controller._positions[_Screen.ENTRIES] == 1
     controller.handle_key("enter")

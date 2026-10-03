@@ -115,6 +115,20 @@ _SUBS_ROW: Final[str] = "{id} {title} · from: {start} · downloaded: {downloade
 _SUBS_REMOVED: Final[str] = "Removed; `Ctrl+Z` in the Subscriptions panel restores it."
 """Confirmation printed once a followed season is gone."""
 
+_SUBS_CHECKED: Final[str] = (
+    "Checked {episode}: {matching} matching, {uncertain} uncertain, {mismatched} mismatched · {outcome}"
+)
+"""Line printed with what one requested check of a followed season saw."""
+
+_SUBS_CHECKING: Final[str] = "The check is still running; `anishift subs list` shows its result later."
+"""Line printed when a requested check outlasts the wait."""
+
+_SUBS_CHECK_WAIT_S: Final[float] = 120.0
+"""Longest wait for the result of one requested check."""
+
+_SUBS_CHECK_POLL_S: Final[float] = 0.5
+"""Pause between two reads of a requested check's result."""
+
 
 def _print_doctor_report(results: list[CheckResult]) -> None:
     """Render doctor results as an icon + message list."""
@@ -368,6 +382,38 @@ def subs_remove(
     """Stop following one season; downloaded files and running downloads stay."""
     _resident_call("subscription_remove", {"subscription_id": subscription_id})
     typer.echo(_SUBS_REMOVED)
+
+
+@subs_app.command("check")
+def subs_check(
+    subscription_id: Annotated[str, typer.Argument(help="Id shown by `anishift subs list`.")],
+) -> None:
+    """Search the source now for one followed season and print what the check saw."""
+    import time  # noqa: PLC0415
+
+    payload: dict[str, object] = {"subscription_id": subscription_id}
+    before: object = _resident_call("subscription_get", payload).get("last_check")
+    _resident_call("subscription_check", payload)
+    deadline: float = time.monotonic() + _SUBS_CHECK_WAIT_S
+    while time.monotonic() < deadline:
+        time.sleep(_SUBS_CHECK_POLL_S)
+        check: object = _resident_call("subscription_get", payload).get("last_check")
+        if isinstance(check, Mapping) and check != before:
+            number: object = check.get("number")
+            typer.echo(
+                _safe(
+                    _SUBS_CHECKED.format(
+                        episode="the list" if number is None else f"E{number}",
+                        matching=check.get("matching"),
+                        uncertain=check.get("uncertain"),
+                        mismatched=check.get("mismatched"),
+                        outcome=str(check.get("outcome", "")).replace("_", " "),
+                    )
+                )
+            )
+            return
+    typer.echo(_SUBS_CHECKING)
+    raise typer.Exit(EXIT_INCOMPLETE)
 
 
 def _subscription_state(row: SubscriptionRow) -> str:

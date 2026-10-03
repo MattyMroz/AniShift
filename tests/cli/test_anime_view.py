@@ -492,7 +492,7 @@ def test_content_is_centered_between_top_and_bottom_pinned_keys(screen: AnimeScr
         title="Slime",
         items=()
         if screen is AnimeScreen.QUERY
-        else tuple(replace(item, status="Nie wyemitowano") for item in rows()[:2]),
+        else tuple(replace(item, status="Czeka na wydanie") for item in rows()[:2]),
         query=TextInput("slime"),
     )
     frame: AnimeFrame = render_anime(state.snapshot(columns), columns, height, 0)

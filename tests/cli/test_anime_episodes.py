@@ -270,7 +270,7 @@ def test_franchise_status_names_every_entry_and_starts_on_the_first_released_one
     frame: str = _frame(controller)
     assert all(label in frame for label in ("zapowiedź", "w emisji", "zakończone"))
     assert [item.status for item in controller._view.items] == ["zapowiedź", "w emisji", "zakończone"]
-    assert [item.navigable for item in controller._view.items] == [False, True, True]
+    assert [item.navigable for item in controller._view.items] == [True, True, True]
     assert controller._view.cursor == 1
 
 

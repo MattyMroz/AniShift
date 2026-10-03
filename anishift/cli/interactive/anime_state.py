@@ -41,6 +41,7 @@ class AnimeScreen(StrEnum):
     FILES = "files"
     BUSY = "busy"
     PROBLEM = "problem"
+    DRAFT = "draft"
 
 
 class NoticeKind(StrEnum):

@@ -1,27 +1,56 @@
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
+import httpx
 import pytest
-from test_automation import _MOMENT, _TIMEOUT_S, _library, _owner, _request, _serving
+from loguru import logger as loguru_logger
+from test_acquisition import (
+    _S1,
+    _S4,
+    _Clock,
+    _episode_service,
+    _EpisodeCatalog,
+    _slime_streams,
+    _StreamSource,
+    _TitleCatalog,
+)
+from test_automation import _INSTANCE, _MOMENT, _TIMEOUT_S, _await, _library, _owner, _request, _serving
+from test_episode_selection import _fixture_graph, _fixture_mapping
 
+from anishift.application import AppService
+from anishift.application import automation as automation_module
 from anishift.application.automation import AutomationOwner
-from anishift.application.control import LegacyOrder, WatchState
+from anishift.application.control import AutomationPolicy, LegacyOrder, WatchState
 from anishift.application.control_views import decode_view
+from anishift.application.episode_selection import AniZipMapping, ListedSpecial, StreamCandidate
 from anishift.application.subscription_targets import (
     MAX_SUBSCRIPTIONS,
     PauseReason,
+    SubscriptionCheck,
+    SubscriptionProblem,
     SubscriptionRecord,
     SubscriptionRow,
+    SubscriptionTarget,
+    TargetState,
 )
 from anishift.application.subscriptions import Subscription, SubscriptionStore
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
-from anishift.platform.local_control import ControlErrorCode, ControlResponse
+from anishift.errors import ErrorCode, ErrorContext
+from anishift.platform.local_control import MAX_FRAME_BYTES, ControlErrorCode, ControlResponse
+from anishift.services.catalog import EpisodeAiring, SeasonAiring, TitleCatalogError, TitleStatus
+from anishift.services.catalog.anizip import AniZipCatalog
+from anishift.services.http_requests import RequestControl
+from anishift.services.torrents.torrentio import TorrentioSource
 
 _ACTIVE: SubscriptionRecord = SubscriptionRecord(
     subscription_id="a",
@@ -172,7 +201,7 @@ def test_restore_at_the_subscription_limit_is_refused_and_keeps_the_undo(tmp_pat
 
 
 @pytest.mark.parametrize(
-    "kind", ["subscription_add", "subscription_enable", "subscription_disable", "subscriptions_check"]
+    "kind", ["subscription_range", "subscription_enable", "subscription_disable", "subscriptions_check"]
 )
 def test_former_subscription_commands_are_unknown(tmp_path: Path, kind: str) -> None:
     with _running(tmp_path, WatchState(subscriptions=(_ACTIVE,))) as (owner, _):
@@ -231,3 +260,526 @@ def test_the_owner_never_writes_the_frozen_subscription_file(tmp_path: Path) -> 
     assert listing.read_bytes() == frozen
     assert [item.subscription_id for item in saved.subscriptions] == ["a"]
     assert saved.legacy_orders == (LegacyOrder(1, 1, "subscription:a:1", None, complete=False),)
+
+
+_NOW: datetime = datetime(2026, 10, 3, 12, tzinfo=UTC)
+
+_KITSU: int = 49235
+
+_WEEK: timedelta = timedelta(days=7)
+
+
+def _airing(status: TitleStatus = TitleStatus.RELEASING, *, dated: bool = True) -> SeasonAiring:
+    episodes: tuple[EpisodeAiring, ...] = tuple(
+        EpisodeAiring(number, _NOW - timedelta(hours=1) + (number - 23) * _WEEK) for number in range(1, 25)
+    )
+    return SeasonAiring(_S4, status, 24, episodes if dated else ())
+
+
+def _mapping(**changes: object) -> AniZipMapping:
+    return replace(_fixture_mapping(_S4), **changes)  # type: ignore[arg-type]
+
+
+@dataclass
+class _World:
+    clock: _Clock = field(default_factory=lambda: _Clock(_NOW.timestamp()))
+    titles: _TitleCatalog = field(
+        default_factory=lambda: _TitleCatalog(graphs={_S4: _fixture_graph(_S1)}, schedules={_S4: _airing()})
+    )
+    episodes: _EpisodeCatalog = field(default_factory=lambda: _EpisodeCatalog({_S4: _mapping(max_age_s=0)}))
+    streams: _StreamSource = field(default_factory=_slime_streams)
+    control: RequestControl | None = None
+    catalog: object = None
+
+    def now(self) -> datetime:
+        return datetime.fromtimestamp(self.clock.now, UTC)
+
+
+def _followed(identifier: str = "a", **changes: object) -> SubscriptionRecord:
+    record: SubscriptionRecord = SubscriptionRecord(
+        identifier,
+        _S4,
+        "Slime S4",
+        (_NOW - timedelta(days=2)).isoformat(),
+        22,
+        kitsu_id=_KITSU,
+        mapping=_mapping(max_age_s=None),
+    )
+    return replace(record, **changes)  # type: ignore[arg-type]
+
+
+def _active(*records: SubscriptionRecord) -> WatchState:
+    return WatchState(policy=AutomationPolicy(auto_enabled=True), subscriptions=records)
+
+
+@contextmanager
+def _following(
+    tmp_path: Path, state: WatchState, world: _World, *, shadow: bool = False
+) -> Iterator[tuple[AutomationOwner, WatchStateStore]]:
+    service, _, _ = _library(tmp_path)
+    service.acquisition = _episode_service(
+        tmp_path,
+        world.titles,
+        cast("_EpisodeCatalog", world.catalog) if world.catalog is not None else world.episodes,
+        world.streams,
+        clock=world.clock,
+        request_control=world.control,
+    )
+    store: WatchStateStore = WatchStateStore(
+        tmp_path / WATCH_STATE_FILE_NAME, subscriptions_path=tmp_path / "subscriptions.json"
+    )
+    if not (tmp_path / WATCH_STATE_FILE_NAME).exists():
+        store.save(state)
+    owner: AutomationOwner = AutomationOwner(
+        cast("AppService", service), store, instance_id=_INSTANCE, clock=world.now, subscription_shadow=shadow
+    )
+    thread: threading.Thread = _serving(owner)
+    try:
+        yield owner, store
+    finally:
+        owner.request_shutdown()
+        thread.join(timeout=_TIMEOUT_S)
+
+
+def _settled(owner: AutomationOwner) -> None:
+    assert _await(lambda: owner._on_owner(lambda: not owner._subscription_checks))
+
+
+def _checked(owner: AutomationOwner, store: WatchStateStore, identifier: str = "a") -> SubscriptionRecord:
+    assert _await(
+        lambda: any(
+            item.subscription_id == identifier and item.last_check is not None for item in owner.state.subscriptions
+        )
+    )
+    _settled(owner)
+    return next(item for item in store.load().subscriptions if item.subscription_id == identifier)
+
+
+def _decisions(tmp_path: Path) -> list[dict[str, object]]:
+    path: Path = tmp_path / "decisions.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+@pytest.mark.parametrize("shadow", [True, False])
+def test_a_due_check_proposes_one_match_and_admits_nothing_in_either_shadow_setting(
+    tmp_path: Path, shadow: bool
+) -> None:
+    world: _World = _World()
+    logged: list[dict[str, object]] = []
+    handler: int = loguru_logger.add(
+        lambda message: logged.append(dict(message.record["extra"])),
+        filter=lambda record: record["message"] == "Subscription checked",
+    )
+    try:
+        with _following(tmp_path, _active(_followed()), world, shadow=shadow) as (owner, store):
+            record: SubscriptionRecord = _checked(owner, store)
+            saved: WatchState = store.load()
+            listed: ControlResponse = _ask(owner, "subscriptions_list", command_id="list")
+    finally:
+        loguru_logger.remove(handler)
+
+    assert record.last_check is not None
+    assert (record.last_check.number, record.last_check.outcome) == (23, "proposed")
+    assert record.last_check.matching > 0
+    assert [(item.number, item.state) for item in record.targets] == [
+        (23, TargetState.DUE),
+        (24, TargetState.AWAITING_AIRING),
+    ]
+    assert record.checked_at == _NOW.isoformat()
+    assert saved.acquisitions == ()
+    assert listed.result["shadow"] is True
+    assert (world.episodes.asked, world.titles.scheduled, world.streams.asked) == ([_S4], [_S4], [(_KITSU, 23)])
+    decisions: list[dict[str, object]] = _decisions(tmp_path)
+    assert [(item["kind"], item.get("source"), item["entry"]) for item in decisions] == [
+        ("check", "ani.zip", "shadow"),
+        ("check", "torrentio", "shadow"),
+        ("proposal", None, "shadow"),
+    ]
+    assert decisions[0]["mapping_source"] == "live"
+    assert decisions[1]["result"] == "match"
+    assert decisions[2]["key"] == {"anilist_id": _S4, "number": 23}
+    assert logged == [
+        {
+            "logger_name": "anishift.application.automation",
+            "subscription_id": "a",
+            "number": 23,
+            "match": record.last_check.matching,
+            "uncertain": record.last_check.uncertain,
+            "mismatch": record.last_check.mismatched,
+            "decision": "proposed",
+        }
+    ]
+
+
+def test_a_failing_subscription_never_stops_the_check_of_the_next_one(tmp_path: Path) -> None:
+    class Broken(_EpisodeCatalog):
+        def mapping(self, anilist_id: int) -> AniZipMapping:
+            if anilist_id == 1:
+                raise RuntimeError(anilist_id)
+            return super().mapping(anilist_id)
+
+    world: _World = _World()
+    world.catalog = Broken({_S4: _mapping(max_age_s=0)})
+    broken: SubscriptionRecord = _followed("b", anilist_id=1, title="Broken", kitsu_id=1)
+    with _following(tmp_path, _active(broken, _followed()), world) as (owner, store):
+        failed: SubscriptionRecord = _checked(owner, store, "b")
+        checked: SubscriptionRecord = _checked(owner, store, "a")
+
+    assert failed.last_check is not None
+    assert (failed.last_check.outcome, failed.checked_at) == ("source_failed", None)
+    assert checked.last_check is not None
+    assert checked.last_check.outcome == "proposed"
+
+
+def test_a_rate_limited_source_blocks_its_provider_and_postpones_the_check_without_consuming_it(
+    tmp_path: Path,
+) -> None:
+    world: _World = _World()
+    world.control = RequestControl(
+        httpx.MockTransport(lambda request: httpx.Response(429, headers={"retry-after": "600"})),
+        clock=world.clock,
+        sleep=lambda delay: None,
+    )
+    with httpx.Client(transport=world.control) as http:
+        world.streams = cast("_StreamSource", TorrentioSource(http))
+        with _following(tmp_path, _active(_followed()), world) as (owner, store):
+            record: SubscriptionRecord = _checked(owner, store)
+            retry: datetime | None = owner._on_owner(lambda: owner._subscription_due(record, world.now()))
+            saved: WatchState = store.load()
+
+    until: datetime = _NOW + timedelta(seconds=600)
+    assert record.last_check is not None
+    assert (record.last_check.outcome, record.last_check.number, record.checked_at) == ("rate_limited", 23, None)
+    assert retry == until
+    assert [(item.provider, item.until) for item in saved.provider_locks] == [("torrentio", until.isoformat())]
+    assert saved.acquisitions == ()
+    assert [(item["source"], item["result"]) for item in _decisions(tmp_path)] == [
+        ("ani.zip", "length"),
+        ("torrentio", "429"),
+    ]
+
+
+class _LateFailure(_StreamSource):
+    def streams(self, kitsu_id: int, number: int) -> tuple[StreamCandidate, ...]:
+        if number == 23:
+            raise OSError(number)
+        return super().streams(kitsu_id, number)
+
+
+def test_a_later_episode_failure_is_the_check_result_and_every_outcome_is_logged(tmp_path: Path) -> None:
+    world: _World = _World()
+    world.streams = _LateFailure(_slime_streams().answers)
+    logged: list[dict[str, object]] = []
+    handler: int = loguru_logger.add(
+        lambda message: logged.append(dict(message.record["extra"])),
+        filter=lambda record: record["message"] == "Subscription checked",
+    )
+    record: SubscriptionRecord = _followed(subscribed_at=(_NOW - timedelta(days=9)).isoformat(), cut=21)
+    try:
+        with _following(tmp_path, _active(record), world) as (owner, store):
+            checked: SubscriptionRecord = _checked(owner, store)
+    finally:
+        loguru_logger.remove(handler)
+
+    assert checked.last_check is not None
+    assert (checked.last_check.number, checked.last_check.outcome) == (23, "source_failed")
+    assert [(item["number"], item["decision"]) for item in logged] == [(22, "no_candidates"), (23, "source_failed")]
+    assert all(item["subscription_id"] == "a" for item in logged)
+
+
+class _HeldStreams(_StreamSource):
+    def __init__(self, answers: Mapping[tuple[int, int | None], tuple[StreamCandidate, ...]]) -> None:
+        super().__init__(answers)
+        self.entered: threading.Event = threading.Event()
+        self.release: threading.Event = threading.Event()
+
+    def streams(self, kitsu_id: int, number: int) -> tuple[StreamCandidate, ...]:
+        self.entered.set()
+        assert self.release.wait(_TIMEOUT_S)
+        return super().streams(kitsu_id, number)
+
+
+def test_a_requested_check_during_a_scheduled_one_gets_its_result_without_a_second_query(tmp_path: Path) -> None:
+    world: _World = _World()
+    held: _HeldStreams = _HeldStreams(_slime_streams().answers)
+    world.streams = held
+    events: list[Mapping[str, object]] = []
+    with _following(tmp_path, _active(_followed()), world) as (owner, store):
+        assert held.entered.wait(_TIMEOUT_S)
+        owner._broadcast = lambda frame, terminal: events.append(frame)
+        answer: ControlResponse = _ask(owner, "subscription_check", {"subscription_id": "a"}, "f")
+        held.release.set()
+        _checked(owner, store)
+
+    assert answer.result == {"subscription_id": "a", "checking": True}
+    checks: list[Mapping[str, object]] = [item for item in events if item.get("event") == "subscription_checked"]
+    assert len(checks) == 1
+    payload: object = checks[0]["payload"]
+    assert isinstance(payload, Mapping)
+    assert payload["subscription_id"] == "a"
+    assert cast("Mapping[str, object]", payload["last_check"])["number"] == 23
+    assert held.asked == [(_KITSU, 23)]
+
+
+class _DownEpisodes(_EpisodeCatalog):
+    def mapping(self, anilist_id: int) -> AniZipMapping:
+        self.asked.append(anilist_id)
+        raise TitleCatalogError(context=ErrorContext(code=ErrorCode.EPISODE_CATALOG_FAILED, message="down"))
+
+
+@pytest.mark.parametrize("failure", ["exception", "404"])
+def test_an_ani_zip_outage_checks_from_the_saved_mapping_also_after_a_restart(tmp_path: Path, failure: str) -> None:
+    refreshed: str = (_NOW - timedelta(days=1)).isoformat()
+    state: WatchState = _active(_followed(refreshed_at=refreshed))
+    with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(404))) as http:
+        world: _World = _World()
+        world.catalog = AniZipCatalog(http) if failure == "404" else _DownEpisodes({})
+        records: list[SubscriptionRecord] = []
+        for _ in range(2):
+            with _following(tmp_path, state, world) as (owner, store):
+                _ask(owner, "subscription_check", {"subscription_id": "a"}, f"check-{len(records)}")
+                _settled(owner)
+                records.append(store.load().subscriptions[0])
+
+    for record in records:
+        assert record.last_check is not None
+        assert record.last_check.outcome == "proposed"
+        assert (record.mapping, record.refreshed_at, record.problem) == (_mapping(max_age_s=None), refreshed, None)
+    sources: list[object] = [
+        item.get("mapping_source") for item in _decisions(tmp_path) if item.get("source") == "ani.zip"
+    ]
+    assert sources
+    assert set(sources) == {"snapshot"}
+
+
+def _add(owner: AutomationOwner, command_id: str = "add", anilist_id: int = _S4) -> ControlResponse:
+    return _ask(owner, "subscription_add", {"anilist_id": anilist_id}, command_id)
+
+
+def test_adding_a_releasing_season_saves_its_cut_mapping_and_future_targets_once(tmp_path: Path) -> None:
+    world: _World = _World()
+    world.titles.schedules[_S4] = _airing()
+    with _following(tmp_path, WatchState(policy=AutomationPolicy(auto_enabled=False)), world) as (owner, store):
+        added: ControlResponse = _add(owner)
+        repeated: ControlResponse = _add(owner)
+        saved: WatchState = store.load()
+
+    assert added.ok
+    assert added.result["from_number"] == 24
+    assert repeated.result == added.result
+    record: SubscriptionRecord = saved.subscriptions[0]
+    assert (record.subscription_id, record.cut, record.kitsu_id) == (added.result["subscription_id"], 23, _KITSU)
+    assert record.mapping == _mapping(max_age_s=None)
+    assert [(item.number, item.state) for item in record.targets] == [(24, TargetState.AWAITING_AIRING)]
+    assert record.subscribed_at == _NOW.isoformat()
+    assert "add" in {item.command_id for item in saved.command_receipts}
+
+
+def test_adding_an_announced_season_without_dates_targets_every_episode(tmp_path: Path) -> None:
+    world: _World = _World()
+    world.titles.schedules[_S4] = replace(_airing(TitleStatus.NOT_YET_RELEASED, dated=False), episode_count=None)
+    with _following(tmp_path, WatchState(policy=AutomationPolicy(auto_enabled=False)), world) as (owner, store):
+        added: ControlResponse = _add(owner)
+        record: SubscriptionRecord = store.load().subscriptions[0]
+
+    assert added.result["from_number"] == 1
+    assert record.targets
+    assert {item.state for item in record.targets} == {TargetState.AWAITING_AIRING}
+    assert record.targets[0].number == 1
+
+
+@pytest.mark.parametrize(
+    ("schedule", "state", "catalog", "reason"),
+    [
+        (_airing(TitleStatus.FINISHED), WatchState(), None, "subscription_not_airing"),
+        (_airing(TitleStatus.HIATUS, dated=False), WatchState(), None, "subscription_cut_unknown"),
+        (_airing(), WatchState(subscriptions=(_followed(),)), None, "subscription_exists"),
+        (
+            _airing(),
+            WatchState(
+                subscriptions=tuple(
+                    _followed(f"s{index}", anilist_id=1000 + index) for index in range(MAX_SUBSCRIPTIONS)
+                )
+            ),
+            None,
+            "subscription_limit",
+        ),
+        (_airing(), WatchState(), "down", "source_failed"),
+    ],
+    ids=["finished", "hiatus-undated", "duplicate", "limit", "new-title-without-ani-zip"],
+)
+def test_an_impossible_addition_is_refused_without_a_write(
+    tmp_path: Path, schedule: SeasonAiring, state: WatchState, catalog: str | None, reason: str
+) -> None:
+    world: _World = _World()
+    world.titles.schedules[_S4] = schedule
+    world.catalog = _DownEpisodes({}) if catalog == "down" else None
+    paused: WatchState = replace(state, policy=AutomationPolicy(auto_enabled=False))
+    with _following(tmp_path, paused, world) as (owner, store):
+        answer: ControlResponse = _add(owner)
+        saved: WatchState = store.load()
+
+    assert answer.code is ControlErrorCode.REFUSED
+    assert answer.reason == reason
+    assert saved.subscriptions == paused.subscriptions
+    assert "add" not in {item.command_id for item in saved.command_receipts}
+
+
+def _migrated(**changes: object) -> SubscriptionRecord:
+    return replace(
+        _followed(
+            cut=None,
+            kitsu_id=None,
+            mapping=None,
+            subscribed_at=(_NOW - 10 * _WEEK).isoformat(),
+            migrated_at=(_NOW - _WEEK).isoformat(),
+            review_pending=True,
+        ),
+        **changes,  # type: ignore[arg-type]
+    )
+
+
+def test_a_paused_migrated_record_is_refreshed_and_its_review_finishes_on_complete_live_data(tmp_path: Path) -> None:
+    record: SubscriptionRecord = _migrated(paused=True, pause_reason=PauseReason.USER)
+    with _following(tmp_path, _active(record), _World()) as (owner, store):
+        reviewed: SubscriptionRecord = _checked(owner, store)
+
+    assert (reviewed.review_pending, reviewed.paused, reviewed.pause_reason) == (False, True, PauseReason.USER)
+    assert (reviewed.kitsu_id, reviewed.mapping) == (_KITSU, _mapping(max_age_s=None))
+    assert reviewed.last_check is not None
+    assert reviewed.last_check.outcome == "refreshed"
+    assert [item.number for item in reviewed.targets] == list(range(14, 25))
+
+
+def test_a_late_review_keeps_a_target_aired_after_migration_unpaused(tmp_path: Path) -> None:
+    record: SubscriptionRecord = _migrated(migrated_at=(_NOW - timedelta(hours=2)).isoformat())
+    with _following(tmp_path, _active(record), _World()) as (owner, store):
+        reviewed: SubscriptionRecord = _checked(owner, store)
+
+    assert (reviewed.review_pending, reviewed.paused) == (False, True)
+    assert reviewed.pause_reason is PauseReason.MIGRATED_DUE
+    late: SubscriptionRecord = _migrated(
+        subscribed_at=(_NOW - timedelta(hours=3)).isoformat(), migrated_at=(_NOW - timedelta(hours=2)).isoformat()
+    )
+    with _following(tmp_path / "late", _active(late), _World()) as (owner, store):
+        kept: SubscriptionRecord = _checked(owner, store)
+
+    assert (kept.review_pending, kept.paused) == (False, False)
+    assert [(item.number, item.state) for item in kept.targets] == [
+        (23, TargetState.DUE),
+        (24, TargetState.AWAITING_AIRING),
+    ]
+
+
+@pytest.mark.parametrize("failure", ["schedule", "snapshot"])
+def test_an_incomplete_review_read_keeps_the_review_and_retries_it_after_a_restart(
+    tmp_path: Path, failure: str
+) -> None:
+    world: _World = _World()
+    down: _DownEpisodes = _DownEpisodes({})
+    record: SubscriptionRecord = _migrated()
+    if failure == "schedule":
+        world.titles.schedule_fails = True
+    else:
+        world.catalog = down
+        record = replace(record, kitsu_id=_KITSU, mapping=_mapping(max_age_s=None))
+    reads: list[int] = world.titles.scheduled if failure == "schedule" else down.asked
+    for attempt in range(1, 3):
+        with _following(tmp_path, _active(record), world) as (owner, store):
+            assert _await(lambda: len(reads) >= attempt)  # noqa: B023
+            _settled(owner)
+            retry: tuple[int, datetime] | None = owner._on_owner(lambda: owner._subscription_retries.get("a"))
+            saved: SubscriptionRecord = store.load().subscriptions[0]
+        assert (saved.review_pending, saved.targets, saved.migrated_at) == (True, (), record.migrated_at)
+        assert retry == (1, _NOW + timedelta(seconds=60))
+    assert len(reads) == 2
+
+
+def test_a_catalog_conflict_has_a_repair_deadline_and_a_consistent_live_read_clears_it(tmp_path: Path) -> None:
+    other: SubscriptionRecord = _followed(kitsu_id=1, mapping=_mapping(kitsu_id=1, max_age_s=None))
+    with _following(tmp_path, _active(other), _World()) as (owner, store):
+        conflicted: SubscriptionRecord = _checked(owner, store)
+        retry: tuple[int, datetime] | None = owner._on_owner(lambda: owner._subscription_retries.get("a"))
+        deadline: datetime | None = owner._on_owner(lambda: owner._subscription_due(conflicted, _NOW))
+
+    assert conflicted.problem is SubscriptionProblem.CATALOG_CONFLICT
+    assert conflicted.targets == ()
+    assert retry == (1, _NOW + timedelta(seconds=60))
+    assert deadline == _NOW + timedelta(seconds=60)
+    repaired: SubscriptionRecord = _followed(problem=SubscriptionProblem.CATALOG_CONFLICT)
+    with _following(tmp_path / "repaired", _active(repaired), _World()) as (owner, store):
+        cleared: SubscriptionRecord = _checked(owner, store)
+
+    assert cleared.problem is None
+
+
+def test_the_owner_schedules_the_next_check_and_runs_it_once_the_clocks_reach_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ticks: list[float] = [1000.0]
+    monkeypatch.setattr(automation_module, "time", SimpleNamespace(monotonic=lambda: ticks[0]))
+    world: _World = _World()
+    checked: SubscriptionRecord = _followed(
+        checked_at=_NOW.isoformat(),
+        targets=(SubscriptionTarget(24, (_NOW + timedelta(hours=2)).isoformat(), TargetState.AWAITING_AIRING),),
+    )
+    with _following(tmp_path, _active(checked), world) as (owner, store):
+        scheduled: float | None = owner._on_owner(lambda: owner._subscriptions_at)
+        world.clock.now += 2 * 3600
+        ticks[0] += 2 * 3600
+        _ask(owner, "subscriptions_list", command_id="wake")
+        record: SubscriptionRecord = _checked(owner, store)
+        paused: ControlResponse = _ask(owner, "set_auto", {"enabled": False}, "pause")
+        idle: float | None = owner._on_owner(lambda: owner._subscriptions_at)
+
+    assert scheduled == 1000.0 + 2 * 3600
+    assert record.checked_at == (_NOW + timedelta(hours=2)).isoformat()
+    assert world.titles.scheduled == [_S4]
+    assert paused.ok
+    assert idle is None
+
+
+def test_a_globally_paused_owner_checks_nothing_on_its_own(tmp_path: Path) -> None:
+    world: _World = _World()
+    state: WatchState = WatchState(policy=AutomationPolicy(auto_enabled=False), subscriptions=(_followed(),))
+    with _following(tmp_path, state, world) as (owner, store):
+        scheduled: float | None = owner._on_owner(lambda: owner._subscriptions_at)
+        manual: ControlResponse = _ask(owner, "subscription_check", {"subscription_id": "a"}, "check")
+        record: SubscriptionRecord = _checked(owner, store)
+
+    assert scheduled is None
+    assert manual.result == {"subscription_id": "a", "checking": True}
+    assert record.last_check is not None
+    assert record.last_check.outcome == "refreshed"
+    assert world.streams.asked == []
+
+
+def test_the_list_and_details_of_the_largest_subscriptions_fit_in_one_frame(tmp_path: Path) -> None:
+    title: str = "Ż" * 200
+    specials: tuple[ListedSpecial, ...] = tuple(ListedSpecial(f"S{index}", "Ś" * 120, None) for index in range(300))
+    huge: SubscriptionRecord = _followed(
+        "huge",
+        title=title,
+        cut=0,
+        mapping=_mapping(max_age_s=None, specials=specials),
+        targets=tuple(
+            SubscriptionTarget(number, (_NOW + number * _WEEK).isoformat(), TargetState.AWAITING_AIRING)
+            for number in range(1, 2001)
+        ),
+        last_check=SubscriptionCheck(_NOW.isoformat(), 2000, 999, 999, 999, "no_match"),
+    )
+    rows: tuple[SubscriptionRecord, ...] = tuple(
+        replace(huge, subscription_id=f"s{index:03}", anilist_id=5000 + index, problem=None)
+        for index in range(MAX_SUBSCRIPTIONS - 1)
+    )
+    state: WatchState = WatchState(policy=AutomationPolicy(auto_enabled=False), subscriptions=(*rows, huge))
+    with _following(tmp_path, state, _World()) as (owner, _):
+        listed: ControlResponse = _ask(owner, "subscriptions_list", command_id="list")
+        details: ControlResponse = _ask(owner, "subscription_get", {"subscription_id": "huge"}, "get")
+
+    for answer in (listed, details):
+        assert answer.ok
+        assert len(json.dumps(answer.result, ensure_ascii=False).encode()) < MAX_FRAME_BYTES // 2
+    assert len(details.result["specials"]) == 300  # type: ignore[arg-type]

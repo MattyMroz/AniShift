@@ -17,7 +17,7 @@ from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from anishift.application.control import EpisodeAssignment
-    from anishift.application.episode_selection import EpisodeOffer, StreamCandidate
+    from anishift.application.episode_selection import EpisodeOffer, RankedCandidate, StreamCandidate
 
 logger = get_logger(__name__)
 
@@ -83,6 +83,12 @@ _FIELDS: Final[frozenset[str]] = frozenset(
         "dub_only",
         "container",
         "supported",
+        "subscription_id",
+        "due_at",
+        "aired_at",
+        "result",
+        "excluded",
+        "mapping_source",
         *_TARGET_FIELDS,
     }
 )
@@ -186,8 +192,18 @@ def admission_decision(assignment: EpisodeAssignment, operation_id: str) -> dict
     }
 
 
-def append_decision(path: Path, kind: str, payload: Mapping[str, object]) -> None:
-    """Append trusted allowlisted evidence without making admission depend on the journal."""
+def candidate_proposal(candidate: RankedCandidate, target: Mapping[str, object]) -> dict[str, object]:
+    """Describe the candidate a subscription would admit, with the H1 target it was assessed against."""
+    return {
+        "target": target_view(target),
+        "stream": stream_view(candidate.stream),
+        "identity": encode_view(candidate.identity),
+        "facts": encode_view(candidate.facts),
+    }
+
+
+def append_decision(path: Path, kind: str, payload: Mapping[str, object], *, entry: str = "manual") -> None:
+    """Append trusted allowlisted evidence of the *entry* path without making admission depend on the journal."""
     try:
         _evidence(payload)
         record: dict[str, object] = {
@@ -195,7 +211,7 @@ def append_decision(path: Path, kind: str, payload: Mapping[str, object]) -> Non
             "rules": "e1",
             "kind": kind,
             "at": datetime.now(UTC).isoformat(),
-            "entry": "manual",
+            "entry": entry,
             **payload,
         }
         line: str = json.dumps(record, ensure_ascii=False, separators=(",", ":"))

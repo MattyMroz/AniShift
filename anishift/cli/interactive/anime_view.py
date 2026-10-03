@@ -53,14 +53,14 @@ MIN_ROWS: Final[int] = HEADER_ROWS + 1 + FOOTER_ROWS
 _MARGIN: Final[int] = 4
 """Cells kept free around centered blocks."""
 
-_EPISODE_STATUS_WIDTH: Final[int] = len("Nie wyemitowano")
+_EPISODE_STATUS_WIDTH: Final[int] = len("Czeka na wydanie")
 """Fixed Stan column width, so a changing episode state never shifts the centered table."""
 
 NAVIGATION_KEYS: Final[tuple[str, ...]] = ("←→ widok", "↑↓ wybierz")
 """Navigation hints appended to table screens and dropped first when space runs out."""
 
 _LIST_SCREENS: Final[frozenset[AnimeScreen]] = frozenset(
-    {AnimeScreen.DETAILS, AnimeScreen.FILES, AnimeScreen.BUSY, AnimeScreen.PROBLEM}
+    {AnimeScreen.DETAILS, AnimeScreen.FILES, AnimeScreen.BUSY, AnimeScreen.PROBLEM, AnimeScreen.DRAFT}
 )
 """Screens rendering one plain text column instead of a table."""
 
@@ -258,10 +258,10 @@ def _query(canvas: _Canvas, snapshot: AnimeSnapshot) -> None:
 
 def _list(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int) -> int:
     items: tuple[AnimeRow, ...] = snapshot.items[snapshot.offset : snapshot.offset + visible]
-    prefix: int = 2 if snapshot.screen is AnimeScreen.FILES else 0
+    prefix: int = 2 if snapshot.screen in {AnimeScreen.FILES, AnimeScreen.DRAFT} else 0
     canvas.place(max((Text(item.title).cell_len for item in items), default=0) + prefix)
     for index, item in enumerate(items):
-        if prefix and index + snapshot.offset == snapshot.cursor:
+        if prefix and index + snapshot.offset == snapshot.cursor and item.navigable:
             canvas.put(canvas.top + index, 0, _pointer(active=True), "brand_accent")
         canvas.put(canvas.top + index, prefix, item.title, selectable=True)
     return canvas.columns - prefix
@@ -346,7 +346,7 @@ def _item(  # noqa: PLR0913
             "[x]"
             if item.key in snapshot.selected
             else "[ ]"
-            if item.eligible or snapshot.screen is AnimeScreen.EPISODES
+            if item.eligible or (snapshot.screen is AnimeScreen.EPISODES and item.navigable)
             else "   ",
             "brand_accent" if item.key in snapshot.selected else "gray",
         )
@@ -451,14 +451,14 @@ def _keys(screen: AnimeScreen) -> tuple[str, ...]:
     if screen is AnimeScreen.QUERY:
         return ("Enter szukaj · Tab widok · Esc wróć",)
     if screen is AnimeScreen.ENTRIES:
-        return ("Enter odcinki · / szukaj · ? więcej · Esc wróć",)
+        return ("Enter odcinki · S subskrybuj · / szukaj · ? więcej · Esc wróć",)
     if screen is AnimeScreen.TITLES:
-        return ("Enter wybierz · / szukaj · Esc wróć",)
+        return ("Enter wybierz · S subskrybuj · / szukaj · Esc wróć",)
     if screen is AnimeScreen.RELEASES:
         return ("Space zaznacz · D pobierz · ? więcej · Esc wróć",)
     if screen is AnimeScreen.DETAILS:
         return ("C kopiuj · Ctrl+C kopiuj zaznaczenie · Esc wróć",)
-    return ("Space zaznacz · D pobierz · I wydania · P ponownie · ? więcej · Esc wróć",)
+    return ("Space zaznacz · D pobierz · I wydania · P ponownie · S subskrybuj · ? więcej · Esc wróć",)
 
 
 def spinner_frame(now: float) -> str:

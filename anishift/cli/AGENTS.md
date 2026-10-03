@@ -54,12 +54,22 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   Zewnętrzne źródła są ponownie rejestrowane przy podglądzie po odświeżeniu biblioteki.
   „Dokończ poprzednią pracę” w Ręcznym wymaga tego samego zakresu grup co zapisane zlecenie;
   `plan_resume` odczytuje zweryfikowany pozostały graf, a Start zachowuje ID zlecenia.
-- Anime uses `ResidentSession` for catalogue reads, offers and episode downloads.
-  It has no group catalogue or subscription-creation route. Receipts and admissions belong to the owner.
-- The Subscriptions tab in `StateController` renders owner `subscriptions_list` rows and only sends
-  pause/resume, remove and Ctrl+Z restore; add and search show `Dostępne po aktualizacji`. Its
-  global banner keeps a fixed row above the list, reserved even when empty. `anishift subs` offers
-  only `list` and `remove` through the owner. `interactive/state.py`, `main.py`
+- Anime uses `ResidentSession` for catalogue reads, offers, episode downloads and `subscription_add`.
+  It has no group catalogue. Receipts and admissions belong to the owner.
+- `S` on titles, entries (announcements included) and episodes opens the U06 draft, computed locally
+  by `subscription_texts.subscription_draft` from the facade's `cut_point`/`is_target`; Esc returns
+  to the source screen. A successful add calls the panel's `show_list`, which opens Subscriptions and
+  highlights the new row once the owner lists it. `interactive/anime.py`, `interactive/subscription_texts.py`
+- The Subscriptions tab in `StateController` renders owner `subscriptions_list` rows. Enter opens U08
+  (the Anime episode screen with a subscription header, every target including numbers beyond the
+  catalogue, and „Dodatki tego sezonu” with related OVA/special entries whose Enter opens their U03), D opens the Anime
+  search whose Esc returns to the list, W/Space pause/resume, F `subscription_check`, Delete/X remove,
+  Ctrl+Z restore. U08 hands W/F/X to the panel through `take_subscription_command`, so command
+  workers stay in `StateController`. F shows `Sprawdzam…`, then the `subscription_checked` result
+  for `CHECK_SHOWN_S`, measured by the injected clock. Row states come only from
+  `subscription_texts.row_state`. The global banner (problem > pause > shadow) keeps a fixed row
+  above the list, reserved even when empty. `anishift subs` offers `list`, `check` and `remove`
+  through the owner. `interactive/state.py`, `main.py`
 - `ResidentSession.episode_offer/episode_choose` share the interruptible catalogue connection:
   offers belong to its server session, so choosing on the main control connection would refuse them.
   `interrupt_reads` invalidates that interaction. Batch download uses the main connection and survives
@@ -191,7 +201,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   copying and row interactions. Mouse events travel through `app` → `state` → `AnimePanel`.
   TITLES is skipped only when every result belongs to visible `Franchise.entries`; one complete,
   released entry can skip ENTRIES. Premiere ordering uses the application facade. The initial
-  cursor is the first selectable row; announcements remain visible but cannot be opened.
+  cursor is the first released row; announcements can be highlighted for `S`, but Enter only names them.
   D submits at most 100 keys and stays on the episode list. Pending mutations are blocked;
   I reads only the cursor. Owner events and receipts correlate by command ID and episode key.
   Each admitted result clears its mark without a background flash; marks keep `[x]` while sending

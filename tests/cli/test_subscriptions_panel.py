@@ -124,19 +124,19 @@ def test_ctrl_z_restores_the_last_removed_subscription_from_any_row(panel: State
     assert remote.calls == [("subscription_restore", None)]
 
 
-@pytest.mark.parametrize(("selected", "key"), [(0, "enter"), (0, "text:d"), (1, "text:d"), (2, "text:f")])
-def test_adding_and_searching_are_announced_for_a_later_version_without_a_command(
-    panel: StateController, remote: _Remote, selected: int, key: str
+def test_enter_on_a_subscription_without_an_anilist_entry_explains_how_to_recover(
+    panel: StateController, remote: _Remote
 ) -> None:
-    panel._selected = selected
+    panel._subscriptions = [_row("a", "Alpha", anilist_id=None)]
+    panel._selected = 1
 
-    panel.handle_key(key)
+    panel.handle_key("enter")
 
-    assert panel._notice == "Dostępne po aktualizacji"
+    assert panel._notice == "Ta subskrypcja nie ma wpisu AniList · usuń ją i dodaj ponownie"
     assert remote.calls == []
 
 
-@pytest.mark.parametrize(("selected", "key"), [(1, "enter"), (0, "space"), (0, "delete"), (0, "text:w")])
+@pytest.mark.parametrize(("selected", "key"), [(0, "space"), (0, "delete"), (0, "text:w"), (0, "text:f")])
 def test_keys_without_a_meaning_for_the_row_send_nothing(
     panel: StateController, remote: _Remote, selected: int, key: str
 ) -> None:
@@ -154,7 +154,7 @@ def test_keys_without_a_meaning_for_the_row_send_nothing(
         ("subscription_missing", "Tej subskrypcji już nie ma"),
         ("nothing_to_restore", "Brak usuniętej subskrypcji do przywrócenia"),
         ("subscription_exists", "Ten sezon jest już subskrybowany"),
-        ("subscription_limit", "Osiągnięto limit subskrypcji; usuń jedną, aby przywrócić"),
+        ("subscription_limit", "Osiągnięto limit subskrypcji; usuń jedną, aby dodać lub przywrócić"),
     ],
 )
 def test_a_refused_subscription_command_shows_its_polish_reason(
