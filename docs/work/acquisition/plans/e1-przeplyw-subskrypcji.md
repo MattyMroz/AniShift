@@ -176,7 +176,7 @@ stateDiagram-v2
 | 18 | Zlecenie ręczne: pobranie potwierdzone i U-07/U-08 bez problemu | zlecony_ręcznie | spełniony | Bez H2 (I-02: zlecenie ≠ pobrano). |
 | 19 | Zlecenie ręczne kończy się problemem | zlecony_ręcznie | reguła stanu po zamknięciu | Automat szuka dalej w pozostałym limicie prób, o ile monitoring aktywny. |
 | 20 | Restart | dowolny | ten sam | Uzgodnienie z qB bez ponownego przekazania (§3.4). |
-| 21 | Pauza subskrypcji (S-07) | dowolny | ten sam | Bez sprawdzeń i nowych prób; aktywna próba kończy się; zegary biegną. |
+| 21 | Pauza subskrypcji (S-07) | dowolny | ten sam | Bez sprawdzeń i nowych prób; aktywna próba trwa do własnego wyniku, zgodnie ze `spec.md` S-07 (korekta 2026-10-03). |
 | 21a | Pauza globalna (S-11) | dowolny | ten sam | Bez sprawdzeń i nowych prób; transfery automatu z zastosowaną selekcją (także aktywna próba) zatrzymane jak w E2, po wznowieniu kontynuowane; transfer w fazie metadanych nie jest zatrzymywany (E2 nie wznawia bezpiecznie transferu zatrzymanego przed listą plików) ani obserwowany. Żaden zegar próby (`T_zastój`, `T_metadane`) nie nalicza czasu pauzy, a czas naliczony przed pauzą jest zachowany; zegary celu (U-14, S-14) bezwzględne od `t_due`. (decyzja orkiestratora 2026-10-02, potwierdzone przez właściciela 2026-10-02) |
 | 22 | Usunięcie subskrypcji (S-08) | dowolny | zamrożony | Aktywna próba kończy się z kontrolą i przetwarzaniem (K-10); po odrzuceniu **brak następnej**. Ctrl+Z przywraca cele ze zużytymi próbami. |
 | 23 | Konflikt katalogu (K-06) | należny | należny, zablokowany | Odśwież dane; problem widoczny; bez nowych prób; numeracja bez zmian. |
