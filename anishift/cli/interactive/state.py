@@ -68,6 +68,7 @@ _HISTORY_LABELS: Final[dict[str, str]] = {
     "processing_error": "błąd",
     "processing_interrupted": "przerwano",
     "delete_outcome": "usuwanie",
+    "subscription_finished": "subskrypcja zakończona",
 }
 """Operation boundary labels shown once per logical material."""
 
@@ -1488,6 +1489,7 @@ class StateController:
         return (
             f"{_safe_text(row.get('title', ''))} · od {'?' if start is None else _safe_text(start)}"
             f" · Pobrano {_safe_text(row.get('downloaded', 0))}/{'?' if total is None else _safe_text(total)}"
+            f" · Gotowe {_safe_text(row.get('ready', 0))}"
             f"\n  {state}"
         )
 

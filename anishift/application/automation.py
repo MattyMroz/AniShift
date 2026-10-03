@@ -40,9 +40,11 @@ from anishift.application.acquisition_staging import (
     torrent_relative_path,
 )
 from anishift.application.artifacts import ArtifactKind, ArtifactLifetime, ArtifactState, create_group_id
-from anishift.application.cancellation import EventCancellationToken
+from anishift.application.cancellation import EventCancellationToken, NeverCancelledToken
 from anishift.application.control import (
     REMOVED_FROM_CLIENT,
+    VERIFICATION_REJECT,
+    VERIFICATION_SKIPPED,
     AcquisitionConfirmation,
     AcquisitionState,
     AdmissionConflict,
@@ -95,6 +97,15 @@ from anishift.application.control_views import (
     preview_plan,
 )
 from anishift.application.discovery import VIDEO_SOURCE_SUFFIXES, ArtifactName, classify_artifact, is_derived_product
+from anishift.application.download_verification import (
+    NO_VIDEO_STREAM,
+    ExpectedEpisode,
+    MeasuredMedia,
+    Verification,
+    expected_episode,
+    measured_media,
+    verify,
+)
 from anishift.application.episode_commands import (
     EpisodeBatch,
     EpisodeFile,
@@ -138,6 +149,10 @@ from anishift.application.selection import ready_group_ids, resolve_readiness
 from anishift.application.subscription_migration import legacy_reference
 from anishift.application.subscription_targets import (
     AIRING_STATUSES,
+    ATTEMPT_ACTIVE,
+    ATTEMPT_SATISFIED,
+    LEGACY_ORDERED,
+    MAX_ATTEMPTS,
     MAX_SUBSCRIPTIONS,
     PauseReason,
     SubscriptionCheck,
@@ -145,16 +160,21 @@ from anishift.application.subscription_targets import (
     SubscriptionRecord,
     SubscriptionRow,
     SubscriptionTarget,
+    TargetFacts,
     TargetState,
     anilist_date,
+    candidate_pair,
     cut_point,
     display_order,
     eligible,
+    late,
     merge_listing,
     next_check_at,
     search_targets,
+    settle_target,
     subscription_row,
 )
+from anishift.application.subscription_targets import completed as season_completed
 from anishift.application.transfers import (
     TransferInspector,
     episode_files,
@@ -167,8 +187,9 @@ from anishift.application.transfers import (
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, resolve_route
 from anishift.config.workspace import run_temp_dir
-from anishift.errors import AniShiftError
+from anishift.errors import AniShiftError, MediaProbeError, UnsupportedMediaError
 from anishift.paths import READY_DIRECTORY
+from anishift.platform.binaries import BinaryNotFoundError
 from anishift.platform.directory_watch import DirectoryChange, source_is_available
 from anishift.platform.local_control import ControlErrorCode, ControlRequest, ControlResponse
 from anishift.platform.recycle import RecycleResult, RestoreRequest
@@ -177,7 +198,7 @@ from anishift.services.torrents.query import EpisodeRange
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterator, Sequence
     from contextlib import AbstractContextManager
 
     from anishift.application.acquisition import AcquisitionService, ListingRead, ReleaseChoice
@@ -185,11 +206,13 @@ if TYPE_CHECKING:
     from anishift.application.control import (
         CommandOutcome,
         FileReservation,
+        FileStamp,
         LegacyOrder,
+        NotificationKey,
         SettingsSnapshot,
         SourceFingerprint,
     )
-    from anishift.application.episode_selection import Franchise, FranchiseEntry
+    from anishift.application.episode_selection import AniZipMapping, Franchise, FranchiseEntry
     from anishift.application.events import RunEvent
     from anishift.application.inspection import InspectedSourceGroup
     from anishift.application.intents import ProductKind
@@ -197,6 +220,8 @@ if TYPE_CHECKING:
     from anishift.application.scheduler import RunHandle
     from anishift.application.service import AppService
     from anishift.application.watch_state import WatchStateStore
+    from anishift.services.media.probe import MediaProbe
+    from anishift.services.media.types import MediaCatalog
     from anishift.services.torrents import TorrentFile, TorrentInfo
 
 __all__ = ["AutomationOwner"]
@@ -406,6 +431,16 @@ _METADATA_STOPPED: Final[str] = "This download was stopped before its file list 
 _CLEANUP_FAILED: Final[str] = "Download finalization failed; bounded retries and restart can retry it"
 """Problem recorded on a released selective transfer whose own staging is still left."""
 
+_DEAD_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        _NO_FILE_LIST: "metadata_timeout",
+        _METADATA_STOPPED: "metadata_stopped",
+        _FILE_MAP_CHANGED: "file_map_changed",
+        _SELECTION_MISMATCH: "selection_mismatch",
+    }
+)
+"""Transfer problems that end a subscription attempt, keyed to the reason the attempt records."""
+
 _SUBSCRIPTION_KINDS: Final[frozenset[str]] = frozenset(
     {
         "subscriptions_list",
@@ -420,8 +455,20 @@ _SUBSCRIPTION_KINDS: Final[frozenset[str]] = frozenset(
 )
 """Subscription commands this owner performs; every other subscription kind is unknown."""
 
-_ATTEMPTS_ENABLED: Final[bool] = False
-"""Whether a subscription check may admit the candidate it chooses instead of only proposing it."""
+_CHECK_TIMEOUT_S: Final[float] = 30.0
+"""Longest identification of one downloaded subscription episode and the wait before its single retry."""
+
+_CHECK_UNAVAILABLE: Final[str] = "probe_unavailable"
+"""Reason of a download check skipped because no media probe can identify files."""
+
+_TARGET_REASONS: Final[Mapping[TargetState, EpisodeReason]] = MappingProxyType(
+    {
+        TargetState.AWAITING_AIRING: EpisodeReason.SUBSCRIPTION_AWAITING_AIRING,
+        TargetState.DUE: EpisodeReason.SUBSCRIPTION_AWAITING_RELEASE,
+        TargetState.EXHAUSTED: EpisodeReason.SUBSCRIPTION_EXHAUSTED,
+    }
+)
+"""Episode reason an unordered episode shows while an unpaused subscription target waits in that state."""
 
 _SUBSCRIPTION_PROVIDERS: Final[tuple[str, ...]] = ("anilist", "anizip", "torrentio")
 """Providers whose cooldown postpones a subscription check instead of counting as a source failure."""
@@ -603,6 +650,14 @@ class _SubscriptionRead:
 
 
 @dataclass(frozen=True, slots=True)
+class _EpisodeIndex:
+    episodes: Mapping[tuple[int, int], tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...]]
+    admissions: Mapping[str, tuple[AcquisitionConfirmation, EpisodeAssignment]]
+    complete: frozenset[str]
+    legacy: Mapping[int, tuple[LegacyOrder, ...]]
+
+
+@dataclass(frozen=True, slots=True)
 class _NotificationTarget:
     set_id: str
     product: ProductConfirmation
@@ -628,10 +683,14 @@ class AutomationOwner:
         recycler: Callable[[Path, tuple[int, int, int, int]], RecycleResult] | None = None,
         restorer: Callable[[RestoreRequest, bool], RecycleResult] | None = None,
         subscription_shadow: bool = False,
+        media_probe: MediaProbe | None = None,
     ) -> None:
         """Load the persisted state and prepare the owner thread and its pool."""
         self._service: AppService = service
-        self._admits: bool = not subscription_shadow and _ATTEMPTS_ENABLED
+        self._admits: bool = not subscription_shadow
+        self._media_probe: MediaProbe | None = media_probe
+        self._check_retries: dict[str, float] = {}
+        self._checking: set[str] = set()
         self._subscriptions_at: float | None = None
         self._subscription_checks: set[str] = set()
         self._subscription_requests: set[str] = set()
@@ -2611,8 +2670,9 @@ class AutomationOwner:
         logger.info("Automation resumed")
 
     def _stopped_transfers(self, state: WatchState) -> WatchState:
-        """Record the stop of every own transfer the client last showed working, in one durable state."""
-        paused: tuple[str, ...] = self._working_transfers(state)
+        """Record the stop of every own transfer the client last showed working and this pause did not stop yet."""
+        owned: frozenset[str] = frozenset(state.pause_owned_transfers)
+        paused: tuple[str, ...] = tuple(item for item in self._working_transfers(state) if item not in owned)
         if not paused:
             return state
         stopped: frozenset[str] = frozenset(paused)
@@ -2635,7 +2695,36 @@ class AutomationOwner:
                     action_sent=unsent_resume,
                 )
             acquisitions.append(updated)
-        return replace(state, acquisitions=tuple(acquisitions), pause_owned_transfers=paused)
+        return replace(
+            state, acquisitions=tuple(acquisitions), pause_owned_transfers=(*state.pause_owned_transfers, *paused)
+        )
+
+    def _pause_ownership(self, state: WatchState) -> WatchState:
+        """Stop each automatic transfer working in a pause and take up each pause-stopped one that became manual."""
+        stopped: WatchState = self._stopped_transfers(state)
+        paused: frozenset[str] = frozenset(stopped.pause_owned_transfers)
+        manual: frozenset[str] = frozenset(
+            item.operation_id
+            for item in stopped.acquisitions
+            if item.manual and _resumable(item, paused, frozenset({item.subscription_id or ""}))
+        )
+        if not manual:
+            return stopped
+        acquisitions: tuple[AcquisitionConfirmation, ...] = tuple(
+            replace(
+                item,
+                requested_action="resume",
+                action_id=f"resume-{token_hex(_ID_BYTES)}",
+                action_pending=True,
+                action_sent=False,
+            )
+            if item.operation_id in manual
+            else item
+            for item in stopped.acquisitions
+        )
+        resumed: frozenset[str] = frozenset(item.info_hash for item in acquisitions if item.operation_id in manual)
+        owned: tuple[str, ...] = tuple(item for item in stopped.pause_owned_transfers if item not in resumed)
+        return replace(stopped, acquisitions=acquisitions, pause_owned_transfers=owned)
 
     def _resumed_transfers(self, state: WatchState) -> WatchState:
         """Take up only the transfers this pause stopped that still carry an active order."""
@@ -3413,10 +3502,20 @@ class AutomationOwner:
         if request.kind == "subscription_add":
             return self._add_subscription(request)
         if request.kind == "subscriptions_list":
+            index: _EpisodeIndex = _episode_index(
+                self._state, frozenset(item.anilist_id for item in self._state.subscriptions)
+            )
             return ControlResponse.succeeded(
                 {
                     "subscriptions": [
-                        encode_view(subscription_row(item)) for item in display_order(self._state.subscriptions)
+                        encode_view(
+                            replace(
+                                subscription_row(item),
+                                ready=self._ready_targets(item, index),
+                                checking_number=self._checking_target(item, index),
+                            )
+                        )
+                        for item in display_order(self._state.subscriptions)
                     ],
                     "shadow": not self._admits,
                     "problem": self._subscriptions_problem,
@@ -3436,7 +3535,8 @@ class AutomationOwner:
 
     def _change_subscription(self, request: ControlRequest, record: SubscriptionRecord) -> ControlResponse:
         if request.kind == "subscription_get":
-            return ControlResponse.succeeded(_subscription_details(record))
+            ready: int = self._ready_targets(record, _episode_index(self._state, frozenset({record.anilist_id})))
+            return ControlResponse.succeeded(_subscription_details(record, ready))
         if request.kind == "subscription_check":
             return self._request_subscription_check(request, record)
         if request.kind == "subscription_remove":
@@ -3683,19 +3783,29 @@ class AutomationOwner:
             return
         now: datetime = self._clock() if result is None else result.checked_at
         evidence: list[tuple[str, dict[str, object]]] = []
+        chosen: list[tuple[int, RankedCandidate, dict[str, object]]] = []
         updated: SubscriptionRecord = current
         if result is not None and result.read is not None:
             updated = merge_listing(current, result.read, now, (item.scope for item in self._state.legacy_orders))
             evidence.append(("check", _mapping_check(current, result.read)))
-        check: SubscriptionCheck = self._subscription_outcome(updated, result, now, evidence)
+        check: SubscriptionCheck = self._subscription_outcome(updated, result, now, evidence, chosen)
         updated = replace(updated, last_check=check)
         if result is not None and result.failure is None:
             updated = replace(updated, checked_at=now.astimezone(UTC).isoformat())
         self._retry_subscription(updated, result, now)
+        overdue: frozenset[int] = frozenset(item.number for item in updated.targets if late(item, now))
+        updated = replace(
+            updated,
+            targets=tuple(
+                replace(item, notified_late=True) if item.number in overdue else item for item in updated.targets
+            ),
+        )
         saved: bool = self._save(
             replace(
                 self._state,
                 subscriptions=tuple(updated if item is current else item for item in self._state.subscriptions),
+                notified=self._state.notified
+                | {(f"subscription:{identifier}:{number}", "late", "") for number in overdue},
             )
         )
         if not saved:
@@ -3706,6 +3816,9 @@ class AutomationOwner:
         journal: Path = self._store.history_path().with_name("decisions.jsonl")
         for kind, payload in evidence:
             append_decision(journal, kind, payload, entry="subscription" if self._admits else "shadow")
+        if saved:
+            for number, candidate, identity in chosen:
+                self._admit_attempt(identifier, number, candidate, identity)
         if requested:
             self._publish(
                 {
@@ -3722,21 +3835,22 @@ class AutomationOwner:
         result: _SubscriptionRead | None,
         now: datetime,
         evidence: list[tuple[str, dict[str, object]]],
+        chosen: list[tuple[int, RankedCandidate, dict[str, object]]],
     ) -> SubscriptionCheck:
         if result is None:
             return _failed_check(record, now, None, "source_failed")
         searchable: bool = self._state.policy.auto_enabled and _searchable(record)
-        taken: frozenset[str] = self._taken_pairs(record)
         first: SubscriptionCheck | None = None
         for number, offer, identity in result.offers:
             target: SubscriptionTarget | None = next((item for item in record.targets if item.number == number), None)
-            chosen: RankedCandidate | None = (
+            taken: frozenset[str] = self._taken_pairs(record, number) | {candidate_pair(item[1]) for item in chosen}
+            choice: RankedCandidate | None = (
                 next((item for item in offer.candidates if eligible(item, target, taken)), None)
                 if searchable and target is not None and target.state is TargetState.DUE
                 else None
             )
             counts: dict[str, int] = offer.counts
-            outcome: str = "proposed" if chosen is not None else "no_match" if offer.candidates else "no_candidates"
+            outcome: str = "proposed" if choice is not None else "no_match" if offer.candidates else "no_candidates"
             logger.info(
                 "Subscription checked",
                 subscription_id=record.subscription_id,
@@ -3747,9 +3861,11 @@ class AutomationOwner:
                 decision=outcome,
             )
             if result.read is not None:
-                evidence.append(("check", _offer_check(record, offer, target, chosen, result.read.listing)))
-            if chosen is not None and target is not None:
-                proposal: dict[str, object] = candidate_proposal(chosen, identity)
+                evidence.append(("check", _offer_check(record, offer, target, choice, result.read.listing)))
+            if choice is not None and target is not None and self._admits:
+                chosen.append((number, choice, identity))
+            elif choice is not None and target is not None:
+                proposal: dict[str, object] = candidate_proposal(choice, identity)
                 evidence.append(
                     ("proposal", {**proposal, **_subscription_key(record, number), "due_at": target.due_at})
                 )
@@ -3777,19 +3893,14 @@ class AutomationOwner:
             now.astimezone(UTC).isoformat(), None, 0, 0, 0, "nothing_due" if searchable else "refreshed"
         )
 
-    def _taken_pairs(self, record: SubscriptionRecord) -> frozenset[str]:
-        admissions: frozenset[str] = frozenset(
-            target.admission_id
-            for item in self._state.subscriptions
-            for target in item.targets
-            if target.admission_id is not None and item is not record
-        )
+    def _taken_pairs(self, record: SubscriptionRecord, number: int) -> frozenset[str]:
+        """Release files every protected assignment except those of episode *number* of *record* already holds."""
         return frozenset(
-            f"{assignment.choice.reference.info_hash}:{'' if index is None else index}".casefold()
+            f"{assignment.choice.reference.info_hash}:{'' if file is None else file}".casefold()
             for transfer in self._state.acquisitions
-            for assignment in transfer.assignments
-            if assignment.admission_id in admissions
-            for index in (assignment.choice.reference.file_index,)
+            for assignment in transfer.protected_assignments
+            if (assignment.choice.anilist_id, assignment.choice.number) != (record.anilist_id, number)
+            for file in (assignment.choice.reference.file_index,)
         )
 
     def _retry_subscription(self, record: SubscriptionRecord, result: _SubscriptionRead | None, now: datetime) -> None:
@@ -3809,6 +3920,305 @@ class AutomationOwner:
             if moment is not None:
                 retry_at = max(retry_at, moment)
         self._subscription_retries[identifier] = (attempts, retry_at)
+
+    def _admit_attempt(
+        self, identifier: str, number: int, candidate: RankedCandidate, identity: Mapping[str, object]
+    ) -> None:
+        record: SubscriptionRecord | None = self._subscription(identifier)
+        target: SubscriptionTarget | None = (
+            None if record is None else next((item for item in record.targets if item.number == number), None)
+        )
+        if (
+            record is None
+            or record.anilist_id is None
+            or target is None
+            or target.state is not TargetState.DUE
+            or not self._state.policy.auto_enabled
+            or not _searchable(record)
+        ):
+            return
+        key: EpisodeKey = EpisodeKey(record.anilist_id, number)
+        ready, previous = self._attempt_previous(identifier, key)
+        if not ready:
+            logger.info(
+                "Subscription attempt waits for its previous transfer", subscription_id=identifier, number=number
+            )
+            return
+        pair: str = candidate_pair(candidate)
+        attempt: SubscriptionTarget = replace(target, attempts=target.attempts + 1, tried=(*target.tried, pair))
+        response: ControlResponse = self._admit_episode(
+            f"sub:{identifier}:{number}:{attempt.attempts}",
+            _episode_choice(key, candidate, identity, confirmed=False),
+            previous=previous,
+            attempt=(identifier, attempt),
+        )
+        if response.ok:
+            return
+        logger.info("Subscription attempt refused", subscription_id=identifier, number=number, reason=response.reason)
+        refused: SubscriptionTarget | None = None
+        if response.reason == AdmissionConflict.TRANSFER_RECORDED.value:
+            refused = replace(target, tried=(*target.tried, pair))
+        elif response.reason == AdmissionConflict.POSSIBLY_ADMITTED.value:
+            refused = replace(target, state=TargetState.MANUAL, reason=LEGACY_ORDERED)
+        if refused is not None:
+            self._save(_with_target(self._state, identifier, refused))
+
+    def _ready_targets(self, record: SubscriptionRecord, index: _EpisodeIndex) -> int:
+        """Count the satisfied targets of *record* whose products the Library holds."""
+        if record.anilist_id is None:
+            return 0
+        anilist_id: int = record.anilist_id
+        return sum(
+            self._episode_ready(EpisodeKey(anilist_id, item.number), index)
+            for item in record.targets
+            if item.state is TargetState.SATISFIED
+        )
+
+    def _checking_target(self, record: SubscriptionRecord, index: _EpisodeIndex) -> int | None:
+        return next(
+            (
+                item.number
+                for item in record.targets
+                if item.state is TargetState.ATTEMPTING
+                and (found := index.admissions.get(item.admission_id or "")) is not None
+                and self._assignment_status(*found).reason == EpisodeReason.SUBSCRIPTION_CHECKING
+            ),
+            None,
+        )
+
+    def _episode_ready(self, key: EpisodeKey, index: _EpisodeIndex) -> bool:
+        rows: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = index.episodes.get(
+            (key.anilist_id, key.number), ()
+        )
+        handed: tuple[AcquisitionConfirmation, EpisodeAssignment] | None = next(
+            (row for row in reversed(rows) if _handed_off(row[1])), None
+        )
+        if handed is None:
+            return self._legacy_episode_status(key).state == "ready"
+        return self._handed_off_status(key, *handed, uncertain=False).state == "ready"
+
+    def _stalled_attempt(self) -> bool:
+        """Whether a transfer stall, known only in memory, ends a target order no durable change will settle."""
+        stalled: frozenset[str] = self._transfers.stalled if self._transfers is not None else frozenset()
+        if not stalled or not self._state.policy.auto_enabled:
+            return False
+        records: tuple[SubscriptionRecord, ...] = (
+            *self._state.subscriptions,
+            *_optional(self._state.removed_subscription),
+        )
+        attempts: frozenset[str] = frozenset(
+            target.admission_id
+            for record in records
+            for target in record.targets
+            if target.state is TargetState.ATTEMPTING and target.admission_id is not None
+        )
+        known: frozenset[str] = frozenset(record.subscription_id for record in records)
+        manual: frozenset[tuple[int | None, int]] = frozenset(
+            (record.anilist_id, target.number)
+            for record in records
+            for target in record.targets
+            if target.state is TargetState.MANUAL and target.reason != LEGACY_ORDERED
+        )
+        return any(
+            row.admission_id in attempts
+            or (row.source is AdmissionSource.SUBSCRIPTION and row.subscription_id not in known)
+            or (_manual_order(row) and (row.choice.anilist_id, row.choice.number) in manual)
+            for item in self._state.acquisitions
+            if item.info_hash in stalled and item.requested_action != "cancel"
+            for row in item.active_assignments
+        )
+
+    def _attempt_previous(self, identifier: str, key: EpisodeKey) -> tuple[bool, str | None]:
+        """Whether the next attempt may start now and which closed attempt it replaces (D-12)."""
+        matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = self._episode_assignments(key)
+        for transfer, assignment in matches:
+            closed: bool = (
+                assignment.subscription_id == identifier and _closed_by_subscription(transfer, assignment)
+            ) or (assignment.source is not AdmissionSource.SUBSCRIPTION and assignment.replaced)
+            if not closed or (transfer.requested_action == "cancel" and transfer.state is not AcquisitionState.FAILED):
+                return False, None
+        return True, matches[-1][1].admission_id if matches else None
+
+    def _settled_targets(self, state: WatchState) -> tuple[WatchState, tuple[SubscriptionRecord, ...]]:
+        """Settle each subscription target on its episode transfers, closing ended attempts and finished seasons."""
+        removed: SubscriptionRecord | None = state.removed_subscription
+        records: tuple[SubscriptionRecord, ...] = (*state.subscriptions, *_optional(removed))
+        closing: bool = state.policy.auto_enabled
+        stalled: frozenset[str] = self._transfers.stalled if closing and self._transfers is not None else frozenset()
+        closed: set[str] = (
+            _orphan_attempts(state, frozenset(item.subscription_id for item in records), stalled) if closing else set()
+        )
+        if not closed and not any(item.targets for item in records):
+            return state, ()
+        index: _EpisodeIndex = _episode_index(state, frozenset(item.anilist_id for item in records))
+        now: datetime = self._clock()
+        orphans: bool = bool(closed)
+        exhausted: set[NotificationKey] = set()
+        settled: dict[str, SubscriptionRecord] = {}
+        for record in records:
+            targets: tuple[SubscriptionTarget, ...] = tuple(
+                self._settled_target(record, item, index, now, stalled if closing else None, closed)
+                for item in record.targets
+            )
+            if targets != record.targets:
+                settled[record.subscription_id] = replace(record, targets=targets)
+            exhausted.update(
+                (f"subscription:{record.subscription_id}:{item.number}", "exhausted", "")
+                for item in targets
+                if item.state is TargetState.EXHAUSTED
+            )
+        subscriptions: tuple[SubscriptionRecord, ...] = tuple(
+            settled.get(item.subscription_id, item) for item in state.subscriptions
+        )
+        finished: tuple[SubscriptionRecord, ...] = tuple(item for item in subscriptions if season_completed(item))
+        if not settled and not finished and not orphans:
+            return state, ()
+        return replace(
+            state,
+            subscriptions=tuple(item for item in subscriptions if item not in finished),
+            removed_subscription=None if removed is None else settled.get(removed.subscription_id, removed),
+            acquisitions=(
+                tuple(_closed_attempt(item, frozenset(closed), self._now()) for item in state.acquisitions)
+                if closed
+                else state.acquisitions
+            ),
+            notified=state.notified | exhausted,
+        ), finished
+
+    def _settled_target(  # noqa: PLR0913 - one target settles on the record, index, clock and closing evidence
+        self,
+        record: SubscriptionRecord,
+        target: SubscriptionTarget,
+        index: _EpisodeIndex,
+        now: datetime,
+        stalled: frozenset[str] | None,
+        closed: set[str],
+    ) -> SubscriptionTarget:
+        if target.state is TargetState.SATISFIED or record.anilist_id is None:
+            return target
+        rows: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = index.episodes.get(
+            (record.anilist_id, target.number), ()
+        )
+        attempt: tuple[AcquisitionConfirmation, EpisodeAssignment] | None = (
+            None if target.admission_id is None else index.admissions.get(target.admission_id)
+        )
+        fact: str | None = (
+            _attempt_fact(attempt, stalled) if target.state is TargetState.ATTEMPTING and stalled is not None else None
+        )
+        facts: TargetFacts = TargetFacts(
+            attempt=ATTEMPT_ACTIVE if target.state is TargetState.ATTEMPTING and fact is None else fact,
+            manual=_manual_fact(rows, stalled),
+            legacy_complete=target.reason == LEGACY_ORDERED
+            and any(
+                item.number in {None, target.number} and (item.complete or item.operation_id in index.complete)
+                for item in index.legacy.get(record.anilist_id, ())
+            ),
+            check_skipped=attempt is not None and attempt[1].verification == VERIFICATION_SKIPPED,
+        )
+        result: SubscriptionTarget = settle_target(target, facts, now)
+        if (
+            target.admission_id is not None
+            and target.state is TargetState.ATTEMPTING
+            and result.state not in {TargetState.ATTEMPTING, TargetState.SATISFIED}
+        ):
+            closed.add(target.admission_id)
+        if target.state is TargetState.MANUAL and facts.manual is None and stalled is not None:
+            closed.update(assignment.admission_id for _transfer, assignment in rows if _manual_order(assignment))
+        return result
+
+    def _observe_subscriptions(self, previous: WatchState, finished: tuple[SubscriptionRecord, ...]) -> None:
+        """Report what one durable write changed in the subscriptions: closed attempts, notices and finished seasons."""
+        if (
+            previous.subscriptions is self._state.subscriptions
+            and previous.removed_subscription is self._state.removed_subscription
+            and previous.notified is self._state.notified
+        ):
+            return
+        journal: Path = self._store.history_path().with_name("decisions.jsonl")
+        current: dict[str, SubscriptionRecord] = {
+            item.subscription_id: item
+            for item in (*self._state.subscriptions, *_optional(self._state.removed_subscription), *finished)
+        }
+        for before in (*previous.subscriptions, *_optional(previous.removed_subscription)):
+            after: SubscriptionRecord | None = current.get(before.subscription_id)
+            if after is not None and after is not before:
+                self._observe_targets(before, after, journal)
+        for record in finished:
+            self._finish_subscription(record)
+        for key in self._state.notified - previous.notified:
+            self._notify_subscription(key, current, journal)
+
+    def _observe_targets(self, before: SubscriptionRecord, after: SubscriptionRecord, journal: Path) -> None:
+        old: dict[int, SubscriptionTarget] = {item.number: item for item in before.targets}
+        for target in after.targets:
+            was: SubscriptionTarget | None = old.get(target.number)
+            if was is None or was == target:
+                continue
+            if was.state is TargetState.ATTEMPTING and target.state is not TargetState.ATTEMPTING:
+                result: str = _attempt_result(target)
+                logger.info(
+                    "Subscription attempt closed",
+                    subscription_id=after.subscription_id,
+                    number=target.number,
+                    attempt=was.attempts,
+                    result=result,
+                    reason=target.reason,
+                )
+                append_decision(
+                    journal,
+                    "attempt",
+                    {
+                        **_subscription_key(after, target.number),
+                        "attempt": was.attempts,
+                        "attempt_result": result,
+                        "reason": target.reason,
+                    },
+                    entry="subscription",
+                )
+            if target.check_skipped and not was.check_skipped:
+                append_decision(
+                    journal,
+                    "escalation",
+                    {**_subscription_key(after, target.number), "reason": "check_skipped"},
+                    entry="subscription",
+                )
+
+    def _finish_subscription(self, record: SubscriptionRecord) -> None:
+        count: int = len(record.targets)
+        logger.info("Subscription finished", subscription_id=record.subscription_id, targets=count)
+        try:
+            self._history.append(
+                HistoryEvent.create(
+                    record.subscription_id,
+                    record.subscription_id,
+                    self._now(),
+                    HistoryKind.SUBSCRIPTION_FINISHED,
+                    sanitize_event_message(f"{record.title}, pobrano {count}/{count}") or record.subscription_id,
+                ),
+                self._clock(),
+            )
+        except AniShiftError, OSError, ValueError, TypeError:
+            logger.warning("Operational history observation failed")
+
+    def _notify_subscription(
+        self, key: NotificationKey, records: Mapping[str, SubscriptionRecord], journal: Path
+    ) -> None:
+        prefix, _separator, number = key[0].rpartition(":")
+        if not prefix.startswith("subscription:") or not number.isdecimal():
+            return
+        record: SubscriptionRecord | None = records.get(prefix.removeprefix("subscription:"))
+        if record is None:
+            return
+        title: str = sanitize_event_message(record.title) or "Subskrypcja"
+        message: str = (
+            f"Nie znaleziono {title} E{number} od 7 dni"
+            if key[1] == "late"
+            else f"{title} E{number}: wyczerpano próby ({MAX_ATTEMPTS} z {MAX_ATTEMPTS})"
+        )
+        append_decision(
+            journal, "escalation", {**_subscription_key(record, int(number)), "reason": key[1]}, entry="subscription"
+        )
+        self._publish_notification("Subskrypcja", sanitize_event_message(message) or title, None)
 
     def _subscription_source_present(self, acquisition: AcquisitionConfirmation) -> bool:
         targets: dict[str, WorkflowTarget] = self._recorded_targets()
@@ -4128,7 +4538,7 @@ class AutomationOwner:
         if any(
             selected.path == path
             for other in transfer.assignments
-            if other.admission_id != assignment.admission_id
+            if _holds_files(other, assignment)
             for _index, path, _size in other.files
         ):
             return ControlResponse.refused(
@@ -4163,6 +4573,8 @@ class AutomationOwner:
 
     def _episode_status(self, key: EpisodeKey) -> EpisodeStatus:
         matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = self._episode_assignments(key)
+        if matches and _closed_by_subscription(*matches[-1]):
+            return self._target_status(EpisodeStatus(key, "not_ordered"))
         status: EpisodeStatus = self._assignment_status(*matches[-1]) if matches else self._legacy_episode_status(key)
         if status.state == "not_ordered" and status.reason is None and not status.uncertain:
             return self._target_status(status)
@@ -4184,14 +4596,8 @@ class AutomationOwner:
             ),
             None,
         )
-        if target is None or target.state not in {TargetState.AWAITING_AIRING, TargetState.DUE}:
-            return status
-        reason: EpisodeReason = (
-            EpisodeReason.SUBSCRIPTION_AWAITING_RELEASE
-            if target.state is TargetState.DUE
-            else EpisodeReason.SUBSCRIPTION_AWAITING_AIRING
-        )
-        return replace(status, reason=reason)
+        reason: EpisodeReason | None = None if target is None else _TARGET_REASONS.get(target.state)
+        return status if reason is None else replace(status, reason=reason)
 
     def _ready_result_missing(self, status: EpisodeStatus) -> bool:
         """Whether a ready episode's recorded main result, or its source video without one, is gone from disk."""
@@ -4216,16 +4622,28 @@ class AutomationOwner:
             return self._handed_off_status(key, transfer, assignment, uncertain=uncertain)
         reason: str | None = EpisodeReason.TRANSFER_FAILED if transfer.problem is not None else None
         complete: frozenset[str] = frozenset(transfer.complete_files)
-        downloaded: bool = bool(assignment.files) and all(path in complete for _index, path, _size in assignment.files)
+        downloaded: bool = assignment.admission_id in self._checking or (
+            bool(assignment.files) and all(path in complete for _index, path, _size in assignment.files)
+        )
         if downloaded:
             if assignment.publication is not None and assignment.publication.problem is not None:
                 reason = EpisodeReason.PUBLICATION_FAILED
+            elif assignment.source is AdmissionSource.SUBSCRIPTION and assignment.publication is None:
+                reason = EpisodeReason.SUBSCRIPTION_CHECKING
         elif not self._replacement_ready(transfer):
             reason = EpisodeReason.WAITING_PREVIOUS_TRANSFER
         if assignment.mapped and not assignment.files:
             reason = EpisodeReason.EPISODE_FILE_UNRESOLVED
         state, reason, _set_id = self._lifecycle_status(transfer, None, downloaded=downloaded, reason=reason)
-        return EpisodeStatus(key, state, reason, assignment.admission_id, transfer.operation_id, uncertain)
+        return EpisodeStatus(
+            key,
+            state,
+            reason,
+            assignment.admission_id,
+            transfer.operation_id,
+            uncertain,
+            attempt=assignment.source is AdmissionSource.SUBSCRIPTION,
+        )
 
     def _handed_off_status(
         self, key: EpisodeKey, transfer: AcquisitionConfirmation, assignment: EpisodeAssignment, *, uncertain: bool
@@ -4244,6 +4662,8 @@ class AutomationOwner:
             and any(file_stamp(self._service.workspace_root / item.name) != item.stamp for item in publication.files)
         ):
             reason = EpisodeReason.PUBLICATION_MISSING
+        if reason is None and state != "ready" and assignment.verification == VERIFICATION_SKIPPED:
+            reason = EpisodeReason.SUBSCRIPTION_CHECK_SKIPPED
         return EpisodeStatus(key, state, reason, assignment.admission_id, transfer.operation_id, uncertain, set_id)
 
     def _lifecycle_status(
@@ -4648,12 +5068,12 @@ class AutomationOwner:
     ) -> EpisodeResult:
         key: EpisodeKey = offer.key
         status: EpisodeStatus = self._episode_status(key)
-        if status.active:
+        if status.active and not status.attempt:
             return EpisodeResult(key, EpisodeReason.EPISODE_IN_PROGRESS)
         matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = self._episode_assignments(key)
         previous: str | None = matches[-1][1].admission_id if matches else None
         conflict: tuple[str, ...] = self._episode_conflicts(key)
-        if (previous or conflict) and status.reason != EpisodeReason.RESULT_MISSING:
+        if (previous or conflict) and status.reason != EpisodeReason.RESULT_MISSING and not status.attempt:
             offer = self._repeat_episode_offer(offer)
         candidate: RankedCandidate | None = None if offer.suggestion is None else offer.candidates[offer.suggestion]
         if (
@@ -4680,7 +5100,7 @@ class AutomationOwner:
             str(response.result["operation_id"]) if response.ok else None,
         )
 
-    def _admit_episode(
+    def _admit_episode(  # noqa: PLR0913 - one admission gate for manual orders and subscription attempts
         self,
         command_id: str,
         choice: EpisodeChoice,
@@ -4688,7 +5108,9 @@ class AutomationOwner:
         previous: str | None = None,
         conflict: tuple[str, ...] = (),
         selection: str | None = None,
+        attempt: tuple[str, SubscriptionTarget] | None = None,
     ) -> ControlResponse:
+        """Admit *choice* durably; with *attempt*, as the next try of that subscription target."""
         receipt: CommandReceipt | None = next(
             (item for item in self._state.command_receipts if item.command_id == command_id), None
         )
@@ -4703,10 +5125,12 @@ class AutomationOwner:
         assignment: EpisodeAssignment = EpisodeAssignment(
             token_hex(_ID_BYTES),
             now,
-            AdmissionSource.MANUAL,
+            AdmissionSource.MANUAL if attempt is None else AdmissionSource.SUBSCRIPTION,
             choice,
             previous_admission_id=previous,
             conflict=conflict,
+            subscription_id=None if attempt is None else attempt[0],
+            attempt=None if attempt is None else attempt[1].attempts,
         )
         shared: AcquisitionConfirmation | None = next(
             (
@@ -4724,7 +5148,7 @@ class AutomationOwner:
                 directory="",
                 required_files=(),
                 state=AcquisitionState.ADMITTED,
-                origin=RequestOrigin.USER,
+                origin=RequestOrigin.USER if attempt is None else RequestOrigin.BACKGROUND,
                 subscription_id=None,
                 episode=str(choice.number),
                 updated_at=now,
@@ -4748,14 +5172,33 @@ class AutomationOwner:
         if previous is not None:
             acquisitions = tuple(_replace_episode_scope(item, previous, now) for item in acquisitions)
         candidate: WatchState = replace(self._state, acquisitions=acquisitions)
+        if attempt is not None:
+            candidate = _with_target(
+                candidate,
+                attempt[0],
+                replace(attempt[1], state=TargetState.ATTEMPTING, admission_id=assignment.admission_id, reason=None),
+            )
         if not self._save(record_command(candidate, CommandReceipt(command_id, now, outcome))):
             return ControlResponse.refused(ControlErrorCode.INTERNAL, _STATE_NOT_SAVED)
-        logger.info("Episode admitted", anilist_id=choice.anilist_id, number=choice.number, shared=shared is not None)
+        logger.info(
+            "Episode admitted",
+            anilist_id=choice.anilist_id,
+            number=choice.number,
+            shared=shared is not None,
+            attempt=assignment.attempt,
+        )
         evidence: dict[str, object] = {
             "command_id": command_id,
             **admission_decision(assignment, confirmation.operation_id),
         }
-        append_decision(self._store.history_path().with_name("decisions.jsonl"), "selection", evidence)
+        if attempt is not None:
+            evidence.update(subscription_id=attempt[0], attempt=assignment.attempt)
+        append_decision(
+            self._store.history_path().with_name("decisions.jsonl"),
+            "selection",
+            evidence,
+            entry="manual" if attempt is None else "subscription",
+        )
         if previous is not None or conflict:
             append_decision(
                 self._store.history_path().with_name("decisions.jsonl"),
@@ -4891,9 +5334,14 @@ class AutomationOwner:
             self._finalize_transfers()
             self._retry_ready()
             return
+        held: frozenset[str] = frozenset(
+            item.info_hash
+            for item in self._state.acquisitions
+            if not self._shutting_down and _polled(item, selective=selective) and not self._working(item)
+        )
         self._transfers_inspecting = True
         self._active_io += 1
-        self._pool.submit(self._inspect_transfers, acquisitions, self._reserved_names())
+        self._pool.submit(self._inspect_transfers, acquisitions, self._reserved_names(), held)
 
     def _reserved_names(self) -> frozenset[str] | None:
         try:
@@ -4948,6 +5396,7 @@ class AutomationOwner:
         self,
         acquisitions: tuple[AcquisitionConfirmation, ...],
         reserved: frozenset[str] | None,
+        held: frozenset[str] = frozenset(),
     ) -> None:
         """Isolate poll-worker failures, report their cause and always return settlement to the owner."""
         basis: tuple[AcquisitionConfirmation, ...] = acquisitions
@@ -4961,7 +5410,9 @@ class AutomationOwner:
             with acquisition.requests("transfer"):
                 acquisitions = self._advance_transfer_actions(acquisition, acquisitions)
                 results = acquisitions
-                results = self._transfers.inspect(acquisitions, stall_after_s=self._state.policy.transfer_stall_s)
+                results = self._transfers.inspect(
+                    acquisitions, stall_after_s=self._state.policy.transfer_stall_s, held=held
+                )
                 results = tuple(
                     _unfinished_selection(self._unseen_send(before, after))
                     for before, after in zip(acquisitions, results, strict=True)
@@ -5376,18 +5827,25 @@ class AutomationOwner:
         if not self._may_settle(item):
             return
         root: Path = self._service.workspace_root
-        reserved: EpisodePublication | None = self._owned(
-            partial(self._reserve_publication, item.operation_id, admission_id)
+        passed, check = self._passed_check(item, admission_id)
+        if not passed:
+            return
+        reserved: tuple[EpisodePublication, FileStamp | None] | None = self._owned(
+            partial(self._reserve_publication, item.operation_id, admission_id, check)
         )
         if reserved is None:
             return
-        publication: EpisodePublication = reserved
+        publication: EpisodePublication = reserved[0]
         try:
             private: Path = publication_path(root, item.operation_id)
             if not publication.copied:
                 data: Path = staging_path(root, item.operation_id)
                 copied: EpisodePublication = replace(
-                    publication, files=tuple(_copied(data, private, file) for file in publication.files)
+                    publication,
+                    files=tuple(
+                        _copied(data, private, file, reserved[1] if _is_video(file.source) else None)
+                        for file in publication.files
+                    ),
                 )
                 if (
                     self._owned(partial(self._update_publication, item.operation_id, admission_id, publication, copied))
@@ -5405,25 +5863,186 @@ class AutomationOwner:
             return
         self._owned(partial(self._settle_publication, item.operation_id, admission_id, publication, outcome))
 
-    def _reserve_publication(self, operation_id: str, admission_id: str) -> EpisodePublication | None:
+    def _reserve_publication(
+        self, operation_id: str, admission_id: str, check: tuple[str, FileStamp | None] | None = None
+    ) -> tuple[EpisodePublication, FileStamp | None] | None:
+        """Reserve the flat names of one episode set with its download check, returning the checked video stamp."""
         current: AcquisitionConfirmation | None = self._confirmation(operation_id)
         assignment: EpisodeAssignment | None = (
             None
             if current is None
             else next((row for row in current.active_assignments if row.admission_id == admission_id), None)
         )
-        if assignment is None or not assignment.files:
+        if assignment is None or not assignment.files or assignment.rejected:
             return None
         if assignment.publication is not None:
-            return self._update_publication(operation_id, admission_id, assignment.publication, assignment.publication)
+            kept: EpisodePublication | None = self._update_publication(
+                operation_id, admission_id, assignment.publication, assignment.publication
+            )
+            return None if kept is None else (kept, assignment.verified_stamp)
+        if assignment.source is AdmissionSource.SUBSCRIPTION and check is None:
+            return None
         reserved: frozenset[str] | None = self._reserved_names()
         if reserved is None:
             return None
         publication: EpisodePublication = EpisodePublication(_published_files(assignment.files, reserved))
-        updated: EpisodePublication | None = self._update_publication(operation_id, admission_id, None, publication)
-        if updated is not None:
-            logger.info("Episode set names reserved", files=len(publication.files))
-        return updated
+        updated: EpisodePublication | None = self._update_publication(
+            operation_id, admission_id, None, publication, check=check
+        )
+        if updated is None:
+            return None
+        logger.info("Episode set names reserved", files=len(publication.files))
+        return updated, None if check is None else check[1]
+
+    def _check_basis(self, operation_id: str, admission_id: str) -> tuple[str, ExpectedEpisode] | None:
+        """Return the staged video and catalogue runtime a subscription attempt is checked against before naming."""
+        current: AcquisitionConfirmation | None = self._confirmation(operation_id)
+        assignment: EpisodeAssignment | None = (
+            None
+            if current is None
+            else next((row for row in current.active_assignments if row.admission_id == admission_id), None)
+        )
+        if (
+            assignment is None
+            or assignment.source is not AdmissionSource.SUBSCRIPTION
+            or assignment.publication is not None
+            or assignment.rejected
+        ):
+            return None
+        video: str = next((path for _index, path, _size in assignment.files if _is_video(path)), "")
+        record: SubscriptionRecord | None = next(
+            (
+                item
+                for item in (*self._state.subscriptions, *_optional(self._state.removed_subscription))
+                if item.subscription_id == assignment.subscription_id
+            ),
+            None,
+        )
+        mapping: AniZipMapping | None = None if record is None else record.mapping
+        expected: ExpectedEpisode = (
+            ExpectedEpisode(None)
+            if mapping is None
+            else expected_episode(mapping.raw_episodes, str(assignment.choice.number))
+        )
+        return video, expected
+
+    def _passed_check(
+        self, item: AcquisitionConfirmation, admission_id: str
+    ) -> tuple[bool, tuple[str, FileStamp | None] | None]:
+        """Whether an episode set may be named now, with the download check result a subscription attempt needs."""
+        basis: tuple[str, ExpectedEpisode] | None = self._owned(
+            partial(self._check_basis, item.operation_id, admission_id)
+        )
+        if basis is None:
+            return True, None
+        check: tuple[str, FileStamp | None] | None = self._check_episode(item.operation_id, admission_id, *basis)
+        if check is None or not self._may_settle(item):
+            return False, None
+        if check[0].startswith(VERIFICATION_REJECT):
+            self._owned(partial(self._reject_attempt, item.operation_id, admission_id, check[0]))
+            return False, None
+        return True, check
+
+    def _check_episode(
+        self, operation_id: str, admission_id: str, video: str, expected: ExpectedEpisode
+    ) -> tuple[str, FileStamp | None] | None:
+        """Check the staged video of one attempt, or answer nothing when the check has to wait for a later round."""
+        deadline: float | None = self._check_retries.get(admission_id)
+        if deadline is not None and time.monotonic() < deadline:
+            return None
+        if not video:
+            return f"{VERIFICATION_REJECT}{NO_VIDEO_STREAM}", None
+        path: Path = staged_file(staging_path(self._service.workspace_root, operation_id), video)
+        before: FileStamp | None = file_stamp(path)
+        self._owned(partial(self._mark_checking, admission_id, checking=True))
+        try:
+            measured: MeasuredMedia | tuple[str, FileStamp | None] | None = self._identify(
+                path, admission_id, retried=deadline is not None
+            )
+        finally:
+            self._owned(partial(self._mark_checking, admission_id, checking=False))
+        if not isinstance(measured, MeasuredMedia):
+            return measured
+        if before is None or file_stamp(path) != before:
+            logger.info("A checked episode file changed during its check")
+            return None
+        self._check_retries.pop(admission_id, None)
+        result: Verification = verify(expected, measured, mode="record_only")
+        logger.info("Download checked", verdict=result.verdict, reason=result.reason)
+        self._owned(partial(self._record_check, admission_id, result))
+        rejected: bool = result.verdict == "reject"
+        return (f"{VERIFICATION_REJECT}{result.reason}", None) if rejected else (result.verdict, before)
+
+    def _mark_checking(self, admission_id: str, *, checking: bool) -> None:
+        if checking:
+            self._checking.add(admission_id)
+        else:
+            self._checking.discard(admission_id)
+        self._publish_state()
+
+    def _identify(
+        self, path: Path, admission_id: str, *, retried: bool
+    ) -> MeasuredMedia | tuple[str, FileStamp | None] | None:
+        if self._media_probe is None:
+            return self._skipped_check(admission_id, _CHECK_UNAVAILABLE)
+        try:
+            catalog: MediaCatalog = self._media_probe.identify(
+                path, cancel=NeverCancelledToken(), timeout_s=_CHECK_TIMEOUT_S
+            )
+        except UnsupportedMediaError:
+            return self._skipped_check(admission_id, "unsupported_container")
+        except BinaryNotFoundError:
+            return self._skipped_check(admission_id, "binary_missing")
+        except MediaProbeError as problem:
+            if retried:
+                return self._skipped_check(admission_id, problem.context.code.value)
+            logger.warning("Download check failed and is retried once", error_code=problem.context.code.value)
+            self._check_retries[admission_id] = time.monotonic() + _CHECK_TIMEOUT_S
+            return None
+        return measured_media(catalog)
+
+    def _skipped_check(self, admission_id: str, reason: str) -> tuple[str, FileStamp | None]:
+        self._check_retries.pop(admission_id, None)
+        logger.warning("Download check skipped", reason=reason)
+        self._owned(partial(self._record_check, admission_id, Verification("inconclusive", reason)))
+        return VERIFICATION_SKIPPED, None
+
+    def _record_check(self, admission_id: str, result: Verification) -> None:
+        assignment: EpisodeAssignment | None = next(
+            (row for item in self._state.acquisitions for row in item.assignments if row.admission_id == admission_id),
+            None,
+        )
+        if assignment is None or assignment.subscription_id is None:
+            return
+        append_decision(
+            self._store.history_path().with_name("decisions.jsonl"),
+            "check",
+            {
+                "source": "h2",
+                "subscription_id": assignment.subscription_id,
+                "key": {"anilist_id": assignment.choice.anilist_id, "number": assignment.choice.number},
+                "attempt": assignment.attempt,
+                "verdict": result.verdict,
+                "reason": result.reason,
+                "measured_s": result.measured_seconds,
+                "expected_s": result.expected_seconds,
+                "duration_source": result.duration_source,
+            },
+            entry="subscription",
+        )
+
+    def _reject_attempt(self, operation_id: str, admission_id: str, verification: str) -> None:
+        current: AcquisitionConfirmation | None = self._confirmation(operation_id)
+        if current is None or not any(
+            row.admission_id == admission_id and row.publication is None for row in current.active_assignments
+        ):
+            return
+        assignments: tuple[EpisodeAssignment, ...] = tuple(
+            replace(row, verification=verification) if row.admission_id == admission_id else row
+            for row in current.assignments
+        )
+        if self._replace_acquisition(replace(current, assignments=assignments, updated_at=self._now())):
+            logger.info("A subscription attempt was rejected by its download check", reason=verification)
 
     def _update_publication(
         self,
@@ -5431,6 +6050,8 @@ class AutomationOwner:
         admission_id: str,
         expected: EpisodePublication | None,
         publication: EpisodePublication,
+        *,
+        check: tuple[str, FileStamp | None] | None = None,
     ) -> EpisodePublication | None:
         current: AcquisitionConfirmation | None = self._confirmation(operation_id)
         if (
@@ -5454,8 +6075,13 @@ class AutomationOwner:
             return None
         if publication == expected:
             return publication
+        checked: EpisodeAssignment = (
+            replace(assignment, publication=publication)
+            if check is None
+            else replace(assignment, publication=publication, verification=check[0], verified_stamp=check[1])
+        )
         assignments: tuple[EpisodeAssignment, ...] = tuple(
-            replace(row, publication=publication) if row is assignment else row for row in current.assignments
+            checked if row is assignment else row for row in current.assignments
         )
         if not self._replace_acquisition(replace(current, assignments=assignments, updated_at=self._now())):
             return None
@@ -5539,6 +6165,8 @@ class AutomationOwner:
                 self.files_changed(DirectoryChange(paths=paths, reason="transfer_complete"))
             else:
                 self._refresh_automatic()
+        if self._stalled_attempt() and self._save(self._state):
+            self._publish_state()
         self._finish_pause_restore()
         pending: dict[str, str | None] = {
             item.info_hash: item.action_id for item in self._state.acquisitions if item.action_pending
@@ -6343,6 +6971,12 @@ class AutomationOwner:
         return None
 
     def _save(self, candidate: WatchState) -> bool:
+        requested: tuple[AcquisitionConfirmation, ...] = candidate.acquisitions
+        finished: tuple[SubscriptionRecord, ...]
+        candidate, finished = self._settled_targets(candidate)
+        if not candidate.policy.auto_enabled:
+            candidate = self._pause_ownership(candidate)
+        acted: bool = candidate.acquisitions != requested
         try:
             self._store.save(candidate)
         except (AniShiftError, OSError) as problem:
@@ -6351,6 +6985,9 @@ class AutomationOwner:
         previous: WatchState = self._state
         self._state = candidate
         self._record_history(previous)
+        self._observe_subscriptions(previous, finished)
+        if acted:
+            self._schedule_transfers()
         return True
 
     def _history_material(self, group_id: str) -> str:
@@ -7025,13 +7662,148 @@ def _episode_command_signature(request: ControlRequest) -> str:
 
 
 def _replace_episode_scope(item: AcquisitionConfirmation, previous: str, now: str) -> AcquisitionConfirmation:
-    if not any(assignment.admission_id == previous for assignment in item.assignments):
+    if not any(assignment.admission_id == previous and not assignment.replaced for assignment in item.assignments):
         return item
     assignments: tuple[EpisodeAssignment, ...] = tuple(
         replace(assignment, replaced=True) if assignment.admission_id == previous else assignment
         for assignment in item.assignments
     )
     return replace(item, assignments=assignments, selection_revision=item.selection_revision + 1, updated_at=now)
+
+
+def _episode_index(state: WatchState, anilist_ids: frozenset[int | None]) -> _EpisodeIndex:
+    episodes: dict[tuple[int, int], list[tuple[AcquisitionConfirmation, EpisodeAssignment]]] = {}
+    protected: Iterator[tuple[AcquisitionConfirmation, EpisodeAssignment]] = (
+        (transfer, assignment) for transfer in state.acquisitions for assignment in transfer.protected_assignments
+    )
+    for transfer, assignment in protected:
+        if assignment.choice.anilist_id in anilist_ids:
+            episodes.setdefault((assignment.choice.anilist_id, assignment.choice.number), []).append(
+                (transfer, assignment)
+            )
+    legacy: dict[int, list[LegacyOrder]] = {}
+    for order in state.legacy_orders:
+        if order.anilist_id in anilist_ids:
+            legacy.setdefault(order.anilist_id, []).append(order)
+    return _EpisodeIndex(
+        episodes={key: tuple(value) for key, value in episodes.items()},
+        admissions={
+            assignment.admission_id: (transfer, assignment)
+            for transfer in state.acquisitions
+            for assignment in transfer.assignments
+            if assignment.source is AdmissionSource.SUBSCRIPTION
+        },
+        complete=frozenset(item.operation_id for item in state.acquisitions if item.state is AcquisitionState.COMPLETE),
+        legacy={key: tuple(value) for key, value in legacy.items()},
+    )
+
+
+def _attempt_fact(found: tuple[AcquisitionConfirmation, EpisodeAssignment] | None, stalled: frozenset[str]) -> str:
+    if found is None:
+        return "missing"
+    transfer, assignment = found
+    checks: tuple[tuple[bool, str], ...] = (
+        (_handed_off(assignment), ATTEMPT_SATISFIED),
+        (assignment.replaced, "replaced"),
+        (assignment.rejected, "rejected"),
+        (transfer.state is AcquisitionState.FAILED, "failed"),
+        (transfer.info_hash in stalled, "stalled"),
+    )
+    return next((reason for hit, reason in checks if hit), _DEAD_PROBLEMS.get(transfer.problem or "", ATTEMPT_ACTIVE))
+
+
+def _orphan_attempts(state: WatchState, known: frozenset[str], stalled: frozenset[str]) -> set[str]:
+    return {
+        assignment.admission_id
+        for transfer in state.acquisitions
+        if transfer.requested_action != "cancel"
+        and transfer.state not in {AcquisitionState.ADMITTED, AcquisitionState.COMPLETE, AcquisitionState.FAILED}
+        for assignment in transfer.active_assignments
+        if assignment.source is AdmissionSource.SUBSCRIPTION
+        and assignment.subscription_id not in known
+        and _attempt_fact((transfer, assignment), stalled) not in {ATTEMPT_ACTIVE, ATTEMPT_SATISFIED}
+    }
+
+
+def _manual_fact(
+    rows: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...], stalled: frozenset[str] | None
+) -> str | None:
+    if any(_handed_off(assignment) for _transfer, assignment in rows):
+        return ATTEMPT_SATISFIED
+    if any(
+        _manual_order(assignment) and (stalled is None or not _dead_transfer(transfer, stalled))
+        for transfer, assignment in rows
+    ):
+        return ATTEMPT_ACTIVE
+    return None
+
+
+def _manual_order(assignment: EpisodeAssignment) -> bool:
+    return assignment.source is not AdmissionSource.SUBSCRIPTION and not assignment.replaced
+
+
+def _dead_transfer(transfer: AcquisitionConfirmation, stalled: frozenset[str]) -> bool:
+    return (
+        transfer.state is AcquisitionState.FAILED
+        or transfer.info_hash in stalled
+        or (transfer.problem or "") in _DEAD_PROBLEMS
+    )
+
+
+def _closed_attempt(item: AcquisitionConfirmation, closed: frozenset[str], now: str) -> AcquisitionConfirmation:
+    """Cancel the own transfer of closed target orders, or withdraw them from a transfer other episodes still use."""
+    mine: frozenset[str] = frozenset(assignment.admission_id for assignment in item.assignments) & closed
+    if not mine:
+        return item
+    active: frozenset[str] = frozenset(assignment.admission_id for assignment in item.active_assignments)
+    if not active <= closed:
+        for admission_id in mine & active:
+            item = _replace_episode_scope(item, admission_id, now)
+        return item
+    if item.state in {AcquisitionState.ADMITTED, AcquisitionState.COMPLETE, AcquisitionState.FAILED}:
+        return item
+    if item.requested_action == "cancel":
+        return item
+    logger.info("A closed subscription target order cancels its own transfer")
+    return replace(
+        item,
+        requested_action="cancel",
+        action_id=f"cancel-{token_hex(_ID_BYTES)}",
+        action_pending=True,
+        action_sent=False,
+        problem=None,
+        updated_at=now,
+    )
+
+
+def _with_target(state: WatchState, identifier: str, target: SubscriptionTarget) -> WatchState:
+    return replace(
+        state,
+        subscriptions=tuple(
+            replace(item, targets=tuple(target if row.number == target.number else row for row in item.targets))
+            if item.subscription_id == identifier
+            else item
+            for item in state.subscriptions
+        ),
+    )
+
+
+def _closed_by_subscription(transfer: AcquisitionConfirmation, assignment: EpisodeAssignment) -> bool:
+    return assignment.source is AdmissionSource.SUBSCRIPTION and (
+        assignment.replaced or assignment.rejected or transfer.state is AcquisitionState.FAILED
+    )
+
+
+def _optional(record: SubscriptionRecord | None) -> tuple[SubscriptionRecord, ...]:
+    return () if record is None else (record,)
+
+
+def _attempt_result(target: SubscriptionTarget) -> str:
+    if target.state is TargetState.SATISFIED:
+        return "accepted"
+    if target.state is TargetState.MANUAL or target.reason == "replaced":
+        return "replaced"
+    return "rejected" if target.reason == "rejected" else "dead"
 
 
 def _transfer_action(item: AcquisitionConfirmation) -> bool:
@@ -7137,11 +7909,15 @@ def _published_files(files: Sequence[FileReservation], reserved: frozenset[str])
     )
 
 
-def _copied(data: Path, private: Path, file: PublishedFile) -> PublishedFile:
+def _copied(data: Path, private: Path, file: PublishedFile, expected: FileStamp | None = None) -> PublishedFile:
     if file.stamp is not None:
         return file
-    digest, stamp = copy_staged(staged_file(data, file.source), private / str(file.index), file.size)
+    digest, stamp = copy_staged(staged_file(data, file.source), private / str(file.index), file.size, expected=expected)
     return replace(file, digest=digest, stamp=stamp)
+
+
+def _is_video(path: str) -> bool:
+    return Path(path).suffix.casefold() in VIDEO_SOURCE_SUFFIXES
 
 
 def _selection_mismatch(
@@ -7161,7 +7937,7 @@ def _episode_bindings(
     item: AcquisitionConfirmation, files: Sequence[TorrentFile]
 ) -> dict[str, tuple[FileReservation, ...]]:
     """Bind every unbound episode to its files, leaving one without a file when its video is already taken."""
-    taken: set[int] = {index for assignment in item.assignments for index, _path, _size in assignment.files}
+    bound: set[int] = set()
     bindings: dict[str, tuple[FileReservation, ...]] = {}
     for assignment in item.active_assignments:
         if assignment.mapped:
@@ -7171,11 +7947,28 @@ def _episode_bindings(
             (entry.index, torrent_relative_path(entry.name).as_posix(), entry.size)
             for entry in episode_files(files, reference, assignment.choice.target, reference.release)
         )
+        held: set[int] = {
+            index
+            for other in item.assignments
+            if _holds_files(other, assignment)
+            for index, _path, _size in other.files
+        }
+        taken: set[int] = bound | held
         if any(index in taken for index, _path, _size in chosen):
             chosen = ()
-        taken.update(index for index, _path, _size in chosen)
+        bound.update(index for index, _path, _size in chosen)
         bindings[assignment.admission_id] = chosen
     return bindings
+
+
+def _holds_files(other: EpisodeAssignment, assignment: EpisodeAssignment) -> bool:
+    """Whether *other* keeps its files from *assignment*; a manual order takes over those of the attempt it replaced."""
+    return other.admission_id != assignment.admission_id and not (
+        assignment.source is AdmissionSource.MANUAL
+        and other.source is AdmissionSource.SUBSCRIPTION
+        and other.admission_id == assignment.previous_admission_id
+        and not other.rejected
+    )
 
 
 def _selection_basis(item: AcquisitionConfirmation) -> tuple[object, ...]:
@@ -7385,10 +8178,10 @@ def _requested_groups(workspace: InspectedWorkspace, payload: Mapping[str, objec
     return tuple(by_id[group_id] for group_id in selected)
 
 
-def _subscription_details(record: SubscriptionRecord) -> dict[str, object]:
+def _subscription_details(record: SubscriptionRecord, ready: int) -> dict[str, object]:
     numbers: tuple[int, ...] = tuple(item.number for item in record.targets)
     problem: SubscriptionTarget | None = next((item for item in record.targets if item.reason is not None), None)
-    row: SubscriptionRow = subscription_row(record)
+    row: SubscriptionRow = replace(subscription_row(record), ready=ready)
     return {
         "row": encode_view(row),
         "subscribed_at": record.subscribed_at,

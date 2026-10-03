@@ -279,8 +279,16 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `UNKNOWN_COMMAND`. Mutacja zapisuje receipt razem ze stanem. Sprawdzenie biegnie w puli I/O,
   jedno na subskrypcję, z izolacją wyjątków; jeden `read_listing` (ze zapisanym mapowaniem jako
   fallback) zasila `prepare_episode(mapping=…)` każdego celu. Wynik trafia do `last_check` i
-  `decisions.jsonl`; `checked_at` zmienia tylko udane sprawdzenie. Owner nie przyjmuje prób
-  (`_admits` wymaga `_ATTEMPTS_ENABLED`), więc `subscriptions_list.shadow` jest zawsze prawdą. `removed_subscription` trzyma jedną
+  `decisions.jsonl`; `checked_at` zmienia tylko udane sprawdzenie. Bez `ANISHIFT_SUBSCRIPTION_SHADOW`
+  owner przyjmuje próbę przez `_admit_episode` z receipt `sub:{id}:{numer}:{próba}`, zapisując cel
+  `attempting` w tym samym zapisie; tryb cienia tylko proponuje. Każdy `_save` rozlicza cele
+  (`settle_target`) na przypisaniach, zamyka skończone próby (anulowanie własnego transferu albo
+  wycofanie zakresu współdzielonego), a ostatni spełniony cel sezonu zakończonego przenosi rekord do
+  Historii. Cel spełnia dopiero przekazany zestaw (`handed_off`), ręczne zamówienie wygrywa (`manual`).
+  Kontrola H2 (`download_verification.py`) biegnie przed nazwaniem plików na wideo ze stagingu;
+  `media_probe` dostarcza `AppService.media_probe` (bez importu `services` w CLI), a sprawdzony
+  `verified_stamp` trafia do `copy_staged(expected=)`. Odrzucenie zamyka próbę, brak sondy lub
+  błąd po jednym ponowieniu daje `verification_skipped`. `removed_subscription` trzyma jedną
   usuniętą subskrypcję dla Ctrl+Z; przywrócenie odmawia `subscription_exists` albo
   `subscription_limit` i zachowuje ją. Wznowienie czyści `pause_reason`. `automation.py`
 - `config/subscriptions.json` jest zamrożonym plikiem poprzedniej wersji: owner go nigdy nie

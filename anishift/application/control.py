@@ -81,6 +81,12 @@ __all__ = [
 REMOVED_FROM_CLIENT: Final[str] = "removed_from_client"
 """Terminal reason for a previously acknowledged transfer missing from its managed client."""
 
+VERIFICATION_REJECT: Final[str] = "reject:"
+"""Prefix of a download check result that rejects the file of a subscription attempt."""
+
+VERIFICATION_SKIPPED: Final[str] = "skipped"
+"""Download check result of a check that could not be performed."""
+
 WATCH_STATE_SCHEMA_VERSION: Final[int] = 4
 """Current schema of the persisted automation state."""
 
@@ -201,6 +207,7 @@ class AdmissionSource(StrEnum):
 
     MANUAL = "manual"
     LEGACY = "legacy"
+    SUBSCRIPTION = "subscription"
 
 
 class AdmissionConflict(StrEnum):
@@ -417,11 +424,16 @@ class EpisodeAssignment:
     publication: EpisodePublication | None = None
     group_id: str | None = None
     video_path: str | None = None
+    subscription_id: str | None = None
+    attempt: int | None = None
+    verification: str | None = None
+    verified_stamp: FileStamp | None = None
 
     def __post_init__(self) -> None:
         if not self.admission_id.strip() or not self.admitted_at.strip():
             msg = "An episode assignment requires its own admission identity and time"
             raise ValueError(msg)
+        self._check_attempt()
         if self.files and self.file_map is None:
             msg = "Episode files require the file map they were bound on"
             raise ValueError(msg)
@@ -448,6 +460,34 @@ class EpisodeAssignment:
     def mapped(self) -> bool:
         """Whether the episode was bound against the metadata of its torrent, with or without a file."""
         return self.file_map is not None
+
+    @property
+    def rejected(self) -> bool:
+        """Whether the download check rejected the file of this subscription attempt."""
+        return self.verification is not None and self.verification.startswith(VERIFICATION_REJECT)
+
+    def _check_attempt(self) -> None:
+        attempt: bool = self.source is AdmissionSource.SUBSCRIPTION
+        if attempt != (self.subscription_id is not None) or attempt != (self.attempt is not None):
+            msg: str = "Exactly a subscription attempt names its subscription and attempt number"
+            raise ValueError(msg)
+        if self.attempt is not None and (type(self.attempt) is not int or self.attempt < 1):
+            msg = "A subscription attempt is numbered from one"
+            raise ValueError(msg)
+        if not attempt and self.verification is not None:
+            msg = "Only a subscription attempt carries a download check"
+            raise ValueError(msg)
+        accepted: bool = self.verification is not None and not self.rejected
+        if attempt and self.publication is not None and not accepted:
+            msg = "A published subscription attempt passed its download check"
+            raise ValueError(msg)
+        checked: bool = accepted and self.verification != VERIFICATION_SKIPPED
+        if self.verified_stamp is not None and not checked:
+            msg = "Only a performed, accepted download check binds the checked file"
+            raise ValueError(msg)
+        if checked and self.publication is not None and self.verified_stamp is None:
+            msg = "A published, checked subscription attempt binds the checked file"
+            raise ValueError(msg)
 
 
 @dataclass(frozen=True, slots=True)
@@ -537,6 +577,10 @@ class AcquisitionConfirmation:
     @property
     def manual(self) -> bool:
         """Whether an explicit user order or explicit reacquire owns this transfer independently of automation."""
+        if any(item.source is AdmissionSource.SUBSCRIPTION for item in self.assignments):
+            return self.previous_operation_id is not None or any(
+                item.source is AdmissionSource.MANUAL for item in self.active_assignments
+            )
         return self.origin is RequestOrigin.USER and (
             self.subscription_id is None or self.previous_operation_id is not None
         )

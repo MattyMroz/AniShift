@@ -127,6 +127,9 @@ EPISODE_REASON_LABELS: Final[dict[str, str]] = {
     EpisodeReason.PACK_IN_PROGRESS: "Czeka na paczkę",
     EpisodeReason.SUBSCRIPTION_AWAITING_AIRING: "Czeka na emisję",
     EpisodeReason.SUBSCRIPTION_AWAITING_RELEASE: "Czeka na wydanie",
+    EpisodeReason.SUBSCRIPTION_CHECKING: "Kontrola",
+    EpisodeReason.SUBSCRIPTION_CHECK_SKIPPED: "Bez kontroli",
+    EpisodeReason.SUBSCRIPTION_EXHAUSTED: "Wyczerpano próby",
 }
 """Shared column labels for owner batch and episode status reasons."""
 
@@ -713,7 +716,7 @@ class AnimeController:
         start: object = row.get("from_number")
         summary: str = (
             f"Od odc. {'?' if start is None else start} · Pobrano {row.get('downloaded', 0)}/"
-            f"{'?' if total is None else total} · {row_state(row, self._moment())}"
+            f"{'?' if total is None else total} · Gotowe {row.get('ready', 0)} · {row_state(row, self._moment())}"
         )
         check: object = self._subscription_details.get("last_check")
         if not isinstance(check, Mapping):
@@ -1435,7 +1438,7 @@ class AnimeController:
             return False
         key: EpisodeKey = EpisodeKey(self._listing.anilist_id, episode.number)
         status: EpisodeStatus | None = self._episode_states.get(key)
-        return key not in self._sending and (status is None or not status.active)
+        return key not in self._sending and (status is None or not status.active or status.attempt)
 
     def _send_episodes(
         self, listing: EpisodeListing, keys: tuple[EpisodeKey, ...], command_id: str, generation: int

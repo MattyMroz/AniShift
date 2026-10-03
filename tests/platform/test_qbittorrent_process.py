@@ -39,16 +39,19 @@ def _encode(value: object) -> bytes:
     raise TypeError(type(value).__name__)
 
 
-def _receipt(root: Path, executable: Path) -> None:
+def _receipt(
+    root: Path, executable: Path, hashes: tuple[str, ...] = ("a" * 40,), released: tuple[str, ...] = ()
+) -> None:
     root.mkdir(parents=True)
     document: dict[str, object] = {
         "pid": 123,
         "created": 456,
         "port": 18081,
         "executable": str(executable),
-        "hashes": ["a" * 40],
+        "hashes": list(hashes),
         "active": True,
         "taken_over": False,
+        "released": list(released),
     }
     (root / "process.json").write_text(json.dumps(document), encoding="utf-8")
 
@@ -221,7 +224,7 @@ def test_an_open_own_window_keeps_ownership_and_blocks_only_the_automatic_close(
 ) -> None:
     root: Path = tmp_path / "profile"
     executable: Path = tmp_path / "bin/qbittorrent/qbittorrent.exe"
-    _receipt(root, executable)
+    _receipt(root, executable, released=("a" * 40,))
     monkeypatch.setattr(processes, "_process_identity", lambda pid: (456, str(executable)))
     monkeypatch.setattr(processes, "_visible_process_window", lambda pid: True)
     requests: list[str] = []
@@ -247,6 +250,42 @@ def test_an_open_own_window_keeps_ownership_and_blocks_only_the_automatic_close(
     assert receipt["active"] is True
     assert any(path.endswith("/stop") for path in requests)
     assert not any(path.endswith("/shutdown") for path in requests)
+
+
+@pytest.mark.parametrize("released", [("a" * 40,), ("a" * 40, "b" * 40)])
+def test_the_idle_close_waits_until_the_owner_released_every_transfer_the_client_still_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, released: tuple[str, ...]
+) -> None:
+    root: Path = tmp_path / "profile"
+    executable: Path = tmp_path / "bin/qbittorrent/qbittorrent.exe"
+    _receipt(root, executable, hashes=("a" * 40, "b" * 40), released=released)
+    alive: list[bool] = [True]
+    monkeypatch.setattr(processes, "_process_identity", lambda pid: (456, str(executable)) if alive[0] else None)
+    monkeypatch.setattr(processes, "_visible_process_window", lambda pid: False)
+    requests: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        if request.url.path.endswith("preferences"):
+            return httpx.Response(200, json={"save_path": str(root / "qBittorrent/downloads")})
+        if request.url.path.endswith("/info"):
+            return httpx.Response(200, json=[{"hash": "b" * 40, "progress": 1, "amount_left": 0, "state": "stoppedUP"}])
+        if request.url.path.endswith("/shutdown"):
+            alive[0] = False
+        return httpx.Response(200, text="v5.2.3")
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        manager: ManagedQBittorrent = ManagedQBittorrent(root, http=http, bin_root=tmp_path / "bin")
+        try:
+            manager.finish_transfers()
+        finally:
+            manager.close()
+
+    receipt: dict[str, object] = json.loads((root / "process.json").read_text(encoding="utf-8"))
+    closed: bool = len(released) == 2
+    assert any(path.endswith("/shutdown") for path in requests) is closed
+    assert alive[0] is not closed
+    assert (receipt["active"], receipt["pid"]) == ((False, 0) if closed else (True, 123))
 
 
 def test_closed_manual_window_is_not_reported_as_a_start_failure_or_restarted(

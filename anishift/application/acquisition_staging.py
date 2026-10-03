@@ -101,9 +101,16 @@ def file_stamp(path: Path) -> FileStamp | None:
     return status.st_size, status.st_mtime_ns, status.st_dev, status.st_ino
 
 
-def copy_staged(source: Path, destination: Path, size: int) -> tuple[str, FileStamp]:
-    """Copy one finished staged file into private storage, returning its content digest and the copy's stamp."""
+def copy_staged(
+    source: Path, destination: Path, size: int, *, expected: FileStamp | None = None
+) -> tuple[str, FileStamp]:
+    """Copy one finished staged file into private storage, returning its content digest and the copy's stamp.
+
+    With *expected*, refuse a source whose stamp differs from the one a download check recorded.
+    """
     before: FileStamp | None = file_stamp(source)
+    if expected is not None and before != expected:
+        raise OSError(_CHANGED_WHILE_COPIED)
     destination.parent.mkdir(parents=True, exist_ok=True)
     copy: Path = staged_file(destination.parent, destination.name)
     copy.unlink(missing_ok=True)

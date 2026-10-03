@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import secrets
 import socket
 import subprocess
 import threading
@@ -44,6 +45,7 @@ from anishift.platform.qbittorrent_process import ManagedQBittorrent
 from anishift.services.catalog.types import PrequelEntry, SeasonAiring, TitleCandidate, TitleStatus
 from anishift.services.extraction import ExtractionService, extract_tracks, identify
 from anishift.services.media import DefaultMediaProbe
+from anishift.services.media.probe import MediaProbe
 from anishift.services.subtitles import DisplayedLine, SpokenLine
 from anishift.services.torrents import Release, TorrentInfo, parse_release_name
 from anishift.services.torrents.errors import TorrentClientError
@@ -80,27 +82,26 @@ def _encode(value: object) -> bytes:
     raise TypeError(type(value).__name__)
 
 
-def make_pack(root: Path) -> tuple[bytes, str]:
-    root.mkdir(parents=True)
+def make_pack(root: Path, *, name: str = "F7-pack", video: bool = True) -> tuple[bytes, str]:
+    root.mkdir(parents=True, exist_ok=True)
+    picture: list[str] = (
+        ["-f", "lavfi", "-i", "testsrc2=size=160x90:rate=12", "-c:v", "libx264", "-preset", "ultrafast"]
+        if video
+        else []
+    )
     subprocess.run(  # noqa: S603
         [
             str(require_binary(Binary.FFMPEG)),
             "-v",
             "error",
-            "-f",
-            "lavfi",
-            "-i",
-            "testsrc2=size=160x90:rate=12",
+            *picture[:4],
             "-f",
             "lavfi",
             "-i",
             "sine=frequency=220:sample_rate=48000",
             "-t",
             "2",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
+            *picture[4:],
             "-c:a",
             "aac",
             str(root / "source.mkv"),
@@ -109,28 +110,28 @@ def make_pack(root: Path) -> tuple[bytes, str]:
         capture_output=True,
         timeout=30,
     )
-    video: bytes = (root / "source.mkv").read_bytes()
+    episode: bytes = (root / "source.mkv").read_bytes()
     (root / "source.mkv").unlink()
-    pack: Path = root / "F7-pack"
+    pack: Path = root / name
     pack.mkdir()
     files: list[dict[bytes, object]] = []
     payload: bytes = b""
     for number in (1, 2, 3):
         for suffix, data in (
-            ("mkv", video),
+            ("mkv", episode),
             ("srt", f"1\n00:00:00,200 --> 00:00:01,500\nSynthetic episode {number}.\n".encode()),
         ):
-            name: str = f"Neko to Ryuu - {number:02}.{suffix}"
-            (pack / name).write_bytes(data)
-            files.append({b"length": len(data), b"path": [name.encode()]})
+            file_name: str = f"Neko to Ryuu - {number:02}.{suffix}"
+            (pack / file_name).write_bytes(data)
+            files.append({b"length": len(data), b"path": [file_name.encode()]})
             payload += data
     padding: bytes = bytes(173)
     (pack / "padding.bin").write_bytes(padding)
     files.append({b"length": len(padding), b"path": [b"padding.bin"], b"attr": b"p"})
     payload += padding
-    assert (len(video) + len(b"1\n00:00:00,200 --> 00:00:01,500\nSynthetic episode 1.\n")) % 16384 != 0
+    assert (len(episode) + len(b"1\n00:00:00,200 --> 00:00:01,500\nSynthetic episode 1.\n")) % 16384 != 0
     info: dict[bytes, object] = {
-        b"name": b"F7-pack",
+        b"name": name.encode(),
         b"files": files,
         b"piece length": 16384,
         b"pieces": b"".join(
@@ -142,11 +143,11 @@ def make_pack(root: Path) -> tuple[bytes, str]:
 
 
 def _port() -> int:
-    for _attempt in range(20):
+    for _attempt in range(100):
+        port: int = 49152 + secrets.randbelow(16384)
         with socket.socket() as tcp, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
-            tcp.bind(("127.0.0.1", 0))
-            port: int = tcp.getsockname()[1]
             try:
+                tcp.bind(("127.0.0.1", port))
                 udp.bind(("127.0.0.1", port))
             except OSError:
                 continue
@@ -403,6 +404,7 @@ def resident(
     root: Path,
     manager: ManagedQBittorrent,
     catalog: Catalog,
+    media_probe: MediaProbe | None = None,
 ) -> Iterator[tuple[AutomationOwner, AppService, ControlClient]]:
     workspace: Path = root / "workspace"
     workspace.mkdir(exist_ok=True)
@@ -431,7 +433,12 @@ def resident(
     )
     store: WatchStateStore = WatchStateStore(root / "watch/state.json", subscriptions_path=root / "subscriptions.json")
     owner: AutomationOwner = AutomationOwner(
-        service, store, instance_id="f7", scan_interval_s=0.1, ready_store=ReadyStore(root / "relocations", workspace)
+        service,
+        store,
+        instance_id="f7",
+        scan_interval_s=0.1,
+        ready_store=ReadyStore(root / "relocations", workspace),
+        media_probe=media_probe,
     )
     thread: threading.Thread = threading.Thread(target=owner.serve, daemon=True)
     thread.start()

@@ -89,6 +89,12 @@ _FIELDS: Final[frozenset[str]] = frozenset(
         "result",
         "excluded",
         "mapping_source",
+        "attempt",
+        "attempt_result",
+        "verification",
+        "measured_s",
+        "expected_s",
+        "duration_source",
         *_TARGET_FIELDS,
     }
 )

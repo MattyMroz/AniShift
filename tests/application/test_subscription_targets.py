@@ -17,12 +17,16 @@ from anishift.application.episode_selection import (
     StreamCandidate,
 )
 from anishift.application.subscription_targets import (
+    ATTEMPT_ACTIVE,
+    ATTEMPT_SATISFIED,
+    LEGACY_ORDERED,
     MAX_ATTEMPTS,
     PauseReason,
     SubscriptionProblem,
     SubscriptionRecord,
     SubscriptionRow,
     SubscriptionTarget,
+    TargetFacts,
     TargetState,
     after_close,
     completed,
@@ -30,10 +34,12 @@ from anishift.application.subscription_targets import (
     display_order,
     eligible,
     is_target,
+    late,
     merge_listing,
     next_check_at,
     next_search_at,
     search_targets,
+    settle_target,
     subscription_row,
 )
 
@@ -519,9 +525,40 @@ def test_only_a_supported_untried_match_is_eligible_whatever_the_target_age(
         ),
         ({"targets": (_target(1, TargetState.SATISFIED),)}, False),
         ({"targets": (_target(1, TargetState.SATISFIED), _target(3, TargetState.SATISFIED))}, False),
+        (
+            {
+                "targets": (
+                    _target(1, TargetState.SATISFIED),
+                    _target(2, TargetState.SATISFIED),
+                    _target(3, TargetState.DUE),
+                )
+            },
+            False,
+        ),
+        (
+            {
+                "targets": (
+                    _target(1, TargetState.SATISFIED),
+                    _target(2, TargetState.SATISFIED),
+                    _target(3, TargetState.SATISFIED),
+                )
+            },
+            True,
+        ),
         ({"cut": None, "migrated_at": _NOW.isoformat(), "targets": (_target(2, TargetState.SATISFIED),)}, True),
     ],
-    ids=["closed", "airing", "unknown-count", "count-grew", "exhausted", "missing", "beyond-count", "migrated"],
+    ids=[
+        "closed",
+        "airing",
+        "unknown-count",
+        "count-grew",
+        "exhausted",
+        "missing",
+        "beyond-count",
+        "beyond-count-waiting",
+        "beyond-count-downloaded",
+        "migrated",
+    ],
 )
 def test_a_finished_season_closes_only_with_every_target_satisfied(changes: dict[str, object], expected: bool) -> None:
     record: SubscriptionRecord = _record(
@@ -530,3 +567,87 @@ def test_a_finished_season_closes_only_with_every_target_satisfied(changes: dict
         targets=(_target(1, TargetState.SATISFIED), _target(2, TargetState.SATISFIED)),
     )
     assert completed(replace(record, **changes)) is expected  # type: ignore[arg-type]
+
+
+_ATTEMPT: SubscriptionTarget = replace(
+    _target(4, TargetState.ATTEMPTING, _NOW - timedelta(hours=1)), attempts=1, admission_id="attempt-1"
+)
+
+
+@pytest.mark.parametrize(
+    ("target", "facts", "state", "reason"),
+    [
+        (_ATTEMPT, TargetFacts(attempt=ATTEMPT_ACTIVE), TargetState.ATTEMPTING, None),
+        (_ATTEMPT, TargetFacts(attempt=ATTEMPT_SATISFIED), TargetState.SATISFIED, None),
+        (_ATTEMPT, TargetFacts(attempt="rejected"), TargetState.DUE, "rejected"),
+        (replace(_ATTEMPT, attempts=MAX_ATTEMPTS), TargetFacts(attempt="stalled"), TargetState.EXHAUSTED, "stalled"),
+        (_ATTEMPT, TargetFacts(attempt="replaced", manual=ATTEMPT_ACTIVE), TargetState.MANUAL, None),
+        (_ATTEMPT, TargetFacts(attempt=ATTEMPT_SATISFIED, manual=ATTEMPT_ACTIVE), TargetState.MANUAL, None),
+        (_target(4), TargetFacts(manual=ATTEMPT_SATISFIED), TargetState.SATISFIED, None),
+        (replace(_ATTEMPT, state=TargetState.MANUAL), TargetFacts(), TargetState.DUE, None),
+        (
+            replace(_ATTEMPT, state=TargetState.MANUAL, reason=LEGACY_ORDERED),
+            TargetFacts(),
+            TargetState.MANUAL,
+            LEGACY_ORDERED,
+        ),
+        (
+            replace(_ATTEMPT, state=TargetState.MANUAL, reason=LEGACY_ORDERED),
+            TargetFacts(legacy_complete=True),
+            TargetState.SATISFIED,
+            None,
+        ),
+        (_target(4), TargetFacts(), TargetState.DUE, None),
+    ],
+    ids=[
+        "active",
+        "handed-off",
+        "rejected",
+        "last-stalled",
+        "replaced-by-hand",
+        "manual-wins",
+        "manual-done",
+        "manual-released",
+        "legacy-open",
+        "legacy-done",
+        "untouched",
+    ],
+)
+def test_a_target_settles_on_what_the_transfers_of_its_episode_prove(
+    target: SubscriptionTarget, facts: TargetFacts, state: TargetState, reason: str | None
+) -> None:
+    settled: SubscriptionTarget = settle_target(target, facts, _NOW)
+
+    assert (settled.state, settled.reason) == (state, reason)
+    assert (settled.attempts, settled.admission_id) == (target.attempts, target.admission_id)
+
+
+def test_a_satisfied_target_never_moves_and_a_skipped_check_stays_marked() -> None:
+    done: SubscriptionTarget = _target(4, TargetState.SATISFIED)
+
+    assert settle_target(done, TargetFacts(attempt="rejected", manual=ATTEMPT_ACTIVE), _NOW) is done
+    marked: SubscriptionTarget = settle_target(_ATTEMPT, TargetFacts(attempt=ATTEMPT_ACTIVE, check_skipped=True), _NOW)
+    assert marked.check_skipped
+    assert settle_target(marked, TargetFacts(attempt=ATTEMPT_SATISFIED), _NOW).check_skipped
+
+
+@pytest.mark.parametrize(
+    ("age", "state", "notified", "expected"),
+    [
+        (timedelta(days=7), TargetState.DUE, False, True),
+        (timedelta(days=7) - timedelta(seconds=1), TargetState.DUE, False, False),
+        (timedelta(days=8), TargetState.DUE, True, False),
+        (timedelta(days=8), TargetState.ATTEMPTING, False, False),
+    ],
+    ids=["week", "under-week", "told", "attempting"],
+)
+def test_a_target_is_late_once_a_week_after_its_deadline_until_told(
+    age: timedelta, state: TargetState, notified: bool, expected: bool
+) -> None:
+    target: SubscriptionTarget = replace(
+        _target(4, state, _NOW - age),
+        notified_late=notified,
+        admission_id="a" if state is TargetState.ATTEMPTING else None,
+    )
+
+    assert late(target, _NOW) is expected

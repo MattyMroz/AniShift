@@ -143,6 +143,11 @@ class WorkspaceInspector:
         self._audio_tolerance_us: int = audio_tolerance_us
         self._cache: dict[str, _CachedInspection] = {}
 
+    @property
+    def probe(self) -> MediaProbe:
+        """Container probe composed for this workspace."""
+        return self._probe
+
     def inspect(
         self,
         discovery: DiscoveryResult,

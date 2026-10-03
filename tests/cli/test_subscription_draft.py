@@ -313,6 +313,11 @@ def test_a_finished_entry_has_no_draft() -> None:
             "AniList podaje 4 odcinki, a subskrypcja czeka na E6 · pobierz ręcznie albo usuń",
         ),
         ({"episode_count": 4, "beyond_count": None}, "Termin nieznany"),
+        (
+            {"due_at": (_NOW - timedelta(hours=1)).isoformat(), "due_number": 3, "checking_number": 3},
+            "Kontrola E3",
+        ),
+        ({"checking_number": 3, "paused": True, "pause_reason": "user"}, "Wstrzymana · W wznów"),
     ],
 )
 def test_a_row_shows_its_strongest_state(changes: Mapping[str, object], state: str) -> None:
@@ -519,7 +524,7 @@ def test_enter_opens_the_subscription_details_with_header_targets_and_specials(
     frame: str = _frame(panel)
     assert panel._tab == _Tab.ANIME
     assert "Subskrypcje \u203a Alpha" in frame
-    assert "Od odc. 3 · Pobrano 1/4 · Termin nieznany" in frame
+    assert "Od odc. 3 · Pobrano 1/4 · Gotowe 0 · Termin nieznany" in frame
     assert "Sprawdzono E3: brak wydań w źródle" in frame
     specials: list[str] = [line for line in frame.splitlines() if "Dodatki tego sezonu" in line or "OVA" in line]
     assert len(specials) == 2

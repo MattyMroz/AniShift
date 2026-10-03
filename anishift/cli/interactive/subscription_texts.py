@@ -79,6 +79,25 @@ def subscription_draft(listing: EpisodeListing, title: str, now: datetime, *, pa
 
 def row_state(row: Mapping[str, object], now: datetime) -> str:
     """Return the one state the second line of a subscription row shows at *now*."""
+    issue: str | None = _issue(row)
+    if issue is not None:
+        return issue
+    if row.get("paused"):
+        return f"{_PAUSES.get(str(row.get('pause_reason')), 'Wstrzymana')} · W wznów"
+    if row.get("review_pending"):
+        return "Sprawdzam przeniesioną subskrypcję"
+    checking: object = row.get("checking_number")
+    if isinstance(checking, int):
+        return f"Kontrola E{checking}"
+    due: object = row.get("due_at")
+    if not isinstance(due, str):
+        return "Przerwa w emisji" if row.get("catalog_status") == "HIATUS" else "Termin nieznany"
+    number: object = row.get("due_number")
+    episode: str = f" E{number}" if isinstance(number, int) else ""
+    return _dated_state(episode, int((datetime.fromisoformat(due) - now).total_seconds()))
+
+
+def _issue(row: Mapping[str, object]) -> str | None:
     problem: object = row.get("problem")
     if problem is not None:
         return _ISSUES.get(str(problem), "Wymaga uwagi")
@@ -88,16 +107,7 @@ def row_state(row: Mapping[str, object], now: datetime) -> str:
         return (
             f"AniList podaje {count} {_episodes(count)}, a subskrypcja czeka na E{beyond} · pobierz ręcznie albo usuń"
         )
-    if row.get("paused"):
-        return f"{_PAUSES.get(str(row.get('pause_reason')), 'Wstrzymana')} · W wznów"
-    if row.get("review_pending"):
-        return "Sprawdzam przeniesioną subskrypcję"
-    due: object = row.get("due_at")
-    if not isinstance(due, str):
-        return "Przerwa w emisji" if row.get("catalog_status") == "HIATUS" else "Termin nieznany"
-    number: object = row.get("due_number")
-    episode: str = f" E{number}" if isinstance(number, int) else ""
-    return _dated_state(episode, int((datetime.fromisoformat(due) - now).total_seconds()))
+    return None
 
 
 def _dated_state(episode: str, remaining: int) -> str:

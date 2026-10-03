@@ -78,6 +78,7 @@ if TYPE_CHECKING:
     from anishift.application.control import RecipePreferences
     from anishift.application.recovery import RunJournal
     from anishift.services.llm import LlmConfig
+    from anishift.services.media.probe import MediaProbe
 
 __all__ = [
     "AppService",
@@ -255,6 +256,11 @@ class AppService:
     def acquisition(self) -> AcquisitionService | None:
         """Release search and download hand-off, absent when no torrent client was composed."""
         return self._acquisition
+
+    @property
+    def media_probe(self) -> MediaProbe:
+        """Container probe composed for workspace inspection, shared by the download check."""
+        return self._inspector.probe
 
     @property
     def workspace_root(self) -> Path:

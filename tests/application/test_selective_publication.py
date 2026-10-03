@@ -103,9 +103,9 @@ def _crash_at(boundary: str, owners: list[AutomationOwner], monkeypatch: pytest.
             owners[0].request_shutdown()
             raise _Crash
 
-    def copy(source: Path, target: Path, size: int) -> tuple[str, FileStamp]:
+    def copy(source: Path, target: Path, size: int, *, expected: FileStamp | None = None) -> tuple[str, FileStamp]:
         crash("reserved")
-        result: tuple[str, FileStamp] = copy_staged(source, target, size)
+        result: tuple[str, FileStamp] = copy_staged(source, target, size, expected=expected)
         crash("copied")
         return result
 
@@ -355,10 +355,10 @@ def test_a_name_taken_before_publication_moves_the_whole_set_to_one_free_core(
     owners: list[AutomationOwner] = []
     reserved: list[tuple[str, ...]] = []
 
-    def copy(source: Path, target: Path, size: int) -> tuple[str, FileStamp]:
+    def copy(source: Path, target: Path, size: int, *, expected: FileStamp | None = None) -> tuple[str, FileStamp]:
         saved: EpisodePublication | None = _current(owners[0]).assignments[0].publication
         reserved.append(() if saved is None else tuple(item.name for item in saved.files))
-        return copy_staged(source, target, size)
+        return copy_staged(source, target, size, expected=expected)
 
     monkeypatch.setattr("anishift.application.automation.copy_staged", copy)
     (setup.root / _NAMES[0]).write_bytes(b"foreign")
@@ -429,10 +429,10 @@ def test_a_publication_step_taken_on_an_older_saved_step_is_discarded(
             replace(current, assignments=(replace(current.assignments[0], publication=changed),))
         )
 
-    def copy(source: Path, target: Path, size: int) -> tuple[str, FileStamp]:
+    def copy(source: Path, target: Path, size: int, *, expected: FileStamp | None = None) -> tuple[str, FileStamp]:
         if _current(owners[0]).assignments[0].publication.problem is None:  # type: ignore[union-attr]
             owners[0]._on_owner(interfere)
-        return copy_staged(source, target, size)
+        return copy_staged(source, target, size, expected=expected)
 
     monkeypatch.setattr("anishift.application.automation.copy_staged", copy)
     with _running(setup) as owner:
@@ -495,11 +495,11 @@ def test_a_failed_copy_is_reported_and_an_explicit_resume_publishes_the_set(
 ) -> None:
     failures: list[int] = []
 
-    def copy(source: Path, target: Path, size: int) -> tuple[str, FileStamp]:
+    def copy(source: Path, target: Path, size: int, *, expected: FileStamp | None = None) -> tuple[str, FileStamp]:
         if not failures:
             failures.append(size)
             raise OSError(28, "No space left on device")
-        return copy_staged(source, target, size)
+        return copy_staged(source, target, size, expected=expected)
 
     monkeypatch.setattr("anishift.application.automation.copy_staged", copy)
     with _running(setup) as owner:
@@ -715,10 +715,10 @@ def test_stop_during_copy_preserves_staging_and_blocks_publication(
     owners: list[AutomationOwner] = []
     stopped: list[ControlResponse] = []
 
-    def copy(source: Path, target: Path, size: int) -> tuple[str, FileStamp]:
+    def copy(source: Path, target: Path, size: int, *, expected: FileStamp | None = None) -> tuple[str, FileStamp]:
         if not stopped:
             stopped.append(owners[0].handle(_request("transfer", {"info_hash": _HASH, "action": "stop"})))
-        return copy_staged(source, target, size)
+        return copy_staged(source, target, size, expected=expected)
 
     monkeypatch.setattr(automation_module, "copy_staged", copy)
     with _running(setup) as owner:

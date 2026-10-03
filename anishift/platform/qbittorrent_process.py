@@ -297,7 +297,7 @@ class ManagedQBittorrent:
                 client.stop(info_hash)
 
     def finish_transfers(self) -> None:
-        """Stop completed seeds and close only an idle client with proven ownership."""
+        """Stop completed seeds and close a proven own client only once the owner released every transfer it holds."""
         with self._lock:
             state: _ProcessState = self._load()
             if not self._matches_process(state) or state.taken_over:
@@ -316,7 +316,7 @@ class ManagedQBittorrent:
                     and item.state in {"uploading", "stalledUP", "forcedUP"}
                 ):
                     client.stop(item.info_hash)
-            if any(item.progress < 1.0 or item.amount_left != 0 for item in entries):
+            if any(item.info_hash.casefold() not in state.released for item in entries):
                 return
             if _visible_process_window(state.pid):
                 logger.info("Kept the private torrent client running while its own window is open")

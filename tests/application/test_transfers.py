@@ -75,6 +75,44 @@ def test_stall_time_excludes_pauses_checks_and_sleep(tmp_path: Path, interruptio
     assert not inspector.stalled
 
 
+class _TwoTransfers(_Acquisition):
+    def transfers(self) -> tuple[TorrentInfo, ...]:
+        assert self.info is not None
+        return (self.info, replace(self.info, info_hash="def", state="downloading"))
+
+    def transfer_files(self, info_hash: str) -> tuple[TorrentFile, ...]:
+        return self.entries
+
+
+@pytest.mark.parametrize("polled", [(), ("def",)])
+def test_a_held_transfer_keeps_its_idle_time_through_a_pause_and_stalls_after_the_rest(
+    tmp_path: Path, polled: tuple[str, ...]
+) -> None:
+    now: list[float] = [0.0]
+    acquisition: _TwoTransfers = _TwoTransfers(tmp_path)
+    assert acquisition.info is not None
+    acquisition.info = replace(acquisition.info, progress=0.5, completed=2, state="downloading", amount_left=2)
+    inspector: TransferInspector = TransferInspector(acquisition, tmp_path, clock=lambda: now[0])
+    manual: tuple[AcquisitionConfirmation, ...] = tuple(
+        replace(_confirmation(), operation_id=f"op-{key}", info_hash=key) for key in polled
+    )
+    inspector.inspect((_confirmation(), *manual), stall_after_s=600)
+    now[0] = 540
+    inspector.inspect((_confirmation(), *manual), stall_after_s=600)
+    for _ in range(3):
+        now[0] += 400
+        inspector.inspect(manual, stall_after_s=600, held=frozenset({"abc"}))
+    inspector.reset_clock()
+    inspector.inspect((_confirmation(), *manual), stall_after_s=600)
+    now[0] += 59
+    inspector.inspect((_confirmation(), *manual), stall_after_s=600)
+    assert "abc" not in inspector.stalled
+    now[0] += 1
+    inspector.inspect((_confirmation(), *manual), stall_after_s=600)
+    assert "abc" in inspector.stalled
+    assert inspector.idle_s("abc") == 600
+
+
 @pytest.mark.parametrize("state", ["uploading", "stalledUP", "queuedUP", "pausedUP", "stoppedUP", "forcedUP"])
 def test_completed_selected_files_are_ready_without_unselected_pack_files(tmp_path: Path, state: str) -> None:
     (tmp_path / "Episode.mkv").write_bytes(b"data")

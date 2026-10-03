@@ -354,9 +354,24 @@ _ASSIGNMENT_KEYS: Final[frozenset[str]] = frozenset(
         "publication",
         "group_id",
         "video_path",
+        "subscription_id",
+        "attempt",
+        "verification",
+        "verified_stamp",
     }
 )
 """Keys a serialized episode assignment must carry."""
+
+_OPTIONAL_ASSIGNMENT_KEYS: Final[tuple[str, ...]] = (
+    "publication",
+    "group_id",
+    "video_path",
+    "subscription_id",
+    "attempt",
+    "verification",
+    "verified_stamp",
+)
+"""Assignment keys a document written before they existed may omit."""
 
 _PUBLICATION_KEYS: Final[frozenset[str]] = frozenset({"files", "handed_off", "problem"})
 """Keys a serialized episode publication must carry."""
@@ -821,6 +836,10 @@ def _encode_assignment(assignment: EpisodeAssignment) -> dict[str, object]:
         "publication": None if assignment.publication is None else _encode_publication(assignment.publication),
         "group_id": assignment.group_id,
         "video_path": assignment.video_path,
+        "subscription_id": assignment.subscription_id,
+        "attempt": assignment.attempt,
+        "verification": assignment.verification,
+        "verified_stamp": None if assignment.verified_stamp is None else list(assignment.verified_stamp),
     }
 
 
@@ -1443,11 +1462,17 @@ def _schema_three_identity(
 def _decode_assignment(raw: object) -> EpisodeAssignment:
     stored: dict[str, object] = _strict_mapping(raw, "episode assignment")
     document: dict[str, object] = _strict_object(
-        {"publication": None, "group_id": None, "video_path": None, **stored}, _ASSIGNMENT_KEYS, "episode assignment"
+        {**dict.fromkeys(_OPTIONAL_ASSIGNMENT_KEYS), **stored}, _ASSIGNMENT_KEYS, "episode assignment"
     )
     reference: dict[str, object] = _strict_object(document["reference"], _REFERENCE_KEYS, "Torrentio reference")
     index: object = reference["file_index"]
+    attempt: object = document["attempt"]
+    stamp: object = document["verified_stamp"]
     return EpisodeAssignment(
+        subscription_id=_optional_text(document, "subscription_id"),
+        attempt=None if attempt is None else _as_whole(attempt, "subscription attempt"),
+        verification=_optional_text(document, "verification"),
+        verified_stamp=None if stamp is None else _decode_stamp(stamp),
         admission_id=_text(document, "admission_id"),
         admitted_at=_text(document, "admitted_at"),
         source=AdmissionSource(_text(document, "source")),

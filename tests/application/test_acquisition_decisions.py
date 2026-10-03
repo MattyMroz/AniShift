@@ -46,11 +46,11 @@ def test_owner_records_live_checks_cache_hits_selection_and_replay(
     streams: _Streams = _Streams()
     streams.answers = {(41024, 4): (_stream(4, "a", uncertain=True), _stream(4, "b"))}
     writers: list[str] = []
-    append: Callable[[Path, str, Mapping[str, object]], None] = acquisition_decisions.append_decision
+    append: Callable[..., None] = acquisition_decisions.append_decision
 
-    def recorded(path: Path, kind: str, payload: Mapping[str, object]) -> None:
+    def recorded(path: Path, kind: str, payload: Mapping[str, object], *, entry: str = "manual") -> None:
         writers.append(threading.current_thread().name)
-        append(path, kind, payload)
+        append(path, kind, payload, entry=entry)
 
     monkeypatch.setattr("anishift.application.automation.append_decision", recorded)
     path: Path = tmp_path / "decisions.jsonl"

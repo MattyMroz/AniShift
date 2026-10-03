@@ -35,6 +35,9 @@ class EpisodeReason(StrEnum):
     COMMAND_REUSED = "command_reused"
     SUBSCRIPTION_AWAITING_AIRING = "subscription_awaiting_airing"
     SUBSCRIPTION_AWAITING_RELEASE = "subscription_awaiting_release"
+    SUBSCRIPTION_CHECKING = "subscription_checking"
+    SUBSCRIPTION_CHECK_SKIPPED = "subscription_check_skipped"
+    SUBSCRIPTION_EXHAUSTED = "subscription_exhausted"
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,7 +93,10 @@ class EpisodeFiles:
 
 @dataclass(frozen=True, slots=True)
 class EpisodeStatus:
-    """Project the latest real admission or the scoped legacy uncertainty of one episode."""
+    """Project the latest real admission or the scoped legacy uncertainty of one episode.
+
+    ``attempt`` marks an unfinished subscription attempt, which an explicit order replaces instead of waiting for it.
+    """
 
     key: EpisodeKey
     state: str
@@ -99,6 +105,7 @@ class EpisodeStatus:
     operation_id: str | None = None
     uncertain: bool = False
     set_id: str | None = None
+    attempt: bool = False
 
     @property
     def active(self) -> bool:

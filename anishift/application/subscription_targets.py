@@ -18,6 +18,9 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AIRING_STATUSES",
+    "ATTEMPT_ACTIVE",
+    "ATTEMPT_SATISFIED",
+    "LEGACY_ORDERED",
     "MAX_ATTEMPTS",
     "MAX_SUBSCRIPTIONS",
     "PauseReason",
@@ -26,6 +29,7 @@ __all__ = [
     "SubscriptionRecord",
     "SubscriptionRow",
     "SubscriptionTarget",
+    "TargetFacts",
     "TargetState",
     "after_close",
     "anilist_date",
@@ -35,10 +39,12 @@ __all__ = [
     "display_order",
     "eligible",
     "is_target",
+    "late",
     "merge_listing",
     "next_check_at",
     "next_search_at",
     "search_targets",
+    "settle_target",
     "subscription_row",
 ]
 
@@ -79,6 +85,18 @@ _HOUR: Final[timedelta] = timedelta(hours=1)
 
 _DAY: Final[timedelta] = timedelta(hours=24)
 """Search step of an older target and the longest wait between two list refreshes."""
+
+_LATE_AFTER: Final[timedelta] = timedelta(days=7)
+"""Age of a due target without a release after which the user is told once."""
+
+LEGACY_ORDERED: Final[str] = "legacy_ordered"
+"""Reason of a target the former subscription file already ordered."""
+
+ATTEMPT_ACTIVE: Final[str] = "active"
+"""Fact of an attempt or manual order whose transfer is still working."""
+
+ATTEMPT_SATISFIED: Final[str] = "satisfied"
+"""Fact of an attempt or manual order whose episode set was handed to Auto."""
 
 
 class TargetState(StrEnum):
@@ -235,6 +253,51 @@ class SubscriptionRow:
     catalog_status: str | None = None
     episode_count: int | None = None
     beyond_count: int | None = None
+    ready: int = 0
+    checking_number: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TargetFacts:
+    """What the transfers of one target episode prove, projected by the owner from its state.
+
+    ``attempt`` is ``ATTEMPT_ACTIVE``, ``ATTEMPT_SATISFIED`` or the reason the attempt closed;
+    ``manual`` is ``ATTEMPT_ACTIVE`` or ``ATTEMPT_SATISFIED`` for a retained manual order of the episode.
+    """
+
+    attempt: str | None = None
+    manual: str | None = None
+    legacy_complete: bool = False
+    check_skipped: bool = False
+
+
+def settle_target(target: SubscriptionTarget, facts: TargetFacts, now: datetime) -> SubscriptionTarget:
+    """Return *target* after the transfers of its episode moved, never satisfied by an order alone."""
+    if target.state is TargetState.SATISFIED:
+        return target
+    settled: SubscriptionTarget = replace(target, check_skipped=target.check_skipped or facts.check_skipped)
+    if facts.manual == ATTEMPT_SATISFIED or (
+        target.state is TargetState.ATTEMPTING and facts.manual is None and facts.attempt == ATTEMPT_SATISFIED
+    ):
+        return replace(settled, state=TargetState.SATISFIED, reason=None)
+    if facts.manual == ATTEMPT_ACTIVE:
+        reason: str | None = target.reason if target.state is TargetState.MANUAL else None
+        return replace(settled, state=TargetState.MANUAL, reason=reason)
+    if target.state is TargetState.ATTEMPTING and facts.attempt not in {ATTEMPT_ACTIVE, ATTEMPT_SATISFIED}:
+        return replace(after_close(settled, now), reason=facts.attempt)
+    return _released_manual(settled, facts, now) if target.state is TargetState.MANUAL else settled
+
+
+def _released_manual(target: SubscriptionTarget, facts: TargetFacts, now: datetime) -> SubscriptionTarget:
+    if target.reason != LEGACY_ORDERED:
+        return after_close(replace(target, reason=None), now)
+    return replace(target, state=TargetState.SATISFIED, reason=None) if facts.legacy_complete else target
+
+
+def late(target: SubscriptionTarget, now: datetime) -> bool:
+    """Whether *target* still waits for a release a week after it aired and nobody was told yet."""
+    due: datetime | None = _moment(target.due_at)
+    return target.state is TargetState.DUE and not target.notified_late and due is not None and now - due >= _LATE_AFTER
 
 
 def after_close(target: SubscriptionTarget, now: datetime, n_max: int = MAX_ATTEMPTS) -> SubscriptionTarget:
@@ -412,9 +475,7 @@ def completed(record: SubscriptionRecord) -> bool:
     if record.catalog_status != _FINISHED or count is None:
         return False
     numbers: set[int] = {item.number for item in record.targets}
-    if any(item.state is not TargetState.SATISFIED for item in record.targets) or any(
-        number > count for number in numbers
-    ):
+    if any(item.state is not TargetState.SATISFIED for item in record.targets):
         return False
     return record.cut is None or set(range(record.cut + 1, count + 1)) <= numbers
 
@@ -432,7 +493,7 @@ def _new_target(
         and moment < migrated
         and any(scope.covers(record.anilist_id, episode.number) for scope in scopes)
     ):
-        return SubscriptionTarget(episode.number, due, TargetState.MANUAL, reason="legacy_ordered")
+        return SubscriptionTarget(episode.number, due, TargetState.MANUAL, reason=LEGACY_ORDERED)
     return SubscriptionTarget(episode.number, due, _open_state(moment, now))
 
 

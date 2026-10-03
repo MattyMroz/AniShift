@@ -134,8 +134,12 @@ class TransferInspector:
         acquisitions: Sequence[AcquisitionConfirmation],
         *,
         stall_after_s: float = float("inf"),
+        held: frozenset[str] = frozenset(),
     ) -> tuple[AcquisitionConfirmation, ...]:
-        """Read the client once and refresh the details of the selected files whenever the transfer moved bytes."""
+        """Read the client once and refresh the details of the selected files whenever the transfer moved bytes.
+
+        A hash in *held* is not observed now, so its accrued idle time survives as a suspended measurement.
+        """
         if not acquisitions:
             self._files.clear()
             self._refused.clear()
@@ -160,7 +164,7 @@ class TransferInspector:
             if missing
             else frozenset()
         )
-        self._record_progress({key: value for key, value in transfers.items() if key in active}, stall_after_s)
+        self._record_progress({key: value for key, value in transfers.items() if key in active}, stall_after_s, held)
         self._files = {key: value for key, value in self._files.items() if key in active}
         self._refused = {key: value for key, value in self._refused.items() if key in active}
         results: list[AcquisitionConfirmation] = []
@@ -229,11 +233,17 @@ class TransferInspector:
             reason=reason,
         )
 
-    def _record_progress(self, transfers: dict[str, TorrentInfo], stall_after_s: float) -> None:
+    def _record_progress(
+        self, transfers: dict[str, TorrentInfo], stall_after_s: float, held: frozenset[str] = frozenset()
+    ) -> None:
         now: float = self._clock()
         progress: dict[str, _Progress] = {}
         with self._progress_lock:
             self._snapshot = tuple(transfers.values())
+            for key in held:
+                suspended: _Progress | None = self._progress.get(key.casefold())
+                if suspended is not None and key.casefold() not in transfers:
+                    progress[key.casefold()] = replace(suspended, downloading=False)
             for key, transfer in transfers.items():
                 previous: _Progress | None = self._progress.get(key)
                 value: tuple[float, int | None] = (transfer.progress, transfer.completed)

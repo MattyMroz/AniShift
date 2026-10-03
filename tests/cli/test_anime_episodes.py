@@ -1323,7 +1323,7 @@ class _Owner(_Catalog):
             return EpisodeBatch(command_id, "fixture", tuple(keys), "accepted")
         results: tuple[EpisodeResult, ...] = (
             EpisodeResult(keys[0], "admitted", "a1", "o1"),
-            EpisodeResult(keys[1], self.refused_reason),
+            *(EpisodeResult(key, self.refused_reason) for key in keys[1:]),
         )
         self.admitted.add(keys[0].number)
         return EpisodeBatch(command_id, "fixture", tuple(keys), "completed", results)
@@ -1486,6 +1486,11 @@ def _owner_controller(owner: _Owner) -> AnimeController:
         ("transfer_recorded", "Konflikt hasha"),
         ("source_failed", "Błąd źródła"),
         ("legacy_unreadable", "Błąd zleceń"),
+        ("subscription_checking", "Kontrola"),
+        ("subscription_check_skipped", "Bez kontroli"),
+        ("subscription_awaiting_airing", "Czeka na emisję"),
+        ("subscription_awaiting_release", "Czeka na wydanie"),
+        ("subscription_exhausted", "Wyczerpano próby"),
     ],
 )
 def test_episode_problem_reason_overrides_ordinary_state_label(reason: str, label: str) -> None:
@@ -1600,6 +1605,26 @@ def test_active_episode_does_not_submit_and_explains_where_to_cancel(state: str,
     _key(controller, key)
     assert controller._notice == "W toku · C anuluj w Przetwarzaniu"
     assert not owner.batches
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("state", ["ordered", "downloading"])
+def test_an_active_subscription_attempt_is_still_ordered_by_d(state: str) -> None:
+    owner: _ChoiceOwner = _ChoiceOwner()
+    owner.statuses[1] = EpisodeStatus(EpisodeKey(1, 1), state, admission_id="attempt", attempt=True)
+    controller: AnimeController = _owner_controller(owner)
+    _key(controller, "text:d")
+    try:
+        deadline: float = time.monotonic() + 10
+        while not owner.batches and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert [keys for keys, _command in owner.batches] == [(EpisodeKey(1, 1),)]
+    finally:
+        owner.release.set()
+        finished: float = time.monotonic() + 10
+        while controller._batch_running and time.monotonic() < finished:
+            time.sleep(0.01)
+    assert not controller._batch_running
 
 
 @pytest.mark.unit

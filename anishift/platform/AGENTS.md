@@ -11,6 +11,10 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
 - `ManagedQBittorrent` dowodzi własności przez PID, czas utworzenia, własną binarkę
   i katalog profilu potwierdzony w API. GUI przejęte przez użytkownika blokuje automatyczne
   zamknięcie. Zwolnienie ukończonego torrenta zachowuje media (`deleteFiles=false`).
+- `finish_transfers()` zatrzymuje ukończone seedy, ale zamyka klienta tylko wtedy, gdy każdy jego
+  wpis ma hash w `state.released` z `process.json`. Sam `progress=1` nie wystarcza: owner może
+  jeszcze sprawdzać i publikować kompletny transfer. Nowe przyjęcie po zamknięciu startuje klienta
+  ponownie przez `download_scope`. `qbittorrent_process.py`
 - `ManagedQBittorrent.released_hashes()` reads and validates only the existing `process.json`,
   under the manager thread lock but never the process lock: on Windows an unlocked read and the
   `_save` replace fail each other with `PermissionError`.
