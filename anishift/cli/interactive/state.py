@@ -29,7 +29,15 @@ from anishift.application import (
 )
 from anishift.application.events import RunEvent, sanitize_event_message
 from anishift.cli.interactive.anime import EPISODE_REASON_LABELS, AnimeController, AnimeResult
-from anishift.cli.interactive.anime_view import NAVIGATION_KEYS
+from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeSnapshot
+from anishift.cli.interactive.anime_view import (
+    MIN_COLUMNS,
+    MIN_ROWS,
+    NAVIGATION_KEYS,
+    AnimeFrame,
+    render_anime,
+    visible_rows,
+)
 from anishift.cli.interactive.menu import (
     append_wrapped_row,
     pack_keys,
@@ -37,7 +45,15 @@ from anishift.cli.interactive.menu import (
     wrap_entries,
 )
 from anishift.cli.interactive.progress import ObservedProgressTimer, RichRunProgress, render_material_progress
-from anishift.cli.interactive.subscription_texts import CHECK_SHOWN_S, check_text, row_state
+from anishift.cli.interactive.subscription_texts import (
+    CHECK_SHOWN_S,
+    SubscriptionState,
+    check_state,
+    check_text,
+    row_columns,
+    row_state,
+    row_summary,
+)
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError
@@ -154,10 +170,13 @@ _SUBSCRIPTION_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
 """Polish subscription refusals selected by machine reason rather than application prose."""
 
 _SUBSCRIPTION_CHECKING: Final[str] = "Sprawdzam…"
-"""Second-row text of a subscription whose requested check has not answered yet."""
+"""Stan of a subscription whose requested check has not answered yet."""
 
-_SHADOW_BANNER: Final[str] = "Tryb cienia — subskrypcje tylko zapisują propozycje"
-"""Fixed row above the list while the owner records proposals instead of attempts."""
+_SHADOW_WARNING: Final[str] = "Tryb cienia — subskrypcje tylko zapisują propozycje"
+"""Status row above the list while the owner records proposals instead of attempts."""
+
+_NO_SUBSCRIPTIONS: Final[str] = "Brak subskrypcji · D dodaj pierwszą"
+"""Only line of an empty subscription list."""
 
 _LIBRARY_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -263,7 +282,7 @@ class StateController:
         self._subscriptions: list[Mapping[str, object]] = []
         self._subscriptions_problem: str = ""
         self._subscriptions_shadow: bool = False
-        self._subscription_checks: dict[str, tuple[str, datetime]] = {}
+        self._subscription_checks: dict[str, tuple[str, str, datetime]] = {}
         self._subscription_target: str | None = None
         self._runs: dict[str, tuple[str, RichRunProgress]] = {}
         self._download_timers: dict[str, ObservedProgressTimer] = {}
@@ -489,8 +508,8 @@ class StateController:
         self._subscription_command(kind, row)
 
     def _selected_subscription(self) -> Mapping[str, object] | None:
-        if 0 < self._selected <= len(self._subscriptions):
-            return self._subscriptions[self._selected - 1]
+        if self._selected < len(self._subscriptions):
+            return self._subscriptions[self._selected]
         return None
 
     def _subscription_command(self, kind: str, row: Mapping[str, object]) -> None:
@@ -502,6 +521,7 @@ class StateController:
             return
         if kind == "subscription_check":
             self._subscription_checks[identifier] = (
+                _SUBSCRIPTION_CHECKING,
                 _SUBSCRIPTION_CHECKING,
                 self._clock() + timedelta(seconds=CHECK_SHOWN_S),
             )
@@ -520,7 +540,7 @@ class StateController:
         position: int | None = next(
             (
                 index
-                for index, item in enumerate(self._subscriptions, 1)
+                for index, item in enumerate(self._subscriptions)
                 if item.get("subscription_id") == self._subscription_target
             ),
             None,
@@ -593,6 +613,8 @@ class StateController:
         self._library_target = None
         self._view_generation += 1
         if self._tab == _Tab.ANIME and self._anime is not None:
+            if self._anime.in_subscriptions:
+                self._anime.leave_subscriptions()
             self._anime.cancel()
         self._positions[self._tab] = self._selected
         self._tab = tab
@@ -636,7 +658,7 @@ class StateController:
         if anime is None:
             return StateResult.CONTINUE
         if key in {"tab", "backtab"} or (key in {"left", "right"} and not anime.input_focused):
-            self._switch_tab((self._tab + (-1 if key in {"left", "backtab"} else 1)) % len(_TABS))
+            self._switch_tab((self._shown_tab() + (-1 if key in {"left", "backtab"} else 1)) % len(_TABS))
             self._invalidate()
             return StateResult.CONTINUE
         if key.casefold() == "text:o" and not anime.input_focused:
@@ -952,9 +974,7 @@ class StateController:
                 context: tuple[str, str] | None = self._library_context()
                 if payload != self._snapshot:
                     self._state_version += 1
-                self._preserve_tab_selection(
-                    _Tab.SUBSCRIPTIONS, [{}, *self._subscriptions], [{}, *subscriptions], "subscription_id"
-                )
+                self._preserve_tab_selection(_Tab.SUBSCRIPTIONS, self._subscriptions, subscriptions, "subscription_id")
                 self._preserve_processing_selection(previous_processing, self._processing_row_ids(payload))
                 self._preserve_library_selection(payload)
                 self._snapshot = payload
@@ -1004,6 +1024,7 @@ class StateController:
             return
         with self._lock:
             self._subscription_checks[identifier] = (
+                check_state(check),
                 check_text(check),
                 self._clock() + timedelta(seconds=CHECK_SHOWN_S),
             )
@@ -1126,11 +1147,12 @@ class StateController:
             if spaced:
                 heading.append(Text())
             area: int = max(budget - len(heading), 1)
-            body: Text = (
-                self._anime.render(columns, area)
-                if self._tab == _Tab.ANIME and self._anime is not None
-                else self._list_body(columns, area)
-            )
+            if self._tab == _Tab.ANIME and self._anime is not None:
+                body: Text = self._anime.render(columns, area)
+            elif self._tab == _Tab.SUBSCRIPTIONS and self._retry is None:
+                body = self._subscription_body(columns, area)
+            else:
+                body = self._list_body(columns, area)
             self._anime_top = len(heading)
             return Text("\n").join([*heading, *body.split("\n", allow_blank=True)])
 
@@ -1150,13 +1172,8 @@ class StateController:
         ]
         status: Text = Text(self._global_status(max(columns - 4, 1)), style="gray") if self._shows_status() else Text()
         footer = [*footer, status][: max(rows - 2, 1)]
-        banner: list[Text] = (
-            [_centered(Text(self._subscription_banner(), style="warning"), columns)]
-            if self._tab == _Tab.SUBSCRIPTIONS and self._retry is None
-            else []
-        )
         wrapped: tuple[tuple[str | Text, ...], ...] = wrap_entries(tuple(label for label, _ in entries), columns)
-        remaining: int = max(rows - 1 - len(footer) - len(banner), 1)
+        remaining: int = max(rows - 1 - len(footer), 1)
         heights: tuple[int, ...] = tuple(map(len, wrapped))
         start, end = visible_window(len(entries), selected, remaining + 7, heights=heights)
         viewport: int = self._viewport()
@@ -1190,7 +1207,7 @@ class StateController:
             if self._tab == _Tab.PROGRESS and self._history_open and self._history_problem:
                 empty = "Historia niedostępna"
             content.append_text(_centered(Text(empty, style="gray"), columns))
-        body: list[Text] = [*banner, *content.split("\n")]
+        body: list[Text] = list(content.split("\n"))
         area: int = rows - len(footer)
         top: int = max((area - len(body)) // 2, 0)
         padding: list[Text] = [Text() for _ in range(max(area - top - len(body), 0))]
@@ -1198,14 +1215,20 @@ class StateController:
             [*(Text() for _ in range(top)), *body, *padding, *(_centered(line, columns) for line in footer)]
         )
 
+    def _shown_tab(self) -> int:
+        if self._tab == _Tab.ANIME and self._anime is not None and self._anime.in_subscriptions:
+            return _Tab.SUBSCRIPTIONS
+        return self._tab
+
     def _tabs(self, columns: int = 120) -> Text:
+        shown: int = self._shown_tab()
         tabs: Text = Text()
         for index, name in enumerate(_TABS):
             if index:
                 tabs.append(" · ", style="gray")
-            tabs.append(name, style="brand_accent" if self._tab == index else "gray")
+            tabs.append(name, style="brand_accent" if shown == index else "gray")
         if tabs.cell_len > max(columns - 2, 1):
-            return Text(f"← {_TABS[self._tab]} ({self._tab + 1}/{len(_TABS)}) →", style="brand_accent")
+            return Text(f"← {_TABS[shown]} ({shown + 1}/{len(_TABS)}) →", style="brand_accent")
         return tabs
 
     def _view_footer(self, width: int) -> list[str | Text]:
@@ -1241,7 +1264,7 @@ class StateController:
             result.append(f"P ponów przenoszenie do biblioteki · {names}")
         hints: tuple[str, ...] = (
             "",
-            self._subscription_hint(),
+            "",
             "H historia · M ręczny · "
             + ("O wstrzymaj automat" if self._snapshot.get("auto_enabled") else "O wznów automat")
             + " · U ustawienia",
@@ -1255,17 +1278,69 @@ class StateController:
         result.append(self._processing_hint() if self._tab == _Tab.PROGRESS else "")
         return result
 
+    def _subscription_body(self, columns: int, rows: int) -> Text:
+        tight: bool = rows == MIN_ROWS and columns >= MIN_COLUMNS
+        area: int = rows if tight else max(rows - 1, 1)
+        items: tuple[AnimeRow, ...] = self._subscription_rows()
+        self._selected = min(self._selected, max(len(items) - 1, 0))
+        visible: int = visible_rows(area)
+        offset: int = min(self._offsets.get(_Tab.SUBSCRIPTIONS, 0), max(len(items) - visible, 0))
+        if self._follow_cursor.get(_Tab.SUBSCRIPTIONS, True):
+            offset = max(min(offset, self._selected), self._selected - visible + 1)
+        self._offsets[_Tab.SUBSCRIPTIONS] = offset
+        problems: tuple[str, ...] = (self._notice.rstrip("."), "" if self._connected else "Brak połączenia")
+        snapshot: AnimeSnapshot = AnimeSnapshot(
+            AnimeScreen.SUBSCRIPTIONS if items else AnimeScreen.DETAILS,
+            "Subskrypcje",
+            items or (AnimeRow("empty", _NO_SUBSCRIPTIONS, navigable=False),),
+            cursor=self._selected,
+            offset=offset,
+            notice=" · ".join(text for text in problems if text),
+            controls=(f"{self._subscription_hint()} · Esc wróć",),
+            global_status=self._subscription_warning(),
+        )
+        frame: AnimeFrame = render_anime(snapshot, columns, area, self._clock().timestamp())
+        lines: list[Text] = list(frame.text.split("\n"))
+        if tight:
+            del lines[next(index for index in range(frame.first_row, rows) if not lines[index].plain.strip())]
+        if rows > 1:
+            lines.append(_centered(Text(self._global_status(max(columns - 4, 1)), style="gray"), columns))
+        return Text("\n").join(lines)
+
+    def _subscription_rows(self) -> tuple[AnimeRow, ...]:
+        now: datetime = self._clock()
+        rows: list[AnimeRow] = []
+        for item in self._subscriptions:
+            state: SubscriptionState = row_state(item, now)
+            shown: tuple[str, str, datetime] | None = self._subscription_checks.get(str(item.get("subscription_id")))
+            if shown is not None and now < shown[2]:
+                state = SubscriptionState(shown[0], shown[1])
+            episodes, downloaded, ready = row_columns(item)
+            title: str = _safe_text(item.get("title", ""))
+            rows.append(
+                AnimeRow(
+                    str(item.get("subscription_id")),
+                    title,
+                    number=episodes,
+                    progress=downloaded,
+                    ready=ready,
+                    status=state.text,
+                    detail=f"{state.detail} · {row_summary(item)} · {title}",
+                )
+            )
+        return tuple(rows)
+
     def _subscription_hint(self) -> str:
         row: Mapping[str, object] | None = self._selected_subscription()
-        toggle: str = "W wznów" if row is not None and row.get("paused") else "W wstrzymaj"
+        if row is None:
+            return "D dodaj · Ctrl+Z cofnij"
+        toggle: str = "W wznów" if row.get("paused") else "W wstrzymaj"
         return f"Enter szczegóły · D dodaj · {toggle} · F szukaj · Del usuń · Ctrl+Z cofnij"
 
-    def _subscription_banner(self) -> str:
+    def _subscription_warning(self) -> str:
         if self._subscriptions_problem:
             return "Monitoring nie działa: nie można zapisać stanu"
-        if self._snapshot.get("auto_enabled") is False:
-            return "AniShift wstrzymany — subskrypcje czekają"
-        return _SHADOW_BANNER if self._subscriptions_shadow else ""
+        return _SHADOW_WARNING if self._subscriptions_shadow else ""
 
     def _processing_hint(self) -> str:
         materials: list[Mapping[str, object]] = self._processing_rows()
@@ -1329,10 +1404,7 @@ class StateController:
         if self._tab == _Tab.PROGRESS:
             return self._processing_entries(columns)
         if self._tab == _Tab.SUBSCRIPTIONS:
-            now: datetime = self._clock()
-            active: int = sum(1 for item in self._subscriptions if not item.get("paused"))
-            add: str = "D Dodaj subskrypcję · " + (f"Aktywne: {active}" if self._subscriptions else "Brak subskrypcji")
-            return [(add, None), *((self._subscription_entry(item, now), None) for item in self._subscriptions)]
+            return [(_safe_text(item.get("title", "")), None) for item in self._subscriptions]
         if self._tab == _Tab.FILES:
             entries = [(_safe_text(item.get("name", "")), None) for item in _library_rows(self._snapshot)]
         return entries
@@ -1480,18 +1552,6 @@ class StateController:
             else str(item.get("material_id") or f"{item.get('run_id')}:{item.get('group_id')}")
             for item in rows
         ]
-
-    def _subscription_entry(self, row: Mapping[str, object], now: datetime) -> str:
-        total: object = row.get("targets_total")
-        start: object = row.get("from_number")
-        shown: tuple[str, datetime] | None = self._subscription_checks.get(str(row.get("subscription_id")))
-        state: str = shown[0] if shown is not None and now < shown[1] else row_state(row, now)
-        return (
-            f"{_safe_text(row.get('title', ''))} · od {'?' if start is None else _safe_text(start)}"
-            f" · Pobrano {_safe_text(row.get('downloaded', 0))}/{'?' if total is None else _safe_text(total)}"
-            f" · Gotowe {_safe_text(row.get('ready', 0))}"
-            f"\n  {state}"
-        )
 
 
 def _centered(line: Text, columns: int) -> Text:

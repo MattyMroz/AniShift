@@ -207,56 +207,56 @@ Otwierany z wiersza Przetwarzania ze stanem „Nie ustalono pliku w paczce”.
 ## 8. U06 — szkic subskrypcji (E3)
 
 ```text
-┌────────────────────────────────────────────────────────────────────────┐
-│ Nowa subskrypcja                                                       │
-│                                                                        │
-│  Tytuł:     That Time I Got Reincarnated as a Slime Season 4           │
-│  Od odc.:   24                                                         │
-│  Później:   E24 — emisja 25.09 18:00                                   │
-│  Koniec:    po pobraniu E24 (sezon ma 24 odcinki)                      │
-│  Dodatki:   nie; pobierasz je osobno z listy wpisów                    │
-│                                                                        │
-│  Wyemitowane E1–E23 nie wchodzą do subskrypcji                         │
-│  · zaznacz je i D, aby pobrać                                          │
-│                                                                        │
-│> [ Dodaj subskrypcję ]                                                 │
-│  [ Anuluj ]                                                            │
-│                                                                        │
-│ ↑↓ wybierz · Enter · Esc anuluj                                        │
-└────────────────────────────────────────────────────────────────────────┘
+                    Nowa subskrypcja › Slime 7
+
+  Pobiorę sam E2–E12 po emisji, najbliższy jutro 18:30. Potem subskrypcja się
+  zamknie.
+
+  E1 wyszedł przed subskrypcją: pobierz go ręcznie (D na liście odcinków).
+
+❯ [ Dodaj subskrypcję ]
+  [ Anuluj ]
+
+              Enter wybierz · Esc anuluj · ←→ widok · ↑↓ wybierz
 ```
 
-- „Od odc.” jest wyliczone z punktu odcięcia (spec U-09): pierwszy odcinek niewyemitowany w chwili dodania; pole nie jest edytowalne.
-- Notka „Wyemitowane E1–E23 nie wchodzą do subskrypcji · zaznacz je i D, aby pobrać” pojawia się, gdy wpis ma wyemitowane odcinki; Esc wraca do U03, gdzie można je zaznaczyć.
-- Liczba odcinków nieznana: „Koniec: gdy sezon się zakończy i wszystkie odcinki będą pobrane”.
-- Zapowiedź bez dat: „Później: od E1 — termin nieznany”.
-- Globalna pauza: dodatkowy wiersz „AniShift jest wstrzymany — subskrypcja zacznie działać po wznowieniu”.
-- Wpis istnieje już jako subskrypcja: zamiast szkicu notka „Ten sezon jest już subskrybowany · Enter pokaż” → U08.
+- Szkic to 1–2 zdania i przyciski, bez tabeli pól. Zakres celów wynika z punktu odcięcia (spec U-09): pierwszy odcinek niewyemitowany w chwili dodania; nie jest edytowalny.
+- Pierwsze zdanie: „Pobiorę sam {E3 | E3–E12 | odcinki od E3} po emisji, {najbliższy [E#] dziś/jutro/DD.MM HH:MM | terminy jeszcze nieznane}.”, zakończone „Potem subskrypcja się zamknie.” (znana liczba odcinków) albo „Subskrypcja zamknie się po końcu sezonu.”.
+- Drugie zdanie tylko, gdy przed punktem odcięcia są wyemitowane odcinki: „E1 wyszedł… pobierz go ręcznie” / „E1–E3 wyszły… pobierz je ręcznie (D na liście odcinków)”. Esc wraca do ekranu źródłowego, gdzie można je zaznaczyć.
+- Globalna pauza: dodatkowe zdanie „Automat jest wstrzymany: zacznę po wznowieniu.”.
+- Nieznany punkt odcięcia: „Nie wiadomo, ile odcinków już wyemitowano · spróbuj później” i sam przycisk Anuluj.
+- Wpis istnieje już jako subskrypcja: zamiast szkicu jeden wiersz „Ten sezon jest już subskrybowany · Enter pokaż” → U08.
+- Dodatki (OVA/special) nie są opisywane w szkicu; ich sekcja jest w U08.
+- Szkic otwarty przez `S` w Anime podświetla zakładkę Anime. Szkic, wyszukiwanie i listy otwarte przez `D` z listy Subskrypcji podświetlają Subskrypcje.
+- Na 50×12 widać jeden wiersz treści: kursor stoi na przycisku, a ↑ przewija do zdań.
 
 ## 9. U07 — lista subskrypcji (E3)
 
 ```text
-┌────────────────────────────────────────────────────────────────────────┐
-│ Anime  [Subskrypcje]  Przetwarzanie  Biblioteka                        │
-│                                                                        │
-│  D Dodaj subskrypcję                                        Aktywne: 3 │
-│                                                                        │
-│> Slime Season 4                     od 5    Pobrano 18/20   Gotowe 17  │
-│    Emisja E24 za 2 d 04:18:09                                          │
-│  Frieren Season 2                   od 1    Pobrano 7/?     Gotowe 6   │
-│    Czeka na wydanie E8 (od 5 h)                                        │
-│  Dungeon Meshi Season 2             od 1    Pobrano 0/?     Gotowe 0   │
-│    Wstrzymana — zakończona przez starą wersję; brakuje E1–E3 · W wznów │
-│                                                                        │
-│ Enter szczegóły · D dodaj · W wstrzymaj · F szukaj · Del usuń · ^Z cofnij│
-└────────────────────────────────────────────────────────────────────────┘
+                     Anime · Subskrypcje · Przetwarzanie · Biblioteka
+
+                                       Subskrypcje
+
+  Tytuł                                         Odcinki  Pobrano  Gotowe  Stan
+  Dungeon Meshi Season 2                        ?        1/?      0       Nie rozpoznano sezonu
+  Kaiju No. 8 Season 2                          E1–E6    4/6      3       Konflikt liczby odcinków
+  That Time I Got Reincarnated as a Slime S4    E5–E12   3/8      2       Emisja E8 za 2 d 04:18:09
+❯ Frieren Season 2                              E1–?     7/?      6       Sprawdzono E8
+
+  Sprawdzono E8: 12 kandydatów, 0 zgodnych (8 niepewnych, 4 niezgodnych) · E1–? · pobrano 7/? · gotowe 6 · Frieren Season 2
+  Enter szczegóły · D dodaj · W wstrzymaj · F szukaj · Del usuń · Ctrl+Z cofnij · Esc wróć · ←→ widok · ↑↓ wybierz
+                             ↓ 0 · Przetwarzanie 0 · Czeka 0 · Automat wstrzymany
 ```
 
-- Pierwszy wiersz listy to zawsze „D Dodaj subskrypcję” (także przy pustej liście, wtedy z tekstem „Brak subskrypcji”).
+- Tabela jak w Anime (ten sam renderer, wskaźnik, kolory i stopka): jeden wiersz na subskrypcję, kolumny Tytuł │ Odcinki │ Pobrano │ Gotowe │ Stan. Odcinki to zakres celów (`E3–E12`, `E3–?`, `E3`, `?`).
+- Stan ma stałą szerokość krótkiego tekstu. Problemy i konflikty mają ten sam styl co pozostałe stany; ich wagę wyraża kolejność listy i pełny opis pod kursorem. Pełny stan podświetlonego wpisu i podsumowanie celów stoją pod tabelą: „{pełny stan} · {zakres} · pobrano {x/y} · gotowe {n} · {tytuł}”; wynik `F` jest więc zawsze na początku.
+- Wąski terminal ukrywa kolumny w kolejności Gotowe, Odcinki, Pobrano, zanim tytuł spadnie poniżej 12 komórek; ich wartości zostają w wierszu pod tabelą. Gdy dwa wiersze notki nie mieszczą całości, pełne wartości i tytuł są w U08 pod `?`.
+- Na 50×12 dolny wiersz statusu (z „Automat wstrzymany”) zostaje; ustępuje mu pusty odstęp pod tabelą.
+- Pusta lista: „Brak subskrypcji · D dodaj pierwszą”; klawisze „D dodaj · Ctrl+Z cofnij · Esc wróć”. Nie ma wiersza „D Dodaj subskrypcję” ani licznika „Aktywne”.
 - Kolejność (spec S-03): najpierw wpisy z problemem, potem według najbliższej emisji, wpisy bez terminu i wstrzymane na końcu, remis alfabetycznie. Kolejność zmienia się tylko po emisji lub zmianie stanu; kursor zostaje na tym samym wpisie.
-- Drugi wiersz wpisu: dokładnie jeden stan z spec S-03. Odliczanie tyka co sekundę bez sieci.
-- Stały wiersz nad listą, gdy dotyczy: „AniShift wstrzymany — subskrypcje czekają” (globalna pauza) albo „Monitoring nie działa: nie można zapisać stanu · ponowię za 5 min” (spec S-12).
-- `W` (również Space): wstrzymaj/wznów podświetloną. `F`: szukaj teraz dla podświetlonej; wynik w drugim wierszu wpisu na 10 s („Sprawdzono E8: 12 kandydatów, 0 zgodnych”). `Delete` (również `X`): usuwa od razu, bez pytania; notka „Usunięto Frieren S2 · Ctrl+Z cofnij”. `Ctrl+Z`: przywraca ostatnio usuniętą subskrypcję, także po restarcie (spec S-08).
+- Kolumna Stan: dokładnie jeden stan z spec S-03. Odliczanie tyka co sekundę bez sieci.
+- Stały wiersz pod tytułem „Subskrypcje”, pusty, gdy nic nie dotyczy: „Monitoring nie działa: nie można zapisać stanu” (spec S-12) albo „Tryb cienia — subskrypcje tylko zapisują propozycje”. Globalna pauza nie ma osobnego paska — widać ją tylko w dolnym wierszu statusu („Automat wstrzymany”).
+- `W` (również Space): wstrzymaj/wznów podświetloną. `F`: szukaj teraz dla podświetlonej; przez 10 s Stan pokazuje „Sprawdzono E8”, a wiersz pod tabelą pełny wynik („Sprawdzono E8: 12 kandydatów, 0 zgodnych…”). `Delete` (również `X`): usuwa od razu, bez pytania; notka „Usunięto Frieren S2 · Ctrl+Z cofnij”. `Ctrl+Z`: przywraca ostatnio usuniętą subskrypcję, także po restarcie (spec S-08). `D`: wyszukiwanie Anime, Esc wraca do listy.
 - Zakończona subskrypcja znika z listy (spec S-09).
 
 ## 10. U08 — szczegóły subskrypcji (E3)
@@ -264,23 +264,27 @@ Otwierany z wiersza Przetwarzania ze stanem „Nie ustalono pliku w paczce”.
 To jest U03 tego wpisu z nagłówkiem subskrypcji. Lista zawiera cele subskrypcji (odcinki od wyliczonego N, spec U-09).
 
 ```text
-┌────────────────────────────────────────────────────────────────────────┐
-│ Subskrypcje › Frieren Season 2                                         │
-│ Od odc. 1 · Pobrano 7/? · Gotowe 6 · Czeka na wydanie E8 (od 5 h)      │
-│ Ostatnie sprawdzenie 14:02: E8 — 9 kandydatów, 0 zgodnych (9 niepewnych)│
-│                                                                        │
-│      Nr  Tytuł                         Emisja          Stan            │
-│       7  …                             21.09 17:00     Gotowe          │
-│>      8  …                             28.09 17:00     Czeka na wydanie│
-│       9  …                             5.10 17:00      Czeka na emisję │
-│                                                                        │
-│ Space zaznacz · D pobierz · I wydania · P ponownie                     │
-│ W wstrzymaj · F szukaj teraz · X usuń · Esc lista                      │
-└────────────────────────────────────────────────────────────────────────┘
+                                 Subskrypcje › Slime Season 4
+                      Emisja E3 za 03:00:00 · E3–E6 · pobrano 1/4 · gotowe 0
+      Nr  Tytuł                                         Emisja      Stan
+❯ [ ] 1   Odcinek 1                                     25.09.2026  Do pobrania
+  [ ] 2   Odcinek 2                                     02.10.2026  Do pobrania
+  [ ] 3   Odcinek 3                                     09.10.2026  Nie wyemitowano
+          Dodatki tego sezonu · pobierasz je osobno z listy wpisów
+      S1  OVA                                           —
+
+  Ostatnie sprawdzenie 14:00: Sprawdzono E3: brak wydań w źródle · E1–E2 wyszły przed subskrypcją: pobierz je
+                                               ręcznie
+  Space zaznacz · D pobierz · I wydania · P ponownie · ? więcej · W wstrzymaj · F szukaj teraz · X usuń · Esc lista
 ```
 
+- Podświetlona jest zakładka Subskrypcje. ←→/Tab/Shift+Tab liczą się od niej (Przetwarzanie albo Anime z własną wyszukiwarką) i zamykają szczegóły; Esc wraca do listy.
+- Wiersz statusu pod tytułem: „{stan} · {zakres} · pobrano {x/y} · gotowe {n}”; zawsze szary, także przy problemie lub konflikcie.
+- Zmiana zakładki zamyka kontekst subskrypcji razem z otwartym edytorem zakresu i zaznaczeniami; przyjęta partia `D` trwa dalej.
+- Notka nad klawiszami łączy: „Ostatnie sprawdzenie HH:MM: …” (na początku, więc wynik `F` jest zawsze widoczny), pełny stan (gdy różni się od krótkiego) oraz odcinki wyemitowane przed subskrypcją i jeszcze niezamówione. Notka o wcześniejszych odcinkach znika, gdy wszystkie są zamówione.
+- `?` otwiera przewijane szczegóły z pełnym tytułem, wierszem statusu, wszystkimi notkami i pomocą klawiszy odcinka; dostępne na każdym rozmiarze, także 50×12. Poniżej 65 kolumn klawisze są krótsze („Space · D pobierz · P ponownie · ? więcej”), a `I wydania` zostaje w pomocy pod `?`.
 - Pod listą odcinków sekcja „Dodatki tego sezonu”: klucze `S…` z ani.zip i powiązane wpisy OVA/special z AniList (tylko informacja; Enter na wpisie OVA przechodzi do jego U03, gdzie można pobrać). Subskrypcja ich nie pobiera.
-- Wszystkie klawisze odcinków jak w U03 (Space i Enter zaznaczają, A, Z, D, P). Dodatkowo: `W`, `F`, `X` jak w U07. „Od odc.” nie jest edytowalne (spec S-10 usunięte).
+- Wszystkie klawisze odcinków jak w U03 (Space i Enter zaznaczają, A, Z, D, P). Dodatkowo: `W`, `F`, `X` jak w U07. Punkt startu nie jest edytowalny (spec S-10 usunięte).
 - `I` na podświetlonym odcinku otwiera U04b tego odcinka (np. ręczny wybór przy „Czeka na wydanie”).
 
 ## 11. Stany i komunikaty
@@ -306,7 +310,7 @@ To jest U03 tego wpisu z nagłówkiem subskrypcji. Lista zawiera cele subskrypcj
 | Kontrola po pobraniu w toku (E3) | „Kontrola E6” | — |
 | Kontrola po pobraniu nie wykonała się (E3) | „Kontrola niewykonana” przy odcinku | — |
 | Limit prób wyczerpany (E3) | „E6: wyczerpano próby (3 z 3)” + jedno powiadomienie w zasobniku | I inne wydania, P pobierz ponownie |
-| Pauza globalna | „AniShift wstrzymany — …” w stałym wierszu | O wznów (listy główne) |
+| Pauza globalna | „Automat wstrzymany” w dolnym wierszu statusu | O wznów (listy główne) |
 
 Tekst błędu jest krótki, bez URL-i, ścieżek absolutnych i szczegółów technicznych.
 
@@ -336,7 +340,7 @@ Każdy scenariusz wykonuje właściciel; wynik przekazuje jako: numer kroku, co 
 ### H3 — subskrypcje (koniec E3, 7 dni)
 
 1. Subskrypcje → D → wyszukaj tytuł w emisji → `S` → Dodaj.
-   Oczekiwane: szkic pokazuje wyliczone „Od odc.”, notkę o wyemitowanych; wpis na liście, odliczanie do emisji; wyemitowane odcinki nie są zlecane.
+   Oczekiwane: szkic jednym zdaniem podaje zakres celów od punktu odcięcia i termin najbliższej emisji, drugim — wyemitowane odcinki do pobrania ręcznie; po dodaniu wpis jest podświetlony na liście z odliczaniem do emisji; wyemitowane odcinki nie są zlecane.
 2. Sprawdź przeniesione stare subskrypcje.
    Oczekiwane: aktywne bez należnych celów sprzed migracji są aktywne; aktywne z należnymi celami sprzed migracji są wstrzymane i nic nie pobierają przed „Wznów”, a po wznowieniu te cele ruszają (spec M-01); zakończone z brakami są wstrzymane z opisem (spec M-03).
 3. Usuń jedną subskrypcję `Delete`, potem `Ctrl+Z`.

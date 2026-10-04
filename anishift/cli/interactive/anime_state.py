@@ -42,6 +42,7 @@ class AnimeScreen(StrEnum):
     BUSY = "busy"
     PROBLEM = "problem"
     DRAFT = "draft"
+    SUBSCRIPTIONS = "subscriptions"
 
 
 class NoticeKind(StrEnum):
@@ -65,6 +66,8 @@ class AnimeRow:
     image: str = ""
     language: str = ""
     seeds: str = ""
+    progress: str = ""
+    ready: str = ""
     detail: str = ""
     eligible: bool = True
     suggested: bool = False
@@ -86,6 +89,8 @@ class AnimeRow:
                 self.image,
                 self.language,
                 self.seeds,
+                self.progress,
+                self.ready,
             )
             if value
         )
@@ -130,6 +135,7 @@ class AnimeSnapshot:
     selection: tuple[TextPoint, TextPoint] | None = None
     controls: tuple[str, ...] = ()
     global_status: str = ""
+    status_kind: NoticeKind = NoticeKind.WARNING
     rendered_field: Text | None = None
     busy: str = ""
 
@@ -155,6 +161,7 @@ class AnimeViewState:
     selection: tuple[TextPoint, TextPoint] | None = None
     controls: tuple[str, ...] = ()
     global_status: str = ""
+    status_kind: NoticeKind = NoticeKind.WARNING
     busy: str = ""
 
     def snapshot(self, width: int = 80) -> AnimeSnapshot:
@@ -179,6 +186,7 @@ class AnimeViewState:
             selection=self.selection,
             controls=self.controls,
             global_status=self.global_status,
+            status_kind=self.status_kind,
             rendered_field=editor.render(
                 max(min(width, _RANGE_COLUMNS) - 12, 1)
                 if self.range_input is not None

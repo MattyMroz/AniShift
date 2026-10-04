@@ -39,6 +39,7 @@ from anishift.application.control_views import (
     encode_view,
 )
 from anishift.cli.exit_codes import EXIT_SUCCESS
+from anishift.cli.interactive import anime_view
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive import state as state_module
 from anishift.cli.interactive.mascot import MascotController
@@ -1094,15 +1095,10 @@ def test_processing_excludes_saved_downloads_regardless_of_client_measurement(
         assert len(frame.splitlines()) <= 24
         assert all(len(line) <= 80 for line in frame.splitlines())
         controller.handle_key("left")
-        frame = controller.render(80, 24).plain
-        assert "D Dodaj subskrypcję · Aktywne: 1" in frame
-        assert "Example · od 22 · Pobrano 1/?" in frame
-        assert "Sprawdzam przeniesioną subskrypcję" in frame
-        assert "Wstrzymana · W wznów" in frame
-        assert "Del usuń" in frame
+        _assert_subscription_rows(controller.render(80, 24).plain)
         _assert_wrapping_navigation(controller)
         _assert_list_fills_available_rows(controller)
-        _assert_title_wraps(controller)
+        _assert_a_long_title_keeps_the_state_beneath_the_table(controller)
         controller.handle_key("tab")
         controller.handle_key("tab")
         frame = controller.render(80, 24).plain
@@ -1134,9 +1130,21 @@ def _row(subscription_id: str, title: str, *, from_number: int | None = 1, pause
     )
 
 
+def _assert_subscription_rows(frame: str) -> None:
+    rows: list[str] = frame.splitlines()
+    example: str = next(line for line in rows if "\u276f Example" in line)
+    assert example.split()[2:] == ["E22–?", "1/?", "0", "Weryfikuję"]
+    assert next(line for line in rows if " Other " in line).split()[-1] == "Wstrzymana"
+    detail: str = "Sprawdzam przeniesioną subskrypcję · E22–? · pobrano 1/? · gotowe 0 · Example"
+    assert detail in " ".join(frame.split())
+    assert "Aktywne" not in frame
+    assert "W wstrzymaj" in frame
+    assert "Del usuń" in frame
+
+
 def _assert_wrapping_navigation(controller: StateController) -> None:
     controller.handle_key("up")
-    assert controller._selected == 2
+    assert controller._selected == 1
     assert "\u276f Other" in controller.render(80, 24).plain
     controller.handle_key("down")
     assert controller._selected == 0
@@ -1148,21 +1156,24 @@ def _assert_list_fills_available_rows(controller: StateController) -> None:
     assert len(frame.splitlines()) <= 24
     assert "Series 0" in frame
     controller.handle_key("end")
-    assert controller._selected == 22
-    assert "Series 19" in controller.render(80, 24).plain
+    assert controller._selected == 21
+    assert "\u276f Series 19" in controller.render(80, 24).plain
     controller.handle_key("home")
     assert controller._selected == 0
 
 
-def _assert_title_wraps(controller: StateController) -> None:
+def _assert_a_long_title_keeps_the_state_beneath_the_table(controller: StateController) -> None:
     controller._subscriptions[0] = {
         **controller._subscriptions[0],
         "title": "A very long anime title " * 10 + "Finale",
     }
-    frame: str = controller.render(80, 24).plain
-    assert "Finale" in frame
-    assert "…" not in frame
-    assert len(frame.splitlines()) <= 24
+    lines: list[str] = controller.render(80, 24).plain.splitlines()
+    row: int = next(index for index, line in enumerate(lines) if "\u276f A very" in line)
+    assert "Finale" not in lines[row]
+    assert any(line.strip().startswith("Sprawdzam przeniesioną subskrypcję · E22–?") for line in lines)
+    assert not any(line.strip().startswith("A very") for line in lines)
+    assert len(lines) <= 24
+    assert all(len(line) <= 80 for line in lines)
 
 
 @pytest.mark.parametrize("show_folder", [False, True])
@@ -1961,8 +1972,11 @@ def test_each_panel_tab_retains_contextual_actions_and_owner_counts_at_feasible_
             assert "Czeka 4" not in frame
         else:
             assert ("Przetwarzanie 0 · Praca" if tab == 2 else "↓ 2 · Przetwarzanie 3 · Czeka 4 · Praca") in frame
-        assert "←→ widok" in frame
-        assert ("D dodaj", "H historia", "Delete usuń")[tab - 1] in frame
+        if tab == 1 and rows < 12:
+            assert "Powiększ terminal do 50 x 12" in frame
+        else:
+            assert " widok" in frame
+            assert ("D dodaj", "H historia", "Delete usuń")[tab - 1] in frame
         assert len(frame.splitlines()) <= rows
         assert all(len(line) <= columns for line in frame.splitlines())
         if tab == 1 and rows >= 24:
@@ -2270,6 +2284,9 @@ def test_every_list_tab_pins_heading_and_keys_and_centers_its_content(
         assert lines[0].strip() == "PANEL"
         assert "Subskrypcje" in lines[2]
         assert abs((content[0] - 4) - (keys - content[-1] - 1)) <= 1
+        if tab == 1:
+            header: str = next(line for line in lines if "Tytuł" in line)
+            right = columns - header.index("Stan") - anime_view._SUBSCRIPTION_STATUS_WIDTH
         assert abs(left - right) <= 1
     finally:
         controller.close()

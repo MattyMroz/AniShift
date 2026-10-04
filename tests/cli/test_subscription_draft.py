@@ -28,10 +28,15 @@ from anishift.application import (
 )
 from anishift.application.subscription_targets import SubscriptionRow
 from anishift.cli.interactive.anime import AnimeController, _Screen
+from anishift.cli.interactive.anime_view import AnimeFrame
 from anishift.cli.interactive.state import StateController, _Tab
 from anishift.cli.interactive.subscription_texts import (
     SubscriptionDraft,
+    SubscriptionState,
+    check_state,
     check_text,
+    earlier_episodes,
+    row_columns,
     row_state,
     subscription_draft,
 )
@@ -228,40 +233,83 @@ def _titles(panel: StateController) -> None:
 
 
 def test_a_draft_follows_the_episodes_airing_after_now_and_names_the_aired_ones() -> None:
-    draft: SubscriptionDraft | None = subscription_draft(_listing(episodes=_weekly(2, 12)), "Slime", _NOW, paused=False)
+    draft: SubscriptionDraft | None = subscription_draft(_listing(episodes=_weekly(2, 12)), _NOW, paused=False)
 
     assert draft is not None
     assert draft.addable
-    assert draft.lines[:5] == (
-        "Tytuł:     Slime",
-        "Od odc.:   3",
-        f"Później:   E3 — emisja {(_NOW + timedelta(days=6)).astimezone():%d.%m %H:%M}",
-        "Koniec:    po pobraniu E12 (sezon ma 12 odcinków)",
-        "Dodatki:   nie; pobierasz je osobno z listy wpisów",
+    assert draft.lines == (
+        "Pobiorę sam E3–E12 po emisji, najbliższy "
+        f"{(_NOW + timedelta(days=6)).astimezone():%d.%m %H:%M}. Potem subskrypcja się zamknie.",
+        "E1–E2 wyszły przed subskrypcją: pobierz je ręcznie (D na liście odcinków).",
     )
-    assert "Wyemitowane E1–E2 nie wchodzą do subskrypcji" in draft.lines
+
+
+@pytest.mark.parametrize(
+    ("airs_at", "when"),
+    [
+        (_NOW + timedelta(minutes=30), "dziś"),
+        (_NOW + timedelta(days=1), "jutro"),
+    ],
+)
+def test_a_draft_names_a_near_airing_by_day(airs_at: datetime, when: str) -> None:
+    listing: EpisodeListing = _listing(
+        episodes=(ListedEpisode(1, aired=True, airs_at=_NOW - timedelta(days=7)), ListedEpisode(2, airs_at=airs_at)),
+        count=2,
+    )
+    local: datetime = airs_at.astimezone()
+    if (local.date() - _NOW.astimezone().date()).days != (0 if when == "dziś" else 1):
+        pytest.skip("local midnight between the fixture clock and the airing")
+
+    draft: SubscriptionDraft | None = subscription_draft(listing, _NOW, paused=False)
+
+    assert draft is not None
+    closing: str = "Potem subskrypcja się zamknie."
+    assert draft.lines[0] == f"Pobiorę sam E2 po emisji, najbliższy {when} {local:%H:%M}. {closing}"
+    assert draft.lines[1] == "E1 wyszedł przed subskrypcją: pobierz go ręcznie (D na liście odcinków)."
 
 
 def test_an_announcement_without_dates_or_count_follows_every_episode_from_the_first() -> None:
-    draft: SubscriptionDraft | None = subscription_draft(
-        _listing("NOT_YET_RELEASED", count=None), "Slime", _NOW, paused=False
-    )
+    draft: SubscriptionDraft | None = subscription_draft(_listing("NOT_YET_RELEASED", count=None), _NOW, paused=False)
 
     assert draft is not None
     assert draft.addable
-    assert draft.lines[1:4] == (
-        "Od odc.:   1",
-        "Później:   od E1 — termin nieznany",
-        "Koniec:    gdy sezon się zakończy i wszystkie odcinki będą pobrane",
+    assert draft.lines == (
+        "Pobiorę sam odcinki od E1 po emisji, terminy jeszcze nieznane. Subskrypcja zamknie się po końcu sezonu.",
     )
-    assert not any("Wyemitowane" in line for line in draft.lines)
 
 
 def test_a_draft_under_the_global_pause_says_when_it_starts_working() -> None:
-    draft: SubscriptionDraft | None = subscription_draft(_listing(episodes=_weekly(0, 2)), "Slime", _NOW, paused=True)
+    draft: SubscriptionDraft | None = subscription_draft(_listing(episodes=_weekly(0, 2)), _NOW, paused=True)
 
     assert draft is not None
-    assert draft.lines[-1] == "AniShift jest wstrzymany — subskrypcja zacznie działać po wznowieniu"
+    assert draft.lines[-1] == "Automat jest wstrzymany: zacznę po wznowieniu."
+
+
+@pytest.mark.parametrize(
+    ("numbers", "text"),
+    [
+        ((), ""),
+        ((2,), "E2 wyszedł przed subskrypcją: pobierz go ręcznie (D na liście odcinków)"),
+        ((1, 2, 3), "E1–E3 wyszły przed subskrypcją: pobierz je ręcznie (D na liście odcinków)"),
+        ((3, 1), "E1, E3 wyszły przed subskrypcją: pobierz je ręcznie (D na liście odcinków)"),
+    ],
+)
+def test_earlier_episodes_are_named_as_a_range_or_a_list(numbers: tuple[int, ...], text: str) -> None:
+    assert earlier_episodes(numbers) == text
+
+
+@pytest.mark.parametrize(
+    ("changes", "columns"),
+    [
+        ({}, ("E3–?", "1/4", "0")),
+        ({"episode_count": 12, "ready": 1}, ("E3–E12", "1/4", "1")),
+        ({"episode_count": 4, "beyond_count": 6}, ("E3–E6", "1/4", "0")),
+        ({"episode_count": 3}, ("E3", "1/4", "0")),
+        ({"from_number": None, "targets_total": None}, ("?", "1/?", "0")),
+    ],
+)
+def test_a_row_shows_its_range_and_progress(changes: Mapping[str, object], columns: tuple[str, str, str]) -> None:
+    assert row_columns(_row("a", "Alpha", **changes)) == columns
 
 
 @pytest.mark.parametrize(
@@ -274,53 +322,80 @@ def test_a_draft_under_the_global_pause_says_when_it_starts_working() -> None:
     ],
 )
 def test_an_unknown_cut_point_offers_no_add_button(listing: EpisodeListing) -> None:
-    draft: SubscriptionDraft | None = subscription_draft(listing, "Slime", _NOW, paused=False)
+    draft: SubscriptionDraft | None = subscription_draft(listing, _NOW, paused=False)
 
     assert draft is not None
     assert not draft.addable
-    assert draft.lines[-1] == "Nie wiadomo, ile odcinków już wyemitowano · spróbuj później"
+    assert draft.lines == ("Nie wiadomo, ile odcinków już wyemitowano · spróbuj później",)
 
 
 def test_a_finished_entry_has_no_draft() -> None:
-    assert subscription_draft(_listing("FINISHED", episodes=_weekly(4, 4)), "Slime", _NOW, paused=False) is None
+    assert subscription_draft(_listing("FINISHED", episodes=_weekly(4, 4)), _NOW, paused=False) is None
+
+
+def _plain(text: str) -> SubscriptionState:
+    return SubscriptionState(text, text)
 
 
 @pytest.mark.parametrize(
     ("changes", "state"),
     [
-        ({"due_at": (_NOW + timedelta(minutes=30)).isoformat(), "due_number": 8}, "Emisja E8 za 00:30:00"),
-        ({"due_at": (_NOW + timedelta(days=2, seconds=5)).isoformat()}, "Emisja za 2 d 00:00:05"),
-        ({"due_at": (_NOW - timedelta(minutes=5)).isoformat(), "due_number": 8}, "Czeka na wydanie E8 (od 5 min)"),
-        ({"due_at": (_NOW - timedelta(hours=5)).isoformat(), "due_number": 8}, "Czeka na wydanie E8 (od 5 h)"),
-        ({"due_at": (_NOW - timedelta(hours=25)).isoformat()}, "Czeka na wydanie (od 1 dzień)"),
+        ({"due_at": (_NOW + timedelta(minutes=30)).isoformat(), "due_number": 8}, _plain("Emisja E8 za 00:30:00")),
+        ({"due_at": (_NOW + timedelta(days=2, seconds=5)).isoformat()}, _plain("Emisja za 2 d 00:00:05")),
+        (
+            {"due_at": (_NOW - timedelta(minutes=5)).isoformat(), "due_number": 8},
+            _plain("Czeka na wydanie E8 (od 5 min)"),
+        ),
+        ({"due_at": (_NOW - timedelta(hours=5)).isoformat(), "due_number": 8}, _plain("Czeka na wydanie E8 (od 5 h)")),
+        ({"due_at": (_NOW - timedelta(hours=25)).isoformat()}, _plain("Czeka na wydanie (od 1 dzień)")),
         (
             {"due_at": (_NOW - timedelta(hours=73)).isoformat(), "due_number": 8},
-            "Czeka na wydanie E8 (od 3 dni; sprawdzam raz dziennie)",
+            SubscriptionState(
+                "Czeka na wydanie E8 (od 3 dni)", "Czeka na wydanie E8 (od 3 dni; sprawdzam raz dziennie)"
+            ),
         ),
-        ({"catalog_status": "HIATUS"}, "Przerwa w emisji"),
-        ({"catalog_status": "RELEASING"}, "Termin nieznany"),
-        ({"review_pending": True, "due_at": _NOW.isoformat()}, "Sprawdzam przeniesioną subskrypcję"),
+        ({"catalog_status": "HIATUS"}, _plain("Przerwa w emisji")),
+        ({"catalog_status": "RELEASING"}, _plain("Termin nieznany")),
+        (
+            {"review_pending": True, "due_at": _NOW.isoformat()},
+            SubscriptionState("Weryfikuję", "Sprawdzam przeniesioną subskrypcję"),
+        ),
         (
             {"paused": True, "pause_reason": "migrated_due", "review_pending": True},
-            "Wstrzymana — przeniesiona; zaległe odcinki · W wznów",
+            SubscriptionState("Wstrzymana", "Wstrzymana — przeniesiona; zaległe odcinki · W wznów"),
+        ),
+        (
+            {"paused": True, "pause_reason": "migrated_missing"},
+            SubscriptionState("Wstrzymana", "Wstrzymana — zakończona przez starą wersję · W wznów"),
         ),
         (
             {"problem": "catalog_conflict", "paused": True, "pause_reason": "user"},
-            "Katalog wskazuje inny sezon — sprawdzam ponownie",
+            SubscriptionState("Inny sezon w katalogu", "Katalog wskazuje inny sezon — sprawdzam ponownie"),
         ),
+        (
+            {"problem": "season_unrecognized"},
+            SubscriptionState("Nie rozpoznano sezonu", "Nie rozpoznano sezonu — usuń i dodaj ponownie"),
+        ),
+        ({"problem": "unknown_problem"}, _plain("Wymaga uwagi")),
         (
             {"episode_count": 4, "beyond_count": 6, "paused": True, "pause_reason": "user"},
-            "AniList podaje 4 odcinki, a subskrypcja czeka na E6 · pobierz ręcznie albo usuń",
+            SubscriptionState(
+                "Konflikt liczby odcinków",
+                "AniList podaje 4 odcinki, a subskrypcja czeka na E6 · pobierz ręcznie albo usuń",
+            ),
         ),
-        ({"episode_count": 4, "beyond_count": None}, "Termin nieznany"),
+        ({"episode_count": 4, "beyond_count": None}, _plain("Termin nieznany")),
         (
             {"due_at": (_NOW - timedelta(hours=1)).isoformat(), "due_number": 3, "checking_number": 3},
-            "Kontrola E3",
+            _plain("Kontrola E3"),
         ),
-        ({"checking_number": 3, "paused": True, "pause_reason": "user"}, "Wstrzymana · W wznów"),
+        (
+            {"checking_number": 3, "paused": True, "pause_reason": "user"},
+            SubscriptionState("Wstrzymana", "Wstrzymana · W wznów"),
+        ),
     ],
 )
-def test_a_row_shows_its_strongest_state(changes: Mapping[str, object], state: str) -> None:
+def test_a_row_shows_its_strongest_state(changes: Mapping[str, object], state: SubscriptionState) -> None:
     assert row_state(_row("a", "Alpha", **changes), _NOW) == state
 
 
@@ -347,6 +422,19 @@ def test_a_check_is_summarized_with_its_candidate_counts(check: Mapping[str, obj
     assert check_text(check) == text
 
 
+@pytest.mark.parametrize(
+    ("check", "text"),
+    [
+        ({"number": 6, "matching": 0, "uncertain": 8, "outcome": "no_match"}, "Sprawdzono E6"),
+        ({"number": 6, "outcome": "source_failed"}, "Sprawdzenie nieudane"),
+        ({"number": None, "outcome": "rate_limited"}, "Sprawdzenie nieudane"),
+        ({"number": None, "outcome": "refreshed"}, "Sprawdzono listę odcinków"),
+    ],
+)
+def test_a_check_has_a_short_state_for_the_list(check: Mapping[str, object], text: str) -> None:
+    assert check_state(check) == text
+
+
 def test_d_on_the_list_searches_and_s_on_an_announced_title_adds_and_highlights_it(
     panel: StateController, owner: _Owner
 ) -> None:
@@ -358,8 +446,8 @@ def test_d_on_the_list_searches_and_s_on_an_announced_title_adds_and_highlights_
     _keys(panel, "text:s")
     frame: str = _frame(panel)
     assert _anime(panel)._screen is _Screen.DRAFT
-    assert "Nowa subskrypcja" in frame
-    assert "Od odc.:   1" in frame
+    assert "Nowa subskrypcja \u203a Slime 7" in frame
+    assert "Pobiorę sam odcinki od E1 po emisji" in frame
     assert "\u276f [ Dodaj subskrypcję ]" in frame
 
     _keys(panel, "enter")
@@ -367,7 +455,8 @@ def test_d_on_the_list_searches_and_s_on_an_announced_title_adds_and_highlights_
     assert panel._tab == _Tab.SUBSCRIPTIONS
     with panel._lock:
         panel._adopt_subscriptions({}, [_row("a", "Alpha"), _row("new", "Slime 7", anilist_id=7)])
-    assert panel._selected == 2
+    assert panel._selected == 1
+    assert "\u276f Slime 7" in _frame(panel)
 
 
 def test_esc_leaves_the_draft_for_its_source_screen_and_the_search_for_the_list(panel: StateController) -> None:
@@ -396,7 +485,7 @@ def test_s_on_an_episode_list_drafts_from_the_loaded_list_without_reading_it_aga
 
     assert _anime(panel)._screen is _Screen.DRAFT
     assert owner.calls.count(("episodes", 1)) == reads
-    assert "Od odc.:   3" in _frame(panel)
+    assert "Pobiorę sam E3–E4 po emisji" in _frame(panel)
 
 
 def test_a_subscribed_entry_offers_its_subscription_instead_of_a_second_one(
@@ -457,7 +546,7 @@ def test_the_list_counts_down_with_the_renderer_clock(panel: StateController, cl
 def test_f_shows_the_check_result_in_the_row_for_ten_seconds(
     panel: StateController, owner: _Owner, clock: _Clock
 ) -> None:
-    panel._selected = 1
+    panel._selected = 0
     _keys(panel, "text:f")
     assert ("subscription_check", {"subscription_id": "a"}) in owner.calls
     assert "Sprawdzam…" in _frame(panel)
@@ -468,7 +557,10 @@ def test_f_shows_the_check_result_in_the_row_for_ten_seconds(
             "last_check": {"number": 6, "matching": 0, "uncertain": 8, "mismatched": 4, "outcome": "no_match"},
         }
     )
-    assert "Sprawdzono E6: 12 kandydatów, 0 zgodnych (8 niepewnych, 4 niezgodnych)" in _frame(panel)
+    frame: str = _frame(panel)
+    row: str = next(line for line in frame.splitlines() if "Alpha" in line and "E3–?" in line)
+    assert "Sprawdzono E6" in row
+    assert "Sprawdzono E6: 12 kandydatów, 0 zgodnych (8 niepewnych, 4 niezgodnych)" in frame
 
     clock.now += timedelta(seconds=11)
 
@@ -477,21 +569,26 @@ def test_f_shows_the_check_result_in_the_row_for_ten_seconds(
 
 
 @pytest.mark.parametrize(
-    ("problem", "auto_enabled", "banner"),
+    ("problem", "auto_enabled", "warning"),
     [
         ("", True, "Tryb cienia — subskrypcje tylko zapisują propozycje"),
-        ("", False, "AniShift wstrzymany — subskrypcje czekają"),
-        ("save_failed", False, "Monitoring nie działa: nie można zapisać stanu"),
+        ("", False, "Tryb cienia — subskrypcje tylko zapisują propozycje"),
+        ("save_failed", True, "Monitoring nie działa: nie można zapisać stanu"),
     ],
 )
-def test_the_shadow_banner_yields_to_the_pause_and_to_a_monitoring_problem(
-    panel: StateController, problem: str, auto_enabled: bool, banner: str
+def test_the_shadow_warning_yields_to_a_monitoring_problem_and_the_pause_stays_in_the_status_line(
+    panel: StateController, problem: str, auto_enabled: bool, warning: str
 ) -> None:
     panel._subscriptions_shadow = True
     panel._subscriptions_problem = problem
     panel._snapshot = {"auto_enabled": auto_enabled}
 
-    assert banner in _frame(panel)
+    lines: list[str] = _frame(panel).splitlines()
+
+    context: int = next(index for index, line in enumerate(lines) if line.strip() == "Subskrypcje")
+    assert lines[context + 1].strip() == warning
+    assert ("Automat wstrzymany" in lines[-1]) is not auto_enabled
+    assert "subskrypcje czekają" not in "\n".join(lines)
 
 
 def _details(owner: _Owner) -> None:
@@ -518,19 +615,106 @@ def test_enter_opens_the_subscription_details_with_header_targets_and_specials(
     panel: StateController, owner: _Owner
 ) -> None:
     _details(owner)
-    panel._selected = 1
+    panel._selected = 0
     _keys(panel, "enter")
 
     frame: str = _frame(panel)
     assert panel._tab == _Tab.ANIME
     assert "Subskrypcje \u203a Alpha" in frame
-    assert "Od odc. 3 · Pobrano 1/4 · Gotowe 0 · Termin nieznany" in frame
-    assert "Sprawdzono E3: brak wydań w źródle" in frame
+    assert "Termin nieznany · E3–? · pobrano 1/4 · gotowe 0" in frame
+    assert "Ostatnie sprawdzenie" in frame
+    assert "Sprawdzono E3: brak wydań w źródle" in " ".join(frame.split())
     specials: list[str] = [line for line in frame.splitlines() if "Dodatki tego sezonu" in line or "OVA" in line]
     assert len(specials) == 2
     assert all("[ ]" not in line for line in specials)
     assert "W wstrzymaj · F szukaj teraz · X usuń · Esc lista" in frame
     assert owner.numbers[-1] == (1, 2, 3, 4, 5, 6)
+
+
+@pytest.mark.parametrize(("state", "shown"), [(None, True), ("not_ordered", True), ("ready", False)])
+def test_the_details_name_aired_episodes_before_the_subscription_until_they_are_ordered(
+    panel: StateController, owner: _Owner, monkeypatch: pytest.MonkeyPatch, state: str | None, shown: bool
+) -> None:
+    _details(owner)
+
+    def statuses(identifier: int, numbers: tuple[int, ...]) -> tuple[EpisodeStatus, ...]:
+        del numbers
+        return () if state is None else tuple(EpisodeStatus(EpisodeKey(identifier, number), state) for number in (1, 2))
+
+    monkeypatch.setattr(owner, "episode_states", statuses)
+    panel._selected = 0
+    _keys(panel, "enter")
+
+    assert ("E1–E2 wyszły przed subskrypcją: pobierz je ręcznie" in _frame(panel)) is shown
+
+
+@pytest.mark.parametrize("changes", [{}, {"problem": "season_unrecognized"}, {"episode_count": 2, "beyond_count": 6}])
+def test_the_details_status_row_stays_gray_for_every_state(
+    panel: StateController, owner: _Owner, changes: Mapping[str, object]
+) -> None:
+    _details(owner)
+    panel._subscriptions = [_row("a", "Alpha", **changes)]
+    _keys(panel, "enter")
+
+    rendered: Text = panel.render(120, 30)
+    index: int = rendered.plain.index("· E3–")
+
+    assert {str(span.style) for span in rendered.spans if span.start <= index < span.end} == {"gray"}
+
+
+def _highlighted(panel: StateController) -> str:
+    rendered: Text = panel.render(120, 30)
+    tabs: int = rendered.plain.index("Anime · Subskrypcje")
+    return next(
+        rendered.plain[span.start : span.end]
+        for span in rendered.spans
+        if span.start >= tabs and str(span.style) == "brand_accent"
+    )
+
+
+def test_details_opened_from_the_list_highlight_the_subscriptions_tab(panel: StateController, owner: _Owner) -> None:
+    _details(owner)
+    _keys(panel, "enter")
+
+    assert _anime(panel)._screen is _Screen.EPISODES
+    assert _highlighted(panel) == "Subskrypcje"
+
+
+@pytest.mark.parametrize(
+    ("opening", "tab"),
+    [
+        (("text:d", "text:slime", "enter", "text:s"), "Subskrypcje"),
+        (("left", "text:slime", "enter", "text:s"), "Anime"),
+    ],
+)
+def test_a_draft_highlights_the_tab_it_was_opened_from(
+    panel: StateController, opening: tuple[str, ...], tab: str
+) -> None:
+    _keys(panel, *opening)
+
+    assert _anime(panel)._screen is _Screen.DRAFT
+    assert _highlighted(panel) == tab
+
+
+@pytest.mark.parametrize(
+    ("key", "tab", "highlighted"),
+    [
+        ("tab", _Tab.PROGRESS, "Przetwarzanie"),
+        ("right", _Tab.PROGRESS, "Przetwarzanie"),
+        ("backtab", _Tab.ANIME, "Anime"),
+        ("left", _Tab.ANIME, "Anime"),
+        ("escape", _Tab.SUBSCRIPTIONS, "Subskrypcje"),
+    ],
+)
+def test_tab_keys_in_the_details_move_from_the_subscriptions_tab(
+    panel: StateController, owner: _Owner, key: str, tab: int, highlighted: str
+) -> None:
+    _details(owner)
+    _keys(panel, "enter", key)
+
+    assert panel._tab == tab
+    assert _highlighted(panel) == highlighted
+    assert "Subskrypcje \u203a Alpha" not in _frame(panel)
 
 
 @pytest.mark.parametrize(
@@ -541,7 +725,7 @@ def test_details_keys_send_the_subscription_command_and_stay(
     panel: StateController, owner: _Owner, key: str, kind: str
 ) -> None:
     _details(owner)
-    panel._selected = 1
+    panel._selected = 0
     _keys(panel, "enter", key)
 
     assert (kind, {"subscription_id": "a"}) in owner.calls
@@ -554,7 +738,7 @@ def test_removing_from_the_details_returns_to_the_list_with_undo(
     panel: StateController, owner: _Owner, key: str
 ) -> None:
     _details(owner)
-    panel._selected = 1
+    panel._selected = 0
     _keys(panel, "enter", key)
 
     assert ("subscription_remove", {"subscription_id": "a"}) in owner.calls
@@ -564,18 +748,18 @@ def test_removing_from_the_details_returns_to_the_list_with_undo(
 
 def test_esc_from_the_details_returns_to_the_list(panel: StateController, owner: _Owner) -> None:
     _details(owner)
-    panel._selected = 1
+    panel._selected = 0
     _keys(panel, "enter", "escape")
 
     assert panel._tab == _Tab.SUBSCRIPTIONS
-    assert panel._selected == 1
+    assert panel._selected == 0
 
 
 def test_a_check_finished_while_the_details_are_open_updates_their_header(
     panel: StateController, owner: _Owner
 ) -> None:
     _details(owner)
-    panel._selected = 1
+    panel._selected = 0
     _keys(panel, "enter")
 
     panel._receive_check(
@@ -585,26 +769,31 @@ def test_a_check_finished_while_the_details_are_open_updates_their_header(
         }
     )
 
-    assert "Sprawdzono E3: 1 kandydat, 1 zgodnych · propozycja zapisana" in _frame(panel)
+    assert "Sprawdzono E3: 1 kandydat, 1 zgodnych · propozycja zapisana" in " ".join(_frame(panel).split())
 
 
-@pytest.mark.parametrize(("columns", "rows"), [(120, 30), (50, 24), (50, 12)])
-@pytest.mark.parametrize("screen", ["draft", "details"])
-def test_the_draft_and_the_details_fit_narrow_and_short_terminals(
-    panel: StateController, owner: _Owner, screen: str, columns: int, rows: int
+@pytest.mark.parametrize("screen", ["list", "draft", "details"])
+def test_the_list_the_draft_and_the_details_fit_every_terminal_size_and_recover_after_a_too_small_one(
+    panel: StateController, owner: _Owner, screen: str
 ) -> None:
     _details(owner)
     if screen == "draft":
         _titles(panel)
         _keys(panel, "down", "text:s")
-    else:
-        panel._selected = 1
+    elif screen == "details":
+        panel._selected = 0
         _keys(panel, "enter")
+    sizes: list[tuple[int, int]] = [(120, 30), (50, 24), (50, 12), (49, 12), (50, 12), (49, 24), (120, 11), (30, 8)]
 
-    lines: list[str] = _frame(panel, columns, rows).splitlines()
+    frames: list[str] = [_frame(panel, columns, rows) for columns, rows in sizes]
 
-    assert len(lines) <= rows
-    assert all(Text(line).cell_len <= columns for line in lines)
+    for (columns, rows), frame in zip(sizes, frames, strict=True):
+        lines: list[str] = frame.splitlines()
+        assert len(lines) <= rows
+        assert all(Text(line).cell_len <= columns for line in lines)
+    assert frames[2] == frames[4]
+    assert "Powiększ terminal do 50 x 12" in frames[3]
+    assert "Powiększ terminal do 50 x 12" in frames[7]
 
 
 def test_targets_beyond_the_catalogue_stay_listed_with_the_count_conflict_in_the_list_and_details(
@@ -615,7 +804,7 @@ def test_targets_beyond_the_catalogue_stay_listed_with_the_count_conflict_in_the
     panel._subscriptions = [_row("a", "Alpha", episode_count=4, beyond_count=6)]
     assert conflict in _frame(panel)
 
-    panel._selected = 1
+    panel._selected = 0
     _keys(panel, "enter")
     frame: str = _frame(panel)
 
@@ -641,7 +830,7 @@ def _beyond_target(
     monkeypatch.setattr(owner, "episode_states", statuses)
     monkeypatch.setattr(owner, "episode_download", boundary, raising=False)
     monkeypatch.setattr(owner, "episode_offer", boundary, raising=False)
-    panel._selected = 1
+    panel._selected = 0
     _keys(panel, "enter")
     _frame(panel)
     _keys(panel, "end")
@@ -689,7 +878,7 @@ def test_a_related_ova_is_listed_in_the_details_and_enter_opens_its_episodes(
         ),
     )
     owner.listings[9] = replace(_listing("FINISHED", episodes=_weekly(1, 1), count=1), anilist_id=9)
-    panel._selected = 1
+    panel._selected = 0
     _keys(panel, "enter")
     assert "Slime OVA" in _frame(panel)
 
@@ -713,16 +902,84 @@ def test_the_draft_description_is_reachable_by_keyboard_in_a_short_terminal(pane
         _keys(panel, "up")
         frames.append(_frame(panel, 50, 12))
 
-    assert any("Tytuł:" in frame for frame in frames)
-    assert any("Od odc.:   1" in frame for frame in frames)
-    assert any("Koniec:" in frame for frame in frames)
+    assert "Nowa subskrypcja \u203a Slime 7" in frames[0]
+    assert any("Pobiorę sam odcinki od E1" in frame for frame in frames)
+    assert any("zamknie się po końcu sezonu" in frame for frame in frames)
+
+
+@pytest.mark.parametrize(("key", "back"), [("backtab", ()), ("tab", ("backtab", "backtab"))])
+def test_switching_tabs_from_an_open_range_closes_it_with_the_subscription_context(
+    panel: StateController, owner: _Owner, key: str, back: tuple[str, ...]
+) -> None:
+    _details(owner)
+    _keys(panel, "enter", "text:z", "text:1", "text:-", "text:2")
+    assert "Zakres:" in _frame(panel)
+
+    _keys(panel, key, *back)
+    anime: AnimeController = _anime(panel)
+    frame: str = _frame(panel)
+
+    assert panel._tab == _Tab.ANIME
+    assert anime._range_input is None
+    assert not anime.input_focused
+    assert "Zakres:" not in frame
+    assert "Enter zastosuj" not in frame
+    _keys(panel, "text:k")
+    assert anime._query == "k"
+
+
+def _detail_rows(panel: StateController, columns: int, rows: int) -> list[str]:
+    anime: AnimeController = _anime(panel)
+    seen: list[str] = []
+    while True:
+        lines: list[str] = _frame(panel, columns, rows).splitlines()
+        frame: AnimeFrame | None = anime._panel._frame
+        assert frame is not None
+        seen.append(lines[panel._anime_top + frame.first_row + anime._view.cursor - anime._view.offset].strip())
+        if anime._view.cursor >= len(anime._view.items) - 1:
+            return seen
+        _keys(panel, "down")
+
+
+@pytest.mark.parametrize("rows", [24, 12])
+def test_every_subscription_fact_is_reachable_in_the_details_of_a_narrow_terminal(
+    panel: StateController, owner: _Owner, rows: int
+) -> None:
+    _details(owner)
+    title: str = "That Time I Got Reincarnated as a Slime " * 10 + "Finale"
+    check: str = "Sprawdzono E3: 13 kandydatów, 1 zgodnych (8 niepewnych, 4 niezgodnych) · propozycja zapisana"
+    owner.details["last_check"] = {
+        "checked_at": _NOW.isoformat(),
+        "number": 3,
+        "matching": 1,
+        "uncertain": 8,
+        "mismatched": 4,
+        "outcome": "proposed",
+    }
+    panel._subscriptions = [_row("a", title, episode_count=12, ready=2)]
+    _keys(panel, "enter")
+
+    lines: list[str] = _frame(panel, 50, rows).splitlines()
+    assert lines[_line(lines, "Ostatnie sprawdzenie")].strip().startswith("Ostatnie sprawdzenie")
+    assert "? więcej" in "\n".join(lines)
+    _keys(panel, "text:?")
+    shown: str = " ".join(_detail_rows(panel, 50, rows))
+
+    assert title in shown
+    assert "Termin nieznany · E3–E12 · pobrano 1/4 · gotowe 2" in shown
+    assert check in shown
+    assert "E1–E2 wyszły przed subskrypcją: pobierz je ręcznie" in shown
+
+
+def _line(lines: list[str], needle: str) -> int:
+    return next(index for index, line in enumerate(lines) if needle in line)
 
 
 def test_the_details_keep_every_subscription_key_visible_in_a_narrow_terminal(
     panel: StateController, owner: _Owner
 ) -> None:
     _details(owner)
-    panel._selected = 1
+    panel._selected = 0
     _keys(panel, "enter")
 
     frame: str = _frame(panel, 50, 24)

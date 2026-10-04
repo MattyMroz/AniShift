@@ -6,12 +6,15 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import pytest
+from rich.text import Text
 
 from anishift.application.control_views import encode_view
 from anishift.application.subscription_targets import SubscriptionRow
 from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
 from anishift.platform.local_control import ControlError, ControlErrorCode
+
+_SIZES: list[tuple[int, int]] = [(120, 30), (50, 24), (50, 12)]
 
 
 class _Remote:
@@ -86,9 +89,17 @@ def _frame(controller: StateController, columns: int = 120, rows: int = 30) -> s
     return controller.render(columns, rows).plain
 
 
+def _line(lines: list[str], needle: str) -> int:
+    return next(index for index, line in enumerate(lines) if needle in line)
+
+
+def _warning(lines: list[str]) -> str:
+    return lines[next(index for index, line in enumerate(lines) if line.strip() == "Subskrypcje") + 1].strip()
+
+
 @pytest.mark.parametrize("key", ["space", "text:w"])
 @pytest.mark.parametrize(
-    ("selected", "kind", "identifier"), [(1, "subscription_pause", "a"), (2, "subscription_resume", "b")]
+    ("selected", "kind", "identifier"), [(0, "subscription_pause", "a"), (1, "subscription_resume", "b")]
 )
 def test_space_and_w_toggle_the_selected_subscription(  # noqa: PLR0913
     panel: StateController, remote: _Remote, key: str, selected: int, kind: str, identifier: str
@@ -106,7 +117,7 @@ def test_space_and_w_toggle_the_selected_subscription(  # noqa: PLR0913
 def test_removing_names_the_title_and_keeps_the_undo_hint_until_the_state_moves(
     panel: StateController, remote: _Remote, key: str
 ) -> None:
-    panel._selected = 1
+    panel._selected = 0
 
     panel.handle_key(key)
     _settle(panel)
@@ -128,7 +139,7 @@ def test_enter_on_a_subscription_without_an_anilist_entry_explains_how_to_recove
     panel: StateController, remote: _Remote
 ) -> None:
     panel._subscriptions = [_row("a", "Alpha", anilist_id=None)]
-    panel._selected = 1
+    panel._selected = 0
 
     panel.handle_key("enter")
 
@@ -136,11 +147,9 @@ def test_enter_on_a_subscription_without_an_anilist_entry_explains_how_to_recove
     assert remote.calls == []
 
 
-@pytest.mark.parametrize(("selected", "key"), [(0, "space"), (0, "delete"), (0, "text:w"), (0, "text:f")])
-def test_keys_without_a_meaning_for_the_row_send_nothing(
-    panel: StateController, remote: _Remote, selected: int, key: str
-) -> None:
-    panel._selected = selected
+@pytest.mark.parametrize("key", ["space", "delete", "text:w", "text:f"])
+def test_row_keys_on_an_empty_list_send_nothing(panel: StateController, remote: _Remote, key: str) -> None:
+    panel._subscriptions = []
 
     panel.handle_key(key)
 
@@ -169,13 +178,13 @@ def test_a_refused_subscription_command_shows_its_polish_reason(
     assert text in _frame(panel)
 
 
-def test_every_row_states_its_progress_and_one_honest_state(panel: StateController) -> None:
+def test_every_row_is_one_line_of_title_range_progress_ready_and_state(panel: StateController) -> None:
     now: datetime = datetime.now(UTC)
     panel._subscriptions = [
         _row("p", "Problem", anilist_id=None, problem="season_unrecognized", from_number=None, targets_total=None),
         _row("m", "Moved", paused=True, pause_reason="migrated_missing", review_pending=True, targets_total=None),
         _row("r", "Review", review_pending=True, targets_total=None, from_number=None),
-        _row("s", "Soon", due_at=(now + timedelta(days=3, hours=1, seconds=30)).isoformat()),
+        _row("s", "Soon", episode_count=12, ready=1, due_at=(now + timedelta(days=3, hours=1, seconds=30)).isoformat()),
         _row("h", "Hour", due_at=(now + timedelta(minutes=30, seconds=30)).isoformat()),
         _row("w", "Waiting", due_at=(now - timedelta(days=2, hours=1)).isoformat()),
         _row("y", "Yesterday", due_at=(now - timedelta(days=1, hours=1)).isoformat()),
@@ -183,88 +192,158 @@ def test_every_row_states_its_progress_and_one_honest_state(panel: StateControll
         _row("u", "Undated"),
     ]
 
-    frame: str = _frame(panel, rows=40)
+    lines: list[str] = _frame(panel, rows=40).splitlines()
 
-    assert "D Dodaj subskrypcję · Aktywne: 8" in frame
-    assert "Problem · od ? · Pobrano 1/?" in frame
-    assert "Nie rozpoznano sezonu — usuń i dodaj ponownie" in frame
-    assert "Moved · od 3 · Pobrano 1/?" in frame
-    assert "Wstrzymana — zakończona przez starą wersję · W wznów" in frame
-    assert "Review · od ? · Pobrano 1/?" in frame
-    assert "Sprawdzam przeniesioną subskrypcję" in frame
-    assert "Soon · od 3 · Pobrano 1/4" in frame
-    assert "Emisja za 3 d 01:00:" in frame
-    assert "Emisja za 00:30:" in frame
-    assert "Czeka na wydanie (od 2 dni)" in frame
-    assert "Czeka na wydanie (od 1 dzień)" in frame
-    assert "Czeka na wydanie (od 5 h)" in frame
-    assert "Termin nieznany" in frame
+    expected: dict[str, tuple[str, ...]] = {
+        "Problem": ("?", "1/?", "0", "Nie rozpoznano sezonu"),
+        "Moved": ("E3–?", "1/?", "0", "Wstrzymana"),
+        "Review": ("?", "1/?", "0", "Weryfikuję"),
+        "Soon": ("E3–E12", "1/4", "1", "Emisja za 3 d 01:00:"),
+        "Hour": ("E3–?", "1/4", "0", "Emisja za 00:30:"),
+        "Waiting": ("E3–?", "1/4", "0", "Czeka na wydanie (od 2 dni)"),
+        "Yesterday": ("E3–?", "1/4", "0", "Czeka na wydanie (od 1 dzień)"),
+        "Recent": ("E3–?", "1/4", "0", "Czeka na wydanie (od 5 h)"),
+        "Undated": ("E3–?", "1/4", "0", "Termin nieznany"),
+    }
+    for title, values in expected.items():
+        line: str = lines[_line(lines, f" {title} ")]
+        position: int = line.index(title) + len(title)
+        for value in values:
+            position = line.index(f"  {value}", position) + len(value) + 2
+    frame: str = "\n".join(lines)
+    assert "Odcinki" in frame
+    assert "Gotowe" in frame
+    assert "Aktywne" not in frame
+    assert "D Dodaj subskrypcję" not in frame
+    assert " od 3 " not in frame
+
+
+def test_the_highlighted_row_explains_its_full_state_beneath_the_table(panel: StateController) -> None:
+    panel._subscriptions = [
+        _row("p", "Problem", anilist_id=None, problem="season_unrecognized"),
+        _row("m", "Moved", paused=True, pause_reason="migrated_missing"),
+    ]
+
+    first: str = _frame(panel)
+    panel.handle_key("down")
+    second: str = _frame(panel)
+
+    assert "Nie rozpoznano sezonu — usuń i dodaj ponownie · E3–? · pobrano 1/4 · gotowe 0 · Problem" in first
+    assert "Wstrzymana — zakończona przez starą wersję · W wznów" in second
+    assert "usuń i dodaj ponownie" not in second
+
+
+def test_problem_and_conflict_states_share_the_style_of_every_other_state(panel: StateController) -> None:
+    panel._subscriptions = [
+        _row("u", "Undated"),
+        _row("p", "Problem", problem="season_unrecognized"),
+        _row("c", "Conflict", episode_count=2, beyond_count=6),
+        _row("s", "Selected", paused=True, pause_reason="user"),
+    ]
+    panel._selected = 3
+
+    rendered: Text = panel.render(120, 30)
+
+    def styles(needle: str) -> set[str]:
+        index: int = rendered.plain.index(needle)
+        return {str(span.style) for span in rendered.spans if span.start <= index < span.end}
+
+    assert styles("Nie rozpoznano sezonu ") == styles("Konflikt liczby odcinków ") == styles("Termin nieznany ")
 
 
 @pytest.mark.parametrize(
-    ("problem", "auto_enabled", "banner"),
+    ("problem", "shadow", "warning"),
     [
-        ("save_failed", True, "Monitoring nie działa: nie można zapisać stanu"),
         ("save_failed", False, "Monitoring nie działa: nie można zapisać stanu"),
-        ("", False, "AniShift wstrzymany — subskrypcje czekają"),
+        ("save_failed", True, "Monitoring nie działa: nie można zapisać stanu"),
+        ("", True, "Tryb cienia — subskrypcje tylko zapisują propozycje"),
     ],
 )
-def test_the_footer_names_why_monitoring_does_not_progress(
-    panel: StateController, problem: str, auto_enabled: bool, banner: str
+def test_the_status_row_names_why_monitoring_does_not_progress(
+    panel: StateController, problem: str, shadow: bool, warning: str
 ) -> None:
     panel._subscriptions_problem = problem
-    panel._snapshot = {"auto_enabled": auto_enabled}
+    panel._subscriptions_shadow = shadow
 
-    assert banner in _frame(panel)
+    assert _warning(_frame(panel).splitlines()) == warning
 
 
-@pytest.mark.parametrize(("columns", "rows"), [(120, 30), (50, 24)])
-@pytest.mark.parametrize("subscriptions", [[], [_row("a", "Alpha")]])
-def test_the_banner_holds_a_fixed_row_above_the_list_whether_shown_or_not(
-    panel: StateController, subscriptions: list[Mapping[str, object]], columns: int, rows: int
-) -> None:
-    panel._subscriptions = subscriptions
+@pytest.mark.parametrize(("columns", "rows"), _SIZES)
+def test_the_global_pause_shows_only_in_the_status_line(panel: StateController, columns: int, rows: int) -> None:
     running: list[str] = _frame(panel, columns, rows).splitlines()
     panel._snapshot = {"auto_enabled": False}
     paused: list[str] = _frame(panel, columns, rows).splitlines()
 
-    add_row: int = next(index for index, line in enumerate(running) if "D Dodaj subskrypcję" in line)
-    banner_row: int = next(index for index, line in enumerate(paused) if "subskrypcje czekają" in line)
-    assert "D Dodaj subskrypcję" in paused[add_row]
-    assert banner_row < add_row
-    assert running[banner_row].strip() == ""
-
-
-def test_a_wrapped_state_line_keeps_its_indent_on_narrow_terminals(panel: StateController) -> None:
-    panel._subscriptions = [
-        _row("p", "Problem", anilist_id=None, problem="season_unrecognized", from_number=None, targets_total=None)
+    assert [line for line in running if "Praca" not in line] == [
+        line for line in paused if "Automat wstrzymany" not in line
     ]
-
-    lines: list[str] = _frame(panel, 50, 24).splitlines()
-
-    first: int = next(index for index, line in enumerate(lines) if "Nie rozpoznano" in line)
-    continuation: str = lines[first + 1]
-    assert "ponownie" in continuation
-    assert len(continuation) - len(continuation.lstrip()) == lines[first].index("Nie rozpoznano")
+    assert "Automat wstrzymany" in paused[-1]
+    assert "subskrypcje czekają" not in "\n".join(paused)
 
 
-def test_an_empty_list_offers_only_the_add_row(panel: StateController) -> None:
+@pytest.mark.parametrize("rows", [24, 12])
+def test_a_check_result_leads_the_text_beneath_the_table_of_a_narrow_terminal(
+    panel: StateController, rows: int
+) -> None:
+    panel._subscriptions = [_row("a", "That Time I Got Reincarnated as a Slime Season 4", episode_count=12)]
+    panel._receive_check(
+        {
+            "subscription_id": "a",
+            "last_check": {"number": 6, "outcome": "proposed", "matching": 1, "uncertain": 8, "mismatched": 4},
+        }
+    )
+
+    lines: list[str] = _frame(panel, 50, rows).splitlines()
+
+    assert lines[_line(lines, "13 kandydatów")].strip().startswith("Sprawdzono E6: 13 kandydatów")
+    assert "Praca" in lines[-1]
+
+
+@pytest.mark.parametrize(("columns", "rows"), _SIZES)
+@pytest.mark.parametrize("change", ["notice", "warning", "check"])
+def test_rows_keep_their_position_when_feedback_appears(
+    panel: StateController, columns: int, rows: int, change: str
+) -> None:
+    before: list[str] = _frame(panel, columns, rows).splitlines()
+    if change == "notice":
+        panel._notice = "Usunięto Gamma · Ctrl+Z cofnij"
+    elif change == "warning":
+        panel._subscriptions_problem = "save_failed"
+    else:
+        panel._receive_check({"subscription_id": "a", "last_check": {"number": 6, "outcome": "no_candidates"}})
+    after: list[str] = _frame(panel, columns, rows).splitlines()
+
+    for title in ("Alpha", "Beta") if rows > 12 else ("Alpha",):
+        assert _line(before, title) == _line(after, title)
+        assert before[_line(before, title)].index(title) == after[_line(after, title)].index(title)
+
+
+@pytest.mark.parametrize(("columns", "rows"), _SIZES)
+def test_an_empty_list_names_the_add_key(panel: StateController, columns: int, rows: int) -> None:
     panel._subscriptions = []
 
-    frame: str = _frame(panel)
+    frame: str = _frame(panel, columns, rows)
 
-    assert "D Dodaj subskrypcję · Brak subskrypcji" in frame
+    assert "Brak subskrypcji · D dodaj pierwszą" in frame
+    assert "D dodaj" in frame.split("Brak subskrypcji · D dodaj pierwszą")[1]
+    assert "Enter szczegóły" not in frame
     assert "Aktywne" not in frame
 
 
-def test_a_healthy_running_list_shows_no_banner(panel: StateController) -> None:
-    frame: str = _frame(panel)
+def test_d_and_enter_on_an_empty_list_open_the_search(panel: StateController) -> None:
+    panel._subscriptions = []
 
-    assert "Monitoring nie działa" not in frame
-    assert "subskrypcje czekają" not in frame
+    panel.handle_key("enter")
+
+    assert panel._tab == 1
+    assert panel._anime is None
 
 
-@pytest.mark.parametrize(("selected", "toggle"), [(1, "W wstrzymaj"), (2, "W wznów")])
+def test_a_healthy_running_list_shows_no_warning(panel: StateController) -> None:
+    assert _warning(_frame(panel).splitlines()) == ""
+
+
+@pytest.mark.parametrize(("selected", "toggle"), [(0, "W wstrzymaj"), (1, "W wznów")])
 def test_the_key_hint_follows_the_selected_row(panel: StateController, selected: int, toggle: str) -> None:
     panel._selected = selected
 
@@ -274,11 +353,34 @@ def test_the_key_hint_follows_the_selected_row(panel: StateController, selected:
     assert "Ctrl+Z cofnij" in frame
 
 
-@pytest.mark.parametrize(("columns", "rows"), [(120, 30), (50, 24), (50, 12)])
-def test_the_list_fits_narrow_and_short_terminals(panel: StateController, columns: int, rows: int) -> None:
-    panel._subscriptions = [_row(f"s{index}", f"Series {index}") for index in range(30)]
+@pytest.mark.parametrize(("columns", "rows"), _SIZES)
+def test_the_list_fits_and_every_row_and_key_stays_reachable(panel: StateController, columns: int, rows: int) -> None:
+    panel._subscriptions = [_row(f"s{index}", f"Series {index:02d}") for index in range(30)]
+    seen: set[str] = set()
 
-    lines: list[str] = _frame(panel, columns, rows).splitlines()
+    for _ in range(30):
+        lines: list[str] = _frame(panel, columns, rows).splitlines()
+        assert len(lines) < rows
+        assert all(Text(line).cell_len <= columns for line in lines)
+        seen.update(f"Series {index:02d}" for index in range(30) if any(f"Series {index:02d}" in x for x in lines))
+        panel.handle_key("down")
 
-    assert len(lines) <= rows
-    assert all(len(line) <= columns for line in lines)
+    frame: str = _frame(panel, columns, rows)
+    assert seen == {f"Series {index:02d}" for index in range(30)}
+    for hint in ("Enter szczegóły", "D dodaj", "W wstrzymaj", "F szukaj", "Del usuń", "Ctrl+Z cofnij"):
+        assert hint in frame
+
+
+@pytest.mark.parametrize(("columns", "labels"), [(120, 5), (80, 5), (50, 2)])
+def test_narrow_terminals_drop_optional_columns_and_keep_them_beneath_the_table(
+    panel: StateController, columns: int, labels: int
+) -> None:
+    panel._subscriptions = [_row("a", "That Time I Got Reincarnated as a Slime Season 4", episode_count=12)]
+
+    lines: list[str] = _frame(panel, columns, 24).splitlines()
+    header: str = lines[_line(lines, "Tytuł")]
+
+    shown: list[str] = [label for label in ("Tytuł", "Odcinki", "Pobrano", "Gotowe", "Stan") if label in header]
+    assert len(shown) == labels
+    assert {"Tytuł", "Stan"} <= set(shown)
+    assert "E3–E12 · pobrano 1/4" in " ".join(line.strip() for line in lines)

@@ -61,15 +61,23 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   to the source screen. A successful add calls the panel's `show_list`, which opens Subscriptions and
   highlights the new row once the owner lists it. `interactive/anime.py`, `interactive/subscription_texts.py`
 - The Subscriptions tab in `StateController` renders owner `subscriptions_list` rows. Enter opens U08
-  (the Anime episode screen with a subscription header, every target including numbers beyond the
+  (the Anime episode screen with a subscription status row, every target including numbers beyond the
   catalogue, and „Dodatki tego sezonu” with related OVA/special entries whose Enter opens their U03), D opens the Anime
   search whose Esc returns to the list, W/Space pause/resume, F `subscription_check`, Delete/X remove,
   Ctrl+Z restore. U08 hands W/F/X to the panel through `take_subscription_command`, so command
   workers stay in `StateController`. F shows `Sprawdzam…`, then the `subscription_checked` result
-  for `CHECK_SHOWN_S`, measured by the injected clock. Row states come only from
-  `subscription_texts.row_state`. The global banner (problem > pause > shadow) keeps a fixed row
-  above the list, reserved even when empty. `anishift subs` offers `list`, `check` and `remove`
-  through the owner. `interactive/state.py`, `main.py`
+  for `CHECK_SHOWN_S`, measured by the injected clock: `check_state` in the Stan column, `check_text`
+  first beneath the table (state, summary, then title). U08 leads its notice with the last check;
+  `?` there lists every subscription fact (`_subscription_facts`) wrapped and scrollable, so 50-column
+  terminals reach the full title, range, Pobrano and Gotowe. Row states and columns come only from `subscription_texts` (`row_state`,
+  `row_columns`, `row_summary`). The list is `render_anime` with `AnimeScreen.SUBSCRIPTIONS`: one row
+  per subscription, fixed Stan width, optional columns dropped before the title shrinks below
+  `_TITLE_FLOOR`; an empty list renders as DETAILS with one message row. The context's status row
+  shows only a monitoring problem or shadow mode; the global pause appears only in the bottom status
+  line, kept at 50×12 by dropping the blank row beneath the table. Problem and conflict states use the ordinary state style. While `AnimeController.in_subscriptions`
+  (U08 or the D search) the Subscriptions tab is highlighted, tab keys count from it, and any tab switch
+  drops that context first, including an open range editor and marks (an admitted batch survives). `anishift subs` offers `list`, `check` and `remove` through the owner. `interactive/state.py`,
+  `interactive/anime_view.py`, `main.py`
 - `ResidentSession.episode_offer/episode_choose` share the interruptible catalogue connection:
   offers belong to its server session, so choosing on the main control connection would refuse them.
   `interrupt_reads` invalidates that interaction. Batch download uses the main connection and survives

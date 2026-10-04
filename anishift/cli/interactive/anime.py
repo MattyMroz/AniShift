@@ -50,7 +50,15 @@ from anishift.application.events import sanitize_event_message
 from anishift.cli.interactive.anime_panel import AnimePanel
 from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeViewState, NoticeKind
 from anishift.cli.interactive.anime_view import WIDE_COLUMNS, visible_rows
-from anishift.cli.interactive.subscription_texts import SubscriptionDraft, check_text, row_state, subscription_draft
+from anishift.cli.interactive.subscription_texts import (
+    SubscriptionDraft,
+    SubscriptionState,
+    check_text,
+    earlier_episodes,
+    row_state,
+    row_summary,
+    subscription_draft,
+)
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError, ErrorCode
@@ -96,8 +104,8 @@ _ANNOUNCED: Final[str] = "Zapowiedź · odcinków jeszcze nie ma · S subskrybuj
 _EXTRA_FORMATS: Final[frozenset[str]] = frozenset({"OVA", "SPECIAL"})
 """AniList formats U08 lists as related extras of the subscribed season."""
 
-_WIDE_SUBSCRIPTION_KEYS: Final[int] = 60
-"""Terminal width from which U08 key hints use their full labels."""
+_WIDE_SUBSCRIPTION_KEYS: Final[int] = 61
+"""Key hint width from which U08 shows full labels and I; narrower hints leave I to the ? details."""
 
 _MAX_BATCH: Final[int] = MAX_EPISODE_KEYS
 """Most episodes one D press sends to the owner, matching its batch limit."""
@@ -483,6 +491,17 @@ class AnimeController:
             self._screen = _Screen.QUERY
             self._input_focused = True
 
+    @property
+    def in_subscriptions(self) -> bool:
+        """Whether the shown screen serves the subscription list: U08 or a search started there."""
+        with self._lock:
+            return self._from_subscriptions
+
+    def leave_subscriptions(self) -> None:
+        """Drop the subscription context so the Anime tab shows its own search."""
+        with self._lock:
+            self._leave_subscriptions()
+
     def open_subscription(self, row: Mapping[str, object]) -> None:
         """Show the episodes of one followed season under its subscription header."""
         with self._lock:
@@ -529,7 +548,12 @@ class AnimeController:
     def _leave_subscriptions(self) -> None:
         self._generation += 1
         self._subscription = None
+        self._subscription_details = {}
         self._from_subscriptions = False
+        self._range = None
+        self._episode_marks.clear()
+        self._details_open = False
+        self._notice = ""
         self._screen = _Screen.QUERY
 
     def _load_subscription(self, row: Mapping[str, object], generation: int, cancel: EventCancellationToken) -> None:
@@ -604,9 +628,7 @@ class AnimeController:
         self._screen = self._draft_return
         if self._draft_id not in self._subscribed:
             draft: SubscriptionDraft | None = (
-                None
-                if listing is None
-                else subscription_draft(listing, self._draft_title, self._moment(), paused=self._paused)
+                None if listing is None else subscription_draft(listing, self._moment(), paused=self._paused)
             )
             if draft is None:
                 self._notice = _NOT_AIRING
@@ -622,12 +644,18 @@ class AnimeController:
 
     def _draft_rows(self) -> tuple[AnimeRow, ...]:
         if self._draft is None:
-            return (AnimeRow("title", _safe(self._draft_title), navigable=False), AnimeRow("show", _SUBSCRIBED))
+            return (AnimeRow("show", _SUBSCRIBED),)
         lines: tuple[AnimeRow, ...] = tuple(
-            AnimeRow(f"line{index}.{piece}", wrapped.plain, navigable=bool(wrapped.plain))
+            row
             for index, value in enumerate(self._draft.lines)
-            for piece, wrapped in enumerate(
-                Text(value).wrap(Console(width=self._columns - 4), self._columns - 4) or (Text(),)
+            for row in (
+                *((AnimeRow(f"gap{index}", "", navigable=False),) if index else ()),
+                *(
+                    AnimeRow(f"line{index}.{piece}", wrapped.plain)
+                    for piece, wrapped in enumerate(
+                        Text(value).wrap(Console(width=self._columns - 4), self._columns - 4)
+                    )
+                ),
             )
         )
         buttons: tuple[AnimeRow, ...] = (
@@ -681,7 +709,7 @@ class AnimeController:
 
     def _sync_subscription_view(self) -> None:
         if self._screen is _Screen.DRAFT:
-            self._view.title = "Nowa subskrypcja"
+            self._view.title = f"Nowa subskrypcja \u203a {_safe(self._draft_title)}"
             self._view.controls = ("Enter wybierz · Esc anuluj",)
             keys: list[str] = [item.key for item in self._view.items]
             wanted: str = self._draft_cursor if self._draft_cursor in keys else self._draft_cursor.split(".")[0] + ".0"
@@ -694,36 +722,55 @@ class AnimeController:
                 self._view.cursor = next(
                     (index for index, item in enumerate(self._view.items) if item.navigable), self._view.cursor
                 )
-        if self._screen is not _Screen.EPISODES or self._subscription is None:
+        facts: tuple[str, ...] = self._subscription_facts()
+        if not facts or self._subscription is None:
             return
-        summary, checked = self._subscription_header()
-        self._view.title = f"Subskrypcje \u203a {_safe(str(self._subscription.get('title', '')))}"
-        self._view.global_status = summary
-        self._view.notice = self._view.notice or checked
+        self._view.title = f"Subskrypcje \u203a {facts[0]}"
+        self._view.global_status = facts[1]
+        self._view.status_kind = NoticeKind.INFO
+        self._view.notice = self._view.notice or " · ".join(note for note in facts[2:] if note)
         toggle: str = "W wznów" if self._subscription.get("paused") else "W wstrzymaj"
         wide: bool = self._columns >= _WIDE_SUBSCRIPTION_KEYS
         self._view.controls = (
-            f"Space{' zaznacz' if wide else ''} · D pobierz · I wydania · P ponownie",
+            "Space zaznacz · D pobierz · I wydania · P ponownie · ? więcej"
+            if wide
+            else "Space · D pobierz · P ponownie · ? więcej",
             f"{toggle} · F szukaj{' teraz' if wide else ''} · X usuń · Esc lista",
+        )
+
+    def _subscription_facts(self) -> tuple[str, ...]:
+        if self._screen is not _Screen.EPISODES or self._subscription is None:
+            return ()
+        state: SubscriptionState = row_state(self._subscription, self._moment())
+        return (
+            _safe(str(self._subscription.get("title", ""))),
+            f"{state.text} · {row_summary(self._subscription)}",
+            self._last_check(),
+            "" if state.detail == state.text else state.detail,
+            self._earlier_episodes(),
         )
 
     def _moment(self) -> datetime:
         return datetime.fromtimestamp(self._clock(), UTC)
 
-    def _subscription_header(self) -> tuple[str, str]:
-        row: Mapping[str, object] = self._subscription or {}
-        total: object = row.get("targets_total")
-        start: object = row.get("from_number")
-        summary: str = (
-            f"Od odc. {'?' if start is None else start} · Pobrano {row.get('downloaded', 0)}/"
-            f"{'?' if total is None else total} · Gotowe {row.get('ready', 0)} · {row_state(row, self._moment())}"
-        )
+    def _earlier_episodes(self) -> str:
+        start: object = (self._subscription or {}).get("from_number")
+        if self._listing is None or not isinstance(start, int):
+            return ""
+        numbers: list[int] = []
+        for item in self._listing.episodes:
+            status: EpisodeStatus | None = self._episode_states.get(EpisodeKey(self._listing.anilist_id, item.number))
+            if item.number < start and item.aired and (status is None or status.state == "not_ordered"):
+                numbers.append(item.number)
+        return earlier_episodes(numbers)
+
+    def _last_check(self) -> str:
         check: object = self._subscription_details.get("last_check")
         if not isinstance(check, Mapping):
-            return summary, ""
+            return ""
         moment: object = check.get("checked_at")
         at: str = datetime.fromisoformat(moment).astimezone().strftime("%H:%M") if isinstance(moment, str) else "—"
-        return summary, f"Ostatnie sprawdzenie {at}: {check_text(check)}"
+        return f"Ostatnie sprawdzenie {at}: {check_text(check)}"
 
     def _now(self) -> float:
         return self._clock()
@@ -848,6 +895,7 @@ class AnimeController:
         self._view.notice = self._notice
         self._view.notice_kind = self._notice_kind
         self._view.global_status = ""
+        self._view.status_kind = NoticeKind.WARNING
         self._view.busy = self._busy if self._screen is _Screen.BUSY else ""
         self._view.controls = ()
         self._view.items = self._display_rows()
@@ -887,6 +935,7 @@ class AnimeController:
             self._view.screen = AnimeScreen.DETAILS
             self._view.items = self._text_rows(
                 (
+                    *self._subscription_facts(),
                     item.copy_text if item else "Anime",
                     item.detail if item else "",
                     "Space zaznacz · A wszystkie/żadne · Z zakres",

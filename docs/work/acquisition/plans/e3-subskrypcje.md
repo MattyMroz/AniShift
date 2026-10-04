@@ -650,21 +650,29 @@ test sprawdza rozmiar każdej ramki i komplet stanów celu.
   ekran, z którego otwarto szkic.
 - **U06**: szkic liczony lokalnie z wczytanego `EpisodeListing` (bez sieci). Używa tych samych
   funkcji `cut_point`/`is_target` z fasady `anishift.application` (jedno źródło reguły).
-  Teksty wg `ux.md:207-234`; dla `cut_point is None` (D-28) tekst odmowy bez przycisku Dodaj.
+  Szkic to 1–2 zdania i przyciski wg `ux.md` §8 (`subscription_texts.subscription_draft`);
+  dla `cut_point is None` (D-28) tekst odmowy bez przycisku Dodaj. Szkic z `S` w Anime
+  podświetla zakładkę Anime, a otwarty przez `D` z U07 — Subskrypcje.
   Enter na „Dodaj subskrypcję” → `subscription_add`; po sukcesie
   przejście do U07 z podświetlonym nowym wpisem (S-04). Odpowiedź ownera jest autorytatywna:
-  wiersz pokazuje `from_number` z odpowiedzi.
-- **U07** (zakładka Subskrypcje w `StateController`): pierwszy wiersz „D Dodaj subskrypcję”
-  (pusta lista: „Brak subskrypcji”), stały wiersz globalny (pauza / błąd monitoringu / cień),
-  dwa wiersze na subskrypcję wg `ux.md:238-260`. Odliczanie z zegara renderera co sekundę,
-  bez IPC; kolejność z `display_order` liczonego przy odebraniu snapshotu, nie co klatkę
-  (S-03). Klawisze: Enter → U08; `D` → zakładka Anime U01 z trybem „dodaj subskrypcję” (Esc
-  wraca do U07); `W`/Space → pause/resume; `F` → `subscription_check` i wynik w drugim
-  wierszu na 10 s; `Delete`/`X` → remove, notka „Usunięto {tytuł} · Ctrl+Z cofnij”;
-  `Ctrl+Z` → restore. Nowy klawisz `Delete` dostaje własny binding w `_NORMALISED_KEYS`
+  wiersz pokazuje zakres od `from_number` z odpowiedzi.
+- **U07** (zakładka Subskrypcje w `StateController`): tabela wspólnego renderera Anime
+  (`render_anime`, `AnimeScreen.SUBSCRIPTIONS`), jeden wiersz na subskrypcję: Tytuł │ Odcinki │
+  Pobrano │ Gotowe │ Stan, wg `ux.md` §9. Stany problemów i konfliktów mają styl zwykłych
+  stanów; pełny stan podświetlonego wpisu stoi pod tabelą (stan i wynik `F` przed tytułem;
+  całość zawsze w U08 pod `?`). Na 50×12 wiersz statusu zostaje. Pusta lista: „Brak subskrypcji ·
+  D dodaj pierwszą”; nad listą nie ma wiersza „Dodaj”. Stały wiersz pod tytułem pokazuje
+  tylko błąd monitoringu albo tryb cienia; pauza globalna jest wyłącznie w dolnym wierszu
+  statusu. Odliczanie z zegara renderera co sekundę, bez IPC; kolejność z `display_order`
+  liczonego przy odebraniu snapshotu, nie co klatkę (S-03). Klawisze: Enter → U08; `D` →
+  zakładka Anime U01 z trybem „dodaj subskrypcję” (Esc wraca do U07); `W`/Space →
+  pause/resume; `F` → `subscription_check`, krótki wynik w kolumnie Stan i pełny pod tabelą
+  na 10 s; `Delete`/`X` → remove, notka „Usunięto {tytuł} · Ctrl+Z cofnij”; `Ctrl+Z` → restore. Nowy klawisz `Delete` dostaje własny binding w `_NORMALISED_KEYS`
   (`prompts.py`), jeśli go tam nie ma (pułapka `cli/AGENTS.md`).
-- **U08**: istniejący ekran odcinków Anime dla `anilist_id` subskrypcji z nagłówkiem
-  subskrypcji (`ux.md:262-284`), kolumną Stan z jednego modelu stanów (D7 z E2 + stany
+- **U08**: istniejący ekran odcinków Anime dla `anilist_id` subskrypcji z tytułem
+  „Subskrypcje › …”, szarym wierszem statusu i notkami wg `ux.md` §10, przy podświetlonej
+  zakładce Subskrypcje (←→/Tab liczą się od niej i zamykają szczegóły razem z edytorem zakresu
+  i zaznaczeniami), `?` z pełnymi faktami subskrypcji, kolumną Stan z jednego modelu stanów (D7 z E2 + stany
   subskrypcji §5.5 spec: „Czeka na emisję”, „Czeka na wydanie”, „Kontrola”, problem) i
   sekcją „Dodatki tego sezonu” (`ListedSpecial`, tylko informacja). Dodatkowe klawisze
   `W`/`F`/`X`; D/I/P/Space/A/Z bez zmian. Projekcja stanu odcinka: owner rozszerza
@@ -674,7 +682,7 @@ test sprawdza rozmiar każdej ramki i komplet stanów celu.
   wyemitowane odcinki **i** każdy numer z zakresu celów `first_target..last_target` z
   `subscription_get` (także przyszłe i poza listą katalogu), w istniejących partiach
   `_MAX_BATCH`. Poza U08 zachowanie zostaje bez zmian. Konflikt
-  liczby odcinków (D-23) widać w nagłówku U08 i w drugim wierszu U07.
+  liczby odcinków (D-23) widać w wierszu statusu U08 i w kolumnie Stan U07.
 - Usuwane: `cli/interactive/subscriptions.py` (`SubscriptionDraft`), gałęzie starego szkicu i
   zakresu w `state.py`, metody `ResidentSession.set_range/repeat/_subscription/follow/
   subscription_retry_proposal` (`resident.py:127-374`). Ścieżka P z Historii dla starych
@@ -979,7 +987,7 @@ Torrentio na cel na sprawdzenie; zegar wyłącznie wstrzykiwany; render bez I/O.
   wyjściowy; U07 z odliczaniem (atrapa zegara renderera), U08; PNG 120/50 kolumn.
 
 **Test na żywo (orkiestrator):** dodać jedną subskrypcję tytułu w emisji (S i D); sprawdzić
-odliczanie, „Od odc.” zgodne z AniList, brak transferu w qB po `F`; w `decisions.jsonl` są
+odliczanie, początek zakresu celów zgodny z AniList, brak transferu w qB po `F`; w `decisions.jsonl` są
 nowe linie `check`/`proposal` (sprawdzić tylko liczbę linii i `kind`, bez treści); migrowane
 subskrypcje po odświeżeniu mają stan M-01/M-03 zgodny z danymi.
 
@@ -1117,7 +1125,8 @@ jedno powtórzenie; drugi czerwony przebieg = finding.
 ```text
 Uruchom: uv run anishift (po restarcie rezydenta zrobionym przez orkiestratora)
 1. Subskrypcje → D → wyszukaj tytuł w emisji → S → Dodaj.
-   Oczekiwane: szkic z „Od odc.”, notka o wyemitowanych; wpis na liście z odliczaniem;
+   Oczekiwane: szkic podaje zakres celów i najbliższą emisję oraz wyemitowane odcinki do
+   pobrania ręcznie; wpis podświetlony na liście z odliczaniem;
    wyemitowane odcinki nie są zlecane.
 2. Przejrzyj przeniesione stare subskrypcje.
    Oczekiwane: aktywne bez zaległych — aktywne; z zaległymi — wstrzymane i nic nie pobierają
