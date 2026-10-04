@@ -341,7 +341,7 @@ def _plain(text: str) -> SubscriptionState:
     ("changes", "state"),
     [
         ({"due_at": (_NOW + timedelta(minutes=30)).isoformat(), "due_number": 8}, _plain("Emisja E8 za 00:30:00")),
-        ({"due_at": (_NOW + timedelta(days=2, seconds=5)).isoformat()}, _plain("Emisja za 2 d 00:00:05")),
+        ({"due_at": (_NOW + timedelta(days=2, seconds=5)).isoformat()}, _plain("Emisja za 2d 00:00:05")),
         (
             {"due_at": (_NOW - timedelta(minutes=5)).isoformat(), "due_number": 8},
             _plain("Czeka na wydanie E8 (od 5 min)"),

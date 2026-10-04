@@ -515,6 +515,19 @@ def test_episode_listing_falls_back_to_mapping_count_and_keeps_source_fields() -
     assert (listing.schedule_warning, listing.schedule_retry_at) == ("TITLE_CATALOG_FAILED", retry_at)
 
 
+@pytest.mark.parametrize(("anilist", "expected"), [(None, 12), (13, 13)], ids=["unknown", "anilist-wins"])
+def test_a_stale_mapping_count_grows_to_the_anilist_schedule_but_never_overrides_the_anilist_count(
+    anilist: int | None, expected: int
+) -> None:
+    mapping: AniZipMapping = replace(_mapping({}), episode_count=4)
+    schedule: tuple[ListedEpisode, ...] = tuple(ListedEpisode(number, airs_at=_NOW) for number in range(1, 13))
+
+    listing: EpisodeListing = episode_listing(5, mapping, "RELEASING", anilist, schedule, _NOW)
+
+    assert listing.episode_count == expected
+    assert [episode.number for episode in listing.episodes] == list(range(1, expected + 1))
+
+
 @pytest.mark.parametrize(
     ("stream", "expected"),
     [

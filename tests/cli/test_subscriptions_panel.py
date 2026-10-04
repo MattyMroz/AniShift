@@ -198,7 +198,7 @@ def test_every_row_is_one_line_of_title_range_progress_ready_and_state(panel: St
         "Problem": ("?", "1/?", "0", "Nie rozpoznano sezonu"),
         "Moved": ("E3–?", "1/?", "0", "Wstrzymana"),
         "Review": ("?", "1/?", "0", "Weryfikuję"),
-        "Soon": ("E3–E12", "1/4", "1", "Emisja za 3 d 01:00:"),
+        "Soon": ("E3–E12", "1/4", "1", "Emisja za 3d 01:00:"),
         "Hour": ("E3–?", "1/4", "0", "Emisja za 00:30:"),
         "Waiting": ("E3–?", "1/4", "0", "Czeka na wydanie (od 2 dni)"),
         "Yesterday": ("E3–?", "1/4", "0", "Czeka na wydanie (od 1 dzień)"),
@@ -228,9 +228,20 @@ def test_the_highlighted_row_explains_its_full_state_beneath_the_table(panel: St
     panel.handle_key("down")
     second: str = _frame(panel)
 
-    assert "Nie rozpoznano sezonu — usuń i dodaj ponownie · E3–? · pobrano 1/4 · gotowe 0 · Problem" in first
+    assert "Nie rozpoznano sezonu — usuń i dodaj ponownie" in first
     assert "Wstrzymana — zakończona przez starą wersję · W wznów" in second
     assert "usuń i dodaj ponownie" not in second
+    assert "pobrano" not in first + second
+    assert "· Problem" not in first
+
+
+def test_a_row_shown_whole_leaves_nothing_beneath_the_table(panel: StateController) -> None:
+    panel._subscriptions = [_row("u", "Undated")]
+
+    lines: list[str] = _frame(panel).splitlines()
+
+    assert [line for line in lines if "Termin nieznany" in line] == [lines[_line(lines, " Undated ")]]
+    assert sum("Undated" in line for line in lines) == 1
 
 
 def test_problem_and_conflict_states_share_the_style_of_every_other_state(panel: StateController) -> None:
@@ -371,16 +382,24 @@ def test_the_list_fits_and_every_row_and_key_stays_reachable(panel: StateControl
         assert hint in frame
 
 
-@pytest.mark.parametrize(("columns", "labels"), [(120, 5), (80, 5), (50, 2)])
-def test_narrow_terminals_drop_optional_columns_and_keep_them_beneath_the_table(
-    panel: StateController, columns: int, labels: int
+@pytest.mark.parametrize(
+    ("columns", "labels", "beneath"),
+    [
+        (120, 5, ""),
+        (50, 2, "odcinki E3–E12 · pobrano 1/4 · gotowe 0 · That Time I Got Reincarnated as a Slime Season 4"),
+    ],
+)
+def test_narrow_terminals_drop_optional_columns_and_show_only_what_the_row_hides_beneath_the_table(
+    panel: StateController, columns: int, labels: int, beneath: str
 ) -> None:
     panel._subscriptions = [_row("a", "That Time I Got Reincarnated as a Slime Season 4", episode_count=12)]
 
     lines: list[str] = _frame(panel, columns, 24).splitlines()
     header: str = lines[_line(lines, "Tytuł")]
+    keys: int = _line(lines, "Enter szczegóły")
+    notice: str = " ".join(line.strip() for line in lines[_line(lines, "Tytuł") + 2 : keys] if line.strip())
 
     shown: list[str] = [label for label in ("Tytuł", "Odcinki", "Pobrano", "Gotowe", "Stan") if label in header]
     assert len(shown) == labels
     assert {"Tytuł", "Stan"} <= set(shown)
-    assert "E3–E12 · pobrano 1/4" in " ".join(line.strip() for line in lines)
+    assert notice == beneath

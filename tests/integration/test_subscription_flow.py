@@ -171,7 +171,7 @@ def _assert_finished_season(store: WatchStateStore, final: WatchState, workspace
         for item in HistoryJournal(store.history_path()).events(_NOW - timedelta(days=1))
         if item.kind is HistoryKind.SUBSCRIPTION_FINISHED
     ]
-    assert history == ["Neko to Ryuu, pobrano 1/1"]
+    assert history == ["Neko to Ryuu, pobrano 3/3"]
     satisfied: EpisodeAssignment = final.acquisitions[-1].assignments[0]
     assert satisfied.group_id is not None
     return satisfied

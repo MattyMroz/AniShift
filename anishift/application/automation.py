@@ -3633,12 +3633,15 @@ class AutomationOwner:
         refusal: ControlResponse | None = self._subscription_refusal(request, record.anilist_id or 0)
         if refusal is not None:
             return refusal
-        return self._commit_subscriptions(
+        response: ControlResponse = self._commit_subscriptions(
             request,
             (*self._state.subscriptions, record),
             self._state.removed_subscription,
             {"subscription_id": record.subscription_id, "from_number": subscription_row(record).from_number},
         )
+        if response.ok:
+            self._log_next_search(record)
+        return response
 
     def _request_subscription_check(self, request: ControlRequest, record: SubscriptionRecord) -> ControlResponse:
         acquisition: AcquisitionService | None = self._service.acquisition
@@ -3673,6 +3676,16 @@ class AutomationOwner:
         moment: datetime | None = next_check_at(record, now)
         retry: tuple[int, datetime] | None = self._subscription_retries.get(record.subscription_id)
         return moment if moment is None or retry is None else max(moment, retry[1])
+
+    def _log_next_search(self, record: SubscriptionRecord, *, finished: bool = False) -> None:
+        moment: datetime | None = None if finished else self._subscription_due(record, self._clock())
+        logger.info(
+            "Subscription next search",
+            subscription_id=record.subscription_id,
+            anilist_id=record.anilist_id,
+            number=None if finished else subscription_row(record).due_number,
+            at=None if moment is None else moment.astimezone(UTC).isoformat(),
+        )
 
     def _poll_subscriptions(self) -> None:
         if self._subscriptions_at is None or time.monotonic() < self._subscriptions_at:
@@ -3819,6 +3832,8 @@ class AutomationOwner:
         if saved:
             for number, candidate, identity in chosen:
                 self._admit_attempt(identifier, number, candidate, identity)
+        checked: SubscriptionRecord | None = self._subscription(identifier)
+        self._log_next_search(checked or updated, finished=checked is None)
         if requested:
             self._publish(
                 {
@@ -4184,8 +4199,9 @@ class AutomationOwner:
                 )
 
     def _finish_subscription(self, record: SubscriptionRecord) -> None:
-        count: int = len(record.targets)
-        logger.info("Subscription finished", subscription_id=record.subscription_id, targets=count)
+        row: SubscriptionRow = subscription_row(record)
+        total: str = "?" if row.targets_total is None else str(row.targets_total)
+        logger.info("Subscription finished", subscription_id=record.subscription_id, targets=len(record.targets))
         try:
             self._history.append(
                 HistoryEvent.create(
@@ -4193,7 +4209,8 @@ class AutomationOwner:
                     record.subscription_id,
                     self._now(),
                     HistoryKind.SUBSCRIPTION_FINISHED,
-                    sanitize_event_message(f"{record.title}, pobrano {count}/{count}") or record.subscription_id,
+                    sanitize_event_message(f"{record.title}, pobrano {row.downloaded}/{total}")
+                    or record.subscription_id,
                 ),
                 self._clock(),
             )

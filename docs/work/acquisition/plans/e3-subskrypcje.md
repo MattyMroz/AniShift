@@ -418,7 +418,8 @@ Czyste funkcje w `subscription_targets.py`; owner tylko je stosuje i zapisuje:
   dla każdego numeru `cut+1..episode_count` (brakujący numer → nie zamyka). Celu nic nie
   wyłącza. Cel z `number > episode_count` blokuje zamknięcie, a projekcja wiersza U07/U08
   wylicza z niego konflikt „AniList podaje {n} odcinków, a subskrypcja czeka na E{m}”
-  (D-23). Licznik „pobrano y/y” w S-09 = spełnione / wszystkie cele.
+  (D-23). Licznik „pobrano y/y” w S-09 pochodzi z `subscription_row` (jak S-03):
+  odcinki przed pierwszym celem plus spełnione cele / te odcinki plus wszystkie cele.
 - `display_order(records, now)` (S-03): problem → najbliższe `due_at`/emisja → bez terminu →
   wstrzymane; remis po tytule (`casefold`).
 
@@ -659,8 +660,8 @@ test sprawdza rozmiar każdej ramki i komplet stanów celu.
 - **U07** (zakładka Subskrypcje w `StateController`): tabela wspólnego renderera Anime
   (`render_anime`, `AnimeScreen.SUBSCRIPTIONS`), jeden wiersz na subskrypcję: Tytuł │ Odcinki │
   Pobrano │ Gotowe │ Stan, wg `ux.md` §9. Stany problemów i konfliktów mają styl zwykłych
-  stanów; pełny stan podświetlonego wpisu stoi pod tabelą (stan i wynik `F` przed tytułem;
-  całość zawsze w U08 pod `?`). Na 50×12 wiersz statusu zostaje. Pusta lista: „Brak subskrypcji ·
+  stanów; pod tabelą stoi tylko to, czego wiersz podświetlonego wpisu nie pokazuje w całości
+  (pełny stan i wynik `F`, ukryte kolumny, przycięty tytuł; całość zawsze w U08 pod `?`). Na 50×12 wiersz statusu zostaje. Pusta lista: „Brak subskrypcji ·
   D dodaj pierwszą”; nad listą nie ma wiersza „Dodaj”. Stały wiersz pod tytułem pokazuje
   tylko błąd monitoringu albo tryb cienia; pauza globalna jest wyłącznie w dolnym wierszu
   statusu. Odliczanie z zegara renderera co sekundę, bez IPC; kolejność z `display_order`

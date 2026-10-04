@@ -54,6 +54,7 @@ from anishift.application.subscription_targets import (
     SubscriptionRow,
     SubscriptionTarget,
     TargetState,
+    next_check_at,
 )
 from anishift.application.subscriptions import Subscription, SubscriptionStore
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
@@ -584,6 +585,31 @@ def test_adding_a_releasing_season_saves_its_cut_mapping_and_future_targets_once
     assert [(item.number, item.state) for item in record.targets] == [(24, TargetState.AWAITING_AIRING)]
     assert record.subscribed_at == _NOW.isoformat()
     assert "add" in {item.command_id for item in saved.command_receipts}
+
+
+def _next_searches() -> tuple[list[dict[str, object]], int]:
+    logged: list[dict[str, object]] = []
+    handler: int = loguru_logger.add(
+        lambda message: logged.append(dict(message.record["extra"])),
+        filter=lambda record: record["message"] == "Subscription next search",
+    )
+    return logged, handler
+
+
+def test_adding_and_checking_a_subscription_log_its_next_search_once_each(tmp_path: Path) -> None:
+    logged, handler = _next_searches()
+    try:
+        with _following(tmp_path, _active(), _World(), shadow=True) as (owner, store):
+            added: ControlResponse = _add(owner)
+            _add(owner)
+            record: SubscriptionRecord = _checked(owner, store, str(added.result["subscription_id"]))
+    finally:
+        loguru_logger.remove(handler)
+
+    following: datetime | None = next_check_at(record, _NOW)
+    assert following is not None
+    assert [(item["number"], item["at"]) for item in logged] == [(24, _NOW.isoformat()), (24, following.isoformat())]
+    assert {(item["subscription_id"], item["anilist_id"]) for item in logged} == {(record.subscription_id, _S4)}
 
 
 def test_adding_an_announced_season_without_dates_targets_every_episode(tmp_path: Path) -> None:

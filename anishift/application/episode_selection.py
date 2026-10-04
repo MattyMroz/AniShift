@@ -373,11 +373,14 @@ def episode_listing(  # noqa: PLR0913
 ) -> EpisodeListing:
     """Join ani.zip episodes with the AniList schedule and fill numbers up to the known episode count.
 
+    Without an AniList count the ani.zip count stands, raised to the highest AniList schedule number.
     An episode is aired when its AniList date has passed; without an AniList date, when U-15 confirms
     its number against the AniList aired count. An ani.zip date never confirms airing and marks
     the episode with ``airs_at_fallback``.
     """
-    count: int | None = episode_count if episode_count is not None else mapping.episode_count
+    count: int | None = episode_count
+    if count is None and mapping.episode_count is not None:
+        count = max((mapping.episode_count, *(planned.number for planned in schedule)))
     aired: int | None = _aired(status, episode_count, schedule, now)
     dated: dict[int, datetime] = {
         planned.number: planned.airs_at for planned in schedule if planned.airs_at is not None

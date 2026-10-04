@@ -89,7 +89,7 @@ def test_a_closed_attempt_without_a_download_moves_the_target_by_its_budget_and_
     assert closed.attempts == attempts
 
 
-def test_a_row_counts_satisfied_targets_and_shows_the_nearest_open_deadline() -> None:
+def test_a_row_counts_earlier_episodes_with_satisfied_targets_and_shows_the_nearest_open_deadline() -> None:
     record: SubscriptionRecord = _record(
         cut=2,
         targets=(
@@ -105,8 +105,8 @@ def test_a_row_counts_satisfied_targets_and_shows_the_nearest_open_deadline() ->
         anilist_id=1,
         title="Series",
         from_number=3,
-        downloaded=1,
-        targets_total=4,
+        downloaded=3,
+        targets_total=6,
         due_at=(_NOW + timedelta(days=1)).isoformat(),
         paused=False,
         pause_reason=None,
@@ -116,6 +116,27 @@ def test_a_row_counts_satisfied_targets_and_shows_the_nearest_open_deadline() ->
     )
 
 
+@pytest.mark.parametrize(
+    ("changes", "first", "expected"),
+    [
+        ({"cut": 1}, 2, (2, 1, 12)),
+        ({"cut": 2}, 3, (3, 2, 12)),
+        ({"cut": 0}, 1, (1, 0, 12)),
+        ({"cut": None, "migrated_at": _NOW.isoformat()}, 2, (2, 1, 12)),
+    ],
+    ids=["from-2", "from-3", "from-1", "migrated-from-first-target"],
+)
+def test_a_row_counts_downloads_over_the_whole_season_from_its_first_episode(
+    changes: dict[str, object], first: int, expected: tuple[int, int, int]
+) -> None:
+    targets: tuple[SubscriptionTarget, ...] = tuple(_target(number) for number in range(first, 13))
+    record: SubscriptionRecord = replace(_record(targets=targets), **changes)  # type: ignore[arg-type]
+
+    row: SubscriptionRow = subscription_row(record)
+
+    assert (row.from_number, row.downloaded, row.targets_total) == expected
+
+
 @pytest.mark.parametrize(("count", "beyond"), [(4, 6), (6, None), (None, None)])
 def test_a_row_names_the_last_target_beyond_the_catalogue_episode_count(count: int | None, beyond: int | None) -> None:
     record: SubscriptionRecord = _record(episode_count=count, targets=tuple(_target(number) for number in range(3, 7)))
@@ -123,6 +144,18 @@ def test_a_row_names_the_last_target_beyond_the_catalogue_episode_count(count: i
     row: SubscriptionRow = subscription_row(record)
 
     assert (row.episode_count, row.beyond_count) == (count, beyond)
+
+
+def test_a_stored_stale_episode_count_heals_on_the_next_read_and_clears_the_count_conflict() -> None:
+    stale: SubscriptionRecord = _record(
+        episode_count=4, targets=tuple(_target(number, due=_NOW - _DAY) for number in range(1, 7))
+    )
+    read: ListingRead = _read(_listing(*(_episode(number, _NOW - _DAY) for number in range(1, 13)), count=12))
+
+    healed: SubscriptionRecord = merge_listing(stale, read, _NOW)
+
+    assert subscription_row(stale).beyond_count == 6
+    assert (healed.episode_count, subscription_row(healed).beyond_count) == (12, None)
 
 
 def test_a_migrated_row_waiting_for_review_hides_its_target_count() -> None:

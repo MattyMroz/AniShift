@@ -258,7 +258,7 @@ def render_anime(snapshot: AnimeSnapshot, columns: int, rows: int, now: float) -
         title_width = _list(canvas, snapshot, visible)
     else:
         title_width = _table(canvas, snapshot, visible, now)
-    _footer(canvas, snapshot, keys, title_width)
+    _footer(canvas, snapshot, keys, title_width, now)
     return canvas.finish(visible, snapshot.selection, canvas.top)
 
 
@@ -432,7 +432,7 @@ def _number_ranges(numbers: list[str]) -> list[str]:
     return [run[0] if len(run) == 1 else f"{run[0]}-{run[-1]}" for run in runs]
 
 
-def _footer(canvas: _Canvas, snapshot: AnimeSnapshot, keys: tuple[str, ...], title_width: int) -> None:
+def _footer(canvas: _Canvas, snapshot: AnimeSnapshot, keys: tuple[str, ...], title_width: int, now: float) -> None:
     selected: list[str] = [item.number for item in snapshot.items if item.key in snapshot.selected]
     summary: Text = Text(
         f"Zaznaczone: {len(selected)} ({', '.join(_number_ranges(selected))})"
@@ -451,6 +451,8 @@ def _footer(canvas: _Canvas, snapshot: AnimeSnapshot, keys: tuple[str, ...], tit
             snapshot.screen is AnimeScreen.RELEASES or not item.detail
         )
         notice = item.title if full_name else item.detail
+        if snapshot.screen is AnimeScreen.SUBSCRIPTIONS:
+            notice = _unshown(snapshot, item, canvas.width - _MARGIN, now)
     color: str = _COLORS[snapshot.notice_kind]
     lines: list[str] = _notice_lines(notice, canvas.width - _MARGIN)
     bottom: int = len(canvas.lines) - len(keys)
@@ -459,6 +461,20 @@ def _footer(canvas: _Canvas, snapshot: AnimeSnapshot, keys: tuple[str, ...], tit
         canvas.center(bottom - len(lines) + index, Text(line, style=color), selectable=True)
     for index, line in enumerate(keys):
         canvas.center(bottom + index, Text(line, style="gray"))
+
+
+def _unshown(snapshot: AnimeSnapshot, item: AnimeRow, limit: int, now: float) -> str:
+    spec: _Table = _spec(snapshot.screen)
+    widths, shown = _widths(snapshot, spec, limit, now)
+    values: list[str] = _values(snapshot, item, now)
+    parts: list[str] = []
+    if item.detail or Text(values[-1]).cell_len > widths[-1]:
+        parts.append(item.detail or values[-1])
+    hidden: list[int] = sorted(position for position in spec.optional if position not in shown)
+    parts.extend(f"{spec.labels[position].lower()} {values[position]}" for position in hidden)
+    if Text(item.title).cell_len > widths[spec.title]:
+        parts.append(item.title)
+    return " · ".join(parts)
 
 
 def _notice_lines(notice: str, width: int) -> list[str]:

@@ -186,7 +186,7 @@ def test_an_attempt_is_checked_on_its_staged_video_before_naming_and_satisfies_i
     assert probe.stamps == [assignment.verified_stamp]
     assert listed.result["shadow"] is False
     rows: list[dict[str, object]] = cast("list[dict[str, object]]", listed.result["subscriptions"])
-    assert (rows[0]["downloaded"], rows[0]["ready"]) == (1, 0)
+    assert (rows[0]["from_number"], rows[0]["downloaded"], rows[0]["ready"]) == (3, 3, 0)
     trail: list[tuple[object, object, object]] = [
         (item["kind"], item.get("source"), item.get("attempt_result")) for item in _decisions(setup)
     ]
@@ -353,4 +353,4 @@ def test_the_last_satisfied_target_of_a_finished_season_moves_the_subscription_i
 
     assert listed.result["subscriptions"] == []
     events: tuple[HistoryEvent, ...] = HistoryJournal(setup.store.history_path()).events(_MOMENT)
-    assert [item.name for item in events if item.kind is HistoryKind.SUBSCRIPTION_FINISHED] == ["Neko, pobrano 1/1"]
+    assert [item.name for item in events if item.kind is HistoryKind.SUBSCRIPTION_FINISHED] == ["Neko, pobrano 3/3"]

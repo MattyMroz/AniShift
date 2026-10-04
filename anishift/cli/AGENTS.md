@@ -67,7 +67,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   Ctrl+Z restore. U08 hands W/F/X to the panel through `take_subscription_command`, so command
   workers stay in `StateController`. F shows `Sprawdzam…`, then the `subscription_checked` result
   for `CHECK_SHOWN_S`, measured by the injected clock: `check_state` in the Stan column, `check_text`
-  first beneath the table (state, summary, then title). U08 leads its notice with the last check;
+  first beneath the table. Beneath the table stands only what the highlighted row hides: the full state
+  when it differs from the short one, dropped columns, then a truncated title (`anime_view._unshown`). U08 leads its notice with the last check;
   `?` there lists every subscription fact (`_subscription_facts`) wrapped and scrollable, so 50-column
   terminals reach the full title, range, Pobrano and Gotowe. Row states and columns come only from `subscription_texts` (`row_state`,
   `row_columns`, `row_summary`). The list is `render_anime` with `AnimeScreen.SUBSCRIPTIONS`: one row

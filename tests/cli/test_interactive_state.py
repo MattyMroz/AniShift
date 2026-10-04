@@ -1135,8 +1135,8 @@ def _assert_subscription_rows(frame: str) -> None:
     example: str = next(line for line in rows if "\u276f Example" in line)
     assert example.split()[2:] == ["E22–?", "1/?", "0", "Weryfikuję"]
     assert next(line for line in rows if " Other " in line).split()[-1] == "Wstrzymana"
-    detail: str = "Sprawdzam przeniesioną subskrypcję · E22–? · pobrano 1/? · gotowe 0 · Example"
-    assert detail in " ".join(frame.split())
+    assert "Sprawdzam przeniesioną subskrypcję" in " ".join(frame.split())
+    assert "pobrano" not in frame
     assert "Aktywne" not in frame
     assert "W wstrzymaj" in frame
     assert "Del usuń" in frame
@@ -1170,7 +1170,7 @@ def _assert_a_long_title_keeps_the_state_beneath_the_table(controller: StateCont
     lines: list[str] = controller.render(80, 24).plain.splitlines()
     row: int = next(index for index, line in enumerate(lines) if "\u276f A very" in line)
     assert "Finale" not in lines[row]
-    assert any(line.strip().startswith("Sprawdzam przeniesioną subskrypcję · E22–?") for line in lines)
+    assert any(line.strip().startswith("Sprawdzam przeniesioną subskrypcję · ") for line in lines)
     assert not any(line.strip().startswith("A very") for line in lines)
     assert len(lines) <= 24
     assert all(len(line) <= 80 for line in lines)

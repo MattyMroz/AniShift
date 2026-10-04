@@ -12,6 +12,7 @@ from typing import cast
 
 import httpx
 import pytest
+from loguru import logger as loguru_logger
 from test_acquisition import _Clock
 from test_automation import _INSTANCE, _MOMENT, _TIMEOUT_S, _real_service, _request, _serving
 from test_selective_lifecycle import _ENTRY, _PACK, _choice, _SelectiveNetwork, _until
@@ -836,7 +837,7 @@ def test_a_finished_season_closes_only_once_every_target_was_really_downloaded(
         for item in HistoryJournal(world.store.history_path()).events(_MOMENT)
         if item.kind is HistoryKind.SUBSCRIPTION_FINISHED
     ]
-    assert finished == (["Neko to Ryuu, pobrano 2/2"] if closed else [])
+    assert finished == (["Neko to Ryuu, pobrano 4/4"] if closed else [])
 
 
 def test_an_old_ordered_transfer_completing_after_migration_satisfies_its_target_without_a_new_order(
@@ -899,7 +900,28 @@ def test_a_target_beyond_a_shrunk_season_blocks_its_close_until_it_is_downloaded
         for item in HistoryJournal(world.store.history_path()).events(_MOMENT)
         if item.kind is HistoryKind.SUBSCRIPTION_FINISHED
     ]
-    assert finished == ([] if left == "removed" else ["Neko to Ryuu, pobrano 2/2"])
+    assert finished == ([] if left == "removed" else ["Neko to Ryuu, pobrano 4/4"])
+
+
+def test_a_check_that_closes_the_season_logs_no_next_search(world: _World) -> None:
+    world.season.status = TitleStatus.FINISHED
+    logged: list[dict[str, object]] = []
+    handler: int = loguru_logger.add(
+        lambda message: logged.append(dict(message.record["extra"])),
+        filter=lambda record: record["message"] == "Subscription next search",
+    )
+    try:
+        record: SubscriptionRecord = _record(targets=(_DONE, _target_row(4, TargetState.SATISFIED)))
+        with _running(world, _following(record, auto=False)) as owner:
+            _check(owner, "check")
+            closed: bool = _record_of(owner) is None
+    finally:
+        loguru_logger.remove(handler)
+
+    assert closed
+    assert [(item["subscription_id"], item["anilist_id"], item["number"], item["at"]) for item in logged] == [
+        ("a", _ENTRY, None, None)
+    ]
 
 
 def test_pausing_a_subscription_lets_its_attempt_finish_and_starts_no_new_search(world: _World) -> None:

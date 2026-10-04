@@ -311,16 +311,21 @@ def after_close(target: SubscriptionTarget, now: datetime, n_max: int = MAX_ATTE
 
 
 def subscription_row(record: SubscriptionRecord) -> SubscriptionRow:
-    """Project *record* into the compact row the subscription list shows."""
+    """Project *record* into the compact row the subscription list shows.
+
+    The download counts span the whole season: episodes before the first target count as downloaded.
+    """
     numbers: tuple[int, ...] = tuple(item.number for item in record.targets)
     nearest: SubscriptionTarget | None = _nearest(record)
+    from_number: int | None = record.cut + 1 if record.cut is not None else min(numbers, default=None)
+    earlier: int = 0 if from_number is None else from_number - 1
     return SubscriptionRow(
         subscription_id=record.subscription_id,
         anilist_id=record.anilist_id,
         title=record.title,
-        from_number=record.cut + 1 if record.cut is not None else min(numbers, default=None),
-        downloaded=sum(1 for item in record.targets if item.state is TargetState.SATISFIED),
-        targets_total=None if record.review_pending else len(record.targets),
+        from_number=from_number,
+        downloaded=earlier + sum(1 for item in record.targets if item.state is TargetState.SATISFIED),
+        targets_total=None if record.review_pending else earlier + len(record.targets),
         due_at=None if nearest is None else nearest.due_at,
         paused=record.paused,
         pause_reason=None if record.pause_reason is None else record.pause_reason.value,

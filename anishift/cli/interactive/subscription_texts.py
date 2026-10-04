@@ -173,7 +173,7 @@ def _dated_state(episode: str, remaining: int) -> SubscriptionState:
         days, rest = divmod(remaining, _DAY_S)
         hours, rest = divmod(rest, _HOUR_S)
         clock: str = f"{hours:02d}:{rest // 60:02d}:{rest % 60:02d}"
-        return _plain(f"Emisja{episode} za {days} d {clock}" if days else f"Emisja{episode} za {clock}")
+        return _plain(f"Emisja{episode} za {days}d {clock}" if days else f"Emisja{episode} za {clock}")
     waited: int = -remaining
     if waited >= _DAILY_AFTER_S:
         since: str = f"od {waited // _DAY_S} dni"

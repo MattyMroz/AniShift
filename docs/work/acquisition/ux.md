@@ -240,16 +240,16 @@ Otwierany z wiersza Przetwarzania ze stanem „Nie ustalono pliku w paczce”.
   Tytuł                                         Odcinki  Pobrano  Gotowe  Stan
   Dungeon Meshi Season 2                        ?        1/?      0       Nie rozpoznano sezonu
   Kaiju No. 8 Season 2                          E1–E6    4/6      3       Konflikt liczby odcinków
-  That Time I Got Reincarnated as a Slime S4    E5–E12   3/8      2       Emisja E8 za 2 d 04:18:09
+  That Time I Got Reincarnated as a Slime S4    E5–E12   7/12     2       Emisja E8 za 2d 04:18:09
 ❯ Frieren Season 2                              E1–?     7/?      6       Sprawdzono E8
 
-  Sprawdzono E8: 12 kandydatów, 0 zgodnych (8 niepewnych, 4 niezgodnych) · E1–? · pobrano 7/? · gotowe 6 · Frieren Season 2
+  Sprawdzono E8: 12 kandydatów, 0 zgodnych (8 niepewnych, 4 niezgodnych)
   Enter szczegóły · D dodaj · W wstrzymaj · F szukaj · Del usuń · Ctrl+Z cofnij · Esc wróć · ←→ widok · ↑↓ wybierz
                              ↓ 0 · Przetwarzanie 0 · Czeka 0 · Automat wstrzymany
 ```
 
-- Tabela jak w Anime (ten sam renderer, wskaźnik, kolory i stopka): jeden wiersz na subskrypcję, kolumny Tytuł │ Odcinki │ Pobrano │ Gotowe │ Stan. Odcinki to zakres celów (`E3–E12`, `E3–?`, `E3`, `?`).
-- Stan ma stałą szerokość krótkiego tekstu. Problemy i konflikty mają ten sam styl co pozostałe stany; ich wagę wyraża kolejność listy i pełny opis pod kursorem. Pełny stan podświetlonego wpisu i podsumowanie celów stoją pod tabelą: „{pełny stan} · {zakres} · pobrano {x/y} · gotowe {n} · {tytuł}”; wynik `F` jest więc zawsze na początku.
+- Tabela jak w Anime (ten sam renderer, wskaźnik, kolory i stopka): jeden wiersz na subskrypcję, kolumny Tytuł │ Odcinki │ Pobrano │ Gotowe │ Stan. Odcinki to zakres celów (`E3–E12`, `E3–?`, `E3`, `?`). Pobrano liczy cały sezon: odcinki przed pierwszym celem liczą się jako pobrane, więc subskrypcja od E3 bez pobranych celów pokazuje `2/12`.
+- Stan ma stałą szerokość krótkiego tekstu. Problemy i konflikty mają ten sam styl co pozostałe stany; ich wagę wyraża kolejność listy i pełny opis pod kursorem. Pod tabelą stoi tylko to, czego wiersz podświetlonego wpisu nie pokazuje w całości: „{pełny stan} · {ukryte kolumny} · {pełny tytuł}”. Pełny stan pojawia się, gdy różni się od krótkiego (np. wynik `F`, który jest wtedy zawsze na początku), ukryte kolumny — gdy wąski terminal je zdjął, tytuł — gdy jest przycięty. Wiersz widoczny w całości nie ma nic pod tabelą.
 - Wąski terminal ukrywa kolumny w kolejności Gotowe, Odcinki, Pobrano, zanim tytuł spadnie poniżej 12 komórek; ich wartości zostają w wierszu pod tabelą. Gdy dwa wiersze notki nie mieszczą całości, pełne wartości i tytuł są w U08 pod `?`.
 - Na 50×12 dolny wiersz statusu (z „Automat wstrzymany”) zostaje; ustępuje mu pusty odstęp pod tabelą.
 - Pusta lista: „Brak subskrypcji · D dodaj pierwszą”; klawisze „D dodaj · Ctrl+Z cofnij · Esc wróć”. Nie ma wiersza „D Dodaj subskrypcję” ani licznika „Aktywne”.
@@ -265,7 +265,7 @@ To jest U03 tego wpisu z nagłówkiem subskrypcji. Lista zawiera cele subskrypcj
 
 ```text
                                  Subskrypcje › Slime Season 4
-                      Emisja E3 za 03:00:00 · E3–E6 · pobrano 1/4 · gotowe 0
+                      Emisja E3 za 03:00:00 · E3–E6 · pobrano 3/6 · gotowe 0
       Nr  Tytuł                                         Emisja      Stan
 ❯ [ ] 1   Odcinek 1                                     25.09.2026  Do pobrania
   [ ] 2   Odcinek 2                                     02.10.2026  Do pobrania
