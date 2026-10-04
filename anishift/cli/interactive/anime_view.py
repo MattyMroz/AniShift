@@ -275,11 +275,16 @@ def _query(canvas: _Canvas, snapshot: AnimeSnapshot) -> None:
 def _list(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int) -> int:
     items: tuple[AnimeRow, ...] = snapshot.items[snapshot.offset : snapshot.offset + visible]
     prefix: int = 2 if snapshot.screen in {AnimeScreen.FILES, AnimeScreen.DRAFT} else 0
-    canvas.place(max((Text(item.title).cell_len for item in items), default=0) + prefix)
+    boxed: int = 4 if snapshot.screen is AnimeScreen.DRAFT and any(item.number for item in items) else 0
+    canvas.place(max((Text(item.title).cell_len for item in items), default=0) + prefix + boxed)
     for index, item in enumerate(items):
         if prefix and index + snapshot.offset == snapshot.cursor and item.navigable:
             canvas.put(canvas.top + index, 0, _pointer(active=True), "brand_accent")
-        canvas.put(canvas.top + index, prefix, item.title, selectable=True)
+        box: int = boxed if item.number else 0
+        if box:
+            marked: bool = item.key in snapshot.selected
+            canvas.put(canvas.top + index, prefix, "[x]" if marked else "[ ]", "brand_accent" if marked else "gray")
+        canvas.put(canvas.top + index, prefix + box, item.title, selectable=True)
     return canvas.columns - prefix
 
 
@@ -298,13 +303,12 @@ def _spec(screen: AnimeScreen) -> _Table:
         )
     if screen is AnimeScreen.SUBSCRIPTIONS:
         return _Table(
-            ("Tytuł", "Odcinki", "Pobrano", "Gotowe", "Stan"),
-            lambda item: (item.title, item.number, item.progress, item.ready, item.status),
+            ("Tytuł", "Odcinki", "Gotowe", "Stan"),
+            lambda item: (item.title, item.number, item.ready, item.status),
             2,
             0,
-            (0, 0, 0, 0, 0),
-            _SUBSCRIPTION_STATUS_WIDTH,
-            (3, 1, 2),
+            status_width=_SUBSCRIPTION_STATUS_WIDTH,
+            optional=(2, 1),
         )
     return _Table(
         ("Nr", "Tytuł", "Emisja", "Stan"),
@@ -398,11 +402,12 @@ def _item(  # noqa: PLR0913
     for position, start, width in columns:
         value: str = values[position]
         status: bool = position == len(values) - 1
+        downloaded: bool = snapshot.screen is AnimeScreen.SUBSCRIPTIONS and position == 1 and not value.startswith("0/")
         canvas.put(
             row,
             start,
             fit(value, width),
-            _value_style(value, active=active, item=item, searching=searching and status),
+            "success" if downloaded else _value_style(value, active=active, item=item, searching=searching and status),
             selectable=not (searching and status),
         )
 
@@ -482,8 +487,8 @@ def _notice_lines(notice: str, width: int) -> list[str]:
         return []
     lines: list[str] = [line.plain for line in Text(notice).wrap(Console(width=width), width)]
     if len(lines) > _NOTICE_ROWS:
-        lines = [*lines[: _NOTICE_ROWS - 1], fit(" ".join(lines[_NOTICE_ROWS - 1 :]), width)]
-    return lines
+        lines = [*lines[: _NOTICE_ROWS - 1], fit(" ".join(line.strip() for line in lines[_NOTICE_ROWS - 1 :]), width)]
+    return [line.strip().removeprefix("· ").removesuffix(" ·") for line in lines]
 
 
 def _key_lines(snapshot: AnimeSnapshot, width: int) -> tuple[str, ...]:

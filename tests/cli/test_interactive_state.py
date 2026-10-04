@@ -1069,7 +1069,7 @@ def test_processing_excludes_saved_downloads_regardless_of_client_measurement(
             return ControlResponse.succeeded(
                 {
                     "subscriptions": [
-                        encode_view(_row("series", "Example", from_number=22)),
+                        encode_view(_row("series", "Example", on_disk=22)),
                         encode_view(_row("other", "Other", paused=True)),
                     ]
                 }
@@ -1114,14 +1114,12 @@ def test_processing_excludes_saved_downloads_regardless_of_client_measurement(
         controller._thread.join(5)
 
 
-def _row(subscription_id: str, title: str, *, from_number: int | None = 1, paused: bool = False) -> SubscriptionRow:
+def _row(subscription_id: str, title: str, *, on_disk: int = 1, paused: bool = False) -> SubscriptionRow:
     return SubscriptionRow(
         subscription_id=subscription_id,
         anilist_id=None,
         title=title,
-        from_number=from_number,
-        downloaded=1,
-        targets_total=None,
+        on_disk=on_disk,
         due_at=None,
         paused=paused,
         pause_reason="user" if paused else None,
@@ -1133,7 +1131,7 @@ def _row(subscription_id: str, title: str, *, from_number: int | None = 1, pause
 def _assert_subscription_rows(frame: str) -> None:
     rows: list[str] = frame.splitlines()
     example: str = next(line for line in rows if "\u276f Example" in line)
-    assert example.split()[2:] == ["E22–?", "1/?", "0", "Weryfikuję"]
+    assert example.split()[2:] == ["22/?", "0", "Weryfikuję"]
     assert next(line for line in rows if " Other " in line).split()[-1] == "Wstrzymana"
     assert "Sprawdzam przeniesioną subskrypcję" in " ".join(frame.split())
     assert "pobrano" not in frame

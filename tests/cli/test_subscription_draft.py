@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -14,8 +14,11 @@ from rich.text import Text
 from anishift.application import (
     AppService,
     EntryGroup,
+    EpisodeBatch,
     EpisodeKey,
     EpisodeListing,
+    EpisodeReason,
+    EpisodeResult,
     EpisodeStatus,
     Franchise,
     FranchiseEntry,
@@ -84,14 +87,13 @@ def _row(subscription_id: str, title: str, **changes: object) -> dict[str, objec
         subscription_id=subscription_id,
         anilist_id=1,
         title=title,
-        from_number=3,
-        downloaded=1,
-        targets_total=4,
         due_at=None,
         paused=False,
         pause_reason=None,
         problem=None,
         review_pending=False,
+        episode_count=4,
+        on_disk=1,
     )
     return {**encode_view(row), **changes}
 
@@ -111,6 +113,10 @@ class _Owner:
         self.calls: list[tuple[str, object]] = []
         self.numbers: list[tuple[int, ...]] = []
         self.refusal: str = ""
+        self.order_error: ControlError | None = None
+        self.reasons: dict[int, str] = {}
+        self.pending: int = 0
+        self.commands: list[str] = []
 
     def new_session(self) -> _Owner:
         return self
@@ -143,6 +149,19 @@ class _Owner:
         if self.refusal:
             raise ControlError("refused", code=ControlErrorCode.REFUSED, reason=self.refusal, answered=True)
         return {"subscription_id": "new"}
+
+    def episode_download(self, keys: tuple[EpisodeKey, ...], *, command_id: str) -> EpisodeBatch:
+        self.calls.append(("episode_download", tuple(key.number for key in keys)))
+        self.commands.append(command_id)
+        if self.order_error is not None:
+            raise self.order_error
+        if self.pending:
+            self.pending -= 1
+            return EpisodeBatch(command_id, "", tuple(keys), "accepted")
+        results: tuple[EpisodeResult, ...] = tuple(
+            EpisodeResult(key, self.reasons.get(key.number, EpisodeReason.ADMITTED), "a", "o") for key in keys
+        )
+        return EpisodeBatch(command_id, "", tuple(keys), "completed", results)
 
     def command(self, kind: str, payload: Mapping[str, object] | None = None) -> Mapping[str, object]:
         self.calls.append((kind, payload))
@@ -232,16 +251,16 @@ def _titles(panel: StateController) -> None:
     assert _anime(panel)._screen is _Screen.TITLES
 
 
-def test_a_draft_follows_the_episodes_airing_after_now_and_names_the_aired_ones() -> None:
+def test_a_draft_follows_the_next_episodes_without_a_start_number_and_lists_the_aired_ones() -> None:
     draft: SubscriptionDraft | None = subscription_draft(_listing(episodes=_weekly(2, 12)), _NOW, paused=False)
 
     assert draft is not None
     assert draft.addable
     assert draft.lines == (
-        "Pobiorę sam E3–E12 po emisji, najbliższy "
+        "Pobiorę sam kolejne odcinki po emisji, najbliższy E3 "
         f"{(_NOW + timedelta(days=6)).astimezone():%d.%m %H:%M}. Potem subskrypcja się zamknie.",
-        "E1–E2 wyszły przed subskrypcją: pobierz je ręcznie (D na liście odcinków).",
     )
+    assert [item.number for item in draft.aired] == [1, 2]
 
 
 @pytest.mark.parametrize(
@@ -264,8 +283,8 @@ def test_a_draft_names_a_near_airing_by_day(airs_at: datetime, when: str) -> Non
 
     assert draft is not None
     closing: str = "Potem subskrypcja się zamknie."
-    assert draft.lines[0] == f"Pobiorę sam E2 po emisji, najbliższy {when} {local:%H:%M}. {closing}"
-    assert draft.lines[1] == "E1 wyszedł przed subskrypcją: pobierz go ręcznie (D na liście odcinków)."
+    assert draft.lines == (f"Pobiorę sam kolejne odcinki po emisji, najbliższy E2 {when} {local:%H:%M}. {closing}",)
+    assert [item.number for item in draft.aired] == [1]
 
 
 def test_an_announcement_without_dates_or_count_follows_every_episode_from_the_first() -> None:
@@ -274,8 +293,9 @@ def test_an_announcement_without_dates_or_count_follows_every_episode_from_the_f
     assert draft is not None
     assert draft.addable
     assert draft.lines == (
-        "Pobiorę sam odcinki od E1 po emisji, terminy jeszcze nieznane. Subskrypcja zamknie się po końcu sezonu.",
+        "Pobiorę sam kolejne odcinki po emisji, terminy jeszcze nieznane. Subskrypcja zamknie się po końcu sezonu.",
     )
+    assert draft.aired == ()
 
 
 def test_a_draft_under_the_global_pause_says_when_it_starts_working() -> None:
@@ -301,14 +321,15 @@ def test_earlier_episodes_are_named_as_a_range_or_a_list(numbers: tuple[int, ...
 @pytest.mark.parametrize(
     ("changes", "columns"),
     [
-        ({}, ("E3–?", "1/4", "0")),
-        ({"episode_count": 12, "ready": 1}, ("E3–E12", "1/4", "1")),
-        ({"episode_count": 4, "beyond_count": 6}, ("E3–E6", "1/4", "0")),
-        ({"episode_count": 3}, ("E3", "1/4", "0")),
-        ({"from_number": None, "targets_total": None}, ("?", "1/?", "0")),
+        ({}, ("1/4", "0")),
+        ({"episode_count": 12, "ready": 1}, ("1/12", "1")),
+        ({"episode_count": 4, "beyond_count": 6}, ("1/4", "0")),
+        ({"episode_count": None, "on_disk": 0}, ("0/?", "0")),
     ],
 )
-def test_a_row_shows_its_range_and_progress(changes: Mapping[str, object], columns: tuple[str, str, str]) -> None:
+def test_a_row_shows_its_episodes_on_disk_out_of_the_season_and_its_ready_count(
+    changes: Mapping[str, object], columns: tuple[str, str]
+) -> None:
     assert row_columns(_row("a", "Alpha", **changes)) == columns
 
 
@@ -447,11 +468,13 @@ def test_d_on_the_list_searches_and_s_on_an_announced_title_adds_and_highlights_
     frame: str = _frame(panel)
     assert _anime(panel)._screen is _Screen.DRAFT
     assert "Nowa subskrypcja \u203a Slime 7" in frame
-    assert "Pobiorę sam odcinki od E1 po emisji" in frame
+    assert "Pobiorę sam kolejne odcinki po emisji" in frame
     assert "\u276f [ Dodaj subskrypcję ]" in frame
+    assert "wyemitowane" not in frame
 
     _keys(panel, "enter")
     assert ("subscription_add", 7) in owner.calls
+    assert not any(kind == "episode_download" for kind, _payload in owner.calls)
     assert panel._tab == _Tab.SUBSCRIPTIONS
     with panel._lock:
         panel._adopt_subscriptions({}, [_row("a", "Alpha"), _row("new", "Slime 7", anilist_id=7)])
@@ -485,7 +508,174 @@ def test_s_on_an_episode_list_drafts_from_the_loaded_list_without_reading_it_aga
 
     assert _anime(panel)._screen is _Screen.DRAFT
     assert owner.calls.count(("episodes", 1)) == reads
-    assert "Pobiorę sam E3–E4 po emisji" in _frame(panel)
+    assert "Pobiorę sam kolejne odcinki po emisji" in _frame(panel)
+
+
+def _episode_draft(panel: StateController, owner: _Owner) -> None:
+    owner.titles = (_title(1, TitleStatus.RELEASING),)
+    with panel._lock:
+        panel._adopt_subscriptions({}, [])
+    _keys(panel, "left", "text:slime", "enter", "text:s")
+    assert _anime(panel)._screen is _Screen.DRAFT
+
+
+def _orders(owner: _Owner) -> list[object]:
+    deadline: float = time.monotonic() + 5
+    while time.monotonic() < deadline and not any(kind == "episode_download" for kind, _ in owner.calls):
+        threading.Event().wait(0.005)
+    return [payload for kind, payload in owner.calls if kind == "episode_download"]
+
+
+def test_the_draft_marks_the_aired_episodes_and_add_orders_them_after_the_subscription(
+    panel: StateController, owner: _Owner
+) -> None:
+    _episode_draft(panel, owner)
+    frame: str = _frame(panel)
+    assert "Już wyemitowane pobiorę od razu, zaznaczone:" in frame
+    assert "[x] E1  Odcinek 1" in frame
+    assert "[x] E2  Odcinek 2" in frame
+    assert "E3  Odcinek 3" not in frame
+    assert "od E" not in frame
+    assert "Space zaznacz" in frame
+
+    _keys(panel, "down", "down", "enter")
+
+    assert _orders(owner) == [(1, 2)]
+    kinds: list[str] = [kind for kind, _ in owner.calls]
+    assert kinds.index("subscription_add") < kinds.index("episode_download")
+    assert panel._tab == _Tab.SUBSCRIPTIONS
+
+
+def test_space_unmarks_an_aired_episode_so_add_orders_only_the_marked_ones(
+    panel: StateController, owner: _Owner
+) -> None:
+    _episode_draft(panel, owner)
+
+    _keys(panel, "down", "space")
+    assert "[ ] E2  Odcinek 2" in _frame(panel)
+    _keys(panel, "down", "enter")
+
+    assert _orders(owner) == [(1,)]
+
+
+def test_a_draft_with_every_aired_episode_unmarked_adds_only_the_subscription(
+    panel: StateController, owner: _Owner
+) -> None:
+    _episode_draft(panel, owner)
+
+    _keys(panel, "text:a")
+    assert "[ ] E1  Odcinek 1" in _frame(panel)
+    _keys(panel, "down", "down", "enter")
+
+    assert ("subscription_add", 1) in owner.calls
+    assert _orders(owner) == []
+
+
+@pytest.mark.parametrize("state", ["ordered", "downloaded", "ready"])
+def test_the_draft_leaves_out_aired_episodes_already_ordered_or_downloaded(
+    panel: StateController, owner: _Owner, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    def statuses(identifier: int, numbers: tuple[int, ...]) -> tuple[EpisodeStatus, ...]:
+        del numbers
+        return (EpisodeStatus(EpisodeKey(identifier, 1), state),)
+
+    monkeypatch.setattr(owner, "episode_states", statuses)
+    _episode_draft(panel, owner)
+
+    frame: str = _frame(panel)
+    assert "E1  Odcinek 1" not in frame
+    assert "[x] E2  Odcinek 2" in frame
+
+
+def test_a_draft_opened_from_the_titles_reads_the_owner_states_of_the_aired_episodes(
+    panel: StateController, owner: _Owner
+) -> None:
+    owner.titles = (_title(1, TitleStatus.RELEASING), _title(7, TitleStatus.NOT_YET_RELEASED))
+    with panel._lock:
+        panel._adopt_subscriptions({}, [])
+    _titles(panel)
+    _keys(panel, "text:s")
+
+    assert owner.numbers[-1] == (1, 2)
+    assert "[x] E1  Odcinek 1" in _frame(panel)
+
+
+def test_a_refused_episode_order_keeps_the_added_subscription_and_names_the_reason(
+    panel: StateController, owner: _Owner
+) -> None:
+    owner.order_error = ControlError("refused", code=ControlErrorCode.REFUSED, reason="shutting_down", answered=True)
+    _episode_draft(panel, owner)
+
+    _keys(panel, "down", "down", "enter")
+
+    assert _orders(owner) == [(1, 2)]
+    assert ("subscription_add", 1) in owner.calls
+    assert panel._tab == _Tab.SUBSCRIPTIONS
+    assert panel._notice.startswith("Dodano subskrypcję · Nie zlecono · ")
+    assert _anime(panel)._pending_batch is None
+    assert not _anime(panel)._sending
+
+
+def test_an_unknown_episode_order_answer_keeps_its_command_for_enter_replay(
+    panel: StateController, owner: _Owner
+) -> None:
+    owner.order_error = ControlError("lost")
+    _episode_draft(panel, owner)
+
+    _keys(panel, "down", "down", "enter")
+
+    assert _orders(owner) == [(1, 2)]
+    assert panel._notice == "Dodano subskrypcję · Wynik nieznany · Enter sprawdź wynik"
+    batch: EpisodeBatch | None = _anime(panel)._pending_batch
+    assert batch is not None
+    assert batch.keys == (EpisodeKey(1, 1), EpisodeKey(1, 2))
+    assert not _anime(panel)._batch_running
+
+
+def _until(condition: Callable[[], bool]) -> None:
+    deadline: float = time.monotonic() + 5
+    while time.monotonic() < deadline and not condition():
+        threading.Event().wait(0.005)
+    assert condition()
+
+
+@pytest.mark.parametrize("pending", [0, 1])
+def test_episodes_the_owner_refuses_after_add_are_named_on_the_subscription_list(
+    panel: StateController, owner: _Owner, pending: int
+) -> None:
+    owner.reasons = {1: EpisodeReason.NO_SUGGESTION, 2: EpisodeReason.NO_SUGGESTION}
+    owner.pending = pending
+    _episode_draft(panel, owner)
+
+    _keys(panel, "down", "down", "enter")
+
+    _until(lambda: "Nie zlecono" in panel._notice)
+    assert panel._tab == _Tab.SUBSCRIPTIONS
+    assert panel._notice.endswith("Nie zlecono E1\u2013E2: Brak wydania")
+    assert _anime(panel)._pending_batch is None
+
+
+@pytest.mark.parametrize("listed", [True, False])
+def test_enter_on_the_list_replays_a_lost_order_under_its_command_and_resolves_it(
+    panel: StateController, owner: _Owner, *, listed: bool
+) -> None:
+    owner.order_error = ControlError("lost")
+    _episode_draft(panel, owner)
+    _keys(panel, "down", "down", "enter")
+    assert panel._notice == "Dodano subskrypcję · Wynik nieznany · Enter sprawdź wynik"
+    if listed:
+        with panel._lock:
+            panel._adopt_subscriptions({}, [_row("new", "Slime", anilist_id=1)])
+    owner.order_error = None
+
+    _keys(panel, "enter")
+
+    _until(lambda: _anime(panel)._pending_batch is None)
+    assert _orders(owner) == [(1, 2), (1, 2)]
+    assert owner.commands[0] == owner.commands[1]
+    assert panel._tab == _Tab.SUBSCRIPTIONS
+    assert ("subscription_get", {"subscription_id": "new"}) not in owner.calls
+    _until(lambda: not panel._notice)
 
 
 def test_a_subscribed_entry_offers_its_subscription_instead_of_a_second_one(
@@ -558,7 +748,7 @@ def test_f_shows_the_check_result_in_the_row_for_ten_seconds(
         }
     )
     frame: str = _frame(panel)
-    row: str = next(line for line in frame.splitlines() if "Alpha" in line and "E3–?" in line)
+    row: str = next(line for line in frame.splitlines() if "Alpha" in line and "1/4" in line)
     assert "Sprawdzono E6" in row
     assert "Sprawdzono E6: 12 kandydatów, 0 zgodnych (8 niepewnych, 4 niezgodnych)" in frame
 
@@ -621,7 +811,7 @@ def test_enter_opens_the_subscription_details_with_header_targets_and_specials(
     frame: str = _frame(panel)
     assert panel._tab == _Tab.ANIME
     assert "Subskrypcje \u203a Alpha" in frame
-    assert "Termin nieznany · E3–? · pobrano 1/4 · gotowe 0" in frame
+    assert "Termin nieznany · odcinki 1/4 · gotowe 0" in frame
     assert "Ostatnie sprawdzenie" in frame
     assert "Sprawdzono E3: brak wydań w źródle" in " ".join(frame.split())
     specials: list[str] = [line for line in frame.splitlines() if "Dodatki tego sezonu" in line or "OVA" in line]
@@ -657,7 +847,7 @@ def test_the_details_status_row_stays_gray_for_every_state(
     _keys(panel, "enter")
 
     rendered: Text = panel.render(120, 30)
-    index: int = rendered.plain.index("· E3–")
+    index: int = rendered.plain.index("· odcinki ")
 
     assert {str(span.style) for span in rendered.spans if span.start <= index < span.end} == {"gray"}
 
@@ -889,6 +1079,16 @@ def test_a_related_ova_is_listed_in_the_details_and_enter_opens_its_episodes(
     assert "Subskrypcje \u203a" not in _frame(panel)
 
 
+def test_a_draft_with_aired_episodes_starts_on_the_first_marked_one_and_reaches_add_by_arrow_at_50x12(
+    panel: StateController, owner: _Owner
+) -> None:
+    _episode_draft(panel, owner)
+
+    assert "\u276f [x] E1  Odcinek 1" in _frame(panel, 50, 12)
+    _keys(panel, "down", "down")
+    assert "\u276f [ Dodaj subskrypcję ]" in _frame(panel, 50, 12)
+
+
 def test_the_draft_description_is_reachable_by_keyboard_in_a_short_terminal(panel: StateController) -> None:
     _titles(panel)
     _keys(panel, "down", "text:s")
@@ -903,7 +1103,7 @@ def test_the_draft_description_is_reachable_by_keyboard_in_a_short_terminal(pane
         frames.append(_frame(panel, 50, 12))
 
     assert "Nowa subskrypcja \u203a Slime 7" in frames[0]
-    assert any("Pobiorę sam odcinki od E1" in frame for frame in frames)
+    assert any("Pobiorę sam kolejne odcinki" in frame for frame in frames)
     assert any("zamknie się po końcu sezonu" in frame for frame in frames)
 
 
@@ -966,7 +1166,7 @@ def test_every_subscription_fact_is_reachable_in_the_details_of_a_narrow_termina
     shown: str = " ".join(_detail_rows(panel, 50, rows))
 
     assert title in shown
-    assert "Termin nieznany · E3–E12 · pobrano 1/4 · gotowe 2" in shown
+    assert "Termin nieznany · odcinki 1/12 · gotowe 2" in shown
     assert check in shown
     assert "E1–E2 wyszły przed subskrypcją: pobierz je ręcznie" in shown
 

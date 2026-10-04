@@ -22,7 +22,7 @@ from anishift.cli.interactive.anime_state import (
     NoticeKind,
     TextPoint,
 )
-from anishift.cli.interactive.anime_view import AnimeFrame, TextCell, render_anime
+from anishift.cli.interactive.anime_view import AnimeFrame, TextCell, _notice_lines, render_anime
 from anishift.cli.interactive.palette import BRAND_THEME
 from anishift.cli.interactive.prompts import _WheelControl
 from anishift.cli.interactive.text_input import TextInput
@@ -580,3 +580,14 @@ def test_selection_summary_joins_consecutive_numbers_into_ranges() -> None:
     items: tuple[AnimeRow, ...] = tuple(AnimeRow(number, f"Odcinek {number}", number=number) for number in numbers)
     snapshot: AnimeSnapshot = AnimeSnapshot(AnimeScreen.EPISODES, "Slime", items, selected=frozenset(numbers))
     assert "Zaznaczone: 13 (1-4, 6-7, 7.5, 8-9, 11, 13-15)" in render_anime(snapshot, 120, 30, 0).text.plain
+
+
+@pytest.mark.parametrize("width", [13, 14])
+def test_a_notice_wrapped_at_a_separator_neither_starts_nor_ends_a_row_with_it(width: int) -> None:
+    assert _notice_lines("odcinki 1/12 · gotowe 0", width) == ["odcinki 1/12", "gotowe 0"]
+
+
+def test_a_notice_longer_than_two_rows_joins_its_tail_with_single_spaces() -> None:
+    lines: list[str] = _notice_lines("alpha beta ee ffffffffffff ggg", 12)
+
+    assert lines[1:] == ["ee ffffffff…"]

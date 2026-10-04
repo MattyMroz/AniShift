@@ -837,7 +837,7 @@ def test_a_finished_season_closes_only_once_every_target_was_really_downloaded(
         for item in HistoryJournal(world.store.history_path()).events(_MOMENT)
         if item.kind is HistoryKind.SUBSCRIPTION_FINISHED
     ]
-    assert finished == (["Neko to Ryuu, pobrano 4/4"] if closed else [])
+    assert finished == (["Neko to Ryuu"] if closed else [])
 
 
 def test_an_old_ordered_transfer_completing_after_migration_satisfies_its_target_without_a_new_order(
@@ -900,7 +900,7 @@ def test_a_target_beyond_a_shrunk_season_blocks_its_close_until_it_is_downloaded
         for item in HistoryJournal(world.store.history_path()).events(_MOMENT)
         if item.kind is HistoryKind.SUBSCRIPTION_FINISHED
     ]
-    assert finished == ([] if left == "removed" else ["Neko to Ryuu, pobrano 4/4"])
+    assert finished == ([] if left == "removed" else ["Neko to Ryuu"])
 
 
 def test_a_check_that_closes_the_season_logs_no_next_search(world: _World) -> None:

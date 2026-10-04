@@ -55,6 +55,7 @@ from anishift.cli.interactive.subscription_texts import (
     SubscriptionState,
     check_text,
     earlier_episodes,
+    episode_label,
     row_state,
     row_summary,
     subscription_draft,
@@ -91,6 +92,9 @@ _DRAFT_ADD: Final[str] = "[ Dodaj subskrypcję ]"
 
 _DRAFT_CANCEL: Final[str] = "[ Anuluj ]"
 """Draft button that returns to the screen the draft was opened from."""
+
+_DRAFT_AIRED: Final[str] = "Już wyemitowane pobiorę od razu, zaznaczone:"
+"""Draft heading of the aired episodes that Dodaj subskrypcję downloads at once."""
 
 _SUBSCRIBED: Final[str] = "Ten sezon jest już subskrybowany · Enter pokaż"
 """Draft line of a season already followed, leading to its details."""
@@ -353,7 +357,11 @@ class AnimeController:
         self._suggestion: str = ""
         self._problem_return: _Screen = _Screen.QUERY
         self._clock: Callable[[], float] = time
-        self._show_list: Callable[[str | None], None] | None = None
+        self._show_list: Callable[[str | None, str], None] | None = None
+        self._notify_list: Callable[[str], None] | None = None
+        self._list_batch: str | None = None
+        self._list_notice: str | None = None
+        self._list_hold: bool = False
         self._subscription_command: tuple[str, Mapping[str, object]] | None = None
         self._subscribed: dict[int, Mapping[str, object]] = {}
         self._paused: bool = False
@@ -366,6 +374,8 @@ class AnimeController:
         self._draft_return: _Screen = _Screen.QUERY
         self._draft_cursor: str = ""
         self._draft_command: str = ""
+        self._draft_listing: EpisodeListing | None = None
+        self._draft_marks: set[int] = set()
         self._initialize_episode_state()
         self._view: AnimeViewState = AnimeViewState(query=self._query_input, query_focused=False)
         self._panel: AnimePanel = AnimePanel(self._view, self._panel_action, self._now)
@@ -398,6 +408,7 @@ class AnimeController:
         self._files: EpisodeFiles | None = None
         self._confirm_choice: RankedCandidate | None = None
         self._pending_batch: EpisodeBatch | None = None
+        self._batch_listing: EpisodeListing | None = None
         self._batch_running: bool = False
         self._batch_results: dict[EpisodeKey, EpisodeResult] = {}
         self._stale: bool = False
@@ -448,7 +459,7 @@ class AnimeController:
             elif self._screen is _Screen.BUSY:
                 result = self._handle_busy(key)
             elif self._screen in {_Screen.ENTRIES, _Screen.EPISODES, _Screen.OFFER, _Screen.CANDIDATES, _Screen.DRAFT}:
-                result = self._subscription_key(key) or self._panel_key(key)
+                result = self._draft_mark_key(key) or self._subscription_key(key) or self._panel_key(key)
             else:
                 result = self._handle_problem(key)
         return result
@@ -458,10 +469,32 @@ class AnimeController:
         self._adopt_view_input()
         return AnimeResult.CONTINUE
 
-    def link_subscriptions(self, show_list: Callable[[str | None], None]) -> None:
-        """Receive the panel callback that opens the subscription list, optionally on one row."""
+    def link_subscriptions(
+        self, show_list: Callable[[str | None, str], None], notify_list: Callable[[str], None]
+    ) -> None:
+        """Receive the panel callbacks that open the subscription list and later update its notice."""
         with self._lock:
             self._show_list = show_list
+            self._notify_list = notify_list
+
+    def replay_list_batch(self) -> bool:
+        """Replay the draft's order whose answer was lost, under its command ID, when one waits."""
+        with self._lock:
+            batch: EpisodeBatch | None = self._pending_batch
+            if batch is None or batch.command_id != self._list_batch or self._batch_running:
+                return False
+            self._resume_batch()
+            return True
+
+    def _flush_list_notice(self) -> None:
+        with self._lock:
+            if self._list_hold:
+                return
+            notice: str | None = self._list_notice
+            self._list_notice = None
+            notify: Callable[[str], None] | None = self._notify_list
+        if notice is not None and notify is not None:
+            notify(notice)
 
     def refresh_subscriptions(self, rows: Sequence[Mapping[str, object]], *, paused: bool) -> None:
         """Project the owner's subscription rows used by drafts and the open subscription header."""
@@ -617,10 +650,12 @@ class AnimeController:
         except Exception as problem:  # noqa: BLE001 - the UI worker reports a failed command without a partial view
             self._catalog_failure(generation, problem, self._draft_return, "anizip")
             return
+        states: dict[EpisodeKey, EpisodeStatus] = self._read_episode_states(listing)
         with self._lock:
             if generation != self._generation:
                 return
             self._worker = None
+            self._episode_states.update(states)
             self._open_draft(listing)
         self._invalidate()
 
@@ -637,6 +672,8 @@ class AnimeController:
             self._draft = draft
         else:
             self._draft = None
+        self._draft_listing = listing
+        self._draft_marks = {item.number for item in self._draft_episodes()}
         self._draft_cursor = ""
         self._offsets[_Screen.DRAFT] = 0
         self._follow_cursor = True
@@ -658,12 +695,54 @@ class AnimeController:
                 ),
             )
         )
+        episodes: tuple[ListedEpisode, ...] = self._draft_episodes()
+        aired: tuple[AnimeRow, ...] = (
+            (
+                AnimeRow("gap.aired", "", navigable=False),
+                AnimeRow("aired", _DRAFT_AIRED, navigable=False),
+                *(
+                    AnimeRow(
+                        f"ep:{item.number}",
+                        f"E{item.number}  {item.title or f'Odcinek {item.number}'}",
+                        number=str(item.number),
+                    )
+                    for item in episodes
+                ),
+            )
+            if episodes
+            else ()
+        )
         buttons: tuple[AnimeRow, ...] = (
             (AnimeRow("add", _DRAFT_ADD), AnimeRow("cancel", _DRAFT_CANCEL))
             if self._draft.addable
             else (AnimeRow("cancel", _DRAFT_CANCEL),)
         )
-        return (*lines, AnimeRow("gap", "", navigable=False), *buttons)
+        return (*lines, *aired, AnimeRow("gap", "", navigable=False), *buttons)
+
+    def _draft_episodes(self) -> tuple[ListedEpisode, ...]:
+        listing: EpisodeListing | None = self._draft_listing
+        if self._draft is None or listing is None:
+            return ()
+        return tuple(item for item in self._draft.aired if self._unordered(EpisodeKey(listing.anilist_id, item.number)))
+
+    def _unordered(self, key: EpisodeKey) -> bool:
+        status: EpisodeStatus | None = self._episode_states.get(key)
+        return key not in self._sending and (status is None or status.state == "not_ordered")
+
+    def _draft_mark_key(self, key: str) -> AnimeResult | None:
+        if self._screen is not _Screen.DRAFT or key.casefold() not in {"space", "text:a"}:
+            return None
+        self._toggle_draft(every=key.casefold() == "text:a")
+        return AnimeResult.CONTINUE
+
+    def _toggle_draft(self, *, every: bool) -> None:
+        numbers: set[int] = {item.number for item in self._draft_episodes()}
+        if every:
+            self._draft_marks = set() if numbers <= self._draft_marks else numbers
+            return
+        chosen: str = self._view.items[self._view.cursor].key if self._view.items else ""
+        if chosen.startswith("ep:"):
+            self._draft_marks ^= {int(chosen.removeprefix("ep:"))}
 
     def _draft_key(self, key: str) -> None:
         if key in {"escape", "interrupt"}:
@@ -672,19 +751,38 @@ class AnimeController:
         if key != "enter" or not self._view.items:
             return
         chosen: str = self._view.items[self._view.cursor].key
-        if chosen == "cancel":
+        if chosen.startswith("ep:"):
+            self._toggle_draft(every=False)
+        elif chosen == "cancel":
             self._screen = self._draft_return
         elif chosen == "show" and self._draft_id in self._subscribed:
             self._open_subscription(self._subscribed[self._draft_id])
         elif chosen == "add" and self._resident is not None:
-            generation: int = self._start_work(_ADDING, _Screen.DRAFT, sending=True)
-            self._spawn(self._add_subscription, (self._draft_id, self._draft_command, generation))
+            self._add_draft()
 
-    def _add_subscription(self, anilist_id: int, command_id: str, generation: int) -> None:
-        if self._resident is None:
+    def _add_draft(self) -> None:
+        keys: tuple[EpisodeKey, ...] = tuple(
+            EpisodeKey(self._draft_id, item.number)
+            for item in self._draft_episodes()
+            if item.number in self._draft_marks
+        )
+        if keys and self._pending_batch is not None:
+            self._notice = "Trwa partia · Enter sprawdź wynik"
+            return
+        if len(keys) > _MAX_BATCH:
+            self._notice = "Limit: 100 odcinków · A odznacz wszystkie"
+            return
+        generation: int = self._start_work(_ADDING, _Screen.DRAFT, sending=True)
+        self._spawn(self._add_subscription, (self._draft_id, self._draft_command, keys, generation))
+
+    def _add_subscription(
+        self, anilist_id: int, command_id: str, keys: tuple[EpisodeKey, ...], generation: int
+    ) -> None:
+        resident: ResidentSession | None = self._resident
+        if resident is None:
             return
         try:
-            answer: Mapping[str, object] = self._resident.subscription_add(anilist_id, command_id=command_id)
+            answer: Mapping[str, object] = resident.subscription_add(anilist_id, command_id=command_id)
         except (AniShiftError, OSError, ValueError) as problem:
             with self._lock:
                 if generation != self._generation:
@@ -696,25 +794,64 @@ class AnimeController:
             self._invalidate()
             return
         identifier: object = answer.get("subscription_id")
+        refusal: str = self._order_aired(resident, keys)
+        show_list: Callable[[str | None, str], None] | None = None
         with self._lock:
-            if generation != self._generation:
-                return
-            self._worker = None
-            self._from_subscriptions = False
-            self._screen = self._draft_return
-            show_list: Callable[[str | None], None] | None = self._show_list
+            if generation == self._generation:
+                self._worker = None
+                self._from_subscriptions = False
+                self._screen = self._draft_return
+                show_list = self._show_list
         if show_list is not None:
-            show_list(identifier if isinstance(identifier, str) else None)
+            show_list(
+                identifier if isinstance(identifier, str) else None,
+                f"Dodano subskrypcję · {refusal}" if refusal else "",
+            )
+        with self._lock:
+            self._list_hold = False
+        self._flush_list_notice()
         self._invalidate()
+
+    def _order_aired(self, resident: ResidentSession, keys: tuple[EpisodeKey, ...]) -> str:
+        with self._lock:
+            listing: EpisodeListing | None = self._draft_listing
+            if not keys or listing is None or self._pending_batch is not None:
+                return ""
+            command_id: str = self._open_batch(listing, keys)
+            self._batch_running = True
+            self._list_hold = True
+        try:
+            batch: EpisodeBatch = resident.episode_download(keys, command_id=command_id)
+        except (AniShiftError, OSError) as problem:
+            logger.warning("Anime aired episodes order failed", error_class=type(problem).__name__)
+            with self._lock:
+                notice: str = self._batch_failed(problem, keys)
+                if self._pending_batch is not None:
+                    self._list_batch = command_id
+                return notice
+        with self._lock:
+            self._batch_running = False
+            self._accept_batch(batch)
+            if self._pending_batch is None:
+                return self._refusals(keys)
+            self._list_batch = command_id
+            self._resume_batch()
+        return ""
 
     def _sync_subscription_view(self) -> None:
         if self._screen is _Screen.DRAFT:
             self._view.title = f"Nowa subskrypcja \u203a {_safe(self._draft_title)}"
-            self._view.controls = ("Enter wybierz · Esc anuluj",)
+            self._view.controls = (
+                ("Enter wybierz · Space zaznacz · A wszystkie · Esc anuluj",)
+                if self._draft_episodes()
+                else ("Enter wybierz · Esc anuluj",)
+            )
             keys: list[str] = [item.key for item in self._view.items]
             wanted: str = self._draft_cursor if self._draft_cursor in keys else self._draft_cursor.split(".")[0] + ".0"
             if wanted not in keys:
-                wanted = next((key for key in keys if key in {"add", "cancel", "show"}), "")
+                wanted = next((key for key in keys if key.startswith("ep:")), "") or next(
+                    (key for key in keys if key in {"add", "cancel", "show"}), ""
+                )
             if wanted in keys:
                 self._view.cursor = keys.index(wanted)
                 self._positions[_Screen.DRAFT] = self._view.cursor
@@ -754,7 +891,7 @@ class AnimeController:
         return datetime.fromtimestamp(self._clock(), UTC)
 
     def _earlier_episodes(self) -> str:
-        start: object = (self._subscription or {}).get("from_number")
+        start: object = self._subscription_details.get("first_target")
         if self._listing is None or not isinstance(start, int):
             return ""
         numbers: list[int] = []
@@ -902,6 +1039,8 @@ class AnimeController:
         self._view.cursor = min(self._view.cursor, max(len(self._view.items) - 1, 0))
         if screen is AnimeScreen.EPISODES:
             self._view.selected = {str(number) for number in self._episode_marks}
+        if screen is AnimeScreen.DRAFT:
+            self._view.selected = {f"ep:{number}" for number in self._draft_marks}
         self._view.searching = (
             {
                 str(key.number)
@@ -1384,28 +1523,57 @@ class AnimeController:
                 else f"E{highlighted.number} jeszcze nie wyemitowano"
             )
             return
-        self._sending.update(keys)
         self._notice = "Szukam wydań…"
+        self._submit_batch(listing, keys)
+
+    def _submit_batch(self, listing: EpisodeListing, keys: tuple[EpisodeKey, ...]) -> None:
+        self._open_batch(listing, keys)
+        self._resume_batch()
+
+    def _open_batch(self, listing: EpisodeListing, keys: tuple[EpisodeKey, ...]) -> str:
+        self._sending.update(keys)
         command_id: str = uuid4().hex
         self._pending_batch = EpisodeBatch(command_id, "", keys, "accepted")
+        self._batch_listing = listing
         self._batch_results.clear()
         self._view.batch_results.clear()
-        self._batch_running = True
-        threading.Thread(
-            target=self._send_episodes,
-            args=(listing, keys, command_id, self._generation),
-            name=_WORKER_NAME,
-            daemon=True,
-        ).start()
+        return command_id
+
+    def _batch_failed(self, problem: AniShiftError | OSError, keys: tuple[EpisodeKey, ...]) -> str:
+        self._batch_running = False
+        listed: bool = self._pending_batch is not None and self._pending_batch.command_id == self._list_batch
+        notice: str = "Wynik nieznany · Enter sprawdź wynik"
+        if isinstance(problem, ControlError) and problem.answered and problem.code is ControlErrorCode.REFUSED:
+            self._pending_batch = None
+            self._list_batch = None if listed else self._list_batch
+            self._sending.difference_update(keys)
+            notice = "Nie zlecono · " + _stated(problem)[0]
+        if listed:
+            self._list_notice = notice
+        return notice
+
+    def _refusals(self, keys: tuple[EpisodeKey, ...]) -> str:
+        causes: dict[str, list[int]] = {}
+        for key in keys:
+            result: EpisodeResult | None = self._batch_results.get(key)
+            if result is None or result.reason != EpisodeReason.ADMITTED:
+                causes.setdefault("przerwano" if result is None else _refused_result(result.reason)[1], []).append(
+                    key.number
+                )
+        named: str = " · ".join(
+            f"{episode_label(numbers)}: {cause}" if cause else episode_label(numbers)
+            for cause, numbers in causes.items()
+        )
+        return f"Nie zlecono {named}" if named else ""
 
     def _resume_batch(self) -> None:
         batch: EpisodeBatch | None = self._pending_batch
-        if batch is None or self._batch_running or self._listing is None:
+        if batch is None or self._batch_running or self._batch_listing is None:
             return
         self._batch_running = True
         threading.Thread(
             target=self._send_episodes,
-            args=(self._listing, batch.keys, batch.command_id, self._generation),
+            args=(self._batch_listing, batch.keys, batch.command_id, self._generation),
             name=_WORKER_NAME,
             daemon=True,
         ).start()
@@ -1428,6 +1596,7 @@ class AnimeController:
             elif event == "episode_batch":
                 self._accept_batch(decode_view(EpisodeBatch, payload))
         self._invalidate()
+        self._flush_list_notice()
 
     def _accept_result(self, result: EpisodeResult) -> None:
         batch: EpisodeBatch | None = self._pending_batch
@@ -1468,6 +1637,9 @@ class AnimeController:
         self._sending.difference_update(batch.keys)
         self._pending_batch = None
         self._batch_running = False
+        if batch.command_id == self._list_batch:
+            self._list_batch = None
+            self._list_notice = self._refusals(batch.keys)
         if batch.state == "interrupted":
             remaining: str = ", ".join(
                 f"E{key.number}"
@@ -1507,19 +1679,12 @@ class AnimeController:
         except (AniShiftError, OSError) as problem:
             logger.warning("Anime episode download failed", error_class=type(problem).__name__)
             with self._lock:
-                self._batch_running = False
-                refused: bool = (
-                    isinstance(problem, ControlError) and problem.answered and problem.code is ControlErrorCode.REFUSED
-                )
-                if refused:
-                    self._pending_batch = None
-                    self._sending.difference_update(keys)
+                notice: str = self._batch_failed(problem, keys)
                 if generation == self._generation:
-                    self._notice = (
-                        "Nie zlecono · " + _stated(problem)[0] if refused else "Wynik nieznany · Enter sprawdź wynik"
-                    )
+                    self._notice = notice
                     self._notice_kind = NoticeKind.WARNING
             self._invalidate()
+            self._flush_list_notice()
             return
         states: dict[EpisodeKey, EpisodeStatus] = self._read_episode_states(listing)
         with self._lock:
@@ -1535,6 +1700,7 @@ class AnimeController:
             if batch.state == "accepted" and generation == self._generation:
                 self._notice = "Partia trwa · Enter sprawdź wynik"
         self._invalidate()
+        self._flush_list_notice()
 
     def _start_franchise(self) -> None:
         candidate: TitleCandidate = self._candidates[self._highlighted]

@@ -361,7 +361,7 @@ dodanie: U06 Enter -> IPC subscription_add{command_id, anilist_id}
   -> owner wątek: wymaga live=True z Kitsu ID (inaczej source_failed);
      cut_point(listing, now); None -> odmowa subscription_cut_unknown (D-28)
      inaczej targets(listing, t_sub, n_cut) + mapping z ListingRead (D-27)
-  -> jeden _save(state + receipt) -> odpowiedź {subscription_id, from_number}
+  -> jeden _save(state + receipt) -> odpowiedź {subscription_id}
 termin: _schedule_subscriptions() = min(next_check_at(sub, now)) po rekordach z terminem -> _subscriptions_at (monotonic)
 sprawdzenie (pula I/O, osobno każda subskrypcja, wyjątek jednej nie przerywa reszty — S-12):
   read = acquisition.read_listing(id, saved=record.mapping)          (jeden wynik, D-27)
@@ -418,8 +418,10 @@ Czyste funkcje w `subscription_targets.py`; owner tylko je stosuje i zapisuje:
   dla każdego numeru `cut+1..episode_count` (brakujący numer → nie zamyka). Celu nic nie
   wyłącza. Cel z `number > episode_count` blokuje zamknięcie, a projekcja wiersza U07/U08
   wylicza z niego konflikt „AniList podaje {n} odcinków, a subskrypcja czeka na E{m}”
-  (D-23). Licznik „pobrano y/y” w S-09 pochodzi z `subscription_row` (jak S-03):
-  odcinki przed pierwszym celem plus spełnione cele / te odcinki plus wszystkie cele.
+  (D-23). Kolumna Odcinki U07 (ta sama liczba w U08 i `?`): x to odcinki sezonu, których
+  grupę (`group_id` przypisania albo grupa publikacji) inwentarz właściciela (`_library`)
+  potwierdza artefaktem wideo źródłowym albo dostępnym zestawem `_ready_library`, y to
+  `episode_count` albo `?`. Wpis Historii S-09 nie ma licznika. Gotowe to odcinki z dostępnym zestawem Biblioteki. Projekcja nie czyta plików ani dzienników.
 - `display_order(records, now)` (S-03): problem → najbliższe `due_at`/emisja → bez terminu →
   wstrzymane; remis po tytule (`casefold`).
 
@@ -611,7 +613,7 @@ Nowej funkcji zasobnika nie ma.
 ### 5.11 Historia (S-09)
 
 `history.py`: nowy `HistoryKind.SUBSCRIPTION_FINISHED` dodany do domyślnego zestawu
-terminalnego (`history.py:145-152`). Wpis „Subskrypcja zakończona: {tytuł}, pobrano y/y”
+terminalnego (`history.py:145-152`). Wpis „Subskrypcja zakończona: {tytuł}” (tytuł sezonu, bez licznika)
 dopisuje owner przy autozamknięciu, w tym samym kroku co usunięcie rekordu ze stanu (stan
 pierwszy; Historia jest nieautorytatywna).
 
@@ -619,9 +621,9 @@ pierwszy; Historia jest nieautorytatywna).
 
 | Polecenie | Wejście | Wyjście / skutek | Mutuje (receipt) |
 | --- | --- | --- | --- |
-| `subscriptions_list` | — | `{subscriptions: [SubscriptionRow], shadow: bool, problem: str \| None}`; wiersz: id, tytuł, `from_number`, `downloaded`, `targets_total \| None`, `ready`, stan wiersza S-03 (kod + liczby + `due_at`), `paused`, `pause_reason`, `problem` | nie |
+| `subscriptions_list` | — | `{subscriptions: [SubscriptionRow], shadow: bool, problem: str \| None}`; wiersz: id, tytuł, `episode_count \| None`, `on_disk`, `ready`, stan wiersza S-03 (kod + liczby + `due_at`), `paused`, `pause_reason`, `problem` | nie |
 | `subscription_get` | `subscription_id` | nagłówek rekordu, liczniki celów wg `TargetState`, `first_target`/`last_target` (zakres numerów celów), najwyżej jeden cel z problemem, wyliczony konflikt liczby odcinków (D-23), `last_check`, `review_pending`, dodatki (`ListedSpecial`) z mapowania rekordu (D-22). Bez listy celów | nie |
-| `subscription_add` | `command_id`, `anilist_id` | `{subscription_id, from_number}` albo odmowa: `subscription_exists`, `subscription_not_airing` (U-10), `subscription_cut_unknown` (D-28), `subscription_limit`, `source_failed` | tak |
+| `subscription_add` | `command_id`, `anilist_id` | `{subscription_id}` albo odmowa: `subscription_exists`, `subscription_not_airing` (U-10), `subscription_cut_unknown` (D-28), `subscription_limit`, `source_failed` | tak |
 | `subscription_pause` / `subscription_resume` | `command_id`, `subscription_id` | idempotentne; `resume` zdejmuje każdy `pause_reason` | tak |
 | `subscription_remove` | `command_id`, `subscription_id` | rekord → `removed_subscription`; aktywne próby trwają (D-24) | tak |
 | `subscription_restore` | `command_id` | przywraca `removed_subscription`; odmowa `subscription_exists` / `nothing_to_restore` | tak |
@@ -651,15 +653,18 @@ test sprawdza rozmiar każdej ramki i komplet stanów celu.
   ekran, z którego otwarto szkic.
 - **U06**: szkic liczony lokalnie z wczytanego `EpisodeListing` (bez sieci). Używa tych samych
   funkcji `cut_point`/`is_target` z fasady `anishift.application` (jedno źródło reguły).
-  Szkic to 1–2 zdania i przyciski wg `ux.md` §8 (`subscription_texts.subscription_draft`);
+  Szkic to zdanie, lista wyemitowanych niezamówionych odcinków (wstępnie zaznaczonych) i
+  przyciski wg `ux.md` §8 (`subscription_texts.subscription_draft`);
   dla `cut_point is None` (D-28) tekst odmowy bez przycisku Dodaj. Szkic z `S` w Anime
   podświetla zakładkę Anime, a otwarty przez `D` z U07 — Subskrypcje.
   Enter na „Dodaj subskrypcję” → `subscription_add`; po sukcesie
-  przejście do U07 z podświetlonym nowym wpisem (S-04). Odpowiedź ownera jest autorytatywna:
-  wiersz pokazuje zakres od `from_number` z odpowiedzi.
+  panel zamawia zaznaczone odcinki tą samą partią `episode_download` co `D` (własny
+  `command_id`), potem przejście do U07 z podświetlonym nowym wpisem (S-04). Odmowa partii nie
+  cofa subskrypcji i trafia do notki listy, także odmowy pojedynczych odcinków i wynik, który
+  przyjdzie później; nieznany wynik powtarza Enter na liście z tym samym `command_id`.
 - **U07** (zakładka Subskrypcje w `StateController`): tabela wspólnego renderera Anime
   (`render_anime`, `AnimeScreen.SUBSCRIPTIONS`), jeden wiersz na subskrypcję: Tytuł │ Odcinki │
-  Pobrano │ Gotowe │ Stan, wg `ux.md` §9. Stany problemów i konfliktów mają styl zwykłych
+  Gotowe │ Stan, wg `ux.md` §9. Stany problemów i konfliktów mają styl zwykłych
   stanów; pod tabelą stoi tylko to, czego wiersz podświetlonego wpisu nie pokazuje w całości
   (pełny stan i wynik `F`, ukryte kolumny, przycięty tytuł; całość zawsze w U08 pod `?`). Na 50×12 wiersz statusu zostaje. Pusta lista: „Brak subskrypcji ·
   D dodaj pierwszą”; nad listą nie ma wiersza „Dodaj”. Stały wiersz pod tytułem pokazuje
@@ -1034,7 +1039,7 @@ researchu):**
 | E-5 | restart ownera w każdym punkcie E-1 (po przyjęciu, po add, w trakcie pobierania, w trakcie H2, po rezerwacji przed kopią, po publikacji) | brak drugiego przyjęcia/publikacji; stan ciągły; po rezerwacji kopia sprawdza `verified_stamp`, bez drugiej kontroli |
 | E-6 | D w Anime na celu `due` oraz na celu `attempting` | `manual`; aktywna próba zastąpiona i policzona |
 | E-7 | dwie subskrypcje, jedna z ciągłym błędem źródła | druga kończy E-1 (S-12) |
-| E-8 | sezon `FINISHED`: (a) wszystkie cele `satisfied`; (b) jeden `exhausted`; (c) jeden `manual` tylko zlecony (przyjęty, niepobrany); (d) jeden `legacy_ordered` z samym `taken`, a drugi z `COMPLETE`; (e) AniList zmniejszył liczbę odcinków: cel nadmiarowy niespełniony (bez próby, `exhausted`, z aktywną próbą), potem ręczne D tego celu albo usunięcie subskrypcji; (f) stare potwierdzenie `legacy_ordered` przechodzi w `COMPLETE` po migracji | (a) rekord usunięty, Historia `SUBSCRIPTION_FINISHED` „pobrano y/y”; (b), (c), (d `taken`) brak zamknięcia; (d `COMPLETE`) spełniony; (e) brak zamknięcia w każdym wariancie, konflikt widoczny w U07/U08, zamknięcie dopiero po pobraniu tego celu, usunięcie działa jak S-08; (f) spełniony bez nowego zapisu `LegacyOrder` |
+| E-8 | sezon `FINISHED`: (a) wszystkie cele `satisfied`; (b) jeden `exhausted`; (c) jeden `manual` tylko zlecony (przyjęty, niepobrany); (d) jeden `legacy_ordered` z samym `taken`, a drugi z `COMPLETE`; (e) AniList zmniejszył liczbę odcinków: cel nadmiarowy niespełniony (bez próby, `exhausted`, z aktywną próbą), potem ręczne D tego celu albo usunięcie subskrypcji; (f) stare potwierdzenie `legacy_ordered` przechodzi w `COMPLETE` po migracji | (a) rekord usunięty, Historia `SUBSCRIPTION_FINISHED` z samym tytułem; (b), (c), (d `taken`) brak zamknięcia; (d `COMPLETE`) spełniony; (e) brak zamknięcia w każdym wariancie, konflikt widoczny w U07/U08, zamknięcie dopiero po pobraniu tego celu, usunięcie działa jak S-08; (f) spełniony bez nowego zapisu `LegacyOrder` |
 | E-9 | pauza subskrypcji w trakcie próby; pauza globalna: (i) w fazie pobierania po 9 min zastoju (`T_zastój` = 10 min w teście), pauza dłuższa niż 10 min, wznowienie, 1 min zastoju, w dwóch wariantach: bez innych transferów oraz z równoległym ręcznym pobieraniem odpytywanym w pauzie; (ii) w fazie metadanych po 9 min (`T_metadane` = 10 min w teście), pauza dłuższa niż 10 min, w obu wariantach, potem wznowienie i 1 min bez listy plików; (iii) metadane przychodzą w pauzie | S-07: próba trwa, nowe sprawdzenia i próby stoją (`spec.md` S-07, korekta 2026-10-03); (i) transfer zatrzymany i wznowiony, w pauzie brak zamknięcia, po wznowieniu zastój = 9 + 1 min → próba martwa dokładnie wtedy w obu wariantach (pomiar przeżywa odpytywanie ręcznego transferu, przerwa wykluczona); (ii) transfer nie jest zatrzymany, w pauzie brak timeoutu, po wznowieniu timeout dokładnie po 9 + 1 min; (iii) selekcja i start treści dopiero po wznowieniu; w pauzie brak nowych prób (D-30) |
 | E-10 | usunięcie z aktywną próbą odrzuconą przez H2 | brak następnej próby (D-24); `Ctrl+Z` przywraca z `attempts` |
 | E-11 | cień włączony | `proposal`, brak przyjęcia, qB nietknięty |

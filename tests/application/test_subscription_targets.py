@@ -89,7 +89,7 @@ def test_a_closed_attempt_without_a_download_moves_the_target_by_its_budget_and_
     assert closed.attempts == attempts
 
 
-def test_a_row_counts_earlier_episodes_with_satisfied_targets_and_shows_the_nearest_open_deadline() -> None:
+def test_a_row_shows_the_nearest_open_deadline_and_leaves_its_file_counts_to_the_owner() -> None:
     record: SubscriptionRecord = _record(
         cut=2,
         targets=(
@@ -104,9 +104,6 @@ def test_a_row_counts_earlier_episodes_with_satisfied_targets_and_shows_the_near
         subscription_id="a",
         anilist_id=1,
         title="Series",
-        from_number=3,
-        downloaded=3,
-        targets_total=6,
         due_at=(_NOW + timedelta(days=1)).isoformat(),
         paused=False,
         pause_reason=None,
@@ -114,27 +111,6 @@ def test_a_row_counts_earlier_episodes_with_satisfied_targets_and_shows_the_near
         review_pending=False,
         due_number=5,
     )
-
-
-@pytest.mark.parametrize(
-    ("changes", "first", "expected"),
-    [
-        ({"cut": 1}, 2, (2, 1, 12)),
-        ({"cut": 2}, 3, (3, 2, 12)),
-        ({"cut": 0}, 1, (1, 0, 12)),
-        ({"cut": None, "migrated_at": _NOW.isoformat()}, 2, (2, 1, 12)),
-    ],
-    ids=["from-2", "from-3", "from-1", "migrated-from-first-target"],
-)
-def test_a_row_counts_downloads_over_the_whole_season_from_its_first_episode(
-    changes: dict[str, object], first: int, expected: tuple[int, int, int]
-) -> None:
-    targets: tuple[SubscriptionTarget, ...] = tuple(_target(number) for number in range(first, 13))
-    record: SubscriptionRecord = replace(_record(targets=targets), **changes)  # type: ignore[arg-type]
-
-    row: SubscriptionRow = subscription_row(record)
-
-    assert (row.from_number, row.downloaded, row.targets_total) == expected
 
 
 @pytest.mark.parametrize(("count", "beyond"), [(4, 6), (6, None), (None, None)])
@@ -158,7 +134,7 @@ def test_a_stored_stale_episode_count_heals_on_the_next_read_and_clears_the_coun
     assert (healed.episode_count, subscription_row(healed).beyond_count) == (12, None)
 
 
-def test_a_migrated_row_waiting_for_review_hides_its_target_count() -> None:
+def test_a_migrated_row_waiting_for_review_names_its_pause() -> None:
     record: SubscriptionRecord = _record(
         cut=None,
         migrated_at=_NOW.isoformat(),
@@ -169,12 +145,7 @@ def test_a_migrated_row_waiting_for_review_hides_its_target_count() -> None:
 
     row: SubscriptionRow = subscription_row(record)
 
-    assert (row.from_number, row.targets_total, row.pause_reason, row.review_pending) == (
-        None,
-        None,
-        "migrated_missing",
-        True,
-    )
+    assert (row.pause_reason, row.review_pending) == ("migrated_missing", True)
 
 
 def test_the_list_orders_problem_then_deadline_then_undated_then_paused_with_title_ties() -> None:

@@ -449,9 +449,8 @@ def test_subs_list_prints_one_row_per_followed_season_from_the_resident(monkeypa
         subscription_id="ab12cd34ef56",
         anilist_id=500,
         title="Neko to Ryuu",
-        from_number=3,
-        downloaded=2,
-        targets_total=None,
+        on_disk=2,
+        ready=1,
         due_at=None,
         paused=False,
         pause_reason=None,
@@ -460,9 +459,7 @@ def test_subs_list_prints_one_row_per_followed_season_from_the_resident(monkeypa
     )
     rows: tuple[SubscriptionRow, ...] = (
         row,
-        replace(
-            row, subscription_id="cd34", title="Oshi no Ko", from_number=None, targets_total=12, review_pending=False
-        ),
+        replace(row, subscription_id="cd34", title="Oshi no Ko", episode_count=12, review_pending=False),
         replace(row, subscription_id="ef56", paused=True, pause_reason="migrated_missing"),
     )
     resident: _Resident = _resident(monkeypatch, {"subscriptions": [encode_view(row) for row in rows]})
@@ -471,9 +468,9 @@ def test_subs_list_prints_one_row_per_followed_season_from_the_resident(monkeypa
 
     assert result.exit_code == 0
     assert result.output.splitlines() == [
-        "ab12cd34ef56 Neko to Ryuu · from: 3 · downloaded: 2 · migrated, review pending",
-        "cd34 Oshi no Ko · from: ? · downloaded: 2/12 · active",
-        "ef56 Neko to Ryuu · from: 3 · downloaded: 2 · paused (migrated_missing)",
+        "ab12cd34ef56 Neko to Ryuu · episodes: 2/? · ready: 1 · migrated, review pending",
+        "cd34 Oshi no Ko · episodes: 2/12 · ready: 1 · active",
+        "ef56 Neko to Ryuu · episodes: 2/? · ready: 1 · paused (migrated_missing)",
     ]
     assert resident.calls == [("subscriptions_list", None)]
     assert resident.closed

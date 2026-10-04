@@ -61,10 +61,11 @@ _FAILED_CHECKS: Final[frozenset[str]] = frozenset({"source_failed", "rate_limite
 
 @dataclass(frozen=True, slots=True)
 class SubscriptionDraft:
-    """Sentences of one subscription draft and whether it can be added."""
+    """Sentences of one subscription draft, whether it can be added and the aired episodes it never targets."""
 
     lines: tuple[str, ...]
     addable: bool
+    aired: tuple[ListedEpisode, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,15 +84,18 @@ def subscription_draft(listing: EpisodeListing, now: datetime, *, paused: bool) 
     if cut is None:
         return SubscriptionDraft(("Nie wiadomo, ile odcinków już wyemitowano · spróbuj później",), False)
     targets: list[ListedEpisode] = [item for item in listing.episodes if is_target(item, now, cut)]
-    count: int | None = listing.episode_count
-    span: str = f"odcinki od E{cut + 1}" if count is None else _span(cut + 1, count)
-    closing: str = "Subskrypcja zamknie się po końcu sezonu." if count is None else "Potem subskrypcja się zamknie."
-    lines: list[str] = [f"Pobiorę sam {span} po emisji, {_next_airing(targets, cut + 1, now)}. {closing}"]
-    if cut:
-        lines.append(f"{earlier_episodes(range(1, cut + 1))}.")
+    closing: str = (
+        "Subskrypcja zamknie się po końcu sezonu."
+        if listing.episode_count is None
+        else "Potem subskrypcja się zamknie."
+    )
+    lines: list[str] = [f"Pobiorę sam kolejne odcinki po emisji, {_next_airing(targets, now)}. {closing}"]
     if paused:
         lines.append("Automat jest wstrzymany: zacznę po wznowieniu.")
-    return SubscriptionDraft(tuple(lines), True)
+    aired: tuple[ListedEpisode, ...] = tuple(
+        item for item in listing.episodes if item.aired and not is_target(item, now, cut)
+    )
+    return SubscriptionDraft(tuple(lines), True, aired)
 
 
 def earlier_episodes(numbers: Iterable[int]) -> str:
@@ -99,34 +103,33 @@ def earlier_episodes(numbers: Iterable[int]) -> str:
     shown: list[int] = sorted(numbers)
     if not shown:
         return ""
-    label: str = (
-        _span(shown[0], shown[-1])
-        if shown[-1] - shown[0] + 1 == len(shown)
-        else ", ".join(f"E{number}" for number in shown)
-    )
+    label: str = episode_label(shown)
     if len(shown) == 1:
         return f"{label} wyszedł przed subskrypcją: pobierz go ręcznie (D na liście odcinków)"
     return f"{label} wyszły przed subskrypcją: pobierz je ręcznie (D na liście odcinków)"
 
 
-def row_columns(row: Mapping[str, object]) -> tuple[str, str, str]:
-    """Return the episode range, the downloaded share and the ready count of one subscription row."""
-    start: object = row.get("from_number")
+def episode_label(numbers: Iterable[int]) -> str:
+    """Name episode numbers as one span when they are consecutive, else as a list."""
+    shown: list[int] = sorted(numbers)
+    if not shown:
+        return ""
+    if shown[-1] - shown[0] + 1 == len(shown):
+        return _span(shown[0], shown[-1])
+    return ", ".join(f"E{number}" for number in shown)
+
+
+def row_columns(row: Mapping[str, object]) -> tuple[str, str]:
+    """Return the episodes on disk out of the season count and the ready count of one subscription row."""
     count: object = row.get("episode_count")
-    beyond: object = row.get("beyond_count")
-    end: object = beyond if isinstance(beyond, int) else count
-    episodes: str = "?"
-    if isinstance(start, int):
-        episodes = _span(start, end) if isinstance(end, int) else f"E{start}–?"
-    total: object = row.get("targets_total")
-    downloaded: str = f"{_safe(row.get('downloaded', 0))}/{'?' if total is None else _safe(total)}"
-    return episodes, downloaded, _safe(row.get("ready", 0))
+    episodes: str = f"{_safe(row.get('on_disk', 0))}/{_safe(count) if isinstance(count, int) else '?'}"
+    return episodes, _safe(row.get("ready", 0))
 
 
 def row_summary(row: Mapping[str, object]) -> str:
-    """Join the range and progress of one subscription row into one caption."""
-    episodes, downloaded, ready = row_columns(row)
-    return f"{episodes} · pobrano {downloaded} · gotowe {ready}"
+    """Join the counters of one subscription row into one caption."""
+    episodes, ready = row_columns(row)
+    return f"odcinki {episodes} · gotowe {ready}"
 
 
 def row_state(row: Mapping[str, object], now: datetime) -> SubscriptionState:
@@ -220,12 +223,11 @@ def check_text(check: Mapping[str, object]) -> str:
     return text + (" · propozycja zapisana" if outcome == "proposed" else "")
 
 
-def _next_airing(targets: list[ListedEpisode], first: int, now: datetime) -> str:
+def _next_airing(targets: list[ListedEpisode], now: datetime) -> str:
     for item in targets:
         moment: datetime | None = anilist_date(item)
         if moment is not None:
-            label: str = "najbliższy" if item.number == first else f"najbliższy E{item.number}"
-            return f"{label} {_when(moment, now)}"
+            return f"najbliższy E{item.number} {_when(moment, now)}"
     return "terminy jeszcze nieznane"
 
 

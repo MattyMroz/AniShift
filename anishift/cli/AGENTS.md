@@ -58,8 +58,15 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   It has no group catalogue. Receipts and admissions belong to the owner.
 - `S` on titles, entries (announcements included) and episodes opens the U06 draft, computed locally
   by `subscription_texts.subscription_draft` from the facade's `cut_point`/`is_target`; Esc returns
-  to the source screen. A successful add calls the panel's `show_list`, which opens Subscriptions and
-  highlights the new row once the owner lists it. `interactive/anime.py`, `interactive/subscription_texts.py`
+  to the source screen. The draft lists aired, unordered episodes before the cut, all marked, with
+  the cursor on the first one; a successful add first orders the marked ones through the ordinary
+  D batch (its own `command_id`; a refusal never undoes the subscription), then calls the panel's
+  `show_list(id, notice)`, which opens Subscriptions, shows a batch refusal and highlights the new
+  row once the owner lists it. A draft batch (`_list_batch`) keeps reporting to the list through
+  `notify_list`: late per-episode refusals, and an unknown answer that Enter on the list replays
+  under the same command ID (`replay_list_batch`) before Enter opens details again.
+  `_list_hold` defers late notices until `show_list` has opened the list.
+  `interactive/anime.py`, `interactive/subscription_texts.py`, `interactive/state.py`
 - The Subscriptions tab in `StateController` renders owner `subscriptions_list` rows. Enter opens U08
   (the Anime episode screen with a subscription status row, every target including numbers beyond the
   catalogue, and „Dodatki tego sezonu” with related OVA/special entries whose Enter opens their U03), D opens the Anime
@@ -70,7 +77,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   first beneath the table. Beneath the table stands only what the highlighted row hides: the full state
   when it differs from the short one, dropped columns, then a truncated title (`anime_view._unshown`). U08 leads its notice with the last check;
   `?` there lists every subscription fact (`_subscription_facts`) wrapped and scrollable, so 50-column
-  terminals reach the full title, range, Pobrano and Gotowe. Row states and columns come only from `subscription_texts` (`row_state`,
+  terminals reach the full title, Odcinki (`on_disk/episode_count`) and Gotowe. Row states and columns come only from `subscription_texts` (`row_state`,
   `row_columns`, `row_summary`). The list is `render_anime` with `AnimeScreen.SUBSCRIPTIONS`: one row
   per subscription, fixed Stan width, optional columns dropped before the title shrinks below
   `_TITLE_FLOOR`; an empty list renders as DETAILS with one message row. The context's status row

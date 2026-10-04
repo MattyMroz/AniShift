@@ -484,6 +484,10 @@ class StateController:
         if key == "undo":
             self._work(lambda session: session.command("subscription_restore"), success="")
             return
+        if key == "enter" and self._anime is not None and self._anime.replay_list_batch():
+            self._notify("Sprawdzam wynik…")
+            self._notice_persistent = True
+            return
         row: Mapping[str, object] | None = self._selected_subscription()
         if key == "text:d" or (key == "enter" and row is None):
             if self._anime is not None:
@@ -526,13 +530,24 @@ class StateController:
             )
         self._work(lambda session: session.command(kind, payload), success="")
 
-    def _show_subscription_list(self, subscription_id: str | None) -> None:
+    def _show_subscription_list(self, subscription_id: str | None, notice: str) -> None:
         with self._lock:
             if self._stop.is_set():
                 return
             self._switch_tab(_Tab.SUBSCRIPTIONS)
             self._subscription_target = subscription_id
             self._select_subscription_target()
+            if notice:
+                self._notify(notice)
+                self._notice_persistent = True
+        self._invalidate()
+
+    def _subscription_notice(self, notice: str) -> None:
+        with self._lock:
+            if self._stop.is_set() or self._tab != _Tab.SUBSCRIPTIONS:
+                return
+            self._notify(notice)
+            self._notice_persistent = bool(notice)
         self._invalidate()
 
     def _select_subscription_target(self) -> None:
@@ -598,7 +613,7 @@ class StateController:
         with self._lock:
             self._anime = controller
             controller.refresh_provider_locks(_rows(self._snapshot.get("provider_locks")))
-            controller.link_subscriptions(self._show_subscription_list)
+            controller.link_subscriptions(self._show_subscription_list, self._subscription_notice)
             controller.refresh_subscriptions(self._subscriptions, paused=self._snapshot.get("auto_enabled") is False)
 
     def suspend(self) -> None:
@@ -1314,14 +1329,13 @@ class StateController:
             shown: tuple[str, str, datetime] | None = self._subscription_checks.get(str(item.get("subscription_id")))
             if shown is not None and now < shown[2]:
                 state = SubscriptionState(shown[0], shown[1])
-            episodes, downloaded, ready = row_columns(item)
+            episodes, ready = row_columns(item)
             title: str = _safe_text(item.get("title", ""))
             rows.append(
                 AnimeRow(
                     str(item.get("subscription_id")),
                     title,
                     number=episodes,
-                    progress=downloaded,
                     ready=ready,
                     status=state.text,
                     detail="" if state.detail == state.text else state.detail,

@@ -45,14 +45,13 @@ def _row(subscription_id: str, title: str, **changes: object) -> dict[str, objec
         subscription_id=subscription_id,
         anilist_id=1,
         title=title,
-        from_number=3,
-        downloaded=1,
-        targets_total=4,
         due_at=None,
         paused=False,
         pause_reason=None,
         problem=None,
         review_pending=False,
+        episode_count=4,
+        on_disk=1,
     )
     return {**encode_view(row), **changes}
 
@@ -178,12 +177,12 @@ def test_a_refused_subscription_command_shows_its_polish_reason(
     assert text in _frame(panel)
 
 
-def test_every_row_is_one_line_of_title_range_progress_ready_and_state(panel: StateController) -> None:
+def test_every_row_is_one_line_of_title_episodes_ready_and_state(panel: StateController) -> None:
     now: datetime = datetime.now(UTC)
     panel._subscriptions = [
-        _row("p", "Problem", anilist_id=None, problem="season_unrecognized", from_number=None, targets_total=None),
-        _row("m", "Moved", paused=True, pause_reason="migrated_missing", review_pending=True, targets_total=None),
-        _row("r", "Review", review_pending=True, targets_total=None, from_number=None),
+        _row("p", "Problem", anilist_id=None, problem="season_unrecognized", episode_count=None, on_disk=0),
+        _row("m", "Moved", paused=True, pause_reason="migrated_missing", review_pending=True, episode_count=None),
+        _row("r", "Review", review_pending=True, on_disk=0),
         _row("s", "Soon", episode_count=12, ready=1, due_at=(now + timedelta(days=3, hours=1, seconds=30)).isoformat()),
         _row("h", "Hour", due_at=(now + timedelta(minutes=30, seconds=30)).isoformat()),
         _row("w", "Waiting", due_at=(now - timedelta(days=2, hours=1)).isoformat()),
@@ -195,15 +194,15 @@ def test_every_row_is_one_line_of_title_range_progress_ready_and_state(panel: St
     lines: list[str] = _frame(panel, rows=40).splitlines()
 
     expected: dict[str, tuple[str, ...]] = {
-        "Problem": ("?", "1/?", "0", "Nie rozpoznano sezonu"),
-        "Moved": ("E3–?", "1/?", "0", "Wstrzymana"),
-        "Review": ("?", "1/?", "0", "Weryfikuję"),
-        "Soon": ("E3–E12", "1/4", "1", "Emisja za 3d 01:00:"),
-        "Hour": ("E3–?", "1/4", "0", "Emisja za 00:30:"),
-        "Waiting": ("E3–?", "1/4", "0", "Czeka na wydanie (od 2 dni)"),
-        "Yesterday": ("E3–?", "1/4", "0", "Czeka na wydanie (od 1 dzień)"),
-        "Recent": ("E3–?", "1/4", "0", "Czeka na wydanie (od 5 h)"),
-        "Undated": ("E3–?", "1/4", "0", "Termin nieznany"),
+        "Problem": ("0/?", "0", "Nie rozpoznano sezonu"),
+        "Moved": ("1/?", "0", "Wstrzymana"),
+        "Review": ("0/4", "0", "Weryfikuję"),
+        "Soon": ("1/12", "1", "Emisja za 3d 01:00:"),
+        "Hour": ("1/4", "0", "Emisja za 00:30:"),
+        "Waiting": ("1/4", "0", "Czeka na wydanie (od 2 dni)"),
+        "Yesterday": ("1/4", "0", "Czeka na wydanie (od 1 dzień)"),
+        "Recent": ("1/4", "0", "Czeka na wydanie (od 5 h)"),
+        "Undated": ("1/4", "0", "Termin nieznany"),
     }
     for title, values in expected.items():
         line: str = lines[_line(lines, f" {title} ")]
@@ -213,6 +212,8 @@ def test_every_row_is_one_line_of_title_range_progress_ready_and_state(panel: St
     frame: str = "\n".join(lines)
     assert "Odcinki" in frame
     assert "Gotowe" in frame
+    assert "Pobrano" not in frame
+    assert "E3" not in frame
     assert "Aktywne" not in frame
     assert "D Dodaj subskrypcję" not in frame
     assert " od 3 " not in frame
@@ -260,6 +261,24 @@ def test_problem_and_conflict_states_share_the_style_of_every_other_state(panel:
         return {str(span.style) for span in rendered.spans if span.start <= index < span.end}
 
     assert styles("Nie rozpoznano sezonu ") == styles("Konflikt liczby odcinków ") == styles("Termin nieznany ")
+
+
+def test_the_episodes_column_uses_the_success_style_only_once_a_file_is_on_disk(panel: StateController) -> None:
+    panel._subscriptions = [
+        _row("e", "Empty", on_disk=0, episode_count=12),
+        _row("o", "Owned", on_disk=3, episode_count=12),
+        _row("s", "Selected"),
+    ]
+    panel._selected = 2
+
+    rendered: Text = panel.render(120, 30)
+
+    def styles(value: str) -> set[str]:
+        index: int = rendered.plain.index(f" {value} ") + 1
+        return {str(span.style) for span in rendered.spans if span.start <= index < span.end}
+
+    assert "success" in styles("3/12")
+    assert "success" not in styles("0/12")
 
 
 @pytest.mark.parametrize(
@@ -385,8 +404,8 @@ def test_the_list_fits_and_every_row_and_key_stays_reachable(panel: StateControl
 @pytest.mark.parametrize(
     ("columns", "labels", "beneath"),
     [
-        (120, 5, ""),
-        (50, 2, "odcinki E3–E12 · pobrano 1/4 · gotowe 0 · That Time I Got Reincarnated as a Slime Season 4"),
+        (120, 4, ""),
+        (50, 2, "odcinki 1/12 · gotowe 0 · That Time I Got Reincarnated as a Slime Season 4"),
     ],
 )
 def test_narrow_terminals_drop_optional_columns_and_show_only_what_the_row_hides_beneath_the_table(
@@ -399,7 +418,7 @@ def test_narrow_terminals_drop_optional_columns_and_show_only_what_the_row_hides
     keys: int = _line(lines, "Enter szczegóły")
     notice: str = " ".join(line.strip() for line in lines[_line(lines, "Tytuł") + 2 : keys] if line.strip())
 
-    shown: list[str] = [label for label in ("Tytuł", "Odcinki", "Pobrano", "Gotowe", "Stan") if label in header]
+    shown: list[str] = [label for label in ("Tytuł", "Odcinki", "Gotowe", "Stan") if label in header]
     assert len(shown) == labels
     assert {"Tytuł", "Stan"} <= set(shown)
     assert notice == beneath

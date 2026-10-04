@@ -109,7 +109,7 @@ _WATCH_SUGGESTION: Final[str] = "Run `anishift autostart enable` so the library 
 _SUBS_EMPTY: Final[str] = "No followed series."
 """Line printed when the subscription list is empty."""
 
-_SUBS_ROW: Final[str] = "{id} {title} · from: {start} · downloaded: {downloaded} · {state}"
+_SUBS_ROW: Final[str] = "{id} {title} · episodes: {episodes} · ready: {ready} · {state}"
 """One list row per followed season."""
 
 _SUBS_REMOVED: Final[str] = "Removed; `Ctrl+Z` in the Subscriptions panel restores it."
@@ -354,7 +354,7 @@ def qbit_setup() -> None:
 
 @subs_app.command("list")
 def subs_list() -> None:
-    """List every followed season with its first episode, downloads and state."""
+    """List every followed season with its episodes on disk, ready episodes and state."""
     from anishift.application import SubscriptionRow, decode_view  # noqa: PLC0415
 
     raw: object = _resident_call("subscriptions_list").get("subscriptions", [])
@@ -368,8 +368,8 @@ def subs_list() -> None:
         line: str = _SUBS_ROW.format(
             id=row.subscription_id,
             title=row.title,
-            start="?" if row.from_number is None else row.from_number,
-            downloaded=row.downloaded if row.targets_total is None else f"{row.downloaded}/{row.targets_total}",
+            episodes=f"{row.on_disk}/{'?' if row.episode_count is None else row.episode_count}",
+            ready=row.ready,
             state=_subscription_state(row),
         )
         typer.echo(_safe(line))

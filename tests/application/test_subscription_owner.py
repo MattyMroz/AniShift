@@ -577,9 +577,9 @@ def test_adding_a_releasing_season_saves_its_cut_mapping_and_future_targets_once
         saved: WatchState = owner._on_owner(store.load)
 
     assert added.ok
-    assert added.result["from_number"] == 24
     assert repeated.result == added.result
     record: SubscriptionRecord = saved.subscriptions[0]
+    assert added.result == {"subscription_id": record.subscription_id}
     assert (record.subscription_id, record.cut, record.kitsu_id) == (added.result["subscription_id"], 23, _KITSU)
     assert record.mapping == _mapping(max_age_s=None)
     assert [(item.number, item.state) for item in record.targets] == [(24, TargetState.AWAITING_AIRING)]
@@ -619,7 +619,7 @@ def test_adding_an_announced_season_without_dates_targets_every_episode(tmp_path
         added: ControlResponse = _add(owner)
         record: SubscriptionRecord = owner._on_owner(store.load).subscriptions[0]
 
-    assert added.result["from_number"] == 1
+    assert added.ok
     assert record.targets
     assert {item.state for item in record.targets} == {TargetState.AWAITING_AIRING}
     assert record.targets[0].number == 1

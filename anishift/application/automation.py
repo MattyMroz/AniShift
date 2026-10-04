@@ -658,6 +658,13 @@ class _EpisodeIndex:
 
 
 @dataclass(frozen=True, slots=True)
+class _DiskInventory:
+    present: frozenset[str]
+    videos: frozenset[str]
+    ready: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
 class _NotificationTarget:
     set_id: str
     product: ProductConfirmation
@@ -3505,14 +3512,13 @@ class AutomationOwner:
             index: _EpisodeIndex = _episode_index(
                 self._state, frozenset(item.anilist_id for item in self._state.subscriptions)
             )
+            disk: _DiskInventory = self._disk_inventory()
             return ControlResponse.succeeded(
                 {
                     "subscriptions": [
                         encode_view(
                             replace(
-                                subscription_row(item),
-                                ready=self._ready_targets(item, index),
-                                checking_number=self._checking_target(item, index),
+                                self._disk_row(item, index, disk), checking_number=self._checking_target(item, index)
                             )
                         )
                         for item in display_order(self._state.subscriptions)
@@ -3535,8 +3541,10 @@ class AutomationOwner:
 
     def _change_subscription(self, request: ControlRequest, record: SubscriptionRecord) -> ControlResponse:
         if request.kind == "subscription_get":
-            ready: int = self._ready_targets(record, _episode_index(self._state, frozenset({record.anilist_id})))
-            return ControlResponse.succeeded(_subscription_details(record, ready))
+            index: _EpisodeIndex = _episode_index(self._state, frozenset({record.anilist_id}))
+            return ControlResponse.succeeded(
+                _subscription_details(record, self._disk_row(record, index, self._disk_inventory()))
+            )
         if request.kind == "subscription_check":
             return self._request_subscription_check(request, record)
         if request.kind == "subscription_remove":
@@ -3637,7 +3645,7 @@ class AutomationOwner:
             request,
             (*self._state.subscriptions, record),
             self._state.removed_subscription,
-            {"subscription_id": record.subscription_id, "from_number": subscription_row(record).from_number},
+            {"subscription_id": record.subscription_id},
         )
         if response.ok:
             self._log_next_search(record)
@@ -3978,16 +3986,89 @@ class AutomationOwner:
         if refused is not None:
             self._save(_with_target(self._state, identifier, refused))
 
-    def _ready_targets(self, record: SubscriptionRecord, index: _EpisodeIndex) -> int:
-        """Count the satisfied targets of *record* whose products the Library holds."""
-        if record.anilist_id is None:
-            return 0
-        anilist_id: int = record.anilist_id
-        return sum(
-            self._episode_ready(EpisodeKey(anilist_id, item.number), index)
-            for item in record.targets
-            if item.state is TargetState.SATISFIED
+    def _disk_inventory(self) -> _DiskInventory:
+        """Return the files, source-video groups and available ready sets the last library inventory proved."""
+        root: Path = self._service.workspace_root
+        groups: tuple[InspectedSourceGroup, ...] = () if self._library is None else self._library.groups
+        return _DiskInventory(
+            present=frozenset(
+                path.relative_to(root).as_posix().casefold()
+                for group in groups
+                for artifact in group.artifacts
+                if (path := artifact.path) is not None and path.is_relative_to(root)
+            ),
+            videos=frozenset(
+                group.group_id
+                for group in groups
+                if any(
+                    artifact.kind in {ArtifactKind.VIDEO_MKV, ArtifactKind.VIDEO_MP4}
+                    and artifact.lifetime is ArtifactLifetime.SOURCE
+                    for artifact in group.artifacts
+                )
+            ),
+            ready=frozenset(
+                identifier
+                for item in self._ready_library
+                if item.available
+                or (
+                    item.main_result is None
+                    and any(_is_video(file.path) and file.identity is not None for file in item.files)
+                )
+                for identifier in (item.set_id, item.group_id)
+            ),
         )
+
+    def _disk_row(self, record: SubscriptionRecord, index: _EpisodeIndex, disk: _DiskInventory) -> SubscriptionRow:
+        """Project *record* with the episodes whose source video, or ready set, the library inventory proves."""
+        row: SubscriptionRow = subscription_row(record)
+        if record.anilist_id is None:
+            return row
+        on_disk: set[int] = set()
+        ready: set[int] = set()
+        indexed: set[int] = set()
+        for (entry, number), matches in index.episodes.items():
+            if entry != record.anilist_id:
+                continue
+            indexed.add(number)
+            transfer, assignment = sorted(matches, key=lambda item: not item[1].replaced)[-1]
+            if _closed_by_subscription(transfer, assignment):
+                continue
+            publication: EpisodePublication | None = assignment.publication
+            group: str | None = assignment.group_id or (
+                None if publication is None else _published_group(frozenset(item.name for item in publication.files))
+            )
+            if group in disk.ready:
+                ready.add(number)
+            if number in ready or group in disk.videos:
+                on_disk.add(number)
+        for number, paths in self._legacy_paths(record.anilist_id, index):
+            if number in indexed:
+                continue
+            if any(
+                {*group.sources, *group.pending_sources} & paths and group.set_id in disk.ready
+                for group in self._state.ready_groups
+            ):
+                ready.add(number)
+            if number in ready or any(_is_video(path) and path.casefold() in disk.present for path in paths):
+                on_disk.add(number)
+        return replace(row, on_disk=len(on_disk), ready=len(ready))
+
+    def _legacy_paths(self, anilist_id: int, index: _EpisodeIndex) -> Iterator[tuple[int, frozenset[str]]]:
+        operations: frozenset[str] = frozenset(
+            item.operation_id for item in index.legacy.get(anilist_id, ()) if item.operation_id is not None
+        )
+        for transfer in self._state.acquisitions:
+            scope: LegacyScope | None = transfer.legacy_scope
+            if (scope.anilist_id != anilist_id) if scope is not None else transfer.operation_id not in operations:
+                continue
+            number: int | None = (
+                scope.number if scope is not None and scope.number is not None else legacy_number(transfer.episode)
+            )
+            if number is not None:
+                yield (
+                    number,
+                    frozenset((Path(transfer.directory) / name).as_posix() for _i, name, _s in transfer.file_layout),
+                )
 
     def _checking_target(self, record: SubscriptionRecord, index: _EpisodeIndex) -> int | None:
         return next(
@@ -4000,17 +4081,6 @@ class AutomationOwner:
             ),
             None,
         )
-
-    def _episode_ready(self, key: EpisodeKey, index: _EpisodeIndex) -> bool:
-        rows: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = index.episodes.get(
-            (key.anilist_id, key.number), ()
-        )
-        handed: tuple[AcquisitionConfirmation, EpisodeAssignment] | None = next(
-            (row for row in reversed(rows) if _handed_off(row[1])), None
-        )
-        if handed is None:
-            return self._legacy_episode_status(key).state == "ready"
-        return self._handed_off_status(key, *handed, uncertain=False).state == "ready"
 
     def _stalled_attempt(self) -> bool:
         """Whether a transfer stall, known only in memory, ends a target order no durable change will settle."""
@@ -4199,8 +4269,6 @@ class AutomationOwner:
                 )
 
     def _finish_subscription(self, record: SubscriptionRecord) -> None:
-        row: SubscriptionRow = subscription_row(record)
-        total: str = "?" if row.targets_total is None else str(row.targets_total)
         logger.info("Subscription finished", subscription_id=record.subscription_id, targets=len(record.targets))
         try:
             self._history.append(
@@ -4209,8 +4277,7 @@ class AutomationOwner:
                     record.subscription_id,
                     self._now(),
                     HistoryKind.SUBSCRIPTION_FINISHED,
-                    sanitize_event_message(f"{record.title}, pobrano {row.downloaded}/{total}")
-                    or record.subscription_id,
+                    sanitize_event_message(record.title) or record.subscription_id,
                 ),
                 self._clock(),
             )
@@ -8195,10 +8262,9 @@ def _requested_groups(workspace: InspectedWorkspace, payload: Mapping[str, objec
     return tuple(by_id[group_id] for group_id in selected)
 
 
-def _subscription_details(record: SubscriptionRecord, ready: int) -> dict[str, object]:
+def _subscription_details(record: SubscriptionRecord, row: SubscriptionRow) -> dict[str, object]:
     numbers: tuple[int, ...] = tuple(item.number for item in record.targets)
     problem: SubscriptionTarget | None = next((item for item in record.targets if item.reason is not None), None)
-    row: SubscriptionRow = replace(subscription_row(record), ready=ready)
     return {
         "row": encode_view(row),
         "subscribed_at": record.subscribed_at,
