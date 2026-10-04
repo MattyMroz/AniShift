@@ -45,5 +45,7 @@ Ta sama pętla co w E2. Polecenie właściciela: `opus55` koduje i iteruje sam, 
 | Nr | Etap | Stan |
 | --- | --- | --- |
 | 1 | Plan E3 (`plans/e3-subskrypcje.md`) na stanie po E2, z decyzjami B1/C1 z `plans/e2-refaktoryzacja.md` → review `astra` | zrobione 2026-10-02: v4.1, `astra` PASS WITH FINDINGS po 4 rundach, findingi wprowadzone; P-1 i P-4 potwierdzone przez właściciela 2026-10-02 |
-| 2 | Fazy wykonania planu E3, każda w pętli `opus55` → `astra` → commit → test na żywo | w toku: F0 |
-| 3 | `outcomes/e3.md`, H3 właściciela (tydzień bez dotykania) | czeka |
+| 2 | Fazy wykonania planu E3, każda w pętli `opus55` → `astra` → commit → test na żywo | F0–F3 i panele zrobione (`6e7889c`…`57f96b0`); w toku: zmiany właściciela 2026-10-04 (nowe S-02, kolumny listy) |
+| 3 | Test właściciela: subskrypcja z wyemitowanym odcinkiem pobiera go od razu | czeka |
+| 4 | F4: dokumenty, `outcomes/e3.md`, H3 właściciela (tydzień bez dotykania) | czeka |
+| 5 | Plan E6 (Biblioteka): propozycje `astra` + burza mózgów orkiestratora → akceptacja właściciela | czeka |

@@ -1,7 +1,7 @@
 ---
 kind: masterplan
 status: active
-updated: 2026-09-28
+updated: 2026-10-04
 baseline: 0e8a6bf9194d2786d426d3f3a58f48272b3eb087
 ---
 
@@ -37,12 +37,14 @@ Użytkownik wybiera w AniShift tytuł → sezon → odcinki i klika Pobierz albo
 | --- | --- | --- | --- | --- | --- |
 | E0 | Pakiet decyzyjny | Specyfikacja, masterplan, plan E1 i UX bez sprzeczności; ustalenia `inżynierska` zaakceptowane lub zawetowane | — | Właściciel akceptuje pakiet (lista weta w manifeście) i zgody na pomiary E1 | accepted |
 | E00 | Katalog modeli i wywołania zgodne z OpenCode | Silnik LLM AniShift zna wszystkie modele OpenCode z limitami, modalnościami i wariantami rozumowania; katalog nadąża za kanonicznym `opencode.jsonc` jedną drogą; każdy model odpowiada przez obecne proxy; obrazy i PDF trafiają do modeli, które je deklarują, pozostałe jawnie odmawiają; decyzja o dwóch enrollmentach podjęta w planie E00 | E0; osobny plan E00 zaakceptowany przez właściciela | Bramki zielone; katalog zgodny z kanonicznym plikiem; smoke request na każdym modelu (obraz i PDF tam, gdzie deklarowane) zaliczony; review `opus5` bez otwartych findingów krytycznych i poważnych | accepted |
-| E1 | Wybór odcinka na prawdziwych danych + pomiary | Najpierw oznaczony korpus ≥ 2000 tytułów / ≥ 10 000 rekordów, zamrożony podział i heurystyka zbudowana od zera na części roboczej; po egzaminie kod domeny, adaptery, usługa/IPC i nowa ścieżka Anime: tytuł → wpisy → odcinki → sugestia i inne wydania (bez pobierania). Stara lista wydań wg grup pod `G` zachowuje pobieranie i subskrypcje. Ranking właściciela bez zmian; pilot N-01 (decyzja U-02) i raport N-02–N-04 | E0, E00 (oceniający korpusu N-02 działają przez silnik LLM po E00) | Heurystyka zbudowana na korpusie ≥ 2000 tytułów / ≥ 10 000 rekordów; jednorazowy egzamin na niewidzianej odłożonej części: 0 błędnych `zgodnych` rozpoznawalnych z nazwy/metadanych (plan E1 D6); metryki `niepewnych` i błędnych `niezgodnych` per warstwa zaakceptowane przez właściciela. Testy oznaczonych fixture i bramki zielone; H1 zaliczone; raport pomiarów z decyzjami dla E2 i E3. Stan 2026-09-28: egzamin 2 (v10.3) PASS, v10.3 przyjęta; integracja według [plans/e1-integracja.md](plans/e1-integracja.md) | current |
+| E1 | Wybór odcinka na prawdziwych danych + pomiary | Najpierw oznaczony korpus ≥ 2000 tytułów / ≥ 10 000 rekordów, zamrożony podział i heurystyka zbudowana od zera na części roboczej; po egzaminie kod domeny, adaptery, usługa/IPC i nowa ścieżka Anime: tytuł → wpisy → odcinki → sugestia i inne wydania (bez pobierania). Stara lista wydań wg grup pod `G` zachowuje pobieranie i subskrypcje. Ranking właściciela bez zmian; pilot N-01 (decyzja U-02) i raport N-02–N-04 | E0, E00 (oceniający korpusu N-02 działają przez silnik LLM po E00) | Heurystyka zbudowana na korpusie ≥ 2000 tytułów / ≥ 10 000 rekordów; jednorazowy egzamin na niewidzianej odłożonej części: 0 błędnych `zgodnych` rozpoznawalnych z nazwy/metadanych (plan E1 D6); metryki `niepewnych` i błędnych `niezgodnych` per warstwa zaakceptowane przez właściciela. Testy oznaczonych fixture i bramki zielone; H1 zaliczone; raport pomiarów z decyzjami dla E2 i E3. Stan 2026-09-28: egzamin 2 (v10.3) PASS, v10.3 przyjęta; integracja według [plans/e1-integracja.md](plans/e1-integracja.md) | done (kod i egzamin; `outcomes/e1.md` partial — odbiór człowieka przeszedł w praktyce przez H2 w E2) |
 | E2 | Jednorazowe pobieranie nową drogą | Pobierz z listy odcinków: zlecenie per odcinek, magnet → lista plików → tylko wybrane pliki → kompletność per odcinek → istniejące przetwarzanie → Biblioteka. Pobierz ponownie z podglądem wydania (spec P-05). Rejestr decyzji ścieżki ręcznej (`config/watch/decisions.jsonl`, [plan przepływu](plans/e1-przeplyw-subskrypcji.md) §5.6). Pomost `G` (stara lista wg grup) usunięty z zakładki Anime decyzją D5 ([plan panelu](plans/e2-panel-anime.md)); istniejące subskrypcje działają dalej w swojej zakładce, nowe zakłada się w E3 | E1 (N-03 pozytywne) | Test integracyjny z prawdziwym qB na syntetyku (E1/E3 bez E2, restart); migracja WatchState na kopii stanu właściciela; H2 zaliczone | accepted ([outcome](outcomes/e2.md)) |
-| E3 | Subskrypcje na wspólnym mechanizmie | Subskrybuj z listy odcinków, zakładka Subskrypcje (lista, szczegóły, dodaj, usuń, wstrzymaj, szukaj teraz), harmonogram U-13–U-15, autozamknięcie, przeniesienie starych subskrypcji; usunięty pomost `G` i stara droga grup w UI | E2; źródło świeżych odcinków rozstrzygnięte (U-02: tylko Torrentio) | Testy fake clock (emisja, brak wydania, koniec sezonu, restart, izolacja problemów); migracja na kopii; H3: tydzień bez dotykania | planned |
-| E4 | Kontrola zawartości po pobraniu | PL napisy → bez tłumaczenia; obce → tłumaczenie; brak napisów → jedna zamiana wydania; lektor zawsze | E2; N-05 | Testy planera na syntetykach; H4 na prawdziwym odcinku z PL i bez PL | planned |
-| E5 | Sprzątanie i przełączenie | Usunięte martwe ścieżki (grupy, kategorie, aktywne wyszukiwanie Nyaa — U-02; fallback W-08 według osobnej decyzji), aktualne `AGENTS.md`/`README.md`, PR-y scalone, nowa wersja działa u właściciela | E3, E4 | Pełne bramki, niezależne review implementacji, działający rezydent u właściciela przez 7 dni bez interwencji | planned |
-| E6 | Biblioteka jako widok tytułów | Biblioteka w układzie ekranu Anime: lista tytułów → Enter → `BIBLIOTEKA › <tytuł>` z odcinkami (numer, tytuł odcinka, Emisja, Stan); zaznaczanie i usuwanie wielu; rozpoznanie plików ręcznych przez AniList z jawnym „nie rozpoznano” | E2; E3 (nadchodzące odcinki subskrypcji); osobny plan zaakceptowany przez właściciela | Szczegóły w „Stany etapów” E6; H6 właściciela na własnej Bibliotece | planned |
+| E3 | Subskrypcje na wspólnym mechanizmie | Subskrybuj z listy odcinków, zakładka Subskrypcje (lista, szczegóły, dodaj, usuń, wstrzymaj, szukaj teraz), harmonogram U-13–U-15, autozamknięcie, przeniesienie starych subskrypcji; usunięty pomost `G` i stara droga grup w UI; przy dodaniu wyemitowane odcinki zaznaczone w szkicu i pobierane od razu (nowe S-02, decyzja 2026-10-04) | E2; źródło świeżych odcinków rozstrzygnięte (U-02: tylko Torrentio) | Testy fake clock (emisja, brak wydania, koniec sezonu, restart, izolacja problemów); migracja na kopii; test właściciela: subskrypcja tytułu z wyemitowanym odcinkiem pobiera go od razu, a kolejne po emisji; H3: tydzień bez dotykania | current |
+| E6 | Biblioteka jako widok tytułów | Biblioteka w układzie ekranu Anime: lista tytułów → Enter → `BIBLIOTEKA › <tytuł>` z odcinkami (numer, tytuł odcinka, Emisja, Stan); zaznaczanie i usuwanie wielu; rozpoznanie plików ręcznych przez AniList z jawnym „nie rozpoznano”; plan rozstrzyga połączenie Biblioteki z Subskrypcjami i pobraniami ręcznymi (jeden interfejs albo obecny podział zakładek) | E3 (nadchodzące odcinki subskrypcji); osobny plan zaakceptowany przez właściciela | Szczegóły w „Stany etapów” E6; H6 właściciela na własnej Bibliotece | planned (następny po E3) |
+| E4 | Kontrola zawartości po pobraniu | PL napisy → bez tłumaczenia; obce → tłumaczenie; brak napisów → jedna zamiana wydania; lektor zawsze; do zbadania: polskie napisy z zewnętrznych źródeł (np. dodatki napisów Stremio) zamiast tłumaczenia, gdy wydanie ich nie ma | E2, E6; N-05 | Testy planera na syntetykach; H4 na prawdziwym odcinku z PL i bez PL | planned (po E6) |
+| E5 | Sprzątanie, uproszczenie i przełączenie | Usunięte martwe ścieżki (grupy, kategorie, aktywne wyszukiwanie Nyaa — U-02; fallback W-08 według osobnej decyzji); refaktoryzacja i uproszczenie kodu: usunięcie nadmiarowych mechanizmów i funkcji bez wymagań; aktualne `AGENTS.md`/`README.md`, PR-y scalone, nowa wersja działa u właściciela | E3, E6, E4 | Pełne bramki, niezależne review implementacji, działający rezydent u właściciela przez 7 dni bez interwencji | planned (ostatni) |
+
+**Kolejność wykonania (decyzja właściciela 2026-10-04):** E3 → E6 → E4 → E5. Biblioteka idzie przed usprawnieniami, bo właściciel chce najpierw kompletnego produktu (wyszukiwarka, pobieranie, subskrypcje, Biblioteka); kontrola zawartości, zewnętrzne napisy i sprzątanie są etapami końcowymi.
 
 Gałąź i PR E00 ustala jego plan; E1 startuje od stanu po E00 (nie od samego `0e8a6bf`).
 
@@ -50,7 +52,13 @@ Gałęzie: `work/local-automation/06-efficiency` scalono do `main` przez PR #56 
 
 ## Aktualny etap
 
-**Stan 2026-10-02:** E2 zaakceptowane przez właściciela ([outcomes/e2.md](outcomes/e2.md)), etap A refaktoryzacji wykonany. Następny: plan i wykonanie E3 (subskrypcje) w pętli `opus55` → `astra`. Poniższy opis E1 jest historyczny.
+**Stan 2026-10-04:** E3 (subskrypcje) w toku. Fazy F0–F3 planu E3 i przebudowa paneli są wykonane, zrecenzowane i działają u właściciela (commity `6e7889c`…`57f96b0`). Zostało, w tej kolejności:
+
+1. Zmiany właściciela z 2026-10-04: szkic subskrypcji zaznacza wyemitowane odcinki (można odznaczyć), a „Dodaj” pobiera je od razu drogą D (nowe S-02); lista subskrypcji `Tytuł · Odcinki X/12 · Gotowe · Stan`, gdzie „Odcinki” to pliki sezonu na dysku, bez kolumny zakresu, „Pobrano” i „od E…”.
+2. Test właściciela: subskrypcja trwającego tytułu z wyemitowanym odcinkiem — ten odcinek pobiera się od razu, kolejne po emisji.
+3. F4 planu E3: dokumenty, `outcomes/e3.md`, H3 (tydzień bez dotykania).
+
+Potem plan E6 (Biblioteka): propozycje `astra`, burza mózgów orkiestratora, akceptacja właściciela, wykonanie. Następnie E4 i E5. Poniższy opis E1 jest historyczny.
 
 **Etap:** E1 — wybór odcinka na prawdziwych danych i pomiary. E0 zaakceptowane zgodnie z [README.md](README.md) §2; E00 zakończone (kod zaakceptowany, PR #57 czeka na merge).
 
@@ -111,15 +119,19 @@ Gałęzie: `work/local-automation/06-efficiency` scalono do `main` przez PR #56 
 - **Cel:** wynik nie tłumaczy polskich napisów i sam wymienia wydanie bez napisów; lektor powstaje zawsze.
 - **Stan po:** inspekcja ścieżek po pobraniu, reguły U-08, licznik prób per odcinek, powody w szczegółach (I-08).
 - **Ryzyko:** rozpoznanie „signs-only” (N-05) — gdy niepewne, ścieżka traktowana jako pełna tylko przy braku słów kluczowych „signs/songs” w nazwie ścieżki; rozstrzyga próba na pobranych plikach.
+- **Pomysł właściciela 2026-10-04, do zbadania w planie E4:** gdy wydanie nie ma polskich napisów, przed tłumaczeniem szukać ich w zewnętrznych źródłach (np. dodatki napisów Stremio). Plan E4 sprawdza dostępność, jakość i dopasowanie czasowe takich napisów; bez tego badania nie zakładamy, że zastąpią tłumaczenie.
 
 ### E5 — sprzątanie i przełączenie
 
 - **Cel:** jeden mechanizm w kodzie i dokumentacji, nowa wersja u właściciela.
 - **Stan po:** usunięte `_group_queries`, filtry grup i kategorii, aktywne wyszukiwanie Nyaa (U-02; fallback W-08 według osobnej decyzji), nieużywane eksporty; zaktualizowane scoped `AGENTS.md` i `README.md`; PR-y scalone; 7 dni pracy u właściciela.
+- **Uproszczenie (właściciel 2026-10-04):** właściciel ocenia, że znaczna część kodu jest przeprojektowana. E5 obejmuje audyt złożoności i refaktoryzację: usunięcie mechanizmów i funkcji bez wymagań, uproszczenie tego, co zostaje, przy zachowaniu kontraktów chronionych testami. Zakres ustala osobny plan zaakceptowany przez właściciela.
 
 ### E6 — Biblioteka jako widok tytułów
 
-Pomysł właściciela z 2026-10-01, podczas E2. Wykonanie po E2 według osobnego planu; kolejność względem E4/E5 ustala właściciel.
+Pomysł właściciela z 2026-10-01, podczas E2. Decyzja właściciela 2026-10-04: E6 idzie zaraz po E3, przed E4 i E5. Plan E6 powstaje z propozycji `astra` i burzy mózgów orkiestratora i wymaga akceptacji właściciela.
+
+- **Pytanie główne planu (właściciel 2026-10-04):** wyszukiwarka, Subskrypcje i Biblioteka to strony tej samej rzeczy — co jest na dysku, co się pobiera i co przyjdzie. Biblioteka różni się tym, że obejmuje też pliki spoza subskrypcji (pobrane ręcznie przez D albo wrzucone do workspace). Plan rozstrzyga: jeden interfejs tytułów czy obecny podział zakładek, i jak ujednolicić prezentację odcinków (liczniki „na dysku” i „gotowe”) między nimi.
 
 - **Problem:** Biblioteka pokazuje surowe nazwy plików mkv, z których trudno odczytać tytuł i odcinek. Jedno anime ma różne zapisy w nazwach. Dla Slime S4 `parse_release_name` daje trzy tytuły: „That Time I Got Reincarnated as a Slime” s4, „Tensei Shitara Slime Datta Ken 4th Season” (Erai-raws) oraz „Tensei Shitara Slime Datta Ken” s4 (Judas).
 - **Czym jest Biblioteka:** wszystko, co zostało przetworzone (mkv i inne pliki). Użytkownika interesują nazwa dzieła, numer odcinka i tytuł odcinka.
@@ -154,6 +166,7 @@ Pomysł właściciela z 2026-10-01, podczas E2. Wykonanie po E2 według osobnego
 
 | Data | Zmiana | Dowód / powód | Wpływ |
 | --- | --- | --- | --- |
+| 2026-10-04 | Właściciel: kolejność E3 → E6 → E4 → E5; nowe S-02 (wyemitowane odcinki zaznaczone w szkicu i pobierane przy dodaniu); E4 bada zewnętrzne polskie napisy; E5 obejmuje uproszczenie przeprojektowanego kodu | Decyzja właściciela po ocenie masterplanu i testach subskrypcji na żywo | E3 current z dodatkowym zakresem; E6 następny; E4 i E5 jako etapy końcowe |
 | 2026-09-24 | Właściciel: heurystyka tożsamości od zera na ≥ 2000 tytułów / ≥ 10 000 oznaczonych rekordów, zamiast portu i parytetu 231/231 | Decyzja właściciela: około 200 przypadków nie wystarcza; błąd ma być anomalią, a jakość sprawdzona na danych niewidzianych przy budowie | Korpus i etykiety przed domeną; zamrożony podział, budowa tylko na części roboczej i jednorazowy egzamin z 0 błędnych `zgodnych`; pozostałe metryki ocenia właściciel. Porażka wymaga nowej części odłożonej. Ranking bez zmian; E0 accepted, E1 current |
 | 2026-09-23 | Właściciel: nowy etap E00 przed E1 — katalog modeli i wywołania zgodne 1:1 ze skillem OpenCode, multimodalność; oceniający N-02 przez `anishift.services.llm` (silnik Palantir), nie przez silnik tłumaczenia | Decyzja właściciela | E00 dodany (planned; wejście: osobny plan zaakceptowany przez właściciela); E1 zależy od E00; plan E1 §9 N-02 i faza 0 pkt 5a zmienione |
 | 2026-09-23 | Właściciel: ocena całego korpusu przez nieograniczoną liczbę agentów | Decyzja właściciela | N-02: zamiast próbki 700 — cały korpus, dwóch agentów na rekord, rekordy kontrolne, lista dla właściciela |
