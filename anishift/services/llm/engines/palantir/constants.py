@@ -123,6 +123,7 @@ def _grok(model_id: str, label: str, levels: tuple[str, ...] = ("low", "high")) 
 
 PALANTIR_MODELS: Final[tuple[PalantirModel, ...]] = (
     _gpt("gpt-6-astra", "Foundry: GPT-6 Astra", _THINKING_LEVELS),
+    _gpt("gpt-6.1-sol", "Foundry: GPT-6.1 Sol", _THINKING_LEVELS, file_modalities=frozenset({"image"})),
     _gpt("gpt-6-sol", "Foundry: GPT-6 Sol", ("none", *_THINKING_LEVELS), file_modalities=frozenset({"image"})),
     _gpt("gpt-6-luna", "Foundry: GPT-6 Luna", ("none", *_THINKING_LEVELS), file_modalities=frozenset({"image"})),
     _gpt("gpt-5.6-sol", "Foundry: GPT-5.6 Sol", ("none", *_THINKING_LEVELS)),
