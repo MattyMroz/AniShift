@@ -274,17 +274,27 @@ def _query(canvas: _Canvas, snapshot: AnimeSnapshot) -> None:
 
 def _list(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int) -> int:
     items: tuple[AnimeRow, ...] = snapshot.items[snapshot.offset : snapshot.offset + visible]
-    prefix: int = 2 if snapshot.screen in {AnimeScreen.FILES, AnimeScreen.DRAFT} else 0
-    boxed: int = 4 if snapshot.screen is AnimeScreen.DRAFT and any(item.number for item in items) else 0
-    canvas.place(max((Text(item.title).cell_len for item in items), default=0) + prefix + boxed)
+    draft: bool = snapshot.screen is AnimeScreen.DRAFT
+    prefix: int = 2 if snapshot.screen is AnimeScreen.FILES or draft else 0
+    boxed: int = 4 if draft and any(item.number for item in items) else 0
+    block: list[AnimeRow] = [item for item in items if not (draft and item.key.startswith("line"))]
+    canvas.place(max((Text(item.title).cell_len for item in block), default=0) + prefix + boxed)
     for index, item in enumerate(items):
-        if prefix and index + snapshot.offset == snapshot.cursor and item.navigable:
-            canvas.put(canvas.top + index, 0, _pointer(active=True), "brand_accent")
+        row: int = canvas.top + index
+        active: bool = index + snapshot.offset == snapshot.cursor and item.navigable
+        style: str = "white_bold"
+        if draft:
+            style = "brand_accent" if active else "white_bold" if item.navigable else "gray"
+        if draft and item.key.startswith("line"):
+            canvas.center(row, Text(item.title, style), selectable=True)
+            continue
+        if prefix and active:
+            canvas.put(row, 0, _pointer(active=True), "brand_accent")
         box: int = boxed if item.number else 0
         if box:
             marked: bool = item.key in snapshot.selected
-            canvas.put(canvas.top + index, prefix, "[x]" if marked else "[ ]", "brand_accent" if marked else "gray")
-        canvas.put(canvas.top + index, prefix + box, item.title, selectable=True)
+            canvas.put(row, prefix, "[x]" if marked else "[ ]", "brand_accent" if marked else "gray")
+        canvas.put(row, prefix + box if item.navigable or not draft else 0, item.title, style, selectable=True)
     return canvas.columns - prefix
 
 

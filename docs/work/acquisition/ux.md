@@ -209,28 +209,27 @@ Otwierany z wiersza Przetwarzania ze stanem „Nie ustalono pliku w paczce”.
 ```text
                     Nowa subskrypcja › Slime 7
 
-  Pobiorę sam kolejne odcinki po emisji, najbliższy E2 jutro 18:30. Potem
-  subskrypcja się zamknie.
+      Kolejne odcinki pobiorę po emisji · najbliższy E2 jutro 18:30
 
-  Już wyemitowane pobiorę od razu, zaznaczone:
-❯ [x] E1  Odcinek 1
+            Już wyemitowane · zaznaczone pobiorę od razu
+            ❯ [x] E1  Odcinek 1
 
-  [ Dodaj subskrypcję ]
-  [ Anuluj ]
+              Dodaj subskrypcję
+              Anuluj
 
     Enter wybierz · Space zaznacz · A wszystkie · Esc anuluj · ←→ widok · ↑↓ wybierz
 ```
 
-- Szkic to zdanie, lista wyemitowanych odcinków i przyciski, bez tabeli pól. Cele subskrypcji wynikają z punktu odcięcia (spec U-09): pierwszy odcinek niewyemitowany w chwili dodania; nie są edytowalne.
-- Pierwsze zdanie: „Pobiorę sam kolejne odcinki po emisji, {najbliższy E# dziś/jutro/DD.MM HH:MM | terminy jeszcze nieznane}.”, zakończone „Potem subskrypcja się zamknie.” (znana liczba odcinków) albo „Subskrypcja zamknie się po końcu sezonu.”. Szkic nie podaje numeru „od E…”.
-- Lista „Już wyemitowane pobiorę od razu, zaznaczone:” pokazuje wyemitowane odcinki przed punktem odcięcia, których właściciel nie ma jeszcze zamówionych, pobranych ani gotowych; wszystkie są wstępnie zaznaczone. Space lub Enter na wierszu przełącza odcinek, `A` zaznacza albo odznacza wszystkie. Kursor startuje na pierwszym odcinku listy, a ↓ prowadzi do przycisków. Brak takich odcinków: brak listy, kursor stoi na przycisku.
+- Szkic to zdanie, lista wyemitowanych odcinków i dwa wiersze akcji, bez tabeli pól i bez udawanych przycisków. Układ jak w Ustawieniach: zdania wyśrodkowane, pod nimi wyśrodkowany blok wierszy; wiersz pod kursorem ma wskaźnik `❯` i niebieską etykietę (`brand_accent`), nagłówek listy jest szary. Odcinki mają ten sam znacznik `[x]`/`[ ]` co lista odcinków Anime. Teksty szkicu nie kończą się kropką. Cele subskrypcji wynikają z punktu odcięcia (spec U-09): pierwszy odcinek niewyemitowany w chwili dodania; nie są edytowalne.
+- Pierwsze zdanie: „Kolejne odcinki pobiorę po emisji · {najbliższy E# dziś/jutro/DD.MM HH:MM | terminy jeszcze nieznane}”. Szkic nie podaje numeru „od E…” ani zapowiedzi zamknięcia subskrypcji.
+- Lista „Już wyemitowane · zaznaczone pobiorę od razu” pokazuje wyemitowane odcinki przed punktem odcięcia, których właściciel nie ma jeszcze zamówionych, pobranych ani gotowych; wszystkie są wstępnie zaznaczone. Space lub Enter na wierszu przełącza odcinek, `A` zaznacza albo odznacza wszystkie. Kursor startuje na pierwszym odcinku listy, a ↓ prowadzi do akcji. Brak takich odcinków: brak listy, kursor stoi na „Dodaj subskrypcję”.
 - „Dodaj subskrypcję” najpierw dodaje subskrypcję, potem zamawia zaznaczone odcinki tą samą partią co `D` (limit 100). Odmowa nie cofa subskrypcji. Odmowę całej partii lista Subskrypcji pokazuje jako „Dodano subskrypcję · Nie zlecono · {powód}”, a odmowy pojedynczych odcinków — także gdy wynik przyjdzie później — jako „Nie zlecono E4–E8: {powód} · E9: {powód}”. Nieznany wynik: „Dodano subskrypcję · Wynik nieznany · Enter sprawdź wynik”; Enter na liście powtarza tę samą partię z tym samym ID polecenia (bez drugiego zamówienia), dopiero potem znów otwiera szczegóły.
-- Globalna pauza: dodatkowe zdanie „Automat jest wstrzymany: zacznę po wznowieniu.”.
-- Nieznany punkt odcięcia: „Nie wiadomo, ile odcinków już wyemitowano · spróbuj później” i sam przycisk Anuluj.
+- Globalna pauza: dodatkowe zdanie „Automat jest wstrzymany · zacznę po wznowieniu”.
+- Nieznany punkt odcięcia: „Nie wiadomo, ile odcinków już wyemitowano · spróbuj później” i sam wiersz Anuluj.
 - Wpis istnieje już jako subskrypcja: zamiast szkicu jeden wiersz „Ten sezon jest już subskrybowany · Enter pokaż” → U08.
 - Dodatki (OVA/special) nie są opisywane w szkicu; ich sekcja jest w U08.
 - Szkic otwarty przez `S` w Anime podświetla zakładkę Anime. Szkic, wyszukiwanie i listy otwarte przez `D` z listy Subskrypcji podświetlają Subskrypcje.
-- Na 50×12 widać jeden wiersz treści: zaznaczony odcinek pod kursorem; ↓ prowadzi do przycisku, ↑ przewija do zdań.
+- Na 50×12 widać jeden wiersz treści: zaznaczony odcinek pod kursorem; ↓ prowadzi do akcji, ↑ przewija do zdań.
 
 ## 9. U07 — lista subskrypcji (E3)
 

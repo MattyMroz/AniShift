@@ -257,8 +257,7 @@ def test_a_draft_follows_the_next_episodes_without_a_start_number_and_lists_the_
     assert draft is not None
     assert draft.addable
     assert draft.lines == (
-        "Pobiorę sam kolejne odcinki po emisji, najbliższy E3 "
-        f"{(_NOW + timedelta(days=6)).astimezone():%d.%m %H:%M}. Potem subskrypcja się zamknie.",
+        f"Kolejne odcinki pobiorę po emisji · najbliższy E3 {(_NOW + timedelta(days=6)).astimezone():%d.%m %H:%M}",
     )
     assert [item.number for item in draft.aired] == [1, 2]
 
@@ -282,8 +281,7 @@ def test_a_draft_names_a_near_airing_by_day(airs_at: datetime, when: str) -> Non
     draft: SubscriptionDraft | None = subscription_draft(listing, _NOW, paused=False)
 
     assert draft is not None
-    closing: str = "Potem subskrypcja się zamknie."
-    assert draft.lines == (f"Pobiorę sam kolejne odcinki po emisji, najbliższy E2 {when} {local:%H:%M}. {closing}",)
+    assert draft.lines == (f"Kolejne odcinki pobiorę po emisji · najbliższy E2 {when} {local:%H:%M}",)
     assert [item.number for item in draft.aired] == [1]
 
 
@@ -292,9 +290,7 @@ def test_an_announcement_without_dates_or_count_follows_every_episode_from_the_f
 
     assert draft is not None
     assert draft.addable
-    assert draft.lines == (
-        "Pobiorę sam kolejne odcinki po emisji, terminy jeszcze nieznane. Subskrypcja zamknie się po końcu sezonu.",
-    )
+    assert draft.lines == ("Kolejne odcinki pobiorę po emisji · terminy jeszcze nieznane",)
     assert draft.aired == ()
 
 
@@ -302,7 +298,7 @@ def test_a_draft_under_the_global_pause_says_when_it_starts_working() -> None:
     draft: SubscriptionDraft | None = subscription_draft(_listing(episodes=_weekly(0, 2)), _NOW, paused=True)
 
     assert draft is not None
-    assert draft.lines[-1] == "Automat jest wstrzymany: zacznę po wznowieniu."
+    assert draft.lines[-1] == "Automat jest wstrzymany · zacznę po wznowieniu"
 
 
 @pytest.mark.parametrize(
@@ -468,8 +464,8 @@ def test_d_on_the_list_searches_and_s_on_an_announced_title_adds_and_highlights_
     frame: str = _frame(panel)
     assert _anime(panel)._screen is _Screen.DRAFT
     assert "Nowa subskrypcja \u203a Slime 7" in frame
-    assert "Pobiorę sam kolejne odcinki po emisji" in frame
-    assert "\u276f [ Dodaj subskrypcję ]" in frame
+    assert "Kolejne odcinki pobiorę po emisji" in frame
+    assert "\u276f Dodaj subskrypcję" in frame
     assert "wyemitowane" not in frame
 
     _keys(panel, "enter")
@@ -508,7 +504,7 @@ def test_s_on_an_episode_list_drafts_from_the_loaded_list_without_reading_it_aga
 
     assert _anime(panel)._screen is _Screen.DRAFT
     assert owner.calls.count(("episodes", 1)) == reads
-    assert "Pobiorę sam kolejne odcinki po emisji" in _frame(panel)
+    assert "Kolejne odcinki pobiorę po emisji" in _frame(panel)
 
 
 def _episode_draft(panel: StateController, owner: _Owner) -> None:
@@ -531,7 +527,7 @@ def test_the_draft_marks_the_aired_episodes_and_add_orders_them_after_the_subscr
 ) -> None:
     _episode_draft(panel, owner)
     frame: str = _frame(panel)
-    assert "Już wyemitowane pobiorę od razu, zaznaczone:" in frame
+    assert "Już wyemitowane · zaznaczone pobiorę od razu" in frame
     assert "[x] E1  Odcinek 1" in frame
     assert "[x] E2  Odcinek 2" in frame
     assert "E3  Odcinek 3" not in frame
@@ -544,6 +540,34 @@ def test_the_draft_marks_the_aired_episodes_and_add_orders_them_after_the_subscr
     kinds: list[str] = [kind for kind, _ in owner.calls]
     assert kinds.index("subscription_add") < kinds.index("episode_download")
     assert panel._tab == _Tab.SUBSCRIPTIONS
+
+
+def _styles(panel: StateController) -> dict[str, str]:
+    rendered: Text = panel.render(120, 30)
+    return {rendered.plain[span.start : span.end]: str(span.style) for span in rendered.spans}
+
+
+def test_the_draft_highlights_the_row_under_the_cursor_and_centers_its_sentence(
+    panel: StateController, owner: _Owner
+) -> None:
+    _episode_draft(panel, owner)
+    styles: dict[str, str] = _styles(panel)
+    sentence: str = next(line for line in _frame(panel).splitlines() if "Kolejne odcinki" in line)
+
+    assert styles["E1  Odcinek 1"] == "brand_accent"
+    assert styles["E2  Odcinek 2"] == "white_bold"
+    assert styles["Dodaj subskrypcję"] == "white_bold"
+    assert styles["Już wyemitowane · zaznaczone pobiorę od razu"] == "gray"
+    lead: int = len(sentence) - len(sentence.lstrip())
+    assert abs(lead - (120 - lead - len(sentence.strip()))) <= 1
+    assert "[ " not in _frame(panel)
+
+    _keys(panel, "down", "down")
+    styles = _styles(panel)
+
+    assert styles["Dodaj subskrypcję"] == "brand_accent"
+    assert styles["E1  Odcinek 1"] == "white_bold"
+    assert styles["[x]"] == "brand_accent"
 
 
 def test_space_unmarks_an_aired_episode_so_add_orders_only_the_marked_ones(
@@ -721,7 +745,7 @@ def test_an_unknown_cut_point_shows_the_refusal_without_an_add_button(panel: Sta
     frame: str = _frame(panel)
     assert "Nie wiadomo, ile odcinków już wyemitowano" in frame
     assert "Dodaj subskrypcję" not in frame
-    assert "\u276f [ Anuluj ]" in frame
+    assert "\u276f Anuluj" in frame
 
 
 def test_the_list_counts_down_with_the_renderer_clock(panel: StateController, clock: _Clock) -> None:
@@ -1086,25 +1110,25 @@ def test_a_draft_with_aired_episodes_starts_on_the_first_marked_one_and_reaches_
 
     assert "\u276f [x] E1  Odcinek 1" in _frame(panel, 50, 12)
     _keys(panel, "down", "down")
-    assert "\u276f [ Dodaj subskrypcję ]" in _frame(panel, 50, 12)
+    assert "\u276f Dodaj subskrypcję" in _frame(panel, 50, 12)
 
 
 def test_the_draft_description_is_reachable_by_keyboard_in_a_short_terminal(panel: StateController) -> None:
     _titles(panel)
     _keys(panel, "down", "text:s")
-    assert "\u276f [ Dodaj subskrypcję ]" in _frame(panel)
+    assert "\u276f Dodaj subskrypcję" in _frame(panel)
     _keys(panel, "down", "up")
-    assert "\u276f [ Dodaj subskrypcję ]" in _frame(panel)
+    assert "\u276f Dodaj subskrypcję" in _frame(panel)
     frames: list[str] = [_frame(panel, 50, 12)]
-    assert "\u276f [ Dodaj subskrypcję ]" in frames[0]
+    assert "\u276f Dodaj subskrypcję" in frames[0]
 
     for _ in range(12):
         _keys(panel, "up")
         frames.append(_frame(panel, 50, 12))
 
     assert "Nowa subskrypcja \u203a Slime 7" in frames[0]
-    assert any("Pobiorę sam kolejne odcinki" in frame for frame in frames)
-    assert any("zamknie się po końcu sezonu" in frame for frame in frames)
+    assert any("Kolejne odcinki pobiorę po emisji" in frame for frame in frames)
+    assert any("jeszcze nieznane" in frame for frame in frames)
 
 
 @pytest.mark.parametrize(("key", "back"), [("backtab", ()), ("tab", ("backtab", "backtab"))])

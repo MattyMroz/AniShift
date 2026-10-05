@@ -84,14 +84,9 @@ def subscription_draft(listing: EpisodeListing, now: datetime, *, paused: bool) 
     if cut is None:
         return SubscriptionDraft(("Nie wiadomo, ile odcinków już wyemitowano · spróbuj później",), False)
     targets: list[ListedEpisode] = [item for item in listing.episodes if is_target(item, now, cut)]
-    closing: str = (
-        "Subskrypcja zamknie się po końcu sezonu."
-        if listing.episode_count is None
-        else "Potem subskrypcja się zamknie."
-    )
-    lines: list[str] = [f"Pobiorę sam kolejne odcinki po emisji, {_next_airing(targets, now)}. {closing}"]
+    lines: list[str] = [f"Kolejne odcinki pobiorę po emisji · {_next_airing(targets, now)}"]
     if paused:
-        lines.append("Automat jest wstrzymany: zacznę po wznowieniu.")
+        lines.append("Automat jest wstrzymany · zacznę po wznowieniu")
     aired: tuple[ListedEpisode, ...] = tuple(
         item for item in listing.episodes if item.aired and not is_target(item, now, cut)
     )

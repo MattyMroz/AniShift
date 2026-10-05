@@ -87,13 +87,13 @@ _SENDING: Final[str] = "Wysyłam…"
 _ADDING: Final[str] = "Dodaję subskrypcję…"
 """Sentence shown while the owner reads the season and saves a new subscription."""
 
-_DRAFT_ADD: Final[str] = "[ Dodaj subskrypcję ]"
-"""Draft button that sends the subscription to the owner."""
+_DRAFT_ADD: Final[str] = "Dodaj subskrypcję"
+"""Draft action that sends the subscription to the owner."""
 
-_DRAFT_CANCEL: Final[str] = "[ Anuluj ]"
-"""Draft button that returns to the screen the draft was opened from."""
+_DRAFT_CANCEL: Final[str] = "Anuluj"
+"""Draft action that returns to the screen the draft was opened from."""
 
-_DRAFT_AIRED: Final[str] = "Już wyemitowane pobiorę od razu, zaznaczone:"
+_DRAFT_AIRED: Final[str] = "Już wyemitowane · zaznaczone pobiorę od razu"
 """Draft heading of the aired episodes that Dodaj subskrypcję downloads at once."""
 
 _SUBSCRIBED: Final[str] = "Ten sezon jest już subskrybowany · Enter pokaż"
@@ -150,6 +150,16 @@ _IN_PROGRESS_HINT: Final[str] = "W toku · C anuluj w Przetwarzaniu"
 
 _EPISODE_ADMITTED: Final[str] = "Odcinek już zlecony"
 """Notice shown when the owner refuses an already admitted episode."""
+
+_REPEAT_HINT: Final[str] = "P pobierz ponownie"
+"""Hint naming the explicit repeat after the owner refuses an already ordered episode."""
+
+_REPEATABLE_REFUSALS: Final[dict[str, str]] = {
+    AdmissionConflict.ADMITTED: _EPISODE_ADMITTED,
+    AdmissionConflict.POSSIBLY_ADMITTED: EPISODE_REASON_LABELS[AdmissionConflict.POSSIBLY_ADMITTED],
+    EpisodeReason.PACK_IN_PROGRESS: EPISODE_REASON_LABELS[EpisodeReason.PACK_IN_PROGRESS],
+}
+"""Notice of each owner refusal that P can override with an explicit repeat."""
 
 _EPISODE_STATE_LABELS: Final[dict[str, str]] = {
     "ordered": "Zlecono",
@@ -2026,7 +2036,10 @@ class AnimeController:
             return True
 
     def _catalog_failure(self, generation: int, problem: Exception, back: _Screen, provider: str) -> None:
-        logger.warning("Anime catalogue command failed", error_class=type(problem).__name__)
+        if isinstance(problem, ControlError) and problem.code is ControlErrorCode.REFUSED:
+            logger.info("Anime catalogue command refused", reason=problem.reason)
+        else:
+            logger.warning("Anime catalogue command failed", error_class=type(problem).__name__)
         if isinstance(problem, (AniShiftError, OSError)):
             self._report(generation, problem, back, provider=provider, catalog_command=True)
             return
@@ -2277,8 +2290,8 @@ def _stated(problem: AniShiftError | OSError | ValueError) -> tuple[str, str]:  
         return refusal_text(problem), ""
     if isinstance(problem, ControlError) and problem.reason == "response_too_large":
         return "Odpowiedź rezydenta jest za duża", ""
-    if isinstance(problem, ControlError) and problem.reason == "episode_admitted":
-        return _EPISODE_ADMITTED, ""
+    if isinstance(problem, ControlError) and problem.reason in _REPEATABLE_REFUSALS:
+        return _REPEATABLE_REFUSALS[problem.reason], _REPEAT_HINT
     if isinstance(problem, ControlError) and problem.code is ControlErrorCode.STALE_PREVIEW:
         return "Wybór lub konflikt zmienił się", "Otwórz podgląd ponownie"
     if isinstance(problem, ControlError) and problem.reason == "download_recorded":
@@ -2308,6 +2321,8 @@ def _refused_result(reason: str) -> tuple[str, str]:
     known: str | None = EPISODE_REASON_LABELS.get(reason)
     if reason == EpisodeReason.EPISODE_IN_PROGRESS:
         return EPISODE_REASON_LABELS[reason], _IN_PROGRESS_HINT
+    if reason in _REPEATABLE_REFUSALS:
+        return EPISODE_REASON_LABELS[reason], f"{_REPEATABLE_REFUSALS[reason]} · {_REPEAT_HINT}"
     if known is not None:
         return known, known
     if reason == EpisodeReason.ACQUISITION_UNAVAILABLE:
