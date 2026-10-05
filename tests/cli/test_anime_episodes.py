@@ -1682,6 +1682,42 @@ def test_changed_repeat_conflict_is_refused_in_existing_problem_view() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("reason", "sentence"),
+    [
+        ("episode_admitted", "Odcinek już zlecony"),
+        ("episode_possibly_admitted", "Już zlecone?"),
+    ],
+)
+def test_choosing_an_already_ordered_episode_states_the_refusal_and_names_the_repeat(
+    reason: str, sentence: str
+) -> None:
+    owner: _ChoiceOwner = _ChoiceOwner()
+    owner.refusal = ControlError("refused", code=ControlErrorCode.REFUSED, reason=reason, answered=True)
+    controller: AnimeController = _owner_controller(owner)
+    _key(controller, "text:i")
+    _key(controller, "text:d")
+    frame: str = controller.render(50, 24).plain
+    assert _at(controller) is _Screen.PROBLEM
+    assert sentence in frame
+    assert "P pobierz ponownie" in frame
+    assert "Rezydent nie wykonał polecenia" not in frame
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("reason", "result"),
+    [
+        ("episode_admitted", ("Zlecono", "Odcinek już zlecony · P pobierz ponownie")),
+        ("episode_possibly_admitted", ("Już zlecone?", "Już zlecone? · P pobierz ponownie")),
+        ("pack_in_progress", ("Czeka na paczkę", "Czeka na paczkę · P pobierz ponownie")),
+    ],
+)
+def test_a_refused_repeatable_download_names_the_repeat_in_the_notice(reason: str, result: tuple[str, str]) -> None:
+    assert anime_module._refused_result(reason) == result
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("cancel", [False, True])
 def test_unresolved_episode_uses_offer_list_and_submits_exact_file_revision(cancel: bool) -> None:
     owner: _ChoiceOwner = _ChoiceOwner()

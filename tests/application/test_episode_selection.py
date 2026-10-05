@@ -656,6 +656,28 @@ def test_rank_candidates_owner_preferences_break_ties_in_order() -> None:
     assert _ranked(_target(), streams) == [polish, multisub, netflix, base, plain_720_polish, low, dubbed]
 
 
+def test_rank_candidates_blue_box_s2e1_suggests_the_polish_match_over_more_seeded_multisub_matches() -> None:
+    target: dict[str, object] = next(
+        case["target"] for case in _regression_cases() if "Blue Box" in case["target"]["aliases"]
+    )
+    polish_flag: tuple[str, ...] = ("Multi Subs", "\U0001f1f5\U0001f1f1")
+    trix: StreamCandidate = _stream(
+        "[Trix] Blue Box S02E01 [WEB-DL 1080p AV1 Opus] (Tri Audio, Multi Subs).mkv", seeders=12, tags=polish_flag
+    )
+    dkb: StreamCandidate = _stream(
+        "[DKB] Ao no Hako - S02E01 [1080p][HEVC x265 10bit][Dual-Audio][Multi-Subs][B53BC902].mkv",
+        seeders=285,
+        tags=("Multi Subs",),
+    )
+    tsundere: StreamCandidate = _stream(
+        "Blue Box S02E01 MULTi 1080p NF WEB-DL DDP5.1 AV1-Tsundere-Raws.mkv", seeders=157
+    )
+    ranked: tuple[RankedCandidate, ...] = rank_candidates(target, [tsundere, dkb, trix])
+    assert [candidate.stream for candidate in ranked] == [trix, dkb, tsundere]
+    assert {candidate.identity.verdict for candidate in ranked} == {IdentityVerdict.MATCH}
+    assert suggestion(ranked) == 0
+
+
 @pytest.mark.parametrize("tag", ["NF", "Crunchyroll"])
 def test_rank_candidates_platform_tag_breaks_a_tie_before_seeders(tag: str) -> None:
     base: StreamCandidate = _stream("Star Garden - 05 [1080p].mkv", seeders=900)

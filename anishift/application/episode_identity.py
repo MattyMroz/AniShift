@@ -1,4 +1,4 @@
-"""Assess selected-file identity with H1 v10.3 without inspecting media or performing I/O."""
+"""Assess selected-file identity with H1 v10.4 without inspecting media or performing I/O."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ TECHNICAL: Final[re.Pattern[str]] = re.compile(
     r"bd(?:rip|remux|mux|mv|\d{3,4}p)?|blu ?ray|dvd(?:rip|remux)?|web(?: ?dl| ?rip)?|hdtv|hdrip|remux|"
     r"aac\d?(?:\.\d)?|flac\d?(?:\.\d)?|opus(?:\d\.\d)?|ac3|eac3|ddp?(?:\d\.\d)?|dts(?: ?hd)?|truehd|lpcm|pcm|"
     r"(?:1|2|5|7)\.\d(?:ch)?|stereo|mono|atmos|hd|ma|"
-    r"dual(?: ?audio)?|multi(?:ple)?(?: ?audio| ?subs?| ?subtitles?)?|sub(?:s|bed|titles?)?|dub(?:bed)?|"
+    r"dual(?: ?audio)?|tri ?audio|multi(?:ple)?(?: ?audio| ?subs?| ?subtitles?)?|m?sub(?:s|bed|titles?)?|dub(?:bed)?|"
     r"eng(?:lish)?|jpn|jap(?:anese)?|rus(?:sian)?|ger(?:man)?|fre(?:nch)?|ita(?:lian)?|spa(?:nish)?|"
     r"por(?:tuguese)?|pol(?:ish)?|ara(?:bic)?|chi(?:nese)?|kor(?:ean)?|latino|pt br|es la|br|la|vostfr|engsubs|"
     r"nf|cr|amzn|dsnp|hidi|b global|netflix|crunchyroll|amazon|bilibili|hidive|"
@@ -456,7 +456,10 @@ def _prepare(value: str) -> str:
     )
     if not semantic:
         text = re.sub(
-            r"(?i)(\b(?:x26[45]|h[ .]?26[45]|av1|hevc|aac|flac))-[a-z][a-z0-9]*(?=\[[^\]]*\]$|$)", r"\1", text
+            r"(?i)(\b(?:x26[45]|h[ .]?26[45]|av1|hevc|aac|flac|msubs))"
+            r"-(?:[a-z][a-z0-9]*|[a-z]+(?:-[a-z]+)+)(?=\[[^\]]*\]$|$)",
+            r"\1",
+            text,
         )
         text = re.sub(r"\[(?:[\w-]+\.)+[a-z]{2,}\]$", "", text, flags=re.IGNORECASE)
         prefix: re.Match[str] | None = FIRST_BRACKET.match(text)
@@ -532,6 +535,15 @@ def _episode_residual(text: str, target: _Target) -> tuple[bool, bool]:
         if not any(_similarity(canonical, title, best) >= best for title in target.canonical_others):
             return True, True
     return exact
+
+
+def _absolute_echo(stem: str, parsed: _Parsed, target: _Target) -> _Parsed:
+    if parsed.mode != "plain" or target.absolute is None or parsed.number != target.local:
+        return parsed
+    if target.absolute == target.local or not re.search(rf"\b0*{target.local}\s*\(0*{target.absolute}\)", stem):
+        return parsed
+    echo: re.Match[str] | None = re.match(rf"0*{target.absolute}\b", parsed.remainder)
+    return replace(parsed, remainder=parsed.remainder[echo.end() :].strip()) if echo else parsed
 
 
 def _similarity(text: str, title: str, threshold: float) -> float:
@@ -1217,7 +1229,7 @@ def _classify(identity: _Target, candidate: Metadata) -> IdentityAssessment:  # 
     if PLEX_SUFFIX.search(stem):
         return IdentityAssessment(IdentityVerdict.MISMATCH, "Selected filename has an explicit Plex extra suffix.")
     stem = _prepare(stem)
-    parsed: _Parsed = _parse(stem, identity)
+    parsed: _Parsed = _absolute_echo(stem, _parse(stem, identity), identity)
     if EXTRAS.search(_without_episode_title(parsed.remainder, identity)[0]):
         return IdentityAssessment(
             IdentityVerdict.MISMATCH, "Selected residual explicitly identifies non-episode material."

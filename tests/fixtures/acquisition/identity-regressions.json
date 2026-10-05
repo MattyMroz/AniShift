@@ -822,5 +822,41 @@
     },
     "expected_verdict": "insufficient_evidence",
     "cause": "Standalone Slime Diaries episode 4 must not match main-series S1E4."
+  },
+  {
+    "target": {"aliases": ["Blue Box Season 2", "アオのハコ Season２", "Ao no Hako Season 2", "Ao no Hako", "Blue Box", "アオのハコ"], "type": "TV", "local_episode": 1, "season": 2, "episode": 1, "absolute": 26, "episode_title": null, "other_series": ["Teenage Blue", "ティーンエイジブルー"], "other_episode_titles": []},
+    "candidate": {"release": "[ToonsHub] Blue Box S02E01 1080p NF WEB-DL DUAL DDP5.1 H.264 (Ao no Hako Dual-Audio Multi-Subs)", "path": null, "filename": "Blue.Box.S02E01.1080p.NF.WEB-DL.DUAL.DDP5.1.H.264.MSubs-ToonsHub.mkv"},
+    "expected_verdict": "match",
+    "cause": "MSubs and the release group after it are technical metadata."
+  },
+  {
+    "target": {"aliases": ["Blue Box Season 2", "アオのハコ Season２", "Ao no Hako Season 2", "Ao no Hako", "Blue Box", "アオのハコ"], "type": "TV", "local_episode": 1, "season": 2, "episode": 1, "absolute": 26, "episode_title": null, "other_series": ["Teenage Blue", "ティーンエイジブルー"], "other_episode_titles": []},
+    "candidate": {"release": "[Trix] Blue Box S02E01 1080p NF WEB-DL Opus2.0 AV1 (Multi-Audio", "path": null, "filename": "[Trix] Blue Box S02E01 [WEB-DL 1080p AV1 Opus] (Tri Audio, Multi Subs).mkv"},
+    "expected_verdict": "match",
+    "cause": "Tri Audio is technical metadata."
+  },
+  {
+    "target": {"aliases": ["Blue Box Season 2", "アオのハコ Season２", "Ao no Hako Season 2", "Ao no Hako", "Blue Box", "アオのハコ"], "type": "TV", "local_episode": 1, "season": 2, "episode": 1, "absolute": 26, "episode_title": null, "other_series": ["Teenage Blue", "ティーンエイジブルー"], "other_episode_titles": []},
+    "candidate": {"release": "Blue Box S02E01 MULTi 1080p NF WEB-DL DDP5.1 AV1-Tsundere-Raws", "path": null, "filename": "Blue Box S02E01 MULTi 1080p NF WEB-DL DDP5.1 AV1-Tsundere-Raws.mkv"},
+    "expected_verdict": "match",
+    "cause": "A hyphenated release group after the codec is technical metadata."
+  },
+  {
+    "target": {"aliases": ["Blue Box Season 2", "アオのハコ Season２", "Ao no Hako Season 2", "Ao no Hako", "Blue Box", "アオのハコ"], "type": "TV", "local_episode": 1, "season": 2, "episode": 1, "absolute": 26, "episode_title": null, "other_series": ["Teenage Blue", "ティーンエイジブルー"], "other_episode_titles": []},
+    "candidate": {"release": "[AsukaRaws] Ao no Hako S2 - 01 (26) (WEB-DL 1280x720 x264 AAC)", "path": null, "filename": "[AsukaRaws] Ao no Hako S2 - 01 (26) (WEB-DL 1280x720 x264 AAC).mp4"},
+    "expected_verdict": "match",
+    "cause": "The target absolute number in parentheses after the local number confirms the same episode."
+  },
+  {
+    "target": {"aliases": ["Blue Box Season 2", "アオのハコ Season２", "Ao no Hako Season 2", "Ao no Hako", "Blue Box", "アオのハコ"], "type": "TV", "local_episode": 1, "season": 2, "episode": 1, "absolute": 26, "episode_title": null, "other_series": ["Teenage Blue", "ティーンエイジブルー"], "other_episode_titles": []},
+    "candidate": {"release": "[AsukaRaws] Ao no Hako S2 - 01 (27) (WEB-DL 1280x720 x264 AAC)", "path": null, "filename": "[AsukaRaws] Ao no Hako S2 - 01 (27) (WEB-DL 1280x720 x264 AAC).mp4"},
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A parenthesised number other than the target absolute number stays unexplained."
+  },
+  {
+    "target": {"aliases": ["The Disastrous Life of Saiki K.", "斉木楠雄のΨ難"], "type": "TV", "local_episode": 1, "season": 1, "episode": 1, "absolute": 1, "episode_title": "The Disastrous Life of a Psychic (Part 1)", "other_series": [], "other_episode_titles": []},
+    "candidate": {"release": "[KiyoshiStar] The Diastrous Life of Saiki K. (2016) [Dual Audio] [1080p] [x264] [10 bit]", "path": null, "filename": "The.Disastrous.Life.of.Saiki.K.S01E01.1080p.BluRay.FLAC5.1.x264-Hi10P-KiyoshiStar.mkv"},
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A hyphenated suffix with digits after the codec is not a release group; it guards a labelled wrong match."
   }
 ]
