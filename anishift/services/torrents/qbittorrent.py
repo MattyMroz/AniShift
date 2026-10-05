@@ -21,7 +21,7 @@ from anishift.services.torrents.errors import TorrentClientError
 from anishift.services.torrents.types import TorrentFile, TorrentInfo
 from anishift.utils.logger import get_logger
 
-__all__ = ["QBittorrentClient", "magnet_url"]
+__all__ = ["DEFAULT_TRACKERS", "QBittorrentClient", "magnet_trackers", "magnet_url"]
 
 logger = get_logger(__name__)
 
@@ -55,6 +55,17 @@ _TORRENT_FILES: Final[TypeAdapter[tuple[TorrentFile, ...]]] = TypeAdapter(tuple[
 
 _STOPPED_ON_ADD: Final[Mapping[str, str]] = MappingProxyType({"stopped": "true", "paused": "true"})
 """Both spellings of the add flag, because Web API 2.11 renamed ``paused`` to ``stopped``."""
+
+DEFAULT_TRACKERS: Final[tuple[str, ...]] = (
+    "udp://tracker.opentrackr.org:1337/announce",
+    "http://tracker.opentrackr.org:1337/announce",
+    "udp://open.stealth.si:80/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://exodus.desync.com:6969/announce",
+    "udp://open.demonii.com:1337/announce",
+    "http://tracker.renfei.net:8080/announce",
+)
+"""Public trackers appended to every magnet so metadata does not depend on DHT alone."""
 
 
 class _Refusal(StrEnum):
@@ -133,6 +144,7 @@ class QBittorrentClient:
                 "useDownloadPath": "false",
             }
         )
+        logger.info("Selective transfer submitted for metadata", trackers=len(magnet_trackers(trackers)))
 
     def set_file_priority(self, info_hash: str, indexes: frozenset[int], priority: int) -> None:
         """Set one explicit group of file indexes to omitted or normal priority."""
@@ -344,13 +356,18 @@ def _nonnegative_integer(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
+def magnet_trackers(trackers: tuple[str, ...] = ()) -> tuple[str, ...]:
+    """Return source trackers followed by the defaults, each address once, in magnet order."""
+    return tuple(dict.fromkeys((*trackers, *DEFAULT_TRACKERS)))
+
+
 def magnet_url(info_hash: str, trackers: tuple[str, ...] = ()) -> str:
     """Encode a v1 magnet with only public, credential-free tracker addresses."""
     if re.fullmatch(r"[0-9a-fA-F]{40}", info_hash) is None:
         msg = "A magnet requires a hexadecimal v1 info hash"
         raise ValueError(msg)
     fields: list[tuple[str, str]] = [("xt", f"urn:btih:{info_hash.casefold()}")]
-    for tracker in dict.fromkeys(trackers):
+    for tracker in magnet_trackers(trackers):
         if not _public_tracker(tracker):
             msg = "A magnet tracker must be a public address without credentials or query parameters"
             raise ValueError(msg)

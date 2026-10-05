@@ -7,10 +7,11 @@ from urllib.parse import parse_qs
 
 import httpx
 import pytest
+from loguru import logger as loguru_logger
 
 from anishift.errors import ErrorCode
 from anishift.services.torrents.errors import TorrentClientError
-from anishift.services.torrents.qbittorrent import QBittorrentClient, magnet_url
+from anishift.services.torrents.qbittorrent import DEFAULT_TRACKERS, QBittorrentClient, magnet_trackers, magnet_url
 from anishift.services.torrents.types import TorrentFile, TorrentInfo
 
 BASE_URL = "http://127.0.0.1:8080"
@@ -401,10 +402,48 @@ def test_magnet_encodes_trackers_and_rejects_hash_injection() -> None:
     tracker: str = "udp://tracker.example.org:6969/announce"
     assert parse_qs(magnet_url("A" * 40, (tracker, tracker)).split("?", 1)[1]) == {
         "xt": ["urn:btih:" + "a" * 40],
-        "tr": [tracker],
+        "tr": [tracker, *DEFAULT_TRACKERS],
     }
     with pytest.raises(ValueError, match="hexadecimal v1 info hash"):
         magnet_url("a" * 40 + "&tr=evil")
+
+
+@pytest.mark.unit
+def test_magnet_without_source_trackers_carries_every_default_tracker() -> None:
+    assert parse_qs(magnet_url("a" * 40).split("?", 1)[1]) == {
+        "xt": ["urn:btih:" + "a" * 40],
+        "tr": list(DEFAULT_TRACKERS),
+    }
+    assert 5 <= len(DEFAULT_TRACKERS) <= 8
+
+
+@pytest.mark.unit
+def test_magnet_keeps_source_trackers_first_without_repeating_defaults() -> None:
+    source: str = "udp://tracker.example.org:6969/announce"
+    trackers: tuple[str, ...] = magnet_trackers((source, DEFAULT_TRACKERS[2]))
+    assert trackers == (source, DEFAULT_TRACKERS[2], *DEFAULT_TRACKERS[:2], *DEFAULT_TRACKERS[3:])
+    assert parse_qs(magnet_url("a" * 40, (source, DEFAULT_TRACKERS[2])).split("?", 1)[1])["tr"] == list(trackers)
+
+
+@pytest.mark.unit
+def test_metadata_add_logs_tracker_count_of_the_sent_magnet() -> None:
+    source: str = "udp://tracker.example.org:6969/announce"
+    captured: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"failure_count": 0, "pending_count": 1})
+
+    client, http = _client(handler)
+    handler_id: int = loguru_logger.add(captured.append, format="{message} {extra}", level="DEBUG")
+    try:
+        with http:
+            client.add_metadata("a" * 40, trackers=(source,), save_path=Path("staging"), category="AniShift")
+    finally:
+        loguru_logger.remove(handler_id)
+    submitted: list[str] = [line for line in captured if "Selective transfer submitted for metadata" in line]
+    assert len(submitted) == 1
+    assert f"'trackers': {len(DEFAULT_TRACKERS) + 1}" in submitted[0]
+    assert all("tracker.example.org" not in line and "opentrackr" not in line for line in captured)
 
 
 @pytest.mark.unit

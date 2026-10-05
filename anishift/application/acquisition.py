@@ -691,7 +691,6 @@ class AcquisitionService:
         client: SelectiveTorrentClient = self._selective()
         with cast("TorrentManagement", self._torrent_management).download_scope(frozenset({info_hash.casefold()})):
             client.add_metadata(info_hash, trackers=trackers, save_path=save_path, category=self._category)
-        logger.info("Selective transfer submitted for metadata", trackers=len(trackers))
 
     def select_files(
         self, info_hash: str, files: tuple[TorrentFile, ...], selected: frozenset[int], save_path: Path
