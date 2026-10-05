@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -48,6 +49,15 @@ _EXIT_TIMEOUT_S: Final[float] = 60.0
 
 _POLL_S: Final[float] = 0.25
 """Delay between readiness checks during process startup and shutdown."""
+
+_PEER_PORT_ATTEMPTS: Final[int] = 20
+"""Bounded random draws for a peer port that both TCP and UDP can bind."""
+
+_PEER_PORT_FIRST: Final[int] = 49152
+"""First port of the IANA dynamic range the peer port is drawn from."""
+
+_PEER_PORT_COUNT: Final[int] = 16384
+"""Size of the dynamic range, drawn at random because sequential ports cross whole excluded blocks."""
 
 _MANAGED_PREFERENCES: Final[dict[str, object]] = {
     "queueing_enabled": False,
@@ -486,11 +496,9 @@ class ManagedQBittorrent:
     def _start(self) -> QBittorrentClient | None:
         state: _ProcessState = self._load()
         executable: Path = bundled_binary_path(Binary.QBITTORRENT, root=self._bin_root)
-        with socket.socket() as web_socket, socket.socket() as torrent_socket:
+        with socket.socket() as web_socket, _peer_port() as torrent_port:
             web_socket.bind(("127.0.0.1", 0))
-            torrent_socket.bind(("0.0.0.0", 0))  # noqa: S104 - reserve the torrent peer port, separate from loopback Web UI
             port: int = web_socket.getsockname()[1]
-            torrent_port: int = torrent_socket.getsockname()[1]
             write_managed_profile(self._root, web_port=port, torrent_port=torrent_port, password=self._password())
         child: subprocess.Popen[bytes] = subprocess.Popen(  # noqa: S603 - bundled executable and private profile argv
             [
@@ -596,6 +604,26 @@ def _unavailable(message: str) -> TorrentClientError:
             suggestion="Open AniShift State and retry after resolving the torrent client problem",
         )
     )
+
+
+@contextmanager
+def _peer_port() -> Iterator[int]:
+    """Hold one peer port bound for both UDP and TCP on every interface until the profile is written."""
+    for _attempt in range(_PEER_PORT_ATTEMPTS):
+        port: int = _PEER_PORT_FIRST + secrets.randbelow(_PEER_PORT_COUNT)
+        with (
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp,
+            socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp,
+        ):
+            try:
+                udp.bind(("0.0.0.0", port))  # noqa: S104 - peers reach the torrent port on every interface
+                tcp.bind(("0.0.0.0", port))  # noqa: S104 - peers reach the torrent port on every interface
+            except OSError:
+                continue
+            yield port
+            return
+    message: str = "No torrent peer port accepts both TCP and UDP; check excluded port ranges"
+    raise _unavailable(message)
 
 
 def _file_identities(files: tuple[TorrentFile, ...]) -> tuple[tuple[int, str, int], ...]:

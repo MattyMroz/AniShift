@@ -11,6 +11,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Final, cast
 
 import httpx
@@ -54,6 +55,83 @@ def _receipt(
         "released": list(released),
     }
     (root / "process.json").write_text(json.dumps(document), encoding="utf-8")
+
+
+class _PortSocket:
+    def __init__(self, refused: int, opened: list[_PortSocket], family: int, kind: int) -> None:
+        del family
+        self.refused: int = refused
+        self.kind: int = kind
+        self.port: int = 0
+        self.closed: bool = False
+        opened.append(self)
+
+    def __enter__(self) -> _PortSocket:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.closed = True
+
+    def bind(self, address: tuple[str, int]) -> None:
+        assert address[0] == "0.0.0.0"  # noqa: S104
+        if self.kind == socket.SOCK_DGRAM and address[1] == self.refused:
+            raise OSError(address[1])
+        self.port = address[1]
+
+
+def _fake_ports(monkeypatch: pytest.MonkeyPatch, draws: list[int], refused: int) -> list[_PortSocket]:
+    opened: list[_PortSocket] = []
+
+    def make(family: int, kind: int) -> _PortSocket:
+        return _PortSocket(refused, opened, family, kind)
+
+    monkeypatch.setattr(
+        processes,
+        "socket",
+        SimpleNamespace(
+            socket=make, AF_INET=socket.AF_INET, SOCK_DGRAM=socket.SOCK_DGRAM, SOCK_STREAM=socket.SOCK_STREAM
+        ),
+    )
+    monkeypatch.setattr(processes, "secrets", SimpleNamespace(randbelow=lambda count: draws.pop(0)))
+    return opened
+
+
+def test_peer_port_skips_a_port_udp_refuses_and_holds_both_sockets_until_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened: list[_PortSocket] = _fake_ports(monkeypatch, [51277 - 49152, 51400 - 49152], 51277)
+    with processes._peer_port() as port:
+        assert port == 51400
+        assert [(item.kind, item.port, item.closed) for item in opened] == [
+            (socket.SOCK_DGRAM, 0, True),
+            (socket.SOCK_STREAM, 0, True),
+            (socket.SOCK_DGRAM, 51400, False),
+            (socket.SOCK_STREAM, 51400, False),
+        ]
+    assert all(item.closed for item in opened)
+
+
+def test_peer_port_refuses_after_bounded_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
+    opened: list[_PortSocket] = _fake_ports(monkeypatch, [51277 - 49152] * processes._PEER_PORT_ATTEMPTS, 51277)
+    with pytest.raises(TorrentClientError, match="both TCP and UDP"), processes._peer_port():
+        pytest.fail("A refused port was reserved")
+    assert len(opened) == processes._PEER_PORT_ATTEMPTS * 2
+    assert all(item.closed for item in opened)
+
+
+def test_peer_port_is_unavailable_to_tcp_and_udp_while_held() -> None:
+    refused: list[int] = []
+    with processes._peer_port() as port:
+        for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+            with socket.socket(socket.AF_INET, kind) as probe:
+                try:
+                    probe.bind(("0.0.0.0", port))  # noqa: S104
+                except OSError:
+                    refused.append(kind)
+    assert refused == [socket.SOCK_STREAM, socket.SOCK_DGRAM]
+    for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+        with socket.socket(socket.AF_INET, kind) as probe:
+            probe.bind(("0.0.0.0", port))  # noqa: S104
 
 
 def test_start_timeout_is_bounded_and_restart_waits_for_explicit_resume(
