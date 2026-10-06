@@ -261,6 +261,39 @@ def test_search_reads_every_candidate_field() -> None:
     assert first.prequel_ids == (151807,)
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(("node", "country"), [({**_MUSHOKU, "countryOfOrigin": "CN"}, "CN"), (_MUSHOKU, None)])
+def test_candidate_country_of_origin(node: dict[str, Any], country: str | None) -> None:
+    queries: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        queries.append(json.loads(request.content)["query"])
+        return httpx.Response(200, json=_page([node]))
+
+    catalog, http = _catalog(handler)
+    with http:
+        candidate: TitleCandidate = catalog.search("mo dao zu shi")[0]
+
+    assert "countryOfOrigin" in queries[0]
+    assert candidate.country == country
+
+
+@pytest.mark.unit
+def test_franchise_query_asks_for_the_country_of_origin_at_every_depth() -> None:
+    queries: list[str] = []
+    root: dict[str, Any] = {"id": 1, "type": "ANIME", "format": "ONA", "title": {"romaji": "Root"}}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        queries.append(json.loads(request.content)["query"])
+        return httpx.Response(200, json=_page([root]))
+
+    catalog, http = _catalog(handler)
+    with http:
+        catalog.franchise(1)
+
+    assert queries[0].count("countryOfOrigin") == 4
+
+
 def test_search_sends_the_requested_limit() -> None:
     seen: list[httpx.Request] = []
 

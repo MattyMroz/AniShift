@@ -249,7 +249,7 @@ class EpisodeListing:
 
 @dataclass(frozen=True, slots=True)
 class StreamCandidate:
-    """One Torrentio stream as the source returned it."""
+    """One release stream as its source returned it, with the language declarations that source made."""
 
     info_hash: str
     name: str | None
@@ -262,6 +262,12 @@ class StreamCandidate:
     provider: str | None
     tags: tuple[str, ...]
     trackers: tuple[str, ...]
+    source: str = "torrentio"
+    subtitle_languages: tuple[str, ...] = ()
+    audio_languages: tuple[str, ...] = ()
+    language_tags: tuple[str, ...] = ()
+    file_count: int | None = None
+    torrent_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -59,7 +59,7 @@ OFFSET_FORMATS: Final[frozenset[str]] = frozenset({"TV", "TV_SHORT", "ONA"})
 SEARCH_QUERY: Final[str] = """
 query ($search: String, $limit: Int) { Page(perPage: $limit) { media(search: $search, type: ANIME, sort: SEARCH_MATCH) {
   id title { romaji english native } synonyms seasonYear startDate { year month day } season format episodes status
-  relations { edges { relationType node { id episodes format } } } } } }
+  countryOfOrigin relations { edges { relationType node { id episodes format } } } } } }
 """
 """Search request returning the candidate fields and the direct relation edges."""
 
@@ -99,7 +99,7 @@ _MAX_FRANCHISE_REQUESTS: Final[int] = 4
 """Bound entry latency under AniList's roughly thirty requests per minute limit."""
 
 _FRANCHISE_FIELDS: Final[str] = (
-    "id type format status seasonYear startDate { year month day } title { romaji english native }"
+    "id type format status countryOfOrigin seasonYear startDate { year month day } title { romaji english native }"
 )
 """Entry projection preserved at every franchise depth."""
 
@@ -394,6 +394,7 @@ def _candidate(node: Mapping[str, Any]) -> TitleCandidate | None:
         status=_status(node.get("status")),
         prequel_ids=_prequel_ids(node),
         start=premiere,
+        country=_text(node.get("countryOfOrigin")) or None,
     )
 
 

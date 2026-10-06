@@ -18,10 +18,12 @@ _UI_PACKAGES: Final[tuple[str, ...]] = ("cli", "tui")
 _PURE_MODULES: Final[tuple[str, ...]] = (
     "artifacts.py",
     "episode_identity.py",
+    "episode_releases.py",
     "episode_selection.py",
     "intents.py",
     "planning.py",
     "planner.py",
+    "release_quality.py",
     "selection.py",
     "workflows.py",
 )
