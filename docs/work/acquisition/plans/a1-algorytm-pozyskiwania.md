@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: draft v14 (v8 zaakceptowany w rundzie 7; v9 = decyzje właściciela O-1..O-5 i „Pobierz teraz”; v10 = gwarancja sprawdzenia i stan PL celu; v11 = rozliczenie ze snapshotu i odświeżenie panelu; v12 = okresowe odświeżenie jednej strony; v13 = odczyt okna przy przewijaniu; v14 = okno usunięte, rewizja subskrypcji w `_status`; v14 zaakceptowany przez recenzentów astra i sol61 w rundzie 13 oraz przez właściciela 2026-10-06); wykonanie po potwierdzeniu zestawu wzorcowego w K0
+status: v18 zaakceptowany przez recenzenta astra (2026-10-06); oczekiwania K0 do potwierdzenia właściciela (historia: v8 zaakceptowany w rundzie 7; v9 = decyzje właściciela O-1..O-5 i „Pobierz teraz”; v10 = gwarancja sprawdzenia i stan PL celu; v11 = rozliczenie ze snapshotu i odświeżenie panelu; v12 = okresowe odświeżenie jednej strony; v13 = odczyt okna przy przewijaniu; v14 = okno usunięte, rewizja subskrypcji w `_status`; v14 zaakceptowany przez recenzentów astra i sol61 w rundzie 13 oraz przez właściciela 2026-10-06; v15 = wyniki K0 i decyzje W1–W3, O1–O9 z `a1-recon.md`, do review; v16 = numeracja wg decyzji D1–D3: most arm-server → AniDB, Kitsu mappings z kontrolą zwrotną, numeracja sprzeczna per odcinek, brak numeracji bez blokady automatu; v17 = poprawki review v16: numeracja per cel (`numbering_gap`), duplikat zachowuje najniższy odcinek, uzupełnienie i naprawa bez konfliktu katalogu, pominięcie pamięci ani.zip, kompletność Kitsu; v18 = `mapping_tvdb_season` w rekordzie (ocena zapisanego mapowania jego własnym sezonem mostu)); wykonanie po potwierdzeniu zestawu wzorcowego w K0
 baseline: 9d82870 na work/acquisition/03-subscriptions
 created: 2026-10-06
 ---
@@ -9,7 +9,7 @@ created: 2026-10-06
 
 ## 1. Status, rezultat, authority
 
-**Status:** v14 zaakceptowany. Kontraktem jest [algorithm-spec.md](../algorithm-spec.md) (dalej „spec A”). Plan
+**Status:** v18 zaakceptowany przez recenzenta astra (2026-10-06); oczekiwania K0 do potwierdzenia właściciela. Kontraktem jest [algorithm-spec.md](../algorithm-spec.md) (dalej „spec A”). Plan
 niczego w nim nie zmienia; luki i sprzeczności z kodem opisuje §11.
 
 **Jeden rezultat:** AniShift szuka odcinka w pięciu źródłach (TsukiHime, Torrentio, Nyaa RSS,
@@ -74,19 +74,19 @@ krok z §7.
 | §2 Plik odcinka | ścieżka w torrencie; `fileIdx` tylko podpowiedź; pola H1 Torrentio bez utraty | `app/episode_releases.py` → `ReleaseFile(path, filename, size, from_listing, file_index)`, `identity_candidate`, `EpisodeRelease.files`; `app/transfers.py` → `episode_files` (:360) | `test_episode_releases.py::test_merge_releases_file_from_listing_wins`, `::test_torrentio_file_keeps_filename_and_path`; `test_episode_selection.py::test_rank_torrentio_equivalent_to_conf_model`; istniejące testy `episode_files` | K5, K6, K13 |
 | §2 Kandydat | para (wydanie, plik), H1 względem celu | `app/episode_selection.py` → `RankedCandidate` | `t/app/test_episode_selection.py` | K6 |
 | §2 Spis plików | TsukiHime `/torrents/{id}` lub qBittorrent; rekord Torrentio = jeden plik | `svc/tsukihime.py` → `TsukiHimeSource.torrent_files` → `TsukiHimeListing`; `app/episode_releases.py` → `EpisodeRelease.listing` | `tests/services/torrents/test_tsukihime.py`; `test_episode_releases.py::test_merge_releases_torrentio_file_is_not_listing` | K8, K5 |
-| §2 Paczka | >1 plik wideo odcinków wg spisu; bez spisu zakres w nazwie / `is_pack`; towarzyszące nie liczą się | `app/episode_releases.py` → `is_pack` (używa `VIDEO_EXTENSIONS` z `episode_identity.py:35` i `pack_name` wstrzykniętego z `ReleaseName.is_pack`, `svc/types.py:38`) | `test_episode_releases.py::test_is_pack_*` (spis z `.mka`/`.ass`, `E01-E04`, `Batch`, spis wygrywa z nazwą) | K5 |
-| §2 Konflikt | zamknięta lista powodów H1 (19 powodów `INSUFFICIENT` + każdy `MISMATCH`) | `app/episode_identity.py` → `CONFLICT_REASONS` (§5.3), `is_conflict`, `conflict_label` | `t/app/test_episode_identity.py::test_conflict_reasons_subset_of_reasons`, `::test_every_mismatch_is_conflict`, `::test_insufficient_conflict_cases`, `::test_conflict_label_for_every_reason`; `test_episode_search.py::test_unresolved_season_stays_in_completion_queue` | K2, K9 |
+| §2 Paczka | >1 plik wideo odcinków wg spisu; bez spisu zakres w nazwie / `is_pack`; towarzyszące nie liczą się | `app/episode_releases.py` → `is_pack` (używa `VIDEO_EXTENSIONS` z `episode_identity.py:35` i `pack_name` wstrzykniętego z `ReleaseName.is_pack`, `svc/types.py:38`) | `test_episode_releases.py::test_is_pack_*` (spis z `.mka`/`.ass`, `E01-E04`, `Batch`, spis wygrywa z nazwą); `tests/services/torrents/test_names.py::test_season_only_before_quality_block_is_pack` (`[ZigZag] … S01 [1080p …]`, Breeze; O8) | K5 |
+| §2 Konflikt | zamknięta lista powodów H1 (19 powodów `INSUFFICIENT` + każdy `MISMATCH`) | `app/episode_identity.py` → `CONFLICT_REASONS` (§5.3), `is_conflict`, `conflict_label` | `t/app/test_episode_identity.py::test_conflict_reasons_subset_of_reasons`, `::test_every_mismatch_is_conflict`, `::test_insufficient_conflict_cases`, `::test_conflict_label_for_every_reason`, `::test_explicit_season_conflict_before_unconsumed_text` (154587-1, 140960-12; O7), `::test_dual_token_is_technical_metadata` (154587-28; O7); `test_episode_search.py::test_unresolved_season_stays_in_completion_queue` | K2, K9 |
 | §2 Pewność / Jakość | estymata modelu / punkty cech | `app/episode_confidence.py` → `confidence`; `app/release_quality.py` → `quality_score` | `test_episode_confidence.py`, `test_release_quality.py` | K3, K4 |
 | §2 Użyteczny | nie paczka, nie niejednoznaczny, nie sam dubbing, bez RAW/HardSub, kontener, plik nieprzyjęty | `app/subscription_choice.py` → `usable` | `t/app/test_subscription_choice.py::test_usable_*` (po jednym na warunek) | K12 |
 | §2 Dopuszczalny | §6.2 | `app/subscription_choice.py` → `admissible` | `test_subscription_choice.py::test_admissible_*` | K12 |
 | §3.1 tabela, TsukiHime | AniList → id → `/episodes/{n}`, `limit=100`, ≤2 strony | `svc/tsukihime.py` → `anime_id`, `episode_page`; `app/episode_search.py` → `_tsukihime_answer` | `test_tsukihime.py::test_episode_page_*` (stronicowanie, `total`, 404 = brak tytułu) | K8, K9 |
 | §3.1 Torrentio | `kitsu:{id}:{n}`; film `movie_streams` | `svc/torrentio.py` (`streams` :37, `movie_streams` :41) przez protokół `StreamSource` (`app/acquisition.py:195`); adaptacja w `app/episode_search.py` → `_torrentio_answer` | `tests/services/torrents/test_torrentio.py`; `test_episode_search.py::test_torrentio_answer_movie_and_series` | K8, K9 |
 | §3.1 Nyaa RSS | frazy jak `search_title` (romaji, angielski), obie kategorie, każda osobnym wywołaniem | istniejące `TorrentSource` (`app/acquisition.py:159`, `NyaaSource` w `bootstrap.py:110–115`); `app/episode_search.py` → `_nyaa_answer`, `_release_stream` (jedyna konwersja `Release` → `StreamCandidate`) | `test_episode_search.py::test_nyaa_queries_both_categories`, `::test_release_stream_fields` | K9 |
-| §3.1 Knaben | te same frazy, ≤2 strony × 300 | `svc/knaben.py` → `KnabenSource.search` (`PagedSource`) | `tests/services/torrents/test_knaben.py` | K8 |
-| §3.1 nekoBT | te same frazy, ≤2 strony × 100; tagi `A=`, `F=`, `S=`, `HS` | `svc/nekobt.py` → `NekoBTSource.search`, `parse_feed`, `language_tags` | `tests/services/torrents/test_nekobt.py` | K8 |
+| §3.1 Knaben | te same frazy, ≤2 strony × 300; GET `/v2/search`, hash małymi literami (O1) | `svc/knaben.py` → `KnabenSource.search` (`PagedSource`) | `tests/services/torrents/test_knaben.py` (w tym `::test_search_get_params_as_recorded`, `::test_hash_lowercased`) | K8 |
+| §3.1 nekoBT | te same frazy, ≤2 strony × 100; blok `{Tags:…}`: `A=`, `F=`, `S=`, flagi bez `=` (`HS`), sklejone kody regionalne → język podstawowy, F∪S (O5) | `svc/nekobt.py` → `NekoBTSource.search`, `parse_feed`, `language_tags` | `tests/services/torrents/test_nekobt.py` (w tym `::test_language_tags_regional_codes`, `::test_language_tags_flags`) | K8 |
 | §3.1 budżet TsukiHime | ≤2+2 strony + 10 uzupełnień = ≤14; ID tytułu zapamiętane | `app/episode_search.py` → `EpisodeSearch.subscription_check`; `SubscriptionRecord.tsukihime_id` | `test_episode_search.py::test_subscription_check_tsukihime_budget_14`; `test_watch_state.py::test_tsukihime_id_roundtrip` | K11, K12 |
 | §3.1 lista przerwana | celu = niedokończone; poprzedniego: PL na stronach = „PL jest”, inaczej błąd odczytu | `app/episode_search.py` → `previous_history`; `app/subscription_choice.py` → `polish_history` | `test_episode_search.py::test_previous_history_truncated_*` (z PL, bez PL) | K14 |
-| §3.1 Torrentio 1 żądanie, Nyaa ≤4 frazy ≤8 żądań | frazy `"{tytuł} - {NN}"`, `"{tytuł} S{ss}E{NN}"`, bez absolutnego w subskrypcji | `app/episode_search.py` → `episode_phrases(candidate, context, number, *, manual, absolute)` (z `base_title`, `svc/names.py:157`, i `season_context`, `app/acquisition.py:593`) | `test_episode_search.py::test_episode_phrases_*` (sezon 1, sezon 2, cour, ręczne z absolutnym, ≤4, bez duplikatów) | K9 |
+| §3.1 Torrentio 1 żądanie, Nyaa ≤4 frazy ≤8 żądań | frazy `"{tytuł} - {NN}"`, `"{tytuł} S{ss}E{NN}"` (TV także `S01E{NN}` w sezonie 1, W1), OVA/SPECIAL bez `S{ss}E{NN}` i z pełnym podtytułem (W2), bez absolutnego w subskrypcji; frazy wspólne dla Nyaa, Knaben, nekoBT | `app/episode_search.py` → `episode_phrases(candidate, context, number, *, manual, absolute)` (z `base_title`, `svc/names.py:157`, poza OVA/SPECIAL; `{ss}` z już pobranego grafu franczyzy regułą `season_context`, `app/acquisition.py:593`, bez zapytań AniList — O6, `a1-recon.md` N-5) | `test_episode_search.py::test_episode_phrases_*` (sezon 1 TV z `S01E{NN}`, sezon 2, cour, OVA/SPECIAL z podtytułem bez `S{ss}E`, ręczne z absolutnym, ≤4, bez duplikatów), `::test_season_index_from_graph_no_anilist_requests` | K9 |
 | §3.1 Knaben/nekoBT ≤8 żądań, raz na 60 min | odczyt co 60 min na cel w subskrypcji | `app/episode_search.py` → `_PulledCache` | `test_episode_search.py::test_pulled_source_read_once_per_hour` | K12 |
 | §3.1 P-10 per źródło, ostatni wynik ≤30 min | seria 429 rzednie źródło do 30 min; pominięte szybkie źródło = ostatni wynik z pamięci ≤30 min; pominięcie ≠ niepowodzenie | `app/episode_search.py` → `_FastCache`, `SourceState.SKIPPED`; P-10 z `RequestControl.blocked_until` (`anishift/services/http_requests.py:91`) | `test_episode_search.py::test_skipped_fast_source_uses_last_result_30_min`, `::test_skipped_source_not_counted_as_failure`; `test_subscription_choice.py::test_pending_skipped_does_not_increment` | K12 |
 | §3.1 format | `MOVIE` → `/episodes/1`, `movie_streams`, fraza bez numeru; inne formaty jak serial | `app/episode_search.py` → `episode_phrases`, `EpisodeRequest.movie` | `test_episode_search.py::test_movie_*`; przypadek filmowy w `test_acquisition_reference.py` | K9, K16 |
@@ -107,16 +107,20 @@ krok z §7.
 | §3.3 ten sam plik z dwóch źródeł | ścieżka ze spisu; nazwa Torrentio łączona, gdy dokładnie jedna | `merge_releases` → `_attach_torrentio_file` (przenosi też deklarację `TORRENTIO_FLAG` na dopasowany plik) | `::test_merge_releases_torrentio_name_joined_once`, `::test_merge_releases_torrentio_name_ambiguous_kept_alone`, `::test_torrentio_flag_follows_matched_listing_file` | K5 |
 | §3.4 pewność na pliku; „bez nazwy pliku” | ocena na pliku; inaczej na nazwie wydania | `app/episode_selection.py` → `rank_candidates` | `test_episode_selection.py::test_rank_without_file_name_marks_release_only` | K6 |
 | §3.4 ocena nazwy wydania | osobna funkcja H1, bez rozszerzenia | `app/episode_identity.py` → `classify_release_name` | `test_episode_identity.py::test_classify_release_name_match`, `::_other_season`, `::_other_episode`, `::_unresolved` | K2 |
-| §3.4 spis z TsukiHime | ID z listy albo wyszukanie po hashu, potem spis w tej samej wizycie; wynik rozróżnia sukces, pustą listę, brak hasha, `202`, `429`, błąd, limit czasu | `svc/tsukihime.py` → `torrent_by_hash`, `torrent_files`; `app/episode_search.py` → `ReadOutcome`, `_listing_read`, `failure_kind` | `test_tsukihime.py::test_torrent_by_hash_*`, `::test_torrent_files_*`; `test_episode_search.py::test_source_outcome_end_to_end` (od odpowiedzi/wyjątku do `SubscriptionTarget.failures`) | K8, K9, K12 |
+| §3.4 spis z TsukiHime | ID z listy albo wyszukanie po hashu, potem spis w tej samej wizycie; btih `200` z kompletnym `files` (`len(files) == filecount`) = spis bez drugiego GET, krótsze → `/torrents/{id}`, tam też krótsze → brak spisu (O2), btih `202` = `PENDING`, ID zachowane (O3); wynik rozróżnia sukces, pustą listę, brak hasha, `202`, `429`, błąd, limit czasu | `svc/tsukihime.py` → `torrent_by_hash`, `torrent_files`; `app/episode_search.py` → `ReadOutcome`, `_listing_read`, `failure_kind` | `test_tsukihime.py::test_torrent_by_hash_*` (w tym `::test_torrent_by_hash_200_files_is_listing`, `::test_btih_partial_files_reads_torrent`, `::test_torrent_files_partial_is_not_listing`, `::test_torrent_by_hash_202_files_not_listing`), `::test_torrent_files_*`, `::test_episode_page_offset_param_start_field`; `test_episode_search.py::test_source_outcome_end_to_end` (od odpowiedzi/wyjątku do `SubscriptionTarget.failures`) | K8, K9, K12 |
 | §3.4 kolejka uzupełnień | kolejność, ≤10 odczytów, jedna wizyta, ponowienie w następnym, przeliczanie | `app/episode_search.py` → `CompletionQueue(order)`; lista: `episode_selection.list_order` (K9), subskrypcja: `subscription_choice.completion_order` (K12) | `test_episode_search.py::test_completion_queue_*` (budżet 10, wizyta = 2 odczyty, retry za nieodwiedzonymi, przeliczanie); `::test_completion_queue_restart_keeps_blocking_first` | K9, K12 |
-| §3.4 pamięć spisów | tylko udane, niepuste | `episode_search.py` → `_ListingCache` | `::test_listing_cache_skips_empty_and_202` | K9 |
+| §3.4 pamięć spisów | tylko udane, niepuste, kompletne | `episode_search.py` → `_ListingCache` | `::test_listing_cache_skips_empty_and_202`, `::test_listing_cache_skips_partial` | K9 |
 | §3.4 reprezentant | `zgodny` → `niepewny` → konflikt, pewność, ścieżka | `episode_selection.py` → `representative` | `test_episode_selection.py::test_representative_*` | K6 |
 | §3.4 niejednoznaczny plik | >1 `zgodny`; ręcznie U-18c; automat nie | `episode_selection.py` → `RankedCandidate.ambiguous`; `subscription_choice.usable`; ścieżka ręczna po metadanych: `transfers.episode_files` (:360, zgodne pliki przed skrótem po nazwie) | `::test_rank_two_matching_files_ambiguous`; `test_subscription_choice.py::test_usable_rejects_ambiguous`; `test_transfers.py::test_episode_files_two_matches_ambiguous`; `test_automation.py::test_manual_ambiguous_file_waits_for_u18c` | K6, K12, K13 |
 | §3.4 ponowne H1 po metadanych | pełna ścieżka qBittorrenta, ponownie §6.2 | `app/transfers.py` → `metadata_check`; `app/automation.py` → `_settle_selection` (:5717) | `t/app/test_transfers.py::test_metadata_check_*`; `test_subscription_attempts.py::test_after_metadata_*` | K13 |
 | §3.5 błędy źródeł | wiersz stanu; pozostałe działają; nie zużywa próby; przyczyna (limit czasu, limit dostawcy, błąd) przez rzeczywiste adaptery; wyniki częściowe zachowane | `episode_search.py` → `SourceResult(state, failure)`, `failure_kind`, `source_line`; `automation.py` → `_subscription_outcome` (:3855), `_subscription_failure` (:3790) | `test_episode_search.py::test_source_line_*`, `::test_source_outcome_end_to_end` (w tym timeout 2. kategorii Nyaa); `test_subscription_attempts.py::test_source_failure_does_not_consume_attempt` | K9, K12 |
 | §3.5 wszystkie zawiodły / wyłączone | dwa osobne komunikaty | `episode_search.py` → `offer_status` | `::test_offer_status_all_failed`, `::test_offer_status_all_disabled` | K9 |
 | §3.5 pusta odpowiedź | brak kandydatów, nie błąd | adaptery zwracają `()` | testy adapterów `::test_*_empty_is_not_error` | K8 |
-| §3.5 numeracja a Torrentio (U-22) | mapowanie bez Kitsu; brak Kitsu wyłącza tylko Torrentio; zmiana numeracji zapisanych odcinków = konflikt katalogu niezależnie od Kitsu (`subscription_targets.merge_listing`, `test_numbering_change_*`, K11); bez numeracji (błąd ani.zip albo `404`, bez zapisanego) „brak numeracji (ani.zip)”, automat nie decyduje i ponawia | `app/subscription_targets.py` → `SubscriptionRecord.__post_init__` (:220–222); `app/acquisition.py` → `read_listing` (:777, pusty `AniZipMapping` zamiast wyjątku, `ListingRead.numbering`), `search_episode`; `automation.py` oferta (:4871–4878), `D` (:5135–5140), subskrypcja (:3770–3773); `episode_search.py` → `SourceState.NO_KITSU`, `EpisodeRequest.numbering`; `subscription_choice.Blocker.NO_NUMBERING` | `t/app/test_subscription_targets.py::test_record_mapping_without_kitsu`; `t/app/test_acquisition.py::test_read_listing_live_without_kitsu`, `::test_read_listing_404_does_not_replace_saved_mapping`; `t/app/test_automation.py::test_offer_without_numbering_shows_releases`, `::test_d_without_numbering_does_not_admit`, `::test_repeat_without_numbering_has_no_suggestion` (ani.zip `500` i `404`); `test_subscription_owner.py::test_no_numbering_blocks_without_admission` | K9, K11, K12 |
+| §3.5 numeracja a Torrentio (U-22) | mapowanie bez Kitsu; brak Kitsu wyłącza tylko Torrentio; zmiana numeracji zapisanych odcinków = konflikt katalogu niezależnie od Kitsu (`subscription_targets.merge_listing`, `test_numbering_change_*`, K11); zmiana numeracji odcinka, który ją miał = konflikt; uzupełnienie z braku i naprawa sprzecznej nie (`test_numbering_filled_*`, `test_duplicate_repaired_not_conflict`); cel bez numeracji (`numbering_gap`, §5.5) lista bez sugestii z "brak numeracji" | `app/subscription_targets.py` → `SubscriptionRecord.__post_init__` (:220-222); `app/acquisition.py` → `read_listing` (:777, pusty `AniZipMapping` zamiast wyjątku, `ListingRead.tvdb_season`), `search_episode`; `automation.py` oferta (:4871-4878), `D` (:5135-5140); `episode_search.py` → `SourceState.NO_KITSU`, `EpisodeRequest.numbering` | `t/app/test_subscription_targets.py::test_record_mapping_without_kitsu`; `t/app/test_acquisition.py::test_read_listing_live_without_kitsu`, `::test_read_listing_404_does_not_replace_saved_mapping`; `t/app/test_automation.py::test_offer_without_numbering_shows_releases`, `::test_d_without_numbering_does_not_admit`, `::test_repeat_without_numbering_has_no_suggestion` (pięć przypadków §5.9) | K9, K9b, K11 |
+| §3.5 źródła numeracji i ID (D1), §3.1 budżet | arm-server przy każdym odczycie listy (AniDB ID, `thetvdb-season`); puste `episodes` → ani.zip po `anidb_id`; brak Kitsu → Kitsu mappings z kontrolą zwrotną (oba odczyty kompletne, `page[limit]=20`, bez `links.next`); `null` nie nadpisuje znanego ID; błąd mostu odbiera tylko jego część; najwyżej 5 żądań | `services/catalog/arm.py` → `ArmCatalog.ids`; `services/catalog/kitsu.py` → `KitsuCatalog.kitsu_id`; `services/catalog/anizip.py` → `AniZipCatalog.mapping_by_anidb`; `app/acquisition.py` → `_bridged_mapping`, `read_listing` (:777) | `t/services/catalog/test_arm.py::test_ids_reads_anidb_and_tvdb_season`; `t/services/catalog/test_kitsu.py::test_kitsu_from_mappings_with_reverse_check`, `::test_kitsu_candidate_with_next_link_is_unresolved`, `::test_kitsu_incomplete_reverse_is_unresolved`, `::test_kitsu_ambiguous_is_unresolved`, `::test_kitsu_request_count`; `t/services/catalog/test_anizip.py::test_mapping_by_anidb`; `t/app/test_acquisition.py::test_numbering_falls_back_to_anidb`, `::test_anidb_nulls_do_not_overwrite_ids`, `::test_bridge_failure_keeps_anilist_mapping`, `::test_listing_bridge_requests_within_budget` | K9b |
+| §3.5 numeracja celu i sprzeczna | numeracja tylko przy kluczu celu z S/E; S/E niższego lokalnego odcinka (najniższy zachowuje) albo sezon ≠ `thetvdb-season` → odcinek bez numeracji; jedna reguła dla H1, listy, ponowienia, `D`, subskrypcji; powód w rejestrze | `app/episode_selection.py` → `numbering_gap`; `ListingRead.tvdb_season`; `acquisition_decisions._FIELDS` → `numbering` | `t/app/test_episode_selection.py::test_numbering_gap_missing_key`, `::test_numbering_gap_without_season_episode`, `::test_numbering_gap_duplicate_keeps_lowest`, `::test_numbering_gap_tvdb_season`; `t/app/test_acquisition_decisions.py::test_numbering_field` | K9b, K15 |
+| §3.5 bez numeracji (D2) | cel bez S/E, absolutu i tytułu; `zgodny` tylko z tytułu wpisu i numeru lokalnego; samo `SxxExx` → `niepewny` bez konfliktu; automat decyduje jak zwykle | `episode_selection.identity_target(..., numbering)`; `episode_identity._identity_conflict` (:635-640) nowy powód spoza `CONFLICT_REASONS`; bez `Blocker.NO_NUMBERING` | `t/app/test_episode_identity.py::test_entry_title_local_number_without_numbering`, `::test_sxxexx_without_numbering_stays_uncertain`; `test_subscription_owner.py::test_no_numbering_decides_on_entry_title` | K2, K9b, K12 |
+| §3.5 odświeżanie (D3) | numeracja czytana przy każdym sprawdzeniu, bez pamięci w ownerze; cel bez numeracji pomija pamięć `max_age_s` ani.zip | `read_listing` w każdym sprawdzeniu subskrypcji | `test_subscription_owner.py::test_numbering_appears_on_next_check`; `t/app/test_acquisition.py::test_subscription_read_bypasses_mapping_cache` (puste i sprzeczne) | K9b, K12 |
 | §4 model | współczynniki bez zmian | `app/episode_confidence.py` → `_WEIGHTS`, `_PLATT_*`, `confidence` | `test_episode_confidence.py::test_model_matches_research_json` | K3 |
 | §4 projekcja dowodów | jedna publiczna funkcja H1 na kontrakcie kandydata H1 (`release`, `path`, `filename`), semantyka `conf_model.py:16–88` | `episode_identity.py` → `identity_evidence(target, candidate)` | `test_episode_confidence.py::test_features_match_research_cases`, `::test_features_filename_differs_from_path`, `::test_features_path_without_filename`, `::test_features_release_only` | K3 |
 | §4 konflikt zamiast % | krótki powód; szczegóły z numerami | `episode_identity.py` → `conflict_label`; `cli/anime.py` → `_candidate_details` (:2411) | `test_episode_identity.py::test_conflict_label_*`; `tests/cli/test_anime_episodes.py::test_conflict_row_shows_reason` | K2, K10 |
@@ -160,7 +164,7 @@ krok z §7.
 | §7 próg przyszły | bez kodu | — | — (poza zakresem wykonania; dane zbiera K15) | — |
 | §8 powiadomienia | jedno na odcinek i powód; sześć rodzajów; bez PL po buforze bez powiadomienia | `automation.py` → `_notify_target` (reuse `tray.notify`, `anishift/platform/tray.py:192`, i trwałych `NotificationKey`, `watch_state.py:1629`); `subscription_texts.py` → `failure_notice` | `t/app/test_notification.py::test_notice_once_per_target_reason`, `::test_notice_*` (po jednym na rodzaj), `::test_no_polish_after_buffer_silent` | K15 |
 | §8 źródła niedostępne > 1 h | per należny cel; początek przeżywa restart; reset przy udanym wyniku (także pustym), braku włączonych źródeł i końcu należności | `SubscriptionTarget.sources_down_since` (§6.1 planu); `subscription_choice.sources_down`; `automation.py` → `_subscription_outcome` (§6.4) | `test_notification.py::test_sources_down_notice_once_across_restart`; `test_subscription_choice.py::test_sources_down_reset_by_empty_success`, `::test_sources_down_not_started_when_all_disabled`; `test_subscription_owner.py::test_sources_down_per_target`, `::test_sources_down_cleared_when_target_settles` | K11, K12, K15 |
-| §9 zestaw wzorcowy | fixtury, oczekiwania, pokrycie, offline | `tests/fixtures/acquisition/reference/`; `t/app/test_acquisition_reference.py` | §9 planu | K0, K16 |
+| §9 zestaw wzorcowy | fixtury (~17 MB w całości, W3), oczekiwania, pokrycie, offline; replay z `content-type` wg źródła, osobne zestawy dozwolonych zapytań dla ręcznego i subskrypcji (O9) | `tests/fixtures/acquisition/reference/`; `t/app/test_acquisition_reference.py` | §9 planu | K0, K16 |
 
 ### 3.2 Wiersze §10
 
@@ -193,7 +197,7 @@ krok z §7.
 | 25 | spec U-18(a) w automacie | ponowne H1 na ścieżce qBittorrenta | `test_transfers.py::test_metadata_check_unique_name_reclassified` | K13 |
 | 26 | plan §3.3 dopuszczalność, E3 D-10 | `ChoiceCandidate.after_metadata` | `test_subscription_choice.py::test_admissible_release_name_only_after_metadata` | K12 |
 | 27 | spec U-23 | `dub_only` na końcu; `usable` odrzuca | `test_episode_selection.py::test_dub_only_after_regular`; `test_subscription_choice.py::test_usable_rejects_dub_only` | K6, K12 |
-| 28 | plan §5.6 | rejestr: `sources`, `quality`, `confidence`, `conflict`, `polish_history` | `test_acquisition_decisions.py::test_selection_fields_a1` | K15 |
+| 28 | plan §5.6 | rejestr: `sources`, `quality`, `confidence`, `conflict`, `polish_history`, `numbering` | `test_acquisition_decisions.py::test_selection_fields_a1` | K15 |
 | 29 | spec R-02 sugestia (O-5) | `suggestion` = pierwszy wiersz §6.1 + „niepewne” | `test_episode_selection.py::test_suggestion_is_first_group_one_row` | K6 |
 
 ## 4. Drzewo zmian
@@ -210,16 +214,16 @@ anishift/
 │   ├── episode_releases.py                   [NEW]  czyste: hash BTIH, scalanie źródeł po hashu, pliki z deklaracjami, paczka
 │   ├── subscription_choice.py                [NEW]  czyste: dopuszczalność, wybór, próg, oczekujące, historia PL, „Pobierz teraz” (skip_wait), zamiana, chronione pliki, zegar niedostępności
 │   ├── episode_search.py                     [NEW]  orkiestracja źródeł: kontrakt źródła, konwersja Nyaa, klasyfikacja błędów, kompletność, limity czasu, cache, kolejka uzupełnień
-│   ├── episode_identity.py                   [EDIT] identity_evidence, classify_release_name, CONFLICT_REASONS
-│   ├── episode_selection.py                  [EDIT] RankedCandidate z jakością i pewnością, list_order, representative, suggestion = pierwszy wiersz (O-5)
-│   ├── acquisition.py                        [EDIT] search_episode (lista, D, brak numeracji); subscription_check; U-22 w read_listing; prepare_episode przez streams_releases do K12
+│   ├── episode_identity.py                   [EDIT] identity_evidence, classify_release_name, CONFLICT_REASONS, powód "mapped bez numeracji celu" (D2)
+│   ├── episode_selection.py                  [EDIT] RankedCandidate z jakością i pewnością, list_order, representative, suggestion = pierwszy wiersz (O-5), numbering_gap, identity_target(numbering)
+│   ├── acquisition.py                        [EDIT] search_episode (lista, D, brak numeracji); subscription_check; U-22 w read_listing; mosty numeracji i ID (D1-D3) w read_listing; prepare_episode przez streams_releases do K12
 │   ├── subscription_targets.py               [EDIT] SubscriptionTarget/Record v5 (w tym polish_skip); excluded; inwariant U-22
 │   ├── subscription_migration.py             [EDIT] migrate_to_five (bez importu legacy); migrate kończy na schemacie 4
 │   ├── watch_state.py                        [EDIT] schemat 5: osobna ścieżka 4 → 5 (legacy tylko do kopii), wersjonowane klucze i receipt, kopia .a1-migration.bak
 │   ├── control.py                            [EDIT] schemat 5, stall 600, ChoiceTraits w EpisodeChoice, EpisodeAssignment.stopped
 │   ├── transfers.py                          [EDIT] metadata_check po metadanych (ponowne H1 i §6.2)
 │   ├── automation.py                         [EDIT] wybór, chronione pliki, po metadanych, próg, czekanie PL, powiadomienia, cykl oferty z rewizjami, subscriptions_revision w _status (zwiększana w _save), _publish_state po T
-│   ├── acquisition_decisions.py              [EDIT] K6: offer_check/candidate_proposal bez facts; K15: nowe pola rejestru
+│   ├── acquisition_decisions.py              [EDIT] K6: offer_check/candidate_proposal bez facts; K15: nowe pola rejestru (w tym numbering)
 │   └── episode_commands.py                   [EDIT] EpisodeOfferView.revision/pending_sources/source_lines, EpisodeStatus.stalled_since/polish_wait_until/polish_skipped
 ├── config/
 │   ├── user_settings.py                      [EDIT] przełączniki pięciu źródeł, subscription_polish_wait_h
@@ -227,9 +231,12 @@ anishift/
 ├── platform/
 │   └── local_control.py                      [EDIT] _event_key (:821) scala episode_offer_partial per command_id i klucz
 ├── services/
-│   ├── http_requests.py                      [EDIT] dostawcy nowych hostów, okna TsukiHime, deadline wywołującego, pula z copy_context, DeadlineExceeded/ProviderCooldown/BudgetExhausted
+│   ├── http_requests.py                      [EDIT] dostawcy nowych hostów (w tym arm, kitsu), okna TsukiHime, deadline wywołującego, pula z copy_context, DeadlineExceeded/ProviderCooldown/BudgetExhausted
 │   ├── catalog/
 │   │   ├── anilist.py                        [EDIT] countryOfOrigin w zapytaniach (:61, :101) i _candidate (:370)
+│   │   ├── anizip.py                         [EDIT] mapping_by_anidb (ten sam parser, parametr anidb_id)
+│   │   ├── arm.py                            [NEW]  ArmCatalog.ids: AniList → AniDB ID i thetvdb-season (arm-server)
+│   │   ├── kitsu.py                          [NEW]  KitsuCatalog.kitsu_id: Kitsu mappings po AniList ID z kontrolą zwrotną
 │   │   └── types.py                          [EDIT] TitleCandidate.country (:62)
 │   └── torrents/
 │       ├── AGENTS.md                         [EDIT] opis źródeł i limitów
@@ -264,7 +271,7 @@ tests/
 │   ├── test_episode_identity.py              [EDIT] ocena nazwy wydania, konflikt
 │   ├── test_episode_selection.py             [EDIT] nowy RankedCandidate, kolejność, sugestia (pierwszy wiersz + niepewne), reprezentant
 │   ├── test_episode_commands.py              [EDIT] nowe pola widoków
-│   ├── test_acquisition.py                   [EDIT] search_episode, brak numeracji, U-22
+│   ├── test_acquisition.py                   [EDIT] search_episode, brak numeracji, U-22, mosty numeracji (K9b)
 │   ├── test_acquisition_decisions.py         [EDIT] K6: ranking przez streams_releases bez facts (:68–74); K15: nowe pola rejestru
 │   ├── test_automation.py                    [EDIT] D po wszystkich źródłach, cykl oferty, dowód wyboru na rewizji, przełącznik przez API ustawień
 │   ├── test_subscription_targets.py          [EDIT] SubscriptionTarget/Record v5, excluded, U-22
@@ -281,7 +288,10 @@ tests/
 ├── services/
 │   ├── test_http_requests.py                 [EDIT] dostawcy, okna, deadline wywołującego (wiszący transport, dołączający), budżet przez obie pule, typy błędów
 │   ├── catalog/
-│   │   └── test_anilist.py                   [EDIT] countryOfOrigin
+│   │   ├── test_anilist.py                   [EDIT] countryOfOrigin
+│   │   ├── test_anizip.py                    [EDIT] mapping_by_anidb
+│   │   ├── test_arm.py                       [NEW]  odpowiedzi arm-server (213805, 204389), 404, błąd
+│   │   └── test_kitsu.py                     [NEW]  kontrola zwrotna, niejednoznaczny wpis, 404
 │   └── torrents/
 │       ├── test_tsukihime.py                 [NEW]  adapter na zapisanych odpowiedziach
 │       ├── test_knaben.py                    [NEW]
@@ -306,6 +316,7 @@ tests/
         ├── expectations.json                 [NEW]  oczekiwania potwierdzone przez właściciela
         ├── coverage-baseline.json            [NEW]  640 hashy badania 1 per przypadek i źródło, gone z dowodem, unverified
         └── <case>.json                       [NEW]  surowe odpowiedzi źródeł per przypadek
+                                                     (wszystkie pliki reference/ jako .json.gz, §9.1)
 
 scripts/tmp/a1_record_reference.py            [NEW, jednorazowy] nagranie fixtur (scripts/tmp/ jest na jednorazowe skrypty)
 ```
@@ -365,7 +376,7 @@ def quality_score(traits: ReleaseTraits) -> float                              #
 ```
 
 - `release_traits(file=…)` bierze deklaracje z `file == file` (zakres pliku) przed deklaracjami
-  `file is None` (zakres wydania); przy `pack=True` deklaracje wydania są pomijane (spec A §5.2:123).
+  `file is None` (zakres wydania); przy `pack=True` deklaracje wydania są pomijane (spec A §5.2:133).
 - `donghua` pochodzi z `TitleCandidate.country == "CN"` (droga w §5.9); bez danych `False`.
 - Stałe `Final` z docstringami: punkty (`POLISH_POINTS = 40.0` …), `PLATFORMS`, `DUB_MARKERS`,
   `DECLARATION_PRIORITY`, `DUBBED_RE`.
@@ -471,7 +482,7 @@ def conflict_label(assessment: IdentityAssessment) -> str   # „inny sezon (S01
   powstaje dla liczby innej niż cel **i** dla liczby nierozpoznanej (`number is None or number not in
   …`, :830, :841, :911), także gdy zapis jest zgodny z celem, ale parser go nie zna (cel sezon 11,
   `Example 第十一季/01.mkv` → `_context_number` daje `None`, :812–818). Konflikt wyklucza wydanie
-  z kolejki uzupełnień i ze zbioru oczekujących (spec A :79, :175), więc fałszywy konflikt mógłby
+  z kolejki uzupełnień i ze zbioru oczekujących (spec A :80, :185), więc fałszywy konflikt mógłby
   odblokować gorsze wydanie; brak oznaczenia jest bezpieczny (wydanie zostaje `niepewny`, blokuje
   i czeka). A1 nie rozdziela tych powodów i nie zmienia goldenów H1 (§10.6 `e1-integracja.md`).
 - **Poza listą (brak danych, nie sprzeczność):** trzy powody łączone wyżej, `The required part/cour is not established.`,
@@ -492,6 +503,20 @@ def conflict_label(assessment: IdentityAssessment) -> str   # „inny sezon (S01
   `Example 第十一季/01.mkv` (`niepewny`, nie konflikt); `test_conflict_label_for_every_reason`;
   `test_episode_search.py::test_unresolved_season_stays_in_completion_queue` (to samo wydanie
   zostaje w kolejce uzupełnień i w zbiorze oczekujących).
+- **Cel bez numeracji (spec A §3.5 D2, K2):** dziś nazwa `Koori no Jouheki S02E01` przy celu bez
+  `season` daje `Season marker conflicts with the target numbering system.` (sprawdzone na
+  `classify`), czyli konflikt, choć celowi brakuje danych, a nazwa niczemu nie przeczy. Zmiana:
+  w `_identity_conflict` (`episode_identity.py:635-640`) przy `parsed.mode == "mapped"`
+  i `target.season is None` powstaje nowy powód `Mapped numbering cannot be checked without target
+  numbering.` (`INSUFFICIENT`, dopisany do `REASONS`, poza `CONFLICT_REASONS`, które zostają
+  19-elementowe). Werdykt pozostaje `INSUFFICIENT`; zmienia się tylko powód, więc golden z takim
+  celem przechodzi procedurę `e1-integracja.md` §10.6. Ścieżka `_local_decision` bez zmian:
+  `[Erai-raws] Koori no Jouheki 2nd Season - 01` przy tym samym celu daje już `MATCH` („Specific work
+  title and local episode match…”), a `Koori no Jouheki - 01` zostaje `A franchise alias does not
+  identify this installment.` Testy (`test_episode_identity.py`):
+  `test_entry_title_local_number_without_numbering` (213805-1, Erai → `zgodny`),
+  `test_sxxexx_without_numbering_stays_uncertain` (`S02E01` romaji i angielski → `niepewny`,
+  `is_conflict` fałsz).
 
 ### 5.4 `anishift/application/episode_releases.py` [NEW, czysty]
 
@@ -578,7 +603,19 @@ Istniejące: `StreamCandidate` (:251), `EpisodeKey`, `ReleaseFacts` (:276), `Ran
 - `streams_releases(streams) -> tuple[EpisodeRelease, ...]` = `merge_releases(streams, {}, pack_name=…)`
   — jedyna droga ze `StreamCandidate` do rankingu dla kodu sprzed K9/K12.
 - `list_order`, `visible` (U-24), `suggestion(candidates, *, numbering: bool) -> tuple[int | None, bool]` (`numbering=False` → `(None, …)`, §5.9).
-- **Sugestia (O-5, spec A §6.1:161):** indeks pierwszego wiersza grupy 1 `list_order` (bez konfliktu,
+- **Numeracja odcinka (spec A §3.5, K9b):** `identity_target(graph, selected_id, mapping, number, *,
+  numbering: bool = True)` (:333); `numbering=False` → wpis odcinka `{}` (bez `season`, `episode`,
+  `absolute`, `episode_title`), reszta celu bez zmian. Nowa czysta
+  `numbering_gap(mapping: AniZipMapping, number: int, tvdb_season: int | None, *, movie: bool) -> str | None` —
+  **jedyna reguła numeracji celu**, wołana dla konkretnego numeru lokalnego; dla filmu (`movie=True`, format `MOVIE`) zawsze `None` (spec A §3.5: sugestia i automat jak dotąd); inaczej `"none"`, gdy brak
+  klucza `str(number)` w `raw_episodes` albo wpis nie ma całkowitych `seasonNumber` i `episodeNumber`;
+  `"duplicate"`, gdy tę samą parę ma niższy lokalny odcinek (najniższy zachowuje numerację);
+  `"tvdb_season"`, gdy `seasonNumber` i `tvdb_season` są znane i różne; inaczej `None` (cel ma
+  numerację). `tvdb_season=None` = bez kontroli sezonu. Testy: `test_numbering_gap_missing_key`
+  (mapowanie tylko z odcinkiem 1, cel 2), `test_numbering_gap_without_season_episode` (172192-1),
+  `test_numbering_gap_duplicate_keeps_lowest` (204389: odcinek 1 ma S02E01, odcinek 2 sprzeczny),
+  `test_numbering_gap_tvdb_season` (198727), `test_numbering_gap_skips_movie` (21519-1: „Complete Movie” bez S/E → `None`), `test_identity_target_without_numbering`.
+- **Sugestia (O-5, spec A §6.1:171):** indeks pierwszego wiersza grupy 1 `list_order` (bez konfliktu,
   nie sam dubbing) i `uncertain = verdict is not MATCH`; pusta grupa 1 → `(None, False)`. Zastępuje
   dzisiejsze szukanie najpierw `zgodnego` (`_SUGGESTED_VERDICTS`, :448–461). `D` bez podglądu bierze tę
   sugestię przez istniejące `_admit_download_offer` (`automation.py:5162–5168`) bez nowych reguł: tak
@@ -621,7 +658,7 @@ class ReadOutcome(StrEnum):             # wynik odczytu TsukiHime (wyszukanie po
     LISTED = "listed"; EMPTY = "empty"; NO_HASH = "no_hash"                          # rozstrzygające / sukces
     PENDING = "pending"; RATE_LIMITED = "rate_limited"; FAILED = "failed"; TIMEOUT = "timeout"  # przejściowe
 
-class Blocker(StrEnum): NONE, PENDING, THRESHOLD, NO_ADMISSIBLE, WAITING_POLISH, NO_NUMBERING, SOURCES_DOWN
+class Blocker(StrEnum): NONE, PENDING, THRESHOLD, NO_ADMISSIBLE, WAITING_POLISH, SOURCES_DOWN
 class PolishHistory(StrEnum): PRESENT, ABSENT, UNKNOWN
 
 def usable(candidate: ChoiceCandidate) -> bool
@@ -644,7 +681,7 @@ def replacement(candidates: Sequence[ChoiceCandidate], *, excluded: Collection[s
   zapisywany w `SubscriptionTarget.failures` w tym samym `_save` co wynik sprawdzenia.
 - `ChoiceDecision`: `candidate: ChoiceCandidate | None`, `blocker: Blocker`, `reason: str`,
   `wait_until: datetime | None`.
-- **„Pobierz teraz” (spec A §6.3:199):** `ChoiceState.skip_wait: bool` = pominięcie aktywne
+- **„Pobierz teraz” (spec A §6.3:209):** `ChoiceState.skip_wait: bool` = pominięcie aktywne
   (`target.polish_skip.due == target.due_at`, §6.1). `decide` przy `skip_wait` pomija tylko czekanie na PL: bierze pierwszego
   `admissible` według `choice_key` (dopuszczalność, próg celu i `pending_blocks` bez zmian;
   `niepewny` odpada w `admissible`); bez kandydata zwraca blocker z §8 jak dziś, a cel zostaje
@@ -698,7 +735,7 @@ class EpisodeRequest:
     tsukihime_id: int | None
     phrases: tuple[str, ...]
     target: Mapping[str, object]
-    numbering: bool                     # False: ani.zip niedostępne i brak zapisanego mapowania (§3.5)
+    numbering: bool                     # False: brak numeracji odcinka albo numeracja sprzeczna (§3.5)
 
 class SourceState(StrEnum): DONE, UNFINISHED, FAILED, DISABLED, SKIPPED, NO_TITLE, NO_KITSU
 class FailureKind(StrEnum): TIMEOUT, RATE_LIMITED, ERROR
@@ -753,8 +790,14 @@ def offer_status(results: Sequence[SourceResult]) -> str | None
 - **TsukiHime (uwaga 4a):** `TsukiHimeLookup` = `(status: int, torrent_id | files)` dla
   `200`/`202`/`404`/`429`; inne błędy adapter zgłasza `TorrentSourceError` z przyczyną. Wizyta
   kolejki = `torrent_by_hash` → przy `200` z ID **w tej samej wizycie** `torrent_files(id)`; `200`
-  z ID to etap pośredni, nigdy `LISTED`/`EMPTY`. `_listing_read` mapuje wynik ostatniego odczytu
-  wizyty: spis `200` + pliki → `LISTED`, spis `200` pusto → `EMPTY`, btih `404` → `NO_HASH`, `202`
+  z ID to etap pośredni, nigdy `LISTED`/`EMPTY`. Wyjątek (O2, `a1-recon.md` N-1: 78/78 list
+  identycznych): btih `200` z kompletnym `files` (`len(files) == filecount`, spec A §2) daje od razu
+  pliki i kończy wizytę jednym odczytem (`LISTED`), bez `torrent_files`; budżet liczy rzeczywiste
+  żądania. btih `200` z `files` pustym albo krótszym niż `filecount` → `torrent_files(id)` jak dotąd.
+  btih `202` → `PENDING` także z niepustym `files` (to nie spis, O3); ID z `202` wolno zachować.
+  `_listing_read` mapuje wynik ostatniego odczytu wizyty: spis `200` + kompletne pliki → `LISTED`,
+  spis `200` pusto albo z listą krótszą niż `filecount` → `EMPTY` (brak spisu: wydanie oceniane po
+  nazwie, bez potwierdzenia pliku, bez wpisu do `_ListingCache`), btih `404` → `NO_HASH`, `202`
   (btih albo spis) → `PENDING`, `429` → `RATE_LIMITED`, wyjątek → `failure_kind` (`TIMEOUT` /
   `RATE_LIMITED` / `ERROR` → `FAILED`).
 - Testy od odpowiedzi lub wyjątku adaptera do `ReadOutcome` i trwałego licznika
@@ -777,17 +820,23 @@ def offer_status(results: Sequence[SourceResult]) -> str | None
   oczekujących źródeł (nie przyrost), więc scalanie zdarzeń po stronie IPC jest bezpieczne (§5.10).
   Testy: `test_manual_offer_snapshot_at_3s_without_results` (wszystkie źródła zablokowane, zegar
   i timer wstrzyknięte); `tests/cli/test_anime_episodes.py::test_offer_after_3s_pending_line_without_rows`.
-- **Brak numeracji (uwaga 12):** `numbering` pochodzi z `ListingRead` (§5.9). `numbering=False` →
-  cel H1 z pustym mapowaniem z odczytu listy (`identity_target`; `raw_episodes.get` daje `{}`,
-  `episode_selection.py:333–345`), Torrentio `NO_KITSU`, pozostałe źródła odpytywane, ranking jak
-  zwykle, `suggestion = None`, `offer_status` = „brak numeracji (ani.zip)”.
+- **Brak numeracji (uwaga 12, spec A §3.5 D2):** `numbering` = `numbering_gap(read.mapping, number,
+  read.tvdb_season, movie=read.movie) is None` dla numeru celu (§5.5, §5.9), liczone raz przy budowie
+  `EpisodeRequest` i razem z nim przekazywane do `identity_target`. `numbering=False` → cel H1 bez numeracji odcinka
+  (`identity_target(..., numbering=False)`, §5.5), Torrentio `NO_KITSU` tylko przy braku Kitsu ID,
+  pozostałe źródła odpytywane, ranking jak zwykle, `suggestion = None`, `offer_status` = „brak
+  numeracji”. Subskrypcja wybiera jak zwykle (§5.6): przyjmuje tylko `zgodny`.
 - Pamięć: `_FastCache` (≤30 min, P-10), `_PulledCache` (Knaben, nekoBT, 60 min),
   `_ListingCache` (spisy po hashu, tylko `LISTED`); `forget` przy wyłączeniu źródła.
-- `CompletionQueue(order)`: ≤10 odczytów na wywołanie, wizyta = wyszukanie po hashu + spis,
+- `CompletionQueue(order)`: ≤10 odczytów na wywołanie, wizyta = wyszukanie po hashu + spis
+  (albo samo wyszukanie, gdy btih `200` ma kompletne `files`, `len(files) == filecount`, O2),
   przeliczanie kolejności po każdym uzupełnieniu. `manual_offer` używa porządku `list_order`,
   `subscription_check` — `completion_order` i trwałych `failures` (blokujące przed ponowieniami).
 - `episode_phrases` zastępuje `_episode_queries` (`acquisition.py:1045`) i `_episode_base` (:1064);
-  reuse `base_title` (`names.py:157`), `season_context` (`acquisition.py:593`).
+  reuse `base_title` (`names.py:157`; dla OVA/SPECIAL pełny tytuł z podtytułem, W2) i reguły
+  `season_context` (`acquisition.py:593`) liczonej na już pobranym grafie franczyzy, bez zapytań
+  AniList (O6; `a1-recon.md` N-5: indeks zgodny 21/21, 0 zamiast 19 zapytań). Fraza `S01E{NN}`
+  także w sezonie 1 TV (W1); OVA/SPECIAL bez `S{ss}E{NN}` (W2); MOVIE bez numeru jak dotąd.
 - Wołają: `AcquisitionService.search_episode` i `subscription_check` (§5.9).
 
 ### 5.8 Adaptery `anishift/services/torrents/` [NEW]
@@ -796,13 +845,18 @@ def offer_status(results: Sequence[SourceResult]) -> str | None
   `TsukiHimeSource(client: httpx.Client)` implementuje `TsukiHimeApi`; `torrent_files` zwraca
   pliki z `filename`, `size`, `sublangs`, `audiolangs` (pola widoczne w `src_measure.py`) jako
   `TsukiHimeFiles`. `TSUKIHIME_URL: Final = "https://api.tsukihime.org/v1"`. `torrent_by_hash`
-  używa `/torrents/btih/{btih}` (ścieżka w swaggerze; kształt odpowiedzi — N-1).
-- `knaben.py` — `KnabenSource.search(phrase, page) -> TextPage` (`PagedSource`): `POST
-  https://api.knaben.org/v2/search`, rozmiar 300, sortowanie po dacie, przesunięcie `page × 300`;
-  nazwy pól — N-3.
+  używa `/torrents/btih/{btih}` (kształt: `a1-recon.md` N-1 — `200` z `id` i `files`, `202` z `id`,
+  `404` przy braku; O2, O3). `episode_page` wysyła parametr `offset`, czyta `start` z odpowiedzi,
+  `limit=100` (większy daje `422`; O4, N-2).
+- `knaben.py` — `KnabenSource.search(phrase, page) -> TextPage` (`PagedSource`): `GET
+  https://api.knaben.org/v2/search` z parametrami jak w nagraniu (`q`, `s=300`, `f=page × 300`,
+  `o=date`, `dead`); pola `hash` (→ małe litery), `title`, `seeders`, `magnetUrl`, `total.value`
+  (O1, N-3).
 - `nekobt.py` — `NekoBTSource.search(phrase, page) -> TextPage` (`PagedSource`), `parse_feed(xml)`,
-  `language_tags(text) -> NekoTags` (`A=`, `F=`, `S=`, `HS`); reuse `xml.etree` i limit
-  `MAX_BODY_BYTES` jak `nyaa.py:65`.
+  `language_tags(text) -> NekoTags`: parser bloku `{Tags:…}` z sufiksu tytułu — `A=`, `F=`, `S=`,
+  flagi bez `=` (`HS` = HardSub), sklejone kody regionalne (`es419`, `frfr`, `zhhans`) → język
+  podstawowy, napisy = F ∪ S (O5, N-4); `seeders` i `infohash` z `torznab:attr`; reuse `xml.etree`
+  i limit `MAX_BODY_BYTES` jak `nyaa.py:65`.
 - Nyaa: bez nowego adaptera (§5.7); jedyna zmiana w `nyaa.py`: przyczyna `httpx.HTTPStatusError`
   przy statusie ≠ 200 (:161–162).
 - Wszystkie: błąd → `TorrentSourceError` z zachowaną przyczyną (`raise … from error`), pusta
@@ -810,7 +864,7 @@ def offer_status(results: Sequence[SourceResult]) -> str | None
 
 ### 5.9 Pozostałe `[EDIT]` w aplikacji i usługach
 
-- `services/http_requests.py` — limit czasu operacji źródła z perspektywy wywołującego (spec A §3.2:58).
+- `services/http_requests.py` — limit czasu operacji źródła z perspektywy wywołującego (spec A §3.2:59).
   Stan zastany: dołączający czeka `future.result()` bez limitu (:120–121), a timeouty httpx działają
   per odczyt gniazda, więc nie ograniczają całości. Kontrakt: **wywołujący czeka na wynik najwyżej
   `remaining`**; fizyczne żądanie działa ze stałymi timeoutami httpx i może przeżyć wywołującego
@@ -860,47 +914,102 @@ def offer_status(results: Sequence[SourceResult]) -> str | None
   - `AcquisitionService.__init__` (:508) dostaje `episode_search`;
   - K9: `search_episode(key, switches, on_partial=None) -> tuple[EpisodeOffer, dict[str, object]]`
     dla oferty (`automation.py:4878`), `D` (`automation.py:5140`) i `offer` (:810, IPC `automation.py:8383`),
-    na mapowaniu i fladze `numbering` z `ListingRead` (niżej), bez drugiego odczytu ani.zip;
+    na mapowaniu i `tvdb_season` z `ListingRead` (niżej), bez drugiego odczytu ani.zip;
   - **brak numeracji już na odczycie listy (uwaga 12, F):** `ListingRead` (:381) dostaje
-    `numbering: bool` = mapowanie ma odcinki (`raw_episodes` niepuste). `read_listing` (:777) przy
+    `tvdb_season: int | None` (z mostu) i `numbering_source`; numeracja konkretnego celu to zawsze
+    `numbering_gap(read.mapping, number, read.tvdb_season, movie=read.movie)` (§5.5), bez flagi dla całego wpisu;
+    `ListingRead.movie` = format wpisu `MOVIE`; `read_listing` go nie zna (`SeasonAiring` nie ma formatu), więc przed `numbering_gap` liczy go jak `acquisition.py:819–822`: `self._context_graph(anilist_id, now).nodes[anilist_id].get("format") == _MOVIE_FORMAT`
+    i ten sam, z którego powstaje `EpisodeRequest.movie` — jedno źródło dla wszystkich wywołań.
+    `read_listing` (:777) przy
     błędzie ani.zip bez `saved` nie zgłasza wyjątku (dziś :784–786), tylko bierze pusty
     `AniZipMapping` — ten sam co ani.zip `404` (`services/catalog/anizip.py:49–50`) — więc oba
-    przypadki dają `numbering=False` niezależnie od wyjątku; lista odcinków powstaje z harmonogramu
+    przypadki dają cel bez numeracji niezależnie od wyjątku; lista odcinków powstaje z harmonogramu
     AniList (`episode_listing`, `episode_selection.py:363–412`, działa bez mapowania). Mapowanie bez
-    odcinków nie jest żywe (`live = fetched and numbering`), więc `404` nie nadpisuje zapisanego.
+    odcinków nie jest żywe (`live = fetched and bool(mapping.raw_episodes)`), więc `404` nie nadpisuje zapisanego.
     Konsumenci: `episodes` (:773), oferta (`automation.py:4871–4878`) i `D` (:5135–5140) wołają
-    `read_listing` i przekazują wynik do `search_episode` → `EpisodeRequest(numbering=False)` (§5.7);
-    subskrypcja (`automation.py:3770–3773`) przy `numbering=False` nie liczy błędu źródła, tylko kończy
-    cel `Blocker.NO_NUMBERING` bez przyjęcia i ponawia przy następnym sprawdzeniu. Testy od
-    ownera przez `ResidentSession` dla ani.zip `500` i `404` bez zapisanego mapowania
-    (parametryzowane, MockTransport): `t/app/test_automation.py::test_offer_without_numbering_shows_releases`
-    (wiersze widoczne, `suggestion is None`, „brak numeracji (ani.zip)”, Torrentio `NO_KITSU`),
-    `::test_d_without_numbering_does_not_admit`, `test_subscription_owner.py::test_no_numbering_blocks_without_admission`
-    (brak przyjęcia, brak wpisu w `failures`, kolejne sprawdzenie zaplanowane), oraz
+    `read_listing` i przekazują wynik do `search_episode` → `EpisodeRequest(numbering=…)` dla numeru celu (§5.7);
+    subskrypcja (`automation.py:3770–3773`) przy `numbering=False` nie liczy błędu źródła i wybiera
+    zwykłą drogą §5.6 na celu bez numeracji (spec A §3.5 D2; bez osobnego blokera); brak
+    przyjmowalnego wydania daje zwykły bloker §5.6 i powód §8. Testy od
+    ownera przez `ResidentSession`, parametryzowane po pięciu przypadkach celu bez numeracji: ani.zip
+    `500` i `404` bez zapisanego mapowania, brak klucza celu przy niepustym mapowaniu (odcinek 2 przy
+    mapowaniu z samym 1), wpis celu bez `seasonNumber`/`episodeNumber` (172192-1), odcinek sprzeczny
+    (204389-2, przy pełnej numeracji odcinka 1 — kontrola: odcinek 1 ma sugestię)
+    (MockTransport, arm-server bez AniDB ID): `t/app/test_automation.py::test_offer_without_numbering_shows_releases`
+    (wiersze widoczne, `suggestion is None`, „brak numeracji”, Torrentio `NO_KITSU`),
+    `::test_d_without_numbering_does_not_admit`, `test_subscription_owner.py::test_no_numbering_decides_on_entry_title`
+    (wydanie z tytułem wpisu i numerem lokalnym przyjęte; samo `SxxExx` bez przyjęcia, brak wpisu
+    w `failures`, kolejne sprawdzenie zaplanowane), oraz
     `t/app/test_acquisition.py::test_read_listing_404_does_not_replace_saved_mapping`;
+  - **mosty numeracji i ID (spec A §3.1, §3.5 D1–D3, K9b):** `read_listing` (:777) po `_mapping`
+    (:866) woła `_bridged_mapping(anilist_id, mapping)`:
+    1. `ArmCatalog.ids(anilist_id) -> ArmIds(anidb_id: int | None, tvdb_season: int | None)` przy
+       każdym odczycie (`GET https://arm.haglund.dev/api/v2/ids?source=anilist&id={id}`; `404` → oba
+       `None`);
+    2. puste `mapping.episodes` i znane `anidb_id` → `AniZipCatalog.mapping_by_anidb(anidb_id)`
+       (`GET https://api.ani.zip/mappings?anidb_id={id}`, ten sam `parse_mapping`); jego `episodes`,
+       `specials`, `raw_episodes`, `episode_count` zastępują puste, a `kitsu_id`/`catalog_type`
+       zostają z pierwszego odczytu, gdy odpowiedź AniDB ma `null`;
+    3. `kitsu_id is None` → `KitsuCatalog.kitsu_id(anilist_id)`: `GET
+       https://kitsu.io/api/edge/mappings?filter[externalSite]=anilist/anime&filter[externalId]={id}&include=item&page[limit]=20`;
+       dokładnie jeden `item` typu `anime`, potem `GET /anime/{kitsu}/mappings?page[limit]=20` musi
+       zawierać `anilist/anime` = ten AniList ID. Każdy z dwóch odczytów musi być kompletny (bez
+       `links.next`); inaczej, przy niejednoznaczności albo błędzie → `None` (Kitsu nieustalone),
+       bez dalszych stron, najwyżej 2 żądania.
+
+    Wynik jest zwykłym `AniZipMapping` (bez nowych pól i bez zmiany schematu `watch_state`), więc
+    numeracja z AniDB jest zapisywana i porównywana w `merge_listing` (K11) jak ta z ani.zip.
+    `ListingRead` dostaje `tvdb_season = ids.tvdb_season` i `numbering_source: str` (`anilist` /
+    `anidb` / `none`); rejestr (§6.6) zapisuje `numbering_source` celu z numeracją, inaczej wynik
+    `numbering_gap`. Błąd mostu (`TitleCatalogError`, `httpx.HTTPError`, `ValueError`) jest logowany
+    (`provider`, `code`) i odbiera tylko swój krok. Bez pamięci w ownerze i bez osobnego
+    harmonogramu: każde sprawdzenie czyta od nowa (D3). `_mapping` (:866) zachowuje dzisiejszą pamięć
+    `max_age_s` dla pierwszego odczytu, z jednym wyjątkiem: `read_listing(anilist_id, saved, *,
+    targets: Collection[int] = ())` — sprawdzenie subskrypcji podaje numery sprawdzanych celów,
+    a gdy mapowanie z pamięci daje któremuś `numbering_gap(mapping, n, tvdb_season, movie=read.movie) is not None`, ani.zip jest czytane
+    od nowa (jedno żądanie zamiast odpowiedzi z pamięci, budżet bez zmian). Lista i `D` pamięć
+    zachowują. Dostawcy `arm` i `kitsu` w `http_requests._provider`
+    (:194) i `RequestControl`. Testy (`t/app/test_acquisition.py`): `test_numbering_falls_back_to_anidb` (213805: puste
+    `episodes`, arm → AniDB 20168, ani.zip po AniDB → S02E01, `kitsu_id` 50827 zachowany),
+    `test_anidb_nulls_do_not_overwrite_ids`, `test_bridge_failure_keeps_anilist_mapping` (arm `500`,
+    Kitsu `404`), `test_listing_bridge_requests_within_budget` (najwyżej 5 żądań, spec A §3.1),
+    `test_subscription_read_bypasses_mapping_cache` (parametryzowany: puste `episodes` i odcinek
+    sprzeczny; drugie sprawdzenie przed `max_age_s` robi nowy odczyt ani.zip, a cel z numeracją
+    korzysta z pamięci), `t/services/catalog/test_kitsu.py::test_kitsu_candidate_with_next_link_is_unresolved`,
+    `::test_kitsu_incomplete_reverse_is_unresolved`, `::test_kitsu_ambiguous_is_unresolved`,
+    `::test_kitsu_request_count` (dokładnie 2 żądania, żadnej kolejnej strony),
+    oraz `test_subscription_owner.py::test_numbering_appears_on_next_check` (drugie sprawdzenie
+    z pełną numeracją bez restartu);
   - **numeracja do końca przetwarzania oferty (R4-2):** `EpisodeOffer` dostaje `numbering: bool = True`
-    ustawiane przez `search_episode` z `ListingRead.numbering`; jedyne miejsce wyliczania sugestii to
+    ustawiane przez `search_episode` z `EpisodeRequest.numbering` tego celu (ta sama wartość co w celu H1); jedyne miejsce wyliczania sugestii to
     `episode_selection.suggestion(candidates, *, numbering)` (§5.5) → brak sugestii przy `numbering=False`. Wołają je
     `search_episode` i `_repeat_episode_offer` (`automation.py:4932–4936`, z `offer.numbering`), więc
     ponowienie oferty (:4923) i `D` legacy (:5160–5162) nie odtwarzają sugestii bez numeracji. Test
-    `t/app/test_automation.py::test_repeat_without_numbering_has_no_suggestion` (ani.zip `500` i `404`,
-    bez zapisanego mapowania, wcześniejsze przyjęcie odcinka + nowe niewykluczone wydanie → oferta
+    `t/app/test_automation.py::test_repeat_without_numbering_has_no_suggestion` (te same pięć
+    przypadków co wyżej, wcześniejsze przyjęcie odcinka + nowe niewykluczone wydanie → oferta
     ponowienia bez sugestii, `D` bez przyjęcia);
   - K12: `subscription_check(key, mapping, record_state) -> SubscriptionSearch` zastępuje
     `prepare_episode` w subskrypcji (`automation.py:3781`); `prepare_episode` (:814) znika;
-  - K11: `read_listing` (:777) uznaje mapowanie za żywe bez Kitsu (`live = fetched and numbering`).
+  - K11: `read_listing` (:777) uznaje mapowanie za żywe bez Kitsu (`live = fetched and bool(mapping.raw_episodes)`).
 - `subscription_targets.py` — `SubscriptionTarget` (:128) i `SubscriptionRecord` (:180) nowe pola
   (§6.1); inwariant (:220–222) zastąpiony „`kitsu_id` wymaga mapowania”; `excluded(target) ->
   frozenset[str]` (hash z kluczy `hash` i starych `hash:fileIdx`); usunięte `eligible` (:456),
   `candidate_pair` (:450) w K12.
   **Konflikt numeracji niezależny od Kitsu (K11, R6-1):** dziś `merge_listing` wykrywa konflikt
   tylko po zmianie `kitsu_id` (:368–370), a przy `read.live` zastępuje mapowanie bez porównania
-  (:387–393). Spec A :90 i `e1-przeplyw-subskrypcji.md:182`: zmiana numeracji to konflikt, który
+  (:387–393). Spec A :91 i `e1-przeplyw-subskrypcji.md:182`: zmiana numeracji to konflikt, który
   blokuje nowe próby i zachowuje dotychczasową numerację. Zmiana: przy `read.live` i zapisanym
   `record.mapping` dla każdego klucza `raw_episodes` zapisanego mapowania porównywana jest trójka
   `(seasonNumber, episodeNumber, absoluteEpisodeNumber)` — dokładnie pola, które `identity_target`
   bierze do celu H1 (`episode_selection.py:343–350`) — z tym samym kluczem nowego mapowania
-  (brak klucza = trójka `None`). Różnica → `replace(record, problem=CATALOG_CONFLICT)` bez zmiany
+  (brak klucza = trójka `None`). Porównywane są tylko odcinki, które w zapisanym mapowaniu miały
+  numerację: `numbering_gap(record.mapping, n, record.mapping_tvdb_season, movie=read.movie) is None` (§5.5, spec A §3.5) —
+  zapisane mapowanie oceniane jest sezonem mostu z odczytu, który je zapisał, nie bieżącym; `None`
+  (nieznany, także po migracji 4 → 5) = tylko S/E i duplikaty, jak przy braku mostu. Gdy mapowanie
+  się aktualizuje, `mapping_tvdb_season = read.tvdb_season`; przy konflikcie oba pola zostają.
+  Odcinek bez numeracji albo sprzeczny w zapisanym mapowaniu może dostać dowolną nową trójkę bez
+  konfliktu (uzupełnienie z `None`, naprawa duplikatu), a u odcinka z numeracją pole `None`
+  w zapisanym, które dostaje wartość, też nie jest zmianą. Różnica znanego pola → `replace(record, problem=CATALOG_CONFLICT)` bez zmiany
   mapowania (jak :370). Klucz `kitsu_id` X → Y nadal jest konfliktem (:369); X → `None` przy
   niezmienionej numeracji nie jest: mapowanie się aktualizuje, `kitsu_id=None` wyłącza tylko
   Torrentio. Nowy klucz odcinka, tytuł (`title`) i data (`airDateUtc`, `anizip.py:82`) nie wchodzą do porównania.
@@ -910,8 +1019,16 @@ def offer_status(results: Sequence[SourceResult]) -> str | None
   `test_numbering_change_without_kitsu_is_conflict` (`kitsu_id=None`, inny `absoluteEpisodeNumber`
   odcinka 3), `test_numbering_change_same_kitsu_is_conflict`, `test_added_episode_or_title_date_not_conflict`,
   `test_kitsu_disappears_same_numbering_not_conflict` (mapowanie zaktualizowane, `kitsu_id is None`),
-  `test_conflict_keeps_previous_mapping`; `test_subscription_owner.py::test_numbering_conflict_blocks_attempts_after_restart`
-  (konflikt → brak przyjęcia → restart ownera → nadal brak przyjęcia).
+  `test_conflict_keeps_previous_mapping`, `test_numbering_filled_from_none_not_conflict`,
+  `test_duplicate_repaired_not_conflict`, `test_saved_season_mismatch_then_fixed_without_bridge_not_conflict`
+  (A: zapisane S01E01 przy `mapping_tvdb_season=2`, nowe S02E01 przy niedostępnym moście),
+  `test_saved_numbering_change_with_new_bridge_season_is_conflict` (B: zapisane S01E01 przy
+  `mapping_tvdb_season=1`, nowe S02E01 przy moście S02); `test_subscription_owner.py::test_numbering_conflict_blocks_attempts_after_restart`
+  (zmiana numeracji odcinka, który ją miał → brak przyjęcia → restart ownera → nadal brak przyjęcia),
+  `::test_numbering_filled_after_restart_not_conflict` (parametryzowany: `None` → pełna, duplikat →
+  poprawna; zapis, restart ownera, żywy odczyt → mapowanie zaktualizowane, bez `CATALOG_CONFLICT`,
+  przyjęcie możliwe), `::test_bridge_season_scenarios_after_restart` (A i B: zapis z sezonem mostu,
+  restart ownera, żywy odczyt → A bez konfliktu, B `CATALOG_CONFLICT` i brak przyjęcia).
 - `control.py` — `WATCH_STATE_SCHEMA_VERSION = 5` (:90); domyślne `transfer_stall_s = 600`;
   `EpisodeChoice` (:347) `traits: ChoiceTraits | None = None`; `EpisodeAssignment` (:412)
   opcjonalne `stopped: str | None`; `compact_acquisition` (:662)
@@ -924,7 +1041,7 @@ def offer_status(results: Sequence[SourceResult]) -> str | None
   **Niejednoznaczny plik w ścieżce ręcznej (K13, R6-2):** `episode_files` (:360–386) dziś zwraca
   plik o unikalnej nazwie reprezentanta (:368–372), zanim policzy pliki zgodne H1, więc
   `Example E01 [1080p].mkv` i `Example E01 [720p].mkv` (oba `MATCH`) dają automatycznie plik
-  reprezentanta, a `_settle_selection` (`automation.py:5740–5753`) startuje treść; spec A :82
+  reprezentanta, a `_settle_selection` (`automation.py:5740–5753`) startuje treść; spec A :83
   wymaga wtedy ręcznego wyboru (U-18c). Zmiana w jednym miejscu: `matched` liczone najpierw;
   `len(matched) > 1` → `()`; dopiero potem skrót po unikalnej nazwie i pojedyncze `matched`.
   Pusty wynik zostawia przypisanie niezmapowane (`_episode_bindings`, :8020–8045), czyli istniejący
@@ -983,7 +1100,7 @@ def offer_status(results: Sequence[SourceResult]) -> str | None
   - `_episode_choice` (:7725) zapisuje `ChoiceTraits` z `candidate.traits`;
   - `_check_basis` (:5981) i `_reject_attempt` (:6118) bez zmian (H2 tylko dla subskrypcji);
   - `_record_decision` (:5296) z nowymi polami; powiadomienia przez `NotificationKey`.
-  - **„Pobierz teraz” (K14, spec A §6.3:199):** bez nowego polecenia IPC — istniejące
+  - **„Pobierz teraz” (K14, spec A §6.3:209):** bez nowego polecenia IPC — istniejące
     `subscription_check` (:3548 → `_request_subscription_check`, :3654–3668), które już zapisuje
     stan przez `_commit` i uruchamia sprawdzenie `manual=True` (:3667), dostaje opcjonalne `number`
     w ładunku. Z `number`: odmowa (`REFUSED`, „cel nie czeka na PL”), gdy cel nie jest należny albo
@@ -1057,7 +1174,8 @@ def offer_status(results: Sequence[SourceResult]) -> str | None
     i `::test_subscriptions_revision_changes_only_on_target_state` (zapis transferu nie zmienia
     rewizji; akcja `T` i rozliczenie sprawdzenia ją zwiększają).
 - `acquisition_decisions.py:45` `_FIELDS` — `sources`, `candidates[].quality`,
-  `candidates[].confidence`, `candidates[].conflict`, `polish_history`, `source_states`, `blocker`.
+  `candidates[].confidence`, `candidates[].conflict`, `polish_history`, `source_states`, `blocker`,
+  `numbering` (§6.6).
 - `config/user_settings.py` — `UserSettings` (:242) pola z §6.5; `load_user_settings` (:796) i
   `_MISSING` (:171) — brakujący klucz dostaje wartość domyślną (do potwierdzenia testem w K9, N-6).
 - `config/field_catalog.py` — `SettingSpec` (:158) dla sześciu pól, `SettingScope.GLOBAL`;
@@ -1233,6 +1351,7 @@ Testy (`test_subscription_choice.py`): `test_replacement_first_admissible_by_cho
 | --- | --- | --- | --- |
 | `tsukihime_id` | `int \| null` | zapamiętane wewnętrzne ID tytułu TsukiHime; `null` = jeszcze nieznane albo brak tytułu (ponawiane przy sprawdzeniu) | §3.1 |
 | `mapping` (istniejący) | jak dziś | dozwolony także przy `kitsu_id = null`; `kitsu_id` bez mapowania niedozwolone | §3.5, U-22 |
+| `mapping_tvdb_season` | `int \| null` | sezon TVDB z mostu z odczytu, który zapisał `mapping`; `null` = nieznany (tylko S/E i duplikaty); ocena zapisanego mapowania w `merge_listing` (§5.9) | §3.5 |
 
 `SubscriptionTarget` (`subscription_targets.py:128`):
 
@@ -1303,7 +1422,7 @@ jest osobna:
 - `migrate` (`subscription_migration.py:80`) ustawia `schema_version=_SCHEMA_FOUR` (stała zamiast
   `WATCH_STATE_SCHEMA_VERSION`), więc jego semantyka pozostaje „do schematu 4”.
 - `migrate_to_five(state)`: `started = attempts`, `threshold = None`, `failures = ()`, `polish = None`,
-  `sources_down_since = None` (cel), `tsukihime_id = None`, `traits = None`; `tried`, receipt,
+  `sources_down_since = None` (cel), `tsukihime_id = None`, `mapping_tvdb_season = None`, `traits = None`; `tried`, receipt,
   `legacy_orders`, `removed_subscription` bez zmian; `transfer_stall_s == 1800` → `600`, inna
   wartość zostaje.
 - Wersjonowane dekodowanie przed ścisłą walidacją: `_decode_target` (:1122), `_decode_subscription`
@@ -1409,7 +1528,8 @@ i dwa cele jednej subskrypcji mogą mieć przeciwne wyniki.
 Dopisywanie bez zmiany poprzednich wpisów; nowe klucze w `_FIELDS` (`acquisition_decisions.py:45`):
 `sources` (stan każdego źródła), `candidates[]` z `quality`, `confidence`, `conflict`, `verdict`,
 `pack`, `after_metadata`; `polish_history` (`state`, `evidence`: `local` / `tsukihime` / `none`),
-`blocker`; przy „Pobierz teraz” `action = "skip_polish_wait"`. Bez nazw plików z dysku i URL-i.
+`blocker`; `numbering` celu: `anilist` / `anidb` / `none` / `duplicate` / `tvdb_season` (spec A §3.5:
+źródło numeracji albo powód jej braku); przy „Pobierz teraz” `action = "skip_polish_wait"`. Bez nazw plików z dysku i URL-i.
 
 ### 6.7 Miejsca zależne od decyzji O-x
 
@@ -1441,7 +1561,16 @@ fixtury w repo, raport niewiadomych w `docs/work/acquisition/a1-recon.md`.
 `TitleCandidate.country` z `countryOfOrigin`. Zachowanie: bez zmian widocznych.
 
 **K2. H1: nazwa wydania i konflikt.** `classify_release_name`, `CONFLICT_REASONS`, `is_conflict`
-(każdy `MISMATCH` + `INSUFFICIENT` z listy, §5.3), `conflict_label`; goldeny bez edycji.
+(każdy `MISMATCH` + `INSUFFICIENT` z listy, §5.3), `conflict_label`; goldeny bez edycji poza O7.
+**O7 (`a1-recon.md` §7, §8):** w `classify_release_name` i/lub `classify` jawny konflikt
+sezonu/odcinka (`_identity_conflict`, `episode_identity.py:635–640`) jest rozpoznany przed odrzuceniem
+„Unconsumed filename text…” (:1260–1265): 154587-1 (`[FrixySubs] … S02E01`) i 140960-12 (`… S02E12`
+VARYG) dają konflikt; token `DUAL` (`.DUAL-VARYG`, 154587-28) to metadana techniczna. Inne werdykty
+bez rozluźnienia: 213805-1 (brak numeracji), 210031-13 (sprzeczny tytuł), 204389-2 (mapowanie)
+zostają jak są. Zmiana werdyktu goldena tylko procedurą `e1-integracja.md` §10.6.
+**D2 (spec A §3.5, §5.3 „Cel bez numeracji”):** powód `Mapped numbering cannot be checked without
+target numbering.` poza `CONFLICT_REASONS` przy celu bez `season`; testy
+`test_entry_title_local_number_without_numbering`, `test_sxxexx_without_numbering_stays_uncertain`.
 
 **K3. Pewność.** `identity_evidence(target, candidate)`, `episode_confidence`, fixtury modelu
 i przypadków (z różnicami filename/path/release i bez pliku).
@@ -1449,7 +1578,9 @@ i przypadków (z różnicami filename/path/release i bez pliku).
 **K4. Jakość.** `release_quality` w całości (deklaracje per plik, dubbing, klasy, punkty, donghua).
 
 **K5. Scalanie.** `ReleaseFile` z oryginalnymi `path`/`filename`/`file_index` (§5.4),
-`merge_releases` z deklaracjami plików, `_attach_torrentio_file`, `is_pack`.
+`merge_releases` z deklaracjami plików, `_attach_torrentio_file`, `is_pack`. **O8 (`a1-recon.md`
+§7, §8):** `names.py:67–69` `_SEASON_ONLY_RE` rozpoznaje `S01` przed blokiem `[1080p …]` jako
+sezon bez odcinka → paczka (`[ZigZag] Bocchi the Rock! S01 …`, `[Breeze] Frieren … S01 …`).
 
 **K6. Ranking listy + wszyscy konsumenci (uwaga 5).** Nowy `RankedCandidate`, `rank_candidates`
 na `EpisodeRelease`, `streams_releases`, `representative`, `list_order`, `visible`, `suggestion`;
@@ -1468,11 +1599,16 @@ z §5.9 (w tym `test_deadline_caller_times_out_while_transport_hangs`, `test_fol
 
 **K8. Adaptery.** `tsukihime.py` (z plikami i statusami `TsukiHimeLookup`), `knaben.py`, `nekobt.py`
 (`PagedSource`, `TextPage`), `source` w Torrentio, przyczyna `HTTPStatusError` w `nyaa.py:161–162`;
-testy na fixturach z K0 przez `httpx.MockTransport`.
+testy na fixturach z K0 przez `httpx.MockTransport`. Według `a1-recon.md` §3 i §8: Knaben GET
+z hashem małymi literami (O1); btih `200` z kompletnym `files` (`len(files) == filecount`) = spis bez drugiego GET, krótsze → `/torrents/{id}`, tam też krótsze → brak spisu; `202` = `PENDING` z ID
+(O2, O3); odcinki TsukiHime `offset` → `start`, `limit` 100 (O4); nekoBT blok `{Tags:…}` (O5).
 
 **K9. Wyszukiwanie ręczne i `D`.** `episode_search.py` (kontrakt źródeł §5.7: Nyaa per kategoria
 i `_release_stream`, `failure_kind`, kompletność, TsukiHime w jednej wizycie, snapshot po 3 s, brak
-numeracji z `ListingRead`, frazy, limity czasu, `_ListingCache`, kolejka w porządku `list_order`),
+numeracji z `ListingRead`, frazy, limity czasu, `_ListingCache`, kolejka w porządku `list_order`;
+frazy wg spec A §3.1 po decyzjach 2026-10-06: `S01E{NN}` w sezonie 1 TV (W1), OVA/SPECIAL bez
+`S{ss}E{NN}` z pełnym podtytułem (W2), `{ss}` z grafu franczyzy bez zapytań AniList (O6) —
+`a1-recon.md` §2 (Frazy), N-5, §4, §6, §8),
 `AcquisitionService.search_episode` dla oferty (`automation.py:4878`), `D` (:5140) i `offer` (:8383); `read_listing` bez wyjątku przy braku numeracji (§5.9, F);
 pola ustawień i `SettingSpec` o `setting_id` = nazwa pola (§6.5); wiring w `bootstrap.py`.
 Subskrypcja dalej przez `prepare_episode` (`automation.py:3781`) do K12. Testy:
@@ -1483,6 +1619,21 @@ Subskrypcja dalej przez `prepare_episode` (`automation.py:3781`) do K12. Testy:
 `test_source_switch_through_settings_api_reaches_owner`. Zachowanie: lista i `D` z pięciu źródeł
 z wierszami stanu; przełączniki działają bez restartu. Na żywo: właściciel otwiera listę odcinka
 i przełącza źródło.
+
+**K9b. Numeracja i mosty ID (spec A §3.1, §3.5 D1–D3).** Adaptery `services/catalog/arm.py`
+(`ArmCatalog.ids`), `services/catalog/kitsu.py` (`KitsuCatalog.kitsu_id` z kontrolą zwrotną),
+`AniZipCatalog.mapping_by_anidb`; dostawcy `arm` i `kitsu` w `http_requests._provider`;
+`_bridged_mapping` w `read_listing`, `ListingRead.tvdb_season` i `numbering_source`, `read_listing(..., targets)` z pominięciem pamięci (§5.9);
+`numbering_gap` (film pomijany, `test_numbering_gap_skips_movie`) i `identity_target(..., numbering)` (§5.5); `EpisodeRequest.numbering` per
+odcinek (§5.7); wiring w `bootstrap.py`. Dogranie do zestawu wzorcowego odpowiedzi arm-server,
+ani.zip po AniDB i Kitsu mappings przypadków 213805-1, 204389-1, 204389-2, 210031-1 tym samym
+`scripts/tmp/a1_record_reference.py` (§9.1). Oczekiwanie 213805-1 zmienia się: cel dostaje S02E01
+z AniDB, więc wydania `S02E01` mogą być zgodne. Orkiestrator wylicza nową propozycję jak w K0
+(`a1-recon.md` §10 ma tylko cel z grafu, `06e78bb8`, nie cel z AniDB) — **właściciel potwierdza ją
+przed commitem K9b.** Testy: z §5.5 i §5.9 („mosty numeracji i ID”), `test_arm.py`, `test_kitsu.py`,
+`test_anizip.py::test_mapping_by_anidb`. Zachowanie: lista 213805 ma numerację S02E01, a 210031
+wiersz Torrentio; odcinek 2 z 204389 pokazuje „brak numeracji”, a odcinek 1 ma numerację. Na żywo: właściciel otwiera
+listę 213805-1.
 
 **K10. UI listy.** Kolumny Jakość i Pewność, powód konfliktu, szczegóły z notą kalibracji.
 
@@ -1499,7 +1650,7 @@ wyszukiwania.
 **K11. Schemat 5.** Pola §6.1 (w tym `SubscriptionTarget.sources_down_since`), migracja §6.2
 (bajty legacy tylko do kopii, kopia warunkiem zapisu, wersjonowane receipt), `excluded`,
 `ChoiceTraits` zapisywane w `_episode_choice`, U-22 w całości (inwariant rekordu i `read_listing`), konflikt numeracji niezależny od Kitsu
-w `merge_listing` (§5.9, testy `test_numbering_change_*`, `test_numbering_conflict_blocks_attempts_after_restart`),
+w `merge_listing` (§5.9, testy `test_numbering_change_*`, `test_numbering_conflict_blocks_attempts_after_restart`; uzupełnienie z braku i naprawa sprzecznej bez konfliktu przez `numbering_gap` z K9b: `test_numbering_filled_from_none_not_conflict`, `test_duplicate_repaired_not_conflict`, `test_numbering_filled_after_restart_not_conflict`; `SubscriptionRecord.mapping_tvdb_season` (§6.1), scenariusze A/B: `test_saved_season_mismatch_then_fixed_without_bridge_not_conflict`, `test_saved_numbering_change_with_new_bridge_season_is_conflict`, `test_bridge_season_scenarios_after_restart`),
 `stall_s = 600`. Zachowanie: subskrypcje działają jak dotąd na nowym schemacie. Na żywo: rezydent
 na kopii stanu właściciela (§6.2).
 
@@ -1507,7 +1658,8 @@ na kopii stanu właściciela (§6.2).
 z budżetem §3.1, `_FastCache`, `_PulledCache`, `completion_order`, trwałe `failures`;
 `AcquisitionService.subscription_check` zastępuje `prepare_episode` w `_check_subscriptions`
 (:3781); wybór w `_subscription_outcome` z `protected_files` zamiast `_taken_pairs` (uwaga 11),
-przyjęcie w `_admit_attempt` (`started`); `Blocker.NO_NUMBERING`; usunięte `eligible`,
+przyjęcie w `_admit_attempt` (`started`); cel bez numeracji przechodzi zwykły wybór (spec A §3.5 D2,
+bez osobnego blokera; `test_no_numbering_decides_on_entry_title`, `test_numbering_appears_on_next_check`); usunięte `eligible`,
 `candidate_pair`, `_taken_pairs`, `prepare_episode`, gałąź `T_niepewny`; `sources_down` per cel
 ustawiane i czyszczone (bez powiadomienia — K15); czysta reguła `replacement` z testami i opisanym
 punktem podpięcia dla E4 (§5.12).
@@ -1539,7 +1691,9 @@ w `decisions.jsonl`, po restarcie rezydenta cel nie wraca do czekania.
 **K15. Powiadomienia i rejestr.** §8 przez `NotificationKey`, w tym §6.4; pola rejestru §6.6.
 
 **K16. Zestaw wzorcowy, pokrycie i odbiór.** `test_acquisition_reference.py` (§9); aktualizacja
-AGENTS.md. Odbiór właściciela na żywo w `uv run anishift`.
+AGENTS.md. Odbiór właściciela na żywo w `uv run anishift`. Replay (O9, `a1-recon.md` §1 „Format
+fixtury”, §2): `MockTransport` ustawia `content-type` według źródła (XML dla Nyaa i nekoBT, JSON dla reszty);
+replay ręczny i subskrypcyjny mają osobne zestawy dozwolonych zapytań. Fixtury ~17 MB w całości (W3).
 
 ## 8. Graf zależności
 
@@ -1549,7 +1703,8 @@ K0 ─► K1 ─┬─► K2 ─► K3 ───────────┐
           └─► K7 ─► K8 ───────────┘             └─► K11 ─────────┴─► K12 ─► K13 ─► K14 ─► K15 ─► K16
 ```
 
-K6 wymaga K3 i K5; K9 wymaga K6 i K8; K12 wymaga K10b i K11 (wspólne fragmenty `automation.py`
+K6 wymaga K3 i K5; K9 wymaga K6 i K8; K9b wymaga K2 i K9 i stoi między K9 a K10/K11 (K10, K11
+i dalsze wymagają K9b); K12 wymaga K10b i K11 (wspólne fragmenty `automation.py`
 i `EpisodeOfferView`).
 
 Strumienie (najwyżej 2 naraz):
@@ -1558,14 +1713,17 @@ Strumienie (najwyżej 2 naraz):
 | --- | --- | --- |
 | po K1 | K2 → K3 | K4 → K5 |
 | po K3 i K5 | K7 → K8 | K6 |
-| po K9 | K10 → K10b (CLI, IPC, oferta w `automation.py` :4851–4995) | K11 (schemat, migracja, `_episode_choice`) |
+| po K9b | K10 → K10b (CLI, IPC, oferta w `automation.py` :4851–4995) | K11 (schemat, migracja, `_episode_choice`) |
 | od K12 | sekwencyjnie (wspólne `_check_subscriptions`, `_settled_target`) | — |
 
 ## 9. Zestaw wzorcowy
 
 ### 9.1 Miejsce i format
 
-`tests/fixtures/acquisition/reference/<anilist_id>-<number>.json`:
+`tests/fixtures/acquisition/reference/<anilist_id>-<number>.json.gz` — JSON spakowany gzipem
+(`mtime=0`), bo hook `check-added-large-files` odrzuca pliki powyżej 500 KB; testy czytają go przez
+`gzip.decompress`. Tak samo `expectations.json.gz`, `coverage-baseline.json.gz`,
+`recording-log.json.gz` i `probes/n2.json.gz`:
 
 ```json
 {
@@ -1580,8 +1738,9 @@ Strumienie (najwyżej 2 naraz):
 Odtworzenie przez `httpx.MockTransport` po (metoda, URL, treść POST); brak odpowiedzi = błąd testu.
 `expectations.json`: `{"<case>": {"top3": [hash, hash, hash], "automatic": {"hash": "...|null",
 "reason": "..."}, "confirmed_by_owner": true}}`. Skrypt nagrywający: `scripts/tmp/a1_record_reference.py`
-(katalog jednorazowych skryptów z mapy repo); fixtury śledzone w git. Rozmiar mierzony w K0;
-powyżej 10 MB łącznie właściciel decyduje o przycięciu odpowiedzi do wierszy pasujących do fraz.
+(katalog jednorazowych skryptów z mapy repo); fixtury śledzone w git. Rozmiar zmierzony w K0:
+~17 MB; decyzja właściciela 2026-10-06 (W3): fixtury zostają w całości, bez przycinania; pola
+`links`/`links_audio` w treściach TsukiHime są zastępowane przy nagraniu (`a1-recon.md` §1, §2 „Sanityzacja”).
 
 ### 9.2 Przypadki
 
@@ -1619,7 +1778,7 @@ powyżej 10 MB łącznie właściciel decyduje o przycięciu odpowiedzi do wiers
   treści), a hasha w nim nie ma. Awaria, `429`, cooldown, `202`, deadline albo niepełna odpowiedź
   dają `unverified`, nie `gone`. `coverage-baseline.json` zapisuje `gone` z dowodem (źródło, zapytanie,
   `total`, liczba stron) i `unverified` osobno.
-- **Decyzja:** spadek > 5 pp (bramka < 95%) wymaga decyzji właściciela przed odbiorem (spec A §9:243),
+- **Decyzja:** spadek > 5 pp (bramka < 95%) wymaga decyzji właściciela przed odbiorem (spec A §9:253),
   **także** gdy pokrycie diagnostyczne pokazuje, że spadek wyjaśnia zanik wydań; raport per
   przypadek i per źródło podaje obie liczby.
 - **Testy:** `test_reference_coverage_gate_against_640`; `test_coverage_diagnostic_excludes_only_proven_gone`
@@ -1646,21 +1805,33 @@ powyżej 10 MB łącznie właściciel decyduje o przycięciu odpowiedzi do wiers
 | otwarta oferta trzyma martwy kanał katalogu po restarcie rezydenta | `test_catalog_session_closed_expires_offer` | następne `get` dostaje `connection_lost` → `_drop` → „Oferta wygasła” |
 | przypisanie bez znanej ścieżki chroni cały hash i blokuje inny plik tego wydania | `test_protected_unbound_assignment_protects_hash` | świadomie zachowawcze do poznania pliku („lepiej nie pobrać”); po metadanych ochrona zawęża się do ścieżki |
 | Nyaa per kategoria zmienia liczbę żądań | `test_nyaa_queries_both_categories`, liczniki `RequestControl.counts` | tyle samo żądań co `search_releases` (jedno na kategorię); budżet §3.1 bez zmian |
-| fixtury za duże | pomiar w K0 | decyzja właściciela o przycięciu |
+| arm-server (pochodna Fribb, odświeżana ok. co 24 h, bez opublikowanego limitu) opóźnia albo gubi most; dla 204389 nie ma TVDB | `test_bridge_failure_keeps_anilist_mapping`, liczniki `RequestControl.counts` dla `arm` | błąd odbiera tylko most: zostaje numeracja z ani.zip po AniList; `tvdb_season = None` wyłącza tylko kontrolę sezonu (duplikat S/E 204389 nadal wykryty); `429` przez `RequestControl` |
+| sezon TVDB z mostu różni się od ani.zip bez realnej sprzeczności | `test_numbering_gap_tvdb_season`, rejestr `numbering = tvdb_season` | bezpieczne: odcinek bez numeracji, automat przyjmuje tylko tytuł wpisu z numerem lokalnym (spec A §3.5 D2) |
+| fixtury za duże | pomiar w K0: ~17 MB | rozstrzygnięte (W3): zostają w całości, `links`/`links_audio` zastępowane przy nagraniu |
 | pokrycie < 95% względem 640 | K16 | decyzja właściciela przed odbiorem (spec A §9), także przy spadku wyjaśnionym zanikiem |
 | wątki fan-outu i puli `RequestControl` a `ContextVar` scope | `test_budget_through_both_pools` | scope otwierany w wątku źródła; pula `RequestControl` przez `copy_context().run` |
 | pełny odczyt stanów odcinków przy dużej subskrypcji: do ~20 porcji `episode_states` przy 2000 celów na każdą zmianę `subscriptions_revision` | `test_subscriptions_revision_changes_only_on_target_state`, liczba wywołań w `test_polish_state_refreshes_on_revision` | zachowanie istniejące: pełny odczyt następuje przy każdej zmianie payloadu statusu (także postęp transferu co 1 s), jak przed A1; A1 dodaje tylko odczyty przy zmianie stanu celów; przy odczuwalnym koszcie — osobna zmiana odczytu stronicowanego |
 
 ### 10.2 Niewiadome (sprawdzane w K0)
 
-- N-1: kształt `/torrents/btih/{btih}` TsukiHime (pole ID torrenta, `404` przy braku, `202`).
-- N-2: stronicowanie `/animes/{id}/episodes/{n}` przy `limit=100` (`total`, `offset`).
-- N-3: Knaben v2 — metoda, nazwy pól (`hash`, `title`, `seeders`), rozmiar 300, `total.value`.
-- N-4: nekoBT torznab — położenie tagów `A=`/`F=`/`S=` i `{Tags:…}` z `HS`, `limit=100`, `offset`.
-- N-5: `{ss}` z `season_context` dla wszystkich przypadków zestawu (bez dodatkowych zapytań AniList).
-- N-6: czy `load_user_settings` uzupełnia brakujące pola bez podnoszenia `SETTINGS_SCHEMA_VERSION`.
-- N-8: `countryOfOrigin` w odpowiedzi AniList dla wpisów zestawu (CN dla co najmniej jednego
-  donghua, jeśli właściciel go wskaże).
+Wszystkie zamknięte w K0 (`a1-recon.md` §3); decyzje W1–W3 (właściciel) i O1–O9 (orkiestrator)
+z 2026-10-06 wpisane w kroki K2, K5, K8, K9, K16 i mapę §3.
+
+- N-1 (zamknięta): btih bez względu na wielkość liter; `404` przy braku; `200` z `id` i `files`
+  (78/78 list identycznych z `/torrents/{id}`); `202` z `id`, `filecount` i niepełnym `files` (11–16 z 28) → O2, O3.
+- N-2 (zamknięta): odpowiedź `{total, start, limit, results}`; parametr `offset` wraca jako `start`;
+  `limit` > 100 → `422` → O4.
+- N-3 (zamknięta): wyszukiwanie przez GET (`q`, `s`, `f`, `o=date`, `dead`), `hash` wielkimi
+  literami, `title`, `seeders`, `magnetUrl`, `total.value`; strony 300 → O1.
+- N-4 (zamknięta): blok `{Tags:…;A=…;F=…;S=…}` w sufiksie tytułu, flagi bez `=` (`HS`), sklejone
+  kody (`es419`, `frfr`, `ptbr`, `zhhans`), `seeders`/`infohash` w `torznab:attr`, `limit=100` +
+  `offset` → O5.
+- N-5 (zamknięta): indeks `season_context` zgodny z grafem franczyzy 21/21, ale wymaga 19 zapytań
+  AniList → O6; SPECIAL 194884 → W2.
+- N-6 (zamknięta): częściowy plik v3 uzupełniany wartościami domyślnymi, v2 migrowany, nieznane
+  klucze pomijane, schemat 4 odrzuca cały plik → nowe pola bez podnoszenia
+  `SETTINGS_SCHEMA_VERSION` (3).
+- N-8 (zamknięta): `countryOfOrigin` wraca; 101972 (Mo Dao Zu Shi) = `CN`, pozostałe `JP`.
 
 ## 11. Odchylenia i blokery
 
