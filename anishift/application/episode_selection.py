@@ -12,6 +12,7 @@ from typing import Any, Final
 
 from anishift.application.discovery import VIDEO_SOURCE_SUFFIXES
 from anishift.application.episode_identity import IdentityAssessment, IdentityVerdict, classify_many
+from anishift.application.release_quality import resolution, resolution_class
 
 __all__ = [
     "AniZipMapping",
@@ -92,30 +93,6 @@ _VERDICT_ORDER: Final[Mapping[IdentityVerdict, int]] = MappingProxyType(
 
 _SUGGESTED_VERDICTS: Final[tuple[IdentityVerdict, ...]] = (IdentityVerdict.MATCH, IdentityVerdict.INSUFFICIENT)
 """Verdicts that may become a suggestion, in order of preference."""
-
-_PREFERRED_RESOLUTIONS: Final[Mapping[int, int]] = MappingProxyType({1080: 0, 2160: 1, 720: 2})
-"""Owner order of the preferred resolution heights."""
-
-_OTHER_RESOLUTION_RANK: Final[int] = 3
-"""Rank of a known height outside the preferred ones, refined by its distance from the reference height."""
-
-_UNKNOWN_RESOLUTION_RANK: Final[int] = 4
-"""Rank of a stream without one declared height."""
-
-_REFERENCE_HEIGHT: Final[int] = 1080
-"""Height closest to which other known resolutions are preferred."""
-
-_RESOLUTION_HEIGHT: Final[re.Pattern[str]] = re.compile(r"(?i)(?<!\d)(360|480|576|720|1080|1440|2160)[pi]\b")
-"""Declared height written as a progressive or interlaced resolution."""
-
-_RESOLUTION_FRAME: Final[re.Pattern[str]] = re.compile(r"(?i)\b\d{3,4}[x×](360|480|576|720|1080|1440|2160)\b")
-"""Declared height written as a frame size."""
-
-_RESOLUTION_4K: Final[re.Pattern[str]] = re.compile(r"(?i)\b4k\b")
-"""Declared 4K resolution."""
-
-_HEIGHT_4K: Final[int] = 2160
-"""Height meant by a 4K declaration."""
 
 _POLISH: Final[re.Pattern[str]] = re.compile(r"(?i)\b(?:polish|polski|polskie|polska|pol|pl)\b")
 """Polish language token in a release name, path or tag."""
@@ -425,7 +402,7 @@ def release_facts(stream: StreamCandidate) -> ReleaseFacts:
     labels: tuple[str, ...] = (*names, *stream.tags)
     container: str | None = _container(stream.file_name)
     return ReleaseFacts(
-        resolution=_resolution((*raw_names, stream.name or "")),
+        resolution=resolution((*raw_names, stream.name or "")),
         polish=_POLISH_FLAG in stream.tags or any(_POLISH.search(text) for text in labels),
         multisub=any(_MULTISUB.search(text) for text in labels),
         platform=next(
@@ -604,24 +581,6 @@ def _episode_aired(number: int, anilist_date: datetime | None, aired: int | None
     return aired is not None and number <= aired
 
 
-def _resolution(texts: Sequence[str]) -> int | None:
-    heights: set[int] = set()
-    for text in texts:
-        heights.update(int(value) for value in _RESOLUTION_HEIGHT.findall(text))
-        heights.update(int(value) for value in _RESOLUTION_FRAME.findall(text))
-        if _RESOLUTION_4K.search(text):
-            heights.add(_HEIGHT_4K)
-    return next(iter(heights)) if len(heights) == 1 else None
-
-
-def _resolution_class(height: int | None) -> tuple[int, int]:
-    if height is None:
-        return _UNKNOWN_RESOLUTION_RANK, 0
-    if height in _PREFERRED_RESOLUTIONS:
-        return _PREFERRED_RESOLUTIONS[height], 0
-    return _OTHER_RESOLUTION_RANK, abs(height - _REFERENCE_HEIGHT)
-
-
 def _container(file_name: str | None) -> str | None:
     found: re.Match[str] | None = _CONTAINER.search(file_name or "")
     return f".{found.group(1).casefold()}" if found else None
@@ -634,7 +593,7 @@ def _rank_key(candidate: RankedCandidate) -> tuple[int, bool, bool, tuple[int, i
         _VERDICT_ORDER[candidate.identity.verdict],
         facts.supported is False,
         facts.dub_only,
-        _resolution_class(facts.resolution),
+        resolution_class(facts.resolution),
         not facts.polish,
         not facts.multisub,
         facts.platform is None,

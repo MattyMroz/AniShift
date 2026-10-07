@@ -6,6 +6,7 @@ import re
 from decimal import Decimal
 from typing import Final
 
+from anishift.application.release_quality import DUBBED_RE
 from anishift.services.torrents.types import ReleaseName
 
 __all__ = ["base_title", "parse_release_name", "season_hint", "strip_season", "title_forms"]
@@ -87,9 +88,6 @@ _FRENCH_RE: Final[re.Pattern[str]] = re.compile(r"(?<!\w)(?:VOSTFR|SUBFRENCH|FRE
 _MULTI_RE: Final[re.Pattern[str]] = re.compile(r"(?<!\w)(?:MultiSub|Multi-Subs|Multi Sub|MULTi)(?!\w)", re.IGNORECASE)
 """Markers of a release carrying several subtitle languages."""
 
-_DUBBED_RE: Final[re.Pattern[str]] = re.compile(r"\[Dub\]|(?<!\w)(?:(?:English|Eng)\s+Dub|Dubbed)(?!\w)", re.IGNORECASE)
-"""Markers of a dubbed audio track; ``Dual-Audio`` alone does not qualify."""
-
 _FRENCH_SUBTITLES: Final[str] = "fr"
 """Subtitle language reported for a French release."""
 
@@ -136,7 +134,7 @@ def parse_release_name(title: str) -> ReleaseName:
         batch=_is_batch(remainder),
         version=version,
         subtitle_language=_subtitle_language(remainder),
-        dubbed=_DUBBED_RE.search(remainder) is not None,
+        dubbed=DUBBED_RE.search(remainder) is not None,
     )
 
 
