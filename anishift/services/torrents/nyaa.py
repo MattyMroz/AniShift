@@ -159,7 +159,9 @@ def _search_category(
     except httpx.HTTPError as error:
         raise _source_error(_SourceFailure.UNREACHABLE) from error
     if response.status_code != HTTPStatus.OK:
-        raise _source_error(_SourceFailure.REJECTED)
+        raise _source_error(_SourceFailure.REJECTED) from httpx.HTTPStatusError(
+            "Nyaa rejected the search", request=response.request, response=response
+        )
     if len(response.content) > MAX_BODY_BYTES:
         raise _source_error(_SourceFailure.OVERSIZED)
     content_type: str = response.headers.get("content-type", "").lower()

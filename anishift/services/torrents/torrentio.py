@@ -102,6 +102,7 @@ def _stream(raw: object) -> StreamCandidate:
     if not isinstance(sources, list) or any(not isinstance(source, str) for source in sources):
         raise _source_error()
     return StreamCandidate(
+        source="torrentio",
         info_hash=info_hash.lower(),
         name=_text(raw.get("name")),
         file_index=index if type(index) is int else None,
