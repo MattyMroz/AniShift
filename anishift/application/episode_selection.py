@@ -6,6 +6,7 @@ import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Final
 
@@ -24,6 +25,7 @@ from anishift.application.release_quality import ReleaseTraits, class_key, quali
 
 __all__ = [
     "AniZipMapping",
+    "CandidateNumbering",
     "EntryGroup",
     "EpisodeKey",
     "EpisodeListing",
@@ -244,6 +246,22 @@ class EpisodeKey:
 
 
 @dataclass(frozen=True, slots=True)
+class CandidateNumbering:
+    """Expose only the parsed and target numbers needed to explain a release row."""
+
+    mode: str
+    season: int | None
+    number: Decimal | None
+    part: int | None
+    local: int | None
+    episode: int | None
+    absolute: int | None
+    target_season: int | None
+    named_season: int | None
+    target_part: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class RankedCandidate:
     """One release row assessed on its representative file, with quality, confidence and usability."""
 
@@ -257,6 +275,7 @@ class RankedCandidate:
     release_name_only: bool
     supported: bool | None
     files: tuple[str, ...]
+    numbering: CandidateNumbering | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -650,6 +669,18 @@ def _ranked(target: Mapping[str, object], release: EpisodeRelease, *, donghua: b
         release_name_only=not assessed,
         supported=None if container is None else container in VIDEO_SOURCE_SUFFIXES,
         files=tuple(scope for item in release.files if (scope := item.scope) is not None),
+        numbering=CandidateNumbering(
+            mode=evidence.mode,
+            season=evidence.season,
+            number=evidence.number,
+            part=evidence.part,
+            local=evidence.local,
+            episode=evidence.episode,
+            absolute=evidence.absolute,
+            target_season=evidence.target_season,
+            named_season=evidence.named_season,
+            target_part=evidence.target_part,
+        ),
     )
 
 

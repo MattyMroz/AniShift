@@ -74,6 +74,8 @@ class AnimeRow:
     uncertain: bool = False
     navigable: bool = True
     refusal_text: str = ""
+    quality: str = ""
+    confidence: str = ""
 
     @property
     def copy_text(self) -> str:
@@ -91,6 +93,8 @@ class AnimeRow:
                 self.seeds,
                 self.progress,
                 self.ready,
+                f"Jakość: {self.quality}" if self.quality else "",
+                f"Pewność: {self.confidence}" if self.confidence else "",
             )
             if value
         )

@@ -57,9 +57,10 @@ from anishift.application import (
 )
 from anishift.application.acquisition import catalog_releases
 from anishift.application.cancellation import EventCancellationToken
+from anishift.application.control_views import decode_view, encode_view
 from anishift.application.episode_commands import EpisodeResult
 from anishift.application.episode_identity import REASONS
-from anishift.application.episode_selection import AniZipMapping, episode_listing
+from anishift.application.episode_selection import AniZipMapping, episode_listing, rank_candidates, streams_releases
 from anishift.application.planning import ExecutionPlan
 from anishift.application.release_quality import AudioClass
 from anishift.application.scheduler_contracts import TaskHandler
@@ -115,12 +116,17 @@ def _listing() -> EpisodeListing:
 def _candidate(verdict: IdentityVerdict = IdentityVerdict.MATCH, resolution: int | None = 1080) -> RankedCandidate:
     return RankedCandidate(
         StreamCandidate("a" * 40, None, None, "Slime - 04.mkv", "[Group] Slime - 04", None, None, None, None, (), ()),
-        IdentityAssessment(verdict, "No selected file."),
+        IdentityAssessment(
+            verdict,
+            "Explicit mapped episode differs from target."
+            if verdict is IdentityVerdict.MISMATCH
+            else "No selected file.",
+        ),
         ReleaseTraits(
             PolishClass.NONE, False, False, AudioClass.ORIGINAL, False, False, False, resolution, False, False, None
         ),
         quality=0.0,
-        confidence=None,
+        confidence=None if verdict is IdentityVerdict.MISMATCH else 0.954,
         conflict=verdict is IdentityVerdict.MISMATCH,
         ambiguous=False,
         release_name_only=False,
@@ -218,6 +224,129 @@ def _at(controller: AnimeController) -> _Screen:
 def test_all_frozen_identity_reasons_have_polish_texts() -> None:
     assert set(_REASON_TEXTS) == REASONS
     assert all(text and text != reason for reason, text in _REASON_TEXTS.items())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("source", ["torrentio", "tsukihime", "nyaa", "knaben", "nekobt"])
+def test_offer_row_has_no_source_column(source: str) -> None:
+    catalog: _Catalog = _Catalog()
+    item: RankedCandidate = replace(_candidate(), quality=68.7, stream=replace(_candidate().stream, source=source))
+    catalog.offer_read = lambda key: _offer(key, (item,))
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+    for key in ("text:i", "text:i"):
+        _key(controller, key)
+        frame: str = _frame(controller)
+        assert "Źródło" not in frame
+        assert source not in frame.casefold()
+        assert controller._view.items[0].quality == "69"
+        assert controller._view.items[0].confidence == "95%"
+
+
+@pytest.mark.unit
+def test_uncertain_mark() -> None:
+    catalog: _Catalog = _Catalog()
+    other: RankedCandidate = replace(
+        _candidate(IdentityVerdict.INSUFFICIENT), stream=replace(_candidate().stream, info_hash="b" * 40)
+    )
+    catalog.offer_read = lambda key: _offer(key, (_candidate(IdentityVerdict.INSUFFICIENT), other, _candidate()))
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+    for key in ("text:i", "text:i"):
+        _key(controller, key)
+        frame: str = _frame(controller)
+        assert "*!" in frame
+        assert "95% · niepewne" in frame
+        assert controller._view.items[0].suggested
+    assert [item.confidence for item in controller._view.items] == ["95% · niepewne", "95%", "95%"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("name", "label"), [("Slime S01E04.mkv", "inny sezon"), ("Slime S02E05.mkv", "inny odcinek")])
+def test_conflict_row_shows_reason(name: str, label: str) -> None:
+    target: dict[str, object] = {
+        "aliases": ["Slime"],
+        "type": "TV",
+        "local_episode": 4,
+        "season": 2,
+        "episode": 4,
+        "absolute": 28,
+    }
+    stream: StreamCandidate = replace(_candidate().stream, file_name=name, release=name)
+    item: RankedCandidate = rank_candidates(
+        target,
+        streams_releases((stream,), pack_name=lambda name: parse_release_name(name).is_pack),
+        donghua=False,
+    )[0]
+    assert item.conflict
+    offer: EpisodeOffer = _offer(EpisodeKey(1, 4), (item,))
+    offer = decode_view(EpisodeOffer, encode_view(offer))
+    assert offer.candidates[0].numbering == item.numbering
+    assert set(encode_view(item.numbering)) == {
+        "mode",
+        "season",
+        "number",
+        "part",
+        "local",
+        "episode",
+        "absolute",
+        "target_season",
+        "named_season",
+        "target_part",
+    }
+    assert "evidence" not in encode_view(offer.candidates[0])
+    catalog: _Catalog = _Catalog()
+    catalog.offer_read = lambda _: offer
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+    for key in ("text:i", "text:i"):
+        _key(controller, key)
+    frame: str = _frame(controller)
+    assert label in frame
+    assert "%" not in frame
+    assert controller._view.items[0].confidence == label
+    _key(controller, "text:?")
+    details: str = " ".join(_frame(controller).split())
+    assert "Odczyt H1 (S/E): sezon" in details
+    assert "Cel: lokalny 4; S/E: sezon 2, odcinek 4; absolutny 28" in details
+    assert ("sezon 1, odcinek 4" if label == "inny sezon" else "sezon 2, odcinek 5") in details
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("release_only", [False, True])
+def test_details_confidence_uncalibrated_note(release_only: bool) -> None:
+    catalog: _Catalog = _Catalog()
+    item: RankedCandidate = replace(
+        _candidate(),
+        release_name_only=release_only,
+        stream=replace(_candidate().stream, file_name=None if release_only else "Slime - 04.mkv"),
+    )
+    catalog.offer_read = lambda key: _offer(key, (item,))
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+    for key in ("text:i", "text:i", "text:?"):
+        _key(controller, key)
+    frames: list[str] = []
+    for _ in range(30):
+        frames.append(" ".join(controller.render(50, 12).plain.split()))
+        _key(controller, "down")
+    text: str = " ".join(" ".join(item.title for item in controller._view.items).split())
+    assert "Kalibracja pewności potwierdzona tylko dla korpusu E1." in text
+    assert "Dla nowych źródeł i ocen bez nazwy pliku: estymata bez potwierdzonej kalibracji." in text
+    assert any("kalibracji." in frame for frame in frames)
+    assert ("· bez nazwy pliku ·" in text) is release_only
+
+
+@pytest.mark.unit
+def test_offer_without_numbering_shows_reason_on_both_release_screens() -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.offer_read = lambda key: replace(_offer(key), numbering=False, suggestion=None, status="brak numeracji")
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+    for key in ("text:i", "text:i"):
+        _key(controller, key)
+        assert "brak numeracji" in controller.render(50, 12).plain
+        assert not any(item.suggested for item in controller._view.items)
 
 
 @pytest.mark.unit
@@ -893,12 +1022,12 @@ def test_other_releases_always_show_aligned_seeds(width: int, unsupported: bool)
     lines: list[str] = controller.render(width, 40).plain.splitlines()
     header: str = next(line for line in lines if "Wydanie" in line and "Seedy" in line)
     known: str = next(line for line in lines if "321" in line)
-    unknown: str = next(line for line in lines if "[Group]" in line and "321" not in line)
+    unknown: str = lines[lines.index(known) + 1]
     assert header.index("Seedy") + 5 == known.index("321") + 3
     assert unknown[header.index("Seedy") + 4] == "?"
     if unsupported:
-        assert "PL" in known
-        assert "1080p" in known[header.index("Obraz") : header.index("Język")]
+        assert "PL · EN" in " ".join(lines)
+        assert "1080p" in " ".join(lines)
         assert "format nieobsługiwany" in controller._view.items[0].detail
     assert all(Text(line).cell_len <= width for line in lines)
 
@@ -920,16 +1049,21 @@ def test_release_views_keep_decision_columns_and_put_size_in_details(width: int,
     for key in ("text:i", "text:i"):
         _key(controller, key)
         lines: list[str] = controller.render(width, 24).plain.splitlines()
-        header: str = next(line for line in lines if "Obraz" in line)
-        assert "Seedy" in header
-        assert "Język" in header
+        header: str = next(line for line in lines if "Wydanie" in line)
+        assert "Jakość" in header
+        assert "Pewność" in header
         assert "Rozm" not in header
         assert "Tożsamość" not in header
         if controller._screen is _Screen.OFFER and verdict is IdentityVerdict.MISMATCH:
             continue
-        row: str = next(line for line in lines if "1080p" in line)
-        assert "PL" in row
-        assert "321" in row
+        row: str = lines[lines.index(header) + 1]
+        assert controller._view.items[0].image == "1080p"
+        assert controller._view.items[0].language == "PL · EN"
+        assert controller._view.items[0].seeds == "321"
+        displayed: str = " ".join(" ".join(lines).split())
+        assert "321" in displayed
+        assert "1080p" in displayed
+        assert "PL · EN" in displayed
         assert "Rozmiar: 1.4 GB" in controller._view.items[0].detail
         assert "indeks:" not in " ".join(lines)
         assert "platforma: —" not in " ".join(lines)
@@ -948,7 +1082,8 @@ def test_offer_columns_remain_fixed_when_language_changes() -> None:
     _open(controller)
     _key(controller, "text:i")
     lines: list[str] = controller.render(50, 24).plain.splitlines()
-    compact: str = next(line for line in lines if "Obraz" in line)
+    compact: str = next(line for line in lines if "Wydanie" in line)
+    assert "obraz 1080p · język —" in " ".join(lines)
     _key(controller, "text:?")
     assert "zgodny:" in controller.render(50, 24).plain
     _key(controller, "escape")
@@ -961,8 +1096,9 @@ def test_offer_columns_remain_fixed_when_language_changes() -> None:
     item = replace(item, traits=replace(item.traits, polish=PolishClass.POLISH, english_subtitles=True))
     _key(controller, "text:i")
     lines = controller.render(50, 24).plain.splitlines()
-    expanded: str = next(line for line in lines if "Obraz" in line)
-    assert expanded.index("Obraz") == compact.index("Obraz")
+    expanded: str = next(line for line in lines if "Wydanie" in line)
+    assert expanded == compact
+    assert "obraz 1080p · język PL · EN" in " ".join(lines)
     assert "PL" in "\n".join(lines)
     assert "321" in "\n".join(lines)
 
@@ -1169,7 +1305,7 @@ def test_offer_verdict_labels_uncertainty_and_empty_suggestion_are_explicit(verd
     _key(controller, "text:i")
     if verdict is IdentityVerdict.INSUFFICIENT:
         assert reason in _frame(controller)
-    assert "Brak wskazanego pliku." in _frame(controller)
+    assert ("inny odcinek" if verdict is IdentityVerdict.MISMATCH else "Brak wskazanego pliku.") in _frame(controller)
     assert "indeks:" not in _frame(controller)
 
 
@@ -1269,17 +1405,18 @@ def test_catalogue_headers_name_the_work_and_columns_align_at_both_widths(width:
     offers: list[str] = controller.render(width, 40).plain.splitlines()
     assert "Plik:" in controller._view.items[0].detail
     header = next(line for line in offers if "Wydanie" in line)
-    offered: str = next(line for line in offers if "1080p" in line)
-    assert header.index("Obraz") == offered.index("1080p")
+    offered: str = offers[offers.index(header) + 1]
+    assert "1080p" in " ".join(offers)
+    assert offered[header.index("Pewność") :].strip() == "95%"
     _key(controller, "text:i")
     candidates: list[str] = controller.render(width, 40).plain.splitlines()
     title: str = next(line for line in candidates if line.strip())
     assert "ANIME \u203a Slime" in title
     header = next(line for line in candidates if "Wydanie" in line and "Seedy" in line)
-    image_column: int = Text(header[: header.index("Obraz")]).cell_len
-    release_rows: list[str] = [line for line in candidates if "1080p" in line]
+    quality_column: int = Text(header[: header.index("Jakość")]).cell_len
+    release_rows: list[str] = candidates[candidates.index(header) + 1 : candidates.index(header) + 3]
     assert len(release_rows) == 2
-    assert all(Text(line[: line.index("1080p")]).cell_len == image_column for line in release_rows)
+    assert all(Text(line[: line.index("95%")]).cell_len == quality_column + 8 for line in release_rows)
     assert all(Text(line).cell_len <= width for line in candidates)
 
 

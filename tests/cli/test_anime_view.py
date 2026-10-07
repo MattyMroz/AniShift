@@ -198,9 +198,53 @@ def test_release_columns_keep_seeds_and_no_repeat_shortcut(width: int) -> None:
         replace(item, image="1080p", language="MultiSub", seeds="312") for item in rows()
     )
     frame: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", items), width, 24, 0)
-    assert "1080p  MultiSub         312" in frame.text.plain.splitlines()[frame.first_row + 2]
+    header: str = frame.text.plain.splitlines()[frame.first_row - 1]
+    assert "Seedy" in header
+    assert "312" in frame.text.plain.splitlines()[frame.first_row + 2]
+    assert "Jakość" in header
+    assert "Pewność" in header
     assert "P ponownie" not in frame.text.plain
     assert all(Text(line).cell_len == width for line in frame.text.plain.splitlines())
+
+
+@pytest.mark.parametrize("width", [50, 80, 120])
+@pytest.mark.parametrize(
+    "confidence", ["97%", "68% · niepewne", "inny sezon", "inny wariant montażu", "inny rodzaj materiału"]
+)
+def test_offer_columns_quality_confidence_last(width: int, confidence: str) -> None:
+    item: AnimeRow = AnimeRow(
+        "one",
+        "[Group] 日本e\u0301 - 04",
+        image="1080p",
+        language="PL · EN",
+        seeds="312",
+        quality="69",
+        confidence=confidence,
+        suggested=True,
+        uncertain=confidence == "68% · niepewne",
+    )
+    frame: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", (item,)), width, 24, 0)
+    lines: list[str] = frame.text.plain.splitlines()
+    header: str = lines[frame.first_row - 1]
+    row: str = lines[frame.first_row]
+    assert header.rstrip().endswith("Jakość  Pewność")
+    assert "69" in row
+    assert confidence in row or (width == 50 and row.rstrip().endswith("…"))
+    assert "*" in row
+    assert ("!" in row) is item.uncertain
+    assert all(Text(line).cell_len == width for line in lines)
+    copied: str = frame.selected_text((TextPoint(frame.first_row, 0), TextPoint(frame.first_row, width - 1)))
+    assert "69" in copied
+    assert "*" not in copied
+    assert "!" not in copied
+    assert item.copy_text.endswith(f"Jakość: 69 · Pewność: {confidence}")
+    displayed: str = " ".join(frame.text.plain.split())
+    assert "1080p" in displayed
+    assert "PL · EN" in displayed
+    assert "312" in displayed
+    assert confidence in displayed
+    if width == 120:
+        assert item.title in row
 
 
 @pytest.mark.parametrize("rows_count", [12, 24])
@@ -215,6 +259,35 @@ def test_narrow_episode_table_keeps_the_full_state_label(rows_count: int) -> Non
     assert all(Text(line).cell_len == 50 for line in lines)
 
 
+@pytest.mark.parametrize("height", [12, 24])
+def test_hidden_release_columns_follow_cursor_and_remain_copyable_at_fifty_columns(height: int) -> None:
+    first: AnimeRow = AnimeRow(
+        "one",
+        "[Group] Slime - 04 [1080p]",
+        image="1080p",
+        language="PL · EN",
+        seeds="321",
+        quality="69",
+        confidence="95% · niepewne",
+        detail="Details " * 40,
+    )
+    second: AnimeRow = replace(first, key="two", image="2160p", language="EN", seeds="?")
+    snapshot: AnimeSnapshot = AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", (first, second))
+    frame: AnimeFrame = render_anime(snapshot, 50, height, 0)
+    next_frame: AnimeFrame = render_anime(replace(snapshot, cursor=1), 50, height, 0)
+    lines: list[str] = frame.text.plain.splitlines()
+    next_lines: list[str] = next_frame.text.plain.splitlines()
+    footer: str = " ".join(" ".join(lines[-5:]).split())
+    next_footer: str = " ".join(" ".join(next_lines[-5:]).split())
+    assert "obraz 1080p · język PL · EN · seedy 321" in footer
+    assert "obraz 2160p · język EN · seedy ?" in next_footer
+    assert "Details" not in footer
+    assert frame.first_row == next_frame.first_row
+    assert lines[frame.first_row - 1] == next_lines[next_frame.first_row - 1]
+    assert frame.selected_text((TextPoint(height - 5, 0), TextPoint(height - 3, 49))).startswith("obraz 1080p")
+    assert all(Text(line).cell_len == 50 for line in lines)
+
+
 @pytest.mark.parametrize("width", [50, 80])
 def test_truncated_release_name_is_shown_in_full_without_moving_the_table(width: int) -> None:
     name: str = "[SubsPlease] Tensei shitara Slime Datta Ken - 01 (1080p) [ABCDEF12].mkv"
@@ -226,7 +299,7 @@ def test_truncated_release_name_is_shown_in_full_without_moving_the_table(width:
     assert name not in lines[frame.first_row]
     assert name in " ".join(" ".join(lines[frame.first_row + 1 :]).split())
     assert "Rozmiar: 1 GB" not in frame.text.plain
-    assert "Rozmiar: 1 GB" in plain.text.plain
+    assert "Rozmiar: 1 GB" in plain.text.plain or "język PL" in plain.text.plain
     assert frame.first_row == plain.first_row
     assert all(Text(line).cell_len == width for line in lines)
 

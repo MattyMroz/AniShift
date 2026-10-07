@@ -109,7 +109,9 @@ from anishift.application.episode_commands import (
     EpisodeResult,
     EpisodeStatus,
 )
+from anishift.application.episode_identity import conflict_label
 from anishift.application.episode_selection import (
+    CandidateNumbering,
     EntryGroup,
     EpisodeKey,
     EpisodeListing,
@@ -208,6 +210,7 @@ __all__ = [
     "AutomationPolicy",
     "BurnSubtitleProduct",
     "CancellationToken",
+    "CandidateNumbering",
     "CatalogOrder",
     "CheckResult",
     "ClientStatus",
@@ -325,6 +328,7 @@ __all__ = [
     "WorkflowTarget",
     "WorkspaceInspector",
     "anilist_date",
+    "conflict_label",
     "cut_point",
     "decode_view",
     "encode_intent",

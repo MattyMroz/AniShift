@@ -305,11 +305,19 @@ def _spec(screen: AnimeScreen) -> _Table:
         )
     if screen is AnimeScreen.RELEASES:
         return _Table(
-            ("Wydanie", "Obraz", "Język", "Seedy"),
-            lambda item: (item.title, item.image, item.language, item.seeds.rjust(5)),
+            ("Wydanie", "Obraz", "Język", "Seedy", "Jakość", "Pewność"),
+            lambda item: (
+                item.title,
+                item.image,
+                item.language,
+                item.seeds.rjust(5),
+                item.quality.rjust(6),
+                item.confidence,
+            ),
             8,
             0,
-            (0, 5, Text("PL · MultiSub").cell_len, 5),
+            (0, 5, Text("PL · MultiSub").cell_len, 5, 6, 7),
+            optional=(2, 1, 3),
         )
     if screen is AnimeScreen.SUBSCRIPTIONS:
         return _Table(
@@ -345,6 +353,8 @@ def _widths(snapshot: AnimeSnapshot, spec: _Table, limit: int, now: float) -> tu
             widths[position] = max(widths[position], Text(value).cell_len)
     if spec.status_width:
         widths[-1] = spec.status_width
+    if snapshot.screen is AnimeScreen.RELEASES:
+        widths[-1] = min(widths[-1], limit - spec.prefix - len("Wydanie") - len("Jakość") - 4)
     shown: list[int] = list(range(len(widths)))
     floor: list[int] = list(widths)
     floor[spec.title] = min(widths[spec.title], _TITLE_FLOOR)
@@ -406,7 +416,7 @@ def _item(  # noqa: PLR0913
             "brand_accent" if item.key in snapshot.selected else "gray",
         )
     if snapshot.screen is AnimeScreen.RELEASES:
-        canvas.put(row, 2, "!" if item.uncertain else "*" if item.suggested else " ", "warning")
+        canvas.put(row, 2, ("*" if item.suggested else " ") + ("!" if item.uncertain else " "), "warning")
     searching: bool = item.key in snapshot.searching
     values: list[str] = _values(snapshot, item, now)
     for position, start, width in columns:
@@ -466,10 +476,12 @@ def _footer(canvas: _Canvas, snapshot: AnimeSnapshot, keys: tuple[str, ...], tit
             snapshot.screen is AnimeScreen.RELEASES or not item.detail
         )
         notice = item.title if full_name else item.detail
-        if snapshot.screen is AnimeScreen.SUBSCRIPTIONS:
+        if snapshot.screen in {AnimeScreen.SUBSCRIPTIONS, AnimeScreen.RELEASES}:
             notice = _unshown(snapshot, item, canvas.width - _MARGIN, now)
     color: str = _COLORS[snapshot.notice_kind]
-    lines: list[str] = _notice_lines(notice, canvas.width - _MARGIN)
+    lines: list[str] = _notice_lines(
+        notice, canvas.width - _MARGIN, maximum=_NOTICE_ROWS + int(snapshot.screen is AnimeScreen.RELEASES)
+    )
     bottom: int = len(canvas.lines) - len(keys)
     canvas.center(bottom - len(lines) - 1, summary, selectable=True)
     for index, line in enumerate(lines):
@@ -483,21 +495,25 @@ def _unshown(snapshot: AnimeSnapshot, item: AnimeRow, limit: int, now: float) ->
     widths, shown = _widths(snapshot, spec, limit, now)
     values: list[str] = _values(snapshot, item, now)
     parts: list[str] = []
-    if item.detail or Text(values[-1]).cell_len > widths[-1]:
+    if snapshot.screen is AnimeScreen.SUBSCRIPTIONS and (item.detail or Text(values[-1]).cell_len > widths[-1]):
         parts.append(item.detail or values[-1])
     hidden: list[int] = sorted(position for position in spec.optional if position not in shown)
-    parts.extend(f"{spec.labels[position].lower()} {values[position]}" for position in hidden)
+    parts.extend(f"{spec.labels[position].lower()} {values[position].strip()}" for position in hidden)
+    if snapshot.screen is AnimeScreen.RELEASES and Text(values[-1]).cell_len > widths[-1]:
+        parts.append(f"pewność {values[-1]}")
     if Text(item.title).cell_len > widths[spec.title]:
         parts.append(item.title)
+    if snapshot.screen is AnimeScreen.RELEASES and not parts:
+        parts.append(item.detail)
     return " · ".join(parts)
 
 
-def _notice_lines(notice: str, width: int) -> list[str]:
+def _notice_lines(notice: str, width: int, *, maximum: int = _NOTICE_ROWS) -> list[str]:
     if not notice:
         return []
     lines: list[str] = [line.plain for line in Text(notice).wrap(Console(width=width), width)]
-    if len(lines) > _NOTICE_ROWS:
-        lines = [*lines[: _NOTICE_ROWS - 1], fit(" ".join(line.strip() for line in lines[_NOTICE_ROWS - 1 :]), width)]
+    if len(lines) > maximum:
+        lines = [*lines[: maximum - 1], fit(" ".join(line.strip() for line in lines[maximum - 1 :]), width)]
     return [line.strip().removeprefix("· ").removesuffix(" ·") for line in lines]
 
 

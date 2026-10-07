@@ -22,6 +22,7 @@ from anishift.application import (
     AcquisitionService,
     AdmissionConflict,
     AppService,
+    CandidateNumbering,
     EpisodeBatch,
     EpisodeFile,
     EpisodeFiles,
@@ -41,6 +42,7 @@ from anishift.application import (
     SearchQuery,
     TitleCandidate,
     TitleStatus,
+    conflict_label,
     decode_view,
     parse_query,
     premiere_order,
@@ -1147,6 +1149,10 @@ class AnimeController:
             return tuple(AnimeRow(str(item.index), f"{item.path} · {item.size:,} B") for item in self._files.files)
         if self._screen in {_Screen.OFFER, _Screen.CANDIDATES}:
             offer: EpisodeOffer | None = self._highlighted_offer()
+            self._view.global_status = offer.status or "" if offer is not None else ""
+            suggested: RankedCandidate | None = (
+                offer.candidates[offer.suggestion] if offer is not None and offer.suggestion is not None else None
+            )
             candidates: tuple[RankedCandidate, ...] = (
                 self._release_candidates
                 if self._screen is _Screen.CANDIDATES
@@ -1161,12 +1167,12 @@ class AnimeController:
                     image=f"{item.traits.resolution}p" if item.traits.resolution else "?",
                     language=_language(item),
                     seeds=str(item.stream.seeders) if item.stream.seeders is not None else "?",
+                    quality=f"{item.quality:.0f}",
+                    confidence=_candidate_confidence(item, suggested=item == suggested),
                     detail=_candidate_reason(item, full=True) + " · " + _candidate_details(item),
                     eligible=item.supported is not False,
                     uncertain=item.identity.verdict is not IdentityVerdict.MATCH,
-                    suggested=offer is not None
-                    and offer.suggestion is not None
-                    and item == offer.candidates[offer.suggestion],
+                    suggested=item == suggested,
                 )
                 for index, item in enumerate(candidates)
             ) or (AnimeRow("empty", "Szukam…" if self._offers_running else "Brak wydania", eligible=False),)
@@ -2415,11 +2421,46 @@ def _identity_fallback(verdict: IdentityVerdict) -> str:
 
 def _candidate_details(item: RankedCandidate) -> str:
     details: list[str] = []
-    if item.stream.file_name:
-        details.append(f"Plik: {_safe(item.stream.file_name)}")
+    if item.stream.path or item.stream.file_name:
+        details.append(f"Plik: {_safe(item.stream.path or item.stream.file_name or '')}")
+    if item.release_name_only:
+        details.append("bez nazwy pliku")
     details.append(f"Rozmiar: {_safe(item.stream.size_text or '?')}")
     if item.traits.platform:
         details.append("wydanie z platformy")
     if item.supported is False:
         details.append("format nieobsługiwany")
+    if item.ambiguous:
+        details.append("niejednoznaczny plik")
+    if item.traits.dub_only:
+        details.append("sam dubbing")
+    details.extend(_candidate_numbering(item.numbering))
+    details.append(
+        "Kalibracja pewności potwierdzona tylko dla korpusu E1. "
+        "Dla nowych źródeł i ocen bez nazwy pliku: estymata bez potwierdzonej kalibracji."
+    )
     return " · ".join(details)
+
+
+def _candidate_confidence(item: RankedCandidate, *, suggested: bool) -> str:
+    if item.conflict:
+        return conflict_label(item.identity)
+    value: str = f"{item.confidence:.0%}" if item.confidence is not None else "?"
+    return value + (" · niepewne" if suggested and item.identity.verdict is not IdentityVerdict.MATCH else "")
+
+
+def _candidate_numbering(evidence: CandidateNumbering | None) -> list[str]:
+    if evidence is None:
+        return []
+    mode: str = {"mapped": "S/E", "plain": "bez znacznika numeracji", "missing": "brak numeru"}[evidence.mode]
+    return [
+        f"Odczyt H1 ({mode}): sezon {evidence.season if evidence.season is not None else '?'}, "
+        f"odcinek {evidence.number if evidence.number is not None else '?'}, "
+        f"część {evidence.part if evidence.part is not None else '?'}",
+        f"Cel: lokalny {evidence.local if evidence.local is not None else '?'}; "
+        f"S/E: sezon {evidence.target_season if evidence.target_season is not None else '?'}, "
+        f"odcinek {evidence.episode if evidence.episode is not None else '?'}; "
+        f"absolutny {evidence.absolute if evidence.absolute is not None else '?'}; "
+        f"sezon w tytule {evidence.named_season if evidence.named_season is not None else '?'}; "
+        f"część {evidence.target_part if evidence.target_part is not None else '?'}",
+    ]
