@@ -858,5 +858,17 @@
     "candidate": {"release": "[KiyoshiStar] The Diastrous Life of Saiki K. (2016) [Dual Audio] [1080p] [x264] [10 bit]", "path": null, "filename": "The.Disastrous.Life.of.Saiki.K.S01E01.1080p.BluRay.FLAC5.1.x264-Hi10P-KiyoshiStar.mkv"},
     "expected_verdict": "insufficient_evidence",
     "cause": "A hyphenated suffix with digits after the codec is not a release group; it guards a labelled wrong match."
+  },
+  {
+    "target": {"aliases": ["Frieren: Beyond Journey's End", "Sousou no Frieren", "葬送のフリーレン"], "type": "TV", "local_episode": 28, "season": 1, "episode": 28, "absolute": 28, "episode_title": "It Would Be Embarrassing When We Met Again", "other_series": [], "other_episode_titles": []},
+    "candidate": {"release": "Frieren Beyond Journeys End S01E28 It Would Be Embarrassing When We Met Again 1080p CR WEB-DL AAC2.0 H 264 DUAL-VARYG (Sousou no Frieren, Dual-Audio, Multi-Subs)", "path": null, "filename": "Frieren.Beyond.Journeys.End.S01E28.It.Would.Be.Embarrassing.When.We.Met.Again.1080p.CR.WEB-DL.AAC2.0.H.264.DUAL-VARYG.mkv"},
+    "expected_verdict": "match",
+    "cause": "DUAL before a release group is technical metadata."
+  },
+  {
+    "target": {"aliases": ["BLUE LOCK Season 2", "ブルーロック VS. U-20 JAPAN", "Blue Lock VS. U-20 JAPAN", "Blue Lock", "BLUE LOCK", "ブルーロック"], "type": "TV", "local_episode": 1, "season": 2, "episode": 1, "absolute": 25, "episode_title": "Tryouts", "other_series": ["Blue Lock: EPISODE Nagi", "BLUE LOCK THE MOVIE -EPISODE NAGI-", "ブルーロック -EPISODE 凪-"], "other_episode_titles": ["The Assassin and the Ninja", "The World You Feel", "Chameleon", "Flow", "The Big Stage", "Itoshi Sae", "Blue Genes", "Night Snow", "The Subs Take to the Stage", "What You Taught Us", "Flowers", "Not Alone", "Last Attack", "Episode S15", "Additional Time! #24", "Additional Time! #25: The Top 6's Rooms", "Additional Time! #26: Each Parallel World", "Additional Time! #27: Ninja Secrets", "Episode S16", "Additional Time! #28: You Remind Me Of...", "Additional Time! #29: Natural Communication", "Additional Time! #30: Preparation", "Additional Time! #31: Multiple Personality", "Episode S17", "Additional Time! #32: \"Bon or Not\" Appraisal Show", "Additional Time! #33: Big Bro's Frame of Mind", "Additional Time! #34: During Half-Time", "Episode S18", "Additional Time! #35: Bag Inspection", "Additional Time! #36: Welcome Back, Baro Baro Kyun!", "Additional Time! #37: Self-Staring Contest"]},
+    "candidate": {"release": "[ToonsHub] BLUE LOCK S02E01 1080p B-Global WEB-DL AAC2.0 H.264 (Multi-Subs)", "path": null, "filename": "BLUE.LOCK.S02E25.Tryouts.1080p.B-Global.WEB-DL.JPN.AAC2.0.H.264.MSubs-ToonsHub.mkv"},
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A mapped number equal to the target absolute number is ambiguous, not a different episode."
   }
 ]

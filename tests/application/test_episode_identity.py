@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import copy
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final
@@ -11,11 +12,15 @@ import pytest
 
 from anishift.application import episode_identity
 from anishift.application.episode_identity import (
+    CONFLICT_REASONS,
     REASONS,
     IdentityAssessment,
     IdentityVerdict,
     classify,
     classify_many,
+    classify_release_name,
+    conflict_label,
+    is_conflict,
 )
 
 pytestmark = pytest.mark.unit
@@ -917,3 +922,241 @@ def test_reasons_assessment_and_conflict_return_literals_complete() -> None:
     assert assessments
     assert conflicts
     assert assessments | conflicts == REASONS
+
+
+_NO_NUMBERING: Final[str] = "Mapped numbering cannot be checked without target numbering."
+_UNCONSUMED: Final[str] = "Unconsumed filename text is neither technical metadata nor a catalog episode title."
+_SEASON_CONFLICT: Final[str] = "Season marker conflicts with the target numbering system."
+_MISMATCH_REASONS: Final[frozenset[str]] = frozenset(
+    {
+        "Explicit mapped episode differs from target.",
+        "Selected file has no allowed video extension.",
+        "Selected filename has an explicit Plex extra suffix.",
+        "Selected residual explicitly identifies non-episode material.",
+    }
+)
+
+
+def _unnumbered_target() -> dict[str, Any]:
+    return _target_for(
+        aliases=[
+            "Koori no Jouheki 2nd Season",
+            "The Ramparts of Ice Season 2",
+            "Koori no Jouheki",
+            "The Ramparts of Ice",
+        ],
+        season=None,
+        episode=None,
+        local_episode=1,
+        absolute=None,
+        episode_title=None,
+        other_episode_titles=[],
+    )
+
+
+def test_conflict_reasons_subset_of_reasons() -> None:
+    assert CONFLICT_REASONS <= REASONS
+    assert len(CONFLICT_REASONS) == 19
+    assert not CONFLICT_REASONS & {
+        "Package localized season conflicts with the target or is unresolved.",
+        "Package Roman season/part conflicts with the target or is unresolved.",
+        "Package season declaration conflicts with the target or is unresolved.",
+        _NO_NUMBERING,
+        _UNCONSUMED,
+    }
+
+
+def test_every_mismatch_is_conflict() -> None:
+    assert _MISMATCH_REASONS <= REASONS
+    for reason in _MISMATCH_REASONS:
+        assessment: IdentityAssessment = IdentityAssessment(IdentityVerdict.MISMATCH, reason)
+        assert is_conflict(assessment)
+        assert conflict_label(assessment)
+    for reason in REASONS:
+        assert not is_conflict(IdentityAssessment(IdentityVerdict.MATCH, reason))
+
+
+def test_conflict_label_for_every_reason() -> None:
+    labels: set[str] = set()
+    for reason in REASONS:
+        assessment: IdentityAssessment = IdentityAssessment(IdentityVerdict.INSUFFICIENT, reason)
+        assert is_conflict(assessment) is (reason in CONFLICT_REASONS)
+        if reason in CONFLICT_REASONS:
+            labels.add(conflict_label(assessment))
+            continue
+        with pytest.raises(ValueError, match=re.escape(reason)):
+            conflict_label(assessment)
+    assert "inny sezon" in labels
+    with pytest.raises(ValueError, match=re.escape(_UNCONSUMED)):
+        conflict_label(IdentityAssessment(IdentityVerdict.MATCH, _UNCONSUMED))
+
+
+def test_insufficient_conflict_cases() -> None:
+    other_season: IdentityAssessment = _assess(_target_for(), {"filename": "Star Garden S02E05 1080p.mkv"})
+    assert other_season == IdentityAssessment(IdentityVerdict.INSUFFICIENT, _SEASON_CONFLICT)
+    assert conflict_label(other_season) == "inny sezon"
+    for filename in ("Star Garden 1080p WEB.mkv", "Star Garden - 05 Mystery Words.mkv"):
+        assert not is_conflict(_assess(_target_for(), {"filename": filename}))
+    unresolved: IdentityAssessment = _assess(
+        _target_for("Example", season=11, episode=1, local_episode=1, absolute=None),
+        {"path": "Example 第十一季/01.mkv", "release": "Example"},
+    )
+    assert unresolved.verdict is IdentityVerdict.INSUFFICIENT
+    assert not is_conflict(unresolved)
+
+
+def _name_assessments(target: Mapping[str, Any], name: str) -> tuple[IdentityAssessment, ...]:
+    return (
+        classify_release_name(target, name),
+        _assess(target, {"filename": f"{name}.mkv"}),
+        _assess(target, {"filename": f"{name}.mkv", "release": name}),
+    )
+
+
+def _marker_cases() -> list[tuple[dict[str, Any], str]]:
+    plain: dict[str, Any] = {"episode_title": None, "other_episode_titles": []}
+    first: dict[str, Any] = _target_for(season=1, episode=1, local_episode=1, absolute=1, **plain)
+    return [
+        (_target_for(season=1, episode=12, local_episode=12, absolute=12), "[FrixySubs] Star Garden - S02E01"),
+        (_target_for(season=1, episode=12, local_episode=12, absolute=12), "Star Garden S02E12"),
+        (first, "Star Garden - S02E02"),
+        (_target_for(season=2, episode=1, local_episode=1, absolute=13, **plain), "Star Garden - S03E01"),
+        (_target_for(season=1, episode=13, local_episode=1, absolute=13, **plain), "Star Garden - S01E14"),
+        (_target_for(season=1, episode=25, local_episode=1, absolute=25, **plain), "Star Garden - S03E01"),
+        (first, "Star Garden - S01E02"),
+        (
+            _target_for(aliases=["Star Garden Part 2", "Star Garden"], episode=1, local_episode=1, absolute=1, **plain),
+            "Star Garden Part 3 - 01",
+        ),
+    ]
+
+
+def test_unconsumed_text_keeps_explicit_markers_uncertain() -> None:
+    for target, name in _marker_cases():
+        for assessment in _name_assessments(target, f"{name} Unknown Words 1080p"):
+            assert assessment == IdentityAssessment(IdentityVerdict.INSUFFICIENT, _UNCONSUMED)
+            assert not is_conflict(assessment)
+
+
+def test_reference_other_season_names_stay_uncertain() -> None:
+    target: dict[str, Any] = _target_for(season=1, episode=12, local_episode=12, absolute=12)
+    for name in (
+        "[FrixySubs] Star Garden - S02E01 (13) [1080p CR WEB-DL H.264 AAC] [Napisy PL]",
+        "Star Garden S02E12 Part of the Family 1080p NF WEB-DL AAC2.0 H 264-VARYG",
+    ):
+        for assessment in _name_assessments(target, name):
+            assert assessment == IdentityAssessment(IdentityVerdict.INSUFFICIENT, _UNCONSUMED)
+
+
+def test_clean_name_explicit_markers_conflict() -> None:
+    for target, name in _marker_cases():
+        for assessment in _name_assessments(target, f"{name} 1080p"):
+            assert is_conflict(assessment), (name, assessment)
+
+
+def test_classify_mapped_absolute_number_stays_ambiguous() -> None:
+    target: dict[str, Any] = _target_for(
+        season=2, episode=1, local_episode=1, absolute=13, episode_title=None, other_episode_titles=[]
+    )
+    assessment: IdentityAssessment = _assess(target, {"filename": "Star Garden S02E13 1080p WEB-DL.mkv"})
+    assert assessment == IdentityAssessment(
+        IdentityVerdict.INSUFFICIENT, "Mapped number equals the target absolute number; numbering is ambiguous."
+    )
+    assert not is_conflict(assessment)
+
+
+def test_classify_inherited_named_season_is_not_conflict() -> None:
+    target: dict[str, Any] = _target_for(
+        aliases=["Fruits Basket The Final Season", "Fruits Basket: 1st Season", "Fruits Basket (2019)"],
+        season=3,
+        episode=13,
+        local_episode=13,
+        absolute=63,
+        episode_title="See You Again Soon",
+        other_episode_titles=[],
+        other_series=["Fruits Basket"],
+    )
+    name: str = "[SubsPlease] Fruits Basket (2019) S3 - 13 (720p) [BFFACE5E].mkv"
+    assessment: IdentityAssessment = _assess(target, {"filename": name, "release": name})
+    assert assessment == IdentityAssessment(IdentityVerdict.INSUFFICIENT, _UNCONSUMED)
+
+
+def test_classify_dual_before_language_suffix_is_not_release_group() -> None:
+    target: dict[str, Any] = _target_for(
+        season=2, episode=1, local_episode=1, absolute=14, episode_title=None, other_episode_titles=[]
+    )
+    assessment: IdentityAssessment = _assess(target, {"filename": "Star.Garden.S02E01.1080p.WEB-DL-Dual-Lat.mkv"})
+    assert assessment.verdict is IdentityVerdict.INSUFFICIENT
+
+
+def test_classify_dual_before_release_group_is_technical_metadata() -> None:
+    target: dict[str, Any] = _target_for(episode_title="It Would Be Embarrassing When We Met Again")
+    filename: str = (
+        "Star.Garden.S01E05.It.Would.Be.Embarrassing.When.We.Met.Again.1080p.CR.WEB-DL.AAC2.0.H.264.DUAL-VARYG.mkv"
+    )
+    assert _assess(target, {"filename": filename}).verdict is IdentityVerdict.MATCH
+    assert _assess(_target_for(), {"filename": "Star.Garden.S01E05.1080p.WEB-DL.H.264.DUAL-VARYG.mkv"}).verdict is (
+        IdentityVerdict.MATCH
+    )
+
+
+def test_entry_title_local_number_without_numbering() -> None:
+    target: dict[str, Any] = _unnumbered_target()
+    name: str = "[Erai-raws] Koori no Jouheki 2nd Season - 01 [1080p CR WEB-DL AVC AAC][MultiSub]"
+    assert classify_release_name(target, name).verdict is IdentityVerdict.MATCH
+    assert _assess(target, {"filename": f"{name}.mkv"}).verdict is IdentityVerdict.MATCH
+    assert _assess(target, {"filename": "Koori no Jouheki - 01.mkv"}) == IdentityAssessment(
+        IdentityVerdict.INSUFFICIENT, "A franchise alias does not identify this installment."
+    )
+
+
+def test_sxxexx_without_numbering_stays_uncertain() -> None:
+    target: dict[str, Any] = _unnumbered_target()
+    for name in ("Koori no Jouheki S02E01 1080p", "The Ramparts of Ice S02E01 1080p NF WEB-DL"):
+        for assessment in (classify_release_name(target, name), _assess(target, {"filename": f"{name}.mkv"})):
+            assert assessment == IdentityAssessment(IdentityVerdict.INSUFFICIENT, _NO_NUMBERING)
+            assert not is_conflict(assessment)
+
+
+def test_release_context_without_numbering_stays_uncertain() -> None:
+    target: dict[str, Any] = _unnumbered_target()
+    name: str = "Koori no Jouheki S01E01 1080p"
+    for assessment in (
+        classify_release_name(target, name),
+        _assess(target, {"filename": f"{name}.mkv", "release": name}),
+        _assess(target, {"filename": "Koori no Jouheki - 01.mkv", "release": name}),
+    ):
+        assert assessment.verdict is IdentityVerdict.INSUFFICIENT
+        assert not is_conflict(assessment)
+
+
+def test_classify_release_name_match() -> None:
+    for name in ("Star Garden S01E05 1080p WEB-DL AAC2.0 H 264", "[Group] Star Garden - 05 (1080p) [ABCD1234].mkv"):
+        assert classify_release_name(_target_for(), name).verdict is IdentityVerdict.MATCH
+
+
+def test_classify_release_name_other_season() -> None:
+    assessment: IdentityAssessment = classify_release_name(_target_for(), "Star Garden S02E05 1080p")
+    assert assessment == IdentityAssessment(
+        IdentityVerdict.INSUFFICIENT, "Package explicitly identifies a different season."
+    )
+    assert conflict_label(assessment) == "inny sezon"
+
+
+def test_classify_release_name_other_episode() -> None:
+    assessment: IdentityAssessment = classify_release_name(_target_for(), "Star Garden S01E06 1080p")
+    assert assessment.verdict is IdentityVerdict.MISMATCH
+    assert conflict_label(assessment) == "inny odcinek"
+
+
+def test_classify_release_name_unresolved() -> None:
+    for name in ("Star Garden 1080p WEB", "Star Garden - 05 Mystery Words"):
+        assessment: IdentityAssessment = classify_release_name(_target_for(), name)
+        assert assessment.verdict is IdentityVerdict.INSUFFICIENT
+        assert not is_conflict(assessment)
+    assert classify_release_name(_target_for(), " ") == IdentityAssessment(
+        IdentityVerdict.INSUFFICIENT, "No selected file."
+    )
+    assert classify_release_name(_target_for(), 5) == IdentityAssessment(  # type: ignore[arg-type]
+        IdentityVerdict.INSUFFICIENT, "Malformed candidate metadata."
+    )

@@ -62,7 +62,7 @@ def test_identity_golden_covers_every_working_reason_and_stratum_with_lossless_t
     golden: dict[str, Any] = json.loads((_FIXTURES / "identity-golden.json").read_text(encoding="utf-8"))
     targets: list[dict[str, Any]] = golden["targets"]
     records: list[dict[str, Any]] = golden["records"]
-    assert len(golden["working_reasons"]) == 37
+    assert len(golden["working_reasons"]) == 39
     assert {record["reason"] for record in records} == set(golden["working_reasons"])
     assert len(golden["working_strata"]) == 50
     assert {(targets[record["target_index"]]["type"], record["verdict"], record["shape"]) for record in records} == {

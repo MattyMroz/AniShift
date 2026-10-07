@@ -244,6 +244,12 @@ _REASON_TEXTS: Final[dict[str, str]] = {
         "Numer nie pasuje do odcinka lokalnego; nie potwierdzono numeracji absolutnej."
     ),
     "Local and mapped numbering conflict.": "Numeracja lokalna i katalogowa są sprzeczne.",
+    "Mapped numbering cannot be checked without target numbering.": (
+        "Bez numeracji szukanego odcinka nie da się sprawdzić numeru katalogowego."
+    ),
+    "Mapped number equals the target absolute number; numbering is ambiguous.": (
+        "Numer w nazwie równa się numerowi absolutnemu odcinka; numeracja jest niejednoznaczna."
+    ),
     "Specific work title and local episode match; residual is technical or catalogued.": (
         "Dokładny tytuł i numer lokalny odcinka są zgodne; pozostały tekst jest rozpoznany."
     ),

@@ -429,6 +429,14 @@ odczytu; `202` = `pending`; `{ss}` z grafu; fraza `S01E{NN}` w sezonie 1 (TV); O
 w `classify` (zamaskowany konflikt sezonu) i token DUAL w K2; `S01` przed `[1080p…]` = paczka
 w późniejszym K (parser).
 
+**O7 — wycofane (orkiestrator, astra, sol61, 2026-10-07):** wczesna sprzeczność przed „Unconsumed
+filename text…” nie wchodzi do K2. Każdy sprawdzony wariant dał na pełnym korpusie (`evidence = {}`)
+fałszywe konflikty dla rekordów poprawnych; najwęższy (tylko `SxxEyy`, numer = lokalny, cel bez
+kontynuacji złożonej) — 17, wszystkie z innego systemu sezonów niż mapowanie celu (BLEACH TYBW `S01`
+przy S17, Bungo Stray Dogs `S04` przy S3, Seven Deadly Sins `S05` przy S4, InuYasha `S08` przy S7,
+Black Clover `S04` przy S1). 154587-1 (`[FrixySubs] … S02E01`) i 140960-12 (`… S02E12` VARYG) zostają
+niepewne — świadoma niekompletność. Z O7 zostaje token `DUAL` przed grupą jako metadana techniczna.
+
 Otwarte do decyzji:
 
 1. **OVA/SPECIAL:** nawet z pełnym tytułem 194884 ma 0 zgodnych z 23 wydań — klasyfikator wymaga

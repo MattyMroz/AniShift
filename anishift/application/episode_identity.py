@@ -1,4 +1,4 @@
-"""Assess selected-file identity with H1 v10.4 without inspecting media or performing I/O."""
+"""Assess selected-file identity with H1 v10.5 without inspecting media or performing I/O."""
 
 from __future__ import annotations
 
@@ -26,6 +26,8 @@ SEASON_PREFIX: Final[str] = r"(?:season\s*|s)"
 """Recognize textual and abbreviated season markers."""
 PART_PREFIX: Final[str] = r"(?:part\s*|cour\s*|p)"
 """Recognize textual and abbreviated part markers."""
+MAPPED_SEASON: Final[re.Pattern[str]] = re.compile(r"(?i)\bs\d{1,2}\s*(e\d{1,4})")
+"""Match the season half of an SxxEyy token so it can be dropped when the target has no numbering."""
 MEDIA_MARKER: Final[re.Pattern[str]] = re.compile(r"\b(?:ova|oad|specials?|movies?)\b")
 """Detect explicit media format qualifiers."""
 FIRST_BRACKET: Final[re.Pattern[str]] = re.compile(r"^\s*\[([^\]]+)\]\s*")
@@ -181,9 +183,46 @@ REASONS: Final[frozenset[str]] = frozenset(
         "Selected filename more specifically identifies a neighboring work.",
         "Filename year is missing from or conflicts with runtime target metadata.",
         "Unconsumed filename text is neither technical metadata nor a catalog episode title.",
+        "Mapped numbering cannot be checked without target numbering.",
+        "Mapped number equals the target absolute number; numbering is ambiguous.",
     }
 )
 """Enumerate every identity explanation, including reasons returned by context-conflict helpers."""
+CONFLICT_LABELS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "Season marker conflicts with the target numbering system.": "inny sezon",
+        "Part/cour marker conflicts with the target.": "inna część",
+        "Local and mapped numbering conflict.": "inny numer",
+        "Package directory explicitly identifies Plex extra material.": "dodatek",
+        "Package explicitly identifies a neighboring work.": "inne dzieło",
+        "Package explicitly identifies a different season.": "inny sezon",
+        "Package explicitly identifies a different part/cour.": "inna część",
+        "Package explicitly identifies a different final season.": "inny sezon",
+        "Package ordinal part/cour conflicts with the target.": "inna część",
+        "Package localized movie format conflicts with the target.": "inny rodzaj (film)",
+        "Package explicitly identifies a different language-specific media format.": "inny rodzaj materiału",
+        "Package explicitly identifies non-episode material.": "nie odcinek",
+        "Package explicitly identifies a different media type.": "inny rodzaj materiału",
+        "Package year conflicts with target metadata.": "inne dzieło (rok)",
+        "Package explicitly identifies a numbered sequel.": "kontynuacja",
+        "Selected file or work directory identifies a neighboring catalogue work.": "inne dzieło",
+        "Selected directory has a numbered season conflicting with the target.": "inny sezon",
+        "Selected TV variant conflicts with the target editing variant.": "inny wariant montażu",
+        "Selected filename more specifically identifies a neighboring work.": "inne dzieło",
+    }
+)
+"""Label each uncertain reason that declares an explicit contradiction with the target."""
+MISMATCH_LABELS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "Explicit mapped episode differs from target.": "inny odcinek",
+        "Selected file has no allowed video extension.": "nie wideo",
+        "Selected filename has an explicit Plex extra suffix.": "dodatek",
+        "Selected residual explicitly identifies non-episode material.": "nie odcinek",
+    }
+)
+"""Label every mismatch reason; each mismatch is a conflict."""
+CONFLICT_REASONS: Final[frozenset[str]] = frozenset(CONFLICT_LABELS)
+"""Close the list of uncertain reasons that count as a conflict with the target."""
 
 
 class IdentityVerdict(StrEnum):
@@ -456,7 +495,7 @@ def _prepare(value: str) -> str:
     )
     if not semantic:
         text = re.sub(
-            r"(?i)(\b(?:x26[45]|h[ .]?26[45]|av1|hevc|aac|flac|msubs))"
+            r"(?i)(\b(?:x26[45]|h[ .]?26[45]|av1|hevc|aac|flac|msubs|(?<!-)dual))"
             r"-(?:[a-z][a-z0-9]*|[a-z]+(?:-[a-z]+)+)(?=\[[^\]]*\]$|$)",
             r"\1",
             text,
@@ -632,12 +671,23 @@ def _numbering_extension(parsed: _Parsed, target: _Target) -> IdentityAssessment
     return None
 
 
-def _identity_conflict(parsed: _Parsed, target: _Target) -> IdentityAssessment | None:
+def _season_conflict(parsed: _Parsed, target: _Target) -> IdentityAssessment | None:
+    if parsed.mode == "mapped" and target.season is None:
+        return IdentityAssessment(
+            IdentityVerdict.INSUFFICIENT, "Mapped numbering cannot be checked without target numbering."
+        )
     expected_season: int | None = target.season if parsed.mode == "mapped" else target.named_season
     if parsed.season is not None and parsed.season != expected_season:
         return IdentityAssessment(
             IdentityVerdict.INSUFFICIENT, "Season marker conflicts with the target numbering system."
         )
+    return None
+
+
+def _identity_conflict(parsed: _Parsed, target: _Target) -> IdentityAssessment | None:
+    season: IdentityAssessment | None = _season_conflict(parsed, target)
+    if season is not None:
+        return season
     if parsed.part is not None and parsed.part != target.part:
         return IdentityAssessment(IdentityVerdict.INSUFFICIENT, "Part/cour marker conflicts with the target.")
     if parsed.broad and not (parsed.mode == "mapped" and target.season and target.season > 1):
@@ -660,6 +710,10 @@ def _decision(parsed: _Parsed, target: _Target) -> IdentityAssessment:
     extra: IdentityAssessment | None = _numbering_extension(parsed, target)
     if extra is not None:
         return extra
+    if parsed.mode == "mapped" and parsed.number != target.episode and parsed.number == target.absolute:
+        return IdentityAssessment(
+            IdentityVerdict.INSUFFICIENT, "Mapped number equals the target absolute number; numbering is ambiguous."
+        )
     if parsed.mode == "mapped":
         return (
             IdentityAssessment(IdentityVerdict.MISMATCH, "Explicit mapped episode differs from target.")
@@ -1030,10 +1084,13 @@ def _structural_decision(parsed: _Parsed, target: _Target, candidate: Metadata, 
     )
     if conflict:
         return IdentityAssessment(IdentityVerdict.INSUFFICIENT, conflict)
+    unnumbered: bool = target.season is None
     for text in contexts:
         context: str = (
             _episode_directory_context(text, target, parsed) if text in directories and not multiple[release] else text
         )
+        if unnumbered:
+            context = MAPPED_SEASON.sub(r"\1", context)
         conflict = _context_conflict(context, target, multiple=multiple[text])
         if conflict:
             return IdentityAssessment(IdentityVerdict.INSUFFICIENT, conflict)
@@ -1218,14 +1275,47 @@ def _invalid_evidence_assessment(candidate: Metadata) -> IdentityAssessment:
     )
 
 
-def _classify(identity: _Target, candidate: Metadata) -> IdentityAssessment:  # noqa: PLR0911
+def classify_release_name(target: Metadata, name: str) -> IdentityAssessment:
+    """Assess a release name as text with the H1 parser, without requiring a video extension."""
+    if not isinstance(name, str):
+        return IdentityAssessment(IdentityVerdict.INSUFFICIENT, "Malformed candidate metadata.")
+    if not name.strip():
+        return IdentityAssessment(IdentityVerdict.INSUFFICIENT, "No selected file.")
+    if not _valid_evidence(target, {}):
+        return IdentityAssessment(IdentityVerdict.INSUFFICIENT, "Malformed target or archived identity metadata.")
+    stem: str
+    dot: str
+    extension: str
+    stem, dot, extension = name.rpartition(".")
+    text: str = stem if dot and extension.casefold() in VIDEO_EXTENSIONS else name
+    return _assess(_target(target, {}), {"release": name, "filename": name}, "", text)
+
+
+def is_conflict(assessment: IdentityAssessment) -> bool:
+    """Tell whether the assessment declares an explicit contradiction with the target."""
+    return assessment.verdict is IdentityVerdict.MISMATCH or (
+        assessment.verdict is IdentityVerdict.INSUFFICIENT and assessment.reason in CONFLICT_REASONS
+    )
+
+
+def conflict_label(assessment: IdentityAssessment) -> str:
+    """Return the short Polish label of a conflict; raise ValueError for an assessment without one."""
+    labels: Mapping[str, str] = MISMATCH_LABELS if assessment.verdict is IdentityVerdict.MISMATCH else CONFLICT_LABELS
+    if not is_conflict(assessment) or assessment.reason not in labels:
+        raise ValueError(assessment.reason)
+    return labels[assessment.reason]
+
+
+def _classify(identity: _Target, candidate: Metadata) -> IdentityAssessment:
     boundary: IdentityAssessment | None = _candidate_boundary(candidate)
     if boundary is not None:
         return boundary
     path: str = str(candidate.get("path") or "").replace("\\", "/")
     selected: str = str(candidate.get("filename") or path.rsplit("/", 1)[-1])
-    stem: str
-    stem = selected.rpartition(".")[0]
+    return _assess(identity, candidate, path, selected.rpartition(".")[0])
+
+
+def _assess(identity: _Target, candidate: Metadata, path: str, stem: str) -> IdentityAssessment:  # noqa: PLR0911
     if PLEX_SUFFIX.search(stem):
         return IdentityAssessment(IdentityVerdict.MISMATCH, "Selected filename has an explicit Plex extra suffix.")
     stem = _prepare(stem)
