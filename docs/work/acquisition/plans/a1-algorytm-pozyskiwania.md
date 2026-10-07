@@ -446,7 +446,8 @@ def conflict_label(assessment: IdentityAssessment) -> str   # „inny sezon (S01
   Ocena „bez nazwy pliku” to kandydat `{"release": name}` — ta sama projekcja, bez osobnej flagi.
 - `identity_evidence` składa dokładnie te wywołania, których używał `conf_model.features()`
   (`_target`, `classify`, `_prepare`, `_parse`, `_absolute_echo`, `_year`, `_episode_residual`,
-  `_structural_decision`, `_multiple_works`); nie powstaje drugi parser.
+  `_multiple_works`); nie powstaje drugi parser. `_structural_decision` nie jest używane przez projekcję,
+  bo zasila tylko weta poza K3.
 - `classify_release_name` używa tego samego parsera bez wymogu rozszerzenia wideo; werdykty
   `classify` bez zmian, więc goldeny `identity-golden.json`, `identity-231.json`,
   `identity-regressions.json` zostają nietknięte (dowód: ich testy zielone bez edycji fixtur).

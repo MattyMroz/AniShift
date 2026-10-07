@@ -6,6 +6,7 @@ import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from decimal import Decimal
 from difflib import SequenceMatcher
 from enum import StrEnum
 from functools import lru_cache
@@ -239,6 +240,34 @@ class IdentityAssessment:
 
     verdict: IdentityVerdict
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class IdentityEvidence:
+    """H1 evidence required by the frozen model, independently of source quality and research vetoes."""
+
+    assessment: IdentityAssessment
+    kind: str
+    mode: str
+    selected: str
+    path: str
+    release: str
+    anchor: bool
+    broad: bool
+    number: Decimal | None
+    season: int | None
+    part: int | None
+    local: int | None
+    episode: int | None
+    absolute: int | None
+    target_season: int | None
+    target_part: int | None
+    named_season: int | None
+    residual: str
+    residual_ok: bool
+    episode_anchor: bool
+    year_ok: bool
+    multiple_works: bool
 
 
 @dataclass(frozen=True)
@@ -1249,6 +1278,49 @@ def classify_many(target: Metadata, candidates: Sequence[Metadata]) -> tuple[Ide
         return tuple(_invalid_evidence_assessment(candidate) for candidate in candidates)
     identity: _Target = _target(target, evidence)
     return tuple(_classify(identity, candidate) for candidate in candidates)
+
+
+def identity_evidence(target: Mapping[str, object], candidate: Mapping[str, object]) -> IdentityEvidence:
+    """Project research features through H1's parser even when classification stops before parsing the file."""
+    identity: _Target = _target(target, {})
+    assessment: IdentityAssessment = classify(target, candidate)
+    path: str = str(candidate.get("path") or "").replace("\\", "/")
+    selected: str = str(candidate.get("filename") or path.rsplit("/", 1)[-1])
+    release: str = str(candidate.get("release") or "")
+    text: str = selected or release
+    stem: str = text.rpartition(".")[0] if text.rpartition(".")[2].casefold() in VIDEO_EXTENSIONS else text
+    stem = _prepare(stem)
+    parsed: _Parsed = _absolute_echo(stem, _parse(stem, identity), identity)
+    residual: str
+    year_ok: bool
+    residual, year_ok = _year(parsed.remainder, identity)
+    residual_ok: bool
+    episode_anchor: bool
+    residual_ok, episode_anchor = _episode_residual(residual, identity)
+    return IdentityEvidence(
+        assessment=assessment,
+        kind=identity.kind,
+        mode=parsed.mode,
+        selected=selected,
+        path=path,
+        release=release,
+        anchor=bool(parsed.anchor),
+        broad=parsed.broad,
+        number=Decimal(parsed.number) if parsed.number is not None else None,
+        season=parsed.season,
+        part=parsed.part,
+        local=identity.local,
+        episode=identity.episode,
+        absolute=identity.absolute,
+        target_season=identity.season,
+        target_part=identity.part,
+        named_season=identity.named_season,
+        residual=residual,
+        residual_ok=residual_ok,
+        episode_anchor=episode_anchor,
+        year_ok=year_ok,
+        multiple_works=_multiple_works(release, identity),
+    )
 
 
 def _candidate_boundary(candidate: Metadata) -> IdentityAssessment | None:
