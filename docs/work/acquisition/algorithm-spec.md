@@ -167,6 +167,8 @@ Wagi i klasy muszą odtworzyć kolejność właściciela (wszystkie 1080p, wła�
 2. Sam dubbing (§5.3).
 3. Kandydaci z konfliktem, w tej samej kolejności wewnętrznej, z powodem.
 
+**Remisy ekranowe (reguła „B-tie”, decyzja właściciela 2026-10-07):** po ułożeniu pełnej listy powyższym kluczem każdy maksymalny blok **kolejnych** wierszy o identycznym podpisie — grupa (1–3), nieobsługiwany kontener, klasy, Jakość i Pewność **w postaci pokazanej na liście** (Jakość zaokrąglona do całości, Pewność do pełnego procentu, brak pewności jako osobna wartość) — jest układany wewnątrz: więcej seedów (brak danych = −1) → dokładne jakość × pewność (bez pewności: jakość) malejąco → hash. Kolejność bloków się nie zmienia, a blok przerwany wierszem o innym podpisie się nie łączy, więc wiersz z widocznie gorszą Jakością lub Pewnością nigdy nie awansuje. Bloki liczone są na pełnej liście, przed ukryciem (U-24); ukrycie i sugestia używają tego porządku. Wzór jakości i sufit seedów (§5.1) bez zmian.
+
 - Kolumny na końcu wiersza: **Jakość** i **Pewność**. Pełna nazwa wydania w wierszu.
 - **Sugestia** (`*`) = pierwszy wiersz z punktu 1 (najwyżej w rankingu); gdy nie jest `zgodny` w H1 — z oznaczeniem „niepewne” (U-03, R-06; tak też w Bibliotece po pobraniu). `D` bez podglądu pobiera sugestię (O-5, decyzja właściciela 2026-10-06).
 - Ręczny wybór kandydata innego niż `zgodny` wymaga potwierdzenia, a konfliktu — potwierdzenia z powodem H1 (R-04 bez zmian).

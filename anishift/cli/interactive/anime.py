@@ -42,10 +42,12 @@ from anishift.application import (
     SearchQuery,
     TitleCandidate,
     TitleStatus,
+    confidence_text,
     conflict_label,
     decode_view,
     parse_query,
     premiere_order,
+    quality_text,
     visible,
 )
 from anishift.application.cancellation import EventCancellationToken
@@ -1167,7 +1169,7 @@ class AnimeController:
                     image=f"{item.traits.resolution}p" if item.traits.resolution else "?",
                     language=_language(item),
                     seeds=str(item.stream.seeders) if item.stream.seeders is not None else "?",
-                    quality=f"{item.quality:.0f}",
+                    quality=quality_text(item),
                     confidence=_candidate_confidence(item, suggested=item == suggested),
                     detail=_candidate_reason(item, full=True) + " · " + _candidate_details(item),
                     eligible=item.supported is not False,
@@ -2445,7 +2447,7 @@ def _candidate_details(item: RankedCandidate) -> str:
 def _candidate_confidence(item: RankedCandidate, *, suggested: bool) -> str:
     if item.conflict:
         return conflict_label(item.identity)
-    value: str = f"{item.confidence:.0%}" if item.confidence is not None else "?"
+    value: str = confidence_text(item) or "?"
     return value + (" · niepewne" if suggested and item.identity.verdict is not IdentityVerdict.MATCH else "")
 
 

@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
+from itertools import groupby
 from typing import Any, Final
 
 from anishift.application.discovery import VIDEO_SOURCE_SUFFIXES
@@ -41,6 +42,7 @@ __all__ = [
     "ListedSpecial",
     "RankedCandidate",
     "StreamCandidate",
+    "confidence_text",
     "episode_listing",
     "franchise_traversal",
     "franchise_view",
@@ -48,6 +50,7 @@ __all__ = [
     "list_order",
     "numbering_gap",
     "premiere_order",
+    "quality_text",
     "rank_candidates",
     "representative",
     "streams_releases",
@@ -451,8 +454,19 @@ def rank_candidates(
 
 
 def list_order(candidates: Sequence[RankedCandidate]) -> tuple[RankedCandidate, ...]:
-    """Order rows without conflict, then dub-only rows, then conflicts, each by class, weighted quality and seeds."""
-    return tuple(sorted(candidates, key=_list_key))
+    """Order rows by group, class and weighted quality; adjacent rows showing equal values go by seeds first."""
+    ordered: list[RankedCandidate] = sorted(candidates, key=_list_key)
+    return tuple(row for _, run in groupby(ordered, key=_shown_signature) for row in sorted(run, key=_tie_key))
+
+
+def quality_text(candidate: RankedCandidate) -> str:
+    """Return the quality exactly as the release list shows it."""
+    return f"{candidate.quality:.0f}"
+
+
+def confidence_text(candidate: RankedCandidate) -> str | None:
+    """Return the confidence exactly as the release list shows it, or None when it is unknown."""
+    return None if candidate.confidence is None else f"{candidate.confidence:.0%}"
 
 
 def visible(candidates: Sequence[RankedCandidate]) -> tuple[RankedCandidate, ...]:
@@ -703,16 +717,32 @@ def _row_stream(release: EpisodeRelease, file: ReleaseFile | None) -> StreamCand
 
 
 def _list_key(candidate: RankedCandidate) -> tuple[float | str, ...]:
-    group: int = 2 if candidate.conflict else int(candidate.traits.dub_only)
     certainty: float = 0.0 if candidate.confidence is None else candidate.confidence
-    weighted: float = candidate.quality if candidate.confidence is None else candidate.quality * certainty
-    seeders: int = -1 if candidate.traits.seeders is None else candidate.traits.seeders
     return (
-        group,
-        candidate.supported is False,
-        *class_key(candidate.traits),
-        -weighted,
+        *_class_prefix(candidate),
+        -_weighted(candidate),
         -certainty,
-        -seeders,
+        -_seeders(candidate),
         candidate.stream.info_hash,
     )
+
+
+def _class_prefix(candidate: RankedCandidate) -> tuple[int, ...]:
+    group: int = 2 if candidate.conflict else int(candidate.traits.dub_only)
+    return group, int(candidate.supported is False), *class_key(candidate.traits)
+
+
+def _shown_signature(candidate: RankedCandidate) -> tuple[object, ...]:
+    return *_class_prefix(candidate), quality_text(candidate), confidence_text(candidate)
+
+
+def _tie_key(candidate: RankedCandidate) -> tuple[float | str, ...]:
+    return -_seeders(candidate), -_weighted(candidate), candidate.stream.info_hash
+
+
+def _weighted(candidate: RankedCandidate) -> float:
+    return candidate.quality if candidate.confidence is None else candidate.quality * candidate.confidence
+
+
+def _seeders(candidate: RankedCandidate) -> int:
+    return -1 if candidate.traits.seeders is None else candidate.traits.seeders

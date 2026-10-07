@@ -125,7 +125,9 @@ from anishift.application.episode_selection import (
     ListedSpecial,
     RankedCandidate,
     StreamCandidate,
+    confidence_text,
     premiere_order,
+    quality_text,
     visible,
 )
 from anishift.application.events import (
@@ -328,6 +330,7 @@ __all__ = [
     "WorkflowTarget",
     "WorkspaceInspector",
     "anilist_date",
+    "confidence_text",
     "conflict_label",
     "cut_point",
     "decode_view",
@@ -345,6 +348,7 @@ __all__ = [
     "plan_manual",
     "premiere_order",
     "preview_plan",
+    "quality_text",
     "read_episode",
     "ready_group_ids",
     "resolve_readiness",

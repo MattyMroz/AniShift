@@ -137,7 +137,7 @@ krok z §7.
 | §5.3 klasy | rozdzielczość (U-05), PL, audio | `release_quality.py` → `resolution_class`, `polish_class`, `audio_class`, `class_key` | `::test_resolution_class_order`, `::test_polish_class_order`, `::test_audio_class_order` | K4 |
 | §5.3 720p ukryte; sam dubbing na końcu; kontener wykluczony | U-24, U-23, U-06 | `episode_selection.py` → `list_order`, `visible`; istniejące `_container` | `test_episode_selection.py::test_low_resolution_hidden_with_matching_1080`, `::test_dub_only_after_regular`, istniejące testy kontenera | K6 |
 | §5.4 kontrola wag | F > A > C > E > B ≈ D | `release_quality.py` | `test_release_quality.py::test_owner_order_f_a_c_e_b_d`; `test_subscription_choice.py::test_choose_owner_order`; `test_episode_selection.py::test_list_owner_order_equal_confidence` | K4, K6, K12 |
-| §6.1 kolejność listy | klucz w trzech grupach | `episode_selection.py` → `list_order` | `::test_list_order_*` | K6 |
+| §6.1 kolejność listy | klucz w trzech grupach; remisy ekranowe B-tie | `episode_selection.py` → `list_order`, `quality_text`, `confidence_text` | `::test_list_order_*` | K6 |
 | §6.1 kolumny | Jakość, Pewność na końcu, pełna nazwa | `cli/anime_state.py` → `AnimeRow` (:57); `cli/anime_view.py` → `_spec` (:301), `_values` (:332) | `tests/cli/test_anime_view.py::test_offer_columns_quality_confidence_last` | K10 |
 | §6.1 sugestia (O-5) | pierwszy wiersz grupy 1; gdy nie `zgodny` — „niepewne”; `D` bez podglądu pobiera sugestię | `episode_selection.py` → `suggestion` (:448); `automation.py` → `_admit_download_offer` (:5162–5168, bez zmian reguł) | `::test_suggestion_is_first_group_one_row`, `::test_suggestion_marks_uncertain`, `::test_suggestion_skips_conflict_and_dub_only`, `::test_suggestion_none_when_group_one_empty`; `test_automation.py::test_d_takes_uncertain_first_row` | K6 |
 | §6.1 potwierdzenia R-04 | bez zmian | istniejące w `cli/anime.py` i `automation.py` (:4997) | istniejące testy w `tests/cli/test_anime_episodes.py` (bez zmian zachowania) | K10 |
@@ -604,6 +604,18 @@ Istniejące: `StreamCandidate` (:251), `EpisodeKey`, `ReleaseFacts` (:276), `Ran
 - `streams_releases(streams) -> tuple[EpisodeRelease, ...]` = `merge_releases(streams, {}, pack_name=…)`
   — jedyna droga ze `StreamCandidate` do rankingu dla kodu sprzed K9/K12.
 - `list_order`, `visible` (U-24), `suggestion(candidates, *, numbering: bool) -> tuple[int | None, bool]` (`numbering=False` → `(None, …)`, §5.9).
+- **Remisy ekranowe (spec A §6.1, reguła „B-tie”, 2026-10-07, po K10):** `list_order` po kluczu
+  `_list_key` dzieli pełną listę na maksymalne kolejne bloki o podpisie
+  `(grupa, supported is False, *class_key, quality_text, confidence_text)` i układa każdy blok:
+  seedy malejąco (None → −1) → dokładne q×c (bez c: q) malejąco → hash. `quality_text` i
+  `confidence_text` (`episode_selection.py`) są jedynym źródłem formatu kolumn Jakość i Pewność,
+  używanym też przez `cli/interactive/anime.py`. Testy (`test_episode_selection.py`):
+  `test_list_order_rows_showing_equal_quality_and_confidence_go_by_seeds`,
+  `test_list_order_seeds_never_beat_a_visibly_higher_confidence`,
+  `test_list_order_equal_shown_rows_split_by_another_row_stay_apart`,
+  `test_list_order_equal_shown_rows_without_confidence_go_by_seeds_then_quality`. Pomiar na 42
+  listach zestawu wzorcowego: sugestia zmienia się tylko w 210031-1 (`fa26bfbd` → `942878e9`, 50 → 288
+  seedów, 75/100%), zero awansów wiersza z widocznie gorszą Jakością lub Pewnością.
 - **Numeracja odcinka (spec A §3.5, K9b):** `identity_target(graph, selected_id, mapping, number, *,
   numbering: bool = True)` (:333); `numbering=False` → wpis odcinka `{}` (bez `season`, `episode`,
   `absolute`, `episode_title`), reszta celu bez zmian. Nowa czysta

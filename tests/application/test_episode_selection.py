@@ -29,6 +29,7 @@ from anishift.application.episode_selection import (
     ListedSpecial,
     RankedCandidate,
     StreamCandidate,
+    confidence_text,
     episode_listing,
     franchise_traversal,
     franchise_view,
@@ -36,6 +37,7 @@ from anishift.application.episode_selection import (
     list_order,
     numbering_gap,
     premiere_order,
+    quality_text,
     rank_candidates,
     representative,
     streams_releases,
@@ -775,6 +777,53 @@ def test_list_order_seed_points_then_hash_break_ties() -> None:
     first: StreamCandidate = _stream(info_hash="1" * 40)
     second: StreamCandidate = _stream(info_hash="2" * 40)
     assert _ranked(_target(), [second, first]) == [first, second]
+
+
+def _shown(digit: str, *, quality: float, certainty: float | None, seeders: int | None) -> RankedCandidate:
+    base: RankedCandidate = _rank(_target(), [_stream()])[0]
+    return replace(
+        base,
+        stream=replace(base.stream, info_hash=digit * 40),
+        traits=replace(base.traits, seeders=seeders),
+        quality=quality,
+        confidence=certainty,
+    )
+
+
+def test_list_order_rows_showing_equal_quality_and_confidence_go_by_seeds() -> None:
+    hidden_edge: RankedCandidate = _shown("1", quality=75.0, certainty=0.9999, seeders=60)
+    seeded: RankedCandidate = _shown("2", quality=75.0, certainty=0.9996, seeders=192)
+    assert (quality_text(hidden_edge), confidence_text(hidden_edge)) == (quality_text(seeded), confidence_text(seeded))
+    ranked: tuple[RankedCandidate, ...] = list_order((hidden_edge, seeded))
+    assert ranked == (seeded, hidden_edge)
+    assert suggestion(ranked, numbering=True) == (0, False)
+
+
+def test_list_order_known_zero_seeds_precede_unknown_seeds_in_a_shown_tie() -> None:
+    unknown: RankedCandidate = _shown("1", quality=75.0, certainty=0.99, seeders=None)
+    zero: RankedCandidate = _shown("2", quality=75.0, certainty=0.99, seeders=0)
+    assert list_order((unknown, zero)) == (zero, unknown)
+
+
+def test_list_order_seeds_never_beat_a_visibly_higher_confidence() -> None:
+    surer: RankedCandidate = _shown("1", quality=75.0, certainty=0.95, seeders=1)
+    seeded: RankedCandidate = _shown("2", quality=75.0, certainty=0.80, seeders=500)
+    assert list_order((seeded, surer)) == (surer, seeded)
+
+
+def test_list_order_equal_shown_rows_split_by_another_row_stay_apart() -> None:
+    first: RankedCandidate = _shown("1", quality=76.4, certainty=1.0, seeders=1)
+    between: RankedCandidate = _shown("2", quality=76.9, certainty=0.99, seeders=0)
+    last: RankedCandidate = _shown("3", quality=75.6, certainty=1.0, seeders=999)
+    assert (quality_text(first), confidence_text(first)) == (quality_text(last), confidence_text(last))
+    assert list_order((last, between, first)) == (first, between, last)
+
+
+def test_list_order_equal_shown_rows_without_confidence_go_by_seeds_then_quality() -> None:
+    lower: RankedCandidate = _shown("1", quality=40.2, certainty=None, seeders=5)
+    higher: RankedCandidate = _shown("2", quality=40.4, certainty=None, seeders=5)
+    seeded: RankedCandidate = _shown("3", quality=39.6, certainty=None, seeders=6)
+    assert list_order((lower, higher, seeded)) == (seeded, higher, lower)
 
 
 def test_representative_prefers_match_then_uncertain_then_conflict_then_path() -> None:
