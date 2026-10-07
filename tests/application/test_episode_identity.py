@@ -1013,6 +1013,31 @@ def _name_assessments(target: Mapping[str, Any], name: str) -> tuple[IdentityAss
     )
 
 
+@pytest.mark.parametrize(
+    "depth",
+    ["8bit", "8-bit", "8 bit", "8bits", "8BITS", "10bit", "10-bit", "10-bits", "10bits", "12bit"],
+)
+@pytest.mark.parametrize("source", ["", "WEBRip "])
+def test_classify_bit_depth_metadata_matches_across_name_boundaries(depth: str, source: str) -> None:
+    target: dict[str, Any] = _target_for(episode_title=None, other_episode_titles=[])
+    for assessment in _name_assessments(target, f"Star Garden S01E05 1080p {source}{depth}"):
+        assert assessment.verdict is IdentityVerdict.MATCH
+
+
+@pytest.mark.parametrize("suffix", ["8bits Unknown Words", "8bitsExtra", "18bits"])
+def test_classify_bit_depth_does_not_consume_unknown_text(suffix: str) -> None:
+    for assessment in _name_assessments(_target_for(), f"Star Garden S01E05 1080p {suffix}"):
+        assert assessment == IdentityAssessment(IdentityVerdict.INSUFFICIENT, _UNCONSUMED)
+
+
+def test_classify_bit_depth_preserves_numbering_and_extra_guards() -> None:
+    for name in ("Star Garden S02E05 8bits", "Star Garden S01E06 8bits", "Star Garden S01E05 Bonus 8bits"):
+        for assessment in _name_assessments(_target_for(), name):
+            assert is_conflict(assessment)
+    for assessment in _name_assessments(_target_for(), "Star Garden 1080p 8bits"):
+        assert assessment.verdict is IdentityVerdict.INSUFFICIENT
+
+
 def _marker_cases() -> list[tuple[dict[str, Any], str]]:
     plain: dict[str, Any] = {"episode_title": None, "other_episode_titles": []}
     first: dict[str, Any] = _target_for(season=1, episode=1, local_episode=1, absolute=1, **plain)

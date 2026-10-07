@@ -1,4 +1,4 @@
-"""Assess selected-file identity with H1 v10.5 without inspecting media or performing I/O."""
+"""Assess selected-file identity with H1 v10.6 without inspecting media or performing I/O."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ VIDEO_EXTENSIONS: Final[frozenset[str]] = frozenset(
 """Allow video containers at the selected-file boundary."""
 TECHNICAL: Final[re.Pattern[str]] = re.compile(
     r"(?:\d{3,4}p|\d{3,4}i|\d{3,4}x\d{3,4}p?|[xh] ?26[45]|hevc|avc|av1|vp9|xvid|divx|"
-    r"(?:hi|ma|main)?(?:8|10|12)(?:bit|p)|(?:8|10|12) bits?|yuv\d+p\d*|"
+    r"(?:hi|ma|main)?(?:8|10|12)(?:bit|p)|8bits|(?:8|10|12) bits?|yuv\d+p\d*|"
     r"bd(?:rip|remux|mux|mv|\d{3,4}p)?|blu ?ray|dvd(?:rip|remux)?|web(?: ?dl| ?rip)?|hdtv|hdrip|remux|"
     r"aac\d?(?:\.\d)?|flac\d?(?:\.\d)?|opus(?:\d\.\d)?|ac3|eac3|ddp?(?:\d\.\d)?|dts(?: ?hd)?|truehd|lpcm|pcm|"
     r"(?:1|2|5|7)\.\d(?:ch)?|stereo|mono|atmos|hd|ma|"

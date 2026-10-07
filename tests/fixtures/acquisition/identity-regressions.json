@@ -870,5 +870,11 @@
     "candidate": {"release": "[ToonsHub] BLUE LOCK S02E01 1080p B-Global WEB-DL AAC2.0 H.264 (Multi-Subs)", "path": null, "filename": "BLUE.LOCK.S02E25.Tryouts.1080p.B-Global.WEB-DL.JPN.AAC2.0.H.264.MSubs-ToonsHub.mkv"},
     "expected_verdict": "insufficient_evidence",
     "cause": "A mapped number equal to the target absolute number is ambiguous, not a different episode."
+  },
+  {
+    "target": {"aliases": ["Nia Liston: The Merciless Maiden", "Kyouran Reijou Nia Liston", "Nia Liston The Merciless Maiden"], "type": "TV", "season": 1, "episode": 1, "local_episode": 1, "absolute": 1},
+    "candidate": {"filename": "Nia Liston The Merciless Maiden S01E01 1080p WEBRip 8bits.mkv"},
+    "expected_verdict": "match",
+    "cause": "The 8bits encoding depth is technical metadata, not an unknown episode title."
   }
 ]
