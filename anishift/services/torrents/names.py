@@ -66,7 +66,7 @@ _SEASON_EPISODE_RE: Final[re.Pattern[str]] = re.compile(r"\bS(\d{1,2})E(\d{1,3})
 """Combined ``SxxEyy`` season and episode form, with an optional version."""
 
 _SEASON_ONLY_RE: Final[re.Pattern[str]] = re.compile(
-    rf"(?<!\w)S(\d{{1,2}})(?!\w)(?=\s+(?:{_TAG_ALTERNATION})(?!\w)|$)", re.IGNORECASE
+    rf"(?<!\w)S(\d{{1,2}})(?!\w)(?=\s+[(\[]?\s*(?:{_TAG_ALTERNATION})(?!\w)|$)", re.IGNORECASE
 )
 """Season marker without an episode, recognized only when a technical tag or the title end follows."""
 
@@ -75,6 +75,9 @@ _EPISODE_RE: Final[re.Pattern[str]] = re.compile(r"^(\d{1,4}(?:\.\d+)?)(?:v(\d+)
 
 _BATCH_RANGE_RE: Final[re.Pattern[str]] = re.compile(r"\(\s*\d+\s*-\s*\d+\s*\)")
 """Parenthesised episode range marking a multi-episode pack."""
+
+_EPISODE_RANGE_RE: Final[re.Pattern[str]] = re.compile(r"(?i)(?<!\w)(?:S\d{1,2})?E\d{1,3}\s*[-~]\s*E\d{1,3}(?!\w)")
+"""Explicit episode range with optional season, as in S01E01-E04."""
 
 _BARE_RANGE_RE: Final[re.Pattern[str]] = re.compile(rf"{SERIES_SEPARATOR}\d{{1,4}}\s*[-~]\s*\d{{1,4}}(?!\d)")
 """Episode range written without parentheses right after the separator, as in ``- 01-12``."""
@@ -271,7 +274,10 @@ def _resolution(remainder: str) -> int | None:
 
 def _is_batch(remainder: str) -> bool:
     """Whether the title advertises a multi-episode pack."""
-    return any(pattern.search(remainder) is not None for pattern in (_BATCH_RANGE_RE, _BARE_RANGE_RE, _BATCH_TAG_RE))
+    return any(
+        pattern.search(remainder) is not None
+        for pattern in (_BATCH_RANGE_RE, _BARE_RANGE_RE, _BATCH_TAG_RE, _EPISODE_RANGE_RE)
+    )
 
 
 def _optional_int(value: str | None) -> int | None:

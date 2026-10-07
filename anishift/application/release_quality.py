@@ -20,11 +20,13 @@ __all__ = [
     "ResolutionClass",
     "class_key",
     "language_code",
+    "name_declaration",
     "quality_score",
     "release_traits",
     "resolution",
     "resolution_class",
     "seed_points",
+    "tag_declaration",
 ]
 
 
@@ -48,6 +50,7 @@ class LanguageDeclaration:
     audio: frozenset[str] | None
     complete_audio: bool
     polish_bare: bool = False
+    partial_subtitles: bool = False
 
 
 class PolishClass(IntEnum):
@@ -276,7 +279,8 @@ def quality_score(traits: ReleaseTraits) -> float:
     )
 
 
-def _name_declaration(text: str, source: LanguageSource, file: str | None) -> LanguageDeclaration:
+def name_declaration(text: str, source: LanguageSource, file: str | None) -> LanguageDeclaration:
+    """Read positive language tokens without treating absent subtitle tokens as an explicit exclusion."""
     text = text.replace("_", " ")
     subtitles: set[str] = set()
     if _PL_SUB_RE.search(text):
@@ -292,10 +296,12 @@ def _name_declaration(text: str, source: LanguageSource, file: str | None) -> La
         frozenset({"pl"}) if polish_audio else None,
         complete_audio=False,
         polish_bare=bool(_PL_BARE_RE.search(unqualified)),
+        partial_subtitles=True,
     )
 
 
-def _tag_declaration(tags: Sequence[str]) -> LanguageDeclaration:
+def tag_declaration(tags: Sequence[str]) -> LanguageDeclaration:
+    """Combine nekoBT fansub and official subtitle lists while retaining the complete audio list."""
     subtitles: set[str] = set()
     audio: set[str] = set()
     for role, values in _NEKOBT_LANGUAGE_RE.findall(";".join(tags)):
@@ -314,11 +320,11 @@ def _scoped_declarations(
 ) -> list[LanguageDeclaration]:
     combined: list[LanguageDeclaration] = [
         *declarations,
-        _tag_declaration(tags),
-        _name_declaration("\n".join(names), LanguageSource.RELEASE_NAME, None),
+        tag_declaration(tags),
+        name_declaration("\n".join(names), LanguageSource.RELEASE_NAME, None),
     ]
     if file is not None:
-        combined.append(_name_declaration(file.replace("\\", "/").rsplit("/", 1)[-1], LanguageSource.FILE_NAME, file))
+        combined.append(name_declaration(file.replace("\\", "/").rsplit("/", 1)[-1], LanguageSource.FILE_NAME, file))
     selected: list[LanguageDeclaration] = [
         declaration
         for declaration in combined
@@ -342,17 +348,12 @@ def _declared(
     return frozenset()
 
 
-def _polish_class(
-    declarations: Sequence[LanguageDeclaration], *, explicit: Sequence[LanguageDeclaration]
-) -> PolishClass:
+def _polish_class(declarations: Sequence[LanguageDeclaration]) -> PolishClass:
     bare_allowed: bool = True
     for declaration in declarations:
         if declaration.subtitles and "pl" in _declared((declaration,)):
             return PolishClass.POLISH
-        explicit_list: bool = declaration.source not in (LanguageSource.FILE_NAME, LanguageSource.RELEASE_NAME) or any(
-            declaration is supplied for supplied in explicit
-        )
-        if declaration.subtitles and explicit_list:
+        if declaration.subtitles and not declaration.partial_subtitles:
             return PolishClass.BARE if bare_allowed and declaration.polish_bare else PolishClass.NONE
         if bare_allowed and declaration.polish_bare:
             return PolishClass.BARE
@@ -388,7 +389,7 @@ def release_traits(  # noqa: PLR0913 - explicit pure boundary mirrors the acquis
     beside_original: bool = bool(complete_audio & acceptable_audio) if complete_audio else dual
     effective_audio: frozenset[str] = complete_audio or audio
     return ReleaseTraits(
-        polish=_polish_class(scoped, explicit=declarations),
+        polish=_polish_class(scoped),
         polish_audio_beside_original="pl" in audio and beside_original,
         english_subtitles="en" in subtitles,
         audio=AudioClass.KOREAN
