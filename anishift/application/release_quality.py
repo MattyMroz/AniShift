@@ -323,8 +323,6 @@ def _scoped_declarations(
         tag_declaration(tags),
         name_declaration("\n".join(names), LanguageSource.RELEASE_NAME, None),
     ]
-    if file is not None:
-        combined.append(name_declaration(file.replace("\\", "/").rsplit("/", 1)[-1], LanguageSource.FILE_NAME, file))
     selected: list[LanguageDeclaration] = [
         declaration
         for declaration in combined
@@ -371,15 +369,24 @@ def release_traits(  # noqa: PLR0913 - explicit pure boundary mirrors the acquis
     pack: bool,
     donghua: bool,
     seeders: int | None,
+    file_names: Sequence[str] | None = None,
 ) -> ReleaseTraits:
-    """Resolve file-scoped languages first and retain exclusion evidence from every source."""
-    scoped: list[LanguageDeclaration] = _scoped_declarations(names, tags, declarations, file=file, pack=pack)
+    """Resolve languages scoped to *file* first; *file_names* name it, defaulting to the base name of *file*."""
+    if file_names is None:
+        file_names = (file.replace("\\", "/").rsplit("/", 1)[-1],) if file is not None else ()
+    file_declarations: tuple[LanguageDeclaration, ...] = (
+        (name_declaration("\n".join(file_names), LanguageSource.FILE_NAME, file),)
+        if file is not None and file_names
+        else ()
+    )
+    scoped: list[LanguageDeclaration] = _scoped_declarations(
+        names, tags, (*declarations, *file_declarations), file=file, pack=pack
+    )
     subtitles: frozenset[str] = _declared(scoped)
     audio: frozenset[str] = _declared(scoped, audio=True)
     complete_audio: frozenset[str] = _declared(scoped, audio=True, complete=True)
     original_audio: frozenset[str] = frozenset({"ja", "zh"}) if donghua else frozenset({"ja"})
     acceptable_audio: frozenset[str] = original_audio | {"ko"}
-    file_names: tuple[str, ...] = (file.replace("\\", "/").rsplit("/", 1)[-1],) if file is not None else ()
     all_names: tuple[str, ...] = tuple(name.replace("_", " ") for name in (*names, *file_names))
     texts: tuple[str, ...] = (*all_names, *tags)
     language_texts: tuple[str, ...] = tuple(name.replace("_", " ") for name in file_names) if pack else texts
@@ -398,7 +405,7 @@ def release_traits(  # noqa: PLR0913 - explicit pure boundary mirrors the acquis
         dub_only=dub_only,
         raw=any(_RAW_RE.search(text) for text in texts),
         hardsub=any(_HARDSUB_RE.search(text) for text in texts) or any(_HS_TAG_RE.search(tag) for tag in tags),
-        resolution=resolution((*names, *((file,) if file is not None else ()))),
+        resolution=resolution((*names, *file_names, *((file,) if file is not None else ()))),
         platform=any(_WEB_RE.search(name) and _PLATFORM_RE.search(name) for name in all_names),
         bluray=any(_BLURAY_RE.search(name) for name in all_names),
         seeders=seeders,

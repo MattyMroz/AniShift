@@ -3,16 +3,24 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from enum import StrEnum
-from types import MappingProxyType
 from typing import Any, Final
 
 from anishift.application.discovery import VIDEO_SOURCE_SUFFIXES
-from anishift.application.episode_identity import IdentityAssessment, IdentityVerdict, classify_many
-from anishift.application.release_quality import resolution, resolution_class
+from anishift.application.episode_confidence import confidence
+from anishift.application.episode_identity import (
+    IdentityAssessment,
+    IdentityEvidence,
+    IdentityVerdict,
+    classify_release_name,
+    identity_evidence,
+    is_conflict,
+)
+from anishift.application.episode_releases import NAME_PRIORITY, EpisodeRelease, ReleaseFile, merge_releases
+from anishift.application.release_quality import ReleaseTraits, class_key, quality_score, release_traits
 
 __all__ = [
     "AniZipMapping",
@@ -30,16 +38,18 @@ __all__ = [
     "ListedEpisode",
     "ListedSpecial",
     "RankedCandidate",
-    "ReleaseFacts",
     "StreamCandidate",
     "episode_listing",
     "franchise_traversal",
     "franchise_view",
     "identity_target",
+    "list_order",
     "premiere_order",
     "rank_candidates",
-    "release_facts",
+    "representative",
+    "streams_releases",
     "suggestion",
+    "visible",
 ]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -86,34 +96,11 @@ _FINISHED: Final[str] = "FINISHED"
 _EXTRA_PREFIX: Final[str] = "Extra: "
 """Prefix ani.zip puts before titles of extra episodes."""
 
-_VERDICT_ORDER: Final[Mapping[IdentityVerdict, int]] = MappingProxyType(
-    {IdentityVerdict.MATCH: 0, IdentityVerdict.INSUFFICIENT: 1, IdentityVerdict.MISMATCH: 2}
-)
-"""Rank position of each identity verdict, ahead of every owner preference."""
+_HIGH_RESOLUTIONS: Final[frozenset[int]] = frozenset({1080, 2160})
+"""Heights whose matching candidate hides lower resolutions from the list (U-24)."""
 
-_SUGGESTED_VERDICTS: Final[tuple[IdentityVerdict, ...]] = (IdentityVerdict.MATCH, IdentityVerdict.INSUFFICIENT)
-"""Verdicts that may become a suggestion, in order of preference."""
-
-_POLISH: Final[re.Pattern[str]] = re.compile(r"(?i)\b(?:polish|polski|polskie|polska|pol|pl)\b")
-"""Polish language token in a release name, path or tag."""
-
-_POLISH_FLAG: Final[str] = "\U0001f1f5\U0001f1f1"
-"""Torrentio tag marking Polish language."""
-
-_MULTISUB: Final[re.Pattern[str]] = re.compile(r"(?i)\bmulti(?:ple)?[ .-]?sub(?:s|titles?)?\b")
-"""Declaration of several subtitle languages."""
-
-_PLATFORMS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
-    (re.compile(r"\b(?:NF|(?i:netflix))\b"), "Netflix"),
-    (re.compile(r"\b(?:CR|(?i:crunchyroll))\b"), "Crunchyroll"),
-)
-"""Whole tokens naming a streaming platform and the platform they name."""
-
-_DUBBED_TAG: Final[str] = "Dubbed"
-"""Torrentio tag of a dubbed release."""
-
-_DUAL_AUDIO: Final[re.Pattern[str]] = re.compile(r"(?i)\b(?:dual|multi)[ .-]?audio\b")
-"""Declaration that original audio accompanies a dub."""
+_HIDDEN_MAX_HEIGHT: Final[int] = 720
+"""Tallest known height hidden while a matching high-resolution candidate exists."""
 
 _CONTAINER: Final[re.Pattern[str]] = re.compile(r"[^/\\]\.([^\s./\\()\[\]{}]+)$")
 """Final suffix of the selected file name; a dot followed by spaces or brackets, as in ``(TrueHD 5.1)``, is not one."""
@@ -256,25 +243,19 @@ class EpisodeKey:
 
 
 @dataclass(frozen=True, slots=True)
-class ReleaseFacts:
-    """Owner-relevant facts declared by a stream's names and tags."""
-
-    resolution: int | None
-    polish: bool
-    multisub: bool
-    platform: str | None
-    dub_only: bool
-    container: str | None
-    supported: bool | None
-
-
-@dataclass(frozen=True, slots=True)
 class RankedCandidate:
-    """One stream with its identity assessment and release facts."""
+    """One release row assessed on its representative file, with quality, confidence and usability."""
 
     stream: StreamCandidate
     identity: IdentityAssessment
-    facts: ReleaseFacts
+    traits: ReleaseTraits
+    quality: float
+    confidence: float | None
+    conflict: bool
+    ambiguous: bool
+    release_name_only: bool
+    supported: bool | None
+    files: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -395,53 +376,63 @@ def episode_listing(  # noqa: PLR0913
     )
 
 
-def release_facts(stream: StreamCandidate) -> ReleaseFacts:
-    """Read resolution, language, platform, dub and container declarations of one stream."""
-    raw_names: tuple[str, ...] = tuple(text for text in (stream.release, stream.path, stream.file_name) if text)
-    names: tuple[str, ...] = tuple(text.replace("_", " ") for text in raw_names)
-    labels: tuple[str, ...] = (*names, *stream.tags)
-    container: str | None = _container(stream.file_name)
-    return ReleaseFacts(
-        resolution=resolution((*raw_names, stream.name or "")),
-        polish=_POLISH_FLAG in stream.tags or any(_POLISH.search(text) for text in labels),
-        multisub=any(_MULTISUB.search(text) for text in labels),
-        platform=next(
-            (platform for pattern, platform in _PLATFORMS if any(pattern.search(text) for text in labels)), None
+def streams_releases(
+    streams: Sequence[StreamCandidate], *, pack_name: Callable[[str], bool]
+) -> tuple[EpisodeRelease, ...]:
+    """Merge source streams without file inventories into releases for ranking."""
+    return merge_releases(streams, {}, pack_name=pack_name)
+
+
+def representative(
+    assessed: Sequence[tuple[ReleaseFile, IdentityEvidence]],
+) -> tuple[ReleaseFile, IdentityEvidence]:
+    """Return the file best matching the target: match, uncertain, conflict, then confidence, then path."""
+    return min(
+        assessed,
+        key=lambda item: (_identity_rank(item[1].assessment), -confidence(item[1]), item[0].scope or ""),
+    )
+
+
+def rank_candidates(
+    target: Mapping[str, object], releases: Sequence[EpisodeRelease], *, donghua: bool
+) -> tuple[RankedCandidate, ...]:
+    """Assess every release on its representative file, else on its name, and return the rows in list order."""
+    return list_order(tuple(_ranked(target, release, donghua=donghua) for release in releases))
+
+
+def list_order(candidates: Sequence[RankedCandidate]) -> tuple[RankedCandidate, ...]:
+    """Order rows without conflict, then dub-only rows, then conflicts, each by class, weighted quality and seeds."""
+    return tuple(sorted(candidates, key=_list_key))
+
+
+def visible(candidates: Sequence[RankedCandidate]) -> tuple[RankedCandidate, ...]:
+    """Hide 720p and lower while a usable matching 1080p or 2160p row exists; unknown heights stay (U-24)."""
+    high: bool = any(
+        candidate.identity.verdict is IdentityVerdict.MATCH
+        and candidate.traits.resolution in _HIGH_RESOLUTIONS
+        and candidate.supported is not False
+        for candidate in candidates
+    )
+    return tuple(
+        candidate
+        for candidate in candidates
+        if not high or candidate.traits.resolution is None or candidate.traits.resolution > _HIDDEN_MAX_HEIGHT
+    )
+
+
+def suggestion(candidates: Sequence[RankedCandidate], *, numbering: bool) -> tuple[int | None, bool]:
+    """Return the first usable row of list group one in *candidates* order and whether it is uncertain."""
+    index: int | None = next(
+        (
+            position
+            for position, candidate in enumerate(candidates)
+            if not candidate.conflict and not candidate.traits.dub_only and candidate.supported is not False
         ),
-        dub_only=_DUBBED_TAG in stream.tags and not any(_DUAL_AUDIO.search(text) for text in labels),
-        container=container,
-        supported=None if container is None else container in VIDEO_SOURCE_SUFFIXES,
+        None,
     )
-
-
-def rank_candidates(target: Mapping[str, object], streams: Sequence[StreamCandidate]) -> tuple[RankedCandidate, ...]:
-    """Assess every stream with H1 and stably order them by verdict, then by the owner preference key."""
-    assessments: tuple[IdentityAssessment, ...] = classify_many(
-        target,
-        [{"release": stream.release, "path": stream.path, "filename": stream.file_name} for stream in streams],
-    )
-    ranked: list[RankedCandidate] = [
-        RankedCandidate(stream=stream, identity=identity, facts=release_facts(stream))
-        for stream, identity in zip(streams, assessments, strict=True)
-    ]
-    ranked.sort(key=_rank_key)
-    return tuple(ranked)
-
-
-def suggestion(candidates: Sequence[RankedCandidate]) -> int | None:
-    """Return the index of the best ranked usable match, else of the best usable uncertain stream."""
-    for verdict in _SUGGESTED_VERDICTS:
-        found: int | None = next(
-            (
-                index
-                for index, candidate in enumerate(candidates)
-                if candidate.identity.verdict is verdict and candidate.facts.supported is not False
-            ),
-            None,
-        )
-        if found is not None:
-            return found
-    return None
+    if not numbering or index is None:
+        return None, False
+    return index, candidates[index].identity.verdict is not IdentityVerdict.MATCH
 
 
 def _walk(
@@ -586,17 +577,80 @@ def _container(file_name: str | None) -> str | None:
     return f".{found.group(1).casefold()}" if found else None
 
 
-def _rank_key(candidate: RankedCandidate) -> tuple[int, bool, bool, tuple[int, int], bool, bool, bool, bool, int]:
-    facts: ReleaseFacts = candidate.facts
-    seeders: int | None = candidate.stream.seeders
+def _identity_rank(assessment: IdentityAssessment) -> int:
+    if assessment.verdict is IdentityVerdict.MATCH:
+        return 0
+    return 2 if is_conflict(assessment) else 1
+
+
+def _ranked(target: Mapping[str, object], release: EpisodeRelease, *, donghua: bool) -> RankedCandidate:
+    assessed: tuple[tuple[ReleaseFile, IdentityEvidence], ...] = tuple(
+        (file, identity_evidence(target, file.identity_candidate(release.name))) for file in release.files
+    )
+    file: ReleaseFile | None = None
+    identity: IdentityAssessment
+    evidence: IdentityEvidence
+    if assessed:
+        file, evidence = representative(assessed)
+        identity = evidence.assessment
+    else:
+        identity = classify_release_name(target, release.name)
+        evidence = identity_evidence(target, {"release": release.name})
+    traits: ReleaseTraits = release_traits(
+        release.names,
+        release.tags,
+        release.declarations,
+        file=None if file is None else file.scope,
+        pack=release.pack,
+        donghua=donghua,
+        seeders=release.seeders,
+        file_names=() if file is None else file.names,
+    )
+    container: str | None = _container(None if file is None else file.filename or file.path)
+    conflict: bool = is_conflict(identity)
+    return RankedCandidate(
+        stream=_row_stream(release, file),
+        identity=identity,
+        traits=traits,
+        quality=quality_score(traits),
+        confidence=None if conflict else confidence(evidence),
+        conflict=conflict,
+        ambiguous=sum(1 for _, item in assessed if item.assessment.verdict is IdentityVerdict.MATCH) > 1,
+        release_name_only=not assessed,
+        supported=None if container is None else container in VIDEO_SOURCE_SUFFIXES,
+        files=tuple(scope for item in release.files if (scope := item.scope) is not None),
+    )
+
+
+def _row_stream(release: EpisodeRelease, file: ReleaseFile | None) -> StreamCandidate:
+    return StreamCandidate(
+        info_hash=release.info_hash,
+        name=None,
+        file_index=release.file_hint if file is None else file.file_index,
+        file_name=None if file is None else file.filename,
+        release=release.name,
+        path=None if file is None else file.path,
+        seeders=release.seeders,
+        size_text=release.size_text,
+        provider=None,
+        tags=release.tags,
+        trackers=release.trackers,
+        source=next(source for source in NAME_PRIORITY if source in release.sources),
+        torrent_id=release.torrent_id,
+    )
+
+
+def _list_key(candidate: RankedCandidate) -> tuple[float | str, ...]:
+    group: int = 2 if candidate.conflict else int(candidate.traits.dub_only)
+    certainty: float = 0.0 if candidate.confidence is None else candidate.confidence
+    weighted: float = candidate.quality if candidate.confidence is None else candidate.quality * certainty
+    seeders: int = -1 if candidate.traits.seeders is None else candidate.traits.seeders
     return (
-        _VERDICT_ORDER[candidate.identity.verdict],
-        facts.supported is False,
-        facts.dub_only,
-        resolution_class(facts.resolution),
-        not facts.polish,
-        not facts.multisub,
-        facts.platform is None,
-        seeders is None,
-        -(seeders or 0),
+        group,
+        candidate.supported is False,
+        *class_key(candidate.traits),
+        -weighted,
+        -certainty,
+        -seeders,
+        candidate.stream.info_hash,
     )

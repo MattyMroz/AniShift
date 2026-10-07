@@ -26,6 +26,7 @@ from anishift.application.episode_selection import (
     franchise_view,
     identity_target,
     rank_candidates,
+    streams_releases,
     suggestion,
 )
 from anishift.errors import AniShiftError, ErrorCode
@@ -34,7 +35,7 @@ from anishift.services.torrents.categories import (
     CATEGORY_NON_ENGLISH_TRANSLATED,
     SEARCH_CATEGORIES,
 )
-from anishift.services.torrents.names import base_title, season_hint, title_forms
+from anishift.services.torrents.names import base_title, parse_release_name, season_hint, title_forms
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -154,6 +155,9 @@ _UNKNOWN_STATUS: Final[str] = "UNKNOWN"
 
 _MOVIE_FORMAT: Final[str] = "MOVIE"
 """AniList format whose only row is fetched as a Torrentio movie."""
+
+_DONGHUA_COUNTRY: Final[str] = "CN"
+"""AniList country of origin whose original audio also includes Chinese."""
 
 
 class TorrentSource(Protocol):
@@ -812,9 +816,13 @@ class AcquisitionService:
         return self.prepare_episode(key)[0]
 
     def prepare_episode(
-        self, key: EpisodeKey, *, mapping: AniZipMapping | None = None
+        self,
+        key: EpisodeKey,
+        *,
+        mapping: AniZipMapping | None = None,
+        exclude: Callable[[StreamCandidate], bool] | None = None,
     ) -> tuple[EpisodeOffer, dict[str, object]]:
-        """Read one live offer and its exact target, assessing against *mapping* instead of ani.zip when given."""
+        """Read one live offer and its target; *mapping* replaces ani.zip, *exclude* drops files before ranking."""
         now: float = self._clock()
         graph: FranchiseGraph = self._context_graph(key.anilist_id, now)
         if mapping is None:
@@ -833,15 +841,20 @@ class AcquisitionService:
         except (AniShiftError, OSError, ValueError) as error:
             self._decision(source_error("torrentio", key.anilist_id, key.number, error))
             raise
-        ranked: tuple[RankedCandidate, ...] = rank_candidates(target, streams)
+        if exclude is not None:
+            streams = tuple(stream for stream in streams if not exclude(stream))
+        donghua: bool = graph.nodes[key.anilist_id].get("countryOfOrigin") == _DONGHUA_COUNTRY
+        ranked: tuple[RankedCandidate, ...] = rank_candidates(
+            target, streams_releases(streams, pack_name=_pack_name), donghua=donghua
+        )
         counts: dict[str, int] = {
             verdict.value: sum(1 for item in ranked if item.identity.verdict is verdict) for verdict in IdentityVerdict
         }
-        suggested: int | None = suggestion(ranked)
+        suggested: int | None = suggestion(ranked, numbering=True)[0]
         logger.info("Episode offer ranked", count=len(ranked), suggested=suggested is not None, movie=movie)
         offer: EpisodeOffer = EpisodeOffer(key, ranked, suggested, datetime.fromtimestamp(self._clock(), UTC), counts)
         if mapping.kitsu_id is not None:
-            self._decision(offer_check(offer, target))
+            self._decision(offer_check(offer, target, streams, donghua=donghua))
         return offer, target
 
     def _titles(self) -> TitleCatalog:
@@ -1145,6 +1158,10 @@ def _series_group(
         newest=max(published) if published else None,
         matches_title=bool(series_forms(series) & alias_keys),
     )
+
+
+def _pack_name(name: str) -> bool:
+    return parse_release_name(name).is_pack
 
 
 def _seeding_stops(preferences: Mapping[str, object]) -> bool:

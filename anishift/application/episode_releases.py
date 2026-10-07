@@ -77,6 +77,18 @@ class ReleaseFile:
     from_listing: bool
     file_index: int | None
 
+    @property
+    def scope(self) -> str | None:
+        """Return the original path, else the filename, that file-scoped declarations refer to."""
+        return self.path or self.filename
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        """Return the distinct base names of the filename and the path that describe this file."""
+        return tuple(
+            dict.fromkeys(value.replace("\\", "/").rsplit("/", 1)[-1] for value in (self.filename, self.path) if value)
+        )
+
     def identity_candidate(self, release: str) -> dict[str, object]:
         """Project source identity fields without substituting a filename for a path."""
         return {"release": release, "path": self.path, "filename": self.filename}
@@ -99,6 +111,7 @@ class EpisodeRelease:
     declarations: tuple[LanguageDeclaration, ...]
     torrent_id: int | None
     trackers: tuple[str, ...]
+    pack: bool
 
 
 def info_hash_hex(value: str) -> str | None:
@@ -128,7 +141,7 @@ def merge_releases(
     *,
     pack_name: Callable[[str], bool],
 ) -> tuple[EpisodeRelease, ...]:
-    """Merge valid BTIH rows without inferring files or inventory completeness from release names."""
+    """Merge valid BTIH rows and mark packs without inferring files or inventory completeness from release names."""
     grouped: dict[str, list[StreamCandidate]] = {}
     for stream in streams:
         key: str | None = info_hash_hex(stream.info_hash)
@@ -137,7 +150,10 @@ def merge_releases(
     normalized_listings: dict[str, TsukiHimeFiles] = {
         key: listing for value, listing in listings.items() if (key := info_hash_hex(value)) is not None
     }
-    return tuple(_merge_release(key, rows, normalized_listings.get(key)) for key, rows in grouped.items())
+    merged: tuple[EpisodeRelease, ...] = tuple(
+        _merge_release(key, rows, normalized_listings.get(key)) for key, rows in grouped.items()
+    )
+    return tuple(replace(release, pack=is_pack(release, pack_name=pack_name)) for release in merged)
 
 
 def _source_name(source: str) -> SourceName:
@@ -181,6 +197,7 @@ def _merge_release(key: str, streams: Sequence[StreamCandidate], listing: TsukiH
             None,
         ),
         trackers=tuple(dict.fromkeys(tracker for stream in ordered for tracker in stream.trackers)),
+        pack=False,
     )
 
 
@@ -234,7 +251,7 @@ def _stream_declarations(stream: StreamCandidate, file: ReleaseFile | None) -> t
         return (tag_declaration((*stream.tags, *stream.language_tags)),)
     if file is None:
         return ()
-    scope: str | None = file.path or file.filename
+    scope: str | None = file.scope
     filename: str = stream.file_name or (stream.path or "").replace("\\", "/").rsplit("/", 1)[-1]
     declarations: list[LanguageDeclaration] = [name_declaration(filename, LanguageSource.FILE_NAME, scope)]
     if _POLISH_FLAG in stream.tags:

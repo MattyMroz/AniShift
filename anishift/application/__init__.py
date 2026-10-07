@@ -122,9 +122,9 @@ from anishift.application.episode_selection import (
     ListedEpisode,
     ListedSpecial,
     RankedCandidate,
-    ReleaseFacts,
     StreamCandidate,
     premiere_order,
+    visible,
 )
 from anishift.application.events import (
     RunEvent,
@@ -164,6 +164,7 @@ from anishift.application.planning import (
     TaskKind,
     TaskState,
 )
+from anishift.application.release_quality import PolishClass, ReleaseTraits
 from anishift.application.results import (
     ArtifactSnapshot,
     GroupResult,
@@ -265,6 +266,7 @@ __all__ = [
     "PlanPreview",
     "PlanProblem",
     "PlanTask",
+    "PolishClass",
     "ProcessingOrderPolicy",
     "ProcessingRequest",
     "ProducedArtifact",
@@ -280,7 +282,7 @@ __all__ = [
     "RefusalReason",
     "ReleaseCatalog",
     "ReleaseChoice",
-    "ReleaseFacts",
+    "ReleaseTraits",
     "RequestOrigin",
     "RequestState",
     "Reservation",
@@ -342,6 +344,7 @@ __all__ = [
     "read_episode",
     "ready_group_ids",
     "resolve_readiness",
+    "visible",
 ]
 
 _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {

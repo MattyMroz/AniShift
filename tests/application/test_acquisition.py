@@ -19,6 +19,7 @@ from test_episode_selection import (
     _fixture_streams,
     _graph,
     _node,
+    _rank,
     _stream,
 )
 
@@ -42,6 +43,7 @@ from anishift.application.acquisition import (
 from anishift.application.cancellation import CancellationToken
 from anishift.application.control_views import decode_view, encode_view
 from anishift.application.episode_identity import IdentityVerdict
+from anishift.application.episode_releases import EpisodeRelease
 from anishift.application.episode_selection import (
     AniZipMapping,
     EntryGroup,
@@ -1005,9 +1007,9 @@ def test_offer_through_the_franchise_ranks_recorded_streams_with_the_recorded_me
     service: AcquisitionService = _episode_service(tmp_path)
     service.franchise(root)
     offer: EpisodeOffer = service.offer(EpisodeKey(selected, number))
-    expected: tuple[RankedCandidate, ...] = rank_candidates(target, _fixture_streams(_STREAM_FILES[kitsu, number]))
+    expected: tuple[RankedCandidate, ...] = _rank(target, _fixture_streams(_STREAM_FILES[kitsu, number]))
     assert offer.candidates == expected
-    assert offer.suggestion == suggestion(expected)
+    assert offer.suggestion == suggestion(expected, numbering=True)[0]
 
 
 @pytest.mark.parametrize(
@@ -1043,9 +1045,11 @@ def test_two_complete_graphs_holding_the_entry_give_the_same_target_and_reasons_
     streams: _StreamSource = _StreamSource({(_S1_KITSU, 4): (_stream("Hoshi no Niwa Moonlight - 04.mkv"),)})
     targets: list[Mapping[str, object]] = []
 
-    def spy(target: Mapping[str, object], candidates: Sequence[StreamCandidate]) -> tuple[RankedCandidate, ...]:
+    def spy(
+        target: Mapping[str, object], releases: Sequence[EpisodeRelease], *, donghua: bool
+    ) -> tuple[RankedCandidate, ...]:
         targets.append(target)
-        return rank_candidates(target, candidates)
+        return rank_candidates(target, releases, donghua=donghua)
 
     monkeypatch.setattr(acquisition_module, "rank_candidates", spy)
     offers: list[EpisodeOffer] = []
@@ -1119,8 +1123,8 @@ def test_diaries_offer_matches_only_its_own_releases_and_never_a_main_series_rel
         item.stream for item in offer.candidates if item.identity.verdict is IdentityVerdict.MATCH
     ]
     assert matches == own
-    assert offer.suggestion is not None
-    assert offer.candidates[offer.suggestion].stream in own
+    assert offer.suggestion == 0
+    assert offer.candidates[0].identity.verdict is IdentityVerdict.INSUFFICIENT
 
 
 def test_offer_on_an_incomplete_leaf_of_a_complete_root_asks_no_further_franchise_query(tmp_path: Path) -> None:

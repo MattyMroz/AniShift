@@ -13,9 +13,9 @@ from anishift.application.episode_selection import (
     EpisodeListing,
     ListedEpisode,
     RankedCandidate,
-    ReleaseFacts,
     StreamCandidate,
 )
+from anishift.application.release_quality import AudioClass, PolishClass, ReleaseTraits
 from anishift.application.subscription_targets import (
     ATTEMPT_ACTIVE,
     ATTEMPT_SATISFIED,
@@ -244,7 +244,14 @@ def _candidate(
     return RankedCandidate(
         StreamCandidate("ABC", None, index, "Series - 04.mkv", "Series - 04", None, 5, None, None, (), ()),
         IdentityAssessment(verdict, "reason"),
-        ReleaseFacts(1080, False, False, None, False, "mkv", supported),
+        ReleaseTraits(PolishClass.NONE, False, False, AudioClass.ORIGINAL, False, False, False, 1080, False, False, 5),
+        quality=25.0,
+        confidence=0.9,
+        conflict=verdict is IdentityVerdict.MISMATCH,
+        ambiguous=False,
+        release_name_only=False,
+        supported=supported,
+        files=("Series - 04.mkv",),
     )
 
 

@@ -36,6 +36,7 @@ from anishift.application import (
     FranchiseEntry,
     IdentityVerdict,
     ListedEpisode,
+    PolishClass,
     RankedCandidate,
     SearchQuery,
     TitleCandidate,
@@ -43,6 +44,7 @@ from anishift.application import (
     decode_view,
     parse_query,
     premiere_order,
+    visible,
 )
 from anishift.application.cancellation import EventCancellationToken
 from anishift.application.episode_commands import MAX_EPISODE_KEYS
@@ -1156,11 +1158,11 @@ class AnimeController:
                 AnimeRow(
                     str(index),
                     item.stream.release,
-                    image=f"{item.facts.resolution}p" if item.facts.resolution else "?",
+                    image=f"{item.traits.resolution}p" if item.traits.resolution else "?",
                     language=_language(item),
                     seeds=str(item.stream.seeders) if item.stream.seeders is not None else "?",
                     detail=_candidate_reason(item, full=True) + " · " + _candidate_details(item),
-                    eligible=item.facts.supported is not False,
+                    eligible=item.supported is not False,
                     uncertain=item.identity.verdict is not IdentityVerdict.MATCH,
                     suggested=offer is not None
                     and offer.suggestion is not None
@@ -1896,7 +1898,7 @@ class AnimeController:
             self._notice = "Trwa partia · po jej zakończeniu otwórz wydania ponownie"
             return
         view: EpisodeOfferView | None = self._offer_view
-        if self._resident is None or view is None or choice.facts.supported is False:
+        if self._resident is None or view is None or choice.supported is False:
             return
         if choice.identity.verdict is not IdentityVerdict.MATCH and not confirmed:
             self._confirm_choice = choice
@@ -2055,15 +2057,7 @@ class AnimeController:
         offer: EpisodeOffer | None = self._highlighted_offer()
         if offer is None:
             return
-        high: bool = any(
-            item.identity.verdict is IdentityVerdict.MATCH
-            and item.facts.resolution in {1080, 2160}
-            and item.facts.supported is not False
-            for item in offer.candidates
-        )
-        self._release_candidates = tuple(
-            item for item in offer.candidates if not high or item.facts.resolution in {1080, 2160, None}
-        )
+        self._release_candidates = visible(offer.candidates)
         self._positions[_Screen.CANDIDATES] = 0
         self._offsets[_Screen.CANDIDATES] = 0
         self._follow_cursor = True
@@ -2388,7 +2382,12 @@ def _format_label(value: str | None) -> str:
 def _language(item: RankedCandidate) -> str:
     return (
         " · ".join(
-            label for label, present in (("PL", item.facts.polish), ("MultiSub", item.facts.multisub)) if present
+            label
+            for label, present in (
+                ("PL", item.traits.polish is not PolishClass.NONE),
+                ("EN", item.traits.english_subtitles),
+            )
+            if present
         )
         or "—"
     )
@@ -2419,8 +2418,8 @@ def _candidate_details(item: RankedCandidate) -> str:
     if item.stream.file_name:
         details.append(f"Plik: {_safe(item.stream.file_name)}")
     details.append(f"Rozmiar: {_safe(item.stream.size_text or '?')}")
-    if item.facts.platform:
-        details.append(f"platforma: {item.facts.platform}")
-    if item.facts.supported is False:
-        details.append(f"format nieobsługiwany ({item.facts.container})")
+    if item.traits.platform:
+        details.append("wydanie z platformy")
+    if item.supported is False:
+        details.append("format nieobsługiwany")
     return " · ".join(details)

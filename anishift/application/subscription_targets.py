@@ -458,7 +458,7 @@ def eligible(candidate: RankedCandidate, target: SubscriptionTarget, taken: froz
     pair: str = candidate_pair(candidate)
     return (
         candidate.identity.verdict is IdentityVerdict.MATCH
-        and candidate.facts.supported is not False
+        and candidate.supported is not False
         and pair not in target.tried
         and pair not in taken
     )

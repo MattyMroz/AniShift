@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import replace
@@ -9,7 +10,15 @@ from typing import Any, Final
 
 import pytest
 
-from anishift.application.episode_identity import IdentityVerdict, classify
+from anishift.application.episode_confidence import confidence
+from anishift.application.episode_identity import IdentityEvidence, IdentityVerdict, classify, identity_evidence
+from anishift.application.episode_releases import (
+    EpisodeRelease,
+    ListedFile,
+    ReleaseFile,
+    TsukiHimeFiles,
+    merge_releases,
+)
 from anishift.application.episode_selection import (
     AniZipMapping,
     EntryGroup,
@@ -24,13 +33,18 @@ from anishift.application.episode_selection import (
     franchise_traversal,
     franchise_view,
     identity_target,
+    list_order,
     premiere_order,
     rank_candidates,
-    release_facts,
+    representative,
+    streams_releases,
     suggestion,
+    visible,
 )
+from anishift.application.release_quality import ReleaseTraits
 from anishift.services.catalog.anilist import parse_franchise_page
 from anishift.services.catalog.anizip import parse_mapping
+from anishift.services.torrents.names import parse_release_name
 from anishift.services.torrents.torrentio import parse_streams
 
 pytestmark = pytest.mark.unit
@@ -115,7 +129,7 @@ def _fixture_streams(name: str) -> list[StreamCandidate]:
 
 def _stream(file_name: str | None = "Star Garden - 05.mkv", **changes: Any) -> StreamCandidate:
     stream: StreamCandidate = StreamCandidate(
-        info_hash="0" * 40,
+        info_hash=hashlib.sha256(repr((file_name, sorted(changes.items()))).encode()).hexdigest()[:40],
         name=None,
         file_index=None,
         file_name=file_name,
@@ -202,8 +216,16 @@ def _star_garden_graph(*, s1_expanded: bool = True) -> FranchiseGraph:
     )
 
 
+def _pack_name(name: str) -> bool:
+    return parse_release_name(name).is_pack
+
+
+def _rank(target: dict[str, object], streams: list[StreamCandidate]) -> tuple[RankedCandidate, ...]:
+    return rank_candidates(target, streams_releases(streams, pack_name=_pack_name), donghua=False)
+
+
 def _ranked(target: dict[str, object], streams: list[StreamCandidate]) -> list[StreamCandidate]:
-    return [candidate.stream for candidate in rank_candidates(target, streams)]
+    return [candidate.stream for candidate in _rank(target, streams)]
 
 
 def _regression_cases() -> list[dict[str, Any]]:
@@ -529,93 +551,135 @@ def test_a_stale_mapping_count_grows_to_the_anilist_schedule_but_never_overrides
 
 
 @pytest.mark.parametrize(
-    ("stream", "expected"),
+    ("file_name", "supported"),
     [
-        (_stream(None, name="Torrentio\n1080p"), 1080),
-        (_stream("Star Garden - 05 [1080i].mkv"), 1080),
-        (_stream("Star Garden - 05 [1440x1080].mkv"), 1080),
-        (_stream("Star Garden - 05 [1440×1080].mkv"), 1080),
-        (_stream(None, release="Star Garden - 05 [1920×1080]"), 1080),
-        (_stream("Star Garden - 05 [4K].mkv"), 2160),
-        (_stream("Star Garden - 05 [11080p].mkv"), None),
-        (_stream("Star Garden - 05 [1080p].mkv", name="Torrentio\n2160p"), None),
-        (_stream("Star Garden - 05.mkv", release="Star Garden 720p", name="Torrentio\n720p"), 720),
+        ("Star Garden - 05.mkv", True),
+        ("Star Garden - 05.MP4", True),
+        ("Star Garden - 05.avi", False),
+        ("Star Garden - 05.ts", False),
+        ("Star Garden - 05.mpegts", False),
+        ("Star Garden - 05.x", False),
+        ("Star Garden - 05.123", False),
+        ("Star Garden - 05 (TrueHD 5.1)", None),
+        ("Star Garden - 05. Final", None),
+        (".mkv", None),
+        (None, None),
+        ("Star Garden - 05", None),
     ],
 )
-def test_release_facts_resolution_needs_one_declared_height(stream: StreamCandidate, expected: int | None) -> None:
-    assert release_facts(stream).resolution == expected
-
-
-def test_release_facts_language_platform_and_dub_declarations() -> None:
-    assert release_facts(_stream(tags=("\U0001f1f5\U0001f1f1",))).polish
-    assert release_facts(_stream("Star Garden - 05 [PL].mkv")).polish
-    assert release_facts(_stream(release="Star_Garden_Polish_Subs")).polish
-    assert not release_facts(_stream("Star Garden - 05 [Plus].mkv")).polish
-    for declaration in ("Multi Subs", "MultiSub", "Multi-Subs", "Multiple Subtitle"):
-        assert release_facts(_stream(release=f"Star Garden [{declaration}]")).multisub
-    assert release_facts(_stream(tags=("Multi Subs",))).multisub
-    assert release_facts(_stream(release="Star Garden 1080p NF WEB-DL")).platform == "Netflix"
-    assert release_facts(_stream(release="[Group] Star Garden (Netflix)")).platform == "Netflix"
-    assert release_facts(_stream(release="Star Garden [CR]")).platform == "Crunchyroll"
-    assert release_facts(_stream(release="Star Garden NFO")).platform is None
-    assert release_facts(_stream(tags=("NF",))).platform == "Netflix"
-    assert release_facts(_stream(tags=("Netflix",))).platform == "Netflix"
-    assert release_facts(_stream(tags=("CR",))).platform == "Crunchyroll"
-    assert release_facts(_stream(tags=("crunchyroll",))).platform == "Crunchyroll"
-    assert release_facts(_stream(tags=("NFO", "cr"))).platform is None
-    assert release_facts(_stream(tags=("Dubbed",))).dub_only
-    assert not release_facts(_stream(release="Star Garden [Dual Audio]", tags=("Dubbed",))).dub_only
-    assert not release_facts(_stream(release="Star Garden Multi-Audio", tags=("Dubbed", "Multi Subs"))).dub_only
-
-
-@pytest.mark.parametrize(
-    ("file_name", "container", "supported"),
-    [
-        ("Star Garden - 05.mkv", ".mkv", True),
-        ("Star Garden - 05.MP4", ".mp4", True),
-        ("Star Garden - 05.avi", ".avi", False),
-        ("Star Garden - 05.ts", ".ts", False),
-        ("Star Garden - 05.mpegts", ".mpegts", False),
-        ("Star Garden - 05.x", ".x", False),
-        ("Star Garden - 05.123", ".123", False),
-        ("Star Garden - 05 (TrueHD 5.1)", None, None),
-        ("Star Garden - 05. Final", None, None),
-        (".mkv", None, None),
-        (None, None, None),
-        ("Star Garden - 05", None, None),
-    ],
-)
-def test_release_facts_container_support_leaves_unknown_containers_unpenalized(
-    file_name: str | None, container: str | None, supported: bool | None
+def test_rank_container_support_leaves_unknown_containers_unpenalized(
+    file_name: str | None, supported: bool | None
 ) -> None:
-    facts = release_facts(_stream(file_name))
-    assert (facts.container, facts.supported) == (container, supported)
+    assert _rank(_target(), [_stream(file_name)])[0].supported is supported
 
 
-def test_release_facts_container_is_read_from_the_file_name_never_the_release_or_path() -> None:
-    facts = release_facts(_stream(None, release="Star Garden - 05 AAC 5.1", path="Star Garden/Star Garden - 05.avi"))
-    assert (facts.container, facts.supported) == (None, None)
+def test_rank_container_falls_back_to_the_path_but_never_reads_the_release() -> None:
+    stream: StreamCandidate = _stream(None, release="Star Garden - 05 AAC 5.1", path="Star Garden/Star Garden - 05.avi")
+    assert _rank(_target(), [stream])[0].supported is False
+    assert _rank(_target(), [_stream(None, release="Star Garden - 05.avi")])[0].supported is None
 
 
-def test_rank_candidates_verdict_precedes_owner_preferences_and_keeps_streams() -> None:
+def test_rank_container_prefers_the_file_name_over_the_path() -> None:
+    stream: StreamCandidate = _stream("Star Garden - 05.mkv", path="Star Garden/Star Garden - 05.avi")
+    assert _rank(_target(), [stream])[0].supported is True
+
+
+@pytest.mark.parametrize(("path", "supported"), [("Star Garden - 05.avi", False), ("Star Garden - 05.ts", False)])
+def test_rank_listed_file_without_torrentio_hint_knows_its_container(path: str, supported: bool) -> None:
+    stream: StreamCandidate = _stream(None, release="Star Garden - 05")
+    releases: tuple[EpisodeRelease, ...] = merge_releases(
+        (stream,), {stream.info_hash: TsukiHimeFiles((ListedFile(path, 100),))}, pack_name=_pack_name
+    )
+    ranked: tuple[RankedCandidate, ...] = rank_candidates(_target(), releases, donghua=False)
+    assert ranked[0].stream.file_name is None
+    assert ranked[0].supported is supported
+    assert suggestion(ranked, numbering=True) == (None, False)
+
+
+def test_rank_traits_read_both_the_file_name_and_the_path() -> None:
+    stream: StreamCandidate = _stream(
+        "Star Garden - 05 [1080p] [English Dub] [CR WEB-DL] [BluRay] [HardSub].mkv",
+        release="Star Garden",
+        path="Star Garden - 05.mkv",
+    )
+    traits: ReleaseTraits = _rank(_target(), [stream])[0].traits
+    assert traits.resolution == 1080
+    assert traits.dub_only
+    assert traits.platform
+    assert traits.bluray
+    assert traits.hardsub
+    assert suggestion(_rank(_target(), [stream]), numbering=True) == (None, False)
+
+
+def test_rank_traits_of_a_pack_file_ignore_the_names_of_other_files() -> None:
+    stream: StreamCandidate = _stream(None, release="Star Garden S01 [Batch]")
+    listing: TsukiHimeFiles = TsukiHimeFiles(
+        (ListedFile("Star Garden - 04 [720p] [English Dub].mkv", 100), ListedFile("Star Garden - 05 [1080p].mkv", 100))
+    )
+    releases: tuple[EpisodeRelease, ...] = merge_releases((stream,), {stream.info_hash: listing}, pack_name=_pack_name)
+    ranked: tuple[RankedCandidate, ...] = rank_candidates(_target(), releases, donghua=False)
+    assert ranked[0].stream.path == "Star Garden - 05 [1080p].mkv"
+    assert ranked[0].traits.resolution == 1080
+    assert not ranked[0].traits.dub_only
+
+
+def test_rank_torrentio_equivalent_to_conf_model() -> None:
+    target: dict[str, object] = identity_target(_fixture_graph(_SLIME_S1), _SLIME_S1, _fixture_mapping(_SLIME_S1), 4)
+    streams: list[StreamCandidate] = _fixture_streams("torrentio__kitsu-41024-4.json")
+    renamed: int = next(
+        index
+        for index, stream in enumerate(streams)
+        if stream.path is not None and sum(item.info_hash == stream.info_hash for item in streams) == 1
+    )
+    original: StreamCandidate = streams[renamed]
+    streams[renamed] = replace(original, file_name="[Trix] Tensei Shitara Slime Datta Ken - 04.mkv")
+    by_file: dict[tuple[str, int | None, str | None, str | None], StreamCandidate] = {
+        (stream.info_hash, stream.file_index, stream.file_name, stream.path): stream for stream in streams
+    }
+    ranked: tuple[RankedCandidate, ...] = _rank(target, streams)
+    assert len(ranked) == len({stream.info_hash for stream in streams})
+    for row in ranked:
+        source: StreamCandidate = by_file[
+            row.stream.info_hash, row.stream.file_index, row.stream.file_name, row.stream.path
+        ]
+        candidate: dict[str, object] = {"release": source.release, "path": source.path, "filename": source.file_name}
+        assert row.identity == classify(target, candidate)
+        assert row.confidence == (None if row.conflict else confidence(identity_evidence(target, candidate)))
+    renamed_row: RankedCandidate = next(
+        row
+        for row in ranked
+        if row.stream.file_name == "[Trix] Tensei Shitara Slime Datta Ken - 04.mkv"
+        and row.stream.path == streams[renamed].path
+    )
+    assert renamed_row.traits == _rank(target, [original])[0].traits
+    assert renamed_row.traits.resolution == 1080
+
+
+def test_list_order_puts_dub_only_rows_then_conflicts_after_the_other_rows() -> None:
     good: StreamCandidate = _stream("Star Garden - 05 [720p].mkv")
     uncertain: StreamCandidate = _stream("Moon Garden - 05 [1080p].mkv", seeders=9999)
+    dubbed: StreamCandidate = _stream("Star Garden - 05 [1080p].mkv", tags=("Dubbed",))
     bad: StreamCandidate = _stream("Star Garden - 05 [1080p].rar", tags=("\U0001f1f5\U0001f1f1",))
-    ranked: tuple[RankedCandidate, ...] = rank_candidates(_target(), [bad, uncertain, good])
-    assert [candidate.stream for candidate in ranked] == [good, uncertain, bad]
-    assert [candidate.identity.verdict for candidate in ranked] == [
-        IdentityVerdict.MATCH,
-        IdentityVerdict.INSUFFICIENT,
-        IdentityVerdict.MISMATCH,
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [bad, dubbed, uncertain, good])
+    assert [candidate.stream for candidate in ranked] == [uncertain, good, dubbed, bad]
+    assert [(candidate.conflict, candidate.traits.dub_only) for candidate in ranked] == [
+        (False, False),
+        (False, False),
+        (False, True),
+        (True, False),
     ]
-    assert rank_candidates(_target(), []) == ()
+    assert ranked[3].confidence is None
+    assert list_order(tuple(reversed(ranked))) == ranked
+    assert _rank(_target(), []) == ()
 
 
-def test_rank_candidates_context_conflicts_precede_release_preferences() -> None:
+def test_rank_candidates_context_conflicts_follow_every_other_row() -> None:
     good: StreamCandidate = _stream("Star Garden - 05 [720p].mkv")
-    for context in ("Star Garden Saison 2", "Star Garden: Next Horizon", "극장판", "Part II"):
+    for context in ("Star Garden Season 2", "극장판"):
         bad: StreamCandidate = _stream("Star Garden - 05 [1080p].mkv", release=context, seeders=9999)
-        assert _ranked(_target(), [bad, good])[0] is good
+        ranked: tuple[RankedCandidate, ...] = _rank(_target(), [bad, good])
+        assert [candidate.stream for candidate in ranked] == [good, bad]
+        assert ranked[1].conflict
 
 
 def test_rank_candidates_resolution_classes_follow_owner_order() -> None:
@@ -631,29 +695,80 @@ def test_rank_candidates_resolution_classes_follow_owner_order() -> None:
     ]
     streams: list[StreamCandidate] = [_stream(f"Star Garden - 05{height}.mkv") for height in heights]
     streams.append(_stream("Star Garden - 05.mkv", release="Star Garden - 05 [1440×1080]"))
-    assert _ranked(_target(), streams) == [
-        streams[5],
-        streams[6],
-        streams[8],
-        streams[4],
-        streams[3],
-        streams[7],
-        streams[2],
-        streams[1],
-        streams[0],
+    assert [candidate.traits.resolution for candidate in _rank(_target(), streams)] == [
+        1080,
+        1080,
+        1080,
+        2160,
+        720,
+        1440,
+        576,
+        480,
+        None,
     ]
 
 
-def test_rank_candidates_owner_preferences_break_ties_in_order() -> None:
+def test_list_order_class_precedes_weighted_quality() -> None:
     base: StreamCandidate = _stream("Star Garden - 05 [1080p].mkv")
-    plain_720_polish: StreamCandidate = _stream("Star Garden - 05 [720p].mkv", tags=("\U0001f1f5\U0001f1f1",))
-    polish: StreamCandidate = replace(base, tags=("\U0001f1f5\U0001f1f1",))
-    multisub: StreamCandidate = replace(base, tags=("Multi Subs",))
-    netflix: StreamCandidate = replace(base, release="Star Garden S01 1080p NF WEB-DL")
-    dubbed: StreamCandidate = replace(base, tags=("Dubbed",))
-    low: StreamCandidate = _stream("Star Garden - 05 [480p].mkv")
-    streams: list[StreamCandidate] = [dubbed, low, plain_720_polish, base, netflix, multisub, polish]
-    assert _ranked(_target(), streams) == [polish, multisub, netflix, base, plain_720_polish, low, dubbed]
+    polish_720: StreamCandidate = _stream("Star Garden - 05 [720p].mkv", tags=("\U0001f1f5\U0001f1f1",))
+    polish: StreamCandidate = _stream("Star Garden - 05 [1080p].mkv", tags=("\U0001f1f5\U0001f1f1",))
+    english: StreamCandidate = _stream("Star Garden - 05 [1080p][Multi-Subs].mkv")
+    dubbed: StreamCandidate = _stream("Star Garden - 05 [1080p].mkv", tags=("Dubbed",))
+    streams: list[StreamCandidate] = [dubbed, polish_720, base, english, polish]
+    assert _ranked(_target(), streams) == [polish, english, base, polish_720, dubbed]
+
+
+def test_list_order_seed_points_then_hash_break_ties() -> None:
+    unknown: StreamCandidate = _stream()
+    zero: StreamCandidate = _stream(seeders=0)
+    two: StreamCandidate = _stream(seeders=2)
+    assert _ranked(_target(), [zero, two, unknown]) == [unknown, two, zero]
+    first: StreamCandidate = _stream(info_hash="1" * 40)
+    second: StreamCandidate = _stream(info_hash="2" * 40)
+    assert _ranked(_target(), [second, first]) == [first, second]
+
+
+def test_representative_prefers_match_then_uncertain_then_conflict_then_path() -> None:
+    files: dict[str, ReleaseFile] = {
+        path: ReleaseFile(path, None, None, from_listing=False, file_index=None)
+        for path in (
+            "B/Star Garden - 05.mkv",
+            "A/Star Garden - 05.mkv",
+            "A/Moon Garden - 05.mkv",
+            "A/Star Garden - 05.rar",
+        )
+    }
+    assessed: dict[str, tuple[ReleaseFile, IdentityEvidence]] = {
+        path: (file, identity_evidence(_target(), file.identity_candidate(""))) for path, file in files.items()
+    }
+    assert representative(list(assessed.values()))[0].path == "A/Star Garden - 05.mkv"
+    assert representative([assessed["A/Star Garden - 05.rar"], assessed["A/Moon Garden - 05.mkv"]])[0].path == (
+        "A/Moon Garden - 05.mkv"
+    )
+
+
+def test_rank_candidates_two_matching_files_of_one_release_make_an_ambiguous_row() -> None:
+    first: StreamCandidate = _stream(path="A/Star Garden - 05.mkv", info_hash="c" * 40, file_index=0)
+    second: StreamCandidate = _stream(path="B/Star Garden - 05.mkv", info_hash="c" * 40, file_index=1)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [second, first])
+    assert len(ranked) == 1
+    assert (ranked[0].ambiguous, ranked[0].stream.path, ranked[0].stream.file_index) == (
+        True,
+        "A/Star Garden - 05.mkv",
+        0,
+    )
+    assert ranked[0].files == ("B/Star Garden - 05.mkv", "A/Star Garden - 05.mkv")
+
+
+def test_rank_candidates_release_without_files_is_assessed_on_its_name() -> None:
+    named: StreamCandidate = _stream(None, release="Star Garden - 05 [1080p]")
+    other: StreamCandidate = _stream(None, release="Star Garden S02E05 [1080p]")
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [other, named])
+    assert [candidate.stream for candidate in ranked] == [named, other]
+    assert [candidate.release_name_only for candidate in ranked] == [True, True]
+    assert ranked[0].identity.verdict is IdentityVerdict.MATCH
+    assert ranked[0].confidence is not None
+    assert (ranked[1].conflict, ranked[1].confidence) == (True, None)
 
 
 def test_rank_candidates_blue_box_s2e1_suggests_the_polish_match_over_more_seeded_multisub_matches() -> None:
@@ -672,42 +787,23 @@ def test_rank_candidates_blue_box_s2e1_suggests_the_polish_match_over_more_seede
     tsundere: StreamCandidate = _stream(
         "Blue Box S02E01 MULTi 1080p NF WEB-DL DDP5.1 AV1-Tsundere-Raws.mkv", seeders=157
     )
-    ranked: tuple[RankedCandidate, ...] = rank_candidates(target, [tsundere, dkb, trix])
+    ranked: tuple[RankedCandidate, ...] = _rank(target, [tsundere, dkb, trix])
     assert [candidate.stream for candidate in ranked] == [trix, dkb, tsundere]
     assert {candidate.identity.verdict for candidate in ranked} == {IdentityVerdict.MATCH}
-    assert suggestion(ranked) == 0
+    assert suggestion(ranked, numbering=True) == (0, False)
 
 
-@pytest.mark.parametrize("tag", ["NF", "Crunchyroll"])
-def test_rank_candidates_platform_tag_breaks_a_tie_before_seeders(tag: str) -> None:
-    base: StreamCandidate = _stream("Star Garden - 05 [1080p].mkv", seeders=900)
-    tagged: StreamCandidate = _stream("Star Garden - 05 [1080p].mkv", tags=(tag,), seeders=1)
-    ranked: tuple[RankedCandidate, ...] = rank_candidates(_target(), [base, tagged])
-    assert [candidate.stream for candidate in ranked] == [tagged, base]
-    assert ranked[0].facts.platform is not None
-
-
-def test_rank_candidates_known_seeders_precede_unknown_and_ties_stay_stable() -> None:
-    unknown: StreamCandidate = _stream()
-    zero: StreamCandidate = _stream(seeders=0)
-    two: StreamCandidate = _stream(seeders=2)
-    assert _ranked(_target(), [unknown, zero, two]) == [two, zero, unknown]
-    first: StreamCandidate = _stream(info_hash="1" * 40)
-    second: StreamCandidate = _stream(info_hash="2" * 40)
-    assert _ranked(_target(), [second, first]) == [second, first]
-
-
-def test_rank_candidates_unsupported_container_follows_supported_and_unknown_is_not_penalized() -> None:
-    avi: StreamCandidate = _stream("Moon Garden - 05 [1080p].avi", seeders=500)
-    unknown: StreamCandidate = _stream(None, release="Star Garden - 05 [1080p]")
-    mkv: StreamCandidate = _stream("Moon Garden - 05 [720p].mkv", seeders=900)
-    ranked: tuple[RankedCandidate, ...] = rank_candidates(_target(), [avi, mkv, unknown])
+def test_list_order_unsupported_container_follows_supported_rows_of_its_group() -> None:
+    avi: StreamCandidate = _stream("Star Garden - 05 [1080p].avi", seeders=500)
+    unknown: StreamCandidate = _stream(None, release="Star Garden - 05 [720p]")
+    mkv: StreamCandidate = _stream("Star Garden - 05 [480p].mkv", seeders=900)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [avi, mkv, unknown])
     assert [candidate.stream for candidate in ranked] == [unknown, mkv, avi]
-    assert {candidate.identity.verdict for candidate in ranked} == {IdentityVerdict.INSUFFICIENT}
+    assert [candidate.supported for candidate in ranked] == [None, True, False]
 
 
-def test_rank_candidates_same_hash_files_are_assessed_separately() -> None:
-    ranked: tuple[RankedCandidate, ...] = rank_candidates(
+def test_rank_candidates_same_hash_files_form_one_row_on_the_matching_file() -> None:
+    ranked: tuple[RankedCandidate, ...] = _rank(
         identity_target(_fixture_graph(_SLIME_S1), _SLIME_S1, _fixture_mapping(_SLIME_S1), 4),
         [
             stream
@@ -715,58 +811,100 @@ def test_rank_candidates_same_hash_files_are_assessed_separately() -> None:
             if stream.info_hash.startswith("21ff7425")
         ],
     )
-    verdicts: dict[int | None, IdentityVerdict] = {
-        candidate.stream.file_index: candidate.identity.verdict for candidate in ranked
-    }
-    assert verdicts == {3: IdentityVerdict.MATCH, 56: IdentityVerdict.INSUFFICIENT}
+    assert len(ranked) == 1
+    assert (ranked[0].stream.file_index, ranked[0].identity.verdict, ranked[0].ambiguous) == (
+        3,
+        IdentityVerdict.MATCH,
+        False,
+    )
+    assert len(ranked[0].files) == 2
 
 
-def test_suggestion_prefers_usable_match_then_usable_uncertain_and_never_mismatch() -> None:
+def test_suggestion_is_first_group_one_row() -> None:
+    match_720: StreamCandidate = _stream("Star Garden - 05 [720p].mkv")
+    uncertain_1080: StreamCandidate = _stream("Moon Garden - 05 [1080p].mkv")
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [match_720, uncertain_1080])
+    assert [candidate.stream for candidate in ranked] == [uncertain_1080, match_720]
+    assert suggestion(ranked, numbering=True) == (0, True)
+
+
+def test_suggestion_marks_uncertain() -> None:
+    match: tuple[RankedCandidate, ...] = _rank(_target(), [_stream("Star Garden - 05 [1080p].mkv")])
+    uncertain: tuple[RankedCandidate, ...] = _rank(_target(), [_stream("Moon Garden - 05 [1080p].mkv")])
+    assert suggestion(match, numbering=True) == (0, False)
+    assert suggestion(uncertain, numbering=True) == (0, True)
+
+
+def test_suggestion_skips_conflict_dub_only_and_unsupported_rows() -> None:
     avi_match: StreamCandidate = _stream("Star Garden - 05 [1080p].avi")
-    mkv_match: StreamCandidate = _stream("Star Garden - 05 [480p].mkv")
-    uncertain: StreamCandidate = _stream("Moon Garden - 05 [1080p].mkv")
+    dubbed: StreamCandidate = _stream("Star Garden - 05 [1080p].mkv", tags=("Dubbed",))
+    mismatch: StreamCandidate = _stream("Star Garden - 05 [1080p].rar")
+    low: StreamCandidate = _stream("Star Garden - 05 [480p].mkv")
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [avi_match, dubbed, mismatch, low])
+    assert [candidate.stream for candidate in ranked] == [low, avi_match, dubbed, mismatch]
+    assert suggestion(ranked, numbering=True) == (0, False)
+
+
+def test_suggestion_none_when_group_one_empty() -> None:
+    dubbed: StreamCandidate = _stream("Star Garden - 05 [1080p].mkv", tags=("Dubbed",))
     mismatch: StreamCandidate = _stream("Star Garden - 05.rar")
-    ranked: tuple[RankedCandidate, ...] = rank_candidates(_target(), [avi_match, uncertain, mkv_match])
-    assert [candidate.stream for candidate in ranked] == [mkv_match, avi_match, uncertain]
-    assert suggestion(ranked) == 0
-    fallback: tuple[RankedCandidate, ...] = rank_candidates(_target(), [avi_match, mismatch, uncertain])
-    assert [candidate.stream for candidate in fallback] == [avi_match, uncertain, mismatch]
-    assert suggestion(fallback) == 1
-    assert suggestion(rank_candidates(_target(), [avi_match, mismatch])) is None
-    assert suggestion(rank_candidates(_target(), [mismatch])) is None
-    assert suggestion(()) is None
+    avi: StreamCandidate = _stream("Star Garden - 05 [1080p].avi")
+    assert suggestion(_rank(_target(), [dubbed, mismatch, avi]), numbering=True) == (None, False)
+    assert suggestion((), numbering=True) == (None, False)
 
 
-def test_suggestion_slime_s4e23_stream_without_file_is_uncertain_and_may_be_suggested() -> None:
+def test_suggestion_without_target_numbering_is_none() -> None:
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [_stream("Star Garden - 05 [1080p].mkv")])
+    assert suggestion(ranked, numbering=False) == (None, False)
+
+
+def test_visible_hides_720p_and_lower_only_beside_a_usable_high_resolution_match() -> None:
+    heights: tuple[str, ...] = ("2160p", "1440p", "720p", "480p")
+    lower: list[StreamCandidate] = [_stream(f"Star Garden - 05 [{height}].mkv") for height in heights[1:]]
+    unknown: StreamCandidate = _stream("Star Garden - 05.mkv")
+    high: StreamCandidate = _stream("Star Garden - 05 [2160p].mkv")
+    shown: tuple[RankedCandidate, ...] = visible(_rank(_target(), [*lower, unknown, high]))
+    assert [candidate.traits.resolution for candidate in shown] == [2160, 1440, None]
+    uncertain: StreamCandidate = _stream("Moon Garden - 05 [1080p].mkv")
+    unsupported: StreamCandidate = _stream("Star Garden - 05 [1080p].avi")
+    for candidates in ([*lower, uncertain], [*lower, unsupported]):
+        assert len(visible(_rank(_target(), candidates))) == len(candidates)
+
+
+def test_suggestion_slime_s4e23_stream_without_file_is_assessed_on_its_release_name() -> None:
     target: dict[str, object] = identity_target(_fixture_graph(_SLIME_S1), _SLIME_S4, _fixture_mapping(_SLIME_S4), 23)
     streams: list[StreamCandidate] = _fixture_streams("torrentio__kitsu-49235-23.json")
     shincaps: StreamCandidate = streams[11]
     transport_stream: StreamCandidate = streams[37]
     assert (shincaps.file_name, shincaps.path) == (None, None)
-    ranked: tuple[RankedCandidate, ...] = rank_candidates(target, [transport_stream, shincaps])
-    assert ranked[0].stream is shincaps
-    assert (ranked[0].identity.verdict, ranked[0].identity.reason) == (
+    ranked: tuple[RankedCandidate, ...] = _rank(target, [transport_stream, shincaps])
+    assert ranked[0].stream.info_hash == shincaps.info_hash
+    assert (ranked[0].release_name_only, ranked[0].identity.verdict, ranked[0].conflict) == (
+        True,
         IdentityVerdict.INSUFFICIENT,
-        "No selected file.",
+        False,
     )
-    assert (ranked[0].facts.container, ranked[0].facts.supported, ranked[0].facts.resolution) == (None, None, 1080)
-    assert (ranked[1].facts.container, ranked[1].facts.supported, ranked[1].facts.resolution) == (".ts", False, 1080)
-    assert suggestion(ranked) == 0
+    assert (ranked[0].supported, ranked[0].traits.resolution) == (None, 1080)
+    assert (ranked[1].supported, ranked[1].traits.resolution) == (False, 1080)
+    assert suggestion(ranked, numbering=True) == (0, True)
 
 
 def test_rank_candidates_slime_s1e4_suggests_main_series_and_never_matches_diaries_or_oad() -> None:
     target: dict[str, object] = identity_target(_fixture_graph(_SLIME_S1), _SLIME_S1, _fixture_mapping(_SLIME_S1), 4)
-    ranked: tuple[RankedCandidate, ...] = rank_candidates(target, _fixture_streams("torrentio__kitsu-41024-4.json"))
-    neighbors: list[RankedCandidate] = [
-        candidate for candidate in ranked if candidate.stream.file_name in _SLIME_NEIGHBOR_FILES
-    ]
-    assert len(neighbors) == len(_SLIME_NEIGHBOR_FILES)
-    assert all(candidate.identity.verdict is not IdentityVerdict.MATCH for candidate in neighbors)
-    index: int | None = suggestion(ranked)
+    ranked: tuple[RankedCandidate, ...] = _rank(target, _fixture_streams("torrentio__kitsu-41024-4.json"))
+    shown: set[str] = {Path(file).name for candidate in ranked for file in candidate.files}
+    assert shown >= _SLIME_NEIGHBOR_FILES
+    assert not any(candidate.ambiguous for candidate in ranked)
+    assert all(
+        candidate.identity.verdict is not IdentityVerdict.MATCH
+        for candidate in ranked
+        if candidate.stream.file_name in _SLIME_NEIGHBOR_FILES
+    )
+    index: int | None = suggestion(ranked, numbering=True)[0]
     assert index is not None
     suggested: RankedCandidate = ranked[index]
     assert suggested.identity.verdict is IdentityVerdict.MATCH
-    assert suggested.stream.file_name == "[Trix] Tensei Shitara Slime Datta Ken - S01E04 (BD 1080p AV1).mkv"
+    assert suggested.stream.file_name not in _SLIME_NEIGHBOR_FILES
 
 
 def _diaries_own_releases() -> list[StreamCandidate]:
@@ -784,22 +922,21 @@ def _diaries_own_releases() -> list[StreamCandidate]:
 def test_rank_candidates_diaries_target_rejects_main_series_and_keeps_own_releases(root_id: int) -> None:
     target: dict[str, object] = identity_target(_fixture_graph(root_id), _SLIME_DIARIES, _mapping({}), 4)
     own: list[StreamCandidate] = _diaries_own_releases()
-    ranked: tuple[RankedCandidate, ...] = rank_candidates(
-        target, [*_fixture_streams("torrentio__kitsu-41024-4.json"), *own]
-    )
+    ranked: tuple[RankedCandidate, ...] = _rank(target, [*_fixture_streams("torrentio__kitsu-41024-4.json"), *own])
     matches: list[StreamCandidate] = [
         candidate.stream for candidate in ranked if candidate.identity.verdict is IdentityVerdict.MATCH
     ]
-    assert matches == own
+    assert sorted(matches, key=lambda stream: stream.info_hash) == own
     main: RankedCandidate = next(
         candidate
         for candidate in ranked
-        if candidate.stream.file_name == "[Trix] Tensei Shitara Slime Datta Ken - S01E04 (BD 1080p AV1).mkv"
+        if any(
+            Path(file).name == "[Trix] Tensei Shitara Slime Datta Ken - S01E04 (BD 1080p AV1).mkv"
+            for file in candidate.files
+        )
     )
     assert main.identity.verdict is not IdentityVerdict.MATCH
-    index: int | None = suggestion(ranked)
-    assert index is not None
-    assert ranked[index].stream in own
+    assert suggestion(ranked, numbering=True) == (0, True)
 
 
 @pytest.mark.parametrize("root_id", [_SLIME_S1, _SLIME_DIARIES])
@@ -816,8 +953,8 @@ def test_rank_candidates_diaries_target_never_matches_a_shared_package_by_its_ti
         release="Tensei Shitara Slime Datta Ken S01 + The Slime Diaries [Batch]",
         path="Season 1/Tensei Shitara Slime Datta Ken - 04.mkv",
     )
-    ranked: tuple[RankedCandidate, ...] = rank_candidates(target, [*package, batch])
-    assert [candidate.identity.verdict for candidate in ranked] == [IdentityVerdict.INSUFFICIENT] * 3
+    ranked: tuple[RankedCandidate, ...] = _rank(target, [*package, batch])
+    assert [candidate.identity.verdict for candidate in ranked] == [IdentityVerdict.INSUFFICIENT] * 2
 
 
 @pytest.mark.parametrize("case", _regression_cases(), ids=lambda case: case["cause"])

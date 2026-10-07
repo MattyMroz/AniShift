@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -66,8 +66,12 @@ _FIELDS: Final[frozenset[str]] = frozenset(
         "anilist_id",
         "number",
         "stream",
+        "streams",
+        "donghua",
         "identity",
-        "facts",
+        "traits",
+        "quality",
+        "confidence",
         "name",
         "file_index",
         "release",
@@ -78,10 +82,14 @@ _FIELDS: Final[frozenset[str]] = frozenset(
         "tags",
         "resolution",
         "polish",
-        "multisub",
+        "polish_audio_beside_original",
+        "english_subtitles",
+        "audio",
+        "raw",
+        "hardsub",
+        "bluray",
         "platform",
         "dub_only",
-        "container",
         "supported",
         "subscription_id",
         "due_at",
@@ -146,20 +154,17 @@ def stream_view(stream: StreamCandidate) -> dict[str, object]:
     }
 
 
-def offer_check(offer: EpisodeOffer, target: Mapping[str, object]) -> dict[str, object]:
-    """Record the actual assessment order and suggestion of one live source read."""
+def offer_check(
+    offer: EpisodeOffer, target: Mapping[str, object], streams: Sequence[StreamCandidate], *, donghua: bool
+) -> dict[str, object]:
+    """Record every ranking input, the resulting row order and the suggestion of one live source read."""
     return {
         "source": "torrentio",
         "key": encode_view(offer.key),
         "target": target_view(target),
-        "candidates": [
-            {
-                "stream": stream_view(item.stream),
-                "identity": encode_view(item.identity),
-                "facts": encode_view(item.facts),
-            }
-            for item in offer.candidates
-        ],
+        "donghua": donghua,
+        "streams": [stream_view(stream) for stream in streams],
+        "candidates": [_candidate_view(item) for item in offer.candidates],
         "suggestion": offer.suggestion,
     }
 
@@ -200,11 +205,18 @@ def admission_decision(assignment: EpisodeAssignment, operation_id: str) -> dict
 
 def candidate_proposal(candidate: RankedCandidate, target: Mapping[str, object]) -> dict[str, object]:
     """Describe the candidate a subscription would admit, with the H1 target it was assessed against."""
+    return {"target": target_view(target), **_candidate_view(candidate)}
+
+
+def _candidate_view(candidate: RankedCandidate) -> dict[str, object]:
     return {
-        "target": target_view(target),
         "stream": stream_view(candidate.stream),
         "identity": encode_view(candidate.identity),
-        "facts": encode_view(candidate.facts),
+        "traits": encode_view(candidate.traits),
+        "quality": candidate.quality,
+        "confidence": candidate.confidence,
+        "conflict": candidate.conflict,
+        "supported": candidate.supported,
     }
 
 

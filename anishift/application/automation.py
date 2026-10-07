@@ -4873,9 +4873,12 @@ class AutomationOwner:
                 return ControlResponse.refused(
                     ControlErrorCode.REFUSED, "This episode has not aired", EpisodeReason.EPISODE_NOT_AIRED
                 )
+            exclude: Callable[[StreamCandidate], bool] | None = (
+                self._on_owner(partial(self._pair_exclusion, key)) if previous or conflict else None
+            )
             offer: EpisodeOffer
             target: dict[str, object]
-            offer, target = acquisition.prepare_episode(key)
+            offer, target = acquisition.prepare_episode(key, exclude=exclude)
         return self._on_owner(
             partial(self._store_episode_offer, request, generation, offer, target, previous, conflict)
         )
@@ -4933,37 +4936,22 @@ class AutomationOwner:
         candidates: tuple[RankedCandidate, ...] = tuple(
             item for item in offer.candidates if not self._excluded_episode_pair(offer.key, item.stream)
         )
-        return replace(offer, candidates=candidates, suggestion=suggestion(candidates))
+        return replace(offer, candidates=candidates, suggestion=suggestion(candidates, numbering=True)[0])
 
     def _excluded_episode_pair(self, key: EpisodeKey, stream: StreamCandidate) -> bool:
-        for _transfer, assignment in self._episode_assignments(key):
-            reference: TorrentioReference = assignment.choice.reference
-            if reference.info_hash != stream.info_hash.casefold():
-                continue
-            if assignment.video_path is not None and stream.path is not None:
-                if assignment.video_path.replace("\\", "/") == stream.path.replace("\\", "/"):
-                    return True
-                continue
-            if not assignment.files:
-                if (
-                    reference.file_name == stream.file_name
-                    if reference.file_name is not None
-                    else reference.release == stream.release
-                ):
-                    return True
-            elif any(
-                path.replace("\\", "/") == stream.path.replace("\\", "/")
-                if stream.path is not None
-                else Path(path).name == stream.file_name
-                for _index, path, _size in assignment.files
-            ):
-                return True
-        return any(
-            item.info_hash == stream.info_hash.casefold()
-            and item.legacy_scope is not None
-            and item.legacy_scope.covers(key.anilist_id, key.number)
-            for item in self._state.acquisitions
-        )
+        return _excluded_pair(self._state.acquisitions, key, stream)
+
+    def _pair_exclusion(self, key: EpisodeKey) -> Callable[[StreamCandidate], bool]:
+        return partial(_excluded_pair, self._state.acquisitions, key)
+
+    def _repeats_download(self, key: EpisodeKey, status: EpisodeStatus) -> bool:
+        matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = self._episode_assignments(key)
+        previous: str | None = matches[-1][1].admission_id if matches else None
+        repeated: bool = bool(previous or self._episode_conflicts(key))
+        return repeated and status.reason != EpisodeReason.RESULT_MISSING and not status.attempt
+
+    def _download_exclusion(self, key: EpisodeKey) -> Callable[[StreamCandidate], bool] | None:
+        return self._pair_exclusion(key) if self._repeats_download(key, self._episode_status(key)) else None
 
     def _episode_choose(self, request: ControlRequest) -> ControlResponse:  # noqa: PLR0911
         receipt: CommandReceipt | None = next(
@@ -4992,7 +4980,7 @@ class AutomationOwner:
         candidate: RankedCandidate | None = next(
             (item for item in view.offer.candidates if item.stream == stream), None
         )
-        if candidate is None or candidate.facts.supported is False:
+        if candidate is None or candidate.supported is False:
             return _invalid("The candidate is not available in this offer")
         if candidate.identity.verdict is not IdentityVerdict.MATCH and not confirmed:
             return ControlResponse.refused(
@@ -5135,9 +5123,12 @@ class AutomationOwner:
                 listing: EpisodeListing = acquisition.episodes(key.anilist_id)
                 if not any(item.number == key.number and item.aired for item in listing.episodes):
                     return EpisodeResult(key, EpisodeReason.EPISODE_NOT_AIRED)
+                exclude: Callable[[StreamCandidate], bool] | None = self._on_owner(
+                    partial(self._download_exclusion, key)
+                )
                 offer: EpisodeOffer
                 target: dict[str, object]
-                offer, target = acquisition.prepare_episode(key)
+                offer, target = acquisition.prepare_episode(key, exclude=exclude)
         except (AniShiftError, OSError, ValueError) as problem:
             logger.warning("Episode batch lookup failed", error_class=type(problem).__name__)
             return EpisodeResult(key, failure_code(problem) or EpisodeReason.SOURCE_FAILED)
@@ -5157,14 +5148,10 @@ class AutomationOwner:
         matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = self._episode_assignments(key)
         previous: str | None = matches[-1][1].admission_id if matches else None
         conflict: tuple[str, ...] = self._episode_conflicts(key)
-        if (previous or conflict) and status.reason != EpisodeReason.RESULT_MISSING and not status.attempt:
+        if self._repeats_download(key, status):
             offer = self._repeat_episode_offer(offer)
         candidate: RankedCandidate | None = None if offer.suggestion is None else offer.candidates[offer.suggestion]
-        if (
-            candidate is None
-            or candidate.identity.verdict is IdentityVerdict.MISMATCH
-            or candidate.facts.supported is False
-        ):
+        if candidate is None or candidate.identity.verdict is IdentityVerdict.MISMATCH or candidate.supported is False:
             return EpisodeResult(key, EpisodeReason.NO_SUGGESTION)
         choice: EpisodeChoice = _episode_choice(key, candidate, target, confirmed=False)
         if status.reason == EpisodeReason.RESULT_MISSING and any(
@@ -7734,6 +7721,41 @@ def _episode_choice(
         candidate.identity.verdict,
         candidate.identity.reason,
         confirmed,
+    )
+
+
+def _excluded_pair(acquisitions: Sequence[AcquisitionConfirmation], key: EpisodeKey, stream: StreamCandidate) -> bool:
+    """Tell whether *stream* is a file already admitted for *key* or covered by a legacy order."""
+    info_hash: str = stream.info_hash.casefold()
+    for transfer in acquisitions:
+        for assignment in transfer.protected_assignments:
+            if (assignment.choice.anilist_id, assignment.choice.number) != (key.anilist_id, key.number):
+                continue
+            if assignment.choice.reference.info_hash == info_hash and _same_file(assignment, stream):
+                return True
+    return any(
+        item.info_hash == info_hash
+        and item.legacy_scope is not None
+        and item.legacy_scope.covers(key.anilist_id, key.number)
+        for item in acquisitions
+    )
+
+
+def _same_file(assignment: EpisodeAssignment, stream: StreamCandidate) -> bool:
+    reference: TorrentioReference = assignment.choice.reference
+    if assignment.video_path is not None and stream.path is not None:
+        return assignment.video_path.replace("\\", "/") == stream.path.replace("\\", "/")
+    if not assignment.files:
+        return (
+            reference.file_name == stream.file_name
+            if reference.file_name is not None
+            else (reference.release == stream.release)
+        )
+    return any(
+        path.replace("\\", "/") == stream.path.replace("\\", "/")
+        if stream.path is not None
+        else Path(path).name == stream.file_name
+        for _index, path, _size in assignment.files
     )
 
 

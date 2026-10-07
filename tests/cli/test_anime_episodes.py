@@ -45,9 +45,10 @@ from anishift.application import (
     InspectedSourceGroup,
     ListedEpisode,
     ListedSpecial,
+    PolishClass,
     RankedCandidate,
     ReleaseCatalog,
-    ReleaseFacts,
+    ReleaseTraits,
     SeasonContext,
     StreamCandidate,
     TitleCandidate,
@@ -60,6 +61,7 @@ from anishift.application.episode_commands import EpisodeResult
 from anishift.application.episode_identity import REASONS
 from anishift.application.episode_selection import AniZipMapping, episode_listing
 from anishift.application.planning import ExecutionPlan
+from anishift.application.release_quality import AudioClass
 from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.watch_state import WatchStateStore
 from anishift.cli.interactive import anime as anime_module
@@ -114,7 +116,16 @@ def _candidate(verdict: IdentityVerdict = IdentityVerdict.MATCH, resolution: int
     return RankedCandidate(
         StreamCandidate("a" * 40, None, None, "Slime - 04.mkv", "[Group] Slime - 04", None, None, None, None, (), ()),
         IdentityAssessment(verdict, "No selected file."),
-        ReleaseFacts(resolution, False, False, None, False, ".mkv", True),
+        ReleaseTraits(
+            PolishClass.NONE, False, False, AudioClass.ORIGINAL, False, False, False, resolution, False, False, None
+        ),
+        quality=0.0,
+        confidence=None,
+        conflict=verdict is IdentityVerdict.MISMATCH,
+        ambiguous=False,
+        release_name_only=False,
+        supported=True,
+        files=("Slime - 04.mkv",),
     )
 
 
@@ -869,7 +880,11 @@ def test_other_releases_always_show_aligned_seeds(width: int, unsupported: bool)
     first: RankedCandidate = _candidate()
     seeded: RankedCandidate = replace(first, stream=replace(first.stream, seeders=321))
     if unsupported:
-        seeded = replace(seeded, facts=ReleaseFacts(1080, True, True, None, False, ".avi", False))
+        seeded = replace(
+            seeded,
+            traits=replace(seeded.traits, polish=PolishClass.POLISH, english_subtitles=True),
+            supported=False,
+        )
     catalog.offer_read = lambda key: _offer(key, (seeded, first))
     controller: AnimeController = _controller(catalog)
     _open(controller)
@@ -884,7 +899,7 @@ def test_other_releases_always_show_aligned_seeds(width: int, unsupported: bool)
     if unsupported:
         assert "PL" in known
         assert "1080p" in known[header.index("Obraz") : header.index("Język")]
-        assert "format nieobsługiwany (.avi)" in controller._view.items[0].detail
+        assert "format nieobsługiwany" in controller._view.items[0].detail
     assert all(Text(line).cell_len <= width for line in lines)
 
 
@@ -896,7 +911,7 @@ def test_release_views_keep_decision_columns_and_put_size_in_details(width: int,
     item: RankedCandidate = _candidate(verdict)
     item = replace(
         item,
-        facts=replace(item.facts, polish=True, multisub=True),
+        traits=replace(item.traits, polish=PolishClass.POLISH, english_subtitles=True),
         stream=replace(item.stream, seeders=321, size_text="1.4 GB"),
     )
     catalog.offer_read = lambda key: _offer(key, (item,))
@@ -943,7 +958,7 @@ def test_offer_columns_remain_fixed_when_language_changes() -> None:
     _key(controller, "escape")
     for key in ("escape", "escape"):
         _key(controller, key)
-    item = replace(item, facts=replace(item.facts, polish=True, multisub=True))
+    item = replace(item, traits=replace(item.traits, polish=PolishClass.POLISH, english_subtitles=True))
     _key(controller, "text:i")
     lines = controller.render(50, 24).plain.splitlines()
     expanded: str = next(line for line in lines if "Obraz" in line)
@@ -1176,21 +1191,21 @@ def test_other_releases_hide_low_resolutions_only_with_a_matching_high_release(h
     _open(controller)
     _key(controller, "text:i")
     _key(controller, "text:i")
-    assert [item.facts.resolution for item in controller._release_candidates] == (
-        [2160, None] if high_verdict is IdentityVerdict.MATCH else [2160, 720, 480, 1440, None]
+    assert [item.traits.resolution for item in controller._release_candidates] == (
+        [2160, 1440, None] if high_verdict is IdentityVerdict.MATCH else [2160, 720, 480, 1440, None]
     )
 
 
 @pytest.mark.unit
 def test_unsupported_high_resolution_match_does_not_hide_a_supported_lower_match() -> None:
     catalog: _Catalog = _Catalog()
-    avi: RankedCandidate = replace(_candidate(), facts=ReleaseFacts(1080, False, False, None, False, ".avi", False))
+    avi: RankedCandidate = replace(_candidate(), supported=False)
     catalog.offer_read = lambda key: _offer(key, (avi, _candidate(resolution=720)))
     controller: AnimeController = _controller(catalog)
     _open(controller)
     _key(controller, "text:i")
     _key(controller, "text:i")
-    assert [item.facts.resolution for item in controller._release_candidates] == [1080, 720]
+    assert [item.traits.resolution for item in controller._release_candidates] == [1080, 720]
 
 
 @pytest.mark.unit
@@ -2440,7 +2455,7 @@ def test_owner_offer_defect_reaches_problem_with_error_class_and_without_suggest
         with _running_panel(tmp_path, ["ok"], sent, now, remote=True) as (controller, _, acquisition):
             _open(controller)
 
-            def broken(key: EpisodeKey) -> tuple[EpisodeOffer, dict[str, object]]:
+            def broken(key: EpisodeKey, **_options: object) -> tuple[EpisodeOffer, dict[str, object]]:
                 raise ValueError("private-payload")
 
             monkeypatch.setattr(acquisition, "prepare_episode", broken)
@@ -2466,7 +2481,7 @@ def test_oversized_owner_offer_reports_problem_and_same_connection_remains_usabl
         _open(controller)
         item: RankedCandidate = _candidate()
         item = replace(item, stream=replace(item.stream, release="x" * (1024 * 1024)))
-        monkeypatch.setattr(acquisition, "prepare_episode", lambda key: (_offer(key, (item,)), {}))
+        monkeypatch.setattr(acquisition, "prepare_episode", lambda key, **_options: (_offer(key, (item,)), {}))
         _key(controller, "text:i")
         assert "Odpowiedź rezydenta jest za duża" in _frame(controller)
         assert not controller._offers

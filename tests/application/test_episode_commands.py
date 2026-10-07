@@ -1798,6 +1798,37 @@ def test_repeat_keeps_an_alternative_file_of_the_same_pack_and_excludes_index_on
         assert owner.state.acquisitions[0].assignments[0].replaced
 
 
+def test_download_batch_repeat_admits_another_file_of_the_previous_pack(tmp_path: Path) -> None:
+    streams: _Streams = _Streams()
+    original: StreamCandidate = _stream(4)
+    streams.answers = {(41024, 4): (original,)}
+    with _running(
+        _episode_service(tmp_path, streams=streams), WatchStateStore(tmp_path / "state.json"), inspect_transfers=False
+    ) as owner:
+        assert _download(owner, (4,), "original").ok
+        _until(lambda: _batch(owner, (4,), "original").state == "completed")
+        old: AcquisitionConfirmation = owner.state.acquisitions[0]
+        filename: str = str(original.file_name)
+        assignment: EpisodeAssignment = replace(old.assignments[0], files=((0, filename, 123),), file_map="revision")
+        complete: AcquisitionConfirmation = replace(
+            old,
+            state=AcquisitionState.COMPLETE,
+            assignments=(assignment,),
+            required_files=(filename,),
+            complete_files=(filename,),
+        )
+        assert owner._on_owner(lambda: owner._save(replace(owner.state, acquisitions=(complete,))))
+        alternative: StreamCandidate = replace(
+            original, file_name="[Group] Tensei shitara Slime Datta Ken - 04v2 [1080p].mkv", file_index=7
+        )
+        streams.answers[(41024, 4)] = (original, alternative)
+        assert _download(owner, (4,), "repeat").ok
+        _until(lambda: _batch(owner, (4,), "repeat").state == "completed")
+        assert [result.reason for result in _batch(owner, (4,), "repeat").results] == ["admitted"]
+        repeated: EpisodeAssignment = owner.state.acquisitions[-1].assignments[-1]
+        assert repeated.choice.reference.file_name == alternative.file_name
+
+
 def test_batch_cannot_automatically_admit_a_mismatched_release(tmp_path: Path) -> None:
     streams: _Streams = _Streams()
     wrong: StreamCandidate = replace(

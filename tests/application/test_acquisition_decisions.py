@@ -28,10 +28,17 @@ from anishift.application.control import (
 )
 from anishift.application.control_views import decode_view, encode_view
 from anishift.application.episode_commands import EpisodeOfferView
-from anishift.application.episode_selection import RankedCandidate, StreamCandidate, rank_candidates, suggestion
+from anishift.application.episode_selection import (
+    RankedCandidate,
+    StreamCandidate,
+    rank_candidates,
+    streams_releases,
+    suggestion,
+)
 from anishift.application.intents import RequestOrigin
 from anishift.application.service import AppService
 from anishift.application.watch_state import WatchStateStore
+from anishift.services.torrents.names import parse_release_name
 from anishift.services.torrents.torrentio import TorrentioSource
 
 
@@ -44,7 +51,8 @@ def test_owner_records_live_checks_cache_hits_selection_and_replay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     streams: _Streams = _Streams()
-    streams.answers = {(41024, 4): (_stream(4, "a", uncertain=True), _stream(4, "b"))}
+    second_file: StreamCandidate = replace(_stream(4, "a"), file_index=5)
+    streams.answers = {(41024, 4): (_stream(4, "a", uncertain=True), second_file, _stream(4, "b"))}
     writers: list[str] = []
     append: Callable[..., None] = acquisition_decisions.append_decision
 
@@ -66,13 +74,25 @@ def test_owner_records_live_checks_cache_hits_selection_and_replay(
     check: dict[str, object] = next(row for row in records if row.get("source") == "torrentio")
     candidates: list[dict[str, object]] = cast("list[dict[str, object]]", check["candidates"])
     restored: tuple[StreamCandidate, ...] = tuple(
-        decode_view(StreamCandidate, {**cast("dict[str, object]", row["stream"]), "trackers": []}) for row in candidates
+        decode_view(StreamCandidate, {**row, "trackers": []})
+        for row in cast("list[dict[str, object]]", check["streams"])
     )
-    ranked: tuple[RankedCandidate, ...] = rank_candidates(cast("dict[str, object]", check["target"]), restored)
+    ranked: tuple[RankedCandidate, ...] = rank_candidates(
+        cast("dict[str, object]", check["target"]),
+        streams_releases(restored, pack_name=lambda name: parse_release_name(name).is_pack),
+        donghua=check["donghua"] is True,
+    )
+    assert len(restored) == 3
+    assert ranked[0].files == ("mystery.mkv", second_file.file_name)
     assert [encode_view(item.identity) for item in ranked] == [row["identity"] for row in candidates]
-    assert [encode_view(item.facts) for item in ranked] == [row["facts"] for row in candidates]
-    assert [item.stream.info_hash for item in ranked] == [item.info_hash for item in restored]
-    assert suggestion(ranked) == check["suggestion"]
+    assert [encode_view(item.traits) for item in ranked] == [row["traits"] for row in candidates]
+    assert [(item.quality, item.confidence, item.conflict, item.supported) for item in ranked] == [
+        (row["quality"], row["confidence"], row["conflict"], row["supported"]) for row in candidates
+    ]
+    assert [item.stream for item in ranked] == [
+        decode_view(StreamCandidate, {**cast("dict[str, object]", row["stream"]), "trackers": []}) for row in candidates
+    ]
+    assert suggestion(ranked, numbering=True)[0] == check["suggestion"]
 
 
 @pytest.mark.unit
