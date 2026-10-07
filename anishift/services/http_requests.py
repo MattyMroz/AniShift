@@ -5,15 +5,16 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Callable, Iterator, Mapping
-from concurrent.futures import Future
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from contextlib import AbstractContextManager, contextmanager, suppress
-from contextvars import ContextVar, Token
+from contextvars import ContextVar, Token, copy_context
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from http import HTTPStatus
+from types import MappingProxyType
 from typing import Final
 
 import httpx
@@ -36,11 +37,43 @@ _MAX_BODY_BYTES: Final[int] = 8 * 1024 * 1024
 REMOTE_INTERVAL_S: Final[float] = 1.0
 """Minimum separation of actual calls to each remote metadata provider."""
 
+_REQUEST_WORKERS: Final[int] = 10
+"""Maximum concurrent physical requests for operations with caller deadlines."""
+
+_TSUKIHIME_WINDOWS: Final[tuple[tuple[int, float], ...]] = ((25, 10.0), (60, 30.0), (100, 60.0))
+"""Simultaneous sliding request limits advertised by TsukiHime."""
+
+_PROVIDERS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "graphql.anilist.co": "anilist",
+        "nyaa.si": "nyaa",
+        "api.ani.zip": "anizip",
+        "torrentio.strem.fun": "torrentio",
+        "api.tsukihime.org": "tsukihime",
+        "api.knaben.org": "knaben",
+        "nekobt.to": "nekobt",
+    }
+)
+"""Independent admission and cooldown identities of public metadata hosts."""
+
+
+class DeadlineExceeded(httpx.TimeoutException):
+    """The caller's operation deadline expired without cancelling a shared physical request."""
+
+
+class ProviderCooldown(httpx.TransportError):
+    """A provider's shared retry deadline prevents sending a request."""
+
+
+class BudgetExhausted(httpx.TransportError):
+    """An operation has already sent its allowed number of requests to this provider."""
+
 
 @dataclass(slots=True)
 class _Operation:
     reason: str
     limits: Mapping[str, int]
+    deadline: float | None = None
     sent: Counter[str] = field(default_factory=Counter)
 
 
@@ -49,12 +82,13 @@ _OPERATION: Final[ContextVar[_Operation | None]] = ContextVar("http_operation", 
 
 
 @contextmanager
-def request_scope(reason: str, limits: Mapping[str, int]) -> Iterator[None]:
+def request_scope(reason: str, limits: Mapping[str, int], *, deadline_s: float | None = None) -> Iterator[None]:
     """Count actual requests against one operation without resetting nested budgets."""
     if _OPERATION.get() is not None:
         yield
         return
-    token: Token[_Operation | None] = _OPERATION.set(_Operation(reason, limits))
+    deadline: float | None = None if deadline_s is None else time.monotonic() + deadline_s
+    token: Token[_Operation | None] = _OPERATION.set(_Operation(reason, limits, deadline))
     try:
         yield
     finally:
@@ -76,6 +110,10 @@ class RequestControl(httpx.BaseTransport):
         self._sleep: Callable[[float], None] = sleep
         self._lock: threading.Lock = threading.Lock()
         self._active: dict[str, Future[httpx.Response]] = {}
+        self._pool: ThreadPoolExecutor = ThreadPoolExecutor(
+            max_workers=_REQUEST_WORKERS, thread_name_prefix="http-request"
+        )
+        self._tsukihime_sent: deque[float] = deque()
         self._until: dict[str, float] = {}
         self._next: dict[str, float] = {}
         self._counts: Counter[tuple[str, str, str, str]] = Counter()
@@ -101,65 +139,112 @@ class RequestControl(httpx.BaseTransport):
                 for key, count in sorted(self._counts.items())
             ]
 
-    def scope(self, reason: str, limits: Mapping[str, int]) -> AbstractContextManager[None]:
+    def scope(
+        self, reason: str, limits: Mapping[str, int], *, deadline_s: float | None = None
+    ) -> AbstractContextManager[None]:
         """Set the reason and request budget of one application operation."""
-        return request_scope(reason, limits)
+        return request_scope(reason, limits, deadline_s=deadline_s)
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         """Send one admitted request or join the equivalent read already in progress."""
+        future: Future[httpx.Response]
+        follower: bool
+        while True:
+            future, follower = self._request_future(request)
+            try:
+                return _wait_response(future, request)
+            except DeadlineExceeded, BudgetExhausted:
+                if not follower:
+                    raise
+                _remaining(request)
+                with self._lock:
+                    self._check_budget(_provider(request), request)
+
+    def _request_future(self, request: httpx.Request) -> tuple[Future[httpx.Response], bool]:
         provider: str = _provider(request)
+        remaining: float | None = _remaining(request)
         shared: bool = request.method == "GET" or (provider == "anilist" and request.method == "POST")
         key: str = _key(request) if shared else ""
         with self._lock:
             future: Future[httpx.Response] | None = self._active.get(key) if shared else None
             follower: bool = future is not None
             if future is None:
-                future = Future()
+                future = (
+                    self._pool.submit(copy_context().run, self._perform, provider, request, key)
+                    if remaining is not None
+                    else Future()
+                )
                 if shared:
                     self._active[key] = future
-        if follower:
-            return _copy_response(future.result())
+        if follower or remaining is not None:
+            return future, follower
         try:
-            self._admit(provider, request)
-            response: httpx.Response = self._send(provider, request)
-            future.set_result(response)
-            return _copy_response(response)
+            future.set_result(self._perform(provider, request, key))
         except BaseException as problem:
             future.set_exception(problem)
             raise
+        return future, follower
+
+    def close(self) -> None:
+        """Cancel queued deadline work without waiting for running requests, then close the transport."""
+        self._pool.shutdown(wait=False, cancel_futures=True)
+        self._transport.close()
+
+    def _perform(self, provider: str, request: httpx.Request, key: str) -> httpx.Response:
+        try:
+            self._admit(provider, request)
+            return self._send(provider, request)
         finally:
-            if shared:
+            if key:
                 with self._lock:
                     self._active.pop(key, None)
 
-    def close(self) -> None:
-        """Close the wrapped connection pool."""
-        self._transport.close()
-
     def _admit(self, provider: str, request: httpx.Request) -> None:
         while True:
+            remaining: float | None = _remaining(request)
             with self._lock:
                 now: float = self._clock()
                 if self._until.get(provider, 0.0) > now:
                     message: str = "Provider cooldown is active"
-                    raise httpx.TransportError(message, request=request)
+                    raise ProviderCooldown(message, request=request)
                 delay: float = self._next.get(provider, 0.0) - now
+                if provider == "tsukihime":
+                    delay = max(delay, self._tsukihime_delay(now))
                 if delay <= 0:
                     self._charge(provider, request)
                     if provider in {"anilist", "nyaa"}:
                         self._next[provider] = now + REMOTE_INTERVAL_S
+                    if provider == "tsukihime":
+                        self._tsukihime_sent.append(now)
                     return
-            self._sleep(delay)
+            self._sleep(delay if remaining is None else min(delay, remaining))
+
+    def _tsukihime_delay(self, now: float) -> float:
+        while self._tsukihime_sent and self._tsukihime_sent[0] <= now - _TSUKIHIME_WINDOWS[-1][1]:
+            self._tsukihime_sent.popleft()
+        return max(
+            (
+                self._tsukihime_sent[-limit] + window - now
+                for limit, window in _TSUKIHIME_WINDOWS
+                if len(self._tsukihime_sent) >= limit
+            ),
+            default=0.0,
+        )
 
     def _charge(self, provider: str, request: httpx.Request) -> None:
+        self._check_budget(provider, request)
+        operation: _Operation | None = _OPERATION.get()
+        if operation is not None:
+            operation.sent[provider] += 1
+
+    def _check_budget(self, provider: str, request: httpx.Request) -> None:
         operation: _Operation | None = _OPERATION.get()
         if operation is None:
             return
         limit: int | None = operation.limits.get(provider)
         if limit is not None and operation.sent[provider] >= limit:
             message: str = "Operation request budget is exhausted"
-            raise httpx.TransportError(message, request=request)
-        operation.sent[provider] += 1
+            raise BudgetExhausted(message, request=request)
 
     def _send(self, provider: str, request: httpx.Request) -> httpx.Response:
         result: str = "transport_error"
@@ -192,15 +277,32 @@ class RequestControl(httpx.BaseTransport):
 
 
 def _provider(request: httpx.Request) -> str:
-    if request.url.host == "graphql.anilist.co":
-        return "anilist"
-    if request.url.host == "nyaa.si":
-        return "nyaa"
-    if request.url.host == "api.ani.zip":
-        return "anizip"
-    if request.url.host == "torrentio.strem.fun":
-        return "torrentio"
-    return "qbittorrent" if request.url.path.startswith("/api/v2/") else "other"
+    return _PROVIDERS.get(request.url.host, "qbittorrent" if request.url.path.startswith("/api/v2/") else "other")
+
+
+def _remaining(request: httpx.Request) -> float | None:
+    operation: _Operation | None = _OPERATION.get()
+    if operation is None or operation.deadline is None:
+        return None
+    remaining: float = operation.deadline - time.monotonic()
+    if remaining <= 0:
+        message: str = "Operation deadline exceeded"
+        raise DeadlineExceeded(message, request=request)
+    return remaining
+
+
+def _wait_response(future: Future[httpx.Response], request: httpx.Request) -> httpx.Response:
+    try:
+        try:
+            return _copy_response(future.result(timeout=_remaining(request)))
+        except TimeoutError as problem:
+            if future.done():
+                return _copy_response(future.result())
+            message: str = "Operation deadline exceeded"
+            raise DeadlineExceeded(message, request=request) from problem
+    except CancelledError as problem:
+        message = "Request control closed before sending the request"
+        raise httpx.TransportError(message, request=request) from problem
 
 
 def _key(request: httpx.Request) -> str:
