@@ -1,9 +1,14 @@
 from __future__ import annotations
 
-import pytest
+from typing import cast
 
+import pytest
+from test_interactive_settings_autosave import FakeSettingsService, _activate
+
+from anishift.application import AppService
 from anishift.cli.interactive.settings import (
     _AUTO_FIELDS,
+    _DOWNLOAD_FIELDS,
     _FIELDS_COVERED_ELSEWHERE,
     _GENERAL_FIELDS,
     _KNOWN_LAYOUT_GAPS,
@@ -11,6 +16,7 @@ from anishift.cli.interactive.settings import (
     _SUBTITLE_FIELDS,
     _TRANSLATION_FIELDS,
     _TTS_FIELDS,
+    SettingsController,
     _SettingField,
 )
 from anishift.config.field_catalog import (
@@ -31,6 +37,7 @@ _TRANSLATION_ENGINES = ("llm", "deepl", "google")
 def _layout_fields() -> tuple[_SettingField, ...]:
     return (
         *_GENERAL_FIELDS,
+        *_DOWNLOAD_FIELDS,
         *_SUBTITLE_FIELDS,
         *_TRANSLATION_FIELDS,
         *_TTS_FIELDS,
@@ -58,6 +65,33 @@ def _panel_specs(settings: UserSettings) -> dict[str, SettingSpec]:
 def test_layout_never_repeats_a_setting() -> None:
     identifiers = _layout_ids()
     assert len(identifiers) == len(set(identifiers))
+
+
+@pytest.mark.unit
+def test_download_category_exposes_six_fields_and_scoped_reset() -> None:
+    service: FakeSettingsService = FakeSettingsService()
+    panel: SettingsController = SettingsController(cast("AppService", service), lambda: None)
+    _activate(panel, "category:download")
+    assert tuple(item.key for item in panel._items) == (
+        "setting:source_tsukihime",
+        "setting:source_torrentio",
+        "setting:source_nyaa",
+        "setting:source_knaben",
+        "setting:source_nekobt",
+        "setting:subscription_polish_wait_h",
+        "reset-scope:download",
+        "back",
+    )
+    assert "POBIERANIE" in panel.render(80, 24).plain
+    service.settings.source_knaben = False
+    service.settings.subscription_polish_wait_h = 48
+    service.settings.translation_batch_size = 99
+    _activate(panel, "reset-scope:download")
+    panel.handle_key("down")
+    panel.handle_key("enter")
+    assert service.settings.source_knaben
+    assert service.settings.subscription_polish_wait_h == 2
+    assert service.settings.translation_batch_size == 99
 
 
 def test_excuse_lists_do_not_overlap_the_layout() -> None:

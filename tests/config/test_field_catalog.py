@@ -16,6 +16,7 @@ from anishift.application.intents import (
     SubtitleSourcePolicy,
     TranslationAction,
 )
+from anishift.config.field_access import setting_is_persisted
 from anishift.config.field_catalog import (
     USER_SETTING_DISPOSITIONS,
     SettingCatalogContext,
@@ -44,6 +45,20 @@ from anishift.services.tts.engines.sapi.constants import SAPI_PROFILES
 
 def _catalog(context: SettingCatalogContext | None = None) -> dict[str, SettingSpec]:
     return {spec.setting_id: spec for spec in setting_catalog(context)}
+
+
+def test_acquisition_specs_are_persisted_fields() -> None:
+    catalog: dict[str, SettingSpec] = _catalog()
+    for field in (
+        "source_tsukihime",
+        "source_torrentio",
+        "source_nyaa",
+        "source_knaben",
+        "source_nekobt",
+        "subscription_polish_wait_h",
+    ):
+        assert setting_is_persisted(catalog[field])
+        assert catalog[field].scope is SettingScope.GLOBAL
 
 
 def test_catalog_contract_is_complete_and_self_consistent() -> None:
@@ -89,6 +104,12 @@ def test_catalog_contract_is_complete_and_self_consistent() -> None:
         "selected_subtitle_artifact_id",
         "selected_subtitle_track_id",
         "source_subtitle_language",
+        "source_tsukihime",
+        "source_torrentio",
+        "source_nyaa",
+        "source_knaben",
+        "source_nekobt",
+        "subscription_polish_wait_h",
         "subtitle_language_priority",
         "subtitle_output_format",
         "subtitle_source_policy",

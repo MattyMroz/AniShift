@@ -6610,7 +6610,7 @@ def test_episode_selection_crosses_owner_ipc_with_the_provider_reason_preserved(
         )
         if scenario == "offer_raises":
 
-            def broken(key: EpisodeKey) -> EpisodeOffer:
+            def broken(key: EpisodeKey, switches: object = None) -> EpisodeOffer:
                 raise ValueError(key.number)
 
             monkeypatch.setattr(acquisition, "offer", broken)
@@ -6641,7 +6641,6 @@ def test_episode_selection_crosses_owner_ipc_with_the_provider_reason_preserved(
                     failures[name] = error
             expected: dict[str, tuple[str, str]] = {
                 "anilist_failed": ("franchise", ErrorCode.TITLE_CATALOG_FAILED.value),
-                "anizip_failed": ("episodes", ErrorCode.EPISODE_CATALOG_FAILED.value),
                 "torrentio_failed": ("offer", ErrorCode.TORRENT_SOURCE_FAILED.value),
                 "offer_raises": ("offer", "command_failed"),
             }
@@ -6652,6 +6651,12 @@ def test_episode_selection_crosses_owner_ipc_with_the_provider_reason_preserved(
                 assert "error_class" in "".join(captured)
             if scenario == "offer_raises":
                 assert "ValueError" in "".join(captured)
+            if scenario == "anizip_failed":
+                assert not failures
+                unmapped: EpisodeOffer = session.offer(EpisodeKey(_SLIME_S1, 4))
+                assert not unmapped.numbering
+                assert unmapped.suggestion is None
+                assert unmapped.status == "brak numeracji"
             if scenario in {"ok", "schedule_limited"}:
                 assert not failures
                 listing: EpisodeListing = session.episodes(_SLIME_S1)

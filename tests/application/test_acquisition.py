@@ -1090,7 +1090,7 @@ def test_zero_max_age_still_serves_every_offer_and_listing_while_refetching_each
     assert [listing.status for listing in listings] == ["FINISHED", "FINISHED"]
     assert offers[0].candidates == offers[1].candidates
     assert offers[0].candidates
-    assert (titles.franchised, titles.scheduled) == ([_S1] * 3, [_S1] * 2)
+    assert (titles.franchised, titles.scheduled) == ([_S1] * 3, [_S1] * 4)
     assert (episodes.asked, streams.asked) == ([_S1] * 4, [(_S1_KITSU, 4)] * 2)
 
 
@@ -1123,7 +1123,9 @@ def test_diaries_offer_matches_only_its_own_releases_and_never_a_main_series_rel
         item.stream for item in offer.candidates if item.identity.verdict is IdentityVerdict.MATCH
     ]
     assert matches == own
-    assert offer.suggestion == 0
+    assert offer.suggestion is None
+    assert not offer.numbering
+    assert offer.status == "brak numeracji"
     assert offer.candidates[0].identity.verdict is IdentityVerdict.INSUFFICIENT
 
 
@@ -1311,18 +1313,29 @@ class _FailingEpisodes(_EpisodeCatalog):
         raise TitleCatalogError(context=ErrorContext(code=ErrorCode.EPISODE_CATALOG_FAILED, message="down"))
 
 
-def test_a_failed_ani_zip_read_builds_the_listing_from_the_saved_mapping_and_fails_without_one(
+def test_a_failed_ani_zip_read_builds_the_listing_from_the_saved_mapping_or_schedule(
     tmp_path: Path,
 ) -> None:
     saved: AniZipMapping = _fixture_mapping(_S1)
-    service: AcquisitionService = _episode_service(tmp_path, episodes=_FailingEpisodes({}))
+    titles: _TitleCatalog = _TitleCatalog(schedules={_S1: SeasonAiring(_S1, TitleStatus.FINISHED, 24, ())})
+    service: AcquisitionService = _episode_service(tmp_path, titles=titles, episodes=_FailingEpisodes({}))
     read: ListingRead = service.read_listing(_S1, saved=saved)
     assert (read.mapping, read.live, len(read.listing.episodes)) == (saved, False, 24)
-    with pytest.raises(TitleCatalogError):
-        service.read_listing(_S1)
+    missing: ListingRead = service.read_listing(_S1)
+    assert not missing.live
+    assert missing.mapping.raw_episodes == {}
+    assert len(missing.listing.episodes) == 24
 
 
-def test_an_ani_zip_404_through_the_real_catalog_keeps_the_saved_mapping_as_a_snapshot(tmp_path: Path) -> None:
+def test_read_listing_live_without_kitsu(tmp_path: Path) -> None:
+    mapping: AniZipMapping = replace(_fixture_mapping(_S1), kitsu_id=None)
+    service: AcquisitionService = _episode_service(tmp_path, episodes=_EpisodeCatalog({_S1: mapping}))
+    read: ListingRead = service.read_listing(_S1)
+    assert read.live
+    assert read.mapping == mapping
+
+
+def test_read_listing_404_does_not_replace_saved_mapping(tmp_path: Path) -> None:
     saved: AniZipMapping = _fixture_mapping(_S1)
     with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(404))) as http:
         service: AcquisitionService = _episode_service(tmp_path, episodes=AniZipCatalog(http))  # type: ignore[arg-type]

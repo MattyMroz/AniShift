@@ -92,6 +92,7 @@ def _acquisition_service(context: AppContext, *, managed_torrents: bool = False)
     import httpx  # noqa: PLC0415
 
     from anishift.application.acquisition import AcquisitionService, TorrentClient  # noqa: PLC0415
+    from anishift.application.episode_search import EpisodeSearch  # noqa: PLC0415
     from anishift.paths import torrent_profile_dir  # noqa: PLC0415
     from anishift.platform.qbittorrent_process import ManagedQBittorrent  # noqa: PLC0415
     from anishift.services.catalog import AniListCatalog, AniZipCatalog  # noqa: PLC0415
@@ -103,6 +104,9 @@ def _acquisition_service(context: AppContext, *, managed_torrents: bool = False)
         search_releases,
     )
     from anishift.services.torrents.categories import SEARCH_CATEGORIES  # noqa: PLC0415
+    from anishift.services.torrents.knaben import KnabenSource  # noqa: PLC0415
+    from anishift.services.torrents.nekobt import NekoBTSource  # noqa: PLC0415
+    from anishift.services.torrents.tsukihime import TsukiHimeSource  # noqa: PLC0415
 
     request_control: RequestControl = RequestControl(httpx.HTTPTransport(retries=0))
     http: httpx.Client = httpx.Client(transport=request_control, follow_redirects=True)
@@ -124,8 +128,10 @@ def _acquisition_service(context: AppContext, *, managed_torrents: bool = False)
         ManagedQBittorrent(torrent_profile_dir(), http=http, previous=external) if managed_torrents else None
     )
     client: TorrentClient = managed if managed is not None else external
+    nyaa: NyaaSource = NyaaSource()
+    torrentio: TorrentioSource = TorrentioSource(http)
     return AcquisitionService(
-        source=NyaaSource(),
+        source=nyaa,
         client=client,
         workspace_root=context.workspace_root,
         parse_name=parse_release_name,
@@ -133,7 +139,16 @@ def _acquisition_service(context: AppContext, *, managed_torrents: bool = False)
         request_control=request_control,
         torrent_management=managed,
         episode_catalog=AniZipCatalog(http),
-        stream_source=TorrentioSource(http),
+        stream_source=torrentio,
+        episode_search=EpisodeSearch(
+            torrentio=torrentio,
+            nyaa=nyaa,
+            knaben=KnabenSource(http),
+            nekobt=NekoBTSource(http),
+            tsukihime=TsukiHimeSource(http),
+            request_control=request_control,
+            pack_name=lambda name: parse_release_name(name).is_pack,
+        ),
     )
 
 

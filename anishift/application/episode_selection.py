@@ -267,6 +267,9 @@ class EpisodeOffer:
     suggestion: int | None
     checked_at: datetime
     counts: dict[str, int]
+    numbering: bool = True
+    source_lines: tuple[str, ...] = ()
+    status: str | None = None
 
 
 def franchise_traversal(

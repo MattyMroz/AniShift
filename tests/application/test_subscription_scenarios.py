@@ -52,6 +52,7 @@ from anishift.application.subscription_targets import (
     SubscriptionRecord,
     SubscriptionTarget,
     TargetState,
+    next_check_at,
 )
 from anishift.application.transfers import TransferInspector, file_map_revision
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
@@ -754,7 +755,9 @@ def test_a_restart_at_each_check_and_publication_point_admits_checks_and_publish
     assert _closures(world) == [(1, "accepted")]
 
 
-def test_a_subscription_whose_source_keeps_failing_never_stops_another_from_finishing(world: _World) -> None:
+def test_a_subscription_without_mapping_keeps_scheduled_targets_and_never_stops_another_from_finishing(
+    world: _World,
+) -> None:
     world.season.broken = frozenset({_OTHER})
     broken: SubscriptionRecord = SubscriptionRecord("b", _OTHER, "Broken", (_MOMENT - timedelta(days=2)).isoformat(), 2)
     with _running(world, _following(broken, _record())) as owner:
@@ -766,7 +769,13 @@ def test_a_subscription_whose_source_keeps_failing_never_stops_another_from_fini
 
     assert failing is not None
     assert failing.last_check is not None
-    assert (failing.last_check.outcome, failing.checked_at, failing.targets) == ("source_failed", None, ())
+    assert failing.last_check.outcome == "no_candidates"
+    assert failing.checked_at == _MOMENT.isoformat()
+    assert failing.mapping is None
+    assert failing.kitsu_id is None
+    assert failing.targets
+    assert all(target.attempts == 0 for target in failing.targets)
+    assert next_check_at(failing, _MOMENT) is not None
 
 
 def _finished(*targets: SubscriptionTarget, count: int = 4) -> SubscriptionRecord:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from datetime import UTC, date, datetime
 from enum import StrEnum
@@ -147,19 +147,7 @@ class AniListCatalog:
 
     def prequel_episodes(self, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
         """Return every entry airing before *candidate*, direct prequel first."""
-        seen: set[int] = {candidate.anilist_id}
-        pending: list[int] = [prequel_id for prequel_id in candidate.prequel_ids if prequel_id not in seen]
-        entries: list[PrequelEntry] = []
-        while pending and len(entries) < MAX_PREQUEL_HOPS:
-            current: int = pending.pop(0)
-            if current in seen:
-                continue
-            seen.add(current)
-            media: Mapping[str, Any] | None = self._media(current)
-            entries.append(_prequel_entry(media))
-            if media is not None:
-                pending.extend(prequel_id for prequel_id in _prequel_ids(media) if prequel_id not in seen)
-        return tuple(entries)
+        return _walk_prequels(candidate, self._media)
 
     def episode_offset(self, candidate: TitleCandidate) -> int:
         """Return how many episodes aired before *candidate*, following its prequel chain."""
@@ -226,7 +214,7 @@ class AniListCatalog:
             raise _catalog_error(_CatalogFailure.MALFORMED)
         candidates: list[TitleCandidate] = []
         for node in media:
-            candidate: TitleCandidate | None = _candidate(node) if isinstance(node, Mapping) else None
+            candidate: TitleCandidate | None = candidate_from_node(node) if isinstance(node, Mapping) else None
             if candidate is not None:
                 candidates.append(candidate)
         return tuple(candidates)
@@ -367,7 +355,7 @@ def _start_date(raw: object) -> date | None:
         raise _catalog_error(_CatalogFailure.MALFORMED) from error
 
 
-def _candidate(node: Mapping[str, Any]) -> TitleCandidate | None:
+def candidate_from_node(node: Mapping[str, Any]) -> TitleCandidate | None:
     """Build one candidate, or ``None`` when the node carries no id or romaji title."""
     anilist_id: object = node.get("id")
     title: object = node.get("title")
@@ -396,6 +384,29 @@ def _candidate(node: Mapping[str, Any]) -> TitleCandidate | None:
         start=premiere,
         country=_text(node.get("countryOfOrigin")) or None,
     )
+
+
+def graph_prequels(graph: FranchiseGraph, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
+    """Read the existing prequel traversal from fetched nodes without issuing catalog requests."""
+    return _walk_prequels(candidate, graph.nodes.get)
+
+
+def _walk_prequels(
+    candidate: TitleCandidate, read: Callable[[int], Mapping[str, Any] | None]
+) -> tuple[PrequelEntry, ...]:
+    pending: list[int] = list(candidate.prequel_ids)
+    seen: set[int] = {candidate.anilist_id}
+    entries: list[PrequelEntry] = []
+    while pending and len(entries) < MAX_PREQUEL_HOPS:
+        current: int = pending.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        media: Mapping[str, Any] | None = read(current)
+        entries.append(_prequel_entry(media))
+        if media is not None:
+            pending.extend(identifier for identifier in _prequel_ids(media) if identifier not in seen)
+    return tuple(entries)
 
 
 def _prequel_ids(node: Mapping[str, Any]) -> tuple[int, ...]:

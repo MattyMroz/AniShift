@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Final, cast
 from anishift.application.acquisition import (
     AcquisitionService,
     CatalogOrder,
+    ListingRead,
     ReleaseChoice,
     SeasonContext,
 )
@@ -117,6 +118,7 @@ from anishift.application.episode_commands import (
     validate_episode_keys,
 )
 from anishift.application.episode_identity import IdentityVerdict
+from anishift.application.episode_search import SourceSwitches
 from anishift.application.episode_selection import (
     EpisodeKey,
     EpisodeListing,
@@ -220,6 +222,7 @@ if TYPE_CHECKING:
     from anishift.application.scheduler import RunHandle
     from anishift.application.service import AppService
     from anishift.application.watch_state import WatchStateStore
+    from anishift.config.user_settings import UserSettings
     from anishift.services.media.probe import MediaProbe
     from anishift.services.media.types import MediaCatalog
     from anishift.services.torrents import TorrentFile, TorrentInfo
@@ -4334,7 +4337,11 @@ class AutomationOwner:
             read: ControlResponse | None = (
                 self._franchise_read(request, acquisition)
                 if payload.get("operation") == "franchise"
-                else _catalog_read(acquisition, payload)
+                else _catalog_read(
+                    acquisition,
+                    payload,
+                    self._source_switches() if payload.get("operation") == "offer" else SourceSwitches(),
+                )
             )
             if read is not None:
                 return read
@@ -4864,12 +4871,13 @@ class AutomationOwner:
         if isinstance(prepared, ControlResponse):
             return prepared
         previous, conflict = prepared
+        switches: SourceSwitches = self._source_switches()
         with (
             acquisition.episode_requests(),
             acquisition.observe_decisions(partial(self._record_decision, command_id=generation)),
         ):
-            listing: EpisodeListing = acquisition.episodes(key.anilist_id)
-            if not any(item.number == key.number and item.aired for item in listing.episodes):
+            read: ListingRead = acquisition.read_listing(key.anilist_id)
+            if not any(item.number == key.number and item.aired for item in read.listing.episodes):
                 return ControlResponse.refused(
                     ControlErrorCode.REFUSED, "This episode has not aired", EpisodeReason.EPISODE_NOT_AIRED
                 )
@@ -4878,7 +4886,7 @@ class AutomationOwner:
             )
             offer: EpisodeOffer
             target: dict[str, object]
-            offer, target = acquisition.prepare_episode(key, exclude=exclude)
+            offer, target = acquisition.search_episode(key, switches, read=read, exclude=exclude)
         return self._on_owner(
             partial(self._store_episode_offer, request, generation, offer, target, previous, conflict)
         )
@@ -4936,7 +4944,17 @@ class AutomationOwner:
         candidates: tuple[RankedCandidate, ...] = tuple(
             item for item in offer.candidates if not self._excluded_episode_pair(offer.key, item.stream)
         )
-        return replace(offer, candidates=candidates, suggestion=suggestion(candidates, numbering=True)[0])
+        return replace(offer, candidates=candidates, suggestion=suggestion(candidates, numbering=offer.numbering)[0])
+
+    def _source_switches(self) -> SourceSwitches:
+        settings: UserSettings = self._service.settings_snapshot()
+        return SourceSwitches(
+            settings.source_tsukihime,
+            settings.source_torrentio,
+            settings.source_nyaa,
+            settings.source_knaben,
+            settings.source_nekobt,
+        )
 
     def _excluded_episode_pair(self, key: EpisodeKey, stream: StreamCandidate) -> bool:
         return _excluded_pair(self._state.acquisitions, key, stream)
@@ -5113,6 +5131,7 @@ class AutomationOwner:
         acquisition: AcquisitionService | None = self._service.acquisition
         if acquisition is None:
             return EpisodeResult(key, EpisodeReason.ACQUISITION_UNAVAILABLE)
+        switches: SourceSwitches = self._source_switches()
         try:
             with (
                 acquisition.episode_requests(),
@@ -5120,15 +5139,15 @@ class AutomationOwner:
                     partial(self._record_decision, command_id=f"{command_id}:episode:{key.number}")
                 ),
             ):
-                listing: EpisodeListing = acquisition.episodes(key.anilist_id)
-                if not any(item.number == key.number and item.aired for item in listing.episodes):
+                read: ListingRead = acquisition.read_listing(key.anilist_id)
+                if not any(item.number == key.number and item.aired for item in read.listing.episodes):
                     return EpisodeResult(key, EpisodeReason.EPISODE_NOT_AIRED)
                 exclude: Callable[[StreamCandidate], bool] | None = self._on_owner(
                     partial(self._download_exclusion, key)
                 )
                 offer: EpisodeOffer
                 target: dict[str, object]
-                offer, target = acquisition.prepare_episode(key, exclude=exclude)
+                offer, target = acquisition.search_episode(key, switches, read=read, exclude=exclude)
         except (AniShiftError, OSError, ValueError) as problem:
             logger.warning("Episode batch lookup failed", error_class=type(problem).__name__)
             return EpisodeResult(key, failure_code(problem) or EpisodeReason.SOURCE_FAILED)
@@ -8387,7 +8406,9 @@ def _external_sources(payload: Mapping[str, object]) -> tuple[dict[str, object],
     return tuple(cast("dict[str, object]", entry) for entry in registrations)
 
 
-def _catalog_read(acquisition: AcquisitionService, payload: Mapping[str, object]) -> ControlResponse | None:
+def _catalog_read(
+    acquisition: AcquisitionService, payload: Mapping[str, object], switches: SourceSwitches
+) -> ControlResponse | None:
     operation: object = payload.get("operation")
     if operation == "titles":
         return ControlResponse.succeeded(
@@ -8402,7 +8423,7 @@ def _catalog_read(acquisition: AcquisitionService, payload: Mapping[str, object]
     key: EpisodeKey = decode_view(
         EpisodeKey, {"anilist_id": payload.get("anilist_id"), "number": payload.get("number")}
     )
-    return ControlResponse.succeeded(encode_view(acquisition.offer(key)))
+    return ControlResponse.succeeded(encode_view(acquisition.offer(key, switches)))
 
 
 def _flag(payload: Mapping[str, object], key: str) -> bool | None:

@@ -11,12 +11,14 @@ from functools import partial
 from pathlib import Path
 from typing import cast
 
+import httpx
 import pytest
 from test_acquisition import _S1, _episode_service, _slime_titles, _StreamSource, _TitleCatalog
 from test_automation import _TIMEOUT_S, _real_service, _request, _serving
 from test_episode_admission import _ENTRY, _Library, _subscribe
 from test_episode_admission import _choice as _legacy_choice
 from test_episode_admission import _library as _legacy_library
+from test_episode_search import controlled, empty_response, search_service
 from test_selective_lifecycle import _SelectiveNetwork, _until
 
 from anishift.application import automation as automation_module
@@ -61,6 +63,10 @@ from anishift.application.transfers import TransferInspector, file_map_revision
 from anishift.application.watch_state import WatchStateStore
 from anishift.application.workflows import WorkflowTarget
 from anishift.cli.resident import ResidentSession
+from anishift.config import user_settings
+from anishift.config.field_access import assign_setting_value
+from anishift.config.field_catalog import SettingSpec, setting_catalog
+from anishift.config.user_settings import UserSettings, save_user_settings
 from anishift.errors import ErrorCode
 from anishift.platform.local_control import (
     ControlClient,
@@ -70,8 +76,149 @@ from anishift.platform.local_control import (
     ControlServer,
     control_endpoint,
 )
+from anishift.services.catalog.anizip import AniZipCatalog
 from anishift.services.catalog.types import SeasonAiring, TitleStatus
+from anishift.services.http_requests import RequestControl
 from anishift.services.torrents import TorrentFile, TorrentInfo
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("mapping_status", [404, 500, 200])
+def test_offer_without_numbering_shows_releases(tmp_path: Path, mapping_status: int) -> None:
+    _without_numbering(tmp_path, mapping_status, repeat=False, download=False)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("mapping_status", [404, 500, 200])
+def test_repeat_without_numbering_has_no_suggestion(tmp_path: Path, mapping_status: int) -> None:
+    _without_numbering(tmp_path, mapping_status, repeat=True, download=False)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("mapping_status", [404, 500, 200])
+def test_d_without_numbering_does_not_admit(tmp_path: Path, mapping_status: int) -> None:
+    _without_numbering(tmp_path, mapping_status, repeat=False, download=True)
+
+
+def _without_numbering(
+    tmp_path: Path,
+    mapping_status: int,
+    *,
+    repeat: bool,
+    download: bool,
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.ani.zip":
+            return httpx.Response(
+                mapping_status, json={"mappings": {}, "episodes": {"1": {"seasonNumber": 1, "episodeNumber": 1}}}
+            )
+        return empty_response(request)
+
+    control: RequestControl = controlled(respond)
+    with httpx.Client(transport=control) as http:
+        service: AcquisitionService = _episode_service(tmp_path)
+        service._episode_catalog = AniZipCatalog(http)
+        service._episode_search = search_service(http, control)
+        store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
+        if repeat:
+            store.save(WatchState(acquisitions=(_legacy(),)))
+        with _running(service, store, inspect_transfers=False) as owner:
+            server: ControlServer = ControlServer(
+                control_endpoint(tmp_path / "ipc"), b"episode-test-key", owner.handle, on_disconnect=owner.disconnect
+            )
+            session: ResidentSession = ResidentSession(
+                tmp_path, lambda: ControlClient(control_endpoint(tmp_path / "ipc"), b"episode-test-key")
+            )
+            try:
+                view: EpisodeOfferView = session.episode_offer(EpisodeKey(_S1, 4), repeat=repeat)
+                assert view.offer.candidates
+                assert view.offer.suggestion is None
+                assert not view.offer.numbering
+                assert view.offer.status == "brak numeracji"
+                assert "Torrentio: brak Kitsu ID" in view.offer.source_lines
+                if not download:
+                    return
+                done: threading.Event = threading.Event()
+                results: list[Mapping[str, object]] = []
+
+                def event(value: Mapping[str, object], terminal: bool) -> None:
+                    del terminal
+                    if value.get("event") == "episode_batch":
+                        results.append(value)
+                        done.set()
+
+                owner.attach_broadcast(event)
+                assert (
+                    session.episode_download((EpisodeKey(_S1, 4),), command_id="missing-numbering").state == "accepted"
+                )
+                assert done.wait(_TIMEOUT_S)
+                batch: EpisodeBatch = decode_view(EpisodeBatch, results[0]["payload"])
+                assert batch.results[0].reason == EpisodeReason.NO_SUGGESTION
+                assert len(owner.state.acquisitions) == int(repeat)
+            finally:
+                session.close()
+                server.close()
+
+
+@pytest.mark.integration
+def test_source_switch_through_settings_api_reaches_owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.host)
+        return empty_response(request)
+
+    monkeypatch.setattr(user_settings, "config_path", lambda: tmp_path / "settings.json")
+    control: RequestControl = controlled(respond)
+    with httpx.Client(transport=control) as http:
+        service: AcquisitionService = _episode_service(tmp_path)
+        service._episode_search = search_service(http, control)
+        with _running(service, WatchStateStore(tmp_path / "state.json"), inspect_transfers=False) as owner:
+            owner._service._env_file = tmp_path / "absent.env"
+            initial: EpisodeOfferView = _offer(owner)
+            assert "Knaben: gotowe" in initial.offer.source_lines
+            assert "api.knaben.org" in seen
+            settings: UserSettings = UserSettings()
+            spec: SettingSpec = next(spec for spec in setting_catalog() if spec.setting_id == "source_knaben")
+            assign_setting_value(settings, spec, False)
+            save_user_settings(settings)
+            assert owner.handle(_request("reload_settings", command_id="reload")).ok
+            seen.clear()
+            updated: EpisodeOfferView = _offer(owner)
+            assert "Knaben: wyłączone" in updated.offer.source_lines
+            assert "api.knaben.org" not in seen
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("blocked_host", ["api.knaben.org", "api.tsukihime.org"])
+def test_episode_download_waits_for_all_sources(tmp_path: Path, blocked_host: str) -> None:
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    finished: threading.Event = threading.Event()
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == blocked_host and (blocked_host == "api.knaben.org" or "/torrents/" in request.url.path):
+            entered.set()
+            assert release.wait(_TIMEOUT_S)
+        return empty_response(request)
+
+    control: RequestControl = controlled(respond)
+    with httpx.Client(transport=control) as http:
+        service: AcquisitionService = _episode_service(tmp_path)
+        service._episode_search = search_service(http, control)
+        with _running(service, WatchStateStore(tmp_path / "state.json"), inspect_transfers=False) as owner:
+            owner.attach_broadcast(
+                lambda event, terminal: finished.set() if event.get("event") == "episode_batch" else None
+            )
+            try:
+                assert _download(owner, (4,)).ok
+                assert entered.wait(_TIMEOUT_S)
+                assert not finished.is_set()
+                assert not owner.state.acquisitions
+            finally:
+                release.set()
+            assert finished.wait(_TIMEOUT_S)
+            assert _batch(owner, (4,)).state == "completed"
 
 
 class _Streams(_StreamSource):

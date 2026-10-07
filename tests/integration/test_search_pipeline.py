@@ -178,10 +178,10 @@ def test_slime_first_season_entry_ranks_episode_four_from_recorded_franchise_map
     assert offer.candidates[offer.suggestion].identity.verdict is IdentityVerdict.MATCH
 
 
-def test_twelve_offers_after_entering_slime_ask_torrentio_twelve_times_and_nothing_else(composed: Composed) -> None:
+def test_twelve_offers_reuse_mapping_and_retry_the_unavailable_schedule(composed: Composed) -> None:
     composed.acquisition.franchise(SLIME_SEASON_1)
     composed.acquisition.episodes(SLIME_SEASON_1)
     composed.hosts.clear()
     for number in range(1, 13):
         composed.acquisition.offer(EpisodeKey(SLIME_SEASON_1, number))
-    assert composed.hosts == ["torrentio.strem.fun"] * 12
+    assert composed.hosts == ["graphql.anilist.co", "torrentio.strem.fun"] * 12

@@ -9,7 +9,7 @@ import unicodedata
 from collections import Counter, OrderedDict
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -18,7 +18,16 @@ from typing import TYPE_CHECKING, Final, Protocol, cast
 
 from anishift.application.acquisition_decisions import offer_check, source_error
 from anishift.application.episode_identity import IdentityVerdict
+from anishift.application.episode_search import (
+    EpisodeRequest,
+    EpisodeSearch,
+    SourceSwitches,
+    episode_phrases,
+    offer_status,
+    source_line,
+)
 from anishift.application.episode_selection import (
+    AniZipMapping,
     EpisodeOffer,
     ListedEpisode,
     episode_listing,
@@ -42,8 +51,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
 
     from anishift.application.cancellation import CancellationToken
+    from anishift.application.episode_search import SearchOutcome, SearchSnapshot
     from anishift.application.episode_selection import (
-        AniZipMapping,
         EpisodeKey,
         EpisodeListing,
         Franchise,
@@ -525,6 +534,7 @@ class AcquisitionService:
         torrent_management: TorrentManagement | None = None,
         episode_catalog: EpisodeCatalog | None = None,
         stream_source: StreamSource | None = None,
+        episode_search: EpisodeSearch | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._source: TorrentSource = source
@@ -537,6 +547,7 @@ class AcquisitionService:
         self._torrent_management: TorrentManagement | None = torrent_management
         self._episode_catalog: EpisodeCatalog | None = episode_catalog
         self._stream_source: StreamSource | None = stream_source
+        self._episode_search: EpisodeSearch | None = episode_search
         self._clock: Callable[[], float] = clock
         self._memory: OrderedDict[int, _Remembered] = OrderedDict()
         self._memory_lock: threading.Lock = threading.Lock()
@@ -599,12 +610,7 @@ class AcquisitionService:
         if self._title_catalog is None:
             return SeasonContext(index=1, offset=0, episodes=candidate.episodes)
         prequels: tuple[PrequelEntry, ...] = self._title_catalog.prequel_episodes(candidate)
-        seasons: int = sum(1 for entry in prequels if not entry.cour)
-        return SeasonContext(
-            index=seasons + (0 if candidate.is_cour() else 1),
-            offset=sum(entry.episodes for entry in prequels),
-            episodes=candidate.episodes,
-        )
+        return _season_context(candidate, prequels)
 
     def search_title(
         self,
@@ -779,17 +785,15 @@ class AcquisitionService:
         return self.read_listing(anilist_id).listing
 
     def read_listing(self, anilist_id: int, *, saved: AniZipMapping | None = None) -> ListingRead:
-        """Read the episode list once, building it from *saved* when ani.zip fails or names no Kitsu entry."""
+        """Read the episode list with saved mapping fallback, or from the schedule when numbering is absent."""
         now: float = self._clock()
         mapping: AniZipMapping
         fetched: bool = True
         try:
             mapping = self._mapping(anilist_id, now)
         except AniShiftError, OSError, ValueError:
-            if saved is None:
-                raise
-            mapping, fetched = saved, False
-        live: bool = fetched and mapping.kitsu_id is not None
+            mapping, fetched = saved or AniZipMapping(None, None, None, (), (), None, {}), False
+        live: bool = fetched and bool(mapping.raw_episodes)
         if not live and saved is not None:
             mapping = saved
             logger.info("Episode mapping snapshot used", provider="anizip")
@@ -811,9 +815,79 @@ class AcquisitionService:
         )
         return ListingRead(listing, mapping, live)
 
-    def offer(self, key: EpisodeKey) -> EpisodeOffer:
+    def offer(self, key: EpisodeKey, switches: SourceSwitches | None = None) -> EpisodeOffer:
         """Rank the live stream candidates of one episode against its remembered identity."""
-        return self.prepare_episode(key)[0]
+        return self.search_episode(key, switches or SourceSwitches())[0]
+
+    def search_episode(
+        self,
+        key: EpisodeKey,
+        switches: SourceSwitches,
+        *,
+        read: ListingRead | None = None,
+        on_partial: Callable[[SearchSnapshot], None] | None = None,
+        exclude: Callable[[StreamCandidate], bool] | None = None,
+    ) -> tuple[EpisodeOffer, dict[str, object]]:
+        """Search the enabled sources using exactly the mapping used for the episode listing."""
+        read = read or self.read_listing(key.anilist_id)
+        if self._episode_search is None:
+            legacy, legacy_target = self.prepare_episode(key, mapping=read.mapping, exclude=exclude)
+            numbered: bool = legacy_target.get("type") == _MOVIE_FORMAT or bool(
+                read.mapping.raw_episodes.get(str(key.number))
+            )
+            return replace(
+                legacy,
+                numbering=numbered,
+                suggestion=legacy.suggestion if numbered else None,
+                status=None if numbered else "brak numeracji",
+            ), legacy_target
+        graph: FranchiseGraph = self._context_graph(key.anilist_id, self._clock())
+        candidate: TitleCandidate = graph_candidate(graph, key.anilist_id)
+        movie: bool = candidate.format == _MOVIE_FORMAT
+        if movie and key.number != 1:
+            msg: str = "A movie has only its first row"
+            raise ValueError(msg)
+        numbering: bool = movie or bool(read.mapping.raw_episodes.get(str(key.number)))
+        target: dict[str, object] = identity_target(graph, key.anilist_id, read.mapping, key.number)
+        absolute: object = target.get("absolute")
+        request: EpisodeRequest = EpisodeRequest(
+            key,
+            key.number,
+            movie,
+            candidate.country == _DONGHUA_COUNTRY,
+            read.mapping.kitsu_id,
+            None,
+            episode_phrases(
+                candidate,
+                graph_season_context(graph, candidate),
+                key.number,
+                manual=True,
+                absolute=absolute if type(absolute) is int else None,
+            ),
+            target,
+            numbering,
+        )
+        result: SearchOutcome = self._episode_search.manual_offer(request, switches, on_partial)
+        ranked: tuple[RankedCandidate, ...] = tuple(
+            row for row in result.snapshot.candidates if exclude is None or not exclude(row.stream)
+        )
+        counts: dict[str, int] = {
+            verdict.value: sum(row.identity.verdict is verdict for row in ranked) for verdict in IdentityVerdict
+        }
+        offer: EpisodeOffer = EpisodeOffer(
+            key,
+            ranked,
+            suggestion(ranked, numbering=numbering)[0],
+            datetime.fromtimestamp(self._clock(), UTC),
+            counts,
+            numbering,
+            tuple(source_line(row) for row in result.snapshot.sources),
+            "brak numeracji" if not numbering else offer_status(result.snapshot.sources),
+        )
+        logger.info(
+            "Episode search completed", count=len(ranked), numbering=numbering, suggested=offer.suggestion is not None
+        )
+        return offer, target
 
     def prepare_episode(
         self,
@@ -1032,6 +1106,32 @@ class AcquisitionService:
         self._client.set_preferences({INCOMPLETE_EXTENSION_PREFERENCE: True, **SEEDING_STOP_PREFERENCES})
         logger.info("Torrent client configured for incomplete-file suffixes and no seeding")
         return self.client_status()
+
+
+def graph_candidate(graph: FranchiseGraph, selected_id: int) -> TitleCandidate:
+    """Project an already fetched catalog node with the catalog's canonical decoder."""
+    from anishift.services.catalog.anilist import candidate_from_node  # noqa: PLC0415
+
+    candidate: TitleCandidate | None = candidate_from_node(graph.nodes[selected_id])
+    if candidate is None:
+        msg: str = "The selected catalog entry has no title"
+        raise ValueError(msg)
+    return candidate
+
+
+def graph_season_context(graph: FranchiseGraph, candidate: TitleCandidate) -> SeasonContext:
+    """Calculate the same season context as catalog traversal using only fetched nodes."""
+    from anishift.services.catalog.anilist import graph_prequels  # noqa: PLC0415
+
+    return _season_context(candidate, graph_prequels(graph, candidate))
+
+
+def _season_context(candidate: TitleCandidate, prequels: Sequence[PrequelEntry]) -> SeasonContext:
+    return SeasonContext(
+        index=sum(not entry.cour for entry in prequels) + (0 if candidate.is_cour() else 1),
+        offset=sum(entry.episodes for entry in prequels),
+        episodes=candidate.episodes,
+    )
 
 
 def _title_queries(candidate: TitleCandidate) -> tuple[str, ...]:

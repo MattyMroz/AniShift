@@ -9,8 +9,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-import httpx
-
 from anishift.application.control_views import encode_view
 from anishift.errors import AniShiftError
 from anishift.utils.logger import get_logger
@@ -171,18 +169,13 @@ def offer_check(
 
 def source_error(source: str, anilist_id: int, number: int | None, error: BaseException) -> dict[str, object]:
     """Keep only a source error code and HTTP status, never its message or payload."""
-    cause: BaseException | None = error
-    status: int | None = None
-    while cause is not None:
-        if isinstance(cause, httpx.HTTPStatusError):
-            status = cause.response.status_code
-            break
-        cause = cause.__cause__
+    from anishift.application.episode_search import http_status  # noqa: PLC0415
+
     return {
         "source": source,
         "key": {"anilist_id": anilist_id, "number": number},
         "error": error.context.code.value if isinstance(error, AniShiftError) else type(error).__name__,
-        "http_status": status,
+        "http_status": http_status(error),
     }
 
 

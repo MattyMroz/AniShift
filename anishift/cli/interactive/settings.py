@@ -154,6 +154,7 @@ _ROOT_ITEMS: Final[tuple[tuple[str, str], ...]] = (
     ("Lektor", "category:tts"),
     ("Wynik", "category:output"),
     ("Auto", "category:auto"),
+    ("Pobieranie", "category:download"),
     ("Połączenia", "category:connections"),
     (_RESET_LABEL, _RESET_KEY),
     (_BACK_LABEL, _BACK_KEY),
@@ -176,6 +177,16 @@ _SUBTITLE_FIELDS: Final[tuple[_SettingField, ...]] = (
     ("subtitle_max_lines_per_event", "Linii na napis", "UKŁAD TEKSTU"),
 )
 """Persisted subtitle layout fields exposed by the product."""
+
+_DOWNLOAD_FIELDS: Final[tuple[_SettingField, ...]] = (
+    ("source_tsukihime", "TsukiHime", "ŹRÓDŁA WYDAŃ"),
+    ("source_torrentio", "Torrentio", "ŹRÓDŁA WYDAŃ"),
+    ("source_nyaa", "Nyaa", "ŹRÓDŁA WYDAŃ"),
+    ("source_knaben", "Knaben", "ŹRÓDŁA WYDAŃ"),
+    ("source_nekobt", "nekoBT", "ŹRÓDŁA WYDAŃ"),
+    ("subscription_polish_wait_h", "Czekanie na polskie napisy (h)", "SUBSKRYPCJE"),
+)
+"""Release source switches and subtitle waiting time exposed by the product."""
 
 _TRANSLATION_FIELDS: Final[tuple[_SettingField, ...]] = (
     ("translation_engine", "Silnik tłumaczenia", "PODSTAWOWE"),
@@ -348,11 +359,13 @@ class _Category(StrEnum):
     TTS = "tts"
     OUTPUT = "output"
     AUTO = "auto"
+    DOWNLOAD = "download"
     CONNECTIONS = "connections"
 
 
 _SCOPE_FIELDS: Final[dict[str, tuple[_SettingField, ...]]] = {
     _Category.GENERAL.value: _GENERAL_FIELDS,
+    _Category.DOWNLOAD.value: _DOWNLOAD_FIELDS,
     _Category.SUBTITLES.value: _SUBTITLE_FIELDS,
     # The model goes before `translation_engine` on purpose: both its fields depend on
     # the `llm` engine, so restoring the engine first would make the reset skip them.
@@ -1029,6 +1042,8 @@ class SettingsController:
             items: tuple[_MenuItem, ...] = self._setting_items(_GENERAL_FIELDS)
         elif self._category is _Category.SUBTITLES:
             items = self._setting_items(_SUBTITLE_FIELDS)
+        elif self._category is _Category.DOWNLOAD:
+            items = self._setting_items(_DOWNLOAD_FIELDS)
         elif self._category is _Category.TRANSLATION:
             items = self._translation_items()
         elif self._category is _Category.TTS:
@@ -1862,6 +1877,7 @@ def _field_title(setting_id: str) -> str:
         field_id: label
         for field_id, label, _section in (
             *_GENERAL_FIELDS,
+            *_DOWNLOAD_FIELDS,
             *_TRANSLATION_FIELDS,
             *_TTS_FIELDS,
             *(item for recipe in _RECIPE_FIELDS.values() for item in recipe),
@@ -1965,6 +1981,7 @@ def _menu_title(category: _Category | None, connection: _Connection | None) -> s
     titles: dict[_Category | None, str] = {
         None: "USTAWIENIA",
         _Category.GENERAL: "OGÓLNE",
+        _Category.DOWNLOAD: "POBIERANIE",
         _Category.SUBTITLES: "NAPISY",
         _Category.TRANSLATION: "TŁUMACZENIE",
         _Category.TTS: "LEKTOR",

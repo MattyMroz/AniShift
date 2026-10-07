@@ -249,6 +249,17 @@ def _stream_declarations(stream: StreamCandidate, file: ReleaseFile | None) -> t
         )
     if stream.source == "nekobt":
         return (tag_declaration((*stream.tags, *stream.language_tags)),)
+    if stream.source == "nyaa" and stream.subtitle_languages:
+        return (
+            LanguageDeclaration(
+                LanguageSource.RELEASE_NAME,
+                None,
+                frozenset(language_code(code) for code in stream.subtitle_languages),
+                None,
+                complete_audio=False,
+                partial_subtitles=True,
+            ),
+        )
     if file is None:
         return ()
     scope: str | None = file.scope

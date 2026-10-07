@@ -2410,7 +2410,7 @@ def test_movie_entry_previews_through_movie_endpoint_without_admission(tmp_path:
 
 @pytest.mark.integration
 @pytest.mark.parametrize("remote", [False, True])
-@pytest.mark.parametrize("provider", ["anilist", "anizip", "torrentio"])
+@pytest.mark.parametrize("provider", ["anilist", "torrentio"])
 def test_http_429_reaches_panel_with_source_deadline_and_no_fallback(
     tmp_path: Path,
     remote: bool,
@@ -2428,7 +2428,6 @@ def test_http_429_reaches_panel_with_source_deadline_and_no_fallback(
         assert controller._screen is _Screen.PROBLEM
         expected: str = {
             "anilist": "AniList nie odpowiada",
-            "anizip": "Lista odcinków niedostępna",
             "torrentio": "Źródło wydań nie odpowiada",
         }[provider]
         assert expected in _frame(controller)
@@ -2439,6 +2438,36 @@ def test_http_429_reaches_panel_with_source_deadline_and_no_fallback(
         assert "spróbuj za 60 s" in _frame(controller)
         now[0] += 60
         assert "Możesz spróbować ponownie" in _frame(controller)
+        assert len(sent) == calls
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("remote", [False, True])
+def test_ani_zip_429_keeps_episode_listing_and_offer_without_numbering(tmp_path: Path, *, remote: bool) -> None:
+    sent: list[str] = []
+    now: list[float] = [datetime(2026, 9, 29, tzinfo=UTC).timestamp()]
+    with _running_panel(tmp_path, ["anizip"], sent, now, remote=remote) as (controller, panel, acquisition):
+        _open(controller)
+        assert controller._screen == _Screen.EPISODES
+        assert controller._listing is not None
+        assert len(controller._listing.episodes) == 24
+        deadline: float = acquisition.blocked_until(("anizip",))
+        assert now[0] < deadline <= now[0] + 90
+        for key in ("down", "down", "down", "text:i"):
+            _key(controller, key)
+        assert controller._screen.value == "offer"
+        offer: EpisodeOffer = controller._offers[4]
+        assert not offer.numbering
+        assert offer.suggestion is None
+        assert offer.status == "brak numeracji"
+        assert not any("torrentio.strem.fun" in url for url in sent)
+        assert sum("api.ani.zip" in url for url in sent) == 1
+        if panel is not None:
+            panel._receive(panel._parent, {"event": "state_changed", "payload": panel._parent.command("status")})
+            assert controller._provider_locks["anizip"] == deadline
+        calls: int = len(sent)
+        now[0] += 90
+        _frame(controller)
         assert len(sent) == calls
 
 
