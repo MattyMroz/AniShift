@@ -34,6 +34,7 @@ from anishift.application.episode_selection import (
     franchise_view,
     identity_target,
     list_order,
+    numbering_gap,
     premiere_order,
     rank_candidates,
     representative,
@@ -303,6 +304,54 @@ def test_identity_target_missing_mapping_entry_leaves_episode_fields_empty() -> 
         None,
     )
     assert target["other_episode_titles"] == ["First Light", "Recap 'One'"]
+
+
+def test_identity_target_without_numbering() -> None:
+    raw: dict[str, Any] = {
+        "1": {"seasonNumber": 2, "episodeNumber": 1, "absoluteEpisodeNumber": 13, "title": {"en": "First Light"}},
+        "2": {"seasonNumber": 2, "episodeNumber": 2, "absoluteEpisodeNumber": 14, "title": {"en": "Second Light"}},
+    }
+    numbered: dict[str, object] = identity_target(_star_garden_graph(), 2, _mapping(raw), 1)
+    target: dict[str, object] = identity_target(_star_garden_graph(), 2, _mapping(raw), 1, numbering=False)
+    assert numbered["episode_title"] == "First Light"
+    assert target == numbered | {"season": None, "episode": None, "absolute": None, "episode_title": None}
+    assert target["other_episode_titles"] == ["Second Light"]
+
+
+def test_numbering_gap_missing_key() -> None:
+    mapping: AniZipMapping = _mapping({"1": {"seasonNumber": 1, "episodeNumber": 1}})
+    assert numbering_gap(mapping, 2, None, movie=False) == "none"
+    assert numbering_gap(mapping, 1, None, movie=False) is None
+
+
+def test_numbering_gap_without_season_episode() -> None:
+    mapping: AniZipMapping = _mapping({"1": {"title": {"en": "Episode 1"}}, "2": {"seasonNumber": 1}})
+    assert numbering_gap(mapping, 1, 2, movie=False) == "none"
+    assert numbering_gap(mapping, 2, 2, movie=False) == "none"
+
+
+def test_numbering_gap_duplicate_keeps_lowest() -> None:
+    mapping: AniZipMapping = _mapping(
+        {
+            "1": {"seasonNumber": 2, "episodeNumber": 1, "absoluteEpisodeNumber": 13},
+            "2": {"seasonNumber": 2, "episodeNumber": 1, "absoluteEpisodeNumber": 13},
+            "3": {"seasonNumber": 2, "episodeNumber": 2, "absoluteEpisodeNumber": 14},
+        }
+    )
+    assert [numbering_gap(mapping, number, None, movie=False) for number in (1, 2, 3)] == [None, "duplicate", None]
+
+
+def test_numbering_gap_tvdb_season() -> None:
+    mapping: AniZipMapping = _mapping({"1": {"seasonNumber": 1, "episodeNumber": 1}})
+    assert numbering_gap(mapping, 1, 2, movie=False) == "tvdb_season"
+    assert numbering_gap(mapping, 1, 1, movie=False) is None
+    assert numbering_gap(mapping, 1, None, movie=False) is None
+
+
+def test_numbering_gap_skips_movie() -> None:
+    mapping: AniZipMapping = _mapping({"1": {"title": {"en": "Complete Movie"}}, "S1": {"title": {"en": "Making of"}}})
+    assert numbering_gap(mapping, 1, None, movie=True) is None
+    assert numbering_gap(mapping, 1, None, movie=False) == "none"
 
 
 def test_identity_target_special_key_is_excluded_only_for_its_own_number() -> None:

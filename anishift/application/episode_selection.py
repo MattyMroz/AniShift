@@ -44,6 +44,7 @@ __all__ = [
     "franchise_view",
     "identity_target",
     "list_order",
+    "numbering_gap",
     "premiere_order",
     "rank_candidates",
     "representative",
@@ -297,8 +298,10 @@ def franchise_view(graph: FranchiseGraph, selected_id: int) -> Franchise:
     )
 
 
-def identity_target(graph: FranchiseGraph, selected_id: int, mapping: AniZipMapping, number: int) -> dict[str, object]:
-    """Build the H1 target of one local episode with exactly the keys and values of the frozen corpus projection."""
+def identity_target(
+    graph: FranchiseGraph, selected_id: int, mapping: AniZipMapping, number: int, *, numbering: bool = True
+) -> dict[str, object]:
+    """Build the H1 target of one local episode; without *numbering* its episode fields stay empty."""
     nodes: Mapping[int, JsonObject] = graph.nodes
     chain, _, missing = _walk(selected_id, nodes, graph.queried)
     members: frozenset[int] = frozenset(chain)
@@ -307,7 +310,7 @@ def identity_target(graph: FranchiseGraph, selected_id: int, mapping: AniZipMapp
     if first_season is not None:
         titles.extend(_titles(first_season))
     key: str = str(number)
-    episode: JsonObject = mapping.raw_episodes.get(key) or {}
+    episode: JsonObject = (mapping.raw_episodes.get(key) or {}) if numbering else {}
     return {
         "aliases": list(dict.fromkeys(titles)),
         "type": nodes[selected_id]["format"],
@@ -325,6 +328,31 @@ def identity_target(graph: FranchiseGraph, selected_id: int, mapping: AniZipMapp
             title for other, value in mapping.raw_episodes.items() if other != key and (title := _episode_title(value))
         ],
     }
+
+
+def numbering_gap(mapping: AniZipMapping, number: int, tvdb_season: int | None, *, movie: bool) -> str | None:
+    """Return why local episode *number* lacks target numbering: ``none``, ``duplicate`` or ``tvdb_season``."""
+    if movie:
+        return None
+    pair: tuple[int, int] | None = _season_episode(mapping.raw_episodes.get(str(number)))
+    if pair is None:
+        return "none"
+    if any(
+        key.isascii() and key.isdecimal() and int(key) < number and _season_episode(value) == pair
+        for key, value in mapping.raw_episodes.items()
+    ):
+        return "duplicate"
+    if tvdb_season is not None and pair[0] != tvdb_season:
+        return "tvdb_season"
+    return None
+
+
+def _season_episode(episode: JsonObject | None) -> tuple[int, int] | None:
+    if episode is None:
+        return None
+    season: object = episode.get("seasonNumber")
+    number: object = episode.get("episodeNumber")
+    return (season, number) if type(season) is int and type(number) is int else None
 
 
 def episode_listing(  # noqa: PLR0913

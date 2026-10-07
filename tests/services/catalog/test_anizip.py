@@ -77,6 +77,32 @@ def test_mapping_invalid_response_has_episode_catalog_code(response: httpx.Respo
     assert caught.value.context.code is ErrorCode.EPISODE_CATALOG_FAILED
 
 
+def test_mapping_by_anidb() -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://api.ani.zip/mappings?anidb_id=20168"
+        assert request.headers["User-Agent"] == USER_AGENT
+        return httpx.Response(
+            200,
+            json={
+                "episodes": {
+                    "1": {
+                        "seasonNumber": 2,
+                        "episodeNumber": 1,
+                        "absoluteEpisodeNumber": 15,
+                        "title": {"en": "Clouds and Rain"},
+                    }
+                },
+                "mappings": {"kitsu_id": None, "type": "TV", "anidb_id": 20168},
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        result: AniZipMapping = AniZipCatalog(http).mapping_by_anidb(20168)
+    assert (result.kitsu_id, result.catalog_type) == (None, "TV")
+    assert result.episodes[0].title == "Clouds and Rain"
+    assert result.raw_episodes["1"]["seasonNumber"] == 2
+
+
 def test_mapping_transport_failure_has_episode_catalog_code() -> None:
     def respond(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("offline", request=request)

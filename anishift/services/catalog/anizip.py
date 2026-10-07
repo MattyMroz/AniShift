@@ -38,11 +38,18 @@ class AniZipCatalog:
 
     def mapping(self, anilist_id: int) -> AniZipMapping:
         """Return episode metadata, or an empty mapping for an unknown entry."""
+        return self._read("anilist_id", anilist_id)
+
+    def mapping_by_anidb(self, anidb_id: int) -> AniZipMapping:
+        """Return the episode metadata of one AniDB entry, or an empty mapping for an unknown one."""
+        return self._read("anidb_id", anidb_id)
+
+    def _read(self, key: str, identifier: int) -> AniZipMapping:
         started: float = perf_counter()
         try:
             response: httpx.Response = self._http.get(
                 ANIZIP_URL,
-                params={"anilist_id": anilist_id},
+                params={key: identifier},
                 headers={"User-Agent": USER_AGENT},
                 timeout=self._timeout_s,
             )
@@ -60,6 +67,7 @@ class AniZipCatalog:
             "Episode mapping completed",
             provider="anizip",
             operation="mapping",
+            lookup=key,
             count=len(result.episodes),
             elapsed_s=perf_counter() - started,
         )

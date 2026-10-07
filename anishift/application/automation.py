@@ -3771,7 +3771,11 @@ class AutomationOwner:
         now: datetime = self._clock()
         try:
             with acquisition.episode_requests():
-                read: ListingRead = acquisition.read_listing(anilist_id, saved=record.mapping)
+                read: ListingRead = acquisition.read_listing(
+                    anilist_id,
+                    saved=record.mapping,
+                    targets=tuple(target.number for target in search_targets(record, now, manual=manual)),
+                )
         except (AniShiftError, OSError, ValueError) as error:
             return _SubscriptionRead(now, None, (), self._subscription_failure(acquisition, error, now))
         preview: SubscriptionRecord = merge_listing(record, read, now, scopes)

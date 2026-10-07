@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, cast
 
 import httpx
 import pytest
@@ -56,6 +56,7 @@ from anishift.application.episode_selection import (
     RankedCandidate,
     StreamCandidate,
     identity_target,
+    numbering_gap,
     rank_candidates,
     suggestion,
 )
@@ -68,7 +69,9 @@ from anishift.services.catalog import (
     TitleCatalogError,
     TitleStatus,
 )
-from anishift.services.catalog.anizip import AniZipCatalog
+from anishift.services.catalog.anizip import AniZipCatalog, parse_mapping
+from anishift.services.catalog.arm import ArmCatalog, ArmIds
+from anishift.services.catalog.kitsu import KitsuCatalog
 from anishift.services.http_requests import RequestControl
 from anishift.services.torrents import Release, ReleaseName, TorrentFile, TorrentInfo
 from anishift.services.torrents.categories import (
@@ -1007,9 +1010,13 @@ def test_offer_through_the_franchise_ranks_recorded_streams_with_the_recorded_me
     service: AcquisitionService = _episode_service(tmp_path)
     service.franchise(root)
     offer: EpisodeOffer = service.offer(EpisodeKey(selected, number))
-    expected: tuple[RankedCandidate, ...] = _rank(target, _fixture_streams(_STREAM_FILES[kitsu, number]))
+    numbering: bool = numbering_gap(_fixture_mapping(selected), number, None, movie=False) is None
+    expected: tuple[RankedCandidate, ...] = _rank(
+        identity_target(graph, selected, _fixture_mapping(selected), number, numbering=numbering),
+        _fixture_streams(_STREAM_FILES[kitsu, number]),
+    )
     assert offer.candidates == expected
-    assert offer.suggestion == suggestion(expected, numbering=True)[0]
+    assert offer.suggestion == suggestion(expected, numbering=numbering)[0]
 
 
 @pytest.mark.parametrize(
@@ -1090,7 +1097,7 @@ def test_zero_max_age_still_serves_every_offer_and_listing_while_refetching_each
     assert [listing.status for listing in listings] == ["FINISHED", "FINISHED"]
     assert offers[0].candidates == offers[1].candidates
     assert offers[0].candidates
-    assert (titles.franchised, titles.scheduled) == ([_S1] * 3, [_S1] * 4)
+    assert (titles.franchised, titles.scheduled) == ([_S1] * 6, [_S1] * 4)
     assert (episodes.asked, streams.asked) == ([_S1] * 4, [(_S1_KITSU, 4)] * 2)
 
 
@@ -1208,11 +1215,11 @@ def test_episodes_use_the_airing_schedule_count_status_and_dates(tmp_path: Path)
 
 def test_failed_schedule_keeps_the_ani_zip_list_with_a_warning_and_the_anilist_retry_time(tmp_path: Path) -> None:
     clock: _Clock = _Clock()
-    titles: _TitleCatalog = _TitleCatalog()
+    titles: _TitleCatalog = _TitleCatalog(graphs={_S1: _fixture_graph(_S1)})
     titles.schedule_fails = True
     service: AcquisitionService = _episode_service(tmp_path, titles, clock=clock)
     listing: EpisodeListing = service.episodes(_S1)
-    assert (listing.status, listing.episode_count, listing.aired) == ("UNKNOWN", 24, None)
+    assert (listing.status, listing.episode_count, listing.aired) == ("FINISHED", 24, None)
     assert len(listing.episodes) == 24
     assert all(episode.airs_at is not None and not episode.aired for episode in listing.episodes)
     assert (listing.schedule_warning, listing.schedule_retry_at) == ("TITLE_CATALOG_FAILED", None)
@@ -1231,7 +1238,9 @@ def test_unmapped_new_ona_lists_twelve_anilist_episodes_without_invented_titles(
         12,
         tuple(EpisodeAiring(number, premiere + timedelta(weeks=number - 1)) for number in range(1, 13)),
     )
-    titles: _TitleCatalog = _TitleCatalog(schedules={1: schedule})
+    titles: _TitleCatalog = _TitleCatalog(
+        graphs={1: _graph(_node(1, "ONA", {"romaji": "Hoshi no Niwa"}, edges=[]), root_id=1)}, schedules={1: schedule}
+    )
     episodes: _EpisodeCatalog = _EpisodeCatalog({1: AniZipMapping(None, None, None, (), (), None, {})})
     streams: _StreamSource = _StreamSource()
     service: AcquisitionService = _episode_service(
@@ -1265,19 +1274,21 @@ def test_failed_schedule_takes_the_remembered_franchise_status_without_inventing
 
 def test_expired_schedule_is_not_a_fallback_after_a_later_failure(tmp_path: Path) -> None:
     clock: _Clock = _Clock()
-    schedule: SeasonAiring = SeasonAiring(_S1, TitleStatus.FINISHED, 25, ())
-    titles: _TitleCatalog = _TitleCatalog(schedules={_S1: schedule})
+    schedule: SeasonAiring = SeasonAiring(_S1, TitleStatus.RELEASING, 25, ())
+    titles: _TitleCatalog = _TitleCatalog(graphs={_S1: _fixture_graph(_S1)}, schedules={_S1: schedule})
     service: AcquisitionService = _episode_service(tmp_path, titles, clock=clock)
-    assert service.episodes(_S1).status == "FINISHED"
+    assert service.episodes(_S1).status == "RELEASING"
     clock.now += 901
     titles.schedule_fails = True
     listing: EpisodeListing = service.episodes(_S1)
-    assert (listing.status, listing.episode_count, listing.schedule_warning) == ("UNKNOWN", 24, "TITLE_CATALOG_FAILED")
+    assert (listing.status, listing.episode_count, listing.schedule_warning) == ("FINISHED", 24, "TITLE_CATALOG_FAILED")
 
 
 def test_retry_after_the_block_restores_the_schedule_without_asking_ani_zip_again(tmp_path: Path) -> None:
     clock: _Clock = _Clock()
-    titles: _TitleCatalog = _TitleCatalog(schedules={_S1: SeasonAiring(_S1, TitleStatus.FINISHED, 24, ())})
+    titles: _TitleCatalog = _TitleCatalog(
+        graphs={_S1: _fixture_graph(_S1)}, schedules={_S1: SeasonAiring(_S1, TitleStatus.FINISHED, 24, ())}
+    )
     episodes: _EpisodeCatalog = _slime_episodes()
     service: AcquisitionService = _episode_service(
         tmp_path, titles, episodes, clock=clock, request_control=_blocked_control(clock.now + 60)
@@ -1317,7 +1328,9 @@ def test_a_failed_ani_zip_read_builds_the_listing_from_the_saved_mapping_or_sche
     tmp_path: Path,
 ) -> None:
     saved: AniZipMapping = _fixture_mapping(_S1)
-    titles: _TitleCatalog = _TitleCatalog(schedules={_S1: SeasonAiring(_S1, TitleStatus.FINISHED, 24, ())})
+    titles: _TitleCatalog = _TitleCatalog(
+        graphs={_S1: _fixture_graph(_S1)}, schedules={_S1: SeasonAiring(_S1, TitleStatus.FINISHED, 24, ())}
+    )
     service: AcquisitionService = _episode_service(tmp_path, titles=titles, episodes=_FailingEpisodes({}))
     read: ListingRead = service.read_listing(_S1, saved=saved)
     assert (read.mapping, read.live, len(read.listing.episodes)) == (saved, False, 24)
@@ -1349,6 +1362,211 @@ def test_a_live_ani_zip_read_is_live_and_replaces_the_saved_mapping(tmp_path: Pa
     saved: AniZipMapping = replace(_fixture_mapping(_S1), episode_count=1)
     read: ListingRead = _episode_service(tmp_path).read_listing(_S1, saved=saved)
     assert (read.mapping, read.live) == (_fixture_mapping(_S1), True)
+
+
+_RAMPARTS: Final[int] = 213805
+
+_RAMPARTS_ANIDB: Final[int] = 20168
+
+_RAMPARTS_KITSU: Final[int] = 50827
+
+
+def _ramparts_titles() -> _TitleCatalog:
+    return _TitleCatalog(
+        graphs={_RAMPARTS: _graph(_node(_RAMPARTS, "TV", {"romaji": "Koori no Jouheki"}, edges=[]), root_id=_RAMPARTS)}
+    )
+
+
+def _ramparts_anidb(kitsu: int | None = None, kind: str | None = None) -> AniZipMapping:
+    return parse_mapping(
+        {
+            "episodes": {
+                "1": {
+                    "seasonNumber": 2,
+                    "episodeNumber": 1,
+                    "absoluteEpisodeNumber": 15,
+                    "title": {"en": "Clouds and Rain"},
+                },
+                "2": {"seasonNumber": 2, "episodeNumber": 2, "absoluteEpisodeNumber": 16},
+            },
+            "mappings": {"kitsu_id": kitsu, "type": kind},
+        }
+    )
+
+
+class _Bridges:
+    def __init__(
+        self,
+        ids: ArmIds | None = None,
+        anidb: AniZipMapping | None = None,
+        kitsu: int | None = None,
+    ) -> None:
+        self.answer: ArmIds | None = ids
+        self.anidb: AniZipMapping | None = anidb
+        self.kitsu: int | None = kitsu
+        self.asked: list[str] = []
+
+    def ids(self, anilist_id: int) -> ArmIds:
+        self.asked.append("arm")
+        if self.answer is None:
+            raise TitleCatalogError(context=ErrorContext(code=ErrorCode.EPISODE_CATALOG_FAILED, message="down"))
+        return self.answer
+
+    def mapping_by_anidb(self, anidb_id: int) -> AniZipMapping:
+        self.asked.append(f"anidb:{anidb_id}")
+        return self.anidb or AniZipMapping(None, None, None, (), (), None, {})
+
+    def kitsu_id(self, anilist_id: int) -> int | None:
+        self.asked.append("kitsu")
+        return self.kitsu
+
+
+def _bridged_service(
+    tmp_path: Path, mapping: AniZipMapping, bridges: _Bridges
+) -> tuple[AcquisitionService, _EpisodeCatalog]:
+    episodes: _EpisodeCatalog = _EpisodeCatalog({_RAMPARTS: mapping})
+    service: AcquisitionService = _episode_service(tmp_path, _ramparts_titles(), episodes)
+    service._id_catalog = bridges
+    service._anidb_catalog = bridges
+    service._kitsu_catalog = bridges
+    return service, episodes
+
+
+def test_numbering_falls_back_to_anidb(tmp_path: Path) -> None:
+    bridges: _Bridges = _Bridges(ArmIds(_RAMPARTS_ANIDB, 2), _ramparts_anidb())
+    service, _ = _bridged_service(tmp_path, AniZipMapping(_RAMPARTS_KITSU, "TV", None, (), (), None, {}), bridges)
+    read: ListingRead = service.read_listing(_RAMPARTS)
+    assert (read.live, read.numbering_source, read.tvdb_season, read.movie) == (True, "anidb", 2, False)
+    assert read.mapping.kitsu_id == _RAMPARTS_KITSU
+    assert read.mapping.raw_episodes["1"]["seasonNumber"] == 2
+    assert read.listing.episodes[0].title == "Clouds and Rain"
+    assert numbering_gap(read.mapping, 1, read.tvdb_season, movie=read.movie) is None
+    assert bridges.asked == ["arm", f"anidb:{_RAMPARTS_ANIDB}"]
+
+
+def test_anidb_nulls_do_not_overwrite_ids(tmp_path: Path) -> None:
+    bridges: _Bridges = _Bridges(ArmIds(_RAMPARTS_ANIDB, None), _ramparts_anidb(kitsu=None, kind=None))
+    service, _ = _bridged_service(tmp_path, AniZipMapping(_RAMPARTS_KITSU, "TV", None, (), (), None, {}), bridges)
+    read: ListingRead = service.read_listing(_RAMPARTS)
+    assert (read.mapping.kitsu_id, read.mapping.catalog_type) == (_RAMPARTS_KITSU, "TV")
+    assert "kitsu" not in bridges.asked
+
+
+def test_bridges_fill_kitsu_only_when_unknown_and_skip_anidb_with_episodes(tmp_path: Path) -> None:
+    mapping: AniZipMapping = replace(_fixture_mapping(_S1), kitsu_id=None)
+    bridges: _Bridges = _Bridges(ArmIds(_RAMPARTS_ANIDB, 1), kitsu=_S1_KITSU)
+    service: AcquisitionService = _episode_service(tmp_path, episodes=_EpisodeCatalog({_S1: mapping}))
+    service._id_catalog = bridges
+    service._anidb_catalog = bridges
+    service._kitsu_catalog = bridges
+    read: ListingRead = service.read_listing(_S1)
+    assert read.mapping == replace(mapping, kitsu_id=_S1_KITSU)
+    assert (read.numbering_source, read.tvdb_season) == ("anilist", 1)
+    assert bridges.asked == ["arm", "kitsu"]
+
+
+def test_bridge_failure_keeps_anilist_mapping(tmp_path: Path) -> None:
+    mapping: AniZipMapping = replace(_fixture_mapping(_S1), kitsu_id=None)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500 if request.url.host == "arm.haglund.dev" else 404)
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        service: AcquisitionService = _episode_service(tmp_path, episodes=_EpisodeCatalog({_S1: mapping}))
+        service._id_catalog = ArmCatalog(http)
+        service._kitsu_catalog = KitsuCatalog(http)
+        read: ListingRead = service.read_listing(_S1)
+    assert (read.mapping, read.live, read.tvdb_season, read.numbering_source) == (mapping, True, None, "anilist")
+
+
+def test_listing_bridge_requests_within_budget(tmp_path: Path) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "arm.haglund.dev":
+            return httpx.Response(200, json={"anidb": _RAMPARTS_ANIDB, "thetvdb-season": 2})
+        if request.url.host == "api.ani.zip":
+            return httpx.Response(200, json={"episodes": {}, "mappings": {"kitsu_id": None}})
+        if request.url.path == "/api/edge/mappings":
+            item: dict[str, object] = {"data": {"type": "anime", "id": str(_RAMPARTS_KITSU)}}
+            return httpx.Response(200, json={"data": [{"relationships": {"item": item}}], "links": {}})
+        site: dict[str, object] = {"externalSite": "anilist/anime", "externalId": str(_RAMPARTS)}
+        return httpx.Response(200, json={"data": [{"attributes": site}], "links": {}})
+
+    control: RequestControl = RequestControl(httpx.MockTransport(respond))
+    with httpx.Client(transport=control) as http:
+        anizip: AniZipCatalog = AniZipCatalog(http)
+        service: AcquisitionService = _episode_service(tmp_path, _ramparts_titles(), request_control=control)
+        service._episode_catalog = anizip
+        service._id_catalog = ArmCatalog(http)
+        service._anidb_catalog = anizip
+        service._kitsu_catalog = KitsuCatalog(http)
+        with service.episode_requests():
+            read: ListingRead = service.read_listing(_RAMPARTS)
+        first: int = sum(cast("int", row["count"]) for row in control.counts())
+        with service.episode_requests():
+            service.read_listing(_RAMPARTS, targets=(1,))
+        second: int = sum(cast("int", row["count"]) for row in control.counts()) - first
+    assert read.mapping.kitsu_id == _RAMPARTS_KITSU
+    assert (first, second) == (5, 5)
+    assert {row["provider"] for row in control.counts()} == {"anizip", "arm", "kitsu"}
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [{}, {"1": {"seasonNumber": 2, "episodeNumber": 1}, "2": {"seasonNumber": 2, "episodeNumber": 1}}],
+    ids=["empty", "duplicate"],
+)
+def test_subscription_read_bypasses_mapping_cache(tmp_path: Path, raw: dict[str, Any]) -> None:
+    mapping: AniZipMapping = AniZipMapping(_RAMPARTS_KITSU, "TV", None, (), (), 3600, raw)
+    service, episodes = _bridged_service(tmp_path, mapping, _Bridges(ArmIds(None, None)))
+    service.read_listing(_RAMPARTS)
+    service.read_listing(_RAMPARTS)
+    service.read_listing(_RAMPARTS, targets=(1,))
+    assert len(episodes.asked) == (1 if raw else 2)
+    service.read_listing(_RAMPARTS, targets=(2,))
+    assert len(episodes.asked) == (2 if raw else 3)
+
+
+class _NoFranchise(_TitleCatalog):
+    def franchise(self, anilist_id: int, *, cancel: CancellationToken | None = None) -> FranchiseGraph:
+        self.franchised.append(anilist_id)
+        raise TitleCatalogError(context=ErrorContext(code=ErrorCode.TITLE_CATALOG_FAILED, message="down"))
+
+
+@pytest.mark.parametrize(("kind", "movie"), [("TV", False), ("MOVIE", True), (None, False)])
+def test_unavailable_franchise_keeps_the_listing_with_a_warning(tmp_path: Path, kind: str | None, movie: bool) -> None:
+    mapping: AniZipMapping = replace(_fixture_mapping(_S1), catalog_type=kind)
+    titles: _NoFranchise = _NoFranchise(schedules={_S1: SeasonAiring(_S1, TitleStatus.FINISHED, 24, ())})
+    read: ListingRead = _episode_service(tmp_path, titles, _EpisodeCatalog({_S1: mapping})).read_listing(_S1)
+    assert titles.franchised == [_S1]
+    assert (read.mapping, read.live, read.movie) == (mapping, True, movie)
+    assert len(read.listing.episodes) == 24
+    assert read.listing.schedule_warning == "TITLE_CATALOG_FAILED"
+
+
+def test_failed_ani_zip_fills_kitsu_on_the_saved_mapping(tmp_path: Path) -> None:
+    saved: AniZipMapping = replace(_fixture_mapping(_S1), kitsu_id=None)
+    bridges: _Bridges = _Bridges(ArmIds(None, None), kitsu=123)
+    service: AcquisitionService = _episode_service(tmp_path, episodes=_FailingEpisodes({}))
+    service._id_catalog = bridges
+    service._kitsu_catalog = bridges
+    read: ListingRead = service.read_listing(_S1, saved=saved)
+    assert (read.mapping, read.live) == (replace(saved, kitsu_id=123), False)
+    assert bridges.asked == ["arm", "kitsu"]
+
+
+@pytest.mark.parametrize(("fresh_kitsu", "asked"), [(None, ["arm", "kitsu"]), (77, ["arm"])])
+def test_empty_ani_zip_keeps_the_saved_mapping_and_fills_its_kitsu(
+    tmp_path: Path, fresh_kitsu: int | None, asked: list[str]
+) -> None:
+    saved: AniZipMapping = replace(_fixture_mapping(_S1), kitsu_id=None)
+    empty: AniZipMapping = AniZipMapping(fresh_kitsu, "TV", None, (), (), None, {})
+    bridges: _Bridges = _Bridges(ArmIds(None, None), kitsu=123)
+    service: AcquisitionService = _episode_service(tmp_path, episodes=_EpisodeCatalog({_S1: empty}))
+    service._id_catalog = bridges
+    service._kitsu_catalog = bridges
+    read: ListingRead = service.read_listing(_S1, saved=saved)
+    assert (read.mapping, read.live) == (replace(saved, kitsu_id=fresh_kitsu or 123), False)
+    assert bridges.asked == asked
 
 
 def test_prepare_episode_with_a_given_mapping_asks_ani_zip_nothing_and_assesses_against_it(tmp_path: Path) -> None:

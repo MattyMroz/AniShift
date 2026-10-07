@@ -95,7 +95,7 @@ def _acquisition_service(context: AppContext, *, managed_torrents: bool = False)
     from anishift.application.episode_search import EpisodeSearch  # noqa: PLC0415
     from anishift.paths import torrent_profile_dir  # noqa: PLC0415
     from anishift.platform.qbittorrent_process import ManagedQBittorrent  # noqa: PLC0415
-    from anishift.services.catalog import AniListCatalog, AniZipCatalog  # noqa: PLC0415
+    from anishift.services.catalog import AniListCatalog, AniZipCatalog, ArmCatalog, KitsuCatalog  # noqa: PLC0415
     from anishift.services.http_requests import RequestControl  # noqa: PLC0415
     from anishift.services.torrents import (  # noqa: PLC0415
         QBittorrentClient,
@@ -130,6 +130,7 @@ def _acquisition_service(context: AppContext, *, managed_torrents: bool = False)
     client: TorrentClient = managed if managed is not None else external
     nyaa: NyaaSource = NyaaSource()
     torrentio: TorrentioSource = TorrentioSource(http)
+    anizip: AniZipCatalog = AniZipCatalog(http)
     return AcquisitionService(
         source=nyaa,
         client=client,
@@ -138,7 +139,10 @@ def _acquisition_service(context: AppContext, *, managed_torrents: bool = False)
         title_catalog=AniListCatalog(http),
         request_control=request_control,
         torrent_management=managed,
-        episode_catalog=AniZipCatalog(http),
+        episode_catalog=anizip,
+        id_catalog=ArmCatalog(http),
+        anidb_catalog=anizip,
+        kitsu_catalog=KitsuCatalog(http),
         stream_source=torrentio,
         episode_search=EpisodeSearch(
             torrentio=torrentio,

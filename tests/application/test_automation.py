@@ -6875,7 +6875,7 @@ def test_a_long_schedule_read_outlasts_the_default_answer_wait_while_other_comma
             reader.join(_TIMEOUT_S)
             assert not reader.is_alive()
             assert [len(listing.episodes) for listing in listings] == [_LONG_SCHEDULE_EPISODES]
-            assert sent.count("graphql.anilist.co") == 17
+            assert sent.count("graphql.anilist.co") == 20
         finally:
             session.close()
             server.close()

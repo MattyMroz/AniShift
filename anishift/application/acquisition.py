@@ -34,6 +34,7 @@ from anishift.application.episode_selection import (
     franchise_traversal,
     franchise_view,
     identity_target,
+    numbering_gap,
     rank_candidates,
     streams_releases,
     suggestion,
@@ -48,7 +49,7 @@ from anishift.services.torrents.names import base_title, parse_release_name, sea
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 
     from anishift.application.cancellation import CancellationToken
     from anishift.application.episode_search import SearchOutcome, SearchSnapshot
@@ -60,7 +61,7 @@ if TYPE_CHECKING:
         RankedCandidate,
         StreamCandidate,
     )
-    from anishift.services.catalog import PrequelEntry, SeasonAiring, TitleCandidate
+    from anishift.services.catalog import ArmIds, PrequelEntry, SeasonAiring, TitleCandidate
     from anishift.services.http_requests import RequestControl
     from anishift.services.torrents import Release, ReleaseName, TorrentFile, TorrentInfo
     from anishift.services.torrents.query import EpisodeRange
@@ -72,11 +73,14 @@ __all__ = [
     "MIN_RESOLUTION",
     "TITLE_SEARCH_LIMIT",
     "AcquisitionService",
+    "AnidbCatalog",
     "CatalogOrder",
     "ClientStatus",
     "DownloadReceipt",
     "EpisodeCatalog",
     "EpisodeReading",
+    "IdCatalog",
+    "KitsuLookup",
     "ListingRead",
     "ReleaseCatalog",
     "ReleaseChoice",
@@ -202,6 +206,30 @@ class EpisodeCatalog(Protocol):
 
     def mapping(self, anilist_id: int) -> AniZipMapping:
         """Return the episode mapping, empty for an unknown entry."""
+        ...
+
+
+class AnidbCatalog(Protocol):
+    """Episode mapping of one AniDB entry."""
+
+    def mapping_by_anidb(self, anidb_id: int) -> AniZipMapping:
+        """Return the episode mapping, empty for an unknown entry."""
+        ...
+
+
+class IdCatalog(Protocol):
+    """Bridge from an AniList entry to its AniDB ID and TheTVDB season."""
+
+    def ids(self, anilist_id: int) -> ArmIds:
+        """Return the bridge IDs, ``None`` where unknown."""
+        ...
+
+
+class KitsuLookup(Protocol):
+    """Kitsu ID of an AniList entry confirmed in both directions."""
+
+    def kitsu_id(self, anilist_id: int) -> int | None:
+        """Return the Kitsu ID, ``None`` when unresolved."""
         ...
 
 
@@ -392,11 +420,14 @@ class DownloadReceipt:
 
 @dataclass(frozen=True, slots=True)
 class ListingRead:
-    """One episode list with the exact mapping it was built from and whether that mapping was read live."""
+    """One episode list with the exact mapping it was built from, whether it was read live, and its numbering facts."""
 
     listing: EpisodeListing
     mapping: AniZipMapping
     live: bool
+    tvdb_season: int | None = None
+    numbering_source: str = "anilist"
+    movie: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -423,6 +454,15 @@ class _Remembered:
     def fresh(self, fetched_at: float, now: float) -> bool:
         age: int | None = self.mapping.max_age_s if self.mapping is not None else None
         return now - fetched_at < (age if age is not None else _FALLBACK_CACHE_S)
+
+
+def _movie(graph_movie: bool | None, mapping: AniZipMapping) -> bool:
+    return graph_movie if graph_movie is not None else mapping.catalog_type == _MOVIE_FORMAT
+
+
+def _bridge_failed(provider: str, error: AniShiftError | OSError | ValueError) -> None:
+    code: ErrorCode | None = error.context.code if isinstance(error, AniShiftError) else None
+    logger.warning("Numbering bridge failed", provider=provider, code=code, error_class=type(error).__name__)
 
 
 def read_episode(name: ReleaseName, context: SeasonContext | None) -> EpisodeReading:
@@ -535,6 +575,9 @@ class AcquisitionService:
         episode_catalog: EpisodeCatalog | None = None,
         stream_source: StreamSource | None = None,
         episode_search: EpisodeSearch | None = None,
+        id_catalog: IdCatalog | None = None,
+        anidb_catalog: AnidbCatalog | None = None,
+        kitsu_catalog: KitsuLookup | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._source: TorrentSource = source
@@ -548,6 +591,9 @@ class AcquisitionService:
         self._episode_catalog: EpisodeCatalog | None = episode_catalog
         self._stream_source: StreamSource | None = stream_source
         self._episode_search: EpisodeSearch | None = episode_search
+        self._id_catalog: IdCatalog | None = id_catalog
+        self._anidb_catalog: AnidbCatalog | None = anidb_catalog
+        self._kitsu_catalog: KitsuLookup | None = kitsu_catalog
         self._clock: Callable[[], float] = clock
         self._memory: OrderedDict[int, _Remembered] = OrderedDict()
         self._memory_lock: threading.Lock = threading.Lock()
@@ -784,22 +830,55 @@ class AcquisitionService:
         """Return the episode list, keeping ani.zip data when the airing schedule is unavailable."""
         return self.read_listing(anilist_id).listing
 
-    def read_listing(self, anilist_id: int, *, saved: AniZipMapping | None = None) -> ListingRead:
-        """Read the episode list with saved mapping fallback, or from the schedule when numbering is absent."""
+    def read_listing(
+        self, anilist_id: int, *, saved: AniZipMapping | None = None, targets: Collection[int] = ()
+    ) -> ListingRead:
+        """Read the episode list with bridged numbering and saved mapping fallback.
+
+        A remembered mapping leaving any of *targets* without numbering is read again from ani.zip.
+        Without the franchise graph the list keeps a warning and the entry counts as a movie only when
+        the chosen mapping says so.
+        """
         now: float = self._clock()
-        mapping: AniZipMapping
-        fetched: bool = True
+        graph_movie: bool | None = self._graph_movie(anilist_id, now)
+        remembered: bool = self._remembered_mapping(anilist_id, now) is not None
+        empty: AniZipMapping = AniZipMapping(None, None, None, (), (), None, {})
+        fresh: AniZipMapping | None
         try:
-            mapping = self._mapping(anilist_id, now)
+            fresh = self._mapping(anilist_id, now)
         except AniShiftError, OSError, ValueError:
-            mapping, fetched = saved or AniZipMapping(None, None, None, (), (), None, {}), False
-        live: bool = fetched and bool(mapping.raw_episodes)
-        if not live and saved is not None:
-            mapping = saved
+            fresh = None
+        ids: ArmIds | None = self._bridge_ids(anilist_id)
+        tvdb_season: int | None = ids.tvdb_season if ids is not None else None
+        if (
+            remembered
+            and fresh is not None
+            and any(
+                numbering_gap(fresh, number, tvdb_season, movie=_movie(graph_movie, fresh)) is not None
+                for number in targets
+            )
+        ):
+            try:
+                fresh = self._mapping(anilist_id, now, refresh=True)
+            except AniShiftError, OSError, ValueError:
+                logger.info("Remembered episode mapping kept", provider="anizip")
+        from_anidb: bool = False
+        if fresh is not None:
+            fresh, from_anidb = self._anidb_numbering(fresh, ids)
+        live: bool = fresh is not None and bool(fresh.raw_episodes)
+        mapping: AniZipMapping = fresh if fresh is not None and live else saved or fresh or empty
+        if mapping is not fresh:
+            from_anidb = False
+        if saved is not None and mapping is saved:
             logger.info("Episode mapping snapshot used", provider="anizip")
+        kitsu: int | None = mapping.kitsu_id if mapping.kitsu_id is not None else self._kitsu_id(anilist_id, fresh)
+        if kitsu != mapping.kitsu_id:
+            mapping = replace(mapping, kitsu_id=kitsu)
+        movie: bool = _movie(graph_movie, mapping)
         schedule: SeasonAiring | None
         failed: bool
         schedule, failed = self._schedule(anilist_id, now)
+        failed = failed or graph_movie is None
         retry: float = self.blocked_until(("anilist",)) if failed else 0.0
         listing: EpisodeListing = episode_listing(
             anilist_id,
@@ -813,7 +892,60 @@ class AcquisitionService:
             schedule_warning=_SCHEDULE_WARNING if failed else None,
             schedule_retry_at=datetime.fromtimestamp(retry, UTC) if retry > now else None,
         )
-        return ListingRead(listing, mapping, live)
+        source: str = "anidb" if from_anidb else "anilist" if mapping.episodes else "none"
+        return ListingRead(listing, mapping, live, tvdb_season, source, movie)
+
+    def _bridge_ids(self, anilist_id: int) -> ArmIds | None:
+        if self._id_catalog is None:
+            return None
+        try:
+            return self._id_catalog.ids(anilist_id)
+        except (AniShiftError, OSError, ValueError) as error:
+            _bridge_failed("arm", error)
+            return None
+
+    def _graph_movie(self, anilist_id: int, now: float) -> bool | None:
+        try:
+            graph: FranchiseGraph = self._context_graph(anilist_id, now)
+        except (AniShiftError, OSError, ValueError) as error:
+            code: ErrorCode | None = error.context.code if isinstance(error, AniShiftError) else None
+            logger.warning("Listing franchise unavailable", provider="anilist", code=code)
+            return None
+        return graph.nodes[anilist_id].get("format") == _MOVIE_FORMAT
+
+    def _anidb_numbering(self, mapping: AniZipMapping, ids: ArmIds | None) -> tuple[AniZipMapping, bool]:
+        anidb: AniZipMapping | None = None
+        if not mapping.episodes and ids is not None and ids.anidb_id is not None and self._anidb_catalog is not None:
+            try:
+                anidb = self._anidb_catalog.mapping_by_anidb(ids.anidb_id)
+            except (AniShiftError, OSError, ValueError) as error:
+                _bridge_failed("anizip", error)
+        if anidb is not None:
+            mapping = replace(
+                mapping,
+                kitsu_id=anidb.kitsu_id if anidb.kitsu_id is not None else mapping.kitsu_id,
+                catalog_type=anidb.catalog_type if anidb.catalog_type is not None else mapping.catalog_type,
+            )
+        if anidb is not None and anidb.raw_episodes:
+            mapping = replace(
+                mapping,
+                episode_count=anidb.episode_count if anidb.episode_count is not None else mapping.episode_count,
+                episodes=anidb.episodes,
+                specials=anidb.specials or mapping.specials,
+                raw_episodes=anidb.raw_episodes,
+            )
+        return mapping, anidb is not None and bool(anidb.episodes)
+
+    def _kitsu_id(self, anilist_id: int, fresh: AniZipMapping | None) -> int | None:
+        if fresh is not None and fresh.kitsu_id is not None:
+            return fresh.kitsu_id
+        if self._kitsu_catalog is None:
+            return None
+        try:
+            return self._kitsu_catalog.kitsu_id(anilist_id)
+        except (AniShiftError, OSError, ValueError) as error:
+            _bridge_failed("kitsu", error)
+            return None
 
     def offer(self, key: EpisodeKey, switches: SourceSwitches | None = None) -> EpisodeOffer:
         """Rank the live stream candidates of one episode against its remembered identity."""
@@ -832,9 +964,7 @@ class AcquisitionService:
         read = read or self.read_listing(key.anilist_id)
         if self._episode_search is None:
             legacy, legacy_target = self.prepare_episode(key, mapping=read.mapping, exclude=exclude)
-            numbered: bool = legacy_target.get("type") == _MOVIE_FORMAT or bool(
-                read.mapping.raw_episodes.get(str(key.number))
-            )
+            numbered: bool = numbering_gap(read.mapping, key.number, read.tvdb_season, movie=read.movie) is None
             return replace(
                 legacy,
                 numbering=numbered,
@@ -847,8 +977,10 @@ class AcquisitionService:
         if movie and key.number != 1:
             msg: str = "A movie has only its first row"
             raise ValueError(msg)
-        numbering: bool = movie or bool(read.mapping.raw_episodes.get(str(key.number)))
-        target: dict[str, object] = identity_target(graph, key.anilist_id, read.mapping, key.number)
+        numbering: bool = numbering_gap(read.mapping, key.number, read.tvdb_season, movie=movie) is None
+        target: dict[str, object] = identity_target(
+            graph, key.anilist_id, read.mapping, key.number, numbering=numbering
+        )
         absolute: object = target.get("absolute")
         request: EpisodeRequest = EpisodeRequest(
             key,
@@ -950,11 +1082,15 @@ class AcquisitionService:
             self._memory.popitem(last=False)
         return entry
 
-    def _mapping(self, anilist_id: int, now: float) -> AniZipMapping:
+    def _remembered_mapping(self, anilist_id: int, now: float) -> AniZipMapping | None:
         with self._memory_lock:
             entry: _Remembered = self._remembered(anilist_id)
-            if entry.mapping is not None and entry.fresh(entry.mapping_at, now):
-                return entry.mapping
+            return entry.mapping if entry.mapping is not None and entry.fresh(entry.mapping_at, now) else None
+
+    def _mapping(self, anilist_id: int, now: float, *, refresh: bool = False) -> AniZipMapping:
+        remembered: AniZipMapping | None = None if refresh else self._remembered_mapping(anilist_id, now)
+        if remembered is not None:
+            return remembered
         if self._episode_catalog is None:
             msg = "No episode catalog is configured"
             raise ValueError(msg)
@@ -972,7 +1108,7 @@ class AcquisitionService:
             }
         )
         with self._memory_lock:
-            entry = self._remembered(anilist_id)
+            entry: _Remembered = self._remembered(anilist_id)
             entry.mapping, entry.mapping_at = mapping, now
         return mapping
 

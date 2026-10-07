@@ -48,6 +48,8 @@ _PROVIDERS: Final[Mapping[str, str]] = MappingProxyType(
         "graphql.anilist.co": "anilist",
         "nyaa.si": "nyaa",
         "api.ani.zip": "anizip",
+        "arm.haglund.dev": "arm",
+        "kitsu.io": "kitsu",
         "torrentio.strem.fun": "torrentio",
         "api.tsukihime.org": "tsukihime",
         "api.knaben.org": "knaben",

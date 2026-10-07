@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import Any, Final, cast
 
 import httpx
 import pytest
@@ -81,37 +81,54 @@ from anishift.services.catalog.types import SeasonAiring, TitleStatus
 from anishift.services.http_requests import RequestControl
 from anishift.services.torrents import TorrentFile, TorrentInfo
 
+_FIRST: Final[dict[str, object]] = {"seasonNumber": 1, "episodeNumber": 1}
+
+_WITHOUT_NUMBERING: Final[list[Any]] = [
+    pytest.param(404, {"1": _FIRST}, id="404"),
+    pytest.param(500, {"1": _FIRST}, id="500"),
+    pytest.param(200, {"1": _FIRST}, id="missing-key"),
+    pytest.param(200, {"1": _FIRST, "4": {"title": {"en": "Fourth"}}}, id="without-season-episode"),
+    pytest.param(
+        200,
+        {"3": {"seasonNumber": 1, "episodeNumber": 3}, "4": {"seasonNumber": 1, "episodeNumber": 3}},
+        id="duplicate",
+    ),
+]
+
 
 @pytest.mark.integration
-@pytest.mark.parametrize("mapping_status", [404, 500, 200])
-def test_offer_without_numbering_shows_releases(tmp_path: Path, mapping_status: int) -> None:
-    _without_numbering(tmp_path, mapping_status, repeat=False, download=False)
+@pytest.mark.parametrize(("mapping_status", "episodes"), _WITHOUT_NUMBERING)
+def test_offer_without_numbering_shows_releases(
+    tmp_path: Path, mapping_status: int, episodes: dict[str, object]
+) -> None:
+    _without_numbering(tmp_path, mapping_status, episodes, repeat=False, download=False)
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("mapping_status", [404, 500, 200])
-def test_repeat_without_numbering_has_no_suggestion(tmp_path: Path, mapping_status: int) -> None:
-    _without_numbering(tmp_path, mapping_status, repeat=True, download=False)
+@pytest.mark.parametrize(("mapping_status", "episodes"), _WITHOUT_NUMBERING)
+def test_repeat_without_numbering_has_no_suggestion(
+    tmp_path: Path, mapping_status: int, episodes: dict[str, object]
+) -> None:
+    _without_numbering(tmp_path, mapping_status, episodes, repeat=True, download=False)
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("mapping_status", [404, 500, 200])
-def test_d_without_numbering_does_not_admit(tmp_path: Path, mapping_status: int) -> None:
-    _without_numbering(tmp_path, mapping_status, repeat=False, download=True)
+@pytest.mark.parametrize(("mapping_status", "episodes"), _WITHOUT_NUMBERING)
+def test_d_without_numbering_does_not_admit(tmp_path: Path, mapping_status: int, episodes: dict[str, object]) -> None:
+    _without_numbering(tmp_path, mapping_status, episodes, repeat=False, download=True)
 
 
 def _without_numbering(
     tmp_path: Path,
     mapping_status: int,
+    episodes: dict[str, object],
     *,
     repeat: bool,
     download: bool,
 ) -> None:
     def respond(request: httpx.Request) -> httpx.Response:
         if request.url.host == "api.ani.zip":
-            return httpx.Response(
-                mapping_status, json={"mappings": {}, "episodes": {"1": {"seasonNumber": 1, "episodeNumber": 1}}}
-            )
+            return httpx.Response(mapping_status, json={"mappings": {}, "episodes": episodes})
         return empty_response(request)
 
     control: RequestControl = controlled(respond)
