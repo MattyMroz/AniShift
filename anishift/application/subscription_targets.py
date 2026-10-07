@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
-from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.episode_releases import info_hash_hex
 from anishift.application.episode_selection import numbering_gap
 from anishift.application.release_quality import ResolutionClass
@@ -22,7 +21,6 @@ if TYPE_CHECKING:
         EpisodeListing,
         JsonObject,
         ListedEpisode,
-        RankedCandidate,
     )
 
 __all__ = [
@@ -47,11 +45,9 @@ __all__ = [
     "TargetState",
     "after_close",
     "anilist_date",
-    "candidate_pair",
     "completed",
     "cut_point",
     "display_order",
-    "eligible",
     "excluded",
     "is_target",
     "late",
@@ -371,7 +367,17 @@ class TargetFacts:
 
 
 def settle_target(target: SubscriptionTarget, facts: TargetFacts, now: datetime) -> SubscriptionTarget:
-    """Return *target* after the transfers of its episode moved, never satisfied by an order alone."""
+    """Return *target* after the transfers of its episode moved, never satisfied by an order alone.
+
+    A target that is no longer due forgets when its sources became unavailable.
+    """
+    settled: SubscriptionTarget = _settle(target, facts, now)
+    if settled.state is TargetState.DUE or settled.sources_down_since is None:
+        return settled
+    return replace(settled, sources_down_since=None)
+
+
+def _settle(target: SubscriptionTarget, facts: TargetFacts, now: datetime) -> SubscriptionTarget:
     if target.state is TargetState.SATISFIED:
         return target
     settled: SubscriptionTarget = replace(target, check_skipped=target.check_skipped or facts.check_skipped)
@@ -549,26 +555,9 @@ def next_check_at(record: SubscriptionRecord, now: datetime) -> datetime | None:
     return min(moments)
 
 
-def candidate_pair(candidate: RankedCandidate) -> str:
-    """Return the casefolded release file reference a target records when it tries *candidate*."""
-    index: int | None = candidate.stream.file_index
-    return f"{candidate.stream.info_hash}:{'' if index is None else index}".casefold()
-
-
 def excluded(target: SubscriptionTarget) -> frozenset[str]:
     """Return the info hashes *target* excludes, reading former ``hash:fileIdx`` entries as their hash."""
     return frozenset(item.partition(":")[0] for item in target.tried)
-
-
-def eligible(candidate: RankedCandidate, target: SubscriptionTarget, taken: frozenset[str]) -> bool:
-    """Whether automation may try *candidate* for *target*: a supported match never tried nor taken elsewhere."""
-    pair: str = candidate_pair(candidate)
-    return (
-        candidate.identity.verdict is IdentityVerdict.MATCH
-        and candidate.supported is not False
-        and pair not in target.tried
-        and pair not in taken
-    )
 
 
 def completed(record: SubscriptionRecord) -> bool:

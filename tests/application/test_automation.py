@@ -331,6 +331,9 @@ class _Service:
     def default_preset_id(self) -> str:
         return "preview"
 
+    def settings_snapshot(self) -> UserSettings:
+        return UserSettings()
+
     def get_preset(self, preset_id: str) -> object:
         del preset_id
         return _PRESET.to_preset()

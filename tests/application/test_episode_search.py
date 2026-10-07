@@ -19,7 +19,6 @@ from anishift.application.episode_search import (
     EpisodeRequest,
     EpisodeSearch,
     FailureKind,
-    ReadOutcome,
     SearchOutcome,
     SearchSnapshot,
     SourceResult,
@@ -31,8 +30,10 @@ from anishift.application.episode_search import (
 )
 from anishift.application.episode_selection import EpisodeKey, FranchiseGraph, RankedCandidate, StreamCandidate
 from anishift.application.release_quality import PolishClass
+from anishift.application.subscription_choice import ReadOutcome
+from anishift.application.subscription_targets import ReleaseFailure
 from anishift.services.catalog.types import TitleCandidate, TitleStatus
-from anishift.services.http_requests import RequestControl
+from anishift.services.http_requests import DeadlineExceeded, RequestControl
 from anishift.services.torrents.categories import SEARCH_CATEGORIES
 from anishift.services.torrents.knaben import KnabenSource
 from anishift.services.torrents.names import parse_release_name
@@ -486,6 +487,287 @@ def test_unresolved_season_stays_in_completion_queue() -> None:
     assert visits == [_HASH]
     assert result.outcomes == {_HASH: ReadOutcome.LISTED}
     assert result.snapshot.candidates[0].identity.verdict is IdentityVerdict.MATCH
+
+
+_TSUKIHIME_ONLY: Final[SourceSwitches] = SourceSwitches(True, False, False, False, False)
+_KNABEN_ONLY: Final[SourceSwitches] = SourceSwitches(False, False, False, True, False)
+
+
+def clocked(http: httpx.Client, control: RequestControl, now: list[float]) -> EpisodeSearch:
+    return EpisodeSearch(
+        torrentio=TorrentioSource(http),
+        nyaa=NyaaSource(http),
+        knaben=KnabenSource(http),
+        nekobt=NekoBTSource(http),
+        tsukihime=TsukiHimeSource(http),
+        request_control=control,
+        pack_name=lambda name: parse_release_name(name).is_pack,
+        clock=lambda: now[0],
+    )
+
+
+def checked(service: EpisodeSearch, switches: SourceSwitches, *failures: ReleaseFailure) -> SearchOutcome:
+    return service.subscription_check(_REQUEST, switches, failures, frozenset())
+
+
+def source_row(outcome: SearchOutcome, source: str) -> SourceResult:
+    return next(row for row in outcome.snapshot.sources if row.source == source)
+
+
+def knaben_hit(info_hash: str = _HASH) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={"hits": [{"hash": info_hash, "title": "Star Garden - 05 [1080p]", "seeders": 3}], "total": {"value": 1}},
+    )
+
+
+def tsukihime_rows(start: int, count: int) -> list[dict[str, object]]:
+    return [
+        {"id": number + 1, "btih": f"{number:040x}", "name": "Star Garden - 05 [1080p]", "filecount": 1}
+        for number in range(start, start + count)
+    ]
+
+
+def test_subscription_check_tsukihime_budget_14() -> None:
+    paths: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path.endswith("/animes/anilist/1"):
+            return httpx.Response(200, json={"id": 77})
+        if "/episodes/" in request.url.path:
+            start: int = int(request.url.params["offset"])
+            return httpx.Response(
+                200, json={"results": tsukihime_rows(start, 20), "total": 60, "start": start, "limit": 20}
+            )
+        return httpx.Response(202, json={"id": 5})
+
+    control: RequestControl = controlled(respond)
+    with httpx.Client(transport=control) as http:
+        service: EpisodeSearch = clocked(http, control, [0.0])
+        first: SearchOutcome = checked(service, _TSUKIHIME_ONLY)
+        first_count: int = len(paths)
+        paths.clear()
+        checked(service, _TSUKIHIME_ONLY)
+
+    assert first_count <= 14
+    assert first_count == 1 + 2 + 10
+    assert sum("/episodes/" in path for path in paths) == 2
+    assert not any(path.endswith("/animes/anilist/1") for path in paths)
+    assert first.tsukihime_id == 77
+    assert source_row(first, "tsukihime").state is SourceState.UNFINISHED
+
+
+def test_pulled_source_read_once_per_hour() -> None:
+    seen: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.host)
+        return knaben_hit()
+
+    now: list[float] = [0.0]
+    control: RequestControl = controlled(respond)
+    with httpx.Client(transport=control) as http:
+        service: EpisodeSearch = clocked(http, control, now)
+        checked(service, _KNABEN_ONLY)
+        now[0] = 3599.0
+        between: SearchOutcome = checked(service, _KNABEN_ONLY)
+        reads: int = len(seen)
+        now[0] = 3601.0
+        checked(service, _KNABEN_ONLY)
+
+    assert reads == 1
+    assert len(seen) == 2
+    assert (source_row(between, "knaben").state, len(source_row(between, "knaben").streams)) == (SourceState.DONE, 1)
+
+
+def test_pulled_failure_keeps_last_result() -> None:
+    failing: list[bool] = [False]
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500) if failing[0] else knaben_hit()
+
+    now: list[float] = [0.0]
+    control: RequestControl = controlled(respond)
+    with httpx.Client(transport=control) as http:
+        service: EpisodeSearch = clocked(http, control, now)
+        checked(service, _KNABEN_ONLY)
+        failing[0] = True
+        now[0] = 3601.0
+        kept: SearchOutcome = checked(service, _KNABEN_ONLY)
+
+    row: SourceResult = source_row(kept, "knaben")
+    assert (row.state, [item.info_hash for item in row.streams]) == (SourceState.UNFINISHED, [_HASH])
+    assert kept.snapshot.candidates
+
+
+def test_pulled_disable_and_restart_drop_memory() -> None:
+    seen: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.host)
+        return knaben_hit()
+
+    now: list[float] = [0.0]
+    control: RequestControl = controlled(respond)
+    with httpx.Client(transport=control) as http:
+        service: EpisodeSearch = clocked(http, control, now)
+        checked(service, _KNABEN_ONLY)
+        checked(service, SourceSwitches(False, False, False, False, False))
+        checked(service, _KNABEN_ONLY)
+        disabled: int = len(seen)
+        checked(clocked(http, control, now), _KNABEN_ONLY)
+
+    assert disabled == 2
+    assert len(seen) == 3
+
+
+def test_pulled_without_success_is_unfinished() -> None:
+    seen: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.host)
+        return httpx.Response(500)
+
+    now: list[float] = [0.0]
+    control: RequestControl = controlled(respond)
+    with httpx.Client(transport=control) as http:
+        service: EpisodeSearch = clocked(http, control, now)
+        failed: SearchOutcome = checked(service, _KNABEN_ONLY)
+        reads: int = len(seen)
+        now[0] = 60.0
+        waiting: SearchOutcome = checked(service, _KNABEN_ONLY)
+
+    assert source_row(failed, "knaben").state is SourceState.FAILED
+    assert (source_row(waiting, "knaben").state, source_row(waiting, "knaben").streams) == (SourceState.UNFINISHED, ())
+    assert len(seen) == reads
+
+
+def test_skipped_fast_source_uses_last_result_30_min() -> None:
+    seen: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.host)
+        return feed()
+
+    now: list[float] = [0.0]
+    control: RequestControl = controlled(respond)
+    with httpx.Client(transport=control) as http:
+        service: EpisodeSearch = clocked(http, control, now)
+        first: SearchOutcome = checked(service, _NYAA)
+        reads: int = len(seen)
+        control.restore({"nyaa": 1_000_000.0}, lambda provider, until: None)
+        now[0] = 1800.0
+        remembered: SearchOutcome = checked(service, _NYAA)
+        now[0] = 1801.0
+        expired: SearchOutcome = checked(service, _NYAA)
+
+    assert len(seen) == reads
+    assert source_row(remembered, "nyaa").state is SourceState.SKIPPED
+    assert source_row(remembered, "nyaa").streams == source_row(first, "nyaa").streams
+    assert remembered.snapshot.candidates
+    assert (source_row(expired, "nyaa").state, source_row(expired, "nyaa").streams) == (SourceState.SKIPPED, ())
+
+
+def test_skipped_source_not_counted_as_failure() -> None:
+    seen: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.host)
+        return empty_response(request)
+
+    control: RequestControl = controlled(respond)
+    control.restore({"tsukihime": 1_000_000.0}, lambda provider, until: None)
+    failures: tuple[ReleaseFailure, ...] = (ReleaseFailure(_HASH, transient=1),)
+    with httpx.Client(transport=control) as http:
+        outcome: SearchOutcome = checked(clocked(http, control, [0.0]), _COMPLETION, *failures)
+
+    assert source_row(outcome, "tsukihime").state is SourceState.SKIPPED
+    assert "api.tsukihime.org" not in seen
+    assert outcome.failures == failures
+    assert outcome.outcomes == {}
+
+
+def test_failed_tsukihime_counts_pending_release_once() -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.tsukihime.org":
+            return httpx.Response(500)
+        return empty_response(request)
+
+    control: RequestControl = controlled(respond)
+    with httpx.Client(transport=control) as http:
+        outcome: SearchOutcome = checked(clocked(http, control, [0.0]), _COMPLETION)
+
+    assert source_row(outcome, "tsukihime").state is SourceState.FAILED
+    assert outcome.failures == (ReleaseFailure(_HASH, transient=1),)
+
+
+def test_ended_release_waits_while_blocking_releases_remain() -> None:
+    hashes: tuple[str, ...] = tuple(f"{number:040x}" for number in range(11))
+    visited: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "nyaa.si":
+            return feed(hashes)
+        if "/torrents/btih/" in request.url.path:
+            visited.append(request.url.path.rsplit("/", 1)[-1])
+            return httpx.Response(202, json={"id": 5})
+        return empty_response(request)
+
+    control: RequestControl = controlled(respond)
+    with httpx.Client(transport=control) as http:
+        service: EpisodeSearch = clocked(http, control, [0.0])
+        first: SearchOutcome = checked(service, _COMPLETION, ReleaseFailure(hashes[0], decisive=True))
+        checked(service, _COMPLETION, *first.failures)
+
+    assert len(visited) == 20
+    assert hashes[0] not in visited
+
+
+def test_tsukihime_deadline_counts_every_pending_release_each_check() -> None:
+    hashes: tuple[str, ...] = tuple(f"{number:040x}" for number in range(15))
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.tsukihime.org":
+            message: str = "Operation deadline exceeded"
+            raise DeadlineExceeded(message, request=request)
+        if request.url.host == "nyaa.si":
+            return feed(hashes)
+        return empty_response(request)
+
+    control: RequestControl = controlled(respond)
+    failures: tuple[ReleaseFailure, ...] = ()
+    with httpx.Client(transport=control) as http:
+        service: EpisodeSearch = clocked(http, control, [0.0])
+        for _ in range(3):
+            outcome: SearchOutcome = checked(service, _COMPLETION, *failures)
+            failures = outcome.failures
+
+    assert source_row(outcome, "tsukihime").failure is FailureKind.TIMEOUT
+    assert set(failures) == {ReleaseFailure(info_hash, transient=3) for info_hash in hashes}
+
+
+def test_tsukihime_rate_limit_during_completion_counts_releases_beyond_budget() -> None:
+    hashes: tuple[str, ...] = tuple(f"{number:040x}" for number in range(15))
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "nyaa.si":
+            return feed(hashes)
+        if request.url.path.endswith("/animes/anilist/1"):
+            return httpx.Response(200, json={"id": 77})
+        if "/episodes/" in request.url.path:
+            return httpx.Response(200, json={"results": [], "total": 0, "start": 0, "limit": 20})
+        if "/torrents/btih/" in request.url.path:
+            return httpx.Response(429)
+        return empty_response(request)
+
+    control: RequestControl = controlled(respond)
+    with httpx.Client(transport=control) as http:
+        outcome: SearchOutcome = checked(clocked(http, control, [0.0]), _COMPLETION)
+
+    assert source_row(outcome, "tsukihime").state is SourceState.DONE
+    assert ReadOutcome.RATE_LIMITED in outcome.outcomes.values()
+    assert set(outcome.failures) == {ReleaseFailure(info_hash, transient=1) for info_hash in hashes}
 
 
 def test_offer_status_all_failed() -> None:

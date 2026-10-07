@@ -25,6 +25,8 @@ from anishift.application.episode_search import (
     episode_phrases,
     offer_status,
     source_line,
+    sources_answered,
+    sources_unavailable,
 )
 from anishift.application.episode_selection import (
     AniZipMapping,
@@ -61,6 +63,7 @@ if TYPE_CHECKING:
         RankedCandidate,
         StreamCandidate,
     )
+    from anishift.application.subscription_targets import ReleaseFailure
     from anishift.services.catalog import ArmIds, PrequelEntry, SeasonAiring, TitleCandidate
     from anishift.services.http_requests import RequestControl
     from anishift.services.torrents import Release, ReleaseName, TorrentFile, TorrentInfo
@@ -88,6 +91,7 @@ __all__ = [
     "SelectiveTorrentClient",
     "SeriesGroup",
     "StreamSource",
+    "SubscriptionSearch",
     "TitleCatalog",
     "TorrentClient",
     "TorrentSource",
@@ -420,7 +424,11 @@ class DownloadReceipt:
 
 @dataclass(frozen=True, slots=True)
 class ListingRead:
-    """One episode list with the exact mapping it was built from, whether it was read live, and its numbering facts."""
+    """One episode list with the exact mapping it was built from, whether it was read live, and its numbering facts.
+
+    ``live`` means ani.zip returned episodes that replace the saved mapping; ``answered`` means ani.zip answered at
+    all, also with an absent or empty mapping.
+    """
 
     listing: EpisodeListing
     mapping: AniZipMapping
@@ -428,6 +436,20 @@ class ListingRead:
     tvdb_season: int | None = None
     numbering_source: str = "anilist"
     movie: bool = False
+    answered: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SubscriptionSearch:
+    """One subscription target search: its offer and H1 target, the target failures after it and source facts."""
+
+    offer: EpisodeOffer
+    target: dict[str, object]
+    failures: tuple[ReleaseFailure, ...] = ()
+    tsukihime: bool = False
+    unavailable: bool = False
+    tsukihime_id: int | None = None
+    queried: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -893,7 +915,7 @@ class AcquisitionService:
             schedule_retry_at=datetime.fromtimestamp(retry, UTC) if retry > now else None,
         )
         source: str = "anidb" if from_anidb else "anilist" if mapping.episodes else "none"
-        return ListingRead(listing, mapping, live, tvdb_season, source, movie)
+        return ListingRead(listing, mapping, live, tvdb_season, source, movie, answered=fresh is not None)
 
     def _bridge_ids(self, anilist_id: int) -> ArmIds | None:
         if self._id_catalog is None:
@@ -963,42 +985,10 @@ class AcquisitionService:
         """Search the enabled sources using exactly the mapping used for the episode listing."""
         read = read or self.read_listing(key.anilist_id)
         if self._episode_search is None:
-            legacy, legacy_target = self.prepare_episode(key, mapping=read.mapping, exclude=exclude)
-            numbered: bool = numbering_gap(read.mapping, key.number, read.tvdb_season, movie=read.movie) is None
-            return replace(
-                legacy,
-                numbering=numbered,
-                suggestion=legacy.suggestion if numbered else None,
-                status=None if numbered else "brak numeracji",
-            ), legacy_target
-        graph: FranchiseGraph = self._context_graph(key.anilist_id, self._clock())
-        candidate: TitleCandidate = graph_candidate(graph, key.anilist_id)
-        movie: bool = candidate.format == _MOVIE_FORMAT
-        if movie and key.number != 1:
-            msg: str = "A movie has only its first row"
-            raise ValueError(msg)
-        numbering: bool = numbering_gap(read.mapping, key.number, read.tvdb_season, movie=movie) is None
-        target: dict[str, object] = identity_target(
-            graph, key.anilist_id, read.mapping, key.number, numbering=numbering
-        )
-        absolute: object = target.get("absolute")
-        request: EpisodeRequest = EpisodeRequest(
-            key,
-            key.number,
-            movie,
-            candidate.country == _DONGHUA_COUNTRY,
-            read.mapping.kitsu_id,
-            None,
-            episode_phrases(
-                candidate,
-                graph_season_context(graph, candidate),
-                key.number,
-                manual=True,
-                absolute=absolute if type(absolute) is int else None,
-            ),
-            target,
-            numbering,
-        )
+            return self._torrentio_offer(key, read, exclude=exclude)
+        request: EpisodeRequest = self._episode_request(key, read, manual=True, tsukihime_id=None)
+        numbering: bool = request.numbering
+        target: dict[str, object] = dict(request.target)
 
         def publish(snapshot: SearchSnapshot) -> None:
             if on_partial is not None:
@@ -1013,6 +1003,66 @@ class AcquisitionService:
             suggested=offer.suggestion is not None,
         )
         return offer, target
+
+    def subscription_check(  # noqa: PLR0913 - the persisted target facts stay explicit at the owner boundary
+        self,
+        key: EpisodeKey,
+        read: ListingRead,
+        switches: SourceSwitches,
+        *,
+        failures: Sequence[ReleaseFailure],
+        excluded: Collection[str],
+        tsukihime_id: int | None,
+    ) -> SubscriptionSearch:
+        """Search one subscription target against the mapping of *read*, within the subscription source budget."""
+        if self._episode_search is None:
+            offer, target = self._torrentio_offer(key, read)
+            return SubscriptionSearch(
+                offer, target, tuple(failures), tsukihime_id=tsukihime_id, queried=read.mapping.kitsu_id is not None
+            )
+        request: EpisodeRequest = self._episode_request(key, read, manual=False, tsukihime_id=tsukihime_id)
+        result: SearchOutcome = self._episode_search.subscription_check(request, switches, failures, excluded)
+        return SubscriptionSearch(
+            self._snapshot_offer(key, result.snapshot, numbering=request.numbering, exclude=None),
+            dict(request.target),
+            result.failures,
+            switches.tsukihime,
+            sources_unavailable(result.snapshot.sources),
+            result.tsukihime_id,
+            sources_answered(result.snapshot.sources),
+        )
+
+    def _episode_request(
+        self, key: EpisodeKey, read: ListingRead, *, manual: bool, tsukihime_id: int | None
+    ) -> EpisodeRequest:
+        graph: FranchiseGraph = self._context_graph(key.anilist_id, self._clock())
+        candidate: TitleCandidate = graph_candidate(graph, key.anilist_id)
+        movie: bool = candidate.format == _MOVIE_FORMAT
+        if movie and key.number != 1:
+            msg: str = "A movie has only its first row"
+            raise ValueError(msg)
+        numbering: bool = numbering_gap(read.mapping, key.number, read.tvdb_season, movie=movie) is None
+        target: dict[str, object] = identity_target(
+            graph, key.anilist_id, read.mapping, key.number, numbering=numbering
+        )
+        absolute: object = target.get("absolute")
+        return EpisodeRequest(
+            key,
+            key.number,
+            movie,
+            candidate.country == _DONGHUA_COUNTRY,
+            read.mapping.kitsu_id,
+            tsukihime_id,
+            episode_phrases(
+                candidate,
+                graph_season_context(graph, candidate),
+                key.number,
+                manual=manual,
+                absolute=absolute if type(absolute) is int else None,
+            ),
+            target,
+            numbering,
+        )
 
     def _snapshot_offer(
         self,
@@ -1040,24 +1090,23 @@ class AcquisitionService:
             snapshot.pending,
         )
 
-    def prepare_episode(
+    def _torrentio_offer(
         self,
         key: EpisodeKey,
+        read: ListingRead,
         *,
-        mapping: AniZipMapping | None = None,
         exclude: Callable[[StreamCandidate], bool] | None = None,
     ) -> tuple[EpisodeOffer, dict[str, object]]:
-        """Read one live offer and its target; *mapping* replaces ani.zip, *exclude* drops files before ranking."""
         now: float = self._clock()
         graph: FranchiseGraph = self._context_graph(key.anilist_id, now)
-        if mapping is None:
-            mapping = self._mapping(key.anilist_id, now)
+        mapping: AniZipMapping = read.mapping
         movie: bool = graph.nodes[key.anilist_id].get("format") == _MOVIE_FORMAT
         if movie and key.number != 1:
             msg = "A movie has only its first row"
             raise ValueError(msg)
+        numbering: bool = numbering_gap(mapping, key.number, read.tvdb_season, movie=movie) is None
         streams: tuple[StreamCandidate, ...] = ()
-        target: dict[str, object] = identity_target(graph, key.anilist_id, mapping, key.number)
+        target: dict[str, object] = identity_target(graph, key.anilist_id, mapping, key.number, numbering=numbering)
         try:
             if mapping.kitsu_id is not None and movie:
                 streams = self._streams().movie_streams(mapping.kitsu_id)
@@ -1075,9 +1124,17 @@ class AcquisitionService:
         counts: dict[str, int] = {
             verdict.value: sum(1 for item in ranked if item.identity.verdict is verdict) for verdict in IdentityVerdict
         }
-        suggested: int | None = suggestion(ranked, numbering=True)[0]
+        suggested: int | None = suggestion(ranked, numbering=numbering)[0]
         logger.info("Episode offer ranked", count=len(ranked), suggested=suggested is not None, movie=movie)
-        offer: EpisodeOffer = EpisodeOffer(key, ranked, suggested, datetime.fromtimestamp(self._clock(), UTC), counts)
+        offer: EpisodeOffer = EpisodeOffer(
+            key,
+            ranked,
+            suggested,
+            datetime.fromtimestamp(self._clock(), UTC),
+            counts,
+            numbering,
+            status=None if numbering else "brak numeracji",
+        )
         if mapping.kitsu_id is not None:
             self._decision(offer_check(offer, target, streams, donghua=donghua))
         return offer, target

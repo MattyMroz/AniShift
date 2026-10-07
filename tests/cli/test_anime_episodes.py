@@ -2901,10 +2901,12 @@ def test_owner_offer_defect_reaches_problem_with_error_class_and_without_suggest
         with _running_panel(tmp_path, ["ok"], sent, now, remote=True) as (controller, _, acquisition):
             _open(controller)
 
-            def broken(key: EpisodeKey, **_options: object) -> tuple[EpisodeOffer, dict[str, object]]:
+            def broken(
+                key: EpisodeKey, _switches: object, **_options: object
+            ) -> tuple[EpisodeOffer, dict[str, object]]:
                 raise ValueError("private-payload")
 
-            monkeypatch.setattr(acquisition, "prepare_episode", broken)
+            monkeypatch.setattr(acquisition, "search_episode", broken)
             _key(controller, "text:i")
             assert controller._screen is _Screen.PROBLEM
             assert "Rezydent nie wykonał polecenia." in _frame(controller)
@@ -2927,7 +2929,9 @@ def test_oversized_owner_offer_reports_problem_and_same_connection_remains_usabl
         _open(controller)
         item: RankedCandidate = _candidate()
         item = replace(item, stream=replace(item.stream, release="x" * (1024 * 1024)))
-        monkeypatch.setattr(acquisition, "prepare_episode", lambda key, **_options: (_offer(key, (item,)), {}))
+        monkeypatch.setattr(
+            acquisition, "search_episode", lambda key, _switches, **_options: (_offer(key, (item,)), {})
+        )
         _key(controller, "text:i")
         assert "Widok nieaktualny: odpowiedź przekracza limit" in _frame(controller)
         assert not controller._offers

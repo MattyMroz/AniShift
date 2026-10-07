@@ -26,7 +26,8 @@ from test_acquisition import (
     _TitleCatalog,
 )
 from test_automation import _INSTANCE, _MOMENT, _TIMEOUT_S, _await, _library, _owner, _request, _serving
-from test_episode_selection import _fixture_graph, _fixture_mapping
+from test_episode_search import controlled, search_service
+from test_episode_selection import _fixture_graph, _fixture_mapping, _stream
 
 from anishift.application import AppService
 from anishift.application import automation as automation_module
@@ -44,6 +45,7 @@ from anishift.application.control import (
 )
 from anishift.application.control_views import decode_view
 from anishift.application.episode_identity import IdentityVerdict
+from anishift.application.episode_search import EpisodeSearch
 from anishift.application.episode_selection import AniZipMapping, ListedSpecial, StreamCandidate
 from anishift.application.intents import RequestOrigin
 from anishift.application.subscription_targets import (
@@ -56,6 +58,7 @@ from anishift.application.subscription_targets import (
     SubscriptionTarget,
     TargetState,
     next_check_at,
+    next_search_at,
 )
 from anishift.application.subscriptions import Subscription, SubscriptionStore
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
@@ -306,6 +309,7 @@ class _World:
     control: RequestControl | None = None
     catalog: object = None
     bridges: _Bridges | None = None
+    search: EpisodeSearch | None = None
 
     def now(self) -> datetime:
         return datetime.fromtimestamp(self.clock.now, UTC)
@@ -345,6 +349,8 @@ def _following(
         service.acquisition._id_catalog = world.bridges
         service.acquisition._anidb_catalog = world.bridges
         service.acquisition._kitsu_catalog = world.bridges
+    if world.search is not None:
+        service.acquisition._episode_search = world.search
     store: WatchStateStore = WatchStateStore(
         tmp_path / WATCH_STATE_FILE_NAME, subscriptions_path=tmp_path / "subscriptions.json"
     )
@@ -504,6 +510,80 @@ def test_a_later_episode_failure_is_the_check_result_and_every_outcome_is_logged
     assert (checked.last_check.number, checked.last_check.outcome) == (23, "source_failed")
     assert [(item["number"], item["decision"]) for item in logged] == [(22, "no_candidates"), (23, "source_failed")]
     assert all(item["subscription_id"] == "a" for item in logged)
+
+
+class _EarlyFailure(_StreamSource):
+    def streams(self, kitsu_id: int, number: int) -> tuple[StreamCandidate, ...]:
+        if number == 22:
+            raise OSError(number)
+        return super().streams(kitsu_id, number)
+
+
+def test_a_failing_target_never_stops_the_check_of_the_next_due_one(tmp_path: Path) -> None:
+    world: _World = _World()
+    world.streams = _EarlyFailure(_slime_streams().answers)
+    record: SubscriptionRecord = _followed(subscribed_at=(_NOW - timedelta(days=9)).isoformat(), cut=21)
+    with _following(tmp_path, _active(record), world, shadow=True) as (owner, store):
+        checked: SubscriptionRecord = _checked(owner, store)
+
+    targets: dict[int, SubscriptionTarget] = {item.number: item for item in checked.targets}
+    assert checked.last_check is not None
+    assert (checked.last_check.number, checked.last_check.outcome, checked.checked_at) == (22, "source_failed", None)
+    assert world.streams.asked == [(_KITSU, 23)]
+    assert targets[22].sources_down_since == _NOW.isoformat()
+    assert targets[23].sources_down_since is None
+    assert [item["key"] for item in _decisions(tmp_path) if item["kind"] == "proposal"] == [
+        {"anilist_id": _S4, "number": 23}
+    ]
+
+
+@pytest.mark.parametrize(("answer", "checked_at"), [("empty", _NOW.isoformat()), ("transport", None)])
+def test_an_empty_ani_zip_answer_is_a_check_but_a_transport_failure_is_not(
+    tmp_path: Path, answer: str, checked_at: str | None
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if answer == "transport":
+            message: str = "unreachable"
+            raise httpx.ConnectError(message, request=request)
+        return httpx.Response(200, json={"episodes": {}, "mappings": {}})
+
+    record: SubscriptionRecord = _followed(kitsu_id=None, mapping=None)
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        world: _World = _World()
+        world.catalog = AniZipCatalog(http)
+        with _following(tmp_path, _active(record), world, shadow=True) as (owner, store):
+            checked: SubscriptionRecord = _checked(owner, store)
+            retry: tuple[int, datetime] | None = owner._on_owner(lambda: owner._subscription_retries.get("a"))
+
+    assert checked.checked_at == checked_at
+    assert (retry is None) is (checked_at is not None)
+
+
+def test_an_unavailable_target_never_stops_the_check_of_the_next_due_one(tmp_path: Path) -> None:
+    answer: str = (Path(__file__).parents[1] / "fixtures" / "search" / "torrentio__kitsu-49235-23.json").read_text(
+        encoding="utf-8"
+    )
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "torrentio.strem.fun" and request.url.path.endswith(":23.json"):
+            return httpx.Response(200, text=answer, headers={"content-type": "application/json"})
+        return httpx.Response(500)
+
+    world: _World = _World()
+    control: RequestControl = controlled(respond)
+    record: SubscriptionRecord = _followed(subscribed_at=(_NOW - timedelta(days=9)).isoformat(), cut=21)
+    with httpx.Client(transport=control) as http:
+        world.search = search_service(http, control)
+        with _following(tmp_path, _active(record), world, shadow=True) as (owner, store):
+            checked: SubscriptionRecord = _checked(owner, store)
+
+    targets: dict[int, SubscriptionTarget] = {item.number: item for item in checked.targets}
+    assert checked.checked_at == _NOW.isoformat()
+    assert (targets[22].state, targets[22].sources_down_since) == (TargetState.DUE, _NOW.isoformat())
+    assert (targets[23].state, targets[23].sources_down_since) == (TargetState.DUE, None)
+    assert [item["key"] for item in _decisions(tmp_path) if item["kind"] == "proposal"] == [
+        {"anilist_id": _S4, "number": 23}
+    ]
 
 
 class _HeldStreams(_StreamSource):
@@ -814,6 +894,67 @@ def test_numbering_filled_after_restart_not_conflict(
     assert (target.number, target.state, target.attempts, target.started) == (23, TargetState.ATTEMPTING, 1, 1)
 
 
+_UNNUMBERED: dict[str, dict[str, int | None]] = {
+    "23": {"seasonNumber": None, "episodeNumber": None, "absoluteEpisodeNumber": None}
+}
+
+
+def _named(file_name: str) -> StreamCandidate:
+    return _stream(file_name, release=file_name, seeders=20)
+
+
+def _unnumbered_world(file_name: str) -> _World:
+    return _World(
+        episodes=_EpisodeCatalog({_S4: replace(_renumbered(_UNNUMBERED), max_age_s=0)}),
+        streams=_StreamSource({(_KITSU, 23): (_named(file_name),)}),
+    )
+
+
+@pytest.mark.parametrize(
+    ("file_name", "admitted"),
+    [
+        ("[SubsPlease] Tensei shitara Slime Datta Ken 4th Season - 23 (1080p).mkv", True),
+        ("[SubsPlease] Tensei shitara Slime Datta Ken S04E23 (1080p).mkv", False),
+    ],
+    ids=["entry-title", "sxxexx-only"],
+)
+def test_no_numbering_decides_on_entry_title(tmp_path: Path, file_name: str, *, admitted: bool) -> None:
+    world: _World = _unnumbered_world(file_name)
+    record: SubscriptionRecord = _followed(mapping=_renumbered(_UNNUMBERED))
+    with _following(tmp_path, _active(record), world) as (owner, store):
+        checked: SubscriptionRecord = _checked(owner, store)
+        saved: WatchState = owner._on_owner(store.load)
+
+    target: SubscriptionTarget = checked.targets[0]
+    assert checked.problem is None
+    assert (target.number, target.failures) == (23, ())
+    if admitted:
+        assert (target.state, target.attempts) == (TargetState.ATTEMPTING, 1)
+        assert _attempt(saved, 23)[1].choice.reference.release == file_name
+        return
+    assert (target.state, target.attempts) == (TargetState.DUE, 0)
+    assert saved.acquisitions == ()
+    assert next_search_at(target, world.now()) is not None
+
+
+def test_numbering_appears_on_next_check(tmp_path: Path) -> None:
+    file_name: str = "[SubsPlease] Tensei shitara Slime Datta Ken S04E23 (1080p).mkv"
+    world: _World = _unnumbered_world(file_name)
+    record: SubscriptionRecord = _followed(mapping=_renumbered(_UNNUMBERED))
+    with _following(tmp_path, _active(record), world) as (owner, store):
+        first: SubscriptionRecord = _checked(owner, store)
+        world.episodes.mappings[_S4] = _mapping(max_age_s=0)
+        _ask(owner, "subscription_check", {"subscription_id": "a"}, "again")
+        _settled(owner)
+        saved: WatchState = owner._on_owner(store.load)
+
+    assert (first.targets[0].state, first.targets[0].attempts) == (TargetState.DUE, 0)
+    record = saved.subscriptions[0]
+    assert (record.problem, record.mapping) == (None, _mapping(max_age_s=None))
+    assert (record.targets[0].state, record.targets[0].attempts) == (TargetState.ATTEMPTING, 1)
+    assert _attempt(saved, 23)[1].choice.reference.release == file_name
+
+
 @pytest.mark.parametrize(
     ("saved_season", "bridge", "conflict"),
     [(4, None, False), (1, ArmIds(None, 4), True)],
@@ -940,7 +1081,7 @@ def test_a_due_check_admits_one_attempt_and_a_restarted_check_admits_no_second(t
     target: SubscriptionTarget = saved.subscriptions[0].targets[0]
     assert (target.number, target.state, target.attempts) == (23, TargetState.ATTEMPTING, 1)
     assert target.admission_id == assignment.admission_id
-    assert target.tried == (f"{assignment.choice.reference.info_hash}:{assignment.choice.reference.file_index}",)
+    assert target.tried == (assignment.choice.reference.info_hash,)
     assert "sub:a:23:1" in {item.command_id for item in saved.command_receipts}
     assert world.streams.asked == [(_KITSU, 23)]
     entries: list[tuple[object, object]] = [(item["kind"], item["entry"]) for item in _decisions(tmp_path)]

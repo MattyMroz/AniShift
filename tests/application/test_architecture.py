@@ -26,6 +26,7 @@ _PURE_MODULES: Final[tuple[str, ...]] = (
     "planner.py",
     "release_quality.py",
     "selection.py",
+    "subscription_choice.py",
     "workflows.py",
 )
 

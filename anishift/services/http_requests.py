@@ -133,6 +133,10 @@ class RequestControl(httpx.BaseTransport):
         with self._lock:
             return max((self._until.get(provider, 0.0) for provider in providers), default=0.0)
 
+    def cooling(self, provider: str) -> bool:
+        """Return whether *provider* is in a cooldown now, by this transport's own clock."""
+        return self.blocked_until((provider,)) > self._clock()
+
     def counts(self) -> list[dict[str, object]]:
         """Return actual request counts without URLs, payloads or credentials."""
         with self._lock:

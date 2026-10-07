@@ -7,15 +7,11 @@ import pytest
 
 from anishift.application.acquisition import ListingRead
 from anishift.application.control import LegacyScope
-from anishift.application.episode_identity import IdentityAssessment, IdentityVerdict
 from anishift.application.episode_selection import (
     AniZipMapping,
     EpisodeListing,
     ListedEpisode,
-    RankedCandidate,
-    StreamCandidate,
 )
-from anishift.application.release_quality import AudioClass, PolishClass, ReleaseTraits
 from anishift.application.subscription_targets import (
     ATTEMPT_ACTIVE,
     ATTEMPT_SATISFIED,
@@ -34,7 +30,6 @@ from anishift.application.subscription_targets import (
     completed,
     cut_point,
     display_order,
-    eligible,
     excluded,
     is_target,
     late,
@@ -252,23 +247,6 @@ def _mapping(kitsu: int | None = 10) -> AniZipMapping:
 
 def _read(listing: EpisodeListing, *, kitsu: int | None = 10, live: bool = True) -> ListingRead:
     return ListingRead(listing, _mapping(kitsu), live)
-
-
-def _candidate(
-    verdict: IdentityVerdict = IdentityVerdict.MATCH, *, supported: bool | None = True, index: int | None = 0
-) -> RankedCandidate:
-    return RankedCandidate(
-        StreamCandidate("ABC", None, index, "Series - 04.mkv", "Series - 04", None, 5, None, None, (), ()),
-        IdentityAssessment(verdict, "reason"),
-        ReleaseTraits(PolishClass.NONE, False, False, AudioClass.ORIGINAL, False, False, False, 1080, False, False, 5),
-        quality=25.0,
-        confidence=0.9,
-        conflict=verdict is IdentityVerdict.MISMATCH,
-        ambiguous=False,
-        release_name_only=False,
-        supported=supported,
-        files=("Series - 04.mkv",),
-    )
 
 
 _DAY: timedelta = timedelta(days=1)
@@ -649,28 +627,6 @@ def test_the_next_check_follows_review_repair_airing_and_search_moments(
     assert next_check_at(replace(_record(), **changes), _NOW) == expected  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("age", [timedelta(0), timedelta(days=8)])
-@pytest.mark.parametrize(
-    ("candidate", "tried", "taken", "expected"),
-    [
-        (_candidate(), (), frozenset(), True),
-        (_candidate(IdentityVerdict.INSUFFICIENT), (), frozenset(), False),
-        (_candidate(IdentityVerdict.MISMATCH), (), frozenset(), False),
-        (_candidate(supported=False), (), frozenset(), False),
-        (_candidate(supported=None), (), frozenset(), True),
-        (_candidate(), ("abc:0",), frozenset(), False),
-        (_candidate(), (), frozenset({"abc:0"}), False),
-        (_candidate(index=None), ("abc:0",), frozenset(), True),
-    ],
-    ids=["match", "uncertain", "mismatch", "unsupported", "unknown-container", "tried", "taken", "other-file"],
-)
-def test_only_a_supported_untried_match_is_eligible_whatever_the_target_age(
-    candidate: RankedCandidate, tried: tuple[str, ...], taken: frozenset[str], expected: bool, age: timedelta
-) -> None:
-    target: SubscriptionTarget = replace(_target(4, TargetState.DUE, _NOW - age), tried=tried)
-    assert eligible(candidate, target, taken) is expected
-
-
 @pytest.mark.parametrize(
     ("changes", "expected"),
     [
@@ -803,6 +759,25 @@ def test_a_satisfied_target_never_moves_and_a_skipped_check_stays_marked() -> No
     marked: SubscriptionTarget = settle_target(_ATTEMPT, TargetFacts(attempt=ATTEMPT_ACTIVE, check_skipped=True), _NOW)
     assert marked.check_skipped
     assert settle_target(marked, TargetFacts(attempt=ATTEMPT_SATISFIED), _NOW).check_skipped
+
+
+@pytest.mark.parametrize(
+    ("target", "facts", "kept"),
+    [
+        (_target(4), TargetFacts(), True),
+        (_target(4), TargetFacts(manual=ATTEMPT_SATISFIED), False),
+        (_target(4), TargetFacts(manual=ATTEMPT_ACTIVE), False),
+        (replace(_ATTEMPT, attempts=MAX_ATTEMPTS, started=MAX_ATTEMPTS), TargetFacts(attempt="stalled"), False),
+        (_ATTEMPT, TargetFacts(attempt=ATTEMPT_ACTIVE), False),
+    ],
+    ids=["still-due", "satisfied", "ordered-by-hand", "exhausted", "attempting"],
+)
+def test_sources_down_cleared_when_target_settles(target: SubscriptionTarget, facts: TargetFacts, kept: bool) -> None:
+    down: SubscriptionTarget = replace(target, sources_down_since=_NOW.isoformat())
+
+    settled: SubscriptionTarget = settle_target(down, facts, _NOW)
+
+    assert (settled.sources_down_since is not None) is kept
 
 
 @pytest.mark.parametrize(

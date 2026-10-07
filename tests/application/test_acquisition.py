@@ -36,6 +36,7 @@ from anishift.application.acquisition import (
     ReleaseCatalog,
     ReleaseChoice,
     SeasonContext,
+    SubscriptionSearch,
     catalog_releases,
     read_episode,
     series_directory_name,
@@ -44,6 +45,7 @@ from anishift.application.cancellation import CancellationToken
 from anishift.application.control_views import decode_view, encode_view
 from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.episode_releases import EpisodeRelease
+from anishift.application.episode_search import SourceSwitches
 from anishift.application.episode_selection import (
     AniZipMapping,
     EntryGroup,
@@ -1569,15 +1571,23 @@ def test_empty_ani_zip_keeps_the_saved_mapping_and_fills_its_kitsu(
     assert bridges.asked == asked
 
 
-def test_prepare_episode_with_a_given_mapping_asks_ani_zip_nothing_and_assesses_against_it(tmp_path: Path) -> None:
+def test_subscription_check_with_a_given_mapping_asks_ani_zip_nothing_and_assesses_against_it(tmp_path: Path) -> None:
     mapping: AniZipMapping = _fixture_mapping(_S1)
     episodes: _EpisodeCatalog = _EpisodeCatalog({_S1: replace(mapping, max_age_s=0)})
     service: AcquisitionService = _episode_service(tmp_path, episodes=episodes)
     service.franchise(_S1)
-    offer, target = service.prepare_episode(EpisodeKey(_S1, 4), mapping=mapping)
+    listing: EpisodeListing = EpisodeListing(_S1, None, "TV", "RELEASING", None, (), (), None, None, None)
+    search: SubscriptionSearch = service.subscription_check(
+        EpisodeKey(_S1, 4),
+        ListingRead(listing, mapping, live=True),
+        SourceSwitches(),
+        failures=(),
+        excluded=frozenset(),
+        tsukihime_id=None,
+    )
     assert episodes.asked == []
-    assert target == identity_target(_fixture_graph(_S1), _S1, mapping, 4)
-    assert offer.candidates
+    assert search.target == identity_target(_fixture_graph(_S1), _S1, mapping, 4)
+    assert search.offer.candidates
 
 
 def test_a_refetched_incomplete_graph_never_replaces_the_complete_one(tmp_path: Path) -> None:

@@ -83,9 +83,12 @@ _THIRD: str = "c" * 40
 _FOURTH: str = "d" * 40
 
 
-def _stream(info_hash: str, number: int = 3, *, seeders: int = 99, name: str | None = None) -> StreamCandidate:
+def _stream(
+    info_hash: str, number: int = 3, *, seeders: int = 99, name: str | None = None, packed: bool = False
+) -> StreamCandidate:
     file_name: str = name or f"Neko to Ryuu - {number:02}.mkv"
-    return StreamCandidate(info_hash, "1080p", None, file_name, file_name, None, seeders, None, None, (), ())
+    path: str | None = f"Pack/{file_name}" if packed else None
+    return StreamCandidate(info_hash, "1080p", None, file_name, file_name, path, seeders, None, None, (), ())
 
 
 def _uncertain(info_hash: str = _FIRST) -> StreamCandidate:
@@ -539,7 +542,7 @@ def test_three_attempts_on_own_transfers_each_wait_for_the_confirmed_cancel_and_
     assert [item[0] for item in world.network.metadata_added] == list(hashes)
     target: SubscriptionTarget = saved.subscriptions[0].targets[0]
     assert (target.state, target.attempts) == (TargetState.EXHAUSTED, 3)
-    assert target.tried == tuple(f"{item}:" for item in hashes)
+    assert target.tried == tuple(hashes)
     assert {"sub:a:3:1", "sub:a:3:2", "sub:a:3:3"} <= _receipts(saved)
     assert "sub:a:3:4" not in _receipts(saved)
     results: dict[str, str] = {"metadata": "dead", "video": "rejected", "stall": "dead"}
@@ -554,12 +557,14 @@ def test_three_attempts_on_own_transfers_each_wait_for_the_confirmed_cancel_and_
 def test_the_next_attempt_after_a_rejection_on_a_shared_transfer_starts_only_once_that_transfer_dropped_it(
     world: _World,
 ) -> None:
-    world.season.offered[3] = (_stream(_FIRST, seeders=300), _stream(_SECOND, seeders=200))
+    world.season.offered[3] = (_stream(_FIRST, seeders=300, packed=True), _stream(_SECOND, seeders=200))
     world.probe.video = False
     with _running(world, _following(auto=False)) as owner:
         assert owner.admit_episode("manual-4", _choice_on(4, _FIRST)).ok
+        _started(world, _FIRST)
         _command(owner, "set_auto", "resume", enabled=True)
         _reaches(owner, TargetState.ATTEMPTING)
+        _until(lambda: world.network.selected.get(_FIRST) == frozenset({0, 1, 2, 3}))
         _stage(world, owner, _FIRST)
         world.network.stop_ignored = True
         _complete(world, _FIRST, 3)
@@ -594,7 +599,7 @@ def test_the_next_attempt_after_a_rejection_on_a_shared_transfer_starts_only_onc
 
 def test_a_shared_then_an_own_attempt_let_the_third_replace_the_first_across_a_restart(world: _World) -> None:
     world.season.offered[3] = (
-        _stream(_FIRST, seeders=300),
+        _stream(_FIRST, seeders=300, packed=True),
         _stream(_SECOND, seeders=200),
         _stream(_THIRD, seeders=100),
         _stream(_FOURTH, seeders=50),
@@ -602,8 +607,10 @@ def test_a_shared_then_an_own_attempt_let_the_third_replace_the_first_across_a_r
     world.probe.video = False
     with _running(world, _following(auto=False)) as owner:
         assert owner.admit_episode("manual-5", _choice_on(5, _FIRST)).ok
+        _started(world, _FIRST)
         _command(owner, "set_auto", "resume", enabled=True)
         _reaches(owner, TargetState.ATTEMPTING)
+        _until(lambda: world.network.selected.get(_FIRST) == frozenset({0, 1, 4}))
         _stage(world, owner, _FIRST)
         _complete(world, _FIRST, 3)
         _reaches(owner, TargetState.DUE)
@@ -774,7 +781,7 @@ def test_a_subscription_without_mapping_keeps_scheduled_targets_and_never_stops_
     assert failing is not None
     assert failing.last_check is not None
     assert failing.last_check.outcome == "no_candidates"
-    assert failing.checked_at == _MOMENT.isoformat()
+    assert failing.checked_at is None
     assert failing.mapping is None
     assert failing.kitsu_id is None
     assert failing.targets
@@ -1077,7 +1084,7 @@ def test_a_removed_subscription_rejected_by_its_check_tries_nothing_more_and_und
         "rejected",
     )
     assert tried == [_FIRST]
-    assert (restored.state, restored.attempts, restored.tried) == (TargetState.DUE, 1, (f"{_FIRST}:",))
+    assert (restored.state, restored.attempts, restored.tried) == (TargetState.DUE, 1, (_FIRST,))
     assert _hashes(_attempts(saved)) == [_FIRST, _SECOND]
     assert "sub:a:3:2" in _receipts(saved)
 
@@ -1117,11 +1124,15 @@ def test_an_order_joining_a_transfer_stopped_by_the_pause_resumes_only_that_one(
 
 
 def test_an_attempt_joining_a_manual_transfer_keeps_working_through_a_pause_and_a_restart(world: _World) -> None:
+    world.season.offered[3] = (_stream(_FIRST, packed=True),)
     with _running(world, _following(auto=False)) as owner:
         assert owner.admit_episode("manual-4", _choice_on(4, _FIRST)).ok
+        _started(world, _FIRST)
         _command(owner, "set_auto", "resume", enabled=True)
         _reaches(owner, TargetState.ATTEMPTING)
-        _started(world, _FIRST)
+        _until(lambda: world.network.selected.get(_FIRST) == frozenset({0, 1, 2, 3}))
+        _until(lambda: world.network.tracked[_FIRST].state == "downloading")
+        stops: int = world.network.actions.count((_FIRST, "stop"))
         _pause(owner, False, "pause")
         _polls(world)
     with _running(world) as owner:
@@ -1130,7 +1141,7 @@ def test_an_attempt_joining_a_manual_transfer_keeps_working_through_a_pause_and_
         target: SubscriptionTarget = _target(owner)
 
     assert owned == ()
-    assert (_FIRST, "stop") not in world.network.actions
+    assert world.network.actions.count((_FIRST, "stop")) == stops
     assert world.network.tracked[_FIRST].state == "downloading"
     assert target.state is TargetState.ATTEMPTING
 
@@ -1139,11 +1150,15 @@ def test_an_attempt_joining_a_manual_transfer_keeps_working_through_a_pause_and_
 def test_replacing_the_only_manual_order_of_a_mixed_transfer_in_a_pause_stops_it_for_the_pause(
     world: _World, restart: bool
 ) -> None:
+    world.season.offered[3] = (_stream(_FIRST, packed=True),)
     with _running(world, _following(auto=False)) as owner:
         assert owner.admit_episode("manual-4", _choice_on(4, _FIRST)).ok
+        _started(world, _FIRST)
         _command(owner, "set_auto", "resume", enabled=True)
         _reaches(owner, TargetState.ATTEMPTING)
-        _started(world, _FIRST)
+        _until(lambda: world.network.selected.get(_FIRST) == frozenset({0, 1, 2, 3}))
+        _until(lambda: world.network.tracked[_FIRST].state == "downloading")
+        stops: int = world.network.actions.count((_FIRST, "stop"))
         _pause(owner, False, "pause")
         manual: str = next(
             item.admission_id for item in _transfer(owner, _FIRST).assignments if item.source is AdmissionSource.MANUAL
@@ -1153,17 +1168,18 @@ def test_replacing_the_only_manual_order_of_a_mixed_transfer_in_a_pause_stops_it
         )
         stored: WatchState = _stored(owner, world)
         if not restart:
-            _until(lambda: (_FIRST, "stop") in world.network.actions)
+            _until(lambda: world.network.actions.count((_FIRST, "stop")) > stops)
     with _running(world) as owner:
-        _until(lambda: (_FIRST, "stop") in world.network.actions)
+        _until(lambda: world.network.actions.count((_FIRST, "stop")) > stops)
         _until(lambda: not _transfer(owner, _FIRST).action_pending)
+        resumes: int = world.network.actions.count((_FIRST, "resume"))
         _pause(owner, True, "unpause")
-        _until(lambda: (_FIRST, "resume") in world.network.actions)
+        _until(lambda: world.network.actions.count((_FIRST, "resume")) > resumes)
 
     assert replaced.ok
     shared: AcquisitionConfirmation = next(item for item in stored.acquisitions if item.info_hash == _FIRST)
     assert (shared.requested_action, stored.pause_owned_transfers) == ("stop", (_FIRST,))
-    assert world.network.actions.count((_FIRST, "stop")) == 1
+    assert world.network.actions.count((_FIRST, "stop")) == stops + 1
 
 
 def _timeout(request: httpx.Request) -> httpx.Response:
@@ -1470,11 +1486,15 @@ def test_the_list_names_the_episode_whose_download_is_being_checked(world: _Worl
 def test_cancelling_the_only_manual_transfer_of_a_mixed_pack_in_a_pause_closes_its_attempt_after_the_pause(
     world: _World, restart: bool
 ) -> None:
+    world.season.offered[3] = (_stream(_FIRST, packed=True),)
     with _running(world, _following(auto=False)) as owner:
         assert owner.admit_episode("manual-4", _choice_on(4, _FIRST)).ok
+        _started(world, _FIRST)
         _command(owner, "set_auto", "resume", enabled=True)
         _reaches(owner, TargetState.ATTEMPTING)
-        _started(world, _FIRST)
+        _until(lambda: world.network.selected.get(_FIRST) == frozenset({0, 1, 2, 3}))
+        _until(lambda: world.network.tracked[_FIRST].state == "downloading")
+        stops: int = world.network.actions.count((_FIRST, "stop"))
         _pause(owner, False, "pause")
         _command(owner, "transfer", "cancel-pack", info_hash=_FIRST, action="cancel")
         _until(_failed(owner, _FIRST))
@@ -1490,7 +1510,7 @@ def test_cancelling_the_only_manual_transfer_of_a_mixed_pack_in_a_pause_closes_i
 
     assert paused == (TargetState.ATTEMPTING, ())
     assert world.network.actions.count((_FIRST, "cancel")) == 1
-    assert (_FIRST, "stop") not in world.network.actions
+    assert world.network.actions.count((_FIRST, "stop")) == stops
     target: SubscriptionTarget = saved.subscriptions[0].targets[0]
     assert (target.attempts, target.reason) == (1, "failed")
     assert _closures(world) == [(1, "dead")]

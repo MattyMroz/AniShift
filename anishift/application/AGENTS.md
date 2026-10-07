@@ -287,8 +287,28 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `subscription_pause/resume/remove/restore`; każdy inny rodzaj `subscription*` to
   `UNKNOWN_COMMAND`. Mutacja zapisuje receipt razem ze stanem. Sprawdzenie biegnie w puli I/O,
   jedno na subskrypcję, z izolacją wyjątków; jeden `read_listing` (ze zapisanym mapowaniem jako
-  fallback) zasila `prepare_episode(mapping=…)` każdego celu. Wynik trafia do `last_check` i
-  `decisions.jsonl`; `checked_at` zmienia tylko udane sprawdzenie. Bez `ANISHIFT_SUBSCRIPTION_SHADOW`
+  fallback) zasila `AcquisitionService.subscription_check` każdego celu. Budżet źródeł trzyma
+  `EpisodeSearch.subscription_check`: TsukiHime najwyżej 2 strony + 10 uzupełnień, Knaben/nekoBT
+  raz na 60 min na cel (między odczytami ostatni udany wynik), szybkie źródło w cooldownie jest
+  `SKIPPED` z wynikiem z pamięci do 30 min; pominięcie nie liczy się jako niepowodzenie wydania.
+  Pamięci są w procesie: wyłączenie źródła i restart je usuwają. Wybór robi czysty
+  `subscription_choice.choose` (pewność listy nie wpływa; kolejność `choice_key`); pliki innych
+  celów chroni `protected_files` po hashu i ścieżce qBittorrenta, a przypisanie bez znanej
+  ścieżki chroni cały hash do metadanych. `tried` zapisuje hash i wyklucza go tylko dla własnego
+  celu. `sources_down_since` celu ustawia sprawdzenie, w którym wszystkie włączone źródła
+  zawiodły, a czyści udane sprawdzenie albo wyjście celu z `due`. `replacement` (R-07) zwraca
+  pierwsze przyjmowalne wydanie bez czekania na polskie i bez progu; wywołuje go E4. Wynik trafia do `last_check` i
+  `decisions.jsonl`; `checked_at` zmienia tylko udane sprawdzenie: bez błędu i (ani.zip
+  odpowiedział — `ListingRead.answered`, także pustym mapowaniem lub 404 — albo jest zapisane
+  mapowanie, albo poszło zapytanie o wydania); inaczej `checked_at` zostaje, a ponowienie idzie z
+  opóźnieniem. `ListingRead.live` (niepuste odcinki zastępujące zapisane mapowanie) nie decyduje o
+  sukcesie. Niedostępność źródeł albo obsługiwany wyjątek jednego celu nie przerywa rundy: cel
+  dostaje `sources_down_since`, kolejne cele są sprawdzane. Wyjątek celu nadal jest wynikiem rundy
+  (`last_check`, bez `checked_at`); niedostępność kończy rundę błędem tylko, gdy dotyczyła
+  wszystkich przeszukanych celów. Błąd wspólnego odczytu listy kończy rundę. TsukiHime
+  jest niedostępny przy awarii listy, limicie czasu albo `429`/błędzie, także w uzupełnieniach;
+  wtedy licznik dostaje każde oczekujące wydanie, a kolejka uzupełnień wybiera wydania nadal
+  blokujące przed rozstrzygniętymi, rotując wizyty tylko w grupie. Bez `ANISHIFT_SUBSCRIPTION_SHADOW`
   owner przyjmuje próbę przez `_admit_episode` z receipt `sub:{id}:{numer}:{próba}`, zapisując cel
   `attempting` w tym samym zapisie; tryb cienia tylko proponuje. Każdy `_save` rozlicza cele
   (`settle_target`) na przypisaniach, zamyka skończone próby (anulowanie własnego transferu albo

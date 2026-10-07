@@ -20,10 +20,11 @@ from test_episode_admission import _ENTRY, _Library, _subscribe
 from test_episode_admission import _choice as _legacy_choice
 from test_episode_admission import _library as _legacy_library
 from test_episode_search import controlled, empty_response, search_service
+from test_episode_selection import _fixture_mapping
 from test_selective_lifecycle import _SelectiveNetwork, _until
 
 from anishift.application import automation as automation_module
-from anishift.application.acquisition import AcquisitionService, TorrentClient, TorrentManagement
+from anishift.application.acquisition import AcquisitionService, ListingRead, TorrentClient, TorrentManagement
 from anishift.application.acquisition_staging import file_stamp
 from anishift.application.artifacts import SourceGroup, create_group_id
 from anishift.application.automation import AutomationOwner
@@ -53,7 +54,14 @@ from anishift.application.episode_commands import (
     EpisodeStatus,
 )
 from anishift.application.episode_identity import IdentityVerdict
-from anishift.application.episode_selection import EpisodeKey, EpisodeOffer, RankedCandidate, StreamCandidate
+from anishift.application.episode_search import SourceSwitches
+from anishift.application.episode_selection import (
+    EpisodeKey,
+    EpisodeListing,
+    EpisodeOffer,
+    RankedCandidate,
+    StreamCandidate,
+)
 from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace
 from anishift.application.intents import RequestOrigin
 from anishift.application.service import AppService
@@ -348,7 +356,9 @@ def _partial_offer(
     streams: _Streams = _Streams()
     streams.answers = {(41024, 4): (_stream(4),)}
     service: AcquisitionService = _episode_service(tmp_path, streams=streams)
-    offer, target = service.prepare_episode(EpisodeKey(_S1, 4))
+    listing: EpisodeListing = EpisodeListing(_S1, None, "TV", "RELEASING", None, (), (), None, None, None)
+    read: ListingRead = ListingRead(listing, _fixture_mapping(_S1), live=True)
+    offer, target = service.search_episode(EpisodeKey(_S1, 4), SourceSwitches(), read=read)
     ready: threading.Event = threading.Event()
     release: threading.Event = threading.Event()
 

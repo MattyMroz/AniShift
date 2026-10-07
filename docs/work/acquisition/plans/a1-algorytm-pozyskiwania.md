@@ -1861,6 +1861,19 @@ z 2026-10-06 wpisane w kroki K2, K5, K8, K9, K16 i mapę §3.
   `episode_offer_start` / `episode_offer_get` i zdarzenia z rewizjami (§5.10), bo spec A §3.2 wymaga
   wyboru przed końcem wyszukiwania; `application/AGENTS.md` („`episode_offer` trzyma jedną interakcję
   na połączenie”) aktualizuje K10b.
+- **Cooldown TsukiHime (rozstrzygnięte w K12):** spec A §6.2 zaliczała cooldown dostawcy do
+  całkowitej niedostępności, a §3.1 mówi, że pominięcie nie liczy się jako niepowodzenie. Wygrywa
+  §3.1; zdanie w §6.2 poprawione. Niedostępność TsukiHime to awaria listy, limit czasu albo
+  `429`/błąd w całym sprawdzeniu, także w uzupełnieniach.
+- **`checked_at` (rozstrzygnięte w K12):** sprawdzenie jest udane, gdy nie ma błędu i ani.zip
+  odpowiedział (`ListingRead.answered`, także pustym mapowaniem albo 404), jest zapisane mapowanie
+  albo poszło zapytanie o wydania. Inaczej `checked_at` zostaje bez zmian, a ponowienie idzie według
+  opóźnień ponowień. `ListingRead.live` zachowuje znaczenie (niepuste odcinki zastępujące zapisane
+  mapowanie) i nie decyduje o sukcesie.
+- **Awaria celu w rundzie (K12):** niedostępność źródeł albo obsługiwany wyjątek jednego celu nie
+  przerywa rundy; każdy cel jest rozliczany osobno (§6.4, `sources_down_since`). Wyjątek celu
+  pozostaje wynikiem rundy (`last_check`, bez `checked_at`); sama niedostępność kończy rundę błędem
+  tylko, gdy dotyczyła wszystkich przeszukanych celów. Błąd wspólnego odczytu listy kończy rundę.
 
 ## 12. Poza zakresem (spec A §11)
 

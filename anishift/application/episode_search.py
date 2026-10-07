@@ -21,13 +21,23 @@ from anishift.application.episode_selection import (
     list_order,
     rank_candidates,
 )
+from anishift.application.subscription_choice import (
+    ReadOutcome,
+    choice_candidate,
+    completion_order,
+    pending_releases,
+    record_failures,
+)
 from anishift.errors import AniShiftError
 from anishift.services.http_requests import BudgetExhausted, DeadlineExceeded, ProviderCooldown, RequestControl
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from anishift.application.acquisition import SeasonContext, StreamSource, TorrentSource
     from anishift.application.episode_releases import SourceName
+    from anishift.application.subscription_targets import ReleaseFailure
     from anishift.services.catalog.types import TitleCandidate
     from anishift.services.torrents.types import Release
 
@@ -43,6 +53,20 @@ FIRST_SNAPSHOT_S: Final[float] = 3.0
 
 COMPLETION_READS: Final[int] = 10
 """Maximum inventory requests per episode search."""
+
+FAST_MEMORY_S: Final[float] = 1800.0
+"""Age up to which a subscription check reuses the last result of a fast source skipped during its cooldown."""
+
+PULL_INTERVAL_S: Final[float] = 3600.0
+"""Interval between two subscription reads of a pulled source for one episode."""
+
+_PULLED: Final[frozenset[str]] = frozenset({"knaben", "nekobt"})
+"""Sources a subscription reads at most once per pull interval, keeping their last successful result between reads."""
+
+_PROVIDER_FAILURES: Final[frozenset[ReadOutcome]] = frozenset(
+    {ReadOutcome.RATE_LIMITED, ReadOutcome.TIMEOUT, ReadOutcome.FAILED}
+)
+"""Inventory outcomes showing that TsukiHime itself failed during a check, not that one release is still pending."""
 
 
 class SourceState(StrEnum):
@@ -63,18 +87,6 @@ class FailureKind(StrEnum):
     TIMEOUT = "timeout"
     RATE_LIMITED = "rate_limited"
     ERROR = "error"
-
-
-class ReadOutcome(StrEnum):
-    """Outcome of a complete inventory visit, never of its intermediate ID lookup."""
-
-    LISTED = "listed"
-    EMPTY = "empty"
-    NO_HASH = "no_hash"
-    PENDING = "pending"
-    RATE_LIMITED = "rate_limited"
-    FAILED = "failed"
-    TIMEOUT = "timeout"
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,10 +141,12 @@ class SearchSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class SearchOutcome:
-    """Final search snapshot and inventory outcomes for the caller."""
+    """Final search snapshot, inventory outcomes and, for a subscription, the target failures after the check."""
 
     snapshot: SearchSnapshot
     outcomes: Mapping[str, ReadOutcome]
+    failures: tuple[ReleaseFailure, ...] = ()
+    tsukihime_id: int | None = None
 
 
 def http_status(error: BaseException) -> int | None:
@@ -263,6 +277,49 @@ def offer_status(results: Sequence[SourceResult]) -> str | None:
     return None
 
 
+def sources_unavailable(results: Sequence[SourceResult]) -> bool:
+    """Whether at least one source is enabled and every enabled one failed, stopped empty or was skipped empty."""
+    enabled: tuple[SourceResult, ...] = tuple(
+        row for row in results if row.state not in {SourceState.DISABLED, SourceState.NO_TITLE, SourceState.NO_KITSU}
+    )
+    return bool(enabled) and all(
+        row.state is SourceState.FAILED
+        or (row.state in {SourceState.UNFINISHED, SourceState.SKIPPED} and not row.streams)
+        for row in enabled
+    )
+
+
+def sources_answered(results: Sequence[SourceResult]) -> bool:
+    """Whether at least one source answered a release query in this check, live or from its kept result."""
+    return any(
+        row.state is SourceState.DONE
+        or bool(row.streams)
+        or (row.state is SourceState.UNFINISHED and row.failure is None)
+        for row in results
+    )
+
+
+@dataclass(slots=True)
+class _SourceMemory:
+    results: dict[tuple[EpisodeKey, SourceName], tuple[float, tuple[StreamCandidate, ...]]] = field(
+        default_factory=dict
+    )
+    lock: Lock = field(default_factory=Lock)
+
+    def remember(self, key: EpisodeKey, source: SourceName, at: float, streams: tuple[StreamCandidate, ...]) -> None:
+        with self.lock:
+            self.results[key, source] = (at, streams)
+
+    def recall(self, key: EpisodeKey, source: SourceName) -> tuple[float, tuple[StreamCandidate, ...]] | None:
+        with self.lock:
+            return self.results.get((key, source))
+
+    def forget(self, source: SourceName) -> None:
+        with self.lock:
+            for item in [item for item in self.results if item[1] == source]:
+                del self.results[item]
+
+
 @dataclass(slots=True)
 class _ListingCache:
     files: dict[str, TsukiHimeFiles] = field(default_factory=dict)
@@ -292,12 +349,25 @@ class CompletionQueue:
         candidates: Sequence[RankedCandidate],
         visited: set[str],
         listed: Mapping[str, TsukiHimeFiles],
+        groups: Callable[[Sequence[RankedCandidate]], tuple[tuple[RankedCandidate, ...], ...]] | None = None,
     ) -> RankedCandidate | None:
-        """Choose an unvisited row, preferring releases not visited in previous checks."""
-        available: tuple[RankedCandidate, ...] = tuple(
-            row
-            for row in self._order(candidates)
-            if row.stream.info_hash not in visited and row.stream.info_hash not in listed
+        """Choose from the first group with an unvisited row, preferring releases not visited before within it."""
+        ordered: tuple[tuple[RankedCandidate, ...], ...] = (
+            groups(candidates) if groups is not None else (self._order(candidates),)
+        )
+        available: tuple[RankedCandidate, ...] = next(
+            (
+                rows
+                for group in ordered
+                if (
+                    rows := tuple(
+                        row
+                        for row in group
+                        if row.stream.info_hash not in visited and row.stream.info_hash not in listed
+                    )
+                )
+            ),
+            (),
         )
         with self._lock:
             previous: dict[str, int] = self._visits.setdefault(key, {})
@@ -360,12 +430,114 @@ class EpisodeSearch:
         )
         self._listings: _ListingCache = _ListingCache()
         self._completion: CompletionQueue = CompletionQueue(list_order)
+        self._fast: _SourceMemory = _SourceMemory()
+        self._pulled: _SourceMemory = _SourceMemory()
+        self._pulled_at: _SourceMemory = _SourceMemory()
+        self._titles: dict[int, int] = {}
+        self._titles_lock: Lock = Lock()
 
     def forget(self, source: SourceName) -> None:
-        """Discard source-owned inventory memory after disabling TsukiHime."""
+        """Discard the memory a source owns after it was disabled."""
+        for memory in (self._fast, self._pulled, self._pulled_at):
+            memory.forget(source)
         if source == "tsukihime":
             with self._listings.lock:
                 self._listings.files.clear()
+
+    def subscription_check(
+        self,
+        request: EpisodeRequest,
+        switches: SourceSwitches,
+        failures: Sequence[ReleaseFailure],
+        excluded: Collection[str],
+    ) -> SearchOutcome:
+        """Search every enabled source within the subscription budget and return the target failures after it."""
+        results: dict[SourceName, SourceResult] = {}
+        for source in NAME_PRIORITY:
+            if not switches.enabled(source):
+                self.forget(source)
+                results[source] = SourceResult(source, SourceState.DISABLED)
+        enabled: tuple[SourceName, ...] = tuple(source for source in NAME_PRIORITY if switches.enabled(source))
+        with ThreadPoolExecutor(max_workers=len(NAME_PRIORITY), thread_name_prefix="episode-source") as pool:
+            futures: dict[SourceName, Future[SourceResult]] = {
+                source: pool.submit(self._subscription_answer, source, request) for source in enabled
+            }
+            results.update({source: future.result() for source, future in futures.items()})
+            listing: SourceResult | None = results["tsukihime"] if switches.tsukihime else None
+            down: bool = listing is not None and listing.failure is not None
+            reachable: bool = listing is not None and not down and listing.state is not SourceState.SKIPPED
+
+            def groups(rows: Sequence[RankedCandidate]) -> tuple[tuple[RankedCandidate, ...], ...]:
+                rows_by_hash: dict[str, RankedCandidate] = {}
+                for row in rows:
+                    rows_by_hash.setdefault(choice_candidate(row).info_hash, row)
+                hashes: tuple[tuple[str, ...], ...] = completion_order(
+                    tuple(choice_candidate(row) for row in rows), failures=failures, excluded=excluded
+                )
+                return tuple(tuple(rows_by_hash[info_hash] for info_hash in group) for group in hashes)
+
+            outcomes: dict[str, ReadOutcome] = (
+                pool.submit(self._complete, request, results, switches, None, groups).result() if reachable else {}
+            )
+        down = down or any(outcome in _PROVIDER_FAILURES for outcome in outcomes.values())
+        snapshot: SearchSnapshot = self._snapshot(request, results, (), switches)
+        pending: tuple[str, ...] = tuple(
+            item.info_hash
+            for item in pending_releases(
+                tuple(choice_candidate(row) for row in snapshot.candidates),
+                failures=failures,
+                excluded=excluded,
+                tsukihime=switches.tsukihime,
+            )
+        )
+        with self._titles_lock:
+            title: int | None = self._titles.get(request.key.anilist_id, request.tsukihime_id)
+        logger.info(
+            "Subscription episode searched",
+            count=len(snapshot.candidates),
+            visits=len(outcomes),
+            tsukihime_down=down,
+            unavailable=sources_unavailable(snapshot.sources),
+        )
+        return SearchOutcome(
+            snapshot,
+            outcomes,
+            record_failures(failures, outcomes, tsukihime_down=down, pending=pending),
+            title,
+        )
+
+    def _subscription_answer(self, source: SourceName, request: EpisodeRequest) -> SourceResult:
+        if source in _PULLED:
+            return self._pulled_answer(source, request)
+        now: float = self._clock()
+        if self._control.cooling(source):
+            remembered: tuple[float, tuple[StreamCandidate, ...]] | None = self._fast.recall(request.key, source)
+            streams: tuple[StreamCandidate, ...] = (
+                remembered[1] if remembered is not None and now - remembered[0] <= FAST_MEMORY_S else ()
+            )
+            logger.info("Episode source skipped", provider=source, remembered=bool(streams))
+            return SourceResult(source, SourceState.SKIPPED, streams)
+        result: SourceResult = self._answer(source, request)
+        if result.state is SourceState.DONE or (result.state is SourceState.UNFINISHED and result.streams):
+            self._fast.remember(request.key, source, now, result.streams)
+        return result
+
+    def _pulled_answer(self, source: SourceName, request: EpisodeRequest) -> SourceResult:
+        now: float = self._clock()
+        attempted: tuple[float, tuple[StreamCandidate, ...]] | None = self._pulled_at.recall(request.key, source)
+        remembered: tuple[float, tuple[StreamCandidate, ...]] | None = self._pulled.recall(request.key, source)
+        if attempted is not None and now - attempted[0] < PULL_INTERVAL_S:
+            if remembered is None:
+                return SourceResult(source, SourceState.UNFINISHED)
+            return SourceResult(source, SourceState.DONE, remembered[1])
+        self._pulled_at.remember(request.key, source, now, ())
+        result: SourceResult = self._answer(source, request)
+        if result.state is SourceState.DONE:
+            self._pulled.remember(request.key, source, now, result.streams)
+            return result
+        if remembered is None:
+            return result
+        return SourceResult(source, SourceState.UNFINISHED, remembered[1], result.failure, result.detail)
 
     def manual_offer(
         self,
@@ -482,13 +654,16 @@ class EpisodeSearch:
         return SourceResult("torrentio", SourceState.DONE, streams)
 
     def _tsukihime_answer(self, request: EpisodeRequest, streams: list[StreamCandidate]) -> SourceResult:
-        identifier: int | None = request.tsukihime_id
+        with self._titles_lock:
+            identifier: int | None = request.tsukihime_id or self._titles.get(request.key.anilist_id)
         completed: int = 0
         try:
             if identifier is None:
                 identifier = self._tsukihime.anime_id(request.key.anilist_id)
             if identifier is None:
                 return SourceResult("tsukihime", SourceState.NO_TITLE)
+            with self._titles_lock:
+                self._titles[request.key.anilist_id] = identifier
             offset: int = 0
             for _ in range(2):
                 page: TsukiHimePage = self._tsukihime.episode_page(
@@ -511,6 +686,7 @@ class EpisodeSearch:
         results: Mapping[SourceName, SourceResult],
         switches: SourceSwitches,
         on_partial: Callable[[SearchSnapshot], None] | None,
+        groups: Callable[[Sequence[RankedCandidate]], tuple[tuple[RankedCandidate, ...], ...]] | None = None,
     ) -> dict[str, ReadOutcome]:
         outcomes: dict[str, ReadOutcome] = {}
         visited: set[str] = set()
@@ -519,7 +695,7 @@ class EpisodeSearch:
             while remaining:
                 snapshot: SearchSnapshot = self._snapshot(request, results, (), switches)
                 chosen: RankedCandidate | None = self._completion.next(
-                    request.key, snapshot.candidates, visited, self._listings.snapshot()
+                    request.key, snapshot.candidates, visited, self._listings.snapshot(), groups
                 )
                 if chosen is None:
                     break

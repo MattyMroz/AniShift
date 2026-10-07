@@ -279,6 +279,7 @@ class RankedCandidate:
     supported: bool | None
     files: tuple[str, ...]
     numbering: CandidateNumbering | None = None
+    pack: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -696,6 +697,7 @@ def _ranked(target: Mapping[str, object], release: EpisodeRelease, *, donghua: b
             named_season=evidence.named_season,
             target_part=evidence.target_part,
         ),
+        pack=release.pack,
     )
 
 
