@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
@@ -52,7 +53,7 @@ from anishift.application.episode_commands import (
     EpisodeStatus,
 )
 from anishift.application.episode_identity import IdentityVerdict
-from anishift.application.episode_selection import EpisodeKey, StreamCandidate
+from anishift.application.episode_selection import EpisodeKey, EpisodeOffer, RankedCandidate, StreamCandidate
 from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace
 from anishift.application.intents import RequestOrigin
 from anishift.application.service import AppService
@@ -72,6 +73,7 @@ from anishift.platform.local_control import (
     ControlClient,
     ControlError,
     ControlErrorCode,
+    ControlRequest,
     ControlResponse,
     ControlServer,
     control_endpoint,
@@ -147,7 +149,7 @@ def _without_numbering(
                 tmp_path, lambda: ControlClient(control_endpoint(tmp_path / "ipc"), b"episode-test-key")
             )
             try:
-                view: EpisodeOfferView = session.episode_offer(EpisodeKey(_S1, 4), repeat=repeat)
+                view: EpisodeOfferView = _session_offer(session, repeat=repeat)
                 assert view.offer.candidates
                 assert view.offer.suggestion is None
                 assert not view.offer.numbering
@@ -303,7 +305,7 @@ def _batch(owner: AutomationOwner, numbers: tuple[int, ...], command: str = "bat
 def _offer(owner: AutomationOwner, *, repeat: bool = False, session: str = "panel") -> EpisodeOfferView:
     response: ControlResponse = owner.handle(
         _request(
-            "episode_offer",
+            "episode_offer_start",
             {
                 "key": encode_view(EpisodeKey(_S1, 4)),
                 "repeat": repeat,
@@ -313,7 +315,322 @@ def _offer(owner: AutomationOwner, *, repeat: bool = False, session: str = "pane
         )
     )
     assert response.ok, response
-    return decode_view(EpisodeOfferView, response.result)
+
+    def ready() -> bool:
+        nonlocal response
+        response = owner.handle(_request("episode_offer_get", {"offer_id": offer_id}, session_id=session))
+        return response.result.get("final") is True or response.result.get("state") == "failed"
+
+    offer_id: object = response.result["offer_id"]
+    _until(ready)
+    assert response.result.get("state") == "ready", response
+    return decode_view(EpisodeOfferView, response.result["view"])
+
+
+def _session_offer(session: ResidentSession, *, repeat: bool = False) -> EpisodeOfferView:
+    started: Mapping[str, object] = session.episode_offer_start(EpisodeKey(_S1, 4), repeat=repeat, command_id="offer")
+    result: Mapping[str, object] = {}
+
+    def ready() -> bool:
+        nonlocal result
+        result = session.episode_offer_get(str(started["offer_id"]))
+        return result.get("final") is True or result.get("state") == "failed"
+
+    _until(ready)
+    assert result.get("state") == "ready", result
+    return decode_view(EpisodeOfferView, result["view"])
+
+
+@contextmanager
+def _partial_offer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, failure: Exception | None = None, before: bool = False
+) -> Iterator[tuple[AutomationOwner, ControlRequest, EpisodeOffer, threading.Event, threading.Event]]:
+    streams: _Streams = _Streams()
+    streams.answers = {(41024, 4): (_stream(4),)}
+    service: AcquisitionService = _episode_service(tmp_path, streams=streams)
+    offer, target = service.prepare_episode(EpisodeKey(_S1, 4))
+    ready: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+
+    def search(_key: EpisodeKey, _switches: object, **options: Any) -> tuple[EpisodeOffer, dict[str, object]]:
+        ready.set()
+        assert release.wait(10)
+        if failure is not None and before:
+            raise failure
+        options["on_partial"](replace(offer, pending=("knaben",)), target)
+        if failure is not None:
+            raise failure
+        assert finish.wait(10)
+        return offer, target
+
+    finish: threading.Event = threading.Event()
+    monkeypatch.setattr(service, "search_episode", search)
+    with _running(service, WatchStateStore(tmp_path / "state.json"), inspect_transfers=False) as owner:
+        started: ControlResponse = owner.handle(
+            _request("episode_offer_start", {"key": encode_view(offer.key)}, session_id="panel")
+        )
+        assert started.ok
+        request: ControlRequest = _request(
+            "episode_offer_get", {"offer_id": started.result["offer_id"]}, session_id="panel"
+        )
+        assert ready.wait(5)
+        try:
+            yield owner, request, offer, release, finish
+        finally:
+            release.set()
+            finish.set()
+
+
+@pytest.mark.integration
+def test_offer_start_returns_before_search(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with _partial_offer(tmp_path, monkeypatch) as (owner, request, _offer, release, _finish):
+        assert not release.is_set()
+        assert owner.handle(request).result == {"state": "searching"}
+        assert owner.handle(_request("status")).ok
+
+
+@pytest.mark.integration
+def test_offer_get_searching_then_ready(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with _partial_offer(tmp_path, monkeypatch) as (owner, request, _offer, release, finish):
+        assert owner.handle(request).result["state"] == "searching"
+        release.set()
+        _until(lambda: owner.handle(request).result.get("state") == "ready")
+        partial_view: Mapping[str, object] = owner.handle(request).result
+        assert partial_view["revision"] == 1
+        assert partial_view["final"] is False
+        assert decode_view(EpisodeOfferView, partial_view["view"]).offer.pending == ("knaben",)
+        finish.set()
+        _until(lambda: owner.handle(request).result.get("final") is True)
+        assert owner.handle(request).result["revision"] == 2
+
+
+@pytest.mark.integration
+def test_partial_offer_stored_with_revision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with _partial_offer(tmp_path, monkeypatch) as (owner, request, offer, release, _finish):
+        release.set()
+        _until(lambda: owner.handle(request).result.get("state") == "ready")
+        view: EpisodeOfferView = decode_view(EpisodeOfferView, owner.handle(request).result["view"])
+        assert view.revision == 1
+        assert view.offer.candidates == offer.candidates
+
+
+@pytest.mark.integration
+def test_partial_offer_dropped_after_close(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with _partial_offer(tmp_path, monkeypatch) as (owner, request, _offer, release, finish):
+        release.set()
+        _until(lambda: owner.handle(request).result.get("state") == "ready")
+        view: EpisodeOfferView = decode_view(EpisodeOfferView, owner.handle(request).result["view"])
+        assert _choose(owner, view).ok
+        finish.set()
+        _until(lambda: owner._on_owner(lambda: owner._active_io) == 0)
+        assert owner.handle(request).reason == "offer_expired"
+        assert len(owner.state.acquisitions) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("closed", [False, True])
+def test_offer_work_counted_in_active_io(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, closed: bool) -> None:
+    with _partial_offer(tmp_path, monkeypatch) as (owner, _request, _offer, release, finish):
+        _until(lambda: owner._on_owner(lambda: owner._active_io) == 1)
+        if closed:
+            owner.disconnect("panel")
+        release.set()
+        finish.set()
+        _until(lambda: owner._on_owner(lambda: owner._active_io) == 0)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("failure", [OSError("private"), ValueError("private"), RuntimeError("private")])
+def test_offer_failure_before_first_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    with _partial_offer(tmp_path, monkeypatch, failure=failure, before=True) as (
+        owner,
+        request,
+        _offer,
+        release,
+        _finish,
+    ):
+        release.set()
+        _until(lambda: owner.handle(request).result.get("state") == "failed")
+        result: Mapping[str, object] = owner.handle(request).result
+        assert result["message"]
+        assert "private" not in str(result)
+        assert "view" not in result
+        _until(lambda: owner._on_owner(lambda: owner._active_io) == 0)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("failure", [OSError("private"), RuntimeError("private")])
+def test_offer_failure_after_partial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: Exception) -> None:
+    with _partial_offer(tmp_path, monkeypatch, failure=failure) as (owner, request, _offer, release, _finish):
+        release.set()
+        _until(lambda: owner.handle(request).result.get("state") == "failed")
+        view: EpisodeOfferView = owner._on_owner(lambda: owner._episode_offers["panel"].revisions[1])
+        assert _choose(owner, view).reason == "offer_expired"
+        _until(lambda: owner._on_owner(lambda: owner._active_io) == 0)
+
+
+@pytest.mark.integration
+def test_final_store_adds_revision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[Mapping[str, object]] = []
+    with _partial_offer(tmp_path, monkeypatch) as (owner, request, _offer, release, finish):
+        owner.attach_broadcast(lambda event, _terminal: events.append(event))
+        release.set()
+        _until(lambda: owner.handle(request).result.get("state") == "ready")
+        finish.set()
+        _until(lambda: owner.handle(request).result.get("final") is True)
+        view: EpisodeOfferView = decode_view(EpisodeOfferView, owner.handle(request).result["view"])
+        assert view.revision == 2
+        assert not view.offer.pending
+        assert len([event for event in events if event.get("event") == "episode_offer_partial"]) == 2
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("changed", ["identity", "conflict", "path", "file_name", "supported"])
+@pytest.mark.parametrize("confirm", [False, True])
+def test_choose_refused_when_assessment_changed_since_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, confirm: bool, changed: str
+) -> None:
+    with _partial_offer(tmp_path, monkeypatch) as (owner, request, offer, release, _finish):
+        release.set()
+        _until(lambda: owner.handle(request).result.get("state") == "ready")
+        view: EpisodeOfferView = decode_view(EpisodeOfferView, owner.handle(request).result["view"])
+        candidate: RankedCandidate = offer.candidates[0]
+        replacements: dict[str, RankedCandidate] = {
+            "identity": replace(candidate, identity=replace(candidate.identity, verdict=IdentityVerdict.INSUFFICIENT)),
+            "conflict": replace(candidate, conflict=not candidate.conflict),
+            "path": replace(candidate, stream=replace(candidate.stream, path="other/04.mkv")),
+            "file_name": replace(candidate, stream=replace(candidate.stream, file_name="other.mkv")),
+            "supported": replace(candidate, supported=None),
+        }
+        updated: EpisodeOffer = replace(offer, candidates=(replacements[changed],))
+        owner._on_owner(
+            lambda: owner._store_partial_offer(request, view.offer_id, updated, owner._episode_offers["panel"].target)
+        )
+        assert _choose(owner, view, confirm=confirm).reason == "offer_changed"
+        latest: EpisodeOfferView = decode_view(EpisodeOfferView, owner.handle(request).result["view"])
+        assert _choose(owner, latest, confirm=True).ok
+
+
+@pytest.mark.integration
+def test_choose_same_assessment_older_revision_ok(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with _partial_offer(tmp_path, monkeypatch) as (owner, request, _offer, release, finish):
+        release.set()
+        _until(lambda: owner.handle(request).result.get("state") == "ready")
+        view: EpisodeOfferView = decode_view(EpisodeOfferView, owner.handle(request).result["view"])
+        finish.set()
+        _until(lambda: owner.handle(request).result.get("final") is True)
+        assert _choose(owner, view).ok
+
+
+@pytest.mark.integration
+def test_choose_older_revision_after_seeders_and_quality_enrichment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _partial_offer(tmp_path, monkeypatch) as (owner, request, offer, release, _finish):
+        release.set()
+        _until(lambda: owner.handle(request).result.get("state") == "ready")
+        view: EpisodeOfferView = decode_view(EpisodeOfferView, owner.handle(request).result["view"])
+        candidate: RankedCandidate = offer.candidates[0]
+        enriched: RankedCandidate = replace(candidate, stream=replace(candidate.stream, seeders=15), quality=27.05)
+        owner._on_owner(
+            lambda: owner._store_partial_offer(
+                request, view.offer_id, replace(offer, candidates=(enriched,)), owner._episode_offers["panel"].target
+            )
+        )
+        assert owner.handle(request).result["revision"] == 2
+        assert _choose(owner, view).ok
+
+
+@pytest.mark.integration
+def test_owner_shutdown_keeps_transport_until_acquisition_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    closed: list[bool] = []
+    transport: httpx.MockTransport = httpx.MockTransport(lambda request: httpx.Response(200))
+    monkeypatch.setattr(transport, "close", lambda: closed.append(True))
+    control: RequestControl = RequestControl(transport)
+    service: AcquisitionService = _episode_service(tmp_path, request_control=control)
+    with _running(service, WatchStateStore(tmp_path / "state.json"), inspect_transfers=False):
+        pass
+    try:
+        assert not closed
+        with control.scope("close_client", {}, deadline_s=1):
+            response: httpx.Response = control.handle_request(httpx.Request("GET", "https://private-client.test/close"))
+        assert response.status_code == 200
+    finally:
+        service.close()
+    assert closed == [True]
+
+
+@pytest.mark.integration
+def test_choose_ignores_client_assessment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    with _partial_offer(tmp_path, monkeypatch) as (owner, request, offer, release, _finish):
+        release.set()
+        _until(lambda: owner.handle(request).result.get("state") == "ready")
+        response: ControlResponse = owner.handle(
+            _request(
+                "episode_choose",
+                {
+                    **request.payload,
+                    "revision": 1,
+                    "info_hash": offer.candidates[0].stream.info_hash,
+                    "path": offer.candidates[0].stream.path,
+                    "candidate": {"identity": "invented"},
+                },
+                session_id="panel",
+                command_id="choose",
+                instance_id="test-instance",
+            )
+        )
+        assert response.ok
+        assert owner.state.acquisitions[0].assignments[0].choice.verdict is IdentityVerdict.MATCH
+
+
+@pytest.mark.integration
+def test_shutdown_with_blocked_source_and_late_429(tmp_path: Path) -> None:
+    entered: threading.Event = threading.Event()
+    released: threading.Event = threading.Event()
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.knaben.org":
+            entered.set()
+            assert released.wait(10)
+            return httpx.Response(429, headers={"Retry-After": "60"})
+        return empty_response(request)
+
+    control: RequestControl = RequestControl(httpx.MockTransport(respond))
+    with httpx.Client(transport=control) as http:
+        service: AcquisitionService = _episode_service(tmp_path, request_control=control)
+        titles: _TitleCatalog = _slime_titles()
+        titles.schedules[_S1] = SeasonAiring(_S1, TitleStatus.FINISHED, 24, ())
+        service._title_catalog = titles
+        service._episode_search = search_service(http, control)
+        service._episode_search._timeout = 0.5
+        owner: AutomationOwner = AutomationOwner(
+            _real_service(tmp_path, acquisition=service), WatchStateStore(tmp_path / "state.json"), instance_id="test"
+        )
+        thread: threading.Thread = _serving(owner)
+        try:
+            started: ControlResponse = owner.handle(
+                _request("episode_offer_start", {"key": encode_view(EpisodeKey(_S1, 4))}, session_id="panel")
+            )
+            assert started.ok
+            assert entered.wait(5)
+            start: float = time.monotonic()
+            owner.request_shutdown()
+            thread.join(2)
+            assert not thread.is_alive()
+            assert time.monotonic() - start < 2
+            released.set()
+            _until(lambda: control.blocked_until(("knaben",)) > time.time())
+            _until(lambda: not control._active)
+            assert owner._active_io == 0
+        finally:
+            released.set()
+            owner.request_shutdown()
+            thread.join(5)
 
 
 def _choose(
@@ -329,7 +646,9 @@ def _choose(
             "episode_choose",
             {
                 "offer_id": view.offer_id,
-                "candidate": encode_view(view.offer.candidates[0].stream),
+                "revision": view.revision,
+                "info_hash": view.offer.candidates[0].stream.info_hash,
+                "path": view.offer.candidates[0].stream.path,
                 "conflict_confirmed": confirm,
                 "deviation_confirmed": confirm,
             },
@@ -1587,7 +1906,7 @@ def test_explicit_uncertain_choice_requires_r04_and_replays_after_lost_response_
         server: ControlServer = ControlServer(endpoint, b"test-key", owner.handle, on_disconnect=owner.disconnect)
         session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, b"test-key"))
         try:
-            view: EpisodeOfferView = session.episode_offer(EpisodeKey(_S1, 4))
+            view: EpisodeOfferView = _session_offer(session)
             candidate: StreamCandidate = view.offer.candidates[0].stream
             with pytest.raises(ControlError) as error:
                 session.episode_choose(view, candidate, command_id="choose-ipc")
@@ -1782,7 +2101,7 @@ def test_metadata_worker_cannot_send_an_admission_replaced_before_it_runs(tmp_pa
         assert owner.state.acquisitions[0].state is AcquisitionState.ADMITTED
 
 
-@pytest.mark.parametrize("kind", ["episode_offer", "episode_choose", "episode_file_choose"])
+@pytest.mark.parametrize("kind", ["episode_offer_start", "episode_choose", "episode_file_choose"])
 def test_malformed_episode_payload_is_invalid_instead_of_internal(tmp_path: Path, kind: str) -> None:
     streams: _Streams = _Streams()
     streams.answers = {(41024, 4): (_stream(4),)}
@@ -1810,7 +2129,7 @@ def test_malformed_episode_payload_is_invalid_instead_of_internal(tmp_path: Path
         assert answer.code is ControlErrorCode.INVALID_PAYLOAD
 
 
-@pytest.mark.parametrize("kind", ["episode_offer", "episode_choose"])
+@pytest.mark.parametrize("kind", ["episode_offer_start", "episode_choose"])
 def test_a_migrated_owner_never_reads_the_frozen_subscription_file_for_episode_conflicts(
     tmp_path: Path,
     kind: str,
@@ -1830,7 +2149,9 @@ def test_a_migrated_owner_never_reads_the_frozen_subscription_file_for_episode_c
                     "key": encode_view(EpisodeKey(_S1, 4)),
                     "repeat": True,
                     "offer_id": view.offer_id,
-                    "candidate": encode_view(view.offer.candidates[0].stream),
+                    "revision": view.revision,
+                    "info_hash": view.offer.candidates[0].stream.info_hash,
+                    "path": view.offer.candidates[0].stream.path,
                     "conflict_confirmed": True,
                 },
                 session_id="panel",
@@ -1888,7 +2209,7 @@ def test_offer_finishing_after_disconnect_cannot_be_accepted(tmp_path: Path) -> 
             target=lambda: answers.append(
                 owner.handle(
                     _request(
-                        "episode_offer",
+                        "episode_offer_start",
                         {"key": encode_view(EpisodeKey(_S1, 4))},
                         session_id="panel",
                     )
@@ -1904,7 +2225,11 @@ def test_offer_finishing_after_disconnect_cannot_be_accepted(tmp_path: Path) -> 
             released.set()
             worker.join(_TIMEOUT_S)
         assert not worker.is_alive()
-        assert answers[0].reason == "offer_expired"
+        assert answers[0].ok
+        expired: ControlResponse = owner.handle(
+            _request("episode_offer_get", {"offer_id": answers[0].result["offer_id"]}, session_id="new-panel")
+        )
+        assert expired.reason == "offer_expired"
         assert not owner.state.acquisitions
 
 
@@ -2059,7 +2384,7 @@ def test_interrupting_episode_interaction_invalidates_its_offer_without_blocking
         server: ControlServer = ControlServer(endpoint, b"test-key", owner.handle, on_disconnect=owner.disconnect)
         session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, b"test-key"))
         try:
-            view: EpisodeOfferView = session.episode_offer(EpisodeKey(_S1, 4))
+            view: EpisodeOfferView = _session_offer(session)
             session.interrupt_reads()
             assert session.episode_states(_S1, (4,))[0].state == "not_ordered"
             with pytest.raises(ControlError) as error:

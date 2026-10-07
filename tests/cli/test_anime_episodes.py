@@ -57,9 +57,11 @@ from anishift.application import (
 )
 from anishift.application.acquisition import catalog_releases
 from anishift.application.cancellation import EventCancellationToken
+from anishift.application.control import AcquisitionConfirmation
 from anishift.application.control_views import decode_view, encode_view
 from anishift.application.episode_commands import EpisodeResult
 from anishift.application.episode_identity import REASONS
+from anishift.application.episode_search import EpisodeSearch
 from anishift.application.episode_selection import AniZipMapping, episode_listing, rank_candidates, streams_releases
 from anishift.application.planning import ExecutionPlan
 from anishift.application.release_quality import AudioClass
@@ -84,9 +86,13 @@ from anishift.platform.local_control import (
 from anishift.services.catalog import AniListCatalog, AniZipCatalog
 from anishift.services.http_requests import RequestControl
 from anishift.services.media import DefaultMediaProbe
+from anishift.services.torrents.knaben import KnabenSource
 from anishift.services.torrents.names import parse_release_name
+from anishift.services.torrents.nekobt import NekoBTSource
+from anishift.services.torrents.nyaa import search_releases
 from anishift.services.torrents.qbittorrent import QBittorrentClient
 from anishift.services.torrents.torrentio import TorrentioSource
+from anishift.services.torrents.tsukihime import TsukiHimeSource
 from anishift.services.torrents.types import Release
 
 
@@ -190,13 +196,18 @@ def _controller(catalog: _Catalog) -> AnimeController:
 
 
 def _settle(controller: AnimeController) -> None:
-    worker: threading.Thread | None = controller._worker
-    while worker is not None:
-        worker.join(10)
-        assert not worker.is_alive()
-        if controller._worker is worker:
-            break
-        worker = controller._worker
+    deadline: float = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        with controller._lock:
+            worker: threading.Thread | None = controller._worker
+            searching: bool = controller._offers_running and not controller._stale
+        if worker is not None:
+            worker.join(10)
+            assert not worker.is_alive()
+        if worker is None and not searching:
+            return
+        time.sleep(0.001)
+    pytest.fail("Anime work did not settle")
 
 
 def _key(controller: AnimeController, key: str) -> None:
@@ -1454,6 +1465,7 @@ class _Owner(_Catalog):
         self.batches: list[tuple[tuple[EpisodeKey, ...], str]] = []
         self.admitted: set[int] = {2}
         self.refused_reason: str = "no_suggestion"
+        self.offer_view: EpisodeOfferView | None = None
 
     def episode_states(self, anilist_id: int, numbers: Sequence[int]) -> tuple[EpisodeStatus, ...]:
         return tuple(
@@ -1461,9 +1473,21 @@ class _Owner(_Catalog):
             for number in numbers
         )
 
-    def episode_offer(self, key: EpisodeKey, *, repeat: bool = False) -> EpisodeOfferView:
+    def episode_offer_start(self, key: EpisodeKey, *, repeat: bool = False, command_id: str) -> Mapping[str, object]:
+        del command_id
         self.calls.append(("repeat" if repeat else "offer", key.number))
-        return EpisodeOfferView("offer", "fixture", self.offer_read(key))
+        self.offer_view = EpisodeOfferView("offer", "fixture", self.offer_read(key))
+        return {"offer_id": "offer", "instance_id": "fixture"}
+
+    def episode_offer_get(self, offer_id: str) -> Mapping[str, object]:
+        assert offer_id == "offer"
+        assert self.offer_view is not None
+        return {
+            "state": "ready",
+            "revision": self.offer_view.revision,
+            "final": True,
+            "view": encode_view(self.offer_view),
+        }
 
     def interrupt_reads(self) -> None:
         self.calls.append(("interrupt", 0))
@@ -1584,9 +1608,12 @@ class _ChoiceOwner(_Owner):
             for number in numbers
         )
 
-    def episode_offer(self, key: EpisodeKey, *, repeat: bool = False) -> EpisodeOfferView:
-        view: EpisodeOfferView = super().episode_offer(key, repeat=repeat)
-        return replace(view, conflict=("legacy:1",), unknown_previous=True) if repeat else view
+    def episode_offer_start(self, key: EpisodeKey, *, repeat: bool = False, command_id: str) -> Mapping[str, object]:
+        result: Mapping[str, object] = super().episode_offer_start(key, repeat=repeat, command_id=command_id)
+        assert self.offer_view is not None
+        if repeat:
+            self.offer_view = replace(self.offer_view, conflict=("legacy:1",), unknown_previous=True)
+        return result
 
     def episode_choose(
         self,
@@ -1625,6 +1652,254 @@ def _owner_controller(owner: _Owner) -> AnimeController:
     )
     _open(controller)
     return controller
+
+
+class _PartialOwner(_ChoiceOwner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.final: bool = False
+        self.failure: str | None = None
+        self.gets: int = 0
+
+    def episode_offer_get(self, offer_id: str) -> Mapping[str, object]:
+        self.gets += 1
+        if self.failure is not None:
+            return {"state": "failed", "message": self.failure}
+        return {**super().episode_offer_get(offer_id), "final": self.final}
+
+
+def _refresh_partial(controller: AnimeController) -> None:
+    controller.receive("episode_offer_partial", {"offer_id": "offer"})
+    deadline: float = time.monotonic() + 5
+    while controller._offer_refreshing and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert not controller._offer_refreshing
+
+
+def _open_partial(owner: _PartialOwner) -> AnimeController:
+    controller: AnimeController = _owner_controller(owner)
+    controller.handle_key("text:i")
+    deadline: float = time.monotonic() + 5
+    while controller._offer_view is None and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert controller._offer_view is not None
+    return controller
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("after_partial", [False, True])
+def test_offer_failed_shows_error(after_partial: bool) -> None:
+    owner: _PartialOwner = _PartialOwner()
+    controller: AnimeController = _owner_controller(owner)
+    if after_partial:
+        controller.handle_key("text:i")
+        deadline: float = time.monotonic() + 5
+        while controller._offer_view is None and time.monotonic() < deadline:
+            time.sleep(0.001)
+        assert controller._offer_view is not None
+    owner.failure = "TORRENT_SOURCE_FAILED"
+    if after_partial:
+        _refresh_partial(controller)
+    else:
+        _key(controller, "text:i")
+    assert controller._screen is _Screen.PROBLEM
+    assert "Źródło wydań nie odpowiada" in _frame(controller)
+    assert not controller._offers
+    gets: int = owner.gets
+    _refresh_partial(controller)
+    assert owner.gets == gets
+
+
+@pytest.mark.unit
+def test_final_revision_without_new_candidates() -> None:
+    owner: _PartialOwner = _PartialOwner()
+    controller: AnimeController = _open_partial(owner)
+    assert "szukam jeszcze" in _frame(controller)
+    assert owner.offer_view is not None
+    owner.offer_view = replace(owner.offer_view, revision=2)
+    owner.final = True
+    _refresh_partial(controller)
+    assert controller._offer_view is not None
+    assert controller._offer_view.revision == 2
+    assert "szukam jeszcze" not in _frame(controller)
+
+
+@pytest.mark.unit
+def test_lower_revision_ignored() -> None:
+    owner: _PartialOwner = _PartialOwner()
+    controller: AnimeController = _open_partial(owner)
+    assert owner.offer_view is not None
+    original: EpisodeOfferView = owner.offer_view
+    owner.offer_view = replace(original, revision=3)
+    _refresh_partial(controller)
+    owner.offer_view = replace(original, revision=2, offer=replace(original.offer, candidates=()))
+    _refresh_partial(controller)
+    assert controller._offer_view is not None
+    assert controller._offer_view.revision == 3
+    assert controller._offer_view.offer.candidates == original.offer.candidates
+
+
+@pytest.mark.unit
+def test_partial_offer_keeps_cursor_on_hash() -> None:
+    owner: _PartialOwner = _PartialOwner()
+    first: RankedCandidate = _candidate()
+    second: RankedCandidate = replace(first, stream=replace(first.stream, info_hash="b" * 40))
+    owner.offer_read = lambda key: _offer(key, (first, second))
+    controller: AnimeController = _open_partial(owner)
+    for key in ("text:i", "down", "space"):
+        controller.handle_key(key)
+    assert owner.offer_view is not None
+    owner.offer_view = replace(
+        owner.offer_view, revision=2, offer=replace(owner.offer_view.offer, candidates=(second, first))
+    )
+    _refresh_partial(controller)
+    controller.render(80, 24)
+    assert controller._view.items[controller._view.cursor].key == second.stream.info_hash
+    assert controller._view.selected == {second.stream.info_hash}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("columns", [50, 80])
+def test_offer_after_3s_pending_line_without_rows(columns: int) -> None:
+    owner: _PartialOwner = _PartialOwner()
+    owner.offer_read = lambda key: replace(_offer(key, ()), pending=("Knaben", "nekoBT"))
+    controller: AnimeController = _open_partial(owner)
+    frame: str = controller.render(columns, 24).plain
+    assert "szukam jeszcze: Knaben, nekoBT" in frame
+    assert "Szukam…" not in frame
+    assert all(cell_len(line) <= columns for line in frame.splitlines())
+
+
+@pytest.mark.unit
+def test_final_event_before_start_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _PartialOwner = _PartialOwner()
+    owner.final = True
+    controller: AnimeController = _owner_controller(owner)
+    start: Callable[..., Mapping[str, object]] = owner.episode_offer_start
+
+    def early(key: EpisodeKey, *, repeat: bool, command_id: str) -> Mapping[str, object]:
+        result: Mapping[str, object] = start(key, repeat=repeat, command_id=command_id)
+        controller.receive("episode_offer_partial", {"offer_id": "offer"})
+        assert owner.gets == 0
+        return result
+
+    monkeypatch.setattr(owner, "episode_offer_start", early)
+    _key(controller, "text:i")
+    assert owner.gets == 1
+    assert controller._offer_view is not None
+    assert not controller._offers_running
+
+
+class _HttpNyaa:
+    def __init__(self, http: httpx.Client) -> None:
+        self.http: httpx.Client = http
+
+    def search(self, query: str, *, categories: Sequence[str] = ()) -> tuple[Release, ...]:
+        return search_releases(query, http=self.http, categories=categories)
+
+
+@contextmanager
+def _searching_panel(
+    tmp_path: Path,
+) -> Iterator[tuple[AnimeController, StateController, ResidentSession, threading.Event, AutomationOwner]]:
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    owners: list[AutomationOwner] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.knaben.org":
+            entered.set()
+            assert release.wait(15)
+            return httpx.Response(200, json={"hits": [], "total": {"value": 0}})
+        if request.url.host == "torrentio.strem.fun":
+            return httpx.Response(
+                200,
+                json={
+                    "streams": [
+                        {
+                            "infoHash": "a" * 40,
+                            "fileIdx": 0,
+                            "title": "[Group] Tensei shitara Slime Datta Ken - 01 [1080p].mkv",
+                            "behaviorHints": {"filename": "[Group] Tensei shitara Slime Datta Ken - 01 [1080p].mkv"},
+                        }
+                    ]
+                },
+            )
+        if request.url.host in {"nyaa.si", "nekobt.to"}:
+            return httpx.Response(200, text="<rss><channel/></rss>", headers={"content-type": "application/xml"})
+        return httpx.Response(404)
+
+    now: list[float] = [time.time()]
+    control: RequestControl = RequestControl(
+        httpx.MockTransport(respond), clock=lambda: now[0], sleep=lambda delay: now.__setitem__(0, now[0] + delay)
+    )
+    with (
+        httpx.Client(transport=control) as http,
+        _running_panel(
+            tmp_path,
+            ["ok"],
+            [],
+            [datetime(2026, 9, 29, tzinfo=UTC).timestamp()],
+            remote=True,
+            admissions=True,
+            owner_ready=owners.append,
+        ) as (controller, panel, acquisition),
+    ):
+        assert panel is not None
+        acquisition._episode_search = EpisodeSearch(
+            torrentio=TorrentioSource(http),
+            nyaa=_HttpNyaa(http),
+            knaben=KnabenSource(http),
+            nekobt=NekoBTSource(http),
+            tsukihime=TsukiHimeSource(http),
+            request_control=control,
+            pack_name=lambda name: parse_release_name(name).is_pack,
+        )
+        _open(controller)
+        controller.handle_key("text:i")
+        try:
+            assert entered.wait(5)
+            deadline: float = time.monotonic() + 5
+            while (
+                controller._offer_view is None or not controller._offer_view.offer.candidates
+            ) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert controller._offer_view is not None
+            assert controller._offer_view.offer.candidates
+            assert controller._resident is not None
+            yield controller, panel, controller._resident, release, owners[0]
+        finally:
+            release.set()
+
+
+@pytest.mark.integration
+def test_choose_during_search_before_slow_source(tmp_path: Path) -> None:
+    with _searching_panel(tmp_path) as (controller, _panel, session, release, owner):
+        assert controller._offers_running
+        assert controller._offer_view is not None
+        key: EpisodeKey = controller._offer_view.offer.key
+        controller.handle_key("text:d")
+        if controller._confirm_choice is not None:
+            controller.handle_key("enter")
+        deadline: float = time.monotonic() + 5
+        while controller._screen is not _Screen.EPISODES and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert controller._screen is _Screen.EPISODES
+        assert not release.is_set()
+        admission_id: str | None = session.episode_states(key.anilist_id, (key.number,))[0].admission_id
+        assert admission_id is not None
+        notice: str = controller._notice
+        acquisitions: tuple[AcquisitionConfirmation, ...] = owner.state.acquisitions
+        assert owner._on_owner(lambda: owner._active_io) > 0
+        release.set()
+        deadline = time.monotonic() + 5
+        while owner._on_owner(lambda: owner._active_io) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert owner._on_owner(lambda: owner._active_io) == 0
+        assert controller._screen is _Screen.EPISODES
+        assert controller._notice == notice
+        assert session.episode_states(key.anilist_id, (key.number,))[0].admission_id == admission_id
+        assert owner.state.acquisitions == acquisitions
 
 
 @pytest.mark.unit
@@ -1987,7 +2262,7 @@ def test_inspection_uses_only_cursor_and_render_navigation_never_submit() -> Non
     for key in ("enter", "down", "up", "text:?", "escape", "escape", "escape"):
         controller.render(50, 24)
         _key(controller, key)
-    assert owner.calls == calls
+    assert owner.calls == [*calls, ("interrupt", 0)]
     assert not owner.choices
     assert not owner.file_choices
     assert not owner.batches
@@ -2389,13 +2664,15 @@ def _replay(scenario: list[str], sent: list[str]) -> Callable[[httpx.Request], h
 
 
 @contextmanager
-def _running_panel(
+def _running_panel(  # noqa: PLR0913
     tmp_path: Path,
     scenario: list[str],
     sent: list[str],
     now: list[float],
     *,
     remote: bool,
+    admissions: bool = False,
+    owner_ready: Callable[[AutomationOwner], None] | None = None,
 ) -> Iterator[tuple[AnimeController, StateController | None, AcquisitionService]]:
     control: RequestControl = RequestControl(
         httpx.MockTransport(_replay(scenario, sent)),
@@ -2439,6 +2716,8 @@ def _running_panel(
             instance_id="fixture",
             clock=lambda: datetime.fromtimestamp(now[0], UTC),
         )
+        if owner_ready is not None:
+            owner_ready(owner)
         thread: threading.Thread = threading.Thread(target=owner.serve, daemon=True)
         thread.start()
         key: bytes = os.urandom(32)
@@ -2452,7 +2731,8 @@ def _running_panel(
         panel.attach_anime(controller)
         try:
             yield controller, panel, acquisition
-            assert not owner.state.acquisitions
+            if not admissions:
+                assert not owner.state.acquisitions
             assert not owner.state.requests
         finally:
             panel.close()
@@ -2649,7 +2929,7 @@ def test_oversized_owner_offer_reports_problem_and_same_connection_remains_usabl
         item = replace(item, stream=replace(item.stream, release="x" * (1024 * 1024)))
         monkeypatch.setattr(acquisition, "prepare_episode", lambda key, **_options: (_offer(key, (item,)), {}))
         _key(controller, "text:i")
-        assert "Odpowiedź rezydenta jest za duża" in _frame(controller)
+        assert "Widok nieaktualny: odpowiedź przekracza limit" in _frame(controller)
         assert not controller._offers
         assert controller._resident is not None
         assert "instance_id" in controller._resident.command("status")

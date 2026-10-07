@@ -519,7 +519,6 @@ _MUTATING_KINDS: Final[frozenset[str]] = frozenset(
 
 _SLOW_KINDS: Final[frozenset[str]] = frozenset(
     {
-        "episode_offer",
         "episode_files",
         "episode_file_choose",
         "deletion_undo",
@@ -582,6 +581,21 @@ class _ActionRecord(Enum):
     SENT = auto()
     SUPERSEDED = auto()
     UNSAVED = auto()
+
+
+@dataclass(slots=True)
+class _OfferSession:
+    """Retain every selectable revision until this catalogue interaction closes."""
+
+    offer_id: str
+    key: EpisodeKey
+    previous: str | None
+    conflict: tuple[str, ...]
+    revisions: dict[int, EpisodeOfferView] = field(default_factory=dict)
+    target: Mapping[str, object] = field(default_factory=dict)
+    final: bool = False
+    failed: str | None = None
+    closed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -754,8 +768,7 @@ class AutomationOwner:
         self._previews_lock: threading.Lock = threading.Lock()
         self._source_checks: dict[str, EventCancellationToken] = {}
         self._catalog_reads: dict[str, EventCancellationToken] = {}
-        self._episode_offers: dict[str, tuple[EpisodeOfferView, Mapping[str, object]]] = {}
-        self._episode_reads: dict[str, str] = {}
+        self._episode_offers: dict[str, _OfferSession] = {}
         self._closed_sessions: set[str] = set()
         self._sessions: set[str] = set()
         self._client_sessions: dict[str, str] = {}
@@ -1420,7 +1433,6 @@ class AutomationOwner:
 
     def _release_session(self, session_id: str) -> None:
         self._episode_offers.pop(session_id, None)
-        self._episode_reads.pop(session_id, None)
         had_panels: bool = bool(self._panels)
         self._panels.discard(session_id)
         if had_panels and not self._panels:
@@ -1584,8 +1596,10 @@ class AutomationOwner:
                 return self._download_command(request)
             case "episode_download":
                 return self._episode_download(request)
-            case "episode_offer":
+            case "episode_offer_start":
                 return self._episode_offer(request)
+            case "episode_offer_get":
+                return self._episode_offer_get(request)
             case "episode_choose":
                 return self._episode_choose(request)
             case "episode_states":
@@ -4513,8 +4527,14 @@ class AutomationOwner:
             return
         acquisition.request_control.restore(
             {item.provider: datetime.fromisoformat(item.until).timestamp() for item in self._state.provider_locks},
-            lambda provider, until: self._on_owner(lambda: self._save_provider_lock(provider, until)),
+            lambda provider, until: self._queue.put(partial(self._persist_provider_lock, provider, until)),
         )
+
+    def _persist_provider_lock(self, provider: str, until: float) -> None:
+        try:
+            self._save_provider_lock(provider, until)
+        except OSError:
+            logger.warning("Provider cooldown could not be persisted", provider=provider)
 
     def _save_provider_lock(self, provider: str, until: float) -> None:
         deadline: ProviderLock = ProviderLock(provider, datetime.fromtimestamp(until, UTC).isoformat(), "rate_limit")
@@ -4816,7 +4836,10 @@ class AutomationOwner:
         conflict: AdmissionConflict | None = episode_conflict(self._state, key.anilist_id, key.number)
         if conflict is not None:
             return EpisodeStatus(key, "possibly_admitted", conflict.value)
-        for view, _target in self._episode_offers.values():
+        for stored in self._episode_offers.values():
+            if stored.closed or stored.failed or not stored.revisions:
+                continue
+            view: EpisodeOfferView = stored.revisions[len(stored.revisions)]
             if view.offer.key != key or view.offer.suggestion is None:
                 continue
             candidate: RankedCandidate = view.offer.candidates[view.offer.suggestion]
@@ -4863,6 +4886,8 @@ class AutomationOwner:
         return tuple(sorted(references))
 
     def _episode_offer(self, request: ControlRequest) -> ControlResponse:
+        if self._shutting_down:
+            return _refuse(RefusalReason.SHUTTING_DOWN)
         acquisition: AcquisitionService | None = self._service.acquisition
         if acquisition is None or request.session_id is None:
             return _invalid("An episode offer requires an acquisition service and a connected session")
@@ -4870,39 +4895,71 @@ class AutomationOwner:
         try:
             key: EpisodeKey = decode_view(EpisodeKey, request.payload.get("key"))
             validate_episode_keys((key,))
-            prepared: ControlResponse | tuple[str | None, tuple[str, ...]] = self._on_owner(
-                partial(self._begin_episode_offer, request, key, generation)
-            )
+            prepared: ControlResponse | tuple[str | None, tuple[str, ...]] = self._begin_episode_offer(request, key)
         except ValueError, TypeError:
             return _invalid("An episode offer requires a valid key and readable conflict")
         if isinstance(prepared, ControlResponse):
             return prepared
         previous, conflict = prepared
+        self._episode_offers[str(request.session_id)] = _OfferSession(generation, key, previous, conflict)
         switches: SourceSwitches = self._source_switches()
+        self._active_io += 1
+        self._pool.submit(self._run_episode_offer, request, generation, key, switches)
+        return ControlResponse.succeeded({"offer_id": generation, "instance_id": self._instance_id})
+
+    def _run_episode_offer(
+        self, request: ControlRequest, generation: str, key: EpisodeKey, switches: SourceSwitches
+    ) -> None:
+        try:
+            self._search_episode_offer(request, generation, key, switches)
+        except (AniShiftError, OSError, ValueError) as problem:
+            reason: str = failure_code(problem) or _COMMAND_FAILURE_REASON
+            logger.warning(
+                "Episode offer failed",
+                error_class=type(problem).__name__,
+                reason=reason,
+                command_kind="episode_offer_start",
+                command_id=request.command_id,
+            )
+            self._on_owner(partial(self._fail_episode_offer, request, generation, reason))
+        except Exception as problem:  # noqa: BLE001
+            self._on_owner(partial(self._fail_episode_offer, request, generation, _COMMAND_FAILURE_REASON))
+            logger.warning("Episode offer interrupted by an unexpected failure", error_class=type(problem).__name__)
+        finally:
+            self._queue.put(self._finish_io)
+
+    def _search_episode_offer(
+        self, request: ControlRequest, generation: str, key: EpisodeKey, switches: SourceSwitches
+    ) -> None:
+        acquisition: AcquisitionService | None = self._service.acquisition
+        if acquisition is None:
+            return
+
+        def publish(offer: EpisodeOffer, target: dict[str, object]) -> None:
+            self._on_owner(partial(self._store_partial_offer, request, generation, offer, target))
+
         with (
             acquisition.episode_requests(),
             acquisition.observe_decisions(partial(self._record_decision, command_id=generation)),
         ):
             read: ListingRead = acquisition.read_listing(key.anilist_id)
             if not any(item.number == key.number and item.aired for item in read.listing.episodes):
-                return ControlResponse.refused(
-                    ControlErrorCode.REFUSED, "This episode has not aired", EpisodeReason.EPISODE_NOT_AIRED
-                )
+                self._on_owner(partial(self._fail_episode_offer, request, generation, EpisodeReason.EPISODE_NOT_AIRED))
+                return
             exclude: Callable[[StreamCandidate], bool] | None = (
-                self._on_owner(partial(self._pair_exclusion, key)) if previous or conflict else None
+                self._on_owner(partial(self._pair_exclusion, key))
+                if request.payload.get("repeat") or request.payload.get("previous_admission_id")
+                else None
             )
             offer: EpisodeOffer
             target: dict[str, object]
-            offer, target = acquisition.search_episode(key, switches, read=read, exclude=exclude)
-        return self._on_owner(
-            partial(self._store_episode_offer, request, generation, offer, target, previous, conflict)
-        )
+            offer, target = acquisition.search_episode(key, switches, read=read, on_partial=publish, exclude=exclude)
+        self._on_owner(partial(self._store_final_offer, request, generation, offer, target))
 
     def _begin_episode_offer(
         self,
         request: ControlRequest,
         key: EpisodeKey,
-        generation: str,
     ) -> ControlResponse | tuple[str | None, tuple[str, ...]]:
         if request.session_id in self._closed_sessions:
             return _refuse(RefusalReason.SESSION_CLOSED)
@@ -4919,33 +4976,68 @@ class AutomationOwner:
             previous = latest.admission_id
         if repeating and not matches and not conflict:
             return _invalid("Repeat requires a previous admission or a possible legacy conflict")
-        session: str = str(request.session_id)
-        self._episode_reads[session] = generation
-        self._episode_offers.pop(session, None)
         return previous, conflict
 
-    def _store_episode_offer(  # noqa: PLR0913
+    def _store_partial_offer(
         self,
         request: ControlRequest,
         generation: str,
         offer: EpisodeOffer,
         target: Mapping[str, object],
-        previous: str | None,
-        conflict: tuple[str, ...],
-    ) -> ControlResponse:
-        session: str = str(request.session_id)
-        if self._episode_reads.get(session) != generation or session in self._closed_sessions:
-            return ControlResponse.refused(
-                ControlErrorCode.STALE_PREVIEW, "The episode interaction expired", "offer_expired"
-            )
-        filtered: EpisodeOffer = self._repeat_episode_offer(offer) if previous or conflict else offer
-        unknown: bool = bool(conflict) or any(
+        *,
+        final: bool = False,
+    ) -> None:
+        stored: _OfferSession | None = self._open_episode_offer(request, generation)
+        if stored is None or stored.final or stored.failed:
+            return
+        filtered: EpisodeOffer = self._repeat_episode_offer(offer) if stored.previous or stored.conflict else offer
+        unknown: bool = bool(stored.conflict) or any(
             not assignment.files and assignment.video_path is None
             for _item, assignment in self._episode_assignments(offer.key)
         )
-        view: EpisodeOfferView = EpisodeOfferView(generation, self._instance_id, filtered, previous, conflict, unknown)
-        self._episode_offers[session] = view, target
-        return ControlResponse.succeeded(encode_view(view))
+        revision: int = len(stored.revisions) + 1
+        stored.revisions[revision] = EpisodeOfferView(
+            generation, self._instance_id, filtered, stored.previous, stored.conflict, unknown, revision
+        )
+        stored.target = target
+        stored.final = final
+        self._publish_offer(generation)
+
+    def _store_final_offer(
+        self, request: ControlRequest, generation: str, offer: EpisodeOffer, target: Mapping[str, object]
+    ) -> None:
+        self._store_partial_offer(request, generation, replace(offer, pending=()), target, final=True)
+
+    def _open_episode_offer(self, request: ControlRequest, offer_id: object) -> _OfferSession | None:
+        stored: _OfferSession | None = self._episode_offers.get(str(request.session_id))
+        return stored if stored is not None and stored.offer_id == offer_id and not stored.closed else None
+
+    def _publish_offer(self, offer_id: str) -> None:
+        self._publish({"event": "episode_offer_partial", "payload": {"offer_id": offer_id}}, terminal=False)
+
+    def _fail_episode_offer(self, request: ControlRequest, generation: str, reason: str) -> None:
+        stored: _OfferSession | None = self._open_episode_offer(request, generation)
+        if stored is not None:
+            stored.failed = reason
+            self._publish_offer(generation)
+
+    def _episode_offer_get(self, request: ControlRequest) -> ControlResponse:
+        stored: _OfferSession | None = self._open_episode_offer(request, request.payload.get("offer_id"))
+        if stored is None:
+            return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, "The episode offer expired", "offer_expired")
+        if stored.failed is not None:
+            return ControlResponse.succeeded({"state": "failed", "message": stored.failed})
+        if not stored.revisions:
+            return ControlResponse.succeeded({"state": "searching"})
+        revision: int = len(stored.revisions)
+        return ControlResponse.succeeded(
+            {
+                "state": "ready",
+                "revision": revision,
+                "final": stored.final,
+                "view": encode_view(stored.revisions[revision]),
+            }
+        )
 
     def _repeat_episode_offer(self, offer: EpisodeOffer) -> EpisodeOffer:
         candidates: tuple[RankedCandidate, ...] = tuple(
@@ -4978,7 +5070,7 @@ class AutomationOwner:
     def _download_exclusion(self, key: EpisodeKey) -> Callable[[StreamCandidate], bool] | None:
         return self._pair_exclusion(key) if self._repeats_download(key, self._episode_status(key)) else None
 
-    def _episode_choose(self, request: ControlRequest) -> ControlResponse:  # noqa: PLR0911
+    def _episode_choose(self, request: ControlRequest) -> ControlResponse:  # noqa: PLR0911, PLR0912
         receipt: CommandReceipt | None = next(
             (item for item in self._state.command_receipts if item.command_id == request.command_id), None
         )
@@ -4989,24 +5081,56 @@ class AutomationOwner:
             return ControlResponse.succeeded(dict(receipt.outcome))
         if request.instance_id not in {None, self._instance_id}:
             return ControlResponse.refused(ControlErrorCode.STALE_INSTANCE, _STALE_INSTANCE)
-        stored: tuple[EpisodeOfferView, Mapping[str, object]] | None = self._episode_offers.get(str(request.session_id))
-        if stored is None or stored[0].offer_id != request.payload.get("offer_id"):
+        stored: _OfferSession | None = self._open_episode_offer(request, request.payload.get("offer_id"))
+        if stored is None or stored.failed is not None:
             return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, "The episode offer expired", "offer_expired")
-        view, target = stored
         try:
-            stream: StreamCandidate = decode_view(StreamCandidate, request.payload.get("candidate"))
+            revision: int = decode_view(int, request.payload.get("revision"))
+            info_hash: str = decode_view(str, request.payload.get("info_hash"))
+            path: str | None = (
+                decode_view(str, request.payload["path"]) if request.payload.get("path") is not None else None
+            )
             confirmed: bool = decode_view(bool, request.payload.get("deviation_confirmed", False))
             conflict_confirmed: bool = decode_view(bool, request.payload.get("conflict_confirmed", False))
+        except ValueError, TypeError:
+            return _invalid("An episode choice requires valid identifiers and confirmations")
+        view: EpisodeOfferView | None = stored.revisions.get(revision)
+        if view is None:
+            return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, "The episode offer expired", "offer_expired")
+        try:
             conflict: tuple[str, ...] = (
                 self._episode_conflicts(view.offer.key) if view.previous_admission_id or view.conflict else ()
             )
         except ValueError, TypeError:
             return _invalid("An episode choice requires a valid candidate, confirmations and readable conflict")
         candidate: RankedCandidate | None = next(
-            (item for item in view.offer.candidates if item.stream == stream), None
+            (item for item in view.offer.candidates if item.stream.info_hash == info_hash and item.stream.path == path),
+            None,
         )
         if candidate is None or candidate.supported is False:
             return _invalid("The candidate is not available in this offer")
+        latest: EpisodeOfferView = stored.revisions[len(stored.revisions)]
+        current: RankedCandidate | None = next(
+            (item for item in latest.offer.candidates if item.stream.info_hash == info_hash), None
+        )
+        if current is None or (
+            candidate.stream.path,
+            candidate.stream.file_name,
+            candidate.identity,
+            candidate.conflict,
+            candidate.supported,
+            view.conflict,
+            view.unknown_previous,
+        ) != (
+            current.stream.path,
+            current.stream.file_name,
+            current.identity,
+            current.conflict,
+            current.supported,
+            latest.conflict,
+            latest.unknown_previous,
+        ):
+            return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, "The episode offer changed", "offer_changed")
         if candidate.identity.verdict is not IdentityVerdict.MATCH and not confirmed:
             return ControlResponse.refused(
                 ControlErrorCode.REFUSED, "Confirm this exact identity deviation", "deviation_unconfirmed"
@@ -5021,13 +5145,13 @@ class AutomationOwner:
             )
         response: ControlResponse = self._admit_episode(
             request.command_id,
-            _episode_choice(view.offer.key, candidate, target, confirmed=confirmed),
+            _episode_choice(view.offer.key, candidate, stored.target, confirmed=confirmed),
             previous=view.previous_admission_id,
             conflict=view.conflict,
             selection=signature,
         )
         if response.ok:
-            self._episode_offers.pop(str(request.session_id), None)
+            stored.closed = True
         return response
 
     def _episode_download(self, request: ControlRequest) -> ControlResponse:  # noqa: PLR0911

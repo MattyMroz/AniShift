@@ -293,6 +293,7 @@ class EpisodeOffer:
     numbering: bool = True
     source_lines: tuple[str, ...] = ()
     status: str | None = None
+    pending: tuple[str, ...] = ()
 
 
 def franchise_traversal(

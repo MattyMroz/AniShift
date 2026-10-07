@@ -1043,7 +1043,7 @@ def _beyond_target(
 
     monkeypatch.setattr(owner, "episode_states", statuses)
     monkeypatch.setattr(owner, "episode_download", boundary, raising=False)
-    monkeypatch.setattr(owner, "episode_offer", boundary, raising=False)
+    monkeypatch.setattr(owner, "episode_offer_start", boundary, raising=False)
     panel._selected = 0
     _keys(panel, "enter")
     _frame(panel)

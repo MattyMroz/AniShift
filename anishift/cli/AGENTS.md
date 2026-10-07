@@ -86,17 +86,20 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   (U08 or the D search) the Subscriptions tab is highlighted, tab keys count from it, and any tab switch
   drops that context first, including an open range editor and marks (an admitted batch survives). `anishift subs` offers `list`, `check` and `remove` through the owner. `interactive/state.py`,
   `interactive/anime_view.py`, `main.py`
-- `ResidentSession.episode_offer/episode_choose` share the interruptible catalogue connection:
-  offers belong to its server session, so choosing on the main control connection would refuse them.
-  `interrupt_reads` invalidates that interaction. Batch download uses the main connection and survives
-  disconnect. Episode mutations take an explicit `command_id`; retain it when recovering a lost response.
+- `ResidentSession.episode_offer_start/get` i `episode_choose` współdzielą kanał katalogu; oferta
+  należy do jego sesji. Panel wywołuje `get` po starcie i `episode_offer_partial`, przyjmuje tylko
+  rosnące rewizje, a `failed` kończy ofertę niezależnie od rewizji. Wybór wysyła
+  `offer_id/revision/info_hash/path`; zmiana reprezentanta lub oceny/potwierdzeń daje `offer_changed`.
+  `interrupt_reads` unieważnia ofertę. Partie używają głównego kanału i przeżywają rozłączenie.
+  Mutacje odcinków wymagają jawnego `command_id`; zachowuj go przy odzyskiwaniu utraconej odpowiedzi.
   `ControlError.connection_lost` (EOF/OSError, timeout odpowiedzi, obcy `command_id`; nie
   `request_too_large`) zamyka połączenie klienta w `ControlClient.call`; kolejne wywołanie łączy się
   od nowa i niczego nie wysyła ponownie. Spóźniona odpowiedź ginie z połączeniem — wynik odzyskuje
   się przez receipt, powtarzając polecenie z tym samym `command_id`. `platform/local_control.py`
-  A lost observation makes `StateController` call the parent's `disconnect()` before reconnecting;
-  it closes only idle channels, never a call in flight. Only an answered refusal ends a D batch;
-  an unanswered error keeps its command ID for Enter replay.
+  Utrata obserwacji wywołuje `disconnect()` przed ponownym połączeniem: zamyka bezczynne kanały,
+  ale zachowuje kanał katalogu z `_open_offer` i wywołania w toku. Po ponownym `observe` panel
+  odzyskuje ofertę przez `get`. Tylko odebrana odmowa kończy partię D; błąd bez odpowiedzi
+  zachowuje jej `command_id` do ponowienia przez Enter.
 - Processing uses `StateController._processing_rows` for rendering, selection, actions and
   counts. A processing request plus `RichRunProgress.group_active` must prove started,
   nonterminal work; the owner's `accepted` state can already contain executing tasks.

@@ -12,11 +12,13 @@ from typing import Final, cast
 
 import pytest
 from rich.text import Text
+from test_anime_episodes import _searching_panel
 
 import anishift.application.automation as automation_module
 from anishift.application import (
     AppService,
     DeletionPreview,
+    EpisodeOfferView,
     GroupIntent,
     LibrarySet,
     ProductIntent,
@@ -42,6 +44,7 @@ from anishift.cli.exit_codes import EXIT_SUCCESS
 from anishift.cli.interactive import anime_view
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive import state as state_module
+from anishift.cli.interactive.anime import _Screen
 from anishift.cli.interactive.mascot import MascotController
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.settings import SettingsController
@@ -59,6 +62,40 @@ from anishift.platform.local_control import (
 
 _SETTINGS_FAILURE: Final[str] = "The settings view could not be closed"
 _SESSION_CLOSED: Final[str] = "The resident session is already closed"
+
+
+@pytest.mark.integration
+def test_observe_loss_keeps_open_offer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(state_module, "_RECONNECT_S", 0.01)
+    with _searching_panel(tmp_path) as (controller, panel, session, release, _owner):
+        catalog: ControlClient | None = session._catalog
+        observed: ResidentSession | None = panel._session
+        assert observed is not None
+        observed.close()
+        deadline: float = monotonic() + 5
+        while (panel._session is observed or not panel._connected) and monotonic() < deadline:
+            time.sleep(0.01)
+        assert panel._session is not observed
+        assert panel._connected
+        assert session._catalog is catalog
+        assert controller._offer_view is not None
+        view: EpisodeOfferView = controller._offer_view
+        assert session.episode_offer_get(view.offer_id)["state"] == "ready"
+        session.episode_choose(
+            view, view.offer.candidates[0].stream, command_id="reconnected", deviation_confirmed=True
+        )
+        assert not release.is_set()
+
+
+@pytest.mark.integration
+def test_catalog_session_closed_expires_offer(tmp_path: Path) -> None:
+    with _searching_panel(tmp_path) as (controller, _panel, session, _release, _owner):
+        session.interrupt_reads()
+        controller.refresh_offer()
+        deadline: float = monotonic() + 5
+        while controller._screen is not _Screen.PROBLEM and monotonic() < deadline:
+            time.sleep(0.01)
+        assert "Oferta wygasła — otwórz ponownie" in controller.render(80, 24).plain
 
 
 def _live_snapshot(run_id: str, labels: dict[str, str], events: tuple[RunEvent, ...]) -> RunProgressSnapshot:

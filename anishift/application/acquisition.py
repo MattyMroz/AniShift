@@ -957,7 +957,7 @@ class AcquisitionService:
         switches: SourceSwitches,
         *,
         read: ListingRead | None = None,
-        on_partial: Callable[[SearchSnapshot], None] | None = None,
+        on_partial: Callable[[EpisodeOffer, dict[str, object]], None] | None = None,
         exclude: Callable[[StreamCandidate], bool] | None = None,
     ) -> tuple[EpisodeOffer, dict[str, object]]:
         """Search the enabled sources using exactly the mapping used for the episode listing."""
@@ -999,27 +999,46 @@ class AcquisitionService:
             target,
             numbering,
         )
-        result: SearchOutcome = self._episode_search.manual_offer(request, switches, on_partial)
+
+        def publish(snapshot: SearchSnapshot) -> None:
+            if on_partial is not None:
+                on_partial(self._snapshot_offer(key, snapshot, numbering=numbering, exclude=exclude), target)
+
+        result: SearchOutcome = self._episode_search.manual_offer(request, switches, publish)
+        offer: EpisodeOffer = self._snapshot_offer(key, result.snapshot, numbering=numbering, exclude=exclude)
+        logger.info(
+            "Episode search completed",
+            count=len(offer.candidates),
+            numbering=numbering,
+            suggested=offer.suggestion is not None,
+        )
+        return offer, target
+
+    def _snapshot_offer(
+        self,
+        key: EpisodeKey,
+        snapshot: SearchSnapshot,
+        *,
+        numbering: bool,
+        exclude: Callable[[StreamCandidate], bool] | None,
+    ) -> EpisodeOffer:
         ranked: tuple[RankedCandidate, ...] = tuple(
-            row for row in result.snapshot.candidates if exclude is None or not exclude(row.stream)
+            row for row in snapshot.candidates if exclude is None or not exclude(row.stream)
         )
         counts: dict[str, int] = {
             verdict.value: sum(row.identity.verdict is verdict for row in ranked) for verdict in IdentityVerdict
         }
-        offer: EpisodeOffer = EpisodeOffer(
+        return EpisodeOffer(
             key,
             ranked,
             suggestion(ranked, numbering=numbering)[0],
             datetime.fromtimestamp(self._clock(), UTC),
             counts,
             numbering,
-            tuple(source_line(row) for row in result.snapshot.sources),
-            "brak numeracji" if not numbering else offer_status(result.snapshot.sources),
+            tuple(source_line(row) for row in snapshot.sources),
+            "brak numeracji" if not numbering else (None if snapshot.pending else offer_status(snapshot.sources)),
+            snapshot.pending,
         )
-        logger.info(
-            "Episode search completed", count=len(ranked), numbering=numbering, suggested=offer.suggestion is not None
-        )
-        return offer, target
 
     def prepare_episode(
         self,
@@ -1205,9 +1224,13 @@ class AcquisitionService:
         return self._torrent_management.released_hashes(hashes)
 
     def close(self) -> None:
-        """Release private torrent process resources."""
-        if self._torrent_management is not None:
-            self._torrent_management.close()
+        """Release private torrent process resources and their shared HTTP transport."""
+        try:
+            if self._torrent_management is not None:
+                self._torrent_management.close()
+        finally:
+            if self.request_control is not None:
+                self.request_control.close()
 
     def finalizable_hashes(self, hashes: frozenset[str]) -> frozenset[str]:
         """Read which hashes can progress without starting or contacting a torrent client."""

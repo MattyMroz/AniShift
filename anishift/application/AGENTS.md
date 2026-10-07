@@ -168,8 +168,12 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   nieudanym końcowym zapisie; zdarzenie opisuje bieżącą próbę, autorytatywne są trwałe receipt.
   Lokalne powody odmów i stanów ownera to `EpisodeReason`; pola `reason` zostają `str`, bo historyczne
   receipt mogą zawierać dowolną wartość. `episode_commands.py`, `automation.py`
-- `episode_offer` trzyma jedną interakcję na połączenie; nowszy odczyt i rozłączenie ją unieważniają.
-  `episode_choose` konsumuje dokładnie zapisanego kandydata bez ponownego odczytu źródła. Niepewne
+- `episode_offer_start` otwiera jedną ofertę na sesję katalogu i zleca pracę w `_active_io`.
+  Owner zachowuje jej rewizje; `episode_offer_partial` sygnalizuje odczyt przez `episode_offer_get`
+  (`searching`/`ready`/`failed`). Koniec zapisuje nową rewizję także bez nowych kandydatów.
+  Nowa oferta i zamknięcie sesji katalogu unieważniają poprzednią. `episode_choose` wybiera przez
+  `offer_id/revision/info_hash/path` z zapisanej rewizji: zmiana reprezentanta, oceny H1, konfliktu
+  lub wymaganych potwierdzeń daje `offer_changed`; same seedy i jakość nie unieważniają wyboru. Niepewne
   automatyczne sugestie są dozwolone, ale jawny wybór niepewnego/niezgodnego wymaga osobnego
   potwierdzenia. Zgoda na powtórkę wiąże bieżące tożsamości zamówień legacy i ostatnie przyjęcie.
   Nieznane transfery legacy zostają nietknięte; znane zastąpione przypisania zachowują pliki i tracą
@@ -308,6 +312,9 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   wysłaniem. Panel prowadzi wyszukiwanie i odczyty katalogu przez ownera. `automation.py`
 - `RequestControl` opakowuje wspólny transport HTTP metadanych i qBittorrenta: liczy rzeczywiste
   wywołania, współdzieli aktywne odczyty i blokady dostawców; trwałe terminy blokad zapisuje owner.
+  Callback cooldownu tylko kolejkuje zapis, nie czeka na ownera. Znane ograniczenie: cooldown
+  przychodzący po końcu pętli zostaje wyłącznie w pamięci. Transport zamyka `AcquisitionService.close`
+  przez `_close_acquisition`, po `_close_client`; `AutomationOwner.serve` go nie zamyka.
   Budżet operacji obejmuje zagnieżdżone zapytania, bez retry transportu. `services/http_requests.py`
 
 ## Workspace, planowanie i wykonanie

@@ -58,6 +58,49 @@ _CLOSE_REFUSED: Final[str] = "The private torrent client did not finish shutting
 
 _WATCH_STUCK: Final[str] = "The workspace watcher did not finish closing"
 
+
+@pytest.mark.integration
+def test_offer_start_releases_catalog_lock(tmp_path: Path) -> None:
+    endpoint: str = control_endpoint(tmp_path)
+    key: bytes = b"offer-test"
+    server: ControlServer = ControlServer(
+        endpoint, key, lambda request: ControlResponse.succeeded({"offer_id": "one", "instance_id": "test"})
+    )
+    session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
+    try:
+        assert session.episode_offer_start(EpisodeKey(1, 1), command_id="start")["offer_id"] == "one"
+        assert session._catalog_lock.acquire(blocking=False)
+        session._catalog_lock.release()
+    finally:
+        session.close()
+        server.close()
+
+
+@pytest.mark.integration
+def test_disconnect_keeps_catalog_with_open_offer(tmp_path: Path) -> None:
+    endpoint: str = control_endpoint(tmp_path)
+    key: bytes = b"offer-test"
+    sessions: list[str | None] = []
+
+    def respond(request: ControlRequest) -> ControlResponse:
+        sessions.append(request.session_id)
+        return ControlResponse.succeeded({"offer_id": "one", "instance_id": "test", "state": "searching"})
+
+    server: ControlServer = ControlServer(endpoint, key, respond)
+    session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
+    try:
+        session.episode_offer_start(EpisodeKey(1, 1), command_id="start")
+        session.disconnect()
+        assert session.episode_offer_get("one")["state"] == "searching"
+        assert sessions[0] == sessions[1]
+        session.interrupt_reads()
+        session.episode_offer_get("one")
+        assert sessions[2] != sessions[0]
+    finally:
+        session.close()
+        server.close()
+
+
 _RESIDENT_SCRIPT: Final[str] = """
 import sys, time
 from pathlib import Path

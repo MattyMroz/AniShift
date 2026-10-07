@@ -71,6 +71,7 @@ class EpisodeOfferView:
     previous_admission_id: str | None = None
     conflict: tuple[str, ...] = ()
     unknown_previous: bool = False
+    revision: int = 1
 
 
 @dataclass(frozen=True, slots=True)

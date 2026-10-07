@@ -951,7 +951,7 @@ class StateController:
             if self._stop.wait(_RECONNECT_S):
                 break
 
-    def _receive(self, session: ResidentSession, frame: Mapping[str, object]) -> None:  # noqa: PLR0912, PLR0915
+    def _receive(self, session: ResidentSession, frame: Mapping[str, object]) -> None:  # noqa: C901, PLR0912, PLR0915
         payload: object = frame.get("payload")
         if frame.get("event") == "panel_open":
             with self._lock:
@@ -971,6 +971,8 @@ class StateController:
             self._receive_check(payload)
             return
         if frame.get("event") == "state_changed":
+            if not self._connected and self._anime is not None:
+                self._anime.refresh_offer()
             listing: Mapping[str, object] = session.command("subscriptions_list")
             subscriptions: list[Mapping[str, object]] = _rows(listing.get("subscriptions"))
             with self._lock:
@@ -1018,6 +1020,7 @@ class StateController:
             "episode_searching",
             "episode_result",
             "episode_batch",
+            "episode_offer_partial",
             "control_problem",
         }:
             self._anime.receive(event, payload)

@@ -392,6 +392,15 @@ def test_the_outbox_merges_every_state_change_into_one_entry() -> None:
     assert _payload(drained[0])["auto_enabled"] is False
 
 
+def test_offer_partial_events_coalesce_per_offer() -> None:
+    outbox = local_control._EventOutbox(MAX_OUTBOX_EVENTS)
+    for offer_id in ("first", "second", "first", "second"):
+        outbox.put({"event": "episode_offer_partial", "payload": {"offer_id": offer_id}}, terminal=False)
+    drained: tuple[Mapping[str, object], ...] = outbox.drain()
+    assert len(drained) == 2
+    assert {_payload(frame)["offer_id"] for frame in drained} == {"first", "second"}
+
+
 def test_the_outbox_drops_progress_before_a_terminal_event() -> None:
     outbox = local_control._EventOutbox(MAX_OUTBOX_EVENTS)
 

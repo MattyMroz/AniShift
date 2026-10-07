@@ -361,7 +361,7 @@ class AnimeController:
         self._resident: ResidentSession | None = resident
         self._acquisition: AcquisitionService | ResidentSession | None = resident or service.acquisition
         self._invalidate: Callable[[], None] = invalidate
-        self._lock: threading.Lock = threading.Lock()
+        self._lock: threading.RLock = threading.RLock()
         self._generation: int = 0
         self._worker: threading.Thread | None = None
         self._current_screen: _Screen = _Screen.QUERY
@@ -427,6 +427,11 @@ class AnimeController:
         self._sending: set[EpisodeKey] = set()
         self._episode_states: dict[EpisodeKey, EpisodeStatus] = {}
         self._offer_view: EpisodeOfferView | None = None
+        self._offer_id: str | None = None
+        self._offer_refreshing: bool = False
+        self._offer_refresh_pending: bool = False
+        self._choice_sending: bool = False
+        self._confirm_view: EpisodeOfferView | None = None
         self._files: EpisodeFiles | None = None
         self._confirm_choice: RankedCandidate | None = None
         self._pending_batch: EpisodeBatch | None = None
@@ -1027,7 +1032,7 @@ class AnimeController:
             self._handle_episode_screen(key)
         self._sync_view()
 
-    def _sync_view(self) -> None:
+    def _sync_view(self) -> None:  # noqa: PLR0912, PLR0915
         screens: dict[_Screen, AnimeScreen] = {
             _Screen.QUERY: AnimeScreen.QUERY,
             _Screen.TITLES: AnimeScreen.TITLES,
@@ -1074,6 +1079,8 @@ class AnimeController:
         )
         if self._pending_batch is not None and screen in {AnimeScreen.EPISODES, AnimeScreen.RELEASES}:
             self._view.searching.add("pending")
+        if self._choice_sending:
+            self._view.searching.add("pending")
         if self._screen is _Screen.BUSY:
             self._view.controls = ("Esc wróć",)
         elif self._screen is _Screen.PROBLEM:
@@ -1091,6 +1098,9 @@ class AnimeController:
             self._view.notice = self._notice or "Lista niepełna"
         else:
             self._sync_subscription_view()
+        if screen is AnimeScreen.RELEASES and self._offer_view is not None and self._offers_running:
+            pending: str = ", ".join(self._offer_view.offer.pending) or "uzupełnienia spisów"
+            self._view.global_status = f"szukam jeszcze: {pending}"
         if self._details_open:
             item: AnimeRow | None = self._view.items[self._view.cursor] if self._view.items else None
             self._view.screen = AnimeScreen.DETAILS
@@ -1164,7 +1174,7 @@ class AnimeController:
             )
             return tuple(
                 AnimeRow(
-                    str(index),
+                    item.stream.info_hash,
                     item.stream.release,
                     image=f"{item.traits.resolution}p" if item.traits.resolution else "?",
                     language=_language(item),
@@ -1176,8 +1186,14 @@ class AnimeController:
                     uncertain=item.identity.verdict is not IdentityVerdict.MATCH,
                     suggested=item == suggested,
                 )
-                for index, item in enumerate(candidates)
-            ) or (AnimeRow("empty", "Szukam…" if self._offers_running else "Brak wydania", eligible=False),)
+                for item in candidates
+            ) or (
+                AnimeRow(
+                    "empty",
+                    "Szukam…" if self._offers_running and self._offer_view is None else "Brak wydania",
+                    eligible=False,
+                ),
+            )
         if self._screen is _Screen.BUSY:
             return (AnimeRow("busy", self._busy, navigable=False),)
         if self._screen is _Screen.PROBLEM:
@@ -1320,6 +1336,10 @@ class AnimeController:
                 self._screen = self._problem_return
             self._confirm_choice = None
             self._offer_view = None
+            self._offer_id = None
+            self._confirm_view = None
+            if self._resident is not None:
+                self._resident.interrupt_reads()
             if self._screen is _Screen.BUSY:
                 self._stop_work()
                 self._screen = self._busy_return
@@ -1416,7 +1436,8 @@ class AnimeController:
                 self._confirm_choice = None
                 self._screen = self._problem_return
                 if key == "enter":
-                    self._choose_release(choice, confirmed=True)
+                    self._choose_release(choice, confirmed=True, shown=self._confirm_view)
+                self._confirm_view = None
             return AnimeResult.CONTINUE
         if key in {"escape", "interrupt"}:
             if self._problem_return in {
@@ -1452,8 +1473,13 @@ class AnimeController:
         elif self._screen is _Screen.OFFER:
             self._offer_key(key)
         elif self._screen is _Screen.CANDIDATES and key.casefold() == "text:d":
-            index: int = int(next(iter(self._view.selected))) if self._view.selected else self._view.cursor
-            self._choose_release(self._release_candidates[index])
+            chosen: RankedCandidate | None = (
+                next((item for item in self._release_candidates if item.stream.info_hash in self._view.selected), None)
+                if self._view.selected
+                else self._release_candidates[self._view.cursor]
+            )
+            if chosen is not None:
+                self._choose_release(chosen)
 
     def _offer_key(self, key: str) -> None:
         if self._files is not None:
@@ -1481,6 +1507,10 @@ class AnimeController:
             self._screen = _Screen.OFFER
         elif self._screen is _Screen.OFFER:
             self._generation += 1
+            self._offer_id = None
+            self._offer_view = None
+            if self._resident is not None:
+                self._resident.interrupt_reads()
             self._worker = None
             self._offers_running = False
             self._screen = _Screen.EPISODES
@@ -1606,6 +1636,11 @@ class AnimeController:
 
     def receive(self, event: str, payload: Mapping[str, object]) -> None:
         """Correlate owner results independently of navigation and retain unknown intentions."""
+        if event == "episode_offer_partial":
+            with self._lock:
+                if self._offer_id is not None and payload.get("offer_id") == self._offer_id:
+                    self.refresh_offer()
+            return
         with self._lock:
             if event == "control_problem":
                 self._stale = True
@@ -1873,6 +1908,11 @@ class AnimeController:
             return
         self._files = None
         self._offer_view = None
+        self._offer_id = None
+        self._offer_refreshing = False
+        self._offer_refresh_pending = False
+        self._choice_sending = False
+        self._resident.interrupt_reads()
         self._offers.clear()
         self._offer_numbers = (episode.number,)
         self._positions[_Screen.OFFER] = 0
@@ -1888,28 +1928,111 @@ class AnimeController:
         if self._resident is None:
             return
         try:
-            view: EpisodeOfferView = self._resident.episode_offer(key, repeat=repeat)
+            started: Mapping[str, object] = self._resident.episode_offer_start(
+                key, repeat=repeat, command_id=uuid4().hex
+            )
         except (AniShiftError, OSError) as problem:
             self._catalog_failure(generation, problem, _Screen.EPISODES, "torrentio")
             return
         with self._lock:
             if generation != self._generation:
                 return
-            self._offer_view = view
-            self._offers[key.number] = view.offer
-            self._offers_running = False
+            self._offer_id = decode_view(str, started.get("offer_id"))
             self._worker = None
-        self._invalidate()
+            self.refresh_offer()
 
-    def _choose_release(self, choice: RankedCandidate, *, confirmed: bool = False) -> None:
+    def refresh_offer(self) -> None:
+        """Recover the latest offer after a signal or a reconnected observation channel."""
+        with self._lock:
+            if self._offer_id is None:
+                return
+            if self._offer_refreshing:
+                self._offer_refresh_pending = True
+                return
+            self._offer_refreshing = True
+            self._spawn(self._read_owner_offer, (self._offer_id, self._generation))
+
+    def _read_owner_offer(self, offer_id: str, generation: int) -> None:  # noqa: PLR0911
+        if self._resident is None:
+            return
+        while True:
+            try:
+                result: Mapping[str, object] = self._resident.episode_offer_get(offer_id)
+            except (AniShiftError, OSError) as problem:
+                with self._lock:
+                    if generation != self._generation or offer_id != self._offer_id:
+                        return
+                    self._offer_refreshing = False
+                    self._worker = None
+                    if self._choice_sending and isinstance(problem, ControlError) and problem.reason == "offer_expired":
+                        return
+                    if isinstance(problem, ControlError) and problem.reason == "response_too_large":
+                        self.receive("control_problem", {})
+                        self._invalidate()
+                        return
+                    self._offer_id = None
+                    self._catalog_failure(generation, problem, _Screen.EPISODES, "")
+                return
+            with self._lock:
+                if generation != self._generation or offer_id != self._offer_id:
+                    return
+                self._accept_offer_state(result, generation)
+                if not self._offer_refresh_pending or self._offer_id is None:
+                    self._offer_refreshing = False
+                    self._worker = None
+                    self._invalidate()
+                    return
+                self._offer_refresh_pending = False
+
+    def _accept_offer_state(self, result: Mapping[str, object], generation: int) -> None:
+        if result.get("state") == "failed":
+            self._offer_id = None
+            self._offer_view = None
+            self._confirm_choice = None
+            self._confirm_view = None
+            reason: str = str(result.get("message"))
+            self._catalog_failure(
+                generation,
+                ControlError(reason, code=ControlErrorCode.INTERNAL, reason=reason, answered=True),
+                _Screen.EPISODES,
+                "torrentio",
+            )
+            return
+        if result.get("state") != "ready":
+            return
+        view: EpisodeOfferView = decode_view(EpisodeOfferView, result.get("view"))
+        if self._offer_view is not None and view.revision <= self._offer_view.revision:
+            return
+        highlighted: str | None = (
+            self._release_candidates[self._positions.get(_Screen.CANDIDATES, 0)].stream.info_hash
+            if self._release_candidates and (self._screen is _Screen.CANDIDATES or self._confirm_choice is not None)
+            else None
+        )
+        self._offer_view = view
+        self._stale = False
+        self._offers[view.offer.key.number] = view.offer
+        self._offers_running = result.get("final") is not True
+        self._release_candidates = visible(view.offer.candidates)
+        self._positions[_Screen.CANDIDATES] = next(
+            (index for index, item in enumerate(self._release_candidates) if item.stream.info_hash == highlighted), 0
+        )
+        self._view.selected.intersection_update(item.stream.info_hash for item in self._release_candidates)
+        self._view.selection = None
+
+    def _choose_release(
+        self, choice: RankedCandidate, *, confirmed: bool = False, shown: EpisodeOfferView | None = None
+    ) -> None:
+        if self._choice_sending:
+            return
         if self._pending_batch is not None:
             self._notice = "Trwa partia · po jej zakończeniu otwórz wydania ponownie"
             return
-        view: EpisodeOfferView | None = self._offer_view
+        view: EpisodeOfferView | None = shown or self._offer_view
         if self._resident is None or view is None or choice.supported is False:
             return
         if choice.identity.verdict is not IdentityVerdict.MATCH and not confirmed:
             self._confirm_choice = choice
+            self._confirm_view = view
             self._problem_return = self._screen
             self._problem = "Pobrać mimo niepewnej tożsamości?"
             self._suggestion = " · ".join(
@@ -1917,7 +2040,9 @@ class AnimeController:
             )
             self._screen = _Screen.PROBLEM
             return
-        generation: int = self._start_work(_SENDING, _Screen.EPISODES, sending=True)
+        generation: int = self._generation
+        self._choice_sending = True
+        self._notice = _SENDING
         self._spawn(self._send_choice, (view, choice, generation, uuid4().hex))
 
     def _send_choice(self, view: EpisodeOfferView, choice: RankedCandidate, generation: int, command_id: str) -> None:
@@ -1932,6 +2057,10 @@ class AnimeController:
                 conflict_confirmed=bool(view.conflict),
             )
         except (AniShiftError, OSError) as problem:
+            with self._lock:
+                if generation == self._generation:
+                    self._choice_sending = False
+                    self._offer_id = None
             self._catalog_failure(generation, problem, _Screen.EPISODES, "")
             return
         self._finish_episode_choice(generation, f"Zlecono E{view.offer.key.number}")
@@ -1996,6 +2125,9 @@ class AnimeController:
             self._notice = notice
             self._notice_kind = NoticeKind.SUCCESS
             self._offer_view = None
+            self._offer_id = None
+            self._choice_sending = False
+            self._offers_running = False
             self._files = None
             self._screen = _Screen.EPISODES
             self._worker = None
@@ -2298,6 +2430,8 @@ def _stated(problem: AniShiftError | OSError | ValueError) -> tuple[str, str]:  
         return refusal_text(problem), ""
     if isinstance(problem, ControlError) and problem.reason == "response_too_large":
         return "Odpowiedź rezydenta jest za duża", ""
+    if isinstance(problem, ControlError) and problem.reason == "offer_expired":
+        return "Oferta wygasła — otwórz ponownie", ""
     if isinstance(problem, ControlError) and problem.reason in _REPEATABLE_REFUSALS:
         return _REPEATABLE_REFUSALS[problem.reason], _REPEAT_HINT
     if isinstance(problem, ControlError) and problem.code is ControlErrorCode.STALE_PREVIEW:

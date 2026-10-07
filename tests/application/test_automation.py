@@ -527,7 +527,7 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
             captured.append,
             format="{message} {extra}",
             level="WARNING",
-            filter=lambda record: record["extra"].get("command_kind") in {"acquisition", "episode_offer"},
+            filter=lambda record: record["extra"].get("command_kind") in {"acquisition", "episode_offer_start"},
         )
         try:
             controller.handle_key("enter")
@@ -543,6 +543,11 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
                 assert worker is not None
                 worker.join(_TIMEOUT_S)
                 assert not worker.is_alive()
+                deadline: float = time.monotonic() + _TIMEOUT_S
+                while controller._offers_running and time.monotonic() < deadline:
+                    controller.refresh_offer()
+                    time.sleep(0.01)
+                assert not controller._offers_running
             frame: str = controller.render(120, 30).plain
             assert "private-provider-payload" not in frame
             if scenario == "titles":

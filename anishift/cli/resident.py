@@ -73,6 +73,7 @@ class ResidentSession:
         self._state_lock: threading.Lock = threading.Lock()
         self._closed: bool = False
         self._interrupts: int = 0
+        self._open_offer: str | None = None
         self._external: dict[str, dict[str, object]] = {}
 
     def discover(self, *, cancel: CancellationToken | None = None) -> InspectedWorkspace:
@@ -205,6 +206,7 @@ class ResidentSession:
         """Refuse reads started earlier and close the catalogue channel, so the owner cancels its read."""
         with self._state_lock:
             self._interrupts += 1
+            self._open_offer = None
             catalog: ControlClient | None = self._catalog
             self._catalog = None
         if catalog is not None:
@@ -243,25 +245,34 @@ class ResidentSession:
             self._call("episode_download", {"keys": [encode_view(key) for key in keys]}, command_id=command_id),
         )
 
-    def episode_offer(
+    def episode_offer_start(
         self,
         key: EpisodeKey,
         *,
         repeat: bool = False,
         previous_admission_id: str | None = None,
-    ) -> EpisodeOfferView:
-        """Inspect one session-bound choice, including the exact conflict an explicit repeat would override."""
-        return decode_view(
-            EpisodeOfferView,
-            self._episode_interaction(
-                "episode_offer",
-                {
-                    "key": encode_view(key),
-                    "repeat": repeat,
-                    "previous_admission_id": previous_admission_id,
-                },
-            ),
+        command_id: str,
+    ) -> Mapping[str, object]:
+        """Start a session-bound search without holding the catalogue channel while sources run."""
+        return self._episode_interaction(
+            "episode_offer_start",
+            {
+                "key": encode_view(key),
+                "repeat": repeat,
+                "previous_admission_id": previous_admission_id,
+            },
+            command_id=command_id,
         )
+
+    def episode_offer_get(self, offer_id: str) -> Mapping[str, object]:
+        """Read the newest retained revision or the terminal failure of an open offer."""
+        try:
+            return self._episode_interaction("episode_offer_get", {"offer_id": offer_id})
+        except ControlError as error:
+            if error.connection_lost or (error.code is ControlErrorCode.REFUSED and not error.reason):
+                message: str = "The episode offer expired"
+                raise ControlError(message, code=ControlErrorCode.STALE_PREVIEW, reason="offer_expired") from error
+            raise
 
     def episode_choose(
         self,
@@ -277,7 +288,9 @@ class ResidentSession:
             "episode_choose",
             {
                 "offer_id": offer.offer_id,
-                "candidate": encode_view(candidate),
+                "revision": offer.revision,
+                "info_hash": candidate.info_hash,
+                "path": candidate.path,
                 "deviation_confirmed": deviation_confirmed,
                 "conflict_confirmed": conflict_confirmed,
             },
@@ -493,9 +506,9 @@ class ResidentSession:
         if self._catalog_lock.acquire(blocking=False):
             try:
                 with self._state_lock:
-                    if self._catalog is not None:
+                    if self._catalog is not None and self._open_offer is None:
                         dropped.append(self._catalog)
-                    self._catalog = None
+                        self._catalog = None
             finally:
                 self._catalog_lock.release()
         for client in dropped:
@@ -543,6 +556,7 @@ class ResidentSession:
                 self._client = None
             if self._catalog is client:
                 self._catalog = None
+                self._open_offer = None
         client.close()
 
     def _episode_read(
@@ -577,7 +591,7 @@ class ResidentSession:
         with self._catalog_lock:
             channel: ControlClient = self._catalog_channel(interrupts)
             try:
-                return channel.call(
+                result: Mapping[str, object] = channel.call(
                     kind,
                     payload,
                     instance_id=instance_id,
@@ -587,7 +601,17 @@ class ResidentSession:
             except ControlError as error:
                 if error.connection_lost:
                     self._drop(channel)
+                elif error.reason == "offer_expired":
+                    with self._state_lock:
+                        self._open_offer = None
                 raise
+            with self._state_lock:
+                self._require_current(interrupts)
+                if kind == "episode_offer_start":
+                    self._open_offer = decode_view(str, result.get("offer_id"))
+                elif kind == "episode_choose" or result.get("state") == "failed":
+                    self._open_offer = None
+            return result
 
     def _catalog_channel(self, interrupts: int) -> ControlClient:
         with self._state_lock:
