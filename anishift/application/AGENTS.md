@@ -85,15 +85,20 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `state.json.bak` (bez parsowania po udanym `load()`/`save()` tej instancji; nieznany plik wymaga
   walidacji), potem `replace`. Uszkodzony JSON, nieznany klucz i nieobsługiwana wersja dają
   `ConfigError`, nigdy pustego stanu; brak pliku to stan domyślny z działającą automatyzacją, a
-  zapisana pauza pozostaje pauzą. `WATCH_STATE_SCHEMA_VERSION` to `4`; loader przyjmuje 1-4, starszy
+  zapisana pauza pozostaje pauzą. `WATCH_STATE_SCHEMA_VERSION` to `5`; loader przyjmuje 1-5, starszy
   plik migruje raz z kopią `state.json.v<wersja>.bak`, więc drugi `load()` nie zmienia bajtów.
-  Przed pierwszym zapisem schematu 3 i schematu 4 (także przy pierwszym `save()` bez `state.json`)
-  kopiuje bajt w bajt `state.json` i `subscriptions.json` do `*.e2-migration.bak` i
-  `*.e3-migration.bak`: istniejącej kopii nie nadpisuje, brak pliku tylko loguje, a błąd kopii to
-  `ConfigError` `IO_ERROR` bez zapisu nowego formatu.
+  Przed pierwszym zapisem schematów 3, 4 i 5 (także przy pierwszym `save()` bez `state.json`)
+  kopiuje bajt w bajt `state.json` i `subscriptions.json` do `*.e2-migration.bak`,
+  `*.e3-migration.bak` i `*.a1-migration.bak`: istniejącej kopii nie nadpisuje, brak pliku tylko
+  loguje, a błąd kopii to `ConfigError` `IO_ERROR` bez zapisu nowego formatu. Migracja 4→5
+  (`subscription_migration.migrate_to_five`) nie czyta `subscriptions.json`, nadaje `started =
+  attempts` i zmienia tylko domyślne `transfer_stall_s` 1800 na 600.
   Walidacja jest wersjonowana: dokument 2+ musi mieć sekcje `recipes`, `ready_groups`,
   `pause_owned_transfers`, `pending_deletions`, `complete_files`, dokument 1 żadnej z nich;
-  dokument 4 musi mieć `subscriptions`, `removed_subscription` i `legacy_orders`, starsze nie mogą;
+  dokument 4+ musi mieć `subscriptions`, `removed_subscription` i `legacy_orders`, starsze nie mogą;
+  pola wyboru schematu 5 (`started`, `threshold`, `failures`, `polish`, `sources_down_since`,
+  `polish_skip`, `tsukihime_id`, `mapping_tvdb_season`, `stopped`, `traits`) są wymagane w 5 i
+  zakazane w 4;
   potwierdzenie wersji 3+ musi mieć `assignments` i `legacy_scope`, starsze nie mogą. Migracja nadaje
   `complete_files` z `required_files` tylko potwierdzeniom `COMPLETE`. Trwałe ścieżki `ReadyGroup` i
   `PendingDeletion` przechodzą przez `require_relative_paths`. Opcjonalne `PendingDeletion.restore`

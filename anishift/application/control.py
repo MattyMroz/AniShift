@@ -18,11 +18,13 @@ from anishift.application.intents import (
     RequestOrigin,
     TranslationAction,
 )
+from anishift.application.release_quality import PolishClass, ResolutionClass, resolution_class
 from anishift.application.workflows import WorkflowTarget
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
+    from anishift.application.release_quality import ReleaseTraits
     from anishift.application.subscription_targets import SubscriptionRecord
 
 __all__ = [
@@ -33,6 +35,7 @@ __all__ = [
     "AdmissionSource",
     "AudiobookRecipe",
     "AutomationPolicy",
+    "ChoiceTraits",
     "CommandReceipt",
     "EpisodeAssignment",
     "EpisodeChoice",
@@ -63,6 +66,7 @@ __all__ = [
     "TranslateRecipe",
     "WatchState",
     "auto_admissible",
+    "choice_traits",
     "compact_acquisition",
     "episode_conflict",
     "legacy_conflict",
@@ -87,7 +91,7 @@ VERIFICATION_REJECT: Final[str] = "reject:"
 VERIFICATION_SKIPPED: Final[str] = "skipped"
 """Download check result of a check that could not be performed."""
 
-WATCH_STATE_SCHEMA_VERSION: Final[int] = 4
+WATCH_STATE_SCHEMA_VERSION: Final[int] = 5
 """Current schema of the persisted automation state."""
 
 type SourceFingerprint = tuple[tuple[str, int, int], ...]
@@ -129,7 +133,7 @@ _DEFAULT_RECHECK_INTERVAL_S: Final[int] = 3600
 _DEFAULT_SEARCH_WINDOW_S: Final[int] = 72 * 3600
 """How long one episode is searched for before it becomes a gap needing a decision."""
 
-_DEFAULT_TRANSFER_STALL_S: Final[int] = 30 * 60
+_DEFAULT_TRANSFER_STALL_S: Final[int] = 10 * 60
 """Active downloading without progress after which a transfer needs attention."""
 
 _DEFAULT_RETRY_BUDGET: Final[int] = 3
@@ -137,6 +141,12 @@ _DEFAULT_RETRY_BUDGET: Final[int] = 3
 
 _DEFAULT_RETRY_DELAYS_S: Final[tuple[int, ...]] = (60, 300)
 """Waits between attempts when the server names no delay of its own."""
+
+_UNUSABLE_TRAITS: Final[tuple[str, ...]] = ("dub_only", "hardsub", "raw")
+"""Release name and tag facts that exclude a release, in their persisted order."""
+
+_ASSIGNMENT_STOPS: Final[frozenset[str]] = frozenset({"pack", "ambiguous", "no_match", "taken", "recheck"})
+"""Reasons a subscription attempt stopped after reading its torrent metadata."""
 
 
 class TextResultFormat(StrEnum):
@@ -344,6 +354,33 @@ class TorrentioReference:
 
 
 @dataclass(frozen=True, slots=True)
+class ChoiceTraits:
+    """Quality facts of the admitted release kept after the release details are compacted away."""
+
+    polish: PolishClass
+    resolution: ResolutionClass
+    unusable: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.polish, PolishClass) or not isinstance(self.resolution, ResolutionClass):
+            msg: str = "Choice traits carry a Polish class and a resolution class"
+            raise TypeError(msg)
+        if self.unusable != tuple(item for item in _UNUSABLE_TRAITS if item in self.unusable):
+            msg = "Choice traits name each known unusable fact once, in order"
+            raise ValueError(msg)
+
+
+def choice_traits(traits: ReleaseTraits) -> ChoiceTraits:
+    """Return the persisted snapshot of the quality facts of one ranked release."""
+    flags: dict[str, bool] = {"dub_only": traits.dub_only, "hardsub": traits.hardsub, "raw": traits.raw}
+    return ChoiceTraits(
+        polish=traits.polish,
+        resolution=resolution_class(traits.resolution)[0],
+        unusable=tuple(item for item in _UNUSABLE_TRAITS if flags[item]),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class EpisodeChoice:
     """One catalogue episode, the stream chosen for it and the H1 evidence it was chosen on."""
 
@@ -354,6 +391,7 @@ class EpisodeChoice:
     verdict: IdentityVerdict
     reason: str
     deviation_confirmed: bool = False
+    traits: ChoiceTraits | None = None
 
     def __post_init__(self) -> None:
         if not _positive(self.anilist_id) or not _positive(self.number):
@@ -428,10 +466,14 @@ class EpisodeAssignment:
     attempt: int | None = None
     verification: str | None = None
     verified_stamp: FileStamp | None = None
+    stopped: str | None = None
 
     def __post_init__(self) -> None:
         if not self.admission_id.strip() or not self.admitted_at.strip():
             msg = "An episode assignment requires its own admission identity and time"
+            raise ValueError(msg)
+        if self.stopped is not None and self.stopped not in _ASSIGNMENT_STOPS:
+            msg = "A stopped episode assignment names a known stop reason"
             raise ValueError(msg)
         self._check_attempt()
         if self.files and self.file_map is None:

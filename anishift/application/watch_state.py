@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -17,6 +17,7 @@ from anishift.application.control import (
     AdmissionSource,
     AudiobookRecipe,
     AutomationPolicy,
+    ChoiceTraits,
     CommandReceipt,
     DeletionOutcome,
     DeletionRestore,
@@ -56,9 +57,14 @@ from anishift.application.intents import (
     RequestOrigin,
     TranslationAction,
 )
-from anishift.application.subscription_migration import migrate
+from anishift.application.release_quality import PolishClass, ResolutionClass
+from anishift.application.subscription_migration import migrate, migrate_to_five
 from anishift.application.subscription_targets import (
     PauseReason,
+    PolishObservation,
+    PolishSkip,
+    PolishState,
+    ReleaseFailure,
     SubscriptionCheck,
     SubscriptionProblem,
     SubscriptionRecord,
@@ -105,7 +111,7 @@ _SCHEMA_BACKUP_TEMPLATE: Final[str] = ".v{version}.bak"
 """Ending of the copy kept from a document an older schema wrote, before it is rewritten."""
 
 _MIGRATION_BACKUP_SUFFIXES: Final[Mapping[int, str]] = MappingProxyType(
-    {3: ".e2-migration.bak", 4: ".e3-migration.bak"}
+    {3: ".e2-migration.bak", 4: ".e3-migration.bak", 5: ".a1-migration.bak"}
 )
 """Ending of the byte-identical copies kept of both owner files before the first write of each schema."""
 
@@ -118,8 +124,11 @@ _SCHEMA_TWO: Final[int] = 2
 _SCHEMA_THREE: Final[int] = 3
 """Schema this build still reads and migrates once, moving the subscription file into the state."""
 
+_SCHEMA_FOUR: Final[int] = 4
+"""Schema this build still reads and migrates once, adding the facts of the release choice."""
+
 _SUPPORTED_SCHEMA_VERSIONS: Final[frozenset[int]] = frozenset(
-    {_SCHEMA_ONE, _SCHEMA_TWO, _SCHEMA_THREE, WATCH_STATE_SCHEMA_VERSION}
+    {_SCHEMA_ONE, _SCHEMA_TWO, _SCHEMA_THREE, _SCHEMA_FOUR, WATCH_STATE_SCHEMA_VERSION}
 )
 """Schema versions of the automation state this build still reads."""
 
@@ -151,6 +160,29 @@ _SUBSCRIPTION_KEYS: Final[frozenset[str]] = frozenset(
     }
 )
 """Keys a serialized subscription must carry."""
+
+_SUBSCRIPTION_KEYS_FIVE: Final[frozenset[str]] = frozenset({"tsukihime_id", "mapping_tvdb_season"})
+"""Subscription keys schema 5 added, which every schema 5 document must carry and no older one may."""
+
+_TARGET_KEYS_FIVE: Final[frozenset[str]] = frozenset(
+    {"started", "threshold", "failures", "polish", "sources_down_since", "polish_skip"}
+)
+"""Target keys schema 5 added, which every schema 5 document must carry and no older one may."""
+
+_ASSIGNMENT_KEYS_FIVE: Final[frozenset[str]] = frozenset({"traits", "stopped"})
+"""Assignment keys schema 5 added, which every schema 5 document must carry and no older one may."""
+
+_FAILURE_KEYS: Final[frozenset[str]] = frozenset({"hash", "decisive", "transient"})
+"""Keys a serialized release failure must carry."""
+
+_POLISH_KEYS: Final[frozenset[str]] = frozenset({"state", "observed_at"})
+"""Keys a serialized Polish observation must carry."""
+
+_POLISH_SKIP_KEYS: Final[frozenset[str]] = frozenset({"due", "at", "settled"})
+"""Keys a serialized Polish skip must carry."""
+
+_TRAITS_KEYS: Final[frozenset[str]] = frozenset({"polish", "resolution", "unusable"})
+"""Keys serialized choice traits must carry."""
 
 _TARGET_KEYS: Final[frozenset[str]] = frozenset(
     {
@@ -515,9 +547,11 @@ class WatchStateStore:
         return migrated
 
     def _migrated(self, stored: WatchState, legacy_content: bytes | None) -> WatchState:
-        legacy: tuple[Subscription, ...] = _decode_legacy(legacy_content)
+        four: bool = stored.schema_version == _SCHEMA_FOUR
+        legacy: tuple[Subscription, ...] = () if four else _decode_legacy(legacy_content)
         try:
-            migrated: WatchState = migrate(stored, legacy, self._clock())
+            imported: WatchState = stored if four else migrate(stored, legacy, self._clock())
+            migrated: WatchState = migrate_to_five(imported)
             return _decode_state(json.loads(json.dumps(_encode_state(migrated))))
         except (KeyError, TypeError, ValueError) as problem:
             raise _subscriptions_invalid() from problem
@@ -840,6 +874,14 @@ def _encode_assignment(assignment: EpisodeAssignment) -> dict[str, object]:
         "attempt": assignment.attempt,
         "verification": assignment.verification,
         "verified_stamp": None if assignment.verified_stamp is None else list(assignment.verified_stamp),
+        "traits": None
+        if choice.traits is None
+        else {
+            "polish": choice.traits.polish.name.casefold(),
+            "resolution": int(choice.traits.resolution),
+            "unusable": list(choice.traits.unusable),
+        },
+        "stopped": assignment.stopped,
     }
 
 
@@ -973,7 +1015,7 @@ class _SchemaFourFacts:
 
 def _schema_four_facts(document: dict[str, object], schema_version: int) -> _SchemaFourFacts:
     sections: dict[str, object] = {key: document.pop(key) for key in _SCHEMA_FOUR_SECTIONS if key in document}
-    if schema_version < WATCH_STATE_SCHEMA_VERSION:
+    if schema_version < _SCHEMA_FOUR:
         if sections:
             msg = "An automation state older than schema 4 cannot carry the sections schema 4 added"
             raise ValueError(msg)
@@ -983,8 +1025,10 @@ def _schema_four_facts(document: dict[str, object], schema_version: int) -> _Sch
         raise ValueError(msg)
     removed: object = sections["removed_subscription"]
     return _SchemaFourFacts(
-        subscriptions=tuple(_decode_subscription(item) for item in _list(sections["subscriptions"], "subscriptions")),
-        removed_subscription=None if removed is None else _decode_subscription(removed),
+        subscriptions=tuple(
+            _decode_subscription(item, schema_version) for item in _list(sections["subscriptions"], "subscriptions")
+        ),
+        removed_subscription=None if removed is None else _decode_subscription(removed, schema_version),
         legacy_orders=tuple(_decode_legacy_order(item) for item in _list(sections["legacy_orders"], "legacy orders")),
     )
 
@@ -1030,10 +1074,25 @@ def _encode_subscription(record: SubscriptionRecord) -> dict[str, object]:
                 "reason": item.reason,
                 "notified_late": item.notified_late,
                 "check_skipped": item.check_skipped,
+                "started": item.started,
+                "threshold": None if item.threshold is None else int(item.threshold),
+                "failures": [
+                    {"hash": failure.info_hash, "decisive": failure.decisive, "transient": failure.transient}
+                    for failure in item.failures
+                ],
+                "polish": None
+                if item.polish is None
+                else {"state": item.polish.state.value, "observed_at": item.polish.observed_at},
+                "sources_down_since": item.sources_down_since,
+                "polish_skip": None
+                if item.polish_skip is None
+                else {"due": item.polish_skip.due, "at": item.polish_skip.at, "settled": item.polish_skip.settled},
             }
             for item in record.targets
         ],
         "migrated_from": record.migrated_from,
+        "tsukihime_id": record.tsukihime_id,
+        "mapping_tvdb_season": record.mapping_tvdb_season,
     }
 
 
@@ -1077,8 +1136,11 @@ def _encode_legacy_order(order: LegacyOrder) -> dict[str, object]:
     }
 
 
-def _decode_subscription(raw: object) -> SubscriptionRecord:
-    document: dict[str, object] = _strict_object(raw, _SUBSCRIPTION_KEYS, "subscription")
+def _decode_subscription(raw: object, schema_version: int) -> SubscriptionRecord:
+    five: bool = schema_version > _SCHEMA_FOUR
+    document: dict[str, object] = _strict_object(
+        raw, _SUBSCRIPTION_KEYS | _SUBSCRIPTION_KEYS_FIVE if five else _SUBSCRIPTION_KEYS, "subscription"
+    )
     reason: str | None = _optional_text(document, "pause_reason")
     problem: str | None = _optional_text(document, "problem")
     mapping: object = document["mapping"]
@@ -1102,8 +1164,10 @@ def _decode_subscription(raw: object) -> SubscriptionRecord:
         refreshed_at=_optional_text(document, "refreshed_at"),
         checked_at=_optional_text(document, "checked_at"),
         last_check=None if check is None else _decode_check(check),
-        targets=tuple(_decode_target(item) for item in _list(document["targets"], "subscription targets")),
+        targets=tuple(_decode_target(item, five=five) for item in _list(document["targets"], "subscription targets")),
         migrated_from=_optional_text(document, "migrated_from"),
+        tsukihime_id=_optional_whole(document, "tsukihime_id") if five else None,
+        mapping_tvdb_season=_optional_whole(document, "mapping_tvdb_season") if five else None,
     )
 
 
@@ -1119,19 +1183,58 @@ def _decode_check(raw: object) -> SubscriptionCheck:
     )
 
 
-def _decode_target(raw: object) -> SubscriptionTarget:
-    document: dict[str, object] = _strict_object(raw, _TARGET_KEYS, "subscription target")
-    return SubscriptionTarget(
+def _decode_target(raw: object, *, five: bool) -> SubscriptionTarget:
+    document: dict[str, object] = _strict_object(
+        raw, _TARGET_KEYS | _TARGET_KEYS_FIVE if five else _TARGET_KEYS, "subscription target"
+    )
+    attempts: int = _whole(document, "attempts")
+    target: SubscriptionTarget = SubscriptionTarget(
         number=_whole(document, "number"),
         due_at=_optional_text(document, "due_at"),
         state=TargetState(_text(document, "state")),
-        attempts=_whole(document, "attempts"),
+        attempts=attempts,
         tried=_decode_texts(document["tried"], "tried release files"),
         admission_id=_optional_text(document, "admission_id"),
         reason=_optional_text(document, "reason"),
         notified_late=_flag(document, "notified_late"),
         check_skipped=_flag(document, "check_skipped"),
+        started=attempts,
     )
+    return _schema_five_target(target, document) if five else target
+
+
+def _schema_five_target(target: SubscriptionTarget, document: dict[str, object]) -> SubscriptionTarget:
+    threshold: int | None = _optional_whole(document, "threshold")
+    polish: object = document["polish"]
+    skip: object = document["polish_skip"]
+    return replace(
+        target,
+        started=_whole(document, "started"),
+        threshold=None if threshold is None else ResolutionClass(threshold),
+        failures=tuple(_decode_failure(item) for item in _list(document["failures"], "release failures")),
+        polish=None if polish is None else _decode_polish(polish),
+        sources_down_since=_optional_text(document, "sources_down_since"),
+        polish_skip=None if skip is None else _decode_polish_skip(skip),
+    )
+
+
+def _decode_failure(raw: object) -> ReleaseFailure:
+    document: dict[str, object] = _strict_object(raw, _FAILURE_KEYS, "release failure")
+    return ReleaseFailure(
+        info_hash=_text(document, "hash"),
+        decisive=_flag(document, "decisive"),
+        transient=_whole(document, "transient"),
+    )
+
+
+def _decode_polish(raw: object) -> PolishObservation:
+    document: dict[str, object] = _strict_object(raw, _POLISH_KEYS, "Polish observation")
+    return PolishObservation(PolishState(_text(document, "state")), _text(document, "observed_at"))
+
+
+def _decode_polish_skip(raw: object) -> PolishSkip:
+    document: dict[str, object] = _strict_object(raw, _POLISH_SKIP_KEYS, "Polish skip")
+    return PolishSkip(_text(document, "due"), _text(document, "at"), settled=_flag(document, "settled"))
 
 
 def _decode_mapping(raw: object) -> AniZipMapping:
@@ -1452,23 +1555,30 @@ def _schema_three_identity(
         _as_whole(fields["applied_revision"], "confirmed selection revision"),
     )
     return (
-        tuple(_decode_assignment(item) for item in _list(fields["assignments"], "episode assignments")),
+        tuple(
+            _decode_assignment(item, five=schema_version > _SCHEMA_FOUR)
+            for item in _list(fields["assignments"], "episode assignments")
+        ),
         scope,
         revisions,
         (_decode_texts(fields["manifest"], "staging manifest"), _flag(fields, "cleaned")),
     )
 
 
-def _decode_assignment(raw: object) -> EpisodeAssignment:
+def _decode_assignment(raw: object, *, five: bool) -> EpisodeAssignment:
     stored: dict[str, object] = _strict_mapping(raw, "episode assignment")
     document: dict[str, object] = _strict_object(
-        {**dict.fromkeys(_OPTIONAL_ASSIGNMENT_KEYS), **stored}, _ASSIGNMENT_KEYS, "episode assignment"
+        {**dict.fromkeys(_OPTIONAL_ASSIGNMENT_KEYS), **stored},
+        _ASSIGNMENT_KEYS | _ASSIGNMENT_KEYS_FIVE if five else _ASSIGNMENT_KEYS,
+        "episode assignment",
     )
     reference: dict[str, object] = _strict_object(document["reference"], _REFERENCE_KEYS, "Torrentio reference")
     index: object = reference["file_index"]
     attempt: object = document["attempt"]
     stamp: object = document["verified_stamp"]
+    traits: object = document.get("traits")
     return EpisodeAssignment(
+        stopped=_optional_text(document, "stopped") if five else None,
         subscription_id=_optional_text(document, "subscription_id"),
         attempt=None if attempt is None else _as_whole(attempt, "subscription attempt"),
         verification=_optional_text(document, "verification"),
@@ -1498,7 +1608,17 @@ def _decode_assignment(raw: object) -> EpisodeAssignment:
             verdict=IdentityVerdict(_text(document, "verdict")),
             reason=_text(document, "reason"),
             deviation_confirmed=_flag(document, "deviation_confirmed"),
+            traits=None if traits is None else _decode_traits(traits),
         ),
+    )
+
+
+def _decode_traits(raw: object) -> ChoiceTraits:
+    document: dict[str, object] = _strict_object(raw, _TRAITS_KEYS, "choice traits")
+    return ChoiceTraits(
+        polish={item.name.casefold(): item for item in PolishClass}[_text(document, "polish")],
+        resolution=ResolutionClass(_whole(document, "resolution")),
+        unusable=_decode_texts(document["unusable"], "unusable release facts"),
     )
 
 
@@ -1601,7 +1721,7 @@ def _decode_receipt(raw: object, schema_version: int) -> CommandReceipt:
     if pending is not None and not isinstance(pending, str):
         msg = "A pending command kind must be text"
         raise TypeError(msg)
-    if schema_version == WATCH_STATE_SCHEMA_VERSION and pending not in {None, "cancel"}:
+    if schema_version >= _SCHEMA_FOUR and pending not in {None, "cancel"}:
         msg = "A schema 4 command receipt can only wait for a cancellation"
         raise ValueError(msg)
     return CommandReceipt(

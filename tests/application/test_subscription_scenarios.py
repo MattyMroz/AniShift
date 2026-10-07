@@ -198,7 +198,11 @@ def _record(**changes: object) -> SubscriptionRecord:
 
 
 def _target_row(number: int, state: TargetState, **changes: object) -> SubscriptionTarget:
-    fields: dict[str, object] = {"due_at": (_AIRED + (number - 3) * _WEEK).isoformat(), **changes}
+    fields: dict[str, object] = {
+        "due_at": (_AIRED + (number - 3) * _WEEK).isoformat(),
+        "started": changes.get("attempts", 0),
+        **changes,
+    }
     return SubscriptionTarget(number=number, state=state, **fields)  # type: ignore[arg-type]
 
 

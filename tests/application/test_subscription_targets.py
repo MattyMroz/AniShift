@@ -21,7 +21,9 @@ from anishift.application.subscription_targets import (
     ATTEMPT_SATISFIED,
     LEGACY_ORDERED,
     MAX_ATTEMPTS,
+    MAX_TRANSIENT_FAILURES,
     PauseReason,
+    ReleaseFailure,
     SubscriptionProblem,
     SubscriptionRecord,
     SubscriptionRow,
@@ -33,6 +35,7 @@ from anishift.application.subscription_targets import (
     cut_point,
     display_order,
     eligible,
+    excluded,
     is_target,
     late,
     merge_listing,
@@ -79,7 +82,7 @@ def test_a_closed_attempt_without_a_download_moves_the_target_by_its_budget_and_
     attempts: int, due: datetime | None, state: TargetState
 ) -> None:
     target: SubscriptionTarget = replace(
-        _target(4, TargetState.ATTEMPTING, due), attempts=attempts, admission_id="admission-1"
+        _target(4, TargetState.ATTEMPTING, due), attempts=attempts, started=attempts, admission_id="admission-1"
     )
 
     closed: SubscriptionTarget = after_close(target, _NOW)
@@ -209,13 +212,26 @@ def test_a_record_refuses_an_inconsistent_shape(changes: dict[str, object]) -> N
         {"number": 0},
         {"attempts": MAX_ATTEMPTS + 1},
         {"state": TargetState.ATTEMPTING},
-        {"state": TargetState.EXHAUSTED, "attempts": 1},
+        {"state": TargetState.EXHAUSTED, "attempts": 1, "started": 1},
         {"tried": ("Upper",)},
+        {"attempts": 1},
+        {"threshold": 2},
+        {"failures": (ReleaseFailure("b" * 40), ReleaseFailure("b" * 40))},
+        {"sources_down_since": "2026-10-02T12:00:00"},
     ],
 )
 def test_a_target_refuses_an_inconsistent_shape(changes: dict[str, object]) -> None:
     with pytest.raises(ValueError, match=r"."):
         replace(_target(1), **changes)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("info_hash", "transient"),
+    [("B" * 40, 0), ("b" * 39, 0), ("b" * 32, 0), ("b" * 40, MAX_TRANSIENT_FAILURES + 1), ("b" * 40, -1)],
+)
+def test_a_release_failure_refuses_an_unusable_hash_or_count(info_hash: str, transient: int) -> None:
+    with pytest.raises(ValueError, match="release failure"):
+        ReleaseFailure(info_hash, transient=transient)
 
 
 def _episode(
@@ -352,6 +368,143 @@ def test_a_live_read_of_another_kitsu_entry_is_a_conflict_until_a_consistent_liv
     assert conflict == replace(record, problem=SubscriptionProblem.CATALOG_CONFLICT)
     assert unchanged.problem is SubscriptionProblem.CATALOG_CONFLICT
     assert repaired.problem is None
+
+
+type _Numbers = tuple[int | None, int | None, int | None]
+
+
+def _numbered(numbers: dict[int, _Numbers], *, kitsu: int | None = 10, **extra: object) -> AniZipMapping:
+    raw: dict[str, dict[str, object]] = {
+        str(number): {"seasonNumber": season, "episodeNumber": episode, "absoluteEpisodeNumber": absolute, **extra}
+        for number, (season, episode, absolute) in numbers.items()
+    }
+    return AniZipMapping(kitsu, "TV", None, (), (), None, raw)
+
+
+def _saved(mapping: AniZipMapping, tvdb_season: int | None = None) -> SubscriptionRecord:
+    return _record(kitsu_id=mapping.kitsu_id, mapping=mapping, mapping_tvdb_season=tvdb_season)
+
+
+def _live(mapping: AniZipMapping, tvdb_season: int | None = None) -> ListingRead:
+    return ListingRead(_listing(_episode(1, _NOW + _DAY)), mapping, live=True, tvdb_season=tvdb_season)
+
+
+_SEASON: dict[int, _Numbers] = {1: (1, 1, 1), 2: (1, 2, 2), 3: (1, 3, 3)}
+
+
+def test_record_mapping_without_kitsu() -> None:
+    record: SubscriptionRecord = _saved(_numbered(_SEASON, kitsu=None))
+
+    assert (record.kitsu_id, record.mapping is not None) == (None, True)
+    with pytest.raises(ValueError, match="mapping identity"):
+        replace(_record(), kitsu_id=10)
+
+
+def test_excluded_legacy_pair_key() -> None:
+    target: SubscriptionTarget = replace(_target(4), tried=("abc:0", "abc:", "d" * 40))
+
+    assert excluded(target) == frozenset({"abc", "d" * 40})
+
+
+def test_numbering_change_without_kitsu_is_conflict() -> None:
+    saved: SubscriptionRecord = _saved(_numbered(_SEASON, kitsu=None))
+
+    merged: SubscriptionRecord = merge_listing(saved, _live(_numbered({**_SEASON, 3: (1, 3, 30)}, kitsu=None)), _NOW)
+
+    assert merged == replace(saved, problem=SubscriptionProblem.CATALOG_CONFLICT)
+
+
+def test_numbering_change_same_kitsu_is_conflict() -> None:
+    saved: SubscriptionRecord = _saved(_numbered(_SEASON))
+
+    merged: SubscriptionRecord = merge_listing(saved, _live(_numbered({**_SEASON, 2: (1, 5, 2)})), _NOW)
+
+    assert merged.problem is SubscriptionProblem.CATALOG_CONFLICT
+
+
+@pytest.mark.parametrize("removed", [2, 3])
+def test_a_numbered_episode_missing_from_the_new_mapping_is_a_conflict(removed: int) -> None:
+    current: dict[int, _Numbers] = {number: value for number, value in _SEASON.items() if number != removed}
+
+    merged: SubscriptionRecord = merge_listing(_saved(_numbered(_SEASON)), _live(_numbered(current)), _NOW)
+
+    assert merged.problem is SubscriptionProblem.CATALOG_CONFLICT
+
+
+def test_added_episode_or_title_date_not_conflict() -> None:
+    current: AniZipMapping = _numbered({**_SEASON, 4: (1, 4, 4)}, title={"en": "New"}, airDateUtc="2026-10-01")
+
+    merged: SubscriptionRecord = merge_listing(_saved(_numbered(_SEASON)), _live(current), _NOW)
+
+    assert merged.problem is None
+    assert merged.mapping == current
+
+
+def test_kitsu_disappears_same_numbering_not_conflict() -> None:
+    current: AniZipMapping = _numbered(_SEASON, kitsu=None)
+
+    merged: SubscriptionRecord = merge_listing(_saved(_numbered(_SEASON)), _live(current), _NOW)
+
+    assert (merged.problem, merged.kitsu_id, merged.mapping) == (None, None, current)
+
+
+def test_conflict_keeps_previous_mapping() -> None:
+    saved: SubscriptionRecord = _saved(_numbered(_SEASON), tvdb_season=1)
+
+    merged: SubscriptionRecord = merge_listing(saved, _live(_numbered({**_SEASON, 1: (2, 1, 1)}), tvdb_season=2), _NOW)
+
+    assert (merged.mapping, merged.mapping_tvdb_season, merged.kitsu_id) == (saved.mapping, 1, 10)
+    assert merged.targets == saved.targets
+
+
+@pytest.mark.parametrize(
+    "saved",
+    [{**_SEASON, 3: (None, None, None)}, {**_SEASON, 3: (1, 3, None)}, {1: (1, 1, 1), 2: (1, 2, 2)}],
+    ids=["no-numbering", "no-absolute", "new-key"],
+)
+def test_numbering_filled_from_none_not_conflict(saved: dict[int, _Numbers]) -> None:
+    current: AniZipMapping = _numbered(_SEASON)
+
+    merged: SubscriptionRecord = merge_listing(_saved(_numbered(saved)), _live(current), _NOW)
+
+    assert (merged.problem, merged.mapping) == (None, current)
+
+
+def test_duplicate_repaired_not_conflict() -> None:
+    current: AniZipMapping = _numbered(_SEASON)
+
+    merged: SubscriptionRecord = merge_listing(_saved(_numbered({**_SEASON, 3: (1, 2, 2)})), _live(current), _NOW)
+
+    assert (merged.problem, merged.mapping) == (None, current)
+
+
+def test_saved_season_mismatch_then_fixed_without_bridge_not_conflict() -> None:
+    current: AniZipMapping = _numbered({1: (2, 1, 1)})
+
+    merged: SubscriptionRecord = merge_listing(_saved(_numbered({1: (1, 1, 1)}), tvdb_season=2), _live(current), _NOW)
+
+    assert (merged.problem, merged.mapping, merged.mapping_tvdb_season) == (None, current, None)
+
+
+def test_saved_numbering_change_with_new_bridge_season_is_conflict() -> None:
+    saved: SubscriptionRecord = _saved(_numbered({1: (1, 1, 1)}), tvdb_season=1)
+
+    merged: SubscriptionRecord = merge_listing(saved, _live(_numbered({1: (2, 1, 1)}), tvdb_season=2), _NOW)
+
+    assert merged == replace(saved, problem=SubscriptionProblem.CATALOG_CONFLICT)
+
+
+def test_a_live_read_records_the_bridge_season_beside_its_mapping() -> None:
+    merged: SubscriptionRecord = merge_listing(_record(), _live(_numbered(_SEASON), tvdb_season=1), _NOW)
+
+    assert (merged.mapping_tvdb_season, merged.mapping) == (1, _numbered(_SEASON))
+
+
+def test_a_snapshot_read_never_judges_the_numbering() -> None:
+    saved: SubscriptionRecord = _saved(_numbered(_SEASON))
+    snapshot: ListingRead = replace(_live(_numbered({**_SEASON, 3: (1, 3, 30)})), live=False)
+
+    assert merge_listing(saved, snapshot, _NOW).problem is None
 
 
 _MIGRATED: datetime = _NOW - 2 * _DAY
@@ -529,7 +682,12 @@ def test_only_a_supported_untried_match_is_eligible_whatever_the_target_age(
             {
                 "targets": (
                     _target(1, TargetState.SATISFIED),
-                    replace(_target(2, TargetState.DUE), state=TargetState.EXHAUSTED, attempts=MAX_ATTEMPTS),
+                    replace(
+                        _target(2, TargetState.DUE),
+                        state=TargetState.EXHAUSTED,
+                        attempts=MAX_ATTEMPTS,
+                        started=MAX_ATTEMPTS,
+                    ),
                 )
             },
             False,
@@ -581,7 +739,7 @@ def test_a_finished_season_closes_only_with_every_target_satisfied(changes: dict
 
 
 _ATTEMPT: SubscriptionTarget = replace(
-    _target(4, TargetState.ATTEMPTING, _NOW - timedelta(hours=1)), attempts=1, admission_id="attempt-1"
+    _target(4, TargetState.ATTEMPTING, _NOW - timedelta(hours=1)), attempts=1, started=1, admission_id="attempt-1"
 )
 
 
@@ -591,7 +749,12 @@ _ATTEMPT: SubscriptionTarget = replace(
         (_ATTEMPT, TargetFacts(attempt=ATTEMPT_ACTIVE), TargetState.ATTEMPTING, None),
         (_ATTEMPT, TargetFacts(attempt=ATTEMPT_SATISFIED), TargetState.SATISFIED, None),
         (_ATTEMPT, TargetFacts(attempt="rejected"), TargetState.DUE, "rejected"),
-        (replace(_ATTEMPT, attempts=MAX_ATTEMPTS), TargetFacts(attempt="stalled"), TargetState.EXHAUSTED, "stalled"),
+        (
+            replace(_ATTEMPT, attempts=MAX_ATTEMPTS, started=MAX_ATTEMPTS),
+            TargetFacts(attempt="stalled"),
+            TargetState.EXHAUSTED,
+            "stalled",
+        ),
         (_ATTEMPT, TargetFacts(attempt="replaced", manual=ATTEMPT_ACTIVE), TargetState.MANUAL, None),
         (_ATTEMPT, TargetFacts(attempt=ATTEMPT_SATISFIED, manual=ATTEMPT_ACTIVE), TargetState.MANUAL, None),
         (_target(4), TargetFacts(manual=ATTEMPT_SATISFIED), TargetState.SATISFIED, None),

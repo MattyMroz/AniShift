@@ -75,6 +75,7 @@ from anishift.application.control import (
     TorrentioReference,
     WatchState,
     auto_admissible,
+    choice_traits,
     compact_acquisition,
     episode_conflict,
     legacy_conflict,
@@ -3975,9 +3976,11 @@ class AutomationOwner:
             )
             return
         pair: str = candidate_pair(candidate)
-        attempt: SubscriptionTarget = replace(target, attempts=target.attempts + 1, tried=(*target.tried, pair))
+        attempt: SubscriptionTarget = replace(
+            target, attempts=target.attempts + 1, started=target.started + 1, tried=(*target.tried, pair)
+        )
         response: ControlResponse = self._admit_episode(
-            f"sub:{identifier}:{number}:{attempt.attempts}",
+            f"sub:{identifier}:{number}:{attempt.started}",
             _episode_choice(key, candidate, identity, confirmed=False),
             previous=previous,
             attempt=(identifier, attempt),
@@ -7744,6 +7747,7 @@ def _episode_choice(
         candidate.identity.verdict,
         candidate.identity.reason,
         confirmed,
+        choice_traits(candidate.traits),
     )
 
 

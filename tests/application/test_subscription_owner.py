@@ -17,6 +17,7 @@ from loguru import logger as loguru_logger
 from test_acquisition import (
     _S1,
     _S4,
+    _Bridges,
     _Clock,
     _episode_service,
     _EpisodeCatalog,
@@ -62,6 +63,7 @@ from anishift.errors import ErrorCode, ErrorContext
 from anishift.platform.local_control import MAX_FRAME_BYTES, ControlErrorCode, ControlResponse
 from anishift.services.catalog import EpisodeAiring, SeasonAiring, TitleCatalogError, TitleStatus
 from anishift.services.catalog.anizip import AniZipCatalog
+from anishift.services.catalog.arm import ArmIds
 from anishift.services.http_requests import RequestControl
 from anishift.services.torrents.torrentio import TorrentioSource
 
@@ -303,6 +305,7 @@ class _World:
     streams: _StreamSource = field(default_factory=_slime_streams)
     control: RequestControl | None = None
     catalog: object = None
+    bridges: _Bridges | None = None
 
     def now(self) -> datetime:
         return datetime.fromtimestamp(self.clock.now, UTC)
@@ -338,6 +341,10 @@ def _following(
         clock=world.clock,
         request_control=world.control,
     )
+    if world.bridges is not None:
+        service.acquisition._id_catalog = world.bridges
+        service.acquisition._anidb_catalog = world.bridges
+        service.acquisition._kitsu_catalog = world.bridges
     store: WatchStateStore = WatchStateStore(
         tmp_path / WATCH_STATE_FILE_NAME, subscriptions_path=tmp_path / "subscriptions.json"
     )
@@ -750,6 +757,91 @@ def test_a_catalog_conflict_has_a_repair_deadline_and_a_consistent_live_read_cle
     assert cleared.problem is None
 
 
+def _renumbered(numbers: Mapping[str, Mapping[str, int | None]]) -> AniZipMapping:
+    base: AniZipMapping = _mapping(max_age_s=None)
+    raw: dict[str, dict[str, object]] = {key: dict(value) for key, value in base.raw_episodes.items()}
+    for key, fields in numbers.items():
+        raw[key].update(fields)
+    return replace(base, raw_episodes=raw)
+
+
+def _seasoned(season: int) -> AniZipMapping:
+    return _renumbered({str(number): {"seasonNumber": season} for number in range(1, 25)})
+
+
+def _two_sessions(
+    tmp_path: Path, record: SubscriptionRecord, world: _World, *, shadow: bool = False
+) -> tuple[SubscriptionRecord, WatchState]:
+    with _following(tmp_path, _active(record), world, shadow=shadow) as (owner, store):
+        first: SubscriptionRecord = _checked(owner, store)
+    with _following(tmp_path, _active(record), world) as (owner, store):
+        _ask(owner, "subscription_check", {"subscription_id": "a"}, "again")
+        _settled(owner)
+        saved: WatchState = owner._on_owner(store.load)
+    return first, saved
+
+
+def test_numbering_conflict_blocks_attempts_after_restart(tmp_path: Path) -> None:
+    world: _World = _World()
+    stored: AniZipMapping = _renumbered({"23": {"episodeNumber": 99}})
+
+    first, saved = _two_sessions(tmp_path, _followed(mapping=stored), world)
+
+    for record in (first, saved.subscriptions[0]):
+        assert (record.problem, record.mapping, record.targets) == (SubscriptionProblem.CATALOG_CONFLICT, stored, ())
+    assert saved.acquisitions == ()
+    assert world.streams.asked == []
+
+
+@pytest.mark.parametrize(
+    "numbers",
+    [
+        {"23": {"seasonNumber": None, "episodeNumber": None, "absoluteEpisodeNumber": None}},
+        {"23": {"episodeNumber": 22, "absoluteEpisodeNumber": 94}},
+    ],
+    ids=["filled", "duplicate"],
+)
+def test_numbering_filled_after_restart_not_conflict(
+    tmp_path: Path, numbers: Mapping[str, Mapping[str, int | None]]
+) -> None:
+    first, saved = _two_sessions(tmp_path, _followed(mapping=_renumbered(numbers)), _World(), shadow=True)
+
+    record: SubscriptionRecord = saved.subscriptions[0]
+    assert (first.problem, record.problem, record.mapping) == (None, None, _mapping(max_age_s=None))
+    _transfer, assignment = _attempt(saved, 23)
+    assert assignment.choice.traits is not None
+    target: SubscriptionTarget = record.targets[0]
+    assert (target.number, target.state, target.attempts, target.started) == (23, TargetState.ATTEMPTING, 1, 1)
+
+
+@pytest.mark.parametrize(
+    ("saved_season", "bridge", "conflict"),
+    [(4, None, False), (1, ArmIds(None, 4), True)],
+    ids=["A-bridge-down", "B-bridge-season"],
+)
+def test_bridge_season_scenarios_after_restart(
+    tmp_path: Path, saved_season: int, bridge: ArmIds | None, conflict: bool
+) -> None:
+    world: _World = _World(bridges=_Bridges(bridge))
+    stored: SubscriptionRecord = _followed(mapping=_seasoned(1), mapping_tvdb_season=saved_season)
+
+    first, saved = _two_sessions(tmp_path, stored, world, shadow=True)
+
+    record: SubscriptionRecord = saved.subscriptions[0]
+    if conflict:
+        for checked in (first, record):
+            assert (checked.problem, checked.mapping, checked.mapping_tvdb_season) == (
+                SubscriptionProblem.CATALOG_CONFLICT,
+                _seasoned(1),
+                1,
+            )
+        assert saved.acquisitions == ()
+        return
+    assert (first.problem, record.problem) == (None, None)
+    assert (record.mapping, record.mapping_tvdb_season) == (_mapping(max_age_s=None), None)
+    assert _attempt(saved, 23)[1].choice.number == 23
+
+
 def test_the_owner_schedules_the_next_check_and_runs_it_once_the_clocks_reach_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -891,7 +983,14 @@ def _closed_attempt(admission_id: str = "attempt-1") -> AcquisitionConfirmation:
 
 def test_the_next_attempt_replaces_the_closed_one_still_held_by_a_shared_transfer(tmp_path: Path) -> None:
     closed: SubscriptionTarget = SubscriptionTarget(
-        23, (_NOW - timedelta(hours=1)).isoformat(), TargetState.DUE, 1, ("0" * 40 + ":0",), "attempt-1", "replaced"
+        23,
+        (_NOW - timedelta(hours=1)).isoformat(),
+        TargetState.DUE,
+        1,
+        ("0" * 40 + ":0",),
+        "attempt-1",
+        "replaced",
+        started=1,
     )
     state: WatchState = replace(_active(_followed(targets=(closed,))), acquisitions=(_closed_attempt(),))
     with _following(tmp_path, state, _World()) as (owner, store):
@@ -909,6 +1008,21 @@ def test_the_next_attempt_replaces_the_closed_one_still_held_by_a_shared_transfe
         assignment.admission_id,
     )
     assert "sub:a:23:2" in {item.command_id for item in saved.command_receipts}
+
+
+def test_an_admission_numbers_its_command_by_started_attempts_not_counted_ones(tmp_path: Path) -> None:
+    due: SubscriptionTarget = SubscriptionTarget(
+        23, (_NOW - timedelta(hours=1)).isoformat(), TargetState.DUE, 0, started=5
+    )
+    with _following(tmp_path, _active(_followed(targets=(due,))), _World()) as (owner, store):
+        _checked(owner, store)
+        saved: WatchState = owner._on_owner(store.load)
+
+    target: SubscriptionTarget = saved.subscriptions[0].targets[0]
+    assert (target.state, target.attempts, target.started) == (TargetState.ATTEMPTING, 1, 6)
+    receipts: set[str] = {item.command_id for item in saved.command_receipts}
+    assert "sub:a:23:6" in receipts
+    assert "sub:a:23:1" not in receipts
 
 
 def _latest(state: WatchState) -> tuple[AcquisitionConfirmation, EpisodeAssignment]:

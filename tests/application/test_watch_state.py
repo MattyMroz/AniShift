@@ -15,6 +15,7 @@ from anishift.application.control import (
     AdmissionSource,
     AudiobookRecipe,
     AutomationPolicy,
+    ChoiceTraits,
     CommandReceipt,
     DeletionOutcome,
     DeletionStatus,
@@ -37,11 +38,23 @@ from anishift.application.control import (
     TorrentioReference,
     TranslateRecipe,
     WatchState,
+    choice_traits,
+    compact_acquisition,
 )
 from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.episode_selection import AniZipMapping, FranchiseGraph, identity_target
 from anishift.application.intents import ProductKind, RebuildRequest, RequestOrigin, TranslationAction
-from anishift.application.subscription_targets import SubscriptionRecord
+from anishift.application.release_quality import AudioClass, PolishClass, ReleaseTraits, ResolutionClass
+from anishift.application.subscription_targets import (
+    MAX_TRANSIENT_FAILURES,
+    PolishObservation,
+    PolishSkip,
+    PolishState,
+    ReleaseFailure,
+    SubscriptionRecord,
+    SubscriptionTarget,
+    TargetState,
+)
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore, watch_state_path
 from anishift.application.workflows import WorkflowTarget
 from anishift.errors import ConfigError, ErrorCode
@@ -802,6 +815,203 @@ def test_a_saved_episode_mapping_loads_equal_and_builds_the_same_identity_target
     assert [identity_target(graph, season, loaded, number) for number in range(1, 30)] == [
         identity_target(graph, season, mapping, number) for number in range(1, 30)
     ]
+
+
+_FIVE_KEYS: dict[str, tuple[str, ...]] = {
+    "subscription": ("tsukihime_id", "mapping_tvdb_season"),
+    "target": ("started", "threshold", "failures", "polish", "sources_down_since", "polish_skip"),
+    "assignment": ("traits", "stopped"),
+}
+
+
+def _schema_five_state() -> WatchState:
+    target: SubscriptionTarget = SubscriptionTarget(
+        1,
+        _TIMESTAMP,
+        TargetState.DUE,
+        attempts=1,
+        tried=("a" * 40, "ffee:2"),
+        started=2,
+        threshold=ResolutionClass.HD,
+        failures=(ReleaseFailure("b" * 40, decisive=True), ReleaseFailure("c" * 40, transient=MAX_TRANSIENT_FAILURES)),
+        polish=PolishObservation(PolishState.ABSENT, _TIMESTAMP),
+        sources_down_since=_TIMESTAMP,
+        polish_skip=PolishSkip(_TIMESTAMP, _TIMESTAMP, settled=True),
+    )
+    record: SubscriptionRecord = SubscriptionRecord(
+        "s",
+        500,
+        "Neko",
+        _TIMESTAMP,
+        0,
+        mapping=AniZipMapping(None, "TV", 12, (), (), None, {"1": {"seasonNumber": 2, "episodeNumber": 1}}),
+        targets=(target,),
+        tsukihime_id=77,
+        mapping_tvdb_season=2,
+    )
+    selective: AcquisitionConfirmation = _selective()
+    assignment: EpisodeAssignment = selective.assignments[0]
+    traits: ChoiceTraits = ChoiceTraits(PolishClass.BARE, ResolutionClass.FULL_HD, ("hardsub", "raw"))
+    chosen: EpisodeAssignment = replace(assignment, choice=replace(assignment.choice, traits=traits), stopped="pack")
+    return replace(
+        _state(),
+        subscriptions=(record,),
+        removed_subscription=replace(record, subscription_id="gone", anilist_id=501),
+        acquisitions=(replace(selective, assignments=(chosen,)),),
+    )
+
+
+def _five_objects(document: dict[str, object]) -> dict[str, list[dict[str, object]]]:
+    records: list[dict[str, object]] = [
+        *cast("list[dict[str, object]]", document["subscriptions"]),
+        cast("dict[str, object]", document["removed_subscription"]),
+    ]
+    return {
+        "subscription": records,
+        "target": [item for record in records for item in cast("list[dict[str, object]]", record["targets"])],
+        "assignment": [
+            item
+            for acquisition in cast("list[dict[str, object]]", document["acquisitions"])
+            for item in cast("list[dict[str, object]]", acquisition["assignments"])
+        ],
+    }
+
+
+def _schema_four(document: dict[str, object]) -> dict[str, object]:
+    document["schema_version"] = 4
+    for place, items in _five_objects(document).items():
+        for item in items:
+            for key in _FIVE_KEYS[place]:
+                item.pop(key)
+    return document
+
+
+def _saved_document(tmp_path: Path, state: WatchState) -> dict[str, object]:
+    _store(tmp_path).save(state)
+    return cast("dict[str, object]", json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8")))
+
+
+def test_schema_five_roundtrip(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    state: WatchState = _schema_five_state()
+
+    store.save(state)
+
+    assert store.load() == state
+    assert json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))["schema_version"] == 5
+
+
+@pytest.mark.parametrize("tsukihime_id", [None, 77])
+def test_tsukihime_id_roundtrip(tmp_path: Path, tsukihime_id: int | None) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    state: WatchState = _schema_five_state()
+    record: SubscriptionRecord = replace(state.subscriptions[0], tsukihime_id=tsukihime_id)
+
+    store.save(replace(state, subscriptions=(record,)))
+
+    assert store.load().subscriptions[0].tsukihime_id == tsukihime_id
+
+
+def test_failures_roundtrip(tmp_path: Path) -> None:
+    document: dict[str, object] = _saved_document(tmp_path, _schema_five_state())
+    target: dict[str, object] = _five_objects(document)["target"][0]
+
+    assert target["failures"] == [
+        {"hash": "b" * 40, "decisive": True, "transient": 0},
+        {"hash": "c" * 40, "decisive": False, "transient": MAX_TRANSIENT_FAILURES},
+    ]
+    assert (
+        _store(tmp_path).load().subscriptions[0].targets[0].failures
+        == _schema_five_state().subscriptions[0].targets[0].failures
+    )
+
+
+def test_choice_traits_are_saved_under_the_assignment(tmp_path: Path) -> None:
+    document: dict[str, object] = _saved_document(tmp_path, _schema_five_state())
+    assignment: dict[str, object] = _five_objects(document)["assignment"][0]
+
+    assert (assignment["traits"], assignment["stopped"]) == (
+        {"polish": "bare", "resolution": 0, "unusable": ["hardsub", "raw"]},
+        "pack",
+    )
+
+
+@pytest.mark.parametrize(("place", "key"), [(place, key) for place, keys in _FIVE_KEYS.items() for key in keys])
+def test_schema_four_rejects_five_keys(tmp_path: Path, place: str, key: str) -> None:
+    document: dict[str, object] = _schema_four(_saved_document(tmp_path, _schema_five_state()))
+    _five_objects(document)[place][0][key] = None
+    _write(tmp_path, document)
+
+    with pytest.raises(ConfigError, match="Automation state file is invalid"):
+        _store(tmp_path).load()
+
+
+@pytest.mark.parametrize(("place", "key"), [(place, key) for place, keys in _FIVE_KEYS.items() for key in keys])
+def test_schema_five_requires_keys(tmp_path: Path, place: str, key: str) -> None:
+    document: dict[str, object] = _saved_document(tmp_path, _schema_five_state())
+    _five_objects(document)[place][0].pop(key)
+    _write(tmp_path, document)
+
+    with pytest.raises(ConfigError, match="Automation state file is invalid"):
+        _store(tmp_path).load()
+
+
+@pytest.mark.parametrize(
+    ("place", "key", "value"),
+    [
+        ("target", "started", 0),
+        ("target", "threshold", 5),
+        ("target", "failures", [{"hash": "B" * 40, "decisive": False, "transient": 0}]),
+        ("target", "failures", [{"hash": "b" * 40, "decisive": False, "transient": MAX_TRANSIENT_FAILURES + 1}]),
+        ("target", "polish", {"state": "maybe", "observed_at": _TIMESTAMP}),
+        ("assignment", "traits", {"polish": "Polish", "resolution": 0, "unusable": []}),
+        ("assignment", "traits", {"polish": "polish", "resolution": 0, "unusable": ["raw", "hardsub"]}),
+        ("assignment", "stopped", "later"),
+    ],
+)
+def test_schema_five_rejects_an_invalid_choice_fact(tmp_path: Path, place: str, key: str, value: object) -> None:
+    document: dict[str, object] = _saved_document(tmp_path, _schema_five_state())
+    _five_objects(document)[place][0][key] = value
+    _write(tmp_path, document)
+
+    with pytest.raises(ConfigError, match="Automation state file is invalid"):
+        _store(tmp_path).load()
+
+
+def test_a_schema_four_document_loads_without_choice_facts_and_counts_its_attempts_as_started(tmp_path: Path) -> None:
+    document: dict[str, object] = _schema_four(_saved_document(tmp_path, _schema_five_state()))
+    _write(tmp_path, document)
+
+    loaded: WatchState = _store(tmp_path).load()
+
+    target: SubscriptionTarget = loaded.subscriptions[0].targets[0]
+    assert (target.attempts, target.started, target.failures, target.threshold) == (1, 1, (), None)
+    assert (loaded.subscriptions[0].tsukihime_id, loaded.subscriptions[0].mapping_tvdb_season) == (None, None)
+    assert loaded.acquisitions[0].assignments[0].choice.traits is None
+    assert loaded.acquisitions[0].assignments[0].stopped is None
+
+
+def test_compaction_keeps_the_choice_traits_through_a_restart(tmp_path: Path) -> None:
+    state: WatchState = _schema_five_state()
+    finished: AcquisitionConfirmation = compact_acquisition(
+        replace(state.acquisitions[0], state=AcquisitionState.COMPLETE, cleaned=True)
+    )
+    store: WatchStateStore = _store(tmp_path)
+
+    store.save(replace(state, acquisitions=(finished,)))
+
+    assert finished.assignments[0].choice.target == {}
+    assert store.load().acquisitions[0].assignments[0].choice.traits == ChoiceTraits(
+        PolishClass.BARE, ResolutionClass.FULL_HD, ("hardsub", "raw")
+    )
+
+
+def test_choice_traits_snapshot_the_ranked_release_facts() -> None:
+    traits: ReleaseTraits = ReleaseTraits(
+        PolishClass.POLISH, False, False, AudioClass.ORIGINAL, True, True, False, 720, False, False, None
+    )
+
+    assert choice_traits(traits) == ChoiceTraits(PolishClass.POLISH, ResolutionClass.HD, ("dub_only", "raw"))
 
 
 def test_the_state_lives_beside_the_other_watch_files() -> None:

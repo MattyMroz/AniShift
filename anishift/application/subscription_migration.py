@@ -1,4 +1,4 @@
-"""Pure migration of the former subscription file into the schema 4 automation state."""
+"""Pure migrations of the former subscription file into schema 4 and of schema 4 into the current state."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Final
 from anishift.application.control import (
     WATCH_STATE_SCHEMA_VERSION,
     AcquisitionConfirmation,
+    AutomationPolicy,
     CommandReceipt,
     LegacyOrder,
     WatchState,
@@ -25,7 +26,7 @@ from anishift.utils.logger import get_logger
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-__all__ = ["legacy_reference", "migrate"]
+__all__ = ["legacy_reference", "migrate", "migrate_to_five"]
 
 logger = get_logger(__name__)
 
@@ -39,6 +40,12 @@ _MISSING_ENDS: Final[frozenset[SubscriptionEnd]] = frozenset({SubscriptionEnd.MI
 
 _ENABLING_KINDS: Final[dict[str, bool]] = {"subscription_enable": True, "subscription_disable": False}
 """Pending former commands that still decide whether a migrated subscription is paused."""
+
+_SCHEMA_FOUR: Final[int] = 4
+"""Schema the former subscription file migrates into."""
+
+_SCHEMA_FOUR_STALL_S: Final[int] = 30 * 60
+"""Transfer stall default of schema 4, replaced by the current default on migration."""
 
 
 def legacy_reference(item: AcquisitionConfirmation) -> str:
@@ -77,12 +84,20 @@ def migrate(state: WatchState, legacy: Sequence[Subscription], now: datetime) ->
     moment: str = now.astimezone(UTC).isoformat()
     return replace(
         state,
-        schema_version=WATCH_STATE_SCHEMA_VERSION,
+        schema_version=_SCHEMA_FOUR,
         command_receipts=tuple(receipts),
         legacy_orders=_legacy_orders(legacy, state.acquisitions),
         subscriptions=_records(kept, moment),
         removed_subscription=None,
     )
+
+
+def migrate_to_five(state: WatchState) -> WatchState:
+    """Return schema 4 *state* as the current schema, replacing only the former transfer stall default."""
+    policy: AutomationPolicy = state.policy
+    if policy.transfer_stall_s == _SCHEMA_FOUR_STALL_S:
+        policy = replace(policy, transfer_stall_s=AutomationPolicy().transfer_stall_s)
+    return replace(state, schema_version=WATCH_STATE_SCHEMA_VERSION, policy=policy)
 
 
 def _legacy_orders(

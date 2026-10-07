@@ -5,8 +5,10 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import cast
 
 import pytest
+from test_watch_state import _schema_four
 
 from anishift.application.control import (
     WATCH_STATE_SCHEMA_VERSION,
@@ -20,7 +22,13 @@ from anishift.application.control import (
 )
 from anishift.application.intents import RequestOrigin
 from anishift.application.subscription_migration import legacy_reference, migrate
-from anishift.application.subscription_targets import PauseReason, SubscriptionProblem, SubscriptionRecord
+from anishift.application.subscription_targets import (
+    PauseReason,
+    SubscriptionProblem,
+    SubscriptionRecord,
+    SubscriptionTarget,
+    TargetState,
+)
 from anishift.application.subscriptions import (
     EpisodeOrder,
     EpisodeState,
@@ -116,7 +124,7 @@ def test_every_switch_end_and_entry_combination_migrates_to_its_record(
         ),
     )
     assert migrated.subscriptions[0].targets == ()
-    assert migrated.schema_version == WATCH_STATE_SCHEMA_VERSION
+    assert migrated.schema_version == 4
 
 
 def test_former_subscriptions_of_one_season_merge_into_one_record_without_losing_an_order() -> None:
@@ -224,19 +232,165 @@ def _write_listing(tmp_path: Path, version: int) -> bytes:
     return path.read_bytes()
 
 
-def _write_old_state(tmp_path: Path) -> bytes:
+def _staged_document(tmp_path: Path, state: WatchState) -> dict[str, object]:
     staging: Path = tmp_path / "staging"
     store: WatchStateStore = WatchStateStore(
         staging / WATCH_STATE_FILE_NAME, subscriptions_path=staging / "subscriptions.json"
     )
-    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True)))
-    document: dict[str, object] = json.loads((tmp_path / "staging" / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
-    document["schema_version"] = 3
-    for key in ("subscriptions", "removed_subscription", "legacy_orders"):
-        document.pop(key)
+    store.save(state)
+    return cast("dict[str, object]", json.loads((staging / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8")))
+
+
+def _write_state(tmp_path: Path, document: dict[str, object]) -> bytes:
     path: Path = tmp_path / WATCH_STATE_FILE_NAME
     path.write_text(json.dumps(document), encoding="utf-8")
     return path.read_bytes()
+
+
+def _write_old_state(tmp_path: Path, state: WatchState | None = None) -> bytes:
+    document: dict[str, object] = _staged_document(
+        tmp_path, state or WatchState(policy=AutomationPolicy(auto_enabled=True))
+    )
+    document["schema_version"] = 3
+    for key in ("subscriptions", "removed_subscription", "legacy_orders"):
+        document.pop(key)
+    return _write_state(tmp_path, document)
+
+
+def _schema_four_state(stall: int = 1800) -> WatchState:
+    target: SubscriptionTarget = SubscriptionTarget(
+        23,
+        _ADDED,
+        TargetState.ATTEMPTING,
+        attempts=2,
+        tried=("a" * 40 + ":0",),
+        admission_id="attempt-2",
+        started=2,
+    )
+    record: SubscriptionRecord = SubscriptionRecord("neko", 7, "Neko to Ryuu", _ADDED, 2, targets=(target,))
+    return WatchState(
+        policy=AutomationPolicy(auto_enabled=True, transfer_stall_s=stall),
+        subscriptions=(record,),
+        removed_subscription=replace(record, subscription_id="gone", anilist_id=8, targets=()),
+        legacy_orders=(LegacyOrder(7, 1, "subscription:neko:1", None, complete=False),),
+        command_receipts=(
+            CommandReceipt("done", _ADDED, {"subscription_id": "neko"}),
+            CommandReceipt("cancel", _ADDED, {"run_id": "run"}, pending="cancel"),
+        ),
+    )
+
+
+def _write_schema_four(tmp_path: Path, state: WatchState) -> bytes:
+    return _write_state(tmp_path, _schema_four(_staged_document(tmp_path, state)))
+
+
+def _upgraded(state: WatchState) -> WatchState:
+    return replace(state, policy=replace(state.policy, transfer_stall_s=AutomationPolicy().transfer_stall_s))
+
+
+def test_four_to_five_keeps_owner_state_without_legacy_file(tmp_path: Path) -> None:
+    _write_schema_four(tmp_path, _schema_four_state())
+
+    migrated: WatchState = _store(tmp_path).load()
+
+    assert migrated == _upgraded(_schema_four_state())
+    assert migrated.schema_version == WATCH_STATE_SCHEMA_VERSION
+    assert migrated.subscriptions[0].targets[0].started == 2
+    assert _store(tmp_path).load() == migrated
+    assert not (tmp_path / "subscriptions.json").exists()
+
+
+@pytest.mark.parametrize("listing", ["different", "corrupt"])
+def test_four_to_five_does_not_decode_frozen_file(tmp_path: Path, listing: str) -> None:
+    if listing == "corrupt":
+        (tmp_path / "subscriptions.json").write_bytes(b"{broken")
+    else:
+        SubscriptionStore(tmp_path / "subscriptions.json").save((_legacy("other", anilist_id=99),))
+    frozen: bytes = (tmp_path / "subscriptions.json").read_bytes()
+    _write_schema_four(tmp_path, _schema_four_state())
+
+    migrated: WatchState = _store(tmp_path).load()
+
+    assert migrated == _upgraded(_schema_four_state())
+    assert (tmp_path / "subscriptions.json").read_bytes() == frozen
+    assert (tmp_path / "subscriptions.json.a1-migration.bak").read_bytes() == frozen
+    assert not (tmp_path / "subscriptions.json.e3-migration.bak").exists()
+
+
+def test_three_to_five_imports_legacy_then_upgrades(tmp_path: Path) -> None:
+    listing: bytes = _write_listing(tmp_path, 4)
+    pending: CommandReceipt = CommandReceipt(
+        "disable", _ADDED, {"subscription_id": "neko"}, pending="subscription_disable"
+    )
+    state: bytes = _write_old_state(
+        tmp_path,
+        WatchState(policy=AutomationPolicy(auto_enabled=True, transfer_stall_s=1800), command_receipts=(pending,)),
+    )
+
+    migrated: WatchState = _store(tmp_path).load()
+
+    assert [(item.subscription_id, item.pause_reason) for item in migrated.subscriptions] == [
+        ("neko", PauseReason.USER)
+    ]
+    assert [item.pending for item in migrated.command_receipts] == [None]
+    assert (migrated.schema_version, migrated.policy.transfer_stall_s) == (WATCH_STATE_SCHEMA_VERSION, 600)
+    for suffix in (".e3-migration.bak", ".a1-migration.bak"):
+        assert (tmp_path / f"{WATCH_STATE_FILE_NAME}{suffix}").read_bytes() == state
+        assert (tmp_path / f"subscriptions.json{suffix}").read_bytes() == listing
+
+
+def test_schema_four_rejects_pending_subscription_receipt(tmp_path: Path) -> None:
+    receipt: CommandReceipt = CommandReceipt("add", _ADDED, {"subscription_id": "neko"}, pending="subscription_add")
+    state: bytes = _write_schema_four(tmp_path, replace(_schema_four_state(), command_receipts=(receipt,)))
+
+    with pytest.raises(ConfigError) as failure:
+        _store(tmp_path).load()
+
+    assert failure.value.context.code is ErrorCode.CONFIG_INVALID
+    assert (tmp_path / WATCH_STATE_FILE_NAME).read_bytes() == state
+    assert not list(tmp_path.glob("*.bak"))
+
+
+@pytest.mark.parametrize(("stored", "expected"), [(1800, 600), (900, 900)])
+def test_four_to_five_stall_default_only(tmp_path: Path, stored: int, expected: int) -> None:
+    _write_schema_four(tmp_path, _schema_four_state(stored))
+
+    assert _store(tmp_path).load().policy.transfer_stall_s == expected
+
+
+def test_four_to_five_backups(tmp_path: Path) -> None:
+    listing: bytes = _write_listing(tmp_path, 4)
+    state: bytes = _write_schema_four(tmp_path, _schema_four_state())
+
+    migrated: WatchState = _store(tmp_path).load()
+    written: bytes = (tmp_path / WATCH_STATE_FILE_NAME).read_bytes()
+    copies: set[str] = {path.name for path in tmp_path.glob("*.bak")}
+    again: WatchState = _store(tmp_path).load()
+
+    assert again == migrated
+    assert (tmp_path / WATCH_STATE_FILE_NAME).read_bytes() == written
+    assert {path.name for path in tmp_path.glob("*.bak")} == copies
+    assert copies == {
+        f"{WATCH_STATE_FILE_NAME}.bak",
+        f"{WATCH_STATE_FILE_NAME}.a1-migration.bak",
+        f"{WATCH_STATE_FILE_NAME}.v4.bak",
+        "subscriptions.json.a1-migration.bak",
+    }
+    assert (tmp_path / f"{WATCH_STATE_FILE_NAME}.a1-migration.bak").read_bytes() == state
+    assert (tmp_path / f"{WATCH_STATE_FILE_NAME}.v4.bak").read_bytes() == state
+    assert (tmp_path / "subscriptions.json.a1-migration.bak").read_bytes() == listing
+
+
+def test_four_to_five_backup_failure_blocks_write(tmp_path: Path) -> None:
+    state: bytes = _write_schema_four(tmp_path, _schema_four_state())
+    (tmp_path / f"{WATCH_STATE_FILE_NAME}.a1-migration.bak.tmp").mkdir()
+
+    with pytest.raises(ConfigError) as failure:
+        _store(tmp_path).load()
+
+    assert failure.value.context.code is ErrorCode.IO_ERROR
+    assert (tmp_path / WATCH_STATE_FILE_NAME).read_bytes() == state
+    assert json.loads(state)["schema_version"] == 4
 
 
 @pytest.mark.parametrize("version", [1, 2, 3, 4])

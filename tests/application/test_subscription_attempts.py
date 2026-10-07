@@ -90,7 +90,11 @@ def _record(attempts: int = 0, **changes: object) -> SubscriptionRecord:
         "Neko",
         (_MOMENT - timedelta(days=2)).isoformat(),
         2,
-        targets=(SubscriptionTarget(3, (_MOMENT - timedelta(hours=1)).isoformat(), TargetState.DUE, attempts),),
+        targets=(
+            SubscriptionTarget(
+                3, (_MOMENT - timedelta(hours=1)).isoformat(), TargetState.DUE, attempts, started=attempts
+            ),
+        ),
     )
     return replace(record, **changes)  # type: ignore[arg-type]
 
@@ -128,9 +132,11 @@ def _attempting(
     thread: threading.Thread = _serving(owner)
     try:
         target: SubscriptionTarget = subscribed.targets[0]
-        tried: SubscriptionTarget = replace(target, attempts=target.attempts + 1, tried=(*target.tried, f"{_HASH}:0"))
+        tried: SubscriptionTarget = replace(
+            target, attempts=target.attempts + 1, started=target.started + 1, tried=(*target.tried, f"{_HASH}:0")
+        )
         admitted: ControlResponse = owner._on_owner(
-            lambda: owner._admit_episode(f"sub:a:3:{tried.attempts}", _choice(3), attempt=("a", tried))
+            lambda: owner._admit_episode(f"sub:a:3:{tried.started}", _choice(3), attempt=("a", tried))
         )
         assert admitted.ok
         yield owner

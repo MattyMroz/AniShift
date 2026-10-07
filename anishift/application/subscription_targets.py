@@ -8,13 +8,22 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
 from anishift.application.episode_identity import IdentityVerdict
+from anishift.application.episode_releases import info_hash_hex
+from anishift.application.episode_selection import numbering_gap
+from anishift.application.release_quality import ResolutionClass
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from anishift.application.acquisition import ListingRead
     from anishift.application.control import LegacyScope
-    from anishift.application.episode_selection import AniZipMapping, EpisodeListing, ListedEpisode, RankedCandidate
+    from anishift.application.episode_selection import (
+        AniZipMapping,
+        EpisodeListing,
+        JsonObject,
+        ListedEpisode,
+        RankedCandidate,
+    )
 
 __all__ = [
     "AIRING_STATUSES",
@@ -23,7 +32,12 @@ __all__ = [
     "LEGACY_ORDERED",
     "MAX_ATTEMPTS",
     "MAX_SUBSCRIPTIONS",
+    "MAX_TRANSIENT_FAILURES",
     "PauseReason",
+    "PolishObservation",
+    "PolishSkip",
+    "PolishState",
+    "ReleaseFailure",
     "SubscriptionCheck",
     "SubscriptionProblem",
     "SubscriptionRecord",
@@ -38,6 +52,7 @@ __all__ = [
     "cut_point",
     "display_order",
     "eligible",
+    "excluded",
     "is_target",
     "late",
     "merge_listing",
@@ -55,6 +70,15 @@ MAX_ATTEMPTS: Final[int] = 3
 
 MAX_SUBSCRIPTIONS: Final[int] = 100
 """Subscriptions the automation state may hold at once."""
+
+MAX_TRANSIENT_FAILURES: Final[int] = 3
+"""Transient TsukiHime read failures of one target and release before the release stops blocking."""
+
+_HEX_HASH_LENGTH: Final[int] = 40
+"""Length of a hexadecimal BTIH v1 info hash."""
+
+_NUMBERING_FIELDS: Final[tuple[str, ...]] = ("seasonNumber", "episodeNumber", "absoluteEpisodeNumber")
+"""Mapped episode fields the H1 target takes its numbering from, compared between list reads."""
 
 _OPEN_STATES: Final[frozenset[str]] = frozenset({"awaiting_airing", "due", "attempting"})
 """Target states still waiting for a download, the ones that carry a deadline."""
@@ -125,6 +149,58 @@ class SubscriptionProblem(StrEnum):
     CATALOG_CONFLICT = "catalog_conflict"
 
 
+class PolishState(StrEnum):
+    """What the last successful TsukiHime read said about Polish subtitles of one episode."""
+
+    PRESENT = "present"
+    ABSENT = "absent"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class PolishObservation:
+    """Last successful TsukiHime observation of Polish subtitles for one target."""
+
+    state: PolishState
+    observed_at: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.state, PolishState):
+            msg: str = "A Polish observation names its state"
+            raise TypeError(msg)
+        _required(self.observed_at)
+
+
+@dataclass(frozen=True, slots=True)
+class PolishSkip:
+    """User's request to stop waiting for Polish subtitles, bound to the deadline it was made for."""
+
+    due: str
+    at: str
+    settled: bool = False
+
+    def __post_init__(self) -> None:
+        _required(self.due)
+        _required(self.at)
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseFailure:
+    """TsukiHime read failures of one release for one target."""
+
+    info_hash: str
+    decisive: bool = False
+    transient: int = 0
+
+    def __post_init__(self) -> None:
+        if info_hash_hex(self.info_hash) != self.info_hash or len(self.info_hash) != _HEX_HASH_LENGTH:
+            msg: str = "A release failure names a lowercase hexadecimal info hash"
+            raise ValueError(msg)
+        if type(self.transient) is not int or not 0 <= self.transient <= MAX_TRANSIENT_FAILURES:
+            msg = "A release failure counts between zero and MAX_TRANSIENT_FAILURES transient reads"
+            raise ValueError(msg)
+
+
 @dataclass(frozen=True, slots=True)
 class SubscriptionTarget:
     """One regular episode a subscription must obtain, with its deadline and spent attempts."""
@@ -138,6 +214,12 @@ class SubscriptionTarget:
     reason: str | None = None
     notified_late: bool = False
     check_skipped: bool = False
+    started: int = 0
+    threshold: ResolutionClass | None = None
+    failures: tuple[ReleaseFailure, ...] = ()
+    polish: PolishObservation | None = None
+    sources_down_since: str | None = None
+    polish_skip: PolishSkip | None = None
 
     def __post_init__(self) -> None:
         if type(self.number) is not int or self.number < 1:
@@ -145,6 +227,9 @@ class SubscriptionTarget:
             raise ValueError(msg)
         if type(self.attempts) is not int or not 0 <= self.attempts <= MAX_ATTEMPTS:
             msg = "A subscription target spends between zero and MAX_ATTEMPTS attempts"
+            raise ValueError(msg)
+        if type(self.started) is not int or self.started < self.attempts:
+            msg = "A subscription target started at least as many attempts as it spent"
             raise ValueError(msg)
         if self.state is TargetState.ATTEMPTING and not self.admission_id:
             msg = "An attempting target names its admission"
@@ -155,7 +240,18 @@ class SubscriptionTarget:
         if any(not item or item != item.casefold() for item in self.tried):
             msg = "A tried release file is a nonempty casefolded reference"
             raise ValueError(msg)
+        self._check_choice_facts()
         _moment(self.due_at)
+        _moment(self.sources_down_since)
+
+    def _check_choice_facts(self) -> None:
+        if self.threshold is not None and not isinstance(self.threshold, ResolutionClass):
+            msg: str = "A target threshold is a resolution class"
+            raise ValueError(msg)
+        hashes: tuple[str, ...] = tuple(item.info_hash for item in self.failures)
+        if len(set(hashes)) != len(hashes):
+            msg = "A target records the failures of every release at most once"
+            raise ValueError(msg)
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +296,8 @@ class SubscriptionRecord:
     last_check: SubscriptionCheck | None = None
     targets: tuple[SubscriptionTarget, ...] = ()
     migrated_from: str | None = None
+    tsukihime_id: int | None = None
+    mapping_tvdb_season: int | None = None
 
     def __post_init__(self) -> None:
         if not self.subscription_id or not self.title.strip():
@@ -217,8 +315,11 @@ class SubscriptionRecord:
         if self.cut is not None and (type(self.cut) is not int or self.cut < 0):
             msg = "A subscription cut point is a nonnegative episode count"
             raise ValueError(msg)
-        if (self.mapping is None) != (self.kitsu_id is None):
-            msg = "A subscription keeps an episode mapping exactly when it knows its mapping identity"
+        if self.kitsu_id is not None and self.mapping is None:
+            msg = "A subscription knows its mapping identity only beside its episode mapping"
+            raise ValueError(msg)
+        if not _optional_whole(self.tsukihime_id, 1) or not _optional_whole(self.mapping_tvdb_season, 0):
+            msg = "A subscription remembers a positive TsukiHime title and a nonnegative TVDB season"
             raise ValueError(msg)
         if self.paused != (self.pause_reason is not None):
             msg = "A paused subscription names why it is paused"
@@ -366,7 +467,7 @@ def merge_listing(
 ) -> SubscriptionRecord:
     """Return *record* after one list read: new targets, moved deadlines, catalogue conflict and migration review."""
     mapping: AniZipMapping = read.mapping
-    if read.live and record.kitsu_id is not None and mapping.kitsu_id != record.kitsu_id:
+    if read.live and _catalog_changed(record, read):
         return replace(record, problem=SubscriptionProblem.CATALOG_CONFLICT)
     reviewing: bool = record.review_pending
     if record.anilist_id is None or (reviewing and not (read.live and read.listing.schedule_warning is None)):
@@ -389,6 +490,7 @@ def merge_listing(
             updated,
             kitsu_id=mapping.kitsu_id,
             mapping=replace(mapping, max_age_s=None),
+            mapping_tvdb_season=read.tvdb_season,
             refreshed_at=now.isoformat(),
             problem=None if record.problem is SubscriptionProblem.CATALOG_CONFLICT else record.problem,
         )
@@ -453,6 +555,11 @@ def candidate_pair(candidate: RankedCandidate) -> str:
     return f"{candidate.stream.info_hash}:{'' if index is None else index}".casefold()
 
 
+def excluded(target: SubscriptionTarget) -> frozenset[str]:
+    """Return the info hashes *target* excludes, reading former ``hash:fileIdx`` entries as their hash."""
+    return frozenset(item.partition(":")[0] for item in target.tried)
+
+
 def eligible(candidate: RankedCandidate, target: SubscriptionTarget, taken: frozenset[str]) -> bool:
     """Whether automation may try *candidate* for *target*: a supported match never tried nor taken elsewhere."""
     pair: str = candidate_pair(candidate)
@@ -473,6 +580,27 @@ def completed(record: SubscriptionRecord) -> bool:
     if any(item.state is not TargetState.SATISFIED for item in record.targets):
         return False
     return record.cut is None or set(range(record.cut + 1, count + 1)) <= numbers
+
+
+def _catalog_changed(record: SubscriptionRecord, read: ListingRead) -> bool:
+    current: AniZipMapping = read.mapping
+    if record.kitsu_id is not None and current.kitsu_id is not None and current.kitsu_id != record.kitsu_id:
+        return True
+    saved: AniZipMapping | None = record.mapping
+    if saved is None:
+        return False
+    return any(
+        _renumbered(value, current.raw_episodes.get(key))
+        for key, value in saved.raw_episodes.items()
+        if key.isascii()
+        and key.isdecimal()
+        and numbering_gap(saved, int(key), record.mapping_tvdb_season, movie=read.movie) is None
+    )
+
+
+def _renumbered(saved: JsonObject, current: JsonObject | None) -> bool:
+    fresh: JsonObject = current or {}
+    return any(saved.get(key) is not None and fresh.get(key) != saved.get(key) for key in _NUMBERING_FIELDS)
 
 
 def _new_target(
@@ -548,6 +676,10 @@ def _nearest(record: SubscriptionRecord) -> SubscriptionTarget | None:
         if item.state in _OPEN_STATES and (moment := _moment(item.due_at)) is not None
     ]
     return min(dated, key=lambda entry: entry[:2])[2] if dated else None
+
+
+def _optional_whole(value: int | None, least: int) -> bool:
+    return value is None or (type(value) is int and value >= least)
 
 
 def _moment(value: str | None) -> datetime | None:
