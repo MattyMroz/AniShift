@@ -28,6 +28,7 @@ from anishift.application.control import (
     AcquisitionState,
     AdmissionSource,
     AutomationPolicy,
+    ChoiceTraits,
     EpisodeAssignment,
     EpisodeChoice,
     FileStamp,
@@ -46,6 +47,7 @@ from anishift.application.episode_selection import (
 )
 from anishift.application.history import HistoryJournal, HistoryKind
 from anishift.application.intents import RequestOrigin
+from anishift.application.release_quality import PolishClass, ResolutionClass
 from anishift.application.subscription_targets import (
     LEGACY_ORDERED,
     PauseReason,
@@ -54,7 +56,7 @@ from anishift.application.subscription_targets import (
     TargetState,
     next_check_at,
 )
-from anishift.application.transfers import TransferInspector, file_map_revision
+from anishift.application.transfers import MetadataCheck, TransferInspector, episode_files
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.platform.local_control import ControlResponse
@@ -89,6 +91,10 @@ def _stream(
     file_name: str = name or f"Neko to Ryuu - {number:02}.mkv"
     path: str | None = f"Pack/{file_name}" if packed else None
     return StreamCandidate(info_hash, "1080p", None, file_name, file_name, path, seeders, None, None, (), ())
+
+
+def _sized(info_hash: str, height: int, seeders: int) -> StreamCandidate:
+    return _stream(info_hash, seeders=seeders, name=f"Neko to Ryuu - 03 [{height}p].mkv")
 
 
 def _uncertain(info_hash: str = _FIRST) -> StreamCandidate:
@@ -378,15 +384,25 @@ def _files(number: int) -> list[TorrentFile]:
     return [item for item in _PACK if f" - {number:02}." in item.name]
 
 
-def _started(world: _World, info_hash: str) -> None:
+def _started(world: _World, info_hash: str, number: int = 3, *, listing: tuple[TorrentFile, ...] = ()) -> None:
     _until(lambda: any(item[0] == info_hash for item in world.network.metadata_added))
     if info_hash not in world.network.per_hash:
-        world.network.deliver(info_hash, _PACK)
+        world.network.deliver(info_hash, listing or tuple(_files(number)))
     _until(lambda: info_hash in world.network.started)
 
 
-def _stage(world: _World, owner: AutomationOwner, info_hash: str, number: int = 3) -> None:
-    _started(world, info_hash)
+def _mapped_before_metadata_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    def mapped(files: tuple[TorrentFile, ...], choice: EpisodeChoice, protected: object) -> MetadataCheck:
+        del protected
+        return MetadataCheck(episode_files(files, choice.reference, choice.target, choice.reference.release))
+
+    monkeypatch.setattr(automation_module, "metadata_check", mapped)
+
+
+def _stage(
+    world: _World, owner: AutomationOwner, info_hash: str, number: int = 3, *, listing: tuple[TorrentFile, ...] = ()
+) -> None:
+    _started(world, info_hash, number, listing=listing)
     data: Path = world.root / "temp" / ".acquisition" / _transfer(owner, info_hash).operation_id / "data"
     for item in _files(number):
         path: Path = data / item.name
@@ -554,26 +570,21 @@ def test_three_attempts_on_own_transfers_each_wait_for_the_confirmed_cancel_and_
     assert _escalations(world) == ["exhausted"]
 
 
-def test_the_next_attempt_after_a_rejection_on_a_shared_transfer_starts_only_once_that_transfer_dropped_it(
-    world: _World,
-) -> None:
+def test_next_release_chosen_content_waits_for_previous_settlement(world: _World) -> None:
     world.season.offered[3] = (_stream(_FIRST, seeders=300, packed=True), _stream(_SECOND, seeders=200))
-    world.probe.video = False
     with _running(world, _following(auto=False)) as owner:
         assert owner.admit_episode("manual-4", _choice_on(4, _FIRST)).ok
-        _started(world, _FIRST)
+        _started(world, _FIRST, 4, listing=_PACK)
+        _until(lambda: world.network.tracked[_FIRST].state == "downloading")
+        world.network.stop_ignored = True
         _command(owner, "set_auto", "resume", enabled=True)
         _reaches(owner, TargetState.ATTEMPTING)
-        _until(lambda: world.network.selected.get(_FIRST) == frozenset({0, 1, 2, 3}))
-        _stage(world, owner, _FIRST)
-        world.network.stop_ignored = True
-        _complete(world, _FIRST, 3)
         _reaches(owner, TargetState.DUE)
-        world.probe.video = True
+        stopped: SubscriptionTarget = _target(owner)
         _check(owner, "second")
         _reaches(owner, TargetState.ATTEMPTING)
         _until(lambda: any(item[0] == _SECOND for item in world.network.metadata_added))
-        world.network.deliver(_SECOND, _PACK)
+        world.network.deliver(_SECOND, tuple(_files(3)))
         _until(lambda: _transfer(owner, _SECOND).applied_revision > 0)
         _polls(world)
         waiting: tuple[bool, object] = (_SECOND in world.network.started, _status(owner, 3)["reason"])
@@ -584,56 +595,83 @@ def test_the_next_attempt_after_a_rejection_on_a_shared_transfer_starts_only_onc
         saved: WatchState = _stored(owner, world)
 
     first, second = _attempts(saved)
+    assert (stopped.attempts, stopped.started, stopped.reason, stopped.tried) == (0, 1, "pack", (_FIRST,))
     assert waiting == (False, EpisodeReason.WAITING_PREVIOUS_TRANSFER)
-    assert (first.choice.reference.info_hash, first.verification, first.replaced) == (
-        _FIRST,
-        "reject:no_video_stream",
-        True,
-    )
+    assert (first.choice.reference.info_hash, first.stopped, first.files, first.replaced) == (_FIRST, "pack", (), True)
     assert (second.choice.reference.info_hash, second.previous_admission_id) == (_SECOND, first.admission_id)
     assert (_FIRST, "cancel") not in world.network.actions
     shared: AcquisitionConfirmation = next(item for item in saved.acquisitions if item.info_hash == _FIRST)
     assert [item.choice.number for item in shared.active_assignments] == [4]
-    assert _closures(world) == [(1, "rejected"), (2, "accepted")]
+    target: SubscriptionTarget = saved.subscriptions[0].targets[0]
+    assert (target.attempts, target.started) == (1, 2)
+    assert _closures(world) == [(1, "stopped"), (1, "accepted")]
 
 
-def test_a_shared_then_an_own_attempt_let_the_third_replace_the_first_across_a_restart(world: _World) -> None:
-    world.season.offered[3] = (
-        _stream(_FIRST, seeders=300, packed=True),
-        _stream(_SECOND, seeders=200),
-        _stream(_THIRD, seeders=100),
-        _stream(_FOURTH, seeders=50),
-    )
-    world.probe.video = False
-    with _running(world, _following(auto=False)) as owner:
-        assert owner.admit_episode("manual-5", _choice_on(5, _FIRST)).ok
-        _started(world, _FIRST)
-        _command(owner, "set_auto", "resume", enabled=True)
+def test_after_metadata_restart_admits_other_same_count(world: _World) -> None:
+    world.season.offered[3] = (_stream(_FIRST, seeders=300), _stream(_SECOND, seeders=200))
+    with _running(world, _following()) as owner:
         _reaches(owner, TargetState.ATTEMPTING)
-        _until(lambda: world.network.selected.get(_FIRST) == frozenset({0, 1, 4}))
-        _stage(world, owner, _FIRST)
-        _complete(world, _FIRST, 3)
-        _reaches(owner, TargetState.DUE)
-        _check(owner, "second")
-        _reaches(owner, TargetState.ATTEMPTING)
-        _fail(world, owner, _SECOND, "metadata")
-        _until(_failed(owner, _SECOND))
+        _until(lambda: any(item[0] == _FIRST for item in world.network.metadata_added))
+        world.network.deliver(_FIRST, _PACK)
+        _until(_failed(owner, _FIRST))
+        stopped: SubscriptionTarget = _target(owner)
+        before: int = len(_attempts(owner.state))
     with _running(world) as owner:
-        _check(owner, "third")
+        _check(owner, "after-restart")
         _reaches(owner, TargetState.ATTEMPTING)
-        _download(world, owner, _THIRD)
-        _reaches(owner, TargetState.EXHAUSTED)
-        _until(_failed(owner, _THIRD))
-        _check(owner, "fourth")
         saved: WatchState = _stored(owner, world)
 
-    first, second, third = _attempts(saved)
-    assert _hashes([first, second, third]) == [_FIRST, _SECOND, _THIRD]
-    assert (second.previous_admission_id, third.previous_admission_id) == (first.admission_id, first.admission_id)
-    assert {"sub:a:3:1", "sub:a:3:2", "sub:a:3:3"} <= _receipts(saved)
-    assert _closures(world) == [(1, "rejected"), (2, "dead"), (3, "rejected")]
-    assert [key for key in saved.notified if key[1] == "exhausted"] == [("subscription:a:3", "exhausted", "")]
-    assert _FOURTH not in {item[0] for item in world.network.metadata_added}
+    first, second = _attempts(saved)
+    assert (stopped.state, stopped.attempts, stopped.started, stopped.reason) == (TargetState.DUE, 0, 1, "pack")
+    assert before == 1
+    assert (first.stopped, first.files) == ("pack", ())
+    assert (second.choice.reference.info_hash, second.previous_admission_id) == (_SECOND, None)
+    target: SubscriptionTarget = saved.subscriptions[0].targets[0]
+    assert (target.attempts, target.started, target.tried) == (1, 2, (_FIRST, _SECOND))
+    assert {"sub:a:3:1", "sub:a:3:2"} <= _receipts(saved)
+    assert (_FIRST, "cancel") in world.network.actions
+    assert _FIRST not in world.network.started
+    assert _closures(world) == [(1, "stopped")]
+
+
+_LISTINGS: dict[str, tuple[str, tuple[TorrentFile, ...]]] = {
+    "ambiguous": (
+        "ambiguous",
+        (
+            TorrentFile(0, "Pack/Neko to Ryuu - 03 [1080p].mkv", 400, 0.0, 1),
+            TorrentFile(1, "Pack/Neko to Ryuu - 03 [720p].mkv", 300, 0.0, 1),
+        ),
+    ),
+    "pack": ("pack", _PACK),
+    "no_match": ("no_match", (TorrentFile(0, "Pack/unknown.mkv", 400, 0.0, 1),)),
+    "recheck": ("recheck", (TorrentFile(0, "Neko to Ryuu S2/Neko to Ryuu - 03.mkv", 400, 0.0, 1),)),
+    "dub": ("recheck", (TorrentFile(0, "Pack/Neko to Ryuu - 03 [English Dub].mkv", 400, 0.0, 1),)),
+    "hardsub": ("no_match", (TorrentFile(0, "Pack/Neko to Ryuu - 03 [HardSub].mkv", 400, 0.0, 1),)),
+    "raw": ("no_match", (TorrentFile(0, "Pack/Neko to Ryuu - 03 [RAW].mkv", 400, 0.0, 1),)),
+}
+
+
+@pytest.mark.parametrize("case", list(_LISTINGS))
+def test_after_metadata_an_unfit_file_list_stops_the_attempt_without_spending_it(world: _World, case: str) -> None:
+    reason: str
+    listing: tuple[TorrentFile, ...]
+    reason, listing = _LISTINGS[case]
+    with _running(world, _following()) as owner:
+        _reaches(owner, TargetState.ATTEMPTING)
+        _until(lambda: any(item[0] == _FIRST for item in world.network.metadata_added))
+        world.network.deliver(_FIRST, listing)
+        _until(_failed(owner, _FIRST))
+        _check(owner, "after-stop")
+        saved: WatchState = _stored(owner, world)
+
+    attempt: EpisodeAssignment = _attempts(saved)[0]
+    assert (attempt.stopped, attempt.files) == (reason, ())
+    target: SubscriptionTarget = saved.subscriptions[0].targets[0]
+    assert (target.state, target.attempts, target.started) == (TargetState.DUE, 0, 1)
+    assert (target.reason, target.tried, target.threshold) == (reason, (_FIRST,), None)
+    assert len(_attempts(saved)) == 1
+    assert _FIRST not in world.network.started
+    assert _closures(world) == [(1, "stopped")]
 
 
 def test_only_uncertain_releases_never_start_an_attempt_at_any_age_and_a_later_match_does(world: _World) -> None:
@@ -1041,7 +1079,7 @@ def test_a_file_list_arriving_in_a_global_pause_is_selected_and_started_only_aft
         assert owner.admit_episode("manual-4", _choice_on(4, _SECOND)).ok
         _stage(world, owner, _SECOND, 4)
         _pause(owner, False, "pause")
-        world.network.deliver(_FIRST, _PACK)
+        world.network.deliver(_FIRST, tuple(_files(3)))
         _polls(world)
         asked: int = len(world.season.asked)
         _check(owner, "while-paused")
@@ -1092,15 +1130,16 @@ def test_a_removed_subscription_rejected_by_its_check_tries_nothing_more_and_und
 @pytest.mark.parametrize("restart", [False, True], ids=["running", "restarted"])
 @pytest.mark.parametrize("stop", ["settled", "in-flight"])
 def test_an_order_joining_a_transfer_stopped_by_the_pause_resumes_only_that_one(
-    world: _World, stop: str, restart: bool
+    world: _World, monkeypatch: pytest.MonkeyPatch, stop: str, restart: bool
 ) -> None:
+    _mapped_before_metadata_checks(monkeypatch)
     world.season.airs[4] = _AIRED - timedelta(minutes=30)
     world.season.offered[4] = (_stream(_SECOND, 4),)
     with _running(world, _following()) as owner:
         _reaches(owner, TargetState.ATTEMPTING)
         _reaches(owner, TargetState.ATTEMPTING, 4)
-        _started(world, _FIRST)
-        _started(world, _SECOND)
+        _started(world, _FIRST, listing=_PACK)
+        _started(world, _SECOND, 4, listing=_PACK)
         world.network.blocked = (_FIRST, "stop") if stop == "in-flight" else None
         _pause(owner, False, "pause")
         _until(lambda: set(owner.state.pause_owned_transfers) == {_FIRST, _SECOND})
@@ -1123,11 +1162,14 @@ def test_an_order_joining_a_transfer_stopped_by_the_pause_resumes_only_that_one(
     assert world.network.tracked[_FIRST].state == "downloading"
 
 
-def test_an_attempt_joining_a_manual_transfer_keeps_working_through_a_pause_and_a_restart(world: _World) -> None:
+def test_an_attempt_joining_a_manual_transfer_keeps_working_through_a_pause_and_a_restart(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mapped_before_metadata_checks(monkeypatch)
     world.season.offered[3] = (_stream(_FIRST, packed=True),)
     with _running(world, _following(auto=False)) as owner:
         assert owner.admit_episode("manual-4", _choice_on(4, _FIRST)).ok
-        _started(world, _FIRST)
+        _started(world, _FIRST, listing=_PACK)
         _command(owner, "set_auto", "resume", enabled=True)
         _reaches(owner, TargetState.ATTEMPTING)
         _until(lambda: world.network.selected.get(_FIRST) == frozenset({0, 1, 2, 3}))
@@ -1148,12 +1190,13 @@ def test_an_attempt_joining_a_manual_transfer_keeps_working_through_a_pause_and_
 
 @pytest.mark.parametrize("restart", [False, True], ids=["running", "restarted"])
 def test_replacing_the_only_manual_order_of_a_mixed_transfer_in_a_pause_stops_it_for_the_pause(
-    world: _World, restart: bool
+    world: _World, monkeypatch: pytest.MonkeyPatch, restart: bool
 ) -> None:
+    _mapped_before_metadata_checks(monkeypatch)
     world.season.offered[3] = (_stream(_FIRST, packed=True),)
     with _running(world, _following(auto=False)) as owner:
         assert owner.admit_episode("manual-4", _choice_on(4, _FIRST)).ok
-        _started(world, _FIRST)
+        _started(world, _FIRST, listing=_PACK)
         _command(owner, "set_auto", "resume", enabled=True)
         _reaches(owner, TargetState.ATTEMPTING)
         _until(lambda: world.network.selected.get(_FIRST) == frozenset({0, 1, 2, 3}))
@@ -1230,33 +1273,6 @@ def _held_check(world: _World) -> tuple[threading.Event, threading.Event]:
 def _rows(owner: AutomationOwner) -> list[dict[str, object]]:
     answer: ControlResponse = owner.handle(_request("subscriptions_list", command_id="list"))
     return cast("list[dict[str, object]]", answer.result["subscriptions"])
-
-
-def test_an_ambiguous_pack_keeps_the_attempt_until_the_user_picks_its_file(world: _World) -> None:
-    pack: tuple[TorrentFile, ...] = (TorrentFile(0, "Pack/unknown.mkv", 400, 0.0, 1),)
-    with _running(world, _following()) as owner:
-        _reaches(owner, TargetState.ATTEMPTING)
-        _until(lambda: any(item[0] == _FIRST for item in world.network.metadata_added))
-        world.network.deliver(_FIRST, pack)
-        _until(lambda: _transfer(owner, _FIRST).assignments[0].mapped)
-        _polls(world)
-        waiting: tuple[TargetState, object] = (_target(owner).state, _status(owner, 3)["reason"])
-        _command(
-            owner,
-            "episode_file_choose",
-            "choose",
-            admission_id=_transfer(owner, _FIRST).assignments[0].admission_id,
-            revision=file_map_revision(pack),
-            file={"index": 0, "path": "Pack/unknown.mkv", "size": 400},
-        )
-        _until(lambda: _FIRST in world.network.started)
-        chosen: tuple[object, ...] = _transfer(owner, _FIRST).assignments[0].files
-        target: SubscriptionTarget = _target(owner)
-
-    assert waiting == (TargetState.ATTEMPTING, EpisodeReason.EPISODE_FILE_UNRESOLVED)
-    assert chosen == ((0, "Pack/unknown.mkv", 400),)
-    assert (target.state, target.attempts) == (TargetState.ATTEMPTING, 1)
-    assert (_FIRST, "cancel") not in world.network.actions
 
 
 def test_an_order_taking_over_an_attempt_in_its_check_on_the_same_release_keeps_its_video(world: _World) -> None:
@@ -1484,12 +1500,13 @@ def test_the_list_names_the_episode_whose_download_is_being_checked(world: _Worl
 
 @pytest.mark.parametrize("restart", [False, True], ids=["running", "restarted"])
 def test_cancelling_the_only_manual_transfer_of_a_mixed_pack_in_a_pause_closes_its_attempt_after_the_pause(
-    world: _World, restart: bool
+    world: _World, monkeypatch: pytest.MonkeyPatch, restart: bool
 ) -> None:
+    _mapped_before_metadata_checks(monkeypatch)
     world.season.offered[3] = (_stream(_FIRST, packed=True),)
     with _running(world, _following(auto=False)) as owner:
         assert owner.admit_episode("manual-4", _choice_on(4, _FIRST)).ok
-        _started(world, _FIRST)
+        _started(world, _FIRST, listing=_PACK)
         _command(owner, "set_auto", "resume", enabled=True)
         _reaches(owner, TargetState.ATTEMPTING)
         _until(lambda: world.network.selected.get(_FIRST) == frozenset({0, 1, 2, 3}))
@@ -1514,3 +1531,131 @@ def test_cancelling_the_only_manual_transfer_of_a_mixed_pack_in_a_pause_closes_i
     target: SubscriptionTarget = saved.subscriptions[0].targets[0]
     assert (target.attempts, target.reason) == (1, "failed")
     assert _closures(world) == [(1, "dead")]
+
+
+def _ended(world: _World, owner: AutomationOwner, how: str) -> None:
+    if how == "stopped":
+        _until(lambda: any(item[0] == _FIRST for item in world.network.metadata_added))
+        world.network.deliver(_FIRST, _PACK)
+        return
+    if how == "rejected":
+        world.probe.video = False
+        _download(world, owner, _FIRST)
+        return
+    _stage(world, owner, _FIRST)
+    if how == "removed":
+        world.network.tracked.pop(_FIRST)
+        return
+    _command(owner, "transfer", "cancel-first", info_hash=_FIRST, action="cancel")
+
+
+@pytest.mark.parametrize("how", ["failed", "removed", "rejected", "stopped"])
+def test_threshold_not_raised_by_failed_removed_rejected_or_stopped(world: _World, how: str) -> None:
+    world.season.offered[3] = (_sized(_FIRST, 1080, 300), _sized(_SECOND, 720, 200))
+    with _running(world, _following()) as owner:
+        _reaches(owner, TargetState.ATTEMPTING)
+        _ended(world, owner, how)
+        _until(_failed(owner, _FIRST))
+        world.probe.video = True
+        _check(owner, "next")
+        _reaches(owner, TargetState.ATTEMPTING)
+        saved: WatchState = _stored(owner, world)
+
+    target: SubscriptionTarget = saved.subscriptions[0].targets[0]
+    assert target.threshold is None
+    assert _hashes(_attempts(saved)) == [_FIRST, _SECOND]
+
+
+@pytest.mark.parametrize("how", ["stall", "metadata"])
+def test_stalled_1080_blocks_720_after_restart(world: _World, how: str) -> None:
+    world.season.offered[3] = (_sized(_FIRST, 1080, 300), _sized(_SECOND, 720, 200))
+    with _running(world, _following()) as owner:
+        _reaches(owner, TargetState.ATTEMPTING)
+        _fail(world, owner, _FIRST, how)
+        _until(_failed(owner, _FIRST))
+    with _running(world) as owner:
+        _check(owner, "after-restart")
+        target: SubscriptionTarget = _target(owner)
+        saved: WatchState = _stored(owner, world)
+
+    assert (target.state, target.attempts) == (TargetState.DUE, 1)
+    assert target.reason in {"stalled", "metadata_timeout"}
+    assert target.threshold is ResolutionClass.FULL_HD
+    assert _hashes(_attempts(saved)) == [_FIRST]
+    assert _closures(world) == [(1, "dead")]
+
+
+@pytest.mark.parametrize("client_state", ["queuedDL", "stoppedDL"])
+def test_paused_time_not_counted_as_stall(world: _World, client_state: str) -> None:
+    world.season.offered[3] = (_sized(_FIRST, 1080, 300),)
+    with _running(world, _following()) as owner:
+        _reaches(owner, TargetState.ATTEMPTING)
+        _stage(world, owner, _FIRST)
+        _polls(world)
+        world.network.tracked[_FIRST] = replace(world.network.tracked[_FIRST], state=client_state)
+        _polls(world)
+        world.ticks.now += 3 * _STALL_S
+        _polls(world)
+        paused: SubscriptionTarget = _target(owner)
+        world.network.tracked[_FIRST] = replace(world.network.tracked[_FIRST], state="downloading")
+        _polls(world)
+        world.ticks.now += _STALL_S - 1
+        _polls(world)
+        before: SubscriptionTarget = _target(owner)
+        world.ticks.now += 1
+        _reaches(owner, TargetState.DUE)
+        closed: SubscriptionTarget = _target(owner)
+
+    assert (paused.state, before.state) == (TargetState.ATTEMPTING, TargetState.ATTEMPTING)
+    assert (closed.reason, closed.threshold) == ("stalled", ResolutionClass.FULL_HD)
+
+
+def _dead_attempt(traits: ChoiceTraits | None) -> AcquisitionConfirmation:
+    chosen: EpisodeChoice = _choice_on(3, _FIRST)
+    compacted: EpisodeChoice = replace(
+        chosen,
+        target={},
+        reference=replace(chosen.reference, release="", trackers=(), file_index=None),
+        traits=traits,
+    )
+    assignment: EpisodeAssignment = EpisodeAssignment(
+        "sub-1", _MOMENT.isoformat(), AdmissionSource.SUBSCRIPTION, compacted, subscription_id="a", attempt=1
+    )
+    return AcquisitionConfirmation(
+        operation_id="dead",
+        info_hash=_FIRST,
+        directory="",
+        required_files=(),
+        state=AcquisitionState.ACCEPTED,
+        origin=RequestOrigin.BACKGROUND,
+        subscription_id="a",
+        episode="3",
+        updated_at=_MOMENT.isoformat(),
+        problem=automation_module._NO_FILE_LIST,
+        assignments=(assignment,),
+    )
+
+
+@pytest.mark.parametrize(
+    ("traits", "threshold", "hashes"),
+    [
+        (ChoiceTraits(PolishClass.NONE, ResolutionClass.FULL_HD), ResolutionClass.FULL_HD, [_FIRST]),
+        (None, ResolutionClass.UNKNOWN, [_FIRST, _SECOND]),
+    ],
+    ids=["snapshot", "without-snapshot"],
+)
+def test_dead_attempt_after_compaction_uses_snapshot(
+    world: _World, traits: ChoiceTraits | None, threshold: ResolutionClass, hashes: list[str]
+) -> None:
+    world.season.offered[3] = (_sized(_SECOND, 720, 200),)
+    attempt: SubscriptionTarget = _target_row(
+        3, TargetState.ATTEMPTING, attempts=1, admission_id="sub-1", tried=(_FIRST,)
+    )
+    with _running(world, _following(_record(targets=(attempt,)), acquisitions=(_dead_attempt(traits),))) as owner:
+        _until(_failed(owner, _FIRST))
+        _check(owner, "after-restart")
+        saved: WatchState = _stored(owner, world)
+
+    target: SubscriptionTarget = saved.subscriptions[0].targets[0]
+    assert (target.attempts, target.threshold) == (len(hashes), threshold)
+    assert _hashes(_attempts(saved)) == hashes

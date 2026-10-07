@@ -188,11 +188,23 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   sprawdź receipt ponownie na wątku ownera, żeby równoległe ponowienia rozliczyły się idempotentnie.
   Nie używaj wideo ze starszego przypisania. Sprawdzaj rewizję selekcji i przypisanie, nie całe
   potwierdzenie: zmiana samego znacznika czasu nie unieważnia wyboru pliku.
-- Pomocnicze funkcje metadanych w `transfers.py` wybierają unikalną dokładną nazwę wideo przed H1
-  na oryginalnych pełnych ścieżkach; `fileIdx` źródła nigdy nie wybiera pliku. Brak unikalnego
-  dopasowania daje pustą selekcję (ręczny wybór pliku). Pliki towarzyszące wymagają tego samego
-  katalogu i stemu. `file_map_revision` pomija postęp i priorytety oraz waliduje unikalne ścieżki
-  Windows i indeksy. Zbiór wybranych plików to `AcquisitionConfirmation.wanted_files` (indeksy
+- Pomocnicze funkcje metadanych w `transfers.py` liczą najpierw pliki `zgodne` H1 na oryginalnych
+  pełnych ścieżkach: więcej niż jeden daje pustą selekcję, dopiero potem wygrywa unikalna dokładna
+  nazwa wideo, a na końcu jedyny zgodny plik; `fileIdx` źródła nigdy nie wybiera pliku. Pusta
+  selekcja ręcznego przypisania to ręczny wybór pliku (U-18c). Próba subskrypcji przechodzi
+  `metadata_check`: niejednoznaczny plik, paczka (więcej niż jedno wideo odcinka w spisie), brak
+  zgodnego, plik niezgodny w H1 albo nieużyteczny (`recheck`) i plik chroniony dla innego celu
+  innego transferu (`taken`) zapisują `EpisodeAssignment.stopped` bez plików, więc treść nie startuje.
+  Nieużyteczny to zapisany snapshot `choice.traits.unusable`, a gdy spis ujawnia inną nazwę pliku niż
+  `reference.file_name` - także `release_traits` tej nazwy z nazwą wydania. Wideo odcinków liczy jedno
+  `episode_identity.episode_video_count` (dla `is_pack` i `metadata_check`) według zasady: niejednoznaczny
+  plik zostaje w zliczaniu. Dodatkiem (`is_extra_path`) jest tylko znacznik NCOP/NCED/creditless albo
+  katalog `EXTRA_FOLDERS`/sufiks `PLEX_SUFFIX`, gdy w całej ścieżce (katalogi i stem) po usunięciu tagów
+  technicznych, CRC i numeru znacznika nie zostaje znak `str.isnumeric`; dodatki liczą się, gdy innego
+  wideo nie ma. PV, CM,
+  trailer, teaser, menu, preview, yokoku, OP i ED liczą się jako odcinek.
+  Pliki towarzyszące wymagają tego samego katalogu i stemu. `file_map_revision` pomija postęp i
+  priorytety oraz waliduje unikalne ścieżki Windows i indeksy. Zbiór wybranych plików to `AcquisitionConfirmation.wanted_files` (indeksy
   aktywnych przypisań); przed `select_files` `_apply_selection` odrzuca mapę, której rewizja różni
   się od `file_map` któregokolwiek aktywnego przypisania. `automation.py`
 - Cykl selektywny prowadzi istniejący poller, tylko gdy `AcquisitionService.selective`: `ADMITTED` →
@@ -314,6 +326,12 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   (`settle_target`) na przypisaniach, zamyka skończone próby (anulowanie własnego transferu albo
   wycofanie zakresu współdzielonego), a ostatni spełniony cel sezonu zakończonego przenosi rekord do
   Historii. Cel spełnia dopiero przekazany zestaw (`handed_off`), ręczne zamówienie wygrywa (`manual`).
+  Próba zatrzymana po metadanych (`stopped`) zamyka się jak inne, zostaje w `tried`, ale zwraca
+  `attempts` (`started` rośnie dalej), więc nawet trzecia nie wyczerpuje celu. Tylko martwa próba
+  (`stalled` albo `metadata_timeout`: 10 min bez przyrostu bajtów w stanie pobierania, czas pauzy i
+  kolejki się nie liczy) podnosi `threshold` do najlepszej klasy z `choice.traits.resolution`, bez
+  snapshotu z `reference.release` (pusta nazwa daje `UNKNOWN`); `failed`, usunięcie z klienta,
+  odrzucenie H2 i zatrzymanie po metadanych progu nie zmieniają.
   Kontrola H2 (`download_verification.py`) biegnie przed nazwaniem plików na wideo ze stagingu;
   `media_probe` dostarcza `AppService.media_probe` (bez importu `services` w CLI), a sprawdzony
   `verified_stamp` trafia do `copy_staged(expected=)`. Odrzucenie zamyka próbę, brak sondy lub

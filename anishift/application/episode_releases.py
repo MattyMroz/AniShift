@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final, Literal
 
-from anishift.application.episode_identity import VIDEO_EXTENSIONS
+from anishift.application.episode_identity import episode_video_count
 from anishift.application.release_quality import (
     LanguageDeclaration,
     LanguageSource,
@@ -124,14 +124,10 @@ def info_hash_hex(value: str) -> str | None:
 
 
 def is_pack(release: EpisodeRelease, *, pack_name: Callable[[str], bool]) -> bool:
-    """Prefer the complete inventory's video count to pack markers from any source name."""
+    """Prefer the complete inventory's episode video count to pack markers from any source name."""
     if release.listing:
-        videos: set[str] = {
-            file.path
-            for file in release.files
-            if file.from_listing and file.path and file.path.rsplit(".", 1)[-1].casefold() in VIDEO_EXTENSIONS
-        }
-        return len(videos) > 1
+        paths: list[str] = list(dict.fromkeys(file.path for file in release.files if file.from_listing and file.path))
+        return episode_video_count(paths) > 1
     return any(pack_name(name) for name in release.names)
 
 

@@ -11,7 +11,7 @@ from typing import cast
 
 import pytest
 from test_automation import _INSTANCE, _MOMENT, _TIMEOUT_S, _real_service, _request, _serving
-from test_selective_lifecycle import _ENTRY, _HASH, _choice, _SelectiveNetwork, _Setup, _starts, _until, _view
+from test_selective_lifecycle import _ENTRY, _HASH, _PACK, _choice, _SelectiveNetwork, _Setup, _starts, _until, _view
 from test_selective_publication import _NAMES, _SUBTITLES, _VIDEO, _root_files
 
 from anishift.application import automation as automation_module
@@ -25,6 +25,7 @@ from anishift.application.control import (
     AcquisitionState,
     AutomationPolicy,
     EpisodeAssignment,
+    EpisodeChoice,
     FileStamp,
     WatchState,
 )
@@ -46,6 +47,12 @@ from anishift.services.media.types import ContainerKind, MediaCatalog, MediaTrac
 from anishift.services.torrents import parse_release_name
 
 _VIDEO_TRACK: MediaTrack = MediaTrack(0, MediaTrackKind.VIDEO, "h264", None, None, True, False)
+
+_TARGET: dict[str, object] = {"aliases": ["Neko to Ryuu"], "type": "TV", "local_episode": 3, "season": 1, "episode": 3}
+
+
+def _matching() -> EpisodeChoice:
+    return replace(_choice(3), target=_TARGET)
 
 
 class _Probe:
@@ -136,7 +143,7 @@ def _attempting(
             target, attempts=target.attempts + 1, started=target.started + 1, tried=(*target.tried, f"{_HASH}:0")
         )
         admitted: ControlResponse = owner._on_owner(
-            lambda: owner._admit_episode(f"sub:a:3:{tried.started}", _choice(3), attempt=("a", tried))
+            lambda: owner._admit_episode(f"sub:a:3:{tried.started}", _matching(), attempt=("a", tried))
         )
         assert admitted.ok
         yield owner
@@ -148,7 +155,7 @@ def _attempting(
 
 def _deliver(setup: _Setup, owner: AutomationOwner) -> Path:
     _until(lambda: bool(setup.network.metadata_added))
-    setup.network.deliver(_HASH)
+    setup.network.deliver(_HASH, _PACK[:2])
     _until(_starts(setup))
     data: Path = setup.root / "temp" / ".acquisition" / str(_view(owner)["operation_id"]) / "data" / "Pack"
     data.mkdir(parents=True, exist_ok=True)
@@ -339,7 +346,7 @@ def test_a_video_changed_after_its_check_is_never_copied_into_the_library(
 def test_a_global_pause_stops_an_attempt_once_and_a_manual_order_joining_it_resumes_it(setup: _Setup) -> None:
     with _attempting(setup, _Probe()) as owner:
         _until(lambda: bool(setup.network.metadata_added))
-        setup.network.deliver(_HASH)
+        setup.network.deliver(_HASH, _PACK[:2])
         _until(lambda: owner.state.acquisitions[0].content_started)
         for command in ("pause-1", "pause-2"):
             assert owner.handle(_request("set_auto", {"enabled": False}, command_id=command)).ok

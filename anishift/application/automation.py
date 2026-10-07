@@ -44,6 +44,7 @@ from anishift.application.acquisition_staging import (
 from anishift.application.artifacts import ArtifactKind, ArtifactLifetime, ArtifactState, create_group_id
 from anishift.application.cancellation import EventCancellationToken, NeverCancelledToken
 from anishift.application.control import (
+    ASSIGNMENT_STOPS,
     REMOVED_FROM_CLIENT,
     VERIFICATION_REJECT,
     VERIFICATION_SKIPPED,
@@ -147,6 +148,7 @@ from anishift.application.planning import ExecutionPlan, TaskState
 from anishift.application.products import AUDIO_PRODUCT_PROFILES, main_product, product_suffix
 from anishift.application.ready import ReadyMove, ReadyStore
 from anishift.application.recovery import CHECKPOINT_VERSION, RunJournal
+from anishift.application.release_quality import ResolutionClass, resolution, resolution_class
 from anishift.application.results import DISPLAYED_ABSENCE_NOTE, GroupResult, GroupStatus, ProducedArtifact, RunResult
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
 from anishift.application.selection import ready_group_ids, resolve_readiness
@@ -188,11 +190,13 @@ from anishift.application.subscription_targets import (
 )
 from anishift.application.subscription_targets import completed as season_completed
 from anishift.application.transfers import (
+    MetadataCheck,
     TransferInspector,
     episode_files,
     file_map_revision,
     flat_layout,
     flat_names,
+    metadata_check,
     reserved_stem,
     video_sidecars,
 )
@@ -453,6 +457,9 @@ _DEAD_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
     }
 )
 """Transfer problems that end a subscription attempt, keyed to the reason the attempt records."""
+
+_DEAD_FACTS: Final[frozenset[str]] = frozenset({"stalled", "metadata_timeout"})
+"""Attempt endings without downloaded bytes for the stall time, the only ones that raise the target threshold."""
 
 _SUBSCRIPTION_KINDS: Final[frozenset[str]] = frozenset(
     {
@@ -4268,6 +4275,8 @@ class AutomationOwner:
                 for item in index.legacy.get(record.anilist_id, ())
             ),
             check_skipped=attempt is not None and attempt[1].verification == VERIFICATION_SKIPPED,
+            refunded=fact in ASSIGNMENT_STOPS,
+            dead=_dead_resolution(attempt[1].choice) if attempt is not None and fact in _DEAD_FACTS else None,
         )
         result: SubscriptionTarget = settle_target(target, facts, now)
         if (
@@ -5925,7 +5934,7 @@ class AutomationOwner:
                         self._record_mapping,
                         item,
                         file_map_revision(files),
-                        _episode_bindings(item, files),
+                        files,
                         tuple(torrent_relative_path(entry.name).as_posix() for entry in files),
                     )
                 )
@@ -5958,7 +5967,7 @@ class AutomationOwner:
         self,
         item: AcquisitionConfirmation,
         revision: str,
-        bindings: Mapping[str, tuple[FileReservation, ...]],
+        files: tuple[TorrentFile, ...],
         manifest: tuple[str, ...],
     ) -> AcquisitionConfirmation | None:
         current: AcquisitionConfirmation | None = self._confirmation(item.operation_id)
@@ -5968,8 +5977,17 @@ class AutomationOwner:
             or _selection_basis(current) != _selection_basis(item)
         ):
             return None
+        others: tuple[AcquisitionConfirmation, ...] = tuple(
+            row for row in self._state.acquisitions if row.operation_id != current.operation_id
+        )
+        bindings: dict[str, tuple[tuple[FileReservation, ...], str | None]] = _episode_bindings(current, files, others)
         assignments: tuple[EpisodeAssignment, ...] = tuple(
-            replace(assignment, file_map=revision, files=bindings[assignment.admission_id])
+            replace(
+                assignment,
+                file_map=revision,
+                files=bindings[assignment.admission_id][0],
+                stopped=bindings[assignment.admission_id][1],
+            )
             if not assignment.mapped and assignment.admission_id in bindings
             else assignment
             for assignment in current.assignments
@@ -5988,7 +6006,8 @@ class AutomationOwner:
         logger.info(
             "Selective transfer episodes bound",
             episodes=len(bindings),
-            unresolved=sum(1 for files in bindings.values() if not files),
+            unresolved=sum(1 for chosen, stopped in bindings.values() if not chosen and stopped is None),
+            stopped=sum(1 for _chosen, stopped in bindings.values() if stopped is not None),
             revision=updated.selection_revision,
         )
         return updated
@@ -8008,10 +8027,17 @@ def _attempt_fact(found: tuple[AcquisitionConfirmation, EpisodeAssignment] | Non
         (_handed_off(assignment), ATTEMPT_SATISFIED),
         (assignment.replaced, "replaced"),
         (assignment.rejected, "rejected"),
+        (assignment.stopped is not None, assignment.stopped or ""),
         (transfer.state is AcquisitionState.FAILED, "failed"),
         (transfer.info_hash in stalled, "stalled"),
     )
     return next((reason for hit, reason in checks if hit), _DEAD_PROBLEMS.get(transfer.problem or "", ATTEMPT_ACTIVE))
+
+
+def _dead_resolution(choice: EpisodeChoice) -> ResolutionClass:
+    if choice.traits is not None:
+        return choice.traits.resolution
+    return resolution_class(resolution((choice.reference.release,)) if choice.reference.release else None)[0]
 
 
 def _orphan_attempts(state: WatchState, known: frozenset[str], stalled: frozenset[str]) -> set[str]:
@@ -8092,7 +8118,10 @@ def _with_target(state: WatchState, identifier: str, target: SubscriptionTarget)
 
 def _closed_by_subscription(transfer: AcquisitionConfirmation, assignment: EpisodeAssignment) -> bool:
     return assignment.source is AdmissionSource.SUBSCRIPTION and (
-        assignment.replaced or assignment.rejected or transfer.state is AcquisitionState.FAILED
+        assignment.replaced
+        or assignment.rejected
+        or assignment.stopped is not None
+        or transfer.state is AcquisitionState.FAILED
     )
 
 
@@ -8105,6 +8134,8 @@ def _attempt_result(target: SubscriptionTarget) -> str:
         return "accepted"
     if target.state is TargetState.MANUAL or target.reason == "replaced":
         return "replaced"
+    if target.reason in ASSIGNMENT_STOPS:
+        return "stopped"
     return "rejected" if target.reason == "rejected" else "dead"
 
 
@@ -8236,18 +8267,25 @@ def _selection_mismatch(
 
 
 def _episode_bindings(
-    item: AcquisitionConfirmation, files: Sequence[TorrentFile]
-) -> dict[str, tuple[FileReservation, ...]]:
-    """Bind every unbound episode to its files, leaving one without a file when its video is already taken."""
+    item: AcquisitionConfirmation, files: Sequence[TorrentFile], others: Sequence[AcquisitionConfirmation]
+) -> dict[str, tuple[tuple[FileReservation, ...], str | None]]:
+    """Bind every unbound episode to its files; a subscription attempt that may not start names its stop reason.
+
+    A manual episode whose video is already taken stays without a file; *others* are the remaining transfers.
+    """
     bound: set[int] = set()
-    bindings: dict[str, tuple[FileReservation, ...]] = {}
+    bindings: dict[str, tuple[tuple[FileReservation, ...], str | None]] = {}
     for assignment in item.active_assignments:
         if assignment.mapped:
             continue
-        reference: TorrentioReference = assignment.choice.reference
+        choice: EpisodeChoice = assignment.choice
+        check: MetadataCheck = (
+            metadata_check(files, choice, protected_files(others, (choice.anilist_id, choice.number)))
+            if assignment.source is AdmissionSource.SUBSCRIPTION
+            else MetadataCheck(episode_files(files, choice.reference, choice.target, choice.reference.release))
+        )
         chosen: tuple[FileReservation, ...] = tuple(
-            (entry.index, torrent_relative_path(entry.name).as_posix(), entry.size)
-            for entry in episode_files(files, reference, assignment.choice.target, reference.release)
+            (entry.index, torrent_relative_path(entry.name).as_posix(), entry.size) for entry in check.files
         )
         held: set[int] = {
             index
@@ -8255,11 +8293,12 @@ def _episode_bindings(
             if _holds_files(other, assignment)
             for index, _path, _size in other.files
         }
-        taken: set[int] = bound | held
-        if any(index in taken for index, _path, _size in chosen):
+        stopped: str | None = check.stopped
+        if any(index in bound | held for index, _path, _size in chosen):
             chosen = ()
+            stopped = "taken" if assignment.source is AdmissionSource.SUBSCRIPTION else None
         bound.update(index for index, _path, _size in chosen)
-        bindings[assignment.admission_id] = chosen
+        bindings[assignment.admission_id] = (chosen, stopped)
     return bindings
 
 

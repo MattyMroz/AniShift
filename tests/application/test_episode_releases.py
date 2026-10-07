@@ -361,6 +361,98 @@ def test_is_pack_companion_files_do_not_count() -> None:
     assert not is_pack(release, pack_name=_pack_name)
 
 
+_EXTRA_CASES: list[tuple[str, str, bool]] = [
+    ("Neko to Ryuu - 01.mkv", "Neko to Ryuu - 02.mkv", True),
+    ("Neko to Ryuu - 01.mkv", "Neko to Ryuu - Kanojo.mkv", True),
+    ("Neko to Ryuu - 01.mkv", "Neko to Ryuu - 02 - The Opening.mkv", True),
+    ("Neko to Ryuu - 01.mkv", "Neko to Ryuu - 02 [ED123456].mkv", True),
+    ("Neko to Ryuu - 01.mkv", "Neko to Ryuu - ED.mkv", True),
+    ("Neko to Ryuu - 01.mkv", "Neko to Ryuu - PV.mkv", True),
+    ("Neko to Ryuu - 01.mkv", "Neko to Ryuu - PV1.mkv", True),
+    ("Neko to Ryuu - 01.mkv", "Neko to Ryuu - PV 01.mkv", True),
+    ("Neko to Ryuu [03].mkv", "Neko to Ryuu [04] The Menu.mkv", True),
+    ("Neko to Ryuu [03].mkv", "Neko to Ryuu [04] Creditless OP.mkv", True),
+    ("Neko to Ryuu Menu.mkv", "Neko to Ryuu Menu - 02 - Story.mkv", True),
+    ("Neko to Ryuu Preview.mkv", "Neko to Ryuu Preview - 02 - Story.mkv", True),
+    ("Menu2.mkv", "Menu2 - 02 - Story.mkv", True),
+    ("NCOP - 01.mkv", "NCOP - 02 - Story.mkv", True),
+    ("Neko to Ryuu - 01.mkv", "Featurettes/Neko to Ryuu - 02.mkv", True),
+    ("Neko to Ryuu - 01.mkv", "Neko to Ryuu - 02-other.mkv", True),
+    ("Neko to Ryuu - 01.mkv", "Neko to Ryuu \u2161 - NCOP.mkv", True),
+    ("Neko to Ryuu - 01.mkv", "Extras/Neko - 02.mkv", True),
+    ("Neko to Ryuu - 03.mkv", "Extras/Neko to Ryuu - S01E04/Story.mkv", True),
+    ("Neko to Ryuu - 03.mkv", "Extras/02/Neko to Ryuu.mkv", True),
+    ("Neko to Ryuu - 03.mkv", "Other/Season 1/02/Story.mkv", True),
+    ("Neko to Ryuu - 03.mkv", "Neko to Ryuu/02/Story-other.mkv", True),
+    ("Neko to Ryuu - 01.mkv", "Neko to Ryuu - NCOP\u00b2.mkv", True),
+    ("Neko to Ryuu - 01.mkv", "Neko to Ryuu - NCOP.mkv", False),
+    ("Neko to Ryuu - 01.mkv", "Neko to Ryuu - NCOP 01.mkv", False),
+    ("Neko to Ryuu - 01.mkv", "Neko to Ryuu - NCED2 [ABCDEF12].mkv", False),
+    ("Neko to Ryuu - 01.mkv", "Neko to Ryuu - Creditless OP.mkv", False),
+    ("Neko to Ryuu - 01.mkv", "Extras/Making Of.mkv", False),
+    ("Neko to Ryuu - 01.mkv", "Neko to Ryuu - PV-trailer.mp4", False),
+]
+
+_EXTRA_IDS: list[str] = [
+    "two-episodes",
+    "unrecognized-video",
+    "marker-word-in-episode-title",
+    "marker-like-checksum",
+    "bare-ed",
+    "pv",
+    "attached-pv-number",
+    "separated-pv-number",
+    "bracketed-episode-number",
+    "bracketed-number-beside-marker",
+    "menu-series-without-number",
+    "preview-series-without-number",
+    "attached-number-series",
+    "ncop-series",
+    "plex-folder-with-number",
+    "plex-suffix-with-number",
+    "roman-numeral",
+    "extras-folder-with-number",
+    "numbered-folder-under-extras",
+    "numbered-folder-in-extras",
+    "numbered-folders-under-other",
+    "numbered-folder-above-plex-suffix",
+    "superscript-number",
+    "ncop",
+    "separated-ncop-number",
+    "nced-with-checksum",
+    "creditless",
+    "extras-folder",
+    "plex-suffix",
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("first", "second", "pack"), _EXTRA_CASES, ids=_EXTRA_IDS)
+def test_is_pack_counts_only_episode_videos(first: str, second: str, *, pack: bool) -> None:
+    listing: TsukiHimeFiles = TsukiHimeFiles((ListedFile(first, 100), ListedFile(second, 50)))
+    release: EpisodeRelease = _merge((_STREAM,), {_HASH: listing})[0]
+    assert is_pack(release, pack_name=_pack_name) is pack
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("series", ["Ed", "Menu", "The Menu", "CM", "PV", "Preview", "Teaser", "Yokoku"])
+def test_is_pack_series_named_like_a_marker(series: str) -> None:
+    listing: TsukiHimeFiles = TsukiHimeFiles(
+        (ListedFile(f"{series} - 01.mkv", 100), ListedFile(f"{series} - 02 - Story.mkv", 50))
+    )
+    release: EpisodeRelease = _merge((_STREAM,), {_HASH: listing})[0]
+    assert is_pack(release, pack_name=_pack_name)
+
+
+@pytest.mark.unit
+def test_is_pack_counts_extras_when_no_episode_video_remains() -> None:
+    listing: TsukiHimeFiles = TsukiHimeFiles(
+        (ListedFile("Example - NCOP.mkv", 100), ListedFile("Example - NCED.mkv", 50))
+    )
+    release: EpisodeRelease = _merge((_STREAM,), {_HASH: listing})[0]
+    assert is_pack(release, pack_name=_pack_name)
+
+
 @pytest.mark.unit
 def test_is_pack_unmatched_torrentio_hint_does_not_add_inventory_video() -> None:
     listing: TsukiHimeFiles = TsukiHimeFiles((ListedFile("01.mkv", 100),))

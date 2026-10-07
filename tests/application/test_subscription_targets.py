@@ -12,6 +12,7 @@ from anishift.application.episode_selection import (
     EpisodeListing,
     ListedEpisode,
 )
+from anishift.application.release_quality import ResolutionClass
 from anishift.application.subscription_targets import (
     ATTEMPT_ACTIVE,
     ATTEMPT_SATISFIED,
@@ -750,6 +751,35 @@ def test_a_target_settles_on_what_the_transfers_of_its_episode_prove(
 
     assert (settled.state, settled.reason) == (state, reason)
     assert (settled.attempts, settled.admission_id) == (target.attempts, target.admission_id)
+
+
+def test_an_attempt_stopped_after_metadata_returns_its_spent_attempt_even_at_the_limit() -> None:
+    last: SubscriptionTarget = replace(_ATTEMPT, attempts=MAX_ATTEMPTS, started=MAX_ATTEMPTS)
+
+    settled: SubscriptionTarget = settle_target(last, TargetFacts(attempt="pack", refunded=True), _NOW)
+
+    assert (settled.state, settled.reason) == (TargetState.DUE, "pack")
+    assert (settled.attempts, settled.started, settled.threshold) == (MAX_ATTEMPTS - 1, MAX_ATTEMPTS, None)
+
+
+@pytest.mark.parametrize(
+    ("threshold", "dead", "expected"),
+    [
+        (None, ResolutionClass.HD, ResolutionClass.HD),
+        (ResolutionClass.HD, ResolutionClass.FULL_HD, ResolutionClass.FULL_HD),
+        (ResolutionClass.FULL_HD, ResolutionClass.HD, ResolutionClass.FULL_HD),
+        (ResolutionClass.FULL_HD, None, ResolutionClass.FULL_HD),
+    ],
+    ids=["first-dead", "better-dead", "worse-dead", "not-dead"],
+)
+def test_a_dead_attempt_keeps_the_best_resolution_class_as_the_target_threshold(
+    threshold: ResolutionClass | None, dead: ResolutionClass | None, expected: ResolutionClass
+) -> None:
+    settled: SubscriptionTarget = settle_target(
+        replace(_ATTEMPT, threshold=threshold), TargetFacts(attempt="stalled", dead=dead), _NOW
+    )
+
+    assert (settled.state, settled.attempts, settled.threshold) == (TargetState.DUE, 1, expected)
 
 
 def test_a_satisfied_target_never_moves_and_a_skipped_check_stays_marked() -> None:

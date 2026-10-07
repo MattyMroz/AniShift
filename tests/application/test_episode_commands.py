@@ -1738,6 +1738,46 @@ def test_layout_settlement_waits_for_a_present_hash_despite_cached_files(tmp_pat
         owner._service.close()
 
 
+def test_manual_ambiguous_file_waits_for_u18c(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    streams: _Streams = _Streams()
+    streams.answers = {(41024, 4): (_stream(4),)}
+    network: _SelectiveNetwork = _SelectiveNetwork()
+    listing: tuple[TorrentFile, ...] = (
+        TorrentFile(0, "pack/[Group] Tensei shitara Slime Datta Ken - 04 [1080p].mkv", 400, 0.0, 1),
+        TorrentFile(1, "pack/[Group] Tensei shitara Slime Datta Ken - 04 [720p].mkv", 300, 0.0, 1),
+    )
+    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
+    with _running(_selective_service(tmp_path, streams, network), store) as owner:
+        assert _download(owner, (4,)).ok
+        _until(lambda: bool(network.metadata_added))
+        network.deliver("a" * 40, listing)
+        _until(lambda: owner.state.acquisitions[0].assignments[0].mapped)
+        waiting: EpisodeAssignment = owner.state.acquisitions[0].assignments[0]
+    with _running(_selective_service(tmp_path, streams, network), store) as owner:
+        seen: int = network.info_calls
+        _until(lambda: network.info_calls >= seen + 3)
+        kept: EpisodeAssignment = owner.state.acquisitions[0].assignments[0]
+        started: list[str] = list(network.started)
+        response: ControlResponse = owner.handle(
+            _request(
+                "episode_file_choose",
+                {
+                    "admission_id": kept.admission_id,
+                    "revision": file_map_revision(listing),
+                    "file": {"index": 1, "path": listing[1].name, "size": 300},
+                },
+            )
+        )
+        assert response.ok, response
+        _until(lambda: bool(network.started))
+        chosen: tuple[tuple[int, str, int], ...] = owner.state.acquisitions[0].assignments[0].files
+
+    assert (waiting.files, waiting.stopped) == ((), None)
+    assert (kept.files, started) == ((), [])
+    assert chosen == ((1, listing[1].name, 300),)
+
+
 def test_manual_file_choice_refuses_a_video_assigned_to_another_episode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1797,12 +1837,7 @@ def test_mapping_never_reuses_a_video_held_by_a_replaced_assignment(tmp_path: Pa
     store.save(WatchState(acquisitions=(transfer,)))
     with _running(_episode_service(tmp_path), store) as owner:
         result: AcquisitionConfirmation | None = owner._on_owner(
-            lambda: owner._record_mapping(
-                transfer,
-                file_map_revision(files),
-                automation_module._episode_bindings(transfer, files),
-                (),
-            )
+            lambda: owner._record_mapping(transfer, file_map_revision(files), files, ())
         )
         assert result is not None
         assert result.assignments[1].mapped

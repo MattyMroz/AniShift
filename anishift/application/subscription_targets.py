@@ -357,13 +357,17 @@ class TargetFacts:
     """What the transfers of one target episode prove, projected by the owner from its state.
 
     ``attempt`` is ``ATTEMPT_ACTIVE``, ``ATTEMPT_SATISFIED`` or the reason the attempt closed;
-    ``manual`` is ``ATTEMPT_ACTIVE`` or ``ATTEMPT_SATISFIED`` for a retained manual order of the episode.
+    ``manual`` is ``ATTEMPT_ACTIVE`` or ``ATTEMPT_SATISFIED`` for a retained manual order of the episode;
+    ``refunded`` returns the spent attempt of one stopped after metadata, and ``dead`` is the resolution
+    class of a dead attempt, which raises the target threshold.
     """
 
     attempt: str | None = None
     manual: str | None = None
     legacy_complete: bool = False
     check_skipped: bool = False
+    refunded: bool = False
+    dead: ResolutionClass | None = None
 
 
 def settle_target(target: SubscriptionTarget, facts: TargetFacts, now: datetime) -> SubscriptionTarget:
@@ -389,7 +393,13 @@ def _settle(target: SubscriptionTarget, facts: TargetFacts, now: datetime) -> Su
         reason: str | None = target.reason if target.state is TargetState.MANUAL else None
         return replace(settled, state=TargetState.MANUAL, reason=reason)
     if target.state is TargetState.ATTEMPTING and facts.attempt not in {ATTEMPT_ACTIVE, ATTEMPT_SATISFIED}:
-        return replace(after_close(settled, now), reason=facts.attempt)
+        threshold: ResolutionClass | None = settled.threshold
+        if facts.dead is not None:
+            threshold = facts.dead if threshold is None else min(threshold, facts.dead)
+        closing: SubscriptionTarget = replace(
+            settled, attempts=settled.attempts - int(facts.refunded), threshold=threshold
+        )
+        return replace(after_close(closing, now), reason=facts.attempt)
     return _released_manual(settled, facts, now) if target.state is TargetState.MANUAL else settled
 
 

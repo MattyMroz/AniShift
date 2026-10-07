@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from anishift.application.subscription_targets import SubscriptionRecord
 
 __all__ = [
+    "ASSIGNMENT_STOPS",
     "WATCH_STATE_SCHEMA_VERSION",
     "AcquisitionConfirmation",
     "AcquisitionState",
@@ -145,7 +146,7 @@ _DEFAULT_RETRY_DELAYS_S: Final[tuple[int, ...]] = (60, 300)
 _UNUSABLE_TRAITS: Final[tuple[str, ...]] = ("dub_only", "hardsub", "raw")
 """Release name and tag facts that exclude a release, in their persisted order."""
 
-_ASSIGNMENT_STOPS: Final[frozenset[str]] = frozenset({"pack", "ambiguous", "no_match", "taken", "recheck"})
+ASSIGNMENT_STOPS: Final[frozenset[str]] = frozenset({"pack", "ambiguous", "no_match", "taken", "recheck"})
 """Reasons a subscription attempt stopped after reading its torrent metadata."""
 
 
@@ -472,7 +473,7 @@ class EpisodeAssignment:
         if not self.admission_id.strip() or not self.admitted_at.strip():
             msg = "An episode assignment requires its own admission identity and time"
             raise ValueError(msg)
-        if self.stopped is not None and self.stopped not in _ASSIGNMENT_STOPS:
+        if self.stopped is not None and self.stopped not in ASSIGNMENT_STOPS:
             msg = "A stopped episode assignment names a known stop reason"
             raise ValueError(msg)
         self._check_attempt()

@@ -28,7 +28,7 @@ from anishift.services.torrents.errors import TorrentClientError
 
 _NOW: datetime = datetime.now(UTC)
 
-_SELECTED: list[int] = [0, 0, 0, 0, 1, 1]
+_SELECTED: list[int] = [1, 1]
 
 
 class _AiredCatalog(Catalog):
@@ -190,11 +190,11 @@ def _started(state: WatchState) -> bool:
 
 @pytest.mark.integration
 @pytest.mark.usefixtures("quick")
-def test_a_due_target_downloads_only_its_episode_across_an_owner_restart_and_finishes_the_season(
+def test_a_due_target_downloads_its_single_episode_release_across_an_owner_restart_and_finishes_the_season(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    torrent, info_hash = make_pack(tmp_path / "seed-data")
+    torrent, info_hash = make_pack(tmp_path / "seed-data", episodes=(3,))
     seed_requests: list[httpx.Request] = []
     receiver_requests: list[httpx.Request] = []
     priorities: list[list[int]] = []
@@ -219,7 +219,7 @@ def test_a_due_target_downloads_only_its_episode_across_an_owner_restart_and_fin
     assert _adds(receiver_requests) == [info_hash]
     assert catalog.asked == [3]
     assert priorities[-1] == _SELECTED
-    assert {tuple(item) for item in priorities} <= {(1, 1, 1, 1, 1, 1), tuple(_SELECTED)}
+    assert {tuple(item) for item in priorities} == {tuple(_SELECTED)}
     assert len(final.acquisitions) == 1
     satisfied: EpisodeAssignment = _assert_finished_season(store, final, tmp_path / "workspace")
     assert (satisfied.subscription_id, satisfied.attempt, satisfied.verification) == ("neko", 1, "no_contradiction")
@@ -237,8 +237,8 @@ def test_a_release_without_video_is_rejected_cancelled_and_replaced_by_the_next_
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    bad, bad_hash = make_pack(tmp_path / "seed-data", name="F7-silent", video=False)
-    good, good_hash = make_pack(tmp_path / "seed-data")
+    bad, bad_hash = make_pack(tmp_path / "seed-data", name="F7-silent", video=False, episodes=(3,))
+    good, good_hash = make_pack(tmp_path / "seed-data", episodes=(3,))
     seed_requests: list[httpx.Request] = []
     receiver_requests: list[httpx.Request] = []
     priorities: list[list[int]] = []
@@ -277,3 +277,41 @@ def test_a_release_without_video_is_rejected_cancelled_and_replaced_by_the_next_
         (item["verdict"], item["reason"]) for item in _decisions(store) if item.get("source") == "h2"
     ]
     assert checks == [("reject", "no_video_stream"), ("no_contradiction", "duration_within_tolerance")]
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures("quick")
+def test_a_pack_revealed_by_metadata_is_cancelled_before_content_without_spending_the_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    torrent, info_hash = make_pack(tmp_path / "seed-data")
+    seed_requests: list[httpx.Request] = []
+    receiver_requests: list[httpx.Request] = []
+    priorities: list[list[int]] = []
+    catalog: _AiredCatalog = _AiredCatalog(info_hash)
+    _subscribed(tmp_path)
+    with (
+        private_client(tmp_path / "seed", monkeypatch, seed_requests) as (seed, seed_api, peer),
+        private_client(tmp_path / "receiver", monkeypatch, receiver_requests) as (receiver, api, receiver_peer),
+    ):
+        _seed(seed, seed_api, tmp_path / "seed-data", (torrent,))
+        links: tuple[tuple[httpx.Client, httpx.Client], tuple[int, int]] = ((api, seed_api), (peer, receiver_peer))
+        with resident(tmp_path, receiver, catalog, DefaultMediaProbe()) as (owner, _service, _client):
+
+            def stopped(state: WatchState) -> bool:
+                target: SubscriptionTarget = state.subscriptions[0].targets[0]
+                return target.reason == "pack" and not receiver.torrents("AniShift")
+
+            _follow(owner, receiver, *links, stopped, priorities)
+            final: WatchState = owner.state
+
+    assert _adds(receiver_requests) == [info_hash]
+    target: SubscriptionTarget = final.subscriptions[0].targets[0]
+    assert (target.state, target.attempts, target.started, target.tried) == (TargetState.DUE, 0, 1, (info_hash,))
+    assert len(final.acquisitions) == 1
+    assert not final.acquisitions[0].content_started
+    stopped_attempt: EpisodeAssignment = final.acquisitions[0].assignments[0]
+    assert (stopped_attempt.stopped, stopped_attempt.files) == ("pack", ())
+    assert not final.ready_groups
+    assert not list((tmp_path / "workspace").glob("*.mkv"))

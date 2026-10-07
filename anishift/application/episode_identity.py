@@ -68,6 +68,15 @@ PLEX_SUFFIX: Final[re.Pattern[str]] = re.compile(
     r"-(?:featurette|behindthescenes|deleted|interview|scene|short|other|trailer)$", re.IGNORECASE
 )
 """Recognize explicit Plex extra suffixes before the filename extension."""
+EXTRA_FOLDERS: Final[frozenset[str]] = PLEX_FOLDERS | {"extras"}
+"""Recognize complete extra-directory names counted apart from episode videos."""
+EXTRA_MARKER: Final[re.Pattern[str]] = re.compile(
+    r"(?i)(?<![^\W_])(?:nc[ ._-]?(?:op|ed)|creditless(?:[ ._-]+(?:op|ed|opening|ending))?)"
+    r"(?:[ ._-]*\d{1,2})?(?:[ ._-]*v\d)?(?![^\W_])"
+)
+"""Find an NCOP, NCED or creditless marker with its own optional number and version."""
+BRACKET_TAG: Final[re.Pattern[str]] = re.compile(r"\[([^\]]*)\]|\(([^)]*)\)")
+"""Find one bracketed tag, dropped only when its content is technical or a checksum."""
 LANGUAGE_FORMATS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
     (re.compile(r"剧场版|劇場版|\bфильм\b"), "MOVIE"),
     (re.compile(r"特典|番外|総集編|总集篇|特別編|特别篇|\bспешл\b"), "SPECIAL"),  # noqa: RUF001
@@ -1361,6 +1370,28 @@ def classify_release_name(target: Metadata, name: str) -> IdentityAssessment:
     stem, dot, extension = name.rpartition(".")
     text: str = stem if dot and extension.casefold() in VIDEO_EXTENSIONS else name
     return _assess(_target(target, {}), {"release": name, "filename": name}, "", text)
+
+
+def is_extra_path(path: str) -> bool:
+    """Tell whether a path is an NCOP, NCED, creditless or Plex extra without any other possible episode number."""
+    parts: list[str] = path.replace("\\", "/").split("/")
+    stem: str = parts[-1].rpartition(".")[0] or parts[-1]
+    plex: bool = PLEX_SUFFIX.search(stem) is not None or any(_normalize(part) in EXTRA_FOLDERS for part in parts[:-1])
+    texts: list[str] = [
+        BRACKET_TAG.sub(lambda tag: " " if _technical(_normalize(tag.group(1) or tag.group(2))) else tag[0], part)
+        for part in (*parts[:-1], stem)
+    ]
+    marked: str = EXTRA_MARKER.sub(" ", texts[-1])
+    return (plex or marked != texts[-1]) and not any(
+        char.isnumeric() for text in (*texts[:-1], marked) for char in text
+    )
+
+
+def episode_video_count(paths: Sequence[str]) -> int:
+    """Count episode videos among torrent paths; recognized extras count only when nothing else is a video."""
+    videos: list[str] = [path for path in paths if path.rpartition(".")[2].casefold() in VIDEO_EXTENSIONS]
+    episodes: list[str] = [path for path in videos if not is_extra_path(path)]
+    return len(episodes or videos)
 
 
 def is_conflict(assessment: IdentityAssessment) -> bool:

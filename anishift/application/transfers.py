@@ -12,28 +12,39 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Final
 
 from anishift.application.acquisition_staging import lexical_path, staged_file, torrent_relative_path
-from anishift.application.control import REMOVED_FROM_CLIENT, AcquisitionState
+from anishift.application.control import REMOVED_FROM_CLIENT, AcquisitionState, choice_traits
 from anishift.application.discovery import SOURCE_SUBTITLE_FORMATS, VIDEO_SOURCE_SUFFIXES
-from anishift.application.episode_identity import IdentityVerdict, classify
+from anishift.application.episode_identity import IdentityVerdict, classify, episode_video_count
 from anishift.application.events import failure_code, sanitize_event_message
 from anishift.application.products import PRODUCT_SUFFIXES
+from anishift.application.release_quality import release_traits
+from anishift.application.subscription_choice import is_taken
 from anishift.errors import AniShiftError
 from anishift.platform.directory_watch import source_is_available
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Collection, Mapping, Sequence
 
     from anishift.application.acquisition import AcquisitionService
-    from anishift.application.control import AcquisitionConfirmation, FileReservation, TorrentioReference
+    from anishift.application.control import (
+        AcquisitionConfirmation,
+        EpisodeChoice,
+        FileReservation,
+        TorrentioReference,
+    )
+    from anishift.application.release_quality import ReleaseTraits
+    from anishift.application.subscription_choice import ProtectedFile
     from anishift.services.torrents import TorrentFile, TorrentInfo
 
 __all__ = [
+    "MetadataCheck",
     "TransferInspector",
     "episode_files",
     "file_map_revision",
     "flat_layout",
     "flat_names",
+    "metadata_check",
     "reserved_stem",
     "video_sidecars",
 ]
@@ -74,6 +85,14 @@ _FAILURES_BEFORE_PROBLEM: Final[int] = 3
 
 _MISSING_BEFORE_TRANSITION: Final[int] = 3
 """Consecutive successful list reads missing a hash before its transfer becomes uncertain or removed."""
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataCheck:
+    """Files a subscription attempt binds after metadata, or the reason it stops before content starts."""
+
+    files: tuple[TorrentFile, ...]
+    stopped: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -360,30 +379,68 @@ def file_map_revision(files: Sequence[TorrentFile]) -> str:
 def episode_files(
     files: Sequence[TorrentFile], reference: TorrentioReference, target: Mapping[str, object], release: str
 ) -> tuple[TorrentFile, ...]:
-    """Select one uniquely named video, otherwise one decisive H1 match, with its exact sidecars."""
+    """Select nothing for several H1 matches, else one uniquely named video or the one match, with exact sidecars."""
     file_map_revision(files)
     videos: tuple[TorrentFile, ...] = tuple(
         item for item in files if torrent_relative_path(item.name).suffix.casefold() in VIDEO_SOURCE_SUFFIXES
     )
+    matched: tuple[TorrentFile, ...] = tuple(item for item in videos if _matches(item, target, release))
+    if len(matched) > 1:
+        return ()
     named: tuple[TorrentFile, ...] = tuple(
         item for item in videos if torrent_relative_path(item.name).name == reference.file_name
     )
     if len(named) == 1:
         return video_sidecars(files, named[0])
-    matched: tuple[TorrentFile, ...] = tuple(
-        item
-        for item in videos
-        if classify(
-            target,
-            {
-                "release": release,
-                "path": item.name,
-                "filename": torrent_relative_path(item.name).name,
-            },
-        ).verdict
-        is IdentityVerdict.MATCH
+    return video_sidecars(files, matched[0]) if matched else ()
+
+
+def metadata_check(
+    files: Sequence[TorrentFile], choice: EpisodeChoice, protected: Collection[ProtectedFile]
+) -> MetadataCheck:
+    """Bind the file of a subscription attempt from the client list, or name why the attempt stops before content."""
+    reference: TorrentioReference = choice.reference
+    paths: list[str] = [torrent_relative_path(item.name).as_posix() for item in files]
+    videos: tuple[TorrentFile, ...] = tuple(
+        item for item in files if torrent_relative_path(item.name).suffix.casefold() in VIDEO_SOURCE_SUFFIXES
     )
-    return video_sidecars(files, matched[0]) if len(matched) == 1 else ()
+    matched: int = sum(1 for item in videos if _matches(item, choice.target, reference.release))
+    chosen: tuple[TorrentFile, ...] = episode_files(files, reference, choice.target, reference.release)
+    if matched > 1 or episode_video_count(paths) > 1:
+        return MetadataCheck((), "ambiguous" if matched > 1 else "pack")
+    if not chosen:
+        return MetadataCheck((), "no_match")
+    video: TorrentFile = next(item for item in chosen if item in videos)
+    path: str = torrent_relative_path(video.name).as_posix()
+    stops: tuple[tuple[bool, str], ...] = (
+        (not _matches(video, choice.target, reference.release), "recheck"),
+        (is_taken(reference.info_hash, path, protected), "taken"),
+        (_unusable(choice, path), "recheck"),
+    )
+    stopped: str | None = next((reason for hit, reason in stops if hit), None)
+    return MetadataCheck(() if stopped else chosen, stopped)
+
+
+def _unusable(choice: EpisodeChoice, path: str) -> bool:
+    if choice.traits is not None and choice.traits.unusable:
+        return True
+    name: str = PurePosixPath(path).name
+    if name == choice.reference.file_name:
+        return False
+    names: tuple[str, ...] = (choice.reference.release,) if choice.reference.release else ()
+    traits: ReleaseTraits = release_traits(
+        names, (), (), file=path, pack=False, donghua=False, seeders=None, file_names=(name,)
+    )
+    return bool(choice_traits(traits).unusable)
+
+
+def _matches(file: TorrentFile, target: Mapping[str, object], release: str) -> bool:
+    candidate: dict[str, object] = {
+        "release": release,
+        "path": file.name,
+        "filename": torrent_relative_path(file.name).name,
+    }
+    return classify(target, candidate).verdict is IdentityVerdict.MATCH
 
 
 def video_sidecars(files: Sequence[TorrentFile], video: TorrentFile) -> tuple[TorrentFile, ...]:

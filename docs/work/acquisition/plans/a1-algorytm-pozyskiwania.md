@@ -1874,6 +1874,31 @@ z 2026-10-06 wpisane w kroki K2, K5, K8, K9, K16 i mapę §3.
   przerywa rundy; każdy cel jest rozliczany osobno (§6.4, `sources_down_since`). Wyjątek celu
   pozostaje wynikiem rundy (`last_check`, bez `checked_at`); sama niedostępność kończy rundę błędem
   tylko, gdy dotyczyła wszystkich przeszukanych celów. Błąd wspólnego odczytu listy kończy rundę.
+- **Po metadanych (K13):** zamiast osobnego `_stop_after_metadata` zatrzymanie zapisuje
+  `metadata_check` w `EpisodeAssignment.stopped` przy mapowaniu (`_record_mapping`), a zwykłe
+  rozliczenie (`_attempt_fact` → `settle_target` z `TargetFacts.refunded`) zamyka próbę, zwraca
+  `attempts` i anuluje własny transfer albo wycofuje zakres współdzielonego. Wideo odcinków w spisie
+  liczy jedna reguła `episode_video_count` wspólna z `is_pack` (doprecyzowanie spec §2: niejednoznaczny
+  plik zostaje w zliczaniu; dodatek to tylko NCOP/NCED/creditless albo katalog/sufiks Plex bez innego
+  znaku liczbowego w całej ścieżce, a PV/CM/menu/OP/ED itd. liczą się jako odcinek; znane ograniczenie:
+  NCOP/NCED/creditless w tytule serii bez innych cyfr w nazwach plików); niejednoznaczność
+  sprawdzana jest przed paczką. Ponowna kontrola użyteczności ocenia `release_traits` nazwy pliku ze
+  spisu tylko, gdy różni się od już ocenionej `reference.file_name`; brak pełnych list audio w
+  zapisanym wyborze sprawia, że wcześniejsza pełna lista nie przesłania znacznika dubbingu w nowej
+  nazwie. Znaczniki `HardSub`/`RAW` w nazwie pliku zatrzymuje już H1 (`no_match`), dubbing -
+  `recheck`. `taken` liczy chronione pliki innych transferów i
+  pliki już związane w tym samym transferze. Próbę na paczce, także dołączoną do ręcznego transferu,
+  automat zawsze zatrzymuje (decyzja właściciela), więc dawne scenariusze E3 ze wspólną paczką
+  sprawdzają teraz zatrzymanie; scenariusze pauzy transferu mieszanego odtwarzają stan zapisany przed
+  K13 (mapowanie bez `metadata_check`). Testy integracyjne subskrypcji z prawdziwym qB seedują
+  wydanie jednego odcinka (`make_pack(..., episodes=(3,))`); zatrzymanie `pack` z oddaniem limitu
+  pokrywa scenariusz bez qB.
+- **Próg (K13):** `raise_threshold` nie trafił do `subscription_choice` (cykl importu z
+  `subscription_targets`); minimum klas liczy `settle_target` z `TargetFacts.dead`. Test odbioru
+  "zatrzymanie po metadanych → restart → inne wydanie" leży w `test_subscription_scenarios.py`
+  (`test_after_metadata_restart_admits_other_same_count`), bo tylko tamta uprząż ma wyszukiwanie;
+  `test_manual_ambiguous_file_waits_for_u18c` leży w `test_episode_commands.py` obok uprzęży
+  ręcznego wyboru pliku.
 
 ## 12. Poza zakresem (spec A §11)
 

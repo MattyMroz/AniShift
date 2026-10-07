@@ -82,7 +82,13 @@ def _encode(value: object) -> bytes:
     raise TypeError(type(value).__name__)
 
 
-def make_pack(root: Path, *, name: str = "F7-pack", video: bool = True) -> tuple[bytes, str]:
+def make_pack(
+    root: Path,
+    *,
+    name: str = "F7-pack",
+    video: bool = True,
+    episodes: tuple[int, ...] = (1, 2, 3),
+) -> tuple[bytes, str]:
     root.mkdir(parents=True, exist_ok=True)
     picture: list[str] = (
         ["-f", "lavfi", "-i", "testsrc2=size=160x90:rate=12", "-c:v", "libx264", "-preset", "ultrafast"]
@@ -116,7 +122,7 @@ def make_pack(root: Path, *, name: str = "F7-pack", video: bool = True) -> tuple
     pack.mkdir()
     files: list[dict[bytes, object]] = []
     payload: bytes = b""
-    for number in (1, 2, 3):
+    for number in episodes:
         for suffix, data in (
             ("mkv", episode),
             ("srt", f"1\n00:00:00,200 --> 00:00:01,500\nSynthetic episode {number}.\n".encode()),
