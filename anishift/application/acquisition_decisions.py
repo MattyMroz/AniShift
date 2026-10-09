@@ -82,6 +82,7 @@ _FIELDS: Final[frozenset[str]] = frozenset(
         "polish",
         "polish_audio_beside_original",
         "english_subtitles",
+        "subtitles_listed",
         "audio",
         "raw",
         "hardsub",

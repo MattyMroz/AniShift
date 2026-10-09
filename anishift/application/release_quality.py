@@ -93,6 +93,7 @@ class ReleaseTraits:
     platform: bool
     bluray: bool
     seeders: int | None
+    subtitles_listed: bool
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -409,4 +410,5 @@ def release_traits(  # noqa: PLR0913 - explicit pure boundary mirrors the acquis
         platform=any(_WEB_RE.search(name) and _PLATFORM_RE.search(name) for name in all_names),
         bluray=any(_BLURAY_RE.search(name) for name in all_names),
         seeders=seeders,
+        subtitles_listed=any(declaration.subtitles and not declaration.partial_subtitles for declaration in scoped),
     )

@@ -21,6 +21,7 @@ from test_acquisition import (
     _Clock,
     _episode_service,
     _EpisodeCatalog,
+    _FailingStreams,
     _slime_streams,
     _StreamSource,
     _TitleCatalog,
@@ -31,26 +32,32 @@ from test_episode_selection import _fixture_graph, _fixture_mapping, _stream
 
 from anishift.application import AppService
 from anishift.application import automation as automation_module
+from anishift.application.acquisition import AcquisitionService, ListingRead
 from anishift.application.automation import AutomationOwner
 from anishift.application.control import (
     AcquisitionConfirmation,
     AcquisitionState,
     AdmissionSource,
     AutomationPolicy,
+    ChoiceTraits,
     EpisodeAssignment,
     EpisodeChoice,
     LegacyOrder,
     TorrentioReference,
     WatchState,
+    compact_acquisition,
 )
 from anishift.application.control_views import decode_view
+from anishift.application.episode_commands import EpisodeStatus
 from anishift.application.episode_identity import IdentityVerdict
-from anishift.application.episode_search import EpisodeSearch
-from anishift.application.episode_selection import AniZipMapping, ListedSpecial, StreamCandidate
+from anishift.application.episode_search import EpisodeSearch, SourceSwitches
+from anishift.application.episode_selection import AniZipMapping, EpisodeKey, ListedSpecial, StreamCandidate
 from anishift.application.intents import RequestOrigin
+from anishift.application.release_quality import PolishClass, ResolutionClass
 from anishift.application.subscription_targets import (
     MAX_SUBSCRIPTIONS,
     PauseReason,
+    PolishSkip,
     SubscriptionCheck,
     SubscriptionProblem,
     SubscriptionRecord,
@@ -62,6 +69,7 @@ from anishift.application.subscription_targets import (
 )
 from anishift.application.subscriptions import Subscription, SubscriptionStore
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
+from anishift.config.user_settings import UserSettings
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.platform.local_control import MAX_FRAME_BYTES, ControlErrorCode, ControlResponse
 from anishift.services.catalog import EpisodeAiring, SeasonAiring, TitleCatalogError, TitleStatus
@@ -310,6 +318,7 @@ class _World:
     catalog: object = None
     bridges: _Bridges | None = None
     search: EpisodeSearch | None = None
+    polish_wait_h: int = 0
 
     def now(self) -> datetime:
         return datetime.fromtimestamp(self.clock.now, UTC)
@@ -337,6 +346,7 @@ def _following(
     tmp_path: Path, state: WatchState, world: _World, *, shadow: bool = False
 ) -> Iterator[tuple[AutomationOwner, WatchStateStore]]:
     service, _, _ = _library(tmp_path)
+    service.user_settings = UserSettings(subscription_polish_wait_h=world.polish_wait_h)
     service.acquisition = _episode_service(
         tmp_path,
         world.titles,
@@ -418,11 +428,13 @@ def test_a_shadow_check_proposes_one_match_and_admits_nothing(tmp_path: Path) ->
     assert [(item["kind"], item.get("source"), item["entry"]) for item in decisions] == [
         ("check", "ani.zip", "shadow"),
         ("check", "torrentio", "shadow"),
+        ("polish", None, "shadow"),
         ("proposal", None, "shadow"),
     ]
     assert decisions[0]["mapping_source"] == "live"
     assert decisions[1]["result"] == "match"
-    assert decisions[2]["key"] == {"anilist_id": _S4, "number": 23}
+    assert (decisions[2]["result"], decisions[2]["reason"]) == ("unknown", "no_polish_after_wait")
+    assert decisions[3]["key"] == {"anilist_id": _S4, "number": 23}
     assert logged == [
         {
             "logger_name": "anishift.application.automation",
@@ -1218,3 +1230,322 @@ def test_a_target_unreleased_a_week_after_airing_is_reported_once(tmp_path: Path
     escalations: list[dict[str, object]] = [item for item in _decisions(tmp_path) if item["kind"] == "escalation"]
     assert [(item["key"], item["reason"]) for item in escalations] == [({"anilist_id": _S4, "number": 23}, "late")]
     assert saved.acquisitions == ()
+
+
+def _status(owner: AutomationOwner, number: int = 23) -> EpisodeStatus:
+    answer: ControlResponse = _ask(owner, "episode_states", {"anilist_id": _S4, "numbers": [number]}, "states")
+    items: object = answer.result["items"]
+    assert isinstance(items, list)
+    return decode_view(EpisodeStatus, items[0])
+
+
+def _now(owner: AutomationOwner, command_id: str = "now", number: int = 23) -> ControlResponse:
+    return _ask(owner, "subscription_check", {"subscription_id": "a", "number": number}, command_id)
+
+
+def test_a_due_target_without_polish_waits_and_shows_the_end_of_its_wait(tmp_path: Path) -> None:
+    world: _World = _World(polish_wait_h=2)
+    with _following(tmp_path, _active(_followed()), world) as (owner, store):
+        record: SubscriptionRecord = _checked(owner, store)
+        status: EpisodeStatus = _status(owner)
+
+    assert record.last_check is not None
+    assert (record.targets[0].state, record.last_check.outcome) == (TargetState.DUE, "no_match")
+    assert record.targets[0].polish_skip is None
+    assert (status.polish, status.polish_wait_until, status.polish_skipped) == (
+        "unknown",
+        (_NOW + timedelta(hours=1)).isoformat(),
+        False,
+    )
+    polish: list[dict[str, object]] = [item for item in _decisions(tmp_path) if item["kind"] == "polish"]
+    assert [(item["result"], item["source"], item["reason"]) for item in polish] == [
+        ("unknown", None, "waiting_polish")
+    ]
+
+
+def test_download_now_admits_a_waiting_target_once_and_survives_a_restart(tmp_path: Path) -> None:
+    world: _World = _World(polish_wait_h=2)
+    with _following(tmp_path, _active(_followed()), world) as (owner, store):
+        _checked(owner, store)
+        answer: ControlResponse = _now(owner)
+        _settled(owner)
+        repeated: ControlResponse = _now(owner)
+        _settled(owner)
+        status: EpisodeStatus = _status(owner)
+        first: WatchState = owner._on_owner(store.load)
+    with _following(tmp_path, _active(_followed()), world) as (owner, store):
+        _ask(owner, "subscription_check", {"subscription_id": "a"}, "again")
+        _settled(owner)
+        saved: WatchState = owner._on_owner(store.load)
+
+    assert answer.result == {"subscription_id": "a", "checking": True, "number": 23}
+    assert repeated.result == answer.result
+    assert status.polish_wait_until is None
+    target: SubscriptionTarget = saved.subscriptions[0].targets[0]
+    assert (target.state, target.attempts) == (TargetState.ATTEMPTING, 1)
+    assert target.polish_skip is not None
+    assert (target.polish_skip.due, target.polish_skip.settled) == ((_NOW - timedelta(hours=1)).isoformat(), True)
+    assert len(first.acquisitions) == len(saved.acquisitions) == 1
+    skips: list[dict[str, object]] = [item for item in _decisions(tmp_path) if item["kind"] == "skip_polish_wait"]
+    assert [(item["key"], item["due_at"], item["entry"]) for item in skips] == [
+        ({"anilist_id": _S4, "number": 23}, target.polish_skip.due, "subscription")
+    ]
+
+
+def test_download_now_during_an_ongoing_check_admits_once(tmp_path: Path) -> None:
+    world: _World = _World(polish_wait_h=2)
+    held: _HeldStreams = _HeldStreams(_slime_streams().answers)
+    world.streams = held
+    target: SubscriptionTarget = SubscriptionTarget(23, (_NOW - timedelta(hours=1)).isoformat(), TargetState.DUE, 0)
+    with _following(tmp_path, _active(_followed(targets=(target,))), world) as (owner, store):
+        assert held.entered.wait(_TIMEOUT_S)
+        answer: ControlResponse = _now(owner)
+        held.release.set()
+        assert _await(
+            lambda: owner._on_owner(lambda: not owner._subscription_checks and not owner._subscription_requests)
+        )
+        saved: WatchState = owner._on_owner(store.load)
+
+    assert answer.ok
+    assert (saved.subscriptions[0].targets[0].state, len(saved.acquisitions)) == (TargetState.ATTEMPTING, 1)
+    assert len(_attempts(saved)) == 1
+
+
+def test_download_now_for_another_target_during_a_check_is_served_by_the_next_one(tmp_path: Path) -> None:
+    def skip_of_23() -> PolishSkip | None:
+        return next(item.polish_skip for item in owner.state.subscriptions[0].targets if item.number == 23)
+
+    world: _World = _World(polish_wait_h=2)
+    held: _HeldStreams = _HeldStreams({})
+    world.streams = held
+    targets: tuple[SubscriptionTarget, ...] = (
+        SubscriptionTarget(22, (_NOW - timedelta(hours=1) - _WEEK).isoformat(), TargetState.DUE),
+        SubscriptionTarget(23, (_NOW - timedelta(hours=1)).isoformat(), TargetState.DUE),
+    )
+    record: SubscriptionRecord = _followed(
+        subscribed_at=(_NOW - timedelta(days=9)).isoformat(), cut=21, targets=targets
+    )
+    with _following(tmp_path, _active(record), world) as (owner, store):
+        assert held.entered.wait(_TIMEOUT_S)
+        answer: ControlResponse = _now(owner)
+        held.release.set()
+        assert _await(lambda: owner._on_owner(lambda: (skip := skip_of_23()) is not None and skip.settled))
+        _settled(owner)
+        saved: WatchState = owner._on_owner(store.load)
+
+    assert answer.ok
+    found: dict[int, SubscriptionTarget] = {item.number: item for item in saved.subscriptions[0].targets}
+    skip: PolishSkip | None = found[23].polish_skip
+    assert skip is not None
+    assert (found[23].state, skip.settled, skip.tried) == (TargetState.DUE, True, False)
+    assert held.asked.count((_KITSU, 23)) == 2
+    assert world.clock.now == _NOW.timestamp()
+
+
+def test_download_now_failing_its_search_returns_the_target_to_its_grid(tmp_path: Path) -> None:
+    world: _World = _World(polish_wait_h=2)
+    world.streams = _FailingStreams()
+    due: str = (_NOW - timedelta(hours=1)).isoformat()
+    asked: str = (_NOW - timedelta(minutes=5)).isoformat()
+    target: SubscriptionTarget = SubscriptionTarget(23, due, TargetState.DUE, polish_skip=PolishSkip(due, asked))
+    with _following(tmp_path, _active(_followed(targets=(target,))), world) as (owner, store):
+        checked: SubscriptionRecord = _checked(owner, store)
+
+    skip: PolishSkip | None = checked.targets[0].polish_skip
+    assert skip is not None
+    assert (skip.settled, skip.tried) == (False, True)
+    moment: datetime | None = next_search_at(checked.targets[0], None)
+    assert moment == datetime.fromisoformat(due)
+
+
+@pytest.mark.parametrize("seen", [None, PolishSkip("2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00")])
+def test_a_check_whose_snapshot_lacks_the_skip_neither_settles_nor_tries_it(seen: PolishSkip | None) -> None:
+    due: str = (_NOW - timedelta(hours=1)).isoformat()
+    skip: PolishSkip = PolishSkip(due, (_NOW - timedelta(minutes=5)).isoformat())
+    record: SubscriptionRecord = _followed(targets=(SubscriptionTarget(23, due, TargetState.DUE, polish_skip=skip),))
+
+    for searched, tried in (([(23, seen)], []), ([], [(23, seen)])):
+        assert automation_module._settled_skips(record, searched, tried) == record
+    assert automation_module._settled_skips(record, [], [(23, skip)]).targets[0].polish_skip == replace(
+        skip, tried=True
+    )
+
+
+def test_download_now_without_a_candidate_keeps_the_target_due_and_stops_its_wait(tmp_path: Path) -> None:
+    world: _World = _World(polish_wait_h=2)
+    world.streams = _StreamSource({})
+    with _following(tmp_path, _active(_followed()), world) as (owner, store):
+        _checked(owner, store)
+        assert _now(owner).ok
+        _settled(owner)
+        status: EpisodeStatus = _status(owner)
+        saved: WatchState = owner._on_owner(store.load)
+
+    target: SubscriptionTarget = saved.subscriptions[0].targets[0]
+    assert (target.state, saved.acquisitions) == (TargetState.DUE, ())
+    assert target.polish_skip is not None
+    assert target.polish_skip.settled
+    assert next_search_at(target, datetime.fromisoformat(saved.subscriptions[0].checked_at or "")) != _NOW
+    assert (status.polish_wait_until, status.polish_skipped) == (None, True)
+
+
+@pytest.mark.parametrize(("wait_h", "number"), [(0, 23), (2, 24), (2, 99)], ids=["no-wait", "awaiting", "unknown"])
+def test_download_now_refuses_a_target_not_waiting_without_a_change(tmp_path: Path, wait_h: int, number: int) -> None:
+    world: _World = _World(polish_wait_h=wait_h)
+    world.streams = _StreamSource({})
+    with _following(tmp_path, _active(_followed()), world) as (owner, store):
+        _checked(owner, store)
+        before: WatchState = owner._on_owner(store.load)
+        answer: ControlResponse = _now(owner, number=number)
+        saved: WatchState = owner._on_owner(store.load)
+
+    assert (answer.code, answer.reason) == (ControlErrorCode.REFUSED, "target_not_waiting")
+    assert saved.subscriptions == before.subscriptions
+    assert "now" not in {item.command_id for item in saved.command_receipts}
+
+
+def test_download_now_settles_only_targets_searched_with_their_sources_available(tmp_path: Path) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "torrentio.strem.fun" and request.url.path.endswith(":23.json"):
+            return httpx.Response(200, json={"streams": []}, headers={"content-type": "application/json"})
+        return httpx.Response(500)
+
+    world: _World = _World(polish_wait_h=2)
+    control: RequestControl = controlled(respond)
+    asked: str = (_NOW - timedelta(minutes=5)).isoformat()
+    targets: tuple[SubscriptionTarget, ...] = tuple(
+        SubscriptionTarget(number, due, TargetState.DUE, polish_skip=PolishSkip(due, asked))
+        for number, due in (
+            (22, (_NOW - timedelta(hours=1) - _WEEK).isoformat()),
+            (23, (_NOW - timedelta(hours=1)).isoformat()),
+        )
+    )
+    record: SubscriptionRecord = _followed(
+        subscribed_at=(_NOW - timedelta(days=9)).isoformat(), cut=21, targets=targets
+    )
+    with httpx.Client(transport=control) as http:
+        world.search = search_service(http, control)
+        with _following(tmp_path, _active(record), world) as (owner, store):
+            checked: SubscriptionRecord = _checked(owner, store)
+
+    found: dict[int, SubscriptionTarget] = {item.number: item for item in checked.targets}
+    assert checked.checked_at == _NOW.isoformat()
+    assert found[22].sources_down_since == _NOW.isoformat()
+    assert [
+        (item.number, item.polish_skip.settled, item.polish_skip.tried)
+        for item in checked.targets
+        if item.polish_skip is not None
+    ] == [(22, False, True), (23, True, False)]
+    moment: datetime | None = next_search_at(found[22], _NOW)
+    assert moment is not None
+    assert moment > _NOW
+
+
+def test_a_target_check_with_the_polish_history_sends_at_most_14_tsukihime_requests(tmp_path: Path) -> None:
+    name: str = "[SubsPlease] Tensei Shitara Slime Datta Ken S4 - 23 (1080p)"
+    paths: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path.endswith(f"/animes/anilist/{_S4}"):
+            return httpx.Response(200, json={"id": 77})
+        if "/episodes/" in request.url.path:
+            start: int = int(request.url.params["offset"])
+            rows: list[dict[str, object]] = [
+                {"id": number + 1, "btih": f"{number:040x}", "name": name, "filecount": 1, "sublangs": ["en"]}
+                for number in range(start, start + 100)
+            ]
+            return httpx.Response(200, json={"results": rows, "total": 300, "start": start, "limit": 100})
+        return httpx.Response(202, json={"id": 5})
+
+    world: _World = _World()
+    control: RequestControl = controlled(respond)
+    with httpx.Client(transport=control) as http:
+        acquisition: AcquisitionService = _episode_service(
+            tmp_path, world.titles, world.episodes, world.streams, clock=world.clock, request_control=control
+        )
+        acquisition._episode_search = search_service(http, control)
+        read: ListingRead = acquisition.read_listing(_S4)
+        counts: list[tuple[int, int]] = []
+        for _ in range(2):
+            paths.clear()
+            acquisition.subscription_check(
+                EpisodeKey(_S4, 23),
+                read,
+                SourceSwitches(True, False, False, False, False),
+                failures=(),
+                excluded=frozenset(),
+                tsukihime_id=None,
+                history_at=_NOW,
+            )
+            counts.append((len(paths), sum(path.endswith("/episodes/22") for path in paths)))
+
+    assert counts == [(14, 1), (14, 2)]
+
+
+def test_subscription_revision_grows_with_each_subscription_change_only(tmp_path: Path) -> None:
+    world: _World = _World(polish_wait_h=2)
+    world.streams = _StreamSource({})
+    with _following(tmp_path, _active(_followed()), world) as (owner, store):
+        _checked(owner, store)
+        checked: object = owner._on_owner(owner._status)["subscriptions_revision"]
+        owner._on_owner(lambda: owner._save(replace(owner.state, recipes=owner.state.recipes)))
+        unchanged: object = owner._on_owner(owner._status)["subscriptions_revision"]
+        assert _now(owner).ok
+        _settled(owner)
+        skipped: object = owner._on_owner(owner._status)["subscriptions_revision"]
+
+    assert isinstance(checked, int)
+    assert isinstance(skipped, int)
+    assert unchanged == checked
+    assert skipped > checked
+
+
+def test_local_polish_evidence_survives_restart_and_compaction(tmp_path: Path) -> None:
+    previous: AcquisitionConfirmation = replace(
+        _closed_attempt("previous"),
+        operation_id="previous-operation",
+        info_hash="1" * 40,
+        episode="22",
+        state=AcquisitionState.COMPLETE,
+        cleaned=True,
+        assignments=(
+            replace(
+                _closed_attempt("previous").assignments[0],
+                choice=EpisodeChoice(
+                    _S4,
+                    22,
+                    TorrentioReference("1" * 40, 0, "Slime - 22.mkv", "", ()),
+                    {"local_episode": 22},
+                    IdentityVerdict.MATCH,
+                    "match",
+                    traits=ChoiceTraits(PolishClass.POLISH, ResolutionClass.FULL_HD),
+                ),
+                replaced=False,
+            ),
+        ),
+    )
+    compacted: AcquisitionConfirmation = compact_acquisition(previous)
+    world: _World = _World(polish_wait_h=6)
+    world.streams = _StreamSource({})
+    state: WatchState = replace(_active(_followed()), acquisitions=(compacted,))
+    with _following(tmp_path, state, world) as (owner, store):
+        _checked(owner, store)
+    with _following(tmp_path, state, world) as (owner, store):
+        _ask(owner, "subscription_check", {"subscription_id": "a"}, "again")
+        _settled(owner)
+        status: EpisodeStatus = _status(owner)
+
+    assert (compacted.assignments[0].choice.target, compacted.assignments[0].choice.reference.release) == ({}, "")
+    assert (status.polish, status.polish_wait_until) == ("present", (_NOW + timedelta(hours=5)).isoformat())
+    polish: list[dict[str, object]] = [item for item in _decisions(tmp_path) if item["kind"] == "polish"]
+    assert [(item["result"], item["source"]) for item in polish] == [("present", "local")] * 2
+
+
+def _attempts(state: WatchState) -> list[EpisodeAssignment]:
+    return [
+        assignment
+        for transfer in state.acquisitions
+        for assignment in transfer.assignments
+        if assignment.source is AdmissionSource.SUBSCRIPTION
+    ]

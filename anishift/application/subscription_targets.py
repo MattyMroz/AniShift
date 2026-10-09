@@ -56,6 +56,7 @@ __all__ = [
     "next_search_at",
     "search_targets",
     "settle_target",
+    "skip_active",
     "subscription_row",
 ]
 
@@ -169,11 +170,12 @@ class PolishObservation:
 
 @dataclass(frozen=True, slots=True)
 class PolishSkip:
-    """User's request to stop waiting for Polish subtitles, bound to the deadline it was made for."""
+    """User's request to stop waiting for Polish, bound to its deadline; *tried* marks a check that held it unserved."""
 
     due: str
     at: str
     settled: bool = False
+    tried: bool = False
 
     def __post_init__(self) -> None:
         _required(self.due)
@@ -513,11 +515,19 @@ def merge_listing(
     return _reviewed(updated) if reviewing else updated
 
 
+def skip_active(target: SubscriptionTarget) -> bool:
+    """Whether the user's request to stop waiting for Polish still binds the current deadline of *target*."""
+    return target.polish_skip is not None and target.polish_skip.due == target.due_at
+
+
 def next_search_at(target: SubscriptionTarget, checked_at: datetime | None) -> datetime | None:
-    """Return the first search moment of a due *target* after *checked_at* on its 15 min, hour and day grid."""
+    """Return the first search of a due *target* after *checked_at* on its grid, or its untried Polish skip."""
     due: datetime | None = _moment(target.due_at)
     if target.state is not TargetState.DUE or due is None:
         return None
+    skip: PolishSkip | None = target.polish_skip
+    if skip is not None and skip_active(target) and not skip.settled and not skip.tried:
+        return _required(skip.at)
     if checked_at is None or checked_at < due:
         return due
     age: timedelta = checked_at - due

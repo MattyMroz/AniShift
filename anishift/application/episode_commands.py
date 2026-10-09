@@ -97,6 +97,8 @@ class EpisodeStatus:
     """Project the latest real admission or the scoped legacy uncertainty of one episode.
 
     ``attempt`` marks an unfinished subscription attempt, which an explicit order replaces instead of waiting for it.
+    A due subscription target carries its Polish history in ``polish``, the end of its Polish wait in
+    ``polish_wait_until`` while it waits, and ``polish_skipped`` once the user ended that wait.
     """
 
     key: EpisodeKey
@@ -107,6 +109,9 @@ class EpisodeStatus:
     uncertain: bool = False
     set_id: str | None = None
     attempt: bool = False
+    polish: str | None = None
+    polish_wait_until: str | None = None
+    polish_skipped: bool = False
 
     @property
     def active(self) -> bool:

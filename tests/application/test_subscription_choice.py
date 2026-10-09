@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from typing import Final
 
 import pytest
@@ -9,6 +10,7 @@ from anishift.application.control import (
     AcquisitionConfirmation,
     AcquisitionState,
     AdmissionSource,
+    ChoiceTraits,
     EpisodeAssignment,
     EpisodeChoice,
     FileReservation,
@@ -18,21 +20,34 @@ from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.intents import RequestOrigin
 from anishift.application.release_quality import AudioClass, PolishClass, ReleaseTraits, ResolutionClass
 from anishift.application.subscription_choice import (
+    NO_POLISH_AFTER_WAIT,
+    Blocker,
     ChoiceCandidate,
+    ChoiceDecision,
+    ChoiceState,
     ProtectedFile,
     ReadOutcome,
     admissible,
     choose,
     completion_order,
+    decide,
     is_taken,
     pending_releases,
+    polish_admitted,
+    polish_history,
     protected_file,
     protected_files,
     record_failures,
     replacement,
     usable,
+    wait_until,
 )
-from anishift.application.subscription_targets import MAX_TRANSIENT_FAILURES, ReleaseFailure
+from anishift.application.subscription_targets import (
+    MAX_TRANSIENT_FAILURES,
+    PolishObservation,
+    PolishState,
+    ReleaseFailure,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -43,7 +58,7 @@ _C: Final[str] = "c" * 40
 
 def _traits(**changes: object) -> ReleaseTraits:
     traits: ReleaseTraits = ReleaseTraits(
-        PolishClass.POLISH, False, False, AudioClass.ORIGINAL, False, False, False, 1080, False, False, 10
+        PolishClass.POLISH, False, False, AudioClass.ORIGINAL, False, False, False, 1080, False, False, 10, False
     )
     return replace(traits, **changes)  # type: ignore[arg-type]
 
@@ -235,7 +250,12 @@ def test_replacement_none_when_no_admissible() -> None:
 
 
 def _held(
-    number: int, *, files: tuple[FileReservation, ...] = (), video_path: str | None = None, info_hash: str = _A
+    number: int,
+    *,
+    files: tuple[FileReservation, ...] = (),
+    video_path: str | None = None,
+    info_hash: str = _A,
+    traits: ChoiceTraits | None = None,
 ) -> AcquisitionConfirmation:
     choice: EpisodeChoice = EpisodeChoice(
         7,
@@ -244,6 +264,7 @@ def _held(
         {"local_episode": number},
         IdentityVerdict.MATCH,
         "match",
+        traits=traits,
     )
     assignment: EpisodeAssignment = EpisodeAssignment(
         f"held-{number}",
@@ -307,3 +328,103 @@ def test_tried_hash_excluded_only_for_own_target() -> None:
     assert not admissible(other_file, excluded={_A}, threshold=None)
     assert admissible(other_file, excluded={_B}, threshold=None)
     assert usable(other_file)
+
+
+_DUE: Final[datetime] = datetime(2026, 10, 7, 18, tzinfo=UTC)
+
+
+def _state(*, waits_h: int = 2, skip_wait: bool = False) -> ChoiceState:
+    return ChoiceState(
+        excluded=frozenset(),
+        threshold=None,
+        failures=(),
+        tsukihime=True,
+        wait_until=_DUE + timedelta(hours=waits_h),
+        skip_wait=skip_wait,
+    )
+
+
+def test_decide_admits_polish_at_once() -> None:
+    polish: ChoiceCandidate = _item()
+
+    assert decide((polish,), _state(), _DUE) == ChoiceDecision(polish, Blocker.NONE)
+
+
+def test_decide_waits_for_polish_until_the_wait_ends() -> None:
+    bare: ChoiceCandidate = _item(polish=PolishClass.NONE)
+
+    assert decide((bare,), _state(), _DUE + timedelta(minutes=119)) == ChoiceDecision(
+        None, Blocker.WAITING_POLISH, _DUE + timedelta(hours=2)
+    )
+
+
+def test_decide_admits_without_polish_after_the_wait() -> None:
+    bare: ChoiceCandidate = _item(polish=PolishClass.BARE)
+
+    assert decide((bare,), _state(), _DUE + timedelta(hours=2)) == ChoiceDecision(
+        bare, Blocker.NONE, reason=NO_POLISH_AFTER_WAIT
+    )
+
+
+def test_skip_wait_admits_without_polish_at_once() -> None:
+    bare: ChoiceCandidate = _item(polish=PolishClass.NONE)
+
+    assert decide((bare,), _state(skip_wait=True), _DUE) == ChoiceDecision(bare, Blocker.NONE)
+
+
+def test_skip_wait_still_needs_an_admissible_release() -> None:
+    assert decide((_item(raw=True),), _state(skip_wait=True), _DUE) == ChoiceDecision(None, Blocker.NO_ADMISSIBLE)
+
+
+def test_decide_waits_when_the_first_choice_lacks_polish_even_beside_a_worse_polish_one() -> None:
+    bare: ChoiceCandidate = _item(_A, polish=PolishClass.NONE, resolution=1080)
+    polish: ChoiceCandidate = _item(_B, resolution=720)
+
+    assert decide((bare, polish), _state(), _DUE).blocker is Blocker.WAITING_POLISH
+    assert decide((bare, polish), _state(), _DUE + timedelta(hours=2)).candidate is bare
+
+
+def test_polish_history_local_evidence_wins_over_an_observation() -> None:
+    absent: PolishObservation = PolishObservation(PolishState.ABSENT, _DUE.isoformat())
+
+    assert polish_history(absent, local=True) is PolishState.PRESENT
+
+
+@pytest.mark.parametrize("state", list(PolishState))
+def test_polish_history_keeps_the_last_observation(state: PolishState) -> None:
+    assert polish_history(PolishObservation(state, _DUE.isoformat()), local=False) is state
+
+
+def test_polish_history_unknown_without_evidence() -> None:
+    assert polish_history(None, local=False) is PolishState.UNKNOWN
+
+
+def test_polish_history_local_evidence_from_any_admission_of_the_previous_episode() -> None:
+    held: AcquisitionConfirmation = _held(3, traits=ChoiceTraits(PolishClass.POLISH, ResolutionClass.FULL_HD))
+
+    assert polish_admitted((held,), 7, 3)
+    assert not polish_admitted((held,), 7, 4)
+    assert not polish_admitted((held,), 8, 3)
+
+
+@pytest.mark.parametrize(
+    "traits", [None, ChoiceTraits(PolishClass.BARE, ResolutionClass.FULL_HD)], ids=["none", "bare"]
+)
+def test_polish_history_no_local_evidence_without_polish_traits(traits: ChoiceTraits | None) -> None:
+    assert not polish_admitted((_held(3, traits=traits),), 7, 3)
+
+
+@pytest.mark.parametrize(
+    ("history", "wait_h", "hours"),
+    [
+        (PolishState.PRESENT, 6, 6),
+        (PolishState.ABSENT, 6, 0),
+        (PolishState.UNKNOWN, 6, 2),
+        (PolishState.UNKNOWN, 1, 1),
+        (PolishState.PRESENT, 0, 0),
+        (PolishState.UNKNOWN, 0, 0),
+    ],
+    ids=["present", "absent", "unknown-capped", "unknown-short", "present-off", "unknown-off"],
+)
+def test_wait_until_follows_the_history_and_setting(history: PolishState, wait_h: int, hours: int) -> None:
+    assert wait_until(_DUE, history, wait_h) == _DUE + timedelta(hours=hours)

@@ -912,6 +912,22 @@ def test_tsukihime_id_roundtrip(tmp_path: Path, tsukihime_id: int | None) -> Non
     assert store.load().subscriptions[0].tsukihime_id == tsukihime_id
 
 
+@pytest.mark.parametrize("tried", [False, True])
+def test_polish_skip_roundtrip_and_reads_a_skip_saved_without_tried(tmp_path: Path, tried: bool) -> None:
+    state: WatchState = _schema_five_state()
+    target: SubscriptionTarget = state.subscriptions[0].targets[0]
+    skip: PolishSkip = PolishSkip(_TIMESTAMP, _TIMESTAMP, tried=tried)
+    record: SubscriptionRecord = replace(state.subscriptions[0], targets=(replace(target, polish_skip=skip),))
+    document: dict[str, object] = _saved_document(tmp_path, replace(state, subscriptions=(record,)))
+    saved: dict[str, object] = cast("dict[str, object]", _five_objects(document)["target"][0]["polish_skip"])
+
+    assert saved == {"due": _TIMESTAMP, "at": _TIMESTAMP, "settled": False, "tried": tried}
+    assert _store(tmp_path).load().subscriptions[0].targets[0].polish_skip == skip
+    saved.pop("tried")
+    (tmp_path / WATCH_STATE_FILE_NAME).write_text(json.dumps(document), encoding="utf-8")
+    assert _store(tmp_path).load().subscriptions[0].targets[0].polish_skip == replace(skip, tried=False)
+
+
 def test_failures_roundtrip(tmp_path: Path) -> None:
     document: dict[str, object] = _saved_document(tmp_path, _schema_five_state())
     target: dict[str, object] = _five_objects(document)["target"][0]
@@ -1008,7 +1024,7 @@ def test_compaction_keeps_the_choice_traits_through_a_restart(tmp_path: Path) ->
 
 def test_choice_traits_snapshot_the_ranked_release_facts() -> None:
     traits: ReleaseTraits = ReleaseTraits(
-        PolishClass.POLISH, False, False, AudioClass.ORIGINAL, True, True, False, 720, False, False, None
+        PolishClass.POLISH, False, False, AudioClass.ORIGINAL, True, True, False, 720, False, False, None, False
     )
 
     assert choice_traits(traits) == ChoiceTraits(PolishClass.POLISH, ResolutionClass.HD, ("dub_only", "raw"))

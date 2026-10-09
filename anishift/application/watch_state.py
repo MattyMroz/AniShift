@@ -178,8 +178,8 @@ _FAILURE_KEYS: Final[frozenset[str]] = frozenset({"hash", "decisive", "transient
 _POLISH_KEYS: Final[frozenset[str]] = frozenset({"state", "observed_at"})
 """Keys a serialized Polish observation must carry."""
 
-_POLISH_SKIP_KEYS: Final[frozenset[str]] = frozenset({"due", "at", "settled"})
-"""Keys a serialized Polish skip must carry."""
+_POLISH_SKIP_KEYS: Final[frozenset[str]] = frozenset({"due", "at", "settled", "tried"})
+"""Keys a serialized Polish skip carries; ``tried`` may be absent and then reads as false."""
 
 _TRAITS_KEYS: Final[frozenset[str]] = frozenset({"polish", "resolution", "unusable"})
 """Keys serialized choice traits must carry."""
@@ -1086,7 +1086,12 @@ def _encode_subscription(record: SubscriptionRecord) -> dict[str, object]:
                 "sources_down_since": item.sources_down_since,
                 "polish_skip": None
                 if item.polish_skip is None
-                else {"due": item.polish_skip.due, "at": item.polish_skip.at, "settled": item.polish_skip.settled},
+                else {
+                    "due": item.polish_skip.due,
+                    "at": item.polish_skip.at,
+                    "settled": item.polish_skip.settled,
+                    "tried": item.polish_skip.tried,
+                },
             }
             for item in record.targets
         ],
@@ -1233,8 +1238,14 @@ def _decode_polish(raw: object) -> PolishObservation:
 
 
 def _decode_polish_skip(raw: object) -> PolishSkip:
-    document: dict[str, object] = _strict_object(raw, _POLISH_SKIP_KEYS, "Polish skip")
-    return PolishSkip(_text(document, "due"), _text(document, "at"), settled=_flag(document, "settled"))
+    stored: dict[str, object] = _strict_mapping(raw, "Polish skip")
+    document: dict[str, object] = _strict_object({"tried": False, **stored}, _POLISH_SKIP_KEYS, "Polish skip")
+    return PolishSkip(
+        _text(document, "due"),
+        _text(document, "at"),
+        settled=_flag(document, "settled"),
+        tried=_flag(document, "tried"),
+    )
 
 
 def _decode_mapping(raw: object) -> AniZipMapping:

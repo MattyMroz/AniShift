@@ -150,7 +150,7 @@ krok z §7.
 | §6.2 po metadanych | zatrzymanie, wykluczenie, bez zużycia limitu; restart → inne wydanie z tym samym licznikiem | `transfers.py` → `metadata_check`; `automation.py` → `_stop_after_metadata` | `test_subscription_attempts.py::test_after_metadata_restart_admits_other_same_count` | K13 |
 | §6.3 historia PL | trzy stany, lokalny dowód najpierw (trwały snapshot cech przyjęcia), błąd zachowuje obserwację | `subscription_choice.py` → `polish_history`; `SubscriptionTarget.polish`; `EpisodeChoice.traits` (§6.1 planu) | `test_subscription_choice.py::test_polish_history_*` (≥8 przypadków); `test_subscription_owner.py::test_local_polish_evidence_survives_restart_and_compaction` | K11, K14 |
 | §6.3 bufor, 0, zmiana od najbliższego sprawdzenia | ustawienie godzin | `user_settings.py` → `subscription_polish_wait_h`; `subscription_choice.py` → `wait_until` | `::test_wait_until_*`; `test_user_settings.py::test_polish_wait_range` | K9, K14 |
-| §6.3 „Pobierz teraz” (O-2) | kończy czekanie tylko dla celu i bieżącego terminu; od razu sprawdzenie i pierwszy dopuszczalny §6.2 bez `niepewnego`; bez kandydata cel należny z powodem §8; trwałe, w rejestrze decyzji | istniejące polecenie `subscription_check` (`automation.py:3548`, `_request_subscription_check` :3654–3668) z `number` celu; `SubscriptionTarget.polish_skip`; `subscription_choice.decide` (`ChoiceState.skip_wait`); U08 klawisz `T` | `test_subscription_choice.py::test_skip_wait_*`; `test_subscription_owner.py::test_download_now_*`; `tests/cli/test_subscriptions_panel.py::test_download_now_key`, `::test_polish_state_per_target`, `::test_polish_state_refreshes_on_revision`, `::test_download_now_refusal_refreshes`; `test_subscription_owner.py::test_subscriptions_revision_changes_only_on_target_state`; `test_subscription_targets.py::test_next_search_at_unsettled_skip_is_now` | K14 |
+| §6.3 „Pobierz teraz” (O-2) | kończy czekanie tylko dla celu i bieżącego terminu; od razu sprawdzenie i pierwszy dopuszczalny §6.2 bez `niepewnego`; bez kandydata cel należny z powodem §8; trwałe, w rejestrze decyzji | istniejące polecenie `subscription_check` (`automation.py:3548`, `_request_subscription_check` :3654–3668) z `number` celu; `SubscriptionTarget.polish_skip`; `subscription_choice.decide` (`ChoiceState.skip_wait`); U08 klawisz `T` | `test_subscription_choice.py::test_skip_wait_*`; `test_subscription_owner.py::test_download_now_*`; `tests/cli/test_subscriptions_panel.py::test_download_now_key`, `::test_polish_state_per_target`, `::test_polish_state_refreshes_on_revision`, `::test_download_now_refusal_refreshes`; `test_subscription_owner.py::test_subscription_revision_grows_with_each_subscription_change_only`; `test_subscription_targets.py::test_next_search_at_unsettled_skip_is_now` | K14 |
 | §6.3 w trakcie / po buforze | pierwszy z PL od razu; po buforze pierwszy dopuszczalny z powodem | `subscription_choice.py` → `decide` | `::test_decide_waiting_takes_polish_first`, `::test_decide_after_buffer_reason` | K14 |
 | §6.3 PL bez roli i dubbing nie kończą | | `subscription_choice.decide` | `::test_decide_bare_polish_keeps_waiting` | K14 |
 | §6.3 ręczne pobranie rezerwuje | istniejące U-16 | bez zmian (`automation.py`) | istniejący test rezerwacji w `test_subscription_owner.py` | — |
@@ -1133,10 +1133,11 @@ def offer_status(results: Sequence[SourceResult]) -> str | None
     (:3762–3764) przed odczytem zegara (:3767–3768), więc `checked_at` nie dowodzi, że runda widziała
     akcję. Dlatego `_SubscriptionRead` (:644) dostaje pole `searched: tuple[tuple[int, PolishSkip |
     None], ...]` — numer i `polish_skip` z podglądu snapshotu dla każdego celu sprawdzonego w pętli
-    :3778–3787 (dopisywane razem z `offers.append`). `_finish_subscription_check` (:3798) przy
-    `failure is None` ustawia `settled = True` tylko tym celom, których bieżące `polish_skip` jest
-    nierozliczone i równe wartości (`due`, `at`) z `searched` — w tym samym zapisie co przyjęcie albo
-    wynik bez kandydata. Runda ze snapshotem sprzed akcji, runda bez tego celu i runda z błędem źródeł
+    :3778–3787 (dopisywane razem z `offers.append`). `_finish_subscription_check` (:3798) ustawia
+    `settled = True` tylko tym celom, których bieżące `polish_skip` jest równe wartości ze `searched`
+    (cel przeszukany bez niedostępności źródeł i bez wyjątku, także gdy inny cel rundy zawiódł) — w tym
+    samym zapisie co przyjęcie albo wynik bez kandydata; cel nieobsłużony przez rundę, której snapshot
+    miał pominięcie, dostaje `tried` (§11). Runda ze snapshotem sprzed akcji i runda bez tego celu
     nie rozliczają. Po rozliczeniu cel wraca do siatki U-14, a `skip_wait` dla tego `due_at` nadal
     obowiązuje. Testy (`test_subscription_owner.py`):
     `test_download_now_admits_first_admissible_without_polish`, `test_download_now_only_this_target`
@@ -1184,7 +1185,7 @@ def offer_status(results: Sequence[SourceResult]) -> str | None
     `subscriptions_revision` → panel ponownie czyta `episode_states`; `T` znika, wiersz pokazuje
     „Pobieram bez czekania na PL”), `::test_download_now_refusal_refreshes` (odmowa `T` → jeden
     odczyt `episode_states`) oraz `test_subscription_owner.py::test_download_now_publishes_state
-    i `::test_subscriptions_revision_changes_only_on_target_state` (zapis transferu nie zmienia
+    i `::test_subscription_revision_grows_with_each_subscription_change_only` (zapis transferu nie zmienia
     rewizji; akcja `T` i rozliczenie sprawdzenia ją zwiększają).
 - `acquisition_decisions.py:45` `_FIELDS` — `sources`, `candidates[].quality`,
   `candidates[].confidence`, `candidates[].conflict`, `polish_history`, `source_states`, `blocker`,
@@ -1698,7 +1699,7 @@ restart + kompaktowanie → TsukiHime niedostępne → „PL jest”). „Pobier
 `subscription_check`, stan PL celu w `episode_states`, klawisz `T` w U08 (§5.6, §5.9, §5.11); testy
 `test_skip_wait_*`, `test_next_search_at_unsettled_skip_is_now`, `test_download_now_*` (w tym trwające
 sprawdzenie innego celu, restart, brak podwójnego przyjęcia, brak kandydata), `test_download_now_key`,
-`test_polish_state_per_target`, `test_polish_state_refreshes_on_revision`, `test_download_now_refusal_refreshes`, `test_subscriptions_revision_changes_only_on_target_state`. Na żywo: wiersze celów pokazują „Czeka na PL do HH:MM”; na celu
+`test_polish_state_per_target`, `test_polish_state_refreshes_on_revision`, `test_download_now_refusal_refreshes`, `test_subscription_revision_grows_with_each_subscription_change_only`. Na żywo: wiersze celów pokazują „Czeka na PL do HH:MM”; na celu
 czekającym na PL właściciel wciska `T` → cel pobiera się od razu (albo pokazuje powód §8), wpis
 w `decisions.jsonl`, po restarcie rezydenta cel nie wraca do czekania.
 
@@ -1824,7 +1825,7 @@ Odtworzenie przez `httpx.MockTransport` po (metoda, URL, treść POST); brak odp
 | fixtury za duże | pomiar w K0: ~17 MB | rozstrzygnięte (W3): zostają w całości, `links`/`links_audio` zastępowane przy nagraniu |
 | pokrycie < 95% względem 640 | K16 | decyzja właściciela przed odbiorem (spec A §9), także przy spadku wyjaśnionym zanikiem |
 | wątki fan-outu i puli `RequestControl` a `ContextVar` scope | `test_budget_through_both_pools` | scope otwierany w wątku źródła; pula `RequestControl` przez `copy_context().run` |
-| pełny odczyt stanów odcinków przy dużej subskrypcji: do ~20 porcji `episode_states` przy 2000 celów na każdą zmianę `subscriptions_revision` | `test_subscriptions_revision_changes_only_on_target_state`, liczba wywołań w `test_polish_state_refreshes_on_revision` | zachowanie istniejące: pełny odczyt następuje przy każdej zmianie payloadu statusu (także postęp transferu co 1 s), jak przed A1; A1 dodaje tylko odczyty przy zmianie stanu celów; przy odczuwalnym koszcie — osobna zmiana odczytu stronicowanego |
+| pełny odczyt stanów odcinków przy dużej subskrypcji: do ~20 porcji `episode_states` przy 2000 celów na każdą zmianę `subscriptions_revision` | `test_subscription_revision_grows_with_each_subscription_change_only`, liczba wywołań w `test_polish_state_refreshes_on_revision` | zachowanie istniejące: pełny odczyt następuje przy każdej zmianie payloadu statusu (także postęp transferu co 1 s), jak przed A1; A1 dodaje tylko odczyty przy zmianie stanu celów; przy odczuwalnym koszcie — osobna zmiana odczytu stronicowanego |
 
 ### 10.2 Niewiadome (sprawdzane w K0)
 
@@ -1899,6 +1900,48 @@ z 2026-10-06 wpisane w kroki K2, K5, K8, K9, K16 i mapę §3.
   (`test_after_metadata_restart_admits_other_same_count`), bo tylko tamta uprząż ma wyszukiwanie;
   `test_manual_ambiguous_file_waits_for_u18c` leży w `test_episode_commands.py` obok uprzęży
   ręcznego wyboru pliku.
+- **Historia PL (K14):** zamiast nowego `PolishHistory` służy istniejący `PolishState`, a
+  `polish_history(observation, *, local)` przyjmuje najpierw obserwację. `Blocker` ma tylko `NONE`,
+  `NO_ADMISSIBLE` i `WAITING_POLISH`; pozostałe powody należą do K15. `previous_history` zwraca
+  `PolishState | None`: `None` (niepełna lista bez PL albo błąd odczytu) zachowuje ostatnią
+  obserwację, którą owner zapisuje jako `PolishObservation` w `_searched`. „PL nie ma” dowodzi wiersz
+  bez konfliktu z `ReleaseTraits.subtitles_listed`: pełna (nie częściowa) lista napisów w zakresie
+  reprezentatywnego pliku według §5.2, więc deklaracja pliku wygrywa z deklaracją wydania, a paczka
+  liczy się przez swój plik odcinka. Deklaracje plików pochodzą z zapamiętanych spisów TsukiHime;
+  historia nie odczytuje nowych spisów. Pole trafia też do allowlisty rejestru decyzji. „Minęły 24 h”
+  liczy się od emisji poprzedniego odcinka z listy odcinków. Budżet §3.1 (14 żądań TsukiHime na
+  sprawdzenie celu) obejmuje odczyt ID tytułu: gdy sprawdzenie celu go wykonało
+  (`SearchOutcome.title_read`), historia czyta najwyżej 1 stronę zamiast 2. Obcinana jest historia,
+  nie uzupełnienia, bo uzupełnienia rozstrzygają bieżący wybór, a niepełna lista poprzedniego odcinka
+  bez PL tylko zachowuje ostatnią obserwację. Historia jest czytana tylko wtedy, gdy może zmienić decyzję
+  (`_polish_matters`: czekanie > 0, brak aktywnego pominięcia, znany termin i trwający bufor), więc
+  budżet żądań sprawdzeń bez czekania się nie zmienia; ścieżka bez `EpisodeSearch` (sam Torrentio)
+  historii nie czyta. Lokalny dowód daje każde przypisanie poprzedniego odcinka, także zastąpione,
+  z `choice.traits.polish == POLISH`. Przy czekaniu 0 wybór bez PL dostaje powód
+  `no_polish_after_wait`. Rozliczenie idzie wyłącznie ze snapshotu rundy (§5.9, R10-1): pominięcie
+  równe wartości ze snapshotu celu przeszukanego bez niedostępności źródeł i bez wyjątku dostaje
+  `settled`, także gdy inny cel rundy zawiódł. Cel, którego snapshot miał to pominięcie, ale runda go
+  nie obsłużyła (niedostępne źródła albo wyjątek), dostaje `PolishSkip.tried` i wraca do zwykłej
+  siatki `next_search_at`, bez pętli natychmiastowych sprawdzeń; pominięcie nadal obowiązuje przy jego
+  wyborze. Runda ze snapshotem sprzed prośby nie zmienia ani `settled`, ani `tried`, więc cel jest
+  sprawdzany od razu po jej końcu. `tried` jest zapisywane w stanie; pominięcie zapisane bez tego pola
+  czyta się jako `tried = false`. Runda, która zaczęła się przed prośbą, decyduje już na bieżącym
+  stanie celu, więc może przyjąć wydanie bez czekania, nie rozliczając pominięcia; po przyjęciu cel
+  nie jest należny, więc nierozliczone pominięcie nie wywołuje kolejnego sprawdzenia.
+- **Rejestr i widok PL (K14):** każdy należny cel sprawdzenia dopisuje wpis `polish` (stan historii,
+  źródło `local`/`tsukihime`/brak, powód decyzji, termin), a „Pobierz teraz” wpis `skip_polish_wait`.
+  Powód „brak PL po {bufor}” jest na razie tylko w rejestrze (`no_polish_after_wait`); widok powodów
+  §8 to K15. Kolumna Stan ma stałe 16 komórek, więc wiersz celu pokazuje „Czeka na PL” albo „Bez
+  czekania PL”, a godzinę podaje linia faktów U08 dla celu pod kursorem (bez stanu PL pod kursorem:
+  najniższy cel ze stanem PL), zawsze z numerem: „E4 PL: … · czekam do HH:MM”; ta sama linia jest
+  pod `?`. Do tego `EpisodeStatus.polish` niesie stan historii. Stopka z „T pobierz teraz”
+  pomija „P ponownie”, bo na celu czekającym P nic nie robi; dzięki temu klawisze mieszczą się w 50
+  kolumnach. `subscriptions_revision` rośnie przy każdej zmianie `WatchState.subscriptions` (także
+  po samym sprawdzeniu), nie przy innych zapisach. Testy U08 leżą w
+  `tests/cli/test_subscription_draft.py`, bo tam jest uprząż szczegółów. Uprzęże testów sprzed K14
+  (`_Service`, `_real_service`, `episode_download_support.resident`) ustawiają
+  `subscription_polish_wait_h=0`, żeby zachować dotychczasowe zachowanie; testy K14 ustawiają
+  czekanie jawnie.
 
 ## 12. Poza zakresem (spec A §11)
 

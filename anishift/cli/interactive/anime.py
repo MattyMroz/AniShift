@@ -62,6 +62,7 @@ from anishift.cli.interactive.subscription_texts import (
     check_text,
     earlier_episodes,
     episode_label,
+    polish_line,
     row_state,
     row_summary,
     subscription_draft,
@@ -384,7 +385,7 @@ class AnimeController:
         self._list_batch: str | None = None
         self._list_notice: str | None = None
         self._list_hold: bool = False
-        self._subscription_command: tuple[str, Mapping[str, object]] | None = None
+        self._subscription_command: tuple[str, Mapping[str, object], int | None] | None = None
         self._subscribed: dict[int, Mapping[str, object]] = {}
         self._paused: bool = False
         self._from_subscriptions: bool = False
@@ -534,10 +535,10 @@ class AnimeController:
                     (row for row in rows if row.get("subscription_id") == identifier), self._subscription
                 )
 
-    def take_subscription_command(self) -> tuple[str, Mapping[str, object]] | None:
-        """Hand one subscription command chosen in the details to the panel, which owns command workers."""
+    def take_subscription_command(self) -> tuple[str, Mapping[str, object], int | None] | None:
+        """Hand one subscription command chosen in the details, with its target number, to the panel."""
         with self._lock:
-            command: tuple[str, Mapping[str, object]] | None = self._subscription_command
+            command: tuple[str, Mapping[str, object], int | None] | None = self._subscription_command
             self._subscription_command = None
             return command
 
@@ -597,13 +598,28 @@ class AnimeController:
             "text:x": "subscription_remove",
             "delete": "subscription_remove",
         }.get(folded)
+        number: int | None = self._waiting_number() if folded == "text:t" else None
+        if number is not None:
+            kind = "subscription_check"
         if kind is not None:
-            self._subscription_command = (kind, row)
+            self._subscription_command = (kind, row, number)
             self._notice = "Sprawdzam…" if kind == "subscription_check" else ""
         if kind == "subscription_remove" or key in {"escape", "interrupt"}:
             self._leave_subscriptions()
             return AnimeResult.SUBSCRIPTIONS
         return None if kind is None else AnimeResult.CONTINUE
+
+    def _waiting_number(self) -> int | None:
+        status: EpisodeStatus | None = self._cursor_status()
+        return None if status is None or status.polish_wait_until is None else status.key.number
+
+    def _cursor_status(self) -> EpisodeStatus | None:
+        listing: EpisodeListing | None = self._listing
+        shown: tuple[ListedEpisode, ...] = self._shown_episodes()
+        position: int = self._positions.get(_Screen.EPISODES, 0)
+        if listing is None or position >= len(shown):
+            return None
+        return self._episode_states.get(EpisodeKey(listing.anilist_id, shown[position].number))
 
     def _leave_subscriptions(self) -> None:
         self._generation += 1
@@ -895,12 +911,14 @@ class AnimeController:
         self._view.notice = self._view.notice or " · ".join(note for note in facts[2:] if note)
         toggle: str = "W wznów" if self._subscription.get("paused") else "W wstrzymaj"
         wide: bool = self._columns >= _WIDE_SUBSCRIPTION_KEYS
-        self._view.controls = (
+        episode_keys: str = (
             "Space zaznacz · D pobierz · I wydania · P ponownie · ? więcej"
             if wide
-            else "Space · D pobierz · P ponownie · ? więcej",
-            f"{toggle} · F szukaj{' teraz' if wide else ''} · X usuń · Esc lista",
+            else "Space · D pobierz · P ponownie · ? więcej"
         )
+        if self._waiting_number() is not None:
+            episode_keys = "T pobierz teraz · " + episode_keys.replace(" · P ponownie", "")
+        self._view.controls = (episode_keys, f"{toggle} · F szukaj{' teraz' if wide else ''} · X usuń · Esc lista")
 
     def _subscription_facts(self) -> tuple[str, ...]:
         if self._screen is not _Screen.EPISODES or self._subscription is None:
@@ -911,8 +929,26 @@ class AnimeController:
             f"{state.text} · {row_summary(self._subscription)}",
             self._last_check(),
             "" if state.detail == state.text else state.detail,
+            self._polish_line(),
             self._earlier_episodes(),
         )
+
+    def _polish_line(self) -> str:
+        listing: EpisodeListing | None = self._listing
+        due: EpisodeStatus | None = self._cursor_status()
+        if due is None or due.polish is None:
+            due = min(
+                (
+                    item
+                    for item in self._episode_states.values()
+                    if item.polish is not None and listing is not None and item.key.anilist_id == listing.anilist_id
+                ),
+                key=lambda item: item.key.number,
+                default=None,
+            )
+        if due is None:
+            return ""
+        return f"E{due.key.number} {polish_line(due.polish, due.polish_wait_until, skipped=due.polish_skipped)}"
 
     def _moment(self) -> datetime:
         return datetime.fromtimestamp(self._clock(), UTC)
@@ -2133,6 +2169,12 @@ class AnimeController:
             self._worker = None
         self._invalidate()
 
+    def polish_refused(self, notice: str) -> None:
+        """Name why the owner refused to stop a Polish wait and reread the episode states that offered it."""
+        with self._lock:
+            self._notice = notice
+        self.refresh_episode_states()
+
     def refresh_episode_states(self) -> None:
         """Refresh at most one owner page around the visible episode window."""
         with self._lock:
@@ -2479,6 +2521,10 @@ def _refused_result(reason: str) -> tuple[str, str]:
 
 
 def _episode_status_label(status: EpisodeStatus) -> str:
+    if status.polish_skipped:
+        return "Bez czekania PL"
+    if status.polish_wait_until is not None:
+        return "Czeka na PL"
     if status.reason in EPISODE_REASON_LABELS:
         return EPISODE_REASON_LABELS[status.reason]
     if status.state == "not_ordered":

@@ -17,7 +17,9 @@ __all__ = [
     "SubscriptionState",
     "check_state",
     "check_text",
+    "clock_time",
     "earlier_episodes",
+    "polish_line",
     "row_columns",
     "row_state",
     "row_summary",
@@ -57,6 +59,15 @@ _ISSUES: Final[Mapping[str, tuple[str, str]]] = MappingProxyType(
 
 _FAILED_CHECKS: Final[frozenset[str]] = frozenset({"source_failed", "rate_limited"})
 """Check outcomes in which a source did not answer."""
+
+_POLISH_HISTORY: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "present": "zwykle jest",
+        "absent": "brak w poprzednim odcinku",
+        "unknown": "nieznane",
+    }
+)
+"""Polish wording of what the previous episode says about Polish subtitles."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +227,21 @@ def check_text(check: Mapping[str, object]) -> str:
     if counts[1] or counts[2]:
         text += f" ({counts[1]} niepewnych, {counts[2]} niezgodnych)"
     return text + (" · propozycja zapisana" if outcome == "proposed" else "")
+
+
+def clock_time(moment: str) -> str:
+    """Return the local hour and minute of one ISO moment."""
+    return f"{datetime.fromisoformat(moment).astimezone():%H:%M}"
+
+
+def polish_line(history: str | None, wait_until: str | None, *, skipped: bool) -> str:
+    """Say what the previous episode tells about Polish subtitles and whether the target waits for them."""
+    seen: str = _POLISH_HISTORY.get(str(history), _POLISH_HISTORY["unknown"])
+    if skipped:
+        return f"PL: {seen} · pobieram bez czekania"
+    if wait_until is not None:
+        return f"PL: {seen} · czekam do {clock_time(wait_until)}"
+    return f"PL: {seen} · pobieram od razu"
 
 
 def _next_airing(targets: list[ListedEpisode], now: datetime) -> str:

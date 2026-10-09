@@ -31,7 +31,7 @@ from anishift.application.episode_search import (
 from anishift.application.episode_selection import EpisodeKey, FranchiseGraph, RankedCandidate, StreamCandidate
 from anishift.application.release_quality import PolishClass
 from anishift.application.subscription_choice import ReadOutcome
-from anishift.application.subscription_targets import ReleaseFailure
+from anishift.application.subscription_targets import PolishState, ReleaseFailure
 from anishift.services.catalog.types import TitleCandidate, TitleStatus
 from anishift.services.http_requests import DeadlineExceeded, RequestControl
 from anishift.services.torrents.categories import SEARCH_CATEGORIES
@@ -416,8 +416,11 @@ def test_disabled_tsukihime_no_listing_no_history() -> None:
 
     control: RequestControl = controlled(respond)
     with httpx.Client(transport=control) as http:
-        search_service(http, control).manual_offer(_REQUEST, _NYAA)
+        service: EpisodeSearch = search_service(http, control)
+        service.manual_offer(_REQUEST, _NYAA)
+        history: PolishState | None = service.previous_history(_REQUEST, _NYAA, settled=True)
     assert set(seen) == {"nyaa.si"}
+    assert history is PolishState.UNKNOWN
 
 
 def test_completion_queue_budget_retry_and_inline_inventory() -> None:
@@ -556,6 +559,131 @@ def test_subscription_check_tsukihime_budget_14() -> None:
     assert not any(path.endswith("/animes/anilist/1") for path in paths)
     assert first.tsukihime_id == 77
     assert source_row(first, "tsukihime").state is SourceState.UNFINISHED
+
+
+def _history(total: int, languages: Sequence[Sequence[str]], *, settled: bool = True) -> PolishState | None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/animes/anilist/1"):
+            return httpx.Response(200, json={"id": 77})
+        start: int = int(request.url.params["offset"])
+        rows: list[dict[str, object]] = [
+            {**row, "sublangs": list(languages[(start + index) % len(languages)])}
+            for index, row in enumerate(tsukihime_rows(start, min(20, total - start)))
+        ]
+        return httpx.Response(200, json={"results": rows, "total": total, "start": start, "limit": 20})
+
+    control: RequestControl = controlled(respond)
+    with httpx.Client(transport=control) as http:
+        return clocked(http, control, [0.0]).previous_history(_REQUEST, _TSUKIHIME_ONLY, settled=settled)
+
+
+def test_previous_history_truncated_with_polish_is_present() -> None:
+    assert _history(60, [["en"], ["pl", "en"]]) is PolishState.PRESENT
+
+
+def test_previous_history_truncated_without_polish_keeps_the_last_observation() -> None:
+    assert _history(60, [["en"]]) is None
+
+
+@pytest.mark.parametrize(
+    ("languages", "settled", "expected"),
+    [
+        ([["en"]], True, PolishState.ABSENT),
+        ([["en"]], False, PolishState.UNKNOWN),
+        ([[]], True, PolishState.UNKNOWN),
+    ],
+    ids=["absent", "too-early", "no-sublangs"],
+)
+def test_previous_history_of_a_complete_list(
+    languages: list[list[str]], *, settled: bool, expected: PolishState
+) -> None:
+    assert _history(5, languages, settled=settled) is expected
+
+
+@pytest.mark.parametrize(
+    ("name", "files", "expected"),
+    [
+        ("Star Garden - 05 [1080p]", [("Star Garden - 05 [1080p].mkv", ["en"])], PolishState.ABSENT),
+        (
+            "Star Garden (01-12) [1080p]",
+            [("Star Garden - 05 [1080p].mkv", ["en"]), ("Star Garden - 06 [1080p].mkv", ["pl"])],
+            PolishState.ABSENT,
+        ),
+        (
+            "Star Garden (01-12) [1080p]",
+            [("Star Garden - 05 [1080p].mkv", ["pl"]), ("Star Garden - 06 [1080p].mkv", ["en"])],
+            PolishState.PRESENT,
+        ),
+    ],
+    ids=["file-languages", "pack-without-polish", "pack-with-polish"],
+)
+def test_previous_history_reads_the_subtitles_listed_for_the_episode_file(
+    name: str, files: list[tuple[str, list[str]]], expected: PolishState
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/animes/anilist/1"):
+            return httpx.Response(200, json={"id": 77})
+        if "/episodes/" in request.url.path:
+            row: dict[str, object] = {"id": 9, "btih": _HASH, "name": name, "filecount": len(files), "sublangs": []}
+            return httpx.Response(200, json={"results": [row], "total": 1, "start": 0, "limit": 100})
+        listed: list[dict[str, object]] = [
+            {"filename": filename, "size": 12, "sublangs": languages} for filename, languages in files
+        ]
+        return httpx.Response(200, json={"id": 9, "filecount": len(files), "files": listed})
+
+    control: RequestControl = controlled(respond)
+    with httpx.Client(transport=control) as http:
+        service: EpisodeSearch = clocked(http, control, [0.0])
+        before: PolishState | None = service.previous_history(_REQUEST, _TSUKIHIME_ONLY, settled=True)
+        service.manual_offer(_REQUEST, _TSUKIHIME_ONLY)
+        history: PolishState | None = service.previous_history(_REQUEST, _TSUKIHIME_ONLY, settled=True)
+
+    assert before is PolishState.UNKNOWN
+    assert history is expected
+
+
+def test_previous_history_reads_only_the_pages_left_in_the_budget() -> None:
+    pages: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/animes/anilist/1"):
+            return httpx.Response(200, json={"id": 77})
+        pages.append(request.url.params["offset"])
+        start: int = int(request.url.params["offset"])
+        rows: list[dict[str, object]] = [{**row, "sublangs": ["en"]} for row in tsukihime_rows(start, 20)]
+        return httpx.Response(200, json={"results": rows, "total": 40, "start": start, "limit": 20})
+
+    control: RequestControl = controlled(respond)
+    with httpx.Client(transport=control) as http:
+        history: PolishState | None = clocked(http, control, [0.0]).previous_history(
+            _REQUEST, _TSUKIHIME_ONLY, settled=True, pages=1
+        )
+
+    assert pages == ["0"]
+    assert history is None
+
+
+def test_previous_history_without_a_tsukihime_title_is_unknown() -> None:
+    control: RequestControl = controlled(lambda request: httpx.Response(404))
+    with httpx.Client(transport=control) as http:
+        history: PolishState | None = clocked(http, control, [0.0]).previous_history(
+            _REQUEST, _TSUKIHIME_ONLY, settled=True
+        )
+    assert history is PolishState.UNKNOWN
+
+
+def test_previous_history_failed_list_keeps_the_last_observation() -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/animes/anilist/1"):
+            return httpx.Response(200, json={"id": 77})
+        return httpx.Response(500)
+
+    control: RequestControl = controlled(respond)
+    with httpx.Client(transport=control) as http:
+        history: PolishState | None = clocked(http, control, [0.0]).previous_history(
+            _REQUEST, _TSUKIHIME_ONLY, settled=True
+        )
+    assert history is None
 
 
 def test_pulled_source_read_once_per_hour() -> None:

@@ -309,7 +309,22 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   ścieżki chroni cały hash do metadanych. `tried` zapisuje hash i wyklucza go tylko dla własnego
   celu. `sources_down_since` celu ustawia sprawdzenie, w którym wszystkie włączone źródła
   zawiodły, a czyści udane sprawdzenie albo wyjście celu z `due`. `replacement` (R-07) zwraca
-  pierwsze przyjmowalne wydanie bez czekania na polskie i bez progu; wywołuje go E4. Wynik trafia do `last_check` i
+  pierwsze przyjmowalne wydanie bez czekania na polskie i bez progu; wywołuje go E4. Czekanie na PL
+  rozstrzyga `decide`: pierwszy wybór z PL bierze od razu, bez PL czeka do `wait_until` (historia
+  `polish_history`: lokalny dowód z `traits.polish` przypisań poprzedniego odcinka przed ostatnią
+  obserwacją TsukiHime; `subscription_polish_wait_h` z bieżących ustawień). `previous_history` czyta
+  tylko, gdy bufor jeszcze trwa; `None` zachowuje ostatnią obserwację. „PL nie ma” wymaga
+  `ReleaseTraits.subtitles_listed` (pełna lista napisów w zakresie pliku wg §5.2, także paczki; deklaracje
+  plików tylko z zapamiętanych spisów, bez nowych odczytów). Historia mieści się w budżecie 14 żądań
+  TsukiHime celu: odczyt ID tytułu (`SearchOutcome.title_read`) zabiera jej jedną stronę.
+  `subscription_check` z `number`
+  („Pobierz teraz”) zapisuje `PolishSkip` dla bieżącego terminu razem z receipt, odmawia
+  `target_not_waiting` celowi, który nie czeka; `next_search_at` daje pominięciu bez `settled` i bez
+  `tried` termin od razu. Rozliczenie idzie tylko ze snapshotu rundy: przeszukanie tego celu bez
+  niedostępności źródeł i bez wyjątku daje `settled`, nieobsłużenie przez rundę, której snapshot miał
+  pominięcie, daje `tried` (powrót na siatkę), a runda ze snapshotem sprzed prośby niczego nie zmienia.
+  Zegar ani `checked_at` nie dowodzą obsługi prośby. `subscriptions_revision` w statusie rośnie przy zmianie
+  subskrypcji. Wynik trafia do `last_check` i
   `decisions.jsonl`; `checked_at` zmienia tylko udane sprawdzenie: bez błędu i (ani.zip
   odpowiedział — `ListingRead.answered`, także pustym mapowaniem lub 404 — albo jest zapisane
   mapowanie, albo poszło zapytanie o wydania); inaczej `checked_at` zostaje, a ponowienie idzie z

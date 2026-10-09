@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
@@ -15,7 +16,12 @@ from anishift.application.release_quality import (
     class_key,
     resolution_class,
 )
-from anishift.application.subscription_targets import MAX_TRANSIENT_FAILURES, ReleaseFailure
+from anishift.application.subscription_targets import (
+    MAX_TRANSIENT_FAILURES,
+    PolishObservation,
+    PolishState,
+    ReleaseFailure,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterator, Mapping, Sequence
@@ -24,22 +30,32 @@ if TYPE_CHECKING:
     from anishift.application.episode_selection import RankedCandidate
 
 __all__ = [
+    "ABSENT_AFTER_H",
+    "NO_POLISH_AFTER_WAIT",
+    "UNKNOWN_WAIT_H",
+    "Blocker",
     "ChoiceCandidate",
+    "ChoiceDecision",
+    "ChoiceState",
     "ReadOutcome",
     "admissible",
     "choice_candidate",
     "choice_key",
     "choose",
     "completion_order",
+    "decide",
     "is_taken",
     "pending_blocks",
     "pending_releases",
+    "polish_admitted",
+    "polish_history",
     "protected_file",
     "protected_files",
     "record_failures",
     "release_hash",
     "replacement",
     "usable",
+    "wait_until",
 ]
 
 
@@ -55,6 +71,14 @@ class ReadOutcome(StrEnum):
     TIMEOUT = "timeout"
 
 
+class Blocker(StrEnum):
+    """Why one due target admits nothing in this check, or NONE when it admits a release."""
+
+    NONE = "none"
+    NO_ADMISSIBLE = "no_admissible"
+    WAITING_POLISH = "waiting_polish"
+
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 type ProtectedFile = tuple[str, str | None]
@@ -62,6 +86,15 @@ type ProtectedFile = tuple[str, str | None]
 
 _DECISIVE: Final[frozenset[ReadOutcome]] = frozenset({ReadOutcome.EMPTY, ReadOutcome.NO_HASH})
 """Inventory outcomes that end the wait for a release without giving it an inventory."""
+
+UNKNOWN_WAIT_H: Final[int] = 2
+"""Longest wait for Polish subtitles, in hours after the deadline, while the Polish history is unknown."""
+
+ABSENT_AFTER_H: Final[int] = 24
+"""Hours after the previous episode aired before its releases may prove that Polish subtitles are absent."""
+
+NO_POLISH_AFTER_WAIT: Final[str] = "no_polish_after_wait"
+"""Reason of a choice taken without Polish subtitles once the wait for them ended."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +112,28 @@ class ChoiceCandidate:
     ambiguous: bool
     supported: bool
     taken: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ChoiceState:
+    """What one due target brings to its choice: tried releases, threshold, pending reads and its Polish wait."""
+
+    excluded: frozenset[str]
+    threshold: ResolutionClass | None
+    failures: tuple[ReleaseFailure, ...]
+    tsukihime: bool
+    wait_until: datetime
+    skip_wait: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ChoiceDecision:
+    """The release one check admits for a target, or what blocks it, with the end of its Polish wait."""
+
+    candidate: ChoiceCandidate | None
+    blocker: Blocker
+    wait_until: datetime | None = None
+    reason: str | None = None
 
 
 def choice_candidate(candidate: RankedCandidate, protected: Collection[ProtectedFile] = ()) -> ChoiceCandidate:
@@ -180,6 +235,51 @@ def choose(
         _class(item) for item in allowed if item.traits.seeders != 0
     )
     return next((item for item in allowed if item.traits.seeders != 0 or _class(item) not in seeded), None)
+
+
+def decide(candidates: Sequence[ChoiceCandidate], state: ChoiceState, now: datetime) -> ChoiceDecision:
+    """Admit the first choice at once when it has Polish subtitles, otherwise only after the Polish wait or a skip."""
+    picked: ChoiceCandidate | None = choose(
+        candidates,
+        excluded=state.excluded,
+        threshold=state.threshold,
+        failures=state.failures,
+        tsukihime=state.tsukihime,
+    )
+    if picked is None:
+        return ChoiceDecision(None, Blocker.NO_ADMISSIBLE)
+    if picked.traits.polish is PolishClass.POLISH or state.skip_wait:
+        return ChoiceDecision(picked, Blocker.NONE)
+    if now < state.wait_until:
+        return ChoiceDecision(None, Blocker.WAITING_POLISH, state.wait_until)
+    return ChoiceDecision(picked, Blocker.NONE, reason=NO_POLISH_AFTER_WAIT)
+
+
+def polish_history(observation: PolishObservation | None, *, local: bool) -> PolishState:
+    """Return the Polish history of a target: a local admission with Polish first, then the last observation."""
+    if local:
+        return PolishState.PRESENT
+    return PolishState.UNKNOWN if observation is None else observation.state
+
+
+def wait_until(due: datetime, history: PolishState, wait_h: int) -> datetime:
+    """Return when a target stops waiting for Polish: the full wait, none when absent, at most two hours unknown."""
+    hours: int = {
+        PolishState.PRESENT: wait_h,
+        PolishState.ABSENT: 0,
+        PolishState.UNKNOWN: min(UNKNOWN_WAIT_H, wait_h),
+    }[history]
+    return due + timedelta(hours=hours)
+
+
+def polish_admitted(acquisitions: Sequence[AcquisitionConfirmation], anilist_id: int, number: int) -> bool:
+    """Whether any release admitted for one episode, by hand or by a subscription, had Polish subtitles."""
+    return any(
+        assignment.choice.traits is not None and assignment.choice.traits.polish is PolishClass.POLISH
+        for transfer in acquisitions
+        for assignment in transfer.assignments
+        if (assignment.choice.anilist_id, assignment.choice.number) == (anilist_id, number)
+    )
 
 
 def replacement(candidates: Sequence[ChoiceCandidate], *, excluded: Collection[str]) -> ChoiceCandidate | None:

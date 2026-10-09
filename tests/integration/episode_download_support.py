@@ -428,7 +428,7 @@ def resident(
     service: AppService = AppService(
         workspace_root=workspace,
         settings=settings,
-        user_settings=UserSettings(),
+        user_settings=UserSettings(subscription_polish_wait_h=0),
         inspector=WorkspaceInspector(DefaultMediaProbe()),
         handler_factory=Handlers(lambda: settings),
         preset_loader=default_preset_file,

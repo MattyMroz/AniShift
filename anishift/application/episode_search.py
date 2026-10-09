@@ -21,6 +21,7 @@ from anishift.application.episode_selection import (
     list_order,
     rank_candidates,
 )
+from anishift.application.release_quality import PolishClass
 from anishift.application.subscription_choice import (
     ReadOutcome,
     choice_candidate,
@@ -28,6 +29,7 @@ from anishift.application.subscription_choice import (
     pending_releases,
     record_failures,
 )
+from anishift.application.subscription_targets import PolishState
 from anishift.errors import AniShiftError
 from anishift.services.http_requests import BudgetExhausted, DeadlineExceeded, ProviderCooldown, RequestControl
 from anishift.utils.logger import get_logger
@@ -53,6 +55,9 @@ FIRST_SNAPSHOT_S: Final[float] = 3.0
 
 COMPLETION_READS: Final[int] = 10
 """Maximum inventory requests per episode search."""
+
+TSUKIHIME_PAGES: Final[int] = 2
+"""Maximum pages read from one TsukiHime episode list."""
 
 FAST_MEMORY_S: Final[float] = 1800.0
 """Age up to which a subscription check reuses the last result of a fast source skipped during its cooldown."""
@@ -147,6 +152,7 @@ class SearchOutcome:
     outcomes: Mapping[str, ReadOutcome]
     failures: tuple[ReleaseFailure, ...] = ()
     tsukihime_id: int | None = None
+    title_read: bool = False
 
 
 def http_status(error: BaseException) -> int | None:
@@ -452,6 +458,8 @@ class EpisodeSearch:
         excluded: Collection[str],
     ) -> SearchOutcome:
         """Search every enabled source within the subscription budget and return the target failures after it."""
+        with self._titles_lock:
+            known: bool = (request.tsukihime_id or self._titles.get(request.key.anilist_id)) is not None
         results: dict[SourceName, SourceResult] = {}
         for source in NAME_PRIORITY:
             if not switches.enabled(source):
@@ -504,7 +512,35 @@ class EpisodeSearch:
             outcomes,
             record_failures(failures, outcomes, tsukihime_down=down, pending=pending),
             title,
+            listing is not None and listing.state is not SourceState.SKIPPED and not known,
         )
+
+    def previous_history(
+        self, request: EpisodeRequest, switches: SourceSwitches, *, settled: bool, pages: int = TSUKIHIME_PAGES
+    ) -> PolishState | None:
+        """Read up to *pages* of the previous episode's TsukiHime list; None when the read proves nothing.
+
+        Polish on any page read proves presence; absence needs the complete list, a release whose file
+        scope lists its subtitles, and a *settled* previous episode. A failed or truncated list without
+        Polish keeps the last observation. Remembered inventories supply file declarations.
+        """
+        if not switches.tsukihime:
+            return PolishState.UNKNOWN
+        result: SourceResult = self._answer("tsukihime", request, pages=pages)
+        if result.state is SourceState.NO_TITLE:
+            return PolishState.UNKNOWN
+        rows: tuple[RankedCandidate, ...] = tuple(
+            row for row in self._snapshot(request, {"tsukihime": result}, (), switches).candidates if not row.conflict
+        )
+        history: PolishState | None = PolishState.UNKNOWN
+        if any(row.traits.polish is PolishClass.POLISH for row in rows):
+            history = PolishState.PRESENT
+        elif result.state is not SourceState.DONE:
+            history = None
+        elif settled and any(row.traits.subtitles_listed for row in rows):
+            history = PolishState.ABSENT
+        logger.info("Previous episode Polish history read", state=history, releases=len(rows))
+        return history
 
     def _subscription_answer(self, source: SourceName, request: EpisodeRequest) -> SourceResult:
         if source in _PULLED:
@@ -595,10 +631,10 @@ class EpisodeSearch:
             tuple(source for source in NAME_PRIORITY if source in pending),
         )
 
-    def _answer(self, source: SourceName, request: EpisodeRequest) -> SourceResult:
+    def _answer(self, source: SourceName, request: EpisodeRequest, *, pages: int = TSUKIHIME_PAGES) -> SourceResult:
         with self._control.scope("episode_search", {}, deadline_s=self._timeout):
             if source == "tsukihime":
-                return self._tsukihime_answer(request, [])
+                return self._tsukihime_answer(request, [], pages)
             if source == "nyaa":
                 return self._nyaa_answer(request)
             if source in self._paged:
@@ -653,7 +689,7 @@ class EpisodeSearch:
         )
         return SourceResult("torrentio", SourceState.DONE, streams)
 
-    def _tsukihime_answer(self, request: EpisodeRequest, streams: list[StreamCandidate]) -> SourceResult:
+    def _tsukihime_answer(self, request: EpisodeRequest, streams: list[StreamCandidate], pages: int) -> SourceResult:
         with self._titles_lock:
             identifier: int | None = request.tsukihime_id or self._titles.get(request.key.anilist_id)
         completed: int = 0
@@ -665,7 +701,7 @@ class EpisodeSearch:
             with self._titles_lock:
                 self._titles[request.key.anilist_id] = identifier
             offset: int = 0
-            for _ in range(2):
+            for _ in range(pages):
                 page: TsukiHimePage = self._tsukihime.episode_page(
                     identifier, 1 if request.movie else request.number, offset
                 )

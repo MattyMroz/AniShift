@@ -20,6 +20,7 @@ from anishift.application.subscription_targets import (
     MAX_ATTEMPTS,
     MAX_TRANSIENT_FAILURES,
     PauseReason,
+    PolishSkip,
     ReleaseFailure,
     SubscriptionProblem,
     SubscriptionRecord,
@@ -39,6 +40,7 @@ from anishift.application.subscription_targets import (
     next_search_at,
     search_targets,
     settle_target,
+    skip_active,
     subscription_row,
 )
 
@@ -549,6 +551,26 @@ def test_a_due_target_is_searched_on_a_grid_of_15_min_then_hours_then_days_from_
 ) -> None:
     target: SubscriptionTarget = _target(1, TargetState.DUE, _DUE)
     assert next_search_at(target, None if checked is None else _DUE + checked) == _DUE + expected
+
+
+def test_next_search_at_unsettled_skip_is_now() -> None:
+    asked: datetime = _DUE + timedelta(minutes=50)
+    skip: PolishSkip = PolishSkip(_DUE.isoformat(), asked.isoformat())
+    target: SubscriptionTarget = replace(_target(1, TargetState.DUE, _DUE), polish_skip=skip)
+
+    assert skip_active(target)
+    assert next_search_at(target, _DUE + timedelta(minutes=45)) == asked
+    assert next_search_at(target, asked + timedelta(minutes=1)) == asked
+    assert next_search_at(replace(target, polish_skip=replace(skip, tried=True)), asked) == _DUE + timedelta(hours=1)
+    assert next_search_at(replace(target, polish_skip=replace(skip, settled=True)), asked) == _DUE + timedelta(hours=1)
+
+
+def test_skip_wait_binds_only_the_deadline_it_was_made_for() -> None:
+    skip: PolishSkip = PolishSkip((_DUE - timedelta(days=7)).isoformat(), _DUE.isoformat())
+    target: SubscriptionTarget = replace(_target(1, TargetState.DUE, _DUE), polish_skip=skip)
+
+    assert not skip_active(target)
+    assert next_search_at(target, None) == _DUE
 
 
 @pytest.mark.parametrize("state", [TargetState.AWAITING_AIRING, TargetState.ATTEMPTING, TargetState.SATISFIED])

@@ -164,6 +164,7 @@ _SUBSCRIPTION_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
         "subscription_not_airing": "Ten wpis nie ma przyszłych odcinków",
         "subscription_cut_unknown": "Nie wiadomo, ile odcinków już wyemitowano · spróbuj później",
         "source_failed": "Nie udało się odczytać katalogu · spróbuj ponownie",
+        "target_not_waiting": "Ten odcinek już nie czeka na polskie napisy",
     }
 )
 """Polish subscription refusals selected by machine reason rather than application prose."""
@@ -515,9 +516,12 @@ class StateController:
             return self._subscriptions[self._selected]
         return None
 
-    def _subscription_command(self, kind: str, row: Mapping[str, object]) -> None:
+    def _subscription_command(self, kind: str, row: Mapping[str, object], number: int | None = None) -> None:
         identifier: str = str(row["subscription_id"])
         payload: dict[str, object] = {"subscription_id": identifier}
+        if number is not None:
+            self._work(lambda session: self._download_now(session, {**payload, "number": number}), success="")
+            return
         if kind == "subscription_remove":
             removed: str = f"Usunięto {_safe_text(row.get('title', ''))} · Ctrl+Z cofnij"
             self._work(lambda session: session.command(kind, payload), success=removed, persistent=True)
@@ -529,6 +533,14 @@ class StateController:
                 self._clock() + timedelta(seconds=CHECK_SHOWN_S),
             )
         self._work(lambda session: session.command(kind, payload), success="")
+
+    def _download_now(self, session: ResidentSession, payload: Mapping[str, object]) -> None:
+        try:
+            session.command("subscription_check", payload)
+        except ControlError as error:
+            if error.reason != "target_not_waiting" or self._anime is None:
+                raise
+            self._anime.polish_refused(refusal_text(error))
 
     def _show_subscription_list(self, subscription_id: str | None, notice: str) -> None:
         with self._lock:
@@ -678,7 +690,7 @@ class StateController:
         if key.casefold() == "text:o" and not anime.input_focused:
             return self._action_key("o")
         result: AnimeResult = anime.handle_key(key)
-        command: tuple[str, Mapping[str, object]] | None = anime.take_subscription_command()
+        command: tuple[str, Mapping[str, object], int | None] | None = anime.take_subscription_command()
         if result is AnimeResult.HOME:
             return StateResult.HOME
         if result is AnimeResult.SUBSCRIPTIONS:

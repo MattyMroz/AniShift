@@ -10,7 +10,7 @@ from collections import Counter, OrderedDict
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Final, Protocol, cast
 from anishift.application.acquisition_decisions import offer_check, source_error
 from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.episode_search import (
+    TSUKIHIME_PAGES,
     EpisodeRequest,
     EpisodeSearch,
     SourceSwitches,
@@ -30,6 +31,7 @@ from anishift.application.episode_search import (
 )
 from anishift.application.episode_selection import (
     AniZipMapping,
+    EpisodeKey,
     EpisodeOffer,
     ListedEpisode,
     episode_listing,
@@ -41,6 +43,8 @@ from anishift.application.episode_selection import (
     streams_releases,
     suggestion,
 )
+from anishift.application.subscription_choice import ABSENT_AFTER_H
+from anishift.application.subscription_targets import PolishState
 from anishift.errors import AniShiftError, ErrorCode
 from anishift.services.torrents.categories import (
     CATEGORY_ENGLISH_TRANSLATED,
@@ -56,7 +60,6 @@ if TYPE_CHECKING:
     from anishift.application.cancellation import CancellationToken
     from anishift.application.episode_search import SearchOutcome, SearchSnapshot
     from anishift.application.episode_selection import (
-        EpisodeKey,
         EpisodeListing,
         Franchise,
         FranchiseGraph,
@@ -441,7 +444,10 @@ class ListingRead:
 
 @dataclass(frozen=True, slots=True)
 class SubscriptionSearch:
-    """One subscription target search: its offer and H1 target, the target failures after it and source facts."""
+    """One subscription target search: its offer and H1 target, the target failures after it and source facts.
+
+    ``polish`` is the Polish history the previous episode's TsukiHime list proved, None when nothing was proved.
+    """
 
     offer: EpisodeOffer
     target: dict[str, object]
@@ -450,6 +456,7 @@ class SubscriptionSearch:
     unavailable: bool = False
     tsukihime_id: int | None = None
     queried: bool = False
+    polish: PolishState | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1013,8 +1020,12 @@ class AcquisitionService:
         failures: Sequence[ReleaseFailure],
         excluded: Collection[str],
         tsukihime_id: int | None,
+        history_at: datetime | None = None,
     ) -> SubscriptionSearch:
-        """Search one subscription target against the mapping of *read*, within the subscription source budget."""
+        """Search one subscription target against the mapping of *read*, within the subscription source budget.
+
+        With *history_at* it also reads the Polish history of the previous episode as of that moment.
+        """
         if self._episode_search is None:
             offer, target = self._torrentio_offer(key, read)
             return SubscriptionSearch(
@@ -1022,6 +1033,7 @@ class AcquisitionService:
             )
         request: EpisodeRequest = self._episode_request(key, read, manual=False, tsukihime_id=tsukihime_id)
         result: SearchOutcome = self._episode_search.subscription_check(request, switches, failures, excluded)
+        title: int | None = result.tsukihime_id or tsukihime_id
         return SubscriptionSearch(
             self._snapshot_offer(key, result.snapshot, numbering=request.numbering, exclude=None),
             dict(request.target),
@@ -1030,6 +1042,34 @@ class AcquisitionService:
             sources_unavailable(result.snapshot.sources),
             result.tsukihime_id,
             sources_answered(result.snapshot.sources),
+            None
+            if history_at is None
+            else self._previous_history(
+                request, read, switches, title, history_at, pages=TSUKIHIME_PAGES - result.title_read
+            ),
+        )
+
+    def _previous_history(  # noqa: PLR0913 - the shared request budget stays explicit
+        self,
+        request: EpisodeRequest,
+        read: ListingRead,
+        switches: SourceSwitches,
+        title: int | None,
+        now: datetime,
+        *,
+        pages: int,
+    ) -> PolishState | None:
+        if request.movie or request.number == 1 or self._episode_search is None:
+            return PolishState.UNKNOWN
+        key: EpisodeKey = EpisodeKey(request.key.anilist_id, request.number - 1)
+        aired: datetime | None = next(
+            (item.airs_at for item in read.listing.episodes if item.number == key.number), None
+        )
+        return self._episode_search.previous_history(
+            self._episode_request(key, read, manual=False, tsukihime_id=title),
+            switches,
+            settled=aired is not None and aired + timedelta(hours=ABSENT_AFTER_H) <= now,
+            pages=pages,
         )
 
     def _episode_request(

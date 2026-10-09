@@ -72,7 +72,11 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   catalogue, and „Dodatki tego sezonu” with related OVA/special entries whose Enter opens their U03), D opens the Anime
   search whose Esc returns to the list, W/Space pause/resume, F `subscription_check`, Delete/X remove,
   Ctrl+Z restore. U08 hands W/F/X to the panel through `take_subscription_command`, so command
-  workers stay in `StateController`. F shows `Sprawdzam…`, then the `subscription_checked` result
+  workers stay in `StateController`. T, only on a highlighted target whose `EpisodeStatus.polish_wait_until`
+  is set, sends `subscription_check` with its `number` and replaces `P ponownie` in the footer; the row Stan
+  is `Czeka na PL`/`Bez czekania PL`, the facts line `E{n} polish_line` names the wait of the highlighted
+  target (else the lowest target with a Polish state), and a
+  `target_not_waiting` refusal rereads episode states (`polish_refused`). F shows `Sprawdzam…`, then the `subscription_checked` result
   for `CHECK_SHOWN_S`, measured by the injected clock: `check_state` in the Stan column, `check_text`
   first beneath the table. Beneath the table stands only what the highlighted row hides: the full state
   when it differs from the short one, dropped columns, then a truncated title (`anime_view._unshown`). U08 leads its notice with the last check;

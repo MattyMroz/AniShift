@@ -319,6 +319,7 @@ class _Service:
         self.submitted_event: threading.Event = threading.Event()
         self.discover_release: threading.Event | None = None
         self.paused: list[bool] = []
+        self.user_settings: UserSettings = UserSettings(subscription_polish_wait_h=0)
 
     def discover(self, *, changed_paths: Sequence[Path] | None = None) -> object:
         del changed_paths
@@ -332,7 +333,7 @@ class _Service:
         return "preview"
 
     def settings_snapshot(self) -> UserSettings:
-        return UserSettings()
+        return self.user_settings
 
     def get_preset(self, preset_id: str) -> object:
         del preset_id
@@ -1436,6 +1437,7 @@ def _real_service(
     tmp_path: Path,
     *,
     acquisition: AcquisitionService | None = None,
+    polish_wait_h: int = 0,
 ) -> AppService:
     def unused(
         run_root: Path,
@@ -1448,7 +1450,7 @@ def _real_service(
     return AppService(
         workspace_root=tmp_path,
         settings=Settings(_env_file=None),
-        user_settings=UserSettings(),
+        user_settings=UserSettings(subscription_polish_wait_h=polish_wait_h),
         inspector=WorkspaceInspector(DefaultMediaProbe()),
         handler_factory=unused,
         preset_loader=default_preset_file,

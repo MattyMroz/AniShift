@@ -153,13 +153,19 @@ from anishift.application.results import DISPLAYED_ABSENCE_NOTE, GroupResult, Gr
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
 from anishift.application.selection import ready_group_ids, resolve_readiness
 from anishift.application.subscription_choice import (
+    Blocker,
     ChoiceCandidate,
+    ChoiceDecision,
+    ChoiceState,
     ProtectedFile,
     choice_candidate,
-    choose,
+    decide,
+    polish_admitted,
+    polish_history,
     protected_file,
     protected_files,
     release_hash,
+    wait_until,
 )
 from anishift.application.subscription_migration import legacy_reference
 from anishift.application.subscription_targets import (
@@ -170,6 +176,9 @@ from anishift.application.subscription_targets import (
     MAX_ATTEMPTS,
     MAX_SUBSCRIPTIONS,
     PauseReason,
+    PolishObservation,
+    PolishSkip,
+    PolishState,
     SubscriptionCheck,
     SubscriptionProblem,
     SubscriptionRecord,
@@ -186,6 +195,7 @@ from anishift.application.subscription_targets import (
     next_check_at,
     search_targets,
     settle_target,
+    skip_active,
     subscription_row,
 )
 from anishift.application.subscription_targets import completed as season_completed
@@ -500,6 +510,7 @@ _SUBSCRIPTION_REFUSALS: Final[Mapping[str, str]] = {
     "subscription_cut_unknown": "The episodes aired so far are unknown",
     "source_failed": "The catalogue could not be read",
     "acquisition_unavailable": "No acquisition service is configured",
+    "target_not_waiting": "This episode no longer waits for Polish subtitles",
 }
 """Messages of subscription refusals, keyed by the reason clients translate."""
 
@@ -682,6 +693,8 @@ class _SubscriptionRead:
     failure: tuple[str, datetime | None] | None = None
     failed_number: int | None = None
     errored: tuple[int, ...] = ()
+    searched: tuple[tuple[int, PolishSkip | None], ...] = ()
+    tried: tuple[tuple[int, PolishSkip | None], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -737,6 +750,7 @@ class AutomationOwner:
         self._subscription_checks: set[str] = set()
         self._subscription_requests: set[str] = set()
         self._subscription_retries: dict[str, tuple[int, datetime]] = {}
+        self._subscriptions_revision: int = 0
         self._store: WatchStateStore = store
         self._instance_id: str = instance_id
         self._clock: Clock = clock
@@ -1694,6 +1708,7 @@ class AutomationOwner:
                 "disabled": sum(item.paused for item in self._state.subscriptions),
             },
             "subscriptions_problem": self._subscriptions_problem,
+            "subscriptions_revision": self._subscriptions_revision,
             "http_requests": (
                 acquisition.request_control.counts()
                 if acquisition is not None and acquisition.request_control is not None
@@ -3694,9 +3709,33 @@ class AutomationOwner:
             return _refuse(RefusalReason.SHUTTING_DOWN)
         checking: bool = record.subscription_id in self._subscription_checks
         outcome: CommandOutcome = {"subscription_id": record.subscription_id, "checking": True}
-        refusal: ControlResponse | None = self._commit(request, self._state, outcome)
+        number: object = request.payload.get("number")
+        candidate: WatchState = self._state
+        skipped: SubscriptionTarget | None = None
+        if number is not None:
+            now: datetime = self._clock()
+            target: SubscriptionTarget | None = next(
+                (item for item in record.targets if type(number) is int and item.number == number), None
+            )
+            if target is None or target.due_at is None or self._polish_waiting(record, target, now) is None:
+                return _subscription_refused("target_not_waiting")
+            skipped = replace(target, polish_skip=PolishSkip(target.due_at, now.astimezone(UTC).isoformat()))
+            candidate = _with_target(self._state, record.subscription_id, skipped)
+            outcome = {**outcome, "number": target.number}
+        refusal: ControlResponse | None = self._commit(request, candidate, outcome)
         if refusal is not None:
             return refusal
+        if skipped is not None:
+            logger.info(
+                "Subscription Polish wait skipped", subscription_id=record.subscription_id, number=skipped.number
+            )
+            append_decision(
+                self._store.history_path().with_name("decisions.jsonl"),
+                "skip_polish_wait",
+                {**_subscription_key(record, skipped.number), "due_at": skipped.due_at},
+                entry="subscription" if self._admits else "shadow",
+            )
+            self._publish_state()
         self._subscription_requests.add(record.subscription_id)
         if not checking:
             self._start_subscription_checks((record.subscription_id,), manual=True)
@@ -3814,7 +3853,10 @@ class AutomationOwner:
         if not automatic or not _searchable(preview):
             return _SubscriptionRead(now, read)
         switches: SourceSwitches = self._source_switches()
+        wait_h: int = self._service.settings_snapshot().subscription_polish_wait_h
         offers: list[tuple[int, SubscriptionSearch]] = []
+        searched: list[tuple[int, PolishSkip | None]] = []
+        tried: list[tuple[int, PolishSkip | None]] = []
         errored: list[int] = []
         failure: tuple[str, datetime | None] | None = None
         for target in search_targets(preview, now, manual=manual):
@@ -3827,6 +3869,7 @@ class AutomationOwner:
                         failures=target.failures,
                         excluded=_excluded_hashes(target),
                         tsukihime_id=preview.tsukihime_id,
+                        history_at=now if _polish_matters(target, wait_h, now) else None,
                     )
             except (AniShiftError, OSError, ValueError) as error:
                 problem: tuple[str, datetime | None] = self._subscription_failure(
@@ -3834,15 +3877,28 @@ class AutomationOwner:
                 )
                 failure = failure or problem
                 errored.append(target.number)
+                tried.append((target.number, target.polish_skip))
                 continue
             offers.append((target.number, search))
+            (tried if search.unavailable else searched).append((target.number, target.polish_skip))
         if failure is not None:
-            return _SubscriptionRead(now, read, tuple(offers), failure, errored[0], tuple(errored))
+            return _SubscriptionRead(
+                now,
+                read,
+                tuple(offers),
+                failure,
+                errored[0],
+                tuple(errored),
+                searched=tuple(searched),
+                tried=tuple(tried),
+            )
         unavailable: tuple[int, ...] = tuple(number for number, search in offers if search.unavailable)
         if offers and len(unavailable) == len(offers):
             failure = self._subscription_failure(acquisition, "SourcesUnavailable", now)
-            return _SubscriptionRead(now, read, tuple(offers), failure, unavailable[0])
-        return _SubscriptionRead(now, read, tuple(offers))
+            return _SubscriptionRead(
+                now, read, tuple(offers), failure, unavailable[0], searched=tuple(searched), tried=tuple(tried)
+            )
+        return _SubscriptionRead(now, read, tuple(offers), searched=tuple(searched), tried=tuple(tried))
 
     def _subscription_failure(
         self, acquisition: AcquisitionService, error_class: str, now: datetime
@@ -3867,6 +3923,7 @@ class AutomationOwner:
             updated = merge_listing(current, result.read, now, (item.scope for item in self._state.legacy_orders))
             evidence.append(("check", _mapping_check(current, result.read)))
             updated = _searched(updated, result.offers, now, errored=result.errored)
+            updated = _settled_skips(updated, result.searched, result.tried)
         check: SubscriptionCheck = self._subscription_outcome(updated, result, now, evidence, chosen)
         updated = replace(updated, last_check=check)
         succeeded: bool = _check_succeeded(current, result)
@@ -3927,11 +3984,10 @@ class AutomationOwner:
             offer: EpisodeOffer = search.offer
             identity: dict[str, object] = search.target
             target: SubscriptionTarget | None = next((item for item in record.targets if item.number == number), None)
-            choice: RankedCandidate | None = (
-                self._subscription_choice(record, target, search, chosen)
-                if searchable and target is not None and target.state is TargetState.DUE and not search.unavailable
-                else None
-            )
+            choice: RankedCandidate | None = None
+            polish: dict[str, object] | None = None
+            if searchable and target is not None and target.state is TargetState.DUE and not search.unavailable:
+                choice, polish = self._subscription_choice(record, target, search, chosen, now)
             counts: dict[str, int] = offer.counts
             outcome: str = "proposed" if choice is not None else "no_match" if offer.candidates else "no_candidates"
             logger.info(
@@ -3945,6 +4001,8 @@ class AutomationOwner:
             )
             if result.read is not None:
                 evidence.append(("check", _offer_check(record, offer, target, choice, result.read.listing)))
+            if polish is not None:
+                evidence.append(("polish", polish))
             if choice is not None and target is not None and self._admits:
                 chosen.append((number, choice, identity))
             elif choice is not None and target is not None:
@@ -3982,21 +4040,66 @@ class AutomationOwner:
         target: SubscriptionTarget,
         search: SubscriptionSearch,
         chosen: Sequence[tuple[int, RankedCandidate, dict[str, object]]],
-    ) -> RankedCandidate | None:
+        now: datetime,
+    ) -> tuple[RankedCandidate | None, dict[str, object]]:
         protected: frozenset[ProtectedFile] = protected_files(
             self._state.acquisitions, (record.anilist_id, target.number)
         ) | {protected_file(row.stream.info_hash, row.stream.path) for _number, row, _identity in chosen}
         rows: tuple[tuple[RankedCandidate, ChoiceCandidate], ...] = tuple(
             (row, choice_candidate(row, protected)) for row in search.offer.candidates
         )
-        picked: ChoiceCandidate | None = choose(
+        decision: ChoiceDecision = decide(
             tuple(item for _row, item in rows),
-            excluded=_excluded_hashes(target),
-            threshold=target.threshold,
-            failures=target.failures,
-            tsukihime=search.tsukihime,
+            ChoiceState(
+                excluded=_excluded_hashes(target),
+                threshold=target.threshold,
+                failures=target.failures,
+                tsukihime=search.tsukihime,
+                wait_until=self._polish_deadline(record, target) or now,
+                skip_wait=skip_active(target),
+            ),
+            now,
         )
-        return next((row for row, item in rows if item is picked), None)
+        local: bool = record.anilist_id is not None and polish_admitted(
+            self._state.acquisitions, record.anilist_id, target.number - 1
+        )
+        polish: dict[str, object] = {
+            **_subscription_key(record, target.number),
+            "result": polish_history(target.polish, local=local).value,
+            "source": "local" if local else None if target.polish is None else "tsukihime",
+            "reason": decision.reason or decision.blocker.value,
+            "due_at": target.due_at,
+        }
+        if decision.blocker is Blocker.WAITING_POLISH:
+            logger.info(
+                "Subscription target waits for Polish subtitles",
+                subscription_id=record.subscription_id,
+                number=target.number,
+            )
+        return next((row for row, item in rows if item is decision.candidate), None), polish
+
+    def _polish_deadline(self, record: SubscriptionRecord, target: SubscriptionTarget) -> datetime | None:
+        """Return when *target* stops waiting for Polish subtitles under the current wait setting."""
+        if target.due_at is None:
+            return None
+        return wait_until(
+            datetime.fromisoformat(target.due_at),
+            self._polish_history(record, target),
+            self._service.settings_snapshot().subscription_polish_wait_h,
+        )
+
+    def _polish_history(self, record: SubscriptionRecord, target: SubscriptionTarget) -> PolishState:
+        local: bool = record.anilist_id is not None and polish_admitted(
+            self._state.acquisitions, record.anilist_id, target.number - 1
+        )
+        return polish_history(target.polish, local=local)
+
+    def _polish_waiting(self, record: SubscriptionRecord, target: SubscriptionTarget, now: datetime) -> datetime | None:
+        """Return the end of the Polish wait of a due *target* that still waits for it, without a user skip."""
+        if target.state is not TargetState.DUE or skip_active(target):
+            return None
+        deadline: datetime | None = self._polish_deadline(record, target)
+        return deadline if deadline is not None and deadline > now else None
 
     def _retry_subscription(
         self, record: SubscriptionRecord, result: _SubscriptionRead | None, now: datetime, *, succeeded: bool = True
@@ -4758,9 +4861,9 @@ class AutomationOwner:
 
     def _target_status(self, status: EpisodeStatus) -> EpisodeStatus:
         """Show an unordered episode as awaiting its airing or release when an unpaused subscription targets it."""
-        target: SubscriptionTarget | None = next(
+        found: tuple[SubscriptionRecord, SubscriptionTarget] | None = next(
             (
-                item
+                (record, item)
                 for record in self._state.subscriptions
                 if record.anilist_id == status.key.anilist_id and not record.paused
                 for item in record.targets
@@ -4768,8 +4871,19 @@ class AutomationOwner:
             ),
             None,
         )
-        reason: EpisodeReason | None = None if target is None else _TARGET_REASONS.get(target.state)
-        return status if reason is None else replace(status, reason=reason)
+        if found is None or (reason := _TARGET_REASONS.get(found[1].state)) is None:
+            return status
+        record, target = found
+        if target.state is not TargetState.DUE:
+            return replace(status, reason=reason)
+        waiting: datetime | None = self._polish_waiting(record, target, self._clock())
+        return replace(
+            status,
+            reason=reason,
+            polish=self._polish_history(record, target).value,
+            polish_wait_until=None if waiting is None else waiting.astimezone(UTC).isoformat(),
+            polish_skipped=skip_active(target),
+        )
 
     def _ready_result_missing(self, status: EpisodeStatus) -> bool:
         """Whether a ready episode's recorded main result, or its source video without one, is gone from disk."""
@@ -7269,6 +7383,8 @@ class AutomationOwner:
             return False
         previous: WatchState = self._state
         self._state = candidate
+        if candidate.subscriptions != previous.subscriptions:
+            self._subscriptions_revision += 1
         self._record_history(previous)
         self._observe_subscriptions(previous, finished)
         if acted:
@@ -8587,11 +8703,43 @@ def _searched(
             targets.append(target)
             continue
         since: str | None = (target.sources_down_since or moment) if search.unavailable else None
-        targets.append(replace(target, failures=search.failures, sources_down_since=since))
+        polish: PolishObservation | None = (
+            target.polish if search.polish is None else PolishObservation(search.polish, moment)
+        )
+        targets.append(replace(target, failures=search.failures, sources_down_since=since, polish=polish))
     title: int | None = record.tsukihime_id or next(
         (item.tsukihime_id for item in found.values() if item.tsukihime_id is not None), None
     )
     return replace(record, targets=tuple(targets), tsukihime_id=title)
+
+
+def _settled_skips(
+    record: SubscriptionRecord,
+    searched: Sequence[tuple[int, PolishSkip | None]],
+    tried: Sequence[tuple[int, PolishSkip | None]],
+) -> SubscriptionRecord:
+    return replace(record, targets=tuple(_settled_skip(item, searched, tried) for item in record.targets))
+
+
+def _settled_skip(
+    target: SubscriptionTarget,
+    searched: Sequence[tuple[int, PolishSkip | None]],
+    tried: Sequence[tuple[int, PolishSkip | None]],
+) -> SubscriptionTarget:
+    skip: PolishSkip | None = target.polish_skip
+    if skip is None:
+        return target
+    if (target.number, skip) in searched:
+        return replace(target, polish_skip=replace(skip, settled=True))
+    if (target.number, skip) in tried:
+        return replace(target, polish_skip=replace(skip, tried=True))
+    return target
+
+
+def _polish_matters(target: SubscriptionTarget, wait_h: int, now: datetime) -> bool:
+    if wait_h <= 0 or target.due_at is None or skip_active(target):
+        return False
+    return now < datetime.fromisoformat(target.due_at) + timedelta(hours=wait_h)
 
 
 def _subscription_refused(reason: str) -> ControlResponse:

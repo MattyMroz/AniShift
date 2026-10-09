@@ -38,7 +38,9 @@ from anishift.cli.interactive.subscription_texts import (
     SubscriptionState,
     check_state,
     check_text,
+    clock_time,
     earlier_episodes,
+    polish_line,
     row_columns,
     row_state,
     subscription_draft,
@@ -1210,3 +1212,128 @@ def test_the_details_keep_every_subscription_key_visible_in_a_narrow_terminal(
 
     for hint in ("D pobierz", "P ponownie", "W wstrzymaj", "F szukaj", "X usuń", "Esc lista"):
         assert hint in frame
+
+
+_WAITS: str = (_NOW + timedelta(hours=1)).isoformat()
+
+
+def _polish(owner: _Owner, monkeypatch: pytest.MonkeyPatch, states: dict[int, EpisodeStatus]) -> None:
+    _details(owner)
+
+    def statuses(identifier: int, numbers: tuple[int, ...]) -> tuple[EpisodeStatus, ...]:
+        owner.numbers.append(tuple(numbers))
+        return tuple(states[number] for number in numbers if number in states and identifier == 1)
+
+    monkeypatch.setattr(owner, "episode_states", statuses)
+
+
+def _due(number: int, **changes: object) -> EpisodeStatus:
+    status: EpisodeStatus = EpisodeStatus(
+        EpisodeKey(1, number), "not_ordered", EpisodeReason.SUBSCRIPTION_AWAITING_RELEASE, polish="unknown"
+    )
+    return replace(status, **changes)  # type: ignore[arg-type]
+
+
+def _row_of(frame: str, number: int) -> str:
+    return next(line for line in frame.splitlines() if f" {number} " in line and "Odcinek" in line)
+
+
+def test_download_now_key(panel: StateController, owner: _Owner, monkeypatch: pytest.MonkeyPatch) -> None:
+    _polish(owner, monkeypatch, {3: _due(3, polish_wait_until=_WAITS)})
+    _keys(panel, "enter", "text:t")
+    sent_on_first: list[tuple[str, object]] = [item for item in owner.calls if item[0] == "subscription_check"]
+    first: str = _frame(panel, 50, 24)
+    _keys(panel, "down", "down")
+    narrow: str = _frame(panel, 50, 24)
+    _keys(panel, "text:t")
+
+    assert sent_on_first == []
+    assert "T pobierz teraz" not in first
+    assert ("subscription_check", {"subscription_id": "a", "number": 3}) in owner.calls
+    for hint in ("T pobierz teraz", "D pobierz", "W wstrzymaj", "F szukaj", "X usuń", "Esc lista"):
+        assert hint in narrow
+    assert _anime(panel)._screen is _Screen.EPISODES
+
+
+def test_polish_state_per_target(panel: StateController, owner: _Owner, monkeypatch: pytest.MonkeyPatch) -> None:
+    _polish(owner, monkeypatch, {3: _due(3, polish_wait_until=_WAITS), 4: _due(4, polish_skipped=True)})
+    _keys(panel, "enter", "down", "down")
+    frame: str = _frame(panel)
+    joined: str = " ".join(frame.split())
+
+    assert "Czeka na PL" in _row_of(frame, 3)
+    assert "Bez czekania PL" in _row_of(frame, 4)
+    assert f"PL: nieznane · czekam do {clock_time(_WAITS)}" in joined
+
+
+def test_polish_line_follows_the_highlighted_target(
+    panel: StateController, owner: _Owner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    later: str = (_NOW + timedelta(hours=5)).isoformat()
+    _polish(owner, monkeypatch, {3: _due(3, polish_wait_until=_WAITS), 4: _due(4, polish_wait_until=later)})
+    _keys(panel, "enter")
+    first: str = " ".join(_frame(panel).split())
+    _keys(panel, "down", "down", "down")
+    highlighted: str = " ".join(_frame(panel).split())
+    _keys(panel, "text:?")
+    details: str = " ".join(_frame(panel, 50, 24).split())
+
+    assert f"E3 PL: nieznane · czekam do {clock_time(_WAITS)}" in first
+    assert f"E4 PL: nieznane · czekam do {clock_time(later)}" in highlighted
+    assert clock_time(_WAITS) not in highlighted
+    assert f"czekam do {clock_time(later)}" in details
+
+
+@pytest.mark.parametrize(
+    ("history", "wait", "skipped", "text"),
+    [
+        ("present", _WAITS, False, f"PL: zwykle jest · czekam do {clock_time(_WAITS)}"),
+        ("absent", None, False, "PL: brak w poprzednim odcinku · pobieram od razu"),
+        ("unknown", _WAITS, False, f"PL: nieznane · czekam do {clock_time(_WAITS)}"),
+        ("present", None, True, "PL: zwykle jest · pobieram bez czekania"),
+    ],
+)
+def test_polish_line_names_the_history_and_the_wait(
+    history: str, wait: str | None, *, skipped: bool, text: str
+) -> None:
+    assert polish_line(history, wait, skipped=skipped) == text
+
+
+def test_polish_state_refreshes_on_revision(
+    panel: StateController, owner: _Owner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    states: dict[int, EpisodeStatus] = {3: _due(3, polish_wait_until=_WAITS)}
+    _polish(owner, monkeypatch, states)
+    _keys(panel, "enter")
+    states[3] = _due(3, polish_skipped=True)
+    session: ResidentSession = cast(
+        "ResidentSession",
+        SimpleNamespace(command=lambda *args: {}, library=lambda: (), acquisition_states=lambda hashes: []),
+    )
+    panel._snapshot = {"auto_enabled": True, "subscriptions_revision": 1}
+    panel._receive(session, {"event": "state_changed", "payload": dict(panel._snapshot)})
+    unchanged: str = _row_of(_frame(panel), 3)
+    panel._receive(session, {"event": "state_changed", "payload": {**panel._snapshot, "subscriptions_revision": 2}})
+
+    assert "Czeka na PL" in unchanged
+    assert "Bez czekania PL" in _row_of(_frame(panel), 3)
+
+
+def test_download_now_refusal_refreshes(panel: StateController, owner: _Owner, monkeypatch: pytest.MonkeyPatch) -> None:
+    states: dict[int, EpisodeStatus] = {3: _due(3, polish_wait_until=_WAITS)}
+    _polish(owner, monkeypatch, states)
+    answer: Callable[[str, Mapping[str, object] | None], Mapping[str, object]] = owner.command
+
+    def command(kind: str, payload: Mapping[str, object] | None = None) -> Mapping[str, object]:
+        if kind == "subscription_check" and payload is not None and "number" in payload:
+            states[3] = _due(3)
+            raise ControlError("refused", code=ControlErrorCode.REFUSED, reason="target_not_waiting", answered=True)
+        return answer(kind, payload)
+
+    monkeypatch.setattr(owner, "command", command)
+    _keys(panel, "enter", "down", "down", "text:t")
+    frame: str = _frame(panel)
+
+    assert "Ten odcinek już nie czeka na polskie napisy" in " ".join(frame.split())
+    assert "Czeka na PL" not in _row_of(frame, 3)
+    assert "T pobierz teraz" not in frame
