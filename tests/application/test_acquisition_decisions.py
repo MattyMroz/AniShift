@@ -9,11 +9,12 @@ from typing import cast
 
 import httpx
 import pytest
-from test_acquisition import _episode_service
+from test_acquisition import _S4, _episode_service
 from test_automation import _real_service, _request
 from test_episode_admission import _choice
 from test_episode_commands import _batch, _choose, _offer, _running, _stream, _Streams
 from test_selective_lifecycle import _until
+from test_subscription_owner import _UNNUMBERED, _active, _checked, _followed, _following, _renumbered, _World
 
 from anishift.application import acquisition_decisions
 from anishift.application.acquisition import AcquisitionService
@@ -37,6 +38,7 @@ from anishift.application.episode_selection import (
 )
 from anishift.application.intents import RequestOrigin
 from anishift.application.service import AppService
+from anishift.application.subscription_targets import SubscriptionRecord
 from anishift.application.watch_state import WatchStateStore
 from anishift.services.torrents.names import parse_release_name
 from anishift.services.torrents.torrentio import TorrentioSource
@@ -272,3 +274,53 @@ def test_ten_thousand_completed_admissions_do_not_expand_status(tmp_path: Path) 
     finally:
         owner._pool.shutdown(wait=True)
         service.close()
+
+
+def _target_check(tmp_path: Path, world: _World, record: SubscriptionRecord | None = None) -> dict[str, object]:
+    with _following(tmp_path, _active(record or _followed()), world) as (owner, store):
+        _checked(owner, store)
+    return next(
+        row
+        for row in _records(tmp_path / "decisions.jsonl")
+        if row["kind"] == "check" and row.get("key") == {"anilist_id": _S4, "number": 23}
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("wait_h", "blocker"), [(0, "none"), (2, "waiting_polish")])
+def test_selection_fields_a1(tmp_path: Path, wait_h: int, blocker: str) -> None:
+    check: dict[str, object] = _target_check(tmp_path, _World(polish_wait_h=wait_h))
+
+    assert check["sources"] == [{"source": "torrentio", "result": "done"}]
+    assert check["blocker"] == blocker
+
+
+@pytest.mark.unit
+def test_selection_candidates_quality_confidence(tmp_path: Path) -> None:
+    check: dict[str, object] = _target_check(tmp_path, _World())
+    candidates: list[dict[str, object]] = cast("list[dict[str, object]]", check["candidates"])
+    record: SubscriptionRecord = _checked_record(tmp_path)
+
+    assert record.last_check is not None
+    assert len(candidates) == record.last_check.matching + record.last_check.uncertain + record.last_check.mismatched
+    assert {frozenset(row) for row in candidates} == {
+        frozenset({"info_hash", "verdict", "quality", "confidence", "conflict", "pack", "after_metadata"})
+    }
+    assert all(isinstance(row["quality"], float) for row in candidates)
+    assert all(row["confidence"] is None or isinstance(row["confidence"], float) for row in candidates)
+    assert "match" in {row["verdict"] for row in candidates}
+
+
+def _checked_record(tmp_path: Path) -> SubscriptionRecord:
+    return WatchStateStore(tmp_path / "state.json").load().subscriptions[0]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("unnumbered", "numbering"), [(False, "anilist"), (True, "none")])
+def test_numbering_field(tmp_path: Path, *, unnumbered: bool, numbering: str) -> None:
+    record: SubscriptionRecord = _followed(mapping=_renumbered(_UNNUMBERED)) if unnumbered else _followed()
+    world: _World = _World()
+    if unnumbered:
+        world.episodes.mappings[_S4] = replace(_renumbered(_UNNUMBERED), max_age_s=0)
+
+    assert _target_check(tmp_path, world, record)["numbering"] == numbering

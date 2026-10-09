@@ -31,6 +31,7 @@ from anishift.application.subscription_choice import (
     choose,
     completion_order,
     decide,
+    decision_deadline,
     is_taken,
     pending_releases,
     polish_admitted,
@@ -428,3 +429,30 @@ def test_polish_history_no_local_evidence_without_polish_traits(traits: ChoiceTr
 )
 def test_wait_until_follows_the_history_and_setting(history: PolishState, wait_h: int, hours: int) -> None:
     assert wait_until(_DUE, history, wait_h) == _DUE + timedelta(hours=hours)
+
+
+def test_decide_names_the_threshold_and_the_best_release_it_refuses() -> None:
+    hd: ChoiceCandidate = _item(_A, resolution=720, quality=40.0)
+    sd: ChoiceCandidate = _item(_B, resolution=480)
+    state: ChoiceState = replace(_state(), threshold=ResolutionClass.FULL_HD)
+
+    assert decide((sd, hd), state, _DUE) == ChoiceDecision(None, Blocker.THRESHOLD, blocked=hd)
+
+
+def test_decide_names_the_pending_release_that_blocks_a_worse_one() -> None:
+    pending: ChoiceCandidate = _item(_A, after_metadata=True, verdict=IdentityVerdict.INSUFFICIENT)
+    worse: ChoiceCandidate = _item(_B, resolution=720)
+
+    assert decide((pending, worse), _state(), _DUE) == ChoiceDecision(None, Blocker.PENDING, blocked=pending)
+
+
+def test_decide_without_any_usable_match_has_no_admissible_release() -> None:
+    uncertain: ChoiceCandidate = _item(_A, verdict=IdentityVerdict.INSUFFICIENT)
+    state: ChoiceState = replace(_state(), threshold=ResolutionClass.FULL_HD)
+
+    assert decide((uncertain,), state, _DUE) == ChoiceDecision(None, Blocker.NO_ADMISSIBLE)
+
+
+@pytest.mark.parametrize(("wait_h", "deadline_h"), [(0, 2), (2, 2), (5, 5)])
+def test_decision_deadline_is_the_polish_wait_but_at_least_two_hours(wait_h: int, deadline_h: int) -> None:
+    assert decision_deadline(_DUE, _DUE + timedelta(hours=wait_h)) == _DUE + timedelta(hours=deadline_h)

@@ -31,6 +31,7 @@ __all__ = [
     "MAX_ATTEMPTS",
     "MAX_SUBSCRIPTIONS",
     "MAX_TRANSIENT_FAILURES",
+    "Blocker",
     "PauseReason",
     "PolishObservation",
     "PolishSkip",
@@ -146,6 +147,16 @@ class SubscriptionProblem(StrEnum):
     CATALOG_CONFLICT = "catalog_conflict"
 
 
+class Blocker(StrEnum):
+    """Why one due target admits nothing in this check, or NONE when it admits a release."""
+
+    NONE = "none"
+    NO_ADMISSIBLE = "no_admissible"
+    WAITING_POLISH = "waiting_polish"
+    THRESHOLD = "threshold"
+    PENDING = "pending"
+
+
 class PolishState(StrEnum):
     """What the last successful TsukiHime read said about Polish subtitles of one episode."""
 
@@ -218,6 +229,8 @@ class SubscriptionTarget:
     polish: PolishObservation | None = None
     sources_down_since: str | None = None
     polish_skip: PolishSkip | None = None
+    blocker: Blocker | None = None
+    polish_buffer_min: int | None = None
 
     def __post_init__(self) -> None:
         if type(self.number) is not int or self.number < 1:
@@ -245,6 +258,12 @@ class SubscriptionTarget:
     def _check_choice_facts(self) -> None:
         if self.threshold is not None and not isinstance(self.threshold, ResolutionClass):
             msg: str = "A target threshold is a resolution class"
+            raise ValueError(msg)
+        if self.blocker is not None and not isinstance(self.blocker, Blocker):
+            msg = "A target blocker is a known blocker"
+            raise ValueError(msg)
+        if not _optional_whole(self.polish_buffer_min, 1):
+            msg = "A target waited a positive number of minutes for Polish subtitles"
             raise ValueError(msg)
         hashes: tuple[str, ...] = tuple(item.info_hash for item in self.failures)
         if len(set(hashes)) != len(hashes):
@@ -375,12 +394,12 @@ class TargetFacts:
 def settle_target(target: SubscriptionTarget, facts: TargetFacts, now: datetime) -> SubscriptionTarget:
     """Return *target* after the transfers of its episode moved, never satisfied by an order alone.
 
-    A target that is no longer due forgets when its sources became unavailable.
+    A target that is no longer due forgets when its sources became unavailable and what blocked its choice.
     """
     settled: SubscriptionTarget = _settle(target, facts, now)
-    if settled.state is TargetState.DUE or settled.sources_down_since is None:
+    if settled.state is TargetState.DUE or (settled.sources_down_since is None and settled.blocker is None):
         return settled
-    return replace(settled, sources_down_since=None)
+    return replace(settled, sources_down_since=None, blocker=None)
 
 
 def _settle(target: SubscriptionTarget, facts: TargetFacts, now: datetime) -> SubscriptionTarget:

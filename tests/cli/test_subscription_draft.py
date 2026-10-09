@@ -25,6 +25,7 @@ from anishift.application import (
     FranchiseRelation,
     ListedEpisode,
     ListedSpecial,
+    TargetNotice,
     TitleCandidate,
     TitleStatus,
     encode_view,
@@ -40,6 +41,7 @@ from anishift.cli.interactive.subscription_texts import (
     check_text,
     clock_time,
     earlier_episodes,
+    notice_line,
     polish_line,
     row_columns,
     row_state,
@@ -1337,3 +1339,77 @@ def test_download_now_refusal_refreshes(panel: StateController, owner: _Owner, m
     assert "Ten odcinek już nie czeka na polskie napisy" in " ".join(frame.split())
     assert "Czeka na PL" not in _row_of(frame, 3)
     assert "T pobierz teraz" not in frame
+
+
+@pytest.mark.parametrize(
+    ("notices", "text"),
+    [
+        ((TargetNotice("stalled"),), "E6: wydanie stoi"),
+        ((TargetNotice("metadata_timeout"),), "E6: wydanie stoi"),
+        ((TargetNotice("rejected", "no_video_stream"),), "E6: wydanie odrzucone (brak obrazu)"),
+        ((TargetNotice("rejected", "fragment_duration"),), "E6: wydanie odrzucone (za krótki plik)"),
+        ((TargetNotice("pack"),), "E6: wydanie okazało się paczką"),
+        ((TargetNotice("ambiguous"),), "E6: wydanie ma niejednoznaczny plik"),
+        ((TargetNotice("no_match"),), "E6: plik to nie ten odcinek"),
+        ((TargetNotice("recheck"),), "E6: plik nie przeszedł ponownej kontroli"),
+        ((TargetNotice("taken"),), "E6: plik należy już do innego odcinka"),
+        ((TargetNotice("failed"),), "E6: pobieranie nie powiodło się"),
+        ((TargetNotice("no_admissible", "12/0/0"),), "E6: brak pewnego wydania (12 wydań, 0 zgodnych)"),
+        ((TargetNotice("no_admissible", "1/1/0"),), "E6: brak pewnego wydania (1 wydanie, 1 zgodne)"),
+        (
+            (TargetNotice("no_admissible", "3/0/1"),),
+            "E6: brak pewnego wydania (3 wydania, 0 zgodnych, 1 już próbowane)",
+        ),
+        (
+            (TargetNotice("no_admissible", "22/3/5"),),
+            "E6: brak pewnego wydania (22 wydania, 3 zgodne, 5 już próbowanych)",
+        ),
+        ((TargetNotice("no_admissible"),), "E6: brak pewnego wydania"),
+        ((TargetNotice("no_admissible", "12/0"),), "E6: brak pewnego wydania"),
+        ((TargetNotice("no_admissible", "x/y/z"),), "E6: brak pewnego wydania"),
+        ((TargetNotice("threshold", "0/720"),), "E6: czekam na 1080p (dostępne 720p)"),
+        ((TargetNotice("threshold", "0"),), "E6: czekam na 1080p"),
+        ((TargetNotice("threshold", "1/720"),), "E6: czekam na 1080p lub 2160p (dostępne 720p)"),
+        ((TargetNotice("threshold", "2/480"),), "E6: czekam na 1080p, 2160p lub 720p (dostępne 480p)"),
+        ((TargetNotice("threshold", "3"),), "E6: czekam na znaną rozdzielczość"),
+        ((TargetNotice("threshold", "9/720"),), "E6: czekam na lepszą rozdzielczość"),
+        ((TargetNotice("threshold", "0/?"),), "E6: czekam na lepszą rozdzielczość"),
+        ((TargetNotice("pending", "1080"),), "E6: czekam na sprawdzenie wydań 1080p"),
+        ((TargetNotice("pending", ""),), "E6: czekam na sprawdzenie wydań"),
+        ((TargetNotice("sources_down", "3"),), "E6: źródła wydań nie odpowiadają od 3 h"),
+        ((TargetNotice("sources_down", "-1"),), "E6: źródła wydań nie odpowiadają"),
+        ((TargetNotice("sources_down"),), "E6: źródła wydań nie odpowiadają"),
+        ((TargetNotice("no_polish_after_wait", "120"),), "E6: brak PL po 2 h"),
+        ((TargetNotice("no_polish_after_wait", "90"),), "E6: brak PL po 1 h 30 min"),
+        ((TargetNotice("no_polish_after_wait", "30"),), "E6: brak PL po 30 min"),
+        ((TargetNotice("no_polish_after_wait", "2h"),), "E6: brak PL"),
+        ((TargetNotice("stalled"), TargetNotice("threshold", "0")), "E6: wydanie stoi · czekam na 1080p"),
+        ((), ""),
+    ],
+)
+def test_notice_line_names_each_reason(notices: tuple[TargetNotice, ...], text: str) -> None:
+    assert notice_line(6, notices) == text
+
+
+def test_notice_line_follows_the_highlighted_target(
+    panel: StateController, owner: _Owner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _polish(
+        owner,
+        monkeypatch,
+        {
+            3: _due(3, notices=(TargetNotice("stalled"), TargetNotice("threshold", "0"))),
+            4: _due(4, notices=(TargetNotice("pack"),)),
+        },
+    )
+    _keys(panel, "enter")
+    first: str = " ".join(_frame(panel).split())
+    _keys(panel, "down", "down", "down")
+    highlighted: str = " ".join(_frame(panel).split())
+    _keys(panel, "text:?")
+    details: str = " ".join(_frame(panel, 50, 24).split())
+
+    assert "E3: wydanie stoi · czekam na 1080p" in first
+    assert "E4: wydanie okazało się paczką" in highlighted
+    assert "E3: wydanie stoi" not in highlighted
+    assert "E4: wydanie okazało się paczką" in details

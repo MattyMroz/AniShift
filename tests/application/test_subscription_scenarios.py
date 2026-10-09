@@ -516,7 +516,7 @@ def test_a_missing_release_is_searched_on_the_quarter_hour_hour_and_day_grid_and
 
     assert delays == [15 * 60, 59 * 60, 86400 - 60, 86400 - 60, 86400 - 60]
     assert world.season.asked == [3] * len(ages)
-    assert _escalations(world) == ["late"]
+    assert _escalations(world) == ["no_admissible", "late"]
     assert ("subscription:a:3", "late", "") in saved.notified
     assert saved.acquisitions == ()
 
@@ -567,7 +567,8 @@ def test_three_attempts_on_own_transfers_each_wait_for_the_confirmed_cancel_and_
     assert (rejected.verification, rejected.publication) == ("reject:no_video_stream", None)
     assert not _root_files(world)
     assert [key for key in saved.notified if key[1] == "exhausted"] == [("subscription:a:3", "exhausted", "")]
-    assert _escalations(world) == ["exhausted"]
+    reasons: dict[str, str] = {"metadata": "stalled", "video": "rejected", "stall": "stalled"}
+    assert _escalations(world) == [reasons[how] for how in order[:2]] + ["exhausted"]
 
 
 def test_next_release_chosen_content_waits_for_previous_settlement(world: _World) -> None:
@@ -699,7 +700,7 @@ def test_only_uncertain_releases_never_start_an_attempt_at_any_age_and_a_later_m
         if item.get("event") == "subscription_checked"
     ]
     assert shown == [1, 1, 1, 1, 1]
-    assert _escalations(world) == ["late"]
+    assert _escalations(world) == ["no_admissible", "late"]
     assert _hashes(_attempts(saved)) == [_SECOND]
 
 
@@ -1659,3 +1660,121 @@ def test_dead_attempt_after_compaction_uses_snapshot(
     target: SubscriptionTarget = saved.subscriptions[0].targets[0]
     assert (target.attempts, target.threshold) == (len(hashes), threshold)
     assert _hashes(_attempts(saved)) == hashes
+
+
+def _published(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    messages: list[str] = []
+    original: Callable[..., None] = AutomationOwner._publish_notification
+
+    def record(owner: AutomationOwner, title: str, message: str, target: object) -> None:
+        messages.append(message)
+        original(owner, title, message, target)
+
+    monkeypatch.setattr(AutomationOwner, "_publish_notification", record)
+    return messages
+
+
+def _offered(*hashes: str) -> tuple[StreamCandidate, ...]:
+    return tuple(_stream(item, seeders=300 - index) for index, item in enumerate(hashes))
+
+
+def _attempts_noted(world: _World) -> list[tuple[object, object]]:
+    return [(item["reason"], item.get("attempt")) for item in _decisions(world, "escalation")]
+
+
+def test_notice_dead_attempt(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = _published(monkeypatch)
+    world.season.offered[3] = _offered(_FIRST, _SECOND)
+    with _running(world, _following()) as owner:
+        _reaches(owner, TargetState.ATTEMPTING)
+        _fail(world, owner, _FIRST, "stall")
+        _until(_failed(owner, _FIRST))
+        _check(owner, "after-stall")
+        saved: WatchState = _stored(owner, world)
+
+    assert messages == ["Neko to Ryuu E3: wydanie stoi, szukam następnego"]
+    assert _attempts_noted(world) == [("stalled", 1)]
+    assert ("subscription:a:3", "stalled", "1") in saved.notified
+
+
+@pytest.mark.parametrize("then", ["pause", "manual"])
+def test_notice_dead_attempt_at_once_before_a_pause_or_a_manual_order(
+    world: _World, monkeypatch: pytest.MonkeyPatch, then: str
+) -> None:
+    messages: list[str] = _published(monkeypatch)
+    with _running(world, _following()) as owner:
+        _reaches(owner, TargetState.ATTEMPTING)
+        _fail(world, owner, _FIRST, "stall")
+        _until(_failed(owner, _FIRST))
+        _until(lambda: bool(messages))
+        closed: list[str] = list(messages)
+        if then == "pause":
+            _command(owner, "subscription_pause", "pause", subscription_id="a")
+        else:
+            world.season.offered[3] = (_stream(_SECOND),)
+            _order(owner, 3, "d-3")
+            _reaches(owner, TargetState.MANUAL)
+    with _running(world) as owner:
+        _idle(owner)
+
+    assert closed == ["Neko to Ryuu E3: wydanie stoi, szukam następnego"]
+    assert messages == closed
+    assert _attempts_noted(world) == [("stalled", 1)]
+
+
+def test_notice_rejected_attempt(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = _published(monkeypatch)
+    world.season.offered[3] = _offered(_FIRST, _SECOND)
+    with _running(world, _following()) as owner:
+        _reaches(owner, TargetState.ATTEMPTING)
+        _fail(world, owner, _FIRST, "video")
+        _until(_failed(owner, _FIRST))
+        world.probe.video = True
+        _check(owner, "after-reject")
+        _reaches(owner, TargetState.ATTEMPTING)
+
+    assert messages == ["Neko to Ryuu E3: wydanie odrzucone (brak obrazu), szukam następnego"]
+    assert _attempts_noted(world) == [("rejected", 1)]
+
+
+@pytest.mark.parametrize(
+    ("case", "text"),
+    [
+        ("pack", "wydanie okazało się paczką"),
+        ("ambiguous", "wydanie ma niejednoznaczny plik"),
+        ("no_match", "plik to nie ten odcinek"),
+    ],
+)
+def test_notice_stopped_after_metadata(world: _World, monkeypatch: pytest.MonkeyPatch, case: str, text: str) -> None:
+    messages: list[str] = _published(monkeypatch)
+    reason, listing = _LISTINGS[case]
+    with _running(world, _following()) as owner:
+        _reaches(owner, TargetState.ATTEMPTING)
+        _until(lambda: any(item[0] == _FIRST for item in world.network.metadata_added))
+        world.network.deliver(_FIRST, listing)
+        _until(_failed(owner, _FIRST))
+        _check(owner, "after-stop")
+        status: dict[str, object] = _status(owner, 3)
+
+    assert messages == [f"Neko to Ryuu E3: {text}, szukam następnego"]
+    assert _attempts_noted(world) == [(reason, 1)]
+    assert status["notices"] == [{"reason": reason, "cause": None}, {"reason": "no_admissible", "cause": None}]
+
+
+def test_notice_each_failed_attempt_once_also_after_a_restart(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = _published(monkeypatch)
+    world.season.offered[3] = _offered(_FIRST, _SECOND)
+    with _running(world, _following()) as owner:
+        for index, info_hash in enumerate((_FIRST, _SECOND), start=1):
+            _reaches(owner, TargetState.ATTEMPTING)
+            _fail(world, owner, info_hash, "stall")
+            _until(_failed(owner, info_hash))
+            _check(owner, f"after-{index}")
+        _check(owner, "again")
+    with _running(world) as owner:
+        _check(owner, "restarted")
+        saved: WatchState = _stored(owner, world)
+
+    assert messages == ["Neko to Ryuu E3: wydanie stoi, szukam następnego"] * 2
+    assert _attempts_noted(world) == [("stalled", 1), ("stalled", 2)]
+    assert {("subscription:a:3", "stalled", "1"), ("subscription:a:3", "stalled", "2")} <= saved.notified

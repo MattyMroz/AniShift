@@ -1930,8 +1930,8 @@ z 2026-10-06 wpisane w kroki K2, K5, K8, K9, K16 i mapę §3.
   nie jest należny, więc nierozliczone pominięcie nie wywołuje kolejnego sprawdzenia.
 - **Rejestr i widok PL (K14):** każdy należny cel sprawdzenia dopisuje wpis `polish` (stan historii,
   źródło `local`/`tsukihime`/brak, powód decyzji, termin), a „Pobierz teraz” wpis `skip_polish_wait`.
-  Powód „brak PL po {bufor}” jest na razie tylko w rejestrze (`no_polish_after_wait`); widok powodów
-  §8 to K15. Kolumna Stan ma stałe 16 komórek, więc wiersz celu pokazuje „Czeka na PL” albo „Bez
+  Powód „brak PL po {bufor}” trafia do rejestru (`no_polish_after_wait`) i do szczegółów odcinka
+  (K15). Kolumna Stan ma stałe 16 komórek, więc wiersz celu pokazuje „Czeka na PL” albo „Bez
   czekania PL”, a godzinę podaje linia faktów U08 dla celu pod kursorem (bez stanu PL pod kursorem:
   najniższy cel ze stanem PL), zawsze z numerem: „E4 PL: … · czekam do HH:MM”; ta sama linia jest
   pod `?`. Do tego `EpisodeStatus.polish` niesie stan historii. Stopka z „T pobierz teraz”
@@ -1942,6 +1942,40 @@ z 2026-10-06 wpisane w kroki K2, K5, K8, K9, K16 i mapę §3.
   (`_Service`, `_real_service`, `episode_download_support.resident`) ustawiają
   `subscription_polish_wait_h=0`, żeby zachować dotychczasowe zachowanie; testy K14 ustawiają
   czekanie jawnie.
+- **Powiadomienia (K15):** jeden kanał — `WatchState.notified`, wpis `escalation` i
+  `_publish_notification`. Klucz `(subscription:{id}:{numer}, powód, szczegół)`: dla nieudanej próby
+  szczegół to `started`, więc każda próba jest osobnym niepowodzeniem z własnym powiadomieniem, a ta
+  sama po restarcie nie powtarza się; dla blokad i źródeł szczegół jest pusty (raz na odcinek i powód).
+  Zamiast `_notify_target` i `subscription_texts.failure_notice` jest `AutomationOwner._escalations`
+  oraz jedno `episode_commands.notice_text`, bo zdanie zasobnika powstaje w ownerze, a aplikacja nie
+  importuje CLI; linię szczegółów składa `subscription_texts.notice_line` z tego samego `notice_text`.
+  Niepowodzeniem jest każdy powód zamknięcia poza zaspokojeniem i zamianą (`replaced`); powody spoza
+  §8 (`failed`, `metadata_stopped` itd.) mają zdanie „pobieranie nie powiodło się”. Blokada w terminie
+  decyzji (`decision_deadline`) obejmuje także `pending` (§6.2) i brak jakichkolwiek wydań („0 wydań,
+  0 zgodnych”), bo spec §8 go nie wyłącza. `SOURCES_DOWN` nie jest blokadą wyboru, tylko osobnym
+  powodem z `sources_down_since`.
+- **Teksty prób (K15, odstępstwo od dosłownych tekstów §8):** powiadomienie o próbie martwej,
+  odrzuconej albo zatrzymanej po metadanych powstaje przy zamknięciu próby (klucz w tym samym zapisie,
+  publikacja po nim) i kończy się „szukam następnego” zamiast „biorę następne / brak następnego”.
+  Powód: przy zamknięciu nie wiadomo jeszcze, czy jest następne wydanie, a czekanie na kolejną decyzję
+  gubiło powiadomienie, gdy cel przechodził na ręczne zlecenie albo pauzę. „Brak następnego” przekazuje
+  powiadomienie o blokadzie w terminie decyzji (rodzaj 1). Próba, która wyczerpuje cel, dostaje tylko
+  istniejące `exhausted`. Liczby blokady to wydania, zgodne niewykluczone i zgodne już próbowane
+  („3 wydania, 0 zgodnych, 1 już próbowane”).
+- **Blokada celu i bufor PL (K15):** `Blocker` (z `THRESHOLD` i `PENDING`) leży w `subscription_targets`
+  z re-eksportem w `subscription_choice`, bo opcjonalne pola schematu 5 `SubscriptionTarget.blocker` i
+  `polish_buffer_min` (brak czyta się jako `None`) trzymają ostatnią blokadę i bufor czekania na PL
+  ostatniej decyzji dla szczegółów po restarcie. „Brak PL po {bufor}” dostaje tylko wybór bez PL po
+  faktycznym czekaniu (`wait_until − t_due` > 0); przy „PL nie ma”, czekaniu 0 i „Pobierz teraz” powodu
+  nie ma. Szczegóły blokady pokazują sam powód (próg z wymaganą klasą), a liczby wydań i „dostępne
+  720p” są wyłącznie w powiadomieniu.
+- **Rejestr (K15):** `polish_history` istnieje jako wpis `polish` (`result`, `source`:
+  `local`/`tsukihime`/brak), więc nie jest dublowany; dowodzą go
+  `test_subscription_owner.py::test_local_polish_evidence_survives_restart_and_compaction` i
+  `::test_a_due_target_without_polish_waits_and_shows_the_end_of_its_wait`. Wpis `check` celu
+  subskrypcji dostał `sources`, `candidates` (`selection_view`), `blocker` i `numbering`. Testy §8 leżą
+  w `test_subscription_owner.py` i `test_subscription_scenarios.py`, nie w `test_notification.py`,
+  bo tamta uprząż dotyczy wyników przetwarzania.
 
 ## 12. Poza zakresem (spec A §11)
 

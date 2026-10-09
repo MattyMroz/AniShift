@@ -19,6 +19,7 @@ from anishift.application.subscription_targets import (
     LEGACY_ORDERED,
     MAX_ATTEMPTS,
     MAX_TRANSIENT_FAILURES,
+    Blocker,
     PauseReason,
     PolishSkip,
     ReleaseFailure,
@@ -825,11 +826,12 @@ def test_a_satisfied_target_never_moves_and_a_skipped_check_stays_marked() -> No
     ids=["still-due", "satisfied", "ordered-by-hand", "exhausted", "attempting"],
 )
 def test_sources_down_cleared_when_target_settles(target: SubscriptionTarget, facts: TargetFacts, kept: bool) -> None:
-    down: SubscriptionTarget = replace(target, sources_down_since=_NOW.isoformat())
+    down: SubscriptionTarget = replace(target, sources_down_since=_NOW.isoformat(), blocker=Blocker.THRESHOLD)
 
     settled: SubscriptionTarget = settle_target(down, facts, _NOW)
 
     assert (settled.sources_down_since is not None) is kept
+    assert (settled.blocker is not None) is kept
 
 
 @pytest.mark.parametrize(

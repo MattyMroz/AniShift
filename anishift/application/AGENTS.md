@@ -98,7 +98,7 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   dokument 4+ musi mieć `subscriptions`, `removed_subscription` i `legacy_orders`, starsze nie mogą;
   pola wyboru schematu 5 (`started`, `threshold`, `failures`, `polish`, `sources_down_since`,
   `polish_skip`, `tsukihime_id`, `mapping_tvdb_season`, `stopped`, `traits`) są wymagane w 5 i
-  zakazane w 4;
+  zakazane w 4; opcjonalne `blocker` i `polish_buffer_min` celu dopuszcza tylko 5, a ich brak czyta się jako `None`;
   potwierdzenie wersji 3+ musi mieć `assignments` i `legacy_scope`, starsze nie mogą. Migracja nadaje
   `complete_files` z `required_files` tylko potwierdzeniom `COMPLETE`. Trwałe ścieżki `ReadyGroup` i
   `PendingDeletion` przechodzą przez `require_relative_paths`. Opcjonalne `PendingDeletion.restore`
@@ -353,6 +353,30 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   błąd po jednym ponowieniu daje `verification_skipped`. `removed_subscription` trzyma jedną
   usuniętą subskrypcję dla Ctrl+Z; przywrócenie odmawia `subscription_exists` albo
   `subscription_limit` i zachowuje ją. Wznowienie czyści `pause_reason`. `automation.py`
+- Powiadomienia §8 mają jeden kanał: trwały `WatchState.notified` z kluczem
+  `(subscription:{id}:{numer}, powód, szczegół)`, wpis `escalation` w `decisions.jsonl` i
+  `_publish_notification`. Klucz trafia do `notified` w tym samym zapisie co zdarzenie, a publikacja
+  idzie dopiero po udanym zapisie. `late`, `exhausted` i nieudaną próbę publikuje
+  `_observe_subscriptions` z różnicy `notified`; próbę zgłasza `_settled_targets` przy jej zamknięciu
+  do `due` lub `awaiting_airing` (szczegół = `started`, każda próba osobno; bez `replaced`), z dopiskiem
+  „szukam następnego”, a cel wyczerpany dostaje tylko `exhausted`. Blokadę wyboru (`no_admissible`,
+  `threshold`, `pending`; pusty szczegół, także przy 0 wydań) i `sources_down` publikuje samo
+  sprawdzenie (`_escalations`, `_CHECK_NOTICES`), bo tylko ono zna liczby: blokadę od
+  `decision_deadline` (koniec czekania na PL, co najmniej `t_due` + 2 h), źródła po
+  `SOURCES_DOWN_NOTICE_H` od `sources_down_since` należnego celu. Liczby blokady: wydania, zgodne
+  niewykluczone i zgodne już próbowane. Ostatnią blokadę trzyma `SubscriptionTarget.blocker`; czyści
+  ją wybór wydania i wyjście z `due`. Pobranie bez PL nie powiadamia. `automation.py`,
+  `subscription_choice.py`
+- Szczegóły odcinka niosą `EpisodeStatus.notices` (`TargetNotice`: kod i przyczyna): nieudaną próbę
+  (odrzucenie z kodem H2), blokadę, niedostępne źródła, a dla przyjęcia subskrypcji bez PL
+  `no_polish_after_wait` z buforem `SubscriptionTarget.polish_buffer_min`, zapisanym przy decyzji tylko
+  po faktycznym czekaniu (`wait_until − t_due` > 0; nie przy „PL nie ma”, czekaniu 0 ani „Pobierz
+  teraz”). Polskie zdania zasobnika i CLI składa jedno `episode_commands.notice_text`; nieczytelna
+  przyczyna daje ogólne zdanie powodu. Wpis `check` celu w rejestrze ma `sources` (stan każdego
+  źródła), `candidates` (`selection_view`: hash, werdykt, jakość, pewność, konflikt, paczka,
+  `after_metadata`, bez nazw i URL-i), `blocker` i `numbering` (`numbering_gap` albo
+  `ListingRead.numbering_source`); historię PL niesie wpis `polish` (`result`, `source`).
+  `acquisition_decisions.py`
 - `config/subscriptions.json` jest zamrożonym plikiem poprzedniej wersji: owner go nigdy nie
   zapisuje, a `subscriptions.py` służy tylko do jego dekodowania (schemat 1-4). Migracja stanu do
   schematu 4 przenosi go czystym `subscription_migration.migrate` do rekordów i `legacy_orders`

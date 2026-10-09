@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -28,6 +28,7 @@ from test_acquisition import (
 )
 from test_automation import _INSTANCE, _MOMENT, _TIMEOUT_S, _await, _library, _owner, _request, _serving
 from test_episode_search import controlled, search_service
+from test_episode_search import empty_response as _empty_response
 from test_episode_selection import _fixture_graph, _fixture_mapping, _stream
 
 from anishift.application import AppService
@@ -43,21 +44,26 @@ from anishift.application.control import (
     EpisodeAssignment,
     EpisodeChoice,
     LegacyOrder,
+    NotificationKey,
     TorrentioReference,
     WatchState,
     compact_acquisition,
 )
 from anishift.application.control_views import decode_view
-from anishift.application.episode_commands import EpisodeStatus
+from anishift.application.episode_commands import EpisodeStatus, TargetNotice
 from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.episode_search import EpisodeSearch, SourceSwitches
 from anishift.application.episode_selection import AniZipMapping, EpisodeKey, ListedSpecial, StreamCandidate
 from anishift.application.intents import RequestOrigin
 from anishift.application.release_quality import PolishClass, ResolutionClass
+from anishift.application.subscription_choice import release_hash
 from anishift.application.subscription_targets import (
     MAX_SUBSCRIPTIONS,
+    Blocker,
     PauseReason,
+    PolishObservation,
     PolishSkip,
+    PolishState,
     SubscriptionCheck,
     SubscriptionProblem,
     SubscriptionRecord,
@@ -1228,7 +1234,11 @@ def test_a_target_unreleased_a_week_after_airing_is_reported_once(tmp_path: Path
     assert [(item.number, item.notified_late) for item in first.targets] == [(23, True), (24, False)]
     assert ("subscription:a:23", "late", "") in saved.notified
     escalations: list[dict[str, object]] = [item for item in _decisions(tmp_path) if item["kind"] == "escalation"]
-    assert [(item["key"], item["reason"]) for item in escalations] == [({"anilist_id": _S4, "number": 23}, "late")]
+    assert [(item["key"], item["reason"]) for item in escalations] == [
+        ({"anilist_id": _S4, "number": 23}, "late"),
+        ({"anilist_id": _S4, "number": 23}, "no_admissible"),
+        ({"anilist_id": _S4, "number": 24}, "no_admissible"),
+    ]
     assert saved.acquisitions == ()
 
 
@@ -1549,3 +1559,332 @@ def _attempts(state: WatchState) -> list[EpisodeAssignment]:
         for assignment in transfer.assignments
         if assignment.source is AdmissionSource.SUBSCRIPTION
     ]
+
+
+def _published(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    messages: list[str] = []
+    original: Callable[..., None] = AutomationOwner._publish_notification
+
+    def record(owner: AutomationOwner, title: str, message: str, target: object) -> None:
+        messages.append(message)
+        original(owner, title, message, target)
+
+    monkeypatch.setattr(AutomationOwner, "_publish_notification", record)
+    return messages
+
+
+def _escalated(tmp_path: Path) -> list[tuple[object, object, object]]:
+    return [
+        (cast("dict[str, object]", item["key"])["number"], item["reason"], item.get("attempt"))
+        for item in _decisions(tmp_path)
+        if item["kind"] == "escalation"
+    ]
+
+
+def _again(owner: AutomationOwner, command_id: str) -> None:
+    _ask(owner, "subscription_check", {"subscription_id": "a"}, command_id)
+    _settled(owner)
+
+
+def test_notice_once_per_target_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = _published(monkeypatch)
+    world: _World = _World(streams=_StreamSource({}))
+    with _following(tmp_path, _active(_followed()), world) as (owner, store):
+        _checked(owner, store)
+        early: list[str] = list(messages)
+        world.clock.now = (_NOW + timedelta(hours=1)).timestamp()
+        _again(owner, "deadline")
+        _again(owner, "again")
+        status: EpisodeStatus = _status(owner)
+    with _following(tmp_path, _active(_followed()), world) as (owner, store):
+        _again(owner, "restarted")
+        saved: WatchState = owner._on_owner(store.load)
+
+    assert early == []
+    assert messages == ["Slime S4 E23: brak pewnego wydania (0 wydań, 0 zgodnych)"]
+    assert _escalated(tmp_path) == [(23, "no_admissible", None)]
+    assert ("subscription:a:23", "no_admissible", "") in saved.notified
+    assert saved.subscriptions[0].targets[0].blocker is Blocker.NO_ADMISSIBLE
+    assert status.notices == (TargetNotice("no_admissible"),)
+
+
+def test_notice_threshold_names_the_wanted_and_available_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    messages: list[str] = _published(monkeypatch)
+    lower: StreamCandidate = _named("[SubsPlease] Tensei shitara Slime Datta Ken 4th Season - 23 (720p).mkv")
+    world: _World = _World(streams=_StreamSource({(_KITSU, 23): (lower,)}))
+    world.clock.now = (_NOW + timedelta(hours=1)).timestamp()
+    dead: SubscriptionTarget = SubscriptionTarget(
+        23,
+        (_NOW - timedelta(hours=1)).isoformat(),
+        TargetState.DUE,
+        attempts=1,
+        tried=("0" * 40,),
+        reason="stalled",
+        started=1,
+        threshold=ResolutionClass.FULL_HD,
+    )
+    with _following(tmp_path, _active(_followed(targets=(dead,))), world) as (owner, store):
+        checked: SubscriptionRecord = _checked(owner, store)
+        _again(owner, "again")
+        status: EpisodeStatus = _status(owner)
+
+    assert messages == ["Slime S4 E23: czekam na 1080p (dostępne 720p)"]
+    assert _escalated(tmp_path) == [(23, "threshold", None)]
+    assert (checked.targets[0].state, checked.targets[0].blocker) == (TargetState.DUE, Blocker.THRESHOLD)
+    assert status.notices == (TargetNotice("stalled"), TargetNotice("threshold", "0"))
+
+
+def test_sources_down_notice_once_across_restart(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = _published(monkeypatch)
+    world: _World = _World(streams=_FailingStreams())
+    counts: list[int] = []
+    with _following(tmp_path, _active(_followed()), world) as (owner, store):
+        _checked(owner, store)
+        counts.append(len(messages))
+    world.clock.now = (_NOW + timedelta(minutes=30)).timestamp()
+    with _following(tmp_path, _active(_followed()), world) as (owner, store):
+        for minutes in (30, 45, 60, 75):
+            world.clock.now = (_NOW + timedelta(minutes=minutes)).timestamp()
+            _again(owner, f"check-{minutes}")
+            counts.append(len(messages))
+        status: EpisodeStatus = _status(owner)
+        saved: WatchState = owner._on_owner(store.load)
+
+    assert counts == [0, 0, 0, 1, 1]
+    assert messages == ["Slime S4 E23: źródła wydań nie odpowiadają od 1 h"]
+    assert _escalated(tmp_path) == [(23, "sources_down", None)]
+    assert saved.subscriptions[0].targets[0].sources_down_since == _NOW.isoformat()
+    assert status.notices == (TargetNotice("sources_down", "1"),)
+
+
+def test_sources_down_per_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = _published(monkeypatch)
+    world: _World = _World(streams=_EarlyFailure(_slime_streams().answers))
+    record: SubscriptionRecord = _followed(subscribed_at=(_NOW - timedelta(days=9)).isoformat(), cut=21)
+    with _following(tmp_path, _active(record), world, shadow=True) as (owner, store):
+        _checked(owner, store)
+        world.clock.now = (_NOW + timedelta(minutes=61)).timestamp()
+        _again(owner, "later")
+        saved: WatchState = owner._on_owner(store.load)
+
+    targets: dict[int, SubscriptionTarget] = {item.number: item for item in saved.subscriptions[0].targets}
+    assert (targets[22].sources_down_since, targets[23].sources_down_since) == (_NOW.isoformat(), None)
+    assert [item for item in _escalated(tmp_path) if item[1] == "sources_down"] == [(22, "sources_down", None)]
+    assert [item for item in messages if "źródła" in item] == ["Slime S4 E22: źródła wydań nie odpowiadają od 1 h"]
+
+
+def test_sources_down_cleared_when_target_settles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = _published(monkeypatch)
+    world: _World = _World(streams=_FailingStreams())
+    manual: EpisodeChoice = replace(
+        _closed_attempt().assignments[0].choice,
+        reference=TorrentioReference("f" * 40, 0, "Slime - 23.mkv", "[Fan] Slime", ()),
+    )
+    with _following(tmp_path, _active(_followed()), world) as (owner, store):
+        down: SubscriptionRecord = _checked(owner, store)
+        ordered: ControlResponse = owner._on_owner(lambda: owner._admit_episode("manual", manual))
+        world.clock.now = (_NOW + timedelta(hours=2)).timestamp()
+        _again(owner, "later")
+        saved: WatchState = owner._on_owner(store.load)
+
+    assert ordered.ok
+    assert down.targets[0].sources_down_since == _NOW.isoformat()
+    target: SubscriptionTarget = saved.subscriptions[0].targets[0]
+    assert (target.state, target.sources_down_since, target.blocker) == (TargetState.MANUAL, None, None)
+    assert "sources_down" not in [item[1] for item in _escalated(tmp_path)]
+    assert messages == []
+
+
+def test_sources_down_not_reported_for_a_target_awaiting_airing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    messages: list[str] = _published(monkeypatch)
+    waiting: SubscriptionTarget = SubscriptionTarget(
+        24,
+        (_NOW - timedelta(hours=1) + _WEEK).isoformat(),
+        TargetState.AWAITING_AIRING,
+        sources_down_since=(_NOW - timedelta(hours=2)).isoformat(),
+    )
+    with _following(tmp_path, _active(_followed(targets=(waiting,))), _World()) as (owner, store):
+        _checked(owner, store)
+
+    assert [item for item in messages if "źródła" in item] == []
+    assert "sources_down" not in [item[1] for item in _escalated(tmp_path)]
+
+
+def test_notice_counts_untried_and_tried_matching_releases(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = _published(monkeypatch)
+    tried: StreamCandidate = _named("[SubsPlease] Tensei shitara Slime Datta Ken 4th Season - 23 (1080p).mkv")
+    dubbed: StreamCandidate = _named("[Grp] Tensei shitara Slime Datta Ken 4th Season - 23 (1080p) [English Dub].mkv")
+    uncertain: StreamCandidate = _named("[Grp] Slime - 23.mkv")
+    world: _World = _World(streams=_StreamSource({(_KITSU, 23): (tried, dubbed, uncertain)}))
+    world.clock.now = (_NOW + timedelta(hours=1)).timestamp()
+    dead: SubscriptionTarget = SubscriptionTarget(
+        23,
+        (_NOW - timedelta(hours=1)).isoformat(),
+        TargetState.DUE,
+        attempts=1,
+        tried=(release_hash(tried.info_hash),),
+        reason="stalled",
+        started=1,
+    )
+    with _following(tmp_path, _active(_followed(targets=(dead,))), world) as (owner, store):
+        _checked(owner, store)
+
+    assert messages == ["Slime S4 E23: brak pewnego wydania (3 wydania, 1 zgodne, 1 już próbowane)"]
+
+
+def _pending_world() -> Callable[[httpx.Request], httpx.Response]:
+    fixture: dict[str, list[dict[str, object]]] = json.loads(
+        (Path(__file__).parents[1] / "fixtures" / "search" / "torrentio__kitsu-49235-23.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    erai: dict[str, object] = dict(fixture["streams"][1])
+    hints: dict[str, object] = cast("dict[str, object]", erai["behaviorHints"])
+    erai["name"] = "Torrentio\n720p"
+    erai["title"] = str(erai["title"]).replace("1080", "720")
+    erai["behaviorHints"] = {"filename": str(hints["filename"]).replace("1080p", "720p")}
+    item: str = (
+        "<item><title>[Grp] Slime - 23 (1080p)</title><link>https://nyaa.si/download/1.torrent</link>"
+        f"<nyaa:infoHash>{'e' * 40}</nyaa:infoHash><nyaa:seeders>30</nyaa:seeders>"
+        "<nyaa:size>1 GiB</nyaa:size></item>"
+    )
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "torrentio.strem.fun":
+            return httpx.Response(200, json={"streams": [erai]})
+        if request.url.host == "nyaa.si":
+            return httpx.Response(
+                200,
+                text=f'<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel>{item}</channel></rss>',
+                headers={"content-type": "application/xml"},
+            )
+        if request.url.path.endswith(f"/animes/anilist/{_S4}"):
+            return httpx.Response(200, json={"id": 77})
+        if "/episodes/" in request.url.path:
+            return httpx.Response(200, json={"results": [], "total": 0, "start": 0, "limit": 100})
+        if "tsukihime" in request.url.host:
+            return httpx.Response(202, json={"id": 5})
+        return _empty_response(request)
+
+    return respond
+
+
+def test_notice_pending_release_blocks_a_worse_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = _published(monkeypatch)
+    world: _World = _World()
+    world.clock.now = (_NOW + timedelta(hours=1)).timestamp()
+    control: RequestControl = controlled(_pending_world())
+    with httpx.Client(transport=control) as http:
+        world.search = search_service(http, control)
+        with _following(tmp_path, _active(_followed()), world) as (owner, store):
+            checked: SubscriptionRecord = _checked(owner, store)
+            status: EpisodeStatus = _status(owner)
+
+    assert messages == ["Slime S4 E23: czekam na sprawdzenie wydań 1080p"]
+    assert _escalated(tmp_path) == [(23, "pending", None)]
+    assert (checked.targets[0].state, checked.targets[0].blocker) == (TargetState.DUE, Blocker.PENDING)
+    assert status.notices == (TargetNotice("pending"),)
+
+
+def test_notice_not_published_when_its_state_cannot_be_saved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = _published(monkeypatch)
+    world: _World = _World(streams=_StreamSource({}))
+    key: NotificationKey = ("subscription:a:23", "no_admissible", "")
+    failing: list[bool] = [True]
+    with _following(tmp_path, _active(_followed()), world) as (owner, store):
+        _checked(owner, store)
+        original: Callable[[WatchState], None] = store.save
+
+        def save(state: WatchState) -> None:
+            if failing[0] and key in state.notified:
+                message: str = "disk full"
+                raise OSError(message)
+            original(state)
+
+        monkeypatch.setattr(store, "save", save)
+        world.clock.now = (_NOW + timedelta(hours=1)).timestamp()
+        _again(owner, "unsaved")
+        unsaved: list[str] = list(messages)
+        noted: bool = key in owner.state.notified
+        failing[0] = False
+        _again(owner, "saved")
+
+    assert (unsaved, noted) == ([], False)
+    assert messages == ["Slime S4 E23: brak pewnego wydania (0 wydań, 0 zgodnych)"]
+    assert _escalated(tmp_path) == [(23, "no_admissible", None)]
+
+
+def test_sources_down_notice_waits_a_full_hour(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = _published(monkeypatch)
+    world: _World = _World(streams=_FailingStreams())
+    counts: list[int] = []
+    with _following(tmp_path, _active(_followed()), world) as (owner, store):
+        _checked(owner, store)
+        for moment in (timedelta(minutes=59, seconds=59), timedelta(hours=1)):
+            world.clock.now = (_NOW + moment).timestamp()
+            _again(owner, f"check-{moment.total_seconds()}")
+            counts.append(len(messages))
+
+    assert counts == [0, 1]
+
+
+def test_no_polish_after_buffer_silent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = _published(monkeypatch)
+    world: _World = _World(polish_wait_h=2)
+    with _following(tmp_path, _active(_followed()), world) as (owner, store):
+        waiting: SubscriptionRecord = _checked(owner, store)
+        world.clock.now = (_NOW + timedelta(hours=1)).timestamp()
+        _again(owner, "after-buffer")
+        status: EpisodeStatus = _status(owner)
+        saved: WatchState = owner._on_owner(store.load)
+
+    assert waiting.targets[0].state is TargetState.DUE
+    target: SubscriptionTarget = saved.subscriptions[0].targets[0]
+    assert (target.state, target.polish_buffer_min) == (TargetState.ATTEMPTING, 120)
+    assert status.notices == (TargetNotice("no_polish_after_wait", "120"),)
+    assert (messages, _escalated(tmp_path)) == ([], [])
+
+
+@pytest.mark.parametrize("case", ["absent", "no-wait", "download-now"])
+def test_no_polish_reason_only_after_an_actual_wait(tmp_path: Path, case: str) -> None:
+    world: _World = _World(polish_wait_h=0 if case == "no-wait" else 2)
+    absent: PolishObservation = PolishObservation(PolishState.ABSENT, _NOW.isoformat())
+    due: SubscriptionTarget = SubscriptionTarget(
+        23, (_NOW - timedelta(hours=1)).isoformat(), TargetState.DUE, polish=absent if case == "absent" else None
+    )
+    with _following(tmp_path, _active(_followed(targets=(due,))), world) as (owner, store):
+        _checked(owner, store)
+        if case == "download-now":
+            assert _now(owner).ok
+            _settled(owner)
+        status: EpisodeStatus = _status(owner)
+        saved: WatchState = owner._on_owner(store.load)
+
+    target: SubscriptionTarget = saved.subscriptions[0].targets[0]
+    assert (target.state, target.polish_buffer_min) == (TargetState.ATTEMPTING, None)
+    assert status.notices == ()
+
+
+def test_replaced_attempt_closes_without_a_notice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = _published(monkeypatch)
+    attempting: SubscriptionTarget = SubscriptionTarget(
+        23,
+        (_NOW - timedelta(hours=1)).isoformat(),
+        TargetState.ATTEMPTING,
+        attempts=1,
+        started=1,
+        tried=("0" * 40,),
+        admission_id="attempt-1",
+    )
+    state: WatchState = replace(_active(_followed(targets=(attempting,))), acquisitions=(_closed_attempt(),))
+    with _following(tmp_path, state, _World(streams=_StreamSource({}))) as (owner, store):
+        _checked(owner, store)
+
+    closures: list[object] = [item.get("attempt_result") for item in _decisions(tmp_path) if item["kind"] == "attempt"]
+    assert closures == ["replaced"]
+    assert [item for item in _escalated(tmp_path) if item[1] == "replaced"] == []
+    assert [item for item in messages if "szukam" in item] == []

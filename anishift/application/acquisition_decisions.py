@@ -102,6 +102,11 @@ _FIELDS: Final[frozenset[str]] = frozenset(
         "measured_s",
         "expected_s",
         "duration_source",
+        "sources",
+        "blocker",
+        "numbering",
+        "pack",
+        "after_metadata",
         *_TARGET_FIELDS,
     }
 )
@@ -200,6 +205,19 @@ def admission_decision(assignment: EpisodeAssignment, operation_id: str) -> dict
 def candidate_proposal(candidate: RankedCandidate, target: Mapping[str, object]) -> dict[str, object]:
     """Describe the candidate a subscription would admit, with the H1 target it was assessed against."""
     return {"target": target_view(target), **_candidate_view(candidate)}
+
+
+def selection_view(candidate: RankedCandidate) -> dict[str, object]:
+    """Describe one candidate an automatic choice weighed by its hash, without names, paths or links."""
+    return {
+        "info_hash": candidate.stream.info_hash,
+        "verdict": candidate.identity.verdict.value,
+        "quality": candidate.quality,
+        "confidence": candidate.confidence,
+        "conflict": candidate.conflict,
+        "pack": candidate.pack,
+        "after_metadata": candidate.release_name_only,
+    }
 
 
 def _candidate_view(candidate: RankedCandidate) -> dict[str, object]:

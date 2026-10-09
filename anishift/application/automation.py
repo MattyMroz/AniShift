@@ -27,7 +27,12 @@ from anishift.application.acquisition import (
     SeasonContext,
     SubscriptionSearch,
 )
-from anishift.application.acquisition_decisions import admission_decision, append_decision, candidate_proposal
+from anishift.application.acquisition_decisions import (
+    admission_decision,
+    append_decision,
+    candidate_proposal,
+    selection_view,
+)
 from anishift.application.acquisition_staging import (
     SetPublication,
     clean_staging,
@@ -118,16 +123,18 @@ from anishift.application.episode_commands import (
     EpisodeReason,
     EpisodeResult,
     EpisodeStatus,
+    TargetNotice,
+    notice_text,
     validate_episode_keys,
 )
 from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.episode_search import SourceSwitches
 from anishift.application.episode_selection import (
     EpisodeKey,
-    EpisodeListing,
     EpisodeOffer,
     RankedCandidate,
     StreamCandidate,
+    numbering_gap,
     suggestion,
 )
 from anishift.application.events import RunEventKind, failure_code, sanitize_event_message
@@ -153,6 +160,8 @@ from anishift.application.results import DISPLAYED_ABSENCE_NOTE, GroupResult, Gr
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
 from anishift.application.selection import ready_group_ids, resolve_readiness
 from anishift.application.subscription_choice import (
+    NO_POLISH_AFTER_WAIT,
+    SOURCES_DOWN_NOTICE_H,
     Blocker,
     ChoiceCandidate,
     ChoiceDecision,
@@ -160,6 +169,7 @@ from anishift.application.subscription_choice import (
     ProtectedFile,
     choice_candidate,
     decide,
+    decision_deadline,
     polish_admitted,
     polish_history,
     protected_file,
@@ -471,6 +481,15 @@ _DEAD_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
 _DEAD_FACTS: Final[frozenset[str]] = frozenset({"stalled", "metadata_timeout"})
 """Attempt endings without downloaded bytes for the stall time, the only ones that raise the target threshold."""
 
+_REPLACED: Final[str] = "replaced"
+"""Closing reason of an attempt an explicit order replaced, which is no failure."""
+
+_CHECK_NOTICES: Final[frozenset[str]] = frozenset({"no_admissible", "threshold", "pending", "sources_down"})
+"""Notice reasons a subscription check publishes itself, with the counts only it knows."""
+
+_FAILURE_BLOCKERS: Final[frozenset[Blocker]] = frozenset({Blocker.NO_ADMISSIBLE, Blocker.THRESHOLD, Blocker.PENDING})
+"""Blockers a due target keeps and reports once its decision deadline passes."""
+
 _SUBSCRIPTION_KINDS: Final[frozenset[str]] = frozenset(
     {
         "subscriptions_list",
@@ -695,6 +714,20 @@ class _SubscriptionRead:
     errored: tuple[int, ...] = ()
     searched: tuple[tuple[int, PolishSkip | None], ...] = ()
     tried: tuple[tuple[int, PolishSkip | None], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _Decided:
+    decision: ChoiceDecision
+    offer: EpisodeOffer
+    polish_buffer_min: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Escalation:
+    number: int
+    key: NotificationKey
+    message: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -3918,14 +3951,15 @@ class AutomationOwner:
         now: datetime = self._clock() if result is None else result.checked_at
         evidence: list[tuple[str, dict[str, object]]] = []
         chosen: list[tuple[int, RankedCandidate, dict[str, object]]] = []
+        decided: dict[int, _Decided] = {}
         updated: SubscriptionRecord = current
         if result is not None and result.read is not None:
             updated = merge_listing(current, result.read, now, (item.scope for item in self._state.legacy_orders))
             evidence.append(("check", _mapping_check(current, result.read)))
             updated = _searched(updated, result.offers, now, errored=result.errored)
             updated = _settled_skips(updated, result.searched, result.tried)
-        check: SubscriptionCheck = self._subscription_outcome(updated, result, now, evidence, chosen)
-        updated = replace(updated, last_check=check)
+        check: SubscriptionCheck = self._subscription_outcome(updated, result, now, evidence, chosen, decided)
+        updated = replace(updated, last_check=check, targets=_with_decisions(updated.targets, decided))
         succeeded: bool = _check_succeeded(current, result)
         if succeeded:
             updated = replace(updated, checked_at=now.astimezone(UTC).isoformat())
@@ -3937,12 +3971,14 @@ class AutomationOwner:
                 replace(item, notified_late=True) if item.number in overdue else item for item in updated.targets
             ),
         )
+        escalations: tuple[_Escalation, ...] = self._escalations(updated, decided, now)
         saved: bool = self._save(
             replace(
                 self._state,
                 subscriptions=tuple(updated if item is current else item for item in self._state.subscriptions),
                 notified=self._state.notified
-                | {(f"subscription:{identifier}:{number}", "late", "") for number in overdue},
+                | {(f"subscription:{identifier}:{number}", "late", "") for number in overdue}
+                | {item.key for item in escalations},
             )
         )
         if not saved:
@@ -3954,6 +3990,8 @@ class AutomationOwner:
         for kind, payload in evidence:
             append_decision(journal, kind, payload, entry="subscription" if self._admits else "shadow")
         if saved:
+            for escalation in escalations:
+                self._escalate(updated, escalation, journal)
             for number, candidate, identity in chosen:
                 self._admit_attempt(identifier, number, candidate, identity)
         checked: SubscriptionRecord | None = self._subscription(identifier)
@@ -3968,13 +4006,14 @@ class AutomationOwner:
             )
         self._publish_state()
 
-    def _subscription_outcome(
+    def _subscription_outcome(  # noqa: PLR0913 - one check result fills its evidence, choices and decisions
         self,
         record: SubscriptionRecord,
         result: _SubscriptionRead | None,
         now: datetime,
         evidence: list[tuple[str, dict[str, object]]],
         chosen: list[tuple[int, RankedCandidate, dict[str, object]]],
+        decided: dict[int, _Decided],
     ) -> SubscriptionCheck:
         if result is None:
             return _failed_check(record, now, None, "source_failed")
@@ -3986,8 +4025,10 @@ class AutomationOwner:
             target: SubscriptionTarget | None = next((item for item in record.targets if item.number == number), None)
             choice: RankedCandidate | None = None
             polish: dict[str, object] | None = None
+            decision: ChoiceDecision | None = None
             if searchable and target is not None and target.state is TargetState.DUE and not search.unavailable:
-                choice, polish = self._subscription_choice(record, target, search, chosen, now)
+                decision, choice, polish = self._subscription_choice(record, target, search, chosen, now)
+                decided[number] = _Decided(decision, offer, self._polish_buffer(record, target, decision))
             counts: dict[str, int] = offer.counts
             outcome: str = "proposed" if choice is not None else "no_match" if offer.candidates else "no_candidates"
             logger.info(
@@ -4000,7 +4041,7 @@ class AutomationOwner:
                 decision=outcome,
             )
             if result.read is not None:
-                evidence.append(("check", _offer_check(record, offer, target, choice, result.read.listing)))
+                evidence.append(("check", _offer_check(record, search, target, choice, result.read, decision)))
             if polish is not None:
                 evidence.append(("polish", polish))
             if choice is not None and target is not None and self._admits:
@@ -4041,7 +4082,7 @@ class AutomationOwner:
         search: SubscriptionSearch,
         chosen: Sequence[tuple[int, RankedCandidate, dict[str, object]]],
         now: datetime,
-    ) -> tuple[RankedCandidate | None, dict[str, object]]:
+    ) -> tuple[ChoiceDecision, RankedCandidate | None, dict[str, object]]:
         protected: frozenset[ProtectedFile] = protected_files(
             self._state.acquisitions, (record.anilist_id, target.number)
         ) | {protected_file(row.stream.info_hash, row.stream.path) for _number, row, _identity in chosen}
@@ -4076,7 +4117,7 @@ class AutomationOwner:
                 subscription_id=record.subscription_id,
                 number=target.number,
             )
-        return next((row for row, item in rows if item is decision.candidate), None), polish
+        return decision, next((row for row, item in rows if item is decision.candidate), None), polish
 
     def _polish_deadline(self, record: SubscriptionRecord, target: SubscriptionTarget) -> datetime | None:
         """Return when *target* stops waiting for Polish subtitles under the current wait setting."""
@@ -4087,6 +4128,16 @@ class AutomationOwner:
             self._polish_history(record, target),
             self._service.settings_snapshot().subscription_polish_wait_h,
         )
+
+    def _polish_buffer(
+        self, record: SubscriptionRecord, target: SubscriptionTarget, decision: ChoiceDecision
+    ) -> int | None:
+        """Return the minutes *target* actually waited for Polish before a choice took a release without it."""
+        deadline: datetime | None = self._polish_deadline(record, target)
+        if decision.reason != NO_POLISH_AFTER_WAIT or deadline is None or target.due_at is None:
+            return None
+        waited: int = int((deadline - datetime.fromisoformat(target.due_at)) / timedelta(minutes=1))
+        return waited if waited > 0 else None
 
     def _polish_history(self, record: SubscriptionRecord, target: SubscriptionTarget) -> PolishState:
         local: bool = record.anilist_id is not None and polish_admitted(
@@ -4317,7 +4368,7 @@ class AutomationOwner:
         index: _EpisodeIndex = _episode_index(state, frozenset(item.anilist_id for item in records))
         now: datetime = self._clock()
         orphans: bool = bool(closed)
-        exhausted: set[NotificationKey] = set()
+        notices: set[NotificationKey] = set()
         settled: dict[str, SubscriptionRecord] = {}
         for record in records:
             targets: tuple[SubscriptionTarget, ...] = tuple(
@@ -4326,10 +4377,15 @@ class AutomationOwner:
             )
             if targets != record.targets:
                 settled[record.subscription_id] = replace(record, targets=targets)
-            exhausted.update(
+            notices.update(
                 (f"subscription:{record.subscription_id}:{item.number}", "exhausted", "")
                 for item in targets
                 if item.state is TargetState.EXHAUSTED
+            )
+            notices.update(
+                key
+                for before, after in zip(record.targets, targets, strict=True)
+                if (key := _closing_key(record, before, after)) is not None
             )
         subscriptions: tuple[SubscriptionRecord, ...] = tuple(
             settled.get(item.subscription_id, item) for item in state.subscriptions
@@ -4346,7 +4402,7 @@ class AutomationOwner:
                 if closed
                 else state.acquisitions
             ),
-            notified=state.notified | exhausted,
+            notified=state.notified | notices,
         ), finished
 
     def _settled_target(  # noqa: PLR0913 - one target settles on the record, index, clock and closing evidence
@@ -4469,21 +4525,103 @@ class AutomationOwner:
         self, key: NotificationKey, records: Mapping[str, SubscriptionRecord], journal: Path
     ) -> None:
         prefix, _separator, number = key[0].rpartition(":")
-        if not prefix.startswith("subscription:") or not number.isdecimal():
+        if not prefix.startswith("subscription:") or not number.isdecimal() or key[1] in _CHECK_NOTICES:
             return
         record: SubscriptionRecord | None = records.get(prefix.removeprefix("subscription:"))
         if record is None:
             return
-        title: str = sanitize_event_message(record.title) or "Subskrypcja"
-        message: str = (
-            f"Nie znaleziono {title} E{number} od 7 dni"
-            if key[1] == "late"
-            else f"{title} E{number}: wyczerpano próby ({MAX_ATTEMPTS} z {MAX_ATTEMPTS})"
+        title: str = _subscription_title(record)
+        message: str = f"{title} E{number}: wyczerpano próby ({MAX_ATTEMPTS} z {MAX_ATTEMPTS})"
+        if key[1] == "late":
+            message = f"Nie znaleziono {title} E{number} od 7 dni"
+        elif key[1] != "exhausted":
+            target: SubscriptionTarget | None = next(
+                (item for item in record.targets if item.number == int(number)), None
+            )
+            failed: TargetNotice = (None if target is None else self._attempt_notice(target)) or TargetNotice(key[1])
+            message = f"{title} E{number}: {notice_text(failed, searching=True)}"
+        self._escalate(record, _Escalation(int(number), key, message), journal)
+
+    def _escalate(self, record: SubscriptionRecord, escalation: _Escalation, journal: Path) -> None:
+        key: NotificationKey = escalation.key
+        payload: dict[str, object] = {**_subscription_key(record, escalation.number), "reason": key[1]}
+        if key[2].isdecimal():
+            payload["attempt"] = int(key[2])
+        append_decision(journal, "escalation", payload, entry="subscription")
+        logger.info(
+            "Subscription notice", subscription_id=record.subscription_id, number=escalation.number, reason=key[1]
         )
-        append_decision(
-            journal, "escalation", {**_subscription_key(record, int(number)), "reason": key[1]}, entry="subscription"
+        self._publish_notification(
+            "Subskrypcja", sanitize_event_message(escalation.message) or _subscription_title(record), None
         )
-        self._publish_notification("Subskrypcja", sanitize_event_message(message) or title, None)
+
+    def _escalations(
+        self, record: SubscriptionRecord, decided: Mapping[int, _Decided], now: datetime
+    ) -> tuple[_Escalation, ...]:
+        """Return the §8 notices one check owes for the due targets of *record*, each reason at most once."""
+        found: list[_Escalation] = []
+        for target in record.targets:
+            if target.state is not TargetState.DUE:
+                continue
+            made: _Decided | None = decided.get(target.number)
+            escalation: _Escalation | None = (
+                None if made is None else self._decided_escalation(record, target, made, now)
+            )
+            if escalation is not None:
+                found.append(escalation)
+            down: _Escalation | None = self._sources_escalation(record, target, now)
+            if down is not None:
+                found.append(down)
+        return tuple(found)
+
+    def _decided_escalation(
+        self, record: SubscriptionRecord, target: SubscriptionTarget, made: _Decided, now: datetime
+    ) -> _Escalation | None:
+        key: NotificationKey = (
+            f"subscription:{record.subscription_id}:{target.number}",
+            made.decision.blocker.value,
+            "",
+        )
+        if key in self._state.notified or not self._decision_due(record, target, made.decision, now):
+            return None
+        message: str = f"{_subscription_title(record)} E{target.number}: {notice_text(_blocker_notice(target, made))}"
+        return _Escalation(target.number, key, message)
+
+    def _decision_due(
+        self, record: SubscriptionRecord, target: SubscriptionTarget, decision: ChoiceDecision, now: datetime
+    ) -> bool:
+        """Whether a blocked target has reached its decision deadline, its Polish wait but at least two hours."""
+        polish: datetime | None = self._polish_deadline(record, target)
+        if decision.blocker not in _FAILURE_BLOCKERS or polish is None or target.due_at is None:
+            return False
+        return now >= decision_deadline(datetime.fromisoformat(target.due_at), polish)
+
+    def _sources_escalation(
+        self, record: SubscriptionRecord, target: SubscriptionTarget, now: datetime
+    ) -> _Escalation | None:
+        key: NotificationKey = (f"subscription:{record.subscription_id}:{target.number}", "sources_down", "")
+        notice: TargetNotice | None = _sources_notice(target, now)
+        if notice is None or notice.cause is None or key in self._state.notified:
+            return None
+        return _Escalation(target.number, key, f"{_subscription_title(record)} E{target.number}: {notice_text(notice)}")
+
+    def _attempt_notice(self, target: SubscriptionTarget) -> TargetNotice | None:
+        """Return why the last automatic attempt of *target* failed, with the check rejection that ended it."""
+        reason: str | None = target.reason
+        if target.started < 1 or reason is None:
+            return None
+        if reason != "rejected":
+            return TargetNotice(reason)
+        verification: str = next(
+            (
+                assignment.verification or ""
+                for transfer in self._state.acquisitions
+                for assignment in transfer.assignments
+                if assignment.admission_id == target.admission_id
+            ),
+            "",
+        )
+        return TargetNotice(reason, verification.removeprefix(VERIFICATION_REJECT) or None)
 
     def _subscription_source_present(self, acquisition: AcquisitionConfirmation) -> bool:
         targets: dict[str, WorkflowTarget] = self._recorded_targets()
@@ -4853,6 +4991,8 @@ class AutomationOwner:
         status: EpisodeStatus = self._assignment_status(*matches[-1]) if matches else self._legacy_episode_status(key)
         if status.state == "not_ordered" and status.reason is None and not status.uncertain:
             return self._target_status(status)
+        if matches:
+            status = replace(status, notices=self._polish_notices(matches[-1][1]))
         if not self._ready_result_missing(status):
             return status
         return EpisodeStatus(
@@ -4874,16 +5014,52 @@ class AutomationOwner:
         if found is None or (reason := _TARGET_REASONS.get(found[1].state)) is None:
             return status
         record, target = found
+        now: datetime = self._clock()
+        notices: tuple[TargetNotice, ...] = self._target_notices(record, target, now)
         if target.state is not TargetState.DUE:
-            return replace(status, reason=reason)
-        waiting: datetime | None = self._polish_waiting(record, target, self._clock())
+            return replace(status, reason=reason, notices=notices)
+        waiting: datetime | None = self._polish_waiting(record, target, now)
         return replace(
             status,
             reason=reason,
             polish=self._polish_history(record, target).value,
             polish_wait_until=None if waiting is None else waiting.astimezone(UTC).isoformat(),
             polish_skipped=skip_active(target),
+            notices=notices,
         )
+
+    def _target_notices(
+        self, record: SubscriptionRecord, target: SubscriptionTarget, now: datetime
+    ) -> tuple[TargetNotice, ...]:
+        """Return why *target* has no download yet: its failed attempt, the blocker it kept and its sources."""
+        failed: TargetNotice | None = self._attempt_notice(target)
+        notices: list[TargetNotice] = [] if failed is None else [failed]
+        if target.state is not TargetState.DUE:
+            return tuple(notices)
+        if target.blocker is not None:
+            notices.append(_kept_notice(target, target.blocker))
+        down: TargetNotice | None = _sources_notice(target, now)
+        if down is not None:
+            notices.append(down)
+        return tuple(notices)
+
+    def _polish_notices(self, assignment: EpisodeAssignment) -> tuple[TargetNotice, ...]:
+        """Return how long the choice of an automatic attempt waited before it took a release without Polish."""
+        if assignment.source is not AdmissionSource.SUBSCRIPTION:
+            return ()
+        target: SubscriptionTarget | None = next(
+            (
+                item
+                for record in self._state.subscriptions
+                if record.subscription_id == assignment.subscription_id
+                for item in record.targets
+                if item.number == assignment.choice.number
+            ),
+            None,
+        )
+        if target is None or target.polish_buffer_min is None:
+            return ()
+        return (TargetNotice(NO_POLISH_AFTER_WAIT, str(target.polish_buffer_min)),)
 
     def _ready_result_missing(self, status: EpisodeStatus) -> bool:
         """Whether a ready episode's recorded main result, or its source video without one, is gone from disk."""
@@ -8750,6 +8926,66 @@ def _subscription_key(record: SubscriptionRecord, number: int | None) -> dict[st
     return {"subscription_id": record.subscription_id, "key": {"anilist_id": record.anilist_id, "number": number}}
 
 
+def _subscription_title(record: SubscriptionRecord) -> str:
+    return sanitize_event_message(record.title) or "Subskrypcja"
+
+
+def _with_decisions(
+    targets: tuple[SubscriptionTarget, ...], decided: Mapping[int, _Decided]
+) -> tuple[SubscriptionTarget, ...]:
+    return tuple(
+        item
+        if (made := decided.get(item.number)) is None
+        else replace(
+            item,
+            blocker=made.decision.blocker if made.decision.blocker in _FAILURE_BLOCKERS else None,
+            polish_buffer_min=made.polish_buffer_min,
+        )
+        for item in targets
+    )
+
+
+def _closing_key(
+    record: SubscriptionRecord, before: SubscriptionTarget, after: SubscriptionTarget
+) -> NotificationKey | None:
+    if before.state is not TargetState.ATTEMPTING or after.state not in {TargetState.DUE, TargetState.AWAITING_AIRING}:
+        return None
+    if after.reason is None or after.reason == _REPLACED:
+        return None
+    return f"subscription:{record.subscription_id}:{after.number}", after.reason, str(after.started)
+
+
+def _blocker_notice(target: SubscriptionTarget, made: _Decided) -> TargetNotice:
+    decision: ChoiceDecision = made.decision
+    height: int | None = None if decision.blocked is None else decision.blocked.traits.resolution
+    shown: str = "" if height is None else str(height)
+    if decision.blocker is Blocker.THRESHOLD and target.threshold is not None:
+        return TargetNotice(Blocker.THRESHOLD.value, f"{int(target.threshold)}/{shown}")
+    if decision.blocker is Blocker.PENDING:
+        return TargetNotice(Blocker.PENDING.value, shown)
+    tried: frozenset[str] = _excluded_hashes(target)
+    matching: list[bool] = [
+        release_hash(item.stream.info_hash) in tried
+        for item in made.offer.candidates
+        if item.identity.verdict is IdentityVerdict.MATCH
+    ]
+    fresh: int = matching.count(False)
+    return TargetNotice(Blocker.NO_ADMISSIBLE.value, f"{len(made.offer.candidates)}/{fresh}/{len(matching) - fresh}")
+
+
+def _kept_notice(target: SubscriptionTarget, blocker: Blocker) -> TargetNotice:
+    if blocker is Blocker.THRESHOLD and target.threshold is not None:
+        return TargetNotice(blocker.value, str(int(target.threshold)))
+    return TargetNotice(blocker.value)
+
+
+def _sources_notice(target: SubscriptionTarget, now: datetime) -> TargetNotice | None:
+    if target.sources_down_since is None:
+        return None
+    hours: int = int((now - datetime.fromisoformat(target.sources_down_since)) / timedelta(hours=1))
+    return TargetNotice("sources_down", str(hours) if hours >= SOURCES_DOWN_NOTICE_H else None)
+
+
 def _failed_check(record: SubscriptionRecord, now: datetime, number: int | None, outcome: str) -> SubscriptionCheck:
     logger.info("Subscription checked", subscription_id=record.subscription_id, number=number, decision=outcome)
     return SubscriptionCheck(now.astimezone(UTC).isoformat(), number, 0, 0, 0, outcome)
@@ -8765,23 +9001,28 @@ def _mapping_check(record: SubscriptionRecord, read: ListingRead) -> dict[str, o
     }
 
 
-def _offer_check(
+def _offer_check(  # noqa: PLR0913 - one register row joins the search, its target, choice, list and decision
     record: SubscriptionRecord,
-    offer: EpisodeOffer,
+    search: SubscriptionSearch,
     target: SubscriptionTarget | None,
     chosen: RankedCandidate | None,
-    listing: EpisodeListing,
+    read: ListingRead,
+    decision: ChoiceDecision | None,
 ) -> dict[str, object]:
-    aired: datetime | None = next(
-        (anilist_date(item) for item in listing.episodes if item.number == offer.key.number), None
-    )
+    offer: EpisodeOffer = search.offer
+    number: int = offer.key.number
+    aired: datetime | None = next((anilist_date(item) for item in read.listing.episodes if item.number == number), None)
     return {
-        **_subscription_key(record, offer.key.number),
+        **_subscription_key(record, number),
         "source": "torrentio",
         "due_at": None if target is None else target.due_at,
         "aired_at": None if aired is None else aired.isoformat(),
         "result": "match" if chosen is not None else "candidates" if offer.candidates else "none",
         "excluded": 0 if target is None else len(target.tried),
+        "sources": [{"source": name, "result": state} for name, state in search.sources],
+        "candidates": [selection_view(item) for item in offer.candidates],
+        "blocker": None if decision is None else decision.blocker.value,
+        "numbering": numbering_gap(read.mapping, number, read.tvdb_season, movie=read.movie) or read.numbering_source,
     }
 
 

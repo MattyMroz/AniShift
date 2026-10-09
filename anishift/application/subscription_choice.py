@@ -18,6 +18,7 @@ from anishift.application.release_quality import (
 )
 from anishift.application.subscription_targets import (
     MAX_TRANSIENT_FAILURES,
+    Blocker,
     PolishObservation,
     PolishState,
     ReleaseFailure,
@@ -31,7 +32,9 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ABSENT_AFTER_H",
+    "DECISION_AFTER_H",
     "NO_POLISH_AFTER_WAIT",
+    "SOURCES_DOWN_NOTICE_H",
     "UNKNOWN_WAIT_H",
     "Blocker",
     "ChoiceCandidate",
@@ -44,6 +47,7 @@ __all__ = [
     "choose",
     "completion_order",
     "decide",
+    "decision_deadline",
     "is_taken",
     "pending_blocks",
     "pending_releases",
@@ -71,14 +75,6 @@ class ReadOutcome(StrEnum):
     TIMEOUT = "timeout"
 
 
-class Blocker(StrEnum):
-    """Why one due target admits nothing in this check, or NONE when it admits a release."""
-
-    NONE = "none"
-    NO_ADMISSIBLE = "no_admissible"
-    WAITING_POLISH = "waiting_polish"
-
-
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 type ProtectedFile = tuple[str, str | None]
@@ -95,6 +91,12 @@ ABSENT_AFTER_H: Final[int] = 24
 
 NO_POLISH_AFTER_WAIT: Final[str] = "no_polish_after_wait"
 """Reason of a choice taken without Polish subtitles once the wait for them ended."""
+
+DECISION_AFTER_H: Final[int] = 2
+"""Hours after the deadline before a target without an admissible release is reported, at least."""
+
+SOURCES_DOWN_NOTICE_H: Final[int] = 1
+"""Hours every enabled source of a due target may stay unavailable before the user is told."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,12 +130,16 @@ class ChoiceState:
 
 @dataclass(frozen=True, slots=True)
 class ChoiceDecision:
-    """The release one check admits for a target, or what blocks it, with the end of its Polish wait."""
+    """The release one check admits for a target, or what blocks it, with the end of its Polish wait.
+
+    ``blocked`` is the best release the threshold refuses, or the best pending release that blocks the choice.
+    """
 
     candidate: ChoiceCandidate | None
     blocker: Blocker
     wait_until: datetime | None = None
     reason: str | None = None
+    blocked: ChoiceCandidate | None = None
 
 
 def choice_candidate(candidate: RankedCandidate, protected: Collection[ProtectedFile] = ()) -> ChoiceCandidate:
@@ -247,12 +253,17 @@ def decide(candidates: Sequence[ChoiceCandidate], state: ChoiceState, now: datet
         tsukihime=state.tsukihime,
     )
     if picked is None:
-        return ChoiceDecision(None, Blocker.NO_ADMISSIBLE)
+        return _blocked(candidates, state)
     if picked.traits.polish is PolishClass.POLISH or state.skip_wait:
         return ChoiceDecision(picked, Blocker.NONE)
     if now < state.wait_until:
         return ChoiceDecision(None, Blocker.WAITING_POLISH, state.wait_until)
     return ChoiceDecision(picked, Blocker.NONE, reason=NO_POLISH_AFTER_WAIT)
+
+
+def decision_deadline(due: datetime, polish_until: datetime) -> datetime:
+    """Return when a due target without an admissible release counts as a failure: its Polish wait, at least 2 h."""
+    return max(polish_until, due + timedelta(hours=DECISION_AFTER_H))
 
 
 def polish_history(observation: PolishObservation | None, *, local: bool) -> PolishState:
@@ -383,6 +394,23 @@ def _assignment_files(info_hash: str, paths: tuple[str | None, ...]) -> Iterator
 def release_hash(value: str) -> str:
     """Return the lowercase hexadecimal hash automation compares releases by, else the casefolded text."""
     return info_hash_hex(value) or value.casefold()
+
+
+def _blocked(candidates: Sequence[ChoiceCandidate], state: ChoiceState) -> ChoiceDecision:
+    allowed: list[ChoiceCandidate] = [
+        item for item in candidates if admissible(item, excluded=state.excluded, threshold=state.threshold)
+    ]
+    if allowed:
+        pending: tuple[ChoiceCandidate, ...] = pending_releases(
+            candidates, failures=state.failures, excluded=state.excluded, tsukihime=state.tsukihime
+        )
+        return ChoiceDecision(None, Blocker.PENDING, blocked=min(pending, key=choice_key, default=None))
+    refused: list[ChoiceCandidate] = [
+        item for item in candidates if admissible(item, excluded=state.excluded, threshold=None)
+    ]
+    if refused:
+        return ChoiceDecision(None, Blocker.THRESHOLD, blocked=min(refused, key=choice_key))
+    return ChoiceDecision(None, Blocker.NO_ADMISSIBLE)
 
 
 def _ended(failures: Sequence[ReleaseFailure]) -> frozenset[str]:

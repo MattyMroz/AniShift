@@ -60,6 +60,7 @@ from anishift.application.intents import (
 from anishift.application.release_quality import PolishClass, ResolutionClass
 from anishift.application.subscription_migration import migrate, migrate_to_five
 from anishift.application.subscription_targets import (
+    Blocker,
     PauseReason,
     PolishObservation,
     PolishSkip,
@@ -168,6 +169,9 @@ _TARGET_KEYS_FIVE: Final[frozenset[str]] = frozenset(
     {"started", "threshold", "failures", "polish", "sources_down_since", "polish_skip"}
 )
 """Target keys schema 5 added, which every schema 5 document must carry and no older one may."""
+
+_TARGET_OPTIONAL_FIVE: Final[frozenset[str]] = frozenset({"blocker", "polish_buffer_min"})
+"""Target keys a schema 5 document may omit, read as absent, which no older one may carry."""
 
 _ASSIGNMENT_KEYS_FIVE: Final[frozenset[str]] = frozenset({"traits", "stopped"})
 """Assignment keys schema 5 added, which every schema 5 document must carry and no older one may."""
@@ -1092,6 +1096,8 @@ def _encode_subscription(record: SubscriptionRecord) -> dict[str, object]:
                     "settled": item.polish_skip.settled,
                     "tried": item.polish_skip.tried,
                 },
+                "blocker": None if item.blocker is None else item.blocker.value,
+                "polish_buffer_min": item.polish_buffer_min,
             }
             for item in record.targets
         ],
@@ -1189,8 +1195,14 @@ def _decode_check(raw: object) -> SubscriptionCheck:
 
 
 def _decode_target(raw: object, *, five: bool) -> SubscriptionTarget:
-    document: dict[str, object] = _strict_object(
-        raw, _TARGET_KEYS | _TARGET_KEYS_FIVE if five else _TARGET_KEYS, "subscription target"
+    document: dict[str, object] = (
+        _strict_object(
+            dict.fromkeys(_TARGET_OPTIONAL_FIVE) | _strict_mapping(raw, "subscription target"),
+            _TARGET_KEYS | _TARGET_KEYS_FIVE | _TARGET_OPTIONAL_FIVE,
+            "subscription target",
+        )
+        if five
+        else _strict_object(raw, _TARGET_KEYS, "subscription target")
     )
     attempts: int = _whole(document, "attempts")
     target: SubscriptionTarget = SubscriptionTarget(
@@ -1212,6 +1224,7 @@ def _schema_five_target(target: SubscriptionTarget, document: dict[str, object])
     threshold: int | None = _optional_whole(document, "threshold")
     polish: object = document["polish"]
     skip: object = document["polish_skip"]
+    blocker: str | None = _optional_text(document, "blocker")
     return replace(
         target,
         started=_whole(document, "started"),
@@ -1220,6 +1233,8 @@ def _schema_five_target(target: SubscriptionTarget, document: dict[str, object])
         polish=None if polish is None else _decode_polish(polish),
         sources_down_since=_optional_text(document, "sources_down_since"),
         polish_skip=None if skip is None else _decode_polish_skip(skip),
+        blocker=None if blocker is None else Blocker(blocker),
+        polish_buffer_min=_optional_whole(document, "polish_buffer_min"),
     )
 
 

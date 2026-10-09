@@ -47,6 +47,7 @@ from anishift.application.intents import ProductKind, RebuildRequest, RequestOri
 from anishift.application.release_quality import AudioClass, PolishClass, ReleaseTraits, ResolutionClass
 from anishift.application.subscription_targets import (
     MAX_TRANSIENT_FAILURES,
+    Blocker,
     PolishObservation,
     PolishSkip,
     PolishState,
@@ -823,6 +824,12 @@ _FIVE_KEYS: dict[str, tuple[str, ...]] = {
     "assignment": ("traits", "stopped"),
 }
 
+_OPTIONAL_FIVE_KEYS: dict[str, tuple[str, ...]] = {
+    "subscription": (),
+    "target": ("blocker", "polish_buffer_min"),
+    "assignment": (),
+}
+
 
 def _schema_five_state() -> WatchState:
     target: SubscriptionTarget = SubscriptionTarget(
@@ -881,7 +888,7 @@ def _schema_four(document: dict[str, object]) -> dict[str, object]:
     document["schema_version"] = 4
     for place, items in _five_objects(document).items():
         for item in items:
-            for key in _FIVE_KEYS[place]:
+            for key in (*_FIVE_KEYS[place], *_OPTIONAL_FIVE_KEYS[place]):
                 item.pop(key)
     return document
 
@@ -928,6 +935,31 @@ def test_polish_skip_roundtrip_and_reads_a_skip_saved_without_tried(tmp_path: Pa
     assert _store(tmp_path).load().subscriptions[0].targets[0].polish_skip == replace(skip, tried=False)
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "saved_value"),
+    [
+        ("blocker", None, None),
+        ("blocker", Blocker.THRESHOLD, "threshold"),
+        ("polish_buffer_min", None, None),
+        ("polish_buffer_min", 120, 120),
+    ],
+)
+def test_optional_target_fact_roundtrip_and_reads_a_target_saved_without_it(
+    tmp_path: Path, field: str, value: object, saved_value: object
+) -> None:
+    state: WatchState = _schema_five_state()
+    target: SubscriptionTarget = replace(state.subscriptions[0].targets[0], **{field: value})  # type: ignore[arg-type]
+    record: SubscriptionRecord = replace(state.subscriptions[0], targets=(target,))
+    document: dict[str, object] = _saved_document(tmp_path, replace(state, subscriptions=(record,)))
+    saved: dict[str, object] = _five_objects(document)["target"][0]
+
+    assert saved[field] == saved_value
+    assert getattr(_store(tmp_path).load().subscriptions[0].targets[0], field) == value
+    saved.pop(field)
+    _write(tmp_path, document)
+    assert getattr(_store(tmp_path).load().subscriptions[0].targets[0], field) is None
+
+
 def test_failures_roundtrip(tmp_path: Path) -> None:
     document: dict[str, object] = _saved_document(tmp_path, _schema_five_state())
     target: dict[str, object] = _five_objects(document)["target"][0]
@@ -952,7 +984,10 @@ def test_choice_traits_are_saved_under_the_assignment(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.parametrize(("place", "key"), [(place, key) for place, keys in _FIVE_KEYS.items() for key in keys])
+@pytest.mark.parametrize(
+    ("place", "key"),
+    [(place, key) for keys in (_FIVE_KEYS, _OPTIONAL_FIVE_KEYS) for place, names in keys.items() for key in names],
+)
 def test_schema_four_rejects_five_keys(tmp_path: Path, place: str, key: str) -> None:
     document: dict[str, object] = _schema_four(_saved_document(tmp_path, _schema_five_state()))
     _five_objects(document)[place][0][key] = None

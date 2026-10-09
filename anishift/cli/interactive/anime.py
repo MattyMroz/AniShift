@@ -62,6 +62,7 @@ from anishift.cli.interactive.subscription_texts import (
     check_text,
     earlier_episodes,
     episode_label,
+    notice_line,
     polish_line,
     row_state,
     row_summary,
@@ -931,25 +932,35 @@ class AnimeController:
             self._last_check(),
             "" if state.detail == state.text else state.detail,
             self._polish_line(),
+            self._notice_line(),
             self._earlier_episodes(),
         )
 
     def _polish_line(self) -> str:
-        listing: EpisodeListing | None = self._listing
-        due: EpisodeStatus | None = self._cursor_status()
-        if due is None or due.polish is None:
-            due = min(
-                (
-                    item
-                    for item in self._episode_states.values()
-                    if item.polish is not None and listing is not None and item.key.anilist_id == listing.anilist_id
-                ),
-                key=lambda item: item.key.number,
-                default=None,
-            )
+        due: EpisodeStatus | None = self._focused_status(lambda item: item.polish is not None)
         if due is None:
             return ""
         return f"E{due.key.number} {polish_line(due.polish, due.polish_wait_until, skipped=due.polish_skipped)}"
+
+    def _notice_line(self) -> str:
+        noted: EpisodeStatus | None = self._focused_status(lambda item: bool(item.notices))
+        return "" if noted is None else notice_line(noted.key.number, noted.notices)
+
+    def _focused_status(self, shown: Callable[[EpisodeStatus], bool]) -> EpisodeStatus | None:
+        """Return the highlighted episode state when it has the fact, else the lowest episode that has it."""
+        listing: EpisodeListing | None = self._listing
+        due: EpisodeStatus | None = self._cursor_status()
+        if due is not None and shown(due):
+            return due
+        return min(
+            (
+                item
+                for item in self._episode_states.values()
+                if shown(item) and listing is not None and item.key.anilist_id == listing.anilist_id
+            ),
+            key=lambda item: item.key.number,
+            default=None,
+        )
 
     def _moment(self) -> datetime:
         return datetime.fromtimestamp(self._clock(), UTC)

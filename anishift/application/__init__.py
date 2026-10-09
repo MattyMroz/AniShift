@@ -108,6 +108,8 @@ from anishift.application.episode_commands import (
     EpisodeReason,
     EpisodeResult,
     EpisodeStatus,
+    TargetNotice,
+    notice_text,
 )
 from anishift.application.episode_identity import conflict_label
 from anishift.application.episode_selection import (
@@ -313,6 +315,7 @@ __all__ = [
     "SubscriptionRow",
     "SubtitleOutputFormat",
     "SubtitleSourcePolicy",
+    "TargetNotice",
     "TargetState",
     "TaskKind",
     "TaskResult",
@@ -341,6 +344,7 @@ __all__ = [
     "is_target",
     "legal_narration_timelines",
     "legal_products",
+    "notice_text",
     "order_groups",
     "parse_query",
     "parse_release_name",

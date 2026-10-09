@@ -75,7 +75,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   workers stay in `StateController`. T, only on a highlighted target whose `EpisodeStatus.polish_wait_until`
   is set, sends `subscription_check` with its `number` and replaces `P ponownie` in the footer; the row Stan
   is `Czeka na PL`/`Bez czekania PL`, the facts line `E{n} polish_line` names the wait of the highlighted
-  target (else the lowest target with a Polish state), and a
+  target (else the lowest target with a Polish state), the next line `notice_line` (`E{n}: …`) joins
+  the same target's `EpisodeStatus.notices` through the facade's `notice_text`, the only source of those
+  Polish phrases (`_focused_status` picks both targets), and a
   `target_not_waiting` refusal rereads episode states (`polish_refused`). F shows `Sprawdzam…`, then the `subscription_checked` result
   for `CHECK_SHOWN_S`, measured by the injected clock: `check_state` in the Stan column, `check_text`
   first beneath the table. Beneath the table stands only what the highlighted row hides: the full state

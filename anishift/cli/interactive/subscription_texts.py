@@ -8,7 +8,16 @@ from datetime import datetime
 from types import MappingProxyType
 from typing import Final
 
-from anishift.application import AIRING_STATUSES, EpisodeListing, ListedEpisode, anilist_date, cut_point, is_target
+from anishift.application import (
+    AIRING_STATUSES,
+    EpisodeListing,
+    ListedEpisode,
+    TargetNotice,
+    anilist_date,
+    cut_point,
+    is_target,
+    notice_text,
+)
 from anishift.application.events import sanitize_event_message
 
 __all__ = [
@@ -19,6 +28,7 @@ __all__ = [
     "check_text",
     "clock_time",
     "earlier_episodes",
+    "notice_line",
     "polish_line",
     "row_columns",
     "row_state",
@@ -242,6 +252,12 @@ def polish_line(history: str | None, wait_until: str | None, *, skipped: bool) -
     if wait_until is not None:
         return f"PL: {seen} · czekam do {clock_time(wait_until)}"
     return f"PL: {seen} · pobieram od razu"
+
+
+def notice_line(number: int, notices: Iterable[TargetNotice]) -> str:
+    """Say why one subscription target has no download yet, or took one without Polish, or nothing."""
+    texts: list[str] = [notice_text(item) for item in notices]
+    return f"E{number}: {' · '.join(texts)}" if texts else ""
 
 
 def _next_airing(targets: list[ListedEpisode], now: datetime) -> str:

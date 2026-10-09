@@ -446,7 +446,8 @@ class ListingRead:
 class SubscriptionSearch:
     """One subscription target search: its offer and H1 target, the target failures after it and source facts.
 
-    ``polish`` is the Polish history the previous episode's TsukiHime list proved, None when nothing was proved.
+    ``polish`` is the Polish history the previous episode's TsukiHime list proved, None when nothing was proved;
+    ``sources`` names the state each source ended this search in.
     """
 
     offer: EpisodeOffer
@@ -457,6 +458,7 @@ class SubscriptionSearch:
     tsukihime_id: int | None = None
     queried: bool = False
     polish: PolishState | None = None
+    sources: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1028,8 +1030,14 @@ class AcquisitionService:
         """
         if self._episode_search is None:
             offer, target = self._torrentio_offer(key, read)
+            queried: bool = read.mapping.kitsu_id is not None
             return SubscriptionSearch(
-                offer, target, tuple(failures), tsukihime_id=tsukihime_id, queried=read.mapping.kitsu_id is not None
+                offer,
+                target,
+                tuple(failures),
+                tsukihime_id=tsukihime_id,
+                queried=queried,
+                sources=(("torrentio", "done" if queried else "no_kitsu"),),
             )
         request: EpisodeRequest = self._episode_request(key, read, manual=False, tsukihime_id=tsukihime_id)
         result: SearchOutcome = self._episode_search.subscription_check(request, switches, failures, excluded)
@@ -1047,6 +1055,7 @@ class AcquisitionService:
             else self._previous_history(
                 request, read, switches, title, history_at, pages=TSUKIHIME_PAGES - result.title_read
             ),
+            tuple((row.source, row.state.value) for row in result.snapshot.sources),
         )
 
     def _previous_history(  # noqa: PLR0913 - the shared request budget stays explicit
