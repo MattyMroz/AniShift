@@ -585,17 +585,16 @@ def _start_date(start: JsonObject) -> date | None:
 
 
 def premiere_order(year: int | None, start: date | None) -> tuple[bool, int, int, int]:
-    """Order premieres ascending with undated entries first; a year without a full date closes its year."""
+    """Order premieres ascending with undated announcements as the newest; a bare year closes its year."""
     if year is None:
-        return False, 0, 0, 0
+        return True, 0, 0, 0
     if start is None:
-        return True, year, _YEAR_END_MONTH, 0
-    return True, year, start.month, start.day
+        return False, year, _YEAR_END_MONTH, 0
+    return False, year, start.month, start.day
 
 
 def _entry_order(entry: FranchiseEntry) -> tuple[bool, int, int, int, int]:
-    dated, year, month, day = premiere_order(entry.year, entry.start)
-    return not dated, year, month, day, entry.anilist_id
+    return *premiere_order(entry.year, entry.start), entry.anilist_id
 
 
 def _titles(node: JsonObject, *, sort_keys: bool = False) -> list[str]:

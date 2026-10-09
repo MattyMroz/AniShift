@@ -412,15 +412,15 @@ def test_search_opens_entries_directly_when_every_result_is_a_displayed_franchis
 
 
 @pytest.mark.unit
-def test_franchise_status_names_every_entry_and_starts_on_the_first_released_one() -> None:
+def test_franchise_lists_an_undated_announcement_first_and_starts_on_it() -> None:
     catalog: _Catalog = _Catalog()
     catalog.titles = (replace(_title(), anilist_id=3), _title())
     catalog.view = Franchise(
         3,
         (
-            replace(_entry(3), status="NOT_YET_RELEASED"),
             replace(_entry(2), status="RELEASING"),
             _entry(1),
+            replace(_entry(3), status="NOT_YET_RELEASED", year=None),
         ),
         (),
         True,
@@ -433,7 +433,7 @@ def test_franchise_status_names_every_entry_and_starts_on_the_first_released_one
     assert all(label in frame for label in ("zapowiedź", "w emisji", "zakończone"))
     assert [item.status for item in controller._view.items] == ["zapowiedź", "w emisji", "zakończone"]
     assert [item.navigable for item in controller._view.items] == [True, True, True]
-    assert controller._view.cursor == 1
+    assert controller._view.cursor == 0
 
 
 @pytest.mark.unit

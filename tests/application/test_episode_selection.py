@@ -426,7 +426,7 @@ def test_franchise_view_slime_projects_ten_entries_from_twenty_five_nodes() -> N
     assert view.entries[0].anilist_id == _SLIME_S4
     assert next(entry for entry in view.entries if entry.anilist_id == _SLIME_S1).relation == "SELF"
     starts: list[tuple[bool, int, int, int]] = [premiere_order(entry.year, entry.start) for entry in view.entries]
-    assert starts == sorted(starts, key=lambda start: (not start[0], *start[1:]), reverse=True)
+    assert starts == sorted(starts, reverse=True)
     by_id: dict[int, EntryGroup] = {entry.anilist_id: entry.group for entry in view.entries}
     assert (by_id[_SLIME_S4], by_id[_SLIME_OAD], by_id[_SLIME_DIARIES]) == (
         EntryGroup.SEASON,

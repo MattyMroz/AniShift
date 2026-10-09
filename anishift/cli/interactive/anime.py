@@ -1846,9 +1846,7 @@ class AnimeController:
             ),
         )
         self._franchise = franchise
-        self._positions[_Screen.ENTRIES] = next(
-            (index for index, entry in enumerate(franchise.entries) if entry.status != "NOT_YET_RELEASED"), 0
-        )
+        self._positions[_Screen.ENTRIES] = 0
         self._offsets[_Screen.ENTRIES] = 0
         self._follow_cursor = True
 
@@ -2353,18 +2351,14 @@ class AnimeController:
             self._load_episodes(entry, generation)
 
     def _store_titles(self, candidates: tuple[TitleCandidate, ...], franchise: Franchise | None) -> None:
-        ordered: list[TitleCandidate] = sorted(
-            natsorted(candidates, key=lambda item: (item.english or item.romaji).casefold()),
-            key=lambda item: premiere_order(item.year, item.start),
-            reverse=True,
+        self._candidates = tuple(
+            sorted(
+                natsorted(candidates, key=lambda item: (item.english or item.romaji).casefold()),
+                key=lambda item: premiere_order(item.year, item.start),
+                reverse=True,
+            )
         )
-        self._candidates = (
-            *(item for item in ordered if item.year is None),
-            *(item for item in ordered if item.year is not None),
-        )
-        self._highlighted = next(
-            (index for index, item in enumerate(self._candidates) if item.status is not TitleStatus.NOT_YET_RELEASED), 0
-        )
+        self._highlighted = 0
         self._franchise = None
         if franchise is not None:
             self._adopt_franchise(franchise)

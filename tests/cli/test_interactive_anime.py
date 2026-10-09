@@ -312,7 +312,7 @@ def test_a_session_without_the_acquisition_boundary_reports_it_and_escape_return
 
 
 @pytest.mark.parametrize("width", [50, 80, 120])
-def test_live_franchise_starts_on_first_released_reaches_announcement_and_wraps(width: int) -> None:
+def test_live_franchise_starts_on_the_newest_announcement_and_wraps(width: int) -> None:
     owner: _Owner = _Owner()
     owner.franchise_view = Franchise(1, (_entry(1, 2018), _entry(4), _entry(5, 2027, "NOT_YET_RELEASED")), (), True)
     controller: AnimeController = _controller(owner)
@@ -321,8 +321,6 @@ def test_live_franchise_starts_on_first_released_reaches_announcement_and_wraps(
     _settle(controller)
     frame: str = controller.render(width, 24).plain
     assert frame.index("2027") < frame.index("2026") < frame.index("2018")
-    assert controller._positions[_Screen.ENTRIES] == 1
-    controller.handle_key("home")
     assert controller._positions[_Screen.ENTRIES] == 0
     controller.handle_key("enter")
     assert controller._screen is _Screen.ENTRIES
