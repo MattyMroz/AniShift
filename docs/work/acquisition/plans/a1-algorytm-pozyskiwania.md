@@ -1976,6 +1976,13 @@ z 2026-10-06 wpisane w kroki K2, K5, K8, K9, K16 i mapę §3.
   subskrypcji dostał `sources`, `candidates` (`selection_view`), `blocker` i `numbering`. Testy §8 leżą
   w `test_subscription_owner.py` i `test_subscription_scenarios.py`, nie w `test_notification.py`,
   bo tamta uprząż dotyczy wyników przetwarzania.
+- **PL bez roli (K16, poprawka zgodna ze spec A §5.2):** flaga PL Torrentio i sam token
+  `PL`/`POL`/`Polish` mają jedną regułę: dają „PL bez roli” dopiero po przejrzeniu wszystkich
+  deklaracji w zakresie pliku i wydania niebędącego paczką, gdy żadna nie rozstrzygnęła klasy (jawne
+  `pl` → PL, pełna lista napisów bez `pl` → brak) i żadna lista audio jej nie wyklucza, więc lista
+  wydania wygrywa także z flagą albo tokenem w nazwie pliku (`release_quality._polish_class`).
+  Kod `multi` z kategorii Nyaa nie jest deklaracją
+  napisów; EN daje wtedy token `MultiSub`/`Multi-Subs` z nazwy (`episode_releases._stream_declarations`).
 
 ## 12. Poza zakresem (spec A §11)
 

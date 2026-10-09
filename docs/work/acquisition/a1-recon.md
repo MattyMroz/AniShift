@@ -89,6 +89,11 @@ Format fixtury:
 - **Przeliczenie po regule numeracji celu (plan v17, `numbering_gap`):** ponowne `--append` dla
   21 przypadków dograło 0 odpowiedzi (21/21 ok, 0 × 429); odświeżyło tylko `modes` i `notes.modes`
   pod nowy cel. `notes.appended.responses` łączy indeksy obu dograń (razem 40).
+- **Dogranie K16 (2026-10-09):** spisy TsukiHime (`/torrents/btih/*`, `/torrents/{id}`) dla wizyt
+  kolejki produkcyjnej i `Page` franczyzy 101972 z `countryOfOrigin` nagrano 2026-10-09
+  (`notes.appended_k16`, log `k16_appended`), a odpowiedź `404` jest monotoniczna: hash nieznany
+  TsukiHime 2026-10-09 nie był znany także w chwili `captured_at`. Ryzyko jest odwrotne dla `200`:
+  spis po hashu nagrany 2026-10-09 mógł 2026-10-06 jeszcze nie istnieć (wtedy `404` albo `202`).
 
 ### Frazy (spec §3.1 po decyzjach)
 

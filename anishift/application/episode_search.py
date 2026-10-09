@@ -206,9 +206,12 @@ def episode_phrases(
     from anishift.services.torrents.names import base_title  # noqa: PLC0415
 
     full: bool = candidate.format in {"OVA", "SPECIAL"}
-    titles: tuple[str, ...] = tuple(
-        dict.fromkeys(title if full else base_title(title) for title in (candidate.romaji, candidate.english) if title)
-    )
+    unique: dict[str, str] = {}
+    for title in (candidate.romaji, candidate.english):
+        if title:
+            shown: str = title if full else base_title(title)
+            unique.setdefault(shown.casefold(), shown)
+    titles: tuple[str, ...] = tuple(unique.values())
     if candidate.format == "MOVIE":
         return titles
     phrases: list[str] = []

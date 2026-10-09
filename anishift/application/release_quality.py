@@ -348,17 +348,23 @@ def _declared(
 
 
 def _polish_class(declarations: Sequence[LanguageDeclaration]) -> PolishClass:
+    """Return the Polish class; a Torrentio flag or bare token counts only when nothing in scope decides it."""
     bare_allowed: bool = True
+    flagged: bool = False
     for declaration in declarations:
+        if declaration.source is LanguageSource.TORRENTIO_FLAG:
+            flagged = flagged or declaration.polish_bare
+            continue
         if declaration.subtitles and "pl" in _declared((declaration,)):
             return PolishClass.POLISH
         if declaration.subtitles and not declaration.partial_subtitles:
             return PolishClass.BARE if bare_allowed and declaration.polish_bare else PolishClass.NONE
         if bare_allowed and declaration.polish_bare:
-            return PolishClass.BARE
+            flagged = True
+            continue
         if declaration.audio:
             bare_allowed = False
-    return PolishClass.NONE
+    return PolishClass.BARE if flagged and bare_allowed else PolishClass.NONE
 
 
 def release_traits(  # noqa: PLR0913 - explicit pure boundary mirrors the acquisition quality contract

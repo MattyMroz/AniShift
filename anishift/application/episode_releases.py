@@ -43,6 +43,9 @@ NAME_PRIORITY: Final[tuple[SourceName, ...]] = ("tsukihime", "nyaa", "nekobt", "
 _POLISH_FLAG: Final[str] = "\U0001f1f5\U0001f1f1"
 """Torrentio Polish language flag scoped to its known file."""
 
+_NOT_LANGUAGES: Final[frozenset[str]] = frozenset({"multi"})
+"""Nyaa subtitle markers that name no language, left to the release name tokens."""
+
 _HEX_HASH: Final[re.Pattern[str]] = re.compile(r"[0-9a-fA-F]{40}")
 """BTIH v1 hash written as forty hexadecimal digits."""
 
@@ -245,15 +248,15 @@ def _stream_declarations(stream: StreamCandidate, file: ReleaseFile | None) -> t
         )
     if stream.source == "nekobt":
         return (tag_declaration((*stream.tags, *stream.language_tags)),)
-    if stream.source == "nyaa" and stream.subtitle_languages:
+    if stream.source == "nyaa":
+        subtitles: frozenset[str] = (
+            frozenset(language_code(code) for code in stream.subtitle_languages) - _NOT_LANGUAGES
+        )
+        if not subtitles:
+            return ()
         return (
             LanguageDeclaration(
-                LanguageSource.RELEASE_NAME,
-                None,
-                frozenset(language_code(code) for code in stream.subtitle_languages),
-                None,
-                complete_audio=False,
-                partial_subtitles=True,
+                LanguageSource.RELEASE_NAME, None, subtitles, None, complete_audio=False, partial_subtitles=True
             ),
         )
     if file is None:

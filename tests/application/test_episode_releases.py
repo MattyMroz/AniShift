@@ -252,6 +252,39 @@ def test_torrentio_flag_without_known_file_is_not_release_declaration() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("subtitles", "expected"),
+    [(("en", "pl-PL"), PolishClass.POLISH), (("en",), PolishClass.NONE), ((), PolishClass.BARE)],
+)
+def test_tsukihime_release_subtitles_decide_before_torrentio_file_flag(
+    subtitles: tuple[str, ...], expected: PolishClass
+) -> None:
+    flagged: StreamCandidate = replace(_STREAM, file_name="Example - 01 [1080p].mkv", tags=("🇵🇱",))
+    listed: StreamCandidate = replace(_STREAM, source="tsukihime", subtitle_languages=subtitles, torrent_id=1)
+    release: EpisodeRelease = _merge((flagged, listed))[0]
+    assert _traits(release, release.files[0].filename).polish is expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("name", "english"),
+    [
+        ("[Group] Example - 01 (1080p) [Multi-Subs]", True),
+        ("[Group] Example - 01 (1080p) [MultiSub]", True),
+        ("[Group] Example - 01 1080p WEB-DL MULTi AAC2.0", False),
+    ],
+)
+def test_nyaa_multi_marker_leaves_english_to_release_name(name: str, english: bool) -> None:
+    language: str | None = parse_release_name(name).subtitle_language
+    stream: StreamCandidate = replace(
+        _STREAM, source="nyaa", release=name, subtitle_languages=(language,) if language else ()
+    )
+    release: EpisodeRelease = _merge((stream,))[0]
+    assert language == "multi"
+    assert _traits(release, None).english_subtitles is english
+
+
+@pytest.mark.unit
 def test_torrentio_flag_and_filename_only_use_filename_scope_without_changing_identity() -> None:
     stream: StreamCandidate = replace(_STREAM, file_name="01 [MultiSub].mkv", tags=("🇵🇱",))
     release: EpisodeRelease = _merge((stream,))[0]

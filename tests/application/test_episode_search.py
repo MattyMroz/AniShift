@@ -381,6 +381,16 @@ def test_episode_phrases_do_not_repeat_identical_titles() -> None:
     )
 
 
+def test_episode_phrases_ignore_title_case_and_keep_first_spelling() -> None:
+    candidate: TitleCandidate = TitleCandidate(
+        1, "Star Garden!", "STAR GARDEN!", None, (), None, None, "TV", 12, TitleStatus.FINISHED, ()
+    )
+    assert episode_phrases(candidate, SeasonContext(1, 0, 12), 5, manual=True, absolute=5) == (
+        "Star Garden! - 05",
+        "Star Garden! S01E05",
+    )
+
+
 def test_manual_offer_partial_after_first_source() -> None:
     release: threading.Event = threading.Event()
     snapshots: list[SearchSnapshot] = []

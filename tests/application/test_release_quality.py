@@ -344,6 +344,58 @@ def test_higher_declaration_wins_subtitles_and_audio(higher: LanguageSource, low
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("subtitles", "pack", "expected"),
+    [
+        (frozenset({"pl", "en"}), False, PolishClass.POLISH),
+        (frozenset({"en"}), False, PolishClass.NONE),
+        (frozenset(), False, PolishClass.NONE),
+        (None, False, PolishClass.NONE),
+        (frozenset({"pl", "en"}), True, PolishClass.BARE),
+        (frozenset({"en"}), True, PolishClass.BARE),
+    ],
+    ids=["release-pl", "release-without-pl", "release-audio-only", "release-audio-none", "pack-pl", "pack-without-pl"],
+)
+def test_release_subtitle_list_decides_before_file_torrentio_flag(
+    subtitles: frozenset[str] | None, pack: bool, expected: PolishClass
+) -> None:
+    file: str = "X - 01 [1080p].mkv"
+    traits: ReleaseTraits = _traits(
+        file=file,
+        pack=pack,
+        declarations=(
+            _declaration(LanguageSource.TORRENTIO_FLAG, file=file, polish_bare=True, complete_audio=False),
+            _declaration(subtitles=subtitles, audio=frozenset({"ja"})),
+        ),
+    )
+    assert traits.polish is expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("subtitles", "expected"),
+    [(frozenset({"en"}), PolishClass.NONE), (frozenset({"pl"}), PolishClass.POLISH), (None, PolishClass.BARE)],
+)
+def test_release_subtitle_list_decides_before_file_bare_token(
+    subtitles: frozenset[str] | None, expected: PolishClass
+) -> None:
+    traits: ReleaseTraits = _traits(file="X - 01 [PL].mkv", declarations=(_declaration(subtitles=subtitles),))
+    assert traits.polish is expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("tags", "expected"), [(("F=pl;S=en",), PolishClass.POLISH), (("S=en",), PolishClass.NONE)])
+def test_release_nekobt_subtitles_decide_before_file_torrentio_flag(
+    tags: tuple[str, ...], expected: PolishClass
+) -> None:
+    file: str = "X - 01 [1080p].mkv"
+    flag: LanguageDeclaration = _declaration(
+        LanguageSource.TORRENTIO_FLAG, file=file, polish_bare=True, complete_audio=False
+    )
+    assert _traits(file=file, tags=tags, declarations=(flag,)).polish is expected
+
+
+@pytest.mark.unit
 def test_higher_declaration_wins_bare_token_and_flag() -> None:
     traits: ReleaseTraits = _traits(
         file="Example PL.mkv",
