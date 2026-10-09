@@ -421,6 +421,7 @@ class AnimeController:
         self._offsets: dict[_Screen, int] = {}
         self._visible_count: int = 1
         self._follow_cursor: bool = True
+        self._release_moved: bool = False
         self._busy_return: _Screen = _Screen.QUERY
         self._work_cancel: EventCancellationToken = EventCancellationToken()
         self._provider_locks: dict[str, float] = {}
@@ -978,10 +979,7 @@ class AnimeController:
     def _adopt_view_input(self) -> None:
         if self._details_open:
             return
-        if self._screen is _Screen.TITLES:
-            self._highlighted = self._view.cursor
-        else:
-            self._positions[self._screen] = self._view.cursor
+        self._adopt_cursor()
         if self._screen is _Screen.EPISODES:
             self._episode_marks = {int(key) for key in self._view.selected}
         if self._screen is _Screen.DRAFT and self._view.items:
@@ -1041,11 +1039,16 @@ class AnimeController:
             self._panel.mouse(event)
             if self._details_open:
                 return
-            if self._screen is _Screen.TITLES:
-                self._highlighted = self._view.cursor
-            else:
-                self._positions[self._screen] = self._view.cursor
+            self._adopt_cursor()
             self._notice = self._view.notice
+
+    def _adopt_cursor(self) -> None:
+        if self._screen is _Screen.TITLES:
+            self._highlighted = self._view.cursor
+            return
+        if self._screen is _Screen.CANDIDATES and self._view.cursor != self._positions.get(self._screen, 0):
+            self._release_moved = True
+        self._positions[self._screen] = self._view.cursor
 
     def _panel_action(self, action: str, keys: tuple[str, ...]) -> None:
         del keys
@@ -2039,7 +2042,8 @@ class AnimeController:
             return
         highlighted: str | None = (
             self._release_candidates[self._positions.get(_Screen.CANDIDATES, 0)].stream.info_hash
-            if self._release_candidates and (self._screen is _Screen.CANDIDATES or self._confirm_choice is not None)
+            if self._release_candidates
+            and ((self._screen is _Screen.CANDIDATES and self._release_moved) or self._confirm_choice is not None)
             else None
         )
         self._offer_view = view
@@ -2240,6 +2244,7 @@ class AnimeController:
         self._release_candidates = visible(offer.candidates)
         self._positions[_Screen.CANDIDATES] = 0
         self._offsets[_Screen.CANDIDATES] = 0
+        self._release_moved = False
         self._follow_cursor = True
         self._screen = _Screen.CANDIDATES
 

@@ -57,7 +57,7 @@ Kontrakt tego, jak AniShift znajduje wydania odcinka, ocenia je i wybiera jedno.
 ### 3.2 Czas i wyniki częściowe
 
 - **Limit operacji źródła:** 30 s od startu, łącznie z oczekiwaniem na limity i stronicowaniem. Po limicie źródło jest „niedokończone”, a jego dotychczasowe wyniki są używane.
-- **Lista (ręczny wybór):** wiersze pojawiają się w miarę odpowiedzi; po 3 s lista pokazuje to, co przyszło, a do końca stan „szukam jeszcze: …”. Nowe wiersze wstawiane są według kolejności §6.1; kursor zostaje na tym samym wydaniu, zaznaczenia zostają.
+- **Lista (ręczny wybór):** wiersze pojawiają się w miarę odpowiedzi; po 3 s lista pokazuje to, co przyszło, a do końca stan „szukam jeszcze: …”. Nowe wiersze wstawiane są według kolejności §6.1; dopóki użytkownik nie przesunie kursora, kursor stoi na pierwszym wierszu, a po pierwszym ruchu zostaje na tym samym wydaniu (decyzja właściciela 2026-10-09); zaznaczenia zostają.
 - **`D` bez podglądu (P-02) i subskrypcja:** decyzja po zakończeniu (albo limicie) wszystkich włączonych źródeł i uzupełnień spisów (§3.4); do tego czasu stan „szukam”.
 - **Źródła dociągane w subskrypcji** (Knaben, nekoBT) są odpytywane najwyżej raz na 60 min na cel. Między odczytami decyzja używa ostatniego udanego wyniku tego źródła dla celu (wydania i seedy z chwili odczytu). Błąd odczytu zachowuje poprzedni wynik; wyłączenie źródła i restart rezydenta go usuwają. Brak jakiegokolwiek udanego odczytu = źródło niedokończone.
 

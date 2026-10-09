@@ -18,7 +18,9 @@ import pytest
 from loguru import logger as loguru_logger
 from prompt_toolkit.application import Application
 from prompt_toolkit.application.current import set_app
+from prompt_toolkit.data_structures import Point
 from prompt_toolkit.input import DummyInput
+from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from prompt_toolkit.output import DummyOutput
 from rich.cells import cell_len
 from rich.text import Text
@@ -1767,6 +1769,114 @@ def test_partial_offer_keeps_cursor_on_hash() -> None:
     controller.render(80, 24)
     assert controller._view.items[controller._view.cursor].key == second.stream.info_hash
     assert controller._view.selected == {second.stream.info_hash}
+
+
+@pytest.mark.unit
+def test_partial_offer_keeps_an_unmoved_cursor_on_the_top_row() -> None:
+    owner: _PartialOwner = _PartialOwner()
+    first: RankedCandidate = _candidate()
+    second: RankedCandidate = replace(first, stream=replace(first.stream, info_hash="b" * 40))
+    owner.offer_read = lambda key: _offer(key, (first, second))
+    controller: AnimeController = _open_partial(owner)
+    controller.handle_key("text:i")
+    controller.render(80, 24)
+    assert owner.offer_view is not None
+    owner.offer_view = replace(
+        owner.offer_view, revision=2, offer=replace(owner.offer_view.offer, candidates=(second, first))
+    )
+    _refresh_partial(controller)
+    controller.render(80, 24)
+    assert controller._view.cursor == 0
+    assert controller._view.items[0].key == second.stream.info_hash
+
+
+def _three_candidates() -> tuple[RankedCandidate, RankedCandidate, RankedCandidate]:
+    first: RankedCandidate = _candidate()
+    return (
+        first,
+        replace(first, stream=replace(first.stream, info_hash="b" * 40)),
+        replace(first, stream=replace(first.stream, info_hash="c" * 40)),
+    )
+
+
+def _revise(owner: _PartialOwner, controller: AnimeController, candidates: tuple[RankedCandidate, ...]) -> str:
+    assert owner.offer_view is not None
+    owner.offer_view = replace(
+        owner.offer_view,
+        revision=owner.offer_view.revision + 1,
+        offer=replace(owner.offer_view.offer, candidates=candidates),
+    )
+    _refresh_partial(controller)
+    controller.render(80, 24)
+    return controller._view.items[controller._view.cursor].key
+
+
+@pytest.mark.unit
+def test_partial_offer_keeps_a_cursor_moved_by_keyboard_on_its_release() -> None:
+    owner: _PartialOwner = _PartialOwner()
+    first, second, third = _three_candidates()
+    owner.offer_read = lambda key: _offer(key, (first, second))
+    controller: AnimeController = _open_partial(owner)
+    for key in ("text:i", "down"):
+        controller.handle_key(key)
+    controller.render(80, 24)
+    assert _revise(owner, controller, (third, first, second)) == second.stream.info_hash
+
+
+@pytest.mark.unit
+def test_partial_offer_keeps_a_cursor_moved_by_a_click_on_its_release() -> None:
+    owner: _PartialOwner = _PartialOwner()
+    first, second, third = _three_candidates()
+    owner.offer_read = lambda key: _offer(key, (first, second))
+    controller: AnimeController = _open_partial(owner)
+    controller.handle_key("text:i")
+    controller.render(80, 24)
+    frame = controller._panel._frame
+    assert frame is not None
+    row: int = frame.first_row + 1 - controller._view.offset
+    for kind in (MouseEventType.MOUSE_DOWN, MouseEventType.MOUSE_UP):
+        controller.mouse(MouseEvent(Point(3, row), kind, MouseButton.LEFT, frozenset()))
+    controller.render(80, 24)
+    assert controller._view.items[controller._view.cursor].key == second.stream.info_hash
+    assert _revise(owner, controller, (third, second, first)) == second.stream.info_hash
+
+
+@pytest.mark.unit
+def test_scroll_details_and_marks_do_not_detach_the_release_cursor_from_the_top() -> None:
+    owner: _PartialOwner = _PartialOwner()
+    first, second, _third = _three_candidates()
+    owner.offer_read = lambda key: _offer(key, (first, second))
+    controller: AnimeController = _open_partial(owner)
+    controller.handle_key("text:i")
+    controller.render(80, 10)
+    controller.scroll(1)
+    controller.render(80, 10)
+    for key in ("text:?", "down", "down", "escape"):
+        controller.handle_key(key)
+    controller.render(80, 10)
+    controller.scroll(-1)
+    controller.handle_key("space")
+    assert _revise(owner, controller, (second, first)) == second.stream.info_hash
+    assert controller._view.cursor == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("reopen", [("escape", "text:i"), ("escape", "escape", "text:i", "text:i")])
+def test_reopening_the_release_list_returns_the_cursor_to_the_top(reopen: tuple[str, ...]) -> None:
+    owner: _PartialOwner = _PartialOwner()
+    first, second, third = _three_candidates()
+    owner.offer_read = lambda key: _offer(key, (first, second))
+    controller: AnimeController = _open_partial(owner)
+    for key in ("text:i", "down"):
+        controller.handle_key(key)
+    controller.render(80, 24)
+    for key in reopen:
+        controller.handle_key(key)
+    deadline: float = time.monotonic() + 5
+    while controller._offer_view is None and time.monotonic() < deadline:
+        time.sleep(0.001)
+    controller.render(80, 24)
+    assert _revise(owner, controller, (third, first, second)) == third.stream.info_hash
 
 
 @pytest.mark.unit
