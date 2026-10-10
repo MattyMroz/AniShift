@@ -259,9 +259,10 @@ Otwierany z wiersza Przetwarzania ze stanem „Nie ustalono pliku w paczce”.
 - Pusta lista (2026-10-10): „Brak subskrypcji”; stopka „/ dodaj pierwszą · ? więcej · Esc wróć”. Przed pierwszą listą od właściciela treść mówi „Łączenie…”. Nie ma wiersza „D Dodaj subskrypcję” ani licznika „Aktywne”.
 - Kolejność (spec S-03): najpierw wpisy z problemem, potem według najbliższej emisji, wpisy bez terminu i wstrzymane na końcu, remis alfabetycznie. Kolejność zmienia się tylko po emisji lub zmianie stanu; kursor zostaje na tym samym wpisie.
 - Kolumna Stan: dokładnie jeden stan z spec S-03. Odliczanie tyka co sekundę bez sieci.
-- Stały wiersz nad tabelą (od 2026-10-10 bez tytułu „Subskrypcje”), pusty, gdy nic nie dotyczy: „Monitoring nie działa: nie można zapisać stanu” (spec S-12) albo „Tryb cienia — subskrypcje tylko zapisują propozycje”. Globalna pauza nie ma osobnego paska — widać ją tylko w dolnym wierszu statusu („Automat wstrzymany”).
+- Stały wiersz nad tabelą (od 2026-10-10 bez tytułu „Subskrypcje”), pusty, gdy nic nie dotyczy: „Monitoring nie działa: nie można zapisać stanu” (spec S-12) albo „Tryb cienia — subskrypcje tylko zapisują propozycje”. Od 2026-10-10 przy pauzie automatu wiersz powtarza stan z dolnego wiersza statusu z „· O wznów”: „Automat wstrzymany · O wznów”, „Automat: zatrzymywanie · O wznów” albo „Automat: pauza niepełna · O wznów”; problem monitoringu ma pierwszeństwo, a tryb cienia ustępuje pauzie.
 - `W` (również Space): wstrzymaj/wznów podświetloną. `F`: szukaj teraz dla podświetlonej; przez 10 s Stan pokazuje „Sprawdzono E8”, a wiersz pod tabelą pełny wynik („Sprawdzono E8: 12 kandydatów, 0 zgodnych…”). `Delete` (również `X`): usuwa od razu, bez pytania; notka „Usunięto Frieren S2 · Ctrl+Z cofnij”. `Ctrl+Z`: przywraca ostatnio usuniętą subskrypcję, także po restarcie (spec S-08). `D`: wyszukiwanie Anime, Esc wraca do listy.
 - Od 2026-10-10: wyszukiwanie otwiera `/` (aliasy `D` i Enter na pustej liście); pierwsze Esc zdejmuje fokus z pola, drugie wraca do listy. Sprawdzenie teraz to `R` (alias `F`), pauza tylko `W` (alias Space). Stopka: „Enter szczegóły · / dodaj · W wstrzymaj · ? więcej · Esc wróć”; `R`, `X`, `Ctrl+Z`, `M`, `U` są w pomocy `?`.
+- Od 2026-10-10 (spec S-03, S-04): Odcinki liczy też jako obejrzane odcinki sprzed pierwszego celu, których nie ma na dysku i które nie są zlecone ani w toku, ani odrzucone przy zleceniu (pod kursorem „E1 obejrzany przed subskrypcją”; zlecony odcinek liczy się dopiero na dysku), Stan po emisji to „Czeka E8 od 2d 04:18:03” w formacie odliczania emisji (od 72 h pełny opis „… · sprawdzam raz dziennie”), stopka mówi „D lub / dodaj”, a przy pauzie automatu stały wiersz nad tabelą powtarza stan z dolnego wiersza statusu.
 - Zakończona subskrypcja znika z listy (spec S-09).
 
 ## 10. U08 — szczegóły subskrypcji (E3)
@@ -278,15 +279,14 @@ To jest U03 tego wpisu z nagłówkiem subskrypcji. Lista zawiera cele subskrypcj
           Dodatki tego sezonu · pobierasz je osobno z listy wpisów
       S1  OVA                                           —
 
-  Ostatnie sprawdzenie 14:00: Sprawdzono E3: brak wydań w źródle · E1–E2 wyszły przed subskrypcją: pobierz je
-                                               ręcznie
+  Ostatnie sprawdzenie 14:00: Sprawdzono E3: brak wydań w źródle · E1–E2 obejrzane przed subskrypcją
   Space zaznacz · D pobierz · W wstrzymaj · ? więcej · Esc wróć
 ```
 
 - Podświetlona jest zakładka Subskrypcje. ←→/Tab/Shift+Tab liczą się od niej (Przetwarzanie albo Anime z własną wyszukiwarką) i zamykają szczegóły; Esc wraca do listy.
 - Wiersz statusu pod tytułem: „{stan} · odcinki {x/y} · gotowe {n}” (liczniki jak w U07); zawsze szary, także przy problemie lub konflikcie.
 - Zmiana zakładki zamyka kontekst subskrypcji razem z otwartym edytorem zakresu i zaznaczeniami; przyjęta partia `D` trwa dalej.
-- Notka nad klawiszami łączy: „Ostatnie sprawdzenie HH:MM: …” (na początku, więc wynik `F` jest zawsze widoczny), pełny stan (gdy różni się od krótkiego) oraz odcinki wyemitowane przed subskrypcją i jeszcze niezamówione. Notka o wcześniejszych odcinkach znika, gdy wszystkie są zamówione.
+- Notka nad klawiszami łączy: „Ostatnie sprawdzenie HH:MM: …” (na początku, więc wynik `F` jest zawsze widoczny), pełny stan (gdy różni się od krótkiego) oraz, od 2026-10-10, tę samą notkę o obejrzanych co lista U07 (`watched_line`): „E1–E2 obejrzane przed subskrypcją” wymienia odcinki sprzed pierwszego celu, których nie ma na dysku i które nie są zlecone ani w toku.
 - `?` otwiera przewijane szczegóły z pełnym tytułem, wierszem statusu, wszystkimi notkami i pomocą klawiszy odcinka; dostępne na każdym rozmiarze, także 50×12. Od 2026-10-10 pomoc to „Ten ekran” (akcje bieżącego stanu, bez aliasów) i „Wszędzie”; stopka ma najwyżej trzy akcje („Space zaznacz · D pobierz · W wstrzymaj”, przy czekaniu na PL `T pobierz teraz` zamiast `W`), a `R`, `X`, `I`, `Z`, `A`, `P`, `S`, `/` są tylko w pomocy. `Backspace` zamyka szczegóły jak Esc.
 - Pod listą odcinków sekcja „Dodatki tego sezonu”: klucze `S…` z ani.zip i powiązane wpisy OVA/special z AniList (tylko informacja; Enter na wpisie OVA przechodzi do jego U03, gdzie można pobrać). Subskrypcja ich nie pobiera.
 - Wszystkie klawisze odcinków jak w U03 (Space i Enter zaznaczają, A, Z, D, P). Dodatkowo: `W`, `F`, `X` jak w U07. Od 2026-10-10 `R` sprawdza teraz (alias `F`), a `/` otwiera wyszukiwarkę nowej subskrypcji bez kontekstu tej subskrypcji. Punkt startu nie jest edytowalny (spec S-10 usunięte).

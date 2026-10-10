@@ -112,7 +112,20 @@ def test_a_row_shows_the_nearest_open_deadline_and_leaves_its_file_counts_to_the
         problem=None,
         review_pending=False,
         due_number=5,
+        watched=(1, 2),
+        done=2,
     )
+
+
+@pytest.mark.parametrize(("cut", "watched"), [(3, (1, 2, 3)), (0, ()), (None, ())])
+def test_a_row_without_targets_counts_the_episodes_before_its_cut_point(
+    cut: int | None, watched: tuple[int, ...]
+) -> None:
+    record: SubscriptionRecord = _record(cut=cut, migrated_at=_NOW.isoformat())
+
+    row: SubscriptionRow = subscription_row(record)
+
+    assert (row.watched, row.done) == (watched, len(watched))
 
 
 @pytest.mark.parametrize(("count", "beyond"), [(4, 6), (6, None), (None, None)])

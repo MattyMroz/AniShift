@@ -52,6 +52,7 @@ def _row(subscription_id: str, title: str, **changes: object) -> dict[str, objec
         review_pending=False,
         episode_count=4,
         on_disk=1,
+        done=1,
     )
     return {**encode_view(row), **changes}
 
@@ -180,9 +181,9 @@ def test_a_refused_subscription_command_shows_its_polish_reason(
 def test_every_row_is_one_line_of_title_episodes_ready_and_state(panel: StateController) -> None:
     now: datetime = datetime.now(UTC)
     panel._subscriptions = [
-        _row("p", "Problem", anilist_id=None, problem="season_unrecognized", episode_count=None, on_disk=0),
+        _row("p", "Problem", anilist_id=None, problem="season_unrecognized", episode_count=None, done=0),
         _row("m", "Moved", paused=True, pause_reason="migrated_missing", review_pending=True, episode_count=None),
-        _row("r", "Review", review_pending=True, on_disk=0),
+        _row("r", "Review", review_pending=True, done=0),
         _row("s", "Soon", episode_count=12, ready=1, due_at=(now + timedelta(days=3, hours=1, seconds=30)).isoformat()),
         _row("h", "Hour", due_at=(now + timedelta(minutes=30, seconds=30)).isoformat()),
         _row("w", "Waiting", due_at=(now - timedelta(days=2, hours=1)).isoformat()),
@@ -199,9 +200,9 @@ def test_every_row_is_one_line_of_title_episodes_ready_and_state(panel: StateCon
         "Review": ("0/4", "0", "Weryfikuję"),
         "Soon": ("1/12", "1", "Emisja za 3d 01:00:"),
         "Hour": ("1/4", "0", "Emisja za 00:30:"),
-        "Waiting": ("1/4", "0", "Czeka na wydanie (od 2 dni)"),
-        "Yesterday": ("1/4", "0", "Czeka na wydanie (od 1 dzień)"),
-        "Recent": ("1/4", "0", "Czeka na wydanie (od 5 h)"),
+        "Waiting": ("1/4", "0", "Czeka od 2d 01:00:"),
+        "Yesterday": ("1/4", "0", "Czeka od 1d 01:00:"),
+        "Recent": ("1/4", "0", "Czeka od 05:01:"),
         "Undated": ("1/4", "0", "Termin nieznany"),
     }
     for title, values in expected.items():
@@ -245,6 +246,46 @@ def test_a_row_shown_whole_leaves_nothing_beneath_the_table(panel: StateControll
     assert sum("Undated" in line for line in lines) == 1
 
 
+@pytest.mark.parametrize(
+    ("columns", "watched", "beneath"),
+    [
+        (120, [1], "E1 obejrzany przed subskrypcją"),
+        (120, [1, 2, 3], "E1–E3 obejrzane przed subskrypcją"),
+        (120, [], ""),
+        (80, [1], "E1 obejrzany przed subskrypcją · Reincarnated as a Sword Season 2 Extra Long Subtitle Edition"),
+    ],
+)
+def test_the_highlighted_row_names_the_episodes_watched_before_its_subscription(
+    panel: StateController, columns: int, watched: list[int], beneath: str
+) -> None:
+    title: str = "Reincarnated as a Sword Season 2" + (" Extra Long Subtitle Edition" if columns == 80 else "")
+    panel._subscriptions = [_row("s", title, episode_count=12, watched=watched, done=len(watched))]
+
+    lines: list[str] = _frame(panel, columns, 24).splitlines()
+    keys: int = _line(lines, "Enter szczegóły")
+    notice: str = " ".join(line.strip() for line in lines[_line(lines, "Tytuł") + 2 : keys] if line.strip())
+
+    assert notice == beneath
+    assert f"  {len(watched)}/12  " in lines[_line(lines, " Reincarnated ")]
+
+
+@pytest.mark.parametrize("columns", [50, 80, 120])
+def test_the_longest_typical_states_stay_whole_in_their_rows(panel: StateController, columns: int) -> None:
+    now: datetime = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
+    week: timedelta = timedelta(days=13, hours=23, minutes=59, seconds=59)
+    panel._clock = lambda: now
+    panel._subscriptions = [
+        _row("a", "As a Reincarnated Aristocrat Season 3", episode_count=12),
+        _row("e", "Reincarnated as a Sword Season 2", due_at=(now + week).isoformat(), due_number=12),
+        _row("w", "The Apothecary Diaries Season 3", due_at=(now - week).isoformat(), due_number=12),
+    ]
+
+    lines: list[str] = _frame(panel, columns, 24).splitlines()
+
+    assert lines[_line(lines, " Reincarnated as")].rstrip().endswith("  Emisja E12 za 13d 23:59:59")
+    assert lines[_line(lines, " The Apothecary")].rstrip().endswith("  Czeka E12 od 13d 23:59:59")
+
+
 def test_problem_and_conflict_states_share_the_style_of_every_other_state(panel: StateController) -> None:
     panel._subscriptions = [
         _row("u", "Undated"),
@@ -263,10 +304,10 @@ def test_problem_and_conflict_states_share_the_style_of_every_other_state(panel:
     assert styles("Nie rozpoznano sezonu ") == styles("Konflikt liczby odcinków ") == styles("Termin nieznany ")
 
 
-def test_the_episodes_column_uses_the_success_style_only_once_a_file_is_on_disk(panel: StateController) -> None:
+def test_the_episodes_column_uses_the_success_style_only_once_an_episode_counts(panel: StateController) -> None:
     panel._subscriptions = [
-        _row("e", "Empty", on_disk=0, episode_count=12),
-        _row("o", "Owned", on_disk=3, episode_count=12),
+        _row("e", "Empty", done=0, episode_count=12),
+        _row("o", "Owned", done=3, episode_count=12),
         _row("s", "Selected"),
     ]
     panel._selected = 2
@@ -298,17 +339,40 @@ def test_the_status_row_names_why_monitoring_does_not_progress(
     assert _warning(_frame(panel).splitlines()) == warning
 
 
+@pytest.mark.parametrize(
+    ("snapshot", "status"),
+    [
+        ({"auto_enabled": False, "pausing": True}, "Automat: zatrzymywanie"),
+        ({"auto_enabled": False, "pause_incomplete": True}, "Automat: pauza niepełna"),
+        ({"auto_enabled": False}, "Automat wstrzymany"),
+    ],
+)
+def test_the_line_above_the_list_names_the_same_pause_state_as_the_status_line(
+    panel: StateController, snapshot: dict[str, object], status: str
+) -> None:
+    panel._snapshot = snapshot
+
+    lines: list[str] = _frame(panel).splitlines()
+
+    assert _warning(lines) == f"{status} · O wznów"
+    assert lines[-1].strip() == status
+
+
 @pytest.mark.parametrize(("columns", "rows"), _SIZES)
-def test_the_global_pause_shows_only_in_the_status_line(panel: StateController, columns: int, rows: int) -> None:
+def test_the_global_pause_shows_above_the_list_and_in_the_status_line(
+    panel: StateController, columns: int, rows: int
+) -> None:
     running: list[str] = _frame(panel, columns, rows).splitlines()
     panel._snapshot = {"auto_enabled": False}
     paused: list[str] = _frame(panel, columns, rows).splitlines()
 
-    assert [line for line in running if "Automat: bezczynny" not in line] == [
-        line for line in paused if "Automat wstrzymany" not in line
-    ]
-    assert "Automat wstrzymany" in paused[-1]
-    assert "subskrypcje czekają" not in "\n".join(paused)
+    warning: int = _line(paused, "Automat wstrzymany · O wznów")
+    assert paused[warning].strip() == "Automat wstrzymany · O wznów"
+    assert not running[warning].strip()
+    assert [*paused[:warning], *paused[warning + 1 : -1]] == [*running[:warning], *running[warning + 1 : -1]]
+    assert paused[-1].strip() == "Automat wstrzymany"
+    assert running[-1].strip() == "Automat: bezczynny"
+    assert "O wznów" not in "\n".join(running)
 
 
 @pytest.mark.parametrize("rows", [24, 12])
@@ -355,7 +419,7 @@ def test_an_empty_list_names_the_add_key(panel: StateController, columns: int, r
     frame: str = _frame(panel, columns, rows)
 
     assert "Brak subskrypcji" in frame
-    assert "/ dodaj pierwszą · ? więcej · Esc wróć" in frame.split("Brak subskrypcji")[1]
+    assert "D lub / dodaj pierwszą · ? więcej · Esc wróć" in frame.split("Brak subskrypcji")[1]
     assert "Enter szczegóły" not in frame
     assert "Aktywne" not in frame
 
@@ -397,7 +461,7 @@ def test_the_list_fits_and_every_row_and_key_stays_reachable(panel: StateControl
 
     frame: str = _frame(panel, columns, rows)
     assert seen == {f"Series {index:02d}" for index in range(30)}
-    for hint in ("Enter szczegóły", "/ dodaj", "W wstrzymaj", "? więcej", "Esc wróć"):
+    for hint in ("Enter szczegóły", "D lub / dodaj", "W wstrzymaj", "? więcej", "Esc wróć"):
         assert hint in frame
     panel.handle_key("text:?")
     shown: str = _frame(panel, columns, rows)

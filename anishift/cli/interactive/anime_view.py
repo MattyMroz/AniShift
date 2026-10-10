@@ -66,7 +66,7 @@ _MARGIN: Final[int] = 4
 _EPISODE_STATUS_WIDTH: Final[int] = len("Czeka na wydanie")
 """Fixed Stan column width, so a changing episode state never shifts the centered table."""
 
-_SUBSCRIPTION_STATUS_WIDTH: Final[int] = len("Czeka na wydanie E8 (od 3 dni)")
+_SUBSCRIPTION_STATUS_WIDTH: Final[int] = len("Emisja E12 za 13d 23:59:59")
 """Fixed Stan column width of the subscription list, so a ticking countdown never shifts the table."""
 
 _TITLE_FLOOR: Final[int] = 12
@@ -457,6 +457,8 @@ def _unshown(snapshot: AnimeSnapshot, item: AnimeRow, limit: int, now: float) ->
         parts.append(item.detail or values[-1])
     hidden: list[int] = sorted(position for position in spec.optional if position not in shown)
     parts.extend(f"{spec.labels[position].lower()} {values[position].strip()}" for position in hidden)
+    if item.note:
+        parts.append(item.note)
     if snapshot.screen is AnimeScreen.RELEASES and Text(values[-1]).cell_len > widths[-1]:
         parts.append(f"pewność {values[-1]}")
     if Text(item.title).cell_len > widths[spec.title]:

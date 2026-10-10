@@ -40,12 +40,13 @@ from anishift.cli.interactive.subscription_texts import (
     check_state,
     check_text,
     clock_time,
-    earlier_episodes,
+    episode_label,
     notice_line,
     polish_line,
     row_columns,
     row_state,
     subscription_draft,
+    watched_line,
 )
 from anishift.cli.resident import ResidentSession
 from anishift.platform.local_control import ControlError, ControlErrorCode
@@ -98,6 +99,7 @@ def _row(subscription_id: str, title: str, **changes: object) -> dict[str, objec
         review_pending=False,
         episode_count=4,
         on_disk=1,
+        done=1,
     )
     return {**encode_view(row), **changes}
 
@@ -309,13 +311,13 @@ def test_a_draft_under_the_global_pause_says_when_it_starts_working() -> None:
     ("numbers", "text"),
     [
         ((), ""),
-        ((2,), "E2 wyszedł przed subskrypcją: pobierz go ręcznie (D na liście odcinków)"),
-        ((1, 2, 3), "E1–E3 wyszły przed subskrypcją: pobierz je ręcznie (D na liście odcinków)"),
-        ((3, 1), "E1, E3 wyszły przed subskrypcją: pobierz je ręcznie (D na liście odcinków)"),
+        ((2,), "E2"),
+        ((1, 2, 3), "E1–E3"),
+        ((3, 1), "E1, E3"),
     ],
 )
-def test_earlier_episodes_are_named_as_a_range_or_a_list(numbers: tuple[int, ...], text: str) -> None:
-    assert earlier_episodes(numbers) == text
+def test_episode_numbers_are_named_as_a_range_or_a_list(numbers: tuple[int, ...], text: str) -> None:
+    assert episode_label(numbers) == text
 
 
 @pytest.mark.parametrize(
@@ -324,13 +326,35 @@ def test_earlier_episodes_are_named_as_a_range_or_a_list(numbers: tuple[int, ...
         ({}, ("1/4", "0")),
         ({"episode_count": 12, "ready": 1}, ("1/12", "1")),
         ({"episode_count": 4, "beyond_count": 6}, ("1/4", "0")),
-        ({"episode_count": None, "on_disk": 0}, ("0/?", "0")),
+        ({"episode_count": None, "done": 0}, ("0/?", "0")),
+        ({"episode_count": 12, "watched": [1], "done": 1, "on_disk": 0}, ("1/12", "0")),
+        ({"episode_count": 12, "done": None, "on_disk": 2}, ("2/12", "0")),
     ],
 )
-def test_a_row_shows_its_episodes_on_disk_out_of_the_season_and_its_ready_count(
+def test_a_row_shows_its_counted_episodes_out_of_the_season_and_its_ready_count(
     changes: Mapping[str, object], columns: tuple[str, str]
 ) -> None:
     assert row_columns(_row("a", "Alpha", **changes)) == columns
+
+
+def test_a_row_from_a_resident_without_the_done_count_shows_its_episodes_on_disk() -> None:
+    row: dict[str, object] = {key: value for key, value in _row("a", "Alpha", on_disk=3).items() if key != "done"}
+
+    assert row_columns(row) == ("3/4", "0")
+
+
+@pytest.mark.parametrize(
+    ("watched", "line"),
+    [
+        ([], ""),
+        (None, ""),
+        ([1], "E1 obejrzany przed subskrypcją"),
+        ([1, 2, 3], "E1–E3 obejrzane przed subskrypcją"),
+        ([1, 3], "E1, E3 obejrzane przed subskrypcją"),
+    ],
+)
+def test_a_row_names_the_episodes_watched_before_its_subscription(watched: list[int] | None, line: str) -> None:
+    assert watched_line(_row("a", "Alpha", watched=watched)) == line
 
 
 @pytest.mark.parametrize(
@@ -363,17 +387,21 @@ def _plain(text: str) -> SubscriptionState:
     [
         ({"due_at": (_NOW + timedelta(minutes=30)).isoformat(), "due_number": 8}, _plain("Emisja E8 za 00:30:00")),
         ({"due_at": (_NOW + timedelta(days=2, seconds=5)).isoformat()}, _plain("Emisja za 2d 00:00:05")),
+        ({"due_at": (_NOW - timedelta(minutes=5)).isoformat(), "due_number": 8}, _plain("Czeka E8 od 00:05:00")),
+        ({"due_at": _NOW.isoformat(), "due_number": 8}, _plain("Czeka E8 od 00:00:00")),
+        ({"due_at": (_NOW - timedelta(hours=5, seconds=7)).isoformat()}, _plain("Czeka od 05:00:07")),
         (
-            {"due_at": (_NOW - timedelta(minutes=5)).isoformat(), "due_number": 8},
-            _plain("Czeka na wydanie E8 (od 5 min)"),
+            {"due_at": (_NOW - timedelta(days=2, hours=4, minutes=18, seconds=3)).isoformat(), "due_number": 2},
+            _plain("Czeka E2 od 2d 04:18:03"),
         ),
-        ({"due_at": (_NOW - timedelta(hours=5)).isoformat(), "due_number": 8}, _plain("Czeka na wydanie E8 (od 5 h)")),
-        ({"due_at": (_NOW - timedelta(hours=25)).isoformat()}, _plain("Czeka na wydanie (od 1 dzień)")),
+        ({"due_at": (_NOW - timedelta(hours=72, seconds=-1)).isoformat()}, _plain("Czeka od 2d 23:59:59")),
         (
-            {"due_at": (_NOW - timedelta(hours=73)).isoformat(), "due_number": 8},
-            SubscriptionState(
-                "Czeka na wydanie E8 (od 3 dni)", "Czeka na wydanie E8 (od 3 dni; sprawdzam raz dziennie)"
-            ),
+            {"due_at": (_NOW - timedelta(hours=72)).isoformat(), "due_number": 8},
+            SubscriptionState("Czeka E8 od 3d 00:00:00", "Czeka E8 od 3d 00:00:00 · sprawdzam raz dziennie"),
+        ),
+        (
+            {"due_at": (_NOW - timedelta(days=3, hours=2)).isoformat()},
+            SubscriptionState("Czeka od 3d 02:00:00", "Czeka od 3d 02:00:00 · sprawdzam raz dziennie"),
         ),
         ({"catalog_status": "HIATUS"}, _plain("Przerwa w emisji")),
         ({"catalog_status": "RELEASING"}, _plain("Termin nieznany")),
@@ -454,6 +482,30 @@ def test_a_check_is_summarized_with_its_candidate_counts(check: Mapping[str, obj
 )
 def test_a_check_has_a_short_state_for_the_list(check: Mapping[str, object], text: str) -> None:
     assert check_state(check) == text
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "paused"),
+    [
+        ({"auto_enabled": True}, False),
+        ({"auto_enabled": True, "pausing": True}, True),
+        ({"auto_enabled": True, "pause_incomplete": True}, True),
+        ({"auto_enabled": False}, True),
+    ],
+)
+@pytest.mark.parametrize("route", ["attach", "listing"])
+def test_a_draft_names_the_pause_whenever_the_status_line_does(
+    panel: StateController, snapshot: dict[str, object], route: str, *, paused: bool
+) -> None:
+    panel._snapshot = snapshot
+    if route == "attach":
+        panel.attach_anime(_anime(panel))
+    else:
+        panel._adopt_subscriptions({}, panel._subscriptions)
+    _titles(panel)
+    _keys(panel, "down", "enter", "text:s")
+
+    assert ("Automat jest wstrzymany · zacznę po wznowieniu" in _frame(panel)) is paused
 
 
 def test_d_on_the_list_searches_and_s_on_an_announced_title_adds_and_highlights_it(
@@ -790,11 +842,12 @@ def test_f_shows_the_check_result_in_the_row_for_ten_seconds(
     ("problem", "auto_enabled", "warning"),
     [
         ("", True, "Tryb cienia — subskrypcje tylko zapisują propozycje"),
-        ("", False, "Tryb cienia — subskrypcje tylko zapisują propozycje"),
+        ("", False, "Automat wstrzymany · O wznów"),
         ("save_failed", True, "Monitoring nie działa: nie można zapisać stanu"),
+        ("save_failed", False, "Monitoring nie działa: nie można zapisać stanu"),
     ],
 )
-def test_the_shadow_warning_yields_to_a_monitoring_problem_and_the_pause_stays_in_the_status_line(
+def test_the_status_row_ranks_a_monitoring_problem_over_the_pause_over_the_shadow_mode(
     panel: StateController, problem: str, auto_enabled: bool, warning: str
 ) -> None:
     panel._subscriptions_shadow = True
@@ -849,21 +902,24 @@ def test_enter_opens_the_subscription_details_with_header_targets_and_specials(
     assert owner.numbers[-1] == (1, 2, 3, 4, 5, 6)
 
 
-@pytest.mark.parametrize(("state", "shown"), [(None, True), ("not_ordered", True), ("ready", False)])
-def test_the_details_name_aired_episodes_before_the_subscription_until_they_are_ordered(
-    panel: StateController, owner: _Owner, monkeypatch: pytest.MonkeyPatch, state: str | None, shown: bool
+@pytest.mark.parametrize(
+    ("watched", "text"),
+    [([1, 2], "E1–E2 obejrzane przed subskrypcją"), ([1], "E1 obejrzany przed subskrypcją"), ([], "")],
+)
+def test_the_details_name_the_episodes_watched_before_the_subscription_like_the_list(
+    panel: StateController, owner: _Owner, watched: list[int], text: str
 ) -> None:
     _details(owner)
-
-    def statuses(identifier: int, numbers: tuple[int, ...]) -> tuple[EpisodeStatus, ...]:
-        del numbers
-        return () if state is None else tuple(EpisodeStatus(EpisodeKey(identifier, number), state) for number in (1, 2))
-
-    monkeypatch.setattr(owner, "episode_states", statuses)
+    panel._subscriptions = [_row("a", "Alpha", watched=watched, done=len(watched))]
     panel._selected = 0
     _keys(panel, "enter")
 
-    assert ("E1–E2 wyszły przed subskrypcją: pobierz je ręcznie" in _frame(panel)) is shown
+    frame: str = " ".join(_frame(panel).split())
+
+    assert text in frame
+    assert ("przed subskrypcją" in frame) is bool(text)
+    assert "pobierz je ręcznie" not in frame
+    assert "Space zaznacz · D pobierz · W wstrzymaj · ? więcej · Esc wróć" in frame
 
 
 @pytest.mark.parametrize("changes", [{}, {"problem": "season_unrecognized"}, {"episode_count": 2, "beyond_count": 6}])
@@ -1220,7 +1276,7 @@ def test_every_subscription_fact_is_reachable_in_the_details_of_a_narrow_termina
         "mismatched": 4,
         "outcome": "proposed",
     }
-    panel._subscriptions = [_row("a", title, episode_count=12, ready=2)]
+    panel._subscriptions = [_row("a", title, episode_count=12, ready=2, watched=[1, 2])]
     _keys(panel, "enter")
 
     lines: list[str] = _frame(panel, 50, rows).splitlines()
@@ -1232,7 +1288,7 @@ def test_every_subscription_fact_is_reachable_in_the_details_of_a_narrow_termina
     assert title in shown
     assert "Termin nieznany · odcinki 1/12 · gotowe 2" in shown
     assert check in shown
-    assert "E1–E2 wyszły przed subskrypcją: pobierz je ręcznie" in shown
+    assert "E1–E2 obejrzane przed subskrypcją" in shown
 
 
 def _line(lines: list[str], needle: str) -> int:

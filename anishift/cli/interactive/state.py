@@ -54,6 +54,7 @@ from anishift.cli.interactive.subscription_texts import (
     check_text,
     row_columns,
     row_state,
+    watched_line,
 )
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
@@ -176,6 +177,15 @@ _SUBSCRIPTION_CHECKING: Final[str] = "Sprawdzam…"
 
 _SHADOW_WARNING: Final[str] = "Tryb cienia — subskrypcje tylko zapisują propozycje"
 """Status row above the list while the owner records proposals instead of attempts."""
+
+_PAUSED: Final[str] = "Automat wstrzymany"
+"""Status line of paused automation, which alone drops the material counters."""
+
+_RESUME_HINT: Final[str] = "O wznów"
+"""Key named beside the pause state above the subscription list."""
+
+_ADD_KEYS: Final[str] = "D lub /"
+"""Keys the subscription footer names for adding a subscription."""
 
 _NO_SUBSCRIPTIONS: Final[str] = "Brak subskrypcji"
 """Only line of an empty subscription list."""
@@ -720,7 +730,7 @@ class StateController:
             self._anime = controller
             controller.refresh_provider_locks(_rows(self._snapshot.get("provider_locks")))
             controller.link_subscriptions(self._show_subscription_list, self._subscription_notice)
-            controller.refresh_subscriptions(self._subscriptions, paused=self._snapshot.get("auto_enabled") is False)
+            controller.refresh_subscriptions(self._subscriptions, paused=self._automation_paused())
 
     def suspend(self) -> None:
         """Invalidate child completion navigation when the enclosing panel is hidden."""
@@ -1185,7 +1195,7 @@ class StateController:
         if self._subscription_target is not None:
             self._select_subscription_target()
         if self._anime is not None:
-            self._anime.refresh_subscriptions(subscriptions, paused=self._snapshot.get("auto_enabled") is False)
+            self._anime.refresh_subscriptions(subscriptions, paused=self._automation_paused())
 
     def _receive_check(self, payload: Mapping[str, object]) -> None:
         check: object = payload.get("last_check")
@@ -1484,10 +1494,10 @@ class StateController:
         row: Mapping[str, object] | None = self._selected_subscription()
         undo: tuple[Action, ...] = (("Ctrl+Z", "cofnij"), *_PANEL_ACTIONS)
         if row is None:
-            return ScreenActions((("/", "dodaj pierwszą"),) if self._snapshot else (), undo)
+            return ScreenActions(((_ADD_KEYS, "dodaj pierwszą"),) if self._snapshot else (), undo)
         toggle: Action = ("W", "wznów" if row.get("paused") else "wstrzymaj")
         return ScreenActions(
-            (("Enter", "szczegóły"), ("/", "dodaj"), toggle), (("R", "sprawdź teraz"), ("X", "usuń"), *undo)
+            (("Enter", "szczegóły"), (_ADD_KEYS, "dodaj"), toggle), (("R", "sprawdź teraz"), ("X", "usuń"), *undo)
         )
 
     def _processing_actions(self) -> ScreenActions:
@@ -1561,6 +1571,7 @@ class StateController:
                     ready=ready,
                     status=state.text,
                     detail="" if state.detail == state.text else state.detail,
+                    note=watched_line(item),
                 )
             )
         return tuple(rows)
@@ -1568,7 +1579,21 @@ class StateController:
     def _subscription_warning(self) -> str:
         if self._subscriptions_problem:
             return "Monitoring nie działa: nie można zapisać stanu"
+        if self._automation_paused():
+            return f"{self._pause_state()} · {_RESUME_HINT}"
         return _SHADOW_WARNING if self._subscriptions_shadow else ""
+
+    def _automation_paused(self) -> bool:
+        return bool(self._pause_state())
+
+    def _pause_state(self) -> str:
+        if not self._connected or not self._snapshot:
+            return ""
+        if self._snapshot.get("pause_incomplete"):
+            return "Automat: pauza niepełna"
+        if self._snapshot.get("pausing"):
+            return "Automat: zatrzymywanie"
+        return "" if self._snapshot.get("auto_enabled") else _PAUSED
 
     def _global_status(self, width: int) -> str:
         if not self._connected or not self._snapshot:
@@ -1576,14 +1601,9 @@ class StateController:
         counts: object = self._snapshot.get("material_counts", {})
         values: Mapping[str, object] = counts if isinstance(counts, Mapping) else {}
         counted: tuple[str, ...] = tuple(f"{label} {values[key]}" for key, label in _STATUS_COUNTS if values.get(key))
-        if self._snapshot.get("pause_incomplete"):
-            state: str = "Automat: pauza niepełna"
-        elif self._snapshot.get("pausing"):
-            state = "Automat: zatrzymywanie"
-        elif not self._snapshot.get("auto_enabled"):
-            return fit("Automat wstrzymany", width)
-        else:
-            state = "Automat: praca" if counted else "Automat: bezczynny"
+        state: str = self._pause_state() or ("Automat: praca" if counted else "Automat: bezczynny")
+        if state == _PAUSED:
+            return fit(state, width)
         return pack_keys((state, *counted), width, optional=tuple(reversed(counted)), limit=1)[0]
 
     def _entries(self, columns: int) -> list[tuple[str | Text, bool | None]]:

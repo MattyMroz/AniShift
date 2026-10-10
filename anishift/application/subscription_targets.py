@@ -354,7 +354,7 @@ class SubscriptionRecord:
 
 @dataclass(frozen=True, slots=True)
 class SubscriptionRow:
-    """Compact list projection of one subscription, never carrying its targets."""
+    """Compact list projection of one subscription; *done* counts episodes on disk plus *watched*, skipped before it."""
 
     subscription_id: str
     anilist_id: int | None
@@ -371,6 +371,8 @@ class SubscriptionRow:
     on_disk: int = 0
     ready: int = 0
     checking_number: int | None = None
+    watched: tuple[int, ...] = ()
+    done: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -450,6 +452,7 @@ def subscription_row(record: SubscriptionRecord) -> SubscriptionRow:
     """Project *record* into the compact row the subscription list shows, before the owner counts its files."""
     numbers: tuple[int, ...] = tuple(item.number for item in record.targets)
     nearest: SubscriptionTarget | None = _nearest(record)
+    watched: tuple[int, ...] = tuple(range(1, min(numbers, default=(record.cut or 0) + 1)))
     return SubscriptionRow(
         subscription_id=record.subscription_id,
         anilist_id=record.anilist_id,
@@ -466,6 +469,8 @@ def subscription_row(record: SubscriptionRecord) -> SubscriptionRow:
             (number for number in numbers if record.episode_count is not None and number > record.episode_count),
             default=None,
         ),
+        watched=watched,
+        done=len(watched),
     )
 
 

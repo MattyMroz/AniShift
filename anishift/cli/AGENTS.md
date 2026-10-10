@@ -69,8 +69,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `interactive/anime.py`, `interactive/subscription_texts.py`, `interactive/state.py`
 - The Subscriptions tab in `StateController` renders owner `subscriptions_list` rows. Enter opens U08
   (the Anime episode screen with a subscription status row, every target including numbers beyond the
-  catalogue, and „Dodatki tego sezonu” with related OVA/special entries whose Enter opens their U03), `/` (silent
-  aliases D and Enter on an empty list) opens the Anime search, whose first Esc blurs the field and the second
+  catalogue, and „Dodatki tego sezonu” with related OVA/special entries whose Enter opens their U03), D or `/` (footer
+  `D lub /`; Enter on an empty list is a silent alias) opens the Anime search, whose first Esc blurs the field and the second
   returns to the list through `_back_out`; W (alias Space) pauses/resumes, R (alias F) sends `subscription_check`,
   X/Delete remove, Ctrl+Z restores. U08 hands W/R/F/X to the panel through `take_subscription_command`, so command
   workers stay in `StateController`; its `/` starts a new search without the old subscription. T, only on a
@@ -85,13 +85,15 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   first beneath the table. Beneath the table stands only what the highlighted row hides: the full state
   when it differs from the short one, dropped columns, then a truncated title (`anime_view._unshown`). U08 leads its notice with the last check;
   `?` there lists every subscription fact (`_subscription_facts`) wrapped and scrollable, so 50-column
-  terminals reach the full title, Odcinki (`on_disk/episode_count`) and Gotowe. Row states and columns come only from `subscription_texts` (`row_state`,
+  terminals reach the full title, Odcinki (`done/episode_count`, else `on_disk` from an older owner: episodes on disk plus
+  `watched`, the episodes before the first target that are neither on disk nor ordered nor refused (`_skipped`);
+  `watched_line` names them beneath the row and in U08) and Gotowe. Row states and columns come only from `subscription_texts` (`row_state`,
   `row_columns`, `row_summary`). The list is `render_anime` with `AnimeScreen.SUBSCRIPTIONS`: one row
   per subscription, fixed Stan width, optional columns dropped before the title shrinks below
   `_TITLE_FLOOR`; an empty list renders as DETAILS with the one row „Brak subskrypcji”, and „Łączenie…” before
   the owner's first listing. The context's status row
-  shows only a monitoring problem or shadow mode; the global pause appears only in the bottom status
-  line, kept at 50×12 by dropping the blank row beneath the table. Problem and conflict states use the ordinary state style. While `AnimeController.in_subscriptions`
+  shows a monitoring problem, else the `_pause_state` text of the status line plus ` · O wznów` (2026-10-10),
+  else shadow mode; the global pause also stays in the bottom status line, kept at 50×12 by dropping the blank row beneath the table. Problem and conflict states use the ordinary state style. While `AnimeController.in_subscriptions`
   (U08 or the `/` search) the Subscriptions tab is highlighted, tab keys count from it, and any tab switch
   drops that context first, including an open range editor and marks (an admitted batch survives). `anishift subs` offers `list`, `check` and `remove` through the owner. `interactive/state.py`,
   `interactive/anime_view.py`, `main.py`

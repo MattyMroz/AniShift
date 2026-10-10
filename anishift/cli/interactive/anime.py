@@ -61,13 +61,13 @@ from anishift.cli.interactive.subscription_texts import (
     SubscriptionDraft,
     SubscriptionState,
     check_text,
-    earlier_episodes,
     episode_label,
     notice_line,
     polish_line,
     row_state,
     row_summary,
     subscription_draft,
+    watched_line,
 )
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
@@ -932,7 +932,7 @@ class AnimeController:
             "" if state.detail == state.text else state.detail,
             self._polish_line(),
             self._notice_line(),
-            self._earlier_episodes(),
+            watched_line(self._subscription),
         )
 
     def _polish_line(self) -> str:
@@ -963,17 +963,6 @@ class AnimeController:
 
     def _moment(self) -> datetime:
         return datetime.fromtimestamp(self._clock(), UTC)
-
-    def _earlier_episodes(self) -> str:
-        start: object = self._subscription_details.get("first_target")
-        if self._listing is None or not isinstance(start, int):
-            return ""
-        numbers: list[int] = []
-        for item in self._listing.episodes:
-            status: EpisodeStatus | None = self._episode_states.get(EpisodeKey(self._listing.anilist_id, item.number))
-            if item.number < start and item.aired and (status is None or status.state == "not_ordered"):
-                numbers.append(item.number)
-        return earlier_episodes(numbers)
 
     def _last_check(self) -> str:
         check: object = self._subscription_details.get("last_check")

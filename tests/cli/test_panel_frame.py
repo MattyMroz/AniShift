@@ -313,7 +313,7 @@ def test_the_subscription_list_says_connecting_until_the_owner_lists_it(build: C
     assert before[-1].strip() == "Automat: brak połączenia"
     assert "Brak subskrypcji" in "\n".join(after)
     assert "Łączenie" not in "\n".join(after)
-    assert after[-2].strip() == "/ dodaj pierwszą · ? więcej · Esc wróć"
+    assert after[-2].strip() == "D lub / dodaj pierwszą · ? więcej · Esc wróć"
     assert after[-1].strip() == "Automat: bezczynny"
 
 

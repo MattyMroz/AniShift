@@ -27,13 +27,13 @@ __all__ = [
     "check_state",
     "check_text",
     "clock_time",
-    "earlier_episodes",
     "notice_line",
     "polish_line",
     "row_columns",
     "row_state",
     "row_summary",
     "subscription_draft",
+    "watched_line",
 ]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -114,17 +114,6 @@ def subscription_draft(listing: EpisodeListing, now: datetime, *, paused: bool) 
     return SubscriptionDraft(tuple(lines), True, aired)
 
 
-def earlier_episodes(numbers: Iterable[int]) -> str:
-    """Name aired episodes a subscription never downloads and how to get them, or nothing without any."""
-    shown: list[int] = sorted(numbers)
-    if not shown:
-        return ""
-    label: str = episode_label(shown)
-    if len(shown) == 1:
-        return f"{label} wyszedł przed subskrypcją: pobierz go ręcznie (D na liście odcinków)"
-    return f"{label} wyszły przed subskrypcją: pobierz je ręcznie (D na liście odcinków)"
-
-
 def episode_label(numbers: Iterable[int]) -> str:
     """Name episode numbers as one span when they are consecutive, else as a list."""
     shown: list[int] = sorted(numbers)
@@ -136,10 +125,23 @@ def episode_label(numbers: Iterable[int]) -> str:
 
 
 def row_columns(row: Mapping[str, object]) -> tuple[str, str]:
-    """Return the episodes on disk out of the season count and the ready count of one subscription row."""
+    """Return the episodes watched before the subscription or on disk out of the season count, and the ready count."""
     count: object = row.get("episode_count")
-    episodes: str = f"{_safe(row.get('on_disk', 0))}/{_safe(count) if isinstance(count, int) else '?'}"
+    done: object = row.get("done")
+    counted: object = done if isinstance(done, int) else row.get("on_disk", 0)
+    episodes: str = f"{_safe(counted)}/{_safe(count) if isinstance(count, int) else '?'}"
     return episodes, _safe(row.get("ready", 0))
+
+
+def watched_line(row: Mapping[str, object]) -> str:
+    """Name the episodes one subscription row counts as watched before it started, or nothing."""
+    watched: object = row.get("watched")
+    items: list[object] | tuple[object, ...] = watched if isinstance(watched, list | tuple) else []
+    numbers: list[int] = [item for item in items if isinstance(item, int)]
+    if not numbers:
+        return ""
+    label: str = episode_label(numbers)
+    return f"{label} obejrzany przed subskrypcją" if len(numbers) == 1 else f"{label} obejrzane przed subskrypcją"
 
 
 def row_summary(row: Mapping[str, object]) -> str:
@@ -189,20 +191,18 @@ def _issue(row: Mapping[str, object]) -> SubscriptionState | None:
 
 def _dated_state(episode: str, remaining: int) -> SubscriptionState:
     if remaining > 0:
-        days, rest = divmod(remaining, _DAY_S)
-        hours, rest = divmod(rest, _HOUR_S)
-        clock: str = f"{hours:02d}:{rest // 60:02d}:{rest % 60:02d}"
-        return _plain(f"Emisja{episode} za {days}d {clock}" if days else f"Emisja{episode} za {clock}")
-    waited: int = -remaining
-    if waited >= _DAILY_AFTER_S:
-        since: str = f"od {waited // _DAY_S} dni"
-        return SubscriptionState(
-            f"Czeka na wydanie{episode} ({since})", f"Czeka na wydanie{episode} ({since}; sprawdzam raz dziennie)"
-        )
-    since = f"{waited // _HOUR_S} h" if waited >= _HOUR_S else f"{waited // 60} min"
-    if waited >= _DAY_S:
-        since = "1 dzień" if waited < 2 * _DAY_S else f"{waited // _DAY_S} dni"
-    return _plain(f"Czeka na wydanie{episode} (od {since})")
+        return _plain(f"Emisja{episode} za {_duration(remaining)}")
+    text: str = f"Czeka{episode} od {_duration(-remaining)}"
+    if -remaining >= _DAILY_AFTER_S:
+        return SubscriptionState(text, f"{text} · sprawdzam raz dziennie")
+    return _plain(text)
+
+
+def _duration(seconds: int) -> str:
+    days, rest = divmod(seconds, _DAY_S)
+    hours, rest = divmod(rest, _HOUR_S)
+    clock: str = f"{hours:02d}:{rest // 60:02d}:{rest % 60:02d}"
+    return f"{days}d {clock}" if days else clock
 
 
 def check_state(check: Mapping[str, object]) -> str:

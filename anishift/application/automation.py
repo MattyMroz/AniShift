@@ -234,7 +234,7 @@ from anishift.services.torrents.query import EpisodeRange
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection, Iterator, Sequence
+    from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
     from contextlib import AbstractContextManager
 
     from anishift.application.acquisition import AcquisitionService, ListingRead, ReleaseChoice
@@ -3596,12 +3596,14 @@ class AutomationOwner:
                 self._state, frozenset(item.anilist_id for item in self._state.subscriptions)
             )
             disk: _DiskInventory = self._disk_inventory()
+            batches: Mapping[EpisodeKey, str] = self._batch_reasons()
             return ControlResponse.succeeded(
                 {
                     "subscriptions": [
                         encode_view(
                             replace(
-                                self._disk_row(item, index, disk), checking_number=self._checking_target(item, index)
+                                self._disk_row(item, index, disk, batches),
+                                checking_number=self._checking_target(item, index),
                             )
                         )
                         for item in display_order(self._state.subscriptions)
@@ -3626,7 +3628,9 @@ class AutomationOwner:
         if request.kind == "subscription_get":
             index: _EpisodeIndex = _episode_index(self._state, frozenset({record.anilist_id}))
             return ControlResponse.succeeded(
-                _subscription_details(record, self._disk_row(record, index, self._disk_inventory()))
+                _subscription_details(
+                    record, self._disk_row(record, index, self._disk_inventory(), self._batch_reasons())
+                )
             )
         if request.kind == "subscription_check":
             return self._request_subscription_check(request, record)
@@ -4248,8 +4252,14 @@ class AutomationOwner:
             ),
         )
 
-    def _disk_row(self, record: SubscriptionRecord, index: _EpisodeIndex, disk: _DiskInventory) -> SubscriptionRow:
-        """Project *record* with the episodes whose source video, or ready set, the library inventory proves."""
+    def _disk_row(
+        self,
+        record: SubscriptionRecord,
+        index: _EpisodeIndex,
+        disk: _DiskInventory,
+        batches: Mapping[EpisodeKey, str],
+    ) -> SubscriptionRow:
+        """Project *record* with the episodes its inventory proves and the unordered ones skipped before it."""
         row: SubscriptionRow = subscription_row(record)
         if record.anilist_id is None:
             return row
@@ -4281,7 +4291,19 @@ class AutomationOwner:
                 ready.add(number)
             if number in ready or any(_is_video(path) and path.casefold() in disk.present for path in paths):
                 on_disk.add(number)
-        return replace(row, on_disk=len(on_disk), ready=len(ready))
+        watched: tuple[int, ...] = tuple(
+            number
+            for number in row.watched
+            if number not in on_disk
+            and _skipped(
+                self._episode_status(
+                    EpisodeKey(record.anilist_id, number),
+                    matches=_latest_last(index.episodes.get((record.anilist_id, number), ())),
+                    batches=batches,
+                )
+            )
+        )
+        return replace(row, on_disk=len(on_disk), ready=len(ready), watched=watched, done=len(on_disk.union(watched)))
 
     def _legacy_paths(self, anilist_id: int, index: _EpisodeIndex) -> Iterator[tuple[int, frozenset[str]]]:
         operations: frozenset[str] = frozenset(
@@ -4856,7 +4878,10 @@ class AutomationOwner:
             validate_episode_keys(keys)
         except ValueError, TypeError:
             return _invalid("Episode states require 1-100 unique positive numbers of one entry")
-        return ControlResponse.succeeded({"items": [encode_view(self._episode_status(key)) for key in keys]})
+        batches: Mapping[EpisodeKey, str] = self._batch_reasons()
+        return ControlResponse.succeeded(
+            {"items": [encode_view(self._episode_status(key, batches=batches)) for key in keys]}
+        )
 
     def _episode_files_command(self, request: ControlRequest) -> ControlResponse:
         receipt: CommandReceipt | None = self._on_owner(lambda: self._receipt(request))
@@ -4984,11 +5009,21 @@ class AutomationOwner:
         self._publish_state()
         return ControlResponse.succeeded(dict(outcome))
 
-    def _episode_status(self, key: EpisodeKey) -> EpisodeStatus:
-        matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = self._episode_assignments(key)
+    def _episode_status(
+        self,
+        key: EpisodeKey,
+        *,
+        matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] | None = None,
+        batches: Mapping[EpisodeKey, str] | None = None,
+    ) -> EpisodeStatus:
+        """Project one episode; callers projecting many pass its sorted assignments and ``_batch_reasons`` once."""
+        if matches is None:
+            matches = self._episode_assignments(key)
         if matches and _closed_by_subscription(*matches[-1]):
             return self._target_status(EpisodeStatus(key, "not_ordered"))
-        status: EpisodeStatus = self._assignment_status(*matches[-1]) if matches else self._legacy_episode_status(key)
+        status: EpisodeStatus = (
+            self._assignment_status(*matches[-1]) if matches else self._legacy_episode_status(key, batches)
+        )
         if status.state == "not_ordered" and status.reason is None and not status.uncertain:
             return self._target_status(status)
         if matches:
@@ -5160,7 +5195,7 @@ class AutomationOwner:
         started: bool = transfer.content_started and (not transfer.selective or _selection_confirmed(transfer))
         return "downloading" if started else "ordered", reason, None
 
-    def _legacy_episode_status(self, key: EpisodeKey) -> EpisodeStatus:
+    def _legacy_episode_status(self, key: EpisodeKey, batches: Mapping[EpisodeKey, str] | None) -> EpisodeStatus:
         records: tuple[AcquisitionConfirmation, ...] = self._legacy_episode_records(key)
         exact: tuple[AcquisitionConfirmation, ...] = tuple(
             item
@@ -5189,18 +5224,22 @@ class AutomationOwner:
             candidate: RankedCandidate = view.offer.candidates[view.offer.suggestion]
             if self._transfer_conflict(candidate.stream.info_hash):
                 return EpisodeStatus(key, "processing_failed", AdmissionConflict.TRANSFER_RECORDED.value)
-        for receipt in reversed(self._state.command_receipts):
+        batched: str | None = (self._batch_reasons() if batches is None else batches).get(key)
+        if batched is None:
+            return EpisodeStatus(key, "not_ordered")
+        return EpisodeStatus(
+            key, "processing_failed" if batched == AdmissionConflict.TRANSFER_RECORDED else "not_ordered", batched
+        )
+
+    def _batch_reasons(self) -> dict[EpisodeKey, str]:
+        """Return the reason of every episode's latest recorded batch result, decoding each batch once."""
+        reasons: dict[EpisodeKey, str] = {}
+        for receipt in self._state.command_receipts:
             if receipt.outcome.get("kind") != "episode_download":
                 continue
             batch: EpisodeBatch = decode_view(EpisodeBatch, json.loads(str(receipt.outcome["batch"])))
-            result: EpisodeResult | None = next((item for item in batch.results if item.key == key), None)
-            if result is not None:
-                return EpisodeStatus(
-                    key,
-                    "processing_failed" if result.reason == AdmissionConflict.TRANSFER_RECORDED else "not_ordered",
-                    result.reason,
-                )
-        return EpisodeStatus(key, "not_ordered")
+            reasons.update((item.key, item.reason) for item in batch.results)
+        return reasons
 
     def _legacy_episode_records(self, key: EpisodeKey) -> tuple[AcquisitionConfirmation, ...]:
         operations: frozenset[str] = frozenset(
@@ -5214,13 +5253,12 @@ class AutomationOwner:
         )
 
     def _episode_assignments(self, key: EpisodeKey) -> tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...]:
-        matches: tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...] = tuple(
+        return _latest_last(
             (transfer, assignment)
             for transfer in self._state.acquisitions
             for assignment in transfer.protected_assignments
             if (assignment.choice.anilist_id, assignment.choice.number) == (key.anilist_id, key.number)
         )
-        return tuple(sorted(matches, key=lambda item: not item[1].replaced))
 
     def _episode_conflicts(self, key: EpisodeKey) -> tuple[str, ...]:
         records: tuple[AcquisitionConfirmation, ...] = self._legacy_episode_records(key)
@@ -8773,6 +8811,18 @@ def _taken_name(path: Path) -> bool:
     except OSError:
         return True
     return True
+
+
+def _latest_last(
+    matches: Iterable[tuple[AcquisitionConfirmation, EpisodeAssignment]],
+) -> tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...]:
+    """Order one episode's assignments so the one not replaced comes last."""
+    return tuple(sorted(matches, key=lambda item: not item[1].replaced))
+
+
+def _skipped(status: EpisodeStatus) -> bool:
+    """Whether nobody ordered *status*'s episode, or its result was made and later removed."""
+    return status.state == "not_ordered" and status.reason in {None, EpisodeReason.RESULT_MISSING}
 
 
 def _admits(receipt: CommandReceipt, key: EpisodeKey) -> bool:

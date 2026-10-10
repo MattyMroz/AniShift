@@ -493,14 +493,14 @@ _ACTIONS: Final[dict[str, tuple[Action, ...]]] = {
     "u08_extra": (("Enter", "otwórz"), *_U08),
     "subscriptions": (
         ("Enter", "szczegóły"),
-        ("/", "dodaj"),
+        ("D lub /", "dodaj"),
         ("W", "wstrzymaj"),
         ("R", "sprawdź teraz"),
         ("X", "usuń"),
         ("Ctrl+Z", "cofnij"),
         *_PANEL,
     ),
-    "subscriptions_empty": (("/", "dodaj pierwszą"), ("Ctrl+Z", "cofnij"), *_PANEL),
+    "subscriptions_empty": (("D lub /", "dodaj pierwszą"), ("Ctrl+Z", "cofnij"), *_PANEL),
     "processing_download": (("W", "wstrzymaj"), ("X", "anuluj"), ("H", "historia"), *_PANEL),
     "processing_run": (("X", "anuluj"), ("H", "historia"), *_PANEL),
     "processing_empty": (("H", "historia"), *_PANEL),
@@ -522,8 +522,8 @@ _ALIASES: Final[dict[str, frozenset[str]]] = {
     "u08": frozenset({"text:f", "delete"}),
     "u08_waiting": frozenset({"text:f", "delete"}),
     "u08_extra": frozenset({"text:f", "delete"}),
-    "subscriptions": frozenset({"text:d", "text:f", "space", "delete"}),
-    "subscriptions_empty": frozenset({"text:d", "enter"}),
+    "subscriptions": frozenset({"text:f", "space", "delete"}),
+    "subscriptions_empty": frozenset({"enter"}),
     "processing_download": frozenset({"text:c", "delete"}),
     "processing_run": frozenset({"text:c", "delete"}),
     "processing_empty": frozenset({"text:c", "delete"}),
@@ -558,8 +558,8 @@ _FOOTERS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
     "draft": ("Enter wybierz · Space zaznacz · ? więcej · Esc wróć", ()),
     "u08": ("Space zaznacz · D pobierz · W wstrzymaj · ? więcej · Esc wróć", ()),
     "u08_waiting": ("Space zaznacz · D pobierz · T pobierz teraz · ? więcej · Esc wróć", ()),
-    "subscriptions": ("Enter szczegóły · / dodaj · W wstrzymaj · ? więcej · Esc wróć", ()),
-    "subscriptions_empty": ("/ dodaj pierwszą · ? więcej · Esc wróć", ()),
+    "subscriptions": ("Enter szczegóły · D lub / dodaj · W wstrzymaj · ? więcej · Esc wróć", ()),
+    "subscriptions_empty": ("D lub / dodaj pierwszą · ? więcej · Esc wróć", ()),
     "processing_download": ("W wstrzymaj · X anuluj · H historia · ? więcej · Esc wróć", ()),
     "processing_run": ("X anuluj · H historia · ? więcej · Esc wróć", ()),
     "history": ("Enter otwórz · P ponów · / szukaj · ? więcej · Esc wróć", ()),
@@ -616,11 +616,10 @@ def _listed(probe: _Probe) -> tuple[Action, ...]:
     return probe.panel._actions().listed
 
 
-def _probe_key(action: str) -> str | None:
+def _probe_keys(action: str) -> tuple[str, ...]:
     named: dict[str, str] = {"Enter": "enter", "Space": "space"}
-    if action in named:
-        return named[action]
-    return f"text:{action.lower()}" if len(action) == 1 else None
+    keys: list[str] = action.split(" lub ")
+    return tuple(named.get(key, f"text:{key.lower()}") for key in keys if key in named or len(key) == 1)
 
 
 def _state(probe: _Probe) -> tuple[object, ...]:
@@ -716,7 +715,7 @@ def test_subscription_list_without_rows_says_so_once(build: Callable[[str], _Pro
 
 @pytest.mark.parametrize("name", sorted(set(_ACTIONS)))
 def test_every_key_that_changes_a_screen_is_listed_or_an_alias(build: Callable[[str], _Probe], name: str) -> None:
-    listed: set[str] = {key for action, _label in _ACTIONS[name] if (key := _probe_key(action)) is not None}
+    listed: set[str] = {key for action, _label in _ACTIONS[name] for key in _probe_keys(action)}
     allowed: set[str] = listed | _ALIASES.get(name, frozenset()) | _EVERYWHERE
     changed: list[str] = [key for key in _KEYS if _changes(build(name), key)]
     assert [key for key in changed if key not in allowed] == []
@@ -724,7 +723,7 @@ def test_every_key_that_changes_a_screen_is_listed_or_an_alias(build: Callable[[
 
 @pytest.mark.parametrize("name", sorted(_ACTIONS))
 def test_every_listed_action_changes_a_screen_where_it_applies(build: Callable[[str], _Probe], name: str) -> None:
-    keys: list[str] = [key for action, _label in _ACTIONS[name] if (key := _probe_key(action)) is not None]
+    keys: list[str] = [key for action, _label in _ACTIONS[name] for key in _probe_keys(action)]
     inert: list[str] = [key for key in keys if not _changes(build(_APPLIES.get((name, key), name)), key)]
     assert inert == []
 

@@ -354,7 +354,7 @@ def qbit_setup() -> None:
 
 @subs_app.command("list")
 def subs_list() -> None:
-    """List every followed season with its episodes on disk, ready episodes and state."""
+    """List every followed season with its watched-or-on-disk episodes, ready episodes and state."""
     from anishift.application import SubscriptionRow, decode_view  # noqa: PLC0415
 
     raw: object = _resident_call("subscriptions_list").get("subscriptions", [])
@@ -365,10 +365,11 @@ def subs_list() -> None:
         typer.echo(_SUBS_EMPTY)
         return
     for row in rows:
+        done: int = row.on_disk if row.done is None else row.done
         line: str = _SUBS_ROW.format(
             id=row.subscription_id,
             title=row.title,
-            episodes=f"{row.on_disk}/{'?' if row.episode_count is None else row.episode_count}",
+            episodes=f"{done}/{'?' if row.episode_count is None else row.episode_count}",
             ready=row.ready,
             state=_subscription_state(row),
         )

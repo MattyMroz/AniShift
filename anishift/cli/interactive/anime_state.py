@@ -76,6 +76,7 @@ class AnimeRow:
     refusal_text: str = ""
     quality: str = ""
     confidence: str = ""
+    note: str = ""
 
     @property
     def copy_text(self) -> str:
