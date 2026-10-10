@@ -1080,7 +1080,7 @@ class AnimeController:
             self._handle_episode_screen(key)
         self._sync_view()
 
-    def _sync_view(self) -> None:  # noqa: PLR0912
+    def _sync_view(self) -> None:
         screens: dict[_Screen, AnimeScreen] = {
             _Screen.QUERY: AnimeScreen.QUERY,
             _Screen.TITLES: AnimeScreen.TITLES,
@@ -1131,9 +1131,7 @@ class AnimeController:
         self._view.controls = footer_segments(self._screen_actions(), more=self._screen not in _NO_HELP)
         if self._screen is _Screen.PROBLEM:
             self._view.notice_kind = NoticeKind.WARNING
-        elif self._files is not None and self._screen is _Screen.OFFER:
-            self._view.title = "Wybierz plik"
-        elif self._screen is _Screen.OFFER:
+        elif self._screen is _Screen.OFFER and self._files is None:
             self._view.notice = self._notice or " · ".join(self._repeat_warning())
             if self._offer_view is not None and self._offer_view.unknown_previous:
                 self._view.global_status = "Nie można potwierdzić odmienności wydania"
@@ -2510,9 +2508,7 @@ class AnimeController:
 
     def _entry_heading(self) -> str:
         entry: FranchiseEntry | None = self._shown_entry
-        return (
-            "ANIME" if entry is None else f"ANIME \u203a {_safe(entry.english or entry.romaji)} ({entry.year or '—'})"
-        )
+        return "" if entry is None else f"Anime \u203a {_safe(entry.english or entry.romaji)} ({entry.year or '—'})"
 
     def _repeat_warning(self) -> tuple[str, ...]:
         view: EpisodeOfferView | None = self._offer_view

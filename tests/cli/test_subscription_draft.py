@@ -803,8 +803,8 @@ def test_the_shadow_warning_yields_to_a_monitoring_problem_and_the_pause_stays_i
 
     lines: list[str] = _frame(panel).splitlines()
 
-    context: int = next(index for index, line in enumerate(lines) if line.strip() == "Subskrypcje")
-    assert lines[context + 1].strip() == warning
+    labels: int = next(index for index, line in enumerate(lines) if line.strip().startswith("Tytuł"))
+    assert lines[labels - 1].strip() == warning
     assert ("Automat wstrzymany" in lines[-1]) is not auto_enabled
     assert "subskrypcje czekają" not in "\n".join(lines)
 

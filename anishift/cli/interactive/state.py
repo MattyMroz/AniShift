@@ -36,6 +36,7 @@ from anishift.cli.interactive.anime_view import (
     MIN_COLUMNS,
     MIN_ROWS,
     AnimeFrame,
+    fit,
     render_anime,
     visible_rows,
 )
@@ -179,6 +180,25 @@ _SHADOW_WARNING: Final[str] = "Tryb cienia — subskrypcje tylko zapisują propo
 _NO_SUBSCRIPTIONS: Final[str] = "Brak subskrypcji"
 """Only line of an empty subscription list."""
 
+_CONNECTING: Final[str] = "Łączenie…"
+"""Only line of the subscription list before the owner's first listing."""
+
+_NO_CONNECTION: Final[str] = "Automat: brak połączenia"
+"""Status line without a live owner snapshot."""
+
+_STATUS_COUNTS: Final[tuple[tuple[str, str], ...]] = (
+    ("downloading", "pobiera"),
+    ("processing", "przetwarza"),
+    ("waiting", "czeka"),
+)
+"""Owner material counters in the order the status line names them."""
+
+_DETAIL_HELP_ROWS: Final[int] = 3
+"""Rows the help under Library files needs: a blank line, the "Ten ekran" heading and one hint line."""
+
+_HISTORY_CRUMB: Final[str] = "Przetwarzanie \u203a Historia"
+"""Breadcrumb above the History list."""
+
 _ANSWERS: Final[str] = "Enter tak · Esc nie"
 """Keys answering the cancellation question."""
 
@@ -314,7 +334,7 @@ class StateController:
         self._anime_top: int = 0
         self._connected: bool = False
         self._busy: bool = False
-        self._notice: str = "Łączenie z procesem w tle…"
+        self._notice: str = ""
         self._state_version: int = 0
         self._notice_version: int = -1
         self._notice_persistent: bool = False
@@ -1301,8 +1321,10 @@ class StateController:
             if spaced:
                 heading.append(Text())
             area: int = max(budget - len(heading), 1)
-            if self._tab == _Tab.ANIME and self._anime is not None:
-                body: Text = self._anime.render(columns, area)
+            if self._tab == _Tab.ANIME and self._anime is not None and area > MIN_ROWS:
+                body: Text = self._pin_status(self._anime.render(columns, area - 1), columns, area)
+            elif self._tab == _Tab.ANIME and self._anime is not None:
+                body = self._anime.render(columns, area)
             elif self._help:
                 body = self._help_body(columns, area)
             elif self._tab == _Tab.SUBSCRIPTIONS and self._retry is None:
@@ -1326,10 +1348,10 @@ class StateController:
                 console, max(columns - 2, 1)
             )
         ]
-        status: Text = Text(self._global_status(max(columns - 4, 1)), style="gray") if self._shows_status() else Text()
-        footer = [*footer, status][: max(rows - 2, 1)]
+        status: Text = Text(self._global_status(max(columns - 4, 1)), style="gray")
+        footer = [*footer[: max(rows - 4, 0)], status]
         wrapped: tuple[tuple[str | Text, ...], ...] = wrap_entries(tuple(label for label, _ in entries), columns)
-        remaining: int = max(rows - 1 - len(footer), 1)
+        remaining: int = max(rows - 2 - len(footer), 1)
         heights: tuple[int, ...] = tuple(map(len, wrapped))
         start, end = visible_window(len(entries), selected, remaining + 7, heights=heights)
         viewport: int = self._viewport()
@@ -1355,8 +1377,8 @@ class StateController:
             append_wrapped_row(content, left, lines, index == selected, marker, index=index)
             remaining -= len(lines)
             self._page = max(index - start + 1, 1)
-        if self._details is not None:
-            for line in ("", *help_lines(self._actions().listed, max(columns - left - 4, 1)))[: max(remaining, 0)]:
+        if self._details is not None and remaining >= _DETAIL_HELP_ROWS:
+            for line in ("", *help_lines(self._actions().listed, max(columns - left - 4, 1)))[:remaining]:
                 content.append(f"{' ' * (left + 2)}{line}\n", style="gray")
         if not entries:
             empty: str = (
@@ -1367,7 +1389,7 @@ class StateController:
             if self._tab == _Tab.PROGRESS and self._history_open and self._history_problem:
                 empty = "Historia niedostępna"
             content.append_text(_centered(Text(empty, style="gray"), columns))
-        body: list[Text] = list(content.split("\n"))
+        body: list[Text] = [self._breadcrumb(columns), *content.split("\n")]
         area: int = rows - len(footer)
         top: int = max((area - len(body)) // 2, 0)
         padding: list[Text] = [Text() for _ in range(max(area - top - len(body), 0))]
@@ -1410,8 +1432,6 @@ class StateController:
             result.append(self._notice.rstrip("."))
         if self._tab == _Tab.FILES and self._library_notice:
             result.append(self._library_notice)
-        if not self._connected:
-            result.append("Brak połączenia")
         relocations: list[Mapping[str, object]] = _relocation_problems(self._snapshot)
         if self._details is None and self._tab == _Tab.FILES and relocations:
             names: str = ", ".join(_safe_text(item["name"]) for item in relocations)
@@ -1423,20 +1443,20 @@ class StateController:
         width: int = max(columns - 4, 1)
         intro: tuple[str, ...] = (_HISTORY_SPAN,) if self._tab == _Tab.PROGRESS and self._history_open else ()
         lines: tuple[str, ...] = help_lines(self._actions().listed, width, intro=intro)
-        status: Text = Text(self._global_status(width), style="gray") if self._shows_status() else Text()
-        footer: list[Text] = [Text("Esc wróć", style="gray"), status][: max(rows - 2, 1)]
+        footer: list[Text] = [Text("Esc wróć", style="gray"), Text(self._global_status(width), style="gray")]
         area: int = rows - len(footer)
-        visible: int = max(area - 1, 1)
+        visible: int = max(area - 2, 1)
         self._page = visible
         self._help_offset = min(self._help_offset, max(len(lines) - visible, 0))
         shown: tuple[str, ...] = lines[self._help_offset : self._help_offset + visible]
         left: int = max((columns - max((Text(line).cell_len for line in shown), default=0)) // 2, 0)
-        top: int = max((area - len(shown)) // 2, 0)
+        top: int = max((area - len(shown) - 1) // 2, 0)
         return Text("\n").join(
             [
                 *(Text() for _ in range(top)),
+                self._breadcrumb(columns),
                 *(Text(f"{' ' * left}{line}", style="gray") for line in shown),
-                *(Text() for _ in range(max(area - top - len(shown), 0))),
+                *(Text() for _ in range(max(area - top - len(shown) - 1, 0))),
                 *(_centered(line, columns) for line in footer),
             ]
         )
@@ -1465,7 +1485,7 @@ class StateController:
         row: Mapping[str, object] | None = self._selected_subscription()
         undo: tuple[Action, ...] = (("Ctrl+Z", "cofnij"), *_PANEL_ACTIONS)
         if row is None:
-            return ScreenActions((("/", "dodaj pierwszą"),), undo)
+            return ScreenActions((("/", "dodaj pierwszą"),) if self._snapshot else (), undo)
         toggle: Action = ("W", "wznów" if row.get("paused") else "wstrzymaj")
         return ScreenActions(
             (("Enter", "szczegóły"), ("/", "dodaj"), toggle), (("R", "sprawdź teraz"), ("X", "usuń"), *undo)
@@ -1495,14 +1515,14 @@ class StateController:
         if self._follow_cursor.get(_Tab.SUBSCRIPTIONS, True):
             offset = max(min(offset, self._selected), self._selected - visible + 1)
         self._offsets[_Tab.SUBSCRIPTIONS] = offset
-        problems: tuple[str, ...] = (self._notice.rstrip("."), "" if self._connected else "Brak połączenia")
+        empty: str = _NO_SUBSCRIPTIONS if self._snapshot else _CONNECTING
         snapshot: AnimeSnapshot = AnimeSnapshot(
             AnimeScreen.SUBSCRIPTIONS if items else AnimeScreen.DETAILS,
-            "Subskrypcje",
-            items or (AnimeRow("empty", _NO_SUBSCRIPTIONS, navigable=False),),
+            "",
+            items or (AnimeRow("empty", empty, navigable=False),),
             cursor=self._selected,
             offset=offset,
-            notice=" · ".join(text for text in problems if text),
+            notice=self._notice.rstrip("."),
             controls=footer_segments(self._actions()),
             global_status=self._subscription_warning(),
         )
@@ -1510,9 +1530,21 @@ class StateController:
         lines: list[Text] = list(frame.text.split("\n"))
         if tight:
             del lines[next(index for index in range(frame.first_row, rows) if not lines[index].plain.strip())]
-        if rows > 1:
-            lines.append(_centered(Text(self._global_status(max(columns - 4, 1)), style="gray"), columns))
-        return Text("\n").join(lines)
+        return self._pin_status(Text("\n").join(lines), columns, rows)
+
+    def _pin_status(self, body: Text, columns: int, rows: int) -> Text:
+        lines: list[Text] = list(body.split("\n", allow_blank=True))[: max(rows - 1, 0)]
+        padding: list[Text] = [Text() for _ in range(max(rows - 1 - len(lines), 0))]
+        status: Text = _centered(Text(self._global_status(max(columns - 4, 1)), style="gray"), columns)
+        return Text("\n").join([*lines, *padding, status])
+
+    def _breadcrumb(self, columns: int) -> Text:
+        crumb: str = ""
+        if self._tab == _Tab.PROGRESS and self._history_open:
+            crumb = _HISTORY_CRUMB
+        elif self._details is not None:
+            crumb = f"Biblioteka \u203a {_safe_text(self._details.name)}"
+        return _centered(Text(fit(crumb, max(columns - 2, 1)), style="white_bold"), columns)
 
     def _subscription_rows(self) -> tuple[AnimeRow, ...]:
         now: datetime = self._clock()
@@ -1541,29 +1573,21 @@ class StateController:
             return "Monitoring nie działa: nie można zapisać stanu"
         return _SHADOW_WARNING if self._subscriptions_shadow else ""
 
-    def _shows_status(self) -> bool:
-        if self._retry is not None or (self._tab == _Tab.PROGRESS and self._history_open):
-            return True
-        return (self._details is None and self._tab != _Tab.FILES) or self._snapshot.get("auto_enabled") is False
-
     def _global_status(self, width: int) -> str:
+        if not self._connected or not self._snapshot:
+            return fit(_NO_CONNECTION, width)
         counts: object = self._snapshot.get("material_counts", {})
         values: Mapping[str, object] = counts if isinstance(counts, Mapping) else {}
-        status: str = "Praca" if self._snapshot.get("auto_enabled") else "Automat wstrzymany"
-        if self._snapshot.get("pausing"):
-            status = "Zatrzymywanie"
+        counted: tuple[str, ...] = tuple(f"{label} {values[key]}" for key, label in _STATUS_COUNTS if values.get(key))
         if self._snapshot.get("pause_incomplete"):
-            status = "Pauza niepełna"
-        counted: tuple[str, ...] = (
-            (f"Przetwarzanie {len(self._processing_rows())}",)
-            if self._tab == _Tab.PROGRESS
-            else (
-                f"↓ {values.get('downloading', 0)}",
-                f"Przetwarzanie {values.get('processing', 0)}",
-                f"Czeka {values.get('waiting', 0)}",
-            )
-        )
-        return pack_keys((*counted, status), width, optional=tuple(reversed(counted)), limit=1)[0]
+            state: str = "Automat: pauza niepełna"
+        elif self._snapshot.get("pausing"):
+            state = "Automat: zatrzymywanie"
+        elif not self._snapshot.get("auto_enabled"):
+            return fit("Automat wstrzymany", width)
+        else:
+            state = "Automat: praca" if counted else "Automat: bezczynny"
+        return pack_keys((state, *counted), width, optional=tuple(reversed(counted)), limit=1)[0]
 
     def _entries(self, columns: int) -> list[tuple[str | Text, bool | None]]:
         if self._retry is not None:

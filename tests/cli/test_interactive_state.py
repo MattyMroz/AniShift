@@ -416,7 +416,7 @@ def test_local_admitted_material_is_preparing_before_progress_restore_and_first_
         initial: str = controller.render(80, 24).plain
         assert "Local.mkv" in initial
         assert "Przygotowanie" in initial
-        assert "Przetwarzanie 1" in initial
+        assert len(controller._processing_rows()) == 1
         assert " |   0% | 00:00:00.000" in initial
         assert "X anuluj" in initial
         controller.handle_key("text:c")
@@ -750,7 +750,7 @@ def test_processing_hides_uncertain_downloads_and_handoffs_without_changing_live
         assert "Download.mkv" in frame
         assert "Local.mkv" in frame
         assert "37%" in frame
-        assert "Przetwarzanie 2 · Praca" in frame
+        assert "Automat: praca · pobiera 20 · przetwarza 1" in frame
         assert not any(text in frame for text in ("Ghost", "Materiał", "Niepewne", "99%"))
         assert controller._processing_row_ids() == ["download", "local"]
         assert "X anuluj" not in frame
@@ -775,10 +775,10 @@ def test_processing_hides_uncertain_downloads_and_handoffs_without_changing_live
 @pytest.mark.parametrize(
     ("snapshot", "action", "status"),
     [
-        ({"auto_enabled": True}, "O automat", "Praca"),
+        ({"auto_enabled": True}, "O automat", "Automat: bezczynny"),
         ({"auto_enabled": False}, "O automat", "Automat wstrzymany"),
-        ({"auto_enabled": False, "pausing": True}, "O automat", "Zatrzymywanie"),
-        ({"auto_enabled": False, "pause_incomplete": True}, "O automat", "Pauza niepełna"),
+        ({"auto_enabled": False, "pausing": True}, "O automat", "Automat: zatrzymywanie"),
+        ({"auto_enabled": False, "pause_incomplete": True}, "O automat", "Automat: pauza niepełna"),
     ],
 )
 def test_processing_footer_names_the_explicit_owner_action_and_current_pause_state(
@@ -793,7 +793,7 @@ def test_processing_footer_names_the_explicit_owner_action_and_current_pause_sta
     monkeypatch.setattr(controller, "_command", lambda kind, payload: calls.append((kind, payload)))
     try:
         frame: str = controller.render(80, 24).plain
-        assert f"Przetwarzanie 0 · {status}" in frame
+        assert frame.splitlines()[-1].strip() == status
         assert "AniShift wstrzymany" not in frame
         controller.handle_key("text:?")
         assert action in controller.render(80, 24).plain
@@ -855,7 +855,8 @@ def test_processing_only_shows_live_material_bars_from_a_mixed_legacy_snapshot( 
         assert "█" in frame
         assert "--" not in frame
         assert "0%" in frame
-        assert "Przetwarzanie 3 · Praca" in frame
+        assert len(controller._processing_rows()) == 3
+        assert frame.splitlines()[-1].strip() == "Automat: praca · pobiera 8 · przetwarza 9 · czeka 7"
         assert "Queued.mkv" in frame
         assert "Przygotowanie" in frame
         assert not any(text in frame for text in ("a" * 40, "Missing", "Relocation", "Kosz", "Czeka", "↓ 8"))
@@ -885,7 +886,7 @@ def test_processing_only_shows_live_material_bars_from_a_mixed_legacy_snapshot( 
         frame = controller.render(columns, rows).plain
         assert "Episode 01.mkv" not in frame
         assert "Episode 02.mkv" in frame
-        assert "Przetwarzanie 2" in frame
+        assert len(controller._processing_rows()) == 2
         assert controller._selected == 1
         controller.handle_key("text:c")
         controller.handle_key("enter")
@@ -929,7 +930,7 @@ def test_processing_requires_live_request_and_distinguishes_preparing_from_start
         frame: str = controller.render(80, 24).plain
         if state in {"accepted", "running"}:
             assert "Przygotowanie" in frame
-            assert "Przetwarzanie 1" in frame
+            assert len(controller._processing_rows()) == 1
             assert "X anuluj" in frame
         else:
             assert "Brak aktywnego przetwarzania" in frame
@@ -1060,7 +1061,7 @@ def test_new_progress_preview_discards_old_percentage_and_uses_only_source_label
         controller._receive(session, {"event": "state_changed", "payload": snapshot})
         preparing: str = controller.render(120, 40).plain
         assert "Przygotowanie" in preparing
-        assert "Przetwarzanie 1" in preparing
+        assert len(controller._processing_rows()) == 1
         assert "Old.mkv" not in preparing
         assert " |   0% | " in preparing
         controller._receive(
@@ -1767,7 +1768,7 @@ def test_a_panel_notice_disappears_once_the_resident_state_moves_on(tmp_path: Pa
     controller: StateController = StateController(session, refreshed.set)
     try:
         _await(lambda: controller._connected, refreshed)
-        _await(lambda: "Łączenie" not in controller.render(80, 24).plain, refreshed)
+        _await(lambda: "Automat: brak połączenia" not in controller.render(80, 24).plain, refreshed)
         controller.set_notice("Grupa jest już przetwarzana")
         assert "Grupa jest już przetwarzana" in controller.render(80, 24).plain
         server.broadcast(
@@ -2019,12 +2020,7 @@ def test_each_panel_tab_retains_contextual_actions_and_owner_counts_at_feasible_
         frame: str = interactive_app._fit_frame(
             controller.render(columns, rows), "test", "workspace", columns, rows
         ).plain
-        if tab == 3:
-            assert "Praca" not in frame
-            assert "↓ 2" not in frame
-            assert "Czeka 4" not in frame
-        else:
-            assert ("Przetwarzanie 0 · Praca" if tab == 2 else "↓ 2 · Przetwarzanie 3 · Czeka 4 · Praca") in frame
+        assert "Automat: praca · pobiera 2 · przetwarza 3 · czeka 4" in frame
         if tab == 1 and rows < 12:
             assert "Powiększ terminal do 50 x 12" in frame
         else:
@@ -2329,14 +2325,16 @@ def test_every_list_tab_pins_heading_and_keys_and_centers_its_content(
         while keys - 1 in occupied:
             keys -= 1
         content: list[int] = [index for index in occupied if 3 < index < keys]
+        crumb: int = content[0] - (2 if tab == 1 else 1)
         left: int = min(len(lines[index]) - len(lines[index].lstrip()) for index in content)
         right: int = columns - max(len(lines[index].rstrip()) for index in content)
         assert len(lines) == rows - 1
-        assert occupied[-1] == len(lines) - (2 if tab == 3 else 1)
-        assert ("Praca" in lines[-1]) is (tab != 3)
+        assert occupied[-1] == len(lines) - 1
+        assert lines[-1].strip() == "Automat: bezczynny"
         assert lines[0].strip() == "PANEL"
         assert "Subskrypcje" in lines[2]
-        assert abs((content[0] - 4) - (keys - content[-1] - 1)) <= 1
+        assert not lines[crumb].strip()
+        assert abs((crumb - 4) - (keys - content[-1] - 1)) <= 1
         if tab == 1:
             header: str = next(line for line in lines if "Tytuł" in line)
             right = columns - header.index("Stan") - anime_view._SUBSCRIPTION_STATUS_WIDTH

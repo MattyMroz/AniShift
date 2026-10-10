@@ -93,7 +93,7 @@ def _line(lines: list[str], needle: str) -> int:
 
 
 def _warning(lines: list[str]) -> str:
-    return lines[next(index for index, line in enumerate(lines) if line.strip() == "Subskrypcje") + 1].strip()
+    return lines[next(index for index, line in enumerate(lines) if line.strip().startswith("Tytuł")) - 1].strip()
 
 
 @pytest.mark.parametrize("key", ["space", "text:w"])
@@ -304,7 +304,7 @@ def test_the_global_pause_shows_only_in_the_status_line(panel: StateController, 
     panel._snapshot = {"auto_enabled": False}
     paused: list[str] = _frame(panel, columns, rows).splitlines()
 
-    assert [line for line in running if "Praca" not in line] == [
+    assert [line for line in running if "Automat: bezczynny" not in line] == [
         line for line in paused if "Automat wstrzymany" not in line
     ]
     assert "Automat wstrzymany" in paused[-1]
@@ -326,7 +326,7 @@ def test_a_check_result_leads_the_text_beneath_the_table_of_a_narrow_terminal(
     lines: list[str] = _frame(panel, 50, rows).splitlines()
 
     assert lines[_line(lines, "13 kandydatów")].strip().startswith("Sprawdzono E6: 13 kandydatów")
-    assert "Praca" in lines[-1]
+    assert lines[-1].strip() == "Automat: bezczynny"
 
 
 @pytest.mark.parametrize(("columns", "rows"), _SIZES)

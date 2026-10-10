@@ -1418,7 +1418,7 @@ def test_catalogue_headers_name_the_work_and_columns_align_at_both_widths(width:
     _key(controller, "escape")
     entries: str = controller.render(width, 40).plain
     assert "\u203a" not in entries
-    assert "ANIME" in (line.strip() for line in entries.splitlines())
+    assert "ANIME" not in entries
     assert all(label in entries for label in ("Premiera", "Tytuł", "Typ", "Status"))
     _key(controller, "enter")
     episodes: list[str] = controller.render(width, 40).plain.splitlines()
@@ -1435,7 +1435,7 @@ def test_catalogue_headers_name_the_work_and_columns_align_at_both_widths(width:
     _key(controller, "text:i")
     candidates: list[str] = controller.render(width, 40).plain.splitlines()
     title: str = next(line for line in candidates if line.strip())
-    assert "ANIME \u203a Slime" in title
+    assert "Anime \u203a Slime" in title
     header = next(line for line in candidates if "Wydanie" in line and "Seedy" in line)
     quality_column: int = Text(header[: header.index("Jakość")]).cell_len
     release_rows: list[str] = candidates[candidates.index(header) + 1 : candidates.index(header) + 3]

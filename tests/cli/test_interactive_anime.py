@@ -193,13 +193,13 @@ def test_returning_from_an_entry_to_the_query_drops_its_context(entries: int) ->
         controller.handle_key("escape")
     assert controller._screen is _Screen.QUERY
     lines: list[str] = controller.render(80, 24).plain.splitlines()
-    assert controller._view.title == "ANIME"
+    assert controller._view.title == ""
     assert "Puniru" not in "".join(lines)
     assert "ANIME" in "".join(lines)
 
 
 @pytest.mark.parametrize("width", [50, 80, 120])
-def test_returning_from_episodes_to_the_franchise_shows_anime_directly_above_the_table(width: int) -> None:
+def test_returning_from_episodes_to_the_franchise_empties_the_breadcrumb_above_the_table(width: int) -> None:
     owner: _Owner = _Owner()
     puniru: FranchiseEntry = replace(_entry(1, 2025), english="Puniru is a Kawaii Slime Season 2")
     owner.franchise_view = Franchise(1, (puniru, _entry(3, 2024)), (), True)
@@ -211,17 +211,17 @@ def test_returning_from_episodes_to_the_franchise_shows_anime_directly_above_the
     _settle(controller)
     episodes: list[str] = controller.render(width, 24).plain.splitlines()
     header: int = next(index for index, line in enumerate(episodes) if "Emisja" in line)
-    assert episodes[header - 2].strip().startswith("ANIME \u203a Puniru")
+    assert episodes[header - 2].strip().startswith("Anime \u203a Puniru")
     controller.handle_key("escape")
     lines: list[str] = controller.render(width, 24).plain.splitlines()
     header = next(index for index, line in enumerate(lines) if "Premiera" in line)
-    assert lines[header - 2].strip() == "ANIME"
+    assert not lines[header - 2].strip()
     assert not lines[header - 1].strip()
     assert "\u203a" not in "".join(lines)
     controller.handle_key("enter")
     _settle(controller)
     assert controller._screen is _Screen.EPISODES
-    assert "ANIME \u203a Puniru" in controller.render(width, 24).plain
+    assert "Anime \u203a Puniru" in controller.render(width, 24).plain
 
 
 def test_cancelled_episode_loading_after_a_search_drops_the_entry_context() -> None:
@@ -235,7 +235,7 @@ def test_cancelled_episode_loading_after_a_search_drops_the_entry_context() -> N
     controller.handle_key("escape")
     controller.render(80, 24)
     assert controller._screen is _Screen.QUERY
-    assert controller._view.title == "ANIME"
+    assert controller._view.title == ""
 
 
 def test_enter_on_a_blank_title_starts_no_search() -> None:
