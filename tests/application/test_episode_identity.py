@@ -1125,6 +1125,65 @@ def test_classify_dual_before_release_group_is_technical_metadata() -> None:
     )
 
 
+def test_classify_multi_before_release_group_is_technical_metadata() -> None:
+    for assessment in _name_assessments(_target_for(), "Star.Garden.S01E05.1080p.WEB-DL.H.264.MULTi-VARYG"):
+        assert assessment.verdict is IdentityVerdict.MATCH
+
+
+def test_classify_multi_before_language_suffix_is_not_release_group() -> None:
+    target: dict[str, Any] = _target_for(
+        season=2, episode=1, local_episode=1, absolute=14, episode_title=None, other_episode_titles=[]
+    )
+    assessment: IdentityAssessment = _assess(target, {"filename": "Star.Garden.S02E01.1080p.WEB-DL-Multi-Lat.mkv"})
+    assert assessment == IdentityAssessment(IdentityVerdict.INSUFFICIENT, _UNCONSUMED)
+
+
+def _season_entry(**changes: Any) -> dict[str, Any]:
+    fields: dict[str, Any] = {
+        "aliases": ["Star Garden Season 2 - Night Bloom", "Star Garden"],
+        "season": 2,
+        "episode": 1,
+        "local_episode": 1,
+        "absolute": 13,
+        "episode_title": None,
+        "other_episode_titles": [],
+    }
+    return _target_for(**{**fields, **changes})
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "[Erai-raws] Star Garden Season 2 - 01 [1080p CR WEB-DL AVC AAC][MultiSub][55FBD905]",
+        "[SubsPlease] Star Garden S2 - 01 (1080p) [9A6F02B8]",
+        "[Erai-raws] Star Garden 2nd Season - 01 [720p][Multiple Subtitle]",
+    ],
+)
+def test_classify_franchise_alias_with_target_season_identifies_local_episode(name: str) -> None:
+    for assessment in _name_assessments(_season_entry(), name):
+        assert assessment.verdict is IdentityVerdict.MATCH
+
+
+@pytest.mark.parametrize(
+    ("target", "name"),
+    [
+        (_season_entry(), "[Erai-raws] Star Garden Season 2 - 13 [1080p][MultiSub]"),
+        (_season_entry(), "[Erai-raws] Star Garden Season 3 - 01 [1080p][MultiSub]"),
+        (_season_entry(), "[Erai-raws] Star Garden - 01 [1080p][MultiSub]"),
+        (_season_entry(episode=13, absolute=25), "[Erai-raws] Star Garden Season 2 - 01 [1080p][MultiSub]"),
+        (
+            _season_entry(aliases=["Star Garden Zero", "Star Garden"], season=1, absolute=1),
+            "[SubsPlease] Star Garden S1 - 01 (1080p) [9A6F02B8]",
+        ),
+    ],
+)
+def test_classify_franchise_alias_without_target_season_and_local_numbering_stays_uncertain(
+    target: dict[str, Any], name: str
+) -> None:
+    for assessment in _name_assessments(target, name):
+        assert assessment.verdict is IdentityVerdict.INSUFFICIENT
+
+
 def test_entry_title_local_number_without_numbering() -> None:
     target: dict[str, Any] = _unnumbered_target()
     name: str = "[Erai-raws] Koori no Jouheki 2nd Season - 01 [1080p CR WEB-DL AVC AAC][MultiSub]"

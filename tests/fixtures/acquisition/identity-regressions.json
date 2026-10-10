@@ -876,5 +876,17 @@
     "candidate": {"filename": "Nia Liston The Merciless Maiden S01E01 1080p WEBRip 8bits.mkv"},
     "expected_verdict": "match",
     "cause": "The 8bits encoding depth is technical metadata, not an unknown episode title."
+  },
+  {
+    "target": {"aliases": ["Solo Leveling Season 2 -Arise from the Shadow-", "俺だけレベルアップな件 Season 2 -Arise from the Shadow-", "Ore dake Level Up na Ken: Season 2 - Arise from the Shadow", "Ore dake Level Up na Ken", "Solo Leveling", "俺だけレベルアップな件"], "type": "TV", "season": 2, "episode": 1, "local_episode": 1, "absolute": 13},
+    "candidate": {"filename": "[Erai-raws] Ore dake Level Up na Ken Season 2 - 01 [1080p CR WEB-DL AVC AAC][MultiSub][55FBD905].mkv", "release": "[Erai-raws] Ore dake Level Up na Ken Season 2: Arise from the Shadow - 01 [1080p CR WEB-DL AVC AAC][MultiSub][55FBD905]"},
+    "expected_verdict": "match",
+    "cause": "A franchise alias with the explicit target season and the local episode identifies the season entry."
+  },
+  {
+    "target": {"aliases": ["Solo Leveling Season 2 -Arise from the Shadow-", "俺だけレベルアップな件 Season 2 -Arise from the Shadow-", "Ore dake Level Up na Ken: Season 2 - Arise from the Shadow", "Ore dake Level Up na Ken", "Solo Leveling", "俺だけレベルアップな件"], "type": "TV", "season": 2, "episode": 1, "local_episode": 1, "absolute": 13, "episode_title": "You Aren't E-Rank, Are You?"},
+    "candidate": {"filename": "Solo.Leveling.S02E01.You.Arent.E-Rank.Are.You.1080p.CR.WEB-DL.AAC2.0.H.264.MULTi-VARYG.mkv"},
+    "expected_verdict": "match",
+    "cause": "MULTi before a release group is technical metadata."
   }
 ]

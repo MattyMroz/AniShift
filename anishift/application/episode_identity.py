@@ -1,4 +1,4 @@
-"""Assess selected-file identity with H1 v10.6 without inspecting media or performing I/O."""
+"""Assess selected-file identity with H1 v10.7 without inspecting media or performing I/O."""
 
 from __future__ import annotations
 
@@ -533,7 +533,7 @@ def _prepare(value: str) -> str:
     )
     if not semantic:
         text = re.sub(
-            r"(?i)(\b(?:x26[45]|h[ .]?26[45]|av1|hevc|aac|flac|msubs|(?<!-)dual))"
+            r"(?i)(\b(?:x26[45]|h[ .]?26[45]|av1|hevc|aac|flac|msubs|(?<!-)(?:dual|multi)))"
             r"-(?:[a-z][a-z0-9]*|[a-z]+(?:-[a-z]+)+)(?=\[[^\]]*\]$|$)",
             r"\1",
             text,
@@ -728,7 +728,8 @@ def _identity_conflict(parsed: _Parsed, target: _Target) -> IdentityAssessment |
         return season
     if parsed.part is not None and parsed.part != target.part:
         return IdentityAssessment(IdentityVerdict.INSUFFICIENT, "Part/cour marker conflicts with the target.")
-    if parsed.broad and not (parsed.mode == "mapped" and target.season and target.season > 1):
+    named: bool = parsed.mode == "plain" and parsed.season == target.season and target.episode == target.local
+    if parsed.broad and not ((parsed.mode == "mapped" or named) and target.season and target.season > 1):
         return IdentityAssessment(IdentityVerdict.INSUFFICIENT, "A franchise alias does not identify this installment.")
     mapped_part: bool = (
         parsed.mode == "mapped"
