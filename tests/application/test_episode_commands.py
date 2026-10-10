@@ -790,7 +790,7 @@ def test_episode_batch_reasons_cross_ipc_as_their_plain_string_values() -> None:
     assert '"reason": "no_suggestion"' in payload
 
 
-def test_a_historical_batch_receipt_keeps_the_source_failure_and_owner_refusal_of_each_episode(
+def test_a_historical_batch_receipt_drops_the_source_failure_and_keeps_the_owner_refusal_of_each_episode(
     tmp_path: Path,
 ) -> None:
     keys: tuple[EpisodeKey, ...] = (EpisodeKey(_S1, 4), EpisodeKey(_S1, 5))
@@ -818,7 +818,7 @@ def test_a_historical_batch_receipt_keeps_the_source_failure_and_owner_refusal_o
         states: tuple[EpisodeStatus, ...] = decode_view(tuple[EpisodeStatus, ...], response.result["items"])
 
     assert [(item.state, item.reason) for item in states] == [
-        ("not_ordered", "TORRENT_SOURCE_FAILED"),
+        ("not_ordered", None),
         ("not_ordered", "shutting_down"),
     ]
 
@@ -827,11 +827,15 @@ def test_a_historical_batch_receipt_keeps_the_source_failure_and_owner_refusal_o
     ("reasons", "expected"),
     [
         (("source_failed", "transfer_recorded"), ("processing_failed", "transfer_recorded")),
-        (("transfer_recorded", "source_failed"), ("not_ordered", "source_failed")),
+        (("transfer_recorded", "source_failed"), ("not_ordered", None)),
+        (("pack_in_progress",), ("not_ordered", "pack_in_progress")),
+        (("source_failed", "no_suggestion"), ("not_ordered", None)),
+        (("episode_not_aired",), ("not_ordered", None)),
+        (("acquisition_unavailable",), ("not_ordered", None)),
     ],
 )
 def test_the_latest_recorded_batch_result_decides_an_unassigned_episode(
-    tmp_path: Path, reasons: tuple[str, str], expected: tuple[str, str]
+    tmp_path: Path, reasons: tuple[str, ...], expected: tuple[str, str | None]
 ) -> None:
     key: EpisodeKey = EpisodeKey(_S1, 4)
     receipts: tuple[CommandReceipt, ...] = tuple(
@@ -1317,6 +1321,19 @@ def test_a_refused_order_is_not_watched_and_a_removed_result_is(tmp_path: Path) 
         assert _episode_state(owner).reason == "result_missing"
 
         assert _subscription_counts(owner, 5) == ([2, 3, 4], 0, 3)
+
+
+def test_a_batch_that_found_no_release_leaves_the_episode_to_download_and_d_searches_again(tmp_path: Path) -> None:
+    streams: _Streams = _Streams()
+    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
+    with _running(_episode_service(tmp_path, streams=streams), store, inspect_transfers=False) as owner:
+        assert _download_reason(owner, "early") == EpisodeReason.NO_SUGGESTION
+        status: EpisodeStatus = _episode_state(owner)
+        assert (status.state, status.reason) == ("not_ordered", None)
+
+        streams.answers = {(41024, 4): (_stream(4),)}
+        assert _download_reason(owner, "later") == EpisodeReason.ADMITTED
+        assert _episode_state(owner).state == "ordered"
 
 
 @pytest.mark.parametrize(

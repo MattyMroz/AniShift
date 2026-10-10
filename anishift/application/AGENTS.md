@@ -305,6 +305,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - `season_context` liczy sezony, nie wpisy: `PrequelEntry.cour` (`Part N`/`Cour N`) podnosi offset,
   nie indeks, a kandydat będący cour zostaje w sezonie poprzednika. `acquisition.py`,
   `services/catalog/anilist.py`
+- Brak S/E w ani.zip nie blokuje samodzielnego 1. sezonu (`_first_season`: TV/ONA z wczytanymi relacjami, indeks 1,
+  jedyna relacja anime to `SEQUEL`, mapowanie i TVDB bez sezonu innego niż 1): cel dostaje S1, odcinek = absolutny =
+  lokalny (`first_season_numbering`), a sugestią może być tylko `zgodny` (`EpisodeOffer.derived_numbering`).
+  `acquisition.py`, `algorithm-spec.md` §3.5
 - Subskrypcje żyją w `WatchState.subscriptions` jako `SubscriptionRecord`; wiersze, limit
   `MAX_SUBSCRIPTIONS` (100) i kolejność listy (`display_order`: problem, termin, bez terminu,
   pauza) mają jedno źródło w `subscription_targets.py`; tam też są reguły celów (`cut_point`,

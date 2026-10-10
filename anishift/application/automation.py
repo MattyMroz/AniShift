@@ -223,7 +223,7 @@ from anishift.application.transfers import (
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, resolve_route
 from anishift.config.workspace import run_temp_dir
-from anishift.errors import AniShiftError, ExecutionError, MediaProbeError, UnsupportedMediaError
+from anishift.errors import AniShiftError, ErrorCode, ExecutionError, MediaProbeError, UnsupportedMediaError
 from anishift.paths import READY_DIRECTORY
 from anishift.platform.binaries import BinaryNotFoundError
 from anishift.platform.directory_watch import DirectoryChange, source_is_available
@@ -518,6 +518,17 @@ _TARGET_REASONS: Final[Mapping[TargetState, EpisodeReason]] = MappingProxyType(
     }
 )
 """Episode reason an unordered episode shows while an unpaused subscription target waits in that state."""
+
+_LOOKUP_REFUSALS: Final[frozenset[str]] = frozenset(
+    {
+        EpisodeReason.NO_SUGGESTION,
+        EpisodeReason.EPISODE_NOT_AIRED,
+        EpisodeReason.SOURCE_FAILED,
+        EpisodeReason.ACQUISITION_UNAVAILABLE,
+        ErrorCode.TORRENT_SOURCE_FAILED,
+    }
+)
+"""Batch refusals that describe only one past release lookup, so episode states never show them."""
 
 _SUBSCRIPTION_PROVIDERS: Final[tuple[str, ...]] = ("anilist", "anizip", "torrentio")
 """Providers whose cooldown postpones a subscription check instead of counting as a source failure."""
@@ -2014,8 +2025,13 @@ class AutomationOwner:
             "problem": acquisition.problem,
             "automatic": not acquisition.manual,
         }
+        release: str = (
+            (transfer.name if transfer is not None and transfer.name != acquisition.info_hash else None)
+            or acquisition.release_title
+            or "Materiał"
+        )
         if acquisition.selective and acquisition.assignments:
-            return self._selective_materials(acquisition, common, measured)
+            return self._selective_materials(acquisition, common, measured, release)
         rows: dict[str, dict[str, object]] = {}
         for index, name, _size in acquisition.file_layout:
             relative: Path = (Path(acquisition.directory) / name).parent
@@ -2080,15 +2096,13 @@ class AutomationOwner:
             acquisition.operation_id: {
                 **common,
                 "material_id": acquisition.operation_id,
-                "name": (transfer.name if transfer is not None and transfer.name != acquisition.info_hash else None)
-                or acquisition.release_title
-                or "Materiał",
+                "name": release,
                 "progress": None if transfer is None else transfer.progress,
             }
         }
 
     def _selective_materials(
-        self, transfer: AcquisitionConfirmation, common: dict[str, object], measured: dict[str, float]
+        self, transfer: AcquisitionConfirmation, common: dict[str, object], measured: dict[str, float], release: str
     ) -> dict[str, dict[str, object]]:
         rows: dict[str, dict[str, object]] = {}
         for assignment in transfer.active_assignments:
@@ -2109,12 +2123,17 @@ class AutomationOwner:
                 progress = 1.0
             elif all(value is not None for value in fractions):
                 progress = min((value for value in fractions if value is not None), default=None)
+            video: str | None = (
+                assignment.video_path
+                or next((path for _index, path, _size in assignment.files if _is_video(path)), None)
+                or assignment.choice.reference.file_name
+            )
             rows[identity] = {
                 **common,
                 "material_id": identity,
                 "group_id": group_id,
                 "admission_id": assignment.admission_id,
-                "name": Path(assignment.video_path or assignment.choice.reference.file_name or "Materiał").name,
+                "name": Path(video).name if video else (assignment.choice.reference.release or release),
                 "progress": progress,
                 "downloaded": downloaded,
                 "stage": "waiting" if downloaded else "download",
@@ -4896,7 +4915,9 @@ class AutomationOwner:
             validate_episode_keys(keys)
         except ValueError, TypeError:
             return _invalid("Episode states require 1-100 unique positive numbers of one entry")
-        batches: Mapping[EpisodeKey, str] = self._batch_reasons()
+        batches: Mapping[EpisodeKey, str] = {
+            key: reason for key, reason in self._batch_reasons().items() if reason not in _LOOKUP_REFUSALS
+        }
         return ControlResponse.succeeded(
             {"items": [encode_view(self._episode_status(key, batches=batches)) for key in keys]}
         )
@@ -5443,7 +5464,8 @@ class AutomationOwner:
         candidates: tuple[RankedCandidate, ...] = tuple(
             item for item in offer.candidates if not self._excluded_episode_pair(offer.key, item.stream)
         )
-        return replace(offer, candidates=candidates, suggestion=suggestion(candidates, numbering=offer.numbering)[0])
+        chosen: int | None = suggestion(candidates, numbering=offer.numbering, match_only=offer.derived_numbering)[0]
+        return replace(offer, candidates=candidates, suggestion=chosen)
 
     def _source_switches(self) -> SourceSwitches:
         settings: UserSettings = self._service.settings_snapshot()

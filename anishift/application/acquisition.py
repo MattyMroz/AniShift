@@ -35,6 +35,7 @@ from anishift.application.episode_selection import (
     EpisodeOffer,
     ListedEpisode,
     episode_listing,
+    first_season_numbering,
     franchise_traversal,
     franchise_view,
     identity_target,
@@ -63,6 +64,7 @@ if TYPE_CHECKING:
         EpisodeListing,
         Franchise,
         FranchiseGraph,
+        JsonObject,
         RankedCandidate,
         StreamCandidate,
     )
@@ -178,6 +180,12 @@ _MOVIE_FORMAT: Final[str] = "MOVIE"
 
 _DONGHUA_COUNTRY: Final[str] = "CN"
 """AniList country of origin whose original audio also includes Chinese."""
+
+_ANIME_TYPE: Final[str] = "ANIME"
+"""AniList media type of a related entry that can be mistaken for the selected one."""
+
+_SEQUEL_RELATION: Final[str] = "SEQUEL"
+"""Only anime relation a lone first season may have."""
 
 
 class TorrentSource(Protocol):
@@ -997,14 +1005,19 @@ class AcquisitionService:
             return self._torrentio_offer(key, read, exclude=exclude)
         request: EpisodeRequest = self._episode_request(key, read, manual=True, tsukihime_id=None)
         numbering: bool = request.numbering
+        derived: bool = _derived_numbering(read, key.number, movie=request.movie, numbering=numbering)
         target: dict[str, object] = dict(request.target)
 
         def publish(snapshot: SearchSnapshot) -> None:
             if on_partial is not None:
-                on_partial(self._snapshot_offer(key, snapshot, numbering=numbering, exclude=exclude), target)
+                on_partial(
+                    self._snapshot_offer(key, snapshot, numbering=numbering, derived=derived, exclude=exclude), target
+                )
 
         result: SearchOutcome = self._episode_search.manual_offer(request, switches, publish)
-        offer: EpisodeOffer = self._snapshot_offer(key, result.snapshot, numbering=numbering, exclude=exclude)
+        offer: EpisodeOffer = self._snapshot_offer(
+            key, result.snapshot, numbering=numbering, derived=derived, exclude=exclude
+        )
         logger.info(
             "Episode search completed",
             count=len(offer.candidates),
@@ -1043,7 +1056,13 @@ class AcquisitionService:
         result: SearchOutcome = self._episode_search.subscription_check(request, switches, failures, excluded)
         title: int | None = result.tsukihime_id or tsukihime_id
         return SubscriptionSearch(
-            self._snapshot_offer(key, result.snapshot, numbering=request.numbering, exclude=None),
+            self._snapshot_offer(
+                key,
+                result.snapshot,
+                numbering=request.numbering,
+                derived=_derived_numbering(read, key.number, movie=request.movie, numbering=request.numbering),
+                exclude=None,
+            ),
             dict(request.target),
             result.failures,
             switches.tsukihime,
@@ -1090,10 +1109,9 @@ class AcquisitionService:
         if movie and key.number != 1:
             msg: str = "A movie has only its first row"
             raise ValueError(msg)
-        numbering: bool = numbering_gap(read.mapping, key.number, read.tvdb_season, movie=movie) is None
-        target: dict[str, object] = identity_target(
-            graph, key.anilist_id, read.mapping, key.number, numbering=numbering
-        )
+        target: dict[str, object]
+        numbering: bool
+        target, numbering = _numbered_target(graph, candidate, read, key.number, movie=movie)
         absolute: object = target.get("absolute")
         return EpisodeRequest(
             key,
@@ -1119,6 +1137,7 @@ class AcquisitionService:
         snapshot: SearchSnapshot,
         *,
         numbering: bool,
+        derived: bool,
         exclude: Callable[[StreamCandidate], bool] | None,
     ) -> EpisodeOffer:
         ranked: tuple[RankedCandidate, ...] = tuple(
@@ -1130,13 +1149,14 @@ class AcquisitionService:
         return EpisodeOffer(
             key,
             ranked,
-            suggestion(ranked, numbering=numbering)[0],
+            suggestion(ranked, numbering=numbering, match_only=derived)[0],
             datetime.fromtimestamp(self._clock(), UTC),
             counts,
             numbering,
             tuple(source_line(row) for row in snapshot.sources),
             "brak numeracji" if not numbering else (None if snapshot.pending else offer_status(snapshot.sources)),
             snapshot.pending,
+            derived,
         )
 
     def _torrentio_offer(
@@ -1153,9 +1173,12 @@ class AcquisitionService:
         if movie and key.number != 1:
             msg = "A movie has only its first row"
             raise ValueError(msg)
-        numbering: bool = numbering_gap(mapping, key.number, read.tvdb_season, movie=movie) is None
         streams: tuple[StreamCandidate, ...] = ()
-        target: dict[str, object] = identity_target(graph, key.anilist_id, mapping, key.number, numbering=numbering)
+        target: dict[str, object]
+        numbering: bool
+        target, numbering = _numbered_target(
+            graph, graph_candidate(graph, key.anilist_id), read, key.number, movie=movie
+        )
         try:
             if mapping.kitsu_id is not None and movie:
                 streams = self._streams().movie_streams(mapping.kitsu_id)
@@ -1173,7 +1196,8 @@ class AcquisitionService:
         counts: dict[str, int] = {
             verdict.value: sum(1 for item in ranked if item.identity.verdict is verdict) for verdict in IdentityVerdict
         }
-        suggested: int | None = suggestion(ranked, numbering=numbering)[0]
+        derived: bool = _derived_numbering(read, key.number, movie=movie, numbering=numbering)
+        suggested: int | None = suggestion(ranked, numbering=numbering, match_only=derived)[0]
         logger.info("Episode offer ranked", count=len(ranked), suggested=suggested is not None, movie=movie)
         offer: EpisodeOffer = EpisodeOffer(
             key,
@@ -1183,6 +1207,7 @@ class AcquisitionService:
             counts,
             numbering,
             status=None if numbering else "brak numeracji",
+            derived_numbering=derived,
         )
         if mapping.kitsu_id is not None:
             self._decision(offer_check(offer, target, streams, donghua=donghua))
@@ -1389,6 +1414,40 @@ def graph_season_context(graph: FranchiseGraph, candidate: TitleCandidate) -> Se
     from anishift.services.catalog.anilist import graph_prequels  # noqa: PLC0415
 
     return _season_context(candidate, graph_prequels(graph, candidate))
+
+
+def _numbered_target(
+    graph: FranchiseGraph, candidate: TitleCandidate, read: ListingRead, number: int, *, movie: bool
+) -> tuple[dict[str, object], bool]:
+    """Build the H1 target and whether it is numbered; a lone first season numbers itself without a mapping."""
+    mapping: AniZipMapping = read.mapping
+    gap: str | None = numbering_gap(mapping, number, read.tvdb_season, movie=movie)
+    if gap == "none" and _first_season(graph, candidate, read):
+        mapping, gap = first_season_numbering(mapping, number), None
+    numbering: bool = gap is None
+    return identity_target(graph, candidate.anilist_id, mapping, number, numbering=numbering), numbering
+
+
+def _first_season(graph: FranchiseGraph, candidate: TitleCandidate, read: ListingRead) -> bool:
+    from anishift.services.catalog.anilist import OFFSET_FORMATS  # noqa: PLC0415
+
+    _, _, missing = franchise_traversal(candidate.anilist_id, graph.nodes, graph.queried)
+    if candidate.format not in OFFSET_FORMATS or candidate.anilist_id in missing or read.tvdb_season not in {None, 1}:
+        return False
+    edges: list[JsonObject] = graph.nodes[candidate.anilist_id]["relations"]["edges"]
+    return (
+        graph_season_context(graph, candidate).index == 1
+        and all(edge["node"]["type"] != _ANIME_TYPE or edge["relationType"] == _SEQUEL_RELATION for edge in edges)
+        and all(
+            episode.get("seasonNumber") in (None, 1)
+            for key, episode in read.mapping.raw_episodes.items()
+            if key.isascii() and key.isdecimal()
+        )
+    )
+
+
+def _derived_numbering(read: ListingRead, number: int, *, movie: bool, numbering: bool) -> bool:
+    return numbering and numbering_gap(read.mapping, number, read.tvdb_season, movie=movie) is not None
 
 
 def _season_context(candidate: TitleCandidate, prequels: Sequence[PrequelEntry]) -> SeasonContext:

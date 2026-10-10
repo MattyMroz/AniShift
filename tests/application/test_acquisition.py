@@ -11,6 +11,7 @@ from typing import Any, Final, cast
 import httpx
 import pytest
 from pydantic import ValidationError
+from test_episode_search import controlled, empty_response, search_service
 from test_episode_selection import (
     _diaries_own_releases,
     _edge,
@@ -1132,10 +1133,120 @@ def test_diaries_offer_matches_only_its_own_releases_and_never_a_main_series_rel
         item.stream for item in offer.candidates if item.identity.verdict is IdentityVerdict.MATCH
     ]
     assert matches == own
-    assert offer.suggestion is None
+    assert offer.suggestion is None or offer.candidates[offer.suggestion].stream in own
     assert not offer.numbering
     assert offer.status == "brak numeracji"
     assert offer.candidates[0].identity.verdict is IdentityVerdict.INSUFFICIENT
+
+
+_OVERGEARED: Final[int] = 212888
+
+_OVERGEARED_MAPPING: Final[AniZipMapping] = parse_mapping(
+    {
+        "mappings": {"anilist_id": _OVERGEARED, "kitsu_id": None, "type": "TV"},
+        "episodes": {
+            "1": {"episode": "1", "title": {"en": "Legendary Class", "x-jat": "Legendary Tenshoku"}},
+            "2": {"episode": "2", "title": {"en": None, "x-jat": "Kaji Shokunin no Daiippo"}},
+            "3": {"episode": "3", "title": {"en": None, "x-jat": "Dai 2 Shokugyou"}},
+            "4": {"episode": "4", "title": {"en": None}},
+        },
+    }
+)
+
+_OVERGEARED_RELEASES: Final[dict[str, IdentityVerdict]] = {
+    "[VARYG] Overgeared S01E02 1080p CR WEB-DL AAC2.0 H.264-VARYG": IdentityVerdict.MATCH,
+    "[DKB] Tempal: Item no Chikara - S01E02 [1080p][HEVC x265 10bit][Multi-Subs]": IdentityVerdict.MATCH,
+    "[Erai-raws] Tempal: Item no Chikara - 02 [1080p CR WEB-DL AVC AAC][MultiSub][ABCDEF12]": IdentityVerdict.MATCH,
+    "[SubsPlease] Tempal - Item no Chikara - 02 (1080p) [ABCDEF12].mkv": IdentityVerdict.MATCH,
+    "[VARYG] Overgeared S01E03 1080p CR WEB-DL AAC2.0 H.264-VARYG": IdentityVerdict.MISMATCH,
+    "[Grupa] Overgeared 02 [1080p][Napisy PL]": IdentityVerdict.INSUFFICIENT,
+}
+
+_OVERGEARED_OTHER_SEASON: Final[AniZipMapping] = replace(
+    _OVERGEARED_MAPPING,
+    raw_episodes={**_OVERGEARED_MAPPING.raw_episodes, "1": {"seasonNumber": 2, "episodeNumber": 1}},
+)
+
+
+def _overgeared_node(identifier: int, romaji: str, english: str, edges: list[dict[str, Any]] | None) -> dict[str, Any]:
+    return _node(identifier, "ONA", {"romaji": romaji, "english": english}, year=2026, edges=edges)
+
+
+def _overgeared_titles(shape: str) -> _TitleCatalog:
+    edges: list[dict[str, Any]] | None = None if shape == "unread" else [_edge("ADAPTATION", 9, "MANGA")]
+    first: dict[str, Any] = _overgeared_node(
+        1 if shape == "sequel" else _OVERGEARED, "Tempal: Item no Chikara", "Overgeared", edges
+    )
+    if shape != "sequel":
+        return _TitleCatalog(graphs={_OVERGEARED: _graph(first, root_id=_OVERGEARED)})
+    prequel: dict[str, Any] = {"relationType": "PREQUEL", "node": {"id": 1, "type": "ANIME", "format": "ONA"}}
+    second: dict[str, Any] = _overgeared_node(
+        _OVERGEARED, "Tempal: Item no Chikara 2nd Season", "Overgeared Season 2", [prequel]
+    )
+    return _TitleCatalog(graphs={_OVERGEARED: _graph(second, first, root_id=_OVERGEARED)})
+
+
+def _overgeared_feed(request: httpx.Request) -> httpx.Response:
+    if request.url.host != "nyaa.si":
+        return empty_response(request)
+    items: str = "".join(
+        f"<item><title>{name}</title><link>https://nyaa.si/download/{index}.torrent</link>"
+        f"<nyaa:infoHash>{index:040x}</nyaa:infoHash><nyaa:seeders>12</nyaa:seeders>"
+        "<nyaa:size>1 GiB</nyaa:size></item>"
+        for index, name in enumerate(_OVERGEARED_RELEASES, start=1)
+    )
+    return httpx.Response(
+        200,
+        text=f'<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel>{items}</channel></rss>',
+        headers={"content-type": "application/xml"},
+    )
+
+
+def _overgeared_offer(
+    tmp_path: Path, shape: str, tvdb_season: int | None, mapping: AniZipMapping = _OVERGEARED_MAPPING
+) -> EpisodeOffer:
+    service: AcquisitionService = _episode_service(
+        tmp_path, _overgeared_titles(shape), _EpisodeCatalog({_OVERGEARED: mapping})
+    )
+    service._id_catalog = _Bridges(ArmIds(None, tvdb_season))
+    control: RequestControl = controlled(_overgeared_feed)
+    with httpx.Client(transport=control) as http:
+        service._episode_search = search_service(http, control)
+        offer, _ = service.search_episode(EpisodeKey(_OVERGEARED, 2), SourceSwitches())
+    return offer
+
+
+@pytest.mark.parametrize("tvdb_season", [None, 1])
+def test_search_of_a_lone_first_season_without_mapped_numbering_matches_s01e02_and_suggests_it(
+    tmp_path: Path, tvdb_season: int | None
+) -> None:
+    offer: EpisodeOffer = _overgeared_offer(tmp_path, "lone", tvdb_season)
+    assert {item.stream.release: item.identity.verdict for item in offer.candidates} == _OVERGEARED_RELEASES
+    assert offer.numbering
+    assert offer.status != "brak numeracji"
+    assert offer.suggestion is not None
+    assert offer.candidates[offer.suggestion].identity.verdict is IdentityVerdict.MATCH
+
+
+@pytest.mark.parametrize(
+    ("shape", "tvdb_season", "mapping"),
+    [
+        ("sequel", None, _OVERGEARED_MAPPING),
+        ("lone", 2, _OVERGEARED_MAPPING),
+        ("unread", None, _OVERGEARED_MAPPING),
+        ("lone", None, _OVERGEARED_OTHER_SEASON),
+    ],
+    ids=["prequel", "tvdb-season-2", "unread-relations", "mapped-other-season"],
+)
+def test_search_without_mapped_numbering_of_a_later_or_unread_season_keeps_no_numbering_and_no_suggestion(
+    tmp_path: Path, shape: str, tvdb_season: int | None, mapping: AniZipMapping
+) -> None:
+    offer: EpisodeOffer = _overgeared_offer(tmp_path, shape, tvdb_season, mapping)
+    assert offer.candidates
+    assert not offer.numbering
+    assert offer.status == "brak numeracji"
+    assert offer.suggestion is None
+    assert IdentityVerdict.MISMATCH not in {item.identity.verdict for item in offer.candidates}
 
 
 def test_offer_on_an_incomplete_leaf_of_a_complete_root_asks_no_further_franchise_query(tmp_path: Path) -> None:

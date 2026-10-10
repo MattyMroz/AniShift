@@ -59,9 +59,12 @@ from anishift.application.cancellation import EventCancellationToken
 from anishift.application.control import (
     AcquisitionConfirmation,
     AcquisitionState,
+    AdmissionSource,
     AudiobookRecipe,
     AutomationPolicy,
     DeletionStatus,
+    EpisodeAssignment,
+    EpisodeChoice,
     FileReservation,
     ManualHandledMarker,
     NarrationTimeline,
@@ -75,6 +78,7 @@ from anishift.application.control import (
     SourceFingerprint,
     SourceSelection,
     TextResultFormat,
+    TorrentioReference,
     TranslateRecipe,
     WatchState,
 )
@@ -3930,6 +3934,46 @@ def test_admitted_download_without_metadata_uses_retained_release_name(tmp_path:
     assert rows[0]["name"] == (title or "Materiał")
     assert rows[0]["progress"] is None
     assert rows[0]["acquisition_state"] == "pending_send"
+
+
+@pytest.mark.parametrize(
+    ("files", "file_name", "release", "expected"),
+    [
+        (((0, "Neko/Neko - 09.mkv", 4), (1, "Neko/Neko - 09.ass", 4)), None, "", "Neko - 09.mkv"),
+        ((), "Neko - 09.mkv", "[Group] Neko", "Neko - 09.mkv"),
+        ((), None, "[Group] Neko - 09 (1080p)", "[Group] Neko - 09 (1080p)"),
+        ((), None, "", "Materiał"),
+    ],
+)
+def test_a_selective_download_names_its_episode_file_then_its_release(
+    tmp_path: Path, files: tuple[FileReservation, ...], file_name: str | None, release: str, expected: str
+) -> None:
+    service, store, _ = _library(tmp_path)
+    choice: EpisodeChoice = EpisodeChoice(
+        anilist_id=1,
+        number=9,
+        reference=TorrentioReference("c" * 40, None, file_name, release),
+        target={"local_episode": 9},
+        verdict=IdentityVerdict.MATCH,
+        reason="Specific work title and local episode match",
+    )
+    assignment: EpisodeAssignment = EpisodeAssignment(
+        "admission",
+        _MOMENT.isoformat(),
+        AdmissionSource.MANUAL,
+        choice,
+        file_map="map" if files else None,
+        files=files,
+    )
+    confirmation: AcquisitionConfirmation = replace(
+        _accepted_transfer("c" * 40, origin=RequestOrigin.USER), assignments=(assignment,)
+    )
+    store.save(WatchState(acquisitions=(confirmation,)))
+    owner: AutomationOwner = _owner(service, store)
+
+    rows: list[dict[str, object]] = list(owner._download_materials(confirmation).values())
+
+    assert [row["name"] for row in rows] == [expected]
 
 
 def _projection_request(tmp_path: Path, state: RequestState) -> tuple[AutomationOwner, Path, tuple[str, ...]]:

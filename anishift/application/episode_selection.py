@@ -44,6 +44,7 @@ __all__ = [
     "StreamCandidate",
     "confidence_text",
     "episode_listing",
+    "first_season_numbering",
     "franchise_traversal",
     "franchise_view",
     "identity_target",
@@ -285,7 +286,7 @@ class RankedCandidate:
 
 @dataclass(frozen=True, slots=True)
 class EpisodeOffer:
-    """Ranked streams of one episode with the index of the suggested one."""
+    """Ranked streams of one episode with the suggested index; derived numbering suggests only a match."""
 
     key: EpisodeKey
     candidates: tuple[RankedCandidate, ...]
@@ -296,6 +297,7 @@ class EpisodeOffer:
     source_lines: tuple[str, ...] = ()
     status: str | None = None
     pending: tuple[str, ...] = ()
+    derived_numbering: bool = False
 
 
 def franchise_traversal(
@@ -353,6 +355,18 @@ def identity_target(
             title for other, value in mapping.raw_episodes.items() if other != key and (title := _episode_title(value))
         ],
     }
+
+
+def first_season_numbering(mapping: AniZipMapping, number: int) -> AniZipMapping:
+    """Return *mapping* numbering local episode *number* as season one with the same episode and absolute number."""
+    key: str = str(number)
+    episode: dict[str, object] = {
+        **(mapping.raw_episodes.get(key) or {}),
+        "seasonNumber": 1,
+        "episodeNumber": number,
+        "absoluteEpisodeNumber": number,
+    }
+    return replace(mapping, raw_episodes={**mapping.raw_episodes, key: episode})
 
 
 def numbering_gap(mapping: AniZipMapping, number: int, tvdb_season: int | None, *, movie: bool) -> str | None:
@@ -497,10 +511,17 @@ def visible(candidates: Sequence[RankedCandidate], keep: int | None = None) -> t
     )
 
 
-def suggestion(candidates: Sequence[RankedCandidate], *, numbering: bool) -> tuple[int | None, bool]:
-    """Return the first usable row of list group one in *candidates* order and whether it is uncertain."""
+def suggestion(
+    candidates: Sequence[RankedCandidate], *, numbering: bool, match_only: bool = False
+) -> tuple[int | None, bool]:
+    """Return the first usable row of list group one, only a match with *match_only*, and whether it is uncertain."""
     index: int | None = next(
-        (position for position, candidate in enumerate(candidates) if _suggestible(candidate)), None
+        (
+            position
+            for position, candidate in enumerate(candidates)
+            if _suggestible(candidate) and (not match_only or candidate.identity.verdict is IdentityVerdict.MATCH)
+        ),
+        None,
     )
     if not numbering or index is None:
         return None, False
