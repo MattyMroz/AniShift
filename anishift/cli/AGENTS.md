@@ -93,7 +93,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `_TITLE_FLOOR`; an empty list renders as DETAILS with the one row „Brak subskrypcji”, and „Łączenie…” before
   the owner's first listing. The context's status row
   shows a monitoring problem, else the `_pause_state` text of the status line plus ` · O wznów` (2026-10-10),
-  else shadow mode; the global pause also stays in the bottom status line, kept at 50×12 by dropping the blank row beneath the table. Problem and conflict states use the ordinary state style. While `AnimeController.in_subscriptions`
+  else shadow mode; the global pause also stays in the bottom status line, kept at 50×12 by dropping the blank row beneath the table.
+  A list longer than the centered layout holds (`_table_body` sets `AnimeSnapshot.fill`, Subscriptions and Library only)
+  fills every row: the status row replaces the blank under the tabs, the empty context row is dropped and one
+  notice row stays above the keys (`anime_view.shown_rows` is the single row count for render and paging). Problem and conflict states use the ordinary state style. While `AnimeController.in_subscriptions`
   (U08 or the `/` search) the Subscriptions tab is highlighted, tab keys count from it, and any tab switch
   drops that context first, including an open range editor and marks (an admitted batch survives). `anishift subs` offers `list`, `check` and `remove` through the owner. `interactive/state.py`,
   `interactive/anime_view.py`, `main.py`
@@ -133,8 +136,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   live admitted processing remains governed by its request and events. Filtered rows lose their timers.
   Anime admission updates its episode rows without changing tabs. Recorded hashes come
   from owner snapshots, never a UI store.
-  Terminal work is reached through History, and recycling/relocation actions through Library; its
-  „P ponów przenoszenie…” line stands above the table and names sets by `library_label`, never by group ID.
+  Terminal work is reached through History and recycling through Library. Library shows no relocation line
+  and has no P action (owner decision 2026-10-10); the owner retries failed relocations by itself.
   Progress labels come from the preview's source names, with `Materiał` for absent/ID-only
   legacy labels. `interactive/state.py`, `interactive/progress.py`, `interactive/anime.py`
 - `StateController` opens History with H inside Processing; S or `/` uses the shared

@@ -89,6 +89,12 @@ _LIST_SCREENS: Final[frozenset[AnimeScreen]] = frozenset(
 _TEXT_SCREENS: Final[frozenset[AnimeScreen]] = frozenset({AnimeScreen.DETAILS, AnimeScreen.BUSY, AnimeScreen.PROBLEM})
 """Screens of text, not lists: a click points at a row, a double click never runs Enter there."""
 
+_FILL_NOTICE_ROWS: Final[int] = 1
+"""Rows a filled table keeps beneath its data for the highlighted row's detail or a notice."""
+
+_FILL_MIN_ROWS: Final[int] = MIN_ROWS - 1
+"""Minimum height of a filled table, which has no blank row beneath its data."""
+
 
 @dataclass(frozen=True, slots=True)
 class AnimeFrame:
@@ -191,15 +197,34 @@ def visible_rows(rows: int) -> int:
     return max(rows - HEADER_ROWS - FOOTER_ROWS, 1)
 
 
+def shown_rows(snapshot: AnimeSnapshot, columns: int, rows: int) -> int:
+    """Return how many item rows ``render_anime`` shows in ``columns`` x ``rows``, 0 when they do not fit."""
+    if columns < MIN_COLUMNS:
+        return 0
+    if not snapshot.fill:
+        return visible_rows(rows) if rows >= MIN_ROWS else 0
+    keys: tuple[str, ...] = _key_lines(snapshot, columns - _MARGIN)
+    filled: int = rows - _filled_start(snapshot) - HEADER_ROWS - _FILL_NOTICE_ROWS - len(keys)
+    return filled if rows >= _FILL_MIN_ROWS else 0
+
+
+def _context(snapshot: AnimeSnapshot) -> str:
+    return CRUMB_SEPARATOR.join(snapshot.crumbs) if snapshot.crumbs else snapshot.title
+
+
+def _filled_start(snapshot: AnimeSnapshot) -> int:
+    return 0 if _context(snapshot) else -1
+
+
 def render_anime(snapshot: AnimeSnapshot, columns: int, rows: int, now: float) -> AnimeFrame:
     """Render ``rows`` lines: content centered above the keys, info and keys pinned to the bottom."""
     width: int = max(columns, 1)
-    if columns < MIN_COLUMNS or rows < MIN_ROWS:
+    visible: int = shown_rows(snapshot, columns, rows)
+    if not visible:
         small: _Canvas = _Canvas(width, 1)
         small.center(0, Text("Powiększ terminal do 50 x 12", "warning"))
         return small.finish(0, None)
     keys: tuple[str, ...] = _key_lines(snapshot, width - _MARGIN)
-    visible: int = visible_rows(rows)
     shown: int = len(snapshot.items[snapshot.offset : snapshot.offset + visible])
     query: bool = snapshot.screen is AnimeScreen.QUERY
     listed: bool = snapshot.screen in _LIST_SCREENS
@@ -209,12 +234,14 @@ def render_anime(snapshot: AnimeSnapshot, columns: int, rows: int, now: float) -
     canvas.opens = snapshot.screen not in _TEXT_SCREENS
     middle: int = (rows - len(keys) - 1) // 2 - heading if query else (rows - len(keys) - height) // 2
     start: int = max(min(middle, rows - FOOTER_ROWS - height), 0)
+    if snapshot.fill:
+        start = _filled_start(snapshot)
     canvas.top = start + heading
     if not query:
-        context: str = CRUMB_SEPARATOR.join(snapshot.crumbs) if snapshot.crumbs else snapshot.title
-        canvas.center(start, Text(context, "white_bold"), selectable=True)
-        mark_crumbs(canvas.lines[start], snapshot.crumbs)
         canvas.center(start + 1, Text(snapshot.global_status, _COLORS[snapshot.status_kind]))
+    if not query and start >= 0:
+        canvas.center(start, Text(_context(snapshot), "white_bold"), selectable=True)
+        mark_crumbs(canvas.lines[start], snapshot.crumbs)
     title_width: int = 0
     if query:
         _query(canvas, snapshot)
@@ -222,7 +249,7 @@ def render_anime(snapshot: AnimeSnapshot, columns: int, rows: int, now: float) -
         title_width = _list(canvas, snapshot, visible)
     else:
         title_width = _table(canvas, snapshot, visible, now)
-    _footer(canvas, snapshot, keys, title_width, now)
+    _footer(canvas, snapshot, keys, title_width, now, visible)
     return canvas.finish(visible, snapshot.selection, canvas.top)
 
 
@@ -311,11 +338,11 @@ def _values(snapshot: AnimeSnapshot, item: AnimeRow, now: float) -> list[str]:
     return values
 
 
-def _widths(snapshot: AnimeSnapshot, spec: _Table, limit: int, now: float) -> tuple[list[int], list[int]]:
+def _widths(snapshot: AnimeSnapshot, spec: _Table, limit: int, now: float, visible: int) -> tuple[list[int], list[int]]:
     widths: list[int] = [
         max(Text(label).cell_len, minimum) for label, minimum in zip(spec.labels, spec.minimums, strict=True)
     ]
-    for item in snapshot.items:
+    for item in snapshot.items[snapshot.offset : snapshot.offset + visible]:
         for position, value in enumerate(_values(snapshot, item, now)):
             widths[position] = max(widths[position], Text(value).cell_len)
     if spec.status_width:
@@ -341,7 +368,7 @@ def _table_width(spec: _Table, widths: list[int], shown: list[int]) -> int:
 
 def _table(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int, now: float) -> int:
     spec: _Table = _spec(snapshot.screen)
-    widths, shown = _widths(snapshot, spec, canvas.width - _MARGIN, now)
+    widths, shown = _widths(snapshot, spec, canvas.width - _MARGIN, now, visible)
     canvas.place(_table_width(spec, widths, shown))
     columns: list[tuple[int, int, int]] = []
     column: int = spec.prefix
@@ -425,7 +452,9 @@ def _number_ranges(numbers: list[str]) -> list[str]:
     return [run[0] if len(run) == 1 else f"{run[0]}-{run[-1]}" for run in runs]
 
 
-def _footer(canvas: _Canvas, snapshot: AnimeSnapshot, keys: tuple[str, ...], title_width: int, now: float) -> None:
+def _footer(  # noqa: PLR0913
+    canvas: _Canvas, snapshot: AnimeSnapshot, keys: tuple[str, ...], title_width: int, now: float, visible: int
+) -> None:
     selected: list[str] = [item.number for item in snapshot.items if item.key in snapshot.selected]
     summary: Text = Text(
         f"Zaznaczone: {len(selected)} ({', '.join(_number_ranges(selected))})"
@@ -445,10 +474,11 @@ def _footer(canvas: _Canvas, snapshot: AnimeSnapshot, keys: tuple[str, ...], tit
         )
         notice = item.title if full_name else item.detail
         if snapshot.screen in {AnimeScreen.SUBSCRIPTIONS, AnimeScreen.RELEASES}:
-            notice = _unshown(snapshot, item, canvas.width - _MARGIN, now)
+            notice = _unshown(snapshot, item, canvas.width - _MARGIN, now, visible)
     color: str = _COLORS[snapshot.notice_kind]
+    notice_rows: int = _FILL_NOTICE_ROWS if snapshot.fill else _NOTICE_ROWS
     lines: list[str] = _notice_lines(
-        notice, canvas.width - _MARGIN, maximum=_NOTICE_ROWS + int(snapshot.screen is AnimeScreen.RELEASES)
+        notice, canvas.width - _MARGIN, maximum=notice_rows + int(snapshot.screen is AnimeScreen.RELEASES)
     )
     bottom: int = len(canvas.lines) - len(keys)
     canvas.center(bottom - len(lines) - 1, summary, selectable=True)
@@ -458,9 +488,9 @@ def _footer(canvas: _Canvas, snapshot: AnimeSnapshot, keys: tuple[str, ...], tit
         canvas.center(bottom + index, Text(line, style="gray"))
 
 
-def _unshown(snapshot: AnimeSnapshot, item: AnimeRow, limit: int, now: float) -> str:
+def _unshown(snapshot: AnimeSnapshot, item: AnimeRow, limit: int, now: float, visible: int) -> str:
     spec: _Table = _spec(snapshot.screen)
-    widths, shown = _widths(snapshot, spec, limit, now)
+    widths, shown = _widths(snapshot, spec, limit, now, visible)
     values: list[str] = _values(snapshot, item, now)
     parts: list[str] = []
     if snapshot.screen is AnimeScreen.SUBSCRIPTIONS and (item.detail or Text(values[-1]).cell_len > widths[-1]):

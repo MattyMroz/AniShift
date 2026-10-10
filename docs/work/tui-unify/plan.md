@@ -131,8 +131,8 @@ Każdy alias ma test.
 4. **Etykiety Esc:** `wróć` wszędzie poza edycją pola (`Esc anuluj`). Znikają „lista”, „bieżące”, „anuluj”
    w DRAFT. Pozostałe etykiety: `usuń`, `ponów`, `szczegóły`, `dodaj`, `szukaj`.
 5. **Komunikaty po usunięciu** zostają w slocie komunikatu. Subskrypcje jak dziś (`state.py:526`). Biblioteka
-   dostaje trwały komunikat „Usunięto · Ctrl+Z cofnij”. Nazwy z wiersza przeniesienia (`P ponów przenoszenie ·
-   {names}`) zostają w slocie komunikatu Biblioteki.
+   dostaje trwały komunikat „Usunięto · Ctrl+Z cofnij”. Od 2026-10-10 Biblioteka nie ma wiersza przeniesienia
+   ani akcji `P` (decyzja właściciela); nieudane przeniesienie rezydent ponawia sam przy pollingu i restarcie.
 6. **Ekrany bez `?`** (stopka bez `? więcej`): QUERY (stopka `Enter szukaj · Esc wróć`), BUSY, PROBLEM,
    pole zakresu `Z`, pole szukania Historii, propozycja ponowienia, pytanie anulowania.
 7. **Szczegóły i bloki pomocy** mają stopkę: własne akcje + `Esc wróć`, bez `? …`; `?` zamyka je po cichu.

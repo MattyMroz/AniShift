@@ -138,6 +138,7 @@ class AnimeSnapshot:
     rendered_field: Text | None = None
     busy: str = ""
     crumbs: tuple[str, ...] = ()
+    fill: bool = False
 
 
 @dataclass(slots=True)

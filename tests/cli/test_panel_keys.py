@@ -516,14 +516,7 @@ _ACTIONS: Final[dict[str, tuple[Action, ...]]] = {
     "processing_empty": (("H", "historia"), *_PANEL),
     "history": (("Enter", "otwórz"), ("P", "ponów"), ("/", "szukaj"), ("H", "zamknij"), *_PANEL),
     "library": (("Enter", "otwórz"), ("F", "folder"), ("X", "usuń"), ("Ctrl+Z", "cofnij"), *_PANEL),
-    "library_relocation": (
-        ("Enter", "otwórz"),
-        ("F", "folder"),
-        ("X", "usuń"),
-        ("Ctrl+Z", "cofnij"),
-        ("P", "ponów przenoszenie"),
-        *_PANEL,
-    ),
+    "library_relocation": (("Enter", "otwórz"), ("F", "folder"), ("X", "usuń"), ("Ctrl+Z", "cofnij"), *_PANEL),
     "library_details": (("Enter", "otwórz plik"), ("F", "folder"), ("X", "usuń"), ("Ctrl+Z", "cofnij"), *_PANEL),
     "library_empty": (("Ctrl+Z", "cofnij"), *_PANEL),
 }

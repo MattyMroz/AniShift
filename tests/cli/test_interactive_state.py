@@ -1463,7 +1463,7 @@ def test_deletion_operations_are_not_selectable_materials(monkeypatch: pytest.Mo
 
 
 @pytest.mark.parametrize("context", ["empty", "library", "deletion", "uncertain", "healthy"])
-def test_files_retries_reported_relocations_independently_of_deletion_history(
+def test_library_never_mentions_or_retries_a_relocation_whatever_its_history(
     monkeypatch: pytest.MonkeyPatch, context: str
 ) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
@@ -1524,22 +1524,14 @@ def test_files_retries_reported_relocations_independently_of_deletion_history(
     try:
         for key in ("home", "down", "end", "up"):
             controller.handle_key(key)
-        frame: str = controller.render(120, 40).plain
-        controller.render(80, 24)
-        assert calls == []
-        relocation_hint: str = "P ponów przenoszenie do biblioteki"
-        if context != "healthy":
-            assert f"{relocation_hint} · Episode" in frame
-            assert "Episode.mkv" not in frame
-        else:
-            assert relocation_hint not in frame
-        assert "P ponów pozostałe pliki" not in frame
+        frames: str = "".join(controller.render(*size).plain for size in ((120, 40), (80, 24), (40, 12)))
+        assert "P" not in {key for key, _label in controller._actions().listed}
         controller.handle_key("text:P")
         _await_state_action(controller)
-        if context != "healthy":
-            assert calls == [("ready_retry", None)]
-        else:
-            assert calls == []
+        assert calls == []
+        assert "przenoszenie" not in frames
+        assert "Episode" not in frames
+        assert "P ponów pozostałe pliki" not in frames
     finally:
         controller.close()
         controller._thread.join(5)

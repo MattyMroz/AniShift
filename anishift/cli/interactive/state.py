@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import threading
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from enum import IntEnum, StrEnum
 from pathlib import Path
@@ -40,6 +41,7 @@ from anishift.cli.interactive.anime_view import (
     AnimeFrame,
     fit,
     render_anime,
+    shown_rows,
     visible_rows,
 )
 from anishift.cli.interactive.menu import (
@@ -1020,10 +1022,6 @@ class StateController:
             raise ValueError(msg)
 
     def _file_action(self, key: str) -> None:
-        if key == "p":
-            if _relocation_problems(self._snapshot):
-                self._command("ready_retry")
-            return
         library: list[Mapping[str, object]] = _library_rows(self._snapshot)
         if key not in {"open", "f", "d", "delete", "x"} or self._selected >= len(library):
             return
@@ -1364,25 +1362,26 @@ class StateController:
             if spaced:
                 heading.append(Text())
             heading.append(_centered(self._tabs(columns), columns))
-            if spaced:
-                heading.append(Text())
-            area: int = max(budget - len(heading), 1)
-            if self._tab == _Tab.ANIME and self._anime is not None:
-                body: Text = (
-                    self._pin_status(self._anime.render(columns, area - 1), columns, area)
-                    if area > MIN_ROWS
-                    else self._anime.render(columns, area)
-                )
-            elif self._help:
-                body = self._help_body(columns, area)
-            elif self._tab == _Tab.SUBSCRIPTIONS and self._retry is None:
-                body = self._subscription_body(columns, area)
-            elif self._library_table(columns, area):
-                body = self._library_body(columns, area)
+            gap: int = int(spaced)
+            area: int = max(budget - len(heading) - gap, 1)
+            if not self._help and self._tab == _Tab.SUBSCRIPTIONS and self._retry is None:
+                body: Text = self._subscription_body(columns, area + gap, gap)
+            elif not self._help and self._library_table(columns, area):
+                body = self._library_body(columns, area + gap, gap)
             else:
-                body = self._list_body(columns, area)
+                heading.extend(Text() for _ in range(gap))
+                body = self._plain_body(columns, area)
             self._anime_top = len(heading)
             return Text("\n").join([*heading, *body.split("\n", allow_blank=True)])
+
+    def _plain_body(self, columns: int, rows: int) -> Text:
+        if self._tab == _Tab.ANIME and self._anime is not None:
+            if rows > MIN_ROWS:
+                return self._pin_status(self._anime.render(columns, rows - 1), columns, rows)
+            return self._anime.render(columns, rows)
+        if self._help:
+            return self._help_body(columns, rows)
+        return self._list_body(columns, rows)
 
     def _list_body(self, columns: int, rows: int) -> Text:
         entries: list[tuple[str | Text, bool | None]] = self._entries(max(columns - 8, 1))
@@ -1485,9 +1484,6 @@ class StateController:
             result.append(self._notice.rstrip("."))
         if self._tab == _Tab.FILES and self._library_notice:
             result.append(self._library_notice)
-        relocation: str = self._relocation_line() if self._tab == _Tab.FILES and self._details is None else ""
-        if relocation:
-            result.append(relocation)
         result.extend(pack_footer(footer_segments(self._actions(), more=self._details is None), width))
         return result
 
@@ -1527,10 +1523,9 @@ class StateController:
         if self._tab == _Tab.PROGRESS:
             return self._processing_actions()
         listed: bool = self._selected < len(_library_rows(self._snapshot))
-        relocation: tuple[Action, ...] = (("P", "ponów przenoszenie"),) if _relocation_problems(self._snapshot) else ()
         return ScreenActions(
             (("Enter", "otwórz"), ("F", "folder"), ("X", "usuń")) if listed else (),
-            (("Ctrl+Z", "cofnij"), *relocation, *_PANEL_ACTIONS),
+            (("Ctrl+Z", "cofnij"), *_PANEL_ACTIONS),
         )
 
     def _subscription_actions(self) -> ScreenActions:
@@ -1554,11 +1549,12 @@ class StateController:
         )
         return ScreenActions(footer, _PANEL_ACTIONS)
 
-    def _subscription_body(self, columns: int, rows: int) -> Text:
+    def _subscription_body(self, columns: int, rows: int, gap: int) -> Text:
         empty: str = _NO_SUBSCRIPTIONS if self._snapshot else _CONNECTING
         return self._table_body(
             columns,
             rows,
+            gap,
             AnimeScreen.SUBSCRIPTIONS,
             self._subscription_rows(),
             empty,
@@ -1566,70 +1562,61 @@ class StateController:
             self._subscription_warning(),
         )
 
-    def _library_body(self, columns: int, rows: int) -> Text:
+    def _library_body(self, columns: int, rows: int, gap: int) -> Text:
         notice: str = self._notice.rstrip(".") if self._notice_persistent else ""
         return self._table_body(
             columns,
             rows,
+            gap,
             AnimeScreen.LIBRARY,
             tuple(_library_row(item) for item in _library_rows(self._snapshot)),
             _NO_ROWS,
             " · ".join(text for text in (notice, self._library_notice) if text),
-            self._relocation_line(),
+            "",
         )
 
     def _library_table(self, columns: int, rows: int) -> bool:
         listed: bool = self._tab == _Tab.FILES and self._details is None and self._retry is None
         return listed and columns >= MIN_COLUMNS and rows >= MIN_ROWS
 
-    def _relocation_line(self) -> str:
-        relocations: list[Mapping[str, object]] = _relocation_problems(self._snapshot)
-        if not relocations:
-            return ""
-        names: list[str] = [
-            _safe_text(library_label(str(item["name"])).text)
-            for item in relocations
-            if item.get("name") and item.get("name") != item.get("group_id")
-        ]
-        unnamed: int = len(relocations) - len(names)
-        if unnamed:
-            names.append(f"{'inne zestawy' if names else 'zestawy'}: {unnamed}")
-        return f"P ponów przenoszenie do biblioteki · {', '.join(names)}"
-
     def _table_body(  # noqa: PLR0913
         self,
         columns: int,
         rows: int,
+        gap: int,
         screen: AnimeScreen,
         items: tuple[AnimeRow, ...],
         empty: str,
         notice: str,
         status: str,
     ) -> Text:
-        tight: bool = rows == MIN_ROWS and columns >= MIN_COLUMNS
-        area: int = rows if tight else max(rows - 1, 1)
         self._selected = min(self._selected, max(len(items) - 1, 0))
-        visible: int = visible_rows(area)
-        self._page = visible
-        offset: int = min(self._offsets.get(self._tab, 0), max(len(items) - visible, 0))
-        if self._follow_cursor.get(self._tab, True):
-            offset = max(min(offset, self._selected), self._selected - visible + 1)
-        self._offsets[self._tab] = offset
+        fill: bool = len(items) > visible_rows(max(rows - gap - 1, 1))
+        height: int = rows if fill else rows - gap
+        tight: bool = not fill and height == MIN_ROWS and columns >= MIN_COLUMNS
+        area: int = height if tight else max(height - 1, 1)
         snapshot: AnimeSnapshot = AnimeSnapshot(
             screen if items else AnimeScreen.DETAILS,
             "",
             items or (AnimeRow("empty", empty, navigable=False),),
             cursor=self._selected,
-            offset=offset,
             notice=notice,
             controls=footer_segments(self._actions()),
             global_status=status,
+            fill=fill,
         )
-        frame: AnimeFrame = render_anime(snapshot, columns, area, self._clock().timestamp())
+        visible: int = max(shown_rows(snapshot, columns, area), 1)
+        self._page = visible
+        offset: int = min(self._offsets.get(self._tab, 0), max(len(items) - visible, 0))
+        if self._follow_cursor.get(self._tab, True):
+            offset = max(min(offset, self._selected), self._selected - visible + 1)
+        self._offsets[self._tab] = offset
+        frame: AnimeFrame = render_anime(replace(snapshot, offset=offset), columns, area, self._clock().timestamp())
         lines: list[Text] = list(frame.text.split("\n"))
         if tight:
-            del lines[next(index for index in range(frame.first_row, rows) if not lines[index].plain.strip())]
-        return self._pin_status(Text("\n").join(lines), columns, rows)
+            del lines[next(index for index in range(frame.first_row, height) if not lines[index].plain.strip())]
+        body: Text = self._pin_status(Text("\n").join(lines), columns, height)
+        return Text("\n").join([*(Text() for _ in range(rows - height)), body])
 
     def _pin_status(self, body: Text, columns: int, rows: int) -> Text:
         lines: list[Text] = list(body.split("\n", allow_blank=True))[: max(rows - 1, 0)]
@@ -1934,10 +1921,6 @@ def _moved(selected: int, key: str, count: int, page: int) -> int:
     if key in {"up", "down"}:
         return (selected + (-1 if key == "up" else 1)) % count
     return min(max(selected + (-page if key == "pageup" else page), 0), count - 1)
-
-
-def _relocation_problems(snapshot: Mapping[str, object]) -> list[Mapping[str, object]]:
-    return [item for item in _rows(snapshot.get("relocations")) if item.get("problem")]
 
 
 def _library_rows(snapshot: Mapping[str, object]) -> list[Mapping[str, object]]:
