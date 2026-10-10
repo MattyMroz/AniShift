@@ -19,6 +19,14 @@ from anishift.cli.interactive.anime_state import (
     query_left,
 )
 from anishift.cli.interactive.menu import append_wrapped_row, pack_keys
+from anishift.cli.interactive.pointer import (
+    TextCell,
+    character_offset,
+    mark_row,
+    selected_cells,
+    selected_text,
+    text_cells,
+)
 from anishift.text.graphemes import split_graphemes
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -79,17 +87,6 @@ _LIST_SCREENS: Final[frozenset[AnimeScreen]] = frozenset(
 
 
 @dataclass(frozen=True, slots=True)
-class TextCell:
-    """Map one selectable grapheme to screen cells and Rich character offsets."""
-
-    point: TextPoint
-    width: int
-    start: int
-    end: int
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
 class AnimeFrame:
     """Return the painted frame and its text-only interaction geometry."""
 
@@ -100,26 +97,11 @@ class AnimeFrame:
 
     def selected_cells(self, selection: tuple[TextPoint, TextPoint] | None) -> tuple[TextCell, ...]:
         """Return whole graphemes intersected by an inclusive reading-order selection."""
-        if selection is None:
-            return ()
-        start, end = sorted(selection)
-        return tuple(
-            cell
-            for cell in self.cells
-            if cell.point <= end and TextPoint(cell.point.row, cell.point.column + cell.width) > start
-        )
+        return selected_cells(self.cells, selection)
 
     def selected_text(self, selection: tuple[TextPoint, TextPoint] | None) -> str:
         """Copy text in reading order while omitting markers, borders and padding."""
-        lines: dict[int, list[str]] = {}
-        previous: TextCell | None = None
-        for cell in self.selected_cells(selection):
-            line: list[str] = lines.setdefault(cell.point.row, [])
-            if previous is not None and previous.point.row == cell.point.row and previous.end != cell.start:
-                line.append(" ")
-            line.append(cell.text)
-            previous = cell
-        return "\n".join("".join(line).strip() for line in lines.values()).strip()
+        return selected_text(self.cells, selection)
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +123,7 @@ class _Canvas:
         self.columns: int = width
         self.lines: list[Text] = [Text(" " * width) for _ in range(rows)]
         self.regions: list[tuple[int, int, str]] = []
+        self.rows: dict[int, int] = {}
 
     def place(self, columns: int) -> None:
         self.columns = max(min(columns, self.width - _MARGIN), 1)
@@ -161,38 +144,23 @@ class _Canvas:
         if not 0 <= row < len(self.lines) or not value.plain:
             return
         line: Text = self.lines[row]
-        prefix: Text = line[: _character_offset(line.plain, column)]
+        prefix: Text = line[: character_offset(line.plain, column)]
         prefix.append_text(value)
-        prefix.append_text(line[_character_offset(line.plain, column + value.cell_len) :])
+        prefix.append_text(line[character_offset(line.plain, column + value.cell_len) :])
         self.lines[row] = prefix
         if selectable:
             self.regions.append((row, column, value.plain))
 
+    def tag(self, row: int, index: int) -> None:
+        self.rows[row] = index
+
     def finish(self, visible: int, selection: tuple[TextPoint, TextPoint] | None, first_row: int = 0) -> AnimeFrame:
-        cells: list[TextCell] = []
-        offsets: list[int] = []
-        offset: int = 0
-        for line in self.lines:
-            offsets.append(offset)
-            offset += len(line.plain) + 1
-        for row, column, value in sorted(self.regions):
-            index: int = _character_offset(self.lines[row].plain, column)
-            cell_column: int = column
-            for grapheme in split_graphemes(value):
-                width: int = Text(grapheme).cell_len
-                cells.append(
-                    TextCell(
-                        TextPoint(row, cell_column),
-                        width,
-                        offsets[row] + index,
-                        offsets[row] + index + len(grapheme),
-                        grapheme,
-                    )
-                )
-                cell_column += width
-                index += len(grapheme)
+        for row, index in self.rows.items():
+            if 0 <= row < len(self.lines):
+                mark_row(self.lines[row], index)
+        cells: tuple[TextCell, ...] = text_cells([line.plain for line in self.lines], self.regions)
         text: Text = Text("\n").join(self.lines)
-        frame: AnimeFrame = AnimeFrame(text, tuple(cells), visible, first_row)
+        frame: AnimeFrame = AnimeFrame(text, cells, visible, first_row)
         for cell in frame.selected_cells(selection):
             text.stylize("reverse", cell.start, cell.end)
         return frame
@@ -212,17 +180,6 @@ def fit(value: str, width: int) -> str:
         result.append(grapheme)
         used += size
     return "".join(result) + ("…" if width else "")
-
-
-def _character_offset(value: str, column: int) -> int:
-    used: int = 0
-    index: int = 0
-    for grapheme in split_graphemes(value):
-        if used >= column:
-            break
-        used += Text(grapheme).cell_len
-        index += len(grapheme)
-    return index
 
 
 def visible_rows(rows: int) -> int:
@@ -281,6 +238,7 @@ def _list(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int) -> int:
     canvas.place(max((Text(item.title).cell_len for item in block), default=0) + prefix + boxed)
     for index, item in enumerate(items):
         row: int = canvas.top + index
+        canvas.tag(row, index + snapshot.offset)
         active: bool = index + snapshot.offset == snapshot.cursor and item.navigable
         style: str = "white_bold"
         if draft:
@@ -402,6 +360,7 @@ def _item(  # noqa: PLR0913
     columns: tuple[tuple[int, int, int], ...],
 ) -> None:
     row: int = canvas.top + index - snapshot.offset
+    canvas.tag(row, index)
     active: bool = index == snapshot.cursor and item.navigable
     canvas.put(row, 0, _pointer(active=active), "brand_accent" if active else "white_bold")
     if snapshot.screen in {AnimeScreen.EPISODES, AnimeScreen.RELEASES}:

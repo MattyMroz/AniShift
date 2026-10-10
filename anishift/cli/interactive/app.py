@@ -31,6 +31,7 @@ from anishift.cli.interactive.manual import ManualController, ManualResult, Manu
 from anishift.cli.interactive.mascot import MascotController, MascotState
 from anishift.cli.interactive.mascot_native import MASCOT_REST_TOP_ROWS, NATIVE_MASCOT_ANCHOR
 from anishift.cli.interactive.menu import with_footer
+from anishift.cli.interactive.pointer import FrameSelection, mark_row
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.prompts import (
     TEXT_MASCOT_SIZE,
@@ -208,6 +209,7 @@ class _InteractiveApplication:
             mouse_handler=self._handle_mouse,
         )
         self._mascot: MascotController = MascotController(self._renderer.invalidate)
+        self._frame_selection: FrameSelection = FrameSelection()
 
     def run(self) -> int:
         """Run the session until Home exits, or until one batch finishes and its window closes."""
@@ -281,6 +283,12 @@ class _InteractiveApplication:
         return controller is not None and controller.copy_selection()
 
     def _handle_key(self, key: str) -> None:
+        if self._frame_selection.copy(key):
+            self._renderer.invalidate()
+            return
+        self._route_key(key)
+
+    def _route_key(self, key: str) -> None:
         with self._lock:
             mode: _ViewMode = self._mode
         if mode is _ViewMode.SETTINGS:
@@ -353,10 +361,30 @@ class _InteractiveApplication:
             self._renderer.exit()
 
     def _handle_mouse(self, event: MouseEvent) -> None:
-        if self._mode is _ViewMode.STATE and self._state is not None:
-            self._state.mouse(event)
+        if self._mode is _ViewMode.STATE and self._state is not None and self._state.mouse(event):
+            return
+        index: int | None = self._frame_selection.mouse(event)
+        if index is not None:
+            self._select_row(index)
+        self._renderer.invalidate()
+
+    def _select_row(self, index: int) -> None:
+        """Point the current list at a clicked row without running its action."""
+        with self._lock:
+            mode: _ViewMode = self._mode
+            settings: SettingsController | None = self._settings
+            manual: ManualController | None = self._manual
+            if mode is _ViewMode.HOME and index < len(self._home_choices):
+                self._selected = index
+        if mode is _ViewMode.SETTINGS and settings is not None:
+            settings.select(index)
+        elif mode is _ViewMode.MANUAL and manual is not None:
+            manual.select(index)
+        elif mode is _ViewMode.STATE and self._state is not None:
+            self._state.select(index)
 
     def _handle_scroll(self, direction: int) -> None:
+        self._frame_selection.clear()
         with self._lock:
             mode: _ViewMode = self._mode
             controller: SettingsController | None = self._settings if mode is _ViewMode.SETTINGS else None
@@ -866,6 +894,7 @@ class _InteractiveApplication:
         mascot_state: MascotState = self._mascot.state
         native_size: tuple[int, int] | None = getattr(self._renderer, "native_mascot_size", None)
         animation_phase: int = getattr(self._renderer, "animation_phase", 0)
+        screen: tuple[object, ...] = ()
         if mode in {_ViewMode.HOME, _ViewMode.PREPARING, _ViewMode.MANUAL_PREPARING}:
             content: Text = _home_content(
                 columns,
@@ -878,6 +907,7 @@ class _InteractiveApplication:
             )
         elif mode is _ViewMode.MANUAL and manual is not None:
             content = manual.render(columns, rows)
+            screen = manual.view_key()
         elif mode in {_ViewMode.AUTO, _ViewMode.AUTO_DONE} and progress is not None:
             content = _auto_content(
                 (columns, rows),
@@ -887,14 +917,21 @@ class _InteractiveApplication:
                 native_size=native_size,
                 animation_phase=animation_phase,
             )
+            screen = (self._queue.offset, progress.row_count)
         elif mode is _ViewMode.SETTINGS and settings is not None:
             content = settings.render(columns, rows)
+            screen = settings.view_key()
         elif mode is _ViewMode.STATE and self._state is not None:
             content = self._state.render(columns, rows)
+            screen = self._state.view_key()
         else:
             content = _message_content(columns, rows, message, mascot_state, view=message_view)
-        footer: str = self._directory if closing_at is None else _closing_label(closing_at)
-        return _fit_frame(content, __version__, footer, columns, rows)
+            screen = (message.plain, message_view.offset)
+        footer: str = self._frame_selection.notice or self._directory
+        if closing_at is not None:
+            footer = _closing_label(closing_at)
+        frame: Text = _fit_frame(content, __version__, footer, columns, rows)
+        return self._frame_selection.paint(frame, (mode, columns, rows, screen))
 
 
 def run_interactive(
@@ -963,6 +1000,7 @@ def _home_content(  # noqa: PLR0913
             content.append(label, style="brand_accent")
         else:
             content.append(f"  {label}", style="white_bold")
+        mark_row(content, index)
         content.append("\n")
     return with_footer(content, (_HOME_HINT,), columns, rows)
 
@@ -977,7 +1015,9 @@ def _small_home_content(
     for index in range(start, min(start + visible, len(choices))):
         label: str = choices[index][0]
         pointer: str = _HOME_POINTER if index == selected else " "
-        content.append(f"{pointer} {label}\n", style="brand_accent" if index == selected else "white_bold")
+        content.append(f"{pointer} {label}", style="brand_accent" if index == selected else "white_bold")
+        mark_row(content, index)
+        content.append("\n")
     if rows > _HOME_FOOTER_ROWS:
         return with_footer(content, (_HOME_HINT,), columns, rows)
     return content

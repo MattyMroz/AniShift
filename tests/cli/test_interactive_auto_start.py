@@ -14,6 +14,7 @@ from anishift.cli.exit_codes import EXIT_REFUSED, EXIT_SUCCESS
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive.manual import ManualRun
 from anishift.cli.interactive.mascot import MascotController, MascotState
+from anishift.cli.interactive.pointer import FrameSelection
 from anishift.cli.interactive.prompts import TerminalRenderer
 from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
@@ -42,6 +43,7 @@ def _application(
     application._mascot = cast("MascotController", SimpleNamespace(state=MascotState.IDLE))
     application._renderer = cast("TerminalRenderer", SimpleNamespace(native_mascot_size=(18, 10)))
     application._directory = "~"
+    application._frame_selection = FrameSelection()
     application._service = cast("AppService", service)
     return application
 

@@ -651,11 +651,11 @@ class StateController:
             return len(_TABS) + 1
         return self._tab
 
-    def mouse(self, event: MouseEvent) -> None:
-        """Forward Anime cell coordinates without changing other tabs."""
+    def mouse(self, event: MouseEvent) -> bool:
+        """Forward Anime cell coordinates, reporting whether the Anime tab took the event."""
         with self._lock:
             if self._tab != _Tab.ANIME or self._anime is None:
-                return
+                return False
             self._anime.mouse(
                 MouseEvent(
                     Point(event.position.x, event.position.y - self._anime_top),
@@ -664,6 +664,25 @@ class StateController:
                     event.modifiers,
                 )
             )
+        self._invalidate()
+        return True
+
+    def view_key(self) -> tuple[object, ...]:
+        """Identify the painted tab and list, so a selection never outlives them."""
+        with self._lock:
+            return (self._shown_tab(), self._viewport(), self._history_open, self._retry is not None)
+
+    def select(self, index: int) -> None:
+        """Move the cursor to a clicked row outside Anime without running its action."""
+        with self._lock:
+            if self._tab == _Tab.ANIME or self._retry is not None or not 0 <= index < len(self._entries(120)):
+                return
+            if index != self._selected and self._tab in {_Tab.FILES, _Tab.SUBSCRIPTIONS}:
+                self._view_generation += 1
+                self._notify("")
+            self._library_target = None
+            self._selected = index
+            self._follow_cursor[self._viewport()] = False
         self._invalidate()
 
     def scroll(self, direction: int) -> None:
@@ -1225,7 +1244,7 @@ class StateController:
             checked: bool | None = entries[index][1]
             marker: str = "" if checked is None else ("● " if checked else "○ ")
             lines: tuple[str | Text, ...] = wrapped[index][:remaining]
-            append_wrapped_row(content, left, lines, index == selected, marker)
+            append_wrapped_row(content, left, lines, index == selected, marker, index=index)
             remaining -= len(lines)
         if not entries:
             empty: str = (

@@ -103,6 +103,9 @@ class _Manual:
         del columns, rows
         return Text("MANUAL LIST")
 
+    def view_key(self) -> tuple[object, ...]:
+        return ()
+
 
 def _install_renderer(monkeypatch: pytest.MonkeyPatch, script: tuple[str, ...] = ()) -> list[_Renderer]:
     made: list[_Renderer] = []

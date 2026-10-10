@@ -24,6 +24,7 @@ from anishift.application import (
     TranslationModelOption,
 )
 from anishift.cli.interactive.menu import with_footer
+from anishift.cli.interactive.pointer import mark_row
 from anishift.cli.interactive.settings_editors import format_voice_input, parse_setting_input, parse_voice_input
 from anishift.cli.interactive.text_input import TextInput, is_edit_key
 from anishift.cli.resident import ResidentSession
@@ -573,6 +574,32 @@ class SettingsController:
             return
         self._follow_cursor = False
         self._offset = min(max(self._offset + direction * _WHEEL_ROWS, 0), max(length - 1, 0))
+
+    def select(self, index: int) -> None:
+        """Move the cursor to a clicked row without choosing it; leaving a row saves its pending edit."""
+        self._discard_armed = False
+        if self._busy:
+            return
+        editor: _Editor | None = self._editor
+        if editor is not None:
+            if 0 <= index < len(editor.options):
+                editor.selected = index
+            return
+        output: bool = self._category is _Category.OUTPUT
+        if not 0 <= index < (len(_PRODUCTS) + 2 if output else len(self._items)) or index == self._selected:
+            return
+        key: str = "" if output else self._items[index].key
+        if not self._commit_pending():
+            return
+        if output:
+            self._selected = index
+        else:
+            self._selected = next((row for row, item in enumerate(self._items) if item.key == key), self._selected)
+        self._feedback = None
+
+    def view_key(self) -> tuple[object, ...]:
+        """Identify the painted screen, so a selection never outlives it."""
+        return (self._category, self._connection, self._voices_open, self._recipe, self._editor is not None)
 
     def _scrollable_length(self) -> int:
         if self._category is _Category.OUTPUT:
@@ -1614,7 +1641,7 @@ class SettingsController:
             )
         self._invalidate()
 
-    def _render_menu(self, columns: int, rows: int) -> Text:
+    def _render_menu(self, columns: int, rows: int) -> Text:  # noqa: PLR0915
         title: str = _VOICES_TITLE if self._voices_open else _menu_title(self._category, self._connection)
         if self._recipe is not None:
             title = f"AUTO · {_RECIPE_LABELS[self._recipe].upper()}"
@@ -1663,6 +1690,7 @@ class SettingsController:
             )
             if current:
                 content.append(f" · {current}", style="gray")
+            mark_row(content, index)
             content.append("\n")
         if has_below:
             content.append(" " * left)
@@ -1675,6 +1703,7 @@ class SettingsController:
                 _truncate_right(back.label, max(columns - left - 2, 1)),
                 style="brand_accent" if selected_back else "white_bold",
             )
+            mark_row(content, len(self._items) - 1)
             content.append("\n")
         self._append_feedback(content, left, columns)
         hint: str = _MENU_HINT
@@ -1717,6 +1746,7 @@ class SettingsController:
                 _truncate_right(label, max(columns - left - 4, 1)),
                 style="brand_accent" if index == self._selected else "white_bold",
             )
+            mark_row(content, index)
             content.append("\n")
         if has_below:
             content.append(" " * left + "↓ więcej\n", style="gray")
@@ -1730,6 +1760,7 @@ class SettingsController:
                 _truncate_right(label, max(columns - left - 2, 1)),
                 style="brand_accent" if self._selected == index else "white_bold",
             )
+            mark_row(content, index)
             content.append("\n")
         self._append_feedback(content, left, columns)
         return self._finish(content, _MULTI_HINT, columns, rows)
@@ -1770,6 +1801,7 @@ class SettingsController:
                     _truncate_right(option.label, option_width),
                     style="brand_accent" if index == editor.selected else "white_bold",
                 )
+                mark_row(content, index)
                 content.append("\n")
             if has_below:
                 content.append(" " * left)

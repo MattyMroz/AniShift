@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 
-from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
+from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from rich.text import Text
 
 from anishift.application.episode_commands import MAX_EPISODE_KEYS
@@ -19,6 +19,7 @@ from anishift.cli.interactive.anime_state import (
     TextPoint,
 )
 from anishift.cli.interactive.anime_view import AnimeFrame, render_anime
+from anishift.cli.interactive.pointer import COPY_KEYS, Gesture, PointerGesture, row_at
 from anishift.cli.interactive.text_input import TextInput
 
 
@@ -38,14 +39,13 @@ class AnimePanel:
         self._clipboard: Callable[[str], bool] = clipboard
         self._frame: AnimeFrame | None = None
         self._size: tuple[int, int] = (80, 24)
-        self._anchor: TextPoint | None = None
-        self._dragged: bool = False
+        self._gesture: PointerGesture = PointerGesture()
 
     def frame(self, columns: int, rows: int) -> Text:
         """Build a frame and retain only the last painted interaction map."""
         if self._size != (columns, rows):
             self.state.selection = None
-            self._anchor = None
+            self._gesture.reset()
         self._size = (columns, rows)
         now: float = self._clock()
         self.state.flashes = {key: deadline for key, deadline in self.state.flashes.items() if deadline > now}
@@ -57,8 +57,7 @@ class AnimePanel:
         self.state.selection = None
         self.state = state
         self.state.selection = None
-        self._anchor = None
-        self._dragged = False
+        self._gesture.reset()
         self._frame = None
 
     def _clear_notice(self) -> None:
@@ -74,14 +73,14 @@ class AnimePanel:
         self.state.offset = 0
         self.state.selection = None
         self._clear_notice()
-        self._anchor = None
+        self._gesture.reset()
         self._frame = None
 
     def handle(self, key: str) -> None:
         """Route normalized terminal keys, giving selected-text copying priority."""
         letter: str = key.removeprefix("text:").lower()
         self._clear_notice()
-        if (key in {"interrupt", "copy"} or letter == "c") and self.copy(key):
+        if (key in COPY_KEYS or letter == "c") and self.copy(key):
             return
         if self._edit(key):
             return
@@ -121,15 +120,13 @@ class AnimePanel:
 
     def copy(self, key: str) -> bool:
         """Copy painted selection or the current row before navigation handles the key."""
-        if key not in {"interrupt", "copy"} and (
-            self.state.screen is AnimeScreen.QUERY or self.state.range_input is not None
-        ):
+        if key not in COPY_KEYS and (self.state.screen is AnimeScreen.QUERY or self.state.range_input is not None):
             return False
         value: str = self._frame.selected_text(self.state.selection) if self._frame is not None else ""
         editor: TextInput | None = self.state.range_input
         if self.state.screen is AnimeScreen.QUERY and self.state.query_focused:
             editor = self.state.query
-        if not value and editor is not None and key in {"interrupt", "copy"}:
+        if not value and editor is not None and key in COPY_KEYS:
             value = editor.selected_text
         if not value and (key == "interrupt" or self.state.screen is AnimeScreen.QUERY or self.state.range_input):
             return False
@@ -252,32 +249,20 @@ class AnimePanel:
         visible: int = self._frame.visible if self._frame is not None else 1
         self.state.offset = max(0, min(self.state.offset + direction, len(self.state.items) - visible))
         self.state.selection = None
-        self._anchor = None
+        self._gesture.reset()
 
     def mouse(self, event: MouseEvent) -> None:
-        """Select only painted text on drag; a click clears the selection."""
-        point: TextPoint = TextPoint(event.position.y, event.position.x)
-        if event.event_type is MouseEventType.MOUSE_DOWN and event.button is MouseButton.LEFT:
+        """Select only painted text on drag; a click clears the selection and points at its row."""
+        gesture: Gesture | None = self._gesture.track(event)
+        if gesture is None:
+            return
+        if event.event_type is MouseEventType.MOUSE_DOWN:
             self._clear_notice()
-            self._anchor = point
-            self._dragged = False
-            self.state.selection = None
-            return
-        if self._anchor is None:
-            return
-        if event.event_type is MouseEventType.MOUSE_MOVE and event.button is MouseButton.LEFT:
-            self._dragged = self._dragged or point != self._anchor
-            self.state.selection = (self._anchor, point)
-        elif event.event_type is MouseEventType.MOUSE_UP:
-            self._dragged = self._dragged or point != self._anchor
-            self.state.selection = (self._anchor, point) if self._dragged else None
-            if not self._dragged:
-                self._click(point)
-            self._anchor = None
+        self.state.selection = gesture.selection
+        if gesture.click is not None:
+            self._click(gesture.click)
 
     def _click(self, point: TextPoint) -> None:
-        if self._frame is None or not self._frame.first_row <= point.row < self._frame.first_row + self._frame.visible:
-            return
-        index: int = point.row - self._frame.first_row + self.state.offset
-        if index < len(self.state.items) and self.state.items[index].navigable:
+        index: int | None = row_at(self._frame.text, point.row) if self._frame is not None else None
+        if index is not None and index < len(self.state.items) and self.state.items[index].navigable:
             self.state.cursor = index

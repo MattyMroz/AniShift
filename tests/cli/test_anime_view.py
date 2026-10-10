@@ -22,8 +22,9 @@ from anishift.cli.interactive.anime_state import (
     NoticeKind,
     TextPoint,
 )
-from anishift.cli.interactive.anime_view import AnimeFrame, TextCell, _notice_lines, render_anime
+from anishift.cli.interactive.anime_view import AnimeFrame, _notice_lines, render_anime
 from anishift.cli.interactive.palette import BRAND_THEME
+from anishift.cli.interactive.pointer import TextCell
 from anishift.cli.interactive.prompts import _WheelControl
 from anishift.cli.interactive.text_input import TextInput
 

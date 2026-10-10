@@ -7,6 +7,8 @@ from collections.abc import Sequence
 from rich.console import Console
 from rich.text import Text
 
+from anishift.cli.interactive.pointer import mark_row
+
 
 def header(title: str, columns: int, rows: int, content_rows: int) -> Text:
     """Build the centered heading used by selectable lists."""
@@ -18,8 +20,10 @@ def header(title: str, columns: int, rows: int, content_rows: int) -> Text:
     return content
 
 
-def append_row(content: Text, left: int, label: str | Text, active: bool, marker: str = "  ") -> None:
-    """Append one selectable row using the shared pointer and palette."""
+def append_row(  # noqa: PLR0913
+    content: Text, left: int, label: str | Text, active: bool, marker: str = "  ", *, index: int | None = None
+) -> None:
+    """Append one selectable row using the shared pointer and palette, tagged with its list ``index``."""
     content.append(" " * left)
     content.append("\u276f " if active else "  ", style="brand_accent" if active else "white_bold")
     content.append(marker, style="brand_accent" if active else "white_bold")
@@ -27,6 +31,8 @@ def append_row(content: Text, left: int, label: str | Text, active: bool, marker
         content.append_text(label)
     else:
         content.append(label, style="brand_accent" if active else "white_bold")
+    if index is not None:
+        mark_row(content, index)
     content.append("\n")
 
 
@@ -93,13 +99,16 @@ def _wrap_label(label: str, console: Console, width: int) -> tuple[str, ...]:
     return tuple(lines)
 
 
-def append_wrapped_row(content: Text, left: int, lines: Sequence[str | Text], active: bool, marker: str) -> None:
+def append_wrapped_row(  # noqa: PLR0913
+    content: Text, left: int, lines: Sequence[str | Text], active: bool, marker: str, *, index: int | None = None
+) -> None:
     """Keep a wrapped title under its label with one pointer and one selection marker."""
-    for index, line in enumerate(lines):
+    for line_index, line in enumerate(lines):
         label: str | Text = line
-        if index and isinstance(line, str):
+        if line_index and isinstance(line, str):
             label = Text(line, style="brand_accent" if active else "white_bold")
-        append_row(content, left, label, active and index == 0, marker if index == 0 else " " * len(marker))
+        first: bool = line_index == 0
+        append_row(content, left, label, active and first, marker if first else " " * len(marker), index=index)
 
 
 def pack_keys(keys: Sequence[str], width: int, *, optional: Sequence[str] = (), limit: int = 2) -> tuple[str, ...]:

@@ -304,6 +304,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Kółko myszy wymaga `_WheelControl`, bo klatka ma dokładnie tyle wierszy co okno i
   domyślny scroller Prompt Toolkit gubi zdarzenie. Nie zastępuj tego
   `ScrollablePane` ani drugim oknem. `interactive/prompts.py`
+- Mysz działa w każdym widoku według jednego źródła `pointer.py` (gest klik/przeciągnięcie, wiersze
+  oznaczone `mark_row`/`row_at`, zaznaczenie i kopiowanie tekstu): Anime przez `AnimePanel`, reszta przez
+  `FrameSelection` w `app.py`, a klik tylko ustawia kursor przez `select` widoku i nigdy nie uruchamia akcji.
+  `interactive/pointer.py`, `interactive/app.py`
 - Zapis stanu panelu ma dziesięć reguł i JEDNO źródło:
   `docs/work/plain-cli/06_state_persistence.md`. Cztery łamane najczęściej:
   (1) nawigacja — `↑↓`, `PageUp`/`PageDown`, `Home`/`End`, kółko — NIGDY nie zmienia
