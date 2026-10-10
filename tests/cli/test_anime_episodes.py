@@ -2074,7 +2074,7 @@ def test_every_refused_stan_label_fits_its_column(reason: str) -> None:
 def test_an_episode_in_progress_keeps_a_short_stan_and_names_cancellation_in_the_notice() -> None:
     assert anime_module._refused_result(EpisodeReason.EPISODE_IN_PROGRESS) == (
         "W toku",
-        "W toku · C anuluj w Przetwarzaniu",
+        "W toku · X anuluj w Przetwarzaniu",
     )
 
 
@@ -2151,7 +2151,7 @@ def test_active_episode_does_not_submit_and_explains_where_to_cancel(state: str,
     owner.statuses[1] = EpisodeStatus(EpisodeKey(1, 1), state)
     controller: AnimeController = _owner_controller(owner)
     _key(controller, key)
-    assert controller._notice == "W toku · C anuluj w Przetwarzaniu"
+    assert controller._notice == "W toku · X anuluj w Przetwarzaniu"
     assert not owner.batches
 
 
@@ -2335,7 +2335,9 @@ def test_fresh_panel_reads_admitted_and_unordered_states_beyond_first_hundred() 
     assert "Nie zamówiono" not in frame
     assert controller._episode_states[EpisodeKey(1, 102)].state == "not_ordered"
     _key(controller, "up")
+    _key(controller, "text:?")
     assert "P ponownie" in controller.render(50, 24).plain
+    _key(controller, "escape")
     _key(controller, "text:a")
     assert 101 not in controller._episode_marks
     assert 102 in controller._episode_marks
@@ -2407,8 +2409,10 @@ def test_owner_refresh_removes_newly_admitted_marks_and_retains_uncertain_file_p
     assert not controller._episode_marks
     frame: str = controller.render(50, 24).plain
     assert "Enter wskaż plik" in frame
-    assert "P ponownie" in frame
     assert "Space zaznacz" in frame
+    _key(controller, "text:?")
+    assert "P ponownie" in controller.render(50, 24).plain
+    _key(controller, "escape")
     _key(controller, "text:d")
     assert not owner.batches
     assert not owner.choices
@@ -2511,7 +2515,7 @@ def test_episode_footer_wraps_only_between_complete_shortcuts() -> None:
     lines: list[str] = controller.render(50, 24).plain.splitlines()
     assert all(
         any(hint in line for line in lines)
-        for hint in ("Space zaznacz", "D pobierz", "I wydania", "P ponownie", "? więcej", "Esc")
+        for hint in ("Space zaznacz", "D pobierz", "S subskrybuj", "? więcej", "Esc wróć")
     )
 
 

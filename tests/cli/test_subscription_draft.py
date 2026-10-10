@@ -845,7 +845,7 @@ def test_enter_opens_the_subscription_details_with_header_targets_and_specials(
     specials: list[str] = [line for line in frame.splitlines() if "Dodatki tego sezonu" in line or "OVA" in line]
     assert len(specials) == 2
     assert all("[ ]" not in line for line in specials)
-    assert "W wstrzymaj · F szukaj teraz · X usuń · Esc lista" in frame
+    assert "Space zaznacz · D pobierz · W wstrzymaj · ? więcej · Esc wróć" in frame
     assert owner.numbers[-1] == (1, 2, 3, 4, 5, 6)
 
 
@@ -1247,9 +1247,12 @@ def test_the_details_keep_every_subscription_key_visible_in_a_narrow_terminal(
     _keys(panel, "enter")
 
     frame: str = _frame(panel, 50, 24)
-
-    for hint in ("D pobierz", "P ponownie", "W wstrzymaj", "F szukaj", "X usuń", "Esc lista"):
+    for hint in ("D pobierz", "W wstrzymaj", "? więcej", "Esc wróć"):
         assert hint in frame
+    _keys(panel, "text:?")
+    shown: str = " ".join(_detail_rows(panel, 50, 24))
+    for hint in ("P ponownie", "R sprawdź teraz", "X usuń"):
+        assert hint in shown
 
 
 _WAITS: str = (_NOW + timedelta(hours=1)).isoformat()
@@ -1288,7 +1291,7 @@ def test_download_now_key(panel: StateController, owner: _Owner, monkeypatch: py
     assert sent_on_first == []
     assert "T pobierz teraz" not in first
     assert ("subscription_check", {"subscription_id": "a", "number": 3}) in owner.calls
-    for hint in ("T pobierz teraz", "D pobierz", "W wstrzymaj", "F szukaj", "X usuń", "Esc lista"):
+    for hint in ("T pobierz teraz", "D pobierz", "? więcej", "Esc wróć"):
         assert hint in narrow
     assert _anime(panel)._screen is _Screen.EPISODES
 

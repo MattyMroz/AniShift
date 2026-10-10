@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.spinner import Spinner
 from rich.text import Text
 
+from anishift.cli.interactive.actions import pack_footer
 from anishift.cli.interactive.anime_state import (
     AnimeRow,
     AnimeScreen,
@@ -18,7 +19,7 @@ from anishift.cli.interactive.anime_state import (
     TextPoint,
     query_left,
 )
-from anishift.cli.interactive.menu import append_wrapped_row, pack_keys
+from anishift.cli.interactive.menu import append_wrapped_row
 from anishift.cli.interactive.pointer import (
     TextCell,
     character_offset,
@@ -76,9 +77,6 @@ _COLORS: Final[dict[NoticeKind, str]] = {
     NoticeKind.WARNING: "warning",
 }
 """Theme role of each feedback kind."""
-
-NAVIGATION_KEYS: Final[tuple[str, ...]] = ("←→ widok", "↑↓ wybierz")
-"""Navigation hints appended to table screens and dropped first when space runs out."""
 
 _LIST_SCREENS: Final[frozenset[AnimeScreen]] = frozenset(
     {AnimeScreen.DETAILS, AnimeScreen.FILES, AnimeScreen.BUSY, AnimeScreen.PROBLEM, AnimeScreen.DRAFT}
@@ -477,32 +475,8 @@ def _notice_lines(notice: str, width: int, *, maximum: int = _NOTICE_ROWS) -> li
 
 
 def _key_lines(snapshot: AnimeSnapshot, width: int) -> tuple[str, ...]:
-    keys: tuple[str, ...] = snapshot.controls or _keys(snapshot.screen)
-    navigation: tuple[str, ...] = NAVIGATION_KEYS
-    if snapshot.editing_range:
-        keys, navigation = ("Enter zastosuj · Esc anuluj",), ()
-    if snapshot.screen is AnimeScreen.QUERY:
-        navigation = ()
-    segments: list[str] = [
-        "Esc wróć" if segment == "Esc" else segment
-        for key in keys
-        for segment in key.replace(" | ", " · ").split(" · ")
-    ]
-    return pack_keys([*segments, *navigation], width, optional=tuple(reversed(NAVIGATION_KEYS)))
-
-
-def _keys(screen: AnimeScreen) -> tuple[str, ...]:
-    if screen is AnimeScreen.QUERY:
-        return ("Enter szukaj · Tab widok · Esc wróć",)
-    if screen is AnimeScreen.ENTRIES:
-        return ("Enter odcinki · S subskrybuj · / szukaj · ? więcej · Esc wróć",)
-    if screen is AnimeScreen.TITLES:
-        return ("Enter wybierz · S subskrybuj · / szukaj · Esc wróć",)
-    if screen is AnimeScreen.RELEASES:
-        return ("Space zaznacz · D pobierz · ? więcej · Esc wróć",)
-    if screen is AnimeScreen.DETAILS:
-        return ("C kopiuj · Ctrl+C kopiuj zaznaczenie · Esc wróć",)
-    return ("Space zaznacz · D pobierz · I wydania · P ponownie · S subskrybuj · ? więcej · Esc wróć",)
+    keys: tuple[str, ...] = ("Enter zastosuj", "Esc anuluj") if snapshot.editing_range else snapshot.controls
+    return pack_footer(keys or ("Esc wróć",), width)
 
 
 def spinner_frame(now: float) -> str:

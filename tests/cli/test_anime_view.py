@@ -520,8 +520,8 @@ def test_footer_is_empty_until_content_needs_explanation(status: str) -> None:
     snapshot: AnimeSnapshot = AnimeSnapshot(
         AnimeScreen.EPISODES, "Slime", (replace(rows()[0], status=status), *rows()[1:])
     )
-    assert not render_anime(snapshot, 80, 24, 0).text.plain.splitlines()[-3].strip()
-    assert "Zażółć 日本語" in render_anime(snapshot, 50, 24, 0).text.plain.splitlines()[-3]
+    assert not render_anime(snapshot, 80, 24, 0).text.plain.splitlines()[-2].strip()
+    assert "Zażółć 日本語" in render_anime(snapshot, 50, 24, 0).text.plain.splitlines()[-2]
 
 
 def test_announcement_uses_existing_gray_for_every_visible_character() -> None:
@@ -607,7 +607,7 @@ def test_long_title_uses_two_bottom_lines_without_moving_the_table() -> None:
     lines: list[str] = long.text.plain.splitlines()
     assert long.first_row == plain.first_row
     assert title not in lines[long.first_row + 2]
-    assert f"{lines[-4].strip()} {lines[-3].strip()}" == title
+    assert f"{lines[-3].strip()} {lines[-2].strip()}" == title
     assert plain.text.plain.splitlines()[: plain.first_row] == lines[: long.first_row]
 
 

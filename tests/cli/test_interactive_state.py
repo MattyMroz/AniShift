@@ -193,10 +193,11 @@ def test_processing_renders_named_owner_download_states_without_invented_measure
         assert "hash" not in frame
         assert "░" in frame
         assert ("█" in frame) is percentage
-        assert "C anuluj" in frame
+        assert "X anuluj" in frame
         assert len(frame.splitlines()) <= rows
         assert all(len(line) <= columns for line in frame.splitlines())
         controller.handle_key("text:c")
+        controller.handle_key("enter")
         assert calls == [("transfer", {"info_hash": "hash", "action": "cancel"})]
     finally:
         controller.close()
@@ -274,11 +275,14 @@ def test_processing_only_allows_cancel_for_metadata_and_client_errors(
     calls: list[object] = []
     monkeypatch.setattr(controller, "_command", lambda *args: calls.append(args))
     try:
-        assert "W " not in controller._processing_hint()
-        assert "C anuluj" in controller.render(120, 40).plain
+        frame: str = controller.render(120, 40).plain
+        assert "W wstrzymaj" not in frame
+        assert "W wznów" not in frame
+        assert "X anuluj" in frame
         controller.handle_key("text:w")
         assert calls == []
         controller.handle_key("text:c")
+        controller.handle_key("enter")
         assert calls == [("transfer", {"info_hash": "hash", "action": "cancel"})]
     finally:
         controller.close()
@@ -322,7 +326,7 @@ def test_processing_labels_predecessor_wait_without_attention_warning(monkeypatc
         controller._thread.join(5)
 
 
-def test_download_handoff_keeps_selection_until_real_task_start_and_removes_finished_material(
+def test_download_handoff_keeps_selection_until_real_task_start_and_removes_finished_material(  # noqa: PLR0915
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
@@ -348,21 +352,24 @@ def test_download_handoff_keeps_selection_until_real_task_start_and_removes_fini
         item.update(stage="waiting", reason="preparing", downloaded=True)
         assert "Przygotowanie" in controller.render(80, 24).plain
         assert " |   0% | " in controller.render(80, 24).plain
-        assert "C anuluj" not in controller.render(80, 24).plain
+        assert "X anuluj" not in controller.render(80, 24).plain
         item.update(reason="finalization_failed", problem="finalization_failed", acquisition_state="complete")
         assert "Finalizacja" in controller.render(80, 24).plain
         assert "Episode 01.mkv" in controller.render(80, 24).plain
         assert "Błąd pobierania" not in controller.render(80, 24).plain
         item.update(reason="preparing", problem=None)
         controller.handle_key("text:c")
+        controller.handle_key("enter")
         assert calls == []
         item.update(stage="processing", state="accepted", run_id="run", group_ids=["a"])
         view: RunProgressSnapshot = _live_snapshot("run", {"a": "Episode 01.mkv"}, ())
         progress: RichRunProgress = RichRunProgress.from_snapshot(view, lambda: None)
         controller._runs = {"run": (view.preview.preview_id, progress)}
         assert "Przygotowanie" in controller.render(80, 24).plain
-        assert "C anuluj całe zlecenie · 1 materiałów" in controller.render(80, 24).plain
+        assert "X anuluj" in controller.render(80, 24).plain
         controller.handle_key("text:c")
+        assert "Anulować całe zlecenie (1 materiałów)? Enter tak · Esc nie" in controller.render(80, 24).plain
+        controller.handle_key("enter")
         assert calls == [("cancel", {"run_id": "run"})]
         progress.emit(RunEvent("run", 1, RunEventKind.TASK_STARTED, group_id="a", task_id="tts-a"))
         progress.emit(
@@ -372,11 +379,13 @@ def test_download_handoff_keeps_selection_until_real_task_start_and_removes_fini
         assert len(controller._processing_rows()) == 1
         assert "42%" in controller.render(80, 24).plain
         controller.handle_key("text:c")
+        controller.handle_key("enter")
         assert calls == [("cancel", {"run_id": "run"}), ("cancel", {"run_id": "run"})]
         progress.emit(RunEvent("run", 3, RunEventKind.GROUP_FINISHED, group_id="a", state=TaskState.SUCCEEDED))
         assert controller._processing_rows() == []
         assert "Episode 01.mkv" not in controller.render(80, 24).plain
         controller.handle_key("text:c")
+        controller.handle_key("enter")
         assert len(calls) == 2
     finally:
         controller.close()
@@ -409,8 +418,9 @@ def test_local_admitted_material_is_preparing_before_progress_restore_and_first_
         assert "Przygotowanie" in initial
         assert "Przetwarzanie 1" in initial
         assert " |   0% | 00:00:00.000" in initial
-        assert "C anuluj całe zlecenie" in initial
+        assert "X anuluj" in initial
         controller.handle_key("text:c")
+        controller.handle_key("enter")
         assert calls == [("cancel", {"run_id": "run"})]
         identity: list[str] = controller._processing_row_ids()
         view: RunProgressSnapshot = _live_snapshot("run", {"local": "Local.mkv"}, ())
@@ -424,6 +434,7 @@ def test_local_admitted_material_is_preparing_before_progress_restore_and_first_
         assert "25%" in controller.render(80, 24).plain
         assert controller._processing_row_ids() == identity
         controller.handle_key("text:c")
+        controller.handle_key("enter")
         assert calls == [("cancel", {"run_id": "run"}), ("cancel", {"run_id": "run"})]
         progress.emit(RunEvent("run", 3, RunEventKind.GROUP_FINISHED, group_id="local", state=TaskState.SUCCEEDED))
         assert controller._processing_rows() == []
@@ -742,13 +753,15 @@ def test_processing_hides_uncertain_downloads_and_handoffs_without_changing_live
         assert "Przetwarzanie 2 · Praca" in frame
         assert not any(text in frame for text in ("Ghost", "Materiał", "Niepewne", "99%"))
         assert controller._processing_row_ids() == ["download", "local"]
-        assert "C anuluj" not in frame
+        assert "X anuluj" not in frame
         controller.handle_key("text:c")
+        controller.handle_key("enter")
         assert calls == []
         controller.handle_key("end")
         assert controller._selected == 1
-        assert "C anuluj całe zlecenie" in controller.render(columns, rows).plain
+        assert "X anuluj" in controller.render(columns, rows).plain
         controller.handle_key("text:c")
+        controller.handle_key("enter")
         assert calls == [("cancel", {"run_id": "run"})]
         controller.handle_key("home")
         assert controller._selected == 0
@@ -762,10 +775,10 @@ def test_processing_hides_uncertain_downloads_and_handoffs_without_changing_live
 @pytest.mark.parametrize(
     ("snapshot", "action", "status"),
     [
-        ({"auto_enabled": True}, "O wstrzymaj automat", "Praca"),
-        ({"auto_enabled": False}, "O wznów automat", "Automat wstrzymany"),
-        ({"auto_enabled": False, "pausing": True}, "O wznów automat", "Zatrzymywanie"),
-        ({"auto_enabled": False, "pause_incomplete": True}, "O wznów automat", "Pauza niepełna"),
+        ({"auto_enabled": True}, "O automat", "Praca"),
+        ({"auto_enabled": False}, "O automat", "Automat wstrzymany"),
+        ({"auto_enabled": False, "pausing": True}, "O automat", "Zatrzymywanie"),
+        ({"auto_enabled": False, "pause_incomplete": True}, "O automat", "Pauza niepełna"),
     ],
 )
 def test_processing_footer_names_the_explicit_owner_action_and_current_pause_state(
@@ -780,9 +793,11 @@ def test_processing_footer_names_the_explicit_owner_action_and_current_pause_sta
     monkeypatch.setattr(controller, "_command", lambda kind, payload: calls.append((kind, payload)))
     try:
         frame: str = controller.render(80, 24).plain
-        assert action in frame
         assert f"Przetwarzanie 0 · {status}" in frame
         assert "AniShift wstrzymany" not in frame
+        controller.handle_key("text:?")
+        assert action in controller.render(80, 24).plain
+        controller.handle_key("escape")
         controller.handle_key("text:o")
         assert calls == [("set_auto", {"enabled": not snapshot["auto_enabled"]})]
     finally:
@@ -873,6 +888,7 @@ def test_processing_only_shows_live_material_bars_from_a_mixed_legacy_snapshot( 
         assert "Przetwarzanie 2" in frame
         assert controller._selected == 1
         controller.handle_key("text:c")
+        controller.handle_key("enter")
         assert calls == [("cancel", {"run_id": "run"})]
         controller._receive(
             session,
@@ -883,9 +899,10 @@ def test_processing_only_shows_live_material_bars_from_a_mixed_legacy_snapshot( 
         )
         frame = controller.render(columns, rows).plain
         assert "Brak aktywnego przetwarzania" in frame
-        assert "C anuluj" not in frame
+        assert "X anuluj" not in frame
         assert "%" not in frame
         controller.handle_key("text:c")
+        controller.handle_key("enter")
         assert len(calls) == 1
     finally:
         controller.close()
@@ -913,10 +930,10 @@ def test_processing_requires_live_request_and_distinguishes_preparing_from_start
         if state in {"accepted", "running"}:
             assert "Przygotowanie" in frame
             assert "Przetwarzanie 1" in frame
-            assert "C anuluj całe zlecenie · 1 materiałów" in frame
+            assert "X anuluj" in frame
         else:
             assert "Brak aktywnego przetwarzania" in frame
-            assert "C anuluj" not in frame
+            assert "X anuluj" not in frame
         assert "Episode.mkv" not in frame
         assert ("%" in frame) is (state in {"accepted", "running"})
     finally:
@@ -1174,7 +1191,7 @@ def _assert_subscription_rows(frame: str) -> None:
     assert "pobrano" not in frame
     assert "Aktywne" not in frame
     assert "W wstrzymaj" in frame
-    assert "Del usuń" in frame
+    assert "? więcej" in frame
 
 
 def _assert_wrapping_navigation(controller: StateController) -> None:
@@ -1371,7 +1388,7 @@ def test_delete_dispatches_whole_set_once_in_preview_session_unless_context_chan
         if action == "refuse":
             assert "Źródło czeka na zwolnienie przez torrent" in controller.render(80, 24).plain
         else:
-            assert controller._notice == ""
+            assert controller._notice == ("Usunięto · Ctrl+Z cofnij" if action == "delete" else "")
     finally:
         release.set()
         _await_state_action(controller)
@@ -1966,6 +1983,7 @@ def test_processing_preserves_selected_identity_when_material_counts_change(
         )
         assert controller._selected == 1
         controller.handle_key("text:c")
+        controller.handle_key("enter")
         assert calls == [("cancel", {"run_id": "run-1"})]
     finally:
         controller.close()
@@ -2010,8 +2028,8 @@ def test_each_panel_tab_retains_contextual_actions_and_owner_counts_at_feasible_
         if tab == 1 and rows < 12:
             assert "Powiększ terminal do 50 x 12" in frame
         else:
-            assert " widok" in frame
-            assert ("D dodaj", "H historia", "Delete usuń")[tab - 1] in frame
+            assert "? więcej · Esc wróć" in frame
+            assert ("/ dodaj", "H historia", "? więcej")[tab - 1] in frame
         assert len(frame.splitlines()) <= rows
         assert all(len(line) <= columns for line in frame.splitlines())
         if tab == 1 and rows >= 24:

@@ -664,8 +664,10 @@ def test_processing_cancel_targets_the_disclosed_whole_manual_run(
             controller: StateController = StateController(session, lambda: None)
             try:
                 assert _wait_for_resident(session, lambda _status: controller._connected)
-                assert "C anuluj całe zlecenie · 2 materiałów" in controller.render(120, 40).plain
+                assert "X anuluj" in controller.render(120, 40).plain
                 controller.handle_key("text:c")
+                assert "Anulować całe zlecenie (2 materiałów)? Enter tak · Esc nie" in controller.render(120, 40).plain
+                controller.handle_key("enter")
                 assert _wait_for_resident(session, lambda _status: not controller._busy)
                 release.set()
                 assert _wait_for_resident(

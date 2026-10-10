@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
@@ -12,7 +13,7 @@ from typing import Final
 
 from natsort import os_sorted
 from prompt_toolkit.data_structures import Point
-from prompt_toolkit.mouse_events import MouseEvent
+from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from rich.console import Console
 from rich.text import Text
 
@@ -28,12 +29,12 @@ from anishift.application import (
     decode_view,
 )
 from anishift.application.events import RunEvent, sanitize_event_message
+from anishift.cli.interactive.actions import Action, ScreenActions, footer_segments, help_lines, pack_footer
 from anishift.cli.interactive.anime import EPISODE_REASON_LABELS, AnimeController, AnimeResult
 from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeSnapshot
 from anishift.cli.interactive.anime_view import (
     MIN_COLUMNS,
     MIN_ROWS,
-    NAVIGATION_KEYS,
     AnimeFrame,
     render_anime,
     visible_rows,
@@ -175,8 +176,26 @@ _SUBSCRIPTION_CHECKING: Final[str] = "Sprawdzam…"
 _SHADOW_WARNING: Final[str] = "Tryb cienia — subskrypcje tylko zapisują propozycje"
 """Status row above the list while the owner records proposals instead of attempts."""
 
-_NO_SUBSCRIPTIONS: Final[str] = "Brak subskrypcji · D dodaj pierwszą"
+_NO_SUBSCRIPTIONS: Final[str] = "Brak subskrypcji"
 """Only line of an empty subscription list."""
+
+_ANSWERS: Final[str] = "Enter tak · Esc nie"
+"""Keys answering the cancellation question."""
+
+_LIBRARY_DELETED: Final[str] = "Usunięto · Ctrl+Z cofnij"
+"""Library notice kept after a deleted set leaves the list, until the next move."""
+
+_HISTORY_SPAN: Final[str] = "Historia z ostatnich 30 dni"
+"""Help line naming how far back the default history reaches."""
+
+_PANEL_ACTIONS: Final[tuple[Action, ...]] = (("M", "ręczny"), ("U", "ustawienia"))
+"""Mode switches listed under ? on every list outside Anime."""
+
+_TAB_KEYS: Final[frozenset[str]] = frozenset({"tab", "backtab", "left", "right"})
+"""Keys switching the panel tab."""
+
+_MOVE_KEYS: Final[frozenset[str]] = frozenset({"up", "down", "pageup", "pagedown", "home", "end"})
+"""Keys moving a list cursor or scrolling a help block."""
 
 _LIBRARY_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
     {
@@ -310,6 +329,10 @@ class StateController:
         self._active_position: int = 0
         self._retry: RetryProposal | None = None
         self._manual_retry: RetryProposal | None = None
+        self._question: tuple[str, str] | None = None
+        self._help: bool = False
+        self._help_offset: int = 0
+        self._page: int = 1
         self._thread: threading.Thread = threading.Thread(target=self._watch, name="anishift-state", daemon=True)
         self._thread.start()
 
@@ -399,24 +422,20 @@ class StateController:
         rows: list[Mapping[str, object]] = _library_rows(self._snapshot)
         return (_library_row_id(rows[self._selected]), "") if self._selected < len(rows) else ("", "")
 
-    def handle_key(self, key: str) -> StateResult:
+    def handle_key(self, key: str) -> StateResult:  # noqa: PLR0911
         """Navigate the shared list or submit one explicit action."""
         with self._lock:
             self._library_target = None
             if self._tab in {_Tab.FILES, _Tab.SUBSCRIPTIONS} and key in {
-                "up",
-                "down",
-                "home",
-                "end",
+                *_MOVE_KEYS,
+                *_TAB_KEYS,
                 "escape",
                 "backspace",
-                "tab",
-                "backtab",
-                "left",
-                "right",
             }:
                 self._view_generation += 1
                 self._notify("")
+            if self._question is not None:
+                return self._question_key(key)
             if self._history_input is not None:
                 self._history_input_key(key)
                 return StateResult.CONTINUE
@@ -424,9 +443,73 @@ class StateController:
                 return self._retry_key(key)
             if self._tab == _Tab.ANIME and self._anime is not None:
                 return self._anime_key(key)
-            if self._modal_key(key) or self._history_navigation(key):
+            if self._help:
+                return self._help_key(key)
+            if self._tab == _Tab.FILES and key == "undo":
+                self._work(lambda session: session.undo_deletion(), success="")
+                self._invalidate()
+                return StateResult.CONTINUE
+            if self._details is not None:
+                return self._details_key(key)
+            if self._history_navigation(key):
                 return StateResult.CONTINUE
             return self._list_key(key)
+
+    def _question_key(self, key: str) -> StateResult:
+        target: tuple[str, str] | None = self._question
+        self._question = None
+        if key == "enter" and target is not None and self._question_rows(target):
+            if self._busy:
+                self._question = target
+            else:
+                self._command(*_cancel_command(target))
+        self._invalidate()
+        return StateResult.CONTINUE
+
+    def _question_rows(self, target: tuple[str, str]) -> list[Mapping[str, object]]:
+        return [item for item in self._processing_rows() if _cancel_target(item) == target]
+
+    def _drop_vanished_question(self) -> None:
+        if self._question is not None and not self._question_rows(self._question):
+            self._question = None
+
+    def _question_text(self) -> str:
+        target: tuple[str, str] | None = self._question
+        rows: list[Mapping[str, object]] = [] if target is None else self._question_rows(target)
+        if target is None or not rows:
+            return ""
+        if target[0] == "info_hash":
+            head: str = "Anulować pobieranie?" if len(rows) == 1 else f"Anulować pobieranie ({len(rows)} materiałów)?"
+        else:
+            scope: object = rows[0].get("group_ids", [])
+            head = f"Anulować całe zlecenie ({len(scope) if isinstance(scope, list) else 1} materiałów)?"
+        return head
+
+    def _help_key(self, key: str) -> StateResult:
+        if key in {"text:?", "escape", "backspace", "interrupt"}:
+            self._help = False
+        elif key in _TAB_KEYS:
+            self._help = False
+            return self._list_key(key)
+        elif key.casefold() == "text:o":
+            return self._action_key("o")
+        elif key in _MOVE_KEYS:
+            offset: int = self._help_offset
+            moves: dict[str, int] = {
+                "up": offset - 1,
+                "down": offset + 1,
+                "pageup": offset - self._page,
+                "pagedown": offset + self._page,
+                "home": 0,
+                "end": sys.maxsize,
+            }
+            self._help_offset = max(moves[key], 0)
+        self._invalidate()
+        return StateResult.CONTINUE
+
+    def _open_help(self) -> None:
+        self._help = True
+        self._help_offset = 0
 
     def _history_navigation(self, key: str) -> bool:
         if self._tab != _Tab.PROGRESS or not self._history_open:
@@ -446,40 +529,28 @@ class StateController:
         if key in {"escape", "interrupt", "backspace"}:
             self._view_generation += 1
             return StateResult.HOME
-        if key in {"tab", "backtab", "left", "right"}:
+        if key in _TAB_KEYS:
             self._view_generation += 1
             self._details = None
             self._switch_tab((self._tab + (-1 if key in {"left", "backtab"} else 1)) % len(_TABS))
             self._notify("")
             if self._tab == _Tab.FILES:
                 self._work(lambda session: session.library())
-        elif key in {"up", "down", "home", "end"}:
+        elif key in _MOVE_KEYS:
             self._follow_cursor[self._tab] = True
-            count: int = max(len(self._entries(120)), 1)
-            if key in {"home", "end"}:
-                self._selected = 0 if key == "home" else count - 1
-            else:
-                self._selected = (self._selected + (-1 if key == "up" else 1)) % count
+            self._selected = _moved(self._selected, key, max(len(self._entries(120)), 1), self._page)
         elif key in {"space", "enter", "delete", "undo"} and self._tab == _Tab.SUBSCRIPTIONS:
             self._subscription_key(key)
         elif key == "enter" and self._tab == _Tab.FILES:
             self._file_action("open")
         elif key == "delete" and self._tab == _Tab.FILES:
             self._file_action("delete")
+        elif key == "delete" and self._tab == _Tab.PROGRESS and not self._history_open:
+            self._processing_action("x")
         elif key.startswith("text:"):
             return self._action_key(key.removeprefix("text:").casefold())
         self._invalidate()
         return StateResult.CONTINUE
-
-    def _modal_key(self, key: str) -> bool:
-        if self._tab == _Tab.FILES and key == "undo":
-            self._work(lambda session: session.undo_deletion(), success="")
-            self._invalidate()
-            return True
-        if self._details is not None:
-            self._details_key(key)
-            return True
-        return False
 
     def _subscription_key(self, key: str) -> None:
         if key == "undo":
@@ -490,7 +561,7 @@ class StateController:
             self._notice_persistent = True
             return
         row: Mapping[str, object] | None = self._selected_subscription()
-        if key == "text:d" or (key == "enter" and row is None):
+        if key in {"text:/", "text:d"} or (key == "enter" and row is None):
             if self._anime is not None:
                 self._switch_tab(_Tab.ANIME)
                 self._anime.start_subscription_search()
@@ -507,6 +578,7 @@ class StateController:
         kind: str = {
             "delete": "subscription_remove",
             "text:x": "subscription_remove",
+            "text:r": "subscription_check",
             "text:f": "subscription_check",
         }.get(key, "subscription_resume" if row.get("paused") else "subscription_pause")
         self._subscription_command(kind, row)
@@ -578,24 +650,28 @@ class StateController:
         if self._tab == _Tab.SUBSCRIPTIONS:
             self._selected = position
 
-    def _details_key(self, key: str) -> None:
-        if key in {"escape", "interrupt", "backspace"}:
+    def _details_key(self, key: str) -> StateResult:
+        details: LibrarySet | None = self._details
+        letter: str = key.removeprefix("text:").casefold() if key.startswith("text:") else ""
+        if key in {"escape", "interrupt", "backspace", "text:?", *_TAB_KEYS}:
             self._view_generation += 1
             self._details = None
             self._selected = self._detail_selection
-        elif key == "delete" and self._details is not None:
-            set_id: str = self._details.set_id
+            if key in _TAB_KEYS:
+                return self._list_key(key)
+        elif letter in {"o", "m", "u"}:
+            return self._action_key(letter)
+        elif (key == "delete" or letter == "x") and details is not None:
+            set_id: str = details.set_id
             generation: int = self._view_generation
             self._work(lambda session: self._delete_set(session, set_id, generation), success="")
-        elif key == "enter" or key.casefold() == "text:f":
+        elif key == "enter" or letter == "f":
             self._open_detail_file(reveal=key != "enter")
-        elif key in {"up", "down", "home", "end"}:
+        elif key in _MOVE_KEYS:
             self._follow_cursor[self._viewport()] = True
-            count: int = max(len(self._entries(120)), 1)
-            self._selected = (self._selected + (-1 if key == "up" else 1)) % count
-            if key in {"home", "end"}:
-                self._selected = 0 if key == "home" else count - 1
+            self._selected = _moved(self._selected, key, max(len(self._entries(120)), 1), self._page)
         self._invalidate()
+        return StateResult.CONTINUE
 
     def _open_detail_file(self, *, reveal: bool) -> None:
         details: LibrarySet | None = self._details
@@ -632,11 +708,14 @@ class StateController:
         """Invalidate child completion navigation when the enclosing panel is hidden."""
         with self._lock:
             self._library_target = None
+            self._question = None
             if self._anime is not None:
                 self._anime.cancel()
 
     def _switch_tab(self, tab: int) -> None:
         self._library_target = None
+        self._question = None
+        self._help = False
         self._view_generation += 1
         if self._tab == _Tab.ANIME and self._anime is not None:
             if self._anime.in_subscriptions:
@@ -652,30 +731,35 @@ class StateController:
         return self._tab
 
     def mouse(self, event: MouseEvent) -> bool:
-        """Forward Anime cell coordinates, reporting whether the Anime tab took the event."""
+        """Cancel an open question on a press or forward Anime cells, reporting whether the panel took the event."""
         with self._lock:
-            if self._tab != _Tab.ANIME or self._anime is None:
+            if self._question is not None and event.event_type is MouseEventType.MOUSE_DOWN:
+                self._question = None
+            elif self._tab != _Tab.ANIME or self._anime is None:
                 return False
-            self._anime.mouse(
-                MouseEvent(
-                    Point(event.position.x, event.position.y - self._anime_top),
-                    event.event_type,
-                    event.button,
-                    event.modifiers,
+            else:
+                self._anime.mouse(
+                    MouseEvent(
+                        Point(event.position.x, event.position.y - self._anime_top),
+                        event.event_type,
+                        event.button,
+                        event.modifiers,
+                    )
                 )
-            )
         self._invalidate()
         return True
 
     def view_key(self) -> tuple[object, ...]:
         """Identify the painted tab and list, so a selection never outlives them."""
         with self._lock:
-            return (self._shown_tab(), self._viewport(), self._history_open, self._retry is not None)
+            return (self._shown_tab(), self._viewport(), self._history_open, self._retry is not None, self._help)
 
     def select(self, index: int) -> None:
         """Move the cursor to a clicked row outside Anime without running its action."""
         with self._lock:
-            if self._tab == _Tab.ANIME or self._retry is not None or not 0 <= index < len(self._entries(120)):
+            if self._tab == _Tab.ANIME or self._retry is not None or self._help:
+                return
+            if not 0 <= index < len(self._entries(120)):
                 return
             if index != self._selected and self._tab in {_Tab.FILES, _Tab.SUBSCRIPTIONS}:
                 self._view_generation += 1
@@ -692,6 +776,10 @@ class StateController:
             if self._tab == _Tab.ANIME:
                 if self._anime is not None:
                     self._anime.scroll(direction)
+                self._invalidate()
+                return
+            if self._help:
+                self._help_offset = max(self._help_offset + direction * 3, 0)
                 self._invalidate()
                 return
             self._offsets[viewport] = max(self._offsets.get(viewport, 0) + direction * 3, 0)
@@ -735,7 +823,11 @@ class StateController:
             self._load_history()
         elif key == "o":
             self._command("set_auto", {"enabled": not self._snapshot.get("auto_enabled", False)})
-        elif self._tab == _Tab.SUBSCRIPTIONS and key in {"d", "f", "w", "x"}:
+        elif self._tab == _Tab.FILES and key in {"?", "d"}:
+            self._library_details()
+        elif key == "?":
+            self._open_help()
+        elif self._tab == _Tab.SUBSCRIPTIONS and key in {"/", "d", "f", "r", "w", "x"}:
             self._subscription_key(f"text:{key}")
         elif self._tab == _Tab.PROGRESS and not self._history_open:
             self._processing_action(key)
@@ -744,23 +836,27 @@ class StateController:
         self._invalidate()
         return StateResult.CONTINUE
 
+    def _library_details(self) -> None:
+        if self._selected < len(_library_rows(self._snapshot)) and self._connected and not self._busy:
+            self._file_action("d")
+        else:
+            self._open_help()
+
     def _processing_action(self, key: str) -> None:
+        item: Mapping[str, object] | None = self._selected_material()
+        if item is None:
+            return
+        target: tuple[str, str] | None = _cancel_target(item)
+        if key in {"c", "x"}:
+            self._question = target
+            return
+        toggle: tuple[str, str] | None = _download_toggle(item)
+        if key == "w" and target is not None and target[0] == "info_hash" and toggle is not None:
+            self._command("transfer", {"info_hash": target[1], "action": toggle[0]})
+
+    def _selected_material(self) -> Mapping[str, object] | None:
         materials: list[Mapping[str, object]] = self._processing_rows()
-        if self._selected >= len(materials):
-            return
-        item: Mapping[str, object] = materials[self._selected]
-        if key not in {"c", "w"}:
-            return
-        if item.get("stage") == "download" and item.get("info_hash"):
-            toggle: tuple[str, str] | None = _download_toggle(item)
-            if key == "w" and toggle is None:
-                return
-            action: str = toggle[0] if key == "w" and toggle is not None else "cancel"
-            self._command("transfer", {"info_hash": item["info_hash"], "action": action})
-        elif (
-            key == "c" and (item.get("stage") == "processing" or item.get("admitted_processing")) and item.get("run_id")
-        ):
-            self._command("cancel", {"run_id": item["run_id"]})
+        return materials[self._selected] if self._selected < len(materials) else None
 
     def _load_history(self) -> None:
         generation: int = self._view_generation
@@ -829,6 +925,7 @@ class StateController:
             with self._lock:
                 if generation == self._view_generation and not self._stop.is_set():
                     self._retry = proposal
+                    self._help = False
 
         self._work(load, success="")
 
@@ -862,10 +959,10 @@ class StateController:
                 self._command("ready_retry")
             return
         library: list[Mapping[str, object]] = _library_rows(self._snapshot)
-        if key not in {"open", "f", "d", "delete"} or self._selected >= len(library):
+        if key not in {"open", "f", "d", "delete", "x"} or self._selected >= len(library):
             return
         set_id: str = str(library[self._selected]["set_id"])
-        if key == "delete":
+        if key in {"delete", "x"}:
             generation: int = self._view_generation
             self._work(lambda session: self._delete_set(session, set_id, generation), success="")
             return
@@ -887,6 +984,8 @@ class StateController:
             if self._details is not None and self._details.set_id == set_id:
                 self._details = None
                 self._selected = self._detail_selection
+            self._notify(_LIBRARY_DELETED)
+            self._notice_persistent = True
 
     def _show_details(self, session: ResidentSession, set_id: str, generation: int) -> None:
         details: LibrarySet = session.library_details(set_id)
@@ -897,6 +996,7 @@ class StateController:
             self._selected = 0
             self._follow_cursor[len(_TABS) + 1] = True
             self._details = details
+            self._help = False
 
     def _command(self, kind: str, payload: Mapping[str, object] | None = None) -> None:
         self._work(lambda session: session.command(kind, payload))
@@ -940,7 +1040,11 @@ class StateController:
             session = self._parent.new_session()
             action(session)
             with self._lock:
-                if generation == self._view_generation and context == self._library_context():
+                if (
+                    generation == self._view_generation
+                    and context == self._library_context()
+                    and self._notice != _LIBRARY_DELETED
+                ):
                     self._notify("" if self._tab == _Tab.FILES else success)
                     self._notice_persistent = persistent
         except (AniShiftError, ControlError, OSError, ValueError) as error:
@@ -1037,8 +1141,9 @@ class StateController:
                 self._observe_downloads()
                 if self._notice_version < self._state_version and not self._notice_persistent:
                     self._notice = ""
-                if context != self._library_context() and self._notice_persistent:
+                if context != self._library_context() and self._notice_persistent and self._notice != _LIBRARY_DELETED:
                     self._notify("")
+                self._drop_vanished_question()
                 if payload.get("shutting_down"):
                     self._finished = True
                     self._stop.set()
@@ -1093,6 +1198,7 @@ class StateController:
             progress[1].emit(event)
             self._preserve_processing_selection(previous, self._processing_row_ids())
             self._observe_downloads()
+            self._drop_vanished_question()
 
     def _preserve_tab_selection(
         self,
@@ -1197,6 +1303,8 @@ class StateController:
             area: int = max(budget - len(heading), 1)
             if self._tab == _Tab.ANIME and self._anime is not None:
                 body: Text = self._anime.render(columns, area)
+            elif self._help:
+                body = self._help_body(columns, area)
             elif self._tab == _Tab.SUBSCRIPTIONS and self._retry is None:
                 body = self._subscription_body(columns, area)
             else:
@@ -1246,6 +1354,10 @@ class StateController:
             lines: tuple[str | Text, ...] = wrapped[index][:remaining]
             append_wrapped_row(content, left, lines, index == selected, marker, index=index)
             remaining -= len(lines)
+            self._page = max(index - start + 1, 1)
+        if self._details is not None:
+            for line in ("", *help_lines(self._actions().listed, max(columns - left - 4, 1)))[: max(remaining, 0)]:
+                content.append(f"{' ' * (left + 2)}{line}\n", style="gray")
         if not entries:
             empty: str = (
                 "Brak aktywnego przetwarzania"
@@ -1280,17 +1392,16 @@ class StateController:
         return tabs
 
     def _view_footer(self, width: int) -> list[str | Text]:
+        question: str = self._question_text()
+        if question:
+            asked: str = f"{question} {_ANSWERS}"
+            return [asked] if Text(asked).cell_len <= width else [question, _ANSWERS]
         if self._retry is not None:
-            return ["Enter przygotuj · Esc anuluj", self._notice]
+            return ["Enter przygotuj · Esc wróć", self._notice]
         if self._tab == _Tab.PROGRESS and self._history_open:
             if self._history_input is not None:
                 return [self._history_input.render(100), "Enter szukaj · Esc anuluj", self._history_problem]
-            return [
-                "Historia · ostatnie 30 dni",
-                "Enter otwórz · P Ponów · S szukaj · Esc bieżące",
-                self._history_problem,
-                self._notice,
-            ]
+            return [*pack_footer(footer_segments(self._actions()), width), self._history_problem, self._notice]
         return self._footer(width)
 
     def _footer(self, width: int) -> list[str | Text]:
@@ -1301,30 +1412,77 @@ class StateController:
             result.append(self._library_notice)
         if not self._connected:
             result.append("Brak połączenia")
-        if self._details is not None:
-            return [
-                *result,
-                "↑↓ pliki · Enter otwórz plik · F folder · Delete usuń · Ctrl+Z cofnij · Esc wróć",
-            ]
         relocations: list[Mapping[str, object]] = _relocation_problems(self._snapshot)
-        if self._tab == _Tab.FILES and relocations:
+        if self._details is None and self._tab == _Tab.FILES and relocations:
             names: str = ", ".join(_safe_text(item["name"]) for item in relocations)
             result.append(f"P ponów przenoszenie do biblioteki · {names}")
-        hints: tuple[str, ...] = (
-            "",
-            "",
-            "H historia · M ręczny · "
-            + ("O wstrzymaj automat" if self._snapshot.get("auto_enabled") else "O wznów automat")
-            + " · U ustawienia",
-            "Enter otwórz · F folder · D szczegóły · Delete usuń · Ctrl+Z cofnij",
-        )
-        result.extend(
-            pack_keys(
-                (hints[self._tab], *NAVIGATION_KEYS, "Esc wróć"), width, optional=tuple(reversed(NAVIGATION_KEYS))
-            )
-        )
-        result.append(self._processing_hint() if self._tab == _Tab.PROGRESS else "")
+        result.extend(pack_footer(footer_segments(self._actions(), more=self._details is None), width))
         return result
+
+    def _help_body(self, columns: int, rows: int) -> Text:
+        width: int = max(columns - 4, 1)
+        intro: tuple[str, ...] = (_HISTORY_SPAN,) if self._tab == _Tab.PROGRESS and self._history_open else ()
+        lines: tuple[str, ...] = help_lines(self._actions().listed, width, intro=intro)
+        status: Text = Text(self._global_status(width), style="gray") if self._shows_status() else Text()
+        footer: list[Text] = [Text("Esc wróć", style="gray"), status][: max(rows - 2, 1)]
+        area: int = rows - len(footer)
+        visible: int = max(area - 1, 1)
+        self._page = visible
+        self._help_offset = min(self._help_offset, max(len(lines) - visible, 0))
+        shown: tuple[str, ...] = lines[self._help_offset : self._help_offset + visible]
+        left: int = max((columns - max((Text(line).cell_len for line in shown), default=0)) // 2, 0)
+        top: int = max((area - len(shown)) // 2, 0)
+        return Text("\n").join(
+            [
+                *(Text() for _ in range(top)),
+                *(Text(f"{' ' * left}{line}", style="gray") for line in shown),
+                *(Text() for _ in range(max(area - top - len(shown), 0))),
+                *(_centered(line, columns) for line in footer),
+            ]
+        )
+
+    def _actions(self) -> ScreenActions:
+        if self._details is not None:
+            return ScreenActions(
+                (("Enter", "otwórz plik"), ("F", "folder"), ("X", "usuń")), (("Ctrl+Z", "cofnij"), *_PANEL_ACTIONS)
+            )
+        if self._tab == _Tab.SUBSCRIPTIONS:
+            return self._subscription_actions()
+        if self._tab == _Tab.PROGRESS and self._history_open:
+            return ScreenActions(
+                (("Enter", "otwórz"), ("P", "ponów"), ("/", "szukaj")), (("H", "zamknij"), *_PANEL_ACTIONS)
+            )
+        if self._tab == _Tab.PROGRESS:
+            return self._processing_actions()
+        listed: bool = self._selected < len(_library_rows(self._snapshot))
+        relocation: tuple[Action, ...] = (("P", "ponów przenoszenie"),) if _relocation_problems(self._snapshot) else ()
+        return ScreenActions(
+            (("Enter", "otwórz"), ("F", "folder"), ("X", "usuń")) if listed else (),
+            (("Ctrl+Z", "cofnij"), *relocation, *_PANEL_ACTIONS),
+        )
+
+    def _subscription_actions(self) -> ScreenActions:
+        row: Mapping[str, object] | None = self._selected_subscription()
+        undo: tuple[Action, ...] = (("Ctrl+Z", "cofnij"), *_PANEL_ACTIONS)
+        if row is None:
+            return ScreenActions((("/", "dodaj pierwszą"),), undo)
+        toggle: Action = ("W", "wznów" if row.get("paused") else "wstrzymaj")
+        return ScreenActions(
+            (("Enter", "szczegóły"), ("/", "dodaj"), toggle), (("R", "sprawdź teraz"), ("X", "usuń"), *undo)
+        )
+
+    def _processing_actions(self) -> ScreenActions:
+        item: Mapping[str, object] | None = self._selected_material()
+        target: tuple[str, str] | None = None if item is None else _cancel_target(item)
+        toggle: tuple[str, str] | None = (
+            _download_toggle(item) if item is not None and target is not None and target[0] == "info_hash" else None
+        )
+        footer: tuple[Action, ...] = (
+            *((("W", toggle[1]),) if toggle is not None else ()),
+            *((("X", "anuluj"),) if target is not None else ()),
+            ("H", "historia"),
+        )
+        return ScreenActions(footer, _PANEL_ACTIONS)
 
     def _subscription_body(self, columns: int, rows: int) -> Text:
         tight: bool = rows == MIN_ROWS and columns >= MIN_COLUMNS
@@ -1332,6 +1490,7 @@ class StateController:
         items: tuple[AnimeRow, ...] = self._subscription_rows()
         self._selected = min(self._selected, max(len(items) - 1, 0))
         visible: int = visible_rows(area)
+        self._page = visible
         offset: int = min(self._offsets.get(_Tab.SUBSCRIPTIONS, 0), max(len(items) - visible, 0))
         if self._follow_cursor.get(_Tab.SUBSCRIPTIONS, True):
             offset = max(min(offset, self._selected), self._selected - visible + 1)
@@ -1344,7 +1503,7 @@ class StateController:
             cursor=self._selected,
             offset=offset,
             notice=" · ".join(text for text in problems if text),
-            controls=(f"{self._subscription_hint()} · Esc wróć",),
+            controls=footer_segments(self._actions()),
             global_status=self._subscription_warning(),
         )
         frame: AnimeFrame = render_anime(snapshot, columns, area, self._clock().timestamp())
@@ -1377,31 +1536,10 @@ class StateController:
             )
         return tuple(rows)
 
-    def _subscription_hint(self) -> str:
-        row: Mapping[str, object] | None = self._selected_subscription()
-        if row is None:
-            return "D dodaj · Ctrl+Z cofnij"
-        toggle: str = "W wznów" if row.get("paused") else "W wstrzymaj"
-        return f"Enter szczegóły · D dodaj · {toggle} · F szukaj · Del usuń · Ctrl+Z cofnij"
-
     def _subscription_warning(self) -> str:
         if self._subscriptions_problem:
             return "Monitoring nie działa: nie można zapisać stanu"
         return _SHADOW_WARNING if self._subscriptions_shadow else ""
-
-    def _processing_hint(self) -> str:
-        materials: list[Mapping[str, object]] = self._processing_rows()
-        if self._selected >= len(materials):
-            return ""
-        item: Mapping[str, object] = materials[self._selected]
-        if item.get("stage") == "download" and item.get("info_hash"):
-            toggle: tuple[str, str] | None = _download_toggle(item)
-            return (f"W {toggle[1]} · " if toggle is not None else "") + "C anuluj całe zlecenie"
-        if not (item.get("stage") == "processing" or item.get("admitted_processing")) or not item.get("run_id"):
-            return ""
-        scope: object = item.get("group_ids", [])
-        count: int = len(scope) if isinstance(scope, list) else 1
-        return f"C anuluj całe zlecenie · {count} materiałów"
 
     def _shows_status(self) -> bool:
         if self._retry is not None or (self._tab == _Tab.PROGRESS and self._history_open):
@@ -1627,6 +1765,28 @@ def _download_toggle(item: Mapping[str, object]) -> tuple[str, str] | None:
     if item.get("state") in {"pausedDL", "stoppedDL", "pausedUP", "stoppedUP"}:
         return "resume", "wznów"
     return "stop", "wstrzymaj"
+
+
+def _cancel_target(item: Mapping[str, object]) -> tuple[str, str] | None:
+    if item.get("stage") == "download" and item.get("info_hash"):
+        return "info_hash", str(item["info_hash"])
+    if (item.get("stage") == "processing" or item.get("admitted_processing")) and item.get("run_id"):
+        return "run_id", str(item["run_id"])
+    return None
+
+
+def _cancel_command(target: tuple[str, str]) -> tuple[str, Mapping[str, object]]:
+    if target[0] == "info_hash":
+        return "transfer", {"info_hash": target[1], "action": "cancel"}
+    return "cancel", {"run_id": target[1]}
+
+
+def _moved(selected: int, key: str, count: int, page: int) -> int:
+    if key in {"home", "end"}:
+        return 0 if key == "home" else count - 1
+    if key in {"up", "down"}:
+        return (selected + (-1 if key == "up" else 1)) % count
+    return min(max(selected + (-page if key == "pageup" else page), 0), count - 1)
 
 
 def _relocation_problems(snapshot: Mapping[str, object]) -> list[Mapping[str, object]]:

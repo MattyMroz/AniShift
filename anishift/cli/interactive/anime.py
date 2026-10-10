@@ -53,6 +53,7 @@ from anishift.application import (
 from anishift.application.cancellation import EventCancellationToken
 from anishift.application.episode_commands import MAX_EPISODE_KEYS
 from anishift.application.events import sanitize_event_message
+from anishift.cli.interactive.actions import Action, ScreenActions, footer_segments, help_lines
 from anishift.cli.interactive.anime_panel import AnimePanel
 from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeViewState, NoticeKind
 from anishift.cli.interactive.anime_view import WIDE_COLUMNS, visible_rows
@@ -116,8 +117,11 @@ _ANNOUNCED: Final[str] = "Zapowiedź · odcinków jeszcze nie ma · S subskrybuj
 _EXTRA_FORMATS: Final[frozenset[str]] = frozenset({"OVA", "SPECIAL"})
 """AniList formats U08 lists as related extras of the subscribed season."""
 
-_WIDE_SUBSCRIPTION_KEYS: Final[int] = 61
-"""Key hint width from which U08 shows full labels and I; narrower hints leave I to the ? details."""
+_COPY: Final[tuple[Action, ...]] = (("C", "kopiuj"),)
+"""Copy action of every Anime screen showing rows."""
+
+_LISTED: Final[tuple[Action, ...]] = (("/", "szukaj"), *_COPY)
+"""Actions every catalogue list lists only under ?."""
 
 _MAX_BATCH: Final[int] = MAX_EPISODE_KEYS
 """Most episodes one D press sends to the owner, matching its batch limit."""
@@ -153,7 +157,7 @@ EPISODE_REASON_LABELS: Final[dict[str, str]] = {
 }
 """Shared column labels for owner batch and episode status reasons."""
 
-_IN_PROGRESS_HINT: Final[str] = "W toku · C anuluj w Przetwarzaniu"
+_IN_PROGRESS_HINT: Final[str] = "W toku · X anuluj w Przetwarzaniu"
 """Notice naming where an active episode can be cancelled instead of ordered again."""
 
 _EPISODE_ADMITTED: Final[str] = "Odcinek już zlecony"
@@ -349,6 +353,10 @@ class _Screen(StrEnum):
     DRAFT = "draft"
 
 
+_NO_HELP: Final[frozenset[_Screen]] = frozenset({_Screen.QUERY, _Screen.BUSY, _Screen.PROBLEM})
+"""Screens whose footer offers no ? help."""
+
+
 class AnimeController:
     """Own one ephemeral release search while AppService owns the network boundary."""
 
@@ -466,7 +474,7 @@ class AnimeController:
             if self._handle_input(key):
                 return AnimeResult.CONTINUE
             if self._details_open:
-                if key in {"escape", "interrupt", "text:?"}:
+                if key in {"escape", "interrupt", "backspace", "text:?"}:
                     self._details_open = False
                     self._view.selection = None
                 else:
@@ -594,8 +602,13 @@ class AnimeController:
         if row is None or self._screen is not _Screen.EPISODES:
             return None
         folded: str = key.casefold()
+        if folded == "text:/":
+            self._leave_subscriptions()
+            self.start_subscription_search()
+            return AnimeResult.CONTINUE
         kind: str | None = {
             "text:w": "subscription_resume" if row.get("paused") else "subscription_pause",
+            "text:r": "subscription_check",
             "text:f": "subscription_check",
             "text:x": "subscription_remove",
             "delete": "subscription_remove",
@@ -886,11 +899,6 @@ class AnimeController:
     def _sync_subscription_view(self) -> None:
         if self._screen is _Screen.DRAFT:
             self._view.title = f"Nowa subskrypcja \u203a {_safe(self._draft_title)}"
-            self._view.controls = (
-                ("Enter wybierz · Space zaznacz · A wszystkie · Esc anuluj",)
-                if self._draft_episodes()
-                else ("Enter wybierz · Esc anuluj",)
-            )
             keys: list[str] = [item.key for item in self._view.items]
             wanted: str = self._draft_cursor if self._draft_cursor in keys else self._draft_cursor.split(".")[0] + ".0"
             if wanted not in keys:
@@ -911,16 +919,6 @@ class AnimeController:
         self._view.global_status = facts[1]
         self._view.status_kind = NoticeKind.INFO
         self._view.notice = self._view.notice or " · ".join(note for note in facts[2:] if note)
-        toggle: str = "W wznów" if self._subscription.get("paused") else "W wstrzymaj"
-        wide: bool = self._columns >= _WIDE_SUBSCRIPTION_KEYS
-        episode_keys: str = (
-            "Space zaznacz · D pobierz · I wydania · P ponownie · ? więcej"
-            if wide
-            else "Space · D pobierz · P ponownie · ? więcej"
-        )
-        if self._waiting_number() is not None:
-            episode_keys = "T pobierz teraz · " + episode_keys.replace(" · P ponownie", "")
-        self._view.controls = (episode_keys, f"{toggle} · F szukaj{' teraz' if wide else ''} · X usuń · Esc lista")
 
     def _subscription_facts(self) -> tuple[str, ...]:
         if self._screen is not _Screen.EPISODES or self._subscription is None:
@@ -1082,7 +1080,7 @@ class AnimeController:
             self._handle_episode_screen(key)
         self._sync_view()
 
-    def _sync_view(self) -> None:  # noqa: PLR0912, PLR0915
+    def _sync_view(self) -> None:  # noqa: PLR0912
         screens: dict[_Screen, AnimeScreen] = {
             _Screen.QUERY: AnimeScreen.QUERY,
             _Screen.TITLES: AnimeScreen.TITLES,
@@ -1111,7 +1109,6 @@ class AnimeController:
         self._view.global_status = ""
         self._view.status_kind = NoticeKind.WARNING
         self._view.busy = self._busy if self._screen is _Screen.BUSY else ""
-        self._view.controls = ()
         self._view.items = self._display_rows()
         self._view.cursor = min(self._view.cursor, max(len(self._view.items) - 1, 0))
         if screen is AnimeScreen.EPISODES:
@@ -1131,16 +1128,12 @@ class AnimeController:
             self._view.searching.add("pending")
         if self._choice_sending:
             self._view.searching.add("pending")
-        if self._screen is _Screen.BUSY:
-            self._view.controls = ("Esc wróć",)
-        elif self._screen is _Screen.PROBLEM:
+        self._view.controls = footer_segments(self._screen_actions(), more=self._screen not in _NO_HELP)
+        if self._screen is _Screen.PROBLEM:
             self._view.notice_kind = NoticeKind.WARNING
-            self._view.controls = ("Enter pobierz mimo to | Esc" if self._confirm_choice else "Enter/Esc wróć",)
         elif self._files is not None and self._screen is _Screen.OFFER:
             self._view.title = "Wybierz plik"
-            self._view.controls = ("Enter wybierz plik | Esc",)
         elif self._screen is _Screen.OFFER:
-            self._view.controls = ("I inne wydania | D pobierz | Esc",)
             self._view.notice = self._notice or " · ".join(self._repeat_warning())
             if self._offer_view is not None and self._offer_view.unknown_previous:
                 self._view.global_status = "Nie można potwierdzić odmienności wydania"
@@ -1159,13 +1152,69 @@ class AnimeController:
                     *self._subscription_facts(),
                     item.copy_text if item else "Anime",
                     item.detail if item else "",
-                    "Space zaznacz · A wszystkie/żadne · Z zakres",
-                    "D pobierz · I wydania · P pobierz ponownie",
-                    "C kopiuj wiersz · Ctrl+C kopiuj zaznaczenie",
+                    *help_lines(self._screen_actions().listed, self._columns - 4),
                 )
             )
             self._view.cursor = min(previous_cursor, max(len(self._view.items) - 1, 0))
-            self._view.controls = ("C kopiuj | Esc wróć",)
+            self._view.controls = footer_segments(ScreenActions(_COPY), more=False)
+
+    def _screen_actions(self) -> ScreenActions:
+        actions: ScreenActions = self._base_actions()
+        if self._screen is _Screen.QUERY or self._pending_batch is None or self._batch_running:
+            return actions
+        others: tuple[Action, ...] = tuple(action for action in actions.footer if action[0] != "Enter")
+        return ScreenActions((("Enter", "sprawdź wynik"), *others), actions.more)
+
+    def _base_actions(self) -> ScreenActions:  # noqa: PLR0911
+        screen: _Screen = self._screen
+        if screen is _Screen.QUERY:
+            return ScreenActions((("Enter", "szukaj"),))
+        if screen is _Screen.BUSY:
+            return ScreenActions(more=() if self._busy_return is _Screen.QUERY else _COPY)
+        if screen is _Screen.PROBLEM:
+            return ScreenActions((("Enter", "pobierz mimo to" if self._confirm_choice else "wróć"),), _COPY)
+        if screen in {_Screen.TITLES, _Screen.ENTRIES}:
+            label: str = "wybierz" if screen is _Screen.TITLES else "odcinki"
+            return ScreenActions((("Enter", label), ("S", "subskrybuj")), _LISTED)
+        if screen is _Screen.OFFER and self._files is not None:
+            return ScreenActions((("Enter", "wybierz"),), _LISTED)
+        if screen is _Screen.OFFER:
+            return ScreenActions((("Enter", "wydania"), ("D", "pobierz")), (("Space", "zaznacz"), *_LISTED))
+        if screen is _Screen.CANDIDATES:
+            return ScreenActions((("Space", "zaznacz"), ("D", "pobierz")), _LISTED)
+        if screen is _Screen.DRAFT:
+            if not self._draft_episodes():
+                return ScreenActions((("Enter", "wybierz"),), _LISTED)
+            return ScreenActions((("Enter", "wybierz"), ("Space", "zaznacz")), (("A", "wszystkie"), *_LISTED))
+        return self._episode_actions()
+
+    def _episode_actions(self) -> ScreenActions:
+        enter: str = self._episode_enter()
+        footer: list[Action] = [*((("Enter", enter),) if enter else ()), ("Space", "zaznacz"), ("D", "pobierz")]
+        more: list[Action] = [("I", "wydania"), ("Z", "zakres"), ("A", "wszystkie"), ("P", "ponownie")]
+        row: Mapping[str, object] | None = self._subscription
+        if row is None:
+            footer.append(("S", "subskrybuj"))
+            return ScreenActions(tuple(footer), (*more, *_LISTED))
+        toggle: Action = ("W", "wznów" if row.get("paused") else "wstrzymaj")
+        waiting: bool = self._waiting_number() is not None
+        footer.append(("T", "pobierz teraz") if waiting else toggle)
+        subscription: tuple[Action, ...] = (*((toggle,) if waiting else ()), ("R", "sprawdź teraz"), ("X", "usuń"))
+        return ScreenActions(tuple(footer), (*subscription, *more, ("S", "subskrybuj"), *_LISTED))
+
+    def _episode_enter(self) -> str:
+        listing: EpisodeListing | None = self._listing
+        shown: tuple[ListedEpisode, ...] = self._shown_episodes()
+        position: int = self._positions.get(_Screen.EPISODES, 0)
+        if listing is None:
+            return ""
+        if position >= len(shown):
+            extras: tuple[AnimeRow, ...] = self._special_rows()[position - len(shown) :]
+            return "otwórz" if extras and extras[0].key.startswith("related:") else ""
+        status: EpisodeStatus | None = self._episode_states.get(EpisodeKey(listing.anilist_id, shown[position].number))
+        if status is None or status.reason != EpisodeReason.EPISODE_FILE_UNRESOLVED or status.admission_id is None:
+            return ""
+        return "wskaż plik"
 
     def _text_rows(self, values: Sequence[str]) -> tuple[AnimeRow, ...]:
         console: Console = Console(width=self._columns - 4)
