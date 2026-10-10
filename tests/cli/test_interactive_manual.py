@@ -108,6 +108,14 @@ def test_manual_previews_and_starts_only_episodes_three_and_eight(tmp_path: Path
     assert not [task for task in run.plan.tasks if task.group_id == completed_id]
 
 
+def test_a_typed_a_selects_every_episode_for_the_preview(tmp_path: Path) -> None:
+    controller: ManualController = _controller(tmp_path)
+    for key in ("text:a", "end", "enter"):
+        assert controller.handle_key(key) is ManualResult.STAY
+
+    assert "8 odcinków" in controller.render(120, 40).plain
+
+
 def test_manual_regeneration_rebuilds_existing_subtitles_without_deleting_them(tmp_path: Path) -> None:
     controller: ManualController = _controller(tmp_path)
     previous: bytes = (tmp_path / "03.pl.srt").read_bytes()

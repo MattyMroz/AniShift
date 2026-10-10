@@ -32,7 +32,7 @@ from anishift.cli.interactive import anime as anime_module
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive.anime import AnimeController, AnimeResult, _Screen
 from anishift.cli.interactive.anime_view import AnimeFrame
-from anishift.cli.interactive.state import StateController
+from anishift.cli.interactive.state import StateController, _Tab
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError, ErrorCode, ErrorContext
 from anishift.platform.local_control import ControlClient, ControlError, ControlErrorCode
@@ -621,6 +621,41 @@ def test_live_app_mouse_routes_unicode_text_selection_and_copy(monkeypatch: pyte
     finally:
         panel.close()
         panel._thread.join(5)
+
+
+def test_typing_on_the_fresh_search_field_writes_every_letter_without_toggling_automation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    calls: list[str] = []
+
+    def call(kind: str, payload: Mapping[str, object], **options: object) -> Mapping[str, object]:
+        del payload, options
+        calls.append(kind)
+        return {"auto_enabled": True}
+
+    client: ControlClient = cast("ControlClient", SimpleNamespace(call=call, close=lambda: None))
+    session: ResidentSession = ResidentSession(Path("workspace"), lambda: client)
+    panel: StateController = StateController(session, lambda: None)
+    anime: AnimeController = _controller(_Owner())
+    panel.attach_anime(anime)
+    panel._snapshot = {"auto_enabled": False}
+    panel._connected = True
+    try:
+        panel._switch_tab(_Tab.ANIME)
+        assert anime._screen is _Screen.QUERY
+        assert not anime.input_focused
+        for letter in "Overlord":
+            panel.handle_key(f"text:{letter}")
+        deadline: float = monotonic() + 5
+        while panel._busy and monotonic() < deadline:
+            threading.Event().wait(0.005)
+        assert anime._query == "Overlord"
+        assert calls == []
+    finally:
+        panel.close()
+        panel._thread.join(5)
+        session.close()
 
 
 def test_global_resume_in_anime_uses_owner_without_download(monkeypatch: pytest.MonkeyPatch) -> None:

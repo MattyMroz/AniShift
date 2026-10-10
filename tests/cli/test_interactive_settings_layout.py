@@ -17,6 +17,7 @@ from anishift.cli.interactive.settings import (
     _TRANSLATION_FIELDS,
     _TTS_FIELDS,
     SettingsController,
+    _field_title,
     _SettingField,
 )
 from anishift.config.field_catalog import (
@@ -65,6 +66,12 @@ def _panel_specs(settings: UserSettings) -> dict[str, SettingSpec]:
 def test_layout_never_repeats_a_setting() -> None:
     identifiers = _layout_ids()
     assert len(identifiers) == len(set(identifiers))
+
+
+@pytest.mark.unit
+def test_every_editor_title_names_its_field_instead_of_its_identifier() -> None:
+    titles: dict[str, str] = {setting_id: _field_title(setting_id) for setting_id, _label, _section in _layout_fields()}
+    assert titles == {setting_id: label.upper() for setting_id, label, _section in _layout_fields()}
 
 
 @pytest.mark.unit

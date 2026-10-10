@@ -1909,6 +1909,7 @@ def _field_title(setting_id: str) -> str:
         field_id: label
         for field_id, label, _section in (
             *_GENERAL_FIELDS,
+            *_SUBTITLE_FIELDS,
             *_DOWNLOAD_FIELDS,
             *_TRANSLATION_FIELDS,
             *_TTS_FIELDS,

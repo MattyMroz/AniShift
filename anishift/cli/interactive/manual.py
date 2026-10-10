@@ -585,7 +585,7 @@ class ManualController:
             self._select_scope(self._selected_groups ^ {group_id})
         elif key == "enter":
             return self._handle_scope_action(self._selected - len(self._group_ids))
-        elif key == "a":
+        elif key.casefold() == "text:a":
             self._select_scope(set() if self._selected_groups else set(self._group_ids))
         elif key == "home":
             self._selected = 0

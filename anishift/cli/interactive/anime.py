@@ -1401,6 +1401,12 @@ class AnimeController:
         with self._lock:
             return self._input_focused
 
+    @property
+    def accepts_text(self) -> bool:
+        """Whether a printable key is typed into a field instead of acting."""
+        with self._lock:
+            return self._input_focused or self._screen is _Screen.QUERY
+
     def _handle_input(self, key: str) -> bool:
         editor: TextInput | None = None
         if self._screen is _Screen.QUERY:
@@ -2265,6 +2271,7 @@ class AnimeController:
         return self._offers.get(self._offer_numbers[self._positions.get(_Screen.OFFER, 0)])
 
     def _start_search(self, text: str) -> None:
+        self._subscription = None
         self._candidates = ()
         self._titles_shown = False
         self._entries_skipped = False

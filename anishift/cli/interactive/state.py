@@ -706,7 +706,7 @@ class StateController:
             self._switch_tab((self._shown_tab() + (-1 if key in {"left", "backtab"} else 1)) % len(_TABS))
             self._invalidate()
             return StateResult.CONTINUE
-        if key.casefold() == "text:o" and not anime.input_focused:
+        if key.casefold() == "text:o" and not anime.accepts_text:
             return self._action_key("o")
         result: AnimeResult = anime.handle_key(key)
         command: tuple[str, Mapping[str, object], int | None] | None = anime.take_subscription_command()

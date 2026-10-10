@@ -964,6 +964,42 @@ def test_removing_from_the_details_returns_to_the_list_with_undo(
     assert "Usunięto Alpha · Ctrl+Z cofnij" in _frame(panel)
 
 
+@pytest.mark.parametrize("key", ["text:x", "delete", "text:w", "text:f"])
+@pytest.mark.parametrize("opening", ["details", "failed_details"])
+def test_a_search_from_the_details_leaves_the_old_subscription_out_of_another_entry(
+    panel: StateController, owner: _Owner, monkeypatch: pytest.MonkeyPatch, opening: str, key: str
+) -> None:
+    _details(owner)
+    owner.titles = (_title(2, TitleStatus.RELEASING),)
+    owner.listings[2] = replace(_listing(episodes=_weekly(2, 4), count=4), anilist_id=2)
+    franchise: Callable[..., Franchise] = owner.franchise
+    failures: list[int] = [1] if opening == "failed_details" else []
+
+    def flaky(identifier: int, *, cancel: object = None) -> Franchise:
+        if failures:
+            failures.pop()
+            raise OSError
+        return franchise(identifier, cancel=cancel)
+
+    monkeypatch.setattr(owner, "franchise", flaky)
+    panel._selected = 0
+    _keys(panel, "enter")
+    if opening == "failed_details":
+        assert _anime(panel)._screen is _Screen.PROBLEM
+        _keys(panel, "enter", "text:slime", "enter")
+    else:
+        _keys(panel, "text:/", "text:slime", "enter")
+    listing: EpisodeListing | None = _anime(panel)._listing
+    assert _anime(panel)._screen is _Screen.EPISODES
+    assert listing is not None
+    assert listing.anilist_id == 2
+    opened: int = len(owner.calls)
+
+    _keys(panel, key)
+
+    assert not [call for call in owner.calls[opened:] if call[0].startswith("subscription_")]
+
+
 def test_esc_from_the_details_returns_to_the_list(panel: StateController, owner: _Owner) -> None:
     _details(owner)
     panel._selected = 0
