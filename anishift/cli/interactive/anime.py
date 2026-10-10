@@ -348,7 +348,7 @@ class _Screen(StrEnum):
     PROBLEM = "problem"
     ENTRIES = "entries"
     EPISODES = "episodes"
-    OFFER = "offer"
+    FILES = "files"
     CANDIDATES = "candidates"
     DRAFT = "draft"
 
@@ -422,8 +422,7 @@ class AnimeController:
         self._shown_entry: FranchiseEntry | None = None
         self._listing: EpisodeListing | None = None
         self._episode_marks: set[int] = set()
-        self._offer_numbers: tuple[int, ...] = ()
-        self._offers: dict[int, EpisodeOffer] = {}
+        self._offer: EpisodeOffer | None = None
         self._offers_running: bool = False
         self._release_candidates: tuple[RankedCandidate, ...] = ()
         self._positions: dict[_Screen, int] = {}
@@ -497,7 +496,7 @@ class AnimeController:
                 result = AnimeResult.CONTINUE
             elif self._screen is _Screen.BUSY:
                 result = self._handle_busy(key)
-            elif self._screen in {_Screen.ENTRIES, _Screen.EPISODES, _Screen.OFFER, _Screen.CANDIDATES, _Screen.DRAFT}:
+            elif self._screen in {_Screen.ENTRIES, _Screen.EPISODES, _Screen.FILES, _Screen.CANDIDATES, _Screen.DRAFT}:
                 result = self._draft_mark_key(key) or self._subscription_key(key) or self._panel_key(key)
             else:
                 result = self._handle_problem(key)
@@ -1046,6 +1045,7 @@ class AnimeController:
     def mouse(self, event: MouseEvent) -> None:
         """Delegate text selection and row clicks to the shared Anime panel."""
         with self._lock:
+            self._sync_view()
             self._panel.mouse(event)
             if self._details_open:
                 return
@@ -1087,7 +1087,7 @@ class AnimeController:
             _Screen.TITLES: AnimeScreen.TITLES,
             _Screen.ENTRIES: AnimeScreen.ENTRIES,
             _Screen.EPISODES: AnimeScreen.EPISODES,
-            _Screen.OFFER: AnimeScreen.FILES if self._files is not None else AnimeScreen.RELEASES,
+            _Screen.FILES: AnimeScreen.FILES,
             _Screen.CANDIDATES: AnimeScreen.RELEASES,
             _Screen.BUSY: AnimeScreen.QUERY if self._busy_return is _Screen.QUERY else AnimeScreen.BUSY,
             _Screen.PROBLEM: AnimeScreen.PROBLEM,
@@ -1132,7 +1132,7 @@ class AnimeController:
         self._view.controls = footer_segments(self._screen_actions(), more=self._screen not in _NO_HELP)
         if self._screen is _Screen.PROBLEM:
             self._view.notice_kind = NoticeKind.WARNING
-        elif self._screen is _Screen.OFFER and self._files is None:
+        elif self._screen is _Screen.CANDIDATES:
             self._view.notice = self._notice or " · ".join(self._repeat_warning())
             if self._offer_view is not None and self._offer_view.unknown_previous:
                 self._view.global_status = "Nie można potwierdzić odmienności wydania"
@@ -1175,10 +1175,8 @@ class AnimeController:
         if screen in {_Screen.TITLES, _Screen.ENTRIES}:
             label: str = "wybierz" if screen is _Screen.TITLES else "odcinki"
             return ScreenActions((("Enter", label), ("S", "subskrybuj")), _LISTED)
-        if screen is _Screen.OFFER and self._files is not None:
+        if screen is _Screen.FILES:
             return ScreenActions((("Enter", "wybierz"),), _LISTED)
-        if screen is _Screen.OFFER:
-            return ScreenActions((("Enter", "wydania"), ("D", "pobierz")), (("Space", "zaznacz"), *_LISTED))
         if screen is _Screen.CANDIDATES:
             return ScreenActions((("Space", "zaznacz"), ("D", "pobierz")), _LISTED)
         if screen is _Screen.DRAFT:
@@ -1255,20 +1253,13 @@ class AnimeController:
             return self._episode_rows() + self._special_rows()
         if self._screen is _Screen.DRAFT:
             return self._draft_rows()
-        if self._screen is _Screen.OFFER and self._files is not None:
+        if self._screen is _Screen.FILES and self._files is not None:
             return tuple(AnimeRow(str(item.index), f"{item.path} · {item.size:,} B") for item in self._files.files)
-        if self._screen in {_Screen.OFFER, _Screen.CANDIDATES}:
-            offer: EpisodeOffer | None = self._highlighted_offer()
+        if self._screen is _Screen.CANDIDATES:
+            offer: EpisodeOffer | None = self._offer
             self._view.global_status = offer.status or "" if offer is not None else ""
             suggested: RankedCandidate | None = (
                 offer.candidates[offer.suggestion] if offer is not None and offer.suggestion is not None else None
-            )
-            candidates: tuple[RankedCandidate, ...] = (
-                self._release_candidates
-                if self._screen is _Screen.CANDIDATES
-                else (
-                    (offer.candidates[offer.suggestion],) if offer is not None and offer.suggestion is not None else ()
-                )
             )
             return tuple(
                 AnimeRow(
@@ -1284,7 +1275,7 @@ class AnimeController:
                     uncertain=item.identity.verdict is not IdentityVerdict.MATCH,
                     suggested=item == suggested,
                 )
-                for item in candidates
+                for item in self._release_candidates
             ) or (
                 AnimeRow(
                     "empty",
@@ -1550,7 +1541,7 @@ class AnimeController:
                 _Screen.TITLES,
                 _Screen.ENTRIES,
                 _Screen.EPISODES,
-                _Screen.OFFER,
+                _Screen.FILES,
                 _Screen.CANDIDATES,
                 _Screen.DRAFT,
             }:
@@ -1576,8 +1567,8 @@ class AnimeController:
             self._start_episodes()
         elif self._screen is _Screen.EPISODES:
             self._episode_key(key)
-        elif self._screen is _Screen.OFFER:
-            self._offer_key(key)
+        elif self._screen is _Screen.FILES and key == "enter":
+            self._choose_file()
         elif self._screen is _Screen.CANDIDATES and key.casefold() == "text:d":
             chosen: RankedCandidate | None = (
                 next((item for item in self._release_candidates if item.stream.info_hash in self._view.selected), None)
@@ -1587,31 +1578,17 @@ class AnimeController:
             if chosen is not None:
                 self._choose_release(chosen)
 
-    def _offer_key(self, key: str) -> None:
-        if self._files is not None:
-            if key == "enter":
-                self._choose_file()
-            return
-        if key in {"enter", "text:i", "text:I"}:
-            self._open_candidates()
-        elif key.casefold() == "text:d":
-            offer: EpisodeOffer | None = self._highlighted_offer()
-            if offer is not None and offer.suggestion is not None:
-                self._choose_release(offer.candidates[offer.suggestion])
-
     def _episode_screen_count(self) -> int:
         if self._screen is _Screen.ENTRIES:
             return len(self._franchise.entries) if self._franchise else 0
         if self._screen is _Screen.EPISODES:
             return len(self._shown_episodes())
-        if self._screen is _Screen.OFFER:
-            return len(self._files.files) if self._files is not None else len(self._offer_numbers)
+        if self._screen is _Screen.FILES:
+            return len(self._files.files) if self._files is not None else 0
         return len(self._release_candidates)
 
     def _back_episode_screen(self) -> None:
-        if self._screen is _Screen.CANDIDATES:
-            self._screen = _Screen.OFFER
-        elif self._screen is _Screen.OFFER:
+        if self._screen in {_Screen.CANDIDATES, _Screen.FILES}:
             self._generation += 1
             self._offer_id = None
             self._offer_view = None
@@ -1881,7 +1858,7 @@ class AnimeController:
         self._entry = None
         self._listing = None
         self._episode_marks.clear()
-        self._offers.clear()
+        self._offer = None
         generation: int = self._start_work(_LOADING_ENTRIES, _Screen.TITLES)
         self._spawn(self._load_franchise, (candidate.anilist_id, generation, self._work_cancel))
 
@@ -1993,19 +1970,12 @@ class AnimeController:
         if self._listing is None:
             self._notice = "Brak mapowania"
             return
-        numbers: tuple[int, ...] = (highlighted.number,) if highlighted.aired else ()
-        if not numbers:
+        if not highlighted.aired:
             self._notice = f"E{highlighted.number} jeszcze nie wyemitowano"
             return
         generation: int = self._start_work("Szukam…", _Screen.EPISODES)
-        self._screen = _Screen.OFFER
-        self._offers_running = True
-        self._offers.clear()
-        self._offer_numbers = numbers
-        self._positions[_Screen.OFFER] = 0
-        self._offsets[_Screen.OFFER] = 0
-        self._follow_cursor = True
-        self._spawn(self._load_offers, (self._listing.anilist_id, numbers, generation))
+        self._open_candidates()
+        self._spawn(self._load_offer, (EpisodeKey(self._listing.anilist_id, highlighted.number), generation))
 
     def _start_owner_offer(self, episode: ListedEpisode, *, repeat: bool = False) -> None:
         if self._resident is None or self._listing is None or not episode.aired:
@@ -2017,12 +1987,8 @@ class AnimeController:
         self._offer_refresh_pending = False
         self._choice_sending = False
         self._resident.interrupt_reads()
-        self._offers.clear()
-        self._offer_numbers = (episode.number,)
-        self._positions[_Screen.OFFER] = 0
         generation: int = self._start_work("Szukam…", _Screen.EPISODES)
-        self._screen = _Screen.OFFER
-        self._offers_running = True
+        self._open_candidates()
         self._spawn(
             partial(self._load_owner_offer, repeat=repeat),
             (EpisodeKey(self._listing.anilist_id, episode.number), generation),
@@ -2115,11 +2081,12 @@ class AnimeController:
         )
         self._offer_view = view
         self._stale = False
-        self._offers[view.offer.key.number] = view.offer
+        self._offer = view.offer
         self._offers_running = result.get("final") is not True
-        self._release_candidates = visible(view.offer.candidates)
+        self._release_candidates = visible(view.offer.candidates, view.offer.suggestion)
         self._positions[_Screen.CANDIDATES] = next(
-            (index for index, item in enumerate(self._release_candidates) if item.stream.info_hash == highlighted), 0
+            (index for index, item in enumerate(self._release_candidates) if item.stream.info_hash == highlighted),
+            self._suggested_position(),
         )
         self._view.selected.intersection_update(item.stream.info_hash for item in self._release_candidates)
         self._view.selection = None
@@ -2173,10 +2140,9 @@ class AnimeController:
     def _start_files(self, admission_id: str) -> None:
         self._offer_view = None
         self._files = None
-        self._offers.clear()
-        self._offer_numbers = ()
-        self._positions[_Screen.OFFER] = 0
-        self._offsets[_Screen.OFFER] = 0
+        self._offer = None
+        self._positions[_Screen.FILES] = 0
+        self._offsets[_Screen.FILES] = 0
         generation: int = self._start_work("Wczytuję pliki…", _Screen.EPISODES)
         self._spawn(self._load_files, (admission_id, generation))
 
@@ -2193,8 +2159,8 @@ class AnimeController:
                 return
             self._files = files
             self._notice = notice
-            self._positions[_Screen.OFFER] = 0
-            self._screen = _Screen.OFFER
+            self._positions[_Screen.FILES] = 0
+            self._screen = _Screen.FILES
             self._worker = None
         self._invalidate()
 
@@ -2202,7 +2168,7 @@ class AnimeController:
         files: EpisodeFiles | None = self._files
         if files is None or not files.files:
             return
-        selected: EpisodeFile = files.files[self._positions.get(_Screen.OFFER, 0)]
+        selected: EpisodeFile = files.files[self._positions.get(_Screen.FILES, 0)]
         generation: int = self._start_work(_SENDING, _Screen.EPISODES, sending=True)
         self._spawn(self._send_file, (files, selected, generation, uuid4().hex))
 
@@ -2263,36 +2229,23 @@ class AnimeController:
                 self._episode_states.update(states)
                 self._episode_marks.difference_update(item.key.number for item in states.values() if item.active)
 
-    def _load_offers(self, anilist_id: int, numbers: tuple[int, ...], generation: int) -> None:
+    def _load_offer(self, key: EpisodeKey, generation: int) -> None:
         if self._acquisition is None:
             return
-        for number in numbers:
-            if not self._offer_pending(generation):
-                return
-            try:
-                offer: EpisodeOffer = self._acquisition.offer(EpisodeKey(anilist_id, number))
-            except Exception as problem:  # noqa: BLE001 - defects fail the whole offer instead of inventing a verdict
-                self._catalog_failure(generation, problem, _Screen.EPISODES, "torrentio")
-                return
-            if not self._receive_offer(generation, number, offer):
-                return
-            self._invalidate()
-        with self._lock:
-            if generation == self._generation:
-                self._worker = None
-                self._offers_running = False
-        self._invalidate()
-
-    def _offer_pending(self, generation: int) -> bool:
-        with self._lock:
-            return generation == self._generation
-
-    def _receive_offer(self, generation: int, number: int, offer: EpisodeOffer) -> bool:
+        try:
+            offer: EpisodeOffer = self._acquisition.offer(key)
+        except Exception as problem:  # noqa: BLE001 - defects fail the whole offer instead of inventing a verdict
+            self._catalog_failure(generation, problem, _Screen.EPISODES, "torrentio")
+            return
         with self._lock:
             if generation != self._generation:
-                return False
-            self._offers[number] = offer
-            return True
+                return
+            self._offer = offer
+            self._release_candidates = visible(offer.candidates, offer.suggestion)
+            self._positions[_Screen.CANDIDATES] = self._suggested_position()
+            self._worker = None
+            self._offers_running = False
+        self._invalidate()
 
     def _catalog_failure(self, generation: int, problem: Exception, back: _Screen, provider: str) -> None:
         if isinstance(problem, ControlError) and problem.code is ControlErrorCode.REFUSED:
@@ -2305,20 +2258,21 @@ class AnimeController:
         self._fail(generation, _COMMAND_FAILED, "", back)
 
     def _open_candidates(self) -> None:
-        offer: EpisodeOffer | None = self._highlighted_offer()
-        if offer is None:
-            return
-        self._release_candidates = visible(offer.candidates)
+        self._screen = _Screen.CANDIDATES
+        self._offers_running = True
+        self._offer = None
+        self._release_candidates = ()
         self._positions[_Screen.CANDIDATES] = 0
         self._offsets[_Screen.CANDIDATES] = 0
         self._release_moved = False
         self._follow_cursor = True
-        self._screen = _Screen.CANDIDATES
 
-    def _highlighted_offer(self) -> EpisodeOffer | None:
-        if not self._offer_numbers:
-            return None
-        return self._offers.get(self._offer_numbers[self._positions.get(_Screen.OFFER, 0)])
+    def _suggested_position(self) -> int:
+        offer: EpisodeOffer | None = self._offer
+        if offer is None or offer.suggestion is None:
+            return 0
+        suggested: RankedCandidate = offer.candidates[offer.suggestion]
+        return next((index for index, item in enumerate(self._release_candidates) if item == suggested), 0)
 
     def _start_search(self, text: str) -> None:
         self._subscription = None
@@ -2328,7 +2282,7 @@ class AnimeController:
         self._franchise = None
         self._entry = None
         self._listing = None
-        self._offers.clear()
+        self._offer = None
         self._episode_marks.clear()
         query: SearchQuery = parse_query(text)
         generation: int = self._start_work(_SEARCHING_TITLE, _Screen.QUERY)
@@ -2491,7 +2445,7 @@ class AnimeController:
             self._worker = None
             self._offers_running = False
             if back is _Screen.EPISODES:
-                self._offers.clear()
+                self._offer = None
                 self._release_candidates = ()
             self._problem_provider = provider
             if deadline:

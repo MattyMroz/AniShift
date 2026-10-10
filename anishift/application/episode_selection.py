@@ -471,30 +471,32 @@ def confidence_text(candidate: RankedCandidate) -> str | None:
     return None if candidate.confidence is None else f"{candidate.confidence:.0%}"
 
 
-def visible(candidates: Sequence[RankedCandidate]) -> tuple[RankedCandidate, ...]:
-    """Hide 720p and lower while a usable matching 1080p or 2160p row exists; unknown heights stay (U-24)."""
+def _suggestible(candidate: RankedCandidate) -> bool:
+    return not candidate.conflict and not candidate.traits.dub_only and candidate.supported is not False
+
+
+def visible(candidates: Sequence[RankedCandidate], keep: int | None = None) -> tuple[RankedCandidate, ...]:
+    """Hide 720p and lower beside a suggestible matching 1080p or 2160p row; unknown heights and *keep* stay (U-24)."""
     high: bool = any(
         candidate.identity.verdict is IdentityVerdict.MATCH
         and candidate.traits.resolution in _HIGH_RESOLUTIONS
-        and candidate.supported is not False
+        and _suggestible(candidate)
         for candidate in candidates
     )
     return tuple(
         candidate
-        for candidate in candidates
-        if not high or candidate.traits.resolution is None or candidate.traits.resolution > _HIDDEN_MAX_HEIGHT
+        for index, candidate in enumerate(candidates)
+        if not high
+        or index == keep
+        or candidate.traits.resolution is None
+        or candidate.traits.resolution > _HIDDEN_MAX_HEIGHT
     )
 
 
 def suggestion(candidates: Sequence[RankedCandidate], *, numbering: bool) -> tuple[int | None, bool]:
     """Return the first usable row of list group one in *candidates* order and whether it is uncertain."""
     index: int | None = next(
-        (
-            position
-            for position, candidate in enumerate(candidates)
-            if not candidate.conflict and not candidate.traits.dub_only and candidate.supported is not False
-        ),
-        None,
+        (position for position, candidate in enumerate(candidates) if _suggestible(candidate)), None
     )
     if not numbering or index is None:
         return None, False

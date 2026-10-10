@@ -165,7 +165,7 @@ class Manual:
     misses: tuple[str, ...]
 
     def top3(self) -> list[str]:
-        return [release_hash(row.stream.info_hash) for row in visible(self.offer.candidates)[:3]]
+        return [release_hash(row.stream.info_hash) for row in visible(self.offer.candidates, self.offer.suggestion)[:3]]
 
     def hashes(self) -> frozenset[str]:
         return frozenset(release_hash(row.stream.info_hash) for row in self.offer.candidates)

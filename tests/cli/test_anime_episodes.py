@@ -258,13 +258,12 @@ def test_offer_row_has_no_source_column(source: str) -> None:
     catalog.offer_read = lambda key: _offer(key, (item,))
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    for key in ("text:i", "text:i"):
-        _key(controller, key)
-        frame: str = _frame(controller)
-        assert "Źródło" not in frame
-        assert source not in frame.casefold()
-        assert controller._view.items[0].quality == "69"
-        assert controller._view.items[0].confidence == "95%"
+    _key(controller, "text:i")
+    frame: str = _frame(controller)
+    assert "Źródło" not in frame
+    assert source not in frame.casefold()
+    assert controller._view.items[0].quality == "69"
+    assert controller._view.items[0].confidence == "95%"
 
 
 @pytest.mark.unit
@@ -276,12 +275,11 @@ def test_uncertain_mark() -> None:
     catalog.offer_read = lambda key: _offer(key, (_candidate(IdentityVerdict.INSUFFICIENT), other, _candidate()))
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    for key in ("text:i", "text:i"):
-        _key(controller, key)
-        frame: str = _frame(controller)
-        assert "*!" in frame
-        assert "95% · niepewne" in frame
-        assert controller._view.items[0].suggested
+    _key(controller, "text:i")
+    frame: str = _frame(controller)
+    assert "*!" in frame
+    assert "95% · niepewne" in frame
+    assert controller._view.items[0].suggested
     assert [item.confidence for item in controller._view.items] == ["95% · niepewne", "95%", "95%"]
 
 
@@ -323,8 +321,7 @@ def test_conflict_row_shows_reason(name: str, label: str) -> None:
     catalog.offer_read = lambda _: offer
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    for key in ("text:i", "text:i"):
-        _key(controller, key)
+    _key(controller, "text:i")
     frame: str = _frame(controller)
     assert label in frame
     assert "%" not in frame
@@ -348,7 +345,7 @@ def test_details_confidence_uncalibrated_note(release_only: bool) -> None:
     catalog.offer_read = lambda key: _offer(key, (item,))
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    for key in ("text:i", "text:i", "text:?"):
+    for key in ("text:i", "text:?"):
         _key(controller, key)
     frames: list[str] = []
     for _ in range(30):
@@ -362,15 +359,16 @@ def test_details_confidence_uncalibrated_note(release_only: bool) -> None:
 
 
 @pytest.mark.unit
-def test_offer_without_numbering_shows_reason_on_both_release_screens() -> None:
+def test_offer_without_numbering_shows_reason_on_the_release_list() -> None:
     catalog: _Catalog = _Catalog()
     catalog.offer_read = lambda key: replace(_offer(key), numbering=False, suggestion=None, status="brak numeracji")
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    for key in ("text:i", "text:i"):
-        _key(controller, key)
-        assert "brak numeracji" in controller.render(50, 12).plain
-        assert not any(item.suggested for item in controller._view.items)
+    _key(controller, "text:i")
+    assert _at(controller) is _Screen.CANDIDATES
+    assert "brak numeracji" in controller.render(50, 12).plain
+    assert not any(item.suggested for item in controller._view.items)
+    assert controller._view.cursor == 0
 
 
 @pytest.mark.unit
@@ -383,8 +381,7 @@ def test_episode_flow_keeps_noncontiguous_selection_and_rereads_episodes_only_on
     assert catalog.calls[-1] == ("offer", 3)
     assert "Pobierz (" not in _frame(controller)
     calls: list[tuple[str, int]] = catalog.calls.copy()
-    for key in ("text:i", "enter", "escape", "escape"):
-        _key(controller, key)
+    _key(controller, "escape")
     assert _at(controller) is _Screen.EPISODES
     assert controller._episode_marks == {1, 3}
     assert controller._positions[_Screen.EPISODES] == 2
@@ -457,7 +454,7 @@ def test_single_complete_entry_skips_entries_even_with_extras(first: str, comple
     assert "Dodatki" not in _frame(controller)
     if skipped:
         assert not controller._episode_marks
-        assert not controller._offers
+        assert controller._offer is None
     else:
         assert "SEZONY I CZĘŚCI" not in _frame(controller)
         assert ("Lista niepełna" in _frame(controller)) is (not complete)
@@ -513,7 +510,7 @@ def test_unmapped_skipped_entry_keeps_its_known_episode_list(movie: bool) -> Non
     assert _at(controller) is _Screen.EPISODES
     assert not catalog.filters
     _key(controller, "text:i")
-    assert _at(controller) is _Screen.OFFER
+    assert _at(controller) is _Screen.CANDIDATES
     assert catalog.calls[-1] == ("offer", 1)
     _key(controller, "escape")
     assert _at(controller) is _Screen.EPISODES
@@ -613,7 +610,7 @@ def test_unmapped_preview_filters_exact_selected_numbers_and_returns_to_episode_
     _key(controller, "enter")
     for key in ("space", "down", "down", "space", "text:i"):
         _key(controller, key)
-    assert _at(controller) is _Screen.OFFER
+    assert _at(controller) is _Screen.CANDIDATES
     assert catalog.calls[-1] == ("offer", 3)
     assert not catalog.filters
     _key(controller, "escape")
@@ -658,7 +655,7 @@ def test_unmapped_sequel_inspects_its_episode_without_legacy_title_resolution() 
     controller: AnimeController = _controller(catalog)
     for key in ("paste:slime", "enter", "down", "enter", "text:i"):
         _key(controller, key)
-    assert _at(controller) is _Screen.OFFER
+    assert _at(controller) is _Screen.CANDIDATES
     assert catalog.calls[-2:] == [("episodes", 2), ("offer", 1)]
     assert not catalog.filters
     _key(controller, "escape")
@@ -683,7 +680,7 @@ def test_unmapped_preview_does_not_depend_on_legacy_title_resolution(unavailable
         controller._entry = None
     _key(controller, "text:i")
     assert not catalog.filters
-    assert _at(controller) is _Screen.OFFER
+    assert _at(controller) is _Screen.CANDIDATES
     assert catalog.calls[-1] == ("offer", 1)
 
 
@@ -1041,8 +1038,7 @@ def test_other_releases_always_show_aligned_seeds(width: int, unsupported: bool)
     catalog.offer_read = lambda key: _offer(key, (seeded, first))
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    for key in ("text:i", "text:i"):
-        _key(controller, key)
+    _key(controller, "text:i")
     lines: list[str] = controller.render(width, 40).plain.splitlines()
     header: str = next(line for line in lines if "Wydanie" in line and "Seedy" in line)
     known: str = next(line for line in lines if "321" in line)
@@ -1070,31 +1066,28 @@ def test_release_views_keep_decision_columns_and_put_size_in_details(width: int,
     catalog.offer_read = lambda key: _offer(key, (item,))
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    for key in ("text:i", "text:i"):
-        _key(controller, key)
-        lines: list[str] = controller.render(width, 24).plain.splitlines()
-        header: str = next(line for line in lines if "Wydanie" in line)
-        assert "Jakość" in header
-        assert "Pewność" in header
-        assert "Rozm" not in header
-        assert "Tożsamość" not in header
-        if controller._screen is _Screen.OFFER and verdict is IdentityVerdict.MISMATCH:
-            continue
-        row: str = lines[lines.index(header) + 1]
-        assert controller._view.items[0].image == "1080p"
-        assert controller._view.items[0].language == "PL · EN"
-        assert controller._view.items[0].seeds == "321"
-        displayed: str = " ".join(" ".join(lines).split())
-        assert "321" in displayed
-        assert "1080p" in displayed
-        assert "PL · EN" in displayed
-        assert "Rozmiar: 1.4 GB" in controller._view.items[0].detail
-        assert "indeks:" not in " ".join(lines)
-        assert "platforma: —" not in " ".join(lines)
-        if verdict is IdentityVerdict.INSUFFICIENT:
-            assert "!" in row
-        if verdict is IdentityVerdict.MISMATCH:
-            assert "!" in row
+    _key(controller, "text:i")
+    lines: list[str] = controller.render(width, 24).plain.splitlines()
+    header: str = next(line for line in lines if "Wydanie" in line)
+    assert "Jakość" in header
+    assert "Pewność" in header
+    assert "Rozm" not in header
+    assert "Tożsamość" not in header
+    row: str = lines[lines.index(header) + 1]
+    assert controller._view.items[0].image == "1080p"
+    assert controller._view.items[0].language == "PL · EN"
+    assert controller._view.items[0].seeds == "321"
+    displayed: str = " ".join(" ".join(lines).split())
+    assert "321" in displayed
+    assert "1080p" in displayed
+    assert "PL · EN" in displayed
+    assert "Rozmiar: 1.4 GB" in controller._view.items[0].detail
+    assert "indeks:" not in " ".join(lines)
+    assert "platforma: —" not in " ".join(lines)
+    if verdict is IdentityVerdict.INSUFFICIENT:
+        assert "!" in row
+    if verdict is IdentityVerdict.MISMATCH:
+        assert "!" in row
 
 
 @pytest.mark.unit
@@ -1110,13 +1103,9 @@ def test_offer_columns_remain_fixed_when_language_changes() -> None:
     assert "obraz 1080p · język —" in " ".join(lines)
     _key(controller, "text:?")
     assert "zgodny:" in controller.render(50, 24).plain
-    _key(controller, "escape")
-    _key(controller, "text:i")
-    _key(controller, "text:?")
-    assert "zgodny:" in controller.render(50, 24).plain
-    _key(controller, "escape")
     for key in ("escape", "escape"):
         _key(controller, key)
+    assert _at(controller) is _Screen.EPISODES
     item = replace(item, traits=replace(item.traits, polish=PolishClass.POLISH, english_subtitles=True))
     _key(controller, "text:i")
     lines = controller.render(50, 24).plain.splitlines()
@@ -1254,7 +1243,8 @@ def test_preview_without_marks_uses_highlighted_episode_and_future_episode_is_no
     for key in ("home", "down", "text:i"):
         _key(controller, key)
     assert catalog.calls[-1] == ("offer", 2)
-    assert controller._offer_numbers == (2,)
+    assert controller._offer is not None
+    assert controller._offer.key.number == 2
 
 
 @pytest.mark.unit
@@ -1309,7 +1299,7 @@ def test_leaving_incremental_offer_drops_late_result_and_sends_no_remaining_requ
         worker.join(5)
     assert _frame(controller) == before
     assert catalog.calls[-1] == ("offer", 2)
-    assert 2 not in controller._offers
+    assert controller._offer is None
 
 
 @pytest.mark.unit
@@ -1321,16 +1311,13 @@ def test_offer_verdict_labels_uncertainty_and_empty_suggestion_are_explicit(verd
     _open(controller)
     _key(controller, "text:i")
     frame: str = _frame(controller)
-    assert ("!" in frame) is (verdict is IdentityVerdict.INSUFFICIENT)
-    assert ("Brak wydania" in frame) is (verdict is IdentityVerdict.MISMATCH)
+    assert ("!" in frame) is (verdict is not IdentityVerdict.MATCH)
+    assert controller._view.items[0].suggested is (verdict is not IdentityVerdict.MISMATCH)
     reason: str = "niepewny: Brak wskazanego pliku."
     if verdict is IdentityVerdict.INSUFFICIENT:
         assert reason in frame
-    _key(controller, "text:i")
-    if verdict is IdentityVerdict.INSUFFICIENT:
-        assert reason in _frame(controller)
-    assert ("inny odcinek" if verdict is IdentityVerdict.MISMATCH else "Brak wskazanego pliku.") in _frame(controller)
-    assert "indeks:" not in _frame(controller)
+    assert ("inny odcinek" if verdict is IdentityVerdict.MISMATCH else "Brak wskazanego pliku.") in frame
+    assert "indeks:" not in frame
 
 
 @pytest.mark.unit
@@ -1350,7 +1337,6 @@ def test_other_releases_hide_low_resolutions_only_with_a_matching_high_release(h
     controller: AnimeController = _controller(catalog)
     _open(controller)
     _key(controller, "text:i")
-    _key(controller, "text:i")
     assert [item.traits.resolution for item in controller._release_candidates] == (
         [2160, 1440, None] if high_verdict is IdentityVerdict.MATCH else [2160, 720, 480, 1440, None]
     )
@@ -1363,7 +1349,6 @@ def test_unsupported_high_resolution_match_does_not_hide_a_supported_lower_match
     catalog.offer_read = lambda key: _offer(key, (avi, _candidate(resolution=720)))
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    _key(controller, "text:i")
     _key(controller, "text:i")
     assert [item.traits.resolution for item in controller._release_candidates] == [1080, 720]
 
@@ -1432,7 +1417,6 @@ def test_catalogue_headers_name_the_work_and_columns_align_at_both_widths(width:
     offered: str = offers[offers.index(header) + 1]
     assert "1080p" in " ".join(offers)
     assert offered[header.index("Pewność") :].strip() == "95%"
-    _key(controller, "text:i")
     candidates: list[str] = controller.render(width, 40).plain.splitlines()
     title: str = next(line for line in candidates if line.strip())
     assert "Anime \u203a Slime" in title
@@ -1457,7 +1441,6 @@ def test_candidate_reason_and_file_details_remain_complete_at_fifty_columns() ->
     catalog.offer_read = lambda key: _offer(key, (candidate,))
     controller: AnimeController = _controller(catalog)
     _open(controller)
-    _key(controller, "text:i")
     _key(controller, "text:i")
     frame: str = controller.render(50, 24).plain
     normalized: str = " ".join(frame.split())
@@ -1597,7 +1580,7 @@ def test_download_orders_marked_episodes_through_the_owner_and_stays_on_the_list
     assert controller._episode_marks == {3}
     assert not any(operation == "offer" for operation, _ in owner.calls)
     _key(controller, "text:i")
-    assert _at(controller) is _Screen.OFFER
+    assert _at(controller) is _Screen.CANDIDATES
 
 
 class _ChoiceOwner(_Owner):
@@ -1717,7 +1700,7 @@ def test_offer_failed_shows_error(after_partial: bool) -> None:
         _key(controller, "text:i")
     assert controller._screen is _Screen.PROBLEM
     assert "Źródło wydań nie odpowiada" in _frame(controller)
-    assert not controller._offers
+    assert controller._offer is None
     gets: int = owner.gets
     _refresh_partial(controller)
     assert owner.gets == gets
@@ -1759,7 +1742,7 @@ def test_partial_offer_keeps_cursor_on_hash() -> None:
     second: RankedCandidate = replace(first, stream=replace(first.stream, info_hash="b" * 40))
     owner.offer_read = lambda key: _offer(key, (first, second))
     controller: AnimeController = _open_partial(owner)
-    for key in ("text:i", "down", "space"):
+    for key in ("down", "space"):
         controller.handle_key(key)
     assert owner.offer_view is not None
     owner.offer_view = replace(
@@ -1772,13 +1755,37 @@ def test_partial_offer_keeps_cursor_on_hash() -> None:
 
 
 @pytest.mark.unit
-def test_partial_offer_keeps_an_unmoved_cursor_on_the_top_row() -> None:
+@pytest.mark.parametrize("owned", [False, True])
+def test_i_opens_the_release_list_at_once_with_the_cursor_on_the_suggestion(*, owned: bool) -> None:
+    first: RankedCandidate = _candidate(IdentityVerdict.MISMATCH)
+    second: RankedCandidate = replace(_candidate(), stream=replace(_candidate().stream, info_hash="b" * 40))
+    catalog: _Catalog = _ChoiceOwner() if owned else _Catalog()
+    catalog.offer_read = lambda key: _offer(key, (first, second))
+    controller: AnimeController = _owner_controller(cast("_ChoiceOwner", catalog)) if owned else _controller(catalog)
+    if not owned:
+        _open(controller)
+    _key(controller, "text:i")
+    controller.render(80, 24)
+    assert _at(controller) is _Screen.CANDIDATES
+    assert [item.key for item in controller._view.items] == [first.stream.info_hash, second.stream.info_hash]
+    assert controller._view.cursor == 1
+    assert controller._view.items[1].suggested
+    if owned:
+        _key(controller, "text:d")
+        assert [choice[1] for choice in cast("_ChoiceOwner", catalog).choices] == [second.stream]
+        assert _at(controller) is _Screen.EPISODES
+        return
+    _key(controller, "escape")
+    assert _at(controller) is _Screen.EPISODES
+
+
+@pytest.mark.unit
+def test_partial_offer_keeps_an_unmoved_cursor_on_the_suggestion() -> None:
     owner: _PartialOwner = _PartialOwner()
     first: RankedCandidate = _candidate()
     second: RankedCandidate = replace(first, stream=replace(first.stream, info_hash="b" * 40))
     owner.offer_read = lambda key: _offer(key, (first, second))
     controller: AnimeController = _open_partial(owner)
-    controller.handle_key("text:i")
     controller.render(80, 24)
     assert owner.offer_view is not None
     owner.offer_view = replace(
@@ -1817,8 +1824,7 @@ def test_partial_offer_keeps_a_cursor_moved_by_keyboard_on_its_release() -> None
     first, second, third = _three_candidates()
     owner.offer_read = lambda key: _offer(key, (first, second))
     controller: AnimeController = _open_partial(owner)
-    for key in ("text:i", "down"):
-        controller.handle_key(key)
+    controller.handle_key("down")
     controller.render(80, 24)
     assert _revise(owner, controller, (third, first, second)) == second.stream.info_hash
 
@@ -1829,7 +1835,6 @@ def test_partial_offer_keeps_a_cursor_moved_by_a_click_on_its_release() -> None:
     first, second, third = _three_candidates()
     owner.offer_read = lambda key: _offer(key, (first, second))
     controller: AnimeController = _open_partial(owner)
-    controller.handle_key("text:i")
     controller.render(80, 24)
     frame = controller._panel._frame
     assert frame is not None
@@ -1842,12 +1847,11 @@ def test_partial_offer_keeps_a_cursor_moved_by_a_click_on_its_release() -> None:
 
 
 @pytest.mark.unit
-def test_scroll_details_and_marks_do_not_detach_the_release_cursor_from_the_top() -> None:
+def test_scroll_details_and_marks_do_not_detach_the_release_cursor_from_the_suggestion() -> None:
     owner: _PartialOwner = _PartialOwner()
     first, second, _third = _three_candidates()
     owner.offer_read = lambda key: _offer(key, (first, second))
     controller: AnimeController = _open_partial(owner)
-    controller.handle_key("text:i")
     controller.render(80, 10)
     controller.scroll(1)
     controller.render(80, 10)
@@ -1861,22 +1865,159 @@ def test_scroll_details_and_marks_do_not_detach_the_release_cursor_from_the_top(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("reopen", [("escape", "text:i"), ("escape", "escape", "text:i", "text:i")])
-def test_reopening_the_release_list_returns_the_cursor_to_the_top(reopen: tuple[str, ...]) -> None:
+def test_reopening_the_release_list_returns_the_cursor_to_the_suggestion() -> None:
     owner: _PartialOwner = _PartialOwner()
     first, second, third = _three_candidates()
     owner.offer_read = lambda key: _offer(key, (first, second))
     controller: AnimeController = _open_partial(owner)
-    for key in ("text:i", "down"):
-        controller.handle_key(key)
+    controller.handle_key("down")
     controller.render(80, 24)
-    for key in reopen:
+    for key in ("escape", "text:i"):
         controller.handle_key(key)
     deadline: float = time.monotonic() + 5
     while controller._offer_view is None and time.monotonic() < deadline:
         time.sleep(0.001)
     controller.render(80, 24)
     assert _revise(owner, controller, (third, first, second)) == third.stream.info_hash
+
+
+@pytest.mark.unit
+def test_partial_offer_moves_an_unmoved_cursor_with_the_suggestion() -> None:
+    owner: _PartialOwner = _PartialOwner()
+    first, second, third = _three_candidates()
+    owner.offer_read = lambda key: _offer(key, (first, second))
+    controller: AnimeController = _open_partial(owner)
+    controller.render(80, 24)
+    assert controller._view.cursor == 0
+    assert owner.offer_view is not None
+    owner.offer_view = replace(
+        owner.offer_view,
+        revision=2,
+        offer=replace(owner.offer_view.offer, candidates=(third, first, second), suggestion=1),
+    )
+    _refresh_partial(controller)
+    controller.render(80, 24)
+    assert controller._view.cursor == 1
+    assert controller._view.items[1].key == first.stream.info_hash
+    assert controller._view.items[1].suggested
+
+
+@pytest.mark.unit
+def test_a_click_beside_the_rows_after_a_revision_keeps_the_cursor_on_the_suggestion() -> None:
+    owner: _PartialOwner = _PartialOwner()
+    first, second, third = _three_candidates()
+    owner.offer_read = lambda key: _offer(key, (first, second))
+    controller: AnimeController = _open_partial(owner)
+    controller.render(80, 24)
+    assert owner.offer_view is not None
+    owner.offer_view = replace(
+        owner.offer_view,
+        revision=2,
+        offer=replace(owner.offer_view.offer, candidates=(second, third, first), suggestion=1),
+    )
+    _refresh_partial(controller)
+    controller.mouse(MouseEvent(Point(3, 1), MouseEventType.MOUSE_DOWN, MouseButton.LEFT, frozenset()))
+    controller.render(80, 24)
+    assert controller._view.items[controller._view.cursor].key == third.stream.info_hash
+    assert not controller._release_moved
+
+
+@pytest.mark.unit
+def test_rows_hidden_before_the_suggestion_do_not_shift_the_cursor_off_it() -> None:
+    first, _second, third = _three_candidates()
+    low: RankedCandidate = replace(_candidate(resolution=720), stream=replace(first.stream, info_hash="l" * 40))
+    catalog: _Catalog = _Catalog()
+    catalog.offer_read = lambda key: replace(_offer(key, (low, third, first)), suggestion=1)
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+    _key(controller, "text:i")
+    controller.render(80, 24)
+    assert [item.key for item in controller._view.items] == [third.stream.info_hash, first.stream.info_hash]
+    assert controller._view.cursor == 0
+    assert controller._view.items[0].suggested
+
+
+@pytest.mark.unit
+def test_i_and_d_order_the_suggestion_when_the_only_high_match_is_dubbed() -> None:
+    base: RankedCandidate = _candidate()
+    dubbed: RankedCandidate = replace(
+        base, stream=replace(base.stream, info_hash="d" * 40), traits=replace(base.traits, dub_only=True)
+    )
+    subbed: RankedCandidate = replace(
+        base, stream=replace(base.stream, info_hash="s" * 40), traits=replace(base.traits, resolution=720)
+    )
+    owner: _ChoiceOwner = _ChoiceOwner()
+    owner.offer_read = lambda key: _offer(key, (subbed, dubbed))
+    controller: AnimeController = _owner_controller(owner)
+    _key(controller, "text:i")
+    _key(controller, "text:d")
+    assert [choice[1] for choice in owner.choices] == [subbed.stream]
+
+
+@pytest.mark.unit
+def test_a_lower_resolution_suggestion_stays_listed_and_is_ordered_by_d() -> None:
+    high: RankedCandidate = _candidate()
+    low: RankedCandidate = replace(_candidate(resolution=720), stream=replace(high.stream, info_hash="l" * 40))
+    owner: _ChoiceOwner = _ChoiceOwner()
+    owner.offer_read = lambda key: replace(_offer(key, (low, high)), suggestion=0)
+    controller: AnimeController = _owner_controller(owner)
+    _key(controller, "text:i")
+    controller.render(80, 24)
+    assert [item.key for item in controller._view.items] == [low.stream.info_hash, high.stream.info_hash]
+    assert controller._view.cursor == 0
+    assert controller._view.items[0].suggested
+    _key(controller, "text:d")
+    assert [choice[1] for choice in owner.choices] == [low.stream]
+
+
+@pytest.mark.unit
+def test_a_late_partial_after_escape_does_not_reopen_the_offer() -> None:
+    owner: _PartialOwner = _PartialOwner()
+    controller: AnimeController = _open_partial(owner)
+    _key(controller, "escape")
+    assert _at(controller) is _Screen.EPISODES
+    assert controller._offer_view is None
+    owner.failure = "TORRENT_SOURCE_FAILED"
+    controller.receive("episode_offer_partial", {"offer_id": "offer"})
+    _settle(controller)
+    assert _at(controller) is _Screen.EPISODES
+    assert owner.gets == 1
+
+
+@pytest.mark.unit
+def test_opening_another_episode_shows_none_of_the_previous_releases_while_searching() -> None:
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    previous: RankedCandidate = replace(
+        _candidate(), stream=replace(_candidate().stream, info_hash="p" * 40, release="[Old] Previous release")
+    )
+
+    def offer(key: EpisodeKey) -> EpisodeOffer:
+        if key.number == 2:
+            entered.set()
+            assert release.wait(5)
+            return _offer(key)
+        return _offer(key, (previous,))
+
+    catalog: _Catalog = _Catalog()
+    catalog.offer_read = offer
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+    _key(controller, "text:i")
+    assert "[Old] Previous release" in _frame(controller)
+    _key(controller, "escape")
+    controller.handle_key("down")
+    controller.handle_key("text:i")
+    worker: threading.Thread | None = controller._worker
+    try:
+        assert entered.wait(5)
+        frame: str = _frame(controller)
+        assert "[Old] Previous release" not in frame
+        assert "Szukam…" in frame
+    finally:
+        release.set()
+        assert worker is not None
+        worker.join(5)
 
 
 @pytest.mark.unit
@@ -2185,16 +2326,15 @@ def test_repeat_requires_inspected_conflict_and_separate_identity_consent(
     owner.offer_read = lambda key: _offer(key, (_candidate(verdict),))
     controller: AnimeController = _owner_controller(owner)
     _key(controller, "text:p")
-    assert _at(controller) is _Screen.OFFER
+    assert _at(controller) is _Screen.CANDIDATES
     frame: str = controller.render(50, 24).plain
     assert "Obecne pliki zostają" in frame
     assert "Nie można potwierdzić odmienności wydania" in frame
     assert all(Text(line).cell_len <= 50 for line in frame.splitlines())
     assert not owner.choices
-    _key(controller, "enter")
     if cancel and verdict is IdentityVerdict.MATCH:
         _key(controller, "escape")
-        _key(controller, "escape")
+        assert _at(controller) is _Screen.EPISODES
         assert not owner.choices
         return
     _key(controller, "text:d")
@@ -2273,7 +2413,7 @@ def test_unresolved_episode_uses_offer_list_and_submits_exact_file_revision(canc
     _key(controller, "down")
     assert "Enter wskaż plik" in controller.render(50, 24).plain
     _key(controller, "enter")
-    assert _at(controller) is _Screen.OFFER
+    assert _at(controller) is _Screen.FILES
     frame: str = controller.render(50, 24).plain
     assert "Season 1/Slime - 02.mkv" in frame
     assert "1,000 B" in frame
@@ -2539,7 +2679,7 @@ def test_local_offer_defect_logs_class_and_fails_the_entire_preview() -> None:
         _key(controller, "text:i")
         assert controller._screen is _Screen.PROBLEM
         assert "Rezydent nie wykonał polecenia." in _frame(controller)
-        assert not controller._offers
+        assert controller._offer is None
         assert "error_class" in "".join(captured)
         assert "ValueError" in "".join(captured)
         assert "private-payload" not in _frame(controller) + "".join(captured)
@@ -2888,8 +3028,10 @@ def test_slime_fixture_flows_from_query_to_s1e4_preview_without_admission(tmp_pa
         assert controller._listing.anilist_id == 101280
         for key in ("down", "down", "down", "text:i"):
             _key(controller, key)
-        assert controller._offers[4].suggestion is not None
-        offer: EpisodeOffer = controller._offers[4]
+        offer: EpisodeOffer | None = controller._offer
+        assert offer is not None
+        assert offer.key.number == 4
+        assert offer.suggestion is not None
         assert offer.suggestion is not None
         assert offer.candidates[offer.suggestion].identity.verdict is IdentityVerdict.MATCH
         assert "Szukam…" not in _frame(controller)
@@ -2944,7 +3086,8 @@ def test_movie_entry_previews_through_movie_endpoint_without_admission(tmp_path:
         assert controller._listing is not None
         assert len(controller._listing.episodes) == 1
         _key(controller, "text:i")
-        assert controller._offers[1].key == EpisodeKey(139498, 1)
+        assert controller._offer is not None
+        assert controller._offer.key == EpisodeKey(139498, 1)
         assert "Brak wydania" in _frame(controller)
         assert "torrentio.strem.fun/stream/movie/kitsu:99.json" in sent
         assert not any("/stream/series/" in url for url in sent)
@@ -2997,8 +3140,10 @@ def test_ani_zip_429_keeps_episode_listing_and_offer_without_numbering(tmp_path:
         assert now[0] < deadline <= now[0] + 90
         for key in ("down", "down", "down", "text:i"):
             _key(controller, key)
-        assert controller._screen.value == "offer"
-        offer: EpisodeOffer = controller._offers[4]
+        assert _at(controller) is _Screen.CANDIDATES
+        offer: EpisodeOffer | None = controller._offer
+        assert offer is not None
+        assert offer.key.number == 4
         assert not offer.numbering
         assert offer.suggestion is None
         assert offer.status == "brak numeracji"
@@ -3035,7 +3180,7 @@ def test_owner_offer_defect_reaches_problem_with_error_class_and_without_suggest
             _key(controller, "text:i")
             assert controller._screen is _Screen.PROBLEM
             assert "Rezydent nie wykonał polecenia." in _frame(controller)
-            assert not controller._offers
+            assert controller._offer is None
             assert "ValueError" in "".join(captured)
             assert "error_class" in "".join(captured)
             assert "private-payload" not in "".join(captured) + _frame(controller)
@@ -3059,7 +3204,7 @@ def test_oversized_owner_offer_reports_problem_and_same_connection_remains_usabl
         )
         _key(controller, "text:i")
         assert "Widok nieaktualny: odpowiedź przekracza limit" in _frame(controller)
-        assert not controller._offers
+        assert controller._offer is None
         assert controller._resident is not None
         assert "instance_id" in controller._resident.command("status")
 
@@ -3081,7 +3226,7 @@ def test_partial_schedule_429_keeps_episode_list_until_explicit_reentry_after_de
         _key(controller, "space")
         _key(controller, "text:d")
         assert not controller._episode_marks
-        assert not controller._offers
+        assert controller._offer is None
         assert "Nie wyemitowano" in _frame(controller)
         reads: int = len(sent)
         now[0] += 90

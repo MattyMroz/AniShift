@@ -265,7 +265,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Every aired, inactive episode remains selectable, including ready, downloaded and failed ones.
   D submits new and repeated keys together through the owner's durable batch. The owner reuses
   repeat candidate exclusion and protected admission replacement. Active ordered/downloading/processing
-  rows show cancellation guidance instead of submitting duplicate work. P remains the explicit offer view.
+  rows show cancellation guidance instead of submitting duplicate work. I and P open the release list
+  (`_Screen.CANDIDATES`) at once, with the cursor on the `*` suggestion until the user moves it; there is
+  no single-release offer screen (owner decision 2026-10-10). Esc returns to the episodes or U08.
+  `_Screen.FILES` is only the file choice of an unresolved pack.
 - Zakres odcinków zastępuje zaznaczenia i przyjmuje nieciągłe numery całkowite; nawigacja i powroty
   z podglądu zachowują zaznaczenia oraz kursor. Film ma jeden wiersz Film i `EpisodeKey(id, 1)`;
   podgląd wymaga mapowania. Enter na kandydacie nic nie robi. `interactive/anime.py`

@@ -57,7 +57,7 @@ Kontrakt tego, jak AniShift znajduje wydania odcinka, ocenia je i wybiera jedno.
 ### 3.2 Czas i wyniki częściowe
 
 - **Limit operacji źródła:** 30 s od startu, łącznie z oczekiwaniem na limity i stronicowaniem. Po limicie źródło jest „niedokończone”, a jego dotychczasowe wyniki są używane.
-- **Lista (ręczny wybór):** wiersze pojawiają się w miarę odpowiedzi; po 3 s lista pokazuje to, co przyszło, a do końca stan „szukam jeszcze: …”. Nowe wiersze wstawiane są według kolejności §6.1; dopóki użytkownik nie przesunie kursora, kursor stoi na pierwszym wierszu, a po pierwszym ruchu zostaje na tym samym wydaniu (decyzja właściciela 2026-10-09); zaznaczenia zostają.
+- **Lista (ręczny wybór):** wiersze pojawiają się w miarę odpowiedzi; po 3 s lista pokazuje to, co przyszło, a do końca stan „szukam jeszcze: …”. Nowe wiersze wstawiane są według kolejności §6.1; dopóki użytkownik nie przesunie kursora, kursor stoi na sugestii `*` (pierwszym wierszu grupy pierwszej, który może być sugestią), a po pierwszym ruchu zostaje na tym samym wydaniu (decyzja właściciela 2026-10-09, kursor na sugestii 2026-10-10); zaznaczenia zostają.
 - **`D` bez podglądu (P-02) i subskrypcja:** decyzja po zakończeniu (albo limicie) wszystkich włączonych źródeł i uzupełnień spisów (§3.4); do tego czasu stan „szukam”.
 - **Źródła dociągane w subskrypcji** (Knaben, nekoBT) są odpytywane najwyżej raz na 60 min na cel. Między odczytami decyzja używa ostatniego udanego wyniku tego źródła dla celu (wydania i seedy z chwili odczytu). Błąd odczytu zachowuje poprzedni wynik; wyłączenie źródła i restart rezydenta go usuwają. Brak jakiegokolwiek udanego odczytu = źródło niedokończone.
 
@@ -152,7 +152,7 @@ Kontrakt tego, jak AniShift znajduje wydania odcinka, ocenia je i wybiera jedno.
 - **Klasa rozdzielczości (U-05 bez zmian):** 1080 (także 1440×1080) → 2160 → 720 → pozostałe znane, bliższe 1080 wyżej → nieznana.
 - **Klasa PL napisów:** PL → PL bez roli → brak.
 - **Klasa audio:** oryginalne (`ja`; `zh` przy donghua) → `ko`.
-- 720p i niższe są ukryte na liście, gdy istnieje zgodny kandydat 1080p lub 2160p (U-24 bez zmian).
+- 720p i niższe są ukryte na liście, gdy istnieje zgodny kandydat 1080p lub 2160p, który może być sugestią: bez konfliktu, nie sam dubbing, w obsługiwanym formacie (U-24; od 2026-10-10 ukrycie nigdy nie chowa sugestii z powodu wydania, którego nie da się zasugerować). Sama sugestia `*` jest zawsze widoczna, także gdy ma 720p lub mniej (2026-10-10).
 - Sam dubbing bez oryginalnej ścieżki — na końcu listy (U-23). Nieobsługiwany kontener — wykluczony z powodem (U-06).
 
 ### 5.4 Kontrola wag

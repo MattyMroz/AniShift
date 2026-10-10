@@ -259,17 +259,10 @@ def _episodes_airing(monkeypatch: pytest.MonkeyPatch) -> _Probe:
     return _episodes_at(monkeypatch, 2, owner)
 
 
-def _offer(monkeypatch: pytest.MonkeyPatch) -> _Probe:
+def _candidates(monkeypatch: pytest.MonkeyPatch) -> _Probe:
     probe: _Probe = _episodes(monkeypatch)
     probe.panel.handle_key("text:i")
     episodes._settle(probe.anime)
-    assert probe.anime._screen is _Screen.OFFER
-    return probe
-
-
-def _candidates(monkeypatch: pytest.MonkeyPatch) -> _Probe:
-    probe: _Probe = _offer(monkeypatch)
-    probe.panel.handle_key("text:i")
     assert probe.anime._screen is _Screen.CANDIDATES
     return probe
 
@@ -457,7 +450,6 @@ _FIXTURES: Final[dict[str, Callable[[pytest.MonkeyPatch], _Probe]]] = {
     "episodes_file": _episodes_file,
     "episodes_ordered": _episodes_ordered,
     "episodes_airing": _episodes_airing,
-    "offer": _offer,
     "candidates": _candidates,
     "files": _files,
     "draft": _draft,
@@ -491,7 +483,6 @@ _ACTIONS: Final[dict[str, tuple[Action, ...]]] = {
         *_EPISODE_MORE,
         *_LISTED,
     ),
-    "offer": (("Enter", "wydania"), ("D", "pobierz"), ("Space", "zaznacz"), *_LISTED),
     "candidates": (("Space", "zaznacz"), ("D", "pobierz"), *_LISTED),
     "files": (("Enter", "wybierz"), *_LISTED),
     "draft": (("Enter", "wybierz"), ("Space", "zaznacz"), ("A", "wszystkie"), *_LISTED),
@@ -528,7 +519,6 @@ _ACTIONS: Final[dict[str, tuple[Action, ...]]] = {
 }
 
 _ALIASES: Final[dict[str, frozenset[str]]] = {
-    "offer": frozenset({"text:i"}),
     "u08": frozenset({"text:f", "delete"}),
     "u08_waiting": frozenset({"text:f", "delete"}),
     "u08_extra": frozenset({"text:f", "delete"}),
@@ -563,7 +553,6 @@ _FOOTERS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
     "titles": ("Enter wybierz · S subskrybuj · ? więcej · Esc wróć", ()),
     "entries": ("Enter odcinki · S subskrybuj · ? więcej · Esc wróć", ()),
     "episodes": ("Space zaznacz · D pobierz · S subskrybuj · ? więcej · Esc wróć", ()),
-    "offer": ("Enter wydania · D pobierz · ? więcej · Esc wróć", ()),
     "candidates": ("Space zaznacz · D pobierz · ? więcej · Esc wróć", ()),
     "files": ("Enter wybierz · ? więcej · Esc wróć", ()),
     "draft": ("Enter wybierz · Space zaznacz · ? więcej · Esc wróć", ()),
@@ -596,7 +585,6 @@ _DETAIL_SCREENS: Final[tuple[str, ...]] = (
     "titles",
     "entries",
     "episodes",
-    "offer",
     "candidates",
     "files",
     "draft",
@@ -773,10 +761,10 @@ def test_question_mark_opens_and_closes_anime_details(build: Callable[[str], _Pr
 
 
 def test_anime_help_lists_only_this_screen_without_aliases(build: Callable[[str], _Probe]) -> None:
-    probe: _Probe = build("offer")
+    probe: _Probe = build("candidates")
     probe.panel.handle_key("text:?")
     text: str = " ".join(item.title for item in probe.anime._view.items)
-    assert "Enter wydania · D pobierz · Space zaznacz · / szukaj · C kopiuj" in text
+    assert "Space zaznacz · D pobierz · / szukaj · C kopiuj" in text
     assert "I " not in text.split("Ten ekran")[1]
     assert "Z zakres" not in text
 
@@ -1040,10 +1028,22 @@ def test_history_search_opens_with_slash_or_s(build: Callable[[str], _Probe], ke
     assert probe.panel._history_input is not None
 
 
-def test_offer_i_opens_the_releases_like_enter(build: Callable[[str], _Probe]) -> None:
-    probe: _Probe = build("offer")
+@pytest.mark.parametrize(("name", "subscribed"), [("episodes", False), ("u08", True)])
+def test_i_opens_the_release_list_at_once_and_escape_returns_to_its_episodes(
+    build: Callable[[str], _Probe], name: str, *, subscribed: bool
+) -> None:
+    probe: _Probe = build(name)
     probe.panel.handle_key("text:i")
-    assert probe.anime._screen is _Screen.CANDIDATES
+    episodes._settle(probe.anime)
+    probe.panel.render(80, 24)
+    opened: _Screen = probe.anime._screen
+    assert opened is _Screen.CANDIDATES
+    assert probe.anime._view.items[probe.anime._view.cursor].suggested
+    assert "Space zaznacz · D pobierz · ? więcej · Esc wróć" in probe.panel.render(80, 24).plain
+    probe.panel.handle_key("escape")
+    assert probe.anime._screen is _Screen.EPISODES
+    assert probe.anime.in_subscriptions is subscribed
+    assert (probe.anime._subscription is not None) is subscribed
 
 
 @pytest.mark.parametrize("name", ["subscriptions", "library_details"])
@@ -1275,7 +1275,6 @@ def test_two_escapes_from_the_subscription_search_return_to_the_list(build: Call
         "entries",
         "episodes",
         "episodes_file",
-        "offer",
         "candidates",
         "files",
         "draft",

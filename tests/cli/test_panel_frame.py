@@ -268,7 +268,6 @@ def _cursor(lines: list[str]) -> int:
     ("name", "crumb"),
     [
         ("episodes", f"Anime {_ARROW} Slime (2018)"),
-        ("offer", f"Anime {_ARROW} Slime (2018)"),
         ("candidates", f"Anime {_ARROW} Slime (2018)"),
         ("files", f"Anime {_ARROW} Slime (2018)"),
         ("u08", f"Subskrypcje {_ARROW} Alpha"),

@@ -969,6 +969,27 @@ def test_visible_hides_720p_and_lower_only_beside_a_usable_high_resolution_match
         assert len(visible(_rank(_target(), candidates))) == len(candidates)
 
 
+def test_visible_keeps_the_suggestion_when_the_only_high_match_cannot_be_suggested() -> None:
+    low: StreamCandidate = _stream("Star Garden - 05 [720p].mkv")
+    dubbed: StreamCandidate = _stream("Star Garden - 05 [1080p].mkv", tags=("Dubbed",))
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [dubbed, low])
+    assert [(row.traits.resolution, row.traits.dub_only, row.identity.verdict) for row in ranked] == [
+        (720, False, IdentityVerdict.MATCH),
+        (1080, True, IdentityVerdict.MATCH),
+    ]
+    assert suggestion(ranked, numbering=True) == (0, False)
+    assert visible(ranked) == ranked
+
+
+def test_visible_never_hides_the_suggestion_beside_a_suggestible_high_match() -> None:
+    low: RankedCandidate = _rank(_target(), [_stream("Star Garden - 05 [720p].mkv")])[0]
+    high: RankedCandidate = _rank(_target(), [_stream("Star Garden - 05 [1080p].mkv")])[0]
+    other: RankedCandidate = _rank(_target(), [_stream("Star Garden - 05 [480p].mkv")])[0]
+    rows: tuple[RankedCandidate, ...] = (low, high, other)
+    assert visible(rows, 0) == (low, high)
+    assert visible(rows) == (high,)
+
+
 def test_suggestion_slime_s4e23_stream_without_file_is_assessed_on_its_release_name() -> None:
     target: dict[str, object] = identity_target(_fixture_graph(_SLIME_S1), _SLIME_S4, _fixture_mapping(_SLIME_S4), 23)
     streams: list[StreamCandidate] = _fixture_streams("torrentio__kitsu-49235-23.json")

@@ -85,7 +85,6 @@ Zasada potwierdzeń: pytanie tylko tam, gdzie nie ma `Ctrl+Z`.
 | Przetwarzanie | `C` | `X` |
 | Biblioteka | `D` | `?` |
 | Historia | `S` | `/` |
-| Anime/oferta | `I` | `Enter` |
 | wszędzie, gdzie działa `X` | `Delete` | `X` |
 
 Każdy alias ma test.
@@ -119,7 +118,7 @@ Każdy alias ma test.
    - Akcje zależne od wiersza wynikają ze stanu: `W wstrzymaj/wznów`, `T` tylko przy czekaniu na PL, `P` przy
      problemie przeniesienia, `W` w Przetwarzaniu tylko dla pobierania.
    - Funkcja zasila wyłącznie stopkę i pomoc. Obecne łańcuchy `if` obsługi klawiszy zostają.
-   - Duplikaty akcji głównej (`I` w ofercie = `Enter`, `Enter` na pustej liście Subskrypcji = `/`) są cichymi
+   - Duplikaty akcji głównej (`Enter` na pustej liście Subskrypcji = `/`) są cichymi
      aliasami (§3.1). `Enter` w EPISODES zależny od wiersza („Wskaż plik”, „Dodatki”) jest akcją główną tego
      wiersza.
    - `D` i `Space` zostają w stopce niezależnie od wiersza pod kursorem (na wierszu niekwalifikującym się dają
@@ -144,7 +143,6 @@ Docelowe stopki 80 kolumn (złote stringi w testach):
 Anime/tytuły        Enter wybierz · S subskrybuj · ? więcej · Esc wróć
 Anime/wpisy         Enter odcinki · S subskrybuj · ? więcej · Esc wróć
 Anime/odcinki       Space zaznacz · D pobierz · S subskrybuj · ? więcej · Esc wróć
-Anime/oferta        Enter wydania · D pobierz · ? więcej · Esc wróć
 Anime/wydania       Space zaznacz · D pobierz · ? więcej · Esc wróć
 Anime/pliki         Enter wybierz · ? więcej · Esc wróć
 Nowa subskrypcja    Enter wybierz · Space zaznacz · ? więcej · Esc wróć
@@ -159,6 +157,8 @@ Biblioteka/szczeg.  Enter otwórz plik · F folder · X usuń · Esc wróć
 Anime, U08/szczeg.  C kopiuj · Esc wróć
 Blok pomocy         Esc wróć
 ```
+
+2026-10-10: ekran oferty usunięty (decyzja właściciela) — `I` i `P` otwierają od razu Anime/wydania; zob. `docs/work/acquisition/ux.md` §6.
 
 Lista „akcji spoza stopki” poniżej jest przykładowa; obowiązuje reguła §4.1 i sonda z F1.
 
@@ -222,7 +222,7 @@ Od góry, identycznie w czterech zakładkach:
    zakładkami: w Anime i Subskrypcjach jest to dotychczasowy wiersz kontekstu z `render_anime` (wyśrodkowany
    blok z tabelą), w `_list_body` wiersz nad wyśrodkowaną listą.
    - na poziomie listy zakładki pusty: lista Subskrypcji, Przetwarzanie, Biblioteka, Anime/tytuły, Anime/wpisy;
-   - głębiej jeden format `Zakładka › Element`: `Anime › Tytuł (rok)` (odcinki, oferta, wydania, pliki),
+   - głębiej jeden format `Zakładka › Element`: `Anime › Tytuł (rok)` (odcinki, wydania, pliki),
      `Subskrypcje › Tytuł` (U08), `Nowa subskrypcja › Tytuł` (DRAFT, jak dziś), `Przetwarzanie › Historia`,
      `Biblioteka › Zestaw` (szczegóły);
    - tytuł „Subskrypcje” nad listą znika. `ANIME` nad polem zapytania zostaje (kontrakt cli/AGENTS); dawne
