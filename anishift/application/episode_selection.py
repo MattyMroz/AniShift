@@ -476,7 +476,7 @@ def _suggestible(candidate: RankedCandidate) -> bool:
 
 
 def visible(candidates: Sequence[RankedCandidate], keep: int | None = None) -> tuple[RankedCandidate, ...]:
-    """Hide 720p and lower beside a suggestible matching 1080p or 2160p row; unknown heights and *keep* stay (U-24)."""
+    """Hide mismatches, and 720p or lower beside a suggestible 1080p or 2160p match unless unknown or *keep* (U-24)."""
     high: bool = any(
         candidate.identity.verdict is IdentityVerdict.MATCH
         and candidate.traits.resolution in _HIGH_RESOLUTIONS
@@ -486,10 +486,13 @@ def visible(candidates: Sequence[RankedCandidate], keep: int | None = None) -> t
     return tuple(
         candidate
         for index, candidate in enumerate(candidates)
-        if not high
-        or index == keep
-        or candidate.traits.resolution is None
-        or candidate.traits.resolution > _HIDDEN_MAX_HEIGHT
+        if candidate.identity.verdict is not IdentityVerdict.MISMATCH
+        and (
+            not high
+            or index == keep
+            or candidate.traits.resolution is None
+            or candidate.traits.resolution > _HIDDEN_MAX_HEIGHT
+        )
     )
 
 

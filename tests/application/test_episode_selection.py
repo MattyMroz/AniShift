@@ -990,6 +990,33 @@ def test_visible_never_hides_the_suggestion_beside_a_suggestible_high_match() ->
     assert visible(rows) == (high,)
 
 
+def test_visible_hides_mismatches_and_keeps_uncertain_conflicts_and_the_suggestion() -> None:
+    kept: set[str] = {"Star Garden - 05 [1080p].mkv", "Moon Garden - 05 [1080p].mkv", "Star Garden S02E05 [1080p].mkv"}
+    hidden: set[str] = {
+        "Star Garden S01E06 [1080p].mkv",
+        "Star Garden S01E07 The Silent Winter Night [1080p].mkv",
+        "Star Garden - 05 Extra [1080p].mkv",
+    }
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [_stream(name) for name in sorted(kept | hidden)])
+    assert {row.stream.file_name for row in ranked if row.identity.verdict is IdentityVerdict.MISMATCH} == hidden
+    index, uncertain = suggestion(ranked, numbering=True)
+    assert index is not None
+    assert not uncertain
+    shown: tuple[RankedCandidate, ...] = visible(ranked, index)
+    assert {row.stream.file_name for row in shown} == kept
+    assert ranked[index] in shown
+    assert [row.conflict for row in shown].count(True) == 1
+
+
+def test_visible_keeps_an_uncertain_suggestion_beside_mismatches() -> None:
+    names: list[str] = ["Moon Garden - 05 [1080p].mkv", "Star Garden S01E06 [1080p].mkv"]
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [_stream(name) for name in names])
+    index, uncertain = suggestion(ranked, numbering=True)
+    assert index is not None
+    assert uncertain
+    assert visible(ranked, index) == (ranked[index],)
+
+
 def test_suggestion_slime_s4e23_stream_without_file_is_assessed_on_its_release_name() -> None:
     target: dict[str, object] = identity_target(_fixture_graph(_SLIME_S1), _SLIME_S4, _fixture_mapping(_SLIME_S4), 23)
     streams: list[StreamCandidate] = _fixture_streams("torrentio__kitsu-49235-23.json")

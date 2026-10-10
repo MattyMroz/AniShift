@@ -270,6 +270,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   rows show cancellation guidance instead of submitting duplicate work. I and P open the release list
   (`_Screen.CANDIDATES`) at once, with the cursor on the `*` suggestion until the user moves it; there is
   no single-release offer screen (owner decision 2026-10-10). Esc returns to the episodes or U08.
+  The list is `episode_selection.visible(offer.candidates, offer.suggestion)`: it drops H1 `MISMATCH`
+  rows and U-24 low resolutions; `!` uncertain rows stay, and a list of only mismatches shows the single
+  `Brak wydania` row. Cursor, marks and R-04 follow rows by hash or equality, never by offer index.
   `_Screen.FILES` is only the file choice of an unresolved pack.
 - Zakres odcinków zastępuje zaznaczenia i przyjmuje nieciągłe numery całkowite; nawigacja i powroty
   z podglądu zachowują zaznaczenia oraz kursor. Film ma jeden wiersz Film i `EpisodeKey(id, 1)`;

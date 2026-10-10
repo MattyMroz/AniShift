@@ -135,7 +135,7 @@ Stopka powyżej obowiązuje w E2. Przy pominiętym U02 pokazuje też `G grupy`, 
 - Brak mapowania ani.zip: zamiast listy „Brak mapowania odcinków dla tego wpisu · Esc wróć”.
 - Terminy emisji niedostępne: jeden komunikat „Brak terminów emisji (AniList) · ponów za N s”; po ochłodzeniu lub bez terminu „Brak terminów emisji (AniList) · wróć i otwórz ponownie”. Bez nowego klawisza ponawiania.
 
-**Pobierz ponownie (E2):** `P` na zleconym/pobranym/gotowym lub „może być zlecony” otwiera bezpośrednio U04b z alternatywami i oznaczoną sugestią. Wiersz ostrzeżenia: „Obecne pliki zostają”, a dla legacy „E3 może być już zlecony · Obecne pliki zostają”. Zastępowane wydanie jest wyłączone z wyboru. Zgodą na ponowienie jest dopiero `D` (stopka „D pobierz”) dla zaznaczonego, a bez zaznaczenia podświetlonego wydania. Nie ma wcześniejszego pytania Enter/Esc ani osobnego U04. R-04 nadal wymaga osobnego potwierdzenia jawnego niepewnego/niezgodnego wyboru. Zgoda legacy dotyczy pokazanych danych konfliktu; zmiana danych ją unieważnia. W subskrypcji ręczne zlecenie rezerwuje cel odcinka.
+**Pobierz ponownie (E2):** `P` na zleconym/pobranym/gotowym lub „może być zlecony” otwiera bezpośrednio U04b z alternatywami i oznaczoną sugestią. Wiersz ostrzeżenia: „Obecne pliki zostają”, a dla legacy „E3 może być już zlecony · Obecne pliki zostają”. Zastępowane wydanie jest wyłączone z wyboru. Zgodą na ponowienie jest dopiero `D` (stopka „D pobierz”) dla zaznaczonego, a bez zaznaczenia podświetlonego wydania. Nie ma wcześniejszego pytania Enter/Esc ani osobnego U04. R-04 nadal wymaga osobnego potwierdzenia jawnego niepewnego wyboru (także `!` z konfliktem). Zgoda legacy dotyczy pokazanych danych konfliktu; zmiana danych ją unieważnia. W subskrypcji ręczne zlecenie rezerwuje cel odcinka.
 
 ## 6. U04 — odczytowy podgląd E1; U04b — wydania i ponowienie E2
 
@@ -174,7 +174,6 @@ U04 jest wyłącznie odczytowym podglądem E1, bez akcji Pobierz. W E2 zwykłe D
 │    [SubsPlease] … - 03 (1080p)                  1080p  —         820 │
 │    [EMBER] … S04E03 (paczka)                    1080p  —          45 │
 │    niepewne · … 03                              ?     —           ? │
-│    niezgodne · Tensura Nikki - 03               1080p  —         110 │
 │                                                                        │
 │  zgodny: Tytuł i numer odcinka są zgodne.                              │
 │  Plik: … - 03.mkv · Rozmiar: 1.4G                                     │
@@ -183,12 +182,12 @@ U04 jest wyłącznie odczytowym podglądem E1, bez akcji Pobierz. W E2 zwykłe D
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Kolejność: zgodni według rankingu, potem niepewni, potem niezgodni. Bez kolumny Tożsamość; tekstowe prefiksy tylko dla wyjątków. Pełny werdykt i krótki powód pod kursorem; `? szczegóły` rozwija pełny powód, Esc zamyka szczegóły. Nazwa pliku i rozmiar pod kursorem; bez indeksu i pustej platformy.
+- Kolejność: zgodni według rankingu, potem niepewni, potem niepewni z konfliktem (`!` z powodem). Wydań niezgodnych (werdykt H1 `MISMATCH`) lista nie pokazuje (decyzja właściciela 2026-10-10); gdy zostają tylko takie, lista ma jeden wiersz „Brak wydania”. Bez kolumny Tożsamość; tekstowe prefiksy tylko dla wyjątków. Pełny werdykt i krótki powód pod kursorem; `? szczegóły` rozwija pełny powód, Esc zamyka szczegóły. Nazwa pliku i rozmiar pod kursorem; bez indeksu i pustej platformy.
 - Kolumna Seedy jest widoczna przy każdej szerokości (także 50 kolumn); tytuł wydania skraca się pierwszy. Szerokość kolumny Język wynika z najdłuższej etykiety na liście.
 - Widoczne rozdzielczości (spec U-24): 1080p, 2160p i nieznana. 720p i niższe są ukryte, jeśli istnieje choć jedno zgodne 1080p lub 2160p, które może być sugestią (bez konfliktu, nie sam dubbing, obsługiwany format; 2026-10-10); inaczej widać wszystkie. Sugestia `*` jest zawsze widoczna, także przy 720p lub mniej (2026-10-10).
 - E1: Enter nic nie robi (stopka: „? szczegóły · Esc podgląd”).
 - E2: sugestia jest oznaczona na liście z powodem pod nią. Space zaznacza jedno wydanie; następny wybór zastępuje poprzedni. Enter na wydaniu nic nie robi (2026-10-10). D pobiera zaznaczone, a bez zaznaczenia — podświetlone. Nie ma A/Z do pobierania kilku wersji jednego odcinka. Esc wraca do odcinków, także po P. Po P stopka pozostaje „D pobierz”, a ponowienie sygnalizuje ostrzeżenie opisane w §5.
-- Jawny wybór `niepewnego` wymaga przed pobraniem potwierdzenia „To wydanie może nie być E3 serii Slime S4. Wybrać mimo to? Enter tak · Esc nie”; `niezgodny`: „Heurystyka uznała to za inny materiał: <powód>. Wybrać mimo to? Enter tak · Esc nie”. Dotyczy też D bez zaznaczenia. Zmiana wyboru unieważnia potwierdzenie (spec R-04).
+- Jawny wybór `niepewnego` wymaga przed pobraniem potwierdzenia „To wydanie może nie być E3 serii Slime S4. Wybrać mimo to? Enter tak · Esc nie”. Niepewny z konfliktem (`!`) wymaga tego samego potwierdzenia z powodem H1. Dotyczy też D bez zaznaczenia. Zmiana wyboru unieważnia potwierdzenie (spec R-04).
 - Wydanie w nieobsługiwanym formacie ma w kolumnie Obraz dopisek „(.avi)” i nie może być wybrane.
 
 ## 7. U05 — wybór pliku w paczce (E2)
@@ -340,7 +339,7 @@ Każdy scenariusz wykonuje właściciel; wynik przekazuje jako: numer kroku, co 
 2. W trakcie pobierania zamknij panel i uruchom ponownie AniShift.
    Oczekiwane: jeden transfer paczki; pobierają się tylko E1 i E3; po restarcie praca trwa; oba odcinki w Bibliotece z lektorem; E2 nie pojawia się w Przetwarzaniu.
 3. `P` na pobranym odcinku → alternatywy z ostrzeżeniem „Obecne pliki zostają” → `D`.
-   Oczekiwane: lista bez zastępowanego wydania, ostrzeżenie „Obecne pliki zostają”; nowe zlecenie tylko tego odcinka; poprzedni wynik zostaje. R-04 osobno przy jawnym niepewnym/niezgodnym wyborze.
+   Oczekiwane: lista bez zastępowanego wydania, ostrzeżenie „Obecne pliki zostają”; nowe zlecenie tylko tego odcinka; poprzedni wynik zostaje. R-04 osobno przy jawnym niepewnym wyborze (także `!` z konfliktem).
 
 ### H3 — subskrypcje (koniec E3, 7 dni)
 

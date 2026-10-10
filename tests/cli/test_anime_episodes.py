@@ -62,7 +62,7 @@ from anishift.application.cancellation import EventCancellationToken
 from anishift.application.control import AcquisitionConfirmation
 from anishift.application.control_views import decode_view, encode_view
 from anishift.application.episode_commands import EpisodeResult
-from anishift.application.episode_identity import REASONS
+from anishift.application.episode_identity import REASONS, is_conflict
 from anishift.application.episode_search import EpisodeSearch
 from anishift.application.episode_selection import AniZipMapping, episode_listing, rank_candidates, streams_releases
 from anishift.application.planning import ExecutionPlan
@@ -121,15 +121,21 @@ def _listing() -> EpisodeListing:
     )
 
 
-def _candidate(verdict: IdentityVerdict = IdentityVerdict.MATCH, resolution: int | None = 1080) -> RankedCandidate:
-    return RankedCandidate(
-        StreamCandidate("a" * 40, None, None, "Slime - 04.mkv", "[Group] Slime - 04", None, None, None, None, (), ()),
-        IdentityAssessment(
-            verdict,
+def _candidate(
+    verdict: IdentityVerdict = IdentityVerdict.MATCH, resolution: int | None = 1080, *, reason: str | None = None
+) -> RankedCandidate:
+    identity: IdentityAssessment = IdentityAssessment(
+        verdict,
+        reason
+        or (
             "Explicit mapped episode differs from target."
             if verdict is IdentityVerdict.MISMATCH
-            else "No selected file.",
+            else "No selected file."
         ),
+    )
+    return RankedCandidate(
+        StreamCandidate("a" * 40, None, None, "Slime - 04.mkv", "[Group] Slime - 04", None, None, None, None, (), ()),
+        identity,
         ReleaseTraits(
             PolishClass.NONE,
             False,
@@ -145,8 +151,8 @@ def _candidate(verdict: IdentityVerdict = IdentityVerdict.MATCH, resolution: int
             False,
         ),
         quality=0.0,
-        confidence=None if verdict is IdentityVerdict.MISMATCH else 0.954,
-        conflict=verdict is IdentityVerdict.MISMATCH,
+        confidence=None if is_conflict(identity) else 0.954,
+        conflict=is_conflict(identity),
         ambiguous=False,
         release_name_only=False,
         supported=True,
@@ -154,11 +160,20 @@ def _candidate(verdict: IdentityVerdict = IdentityVerdict.MATCH, resolution: int
     )
 
 
+def _conflicted() -> RankedCandidate:
+    return _candidate(IdentityVerdict.INSUFFICIENT, reason="Season marker conflicts with the target numbering system.")
+
+
+_KEPT_ROWS: Final[list[object]] = [
+    pytest.param(_candidate(), id="match"),
+    pytest.param(_candidate(IdentityVerdict.INSUFFICIENT), id="uncertain"),
+    pytest.param(_conflicted(), id="conflict"),
+]
+
+
 def _offer(key: EpisodeKey, candidates: tuple[RankedCandidate, ...] | None = None) -> EpisodeOffer:
     candidates = (_candidate(),) if candidates is None else candidates
-    suggested: int | None = next(
-        (i for i, item in enumerate(candidates) if item.identity.verdict is not IdentityVerdict.MISMATCH), None
-    )
+    suggested: int | None = next((i for i, item in enumerate(candidates) if not item.conflict), None)
     return EpisodeOffer(
         key,
         candidates,
@@ -284,8 +299,7 @@ def test_uncertain_mark() -> None:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(("name", "label"), [("Slime S01E04.mkv", "inny sezon"), ("Slime S02E05.mkv", "inny odcinek")])
-def test_conflict_row_shows_reason(name: str, label: str) -> None:
+def test_conflict_row_shows_reason() -> None:
     target: dict[str, object] = {
         "aliases": ["Slime"],
         "type": "TV",
@@ -294,7 +308,7 @@ def test_conflict_row_shows_reason(name: str, label: str) -> None:
         "episode": 4,
         "absolute": 28,
     }
-    stream: StreamCandidate = replace(_candidate().stream, file_name=name, release=name)
+    stream: StreamCandidate = replace(_candidate().stream, file_name="Slime S01E04.mkv", release="Slime S01E04.mkv")
     item: RankedCandidate = rank_candidates(
         target,
         streams_releases((stream,), pack_name=lambda name: parse_release_name(name).is_pack),
@@ -323,14 +337,14 @@ def test_conflict_row_shows_reason(name: str, label: str) -> None:
     _open(controller)
     _key(controller, "text:i")
     frame: str = _frame(controller)
-    assert label in frame
+    assert "inny sezon" in frame
     assert "%" not in frame
-    assert controller._view.items[0].confidence == label
+    assert controller._view.items[0].confidence == "inny sezon"
     _key(controller, "text:?")
     details: str = " ".join(_frame(controller).split())
     assert "Odczyt H1 (S/E): sezon" in details
     assert "Cel: lokalny 4; S/E: sezon 2, odcinek 4; absolutny 28" in details
-    assert ("sezon 1, odcinek 4" if label == "inny sezon" else "sezon 2, odcinek 5") in details
+    assert "sezon 1, odcinek 4" in details
 
 
 @pytest.mark.unit
@@ -1054,14 +1068,13 @@ def test_other_releases_always_show_aligned_seeds(width: int, unsupported: bool)
 
 @pytest.mark.unit
 @pytest.mark.parametrize("width", [50, 80, 120])
-@pytest.mark.parametrize("verdict", list(IdentityVerdict))
-def test_release_views_keep_decision_columns_and_put_size_in_details(width: int, verdict: IdentityVerdict) -> None:
+@pytest.mark.parametrize("base", _KEPT_ROWS)
+def test_release_views_keep_decision_columns_and_put_size_in_details(width: int, base: RankedCandidate) -> None:
     catalog: _Catalog = _Catalog()
-    item: RankedCandidate = _candidate(verdict)
-    item = replace(
-        item,
-        traits=replace(item.traits, polish=PolishClass.POLISH, english_subtitles=True),
-        stream=replace(item.stream, seeders=321, size_text="1.4 GB"),
+    item: RankedCandidate = replace(
+        base,
+        traits=replace(base.traits, polish=PolishClass.POLISH, english_subtitles=True),
+        stream=replace(base.stream, seeders=321, size_text="1.4 GB"),
     )
     catalog.offer_read = lambda key: _offer(key, (item,))
     controller: AnimeController = _controller(catalog)
@@ -1084,10 +1097,10 @@ def test_release_views_keep_decision_columns_and_put_size_in_details(width: int,
     assert "Rozmiar: 1.4 GB" in controller._view.items[0].detail
     assert "indeks:" not in " ".join(lines)
     assert "platforma: —" not in " ".join(lines)
-    if verdict is IdentityVerdict.INSUFFICIENT:
+    if base.identity.verdict is IdentityVerdict.INSUFFICIENT:
         assert "!" in row
-    if verdict is IdentityVerdict.MISMATCH:
-        assert "!" in row
+    if base.conflict:
+        assert controller._view.items[0].confidence == "inny sezon"
 
 
 @pytest.mark.unit
@@ -1303,20 +1316,20 @@ def test_leaving_incremental_offer_drops_late_result_and_sends_no_remaining_requ
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("verdict", list(IdentityVerdict))
-def test_offer_verdict_labels_uncertainty_and_empty_suggestion_are_explicit(verdict: IdentityVerdict) -> None:
+@pytest.mark.parametrize("item", _KEPT_ROWS)
+def test_offer_verdict_labels_uncertainty_and_empty_suggestion_are_explicit(item: RankedCandidate) -> None:
     catalog: _Catalog = _Catalog()
-    catalog.offer_read = lambda key: _offer(key, (_candidate(verdict),))
+    catalog.offer_read = lambda key: _offer(key, (item,))
     controller: AnimeController = _controller(catalog)
     _open(controller)
     _key(controller, "text:i")
     frame: str = _frame(controller)
-    assert ("!" in frame) is (verdict is not IdentityVerdict.MATCH)
-    assert controller._view.items[0].suggested is (verdict is not IdentityVerdict.MISMATCH)
+    assert ("!" in frame) is (item.identity.verdict is not IdentityVerdict.MATCH)
+    assert controller._view.items[0].suggested is not item.conflict
     reason: str = "niepewny: Brak wskazanego pliku."
-    if verdict is IdentityVerdict.INSUFFICIENT:
+    if item.identity.verdict is IdentityVerdict.INSUFFICIENT and not item.conflict:
         assert reason in frame
-    assert ("inny odcinek" if verdict is IdentityVerdict.MISMATCH else "Brak wskazanego pliku.") in frame
+    assert ("inny sezon" if item.conflict else "Brak wskazanego pliku.") in frame
     assert "indeks:" not in frame
 
 
@@ -1337,9 +1350,11 @@ def test_other_releases_hide_low_resolutions_only_with_a_matching_high_release(h
     controller: AnimeController = _controller(catalog)
     _open(controller)
     _key(controller, "text:i")
-    assert [item.traits.resolution for item in controller._release_candidates] == (
-        [2160, 1440, None] if high_verdict is IdentityVerdict.MATCH else [2160, 720, 480, 1440, None]
-    )
+    assert [item.traits.resolution for item in controller._release_candidates] == {
+        IdentityVerdict.MATCH: [2160, 1440, None],
+        IdentityVerdict.INSUFFICIENT: [2160, 720, 480, 1440, None],
+        IdentityVerdict.MISMATCH: [720, 480, 1440, None],
+    }[high_verdict]
 
 
 @pytest.mark.unit
@@ -1755,9 +1770,35 @@ def test_partial_offer_keeps_cursor_on_hash() -> None:
 
 
 @pytest.mark.unit
+def test_partial_offer_drops_a_marked_row_turned_mismatch_and_returns_the_cursor_to_the_suggestion() -> None:
+    owner: _PartialOwner = _PartialOwner()
+    first: RankedCandidate = _candidate()
+    second: RankedCandidate = replace(
+        _candidate(IdentityVerdict.INSUFFICIENT), stream=replace(first.stream, info_hash="b" * 40)
+    )
+    owner.offer_read = lambda key: _offer(key, (first, second))
+    controller: AnimeController = _open_partial(owner)
+    controller.render(80, 24)
+    for key in ("down", "space"):
+        controller.handle_key(key)
+    controller.render(80, 24)
+    assert controller._view.selected == {second.stream.info_hash}
+    assert owner.offer_view is not None
+    flipped: RankedCandidate = replace(_candidate(IdentityVerdict.MISMATCH), stream=second.stream)
+    owner.offer_view = replace(
+        owner.offer_view, revision=2, offer=replace(owner.offer_view.offer, candidates=(first, flipped))
+    )
+    _refresh_partial(controller)
+    controller.render(80, 24)
+    assert [item.key for item in controller._view.items] == [first.stream.info_hash]
+    assert controller._view.selected == set()
+    assert controller._view.items[controller._view.cursor].key == first.stream.info_hash
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("owned", [False, True])
 def test_i_opens_the_release_list_at_once_with_the_cursor_on_the_suggestion(*, owned: bool) -> None:
-    first: RankedCandidate = _candidate(IdentityVerdict.MISMATCH)
+    first: RankedCandidate = _conflicted()
     second: RankedCandidate = replace(_candidate(), stream=replace(_candidate().stream, info_hash="b" * 40))
     catalog: _Catalog = _ChoiceOwner() if owned else _Catalog()
     catalog.offer_read = lambda key: _offer(key, (first, second))
@@ -1777,6 +1818,43 @@ def test_i_opens_the_release_list_at_once_with_the_cursor_on_the_suggestion(*, o
         return
     _key(controller, "escape")
     assert _at(controller) is _Screen.EPISODES
+
+
+@pytest.mark.unit
+def test_release_list_hides_a_mismatch_and_keeps_an_uncertain_conflict_for_space_and_confirmed_d() -> None:
+    hidden: RankedCandidate = _candidate(IdentityVerdict.MISMATCH)
+    kept: RankedCandidate = replace(_conflicted(), stream=replace(_candidate().stream, info_hash="b" * 40))
+    match: RankedCandidate = replace(_candidate(), stream=replace(_candidate().stream, info_hash="c" * 40))
+    owner: _ChoiceOwner = _ChoiceOwner()
+    owner.offer_read = lambda key: _offer(key, (hidden, kept, match))
+    controller: AnimeController = _owner_controller(owner)
+    _key(controller, "text:i")
+    frame: str = controller.render(80, 24).plain
+    assert [item.key for item in controller._view.items] == [kept.stream.info_hash, match.stream.info_hash]
+    assert controller._view.cursor == 1
+    assert "inny odcinek" not in frame
+    assert "inny sezon" in frame
+    for key in ("up", "space"):
+        _key(controller, key)
+    assert controller._view.selected == {kept.stream.info_hash}
+    _key(controller, "text:d")
+    assert _at(controller) is _Screen.PROBLEM
+    assert not owner.choices
+    _key(controller, "enter")
+    assert [choice[1] for choice in owner.choices] == [kept.stream]
+
+
+@pytest.mark.unit
+def test_release_list_of_only_mismatches_shows_the_empty_list_row() -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.offer_read = lambda key: _offer(key, (_candidate(IdentityVerdict.MISMATCH),))
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+    _key(controller, "text:i")
+    frame: str = _frame(controller)
+    assert "Brak wydania" in frame
+    assert "inny odcinek" not in frame
+    assert controller._release_candidates == ()
 
 
 @pytest.mark.unit
@@ -2317,13 +2395,12 @@ def test_an_active_subscription_attempt_is_still_ordered_by_d(state: str) -> Non
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("verdict", [IdentityVerdict.MATCH, IdentityVerdict.INSUFFICIENT, IdentityVerdict.MISMATCH])
+@pytest.mark.parametrize("item", _KEPT_ROWS)
 @pytest.mark.parametrize("cancel", [False, True])
-def test_repeat_requires_inspected_conflict_and_separate_identity_consent(
-    verdict: IdentityVerdict, cancel: bool
-) -> None:
+def test_repeat_requires_inspected_conflict_and_separate_identity_consent(item: RankedCandidate, cancel: bool) -> None:
+    verdict: IdentityVerdict = item.identity.verdict
     owner: _ChoiceOwner = _ChoiceOwner()
-    owner.offer_read = lambda key: _offer(key, (_candidate(verdict),))
+    owner.offer_read = lambda key: _offer(key, (item,))
     controller: AnimeController = _owner_controller(owner)
     _key(controller, "text:p")
     assert _at(controller) is _Screen.CANDIDATES
@@ -2347,7 +2424,7 @@ def test_repeat_requires_inspected_conflict_and_separate_identity_consent(
     if not cancel:
         view, stream, command, deviation, conflict = owner.choices[0]
         assert view.conflict == ("legacy:1",)
-        assert stream == _candidate(verdict).stream
+        assert stream == item.stream
         assert command
         assert deviation is (verdict is not IdentityVerdict.MATCH)
         assert conflict
