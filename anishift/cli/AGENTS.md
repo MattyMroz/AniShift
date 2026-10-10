@@ -12,6 +12,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `control.py` — cienki klient rezydenta: `open_control()` (start na żądanie) i `resident_status()`
 - `resident.py` — sesja panelu: biblioteka, rezerwacje, podgląd zamiaru, zewnętrzne źródła, Start i wynik przez kanał
 - `interactive/` — lazy-loaded Home, jeden renderer Prompt Toolkit, maskotka, Settings, Manual i wspólny postęp
+- `interactive/state.py` — `StateController` panelu: szkielet (zakładki, okruszek, stopka, pomoc, status, pytanie, mysz),
+  klawisze, workery i strumień zdarzeń ownera. Treść i akcje zakładek są w czystych funkcjach: `state_subscriptions.py`,
+  `state_processing.py` (Przetwarzanie i Historia), `state_library.py`; `state_texts.py` to liść z odmowami,
+  `safe_text` i `rows`. Zależności tylko `state` → `state_*` → `state_texts`; `PANEL_ACTIONS` leży w `actions.py`
 
 ## Pułapki
 
@@ -23,6 +27,11 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   Selected-text Ctrl+C/C precedes navigation; unselected Ctrl+C keeps back/blur semantics.
   `_WheelControl` converts Prompt Toolkit character positions to terminal cells before the
   optional mouse callback. Keep CJK/combining characters aligned with the hit map.
+  `anime.py` (`AnimeController`) owns state, keys, mouse and workers; its rows and texts are pure
+  functions: `anime_rows.py` (titles, entries, episodes, U08 extras, files, draft), `anime_releases.py`
+  (release rows, `_REASON_TEXTS`, suggestion position) and the leaf `anime_texts.py` (labels, `stated`,
+  `refused_result`, `safe`; `stated` imports `state.refusal_text` lazily). Imports run `anime` →
+  `anime_rows`/`anime_releases` → `anime_texts`; `anime.py` re-exports `EPISODE_REASON_LABELS` for `state_processing.py`.
 - `main._default` catches resident `ControlError`, reports a Polish connection failure and
   exits with `EXIT_REFUSED`; service cleanup also runs when session construction fails.
 - `anishift watch` uruchamia rezydenta bez importu Prompt Toolkit; `watch resident` jest aliasem.

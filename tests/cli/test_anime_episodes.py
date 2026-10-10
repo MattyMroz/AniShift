@@ -70,8 +70,9 @@ from anishift.application.release_quality import AudioClass
 from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.watch_state import WatchStateStore
 from anishift.cli.interactive import anime as anime_module
-from anishift.cli.interactive import anime_view
-from anishift.cli.interactive.anime import _REASON_TEXTS, EPISODE_REASON_LABELS, AnimeController, _Screen
+from anishift.cli.interactive import anime_texts, anime_view
+from anishift.cli.interactive.anime import EPISODE_REASON_LABELS, AnimeController, _Screen
+from anishift.cli.interactive.anime_releases import _REASON_TEXTS
 from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
 from anishift.config.presets import default_preset_file
@@ -2318,12 +2319,12 @@ def test_every_owner_reason_has_a_stan_label_or_an_explicit_fallback() -> None:
 @pytest.mark.unit
 @pytest.mark.parametrize("reason", [*EpisodeReason, *EPISODE_REASON_LABELS, "reason_from_a_newer_owner"])
 def test_every_refused_stan_label_fits_its_column(reason: str) -> None:
-    assert cell_len(anime_module._refused_result(reason)[0]) <= anime_view._EPISODE_STATUS_WIDTH
+    assert cell_len(anime_texts.refused_result(reason)[0]) <= anime_view._EPISODE_STATUS_WIDTH
 
 
 @pytest.mark.unit
 def test_an_episode_in_progress_keeps_a_short_stan_and_names_cancellation_in_the_notice() -> None:
-    assert anime_module._refused_result(EpisodeReason.EPISODE_IN_PROGRESS) == (
+    assert anime_texts.refused_result(EpisodeReason.EPISODE_IN_PROGRESS) == (
         "W toku",
         "W toku · X anuluj w Przetwarzaniu",
     )
@@ -2511,7 +2512,7 @@ def test_choosing_an_already_ordered_episode_states_the_refusal_and_names_the_re
     ],
 )
 def test_a_refused_repeatable_download_names_the_repeat_in_the_notice(reason: str, result: tuple[str, str]) -> None:
-    assert anime_module._refused_result(reason) == result
+    assert anime_texts.refused_result(reason) == result
 
 
 @pytest.mark.unit
