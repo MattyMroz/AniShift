@@ -12,6 +12,7 @@ from rich.text import Text
 from anishift.cli.interactive.mascot import MascotState, mascot_art
 from anishift.cli.interactive.mascot_native import MASCOT_FRAME_ROWS, NATIVE_MASCOT_ANCHOR
 from anishift.cli.interactive.palette import hex_color, mix, rim_color
+from anishift.cli.interactive.pointer import mark_inert
 from anishift.cli.interactive.prompts import BRAND_GAP_COLUMNS, AutoGeometry, HomeGeometry
 
 __all__ = [
@@ -92,7 +93,9 @@ def brand_for_geometry(
     if raster_padding:
         brand = brand.copy()
         brand.append("\n " * raster_padding)
-    return _centered_brand(brand, geometry.terminal_columns)
+    centered: Text = _centered_brand(brand, geometry.terminal_columns)
+    mark_inert(centered)
+    return centered
 
 
 @lru_cache(maxsize=4)

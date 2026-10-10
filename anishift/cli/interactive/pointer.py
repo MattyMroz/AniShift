@@ -20,6 +20,9 @@ from anishift.text.graphemes import split_graphemes
 _ROW_META: Final[str] = "anishift_row"
 """Style meta key carrying the list index of a painted row."""
 
+_INERT_META: Final[str] = "anishift_inert"
+"""Style meta key marking painted art, such as the brand, that a drag never selects."""
+
 COPY_KEYS: Final[frozenset[str]] = frozenset({"interrupt", "copy"})
 """Keys that copy a painted selection before the view handles them."""
 
@@ -133,6 +136,11 @@ def mark_row(content: Text, index: int) -> None:
     content.stylize(Style(meta={_ROW_META: index}), content.plain.rfind("\n") + 1, len(content))
 
 
+def mark_inert(content: Text) -> None:
+    """Tag all of ``content`` as art that a drag never selects or copies."""
+    content.stylize(Style(meta={_INERT_META: True}), 0, len(content))
+
+
 def row_at(frame: Text, row: int) -> int | None:
     """Return the list item painted on a frame row, if that row belongs to one."""
     lines: list[Text] = list(frame.split("\n", allow_blank=True))
@@ -182,14 +190,21 @@ def text_cells(lines: Sequence[str], regions: Iterable[tuple[int, int, str]]) ->
 
 
 def painted_cells(frame: Text) -> tuple[TextCell, ...]:
-    """Map every painted line of a frame without its surrounding padding."""
+    """Map every painted line of a frame without its surrounding padding or inert art."""
     lines: list[str] = frame.plain.split("\n")
     regions: list[tuple[int, int, str]] = []
     for row, line in enumerate(lines):
         value: str = line.strip()
         if value:
             regions.append((row, Text(line[: len(line) - len(line.lstrip())]).cell_len, value))
-    return text_cells(lines, regions)
+    inert: list[tuple[int, int]] = [
+        (span.start, span.end)
+        for span in frame.spans
+        if isinstance(span.style, Style) and span.style.meta.get(_INERT_META)
+    ]
+    return tuple(
+        cell for cell in text_cells(lines, regions) if not any(start <= cell.start < end for start, end in inert)
+    )
 
 
 def selected_cells(cells: Sequence[TextCell], selection: tuple[TextPoint, TextPoint] | None) -> tuple[TextCell, ...]:

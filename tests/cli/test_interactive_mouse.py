@@ -215,6 +215,23 @@ def test_home_drag_over_the_mascot_never_copies_its_image_marker(monkeypatch: py
     assert NATIVE_MASCOT_ANCHOR not in copied[0]
 
 
+@pytest.mark.parametrize(("columns", "rows"), [(80, 24), (120, 30)])
+def test_home_drag_over_the_brand_selects_and_copies_nothing(
+    monkeypatch: pytest.MonkeyPatch, columns: int, rows: int
+) -> None:
+    application, copied = _application(monkeypatch, _Mode.HOME)
+    frame: Text = application._render_frame(columns, rows)
+    last: int = max(row for row, line in enumerate(frame.plain.split("\n")) if "█" in line)
+
+    _drag(application, Point(0, 0), Point(columns - 1, last))
+    painted: Text = application._render_frame(columns, rows)
+    application._handle_key("copy")
+
+    assert "█" in frame.plain
+    assert _reversed(painted) == ""
+    assert copied == []
+
+
 def test_small_home_click_reaches_its_choices(monkeypatch: pytest.MonkeyPatch) -> None:
     application, _copied = _application(monkeypatch, _Mode.HOME)
 
