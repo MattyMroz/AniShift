@@ -254,6 +254,51 @@ def test_offer_columns_quality_confidence_last(width: int, confidence: str) -> N
         assert item.title in row
 
 
+def test_release_size_column_follows_image_and_aligns_sizes_right_at_120_columns() -> None:
+    first: AnimeRow = AnimeRow(
+        "one",
+        "[Group] Slime - 04",
+        image="1080p",
+        size="1.40 GB",
+        language="PL",
+        seeds="312",
+        quality="69",
+        confidence="95%",
+        detail="zgodny: powód",
+    )
+    sizes: tuple[str, ...] = ("1.40 GB", "350.2 MiB", "?")
+    items: tuple[AnimeRow, ...] = tuple(replace(first, key=str(index), size=size) for index, size in enumerate(sizes))
+    frame: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", items), 120, 40, 0)
+    lines: list[str] = frame.text.plain.splitlines()
+    header: str = lines[frame.first_row - 1]
+    labels: tuple[str, ...] = ("Wydanie", "Obraz", "Rozmiar", "Język", "Seedy", "Jakość", "Pewność")
+    starts: list[int] = [header.index(label) for label in labels]
+    end: int = header.index("Rozmiar") + len("Rozmiar")
+    rows_shown: list[str] = lines[frame.first_row : frame.first_row + len(sizes)]
+    assert starts == sorted(starts)
+    assert all(row[:end].endswith(f" {size}") for row, size in zip(rows_shown, sizes, strict=True))
+    assert "rozmiar" not in " ".join(lines[frame.first_row + len(sizes) :])
+
+
+def test_release_size_column_hides_first_and_moves_to_the_notice_at_80_columns() -> None:
+    item: AnimeRow = AnimeRow(
+        "one",
+        "[SubsPlease] Tensei shitara Slime Datta Ken S4 - 04 (1080p)",
+        image="1080p",
+        size="350.2 MiB",
+        language="PL · MultiSub",
+        seeds="312",
+        quality="69",
+        confidence="95%",
+    )
+    frame: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", (item,)), 80, 24, 0)
+    lines: list[str] = frame.text.plain.splitlines()
+    header: str = lines[frame.first_row - 1]
+    assert "Rozmiar" not in header
+    assert all(label in header for label in ("Wydanie", "Obraz", "Język", "Seedy", "Jakość", "Pewność"))
+    assert "rozmiar 350.2 MiB" in " ".join(lines[frame.first_row + 1 :])
+
+
 @pytest.mark.parametrize("rows_count", [12, 24])
 def test_narrow_episode_table_keeps_the_full_state_label(rows_count: int) -> None:
     items: tuple[AnimeRow, ...] = tuple(replace(item, title=item.title * 4) for item in rows())
@@ -272,13 +317,14 @@ def test_hidden_release_columns_follow_cursor_and_remain_copyable_at_fifty_colum
         "one",
         "[Group] Slime - 04 [1080p]",
         image="1080p",
+        size="1.40 GB",
         language="PL · EN",
         seeds="321",
         quality="69",
         confidence="95% · niepewne",
         detail="Details " * 40,
     )
-    second: AnimeRow = replace(first, key="two", image="2160p", language="EN", seeds="?")
+    second: AnimeRow = replace(first, key="two", image="2160p", size="?", language="EN", seeds="?")
     snapshot: AnimeSnapshot = AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", (first, second))
     frame: AnimeFrame = render_anime(snapshot, 50, height, 0)
     next_frame: AnimeFrame = render_anime(replace(snapshot, cursor=1), 50, height, 0)
@@ -286,8 +332,9 @@ def test_hidden_release_columns_follow_cursor_and_remain_copyable_at_fifty_colum
     next_lines: list[str] = next_frame.text.plain.splitlines()
     footer: str = " ".join(" ".join(lines[-5:]).split())
     next_footer: str = " ".join(" ".join(next_lines[-5:]).split())
-    assert "obraz 1080p · język PL · EN · seedy 321" in footer
-    assert "obraz 2160p · język EN · seedy ?" in next_footer
+    assert "obraz 1080p · rozmiar 1.40 GB · język PL · EN" in footer
+    assert "seedy 321" in footer
+    assert "obraz 2160p · rozmiar ? · język EN · seedy ?" in next_footer
     assert "Details" not in footer
     assert frame.first_row == next_frame.first_row
     assert lines[frame.first_row - 1] == next_lines[next_frame.first_row - 1]

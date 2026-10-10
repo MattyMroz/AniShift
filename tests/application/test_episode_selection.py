@@ -674,6 +674,23 @@ def test_rank_traits_of_a_pack_file_ignore_the_names_of_other_files() -> None:
     assert not ranked[0].traits.dub_only
 
 
+def test_rank_pack_row_carries_the_size_of_its_representative_file_not_of_the_pack() -> None:
+    stream: StreamCandidate = replace(_stream(None, release="Star Garden S01 [Batch]"), size_text="16.80 GB")
+    listing: TsukiHimeFiles = TsukiHimeFiles(
+        (
+            ListedFile("Star Garden - 04 [1080p].mkv", 1_300_000_000),
+            ListedFile("Star Garden - 05 [1080p].mkv", 1_400_000_000),
+        )
+    )
+    listed: tuple[EpisodeRelease, ...] = merge_releases((stream,), {stream.info_hash: listing}, pack_name=_pack_name)
+    ranked: RankedCandidate = rank_candidates(_target(), listed, donghua=False)[0]
+    unlisted: RankedCandidate = _rank(_target(), [stream])[0]
+    assert ranked.stream.path == "Star Garden - 05 [1080p].mkv"
+    assert ranked.stream.file_size == 1_400_000_000
+    assert ranked.stream.size_text == "16.80 GB"
+    assert unlisted.stream.file_size is None
+
+
 def test_rank_torrentio_equivalent_to_conf_model() -> None:
     target: dict[str, object] = identity_target(_fixture_graph(_SLIME_S1), _SLIME_S1, _fixture_mapping(_SLIME_S1), 4)
     streams: list[StreamCandidate] = _fixture_streams("torrentio__kitsu-41024-4.json")

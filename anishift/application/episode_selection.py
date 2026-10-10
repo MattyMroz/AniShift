@@ -238,6 +238,7 @@ class StreamCandidate:
     language_tags: tuple[str, ...] = ()
     file_count: int | None = None
     torrent_id: int | None = None
+    file_size: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -720,6 +721,7 @@ def _row_stream(release: EpisodeRelease, file: ReleaseFile | None) -> StreamCand
         trackers=release.trackers,
         source=next(source for source in NAME_PRIORITY if source in release.sources),
         torrent_id=release.torrent_id,
+        file_size=None if file is None else file.size,
     )
 
 

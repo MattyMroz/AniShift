@@ -1069,7 +1069,9 @@ def test_other_releases_always_show_aligned_seeds(width: int, unsupported: bool)
 @pytest.mark.unit
 @pytest.mark.parametrize("width", [50, 80, 120])
 @pytest.mark.parametrize("base", _KEPT_ROWS)
-def test_release_views_keep_decision_columns_and_put_size_in_details(width: int, base: RankedCandidate) -> None:
+def test_release_views_keep_decision_columns_and_show_size_in_column_or_notice(
+    width: int, base: RankedCandidate
+) -> None:
     catalog: _Catalog = _Catalog()
     item: RankedCandidate = replace(
         base,
@@ -1084,7 +1086,6 @@ def test_release_views_keep_decision_columns_and_put_size_in_details(width: int,
     header: str = next(line for line in lines if "Wydanie" in line)
     assert "Jakość" in header
     assert "Pewność" in header
-    assert "Rozm" not in header
     assert "Tożsamość" not in header
     row: str = lines[lines.index(header) + 1]
     assert controller._view.items[0].image == "1080p"
@@ -1094,13 +1095,44 @@ def test_release_views_keep_decision_columns_and_put_size_in_details(width: int,
     assert "321" in displayed
     assert "1080p" in displayed
     assert "PL · EN" in displayed
-    assert "Rozmiar: 1.4 GB" in controller._view.items[0].detail
+    assert controller._view.items[0].size == "1.4 GB"
+    assert "Rozmiar" not in controller._view.items[0].detail
+    assert "1.4 GB" in row if "Rozmiar" in header else "rozmiar 1.4 GB" in displayed
     assert "indeks:" not in " ".join(lines)
     assert "platforma: —" not in " ".join(lines)
     if base.identity.verdict is IdentityVerdict.INSUFFICIENT:
         assert "!" in row
     if base.conflict:
         assert controller._view.items[0].confidence == "inny sezon"
+
+
+@pytest.mark.unit
+def test_release_size_shows_the_episode_file_size_and_unknown_for_a_pack_without_it() -> None:
+    catalog: _Catalog = _Catalog()
+    single: RankedCandidate = replace(_candidate(), stream=replace(_candidate().stream, size_text="1.40 GB"))
+    pack: RankedCandidate = replace(
+        _candidate(),
+        stream=replace(
+            _candidate().stream, info_hash="b" * 40, release="[Group] Slime S4 (01-12)", size_text="16.80 GB"
+        ),
+        pack=True,
+    )
+    listed: RankedCandidate = replace(
+        pack,
+        stream=replace(pack.stream, info_hash="c" * 40, release="[Other] Slime S4 (01-12)", file_size=1_400_000_000),
+    )
+    catalog.offer_read = lambda key: _offer(key, (single, pack, listed))
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+    _key(controller, "text:i")
+    lines: list[str] = controller.render(120, 40).plain.splitlines()
+    header: str = next(line for line in lines if "Wydanie" in line)
+    end: int = header.index("Rozmiar") + len("Rozmiar")
+    shown: list[str] = [line[:end] for line in lines[lines.index(header) + 1 : lines.index(header) + 4]]
+    sizes: dict[str, str] = {item.key[0]: item.size for item in controller._view.items}
+    assert sizes == {"a": "1.40 GB", "b": "?", "c": "1.4 GB"}
+    assert all(row.endswith(f" {item.size}") for row, item in zip(shown, controller._view.items, strict=True))
+    assert "16.80 GB" not in " ".join(lines)
 
 
 @pytest.mark.unit
@@ -1113,7 +1145,7 @@ def test_offer_columns_remain_fixed_when_language_changes() -> None:
     _key(controller, "text:i")
     lines: list[str] = controller.render(50, 24).plain.splitlines()
     compact: str = next(line for line in lines if "Wydanie" in line)
-    assert "obraz 1080p · język —" in " ".join(lines)
+    assert "obraz 1080p · rozmiar ? · język —" in " ".join(lines)
     _key(controller, "text:?")
     assert "zgodny:" in controller.render(50, 24).plain
     for key in ("escape", "escape"):
@@ -1124,7 +1156,7 @@ def test_offer_columns_remain_fixed_when_language_changes() -> None:
     lines = controller.render(50, 24).plain.splitlines()
     expanded: str = next(line for line in lines if "Wydanie" in line)
     assert expanded == compact
-    assert "obraz 1080p · język PL · EN" in " ".join(lines)
+    assert "obraz 1080p · rozmiar ? · język PL · EN" in " ".join(lines)
     assert "PL" in "\n".join(lines)
     assert "321" in "\n".join(lines)
 
@@ -1460,7 +1492,7 @@ def test_candidate_reason_and_file_details_remain_complete_at_fifty_columns() ->
     frame: str = controller.render(50, 24).plain
     normalized: str = " ".join(frame.split())
     assert _REASON_TEXTS[reason] not in normalized
-    assert f"Plik: {filename} · Rozmiar: ?" in controller._view.items[0].detail
+    assert f"Plik: {filename}" in controller._view.items[0].detail
     _key(controller, "text:?")
     assert _REASON_TEXTS[reason] in " ".join(controller.render(50, 24).plain.split())
     _key(controller, "escape")

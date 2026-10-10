@@ -159,7 +159,7 @@ U04 jest wyłącznie odczytowym podglądem E1, bez akcji Pobierz. W E2 zwykłe D
 
 - Wiersze wypełniają się po kolei (jedno zapytanie na odcinek); dopóki trwa, wiersz ma „Szukam…”. Esc przerywa i nie wysyła kolejnych zapytań.
 - Kolumna Język: „PL”, „MultiSub”, „PL · MultiSub” albo „—”. Platforma (NF/CR) tylko w szczególe, gdy znana; grupa pozostaje w nazwie wydania.
-- Rozmiar tylko w szczególe bieżącego wydania, brak → „?”. Seedy brak → „?”; Obraz, Język i Seedy pozostają widoczne przy 50–120 kolumnach.
+- Rozmiar jest kolumną listy wydań U04b (2026-10-10), brak → „?”. Seedy brak → „?”. Przy wąskim terminalu kolumny pomocnicze chowają się do notki pod kursorem według zasad U04b.
 - Powód sugestii jest krótki i wynika z faktycznej oceny, bez powtarzania pól tabeli ani ogólnika „pierwsze według preferencji”.
 - U04 i U04b używają tej samej formy szczegółu: „werdykt: krótki powód”, np. „niepewny: Brak wskazanego pliku.”. Szerokość kolumny Język w obu widokach wynika z ich widocznych danych; nie rezerwuje pustego miejsca na nieobecne etykiety.
 - E1: wiersz „[ Pobierz … ]” nie istnieje; stopka jak w makiecie bez „Enter pobierz”.
@@ -182,8 +182,8 @@ U04 jest wyłącznie odczytowym podglądem E1, bez akcji Pobierz. W E2 zwykłe D
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Kolejność: zgodni według rankingu, potem niepewni, potem niepewni z konfliktem (`!` z powodem). Wydań niezgodnych (werdykt H1 `MISMATCH`) lista nie pokazuje (decyzja właściciela 2026-10-10); gdy zostają tylko takie, lista ma jeden wiersz „Brak wydania”. Bez kolumny Tożsamość; tekstowe prefiksy tylko dla wyjątków. Pełny werdykt i krótki powód pod kursorem; `? szczegóły` rozwija pełny powód, Esc zamyka szczegóły. Nazwa pliku i rozmiar pod kursorem; bez indeksu i pustej platformy.
-- Kolumna Seedy jest widoczna przy każdej szerokości (także 50 kolumn); tytuł wydania skraca się pierwszy. Szerokość kolumny Język wynika z najdłuższej etykiety na liście.
+- Kolejność: zgodni według rankingu, potem niepewni, potem niepewni z konfliktem (`!` z powodem). Wydań niezgodnych (werdykt H1 `MISMATCH`) lista nie pokazuje (decyzja właściciela 2026-10-10); gdy zostają tylko takie, lista ma jeden wiersz „Brak wydania”. Bez kolumny Tożsamość; tekstowe prefiksy tylko dla wyjątków. Pełny werdykt i krótki powód pod kursorem; `? szczegóły` rozwija pełny powód, Esc zamyka szczegóły. Nazwa pliku pod kursorem, a rozmiar tylko wtedy, gdy jego kolumna jest ukryta; bez indeksu i pustej platformy.
+- Kolumny listy wydań (2026-10-10): Wydanie · Obraz · Rozmiar · Język · Seedy · Jakość · Pewność. Rozmiar to wielkość pliku odcinka (przy paczce pliku, który trafi na dysk, nie całej paczki) w formacie np. „1.4 GB”; bez rozmiaru pliku wydanie niebędące paczką pokazuje rozmiar torrentu podany przez źródło, a paczka „?”. Rozmiar i Seedy są wyrównane do prawej. Przy wąskim terminalu tytuł wydania skraca się najpierw do 12 komórek, potem chowają się kolumny w kolejności Rozmiar, Język, Obraz, Seedy, a ukryte wartości trafiają do notki pod kursorem; Wydanie, Jakość i Pewność zostają zawsze. Szerokość kolumny Język wynika z najdłuższej etykiety na liście.
 - Widoczne rozdzielczości (spec U-24): 1080p, 2160p i nieznana. 720p i niższe są ukryte, jeśli istnieje choć jedno zgodne 1080p lub 2160p, które może być sugestią (bez konfliktu, nie sam dubbing, obsługiwany format; 2026-10-10); inaczej widać wszystkie. Sugestia `*` jest zawsze widoczna, także przy 720p lub mniej (2026-10-10).
 - E1: Enter nic nie robi (stopka: „? szczegóły · Esc podgląd”).
 - E2: sugestia jest oznaczona na liście z powodem pod nią. Space zaznacza jedno wydanie; następny wybór zastępuje poprzedni. Enter na wydaniu nic nie robi (2026-10-10). D pobiera zaznaczone, a bez zaznaczenia — podświetlone. Nie ma A/Z do pobierania kilku wersji jednego odcinka. Esc wraca do odcinków, także po P. Po P stopka pozostaje „D pobierz”, a ponowienie sygnalizuje ostrzeżenie opisane w §5.
@@ -405,7 +405,7 @@ Każdy scenariusz wykonuje właściciel; wynik przekazuje jako: numer kroku, co 
 ## 14. Mały terminal i asynchroniczność
 
 - Nagłówek i stopka są stałe, środek przewijany. Linie przycinane według szerokości komórek terminala.
-- Rozmiar jest szczegółem, nie kolumną. W wydaniach przy 50–120 kolumnach zawsze widać obraz, język i seedy; najpierw skraca się nazwę. Wyjątki tożsamości są tekstem w wierszu, pełny werdykt pod kursorem. W odcinkach znika najpierw emisja, potem skraca się tytuł; numer i stan pozostają.
+- W wydaniach najpierw skraca się nazwę, potem chowają się Rozmiar, Język, Obraz i Seedy, a ich wartości trafiają do notki pod kursorem; Jakość i Pewność zostają. Wyjątki tożsamości są tekstem w wierszu, pełny werdykt pod kursorem. W odcinkach znika najpierw emisja, potem skraca się tytuł; numer i stan pozostają.
 - Gdy cztery zakładki się nie mieszczą: „← Subskrypcje (2/4) →” z liczbą liczoną z listy zakładek (dziś wpisane na sztywno `/4`).
 - Ekran zbyt niski na listę: „Powiększ terminal” + działające Esc/Tab.
 - Każdy wynik sieciowy jest przypisany do generacji ekranu; Esc, zmiana zakładki i nowe zapytanie unieważniają spóźnione wyniki. Render nigdy nie wykonuje sieci ani zapisu.

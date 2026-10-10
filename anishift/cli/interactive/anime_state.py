@@ -66,6 +66,7 @@ class AnimeRow:
     kind: str = ""
     status: str = ""
     image: str = ""
+    size: str = ""
     language: str = ""
     seeds: str = ""
     progress: str = ""
@@ -92,6 +93,7 @@ class AnimeRow:
                 self.kind,
                 self.status,
                 self.image,
+                f"Rozmiar: {self.size}" if self.size else "",
                 self.language,
                 self.seeds,
                 self.progress,

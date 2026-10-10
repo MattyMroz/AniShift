@@ -75,6 +75,7 @@ from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError, ErrorCode
 from anishift.platform.local_control import ControlError, ControlErrorCode
 from anishift.utils.logger import get_logger
+from anishift.utils.rich_console import format_bytes
 
 __all__ = ["AnimeController", "AnimeResult"]
 
@@ -1282,6 +1283,7 @@ class AnimeController:
                     item.stream.info_hash,
                     item.stream.release,
                     image=f"{item.traits.resolution}p" if item.traits.resolution else "?",
+                    size=_candidate_size(item),
                     language=_language(item),
                     seeds=str(item.stream.seeders) if item.stream.seeders is not None else "?",
                     quality=quality_text(item),
@@ -2644,7 +2646,6 @@ def _candidate_details(item: RankedCandidate) -> str:
         details.append(f"Plik: {_safe(item.stream.path or item.stream.file_name or '')}")
     if item.release_name_only:
         details.append("bez nazwy pliku")
-    details.append(f"Rozmiar: {_safe(item.stream.size_text or '?')}")
     if item.traits.platform:
         details.append("wydanie z platformy")
     if item.supported is False:
@@ -2659,6 +2660,12 @@ def _candidate_details(item: RankedCandidate) -> str:
         "Dla nowych źródeł i ocen bez nazwy pliku: estymata bez potwierdzonej kalibracji."
     )
     return " · ".join(details)
+
+
+def _candidate_size(item: RankedCandidate) -> str:
+    if item.stream.file_size is not None:
+        return format_bytes(item.stream.file_size, precision=1)
+    return "?" if item.pack else _safe(item.stream.size_text or "?")
 
 
 def _candidate_confidence(item: RankedCandidate, *, suggested: bool) -> str:

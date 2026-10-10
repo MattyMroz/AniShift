@@ -123,6 +123,7 @@ class _Table:
     minimums: tuple[int, ...] = (0, 0, 0, 0)
     status_width: int = 0
     optional: tuple[int, ...] = ()
+    right: tuple[int, ...] = ()
 
 
 class _Canvas:
@@ -297,10 +298,11 @@ def _spec(screen: AnimeScreen) -> _Table:
         )
     if screen is AnimeScreen.RELEASES:
         return _Table(
-            ("Wydanie", "Obraz", "Język", "Seedy", "Jakość", "Pewność"),
+            ("Wydanie", "Obraz", "Rozmiar", "Język", "Seedy", "Jakość", "Pewność"),
             lambda item: (
                 item.title,
                 item.image,
+                item.size,
                 item.language,
                 item.seeds.rjust(5),
                 item.quality.rjust(6),
@@ -308,8 +310,9 @@ def _spec(screen: AnimeScreen) -> _Table:
             ),
             8,
             0,
-            (0, 5, Text("PL · MultiSub").cell_len, 5, 6, 7),
-            optional=(2, 1, 3),
+            (0, 5, 0, Text("PL · MultiSub").cell_len, 5, 6, 7),
+            optional=(2, 3, 1, 4),
+            right=(2,),
         )
     if screen is AnimeScreen.SUBSCRIPTIONS:
         return _Table(
@@ -374,7 +377,8 @@ def _table(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int, now: float) -
     column: int = spec.prefix
     for position in shown:
         columns.append((position, column, widths[position]))
-        canvas.put(canvas.top - 1, column, spec.labels[position], "gray")
+        label: str = spec.labels[position]
+        canvas.put(canvas.top - 1, column, label.rjust(widths[position]) if position in spec.right else label, "gray")
         column += widths[position] + 2
     for index, item in enumerate(snapshot.items[snapshot.offset : snapshot.offset + visible], snapshot.offset):
         _item(canvas, snapshot, item, index, now, tuple(columns))
@@ -414,8 +418,9 @@ def _item(  # noqa: PLR0913
         canvas.put(row, 2, ("*" if item.suggested else " ") + ("!" if item.uncertain else " "), "warning")
     searching: bool = item.key in snapshot.searching
     values: list[str] = _values(snapshot, item, now)
+    right: tuple[int, ...] = _spec(snapshot.screen).right
     for position, start, width in columns:
-        value: str = values[position]
+        value: str = values[position].rjust(width) if position in right else values[position]
         status: bool = position == len(values) - 1
         downloaded: bool = snapshot.screen is AnimeScreen.SUBSCRIPTIONS and position == 1 and not value.startswith("0/")
         canvas.put(
