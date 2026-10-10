@@ -456,7 +456,7 @@ def rank_candidates(
 
 
 def list_order(candidates: Sequence[RankedCandidate]) -> tuple[RankedCandidate, ...]:
-    """Order rows by group, class and weighted quality; adjacent rows showing equal values go by seeds first."""
+    """Order rows by group, class and weighted quality; adjacent rows showing equal values go by match, then seeds."""
     ordered: list[RankedCandidate] = sorted(candidates, key=_list_key)
     return tuple(row for _, run in groupby(ordered, key=_shown_signature) for row in sorted(run, key=_tie_key))
 
@@ -744,7 +744,12 @@ def _shown_signature(candidate: RankedCandidate) -> tuple[object, ...]:
 
 
 def _tie_key(candidate: RankedCandidate) -> tuple[float | str, ...]:
-    return -_seeders(candidate), -_weighted(candidate), candidate.stream.info_hash
+    return (
+        candidate.identity.verdict is not IdentityVerdict.MATCH,
+        -_seeders(candidate),
+        -_weighted(candidate),
+        candidate.stream.info_hash,
+    )
 
 
 def _weighted(candidate: RankedCandidate) -> float:

@@ -779,7 +779,14 @@ def test_list_order_seed_points_then_hash_break_ties() -> None:
     assert _ranked(_target(), [second, first]) == [first, second]
 
 
-def _shown(digit: str, *, quality: float, certainty: float | None, seeders: int | None) -> RankedCandidate:
+def _shown(
+    digit: str,
+    *,
+    quality: float,
+    certainty: float | None,
+    seeders: int | None,
+    verdict: IdentityVerdict = IdentityVerdict.MATCH,
+) -> RankedCandidate:
     base: RankedCandidate = _rank(_target(), [_stream()])[0]
     return replace(
         base,
@@ -787,6 +794,7 @@ def _shown(digit: str, *, quality: float, certainty: float | None, seeders: int 
         traits=replace(base.traits, seeders=seeders),
         quality=quality,
         confidence=certainty,
+        identity=replace(base.identity, verdict=verdict),
     )
 
 
@@ -797,6 +805,34 @@ def test_list_order_rows_showing_equal_quality_and_confidence_go_by_seeds() -> N
     ranked: tuple[RankedCandidate, ...] = list_order((hidden_edge, seeded))
     assert ranked == (seeded, hidden_edge)
     assert suggestion(ranked, numbering=True) == (0, False)
+
+
+def test_list_order_shown_tie_puts_a_match_before_a_more_seeded_uncertain_row_and_suggests_it() -> None:
+    uncertain: RankedCandidate = _shown(
+        "1", quality=35.0, certainty=1.0, seeders=200, verdict=IdentityVerdict.INSUFFICIENT
+    )
+    match: RankedCandidate = _shown("2", quality=35.0, certainty=1.0, seeders=120)
+    ranked: tuple[RankedCandidate, ...] = list_order((uncertain, match))
+    assert ranked == (match, uncertain)
+    assert suggestion(ranked, numbering=True) == (0, False)
+
+
+def test_list_order_visibly_higher_quality_keeps_an_uncertain_row_before_a_match() -> None:
+    uncertain: RankedCandidate = _shown(
+        "1", quality=36.0, certainty=1.0, seeders=0, verdict=IdentityVerdict.INSUFFICIENT
+    )
+    match: RankedCandidate = _shown("2", quality=35.0, certainty=1.0, seeders=500)
+    ranked: tuple[RankedCandidate, ...] = list_order((match, uncertain))
+    assert ranked == (uncertain, match)
+    assert suggestion(ranked, numbering=True) == (0, True)
+
+
+def test_list_order_visibly_higher_confidence_keeps_an_uncertain_row_before_a_match() -> None:
+    uncertain: RankedCandidate = _shown(
+        "1", quality=35.0, certainty=0.99, seeders=0, verdict=IdentityVerdict.INSUFFICIENT
+    )
+    match: RankedCandidate = _shown("2", quality=35.0, certainty=0.98, seeders=500)
+    assert list_order((match, uncertain)) == (uncertain, match)
 
 
 def test_list_order_known_zero_seeds_precede_unknown_seeds_in_a_shown_tie() -> None:
