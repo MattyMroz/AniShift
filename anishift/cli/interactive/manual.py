@@ -468,6 +468,7 @@ class ManualController:
     def handle_key(self, key: str) -> ManualResult:
         """Apply one normalized terminal key without render-time I/O."""
         with self._lock:
+            key = "escape" if key == "backspace" and self._screen is not _Screen.INPUT else key
             if self._screen is _Screen.BUSY:
                 result: ManualResult = self._handle_busy_key(key)
             elif self._screen is _Screen.INPUT:

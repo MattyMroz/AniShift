@@ -480,7 +480,7 @@ def test_application_tab_cancels_pending_search_and_returns_to_an_idle_draft(
     panel.attach_anime(anime)
     worker: threading.Thread | None = None
     try:
-        for key in ("left", "left", "text:slime", "enter"):
+        for key in ("left", "text:slime", "enter"):
             panel.handle_key(key)
         assert owner.entered.wait(5)
         worker = anime._worker
@@ -564,7 +564,7 @@ def test_panel_query_requires_focus_and_preserves_text_across_tabs(
     panel: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
     panel.attach_anime(anime)
     try:
-        for key in ("left", "left", "text:abc", "left", "text:x", "escape"):
+        for key in ("left", "text:abc", "left", "text:x", "escape"):
             panel.handle_key(key)
         assert anime._query == "abxc"
         assert not anime.input_focused
@@ -597,8 +597,7 @@ def test_live_app_mouse_routes_unicode_text_selection_and_copy(monkeypatch: pyte
     application._mode = interactive_app._ViewMode.STATE
     application._state = panel
     try:
-        for key in ("left", "left"):
-            panel.handle_key(key)
+        panel.handle_key("left")
         lines: list[str] = panel.render(120, 24).plain.splitlines()
         first: int = panel._anime_top + _first_row(anime)
         start: Point = Point(lines[first].index("Odcinek 1"), first)
@@ -678,7 +677,7 @@ def test_global_resume_in_anime_uses_owner_without_download(monkeypatch: pytest.
     panel._snapshot = {"auto_enabled": False}
     panel._connected = True
     try:
-        for key in ("left", "left", "text:o"):
+        for key in ("left", "text:o"):
             panel.handle_key(key)
         deadline: float = monotonic() + 5
         while panel._busy and monotonic() < deadline:

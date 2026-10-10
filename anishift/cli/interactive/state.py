@@ -325,7 +325,7 @@ class StateController:
         self._subscription_target: str | None = None
         self._runs: dict[str, tuple[str, RichRunProgress]] = {}
         self._download_timers: dict[str, ObservedProgressTimer] = {}
-        self._tab: int = _Tab.PROGRESS
+        self._tab: int = _Tab.SUBSCRIPTIONS
         self._selected: int = 0
         self._positions: dict[int, int] = {}
         self._offsets: dict[int, int] = {}
@@ -953,7 +953,7 @@ class StateController:
         proposal: RetryProposal | None = self._retry
         if proposal is None:
             return StateResult.CONTINUE
-        if key in {"escape", "interrupt"}:
+        if key in {"escape", "interrupt", "backspace"}:
             self._retry = None
         elif key == "enter" and proposal.action in {"manual", "resume"}:
             self._manual_retry = proposal

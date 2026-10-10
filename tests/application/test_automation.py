@@ -4045,6 +4045,7 @@ def test_library_retry_after_refused_deletion_only_relocates(  # noqa: PLR0915
         session.delete_set(preview)
         assert _await(lambda: len(recycled) == 1)
         controller: StateController = StateController(session, lambda: None)
+        controller.show_processing()
         try:
             assert _await(lambda: controller._connected)
             assert "Brak aktywnego przetwarzania" in controller.render(120, 40).plain

@@ -585,6 +585,7 @@ def test_history_retry_discloses_multigroup_scope_under_pause_and_releases_reser
         run_id: str = _execute_mixed_materials(session, groups)
         completed_stamp: os.stat_result = (tmp_path / "01.spoken.pl.srt").stat()
         controller: StateController = StateController(session, lambda: None)
+        controller.show_processing()
         try:
             assert _wait_for_resident(session, lambda _status: controller._connected)
             assert "Brak aktywnego przetwarzania" in controller.render(120, 40).plain
@@ -662,6 +663,7 @@ def test_processing_cancel_targets_the_disclosed_whole_manual_run(
             run_id: str = session.start(preview)
             assert entered.wait(1.0)
             controller: StateController = StateController(session, lambda: None)
+            controller.show_processing()
             try:
                 assert _wait_for_resident(session, lambda _status: controller._connected)
                 assert "X anuluj" in controller.render(120, 40).plain
@@ -704,7 +706,7 @@ def test_panel_settings_and_manual_return_preserve_idle_processing_without_waiti
     ):
         session.discover()
         application: _InteractiveApplication = _InteractiveApplication(service, resident=session)
-        application._show_state()
+        application._show_state(processing=True)
         panel: StateController | None = application._state
         assert panel is not None
         try:

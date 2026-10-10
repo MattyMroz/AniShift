@@ -530,6 +530,7 @@ def test_subscription_list_click_moves_the_cursor_without_opening_details(monkey
 
 def test_processing_click_moves_the_cursor_without_a_command(monkeypatch: pytest.MonkeyPatch) -> None:
     controller: StateController = _state(monkeypatch)
+    controller.show_processing()
     controller._snapshot = {
         "materials": [
             {

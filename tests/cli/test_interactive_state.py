@@ -163,6 +163,7 @@ def test_processing_renders_named_owner_download_states_without_invented_measure
 ) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller.show_processing()
     controller._connected = True
     controller._notice = ""
     controller._snapshot = {
@@ -219,6 +220,7 @@ def test_processing_toggles_one_download_with_w(
 ) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller.show_processing()
     controller._connected = True
     controller._snapshot = {
         "materials": [
@@ -259,6 +261,7 @@ def test_processing_only_allows_cancel_for_metadata_and_client_errors(
 ) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller.show_processing()
     controller._connected = True
     controller._snapshot = {
         "materials": [
@@ -302,6 +305,7 @@ def test_metadata_stop_refusal_has_a_polish_explanation() -> None:
 def test_processing_labels_predecessor_wait_without_attention_warning(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller.show_processing()
     controller._connected = True
     controller._snapshot = {
         "materials": [
@@ -331,6 +335,7 @@ def test_download_handoff_keeps_selection_until_real_task_start_and_removes_fini
 ) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller.show_processing()
     controller._connected = True
     controller._notice = ""
     item: dict[str, object] = {
@@ -399,6 +404,7 @@ def test_local_admitted_material_is_preparing_before_progress_restore_and_first_
 ) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller.show_processing()
     item: dict[str, object] = {
         **_live_material("local", state=request_state),
         "name": "Local.mkv",
@@ -455,6 +461,7 @@ def test_download_clock_tracks_observed_activity_freezes_and_drops_removed_mater
     monkeypatch.setattr("anishift.cli.interactive.progress.time.monotonic", lambda: clock[0])
     session: ResidentSession = cast("ResidentSession", SimpleNamespace(command=lambda *args: {"subscriptions": []}))
     controller: StateController = StateController(session, lambda: None)
+    controller.show_processing()
     item: dict[str, object] = {
         "material_id": "download",
         "acquisition_state": "accepted",
@@ -510,6 +517,7 @@ def test_live_new_admission_starts_zero_and_reconnect_preserves_last_display_val
     monkeypatch.setattr("anishift.cli.interactive.progress.time.monotonic", lambda: 100.0)
     session: ResidentSession = cast("ResidentSession", SimpleNamespace(command=lambda *args: {"subscriptions": []}))
     controller: StateController = StateController(session, lambda: None)
+    controller.show_processing()
     item: dict[str, object] = {
         "material_id": "new",
         "name": "Episode.mkv",
@@ -557,6 +565,7 @@ def test_global_pause_marks_only_automatic_processing_as_held(
     monkeypatch.setattr("anishift.cli.interactive.progress.time.monotonic", lambda: 100.0)
     session: ResidentSession = cast("ResidentSession", SimpleNamespace(command=lambda *args: {"subscriptions": []}))
     controller: StateController = StateController(session, lambda: None)
+    controller.show_processing()
     item: dict[str, object] = (
         {
             "material_id": "run-group",
@@ -602,6 +611,7 @@ def test_download_numeric_display_retains_samples_and_freezes_until_verified_res
     monkeypatch.setattr("anishift.cli.interactive.progress.time.monotonic", lambda: clock[0])
     session: ResidentSession = cast("ResidentSession", SimpleNamespace(command=lambda *args: {"subscriptions": []}))
     controller: StateController = StateController(session, lambda: None)
+    controller.show_processing()
     item: dict[str, object] = {
         "material_id": "download",
         "name": "Episode.mkv",
@@ -666,6 +676,7 @@ def test_reconnected_task_keeps_verified_percentage_and_elapsed_for_the_same_pre
     )
     session: ResidentSession = cast("ResidentSession", SimpleNamespace(command=lambda *args: encode_view(view)))
     controller: StateController = StateController(session, lambda: None)
+    controller.show_processing()
     payload: dict[str, object] = {
         "materials": [_live_material("group")],
         "requests": [{"request_id": "run", "state": "running"}],
@@ -706,6 +717,7 @@ def test_processing_hides_uncertain_downloads_and_handoffs_without_changing_live
 ) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller.show_processing()
     calls: list[object] = []
     monkeypatch.setattr(controller, "_command", lambda *args: calls.append(args))
     hidden: list[dict[str, object]] = [
@@ -786,6 +798,7 @@ def test_processing_footer_names_the_explicit_owner_action_and_current_pause_sta
 ) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller.show_processing()
     controller._snapshot = snapshot
     controller._connected = True
     controller._notice = ""
@@ -814,6 +827,7 @@ def test_processing_only_shows_live_material_bars_from_a_mixed_legacy_snapshot( 
     calls: list[tuple[str, Mapping[str, object]]] = []
     session: ResidentSession = cast("ResidentSession", SimpleNamespace())
     controller: StateController = StateController(session, lambda: None)
+    controller.show_processing()
     monkeypatch.setattr(controller, "_command", lambda kind, payload: calls.append((kind, payload)))
     labels: dict[str, str] = {"a": "Episode 01.mkv", "b": "Episode 02.mkv", "queued": "Queued.mkv"}
     view: RunProgressSnapshot = _live_snapshot(
@@ -916,6 +930,7 @@ def test_processing_requires_live_request_and_distinguishes_preparing_from_start
 ) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller.show_processing()
     view: RunProgressSnapshot = _live_snapshot("run", {"group": "Episode.mkv"}, ())
     if state not in {"accepted", "running"}:
         view = replace(
@@ -990,6 +1005,7 @@ def test_reopened_state_restores_progress_and_keeps_settings_available_without_r
     server: ControlServer = ControlServer(endpoint, key, handle)
     session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
     controller: StateController = StateController(session, refreshed.set)
+    controller.show_processing()
     try:
         deadline: float = time.monotonic() + 5.0
         while "37%" not in controller.render(120, 35).plain and time.monotonic() < deadline:
@@ -1027,6 +1043,7 @@ def test_new_progress_preview_discards_old_percentage_and_uses_only_source_label
 ) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller.show_processing()
     view: RunProgressSnapshot = _live_snapshot(
         "run",
         {"group": "Old.mkv"},
@@ -1137,6 +1154,7 @@ def test_processing_excludes_saved_downloads_regardless_of_client_measurement(
     session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
     refreshed: threading.Event = threading.Event()
     controller: StateController = StateController(session, refreshed.set)
+    controller.show_processing()
     try:
         deadline: float = time.monotonic() + 5
         while not controller._connected and time.monotonic() < deadline:
@@ -1562,6 +1580,7 @@ def test_library_details_keep_provenance_without_missing_result_header(
 ) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller._tab = state_module._Tab.FILES
     controller._details = LibrarySet(
         "set", "group", "Episode", None, "ready/01.txt", (), problem == "library_ownership_unknown", problem
     )
@@ -1889,6 +1908,7 @@ def test_history_does_not_address_hidden_processing_rows_or_drop_a_search_during
         cast("ResidentSession", SimpleNamespace(new_session=lambda: session)),
         lambda: None,
     )
+    controller.show_processing()
     controller._history_open = True
     controller._snapshot = {"materials": [{"group_id": "running", "run_id": "active-run", "active": True}]}
     try:
@@ -1941,6 +1961,7 @@ def test_processing_preserves_selected_identity_when_material_counts_change(
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     session: ResidentSession = cast("ResidentSession", SimpleNamespace(command=lambda kind: {"subscriptions": []}))
     controller: StateController = StateController(session, lambda: None)
+    controller.show_processing()
     calls: list[tuple[str, Mapping[str, object]]] = []
     monkeypatch.setattr(controller, "_command", lambda kind, payload: calls.append((kind, payload)))
     materials: list[dict[str, object]] = [_live_material(f"material-{index}", f"run-{index}") for index in range(3)]
@@ -2045,6 +2066,7 @@ def _rendered_transfers(tmp_path: Path, snapshot: dict[str, object]) -> str:
     session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
     refreshed: threading.Event = threading.Event()
     controller: StateController = StateController(session, refreshed.set)
+    controller.show_processing()
     try:
         deadline: float = time.monotonic() + 5.0
         while not controller._connected and time.monotonic() < deadline:

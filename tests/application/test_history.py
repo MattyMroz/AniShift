@@ -212,6 +212,7 @@ def test_recovered_terminal_time_is_admission_time_with_stable_identity_and_rete
         old_document.pop("recovered_from_admission")
         assert not TypeAdapter(HistoryEvent).validate_python(old_document).recovered_from_admission
         controller: StateController = StateController(session, lambda: None)
+        controller.show_processing()
         try:
             assert _wait_for_resident(session, lambda _status: controller._connected)
             controller.handle_key("text:h")
@@ -250,6 +251,7 @@ def test_download_without_processing_is_searchable_but_never_opens_its_source(
     with closing(service), _panel_owner(service, tmp_path) as (session, store):
         assert session.history() == ()
         controller: StateController = StateController(session, lambda: None)
+        controller.show_processing()
         try:
             assert _wait_for_resident(session, lambda _status: controller._connected)
             controller.handle_key("text:h")
@@ -593,6 +595,7 @@ def test_failed_history_append_does_not_fail_execution_or_repeat_confirmed_work(
             session.history()
         assert refused.value.reason == f"history_{failure}"
         controller: StateController = StateController(session, lambda: None)
+        controller.show_processing()
         try:
             assert _wait_for_resident(session, lambda _status: controller._connected)
             controller.handle_key("text:h")
@@ -654,6 +657,7 @@ def test_history_retry_render_and_back_preserve_selected_material_and_tab_contex
         )
     with closing(service), _panel_owner(service, tmp_path) as (session, store):
         controller: StateController = StateController(session, lambda: None)
+        controller.show_processing()
         try:
             assert _wait_for_resident(session, lambda _status: controller._connected)
             controller.handle_key("text:h")
@@ -722,6 +726,7 @@ def test_single_highlight_retry_of_an_old_subscription_material_opens_actual_sel
         session.reserve(groups)
         assert session.execute(session.plan_auto(groups, preset), CollectingRunSink()).succeeded
         controller: StateController = StateController(session, lambda: None)
+        controller.show_processing()
         try:
             assert _wait_for_resident(session, lambda _status: controller._connected)
             controller.handle_key("text:h")
@@ -773,6 +778,7 @@ def test_history_view_search_hotkeys_and_validated_open_remain_read_only_under_p
     monkeypatch.setattr(state_module, "_open_path", lambda path, **_kwargs: opened.append(path))
     with closing(service), _panel_owner(service, tmp_path) as (session, store):
         controller: StateController = StateController(session, lambda: None)
+        controller.show_processing()
         try:
             assert _wait_for_resident(session, lambda _status: controller._connected)
             controller.handle_key("text:h")
@@ -891,6 +897,7 @@ def test_history_opens_ready_product_while_held_source_keeps_local_retry_scope_l
         assert tuple(item.path for item in record.files if item.role == "product") == ("ready/Book.m4a",)
         assert record.main_result == "ready/Book.m4a"
         controller: StateController = StateController(session, lambda: None)
+        controller.show_processing()
         try:
             assert _wait_for_resident(session, lambda _status: controller._connected)
             controller.handle_key("text:h")

@@ -1236,3 +1236,119 @@ def test_an_arriving_retry_proposal_closes_the_help_block(build: Callable[[str],
     assert probe.panel._retry == proposal
     assert not probe.panel._help
     assert "Enter przygotuj · Esc wróć" in probe.panel.render(80, 24).plain
+
+
+@pytest.mark.parametrize(("key", "tab"), [("left", _Tab.ANIME), ("right", _Tab.PROGRESS)])
+def test_a_new_panel_opens_on_subscriptions_between_anime_and_processing(
+    monkeypatch: pytest.MonkeyPatch, key: str, tab: int
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    panel: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    try:
+        assert panel._tab == _Tab.SUBSCRIPTIONS
+        panel.handle_key(key)
+        assert panel._tab == tab
+    finally:
+        panel.close()
+        panel._thread.join(5)
+
+
+@pytest.mark.parametrize("name", ["subscriptions", "subscriptions_empty", "u08"])
+def test_two_escapes_from_the_subscription_search_return_to_the_list(build: Callable[[str], _Probe], name: str) -> None:
+    probe: _Probe = build(name)
+    for key in ("text:/", "text:slime"):
+        probe.panel.handle_key(key)
+    assert probe.panel.handle_key("escape") is StateResult.CONTINUE
+    assert probe.panel._tab == _Tab.ANIME
+    assert probe.anime._screen is _Screen.QUERY
+    assert not probe.anime.input_focused
+    assert probe.anime._query == "slime"
+    assert probe.panel.handle_key("escape") is StateResult.CONTINUE
+    assert probe.panel._tab == _Tab.SUBSCRIPTIONS
+    assert not probe.anime.in_subscriptions
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "titles",
+        "entries",
+        "episodes",
+        "episodes_file",
+        "offer",
+        "candidates",
+        "files",
+        "draft",
+        "busy",
+        "problem",
+        "u08",
+        "u08_extra",
+    ],
+)
+def test_backspace_goes_back_like_escape_on_every_anime_screen_but_the_query(
+    build: Callable[[str], _Probe], name: str
+) -> None:
+    escaped: _Probe = build(name)
+    expected: StateResult = escaped.panel.handle_key("escape")
+    episodes._settle(escaped.anime)
+    erased: _Probe = build(name)
+    before: tuple[object, ...] = _state(erased)
+    assert erased.panel.handle_key("backspace") is expected
+    episodes._settle(erased.anime)
+    assert _state(erased) == _state(escaped)
+    assert _state(erased) != before
+
+
+@pytest.mark.parametrize(
+    ("name", "keys", "text"),
+    [
+        ("query", (), ""),
+        ("query", ("text:/", "text:slime"), "slim"),
+        ("titles", ("escape",), "slim"),
+        ("subscriptions", ("text:/", "text:slime", "escape"), "slim"),
+    ],
+)
+def test_backspace_on_the_query_types_into_it_instead_of_leaving(
+    build: Callable[[str], _Probe], name: str, keys: tuple[str, ...], text: str
+) -> None:
+    probe: _Probe = build(name)
+    for key in keys:
+        probe.panel.handle_key(key)
+    assert probe.anime._screen is _Screen.QUERY
+    assert probe.panel.handle_key("backspace") is StateResult.CONTINUE
+    assert probe.panel._tab == _Tab.ANIME
+    assert probe.anime._screen is _Screen.QUERY
+    assert probe.anime.input_focused
+    assert probe.anime._query == text
+
+
+def test_backspace_edits_the_episode_range(build: Callable[[str], _Probe]) -> None:
+    probe: _Probe = build("episodes")
+    for key in ("text:z", "text:1", "text:-", "text:3"):
+        probe.panel.handle_key(key)
+    assert probe.panel.handle_key("backspace") is StateResult.CONTINUE
+    assert probe.anime._range == "1-"
+    assert probe.anime._screen is _Screen.EPISODES
+
+
+def test_backspace_edits_the_history_search(build: Callable[[str], _Probe]) -> None:
+    probe: _Probe = build("history")
+    for key in ("text:/", "text:ab"):
+        probe.panel.handle_key(key)
+    assert probe.panel.handle_key("backspace") is StateResult.CONTINUE
+    assert probe.panel._history_input is not None
+    assert probe.panel._history_input.text == "a"
+    assert probe.panel._history_open
+
+
+@pytest.mark.parametrize("key", ["escape", "backspace"])
+def test_escape_or_backspace_closes_the_retry_proposal(build: Callable[[str], _Probe], key: str) -> None:
+    probe: _Probe = build("history")
+    probe.panel.handle_key("text:p")
+    load: Callable[[ResidentSession], object] = cast("Callable[[ResidentSession], object]", probe.work[-1])
+    proposal: RetryProposal = RetryProposal("material", "manual", ("group",))
+    load(cast("ResidentSession", SimpleNamespace(retry_proposal=lambda identifier: proposal)))
+    assert probe.panel._retry == proposal
+    assert probe.panel.handle_key(key) is StateResult.CONTINUE
+    assert probe.panel._retry is None
+    assert probe.panel._history_open

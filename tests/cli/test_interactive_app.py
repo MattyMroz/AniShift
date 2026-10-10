@@ -256,6 +256,23 @@ def test_notification_opens_library_and_icon_activation_returns_home(
         application._mascot.close()
 
 
+def test_the_tray_state_window_opens_the_panel_on_subscriptions(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_renderer(monkeypatch)
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    session: ResidentSession = cast(
+        "ResidentSession",
+        SimpleNamespace(command=lambda kind: {"subscriptions": []}, close=lambda: None, interrupt_reads=lambda: None),
+    )
+    application: interactive_app._InteractiveApplication = interactive_app._InteractiveApplication(
+        cast("AppService", _service(acquisition=None)), resident=session, show_state=True
+    )
+    monkeypatch.setattr(application, "_start_prewarm", lambda: None)
+    application.run()
+    assert _mode(application) is interactive_app._ViewMode.STATE
+    assert application._state is not None
+    assert application._state._tab == _Tab.SUBSCRIPTIONS
+
+
 def _frame(application: interactive_app._InteractiveApplication, columns: int = 120, rows: int = 40) -> str:
     return application._render_frame(columns, rows).plain
 

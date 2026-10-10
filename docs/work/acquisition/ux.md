@@ -9,6 +9,8 @@ baseline: 0e8a6bf9194d2786d426d3f3a58f48272b3eb087
 
 **Decyzja orkiestratora 2026-09-29, do potwierdzenia:** uproszczenia zapytania, pomijania pojedynczego wpisu, zaznaczeń i szczegółów wydań oraz kontrakt P/komunikatów F6 poniżej. Nagłówek PANEL, liczniki globalne, status U01, „Nie zamówiono” i zaznaczanie wydań pozostają.
 
+**Ujednolicenie zakładek 2026-10-10, do potwierdzenia przez właściciela** ([intencja](../tui-unify/intent.md), [plan](../tui-unify/plan.md) §3–§7): panel startuje na Subskrypcjach. Stopka każdego ekranu ma postać „Enter … · najwyżej 3 akcje · ? więcej · Esc wróć”, bez „←→ widok · ↑↓ wybierz”; przy wąskim ekranie odpadają akcje od końca, nigdy `?` i Esc. `?` otwiera pomoc „Ten ekran” i „Wszędzie” w każdej zakładce (w Anime i U08 pod istniejącymi szczegółami wiersza). Linia statusu automatu ma jeden format w czterech zakładkach: „Automat: praca · pobiera N · przetwarza N · czeka N”, „Automat: bezczynny”, „Automat wstrzymany”, „Automat: zatrzymywanie”, „Automat: pauza niepełna” albo „Automat: brak połączenia”; w Anime znika poniżej 13 wierszy. Stopki w makietach E1–E3 poza U06, U07 i U08 są historyczne; obowiązuje reguła planu.
+
 ## 1. Zasady
 
 - Ten dokument jest jedynym źródłem makiet, przejść i klawiszy tej pracy. Wymagania są w [spec.md](spec.md); kolejność budowy w [masterplan.md](masterplan.md).
@@ -17,6 +19,7 @@ baseline: 0e8a6bf9194d2786d426d3f3a58f48272b3eb087
 - `[x]` = zaznaczone w szkicu, `>` = kursor. Zaznaczenie nigdy nie oznacza zlecenia.
 - Każda akcja widoczna w stopce działa klawiszem; skrót literowy nie działa, gdy aktywne jest pole tekstowe.
 - Esc wraca o jeden ekran i odtwarza poprzedni kursor, zaznaczenia i przewinięcie, bez ponownego pobierania danych.
+- `Backspace` poza polem tekstowym działa jak Esc (2026-10-10), także na ekranach oczekiwania i błędu. W polu zapytania, zakresu, szukania Historii, ścieżki Ręcznego i edytorach Ustawień kasuje znak.
 - Zlecenie powstaje wyłącznie przez: `D` na odcinkach lub wydaniach (E2), także `D pobierz ponownie` w U04b po P, albo automatycznie dla celu subskrypcji dodanej przez Enter na „Dodaj subskrypcję” (U06). Nawigacja, render, odliczanie, Tab i Esc niczego nie zlecają.
 
 ## 2. Przejścia
@@ -55,7 +58,7 @@ Po zleceniu widok przechodzi do Przetwarzania z nowymi odcinkami — tylko jeśl
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Pole wyszukiwania startuje bez fokusu; pierwszy znak lub wklejenie włącza edycję i wpisuje tekst. Enter na polu lub `/` również włącza edycję; Enter w edycji szuka; Esc wyłącza edycję i zostawia tekst. Automatyczne rozpoczęcie pisania dotyczy tylko zapytania.
+- Pole wyszukiwania startuje bez fokusu; pierwszy znak lub wklejenie włącza edycję i wpisuje tekst. Enter na polu lub `/` również włącza edycję; Enter w edycji szuka; Esc wyłącza edycję i zostawia tekst. `Backspace` (2026-10-10) włącza edycję jak pierwszy znak i kasuje znak, nigdy nie opuszcza zakładki. Automatyczne rozpoczęcie pisania dotyczy tylko zapytania.
 - Ekran pojawia się tylko, gdy choć jeden wynik wyszukiwania nie jest wpisem franczyzy pierwszego wyniku widocznym w U02. Gdy wszystkie wyniki są w U02, wyszukiwanie od razu otwiera U02 z kursorem na pierwszym wyniku, a Esc z U02 wraca do zapytania. Nieudany odczyt franczyzy po wyszukiwaniu pokazuje błąd, z którego Enter wraca do tej listy.
 - Dokładnie jeden wynik i jeden wpis kompletnej franczyzy, bez dodatków, otwiera od razu U03; Esc wraca do zapytania. Wiele wpisów, wpis będący dodatkiem, dodatki z ani.zip lub niepełna lista zachowują U02. Sprawdzenie dodatków może wymagać odczytu odcinków przed decyzją o pominięciu.
 - Przy pominiętym U02 `G grupy` pozostaje dostępne z U03 dla wpisu z wyników wyszukiwania, także bez mapowania odcinków; Esc ze starej listy wraca do U03. Błąd odczytu odcinków wyłącza pominięcie: Enter/Esc z błędu wraca do U02. Lista wczytana przy wykryciu dodatków jest używana przy pierwszym Enter z U02 bez drugiego odczytu; następne jawne wejścia ponawiają odczyt. Nieaktywny ekran zapytania nie pokazuje „Enter edytuj”.
@@ -217,7 +220,7 @@ Otwierany z wiersza Przetwarzania ze stanem „Nie ustalono pliku w paczce”.
               Dodaj subskrypcję
               Anuluj
 
-    Enter wybierz · Space zaznacz · A wszystkie · Esc anuluj · ←→ widok · ↑↓ wybierz
+              Enter wybierz · Space zaznacz · ? więcej · Esc wróć
 ```
 
 - Szkic to zdanie, lista wyemitowanych odcinków i dwa wiersze akcji, bez tabeli pól i bez udawanych przycisków. Układ jak w Ustawieniach: zdania wyśrodkowane, pod nimi wyśrodkowany blok wierszy; wiersz pod kursorem ma wskaźnik `❯` i niebieską etykietę (`brand_accent`), nagłówek listy jest szary. Odcinki mają ten sam znacznik `[x]`/`[ ]` co lista odcinków Anime. Teksty szkicu nie kończą się kropką. Cele subskrypcji wynikają z punktu odcięcia (spec U-09): pierwszy odcinek niewyemitowany w chwili dodania; nie są edytowalne.
@@ -228,15 +231,13 @@ Otwierany z wiersza Przetwarzania ze stanem „Nie ustalono pliku w paczce”.
 - Nieznany punkt odcięcia: „Nie wiadomo, ile odcinków już wyemitowano · spróbuj później” i sam wiersz Anuluj.
 - Wpis istnieje już jako subskrypcja: zamiast szkicu jeden wiersz „Ten sezon jest już subskrybowany · Enter pokaż” → U08.
 - Dodatki (OVA/special) nie są opisywane w szkicu; ich sekcja jest w U08.
-- Szkic otwarty przez `S` w Anime podświetla zakładkę Anime. Szkic, wyszukiwanie i listy otwarte przez `D` z listy Subskrypcji podświetlają Subskrypcje.
+- Szkic otwarty przez `S` w Anime podświetla zakładkę Anime. Szkic, wyszukiwanie i listy otwarte przez `D` z listy Subskrypcji podświetlają Subskrypcje (od 2026-10-10 przez `/`, `D` zostaje aliasem).
 - Na 50×12 widać jeden wiersz treści: zaznaczony odcinek pod kursorem; ↓ prowadzi do akcji, ↑ przewija do zdań.
 
 ## 9. U07 — lista subskrypcji (E3)
 
 ```text
                      Anime · Subskrypcje · Przetwarzanie · Biblioteka
-
-                                       Subskrypcje
 
   Tytuł                                         Odcinki  Gotowe  Stan
   Dungeon Meshi Season 2                        1/?      0       Nie rozpoznano sezonu
@@ -245,19 +246,20 @@ Otwierany z wiersza Przetwarzania ze stanem „Nie ustalono pliku w paczce”.
 ❯ Frieren Season 2                              7/?      6       Sprawdzono E8
 
   Sprawdzono E8: 12 kandydatów, 0 zgodnych (8 niepewnych, 4 niezgodnych)
-  Enter szczegóły · D dodaj · W wstrzymaj · F szukaj · Del usuń · Ctrl+Z cofnij · Esc wróć · ←→ widok · ↑↓ wybierz
-                             ↓ 0 · Przetwarzanie 0 · Czeka 0 · Automat wstrzymany
+                     Enter szczegóły · / dodaj · W wstrzymaj · ? więcej · Esc wróć
+                                     Automat wstrzymany
 ```
 
 - Tabela jak w Anime (ten sam renderer, wskaźnik, kolory i stopka): jeden wiersz na subskrypcję, kolumny Tytuł │ Odcinki │ Gotowe │ Stan. Odcinki `x/y`: x to odcinki sezonu, których pliki potwierdza inwentarz plików właściciela (grupa odcinka z wideo źródłowym w workspace albo gotowy zestaw; świeżo przekazany odcinek pojawia się po inspekcji, czyli po kilku sekundach; plik tylko w stagingu, usunięte wideo albo same napisy lub TXT się nie liczą), y to liczba odcinków sezonu albo `?`. Gotowe liczy odcinki, których gotowy zestaw Biblioteka pokazuje jako dostępny; usunięty gotowy wynik się nie liczy. Liczenie nie czyta plików ani dzienników runów. Ta sama liczba stoi w U08, w `?`, w `anishift subs list`; wpis Historii zakończonej subskrypcji nie ma licznika (S-09). Brak kolumny „od E…”.
 - Stan ma stałą szerokość krótkiego tekstu. Problemy i konflikty mają ten sam styl co pozostałe stany; ich wagę wyraża kolejność listy i pełny opis pod kursorem. Pod tabelą stoi tylko to, czego wiersz podświetlonego wpisu nie pokazuje w całości: „{pełny stan} · {ukryte kolumny} · {pełny tytuł}”. Pełny stan pojawia się, gdy różni się od krótkiego (np. wynik `F`, który jest wtedy zawsze na początku), ukryte kolumny — gdy wąski terminal je zdjął, tytuł — gdy jest przycięty. Wiersz widoczny w całości nie ma nic pod tabelą.
 - Wąski terminal ukrywa kolumny w kolejności Gotowe, Odcinki, zanim tytuł spadnie poniżej 12 komórek; ich wartości zostają w wierszu pod tabelą. Gdy dwa wiersze notki nie mieszczą całości, pełne wartości i tytuł są w U08 pod `?`.
 - Na 50×12 dolny wiersz statusu (z „Automat wstrzymany”) zostaje; ustępuje mu pusty odstęp pod tabelą.
-- Pusta lista: „Brak subskrypcji · D dodaj pierwszą”; klawisze „D dodaj · Ctrl+Z cofnij · Esc wróć”. Nie ma wiersza „D Dodaj subskrypcję” ani licznika „Aktywne”.
+- Pusta lista (2026-10-10): „Brak subskrypcji”; stopka „/ dodaj pierwszą · ? więcej · Esc wróć”. Przed pierwszą listą od właściciela treść mówi „Łączenie…”. Nie ma wiersza „D Dodaj subskrypcję” ani licznika „Aktywne”.
 - Kolejność (spec S-03): najpierw wpisy z problemem, potem według najbliższej emisji, wpisy bez terminu i wstrzymane na końcu, remis alfabetycznie. Kolejność zmienia się tylko po emisji lub zmianie stanu; kursor zostaje na tym samym wpisie.
 - Kolumna Stan: dokładnie jeden stan z spec S-03. Odliczanie tyka co sekundę bez sieci.
-- Stały wiersz pod tytułem „Subskrypcje”, pusty, gdy nic nie dotyczy: „Monitoring nie działa: nie można zapisać stanu” (spec S-12) albo „Tryb cienia — subskrypcje tylko zapisują propozycje”. Globalna pauza nie ma osobnego paska — widać ją tylko w dolnym wierszu statusu („Automat wstrzymany”).
+- Stały wiersz nad tabelą (od 2026-10-10 bez tytułu „Subskrypcje”), pusty, gdy nic nie dotyczy: „Monitoring nie działa: nie można zapisać stanu” (spec S-12) albo „Tryb cienia — subskrypcje tylko zapisują propozycje”. Globalna pauza nie ma osobnego paska — widać ją tylko w dolnym wierszu statusu („Automat wstrzymany”).
 - `W` (również Space): wstrzymaj/wznów podświetloną. `F`: szukaj teraz dla podświetlonej; przez 10 s Stan pokazuje „Sprawdzono E8”, a wiersz pod tabelą pełny wynik („Sprawdzono E8: 12 kandydatów, 0 zgodnych…”). `Delete` (również `X`): usuwa od razu, bez pytania; notka „Usunięto Frieren S2 · Ctrl+Z cofnij”. `Ctrl+Z`: przywraca ostatnio usuniętą subskrypcję, także po restarcie (spec S-08). `D`: wyszukiwanie Anime, Esc wraca do listy.
+- Od 2026-10-10: wyszukiwanie otwiera `/` (aliasy `D` i Enter na pustej liście); pierwsze Esc zdejmuje fokus z pola, drugie wraca do listy. Sprawdzenie teraz to `R` (alias `F`), pauza tylko `W` (alias Space). Stopka: „Enter szczegóły · / dodaj · W wstrzymaj · ? więcej · Esc wróć”; `R`, `X`, `Ctrl+Z`, `M`, `U` są w pomocy `?`.
 - Zakończona subskrypcja znika z listy (spec S-09).
 
 ## 10. U08 — szczegóły subskrypcji (E3)
@@ -276,16 +278,16 @@ To jest U03 tego wpisu z nagłówkiem subskrypcji. Lista zawiera cele subskrypcj
 
   Ostatnie sprawdzenie 14:00: Sprawdzono E3: brak wydań w źródle · E1–E2 wyszły przed subskrypcją: pobierz je
                                                ręcznie
-  Space zaznacz · D pobierz · I wydania · P ponownie · ? więcej · W wstrzymaj · F szukaj teraz · X usuń · Esc lista
+  Space zaznacz · D pobierz · W wstrzymaj · ? więcej · Esc wróć
 ```
 
 - Podświetlona jest zakładka Subskrypcje. ←→/Tab/Shift+Tab liczą się od niej (Przetwarzanie albo Anime z własną wyszukiwarką) i zamykają szczegóły; Esc wraca do listy.
 - Wiersz statusu pod tytułem: „{stan} · odcinki {x/y} · gotowe {n}” (liczniki jak w U07); zawsze szary, także przy problemie lub konflikcie.
 - Zmiana zakładki zamyka kontekst subskrypcji razem z otwartym edytorem zakresu i zaznaczeniami; przyjęta partia `D` trwa dalej.
 - Notka nad klawiszami łączy: „Ostatnie sprawdzenie HH:MM: …” (na początku, więc wynik `F` jest zawsze widoczny), pełny stan (gdy różni się od krótkiego) oraz odcinki wyemitowane przed subskrypcją i jeszcze niezamówione. Notka o wcześniejszych odcinkach znika, gdy wszystkie są zamówione.
-- `?` otwiera przewijane szczegóły z pełnym tytułem, wierszem statusu, wszystkimi notkami i pomocą klawiszy odcinka; dostępne na każdym rozmiarze, także 50×12. Poniżej 65 kolumn klawisze są krótsze („Space · D pobierz · P ponownie · ? więcej”), a `I wydania` zostaje w pomocy pod `?`.
+- `?` otwiera przewijane szczegóły z pełnym tytułem, wierszem statusu, wszystkimi notkami i pomocą klawiszy odcinka; dostępne na każdym rozmiarze, także 50×12. Od 2026-10-10 pomoc to „Ten ekran” (akcje bieżącego stanu, bez aliasów) i „Wszędzie”; stopka ma najwyżej trzy akcje („Space zaznacz · D pobierz · W wstrzymaj”, przy czekaniu na PL `T pobierz teraz` zamiast `W`), a `R`, `X`, `I`, `Z`, `A`, `P`, `S`, `/` są tylko w pomocy. `Backspace` zamyka szczegóły jak Esc.
 - Pod listą odcinków sekcja „Dodatki tego sezonu”: klucze `S…` z ani.zip i powiązane wpisy OVA/special z AniList (tylko informacja; Enter na wpisie OVA przechodzi do jego U03, gdzie można pobrać). Subskrypcja ich nie pobiera.
-- Wszystkie klawisze odcinków jak w U03 (Space i Enter zaznaczają, A, Z, D, P). Dodatkowo: `W`, `F`, `X` jak w U07. Punkt startu nie jest edytowalny (spec S-10 usunięte).
+- Wszystkie klawisze odcinków jak w U03 (Space i Enter zaznaczają, A, Z, D, P). Dodatkowo: `W`, `F`, `X` jak w U07. Od 2026-10-10 `R` sprawdza teraz (alias `F`), a `/` otwiera wyszukiwarkę nowej subskrypcji bez kontekstu tej subskrypcji. Punkt startu nie jest edytowalny (spec S-10 usunięte).
 - `I` na podświetlonym odcinku otwiera U04b tego odcinka (np. ręczny wybór przy „Czeka na wydanie”).
 
 ## 11. Stany i komunikaty
@@ -306,12 +308,12 @@ To jest U03 tego wpisu z nagłówkiem subskrypcji. Lista zawiera cele subskrypcj
 | Brak napisów w dwóch wydaniach (E4) | „Brak napisów w dwóch wydaniach” | Enter → U04b |
 | Termin nieznany (E3) | „Termin nieznany” | — |
 | Przerwa w emisji (E3) | „Przerwa w emisji” | — |
-| Brak wydania od 7 dni (E3) | „Nie znaleziono E6 od 7 dni · szukam raz dziennie” + jedno powiadomienie w zasobniku | F szukaj teraz, I inne wydania |
-| Czeka na wydanie (E3) | „Czeka na wydanie E8 (od 5 h)” / „(od 3 dni; sprawdzam raz dziennie)” | F szukaj teraz |
+| Brak wydania od 7 dni (E3) | „Nie znaleziono E6 od 7 dni · szukam raz dziennie” + jedno powiadomienie w zasobniku | R sprawdź teraz, I inne wydania |
+| Czeka na wydanie (E3) | „Czeka na wydanie E8 (od 5 h)” / „(od 3 dni; sprawdzam raz dziennie)” | R sprawdź teraz |
 | Kontrola po pobraniu w toku (E3) | „Kontrola E6” | — |
 | Kontrola po pobraniu nie wykonała się (E3) | „Kontrola niewykonana” przy odcinku | — |
 | Limit prób wyczerpany (E3) | „E6: wyczerpano próby (3 z 3)” + jedno powiadomienie w zasobniku | I inne wydania, P pobierz ponownie |
-| Pauza globalna | „Automat wstrzymany” w dolnym wierszu statusu | O wznów (listy główne) |
+| Pauza globalna | „Automat wstrzymany” w dolnym wierszu statusu, od 2026-10-10 we wszystkich czterech zakładkach | O wznów (wszędzie poza polem zapytania) |
 
 Tekst błędu jest krótki, bez URL-i, ścieżek absolutnych i szczegółów technicznych.
 
@@ -362,6 +364,8 @@ Każdy scenariusz wykonuje właściciel; wynik przekazuje jako: numer kroku, co 
 | --- | --- | --- | --- |
 | Wszystkie poza polem tekstowym | ←→ / Tab / Shift+Tab | Zmiana zakładki (zachowuje stan ekranów) | bez zmian |
 | Wszystkie | Esc / Ctrl+C (bez zaznaczenia tekstu) | O ekran wstecz; w polu tekstowym najpierw wyłącza edycję, wyjątek: zakres odcinków zamyka od razu | E1: uproszczenie zakresu |
+| Wszystkie poza polem tekstowym | Backspace | Jak Esc; w polu zapytania włącza edycję i kasuje znak | 2026-10-10 |
+| Wszystkie | ? | Pomoc „Ten ekran” i „Wszędzie”; w szczegółach zamyka je | 2026-10-10 |
 | Pole tekstowe | wszystkie litery, Space, Delete | Tekst, nigdy skrót | bez zmian |
 | U01 | Enter / `/`; pierwszy znak lub wklejenie w zapytaniu | Wybierz tytuł / edytuj zapytanie; znak i wklejenie rozpoczynają edycję bez utraty tekstu | E1 |
 | U01, U02 | G | Stara lista wydań wg grup (pomost); w U02 tylko dla wpisu z wyników wyszukiwania | E1–E2; usuwane w E3 |
@@ -385,12 +389,16 @@ Każdy scenariusz wykonuje właściciel; wynik przekazuje jako: numer kroku, co 
 | U07 | D | Dodaj subskrypcję (przejście do U01) | bez zmian (dziś też `D`) |
 | U07, U08 | W, Space (tylko U07) | Wstrzymaj/wznów | bez zmian |
 | U07, U08 | F | Szukaj teraz — tylko podświetlona/otwarta subskrypcja | zmiana: dziś wszystkie |
+| U07, U08 | `/` (aliasy: `D` w U07, Enter na pustej U07) | Dodaj subskrypcję: wyszukiwarka U01; dwa Esc wracają do U07 | 2026-10-10 |
+| U07, U08 | R (alias F) | Sprawdź teraz | 2026-10-10 |
 | U07, U08 | Delete, X | Usuń od razu, bez pytania | Delete nowe; X jak dziś |
 | U07 | Ctrl+Z | Przywróć ostatnio usuniętą subskrypcję | E3 |
 | Przetwarzanie | Enter na wierszu z problemem | Ekran naprawy (U05 / U04b) | E2 |
+| Przetwarzanie | X, Delete, C | Pytanie „Anulować …? Enter tak · Esc nie” jak przy R-04; anuluje dopiero Enter | 2026-10-10 |
 | Listy główne (U07, Przetwarzanie, Historia, Biblioteka) | U / M / O | Ustawienia / Ręczny / pauza globalna | bez zmian |
+| Wszystkie poza polem zapytania | O | Pauza globalna | 2026-10-10 |
 
-`D` na liście subskrypcji oznacza „Dodaj” (zachowane), na odcinkach i wydaniach — „Pobierz”. Znaczenie jest zawsze opisane w stopce.
+`D` na liście subskrypcji oznacza „Dodaj” (zachowane), na odcinkach i wydaniach — „Pobierz”. Znaczenie jest zawsze opisane w stopce. Od 2026-10-10 dodawanie subskrypcji opisuje stopka jako „/ dodaj”, a `D` na liście jest cichym aliasem; `D` w stopce znaczy zawsze „pobierz”.
 
 ## 14. Mały terminal i asynchroniczność
 

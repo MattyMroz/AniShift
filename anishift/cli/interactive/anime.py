@@ -473,8 +473,9 @@ class AnimeController:
                 return AnimeResult.CONTINUE
             if self._handle_input(key):
                 return AnimeResult.CONTINUE
+            key = "escape" if key == "backspace" else key
             if self._details_open:
-                if key in {"escape", "interrupt", "backspace", "text:?"}:
+                if key in {"escape", "interrupt", "text:?"}:
                     self._details_open = False
                     self._view.selection = None
                 else:
@@ -1473,7 +1474,9 @@ class AnimeController:
         if not self._input_focused:
             if key == "enter" or (self._screen is _Screen.QUERY and key == "text:/"):
                 self._input_focused = True
-            elif self._screen is _Screen.QUERY and (key.startswith(("text:", "paste:")) or key in {"space", "paste"}):
+            elif self._screen is _Screen.QUERY and (
+                key.startswith(("text:", "paste:")) or key in {"space", "paste", "backspace"}
+            ):
                 self._input_focused = True
                 editor.handle(key)
             return key not in {"escape", "interrupt"}
