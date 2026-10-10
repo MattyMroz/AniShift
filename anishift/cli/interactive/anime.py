@@ -239,6 +239,7 @@ _REASON_TEXTS: Final[dict[str, str]] = {
     "A franchise alias does not identify this installment.": "Nazwa franczyzy nie wskazuje jednoznacznie tego wpisu.",
     "The required part/cour is not established.": "Nie ustalono wymaganej części sezonu.",
     "Explicit mapped episode differs from target.": "Podany numer katalogowy wskazuje inny odcinek.",
+    "Catalog episode title belongs to another episode.": "Tytuł w nazwie należy do innego odcinka.",
     "Work anchor and exact mapped season/episode match; residual is technical or catalogued.": (
         "Tytuł oraz katalogowe numery sezonu i odcinka są zgodne; pozostały tekst jest rozpoznany."
     ),

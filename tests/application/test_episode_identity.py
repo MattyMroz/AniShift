@@ -933,8 +933,10 @@ _MISMATCH_REASONS: Final[frozenset[str]] = frozenset(
         "Selected file has no allowed video extension.",
         "Selected filename has an explicit Plex extra suffix.",
         "Selected residual explicitly identifies non-episode material.",
+        "Catalog episode title belongs to another episode.",
     }
 )
+_OTHER_EPISODE_TITLE: Final[str] = "Catalog episode title belongs to another episode."
 
 
 def _unnumbered_target() -> dict[str, Any]:
@@ -1244,3 +1246,66 @@ def test_classify_release_name_unresolved() -> None:
     assert classify_release_name(_target_for(), 5) == IdentityAssessment(  # type: ignore[arg-type]
         IdentityVerdict.INSUFFICIENT, "Malformed candidate metadata."
     )
+
+
+@pytest.mark.parametrize(
+    ("target", "name"),
+    [
+        (_target_for(), "Star Garden S01E06 The Silent Winter Night 1080p WEB-DL"),
+        (_target_for(), "Star Garden - 06 - The Silent Winter Night"),
+        (_target_for(), "Star Garden S01E06 The Silent WinterNight 1080p"),
+        (_target_for(), "[Group] Star Garden - 06 The Silent Winter Night (1080p) [ABCD1234]"),
+        (
+            _target_for(season=2, episode=1, local_episode=1, absolute=13),
+            "Star.Garden.S02E13.The.Silent.Winter.Night.1080p.CR.WEB-DL.AAC2.0.H.264-VARYG",
+        ),
+        (
+            {**_unnumbered_target(), "other_episode_titles": ["The Silent Winter Night"]},
+            "Koori no Jouheki - 02 - The Silent Winter Night",
+        ),
+        (_target_for(season=2, episode=1, local_episode=1, absolute=13), "Star Garden - 13 - The Silent Winter Night"),
+        (
+            _target_for(season=1, episode=13, local_episode=1, absolute=13),
+            "Star Garden S01E01 The Silent Winter Night 1080p",
+        ),
+    ],
+)
+def test_classify_other_episode_title_after_conflicting_number_is_conflict(target: dict[str, Any], name: str) -> None:
+    for assessment in _name_assessments(target, name):
+        assert assessment == IdentityAssessment(IdentityVerdict.MISMATCH, _OTHER_EPISODE_TITLE)
+        assert conflict_label(assessment) == "tytuł innego odcinka"
+
+
+@pytest.mark.parametrize(
+    ("target", "name"),
+    [
+        (_target_for(), "Star Garden S01E05 The Silent Winter Night 1080p"),
+        (_target_for(), "Star Garden - 05 - The Silent Winter Night"),
+        (
+            {**_unnumbered_target(), "other_episode_titles": ["The Silent Winter Night"]},
+            "Koori no Jouheki S02E01 The Silent Winter Night 1080p",
+        ),
+        (
+            {**_unnumbered_target(), "other_episode_titles": ["The Silent Winter Night"]},
+            "Koori no Jouheki S02E05 The Silent Winter Night 1080p",
+        ),
+        (
+            _target_for(season=1, episode=13, local_episode=1, absolute=13),
+            "Star Garden S01E13 The Silent Winter Night 1080p",
+        ),
+        (_target_for(), "Star Garden S01E06 The Silent Winter Night Extended Cut 1080p"),
+        (_target_for(), "Star Garden S01E06 Prologue The Silent Winter Night 1080p"),
+        (_target_for(other_episode_titles=["Snow!"]), "Star Garden S01E06 Snow 1080p"),
+        (_target_for(other_episode_titles=["Snowy"]), "Star Garden - 06 - Snowy"),
+        (_target_for(other_episode_titles=["Journey"]), "Star Garden S01E06 Journey 1080p"),
+        (
+            _target_for(other_episode_titles=["A Journey Through Clouds Again"]),
+            "Star Garden S01E06 A Journey Through Clouds Again 1080p",
+        ),
+        (_target_for(other_episode_titles=["Return to Star Garden"]), "Star Garden S01E06 Return to Star Garden 1080p"),
+    ],
+)
+def test_classify_other_episode_title_without_full_evidence_stays_uncertain(target: dict[str, Any], name: str) -> None:
+    for assessment in _name_assessments(target, name):
+        assert assessment == IdentityAssessment(IdentityVerdict.INSUFFICIENT, _UNCONSUMED)
+        assert not is_conflict(assessment)

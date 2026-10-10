@@ -1,4 +1,4 @@
-"""Assess selected-file identity with H1 v10.7 without inspecting media or performing I/O."""
+"""Assess selected-file identity with H1 v10.8 without inspecting media or performing I/O."""
 
 from __future__ import annotations
 
@@ -195,6 +195,7 @@ REASONS: Final[frozenset[str]] = frozenset(
         "Unconsumed filename text is neither technical metadata nor a catalog episode title.",
         "Mapped numbering cannot be checked without target numbering.",
         "Mapped number equals the target absolute number; numbering is ambiguous.",
+        "Catalog episode title belongs to another episode.",
     }
 )
 """Enumerate every identity explanation, including reasons returned by context-conflict helpers."""
@@ -228,6 +229,7 @@ MISMATCH_LABELS: Final[Mapping[str, str]] = MappingProxyType(
         "Selected file has no allowed video extension.": "nie wideo",
         "Selected filename has an explicit Plex extra suffix.": "dodatek",
         "Selected residual explicitly identifies non-episode material.": "nie odcinek",
+        "Catalog episode title belongs to another episode.": "tytuł innego odcinka",
     }
 )
 """Label every mismatch reason; each mismatch is a conflict."""
@@ -612,6 +614,20 @@ def _episode_residual(text: str, target: _Target) -> tuple[bool, bool]:
         if not any(_similarity(canonical, title, best) >= best for title in target.canonical_others):
             return True, True
     return exact
+
+
+def _other_episode_title(text: str, parsed: _Parsed, target: _Target) -> bool:
+    expected: int | None = target.episode if parsed.mode == "mapped" else target.local
+    if parsed.number is None or expected is None or parsed.number == expected:
+        return False
+    owned: tuple[str, ...] = (*target.episode_titles, *target.titles, *target.broad)
+    return any(
+        len(_canonical(title)) >= MIN_CANONICAL
+        and (rest := _prefix(text, title)) is not None
+        and (not rest or TECHNICAL.match(rest))
+        and not any(title in own or own in title for own in owned)
+        for title in target.other_episodes
+    )
 
 
 def _absolute_echo(stem: str, parsed: _Parsed, target: _Target) -> _Parsed:
@@ -1452,6 +1468,8 @@ def _assess(identity: _Target, candidate: Metadata, path: str, stem: str) -> Ide
     residual_ok: bool
     episode_anchor: bool
     residual_ok, episode_anchor = _episode_residual(residual, identity)
+    if not residual_ok and _other_episode_title(residual, parsed, identity):
+        return IdentityAssessment(IdentityVerdict.MISMATCH, "Catalog episode title belongs to another episode.")
     if not residual_ok:
         return IdentityAssessment(
             IdentityVerdict.INSUFFICIENT,

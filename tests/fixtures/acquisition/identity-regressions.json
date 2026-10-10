@@ -888,5 +888,23 @@
     "candidate": {"filename": "Solo.Leveling.S02E01.You.Arent.E-Rank.Are.You.1080p.CR.WEB-DL.AAC2.0.H.264.MULTi-VARYG.mkv"},
     "expected_verdict": "match",
     "cause": "MULTi before a release group is technical metadata."
+  },
+  {
+    "target": {"aliases": ["Solo Leveling Season 2 -Arise from the Shadow-", "俺だけレベルアップな件 Season 2 -Arise from the Shadow-", "Ore dake Level Up na Ken: Season 2 - Arise from the Shadow", "Ore dake Level Up na Ken", "Solo Leveling", "俺だけレベルアップな件"], "type": "TV", "season": 2, "episode": 1, "local_episode": 1, "absolute": 13, "episode_title": "You Aren't E-Rank, Are You?", "other_episode_titles": ["I Suppose You Aren't Aware", "Still a Long Way to Go", "I Need to Stop Faking", "This Is What We're Trained to Do", "Don't Look Down On My Guys", "The 10th S-Rank Hunter", "Looking Up Was Tiring Me Out", "It Was All Worth It", "We Need a Hero", "It's Going to Get Even More Intense", "Are You the King of Humans", "On to the Next Target"], "other_series": []},
+    "candidate": {"filename": "Solo.Leveling.S02E13.On.to.the.Next.Target.1080p.CR.WEB-DL.AAC2.0.H.264-VARYG.mkv", "release": "Solo Leveling S02E13 On to the Next Target 1080p CR WEB-DL AAC2.0 H 264-VARYG (Ore dake Level Up na Ken, Multi-Subs)"},
+    "expected_verdict": "mismatch",
+    "cause": "A conflicting episode number followed by another catalog episode title is a conflict."
+  },
+  {
+    "target": {"aliases": ["Solo Leveling Season 2 -Arise from the Shadow-", "俺だけレベルアップな件 Season 2 -Arise from the Shadow-", "Ore dake Level Up na Ken: Season 2 - Arise from the Shadow", "Ore dake Level Up na Ken", "Solo Leveling", "俺だけレベルアップな件"], "type": "TV", "season": 2, "episode": 1, "local_episode": 1, "absolute": 13, "episode_title": "You Aren't E-Rank, Are You?", "other_episode_titles": ["I Suppose You Aren't Aware", "Still a Long Way to Go", "I Need to Stop Faking", "This Is What We're Trained to Do", "Don't Look Down On My Guys", "The 10th S-Rank Hunter", "Looking Up Was Tiring Me Out", "It Was All Worth It", "We Need a Hero", "It's Going to Get Even More Intense", "Are You the King of Humans", "On to the Next Target"], "other_series": []},
+    "candidate": {"filename": "Solo.Leveling.S02E13.You.Arent.E-Rank.Are.You.1080p.CR.WEB-DL.DUAL.AAC2.0.H.264-VARYG.mkv", "release": "Solo Leveling S02E13 You Arent E-Rank Are You 1080p CR WEB-DL DUAL AAC2.0 H 264-VARYG (Ore dake Level Up na Ken, Dual-Audio, Multi-Subs)"},
+    "expected_verdict": "insufficient_evidence",
+    "cause": "An absolute-number echo followed by the target episode title stays uncertain."
+  },
+  {
+    "target": {"aliases": ["Solo Leveling Season 2 -Arise from the Shadow-", "俺だけレベルアップな件 Season 2 -Arise from the Shadow-", "Ore dake Level Up na Ken: Season 2 - Arise from the Shadow", "Ore dake Level Up na Ken", "Solo Leveling", "俺だけレベルアップな件"], "type": "TV", "season": 2, "episode": 1, "local_episode": 1, "absolute": 13, "episode_title": "You Aren't E-Rank, Are You?", "other_episode_titles": ["I Suppose You Aren't Aware", "Still a Long Way to Go", "I Need to Stop Faking", "This Is What We're Trained to Do", "Don't Look Down On My Guys", "The 10th S-Rank Hunter", "Looking Up Was Tiring Me Out", "It Was All Worth It", "We Need a Hero", "It's Going to Get Even More Intense", "Are You the King of Humans", "On to the Next Target"], "other_series": []},
+    "candidate": {"filename": "[ToonsHub] Solo Leveling S02E13 1080p CR WEB-DL AAC2.0 H.264 (Ore dake Level Up na Ken, Multi-Subs).mkv", "release": "[ToonsHub] Solo Leveling S02E13 1080p CR WEB-DL AAC2.0 H.264 (Ore dake Level Up na Ken, Multi-Subs)"},
+    "expected_verdict": "insufficient_evidence",
+    "cause": "An absolute-number echo without an episode title stays uncertain."
   }
 ]
