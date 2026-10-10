@@ -62,8 +62,11 @@ class _SelectiveNetwork(_TorrentNetwork):
         self.hidden_reads: int = 0
         self.before_inspection: Callable[[], None] | None = None
         self.during_check: Callable[[], None] | None = None
+        self.file_reads: int = 0
+        self.started_priorities: list[tuple[int, ...]] = []
 
     def files(self, info_hash: str) -> tuple[TorrentFile, ...]:
+        self.file_reads += 1
         check: Callable[[], None] | None = self.during_check
         if check is not None and self.selections:
             self.during_check = None
@@ -124,6 +127,7 @@ class _SelectiveNetwork(_TorrentNetwork):
             self.deliver(info_hash)
         if self.per_hash.get(info_hash) and info_hash not in self.selected:
             self.unapproved_starts.append(info_hash)
+        self.started_priorities.append(tuple(item.priority for item in self.per_hash.get(info_hash, ())))
         super().resume(info_hash)
 
     def transfer_action(self, info_hash: str, action: str) -> None:
@@ -569,13 +573,11 @@ def _interrupted_after_selection(setup: _Setup) -> None:
     setup.network.before_select = None
 
 
-@pytest.mark.parametrize("change", ["priorities", "folder", "sizes"])
+@pytest.mark.parametrize("change", ["folder", "sizes"])
 def test_a_restarted_owner_never_starts_a_selection_the_client_no_longer_matches(setup: _Setup, change: str) -> None:
     _interrupted_after_selection(setup)
     applied: AcquisitionConfirmation = _stored(setup)
     files: tuple[TorrentFile, ...] = setup.network.per_hash[_HASH]
-    if change == "priorities":
-        setup.network.per_hash[_HASH] = tuple(replace(item, priority=1) for item in files)
     if change == "folder":
         setup.network.tracked[_HASH] = replace(setup.network.tracked[_HASH], save_path=str(setup.root))
     if change == "sizes":
@@ -594,6 +596,102 @@ def test_a_restarted_owner_starts_a_selection_the_client_still_matches(setup: _S
         _until(_starts(setup))
 
     assert _stored(setup).problem is None
+    assert setup.network.started == [_HASH]
+
+
+def _start_content(setup: _Setup, owner: AutomationOwner) -> None:
+    assert owner.admit_episode("admit-1", _choice(3)).ok
+    _until(lambda: bool(setup.network.metadata_added))
+    setup.network.deliver(_HASH)
+    _until(lambda: owner.state.acquisitions[0].content_started)
+
+
+def _lose_selection(setup: _Setup, priority: int, state: str) -> None:
+    setup.network.per_hash[_HASH] = tuple(replace(item, priority=priority) for item in setup.network.per_hash[_HASH])
+    setup.network.tracked[_HASH] = replace(setup.network.tracked[_HASH], state=state)
+
+
+def _checked(owner: AutomationOwner) -> bool:
+    return owner._on_owner(lambda: not owner._unverified and not owner._transfers_inspecting)
+
+
+@pytest.mark.parametrize(("priority", "state"), [(1, "downloading"), (0, "stoppedUP")])
+@pytest.mark.parametrize("restart", ["owner", "client"])
+def test_a_restarted_client_gets_its_lost_selection_back_before_the_transfer_starts_again(
+    setup: _Setup, priority: int, state: str, restart: str
+) -> None:
+    if restart == "owner":
+        with _running(setup) as owner:
+            _start_content(setup, owner)
+        _lose_selection(setup, priority, state)
+        with _running(setup):
+            _until(_starts(setup, 2))
+    else:
+        with _running(setup) as owner:
+            _start_content(setup, owner)
+            setup.network.unreachable = True
+            _until(lambda: owner._on_owner(lambda: owner._transfers_failure is not None))
+            _lose_selection(setup, priority, state)
+            setup.network.unreachable = False
+            _until(_starts(setup, 2))
+
+    stored: AcquisitionConfirmation = _stored(setup)
+    assert ((_HASH, "stop") in setup.network.actions) is (state == "downloading")
+    assert setup.network.selections == [(_HASH, frozenset({0, 1}))] * 2
+    assert setup.network.started_priorities == [(1, 1, 0, 0, 0)] * 2
+    assert setup.network.unapproved_starts == []
+    assert (stored.selection_revision, stored.applied_revision, stored.content_started) == (1, 1, True)
+    assert stored.problem is None
+
+
+def test_a_paused_automatic_transfer_gets_its_lost_selection_back_but_stays_stopped_until_automation_resumes(
+    setup: _Setup,
+) -> None:
+    with _running(setup) as owner:
+        _start_content(setup, owner)
+        owner._on_owner(
+            lambda: owner._replace_acquisition(replace(owner.state.acquisitions[0], origin=RequestOrigin.BACKGROUND))
+        )
+        assert owner.handle(_request("set_auto", {"enabled": False}, command_id="pause-1")).ok
+        _until(lambda: owner.state.acquisitions[0].action_sent and not owner.state.acquisitions[0].action_pending)
+    stops: int = setup.network.actions.count((_HASH, "stop"))
+    _lose_selection(setup, 1, "downloading")
+    with _running(setup) as owner:
+        _until(lambda: len(setup.network.selections) == 2)
+        _until(lambda: _checked(owner))
+        during_pause: tuple[int, list[str], bool] = (
+            setup.network.actions.count((_HASH, "stop")),
+            list(setup.network.started),
+            owner.state.acquisitions[0].content_started,
+        )
+        assert owner.handle(_request("set_auto", {"enabled": True}, command_id="resume-1")).ok
+        _until(_starts(setup, 2))
+
+    assert during_pause == (stops + 1, [_HASH], False)
+    assert setup.network.selections == [(_HASH, frozenset({0, 1}))] * 2
+    assert setup.network.started_priorities == [(1, 1, 0, 0, 0)] * 2
+    assert _stored(setup).problem is None
+
+
+def _steady_file_reads(setup: _Setup, owner: AutomationOwner) -> int:
+    _until(lambda: _checked(owner))
+    settled: int = setup.network.info_calls
+    _until(lambda: setup.network.info_calls > settled + 2)
+    reads: int = setup.network.file_reads
+    polled: int = setup.network.info_calls
+    _until(lambda: setup.network.info_calls > polled + 5)
+    return setup.network.file_reads - reads
+
+
+def test_a_matching_selection_costs_no_file_reads_without_a_client_restart(setup: _Setup) -> None:
+    with _running(setup) as owner:
+        _start_content(setup, owner)
+        running: int = _steady_file_reads(setup, owner)
+    with _running(setup) as owner:
+        restarted: int = _steady_file_reads(setup, owner)
+
+    assert (running, restarted) == (0, 0)
+    assert setup.network.selections == [(_HASH, frozenset({0, 1}))]
     assert setup.network.started == [_HASH]
 
 

@@ -226,6 +226,13 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `_SELECTION_MISMATCH` — cache inspektora tu nie wystarcza. Tuż przed startem owner ponownie
   sprawdza `_may_start_selection` (polityka, action ID, `_selection_basis`); resume chroni
   `_mark_sent`, który odrzuca akcję zastąpioną w trakcie odczytu.
+- qBittorrent potrafi zgubić świeże priorytety przy wyłączeniu. Start ownera i pierwsza udana runda
+  po nieudanej (`_recheck_selections`) oznaczają każdy `ACCEPTED` z `_selection_confirmed` w
+  `_unverified`; tylko wtedy runda czyta `_mismatched`, także dla nieręcznych transferów w pauzie.
+  Niezgodność: stop, ta sama rewizja przez `_apply_selection(restoring=True)` (bramka bez polityki),
+  start zwykłą ścieżką (`content_started` wraca do `False`), więc pauza nadal blokuje nieręczne.
+  Nienaprawialna mapa lub folder daje `_SELECTION_MISMATCH`. Wynik rundy dla przywróconego rekordu
+  nie jest scalany. Restart qB wewnątrz wywołania managera bez nieudanej rundy nie daje sygnału.
 - Rekord selektywny nie przechodzi w `COMPLETE`/release, dopóki selekcja nie jest zastosowana i
   każde aktywne przypisanie nie ma przekazanego zestawu (`handed_off`); inspektor zachowuje listę
   plików ukończonego transferu (`stale`). Timeout metadanych (`METADATA_TIMEOUT_S`) liczy się w

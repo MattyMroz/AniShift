@@ -854,6 +854,7 @@ class AutomationOwner:
         )
         self._transfers_at: float | None = None
         self._send_misses: dict[str, int] = {}
+        self._unverified: frozenset[str] = frozenset()
         self._transfers_inspecting: bool = False
         self._transfer_release_lock: threading.Lock = threading.Lock()
         self._completion_attempts: dict[str, int] = {}
@@ -1041,6 +1042,7 @@ class AutomationOwner:
         self._schedule_subscriptions()
         self._report_preflight()
         self._service.set_background_admission(self._state.policy.auto_enabled)
+        self._recheck_selections()
         self._prepare_transfers()
         self._schedule_transfers()
         self._retry_ready()
@@ -5922,9 +5924,12 @@ class AutomationOwner:
         if self._shutting_down or self._transfers_inspecting:
             return
         selective: bool = self._selective_client()
-        active: bool = self._transfers is not None and any(
-            (_polled(item, selective=selective) and self._working(item)) or _transfer_action(item)
-            for item in self._state.acquisitions
+        active: bool = self._transfers is not None and (
+            bool(self._unverified)
+            or any(
+                (_polled(item, selective=selective) and self._working(item)) or _transfer_action(item)
+                for item in self._state.acquisitions
+            )
         )
         pending: bool = bool(self._pending_completion()) or any(
             self._ready_attempts.get(group_id, 0) < _FINALIZE_ATTEMPTS for group_id in self._ready_waiting()
@@ -5974,11 +5979,13 @@ class AutomationOwner:
             for item in (() if self._transfers is None else self._state.acquisitions)
             if (_polled(item, selective=selective) and self._working(item)) or _transfer_action(item)
         )
+        checks: tuple[AcquisitionConfirmation, ...] = self._selection_checks()
         self._transfers_at = None
         if not acquisitions:
             self._finalize_transfers()
             self._retry_ready()
-            return
+            if not checks:
+                return
         held: frozenset[str] = frozenset(
             item.info_hash
             for item in self._state.acquisitions
@@ -5986,7 +5993,25 @@ class AutomationOwner:
         )
         self._transfers_inspecting = True
         self._active_io += 1
-        self._pool.submit(self._inspect_transfers, acquisitions, self._reserved_names(), held)
+        self._pool.submit(self._inspect_transfers, acquisitions, self._reserved_names(), held, checks)
+
+    def _recheck_selections(self) -> None:
+        """Require a fresh client proof of every confirmed selection, which a new client process may have lost."""
+        if not self._selective_client():
+            return
+        self._unverified = frozenset(item.operation_id for item in self._state.acquisitions if _restorable(item))
+        if self._unverified:
+            logger.info("Confirmed selections await a client check", transfers=len(self._unverified))
+
+    def _selection_checks(self) -> tuple[AcquisitionConfirmation, ...]:
+        eligible: tuple[AcquisitionConfirmation, ...] = tuple(
+            item for item in self._state.acquisitions if item.operation_id in self._unverified and _restorable(item)
+        )
+        self._unverified = frozenset(item.operation_id for item in eligible)
+        return () if self._shutting_down else tuple(item for item in eligible if not item.action_pending)
+
+    def _selection_checked(self, operation_id: str) -> None:
+        self._unverified -= {operation_id}
 
     def _reserved_names(self) -> frozenset[str] | None:
         try:
@@ -6042,6 +6067,7 @@ class AutomationOwner:
         acquisitions: tuple[AcquisitionConfirmation, ...],
         reserved: frozenset[str] | None,
         held: frozenset[str] = frozenset(),
+        checks: tuple[AcquisitionConfirmation, ...] = (),
     ) -> None:
         """Isolate poll-worker failures, report their cause and always return settlement to the owner."""
         basis: tuple[AcquisitionConfirmation, ...] = acquisitions
@@ -6054,6 +6080,9 @@ class AutomationOwner:
                 return
             with acquisition.requests("transfer"):
                 acquisitions = self._advance_transfer_actions(acquisition, acquisitions)
+                restored: dict[str, AcquisitionConfirmation] = self._restore_selections(acquisition, checks)
+                acquisitions = tuple(restored.get(item.operation_id, item) for item in acquisitions)
+                basis = tuple(item for item in basis if item.operation_id not in restored)
                 results = acquisitions
                 results = self._transfers.inspect(
                     acquisitions, stall_after_s=self._state.policy.transfer_stall_s, held=held
@@ -6062,7 +6091,10 @@ class AutomationOwner:
                     _unfinished_selection(self._unseen_send(before, after))
                     for before, after in zip(acquisitions, results, strict=True)
                 )
-                results = self._settle_layouts(acquisition, results, reserved)
+                checking: frozenset[str] = frozenset(
+                    item.operation_id for item in checks if item.operation_id not in restored
+                )
+                results = self._settle_layouts(acquisition, results, reserved, checking)
             self._publish_episodes(results)
         except Exception as problem:  # noqa: BLE001
             failure = sanitize_event_message(str(problem))
@@ -6101,6 +6133,7 @@ class AutomationOwner:
         service: AcquisitionService,
         results: tuple[AcquisitionConfirmation, ...],
         reserved: frozenset[str] | None,
+        checking: frozenset[str] = frozenset(),
     ) -> tuple[AcquisitionConfirmation, ...]:
         taken: set[str] | None = None if reserved is None else set(reserved)
         settled: list[AcquisitionConfirmation] = []
@@ -6108,7 +6141,7 @@ class AutomationOwner:
             entry.info_hash.casefold() for entry in (() if self._transfers is None else self._transfers.snapshot())
         )
         for item in results:
-            if item.info_hash not in present:
+            if item.info_hash not in present or item.operation_id in checking:
                 settled.append(item)
                 continue
             if item.selective:
@@ -6333,6 +6366,66 @@ class AutomationOwner:
         logger.warning("A selective transfer no longer matches its applied selection")
         return True
 
+    def _restore_selections(
+        self, service: AcquisitionService, checks: tuple[AcquisitionConfirmation, ...]
+    ) -> dict[str, AcquisitionConfirmation]:
+        """Prove each confirmed selection on the client and apply a lost one again, returning the changed records."""
+        changed: dict[str, AcquisitionConfirmation] = {}
+        for item in checks:
+            restored: AcquisitionConfirmation | None = self._restore_selection(service, item)
+            if restored is not None:
+                changed[item.operation_id] = restored
+        return changed
+
+    def _restore_selection(
+        self, service: AcquisitionService, item: AcquisitionConfirmation
+    ) -> AcquisitionConfirmation | None:
+        try:
+            if not self._mismatched(service, item):
+                self._owned(partial(self._selection_checked, item.operation_id))
+                return None
+            observed: str | None = next(
+                (entry.state for entry in service.transfers() if entry.info_hash.casefold() == item.info_hash), None
+            )
+            files: tuple[TorrentFile, ...] = () if observed is None else service.transfer_files(item.info_hash)
+        except (AniShiftError, OSError, ValueError) as problem:
+            logger.warning("A confirmed selection could not be checked", error_class=type(problem).__name__)
+            return None
+        if observed is None:
+            self._owned(partial(self._selection_checked, item.operation_id))
+            return None
+        try:
+            restored: AcquisitionConfirmation | None = self._apply_selection(
+                service, item, files, observed, restoring=True
+            )
+        except (AniShiftError, OSError, ValueError) as problem:
+            logger.warning("A lost selection could not be applied again", error_class=type(problem).__name__)
+            return self._owned(partial(self._lost_selection, item))
+        if restored is not None:
+            self._owned(partial(self._selection_checked, item.operation_id))
+            logger.info("A selection the client lost was applied again", revision=restored.applied_revision)
+        return restored
+
+    def _lost_selection(self, item: AcquisitionConfirmation) -> AcquisitionConfirmation | None:
+        current: AcquisitionConfirmation | None = self._confirmation(item.operation_id)
+        if current is None or not self._selection_current(item):
+            return None
+        updated: AcquisitionConfirmation = replace(current, problem=_SELECTION_MISMATCH, updated_at=self._now())
+        if not self._replace_acquisition(updated):
+            return None
+        self._selection_checked(item.operation_id)
+        return updated
+
+    def _selection_current(self, item: AcquisitionConfirmation) -> bool:
+        current: AcquisitionConfirmation | None = self._confirmation(item.operation_id)
+        return (
+            not self._shutting_down
+            and current is not None
+            and current.action_id == item.action_id
+            and current.problem is None
+            and _selection_basis(current) == _selection_basis(item)
+        )
+
     def _record_mapping(
         self,
         item: AcquisitionConfirmation,
@@ -6388,6 +6481,8 @@ class AutomationOwner:
         item: AcquisitionConfirmation,
         files: tuple[TorrentFile, ...],
         observed: str | None,
+        *,
+        restoring: bool = False,
     ) -> AcquisitionConfirmation | None:
         if observed not in _SELECTABLE_STATES:
             if observed is None or observed in _SETTLING_SELECTION_STATES:
@@ -6399,7 +6494,8 @@ class AutomationOwner:
         revision: str = file_map_revision(files)
         if any(assignment.file_map != revision for assignment in item.active_assignments):
             raise ValueError(_FILE_MAP_CHANGED)
-        if not self._may_settle(item):
+        allowed: bool = self._owned(partial(self._selection_current, item)) if restoring else self._may_settle(item)
+        if not allowed:
             return None
         service.select_files(
             item.info_hash, files, item.wanted_files, staging_path(self._service.workspace_root, item.operation_id)
@@ -6853,6 +6949,7 @@ class AutomationOwner:
             self._transfers_delay = PANEL_TRANSFER_CHECK_INTERVAL_S if self._panels else TRANSFER_CHECK_INTERVAL_S
             if previous is not None:
                 logger.info("Transfer reconciliation recovered")
+                self._recheck_selections()
             return
         self._transfers_delay = min(
             max(self._transfers_delay, TRANSFER_CHECK_INTERVAL_S) * _TRANSFER_BACKOFF_FACTOR,
@@ -8555,6 +8652,16 @@ def _selection_confirmed(item: AcquisitionConfirmation) -> bool:
         item.selection_revision > 0
         and item.applied_revision == item.selection_revision
         and all(assignment.mapped for assignment in item.active_assignments)
+    )
+
+
+def _restorable(item: AcquisitionConfirmation) -> bool:
+    """Answer whether a client must still prove this unfinished transfer holds its confirmed selection."""
+    return (
+        item.selective
+        and item.state is AcquisitionState.ACCEPTED
+        and item.problem is None
+        and _selection_confirmed(item)
     )
 
 
