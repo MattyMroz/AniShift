@@ -8,8 +8,7 @@ from typing import Final
 
 from natsort import os_sort_keygen
 
-from anishift.application import LibraryLabel, LibrarySet, library_label
-from anishift.application.control_views import LibraryFile
+from anishift.application import LibraryFile, LibraryLabel, LibrarySet, library_label
 from anishift.cli.interactive.actions import PANEL_ACTIONS, ScreenActions
 from anishift.cli.interactive.anime_state import AnimeRow
 from anishift.cli.interactive.state_texts import LIBRARY_PROBLEMS, rows, safe_text

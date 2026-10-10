@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from anishift.application.control_payloads import encode_intent
     from anishift.application.control_views import (
         DeletionPreview,
+        LibraryFile,
         LibraryFileIdentity,
         LibrarySet,
         PlanPreview,
@@ -259,6 +260,7 @@ __all__ = [
     "InspectedSourceGroup",
     "InspectedWorkspace",
     "InspectionWarning",
+    "LibraryFile",
     "LibraryFileIdentity",
     "LibraryLabel",
     "LibrarySet",
@@ -368,6 +370,7 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "RetryProposal": ("anishift.application.control_views", "RetryProposal"),
     "DeletionPreview": ("anishift.application.control_views", "DeletionPreview"),
     "LibrarySet": ("anishift.application.control_views", "LibrarySet"),
+    "LibraryFile": ("anishift.application.control_views", "LibraryFile"),
     "LibraryFileIdentity": ("anishift.application.control_views", "LibraryFileIdentity"),
     "LibraryLabel": ("anishift.application.library", "LibraryLabel"),
     "library_label": ("anishift.application.library", "library_label"),

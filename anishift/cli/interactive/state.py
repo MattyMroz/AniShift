@@ -19,6 +19,7 @@ from rich.text import Text
 from anishift.application import (
     DeletionPreview,
     HistoryEvent,
+    LibraryFile,
     LibraryFileIdentity,
     LibrarySet,
     RetryProposal,
@@ -26,7 +27,6 @@ from anishift.application import (
     decode_view,
     library_label,
 )
-from anishift.application.control_views import LibraryFile
 from anishift.application.events import RunEvent
 from anishift.cli.interactive.actions import ScreenActions, footer_segments, help_lines, pack_footer
 from anishift.cli.interactive.anime import AnimeController, AnimeResult
