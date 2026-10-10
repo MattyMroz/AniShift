@@ -25,6 +25,7 @@ from anishift.cli.interactive.manual import _Screen as _ManualScreen
 from anishift.cli.interactive.mascot_native import NATIVE_MASCOT_ANCHOR
 from anishift.cli.interactive.menu import append_wrapped_row
 from anishift.cli.interactive.pointer import (
+    SELECTION_STYLE,
     FrameSelection,
     PointerGesture,
     mark_row,
@@ -109,7 +110,7 @@ def _point(frame: Text, text: str) -> Point:
 
 
 def _reversed(frame: Text) -> str:
-    return "".join(frame.plain[span.start : span.end] for span in frame.spans if span.style == "reverse")
+    return "".join(frame.plain[span.start : span.end] for span in frame.spans if span.style == SELECTION_STYLE)
 
 
 def _state(monkeypatch: pytest.MonkeyPatch) -> StateController:

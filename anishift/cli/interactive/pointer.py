@@ -23,6 +23,9 @@ _ROW_META: Final[str] = "anishift_row"
 _INERT_META: Final[str] = "anishift_inert"
 """Style meta key marking painted art, such as the brand, that a drag never selects."""
 
+SELECTION_STYLE: Final[str] = "#0a0d14 on #e2e7f5"
+"""One flat style for painted text a drag selects, whatever colors the cells carry."""
+
 COPY_KEYS: Final[frozenset[str]] = frozenset({"interrupt", "copy"})
 """Keys that copy a painted selection before the view handles them."""
 
@@ -99,7 +102,7 @@ class FrameSelection:
         self._view = view
         if self._selection is not None:
             for cell in selected_cells(painted_cells(frame), self._selection):
-                frame.stylize("reverse", cell.start, cell.end)
+                frame.stylize(SELECTION_STYLE, cell.start, cell.end)
         self._frame = frame
         return frame
 

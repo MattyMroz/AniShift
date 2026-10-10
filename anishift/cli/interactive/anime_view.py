@@ -21,6 +21,7 @@ from anishift.cli.interactive.anime_state import (
 )
 from anishift.cli.interactive.menu import append_wrapped_row
 from anishift.cli.interactive.pointer import (
+    SELECTION_STYLE,
     TextCell,
     character_offset,
     mark_row,
@@ -160,7 +161,7 @@ class _Canvas:
         text: Text = Text("\n").join(self.lines)
         frame: AnimeFrame = AnimeFrame(text, cells, visible, first_row)
         for cell in frame.selected_cells(selection):
-            text.stylize("reverse", cell.start, cell.end)
+            text.stylize(SELECTION_STYLE, cell.start, cell.end)
         return frame
 
 

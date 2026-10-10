@@ -24,7 +24,7 @@ from anishift.cli.interactive.anime_state import (
 )
 from anishift.cli.interactive.anime_view import AnimeFrame, _notice_lines, render_anime
 from anishift.cli.interactive.palette import BRAND_THEME
-from anishift.cli.interactive.pointer import TextCell
+from anishift.cli.interactive.pointer import SELECTION_STYLE, TextCell
 from anishift.cli.interactive.prompts import _WheelControl
 from anishift.cli.interactive.text_input import TextInput
 
@@ -137,7 +137,7 @@ def test_multiline_mouse_copy_excludes_chrome_and_retains_unicode(key: str) -> N
     mouse(view, MouseEventType.MOUSE_MOVE, 79, top + 4)
     mouse(view, MouseEventType.MOUSE_UP, 79, top + 4)
     highlighted: Text = view.frame(80, 24)
-    assert any(span.style == "reverse" for span in highlighted.spans)
+    assert any(span.style == SELECTION_STYLE for span in highlighted.spans)
     view.handle(key)
     value: str = clipboard.call_args.args[0]
     assert "Zażółć 日本語" in value
