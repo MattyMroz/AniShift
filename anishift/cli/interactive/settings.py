@@ -24,7 +24,7 @@ from anishift.application import (
     TranslationModelOption,
 )
 from anishift.cli.interactive.menu import with_footer
-from anishift.cli.interactive.pointer import mark_row
+from anishift.cli.interactive.pointer import mark_inert, mark_row
 from anishift.cli.interactive.settings_editors import format_voice_input, parse_setting_input, parse_voice_input
 from anishift.cli.interactive.text_input import TextInput, is_edit_key
 from anishift.cli.resident import ResidentSession
@@ -1675,41 +1675,45 @@ class SettingsController:
         left: int = _menu_left_padding(columns, visible if back is None else (*visible, back))
         content: Text = Text("\n" * max((max(rows - 1, 1) - body_rows) // 2, 0))
         content.append(" " * left)
-        content.append(_truncate_right(title, max(columns - left, 1)), style="white_bold")
+        content.append_text(mark_inert(Text(_truncate_right(title, max(columns - left, 1)), style="white_bold")))
         content.append("\n\n")
         if has_above:
             content.append(" " * left)
-            content.append("↑ więcej\n", style="gray")
+            content.append_text(mark_inert(Text("↑ więcej\n", style="gray")))
         previous_section: str = ""
         for index, item in enumerate(visible, start=start):
             if item.section and item.section != previous_section:
                 content.append(" " * left)
-                content.append(f"{_truncate_right(item.section, max(columns - left, 1))}\n", style="gray")
+                section: str = _truncate_right(item.section, max(columns - left, 1))
+                content.append_text(mark_inert(Text(f"{section}\n", style="gray")))
                 previous_section = item.section
             content.append(" " * left)
-            content.append(f"{_POINTER} " if index == self._selected else "  ", style="brand_accent")
             available: int = max(columns - left - 2, 1)
             current: str = _truncate_right(item.current, max(available // 2, 1)) if item.current else ""
             label_width: int = max(available - len(current) - (3 if current else 0), 1)
-            content.append(
+            label: Text = Text(f"{_POINTER} " if index == self._selected else "  ", style="brand_accent")
+            label.append(
                 _truncate_right(item.label, label_width),
                 style="brand_accent" if index == self._selected else "white_bold",
             )
+            content.append_text(mark_inert(label))
             if current:
-                content.append(f" · {current}", style="gray")
+                content.append_text(mark_inert(Text(" · ", style="gray")))
+                content.append(current, style="gray")
             mark_row(content, index)
             content.append("\n")
         if has_below:
             content.append(" " * left)
-            content.append("↓ więcej\n", style="gray")
+            content.append_text(mark_inert(Text("↓ więcej\n", style="gray")))
         if back is not None:
             selected_back: bool = self._selected == len(self._items) - 1
             content.append(" " * left)
-            content.append(f"{_POINTER} " if selected_back else "  ", style="brand_accent")
-            content.append(
+            back_label: Text = Text(f"{_POINTER} " if selected_back else "  ", style="brand_accent")
+            back_label.append(
                 _truncate_right(back.label, max(columns - left - 2, 1)),
                 style="brand_accent" if selected_back else "white_bold",
             )
+            content.append_text(mark_inert(back_label))
             mark_row(content, len(self._items) - 1)
             content.append("\n")
         self._append_feedback(content, left, columns)
@@ -1769,7 +1773,7 @@ class SettingsController:
             )
             mark_row(content, index)
             content.append("\n")
-        self._append_feedback(content, left, columns)
+        self._append_feedback(mark_inert(content), left, columns)
         return self._finish(content, _MULTI_HINT, columns, rows)
 
     def _render_editor(self, columns: int, rows: int, editor: _Editor) -> Text:
@@ -1813,8 +1817,9 @@ class SettingsController:
             if has_below:
                 content.append(" " * left)
                 content.append("↓ więcej\n", style="gray")
+            mark_inert(content)
         else:
-            _append_editor_buffer(content, editor, columns, left)
+            _append_editor_buffer(mark_inert(content), editor, columns, left)
         self._append_feedback(content, left, columns)
         hint: str = _INPUT_HINT if not editor.options else _SELECT_HINT
         if editor.kind is _EditorKind.MULTI_SELECT:
@@ -2143,7 +2148,7 @@ def _stepped_value(spec: SettingSpec, current: SettingValue, direction: int) -> 
 
 def _append_editor_buffer(content: Text, editor: _Editor, columns: int, left: int) -> None:
     content.append(" " * left)
-    content.append(f"{_POINTER} ", style="brand_accent")
+    content.append_text(mark_inert(Text(f"{_POINTER} ", style="brand_accent")))
     content.append_text(editor.input.render(max(columns - left - 4, 1), masked=editor.kind is _EditorKind.PASSWORD))
     content.append("\n")
 

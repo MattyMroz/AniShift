@@ -678,7 +678,11 @@ def test_long_title_uses_two_bottom_lines_without_moving_the_table() -> None:
 def test_cursor_highlights_a_ready_row_and_keeps_its_green_state() -> None:
     items: tuple[AnimeRow, ...] = (replace(rows()[1], status="Gotowe"), rows()[0])
     frame: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.EPISODES, "Slime", items), 80, 24, 0)
-    styles: dict[str, str] = {frame.text.plain[span.start : span.end]: str(span.style) for span in frame.text.spans}
+    styles: dict[str, str] = {
+        frame.text.plain[span.start : span.end]: str(span.style)
+        for span in frame.text.spans
+        if str(span.style) != "none"
+    }
     assert styles["A Promise"] == "brand_accent"
     assert styles["Gotowe"] == "success"
     assert styles["\u276f "] == "brand_accent"

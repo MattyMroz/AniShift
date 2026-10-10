@@ -14,7 +14,7 @@ import test_subscription_draft as drafts
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from rich.text import Text
-from test_interactive_mouse import _application, _click, _row_at, _row_of
+from test_interactive_mouse import _application, _click, _drag, _reversed, _row_at, _row_of
 from test_interactive_state import _live_material, _live_snapshot
 
 from anishift.application import (
@@ -1854,3 +1854,68 @@ def test_a_crumb_level_counts_parts_even_when_a_title_contains_the_separator(
 
     assert stayed
     assert not probe.panel._history_open
+
+
+_POINTER: Final[str] = chr(0x276F)
+
+_INTERFACE: Final[tuple[str, ...]] = ("PANEL", *state_module._TABS, "Esc wróć", "Automat", "v0.")
+
+
+@pytest.mark.parametrize(
+    ("name", "content", "interface"),
+    [
+        ("subscriptions", "Alpha  1/4      0       Termin nieznany", ("Tytuł", "Odcinki", "W wstrzymaj", _POINTER)),
+        ("library", "Slime  —", ("Nazwa", "F folder", _POINTER)),
+        ("processing_download", "Pobieranie     one.mkv", ("H historia", _POINTER)),
+        (
+            "episodes",
+            "1   Episode 1  —       Już zlecone?\n2   Episode 2",
+            ("Nr", "Emisja", "[ ]", "D pobierz", _POINTER),
+        ),
+        ("candidates", "[Group] Slime - 04", ("Wydanie", "Pewność", "*", "[ ]", _POINTER)),
+        ("draft", "E3  Episode 3", ("[x]", "Już wyemitowane", "Dodaj subskrypcję", "Anuluj", _POINTER)),
+        ("history", "2026-10-09 20:15:00 · Slime · ukończono", ("Historia", "P ponów", _POINTER)),
+        ("library_details", "ready/Slime.pl.mkv · MKV", ("Ten ekran", "F folder", "Wszędzie", _POINTER)),
+        ("u08", "Ostatnie sprawdzenie 14:00", ("Tytuł", "[ ]", "W wstrzymaj", _POINTER)),
+        ("problem", "Źródło wydań nie odpowiada", ()),
+        ("subscriptions_empty", "", ("Brak subskrypcji",)),
+        ("busy", "", ("Wczytuję",)),
+        ("query", "", ("ANIME", ">")),
+    ],
+)
+def test_a_drag_over_the_whole_panel_copies_its_content_but_none_of_the_interface(
+    build: Callable[[str], _Probe],
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    content: str,
+    interface: tuple[str, ...],
+) -> None:
+    probe: _Probe = build(name)
+    application, copied = _application(monkeypatch, interactive_app._ViewMode.STATE)
+    application._state = probe.panel
+    frame: Text = application._render_frame(80, 24)
+
+    _drag(application, Point(0, 0), Point(79, 23))
+    painted: Text = application._render_frame(80, 24)
+    application._handle_key("copy")
+    selected: str = _reversed(painted)
+
+    assert all(label in frame.plain for label in (*_INTERFACE, *interface))
+    assert copied == ([copied[0]] if content else [])
+    assert content in "".join(copied)
+    assert not [label for label in (*_INTERFACE, *interface) if label in "".join(copied) or label in selected]
+
+
+def test_a_click_on_an_inert_tab_or_crumb_still_runs_it(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    probe: _Probe = build("library_details")
+    application: interactive_app._InteractiveApplication = _app(monkeypatch, probe)
+    frame: Text = application._render_frame(80, 24)
+
+    _click(application, _label_point(frame, "Biblioteka", f"Biblioteka{CRUMB_SEPARATOR}"))
+    listed: bool = probe.panel._details is None
+    _click(application, _tab_point(application._render_frame(80, 24), _Tab.SUBSCRIPTIONS))
+
+    assert listed
+    assert probe.panel._tab == _Tab.SUBSCRIPTIONS

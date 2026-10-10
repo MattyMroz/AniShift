@@ -363,7 +363,7 @@ def _empty_message(probe: _Probe, text: str) -> tuple[int, int, list[str]]:
     styles: list[str] = [
         str(span.style)
         for span in lines[row].spans
-        if span.start <= column and span.end >= column + len(text) and str(span.style)
+        if span.start <= column and span.end >= column + len(text) and str(span.style) not in {"", "none"}
     ]
     return row, column - (100 - len(text)) // 2, styles
 

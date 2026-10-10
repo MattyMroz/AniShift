@@ -61,6 +61,7 @@ from anishift.cli.interactive.menu import (
     visible_window as _visible_window,
 )
 from anishift.cli.interactive.menu import with_footer
+from anishift.cli.interactive.pointer import mark_inert
 from anishift.cli.interactive.state import refusal_text
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
@@ -1245,7 +1246,8 @@ class ManualController:
         content: Text = _header(title, columns, rows, 3)
         left: int = max((columns - min(max(len(self._input.text) + 3, 24), columns)) // 2, 0)
         width: int = max(columns - left - 3, 1)
-        content.append(f"{' ' * left}> ", style="white_bold")
+        content.append(" " * left)
+        content.append_text(mark_inert(Text("> ", style="white_bold")))
         content.append_text(self._input.render(width))
         content.append("\n")
         return self._finish(content, columns, rows, _INPUT_HINT)

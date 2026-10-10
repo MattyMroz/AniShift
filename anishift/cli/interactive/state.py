@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from enum import IntEnum, StrEnum
@@ -50,7 +50,7 @@ from anishift.cli.interactive.menu import (
     visible_window,
     wrap_entries,
 )
-from anishift.cli.interactive.pointer import CRUMB_SEPARATOR, Click, ClickKind, mark_crumbs, mark_target
+from anishift.cli.interactive.pointer import CRUMB_SEPARATOR, Click, ClickKind, mark_crumbs, mark_inert, mark_target
 from anishift.cli.interactive.progress import ObservedProgressTimer, RichRunProgress, render_material_progress
 from anishift.cli.interactive.subscription_texts import (
     CHECK_SHOWN_S,
@@ -1367,10 +1367,10 @@ class StateController:
             spaced: bool = rows >= _MINIMUM_HEADER_ROWS
             heading: list[Text] = []
             if rows >= _MINIMUM_TITLE_ROWS:
-                heading.append(_centered(Text("PANEL", style="white_bold"), columns))
+                heading.append(mark_inert(_centered(Text("PANEL", style="white_bold"), columns)))
             if spaced:
                 heading.append(Text())
-            heading.append(_centered(self._tabs(columns), columns))
+            heading.append(mark_inert(_centered(self._tabs(columns), columns)))
             gap: int = int(spaced)
             area: int = max(budget - len(heading) - gap, 1)
             if not self._help and self._tab == _Tab.SUBSCRIPTIONS and self._retry is None:
@@ -1406,7 +1406,7 @@ class StateController:
                 console, max(columns - 2, 1)
             )
         ]
-        status: Text = Text(self._global_status(max(columns - 4, 1)), style="gray")
+        status: Text = mark_inert(Text(self._global_status(max(columns - 4, 1)), style="gray"))
         footer = [*footer[: max(rows - 4, 0)], status]
         wrapped: tuple[tuple[str | Text, ...], ...] = wrap_entries(tuple(label for label, _ in entries), columns)
         remaining: int = max(rows - 2 - len(footer), 1)
@@ -1437,7 +1437,7 @@ class StateController:
             self._page = max(index - start + 1, 1)
         if self._details is not None and remaining >= _DETAIL_HELP_ROWS:
             for line in ("", *help_lines(self._actions().listed, max(columns - left - 4, 1)))[:remaining]:
-                content.append(f"{' ' * (left + 2)}{line}\n", style="gray")
+                content.append_text(mark_inert(Text(f"{' ' * (left + 2)}{line}\n", style="gray")))
         if not entries:
             content.append("\n")
             content.append_text(self._empty_line(columns))
@@ -1474,13 +1474,13 @@ class StateController:
         question: str = self._question_text()
         if question:
             asked: str = f"{question} {_ANSWERS}"
-            return [asked] if Text(asked).cell_len <= width else [question, _ANSWERS]
+            return [*_keys([asked] if Text(asked).cell_len <= width else [question, _ANSWERS])]
         if self._retry is not None:
-            return ["Enter przygotuj · Esc wróć", self._notice]
+            return [*_keys(["Enter przygotuj · Esc wróć"]), self._notice]
         if self._tab == _Tab.PROGRESS and self._history_open:
             if self._history_input is not None:
-                return [self._history_input.render(width), "Enter szukaj · Esc anuluj", self._history_problem]
-            return [*pack_footer(footer_segments(self._actions()), width), self._history_problem, self._notice]
+                return [self._history_input.render(width), *_keys(["Enter szukaj · Esc anuluj"]), self._history_problem]
+            return [*_keys(pack_footer(footer_segments(self._actions()), width)), self._history_problem, self._notice]
         return self._footer(width)
 
     def _footer(self, width: int) -> list[str | Text]:
@@ -1489,14 +1489,14 @@ class StateController:
             result.append(self._notice.rstrip("."))
         if self._tab == _Tab.FILES and self._library_notice:
             result.append(self._library_notice)
-        result.extend(pack_footer(footer_segments(self._actions(), more=self._details is None), width))
+        result.extend(_keys(pack_footer(footer_segments(self._actions(), more=self._details is None), width)))
         return result
 
     def _help_body(self, columns: int, rows: int) -> Text:
         width: int = max(columns - 4, 1)
         intro: tuple[str, ...] = (_HISTORY_SPAN,) if self._tab == _Tab.PROGRESS and self._history_open else ()
         lines: tuple[str, ...] = help_lines(self._actions().listed, width, intro=intro)
-        footer: list[Text] = [Text("Esc wróć", style="gray"), Text(self._global_status(width), style="gray")]
+        footer: list[Text] = _keys(["Esc wróć", self._global_status(width)])
         area: int = rows - len(footer)
         visible: int = max(area - 2, 1)
         self._page = visible
@@ -1635,12 +1635,12 @@ class StateController:
         return _LOADING if self._busy else _NO_ROWS
 
     def _empty_line(self, columns: int) -> Text:
-        return _centered(Text(self._empty_text(), style="gray"), columns)
+        return mark_inert(_centered(Text(self._empty_text(), style="gray"), columns))
 
     def _pin_status(self, body: Text, columns: int, rows: int) -> Text:
         lines: list[Text] = list(body.split("\n", allow_blank=True))[: max(rows - 1, 0)]
         padding: list[Text] = [Text() for _ in range(max(rows - 1 - len(lines), 0))]
-        status: Text = _centered(Text(self._global_status(max(columns - 4, 1)), style="gray"), columns)
+        status: Text = mark_inert(_centered(Text(self._global_status(max(columns - 4, 1)), style="gray"), columns))
         return Text("\n").join([*lines, *padding, status])
 
     def breadcrumb(self) -> tuple[str, ...]:
@@ -1658,7 +1658,7 @@ class StateController:
         parts: tuple[str, ...] = self.breadcrumb()
         line: Text = _centered(Text(fit(CRUMB_SEPARATOR.join(parts), max(columns - 2, 1)), style="white_bold"), columns)
         mark_crumbs(line, parts)
-        return line
+        return mark_inert(line)
 
     def _subscription_rows(self) -> tuple[AnimeRow, ...]:
         now: datetime = self._clock()
@@ -1885,6 +1885,10 @@ class StateController:
             else str(item.get("material_id") or f"{item.get('run_id')}:{item.get('group_id')}")
             for item in rows
         ]
+
+
+def _keys(lines: Iterable[str]) -> list[Text]:
+    return [mark_inert(Text(line, style="gray")) for line in lines]
 
 
 def _centered(line: Text, columns: int) -> Text:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import timeit
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,7 +17,9 @@ from test_interactive_state import _row
 
 from anishift.application import AppService
 from anishift.application.control_views import RetryProposal, encode_view
+from anishift.cli.interactive import anime_view as anime_view_module
 from anishift.cli.interactive import app as interactive_app
+from anishift.cli.interactive import menu as menu_module
 from anishift.cli.interactive import state as state_module
 from anishift.cli.interactive.anime_panel import AnimePanel
 from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeViewState
@@ -218,19 +221,34 @@ def test_home_click_beside_the_choices_keeps_the_cursor_until_a_choice_is_hit(mo
     assert application._selected == 2
 
 
-def test_home_drag_over_the_mascot_never_copies_its_image_marker(monkeypatch: pytest.MonkeyPatch) -> None:
-    application, copied = _application(monkeypatch, _Mode.HOME)
-    frame: Text = application._render_frame(80, 24)
-    end: Point = _point(frame, "Panel")
+def test_auto_drag_over_the_mascot_never_copies_its_image_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+    application, copied = _application(monkeypatch, _Mode.AUTO)
+    application._progress = cast("RichRunProgress", _Queue())
+    frame: Text = application._render_frame(80, 30)
+    end: Point = _point(frame, "plik-02")
 
     _drag(application, Point(0, 0), Point(79, end.y))
-    application._render_frame(80, 24)
+    application._render_frame(80, 30)
     application._handle_key("copy")
 
     assert NATIVE_MASCOT_ANCHOR in frame.plain
-    assert copied
-    assert copied[0].endswith("Panel")
-    assert NATIVE_MASCOT_ANCHOR not in copied[0]
+    assert copied == ["plik-00\nplik-01\nplik-02"]
+
+
+@pytest.mark.parametrize(("columns", "rows"), [(80, 24), (50, 7)])
+def test_home_drag_over_the_whole_screen_selects_and_copies_nothing(
+    monkeypatch: pytest.MonkeyPatch, columns: int, rows: int
+) -> None:
+    application, copied = _application(monkeypatch, _Mode.HOME)
+    frame: Text = application._render_frame(columns, rows)
+
+    _drag(application, Point(0, 0), Point(columns - 1, rows - 1))
+    painted: Text = application._render_frame(columns, rows)
+    application._handle_key("copy")
+
+    assert "Ręczny" in frame.plain
+    assert _reversed(painted) == ""
+    assert copied == []
 
 
 @pytest.mark.parametrize(("columns", "rows"), [(80, 24), (120, 30)])
@@ -258,36 +276,39 @@ def test_small_home_click_reaches_its_choices(monkeypatch: pytest.MonkeyPatch) -
     assert application._selected == 1
 
 
-def test_home_drag_selects_painted_text_and_ctrl_c_copies_it_instead_of_exiting(
+def test_message_drag_selects_painted_text_and_ctrl_c_copies_it_instead_of_leaving(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    application, copied = _application(monkeypatch, _Mode.HOME)
+    application, copied = _application(monkeypatch, _Mode.MESSAGE)
     renderer: _Renderer = cast("_Renderer", application._renderer)
-    start: Point = _point(application._render_frame(80, 24), "Ręczny")
+    application._message = Text("Raport końcowy")
+    start: Point = _point(application._render_frame(80, 24), "Raport")
 
-    _drag(application, start, Point(start.x + len("Ręczny") - 1, start.y))
+    _drag(application, start, Point(start.x + len("Raport") - 1, start.y))
     painted: Text = application._render_frame(80, 24)
     application._handle_key("interrupt")
 
-    assert _reversed(painted) == "Ręczny"
-    assert copied == ["Ręczny"]
-    assert NATIVE_MASCOT_ANCHOR not in copied[0]
+    assert _reversed(painted) == "Raport"
+    assert copied == ["Raport"]
     assert renderer.exits == 0
-    assert application._selected == 0
+    assert application._mode is _Mode.MESSAGE
     assert "Skopiowano zaznaczenie" in application._render_frame(80, 24).plain
 
 
-def test_another_key_drops_the_selection_and_reaches_the_view(monkeypatch: pytest.MonkeyPatch) -> None:
-    application, copied = _application(monkeypatch, _Mode.HOME)
-    start: Point = _point(application._render_frame(80, 24), "Ręczny")
+def test_another_key_drops_the_selection_and_reaches_the_view(
+    monkeypatch: pytest.MonkeyPatch, library: StateController
+) -> None:
+    application, copied = _application(monkeypatch, _Mode.STATE)
+    application._state = library
+    start: Point = _point(application._render_frame(80, 24), "Episode 0")
     _drag(application, start, Point(start.x + 3, start.y))
     painted: Text = application._render_frame(80, 24)
 
     application._handle_key("down")
     application._handle_key("copy")
 
-    assert _reversed(painted) == "Ręcz"
-    assert application._selected == 1
+    assert _reversed(painted) == "Epis"
+    assert library._selected == 1
     assert copied == []
     assert _reversed(application._render_frame(80, 24)) == ""
 
@@ -386,19 +407,44 @@ def test_settings_click_in_a_choice_editor_moves_without_choosing(monkeypatch: p
     assert service.saves == []
 
 
-def test_settings_drag_copies_a_row_label(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("category", ["", "subtitles", "output", "general"])
+def test_settings_drag_over_the_whole_screen_copies_only_setting_values(
+    monkeypatch: pytest.MonkeyPatch, category: str
+) -> None:
+    application, copied = _application(monkeypatch, _Mode.SETTINGS)
+    controller: SettingsController = (
+        _settings(FakeSettingsService(), category)
+        if category
+        else SettingsController(cast("AppService", FakeSettingsService()), lambda: None)
+    )
+    application._settings = controller
+    frame: Text = application._render_frame(100, 30)
+    values: list[str] = [item.current for item in controller._items if item.current]
+
+    _drag(application, Point(0, 0), Point(99, 29))
+    painted: Text = application._render_frame(100, 30)
+    application._handle_key("copy")
+
+    assert "Cofnij" in frame.plain
+    assert copied == (["\n".join(values)] if values else [])
+    assert _reversed(painted) == "".join(values)
+    assert bool(values) == (category in {"subtitles", "general"})
+
+
+def test_settings_drag_over_a_field_copies_its_text_without_the_pointer(monkeypatch: pytest.MonkeyPatch) -> None:
     application, copied = _application(monkeypatch, _Mode.SETTINGS)
     controller: SettingsController = SettingsController(cast("AppService", FakeSettingsService()), lambda: None)
+    _open_field(controller, "subtitles", "subtitle_max_chars_per_line")
     application._settings = controller
-    label: str = controller._items[1].label
-    start: Point = _point(application._render_frame(100, 30), label)
+    editor = controller._editor
+    assert editor is not None
+    application._render_frame(100, 30)
 
-    _drag(application, start, Point(start.x + len(label) - 1, start.y))
+    _drag(application, Point(0, 0), Point(99, 29))
     application._render_frame(100, 30)
     application._handle_key("copy")
 
-    assert copied == [label]
-    assert controller._category is None
+    assert copied == [editor.input.text]
 
 
 def _manual(
@@ -621,6 +667,35 @@ def test_auto_queue_drag_copies_a_row_and_the_wheel_drops_the_selection(monkeypa
     assert copied == ["plik-03"]
     assert application._queue.following is False
     assert _reversed(application._render_frame(80, 30)) == ""
+
+
+def _best_render(application: interactive_app._InteractiveApplication) -> float:
+    return min(timeit.repeat(lambda: application._render_frame(120, 40), number=1, repeat=7))
+
+
+def test_inert_interface_keeps_a_thousand_row_panel_render_within_a_fifth_of_its_cost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller: StateController = _state(monkeypatch)
+    controller._tab = state_module._Tab.SUBSCRIPTIONS
+    controller._subscriptions = [encode_view(_row(f"s{index}", f"Series {index}")) for index in range(1000)]
+    application, _copied = _application(monkeypatch, _Mode.STATE)
+    application._state = controller
+    try:
+        application._render_frame(120, 40)
+        _drag(application, Point(0, 0), Point(119, 38))
+        marked: float = _best_render(application)
+        selected: str = _reversed(application._render_frame(120, 40))
+        for module in (state_module, anime_view_module, menu_module, interactive_app):
+            monkeypatch.setattr(module, "mark_inert", lambda content: content)
+        unmarked: float = _best_render(application)
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+    assert "Series 0" in selected
+    assert "PANEL" not in selected
+    assert marked <= unmarked * 1.2
 
 
 def test_a_resize_drops_a_selection_painted_for_the_old_geometry(monkeypatch: pytest.MonkeyPatch) -> None:

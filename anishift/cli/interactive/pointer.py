@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import re
 import unicodedata
+from bisect import bisect_right
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from itertools import accumulate
 from time import monotonic
 from typing import Final
 
@@ -19,7 +22,16 @@ from anishift.text.graphemes import split_graphemes
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 _INERT_META: Final[str] = "anishift_inert"
-"""Style meta key marking painted art, such as the brand, that a drag never selects."""
+"""Style meta key marking painted interface, such as the brand, tabs or key hints, that a drag never selects."""
+
+_INERT_STYLE: Final[Style] = Style(meta={_INERT_META: True})
+"""Shared style tagging inert characters."""
+
+_INERT_MASK: Final[str] = "\0"
+"""Character standing in for an inert one while a frame is split into selectable runs."""
+
+_SELECTABLE_RUN: Final[re.Pattern[str]] = re.compile(r"[^\0\n]+")
+"""Maximal run of one line's characters between inert interface."""
 
 _TARGET_META: Final[str] = "anishift_target"
 """Style meta key carrying the ``(kind, value)`` a click on painted text asks for, such as a row or a tab."""
@@ -167,7 +179,8 @@ class FrameSelection:
         if view != self._view:
             self.clear()
         self._view = view
-        paint_selection(frame, selected_cells(painted_cells(frame), self._selection))
+        if self._selection is not None:
+            paint_selection(frame, selected_cells(painted_cells(frame), self._selection))
         self._frame = frame
         return frame
 
@@ -205,9 +218,10 @@ def mark_row(content: Text, index: int, *, opens: bool = True) -> None:
     mark_target(content, content.plain.rfind("\n") + 1, len(content), target)
 
 
-def mark_inert(content: Text) -> None:
-    """Tag all of ``content`` as art that a drag never selects or copies."""
-    content.stylize(Style(meta={_INERT_META: True}), 0, len(content))
+def mark_inert(content: Text) -> Text:
+    """Tag all of ``content`` as interface that a drag never selects or copies, keeping its click targets."""
+    content.stylize(_INERT_STYLE, 0, len(content))
+    return content
 
 
 def mark_target(content: Text, start: int, end: int, target: Click) -> None:
@@ -287,21 +301,24 @@ def text_cells(lines: Sequence[str], regions: Iterable[tuple[int, int, str]]) ->
 
 
 def painted_cells(frame: Text) -> tuple[TextCell, ...]:
-    """Map every painted line of a frame without its surrounding padding or inert art."""
-    lines: list[str] = frame.plain.split("\n")
+    """Map the painted runs of a frame between its padding and inert interface."""
+    plain: str = frame.plain
+    masked: list[str] = list(plain)
+    for span in frame.spans:
+        end: int = min(span.end, len(plain))
+        if span.start < end and isinstance(span.style, Style) and span.style.meta.get(_INERT_META):
+            masked[span.start : end] = _INERT_MASK * (end - span.start)
+    lines: list[str] = plain.split("\n")
+    starts: list[int] = list(accumulate((len(line) + 1 for line in lines), initial=0))
     regions: list[tuple[int, int, str]] = []
-    for row, line in enumerate(lines):
-        value: str = line.strip()
-        if value:
-            regions.append((row, Text(line[: len(line) - len(line.lstrip())]).cell_len, value))
-    inert: list[tuple[int, int]] = [
-        (span.start, span.end)
-        for span in frame.spans
-        if isinstance(span.style, Style) and span.style.meta.get(_INERT_META)
-    ]
-    return tuple(
-        cell for cell in text_cells(lines, regions) if not any(start <= cell.start < end for start, end in inert)
-    )
+    for run in _SELECTABLE_RUN.finditer("".join(masked)):
+        value: str = run.group().strip()
+        if not value:
+            continue
+        start: int = run.end() - len(run.group().lstrip())
+        row: int = bisect_right(starts, start) - 1
+        regions.append((row, Text(lines[row][: start - starts[row]]).cell_len, value))
+    return text_cells(lines, regions)
 
 
 def selected_cells(cells: Sequence[TextCell], selection: tuple[TextPoint, TextPoint] | None) -> tuple[TextCell, ...]:
@@ -317,13 +334,16 @@ def selected_cells(cells: Sequence[TextCell], selection: tuple[TextPoint, TextPo
 
 
 def paint_selection(text: Text, cells: Sequence[TextCell]) -> None:
-    """Invert selected text in its own colors; paint two or more blanks, or a jump between regions of a row, flat."""
+    """Invert selected text in its own colors; paint two or more blanks, or blanks between regions of a row, flat."""
+    plain: str = text.plain
     for index, cell in enumerate(cells):
         previous: TextCell | None = cells[index - 1] if index else None
         following: TextCell | None = cells[index + 1] if index + 1 < len(cells) else None
         gap: bool = _blank_pair(previous, cell) or _blank_pair(cell, following)
         text.stylize(SELECTION_GAP_STYLE if gap else SELECTION_STYLE, cell.start, cell.end)
-        if previous is not None and previous.point.row == cell.point.row and previous.end < cell.start:
+        if previous is None or previous.point.row != cell.point.row or previous.end >= cell.start:
+            continue
+        if plain[previous.end : cell.start].isspace():
             text.stylize(SELECTION_GAP_STYLE, previous.end, cell.start)
 
 

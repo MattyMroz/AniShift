@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from rich.console import Console
 from rich.text import Text
 
-from anishift.cli.interactive.pointer import mark_row
+from anishift.cli.interactive.pointer import mark_inert, mark_row
 
 
 def header(title: str, columns: int, rows: int, content_rows: int) -> Text:
@@ -16,7 +16,9 @@ def header(title: str, columns: int, rows: int, content_rows: int) -> Text:
     shown: str = truncate_right(title, max(columns - 2, 1))
     left: int = max((columns - len(shown)) // 2, 0)
     content: Text = Text("\n" * top)
-    content.append(f"{' ' * left}{shown}\n\n", style="white_bold")
+    content.append(" " * left)
+    content.append_text(mark_inert(Text(shown, style="white_bold")))
+    content.append("\n\n")
     return content
 
 
@@ -25,8 +27,8 @@ def append_row(  # noqa: PLR0913
 ) -> None:
     """Append one selectable row using the shared pointer and palette, tagged with its list ``index``."""
     content.append(" " * left)
-    content.append("\u276f " if active else "  ", style="brand_accent" if active else "white_bold")
-    content.append(marker, style="brand_accent" if active else "white_bold")
+    pointer: Text = Text("\u276f " if active else "  ", style="brand_accent" if active else "white_bold")
+    content.append_text(mark_inert(pointer.append(marker)))
     if isinstance(label, Text):
         content.append_text(label)
     else:
@@ -143,7 +145,9 @@ def with_footer(content: Text, hints: Sequence[str | Text], columns: int, rows: 
     footer: list[Text] = [
         line
         for hint in hints
-        for line in ((hint if isinstance(hint, Text) else Text(hint, style="gray")).wrap(console, width) or (Text(),))
+        for line in (
+            (hint if isinstance(hint, Text) else mark_inert(Text(hint, style="gray"))).wrap(console, width) or (Text(),)
+        )
     ]
     footer = footer[: max(rows - 1, 1)]
     budget: int = max(rows - 1 - len(footer), 0)

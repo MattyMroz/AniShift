@@ -31,7 +31,7 @@ from anishift.cli.interactive.manual import ManualController, ManualResult, Manu
 from anishift.cli.interactive.mascot import MascotController, MascotState
 from anishift.cli.interactive.mascot_native import MASCOT_REST_TOP_ROWS, NATIVE_MASCOT_ANCHOR
 from anishift.cli.interactive.menu import with_footer
-from anishift.cli.interactive.pointer import Click, ClickKind, FrameSelection, mark_row
+from anishift.cli.interactive.pointer import Click, ClickKind, FrameSelection, mark_inert, mark_row
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.prompts import (
     TEXT_MASCOT_SIZE,
@@ -1053,7 +1053,7 @@ def _home_content(  # noqa: PLR0913
             content.append(f"  {label}", style="white_bold")
         mark_row(content, index)
         content.append("\n")
-    return with_footer(content, (_HOME_HINT,), columns, rows)
+    return with_footer(mark_inert(content), (_HOME_HINT,), columns, rows)
 
 
 def _small_home_content(
@@ -1069,6 +1069,7 @@ def _small_home_content(
         content.append(f"{pointer} {label}", style="brand_accent" if index == selected else "white_bold")
         mark_row(content, index)
         content.append("\n")
+    mark_inert(content)
     if rows > _HOME_FOOTER_ROWS:
         return with_footer(content, (_HOME_HINT,), columns, rows)
     return content
@@ -1167,7 +1168,7 @@ def _fit_frame(content: Text, version: str, directory: str, columns: int, rows: 
         # move the screen row the native mascot is anchored to.
         line.truncate(max(columns, 1), overflow="crop")
     lines.extend(Text() for _ in range(body_rows - len(lines)))
-    lines.append(Text(status_line(version, directory, columns), style="gray"))
+    lines.append(mark_inert(Text(status_line(version, directory, columns), style="gray")))
     frame = Text()
     for index, line in enumerate(lines):
         frame.append_text(line)

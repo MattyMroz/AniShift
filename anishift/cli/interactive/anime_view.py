@@ -25,6 +25,7 @@ from anishift.cli.interactive.pointer import (
     TextPoint,
     character_offset,
     mark_crumbs,
+    mark_inert,
     mark_row,
     paint_selection,
     selected_cells,
@@ -157,7 +158,7 @@ class _Canvas:
             return
         line: Text = self.lines[row]
         prefix: Text = line[: character_offset(line.plain, column)]
-        prefix.append_text(value)
+        prefix.append_text(value if selectable else mark_inert(value))
         prefix.append_text(line[character_offset(line.plain, column + value.cell_len) :])
         self.lines[row] = prefix
         if selectable:
@@ -241,7 +242,7 @@ def render_anime(snapshot: AnimeSnapshot, columns: int, rows: int, now: float) -
     if not query:
         canvas.center(start + 1, Text(snapshot.global_status, _COLORS[snapshot.status_kind]))
     if not query and start >= 0:
-        canvas.center(start, Text(_context(snapshot), "white_bold"), selectable=True)
+        canvas.center(start, Text(_context(snapshot), "white_bold"))
         mark_crumbs(canvas.lines[start], snapshot.crumbs)
     title_width: int = 0
     if query:
@@ -287,7 +288,13 @@ def _list(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int) -> int:
         if box:
             marked: bool = item.key in snapshot.selected
             canvas.put(row, prefix, "[x]" if marked else "[ ]", "brand_accent" if marked else "gray")
-        canvas.put(row, prefix + box if item.navigable or not draft else 0, item.title, style, selectable=True)
+        canvas.put(
+            row,
+            prefix + box if item.navigable or not draft else 0,
+            item.title,
+            style,
+            selectable=snapshot.screen is not AnimeScreen.BUSY and (not draft or bool(item.number)),
+        )
     return canvas.columns - prefix
 
 

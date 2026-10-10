@@ -602,7 +602,9 @@ def test_the_draft_marks_the_aired_episodes_and_add_orders_them_after_the_subscr
 
 def _styles(panel: StateController) -> dict[str, str]:
     rendered: Text = panel.render(120, 30)
-    return {rendered.plain[span.start : span.end]: str(span.style) for span in rendered.spans}
+    return {
+        rendered.plain[span.start : span.end]: str(span.style) for span in rendered.spans if str(span.style) != "none"
+    }
 
 
 def test_the_draft_highlights_the_row_under_the_cursor_and_centers_its_sentence(
@@ -935,7 +937,7 @@ def test_the_details_status_row_stays_gray_for_every_state(
     rendered: Text = panel.render(120, 30)
     index: int = rendered.plain.index("· odcinki ")
 
-    assert {str(span.style) for span in rendered.spans if span.start <= index < span.end} == {"gray"}
+    assert {str(span.style) for span in rendered.spans if span.start <= index < span.end} - {"none"} == {"gray"}
 
 
 def _highlighted(panel: StateController) -> str:
