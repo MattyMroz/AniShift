@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from types import MappingProxyType
 from typing import Final
 
@@ -24,6 +24,7 @@ __all__ = [
     "library_row_id",
     "library_rows",
     "library_title",
+    "unsettled_deletions",
 ]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -35,7 +36,7 @@ LIBRARY_DELETED: Final[str] = "Usunięto · Ctrl+Z cofnij"
 """Library notice kept after a deleted set leaves the list, until the next move."""
 
 DETAIL_ACTIONS: Final[ScreenActions] = ScreenActions(
-    (("Enter", "otwórz plik"), ("F", "folder"), ("X", "usuń")), (("Ctrl+Z", "cofnij"), *PANEL_ACTIONS)
+    (("Enter", "otwórz plik"), ("F", "folder"), ("Del", "usuń")), (("Ctrl+Z", "cofnij"), *PANEL_ACTIONS)
 )
 """Actions of the files of one set."""
 
@@ -52,21 +53,33 @@ _FILE_ROLES: Final[Mapping[str, str]] = MappingProxyType(
 """Roles shown beside files without implying ownership of an external manual reference."""
 
 
-def library_rows(snapshot: Mapping[str, object]) -> list[Mapping[str, object]]:
-    """Return the sets and problem sets not being deleted, naturally sorted by title and episode."""
-    deleted: set[str] = {
-        str(item["set_id"])
-        for item in rows(snapshot.get("deletions"))
-        if not item.get("restored")
-        and (item.get("active") or (item.get("total") and item.get("recycled") == item.get("total")))
+def library_rows(snapshot: Mapping[str, object], hidden: Collection[str] = ()) -> list[Mapping[str, object]]:
+    """Return the sets and problem sets neither hidden nor being deleted, naturally sorted by title and episode."""
+    deletions: list[Mapping[str, object]] = [
+        item for item in rows(snapshot.get("deletions")) if not item.get("restored")
+    ]
+    deleting: set[str] = {*hidden, *(str(item["set_id"]) for item in deletions if item.get("active"))}
+    deleted: set[str] = deleting | {
+        str(item["set_id"]) for item in deletions if item.get("total") and item.get("recycled") == item.get("total")
     }
     return sorted(
         [
-            *rows(snapshot.get("library")),
-            *(item for item in rows(snapshot.get("library_problems")) if str(item.get("set_id")) not in deleted),
+            *(item for item in rows(snapshot.get("library")) if library_row_id(item) not in deleting),
+            *(item for item in rows(snapshot.get("library_problems")) if library_row_id(item) not in deleted),
         ],
         key=_order,
     )
+
+
+def unsettled_deletions(snapshot: Mapping[str, object], hidden: Mapping[str, str]) -> dict[str, str]:
+    """Keep hidden sets awaiting the owner's answer or a snapshot reporting their accepted deletion."""
+    listed: set[str] = {library_row_id(item) for item in library_rows(snapshot)}
+    reported: set[str] = {str(item.get("operation_id")) for item in rows(snapshot.get("deletions"))}
+    return {
+        set_id: operation
+        for set_id, operation in hidden.items()
+        if not operation or (set_id in listed and operation not in reported)
+    }
 
 
 def library_row(item: Mapping[str, object]) -> AnimeRow:
@@ -88,7 +101,7 @@ def library_row_id(item: Mapping[str, object]) -> str:
 def library_actions(*, listed: bool) -> ScreenActions:
     """Return the actions of the Library list, file actions only on a listed set."""
     return ScreenActions(
-        (("Enter", "otwórz"), ("F", "folder"), ("X", "usuń")) if listed else (),
+        (("Enter", "otwórz"), ("F", "folder"), ("Del", "usuń")) if listed else (),
         (("Ctrl+Z", "cofnij"), *PANEL_ACTIONS),
     )
 

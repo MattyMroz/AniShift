@@ -105,9 +105,12 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   says `library_loading` (no inventory yet) or History loads (`_busy`), then the tab's own empty text. The context's status row
   shows a monitoring problem, else the `_pause_state` text of the status line plus ` · O wznów` (2026-10-10),
   else shadow mode; the global pause also stays in the bottom status line, kept at 50×12 by dropping the blank row beneath the table.
-  A list longer than the centered layout holds (`_table_body` sets `AnimeSnapshot.fill`, Subscriptions and Library only)
-  fills every row: the status row replaces the blank under the tabs, the empty context row is dropped and one
-  notice row stays above the keys (`anime_view.shown_rows` is the single row count for render and paging). Problem and conflict states use the ordinary state style. While `AnimeController.in_subscriptions`
+  A table longer than the centered layout holds (`anime_view.overflows`; `_table_body` for Subscriptions and Library,
+  `AnimeController.render` for Anime titles, entries, episodes and releases set `AnimeSnapshot.fill`) fills every row:
+  it takes the blank under the tabs, the empty context row is dropped, and only the rows the screen draws under the
+  table stay above the keys: one notice row, plus the „Zaznaczone…” row on episodes, and three notice rows on releases
+  for the full name (`anime_view.shown_rows` is the single row count for render and paging; a fitting table keeps the
+  centered layout, and `AnimeController.lead` adds its blank to `_anime_top`). Problem and conflict states use the ordinary state style. While `AnimeController.in_subscriptions`
   (U08 or the `/` search) the Subscriptions tab is highlighted, tab keys count from it, and any tab switch
   drops that context first, including an open range editor and marks (an admitted batch survives). `anishift subs` offers `list`, `check` and `remove` through the owner. `interactive/state.py`,
   `interactive/anime_view.py`, `main.py`
@@ -150,7 +153,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   Terminal work is reached through History and recycling through Library. Library shows no relocation line
   and has no P action (owner decision 2026-10-10); the owner retries failed relocations by itself.
   Progress labels come from the preview's source names, with `Materiał` for absent/ID-only
-  legacy labels. `interactive/state.py`, `interactive/progress.py`, `interactive/anime.py`
+  legacy labels. Download rows name the episode file, then the release (`_download_materials`),
+  then `Materiał`. `interactive/state.py`, `interactive/progress.py`, `interactive/anime.py`
 - `StateController` opens History with H inside Processing; S or `/` uses the shared
   `TextInput` and suppresses application hotkeys while typing. Default rows are the latest
   50 terminal materials; explicit search includes retained order/download/regeneration boundaries.
@@ -160,12 +164,13 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   F passes `playback=False` to reveal the confirmed main product. History
   failures remain visible across renders. `interactive/state.py`, `resident.py`
 - Library Details Enter/F submits the exact selected `LibraryFileIdentity` for owner membership
-  and freshness validation; informational rows have no file action. Delete previews and submits
-  the whole set in one worker session without a confirmation screen. Ctrl+Z delegates
+  and freshness validation; informational rows have no file action. Del (silent alias X) hides the row in the same
+  frame and previews then submits the whole set on its own background thread, so further Dels never wait; the row
+  stays hidden until a snapshot reports the accepted operation and returns with the refusal text. Ctrl+Z delegates
   last-deletion Undo to the owner. Library is a naturally sorted `Nazwa · Odcinek` table (`_table_body` with
   `AnimeScreen.LIBRARY`, labels from the facade's `library_label`); below 50×12 it lists `label.text`. It shows no operation rows or routine
   busy/global-progress messages; a completed deletion removes the row and keeps „Usunięto · Ctrl+Z cofnij”
-  until the next move, and Undo restores it. X works like Delete; `?` (alias D) opens set details.
+  until the next move, and Undo restores it. `?` (alias D) opens set details.
   Partial leftovers remain accessible. Synchronous action
   refusals survive unrelated snapshots but not a changed selection/view; late action results
   cannot overwrite a newer context. `interactive/state.py`, `resident.py`
@@ -226,13 +231,17 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   or lost confirmation; never derive it from acquisition timestamps. Unobserved elapsed
   time displays fixed-width numeric zero. ID-only label suppression belongs to remote
   `from_snapshot`, not the local source-label constructor.
-  `Extracted`, `Translate`, `Translated` i `TTS` reużywają ten sam
-  wiersz. Procent pochodzi z pomiaru backendu; `progress_percent=None` z komunikatem
+  `Wyodrębniono`, `Tłumaczenie`, `Przetłumaczono` i `Synteza mowy` reużywają ten sam
+  wiersz. Etykiety etapów są po polsku w jednym miejscu (`_ACTIVE_LABEL`, `_AUDIO_LABEL`);
+  etap bez wpisu pokazuje `Przetwarzanie`, nigdy identyfikator. Szerokości nazwy, paska i pól
+  liczbowych liczy `_row_geometry` wyłącznie z liczby kolumn, więc wiersze pobierania
+  i przetwarzania renderowane osobno mają wspólne kolumny; nie wyliczaj ich z treści wiersza.
+  Procent pochodzi z pomiaru backendu; `progress_percent=None` z komunikatem
   oznacza aktywność bez znanego procentu. Nie wyliczaj pozornego postępu z upływu czasu.
   Techniczne taski nie otrzymują osobnych wierszy. Etykieta zachowuje konkretną nazwę
   źródła wraz z rozszerzeniem; przycinanie odbywa się dopiero w renderze według
-  komórek terminala. `✓ Done` zachowuje gradient. Procent opisuje bieżący task; etykiety `Extracted`
-  i `Translated` wymagają ukończenia wszystkich tasków danego etapu.
+  komórek terminala. `✓ Gotowe` zachowuje gradient. Procent opisuje bieżący task; etykiety `Wyodrębniono`
+  i `Przetłumaczono` wymagają ukończenia wszystkich tasków danego etapu.
   `interactive/progress.py`
 - Run niepełny, anulowany albo z ostrzeżeniami pokazuje przewijany wynik grup:
   przyczyny błędów, zapisane i zachowane produkty oraz lokalizację logu.

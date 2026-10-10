@@ -6,9 +6,14 @@ from types import SimpleNamespace
 from typing import Final, cast
 
 import pytest
+import test_anime_episodes as episodes
+from prompt_toolkit.data_structures import Point
+from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from rich.text import Text
-from test_panel_keys import _FIXTURES, _Library, _Probe
+from test_panel_keys import _FIXTURES, _anime_probe, _Library, _Probe
 
+from anishift.application import ListedEpisode, RankedCandidate, TitleCandidate, TitleStatus
+from anishift.cli.interactive import anime as anime_module
 from anishift.cli.interactive.anime import AnimeController
 from anishift.cli.interactive.state import StateController, _Tab
 from anishift.cli.resident import ResidentSession
@@ -41,6 +46,23 @@ _STATES: Final[tuple[tuple[Mapping[str, object], str], ...]] = (
 )
 
 _SIZES: Final[tuple[tuple[int, int], ...]] = ((40, 12), (50, 12), (80, 12), (80, 24), (120, 30))
+
+_BREADCRUMB_CASES: Final[tuple[tuple[str, int, int], ...]] = tuple(
+    (name, columns, rows)
+    for name in ("episodes", "files", "history", "library_details")
+    for columns, rows in ((50, 12), (80, 12), (80, 24), (120, 30))
+    if name != "episodes" or rows > 12
+)
+
+_CRUMB: Final[str] = f"Anime {_ARROW} Slime (2018)"
+
+_LABELS: Final[Mapping[str, str]] = {"titles": "Premiera", "episodes": "Nr", "releases": "Wydanie"}
+
+_MARKS: Final[Mapping[str, str]] = {"titles": "Show ", "episodes": "Episode ", "releases": "] [Group"}
+
+_ABOVE: Final[Mapping[str, tuple[str, ...]]] = {"titles": ("",), "episodes": (_CRUMB, ""), "releases": (_CRUMB, "")}
+
+_BELOW: Final[Mapping[str, int]] = {"titles": 1, "episodes": 2, "releases": 3}
 
 
 @pytest.fixture
@@ -230,8 +252,7 @@ def test_library_details_help_shows_its_heading_only_with_a_hint_below(
     assert heading is None or lines[heading + 1].startswith("Enter otwórz plik")
 
 
-@pytest.mark.parametrize(("columns", "rows"), [(50, 12), (80, 12), (80, 24), (120, 30)])
-@pytest.mark.parametrize("name", ["episodes", "files", "history", "library_details"])
+@pytest.mark.parametrize(("name", "columns", "rows"), _BREADCRUMB_CASES)
 def test_an_empty_breadcrumb_keeps_its_row_so_the_content_stays(
     build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch, name: str, columns: int, rows: int
 ) -> None:
@@ -385,3 +406,137 @@ def test_every_empty_tab_shows_its_message_in_one_style_and_place(
     probe.panel._history_open = history
 
     assert _empty_message(probe, text) == (16, 0, ["gray"])
+
+
+def _shows(owner: episodes._ChoiceOwner, count: int) -> tuple[str, ...]:
+    owner.titles = tuple(
+        TitleCandidate(100 + index, f"Show {index:02}", None, None, (), 2020, None, "TV", 12, TitleStatus.FINISHED, ())
+        for index in range(count)
+    )
+    return ("text:/", "text:slime", "enter")
+
+
+def _numbered(owner: episodes._ChoiceOwner, count: int) -> tuple[str, ...]:
+    owner.listing = replace(
+        episodes._listing(),
+        episodes=tuple(ListedEpisode(number, f"Episode {number}", aired=True) for number in range(1, count + 1)),
+    )
+    return ("text:/", "text:slime", "enter", "enter")
+
+
+def _offered(owner: episodes._ChoiceOwner, count: int) -> tuple[str, ...]:
+    base: RankedCandidate = episodes._candidate()
+    candidates: tuple[RankedCandidate, ...] = tuple(
+        replace(
+            base,
+            stream=replace(base.stream, info_hash=f"{index:040x}", release=f"[Group{index:02}] Slime - 04 [1080p]"),
+        )
+        for index in range(count)
+    )
+    owner.offer_read = lambda key: episodes._offer(key, candidates)
+    return ("text:/", "text:slime", "enter", "enter", "text:i")
+
+
+_LISTS: Final[Mapping[str, Callable[[episodes._ChoiceOwner, int], tuple[str, ...]]]] = {
+    "titles": _shows,
+    "episodes": _numbered,
+    "releases": _offered,
+}
+
+
+@pytest.fixture
+def listed(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[[str, int], _Probe]]:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    built: list[StateController] = []
+
+    def make(kind: str, count: int) -> _Probe:
+        owner: episodes._ChoiceOwner = episodes._ChoiceOwner()
+        probe: _Probe = _anime_probe(monkeypatch, owner, *_LISTS[kind](owner, count))
+        built.append(probe.panel)
+        return probe
+
+    yield make
+    for panel in built:
+        panel.close()
+        panel._thread.join(5)
+
+
+def _index(lines: list[str], text: str) -> int:
+    return next(index for index, line in enumerate(lines) if text in line)
+
+
+@pytest.mark.parametrize(
+    ("kind", "count", "columns", "rows"),
+    [
+        ("episodes", 13, 80, 24),
+        ("episodes", 13, 100, 22),
+        ("episodes", 40, 80, 24),
+        ("episodes", 40, 100, 30),
+        ("releases", 40, 80, 24),
+        ("releases", 40, 100, 30),
+        ("titles", 40, 80, 24),
+        ("titles", 40, 100, 30),
+    ],
+)
+def test_an_overflowing_anime_list_fills_every_row_between_the_tabs_and_the_keys(
+    listed: Callable[[str, int], _Probe], kind: str, count: int, columns: int, rows: int
+) -> None:
+    probe: _Probe = listed(kind, count)
+
+    lines: list[str] = _lines(probe, columns, rows)
+
+    tabs: int = _index(lines, "Biblioteka")
+    header: int = next(index for index, line in enumerate(lines) if line.strip().startswith(_LABELS[kind]))
+    keys: int = _index(lines, "Esc wróć")
+    data: list[str] = lines[header + 1 : keys - _BELOW[kind]]
+    assert tuple(line.strip() for line in lines[tabs + 1 : header]) == _ABOVE[kind]
+    assert all(_MARKS[kind] in line for line in data)
+    assert not any(_MARKS[kind] in line for line in lines[keys - _BELOW[kind] : keys])
+    assert len(data) == probe.anime._visible_count == rows - 7 - len(_ABOVE[kind]) - _BELOW[kind]
+    assert keys == len(lines) - 2 == rows - 3
+    assert lines[-1].strip() == "Automat: bezczynny"
+
+
+@pytest.mark.parametrize(("kind", "count"), [("episodes", 5), ("episodes", 13), ("releases", 5), ("titles", 5)])
+def test_an_anime_list_that_fits_keeps_its_centered_layout(
+    listed: Callable[[str, int], _Probe], monkeypatch: pytest.MonkeyPatch, kind: str, count: int
+) -> None:
+    probe: _Probe = listed(kind, count)
+
+    fitted: list[str] = _lines(probe, 100, 30)
+    monkeypatch.setattr(anime_module, "overflows", lambda screen, count, rows: False)
+
+    assert _lines(probe, 100, 30) == fitted
+    assert len([line for line in fitted if _MARKS[kind] in line]) == count
+    assert not fitted[_index(fitted, "Biblioteka") + 2].strip()
+
+
+def _click(probe: _Probe, lines: list[str], text: str) -> None:
+    row: int = _index(lines, text)
+    for kind in (MouseEventType.MOUSE_DOWN, MouseEventType.MOUSE_UP):
+        probe.panel.mouse(MouseEvent(Point(lines[row].index(text), row), kind, MouseButton.LEFT, frozenset()))
+
+
+def _pointed(lines: list[str]) -> str:
+    return lines[_index(lines, _POINTER)]
+
+
+def test_a_filled_episode_list_keeps_clicks_scrolling_and_paging_on_the_painted_rows(
+    listed: Callable[[str, int], _Probe],
+) -> None:
+    probe: _Probe = listed("episodes", 40)
+
+    _click(probe, _lines(probe, 80, 24), "Episode 5 ")
+    clicked: list[str] = _lines(probe, 80, 24)
+    probe.panel.scroll(1)
+    scrolled: list[str] = _lines(probe, 80, 24)
+    _click(probe, scrolled, "Episode 15 ")
+    reclicked: list[str] = _lines(probe, 80, 24)
+    probe.panel.handle_key("pagedown")
+    paged: list[str] = _lines(probe, 80, 24)
+
+    assert "Episode 5 " in _pointed(clicked)
+    assert "Episode 4 " in scrolled[_index(scrolled, "Nr") + 1]
+    assert "Episode 15 " in _pointed(reclicked)
+    assert "Episode 28 " in _pointed(paged)
+    assert _index(paged, _POINTER) < _index(paged, "Esc wróć") - _BELOW["episodes"]

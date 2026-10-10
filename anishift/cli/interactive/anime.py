@@ -68,7 +68,7 @@ from anishift.cli.interactive.anime_texts import (
     safe,
     stated,
 )
-from anishift.cli.interactive.anime_view import WIDE_COLUMNS, visible_rows
+from anishift.cli.interactive.anime_view import WIDE_COLUMNS, overflows, shown_rows
 from anishift.cli.interactive.pointer import Click, ClickKind
 from anishift.cli.interactive.subscription_texts import (
     SubscriptionDraft,
@@ -227,6 +227,7 @@ class AnimeController:
         self._positions: dict[_Screen, int] = {}
         self._offsets: dict[_Screen, int] = {}
         self._visible_count: int = 1
+        self.lead: int = 0
         self._follow_cursor: bool = True
         self._release_moved: bool = False
         self._busy_return: _Screen = _Screen.QUERY
@@ -771,12 +772,15 @@ class AnimeController:
             self._notice = ""
             self._follow_cursor = False
 
-    def render(self, columns: int, rows: int) -> Text:
-        """Render the cached state of the current screen for one terminal geometry."""
+    def render(self, columns: int, rows: int, gap: int = 0) -> Text:
+        """Render ``rows`` lines: a table overflowing ``rows - gap`` fills them, otherwise ``gap`` blank lines lead."""
         with self._lock:
             self._columns = min(columns - 4, WIDE_COLUMNS)
             self._sync_view()
-            self._visible_count = visible_rows(rows)
+            self._view.fill = overflows(self._view.screen, len(self._view.items), rows - gap)
+            self.lead = 0 if self._view.fill else gap
+            rows -= self.lead
+            self._visible_count = max(shown_rows(self._view.snapshot(columns), columns, rows), 1)
             offset: int = min(
                 self._view.offset if self._details_open else self._offsets.get(self._screen, 0),
                 max(len(self._view.items) - self._visible_count, 0),
@@ -786,7 +790,7 @@ class AnimeController:
             self._view.offset = offset
             if not self._details_open:
                 self._offsets[self._screen] = offset
-            return self._panel.frame(columns, rows)
+            return Text("\n").join([*(Text() for _ in range(self.lead)), self._panel.frame(columns, rows)])
 
     def mouse(self, event: MouseEvent) -> Click:
         """Delegate text selection and row clicks to the shared Anime panel and name what the click asks for."""

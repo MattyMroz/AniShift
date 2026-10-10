@@ -17,7 +17,6 @@ from test_anime_episodes import _searching_panel
 import anishift.application.automation as automation_module
 from anishift.application import (
     AppService,
-    DeletionPreview,
     EpisodeOfferView,
     GroupIntent,
     LibrarySet,
@@ -863,7 +862,7 @@ def test_processing_only_shows_live_material_bars_from_a_mixed_legacy_snapshot( 
         frame: str = controller.render(columns, rows).plain
         assert "Episode 01.mkv" in frame
         assert "Episode 02.mkv" in frame
-        assert "TTS" in frame
+        assert "Synteza mowy" in frame
         assert "25%" in frame
         assert "░" in frame
         assert "█" in frame
@@ -1327,93 +1326,6 @@ def test_library_details_refresh_preserves_selection_without_reopening_or_discon
     finally:
         controller.close()
         controller._thread.join(5)
-
-
-@pytest.mark.parametrize("action", ["delete", "leave", "navigate", "refuse"])
-@pytest.mark.parametrize("details", [False, True])
-def test_delete_dispatches_whole_set_once_in_preview_session_unless_context_changes_or_owner_refuses(
-    monkeypatch: pytest.MonkeyPatch, action: str, details: bool
-) -> None:
-    monkeypatch.setattr(StateController, "_watch", lambda self: None)
-    prepared: threading.Event = threading.Event()
-    release: threading.Event = threading.Event()
-    submitted: list[DeletionPreview] = []
-    sessions: list[Session] = []
-    preview: DeletionPreview = DeletionPreview(
-        "preview-01",
-        "instance",
-        "set-01",
-        "Episode 01",
-        (LibraryFileIdentity("ready/01.txt", 123, 1, 2, 3),),
-    )
-
-    class Session:
-        closed: bool = False
-
-        def new_session(self) -> ResidentSession:
-            session: Session = Session()
-            sessions.append(session)
-            return cast("ResidentSession", session)
-
-        def preview_deletion(self, set_id: str) -> DeletionPreview:
-            assert set_id == preview.set_id
-            assert not controller._lock.locked()
-            prepared.set()
-            assert release.wait(5)
-            return preview
-
-        def delete_set(self, value: DeletionPreview) -> str:
-            assert not self.closed
-            assert sessions == [self]
-            assert not controller._lock.locked()
-            if action == "refuse":
-                raise ControlError("held", reason="library_source_held", answered=True)
-            submitted.append(value)
-            return "operation-01"
-
-        def close(self) -> None:
-            self.closed = True
-
-    controller: StateController = StateController(cast("ResidentSession", Session()), lambda: None)
-    controller._tab = state_module._Tab.FILES
-    controller._snapshot = {
-        "library": [{"set_id": f"other-{index}", "name": f"Earlier {index}"} for index in range(3)]
-        + [{"set_id": "set-01", "name": "Episode 01"}]
-    }
-    controller._selected = 3
-    controller._connected = True
-    if details:
-        controller._details = LibrarySet("set-01", "group", "Episode 01", None, None, (), False)
-        controller._detail_selection = 3
-        controller._selected = 0
-    try:
-        controller.handle_key("delete")
-        assert prepared.wait(5)
-        controller.handle_key("delete")
-        assert controller._notice == ""
-        if action == "leave":
-            controller.handle_key("escape")
-        elif action == "navigate":
-            controller.handle_key("down")
-            controller.handle_key("delete")
-        release.set()
-        _await_state_action(controller)
-        assert len(sessions) == 1
-        assert sessions[0].closed
-        assert submitted == ([preview] if action == "delete" else [])
-        if action == "delete":
-            assert controller._details is None
-            assert controller._selected == 3
-        if action == "refuse":
-            assert "Źródło czeka na zwolnienie przez torrent" in controller.render(80, 24).plain
-        else:
-            assert controller._notice == ("Usunięto · Ctrl+Z cofnij" if action == "delete" else "")
-    finally:
-        release.set()
-        _await_state_action(controller)
-        controller.close()
-        controller._thread.join(5)
-        assert all(session.closed for session in sessions)
 
 
 @pytest.mark.parametrize("tab", [state_module._Tab.PROGRESS, state_module._Tab.FILES])
@@ -1941,6 +1853,54 @@ def test_compact_panel_keeps_heading_and_tabs_without_blank_lines(monkeypatch: p
         assert spaced[0].strip() == "PANEL"
         assert not spaced[1].strip()
         assert spaced[2].strip() == lines[1].strip()
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+@pytest.mark.parametrize("columns", [80, 100, 120])
+def test_processing_aligns_bars_and_percentages_of_downloads_and_processing(
+    monkeypatch: pytest.MonkeyPatch, columns: int
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller.show_processing()
+    controller._connected = True
+    controller._notice = ""
+    view: RunProgressSnapshot = _live_snapshot(
+        "run",
+        {"group": "[Erai-raws] Kusuriya no Hitorigoto - 05 [1080p CR WEB-DL AVC AAC][MultiSub].mkv"},
+        (RunEvent("run", 1, RunEventKind.TASK_STARTED, group_id="group", task_id="tts-group"),),
+    )
+    controller._runs["run"] = (view.preview.preview_id, RichRunProgress.from_snapshot(view, lambda: None))
+    downloads: list[dict[str, object]] = [
+        {
+            "material_id": f"{info_hash}:0",
+            "acquisition_id": info_hash,
+            "info_hash": info_hash,
+            "stage": "download",
+            "name": name,
+            "state": "downloading",
+            "acquisition_state": "accepted",
+            "progress": 0.41,
+        }
+        for info_hash, name in (
+            ("a" * 40, "[Erai-raws] Kikansha no Mahou wa Tokubetsu desu - 05 [1080p CR WEB-DL AVC AAC].mkv"),
+            ("b" * 40, "b" * 40),
+        )
+    ]
+    controller._snapshot = {
+        "auto_enabled": True,
+        "requests": [{"request_id": "run", "state": "running"}],
+        "materials": [*downloads, _live_material("group")],
+    }
+    try:
+        lines: list[str] = [line for line in controller.render(columns, 30).plain.splitlines() if "%" in line]
+        assert len(lines) == 3
+        assert "Materiał" in lines[1]
+        assert "Synteza mowy" in lines[2]
+        assert len({next(index for index, char in enumerate(line) if char in "█░") for line in lines}) == 1
+        assert len({line.index(" | ") for line in lines}) == 1
     finally:
         controller.close()
         controller._thread.join(5)

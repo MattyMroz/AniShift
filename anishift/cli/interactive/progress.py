@@ -82,29 +82,32 @@ _DETERMINATE_STAGE: Final[dict[TaskKind, str]] = {
 """Task kinds owning measurable public stages."""
 
 _ACTIVE_LABEL: Final[dict[str, str]] = {
-    "extracting": "Extract",
-    "translating": "Translate",
-    "tts": "TTS",
-    "audio": "Audio",
-    "composing": "Render",
+    "extracting": "Ekstrakcja",
+    "translating": "Tłumaczenie",
+    "tts": "Synteza mowy",
+    "audio": "Dźwięk",
+    "composing": "Kompozycja",
     "cover": "Okładka",
-    "publishing": "Save",
+    "publishing": "Zapis",
 }
 """Labels shown while measurable stages are active."""
 
+_FALLBACK_LABEL: Final[str] = "Przetwarzanie"
+"""Label of an active stage without its own entry."""
+
 _COMPLETE_LABEL: Final[dict[str, str]] = {
-    "extracting": "Extracted",
-    "translating": "Translated",
+    "extracting": "Wyodrębniono",
+    "translating": "Przetłumaczono",
 }
 """Labels shown after extraction and translation complete."""
 
 _AUDIO_LABEL: Final[dict[str, str]] = {
-    "normalizing": "Normalize",
-    "timeline": "Timeline",
-    "mixing": "Mix",
-    "narration_resume": "Resume",
-    "skipped_no_spoken": "No speech",
-    "wrapping": "Narrator",
+    "normalizing": "Normalizacja",
+    "timeline": "Oś czasu",
+    "mixing": "Miksowanie",
+    "narration_resume": "Wznowienie",
+    "skipped_no_spoken": "Brak mowy",
+    "wrapping": "Lektor",
 }
 """Labels for coarse audio callbacks."""
 
@@ -135,6 +138,16 @@ class _RenderRow:
     completed: int
     style: str | None
     elapsed_seconds: float | None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Geometry:
+    """Carry the column widths shared by every row rendered at one terminal width."""
+
+    description: int
+    bar: int
+    details: bool
+    elapsed: bool
 
 
 @dataclass(slots=True)
@@ -404,7 +417,7 @@ class RichRunProgress:
             return False
         state.stage_rank = _STAGE_RANK[stage]
         state.completed = state.progress_by_task.get(selected, 0)
-        state.description = _description(state.label, _ACTIVE_LABEL[stage])
+        state.description = _description(state.label, _active_label(stage))
         state.style = None
         state.determinate = selected in state.progress_by_task and selected not in state.unmeasured_tasks
         if selected in state.unmeasured_tasks:
@@ -435,7 +448,7 @@ class RichRunProgress:
             state.completed = max(state.completed, event.progress_percent)
         else:
             state.completed = event.progress_percent
-        phase: str = _ACTIVE_LABEL[stage]
+        phase: str = _active_label(stage)
         if stage in _COMPLETE_LABEL and _stage_complete(group_id, stage, state, self._stage_tasks):
             phase = _COMPLETE_LABEL[stage]
         state.description = _description(state.label, phase)
@@ -449,7 +462,7 @@ class RichRunProgress:
         if stage is None or _STAGE_RANK[stage] != state.stage_rank:
             return False
         state.determinate = False
-        state.description = _description(state.label, _AUDIO_LABEL.get(message or "", _ACTIVE_LABEL[stage]))
+        state.description = _description(state.label, _AUDIO_LABEL.get(message or "", _active_label(stage)))
         _stop_timer(state)
         return True
 
@@ -459,7 +472,7 @@ class RichRunProgress:
             TaskKind.TRANSLATE_SUBTITLES,
         }:
             return False
-        state.description = _description(state.label, "Retry")
+        state.description = _description(state.label, "Ponawianie")
         state.unmeasured_tasks.add(event.task_id)
         state.style = "warning"
         state.determinate = False
@@ -479,7 +492,7 @@ class RichRunProgress:
         if stage is None or _STAGE_RANK[stage] != state.stage_rank:
             return False
         state.completed = _COMPLETE
-        phase: str = _ACTIVE_LABEL[stage]
+        phase: str = _active_label(stage)
         if _stage_complete(group_id, stage, state, self._stage_tasks):
             phase = _COMPLETE_LABEL.get(stage, phase)
         state.description = _description(state.label, phase)
@@ -503,16 +516,16 @@ class RichRunProgress:
         state.stage_rank = _STAGE_RANK["terminal"]
         _stop_timer(state)
         if task_state is TaskState.SUCCEEDED:
-            state.description = _description(state.label, "✓ Done")
+            state.description = _description(state.label, "✓ Gotowe")
             state.completed = _COMPLETE
             state.style = None
             return
         state.completed = 0
         if task_state is TaskState.CANCELLED:
-            state.description = _description(state.label, "Cancelled")
+            state.description = _description(state.label, "Anulowano")
             state.style = "warning"
             return
-        state.description = _description(state.label, "Failed")
+        state.description = _description(state.label, "Błąd")
         state.style = "error"
 
     def _finish_remaining(self, task_state: TaskState | None) -> bool:
@@ -526,10 +539,10 @@ class RichRunProgress:
             state.completed = 0
             _stop_timer(state)
             if task_state is TaskState.CANCELLED:
-                state.description = _description(state.label, "Cancelled")
+                state.description = _description(state.label, "Anulowano")
                 state.style = "warning"
             else:
-                state.description = _description(state.label, "Not run")
+                state.description = _description(state.label, "Nie wykonano")
                 state.style = "error"
             changed = True
         return changed
@@ -554,7 +567,7 @@ class RichRunProgress:
 
 def _new_file_state(label: str) -> _FileState:
     """Create the initial extracting row for one source label."""
-    return _FileState(label=label, description=_description(label, _ACTIVE_LABEL["extracting"]), determinate=True)
+    return _FileState(label=label, description=_description(label, _active_label("extracting")), determinate=True)
 
 
 def render_material_progress(
@@ -573,31 +586,26 @@ def render_material_progress(
 def _render_rows(rows: tuple[_RenderRow, ...], columns: int) -> Text:
     """Render all file snapshots into one Rich text block."""
     result = Text()
-    if not rows:
-        return result
-    columns = max(columns, 0)
-    full_details_width: int = max(cell_len(_row_details(row, show_elapsed=True)) for row in rows)
-    show_bar: bool = columns >= full_details_width + _MIN_BAR_COLUMNS + _MIN_DESCRIPTION_COLUMNS + 1
-    details: tuple[str, ...] = tuple(_row_details(row, show_elapsed=show_bar) for row in rows)
-    details_width: int = max(cell_len(detail) for detail in details)
-    available: int = columns - details_width - (_MIN_BAR_COLUMNS + 1 if show_bar else 0)
-    if available < 1:
-        details = ("",) * len(rows)
-        details_width = 0
-        available = columns
-    natural_width: int = max(cell_len(row.description) for row in rows)
-    if show_bar:
-        reserved: int = min(natural_width, _DESCRIPTION_RESERVE_COLUMNS)
-        bar_width: int = min(_MAX_BAR_COLUMNS, max(_MIN_BAR_COLUMNS, columns - details_width - reserved - 1))
-        available = columns - details_width - bar_width - 1
-    else:
-        bar_width = 0
-    description_width: int = min(natural_width, available)
+    geometry: _Geometry = _row_geometry(max(columns, 0))
     for index, row in enumerate(rows):
-        _append_row(result, row, description_width, bar_width, details[index])
+        details: str = _row_details(row, show_elapsed=geometry.elapsed) if geometry.details else ""
+        _append_row(result, row, geometry.description, geometry.bar, details)
         if index < len(rows) - 1:
             result.append("\n")
     return result
+
+
+def _row_geometry(columns: int) -> _Geometry:
+    """Return the column layout every progress row shares at one terminal width, independent of row content."""
+    sample: _RenderRow = _RenderRow("", _COMPLETE, None, 0.0)
+    full: int = cell_len(_row_details(sample, show_elapsed=True))
+    if columns >= full + _MIN_BAR_COLUMNS + _MIN_DESCRIPTION_COLUMNS + 1:
+        bar: int = min(_MAX_BAR_COLUMNS, max(_MIN_BAR_COLUMNS, columns - full - _DESCRIPTION_RESERVE_COLUMNS - 1))
+        return _Geometry(description=columns - full - bar - 1, bar=bar, details=True, elapsed=True)
+    available: int = columns - cell_len(_row_details(sample, show_elapsed=False))
+    if available >= 1:
+        return _Geometry(description=available, bar=0, details=True, elapsed=False)
+    return _Geometry(description=columns, bar=0, details=False, elapsed=False)
 
 
 def _append_row(result: Text, row: _RenderRow, description_width: int, bar_width: int, details: str) -> None:
@@ -667,6 +675,11 @@ def _stage_for(kind: TaskKind | None) -> str | None:
     if kind is None:
         return None
     return _DETERMINATE_STAGE.get(kind)
+
+
+def _active_label(stage: str) -> str:
+    """Return the Polish label of an active public stage, or the generic processing label."""
+    return _ACTIVE_LABEL.get(stage, _FALLBACK_LABEL)
 
 
 def _index_stage_tasks(plan: ExecutionPlan | PlanPreview) -> dict[tuple[str, str], tuple[str, ...]]:

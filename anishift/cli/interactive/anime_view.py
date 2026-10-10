@@ -93,6 +93,9 @@ _TEXT_SCREENS: Final[frozenset[AnimeScreen]] = frozenset({AnimeScreen.DETAILS, A
 _FILL_NOTICE_ROWS: Final[int] = 1
 """Rows a filled table keeps beneath its data for the highlighted row's detail or a notice."""
 
+_RELEASE_NOTICE_ROWS: Final[int] = _NOTICE_ROWS + 1
+"""Lines a release notice may take, so a truncated release name shows in full."""
+
 _FILL_MIN_ROWS: Final[int] = MIN_ROWS - 1
 """Minimum height of a filled table, which has no blank row beneath its data."""
 
@@ -199,6 +202,11 @@ def visible_rows(rows: int) -> int:
     return max(rows - HEADER_ROWS - FOOTER_ROWS, 1)
 
 
+def overflows(screen: AnimeScreen, count: int, rows: int) -> bool:
+    """Return whether ``count`` table rows overflow the centered layout of ``rows`` rows, so the table fills them."""
+    return screen is not AnimeScreen.QUERY and screen not in _LIST_SCREENS and count > visible_rows(rows)
+
+
 def shown_rows(snapshot: AnimeSnapshot, columns: int, rows: int) -> int:
     """Return how many item rows ``render_anime`` shows in ``columns`` x ``rows``, 0 when they do not fit."""
     if columns < MIN_COLUMNS:
@@ -206,8 +214,18 @@ def shown_rows(snapshot: AnimeSnapshot, columns: int, rows: int) -> int:
     if not snapshot.fill:
         return visible_rows(rows) if rows >= MIN_ROWS else 0
     keys: tuple[str, ...] = _key_lines(snapshot, columns - _MARGIN)
-    filled: int = rows - _filled_start(snapshot) - HEADER_ROWS - _FILL_NOTICE_ROWS - len(keys)
+    filled: int = rows - _filled_start(snapshot) - HEADER_ROWS - _footer_rows(snapshot) - len(keys)
     return filled if rows >= _FILL_MIN_ROWS else 0
+
+
+def _notice_rows(snapshot: AnimeSnapshot) -> int:
+    if snapshot.screen is AnimeScreen.RELEASES:
+        return _RELEASE_NOTICE_ROWS
+    return _FILL_NOTICE_ROWS if snapshot.fill else _NOTICE_ROWS
+
+
+def _footer_rows(snapshot: AnimeSnapshot) -> int:
+    return _notice_rows(snapshot) + int(snapshot.screen is AnimeScreen.EPISODES)
 
 
 def _context(snapshot: AnimeSnapshot) -> str:
@@ -488,10 +506,7 @@ def _footer(  # noqa: PLR0913
         if snapshot.screen in {AnimeScreen.SUBSCRIPTIONS, AnimeScreen.RELEASES}:
             notice = _unshown(snapshot, item, canvas.width - _MARGIN, now, visible)
     color: str = _COLORS[snapshot.notice_kind]
-    notice_rows: int = _FILL_NOTICE_ROWS if snapshot.fill else _NOTICE_ROWS
-    lines: list[str] = _notice_lines(
-        notice, canvas.width - _MARGIN, maximum=notice_rows + int(snapshot.screen is AnimeScreen.RELEASES)
-    )
+    lines: list[str] = _notice_lines(notice, canvas.width - _MARGIN, maximum=_notice_rows(snapshot))
     bottom: int = len(canvas.lines) - len(keys)
     canvas.center(bottom - len(lines) - 1, summary, selectable=True)
     for index, line in enumerate(lines):

@@ -167,6 +167,7 @@ class AnimeViewState:
     status_kind: NoticeKind = NoticeKind.WARNING
     busy: str = ""
     crumbs: tuple[str, ...] = ()
+    fill: bool = False
 
     def snapshot(self, width: int = 80) -> AnimeSnapshot:
         """Freeze local values without changing state or reading a clock."""
@@ -199,6 +200,7 @@ class AnimeViewState:
             ),
             busy=self.busy,
             crumbs=self.crumbs,
+            fill=self.fill,
         )
 
     def toggle(self) -> None:

@@ -183,6 +183,7 @@ def _probe(
     work: list[object] = []
     copied: list[str] = []
     monkeypatch.setattr(panel, "_work", lambda action, **options: work.append(action))
+    monkeypatch.setattr(panel, "_delete_hidden", lambda set_id: None)
 
     def copy(text: str) -> bool:
         copied.append(text)
@@ -514,9 +515,9 @@ _ACTIONS: Final[dict[str, tuple[Action, ...]]] = {
     "processing_run": (("X", "anuluj"), ("H", "historia"), *_PANEL),
     "processing_empty": (("H", "historia"), *_PANEL),
     "history": (("Enter", "otwórz"), ("P", "ponów"), ("/", "szukaj"), ("H", "zamknij"), *_PANEL),
-    "library": (("Enter", "otwórz"), ("F", "folder"), ("X", "usuń"), ("Ctrl+Z", "cofnij"), *_PANEL),
-    "library_relocation": (("Enter", "otwórz"), ("F", "folder"), ("X", "usuń"), ("Ctrl+Z", "cofnij"), *_PANEL),
-    "library_details": (("Enter", "otwórz plik"), ("F", "folder"), ("X", "usuń"), ("Ctrl+Z", "cofnij"), *_PANEL),
+    "library": (("Enter", "otwórz"), ("F", "folder"), ("Del", "usuń"), ("Ctrl+Z", "cofnij"), *_PANEL),
+    "library_relocation": (("Enter", "otwórz"), ("F", "folder"), ("Del", "usuń"), ("Ctrl+Z", "cofnij"), *_PANEL),
+    "library_details": (("Enter", "otwórz plik"), ("F", "folder"), ("Del", "usuń"), ("Ctrl+Z", "cofnij"), *_PANEL),
     "library_empty": (("Ctrl+Z", "cofnij"), *_PANEL),
 }
 
@@ -530,10 +531,10 @@ _ALIASES: Final[dict[str, frozenset[str]]] = {
     "processing_run": frozenset({"text:c", "delete"}),
     "processing_empty": frozenset({"text:c", "delete"}),
     "history": frozenset({"text:s"}),
-    "library": frozenset({"text:d", "delete"}),
-    "library_relocation": frozenset({"text:d", "delete"}),
-    "library_details": frozenset({"delete"}),
-    "library_empty": frozenset({"text:d", "delete"}),
+    "library": frozenset({"text:d", "text:x"}),
+    "library_relocation": frozenset({"text:d", "text:x"}),
+    "library_details": frozenset({"text:x"}),
+    "library_empty": frozenset({"text:d", "text:x"}),
 }
 
 _APPLIES: Final[dict[tuple[str, str], str]] = {
@@ -565,8 +566,8 @@ _FOOTERS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
     "processing_download": ("W wstrzymaj · X anuluj · H historia · ? więcej · Esc wróć", ()),
     "processing_run": ("X anuluj · H historia · ? więcej · Esc wróć", ()),
     "history": ("Enter otwórz · P ponów · / szukaj · ? więcej · Esc wróć", ()),
-    "library": ("Enter otwórz · F folder · X usuń · ? więcej · Esc wróć", ()),
-    "library_details": ("Enter otwórz plik · F folder · X usuń · Esc wróć", ()),
+    "library": ("Enter otwórz · F folder · Del usuń · ? więcej · Esc wróć", ()),
+    "library_details": ("Enter otwórz plik · F folder · Del usuń · Esc wróć", ()),
     "episodes_details": ("C kopiuj · Esc wróć", ("text:?",)),
     "u08_details": ("C kopiuj · Esc wróć", ("text:?",)),
     "subscriptions_help": ("Esc wróć", ("text:?",)),
@@ -619,7 +620,7 @@ def _listed(probe: _Probe) -> tuple[Action, ...]:
 
 
 def _probe_keys(action: str) -> tuple[str, ...]:
-    named: dict[str, str] = {"Enter": "enter", "Space": "space"}
+    named: dict[str, str] = {"Enter": "enter", "Space": "space", "Del": "delete"}
     keys: list[str] = action.split(" lub ")
     return tuple(named.get(key, f"text:{key.lower()}") for key in keys if key in named or len(key) == 1)
 
@@ -659,6 +660,7 @@ def _state(probe: _Probe) -> tuple[object, ...]:
         panel._history_input is not None,
         panel._question,
         panel._retry is not None,
+        tuple(panel._hidden),
         len(probe.work),
         len(probe.copied),
         calls,
@@ -914,7 +916,8 @@ def test_library_details_reach_mode_keys_and_the_automat(
 def test_library_details_delete_the_set_with_x_or_delete(build: Callable[[str], _Probe], key: str) -> None:
     probe: _Probe = build("library_details")
     probe.panel.handle_key(key)
-    assert len(probe.work) == 1
+    assert probe.panel._details is None
+    assert probe.panel._hidden == {"set": ""}
 
 
 @pytest.mark.parametrize("key", ["tab", "backtab", "left", "right"])
@@ -941,40 +944,6 @@ def test_backspace_closes_anime_details(build: Callable[[str], _Probe], name: st
     probe.panel.handle_key("backspace")
     assert not probe.anime._details_open
     assert probe.anime._screen is _Screen.EPISODES
-
-
-def test_library_keeps_the_deletion_notice_until_the_next_move(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(StateController, "_watch", lambda self: None)
-    owner: _Library = _Library()
-    deleted: list[str] = []
-    session: ResidentSession = cast(
-        "ResidentSession",
-        SimpleNamespace(
-            preview_deletion=lambda set_id: set_id,
-            delete_set=deleted.append,
-            close=lambda: None,
-            command=owner.command,
-        ),
-    )
-    panel: StateController = StateController(
-        cast("ResidentSession", SimpleNamespace(new_session=lambda: session)), lambda: None
-    )
-    monkeypatch.setattr(panel, "_work", lambda action, **options: panel._perform(action, ""))
-    library: list[dict[str, str]] = [{"set_id": "one", "name": "One"}, {"set_id": "two", "name": "Two"}]
-    panel._tab = _Tab.FILES
-    panel._connected = True
-    panel._snapshot = {"library": library}
-    try:
-        panel.handle_key("text:x")
-        assert deleted == ["one"]
-        assert "Usunięto · Ctrl+Z cofnij" in panel.render(80, 24).plain
-        panel._receive(session, {"event": "state_changed", "payload": {"library": library[1:]}})
-        assert "Usunięto · Ctrl+Z cofnij" in panel.render(80, 24).plain
-        panel.handle_key("down")
-        assert "Usunięto" not in panel.render(80, 24).plain
-    finally:
-        panel.close()
-        panel._thread.join(5)
 
 
 @pytest.mark.parametrize(("key", "kind"), [("text:r", "check"), ("text:f", "check"), ("text:w", "pause")])
