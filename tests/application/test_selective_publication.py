@@ -9,7 +9,7 @@ from typing import cast
 
 import pytest
 from fakes import FakeMediaProbe, FakeTranslationService
-from test_automation import _request
+from test_automation import _request, _unlink_when_released
 from test_selective_lifecycle import (
     _HASH,
     _choice,
@@ -911,8 +911,8 @@ def test_lost_handed_off_files_report_a_problem_without_holding_the_remaining_pa
         _until(
             lambda: (publication := _current(owner).assignments[1].publication) is not None and publication.handed_off
         )
-        (setup.root / _NAMES[0]).unlink()
-        (data / "Pack" / _NAMES[0]).unlink()
+        _unlink_when_released(setup.root / _NAMES[0])
+        _unlink_when_released(data / "Pack" / _NAMES[0])
         (data / "Pack" / "Neko to Ryuu - 04.mkv").write_bytes(b"v" * 410)
         (data / "Pack" / "Neko to Ryuu - 04.ass").write_bytes(b"s" * 41)
         setup.network.finish(_HASH)

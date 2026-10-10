@@ -8,6 +8,8 @@ Testy pytest. Konwencje testowe całego drzewa; komenda bramki jakości i marker
 - Istnieje dokładnie JEDEN `__init__.py` (`services/translation/`), reszta katalogów go nie ma — niespójność, którą łatwo nieświadomie „naprawić" i rozwalić importy conftest. `services/translation/__init__.py:1`
 - Progi dokładności są zaszyte w asercjach (`>= 0.95`, `>= 0.9586`, `>= 0.9`) — to bramki regresji, nie luźne sanity. `services/extraction/test_regression_tracks.py:63`
 - Regresja klasyfikatora ma allowlistę znanych pudeł (`_KNOWN_MISSED_DIALOG`) i faila na KAŻDE nowe pudło, nie tylko na spadek dokładności. `services/subtitles/test_regression_classifier.py:10`
+- Wątek `AnimeController` zeruje `_worker` przed swoimi ostatnimi skutkami (np. przejściem na listę subskrypcji), więc `_worker is None` nie dowodzi końca pracy; czekaj na koniec wątków `_WORKER_NAME` uruchomionych przez klawisz (`test_subscription_draft._keys`). `cli/test_subscription_draft.py`
+- Pomocnik oczekiwania ma zwracać sukces przy pierwszej obserwacji warunku, nie oceniać go drugi raz: `run_result` wraca chwilowo do `running` przy ponowieniu odroczonej relokacji. Plik przekazany do Auto bywa otwarty przez sondę `mkvmerge`; test usuwający go na Windows używa `_unlink_when_released`. `application/test_automation.py`
 - `test_translation_network.py` liczy ścieżkę datasetu względną `../mm_avh_working_space/...` — działa tylko gdy CWD = katalog repo. `services/translation/test_translation_network.py:20`
 
 ## Konwencje

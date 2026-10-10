@@ -317,8 +317,7 @@ def _subscription(monkeypatch: pytest.MonkeyPatch, owner: drafts._Owner | None =
     )
     probe: _Probe = _probe(monkeypatch, owner, anime, (drafts._row("a", "Alpha"),))
     probe.panel._tab = _Tab.SUBSCRIPTIONS
-    probe.panel.handle_key("enter")
-    drafts._settle(probe.panel)
+    drafts._keys(probe.panel, "enter")
     assert anime._screen is _Screen.EPISODES
     assert anime._subscription is not None
     return probe

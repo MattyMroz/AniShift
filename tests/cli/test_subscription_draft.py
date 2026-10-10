@@ -31,7 +31,7 @@ from anishift.application import (
     encode_view,
 )
 from anishift.application.subscription_targets import SubscriptionRow
-from anishift.cli.interactive.anime import AnimeController, _Screen
+from anishift.cli.interactive.anime import _WORKER_NAME, AnimeController, _Screen
 from anishift.cli.interactive.anime_view import AnimeFrame
 from anishift.cli.interactive.state import StateController, _Tab
 from anishift.cli.interactive.subscription_texts import (
@@ -228,14 +228,15 @@ def _anime(panel: StateController) -> AnimeController:
     return anime
 
 
-def _settle(panel: StateController) -> None:
-    anime: AnimeController = _anime(panel)
+def _settle(panel: StateController, known: set[threading.Thread]) -> None:
     deadline: float = time.monotonic() + 5
     while time.monotonic() < deadline:
-        worker: threading.Thread | None = anime._worker
-        if worker is not None:
+        started: list[threading.Thread] = [
+            thread for thread in threading.enumerate() if thread.name == _WORKER_NAME and thread not in known
+        ]
+        for worker in started:
             worker.join(5)
-        if (anime._worker is None or not anime._worker.is_alive()) and not panel._busy:
+        if not started and not panel._busy:
             return
         threading.Event().wait(0.005)
     raise AssertionError
@@ -243,8 +244,9 @@ def _settle(panel: StateController) -> None:
 
 def _keys(panel: StateController, *keys: str) -> None:
     for key in keys:
+        known: set[threading.Thread] = set(threading.enumerate())
         panel.handle_key(key)
-        _settle(panel)
+        _settle(panel, known)
 
 
 def _frame(panel: StateController, columns: int = 120, rows: int = 30) -> str:

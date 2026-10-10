@@ -3470,7 +3470,9 @@ def test_new_sidecars_and_changed_products_invalidate_the_affected_preview(tmp_p
 
 def _await(condition: Callable[[], bool]) -> bool:
     deadline: float = time.monotonic() + _TIMEOUT_S
-    while not condition() and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        if condition():
+            return True
         time.sleep(0.01)
     return condition()
 
