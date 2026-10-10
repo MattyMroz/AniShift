@@ -93,7 +93,7 @@ from anishift.application.inspection import (
 from anishift.application.intents import GroupIntent, ProductIntent, ProductKind, RebuildRequest, RequestOrigin, RunMode
 from anishift.application.planning import ExecutionPlan
 from anishift.application.products import classify_product
-from anishift.application.ready import ReadyMove, ReadyStore
+from anishift.application.ready import ReadyMove, ReadyStore, in_ready
 from anishift.application.recovery import RunJournal
 from anishift.application.results import GroupResult, GroupStatus, RunResult
 from anishift.application.scheduler import RunHandle
@@ -4054,10 +4054,11 @@ def test_library_retry_after_refused_deletion_only_relocates(  # noqa: PLR0915
             controller.handle_key("home")
             frame: str = controller.render(120, 40).plain
             assert "P ponów pozostałe pliki" not in frame
-            assert "P ponów przenoszenie do biblioteki" in frame
+            assert "przenoszenie" not in frame
+            assert _await(lambda: bool(links))
             attempts: int = len(links)
             fail = False
-            controller.handle_key("text:p")
+            session.command("ready_retry")
             assert _await((tmp_path / "ready/Book.m4a").is_file)
             assert len(links) > attempts
             assert recycled == ["01.pl.txt"]
@@ -4242,6 +4243,276 @@ def test_relocation_counts_only_real_failures_and_reports_exhaustion(
         thread.join(_TIMEOUT_S)
         service.close()
     assert not thread.is_alive()
+
+
+def _translated_pair(tmp_path: Path, *, ready: bool) -> str:
+    for number in (1, 2):
+        write_text_source(_library_dir(tmp_path) / f"{number:02d}.txt", f"Episode {number}")
+    service: AppService = _processing_service(tmp_path, FakeTranslationService())
+    with closing(service), _panel_owner(service, tmp_path, ready=ready) as (session, store):
+        groups: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
+        session.reserve(groups)
+        preview: PlanPreview = session.plan_manual(tuple(_translation_intent(group_id) for group_id in groups))
+        result: RunResult = session.execute(preview, CollectingRunSink())
+        assert result.succeeded
+        assert _await(lambda: len(store.load().ready_groups) == (2 if ready else 0))
+    return result.run_id
+
+
+def _translation_intent(group_id: str) -> GroupIntent:
+    return GroupIntent(
+        group_id,
+        RunMode.MANUAL,
+        ProductIntent(frozenset({ProductKind.FULL_PL})),
+        target=WorkflowTarget.TRANSLATE,
+    )
+
+
+def _recovered_owner(tmp_path: Path, service: AppService) -> tuple[AutomationOwner, threading.Thread]:
+    owner: AutomationOwner = AutomationOwner(
+        service,
+        WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME),
+        instance_id=_INSTANCE,
+        clock=lambda: _MOMENT,
+        ready_store=ReadyStore(relocation_journal_dir(tmp_path / ".control"), tmp_path),
+    )
+    thread: threading.Thread = _serving(owner)
+    owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+    assert _await(lambda: owner._on_owner(lambda: owner._recovery_started and not owner._recovering))
+    return owner, thread
+
+
+def _workspace_files(root: Path) -> dict[Path, bytes]:
+    return {
+        path.relative_to(root): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file() and ".control" not in path.relative_to(root).parts
+    }
+
+
+@pytest.mark.integration
+def test_a_changed_source_in_ready_leaves_its_finished_neighbour_free_to_start(tmp_path: Path) -> None:
+    run_id: str = _translated_pair(tmp_path, ready=True)
+    (tmp_path / READY_DIRECTORY / "01.txt").write_text("Replaced episode", encoding="utf-8")
+    store: WatchStateStore = WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME)
+    journal: bytes = store.run_path(run_id).read_bytes()
+    files: dict[Path, bytes] = _workspace_files(tmp_path)
+    kept: str = next(group.group_id for group in store.load().ready_groups if group.stem == "02")
+    service: AppService = _processing_service(tmp_path, FakeTranslationService())
+    owner, thread = _recovered_owner(tmp_path, service)
+    try:
+        assert owner.handle(_request("status")).result["relocations"] == []
+        assert store.run_path(run_id).read_bytes() == journal
+        assert _workspace_files(tmp_path) == files
+        assert owner.handle(_request("reserve", {"client_id": _CLIENT, "group_ids": [kept]})).ok
+        preview: ControlResponse = owner.handle(
+            _request(
+                "preview",
+                {
+                    "client_id": _CLIENT,
+                    "source_selection": "manual",
+                    "group_ids": [kept],
+                    "intents": [encode_view(_translation_intent(kept))],
+                },
+                command_id="preview-1",
+            )
+        )
+        assert preview.ok, preview.message
+        started: ControlResponse = owner.handle(
+            _request("start", {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]}, command_id="start-1")
+        )
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+    assert started.reason != RefusalReason.GROUP_RELOCATING.value
+    assert started.ok, started.message
+
+
+@pytest.mark.integration
+def test_retrying_relocation_clears_a_stale_problem_of_a_finished_set(tmp_path: Path) -> None:
+    _translated_pair(tmp_path, ready=True)
+    (tmp_path / READY_DIRECTORY / "01.txt").write_text("Replaced episode", encoding="utf-8")
+    groups: tuple[str, ...] = tuple(
+        group.group_id for group in WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME).load().ready_groups
+    )
+    service: AppService = _processing_service(tmp_path, FakeTranslationService())
+    owner, thread = _recovered_owner(tmp_path, service)
+    try:
+        owner._on_owner(lambda: owner._ready_problems.update(dict.fromkeys(groups, "stale")))
+        assert owner.handle(_request("ready_retry")).ok
+        problems: dict[str, str] = owner._on_owner(lambda: dict(owner._ready_problems))
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+    assert problems == {}
+
+
+@pytest.mark.integration
+def test_a_changed_source_stays_in_place_while_its_finished_neighbour_reaches_ready(tmp_path: Path) -> None:
+    _translated_pair(tmp_path, ready=False)
+    (_library_dir(tmp_path) / "01.txt").write_text("Replaced episode", encoding="utf-8")
+    service: AppService = _processing_service(tmp_path, FakeTranslationService())
+    owner, thread = _recovered_owner(tmp_path, service)
+    try:
+        assert _await(lambda: len(owner.state.ready_groups) == 1)
+        relocations: object = owner.handle(_request("status")).result["relocations"]
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+    assert relocations == []
+    recorded: ReadyGroup = owner.state.ready_groups[0]
+    assert recorded.stem == "02"
+    assert recorded.sources == ("ready/02.txt",)
+    assert (_library_dir(tmp_path) / "01.txt").read_text(encoding="utf-8") == "Replaced episode"
+    assert not (tmp_path / READY_DIRECTORY / "01.txt").exists()
+
+
+@pytest.mark.integration
+def test_preparing_a_finished_run_again_keeps_the_problem_of_its_pending_relocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id: str = _translated_pair(tmp_path, ready=False)
+
+    def interrupted(store: ReadyStore, move: ReadyMove) -> None:
+        del store, move
+        raise OSError(13, "Relocation interrupted")
+
+    monkeypatch.setattr(ReadyStore, "execute", interrupted)
+    service: AppService = _processing_service(tmp_path, FakeTranslationService())
+    owner, thread = _recovered_owner(tmp_path, service)
+    try:
+        assert _await(lambda: owner._on_owner(lambda: len(owner._ready_problems) == 2 and not owner._ready_inflight))
+
+        def prepared_again() -> dict[str, str]:
+            owner._ready_attempts.update(dict.fromkeys(owner._ready_moves, automation_module._FINALIZE_ATTEMPTS))
+            owner._prepare_ready(owner._run_results[run_id])
+            return dict(owner._ready_problems)
+
+        problems: dict[str, str] = owner._on_owner(prepared_again)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+    assert len(problems) == 2
+    assert all("Relocation interrupted" in problem for problem in problems.values())
+
+
+@pytest.mark.integration
+def test_retrying_relocation_leaves_a_changed_source_in_place_and_moves_its_finished_neighbour(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _translated_pair(tmp_path, ready=False)
+    (_library_dir(tmp_path) / "01.txt").write_text("Replaced episode", encoding="utf-8")
+    execute: Callable[[ReadyStore, ReadyMove], None] = ReadyStore.execute
+    failing: list[bool] = [True]
+
+    def interrupted(store: ReadyStore, move: ReadyMove) -> None:
+        if failing:
+            raise OSError(13, "Relocation interrupted")
+        execute(store, move)
+
+    monkeypatch.setattr(ReadyStore, "execute", interrupted)
+    service: AppService = _processing_service(tmp_path, FakeTranslationService())
+    owner, thread = _recovered_owner(tmp_path, service)
+    try:
+        assert _await(lambda: owner._on_owner(lambda: len(owner._ready_problems) == 1 and not owner._ready_inflight))
+        failing.clear()
+        assert owner.handle(_request("ready_retry")).ok
+        assert _await(lambda: len(owner.state.ready_groups) == 1)
+        assert _await(lambda: owner._on_owner(lambda: not owner._ready_problems and not owner._ready_moves))
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+    assert owner.state.ready_groups[0].sources == ("ready/02.txt",)
+    assert (_library_dir(tmp_path) / "01.txt").read_text(encoding="utf-8") == "Replaced episode"
+    assert not (tmp_path / READY_DIRECTORY / "01.txt").exists()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("damage", ["json", "version"])
+@pytest.mark.parametrize("ready", [False, True])
+def test_an_unreadable_run_checkpoint_blocks_only_sets_outside_ready(
+    tmp_path: Path, damage: str, *, ready: bool
+) -> None:
+    run_id: str = _translated_pair(tmp_path, ready=ready)
+    path: Path = WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME).run_path(run_id)
+    document: dict[str, object] = json.loads(path.read_bytes())
+    path.write_bytes(b"{" if damage == "json" else json.dumps({**document, "version": 99}).encode())
+    service: AppService = _processing_service(tmp_path, FakeTranslationService())
+    owner, thread = _recovered_owner(tmp_path, service)
+    try:
+        relocations: list[dict[str, object]] = cast(
+            "list[dict[str, object]]", owner.handle(_request("status")).result["relocations"]
+        )
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+    if ready:
+        assert relocations == []
+        assert len(owner.state.ready_groups) == 2
+        return
+    assert len(relocations) == 2
+    assert all(item["problem"] for item in relocations)
+    assert owner.state.ready_groups == ()
+    assert (_library_dir(tmp_path) / "01.txt").is_file()
+
+
+def test_exhausted_relocation_retries_on_its_own_once_the_backoff_ceiling_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    monkeypatch.setattr(automation_module, "TRANSFER_BACKOFF_CEILING_S", 1.0)
+    _prepared_audiobook(tmp_path)
+    service: AppService = _real_service(tmp_path)
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=False)))
+    owner: AutomationOwner = _relocating_owner(tmp_path, service, store)
+    journal: ReadyStore = cast("ReadyStore", owner._ready_store)
+    execute: Callable[[ReadyMove], None] = journal.execute
+    moments: list[float] = []
+
+    def attempt(current: ReadyMove) -> None:
+        moments.append(time.monotonic())
+        if len(moments) <= automation_module._FINALIZE_ATTEMPTS:
+            raise OSError(13, "Relocation unavailable")
+        execute(current)
+
+    monkeypatch.setattr(journal, "execute", attempt)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _await(lambda: owner._on_owner(lambda: bool(owner._ready_exhausted) and not owner._ready_inflight))
+        owner._on_owner(owner._retry_ready)
+        early: tuple[int, bool] = owner._on_owner(lambda: (len(moments), bool(owner._ready_inflight)))
+        pausing: object = owner.handle(_request("status")).result["pausing"]
+        assert _await((tmp_path / "ready" / "Book.m4a").exists)
+        assert _await(lambda: owner._on_owner(lambda: not owner._ready_problems and not owner._ready_moves))
+        idle: tuple[float | None, float | None] = owner._on_owner(lambda: (owner._transfers_at, owner._ready_retry_at))
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+    assert early == (automation_module._FINALIZE_ATTEMPTS, False)
+    assert pausing is False
+    assert len(moments) == automation_module._FINALIZE_ATTEMPTS + 1
+    assert moments[-1] - moments[-2] >= automation_module.TRANSFER_BACKOFF_CEILING_S
+    assert idle == (None, None)
+
+
+@pytest.mark.parametrize(("folder", "expected"), [("ready", True), ("ready/Show", False), ("", False)])
+def test_only_the_ready_folder_itself_counts_as_ready(tmp_path: Path, folder: str, *, expected: bool) -> None:
+    assert in_ready(tmp_path / folder, tmp_path) is expected
 
 
 @pytest.mark.parametrize(

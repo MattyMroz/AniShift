@@ -125,7 +125,9 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - `ReadyStore` przenosi ukończoną grupę do `ready/` przez wyłączne dowiązanie i usunięcie starej
   nazwy na tym samym woluminie. Dziennik zostaje do zapisu nowych tożsamości w stanie ownera; znany
   torrent musi wcześniej zwolnić pliki. Blokada relokacji chroni oba ID grupy przed Auto. Nie
-  przenoś plików z renderera.
+  przenoś plików z renderera. Przygotowanie czyta plan dziennika bez walidacji wejść całego runu;
+  grupa już w `ready/` traci wpis problemu bez czytania dziennika, a grupa spoza `ready/` ze
+  zmienionym źródłem jest pomijana bez problemu i bez przenoszenia.
 - Usuwanie z Biblioteki pomija pasujące pobranie tylko w stanie `COMPLETE` z receipt managera
   dowodzącym zwolnienia. Dowód zwolnienia czytaj w puli I/O i sprawdź stan ownera ponownie przed
   przyjęciem; same historyczne ścieżki relokacji nie dowodzą aktywnego posiadania.
@@ -263,8 +265,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   chronione oryginały zachowują manifest i dowody publikacji. Usuwane są tylko pliki manifestu i
   puste katalogi; prawdziwe błędy I/O ponawiają się w procesie w ograniczonym budżecie, potem po
   restarcie. Oczekiwanie na zwolnienie lub odroczoną relokację nie jest błędem; ponowienia stoją,
-  gdy klient nie może postępować (zewnętrzny, przejęty, zamknięty), i wracają przy pollingu,
-  `ready_retry` albo restarcie. Przekazany zestaw nie potrzebuje oryginałów ze stagingu do
+  gdy klient nie może postępować (zewnętrzny, przejęty, zamknięty), i wracają przy pollingu albo
+  restarcie. Relokacja po wyczerpaniu prób wraca sama co `TRANSFER_BACKOFF_CEILING_S` przez osobny
+  termin `_ready_retry_at`, nie `_transfers_at`, więc nie udaje trwającej pauzy; bez takich ruchów
+  termin nie budzi rezydenta. Przekazany zestaw nie potrzebuje oryginałów ze stagingu do
   ukończenia transferu; brak opublikowanych plików przed przetwarzaniem daje `publication_missing`
   bez blokowania zwolnienia pozostałych odcinków. Rekordy schematu 3 sprzed `manifest`, `cleaned` i
   `publication` pozostają czytelne. `automation.py`, `acquisition_staging.py`, `watch_state.py`

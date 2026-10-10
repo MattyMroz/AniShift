@@ -153,7 +153,7 @@ from anishift.application.library import file_identity, project_library
 from anishift.application.planner import auto_group_products
 from anishift.application.planning import ExecutionPlan, TaskState
 from anishift.application.products import AUDIO_PRODUCT_PROFILES, main_product, product_suffix
-from anishift.application.ready import ReadyMove, ReadyStore
+from anishift.application.ready import ReadyMove, ReadyStore, in_ready
 from anishift.application.recovery import CHECKPOINT_VERSION, RunJournal
 from anishift.application.release_quality import ResolutionClass, resolution, resolution_class
 from anishift.application.results import DISPLAYED_ABSENCE_NOTE, GroupResult, GroupStatus, ProducedArtifact, RunResult
@@ -223,7 +223,7 @@ from anishift.application.transfers import (
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, resolve_route
 from anishift.config.workspace import run_temp_dir
-from anishift.errors import AniShiftError, MediaProbeError, UnsupportedMediaError
+from anishift.errors import AniShiftError, ExecutionError, MediaProbeError, UnsupportedMediaError
 from anishift.paths import READY_DIRECTORY
 from anishift.platform.binaries import BinaryNotFoundError
 from anishift.platform.directory_watch import DirectoryChange, source_is_available
@@ -814,6 +814,8 @@ class AutomationOwner:
         self._ready_inflight: set[str] = set()
         self._ready_problems: dict[str, str] = {}
         self._ready_attempts: dict[str, int] = {}
+        self._ready_exhausted: dict[str, float] = {}
+        self._ready_retry_at: float | None = None
         self._ready_parked: set[str] = set()
         self._completion_parked: set[str] = set()
         self._recovery_started: bool = False
@@ -1115,7 +1117,13 @@ class AutomationOwner:
             try:
                 deadlines: tuple[float, ...] = tuple(
                     deadline
-                    for deadline in (self._settle_at, self._transfers_at, self._inspection_at, self._subscriptions_at)
+                    for deadline in (
+                        self._settle_at,
+                        self._transfers_at,
+                        self._inspection_at,
+                        self._subscriptions_at,
+                        self._ready_retry_at,
+                    )
                     if deadline is not None
                 )
                 timeout: float | None = max(0.0, min(deadlines) - time.monotonic()) if deadlines else None
@@ -1125,6 +1133,7 @@ class AutomationOwner:
                 self._refresh_automatic()
                 self._poll_transfers()
                 self._poll_subscriptions()
+                self._poll_ready()
                 continue
             except KeyboardInterrupt:
                 item = None
@@ -1147,6 +1156,7 @@ class AutomationOwner:
                 self._dispatch(item)
             self._poll_transfers()
             self._poll_subscriptions()
+            self._poll_ready()
             if self._drained():
                 return
 
@@ -1340,7 +1350,7 @@ class AutomationOwner:
         request: ProcessingRequest | None = next(
             (item for item in reversed(self._state.requests) if group.group_id in item.group_ids), None
         )
-        if request is None or request.fingerprints.get(group.group_id) != _group_fingerprint(group):
+        if request is None or not _accepted_sources(group, request):
             return False
         if request.state not in {RequestState.SUCCEEDED, RequestState.PARTIAL, RequestState.FAILED}:
             return False
@@ -1929,10 +1939,7 @@ class AutomationOwner:
 
     def _journal_completed_groups(self, request: ProcessingRequest) -> frozenset[str] | None:
         try:
-            document: object = json.loads(self._store.run_path(request.request_id).read_bytes())
-            if not isinstance(document, dict) or document.get("version") != CHECKPOINT_VERSION:
-                return None
-            plan: ExecutionPlan = decode_view(ExecutionPlan, document.get("plan"))
+            plan: ExecutionPlan = _journal_plan(self._store.run_path(request.request_id))
         except AniShiftError, OSError, ValueError, TypeError:
             return None
         return frozenset(
@@ -5913,20 +5920,46 @@ class AutomationOwner:
     def _schedule_transfers(self, delay: float = 0.0) -> None:
         if self._shutting_down or self._transfers_inspecting:
             return
-        working: bool = self._state.policy.auto_enabled
         selective: bool = self._selective_client()
         active: bool = self._transfers is not None and any(
             (_polled(item, selective=selective) and self._working(item)) or _transfer_action(item)
             for item in self._state.acquisitions
         )
         pending: bool = bool(self._pending_completion()) or any(
-            self._ready_attempts.get(group_id, 0) < _FINALIZE_ATTEMPTS
+            self._ready_attempts.get(group_id, 0) < _FINALIZE_ATTEMPTS for group_id in self._ready_waiting()
+        )
+        self._transfers_at = time.monotonic() + delay if active or pending else None
+        self._ready_retry_at = self._next_ready_retry()
+
+    def _ready_waiting(self) -> tuple[str, ...]:
+        working: bool = self._state.policy.auto_enabled
+        return tuple(
+            group_id
             for group_id, move in self._ready_moves.items()
             if group_id not in self._ready_inflight
             and group_id not in self._ready_parked
             and (working or not move.deferred)
         )
-        self._transfers_at = time.monotonic() + delay if active or pending else None
+
+    def _next_ready_retry(self) -> float | None:
+        if self._shutting_down:
+            return None
+        deleting: set[str] = self._deleting_groups()
+        return min(
+            (
+                self._ready_exhausted[group_id] + TRANSFER_BACKOFF_CEILING_S
+                for group_id in self._ready_waiting()
+                if group_id in self._ready_exhausted
+                and not {group_id, self._ready_moves[group_id].destination_group_id} & deleting
+            ),
+            default=None,
+        )
+
+    def _poll_ready(self) -> None:
+        if self._ready_retry_at is None or self._ready_retry_at > time.monotonic():
+            return
+        self._retry_ready()
+        self._ready_retry_at = self._next_ready_retry()
 
     def _selective_client(self) -> bool:
         return self._service.acquisition is not None and self._service.acquisition.selective
@@ -7029,9 +7062,7 @@ class AutomationOwner:
         groups: tuple[InspectedSourceGroup, ...] = tuple(
             group for group in self._library.groups if group.group_id in request.group_ids
         )
-        if len(groups) != len(request.group_ids) or any(
-            _group_fingerprint(group) != request.fingerprints.get(group.group_id) for group in groups
-        ):
+        if len(groups) != len(request.group_ids) or not all(_accepted_sources(group, request) for group in groups):
             self._failed_recovery(request, "The sources changed or are missing; inspect the files before resuming")
             return
         preview: _Preview = _Preview(
@@ -7089,9 +7120,7 @@ class AutomationOwner:
         sources: tuple[InspectedSourceGroup, ...] = tuple(
             group
             for group in self._library.groups
-            if group.group_id in request.group_ids
-            and _group_fingerprint(group) == request.fingerprints.get(group.group_id)
-            and not self._blocked((group.group_id,), self._instance_id)
+            if group.group_id in request.group_ids and not self._blocked((group.group_id,), self._instance_id)
         )
         result: RunResult = self._completed_result(request)
         self._run_results[request.request_id] = result
@@ -7121,11 +7150,16 @@ class AutomationOwner:
             ):
                 continue
             try:
+                if in_ready(group.source.directory, self._service.workspace_root):
+                    self._ready_problems.pop(group.group_id, None)
+                    continue
                 request: ProcessingRequest | None = next(
                     (item for item in self._state.requests if item.request_id == result.run_id), None
                 )
+                if request is not None and not _accepted_sources(group, request):
+                    continue
                 if not artifacts and request is not None and self._store.run_path(request.request_id).is_file():
-                    artifacts = RunJournal.load(self._store.run_path(request.request_id)).plan.artifacts
+                    artifacts = _journal_plan(self._store.run_path(request.request_id)).artifacts
                 intent: GroupIntent | None = next(
                     (
                         item
@@ -7215,11 +7249,15 @@ class AutomationOwner:
                 continue
             if move.deferred and not self._working():
                 continue
-            if self._ready_attempts.get(group_id, 0) >= _FINALIZE_ATTEMPTS:
-                continue
             if group_id in self._ready_inflight or {move.group_id, move.destination_group_id}.intersection(
                 self._deleting_groups()
             ):
+                continue
+            exhausted: float | None = self._ready_exhausted.get(group_id)
+            if exhausted is not None and time.monotonic() - exhausted >= TRANSFER_BACKOFF_CEILING_S:
+                del self._ready_exhausted[group_id]
+                self._ready_attempts.pop(group_id, None)
+            if self._ready_attempts.get(group_id, 0) >= _FINALIZE_ATTEMPTS:
                 continue
             self._ready_inflight.add(group_id)
             self._active_io += 1
@@ -7265,10 +7303,11 @@ class AutomationOwner:
                 problem = sanitize_event_message(str(error)) or "Relocated checkpoint needs retry"
         if problem is not None:
             self._ready_problems[move.group_id] = problem
-            self._ready_attempts[move.group_id] = self._ready_attempts.get(move.group_id, 0) + 1
+            self._failed_ready_attempt(move.group_id)
             logger.warning("Ready relocation failed", attempts=self._ready_attempts[move.group_id])
             self._publish_ready(move)
             return
+        self._ready_exhausted.pop(move.group_id, None)
         self._run_results = {
             run_id: self._relocated_result(move, result) for run_id, result in self._run_results.items()
         }
@@ -7283,7 +7322,7 @@ class AutomationOwner:
                 self._ready_store.acknowledge(move)
         except OSError:
             self._ready_problems[move.group_id] = "Files and state are saved; relocation acknowledgement needs retry"
-            self._ready_attempts[move.group_id] = self._ready_attempts.get(move.group_id, 0) + 1
+            self._failed_ready_attempt(move.group_id)
             self._publish_ready(move)
             return
         self._ready_moves.pop(move.group_id, None)
@@ -7326,6 +7365,11 @@ class AutomationOwner:
                 for group in updated.groups
             ),
         )
+
+    def _failed_ready_attempt(self, group_id: str) -> None:
+        self._ready_attempts[group_id] = self._ready_attempts.get(group_id, 0) + 1
+        if self._ready_attempts[group_id] >= _FINALIZE_ATTEMPTS:
+            self._ready_exhausted[group_id] = time.monotonic()
 
     def _publish_ready(self, move: ReadyMove) -> None:
         self._schedule_transfers(self._transfers_delay)
@@ -8857,6 +8901,20 @@ def _group_with_target(group: InspectedSourceGroup, target: WorkflowTarget | Non
 
 def _group_fingerprint(group: InspectedSourceGroup) -> SourceFingerprint:
     return source_fingerprint(snapshot_sources(group, {}, 0.0))
+
+
+def _accepted_sources(group: InspectedSourceGroup, request: ProcessingRequest) -> bool:
+    """Whether the group's source files still match the ones its request accepted."""
+    return _group_fingerprint(group) == request.fingerprints.get(group.group_id)
+
+
+def _journal_plan(path: Path) -> ExecutionPlan:
+    """Read the saved graph of one run without validating the files it names."""
+    document: object = json.loads(path.read_bytes())
+    if not isinstance(document, dict) or document.get("version") != CHECKPOINT_VERSION:
+        msg: str = "The saved run checkpoint has an unsupported version"
+        raise ExecutionError(msg)
+    return decode_view(ExecutionPlan, document.get("plan"))
 
 
 def _requested_groups(workspace: InspectedWorkspace, payload: Mapping[str, object]) -> tuple[InspectedSourceGroup, ...]:

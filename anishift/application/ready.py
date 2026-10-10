@@ -187,9 +187,9 @@ class ReadyStore:
         pending: Path = self._path(group.group_id)
         if pending.exists():
             return TypeAdapter(ReadyMove).validate_json(pending.read_bytes(), strict=True)
-        ready: Path = ready_dir(self._workspace)
-        if group.directory.resolve() == ready.resolve():
+        if in_ready(group.directory, self._workspace):
             return None
+        ready: Path = ready_dir(self._workspace)
         if ready.is_symlink() or not ready.resolve().is_relative_to(self._workspace):
             message: str = "The ready directory must remain inside the workspace"
             raise ExecutionError(message)
@@ -318,6 +318,11 @@ class ReadyStore:
             message: str = "Relocation requires a safe group identifier"
             raise ExecutionError(message)
         return self._directory / f"{group_id}.json"
+
+
+def in_ready(directory: Path, workspace: Path) -> bool:
+    """Whether the directory is the workspace's ready folder itself, not one of its subfolders."""
+    return directory.resolve() == ready_dir(workspace).resolve()
 
 
 def retry_file_release(operation: Callable[[], None]) -> None:
