@@ -499,11 +499,9 @@ class StateController:
         if target is None or not rows:
             return ""
         if target[0] == "info_hash":
-            head: str = "Anulować pobieranie?" if len(rows) == 1 else f"Anulować pobieranie ({len(rows)} materiałów)?"
-        else:
-            scope: object = rows[0].get("group_ids", [])
-            head = f"Anulować całe zlecenie ({len(scope) if isinstance(scope, list) else 1} materiałów)?"
-        return head
+            return "Anulować pobieranie?" if len(rows) == 1 else f"Anulować pobieranie ({len(rows)} materiałów)?"
+        scope: object = rows[0].get("group_ids", [])
+        return f"Anulować całe zlecenie ({len(scope) if isinstance(scope, list) else 1} materiałów)?"
 
     def _help_key(self, key: str) -> StateResult:
         if key in {"text:?", "escape", "backspace", "interrupt"}:
@@ -866,13 +864,12 @@ class StateController:
         item: Mapping[str, object] | None = self._selected_material()
         if item is None:
             return
-        target: tuple[str, str] | None = _cancel_target(item)
         if key in {"c", "x"}:
-            self._question = target
+            self._question = _cancel_target(item)
             return
-        toggle: tuple[str, str] | None = _download_toggle(item)
-        if key == "w" and target is not None and target[0] == "info_hash" and toggle is not None:
-            self._command("transfer", {"info_hash": target[1], "action": toggle[0]})
+        toggle: tuple[str, str] | None = _pause_toggle(item)
+        if key == "w" and toggle is not None:
+            self._command("transfer", {"info_hash": str(item["info_hash"]), "action": toggle[0]})
 
     def _selected_material(self) -> Mapping[str, object] | None:
         materials: list[Mapping[str, object]] = self._processing_rows()
@@ -1321,10 +1318,12 @@ class StateController:
             if spaced:
                 heading.append(Text())
             area: int = max(budget - len(heading), 1)
-            if self._tab == _Tab.ANIME and self._anime is not None and area > MIN_ROWS:
-                body: Text = self._pin_status(self._anime.render(columns, area - 1), columns, area)
-            elif self._tab == _Tab.ANIME and self._anime is not None:
-                body = self._anime.render(columns, area)
+            if self._tab == _Tab.ANIME and self._anime is not None:
+                body: Text = (
+                    self._pin_status(self._anime.render(columns, area - 1), columns, area)
+                    if area > MIN_ROWS
+                    else self._anime.render(columns, area)
+                )
             elif self._help:
                 body = self._help_body(columns, area)
             elif self._tab == _Tab.SUBSCRIPTIONS and self._retry is None:
@@ -1494,9 +1493,7 @@ class StateController:
     def _processing_actions(self) -> ScreenActions:
         item: Mapping[str, object] | None = self._selected_material()
         target: tuple[str, str] | None = None if item is None else _cancel_target(item)
-        toggle: tuple[str, str] | None = (
-            _download_toggle(item) if item is not None and target is not None and target[0] == "info_hash" else None
-        )
+        toggle: tuple[str, str] | None = None if item is None else _pause_toggle(item)
         footer: tuple[Action, ...] = (
             *((("W", toggle[1]),) if toggle is not None else ()),
             *((("X", "anuluj"),) if target is not None else ()),
@@ -1797,6 +1794,11 @@ def _cancel_target(item: Mapping[str, object]) -> tuple[str, str] | None:
     if (item.get("stage") == "processing" or item.get("admitted_processing")) and item.get("run_id"):
         return "run_id", str(item["run_id"])
     return None
+
+
+def _pause_toggle(item: Mapping[str, object]) -> tuple[str, str] | None:
+    target: tuple[str, str] | None = _cancel_target(item)
+    return _download_toggle(item) if target is not None and target[0] == "info_hash" else None
 
 
 def _cancel_command(target: tuple[str, str]) -> tuple[str, Mapping[str, object]]:

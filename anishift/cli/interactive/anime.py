@@ -1125,9 +1125,9 @@ class AnimeController:
             if screen is AnimeScreen.EPISODES
             else set()
         )
-        if self._pending_batch is not None and screen in {AnimeScreen.EPISODES, AnimeScreen.RELEASES}:
-            self._view.searching.add("pending")
-        if self._choice_sending:
+        if self._choice_sending or (
+            self._pending_batch is not None and screen in {AnimeScreen.EPISODES, AnimeScreen.RELEASES}
+        ):
             self._view.searching.add("pending")
         self._view.controls = footer_segments(self._screen_actions(), more=self._screen not in _NO_HELP)
         if self._screen is _Screen.PROBLEM:
@@ -1203,10 +1203,10 @@ class AnimeController:
 
     def _episode_enter(self) -> str:
         listing: EpisodeListing | None = self._listing
-        shown: tuple[ListedEpisode, ...] = self._shown_episodes()
-        position: int = self._positions.get(_Screen.EPISODES, 0)
         if listing is None:
             return ""
+        shown: tuple[ListedEpisode, ...] = self._shown_episodes()
+        position: int = self._positions.get(_Screen.EPISODES, 0)
         if position >= len(shown):
             extras: tuple[AnimeRow, ...] = self._special_rows()[position - len(shown) :]
             return "otwórz" if extras and extras[0].key.startswith("related:") else ""
