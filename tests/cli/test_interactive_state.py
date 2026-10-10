@@ -1529,8 +1529,8 @@ def test_files_retries_reported_relocations_independently_of_deletion_history(
         assert calls == []
         relocation_hint: str = "P ponów przenoszenie do biblioteki"
         if context != "healthy":
-            assert relocation_hint in frame
-            assert "Episode.mkv" in frame
+            assert f"{relocation_hint} · Episode" in frame
+            assert "Episode.mkv" not in frame
         else:
             assert relocation_hint not in frame
         assert "P ponów pozostałe pliki" not in frame

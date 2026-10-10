@@ -16,10 +16,9 @@ from anishift.cli.interactive.anime_state import (
     AnimeScreen,
     AnimeViewState,
     NoticeKind,
-    TextPoint,
 )
 from anishift.cli.interactive.anime_view import AnimeFrame, render_anime
-from anishift.cli.interactive.pointer import COPY_KEYS, Gesture, PointerGesture, row_at
+from anishift.cli.interactive.pointer import COPY_KEYS, Click, ClickKind, Gesture, PointerGesture
 from anishift.cli.interactive.text_input import TextInput
 
 
@@ -39,7 +38,7 @@ class AnimePanel:
         self._clipboard: Callable[[str], bool] = clipboard
         self._frame: AnimeFrame | None = None
         self._size: tuple[int, int] = (80, 24)
-        self._gesture: PointerGesture = PointerGesture()
+        self._gesture: PointerGesture = PointerGesture(clock)
 
     def frame(self, columns: int, rows: int) -> Text:
         """Build a frame and retain only the last painted interaction map."""
@@ -251,18 +250,19 @@ class AnimePanel:
         self.state.selection = None
         self._gesture.reset()
 
-    def mouse(self, event: MouseEvent) -> None:
-        """Select only painted text on drag; a click clears the selection and points at its row."""
+    def mouse(self, event: MouseEvent) -> Click:
+        """Select only painted text on drag; a click clears the selection, points at its row and names the request."""
         gesture: Gesture | None = self._gesture.track(event)
         if gesture is None:
-            return
+            return Click()
         if event.event_type is MouseEventType.MOUSE_DOWN:
             self._clear_notice()
         self.state.selection = gesture.selection
-        if gesture.click is not None:
-            self._click(gesture.click)
-
-    def _click(self, point: TextPoint) -> None:
-        index: int | None = row_at(self._frame.text, point.row) if self._frame is not None else None
-        if index is not None and index < len(self.state.items) and self.state.items[index].navigable:
-            self.state.cursor = index
+        click: Click = self._gesture.resolve(self._frame.text if self._frame is not None else Text(), gesture)
+        if click.kind not in {ClickKind.ROW, ClickKind.LINE}:
+            return click
+        if click.value >= len(self.state.items) or not self.state.items[click.value].navigable:
+            self._gesture.reset()
+            return Click()
+        self.state.cursor = click.value
+        return click

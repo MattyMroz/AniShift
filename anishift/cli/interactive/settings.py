@@ -575,27 +575,34 @@ class SettingsController:
         self._follow_cursor = False
         self._offset = min(max(self._offset + direction * _WHEEL_ROWS, 0), max(length - 1, 0))
 
-    def select(self, index: int) -> None:
-        """Move the cursor to a clicked row without choosing it; leaving a row saves its pending edit."""
+    def place(self, index: int) -> None:
+        """Put the text cursor of the open editor before a clicked character."""
+        self._discard_armed = False
+        if self._editor is not None and not self._busy:
+            self._editor.input.place(index)
+
+    def select(self, index: int) -> bool:
+        """Point at a clicked row without choosing it, saving a pending edit, and report whether it stands there."""
         self._discard_armed = False
         if self._busy:
-            return
+            return False
         editor: _Editor | None = self._editor
         if editor is not None:
             if 0 <= index < len(editor.options):
                 editor.selected = index
-            return
+            return editor.selected == index
         output: bool = self._category is _Category.OUTPUT
         if not 0 <= index < (len(_PRODUCTS) + 2 if output else len(self._items)) or index == self._selected:
-            return
+            return index == self._selected
         key: str = "" if output else self._items[index].key
         if not self._commit_pending():
-            return
+            return False
         if output:
             self._selected = index
         else:
             self._selected = next((row for row, item in enumerate(self._items) if item.key == key), self._selected)
         self._feedback = None
+        return self._selected == index
 
     def view_key(self) -> tuple[object, ...]:
         """Identify the painted screen, so a selection never outlives it."""
@@ -1801,7 +1808,7 @@ class SettingsController:
                     _truncate_right(option.label, option_width),
                     style="brand_accent" if index == editor.selected else "white_bold",
                 )
-                mark_row(content, index)
+                mark_row(content, index, opens=editor.kind is not _EditorKind.CONFIRM)
                 content.append("\n")
             if has_below:
                 content.append(" " * left)

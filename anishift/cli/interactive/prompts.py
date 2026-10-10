@@ -81,6 +81,16 @@ _TERMINAL_SIZE_POLL_SECONDS: Final[float] = 0.1
 _AUTO_REFRESH_SECONDS: Final[float] = 0.1
 """Interval used by the single event loop to advance visible elapsed time."""
 
+_POINTER_EVENTS: Final[frozenset[tuple[MouseButton, MouseEventType]]] = frozenset(
+    {
+        (MouseButton.LEFT, MouseEventType.MOUSE_DOWN),
+        (MouseButton.LEFT, MouseEventType.MOUSE_MOVE),
+        (MouseButton.LEFT, MouseEventType.MOUSE_UP),
+        (MouseButton.RIGHT, MouseEventType.MOUSE_DOWN),
+    }
+)
+"""Pointer events the views follow: every left-button event and a right-button press."""
+
 _NORMALISED_KEYS: Final[tuple[tuple[Keys | str | tuple[Keys | str, ...], str], ...]] = (
     (Keys.Up, "up"),
     (Keys.Down, "down"),
@@ -186,7 +196,7 @@ class _WheelControl(FormattedTextControl):
         self._mouse_callback: Callable[[MouseEvent], None] | None = mouse_handler
 
     def mouse_handler(self, mouse_event: MouseEvent) -> object:
-        """Forward wheel and left-button gestures without consuming unrelated pointer events."""
+        """Forward wheel, left-button gestures and a right-button press without consuming other pointer events."""
         wheel: dict[MouseEventType, int] = {
             MouseEventType.SCROLL_UP: -1,
             MouseEventType.SCROLL_DOWN: 1,
@@ -197,11 +207,7 @@ class _WheelControl(FormattedTextControl):
                 return NotImplemented
             self._scroll_handler(direction)
             return None
-        if mouse_event.button is not MouseButton.LEFT or mouse_event.event_type not in {
-            MouseEventType.MOUSE_DOWN,
-            MouseEventType.MOUSE_MOVE,
-            MouseEventType.MOUSE_UP,
-        }:
+        if (mouse_event.button, mouse_event.event_type) not in _POINTER_EVENTS:
             return NotImplemented
         if self._mouse_callback is not None:
             lines: list[str] = fragment_list_to_text(to_formatted_text(self.text)).split("\n")

@@ -819,13 +819,20 @@ class ManualController:
         with self._lock:
             return self._screen is _Screen.INPUT and self._input.handle("interrupt")
 
-    def select(self, index: int) -> None:
-        """Move the cursor to a clicked list row without choosing it."""
+    def place(self, index: int) -> None:
+        """Put the text cursor of the external-source path before a clicked character."""
+        with self._lock:
+            if self._screen is _Screen.INPUT:
+                self._input.place(index)
+
+    def select(self, index: int) -> bool:
+        """Move the cursor to a clicked list row without choosing it and report whether it stands there."""
         with self._lock:
             if not 0 <= index < self._row_count():
-                return
+                return False
             self._selected = index
             self._feedback = None
+            return True
 
     def view_key(self) -> tuple[object, ...]:
         """Identify the painted screen, so a selection never outlives it."""

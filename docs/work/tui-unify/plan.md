@@ -160,6 +160,8 @@ Blok pomocy         Esc wróć
 
 2026-10-10: ekran oferty usunięty (decyzja właściciela) — `I` i `P` otwierają od razu Anime/wydania; zob. `docs/work/acquisition/ux.md` §6.
 
+2026-10-10: klik w wiersz dalej tylko ustawia kursor, a podwójny klik działa jak Enter na tym wierszu (decyzja właściciela).
+
 Lista „akcji spoza stopki” poniżej jest przykładowa; obowiązuje reguła §4.1 i sonda z F1.
 
 Akcje spoza stopki (pomoc „Ten ekran”):
@@ -405,7 +407,7 @@ Push po F4.
   - Historia w Bibliotece;
   - wiersze „Cofnij/Anuluj/Wróć”;
   - tłumaczenie komunikatów planera;
-  - kliknięcie w zakładki;
+  - ~~kliknięcie w zakładki~~ — zrobione 2026-10-10 (decyzja właściciela);
   - `Enter` w Przetwarzaniu.
 - **Forbidden:**
   - paleta, style, akcent, kursor i układ góra/dół;

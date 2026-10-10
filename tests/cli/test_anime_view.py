@@ -20,11 +20,10 @@ from anishift.cli.interactive.anime_state import (
     AnimeSnapshot,
     AnimeViewState,
     NoticeKind,
-    TextPoint,
 )
 from anishift.cli.interactive.anime_view import AnimeFrame, _notice_lines, render_anime
 from anishift.cli.interactive.palette import BRAND_THEME
-from anishift.cli.interactive.pointer import SELECTION_STYLE, TextCell
+from anishift.cli.interactive.pointer import SELECTION_GAP_STYLE, SELECTION_STYLE, TextCell, TextPoint
 from anishift.cli.interactive.prompts import _WheelControl
 from anishift.cli.interactive.text_input import TextInput
 
@@ -137,7 +136,14 @@ def test_multiline_mouse_copy_excludes_chrome_and_retains_unicode(key: str) -> N
     mouse(view, MouseEventType.MOUSE_MOVE, 79, top + 4)
     mouse(view, MouseEventType.MOUSE_UP, 79, top + 4)
     highlighted: Text = view.frame(80, 24)
-    assert any(span.style == SELECTION_STYLE for span in highlighted.spans)
+    painted: dict[object, set[str]] = {
+        style: {highlighted.plain[span.start : span.end] for span in highlighted.spans if span.style == style}
+        for style in (SELECTION_STYLE, SELECTION_GAP_STYLE)
+    }
+    assert painted[SELECTION_STYLE]
+    assert all(len(value) == 1 for value in painted[SELECTION_STYLE] if value.isspace())
+    assert painted[SELECTION_GAP_STYLE]
+    assert all(value.isspace() for value in painted[SELECTION_GAP_STYLE])
     view.handle(key)
     value: str = clipboard.call_args.args[0]
     assert "Zażółć 日本語" in value
@@ -316,6 +322,17 @@ def test_mouse_callback_is_forwarded_by_shared_terminal_control() -> None:
     assert callback.call_args.args[0].event_type == event.event_type
     control_view.mouse_handler(MouseEvent(Point(1, 2), MouseEventType.SCROLL_DOWN, MouseButton.NONE, frozenset()))
     wheel.assert_called_once_with(1)
+
+
+def test_shared_mouse_control_forwards_a_right_press_but_not_its_release() -> None:
+    callback: Mock = Mock()
+    control_view: _WheelControl = _WheelControl(None, callback, text="test")
+    pressed: MouseEvent = MouseEvent(Point(1, 0), MouseEventType.MOUSE_DOWN, MouseButton.RIGHT, frozenset())
+    released: MouseEvent = MouseEvent(Point(1, 0), MouseEventType.MOUSE_UP, MouseButton.RIGHT, frozenset())
+    assert control_view.mouse_handler(pressed) is None
+    assert control_view.mouse_handler(released) is NotImplemented
+    assert callback.call_count == 1
+    assert callback.call_args.args[0].button is MouseButton.RIGHT
 
 
 def test_shared_mouse_control_converts_unicode_character_offsets_to_cells() -> None:

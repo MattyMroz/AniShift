@@ -57,6 +57,7 @@ from anishift.cli.interactive.actions import Action, ScreenActions, footer_segme
 from anishift.cli.interactive.anime_panel import AnimePanel
 from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeViewState, NoticeKind
 from anishift.cli.interactive.anime_view import WIDE_COLUMNS, visible_rows
+from anishift.cli.interactive.pointer import Click, ClickKind
 from anishift.cli.interactive.subscription_texts import (
     SubscriptionDraft,
     SubscriptionState,
@@ -899,7 +900,7 @@ class AnimeController:
 
     def _sync_subscription_view(self) -> None:
         if self._screen is _Screen.DRAFT:
-            self._view.title = f"Nowa subskrypcja \u203a {_safe(self._draft_title)}"
+            self._view.crumbs = ("Nowa subskrypcja", _safe(self._draft_title))
             keys: list[str] = [item.key for item in self._view.items]
             wanted: str = self._draft_cursor if self._draft_cursor in keys else self._draft_cursor.split(".")[0] + ".0"
             if wanted not in keys:
@@ -916,7 +917,7 @@ class AnimeController:
         facts: tuple[str, ...] = self._subscription_facts()
         if not facts or self._subscription is None:
             return
-        self._view.title = f"Subskrypcje \u203a {facts[0]}"
+        self._view.crumbs = ("Subskrypcje", facts[0])
         self._view.global_status = facts[1]
         self._view.status_kind = NoticeKind.INFO
         self._view.notice = self._view.notice or " · ".join(note for note in facts[2:] if note)
@@ -1032,15 +1033,39 @@ class AnimeController:
                 self._offsets[self._screen] = offset
             return self._panel.frame(columns, rows)
 
-    def mouse(self, event: MouseEvent) -> None:
-        """Delegate text selection and row clicks to the shared Anime panel."""
+    def mouse(self, event: MouseEvent) -> Click:
+        """Delegate text selection and row clicks to the shared Anime panel and name what the click asks for."""
         with self._lock:
             self._sync_view()
-            self._panel.mouse(event)
+            click: Click = self._panel.mouse(event)
             if self._details_open:
-                return
-            self._adopt_cursor()
+                return click
+            if click.kind in {ClickKind.ROW, ClickKind.LINE}:
+                self._adopt_cursor()
             self._notice = self._view.notice
+            return click
+
+    def place(self, index: int) -> None:
+        """Focus the shown search or range field and put its cursor before a clicked character."""
+        with self._lock:
+            editor: TextInput | None = self._range_input
+            if editor is None and self._screen is _Screen.QUERY:
+                editor = self._query_input
+            if editor is None:
+                return
+            editor.place(index)
+            self._input_focused = True
+
+    def points_at(self, index: int) -> bool:
+        """Report whether the cursor of the shown list stands on row ``index``."""
+        with self._lock:
+            return self._view.cursor == index
+
+    def breadcrumb(self) -> tuple[str, ...]:
+        """Return the breadcrumb levels above the shown screen, none on the list levels."""
+        with self._lock:
+            self._sync_view()
+            return self._view.crumbs
 
     def _adopt_cursor(self) -> None:
         if self._screen is _Screen.TITLES:
@@ -1089,7 +1114,8 @@ class AnimeController:
             self._view.selection = None
             self._view.selected.clear()
         self._view.screen = screen
-        self._view.title = self._entry_heading()
+        self._view.title = ""
+        self._view.crumbs = self._entry_heading()
         self._view.cursor = (
             self._highlighted if self._screen is _Screen.TITLES else self._positions.get(self._screen, 0)
         )
@@ -2453,9 +2479,11 @@ class AnimeController:
         remaining: int = max(ceil(deadline - self._clock()), 0)
         return f"spróbuj za {remaining} s" if remaining else "Możesz spróbować ponownie"
 
-    def _entry_heading(self) -> str:
+    def _entry_heading(self) -> tuple[str, ...]:
         entry: FranchiseEntry | None = self._shown_entry
-        return "" if entry is None else f"Anime \u203a {_safe(entry.english or entry.romaji)} ({entry.year or '—'})"
+        if entry is None:
+            return ()
+        return ("Anime", f"{_safe(entry.english or entry.romaji)} ({entry.year or '—'})")
 
     def _repeat_warning(self) -> tuple[str, ...]:
         view: EpisodeOfferView | None = self._offer_view

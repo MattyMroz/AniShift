@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from time import time
 from types import SimpleNamespace
 from typing import Final, cast
 
@@ -13,6 +14,7 @@ import test_subscription_draft as drafts
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from rich.text import Text
+from test_interactive_mouse import _application, _click, _row_at, _row_of
 from test_interactive_state import _live_material, _live_snapshot
 
 from anishift.application import (
@@ -39,12 +41,16 @@ from anishift.application.control_views import (
     RunProgressSnapshot,
     encode_view,
 )
+from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive import state as state_module
 from anishift.cli.interactive.actions import Action, ScreenActions, footer_segments, pack_footer
 from anishift.cli.interactive.anime import AnimeController, _Screen
-from anishift.cli.interactive.pointer import row_at
+from anishift.cli.interactive.anime_panel import AnimePanel
+from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeViewState
+from anishift.cli.interactive.pointer import CRUMB_SEPARATOR, Click, ClickKind, FrameSelection
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.state import StateController, StateResult, _Tab
+from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 
 pytestmark = pytest.mark.unit
@@ -120,6 +126,10 @@ class _Library:
     def library_file(self, set_id: str, identity: LibraryFileIdentity) -> Path:
         self.calls.append(("file", identity))
         return Path(identity.path)
+
+    def library_result(self, set_id: str) -> Path:
+        self.calls.append(("result", set_id))
+        return Path(set_id)
 
 
 class _SubscriptionOwner(drafts._Owner):
@@ -798,7 +808,7 @@ def test_help_block_ignores_actions_and_clicks(build: Callable[[str], _Probe], n
     assert probe.work == []
     assert probe.panel._selected == selected
     assert probe.panel._question is None
-    assert all(row_at(frame, row) is None for row in range(24))
+    assert all(_row_at(frame, row) is None for row in range(24))
     assert probe.panel.view_key()[-1] is True
 
 
@@ -1133,11 +1143,11 @@ def test_a_mouse_press_clears_the_question_without_selecting(
     probe: _Probe = build("processing_download")
     probe.panel._snapshot = {**probe.panel._snapshot, "materials": [_download(), _download("other", "two")]}
     probe.panel.handle_key("text:x")
-    taken: bool = probe.panel.mouse(MouseEvent(Point(10, 5), MouseEventType.MOUSE_DOWN, button, frozenset()))
-    assert taken
+    taken: Click | None = probe.panel.mouse(MouseEvent(Point(10, 5), MouseEventType.MOUSE_DOWN, button, frozenset()))
+    assert taken == Click()
     assert probe.panel._question is None
     assert probe.panel._selected == 0
-    assert not probe.panel.mouse(MouseEvent(Point(10, 5), MouseEventType.MOUSE_UP, button, frozenset()))
+    assert probe.panel.mouse(MouseEvent(Point(10, 5), MouseEventType.MOUSE_UP, button, frozenset())) is None
 
 
 @pytest.mark.parametrize("leave", ["library", "subscriptions", "suspend", "tab"])
@@ -1350,3 +1360,505 @@ def test_escape_or_backspace_closes_the_retry_proposal(build: Callable[[str], _P
     assert probe.panel.handle_key(key) is StateResult.CONTINUE
     assert probe.panel._retry is None
     assert probe.panel._history_open
+
+
+def _settle(probe: _Probe) -> None:
+    if probe.panel._anime is not None:
+        episodes._settle(probe.panel._anime)
+
+
+def _frozen(probe: _Probe) -> _Probe:
+    now: float = time()
+    probe.anime._clock = lambda: now
+    return probe
+
+
+def _app(monkeypatch: pytest.MonkeyPatch, probe: _Probe) -> interactive_app._InteractiveApplication:
+    application, _copied = _application(monkeypatch, interactive_app._ViewMode.STATE)
+    application._frame_selection = FrameSelection(clock=lambda: 0.0)
+    application._state = probe.panel
+    return application
+
+
+def _cursor_point(frame: Text, probe: _Probe) -> Point:
+    cursor: int = probe.anime._view.cursor if probe.panel._tab == _Tab.ANIME else probe.panel._selected
+    lines: list[str] = frame.plain.split("\n")
+    row: int = next(row for row in range(len(lines)) if _row_at(frame, row) == cursor)
+    return Point(len(lines[row]) - len(lines[row].lstrip()), row)
+
+
+def _label_point(frame: Text, label: str, line_mark: str) -> Point:
+    lines: list[str] = frame.plain.split("\n")
+    row: int = next(row for row, line in enumerate(lines) if line_mark in line)
+    return Point(Text(lines[row][: lines[row].index(label)]).cell_len, row)
+
+
+def _tab_point(frame: Text, tab: int) -> Point:
+    return _label_point(frame, state_module._TABS[tab], " · ".join(state_module._TABS))
+
+
+def _right_click(application: interactive_app._InteractiveApplication, point: Point) -> None:
+    application._handle_mouse(MouseEvent(point, MouseEventType.MOUSE_DOWN, MouseButton.RIGHT, frozenset()))
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "titles",
+        "entries",
+        "episodes",
+        "episodes_file",
+        "candidates",
+        "files",
+        "draft",
+        "u08",
+        "u08_extra",
+        "subscriptions",
+        "processing_download",
+        "history",
+        "library",
+        "library_details",
+    ],
+)
+def test_a_double_click_on_the_cursor_row_does_what_enter_does(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    pressed: _Probe = _frozen(build(name))
+    pressed.panel.handle_key("enter")
+    _settle(pressed)
+    clicked: _Probe = _frozen(build(name))
+    application: interactive_app._InteractiveApplication = _app(monkeypatch, clicked)
+    point: Point = _cursor_point(application._render_frame(80, 24), clicked)
+
+    _click(application, point)
+    _click(application, point)
+    _settle(clicked)
+
+    assert _state(clicked) == _state(pressed)
+
+
+@pytest.mark.parametrize(
+    ("name", "keys", "tab"),
+    [
+        ("library", (), _Tab.ANIME),
+        ("library", (), _Tab.SUBSCRIPTIONS),
+        ("library", (), _Tab.PROGRESS),
+        ("subscriptions", (), _Tab.FILES),
+        ("query", ("text:/", "text:slime"), _Tab.FILES),
+        ("history", ("text:/",), _Tab.PROGRESS),
+    ],
+)
+def test_a_click_on_a_tab_name_switches_exactly_where_tab_switches(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch, name: str, keys: tuple[str, ...], tab: int
+) -> None:
+    probe: _Probe = build(name)
+    for key in keys:
+        probe.panel.handle_key(key)
+    start: int = probe.panel._shown_tab()
+    tabbed: _Probe = build(name)
+    for key in (*keys, "tab"):
+        tabbed.panel.handle_key(key)
+    switches: bool = tabbed.panel._shown_tab() != start
+    application: interactive_app._InteractiveApplication = _app(monkeypatch, probe)
+
+    _click(application, _tab_point(application._render_frame(80, 24), tab))
+
+    assert probe.panel._shown_tab() == (tab if switches else start)
+    assert switches == (name != "history")
+
+
+def test_a_click_on_the_narrow_tab_arrows_moves_to_the_neighbouring_tabs(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    probe: _Probe = build("library")
+    application: interactive_app._InteractiveApplication = _app(monkeypatch, probe)
+    _click(application, _label_point(application._render_frame(40, 24), "←", "(4/4)"))
+    left: int = probe.panel._tab
+    _click(application, _label_point(application._render_frame(40, 24), "→", "(3/4)"))
+
+    assert left == _Tab.PROGRESS
+    assert probe.panel._tab == _Tab.FILES
+
+
+@pytest.mark.parametrize(
+    ("name", "label", "escapes"),
+    [
+        ("history", "Przetwarzanie", 1),
+        ("library_details", "Biblioteka", 1),
+        ("candidates", "Anime", 2),
+        ("u08", "Subskrypcje", 1),
+        ("draft", "Nowa subskrypcja", 1),
+    ],
+)
+def test_a_click_on_an_earlier_crumb_goes_back_by_escape_until_that_level(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch, name: str, label: str, escapes: int
+) -> None:
+    escaped: _Probe = build(name)
+    before: tuple[object, ...] = _state(escaped)
+    for _escape in range(escapes):
+        escaped.panel.handle_key("escape")
+        _settle(escaped)
+    probe: _Probe = build(name)
+    application: interactive_app._InteractiveApplication = _app(monkeypatch, probe)
+    current: Point = _label_point(application._render_frame(80, 24), probe.panel.breadcrumb()[-1], CRUMB_SEPARATOR)
+
+    _click(application, current)
+    unchanged: tuple[object, ...] = _state(probe)
+    _click(application, _label_point(application._render_frame(80, 24), label, f"{label}{CRUMB_SEPARATOR}"))
+    _settle(probe)
+
+    assert unchanged == before
+    assert _state(probe) == _state(escaped)
+    assert _state(probe) != before
+
+
+@pytest.mark.parametrize(
+    ("name", "keys"),
+    [
+        ("titles", ()),
+        ("episodes", ()),
+        ("episodes", ("text:z",)),
+        ("candidates", ()),
+        ("draft", ()),
+        ("u08", ()),
+        ("query", ("text:/", "text:slime")),
+        ("history", ()),
+        ("history", ("text:/",)),
+        ("library_details", ()),
+    ],
+)
+def test_a_right_click_does_what_escape_does_also_in_a_focused_field(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch, name: str, keys: tuple[str, ...]
+) -> None:
+    escaped: _Probe = build(name)
+    clicked: _Probe = build(name)
+    for key in keys:
+        escaped.panel.handle_key(key)
+        clicked.panel.handle_key(key)
+    before: tuple[object, ...] = _state(escaped)
+    escaped.panel.handle_key("escape")
+    _settle(escaped)
+    application: interactive_app._InteractiveApplication = _app(monkeypatch, clicked)
+    application._render_frame(80, 24)
+
+    _right_click(application, Point(10, 12))
+    _settle(clicked)
+
+    assert _state(clicked) == _state(escaped)
+    assert _state(clicked) != before
+
+
+def test_a_right_click_on_a_tab_list_leaves_the_panel_like_escape(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    application: interactive_app._InteractiveApplication = _app(monkeypatch, build("subscriptions"))
+    application._render_frame(80, 24)
+
+    _right_click(application, Point(0, 0))
+
+    assert application._mode is interactive_app._ViewMode.HOME
+
+
+def _field(probe: _Probe) -> TextInput:
+    if probe.panel._history_input is not None:
+        return probe.panel._history_input
+    editor: TextInput | None = probe.anime._range_input
+    return probe.anime._query_input if editor is None else editor
+
+
+@pytest.mark.parametrize(
+    ("name", "keys", "shown"),
+    [
+        ("query", ("text:/", "text:slime", "escape"), ("> ", "slime")),
+        ("episodes", ("text:z", "text:1-3"), ("Zakres: ", "1-3")),
+        ("history", ("text:/", "text:abc"), ("", "abc ")),
+    ],
+)
+def test_a_click_in_a_text_field_focuses_it_and_puts_the_cursor_there_or_at_its_end(
+    build: Callable[[str], _Probe],
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    keys: tuple[str, ...],
+    shown: tuple[str, str],
+) -> None:
+    before, value = shown
+    probe: _Probe = build(name)
+    for key in keys:
+        probe.panel.handle_key(key)
+    application: interactive_app._InteractiveApplication = _app(monkeypatch, probe)
+    field: Point = _label_point(application._render_frame(80, 24), f"{before}{value}", f"{before}{value}")
+    text: str = _field(probe).text
+
+    _click(application, Point(field.x + len(before) + 1, field.y))
+    focused: bool = probe.panel._history_input is not None or probe.anime.input_focused
+    probe.panel.handle_key("text:Q")
+    inserted: str = _field(probe).text
+    application._render_frame(80, 24)
+    _click(application, Point(79, field.y))
+    probe.panel.handle_key("text:E")
+
+    assert focused
+    assert inserted == f"{text[0]}Q{text[1:]}"
+    assert _field(probe).text == f"{inserted}E"
+
+
+def _uncertain_release(probe: _Probe) -> _Probe:
+    anime: AnimeController = probe.anime
+    anime._confirm_choice = anime._release_candidates[0]
+    anime._confirm_view = anime._offer_view
+    anime._problem = "Wydanie niepewne"
+    anime._problem_return = _Screen.CANDIDATES
+    anime._screen = _Screen.PROBLEM
+    return probe
+
+
+def _double_click(application: interactive_app._InteractiveApplication, point: Point) -> None:
+    _click(application, point)
+    _click(application, point)
+
+
+def test_a_double_click_on_a_problem_text_never_confirms_the_release(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    probe: _Probe = _uncertain_release(_frozen(build("candidates")))
+    owner: episodes._ChoiceOwner = cast("episodes._ChoiceOwner", probe.owner)
+    choices: int = len(owner.choices)
+    application: interactive_app._InteractiveApplication = _app(monkeypatch, probe)
+    frame: Text = application._render_frame(80, 24)
+
+    _double_click(application, _label_point(frame, "Wydanie niepewne", "Wydanie niepewne"))
+    _settle(probe)
+
+    assert len(owner.choices) == choices
+    assert probe.anime._screen is _Screen.PROBLEM
+
+
+@pytest.mark.parametrize("name", ["titles", "episodes"])
+def test_a_double_click_in_the_details_text_only_points_at_a_line(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    probe: _Probe = _frozen(build(name))
+    probe.panel.handle_key("text:?")
+    before: tuple[object, ...] = _state(probe)
+    application: interactive_app._InteractiveApplication = _app(monkeypatch, probe)
+    frame: Text = application._render_frame(80, 24)
+    lines: list[str] = frame.plain.split("\n")
+    row: int = next(row for row in range(len(lines)) if _row_at(frame, row) is not None and lines[row].strip())
+
+    _double_click(application, Point(len(lines[row]) - len(lines[row].lstrip()), row))
+    _settle(probe)
+
+    assert probe.anime._details_open
+    assert _state(probe) == before
+
+
+@pytest.mark.parametrize("blocked", ["retry", "help"])
+def test_a_double_click_on_a_row_that_takes_no_cursor_runs_nothing(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch, blocked: str
+) -> None:
+    probe: _Probe = build("library")
+    if blocked == "retry":
+        probe.panel._retry = RetryProposal("material", "reacquire", ("group",), operation_id="operation")
+    probe.panel._help = blocked == "help"
+    application: interactive_app._InteractiveApplication = _app(monkeypatch, probe)
+    frame: Text = application._render_frame(80, 24)
+    row: int = next((row for row in range(24) if _row_at(frame, row) == 0), 12)
+
+    _double_click(application, Point(4, row))
+
+    assert probe.work == []
+    assert (probe.panel._retry is not None) == (blocked == "retry")
+    assert probe.panel._help == (blocked == "help")
+
+
+def test_a_click_on_a_row_that_takes_no_cursor_never_arms_a_double_click(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    probe: _Probe = build("library")
+    probe.panel._retry = RetryProposal("material", "reacquire", ("group",), operation_id="operation")
+    application: interactive_app._InteractiveApplication = _app(monkeypatch, probe)
+    point: Point = Point(4, next(row for row in range(24) if _row_at(application._render_frame(80, 24), row) == 0))
+
+    _click(application, point)
+    probe.panel._retry = None
+    application._render_frame(80, 24)
+    _click(application, point)
+
+    assert probe.panel._selected == 0
+    assert probe.work == []
+
+
+def test_a_click_on_a_placeholder_anime_row_never_arms_a_double_click() -> None:
+    panel: AnimePanel = AnimePanel(
+        AnimeViewState(screen=AnimeScreen.DRAFT, title="", items=(AnimeRow("busy", "Szukam", navigable=False),)),
+        lambda _action, _keys: None,
+        lambda: 0.0,
+    )
+    lines: list[str] = panel.frame(80, 24).plain.split("\n")
+    point: Point = Point(4, next(row for row, line in enumerate(lines) if "Szukam" in line))
+
+    def click() -> Click:
+        result: Click = Click()
+        for kind in (MouseEventType.MOUSE_DOWN, MouseEventType.MOUSE_UP):
+            result = panel.mouse(MouseEvent(point, kind, MouseButton.LEFT, frozenset()))
+        return result
+
+    first: Click = click()
+    panel.state.items = (AnimeRow("alpha", "Szukam dalej"),)
+    panel.frame(80, 24)
+    second: Click = click()
+
+    assert first == Click()
+    assert second == Click(ClickKind.ROW, 0)
+
+
+def _opened(monkeypatch: pytest.MonkeyPatch, probe: _Probe) -> list[tuple[str, object]]:
+    monkeypatch.setattr(state_module, "_open_path", lambda path, *, show_folder: None)
+    session: _Library = _Library()
+    for action in probe.work:
+        cast("Callable[[ResidentSession], None]", action)(cast("ResidentSession", session))
+    return session.calls
+
+
+def _double_click_row(application: interactive_app._InteractiveApplication, size: tuple[int, int], index: int) -> None:
+    point: Point = Point(4, _row_of(application._render_frame(*size), index))
+    _click(application, point)
+    application._render_frame(*size)
+    _click(application, point)
+
+
+@pytest.mark.parametrize("rows", [24, 25])
+def test_a_double_click_in_library_details_opens_the_clicked_file_when_its_notice_clears(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch, rows: int
+) -> None:
+    probe: _Probe = build("library_details")
+    probe.panel._selected = 0
+    probe.panel.handle_key("enter")
+    application: interactive_app._InteractiveApplication = _app(monkeypatch, probe)
+
+    _double_click_row(application, (80, rows), 3)
+
+    assert probe.panel._notice == ""
+    assert probe.panel._selected == 3
+    assert _opened(monkeypatch, probe) == [("file", _details_view().files[1].identity)]
+
+
+def test_a_double_click_in_a_narrow_library_opens_the_clicked_set_when_its_notice_clears(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    probe: _Probe = _list_probe(
+        monkeypatch,
+        _Tab.FILES,
+        {"library": [{"set_id": "first", "name": "Alpha"}, {"set_id": "second", "name": "Beta"}]},
+    )
+    probe.panel._notify("Nie udało się otworzyć pliku wideo w odtwarzaczu")
+    probe.panel._notice_persistent = True
+    application: interactive_app._InteractiveApplication = _app(monkeypatch, probe)
+
+    _double_click_row(application, (40, 12), 1)
+
+    assert probe.panel._selected == 1
+    assert _opened(monkeypatch, probe) == [("result", "second")]
+
+
+def test_a_double_click_across_a_library_change_opens_the_first_clicked_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    library: list[dict[str, str]] = [
+        {"set_id": f"e{number:02d}", "name": f"[Grp] Show - {number:02d} [1080p]"} for number in range(2, 42, 2)
+    ]
+    probe: _Probe = _list_probe(monkeypatch, _Tab.FILES, {"library": library})
+    application: interactive_app._InteractiveApplication = _app(monkeypatch, probe)
+    point: Point = Point(4, _row_of(application._render_frame(80, 24), 1))
+
+    _click(application, point)
+    changed: dict[str, object] = {"library": [{"set_id": "e03", "name": "[Grp] Show - 03 [1080p]"}, *library]}
+    probe.panel._preserve_library_selection(changed)
+    probe.panel._snapshot = changed
+    frame: Text = application._render_frame(80, 24)
+    _click(application, point)
+
+    assert _row_at(frame, point.y) == 1
+    assert probe.panel._selected == 2
+    assert _opened(monkeypatch, probe) == [("result", "e04")]
+
+
+def test_a_wheel_between_two_anime_clicks_cancels_the_double_click(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    probe: _Probe = _frozen(build("titles"))
+    application: interactive_app._InteractiveApplication = _app(monkeypatch, probe)
+    point: Point = _cursor_point(application._render_frame(80, 24), probe)
+
+    _click(application, point)
+    application._handle_scroll(1)
+    application._render_frame(80, 24)
+    _click(application, point)
+    _settle(probe)
+
+    assert probe.anime._screen is _Screen.TITLES
+
+
+def test_a_second_click_on_a_problem_painted_over_the_clicked_row_confirms_nothing() -> None:
+    panel: AnimePanel = AnimePanel(
+        AnimeViewState(
+            screen=AnimeScreen.RELEASES,
+            title="",
+            items=tuple(AnimeRow(f"release-{index}", f"Wydanie {index}") for index in range(8)),
+        ),
+        lambda _action, _keys: None,
+        lambda: 0.0,
+    )
+    lines: list[str] = panel.frame(80, 24).plain.split("\n")
+    point: Point = Point(10, next(row for row, line in enumerate(lines) if "Wydanie 6" in line))
+
+    def click() -> Click:
+        result: Click = Click()
+        for kind in (MouseEventType.MOUSE_DOWN, MouseEventType.MOUSE_UP):
+            result = panel.mouse(MouseEvent(point, kind, MouseButton.LEFT, frozenset()))
+        return result
+
+    first: Click = click()
+    panel.state.screen = AnimeScreen.PROBLEM
+    panel.state.items = (AnimeRow("problem", "Wydanie niepewne", navigable=False),)
+    panel.state.cursor = 0
+    panel.frame(80, 24)
+    second: Click = click()
+
+    assert first == Click(ClickKind.ROW, 6)
+    assert second == Click()
+
+
+def test_a_click_in_the_history_search_reaches_the_scrolled_character(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    probe: _Probe = build("history")
+    value: str = "abcdefghij" * 7
+    for key in ("text:/", f"text:{value}"):
+        probe.panel.handle_key(key)
+    application: interactive_app._InteractiveApplication = _app(monkeypatch, probe)
+    lines: list[str] = application._render_frame(60, 24).plain.split("\n")
+    row: int = next(row for row, line in enumerate(lines) if "abcdefghij" in line)
+    shown: str = lines[row].strip()
+
+    _click(application, Point(len(lines[row]) - len(lines[row].lstrip()), row))
+
+    assert sum("abcdefghij" in line for line in lines) == 1
+    assert probe.panel._history_input is not None
+    assert probe.panel._history_input.cursor == len(value) - len(shown)
+
+
+def test_a_crumb_level_counts_parts_even_when_a_title_contains_the_separator(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    probe: _Probe = build("history")
+    monkeypatch.setattr(state_module, "_HISTORY_CRUMB", ("Przetwarzanie", f"Hist{CRUMB_SEPARATOR}oria"))
+    application: interactive_app._InteractiveApplication = _app(monkeypatch, probe)
+    mark: str = f"Hist{CRUMB_SEPARATOR}oria"
+
+    _click(application, _label_point(application._render_frame(80, 24), "oria", mark))
+    stayed: bool = probe.panel._history_open
+    _click(application, _label_point(application._render_frame(80, 24), "Przetwarzanie", mark))
+
+    assert stayed
+    assert not probe.panel._history_open

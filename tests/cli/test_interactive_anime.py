@@ -32,6 +32,7 @@ from anishift.cli.interactive import anime as anime_module
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive.anime import AnimeController, AnimeResult, _Screen
 from anishift.cli.interactive.anime_view import AnimeFrame
+from anishift.cli.interactive.pointer import FrameSelection
 from anishift.cli.interactive.state import StateController, _Tab
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError, ErrorCode, ErrorContext
@@ -596,6 +597,7 @@ def test_live_app_mouse_routes_unicode_text_selection_and_copy(monkeypatch: pyte
     application: interactive_app._InteractiveApplication = object.__new__(interactive_app._InteractiveApplication)
     application._mode = interactive_app._ViewMode.STATE
     application._state = panel
+    application._frame_selection = FrameSelection()
     try:
         panel.handle_key("left")
         lines: list[str] = panel.render(120, 24).plain.splitlines()

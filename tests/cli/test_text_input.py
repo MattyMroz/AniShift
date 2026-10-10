@@ -6,6 +6,7 @@ from prompt_toolkit.application.current import set_app
 from prompt_toolkit.input import DummyInput
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
+from rich.style import Style
 from rich.text import Text
 
 from anishift.cli.interactive.palette import BRAND_THEME
@@ -69,7 +70,7 @@ def test_inactive_render_hides_selection_and_cursor_without_changing_the_buffer(
     inactive: Text = editor.render(12, masked=masked, focused=False)
     assert inactive.cell_len <= 12
     assert inactive.plain == ("•" * 12 if masked else editor.text[:12])
-    assert not inactive.spans
+    assert [span for span in inactive.spans if not (isinstance(span.style, Style) and span.style.meta)] == []
     assert inactive.style == "gray"
     assert "anime" not in inactive.plain if masked else inactive.plain.startswith("anime")
     assert editor.selected

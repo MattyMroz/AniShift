@@ -16,15 +16,17 @@ from anishift.cli.interactive.anime_state import (
     AnimeScreen,
     AnimeSnapshot,
     NoticeKind,
-    TextPoint,
     query_left,
 )
 from anishift.cli.interactive.menu import append_wrapped_row
 from anishift.cli.interactive.pointer import (
-    SELECTION_STYLE,
+    CRUMB_SEPARATOR,
     TextCell,
+    TextPoint,
     character_offset,
+    mark_crumbs,
     mark_row,
+    paint_selection,
     selected_cells,
     selected_text,
     text_cells,
@@ -84,6 +86,9 @@ _LIST_SCREENS: Final[frozenset[AnimeScreen]] = frozenset(
 )
 """Screens rendering one plain text column instead of a table."""
 
+_TEXT_SCREENS: Final[frozenset[AnimeScreen]] = frozenset({AnimeScreen.DETAILS, AnimeScreen.BUSY, AnimeScreen.PROBLEM})
+"""Screens of text, not lists: a click points at a row, a double click never runs Enter there."""
+
 
 @dataclass(frozen=True, slots=True)
 class AnimeFrame:
@@ -123,6 +128,7 @@ class _Canvas:
         self.lines: list[Text] = [Text(" " * width) for _ in range(rows)]
         self.regions: list[tuple[int, int, str]] = []
         self.rows: dict[int, int] = {}
+        self.opens: bool = True
 
     def place(self, columns: int) -> None:
         self.columns = max(min(columns, self.width - _MARGIN), 1)
@@ -156,12 +162,11 @@ class _Canvas:
     def finish(self, visible: int, selection: tuple[TextPoint, TextPoint] | None, first_row: int = 0) -> AnimeFrame:
         for row, index in self.rows.items():
             if 0 <= row < len(self.lines):
-                mark_row(self.lines[row], index)
+                mark_row(self.lines[row], index, opens=self.opens)
         cells: tuple[TextCell, ...] = text_cells([line.plain for line in self.lines], self.regions)
         text: Text = Text("\n").join(self.lines)
         frame: AnimeFrame = AnimeFrame(text, cells, visible, first_row)
-        for cell in frame.selected_cells(selection):
-            text.stylize(SELECTION_STYLE, cell.start, cell.end)
+        paint_selection(text, frame.selected_cells(selection))
         return frame
 
 
@@ -201,11 +206,14 @@ def render_anime(snapshot: AnimeSnapshot, columns: int, rows: int, now: float) -
     heading: int = _QUERY_HEADING_ROWS if query else _CONTEXT_ROWS if listed else HEADER_ROWS
     height: int = heading + (1 if query else max(shown, 1))
     canvas: _Canvas = _Canvas(width, rows)
+    canvas.opens = snapshot.screen not in _TEXT_SCREENS
     middle: int = (rows - len(keys) - 1) // 2 - heading if query else (rows - len(keys) - height) // 2
     start: int = max(min(middle, rows - FOOTER_ROWS - height), 0)
     canvas.top = start + heading
     if not query:
-        canvas.center(start, Text(snapshot.title, "white_bold"), selectable=True)
+        context: str = CRUMB_SEPARATOR.join(snapshot.crumbs) if snapshot.crumbs else snapshot.title
+        canvas.center(start, Text(context, "white_bold"), selectable=True)
+        mark_crumbs(canvas.lines[start], snapshot.crumbs)
         canvas.center(start + 1, Text(snapshot.global_status, _COLORS[snapshot.status_kind]))
     title_width: int = 0
     if query:
@@ -285,6 +293,8 @@ def _spec(screen: AnimeScreen) -> _Table:
             status_width=_SUBSCRIPTION_STATUS_WIDTH,
             optional=(2, 1),
         )
+    if screen is AnimeScreen.LIBRARY:
+        return _Table(("Nazwa", "Odcinek"), lambda item: (item.title, item.number), 2, 0, (0, 0))
     return _Table(
         ("Nr", "Tytuł", "Emisja", "Stan"),
         lambda item: (item.number, item.title, item.date, item.status),

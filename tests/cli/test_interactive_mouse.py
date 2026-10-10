@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -9,9 +9,9 @@ import pytest
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from rich.text import Text
-from test_interactive_manual import _audiobook_controller
+from test_interactive_manual import _audiobook_controller, _manual_at
 from test_interactive_manual import _controller as _manual_controller
-from test_interactive_settings_autosave import FakeSettingsService
+from test_interactive_settings_autosave import FakeSettingsService, _open_field
 from test_interactive_state import _row
 
 from anishift.application import AppService
@@ -19,18 +19,26 @@ from anishift.application.control_views import RetryProposal, encode_view
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive import state as state_module
 from anishift.cli.interactive.anime_panel import AnimePanel
-from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeViewState, TextPoint
+from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeViewState
 from anishift.cli.interactive.manual import ManualController, ManualResult
 from anishift.cli.interactive.manual import _Screen as _ManualScreen
 from anishift.cli.interactive.mascot_native import NATIVE_MASCOT_ANCHOR
 from anishift.cli.interactive.menu import append_wrapped_row
 from anishift.cli.interactive.pointer import (
+    CRUMB_SEPARATOR,
+    DOUBLE_CLICK_SECONDS,
+    SELECTION_GAP_STYLE,
     SELECTION_STYLE,
+    Click,
+    ClickKind,
     FrameSelection,
     PointerGesture,
+    TextPoint,
+    click_at,
+    mark_crumbs,
     mark_row,
+    mark_target,
     painted_cells,
-    row_at,
     selected_text,
 )
 from anishift.cli.interactive.progress import RichRunProgress
@@ -109,8 +117,17 @@ def _point(frame: Text, text: str) -> Point:
     return Point(Text(line[: line.index(text)]).cell_len, rows[0])
 
 
+def _row_at(frame: Text, row: int) -> int | None:
+    click: Click = click_at(frame, TextPoint(row, 0))
+    return click.value if click.kind in {ClickKind.ROW, ClickKind.LINE} else None
+
+
 def _reversed(frame: Text) -> str:
-    return "".join(frame.plain[span.start : span.end] for span in frame.spans if span.style == SELECTION_STYLE)
+    return "".join(
+        frame.plain[span.start : span.end]
+        for span in frame.spans
+        if span.style in {SELECTION_STYLE, SELECTION_GAP_STYLE}
+    )
 
 
 def _state(monkeypatch: pytest.MonkeyPatch) -> StateController:
@@ -165,13 +182,13 @@ def test_pointer_gesture_tells_a_click_from_a_drag() -> None:
     assert drag.selection is not None
 
 
-def test_row_at_names_every_line_of_a_wrapped_row_and_nothing_else() -> None:
+def test_click_at_names_every_line_of_a_wrapped_row_and_nothing_else() -> None:
     content: Text = Text("NAGŁÓWEK\n")
     append_wrapped_row(content, 2, ("pierwsza linia", "  dalszy ciąg"), False, "", index=7)
     content.append("stopka")
     mark_row(Text("bez znacznika"), 3)
 
-    assert [row_at(content, row) for row in range(5)] == [None, 7, 7, None, None]
+    assert [_row_at(content, row) for row in range(5)] == [None, 7, 7, None, None]
 
 
 def test_home_click_points_at_the_clicked_choice_without_running_it(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -328,7 +345,7 @@ def test_settings_click_after_the_wheel_lands_on_the_painted_row(monkeypatch: py
 
 
 def _row_of(frame: Text, index: int) -> int:
-    return next(row for row in range(len(frame.plain.split("\n"))) if row_at(frame, row) == index)
+    return next(row for row in range(len(frame.plain.split("\n"))) if _row_at(frame, row) == index)
 
 
 def test_settings_click_saves_a_pending_number_before_leaving_its_row(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -412,7 +429,7 @@ def test_manual_click_in_a_windowed_narrow_list_lands_on_the_painted_row(
     for _step in range(10):
         controller.handle_key("down")
     frame: Text = application._render_frame(50, 16)
-    shown: list[int] = [index for row in range(16) if (index := row_at(frame, row)) is not None]
+    shown: list[int] = [index for row in range(16) if (index := _row_at(frame, row)) is not None]
     target: int = shown[1]
 
     _click(application, Point(4, _row_of(frame, target)))
@@ -472,7 +489,7 @@ def test_library_click_after_the_wheel_keeps_the_view_and_lands_on_the_row(
     for _notch in range(3):
         application._handle_scroll(1)
     frame: Text = application._render_frame(columns, 20)
-    shown: list[int] = [index for row in range(20) if (index := row_at(frame, row)) is not None]
+    shown: list[int] = [index for row in range(20) if (index := _row_at(frame, row)) is not None]
     target: int = shown[2]
 
     _click(application, Point(4, _row_of(frame, target)))
@@ -480,7 +497,7 @@ def test_library_click_after_the_wheel_keeps_the_view_and_lands_on_the_row(
 
     assert shown[0] > 0
     assert library._selected == target
-    assert [row_at(after, row) for row in range(20)] == [row_at(frame, row) for row in range(20)]
+    assert [_row_at(after, row) for row in range(20)] == [_row_at(frame, row) for row in range(20)]
 
 
 def test_library_click_on_the_last_painted_row_keeps_the_view(
@@ -489,16 +506,16 @@ def test_library_click_on_the_last_painted_row_keeps_the_view(
     application, _copied = _application(monkeypatch, _Mode.STATE)
     application._state = library
     frame: Text = application._render_frame(80, 20)
-    shown: list[int] = [index for row in range(20) if (index := row_at(frame, row)) is not None]
+    shown: list[int] = [index for row in range(20) if (index := _row_at(frame, row)) is not None]
 
     _click(application, Point(4, _row_of(frame, shown[-1])))
     after: Text = application._render_frame(80, 20)
 
     assert library._selected == shown[-1]
-    assert [row_at(after, row) for row in range(20)] == [row_at(frame, row) for row in range(20)]
+    assert [_row_at(after, row) for row in range(20)] == [_row_at(frame, row) for row in range(20)]
 
 
-def test_library_click_on_the_tabs_changes_nothing_until_a_row_is_hit(
+def test_library_click_on_a_tab_name_switches_to_it_and_keeps_the_library_cursor(
     monkeypatch: pytest.MonkeyPatch, library: StateController
 ) -> None:
     application, _copied = _application(monkeypatch, _Mode.STATE)
@@ -506,13 +523,13 @@ def test_library_click_on_the_tabs_changes_nothing_until_a_row_is_hit(
     library._selected = 2
     frame: Text = application._render_frame(80, 24)
 
+    _click(application, _point(frame, "Biblioteka"))
+    stayed: int = library._tab
     _click(application, _point(frame, "Subskrypcje"))
-    beside: int = library._selected
-    _click(application, _point(frame, "Episode 0"))
 
-    assert beside == 2
-    assert library._selected == 0
-    assert library._tab == state_module._Tab.FILES
+    assert stayed == state_module._Tab.FILES
+    assert library._tab == state_module._Tab.SUBSCRIPTIONS
+    assert library._positions[state_module._Tab.FILES] == 2
 
 
 def test_library_drag_copies_the_painted_names(monkeypatch: pytest.MonkeyPatch, library: StateController) -> None:
@@ -526,7 +543,7 @@ def test_library_drag_copies_the_painted_names(monkeypatch: pytest.MonkeyPatch, 
     application._render_frame(80, 24)
     application._handle_key("interrupt")
 
-    assert copied == ["Episode 4\nEpisode 5"]
+    assert copied == ["Episode 4   —\nEpisode 5"]
     assert application._mode is _Mode.STATE
 
 
@@ -855,7 +872,7 @@ def test_a_name_starting_with_a_choice_mark_is_copied_whole(
 ) -> None:
     application, copied = _application(monkeypatch, _Mode.STATE)
     application._state = library
-    name: str = "● Alfa.mkv"
+    name: str = "● Alfa"
     library._snapshot = {"library": [{"set_id": "set-0", "name": name}]}
     start: Point = _point(application._render_frame(80, 24), name)
 
@@ -864,3 +881,390 @@ def test_a_name_starting_with_a_choice_mark_is_copied_whole(
     application._handle_key("copy")
 
     assert copied == [name]
+
+
+def _styles_at(text: Text, index: int) -> list[object]:
+    return [span.style for span in text.spans if span.start <= index < span.end]
+
+
+def test_a_selection_inverts_text_in_its_own_color_and_paints_gaps_between_columns_flat() -> None:
+    selection: FrameSelection = FrameSelection(lambda _value: True)
+    line: Text = Text("  ")
+    line.append("Alfa", style="brand_accent")
+    line.append("   ")
+    line.append("Be ta", style="success")
+    selection.paint(line.copy(), ())
+    for kind, column in (
+        (MouseEventType.MOUSE_DOWN, 0),
+        (MouseEventType.MOUSE_MOVE, 13),
+        (MouseEventType.MOUSE_UP, 13),
+    ):
+        selection.mouse(_event(kind, Point(column, 0)))
+
+    painted: Text = selection.paint(line.copy(), ())
+
+    assert all(SELECTION_STYLE in _styles_at(painted, index) for index in (*range(2, 6), *range(9, 14)))
+    assert "brand_accent" in _styles_at(painted, 2)
+    assert "success" in _styles_at(painted, 11)
+    assert SELECTION_GAP_STYLE not in _styles_at(painted, 11)
+    assert all(_styles_at(painted, index)[-1] == SELECTION_GAP_STYLE for index in range(6, 9))
+    assert all(SELECTION_STYLE not in _styles_at(painted, index) for index in range(6, 9))
+    assert _styles_at(painted, 0) == []
+
+
+def test_an_anime_table_selection_paints_the_gaps_between_its_columns_flat() -> None:
+    items: tuple[AnimeRow, ...] = tuple(
+        AnimeRow(f"key-{index}", f"Odcinek {index}", number=str(index), date="2026-10-10", status="Gotowe")
+        for index in range(1, 4)
+    )
+    panel: AnimePanel = AnimePanel(
+        AnimeViewState(screen=AnimeScreen.EPISODES, title="", items=items), lambda _action, _keys: None, lambda: 0.0
+    )
+    frame: Text = panel.frame(80, 24)
+    lines: list[str] = frame.plain.split("\n")
+    row: int = next(row for row, line in enumerate(lines) if "Odcinek 2" in line)
+    start: int = len(lines[row]) - len(lines[row].lstrip())
+    end: int = len(lines[row].rstrip()) - 1
+    for kind, column in ((MouseEventType.MOUSE_DOWN, start), (MouseEventType.MOUSE_UP, end)):
+        panel.mouse(MouseEvent(Point(column, row), kind, MouseButton.LEFT, frozenset()))
+    painted: Text = panel.frame(80, 24)
+    offset: int = sum(len(line) + 1 for line in lines[:row])
+    between: int = offset + lines[row].index("Odcinek 2") + len("Odcinek 2") + 1
+    inside: int = offset + lines[row].index("Odcinek 2") + len("Odcinek")
+
+    assert SELECTION_GAP_STYLE in _styles_at(painted, between)
+    assert SELECTION_STYLE in _styles_at(painted, inside)
+    assert SELECTION_GAP_STYLE not in _styles_at(painted, inside)
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now: float = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _rows_frame() -> Text:
+    content: Text = Text("NAGŁÓWEK\n")
+    for index in range(3):
+        content.append(f"wiersz {index}")
+        mark_row(content, index)
+        content.append("\n")
+    return content
+
+
+def _gesture(gesture: PointerGesture, frame: Text, *events: tuple[MouseEventType, Point]) -> Click:
+    clicks: list[Click] = [Click()]
+    for kind, point in events:
+        tracked = gesture.track(_event(kind, point))
+        if tracked is not None:
+            clicks.append(gesture.resolve(frame, tracked))
+    return clicks[-1]
+
+
+def _press(gesture: PointerGesture, frame: Text, point: Point) -> Click:
+    return _gesture(gesture, frame, (MouseEventType.MOUSE_DOWN, point), (MouseEventType.MOUSE_UP, point))
+
+
+def test_a_quick_second_click_on_the_same_row_opens_it_once() -> None:
+    clock: _Clock = _Clock()
+    gesture: PointerGesture = PointerGesture(clock)
+    frame: Text = _rows_frame()
+
+    first: Click = _press(gesture, frame, Point(1, 2))
+    clock.now += DOUBLE_CLICK_SECONDS / 2
+    second: Click = _press(gesture, frame, Point(5, 2))
+    third: Click = _press(gesture, frame, Point(5, 2))
+
+    assert first == Click(ClickKind.ROW, 1)
+    assert second == Click(ClickKind.OPEN)
+    assert third == Click(ClickKind.ROW, 1)
+
+
+def test_a_quick_second_click_opens_by_screen_line_even_when_the_rows_moved() -> None:
+    gesture: PointerGesture = PointerGesture(_Clock())
+    frame: Text = _rows_frame()
+    moved: Text = Text("\n").append_text(frame)
+
+    first: Click = _press(gesture, frame, Point(1, 2))
+    second: Click = _press(gesture, moved, Point(1, 2))
+    _press(gesture, frame, Point(1, 2))
+    elsewhere: Click = _press(gesture, moved, Point(1, 3))
+
+    assert first == Click(ClickKind.ROW, 1)
+    assert second == Click(ClickKind.OPEN)
+    assert elsewhere == Click(ClickKind.ROW, 1)
+
+
+def test_clicks_on_two_rows_never_open_either() -> None:
+    gesture: PointerGesture = PointerGesture(_Clock())
+    frame: Text = _rows_frame()
+
+    first: Click = _press(gesture, frame, Point(1, 1))
+    second: Click = _press(gesture, frame, Point(1, 2))
+
+    assert first == Click(ClickKind.ROW, 0)
+    assert second == Click(ClickKind.ROW, 1)
+
+
+def test_a_second_click_after_the_pause_only_points_at_the_row() -> None:
+    clock: _Clock = _Clock()
+    gesture: PointerGesture = PointerGesture(clock)
+    frame: Text = _rows_frame()
+
+    _press(gesture, frame, Point(1, 2))
+    clock.now += DOUBLE_CLICK_SECONDS + 0.01
+
+    assert _press(gesture, frame, Point(1, 2)) == Click(ClickKind.ROW, 1)
+
+
+def test_a_drag_is_never_a_click_and_breaks_a_double_click() -> None:
+    gesture: PointerGesture = PointerGesture(_Clock())
+    frame: Text = _rows_frame()
+
+    _press(gesture, frame, Point(1, 2))
+    dragged: Click = _gesture(
+        gesture,
+        frame,
+        (MouseEventType.MOUSE_DOWN, Point(1, 2)),
+        (MouseEventType.MOUSE_MOVE, Point(4, 2)),
+        (MouseEventType.MOUSE_UP, Point(4, 2)),
+    )
+    after: Click = _press(gesture, frame, Point(1, 2))
+
+    assert dragged == Click()
+    assert after == Click(ClickKind.ROW, 1)
+
+
+def test_a_right_press_asks_to_go_back_and_its_release_is_ignored() -> None:
+    gesture: PointerGesture = PointerGesture(_Clock())
+    frame: Text = _rows_frame()
+    _gesture(gesture, frame, (MouseEventType.MOUSE_DOWN, Point(1, 2)))
+
+    pressed = gesture.track(MouseEvent(Point(1, 2), MouseEventType.MOUSE_DOWN, MouseButton.RIGHT, frozenset()))
+    released = gesture.track(MouseEvent(Point(1, 2), MouseEventType.MOUSE_UP, MouseButton.RIGHT, frozenset()))
+
+    assert pressed is not None
+    assert gesture.resolve(frame, pressed) == Click(ClickKind.BACK)
+    assert released is None
+
+
+def test_click_at_names_tagged_tabs_and_earlier_crumbs_but_not_the_current_level() -> None:
+    tabs: Text = Text("Anime · Subskrypcje")
+    mark_target(tabs, 8, 19, Click(ClickKind.TAB, 1))
+    parts: tuple[str, ...] = ("Anime", f"Re{CRUMB_SEPARATOR}Zero (2016)")
+    crumb: Text = Text(f"   {CRUMB_SEPARATOR.join(parts)}")
+    mark_crumbs(crumb, parts)
+    frame: Text = Text("\n").join([tabs, crumb])
+
+    assert click_at(frame, TextPoint(0, 10)) == Click(ClickKind.TAB, 1)
+    assert click_at(frame, TextPoint(0, 2)) == Click()
+    assert click_at(frame, TextPoint(1, 4)) == Click(ClickKind.CRUMB, 0)
+    assert click_at(frame, TextPoint(1, 9)) == Click()
+    assert click_at(frame, TextPoint(1, 12)) == Click()
+    assert click_at(frame, TextPoint(1, 18)) == Click()
+
+
+def _frozen(application: interactive_app._InteractiveApplication) -> None:
+    application._frame_selection = FrameSelection(clock=lambda: 0.0)
+
+
+def _double(application: interactive_app._InteractiveApplication, point: Point) -> None:
+    for _press_number in range(2):
+        _click(application, point)
+
+
+_View = tuple[interactive_app._InteractiveApplication, Point, Callable[[], tuple[object, ...]]]
+
+
+def _home_view(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _View:
+    del tmp_path
+    application, _copied = _application(monkeypatch, _Mode.HOME)
+    _frozen(application)
+    point: Point = _point(application._render_frame(80, 24), "Panel")
+    return application, point, lambda: (application._mode, application._selected)
+
+
+def _settings_view(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _View:
+    del tmp_path
+    application, _copied = _application(monkeypatch, _Mode.SETTINGS)
+    _frozen(application)
+    controller: SettingsController = SettingsController(cast("AppService", FakeSettingsService()), lambda: None)
+    application._settings = controller
+    point: Point = Point(4, _row_of(application._render_frame(100, 30), 1))
+    return application, point, lambda: (application._mode, controller._category, controller._selected)
+
+
+def _manual_view(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _View:
+    application, controller, _copied = _manual(monkeypatch, tmp_path)
+    _frozen(application)
+    point: Point = Point(4, _row_of(application._render_frame(100, 40), 4))
+    return (
+        application,
+        point,
+        lambda: (application._mode, controller._screen, controller._selected, frozenset(controller._selected_groups)),
+    )
+
+
+@pytest.mark.parametrize("view", [_home_view, _settings_view, _manual_view])
+def test_a_double_click_on_a_row_does_what_enter_does_there(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, view: Callable[[pytest.MonkeyPatch, Path], _View]
+) -> None:
+    outcomes: dict[str, tuple[object, ...]] = {}
+    for action in ("double", "enter", "click"):
+        (tmp_path / action).mkdir()
+        application, point, snapshot = view(monkeypatch, tmp_path / action)
+        _click(application, point)
+        if action == "double":
+            _click(application, point)
+        if action == "enter":
+            application._handle_key("enter")
+        outcomes[action] = snapshot()
+
+    assert outcomes["double"] == outcomes["enter"]
+    assert outcomes["double"] != outcomes["click"]
+
+
+def test_a_double_click_leaves_no_selected_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    application, _copied = _application(monkeypatch, _Mode.SETTINGS)
+    _frozen(application)
+    controller: SettingsController = SettingsController(cast("AppService", FakeSettingsService()), lambda: None)
+    application._settings = controller
+
+    _double(application, Point(4, _row_of(application._render_frame(100, 30), 1)))
+
+    assert controller._category is not None
+    assert _reversed(application._render_frame(100, 30)) == ""
+
+
+def test_a_double_click_on_the_brand_neither_selects_nor_runs_anything(monkeypatch: pytest.MonkeyPatch) -> None:
+    application, copied = _application(monkeypatch, _Mode.HOME)
+    _frozen(application)
+    frame: Text = application._render_frame(80, 24)
+    brand: int = next(row for row, line in enumerate(frame.plain.split("\n")) if "█" in line)
+    column: int = frame.plain.split("\n")[brand].index("█")
+
+    _double(application, Point(column, brand))
+    application._handle_key("copy")
+
+    assert application._mode is _Mode.HOME
+    assert application._selected == 0
+    assert _reversed(application._render_frame(80, 24)) == ""
+    assert copied == []
+
+
+def test_a_double_click_after_the_pause_only_points(monkeypatch: pytest.MonkeyPatch) -> None:
+    application, _copied = _application(monkeypatch, _Mode.HOME)
+    clock: _Clock = _Clock()
+    application._frame_selection = FrameSelection(clock=clock)
+    point: Point = _point(application._render_frame(80, 24), "Wyjście")
+
+    _click(application, point)
+    clock.now += DOUBLE_CLICK_SECONDS + 0.01
+    _click(application, point)
+
+    assert application._selected == 3
+    assert cast("_Renderer", application._renderer).exits == 0
+
+
+def test_a_double_click_split_across_two_rows_runs_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    application, _copied = _application(monkeypatch, _Mode.HOME)
+    _frozen(application)
+    frame: Text = application._render_frame(80, 24)
+
+    _click(application, _point(frame, "Ustawienia"))
+    _click(application, _point(frame, "Wyjście"))
+
+    assert application._selected == 3
+    assert cast("_Renderer", application._renderer).exits == 0
+
+
+def test_a_drag_over_a_row_then_a_click_runs_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    application, _copied = _application(monkeypatch, _Mode.HOME)
+    _frozen(application)
+    start: Point = _point(application._render_frame(80, 24), "Wyjście")
+
+    _drag(application, start, Point(start.x + 3, start.y))
+    _click(application, start)
+
+    assert application._selected == 3
+    assert cast("_Renderer", application._renderer).exits == 0
+
+
+def test_a_right_click_in_settings_goes_back_like_escape(monkeypatch: pytest.MonkeyPatch) -> None:
+    application, _copied = _application(monkeypatch, _Mode.SETTINGS)
+    controller: SettingsController = _settings(FakeSettingsService(), "subtitles")
+    application._settings = controller
+    application._render_frame(100, 30)
+
+    application._handle_mouse(MouseEvent(Point(4, 4), MouseEventType.MOUSE_DOWN, MouseButton.RIGHT, frozenset()))
+
+    assert controller._category is None
+    assert application._mode is _Mode.SETTINGS
+
+
+def _field_point(frame: Text, before: str, value: str, index: int) -> Point:
+    lines: list[str] = frame.plain.split("\n")
+    row: int = next(row for row, line in enumerate(lines) if f"{before}{value}" in line)
+    start: int = lines[row].index(f"{before}{value}") + len(before)
+    return Point(Text(lines[row][: start + index]).cell_len, row)
+
+
+def test_a_click_in_a_settings_field_puts_the_cursor_there_and_past_the_end_at_its_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, _copied = _application(monkeypatch, _Mode.SETTINGS)
+    controller: SettingsController = SettingsController(cast("AppService", FakeSettingsService()), lambda: None)
+    _open_field(controller, "subtitles", "subtitle_max_chars_per_line")
+    application._settings = controller
+    editor = controller._editor
+    assert editor is not None
+    value: str = editor.input.text
+    point: Point = _field_point(application._render_frame(100, 30), f"{chr(0x276F)} ", value, 1)
+
+    _click(application, point)
+    application._handle_key("text:9")
+    placed: str = editor.input.text
+    application._render_frame(100, 30)
+    _click(application, Point(98, point.y))
+    application._handle_key("text:7")
+
+    assert placed == f"{value[0]}9{value[1:]}"
+    assert editor.input.text == f"{placed}7"
+
+
+def test_a_click_in_the_manual_path_field_reaches_the_scrolled_character(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    application, _copied = _application(monkeypatch, _Mode.MANUAL)
+    controller: ManualController = _manual_at(tmp_path / "manual", _ManualScreen.INPUT)
+    application._manual = controller
+    value: str = "0123456789" * 8
+    controller.handle_key(f"text:{value}")
+    frame: Text = application._render_frame(50, 20)
+    line: str = next(line for line in frame.plain.split("\n") if line.startswith("> "))
+
+    _click(application, Point(2, frame.plain.split("\n").index(line)))
+
+    assert controller._input.cursor == len(value) - len(line[2:].rstrip())
+    assert controller._input.cursor > 0
+    assert controller._screen is _ManualScreen.INPUT
+
+
+def test_a_click_on_a_row_that_takes_no_cursor_is_forgotten_before_the_next_click(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, _copied = _application(monkeypatch, _Mode.SETTINGS)
+    _frozen(application)
+    controller: SettingsController = SettingsController(cast("AppService", FakeSettingsService()), lambda: None)
+    application._settings = controller
+    point: Point = Point(4, _row_of(application._render_frame(100, 30), 1))
+
+    controller._busy = True
+    _click(application, point)
+    controller._busy = False
+    _click(application, point)
+
+    assert controller._selected == 1
+    assert controller._category is None

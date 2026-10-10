@@ -10,6 +10,7 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.selection import SelectionState
 from rich.text import Text
 
+from anishift.cli.interactive.pointer import Click, ClickKind, character_offset, mark_target
 from anishift.text.graphemes import split_graphemes
 
 __all__ = ["EDIT_KEYS", "TextInput", "is_edit_key"]
@@ -123,6 +124,7 @@ class TextInput:
         line: Text = Text(value, style="white_bold" if focused else "gray")
         if not focused:
             line.truncate(max(width, 1), overflow="crop")
+            mark_target(line, 0, len(line), Click(ClickKind.FIELD, 0))
             return line
         if self.selected:
             selection_start, selection_end = self._buffer.document.selection_range()
@@ -138,12 +140,17 @@ class TextInput:
             start = end
         line.stylize("reverse", start, end)
         cursor_cells: int = line[:end].cell_len
-        offset: int = min(max(cursor_cells - max(width, 1), 0), line[:start].cell_len)
-        result: Text = line
-        if offset:
-            result = _visible_tail(result, offset)
+        hidden: int = character_offset(line.plain, min(max(cursor_cells - max(width, 1), 0), line[:start].cell_len))
+        result: Text = line[hidden:]
         result.truncate(max(width, 1), overflow="crop")
+        mark_target(result, 0, len(result), Click(ClickKind.FIELD, hidden))
         return result
+
+    def place(self, index: int) -> None:
+        """Put the text cursor before character ``index``, clamped to the value, and drop any selection."""
+        self._buffer.selection_state = None
+        self._buffer.cursor_position = min(max(index, 0), len(self.text))
+        self.pristine = False
 
     def _move(self, key: str) -> None:
         selecting: bool = "shift-" in key
@@ -220,14 +227,3 @@ class TextInput:
             )
             if key == "copy":
                 self._buffer.selection_state = selection
-
-
-def _visible_tail(text: Text, cells: int) -> Text:
-    index: int = 0
-    used: int = 0
-    for grapheme in split_graphemes(text.plain):
-        if used >= cells:
-            break
-        used += Text(grapheme).cell_len
-        index += len(grapheme)
-    return text[index:]

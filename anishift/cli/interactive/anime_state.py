@@ -10,6 +10,7 @@ from typing import Final
 
 from rich.text import Text
 
+from anishift.cli.interactive.pointer import TextPoint
 from anishift.cli.interactive.text_input import TextInput
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -43,6 +44,7 @@ class AnimeScreen(StrEnum):
     PROBLEM = "problem"
     DRAFT = "draft"
     SUBSCRIPTIONS = "subscriptions"
+    LIBRARY = "library"
 
 
 class NoticeKind(StrEnum):
@@ -110,14 +112,6 @@ class AnimeRow:
         )
 
 
-@dataclass(frozen=True, slots=True, order=True)
-class TextPoint:
-    """Address a terminal cell in reading order."""
-
-    row: int
-    column: int
-
-
 @dataclass(frozen=True, slots=True)
 class AnimeSnapshot:
     """Freeze all inputs needed for a deterministic frame."""
@@ -143,6 +137,7 @@ class AnimeSnapshot:
     status_kind: NoticeKind = NoticeKind.WARNING
     rendered_field: Text | None = None
     busy: str = ""
+    crumbs: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -168,6 +163,7 @@ class AnimeViewState:
     global_status: str = ""
     status_kind: NoticeKind = NoticeKind.WARNING
     busy: str = ""
+    crumbs: tuple[str, ...] = ()
 
     def snapshot(self, width: int = 80) -> AnimeSnapshot:
         """Freeze local values without changing state or reading a clock."""
@@ -199,6 +195,7 @@ class AnimeViewState:
                 focused=self.query_focused or self.range_input is not None,
             ),
             busy=self.busy,
+            crumbs=self.crumbs,
         )
 
     def toggle(self) -> None:

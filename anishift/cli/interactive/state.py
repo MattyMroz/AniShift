@@ -11,7 +11,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
-from natsort import os_sorted
+from natsort import os_sort_keygen
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from rich.console import Console
@@ -22,11 +22,13 @@ from anishift.application import (
     EpisodeReason,
     HistoryEvent,
     LibraryFileIdentity,
+    LibraryLabel,
     LibrarySet,
     RefusalReason,
     RetryProposal,
     RunProgressSnapshot,
     decode_view,
+    library_label,
 )
 from anishift.application.events import RunEvent, sanitize_event_message
 from anishift.cli.interactive.actions import Action, ScreenActions, footer_segments, help_lines, pack_footer
@@ -46,6 +48,7 @@ from anishift.cli.interactive.menu import (
     visible_window,
     wrap_entries,
 )
+from anishift.cli.interactive.pointer import CRUMB_SEPARATOR, Click, ClickKind, mark_crumbs, mark_target
 from anishift.cli.interactive.progress import ObservedProgressTimer, RichRunProgress, render_material_progress
 from anishift.cli.interactive.subscription_texts import (
     CHECK_SHOWN_S,
@@ -190,6 +193,12 @@ _ADD_KEYS: Final[str] = "D lub /"
 _NO_SUBSCRIPTIONS: Final[str] = "Brak subskrypcji"
 """Only line of an empty subscription list."""
 
+_NO_ROWS: Final[str] = "Brak pozycji"
+"""Only line of an empty list."""
+
+_TITLE_KEY: Final[Callable[[str], object]] = os_sort_keygen()
+"""Order Library titles the way the system file browser orders names."""
+
 _CONNECTING: Final[str] = "Łączenie…"
 """Only line of the subscription list before the owner's first listing."""
 
@@ -206,8 +215,8 @@ _STATUS_COUNTS: Final[tuple[tuple[str, str], ...]] = (
 _DETAIL_HELP_ROWS: Final[int] = 3
 """Rows the help under Library files needs: a blank line, the "Ten ekran" heading and one hint line."""
 
-_HISTORY_CRUMB: Final[str] = "Przetwarzanie \u203a Historia"
-"""Breadcrumb above the History list."""
+_HISTORY_CRUMB: Final[tuple[str, ...]] = ("Przetwarzanie", "Historia")
+"""Breadcrumb levels above the History list."""
 
 _ANSWERS: Final[str] = "Enter tak · Esc nie"
 """Keys answering the cancellation question."""
@@ -221,8 +230,13 @@ _HISTORY_SPAN: Final[str] = "Historia z ostatnich 30 dni"
 _PANEL_ACTIONS: Final[tuple[Action, ...]] = (("M", "ręczny"), ("U", "ustawienia"))
 """Mode switches listed under ? on every list outside Anime."""
 
-_TAB_KEYS: Final[frozenset[str]] = frozenset({"tab", "backtab", "left", "right"})
-"""Keys switching the panel tab."""
+_CLICKED_TAB: Final[str] = "tab:"
+"""Prefix of the key a click on a tab name sends, followed by the tab index."""
+
+_TAB_KEYS: Final[frozenset[str]] = frozenset(
+    {"tab", "backtab", "left", "right", *(f"{_CLICKED_TAB}{index}" for index in range(len(_TABS)))}
+)
+"""Keys switching the panel tab, a clicked tab name included."""
 
 _MOVE_KEYS: Final[frozenset[str]] = frozenset({"up", "down", "pageup", "pagedown", "home", "end"})
 """Keys moving a list cursor or scrolling a help block."""
@@ -291,6 +305,17 @@ def refusal_text(problem: BaseException) -> str:
     return _REFUSAL_TEXTS.get(reason) or _LIBRARY_PROBLEMS.get(reason) or fallback or _UNKNOWN_REFUSAL
 
 
+def tab_key(index: int) -> str:
+    """Return the key a click on tab ``index`` sends, so it switches exactly like Tab."""
+    return f"{_CLICKED_TAB}{index}"
+
+
+def _tab_target(current: int, key: str) -> int:
+    if key.startswith(_CLICKED_TAB):
+        return int(key.removeprefix(_CLICKED_TAB))
+    return (current + (-1 if key in {"left", "backtab"} else 1)) % len(_TABS)
+
+
 class _Tab(IntEnum):
     ANIME = 0
     SUBSCRIPTIONS = 1
@@ -342,6 +367,7 @@ class StateController:
         self._follow_cursor: dict[int, bool] = {}
         self._anime: AnimeController | None = None
         self._anime_top: int = 0
+        self._heading_press: bool = False
         self._connected: bool = False
         self._busy: bool = False
         self._notice: str = ""
@@ -560,7 +586,7 @@ class StateController:
         if key in _TAB_KEYS:
             self._view_generation += 1
             self._details = None
-            self._switch_tab((self._tab + (-1 if key in {"left", "backtab"} else 1)) % len(_TABS))
+            self._switch_tab(_tab_target(self._tab, key))
             self._notify("")
             if self._tab == _Tab.FILES:
                 self._work(lambda session: session.library())
@@ -758,15 +784,18 @@ class StateController:
             return len(_TABS) + 1
         return self._tab
 
-    def mouse(self, event: MouseEvent) -> bool:
-        """Cancel an open question on a press or forward Anime cells, reporting whether the panel took the event."""
+    def mouse(self, event: MouseEvent) -> Click | None:
+        """Cancel an open question on a press or forward Anime body cells; ``None`` leaves the event to the frame."""
         with self._lock:
+            if event.event_type is MouseEventType.MOUSE_DOWN:
+                self._heading_press = event.position.y < self._anime_top
             if self._question is not None and event.event_type is MouseEventType.MOUSE_DOWN:
                 self._question = None
-            elif self._tab != _Tab.ANIME or self._anime is None:
-                return False
+                click: Click = Click()
+            elif self._tab != _Tab.ANIME or self._anime is None or self._heading_press:
+                return None
             else:
-                self._anime.mouse(
+                click = self._anime.mouse(
                     MouseEvent(
                         Point(event.position.x, event.position.y - self._anime_top),
                         event.event_type,
@@ -775,20 +804,29 @@ class StateController:
                     )
                 )
         self._invalidate()
-        return True
+        return click
 
     def view_key(self) -> tuple[object, ...]:
         """Identify the painted tab and list, so a selection never outlives them."""
         with self._lock:
             return (self._shown_tab(), self._viewport(), self._history_open, self._retry is not None, self._help)
 
-    def select(self, index: int) -> None:
-        """Move the cursor to a clicked row outside Anime without running its action."""
+    def place(self, index: int) -> None:
+        """Focus the clicked text field and put its cursor before a clicked character."""
         with self._lock:
-            if self._tab == _Tab.ANIME or self._retry is not None or self._help:
-                return
-            if not 0 <= index < len(self._entries(120)):
-                return
+            if self._tab == _Tab.ANIME and self._anime is not None:
+                self._anime.place(index)
+            elif self._history_input is not None:
+                self._history_input.place(index)
+        self._invalidate()
+
+    def select(self, index: int) -> bool:
+        """Move the cursor to a clicked row without running its action and report whether it stands there."""
+        with self._lock:
+            if self._tab == _Tab.ANIME:
+                return self._anime is not None and self._anime.points_at(index)
+            if self._retry is not None or self._help or not 0 <= index < len(self._entries(120)):
+                return False
             if index != self._selected and self._tab in {_Tab.FILES, _Tab.SUBSCRIPTIONS}:
                 self._view_generation += 1
                 self._notify("")
@@ -796,6 +834,7 @@ class StateController:
             self._selected = index
             self._follow_cursor[self._viewport()] = False
         self._invalidate()
+        return True
 
     def scroll(self, direction: int) -> None:
         """Move the visible list without changing its selected identity."""
@@ -818,8 +857,8 @@ class StateController:
         anime: AnimeController | None = self._anime
         if anime is None:
             return StateResult.CONTINUE
-        if key in {"tab", "backtab"} or (key in {"left", "right"} and not anime.input_focused):
-            self._switch_tab((self._shown_tab() + (-1 if key in {"left", "backtab"} else 1)) % len(_TABS))
+        if key in _TAB_KEYS and (key not in {"left", "right"} or not anime.input_focused):
+            self._switch_tab(_tab_target(self._shown_tab(), key))
             self._invalidate()
             return StateResult.CONTINUE
         if key.casefold() == "text:o" and not anime.accepts_text:
@@ -1338,6 +1377,8 @@ class StateController:
                 body = self._help_body(columns, area)
             elif self._tab == _Tab.SUBSCRIPTIONS and self._retry is None:
                 body = self._subscription_body(columns, area)
+            elif self._library_table(columns, area):
+                body = self._library_body(columns, area)
             else:
                 body = self._list_body(columns, area)
             self._anime_top = len(heading)
@@ -1391,9 +1432,7 @@ class StateController:
                 content.append(f"{' ' * (left + 2)}{line}\n", style="gray")
         if not entries:
             empty: str = (
-                "Brak aktywnego przetwarzania"
-                if self._tab == _Tab.PROGRESS and not self._history_open
-                else "Brak pozycji"
+                "Brak aktywnego przetwarzania" if self._tab == _Tab.PROGRESS and not self._history_open else _NO_ROWS
             )
             if self._tab == _Tab.PROGRESS and self._history_open and self._history_problem:
                 empty = "Historia niedostępna"
@@ -1418,9 +1457,14 @@ class StateController:
             if index:
                 tabs.append(" · ", style="gray")
             tabs.append(name, style="brand_accent" if shown == index else "gray")
-        if tabs.cell_len > max(columns - 2, 1):
-            return Text(f"← {_TABS[shown]} ({shown + 1}/{len(_TABS)}) →", style="brand_accent")
-        return tabs
+            if index != shown:
+                mark_target(tabs, len(tabs) - len(name), len(tabs), Click(ClickKind.TAB, index))
+        if tabs.cell_len <= max(columns - 2, 1):
+            return tabs
+        compact: Text = Text(f"← {_TABS[shown]} ({shown + 1}/{len(_TABS)}) →", style="brand_accent")
+        mark_target(compact, 0, 1, Click(ClickKind.TAB, (shown - 1) % len(_TABS)))
+        mark_target(compact, len(compact) - 1, len(compact), Click(ClickKind.TAB, (shown + 1) % len(_TABS)))
+        return compact
 
     def _view_footer(self, width: int) -> list[str | Text]:
         question: str = self._question_text()
@@ -1431,7 +1475,7 @@ class StateController:
             return ["Enter przygotuj · Esc wróć", self._notice]
         if self._tab == _Tab.PROGRESS and self._history_open:
             if self._history_input is not None:
-                return [self._history_input.render(100), "Enter szukaj · Esc anuluj", self._history_problem]
+                return [self._history_input.render(width), "Enter szukaj · Esc anuluj", self._history_problem]
             return [*pack_footer(footer_segments(self._actions()), width), self._history_problem, self._notice]
         return self._footer(width)
 
@@ -1441,10 +1485,9 @@ class StateController:
             result.append(self._notice.rstrip("."))
         if self._tab == _Tab.FILES and self._library_notice:
             result.append(self._library_notice)
-        relocations: list[Mapping[str, object]] = _relocation_problems(self._snapshot)
-        if self._details is None and self._tab == _Tab.FILES and relocations:
-            names: str = ", ".join(_safe_text(item["name"]) for item in relocations)
-            result.append(f"P ponów przenoszenie do biblioteki · {names}")
+        relocation: str = self._relocation_line() if self._tab == _Tab.FILES and self._details is None else ""
+        if relocation:
+            result.append(relocation)
         result.extend(pack_footer(footer_segments(self._actions(), more=self._details is None), width))
         return result
 
@@ -1512,26 +1555,75 @@ class StateController:
         return ScreenActions(footer, _PANEL_ACTIONS)
 
     def _subscription_body(self, columns: int, rows: int) -> Text:
+        empty: str = _NO_SUBSCRIPTIONS if self._snapshot else _CONNECTING
+        return self._table_body(
+            columns,
+            rows,
+            AnimeScreen.SUBSCRIPTIONS,
+            self._subscription_rows(),
+            empty,
+            self._notice.rstrip("."),
+            self._subscription_warning(),
+        )
+
+    def _library_body(self, columns: int, rows: int) -> Text:
+        notice: str = self._notice.rstrip(".") if self._notice_persistent else ""
+        return self._table_body(
+            columns,
+            rows,
+            AnimeScreen.LIBRARY,
+            tuple(_library_row(item) for item in _library_rows(self._snapshot)),
+            _NO_ROWS,
+            " · ".join(text for text in (notice, self._library_notice) if text),
+            self._relocation_line(),
+        )
+
+    def _library_table(self, columns: int, rows: int) -> bool:
+        listed: bool = self._tab == _Tab.FILES and self._details is None and self._retry is None
+        return listed and columns >= MIN_COLUMNS and rows >= MIN_ROWS
+
+    def _relocation_line(self) -> str:
+        relocations: list[Mapping[str, object]] = _relocation_problems(self._snapshot)
+        if not relocations:
+            return ""
+        names: list[str] = [
+            _safe_text(library_label(str(item["name"])).text)
+            for item in relocations
+            if item.get("name") and item.get("name") != item.get("group_id")
+        ]
+        unnamed: int = len(relocations) - len(names)
+        if unnamed:
+            names.append(f"{'inne zestawy' if names else 'zestawy'}: {unnamed}")
+        return f"P ponów przenoszenie do biblioteki · {', '.join(names)}"
+
+    def _table_body(  # noqa: PLR0913
+        self,
+        columns: int,
+        rows: int,
+        screen: AnimeScreen,
+        items: tuple[AnimeRow, ...],
+        empty: str,
+        notice: str,
+        status: str,
+    ) -> Text:
         tight: bool = rows == MIN_ROWS and columns >= MIN_COLUMNS
         area: int = rows if tight else max(rows - 1, 1)
-        items: tuple[AnimeRow, ...] = self._subscription_rows()
         self._selected = min(self._selected, max(len(items) - 1, 0))
         visible: int = visible_rows(area)
         self._page = visible
-        offset: int = min(self._offsets.get(_Tab.SUBSCRIPTIONS, 0), max(len(items) - visible, 0))
-        if self._follow_cursor.get(_Tab.SUBSCRIPTIONS, True):
+        offset: int = min(self._offsets.get(self._tab, 0), max(len(items) - visible, 0))
+        if self._follow_cursor.get(self._tab, True):
             offset = max(min(offset, self._selected), self._selected - visible + 1)
-        self._offsets[_Tab.SUBSCRIPTIONS] = offset
-        empty: str = _NO_SUBSCRIPTIONS if self._snapshot else _CONNECTING
+        self._offsets[self._tab] = offset
         snapshot: AnimeSnapshot = AnimeSnapshot(
-            AnimeScreen.SUBSCRIPTIONS if items else AnimeScreen.DETAILS,
+            screen if items else AnimeScreen.DETAILS,
             "",
             items or (AnimeRow("empty", empty, navigable=False),),
             cursor=self._selected,
             offset=offset,
-            notice=self._notice.rstrip("."),
+            notice=notice,
             controls=footer_segments(self._actions()),
-            global_status=self._subscription_warning(),
+            global_status=status,
         )
         frame: AnimeFrame = render_anime(snapshot, columns, area, self._clock().timestamp())
         lines: list[Text] = list(frame.text.split("\n"))
@@ -1545,13 +1637,22 @@ class StateController:
         status: Text = _centered(Text(self._global_status(max(columns - 4, 1)), style="gray"), columns)
         return Text("\n").join([*lines, *padding, status])
 
+    def breadcrumb(self) -> tuple[str, ...]:
+        """Return the breadcrumb levels above the shown content, none on the list levels."""
+        with self._lock:
+            if self._tab == _Tab.ANIME and self._anime is not None:
+                return self._anime.breadcrumb()
+            if self._tab == _Tab.PROGRESS and self._history_open:
+                return _HISTORY_CRUMB
+            if self._details is not None:
+                return ("Biblioteka", _safe_text(library_label(self._details.name).text))
+            return ()
+
     def _breadcrumb(self, columns: int) -> Text:
-        crumb: str = ""
-        if self._tab == _Tab.PROGRESS and self._history_open:
-            crumb = _HISTORY_CRUMB
-        elif self._details is not None:
-            crumb = f"Biblioteka \u203a {_safe_text(self._details.name)}"
-        return _centered(Text(fit(crumb, max(columns - 2, 1)), style="white_bold"), columns)
+        parts: tuple[str, ...] = self.breadcrumb()
+        line: Text = _centered(Text(fit(CRUMB_SEPARATOR.join(parts), max(columns - 2, 1)), style="white_bold"), columns)
+        mark_crumbs(line, parts)
+        return line
 
     def _subscription_rows(self) -> tuple[AnimeRow, ...]:
         now: datetime = self._clock()
@@ -1632,7 +1733,7 @@ class StateController:
         if self._tab == _Tab.SUBSCRIPTIONS:
             return [(_safe_text(item.get("title", "")), None) for item in self._subscriptions]
         if self._tab == _Tab.FILES:
-            entries = [(_safe_text(item.get("name", "")), None) for item in _library_rows(self._snapshot)]
+            entries = [(_safe_text(_library_label(item).text), None) for item in _library_rows(self._snapshot)]
         return entries
 
     def _processing_entries(self, columns: int) -> list[tuple[str | Text, bool | None]]:
@@ -1846,13 +1947,28 @@ def _library_rows(snapshot: Mapping[str, object]) -> list[Mapping[str, object]]:
         if not item.get("restored")
         and (item.get("active") or (item.get("total") and item.get("recycled") == item.get("total")))
     }
-    return os_sorted(
+    return sorted(
         [
             *_rows(snapshot.get("library")),
             *(item for item in _rows(snapshot.get("library_problems")) if str(item.get("set_id")) not in deleted),
         ],
-        key=lambda item: (str(item.get("name", "")), _library_row_id(item)),
+        key=_library_order,
     )
+
+
+def _library_label(item: Mapping[str, object]) -> LibraryLabel:
+    return library_label(str(item.get("name", "")))
+
+
+def _library_order(item: Mapping[str, object]) -> tuple[object, ...]:
+    label: LibraryLabel = _library_label(item)
+    numbers: tuple[object, ...] = (label.season or 0, label.episode or 0, label.last or 0)
+    return (_TITLE_KEY(label.title), label.episode is None, *numbers, _library_row_id(item))
+
+
+def _library_row(item: Mapping[str, object]) -> AnimeRow:
+    label: LibraryLabel = _library_label(item)
+    return AnimeRow(_library_row_id(item), _safe_text(label.title), number=label.episode_text)
 
 
 def _library_row_id(item: Mapping[str, object]) -> str:

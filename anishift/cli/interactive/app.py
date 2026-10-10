@@ -31,7 +31,7 @@ from anishift.cli.interactive.manual import ManualController, ManualResult, Manu
 from anishift.cli.interactive.mascot import MascotController, MascotState
 from anishift.cli.interactive.mascot_native import MASCOT_REST_TOP_ROWS, NATIVE_MASCOT_ANCHOR
 from anishift.cli.interactive.menu import with_footer
-from anishift.cli.interactive.pointer import FrameSelection, mark_row
+from anishift.cli.interactive.pointer import Click, ClickKind, FrameSelection, mark_row
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.prompts import (
     TEXT_MASCOT_SIZE,
@@ -43,7 +43,7 @@ from anishift.cli.interactive.prompts import (
     status_line,
 )
 from anishift.cli.interactive.settings import SettingsController, SettingsResult
-from anishift.cli.interactive.state import StateController, StateResult, refusal_text
+from anishift.cli.interactive.state import StateController, StateResult, refusal_text, tab_key
 from anishift.cli.resident import ResidentSession
 from anishift.cli.run import AutoRunRefusal, PreparedAutoRun, execute_plan, prepare_auto_run
 from anishift.errors import AniShiftError
@@ -85,6 +85,9 @@ _QUEUE_WHEEL_ROWS: Final[int] = 3
 
 _QUEUE_MARKER_ROWS: Final[int] = 2
 """Rows reserved above and below the queue for the hidden-row markers."""
+
+_CRUMB_ESCAPES: Final[int] = 4
+"""Most Esc presses one breadcrumb click sends; details over a problem over the Anime release list need four."""
 
 _MINIMUM_BRANDED_ROWS: Final[int] = 8
 """Minimum terminal height for a brand, gap, queue markers and progress."""
@@ -361,27 +364,75 @@ class _InteractiveApplication:
             self._renderer.exit()
 
     def _handle_mouse(self, event: MouseEvent) -> None:
-        if self._mode is _ViewMode.STATE and self._state is not None and self._state.mouse(event):
+        taken: Click | None = (
+            self._state.mouse(event) if self._mode is _ViewMode.STATE and self._state is not None else None
+        )
+        if taken is not None:
+            self._frame_selection.clear()
+            self._follow_click(taken)
             return
-        index: int | None = self._frame_selection.mouse(event)
-        if index is not None:
-            self._select_row(index)
+        self._follow_click(self._frame_selection.mouse(event))
         self._renderer.invalidate()
 
-    def _select_row(self, index: int) -> None:
-        """Point the current list at a clicked row without running its action."""
+    def _follow_click(self, click: Click) -> None:
+        """Point at a clicked row or text, or run what Enter, Tab or Esc does for the other clicks."""
+        if click.kind in {ClickKind.ROW, ClickKind.LINE, ClickKind.OPEN}:
+            self._point_at(click)
+        elif click.kind is ClickKind.TAB:
+            self._handle_key(tab_key(click.value))
+        elif click.kind is ClickKind.CRUMB:
+            self._leave_crumb(click.value)
+        elif click.kind is ClickKind.BACK:
+            self._handle_key("escape")
+        elif click.kind is ClickKind.FIELD:
+            self._place_cursor(click.value)
+
+    def _place_cursor(self, index: int) -> None:
+        """Focus the clicked text field of the current view and put its cursor before a clicked character."""
+        with self._lock:
+            mode: _ViewMode = self._mode
+            settings: SettingsController | None = self._settings
+            manual: ManualController | None = self._manual
+        if mode is _ViewMode.SETTINGS and settings is not None:
+            settings.place(index)
+        elif mode is _ViewMode.MANUAL and manual is not None:
+            manual.place(index)
+        elif mode is _ViewMode.STATE and self._state is not None:
+            self._state.place(index)
+
+    def _point_at(self, click: Click) -> None:
+        """Point at a clicked row or run Enter on the cursor for a double click; a row without a cursor forgets it."""
+        if click.kind is ClickKind.OPEN:
+            self._handle_key("enter")
+        elif not self._select_row(click.value):
+            self._frame_selection.clear()
+
+    def _leave_crumb(self, level: int) -> None:
+        """Press Esc while the breadcrumb still shows the clicked ``level`` with deeper levels below it."""
+        state: StateController | None = self._state
+        if state is None:
+            return
+        clicked: tuple[str, ...] = state.breadcrumb()[: level + 1]
+        for _step in range(_CRUMB_ESCAPES):
+            shown: tuple[str, ...] = state.breadcrumb()
+            if self._mode is not _ViewMode.STATE or len(shown) <= level + 1 or shown[: level + 1] != clicked:
+                return
+            self._handle_key("escape")
+
+    def _select_row(self, index: int) -> bool:
+        """Point the current list at a clicked row without running its action and report whether it stands there."""
         with self._lock:
             mode: _ViewMode = self._mode
             settings: SettingsController | None = self._settings
             manual: ManualController | None = self._manual
             if mode is _ViewMode.HOME and index < len(self._home_choices):
                 self._selected = index
+                return True
         if mode is _ViewMode.SETTINGS and settings is not None:
-            settings.select(index)
-        elif mode is _ViewMode.MANUAL and manual is not None:
-            manual.select(index)
-        elif mode is _ViewMode.STATE and self._state is not None:
-            self._state.select(index)
+            return settings.select(index)
+        if mode is _ViewMode.MANUAL and manual is not None:
+            return manual.select(index)
+        return mode is _ViewMode.STATE and self._state is not None and self._state.select(index)
 
     def _handle_scroll(self, direction: int) -> None:
         self._frame_selection.clear()

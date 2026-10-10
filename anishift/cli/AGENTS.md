@@ -88,7 +88,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   terminals reach the full title, Odcinki (`done/episode_count`, else `on_disk` from an older owner: episodes on disk plus
   `watched`, the episodes before the first target that are neither on disk nor ordered nor refused (`_skipped`);
   `watched_line` names them beneath the row and in U08) and Gotowe. Row states and columns come only from `subscription_texts` (`row_state`,
-  `row_columns`, `row_summary`). The list is `render_anime` with `AnimeScreen.SUBSCRIPTIONS`: one row
+  `row_columns`, `row_summary`). The list is `render_anime` with `AnimeScreen.SUBSCRIPTIONS` through `_table_body`, shared with Library: one row
   per subscription, fixed Stan width, optional columns dropped before the title shrinks below
   `_TITLE_FLOOR`; an empty list renders as DETAILS with the one row „Brak subskrypcji”, and „Łączenie…” before
   the owner's first listing. The context's status row
@@ -133,7 +133,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   live admitted processing remains governed by its request and events. Filtered rows lose their timers.
   Anime admission updates its episode rows without changing tabs. Recorded hashes come
   from owner snapshots, never a UI store.
-  Terminal work is reached through History, and recycling/relocation actions through Library.
+  Terminal work is reached through History, and recycling/relocation actions through Library; its
+  „P ponów przenoszenie…” line stands above the table and names sets by `library_label`, never by group ID.
   Progress labels come from the preview's source names, with `Materiał` for absent/ID-only
   legacy labels. `interactive/state.py`, `interactive/progress.py`, `interactive/anime.py`
 - `StateController` opens History with H inside Processing; S or `/` uses the shared
@@ -147,7 +148,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Library Details Enter/F submits the exact selected `LibraryFileIdentity` for owner membership
   and freshness validation; informational rows have no file action. Delete previews and submits
   the whole set in one worker session without a confirmation screen. Ctrl+Z delegates
-  last-deletion Undo to the owner. Library shows material names, not operation rows or routine
+  last-deletion Undo to the owner. Library is a naturally sorted `Nazwa · Odcinek` table (`_table_body` with
+  `AnimeScreen.LIBRARY`, labels from the facade's `library_label`); below 50×12 it lists `label.text`. It shows no operation rows or routine
   busy/global-progress messages; a completed deletion removes the row and keeps „Usunięto · Ctrl+Z cofnij”
   until the next move, and Undo restores it. X works like Delete; `?` (alias D) opens set details.
   Partial leftovers remain accessible. Synchronous action
@@ -329,9 +331,21 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Kółko myszy wymaga `_WheelControl`, bo klatka ma dokładnie tyle wierszy co okno i
   domyślny scroller Prompt Toolkit gubi zdarzenie. Nie zastępuj tego
   `ScrollablePane` ani drugim oknem. `interactive/prompts.py`
-- Mysz działa w każdym widoku według jednego źródła `pointer.py` (gest klik/przeciągnięcie, wiersze
-  oznaczone `mark_row`/`row_at`, zaznaczenie i kopiowanie tekstu): Anime przez `AnimePanel`, reszta przez
-  `FrameSelection` w `app.py`, a klik tylko ustawia kursor przez `select` widoku i nigdy nie uruchamia akcji.
+- Mysz działa w każdym widoku według jednego źródła `pointer.py`: `PointerGesture` odróżnia przeciągnięcie
+  (zaznacza tekst ramki) od kliknięcia, a `click_at` czyta tagi `mark_row`, `mark_target` (zakładki),
+  `mark_crumbs` (wcześniejsze człony okruszka) i pole, które `TextInput.render` oznacza samo. Anime idzie przez
+  `AnimePanel`, reszta i nagłówek z zakładkami przez `FrameSelection`; `app._follow_click` zamienia `Click` na
+  istniejące ścieżki. Klik w wiersz tylko ustawia kursor (`select` zwraca, czy kursor tam stoi; wiersz bez kursora
+  kasuje zapamiętany klik); drugi klik w ten sam wiersz EKRANU w `DOUBLE_CLICK_SECONDS`, znów trafiający w wiersz
+  listy, to sam Enter na kursorze z pierwszego kliku, bez ponownego `select` — lista może się przesunąć albo zmienić między klikami; przeciągnięcie
+  i kółko przerywają podwójny klik. Ekrany tekstowe (szczegóły `?`, PROBLEM, BUSY w Anime; pytanie CONFIRM w Ustawieniach)
+  tagują wiersze `mark_row(..., opens=False)`: podwójny klik tylko wskazuje, zatwierdza wyłącznie Enter. Klik
+  w nazwę zakładki wysyła klawisz `tab_key(n)` tą samą drogą co Tab (blokowany tam, gdzie Tab). Okruszek to krotka
+  członów (`breadcrumb()`, `AnimeViewState.crumbs`); klik w człon `n` naciska Esc, dopóki okruszek pokazuje ten człon
+  i głębsze (najwyżej `_CRUMB_ESCAPES`). Prawy przycisk (tylko `MOUSE_DOWN`) to Esc, także w polu. Klik w pole
+  tekstowe daje mu fokus i stawia kursor (`TextInput.place`), za końcem tekstu — na końcu. Zaznaczenie
+  (`paint_selection`): tekst i pojedyncze spacje dostają `reverse` (`SELECTION_STYLE`), a przebiegi co najmniej
+  dwóch białych komórek i przerwy między zaznaczonymi regionami jednego wiersza płaski `SELECTION_GAP_STYLE`.
   `interactive/pointer.py`, `interactive/app.py`
 - Zapis stanu panelu ma dziesięć reguł i JEDNO źródło:
   `docs/work/plain-cli/06_state_persistence.md`. Cztery łamane najczęściej:
