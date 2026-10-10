@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         InspectionWarning,
         WorkspaceInspector,
     )
+    from anishift.application.library import LibraryLabel, library_label
     from anishift.application.ready import ReadyStore
     from anishift.application.scheduler import RunHandle
     from anishift.application.service import (
@@ -259,6 +260,7 @@ __all__ = [
     "InspectedWorkspace",
     "InspectionWarning",
     "LibraryFileIdentity",
+    "LibraryLabel",
     "LibrarySet",
     "ListedEpisode",
     "ListedSpecial",
@@ -344,6 +346,7 @@ __all__ = [
     "is_target",
     "legal_narration_timelines",
     "legal_products",
+    "library_label",
     "notice_text",
     "order_groups",
     "parse_query",
@@ -366,6 +369,8 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "DeletionPreview": ("anishift.application.control_views", "DeletionPreview"),
     "LibrarySet": ("anishift.application.control_views", "LibrarySet"),
     "LibraryFileIdentity": ("anishift.application.control_views", "LibraryFileIdentity"),
+    "LibraryLabel": ("anishift.application.library", "LibraryLabel"),
+    "library_label": ("anishift.application.library", "library_label"),
     "PlanPreview": ("anishift.application.control_views", "PlanPreview"),
     "RunProgressSnapshot": ("anishift.application.control_views", "RunProgressSnapshot"),
     "decode_view": ("anishift.application.control_views", "decode_view"),

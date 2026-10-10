@@ -5,7 +5,14 @@ from typing import Final
 
 import pytest
 
-from anishift.services.torrents.names import base_title, parse_release_name, season_hint, strip_season, title_forms
+from anishift.services.torrents.names import (
+    base_title,
+    episode_range,
+    parse_release_name,
+    season_hint,
+    strip_season,
+    title_forms,
+)
 from anishift.services.torrents.types import ReleaseName
 
 _CASES: Final[tuple[tuple[str, ReleaseName], ...]] = (
@@ -513,3 +520,18 @@ def test_title_forms_meet_when_a_release_drops_the_subtitle() -> None:
 
 def test_title_forms_of_unrelated_titles_do_not_meet() -> None:
     assert not (title_forms("Solo Leveling") & title_forms("Ore dake Level Up na Ken"))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Show.S01E01-E02.1080p.WEB.mkv", (Decimal(1), Decimal(2))),
+        ("[Group] Show - 01-12 (1080p)", (Decimal(1), Decimal(12))),
+        ("[Group] Show - S02E03~E04 [1080p]", (Decimal(3), Decimal(4))),
+        ("[Group] Show - 05 (1080p)", None),
+        ("Show.S01E05.1080p.WEB.mkv", None),
+    ],
+)
+def test_episode_range_reads_the_first_and_last_episode(title: str, expected: tuple[Decimal, Decimal] | None) -> None:
+    assert episode_range(title) == expected

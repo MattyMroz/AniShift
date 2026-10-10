@@ -4244,6 +4244,39 @@ def test_relocation_counts_only_real_failures_and_reports_exhaustion(
     assert not thread.is_alive()
 
 
+@pytest.mark.parametrize(
+    ("fingerprints", "expected"), [({"group-a": (("ready/Show - 05.mkv", 1, 2),)}, "Show - 05.mkv"), ({}, None)]
+)
+def test_a_relocation_row_names_its_set_from_the_request_and_never_by_the_group_id(
+    tmp_path: Path, fingerprints: dict[str, tuple[tuple[str, int, int], ...]], expected: str | None
+) -> None:
+    service, store, state = _completed_library(tmp_path)
+    request: ProcessingRequest = ProcessingRequest(
+        "relocated",
+        1,
+        ("group-a",),
+        fingerprints,
+        RequestOrigin.USER,
+        SourceSelection.MANUAL,
+        None,
+        {},
+        RequestState.SUCCEEDED,
+        1,
+        _MOMENT.isoformat(),
+    )
+    store.save(replace(state, requests=(request,)))
+    owner: AutomationOwner = _owner(service, store)
+    try:
+        owner._ready_problems.update({"group-a": "failed", "group-b": "failed"})
+
+        assert owner._status()["relocations"] == [
+            {"group_id": "group-a", "name": expected, "problem": "failed"},
+            {"group_id": "group-b", "name": None, "problem": "failed"},
+        ]
+    finally:
+        service.close()
+
+
 @pytest.mark.parametrize("external", [False, True])
 def test_unmanageable_deferred_relocation_does_not_keep_an_idle_timer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, external: bool

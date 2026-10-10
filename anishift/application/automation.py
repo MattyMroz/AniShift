@@ -1778,9 +1778,7 @@ class AutomationOwner:
             "relocations": [
                 {
                     "group_id": group_id,
-                    "name": Path(self._ready_moves[group_id].files[0].source).name
-                    if group_id in self._ready_moves and self._ready_moves[group_id].files
-                    else group_id,
+                    "name": self._relocation_name(group_id),
                     "problem": self._ready_problems.get(group_id),
                 }
                 for group_id in sorted(self._ready_moves.keys() | self._ready_problems.keys())
@@ -1944,6 +1942,16 @@ class AutomationOwner:
             and not group.task_ids
             and not any(problem.is_blocking for problem in group.problems)
         )
+
+    def _relocation_name(self, group_id: str) -> str | None:
+        move: ReadyMove | None = self._ready_moves.get(group_id)
+        if move is not None and move.files:
+            return Path(move.files[0].source).name
+        request: ProcessingRequest | None = next(
+            (item for item in reversed(self._state.requests) if group_id in item.group_ids), None
+        )
+        name: str | None = None if request is None else self._processing_name(request, group_id)
+        return None if name == group_id else name
 
     def _processing_name(self, request: ProcessingRequest, group_id: str) -> str:
         with self._progress_lock:

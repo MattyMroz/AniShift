@@ -9,7 +9,7 @@ from typing import Final
 from anishift.application.release_quality import DUBBED_RE
 from anishift.services.torrents.types import ReleaseName
 
-__all__ = ["base_title", "parse_release_name", "season_hint", "strip_season", "title_forms"]
+__all__ = ["base_title", "episode_range", "parse_release_name", "season_hint", "strip_season", "title_forms"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -76,10 +76,10 @@ _EPISODE_RE: Final[re.Pattern[str]] = re.compile(r"^(\d{1,4}(?:\.\d+)?)(?:v(\d+)
 _BATCH_RANGE_RE: Final[re.Pattern[str]] = re.compile(r"\(\s*\d+\s*-\s*\d+\s*\)")
 """Parenthesised episode range marking a multi-episode pack."""
 
-_EPISODE_RANGE_RE: Final[re.Pattern[str]] = re.compile(r"(?i)(?<!\w)(?:S\d{1,2})?E\d{1,3}\s*[-~]\s*E\d{1,3}(?!\w)")
+_EPISODE_RANGE_RE: Final[re.Pattern[str]] = re.compile(r"(?i)(?<!\w)(?:S\d{1,2})?E(\d{1,3})\s*[-~]\s*E(\d{1,3})(?!\w)")
 """Explicit episode range with optional season, as in S01E01-E04."""
 
-_BARE_RANGE_RE: Final[re.Pattern[str]] = re.compile(rf"{SERIES_SEPARATOR}\d{{1,4}}\s*[-~]\s*\d{{1,4}}(?!\d)")
+_BARE_RANGE_RE: Final[re.Pattern[str]] = re.compile(rf"{SERIES_SEPARATOR}(\d{{1,4}})\s*[-~]\s*(\d{{1,4}})(?!\d)")
 """Episode range written without parentheses right after the separator, as in ``- 01-12``."""
 
 _BATCH_TAG_RE: Final[re.Pattern[str]] = re.compile(r"[(\[][^)\]]*\bbatch\b[^)\]]*[)\]]", re.IGNORECASE)
@@ -139,6 +139,13 @@ def parse_release_name(title: str) -> ReleaseName:
         subtitle_language=_subtitle_language(remainder),
         dubbed=DUBBED_RE.search(remainder) is not None,
     )
+
+
+def episode_range(title: str) -> tuple[Decimal, Decimal] | None:
+    """Return the first and last episode of the explicit range in *title*, or ``None`` without one."""
+    cleaned: str = _clean(title)
+    match: re.Match[str] | None = _EPISODE_RANGE_RE.search(cleaned) or _BARE_RANGE_RE.search(cleaned)
+    return None if match is None else (Decimal(match.group(1)), Decimal(match.group(2)))
 
 
 def season_hint(series: str) -> int | None:

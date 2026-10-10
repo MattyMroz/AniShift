@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 from collections.abc import Sequence
+from dataclasses import dataclass
+from decimal import Decimal
+from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING, Final
 
 from natsort import os_sorted
 
@@ -20,10 +25,128 @@ from anishift.application.control import (
 )
 from anishift.application.control_views import LibraryFile, LibraryFileIdentity, LibrarySet
 from anishift.application.discovery import ArtifactName, classify_artifact
+from anishift.application.episode_identity import TECHNICAL, VIDEO_EXTENSIONS
 from anishift.application.intents import GroupIntent
 from anishift.application.products import main_product
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, WorkspacePlace
 from anishift.paths import READY_DIRECTORY
+from anishift.services.torrents.names import episode_range, parse_release_name, season_hint, strip_season
+
+if TYPE_CHECKING:
+    from anishift.services.torrents.types import ReleaseName
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+NO_EPISODE: Final[str] = "—"
+"""Episode column of a film or a file without an episode number."""
+RANGE_DASH: Final[str] = "–"
+"""Join the first and last episode of an episode range."""
+FILM_TAIL: Final[re.Pattern[str]] = re.compile(
+    r"(?i)(?<=[\s.])(?:\(?(?:19|20)\d{2}\)?|\d{3,4}[pi]|blu-?ray|bdrip|web-?dl|webrip)(?=[\s.]|$)"
+)
+"""Open the release tail of a film name: a year, a resolution or a source after a space or a dot."""
+EPISODE_MARKER: Final[re.Pattern[str]] = re.compile(
+    r"(?i)^(?:ep\.?|e)\s*\d|\b(?:episode|cap[ií]tulo)\s*\d|\bs\d{1,2}[ .]?ep?\d|\d+x\d+"
+    r"|\b(?:season|temporada|saison|staffel)\s*\d"
+)
+"""Find an episode or season marker that keeps a subtitle out of a film title."""
+WORD_DOT: Final[re.Pattern[str]] = re.compile(r"(?<!\d)\.|\.(?!\d)")
+"""Find a dot standing for a space, leaving the dot of a decimal number such as ``2.22``."""
+EPISODE_NUMBER: Final[re.Pattern[str]] = re.compile(r"\d+(?:v\d+)?")
+"""Match a bare episode number with an optional version, as in ``01v3``."""
+SUBTITLE_DASH: Final[re.Pattern[str]] = re.compile(r"([ .])-\1")
+"""Find a dash between two spaces or two dots that opens a subtitle."""
+LEADING_PARENTHESES: Final[re.Pattern[str]] = re.compile(r"^\(([^)]*)\)")
+"""Find a release group written in parentheses at the very start of a name."""
+EMPTY_BRACKETS: Final[re.Pattern[str]] = re.compile(r"\s*[(\[]\s*[)\]]")
+"""Find the empty brackets a removed season marker leaves behind."""
+TITLE_EDGE: Final[str] = " -–:,"
+"""Characters left dangling at the end of a title once its tail is cut off."""
+NUMBERED_PARTS: Final[frozenset[str]] = frozenset({"movie", "film", "part", "case", "chapter", "vol", "ova"})
+"""Words whose trailing number belongs to the title rather than to an episode."""
+LABEL_CACHE_SIZE: Final[int] = 4096
+"""Bound the labels kept for Library names read again on every panel frame."""
+
+
+@dataclass(frozen=True, slots=True)
+class LibraryLabel:
+    """Series title and episode read from one Library file name."""
+
+    title: str
+    season: int | None
+    episode: Decimal | None
+    last: Decimal | None = None
+
+    @property
+    def episode_text(self) -> str:
+        """Return the Episode column: ``SxxEyy``, ``SxxEyy–Ezz`` or a dash without an episode."""
+        if self.episode is None:
+            return NO_EPISODE
+        text: str = f"S{self.season:02}E{_number(self.episode)}"
+        return text if self.last is None else f"{text}{RANGE_DASH}E{_number(self.last)}"
+
+    @property
+    def text(self) -> str:
+        """Return the title followed by the episode, or the title alone without an episode."""
+        return self.title if self.episode is None else f"{self.title} {self.episode_text}"
+
+
+@lru_cache(maxsize=LABEL_CACHE_SIZE)
+def library_label(name: str) -> LibraryLabel:
+    """Read the series title, season and episode from a Library file name, keeping an unrecognized name whole."""
+    path: Path = Path(name)
+    stem: str = path.stem if path.suffix.removeprefix(".").casefold() in VIDEO_EXTENSIONS else name
+    text: str = LEADING_PARENTHESES.sub(r"[\1]", stem.replace("_", " " if " " in stem else "."))
+    release: ReleaseName = parse_release_name(text)
+    span: tuple[Decimal, Decimal] | None = episode_range(text)
+    episode: Decimal | None = span[0] if span is not None else release.episode
+    hint: int | None = season_hint(release.series)
+    season: int | None = release.season if release.season is not None else hint
+    series: str = strip_season(release.series) if hint is not None else release.series
+    joined: ReleaseName | None = _subtitled(release, text) if episode is None and release.season is None else None
+    if joined is not None:
+        release, series = joined, joined.series
+    if episode is None and season is None and release.group is None and release.resolution is None:
+        return LibraryLabel(stem, None, None)
+    title: str = _title(series, film=episode is None)
+    return LibraryLabel(
+        title or stem,
+        (1 if season is None else season) if episode is not None else season,
+        episode,
+        None if span is None else span[1],
+    )
+
+
+def _subtitled(release: ReleaseName, text: str) -> ReleaseName | None:
+    joined: ReleaseName = parse_release_name(SUBTITLE_DASH.sub(r"\1", text))
+    subtitle: list[str] = joined.series.removeprefix(release.series).split()
+    keep: bool = bool(subtitle) and joined.series.startswith(release.series) and not _episode_subtitle(subtitle)
+    return joined if keep and EPISODE_MARKER.search(release.series) is None else None
+
+
+def _episode_subtitle(words: list[str]) -> bool:
+    if len(words) == 1 and any(char.isdigit() for char in words[0]):
+        return True
+    if EPISODE_MARKER.search(" ".join(words)):
+        return True
+    previous: list[str] = [word.casefold().rstrip(".") for word in words[-2:-1]]
+    return bool(words) and EPISODE_NUMBER.fullmatch(words[-1]) is not None and not set(previous) & NUMBERED_PARTS
+
+
+def _title(series: str, *, film: bool) -> str:
+    text: str = series.strip()
+    tail: re.Match[str] | None = FILM_TAIL.search(text) if film else None
+    if tail is not None or " " not in text:
+        text = WORD_DOT.sub(" ", text[: len(text) if tail is None else tail.start()])
+    words: list[str] = text.split()
+    while film and len(words) > 1 and TECHNICAL.fullmatch(words[-1].casefold()):
+        words.pop()
+    return EMPTY_BRACKETS.sub("", " ".join(words)).rstrip(TITLE_EDGE)
+
+
+def _number(value: Decimal) -> str:
+    whole, _, fraction = format(value.normalize(), "f").partition(".")
+    return f"{whole:0>2}.{fraction}" if fraction else f"{whole:0>2}"
 
 
 def file_identity(root: Path, name: str) -> LibraryFileIdentity | None:
