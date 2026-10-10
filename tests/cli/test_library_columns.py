@@ -8,6 +8,7 @@ import pytest
 
 from anishift.application import LibrarySet
 from anishift.cli.interactive import state as state_module
+from anishift.cli.interactive import state_library
 from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeSnapshot
 from anishift.cli.interactive.anime_view import _SUBSCRIPTION_STATUS_WIDTH, render_anime
 from anishift.cli.interactive.pointer import CRUMB_SEPARATOR
@@ -63,7 +64,7 @@ def test_library_rows_sort_by_title_then_season_then_episode_with_the_film_last(
         )
     }
 
-    order: list[object] = [row["name"] for row in state_module._library_rows(snapshot)]
+    order: list[object] = [row["name"] for row in state_library.library_rows(snapshot)]
 
     assert order == [
         "[Grp] Abc 9 - 01 [1080p]",
@@ -118,7 +119,7 @@ def test_library_refresh_keeps_the_selected_set_after_the_order_changes(library:
     library._preserve_library_selection(payload)
     library._snapshot = payload
 
-    assert state_module._library_rows(payload)[library._selected]["set_id"] == "set-1"
+    assert state_library.library_rows(payload)[library._selected]["set_id"] == "set-1"
     assert _POINTER in _line(library.render(80, 24).plain, "E10")
 
 

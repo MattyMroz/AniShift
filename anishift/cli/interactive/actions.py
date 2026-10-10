@@ -25,6 +25,9 @@ EVERYWHERE: Final[tuple[Action, ...]] = (
 MORE: Final[str] = "? więcej"
 """Footer hint opening the help of the current screen."""
 
+PANEL_ACTIONS: Final[tuple[Action, ...]] = (("M", "ręczny"), ("U", "ustawienia"))
+"""Mode switches listed under ? on every list outside Anime."""
+
 
 @dataclass(frozen=True, slots=True)
 class ScreenActions:

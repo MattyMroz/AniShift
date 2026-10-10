@@ -10,6 +10,7 @@ import pytest
 from anishift.application.control_views import LibraryFile, LibraryFileIdentity, LibrarySet
 from anishift.application.workflows import WorkflowTarget
 from anishift.cli.interactive import state as module
+from anishift.cli.interactive import state_library
 from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
 from anishift.platform.local_control import ControlError
@@ -54,7 +55,7 @@ def test_details_open_exact_file_but_not_heading(
     try:
         controller.handle_key(key)
         assert calls == []
-        controller._selected = len(module._library_detail_entries(details)) - len(details.files)
+        controller._selected = len(state_library.detail_entries(details)) - len(details.files)
         controller.handle_key(key)
         assert calls == ([] if missing else [(tmp_path / identity.path, key == "text:f")])
     finally:
@@ -157,7 +158,7 @@ def test_undo_refusal_is_visible_without_synthetic_operation_rows(
         controller.handle_key("undo")
         frame: str = controller.render(120, 35).plain
         assert "Brak usuniętego zestawu do przywrócenia" in frame
-        assert module._library_rows(controller._snapshot) == []
+        assert state_library.library_rows(controller._snapshot) == []
     finally:
         controller.close()
         controller._thread.join(5)

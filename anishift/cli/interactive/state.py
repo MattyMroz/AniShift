@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import sys
 import threading
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from enum import IntEnum, StrEnum
 from pathlib import Path
-from types import MappingProxyType
 from typing import Final
 
-from natsort import os_sort_keygen
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from rich.console import Console
@@ -20,20 +18,18 @@ from rich.text import Text
 
 from anishift.application import (
     DeletionPreview,
-    EpisodeReason,
     HistoryEvent,
     LibraryFileIdentity,
-    LibraryLabel,
     LibrarySet,
-    RefusalReason,
     RetryProposal,
     RunProgressSnapshot,
     decode_view,
     library_label,
 )
-from anishift.application.events import RunEvent, sanitize_event_message
-from anishift.cli.interactive.actions import Action, ScreenActions, footer_segments, help_lines, pack_footer
-from anishift.cli.interactive.anime import EPISODE_REASON_LABELS, AnimeController, AnimeResult
+from anishift.application.control_views import LibraryFile
+from anishift.application.events import RunEvent
+from anishift.cli.interactive.actions import ScreenActions, footer_segments, help_lines, pack_footer
+from anishift.cli.interactive.anime import AnimeController, AnimeResult
 from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeSnapshot
 from anishift.cli.interactive.anime_view import (
     MIN_COLUMNS,
@@ -52,54 +48,56 @@ from anishift.cli.interactive.menu import (
 )
 from anishift.cli.interactive.pointer import CRUMB_SEPARATOR, Click, ClickKind, mark_crumbs, mark_inert, mark_target
 from anishift.cli.interactive.progress import ObservedProgressTimer, RichRunProgress, render_material_progress
-from anishift.cli.interactive.subscription_texts import (
-    CHECK_SHOWN_S,
-    SubscriptionState,
-    check_state,
-    check_text,
-    row_columns,
-    row_state,
-    watched_line,
+from anishift.cli.interactive.state_library import (
+    DETAIL_ACTIONS,
+    EMPTY_LIBRARY,
+    LIBRARY_DELETED,
+    detail_entries,
+    detail_file,
+    library_actions,
+    library_row,
+    library_row_id,
+    library_rows,
+    library_title,
 )
+from anishift.cli.interactive.state_processing import (
+    HISTORY_ACTIONS,
+    HISTORY_PROBLEMS,
+    HISTORY_SPAN,
+    HISTORY_UNAVAILABLE,
+    NO_HISTORY,
+    NO_PROCESSING,
+    cancel_command,
+    cancel_target,
+    download_progress,
+    held,
+    history_entry,
+    material_name,
+    pause_toggle,
+    processing_actions,
+    processing_rows,
+    question_text,
+    retry_entry,
+    row_ids,
+)
+from anishift.cli.interactive.state_subscriptions import (
+    NO_SUBSCRIPTIONS,
+    command_kind,
+    shown_check,
+    subscription_actions,
+    subscription_rows,
+    subscription_warning,
+)
+from anishift.cli.interactive.state_texts import refusal_text, rows, safe_text
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError
-from anishift.platform.local_control import ControlError, ControlErrorCode
+from anishift.platform.local_control import ControlError
 from anishift.platform.tray import open_path as _open_path
 
 __all__ = ["StateController", "StateResult", "refusal_text"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-
-_RETRY_PROBLEMS: Final[dict[str, str]] = {
-    "retry_source_missing": "Brak lokalnego źródła; usuniętej treści nie można odtworzyć",
-    "retry_reference_missing": "Brak zachowanej referencji wydania; wybierz wydanie ponownie w Anime",
-    "retry_choose_one": (
-        "Zakres zawiera lokalne materiały; wybierz jeden numer, aby zobaczyć właściwe dokończenie lub poprawkę"
-    ),
-    "retry_source_available": "Źródło jest już lokalnie; ponownie wybierz Ponów, aby przygotować Ręczny",
-    "retry_acquisition_pending": "Wcześniejsze przekazanie nadal wymaga uzgodnienia; nie dodano drugiego pobrania",
-    "legacy_subscription_retry": "Pobierz ten odcinek ponownie z Anime (P)",
-}
-"""Actionable retry refusals without claiming missing source bytes can be recovered."""
-
-_HISTORY_LABELS: Final[dict[str, str]] = {
-    "order_admitted": "przyjęto zamówienie",
-    "download_confirmed": "pobrano źródło",
-    "regeneration": "przyjęto regenerację",
-    "processing_success": "ukończono",
-    "processing_error": "błąd",
-    "processing_interrupted": "przerwano",
-    "delete_outcome": "usuwanie",
-    "subscription_finished": "subskrypcja zakończona",
-}
-"""Operation boundary labels shown once per logical material."""
-
-_HISTORY_PROBLEMS: Final[dict[str, str]] = {
-    "history_corrupt": "Historia niedostępna · uszkodzony zapis; przetwarzanie działa dalej",
-    "history_unavailable": "Historia niedostępna · błąd odczytu lub zapisu; przetwarzanie działa dalej",
-}
-"""Persistent observation warnings distinct from an empty history."""
 
 _TABS: Final[tuple[str, ...]] = ("Anime", "Subskrypcje", "Przetwarzanie", "Biblioteka")
 """Views of the same resident snapshot, switched without network requests."""
@@ -113,102 +111,11 @@ _MINIMUM_TITLE_ROWS: Final[int] = 12
 _RECONNECT_S: Final[float] = 2.0
 """Delay before reconnecting a lost panel event stream."""
 
-_CLIENT_PROBLEMS: Final[dict[str, str]] = {
-    "The private torrent window was closed; downloads remain stopped until explicitly resumed": (
-        "qBittorrent wyłączony · zlecenia czekają na wznowienie"
-    ),
-    "The private torrent client was taken over; automatic control is disabled": ("qBittorrent sterowany ręcznie"),
-    "The private torrent client was opened manually; automatic control stopped": (
-        "Otwarto qBittorrenta · sterowanie automatyczne wstrzymane"
-    ),
-    "The private torrent client could not start; resolve the problem and explicitly resume": (
-        "Nie udało się uruchomić qBittorrenta · usuń przyczynę i wybierz Wznów"
-    ),
-}
-"""Polish explanations of private client states surfaced by the transport boundary."""
-
-_REFUSAL_TEXTS: Final[Mapping[str, str]] = MappingProxyType(
-    {
-        RefusalReason.GROUP_RESERVED.value: "Inny panel zajął ten odcinek",
-        RefusalReason.GROUP_PROCESSING.value: "Ten odcinek jest już przetwarzany",
-        RefusalReason.GROUP_RELOCATING.value: "Gotowy odcinek jest przenoszony do biblioteki",
-        RefusalReason.SESSION_CLOSED.value: "Połączenie z procesem w tle wygasło",
-        RefusalReason.CLIENT_BOUND.value: "Ten panel jest już połączony w innej sesji",
-        RefusalReason.NOT_RESERVED.value: "Najpierw zajmij odcinek, potem dodaj do niego plik",
-        RefusalReason.FOREIGN_PREVIEW.value: "Ten wybór należy do innego panelu",
-        RefusalReason.NOT_RESUMABLE.value: "Tej pracy nie da się wznowić",
-        RefusalReason.PAUSED.value: "AniShift jest wstrzymany · wybierz Wznów, aby podjąć pracę",
-        RefusalReason.SHUTTING_DOWN.value: "AniShift się kończy · nie przyjmuje już nowej pracy",
-        RefusalReason.TRANSFER_METADATA_PENDING.value: (
-            "Trwa przygotowanie pobrania · poczekaj na potwierdzenie wyboru plików"
-        ),
-    }
-)
-"""Polish sentence the panel shows for every refusal cause the resident names."""
-
-_UNKNOWN_REFUSAL: Final[str] = "Proces w tle odrzucił polecenie"
-"""Polish sentence for a refusal this version cannot name any more precisely."""
-
-_CONTROL_PROBLEMS: Final[Mapping[ControlErrorCode, str]] = MappingProxyType(
-    {
-        ControlErrorCode.STALE_INSTANCE: "Proces w tle został uruchomiony ponownie · otwórz panel ponownie",
-        ControlErrorCode.UNKNOWN_COMMAND: "Proces w tle nie obsługuje tego polecenia",
-        ControlErrorCode.INVALID_PAYLOAD: "Proces w tle odrzucił niepoprawne dane polecenia",
-        ControlErrorCode.STALE_PREVIEW: "Podgląd jest nieaktualny · przygotuj go ponownie",
-        ControlErrorCode.CONFLICT: "Polecenie koliduje z bieżącą pracą",
-        ControlErrorCode.ALREADY_PROCESSING: "Ten odcinek jest już przetwarzany",
-        ControlErrorCode.REFUSED: _UNKNOWN_REFUSAL,
-        ControlErrorCode.INTERNAL: "Wewnętrzny błąd procesu w tle · sprawdź log",
-    }
-)
-"""Polish fallback for each public control code when no more precise reason is known."""
-
-_SUBSCRIPTION_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
-    {
-        "subscription_missing": "Tej subskrypcji już nie ma",
-        "nothing_to_restore": "Brak usuniętej subskrypcji do przywrócenia",
-        "subscription_exists": "Ten sezon jest już subskrybowany",
-        "subscription_limit": "Osiągnięto limit subskrypcji; usuń jedną, aby dodać lub przywrócić",
-        "subscription_not_airing": "Ten wpis nie ma przyszłych odcinków",
-        "subscription_cut_unknown": "Nie wiadomo, ile odcinków już wyemitowano · spróbuj później",
-        "source_failed": "Nie udało się odczytać katalogu · spróbuj ponownie",
-        "target_not_waiting": "Ten odcinek już nie czeka na polskie napisy",
-    }
-)
-"""Polish subscription refusals selected by machine reason rather than application prose."""
-
-_SUBSCRIPTION_CHECKING: Final[str] = "Sprawdzam…"
-"""Stan of a subscription whose requested check has not answered yet."""
-
-_SHADOW_WARNING: Final[str] = "Tryb cienia — subskrypcje tylko zapisują propozycje"
-"""Status row above the list while the owner records proposals instead of attempts."""
-
 _PAUSED: Final[str] = "Automat wstrzymany"
 """Status line of paused automation, which alone drops the material counters."""
 
-_RESUME_HINT: Final[str] = "O wznów"
-"""Key named beside the pause state above the subscription list."""
-
-_ADD_KEYS: Final[str] = "D lub /"
-"""Keys the subscription footer names for adding a subscription."""
-
-_NO_SUBSCRIPTIONS: Final[str] = "Brak subskrypcji"
-"""Only line of an empty subscription list."""
-
-_NO_ROWS: Final[str] = "Brak pozycji"
-"""Only line of an empty History list."""
-
-_NO_PROCESSING: Final[str] = "Brak aktywnego przetwarzania"
-"""Only line of an empty Processing list."""
-
-_EMPTY_LIBRARY: Final[str] = "Biblioteka jest pusta"
-"""Only line of a Library the owner has inventoried and found empty."""
-
 _LOADING: Final[str] = "Wczytuję…"
 """Only line of a connected list whose rows the owner has not produced yet."""
-
-_TITLE_KEY: Final[Callable[[str], object]] = os_sort_keygen()
-"""Order Library titles the way the system file browser orders names."""
 
 _CONNECTING: Final[str] = "Łączenie…"
 """Only line of an empty tab list before the owner's first snapshot."""
@@ -232,15 +139,6 @@ _HISTORY_CRUMB: Final[tuple[str, ...]] = ("Przetwarzanie", "Historia")
 _ANSWERS: Final[str] = "Enter tak · Esc nie"
 """Keys answering the cancellation question."""
 
-_LIBRARY_DELETED: Final[str] = "Usunięto · Ctrl+Z cofnij"
-"""Library notice kept after a deleted set leaves the list, until the next move."""
-
-_HISTORY_SPAN: Final[str] = "Historia z ostatnich 30 dni"
-"""Help line naming how far back the default history reaches."""
-
-_PANEL_ACTIONS: Final[tuple[Action, ...]] = (("M", "ręczny"), ("U", "ustawienia"))
-"""Mode switches listed under ? on every list outside Anime."""
-
 _CLICKED_TAB: Final[str] = "tab:"
 """Prefix of the key a click on a tab name sends, followed by the tab index."""
 
@@ -251,69 +149,6 @@ _TAB_KEYS: Final[frozenset[str]] = frozenset(
 
 _MOVE_KEYS: Final[frozenset[str]] = frozenset({"up", "down", "pageup", "pagedown", "home", "end"})
 """Keys moving a list cursor or scrolling a help block."""
-
-_LIBRARY_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
-    {
-        "library_set_missing": "Tego zestawu nie ma już w bibliotece",
-        "library_result_missing": "Brakuje potwierdzonego głównego wyniku",
-        "library_result_changed": "Główny wynik istnieje, ale jest zmieniony lub niepotwierdzony",
-        "library_ownership_unknown": "Pochodzenie zestawu wymaga rozstrzygnięcia przed usunięciem",
-        "library_source_held": "Źródło czeka na zwolnienie przez torrent",
-        "library_source_missing": "Brakuje źródłowego pliku wideo tego zestawu",
-        "library_scope_changed": "Zestaw zmienił się · przygotuj nowe potwierdzenie",
-        "library_source_busy": "Plik jest nadal zapisywany lub niedostępny",
-        "library_deleting": "Zestaw jest chroniony przez operację Kosza lub przywracania",
-        "recycle_unsupported": "Kosz jest niedostępny dla tego środowiska",
-        "recycle_unavailable": "Nie udało się potwierdzić dostępności operacji Kosza",
-        "recycle_refused": "System odmówił przeniesienia pliku do Kosza",
-        "recycle_timeout": "Upłynął limit operacji · jej wynik pozostaje niepewny",
-        "recycle_cleanup_timeout": "Upłynął limit zamykania operacji · jej wynik pozostaje niepewny",
-        "recycle_interrupted": "Operacja została przerwana · jej wynik pozostaje niepewny",
-        "recycle_invalid_evidence": "Brak poprawnego potwierdzenia operacji Kosza",
-        "recycle_incomplete": "System nie potwierdził pełnego wyniku operacji",
-        "library_release_unavailable": "Nie można odczytać potwierdzenia zwolnienia torrenta",
-        "restore_nothing": "Brak usuniętego zestawu do przywrócenia",
-        "restore_already_completed": "Ostatnie usunięcie zostało już cofnięte",
-        "restore_destination_occupied": "Miejsce przywracania jest zajęte · istniejący plik pozostawiono bez zmian",
-        "restore_receipt_missing": "Brak dokładnego elementu w Koszu · mógł zostać opróżniony",
-        "restore_unsupported_destination": "Przywracanie wymaga dostępnego miejsca na tym samym woluminie NTFS",
-        "restore_unsafe_path": "Ścieżka przywracania jest niedostępna lub prowadzi przez dowiązanie",
-        "restore_scope_changed": "Pliki przywracania zmieniły się · nie wykonano kolejnej operacji",
-        "restore_interrupted": "Przywracanie przerwane · Ctrl+Z sprawdzi zapisany stan przed ponowieniem",
-        "restore_incomplete": "System nie potwierdził pełnego przywrócenia",
-        "restore_inflight": "Przywracanie wymaga rozliczenia zapisanej operacji",
-    }
-)
-"""Polish explanations keyed by the owner's library reason codes."""
-
-_FILE_ROLES: Final[Mapping[str, str]] = MappingProxyType(
-    {
-        "source": "źródło",
-        "product": "wynik",
-        "pending_source": "źródło · czeka na zwolnienie",
-    }
-)
-"""Roles shown beside files without implying ownership of an external manual reference."""
-
-
-def refusal_text(problem: BaseException) -> str:
-    """Translate ControlError reasons and codes, otherwise return sanitized exception text."""
-    reason: str = problem.reason if isinstance(problem, ControlError) else ""
-    if reason in _RETRY_PROBLEMS:
-        return _RETRY_PROBLEMS[reason]
-    if reason in _SUBSCRIPTION_PROBLEMS:
-        return _SUBSCRIPTION_PROBLEMS[reason]
-    fallback: str = _safe_text(str(problem))
-    if isinstance(problem, ControlError):
-        fallback = (
-            _CONTROL_PROBLEMS[problem.code]
-            if problem.answered
-            else (
-                "Brak potwierdzonej odpowiedzi procesu w tle · sprawdź, czy proces działa, "
-                "oraz Historię i log przed ponowieniem"
-            )
-        )
-    return _REFUSAL_TEXTS.get(reason) or _LIBRARY_PROBLEMS.get(reason) or fallback or _UNKNOWN_REFUSAL
 
 
 def tab_key(index: int) -> str:
@@ -442,7 +277,7 @@ class StateController:
             self._switch_tab(_Tab.FILES)
             target: object = navigation.get("set_id")
             self._library_target = target if isinstance(target, str) else None
-            self._library_notice = _safe_text(navigation.get("notification_problem") or "")
+            self._library_notice = safe_text(navigation.get("notification_problem") or "")
             self._select_library_target(self._snapshot)
             self._follow_cursor[_Tab.FILES] = True
             self._work(lambda session: session.library(), success="")
@@ -452,7 +287,7 @@ class StateController:
         if self._library_target is None:
             return
         position: int | None = next(
-            (index for index, item in enumerate(_library_rows(payload)) if item.get("set_id") == self._library_target),
+            (index for index, item in enumerate(library_rows(payload)) if item.get("set_id") == self._library_target),
             None,
         )
         if position is not None:
@@ -476,7 +311,7 @@ class StateController:
         self._invalidate()
 
     def _notify(self, message: str) -> None:
-        self._notice = _safe_text(message).rstrip(".")
+        self._notice = safe_text(message).rstrip(".")
         self._notice_version = self._state_version
         self._notice_persistent = False
 
@@ -486,8 +321,8 @@ class StateController:
         details: LibrarySet | None = self._details
         if details is not None:
             return details.set_id, str(self._selected)
-        rows: list[Mapping[str, object]] = _library_rows(self._snapshot)
-        return (_library_row_id(rows[self._selected]), "") if self._selected < len(rows) else ("", "")
+        listed: list[Mapping[str, object]] = library_rows(self._snapshot)
+        return (library_row_id(listed[self._selected]), "") if self._selected < len(listed) else ("", "")
 
     def handle_key(self, key: str) -> StateResult:  # noqa: PLR0911
         """Navigate the shared list or submit one explicit action."""
@@ -529,12 +364,12 @@ class StateController:
             if self._busy:
                 self._question = target
             else:
-                self._command(*_cancel_command(target))
+                self._command(*cancel_command(target))
         self._invalidate()
         return StateResult.CONTINUE
 
     def _question_rows(self, target: tuple[str, str]) -> list[Mapping[str, object]]:
-        return [item for item in self._processing_rows() if _cancel_target(item) == target]
+        return [item for item in self._processing_rows() if cancel_target(item) == target]
 
     def _drop_vanished_question(self) -> None:
         if self._question is not None and not self._question_rows(self._question):
@@ -542,13 +377,7 @@ class StateController:
 
     def _question_text(self) -> str:
         target: tuple[str, str] | None = self._question
-        rows: list[Mapping[str, object]] = [] if target is None else self._question_rows(target)
-        if target is None or not rows:
-            return ""
-        if target[0] == "info_hash":
-            return "Anulować pobieranie?" if len(rows) == 1 else f"Anulować pobieranie ({len(rows)} materiałów)?"
-        scope: object = rows[0].get("group_ids", [])
-        return f"Anulować całe zlecenie ({len(scope) if isinstance(scope, list) else 1} materiałów)?"
+        return "" if target is None else question_text(target, self._question_rows(target))
 
     def _help_key(self, key: str) -> StateResult:
         if key in {"text:?", "escape", "backspace", "interrupt"}:
@@ -640,13 +469,7 @@ class StateController:
                 self._switch_tab(_Tab.ANIME)
                 self._anime.open_subscription(row)
             return
-        kind: str = {
-            "delete": "subscription_remove",
-            "text:x": "subscription_remove",
-            "text:r": "subscription_check",
-            "text:f": "subscription_check",
-        }.get(key, "subscription_resume" if row.get("paused") else "subscription_pause")
-        self._subscription_command(kind, row)
+        self._subscription_command(command_kind(key, row), row)
 
     def _selected_subscription(self) -> Mapping[str, object] | None:
         if self._selected < len(self._subscriptions):
@@ -660,15 +483,11 @@ class StateController:
             self._work(lambda session: self._download_now(session, {**payload, "number": number}), success="")
             return
         if kind == "subscription_remove":
-            removed: str = f"Usunięto {_safe_text(row.get('title', ''))} · Ctrl+Z cofnij"
+            removed: str = f"Usunięto {safe_text(row.get('title', ''))} · Ctrl+Z cofnij"
             self._work(lambda session: session.command(kind, payload), success=removed, persistent=True)
             return
         if kind == "subscription_check":
-            self._subscription_checks[identifier] = (
-                _SUBSCRIPTION_CHECKING,
-                _SUBSCRIPTION_CHECKING,
-                self._clock() + timedelta(seconds=CHECK_SHOWN_S),
-            )
+            self._subscription_checks[identifier] = shown_check(None, self._clock())
         self._work(lambda session: session.command(kind, payload), success="")
 
     def _download_now(self, session: ResidentSession, payload: Mapping[str, object]) -> None:
@@ -740,12 +559,12 @@ class StateController:
 
     def _open_detail_file(self, *, reveal: bool) -> None:
         details: LibrarySet | None = self._details
-        index: int = self._selected - (len(_library_detail_entries(details)) - len(details.files)) if details else -1
-        if details is None or not 0 <= index < len(details.files):
+        chosen: LibraryFile | None = None if details is None else detail_file(details, self._selected)
+        if details is None or chosen is None:
             self._notify("Wybierz wiersz pliku")
             self._notice_persistent = True
             return
-        identity: LibraryFileIdentity | None = details.files[index].identity
+        identity: LibraryFileIdentity | None = chosen.identity
         if identity is None:
             self._notify("Wybrany plik jest niedostępny")
             self._notice_persistent = True
@@ -765,7 +584,7 @@ class StateController:
         """Reuse the session's one search controller inside the Anime tab."""
         with self._lock:
             self._anime = controller
-            controller.refresh_provider_locks(_rows(self._snapshot.get("provider_locks")))
+            controller.refresh_provider_locks(rows(self._snapshot.get("provider_locks")))
             controller.link_subscriptions(self._show_subscription_list, self._subscription_notice)
             controller.refresh_subscriptions(self._subscriptions, paused=self._automation_paused())
 
@@ -915,7 +734,7 @@ class StateController:
         return StateResult.CONTINUE
 
     def _library_details(self) -> None:
-        if self._selected < len(_library_rows(self._snapshot)) and self._connected and not self._busy:
+        if self._selected < len(library_rows(self._snapshot)) and self._connected and not self._busy:
             self._file_action("d")
         else:
             self._open_help()
@@ -925,9 +744,9 @@ class StateController:
         if item is None:
             return
         if key in {"c", "x"}:
-            self._question = _cancel_target(item)
+            self._question = cancel_target(item)
             return
-        toggle: tuple[str, str] | None = _pause_toggle(item)
+        toggle: tuple[str, str] | None = pause_toggle(item)
         if key == "w" and toggle is not None:
             self._command("transfer", {"info_hash": str(item["info_hash"]), "action": toggle[0]})
 
@@ -945,9 +764,9 @@ class StateController:
             try:
                 items = session.history(query)
             except ControlError as error:
-                if error.reason not in _HISTORY_PROBLEMS:
+                if error.reason not in HISTORY_PROBLEMS:
                     raise
-                problem = _HISTORY_PROBLEMS[error.reason]
+                problem = HISTORY_PROBLEMS[error.reason]
             with self._lock:
                 if generation != self._view_generation or not self._history_open or self._stop.is_set():
                     return
@@ -1018,20 +837,12 @@ class StateController:
             return StateResult.MANUAL
         elif key == "enter":
             self._retry = None
-            generation: int = self._view_generation
-            self._work(lambda session: self._execute_repeat(session, proposal, generation))
+            self._work(lambda session: _execute_repeat(session, proposal))
         self._invalidate()
         return StateResult.CONTINUE
 
-    def _execute_repeat(self, session: ResidentSession, proposal: RetryProposal, generation: int) -> None:
-        if proposal.action == "reacquire" and proposal.operation_id is not None:
-            session.reacquire(proposal.operation_id)
-        else:
-            msg = "Nieaktualne ponowienie; wybierz materiał jeszcze raz"
-            raise ValueError(msg)
-
     def _file_action(self, key: str) -> None:
-        library: list[Mapping[str, object]] = _library_rows(self._snapshot)
+        library: list[Mapping[str, object]] = library_rows(self._snapshot)
         if key not in {"open", "f", "d", "delete", "x"} or self._selected >= len(library):
             return
         set_id: str = str(library[self._selected]["set_id"])
@@ -1057,7 +868,7 @@ class StateController:
             if self._details is not None and self._details.set_id == set_id:
                 self._details = None
                 self._selected = self._detail_selection
-            self._notify(_LIBRARY_DELETED)
+            self._notify(LIBRARY_DELETED)
             self._notice_persistent = True
 
     def _show_details(self, session: ResidentSession, set_id: str, generation: int) -> None:
@@ -1116,7 +927,7 @@ class StateController:
                 if (
                     generation == self._view_generation
                     and context == self._library_context()
-                    and self._notice != _LIBRARY_DELETED
+                    and self._notice != LIBRARY_DELETED
                 ):
                     self._notify("" if self._tab == _Tab.FILES else success)
                     self._notice_persistent = persistent
@@ -1161,16 +972,16 @@ class StateController:
 
     def _receive(self, session: ResidentSession, frame: Mapping[str, object]) -> None:  # noqa: C901, PLR0912, PLR0915
         payload: object = frame.get("payload")
-        if frame.get("event") == "panel_open":
+        event: str = str(frame.get("event", ""))
+        if event == "panel_open":
             with self._lock:
                 self._open_requested = payload if isinstance(payload, Mapping) else {}
             self._invalidate()
             return
         if not isinstance(payload, Mapping):
             return
-        event: str = str(frame.get("event", ""))
         self._forward_anime(event, payload)
-        if frame.get("event") == "control_problem":
+        if event == "control_problem":
             with self._lock:
                 self._notify("Widok nieaktualny: odpowiedź przekracza limit.")
             self._invalidate()
@@ -1178,11 +989,11 @@ class StateController:
         if event == "subscription_checked":
             self._receive_check(payload)
             return
-        if frame.get("event") == "state_changed":
+        if event == "state_changed":
             if not self._connected and self._anime is not None:
                 self._anime.refresh_offer()
             listing: Mapping[str, object] = session.command("subscriptions_list")
-            subscriptions: list[Mapping[str, object]] = _rows(listing.get("subscriptions"))
+            subscriptions: list[Mapping[str, object]] = rows(listing.get("subscriptions"))
             with self._lock:
                 previous_processing: list[str] = self._processing_row_ids()
             self._restore_progress(session, payload)
@@ -1198,13 +1009,13 @@ class StateController:
                 context: tuple[str, str] | None = self._library_context()
                 if payload != self._snapshot:
                     self._state_version += 1
-                self._preserve_tab_selection(_Tab.SUBSCRIPTIONS, self._subscriptions, subscriptions, "subscription_id")
+                self._preserve_subscription_selection(subscriptions)
                 self._preserve_processing_selection(previous_processing, self._processing_row_ids(payload))
                 self._preserve_library_selection(payload)
                 self._snapshot = payload
                 self._select_library_target(payload)
                 if self._anime is not None and self._anime is anime:
-                    self._anime.refresh_provider_locks(_rows(payload.get("provider_locks")))
+                    self._anime.refresh_provider_locks(rows(payload.get("provider_locks")))
                 if self._details is previous_details:
                     self._details = details
                     if previous_details is not None and details is None:
@@ -1214,13 +1025,13 @@ class StateController:
                 self._observe_downloads()
                 if self._notice_version < self._state_version and not self._notice_persistent:
                     self._notice = ""
-                if context != self._library_context() and self._notice_persistent and self._notice != _LIBRARY_DELETED:
+                if context != self._library_context() and self._notice_persistent and self._notice != LIBRARY_DELETED:
                     self._notify("")
                 self._drop_vanished_question()
                 if payload.get("shutting_down"):
                     self._finished = True
                     self._stop.set()
-        elif frame.get("event") == "run_event":
+        elif event == "run_event":
             self._receive_progress(session, decode_view(RunEvent, payload))
         self._invalidate()
 
@@ -1249,11 +1060,7 @@ class StateController:
         if not isinstance(check, Mapping) or not isinstance(identifier, str):
             return
         with self._lock:
-            self._subscription_checks[identifier] = (
-                check_state(check),
-                check_text(check),
-                self._clock() + timedelta(seconds=CHECK_SHOWN_S),
-            )
+            self._subscription_checks[identifier] = shown_check(check, self._clock())
             if self._anime is not None:
                 self._anime.subscription_checked(identifier, check)
         self._invalidate()
@@ -1273,23 +1080,17 @@ class StateController:
             self._observe_downloads()
             self._drop_vanished_question()
 
-    def _preserve_tab_selection(
-        self,
-        tab: int,
-        old: list[Mapping[str, object]],
-        new: list[Mapping[str, object]],
-        key: str,
-    ) -> None:
-        position: int = self._selected if self._tab == tab else self._positions.get(tab, 0)
+    def _preserve_subscription_selection(self, new: list[Mapping[str, object]]) -> None:
+        old: list[Mapping[str, object]] = self._subscriptions
+        shown: bool = self._tab == _Tab.SUBSCRIPTIONS
+        position: int = self._selected if shown else self._positions.get(_Tab.SUBSCRIPTIONS, 0)
         if position >= len(old):
             return
-        identifier: object = old[position].get(key)
-        position = next(
-            (index for index, item in enumerate(new) if item.get(key) == identifier),
-            min(position, max(len(new) - 1, 0)),
+        position = _kept(
+            [item.get("subscription_id") for item in old], [item.get("subscription_id") for item in new], position
         )
-        self._positions[tab] = position
-        if self._tab == tab:
+        self._positions[_Tab.SUBSCRIPTIONS] = position
+        if shown:
             self._selected = position
 
     @staticmethod
@@ -1309,8 +1110,7 @@ class StateController:
             position = self._positions.get(_Tab.PROGRESS, 0)
         if self._history_open:
             position = self._active_position
-        identifier: str | None = old[position] if position < len(old) else None
-        position = new.index(identifier) if identifier in new else min(position, max(len(new) - 1, 0))
+        position = _kept(old, new, position)
         if self._history_open:
             self._active_position = position
             return
@@ -1320,16 +1120,12 @@ class StateController:
         self._selected = position
 
     def _preserve_library_selection(self, payload: Mapping[str, object]) -> None:
-        old: list[Mapping[str, object]] = _library_rows(self._snapshot)
-        new: list[Mapping[str, object]] = _library_rows(payload)
+        old: list[str] = [library_row_id(item) for item in library_rows(self._snapshot)]
+        new: list[str] = [library_row_id(item) for item in library_rows(payload)]
         position: int = self._selected if self._details is None else self._detail_selection
         if self._tab != _Tab.FILES:
             position = self._positions.get(_Tab.FILES, 0)
-        selected_id: object = _library_row_id(old[position]) if position < len(old) else None
-        position = next(
-            (index for index, item in enumerate(new) if _library_row_id(item) == selected_id),
-            min(position, max(len(new) - 1, 0)),
-        )
+        position = _kept(old, new, position)
         self._positions[_Tab.FILES] = position
         if self._tab != _Tab.FILES:
             return
@@ -1339,7 +1135,7 @@ class StateController:
             self._detail_selection = position
 
     def _restore_progress(self, session: ResidentSession, payload: Mapping[str, object]) -> None:
-        entries: list[Mapping[str, object]] = _rows(payload.get("run_progress"))
+        entries: list[Mapping[str, object]] = rows(payload.get("run_progress"))
         identifiers: set[str] = {str(item["run_id"]) for item in entries}
         with self._lock:
             self._runs = {key: value for key, value in self._runs.items() if key in identifiers}
@@ -1393,7 +1189,7 @@ class StateController:
         return self._list_body(columns, rows)
 
     def _list_body(self, columns: int, rows: int) -> Text:
-        entries: list[tuple[str | Text, bool | None]] = self._entries(max(columns - 8, 1))
+        entries: Sequence[str | Text] = self._entries(max(columns - 8, 1))
         selected: int = min(self._selected, max(len(entries) - 1, 0))
         if self._retry is None:
             self._selected = selected
@@ -1408,7 +1204,7 @@ class StateController:
         ]
         status: Text = mark_inert(Text(self._global_status(max(columns - 4, 1)), style="gray"))
         footer = [*footer[: max(rows - 4, 0)], status]
-        wrapped: tuple[tuple[str | Text, ...], ...] = wrap_entries(tuple(label for label, _ in entries), columns)
+        wrapped: tuple[tuple[str | Text, ...], ...] = wrap_entries(entries, columns)
         remaining: int = max(rows - 2 - len(footer), 1)
         heights: tuple[int, ...] = tuple(map(len, wrapped))
         start, end = visible_window(len(entries), selected, remaining + 7, heights=heights)
@@ -1421,18 +1217,15 @@ class StateController:
             self._offsets[viewport] = start
             end = len(entries)
         content: Text = Text()
-        markers: int = 2 if any(checked is not None for _label, checked in entries) else 0
         widths: list[int] = [
             line.cell_len if isinstance(line, Text) else Text(line).cell_len for lines in wrapped for line in lines
         ]
-        left: int = max((columns - 2 - markers - max(widths, default=0)) // 2, 0)
+        left: int = max((columns - 2 - max(widths, default=0)) // 2, 0)
         for index in range(start, end):
             if remaining <= 0:
                 break
-            checked: bool | None = entries[index][1]
-            marker: str = "" if checked is None else ("● " if checked else "○ ")
             lines: tuple[str | Text, ...] = wrapped[index][:remaining]
-            append_wrapped_row(content, left, lines, index == selected, marker, index=index)
+            append_wrapped_row(content, left, lines, index == selected, "", index=index)
             remaining -= len(lines)
             self._page = max(index - start + 1, 1)
         if self._details is not None and remaining >= _DETAIL_HELP_ROWS:
@@ -1454,7 +1247,7 @@ class StateController:
             return _Tab.SUBSCRIPTIONS
         return self._tab
 
-    def _tabs(self, columns: int = 120) -> Text:
+    def _tabs(self, columns: int) -> Text:
         shown: int = self._shown_tab()
         tabs: Text = Text()
         for index, name in enumerate(_TABS):
@@ -1494,7 +1287,7 @@ class StateController:
 
     def _help_body(self, columns: int, rows: int) -> Text:
         width: int = max(columns - 4, 1)
-        intro: tuple[str, ...] = (_HISTORY_SPAN,) if self._tab == _Tab.PROGRESS and self._history_open else ()
+        intro: tuple[str, ...] = (HISTORY_SPAN,) if self._tab == _Tab.PROGRESS and self._history_open else ()
         lines: tuple[str, ...] = help_lines(self._actions().listed, width, intro=intro)
         footer: list[Text] = _keys(["Esc wróć", self._global_status(width)])
         area: int = rows - len(footer)
@@ -1516,43 +1309,14 @@ class StateController:
 
     def _actions(self) -> ScreenActions:
         if self._details is not None:
-            return ScreenActions(
-                (("Enter", "otwórz plik"), ("F", "folder"), ("X", "usuń")), (("Ctrl+Z", "cofnij"), *_PANEL_ACTIONS)
-            )
+            return DETAIL_ACTIONS
         if self._tab == _Tab.SUBSCRIPTIONS:
-            return self._subscription_actions()
+            return subscription_actions(self._selected_subscription(), loaded=bool(self._snapshot))
         if self._tab == _Tab.PROGRESS and self._history_open:
-            return ScreenActions(
-                (("Enter", "otwórz"), ("P", "ponów"), ("/", "szukaj")), (("H", "zamknij"), *_PANEL_ACTIONS)
-            )
+            return HISTORY_ACTIONS
         if self._tab == _Tab.PROGRESS:
-            return self._processing_actions()
-        listed: bool = self._selected < len(_library_rows(self._snapshot))
-        return ScreenActions(
-            (("Enter", "otwórz"), ("F", "folder"), ("X", "usuń")) if listed else (),
-            (("Ctrl+Z", "cofnij"), *_PANEL_ACTIONS),
-        )
-
-    def _subscription_actions(self) -> ScreenActions:
-        row: Mapping[str, object] | None = self._selected_subscription()
-        undo: tuple[Action, ...] = (("Ctrl+Z", "cofnij"), *_PANEL_ACTIONS)
-        if row is None:
-            return ScreenActions(((_ADD_KEYS, "dodaj pierwszą"),) if self._snapshot else (), undo)
-        toggle: Action = ("W", "wznów" if row.get("paused") else "wstrzymaj")
-        return ScreenActions(
-            (("Enter", "szczegóły"), (_ADD_KEYS, "dodaj"), toggle), (("R", "sprawdź teraz"), ("X", "usuń"), *undo)
-        )
-
-    def _processing_actions(self) -> ScreenActions:
-        item: Mapping[str, object] | None = self._selected_material()
-        target: tuple[str, str] | None = None if item is None else _cancel_target(item)
-        toggle: tuple[str, str] | None = None if item is None else _pause_toggle(item)
-        footer: tuple[Action, ...] = (
-            *((("W", toggle[1]),) if toggle is not None else ()),
-            *((("X", "anuluj"),) if target is not None else ()),
-            ("H", "historia"),
-        )
-        return ScreenActions(footer, _PANEL_ACTIONS)
+            return processing_actions(self._selected_material())
+        return library_actions(listed=self._selected < len(library_rows(self._snapshot)))
 
     def _subscription_body(self, columns: int, rows: int, gap: int) -> Text:
         return self._table_body(
@@ -1560,9 +1324,11 @@ class StateController:
             rows,
             gap,
             AnimeScreen.SUBSCRIPTIONS,
-            self._subscription_rows(),
+            subscription_rows(self._subscriptions, self._subscription_checks, self._clock()),
             self._notice.rstrip("."),
-            self._subscription_warning(),
+            subscription_warning(
+                problem=bool(self._subscriptions_problem), pause=self._pause_state(), shadow=self._subscriptions_shadow
+            ),
         )
 
     def _library_body(self, columns: int, rows: int, gap: int) -> Text:
@@ -1572,7 +1338,7 @@ class StateController:
             rows,
             gap,
             AnimeScreen.LIBRARY,
-            tuple(_library_row(item) for item in _library_rows(self._snapshot)),
+            tuple(library_row(item) for item in library_rows(self._snapshot)),
             " · ".join(text for text in (notice, self._library_notice) if text),
             "",
         )
@@ -1625,14 +1391,14 @@ class StateController:
         if not self._snapshot:
             return _CONNECTING
         if self._tab == _Tab.SUBSCRIPTIONS:
-            return _NO_SUBSCRIPTIONS
+            return NO_SUBSCRIPTIONS
         if self._tab == _Tab.FILES:
-            return _LOADING if self._snapshot.get("library_loading") else _EMPTY_LIBRARY
+            return _LOADING if self._snapshot.get("library_loading") else EMPTY_LIBRARY
         if not self._history_open:
-            return _NO_PROCESSING
+            return NO_PROCESSING
         if self._history_problem:
-            return "Historia niedostępna"
-        return _LOADING if self._busy else _NO_ROWS
+            return HISTORY_UNAVAILABLE
+        return _LOADING if self._busy else NO_HISTORY
 
     def _empty_line(self, columns: int) -> Text:
         return mark_inert(_centered(Text(self._empty_text(), style="gray"), columns))
@@ -1651,7 +1417,7 @@ class StateController:
             if self._tab == _Tab.PROGRESS and self._history_open:
                 return _HISTORY_CRUMB
             if self._details is not None:
-                return ("Biblioteka", _safe_text(library_label(self._details.name).text))
+                return ("Biblioteka", safe_text(library_label(self._details.name).text))
             return ()
 
     def _breadcrumb(self, columns: int) -> Text:
@@ -1659,36 +1425,6 @@ class StateController:
         line: Text = _centered(Text(fit(CRUMB_SEPARATOR.join(parts), max(columns - 2, 1)), style="white_bold"), columns)
         mark_crumbs(line, parts)
         return mark_inert(line)
-
-    def _subscription_rows(self) -> tuple[AnimeRow, ...]:
-        now: datetime = self._clock()
-        rows: list[AnimeRow] = []
-        for item in self._subscriptions:
-            state: SubscriptionState = row_state(item, now)
-            shown: tuple[str, str, datetime] | None = self._subscription_checks.get(str(item.get("subscription_id")))
-            if shown is not None and now < shown[2]:
-                state = SubscriptionState(shown[0], shown[1])
-            episodes, ready = row_columns(item)
-            title: str = _safe_text(item.get("title", ""))
-            rows.append(
-                AnimeRow(
-                    str(item.get("subscription_id")),
-                    title,
-                    number=episodes,
-                    ready=ready,
-                    status=state.text,
-                    detail="" if state.detail == state.text else state.detail,
-                    note=watched_line(item),
-                )
-            )
-        return tuple(rows)
-
-    def _subscription_warning(self) -> str:
-        if self._subscriptions_problem:
-            return "Monitoring nie działa: nie można zapisać stanu"
-        if self._automation_paused():
-            return f"{self._pause_state()} · {_RESUME_HINT}"
-        return _SHADOW_WARNING if self._subscriptions_shadow else ""
 
     def _automation_paused(self) -> bool:
         return bool(self._pause_state())
@@ -1713,63 +1449,41 @@ class StateController:
             return fit(state, width)
         return pack_keys((state, *counted), width, optional=tuple(reversed(counted)), limit=1)[0]
 
-    def _entries(self, columns: int) -> list[tuple[str | Text, bool | None]]:
+    def _entries(self, columns: int) -> Sequence[str | Text]:
         if self._retry is not None:
-            labels: dict[str, str] = {
-                "resume": f"Dokończ całe zapisane zlecenie · {len(self._retry.group_ids)} materiałów · podgląd",
-                "manual": "Popraw wybrany lokalny materiał w Ręcznym · wybór zakresu przebudowy",
-                "reacquire": "Pobierz ponownie zachowane wydanie · nowe jawne zamówienie",
-            }
-            return [(labels.get(self._retry.action, "Nieznana droga ponowienia"), None)]
+            return [retry_entry(self._retry)]
         if self._tab == _Tab.PROGRESS and self._history_open:
-            return [
-                (
-                    f"{item.occurred_at[:19].replace('T', ' ')} · {_safe_text(item.name)}"
-                    f" · {_HISTORY_LABELS.get(item.kind, item.kind)}"
-                    + (" · odtworzony zapis · czas przyjęcia" if item.recovered_from_admission else ""),
-                    None,
-                )
-                for item in self._history_items
-            ]
-        entries: list[tuple[str | Text, bool | None]] = []
+            return [history_entry(item) for item in self._history_items]
         if self._details is not None:
-            return _library_detail_entries(self._details)
+            return detail_entries(self._details)
         if self._tab == _Tab.PROGRESS:
             return self._processing_entries(columns)
         if self._tab == _Tab.SUBSCRIPTIONS:
-            return [(_safe_text(item.get("title", "")), None) for item in self._subscriptions]
-        if self._tab == _Tab.FILES:
-            entries = [(_safe_text(_library_label(item).text), None) for item in _library_rows(self._snapshot)]
-        return entries
+            return [safe_text(item.get("title", "")) for item in self._subscriptions]
+        return [library_title(item) for item in library_rows(self._snapshot)] if self._tab == _Tab.FILES else []
 
-    def _processing_entries(self, columns: int) -> list[tuple[str | Text, bool | None]]:
-        entries: list[tuple[str | Text, bool | None]] = []
+    def _processing_entries(self, columns: int) -> list[Text]:
+        entries: list[Text] = []
         for item in self._processing_rows():
             if item.get("stage") == "processing":
                 status: str | None = (
-                    "Brak odczytu" if not self._connected else ("Wstrzymano" if self._held(item) else None)
+                    "Brak odczytu" if not self._connected else ("Wstrzymano" if held(self._snapshot, item) else None)
                 )
                 line: Text = self._runs[str(item["run_id"])][1].render_group(
                     str(item["group_id"]), columns, status=status
                 )
             else:
-                label, fraction = self._download_progress(item)
-                name: str = _safe_text(item.get("name", ""))
-                if not name or name in {item.get("info_hash"), item.get("material_id"), item.get("group_id")}:
-                    name = "Materiał"
+                label, fraction = download_progress(item, self._snapshot, connected=self._connected)
                 timer: ObservedProgressTimer | None = self._download_timers.get(str(item.get("material_id")))
                 line = render_material_progress(
-                    name,
+                    material_name(item),
                     label,
                     fraction if fraction is not None or timer is None else timer.fraction,
                     columns,
                     elapsed_seconds=None if timer is None else timer.elapsed(),
                 )
-            entries.append((line, None))
+            entries.append(line)
         return entries
-
-    def _held(self, item: Mapping[str, object]) -> bool:
-        return bool(self._snapshot.get("paused")) and item.get("automatic") is not False
 
     def _observe_downloads(self) -> None:
         manual: set[str] = {
@@ -1786,7 +1500,7 @@ class StateController:
             generation: str = str(item.get("acquisition_id"))
             if item.get("stage") == "waiting" or timer.generation != generation:
                 timer = ObservedProgressTimer(generation=generation)
-            _label, fraction = self._download_progress(item)
+            _label, fraction = download_progress(item, self._snapshot, connected=self._connected)
             timer.observe(
                 active=self._connected
                 and not self._snapshot.get("transfers_problem")
@@ -1800,91 +1514,11 @@ class StateController:
             current[identifier] = timer
         self._download_timers = current
 
-    def _download_progress(self, item: Mapping[str, object]) -> tuple[str, float | None]:  # noqa: PLR0911
-        fraction: object = item.get("progress")
-        measured: float | None = float(fraction) if isinstance(fraction, (int, float)) else None
-        if item.get("reason") == EpisodeReason.FINALIZATION_FAILED:
-            return "Finalizacja", None
-        if item.get("stage") == "waiting":
-            return ("Wstrzymano" if self._held(item) else "Przygotowanie"), None
-        if item.get("problem"):
-            return "Wymaga uwagi", None
-        if item.get("reason") == EpisodeReason.WAITING_PREVIOUS_TRANSFER:
-            return EPISODE_REASON_LABELS[EpisodeReason.WAITING_PREVIOUS_TRANSFER], None
-        if not self._connected or self._snapshot.get("transfers_problem"):
-            return "Brak odczytu", None
-        state: object = item.get("state")
-        if _download_toggle(item) == ("resume", "wznów"):
-            return "Wstrzymano", measured
-        if state in {"metaDL", "forcedMetaDL"} or item.get("acquisition_state") == "pending_send":
-            return "Metadane", measured
-        if state is None:
-            return "Brak transferu", None
-        if state in {"error", "missingFiles"}:
-            return "Błąd transferu", None
-        if state in {"downloading", "forcedDL", "stalledDL"}:
-            return (
-                "Brak odczytu" if measured is None else ("Brak źródeł" if state == "stalledDL" else "Pobieranie")
-            ), measured
-        return {
-            "queuedDL": "W kolejce",
-            "uploading": "Pobrane",
-            "stalledUP": "Pobrane",
-            "forcedUP": "Pobrane",
-            "queuedUP": "Pobrane",
-            "moving": "Przenoszenie",
-        }.get(str(state), "Sprawdzanie"), measured
-
     def _processing_rows(self, snapshot: Mapping[str, object] | None = None) -> list[Mapping[str, object]]:
-        payload: Mapping[str, object] = self._snapshot if snapshot is None else snapshot
-        running: set[str] = {
-            str(item["request_id"])
-            for item in _rows(payload.get("requests"))
-            if item.get("state") in {"accepted", "running"}
-        }
-        processing: list[Mapping[str, object]] = [
-            item
-            for item in _rows(payload.get("materials"))
-            if item.get("stage") == "processing"
-            and item.get("state") in {"accepted", "running"}
-            and str(item.get("run_id")) in running
-            and (progress := self._runs.get(str(item.get("run_id")))) is not None
-            and progress[1].group_active(str(item.get("group_id")))
-        ]
-        downloads: list[Mapping[str, object]] = [
-            item
-            for item in _rows(payload.get("materials"))
-            if item.get("acquisition_state") in {"pending_send", "accepted", "complete"}
-            and (
-                item.get("stage") == "download"
-                or (
-                    item.get("stage") == "waiting"
-                    and item.get("reason") in {"preparing", EpisodeReason.FINALIZATION_FAILED}
-                )
-            )
-        ]
-        preparing: list[Mapping[str, object]] = [
-            {**item, "stage": "waiting", "reason": "preparing", "admitted_processing": True}
-            for item in _rows(payload.get("materials"))
-            if item.get("stage") == "processing"
-            and item.get("state") in {"accepted", "running"}
-            and str(item.get("run_id")) in running
-            and (
-                (progress := self._runs.get(str(item.get("run_id")))) is None
-                or progress[1].group_pending(str(item.get("group_id")))
-            )
-        ]
-        return [*downloads, *preparing, *processing]
+        return processing_rows(self._snapshot if snapshot is None else snapshot, self._runs)
 
     def _processing_row_ids(self, snapshot: Mapping[str, object] | None = None) -> list[str]:
-        rows: list[Mapping[str, object]] = self._processing_rows(snapshot)
-        return [
-            str(item["acquisition_id"])
-            if item.get("acquisition_id")
-            and sum(other.get("acquisition_id") == item["acquisition_id"] for other in rows) == 1
-            else str(item.get("material_id") or f"{item.get('run_id')}:{item.get('group_id')}")
-            for item in rows
-        ]
+        return row_ids(self._processing_rows(snapshot))
 
 
 def _keys(lines: Iterable[str]) -> list[Text]:
@@ -1897,47 +1531,6 @@ def _centered(line: Text, columns: int) -> Text:
     return result
 
 
-def _rows(value: object) -> list[Mapping[str, object]]:
-    return [item for item in value if isinstance(item, Mapping)] if isinstance(value, list) else []
-
-
-def _safe_text(value: object) -> str:
-    message: str = sanitize_event_message(str(value)) or ""
-    return _CLIENT_PROBLEMS.get(message, message)
-
-
-def _download_toggle(item: Mapping[str, object]) -> tuple[str, str] | None:
-    if item.get("acquisition_state") == "pending_send" or item.get("state") in {
-        "metaDL",
-        "forcedMetaDL",
-        "error",
-        "missingFiles",
-    }:
-        return None
-    if item.get("state") in {"pausedDL", "stoppedDL", "pausedUP", "stoppedUP"}:
-        return "resume", "wznów"
-    return "stop", "wstrzymaj"
-
-
-def _cancel_target(item: Mapping[str, object]) -> tuple[str, str] | None:
-    if item.get("stage") == "download" and item.get("info_hash"):
-        return "info_hash", str(item["info_hash"])
-    if (item.get("stage") == "processing" or item.get("admitted_processing")) and item.get("run_id"):
-        return "run_id", str(item["run_id"])
-    return None
-
-
-def _pause_toggle(item: Mapping[str, object]) -> tuple[str, str] | None:
-    target: tuple[str, str] | None = _cancel_target(item)
-    return _download_toggle(item) if target is not None and target[0] == "info_hash" else None
-
-
-def _cancel_command(target: tuple[str, str]) -> tuple[str, Mapping[str, object]]:
-    if target[0] == "info_hash":
-        return "transfer", {"info_hash": target[1], "action": "cancel"}
-    return "cancel", {"run_id": target[1]}
-
-
 def _moved(selected: int, key: str, count: int, page: int) -> int:
     if key in {"home", "end"}:
         return 0 if key == "home" else count - 1
@@ -1946,59 +1539,17 @@ def _moved(selected: int, key: str, count: int, page: int) -> int:
     return min(max(selected + (-page if key == "pageup" else page), 0), count - 1)
 
 
-def _library_rows(snapshot: Mapping[str, object]) -> list[Mapping[str, object]]:
-    deleted: set[str] = {
-        str(item["set_id"])
-        for item in _rows(snapshot.get("deletions"))
-        if not item.get("restored")
-        and (item.get("active") or (item.get("total") and item.get("recycled") == item.get("total")))
-    }
-    return sorted(
-        [
-            *_rows(snapshot.get("library")),
-            *(item for item in _rows(snapshot.get("library_problems")) if str(item.get("set_id")) not in deleted),
-        ],
-        key=_library_order,
-    )
+def _kept(old: Sequence[object], new: Sequence[object], position: int) -> int:
+    identifier: object = old[position] if position < len(old) else None
+    return new.index(identifier) if identifier in new else min(position, max(len(new) - 1, 0))
 
 
-def _library_label(item: Mapping[str, object]) -> LibraryLabel:
-    return library_label(str(item.get("name", "")))
-
-
-def _library_order(item: Mapping[str, object]) -> tuple[object, ...]:
-    label: LibraryLabel = _library_label(item)
-    numbers: tuple[object, ...] = (label.season or 0, label.episode or 0, label.last or 0)
-    return (_TITLE_KEY(label.title), label.episode is None, *numbers, _library_row_id(item))
-
-
-def _library_row(item: Mapping[str, object]) -> AnimeRow:
-    label: LibraryLabel = _library_label(item)
-    return AnimeRow(_library_row_id(item), _safe_text(label.title), number=label.episode_text)
-
-
-def _library_row_id(item: Mapping[str, object]) -> str:
-    return str(item.get("set_id", ""))
-
-
-def _library_detail_entries(details: LibrarySet) -> list[tuple[str | Text, bool | None]]:
-    entries: list[tuple[str | Text, bool | None]] = [(_safe_text(details.name), None)]
-    if details.target is None:
-        entries.append(("Cel nierozstrzygnięty · regeneracja wymaga wyboru", None))
-    if details.problem == "library_ownership_unknown":
-        entries.append((_LIBRARY_PROBLEMS[details.problem], None))
-    if details.provisional_timing:
-        entries.append(("Czasy robocze · skrypt lektora bez synchronizacji z nagraniem", None))
-    entries.extend(
-        (
-            f"{_safe_text(item.path)} · {item.format} · {_FILE_ROLES[item.role]} · "
-            + ("brak" if item.identity is None else f"{item.identity.size:,} B")
-            + (" · główny" if item.path == details.main_result else ""),
-            None,
-        )
-        for item in details.files
-    )
-    return entries
+def _execute_repeat(session: ResidentSession, proposal: RetryProposal) -> None:
+    if proposal.action == "reacquire" and proposal.operation_id is not None:
+        session.reacquire(proposal.operation_id)
+    else:
+        msg = "Nieaktualne ponowienie; wybierz materiał jeszcze raz"
+        raise ValueError(msg)
 
 
 def _open_episode(session: ResidentSession, set_id: str, *, show_folder: bool = False) -> None:

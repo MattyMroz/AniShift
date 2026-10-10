@@ -41,7 +41,7 @@ from anishift.application.control_views import (
     encode_view,
 )
 from anishift.cli.exit_codes import EXIT_SUCCESS
-from anishift.cli.interactive import anime_view
+from anishift.cli.interactive import anime_view, state_library, state_texts
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive import state as state_module
 from anishift.cli.interactive.anime import _Screen
@@ -1453,7 +1453,7 @@ def test_deletion_operations_are_not_selectable_materials(monkeypatch: pytest.Mo
         assert "Kosz:" not in frame
         assert "nierozliczone" not in frame
         assert "P ponów" not in frame
-        assert state_module._library_rows(controller._snapshot) == []
+        assert state_library.library_rows(controller._snapshot) == []
         for key in ("text:p", "delete", "enter", "text:d"):
             controller.handle_key(key)
         assert calls == []
@@ -1548,7 +1548,7 @@ def test_merged_library_is_naturally_ordered_and_preserves_missing_selection(
         "library_problems": [{"set_id": "3", "name": "Episode 3", "available": False}],
     }
     try:
-        assert [row["set_id"] for row in state_module._library_rows(controller._snapshot)] == ["2", "3", "10"]
+        assert [row["set_id"] for row in state_library.library_rows(controller._snapshot)] == ["2", "3", "10"]
         controller._selected = 1
         payload: dict[str, object] = {
             "library": [{"set_id": "10", "name": "Episode 10"}],
@@ -1578,8 +1578,8 @@ def test_library_details_keep_provenance_without_missing_result_header(
     )
     try:
         frame: str = controller.render(120, 40).plain
-        assert (state_module._LIBRARY_PROBLEMS[problem] in frame) is (problem == "library_ownership_unknown")
-        assert state_module._LIBRARY_PROBLEMS["library_result_missing"] not in frame
+        assert (state_texts.LIBRARY_PROBLEMS[problem] in frame) is (problem == "library_ownership_unknown")
+        assert state_texts.LIBRARY_PROBLEMS["library_result_missing"] not in frame
     finally:
         controller.close()
         controller._thread.join(5)
@@ -1612,7 +1612,7 @@ def test_library_deletion_snapshot_removes_ghost_and_restore_returns_material(mo
                 },
             },
         )
-        assert state_module._library_rows(controller._snapshot) == []
+        assert state_library.library_rows(controller._snapshot) == []
         frame: str = controller.render(80, 24).plain
         assert all(text not in frame for text in ("Episode B", "Kosz", "Brakuje potwierdzonego", "Wstrzymano"))
         controller._receive(
@@ -1625,7 +1625,7 @@ def test_library_deletion_snapshot_removes_ghost_and_restore_returns_material(mo
                 },
             },
         )
-        assert state_module._library_rows(controller._snapshot) == [material]
+        assert state_library.library_rows(controller._snapshot) == [material]
         frame = controller.render(80, 24).plain
         assert "Episode B" in frame
         assert "Kosz" not in frame
@@ -1639,7 +1639,7 @@ def test_library_deletion_snapshot_removes_ghost_and_restore_returns_material(mo
                 },
             },
         )
-        assert state_module._library_rows(controller._snapshot) == [material]
+        assert state_library.library_rows(controller._snapshot) == [material]
         controller._receive(
             client,
             {
@@ -1650,7 +1650,7 @@ def test_library_deletion_snapshot_removes_ghost_and_restore_returns_material(mo
                 },
             },
         )
-        assert state_module._library_rows(controller._snapshot) == [material]
+        assert state_library.library_rows(controller._snapshot) == [material]
         assert "Episode B" in controller.render(80, 24).plain
     finally:
         controller.close()
@@ -1665,14 +1665,14 @@ def _await_state_action(controller: StateController) -> None:
 
 
 def test_every_refusal_cause_reaches_the_panel_as_its_own_translated_sentence() -> None:
-    assert set(state_module._REFUSAL_TEXTS) == {reason.value for reason in RefusalReason}
+    assert set(state_texts._REFUSAL_TEXTS) == {reason.value for reason in RefusalReason}
     texts: list[str] = []
     for reason in RefusalReason:
         english: str = automation_module._REFUSALS[reason][1]
         stated: str = refusal_text(
             ControlError(english, code=ControlErrorCode.CONFLICT, reason=reason.value, answered=True)
         )
-        assert stated == state_module._REFUSAL_TEXTS[reason.value]
+        assert stated == state_texts._REFUSAL_TEXTS[reason.value]
         assert stated != english
         assert stated
         assert not stated.endswith(".")
@@ -1705,7 +1705,7 @@ def test_the_panel_never_picks_refusal_text_by_matching_the_message() -> None:
     )
 
     assert stated == "Polecenie koliduje z bieżącą pracą"
-    assert stated != state_module._REFUSAL_TEXTS[RefusalReason.GROUP_RESERVED.value]
+    assert stated != state_texts._REFUSAL_TEXTS[RefusalReason.GROUP_RESERVED.value]
 
 
 @pytest.mark.parametrize(
@@ -1869,7 +1869,7 @@ def test_library_return_keeps_identity_and_detached_scroll_after_an_inactive_ref
         controller._receive(session, {"event": "state_changed", "payload": {"library": library[1:]}})
         controller._switch_tab(state_module._Tab.FILES)
         assert controller._selected == 38
-        assert state_module._library_rows(controller._snapshot)[controller._selected]["set_id"] == "set-39"
+        assert state_library.library_rows(controller._snapshot)[controller._selected]["set_id"] == "set-39"
         controller.handle_key("up")
         assert "\u276f Episode 38" in controller.render(80, 24).plain
     finally:

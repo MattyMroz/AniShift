@@ -54,7 +54,8 @@ from anishift.application.results import DISPLAYED_ABSENCE_NOTE
 from anishift.application.service import AppService
 from anishift.application.watch_state import WatchStateStore
 from anishift.cli.interactive import app as interactive_app
-from anishift.cli.interactive.state import StateController, _library_rows, _Tab
+from anishift.cli.interactive.state import StateController, _Tab
+from anishift.cli.interactive.state_library import library_rows
 from anishift.cli.resident import ResidentSession
 from anishift.config.presets import AutoPresetFile
 from anishift.errors import ExecutionError
@@ -966,10 +967,10 @@ def test_notification_routes_through_owner_session_and_app_to_library(  # noqa: 
             assert _await(lambda: controller is not None and controller._connected)
             if change == "valid" or (attached and change == "deleted_before_attach"):
                 assert _await(lambda: controller is not None and controller._library_target is None)
-                assert _library_rows(controller._snapshot)[controller._selected]["set_id"] == record.set_id
+                assert library_rows(controller._snapshot)[controller._selected]["set_id"] == record.set_id
             else:
                 assert controller._library_target is None
-                rows: list[Mapping[str, object]] = _library_rows(controller._snapshot)
+                rows: list[Mapping[str, object]] = library_rows(controller._snapshot)
                 assert not rows or rows[controller._selected]["set_id"] != record.set_id
             owner.tray_action(f"notification:{identifier}")
             assert owner.handle(_request("status")).ok
