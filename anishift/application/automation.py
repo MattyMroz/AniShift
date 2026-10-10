@@ -1731,6 +1731,7 @@ class AutomationOwner:
             ],
             "watch_mode": self._watch_mode,
             "library_groups": 0 if self._library is None else len(self._library.groups),
+            "library_loading": self._library is None,
             "directory_exceptions": dict(policy.directory_exceptions),
             "requests": [
                 {

@@ -90,8 +90,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `watched_line` names them beneath the row and in U08) and Gotowe. Row states and columns come only from `subscription_texts` (`row_state`,
   `row_columns`, `row_summary`). The list is `render_anime` with `AnimeScreen.SUBSCRIPTIONS` through `_table_body`, shared with Library: one row
   per subscription, fixed Stan width, optional columns dropped before the title shrinks below
-  `_TITLE_FLOOR`; an empty list renders as DETAILS with the one row „Brak subskrypcji”, and „Łączenie…” before
-  the owner's first listing. The context's status row
+  `_TITLE_FLOOR`; an empty list renders as DETAILS with the one row „Brak subskrypcji”. Every empty tab list
+  (both `_table_body` and `_list_body`) takes its text from `StateController._empty_text` and its gray, centered line
+  from `_empty_line`, on the same row: „Łączenie…” before the first snapshot, „Wczytuję…” while the owner's status
+  says `library_loading` (no inventory yet) or History loads (`_busy`), then the tab's own empty text. The context's status row
   shows a monitoring problem, else the `_pause_state` text of the status line plus ` · O wznów` (2026-10-10),
   else shadow mode; the global pause also stays in the bottom status line, kept at 50×12 by dropping the blank row beneath the table.
   A list longer than the centered layout holds (`_table_body` sets `AnimeSnapshot.fill`, Subscriptions and Library only)

@@ -196,13 +196,22 @@ _NO_SUBSCRIPTIONS: Final[str] = "Brak subskrypcji"
 """Only line of an empty subscription list."""
 
 _NO_ROWS: Final[str] = "Brak pozycji"
-"""Only line of an empty list."""
+"""Only line of an empty History list."""
+
+_NO_PROCESSING: Final[str] = "Brak aktywnego przetwarzania"
+"""Only line of an empty Processing list."""
+
+_EMPTY_LIBRARY: Final[str] = "Biblioteka jest pusta"
+"""Only line of a Library the owner has inventoried and found empty."""
+
+_LOADING: Final[str] = "Wczytuję…"
+"""Only line of a connected list whose rows the owner has not produced yet."""
 
 _TITLE_KEY: Final[Callable[[str], object]] = os_sort_keygen()
 """Order Library titles the way the system file browser orders names."""
 
 _CONNECTING: Final[str] = "Łączenie…"
-"""Only line of the subscription list before the owner's first listing."""
+"""Only line of an empty tab list before the owner's first snapshot."""
 
 _NO_CONNECTION: Final[str] = "Automat: brak połączenia"
 """Status line without a live owner snapshot."""
@@ -1430,12 +1439,8 @@ class StateController:
             for line in ("", *help_lines(self._actions().listed, max(columns - left - 4, 1)))[:remaining]:
                 content.append(f"{' ' * (left + 2)}{line}\n", style="gray")
         if not entries:
-            empty: str = (
-                "Brak aktywnego przetwarzania" if self._tab == _Tab.PROGRESS and not self._history_open else _NO_ROWS
-            )
-            if self._tab == _Tab.PROGRESS and self._history_open and self._history_problem:
-                empty = "Historia niedostępna"
-            content.append_text(_centered(Text(empty, style="gray"), columns))
+            content.append("\n")
+            content.append_text(self._empty_line(columns))
         body: list[Text] = [self._breadcrumb(columns), *content.split("\n")]
         area: int = rows - len(footer)
         top: int = max((area - len(body)) // 2, 0)
@@ -1550,14 +1555,12 @@ class StateController:
         return ScreenActions(footer, _PANEL_ACTIONS)
 
     def _subscription_body(self, columns: int, rows: int, gap: int) -> Text:
-        empty: str = _NO_SUBSCRIPTIONS if self._snapshot else _CONNECTING
         return self._table_body(
             columns,
             rows,
             gap,
             AnimeScreen.SUBSCRIPTIONS,
             self._subscription_rows(),
-            empty,
             self._notice.rstrip("."),
             self._subscription_warning(),
         )
@@ -1570,7 +1573,6 @@ class StateController:
             gap,
             AnimeScreen.LIBRARY,
             tuple(_library_row(item) for item in _library_rows(self._snapshot)),
-            _NO_ROWS,
             " · ".join(text for text in (notice, self._library_notice) if text),
             "",
         )
@@ -1586,7 +1588,6 @@ class StateController:
         gap: int,
         screen: AnimeScreen,
         items: tuple[AnimeRow, ...],
-        empty: str,
         notice: str,
         status: str,
     ) -> Text:
@@ -1598,7 +1599,7 @@ class StateController:
         snapshot: AnimeSnapshot = AnimeSnapshot(
             screen if items else AnimeScreen.DETAILS,
             "",
-            items or (AnimeRow("empty", empty, navigable=False),),
+            items or (AnimeRow("empty", self._empty_text(), navigable=False),),
             cursor=self._selected,
             notice=notice,
             controls=footer_segments(self._actions()),
@@ -1613,10 +1614,28 @@ class StateController:
         self._offsets[self._tab] = offset
         frame: AnimeFrame = render_anime(replace(snapshot, offset=offset), columns, area, self._clock().timestamp())
         lines: list[Text] = list(frame.text.split("\n"))
+        if not items and frame.visible:
+            lines[frame.first_row] = self._empty_line(columns)
         if tight:
             del lines[next(index for index in range(frame.first_row, height) if not lines[index].plain.strip())]
         body: Text = self._pin_status(Text("\n").join(lines), columns, height)
         return Text("\n").join([*(Text() for _ in range(rows - height)), body])
+
+    def _empty_text(self) -> str:
+        if not self._snapshot:
+            return _CONNECTING
+        if self._tab == _Tab.SUBSCRIPTIONS:
+            return _NO_SUBSCRIPTIONS
+        if self._tab == _Tab.FILES:
+            return _LOADING if self._snapshot.get("library_loading") else _EMPTY_LIBRARY
+        if not self._history_open:
+            return _NO_PROCESSING
+        if self._history_problem:
+            return "Historia niedostępna"
+        return _LOADING if self._busy else _NO_ROWS
+
+    def _empty_line(self, columns: int) -> Text:
+        return _centered(Text(self._empty_text(), style="gray"), columns)
 
     def _pin_status(self, body: Text, columns: int, rows: int) -> Text:
         lines: list[Text] = list(body.split("\n", allow_blank=True))[: max(rows - 1, 0)]

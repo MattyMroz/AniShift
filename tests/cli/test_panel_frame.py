@@ -332,3 +332,56 @@ def test_a_fresh_panel_names_the_missing_connection_only_in_the_status(
 
     assert not any(text in "\n".join(lines) for text in ("Brak połączenia", "Łączenie z procesem"))
     assert lines[-1].strip() == "Automat: brak połączenia"
+
+
+def _state(probe: _Probe, payload: Mapping[str, object]) -> list[str]:
+    probe.panel._receive(cast("ResidentSession", _Library()), {"event": "state_changed", "payload": payload})
+    return _lines(probe, 100, 30)
+
+
+def test_the_library_says_loading_until_the_owner_inventories_it(build: Callable[[str], _Probe]) -> None:
+    probe: _Probe = build("library_empty")
+
+    loading: str = "\n".join(_state(probe, {"auto_enabled": True, "library": [], "library_loading": True}))
+    empty: str = "\n".join(_state(probe, {"auto_enabled": True, "library": [], "library_loading": False}))
+    listed: str = "\n".join(
+        _state(probe, {"auto_enabled": True, "library": [{"set_id": "set", "name": "Slime"}], "library_loading": True})
+    )
+
+    assert "Wczytuję…" in loading
+    assert "Biblioteka jest pusta" not in loading
+    assert "Biblioteka jest pusta" in empty
+    assert "Wczytuję" not in empty
+    assert "Slime" in listed
+    assert not any(text in listed for text in ("Wczytuję", "Biblioteka jest pusta", "Brak pozycji"))
+
+
+def _empty_message(probe: _Probe, text: str) -> tuple[int, int, list[str]]:
+    lines: list[Text] = list(probe.panel.render(100, 30).split("\n", allow_blank=True))
+    row: int = next(index for index, line in enumerate(lines) if line.plain.strip() == text)
+    column: int = lines[row].plain.index(text)
+    styles: list[str] = [
+        str(span.style)
+        for span in lines[row].spans
+        if span.start <= column and span.end >= column + len(text) and str(span.style)
+    ]
+    return row, column - (100 - len(text)) // 2, styles
+
+
+@pytest.mark.parametrize(
+    ("name", "history", "text"),
+    [
+        ("library_empty", False, "Biblioteka jest pusta"),
+        ("processing_empty", False, "Brak aktywnego przetwarzania"),
+        ("subscriptions_empty", False, "Brak subskrypcji"),
+        ("processing_empty", True, "Brak pozycji"),
+    ],
+)
+def test_every_empty_tab_shows_its_message_in_one_style_and_place(
+    build: Callable[[str], _Probe], name: str, history: bool, text: str
+) -> None:
+    probe: _Probe = build(name)
+    probe.panel._connected = True
+    probe.panel._history_open = history
+
+    assert _empty_message(probe, text) == (16, 0, ["gray"])

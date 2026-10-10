@@ -3296,6 +3296,39 @@ def test_auto_off_keeps_the_library_current_and_auto_on_admits_without_another_f
     assert len(service.submitted) == 1
 
 
+def test_the_status_reports_the_library_as_loading_until_the_first_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(watch_module, "QUIET_S", 0.02)
+    monkeypatch.setattr(watch_module, "SCAN_INTERVAL_S", 0.01)
+    service, store, _group_id = _library(tmp_path)
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=False)))
+    owner: AutomationOwner = _owner(service, store, scan_interval_s=0.01)
+    loaded: list[object] = []
+    observed: threading.Event = threading.Event()
+
+    def broadcast(frame: Mapping[str, object], terminal: bool) -> None:
+        del terminal
+        payload: object = frame.get("payload")
+        if isinstance(payload, Mapping) and payload.get("library_groups") == 1:
+            loaded.append(payload.get("library_loading"))
+            observed.set()
+
+    owner.attach_broadcast(broadcast)
+    before: object = owner._status()["library_loading"]
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        assert observed.wait(_TIMEOUT_S)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+    assert before is True
+    assert loaded[0] is False
+
+
 def test_automatic_work_plans_with_the_persisted_recipe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(watch_module, "QUIET_S", 0.02)
     monkeypatch.setattr(watch_module, "SCAN_INTERVAL_S", 0.01)
