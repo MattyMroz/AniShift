@@ -3860,6 +3860,7 @@ def test_material_identity_survives_bundle_metadata_preparation_processing_and_r
                 "downloading": 1 + int(bundle),
                 "processing": 0,
                 "waiting": 0,
+                "attention": 0,
             }
             assert _await(lambda: all(item["content_started"] for item in _material_rows(session)))
             write_media_source(tmp_path / "09.mkv")

@@ -68,7 +68,7 @@ from anishift.cli.interactive.pointer import (
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.state import StateController, StateResult, _Tab
 from anishift.cli.interactive.state_library import detail_actions
-from anishift.cli.interactive.state_processing import history_actions
+from anishift.cli.interactive.state_processing import download_progress, history_actions
 from anishift.cli.interactive.state_subscriptions import subscription_actions
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
@@ -1248,6 +1248,29 @@ def test_a_drag_in_a_scrolled_field_keeps_its_starting_character_across_redraws(
 
     assert released.anchor == 20
     assert field.selection_range == (released.value, 20)
+
+
+def test_the_status_line_tells_the_queue_from_materials_that_wait_for_the_user(
+    build: Callable[[str], _Probe],
+) -> None:
+    probe: _Probe = build("processing_empty")
+    probe.panel._snapshot = {
+        **probe.panel._snapshot,
+        "auto_enabled": True,
+        "material_counts": {"downloading": 0, "processing": 0, "waiting": 1, "attention": 2},
+    }
+
+    assert "w kolejce 1 · do sprawdzenia 2" in probe.panel._global_status(120)
+
+
+@pytest.mark.parametrize(
+    ("reason", "label"),
+    [("subtitle_source_missing", "Brak napisów"), ("video_missing", "Brak wideo"), ("unknown", "Do sprawdzenia")],
+)
+def test_a_material_waiting_for_the_user_names_its_cause(reason: str, label: str) -> None:
+    item: dict[str, object] = {"stage": "waiting", "reason": reason, "attention": True}
+
+    assert download_progress(item, {}, connected=True) == (label, None)
 
 
 def test_the_help_is_a_table_of_keys_and_what_they_do() -> None:

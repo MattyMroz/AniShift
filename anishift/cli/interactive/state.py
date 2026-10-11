@@ -150,6 +150,7 @@ _STATUS_COUNTS: Final[tuple[tuple[str, str], ...]] = (
     ("downloading", "pobiera"),
     ("processing", "przetwarza"),
     ("waiting", "w kolejce"),
+    ("attention", "do sprawdzenia"),
 )
 """Owner material counters in the order the status line names them."""
 

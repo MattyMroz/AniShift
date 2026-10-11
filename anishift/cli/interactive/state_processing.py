@@ -34,6 +34,22 @@ __all__ = [
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
+_READINESS_LABELS: Final[dict[str, str]] = {
+    "subtitle_source_missing": "Brak napisów",
+    "sidecar_missing": "Brak napisów obok",
+    "ambiguous_sidecar": "Kilka plików napisów",
+    "video_missing": "Brak wideo",
+    "content_source_missing": "Brak źródła",
+    "ambiguous_content_source": "Kilka źródeł",
+    "source_incomplete": "Plik niekompletny",
+    "source_path_collision": "Konflikt nazw",
+    "unsupported_source": "Nieobsługiwany plik",
+    "image_missing": "Brak okładki",
+    "ambiguous_image": "Kilka okładek",
+    "place_starts_no_work": "Folder bez Auto",
+}
+"""Short Polish cause of a workspace material that waits for the user, not for a queue."""
+
 _HISTORY_LABELS: Final[dict[str, str]] = {
     "order_admitted": "przyjęto zamówienie",
     "download_confirmed": "pobrano źródło",
@@ -158,6 +174,8 @@ def download_progress(  # noqa: PLR0911
     measured: float | None = float(fraction) if isinstance(fraction, (int, float)) else None
     if item.get("reason") == EpisodeReason.FINALIZATION_FAILED:
         return "Błąd zapisu", None
+    if item.get("attention"):
+        return _READINESS_LABELS.get(str(item.get("reason")), "Do sprawdzenia"), None
     if item.get("stage") == "waiting":
         return ("Wstrzymano" if held(snapshot, item) else "Przygotowanie"), None
     if item.get("problem"):

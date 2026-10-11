@@ -129,7 +129,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   i w zakładkach; w polach tekstowych kasuje znak. Anulowanie w Przetwarzaniu (`X`, `Delete`, `C`) uzbraja
   `_question`; anuluje dopiero Enter (także klik w `Enter tak`), a każdy inny klawisz (także Tab i ←→), klik w wiersz
   (`select` kasuje pytanie bez wyboru) i opuszczenie zakładki je kasują; samo wciśnięcie myszy go nie kasuje. Linia
-  statusu automatu (`_global_status`) liczy wyłącznie `material_counts` i stoi w czterech zakładkach.
+  statusu automatu (`_global_status`) liczy wyłącznie `material_counts` i stoi w czterech zakładkach: `w kolejce`
+  (`waiting`, ruszy samo) i osobno `do sprawdzenia` (`attention`: plik z folderu, który nie jest gotowy, np. bez napisów
+  lub wideo; wiersz Przetwarzania podaje powód z `state_processing._READINESS_LABELS`; decyzja właściciela 2026-10-12).
   Okruszek `Zakładka › Element` stoi nad treścią i jest pusty na poziomie listy. `interactive/actions.py`,
   `interactive/state.py`, `interactive/anime.py`, `interactive/manual.py`
 - `ResidentSession.episode_offer_start/get` i `episode_choose` współdzielą kanał katalogu; oferta

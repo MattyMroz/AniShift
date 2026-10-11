@@ -1729,10 +1729,11 @@ class AutomationOwner:
                     for item in materials
                 ),
                 "waiting": sum(
-                    item.get("stage") == "waiting"
+                    (item.get("stage") == "waiting" and not item.get("attention"))
                     or (item.get("stage") == "processing" and item.get("state") in {"accepted", "paused"})
                     for item in materials
                 ),
+                "attention": sum(item.get("attention") is True for item in materials),
             },
             "recovery_problems": [
                 {"run_id": request.request_id, "group_ids": list(request.group_ids), "problem": request.problem}
@@ -1926,6 +1927,7 @@ class AutomationOwner:
                 "reason": None if readiness.reason is None else readiness.reason.value,
                 "active": False,
                 "automatic": True,
+                "attention": True,
             }
         return list(materials.values())
 
