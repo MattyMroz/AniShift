@@ -751,8 +751,6 @@ class AnimeController:
         self._adopt_cursor()
         if self._screen is _Screen.EPISODES:
             self._episode_marks = {int(key) for key in self._view.selected}
-        if self._screen is _Screen.DRAFT and self._view.items:
-            self._draft_cursor = self._view.items[self._view.cursor].key
         self._range_input = self._view.range_input
         self._input_focused = (
             self._view.query_focused if self._screen is _Screen.QUERY else self._range_input is not None
@@ -845,6 +843,8 @@ class AnimeController:
             return
         if self._screen is _Screen.CANDIDATES and self._view.cursor != self._positions.get(self._screen, 0):
             self._release_moved = True
+        if self._screen is _Screen.DRAFT and self._view.items:
+            self._draft_cursor = self._view.items[self._view.cursor].key
         self._positions[self._screen] = self._view.cursor
 
     def _panel_action(self, action: str, keys: tuple[str, ...]) -> None:

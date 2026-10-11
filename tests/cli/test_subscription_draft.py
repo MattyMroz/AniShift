@@ -9,6 +9,8 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from prompt_toolkit.data_structures import Point
+from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from rich.text import Text
 
 from anishift.application import (
@@ -33,6 +35,7 @@ from anishift.application import (
 from anishift.application.subscription_targets import SubscriptionRow
 from anishift.cli.interactive.anime import _WORKER_NAME, AnimeController, _Screen
 from anishift.cli.interactive.anime_view import AnimeFrame
+from anishift.cli.interactive.pointer import Click, ClickKind
 from anishift.cli.interactive.state import StateController, _Tab
 from anishift.cli.interactive.subscription_texts import (
     SubscriptionDraft,
@@ -640,6 +643,27 @@ def test_space_unmarks_an_aired_episode_so_add_orders_only_the_marked_ones(
     _keys(panel, "down", "enter")
 
     assert _orders(owner) == [(1,)]
+
+
+def test_a_click_on_a_draft_box_toggles_its_own_row_and_not_the_cursor_row(
+    panel: StateController, owner: _Owner
+) -> None:
+    _episode_draft(panel, owner)
+    lines: list[str] = _frame(panel).split("\n")
+    row: int = next(index for index, line in enumerate(lines) if "E2  Odcinek 2" in line)
+    point: Point = Point(lines[row].index("[x]") + 1, row)
+    click: Click | None = None
+    for kind in (MouseEventType.MOUSE_DOWN, MouseEventType.MOUSE_UP):
+        click = panel.mouse(MouseEvent(point, kind, MouseButton.LEFT, frozenset()))
+
+    assert click is not None
+    assert click.kind is ClickKind.TOGGLE
+    assert panel.select(click.value)
+    _keys(panel, "space")
+    frame: str = _frame(panel)
+
+    assert "[x] E1  Odcinek 1" in frame
+    assert "[ ] E2  Odcinek 2" in frame
 
 
 def test_a_draft_with_every_aired_episode_unmarked_adds_only_the_subscription(
