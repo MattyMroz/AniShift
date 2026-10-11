@@ -2549,6 +2549,7 @@ def test_choosing_an_already_ordered_episode_keeps_the_releases_and_p_opens_them
     reason: str, sentence: str
 ) -> None:
     owner: _ChoiceOwner = _ChoiceOwner()
+    owner.statuses.pop(1)
     owner.refusal = ControlError("refused", code=ControlErrorCode.REFUSED, reason=reason, answered=True)
     controller: AnimeController = _owner_controller(owner)
     _key(controller, "text:i")
@@ -2566,6 +2567,31 @@ def test_choosing_an_already_ordered_episode_keeps_the_releases_and_p_opens_them
 
     assert ("repeat", 1) in owner.calls
     assert _at(controller) is _Screen.CANDIDATES
+
+
+@pytest.mark.unit
+def test_a_repeatable_refusal_keeps_a_known_ready_episode_state() -> None:
+    owner: _ChoiceOwner = _ChoiceOwner()
+    ready: EpisodeStatus = EpisodeStatus(EpisodeKey(1, 1), "ready", None, "admission-1", set_id="set-1")
+    owner.statuses[1] = ready
+    owner.refusal = ControlError("refused", code=ControlErrorCode.REFUSED, reason="episode_admitted", answered=True)
+    controller: AnimeController = _owner_controller(owner)
+    _key(controller, "text:i")
+    _key(controller, "text:d")
+
+    assert controller._episode_states[EpisodeKey(1, 1)] == ready
+
+
+@pytest.mark.unit
+def test_the_release_list_names_no_choice_while_a_choice_is_being_sent() -> None:
+    controller: AnimeController = _owner_controller(_ChoiceOwner())
+    _key(controller, "text:i")
+    controller._view.searching = {"1"}
+
+    keys: list[str] = [key for key, _label in controller._base_actions().footer]
+
+    assert "Space" not in keys
+    assert "D" not in keys
 
 
 @pytest.mark.unit
@@ -2725,7 +2751,8 @@ def test_owner_refresh_removes_newly_admitted_marks_and_retains_uncertain_file_p
     assert not controller._episode_marks
     frame: str = controller.render(50, 24).plain
     assert "Enter wskaż plik" in frame
-    assert "Space zaznacz" in frame
+    assert "Enter wskaż plik" in frame
+    assert "Space zaznacz" not in frame
     _key(controller, "text:?")
     assert "P ponownie" in controller.render(50, 24).plain
     _key(controller, "escape")

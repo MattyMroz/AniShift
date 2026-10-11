@@ -52,12 +52,17 @@ from anishift.cli.interactive.pointer import (
     Click,
     ClickKind,
     FrameSelection,
+    Gesture,
+    PointerGesture,
     TextPoint,
     click_at,
     mark_keys,
 )
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.state import StateController, StateResult, _Tab
+from anishift.cli.interactive.state_library import detail_actions
+from anishift.cli.interactive.state_processing import history_actions
+from anishift.cli.interactive.state_subscriptions import subscription_actions
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 from anishift.platform.local_control import ControlError, ControlErrorCode
@@ -77,7 +82,9 @@ _EVERYWHERE: Final[frozenset[str]] = frozenset({"text:o", "text:?"})
 
 _PANEL: Final[tuple[Action, ...]] = (("M", "ręczny"), ("U", "ustawienia"))
 
-_EPISODE_MORE: Final[tuple[Action, ...]] = (("I", "wydania"), ("Z", "zakres"), ("A", "wszystkie"), ("P", "ponownie"))
+_FRESH_MORE: Final[tuple[Action, ...]] = (("I", "wydania"), ("Z", "zakres"), ("A", "wszystkie"))
+
+_EPISODE_MORE: Final[tuple[Action, ...]] = (*_FRESH_MORE, ("P", "ponownie"))
 
 _LISTED: Final[tuple[Action, ...]] = (("/", "szukaj"), ("C", "kopiuj"))
 
@@ -91,6 +98,8 @@ _U08: Final[tuple[Action, ...]] = (
     ("S", "subskrybuj"),
     *_LISTED,
 )
+
+_U08_FRESH: Final[tuple[Action, ...]] = tuple(action for action in _U08 if action != ("P", "ponownie"))
 
 _HASH: Final[str] = "a" * 40
 
@@ -498,26 +507,35 @@ _FIXTURES: Final[dict[str, Callable[[pytest.MonkeyPatch], _Probe]]] = {
 }
 
 _ACTIONS: Final[dict[str, tuple[Action, ...]]] = {
-    "titles": (("Enter", "wybierz"), ("S", "subskrybuj"), *_LISTED),
-    "entries": (("Enter", "odcinki"), ("S", "subskrybuj"), *_LISTED),
-    "episodes": (("Space", "zaznacz"), ("D", "pobierz"), ("S", "subskrybuj"), *_EPISODE_MORE, *_LISTED),
+    "titles": (("Enter", "wybierz"), *_LISTED),
+    "entries": (("Enter", "odcinki"), *_LISTED),
+    "episodes": (("Space", "zaznacz"), ("D", "pobierz"), ("S", "subskrybuj"), *_FRESH_MORE, *_LISTED),
     "episodes_file": (
         ("Enter", "wskaż plik"),
-        ("Space", "zaznacz"),
-        ("D", "pobierz"),
         ("S", "subskrybuj"),
-        *_EPISODE_MORE,
+        ("Z", "zakres"),
+        ("A", "wszystkie"),
+        ("P", "ponownie"),
         *_LISTED,
     ),
     "candidates": (("Space", "zaznacz"), ("D", "pobierz"), *_LISTED),
     "files": (("Enter", "wybierz"), *_LISTED),
-    "draft": (("Enter", "wybierz"), ("Space", "zaznacz"), ("A", "wszystkie"), *_LISTED),
+    "draft": (("Space", "zaznacz"), ("A", "wszystkie"), *_LISTED),
     "busy": (("C", "kopiuj"),),
-    "problem": (("Enter", "wróć"), ("C", "kopiuj")),
-    "u08": _U08,
-    "u08_waiting": (_U08[0], _U08[1], ("T", "pobierz teraz"), *_U08[2:]),
+    "problem": (("C", "kopiuj"),),
+    "u08": _U08_FRESH,
+    "u08_waiting": (_U08_FRESH[0], _U08_FRESH[1], ("T", "pobierz teraz"), *_U08_FRESH[2:]),
     "u08_ready": (("Enter", "obejrzyj"), *_U08),
-    "u08_extra": (("Enter", "otwórz"), *_U08),
+    "u08_extra": (
+        ("Enter", "otwórz"),
+        ("W", "wstrzymaj"),
+        ("R", "sprawdź teraz"),
+        ("X", "usuń"),
+        ("Z", "zakres"),
+        ("A", "wszystkie"),
+        ("S", "subskrybuj"),
+        *_LISTED,
+    ),
     "subscriptions": (
         ("Enter", "szczegóły"),
         ("D", "dodaj"),
@@ -539,6 +557,11 @@ _ACTIONS: Final[dict[str, tuple[Action, ...]]] = {
 }
 
 _ALIASES: Final[dict[str, frozenset[str]]] = {
+    "titles": frozenset({"text:s"}),
+    "entries": frozenset({"text:s"}),
+    "draft": frozenset({"enter"}),
+    "problem": frozenset({"enter"}),
+    "episodes_file": frozenset({"text:i"}),
     "episodes": frozenset({"enter"}),
     "u08": frozenset({"text:f", "delete", "enter"}),
     "u08_waiting": frozenset({"text:f", "delete", "enter"}),
@@ -572,12 +595,12 @@ _APPLIES: Final[dict[tuple[str, str], str]] = {
 
 _FOOTERS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
     "query": ("Enter szukaj · Esc wróć", ()),
-    "titles": ("Enter wybierz · S subskrybuj · ? klawisze · Esc wróć", ()),
-    "entries": ("Enter odcinki · S subskrybuj · ? klawisze · Esc wróć", ()),
+    "titles": ("Enter wybierz · ? klawisze · Esc wróć", ()),
+    "entries": ("Enter odcinki · ? klawisze · Esc wróć", ()),
     "episodes": ("Space zaznacz · D pobierz · S subskrybuj · ? klawisze · Esc wróć", ()),
     "candidates": ("Space zaznacz · D pobierz · ? klawisze · Esc wróć", ()),
     "files": ("Enter wybierz · ? klawisze · Esc wróć", ()),
-    "draft": ("Enter wybierz · Space zaznacz · ? klawisze · Esc wróć", ()),
+    "draft": ("Space zaznacz · ? klawisze · Esc wróć", ()),
     "u08": ("Space zaznacz · D pobierz · W wstrzymaj · ? klawisze · Esc wróć", ()),
     "u08_waiting": ("Space zaznacz · D pobierz · T pobierz teraz · ? klawisze · Esc wróć", ()),
     "subscriptions": ("Enter szczegóły · D dodaj · W wstrzymaj · ? klawisze · Esc wróć", ()),
@@ -590,7 +613,7 @@ _FOOTERS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
     "episodes_details": ("C kopiuj · Esc wróć", ("text:?",)),
     "u08_details": ("C kopiuj · Esc wróć", ("text:?",)),
     "subscriptions_help": ("Esc wróć", ("text:?",)),
-    "problem": ("Enter/Esc wróć", ()),
+    "problem": ("Esc wróć", ()),
 }
 
 _HELP_SCREENS: Final[tuple[str, ...]] = (
@@ -1198,6 +1221,40 @@ def test_a_drag_over_the_search_text_selects_it_in_the_field_so_backspace_clears
     probe.panel.handle_key("backspace")
 
     assert probe.anime._query == ""
+
+
+def test_a_drag_in_a_scrolled_field_keeps_its_starting_character_across_redraws() -> None:
+    field: TextInput = TextInput("abcdefghijklmnopqrst")
+    gesture: PointerGesture = PointerGesture()
+
+    def step(kind: MouseEventType, column: int) -> Click:
+        found: Gesture | None = gesture.track(MouseEvent(Point(column, 0), kind, MouseButton.LEFT, frozenset()))
+        assert found is not None
+        click: Click = gesture.resolve(field.render(10), found)
+        if click.kind is ClickKind.FIELD:
+            field.place(click.value, click.anchor)
+        return click
+
+    step(MouseEventType.MOUSE_DOWN, 9)
+    step(MouseEventType.MOUSE_MOVE, 8)
+    released: Click = step(MouseEventType.MOUSE_UP, 8)
+
+    assert released.anchor == 20
+    assert field.selection_range == (released.value, 20)
+
+
+def test_footers_name_opening_actions_only_where_something_opens() -> None:
+    assert [key for key, _label in history_actions(listed=False).footer] == ["/"]
+    assert [key for key, _label in history_actions(listed=True).footer] == ["Enter", "P", "/"]
+    assert [key for key, _label in detail_actions(openable=False).footer] == ["Del"]
+    assert [key for key, _label in detail_actions(openable=True).footer] == ["Enter", "F", "Del"]
+    old: dict[str, object] = {"subscription_id": "a", "anilist_id": None, "title": "Old"}
+    assert [key for key, _label in subscription_actions(old, loaded=True).footer] == ["D", "W"]
+    assert [key for key, _label in subscription_actions({**old, "anilist_id": 7}, loaded=True).footer] == [
+        "Enter",
+        "D",
+        "W",
+    ]
 
 
 def test_a_deletion_notice_offers_its_undo_as_a_click_and_keeps_its_title_plain() -> None:

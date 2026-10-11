@@ -1323,7 +1323,7 @@ def test_the_details_keep_every_subscription_key_visible_in_a_narrow_terminal(
         assert hint in frame
     _keys(panel, "text:?")
     shown: str = " ".join(_detail_rows(panel, 50, 24))
-    for hint in ("P ponownie", "R sprawdź teraz", "X usuń"):
+    for hint in ("R sprawdź teraz", "X usuń"):
         assert hint in shown
 
 
@@ -1363,7 +1363,7 @@ def test_download_now_key(panel: StateController, owner: _Owner, monkeypatch: py
     assert sent_on_first == []
     assert "T pobierz teraz" not in first
     assert ("subscription_check", {"subscription_id": "a", "number": 3}) in owner.calls
-    for hint in ("T pobierz teraz", "D pobierz", "? klawisze", "Esc wróć"):
+    for hint in ("T pobierz teraz", "? klawisze", "Esc wróć"):
         assert hint in narrow
     assert _anime(panel)._screen is _Screen.EPISODES
 

@@ -121,6 +121,9 @@ _NOT_AIRING: Final[str] = "Ten wpis nie ma przyszłych odcinków"
 _ANNOUNCED: Final[str] = "Zapowiedź · odcinków jeszcze nie ma · S subskrybuj"
 """Notice for Enter on an announced entry, which opens nothing."""
 
+_DRAFT_BUTTONS: Final[frozenset[str]] = frozenset({"add", "cancel", "show"})
+"""Keys of the subscription draft rows Enter acts on."""
+
 
 _COPY: Final[tuple[Action, ...]] = (("C", "kopiuj"),)
 """Copy action of every Anime screen showing rows."""
@@ -960,25 +963,68 @@ class AnimeController:
         if screen is _Screen.BUSY:
             return ScreenActions(more=() if self._busy_return is _Screen.QUERY else _COPY)
         if screen is _Screen.PROBLEM:
-            return ScreenActions((("Enter", "pobierz mimo to" if self._confirm_choice else "wróć"),), _COPY)
+            confirm: tuple[Action, ...] = (("Enter", "pobierz mimo to"),) if self._confirm_choice else ()
+            return ScreenActions(confirm, _COPY)
         if screen in {_Screen.TITLES, _Screen.ENTRIES}:
-            label: str = "wybierz" if screen is _Screen.TITLES else "odcinki"
-            return ScreenActions((("Enter", label), ("S", "subskrybuj")), _LISTED)
+            return self._listed_actions()
         if screen is _Screen.FILES:
             return ScreenActions((("Enter", "wybierz"),), _LISTED)
+        row: AnimeRow | None = self._cursor_row()
         if screen is _Screen.CANDIDATES:
-            again: tuple[Action, ...] = (("P", "pobierz ponownie"),) if self._repeatable_offer() is not None else ()
-            return ScreenActions((("Space", "zaznacz"), ("D", "pobierz"), *again), _LISTED)
+            free: bool = not self._view.searching
+            pick: tuple[Action, ...] = (("Space", "zaznacz"),) if free and row is not None and row.eligible else ()
+            target: bool = bool(self._view.selected) or (row is not None and row.eligible)
+            take: tuple[Action, ...] = (("D", "pobierz"),) if free and target else ()
+            again: tuple[Action, ...] = (
+                (("P", "pobierz ponownie"),) if free and self._repeatable_offer() is not None else ()
+            )
+            return ScreenActions((*pick, *take, *again), _LISTED)
         if screen is _Screen.DRAFT:
-            if not self._draft_episodes():
-                return ScreenActions((("Enter", "wybierz"),), _LISTED)
-            return ScreenActions((("Enter", "wybierz"), ("Space", "zaznacz")), (("A", "wszystkie"), *_LISTED))
+            key: str = self._draft_cursor or next(
+                (item.key for item in self._view.items if item.key.startswith("ep:") or item.key in _DRAFT_BUTTONS), ""
+            )
+            enter: tuple[Action, ...] = (("Enter", "wybierz"),) if key in _DRAFT_BUTTONS else ()
+            mark: tuple[Action, ...] = (("Space", "zaznacz"),) if key.startswith("ep:") else ()
+            every: tuple[Action, ...] = (("A", "wszystkie"),) if self._draft_episodes() else ()
+            return ScreenActions((*enter, *mark), (*every, *_LISTED))
         return self._episode_actions()
+
+    def _cursor_row(self) -> AnimeRow | None:
+        items: tuple[AnimeRow, ...] = self._view.items
+        return items[self._view.cursor] if 0 <= self._view.cursor < len(items) else None
+
+    def _listed_actions(self) -> ScreenActions:
+        status: str = ""
+        anilist_id: int | None = None
+        if self._screen is _Screen.TITLES and self._candidates:
+            candidate: TitleCandidate = self._candidates[self._highlighted]
+            status, anilist_id = candidate.status.value, candidate.anilist_id
+        elif self._screen is _Screen.ENTRIES and self._franchise is not None and self._franchise.entries:
+            entry: FranchiseEntry = self._franchise.entries[self._positions.get(_Screen.ENTRIES, 0)]
+            status, anilist_id = entry.status or "", entry.anilist_id
+        label: str = "wybierz" if self._screen is _Screen.TITLES else "odcinki"
+        enter: tuple[Action, ...] = () if status == "NOT_YET_RELEASED" else (("Enter", label),)
+        finished: bool = status == "FINISHED" and anilist_id not in self._subscribed
+        subscribe: tuple[Action, ...] = () if finished else (("S", "subskrybuj"),)
+        return ScreenActions((*enter, *subscribe), _LISTED)
 
     def _episode_actions(self) -> ScreenActions:
         enter: str = self._episode_enter()
-        footer: list[Action] = [*((("Enter", enter),) if enter else ()), ("Space", "zaznacz"), ("D", "pobierz")]
-        more: list[Action] = [("I", "wydania"), ("Z", "zakres"), ("A", "wszystkie"), ("P", "ponownie")]
+        current: AnimeRow | None = self._cursor_row()
+        free: bool = not self._view.searching
+        eligible: bool = free and current is not None and current.eligible
+        footer: list[Action] = [
+            *((("Enter", enter),) if enter else ()),
+            *((("Space", "zaznacz"),) if eligible else ()),
+            *((("D", "pobierz"),) if eligible or (free and self._episode_marks and self._on_episode()) else ()),
+        ]
+        film: bool = self._entry is not None and self._entry.format == "MOVIE"
+        more: list[Action] = [
+            *((("I", "wydania"),) if eligible else ()),
+            *((("Z", "zakres"),) if free and not film else ()),
+            *((("A", "wszystkie"),) if free else ()),
+            *((("P", "ponownie"),) if free and self._repeatable_episode() else ()),
+        ]
         row: Mapping[str, object] | None = self._subscription
         if row is None:
             footer.append(("S", "subskrybuj"))
@@ -988,6 +1034,18 @@ class AnimeController:
         footer.append(("T", "pobierz teraz") if waiting else toggle)
         subscription: tuple[Action, ...] = (*((toggle,) if waiting else ()), ("R", "sprawdź teraz"), ("X", "usuń"))
         return ScreenActions(tuple(footer), (*subscription, *more, ("S", "subskrybuj"), *_LISTED))
+
+    def _on_episode(self) -> bool:
+        return self._positions.get(_Screen.EPISODES, 0) < len(self._shown_episodes())
+
+    def _repeatable_episode(self) -> bool:
+        listing: EpisodeListing | None = self._listing
+        shown: tuple[ListedEpisode, ...] = self._shown_episodes()
+        position: int = self._positions.get(_Screen.EPISODES, 0)
+        if listing is None or position >= len(shown):
+            return False
+        status: EpisodeStatus | None = self._episode_states.get(EpisodeKey(listing.anilist_id, shown[position].number))
+        return status is not None and (status.state != "not_ordered" or status.admission_id is not None)
 
     def _episode_enter(self) -> str:
         listing: EpisodeListing | None = self._listing
@@ -1233,6 +1291,11 @@ class AnimeController:
         if key in {"escape", "interrupt"}:
             self._back_episode_screen()
             return
+        if self._screen is _Screen.CANDIDATES and key.casefold() == "text:p":
+            episode: ListedEpisode | None = self._repeatable_offer()
+            if episode is not None:
+                self._start_owner_offer(episode, repeat=True)
+            return
         count: int = self._episode_screen_count()
         if not count:
             return
@@ -1250,10 +1313,6 @@ class AnimeController:
             )
             if chosen is not None:
                 self._choose_release(chosen)
-        elif self._screen is _Screen.CANDIDATES and key.casefold() == "text:p":
-            episode: ListedEpisode | None = self._repeatable_offer()
-            if episode is not None:
-                self._start_owner_offer(episode, repeat=True)
 
     def _repeatable_offer(self) -> ListedEpisode | None:
         view: EpisodeOfferView | None = self._offer_view
@@ -1263,7 +1322,7 @@ class AnimeController:
         status: EpisodeStatus | None = self._episode_states.get(view.offer.key)
         if status is None or (status.state == "not_ordered" and status.admission_id is None):
             return None
-        return next((item for item in listing.episodes if item.number == view.offer.key.number), None)
+        return next((item for item in self._shown_episodes() if item.number == view.offer.key.number), None)
 
     def _episode_screen_count(self) -> int:
         if self._screen is _Screen.ENTRIES:
@@ -1807,13 +1866,19 @@ class AnimeController:
                 conflict_confirmed=bool(view.conflict),
             )
         except (AniShiftError, OSError) as problem:
-            repeatable: bool = isinstance(problem, ControlError) and problem.reason in REPEATABLE_REASONS
+            reason: str | None = problem.reason if isinstance(problem, ControlError) else None
+            repeatable: bool = reason in REPEATABLE_REASONS
             with self._lock:
                 if generation == self._generation:
                     self._choice_sending = False
                     if repeatable:
                         self._worker = None
                         self._notice = " · ".join(part for part in stated(problem) if part)
+                        known: EpisodeStatus | None = self._episode_states.get(view.offer.key)
+                        if known is None or (known.state == "not_ordered" and known.admission_id is None):
+                            self._episode_states[view.offer.key] = EpisodeStatus(
+                                view.offer.key, "possibly_admitted", reason
+                            )
                     else:
                         self._offer_id = None
             if repeatable:

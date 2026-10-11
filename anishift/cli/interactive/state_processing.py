@@ -12,7 +12,6 @@ from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.state_texts import rows, safe_text
 
 __all__ = [
-    "HISTORY_ACTIONS",
     "HISTORY_PROBLEMS",
     "HISTORY_SPAN",
     "HISTORY_UNAVAILABLE",
@@ -22,6 +21,7 @@ __all__ = [
     "cancel_target",
     "download_progress",
     "held",
+    "history_actions",
     "history_entry",
     "material_name",
     "pause_toggle",
@@ -55,10 +55,6 @@ HISTORY_PROBLEMS: Final[dict[str, str]] = {
 HISTORY_SPAN: Final[str] = "Historia z ostatnich 30 dni"
 """Help line naming how far back the default history reaches."""
 
-HISTORY_ACTIONS: Final[ScreenActions] = ScreenActions(
-    (("Enter", "otwórz"), ("P", "ponów"), ("/", "szukaj")), (("H", "zamknij"), *PANEL_ACTIONS)
-)
-"""Actions of the History list."""
 
 NO_PROCESSING: Final[str] = "Brak aktywnego przetwarzania"
 """Only line of an empty Processing list."""
@@ -215,6 +211,12 @@ def question_text(target: tuple[str, str], targeted: list[Mapping[str, object]])
         return "Anulować pobieranie?" if len(targeted) == 1 else f"Anulować pobieranie ({len(targeted)} materiałów)?"
     scope: object = targeted[0].get("group_ids", [])
     return f"Anulować całe zlecenie ({len(scope) if isinstance(scope, list) else 1} materiałów)?"
+
+
+def history_actions(*, listed: bool) -> ScreenActions:
+    """Return the actions of the History list, opening and retrying only on a listed material."""
+    material: tuple[Action, ...] = (("Enter", "otwórz"), ("P", "ponów")) if listed else ()
+    return ScreenActions((*material, ("/", "szukaj")), (("H", "zamknij"), *PANEL_ACTIONS))
 
 
 def processing_actions(item: Mapping[str, object] | None) -> ScreenActions:

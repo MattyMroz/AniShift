@@ -61,9 +61,9 @@ from anishift.cli.interactive.pointer import (
 )
 from anishift.cli.interactive.progress import ObservedProgressTimer, RichRunProgress, render_material_progress
 from anishift.cli.interactive.state_library import (
-    DETAIL_ACTIONS,
     EMPTY_LIBRARY,
     LIBRARY_DELETED,
+    detail_actions,
     detail_entries,
     detail_file,
     details_label,
@@ -75,7 +75,6 @@ from anishift.cli.interactive.state_library import (
     unsettled_deletions,
 )
 from anishift.cli.interactive.state_processing import (
-    HISTORY_ACTIONS,
     HISTORY_PROBLEMS,
     HISTORY_SPAN,
     HISTORY_UNAVAILABLE,
@@ -85,6 +84,7 @@ from anishift.cli.interactive.state_processing import (
     cancel_target,
     download_progress,
     held,
+    history_actions,
     history_entry,
     material_name,
     pause_toggle,
@@ -1372,11 +1372,12 @@ class StateController:
 
     def _actions(self) -> ScreenActions:
         if self._details is not None:
-            return DETAIL_ACTIONS
+            chosen: LibraryFile | None = detail_file(self._details, self._selected)
+            return detail_actions(openable=chosen is not None and chosen.identity is not None)
         if self._tab == _Tab.SUBSCRIPTIONS:
             return subscription_actions(self._selected_subscription(), loaded=bool(self._snapshot))
         if self._tab == _Tab.PROGRESS and self._history_open:
-            return HISTORY_ACTIONS
+            return history_actions(listed=self._selected < len(self._history_items))
         if self._tab == _Tab.PROGRESS:
             return processing_actions(self._selected_material())
         return library_actions(listed=self._selected < len(self._library()))

@@ -154,6 +154,7 @@ class PointerGesture:
         self._anchor: TextPoint | None = None
         self._dragged: bool = False
         self._last: tuple[int, float] | None = None
+        self._field: tuple[int, int] | None = None
 
     def reset(self) -> None:
         """Forget a press and a previous click whose coordinates no longer match the painted frame."""
@@ -185,12 +186,27 @@ class PointerGesture:
             self._last = None
         return Gesture((anchor, point)) if self._dragged else Gesture(None, point)
 
+    def _field_drag(self, frame: Text, selection: tuple[TextPoint, TextPoint] | None) -> Click:
+        field: tuple[int, int] | None = self._field
+        if selection is None or field is None or selection[1].row != field[0]:
+            return Click()
+        end: Click = click_at(frame, selection[1])
+        return Click(ClickKind.FIELD, end.value, anchor=field[1]) if end.kind is ClickKind.FIELD else Click()
+
     def resolve(self, frame: Text, gesture: Gesture) -> Click:
         """Name what ``gesture`` asks of the view painted as ``frame``; a quick second click on one screen row opens."""
         if gesture.back:
             return Click(ClickKind.BACK)
+        if gesture.click is None and gesture.selection is None:
+            pressed: Click = Click() if self._anchor is None else click_at(frame, self._anchor)
+            self._field = (
+                None
+                if self._anchor is None or pressed.kind is not ClickKind.FIELD
+                else (self._anchor.row, pressed.value)
+            )
+            return Click()
         if gesture.click is None:
-            return _field_drag(frame, gesture.selection)
+            return self._field_drag(frame, gesture.selection)
         target: Click = click_at(frame, gesture.click)
         now: float = self._clock()
         previous: tuple[int, float] | None = self._last
@@ -420,16 +436,6 @@ def _span_at(line: Text, offset: int) -> tuple[Span, Click] | None:
         if click.kind is ClickKind.FIELD and (field is None or span.end <= offset):
             field = (span, click)
     return field
-
-
-def _field_drag(frame: Text, selection: tuple[TextPoint, TextPoint] | None) -> Click:
-    if selection is None or selection[0].row != selection[1].row:
-        return Click()
-    start: Click = click_at(frame, selection[0])
-    end: Click = click_at(frame, selection[1])
-    if start.kind is not ClickKind.FIELD or end.kind is not ClickKind.FIELD:
-        return Click()
-    return Click(ClickKind.FIELD, end.value, anchor=start.value)
 
 
 def _key_name(label: str) -> str | None:

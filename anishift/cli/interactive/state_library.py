@@ -11,14 +11,14 @@ from typing import Final
 from natsort import os_sort_keygen
 
 from anishift.application import LibraryFile, LibraryLabel, LibrarySet, library_label
-from anishift.cli.interactive.actions import PANEL_ACTIONS, ScreenActions
+from anishift.cli.interactive.actions import PANEL_ACTIONS, Action, ScreenActions
 from anishift.cli.interactive.anime_state import AnimeRow
 from anishift.cli.interactive.state_texts import LIBRARY_PROBLEMS, rows, safe_text
 
 __all__ = [
-    "DETAIL_ACTIONS",
     "EMPTY_LIBRARY",
     "LIBRARY_DELETED",
+    "detail_actions",
     "detail_entries",
     "detail_file",
     "details_label",
@@ -37,11 +37,6 @@ EMPTY_LIBRARY: Final[str] = "Biblioteka jest pusta"
 
 LIBRARY_DELETED: Final[str] = "Usunięto · Ctrl+Z cofnij"
 """Library notice kept after a deleted set leaves the list, until the next move."""
-
-DETAIL_ACTIONS: Final[ScreenActions] = ScreenActions(
-    (("Enter", "otwórz plik"), ("F", "folder"), ("Del", "usuń")), (("Ctrl+Z", "cofnij"), *PANEL_ACTIONS)
-)
-"""Actions of the files of one set."""
 
 _TITLE_KEY: Final[Callable[[str], object]] = os_sort_keygen()
 """Order Library titles the way the system file browser orders names."""
@@ -99,6 +94,12 @@ def library_title(item: Mapping[str, object]) -> str:
 def library_row_id(item: Mapping[str, object]) -> str:
     """Return the set ID identifying a Library row."""
     return str(item.get("set_id", ""))
+
+
+def detail_actions(*, openable: bool) -> ScreenActions:
+    """Return the actions of the files of one set, opening only on an available file row."""
+    files: tuple[Action, ...] = (("Enter", "otwórz plik"), ("F", "folder")) if openable else ()
+    return ScreenActions((*files, ("Del", "usuń")), (("Ctrl+Z", "cofnij"), *PANEL_ACTIONS))
 
 
 def library_actions(*, listed: bool) -> ScreenActions:
