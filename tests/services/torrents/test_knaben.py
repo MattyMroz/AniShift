@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import cast
 
 import httpx
@@ -65,6 +66,22 @@ def test_magnet_fallback_keeps_trackers_without_webseeds() -> None:
     assert page.total is None
     assert page.streams[0].seeders is None
     assert page.streams[0].trackers == ("udp://tracker.example:80",)
+
+
+@pytest.mark.unit
+def test_publication_date_is_read_as_utc_and_an_unreadable_one_stays_unknown() -> None:
+    dates: list[object] = ["2026-10-02T12:56:37+02:00", "2026-10-02T12:56:37", "yesterday", None]
+    body: dict[str, object] = {
+        "hits": [{"hash": f"{index:040x}", "title": "Example", "date": value} for index, value in enumerate(dates)]
+    }
+    with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=body))) as client:
+        page: TextPage = KnabenSource(client).search("Example", 0)
+    assert [stream.published for stream in page.streams] == [
+        datetime(2026, 10, 2, 10, 56, 37, tzinfo=UTC),
+        datetime(2026, 10, 2, 12, 56, 37, tzinfo=UTC),
+        None,
+        None,
+    ]
 
 
 @pytest.mark.unit

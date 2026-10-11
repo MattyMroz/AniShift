@@ -57,10 +57,12 @@ from anishift.application.episode_selection import (
     FranchiseGraph,
     ListedEpisode,
     RankedCandidate,
+    SeasonDates,
     StreamCandidate,
     identity_target,
     numbering_gap,
     rank_candidates,
+    season_dates,
     suggestion,
 )
 from anishift.errors import ErrorCode, ErrorContext, FatalError
@@ -1056,10 +1058,14 @@ def test_two_complete_graphs_holding_the_entry_give_the_same_target_and_reasons_
     targets: list[Mapping[str, object]] = []
 
     def spy(
-        target: Mapping[str, object], releases: Sequence[EpisodeRelease], *, donghua: bool
+        target: Mapping[str, object],
+        releases: Sequence[EpisodeRelease],
+        *,
+        donghua: bool,
+        dates: SeasonDates | None = None,
     ) -> tuple[RankedCandidate, ...]:
         targets.append(target)
-        return rank_candidates(target, releases, donghua=donghua)
+        return rank_candidates(target, releases, donghua=donghua, dates=dates)
 
     monkeypatch.setattr(acquisition_module, "rank_candidates", spy)
     offers: list[EpisodeOffer] = []
@@ -1072,6 +1078,35 @@ def test_two_complete_graphs_holding_the_entry_give_the_same_target_and_reasons_
         offers.append(service.offer(EpisodeKey(2, 4)))
     assert targets[0] == targets[1]
     assert [item.identity for item in offers[0].candidates] == [item.identity for item in offers[1].candidates]
+
+
+@pytest.mark.parametrize("count", [24, None])
+def test_offer_ranks_against_the_listing_air_dates_and_only_the_anilist_episode_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, count: int | None
+) -> None:
+    titles: _TitleCatalog = _slime_titles()
+    titles.schedules[_S1] = SeasonAiring(_S1, TitleStatus.FINISHED if count else TitleStatus.UNKNOWN, count, ())
+    service: AcquisitionService = _episode_service(tmp_path, titles, _slime_episodes(), _slime_streams())
+    seen: list[SeasonDates | None] = []
+
+    def spy(
+        target: Mapping[str, object],
+        releases: Sequence[EpisodeRelease],
+        *,
+        donghua: bool,
+        dates: SeasonDates | None = None,
+    ) -> tuple[RankedCandidate, ...]:
+        seen.append(dates)
+        return rank_candidates(target, releases, donghua=donghua, dates=dates)
+
+    monkeypatch.setattr(acquisition_module, "rank_candidates", spy)
+    read: ListingRead = service.read_listing(_S1)
+    service.offer(EpisodeKey(_S1, 4))
+    assert read.listing.episode_count is not None
+    assert read.episode_count == count
+    assert seen == [season_dates(read.listing, count)]
+    assert seen[0] is not None
+    assert seen[0].aired
 
 
 def test_offer_refreshes_the_franchise_once_its_remembered_graph_has_expired(tmp_path: Path) -> None:
@@ -1739,6 +1774,12 @@ def test_episode_selection_views_survive_a_strict_ipc_round_trip(tmp_path: Path)
         with pytest.raises(ValidationError):
             decode_view(EpisodeListing, mistyped)
     assert decode_view(EpisodeOffer, encode_view(offer)) == offer
+    published: datetime = datetime(2026, 9, 29, 12, 30, tzinfo=UTC)
+    dated: EpisodeOffer = replace(
+        offer,
+        candidates=tuple(replace(row, stream=replace(row.stream, published=published)) for row in offer.candidates),
+    )
+    assert decode_view(EpisodeOffer, encode_view(dated)) == dated
     choice: ReleaseChoice = ReleaseChoice(_release("sp-10"), _NAMES["sp-10"], EpisodeReading(Decimal(10)))
     assert decode_view(ReleaseChoice, encode_view(choice)) == choice
 

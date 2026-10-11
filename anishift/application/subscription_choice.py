@@ -7,8 +7,9 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
-from anishift.application.episode_identity import IdentityVerdict
+from anishift.application.episode_identity import IdentityAssessment, IdentityVerdict
 from anishift.application.episode_releases import info_hash_hex
+from anishift.application.episode_selection import OFFER_REASONS
 from anishift.application.release_quality import (
     PolishClass,
     ReleaseTraits,
@@ -143,12 +144,12 @@ class ChoiceDecision:
 
 
 def choice_candidate(candidate: RankedCandidate, protected: Collection[ProtectedFile] = ()) -> ChoiceCandidate:
-    """Project one ranked row, marking it taken when its file is protected for another target."""
+    """Project one ranked row, taken when another target protects its file; an offer-rule match stays uncertain."""
     path: str | None = candidate.stream.path
     return ChoiceCandidate(
         info_hash=release_hash(candidate.stream.info_hash),
         file=path or candidate.stream.file_name,
-        verdict=candidate.identity.verdict,
+        verdict=_verdict(candidate.identity),
         conflict=candidate.conflict,
         after_metadata=candidate.release_name_only,
         traits=candidate.traits,
@@ -433,3 +434,9 @@ def _worse(candidate: ChoiceCandidate, pending: ChoiceCandidate) -> bool:
     mine: ResolutionClass = _resolution(candidate)
     theirs: ResolutionClass = _resolution(pending)
     return mine > theirs or (mine == theirs and candidate.traits.polish > pending.traits.polish)
+
+
+def _verdict(identity: IdentityAssessment) -> IdentityVerdict:
+    if identity.verdict is IdentityVerdict.MATCH and identity.reason in OFFER_REASONS:
+        return IdentityVerdict.INSUFFICIENT
+    return identity.verdict

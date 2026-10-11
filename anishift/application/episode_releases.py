@@ -6,6 +6,7 @@ import base64
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import TYPE_CHECKING, Final, Literal
 
 from anishift.application.episode_identity import episode_video_count
@@ -99,7 +100,7 @@ class ReleaseFile:
 
 @dataclass(frozen=True, slots=True)
 class EpisodeRelease:
-    """One normalized BTIH with all source evidence and independently scoped file languages."""
+    """One normalized BTIH with all source evidence, independently scoped file languages and earliest publication."""
 
     info_hash: str
     name: str
@@ -115,6 +116,7 @@ class EpisodeRelease:
     torrent_id: int | None
     trackers: tuple[str, ...]
     pack: bool
+    published: datetime | None = None
 
 
 def info_hash_hex(value: str) -> str | None:
@@ -197,6 +199,7 @@ def _merge_release(key: str, streams: Sequence[StreamCandidate], listing: TsukiH
         ),
         trackers=tuple(dict.fromkeys(tracker for stream in ordered for tracker in stream.trackers)),
         pack=False,
+        published=min((stream.published for stream in ordered if stream.published is not None), default=None),
     )
 
 

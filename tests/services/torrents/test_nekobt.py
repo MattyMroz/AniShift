@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from xml.etree import ElementTree
 
 import httpx
@@ -71,6 +72,16 @@ def test_fansub_polish_and_hardsub_survive_quality_projection() -> None:
     assert traits.english_subtitles
     assert traits.hardsub
     assert not traits.dub_only
+
+
+@pytest.mark.unit
+def test_publication_date_comes_from_pub_date_and_its_absence_stays_unknown() -> None:
+    items: str = "".join(
+        f'<item><title>Example</title><t:attr name="infohash" value="{info_hash * 40}"/>{date}</item>'
+        for info_hash, date in (("a", "<pubDate>Sat, 26 Sep 2026 17:22:32 +0200</pubDate>"), ("b", ""))
+    )
+    page: TextPage = parse_feed(f'<rss xmlns:t="http://torznab.com/schemas/2015/feed"><channel>{items}</channel></rss>')
+    assert [stream.published for stream in page.streams] == [datetime(2026, 9, 26, 15, 22, 32, tzinfo=UTC), None]
 
 
 @pytest.mark.unit

@@ -41,6 +41,7 @@ from anishift.application.episode_selection import (
     identity_target,
     numbering_gap,
     rank_candidates,
+    season_dates,
     streams_releases,
     suggestion,
 )
@@ -438,7 +439,7 @@ class ListingRead:
     """One episode list with the exact mapping it was built from, whether it was read live, and its numbering facts.
 
     ``live`` means ani.zip returned episodes that replace the saved mapping; ``answered`` means ani.zip answered at
-    all, also with an absent or empty mapping.
+    all, also with an absent or empty mapping; ``episode_count`` is the AniList count alone, without ani.zip fallback.
     """
 
     listing: EpisodeListing
@@ -448,6 +449,7 @@ class ListingRead:
     numbering_source: str = "anilist"
     movie: bool = False
     answered: bool = False
+    episode_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -932,7 +934,16 @@ class AcquisitionService:
             schedule_retry_at=datetime.fromtimestamp(retry, UTC) if retry > now else None,
         )
         source: str = "anidb" if from_anidb else "anilist" if mapping.episodes else "none"
-        return ListingRead(listing, mapping, live, tvdb_season, source, movie, answered=fresh is not None)
+        return ListingRead(
+            listing,
+            mapping,
+            live,
+            tvdb_season,
+            source,
+            movie,
+            answered=fresh is not None,
+            episode_count=schedule.episode_count if schedule is not None else None,
+        )
 
     def _bridge_ids(self, anilist_id: int) -> ArmIds | None:
         if self._id_catalog is None:
@@ -1129,6 +1140,7 @@ class AcquisitionService:
             ),
             target,
             numbering,
+            season_dates(read.listing, read.episode_count),
         )
 
     def _snapshot_offer(
@@ -1191,7 +1203,10 @@ class AcquisitionService:
             streams = tuple(stream for stream in streams if not exclude(stream))
         donghua: bool = graph.nodes[key.anilist_id].get("countryOfOrigin") == _DONGHUA_COUNTRY
         ranked: tuple[RankedCandidate, ...] = rank_candidates(
-            target, streams_releases(streams, pack_name=_pack_name), donghua=donghua
+            target,
+            streams_releases(streams, pack_name=_pack_name),
+            donghua=donghua,
+            dates=season_dates(read.listing, read.episode_count),
         )
         counts: dict[str, int] = {
             verdict.value: sum(1 for item in ranked if item.identity.verdict is verdict) for verdict in IdentityVerdict

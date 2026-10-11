@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from itertools import groupby
@@ -26,7 +26,7 @@ from anishift.application.episode_releases import NAME_PRIORITY, EpisodeRelease,
 from anishift.application.release_quality import ReleaseTraits, class_key, quality_score, release_traits
 
 __all__ = [
-    "GROUP_NUMBERING_REASON",
+    "OFFER_REASONS",
     "AniZipMapping",
     "CandidateNumbering",
     "EntryGroup",
@@ -43,6 +43,7 @@ __all__ = [
     "ListedEpisode",
     "ListedSpecial",
     "RankedCandidate",
+    "SeasonDates",
     "StreamCandidate",
     "confidence_text",
     "episode_listing",
@@ -56,6 +57,7 @@ __all__ = [
     "quality_text",
     "rank_candidates",
     "representative",
+    "season_dates",
     "streams_releases",
     "suggestion",
     "visible",
@@ -114,11 +116,84 @@ _HIDDEN_MAX_HEIGHT: Final[int] = 720
 _CONTAINER: Final[re.Pattern[str]] = re.compile(r"[^/\\]\.([^\s./\\()\[\]{}]+)$")
 """Final suffix of the selected file name; a dot followed by spaces or brackets, as in ``(TrueHD 5.1)``, is not one."""
 
-GROUP_NUMBERING_REASON: Final[str] = "Release group numbers this season from 1."
-"""Explain a season-scoped absolute-number echo without the target episode title from a group numbering it locally."""
+_EARLY: Final[timedelta] = timedelta(days=2)
+"""Margin before an episode's air date within which a release may still be that episode."""
 
-_GROUP_NUMBERING: Final[IdentityAssessment] = IdentityAssessment(IdentityVerdict.MISMATCH, GROUP_NUMBERING_REASON)
-"""Verdict of a season-scoped absolute-number echo once its group numbers the target season from one."""
+_MATCH_EARLY: Final[timedelta] = timedelta(days=30)
+"""Margin before an episode's air date beyond which even a matching release is an older episode."""
+
+_ECHO_BEFORE: Final[timedelta] = timedelta(days=1)
+"""Earliest publication before a season episode aired that still counts as its weekly release."""
+
+_ECHO_AFTER: Final[timedelta] = timedelta(days=3)
+"""Latest publication after a season episode aired that still counts as its weekly release."""
+
+_ECHO_GAP: Final[timedelta] = timedelta(days=14)
+"""Shortest delay after the target aired for a weekly release of another episode number."""
+
+_WEEKLY_MARGIN: Final[timedelta] = timedelta(days=14)
+"""Margin before an unscheduled episode's weekly estimated air date."""
+
+_ABSOLUTE_LATE: Final[timedelta] = timedelta(days=14)
+"""Latest publication after the target aired at which a bare absolute number may still be the target."""
+
+_NUMBERING_REASONS: Final[frozenset[str]] = frozenset(
+    {
+        "A franchise alias does not identify this installment.",
+        "Bare number is not the local episode; absolute numbering is not established.",
+        "Mapped number equals the target absolute number; numbering is ambiguous.",
+    }
+)
+"""H1 reasons that leave only the numbering system of a bare number unresolved."""
+
+_CHECKSUM: Final[re.Pattern[str]] = re.compile(r"[\[(]([0-9A-Fa-f]{8})[\])]")
+"""CRC32 of a file written in brackets or parentheses."""
+
+_PUBLISHED_EARLY: Final[IdentityAssessment] = IdentityAssessment(
+    IdentityVerdict.MISMATCH, "Published before the target episode aired."
+)
+"""Verdict of a release published more than the margin before the target episode aired."""
+
+_ABSOLUTE_ONLY: Final[IdentityAssessment] = IdentityAssessment(
+    IdentityVerdict.MATCH, "Bare number is the target absolute number; no local episode had that number yet."
+)
+"""Verdict of a bare absolute number published near the target air date that the season rules out as local."""
+
+_WEEKLY_ECHO: Final[IdentityAssessment] = IdentityAssessment(
+    IdentityVerdict.MISMATCH, "Published when the season episode with this number aired."
+)
+"""Verdict of another episode number published with that season episode, weeks after the target aired."""
+
+_BEYOND_SEASON: Final[IdentityAssessment] = IdentityAssessment(
+    IdentityVerdict.MISMATCH, "Bare number lies beyond the target season."
+)
+"""Verdict of a bare number above the last absolute number of the target season."""
+
+_GROUP_NUMBERING: Final[IdentityAssessment] = IdentityAssessment(
+    IdentityVerdict.MISMATCH, "Release group numbers this season from 1."
+)
+"""Verdict of a group's SxxEyy absolute-number echo published once that local episode aired, beside its local match."""
+
+_GROUP_SEASON: Final[IdentityAssessment] = IdentityAssessment(
+    IdentityVerdict.MISMATCH, "Release group marks the target season elsewhere in the offer."
+)
+"""Verdict of a group's unmarked franchise-alias local number once it marks the target season in a match."""
+
+_CHECKSUM_REASON: Final[str] = "File checksum equals an assessed release."
+"""Explain a verdict taken over from another row carrying the same CRC32."""
+
+OFFER_REASONS: Final[frozenset[str]] = frozenset(
+    {
+        _PUBLISHED_EARLY.reason,
+        _ABSOLUTE_ONLY.reason,
+        _WEEKLY_ECHO.reason,
+        _BEYOND_SEASON.reason,
+        _GROUP_NUMBERING.reason,
+        _GROUP_SEASON.reason,
+        _CHECKSUM_REASON,
+    }
+)
+"""Explanations the offer rules give beside the frozen H1 reasons."""
 
 
 class EntryGroup(StrEnum):
@@ -248,6 +323,16 @@ class StreamCandidate:
     file_count: int | None = None
     torrent_id: int | None = None
     file_size: int | None = None
+    published: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SeasonDates:
+    """Air dates of the season's local episodes, its AniList episode count and whether AniList schedules it."""
+
+    aired: Mapping[int, datetime]
+    episodes: int | None
+    scheduled: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,6 +435,7 @@ def identity_target(
         "aliases": list(dict.fromkeys(titles)),
         "type": nodes[selected_id]["format"],
         "local_episode": number,
+        "episodes": nodes[selected_id].get("episodes"),
         "season": episode.get("seasonNumber"),
         "episode": episode.get("episodeNumber"),
         "absolute": episode.get("absoluteEpisodeNumber"),
@@ -454,6 +540,15 @@ def episode_listing(  # noqa: PLR0913
     )
 
 
+def season_dates(listing: EpisodeListing, episodes: int | None) -> SeasonDates:
+    """Return the dated local episodes of *listing*, the AniList count *episodes* and whether AniList dates any."""
+    return SeasonDates(
+        aired={episode.number: episode.airs_at for episode in listing.episodes if episode.airs_at is not None},
+        episodes=episodes,
+        scheduled=any(episode.airs_at is not None and not episode.airs_at_fallback for episode in listing.episodes),
+    )
+
+
 def streams_releases(
     streams: Sequence[StreamCandidate], *, pack_name: Callable[[str], bool]
 ) -> tuple[EpisodeRelease, ...]:
@@ -472,28 +567,26 @@ def representative(
 
 
 def rank_candidates(
-    target: Mapping[str, object], releases: Sequence[EpisodeRelease], *, donghua: bool
+    target: Mapping[str, object],
+    releases: Sequence[EpisodeRelease],
+    *,
+    donghua: bool,
+    dates: SeasonDates | None = None,
 ) -> tuple[RankedCandidate, ...]:
-    """Assess every release on its representative file, else on its name, apply group numbering, return list order."""
+    """Assess every release on its representative file, else on its name, apply the offer rules, return list order."""
     assessed: tuple[tuple[RankedCandidate, IdentityEvidence], ...] = tuple(
         _ranked(target, release, donghua=donghua) for release in releases
     )
-    local_groups: frozenset[str] = frozenset(
-        group
-        for row, evidence in assessed
-        if row.identity.verdict is IdentityVerdict.MATCH
-        and evidence.number is not None
-        and evidence.number == evidence.local
-        and (group := _release_group(row)) is not None
+    marking: frozenset[str] = frozenset(
+        group for row, evidence in assessed if _marks_season(row, evidence) and (group := _release_group(row))
     )
-    return list_order(
-        tuple(
-            replace(row, identity=_GROUP_NUMBERING, conflict=True, confidence=None)
-            if _absolute_echo(row, evidence) and _release_group(row) in local_groups
-            else row
-            for row, evidence in assessed
-        )
+    local: frozenset[str] = frozenset(
+        group for row, evidence in assessed if _local_match(row, evidence) and (group := _release_group(row))
     )
+    ruled: tuple[RankedCandidate, ...] = tuple(
+        _offer_rule(row, evidence, dates, marking=marking, local=local) for row, evidence in assessed
+    )
+    return list_order(_same_checksum(ruled))
 
 
 def list_order(candidates: Sequence[RankedCandidate]) -> tuple[RankedCandidate, ...]:
@@ -761,17 +854,184 @@ def _release_group(row: RankedCandidate) -> str | None:
     return found.group(1).strip().casefold() if found else None
 
 
-def _absolute_echo(row: RankedCandidate, evidence: IdentityEvidence) -> bool:
-    if row.identity.verdict is not IdentityVerdict.INSUFFICIENT or row.conflict:
-        return False
-    marked: bool = evidence.season is not None and evidence.season in (evidence.target_season, evidence.named_season)
+def _offer_rule(
+    row: RankedCandidate,
+    evidence: IdentityEvidence,
+    dates: SeasonDates | None,
+    *,
+    marking: frozenset[str],
+    local: frozenset[str],
+) -> RankedCandidate:
+    if row.identity.verdict is IdentityVerdict.MATCH:
+        return _ruled(row, _PUBLISHED_EARLY) if _published_early(row, evidence, dates, _MATCH_EARLY) else row
+    if row.identity.verdict is not IdentityVerdict.INSUFFICIENT:
+        return row
+    assessment: IdentityAssessment | None = None
+    if dates is not None and _beyond_season(evidence, dates):
+        assessment = _BEYOND_SEASON
+    elif _published_early(row, evidence, dates, _EARLY):
+        assessment = _PUBLISHED_EARLY
+    elif dates is not None and _absolute_only(row, evidence, dates):
+        assessment = _ABSOLUTE_ONLY
+    elif dates is not None and _weekly_echo(row, evidence, dates):
+        assessment = _WEEKLY_ECHO
+    elif dates is not None and _release_group(row) in local and _group_echo(row, evidence, dates):
+        assessment = _GROUP_NUMBERING
+    elif _release_group(row) in marking and _unmarked_local(row, evidence):
+        assessment = _GROUP_SEASON
+    return row if assessment is None else _ruled(row, assessment)
+
+
+def _ruled(row: RankedCandidate, assessment: IdentityAssessment) -> RankedCandidate:
+    if assessment.verdict is IdentityVerdict.MATCH:
+        return replace(row, identity=assessment, conflict=False)
+    return replace(row, identity=assessment, conflict=True, confidence=None)
+
+
+def _bare(evidence: IdentityEvidence) -> bool:
+    return evidence.mode == "plain" and evidence.season is None
+
+
+def _season_marked(evidence: IdentityEvidence) -> bool:
+    return evidence.season is not None and evidence.season in (evidence.target_season, evidence.named_season)
+
+
+def _whole(number: Decimal | None) -> int | None:
+    return int(number) if number is not None and number == int(number) else None
+
+
+def _published_early(
+    row: RankedCandidate, evidence: IdentityEvidence, dates: SeasonDates | None, margin: timedelta
+) -> bool:
+    published: datetime | None = row.stream.published
+    aired: datetime | None = None if dates is None or evidence.local is None else dates.aired.get(evidence.local)
+    return published is not None and aired is not None and published < aired - margin
+
+
+def _beyond_season(evidence: IdentityEvidence, dates: SeasonDates) -> bool:
+    number: int | None = _whole(evidence.number)
     return (
-        evidence.number is not None
+        _bare(evidence)
+        and number is not None
+        and dates.episodes is not None
+        and evidence.absolute is not None
+        and evidence.local is not None
+        and number > evidence.absolute - evidence.local + dates.episodes
+    )
+
+
+def _absolute_only(row: RankedCandidate, evidence: IdentityEvidence, dates: SeasonDates) -> bool:
+    return (
+        not row.conflict
+        and row.identity.reason in _NUMBERING_REASONS
+        and _bare(evidence)
+        and evidence.local is not None
+        and evidence.number is not None
         and evidence.number == evidence.absolute
         and evidence.number != evidence.local
-        and (marked or (evidence.anchor and not evidence.broad))
-        and not evidence.episode_anchor
+        and evidence.residual_ok
+        and evidence.year_ok
+        and not evidence.multiple_works
+        and _local_impossible(row.stream.published, int(evidence.number), evidence.local, dates)
     )
+
+
+def _local_impossible(published: datetime | None, number: int, local: int, dates: SeasonDates) -> bool:
+    target: datetime | None = dates.aired.get(local)
+    if published is None or target is None or published > target + _ABSOLUTE_LATE:
+        return False
+    if dates.episodes is not None and number > dates.episodes:
+        return True
+    aired: datetime | None = dates.aired.get(number)
+    if aired is not None:
+        return published < aired - _EARLY
+    return dates.scheduled and published < target + timedelta(weeks=number - local) - _WEEKLY_MARGIN
+
+
+def _weekly_echo(row: RankedCandidate, evidence: IdentityEvidence, dates: SeasonDates) -> bool:
+    number: int | None = _whole(evidence.number)
+    published: datetime | None = row.stream.published
+    if number is None or evidence.local is None or published is None or number == evidence.local:
+        return False
+    aired: datetime | None = dates.aired.get(number)
+    target: datetime | None = dates.aired.get(evidence.local)
+    return (
+        (_bare(evidence) or _season_marked(evidence))
+        and not evidence.episode_anchor
+        and aired is not None
+        and target is not None
+        and aired - _ECHO_BEFORE <= published <= aired + _ECHO_AFTER
+        and published > target + _ECHO_GAP
+    )
+
+
+def _local_match(row: RankedCandidate, evidence: IdentityEvidence) -> bool:
+    return (
+        row.identity.verdict is IdentityVerdict.MATCH
+        and evidence.number is not None
+        and evidence.number == evidence.local
+    )
+
+
+def _group_echo(row: RankedCandidate, evidence: IdentityEvidence, dates: SeasonDates) -> bool:
+    number: int | None = _whole(evidence.number)
+    published: datetime | None = row.stream.published
+    aired: datetime | None = None if number is None else dates.aired.get(number)
+    return (
+        not row.conflict
+        and evidence.mode == "mapped"
+        and _season_marked(evidence)
+        and number is not None
+        and number == evidence.absolute
+        and number != evidence.local
+        and not evidence.episode_anchor
+        and published is not None
+        and aired is not None
+        and published >= aired - _ECHO_BEFORE
+    )
+
+
+def _marks_season(row: RankedCandidate, evidence: IdentityEvidence) -> bool:
+    return row.identity.verdict is IdentityVerdict.MATCH and (
+        _season_marked(evidence) or (evidence.anchor and not evidence.broad)
+    )
+
+
+def _unmarked_local(row: RankedCandidate, evidence: IdentityEvidence) -> bool:
+    return (
+        not row.conflict
+        and _bare(evidence)
+        and evidence.broad
+        and evidence.number is not None
+        and evidence.number == evidence.local
+        and evidence.absolute is not None
+        and evidence.absolute != evidence.local
+    )
+
+
+def _checksum(row: RankedCandidate) -> str | None:
+    for text in (row.stream.file_name or "", row.stream.release):
+        found: list[str] = _CHECKSUM.findall(text)
+        if found:
+            return found[-1].upper()
+    return None
+
+
+def _same_checksum(rows: tuple[RankedCandidate, ...]) -> tuple[RankedCandidate, ...]:
+    decided: dict[str, set[IdentityVerdict]] = {}
+    for row in rows:
+        checksum: str | None = _checksum(row)
+        if checksum is not None and row.identity.verdict is not IdentityVerdict.INSUFFICIENT:
+            decided.setdefault(checksum, set()).add(row.identity.verdict)
+    return tuple(_checksum_verdict(row, decided) for row in rows)
+
+
+def _checksum_verdict(row: RankedCandidate, decided: Mapping[str, set[IdentityVerdict]]) -> RankedCandidate:
+    checksum: str | None = _checksum(row)
+    verdicts: set[IdentityVerdict] = decided.get(checksum, set()) if checksum is not None else set()
+    if row.identity.verdict is not IdentityVerdict.INSUFFICIENT or len(verdicts) != 1:
+        return row
+    return _ruled(row, IdentityAssessment(next(iter(verdicts)), _CHECKSUM_REASON))
 
 
 def _row_stream(release: EpisodeRelease, file: ReleaseFile | None) -> StreamCandidate:
@@ -790,6 +1050,7 @@ def _row_stream(release: EpisodeRelease, file: ReleaseFile | None) -> StreamCand
         source=next(source for source in NAME_PRIORITY if source in release.sources),
         torrent_id=release.torrent_id,
         file_size=None if file is None else file.size,
+        published=release.published,
     )
 
 

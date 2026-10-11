@@ -31,10 +31,12 @@ type Outcome = tuple[str, str | None, PolishState | None, bool, str | None]
 _SEASON_CONFLICT_WITHDRAWN: Final[str] = (
     "a1-recon.md §8: O7 withdrawn, an explicit other season in the name stays insufficient instead of a conflict"
 )
+_PUBLICATION_DATE_PENDING: Final[str] = "awaits the owner's decision of 2026-10-11: the publication date rule"
 _DOCUMENTED: Final[dict[str, str]] = {
     "140960-12": f"{_SEASON_CONFLICT_WITHDRAWN} and the completion queue",
+    "152677-1": _PUBLICATION_DATE_PENDING,
     "154587-1": f"{_SEASON_CONFLICT_WITHDRAWN} and the completion queue",
-    "204389-1": _SEASON_CONFLICT_WITHDRAWN,
+    "172192-1": _PUBLICATION_DATE_PENDING,
 }
 _REASONS: Final[tuple[tuple[str, str], ...]] = (
     ("przed emisją", "not_due"),

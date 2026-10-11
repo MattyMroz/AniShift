@@ -65,7 +65,7 @@ from anishift.application.episode_commands import EpisodeResult
 from anishift.application.episode_identity import REASONS, is_conflict
 from anishift.application.episode_search import EpisodeSearch
 from anishift.application.episode_selection import (
-    GROUP_NUMBERING_REASON,
+    OFFER_REASONS,
     AniZipMapping,
     episode_listing,
     rank_candidates,
@@ -268,7 +268,7 @@ def _at(controller: AnimeController) -> _Screen:
 
 @pytest.mark.unit
 def test_all_frozen_identity_reasons_have_polish_texts() -> None:
-    assert set(_REASON_TEXTS) == REASONS | {GROUP_NUMBERING_REASON}
+    assert set(_REASON_TEXTS) == REASONS | OFFER_REASONS
     assert all(text and text != reason for reason, text in _REASON_TEXTS.items())
 
 

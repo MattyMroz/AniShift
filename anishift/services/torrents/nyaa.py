@@ -37,6 +37,7 @@ __all__ = [
     "SEARCH_CATEGORIES",
     "USER_AGENT",
     "parse_feed",
+    "published_date",
     "search_releases",
 ]
 
@@ -182,7 +183,7 @@ def _release_from_item(item: ElementTree.Element) -> Release | None:
         info_hash=info_hash,
         seeders=_seeders(_text(item, f"{{{NYAA_NAMESPACE}}}seeders")),
         size_text=_text(item, f"{{{NYAA_NAMESPACE}}}size"),
-        published=_published(_text(item, "pubDate")),
+        published=published_date(_text(item, "pubDate")),
     )
 
 
@@ -202,7 +203,7 @@ def _seeders(raw: str) -> int:
         return 0
 
 
-def _published(raw: str) -> datetime | None:
+def published_date(raw: str) -> datetime | None:
     """Return the publication moment as an aware UTC value, or ``None`` when unreadable."""
     if not raw:
         return None

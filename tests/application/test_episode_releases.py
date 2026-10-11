@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from itertools import permutations
 from typing import Final
 
@@ -138,6 +139,18 @@ def test_merge_releases_empty_preferred_name_uses_next_available() -> None:
 def test_merge_releases_seeders_max_or_unknown(seeders: tuple[int | None, ...], expected: int | None) -> None:
     release: EpisodeRelease = _merge(tuple(replace(_STREAM, seeders=value) for value in seeders))[0]
     assert release.seeders == expected
+
+
+@pytest.mark.unit
+def test_merge_releases_publication_is_the_earliest_source_date_or_unknown() -> None:
+    first: datetime = datetime(2026, 10, 1, 22, 32, tzinfo=UTC)
+    streams: tuple[StreamCandidate, ...] = (
+        replace(_STREAM, source="knaben", published=first + timedelta(hours=5)),
+        replace(_STREAM, source="nyaa", published=first),
+        replace(_STREAM, source="nekobt", published=None),
+    )
+    assert _merge(streams)[0].published == first
+    assert _merge((_STREAM,))[0].published is None
 
 
 @pytest.mark.unit

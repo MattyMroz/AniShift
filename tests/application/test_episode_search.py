@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from typing import Final
 
 import httpx
@@ -28,7 +29,13 @@ from anishift.application.episode_search import (
     offer_status,
     source_line,
 )
-from anishift.application.episode_selection import EpisodeKey, FranchiseGraph, RankedCandidate, StreamCandidate
+from anishift.application.episode_selection import (
+    EpisodeKey,
+    FranchiseGraph,
+    RankedCandidate,
+    SeasonDates,
+    StreamCandidate,
+)
 from anishift.application.release_quality import PolishClass
 from anishift.application.subscription_choice import ReadOutcome
 from anishift.application.subscription_targets import PolishState, ReleaseFailure
@@ -139,6 +146,33 @@ def test_release_stream_fields() -> None:
     assert stream.path is None
     assert stream.source == "nyaa"
     assert result.snapshot.candidates[0].traits.english_subtitles
+
+
+def test_nyaa_publication_reaches_the_row_and_the_request_season_dates_judge_it() -> None:
+    published: datetime = datetime(2026, 10, 1, 22, 32, 44, tzinfo=UTC)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.host != "nyaa.si":
+            return empty_response(request)
+        return httpx.Response(
+            200,
+            text='<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel><item><title>Moon Garden - 05 [1080p]</title>'
+            f"<link>https://nyaa.si/download/1.torrent</link><nyaa:infoHash>{_HASH}</nyaa:infoHash>"
+            "<pubDate>Thu, 01 Oct 2026 22:32:44 -0000</pubDate></item></channel></rss>",
+            headers={"content-type": "application/xml"},
+        )
+
+    dated: EpisodeRequest = replace(
+        _REQUEST, dates=SeasonDates({5: published + timedelta(days=3)}, None, scheduled=True)
+    )
+    outcomes: list[SearchOutcome] = []
+    for request in (_REQUEST, dated):
+        control: RequestControl = controlled(respond)
+        with httpx.Client(transport=control) as http:
+            outcomes.append(search_service(http, control).manual_offer(request, _NYAA))
+    rows: list[RankedCandidate] = [outcome.snapshot.candidates[0] for outcome in outcomes]
+    assert [row.stream.published for row in rows] == [published, published]
+    assert [row.identity.verdict for row in rows] == [IdentityVerdict.INSUFFICIENT, IdentityVerdict.MISMATCH]
 
 
 @pytest.mark.parametrize(

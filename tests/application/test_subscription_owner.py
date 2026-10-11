@@ -52,8 +52,14 @@ from anishift.application.control import (
 from anishift.application.control_views import decode_view
 from anishift.application.episode_commands import EpisodeStatus, TargetNotice
 from anishift.application.episode_identity import IdentityVerdict
-from anishift.application.episode_search import EpisodeSearch, SourceSwitches
-from anishift.application.episode_selection import AniZipMapping, EpisodeKey, ListedSpecial, StreamCandidate
+from anishift.application.episode_search import EpisodeRequest, EpisodeSearch, SourceSwitches
+from anishift.application.episode_selection import (
+    AniZipMapping,
+    EpisodeKey,
+    ListedSpecial,
+    StreamCandidate,
+    season_dates,
+)
 from anishift.application.intents import RequestOrigin
 from anishift.application.release_quality import PolishClass, ResolutionClass
 from anishift.application.subscription_choice import release_hash
@@ -1491,6 +1497,43 @@ def test_a_target_check_with_the_polish_history_sends_at_most_14_tsukihime_reque
             counts.append((len(paths), sum(path.endswith("/episodes/22") for path in paths)))
 
     assert counts == [(14, 1), (14, 2)]
+
+
+def test_the_polish_history_ranks_the_previous_episode_against_its_own_air_date(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world: _World = _World()
+    world.titles.schedules[_S4] = replace(_airing(), episode_count=None)
+    control: RequestControl = controlled(_empty_response)
+    requests: list[EpisodeRequest] = []
+    with httpx.Client(transport=control) as http:
+        acquisition: AcquisitionService = _episode_service(
+            tmp_path, world.titles, world.episodes, world.streams, clock=world.clock, request_control=control
+        )
+        search: EpisodeSearch = search_service(http, control)
+        history: Callable[..., PolishState | None] = search.previous_history
+
+        def previous(request: EpisodeRequest, switches: SourceSwitches, **options: object) -> PolishState | None:
+            requests.append(request)
+            return history(request, switches, **options)
+
+        monkeypatch.setattr(search, "previous_history", previous)
+        acquisition._episode_search = search
+        read: ListingRead = acquisition.read_listing(_S4)
+        acquisition.subscription_check(
+            EpisodeKey(_S4, 23),
+            read,
+            SourceSwitches(True, False, False, False, False),
+            failures=(),
+            excluded=frozenset(),
+            tsukihime_id=None,
+            history_at=_NOW,
+        )
+    assert [(request.number, request.target["local_episode"]) for request in requests] == [(22, 22)]
+    assert read.listing.episode_count is not None
+    assert requests[0].dates == season_dates(read.listing, None)
+    assert requests[0].dates is not None
+    assert requests[0].dates.aired[22] == _NOW - timedelta(hours=1) - _WEEK
 
 
 def test_subscription_revision_grows_with_each_subscription_change_only(tmp_path: Path) -> None:

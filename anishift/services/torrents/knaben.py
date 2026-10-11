@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Final
 
 import httpx
@@ -79,4 +80,15 @@ def _candidate(row: Mapping[str, object]) -> StreamCandidate:
         tags=(),
         trackers=trackers,
         source="knaben",
+        published=_published(row.get("date")),
     )
+
+
+def _published(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed: datetime = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)

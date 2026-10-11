@@ -14,7 +14,7 @@ from anishift.application.episode_search import TextPage
 from anishift.application.episode_selection import StreamCandidate
 from anishift.application.release_quality import LanguageDeclaration, language_code, tag_declaration
 from anishift.services.torrents._source import get_response, integer, magnet_fields, source_error, text
-from anishift.services.torrents.nyaa import MAX_BODY_BYTES
+from anishift.services.torrents.nyaa import MAX_BODY_BYTES, published_date
 from anishift.utils.rich_console import format_bytes
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -148,4 +148,5 @@ def _candidate(item: ElementTree.Element) -> StreamCandidate:
         subtitle_languages=tuple(sorted(tags.subtitles)),
         audio_languages=tuple(sorted(tags.audio)),
         language_tags=("A=" + ",".join(sorted(tags.audio)), "S=" + ",".join(sorted(tags.subtitles))),
+        published=published_date(item.findtext("pubDate") or ""),
     )

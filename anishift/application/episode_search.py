@@ -17,6 +17,7 @@ from anishift.application.episode_releases import NAME_PRIORITY, EpisodeRelease,
 from anishift.application.episode_selection import (
     EpisodeKey,
     RankedCandidate,
+    SeasonDates,
     StreamCandidate,
     list_order,
     rank_candidates,
@@ -111,7 +112,7 @@ class SourceSwitches:
 
 @dataclass(frozen=True, slots=True)
 class EpisodeRequest:
-    """One local episode and its catalog identity shared by all release sources."""
+    """One local episode, its catalog identity shared by all release sources and its season's air dates."""
 
     key: EpisodeKey
     number: int
@@ -122,6 +123,7 @@ class EpisodeRequest:
     phrases: tuple[str, ...]
     target: Mapping[str, object]
     numbering: bool
+    dates: SeasonDates | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,6 +241,7 @@ def _release_stream(release: Release) -> StreamCandidate:
         (),
         source="nyaa",
         subtitle_languages=(release.subtitle_language,) if release.subtitle_language else (),
+        published=release.published,
     )
 
 
@@ -629,7 +632,7 @@ class EpisodeSearch:
             streams, self._listings.snapshot() if switches.tsukihime else {}, pack_name=self._pack_name
         )
         return SearchSnapshot(
-            rank_candidates(request.target, releases, donghua=request.donghua),
+            rank_candidates(request.target, releases, donghua=request.donghua, dates=request.dates),
             tuple(results[source] for source in NAME_PRIORITY if source in results),
             tuple(source for source in NAME_PRIORITY if source in pending),
         )

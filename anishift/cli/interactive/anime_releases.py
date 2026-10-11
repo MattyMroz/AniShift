@@ -114,6 +114,15 @@ _REASON_TEXTS: Final[dict[str, str]] = {
     "Titleless file lacks an unambiguous nearest work directory or single-work release.": (
         "Plik bez tytułu nie ma jednoznacznego katalogu ani wydania jednego tytułu."
     ),
+    "Titleless file names the target episode number and catalog episode title.": (
+        "Plik bez tytułu serii podaje numer i katalogowy tytuł szukanego odcinka."
+    ),
+    "Franchise alias carries the target absolute number of a matching release.": (
+        "Nazwa franczyzy ma numer absolutny odcinka, a nazwa wydania wskazuje szukany odcinek."
+    ),
+    "Selected name numbers a special instead of a TV episode.": (
+        "Nazwa wskazuje odcinek specjalny (S00 albo numer z .5), a nie odcinek serii."
+    ),
     "Selected file or work directory identifies a neighboring catalogue work.": (
         "Wybrany plik lub katalog wskazuje inny tytuł katalogowy."
     ),
@@ -146,9 +155,21 @@ _REASON_TEXTS: Final[dict[str, str]] = {
     "Unconsumed filename text is neither technical metadata nor a catalog episode title.": (
         "Pozostały tekst nazwy nie jest metadanymi technicznymi ani katalogowym tytułem odcinka."
     ),
+    "Published before the target episode aired.": "Wydanie opublikowano przed emisją szukanego odcinka.",
+    "Bare number is the target absolute number; no local episode had that number yet.": (
+        "Numer to numer absolutny szukanego odcinka; odcinek sezonu o tym numerze jeszcze nie istniał."
+    ),
+    "Published when the season episode with this number aired.": (
+        "Wydanie opublikowano w dniu emisji odcinka sezonu o tym numerze."
+    ),
+    "Bare number lies beyond the target season.": "Numer wykracza poza odcinki szukanego sezonu.",
     "Release group numbers this season from 1.": "Ta grupa numeruje odcinki tego sezonu od 1.",
+    "Release group marks the target season elsewhere in the offer.": (
+        "Ta grupa oznacza szukany sezon w innym wydaniu, więc to wydanie bez sezonu dotyczy innego sezonu."
+    ),
+    "File checksum equals an assessed release.": "Suma kontrolna pliku jest taka sama jak w ocenionym wydaniu.",
 }
-"""Translate every frozen H1 explanation and the release group numbering explanation at the UI boundary."""
+"""Translate every frozen H1 explanation and every offer rule explanation at the UI boundary."""
 
 
 def release_rows(

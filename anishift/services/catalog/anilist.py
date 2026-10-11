@@ -99,7 +99,8 @@ _MAX_FRANCHISE_REQUESTS: Final[int] = 4
 """Bound entry latency under AniList's roughly thirty requests per minute limit."""
 
 _FRANCHISE_FIELDS: Final[str] = (
-    "id type format status countryOfOrigin seasonYear startDate { year month day } title { romaji english native }"
+    "id type format status episodes countryOfOrigin seasonYear startDate { year month day }"
+    " title { romaji english native }"
 )
 """Entry projection preserved at every franchise depth."""
 

@@ -4,7 +4,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Final
 
@@ -20,7 +20,13 @@ from anishift.application.episode_releases import (
     merge_releases,
 )
 from anishift.application.episode_selection import (
-    GROUP_NUMBERING_REASON,
+    _ABSOLUTE_ONLY,
+    _BEYOND_SEASON,
+    _CHECKSUM_REASON,
+    _GROUP_NUMBERING,
+    _GROUP_SEASON,
+    _PUBLISHED_EARLY,
+    _WEEKLY_ECHO,
     AniZipMapping,
     EntryGroup,
     EpisodeListing,
@@ -29,6 +35,7 @@ from anishift.application.episode_selection import (
     ListedEpisode,
     ListedSpecial,
     RankedCandidate,
+    SeasonDates,
     StreamCandidate,
     confidence_text,
     episode_listing,
@@ -41,11 +48,13 @@ from anishift.application.episode_selection import (
     quality_text,
     rank_candidates,
     representative,
+    season_dates,
     streams_releases,
     suggestion,
     visible,
 )
 from anishift.application.release_quality import ReleaseTraits
+from anishift.application.subscription_choice import ChoiceCandidate, choice_candidate, choose
 from anishift.services.catalog.anilist import parse_franchise_page
 from anishift.services.catalog.anizip import parse_mapping
 from anishift.services.torrents.names import parse_release_name
@@ -67,6 +76,7 @@ _TARGET_KEYS: Final[frozenset[str]] = frozenset(
         "aliases",
         "episode",
         "episode_title",
+        "episodes",
         "local_episode",
         "other_episode_titles",
         "other_series",
@@ -262,6 +272,7 @@ def test_identity_target_slime_s1e4_has_exactly_the_corpus_keys_and_mapping_valu
         4,
     )
     assert target["episode_title"] == "In the Kingdom of the Dwarves"
+    assert target["episodes"] is None
     other_titles: object = target["other_episode_titles"]
     assert isinstance(other_titles, list)
     assert "In the Kingdom of the Dwarves" not in other_titles
@@ -270,6 +281,12 @@ def test_identity_target_slime_s1e4_has_exactly_the_corpus_keys_and_mapping_valu
     assert isinstance(other_series, list)
     assert "The Slime Diaries" in other_series
     assert "Attack on Titan" in other_series
+
+
+def test_identity_target_carries_the_anilist_episode_count_of_the_selected_entry() -> None:
+    graph: FranchiseGraph = _star_garden_graph()
+    nodes: dict[int, Mapping[str, Any]] = {**graph.nodes, 2: {**graph.nodes[2], "episodes": 12}}
+    assert identity_target(replace(graph, nodes=nodes), 2, _mapping({}), 5)["episodes"] == 12
 
 
 def test_identity_target_later_season_inherits_first_season_after_own_sorted_titles() -> None:
@@ -1080,18 +1097,53 @@ def test_visible_keeps_an_uncertain_suggestion_beside_mismatches() -> None:
     assert visible(ranked, index) == (ranked[index],)
 
 
-_SOLO_LEVELING_ECHOES: Final[tuple[str, ...]] = (
-    "[ToonsHub] Solo Leveling S02E13 1080p CR WEB-DL AAC2.0 H.264 (Ore dake Level Up na Ken, Multi-Audio, Multi-Subs)",
-    "[PacMan] Solo.Leveling.S02E13.1080p.CR.WEB-DL.AAC2.0.H.264",
-    "[DKB] Solo Leveling - S02E13 [1080p][HEVC x265 10bit][Dual-Audio][Multi-Subs]",
-    "[Erai-raws] Ore dake Level Up na Ken Season 2: Arise from the Shadow - 13 [1080p CR WEB-DL AVC AAC][MultiSub]",
+_SOLO_LEVELING_S2E1_AIRED: Final[datetime] = datetime(2025, 1, 4, 15, tzinfo=UTC)
+
+_SOLO_LEVELING_S2E13_AIRED: Final[datetime] = datetime(2025, 3, 29, 15, tzinfo=UTC)
+
+_SOLO_LEVELING_DATES: Final[SeasonDates] = SeasonDates(
+    aired={number: _SOLO_LEVELING_S2E1_AIRED + timedelta(weeks=number - 1) for number in range(1, 14)},
+    episodes=13,
+    scheduled=True,
 )
 
-_SOLO_LEVELING_UNSCOPED: Final[tuple[str, ...]] = (
+_SOLO_LEVELING_ECHOES: Final[tuple[tuple[str, datetime, str], ...]] = (
+    (
+        "[ToonsHub] Solo Leveling S02E13 1080p CR WEB-DL AAC2.0 H.264 "
+        "(Ore dake Level Up na Ken, Multi-Audio, Multi-Subs)",
+        datetime(2025, 4, 19, 20, 29, tzinfo=UTC),
+        _GROUP_NUMBERING.reason,
+    ),
+    (
+        "[PacMan] Solo.Leveling.S02E13.1080p.CR.WEB-DL.AAC2.0.H.264",
+        datetime(2026, 9, 1, 4, 42, tzinfo=UTC),
+        _GROUP_NUMBERING.reason,
+    ),
+    (
+        "[DKB] Solo Leveling - S02E13 [1080p][HEVC x265 10bit][Dual-Audio][Multi-Subs]",
+        datetime(2025, 3, 29, 17, 36, tzinfo=UTC),
+        _WEEKLY_ECHO.reason,
+    ),
+    (
+        "[Erai-raws] Ore dake Level Up na Ken Season 2: Arise from the Shadow - 13 [1080p CR WEB-DL AVC AAC][MultiSub]",
+        datetime(2025, 3, 29, 16, 33, tzinfo=UTC),
+        _WEEKLY_ECHO.reason,
+    ),
+    (
+        "[EMBER] Ore dake Level Up na Ken S02E13 [1080p] [HEVC WEBRip DDP] (Solo Leveling Season 2)",
+        datetime(2025, 4, 1, 5, 8, tzinfo=UTC),
+        _WEEKLY_ECHO.reason,
+    ),
+)
+
+_SOLO_LEVELING_ABSOLUTE: Final[tuple[str, ...]] = (
     "[ASW] Solo Leveling - 13 [1080p HEVC x265 10Bit][AAC]",
-    "[SubsPlease] Solo Leveling - 13 (1080p) [9C5E3F5C]",
-    "[Erai-raws] Ore dake Level Up na Ken - 13 [1080p][Multiple Subtitle]",
-    "[EMBER] Ore dake Level Up na Ken S02E13 [1080p] [HEVC WEBRip DDP] (Solo Leveling Season 2)",
+    "[SubsPlease] Solo Leveling - 13 (1080p) [69C63E88].mkv",
+)
+
+_SOLO_LEVELING_FIRST_SEASON: Final[tuple[str, ...]] = (
+    "[ASW] Solo Leveling - 01 [1080p HEVC x265 10Bit][AAC]",
+    "[SubsPlease] Solo Leveling - 01 (1080p) [547E0168].mkv",
 )
 
 
@@ -1111,67 +1163,295 @@ def _solo_leveling_local_matches() -> list[StreamCandidate]:
     ]
 
 
-def test_rank_candidates_solo_leveling_s2e1_hides_season_marked_echoes_of_groups_numbering_from_one() -> None:
-    matches: list[StreamCandidate] = _solo_leveling_local_matches()
-    echoes: list[StreamCandidate] = [_stream(None, release=name) for name in _SOLO_LEVELING_ECHOES]
-    unscoped: list[StreamCandidate] = [_stream(None, release=name) for name in _SOLO_LEVELING_UNSCOPED]
-    ranked: tuple[RankedCandidate, ...] = _rank(_solo_leveling_s2e1(), [*echoes, *unscoped, *matches])
-    by_stream: dict[StreamCandidate, RankedCandidate] = {row.stream: row for row in ranked}
-    assert {by_stream[stream].identity.verdict for stream in matches} == {IdentityVerdict.MATCH}
-    assert [(by_stream[stream].identity.verdict, by_stream[stream].identity.reason) for stream in echoes] == [
-        (IdentityVerdict.MISMATCH, GROUP_NUMBERING_REASON)
-    ] * len(echoes)
-    assert [(by_stream[stream].conflict, by_stream[stream].confidence) for stream in echoes] == [(True, None)] * len(
-        echoes
+def _released(name: str, published: datetime | None) -> StreamCandidate:
+    return _stream(None, release=name, published=published)
+
+
+def _dated_rank(
+    target: dict[str, object], streams: list[StreamCandidate], dates: SeasonDates | None
+) -> dict[StreamCandidate, RankedCandidate]:
+    ranked: tuple[RankedCandidate, ...] = rank_candidates(
+        target, streams_releases(streams, pack_name=_pack_name), donghua=False, dates=dates
     )
-    assert {by_stream[stream].identity.verdict for stream in unscoped} == {IdentityVerdict.INSUFFICIENT}
+    return {row.stream: row for row in ranked}
+
+
+def _verdicts(rows: Mapping[StreamCandidate, RankedCandidate], streams: list[StreamCandidate]) -> list[tuple[str, str]]:
+    return [(rows[stream].identity.verdict.value, rows[stream].identity.reason) for stream in streams]
+
+
+def test_rank_candidates_solo_leveling_s2e1_matches_absolute_releases_and_hides_older_and_later_episodes() -> None:
+    matches: list[StreamCandidate] = _solo_leveling_local_matches()
+    echoes: list[StreamCandidate] = [_released(name, published) for name, published, _ in _SOLO_LEVELING_ECHOES]
+    absolute: list[StreamCandidate] = [
+        _released(name, _SOLO_LEVELING_S2E1_AIRED + timedelta(hours=3)) for name in _SOLO_LEVELING_ABSOLUTE
+    ]
+    first: list[StreamCandidate] = [
+        _released(name, datetime(2024, 1, 6, 22, 19, tzinfo=UTC)) for name in _SOLO_LEVELING_FIRST_SEASON
+    ]
+    rows: dict[StreamCandidate, RankedCandidate] = _dated_rank(
+        _solo_leveling_s2e1(), [*echoes, *absolute, *first, *matches], _SOLO_LEVELING_DATES
+    )
+    assert _verdicts(rows, echoes) == [("mismatch", reason) for _, _, reason in _SOLO_LEVELING_ECHOES]
+    assert _verdicts(rows, absolute) == [("match", _ABSOLUTE_ONLY.reason)] * len(absolute)
+    assert _verdicts(rows, first) == [("mismatch", _PUBLISHED_EARLY.reason)] * len(first)
+    assert {rows[stream].identity.verdict for stream in matches} == {IdentityVerdict.MATCH}
+    assert [(rows[stream].conflict, rows[stream].confidence) for stream in [*echoes, *first]] == [(True, None)] * 7
+    ranked: tuple[RankedCandidate, ...] = list_order(tuple(rows.values()))
     index, uncertain = suggestion(ranked, numbering=True)
     assert index is not None
     assert not uncertain
-    assert {row.stream for row in visible(ranked, index)} == {*matches, *unscoped}
+    assert {row.stream for row in visible(ranked, index)} == {*matches, *absolute}
 
 
-def test_rank_candidates_echo_carrying_the_target_episode_title_stays_uncertain() -> None:
+def test_rank_candidates_without_dates_leaves_solo_leveling_numbers_to_h1() -> None:
+    names: list[str] = [
+        *_SOLO_LEVELING_ABSOLUTE,
+        *_SOLO_LEVELING_FIRST_SEASON,
+        *(name for name, _, _ in _SOLO_LEVELING_ECHOES),
+    ]
+    undated: list[StreamCandidate] = [_released(name, None) for name in names]
+    dated: list[StreamCandidate] = [_released(name, _SOLO_LEVELING_S2E13_AIRED) for name in names]
+    matches: list[StreamCandidate] = _solo_leveling_local_matches()
+    without_dates: dict[StreamCandidate, RankedCandidate] = _dated_rank(_solo_leveling_s2e1(), [*dated, *matches], None)
+    without_published: dict[StreamCandidate, RankedCandidate] = _dated_rank(
+        _solo_leveling_s2e1(), [*undated, *matches], replace(_SOLO_LEVELING_DATES, episodes=None)
+    )
+    assert {without_dates[stream].identity.verdict for stream in dated} == {IdentityVerdict.INSUFFICIENT}
+    assert {without_published[stream].identity.verdict for stream in undated} == {IdentityVerdict.INSUFFICIENT}
+
+
+def test_rank_candidates_uncertain_release_published_more_than_two_days_before_the_target_aired_is_a_mismatch() -> None:
+    aired: datetime = datetime(2026, 9, 5, 15, tzinfo=UTC)
+    dates: SeasonDates = SeasonDates({5: aired}, None, scheduled=True)
+    early_match: StreamCandidate = _stream("Star Garden - 05 [1080p].mkv", published=aired - timedelta(days=30))
+    early_uncertain: StreamCandidate = _stream("Moon Garden - 05 [1080p].mkv", published=aired - timedelta(days=3))
+    leak: StreamCandidate = _stream("Moon Garden - 05 [720p].mkv", published=aired - timedelta(days=1))
+    weekly: StreamCandidate = _stream("Star Garden - 05 [480p].mkv", published=aired + timedelta(hours=2))
+    undated: StreamCandidate = _stream("Moon Garden - 05 [576p].mkv")
+    rows: dict[StreamCandidate, RankedCandidate] = _dated_rank(
+        _target(), [early_match, early_uncertain, leak, weekly, undated], dates
+    )
+    assert _verdicts(rows, [early_uncertain]) == [("mismatch", _PUBLISHED_EARLY.reason)]
+    assert [rows[stream].identity.verdict for stream in (early_match, leak, weekly, undated)] == [
+        IdentityVerdict.MATCH,
+        IdentityVerdict.INSUFFICIENT,
+        IdentityVerdict.MATCH,
+        IdentityVerdict.INSUFFICIENT,
+    ]
+    assert rows[early_match].identity.reason != _PUBLISHED_EARLY.reason
+
+
+def test_rank_candidates_matching_release_published_over_thirty_days_before_the_target_aired_is_a_mismatch() -> None:
+    aired: datetime = datetime(2026, 9, 5, 15, tzinfo=UTC)
+    dates: SeasonDates = SeasonDates({5: aired}, None, scheduled=True)
+    old: StreamCandidate = _stream("Star Garden - 05 [1080p].mkv", published=aired - timedelta(days=30, hours=1))
+    early_access: StreamCandidate = _stream("Star Garden - 05 [720p].mkv", published=aired - timedelta(days=29))
+    rows: dict[StreamCandidate, RankedCandidate] = _dated_rank(_target(), [old, early_access], dates)
+    assert _verdicts(rows, [old]) == [("mismatch", _PUBLISHED_EARLY.reason)]
+    assert rows[early_access].identity.verdict is IdentityVerdict.MATCH
+
+
+def test_rank_candidates_judges_publication_against_the_air_date_of_the_target_episode_itself() -> None:
+    aired: datetime = datetime(2026, 9, 5, 15, tzinfo=UTC)
+    dates: SeasonDates = SeasonDates({4: aired - timedelta(weeks=1), 5: aired}, None, scheduled=True)
+    stream: StreamCandidate = _stream("Star Garden - 04 [1080p].mkv", published=aired - timedelta(days=5))
+    current: RankedCandidate = _dated_rank(_target(), [stream], dates)[stream]
+    previous: RankedCandidate = _dated_rank(_target(local_episode=4, episode=4, absolute=4), [stream], dates)[stream]
+    assert (current.identity.verdict, current.identity.reason) == (IdentityVerdict.MISMATCH, _PUBLISHED_EARLY.reason)
+    assert previous.identity.verdict is IdentityVerdict.MATCH
+
+
+def test_rank_candidates_bare_absolute_number_matches_only_when_no_local_episode_had_that_number() -> None:
+    published: datetime = _SOLO_LEVELING_S2E1_AIRED + timedelta(hours=3)
+    name: str = "[SubsPlease] Solo Leveling - 13 (1080p) [69C63E88].mkv"
+    target: dict[str, object] = _solo_leveling_s2e1()
+    stream: StreamCandidate = _released(name, published)
+    undated: StreamCandidate = _released(name, None)
+    late: StreamCandidate = _released(name, _SOLO_LEVELING_S2E13_AIRED - timedelta(days=1, hours=12))
+    unscheduled: SeasonDates = SeasonDates({1: _SOLO_LEVELING_S2E1_AIRED}, None, scheduled=True)
+    cases: list[tuple[StreamCandidate, SeasonDates, IdentityVerdict]] = [
+        (stream, _SOLO_LEVELING_DATES, IdentityVerdict.MATCH),
+        (late, replace(_SOLO_LEVELING_DATES, episodes=None), IdentityVerdict.INSUFFICIENT),
+        (undated, replace(_SOLO_LEVELING_DATES, episodes=12), IdentityVerdict.INSUFFICIENT),
+        (undated, replace(_SOLO_LEVELING_DATES, episodes=13), IdentityVerdict.INSUFFICIENT),
+        (stream, unscheduled, IdentityVerdict.MATCH),
+        (stream, replace(unscheduled, scheduled=False), IdentityVerdict.INSUFFICIENT),
+        (_released(name, _SOLO_LEVELING_S2E1_AIRED + timedelta(weeks=11)), unscheduled, IdentityVerdict.INSUFFICIENT),
+    ]
+    assert [_dated_rank(target, [row], dates)[row].identity.verdict for row, dates, _ in cases] == [
+        verdict for _, _, verdict in cases
+    ]
+    assert _dated_rank(target, [stream], _SOLO_LEVELING_DATES)[stream].identity.reason == _ABSOLUTE_ONLY.reason
+
+
+def test_rank_candidates_bare_absolute_number_matches_only_when_published_near_the_target_air_date() -> None:
+    name: str = "[SubsPlease] Solo Leveling - 13 (1080p) [69C63E88].mkv"
+    target: dict[str, object] = _solo_leveling_s2e1()
+    dates: SeasonDates = replace(_SOLO_LEVELING_DATES, episodes=12)
+    window: list[tuple[timedelta, IdentityVerdict]] = [
+        (-timedelta(days=2), IdentityVerdict.MATCH),
+        (timedelta(days=14), IdentityVerdict.MATCH),
+        (-timedelta(days=2, hours=1), IdentityVerdict.MISMATCH),
+        (timedelta(days=14, hours=1), IdentityVerdict.INSUFFICIENT),
+        (timedelta(days=365), IdentityVerdict.INSUFFICIENT),
+    ]
+    rows: list[StreamCandidate] = [_released(name, _SOLO_LEVELING_S2E1_AIRED + offset) for offset, _ in window]
+    assert [_dated_rank(target, [row], dates)[row].identity.verdict for row in rows] == [
+        verdict for _, verdict in window
+    ]
+    aired: StreamCandidate = _released(name, _SOLO_LEVELING_S2E1_AIRED + timedelta(hours=3))
+    without_target: SeasonDates = replace(dates, aired={13: _SOLO_LEVELING_S2E13_AIRED})
+    assert _dated_rank(target, [aired], without_target)[aired].identity.verdict is IdentityVerdict.INSUFFICIENT
+
+
+def test_rank_candidates_weekly_echo_needs_the_episode_air_window_weeks_after_the_target() -> None:
+    name: str = "[DKB] Solo Leveling - S02E13 [1080p][HEVC x265 10bit][Dual-Audio][Multi-Subs]"
+    target: dict[str, object] = _solo_leveling_s2e1()
+    window: list[tuple[datetime, IdentityVerdict]] = [
+        (_SOLO_LEVELING_S2E13_AIRED - timedelta(hours=23), IdentityVerdict.MISMATCH),
+        (_SOLO_LEVELING_S2E13_AIRED + timedelta(days=3), IdentityVerdict.MISMATCH),
+        (_SOLO_LEVELING_S2E13_AIRED - timedelta(days=1, hours=1), IdentityVerdict.INSUFFICIENT),
+        (_SOLO_LEVELING_S2E13_AIRED + timedelta(days=3, hours=1), IdentityVerdict.INSUFFICIENT),
+    ]
+    rows: list[StreamCandidate] = [_released(name, published) for published, _ in window]
+    assert [_dated_rank(target, [row], _SOLO_LEVELING_DATES)[row].identity.verdict for row in rows] == [
+        verdict for _, verdict in window
+    ]
+    soon: SeasonDates = replace(
+        _SOLO_LEVELING_DATES, aired={1: _SOLO_LEVELING_S2E1_AIRED, 13: _SOLO_LEVELING_S2E1_AIRED + timedelta(days=13)}
+    )
+    early: StreamCandidate = _released(name, _SOLO_LEVELING_S2E1_AIRED + timedelta(days=13))
+    assert _dated_rank(target, [early], soon)[early].identity.verdict is IdentityVerdict.INSUFFICIENT
+
+
+def test_rank_candidates_weekly_echo_carrying_the_target_episode_title_stays_uncertain() -> None:
     titled: StreamCandidate = _stream(
         "Solo.Leveling.S02E13.You.Arent.E-Rank.Are.You.1080p.CR.WEB-DL.AAC2.0.H.264-ToonsHub.mkv",
         release="[ToonsHub] Solo Leveling S02E13 1080p CR WEB-DL AAC2.0 H.264 (Ore dake Level Up na Ken, Multi-Subs)",
+        published=_SOLO_LEVELING_S2E13_AIRED + timedelta(hours=2),
     )
-    ranked: tuple[RankedCandidate, ...] = _rank(_solo_leveling_s2e1(), [titled, *_solo_leveling_local_matches()])
-    echo: RankedCandidate = next(row for row in ranked if row.stream == titled)
-    assert echo.identity.verdict is IdentityVerdict.INSUFFICIENT
-    assert echo in visible(ranked)
+    rows: dict[StreamCandidate, RankedCandidate] = _dated_rank(
+        _solo_leveling_s2e1(), [titled, *_solo_leveling_local_matches()], _SOLO_LEVELING_DATES
+    )
+    assert rows[titled].identity.verdict is IdentityVerdict.INSUFFICIENT
+    assert rows[titled] in visible(tuple(rows.values()))
 
 
-def test_rank_candidates_echo_without_a_local_match_of_its_group_stays_uncertain() -> None:
-    echoes: list[StreamCandidate] = [_stream(None, release=name) for name in _SOLO_LEVELING_ECHOES]
-    ranked: tuple[RankedCandidate, ...] = _rank(_solo_leveling_s2e1(), echoes)
-    assert {row.identity.verdict for row in ranked} == {IdentityVerdict.INSUFFICIENT}
-    assert len(visible(ranked)) == len(echoes)
+def test_rank_candidates_group_echo_needs_sxxeyy_its_group_local_match_and_an_aired_local_episode() -> None:
+    late: datetime = datetime(2025, 4, 19, 20, 29, tzinfo=UTC)
+    toonshub: str = (
+        "[ToonsHub] Solo Leveling S02E13 1080p CR WEB-DL AAC2.0 H.264 (Ore dake Level Up na Ken, Multi-Subs)"
+    )
+    erai: str = (
+        "[Erai-raws] Ore dake Level Up na Ken Season 2: Arise from the Shadow - 13 [1080p CR WEB-DL AVC AAC][MultiSub]"
+    )
+    matches: list[StreamCandidate] = _solo_leveling_local_matches()
+    hidden: StreamCandidate = _released(toonshub, late)
+    target_day: StreamCandidate = _released(toonshub, _SOLO_LEVELING_S2E1_AIRED + timedelta(hours=1))
+    not_mapped: StreamCandidate = _released(erai, late)
+    nth_season: StreamCandidate = _released("[ToonsHub] Solo Leveling 2nd Season - 13 [1080p]", late)
+    rows: dict[StreamCandidate, RankedCandidate] = _dated_rank(
+        _solo_leveling_s2e1(), [hidden, target_day, not_mapped, nth_season, *matches], _SOLO_LEVELING_DATES
+    )
+    lone: dict[StreamCandidate, RankedCandidate] = _dated_rank(_solo_leveling_s2e1(), [hidden], _SOLO_LEVELING_DATES)
+    unaired: SeasonDates = replace(_SOLO_LEVELING_DATES, aired={1: _SOLO_LEVELING_S2E1_AIRED})
+    undated: dict[StreamCandidate, RankedCandidate] = _dated_rank(_solo_leveling_s2e1(), [hidden, *matches], unaired)
+    assert _verdicts(rows, [hidden]) == [("mismatch", _GROUP_NUMBERING.reason)]
+    assert [rows[stream].identity.verdict for stream in (target_day, not_mapped, nth_season)] == [
+        IdentityVerdict.INSUFFICIENT
+    ] * 3
+    assert lone[hidden].identity.verdict is IdentityVerdict.INSUFFICIENT
+    assert undated[hidden].identity.verdict is IdentityVerdict.INSUFFICIENT
 
 
-def test_rank_candidates_ember_s2e1_matches_and_hides_its_own_absolute_number_echo() -> None:
-    local: StreamCandidate = _stream(
+def test_rank_candidates_bare_number_beyond_the_target_season_is_a_mismatch() -> None:
+    dates: SeasonDates = SeasonDates({}, 12, scheduled=False)
+    beyond: StreamCandidate = _stream("[Grp] Star Garden - 13 [1080p].mkv")
+    last: StreamCandidate = _stream("[Grp] Star Garden - 12 [1080p].mkv")
+    rows: dict[StreamCandidate, RankedCandidate] = _dated_rank(_target(), [beyond, last], dates)
+    unknown: dict[StreamCandidate, RankedCandidate] = _dated_rank(_target(), [beyond], replace(dates, episodes=None))
+    assert _verdicts(rows, [beyond]) == [("mismatch", _BEYOND_SEASON.reason)]
+    assert rows[last].identity.verdict is IdentityVerdict.INSUFFICIENT
+    assert unknown[beyond].identity.verdict is IdentityVerdict.INSUFFICIENT
+
+
+def test_rank_candidates_group_marking_the_season_turns_its_bare_franchise_first_episode_into_another_season() -> None:
+    marked: StreamCandidate = _stream(
+        None, release="[Erai-raws] Ore dake Level Up na Ken Season 2: Arise from the Shadow - 01 [1080p][MultiSub]"
+    )
+    bare: StreamCandidate = _stream(
+        None, release="[Erai-raws] Ore dake Level Up na Ken - 01 [1080p][Multiple Subtitle]"
+    )
+    other: StreamCandidate = _stream(None, release="[Other] Ore dake Level Up na Ken - 01 [1080p]")
+    rows: dict[StreamCandidate, RankedCandidate] = _dated_rank(_solo_leveling_s2e1(), [marked, bare, other], None)
+    assert rows[marked].identity.verdict is IdentityVerdict.MATCH
+    assert _verdicts(rows, [bare]) == [("mismatch", _GROUP_SEASON.reason)]
+    assert rows[other].identity.verdict is IdentityVerdict.INSUFFICIENT
+
+
+def test_rank_candidates_row_with_the_checksum_of_one_assessed_verdict_takes_that_verdict() -> None:
+    match: StreamCandidate = _stream("Star Garden - 05 [1080p][ABCDEF12].mkv")
+    copy: StreamCandidate = _stream("Moon Garden - 05 [1080p][ABCDEF12].mkv")
+    mismatch: StreamCandidate = _stream("Star Garden S01E06 [1080p][12345678].mkv")
+    split_match: StreamCandidate = _stream("Star Garden - 05 [720p][12345678].mkv")
+    split: StreamCandidate = _stream("Moon Garden - 05 [720p][12345678].mkv")
+    lone: StreamCandidate = _stream("Moon Garden - 05 [480p][0FEDCBA9].mkv")
+    rows: dict[StreamCandidate, RankedCandidate] = _dated_rank(
+        _target(), [match, copy, mismatch, split_match, split, lone], None
+    )
+    assert _verdicts(rows, [copy]) == [("match", _CHECKSUM_REASON)]
+    assert not rows[copy].conflict
+    assert [rows[stream].identity.verdict for stream in (split, lone)] == [IdentityVerdict.INSUFFICIENT] * 2
+
+
+def test_offer_rule_match_is_a_list_suggestion_but_automation_treats_it_as_uncertain() -> None:
+    absolute: StreamCandidate = _released(
+        "[SubsPlease] Solo Leveling - 13 (1080p) [69C63E88].mkv", _SOLO_LEVELING_S2E1_AIRED + timedelta(hours=3)
+    )
+    ranked: tuple[RankedCandidate, ...] = tuple(
+        _dated_rank(_solo_leveling_s2e1(), [absolute], _SOLO_LEVELING_DATES).values()
+    )
+    assert suggestion(ranked, numbering=True) == (0, False)
+    assert visible(ranked, 0) == ranked
+    assert ranked[0].identity.verdict is IdentityVerdict.MATCH
+    automated: ChoiceCandidate = choice_candidate(ranked[0])
+    assert automated.verdict is IdentityVerdict.INSUFFICIENT
+    assert choose([automated], excluded=frozenset(), threshold=None, failures=(), tsukihime=False) is None
+
+
+def test_checksum_rule_match_is_uncertain_for_automation_while_its_h1_source_stays_a_match() -> None:
+    match: StreamCandidate = _stream("Star Garden - 05 [1080p][ABCDEF12].mkv")
+    copy: StreamCandidate = _stream("Moon Garden - 05 [1080p][ABCDEF12].mkv")
+    rows: dict[StreamCandidate, RankedCandidate] = _dated_rank(_target(), [match, copy], None)
+    assert [rows[stream].identity.verdict for stream in (match, copy)] == [IdentityVerdict.MATCH] * 2
+    assert [choice_candidate(rows[stream]).verdict for stream in (match, copy)] == [
+        IdentityVerdict.MATCH,
+        IdentityVerdict.INSUFFICIENT,
+    ]
+
+
+def test_season_dates_keep_dated_episodes_the_anilist_count_and_whether_anilist_schedules_the_season() -> None:
+    aired: datetime = datetime(2026, 9, 5, 15, tzinfo=UTC)
+    listing: EpisodeListing = EpisodeListing(
+        1,
         None,
-        release="[EMBER] Ore dake Level Up na Ken S02E01 [1080p] [HEVC WEBRip DDP] "
-        "(Solo Leveling Season 2: Arise from the Shadow)",
-    )
-    echo: StreamCandidate = _stream(
+        "TV",
+        "RELEASING",
+        12,
+        (
+            ListedEpisode(1, airs_at=aired, airs_at_fallback=True),
+            ListedEpisode(2),
+            ListedEpisode(3, airs_at=aired + timedelta(weeks=2)),
+        ),
+        (),
         None,
-        release="[EMBER] Ore dake Level Up na Ken S02E13 [1080p] [HEVC WEBRip DDP] "
-        "(Solo Leveling Season 2: Arise from the Shadow)",
+        None,
+        None,
     )
-    ranked: tuple[RankedCandidate, ...] = _rank(_solo_leveling_s2e1(), [echo, local])
-    by_stream: dict[StreamCandidate, RankedCandidate] = {row.stream: row for row in ranked}
-    assert by_stream[local].identity.verdict is IdentityVerdict.MATCH
-    assert (by_stream[echo].identity.verdict, by_stream[echo].identity.reason, by_stream[echo].conflict) == (
-        IdentityVerdict.MISMATCH,
-        GROUP_NUMBERING_REASON,
-        True,
-    )
-    index, uncertain = suggestion(ranked, numbering=True)
-    assert index is not None
-    assert not uncertain
-    assert visible(ranked, index) == (by_stream[local],)
+    assert season_dates(listing, None) == SeasonDates({1: aired, 3: aired + timedelta(weeks=2)}, None, scheduled=True)
+    fallback: EpisodeListing = replace(listing, episodes=listing.episodes[:2])
+    assert season_dates(fallback, 12) == SeasonDates({1: aired}, 12, scheduled=False)
 
 
 def test_suggestion_slime_s4e23_stream_without_file_is_assessed_on_its_release_name() -> None:
