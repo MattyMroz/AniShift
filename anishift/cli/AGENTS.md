@@ -308,7 +308,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   repeat candidate exclusion and protected admission replacement. Active ordered/downloading/processing
   rows show cancellation guidance instead of submitting duplicate work. I and P open the release list
   (`_Screen.CANDIDATES`) at once, with the cursor on the `*` suggestion until the user moves it; there is
-  no single-release offer screen (owner decision 2026-10-10). Esc returns to the episodes or U08.
+  no single-release offer screen (owner decision 2026-10-10). Esc returns to the episodes or U08. A choice refused
+  for a repeatable reason (`REPEATABLE_REASONS`) keeps the release list with the notice `… · P pobierz ponownie`;
+  P there (footer `P pobierz ponownie` only for an ordered episode outside a repeat offer) reopens the list as a
+  repeat (`_repeatable_offer`, owner report 2026-10-11).
   The list is `episode_selection.visible(offer.candidates, offer.suggestion)`: it drops H1 `MISMATCH`
   rows, rows with 0 seeders and U-24 low resolutions; beside a live `MATCH` only matches stay (owner decision
   2026-10-11), so `!` rows show only when no match exists; small re-encodes (`traits.small`) follow the full files

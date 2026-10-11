@@ -2545,7 +2545,7 @@ def test_changed_repeat_conflict_is_refused_in_existing_problem_view() -> None:
         ("episode_possibly_admitted", "Już zlecone?"),
     ],
 )
-def test_choosing_an_already_ordered_episode_states_the_refusal_and_names_the_repeat(
+def test_choosing_an_already_ordered_episode_keeps_the_releases_and_p_opens_them_for_a_repeat(
     reason: str, sentence: str
 ) -> None:
     owner: _ChoiceOwner = _ChoiceOwner()
@@ -2553,11 +2553,19 @@ def test_choosing_an_already_ordered_episode_states_the_refusal_and_names_the_re
     controller: AnimeController = _owner_controller(owner)
     _key(controller, "text:i")
     _key(controller, "text:d")
-    frame: str = controller.render(50, 24).plain
-    assert _at(controller) is _Screen.PROBLEM
-    assert sentence in frame
-    assert "P pobierz ponownie" in frame
+    frame: str = controller.render(80, 24).plain
+    assert _at(controller) is _Screen.CANDIDATES
+    assert f"{sentence} · P pobierz ponownie" in frame
+    assert "D pobierz · P pobierz ponownie" in frame
     assert "Rezydent nie wykonał polecenia" not in frame
+
+    controller.handle_key("text:p")
+    deadline: float = time.monotonic() + 10
+    while ("repeat", 1) not in owner.calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert ("repeat", 1) in owner.calls
+    assert _at(controller) is _Screen.CANDIDATES
 
 
 @pytest.mark.unit

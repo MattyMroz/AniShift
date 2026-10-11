@@ -13,6 +13,7 @@ __all__ = [
     "COMMAND_FAILED",
     "EPISODE_REASON_LABELS",
     "IN_PROGRESS_HINT",
+    "REPEATABLE_REASONS",
     "UNAVAILABLE",
     "episode_status_label",
     "error_code",
@@ -63,6 +64,9 @@ _REPEATABLE_REFUSALS: Final[dict[str, str]] = {
     EpisodeReason.PACK_IN_PROGRESS: EPISODE_REASON_LABELS[EpisodeReason.PACK_IN_PROGRESS],
 }
 """Notice of each owner refusal that P can override with an explicit repeat."""
+
+REPEATABLE_REASONS: Final[frozenset[str]] = frozenset(_REPEATABLE_REFUSALS)
+"""Owner refusal reasons an explicit repeat (P) overrides."""
 
 _EPISODE_STATE_LABELS: Final[dict[str, str]] = {
     "ordered": "Zlecono",

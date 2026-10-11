@@ -68,6 +68,7 @@ from anishift.cli.interactive.anime_texts import (
     COMMAND_FAILED,
     EPISODE_REASON_LABELS,
     IN_PROGRESS_HINT,
+    REPEATABLE_REASONS,
     UNAVAILABLE,
     error_code,
     refused_result,
@@ -966,7 +967,8 @@ class AnimeController:
         if screen is _Screen.FILES:
             return ScreenActions((("Enter", "wybierz"),), _LISTED)
         if screen is _Screen.CANDIDATES:
-            return ScreenActions((("Space", "zaznacz"), ("D", "pobierz")), _LISTED)
+            again: tuple[Action, ...] = (("P", "pobierz ponownie"),) if self._repeatable_offer() is not None else ()
+            return ScreenActions((("Space", "zaznacz"), ("D", "pobierz"), *again), _LISTED)
         if screen is _Screen.DRAFT:
             if not self._draft_episodes():
                 return ScreenActions((("Enter", "wybierz"),), _LISTED)
@@ -1248,6 +1250,20 @@ class AnimeController:
             )
             if chosen is not None:
                 self._choose_release(chosen)
+        elif self._screen is _Screen.CANDIDATES and key.casefold() == "text:p":
+            episode: ListedEpisode | None = self._repeatable_offer()
+            if episode is not None:
+                self._start_owner_offer(episode, repeat=True)
+
+    def _repeatable_offer(self) -> ListedEpisode | None:
+        view: EpisodeOfferView | None = self._offer_view
+        listing: EpisodeListing | None = self._listing
+        if view is None or listing is None or view.previous_admission_id is not None or view.conflict:
+            return None
+        status: EpisodeStatus | None = self._episode_states.get(view.offer.key)
+        if status is None or (status.state == "not_ordered" and status.admission_id is None):
+            return None
+        return next((item for item in listing.episodes if item.number == view.offer.key.number), None)
 
     def _episode_screen_count(self) -> int:
         if self._screen is _Screen.ENTRIES:
@@ -1791,10 +1807,18 @@ class AnimeController:
                 conflict_confirmed=bool(view.conflict),
             )
         except (AniShiftError, OSError) as problem:
+            repeatable: bool = isinstance(problem, ControlError) and problem.reason in REPEATABLE_REASONS
             with self._lock:
                 if generation == self._generation:
                     self._choice_sending = False
-                    self._offer_id = None
+                    if repeatable:
+                        self._worker = None
+                        self._notice = " · ".join(part for part in stated(problem) if part)
+                    else:
+                        self._offer_id = None
+            if repeatable:
+                self._invalidate()
+                return
             self._catalog_failure(generation, problem, _Screen.EPISODES, "")
             return
         self._finish_episode_choice(generation, f"Zlecono E{view.offer.key.number}")
