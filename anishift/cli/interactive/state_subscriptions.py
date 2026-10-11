@@ -38,7 +38,7 @@ _CHECKING: Final[str] = "Sprawdzam…"
 _SHADOW_WARNING: Final[str] = "Tryb cienia — subskrypcje tylko zapisują propozycje"
 """Status row above the list while the owner records proposals instead of attempts."""
 
-_ADD_KEYS: Final[str] = "D lub /"
+_ADD_KEYS: Final[str] = "D"
 """Keys the subscription footer names for adding a subscription."""
 
 _COMMANDS: Final[dict[str, str]] = {

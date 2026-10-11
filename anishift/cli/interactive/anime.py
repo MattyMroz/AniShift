@@ -362,14 +362,10 @@ class AnimeController:
             self._playback = None
             return set_id
 
-    def start_subscription_search(self) -> None:
-        """Open the title search on behalf of the subscription list, to which Esc returns."""
+    def start_search(self) -> None:
+        """Open the title search of the Anime tab with its field focused, outside any subscription."""
         with self._lock:
-            self._generation += 1
-            self._subscription = None
-            self._from_subscriptions = True
-            self._details_open = False
-            self._screen = _Screen.QUERY
+            self._leave_subscriptions()
             self._input_focused = True
 
     @property
@@ -414,7 +410,7 @@ class AnimeController:
         folded: str = key.casefold()
         if folded == "text:/":
             self._leave_subscriptions()
-            self.start_subscription_search()
+            self._input_focused = True
             return AnimeResult.CONTINUE
         kind: str | None = {
             "text:w": "subscription_resume" if row.get("paused") else "subscription_pause",

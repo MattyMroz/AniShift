@@ -539,7 +539,8 @@ def test_esc_leaves_the_draft_for_its_source_screen_and_the_search_for_the_list(
     assert _anime(panel)._screen is _Screen.TITLES
 
     _keys(panel, "escape", "escape")
-    assert panel._tab == _Tab.SUBSCRIPTIONS
+    assert panel._tab == _Tab.ANIME
+    assert _anime(panel)._screen is _Screen.QUERY
 
 
 def test_s_on_an_episode_list_drafts_from_the_loaded_list_without_reading_it_again(
@@ -959,7 +960,7 @@ def test_details_opened_from_the_list_highlight_the_subscriptions_tab(panel: Sta
 @pytest.mark.parametrize(
     ("opening", "tab"),
     [
-        (("text:d", "text:slime", "enter", "text:s"), "Subskrypcje"),
+        (("text:d", "text:slime", "enter", "text:s"), "Anime"),
         (("left", "text:slime", "enter", "text:s"), "Anime"),
     ],
 )

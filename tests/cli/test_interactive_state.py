@@ -2069,7 +2069,7 @@ def test_each_panel_tab_retains_contextual_actions_and_owner_counts_at_feasible_
         ).plain
         assert "Automat: praca · pobiera 2 · przetwarza 3 · czeka 4 · O wyłącz" in frame
         assert "? klawisze · Esc wróć" in frame
-        assert ("/ dodaj", "H historia", "? klawisze")[tab - 1] in frame
+        assert ("D dodaj", "H historia", "? klawisze")[tab - 1] in frame
         assert len(frame.splitlines()) <= rows
         assert all(len(line) <= columns for line in frame.splitlines())
         if tab == 1:

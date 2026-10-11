@@ -487,7 +487,7 @@ class StateController:
         if key in {"text:/", "text:d"} or (key == "enter" and row is None):
             if self._anime is not None:
                 self._switch_tab(_Tab.ANIME)
-                self._anime.start_subscription_search()
+                self._anime.start_search()
             return
         if row is None:
             return

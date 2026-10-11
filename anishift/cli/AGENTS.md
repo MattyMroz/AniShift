@@ -78,11 +78,11 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `interactive/anime.py`, `interactive/subscription_texts.py`, `interactive/state.py`
 - The Subscriptions tab in `StateController` renders owner `subscriptions_list` rows. Enter opens U08
   (the Anime episode screen with a subscription status row, every target including numbers beyond the
-  catalogue, and „Dodatki tego sezonu” with related OVA/special entries whose Enter opens their U03), D or `/` (footer
-  `D lub /`; Enter on an empty list is a silent alias) opens the Anime search, whose first Esc blurs the field and the second
-  returns to the list through `_back_out`; W (alias Space) pauses/resumes, R (alias F) sends `subscription_check`,
+  catalogue, and „Dodatki tego sezonu” with related OVA/special entries whose Enter opens their U03), D (footer `D dodaj`;
+  `/` and Enter on an empty list are silent aliases) switches to the Anime tab and its own search (`start_search`, owner
+  decision 2026-10-11): no subscription context, Esc behaves as in the Anime tab; W (alias Space) pauses/resumes, R (alias F) sends `subscription_check`,
   X/Delete remove, Ctrl+Z restores. U08 hands W/R/F/X to the panel through `take_subscription_command`, so command
-  workers stay in `StateController`; its `/` starts a new search without the old subscription. T, only on a
+  workers stay in `StateController`; its `/` opens the Anime tab search without the old subscription. T, only on a
   highlighted target whose `EpisodeStatus.polish_wait_until`
   is set, sends `subscription_check` with its `number` and replaces the W toggle in the footer; the row Stan
   is `Czeka na PL`/`Bez czekania PL`, the facts line `E{n} polish_line` names the wait of the highlighted
@@ -118,7 +118,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   centered layout). A layout too low for the centered table also fills; when not even one data row fits, the
   context and status rows go too (`anime_view._filled`). The table stays while its header and one row fit; only then
   does Library list plain names (`_table_body` returns `None`) and the other tables ask for a larger terminal. Problem and conflict states use the ordinary state style. While `AnimeController.in_subscriptions`
-  (U08 or the `/` search) the Subscriptions tab is highlighted, tab keys count from it, and any tab switch
+  (U08) the Subscriptions tab is highlighted, tab keys count from it, and any tab switch
   drops that context first, including an open range editor and marks (an admitted batch survives). `anishift subs` offers `list`, `check` and `remove` through the owner. `interactive/state.py`,
   `interactive/anime_view.py`, `main.py`
 - Cztery zakładki panelu mają jeden słownik klawiszy (`docs/work/tui-unify/plan.md` §3–§7). Stopka i pomoc

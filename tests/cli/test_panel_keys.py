@@ -520,14 +520,14 @@ _ACTIONS: Final[dict[str, tuple[Action, ...]]] = {
     "u08_extra": (("Enter", "otwórz"), *_U08),
     "subscriptions": (
         ("Enter", "szczegóły"),
-        ("D lub /", "dodaj"),
+        ("D", "dodaj"),
         ("W", "wstrzymaj"),
         ("R", "sprawdź teraz"),
         ("X", "usuń"),
         ("Ctrl+Z", "cofnij"),
         *_PANEL,
     ),
-    "subscriptions_empty": (("D lub /", "dodaj pierwszą"), ("Ctrl+Z", "cofnij"), *_PANEL),
+    "subscriptions_empty": (("D", "dodaj pierwszą"), ("Ctrl+Z", "cofnij"), *_PANEL),
     "processing_download": (("W", "wstrzymaj"), ("X", "anuluj"), ("H", "historia"), *_PANEL),
     "processing_run": (("X", "anuluj"), ("H", "historia"), *_PANEL),
     "processing_empty": (("H", "historia"), *_PANEL),
@@ -544,8 +544,8 @@ _ALIASES: Final[dict[str, frozenset[str]]] = {
     "u08_waiting": frozenset({"text:f", "delete", "enter"}),
     "u08_ready": frozenset({"text:f", "delete"}),
     "u08_extra": frozenset({"text:f", "delete"}),
-    "subscriptions": frozenset({"text:f", "space", "delete"}),
-    "subscriptions_empty": frozenset({"enter"}),
+    "subscriptions": frozenset({"text:f", "space", "delete", "text:/"}),
+    "subscriptions_empty": frozenset({"enter", "text:/"}),
     "processing_download": frozenset({"text:c", "delete"}),
     "processing_run": frozenset({"text:c", "delete"}),
     "processing_empty": frozenset({"text:c", "delete"}),
@@ -580,8 +580,8 @@ _FOOTERS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
     "draft": ("Enter wybierz · Space zaznacz · ? klawisze · Esc wróć", ()),
     "u08": ("Space zaznacz · D pobierz · W wstrzymaj · ? klawisze · Esc wróć", ()),
     "u08_waiting": ("Space zaznacz · D pobierz · T pobierz teraz · ? klawisze · Esc wróć", ()),
-    "subscriptions": ("Enter szczegóły · D lub / dodaj · W wstrzymaj · ? klawisze · Esc wróć", ()),
-    "subscriptions_empty": ("D lub / dodaj pierwszą · ? klawisze · Esc wróć", ()),
+    "subscriptions": ("Enter szczegóły · D dodaj · W wstrzymaj · ? klawisze · Esc wróć", ()),
+    "subscriptions_empty": ("D dodaj pierwszą · ? klawisze · Esc wróć", ()),
     "processing_download": ("W wstrzymaj · X anuluj · H historia · ? klawisze · Esc wróć", ()),
     "processing_run": ("X anuluj · H historia · ? klawisze · Esc wróć", ()),
     "history": ("Enter otwórz · P ponów · / szukaj · ? klawisze · Esc wróć", ()),
@@ -733,7 +733,8 @@ def test_footers_wrap_only_between_hints_at_50_columns(build: Callable[[str], _P
 def test_subscription_list_without_rows_says_so_once(build: Callable[[str], _Probe]) -> None:
     frame: str = build("subscriptions_empty").panel.render(80, 24).plain
     assert "Brak subskrypcji" in frame
-    assert "D dodaj" not in frame
+    assert "D dodaj pierwszą" in frame
+    assert "D dodaj ·" not in frame
 
 
 @pytest.mark.parametrize("name", sorted(set(_ACTIONS)))
@@ -991,14 +992,14 @@ def test_subscription_removal_keys(
 
 
 @pytest.mark.parametrize(("name", "key"), [("subscriptions", "text:/"), ("subscriptions", "text:d"), ("u08", "text:/")])
-def test_slash_opens_the_subscription_search_without_the_old_subscription(
+def test_d_and_slash_open_the_anime_search_outside_any_subscription(
     build: Callable[[str], _Probe], name: str, key: str
 ) -> None:
     probe: _Probe = build(name)
     probe.panel.handle_key(key)
     assert probe.panel._tab == _Tab.ANIME
     assert probe.anime._screen is _Screen.QUERY
-    assert probe.anime.in_subscriptions
+    assert not probe.anime.in_subscriptions
     assert probe.anime.input_focused
     assert probe.anime._subscription is None
 
@@ -1007,7 +1008,7 @@ def test_enter_on_an_empty_subscription_list_opens_the_search(build: Callable[[s
     probe: _Probe = build("subscriptions_empty")
     probe.panel.handle_key("enter")
     assert probe.panel._tab == _Tab.ANIME
-    assert probe.anime.in_subscriptions
+    assert not probe.anime.in_subscriptions
 
 
 @pytest.mark.parametrize("key", ["text:/", "text:s"])
@@ -1304,7 +1305,9 @@ def test_a_new_panel_opens_on_subscriptions_between_anime_and_processing(
 
 
 @pytest.mark.parametrize("name", ["subscriptions", "subscriptions_empty", "u08"])
-def test_two_escapes_from_the_subscription_search_return_to_the_list(build: Callable[[str], _Probe], name: str) -> None:
+def test_the_search_opened_from_subscriptions_behaves_like_the_anime_tab_search(
+    build: Callable[[str], _Probe], name: str
+) -> None:
     probe: _Probe = build(name)
     for key in ("text:/", "text:slime"):
         probe.panel.handle_key(key)
@@ -1313,9 +1316,8 @@ def test_two_escapes_from_the_subscription_search_return_to_the_list(build: Call
     assert probe.anime._screen is _Screen.QUERY
     assert not probe.anime.input_focused
     assert probe.anime._query == "slime"
-    assert probe.panel.handle_key("escape") is StateResult.CONTINUE
-    assert probe.panel._tab == _Tab.SUBSCRIPTIONS
     assert not probe.anime.in_subscriptions
+    assert probe.panel.handle_key("escape") is StateResult.HOME
 
 
 @pytest.mark.parametrize(
