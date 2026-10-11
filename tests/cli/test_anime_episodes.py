@@ -1136,6 +1136,60 @@ def test_release_size_shows_the_episode_file_size_and_unknown_for_a_pack_without
     assert "16.80 GB" not in " ".join(lines)
 
 
+def _pack_releases() -> tuple[RankedCandidate, RankedCandidate, RankedCandidate]:
+    single: RankedCandidate = replace(
+        _candidate(), stream=replace(_candidate().stream, release="[Group] Slime S2 - 01 (1080p)")
+    )
+    listed: RankedCandidate = replace(
+        _candidate(),
+        stream=replace(
+            _candidate().stream,
+            info_hash="b" * 40,
+            release="[Group] Slime S02 01-13",
+            file_name=None,
+            path="Slime S02/[Group] Slime S02E01.mkv",
+        ),
+        pack=True,
+    )
+    unlisted: RankedCandidate = replace(
+        listed, stream=replace(listed.stream, info_hash="c" * 40, release="[Other] Slime S02 01-13", path=None)
+    )
+    return single, listed, unlisted
+
+
+@pytest.mark.unit
+def test_release_rows_name_the_episode_file_of_a_listed_pack_and_the_episode_of_an_unlisted_one() -> None:
+    catalog: _Catalog = _Catalog()
+    releases: tuple[RankedCandidate, ...] = _pack_releases()
+    catalog.offer_read = lambda key: _offer(key, releases)
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+    _key(controller, "text:i")
+    controller.render(120, 40)
+    titles: list[str] = [item.title for item in controller._view.items]
+    assert titles == [
+        "[Group] Slime S2 - 01 (1080p)",
+        "z paczki · [Group] Slime S02E01.mkv",
+        "z paczki · E1 · [Other] Slime S02 01-13",
+    ]
+    assert "S02 01-13" not in titles[1]
+    assert not controller._view.items[0].note
+
+
+@pytest.mark.unit
+def test_pack_release_notice_shows_the_file_and_the_pack_name() -> None:
+    catalog: _Catalog = _Catalog()
+    releases: tuple[RankedCandidate, ...] = _pack_releases()
+    catalog.offer_read = lambda key: _offer(key, releases)
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+    _key(controller, "text:i")
+    _key(controller, "down")
+    shown: str = " ".join(" ".join(controller.render(120, 40).plain.split()).split())
+    assert "z paczki: [Group] Slime S02 01-13" in shown
+    assert "z paczki · [Group] Slime S02E01.mkv" in shown
+
+
 @pytest.mark.unit
 def test_offer_columns_remain_fixed_when_language_changes() -> None:
     catalog: _Catalog = _Catalog()

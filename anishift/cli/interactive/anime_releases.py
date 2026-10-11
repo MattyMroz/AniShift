@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import PureWindowsPath
 from typing import Final
 
 from anishift.application import (
@@ -153,10 +154,11 @@ def release_rows(
     suggested: RankedCandidate | None = (
         offer.candidates[offer.suggestion] if offer is not None and offer.suggestion is not None else None
     )
+    episode: str = "" if offer is None else f" · E{offer.key.number}"
     return tuple(
         AnimeRow(
             item.stream.info_hash,
-            item.stream.release,
+            _release_title(item, episode),
             image=f"{item.traits.resolution}p" if item.traits.resolution else "?",
             size=_candidate_size(item),
             language=_language(item),
@@ -167,6 +169,7 @@ def release_rows(
             eligible=item.supported is not False,
             uncertain=item.identity.verdict is not IdentityVerdict.MATCH,
             suggested=item == suggested,
+            note=f"z paczki: {item.stream.release}" if item.pack and _pack_file(item) else "",
         )
         for item in candidates
     ) or (AnimeRow("empty", "Szukam…" if searching else "Brak wydania", eligible=False),)
@@ -196,6 +199,18 @@ def candidate_reason(item: RankedCandidate) -> str:
     """Return the Polish identity verdict of one release with its explanation."""
     verdict: IdentityVerdict = item.identity.verdict
     return f"{_VERDICT_LABELS[verdict]}: {_REASON_TEXTS.get(item.identity.reason, _VERDICT_FALLBACKS[verdict])}"
+
+
+def _release_title(item: RankedCandidate, episode: str) -> str:
+    if not item.pack:
+        return item.stream.release
+    file: str | None = _pack_file(item)
+    return f"z paczki · {file}" if file else f"z paczki{episode} · {item.stream.release}"
+
+
+def _pack_file(item: RankedCandidate) -> str | None:
+    path: str | None = item.stream.path or item.stream.file_name
+    return PureWindowsPath(path).name if path else None
 
 
 def _language(item: RankedCandidate) -> str:

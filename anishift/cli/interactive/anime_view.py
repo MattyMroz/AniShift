@@ -524,12 +524,14 @@ def _unshown(snapshot: AnimeSnapshot, item: AnimeRow, limit: int, now: float, vi
         parts.append(item.detail or values[-1])
     hidden: list[int] = sorted(position for position in spec.optional if position not in shown)
     parts.extend(f"{spec.labels[position].lower()} {values[position].strip()}" for position in hidden)
-    if item.note:
+    if item.note and snapshot.screen is not AnimeScreen.RELEASES:
         parts.append(item.note)
     if snapshot.screen is AnimeScreen.RELEASES and Text(values[-1]).cell_len > widths[-1]:
         parts.append(f"pewność {values[-1]}")
     if Text(item.title).cell_len > widths[spec.title]:
         parts.append(item.title)
+    if snapshot.screen is AnimeScreen.RELEASES and item.note:
+        parts.append(item.note)
     if snapshot.screen is AnimeScreen.RELEASES and not parts:
         parts.append(item.detail)
     return " · ".join(parts)
