@@ -237,7 +237,7 @@ def test_an_overflowing_table_fills_every_row_between_the_tabs_and_the_keys(
 
     tabs, header, keys = _regions(lines, label)
     data: list[str] = lines[header + 1 : keys - 1]
-    assert header == tabs + (3 if tab == state_module._Tab.SUBSCRIPTIONS else 2)
+    assert header == tabs + 2
     assert not any(line.strip() for line in lines[tabs + 1 : header])
     assert not lines[keys - 1].strip()
     assert all("Show" in line for line in data)

@@ -110,8 +110,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   A table longer than the centered layout holds (`anime_view.overflows`; `_table_body` for Subscriptions and Library,
   `AnimeController.render` for Anime titles, entries, episodes and releases set `AnimeSnapshot.fill`) fills every row
   below the one blank line under the tabs, which `StateController.render` always keeps in the heading from 16 rows.
-  The empty context row is dropped, and without a context so is an empty status row, except on Subscriptions
-  (`_RESERVED_STATUS`), whose pause warning must not shift the table on O; only the rows the screen draws under the
+  The empty context row is dropped, and without a context so is an empty status row (the automation pause shows only
+  in the bottom status line, never above the Subscriptions list); only the rows the screen draws under the
   table stay above the keys: one notice row, plus the „Zaznaczone…” row on episodes, and three notice rows on releases
   for the full name (`anime_view.shown_rows` is the single row count for render and paging; a fitting table keeps the
   centered layout). A layout too low for the centered table also fills; when not even one data row fits, the

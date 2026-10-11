@@ -1363,9 +1363,7 @@ class StateController:
             AnimeScreen.SUBSCRIPTIONS,
             subscription_rows(self._subscriptions, self._subscription_checks, self._clock()),
             self._notice.rstrip("."),
-            subscription_warning(
-                problem=bool(self._subscriptions_problem), pause=self._pause_state(), shadow=self._subscriptions_shadow
-            ),
+            subscription_warning(problem=bool(self._subscriptions_problem), shadow=self._subscriptions_shadow),
         )
 
     def _library_body(self, columns: int, rows: int) -> Text | None:

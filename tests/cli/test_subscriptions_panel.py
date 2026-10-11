@@ -347,29 +347,24 @@ def test_the_status_row_names_why_monitoring_does_not_progress(
         ({"auto_enabled": False}, "Automat wstrzymany"),
     ],
 )
-def test_the_line_above_the_list_names_the_same_pause_state_as_the_status_line(
+def test_the_pause_state_shows_only_in_the_status_line(
     panel: StateController, snapshot: dict[str, object], status: str
 ) -> None:
     panel._snapshot = snapshot
 
     lines: list[str] = _frame(panel).splitlines()
 
-    assert _warning(lines) == f"{status} · O wznów"
+    assert _warning(lines) == ""
     assert lines[-1].strip() == status
 
 
 @pytest.mark.parametrize(("columns", "rows"), _SIZES)
-def test_the_global_pause_shows_above_the_list_and_in_the_status_line(
-    panel: StateController, columns: int, rows: int
-) -> None:
+def test_the_global_pause_changes_only_the_status_line(panel: StateController, columns: int, rows: int) -> None:
     running: list[str] = _frame(panel, columns, rows).splitlines()
     panel._snapshot = {"auto_enabled": False}
     paused: list[str] = _frame(panel, columns, rows).splitlines()
 
-    warning: int = _line(paused, "Automat wstrzymany · O wznów")
-    assert paused[warning].strip() == "Automat wstrzymany · O wznów"
-    assert not running[warning].strip()
-    assert [*paused[:warning], *paused[warning + 1 : -1]] == [*running[:warning], *running[warning + 1 : -1]]
+    assert paused[:-1] == running[:-1]
     assert paused[-1].strip() == "Automat wstrzymany"
     assert running[-1].strip() == "Automat: bezczynny"
     assert "O wznów" not in "\n".join(running)
@@ -394,15 +389,13 @@ def test_a_check_result_leads_the_text_beneath_the_table_of_a_narrow_terminal(
 
 
 @pytest.mark.parametrize(("columns", "rows"), _SIZES)
-@pytest.mark.parametrize("change", ["notice", "warning", "check"])
+@pytest.mark.parametrize("change", ["notice", "check"])
 def test_rows_keep_their_position_when_feedback_appears(
     panel: StateController, columns: int, rows: int, change: str
 ) -> None:
     before: list[str] = _frame(panel, columns, rows).splitlines()
     if change == "notice":
         panel._notice = "Usunięto Gamma · Ctrl+Z cofnij"
-    elif change == "warning":
-        panel._subscriptions_problem = "save_failed"
     else:
         panel._receive_check({"subscription_id": "a", "last_check": {"number": 6, "outcome": "no_candidates"}})
     after: list[str] = _frame(panel, columns, rows).splitlines()

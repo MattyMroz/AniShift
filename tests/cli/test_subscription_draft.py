@@ -846,12 +846,12 @@ def test_f_shows_the_check_result_in_the_row_for_ten_seconds(
     ("problem", "auto_enabled", "warning"),
     [
         ("", True, "Tryb cienia — subskrypcje tylko zapisują propozycje"),
-        ("", False, "Automat wstrzymany · O wznów"),
+        ("", False, "Tryb cienia — subskrypcje tylko zapisują propozycje"),
         ("save_failed", True, "Monitoring nie działa: nie można zapisać stanu"),
         ("save_failed", False, "Monitoring nie działa: nie można zapisać stanu"),
     ],
 )
-def test_the_status_row_ranks_a_monitoring_problem_over_the_pause_over_the_shadow_mode(
+def test_the_status_row_ranks_a_monitoring_problem_over_the_shadow_mode_whatever_the_pause(
     panel: StateController, problem: str, auto_enabled: bool, warning: str
 ) -> None:
     panel._subscriptions_shadow = True

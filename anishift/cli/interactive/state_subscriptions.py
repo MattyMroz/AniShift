@@ -39,9 +39,6 @@ _CHECKING: Final[str] = "Sprawdzam…"
 _SHADOW_WARNING: Final[str] = "Tryb cienia — subskrypcje tylko zapisują propozycje"
 """Status row above the list while the owner records proposals instead of attempts."""
 
-_RESUME_HINT: Final[str] = "O wznów"
-"""Key named beside the pause state above the subscription list."""
-
 _ADD_KEYS: Final[str] = "D lub /"
 """Keys the subscription footer names for adding a subscription."""
 
@@ -91,12 +88,10 @@ def subscription_actions(row: Mapping[str, object] | None, *, loaded: bool) -> S
     )
 
 
-def subscription_warning(*, problem: bool, pause: str, shadow: bool) -> str:
-    """Return the status row above the list: a monitoring problem, the pause or shadow mode."""
+def subscription_warning(*, problem: bool, shadow: bool) -> str:
+    """Return the status row above the list: a monitoring problem or shadow mode."""
     if problem:
         return "Monitoring nie działa: nie można zapisać stanu"
-    if pause:
-        return f"{pause} · {_RESUME_HINT}"
     return _SHADOW_WARNING if shadow else ""
 
 

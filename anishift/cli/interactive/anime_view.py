@@ -93,9 +93,6 @@ _LIST_SCREENS: Final[frozenset[AnimeScreen]] = frozenset(
 _TEXT_SCREENS: Final[frozenset[AnimeScreen]] = frozenset({AnimeScreen.DETAILS, AnimeScreen.BUSY, AnimeScreen.PROBLEM})
 """Screens of text, not lists: a click points at a row, a double click never runs Enter there."""
 
-_RESERVED_STATUS: Final[frozenset[AnimeScreen]] = frozenset({AnimeScreen.SUBSCRIPTIONS})
-"""Screens keeping an empty status row in a filled table, so a pause warning never shifts the rows."""
-
 _FILL_NOTICE_ROWS: Final[int] = 1
 """Rows a filled table keeps beneath its data for the highlighted row's detail or a notice."""
 
@@ -249,7 +246,7 @@ def _context(snapshot: AnimeSnapshot) -> str:
 def _filled(snapshot: AnimeSnapshot, columns: int, rows: int) -> tuple[int, int]:
     keys: tuple[str, ...] = _key_lines(snapshot, columns - _MARGIN)
     spare: int = rows - HEADER_ROWS - _footer_rows(snapshot) - len(keys)
-    status: bool = bool(snapshot.global_status) or snapshot.screen in _RESERVED_STATUS
+    status: bool = bool(snapshot.global_status)
     empty: int = 0 if _context(snapshot) else 1 if status else _CONTEXT_ROWS
     start: int = -min(max(empty, 1 - spare), _CONTEXT_ROWS)
     return start, spare - start

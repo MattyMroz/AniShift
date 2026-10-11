@@ -585,7 +585,7 @@ def test_one_blank_line_stands_under_the_tabs_and_the_keys_stay_at_the_bottom(
     content: int = next(index for index in range(tabs + 1, len(lines)) if lines[index].strip())
     assert not lines[tabs + 1].strip()
     if count == 40:
-        assert content == tabs + (3 if name == "subscriptions" else 2)
+        assert content == tabs + 2
     assert "Esc wróć" in lines[-2]
     assert lines[-1].strip() == "Automat: bezczynny"
     assert len(lines) == rows - 1
@@ -593,7 +593,7 @@ def test_one_blank_line_stands_under_the_tabs_and_the_keys_stay_at_the_bottom(
 
 @pytest.mark.parametrize(("columns", "rows"), _TALL_SIZES)
 @pytest.mark.parametrize("count", [3, 40])
-def test_the_pause_warning_never_shifts_the_subscription_table(
+def test_the_pause_shows_only_in_the_status_line_and_never_shifts_the_subscription_table(
     build: Callable[[str], _Probe], count: int, columns: int, rows: int
 ) -> None:
     probe: _Probe = _lengthened(build("subscriptions"), "subscriptions", count)
@@ -602,8 +602,8 @@ def test_the_pause_warning_never_shifts_the_subscription_table(
     paused: list[str] = _lines(probe, columns, rows)
 
     assert _index(paused, "Tytuł") == _index(running, "Tytuł")
-    assert "O wznów" in paused[_index(paused, "Tytuł") - 1]
-    assert not paused[_index(paused, "Biblioteka") + 1].strip()
+    assert sum("Automat wstrzymany" in line for line in paused) == 1
+    assert paused[-1].strip() == "Automat wstrzymany"
 
 
 @pytest.mark.parametrize(("columns", "rows"), _LOW_SIZES)
