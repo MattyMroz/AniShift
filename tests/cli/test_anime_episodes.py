@@ -302,7 +302,7 @@ def test_uncertain_mark() -> None:
     assert "*!" in frame
     assert "95% · niepewne" in frame
     assert controller._view.items[0].suggested
-    assert [item.confidence for item in controller._view.items] == ["95% · niepewne", "95%", "95%"]
+    assert [item.confidence for item in controller._view.items] == ["95% · niepewne", "95%"]
 
 
 @pytest.mark.unit
@@ -1864,7 +1864,7 @@ def test_partial_offer_keeps_cursor_on_hash() -> None:
 @pytest.mark.unit
 def test_partial_offer_drops_a_marked_row_turned_mismatch_and_returns_the_cursor_to_the_suggestion() -> None:
     owner: _PartialOwner = _PartialOwner()
-    first: RankedCandidate = _candidate()
+    first: RankedCandidate = _candidate(IdentityVerdict.INSUFFICIENT)
     second: RankedCandidate = replace(
         _candidate(IdentityVerdict.INSUFFICIENT), stream=replace(first.stream, info_hash="b" * 40)
     )
@@ -1900,9 +1900,9 @@ def test_i_opens_the_release_list_at_once_with_the_cursor_on_the_suggestion(*, o
     _key(controller, "text:i")
     controller.render(80, 24)
     assert _at(controller) is _Screen.CANDIDATES
-    assert [item.key for item in controller._view.items] == [first.stream.info_hash, second.stream.info_hash]
-    assert controller._view.cursor == 1
-    assert controller._view.items[1].suggested
+    assert [item.key for item in controller._view.items] == [second.stream.info_hash]
+    assert controller._view.cursor == 0
+    assert controller._view.items[0].suggested
     if owned:
         _key(controller, "text:d")
         assert [choice[1] for choice in cast("_ChoiceOwner", catalog).choices] == [second.stream]
@@ -1913,17 +1913,16 @@ def test_i_opens_the_release_list_at_once_with_the_cursor_on_the_suggestion(*, o
 
 
 @pytest.mark.unit
-def test_release_list_hides_a_mismatch_and_keeps_an_uncertain_conflict_for_space_and_confirmed_d() -> None:
+def test_release_list_without_a_match_hides_a_mismatch_and_keeps_an_uncertain_conflict_for_confirmed_d() -> None:
     hidden: RankedCandidate = _candidate(IdentityVerdict.MISMATCH)
     kept: RankedCandidate = replace(_conflicted(), stream=replace(_candidate().stream, info_hash="b" * 40))
-    match: RankedCandidate = replace(_candidate(), stream=replace(_candidate().stream, info_hash="c" * 40))
     owner: _ChoiceOwner = _ChoiceOwner()
-    owner.offer_read = lambda key: _offer(key, (hidden, kept, match))
+    owner.offer_read = lambda key: _offer(key, (hidden, kept))
     controller: AnimeController = _owner_controller(owner)
     _key(controller, "text:i")
     frame: str = controller.render(80, 24).plain
-    assert [item.key for item in controller._view.items] == [kept.stream.info_hash, match.stream.info_hash]
-    assert controller._view.cursor == 1
+    assert [item.key for item in controller._view.items] == [kept.stream.info_hash]
+    assert controller._view.cursor == 0
     assert "inny odcinek" not in frame
     assert "inny sezon" in frame
     for key in ("up", "space"):

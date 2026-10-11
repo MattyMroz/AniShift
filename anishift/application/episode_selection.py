@@ -610,7 +610,8 @@ def _suggestible(candidate: RankedCandidate) -> bool:
 
 
 def visible(candidates: Sequence[RankedCandidate], keep: int | None = None) -> tuple[RankedCandidate, ...]:
-    """Hide mismatches, and 720p or lower beside a suggestible 1080p or 2160p match unless unknown or *keep* (U-24)."""
+    """Hide mismatches, other rows beside a match, and 720p or lower beside a high match, never *keep* (U-24)."""
+    matched: bool = any(candidate.identity.verdict is IdentityVerdict.MATCH for candidate in candidates)
     high: bool = any(
         candidate.identity.verdict is IdentityVerdict.MATCH
         and candidate.traits.resolution in _HIGH_RESOLUTIONS
@@ -621,6 +622,7 @@ def visible(candidates: Sequence[RankedCandidate], keep: int | None = None) -> t
         candidate
         for index, candidate in enumerate(candidates)
         if candidate.identity.verdict is not IdentityVerdict.MISMATCH
+        and (not matched or index == keep or candidate.identity.verdict is IdentityVerdict.MATCH)
         and (
             not high
             or index == keep
@@ -633,15 +635,15 @@ def visible(candidates: Sequence[RankedCandidate], keep: int | None = None) -> t
 def suggestion(
     candidates: Sequence[RankedCandidate], *, numbering: bool, match_only: bool = False
 ) -> tuple[int | None, bool]:
-    """Return the first usable row of list group one, only a match with *match_only*, and whether it is uncertain."""
-    index: int | None = next(
-        (
-            position
-            for position, candidate in enumerate(candidates)
-            if _suggestible(candidate) and (not match_only or candidate.identity.verdict is IdentityVerdict.MATCH)
-        ),
-        None,
-    )
+    """Return the first seeded usable row of group one, a match whenever one is usable, and whether it is uncertain."""
+    usable: list[tuple[int, RankedCandidate]] = [
+        (position, candidate)
+        for position, candidate in enumerate(candidates)
+        if _suggestible(candidate) and candidate.traits.seeders != 0
+    ]
+    matches: list[int] = [position for position, item in usable if item.identity.verdict is IdentityVerdict.MATCH]
+    pool: list[int] = matches if match_only or matches else [position for position, _item in usable]
+    index: int | None = pool[0] if pool else None
     if not numbering or index is None:
         return None, False
     return index, candidates[index].identity.verdict is not IdentityVerdict.MATCH

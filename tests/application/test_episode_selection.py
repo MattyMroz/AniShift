@@ -868,7 +868,7 @@ def test_list_order_visibly_higher_quality_keeps_an_uncertain_row_before_a_match
     match: RankedCandidate = _shown("2", quality=35.0, certainty=1.0, seeders=500)
     ranked: tuple[RankedCandidate, ...] = list_order((match, uncertain))
     assert ranked == (uncertain, match)
-    assert suggestion(ranked, numbering=True) == (0, True)
+    assert suggestion(ranked, numbering=True) == (1, False)
 
 
 def test_list_order_visibly_higher_confidence_keeps_an_uncertain_row_before_a_match() -> None:
@@ -998,12 +998,19 @@ def test_rank_candidates_same_hash_files_form_one_row_on_the_matching_file() -> 
     assert len(ranked[0].files) == 2
 
 
-def test_suggestion_is_first_group_one_row() -> None:
+def test_suggestion_prefers_a_match_to_an_earlier_uncertain_row() -> None:
     match_720: StreamCandidate = _stream("Star Garden - 05 [720p].mkv")
     uncertain_1080: StreamCandidate = _stream("Moon Garden - 05 [1080p].mkv")
     ranked: tuple[RankedCandidate, ...] = _rank(_target(), [match_720, uncertain_1080])
     assert [candidate.stream for candidate in ranked] == [uncertain_1080, match_720]
-    assert suggestion(ranked, numbering=True) == (0, True)
+    assert suggestion(ranked, numbering=True) == (1, False)
+
+
+def test_suggestion_never_picks_a_release_without_seeders() -> None:
+    empty: RankedCandidate = _shown("1", quality=36.0, certainty=1.0, seeders=0)
+    seeded: RankedCandidate = _shown("2", quality=35.0, certainty=1.0, seeders=3)
+    assert suggestion((empty, seeded), numbering=True) == (1, False)
+    assert suggestion((empty,), numbering=True) == (None, False)
 
 
 def test_suggestion_marks_uncertain() -> None:
@@ -1043,10 +1050,8 @@ def test_visible_hides_720p_and_lower_only_beside_a_usable_high_resolution_match
     high: StreamCandidate = _stream("Star Garden - 05 [2160p].mkv")
     shown: tuple[RankedCandidate, ...] = visible(_rank(_target(), [*lower, unknown, high]))
     assert [candidate.traits.resolution for candidate in shown] == [2160, 1440, None]
-    uncertain: StreamCandidate = _stream("Moon Garden - 05 [1080p].mkv")
     unsupported: StreamCandidate = _stream("Star Garden - 05 [1080p].avi")
-    for candidates in ([*lower, uncertain], [*lower, unsupported]):
-        assert len(visible(_rank(_target(), candidates))) == len(candidates)
+    assert len(visible(_rank(_target(), [*lower, unsupported]))) == len(lower) + 1
 
 
 def test_visible_keeps_the_suggestion_when_the_only_high_match_cannot_be_suggested() -> None:
@@ -1070,14 +1075,15 @@ def test_visible_never_hides_the_suggestion_beside_a_suggestible_high_match() ->
     assert visible(rows) == (high,)
 
 
-def test_visible_hides_mismatches_and_keeps_uncertain_conflicts_and_the_suggestion() -> None:
-    kept: set[str] = {"Star Garden - 05 [1080p].mkv", "Moon Garden - 05 [1080p].mkv", "Star Garden S02E05 [1080p].mkv"}
+def test_visible_hides_mismatches_uncertain_rows_and_other_seasons_beside_a_match() -> None:
+    kept: set[str] = {"Star Garden - 05 [1080p].mkv"}
+    others: set[str] = {"Moon Garden - 05 [1080p].mkv", "Star Garden S02E05 [1080p].mkv"}
     hidden: set[str] = {
         "Star Garden S01E06 [1080p].mkv",
         "Star Garden S01E07 The Silent Winter Night [1080p].mkv",
         "Star Garden - 05 Extra [1080p].mkv",
     }
-    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [_stream(name) for name in sorted(kept | hidden)])
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [_stream(name) for name in sorted(kept | hidden | others)])
     assert {row.stream.file_name for row in ranked if row.identity.verdict is IdentityVerdict.MISMATCH} == hidden
     index, uncertain = suggestion(ranked, numbering=True)
     assert index is not None
@@ -1085,7 +1091,7 @@ def test_visible_hides_mismatches_and_keeps_uncertain_conflicts_and_the_suggesti
     shown: tuple[RankedCandidate, ...] = visible(ranked, index)
     assert {row.stream.file_name for row in shown} == kept
     assert ranked[index] in shown
-    assert [row.conflict for row in shown].count(True) == 1
+    assert next(row for row in ranked if row.stream.file_name == "Star Garden S02E05 [1080p].mkv").conflict
 
 
 def test_visible_keeps_an_uncertain_suggestion_beside_mismatches() -> None:
@@ -1325,7 +1331,7 @@ def test_rank_candidates_weekly_echo_needs_the_episode_air_window_weeks_after_th
     assert _dated_rank(target, [early], soon)[early].identity.verdict is IdentityVerdict.INSUFFICIENT
 
 
-def test_rank_candidates_weekly_echo_carrying_the_target_episode_title_stays_uncertain() -> None:
+def test_rank_candidates_weekly_echo_carrying_the_target_episode_title_stays_uncertain_and_hidden() -> None:
     titled: StreamCandidate = _stream(
         "Solo.Leveling.S02E13.You.Arent.E-Rank.Are.You.1080p.CR.WEB-DL.AAC2.0.H.264-ToonsHub.mkv",
         release="[ToonsHub] Solo Leveling S02E13 1080p CR WEB-DL AAC2.0 H.264 (Ore dake Level Up na Ken, Multi-Subs)",
@@ -1335,7 +1341,7 @@ def test_rank_candidates_weekly_echo_carrying_the_target_episode_title_stays_unc
         _solo_leveling_s2e1(), [titled, *_solo_leveling_local_matches()], _SOLO_LEVELING_DATES
     )
     assert rows[titled].identity.verdict is IdentityVerdict.INSUFFICIENT
-    assert rows[titled] in visible(tuple(rows.values()))
+    assert rows[titled] not in visible(tuple(rows.values()))
 
 
 def test_rank_candidates_group_echo_needs_sxxeyy_its_group_local_match_and_an_aired_local_episode() -> None:
@@ -1519,7 +1525,10 @@ def test_rank_candidates_diaries_target_rejects_main_series_and_keeps_own_releas
         )
     )
     assert main.identity.verdict is not IdentityVerdict.MATCH
-    assert suggestion(ranked, numbering=True) == (0, True)
+    index, uncertain = suggestion(ranked, numbering=True)
+    assert index is not None
+    assert ranked[index].stream in own
+    assert not uncertain
 
 
 @pytest.mark.parametrize("root_id", [_SLIME_S1, _SLIME_DIARIES])
