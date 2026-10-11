@@ -906,5 +906,23 @@
     "candidate": {"filename": "[ToonsHub] Solo Leveling S02E13 1080p CR WEB-DL AAC2.0 H.264 (Ore dake Level Up na Ken, Multi-Subs).mkv", "release": "[ToonsHub] Solo Leveling S02E13 1080p CR WEB-DL AAC2.0 H.264 (Ore dake Level Up na Ken, Multi-Subs)"},
     "expected_verdict": "insufficient_evidence",
     "cause": "An absolute-number echo without an episode title stays uncertain."
+  },
+  {
+    "target": {"aliases": ["The Genius Prince's Guide to Raising a Nation Out of Debt", "Tensai Ouji no Akaji Kokka Saisei Jutsu"], "type": "TV", "season": 1, "episode": 1, "local_episode": 1, "absolute": 1},
+    "candidate": {"release": "[Anime Time] Tensai Ouji no Akaji Kokka Saisei Jutsu - 01 [1080p][HEVC 10bit x265][AAC][Multi Sub] The Genius Prince's Guide to Raising a Nation Out of Debt.mkv [Weekly]", "filename": "[Anime Time] Tensai Ouji no Akaji Kokka Saisei Jutsu - 01 [1080p][HEVC 10bit x265][AAC][Multi Sub] The Genius Prince's Guide to Raising a Nation Out of Debt [Weekly].mkv"},
+    "expected_verdict": "match",
+    "cause": "The target's own series alias after the number, followed only by technical tags such as Weekly, is consumed like the target title."
+  },
+  {
+    "target": {"aliases": ["The Genius Prince's Guide to Raising a Nation Out of Debt", "Tensai Ouji no Akaji Kokka Saisei Jutsu"], "type": "TV", "season": 1, "episode": 1, "local_episode": 1, "absolute": 1},
+    "candidate": {"release": "[Anime Time] Tensai Ouji no Akaji Kokka Saisei Jutsu - 01 [1080p][HEVC 10bit x265][AAC][Multi Sub] The Genius Prince's Guide to Raising a Nation Out of Debt.mkv [Weekly]", "filename": "[Anime Time] Tensai Ouji no Akaji Kokka Saisei Jutsu - 01 [1080p][HEVC 10bit x265][AAC][Multi Sub] The Genius Prince's Guide to Raising a Nation Out of Debt.mkv"},
+    "expected_verdict": "match",
+    "cause": "The target's own series alias closing the selected filename is consumed like the target title."
+  },
+  {
+    "target": {"aliases": ["Solo Leveling Season 2 -Arise from the Shadow-", "俺だけレベルアップな件 Season 2 -Arise from the Shadow-", "Ore dake Level Up na Ken: Season 2 - Arise from the Shadow", "Ore dake Level Up na Ken", "Solo Leveling", "俺だけレベルアップな件"], "type": "TV", "season": 2, "episode": 1, "local_episode": 1, "absolute": 13, "episode_title": "You Aren't E-Rank, Are You?", "other_episode_titles": ["I Suppose You Aren't Aware", "Still a Long Way to Go", "I Need to Stop Faking", "This Is What We're Trained to Do", "Don't Look Down On My Guys", "The 10th S-Rank Hunter", "Looking Up Was Tiring Me Out", "It Was All Worth It", "We Need a Hero", "It's Going to Get Even More Intense", "Are You the King of Humans", "On to the Next Target"], "other_series": []},
+    "candidate": {"filename": "[EMBER] Ore dake Level Up na Ken S02E01 [1080p] [HEVC WEBRip DDP] (Solo Leveling Season 2: Arise from the Shadow).mkv", "release": "[EMBER] Ore dake Level Up na Ken S02E01 [1080p] [HEVC WEBRip DDP] (Solo Leveling Season 2: Arise from the Shadow)"},
+    "expected_verdict": "match",
+    "cause": "The romaji work title with the explicit target season and episode stays a match beside the full English season title."
   }
 ]

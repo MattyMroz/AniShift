@@ -1,4 +1,4 @@
-"""Assess selected-file identity with H1 v10.8 without inspecting media or performing I/O."""
+"""Assess selected-file identity with H1 v10.9 without inspecting media or performing I/O."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ TECHNICAL: Final[re.Pattern[str]] = re.compile(
     r"por(?:tuguese)?|pol(?:ish)?|ara(?:bic)?|chi(?:nese)?|kor(?:ean)?|latino|pt br|es la|br|la|vostfr|engsubs|"
     r"nf|cr|amzn|dsnp|hidi|b global|netflix|crunchyroll|amazon|bilibili|hidive|"
     r"hdr\d*|sdr|dv|dolby vision|uhd|repack\d*|proper|v\d+|[0-9a-f]{8}|"
-    r"mkv|mp4|avi|nvenc|bs\d+|laserdisc|tv|complete|batch|end|fin|uncensored|uncut)\b"
+    r"mkv|mp4|avi|nvenc|bs\d+|laserdisc|tv|complete|batch|weekly|end|fin|uncensored|uncut)\b"
 )
 """Consume closed technical metadata without discarding arbitrary title words."""
 EXTRAS: Final[re.Pattern[str]] = re.compile(
@@ -579,15 +579,23 @@ def _without_episode_title(text: str, target: _Target) -> tuple[str, bool]:
     return remainder, False
 
 
+def _own_title(text: str, target: _Target) -> bool:
+    words: list[str] = text.split()
+    titles: tuple[str, ...] = (*target.titles, *target.broad)
+    for start in range(1, len(words)):
+        tail: str = " ".join(words[start:])
+        if _technical(" ".join(words[:start])) and any(
+            (rest := _prefix(tail, title)) is not None and _technical(rest) for title in titles
+        ):
+            return True
+    return False
+
+
 def _residual(text: str, target: _Target) -> tuple[bool, bool]:
     remainder: str
     anchored: bool
     remainder, anchored = _without_episode_title(text, target)
-    for title in sorted(target.titles, key=len, reverse=True):
-        if remainder.endswith(" " + title):
-            remainder = remainder[: -len(title)].strip()
-            break
-    return _technical(remainder), anchored
+    return _technical(remainder) or _own_title(remainder, target), anchored
 
 
 def _episode_residual(text: str, target: _Target) -> tuple[bool, bool]:

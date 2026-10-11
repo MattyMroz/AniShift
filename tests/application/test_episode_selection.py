@@ -1149,6 +1149,31 @@ def test_rank_candidates_echo_without_a_local_match_of_its_group_stays_uncertain
     assert len(visible(ranked)) == len(echoes)
 
 
+def test_rank_candidates_ember_s2e1_matches_and_hides_its_own_absolute_number_echo() -> None:
+    local: StreamCandidate = _stream(
+        None,
+        release="[EMBER] Ore dake Level Up na Ken S02E01 [1080p] [HEVC WEBRip DDP] "
+        "(Solo Leveling Season 2: Arise from the Shadow)",
+    )
+    echo: StreamCandidate = _stream(
+        None,
+        release="[EMBER] Ore dake Level Up na Ken S02E13 [1080p] [HEVC WEBRip DDP] "
+        "(Solo Leveling Season 2: Arise from the Shadow)",
+    )
+    ranked: tuple[RankedCandidate, ...] = _rank(_solo_leveling_s2e1(), [echo, local])
+    by_stream: dict[StreamCandidate, RankedCandidate] = {row.stream: row for row in ranked}
+    assert by_stream[local].identity.verdict is IdentityVerdict.MATCH
+    assert (by_stream[echo].identity.verdict, by_stream[echo].identity.reason, by_stream[echo].conflict) == (
+        IdentityVerdict.MISMATCH,
+        GROUP_NUMBERING_REASON,
+        True,
+    )
+    index, uncertain = suggestion(ranked, numbering=True)
+    assert index is not None
+    assert not uncertain
+    assert visible(ranked, index) == (by_stream[local],)
+
+
 def test_suggestion_slime_s4e23_stream_without_file_is_assessed_on_its_release_name() -> None:
     target: dict[str, object] = identity_target(_fixture_graph(_SLIME_S1), _SLIME_S4, _fixture_mapping(_SLIME_S4), 23)
     streams: list[StreamCandidate] = _fixture_streams("torrentio__kitsu-49235-23.json")

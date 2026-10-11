@@ -1309,3 +1309,69 @@ def test_classify_other_episode_title_without_full_evidence_stays_uncertain(targ
     for assessment in _name_assessments(target, name):
         assert assessment == IdentityAssessment(IdentityVerdict.INSUFFICIENT, _UNCONSUMED)
         assert not is_conflict(assessment)
+
+
+_PRINCE_STEM: Final[str] = (
+    "[Anime Time] Tensai Ouji no Akaji Kokka Saisei Jutsu - 01 [1080p][HEVC 10bit x265][AAC][Multi Sub] "
+    "The Genius Prince's Guide to Raising a Nation Out of Debt"
+)
+
+
+def test_classify_own_series_alias_after_number_and_weekly_tag_matches() -> None:
+    target: dict[str, Any] = {
+        "aliases": [
+            "The Genius Prince's Guide to Raising a Nation Out of Debt",
+            "Tensai Ouji no Akaji Kokka Saisei Jutsu",
+        ],
+        "type": "TV",
+        "season": 1,
+        "episode": 1,
+        "local_episode": 1,
+        "absolute": 1,
+    }
+    release: str = f"{_PRINCE_STEM}.mkv [Weekly]"
+    assessments: tuple[IdentityAssessment, ...] = (
+        classify_release_name(target, release),
+        _assess(target, {"filename": f"{_PRINCE_STEM}.mkv", "release": release}),
+        _assess(target, {"filename": f"{_PRINCE_STEM} [Weekly].mkv", "release": release}),
+    )
+    for assessment in assessments:
+        assert assessment.verdict is IdentityVerdict.MATCH
+
+
+@pytest.mark.parametrize(
+    ("target", "name"),
+    [
+        (_target_for(), "Star Garden - 05 [1080p] Star Garden [Weekly]"),
+        (_target_for(), "[Group] Star Garden - 05 [1080p][HEVC] (Star Garden) (Weekly)"),
+        (_target_for(), "Star Garden - 05 [1080p] StarGarden"),
+        (_target_for(), "Star Garden - 05 - A Journey Through Clouds [1080p] Star Garden [Weekly]"),
+        (
+            _target_for(aliases=["Star Garden Season 2", "Star Garden"], season=2, absolute=17),
+            "Star Garden Season 2 - 05 [1080p] (Star Garden) [Weekly]",
+        ),
+    ],
+)
+def test_classify_own_series_alias_among_technical_tags_is_consumed(target: dict[str, Any], name: str) -> None:
+    for assessment in _name_assessments(target, name):
+        assert assessment.verdict is IdentityVerdict.MATCH
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Star Garden - 05 [1080p] Moon Harbor [Weekly]",
+        "Star Garden - 05 [1080p] Star Garden Movie",
+        "Star Garden - 05 [1080p] Star Garden Moon Harbor [Weekly]",
+        "Star Garden - 05 Star Garden [1080p]",
+    ],
+)
+def test_classify_series_alias_without_technical_frame_stays_uncertain(name: str) -> None:
+    for assessment in _name_assessments(_target_for(other_series=["Moon Harbor"]), name):
+        assert assessment == IdentityAssessment(IdentityVerdict.INSUFFICIENT, _UNCONSUMED)
+
+
+def test_classify_other_episode_title_before_own_alias_stays_conflict() -> None:
+    name: str = "Star Garden - 06 - The Silent Winter Night [1080p] Star Garden [Weekly]"
+    for assessment in _name_assessments(_target_for(), name):
+        assert assessment == IdentityAssessment(IdentityVerdict.MISMATCH, _OTHER_EPISODE_TITLE)
