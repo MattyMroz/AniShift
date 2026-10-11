@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
 from itertools import islice
@@ -142,7 +142,7 @@ class _RenderRow:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _Geometry:
-    """Carry the column widths shared by every row rendered at one terminal width."""
+    """Carry the column widths shared by every row rendered at one terminal width and set of names."""
 
     description: int
     bar: int
@@ -303,7 +303,7 @@ class RichRunProgress:
                     return index
             return max(len(self._files) - 1, 0)
 
-    def render(
+    def render(  # noqa: PLR0913
         self,
         columns: int,
         *,
@@ -311,8 +311,9 @@ class RichRunProgress:
         limit: int | None = None,
         include_completed: bool = True,
         status: str | None = None,
+        names: Sequence[str] = (),
     ) -> Text:
-        """Render one width-fitted window of the queue through shared Rich bars."""
+        """Render one window of the queue sized to its longest name, or to ``names`` when given."""
         now: float = time.monotonic()
         start: int = min(max(offset, 0), max(len(self._files) - 1, 0))
         end: int = len(self._files) if limit is None else start + max(limit, 0)
@@ -327,15 +328,24 @@ class RichRunProgress:
                 for state in islice(self._files.values(), start, end)
                 if include_completed or not (state.terminal and state.completed == _COMPLETE)
             )
-        return _render_rows(rows, columns)
+            labels: Sequence[str] = names or tuple(state.label for state in self._files.values())
+        return _render_rows(rows, columns, labels)
 
-    def render_group(self, group_id: str, columns: int, *, status: str | None = None) -> Text:
+    def render_group(
+        self, group_id: str, columns: int, *, status: str | None = None, names: Sequence[str] = ()
+    ) -> Text:
         """Render one durable group identity through the existing stage bars."""
         with self._lock:
             identifiers: tuple[str, ...] = tuple(self._files)
         if group_id not in identifiers:
             return Text()
-        return self.render(columns, offset=identifiers.index(group_id), limit=1, status=status)
+        return self.render(columns, offset=identifiers.index(group_id), limit=1, status=status, names=names)
+
+    def label(self, group_id: str) -> str:
+        """Return the source name shown for one group, or an empty name for an unknown group."""
+        with self._lock:
+            state: _FileState | None = self._files.get(group_id)
+            return "" if state is None else state.label
 
     def observe_activity(self, *, active: bool) -> None:
         """Freeze unavailable observations and resume only measured active rows."""
@@ -570,23 +580,30 @@ def _new_file_state(label: str) -> _FileState:
     return _FileState(label=label, description=_description(label, _active_label("extracting")), determinate=True)
 
 
-def render_material_progress(
-    name: str, stage: str, fraction: float | None, columns: int, *, elapsed_seconds: float | None = None
+def render_material_progress(  # noqa: PLR0913
+    name: str,
+    stage: str,
+    fraction: float | None,
+    columns: int,
+    *,
+    elapsed_seconds: float | None = None,
+    names: Sequence[str] = (),
 ) -> Text:
-    """Render a transfer using the full processing row geometry and measured elapsed time."""
+    """Render a transfer in the processing row geometry shared with ``names`` and measured elapsed time."""
     row: _RenderRow = _RenderRow(
         _description(name, stage),
         0 if fraction is None else round(min(max(fraction, 0.0), 1.0) * _COMPLETE),
         None,
         elapsed_seconds,
     )
-    return _render_rows((row,), columns)
+    return _render_rows((row,), columns, names)
 
 
-def _render_rows(rows: tuple[_RenderRow, ...], columns: int) -> Text:
-    """Render all file snapshots into one Rich text block."""
+def _render_rows(rows: tuple[_RenderRow, ...], columns: int, names: Sequence[str]) -> Text:
+    """Render all file snapshots into one Rich text block sized to the longest row or name."""
     result = Text()
-    geometry: _Geometry = _row_geometry(max(columns, 0))
+    descriptions: tuple[str, ...] = (*(row.description for row in rows), *(_description(name, "") for name in names))
+    geometry: _Geometry = _row_geometry(max(columns, 0), descriptions)
     for index, row in enumerate(rows):
         details: str = _row_details(row, show_elapsed=geometry.elapsed) if geometry.details else ""
         _append_row(result, row, geometry.description, geometry.bar, details)
@@ -595,17 +612,19 @@ def _render_rows(rows: tuple[_RenderRow, ...], columns: int) -> Text:
     return result
 
 
-def _row_geometry(columns: int) -> _Geometry:
-    """Return the column layout every progress row shares at one terminal width, independent of row content."""
+def _row_geometry(columns: int, descriptions: Sequence[str]) -> _Geometry:
+    """Return the layout shared by progress rows: the longest description, capped by the terminal width."""
+    content: int = max(map(cell_len, descriptions), default=0)
     sample: _RenderRow = _RenderRow("", _COMPLETE, None, 0.0)
     full: int = cell_len(_row_details(sample, show_elapsed=True))
     if columns >= full + _MIN_BAR_COLUMNS + _MIN_DESCRIPTION_COLUMNS + 1:
-        bar: int = min(_MAX_BAR_COLUMNS, max(_MIN_BAR_COLUMNS, columns - full - _DESCRIPTION_RESERVE_COLUMNS - 1))
-        return _Geometry(description=columns - full - bar - 1, bar=bar, details=True, elapsed=True)
+        reserve: int = min(content, _DESCRIPTION_RESERVE_COLUMNS)
+        bar: int = min(_MAX_BAR_COLUMNS, max(_MIN_BAR_COLUMNS, columns - full - reserve - 1))
+        return _Geometry(description=min(content, columns - full - bar - 1), bar=bar, details=True, elapsed=True)
     available: int = columns - cell_len(_row_details(sample, show_elapsed=False))
     if available >= 1:
-        return _Geometry(description=available, bar=0, details=True, elapsed=False)
-    return _Geometry(description=columns, bar=0, details=False, elapsed=False)
+        return _Geometry(description=min(content, available), bar=0, details=True, elapsed=False)
+    return _Geometry(description=min(content, columns), bar=0, details=False, elapsed=False)
 
 
 def _append_row(result: Text, row: _RenderRow, description_width: int, bar_width: int, details: str) -> None:

@@ -90,14 +90,14 @@ _LIST_SCREENS: Final[frozenset[AnimeScreen]] = frozenset(
 _TEXT_SCREENS: Final[frozenset[AnimeScreen]] = frozenset({AnimeScreen.DETAILS, AnimeScreen.BUSY, AnimeScreen.PROBLEM})
 """Screens of text, not lists: a click points at a row, a double click never runs Enter there."""
 
+_RESERVED_STATUS: Final[frozenset[AnimeScreen]] = frozenset({AnimeScreen.SUBSCRIPTIONS})
+"""Screens keeping an empty status row in a filled table, so a pause warning never shifts the rows."""
+
 _FILL_NOTICE_ROWS: Final[int] = 1
 """Rows a filled table keeps beneath its data for the highlighted row's detail or a notice."""
 
 _RELEASE_NOTICE_ROWS: Final[int] = _NOTICE_ROWS + 1
 """Lines a release notice may take, so a truncated release name shows in full."""
-
-_FILL_MIN_ROWS: Final[int] = MIN_ROWS - 1
-"""Minimum height of a filled table, which has no blank row beneath its data."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,7 +204,8 @@ def visible_rows(rows: int) -> int:
 
 def overflows(screen: AnimeScreen, count: int, rows: int) -> bool:
     """Return whether ``count`` table rows overflow the centered layout of ``rows`` rows, so the table fills them."""
-    return screen is not AnimeScreen.QUERY and screen not in _LIST_SCREENS and count > visible_rows(rows)
+    table: bool = screen is not AnimeScreen.QUERY and screen not in _LIST_SCREENS
+    return table and (rows < MIN_ROWS or count > visible_rows(rows))
 
 
 def shown_rows(snapshot: AnimeSnapshot, columns: int, rows: int) -> int:
@@ -213,9 +214,7 @@ def shown_rows(snapshot: AnimeSnapshot, columns: int, rows: int) -> int:
         return 0
     if not snapshot.fill:
         return visible_rows(rows) if rows >= MIN_ROWS else 0
-    keys: tuple[str, ...] = _key_lines(snapshot, columns - _MARGIN)
-    filled: int = rows - _filled_start(snapshot) - HEADER_ROWS - _footer_rows(snapshot) - len(keys)
-    return filled if rows >= _FILL_MIN_ROWS else 0
+    return max(_filled(snapshot, columns, rows)[1], 0)
 
 
 def _notice_rows(snapshot: AnimeSnapshot) -> int:
@@ -232,8 +231,13 @@ def _context(snapshot: AnimeSnapshot) -> str:
     return CRUMB_SEPARATOR.join(snapshot.crumbs) if snapshot.crumbs else snapshot.title
 
 
-def _filled_start(snapshot: AnimeSnapshot) -> int:
-    return 0 if _context(snapshot) else -1
+def _filled(snapshot: AnimeSnapshot, columns: int, rows: int) -> tuple[int, int]:
+    keys: tuple[str, ...] = _key_lines(snapshot, columns - _MARGIN)
+    spare: int = rows - HEADER_ROWS - _footer_rows(snapshot) - len(keys)
+    status: bool = bool(snapshot.global_status) or snapshot.screen in _RESERVED_STATUS
+    empty: int = 0 if _context(snapshot) else 1 if status else _CONTEXT_ROWS
+    start: int = -min(max(empty, 1 - spare), _CONTEXT_ROWS)
+    return start, spare - start
 
 
 def render_anime(snapshot: AnimeSnapshot, columns: int, rows: int, now: float) -> AnimeFrame:
@@ -255,7 +259,7 @@ def render_anime(snapshot: AnimeSnapshot, columns: int, rows: int, now: float) -
     middle: int = (rows - len(keys) - 1) // 2 - heading if query else (rows - len(keys) - height) // 2
     start: int = max(min(middle, rows - FOOTER_ROWS - height), 0)
     if snapshot.fill:
-        start = _filled_start(snapshot)
+        start = _filled(snapshot, width, rows)[0]
     canvas.top = start + heading
     if not query:
         canvas.center(start + 1, Text(snapshot.global_status, _COLORS[snapshot.status_kind]))

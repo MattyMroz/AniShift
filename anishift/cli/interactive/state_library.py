@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping
+from dataclasses import replace
+from decimal import Decimal
 from types import MappingProxyType
 from typing import Final
 
@@ -19,6 +21,7 @@ __all__ = [
     "LIBRARY_DELETED",
     "detail_entries",
     "detail_file",
+    "details_label",
     "library_actions",
     "library_row",
     "library_row_id",
@@ -130,8 +133,30 @@ def detail_file(details: LibrarySet, selected: int) -> LibraryFile | None:
     return details.files[index] if 0 <= index < len(details.files) else None
 
 
+def details_label(details: LibrarySet) -> LibraryLabel:
+    """Return the label of an opened set, named after its series when the owner knows it."""
+    return _series_label(details.name, details.series, details.season, details.episode)
+
+
 def _label(item: Mapping[str, object]) -> LibraryLabel:
-    return library_label(str(item.get("name", "")))
+    series: object = item.get("series")
+    season: object = item.get("season")
+    episode: object = item.get("episode")
+    return _series_label(
+        str(item.get("name", "")),
+        series if isinstance(series, str) and series else None,
+        season if type(season) is int else None,
+        episode if type(episode) is int else None,
+    )
+
+
+def _series_label(name: str, series: str | None, season: int | None, episode: int | None) -> LibraryLabel:
+    label: LibraryLabel = library_label(name)
+    if series is None:
+        return label
+    if season is None or episode is None:
+        return replace(label, title=series)
+    return LibraryLabel(series, season, Decimal(episode))
 
 
 def _order(item: Mapping[str, object]) -> tuple[object, ...]:

@@ -1906,6 +1906,80 @@ def test_processing_aligns_bars_and_percentages_of_downloads_and_processing(
         controller._thread.join(5)
 
 
+def _processing_lines(monkeypatch: pytest.MonkeyPatch, columns: int, downloads: tuple[str, ...]) -> list[str]:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller.show_processing()
+    controller._connected = True
+    controller._notice = ""
+    view: RunProgressSnapshot = _live_snapshot(
+        "run",
+        {"group": "[Judas] Ao no Hako - S02E02.mkv"},
+        (RunEvent("run", 1, RunEventKind.TASK_STARTED, group_id="group", task_id="tts-group"),),
+    )
+    controller._runs["run"] = (view.preview.preview_id, RichRunProgress.from_snapshot(view, lambda: None))
+    materials: list[dict[str, object]] = [
+        {
+            "material_id": f"{index}:0",
+            "acquisition_id": str(index),
+            "info_hash": str(index),
+            "stage": "download",
+            "name": name,
+            "state": "downloading",
+            "acquisition_state": "accepted",
+            "progress": 0.41,
+        }
+        for index, name in enumerate(downloads)
+    ]
+    controller._snapshot = {
+        "auto_enabled": True,
+        "requests": [{"request_id": "run", "state": "running"}],
+        "materials": [*materials, _live_material("group")],
+    }
+    try:
+        return [line.rstrip() for line in controller.render(columns, 30).plain.splitlines() if "%" in line]
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+def _margins(lines: list[str], columns: int) -> tuple[int, int]:
+    return min(len(line) - len(line.lstrip()) for line in lines), columns - max(Text(line).cell_len for line in lines)
+
+
+def test_processing_centers_a_short_row_without_a_gap_on_a_wide_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    lines: list[str] = _processing_lines(monkeypatch, 200, ())
+
+    assert len(lines) == 1
+    left, right = _margins(lines, 200)
+    assert abs(left - right) <= 1
+    assert lines[0].index("█" if "█" in lines[0] else "░") - (lines[0].index(".mkv") + len(".mkv")) <= 3
+
+
+@pytest.mark.parametrize("columns", [80, 120, 200])
+def test_processing_rows_with_different_names_share_columns_in_a_centered_block(
+    monkeypatch: pytest.MonkeyPatch, columns: int
+) -> None:
+    lines: list[str] = _processing_lines(
+        monkeypatch, columns, ("[SubsPlease] Kusuriya no Hitorigoto - 29 (1080p).mkv", "Dandadan - 14.mkv")
+    )
+
+    assert len(lines) == 3
+    assert len({next(index for index, char in enumerate(line) if char in "█░") for line in lines}) == 1
+    assert len({line.index(" | ") for line in lines}) == 1
+    left, right = _margins(lines, columns)
+    assert abs(left - right) <= 1
+
+
+def test_processing_truncates_a_long_name_to_fit_a_narrow_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    lines: list[str] = _processing_lines(
+        monkeypatch, 80, ("[Erai-raws] Kikansha no Mahou wa Tokubetsu desu - 05 [1080p CR WEB-DL AVC AAC].mkv",)
+    )
+
+    assert "[Erai-raws] Kik….mkv" in lines[0]
+    assert all(Text(line).cell_len <= 80 for line in lines)
+
+
 @pytest.mark.parametrize("inactive", [False, True])
 def test_processing_preserves_selected_identity_when_material_counts_change(
     monkeypatch: pytest.MonkeyPatch, inactive: bool
@@ -1994,14 +2068,11 @@ def test_each_panel_tab_retains_contextual_actions_and_owner_counts_at_feasible_
             controller.render(columns, rows), "test", "workspace", columns, rows
         ).plain
         assert "Automat: praca · pobiera 2 · przetwarza 3 · czeka 4" in frame
-        if tab == 1 and rows < 12:
-            assert "Powiększ terminal do 50 x 12" in frame
-        else:
-            assert "? więcej · Esc wróć" in frame
-            assert ("/ dodaj", "H historia", "? więcej")[tab - 1] in frame
+        assert "? więcej · Esc wróć" in frame
+        assert ("/ dodaj", "H historia", "? więcej")[tab - 1] in frame
         assert len(frame.splitlines()) <= rows
         assert all(len(line) <= columns for line in frame.splitlines())
-        if tab == 1 and rows >= 24:
+        if tab == 1:
             assert "Title" in frame
     finally:
         controller.close()

@@ -7,6 +7,7 @@ from typing import Final, cast
 
 import pytest
 import test_anime_episodes as episodes
+import test_subscription_draft as drafts
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from rich.text import Text
@@ -60,7 +61,11 @@ _LABELS: Final[Mapping[str, str]] = {"titles": "Premiera", "episodes": "Nr", "re
 
 _MARKS: Final[Mapping[str, str]] = {"titles": "Show ", "episodes": "Episode ", "releases": "] [Group"}
 
-_ABOVE: Final[Mapping[str, tuple[str, ...]]] = {"titles": ("",), "episodes": (_CRUMB, ""), "releases": (_CRUMB, "")}
+_ABOVE: Final[Mapping[str, tuple[str, ...]]] = {
+    "titles": ("",),
+    "episodes": ("", _CRUMB, ""),
+    "releases": ("", _CRUMB, ""),
+}
 
 _BELOW: Final[Mapping[str, int]] = {"titles": 1, "episodes": 2, "releases": 3}
 
@@ -538,5 +543,87 @@ def test_a_filled_episode_list_keeps_clicks_scrolling_and_paging_on_the_painted_
     assert "Episode 5 " in _pointed(clicked)
     assert "Episode 4 " in scrolled[_index(scrolled, "Nr") + 1]
     assert "Episode 15 " in _pointed(reclicked)
-    assert "Episode 28 " in _pointed(paged)
+    assert "Episode 27 " in _pointed(paged)
     assert _index(paged, _POINTER) < _index(paged, "Esc wróć") - _BELOW["episodes"]
+
+
+_TALL_SIZES: Final[tuple[tuple[int, int], ...]] = ((80, 24), (100, 30), (120, 40))
+
+_LOW_SIZES: Final[tuple[tuple[int, int], ...]] = ((130, 9), (100, 8), (80, 7))
+
+_HEADERS: Final[Mapping[str, str]] = {"subscriptions": "Tytuł", "library": "Nazwa"}
+
+
+def _lengthened(probe: _Probe, name: str, count: int) -> _Probe:
+    if name == "subscriptions":
+        probe.panel._subscriptions = [drafts._row(f"s{index}", f"Show {index:02}") for index in range(count)]
+    elif name == "library":
+        rows: list[dict[str, object]] = [
+            {"set_id": f"s{index}", "name": f"Kikansha no Mahou wa Tokubetsu desu S02E{index:02}"}
+            for index in range(1, count + 1)
+        ]
+        probe.panel._snapshot = {**probe.panel._snapshot, "library": rows}
+    else:
+        listing = probe.anime._listing
+        assert listing is not None
+        probe.anime._listing = replace(
+            listing,
+            episodes=tuple(ListedEpisode(number, f"Odcinek {number}", aired=True) for number in range(1, count + 1)),
+        )
+    return probe
+
+
+@pytest.mark.parametrize(("columns", "rows"), _TALL_SIZES)
+@pytest.mark.parametrize("count", [3, 40])
+@pytest.mark.parametrize("name", ["subscriptions", "library", "episodes", "u08"])
+def test_one_blank_line_stands_under_the_tabs_and_the_keys_stay_at_the_bottom(
+    build: Callable[[str], _Probe], name: str, count: int, columns: int, rows: int
+) -> None:
+    lines: list[str] = _lines(_lengthened(build(name), name, count), columns, rows)
+
+    tabs: int = _index(lines, "Biblioteka")
+    content: int = next(index for index in range(tabs + 1, len(lines)) if lines[index].strip())
+    assert not lines[tabs + 1].strip()
+    if count == 40:
+        assert content == tabs + (3 if name == "subscriptions" else 2)
+    assert "Esc wróć" in lines[-2]
+    assert lines[-1].strip() == "Automat: bezczynny"
+    assert len(lines) == rows - 1
+
+
+@pytest.mark.parametrize(("columns", "rows"), _TALL_SIZES)
+@pytest.mark.parametrize("count", [3, 40])
+def test_the_pause_warning_never_shifts_the_subscription_table(
+    build: Callable[[str], _Probe], count: int, columns: int, rows: int
+) -> None:
+    probe: _Probe = _lengthened(build("subscriptions"), "subscriptions", count)
+    running: list[str] = _lines(probe, columns, rows)
+    probe.panel._snapshot = {**probe.panel._snapshot, "auto_enabled": False}
+    paused: list[str] = _lines(probe, columns, rows)
+
+    assert _index(paused, "Tytuł") == _index(running, "Tytuł")
+    assert "O wznów" in paused[_index(paused, "Tytuł") - 1]
+    assert not paused[_index(paused, "Biblioteka") + 1].strip()
+
+
+@pytest.mark.parametrize(("columns", "rows"), _LOW_SIZES)
+@pytest.mark.parametrize("name", ["subscriptions", "library"])
+def test_a_low_table_keeps_its_header_and_at_least_one_row(
+    build: Callable[[str], _Probe], name: str, columns: int, rows: int
+) -> None:
+    lines: list[str] = _lines(_lengthened(build(name), name, 8), columns, rows)
+
+    header: int = _index(lines, _HEADERS[name])
+    assert _POINTER in lines[header + 1]
+    assert "Powiększ" not in "\n".join(lines)
+    assert lines[-1].strip() == "Automat: bezczynny"
+
+
+@pytest.mark.parametrize(("name", "shown"), [("subscriptions", "Powiększ terminal do 50 x 12"), ("library", "S02E01")])
+def test_a_table_without_room_for_one_row_keeps_the_narrow_list_or_the_message(
+    build: Callable[[str], _Probe], name: str, shown: str
+) -> None:
+    frame: str = "\n".join(_lines(_lengthened(build(name), name, 8), 80, 6))
+
+    assert shown in frame
+    assert _HEADERS[name] not in frame

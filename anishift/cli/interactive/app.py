@@ -26,7 +26,7 @@ from anishift.application.cancellation import EventCancellationToken
 from anishift.application.events import sanitize_event_message
 from anishift.cli.exit_codes import EXIT_CANCELLED, EXIT_INCOMPLETE, EXIT_REFUSED, EXIT_SUCCESS, run_exit_code
 from anishift.cli.interactive.anime import AnimeController
-from anishift.cli.interactive.home import HomeAction, brand_for_geometry, working_directory_label
+from anishift.cli.interactive.home import HomeAction, brand_for_geometry, centered_block, working_directory_label
 from anishift.cli.interactive.manual import ManualController, ManualResult, ManualRun
 from anishift.cli.interactive.mascot import MascotController, MascotState
 from anishift.cli.interactive.mascot_native import MASCOT_REST_TOP_ROWS, NATIVE_MASCOT_ANCHOR
@@ -1089,7 +1089,7 @@ def _auto_content(  # noqa: PLR0913
         visible_rows: int = max(rows - 2, 1)
         view.fit(progress.active_row, progress.row_count, visible_rows)
         tiny = Text(f"↑ {view.offset} · ↓ {max(progress.row_count - view.offset - visible_rows, 0)}\n", style="gray")
-        tiny.append_text(progress.render(columns, offset=view.offset, limit=visible_rows))
+        tiny.append_text(centered_block(progress.render(columns, offset=view.offset, limit=visible_rows), columns))
         return tiny
     geometry: AutoGeometry = resolve_auto_geometry(columns, rows, progress.row_count, native_size or TEXT_MASCOT_SIZE)
     brand: Text = brand_for_geometry(
@@ -1105,7 +1105,7 @@ def _auto_content(  # noqa: PLR0913
     content.append("\n\n")
     if paged:
         content.append_text(_queue_marker("↑", view.offset))
-    content.append_text(progress.render(columns, offset=view.offset, limit=visible))
+    content.append_text(centered_block(progress.render(columns, offset=view.offset, limit=visible), columns))
     if paged:
         content.append("\n")
         content.append_text(_queue_marker("↓", total - view.offset - visible))

@@ -46,3 +46,24 @@ def test_first_auto_execution_frame_contains_real_extraction_rows() -> None:
 
     assert "Ekstrakcja" in frame.plain
     assert "episode-01" in frame.plain
+
+
+def test_manual_progress_rows_form_one_centered_block_sized_to_their_names() -> None:
+    groups: tuple[SimpleNamespace, ...] = tuple(
+        SimpleNamespace(group_id=name, source=Path(f"{name}.mkv"), artifacts=())
+        for name in ("Ao no Hako - 02", "Kusuriya no Hitorigoto - 29 (1080p)")
+    )
+    prepared = cast(
+        "PreparedAutoRun",
+        SimpleNamespace(workspace=SimpleNamespace(groups=groups), plan=SimpleNamespace(groups=groups, tasks=())),
+    )
+    progress = RichRunProgress(prepared, lambda: None)
+
+    frame = interactive_app._auto_content((200, 40), progress, MascotState.EXTRACT, interactive_app._QueueView())
+
+    lines: list[str] = [line.rstrip() for line in frame.plain.splitlines() if " | " in line]
+    assert len(lines) == 2
+    assert len({line.index("░") for line in lines}) == 1
+    assert len({line.index(" | ") for line in lines}) == 1
+    left: int = min(len(line) - len(line.lstrip()) for line in lines)
+    assert abs(left - (200 - max(len(line) for line in lines))) <= 1

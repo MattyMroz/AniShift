@@ -89,7 +89,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   target (else the lowest target with a Polish state), the next line `notice_line` (`E{n}: …`) joins
   the same target's `EpisodeStatus.notices` through the facade's `notice_text`, the only source of those
   Polish phrases (`_focused_status` picks both targets), and a
-  `target_not_waiting` refusal rereads episode states (`polish_refused`). R/F shows `Sprawdzam…`, then the `subscription_checked` result
+  `target_not_waiting` refusal rereads episode states (`refused`). Enter or a double click on a `ready` episode
+  (Stan „Gotowe”, footer `Enter obejrzyj`) hands its `EpisodeStatus.set_id` to the panel through `take_playback`;
+  `StateController._play` opens it through Library's `_open_episode` and shows a refusal with `refused`. R/F shows `Sprawdzam…`, then the `subscription_checked` result
   for `CHECK_SHOWN_S`, measured by the injected clock: `check_state` in the Stan column, `check_text`
   first beneath the table. Beneath the table stands only what the highlighted row hides: the full state
   when it differs from the short one, dropped columns, then a truncated title (`anime_view._unshown`). U08 leads its notice with the last check;
@@ -106,11 +108,15 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   shows a monitoring problem, else the `_pause_state` text of the status line plus ` · O wznów` (2026-10-10),
   else shadow mode; the global pause also stays in the bottom status line, kept at 50×12 by dropping the blank row beneath the table.
   A table longer than the centered layout holds (`anime_view.overflows`; `_table_body` for Subscriptions and Library,
-  `AnimeController.render` for Anime titles, entries, episodes and releases set `AnimeSnapshot.fill`) fills every row:
-  it takes the blank under the tabs, the empty context row is dropped, and only the rows the screen draws under the
+  `AnimeController.render` for Anime titles, entries, episodes and releases set `AnimeSnapshot.fill`) fills every row
+  below the one blank line under the tabs, which `StateController.render` always keeps in the heading from 16 rows.
+  The empty context row is dropped, and without a context so is an empty status row, except on Subscriptions
+  (`_RESERVED_STATUS`), whose pause warning must not shift the table on O; only the rows the screen draws under the
   table stay above the keys: one notice row, plus the „Zaznaczone…” row on episodes, and three notice rows on releases
   for the full name (`anime_view.shown_rows` is the single row count for render and paging; a fitting table keeps the
-  centered layout, and `AnimeController.lead` adds its blank to `_anime_top`). Problem and conflict states use the ordinary state style. While `AnimeController.in_subscriptions`
+  centered layout). A layout too low for the centered table also fills; when not even one data row fits, the
+  context and status rows go too (`anime_view._filled`). The table stays while its header and one row fit; only then
+  does Library list plain names (`_table_body` returns `None`) and the other tables ask for a larger terminal. Problem and conflict states use the ordinary state style. While `AnimeController.in_subscriptions`
   (U08 or the `/` search) the Subscriptions tab is highlighted, tab keys count from it, and any tab switch
   drops that context first, including an open range editor and marks (an admitted batch survives). `anishift subs` offers `list`, `check` and `remove` through the owner. `interactive/state.py`,
   `interactive/anime_view.py`, `main.py`
@@ -168,7 +174,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   frame and previews then submits the whole set on its own background thread, so further Dels never wait; the row
   stays hidden until a snapshot reports the accepted operation and returns with the refusal text. Ctrl+Z delegates
   last-deletion Undo to the owner. Library is a naturally sorted `Nazwa · Odcinek` table (`_table_body` with
-  `AnimeScreen.LIBRARY`, labels from the facade's `library_label`); below 50×12 it lists `label.text`. It shows no operation rows or routine
+  `AnimeScreen.LIBRARY`, labels from the facade's `library_label`); a row or `LibrarySet` with the owner's `series`
+  takes that Nazwa and, with `season`/`episode`, that Odcinek (`state_library._series_label`, also the breadcrumb via
+  `details_label`); a row without them, as from an older owner, keeps the file label. Below 50×12 it lists `label.text`. It shows no operation rows or routine
   busy/global-progress messages; a completed deletion removes the row and keeps „Usunięto · Ctrl+Z cofnij”
   until the next move, and Undo restores it. `?` (alias D) opens set details.
   Partial leftovers remain accessible. Synchronous action
@@ -234,8 +242,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `Wyodrębniono`, `Tłumaczenie`, `Przetłumaczono` i `Synteza mowy` reużywają ten sam
   wiersz. Etykiety etapów są po polsku w jednym miejscu (`_ACTIVE_LABEL`, `_AUDIO_LABEL`);
   etap bez wpisu pokazuje `Przetwarzanie`, nigdy identyfikator. Szerokości nazwy, paska i pól
-  liczbowych liczy `_row_geometry` wyłącznie z liczby kolumn, więc wiersze pobierania
-  i przetwarzania renderowane osobno mają wspólne kolumny; nie wyliczaj ich z treści wiersza.
+  liczbowych liczy jedno `_row_geometry` z liczby kolumn i najdłuższej nazwy całej listy
+  (`names`); każdy wiersz pobierania i przetwarzania renderowany osobno musi dostać te same
+  `names`, inaczej kolumny się rozjadą. Blok wyśrodkowuje wywołujący: lista panelu
+  i `centered_block` w oknie Ręcznego.
   Procent pochodzi z pomiaru backendu; `progress_percent=None` z komunikatem
   oznacza aktywność bez znanego procentu. Nie wyliczaj pozornego postępu z upływu czasu.
   Techniczne taski nie otrzymują osobnych wierszy. Etykieta zachowuje konkretną nazwę

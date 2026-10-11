@@ -200,6 +200,7 @@ class AnimeController:
         self._list_notice: str | None = None
         self._list_hold: bool = False
         self._subscription_command: tuple[str, Mapping[str, object], int | None] | None = None
+        self._playback: str | None = None
         self._subscribed: dict[int, Mapping[str, object]] = {}
         self._paused: bool = False
         self._from_subscriptions: bool = False
@@ -233,7 +234,6 @@ class AnimeController:
         self._positions: dict[_Screen, int] = {}
         self._offsets: dict[_Screen, int] = {}
         self._visible_count: int = 1
-        self.lead: int = 0
         self._follow_cursor: bool = True
         self._release_moved: bool = False
         self._busy_return: _Screen = _Screen.QUERY
@@ -355,6 +355,13 @@ class AnimeController:
             command: tuple[str, Mapping[str, object], int | None] | None = self._subscription_command
             self._subscription_command = None
             return command
+
+    def take_playback(self) -> str | None:
+        """Hand the set ID of the ready episode whose result Enter asked to play to the panel."""
+        with self._lock:
+            set_id: str | None = self._playback
+            self._playback = None
+            return set_id
 
     def start_subscription_search(self) -> None:
         """Open the title search on behalf of the subscription list, to which Esc returns."""
@@ -778,14 +785,12 @@ class AnimeController:
             self._notice = ""
             self._follow_cursor = False
 
-    def render(self, columns: int, rows: int, gap: int = 0) -> Text:
-        """Render ``rows`` lines: a table overflowing ``rows - gap`` fills them, otherwise ``gap`` blank lines lead."""
+    def render(self, columns: int, rows: int) -> Text:
+        """Render ``rows`` lines: a table overflowing its centered layout fills them."""
         with self._lock:
             self._columns = min(columns - 4, WIDE_COLUMNS)
             self._sync_view()
-            self._view.fill = overflows(self._view.screen, len(self._view.items), rows - gap)
-            self.lead = 0 if self._view.fill else gap
-            rows -= self.lead
+            self._view.fill = overflows(self._view.screen, len(self._view.items), rows)
             self._visible_count = max(shown_rows(self._view.snapshot(columns), columns, rows), 1)
             offset: int = min(
                 self._view.offset if self._details_open else self._offsets.get(self._screen, 0),
@@ -796,7 +801,7 @@ class AnimeController:
             self._view.offset = offset
             if not self._details_open:
                 self._offsets[self._screen] = offset
-            return Text("\n").join([*(Text() for _ in range(self.lead)), self._panel.frame(columns, rows)])
+            return self._panel.frame(columns, rows)
 
     def mouse(self, event: MouseEvent) -> Click:
         """Delegate text selection and row clicks to the shared Anime panel and name what the click asks for."""
@@ -991,6 +996,8 @@ class AnimeController:
             extras: tuple[AnimeRow, ...] = self._special_rows()[position - len(shown) :]
             return "otwórz" if extras and extras[0].key.startswith("related:") else ""
         status: EpisodeStatus | None = self._episode_states.get(EpisodeKey(listing.anilist_id, shown[position].number))
+        if _ready_set(status) is not None:
+            return "obejrzyj"
         if status is None or status.reason != EpisodeReason.EPISODE_FILE_UNRESOLVED or status.admission_id is None:
             return ""
         return "wskaż plik"
@@ -1284,7 +1291,10 @@ class AnimeController:
             return
         episode: ListedEpisode = shown[position]
         status: EpisodeStatus | None = self._episode_states.get(EpisodeKey(listing.anilist_id, episode.number))
-        if key == "enter" and status is not None and status.reason == EpisodeReason.EPISODE_FILE_UNRESOLVED:
+        ready: str | None = _ready_set(status)
+        if key == "enter" and ready is not None:
+            self._playback = ready
+        elif key == "enter" and status is not None and status.reason == EpisodeReason.EPISODE_FILE_UNRESOLVED:
             if status.admission_id is not None:
                 self._start_files(status.admission_id)
         elif (
@@ -1858,8 +1868,8 @@ class AnimeController:
             self._worker = None
         self._invalidate()
 
-    def polish_refused(self, notice: str) -> None:
-        """Name why the owner refused to stop a Polish wait and reread the episode states that offered it."""
+    def refused(self, notice: str) -> None:
+        """Name why the owner refused a command from the episode list and reread the episode states that offered it."""
         with self._lock:
             self._notice = notice
         self.refresh_episode_states()
@@ -2115,6 +2125,10 @@ class AnimeController:
         if entry is None:
             return ()
         return ("Anime", f"{safe(entry.english or entry.romaji)} ({entry.year or '—'})")
+
+
+def _ready_set(status: EpisodeStatus | None) -> str | None:
+    return status.set_id if status is not None and status.state == "ready" else None
 
 
 def _deadline(value: str) -> float | None:

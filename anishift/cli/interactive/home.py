@@ -18,6 +18,7 @@ from anishift.cli.interactive.prompts import BRAND_GAP_COLUMNS, AutoGeometry, Ho
 __all__ = [
     "HomeAction",
     "brand_for_geometry",
+    "centered_block",
     "working_directory_label",
 ]
 
@@ -93,7 +94,7 @@ def brand_for_geometry(
     if raster_padding:
         brand = brand.copy()
         brand.append("\n " * raster_padding)
-    centered: Text = _centered_brand(brand, geometry.terminal_columns)
+    centered: Text = centered_block(brand, geometry.terminal_columns)
     mark_inert(centered)
     return centered
 
@@ -196,9 +197,9 @@ def _beside(left: Text, right: Text) -> Text:
     return result
 
 
-def _centered_brand(brand: Text, terminal_columns: int) -> Text:
-    """Apply one shared horizontal offset to every row of the brand block."""
-    lines: list[Text] = list(brand.split("\n"))
+def centered_block(block: Text, terminal_columns: int) -> Text:
+    """Apply one shared horizontal offset to every row of a block."""
+    lines: list[Text] = list(block.split("\n"))
     width: int = max(line.cell_len for line in lines)
     padding: int = max((terminal_columns - width) // 2, 0)
     result: Text = Text()

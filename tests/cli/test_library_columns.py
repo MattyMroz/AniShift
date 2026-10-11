@@ -17,6 +17,7 @@ from anishift.cli.resident import ResidentSession
 
 _POINTER: str = "\N{HEAVY RIGHT-POINTING ANGLE QUOTATION MARK ORNAMENT}"
 _BLUE_BOX: str = "Blue.Box.S02E01.Deja.Vu.1080p.NF.WEB-DL.MULTi.DDP5.1.H.264.MSubs-ToonsHub"
+_JUDAS: str = "[Judas] Ao no Hako - S02E02"
 _LONG: str = (
     "Magic.Repo.Man.Dumped.by.My.Party.Ill.Cash.In.With.a.Cute.Support.Fairy.to.Become.the.Strongest"
     ".S01E01.1080p.CR.WEB-DL.AAC2.0.H.264-VARYG"
@@ -106,6 +107,71 @@ def test_library_breadcrumb_names_the_set_by_title_and_episode(library: StateCon
 
 
 @pytest.mark.unit
+def test_library_names_downloads_of_one_series_after_the_owner_series_whatever_their_files(
+    library: StateController,
+) -> None:
+    library._snapshot = {
+        "library": [
+            {"set_id": "judas", "name": _JUDAS, "series": "Blue Box", "season": 2, "episode": 2},
+            {"set_id": "toonshub", "name": _BLUE_BOX, "series": "Blue Box", "season": 2, "episode": 1},
+        ]
+    }
+
+    frame: str = library.render(80, 24).plain
+
+    assert [state_library.library_row(item) for item in state_library.library_rows(library._snapshot)] == [
+        AnimeRow("toonshub", "Blue Box", number="S02E01"),
+        AnimeRow("judas", "Blue Box", number="S02E02"),
+    ]
+    assert "Ao no Hako" not in frame
+    assert _line(frame, "S02E02").split()[:2] == ["Blue", "Box"]
+
+
+@pytest.mark.unit
+def test_library_keeps_the_file_label_of_a_set_without_owner_series_fields(library: StateController) -> None:
+    library._snapshot = {"library": _rows(_JUDAS, "moj_film_wakacje")}
+
+    rows: list[AnimeRow] = [state_library.library_row(item) for item in state_library.library_rows(library._snapshot)]
+
+    assert rows == [AnimeRow("set-0", "Ao no Hako", number="S02E02"), AnimeRow("set-1", "moj_film_wakacje", number="—")]
+
+
+@pytest.mark.unit
+def test_library_names_a_series_without_a_known_episode_and_keeps_the_file_episode() -> None:
+    row: AnimeRow = state_library.library_row(
+        {"set_id": "set", "name": "[Judas] Tensei Shitara Slime Datta Ken - S04E01", "series": "Slime", "season": None}
+    )
+
+    assert row == AnimeRow("set", "Slime", number="S04E01")
+
+
+@pytest.mark.unit
+def test_library_sorts_owner_named_series_naturally_among_file_named_sets() -> None:
+    snapshot: Mapping[str, object] = {
+        "library": [
+            {"set_id": "e10", "name": "[Grp] Ao no Hako - 10", "series": "Blue Box", "season": 2, "episode": 10},
+            {"set_id": "file", "name": "[Grp] Abc - 01 [1080p]"},
+            {"set_id": "e2", "name": "[Other] Blue Box S02E02", "series": "Blue Box", "season": 2, "episode": 2},
+            {"set_id": "s1", "name": "Ao.no.Hako.S01E12.1080p", "series": "Blue Box", "season": 1, "episode": 12},
+            {"set_id": "zeta", "name": "[Grp] Zeta - 01 [1080p]"},
+        ]
+    }
+
+    order: list[str] = [state_library.library_row_id(item) for item in state_library.library_rows(snapshot)]
+
+    assert order == ["file", "s1", "e2", "e10", "zeta"]
+
+
+@pytest.mark.unit
+def test_library_breadcrumb_names_a_downloaded_set_after_its_series(library: StateController) -> None:
+    library._details = LibrarySet(
+        "set", "group", _JUDAS, None, f"ready/{_JUDAS}.mkv", (), True, series="Blue Box", season=2, episode=2
+    )
+
+    assert library.breadcrumb() == ("Biblioteka", "Blue Box S02E02")
+
+
+@pytest.mark.unit
 def test_library_refresh_keeps_the_selected_set_after_the_order_changes(library: StateController) -> None:
     library._snapshot = {"library": _rows("[Grp] Show - 02 [1080p]", "[Grp] Show - 10 [1080p]")}
     library.handle_key("down")
@@ -171,8 +237,8 @@ def test_an_overflowing_table_fills_every_row_between_the_tabs_and_the_keys(
 
     tabs, header, keys = _regions(lines, label)
     data: list[str] = lines[header + 1 : keys - 1]
-    assert header == tabs + 2
-    assert not lines[tabs + 1].strip()
+    assert header == tabs + (3 if tab == state_module._Tab.SUBSCRIPTIONS else 2)
+    assert not any(line.strip() for line in lines[tabs + 1 : header])
     assert not lines[keys - 1].strip()
     assert all("Show" in line for line in data)
     assert len(data) == library._page == len(lines) - header - 4

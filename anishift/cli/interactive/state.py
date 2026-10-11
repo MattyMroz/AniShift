@@ -24,7 +24,6 @@ from anishift.application import (
     RetryProposal,
     RunProgressSnapshot,
     decode_view,
-    library_label,
 )
 from anishift.application.events import RunEvent
 from anishift.cli.interactive.actions import ScreenActions, footer_segments, help_lines, pack_footer
@@ -53,6 +52,7 @@ from anishift.cli.interactive.state_library import (
     LIBRARY_DELETED,
     detail_entries,
     detail_file,
+    details_label,
     library_actions,
     library_row,
     library_row_id,
@@ -497,7 +497,13 @@ class StateController:
         except ControlError as error:
             if error.reason != "target_not_waiting" or self._anime is None:
                 raise
-            self._anime.polish_refused(refusal_text(error))
+            self._anime.refused(refusal_text(error))
+
+    def _play(self, session: ResidentSession, anime: AnimeController, set_id: str) -> None:
+        try:
+            _open_episode(session, set_id)
+        except (AniShiftError, ControlError, OSError, ValueError) as error:
+            anime.refused(refusal_text(error))
 
     def _show_subscription_list(self, subscription_id: str | None, notice: str) -> None:
         with self._lock:
@@ -696,6 +702,7 @@ class StateController:
             return self._action_key("o")
         result: AnimeResult = anime.handle_key(key)
         command: tuple[str, Mapping[str, object], int | None] | None = anime.take_subscription_command()
+        playback: str | None = anime.take_playback()
         if result is AnimeResult.HOME:
             return StateResult.HOME
         if result is AnimeResult.SUBSCRIPTIONS:
@@ -703,6 +710,8 @@ class StateController:
             self._notify("")
         if command is not None:
             self._subscription_command(*command)
+        if playback is not None:
+            self._work(lambda session: self._play(session, anime, playback), success="")
         self._invalidate()
         return StateResult.CONTINUE
 
@@ -1190,26 +1199,27 @@ class StateController:
             if spaced:
                 heading.append(Text())
             heading.append(mark_inert(_centered(self._tabs(columns), columns)))
-            gap: int = int(spaced)
-            area: int = max(budget - len(heading) - gap, 1)
-            lead: int = 0
-            if not self._help and self._tab == _Tab.SUBSCRIPTIONS and self._retry is None:
-                body: Text = self._subscription_body(columns, area + gap, gap)
-            elif not self._help and self._library_table(columns, area):
-                body = self._library_body(columns, area + gap, gap)
+            heading.extend(Text() for _ in range(int(spaced)))
+            area: int = max(budget - len(heading), 1)
+            table: Text | None = None if self._help or self._retry is not None else self._table(columns, area)
+            if table is not None:
+                body: Text = table
             elif self._tab == _Tab.ANIME and self._anime is not None:
-                body = self._anime_body(self._anime, columns, area + gap, gap)
-                lead = self._anime.lead
+                body = self._anime_body(self._anime, columns, area)
             else:
-                heading.extend(Text() for _ in range(gap))
                 body = self._help_body(columns, area) if self._help else self._list_body(columns, area)
-            self._anime_top = len(heading) + lead
+            self._anime_top = len(heading)
             return Text("\n").join([*heading, *body.split("\n", allow_blank=True)])
 
-    def _anime_body(self, anime: AnimeController, columns: int, rows: int, gap: int) -> Text:
-        if rows - gap > MIN_ROWS:
-            return self._pin_status(anime.render(columns, rows - 1, gap), columns, rows)
-        return anime.render(columns, rows, gap)
+    def _table(self, columns: int, rows: int) -> Text | None:
+        if self._tab == _Tab.SUBSCRIPTIONS:
+            return self._subscription_body(columns, rows)
+        return self._library_body(columns, rows) if self._tab == _Tab.FILES and self._details is None else None
+
+    def _anime_body(self, anime: AnimeController, columns: int, rows: int) -> Text:
+        if rows > MIN_ROWS:
+            return self._pin_status(anime.render(columns, rows - 1), columns, rows)
+        return anime.render(columns, rows)
 
     def _list_body(self, columns: int, rows: int) -> Text:
         entries: Sequence[str | Text] = self._entries(max(columns - 8, 1))
@@ -1341,11 +1351,10 @@ class StateController:
             return processing_actions(self._selected_material())
         return library_actions(listed=self._selected < len(self._library()))
 
-    def _subscription_body(self, columns: int, rows: int, gap: int) -> Text:
+    def _subscription_body(self, columns: int, rows: int) -> Text | None:
         return self._table_body(
             columns,
             rows,
-            gap,
             AnimeScreen.SUBSCRIPTIONS,
             subscription_rows(self._subscriptions, self._subscription_checks, self._clock()),
             self._notice.rstrip("."),
@@ -1354,37 +1363,30 @@ class StateController:
             ),
         )
 
-    def _library_body(self, columns: int, rows: int, gap: int) -> Text:
+    def _library_body(self, columns: int, rows: int) -> Text | None:
         notice: str = self._notice.rstrip(".") if self._notice_persistent else ""
         return self._table_body(
             columns,
             rows,
-            gap,
             AnimeScreen.LIBRARY,
             tuple(library_row(item) for item in self._library()),
             " · ".join(text for text in (notice, self._library_notice) if text),
             "",
         )
 
-    def _library_table(self, columns: int, rows: int) -> bool:
-        listed: bool = self._tab == _Tab.FILES and self._details is None and self._retry is None
-        return listed and columns >= MIN_COLUMNS and rows >= MIN_ROWS
-
     def _table_body(  # noqa: PLR0913
         self,
         columns: int,
         rows: int,
-        gap: int,
         screen: AnimeScreen,
         items: tuple[AnimeRow, ...],
         notice: str,
         status: str,
-    ) -> Text:
+    ) -> Text | None:
         self._selected = min(self._selected, max(len(items) - 1, 0))
-        fill: bool = overflows(screen, len(items), max(rows - gap - 1, 1))
-        height: int = rows if fill else rows - gap
-        tight: bool = not fill and height == MIN_ROWS and columns >= MIN_COLUMNS
-        area: int = height if tight else max(height - 1, 1)
+        fill: bool = overflows(screen, len(items), max(rows - 1, 1))
+        tight: bool = not fill and rows == MIN_ROWS and columns >= MIN_COLUMNS
+        area: int = rows if tight else max(rows - 1, 1)
         snapshot: AnimeSnapshot = AnimeSnapshot(
             screen if items else AnimeScreen.DETAILS,
             "",
@@ -1395,7 +1397,10 @@ class StateController:
             global_status=status,
             fill=fill,
         )
-        visible: int = max(shown_rows(snapshot, columns, area), 1)
+        visible: int = shown_rows(snapshot, columns, area)
+        if not visible and screen is AnimeScreen.LIBRARY:
+            return None
+        visible = max(visible, 1)
         self._page = visible
         offset: int = min(self._offsets.get(self._tab, 0), max(len(items) - visible, 0))
         if self._follow_cursor.get(self._tab, True):
@@ -1406,9 +1411,8 @@ class StateController:
         if not items and frame.visible:
             lines[frame.first_row] = self._empty_line(columns)
         if tight:
-            del lines[next(index for index in range(frame.first_row, height) if not lines[index].plain.strip())]
-        body: Text = self._pin_status(Text("\n").join(lines), columns, height)
-        return Text("\n").join([*(Text() for _ in range(rows - height)), body])
+            del lines[next(index for index in range(frame.first_row, rows) if not lines[index].plain.strip())]
+        return self._pin_status(Text("\n").join(lines), columns, rows)
 
     def _empty_text(self) -> str:
         if not self._snapshot:
@@ -1440,7 +1444,7 @@ class StateController:
             if self._tab == _Tab.PROGRESS and self._history_open:
                 return _HISTORY_CRUMB
             if self._details is not None:
-                return ("Biblioteka", safe_text(library_label(self._details.name).text))
+                return ("Biblioteka", safe_text(details_label(self._details).text))
             return ()
 
     def _breadcrumb(self, columns: int) -> Text:
@@ -1487,13 +1491,20 @@ class StateController:
 
     def _processing_entries(self, columns: int) -> list[Text]:
         entries: list[Text] = []
-        for item in self._processing_rows():
+        items: list[Mapping[str, object]] = self._processing_rows()
+        names: tuple[str, ...] = tuple(
+            self._runs[str(item["run_id"])][1].label(str(item["group_id"]))
+            if item.get("stage") == "processing"
+            else material_name(item)
+            for item in items
+        )
+        for item in items:
             if item.get("stage") == "processing":
                 status: str | None = (
                     "Brak odczytu" if not self._connected else ("Wstrzymano" if held(self._snapshot, item) else None)
                 )
                 line: Text = self._runs[str(item["run_id"])][1].render_group(
-                    str(item["group_id"]), columns, status=status
+                    str(item["group_id"]), columns, status=status, names=names
                 )
             else:
                 label, fraction = download_progress(item, self._snapshot, connected=self._connected)
@@ -1504,6 +1515,7 @@ class StateController:
                     fraction if fraction is not None or timer is None else timer.fraction,
                     columns,
                     elapsed_seconds=None if timer is None else timer.elapsed(),
+                    names=names,
                 )
             entries.append(line)
         return entries

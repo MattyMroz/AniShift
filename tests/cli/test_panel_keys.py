@@ -52,6 +52,7 @@ from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.state import StateController, StateResult, _Tab
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
+from anishift.platform.local_control import ControlError, ControlErrorCode
 
 pytestmark = pytest.mark.unit
 
@@ -340,6 +341,12 @@ def _u08_waiting(monkeypatch: pytest.MonkeyPatch) -> _Probe:
     return probe
 
 
+def _u08_ready(monkeypatch: pytest.MonkeyPatch) -> _Probe:
+    probe: _Probe = _subscription(monkeypatch)
+    probe.anime._episode_states[EpisodeKey(1, 1)] = EpisodeStatus(EpisodeKey(1, 1), "ready", set_id="set-1")
+    return probe
+
+
 def _u08_extra(monkeypatch: pytest.MonkeyPatch) -> _Probe:
     owner: drafts._Owner = _SubscriptionOwner()
     owner.extras = (
@@ -468,6 +475,7 @@ _FIXTURES: Final[dict[str, Callable[[pytest.MonkeyPatch], _Probe]]] = {
     "u08": _u08,
     "u08_ordered": _u08_ordered,
     "u08_waiting": _u08_waiting,
+    "u08_ready": _u08_ready,
     "u08_extra": _u08_extra,
     "subscriptions": _subscriptions,
     "subscriptions_empty": _subscriptions_empty,
@@ -500,6 +508,7 @@ _ACTIONS: Final[dict[str, tuple[Action, ...]]] = {
     "problem": (("Enter", "wróć"), ("C", "kopiuj")),
     "u08": _U08,
     "u08_waiting": (_U08[0], _U08[1], ("T", "pobierz teraz"), *_U08[2:]),
+    "u08_ready": (("Enter", "obejrzyj"), *_U08),
     "u08_extra": (("Enter", "otwórz"), *_U08),
     "subscriptions": (
         ("Enter", "szczegóły"),
@@ -524,6 +533,7 @@ _ACTIONS: Final[dict[str, tuple[Action, ...]]] = {
 _ALIASES: Final[dict[str, frozenset[str]]] = {
     "u08": frozenset({"text:f", "delete"}),
     "u08_waiting": frozenset({"text:f", "delete"}),
+    "u08_ready": frozenset({"text:f", "delete"}),
     "u08_extra": frozenset({"text:f", "delete"}),
     "subscriptions": frozenset({"text:f", "space", "delete"}),
     "subscriptions_empty": frozenset({"enter"}),
@@ -1373,6 +1383,7 @@ def _right_click(application: interactive_app._InteractiveApplication, point: Po
         "files",
         "draft",
         "u08",
+        "u08_ready",
         "u08_extra",
         "subscriptions",
         "processing_download",
@@ -1888,3 +1899,84 @@ def test_a_click_on_an_inert_tab_or_crumb_still_runs_it(
 
     assert listed
     assert probe.panel._tab == _Tab.SUBSCRIPTIONS
+
+
+class _RefusedResult(_Library):
+    def library_result(self, set_id: str) -> Path:
+        self.calls.append(("result", set_id))
+        raise ControlError("missing", code=ControlErrorCode.REFUSED, reason="library_result_missing", answered=True)
+
+
+def _playing(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Path, bool]]:
+    opened: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(
+        state_module, "_open_path", lambda path, *, show_folder=False: opened.append((path, show_folder))
+    )
+    return opened
+
+
+def _run_work(probe: _Probe, session: _Library) -> None:
+    for action in cast("list[Callable[[_Library], object]]", probe.work):
+        action(session)
+
+
+def test_a_ready_episode_shows_gotowe_in_the_success_color(build: Callable[[str], _Probe]) -> None:
+    lines: list[Text] = list(build("u08_ready").panel.render(100, 30).split("\n", allow_blank=True))
+    row: Text = next(line for line in lines if "Odcinek 1 " in line.plain)
+    column: int = row.plain.index("Gotowe")
+
+    assert "success" in [str(span.style) for span in row.spans if span.start <= column < span.end]
+
+
+def test_a_ready_episode_offers_enter_to_watch_in_the_footer_and_help(build: Callable[[str], _Probe]) -> None:
+    probe: _Probe = build("u08_ready")
+    footer: list[str] = [line.strip() for line in probe.panel.render(100, 30).plain.splitlines()]
+    probe.panel.handle_key("text:?")
+    help_frame: str = probe.panel.render(100, 30).plain
+
+    assert "Enter obejrzyj · Space zaznacz · D pobierz · W wstrzymaj · ? więcej · Esc wróć" in footer
+    assert "Enter obejrzyj" in help_frame
+
+
+def test_enter_on_a_ready_episode_opens_its_main_result_like_library(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    probe: _Probe = build("u08_ready")
+    opened: list[tuple[Path, bool]] = _playing(monkeypatch)
+    session: _Library = _Library()
+
+    probe.panel.handle_key("enter")
+    _run_work(probe, session)
+
+    assert session.calls == [("result", "set-1")]
+    assert opened == [(Path("set-1"), False)]
+    assert probe.anime._screen is _Screen.EPISODES
+
+
+def test_a_refused_ready_result_names_the_refusal_on_the_episode_list(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    probe: _Probe = build("u08_ready")
+    opened: list[tuple[Path, bool]] = _playing(monkeypatch)
+
+    probe.panel.handle_key("enter")
+    _run_work(probe, _RefusedResult())
+
+    assert opened == []
+    assert "Brakuje potwierdzonego głównego wyniku" in probe.panel.render(100, 30).plain
+
+
+@pytest.mark.parametrize("name", ["u08", "u08_ordered", "episodes"])
+def test_enter_on_an_episode_that_is_not_ready_opens_nothing(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    probe: _Probe = build(name)
+    opened: list[tuple[Path, bool]] = _playing(monkeypatch)
+    before: tuple[object, ...] = _state(probe)
+
+    probe.panel.handle_key("enter")
+    _settle(probe)
+
+    assert probe.work == []
+    assert opened == []
+    assert _state(probe) == before
