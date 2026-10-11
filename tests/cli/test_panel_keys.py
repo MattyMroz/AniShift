@@ -1302,6 +1302,29 @@ def test_every_short_download_problem_matches_an_owner_sentence() -> None:
     assert set(processing_module._DOWNLOAD_PROBLEMS) == owner
 
 
+def test_only_files_to_check_leave_the_automation_idle_but_listed(build: Callable[[str], _Probe]) -> None:
+    probe: _Probe = build("processing_empty")
+    material: dict[str, object] = {
+        "material_id": "a",
+        "group_id": "a",
+        "name": "Odcinek.mkv",
+        "stage": "waiting",
+        "reason": "subtitle_source_missing",
+        "attention": True,
+    }
+    probe.panel._snapshot = {
+        **probe.panel._snapshot,
+        "auto_enabled": True,
+        "materials": [material],
+        "material_counts": {"downloading": 0, "processing": 0, "waiting": 0, "attention": 1},
+    }
+    frame: str = probe.panel.render(100, 24).plain
+
+    assert probe.panel._global_status(120).startswith("Automat: bezczynny · do sprawdzenia 1")
+    assert "Odcinek.mkv" in frame
+    assert "Brak napisów" in frame
+
+
 def test_the_help_is_a_table_of_keys_and_what_they_do() -> None:
     lines: tuple[str, ...] = help_lines((("Enter", "szczegóły"), ("Ctrl+Z", "cofnij")), 80)
 

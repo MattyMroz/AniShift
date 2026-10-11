@@ -112,7 +112,7 @@ _TRANSFER_LABELS: Final[dict[str, str]] = {
 def processing_rows(
     payload: Mapping[str, object], runs: Mapping[str, tuple[str, RichRunProgress]]
 ) -> list[Mapping[str, object]]:
-    """Return recorded downloads, admitted work awaiting its first task and started processing, in that order."""
+    """Return recorded downloads, admitted work awaiting its first task, started processing and files to check."""
     running: set[str] = {
         str(item["request_id"])
         for item in rows(payload.get("requests"))
@@ -150,7 +150,8 @@ def processing_rows(
             or progress[1].group_pending(str(item.get("group_id")))
         )
     ]
-    return [*downloads, *preparing, *processing]
+    attention: list[Mapping[str, object]] = [item for item in rows(payload.get("materials")) if item.get("attention")]
+    return [*downloads, *preparing, *processing, *attention]
 
 
 def row_ids(materials: list[Mapping[str, object]]) -> list[str]:

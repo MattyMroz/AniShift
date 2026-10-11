@@ -689,7 +689,7 @@ def test_processing_cancel_targets_the_disclosed_whole_manual_run(
 
 @pytest.mark.integration
 @pytest.mark.parametrize("key", ["text:u", "text:m"])
-def test_panel_settings_and_manual_return_preserve_idle_processing_without_waiting_rows(
+def test_panel_settings_and_manual_return_preserve_the_processing_list_of_files_to_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str
 ) -> None:
     monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _PALANTIR_TOKEN)
@@ -728,8 +728,9 @@ def test_panel_settings_and_manual_return_preserve_idle_processing_without_waiti
             assert application._mode is _ViewMode.STATE
             assert application._state is panel
             assert panel._tab == 2
-            assert panel._selected == 0
-            assert "Brak aktywnego przetwarzania" in before
+            assert panel._selected == 34
+            assert "do sprawdzenia 35" in before
+            assert all(item.get("attention") for item in panel._processing_rows())
             assert panel._offsets[2] == offset
             assert application._render_frame(80, 24).plain == before
         finally:

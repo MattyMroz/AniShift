@@ -4128,7 +4128,8 @@ def test_library_retry_after_refused_deletion_only_relocates(  # noqa: PLR0915
         controller.show_processing()
         try:
             assert _await(lambda: controller._connected)
-            assert "Brak aktywnego przetwarzania" in controller.render(120, 40).plain
+            controller.render(120, 40)
+            assert all(item.get("attention") for item in controller._processing_rows())
             controller.handle_key("right")
             assert _await(lambda: not controller._busy)
             controller.handle_key("home")

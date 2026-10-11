@@ -154,6 +154,12 @@ _STATUS_COUNTS: Final[tuple[tuple[str, str], ...]] = (
 )
 """Owner material counters in the order the status line names them."""
 
+_WORK_COUNTS: Final[tuple[str, ...]] = ("downloading", "processing", "waiting")
+"""Owner counters of work that runs or will start by itself, which make the automation read as working."""
+
+_HELP_TITLES: Final[frozenset[str]] = frozenset({"Ten ekran", "Wszędzie"})
+"""Section titles of the ? help, never left as the last shown line of a cut help."""
+
 _DETAIL_HELP_ROWS: Final[int] = 3
 """Rows the help under Library files needs: a blank line, the "Ten ekran" heading and one hint line."""
 
@@ -1291,7 +1297,10 @@ class StateController:
             remaining -= len(lines)
             self._page = max(index - start + 1, 1)
         if self._details is not None and remaining >= _DETAIL_HELP_ROWS:
-            for line in ("", *help_lines(self._actions().listed, max(columns - left - 4, 1)))[:remaining]:
+            shown: list[str] = list(("", *help_lines(self._actions().listed, max(columns - left - 4, 1)))[:remaining])
+            while shown and shown[-1] in _HELP_TITLES:
+                shown.pop()
+            for line in shown:
                 content.append_text(mark_inert(Text(f"{' ' * (left + 2)}{line}\n", style="gray")))
         if not entries:
             content.append("\n")
@@ -1502,7 +1511,8 @@ class StateController:
         values: Mapping[str, object] = counts if isinstance(counts, Mapping) else {}
         counted: tuple[str, ...] = tuple(f"{label} {values[key]}" for key, label in _STATUS_COUNTS if values.get(key))
         paused: str = self._pause_state()
-        state: str = paused or ("Automat: praca" if counted else "Automat: bezczynny")
+        working: bool = any(values.get(key) for key in _WORK_COUNTS)
+        state: str = paused or ("Automat: praca" if working else "Automat: bezczynny")
         hint: str = _ENABLE_HINT if paused else _DISABLE_HINT
         shown: tuple[str, ...] = () if state == _PAUSED else counted
         return pack_keys((state, *shown, hint), width, optional=(*reversed(shown), hint), limit=1)[0]

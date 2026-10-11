@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from rich.cells import cell_len
+from rich.text import Text
 
 from anishift.cli.interactive.menu import pack_keys
 
@@ -72,5 +73,11 @@ def help_lines(actions: Sequence[Action], width: int, *, intro: Sequence[str] = 
         if not rows:
             continue
         lines.append(title)
-        lines.extend(f"  {key}{' ' * (column - cell_len(key))}  {label}"[:width] for key, label in rows)
+        lines.extend(_cropped(f"  {key}{' ' * (column - cell_len(key))}  {label}", width) for key, label in rows)
     return tuple(lines)
+
+
+def _cropped(line: str, width: int) -> str:
+    shown: Text = Text(line)
+    shown.truncate(max(width, 1), overflow="crop")
+    return shown.plain
