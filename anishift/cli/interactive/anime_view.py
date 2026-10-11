@@ -311,7 +311,7 @@ def _list(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int) -> int:
         if item.navigable:
             canvas.tag(row, index + snapshot.offset)
         active: bool = index + snapshot.offset == snapshot.cursor and item.navigable
-        style: str = "white_bold"
+        style: str = "brand_accent" if snapshot.screen is AnimeScreen.BUSY else "white_bold"
         if draft:
             style = "brand_accent" if active else "white_bold" if item.navigable else "gray"
         if draft and item.key.startswith("line"):

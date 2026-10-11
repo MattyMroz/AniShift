@@ -31,6 +31,8 @@ from anishift.application import (
 from anishift.cli.interactive import anime as anime_module
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive.anime import AnimeController, AnimeResult, _Screen
+from anishift.cli.interactive.anime_panel import AnimePanel
+from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeViewState
 from anishift.cli.interactive.anime_view import AnimeFrame
 from anishift.cli.interactive.pointer import FrameSelection
 from anishift.cli.interactive.state import StateController, _Tab
@@ -771,3 +773,16 @@ def test_a_click_inside_the_search_text_puts_the_caret_before_the_clicked_charac
     finally:
         panel.close()
         panel._thread.join(5)
+
+
+def test_a_loading_line_off_the_search_is_azure_like_the_search_one() -> None:
+    panel: AnimePanel = AnimePanel(
+        AnimeViewState(
+            screen=AnimeScreen.BUSY, title="", items=(AnimeRow("busy", "Wczytuję odcinki…", navigable=False),)
+        ),
+        lambda _action, _keys: None,
+        lambda: 0.0,
+    )
+    painted: Text = panel.frame(80, 24)
+    start: int = painted.plain.index("Wczytuję odcinki…")
+    assert any(span.style == "brand_accent" and span.start <= start < span.end for span in painted.spans)
