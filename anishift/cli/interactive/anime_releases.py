@@ -20,9 +20,12 @@ from anishift.cli.interactive.anime_state import AnimeRow
 from anishift.cli.interactive.anime_texts import safe
 from anishift.utils.rich_console import format_bytes
 
-__all__ = ["candidate_reason", "release_rows", "repeat_warning", "suggested_position"]
+__all__ = ["UNKNOWN_PREVIOUS_WARNING", "candidate_reason", "release_rows", "repeat_warning", "suggested_position"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
+
+UNKNOWN_PREVIOUS_WARNING: Final[str] = "Nie wiem, które wydanie pobrano poprzednio — może to być to samo"
+"""Warning shown when the previous order of the episode recorded no release hash."""
 
 _VERDICT_LABELS: Final[dict[IdentityVerdict, str]] = {
     IdentityVerdict.MATCH: "zgodny",
@@ -143,8 +146,9 @@ _REASON_TEXTS: Final[dict[str, str]] = {
     "Unconsumed filename text is neither technical metadata nor a catalog episode title.": (
         "Pozostały tekst nazwy nie jest metadanymi technicznymi ani katalogowym tytułem odcinka."
     ),
+    "Release group numbers this season from 1.": "Ta grupa numeruje odcinki tego sezonu od 1.",
 }
-"""Translate every frozen H1 explanation at the UI boundary."""
+"""Translate every frozen H1 explanation and the release group numbering explanation at the UI boundary."""
 
 
 def release_rows(
@@ -192,7 +196,7 @@ def repeat_warning(view: EpisodeOfferView | None) -> tuple[str, ...]:
         if view.conflict
         else "Obecne pliki zostają"
     )
-    return (warning, *(("Nie można potwierdzić odmienności wydania",) if view.unknown_previous else ()))
+    return (warning, *((UNKNOWN_PREVIOUS_WARNING,) if view.unknown_previous else ()))
 
 
 def candidate_reason(item: RankedCandidate) -> str:

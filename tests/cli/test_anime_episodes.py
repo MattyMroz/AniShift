@@ -64,7 +64,13 @@ from anishift.application.control_views import decode_view, encode_view
 from anishift.application.episode_commands import EpisodeResult
 from anishift.application.episode_identity import REASONS, is_conflict
 from anishift.application.episode_search import EpisodeSearch
-from anishift.application.episode_selection import AniZipMapping, episode_listing, rank_candidates, streams_releases
+from anishift.application.episode_selection import (
+    GROUP_NUMBERING_REASON,
+    AniZipMapping,
+    episode_listing,
+    rank_candidates,
+    streams_releases,
+)
 from anishift.application.planning import ExecutionPlan
 from anishift.application.release_quality import AudioClass
 from anishift.application.scheduler_contracts import TaskHandler
@@ -72,7 +78,7 @@ from anishift.application.watch_state import WatchStateStore
 from anishift.cli.interactive import anime as anime_module
 from anishift.cli.interactive import anime_texts, anime_view
 from anishift.cli.interactive.anime import EPISODE_REASON_LABELS, AnimeController, _Screen
-from anishift.cli.interactive.anime_releases import _REASON_TEXTS
+from anishift.cli.interactive.anime_releases import _REASON_TEXTS, UNKNOWN_PREVIOUS_WARNING
 from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
 from anishift.config.presets import default_preset_file
@@ -262,7 +268,7 @@ def _at(controller: AnimeController) -> _Screen:
 
 @pytest.mark.unit
 def test_all_frozen_identity_reasons_have_polish_texts() -> None:
-    assert set(_REASON_TEXTS) == REASONS
+    assert set(_REASON_TEXTS) == REASONS | {GROUP_NUMBERING_REASON}
     assert all(text and text != reason for reason, text in _REASON_TEXTS.items())
 
 
@@ -2493,7 +2499,7 @@ def test_repeat_requires_inspected_conflict_and_separate_identity_consent(item: 
     assert _at(controller) is _Screen.CANDIDATES
     frame: str = controller.render(50, 24).plain
     assert "Obecne pliki zostają" in frame
-    assert "Nie można potwierdzić odmienności wydania" in frame
+    assert UNKNOWN_PREVIOUS_WARNING in controller.render(80, 24).plain
     assert all(Text(line).cell_len <= 50 for line in frame.splitlines())
     assert not owner.choices
     if cancel and verdict is IdentityVerdict.MATCH:

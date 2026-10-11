@@ -14,6 +14,7 @@ from typing import Any, Final
 from anishift.application.discovery import VIDEO_SOURCE_SUFFIXES
 from anishift.application.episode_confidence import confidence
 from anishift.application.episode_identity import (
+    FIRST_BRACKET,
     IdentityAssessment,
     IdentityEvidence,
     IdentityVerdict,
@@ -25,6 +26,7 @@ from anishift.application.episode_releases import NAME_PRIORITY, EpisodeRelease,
 from anishift.application.release_quality import ReleaseTraits, class_key, quality_score, release_traits
 
 __all__ = [
+    "GROUP_NUMBERING_REASON",
     "AniZipMapping",
     "CandidateNumbering",
     "EntryGroup",
@@ -111,6 +113,12 @@ _HIDDEN_MAX_HEIGHT: Final[int] = 720
 
 _CONTAINER: Final[re.Pattern[str]] = re.compile(r"[^/\\]\.([^\s./\\()\[\]{}]+)$")
 """Final suffix of the selected file name; a dot followed by spaces or brackets, as in ``(TrueHD 5.1)``, is not one."""
+
+GROUP_NUMBERING_REASON: Final[str] = "Release group numbers this season from 1."
+"""Explain a season-scoped absolute-number echo without the target episode title from a group numbering it locally."""
+
+_GROUP_NUMBERING: Final[IdentityAssessment] = IdentityAssessment(IdentityVerdict.MISMATCH, GROUP_NUMBERING_REASON)
+"""Verdict of a season-scoped absolute-number echo once its group numbers the target season from one."""
 
 
 class EntryGroup(StrEnum):
@@ -466,8 +474,26 @@ def representative(
 def rank_candidates(
     target: Mapping[str, object], releases: Sequence[EpisodeRelease], *, donghua: bool
 ) -> tuple[RankedCandidate, ...]:
-    """Assess every release on its representative file, else on its name, and return the rows in list order."""
-    return list_order(tuple(_ranked(target, release, donghua=donghua) for release in releases))
+    """Assess every release on its representative file, else on its name, apply group numbering, return list order."""
+    assessed: tuple[tuple[RankedCandidate, IdentityEvidence], ...] = tuple(
+        _ranked(target, release, donghua=donghua) for release in releases
+    )
+    local_groups: frozenset[str] = frozenset(
+        group
+        for row, evidence in assessed
+        if row.identity.verdict is IdentityVerdict.MATCH
+        and evidence.number is not None
+        and evidence.number == evidence.local
+        and (group := _release_group(row)) is not None
+    )
+    return list_order(
+        tuple(
+            replace(row, identity=_GROUP_NUMBERING, conflict=True, confidence=None)
+            if _absolute_echo(row, evidence) and _release_group(row) in local_groups
+            else row
+            for row, evidence in assessed
+        )
+    )
 
 
 def list_order(candidates: Sequence[RankedCandidate]) -> tuple[RankedCandidate, ...]:
@@ -675,7 +701,9 @@ def _identity_rank(assessment: IdentityAssessment) -> int:
     return 2 if is_conflict(assessment) else 1
 
 
-def _ranked(target: Mapping[str, object], release: EpisodeRelease, *, donghua: bool) -> RankedCandidate:
+def _ranked(
+    target: Mapping[str, object], release: EpisodeRelease, *, donghua: bool
+) -> tuple[RankedCandidate, IdentityEvidence]:
     assessed: tuple[tuple[ReleaseFile, IdentityEvidence], ...] = tuple(
         (file, identity_evidence(target, file.identity_candidate(release.name))) for file in release.files
     )
@@ -700,7 +728,7 @@ def _ranked(target: Mapping[str, object], release: EpisodeRelease, *, donghua: b
     )
     container: str | None = _container(None if file is None else file.filename or file.path)
     conflict: bool = is_conflict(identity)
-    return RankedCandidate(
+    row: RankedCandidate = RankedCandidate(
         stream=_row_stream(release, file),
         identity=identity,
         traits=traits,
@@ -724,6 +752,25 @@ def _ranked(target: Mapping[str, object], release: EpisodeRelease, *, donghua: b
             target_part=evidence.target_part,
         ),
         pack=release.pack,
+    )
+    return row, evidence
+
+
+def _release_group(row: RankedCandidate) -> str | None:
+    found: re.Match[str] | None = FIRST_BRACKET.match(row.stream.release)
+    return found.group(1).strip().casefold() if found else None
+
+
+def _absolute_echo(row: RankedCandidate, evidence: IdentityEvidence) -> bool:
+    if row.identity.verdict is not IdentityVerdict.INSUFFICIENT or row.conflict:
+        return False
+    marked: bool = evidence.season is not None and evidence.season in (evidence.target_season, evidence.named_season)
+    return (
+        evidence.number is not None
+        and evidence.number == evidence.absolute
+        and evidence.number != evidence.local
+        and (marked or (evidence.anchor and not evidence.broad))
+        and not evidence.episode_anchor
     )
 
 

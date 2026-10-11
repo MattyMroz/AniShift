@@ -47,7 +47,13 @@ from anishift.application.cancellation import EventCancellationToken
 from anishift.application.episode_commands import MAX_EPISODE_KEYS
 from anishift.cli.interactive.actions import Action, ScreenActions, footer_segments, help_lines
 from anishift.cli.interactive.anime_panel import AnimePanel
-from anishift.cli.interactive.anime_releases import candidate_reason, release_rows, repeat_warning, suggested_position
+from anishift.cli.interactive.anime_releases import (
+    UNKNOWN_PREVIOUS_WARNING,
+    candidate_reason,
+    release_rows,
+    repeat_warning,
+    suggested_position,
+)
 from anishift.cli.interactive.anime_rows import (
     draft_rows,
     entry_rows,
@@ -910,7 +916,7 @@ class AnimeController:
         elif self._screen is _Screen.CANDIDATES:
             self._view.notice = self._notice or " · ".join(repeat_warning(self._offer_view))
             if self._offer_view is not None and self._offer_view.unknown_previous:
-                self._view.global_status = "Nie można potwierdzić odmienności wydania"
+                self._view.global_status = UNKNOWN_PREVIOUS_WARNING
         elif self._screen is _Screen.ENTRIES and self._franchise is not None and not self._franchise.complete:
             self._view.notice = self._notice or "Lista niepełna"
         else:

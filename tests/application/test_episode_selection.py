@@ -20,6 +20,7 @@ from anishift.application.episode_releases import (
     merge_releases,
 )
 from anishift.application.episode_selection import (
+    GROUP_NUMBERING_REASON,
     AniZipMapping,
     EntryGroup,
     EpisodeListing,
@@ -234,6 +235,15 @@ def _ranked(target: dict[str, object], streams: list[StreamCandidate]) -> list[S
 def _regression_cases() -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = _read(_REGRESSIONS)
     return cases
+
+
+def _solo_leveling_s2e1() -> dict[str, object]:
+    target: dict[str, object] = next(
+        case["target"]
+        for case in _regression_cases()
+        if "Solo Leveling" in case["target"]["aliases"] and case["target"].get("other_episode_titles")
+    )
+    return target
 
 
 def test_identity_target_slime_s1e4_has_exactly_the_corpus_keys_and_mapping_values() -> None:
@@ -1068,6 +1078,75 @@ def test_visible_keeps_an_uncertain_suggestion_beside_mismatches() -> None:
     assert index is not None
     assert uncertain
     assert visible(ranked, index) == (ranked[index],)
+
+
+_SOLO_LEVELING_ECHOES: Final[tuple[str, ...]] = (
+    "[ToonsHub] Solo Leveling S02E13 1080p CR WEB-DL AAC2.0 H.264 (Ore dake Level Up na Ken, Multi-Audio, Multi-Subs)",
+    "[PacMan] Solo.Leveling.S02E13.1080p.CR.WEB-DL.AAC2.0.H.264",
+    "[DKB] Solo Leveling - S02E13 [1080p][HEVC x265 10bit][Dual-Audio][Multi-Subs]",
+    "[Erai-raws] Ore dake Level Up na Ken Season 2: Arise from the Shadow - 13 [1080p CR WEB-DL AVC AAC][MultiSub]",
+)
+
+_SOLO_LEVELING_UNSCOPED: Final[tuple[str, ...]] = (
+    "[ASW] Solo Leveling - 13 [1080p HEVC x265 10Bit][AAC]",
+    "[SubsPlease] Solo Leveling - 13 (1080p) [9C5E3F5C]",
+    "[Erai-raws] Ore dake Level Up na Ken - 13 [1080p][Multiple Subtitle]",
+    "[EMBER] Ore dake Level Up na Ken S02E13 [1080p] [HEVC WEBRip DDP] (Solo Leveling Season 2)",
+)
+
+
+def _solo_leveling_local_matches() -> list[StreamCandidate]:
+    return [
+        _stream(
+            "[ToonsHub] Solo Leveling S02E01 1080p CR WEB-DL AAC2.0 H.264 (Multi-Subs).mkv",
+            release="[ToonsHub] Solo Leveling S02E01 1080p CR WEB-DL AAC2.0 H.264 (Multi-Subs)",
+        ),
+        _stream(None, release="[PacMan] Solo.Leveling.S02E01.1080p.CR.WEB-DL.AAC2.0.H.264"),
+        _stream(None, release="[DKB] Solo Leveling - S02E01 [1080p][HEVC x265 10bit][Dual-Audio][Multi-Subs]"),
+        _stream(
+            None,
+            release="[Erai-raws] Ore dake Level Up na Ken Season 2: Arise from the Shadow - 01 "
+            "[1080p CR WEB-DL AVC AAC][MultiSub][55FBD905]",
+        ),
+    ]
+
+
+def test_rank_candidates_solo_leveling_s2e1_hides_season_marked_echoes_of_groups_numbering_from_one() -> None:
+    matches: list[StreamCandidate] = _solo_leveling_local_matches()
+    echoes: list[StreamCandidate] = [_stream(None, release=name) for name in _SOLO_LEVELING_ECHOES]
+    unscoped: list[StreamCandidate] = [_stream(None, release=name) for name in _SOLO_LEVELING_UNSCOPED]
+    ranked: tuple[RankedCandidate, ...] = _rank(_solo_leveling_s2e1(), [*echoes, *unscoped, *matches])
+    by_stream: dict[StreamCandidate, RankedCandidate] = {row.stream: row for row in ranked}
+    assert {by_stream[stream].identity.verdict for stream in matches} == {IdentityVerdict.MATCH}
+    assert [(by_stream[stream].identity.verdict, by_stream[stream].identity.reason) for stream in echoes] == [
+        (IdentityVerdict.MISMATCH, GROUP_NUMBERING_REASON)
+    ] * len(echoes)
+    assert [(by_stream[stream].conflict, by_stream[stream].confidence) for stream in echoes] == [(True, None)] * len(
+        echoes
+    )
+    assert {by_stream[stream].identity.verdict for stream in unscoped} == {IdentityVerdict.INSUFFICIENT}
+    index, uncertain = suggestion(ranked, numbering=True)
+    assert index is not None
+    assert not uncertain
+    assert {row.stream for row in visible(ranked, index)} == {*matches, *unscoped}
+
+
+def test_rank_candidates_echo_carrying_the_target_episode_title_stays_uncertain() -> None:
+    titled: StreamCandidate = _stream(
+        "Solo.Leveling.S02E13.You.Arent.E-Rank.Are.You.1080p.CR.WEB-DL.AAC2.0.H.264-ToonsHub.mkv",
+        release="[ToonsHub] Solo Leveling S02E13 1080p CR WEB-DL AAC2.0 H.264 (Ore dake Level Up na Ken, Multi-Subs)",
+    )
+    ranked: tuple[RankedCandidate, ...] = _rank(_solo_leveling_s2e1(), [titled, *_solo_leveling_local_matches()])
+    echo: RankedCandidate = next(row for row in ranked if row.stream == titled)
+    assert echo.identity.verdict is IdentityVerdict.INSUFFICIENT
+    assert echo in visible(ranked)
+
+
+def test_rank_candidates_echo_without_a_local_match_of_its_group_stays_uncertain() -> None:
+    echoes: list[StreamCandidate] = [_stream(None, release=name) for name in _SOLO_LEVELING_ECHOES]
+    ranked: tuple[RankedCandidate, ...] = _rank(_solo_leveling_s2e1(), echoes)
+    assert {row.identity.verdict for row in ranked} == {IdentityVerdict.INSUFFICIENT}
+    assert len(visible(ranked)) == len(echoes)
 
 
 def test_suggestion_slime_s4e23_stream_without_file_is_assessed_on_its_release_name() -> None:
