@@ -1136,7 +1136,7 @@ def test_release_size_shows_the_episode_file_size_and_unknown_for_a_pack_without
     end: int = header.index("Rozmiar") + len("Rozmiar")
     shown: list[str] = [line[:end] for line in lines[lines.index(header) + 1 : lines.index(header) + 4]]
     sizes: dict[str, str] = {item.key[0]: item.size for item in controller._view.items}
-    assert sizes == {"a": "1.40 GB", "b": "?", "c": "1.4 GB"}
+    assert sizes == {"a": "1.4 GB", "b": "?", "c": "1.4 GB"}
     assert all(row.endswith(f" {item.size}") for row, item in zip(shown, controller._view.items, strict=True))
     assert "16.80 GB" not in " ".join(lines)
 

@@ -132,6 +132,7 @@ from anishift.application.episode_selection import (
     confidence_text,
     premiere_order,
     quality_text,
+    size_bytes,
     visible,
 )
 from anishift.application.events import (
@@ -361,6 +362,7 @@ __all__ = [
     "read_episode",
     "ready_group_ids",
     "resolve_readiness",
+    "size_bytes",
     "visible",
 ]
 

@@ -49,6 +49,7 @@ from anishift.application.episode_selection import (
     rank_candidates,
     representative,
     season_dates,
+    size_bytes,
     streams_releases,
     suggestion,
     visible,
@@ -1585,3 +1586,17 @@ def test_a_season_batch_sets_no_size_reference_for_single_episodes() -> None:
 def test_suggestion_with_match_only_and_no_usable_match_is_none() -> None:
     uncertain: tuple[RankedCandidate, ...] = _rank(_target(), [_stream("Moon Garden - 05 [1080p].mkv")])
     assert suggestion(uncertain, numbering=True, match_only=True) == (None, False)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("1.4 GiB", 1_503_238_553),
+        ("1.4 GB", 1_400_000_000),
+        ("927.39 MB", 927_390_000),
+        ("250,5 MiB", 262_668_288),
+        ("rozmiar nieznany", None),
+    ],
+)
+def test_size_bytes_reads_binary_and_decimal_units(text: str, expected: int | None) -> None:
+    assert size_bytes(text) == expected

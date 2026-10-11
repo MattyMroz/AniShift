@@ -15,6 +15,7 @@ from anishift.application import (
     confidence_text,
     conflict_label,
     quality_text,
+    size_bytes,
 )
 from anishift.cli.interactive.anime_state import AnimeRow
 from anishift.cli.interactive.anime_texts import safe
@@ -277,7 +278,10 @@ def _candidate_details(item: RankedCandidate) -> str:
 def _candidate_size(item: RankedCandidate) -> str:
     if item.stream.file_size is not None:
         return format_bytes(item.stream.file_size, precision=1)
-    return "?" if item.pack else safe(item.stream.size_text or "?")
+    if item.pack:
+        return "?"
+    size: int | None = size_bytes(item.stream.size_text or "")
+    return safe(item.stream.size_text or "?") if size is None else format_bytes(size, precision=1)
 
 
 def _candidate_confidence(item: RankedCandidate, *, suggested: bool) -> str:

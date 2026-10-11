@@ -59,6 +59,7 @@ __all__ = [
     "rank_candidates",
     "representative",
     "season_dates",
+    "size_bytes",
     "streams_releases",
     "suggestion",
     "visible",
@@ -120,11 +121,11 @@ SMALL_SHARE: Final[float] = 0.5
 SIZE_OUTLIER: Final[float] = 4.0
 """Multiple of the median file size above which a release, such as a batch or collection, sets no reference."""
 
-_SIZE: Final[re.Pattern[str]] = re.compile(r"(?i)(\d+(?:[.,]\d+)?)\s*([KMGT])i?B\b")
+_SIZE: Final[re.Pattern[str]] = re.compile(r"(?i)(\d+(?:[.,]\d+)?)\s*([KMGT])(i?)B\b")
 """Read a human size such as ``1.4 GiB`` or ``395.9 MB``."""
 
-_SIZE_UNITS: Final[Mapping[str, int]] = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
-"""Bytes of each size unit prefix."""
+_SIZE_POWERS: Final[Mapping[str, int]] = {"K": 1, "M": 2, "G": 3, "T": 4}
+"""Power of the unit base each size prefix stands for."""
 
 _CONTAINER: Final[re.Pattern[str]] = re.compile(r"[^/\\]\.([^\s./\\()\[\]{}]+)$")
 """Final suffix of the selected file name; a dot followed by spaces or brackets, as in ``(TrueHD 5.1)``, is not one."""
@@ -622,6 +623,15 @@ def confidence_text(candidate: RankedCandidate) -> str | None:
 
 def _suggestible(candidate: RankedCandidate) -> bool:
     return not candidate.conflict and not candidate.traits.dub_only and candidate.supported is not False
+
+
+def size_bytes(text: str) -> int | None:
+    """Return the bytes a human size names, ``GiB`` on base 1024 and ``GB`` on base 1000, or None without one."""
+    found: re.Match[str] | None = _SIZE.search(text)
+    if found is None:
+        return None
+    base: int = 1024 if found.group(3) else 1000
+    return int(float(found.group(1).replace(",", ".")) * base ** _SIZE_POWERS[found.group(2).upper()])
 
 
 def visible(candidates: Sequence[RankedCandidate], keep: int | None = None) -> tuple[RankedCandidate, ...]:
@@ -1149,10 +1159,7 @@ def _episode_bytes(row: RankedCandidate, single: Callable[[str], bool]) -> int |
         return row.stream.file_size
     if row.pack or not single(row.stream.release or row.stream.file_name or ""):
         return None
-    found: re.Match[str] | None = _SIZE.search(row.stream.size_text or "")
-    if found is None:
-        return None
-    return int(float(found.group(1).replace(",", ".")) * _SIZE_UNITS[found.group(2).upper()])
+    return size_bytes(row.stream.size_text or "")
 
 
 def _weighted(candidate: RankedCandidate) -> float:
