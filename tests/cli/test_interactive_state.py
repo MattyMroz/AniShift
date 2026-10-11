@@ -808,7 +808,7 @@ def test_processing_footer_names_the_explicit_owner_action_and_current_pause_sta
         assert frame.splitlines()[-1].strip() == status
         assert "AniShift wstrzymany" not in frame
         controller.handle_key("text:?")
-        assert action in controller.render(80, 24).plain
+        assert action in " ".join(controller.render(80, 24).plain.split())
         controller.handle_key("escape")
         controller.handle_key("text:o")
         assert calls == [("set_auto", {"enabled": not snapshot["auto_enabled"]})]

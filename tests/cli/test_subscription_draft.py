@@ -1324,7 +1324,7 @@ def test_the_details_keep_every_subscription_key_visible_in_a_narrow_terminal(
     _keys(panel, "text:?")
     shown: str = " ".join(_detail_rows(panel, 50, 24))
     for hint in ("R sprawdź teraz", "X usuń"):
-        assert hint in shown
+        assert hint in " ".join(shown.split())
 
 
 _WAITS: str = (_NOW + timedelta(hours=1)).isoformat()

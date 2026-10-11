@@ -2678,7 +2678,7 @@ def test_fresh_panel_reads_admitted_and_unordered_states_beyond_first_hundred() 
     assert controller._episode_states[EpisodeKey(1, 102)].state == "not_ordered"
     _key(controller, "up")
     _key(controller, "text:?")
-    assert "P ponownie" in controller.render(50, 24).plain
+    assert "P ponownie" in " ".join(controller.render(50, 24).plain.split())
     _key(controller, "escape")
     _key(controller, "text:a")
     assert 101 not in controller._episode_marks
@@ -2754,7 +2754,7 @@ def test_owner_refresh_removes_newly_admitted_marks_and_retains_uncertain_file_p
     assert "Enter wskaż plik" in frame
     assert "Space zaznacz" not in frame
     _key(controller, "text:?")
-    assert "P ponownie" in controller.render(50, 24).plain
+    assert "P ponownie" in " ".join(controller.render(50, 24).plain.split())
     _key(controller, "escape")
     _key(controller, "text:d")
     assert not owner.batches

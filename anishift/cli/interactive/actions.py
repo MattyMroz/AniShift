@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
+from rich.cells import cell_len
+
 from anishift.cli.interactive.menu import pack_keys
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -15,8 +17,7 @@ type Action = tuple[str, str]
 
 EVERYWHERE: Final[tuple[Action, ...]] = (
     ("↑↓", "wybierz"),
-    ("←→", "zakładki"),
-    ("Tab", "zakładki"),
+    ("←→ Tab", "zakładki"),
     ("O", "automat"),
     ("Esc", "wróć"),
 )
@@ -63,12 +64,13 @@ def pack_footer(segments: Sequence[str], width: int) -> tuple[str, ...]:
 
 
 def help_lines(actions: Sequence[Action], width: int, *, intro: Sequence[str] = ()) -> tuple[str, ...]:
-    """List the actions of this screen and of every screen, wrapped only between hints."""
-    listed: tuple[str, ...] = tuple(f"{key} {label}" for key, label in actions)
-    everywhere: tuple[str, ...] = tuple(f"{key} {label}" for key, label in EVERYWHERE)
-    return (
-        *intro,
-        *(("Ten ekran", *pack_keys(listed, width, limit=len(listed))) if listed else ()),
-        "Wszędzie",
-        *pack_keys(everywhere, width, limit=len(everywhere)),
-    )
+    """List the actions of this screen and of every screen as a table of keys and what they do."""
+    sections: tuple[tuple[str, Sequence[Action]], ...] = (("Ten ekran", actions), ("Wszędzie", EVERYWHERE))
+    column: int = max(cell_len(key) for _title, rows in sections for key, _label in rows)
+    lines: list[str] = list(intro)
+    for title, rows in sections:
+        if not rows:
+            continue
+        lines.append(title)
+        lines.extend(f"  {key}{' ' * (column - cell_len(key))}  {label}"[:width] for key, label in rows)
+    return tuple(lines)

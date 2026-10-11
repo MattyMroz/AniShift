@@ -43,7 +43,14 @@ from anishift.application.control_views import (
 )
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive import state as state_module
-from anishift.cli.interactive.actions import ACTION_NOTICES, Action, ScreenActions, footer_segments, pack_footer
+from anishift.cli.interactive.actions import (
+    ACTION_NOTICES,
+    Action,
+    ScreenActions,
+    footer_segments,
+    help_lines,
+    pack_footer,
+)
 from anishift.cli.interactive.anime import AnimeController, _Screen
 from anishift.cli.interactive.anime_panel import AnimePanel
 from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeViewState
@@ -789,7 +796,7 @@ def test_question_mark_opens_and_closes_the_help_block(build: Callable[[str], _P
     assert probe.panel._help
     frame: str = probe.panel.render(80, 24).plain
     assert "Ten ekran" in frame
-    assert "↑↓ wybierz · ←→ zakładki · Tab zakładki · O automat · Esc wróć" in frame
+    assert "↑↓ wybierz ←→ Tab zakładki O automat Esc wróć" in " ".join(frame.split())
     probe.panel.handle_key("text:?")
     assert not probe.panel._help
 
@@ -810,7 +817,7 @@ def test_anime_help_lists_only_this_screen_without_aliases(build: Callable[[str]
     probe: _Probe = build("candidates")
     probe.panel.handle_key("text:?")
     text: str = " ".join(item.title for item in probe.anime._view.items)
-    assert "Space zaznacz · D pobierz · / szukaj · C kopiuj" in text
+    assert "Space zaznacz D pobierz / szukaj C kopiuj" in " ".join(text.split())
     assert "I " not in text.split("Ten ekran")[1]
     assert "Z zakres" not in text
 
@@ -1241,6 +1248,21 @@ def test_a_drag_in_a_scrolled_field_keeps_its_starting_character_across_redraws(
 
     assert released.anchor == 20
     assert field.selection_range == (released.value, 20)
+
+
+def test_the_help_is_a_table_of_keys_and_what_they_do() -> None:
+    lines: tuple[str, ...] = help_lines((("Enter", "szczegóły"), ("Ctrl+Z", "cofnij")), 80)
+
+    assert lines == (
+        "Ten ekran",
+        "  Enter   szczegóły",
+        "  Ctrl+Z  cofnij",
+        "Wszędzie",
+        "  ↑↓      wybierz",
+        "  ←→ Tab  zakładki",
+        "  O       automat",
+        "  Esc     wróć",
+    )
 
 
 def test_footers_name_opening_actions_only_where_something_opens() -> None:
@@ -2114,7 +2136,7 @@ def test_a_ready_episode_offers_enter_to_watch_in_the_footer_and_help(build: Cal
     help_frame: str = probe.panel.render(100, 30).plain
 
     assert "Enter obejrzyj · Space zaznacz · D pobierz · W wstrzymaj · ? klawisze · Esc wróć" in footer
-    assert "Enter obejrzyj" in help_frame
+    assert "Enter obejrzyj" in " ".join(help_frame.split())
 
 
 def test_enter_on_a_ready_episode_opens_its_main_result_like_library(
