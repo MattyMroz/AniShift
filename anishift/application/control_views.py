@@ -102,6 +102,9 @@ class LibrarySet:
     available: bool
     problem: str | None = None
     provisional_timing: bool = False
+    series: str | None = None
+    season: int | None = None
+    episode: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

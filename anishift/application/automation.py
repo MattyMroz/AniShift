@@ -149,7 +149,13 @@ from anishift.application.intents import (
     RunMode,
     SubtitleOutputFormat,
 )
-from anishift.application.library import file_identity, project_library
+from anishift.application.library import (
+    assigned_files,
+    file_identity,
+    name_series,
+    project_library,
+    untitled_series,
+)
 from anishift.application.planner import auto_group_products
 from anishift.application.planning import ExecutionPlan, TaskState
 from anishift.application.products import AUDIO_PRODUCT_PROFILES, main_product, product_suffix
@@ -888,6 +894,8 @@ class AutomationOwner:
         self._inspection_at: float | None = None
         self._library: InspectedWorkspace | None = None
         self._ready_library: tuple[LibrarySet, ...] = ()
+        self._series_titles: dict[int, str] = {}
+        self._series_requested: set[int] = set()
         self._deletion_previews: dict[str, tuple[DeletionPreview, str | None, int]] = {}
         self._ledger: WatchLedger = WatchLedger()
         self._settle_at: float | None = None
@@ -952,7 +960,7 @@ class AutomationOwner:
 
     def _acquisition_groups(self, acquisition: AcquisitionConfirmation) -> list[str]:
         groups: set[str] = {row.group_id for row in acquisition.assignments if row.group_id is not None}
-        for name in sorted(_assigned_files(acquisition)):
+        for name in sorted(assigned_files(acquisition)):
             relative: Path = (Path(acquisition.directory) / name).parent
             candidate: ArtifactName | None = classify_artifact(Path(name), resolve_route(relative))
             if candidate is not None:
@@ -1442,9 +1450,7 @@ class AutomationOwner:
                     return RequestOrigin.USER if acquisition.manual else RequestOrigin.BACKGROUND
         for acquisition in reversed(self._state.acquisitions):
             directory: Path = self._service.workspace_root / acquisition.directory
-            owned: frozenset[str] = frozenset(
-                name for name in _assigned_files(acquisition) if directory / name in paths
-            )
+            owned: frozenset[str] = frozenset(name for name in assigned_files(acquisition) if directory / name in paths)
             if not owned:
                 continue
             if not owned <= frozenset(acquisition.complete_files):
@@ -1708,6 +1714,7 @@ class AutomationOwner:
         pausing: bool = self._pausing()
         incomplete: bool = not pausing and self._pause_incomplete()
         materials: list[dict[str, object]] = self._processing_materials()
+        library: tuple[LibrarySet, ...] = name_series(self._ready_library, self._state, self._series_titles)
         return {
             "instance_id": self._instance_id,
             "notification_problem": self._notification_problem,
@@ -1814,13 +1821,16 @@ class AutomationOwner:
                     "name": group.name,
                     "main_result": group.main_result,
                     "target": None if group.target is None else group.target.value,
+                    "series": group.series,
+                    "season": group.season,
+                    "episode": group.episode,
                 }
-                for group in self._ready_library
+                for group in library
                 if group.available
             ],
             "library_problems": [
                 encode_view(group)
-                for group in self._ready_library
+                for group in library
                 if not group.available and any(item.identity is not None for item in group.files)
             ],
             "deletions": [
@@ -2149,7 +2159,7 @@ class AutomationOwner:
         group: LibrarySet | None = next((item for item in self._ready_library if item.set_id == identifier), None)
         if group is None:
             return self._library_refusal("library_set_missing")
-        return ControlResponse.succeeded(encode_view(group))
+        return ControlResponse.succeeded(encode_view(name_series((group,), self._state, self._series_titles)[0]))
 
     def _inspect_library_command(self, request: ControlRequest) -> ControlResponse:
         groups: tuple[SourceGroup, ...] = self._service.library_inventory()
@@ -2176,7 +2186,8 @@ class AutomationOwner:
         if request.kind == "deletion_undo":
             return self._start_restore(request, released)
         if request.kind == "library_refresh":
-            return ControlResponse.succeeded({"sets": [encode_view(item) for item in self._ready_library]})
+            named: tuple[LibrarySet, ...] = name_series(self._ready_library, self._state, self._series_titles)
+            return ControlResponse.succeeded({"sets": [encode_view(item) for item in named]})
         if request.kind == "deletion_retry":
             return self._retry_deletion(request, released)
         identifier: str | None = _text(request.payload, "set_id")
@@ -2292,7 +2303,7 @@ class AutomationOwner:
     def _torrent_owns_set(self, group: LibrarySet, released: frozenset[str] = frozenset()) -> bool:
         paths: set[str] = {item.path for item in group.files}
         return any(
-            paths.intersection((Path(item.directory) / name).as_posix() for name in _assigned_files(item))
+            paths.intersection((Path(item.directory) / name).as_posix() for name in assigned_files(item))
             for item in self._state.acquisitions
             if item.state is not AcquisitionState.COMPLETE or item.info_hash not in released
         )
@@ -6076,7 +6087,7 @@ class AutomationOwner:
             for name, _size, _stamp in operation.files
         }
         return bool(
-            paths.intersection((Path(acquisition.directory) / name).as_posix() for name in _assigned_files(acquisition))
+            paths.intersection((Path(acquisition.directory) / name).as_posix() for name in assigned_files(acquisition))
         )
 
     def _working(self, acquisition: AcquisitionConfirmation | None = None) -> bool:
@@ -8119,7 +8130,35 @@ class AutomationOwner:
         )
 
     def _publish_state(self) -> None:
+        self._request_series_titles()
         self._publish({"event": "state_changed", "payload": self._status()}, terminal=False)
+
+    def _request_series_titles(self) -> None:
+        acquisition: AcquisitionService | None = self._service.acquisition
+        if acquisition is None or self._shutting_down:
+            return
+        wanted: frozenset[int] = untitled_series(self._state, self._series_titles) - self._series_requested
+        if not wanted:
+            return
+        self._series_requested.update(wanted)
+        self._active_io += 1
+        self._pool.submit(self._read_series_titles, acquisition, tuple(sorted(wanted)))
+
+    def _read_series_titles(self, acquisition: AcquisitionService, anilist_ids: tuple[int, ...]) -> None:
+        titles: dict[int, str] = {}
+        try:
+            for anilist_id in anilist_ids:
+                title: str | None = _series_title(acquisition, anilist_id)
+                if title is not None:
+                    titles[anilist_id] = title
+        finally:
+            self._queue.put(lambda: self._record_series_titles(titles))
+
+    def _record_series_titles(self, titles: dict[int, str]) -> None:
+        self._active_io -= 1
+        self._series_titles.update(titles)
+        if titles:
+            self._publish_state()
 
     def _progress_views(self) -> list[dict[str, object]]:
         with self._progress_lock:
@@ -8953,15 +8992,10 @@ def _file_owners(
     for item in move.files:
         for acquisition in acquisitions:
             directory: Path = Path(acquisition.directory)
-            if any((directory / name).as_posix() == item.source for name in _assigned_files(acquisition)):
+            if any((directory / name).as_posix() == item.source for name in assigned_files(acquisition)):
                 owners[item.source] = acquisition
                 break
     return owners
-
-
-def _assigned_files(acquisition: AcquisitionConfirmation) -> frozenset[str]:
-    """Return every workspace name one transfer owns, whether reserved up front or observed later."""
-    return frozenset(acquisition.required_files) | frozenset(path for _index, path, _size in acquisition.file_layout)
 
 
 def _reserved_stems(acquisition: AcquisitionConfirmation) -> frozenset[str]:
@@ -9074,6 +9108,17 @@ def _subscription_details(record: SubscriptionRecord, row: SubscriptionRow) -> d
         "last_check": None if record.last_check is None else encode_view(record.last_check),
         "specials": [] if record.mapping is None else [encode_view(item) for item in record.mapping.specials],
     }
+
+
+def _series_title(acquisition: AcquisitionService, anilist_id: int) -> str | None:
+    try:
+        with acquisition.episode_requests():
+            franchise: Franchise = acquisition.franchise(anilist_id)
+    except (AniShiftError, OSError, ValueError) as error:
+        logger.warning("Library series title unavailable", provider="anilist", error_class=type(error).__name__)
+        return None
+    entry: FranchiseEntry | None = next((item for item in franchise.entries if item.anilist_id == anilist_id), None)
+    return None if entry is None else entry.english or entry.romaji
 
 
 def _subscription_draft(read: ListingRead, entry: FranchiseEntry | None, now: datetime) -> SubscriptionRecord | str:

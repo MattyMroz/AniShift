@@ -14,8 +14,9 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   zachowanej referencji Nyaa i rekonstrukcją `Release` dla jawnego ponowienia. Koordynator publikuje
   zwalidowany staging przez `scheduler_runtime.py`. Decyzje produktowe pozostają w plannerze.
 - `library.py` obok `acquisition.py` importuje czyste funkcje `services.torrents.names`
-  (`parse_release_name`, `episode_range`, `season_hint`, `strip_season`) dla etykiety Biblioteki
-  `library_label` (Nazwa · Odcinek), wystawionej panelowi przez fasadę.
+  (`parse_release_name`, `episode_range`, `season_hint`, `strip_season`, `base_title`) dla etykiety
+  Biblioteki `library_label` (Nazwa · Odcinek), wystawionej panelowi przez fasadę, i nazwy serii
+  `series_title`.
 - Nazwy trwałych produktów pochodzą wyłącznie z `products.py`; żaden inny moduł nie zapisuje
   literałów `.pl`, `.spoken.pl`, `.displayed.pl`, `.pl.mkv`, `.pl.mp4` ani `.m4a`.
 - CLI używa publicznej fasady `anishift.application`; nie importuje wewnętrznych helperów I/O
@@ -128,6 +129,14 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   przenoś plików z renderera. Przygotowanie czyta plan dziennika bez walidacji wejść całego runu;
   grupa już w `ready/` traci wpis problemu bez czytania dziennika, a grupa spoza `ready/` ze
   zmienionym źródłem jest pomijana bez problemu i bez przenoszenia.
+- Zestaw pobrany przez AniShift wiąże z odcinkiem `downloaded_episodes`: `EpisodeAssignment.group_id`
+  równy `ReadyGroup.set_id` (albo `group_id`), a dla zamówienia `download` — `legacy_scope` i jego pliki
+  w `ReadyGroup.sources`. `name_series` dokłada `LibrarySet.series/season/episode` przy emisji (status,
+  `library_details`, `library_refresh`), nigdy w zapisanym stanie: tytuł subskrypcji tego `anilist_id`,
+  inaczej tytuł z katalogu (`franchise`, raz na instancję w puli I/O, wynik w `_series_titles` ownera),
+  przycięty przez `series_title`. Sezon to `season_hint` tytułu, inaczej sezon z mapowania subskrypcji;
+  numer to lokalny numer klucza. Bez sezonu lub numeru `episode` zostaje puste i panel bierze odcinek z
+  nazwy pliku. Zestaw ręczny nie dostaje pól. `library.py`, `automation.py`
 - Usuwanie z Biblioteki pomija pasujące pobranie tylko w stanie `COMPLETE` z receipt managera
   dowodzącym zwolnienia. Dowód zwolnienia czytaj w puli I/O i sprawdź stan ownera ponownie przed
   przyjęciem; same historyczne ścieżki relokacji nie dowodzą aktywnego posiadania.
