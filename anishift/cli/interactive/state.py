@@ -136,6 +136,9 @@ _DETAIL_HELP_ROWS: Final[int] = 3
 _HISTORY_CRUMB: Final[tuple[str, ...]] = ("Przetwarzanie", "Historia")
 """Breadcrumb levels above the History list."""
 
+_TOP: Final[Click] = Click(ClickKind.CRUMB, 0)
+"""Click target of the shown tab below its list level, which leaves for the tab's list like its first crumb."""
+
 _ANSWERS: Final[str] = "Enter tak · Esc nie"
 """Keys answering the cancellation question."""
 
@@ -1282,13 +1285,15 @@ class StateController:
 
     def _tabs(self, columns: int) -> Text:
         shown: int = self._shown_tab()
+        nested: bool = len(self.breadcrumb()) > 1
         tabs: Text = Text()
         for index, name in enumerate(_TABS):
             if index:
                 tabs.append(" · ", style="gray")
             tabs.append(name, style="brand_accent" if shown == index else "gray")
-            if index != shown:
-                mark_target(tabs, len(tabs) - len(name), len(tabs), Click(ClickKind.TAB, index))
+            target: Click | None = Click(ClickKind.TAB, index) if index != shown else _TOP if nested else None
+            if target is not None:
+                mark_target(tabs, len(tabs) - len(name), len(tabs), target)
         if tabs.cell_len <= max(columns - 2, 1):
             return tabs
         compact: Text = Text(f"← {_TABS[shown]} ({shown + 1}/{len(_TABS)}) →", style="brand_accent")

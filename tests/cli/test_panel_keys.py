@@ -1486,6 +1486,29 @@ def test_a_click_on_an_earlier_crumb_goes_back_by_escape_until_that_level(
 
 
 @pytest.mark.parametrize(
+    ("name", "tab"),
+    [("history", 2), ("library_details", 3), ("candidates", 0), ("u08", 1)],
+)
+def test_a_click_on_the_shown_tab_below_its_list_goes_back_like_its_first_crumb(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch, name: str, tab: int
+) -> None:
+    crumbed: _Probe = build(name)
+    label: str = crumbed.panel.breadcrumb()[0]
+    first: interactive_app._InteractiveApplication = _app(monkeypatch, crumbed)
+    _click(first, _label_point(first._render_frame(80, 24), label, f"{label}{CRUMB_SEPARATOR}"))
+    _settle(crumbed)
+    probe: _Probe = build(name)
+    application: interactive_app._InteractiveApplication = _app(monkeypatch, probe)
+    before: tuple[object, ...] = _state(probe)
+
+    _click(application, _tab_point(application._render_frame(80, 24), tab))
+    _settle(probe)
+
+    assert _state(probe) == _state(crumbed)
+    assert _state(probe) != before
+
+
+@pytest.mark.parametrize(
     ("name", "keys"),
     [
         ("titles", ()),
