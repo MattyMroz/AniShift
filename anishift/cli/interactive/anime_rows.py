@@ -169,7 +169,6 @@ def draft_rows(draft: SubscriptionDraft | None, episodes: Sequence[ListedEpisode
     )
     aired: tuple[AnimeRow, ...] = (
         (
-            AnimeRow("gap.aired", "", navigable=False),
             AnimeRow("aired", _DRAFT_AIRED, navigable=False),
             *(
                 AnimeRow(

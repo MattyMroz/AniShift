@@ -637,6 +637,20 @@ def test_space_unmarks_an_aired_episode_so_add_orders_only_the_marked_ones(
     assert _orders(owner) == [(1,)]
 
 
+def test_a_long_draft_fills_the_screen_under_one_blank_line_below_the_tabs(
+    panel: StateController, owner: _Owner
+) -> None:
+    owner.listings[1] = replace(_listing(episodes=_weekly(15, 16), count=16), anilist_id=1)
+    _episode_draft(panel, owner)
+    lines: list[str] = _frame(panel, 120, 24).split("\n")
+    tabs: int = next(index for index, line in enumerate(lines) if "Subskrypcje" in line)
+    crumb: int = next(index for index, line in enumerate(lines) if "Nowa subskrypcja" in line)
+    shown: list[str] = [line for line in lines if "] E" in line]
+
+    assert crumb == tabs + 2
+    assert len(shown) >= 12
+
+
 def test_a_click_on_a_draft_box_toggles_its_own_row_and_not_the_cursor_row(
     panel: StateController, owner: _Owner
 ) -> None:

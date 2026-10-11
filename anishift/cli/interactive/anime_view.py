@@ -217,7 +217,7 @@ def visible_rows(rows: int) -> int:
 
 def overflows(screen: AnimeScreen, count: int, rows: int) -> bool:
     """Return whether ``count`` table rows overflow the centered layout of ``rows`` rows, so the table fills them."""
-    table: bool = screen is not AnimeScreen.QUERY and screen not in _LIST_SCREENS
+    table: bool = screen is AnimeScreen.DRAFT or (screen is not AnimeScreen.QUERY and screen not in _LIST_SCREENS)
     return table and (rows < MIN_ROWS or count > visible_rows(rows))
 
 
@@ -246,7 +246,8 @@ def _context(snapshot: AnimeSnapshot) -> str:
 
 def _filled(snapshot: AnimeSnapshot, columns: int, rows: int) -> tuple[int, int]:
     keys: tuple[str, ...] = _key_lines(snapshot, columns - _MARGIN)
-    spare: int = rows - HEADER_ROWS - _footer_rows(snapshot) - len(keys)
+    heading: int = _CONTEXT_ROWS if snapshot.screen in _LIST_SCREENS else HEADER_ROWS
+    spare: int = rows - heading - _footer_rows(snapshot) - len(keys)
     status: bool = bool(snapshot.global_status)
     empty: int = 0 if _context(snapshot) else 1 if status else _CONTEXT_ROWS
     start: int = -min(max(empty, 1 - spare), _CONTEXT_ROWS)
