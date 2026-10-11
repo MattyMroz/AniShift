@@ -31,7 +31,15 @@ from anishift.cli.interactive.manual import ManualController, ManualResult, Manu
 from anishift.cli.interactive.mascot import MascotController, MascotState
 from anishift.cli.interactive.mascot_native import MASCOT_REST_TOP_ROWS, NATIVE_MASCOT_ANCHOR
 from anishift.cli.interactive.menu import with_footer
-from anishift.cli.interactive.pointer import Click, ClickKind, FrameSelection, TextPoint, mark_inert, mark_row
+from anishift.cli.interactive.pointer import (
+    Click,
+    ClickKind,
+    FrameSelection,
+    TextPoint,
+    mark_inert,
+    mark_keys,
+    mark_row,
+)
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.prompts import (
     TEXT_MASCOT_SIZE,
@@ -68,7 +76,7 @@ _HOME_CHOICES: Final[tuple[tuple[str, HomeAction], ...]] = (
 )
 """Home actions in their product-defined display order."""
 
-_HOME_HINT: Final[str] = "↑↓ · Enter"
+_HOME_HINT: Final[str] = "Enter wybierz"
 """Compact keyboard hint shown below Home choices."""
 
 _HOME_FOOTER_ROWS: Final[int] = 2
@@ -95,7 +103,7 @@ _MINIMUM_BRANDED_ROWS: Final[int] = 8
 _BATCH_CLOSE_SECONDS: Final[float] = 10.0
 """Seconds a finished batch window stays readable before it closes itself."""
 
-_BATCH_CLOSING: Final[str] = "Okno zamknie się za {seconds} s · dowolny klawisz zamyka"
+_BATCH_CLOSING: Final[str] = "Okno zamknie się za {seconds} s · Esc zamknij"
 """Footer of a finished batch window while it counts down."""
 
 _REFUSAL_MESSAGES: Final[dict[str, str]] = {
@@ -987,7 +995,9 @@ class _InteractiveApplication:
             content = self._state.render(columns, rows)
             screen = self._state.view_key()
         else:
-            content = _message_content(columns, rows, message, mascot_state, view=message_view)
+            content = _message_content(
+                columns, rows, message, mascot_state, view=message_view, closing=closing_at is not None
+            )
             screen = (message.plain, message_view.offset)
         footer: str = self._frame_selection.notice or self._directory
         if closing_at is not None:
@@ -1133,13 +1143,14 @@ def _last_offset(total: int, visible: int) -> int:
     return max(total - visible, 0)
 
 
-def _message_content(
+def _message_content(  # noqa: PLR0913
     columns: int,
     rows: int,
     message: Text,
     mascot_state: MascotState,
     *,
     view: _QueueView | None = None,
+    closing: bool = False,
 ) -> Text:
     geometry: HomeGeometry = resolve_home_geometry(columns, rows)
     content = Text("\n" * geometry.top_padding)
@@ -1150,7 +1161,7 @@ def _message_content(
     window: _QueueView = view if view is not None else _QueueView(following=False)
     window.fit(len(lines) - 1, len(lines), budget)
     content.append_text(Text("\n").join(lines[window.offset : window.offset + budget]))
-    return with_footer(content, ("↑↓ przewijanie · dowolny inny klawisz: powrót",), columns, rows)
+    return with_footer(content, ("" if closing else "Esc wróć",), columns, rows)
 
 
 def _result_message(result: RunResult, workspace: InspectedWorkspace) -> Text:
@@ -1179,7 +1190,7 @@ def _fit_frame(content: Text, version: str, directory: str, columns: int, rows: 
         # move the screen row the native mascot is anchored to.
         line.truncate(max(columns, 1), overflow="crop")
     lines.extend(Text() for _ in range(body_rows - len(lines)))
-    lines.append(mark_inert(Text(status_line(version, directory, columns), style="gray")))
+    lines.append(mark_keys(mark_inert(Text(status_line(version, directory, columns), style="gray"))))
     frame = Text()
     for index, line in enumerate(lines):
         frame.append_text(line)

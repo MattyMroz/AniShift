@@ -117,6 +117,17 @@ def test_an_existing_voice_opens_prefilled(panel: SettingsController, service: F
     assert panel._editor.buffer == "kaja | Kaja | voice-1"
 
 
+def test_only_an_existing_voice_names_its_removal_by_an_emptied_line(
+    panel: SettingsController, service: FakeSettingsService
+) -> None:
+    service.settings.elevenbytes_custom_voices = [CustomVoiceSetting("kaja", "Kaja", "voice-1")]
+    _open_voices(panel)
+    _activate(panel, "voice:kaja")
+    editing: str = panel.render(100, 30).plain
+
+    assert "pusta linia usuwa" in editing
+
+
 def test_editing_a_voice_replaces_it_in_place(panel: SettingsController, service: FakeSettingsService) -> None:
     service.settings.elevenbytes_custom_voices = [
         CustomVoiceSetting("kaja", "Kaja", "voice-1"),
@@ -196,3 +207,12 @@ def test_the_parser_trims_every_part() -> None:
 def test_a_formatted_voice_parses_back_into_the_same_voice() -> None:
     voice = CustomVoiceSetting("kaja", "Kaja", "voice-1")
     assert parse_voice_input(format_voice_input(voice)) == voice
+
+
+def test_a_running_check_names_only_its_cancel_key(panel: SettingsController) -> None:
+    panel._busy = True
+
+    shown: str = panel.render(100, 30).plain
+
+    assert "Esc anuluj" in shown
+    assert "Enter otwórz" not in shown

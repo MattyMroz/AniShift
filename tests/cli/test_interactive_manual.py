@@ -294,3 +294,14 @@ def test_backspace_edits_the_external_file_path(tmp_path: Path) -> None:
         assert controller.handle_key(key) is ManualResult.STAY
     assert controller._screen is _Screen.INPUT
     assert controller._input.text == "a"
+
+
+def test_the_episode_list_names_space_on_an_episode_and_enter_on_an_action(tmp_path: Path) -> None:
+    controller: ManualController = _controller(tmp_path)
+    on_episode: str = controller.render(120, 40).plain
+    controller.handle_key("end")
+    on_action: str = controller.render(120, 40).plain
+
+    assert "Space zaznacz · A " in on_episode
+    assert "Enter wybierz · A " in on_action
+    assert "Space zaznacz" not in on_action

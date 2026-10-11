@@ -71,10 +71,10 @@ __all__ = ["ManualController", "ManualDraft", "ManualResult", "ManualRun", "defa
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_MENU_HINT: Final[str] = "↑↓ · Enter · Esc"
+_MENU_HINT: Final[str] = "Enter wybierz · Esc wróć"
 """Keyboard hint used by single-choice menus."""
 
-_MULTI_HINT: Final[str] = "↑↓ · Enter/Space zmień · Esc wróć"
+_MULTI_HINT: Final[str] = "Enter zmień · Esc wróć"
 """Keyboard hint used by multi-choice menus."""
 
 _GROUP_ACTIONS: Final[tuple[tuple[str, ProductKind | None], ...]] = (
@@ -1110,7 +1110,10 @@ class ManualController:
                 f"{'●' if self._group_ids[index] in self._selected_groups else '○'} " if index < len(labels) else "  "
             )
             _append_row(content, left, shown[index], index == self._selected, marker, index=index)
-        return self._finish(content, columns, rows, "↑↓ · Space wybierz · A wszystkie · End podgląd · Esc wróć")
+        every: str = "A odznacz wszystkie" if self._selected_groups else "A zaznacz wszystkie"
+        on_group: bool = self._selected < len(self._group_ids)
+        hint: str = f"Space zaznacz · {every} · Esc wróć" if on_group else f"Enter wybierz · {every} · Esc wróć"
+        return self._finish(content, columns, rows, hint)
 
     def _render_group_action(self, columns: int, rows: int) -> Text:
         entries: tuple[str, ...] = ("Użyj ustawień domyślnych", "Dostosuj ten odcinek", "Wróć")

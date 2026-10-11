@@ -211,7 +211,7 @@ def test_home_click_beside_the_choices_keeps_the_cursor_until_a_choice_is_hit(mo
     application._selected = 1
     frame: Text = application._render_frame(80, 24)
 
-    _click(application, _point(frame, "↑↓"))
+    _click(application, Point(0, 1))
     _click(application, Point(0, 0))
     _click(application, Point(0, 23))
     beside: int = application._selected
@@ -326,7 +326,7 @@ def test_settings_click_moves_the_cursor_without_opening_the_row(monkeypatch: py
     assert controller._editor is None
 
 
-def test_settings_click_ignores_the_title_section_and_hint_but_not_a_row(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_settings_click_ignores_the_title_and_section_but_not_a_row(monkeypatch: pytest.MonkeyPatch) -> None:
     application, _copied = _application(monkeypatch, _Mode.SETTINGS)
     controller: SettingsController = _settings(FakeSettingsService(), "subtitles")
     application._settings = controller
@@ -334,9 +334,8 @@ def test_settings_click_ignores_the_title_section_and_hint_but_not_a_row(monkeyp
     frame: Text = application._render_frame(100, 30)
     lines: list[str] = frame.plain.split("\n")
     title: int = next(row for row, line in enumerate(lines) if line.strip())
-    hint: int = max(row for row, line in enumerate(lines[:-1]) if line.strip())
 
-    for row in (title, title + 2, hint):
+    for row in (title, title + 2):
         _click(application, Point(len(lines[row]) - len(lines[row].lstrip()), row))
     beside: int = controller._selected
     _click(application, Point(4, _row_of(frame, 0)))

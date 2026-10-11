@@ -49,26 +49,32 @@ __all__ = ["SettingsController", "SettingsResult"]
 _POINTER: Final[str] = "\u276f"
 """Marker placed before the active interactive row."""
 
-_MENU_HINT: Final[str] = "↑↓/Tab · ←→ · Enter · Esc"
-"""Keyboard hint used by settings menus."""
+_MENU_HINT: Final[str] = "Enter otwórz · Esc wróć"
+"""Keyboard hint used by settings menus on a category, reset or back row."""
 
-_MULTI_HINT: Final[str] = "↑↓ · Enter/Space zmień · Esc wróć"
+_SETTING_HINT: Final[str] = "Enter zmień · Esc wróć"
+"""Keyboard hint used by settings menus on a setting row, whose arrows also step its value."""
+
+_MULTI_HINT: Final[str] = "Enter zmień · Esc wróć"
 """Keyboard hint used by the output product selector."""
 
-_MULTI_SELECT_HINT: Final[str] = "↑↓ · Space zmień · Esc wróć"
+_MULTI_SELECT_HINT: Final[str] = "Space zmień · Esc wróć"
 """Keyboard hint used by multi-choice setting editors."""
 
-_SELECT_HINT: Final[str] = "↑↓/Tab · Enter/→ wybierz · Esc/← cofnij"
+_SELECT_HINT: Final[str] = "Enter wybierz · Esc wróć"
 """Keyboard hint used by single-choice editors, where moving is not choosing."""
 
 _SECRET_HINT: Final[str] = "Enter zatwierdź · Esc anuluj"  # noqa: S105 - keyboard hint, never a credential
 """Keyboard hint used by the secret editor, the only value not saved on its own."""
 
-_INPUT_HINT: Final[str] = "←→ kursor · Enter/Esc wróć · zapis automatyczny"
+_INPUT_HINT: Final[str] = "Enter zatwierdź · Esc wróć"
 """Keyboard hint used by editors that persist what was typed on their own."""
 
-_VOICE_HINT: Final[str] = "alias | nazwa | ID głosu · Enter zatwierdź · puste usuwa · Esc wróć"
-"""Keyboard hint used by the custom voice editor, including its line format."""
+_VOICE_HINT: Final[str] = "alias | nazwa | ID głosu · Enter zatwierdź · Esc wróć"
+"""Keyboard hint used by the editor of a new custom voice, including its line format."""
+
+_VOICE_EDIT_HINT: Final[str] = "alias | nazwa | ID głosu · Enter zatwierdź · pusta linia usuwa · Esc wróć"
+"""Keyboard hint used by the editor of an existing custom voice, which an emptied line removes."""
 
 _VOICES_SETTING_ID: Final[str] = "elevenbytes_custom_voices"
 """Setting holding the list of user-defined ElevenBytes voices."""
@@ -1718,6 +1724,8 @@ class SettingsController:
             content.append("\n")
         self._append_feedback(content, left, columns)
         hint: str = _MENU_HINT
+        if self._items and self._items[self._selected].key.startswith("setting:"):
+            hint = _SETTING_HINT
         if self._recipe is not None and rows >= _RECIPE_DESCRIPTION_MIN_ROWS:
             hint = _RECIPE_DESCRIPTIONS[self._recipe] + "\n" + hint
         return self._finish(content, hint, columns, rows)
@@ -1774,7 +1782,10 @@ class SettingsController:
             mark_row(content, index)
             content.append("\n")
         self._append_feedback(mark_inert(content), left, columns)
-        return self._finish(content, _MULTI_HINT, columns, rows)
+        hint: str = _MENU_HINT if self._selected >= reset_index else _MULTI_HINT
+        if self._selected < reset_index and self._output_products == {_PRODUCTS[self._selected][0]}:
+            hint = "Esc wróć"
+        return self._finish(content, hint, columns, rows)
 
     def _render_editor(self, columns: int, rows: int, editor: _Editor) -> Text:
         start, end, body_rows = _editor_window(
@@ -1825,7 +1836,7 @@ class SettingsController:
         if editor.kind is _EditorKind.MULTI_SELECT:
             hint = _MULTI_SELECT_HINT
         elif editor.kind is _EditorKind.VOICE:
-            hint = _VOICE_HINT
+            hint = _VOICE_EDIT_HINT if editor.current_value else _VOICE_HINT
         elif editor.kind is _EditorKind.PASSWORD:
             hint = _SECRET_HINT
         elif editor.action is _EditorAction.SELECT_CUSTOM_MODEL:
@@ -1833,6 +1844,8 @@ class SettingsController:
         return self._finish(content, hint, columns, rows)
 
     def _finish(self, content: Text, hint: str, columns: int, rows: int) -> Text:
+        if self._busy:
+            hint = "Esc anuluj"
         lines: list[Text] = list(content.split("\n", allow_blank=True))
         feedback: Text = lines[-2]
         feedback = feedback[len(feedback.plain) - len(feedback.plain.lstrip()) :]

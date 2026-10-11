@@ -5,10 +5,11 @@ from pathlib import Path
 import pytest
 from rich.text import Text
 
-from anishift.cli.interactive.app import _fit_frame, _home_content
+from anishift.cli.interactive.app import _closing_label, _fit_frame, _home_content
 from anishift.cli.interactive.home import HomeAction, brand_for_geometry, working_directory_label
 from anishift.cli.interactive.mascot import MascotState, mascot_art
 from anishift.cli.interactive.mascot_native import NATIVE_MASCOT_ANCHOR
+from anishift.cli.interactive.pointer import Click, ClickKind, TextPoint, click_at
 from anishift.cli.interactive.prompts import (
     AutoGeometry,
     HomeGeometry,
@@ -23,9 +24,17 @@ def test_home_selects_panel_before_processing_actions() -> None:
     labels: list[str] = ["Panel", "Ręczny", "Ustawienia", "Wyjście"]
     rows: list[str] = [line.strip().removeprefix("\u276f").strip() for line in content.plain.split("\n")]
 
-    assert [row for row in rows if row][-5:] == [*labels, "↑↓ · Enter"]
+    assert [row for row in rows if row][-5:] == [*labels, "Enter wybierz"]
     assert len(HomeAction) == len(labels)
     assert "\u276f Panel" in content.plain
+
+
+def test_the_batch_countdown_offers_its_close_key_as_a_click() -> None:
+    frame: Text = _fit_frame(Text(), "0.1.0", _closing_label(0.0), 80, 10)
+    last: str = frame.plain.splitlines()[-1]
+
+    assert click_at(frame, TextPoint(9, last.index("Esc zamknij"))) == Click(ClickKind.KEY, key="escape")
+    assert click_at(frame, TextPoint(9, last.index("Okno"))) == Click()
 
 
 def test_the_footer_keeps_the_directory_and_version_at_opposite_edges() -> None:

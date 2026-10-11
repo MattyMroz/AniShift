@@ -391,7 +391,7 @@ def test_an_auto_refusal_stays_a_sentence_with_a_hint_and_returns_home(monkeypat
 
     assert "Workspace nie zawiera materiału do uruchomienia" in refused
     assert "Umieść plik wideo lub napisów w workspace i spróbuj ponownie" in refused
-    assert "dowolny inny klawisz: powrót" in refused
+    assert "Esc wróć" in refused
     assert "source group" not in refused
     assert "Traceback" not in refused
 
