@@ -72,8 +72,8 @@ _MARGIN: Final[int] = 4
 _EPISODE_STATUS_WIDTH: Final[int] = len("Czeka na wydanie")
 """Fixed Stan column width, so a changing episode state never shifts the centered table."""
 
-_SUBSCRIPTION_STATUS_WIDTH: Final[int] = len("Emisja E12 za 13d 23:59:59")
-"""Fixed Stan column width of the subscription list, so a ticking countdown never shifts the table."""
+_SUBSCRIPTION_STATUS_WIDTH: Final[int] = len("Konflikt liczby odcinków")
+"""Fixed Stan column width of the subscription list, so a changing state never shifts the table."""
 
 _TITLE_FLOOR: Final[int] = 12
 """Fewest title cells kept before optional table columns are dropped."""

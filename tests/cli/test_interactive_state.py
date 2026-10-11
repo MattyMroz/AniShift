@@ -1140,7 +1140,7 @@ def test_processing_excludes_saved_downloads_regardless_of_client_measurement(
             return ControlResponse.succeeded(
                 {
                     "subscriptions": [
-                        encode_view(_row("series", "Example", done=22)),
+                        encode_view(_row("series", "Example", aired=22)),
                         encode_view(_row("other", "Other", paused=True)),
                     ]
                 }
@@ -1186,12 +1186,12 @@ def test_processing_excludes_saved_downloads_regardless_of_client_measurement(
         controller._thread.join(5)
 
 
-def _row(subscription_id: str, title: str, *, done: int = 1, paused: bool = False) -> SubscriptionRow:
+def _row(subscription_id: str, title: str, *, aired: int = 1, paused: bool = False) -> SubscriptionRow:
     return SubscriptionRow(
         subscription_id=subscription_id,
         anilist_id=None,
         title=title,
-        done=done,
+        aired=aired,
         due_at=None,
         paused=paused,
         pause_reason="user" if paused else None,

@@ -33,16 +33,12 @@ __all__ = [
     "row_state",
     "row_summary",
     "subscription_draft",
-    "watched_line",
 ]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 CHECK_SHOWN_S: Final[float] = 10.0
 """Seconds a requested check result stays in its subscription row."""
-
-_DAY_S: Final[int] = 86400
-"""Seconds in one day."""
 
 _HOUR_S: Final[int] = 3600
 """Seconds in one hour."""
@@ -62,10 +58,25 @@ _PAUSES: Final[Mapping[str, str]] = MappingProxyType(
 _ISSUES: Final[Mapping[str, tuple[str, str]]] = MappingProxyType(
     {
         "season_unrecognized": ("Nie rozpoznano sezonu", "Nie rozpoznano sezonu — usuń i dodaj ponownie"),
-        "catalog_conflict": ("Inny sezon w katalogu", "Katalog wskazuje inny sezon — sprawdzam ponownie"),
+        "catalog_conflict": (
+            "Zmienił się sezon",
+            "Lista odcinków przypisała ten tytuł do innego sezonu · usuń subskrypcję i dodaj ponownie",
+        ),
     }
 )
 """Short state and full explanation of each problem that stops a whole subscription."""
+
+_DUE_STATES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "searching": "szukam",
+        "pending": "szukam",
+        "polish": "czekam na PL",
+        "downloading": "pobieram",
+        "no_release": "brak wydania",
+        "exhausted": "nie udało się",
+    }
+)
+"""Short Polish words of what the earliest unfinished episode of a subscription is waiting for."""
 
 _FAILED_CHECKS: Final[frozenset[str]] = frozenset({"source_failed", "rate_limited"})
 """Check outcomes in which a source did not answer."""
@@ -125,23 +136,10 @@ def episode_label(numbers: Iterable[int]) -> str:
 
 
 def row_columns(row: Mapping[str, object]) -> tuple[str, str]:
-    """Return the episodes watched before the subscription or on disk out of the season count, and the ready count."""
+    """Return the aired episodes out of the season count, and the ready count."""
     count: object = row.get("episode_count")
-    done: object = row.get("done")
-    counted: object = done if isinstance(done, int) else row.get("on_disk", 0)
-    episodes: str = f"{_safe(counted)}/{_safe(count) if isinstance(count, int) else '?'}"
+    episodes: str = f"{_safe(row.get('aired', 0))}/{_safe(count) if isinstance(count, int) else '?'}"
     return episodes, _safe(row.get("ready", 0))
-
-
-def watched_line(row: Mapping[str, object]) -> str:
-    """Name the episodes one subscription row counts as watched before it started, or nothing."""
-    watched: object = row.get("watched")
-    items: list[object] | tuple[object, ...] = watched if isinstance(watched, list | tuple) else []
-    numbers: list[int] = [item for item in items if isinstance(item, int)]
-    if not numbers:
-        return ""
-    label: str = episode_label(numbers)
-    return f"{label} obejrzany przed subskrypcją" if len(numbers) == 1 else f"{label} obejrzane przed subskrypcją"
 
 
 def row_summary(row: Mapping[str, object]) -> str:
@@ -166,8 +164,7 @@ def row_state(row: Mapping[str, object], now: datetime) -> SubscriptionState:
     if not isinstance(due, str):
         return _plain("Przerwa w emisji" if row.get("catalog_status") == "HIATUS" else "Termin nieznany")
     number: object = row.get("due_number")
-    episode: str = f" E{number}" if isinstance(number, int) else ""
-    return _dated_state(episode, int((datetime.fromisoformat(due) - now).total_seconds()))
+    return _due_state(f"E{number}" if isinstance(number, int) else "Odcinek", datetime.fromisoformat(due), row, now)
 
 
 def _plain(text: str) -> SubscriptionState:
@@ -189,20 +186,18 @@ def _issue(row: Mapping[str, object]) -> SubscriptionState | None:
     return None
 
 
-def _dated_state(episode: str, remaining: int) -> SubscriptionState:
-    if remaining > 0:
-        return _plain(f"Emisja{episode} za {_duration(remaining)}")
-    text: str = f"Czeka{episode} od {_duration(-remaining)}"
-    if -remaining >= _DAILY_AFTER_S:
+def _due_state(label: str, due: datetime, row: Mapping[str, object], now: datetime) -> SubscriptionState:
+    state: str = str(row.get("due_state"))
+    if state not in _DUE_STATES:
+        if due > now:
+            return _plain(f"{label} · {_when(due, now)}")
+        state = "searching"
+    text: str = f"{label} · {_DUE_STATES[state]}"
+    if state == "exhausted":
+        return SubscriptionState(text, f"{label} · nie udało się pobrać · pobierz ręcznie w szczegółach")
+    if state == "searching" and (now - due).total_seconds() >= _DAILY_AFTER_S:
         return SubscriptionState(text, f"{text} · sprawdzam raz dziennie")
     return _plain(text)
-
-
-def _duration(seconds: int) -> str:
-    days, rest = divmod(seconds, _DAY_S)
-    hours, rest = divmod(rest, _HOUR_S)
-    clock: str = f"{hours:02d}:{rest // 60:02d}:{rest % 60:02d}"
-    return f"{days}d {clock}" if days else clock
 
 
 def check_state(check: Mapping[str, object]) -> str:

@@ -212,7 +212,7 @@ def _fill(panel: StateController, tab: int, count: int) -> str:
         "relocations": [{"group_id": "group-1a2b", "name": f"{_BLUE_BOX}.mkv", "problem": "failed"}],
     }
     panel._subscriptions = [
-        {"subscription_id": f"sub-{index}", "title": f"Show {index:02}", "episode_count": 12, "done": 3, "ready": 1}
+        {"subscription_id": f"sub-{index}", "title": f"Show {index:02}", "episode_count": 12, "aired": 3, "ready": 1}
         for index in range(count)
     ]
     return "Nazwa" if tab == state_module._Tab.FILES else "Tytuł"
@@ -288,7 +288,7 @@ def test_the_table_narrows_and_stays_centered_when_the_longest_name_scrolls_away
     label: str = _fill(library, tab, 30)
     library._snapshot = {"library": _rows(_LONG, *(f"[Grp] Show - {index:02} [1080p]" for index in range(30)))}
     library._subscriptions = [
-        {"subscription_id": "sub-long", "title": _LONG_TITLE, "episode_count": 12, "done": 3, "ready": 1},
+        {"subscription_id": "sub-long", "title": _LONG_TITLE, "episode_count": 12, "aired": 3, "ready": 1},
         *library._subscriptions,
     ]
     last, width = (

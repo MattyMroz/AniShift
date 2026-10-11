@@ -365,11 +365,10 @@ def subs_list() -> None:
         typer.echo(_SUBS_EMPTY)
         return
     for row in rows:
-        done: int = row.on_disk if row.done is None else row.done
         line: str = _SUBS_ROW.format(
             id=row.subscription_id,
             title=row.title,
-            episodes=f"{done}/{'?' if row.episode_count is None else row.episode_count}",
+            episodes=f"{row.aired}/{'?' if row.episode_count is None else row.episode_count}",
             ready=row.ready,
             state=_subscription_state(row),
         )

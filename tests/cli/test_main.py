@@ -449,8 +449,7 @@ def test_subs_list_prints_one_row_per_followed_season_from_the_resident(monkeypa
         subscription_id="ab12cd34ef56",
         anilist_id=500,
         title="Neko to Ryuu",
-        on_disk=2,
-        done=3,
+        aired=3,
         ready=1,
         due_at=None,
         paused=False,
@@ -475,31 +474,6 @@ def test_subs_list_prints_one_row_per_followed_season_from_the_resident(monkeypa
     ]
     assert resident.calls == [("subscriptions_list", None)]
     assert resident.closed
-
-
-def test_subs_list_shows_the_episodes_on_disk_from_a_resident_without_the_done_count(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    row: SubscriptionRow = SubscriptionRow(
-        subscription_id="cd34",
-        anilist_id=500,
-        title="Oshi no Ko",
-        on_disk=2,
-        ready=1,
-        due_at=None,
-        paused=False,
-        pause_reason=None,
-        problem=None,
-        review_pending=False,
-        episode_count=12,
-    )
-    old: dict[str, object] = {key: value for key, value in encode_view(row).items() if key not in {"done", "watched"}}
-    _resident(monkeypatch, {"subscriptions": [old]})
-
-    result: Result = CliRunner().invoke(cli_main.app, ["subs", "list"])
-
-    assert result.exit_code == 0
-    assert result.output.splitlines() == ["cd34 Oshi no Ko · episodes: 2/12 · ready: 1 · active"]
 
 
 def test_subs_list_states_when_nothing_is_followed(monkeypatch: pytest.MonkeyPatch) -> None:

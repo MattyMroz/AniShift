@@ -51,8 +51,7 @@ def _row(subscription_id: str, title: str, **changes: object) -> dict[str, objec
         problem=None,
         review_pending=False,
         episode_count=4,
-        on_disk=1,
-        done=1,
+        aired=1,
     )
     return {**encode_view(row), **changes}
 
@@ -181,9 +180,9 @@ def test_a_refused_subscription_command_shows_its_polish_reason(
 def test_every_row_is_one_line_of_title_episodes_ready_and_state(panel: StateController) -> None:
     now: datetime = datetime.now(UTC)
     panel._subscriptions = [
-        _row("p", "Problem", anilist_id=None, problem="season_unrecognized", episode_count=None, done=0),
+        _row("p", "Problem", anilist_id=None, problem="season_unrecognized", episode_count=None, aired=0),
         _row("m", "Moved", paused=True, pause_reason="migrated_missing", review_pending=True, episode_count=None),
-        _row("r", "Review", review_pending=True, done=0),
+        _row("r", "Review", review_pending=True, aired=0),
         _row("s", "Soon", episode_count=12, ready=1, due_at=(now + timedelta(days=3, hours=1, seconds=30)).isoformat()),
         _row("h", "Hour", due_at=(now + timedelta(minutes=30, seconds=30)).isoformat()),
         _row("w", "Waiting", due_at=(now - timedelta(days=2, hours=1)).isoformat()),
@@ -198,11 +197,11 @@ def test_every_row_is_one_line_of_title_episodes_ready_and_state(panel: StateCon
         "Problem": ("0/?", "0", "Nie rozpoznano sezonu"),
         "Moved": ("1/?", "0", "Wstrzymana"),
         "Review": ("0/4", "0", "Weryfikuję"),
-        "Soon": ("1/12", "1", "Emisja za 3d 01:00:"),
-        "Hour": ("1/4", "0", "Emisja za 00:30:"),
-        "Waiting": ("1/4", "0", "Czeka od 2d 01:00:"),
-        "Yesterday": ("1/4", "0", "Czeka od 1d 01:00:"),
-        "Recent": ("1/4", "0", "Czeka od 05:01:"),
+        "Soon": ("1/12", "1", "Odcinek · "),
+        "Hour": ("1/4", "0", "Odcinek · "),
+        "Waiting": ("1/4", "0", "Odcinek · szukam"),
+        "Yesterday": ("1/4", "0", "Odcinek · szukam"),
+        "Recent": ("1/4", "0", "Odcinek · szukam"),
         "Undated": ("1/4", "0", "Termin nieznany"),
     }
     for title, values in expected.items():
@@ -246,29 +245,6 @@ def test_a_row_shown_whole_leaves_nothing_beneath_the_table(panel: StateControll
     assert sum("Undated" in line for line in lines) == 1
 
 
-@pytest.mark.parametrize(
-    ("columns", "watched", "beneath"),
-    [
-        (120, [1], "E1 obejrzany przed subskrypcją"),
-        (120, [1, 2, 3], "E1–E3 obejrzane przed subskrypcją"),
-        (120, [], ""),
-        (80, [1], "E1 obejrzany przed subskrypcją · Reincarnated as a Sword Season 2 Extra Long Subtitle Edition"),
-    ],
-)
-def test_the_highlighted_row_names_the_episodes_watched_before_its_subscription(
-    panel: StateController, columns: int, watched: list[int], beneath: str
-) -> None:
-    title: str = "Reincarnated as a Sword Season 2" + (" Extra Long Subtitle Edition" if columns == 80 else "")
-    panel._subscriptions = [_row("s", title, episode_count=12, watched=watched, done=len(watched))]
-
-    lines: list[str] = _frame(panel, columns, 24).splitlines()
-    keys: int = _line(lines, "Enter szczegóły")
-    notice: str = " ".join(line.strip() for line in lines[_line(lines, "Tytuł") + 2 : keys] if line.strip())
-
-    assert notice == beneath
-    assert f"  {len(watched)}/12  " in lines[_line(lines, " Reincarnated ")]
-
-
 @pytest.mark.parametrize("columns", [50, 80, 120])
 def test_the_longest_typical_states_stay_whole_in_their_rows(panel: StateController, columns: int) -> None:
     now: datetime = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
@@ -276,14 +252,20 @@ def test_the_longest_typical_states_stay_whole_in_their_rows(panel: StateControl
     panel._clock = lambda: now
     panel._subscriptions = [
         _row("a", "As a Reincarnated Aristocrat Season 3", episode_count=12),
-        _row("e", "Reincarnated as a Sword Season 2", due_at=(now + week).isoformat(), due_number=12),
-        _row("w", "The Apothecary Diaries Season 3", due_at=(now - week).isoformat(), due_number=12),
+        _row("e", "Reincarnated as a Sword Season 2", due_at=(now + week).isoformat()),
+        _row(
+            "w", "The Apothecary Diaries Season 3", due_at=(now - week).isoformat(), due_number=12, due_state="polish"
+        ),
     ]
 
     lines: list[str] = _frame(panel, columns, 24).splitlines()
 
-    assert lines[_line(lines, " Reincarnated as")].rstrip().endswith("  Emisja E12 za 13d 23:59:59")
-    assert lines[_line(lines, " The Apothecary")].rstrip().endswith("  Czeka E12 od 13d 23:59:59")
+    assert (
+        lines[_line(lines, " Reincarnated as")]
+        .rstrip()
+        .endswith(f"  Odcinek · {(now + week).astimezone():%d.%m %H:%M}")
+    )
+    assert lines[_line(lines, " The Apothecary")].rstrip().endswith("  E12 · czekam na PL")
 
 
 def test_problem_and_conflict_states_share_the_style_of_every_other_state(panel: StateController) -> None:
@@ -306,8 +288,8 @@ def test_problem_and_conflict_states_share_the_style_of_every_other_state(panel:
 
 def test_the_episodes_column_uses_the_success_style_only_once_an_episode_counts(panel: StateController) -> None:
     panel._subscriptions = [
-        _row("e", "Empty", done=0, episode_count=12),
-        _row("o", "Owned", done=3, episode_count=12),
+        _row("e", "Empty", aired=0, episode_count=12),
+        _row("o", "Owned", aired=3, episode_count=12),
         _row("s", "Selected"),
     ]
     panel._selected = 2

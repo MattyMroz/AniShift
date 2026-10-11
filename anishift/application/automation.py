@@ -209,6 +209,7 @@ from anishift.application.subscription_targets import (
     late,
     merge_listing,
     next_check_at,
+    renumbered,
     search_targets,
     settle_target,
     skip_active,
@@ -757,8 +758,6 @@ class _EpisodeIndex:
 
 @dataclass(frozen=True, slots=True)
 class _DiskInventory:
-    present: frozenset[str]
-    videos: frozenset[str]
     ready: frozenset[str]
 
 
@@ -3644,13 +3643,12 @@ class AutomationOwner:
                 self._state, frozenset(item.anilist_id for item in self._state.subscriptions)
             )
             disk: _DiskInventory = self._disk_inventory()
-            batches: Mapping[EpisodeKey, str] = self._batch_reasons()
             return ControlResponse.succeeded(
                 {
                     "subscriptions": [
                         encode_view(
                             replace(
-                                self._disk_row(item, index, disk, batches),
+                                self._disk_row(item, index, disk),
                                 checking_number=self._checking_target(item, index),
                             )
                         )
@@ -3676,9 +3674,7 @@ class AutomationOwner:
         if request.kind == "subscription_get":
             index: _EpisodeIndex = _episode_index(self._state, frozenset({record.anilist_id}))
             return ControlResponse.succeeded(
-                _subscription_details(
-                    record, self._disk_row(record, index, self._disk_inventory(), self._batch_reasons())
-                )
+                _subscription_details(record, self._disk_row(record, index, self._disk_inventory()))
             )
         if request.kind == "subscription_check":
             return self._request_subscription_check(request, record)
@@ -4005,9 +4001,11 @@ class AutomationOwner:
         chosen: list[tuple[int, RankedCandidate, dict[str, object]]] = []
         decided: dict[int, _Decided] = {}
         updated: SubscriptionRecord = current
+        mapping_check: dict[str, object] | None = None
         if result is not None and result.read is not None:
             updated = merge_listing(current, result.read, now, (item.scope for item in self._state.legacy_orders))
-            evidence.append(("check", _mapping_check(current, result.read)))
+            mapping_check = _mapping_check(current, result.read)
+            evidence.append(("check", mapping_check))
             updated = _searched(updated, result.offers, now, errored=result.errored)
             updated = _settled_skips(updated, result.searched, result.tried)
         check: SubscriptionCheck = self._subscription_outcome(updated, result, now, evidence, chosen, decided)
@@ -4039,6 +4037,15 @@ class AutomationOwner:
         elif self._subscriptions_problem == _STATE_NOT_SAVED:
             self._subscriptions_problem = None
         journal: Path = self._store.history_path().with_name("decisions.jsonl")
+        if (
+            saved
+            and mapping_check is not None
+            and result is not None
+            and result.read is not None
+            and updated.mapping != current.mapping
+            and renumbered(current, result.read)
+        ):
+            mapping_check["renumbered"] = True
         for kind, payload in evidence:
             append_decision(journal, kind, payload, entry="subscription" if self._admits else "shadow")
         if saved:
@@ -4269,25 +4276,8 @@ class AutomationOwner:
             self._save(_with_target(self._state, identifier, refused))
 
     def _disk_inventory(self) -> _DiskInventory:
-        """Return the files, source-video groups and available ready sets the last library inventory proved."""
-        root: Path = self._service.workspace_root
-        groups: tuple[InspectedSourceGroup, ...] = () if self._library is None else self._library.groups
+        """Return the available ready sets the last library inventory proved."""
         return _DiskInventory(
-            present=frozenset(
-                path.relative_to(root).as_posix().casefold()
-                for group in groups
-                for artifact in group.artifacts
-                if (path := artifact.path) is not None and path.is_relative_to(root)
-            ),
-            videos=frozenset(
-                group.group_id
-                for group in groups
-                if any(
-                    artifact.kind in {ArtifactKind.VIDEO_MKV, ArtifactKind.VIDEO_MP4}
-                    and artifact.lifetime is ArtifactLifetime.SOURCE
-                    for artifact in group.artifacts
-                )
-            ),
             ready=frozenset(
                 identifier
                 for item in self._ready_library
@@ -4300,18 +4290,11 @@ class AutomationOwner:
             ),
         )
 
-    def _disk_row(
-        self,
-        record: SubscriptionRecord,
-        index: _EpisodeIndex,
-        disk: _DiskInventory,
-        batches: Mapping[EpisodeKey, str],
-    ) -> SubscriptionRow:
-        """Project *record* with the episodes its inventory proves and the unordered ones skipped before it."""
+    def _disk_row(self, record: SubscriptionRecord, index: _EpisodeIndex, disk: _DiskInventory) -> SubscriptionRow:
+        """Project *record* with the episodes its inventory proves ready."""
         row: SubscriptionRow = subscription_row(record)
         if record.anilist_id is None:
             return row
-        on_disk: set[int] = set()
         ready: set[int] = set()
         indexed: set[int] = set()
         for (entry, number), matches in index.episodes.items():
@@ -4327,8 +4310,6 @@ class AutomationOwner:
             )
             if group in disk.ready:
                 ready.add(number)
-            if number in ready or group in disk.videos:
-                on_disk.add(number)
         for number, paths in self._legacy_paths(record.anilist_id, index):
             if number in indexed:
                 continue
@@ -4337,21 +4318,7 @@ class AutomationOwner:
                 for group in self._state.ready_groups
             ):
                 ready.add(number)
-            if number in ready or any(_is_video(path) and path.casefold() in disk.present for path in paths):
-                on_disk.add(number)
-        watched: tuple[int, ...] = tuple(
-            number
-            for number in row.watched
-            if number not in on_disk
-            and _skipped(
-                self._episode_status(
-                    EpisodeKey(record.anilist_id, number),
-                    matches=_latest_last(index.episodes.get((record.anilist_id, number), ())),
-                    batches=batches,
-                )
-            )
-        )
-        return replace(row, on_disk=len(on_disk), ready=len(ready), watched=watched, done=len(on_disk.union(watched)))
+        return replace(row, ready=len(ready))
 
     def _legacy_paths(self, anilist_id: int, index: _EpisodeIndex) -> Iterator[tuple[int, frozenset[str]]]:
         operations: frozenset[str] = frozenset(
@@ -9034,11 +9001,6 @@ def _latest_last(
 ) -> tuple[tuple[AcquisitionConfirmation, EpisodeAssignment], ...]:
     """Order one episode's assignments so the one not replaced comes last."""
     return tuple(sorted(matches, key=lambda item: not item[1].replaced))
-
-
-def _skipped(status: EpisodeStatus) -> bool:
-    """Whether nobody ordered *status*'s episode, or its result was made and later removed."""
-    return status.state == "not_ordered" and status.reason in {None, EpisodeReason.RESULT_MISSING}
 
 
 def _admits(receipt: CommandReceipt, key: EpisodeKey) -> bool:

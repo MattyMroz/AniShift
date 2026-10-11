@@ -49,7 +49,6 @@ from anishift.cli.interactive.subscription_texts import (
     row_columns,
     row_state,
     subscription_draft,
-    watched_line,
 )
 from anishift.cli.resident import ResidentSession
 from anishift.platform.local_control import ControlError, ControlErrorCode
@@ -101,8 +100,7 @@ def _row(subscription_id: str, title: str, **changes: object) -> dict[str, objec
         problem=None,
         review_pending=False,
         episode_count=4,
-        on_disk=1,
-        done=1,
+        aired=1,
     )
     return {**encode_view(row), **changes}
 
@@ -331,35 +329,14 @@ def test_episode_numbers_are_named_as_a_range_or_a_list(numbers: tuple[int, ...]
         ({}, ("1/4", "0")),
         ({"episode_count": 12, "ready": 1}, ("1/12", "1")),
         ({"episode_count": 4, "beyond_count": 6}, ("1/4", "0")),
-        ({"episode_count": None, "done": 0}, ("0/?", "0")),
-        ({"episode_count": 12, "watched": [1], "done": 1, "on_disk": 0}, ("1/12", "0")),
-        ({"episode_count": 12, "done": None, "on_disk": 2}, ("2/12", "0")),
+        ({"episode_count": None, "aired": 0}, ("0/?", "0")),
+        ({"episode_count": 12, "aired": 3}, ("3/12", "0")),
     ],
 )
-def test_a_row_shows_its_counted_episodes_out_of_the_season_and_its_ready_count(
+def test_a_row_shows_its_aired_episodes_out_of_the_season_and_its_ready_count(
     changes: Mapping[str, object], columns: tuple[str, str]
 ) -> None:
     assert row_columns(_row("a", "Alpha", **changes)) == columns
-
-
-def test_a_row_from_a_resident_without_the_done_count_shows_its_episodes_on_disk() -> None:
-    row: dict[str, object] = {key: value for key, value in _row("a", "Alpha", on_disk=3).items() if key != "done"}
-
-    assert row_columns(row) == ("3/4", "0")
-
-
-@pytest.mark.parametrize(
-    ("watched", "line"),
-    [
-        ([], ""),
-        (None, ""),
-        ([1], "E1 obejrzany przed subskrypcją"),
-        ([1, 2, 3], "E1–E3 obejrzane przed subskrypcją"),
-        ([1, 3], "E1, E3 obejrzane przed subskrypcją"),
-    ],
-)
-def test_a_row_names_the_episodes_watched_before_its_subscription(watched: list[int] | None, line: str) -> None:
-    assert watched_line(_row("a", "Alpha", watched=watched)) == line
 
 
 @pytest.mark.parametrize(
@@ -390,23 +367,30 @@ def _plain(text: str) -> SubscriptionState:
 @pytest.mark.parametrize(
     ("changes", "state"),
     [
-        ({"due_at": (_NOW + timedelta(minutes=30)).isoformat(), "due_number": 8}, _plain("Emisja E8 za 00:30:00")),
-        ({"due_at": (_NOW + timedelta(days=2, seconds=5)).isoformat()}, _plain("Emisja za 2d 00:00:05")),
-        ({"due_at": (_NOW - timedelta(minutes=5)).isoformat(), "due_number": 8}, _plain("Czeka E8 od 00:05:00")),
-        ({"due_at": _NOW.isoformat(), "due_number": 8}, _plain("Czeka E8 od 00:00:00")),
-        ({"due_at": (_NOW - timedelta(hours=5, seconds=7)).isoformat()}, _plain("Czeka od 05:00:07")),
         (
-            {"due_at": (_NOW - timedelta(days=2, hours=4, minutes=18, seconds=3)).isoformat(), "due_number": 2},
-            _plain("Czeka E2 od 2d 04:18:03"),
-        ),
-        ({"due_at": (_NOW - timedelta(hours=72, seconds=-1)).isoformat()}, _plain("Czeka od 2d 23:59:59")),
-        (
-            {"due_at": (_NOW - timedelta(hours=72)).isoformat(), "due_number": 8},
-            SubscriptionState("Czeka E8 od 3d 00:00:00", "Czeka E8 od 3d 00:00:00 · sprawdzam raz dziennie"),
+            {"due_at": (_NOW + timedelta(minutes=30)).isoformat(), "due_number": 8, "due_state": "airing"},
+            _plain(f"E8 · dziś {clock_time((_NOW + timedelta(minutes=30)).isoformat())}"),
         ),
         (
-            {"due_at": (_NOW - timedelta(days=3, hours=2)).isoformat()},
-            SubscriptionState("Czeka od 3d 02:00:00", "Czeka od 3d 02:00:00 · sprawdzam raz dziennie"),
+            {"due_at": (_NOW + timedelta(days=2)).isoformat()},
+            _plain(f"Odcinek · {(_NOW + timedelta(days=2)).astimezone():%d.%m %H:%M}"),
+        ),
+        ({"due_at": (_NOW - timedelta(minutes=5)).isoformat(), "due_number": 8}, _plain("E8 · szukam")),
+        (
+            {"due_at": (_NOW - timedelta(minutes=5)).isoformat(), "due_number": 8, "due_state": "airing"},
+            _plain("E8 · szukam"),
+        ),
+        ({"due_at": _NOW.isoformat(), "due_number": 8, "due_state": "polish"}, _plain("E8 · czekam na PL")),
+        ({"due_at": _NOW.isoformat(), "due_number": 8, "due_state": "downloading"}, _plain("E8 · pobieram")),
+        ({"due_at": _NOW.isoformat(), "due_number": 8, "due_state": "no_release"}, _plain("E8 · brak wydania")),
+        (
+            {"due_at": _NOW.isoformat(), "due_number": 8, "due_state": "exhausted"},
+            SubscriptionState("E8 · nie udało się", "E8 · nie udało się pobrać · pobierz ręcznie w szczegółach"),
+        ),
+        ({"due_at": (_NOW - timedelta(hours=72, seconds=-1)).isoformat(), "due_number": 8}, _plain("E8 · szukam")),
+        (
+            {"due_at": (_NOW - timedelta(hours=72)).isoformat(), "due_number": 8, "due_state": "searching"},
+            SubscriptionState("E8 · szukam", "E8 · szukam · sprawdzam raz dziennie"),
         ),
         ({"catalog_status": "HIATUS"}, _plain("Przerwa w emisji")),
         ({"catalog_status": "RELEASING"}, _plain("Termin nieznany")),
@@ -424,7 +408,10 @@ def _plain(text: str) -> SubscriptionState:
         ),
         (
             {"problem": "catalog_conflict", "paused": True, "pause_reason": "user"},
-            SubscriptionState("Inny sezon w katalogu", "Katalog wskazuje inny sezon — sprawdzam ponownie"),
+            SubscriptionState(
+                "Zmienił się sezon",
+                "Lista odcinków przypisała ten tytuł do innego sezonu · usuń subskrypcję i dodaj ponownie",
+            ),
         ),
         (
             {"problem": "season_unrecognized"},
@@ -832,13 +819,16 @@ def test_an_unknown_cut_point_shows_the_refusal_without_an_add_button(panel: Sta
     assert "\u276f Anuluj" in frame
 
 
-def test_the_list_counts_down_with_the_renderer_clock(panel: StateController, clock: _Clock) -> None:
-    panel._subscriptions = [_row("a", "Alpha", due_at=(_NOW + timedelta(minutes=30)).isoformat(), due_number=8)]
-    assert "Emisja E8 za 00:30:00" in _frame(panel)
+def test_the_list_turns_an_aired_episode_into_a_search_with_the_renderer_clock(
+    panel: StateController, clock: _Clock
+) -> None:
+    due: datetime = _NOW + timedelta(minutes=1)
+    panel._subscriptions = [_row("a", "Alpha", due_at=due.isoformat(), due_number=8, due_state="airing")]
+    assert f"E8 · dziś {clock_time(due.isoformat())}" in _frame(panel)
 
-    clock.now += timedelta(seconds=1)
+    clock.now += timedelta(minutes=2)
 
-    assert "Emisja E8 za 00:29:59" in _frame(panel)
+    assert "E8 · szukam" in _frame(panel)
 
 
 def test_f_shows_the_check_result_in_the_row_for_ten_seconds(
@@ -928,26 +918,6 @@ def test_enter_opens_the_subscription_details_with_header_targets_and_specials(
     assert all("[ ]" not in line for line in specials)
     assert "Space zaznacz · D pobierz · W wstrzymaj · ? więcej · Esc wróć" in frame
     assert owner.numbers[-1] == (1, 2, 3, 4, 5, 6)
-
-
-@pytest.mark.parametrize(
-    ("watched", "text"),
-    [([1, 2], "E1–E2 obejrzane przed subskrypcją"), ([1], "E1 obejrzany przed subskrypcją"), ([], "")],
-)
-def test_the_details_name_the_episodes_watched_before_the_subscription_like_the_list(
-    panel: StateController, owner: _Owner, watched: list[int], text: str
-) -> None:
-    _details(owner)
-    panel._subscriptions = [_row("a", "Alpha", watched=watched, done=len(watched))]
-    panel._selected = 0
-    _keys(panel, "enter")
-
-    frame: str = " ".join(_frame(panel).split())
-
-    assert text in frame
-    assert ("przed subskrypcją" in frame) is bool(text)
-    assert "pobierz je ręcznie" not in frame
-    assert "Space zaznacz · D pobierz · W wstrzymaj · ? więcej · Esc wróć" in frame
 
 
 @pytest.mark.parametrize("changes", [{}, {"problem": "season_unrecognized"}, {"episode_count": 2, "beyond_count": 6}])
@@ -1304,7 +1274,7 @@ def test_every_subscription_fact_is_reachable_in_the_details_of_a_narrow_termina
         "mismatched": 4,
         "outcome": "proposed",
     }
-    panel._subscriptions = [_row("a", title, episode_count=12, ready=2, watched=[1, 2])]
+    panel._subscriptions = [_row("a", title, episode_count=12, ready=2)]
     _keys(panel, "enter")
 
     lines: list[str] = _frame(panel, 50, rows).splitlines()
@@ -1316,7 +1286,6 @@ def test_every_subscription_fact_is_reachable_in_the_details_of_a_narrow_termina
     assert title in shown
     assert "Termin nieznany · odcinki 1/12 · gotowe 2" in shown
     assert check in shown
-    assert "E1–E2 obejrzane przed subskrypcją" in shown
 
 
 def _line(lines: list[str], needle: str) -> int:

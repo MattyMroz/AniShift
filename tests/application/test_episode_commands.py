@@ -8,7 +8,6 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
-from functools import partial
 from pathlib import Path
 from typing import Any, Final, cast
 
@@ -27,7 +26,6 @@ from test_selective_lifecycle import _SelectiveNetwork, _until
 from anishift.application import automation as automation_module
 from anishift.application import control_views as control_views_module
 from anishift.application.acquisition import AcquisitionService, ListingRead, TorrentClient, TorrentManagement
-from anishift.application.acquisition_staging import file_stamp
 from anishift.application.artifacts import SourceGroup, create_group_id
 from anishift.application.automation import AutomationOwner
 from anishift.application.control import (
@@ -37,14 +35,11 @@ from anishift.application.control import (
     AutomationPolicy,
     CommandReceipt,
     EpisodeAssignment,
-    EpisodePublication,
     LegacyScope,
     ProductConfirmation,
-    PublishedFile,
     ReadyGroup,
     RefusalReason,
     WatchState,
-    compact_acquisition,
 )
 from anishift.application.control_views import decode_view, encode_view
 from anishift.application.episode_commands import (
@@ -64,7 +59,6 @@ from anishift.application.episode_selection import (
     RankedCandidate,
     StreamCandidate,
 )
-from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace
 from anishift.application.intents import RequestOrigin
 from anishift.application.service import AppService
 from anishift.application.subscription_migration import legacy_reference, migrate
@@ -1100,7 +1094,7 @@ def test_ready_episode_without_its_main_result_returns_to_download_and_d_reorder
         assert owner._on_owner(lambda: owner._save(replace(owner.state, subscriptions=(followed,))))
         listed: ControlResponse = owner.handle(_request("subscriptions_list", command_id="list"))
         row: Mapping[str, object] = cast("list[Mapping[str, object]]", listed.result["subscriptions"])[0]
-        assert (row["on_disk"], row["ready"]) == ((1, 1) if present else (0, 0))
+        assert row["ready"] == (1 if present else 0)
         reason: str = _download_reason(owner, "again")
         if present:
             assert (status.state, status.reason, status.set_id) == ("ready", None, "episode-4")
@@ -1123,15 +1117,15 @@ def test_ready_episode_without_its_main_result_returns_to_download_and_d_reorder
         assert len(owner.state.acquisitions) == 2
 
 
-def _listed_counts(owner: AutomationOwner) -> list[tuple[object, object]]:
+def _listed_counts(owner: AutomationOwner) -> list[object]:
     listed: ControlResponse = owner.handle(
         _request("subscriptions_list", command_id=f"list-{len(owner.state.requests)}")
     )
     rows: list[Mapping[str, object]] = cast("list[Mapping[str, object]]", listed.result["subscriptions"])
-    return [(row["on_disk"], row["ready"]) for row in rows]
+    return [row["ready"] for row in rows]
 
 
-def test_a_downloaded_episode_without_a_ready_set_or_a_proven_file_counts_neither_on_disk_nor_ready(
+def test_a_downloaded_episode_without_a_ready_set_or_a_proven_file_is_not_counted_ready(
     tmp_path: Path,
 ) -> None:
     streams: _Streams = _Streams()
@@ -1147,115 +1141,10 @@ def test_a_downloaded_episode_without_a_ready_set_or_a_proven_file_counts_neithe
         owner._on_owner(lambda: owner._record_ready_inventory(groups))
 
         assert owner.state.acquisitions[0].complete_files
-        assert _listed_counts(owner) == [(0, 0)]
+        assert _listed_counts(owner) == [0]
 
 
-def _subscription_counts(owner: AutomationOwner, first: int) -> tuple[object, object, object]:
-    followed: SubscriptionRecord = SubscriptionRecord(
-        "s",
-        _S1,
-        "Slime",
-        "2026-01-01T00:00:00+00:00",
-        first - 1,
-        paused=True,
-        pause_reason=PauseReason.USER,
-        targets=(SubscriptionTarget(first, None, TargetState.AWAITING_AIRING),),
-    )
-    assert owner._on_owner(lambda: owner._save(replace(owner.state, subscriptions=(followed,))))
-    listed: ControlResponse = owner.handle(_request("subscriptions_list", command_id=f"list-{first}"))
-    row: Mapping[str, object] = cast("list[Mapping[str, object]]", listed.result["subscriptions"])[0]
-    return row["watched"], row["on_disk"], row["done"]
-
-
-def _land(owner: AutomationOwner) -> None:
-    root: Path = owner._service.workspace_root
-    (root / "ready").mkdir(parents=True, exist_ok=True)
-    transfers: list[AcquisitionConfirmation] = []
-    groups: list[ReadyGroup] = []
-    products: list[ProductConfirmation] = []
-    for transfer in owner.state.acquisitions:
-        assignment: EpisodeAssignment = transfer.assignments[0]
-        number: int = assignment.choice.number
-        filename: str = str(_stream(number).file_name)
-        name: str = f"Slime - {number:02d}"
-        (root / "ready" / f"{name}.mkv").write_bytes(b"source")
-        result: Path = root / "ready" / f"{name}.pl.mkv"
-        result.write_bytes(b"result")
-        landed: EpisodeAssignment = replace(
-            assignment, files=((0, filename, 123),), file_map="revision", group_id=f"episode-{number}"
-        )
-        transfers.append(
-            replace(
-                transfer,
-                state=AcquisitionState.COMPLETE,
-                assignments=(landed,),
-                required_files=(filename,),
-                complete_files=(filename,),
-                cleaned=True,
-            )
-        )
-        groups.append(
-            ReadyGroup(
-                f"episode-{number}",
-                f"ready-episode-{number}",
-                name,
-                "",
-                name,
-                WorkflowTarget.VIDEO,
-                (f"ready/{name}.mkv",),
-                (f"ready/{name}.pl.mkv",),
-                f"ready/{name}.pl.mkv",
-            )
-        )
-        products.append(
-            ProductConfirmation(
-                f"ready-episode-{number}",
-                "video_pl",
-                f"ready/{name}.pl.mkv",
-                1,
-                "run",
-                RequestOrigin.USER,
-                result.stat().st_size,
-                result.stat().st_mtime_ns,
-            )
-        )
-    state: WatchState = replace(
-        owner.state, acquisitions=tuple(transfers), ready_groups=tuple(groups), products=tuple(products)
-    )
-    assert owner._on_owner(lambda: owner._save(state))
-    inventory: tuple[SourceGroup, ...] = owner._service.library_inventory()
-    owner._on_owner(lambda: owner._record_ready_inventory(inventory))
-
-
-@pytest.mark.parametrize(
-    ("ordered", "landed", "first", "counted"),
-    [
-        ((), False, 2, ([1], 0, 1)),
-        ((1, 2, 3), False, 4, ([], 0, 0)),
-        ((1, 2, 3), True, 4, ([], 3, 3)),
-        ((2,), False, 3, ([1], 0, 1)),
-    ],
-)
-def test_only_unordered_episodes_before_the_first_target_without_files_count_as_watched(
-    tmp_path: Path, ordered: tuple[int, ...], *, landed: bool, first: int, counted: tuple[list[int], int, int]
-) -> None:
-    streams: _Streams = _Streams()
-    streams.answers = {(41024, number): (_stream(number, "abcdef"[number - 1]),) for number in ordered}
-    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
-    with _running(_episode_service(tmp_path, streams=streams), store, inspect_transfers=False) as owner:
-        if ordered:
-            assert _download(owner, ordered, "order").ok
-            _until(lambda: _batch(owner, ordered, "order").state == "completed")
-            assert all(item.reason == "admitted" for item in _batch(owner, ordered, "order").results)
-        if landed:
-            _land(owner)
-
-        assert _subscription_counts(owner, first) == counted
-
-
-def test_listing_many_subscriptions_decodes_each_recorded_batch_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_listing_many_subscriptions_decodes_no_recorded_batch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     streams: _Streams = _Streams()
     streams.answers = {(41024, 1): (_stream(1),)}
     store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
@@ -1304,23 +1193,10 @@ def test_listing_many_subscriptions_decodes_each_recorded_batch_once(
         monkeypatch.setattr(control_views_module, "TypeAdapter", building)
         owner.handle(_request("subscriptions_list", command_id="again"))
 
-        assert [row["watched"] for row in rows] == [[1, 2, 3, 4, 5, 6]] * 6
-        assert len(decoded) == recorded * 2 == 20
+        assert [row["aired"] for row in rows] == [6] * 6
+        assert recorded == 10
+        assert decoded == []
         assert built == []
-
-
-def test_a_refused_order_is_not_watched_and_a_removed_result_is(tmp_path: Path) -> None:
-    streams: _Streams = _Streams()
-    streams.answers = {(41024, 4): (_stream(4),)}
-    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
-    with _running(_episode_service(tmp_path, streams=streams), store, inspect_transfers=False) as owner:
-        _ready_episode(owner, AcquisitionState.COMPLETE, present=False)
-        assert _download(owner, (1,), "refused").ok
-        _until(lambda: _batch(owner, (1,), "refused").state == "completed")
-        assert _batch(owner, (1,), "refused").results[0].reason != "admitted"
-        assert _episode_state(owner).reason == "result_missing"
-
-        assert _subscription_counts(owner, 5) == ([2, 3, 4], 0, 3)
 
 
 def test_a_batch_that_found_no_release_leaves_the_episode_to_download_and_d_searches_again(tmp_path: Path) -> None:
@@ -1334,74 +1210,6 @@ def test_a_batch_that_found_no_release_leaves_the_episode_to_download_and_d_sear
         streams.answers = {(41024, 4): (_stream(4),)}
         assert _download_reason(owner, "later") == EpisodeReason.ADMITTED
         assert _episode_state(owner).state == "ordered"
-
-
-@pytest.mark.parametrize(
-    ("first", "counted"),
-    [(1, ([], 1, 1)), (4, ([1, 2, 3], 1, 4)), (5, ([1, 2, 3], 1, 4)), (7, ([1, 2, 3, 5, 6], 1, 6))],
-)
-def test_episodes_before_the_first_target_count_as_done_once_beside_the_episodes_on_disk(
-    tmp_path: Path, first: int, counted: tuple[list[int], int, int]
-) -> None:
-    streams: _Streams = _Streams()
-    streams.answers = {(41024, 4): (_stream(4),)}
-    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
-    with _running(_episode_service(tmp_path, streams=streams), store, inspect_transfers=False) as owner:
-        _ready_episode(owner, AcquisitionState.COMPLETE, present=True)
-
-        assert _subscription_counts(owner, first) == counted
-
-
-@pytest.mark.parametrize(
-    ("left", "expected"),
-    [(("Slime - 04.mkv",), (1, 0)), (("Slime - 04.txt", "Slime - 04.pl.srt"), (0, 0))],
-)
-def test_an_episode_counts_on_disk_by_its_source_video_before_and_after_its_transfer_is_compacted(
-    tmp_path: Path, left: tuple[str, ...], expected: tuple[int, int]
-) -> None:
-    streams: _Streams = _Streams()
-    streams.answers = {(41024, 4): (_stream(4),)}
-    store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
-    with _running(_episode_service(tmp_path, streams=streams), store, inspect_transfers=False) as owner:
-        assignment, _ready = _ready_episode(owner, AcquisitionState.COMPLETE, present=False)
-        root: Path = owner._service.workspace_root
-        (root / "Slime - 04.mkv").write_bytes(b"video")
-        index, source, size = assignment.files[0]
-        file: PublishedFile = PublishedFile(
-            index, source, "Slime - 04.mkv", size, "digest", file_stamp(root / "Slime - 04.mkv")
-        )
-        published: EpisodeAssignment = replace(
-            assignment, group_id=None, publication=EpisodePublication((file,), handed_off=True)
-        )
-        transfer: AcquisitionConfirmation = replace(owner.state.acquisitions[0], assignments=(published,))
-        compacted: AcquisitionConfirmation = compact_acquisition(
-            replace(transfer, assignments=(automation_module._retained_episode(published),), cleaned=True)
-        )
-        (root / "Slime - 04.mkv").unlink()
-        for name in left:
-            (root / name).write_bytes(b"left")
-        group: str | None = automation_module._published_group(frozenset({file.name}))
-        sources: tuple[SourceGroup, ...] = tuple(
-            item
-            for item in owner._service.library_inventory(tuple(root / name for name in left))
-            if item.group_id == group
-        )
-        assert len(sources) == 1
-        workspace: InspectedWorkspace = InspectedWorkspace(
-            tuple(InspectedSourceGroup(item, item.artifacts, {}, ()) for item in sources), ()
-        )
-        owner._on_owner(lambda: setattr(owner, "_library", workspace))
-        followed: SubscriptionRecord = SubscriptionRecord(
-            "s", _S1, "Slime", "2026-01-01T00:00:00+00:00", 3, paused=True, pause_reason=PauseReason.USER
-        )
-        counts: list[list[tuple[object, object]]] = []
-        for item in (transfer, compacted):
-            state: WatchState = replace(owner.state, acquisitions=(item,), ready_groups=(), subscriptions=(followed,))
-            assert owner._on_owner(partial(owner._save, state))
-            counts.append(_listed_counts(owner))
-
-    assert compacted.assignments[0].publication is None
-    assert counts == [[expected], [expected]]
 
 
 def test_the_subscription_list_counts_a_full_library_from_memory_without_reading_files(
@@ -1446,9 +1254,9 @@ def test_the_subscription_list_counts_a_full_library_from_memory_without_reading
         monkeypatch.setattr(automation_module, "file_stamp", read("stamp"))
         monkeypatch.setattr(AutomationOwner, "_journal_completed_groups", read("journal"))
 
-        counts: list[tuple[object, object]] = _listed_counts(owner)
+        counts: list[object] = _listed_counts(owner)
 
-    assert counts == [(12, 12)] * 100
+    assert counts == [12] * 100
     assert reads == []
 
 

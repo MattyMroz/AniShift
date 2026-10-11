@@ -86,7 +86,6 @@ from anishift.cli.interactive.subscription_texts import (
     row_state,
     row_summary,
     subscription_draft,
-    watched_line,
 )
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
@@ -702,7 +701,6 @@ class AnimeController:
             "" if state.detail == state.text else state.detail,
             self._polish_line(),
             self._notice_line(),
-            watched_line(self._subscription),
         )
 
     def _polish_line(self) -> str:

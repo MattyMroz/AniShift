@@ -55,6 +55,7 @@ __all__ = [
     "merge_listing",
     "next_check_at",
     "next_search_at",
+    "renumbered",
     "search_targets",
     "settle_target",
     "skip_active",
@@ -78,8 +79,14 @@ _HEX_HASH_LENGTH: Final[int] = 40
 _NUMBERING_FIELDS: Final[tuple[str, ...]] = ("seasonNumber", "episodeNumber", "absoluteEpisodeNumber")
 """Mapped episode fields the H1 target takes its numbering from, compared between list reads."""
 
+_SEASON_FIELDS: Final[tuple[str, ...]] = ("seasonNumber",)
+"""Mapped episode field whose change between list reads moves an episode to another season."""
+
 _OPEN_STATES: Final[frozenset[str]] = frozenset({"awaiting_airing", "due", "attempting"})
 """Target states still waiting for a download, the ones that carry a deadline."""
+
+_LAGGING_STATES: Final[frozenset[str]] = frozenset({"due", "attempting", "exhausted"})
+"""Target states of an aired episode the subscription has not handed to processing yet."""
 
 AIRING_STATUSES: Final[frozenset[str]] = frozenset({"RELEASING", "NOT_YET_RELEASED", "HIATUS"})
 """Catalogue statuses of an entry that still has future episodes, the only ones a subscription may follow."""
@@ -354,7 +361,7 @@ class SubscriptionRecord:
 
 @dataclass(frozen=True, slots=True)
 class SubscriptionRow:
-    """Compact list projection of one subscription; *done* counts episodes on disk plus *watched*, skipped before it."""
+    """Compact list projection of one subscription: aired and ready counts and the earliest unfinished target."""
 
     subscription_id: str
     anilist_id: int | None
@@ -368,11 +375,10 @@ class SubscriptionRow:
     catalog_status: str | None = None
     episode_count: int | None = None
     beyond_count: int | None = None
-    on_disk: int = 0
     ready: int = 0
     checking_number: int | None = None
-    watched: tuple[int, ...] = ()
-    done: int | None = None
+    aired: int = 0
+    due_state: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -451,8 +457,7 @@ def after_close(target: SubscriptionTarget, now: datetime, n_max: int = MAX_ATTE
 def subscription_row(record: SubscriptionRecord) -> SubscriptionRow:
     """Project *record* into the compact row the subscription list shows, before the owner counts its files."""
     numbers: tuple[int, ...] = tuple(item.number for item in record.targets)
-    nearest: SubscriptionTarget | None = _nearest(record)
-    watched: tuple[int, ...] = tuple(range(1, min(numbers, default=(record.cut or 0) + 1)))
+    nearest: SubscriptionTarget | None = _lagging(record) or _nearest(record)
     return SubscriptionRow(
         subscription_id=record.subscription_id,
         anilist_id=record.anilist_id,
@@ -469,8 +474,8 @@ def subscription_row(record: SubscriptionRecord) -> SubscriptionRow:
             (number for number in numbers if record.episode_count is not None and number > record.episode_count),
             default=None,
         ),
-        watched=watched,
-        done=len(watched),
+        aired=(record.cut or 0) + sum(item.state is not TargetState.AWAITING_AIRING for item in record.targets),
+        due_state=None if nearest is None else _due_state(nearest),
     )
 
 
@@ -617,15 +622,24 @@ def completed(record: SubscriptionRecord) -> bool:
     return record.cut is None or set(range(record.cut + 1, count + 1)) <= numbers
 
 
+def renumbered(record: SubscriptionRecord, read: ListingRead) -> bool:
+    """Whether a live *read* shifts the saved episode numbers of *record* within their seasons, which it accepts."""
+    return read.live and not _catalog_changed(record, read) and _numbering_changed(record, read, _NUMBERING_FIELDS)
+
+
 def _catalog_changed(record: SubscriptionRecord, read: ListingRead) -> bool:
     current: AniZipMapping = read.mapping
     if record.kitsu_id is not None and current.kitsu_id is not None and current.kitsu_id != record.kitsu_id:
         return True
+    return _numbering_changed(record, read, _SEASON_FIELDS)
+
+
+def _numbering_changed(record: SubscriptionRecord, read: ListingRead, fields: tuple[str, ...]) -> bool:
     saved: AniZipMapping | None = record.mapping
     if saved is None:
         return False
     return any(
-        _renumbered(value, current.raw_episodes.get(key))
+        _differs(value, read.mapping.raw_episodes.get(key), fields)
         for key, value in saved.raw_episodes.items()
         if key.isascii()
         and key.isdecimal()
@@ -633,9 +647,9 @@ def _catalog_changed(record: SubscriptionRecord, read: ListingRead) -> bool:
     )
 
 
-def _renumbered(saved: JsonObject, current: JsonObject | None) -> bool:
+def _differs(saved: JsonObject, current: JsonObject | None, fields: tuple[str, ...]) -> bool:
     fresh: JsonObject = current or {}
-    return any(saved.get(key) is not None and fresh.get(key) != saved.get(key) for key in _NUMBERING_FIELDS)
+    return any(saved.get(key) is not None and fresh.get(key) != saved.get(key) for key in fields)
 
 
 def _new_target(
@@ -702,6 +716,22 @@ def _display_key(record: SubscriptionRecord) -> tuple[int, float, str, str]:
     bucket: int = 0 if record.problem is not None else 3 if record.paused else 1 if due is not None else 2
     deadline: float = due.timestamp() if bucket == 1 and due is not None else 0.0
     return bucket, deadline, record.title.casefold(), record.subscription_id
+
+
+def _lagging(record: SubscriptionRecord) -> SubscriptionTarget | None:
+    lagging: list[SubscriptionTarget] = [item for item in record.targets if item.state in _LAGGING_STATES]
+    return min(lagging, key=lambda item: item.number) if lagging else None
+
+
+def _due_state(target: SubscriptionTarget) -> str:
+    if target.state is TargetState.DUE:
+        blocker: Blocker | None = target.blocker
+        if blocker is Blocker.WAITING_POLISH:
+            return "polish"
+        if blocker is Blocker.PENDING:
+            return "pending"
+        return "no_release" if blocker in {Blocker.NO_ADMISSIBLE, Blocker.THRESHOLD} else "searching"
+    return {TargetState.ATTEMPTING: "downloading", TargetState.EXHAUSTED: "exhausted"}.get(target.state, "airing")
 
 
 def _nearest(record: SubscriptionRecord) -> SubscriptionTarget | None:

@@ -885,9 +885,34 @@ def _two_sessions(
     return first, saved
 
 
-def test_numbering_conflict_blocks_attempts_after_restart(tmp_path: Path) -> None:
+@pytest.mark.parametrize("saves", [True, False])
+def test_a_renumbered_list_is_logged_as_accepted_only_once_its_state_is_saved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, saves: bool
+) -> None:
+    current: AniZipMapping = _mapping(max_age_s=None)
+    original: Callable[[WatchStateStore, WatchState], None] = WatchStateStore.save
+
+    def save(store: WatchStateStore, state: WatchState) -> None:
+        if not saves and any(item.mapping == current for item in state.subscriptions):
+            message: str = "disk full"
+            raise OSError(message)
+        original(store, state)
+
+    monkeypatch.setattr(WatchStateStore, "save", save)
+    stored: SubscriptionRecord = _followed(mapping=_renumbered({"23": {"episodeNumber": 99}}))
+    with _following(tmp_path, _active(stored), _World()) as (owner, store):
+        assert _await(lambda: any(item.get("source") == "ani.zip" for item in _decisions(tmp_path)))
+        _settled(owner)
+        kept: SubscriptionRecord = owner._on_owner(store.load).subscriptions[0]
+
+    checks: list[dict[str, object]] = [item for item in _decisions(tmp_path) if item.get("source") == "ani.zip"]
+    assert ("renumbered" in checks[0]) is saves
+    assert (kept.mapping, kept.problem) == ((current, None) if saves else (stored.mapping, None))
+
+
+def test_a_season_conflict_blocks_attempts_after_restart(tmp_path: Path) -> None:
     world: _World = _World()
-    stored: AniZipMapping = _renumbered({"23": {"episodeNumber": 99}})
+    stored: AniZipMapping = _renumbered({"23": {"seasonNumber": 9}})
 
     first, saved = _two_sessions(tmp_path, _followed(mapping=stored), world)
 

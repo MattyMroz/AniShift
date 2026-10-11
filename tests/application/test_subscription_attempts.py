@@ -174,12 +174,6 @@ def _target(owner: AutomationOwner) -> SubscriptionTarget:
     return owner.state.subscriptions[0].targets[0]
 
 
-def _disk_counts(owner: AutomationOwner) -> tuple[object, object]:
-    listed: ControlResponse = owner.handle(_request("subscriptions_list", command_id="counts"))
-    row: dict[str, object] = cast("list[dict[str, object]]", listed.result["subscriptions"])[0]
-    return row["on_disk"], row["ready"]
-
-
 def _decisions(setup: _Setup) -> list[dict[str, object]]:
     path: Path = setup.store.history_path().with_name("decisions.jsonl")
     entries: list[dict[str, object]] = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
@@ -194,7 +188,6 @@ def test_an_attempt_is_checked_on_its_staged_video_before_naming_and_satisfies_i
         _deliver(setup, owner)
         _until(lambda: _target(owner).state is TargetState.SATISFIED)
         assignment: EpisodeAssignment = _assignment(owner)
-        _until(lambda: _disk_counts(owner) == (1, 0))
         listed: ControlResponse = owner.handle(_request("subscriptions_list", command_id="list"))
 
     assert probe.seen == [(_NAMES[0], False, EpisodeReason.SUBSCRIPTION_CHECKING)]
@@ -206,7 +199,7 @@ def test_an_attempt_is_checked_on_its_staged_video_before_naming_and_satisfies_i
     assert probe.stamps == [assignment.verified_stamp]
     assert listed.result["shadow"] is False
     rows: list[dict[str, object]] = cast("list[dict[str, object]]", listed.result["subscriptions"])
-    assert (rows[0]["on_disk"], rows[0]["ready"]) == (1, 0)
+    assert (rows[0]["ready"], rows[0]["due_state"]) == (0, None)
     trail: list[tuple[object, object, object]] = [
         (item["kind"], item.get("source"), item.get("attempt_result")) for item in _decisions(setup)
     ]

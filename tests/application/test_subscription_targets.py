@@ -39,6 +39,7 @@ from anishift.application.subscription_targets import (
     merge_listing,
     next_check_at,
     next_search_at,
+    renumbered,
     search_targets,
     settle_target,
     skip_active,
@@ -91,7 +92,7 @@ def test_a_closed_attempt_without_a_download_moves_the_target_by_its_budget_and_
     assert closed.attempts == attempts
 
 
-def test_a_row_shows_the_nearest_open_deadline_and_leaves_its_file_counts_to_the_owner() -> None:
+def test_a_row_names_the_earliest_unfinished_target_and_counts_the_aired_episodes() -> None:
     record: SubscriptionRecord = _record(
         cut=2,
         targets=(
@@ -106,26 +107,55 @@ def test_a_row_shows_the_nearest_open_deadline_and_leaves_its_file_counts_to_the
         subscription_id="a",
         anilist_id=1,
         title="Series",
-        due_at=(_NOW + timedelta(days=1)).isoformat(),
+        due_at=(_NOW + timedelta(days=3)).isoformat(),
         paused=False,
         pause_reason=None,
         problem=None,
         review_pending=False,
-        due_number=5,
-        watched=(1, 2),
-        done=2,
+        due_number=4,
+        aired=5,
+        due_state="searching",
     )
 
 
-@pytest.mark.parametrize(("cut", "watched"), [(3, (1, 2, 3)), (0, ()), (None, ())])
-def test_a_row_without_targets_counts_the_episodes_before_its_cut_point(
-    cut: int | None, watched: tuple[int, ...]
+@pytest.mark.parametrize(
+    ("state", "blocker", "shown"),
+    [
+        (TargetState.AWAITING_AIRING, None, "airing"),
+        (TargetState.DUE, None, "searching"),
+        (TargetState.DUE, Blocker.PENDING, "pending"),
+        (TargetState.DUE, Blocker.WAITING_POLISH, "polish"),
+        (TargetState.DUE, Blocker.NO_ADMISSIBLE, "no_release"),
+        (TargetState.DUE, Blocker.THRESHOLD, "no_release"),
+        (TargetState.ATTEMPTING, None, "downloading"),
+        (TargetState.EXHAUSTED, None, "exhausted"),
+    ],
+)
+def test_a_row_names_what_its_earliest_unfinished_target_waits_for(
+    state: TargetState, blocker: Blocker | None, shown: str
 ) -> None:
-    record: SubscriptionRecord = _record(cut=cut, migrated_at=_NOW.isoformat())
+    spent: int = MAX_ATTEMPTS if state is TargetState.EXHAUSTED else 0
+    target: SubscriptionTarget = SubscriptionTarget(
+        3,
+        (_NOW - timedelta(hours=1)).isoformat(),
+        state,
+        attempts=spent,
+        started=spent,
+        admission_id="admission" if state is TargetState.ATTEMPTING else None,
+        blocker=blocker,
+    )
+    record: SubscriptionRecord = _record(cut=2, targets=(target, _target(4, TargetState.AWAITING_AIRING, _NOW)))
 
     row: SubscriptionRow = subscription_row(record)
 
-    assert (row.watched, row.done) == (watched, len(watched))
+    assert (row.due_number, row.due_state) == (3, shown)
+
+
+@pytest.mark.parametrize(("cut", "aired"), [(3, 3), (0, 0), (None, 0)])
+def test_a_row_without_targets_counts_the_episodes_before_its_cut_point_as_aired(cut: int | None, aired: int) -> None:
+    record: SubscriptionRecord = _record(cut=cut, migrated_at=_NOW.isoformat())
+
+    assert subscription_row(record).aired == aired
 
 
 @pytest.mark.parametrize(("count", "beyond"), [(4, 6), (6, None), (None, None)])
@@ -401,20 +431,38 @@ def test_excluded_legacy_pair_key() -> None:
     assert excluded(target) == frozenset({"abc", "d" * 40})
 
 
-def test_numbering_change_without_kitsu_is_conflict() -> None:
+def test_a_shifted_absolute_number_without_kitsu_is_accepted_as_renumbering() -> None:
     saved: SubscriptionRecord = _saved(_numbered(_SEASON, kitsu=None))
+    current: AniZipMapping = _numbered({**_SEASON, 3: (1, 3, 30)}, kitsu=None)
 
-    merged: SubscriptionRecord = merge_listing(saved, _live(_numbered({**_SEASON, 3: (1, 3, 30)}, kitsu=None)), _NOW)
+    merged: SubscriptionRecord = merge_listing(saved, _live(current), _NOW)
+
+    assert (merged.problem, merged.mapping) == (None, current)
+    assert renumbered(saved, _live(current))
+
+
+def test_episode_numbers_shifted_within_their_season_replace_a_conflicted_mapping() -> None:
+    saved: SubscriptionRecord = replace(
+        _saved(_numbered({1: (2, 1, 13), 2: (2, 1, 13), 3: (2, 2, 14)})),
+        problem=SubscriptionProblem.CATALOG_CONFLICT,
+    )
+    current: AniZipMapping = _numbered({1: (2, 1, 13), 2: (2, 2, 14), 3: (2, 3, 15)})
+
+    merged: SubscriptionRecord = merge_listing(saved, _live(current), _NOW)
+
+    assert (merged.problem, merged.mapping) == (None, current)
+    assert renumbered(saved, _live(current))
+
+
+def test_a_moved_season_is_a_conflict_and_never_counts_as_renumbering() -> None:
+    saved: SubscriptionRecord = _saved(_numbered(_SEASON))
+    moved: ListingRead = _live(_numbered({**_SEASON, 2: (2, 2, 2)}))
+
+    merged: SubscriptionRecord = merge_listing(saved, moved, _NOW)
 
     assert merged == replace(saved, problem=SubscriptionProblem.CATALOG_CONFLICT)
-
-
-def test_numbering_change_same_kitsu_is_conflict() -> None:
-    saved: SubscriptionRecord = _saved(_numbered(_SEASON))
-
-    merged: SubscriptionRecord = merge_listing(saved, _live(_numbered({**_SEASON, 2: (1, 5, 2)})), _NOW)
-
-    assert merged.problem is SubscriptionProblem.CATALOG_CONFLICT
+    assert not renumbered(saved, moved)
+    assert not renumbered(saved, _live(_numbered(_SEASON)))
 
 
 @pytest.mark.parametrize("removed", [2, 3])

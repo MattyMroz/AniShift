@@ -16,7 +16,6 @@ from anishift.cli.interactive.subscription_texts import (
     check_text,
     row_columns,
     row_state,
-    watched_line,
 )
 
 __all__ = [
@@ -71,7 +70,6 @@ def subscription_rows(
                 ready=ready,
                 status=state.text,
                 detail="" if state.detail == state.text else state.detail,
-                note=watched_line(item),
             )
         )
     return tuple(rows)

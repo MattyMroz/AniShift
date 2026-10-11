@@ -325,7 +325,11 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - Subskrypcje żyją w `WatchState.subscriptions` jako `SubscriptionRecord`; wiersze, limit
   `MAX_SUBSCRIPTIONS` (100) i kolejność listy (`display_order`: problem, termin, bez terminu,
   pauza) mają jedno źródło w `subscription_targets.py`; tam też są reguły celów (`cut_point`,
-  `is_target`, `merge_listing`) i terminów (`next_search_at`, `next_check_at`). Owner obsługuje
+  `is_target`, `merge_listing`) i terminów (`next_search_at`, `next_check_at`). Odczyt ani.zip, który
+  przesuwa numery zapisanych odcinków w ich sezonach, zastępuje mapowanie od razu (`renumbered`, wpis
+  `renumbered` w `check`); konfliktem `CATALOG_CONFLICT` jest tylko zmiana sezonu odcinka albo wpisu kitsu
+  (decyzja właściciela 2026-10-11, przypadek Sword). `SubscriptionRow` niesie `aired` (cięcie + cele
+  poza `awaiting_airing`), `ready` i najwcześniejszy niedokończony cel (`due_number`, `due_state`). Owner obsługuje
   `subscriptions_list`, `subscription_get`, `subscription_add`, `subscription_check` i
   `subscription_pause/resume/remove/restore`; każdy inny rodzaj `subscription*` to
   `UNKNOWN_COMMAND`. Mutacja zapisuje receipt razem ze stanem. Sprawdzenie biegnie w puli I/O,

@@ -97,6 +97,7 @@ _FIELDS: Final[frozenset[str]] = frozenset(
         "result",
         "excluded",
         "mapping_source",
+        "renumbered",
         "attempt",
         "attempt_result",
         "verification",

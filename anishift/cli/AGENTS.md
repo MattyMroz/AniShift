@@ -96,9 +96,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   first beneath the table. Beneath the table stands only what the highlighted row hides: the full state
   when it differs from the short one, dropped columns, then a truncated title (`anime_view._unshown`). U08 leads its notice with the last check;
   `?` there lists every subscription fact (`_subscription_facts`) wrapped and scrollable, so 50-column
-  terminals reach the full title, Odcinki (`done/episode_count`, else `on_disk` from an older owner: episodes on disk plus
-  `watched`, the episodes before the first target that are neither on disk nor ordered nor refused (`_skipped`);
-  `watched_line` names them beneath the row and in U08) and Gotowe. Row states and columns come only from `subscription_texts` (`row_state`,
+  terminals reach the full title, Odcinki (`aired/episode_count`: aired episodes, owner decision 2026-10-11) and Gotowe
+  (episodes on disk). Stan names the earliest unfinished target (`due_number`) and what it waits for (`due_state`:
+  `E3 · szukam`, `czekam na PL`, `pobieram`, `brak wydania`, `nie udało się`), else the airing of the next one
+  (`E4 · 18.10 16:30`). Row states and columns come only from `subscription_texts` (`row_state`,
   `row_columns`, `row_summary`). The list is `render_anime` with `AnimeScreen.SUBSCRIPTIONS` through `_table_body`, shared with Library: one row
   per subscription, fixed Stan width, optional columns dropped before the title shrinks below
   `_TITLE_FLOOR`; an empty list renders as DETAILS with the one row „Brak subskrypcji”. Every empty tab list
