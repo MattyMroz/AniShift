@@ -159,7 +159,7 @@ def row_state(row: Mapping[str, object], now: datetime) -> SubscriptionState:
         return SubscriptionState("Weryfikuję", "Sprawdzam przeniesioną subskrypcję")
     checking: object = row.get("checking_number")
     if isinstance(checking, int):
-        return _plain(f"Kontrola E{checking}")
+        return _plain(f"E{checking} · sprawdzam plik")
     due: object = row.get("due_at")
     if not isinstance(due, str):
         return _plain("Przerwa w emisji" if row.get("catalog_status") == "HIATUS" else "Termin nieznany")
@@ -231,7 +231,7 @@ def check_text(check: Mapping[str, object]) -> str:
     text: str = f"Sprawdzono E{number}: {total} {noun}, {counts[0]} zgodnych"
     if counts[1] or counts[2]:
         text += f" ({counts[1]} niepewnych, {counts[2]} niezgodnych)"
-    return text + (" · propozycja zapisana" if outcome == "proposed" else "")
+    return text + (" · tryb próbny" if outcome == "proposed" else "")
 
 
 def clock_time(moment: str) -> str:

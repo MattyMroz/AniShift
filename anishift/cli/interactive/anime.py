@@ -1843,7 +1843,7 @@ class AnimeController:
             self._confirm_choice = choice
             self._confirm_view = view
             self._problem_return = self._screen
-            self._problem = "Pobrać mimo niepewnej tożsamości?"
+            self._problem = "Nie mam pewności, że to właściwy odcinek. Pobrać?"
             self._suggestion = " · ".join(
                 (choice.stream.release, f"E{view.offer.key.number}", candidate_reason(choice))
             )

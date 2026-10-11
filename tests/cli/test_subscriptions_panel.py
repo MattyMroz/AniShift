@@ -309,7 +309,7 @@ def test_the_episodes_column_uses_the_success_style_only_once_an_episode_counts(
     [
         ("save_failed", False, "Monitoring nie działa: nie można zapisać stanu"),
         ("save_failed", True, "Monitoring nie działa: nie można zapisać stanu"),
-        ("", True, "Tryb cienia — subskrypcje tylko zapisują propozycje"),
+        ("", True, "Tryb próbny · subskrypcje niczego nie pobierają"),
     ],
 )
 def test_the_status_row_names_why_monitoring_does_not_progress(

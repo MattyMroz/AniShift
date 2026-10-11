@@ -107,18 +107,18 @@ _BATCH_CLOSING: Final[str] = "Okno zamknie się za {seconds} s · Esc zamknij"
 """Footer of a finished batch window while it counts down."""
 
 _REFUSAL_MESSAGES: Final[dict[str, str]] = {
-    "The workspace holds no source group to run.": "Workspace nie zawiera materiału do uruchomienia",
-    "No discovered source group is ready to run.": "Żadna wykryta grupa nie jest gotowa do uruchomienia",
+    "The workspace holds no source group to run.": "W folderze AniShift nie ma odcinka do przetworzenia",
+    "No discovered source group is ready to run.": "Żaden odcinek nie jest gotowy do przetworzenia",
     "The plan cannot run because of a blocking problem.": "Plan nie może zostać uruchomiony",
 }
 """Polish presentation of stable UI-neutral Auto refusals."""
 
 _REFUSAL_SUGGESTIONS: Final[dict[str, str]] = {
     "Put a video or a subtitle file in the workspace and run the preset again.": (
-        "Umieść plik wideo lub napisów w workspace i spróbuj ponownie"
+        "Wrzuć plik wideo lub napisy do folderu AniShift i spróbuj ponownie"
     ),
     "Give every group usable text, resolve its conflict, then run the preset again.": (
-        "Usuń konflikty i zapewnij każdej grupie użyteczne napisy"
+        "Każdy odcinek potrzebuje napisów, z których powstanie lektor"
     ),
 }
 """Polish presentation of stable UI-neutral Auto suggestions."""

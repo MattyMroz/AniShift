@@ -30,7 +30,7 @@ _COUNTS: Final[Mapping[str, int]] = {"downloading": 1, "processing": 2, "waiting
 _STATES: Final[tuple[tuple[Mapping[str, object], str], ...]] = (
     (
         {"auto_enabled": True, "material_counts": _COUNTS},
-        "Automat: praca · pobiera 1 · przetwarza 2 · czeka 3 · O wyłącz",
+        "Automat: praca · pobiera 1 · przetwarza 2 · w kolejce 3 · O wyłącz",
     ),
     (
         {"auto_enabled": True, "material_counts": {"downloading": 0, "processing": 2}},
@@ -44,11 +44,11 @@ _STATES: Final[tuple[tuple[Mapping[str, object], str], ...]] = (
     ({"auto_enabled": False, "material_counts": _COUNTS}, "Automat wstrzymany · O włącz"),
     (
         {"auto_enabled": False, "pausing": True, "material_counts": _COUNTS},
-        "Automat: zatrzymywanie · pobiera 1 · przetwarza 2 · czeka 3 · O włącz",
+        "Automat: zatrzymywanie · pobiera 1 · przetwarza 2 · w kolejce 3 · O włącz",
     ),
     (
         {"auto_enabled": False, "pause_incomplete": True, "material_counts": {"waiting": 3}},
-        "Automat: pauza niepełna · czeka 3 · O włącz",
+        "Automat: pauza niepełna · w kolejce 3 · O włącz",
     ),
 )
 
@@ -140,7 +140,7 @@ def test_processing_status_counts_owner_materials_instead_of_its_rows(build: Cal
     lines: list[str] = _lines(probe, 80, 24)
 
     assert len(probe.panel._processing_rows()) == 1
-    assert lines[-1].strip() == "Automat: praca · pobiera 5 · czeka 2 · O wyłącz"
+    assert lines[-1].strip() == "Automat: praca · pobiera 5 · w kolejce 2 · O wyłącz"
 
 
 @pytest.mark.parametrize("name", ["query", "episodes", "subscriptions"])

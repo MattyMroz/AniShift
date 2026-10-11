@@ -56,7 +56,7 @@ _KEY_NAMES: Final[dict[str, str]] = {
     "?": "text:?",
     "/": "text:/",
 }
-"""Key a footer hint names, by its label; single letters press their own lowercase key."""
+"""Key a footer hint names, by its label; single capital letters press their own lowercase key."""
 
 _ROW_KINDS: Final[frozenset[str]] = frozenset({"row", "line"})
 """Target kinds that tag a whole painted line, wherever on it the click lands."""
@@ -442,7 +442,7 @@ def _key_name(label: str) -> str | None:
     head: str = label if label == "/" else label.split("/", maxsplit=1)[0]
     if head in _KEY_NAMES:
         return _KEY_NAMES[head]
-    return f"text:{head.lower()}" if len(head) == 1 and head.isalpha() else None
+    return f"text:{head.lower()}" if len(head) == 1 and head.isalpha() and head.isupper() else None
 
 
 def _toggle_at(line: Text, offset: int) -> Click | None:

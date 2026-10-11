@@ -257,7 +257,7 @@ def test_a_refused_batch_exits_refused_after_showing_the_reason(monkeypatch: pyt
     code: int = application.run()
 
     assert code == EXIT_REFUSED
-    assert "Żadna wykryta grupa nie jest gotowa" in _frame(application)
+    assert "Żaden odcinek nie jest gotowy" in _frame(application)
 
 
 def test_interrupting_a_batch_cancels_its_run_and_exits_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:

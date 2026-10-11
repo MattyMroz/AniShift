@@ -230,7 +230,7 @@ class AnimeViewState:
         try:
             chosen: set[str] = _range_keys(value, self.items)
         except ValueError:
-            self.notice = "Zakres: podaj 1,3,7.5 albo 5-"
+            self.notice = "Zakres: np. 1,3 albo 5-"
             return False
         self.selected = chosen
         self.range_input = None

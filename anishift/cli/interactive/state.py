@@ -149,7 +149,7 @@ _NO_CONNECTION: Final[str] = "Automat: brak połączenia"
 _STATUS_COUNTS: Final[tuple[tuple[str, str], ...]] = (
     ("downloading", "pobiera"),
     ("processing", "przetwarza"),
-    ("waiting", "czeka"),
+    ("waiting", "w kolejce"),
 )
 """Owner material counters in the order the status line names them."""
 

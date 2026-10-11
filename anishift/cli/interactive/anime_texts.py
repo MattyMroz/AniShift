@@ -31,20 +31,20 @@ EPISODE_REASON_LABELS: Final[dict[str, str]] = {
     AdmissionConflict.ADMITTED: "Zlecono",
     EpisodeReason.EPISODE_IN_PROGRESS: "W toku",
     AdmissionConflict.POSSIBLY_ADMITTED: "Już zlecone?",
-    AdmissionConflict.TRANSFER_RECORDED: "Konflikt hasha",
+    AdmissionConflict.TRANSFER_RECORDED: "Już pobierane",
     EpisodeReason.SOURCE_FAILED: "Błąd źródła",
     EpisodeReason.LEGACY_UNREADABLE: "Błąd zleceń",
     EpisodeReason.EPISODE_FILE_UNRESOLVED: "Wskaż plik",
     EpisodeReason.TRANSFER_FAILED: "Błąd pobierania",
     EpisodeReason.PUBLICATION_FAILED: "Błąd eksportu",
-    EpisodeReason.WAITING_PREVIOUS_TRANSFER: "Czeka na stare",
+    EpisodeReason.WAITING_PREVIOUS_TRANSFER: "Czeka w kolejce",
     EpisodeReason.PUBLICATION_MISSING: "Brak pliku",
     EpisodeReason.RESULT_MISSING: "Do pobrania",
     EpisodeReason.PACK_IN_PROGRESS: "Czeka na paczkę",
     EpisodeReason.SUBSCRIPTION_AWAITING_AIRING: "Czeka na emisję",
     EpisodeReason.SUBSCRIPTION_AWAITING_RELEASE: "Czeka na wydanie",
-    EpisodeReason.SUBSCRIPTION_CHECKING: "Kontrola",
-    EpisodeReason.SUBSCRIPTION_CHECK_SKIPPED: "Bez kontroli",
+    EpisodeReason.SUBSCRIPTION_CHECKING: "Sprawdzam plik",
+    EpisodeReason.SUBSCRIPTION_CHECK_SKIPPED: "Niesprawdzony",
     EpisodeReason.SUBSCRIPTION_EXHAUSTED: "Wyczerpano próby",
 }
 """Shared column labels for owner batch and episode status reasons."""
@@ -95,9 +95,7 @@ _PROBLEM_TEXTS: Final[dict[ErrorCode, tuple[str, str]]] = {
 }
 """Polish sentence and hint of every failure this screen can meet."""
 
-COMMAND_FAILED: Final[str] = (
-    "Rezydent nie wykonał polecenia. Jeśli AniShift był właśnie aktualizowany, uruchom go ponownie."
-)
+COMMAND_FAILED: Final[str] = "AniShift w tle nie wykonał polecenia · uruchom AniShift ponownie"
 """Safe explanation shared by failed catalogue commands and local worker defects."""
 
 
@@ -108,7 +106,7 @@ def stated(problem: AniShiftError | OSError | ValueError) -> tuple[str, str]:  #
     if not isinstance(problem, AniShiftError):
         return refusal_text(problem), ""
     if isinstance(problem, ControlError) and problem.reason == "response_too_large":
-        return "Odpowiedź rezydenta jest za duża", ""
+        return "Odpowiedź AniShift w tle jest za duża", ""
     if isinstance(problem, ControlError) and problem.reason == "offer_expired":
         return "Oferta wygasła — otwórz ponownie", ""
     if isinstance(problem, ControlError) and problem.reason in _REPEATABLE_REFUSALS:
@@ -118,11 +116,11 @@ def stated(problem: AniShiftError | OSError | ValueError) -> tuple[str, str]:  #
     if isinstance(problem, ControlError) and problem.reason == "download_recorded":
         counts: dict[str, int] | None = _download_counts(problem)
         if counts is None:
-            return "Nie można potwierdzić wyniku zamówienia", "Sprawdź prywatny klient AniShift i log"
+            return "Nie można potwierdzić wyniku zamówienia", "Sprawdź qBittorrenta AniShift i log"
         return (
             f"Przyjęto: {counts['sent']} · już przyjęte: {counts['accepted']}"
             f" · wynik przekazania niepotwierdzony: {counts['uncertain']}",
-            "Sprawdź prywatny klient AniShift i log",
+            "Sprawdź qBittorrenta AniShift i log",
         )
     code: ErrorCode | None = error_code(problem)
     texts: tuple[str, str] | None = _PROBLEM_TEXTS.get(code) if code is not None else None
@@ -132,7 +130,7 @@ def stated(problem: AniShiftError | OSError | ValueError) -> tuple[str, str]:  #
             ErrorCode.TORRENT_CLIENT_UNAUTHORIZED,
             ErrorCode.TORRENT_CLIENT_REFUSED,
         }:
-            return texts[0], "Sprawdź prywatny klient AniShift i log"
+            return texts[0], "Sprawdź qBittorrenta AniShift i log"
         return texts
     return (refusal_text(problem), "") if isinstance(problem, ControlError) else ("Nie udało się wykonać operacji", "")
 

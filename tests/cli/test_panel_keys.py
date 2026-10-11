@@ -1157,7 +1157,7 @@ def test_a_click_on_a_row_clears_the_question_without_selecting(build: Callable[
 
 def test_every_footer_and_status_hint_is_a_click_on_its_key_and_plain_words_are_not() -> None:
     footer: Text = mark_keys(Text("Enter szczegóły · D dodaj · W wstrzymaj · ? klawisze · Esc wróć · Ctrl+Z cofnij"))
-    status: Text = mark_keys(Text("Automat: praca · czeka 2 · O wyłącz"))
+    status: Text = mark_keys(Text("Automat: praca · w kolejce 2 · O wyłącz"))
 
     def key(line: Text, label: str) -> str:
         return click_at(line, TextPoint(0, line.plain.index(label))).key
@@ -1170,7 +1170,7 @@ def test_every_footer_and_status_hint_is_a_click_on_its_key_and_plain_words_are_
         "escape",
         "undo",
     ]
-    assert [key(status, label) for label in ("Automat", "czeka", "O ")] == ["", "", "text:o"]
+    assert [key(status, label) for label in ("Automat", "w kolejce", "O ")] == ["", "", "text:o"]
 
 
 @pytest.mark.parametrize("name", ["query", "titles"])

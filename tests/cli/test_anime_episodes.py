@@ -2339,13 +2339,13 @@ def test_choose_during_search_before_slow_source(tmp_path: Path) -> None:
     [
         ("transfer_failed", "Błąd pobierania"),
         ("publication_failed", "Błąd eksportu"),
-        ("waiting_previous_transfer", "Czeka na stare"),
+        ("waiting_previous_transfer", "Czeka w kolejce"),
         ("publication_missing", "Brak pliku"),
-        ("transfer_recorded", "Konflikt hasha"),
+        ("transfer_recorded", "Już pobierane"),
         ("source_failed", "Błąd źródła"),
         ("legacy_unreadable", "Błąd zleceń"),
-        ("subscription_checking", "Kontrola"),
-        ("subscription_check_skipped", "Bez kontroli"),
+        ("subscription_checking", "Sprawdzam plik"),
+        ("subscription_check_skipped", "Niesprawdzony"),
         ("subscription_awaiting_airing", "Czeka na emisję"),
         ("subscription_awaiting_release", "Czeka na wydanie"),
         ("subscription_exhausted", "Wyczerpano próby"),
@@ -2558,7 +2558,7 @@ def test_choosing_an_already_ordered_episode_keeps_the_releases_and_p_opens_them
     assert _at(controller) is _Screen.CANDIDATES
     assert f"{sentence} · P pobierz ponownie" in frame
     assert "D pobierz · P pobierz ponownie" in frame
-    assert "Rezydent nie wykonał polecenia" not in frame
+    assert "AniShift w tle nie wykonał polecenia" not in frame
 
     controller.handle_key("text:p")
     deadline: float = time.monotonic() + 10
@@ -2881,7 +2881,7 @@ def test_local_offer_defect_logs_class_and_fails_the_entire_preview() -> None:
         _key(controller, "down")
         _key(controller, "text:i")
         assert controller._screen is _Screen.PROBLEM
-        assert "Rezydent nie wykonał polecenia." in _frame(controller)
+        assert "AniShift w tle nie wykonał polecenia" in _frame(controller)
         assert controller._offer is None
         assert "error_class" in "".join(captured)
         assert "ValueError" in "".join(captured)
@@ -2914,7 +2914,7 @@ def test_only_internal_command_failed_on_new_operations_suggests_restart(
     controller: AnimeController = _controller(catalog)
     _open(controller)
     _key(controller, "text:i")
-    assert ("Rezydent nie wykonał polecenia." in _frame(controller)) is restart
+    assert ("AniShift w tle nie wykonał polecenia" in _frame(controller)) is restart
     assert "private-payload" not in _frame(controller)
 
 
@@ -3382,7 +3382,7 @@ def test_owner_offer_defect_reaches_problem_with_error_class_and_without_suggest
             monkeypatch.setattr(acquisition, "search_episode", broken)
             _key(controller, "text:i")
             assert controller._screen is _Screen.PROBLEM
-            assert "Rezydent nie wykonał polecenia." in _frame(controller)
+            assert "AniShift w tle nie wykonał polecenia" in _frame(controller)
             assert controller._offer is None
             assert "ValueError" in "".join(captured)
             assert "error_class" in "".join(captured)

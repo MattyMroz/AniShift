@@ -389,8 +389,8 @@ def test_an_auto_refusal_stays_a_sentence_with_a_hint_and_returns_home(monkeypat
     _settle(application)
     refused: str = _frame(application)
 
-    assert "Workspace nie zawiera materiału do uruchomienia" in refused
-    assert "Umieść plik wideo lub napisów w workspace i spróbuj ponownie" in refused
+    assert "W folderze AniShift nie ma odcinka do przetworzenia" in refused
+    assert "Wrzuć plik wideo lub napisy do folderu AniShift i spróbuj ponownie" in refused
     assert "Esc wróć" in refused
     assert "source group" not in refused
     assert "Traceback" not in refused

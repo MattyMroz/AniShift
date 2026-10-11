@@ -432,7 +432,7 @@ def _plain(text: str) -> SubscriptionState:
         ({"episode_count": 4, "beyond_count": None}, _plain("Termin nieznany")),
         (
             {"due_at": (_NOW - timedelta(hours=1)).isoformat(), "due_number": 3, "checking_number": 3},
-            _plain("Kontrola E3"),
+            _plain("E3 · sprawdzam plik"),
         ),
         (
             {"checking_number": 3, "paused": True, "pause_reason": "user"},
@@ -453,7 +453,7 @@ def test_a_row_shows_its_strongest_state(changes: Mapping[str, object], state: S
         ),
         (
             {"number": 6, "matching": 1, "uncertain": 0, "mismatched": 0, "outcome": "proposed"},
-            "Sprawdzono E6: 1 kandydat, 1 zgodnych · propozycja zapisana",
+            "Sprawdzono E6: 1 kandydat, 1 zgodnych · tryb próbny",
         ),
         ({"number": 6, "outcome": "no_candidates"}, "Sprawdzono E6: brak wydań w źródle"),
         ({"number": 6, "outcome": "source_failed"}, "E6: źródło wydań nie odpowiada · ponowię później"),
@@ -878,8 +878,8 @@ def test_f_shows_the_check_result_in_the_row_for_ten_seconds(
 @pytest.mark.parametrize(
     ("problem", "auto_enabled", "warning"),
     [
-        ("", True, "Tryb cienia — subskrypcje tylko zapisują propozycje"),
-        ("", False, "Tryb cienia — subskrypcje tylko zapisują propozycje"),
+        ("", True, "Tryb próbny · subskrypcje niczego nie pobierają"),
+        ("", False, "Tryb próbny · subskrypcje niczego nie pobierają"),
         ("save_failed", True, "Monitoring nie działa: nie można zapisać stanu"),
         ("save_failed", False, "Monitoring nie działa: nie można zapisać stanu"),
     ],
@@ -1096,7 +1096,7 @@ def test_a_check_finished_while_the_details_are_open_updates_their_header(
         }
     )
 
-    assert "Sprawdzono E3: 1 kandydat, 1 zgodnych · propozycja zapisana" in " ".join(_frame(panel).split())
+    assert "Sprawdzono E3: 1 kandydat, 1 zgodnych · tryb próbny" in " ".join(_frame(panel).split())
 
 
 @pytest.mark.parametrize("screen", ["list", "draft", "details"])
@@ -1284,7 +1284,7 @@ def test_every_subscription_fact_is_reachable_in_the_details_of_a_narrow_termina
 ) -> None:
     _details(owner)
     title: str = "That Time I Got Reincarnated as a Slime " * 10 + "Finale"
-    check: str = "Sprawdzono E3: 13 kandydatów, 1 zgodnych (8 niepewnych, 4 niezgodnych) · propozycja zapisana"
+    check: str = "Sprawdzono E3: 13 kandydatów, 1 zgodnych (8 niepewnych, 4 niezgodnych) · tryb próbny"
     owner.details["last_check"] = {
         "checked_at": _NOW.isoformat(),
         "number": 3,

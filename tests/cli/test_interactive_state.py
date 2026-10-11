@@ -138,7 +138,7 @@ def _live_material(group_id: str, run_id: str = "run", state: str = "running") -
     ("state", "acquisition_state", "problem", "expected", "percentage"),
     [
         ("downloading", "accepted", None, "Pobieranie", True),
-        ("metaDL", "accepted", None, "Metadane", True),
+        ("metaDL", "accepted", None, "Łączę", True),
         ("stoppedDL", "accepted", None, "Wstrzymano", True),
         (None, "accepted", None, "Brak transferu", False),
         ("downloading", "accepted", "unavailable", "Brak odczytu", False),
@@ -322,7 +322,7 @@ def test_processing_labels_predecessor_wait_without_attention_warning(monkeypatc
     }
     try:
         frame: str = controller.render(120, 40).plain
-        assert "Czeka na stare" in frame
+        assert "Czeka w kolejce" in frame
         assert "Wymaga uwagi" not in frame
     finally:
         controller.close()
@@ -358,7 +358,7 @@ def test_download_handoff_keeps_selection_until_real_task_start_and_removes_fini
         assert " |   0% | " in controller.render(80, 24).plain
         assert "X anuluj" not in controller.render(80, 24).plain
         item.update(reason="finalization_failed", problem="finalization_failed", acquisition_state="complete")
-        assert "Finalizacja" in controller.render(80, 24).plain
+        assert "Błąd zapisu" in controller.render(80, 24).plain
         assert "Episode 01.mkv" in controller.render(80, 24).plain
         assert "Błąd pobierania" not in controller.render(80, 24).plain
         item.update(reason="preparing", problem=None)
@@ -869,7 +869,7 @@ def test_processing_only_shows_live_material_bars_from_a_mixed_legacy_snapshot( 
         assert "--" not in frame
         assert "0%" in frame
         assert len(controller._processing_rows()) == 3
-        assert frame.splitlines()[-1].strip() == "Automat: praca · pobiera 8 · przetwarza 9 · czeka 7 · O wyłącz"
+        assert frame.splitlines()[-1].strip() == "Automat: praca · pobiera 8 · przetwarza 9 · w kolejce 7 · O wyłącz"
         assert "Queued.mkv" in frame
         assert "Przygotowanie" in frame
         assert not any(text in frame for text in ("a" * 40, "Missing", "Relocation", "Kosz", "Czeka", "↓ 8"))
@@ -2067,7 +2067,7 @@ def test_each_panel_tab_retains_contextual_actions_and_owner_counts_at_feasible_
         frame: str = interactive_app._fit_frame(
             controller.render(columns, rows), "test", "workspace", columns, rows
         ).plain
-        assert "Automat: praca · pobiera 2 · przetwarza 3 · czeka 4 · O wyłącz" in frame
+        assert "Automat: praca · pobiera 2 · przetwarza 3 · w kolejce 4 · O wyłącz" in frame
         assert "? klawisze · Esc wróć" in frame
         assert ("D dodaj", "H historia", "? klawisze")[tab - 1] in frame
         assert len(frame.splitlines()) <= rows

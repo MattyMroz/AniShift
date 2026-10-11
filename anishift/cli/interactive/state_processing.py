@@ -157,7 +157,7 @@ def download_progress(  # noqa: PLR0911
     fraction: object = item.get("progress")
     measured: float | None = float(fraction) if isinstance(fraction, (int, float)) else None
     if item.get("reason") == EpisodeReason.FINALIZATION_FAILED:
-        return "Finalizacja", None
+        return "Błąd zapisu", None
     if item.get("stage") == "waiting":
         return ("Wstrzymano" if held(snapshot, item) else "Przygotowanie"), None
     if item.get("problem"):
@@ -170,7 +170,7 @@ def download_progress(  # noqa: PLR0911
     if _download_toggle(item) == ("resume", "wznów"):
         return "Wstrzymano", measured
     if state in {"metaDL", "forcedMetaDL"} or item.get("acquisition_state") == "pending_send":
-        return "Metadane", measured
+        return "Łączę", measured
     if state is None:
         return "Brak transferu", None
     if state in {"error", "missingFiles"}:

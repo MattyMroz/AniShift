@@ -35,7 +35,7 @@ NO_SUBSCRIPTIONS: Final[str] = "Brak subskrypcji"
 _CHECKING: Final[str] = "Sprawdzam…"
 """Stan of a subscription whose requested check has not answered yet."""
 
-_SHADOW_WARNING: Final[str] = "Tryb cienia — subskrypcje tylko zapisują propozycje"
+_SHADOW_WARNING: Final[str] = "Tryb próbny · subskrypcje niczego nie pobierają"
 """Status row above the list while the owner records proposals instead of attempts."""
 
 _ADD_KEYS: Final[str] = "D"
