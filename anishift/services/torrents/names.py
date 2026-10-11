@@ -15,6 +15,7 @@ __all__ = [
     "episode_range",
     "parse_release_name",
     "season_hint",
+    "single_episode",
     "strip_season",
     "title_forms",
 ]
@@ -168,6 +169,12 @@ def strip_season(series: str) -> str:
     if marker is None:
         return " ".join(series.split())
     return " ".join(f"{series[: marker.start()]} {series[marker.end() :]}".split())
+
+
+def single_episode(name: str) -> bool:
+    """Whether release *name* holds exactly one numbered episode, never a range, batch or season pack."""
+    parsed: ReleaseName = parse_release_name(name)
+    return parsed.episode is not None and not parsed.is_pack and episode_range(name) is None
 
 
 def before_season(series: str) -> str:

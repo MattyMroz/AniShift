@@ -94,6 +94,7 @@ class ReleaseTraits:
     bluray: bool
     seeders: int | None
     subtitles_listed: bool
+    small: bool = False
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────

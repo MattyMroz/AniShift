@@ -160,7 +160,11 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   przez IPC ownera. Grafy, mapowania i harmonogramy zostają w pamięci usługi; nie powstaje przyjęcie
   ani receipt. Awaria harmonogramu zachowuje mapowanie z ostrzeżeniem i terminem ponowienia. `offer`
   używa zapamiętanego grafu bez rozwijania niepełnego liścia; filmy wołają `movie_streams` z
-  `EpisodeKey(id, 1)`. Sugestie pomijają niezgodne wydania i znane nieobsługiwane kontenery.
+  `EpisodeKey(id, 1)`. Sugestie pomijają niezgodne wydania, znane nieobsługiwane kontenery i wydania z 0
+  seedów, a gdy jakiś `MATCH` nadaje się do sugestii, wybierają `MATCH` i pełny plik przed małym przekodowaniem.
+  `rank_candidates(single=...)` oznacza `traits.small`: plik jednego odcinka poniżej `SMALL_SHARE` największego
+  nieodstającego pliku tej rozdzielczości; paczki i zakresy (`names.single_episode`) nie wyznaczają odniesienia.
+  Cel subskrypcji z blokerem `PENDING` (`next_search_at`) wraca do sprawdzenia po 15 min, poza siatką U-14.
 - `AutomationOwner.admit_episode` to synchroniczna bramka przyjęcia: jeden zapis `ADMITTED`
   (selektywne `AcquisitionConfirmation` z `EpisodeAssignment`) razem z receipt, bez skutków w qB.
   Wysyłkę przejmuje cykl transferów (niżej); komenda `transfer` na hash w stanie `ADMITTED` dostaje

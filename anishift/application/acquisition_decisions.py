@@ -87,6 +87,7 @@ _FIELDS: Final[frozenset[str]] = frozenset(
         "raw",
         "hardsub",
         "bluray",
+        "small",
         "platform",
         "dub_only",
         "supported",

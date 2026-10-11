@@ -57,7 +57,7 @@ from anishift.application.release_quality import ReleaseTraits
 from anishift.application.subscription_choice import ChoiceCandidate, choice_candidate, choose
 from anishift.services.catalog.anilist import parse_franchise_page
 from anishift.services.catalog.anizip import parse_mapping
-from anishift.services.torrents.names import parse_release_name
+from anishift.services.torrents.names import parse_release_name, single_episode
 from anishift.services.torrents.torrentio import parse_streams
 
 pytestmark = pytest.mark.unit
@@ -235,7 +235,9 @@ def _pack_name(name: str) -> bool:
 
 
 def _rank(target: dict[str, object], streams: list[StreamCandidate]) -> tuple[RankedCandidate, ...]:
-    return rank_candidates(target, streams_releases(streams, pack_name=_pack_name), donghua=False)
+    return rank_candidates(
+        target, streams_releases(streams, pack_name=_pack_name), donghua=False, single=single_episode
+    )
 
 
 def _ranked(target: dict[str, object], streams: list[StreamCandidate]) -> list[StreamCandidate]:
@@ -1552,3 +1554,34 @@ def test_rank_candidates_diaries_target_never_matches_a_shared_package_by_its_ti
 @pytest.mark.parametrize("case", _regression_cases(), ids=lambda case: case["cause"])
 def test_identity_regression_case_keeps_expected_verdict(case: dict[str, Any]) -> None:
     assert classify(case["target"], case["candidate"]).verdict == case["expected_verdict"]
+
+
+def test_visible_hides_unseeded_rows_so_a_dead_high_match_never_hides_live_lower_matches() -> None:
+    dead: StreamCandidate = _stream("Star Garden - 05 [1080p].mkv", seeders=0)
+    live: StreamCandidate = _stream("Star Garden - 05 [720p].mkv", seeders=10)
+    other: StreamCandidate = _stream("Star Garden - 05 [720p].mkv", seeders=8, provider="nyaa")
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [dead, live, other])
+    assert {row.stream.info_hash for row in visible(ranked)} == {live.info_hash, other.info_hash}
+
+
+def test_a_small_re_encode_follows_the_full_files_of_its_class_and_never_leads_the_suggestion() -> None:
+    full: StreamCandidate = _stream("Star Garden - 05 [1080p].mkv", size_text="1.4 GiB", seeders=10)
+    small: StreamCandidate = _stream("Star Garden - 05 [1080p HEVC].mkv", size_text="350 MiB", seeders=90)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [full, small])
+    index, _uncertain = suggestion(ranked, numbering=True)
+    assert [row.traits.small for row in ranked if row.stream.info_hash == small.info_hash] == [True]
+    assert [row.stream.info_hash for row in visible(ranked)] == [full.info_hash, small.info_hash]
+    assert index is not None
+    assert ranked[index].stream.info_hash == full.info_hash
+
+
+def test_a_season_batch_sets_no_size_reference_for_single_episodes() -> None:
+    single: StreamCandidate = _stream("Star Garden - 05 [1080p].mkv", size_text="1.4 GiB", seeders=10)
+    batch: StreamCandidate = _stream(None, release="Star Garden - 01-12 [1080p]", size_text="40 GiB", seeders=10)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [single, batch])
+    assert not any(row.traits.small for row in ranked)
+
+
+def test_suggestion_with_match_only_and_no_usable_match_is_none() -> None:
+    uncertain: tuple[RankedCandidate, ...] = _rank(_target(), [_stream("Moon Garden - 05 [1080p].mkv")])
+    assert suggestion(uncertain, numbering=True, match_only=True) == (None, False)

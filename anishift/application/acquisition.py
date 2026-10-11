@@ -53,7 +53,13 @@ from anishift.services.torrents.categories import (
     CATEGORY_NON_ENGLISH_TRANSLATED,
     SEARCH_CATEGORIES,
 )
-from anishift.services.torrents.names import base_title, parse_release_name, season_hint, title_forms
+from anishift.services.torrents.names import (
+    base_title,
+    parse_release_name,
+    season_hint,
+    single_episode,
+    title_forms,
+)
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -1207,6 +1213,7 @@ class AcquisitionService:
             streams_releases(streams, pack_name=_pack_name),
             donghua=donghua,
             dates=season_dates(read.listing, read.episode_count),
+            single=single_episode,
         )
         counts: dict[str, int] = {
             verdict.value: sum(1 for item in ranked if item.identity.verdict is verdict) for verdict in IdentityVerdict

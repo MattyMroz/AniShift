@@ -628,11 +628,15 @@ class EpisodeSearch:
         streams: tuple[StreamCandidate, ...] = tuple(
             stream for source in NAME_PRIORITY if source in results for stream in results[source].streams
         )
+        from anishift.services.torrents.names import single_episode  # noqa: PLC0415
+
         releases: tuple[EpisodeRelease, ...] = merge_releases(
             streams, self._listings.snapshot() if switches.tsukihime else {}, pack_name=self._pack_name
         )
         return SearchSnapshot(
-            rank_candidates(request.target, releases, donghua=request.donghua, dates=request.dates),
+            rank_candidates(
+                request.target, releases, donghua=request.donghua, dates=request.dates, single=single_episode
+            ),
             tuple(results[source] for source in NAME_PRIORITY if source in results),
             tuple(source for source in NAME_PRIORITY if source in pending),
         )

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -1063,9 +1063,10 @@ def test_two_complete_graphs_holding_the_entry_give_the_same_target_and_reasons_
         *,
         donghua: bool,
         dates: SeasonDates | None = None,
+        single: Callable[[str], bool] | None = None,
     ) -> tuple[RankedCandidate, ...]:
         targets.append(target)
-        return rank_candidates(target, releases, donghua=donghua, dates=dates)
+        return rank_candidates(target, releases, donghua=donghua, dates=dates, single=single)
 
     monkeypatch.setattr(acquisition_module, "rank_candidates", spy)
     offers: list[EpisodeOffer] = []
@@ -1095,9 +1096,10 @@ def test_offer_ranks_against_the_listing_air_dates_and_only_the_anilist_episode_
         *,
         donghua: bool,
         dates: SeasonDates | None = None,
+        single: Callable[[str], bool] | None = None,
     ) -> tuple[RankedCandidate, ...]:
         seen.append(dates)
-        return rank_candidates(target, releases, donghua=donghua, dates=dates)
+        return rank_candidates(target, releases, donghua=donghua, dates=dates, single=single)
 
     monkeypatch.setattr(acquisition_module, "rank_candidates", spy)
     read: ListingRead = service.read_listing(_S1)
