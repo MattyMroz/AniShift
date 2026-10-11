@@ -567,6 +567,12 @@ def test_a_due_target_is_searched_on_a_grid_of_15_min_then_hours_then_days_from_
     assert next_search_at(target, None if checked is None else _DUE + checked) == _DUE + expected
 
 
+@pytest.mark.parametrize("age", [timedelta(minutes=5), timedelta(hours=30), timedelta(days=4)])
+def test_a_target_waiting_for_pending_reads_is_searched_again_a_quarter_hour_after_its_check(age: timedelta) -> None:
+    target: SubscriptionTarget = replace(_target(1, TargetState.DUE, _DUE), blocker=Blocker.PENDING)
+    assert next_search_at(target, _DUE + age) == _DUE + age + timedelta(minutes=15)
+
+
 def test_next_search_at_unsettled_skip_is_now() -> None:
     asked: datetime = _DUE + timedelta(minutes=50)
     skip: PolishSkip = PolishSkip(_DUE.isoformat(), asked.isoformat())

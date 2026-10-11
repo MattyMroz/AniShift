@@ -545,7 +545,7 @@ def skip_active(target: SubscriptionTarget) -> bool:
 
 
 def next_search_at(target: SubscriptionTarget, checked_at: datetime | None) -> datetime | None:
-    """Return the first search of a due *target* after *checked_at* on its grid, or its untried Polish skip."""
+    """Return the next search of a due *target* after *checked_at*: its grid, 15 min while reads pend, or its skip."""
     due: datetime | None = _moment(target.due_at)
     if target.state is not TargetState.DUE or due is None:
         return None
@@ -554,6 +554,8 @@ def next_search_at(target: SubscriptionTarget, checked_at: datetime | None) -> d
         return _required(skip.at)
     if checked_at is None or checked_at < due:
         return due
+    if target.blocker is Blocker.PENDING:
+        return checked_at + _QUARTER_HOUR
     age: timedelta = checked_at - due
     start: timedelta
     step: timedelta
