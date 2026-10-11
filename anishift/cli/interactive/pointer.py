@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from bisect import bisect_right
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from io import StringIO
@@ -40,7 +40,23 @@ _SELECTABLE_RUN: Final[re.Pattern[str]] = re.compile(r"[^\0\n]+")
 """Maximal run of one line's characters between inert interface."""
 
 _TARGET_META: Final[str] = "anishift_target"
-"""Style meta key carrying the ``(kind, value)`` a click on painted text asks for, such as a row or a tab."""
+"""Style meta key carrying the ``(kind, value, key)`` a click on painted text asks for, such as a row or a tab."""
+
+_HINT_SEPARATOR: Final[str] = " · "
+"""Separator between the key hints of one footer line."""
+
+_KEY_NAMES: Final[dict[str, str]] = {
+    "Enter": "enter",
+    "Esc": "escape",
+    "Space": "space",
+    "Del": "delete",
+    "Backspace": "backspace",
+    "Tab": "tab",
+    "Ctrl+Z": "undo",
+    "?": "text:?",
+    "/": "text:/",
+}
+"""Key a footer hint names, by its label; single letters press their own lowercase key."""
 
 _ROW_KINDS: Final[frozenset[str]] = frozenset({"row", "line"})
 """Target kinds that tag a whole painted line, wherever on it the click lands."""
@@ -108,14 +124,16 @@ class ClickKind(StrEnum):
     BACK = "back"
     FIELD = "field"
     TOGGLE = "toggle"
+    KEY = "key"
 
 
 @dataclass(frozen=True, slots=True)
 class Click:
-    """Carry one pointer request with the list row, tab, breadcrumb level or text-field offset it names."""
+    """Carry one pointer request with the list row, tab, breadcrumb level, text-field offset or key it names."""
 
     kind: ClickKind = ClickKind.NONE
     value: int = 0
+    key: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,7 +279,26 @@ def mark_inert(content: Text) -> Text:
 
 def mark_target(content: Text, start: int, end: int, target: Click) -> None:
     """Tag the characters ``start:end`` of ``content`` as the place a click asks for ``target``."""
-    content.stylize(Style(meta={_TARGET_META: (target.kind.value, target.value)}), start, end)
+    content.stylize(Style(meta={_TARGET_META: (target.kind.value, target.value, target.key)}), start, end)
+
+
+def mark_keys(line: Text, keys: Mapping[str, str] | None = None, *, only: Collection[str] | None = None) -> Text:
+    """Tag each ``Key verb`` hint of ``line`` (or only the ``only`` segments) as a click on its key or ``keys``."""
+    start: int = 0
+    for segment in line.plain.split(_HINT_SEPARATOR):
+        words: list[re.Match[str]] = list(re.finditer(r"\S+", segment))
+        for position, word in enumerate(words):
+            if (only is not None and segment.strip() not in only) or (
+                position and not words[position - 1].group().endswith("?")
+            ):
+                continue
+            key: str | None = (keys or {}).get(word.group()) or _key_name(word.group())
+            if key is not None:
+                end: int = start + len(segment.rstrip())
+                mark_target(line, start + word.start(), end, Click(ClickKind.KEY, key=key))
+                break
+        start += len(segment) + len(_HINT_SEPARATOR)
+    return line
 
 
 def mark_crumbs(line: Text, parts: Sequence[str]) -> None:
@@ -375,12 +412,19 @@ def _span_at(line: Text, offset: int) -> tuple[Span, Click] | None:
         target: object = span.style.meta.get(_TARGET_META) if isinstance(span.style, Style) else None
         if not isinstance(target, tuple):
             continue
-        click: Click = Click(ClickKind(target[0]), target[1])
+        click: Click = Click(ClickKind(target[0]), target[1], target[2])
         if span.start <= offset < span.end:
             return span, click
         if click.kind is ClickKind.FIELD and (field is None or span.end <= offset):
             field = (span, click)
     return field
+
+
+def _key_name(label: str) -> str | None:
+    head: str = label if label == "/" else label.split("/", maxsplit=1)[0]
+    if head in _KEY_NAMES:
+        return _KEY_NAMES[head]
+    return f"text:{head.lower()}" if len(head) == 1 and head.isalpha() else None
 
 
 def _toggle_at(line: Text, offset: int) -> Click | None:

@@ -250,6 +250,10 @@ class AnimePanel:
         self.state.selection = None
         self._gesture.reset()
 
+    def covers(self, row: int) -> bool:
+        """Report whether ``row`` falls on the last painted frame."""
+        return self._frame is not None and 0 <= row < len(self._frame.text.plain.split("\n"))
+
     def mouse(self, event: MouseEvent) -> Click:
         """Select only painted text on drag; a click clears the selection, points at its row and names the request."""
         gesture: Gesture | None = self._gesture.track(event)

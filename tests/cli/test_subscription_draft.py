@@ -392,6 +392,10 @@ def _plain(text: str) -> SubscriptionState:
             {"due_at": (_NOW - timedelta(hours=72)).isoformat(), "due_number": 8, "due_state": "searching"},
             SubscriptionState("E8 · szukam", "E8 · szukam · sprawdzam raz dziennie"),
         ),
+        (
+            {"due_at": (_NOW - timedelta(hours=96)).isoformat(), "due_number": 8, "due_state": "pending"},
+            _plain("E8 · szukam"),
+        ),
         ({"catalog_status": "HIATUS"}, _plain("Przerwa w emisji")),
         ({"catalog_status": "RELEASING"}, _plain("Termin nieznany")),
         (
@@ -916,7 +920,7 @@ def test_enter_opens_the_subscription_details_with_header_targets_and_specials(
     specials: list[str] = [line for line in frame.splitlines() if "Dodatki tego sezonu" in line or "OVA" in line]
     assert len(specials) == 2
     assert all("[ ]" not in line for line in specials)
-    assert "Space zaznacz · D pobierz · W wstrzymaj · ? więcej · Esc wróć" in frame
+    assert "Space zaznacz · D pobierz · W wstrzymaj · ? klawisze · Esc wróć" in frame
     assert owner.numbers[-1] == (1, 2, 3, 4, 5, 6)
 
 
@@ -1279,7 +1283,7 @@ def test_every_subscription_fact_is_reachable_in_the_details_of_a_narrow_termina
 
     lines: list[str] = _frame(panel, 50, rows).splitlines()
     assert lines[_line(lines, "Ostatnie sprawdzenie")].strip().startswith("Ostatnie sprawdzenie")
-    assert "? więcej" in "\n".join(lines)
+    assert "? klawisze" in "\n".join(lines)
     _keys(panel, "text:?")
     shown: str = " ".join(_detail_rows(panel, 50, rows))
 
@@ -1300,7 +1304,7 @@ def test_the_details_keep_every_subscription_key_visible_in_a_narrow_terminal(
     _keys(panel, "enter")
 
     frame: str = _frame(panel, 50, 24)
-    for hint in ("D pobierz", "W wstrzymaj", "? więcej", "Esc wróć"):
+    for hint in ("D pobierz", "W wstrzymaj", "? klawisze", "Esc wróć"):
         assert hint in frame
     _keys(panel, "text:?")
     shown: str = " ".join(_detail_rows(panel, 50, 24))
@@ -1344,7 +1348,7 @@ def test_download_now_key(panel: StateController, owner: _Owner, monkeypatch: py
     assert sent_on_first == []
     assert "T pobierz teraz" not in first
     assert ("subscription_check", {"subscription_id": "a", "number": 3}) in owner.calls
-    for hint in ("T pobierz teraz", "D pobierz", "? więcej", "Esc wróć"):
+    for hint in ("T pobierz teraz", "D pobierz", "? klawisze", "Esc wróć"):
         assert hint in narrow
     assert _anime(panel)._screen is _Screen.EPISODES
 

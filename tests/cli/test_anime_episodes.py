@@ -2823,7 +2823,7 @@ def test_episode_footer_wraps_only_between_complete_shortcuts() -> None:
     lines: list[str] = controller.render(50, 24).plain.splitlines()
     assert all(
         any(hint in line for line in lines)
-        for hint in ("Space zaznacz", "D pobierz", "S subskrybuj", "? więcej", "Esc wróć")
+        for hint in ("Space zaznacz", "D pobierz", "S subskrybuj", "? klawisze", "Esc wróć")
     )
 
 

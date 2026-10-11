@@ -211,7 +211,7 @@ def test_home_click_beside_the_choices_keeps_the_cursor_until_a_choice_is_hit(mo
     application._selected = 1
     frame: Text = application._render_frame(80, 24)
 
-    _click(application, _point(frame, "Enter"))
+    _click(application, _point(frame, "↑↓"))
     _click(application, Point(0, 0))
     _click(application, Point(0, 23))
     beside: int = application._selected

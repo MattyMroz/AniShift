@@ -43,11 +43,19 @@ from anishift.application.control_views import (
 )
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive import state as state_module
-from anishift.cli.interactive.actions import Action, ScreenActions, footer_segments, pack_footer
+from anishift.cli.interactive.actions import ACTION_NOTICES, Action, ScreenActions, footer_segments, pack_footer
 from anishift.cli.interactive.anime import AnimeController, _Screen
 from anishift.cli.interactive.anime_panel import AnimePanel
 from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeViewState
-from anishift.cli.interactive.pointer import CRUMB_SEPARATOR, Click, ClickKind, FrameSelection
+from anishift.cli.interactive.pointer import (
+    CRUMB_SEPARATOR,
+    Click,
+    ClickKind,
+    FrameSelection,
+    TextPoint,
+    click_at,
+    mark_keys,
+)
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.state import StateController, StateResult, _Tab
 from anishift.cli.interactive.text_input import TextInput
@@ -564,20 +572,20 @@ _APPLIES: Final[dict[tuple[str, str], str]] = {
 
 _FOOTERS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
     "query": ("Enter szukaj · Esc wróć", ()),
-    "titles": ("Enter wybierz · S subskrybuj · ? więcej · Esc wróć", ()),
-    "entries": ("Enter odcinki · S subskrybuj · ? więcej · Esc wróć", ()),
-    "episodes": ("Space zaznacz · D pobierz · S subskrybuj · ? więcej · Esc wróć", ()),
-    "candidates": ("Space zaznacz · D pobierz · ? więcej · Esc wróć", ()),
-    "files": ("Enter wybierz · ? więcej · Esc wróć", ()),
-    "draft": ("Enter wybierz · Space zaznacz · ? więcej · Esc wróć", ()),
-    "u08": ("Space zaznacz · D pobierz · W wstrzymaj · ? więcej · Esc wróć", ()),
-    "u08_waiting": ("Space zaznacz · D pobierz · T pobierz teraz · ? więcej · Esc wróć", ()),
-    "subscriptions": ("Enter szczegóły · D lub / dodaj · W wstrzymaj · ? więcej · Esc wróć", ()),
-    "subscriptions_empty": ("D lub / dodaj pierwszą · ? więcej · Esc wróć", ()),
-    "processing_download": ("W wstrzymaj · X anuluj · H historia · ? więcej · Esc wróć", ()),
-    "processing_run": ("X anuluj · H historia · ? więcej · Esc wróć", ()),
-    "history": ("Enter otwórz · P ponów · / szukaj · ? więcej · Esc wróć", ()),
-    "library": ("Enter otwórz · F folder · Del usuń · ? więcej · Esc wróć", ()),
+    "titles": ("Enter wybierz · S subskrybuj · ? klawisze · Esc wróć", ()),
+    "entries": ("Enter odcinki · S subskrybuj · ? klawisze · Esc wróć", ()),
+    "episodes": ("Space zaznacz · D pobierz · S subskrybuj · ? klawisze · Esc wróć", ()),
+    "candidates": ("Space zaznacz · D pobierz · ? klawisze · Esc wróć", ()),
+    "files": ("Enter wybierz · ? klawisze · Esc wróć", ()),
+    "draft": ("Enter wybierz · Space zaznacz · ? klawisze · Esc wróć", ()),
+    "u08": ("Space zaznacz · D pobierz · W wstrzymaj · ? klawisze · Esc wróć", ()),
+    "u08_waiting": ("Space zaznacz · D pobierz · T pobierz teraz · ? klawisze · Esc wróć", ()),
+    "subscriptions": ("Enter szczegóły · D lub / dodaj · W wstrzymaj · ? klawisze · Esc wróć", ()),
+    "subscriptions_empty": ("D lub / dodaj pierwszą · ? klawisze · Esc wróć", ()),
+    "processing_download": ("W wstrzymaj · X anuluj · H historia · ? klawisze · Esc wróć", ()),
+    "processing_run": ("X anuluj · H historia · ? klawisze · Esc wróć", ()),
+    "history": ("Enter otwórz · P ponów · / szukaj · ? klawisze · Esc wróć", ()),
+    "library": ("Enter otwórz · F folder · Del usuń · ? klawisze · Esc wróć", ()),
     "library_details": ("Enter otwórz plik · F folder · Del usuń · Esc wróć", ()),
     "episodes_details": ("C kopiuj · Esc wróć", ("text:?",)),
     "u08_details": ("C kopiuj · Esc wróć", ("text:?",)),
@@ -1020,7 +1028,7 @@ def test_i_opens_the_release_list_at_once_and_escape_returns_to_its_episodes(
     opened: _Screen = probe.anime._screen
     assert opened is _Screen.CANDIDATES
     assert probe.anime._view.items[probe.anime._view.cursor].suggested
-    assert "Space zaznacz · D pobierz · ? więcej · Esc wróć" in probe.panel.render(80, 24).plain
+    assert "Space zaznacz · D pobierz · ? klawisze · Esc wróć" in probe.panel.render(80, 24).plain
     probe.panel.handle_key("escape")
     assert probe.anime._screen is _Screen.EPISODES
     assert probe.anime.in_subscriptions is subscribed
@@ -1048,7 +1056,7 @@ def test_cancel_keys_arm_the_question_only_on_a_row_with_a_target(build: Callabl
     assert probe.panel._question == ("info_hash", "hash")
     frame: str = probe.panel.render(80, 24).plain
     assert "Anulować pobieranie? Enter tak · Esc nie" in frame
-    assert "? więcej" not in frame
+    assert "? klawisze" not in frame
     empty: _Probe = build("processing_empty")
     empty.panel.handle_key(key)
     assert empty.panel._question is None
@@ -1108,18 +1116,79 @@ def test_any_other_key_clears_the_question_and_is_swallowed(build: Callable[[str
     assert probe.work == []
 
 
-@pytest.mark.parametrize("button", [MouseButton.LEFT, MouseButton.RIGHT])
-def test_a_mouse_press_clears_the_question_without_selecting(
-    build: Callable[[str], _Probe], button: MouseButton
-) -> None:
+def test_a_click_on_a_row_clears_the_question_without_selecting(build: Callable[[str], _Probe]) -> None:
     probe: _Probe = build("processing_download")
     probe.panel._snapshot = {**probe.panel._snapshot, "materials": [_download(), _download("other", "two")]}
     probe.panel.handle_key("text:x")
-    taken: Click | None = probe.panel.mouse(MouseEvent(Point(10, 5), MouseEventType.MOUSE_DOWN, button, frozenset()))
-    assert taken == Click()
+    pressed: Click | None = probe.panel.mouse(
+        MouseEvent(Point(10, 5), MouseEventType.MOUSE_DOWN, MouseButton.LEFT, frozenset())
+    )
+
+    assert pressed is None
+    assert probe.panel._question is not None
+    assert not probe.panel.select(1)
     assert probe.panel._question is None
     assert probe.panel._selected == 0
-    assert probe.panel.mouse(MouseEvent(Point(10, 5), MouseEventType.MOUSE_UP, button, frozenset())) is None
+
+
+def test_every_footer_and_status_hint_is_a_click_on_its_key_and_plain_words_are_not() -> None:
+    footer: Text = mark_keys(Text("Enter szczegóły · D dodaj · W wstrzymaj · ? klawisze · Esc wróć · Ctrl+Z cofnij"))
+    status: Text = mark_keys(Text("Automat: praca · czeka 2 · O wyłącz"))
+
+    def key(line: Text, label: str) -> str:
+        return click_at(line, TextPoint(0, line.plain.index(label))).key
+
+    assert [key(footer, label) for label in ("Enter", "D ", "W ", "? ", "Esc", "Ctrl")] == [
+        "enter",
+        "text:d",
+        "text:w",
+        "text:?",
+        "escape",
+        "undo",
+    ]
+    assert [key(status, label) for label in ("Automat", "czeka", "O ")] == ["", "", "text:o"]
+
+
+@pytest.mark.parametrize("name", ["query", "titles"])
+def test_a_click_on_the_status_o_hint_in_anime_toggles_the_automation_even_beside_a_search_field(
+    build: Callable[[str], _Probe], name: str
+) -> None:
+    probe: _Probe = build(name)
+    probe.panel.handle_key("text:x")
+    typed: str = probe.anime._query
+    frame: Text = probe.panel.render(80, 24)
+    lines: list[str] = frame.plain.split("\n")
+    row: int = next(index for index, line in enumerate(lines) if "O wyłącz" in line)
+    column: int = lines[row].index("O wyłącz")
+
+    pressed: Click | None = probe.panel.mouse(
+        MouseEvent(Point(column, row), MouseEventType.MOUSE_DOWN, MouseButton.LEFT, frozenset())
+    )
+    clicked: Click = click_at(frame, TextPoint(row, column))
+    probe.panel.handle_key(clicked.key)
+
+    assert pressed is None
+    assert clicked == Click(ClickKind.KEY, key="automation")
+    assert probe.anime._query == typed
+    assert len(probe.work) == 1
+
+
+def test_a_deletion_notice_offers_its_undo_as_a_click_and_keeps_its_title_plain() -> None:
+    notice: Text = mark_keys(Text("Usunięto W toku · Ctrl+Z cofnij"), only=ACTION_NOTICES)
+
+    assert click_at(notice, TextPoint(0, notice.plain.index("W toku"))) == Click()
+    assert click_at(notice, TextPoint(0, notice.plain.index("Ctrl+Z"))) == Click(ClickKind.KEY, key="undo")
+
+
+def test_the_question_answers_are_keys_a_click_presses(build: Callable[[str], _Probe]) -> None:
+    probe: _Probe = build("processing_download")
+    probe.panel.handle_key("text:x")
+    frame: Text = probe.panel.render(80, 24)
+    lines: list[str] = frame.plain.split("\n")
+    row: int = next(index for index, line in enumerate(lines) if "Enter tak" in line)
+
+    assert click_at(frame, TextPoint(row, lines[row].index("Enter tak") + 7)) == Click(ClickKind.KEY, key="enter")
+    assert click_at(frame, TextPoint(row, lines[row].index("Esc nie"))) == Click(ClickKind.KEY, key="escape")
 
 
 @pytest.mark.parametrize("leave", ["library", "subscriptions", "suspend", "tab"])
@@ -1199,10 +1268,10 @@ def test_a_finished_run_ends_its_question_and_frees_the_keys(build: Callable[[st
 
 def test_a_narrow_footer_drops_actions_from_the_end_and_keeps_help_and_back(build: Callable[[str], _Probe]) -> None:
     actions: ScreenActions = ScreenActions((("W", "wstrzymaj"), ("X", "anuluj"), ("H", "historia")))
-    assert pack_footer(footer_segments(actions), 20) == ("W wstrzymaj", "? więcej · Esc wróć")
+    assert pack_footer(footer_segments(actions), 21) == ("W wstrzymaj", "? klawisze · Esc wróć")
     lines: list[str] = [line.strip() for line in build("processing_download").panel.render(30, 24).plain.splitlines()]
     assert "W wstrzymaj · X anuluj" in lines
-    assert "? więcej · Esc wróć" in lines
+    assert "? klawisze · Esc wróć" in lines
     assert not any("H historia" in line for line in lines)
 
 
@@ -1959,7 +2028,7 @@ def test_a_ready_episode_offers_enter_to_watch_in_the_footer_and_help(build: Cal
     probe.panel.handle_key("text:?")
     help_frame: str = probe.panel.render(100, 30).plain
 
-    assert "Enter obejrzyj · Space zaznacz · D pobierz · W wstrzymaj · ? więcej · Esc wróć" in footer
+    assert "Enter obejrzyj · Space zaznacz · D pobierz · W wstrzymaj · ? klawisze · Esc wróć" in footer
     assert "Enter obejrzyj" in help_frame
 
 

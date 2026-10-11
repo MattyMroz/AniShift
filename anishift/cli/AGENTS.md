@@ -127,7 +127,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   (§3.1) działają, ale nie trafiają do stopki ani pomocy. Panel startuje na Subskrypcjach, także z zasobnika
   (`--state`). `Backspace` poza polem tekstowym działa jak Esc w Anime (także BUSY i PROBLEM), w Ręcznym
   i w zakładkach; w polach tekstowych kasuje znak. Anulowanie w Przetwarzaniu (`X`, `Delete`, `C`) uzbraja
-  `_question`; anuluje dopiero Enter, a każdy inny klawisz (także Tab i ←→), klik i opuszczenie zakładki je kasują. Linia
+  `_question`; anuluje dopiero Enter (także klik w `Enter tak`), a każdy inny klawisz (także Tab i ←→), klik w wiersz
+  (`select` kasuje pytanie bez wyboru) i opuszczenie zakładki je kasują; samo wciśnięcie myszy go nie kasuje. Linia
   statusu automatu (`_global_status`) liczy wyłącznie `material_counts` i stoi w czterech zakładkach.
   Okruszek `Zakładka › Element` stoi nad treścią i jest pusty na poziomie listy. `interactive/actions.py`,
   `interactive/state.py`, `interactive/anime.py`, `interactive/manual.py`
@@ -272,7 +273,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   the keys, the table keeps its position when they change, and `AnimeFrame.first_row` locates
   the first data row. Columns are sized from content, using the shared menu pointer,
   `pack_keys` footer and existing theme roles.
-  Key hints come from the screen's actions (`actions.py`): `Enter …`, at most three actions, `? więcej`,
+  Every footer line and the `O` hint of the status line go through `pointer.mark_keys`: each `Key verb` segment is a
+  `ClickKind.KEY` target, and `app._follow_click` presses that key the way the keyboard does (owner decision 2026-10-11).
+  Key hints come from the screen's actions (`actions.py`): `Enter …`, at most three actions, `? klawisze`,
   `Esc wróć`, packed into at most two lines that break only at ` · `; actions drop from the end, never `?` or
   Esc. Navigation keys appear only in the `?` help.
   Never introduce an Anime-specific palette, background, tab strip or separators. Render performs

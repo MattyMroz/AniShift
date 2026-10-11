@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from rich.console import Console
 from rich.text import Text
 
-from anishift.cli.interactive.pointer import mark_inert, mark_row
+from anishift.cli.interactive.pointer import mark_inert, mark_keys, mark_row
 
 
 def header(title: str, columns: int, rows: int, content_rows: int) -> Text:
@@ -146,7 +146,8 @@ def with_footer(content: Text, hints: Sequence[str | Text], columns: int, rows: 
         line
         for hint in hints
         for line in (
-            (hint if isinstance(hint, Text) else mark_inert(Text(hint, style="gray"))).wrap(console, width) or (Text(),)
+            (hint if isinstance(hint, Text) else mark_keys(mark_inert(Text(hint, style="gray")))).wrap(console, width)
+            or (Text(),)
         )
     ]
     footer = footer[: max(rows - 1, 1)]

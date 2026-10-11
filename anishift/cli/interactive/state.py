@@ -26,7 +26,13 @@ from anishift.application import (
     decode_view,
 )
 from anishift.application.events import RunEvent
-from anishift.cli.interactive.actions import ScreenActions, footer_segments, help_lines, pack_footer
+from anishift.cli.interactive.actions import (
+    ACTION_NOTICES,
+    ScreenActions,
+    footer_segments,
+    help_lines,
+    pack_footer,
+)
 from anishift.cli.interactive.anime import AnimeController, AnimeResult
 from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeSnapshot
 from anishift.cli.interactive.anime_view import (
@@ -44,7 +50,15 @@ from anishift.cli.interactive.menu import (
     visible_window,
     wrap_entries,
 )
-from anishift.cli.interactive.pointer import CRUMB_SEPARATOR, Click, ClickKind, mark_crumbs, mark_inert, mark_target
+from anishift.cli.interactive.pointer import (
+    CRUMB_SEPARATOR,
+    Click,
+    ClickKind,
+    mark_crumbs,
+    mark_inert,
+    mark_keys,
+    mark_target,
+)
 from anishift.cli.interactive.progress import ObservedProgressTimer, RichRunProgress, render_material_progress
 from anishift.cli.interactive.state_library import (
     DETAIL_ACTIONS,
@@ -125,6 +139,9 @@ _LOADING: Final[str] = "Wczytuję…"
 
 _CONNECTING: Final[str] = "Łączenie…"
 """Only line of an empty tab list before the owner's first snapshot."""
+
+_AUTOMATION_KEY: Final[str] = "automation"
+"""Key a click on the status line O hint presses: it toggles automation wherever the keyboard focus stands."""
 
 _NO_CONNECTION: Final[str] = "Automat: brak połączenia"
 """Status line without a live owner snapshot."""
@@ -223,7 +240,7 @@ class StateController:
         self._follow_cursor: dict[int, bool] = {}
         self._anime: AnimeController | None = None
         self._anime_top: int = 0
-        self._heading_press: bool = False
+        self._frame_press: bool = False
         self._connected: bool = False
         self._busy: bool = False
         self._notice: str = ""
@@ -337,6 +354,8 @@ class StateController:
     def handle_key(self, key: str) -> StateResult:  # noqa: PLR0911
         """Navigate the shared list or submit one explicit action."""
         with self._lock:
+            if key == _AUTOMATION_KEY:
+                return self._action_key("o")
             self._library_target = None
             if self._tab in {_Tab.FILES, _Tab.SUBSCRIPTIONS} and key in {
                 *_MOVE_KEYS,
@@ -631,24 +650,20 @@ class StateController:
         return self._tab
 
     def mouse(self, event: MouseEvent) -> Click | None:
-        """Cancel an open question on a press or forward Anime body cells; ``None`` leaves the event to the frame."""
+        """Forward Anime body cells; ``None`` leaves the event to the frame."""
         with self._lock:
             if event.event_type is MouseEventType.MOUSE_DOWN:
-                self._heading_press = event.position.y < self._anime_top
-            if self._question is not None and event.event_type is MouseEventType.MOUSE_DOWN:
-                self._question = None
-                click: Click = Click()
-            elif self._tab != _Tab.ANIME or self._anime is None or self._heading_press:
+                self._frame_press = self._anime is None or not self._anime.covers(event.position.y - self._anime_top)
+            if self._tab != _Tab.ANIME or self._anime is None or self._frame_press:
                 return None
-            else:
-                click = self._anime.mouse(
-                    MouseEvent(
-                        Point(event.position.x, event.position.y - self._anime_top),
-                        event.event_type,
-                        event.button,
-                        event.modifiers,
-                    )
+            click: Click = self._anime.mouse(
+                MouseEvent(
+                    Point(event.position.x, event.position.y - self._anime_top),
+                    event.event_type,
+                    event.button,
+                    event.modifiers,
                 )
+            )
         self._invalidate()
         return click
 
@@ -671,6 +686,10 @@ class StateController:
         with self._lock:
             if self._tab == _Tab.ANIME:
                 return self._anime is not None and self._anime.points_at(index)
+            if self._question is not None:
+                self._question = None
+                self._invalidate()
+                return False
             if self._retry is not None or self._help or not 0 <= index < len(self._entries(120)):
                 return False
             if index != self._selected and self._tab in {_Tab.FILES, _Tab.SUBSCRIPTIONS}:
@@ -1240,11 +1259,11 @@ class StateController:
             line
             for hint in self._view_footer(max(columns - 4, 1))
             if hint
-            for line in (hint if isinstance(hint, Text) else Text(hint, style="gray")).wrap(
-                console, max(columns - 2, 1)
-            )
+            for line in (
+                hint if isinstance(hint, Text) else mark_keys(Text(hint, style="gray"), only=ACTION_NOTICES)
+            ).wrap(console, max(columns - 2, 1))
         ]
-        status: Text = mark_inert(Text(self._global_status(max(columns - 4, 1)), style="gray"))
+        status: Text = _status_keys(Text(self._global_status(max(columns - 4, 1)), style="gray"))
         footer = [*footer[: max(rows - 4, 0)], status]
         wrapped: tuple[tuple[str | Text, ...], ...] = wrap_entries(entries, columns)
         remaining: int = max(rows - 2 - len(footer), 1)
@@ -1442,7 +1461,7 @@ class StateController:
     def _pin_status(self, body: Text, columns: int, rows: int) -> Text:
         lines: list[Text] = list(body.split("\n", allow_blank=True))[: max(rows - 1, 0)]
         padding: list[Text] = [Text() for _ in range(max(rows - 1 - len(lines), 0))]
-        status: Text = mark_inert(_centered(Text(self._global_status(max(columns - 4, 1)), style="gray"), columns))
+        status: Text = _status_keys(_centered(Text(self._global_status(max(columns - 4, 1)), style="gray"), columns))
         return Text("\n").join([*lines, *padding, status])
 
     def breadcrumb(self) -> tuple[str, ...]:
@@ -1566,8 +1585,12 @@ class StateController:
         return row_ids(self._processing_rows(snapshot))
 
 
+def _status_keys(status: Text) -> Text:
+    return mark_keys(mark_inert(status), {"O": _AUTOMATION_KEY})
+
+
 def _keys(lines: Iterable[str]) -> list[Text]:
-    return [mark_inert(Text(line, style="gray")) for line in lines]
+    return [mark_keys(mark_inert(Text(line, style="gray"))) for line in lines]
 
 
 def _centered(line: Text, columns: int) -> Text:

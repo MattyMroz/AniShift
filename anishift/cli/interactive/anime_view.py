@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.spinner import Spinner
 from rich.text import Text
 
-from anishift.cli.interactive.actions import pack_footer
+from anishift.cli.interactive.actions import ACTION_NOTICES, pack_footer
 from anishift.cli.interactive.anime_state import (
     AnimeRow,
     AnimeScreen,
@@ -28,6 +28,7 @@ from anishift.cli.interactive.pointer import (
     character_offset,
     mark_crumbs,
     mark_inert,
+    mark_keys,
     mark_row,
     mark_target,
     paint_selection,
@@ -520,9 +521,11 @@ def _footer(  # noqa: PLR0913
     bottom: int = len(canvas.lines) - len(keys)
     canvas.center(bottom - len(lines) - 1, summary, selectable=True)
     for index, line in enumerate(lines):
-        canvas.center(bottom - len(lines) + index, Text(line, style=color), selectable=True)
+        canvas.center(
+            bottom - len(lines) + index, mark_keys(Text(line, style=color), only=ACTION_NOTICES), selectable=True
+        )
     for index, line in enumerate(keys):
-        canvas.center(bottom + index, Text(line, style="gray"))
+        canvas.center(bottom + index, mark_keys(Text(line, style="gray")))
 
 
 def _unshown(snapshot: AnimeSnapshot, item: AnimeRow, limit: int, now: float, visible: int) -> str:

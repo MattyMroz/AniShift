@@ -341,11 +341,11 @@ def test_the_subscription_list_says_connecting_until_the_owner_lists_it(build: C
 
     assert "Łączenie…" in "\n".join(before)
     assert "Brak subskrypcji" not in "\n".join(before)
-    assert before[-2].strip() == "? więcej · Esc wróć"
+    assert before[-2].strip() == "? klawisze · Esc wróć"
     assert before[-1].strip() == "Automat: brak połączenia"
     assert "Brak subskrypcji" in "\n".join(after)
     assert "Łączenie" not in "\n".join(after)
-    assert after[-2].strip() == "D lub / dodaj pierwszą · ? więcej · Esc wróć"
+    assert after[-2].strip() == "D lub / dodaj pierwszą · ? klawisze · Esc wróć"
     assert after[-1].strip() == "Automat: bezczynny · O wyłącz"
 
 

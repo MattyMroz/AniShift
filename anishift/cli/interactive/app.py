@@ -395,6 +395,8 @@ class _InteractiveApplication:
             self._place_cursor(click.value)
         elif click.kind is ClickKind.TOGGLE and self._select_row(click.value):
             self._handle_key("space")
+        elif click.kind is ClickKind.KEY:
+            self._handle_key(click.key)
 
     def _place_cursor(self, index: int) -> None:
         """Focus the clicked text field of the current view and put its cursor before a clicked character."""

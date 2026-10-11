@@ -824,6 +824,11 @@ class AnimeController:
             editor.place(index)
             self._input_focused = True
 
+    def covers(self, row: int) -> bool:
+        """Report whether ``row`` of the panel body falls on the painted Anime frame."""
+        with self._lock:
+            return self._panel.covers(row)
+
     def points_at(self, index: int) -> bool:
         """Report whether the cursor of the shown list stands on row ``index``."""
         with self._lock:

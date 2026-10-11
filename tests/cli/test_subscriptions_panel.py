@@ -394,7 +394,7 @@ def test_an_empty_list_names_the_add_key(panel: StateController, columns: int, r
     frame: str = _frame(panel, columns, rows)
 
     assert "Brak subskrypcji" in frame
-    assert "D lub / dodaj pierwszą · ? więcej · Esc wróć" in frame.split("Brak subskrypcji")[1]
+    assert "D lub / dodaj pierwszą · ? klawisze · Esc wróć" in frame.split("Brak subskrypcji")[1]
     assert "Enter szczegóły" not in frame
     assert "Aktywne" not in frame
 
@@ -419,7 +419,7 @@ def test_the_key_hint_follows_the_selected_row(panel: StateController, selected:
     frame: str = _frame(panel)
 
     assert toggle in frame
-    assert "? więcej" in frame
+    assert "? klawisze" in frame
 
 
 @pytest.mark.parametrize(("columns", "rows"), _SIZES)
@@ -436,7 +436,7 @@ def test_the_list_fits_and_every_row_and_key_stays_reachable(panel: StateControl
 
     frame: str = _frame(panel, columns, rows)
     assert seen == {f"Series {index:02d}" for index in range(30)}
-    for hint in ("Enter szczegóły", "D lub / dodaj", "W wstrzymaj", "? więcej", "Esc wróć"):
+    for hint in ("Enter szczegóły", "D lub / dodaj", "W wstrzymaj", "? klawisze", "Esc wróć"):
         assert hint in frame
     panel.handle_key("text:?")
     shown: str = _frame(panel, columns, rows)

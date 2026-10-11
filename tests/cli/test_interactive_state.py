@@ -1209,7 +1209,7 @@ def _assert_subscription_rows(frame: str) -> None:
     assert "pobrano" not in frame
     assert "Aktywne" not in frame
     assert "W wstrzymaj" in frame
-    assert "? więcej" in frame
+    assert "? klawisze" in frame
 
 
 def _assert_wrapping_navigation(controller: StateController) -> None:
@@ -2068,8 +2068,8 @@ def test_each_panel_tab_retains_contextual_actions_and_owner_counts_at_feasible_
             controller.render(columns, rows), "test", "workspace", columns, rows
         ).plain
         assert "Automat: praca · pobiera 2 · przetwarza 3 · czeka 4 · O wyłącz" in frame
-        assert "? więcej · Esc wróć" in frame
-        assert ("/ dodaj", "H historia", "? więcej")[tab - 1] in frame
+        assert "? klawisze · Esc wróć" in frame
+        assert ("/ dodaj", "H historia", "? klawisze")[tab - 1] in frame
         assert len(frame.splitlines()) <= rows
         assert all(len(line) <= columns for line in frame.splitlines())
         if tab == 1:

@@ -22,8 +22,11 @@ EVERYWHERE: Final[tuple[Action, ...]] = (
 )
 """Keys working on every panel screen, listed at the end of each help."""
 
-MORE: Final[str] = "? więcej"
+MORE: Final[str] = "? klawisze"
 """Footer hint opening the help of the current screen."""
+
+ACTION_NOTICES: Final[frozenset[str]] = frozenset({"Ctrl+Z cofnij", "P pobierz ponownie"})
+"""Key hints a notice may end with, clickable like the footer."""
 
 PANEL_ACTIONS: Final[tuple[Action, ...]] = (("M", "ręczny"), ("U", "ustawienia"))
 """Mode switches listed under ? on every list outside Anime."""
@@ -43,7 +46,7 @@ class ScreenActions:
 
 
 def footer_segments(actions: ScreenActions, *, more: bool = True) -> tuple[str, ...]:
-    """Build footer hints: footer actions, then ? więcej and Esc wróć, merged with an Enter that also goes back."""
+    """Build footer hints: footer actions, then ? klawisze and Esc wróć, merged with an Enter that also goes back."""
     shown: list[str] = [f"{key} {label}" for key, label in actions.footer]
     escape: tuple[str, ...] = ("Esc wróć",)
     if shown and shown[0] == "Enter wróć":
