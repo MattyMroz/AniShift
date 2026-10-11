@@ -531,8 +531,9 @@ _ACTIONS: Final[dict[str, tuple[Action, ...]]] = {
 }
 
 _ALIASES: Final[dict[str, frozenset[str]]] = {
-    "u08": frozenset({"text:f", "delete"}),
-    "u08_waiting": frozenset({"text:f", "delete"}),
+    "episodes": frozenset({"enter"}),
+    "u08": frozenset({"text:f", "delete", "enter"}),
+    "u08_waiting": frozenset({"text:f", "delete", "enter"}),
     "u08_ready": frozenset({"text:f", "delete"}),
     "u08_extra": frozenset({"text:f", "delete"}),
     "subscriptions": frozenset({"text:f", "space", "delete"}),
@@ -1782,7 +1783,8 @@ def test_a_second_click_on_a_problem_painted_over_the_clicked_row_confirms_nothi
         lambda: 0.0,
     )
     lines: list[str] = panel.frame(80, 24).plain.split("\n")
-    point: Point = Point(10, next(row for row, line in enumerate(lines) if "Wydanie 6" in line))
+    row: int = next(row for row, line in enumerate(lines) if "Wydanie 6" in line)
+    point: Point = Point(lines[row].index("Wydanie 6"), row)
 
     def click() -> Click:
         result: Click = Click()
@@ -1967,16 +1969,46 @@ def test_a_refused_ready_result_names_the_refusal_on_the_episode_list(
 
 
 @pytest.mark.parametrize("name", ["u08", "u08_ordered", "episodes"])
-def test_enter_on_an_episode_that_is_not_ready_opens_nothing(
+def test_enter_on_an_episode_that_is_not_ready_opens_its_releases_like_i(
     build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
     probe: _Probe = build(name)
+    inspected: _Probe = build(name)
     opened: list[tuple[Path, bool]] = _playing(monkeypatch)
-    before: tuple[object, ...] = _state(probe)
 
     probe.panel.handle_key("enter")
+    inspected.panel.handle_key("text:i")
     _settle(probe)
+    _settle(inspected)
 
-    assert probe.work == []
     assert opened == []
-    assert _state(probe) == before
+    assert _state(probe) == _state(inspected)
+    assert len(probe.work) == len(inspected.work)
+
+
+def test_a_click_on_an_episode_box_points_at_its_row_and_asks_for_a_toggle() -> None:
+    panel: AnimePanel = AnimePanel(
+        AnimeViewState(
+            screen=AnimeScreen.EPISODES,
+            title="",
+            items=tuple(AnimeRow(f"episode-{index}", f"Odcinek {index}", number=str(index)) for index in range(1, 6)),
+        ),
+        lambda _action, _keys: None,
+        lambda: 0.0,
+    )
+    lines: list[str] = panel.frame(80, 24).plain.split("\n")
+    row: int = next(row for row, line in enumerate(lines) if "Odcinek 3" in line)
+
+    def click(column: int) -> Click:
+        result: Click = Click()
+        for kind in (MouseEventType.MOUSE_DOWN, MouseEventType.MOUSE_UP):
+            result = panel.mouse(MouseEvent(Point(column, row), kind, MouseButton.LEFT, frozenset()))
+        return result
+
+    toggled: Click = click(lines[row].index("[ ]") + 1)
+    cursor: int = panel.state.cursor
+    pointed: Click = click(lines[row].index("Odcinek 3"))
+
+    assert toggled == Click(ClickKind.TOGGLE, 2)
+    assert cursor == 2
+    assert pointed == Click(ClickKind.ROW, 2)

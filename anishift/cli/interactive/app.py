@@ -9,7 +9,7 @@ from enum import StrEnum
 from time import monotonic
 from typing import Final
 
-from prompt_toolkit.mouse_events import MouseEvent
+from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from rich.text import Text
 
 from anishift import __version__
@@ -31,7 +31,7 @@ from anishift.cli.interactive.manual import ManualController, ManualResult, Manu
 from anishift.cli.interactive.mascot import MascotController, MascotState
 from anishift.cli.interactive.mascot_native import MASCOT_REST_TOP_ROWS, NATIVE_MASCOT_ANCHOR
 from anishift.cli.interactive.menu import with_footer
-from anishift.cli.interactive.pointer import Click, ClickKind, FrameSelection, mark_inert, mark_row
+from anishift.cli.interactive.pointer import Click, ClickKind, FrameSelection, TextPoint, mark_inert, mark_row
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.prompts import (
     TEXT_MASCOT_SIZE,
@@ -210,6 +210,7 @@ class _InteractiveApplication:
             self._handle_idle,
             self._handle_scroll,
             mouse_handler=self._handle_mouse,
+            hover_handler=self._handle_hover,
         )
         self._mascot: MascotController = MascotController(self._renderer.invalidate)
         self._frame_selection: FrameSelection = FrameSelection()
@@ -370,9 +371,15 @@ class _InteractiveApplication:
         if taken is not None:
             self._frame_selection.clear()
             self._follow_click(taken)
-            return
-        self._follow_click(self._frame_selection.mouse(event))
-        self._renderer.invalidate()
+        else:
+            self._follow_click(self._frame_selection.mouse(event))
+        if event.event_type is MouseEventType.MOUSE_UP:
+            self._frame_selection.hover(TextPoint(event.position.y, event.position.x))
+        if taken is None:
+            self._renderer.invalidate()
+
+    def _handle_hover(self, event: MouseEvent) -> bool:
+        return self._frame_selection.hover(TextPoint(event.position.y, event.position.x))
 
     def _follow_click(self, click: Click) -> None:
         """Point at a clicked row or text, or run what Enter, Tab or Esc does for the other clicks."""
@@ -386,6 +393,8 @@ class _InteractiveApplication:
             self._handle_key("escape")
         elif click.kind is ClickKind.FIELD:
             self._place_cursor(click.value)
+        elif click.kind is ClickKind.TOGGLE and self._select_row(click.value):
+            self._handle_key("space")
 
     def _place_cursor(self, index: int) -> None:
         """Focus the clicked text field of the current view and put its cursor before a clicked character."""

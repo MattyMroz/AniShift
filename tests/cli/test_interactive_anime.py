@@ -689,3 +689,85 @@ def test_global_resume_in_anime_uses_owner_without_download(monkeypatch: pytest.
         panel.close()
         panel._thread.join(5)
         session.close()
+
+
+def _search_application(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[interactive_app._InteractiveApplication, StateController, AnimeController]:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    anime: AnimeController = _controller(_Owner())
+    panel: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    panel.attach_anime(anime)
+    panel._tab = _Tab.ANIME
+    application: interactive_app._InteractiveApplication = object.__new__(interactive_app._InteractiveApplication)
+    application._lock = threading.Lock()
+    application._mode = interactive_app._ViewMode.STATE
+    application._state = panel
+    application._settings = None
+    application._manual = None
+    application._frame_selection = FrameSelection()
+    return application, panel, anime
+
+
+def _click_at(application: interactive_app._InteractiveApplication, point: Point) -> None:
+    for kind in (MouseEventType.MOUSE_DOWN, MouseEventType.MOUSE_UP):
+        application._handle_mouse(MouseEvent(point, kind, MouseButton.LEFT, frozenset()))
+
+
+def _block_caret(frame: Text) -> tuple[int, int] | None:
+    for span in frame.spans:
+        if span.style == "reverse":
+            line_start: int = frame.plain.rfind("\n", 0, span.start) + 1
+            return frame.plain.count("\n", 0, span.start), span.start - line_start
+    return None
+
+
+def _query_row(frame: Text) -> int:
+    return next(row for row, line in enumerate(frame.plain.split("\n")) if line.strip().startswith(">"))
+
+
+@pytest.mark.parametrize("column", ["prompt", "margin"])
+def test_a_click_on_the_line_of_the_empty_search_field_focuses_it_and_shows_the_block_caret(
+    monkeypatch: pytest.MonkeyPatch, column: str
+) -> None:
+    application, panel, anime = _search_application(monkeypatch)
+    try:
+        frame: Text = panel.render(80, 24)
+        row: int = _query_row(frame)
+        prompt: int = frame.plain.split("\n")[row].index(">")
+        idle: tuple[int, int] | None = _block_caret(frame)
+
+        _click_at(application, Point(prompt if column == "prompt" else 1, row))
+        focused: Text = panel.render(80, 24)
+
+        assert idle is None
+        assert anime.input_focused
+        assert _block_caret(focused) == (row, prompt + 2)
+    finally:
+        panel.close()
+        panel._thread.join(5)
+
+
+def test_a_click_inside_the_search_text_puts_the_caret_before_the_clicked_character(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, panel, anime = _search_application(monkeypatch)
+    try:
+        anime.handle_key("text:slime")
+        anime.handle_key("escape")
+        frame: Text = panel.render(80, 24)
+        row: int = _query_row(frame)
+        column: int = frame.plain.split("\n")[row].index("slime") + 2
+
+        _click_at(application, Point(column, row))
+        focused: Text = panel.render(80, 24)
+        _click_at(application, Point(79, row))
+        end: Text = panel.render(80, 24)
+
+        assert anime.input_focused
+        assert _block_caret(focused) == (row, column)
+        assert _block_caret(end) == (row, column + 3)
+        assert anime._query_input.text == "slime"
+    finally:
+        panel.close()
+        panel._thread.join(5)

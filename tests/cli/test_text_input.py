@@ -105,7 +105,7 @@ def test_end_cursor_highlights_one_trailing_space(value: str, width: int) -> Non
         span.style == "reverse" and (span.start, span.end) == (len(rendered) - 1, len(rendered))
         for span in rendered.spans
     )
-    assert editor.render(80, focused=False).plain == value
+    assert editor.render(80, focused=False).plain == (value or " ")
 
 
 @pytest.mark.parametrize("value", ["漢" * 20, "a\u0301" * 20])

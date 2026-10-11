@@ -259,7 +259,7 @@ class AnimePanel:
             self._clear_notice()
         self.state.selection = gesture.selection
         click: Click = self._gesture.resolve(self._frame.text if self._frame is not None else Text(), gesture)
-        if click.kind not in {ClickKind.ROW, ClickKind.LINE}:
+        if click.kind not in {ClickKind.ROW, ClickKind.LINE, ClickKind.TOGGLE}:
             return click
         if click.value >= len(self.state.items) or not self.state.items[click.value].navigable:
             self._gesture.reset()

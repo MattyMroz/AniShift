@@ -964,8 +964,7 @@ def test_a_new_search_with_a_shorter_franchise_resets_the_entry_cursor() -> None
     for key in ("text:/", "enter"):
         _key(controller, key)
     assert _at(controller) is _Screen.TITLES
-    for key in ("enter", "enter"):
-        _key(controller, key)
+    _key(controller, "enter")
     assert _at(controller) is _Screen.EPISODES
     assert catalog.calls[-1] == ("episodes", 1)
 

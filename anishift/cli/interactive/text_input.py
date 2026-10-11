@@ -119,9 +119,9 @@ class TextInput:
         return True
 
     def render(self, width: int, *, masked: bool = False, focused: bool = True) -> Text:
-        """Render the value, showing its cursor and selection only while focused."""
+        """Render the value with cursor and selection while focused; an empty idle field keeps one clickable cell."""
         value: str = "•" * len(self.text) if masked else self.text
-        line: Text = Text(value, style="white_bold" if focused else "gray")
+        line: Text = Text(value if value or focused else " ", style="white_bold" if focused else "gray")
         if not focused:
             line.truncate(max(width, 1), overflow="crop")
             mark_target(line, 0, len(line), Click(ClickKind.FIELD, 0))

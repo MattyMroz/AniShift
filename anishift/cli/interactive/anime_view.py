@@ -21,12 +21,15 @@ from anishift.cli.interactive.anime_state import (
 from anishift.cli.interactive.menu import append_wrapped_row
 from anishift.cli.interactive.pointer import (
     CRUMB_SEPARATOR,
+    Click,
+    ClickKind,
     TextCell,
     TextPoint,
     character_offset,
     mark_crumbs,
     mark_inert,
     mark_row,
+    mark_target,
     paint_selection,
     selected_cells,
     selected_text,
@@ -139,6 +142,7 @@ class _Canvas:
         self.lines: list[Text] = [Text(" " * width) for _ in range(rows)]
         self.regions: list[tuple[int, int, str]] = []
         self.rows: dict[int, int] = {}
+        self.boxes: dict[int, int] = {}
         self.opens: bool = True
 
     def place(self, columns: int) -> None:
@@ -170,10 +174,21 @@ class _Canvas:
     def tag(self, row: int, index: int) -> None:
         self.rows[row] = index
 
+    def box(self, row: int, column: int, *, marked: bool) -> None:
+        self.put(row, column, "[x]" if marked else "[ ]", "brand_accent" if marked else "gray")
+        self.boxes[row] = self.left + column
+
     def finish(self, visible: int, selection: tuple[TextPoint, TextPoint] | None, first_row: int = 0) -> AnimeFrame:
         for row, index in self.rows.items():
             if 0 <= row < len(self.lines):
                 mark_row(self.lines[row], index, opens=self.opens)
+        for row, column in self.boxes.items():
+            if row in self.rows and 0 <= row < len(self.lines):
+                plain: str = self.lines[row].plain
+                start: int = character_offset(plain, column)
+                mark_target(
+                    self.lines[row], start, character_offset(plain, column + 3), Click(ClickKind.TOGGLE, self.rows[row])
+                )
         cells: tuple[TextCell, ...] = text_cells([line.plain for line in self.lines], self.regions)
         text: Text = Text("\n").join(self.lines)
         frame: AnimeFrame = AnimeFrame(text, cells, visible, first_row)
@@ -296,7 +311,8 @@ def _list(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int) -> int:
     canvas.place(max((Text(item.title).cell_len for item in block), default=0) + prefix + boxed)
     for index, item in enumerate(items):
         row: int = canvas.top + index
-        canvas.tag(row, index + snapshot.offset)
+        if item.navigable:
+            canvas.tag(row, index + snapshot.offset)
         active: bool = index + snapshot.offset == snapshot.cursor and item.navigable
         style: str = "white_bold"
         if draft:
@@ -308,8 +324,7 @@ def _list(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int) -> int:
             canvas.put(row, 0, _pointer(active=True), "brand_accent")
         box: int = boxed if item.number else 0
         if box:
-            marked: bool = item.key in snapshot.selected
-            canvas.put(row, prefix, "[x]" if marked else "[ ]", "brand_accent" if marked else "gray")
+            canvas.box(row, prefix, marked=item.key in snapshot.selected)
         canvas.put(
             row,
             prefix + box if item.navigable or not draft else 0,
@@ -429,20 +444,14 @@ def _item(  # noqa: PLR0913
     columns: tuple[tuple[int, int, int], ...],
 ) -> None:
     row: int = canvas.top + index - snapshot.offset
-    canvas.tag(row, index)
+    if item.navigable:
+        canvas.tag(row, index)
     active: bool = index == snapshot.cursor and item.navigable
     canvas.put(row, 0, _pointer(active=active), "brand_accent" if active else "white_bold")
     if snapshot.screen in {AnimeScreen.EPISODES, AnimeScreen.RELEASES}:
-        canvas.put(
-            row,
-            4 if snapshot.screen is AnimeScreen.RELEASES else 2,
-            "[x]"
-            if item.key in snapshot.selected
-            else "[ ]"
-            if item.eligible or (snapshot.screen is AnimeScreen.EPISODES and item.navigable)
-            else "   ",
-            "brand_accent" if item.key in snapshot.selected else "gray",
-        )
+        boxed: bool = item.key in snapshot.selected or item.eligible
+        if boxed or (snapshot.screen is AnimeScreen.EPISODES and item.navigable):
+            canvas.box(row, 4 if snapshot.screen is AnimeScreen.RELEASES else 2, marked=item.key in snapshot.selected)
     if snapshot.screen is AnimeScreen.RELEASES:
         canvas.put(row, 2, ("*" if item.suggested else " ") + ("!" if item.uncertain else " "), "warning")
     searching: bool = item.key in snapshot.searching

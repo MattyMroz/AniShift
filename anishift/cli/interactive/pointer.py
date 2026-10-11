@@ -8,16 +8,22 @@ from bisect import bisect_right
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from itertools import accumulate
+from io import StringIO
+from itertools import accumulate, groupby
 from time import monotonic
 from typing import Final
 
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
+from rich.color import Color
+from rich.console import Console
 from rich.style import Style
-from rich.text import Text
+from rich.text import Span, Text
+from rich.theme import Theme
 
 from anishift.cli.interactive.anime_clipboard import copy_text
+from anishift.cli.interactive.palette import BRAND_THEME, MASCOT_AZURE, hex_color
 from anishift.text.graphemes import split_graphemes
+from anishift.utils.rich_console.theme import RICH_THEME
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -49,6 +55,20 @@ SELECTION_STYLE: Final[str] = "reverse"
 
 SELECTION_GAP_STYLE: Final[str] = "#0a0d14 on #e2e7f5"
 """Flat style of a selected gap between columns, matching inverted plain text so every gap keeps one shade."""
+
+HOVER_STYLE: Final[Style] = Style(color=hex_color(MASCOT_AZURE), bold=True)
+"""Style of the target under the mouse, the cursor row's look without its pointer."""
+
+_STYLES: Final[Console] = Console(file=StringIO(), theme=Theme({**RICH_THEME.styles, **BRAND_THEME.styles}))
+"""Console resolving the panel's themed style names into colors."""
+
+_CURSOR_POINTER: Final[str] = "\u276f"
+"""Pointer glyph of the one cursor row, which the hover leaves as it is."""
+
+_PLAIN_COLORS: Final[frozenset[Color | None]] = frozenset(
+    {None, _STYLES.get_style("white_bold").color, _STYLES.get_style("gray").color}
+)
+"""White, gray and unset letter colors, the only ones the hover repaints in azure."""
 
 COPY_KEYS: Final[frozenset[str]] = frozenset({"interrupt", "copy"})
 """Keys that copy a painted selection before the view handles them."""
@@ -87,6 +107,7 @@ class ClickKind(StrEnum):
     CRUMB = "crumb"
     BACK = "back"
     FIELD = "field"
+    TOGGLE = "toggle"
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,20 +193,32 @@ class FrameSelection:
         self._selection: tuple[TextPoint, TextPoint] | None = None
         self._frame: Text = Text()
         self._view: tuple[object, ...] = ()
+        self._hover: TextPoint | None = None
         self.notice: str = ""
 
     def paint(self, frame: Text, view: tuple[object, ...]) -> Text:
-        """Highlight the selection on a new frame, dropping it when the view or its geometry changed."""
+        """Highlight the selection and the hovered target on a new frame, dropping both when the view changed."""
         if view != self._view:
             self.clear()
         self._view = view
         if self._selection is not None:
             paint_selection(frame, selected_cells(painted_cells(frame), self._selection))
+        frame = light_targets(frame, hovered(frame, self._hover))
         self._frame = frame
         return frame
 
+    def hover(self, point: TextPoint) -> bool:
+        """Follow a move with no button pressed and report whether it changed the lit target."""
+        before: tuple[tuple[int, int, int], ...] = hovered(self._frame, self._hover)
+        self._hover = point
+        return hovered(self._frame, point) != before
+
     def mouse(self, event: MouseEvent) -> Click:
-        """Follow a mouse event and name what a click, a double click or a right press asks of the view."""
+        """Follow a button event, hiding the hover while dragging, and name what a click or a right press asks."""
+        if event.event_type is MouseEventType.MOUSE_MOVE:
+            self._hover = None
+        if event.event_type is MouseEventType.MOUSE_UP:
+            self._hover = TextPoint(event.position.y, event.position.x)
         gesture: Gesture | None = self._gesture.track(event)
         if gesture is None:
             return Click()
@@ -194,8 +227,9 @@ class FrameSelection:
         return self._gesture.resolve(self._frame, gesture)
 
     def copy(self, key: str) -> bool:
-        """Copy the selection for a copy key; any other key drops it and is left to the view."""
+        """Copy the selection for a copy key; any key hides the hover and any other key drops the selection."""
         self.notice = ""
+        self._hover = None
         if key not in COPY_KEYS:
             self._frame = Text()
             self.clear()
@@ -207,8 +241,9 @@ class FrameSelection:
         return True
 
     def clear(self) -> None:
-        """Drop the selection and any unfinished press."""
+        """Drop the selection, the hover and any unfinished press."""
         self._selection = None
+        self._hover = None
         self._gesture.reset()
 
 
@@ -238,26 +273,122 @@ def mark_crumbs(line: Text, parts: Sequence[str]) -> None:
 
 
 def click_at(frame: Text, point: TextPoint) -> Click:
-    """Return the row, target or text offset a click on a frame cell names; right of a field means its end."""
+    """Return the row, target or text offset a click names; elsewhere on a field's line means its nearer end."""
     lines: list[Text] = list(frame.split("\n", allow_blank=True))
     if not 0 <= point.row < len(lines):
         return Click()
     line: Text = lines[point.row]
+    offset: int = character_offset(line.plain, point.column)
+    toggle: Click | None = _toggle_at(line, offset)
+    if toggle is not None:
+        return toggle
     row: Click | None = _line_row(line)
     if row is not None:
         return row
-    offset: int = character_offset(line.plain, point.column)
-    beyond: Click = Click()
+    hit: tuple[Span, Click] | None = _span_at(line, offset)
+    if hit is None:
+        return Click()
+    span, target = hit
+    if target.kind is ClickKind.FIELD:
+        return Click(target.kind, target.value + min(max(offset, span.start), span.end) - span.start)
+    return target
+
+
+def hovered(frame: Text, point: TextPoint | None) -> tuple[tuple[int, int, int], ...]:
+    """Return ``(row, first cell, end cell)`` bands under ``point``: a list row across the list, else its target."""
+    if point is None:
+        return ()
+    lines: list[Text] = list(frame.split("\n", allow_blank=True))
+    if not 0 <= point.row < len(lines):
+        return ()
+    line: Text = lines[point.row]
+    row: Click | None = _line_row(line)
+    if row is not None:
+        return _row_bands(lines, row, point.column)
+    hit: tuple[Span, Click] | None = _span_at(line, character_offset(line.plain, point.column))
+    if hit is None:
+        return ()
+    span, target = hit
+    cells: tuple[int, int] | None = (
+        _extent(line, 0, len(line)) if target.kind is ClickKind.FIELD else _extent(line, span.start, span.end)
+    )
+    return () if cells is None else ((point.row, *cells),)
+
+
+def light_targets(frame: Text, bands: Sequence[tuple[int, int, int]]) -> Text:
+    """Paint the white and gray letters of each band in HOVER_STYLE; the cursor row and other colors stay."""
+    lines: list[Text] = list(frame.split("\n", allow_blank=True))
+    if not bands or any(_CURSOR_POINTER in lines[row].plain for row, _left, _right in bands):
+        return frame
+    for row, left, right in bands:
+        line: Text = lines[row]
+        _light_letters(line, character_offset(line.plain, left), character_offset(line.plain, right))
+    return Text("\n").join(lines)
+
+
+def _light_letters(line: Text, start: int, end: int) -> None:
+    offset: int = start
+    for color, run in groupby(_letter_colors(line, start, end)):
+        length: int = len(list(run))
+        if color in _PLAIN_COLORS:
+            line.stylize(HOVER_STYLE, offset, offset + length)
+        offset += length
+
+
+def _letter_colors(line: Text, start: int, end: int) -> list[Color | None]:
+    colors: list[Color | None] = [None] * (end - start)
+    for span in line.spans:
+        style: Style = _STYLES.get_style(span.style, default=Style())
+        color: Color | None = Color.default() if style.reverse else style.color
+        if color is None:
+            continue
+        for index in range(max(span.start, start), min(span.end, end)):
+            colors[index - start] = color
+    return colors
+
+
+def _row_bands(lines: Sequence[Text], row: Click, column: int) -> tuple[tuple[int, int, int], ...]:
+    extents: list[tuple[int, int]] = [
+        extent for other in lines if _line_row(other) is not None and (extent := _extent(other, 0, len(other)))
+    ]
+    if not extents:
+        return ()
+    left: int = min(first for first, _last in extents)
+    right: int = max(last for _first, last in extents)
+    if not left <= column < right:
+        return ()
+    return tuple((index, left, right) for index, other in enumerate(lines) if _line_row(other) == row)
+
+
+def _extent(line: Text, start: int, end: int) -> tuple[int, int] | None:
+    value: str = line.plain[start:end]
+    if not value.strip():
+        return None
+    first: int = start + len(value) - len(value.lstrip())
+    last: int = start + len(value.rstrip())
+    return Text(line.plain[:first]).cell_len, Text(line.plain[:last]).cell_len
+
+
+def _span_at(line: Text, offset: int) -> tuple[Span, Click] | None:
+    field: tuple[Span, Click] | None = None
     for span in line.spans:
         target: object = span.style.meta.get(_TARGET_META) if isinstance(span.style, Style) else None
-        if not isinstance(target, tuple) or offset < span.start:
+        if not isinstance(target, tuple):
             continue
-        kind: ClickKind = ClickKind(target[0])
-        if offset < span.end:
-            return Click(kind, target[1] + (offset - span.start if kind is ClickKind.FIELD else 0))
-        if kind is ClickKind.FIELD:
-            beyond = Click(kind, target[1] + span.end - span.start)
-    return beyond
+        click: Click = Click(ClickKind(target[0]), target[1])
+        if span.start <= offset < span.end:
+            return span, click
+        if click.kind is ClickKind.FIELD and (field is None or span.end <= offset):
+            field = (span, click)
+    return field
+
+
+def _toggle_at(line: Text, offset: int) -> Click | None:
+    for span in line.spans:
+        target: object = span.style.meta.get(_TARGET_META) if isinstance(span.style, Style) else None
+        if span.start <= offset < span.end and isinstance(target, tuple) and target[0] == ClickKind.TOGGLE:
+            return Click(ClickKind.TOGGLE, target[1])
+    return None
 
 
 def _line_row(line: Text) -> Click | None:

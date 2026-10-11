@@ -115,10 +115,9 @@ def _install_renderer(monkeypatch: pytest.MonkeyPatch, script: tuple[str, ...] =
         key_handler: Callable[[str], None],
         idle_handler: Callable[[], None] | None = None,
         scroll_handler: Callable[[int], None] | None = None,
-        *,
-        mouse_handler: object = None,
+        **handlers: object,
     ) -> _Renderer:
-        del mouse_handler
+        del handlers
         renderer: _Renderer = _Renderer(frame_provider, key_handler, idle_handler, scroll_handler)
         renderer.script = list(script)
         made.append(renderer)

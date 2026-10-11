@@ -2246,10 +2246,9 @@ def _recording_renderer(renderers: list[_PanelRenderer]) -> Callable[..., _Panel
         key_handler: Callable[[str], None],
         idle_handler: Callable[[], None] | None = None,
         scroll_handler: Callable[[int], None] | None = None,
-        *,
-        mouse_handler: object = None,
+        **handlers: object,
     ) -> _PanelRenderer:
-        del mouse_handler
+        del handlers
         renderer: _PanelRenderer = _PanelRenderer(frame_provider, key_handler, idle_handler, scroll_handler)
         renderers.append(renderer)
         return renderer

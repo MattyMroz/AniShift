@@ -810,7 +810,9 @@ class AnimeController:
             click: Click = self._panel.mouse(event)
             if self._details_open:
                 return click
-            if click.kind in {ClickKind.ROW, ClickKind.LINE}:
+            if click.kind is ClickKind.TOGGLE and self._range_input is not None:
+                click = Click(ClickKind.ROW, click.value)
+            if click.kind in {ClickKind.ROW, ClickKind.LINE, ClickKind.TOGGLE}:
                 self._adopt_cursor()
             self._notice = self._view.notice
             return click
@@ -998,9 +1000,7 @@ class AnimeController:
         status: EpisodeStatus | None = self._episode_states.get(EpisodeKey(listing.anilist_id, shown[position].number))
         if _ready_set(status) is not None:
             return "obejrzyj"
-        if status is None or status.reason != EpisodeReason.EPISODE_FILE_UNRESOLVED or status.admission_id is None:
-            return ""
-        return "wskaż plik"
+        return "wskaż plik" if _unresolved_admission(status) is not None else ""
 
     def _display_rows(self) -> tuple[AnimeRow, ...]:  # noqa: PLR0911
         if self._screen is _Screen.TITLES:
@@ -1294,16 +1294,15 @@ class AnimeController:
         ready: str | None = _ready_set(status)
         if key == "enter" and ready is not None:
             self._playback = ready
-        elif key == "enter" and status is not None and status.reason == EpisodeReason.EPISODE_FILE_UNRESOLVED:
-            if status.admission_id is not None:
-                self._start_files(status.admission_id)
+        elif key == "enter" and (admission := _unresolved_admission(status)) is not None:
+            self._start_files(admission)
         elif (
             key.casefold() == "text:p"
             and status is not None
             and (status.state != "not_ordered" or status.admission_id is not None)
         ):
             self._start_owner_offer(episode, repeat=True)
-        elif key.casefold() == "text:i":
+        elif key.casefold() == "text:i" or key == "enter":
             self._inspect_episode(episode)
         elif key.casefold() == "text:d":
             if self._resident is None:
@@ -2129,6 +2128,12 @@ class AnimeController:
 
 def _ready_set(status: EpisodeStatus | None) -> str | None:
     return status.set_id if status is not None and status.state == "ready" else None
+
+
+def _unresolved_admission(status: EpisodeStatus | None) -> str | None:
+    if status is None or status.reason != EpisodeReason.EPISODE_FILE_UNRESOLVED:
+        return None
+    return status.admission_id
 
 
 def _deadline(value: str) -> float | None:

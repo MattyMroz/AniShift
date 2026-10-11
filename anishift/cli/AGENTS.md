@@ -375,8 +375,13 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   tagują wiersze `mark_row(..., opens=False)`: podwójny klik tylko wskazuje, zatwierdza wyłącznie Enter. Klik
   w nazwę zakładki wysyła klawisz `tab_key(n)` tą samą drogą co Tab (blokowany tam, gdzie Tab). Okruszek to krotka
   członów (`breadcrumb()`, `AnimeViewState.crumbs`); klik w człon `n` naciska Esc, dopóki okruszek pokazuje ten człon
-  i głębsze (najwyżej `_CRUMB_ESCAPES`). Prawy przycisk (tylko `MOUSE_DOWN`) to Esc, także w polu. Klik w pole
-  tekstowe daje mu fokus i stawia kursor (`TextInput.place`), za końcem tekstu — na końcu. Zaznaczenie
+  i głębsze (najwyżej `_CRUMB_ESCAPES`). Prawy przycisk (tylko `MOUSE_DOWN`) to Esc, także w polu. Klik w dowolne
+  miejsce linii pola tekstowego (też `> ` i puste pole) daje mu fokus i stawia kursor (`TextInput.place`), za końcem
+  tekstu — na końcu, przed nim — na początku. Klik w `[ ]`/`[x]` (`_Canvas.box` tagi `ClickKind.TOGGLE`) ustawia kursor
+  i naciska Space; przy otwartym polu zakresu Z to zwykły klik w wiersz. Enter i podwójny klik na odcinku bez gotowego
+  pliku otwierają wydania jak `I`. Hover (`FrameSelection.hover`, `light_targets`): białe i szare litery celu pod
+  myszą dostają `HOVER_STYLE`, inne kolory, kursor pola (`reverse`) i wiersz z `❯` zostają; wiersz świeci tylko nad
+  zakresem listy, przeciąganie i klawisz go gaszą, klik nie; przerysowanie tylko przy zmianie celu. Zaznaczenie
   (`paint_selection`): tekst i pojedyncze spacje dostają `reverse` (`SELECTION_STYLE`), a przebiegi co najmniej
   dwóch białych komórek i przerwy między zaznaczonymi regionami jednego wiersza płaski `SELECTION_GAP_STYLE`.
   `interactive/pointer.py`, `interactive/app.py`

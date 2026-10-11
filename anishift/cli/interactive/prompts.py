@@ -91,6 +91,9 @@ _POINTER_EVENTS: Final[frozenset[tuple[MouseButton, MouseEventType]]] = frozense
 )
 """Pointer events the views follow: every left-button event and a right-button press."""
 
+_HOVER_EVENT: Final[tuple[MouseButton, MouseEventType]] = (MouseButton.NONE, MouseEventType.MOUSE_MOVE)
+"""Move with no button pressed, which only changes what lies under the mouse."""
+
 _NORMALISED_KEYS: Final[tuple[tuple[Keys | str | tuple[Keys | str, ...], str], ...]] = (
     (Keys.Up, "up"),
     (Keys.Down, "down"),
@@ -189,14 +192,16 @@ class _WheelControl(FormattedTextControl):
         self,
         scroll_handler: Callable[[int], None] | None,
         mouse_handler: Callable[[MouseEvent], None] | None = None,
+        hover_handler: Callable[[MouseEvent], bool] | None = None,
         **arguments: object,
     ) -> None:
         super().__init__(**arguments)  # type: ignore[arg-type]
         self._scroll_handler: Callable[[int], None] | None = scroll_handler
         self._mouse_callback: Callable[[MouseEvent], None] | None = mouse_handler
+        self._hover_callback: Callable[[MouseEvent], bool] | None = hover_handler
 
     def mouse_handler(self, mouse_event: MouseEvent) -> object:
-        """Forward wheel, left-button gestures and a right-button press without consuming other pointer events."""
+        """Forward wheel, pointer gestures and hover moves; a move that changes nothing skips the redraw."""
         wheel: dict[MouseEventType, int] = {
             MouseEventType.SCROLL_UP: -1,
             MouseEventType.SCROLL_DOWN: 1,
@@ -207,24 +212,21 @@ class _WheelControl(FormattedTextControl):
                 return NotImplemented
             self._scroll_handler(direction)
             return None
-        if (mouse_event.button, mouse_event.event_type) not in _POINTER_EVENTS:
+        pressed: tuple[MouseButton, MouseEventType] = (mouse_event.button, mouse_event.event_type)
+        if pressed == _HOVER_EVENT and self._hover_callback is not None:
+            return None if self._hover_callback(self._in_cells(mouse_event)) else NotImplemented
+        if pressed not in _POINTER_EVENTS or self._mouse_callback is None:
             return NotImplemented
-        if self._mouse_callback is not None:
-            lines: list[str] = fragment_list_to_text(to_formatted_text(self.text)).split("\n")
-            row: int = mouse_event.position.y
-            column: int = mouse_event.position.x
-            if 0 <= row < len(lines):
-                column = Text(lines[row][:column]).cell_len
-            self._mouse_callback(
-                MouseEvent(
-                    Point(column, row),
-                    mouse_event.event_type,
-                    mouse_event.button,
-                    mouse_event.modifiers,
-                )
-            )
-            return None
-        return NotImplemented
+        self._mouse_callback(self._in_cells(mouse_event))
+        return None
+
+    def _in_cells(self, mouse_event: MouseEvent) -> MouseEvent:
+        lines: list[str] = fragment_list_to_text(to_formatted_text(self.text)).split("\n")
+        row: int = mouse_event.position.y
+        column: int = mouse_event.position.x
+        if 0 <= row < len(lines):
+            column = Text(lines[row][:column]).cell_len
+        return MouseEvent(Point(column, row), mouse_event.event_type, mouse_event.button, mouse_event.modifiers)
 
 
 class TerminalRenderer:
@@ -238,6 +240,7 @@ class TerminalRenderer:
         scroll_handler: Callable[[int], None] | None = None,
         *,
         mouse_handler: Callable[[MouseEvent], None] | None = None,
+        hover_handler: Callable[[MouseEvent], bool] | None = None,
         use_mascot: bool = True,
     ) -> None:
         self._frame_provider: Callable[[int, int], Text] = frame_provider
@@ -258,6 +261,7 @@ class TerminalRenderer:
         control = _WheelControl(
             scroll_handler,
             mouse_handler,
+            hover_handler,
             text=lambda: self._prepared_frame,
             focusable=False,
             show_cursor=False,
