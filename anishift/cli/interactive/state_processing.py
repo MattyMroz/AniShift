@@ -34,6 +34,17 @@ __all__ = [
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
+_DOWNLOAD_PROBLEMS: Final[dict[str, str]] = {
+    "The automation state could not be saved, so nothing changed": "Błąd zapisu stanu",
+    "The download destination could not be read, so no name was reserved": "Folder nieczytelny",
+    "Something took a name reserved for this download; clear that name and retry": "Nazwa pliku zajęta",
+    "No file list was received for this download; resume it to keep waiting": "Brak listy plików",
+    "This download no longer matches its saved file selection or folder": "Pliki się zmieniły",
+    "The client does not show this download; resume it to check again": "qBittorrent go nie widzi",
+    "This download was stopped before its file list arrived and cannot resume safely": "Zatrzymane za wcześnie",
+}
+"""Short Polish cause of each download problem the owner reports, by its owner sentence."""
+
 _READINESS_LABELS: Final[dict[str, str]] = {
     "subtitle_source_missing": "Brak napisów",
     "sidecar_missing": "Brak napisów obok",
@@ -179,7 +190,7 @@ def download_progress(  # noqa: PLR0911
     if item.get("stage") == "waiting":
         return ("Wstrzymano" if held(snapshot, item) else "Przygotowanie"), None
     if item.get("problem"):
-        return "Wymaga uwagi", None
+        return _DOWNLOAD_PROBLEMS.get(str(item.get("problem")), "Wymaga uwagi"), None
     if item.get("reason") == EpisodeReason.WAITING_PREVIOUS_TRANSFER:
         return EPISODE_REASON_LABELS[EpisodeReason.WAITING_PREVIOUS_TRANSFER], None
     if not connected or snapshot.get("transfers_problem"):

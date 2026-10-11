@@ -33,6 +33,7 @@ from anishift.application import (
     TitleCandidate,
     TitleStatus,
 )
+from anishift.application import automation as automation_module
 from anishift.application.control_views import (
     LibraryFile,
     LibraryFileIdentity,
@@ -43,6 +44,7 @@ from anishift.application.control_views import (
 )
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive import state as state_module
+from anishift.cli.interactive import state_processing as processing_module
 from anishift.cli.interactive.actions import (
     ACTION_NOTICES,
     Action,
@@ -1271,6 +1273,33 @@ def test_a_material_waiting_for_the_user_names_its_cause(reason: str, label: str
     item: dict[str, object] = {"stage": "waiting", "reason": reason, "attention": True}
 
     assert download_progress(item, {}, connected=True) == (label, None)
+
+
+@pytest.mark.parametrize(
+    ("problem", "label"),
+    [
+        ("This download no longer matches its saved file selection or folder", "Pliki się zmieniły"),
+        ("Something new and unknown", "Wymaga uwagi"),
+    ],
+)
+def test_a_download_problem_names_its_cause_in_short(problem: str, label: str) -> None:
+    item: dict[str, object] = {"stage": "download", "problem": problem}
+
+    assert download_progress(item, {}, connected=True) == (label, None)
+
+
+def test_every_short_download_problem_matches_an_owner_sentence() -> None:
+    owner: set[str] = {
+        automation_module._STATE_NOT_SAVED,
+        automation_module._UNREADABLE_DESTINATION,
+        automation_module._OCCUPIED_DESTINATION,
+        automation_module._NO_FILE_LIST,
+        automation_module._SELECTION_MISMATCH,
+        automation_module._SEND_UNCONFIRMED,
+        automation_module._METADATA_STOPPED,
+    }
+
+    assert set(processing_module._DOWNLOAD_PROBLEMS) == owner
 
 
 def test_the_help_is_a_table_of_keys_and_what_they_do() -> None:
