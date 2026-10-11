@@ -934,6 +934,7 @@ _MISMATCH_REASONS: Final[frozenset[str]] = frozenset(
         "Selected filename has an explicit Plex extra suffix.",
         "Selected residual explicitly identifies non-episode material.",
         "Catalog episode title belongs to another episode.",
+        "Selected name numbers a special instead of a TV episode.",
     }
 )
 _OTHER_EPISODE_TITLE: Final[str] = "Catalog episode title belongs to another episode."
@@ -1375,3 +1376,146 @@ def test_classify_other_episode_title_before_own_alias_stays_conflict() -> None:
     name: str = "Star Garden - 06 - The Silent Winter Night [1080p] Star Garden [Weekly]"
     for assessment in _name_assessments(_target_for(), name):
         assert assessment == IdentityAssessment(IdentityVerdict.MISMATCH, _OTHER_EPISODE_TITLE)
+
+
+_TITLELESS: Final[str] = "Titleless file lacks an unambiguous nearest work directory or single-work release."
+_TITLELESS_EPISODE: Final[str] = "Titleless file names the target episode number and catalog episode title."
+_FRANCHISE: Final[str] = "A franchise alias does not identify this installment."
+_FRANCHISE_ABSOLUTE: Final[str] = "Franchise alias carries the target absolute number of a matching release."
+_SPECIAL: Final[str] = "Selected name numbers a special instead of a TV episode."
+_NON_EPISODE: Final[str] = "Selected residual explicitly identifies non-episode material."
+_BEYOND_RANGE: Final[str] = "Mapped absolute number exceeds the local episode range under a specific title."
+_BARE_NUMBER: Final[str] = "Bare number is not the local episode; absolute numbering is not established."
+_BATCH: Final[str] = "[Group] Star Garden (2020) (Season 1) [1080p] (Hoshi no Niwa) (Batch)"
+
+
+def _season_two() -> dict[str, Any]:
+    return _target_for(
+        aliases=["Star Garden Season 2", "Star Garden", "Hoshi no Niwa"], season=2, local_episode=5, absolute=17
+    )
+
+
+@pytest.mark.parametrize(
+    "filename", ["S01E05-A Journey Through Clouds [ABCD1234].mkv", "05 - A Journey Through Clouds.mkv"]
+)
+def test_classify_titleless_file_with_target_number_and_episode_title_matches(filename: str) -> None:
+    target: dict[str, Any] = _target_for(aliases=["Star Garden", "Hoshi no Niwa"])
+    candidate: dict[str, str] = {"release": _BATCH, "filename": filename, "path": filename}
+    assert _assess(target, candidate) == IdentityAssessment(IdentityVerdict.MATCH, _TITLELESS_EPISODE)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "S01E05 [ABCD1234].mkv",
+        "S01E06-A Journey Through Clouds [ABCD1234].mkv",
+        "S02E05-A Journey Through Clouds [ABCD1234].mkv",
+        "06 - A Journey Through Clouds.mkv",
+    ],
+)
+def test_classify_titleless_file_without_target_number_or_episode_title_stays_uncertain(filename: str) -> None:
+    target: dict[str, Any] = _target_for(aliases=["Star Garden", "Hoshi no Niwa"])
+    candidate: dict[str, str] = {"release": _BATCH, "filename": filename, "path": filename}
+    assert _assess(target, candidate) == IdentityAssessment(IdentityVerdict.INSUFFICIENT, _TITLELESS)
+
+
+@pytest.mark.parametrize(
+    ("release", "path"),
+    [
+        ("[Group] Moon Harbor (2020) (Season 1) (Batch)", "S01E05-A Journey Through Clouds [ABCD1234].mkv"),
+        ("", "Moon Harbor/S01E05 - A Journey Through Clouds.mkv"),
+        ("Moon Harbor", "Moon Harbor/05 - A Journey Through Clouds.mkv"),
+    ],
+)
+def test_classify_titleless_file_under_another_single_work_stays_uncertain(release: str, path: str) -> None:
+    target: dict[str, Any] = _target_for(aliases=["Star Garden", "Hoshi no Niwa"])
+    candidate: dict[str, str] = {"release": release, "filename": path.rsplit("/", 1)[-1], "path": path}
+    assert _assess(target, candidate) == IdentityAssessment(IdentityVerdict.INSUFFICIENT, _TITLELESS)
+
+
+@pytest.mark.parametrize(
+    ("release", "path"),
+    [
+        ("[Group] Anime Collection (Seasons 1-2) (Batch)", "S01E05-A Journey Through Clouds [ABCD1234].mkv"),
+        ("[Group] 1080p Batch", "Hoshi no Niwa (Moon)/S01E05 - A Journey Through Clouds.mkv"),
+    ],
+)
+def test_classify_titleless_file_in_multi_work_release_or_target_directory_matches(release: str, path: str) -> None:
+    target: dict[str, Any] = _target_for(aliases=["Star Garden", "Hoshi no Niwa"])
+    candidate: dict[str, str] = {"release": release, "filename": path.rsplit("/", 1)[-1], "path": path}
+    assert _assess(target, candidate) == IdentityAssessment(IdentityVerdict.MATCH, _TITLELESS_EPISODE)
+
+
+def test_classify_particle_wo_matches_romanized_o() -> None:
+    target: dict[str, Any] = _target_for("Bisque Doll wa Koi wo Suru")
+    for assessment in _name_assessments(target, "Bisque Doll wa Koi o Suru - 05 [1080p]"):
+        assert assessment.verdict is IdentityVerdict.MATCH
+
+
+def test_classify_wo_inside_a_word_is_not_a_particle() -> None:
+    for assessment in _name_assessments(_target_for("Two Star Garden"), "To Star Garden - 05 [1080p]"):
+        assert assessment.verdict is not IdentityVerdict.MATCH
+
+
+def test_classify_second_franchise_alias_after_anchor_is_consumed() -> None:
+    for assessment in _name_assessments(_season_two(), "[Group] Hoshi no Niwa (Star Garden) - S02E05 [1080p]"):
+        assert assessment.verdict is IdentityVerdict.MATCH
+
+
+def test_classify_unknown_title_after_franchise_anchor_stays_uncertain() -> None:
+    for assessment in _name_assessments(_season_two(), "[Group] Hoshi no Niwa (Moon Harbor) - S02E05 [1080p]"):
+        assert assessment == IdentityAssessment(IdentityVerdict.INSUFFICIENT, _UNCONSUMED)
+
+
+def test_classify_franchise_alias_with_target_absolute_number_matches_under_matching_release() -> None:
+    candidate: dict[str, str] = {"filename": "[Group] Star Garden - 17.mkv", "release": "[Group] Star Garden S02E05"}
+    assert _assess(_season_two(), candidate) == IdentityAssessment(IdentityVerdict.MATCH, _FRANCHISE_ABSOLUTE)
+
+
+@pytest.mark.parametrize(
+    ("filename", "release"),
+    [
+        ("[Group] Star Garden - 17.mkv", ""),
+        ("[Group] Star Garden - 17.mkv", "[Group] Star Garden - 17.mkv"),
+        ("[Group] Star Garden - 17.mkv", "[Group] Star Garden S02E06"),
+        ("[Group] Star Garden - 05.mkv", "[Group] Star Garden S02E05"),
+    ],
+)
+def test_classify_franchise_alias_without_absolute_number_and_matching_release_stays_uncertain(
+    filename: str, release: str
+) -> None:
+    assessment: IdentityAssessment = _assess(_season_two(), {"filename": filename, "release": release})
+    assert assessment == IdentityAssessment(IdentityVerdict.INSUFFICIENT, _FRANCHISE)
+
+
+@pytest.mark.parametrize(
+    ("name", "reason"),
+    [
+        ("Star Garden - 05 web preview [1080p]", _NON_EPISODE),
+        ("Star Garden S00E05 [1080p]", _SPECIAL),
+        ("Star Garden - 05.5 [1080p]", _SPECIAL),
+    ],
+)
+def test_classify_preview_season_zero_and_half_episode_are_not_tv_episodes(name: str, reason: str) -> None:
+    for assessment in _name_assessments(_target_for(), name):
+        assert assessment == IdentityAssessment(IdentityVerdict.MISMATCH, reason)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [_target_for(type="OVA"), _target_for(season=None, episode=None, absolute=None)],
+)
+def test_classify_season_zero_without_numbered_tv_target_is_not_special(target: dict[str, Any]) -> None:
+    for assessment in _name_assessments(target, "Star Garden S00E05 [1080p]"):
+        assert assessment.verdict is IdentityVerdict.INSUFFICIENT
+
+
+def test_classify_target_episode_count_identifies_absolute_number_beyond_it() -> None:
+    target: dict[str, Any] = _target_for("Star Garden Season 2", season=2, episode=1, local_episode=1, absolute=13)
+    for count, expected in (
+        (12, IdentityAssessment(IdentityVerdict.MATCH, _BEYOND_RANGE)),
+        (13, IdentityAssessment(IdentityVerdict.INSUFFICIENT, _BARE_NUMBER)),
+        (None, IdentityAssessment(IdentityVerdict.INSUFFICIENT, _BARE_NUMBER)),
+    ):
+        for assessment in _name_assessments({**target, "episodes": count}, "Star Garden Season 2 - 13 [1080p]"):
+            assert assessment == expected

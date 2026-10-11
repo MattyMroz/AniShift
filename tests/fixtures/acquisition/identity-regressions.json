@@ -924,5 +924,304 @@
     "candidate": {"filename": "[EMBER] Ore dake Level Up na Ken S02E01 [1080p] [HEVC WEBRip DDP] (Solo Leveling Season 2: Arise from the Shadow).mkv", "release": "[EMBER] Ore dake Level Up na Ken S02E01 [1080p] [HEVC WEBRip DDP] (Solo Leveling Season 2: Arise from the Shadow)"},
     "expected_verdict": "match",
     "cause": "The romaji work title with the explicit target season and episode stays a match beside the full English season title."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Solo Leveling Season 2 -Arise from the Shadow-",
+        "俺だけレベルアップな件 Season 2 -Arise from the Shadow-",
+        "Ore dake Level Up na Ken: Season 2 - Arise from the Shadow",
+        "Ore dake Level Up na Ken",
+        "Solo Leveling",
+        "俺だけレベルアップな件"
+      ],
+      "type": "TV",
+      "season": 2,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 13,
+      "episode_title": "You Aren't E-Rank, Are You?",
+      "other_episode_titles": [
+        "I Suppose You Aren't Aware",
+        "Still a Long Way to Go",
+        "I Need to Stop Faking",
+        "This Is What We're Trained to Do",
+        "Don't Look Down On My Guys",
+        "The 10th S-Rank Hunter",
+        "Looking Up Was Tiring Me Out",
+        "It Was All Worth It",
+        "We Need a Hero",
+        "It's Going to Get Even More Intense",
+        "Are You the King of Humans",
+        "On to the Next Target"
+      ],
+      "other_series": []
+    },
+    "candidate": {
+      "release": "[EMBER] Solo Leveling (2025) (Season 2) [1080p] [Dual Audio HEVC WEBRip DDP] (Ore dake Level Up na Ken Season 2: Arise from the Shadow) (Batch)",
+      "filename": "S02E01-You Aren't E-Rank, Are You [0A2554ED].mkv",
+      "path": "S02E01-You Aren't E-Rank, Are You [0A2554ED].mkv"
+    },
+    "expected_verdict": "match",
+    "cause": "A titleless file naming the target season, episode and catalog episode title matches inside a release that does not identify one work."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Sono Bisque Doll wa Koi wo Suru",
+        "My Dress-Up Darling"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1
+    },
+    "candidate": {
+      "release": "[Erai-raws] Sono Bisque Doll wa Koi o Suru - 01 [1080p][Multiple Subtitle][95BEA368].mkv",
+      "filename": "[Erai-raws] Sono Bisque Doll wa Koi o Suru - 01 [1080p][Multiple Subtitle][95BEA368].mkv"
+    },
+    "expected_verdict": "match",
+    "cause": "The romanized particle o matches wo in the catalog title."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Solo Leveling Season 2 -Arise from the Shadow-",
+        "俺だけレベルアップな件 Season 2 -Arise from the Shadow-",
+        "Ore dake Level Up na Ken: Season 2 - Arise from the Shadow",
+        "Ore dake Level Up na Ken",
+        "Solo Leveling",
+        "俺だけレベルアップな件"
+      ],
+      "type": "TV",
+      "season": 2,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 13,
+      "episode_title": "You Aren't E-Rank, Are You?",
+      "other_episode_titles": [
+        "I Suppose You Aren't Aware",
+        "Still a Long Way to Go",
+        "I Need to Stop Faking",
+        "This Is What We're Trained to Do",
+        "Don't Look Down On My Guys",
+        "The 10th S-Rank Hunter",
+        "Looking Up Was Tiring Me Out",
+        "It Was All Worth It",
+        "We Need a Hero",
+        "It's Going to Get Even More Intense",
+        "Are You the King of Humans",
+        "On to the Next Target"
+      ],
+      "other_series": []
+    },
+    "candidate": {
+      "release": "[Judas] Ore dake Level Up na Ken (Solo Leveling) - S02E01 [1080p][HEVC x265 10bit][Multi-Subs] (Weekly)",
+      "filename": "[Judas] Ore dake Level Up na Ken (Solo Leveling) - S02E01 [1080p][HEVC x265 10bit][Multi-Subs] (Weekly).mkv"
+    },
+    "expected_verdict": "match",
+    "cause": "A second franchise alias right after the anchoring franchise alias is consumed."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Solo Leveling Season 2 -Arise from the Shadow-",
+        "俺だけレベルアップな件 Season 2 -Arise from the Shadow-",
+        "Ore dake Level Up na Ken: Season 2 - Arise from the Shadow",
+        "Ore dake Level Up na Ken",
+        "Solo Leveling",
+        "俺だけレベルアップな件"
+      ],
+      "type": "TV",
+      "season": 2,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 13,
+      "episode_title": "You Aren't E-Rank, Are You?",
+      "other_episode_titles": [
+        "I Suppose You Aren't Aware",
+        "Still a Long Way to Go",
+        "I Need to Stop Faking",
+        "This Is What We're Trained to Do",
+        "Don't Look Down On My Guys",
+        "The 10th S-Rank Hunter",
+        "Looking Up Was Tiring Me Out",
+        "It Was All Worth It",
+        "We Need a Hero",
+        "It's Going to Get Even More Intense",
+        "Are You the King of Humans",
+        "On to the Next Target"
+      ],
+      "other_series": []
+    },
+    "candidate": {
+      "release": "[EMBER] Ore dake Level Up na Ken S02E01 [1080p] [HEVC WEBRip DDP] (Solo Leveling Season 2: Arise from the Shadow)",
+      "filename": "[EMBER] Solo Leveling - 13.mkv"
+    },
+    "expected_verdict": "match",
+    "cause": "A franchise alias with the target absolute number matches when the release name identifies the target episode."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Sousou no Frieren",
+        "Frieren: Beyond Journey's End"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1
+    },
+    "candidate": {
+      "release": "[Beatrice-Raws] Sousou no Frieren (EP 01 web preview) [BDRip 1920x1080 HEVC TrueHD]",
+      "filename": "[Beatrice-Raws] Sousou no Frieren (EP 01 web preview) [BDRip 1920x1080 HEVC TrueHD].mkv"
+    },
+    "expected_verdict": "mismatch",
+    "cause": "A preview after the episode number is non-episode material."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Solo Leveling Season 2 -Arise from the Shadow-",
+        "俺だけレベルアップな件 Season 2 -Arise from the Shadow-",
+        "Ore dake Level Up na Ken: Season 2 - Arise from the Shadow",
+        "Ore dake Level Up na Ken",
+        "Solo Leveling",
+        "俺だけレベルアップな件"
+      ],
+      "type": "TV",
+      "season": 2,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 13,
+      "episode_title": "You Aren't E-Rank, Are You?",
+      "other_episode_titles": [
+        "I Suppose You Aren't Aware",
+        "Still a Long Way to Go",
+        "I Need to Stop Faking",
+        "This Is What We're Trained to Do",
+        "Don't Look Down On My Guys",
+        "The 10th S-Rank Hunter",
+        "Looking Up Was Tiring Me Out",
+        "It Was All Worth It",
+        "We Need a Hero",
+        "It's Going to Get Even More Intense",
+        "Are You the King of Humans",
+        "On to the Next Target"
+      ],
+      "other_series": []
+    },
+    "candidate": {
+      "release": "[DKB] Solo Leveling - S00E01 [1080p][HEVC x265 10bit][Multi-Subs]",
+      "filename": "[DKB] Solo Leveling - S00E01 [1080p][HEVC x265 10bit][Multi-Subs].mkv"
+    },
+    "expected_verdict": "mismatch",
+    "cause": "Season 0 numbering names a special, not a TV episode."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Tensei Shitara Slime Datta Ken",
+        "That Time I Got Reincarnated as a Slime"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 24,
+      "local_episode": 24,
+      "absolute": 24
+    },
+    "candidate": {
+      "release": "[Asakura] Tensei Shitara Slime Datta Ken 24.5 [BDRip 1920x1080 x265 10bit FLAC] [9F9237AB]",
+      "filename": "[Asakura] Tensei Shitara Slime Datta Ken 24.5 [BDRip 1920x1080 x265 10bit FLAC] [9F9237AB].mkv"
+    },
+    "expected_verdict": "mismatch",
+    "cause": "A half episode number names a special, not a TV episode."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Shingeki no Kyojin Season 3",
+        "Attack on Titan Season 3"
+      ],
+      "type": "TV",
+      "season": 3,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 38,
+      "episodes": 12
+    },
+    "candidate": {
+      "release": "[HorribleSubs] Shingeki no Kyojin S3 - 38 [720p]",
+      "filename": "[HorribleSubs] Shingeki no Kyojin S3 - 38 [720p].mkv"
+    },
+    "expected_verdict": "match",
+    "cause": "A target absolute number beyond the entry's episode count identifies the season-specific title."
+  },
+  {
+    "target": {
+      "aliases": [
+        "[Oshi no Ko] Season 3",
+        "【推しの子】第3期",
+        "Oshi no Ko",
+        "[Oshi no Ko]"
+      ],
+      "type": "TV",
+      "season": 3,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 25,
+      "episode_title": "The Beginning"
+    },
+    "candidate": {
+      "release": "[EMBER] Other Show (2026) (Season 3) (Batch)",
+      "filename": "S03E01-The Beginning.mkv",
+      "path": "S03E01-The Beginning.mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A titleless file with the target episode title inside a single-work release of another show is not the target."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Noein: To Your Other Self",
+        "Noein: Mou Hitori no Kimi e",
+        "Noein"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Beginning"
+    },
+    "candidate": {
+      "release": "[Grp] Some Other Show (Season 1) (Batch)",
+      "filename": "S01E01 - The Beginning.mkv",
+      "path": "S01E01 - The Beginning.mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A repeated catalog episode title does not identify the work inside another show's season batch."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Show A"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "Prologue"
+    },
+    "candidate": {
+      "release": "Show B",
+      "filename": "S01E01 - Prologue.mkv",
+      "path": "Show B/S01E01 - Prologue.mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A nearest work directory naming another show blocks a titleless file with the target episode title."
   }
 ]

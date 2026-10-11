@@ -1,4 +1,4 @@
-"""Assess selected-file identity with H1 v10.9 without inspecting media or performing I/O."""
+"""Assess selected-file identity with H1 v10.10 without inspecting media or performing I/O."""
 
 from __future__ import annotations
 
@@ -60,6 +60,8 @@ EXTRAS: Final[re.Pattern[str]] = re.compile(
     r"interviews?|making of|music video)\b"
 )
 """Recognize explicit non-episode material after the work anchor."""
+PREVIEW: Final[re.Pattern[str]] = re.compile(r"\bpreviews?\b")
+"""Recognize a preview in the selected residual as non-episode material."""
 PLEX_FOLDERS: Final[frozenset[str]] = frozenset(
     ("featurettes", "behind the scenes", "deleted scenes", "interviews", "scenes", "shorts", "other", "trailers")
 )
@@ -179,6 +181,9 @@ REASONS: Final[frozenset[str]] = frozenset(
         "Package year conflicts with target metadata.",
         "Package explicitly identifies a numbered sequel.",
         "Titleless file lacks an unambiguous nearest work directory or single-work release.",
+        "Titleless file names the target episode number and catalog episode title.",
+        "Franchise alias carries the target absolute number of a matching release.",
+        "Selected name numbers a special instead of a TV episode.",
         "Selected file or work directory identifies a neighboring catalogue work.",
         "Selected directory has a numbered season conflicting with the target.",
         "Selected TV variant conflicts with the target editing variant.",
@@ -230,6 +235,7 @@ MISMATCH_LABELS: Final[Mapping[str, str]] = MappingProxyType(
         "Selected filename has an explicit Plex extra suffix.": "dodatek",
         "Selected residual explicitly identifies non-episode material.": "nie odcinek",
         "Catalog episode title belongs to another episode.": "tytuł innego odcinka",
+        "Selected name numbers a special instead of a TV episode.": "odcinek specjalny",
     }
 )
 """Label every mismatch reason; each mismatch is a conflict."""
@@ -333,7 +339,7 @@ def _normalize(value: str) -> str:
 
 @lru_cache(maxsize=TEXT_CACHE_SIZE)
 def _canonical(text: str) -> str:
-    return re.sub(r"[\s.-]", "", text).replace("ou", "o").replace("oo", "o").replace("uu", "u")
+    return re.sub(r"[\s.-]", "", re.sub(r"\bwo\b", "o", text)).replace("ou", "o").replace("oo", "o").replace("uu", "u")
 
 
 def _names(value: Any) -> tuple[str, ...]:
@@ -514,7 +520,7 @@ def _target(target: Metadata, evidence: Metadata) -> _Target:
         year=year,
         named_season=max(named) if named else season,
         part=max(parts) if parts else None,
-        count=_integer(catalog.get("episodes")),
+        count=_integer(target.get("episodes") if target.get("episodes") is not None else catalog.get("episodes")),
         neighbor_years=frozenset(value for entry in related if (value := _metadata_year(entry)) is not None),
         canonical_episodes=tuple(
             (_canonical(title), tuple(re.findall(r"\d+", title)))
@@ -678,7 +684,7 @@ def _parse(text: str, target: _Target) -> _Parsed:
     if anchor:
         alias: str
         tail: str
-        alias, tail = _match(remainder, target.titles)
+        alias, tail = _match(remainder, (*target.titles, *target.broad))
         remainder = tail if alias else remainder
     yearless: str
     valid: bool
@@ -1158,15 +1164,50 @@ def _structural_decision(parsed: _Parsed, target: _Target, candidate: Metadata, 
         if conflict:
             return IdentityAssessment(IdentityVerdict.INSUFFICIENT, conflict)
     if parsed.anchor:
-        return _decision(parsed, target)
+        return _anchored_decision(parsed, target, release, selected)
     identity_contexts: list[str] = directories if multiple[release] else contexts
     inherited: _Parsed | None = _inherited_identity(parsed, identity_contexts, target)
+    scoped: bool = multiple[release] or any(_names_target(text, target) for text in contexts)
+    if (
+        inherited is None
+        and parsed.episode_title
+        and scoped
+        and _decision(parsed, target).verdict is IdentityVerdict.MATCH
+    ):
+        return IdentityAssessment(
+            IdentityVerdict.MATCH, "Titleless file names the target episode number and catalog episode title."
+        )
     if inherited is None:
         return IdentityAssessment(
             IdentityVerdict.INSUFFICIENT,
             "Titleless file lacks an unambiguous nearest work directory or single-work release.",
         )
     return _decision(inherited, target)
+
+
+def _names_target(text: str, target: _Target) -> bool:
+    words: list[str] = _normalize(text).split()
+    titles: tuple[str, ...] = (*target.titles, *target.broad)
+    return any(_match(" ".join(words[start:]), titles)[0] for start in range(len(words)))
+
+
+def _anchored_decision(parsed: _Parsed, target: _Target, release: str, selected: str) -> IdentityAssessment:
+    decided: IdentityAssessment = _decision(parsed, target)
+    absolute: bool = (
+        decided.reason == "A franchise alias does not identify this installment."
+        and parsed.mode == "plain"
+        and parsed.season is None
+        and target.kind == "TV"
+        and target.local is not None
+        and target.absolute not in (None, target.local)
+        and parsed.number == target.absolute
+        and release not in ("", selected)
+    )
+    if absolute and _release_assessment(target, release).verdict is IdentityVerdict.MATCH:
+        return IdentityAssessment(
+            IdentityVerdict.MATCH, "Franchise alias carries the target absolute number of a matching release."
+        )
+    return decided
 
 
 def _selected_work_conflict(files: list[str], directories: list[str], target: _Target) -> str:
@@ -1389,12 +1430,16 @@ def classify_release_name(target: Metadata, name: str) -> IdentityAssessment:
         return IdentityAssessment(IdentityVerdict.INSUFFICIENT, "No selected file.")
     if not _valid_evidence(target, {}):
         return IdentityAssessment(IdentityVerdict.INSUFFICIENT, "Malformed target or archived identity metadata.")
+    return _release_assessment(_target(target, {}), name)
+
+
+def _release_assessment(identity: _Target, name: str) -> IdentityAssessment:
     stem: str
     dot: str
     extension: str
     stem, dot, extension = name.rpartition(".")
     text: str = stem if dot and extension.casefold() in VIDEO_EXTENSIONS else name
-    return _assess(_target(target, {}), {"release": name, "filename": name}, "", text)
+    return _assess(identity, {"release": name, "filename": name}, "", text)
 
 
 def is_extra_path(path: str) -> bool:
@@ -1443,15 +1488,26 @@ def _classify(identity: _Target, candidate: Metadata) -> IdentityAssessment:
     return _assess(identity, candidate, path, selected.rpartition(".")[0])
 
 
+def _special_number(stem: str, parsed: _Parsed, target: _Target) -> bool:
+    if target.kind != "TV" or not parsed.anchor or parsed.number is None:
+        return False
+    if parsed.mode == "mapped" and parsed.season == 0 and target.season not in (None, 0):
+        return True
+    return re.search(rf"(?<![\d.])0*{parsed.number}\.5(?!\d)", stem) is not None
+
+
 def _assess(identity: _Target, candidate: Metadata, path: str, stem: str) -> IdentityAssessment:  # noqa: PLR0911
     if PLEX_SUFFIX.search(stem):
         return IdentityAssessment(IdentityVerdict.MISMATCH, "Selected filename has an explicit Plex extra suffix.")
     stem = _prepare(stem)
     parsed: _Parsed = _absolute_echo(stem, _parse(stem, identity), identity)
-    if EXTRAS.search(_without_episode_title(parsed.remainder, identity)[0]):
+    rest: str = _without_episode_title(parsed.remainder, identity)[0]
+    if EXTRAS.search(rest) or PREVIEW.search(rest):
         return IdentityAssessment(
             IdentityVerdict.MISMATCH, "Selected residual explicitly identifies non-episode material."
         )
+    if _special_number(stem, parsed, identity):
+        return IdentityAssessment(IdentityVerdict.MISMATCH, "Selected name numbers a special instead of a TV episode.")
     bracket: re.Match[str] | None = FIRST_BRACKET.match(stem)
     if not parsed.anchor and bracket and _strip_group(stem) != stem:
         inherited: _Parsed | None = _inherited_identity(parsed, [bracket.group(1)], identity)
