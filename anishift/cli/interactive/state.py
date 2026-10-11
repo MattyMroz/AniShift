@@ -672,13 +672,13 @@ class StateController:
         with self._lock:
             return (self._shown_tab(), self._viewport(), self._history_open, self._retry is not None, self._help)
 
-    def place(self, index: int) -> None:
-        """Focus the clicked text field and put its cursor before a clicked character."""
+    def place(self, index: int, anchor: int | None = None) -> None:
+        """Focus the clicked text field and put its cursor before a clicked character, selecting from ``anchor``."""
         with self._lock:
             if self._tab == _Tab.ANIME and self._anime is not None:
-                self._anime.place(index)
+                self._anime.place(index, anchor)
             elif self._history_input is not None:
-                self._history_input.place(index)
+                self._history_input.place(index, anchor)
         self._invalidate()
 
     def select(self, index: int) -> bool:

@@ -820,11 +820,11 @@ class ManualController:
         with self._lock:
             return self._screen is _Screen.INPUT and self._input.handle("interrupt")
 
-    def place(self, index: int) -> None:
-        """Put the text cursor of the external-source path before a clicked character."""
+    def place(self, index: int, anchor: int | None = None) -> None:
+        """Put the text cursor of the external-source path before a clicked character, selecting from ``anchor``."""
         with self._lock:
             if self._screen is _Screen.INPUT:
-                self._input.place(index)
+                self._input.place(index, anchor)
 
     def select(self, index: int) -> bool:
         """Move the cursor to a clicked list row without choosing it and report whether it stands there."""

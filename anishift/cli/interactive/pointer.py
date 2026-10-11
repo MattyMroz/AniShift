@@ -129,11 +129,12 @@ class ClickKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Click:
-    """Carry one pointer request with the list row, tab, breadcrumb level, text-field offset or key it names."""
+    """Carry one pointer request with the row, tab, breadcrumb level, field offset (and drag anchor) or key it names."""
 
     kind: ClickKind = ClickKind.NONE
     value: int = 0
     key: str = ""
+    anchor: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,7 +190,7 @@ class PointerGesture:
         if gesture.back:
             return Click(ClickKind.BACK)
         if gesture.click is None:
-            return Click()
+            return _field_drag(frame, gesture.selection)
         target: Click = click_at(frame, gesture.click)
         now: float = self._clock()
         previous: tuple[int, float] | None = self._last
@@ -241,8 +242,9 @@ class FrameSelection:
         if gesture is None:
             return Click()
         self.notice = ""
-        self._selection = gesture.selection
-        return self._gesture.resolve(self._frame, gesture)
+        click: Click = self._gesture.resolve(self._frame, gesture)
+        self._selection = None if click.anchor is not None else gesture.selection
+        return click
 
     def copy(self, key: str) -> bool:
         """Copy the selection for a copy key; any key hides the hover and any other key drops the selection."""
@@ -418,6 +420,16 @@ def _span_at(line: Text, offset: int) -> tuple[Span, Click] | None:
         if click.kind is ClickKind.FIELD and (field is None or span.end <= offset):
             field = (span, click)
     return field
+
+
+def _field_drag(frame: Text, selection: tuple[TextPoint, TextPoint] | None) -> Click:
+    if selection is None or selection[0].row != selection[1].row:
+        return Click()
+    start: Click = click_at(frame, selection[0])
+    end: Click = click_at(frame, selection[1])
+    if start.kind is not ClickKind.FIELD or end.kind is not ClickKind.FIELD:
+        return Click()
+    return Click(ClickKind.FIELD, end.value, anchor=start.value)
 
 
 def _key_name(label: str) -> str | None:

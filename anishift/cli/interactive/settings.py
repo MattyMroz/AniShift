@@ -575,11 +575,11 @@ class SettingsController:
         self._follow_cursor = False
         self._offset = min(max(self._offset + direction * _WHEEL_ROWS, 0), max(length - 1, 0))
 
-    def place(self, index: int) -> None:
-        """Put the text cursor of the open editor before a clicked character."""
+    def place(self, index: int, anchor: int | None = None) -> None:
+        """Put the text cursor of the open editor before a clicked character, selecting from ``anchor``."""
         self._discard_armed = False
         if self._editor is not None and not self._busy:
-            self._editor.input.place(index)
+            self._editor.input.place(index, anchor)
 
     def select(self, index: int) -> bool:
         """Point at a clicked row without choosing it, saving a pending edit, and report whether it stands there."""

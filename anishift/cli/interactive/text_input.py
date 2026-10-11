@@ -146,9 +146,11 @@ class TextInput:
         mark_target(result, 0, len(result), Click(ClickKind.FIELD, hidden))
         return result
 
-    def place(self, index: int) -> None:
-        """Put the text cursor before character ``index``, clamped to the value, and drop any selection."""
-        self._buffer.selection_state = None
+    def place(self, index: int, anchor: int | None = None) -> None:
+        """Put the cursor before character ``index``, selecting from ``anchor`` if given, else dropping a selection."""
+        self._buffer.selection_state = (
+            None if anchor is None or anchor == index else SelectionState(min(max(anchor, 0), len(self.text)))
+        )
         self._buffer.cursor_position = min(max(index, 0), len(self.text))
         self.pristine = False
 

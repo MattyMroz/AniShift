@@ -1174,6 +1174,32 @@ def test_a_click_on_the_status_o_hint_in_anime_toggles_the_automation_even_besid
     assert len(probe.work) == 1
 
 
+def test_a_drag_over_the_search_text_selects_it_in_the_field_so_backspace_clears_it(
+    build: Callable[[str], _Probe],
+) -> None:
+    probe: _Probe = build("query")
+    for key in ("text:slime", "escape"):
+        probe.panel.handle_key(key)
+    frame: Text = probe.panel.render(80, 24)
+    lines: list[str] = frame.plain.split("\n")
+    row: int = next(index for index, line in enumerate(lines) if "> slime" in line)
+    start: int = lines[row].index("slime")
+    click: Click | None = None
+    for kind, column in (
+        (MouseEventType.MOUSE_DOWN, start),
+        (MouseEventType.MOUSE_MOVE, start + 4),
+        (MouseEventType.MOUSE_UP, start + 5),
+    ):
+        click = probe.panel.mouse(MouseEvent(Point(column, row), kind, MouseButton.LEFT, frozenset()))
+
+    assert click == Click(ClickKind.FIELD, 5, anchor=0)
+    assert probe.anime._view.selection is None
+    probe.panel.place(click.value, click.anchor)
+    probe.panel.handle_key("backspace")
+
+    assert probe.anime._query == ""
+
+
 def test_a_deletion_notice_offers_its_undo_as_a_click_and_keeps_its_title_plain() -> None:
     notice: Text = mark_keys(Text("Usunięto W toku · Ctrl+Z cofnij"), only=ACTION_NOTICES)
 

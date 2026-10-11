@@ -810,15 +810,15 @@ class AnimeController:
             self._notice = self._view.notice
             return click
 
-    def place(self, index: int) -> None:
-        """Focus the shown search or range field and put its cursor before a clicked character."""
+    def place(self, index: int, anchor: int | None = None) -> None:
+        """Focus the shown search or range field and put its cursor before a clicked character, selecting a drag."""
         with self._lock:
             editor: TextInput | None = self._range_input
             if editor is None and self._screen is _Screen.QUERY:
                 editor = self._query_input
             if editor is None:
                 return
-            editor.place(index)
+            editor.place(index, anchor)
             self._input_focused = True
 
     def covers(self, row: int) -> bool:

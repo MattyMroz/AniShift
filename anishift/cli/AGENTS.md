@@ -385,7 +385,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   członów (`breadcrumb()`, `AnimeViewState.crumbs`); klik w człon `n` naciska Esc, dopóki okruszek pokazuje ten człon
   i głębsze (najwyżej `_CRUMB_ESCAPES`). Prawy przycisk (tylko `MOUSE_DOWN`) to Esc, także w polu. Klik w dowolne
   miejsce linii pola tekstowego (też `> ` i puste pole) daje mu fokus i stawia kursor (`TextInput.place`), za końcem
-  tekstu — na końcu, przed nim — na początku. Klik w `[ ]`/`[x]` (`_Canvas.box` tagi `ClickKind.TOGGLE`) ustawia kursor
+  tekstu — na końcu, przed nim — na początku. Przeciągnięcie zaczęte i skończone w jednym polu (`pointer._field_drag`)
+  zaznacza tekst w tym polu (`Click.anchor` → `TextInput.place(index, anchor)`), nie w ramce, więc Backspace/Delete
+  usuwają zaznaczenie, a pisanie je zastępuje (zgłoszenie właściciela 2026-10-11). Klik w `[ ]`/`[x]` (`_Canvas.box` tagi `ClickKind.TOGGLE`) ustawia kursor
   i naciska Space; przy otwartym polu zakresu Z to zwykły klik w wiersz. Enter i podwójny klik na odcinku bez gotowego
   pliku otwierają wydania jak `I`. Hover (`FrameSelection.hover`, `light_targets`): białe i szare litery celu pod
   myszą dostają `HOVER_STYLE`, inne kolory, kursor pola (`reverse`) i wiersz z `❯` zostają; wiersz świeci tylko nad

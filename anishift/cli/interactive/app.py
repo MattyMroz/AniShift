@@ -392,24 +392,24 @@ class _InteractiveApplication:
         elif click.kind is ClickKind.BACK:
             self._handle_key("escape")
         elif click.kind is ClickKind.FIELD:
-            self._place_cursor(click.value)
+            self._place_cursor(click.value, click.anchor)
         elif click.kind is ClickKind.TOGGLE and self._select_row(click.value):
             self._handle_key("space")
         elif click.kind is ClickKind.KEY:
             self._handle_key(click.key)
 
-    def _place_cursor(self, index: int) -> None:
-        """Focus the clicked text field of the current view and put its cursor before a clicked character."""
+    def _place_cursor(self, index: int, anchor: int | None = None) -> None:
+        """Focus the clicked text field and put its cursor before a clicked character, selecting a dragged span."""
         with self._lock:
             mode: _ViewMode = self._mode
             settings: SettingsController | None = self._settings
             manual: ManualController | None = self._manual
         if mode is _ViewMode.SETTINGS and settings is not None:
-            settings.place(index)
+            settings.place(index, anchor)
         elif mode is _ViewMode.MANUAL and manual is not None:
-            manual.place(index)
+            manual.place(index, anchor)
         elif mode is _ViewMode.STATE and self._state is not None:
-            self._state.place(index)
+            self._state.place(index, anchor)
 
     def _point_at(self, click: Click) -> None:
         """Point at a clicked row or run Enter on the cursor for a double click; a row without a cursor forgets it."""
