@@ -33,7 +33,7 @@ from anishift.application.products import main_product
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, WorkspacePlace
 from anishift.paths import READY_DIRECTORY
 from anishift.services.torrents.names import (
-    base_title,
+    before_season,
     episode_range,
     parse_release_name,
     season_hint,
@@ -77,6 +77,9 @@ LABEL_CACHE_SIZE: Final[int] = 4096
 """Bound the labels kept for Library names read again on every panel frame."""
 SERIES_PART: Final[re.Pattern[str]] = re.compile(r"(?i)\s+(?:part|cour)\s*\d+$")
 """Find the trailing part or cour number of a catalogue title, which numbers a broadcast block, not a series."""
+
+SERIES_YEAR: Final[re.Pattern[str]] = re.compile(r"\s*\((?:19|20)\d{2}\)")
+"""Find a parenthesised year of a catalogue title, which tells remakes apart, not seasons."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,8 +132,8 @@ def library_label(name: str) -> LibraryLabel:
 
 
 def series_title(title: str) -> str:
-    """Return a catalogue title without its season, part, year or subtitle, shared by every season of a series."""
-    base: str = SERIES_PART.sub("", base_title(title))
+    """Return a catalogue title without its season, what follows it, its part or its year, shared by every season."""
+    base: str = SERIES_PART.sub("", SERIES_YEAR.sub("", before_season(title))).removesuffix(" -").removesuffix(" :")
     return base or " ".join(title.split())
 
 

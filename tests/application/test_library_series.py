@@ -142,7 +142,7 @@ def test_name_series_reads_an_unsubscribed_download_from_catalogue_titles_once_t
     assert untitled_series(state, {}) == frozenset({178789})
     assert untitled_series(state, titles) == frozenset()
     assert set(_named(state).values()) == {(None, None, None)}
-    assert set(_named(state, titles).values()) == {("Mushoku Tensei", 3, 14)}
+    assert set(_named(state, titles).values()) == {("Mushoku Tensei: Jobless Reincarnation", 3, 14)}
 
 
 @pytest.mark.unit
@@ -211,9 +211,13 @@ def test_name_series_leaves_a_set_added_by_hand_to_its_file_name() -> None:
         ("Hunter x Hunter (2011)", "Hunter x Hunter"),
         ("Ao no Hako 2nd Season", "Ao no Hako"),
         ("Overgeared", "Overgeared"),
+        ("Nia Liston: The Merciless Maiden", "Nia Liston: The Merciless Maiden"),
+        ("Mushoku Tensei: Jobless Reincarnation Season 2", "Mushoku Tensei: Jobless Reincarnation"),
+        ("Re:ZERO -Starting Life in Another World- Season 3", "Re:ZERO -Starting Life in Another World-"),
+        ("Futari Solo Camp - Season 2", "Futari Solo Camp"),
     ],
 )
-def test_series_title_drops_season_part_year_and_subtitle(title: str, series: str) -> None:
+def test_series_title_keeps_the_subtitle_and_drops_the_season_part_and_year(title: str, series: str) -> None:
     assert series_title(title) == series
 
 

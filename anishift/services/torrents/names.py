@@ -9,7 +9,15 @@ from typing import Final
 from anishift.application.release_quality import DUBBED_RE
 from anishift.services.torrents.types import ReleaseName
 
-__all__ = ["base_title", "episode_range", "parse_release_name", "season_hint", "strip_season", "title_forms"]
+__all__ = [
+    "base_title",
+    "before_season",
+    "episode_range",
+    "parse_release_name",
+    "season_hint",
+    "strip_season",
+    "title_forms",
+]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -160,6 +168,12 @@ def strip_season(series: str) -> str:
     if marker is None:
         return " ".join(series.split())
     return " ".join(f"{series[: marker.start()]} {series[marker.end() :]}".split())
+
+
+def before_season(series: str) -> str:
+    """Return the part of *series* before its only season marker, or all of it, with spaces collapsed."""
+    marker: re.Match[str] | None = _season_marker(series)
+    return " ".join((series if marker is None else series[: marker.start()]).split())
 
 
 def base_title(text: str) -> str:
