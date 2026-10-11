@@ -244,7 +244,7 @@ def test_an_overflowing_table_fills_every_row_between_the_tabs_and_the_keys(
     assert len(data) == library._page == len(lines) - header - 4
     assert keys == len(lines) - 2
     assert len(lines) == rows - 1
-    assert lines[-1].strip() == "Automat: bezczynny"
+    assert lines[-1].strip() == "Automat: bezczynny · O wyłącz"
     assert "przenoszenie" not in "\n".join(lines)
 
 
@@ -261,7 +261,7 @@ def test_a_table_that_fits_stays_centered_between_the_tabs_and_the_keys(library:
     assert [line for line in lines[header + 1 : header + 6] if "Show" in line] == lines[header + 1 : header + 6]
     assert min(above, below) > 2
     assert abs(above - below) <= 2
-    assert lines[-1].strip() == "Automat: bezczynny"
+    assert lines[-1].strip() == "Automat: bezczynny · O wyłącz"
 
 
 @pytest.mark.unit

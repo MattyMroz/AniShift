@@ -862,7 +862,7 @@ def test_the_status_row_ranks_a_monitoring_problem_over_the_shadow_mode_whatever
 
     labels: int = next(index for index, line in enumerate(lines) if line.strip().startswith("Tytuł"))
     assert lines[labels - 1].strip() == warning
-    assert ("Automat wstrzymany" in lines[-1]) is not auto_enabled
+    assert ("Automat wstrzymany · O włącz" in lines[-1]) is not auto_enabled
     assert "subskrypcje czekają" not in "\n".join(lines)
 
 

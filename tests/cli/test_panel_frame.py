@@ -28,21 +28,27 @@ _POINTER: Final[str] = "\N{HEAVY RIGHT-POINTING ANGLE QUOTATION MARK ORNAMENT}"
 _COUNTS: Final[Mapping[str, int]] = {"downloading": 1, "processing": 2, "waiting": 3}
 
 _STATES: Final[tuple[tuple[Mapping[str, object], str], ...]] = (
-    ({"auto_enabled": True, "material_counts": _COUNTS}, "Automat: praca · pobiera 1 · przetwarza 2 · czeka 3"),
-    ({"auto_enabled": True, "material_counts": {"downloading": 0, "processing": 2}}, "Automat: praca · przetwarza 2"),
-    ({"auto_enabled": True, "material_counts": {}}, "Automat: bezczynny"),
+    (
+        {"auto_enabled": True, "material_counts": _COUNTS},
+        "Automat: praca · pobiera 1 · przetwarza 2 · czeka 3 · O wyłącz",
+    ),
+    (
+        {"auto_enabled": True, "material_counts": {"downloading": 0, "processing": 2}},
+        "Automat: praca · przetwarza 2 · O wyłącz",
+    ),
+    ({"auto_enabled": True, "material_counts": {}}, "Automat: bezczynny · O wyłącz"),
     (
         {"auto_enabled": True, "material_counts": {"downloading": 0, "processing": 0, "waiting": 0}},
-        "Automat: bezczynny",
+        "Automat: bezczynny · O wyłącz",
     ),
-    ({"auto_enabled": False, "material_counts": _COUNTS}, "Automat wstrzymany"),
+    ({"auto_enabled": False, "material_counts": _COUNTS}, "Automat wstrzymany · O włącz"),
     (
         {"auto_enabled": False, "pausing": True, "material_counts": _COUNTS},
-        "Automat: zatrzymywanie · pobiera 1 · przetwarza 2 · czeka 3",
+        "Automat: zatrzymywanie · pobiera 1 · przetwarza 2 · czeka 3 · O włącz",
     ),
     (
         {"auto_enabled": False, "pause_incomplete": True, "material_counts": {"waiting": 3}},
-        "Automat: pauza niepełna · czeka 3",
+        "Automat: pauza niepełna · czeka 3 · O włącz",
     ),
 )
 
@@ -122,7 +128,7 @@ def _status(probe: _Probe, columns: int, rows: int) -> str:
 
 @pytest.mark.parametrize(
     ("columns", "status"),
-    [(49, "Automat: praca · pobiera 1 · przetwarza 2"), (40, "Automat: praca · pobiera 1")],
+    [(49, "Automat: praca · pobiera 1 · O wyłącz"), (40, "Automat: praca · O wyłącz")],
 )
 def test_a_narrow_status_drops_counts_from_the_end(build: Callable[[str], _Probe], columns: int, status: str) -> None:
     assert _lines(_counted(build("processing_download")), columns, 24)[-1].strip() == status
@@ -134,7 +140,7 @@ def test_processing_status_counts_owner_materials_instead_of_its_rows(build: Cal
     lines: list[str] = _lines(probe, 80, 24)
 
     assert len(probe.panel._processing_rows()) == 1
-    assert lines[-1].strip() == "Automat: praca · pobiera 5 · czeka 2"
+    assert lines[-1].strip() == "Automat: praca · pobiera 5 · czeka 2 · O wyłącz"
 
 
 @pytest.mark.parametrize("name", ["query", "episodes", "subscriptions"])
@@ -151,7 +157,7 @@ def test_a_terminal_too_narrow_for_the_table_keeps_the_status_on_the_last_line(
     probe: _Probe = _counted(build(name))
 
     assert "Powiększ terminal do 50 x 12" in "\n".join(_lines(probe, 40, 24))
-    assert _status(probe, 40, 24) == "Automat: praca · pobiera 1"
+    assert _status(probe, 40, 24) == "Automat: praca · O wyłącz"
 
 
 def test_the_history_help_keeps_the_history_breadcrumb(build: Callable[[str], _Probe]) -> None:
@@ -172,7 +178,7 @@ def test_processing_and_library_draw_their_list_and_status_at_40_by_12(
 
     assert any(row in line for line in lines)
     assert "Powiększ" not in "\n".join(lines)
-    assert lines[-1].strip() == "Automat: praca · pobiera 1"
+    assert lines[-1].strip() == "Automat: praca · O wyłącz"
 
 
 _ANIME_SCREENS: Final[list[tuple[str, tuple[str, ...], str]]] = [
@@ -211,7 +217,7 @@ def test_anime_shows_the_status_from_13_rows(
     lines: list[str] = _lines(probe, 50, 13)
 
     assert shown in "\n".join(lines)
-    assert lines[-1].strip() == "Automat: praca · pobiera 1 · przetwarza 2"
+    assert lines[-1].strip() == "Automat: praca · pobiera 1 · O wyłącz"
 
 
 @pytest.mark.parametrize("columns", [50, 80])
@@ -219,7 +225,7 @@ def test_subscriptions_keep_the_status_at_12_rows(build: Callable[[str], _Probe]
     lines: list[str] = _lines(_counted(build("subscriptions")), columns, 12)
 
     assert any("Alpha" in line for line in lines)
-    assert lines[-1].strip().startswith("Automat: praca · pobiera 1 · przetwarza 2")
+    assert lines[-1].strip().startswith("Automat: praca · pobiera 1")
 
 
 @pytest.mark.parametrize("name", sorted(_FIXTURES))
@@ -243,7 +249,7 @@ def test_a_tiny_library_frame_with_a_notice_and_a_relocation_problem_fills_the_t
     lines: list[str] = _lines(probe, 40, 8)
 
     assert len(lines) == 7
-    assert lines[-1].strip() == "Automat: bezczynny"
+    assert lines[-1].strip() == "Automat: bezczynny · O wyłącz"
 
 
 @pytest.mark.parametrize("rows", range(12, 31))
@@ -340,7 +346,7 @@ def test_the_subscription_list_says_connecting_until_the_owner_lists_it(build: C
     assert "Brak subskrypcji" in "\n".join(after)
     assert "Łączenie" not in "\n".join(after)
     assert after[-2].strip() == "D lub / dodaj pierwszą · ? więcej · Esc wróć"
-    assert after[-1].strip() == "Automat: bezczynny"
+    assert after[-1].strip() == "Automat: bezczynny · O wyłącz"
 
 
 @pytest.mark.parametrize("tab", [_Tab.SUBSCRIPTIONS, _Tab.PROGRESS, _Tab.FILES])
@@ -499,7 +505,7 @@ def test_an_overflowing_anime_list_fills_every_row_between_the_tabs_and_the_keys
     assert not any(_MARKS[kind] in line for line in lines[keys - _BELOW[kind] : keys])
     assert len(data) == probe.anime._visible_count == rows - 7 - len(_ABOVE[kind]) - _BELOW[kind]
     assert keys == len(lines) - 2 == rows - 3
-    assert lines[-1].strip() == "Automat: bezczynny"
+    assert lines[-1].strip() == "Automat: bezczynny · O wyłącz"
 
 
 @pytest.mark.parametrize(("kind", "count"), [("episodes", 5), ("episodes", 13), ("releases", 5), ("titles", 5)])
@@ -587,7 +593,7 @@ def test_one_blank_line_stands_under_the_tabs_and_the_keys_stay_at_the_bottom(
     if count == 40:
         assert content == tabs + 2
     assert "Esc wróć" in lines[-2]
-    assert lines[-1].strip() == "Automat: bezczynny"
+    assert lines[-1].strip() == "Automat: bezczynny · O wyłącz"
     assert len(lines) == rows - 1
 
 
@@ -602,8 +608,8 @@ def test_the_pause_shows_only_in_the_status_line_and_never_shifts_the_subscripti
     paused: list[str] = _lines(probe, columns, rows)
 
     assert _index(paused, "Tytuł") == _index(running, "Tytuł")
-    assert sum("Automat wstrzymany" in line for line in paused) == 1
-    assert paused[-1].strip() == "Automat wstrzymany"
+    assert sum("Automat wstrzymany · O włącz" in line for line in paused) == 1
+    assert paused[-1].strip() == "Automat wstrzymany · O włącz"
 
 
 @pytest.mark.parametrize(("columns", "rows"), _LOW_SIZES)
@@ -616,7 +622,7 @@ def test_a_low_table_keeps_its_header_and_at_least_one_row(
     header: int = _index(lines, _HEADERS[name])
     assert _POINTER in lines[header + 1]
     assert "Powiększ" not in "\n".join(lines)
-    assert lines[-1].strip() == "Automat: bezczynny"
+    assert lines[-1].strip() == "Automat: bezczynny · O wyłącz"
 
 
 @pytest.mark.parametrize(("name", "shown"), [("subscriptions", "Powiększ terminal do 50 x 12"), ("library", "S02E01")])

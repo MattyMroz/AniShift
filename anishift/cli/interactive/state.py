@@ -114,6 +114,12 @@ _RECONNECT_S: Final[float] = 2.0
 _PAUSED: Final[str] = "Automat wstrzymany"
 """Status line of paused automation, which alone drops the material counters."""
 
+_ENABLE_HINT: Final[str] = "O włącz"
+"""Key the status line names beside a paused automation."""
+
+_DISABLE_HINT: Final[str] = "O wyłącz"
+"""Key the status line names beside a working or idle automation."""
+
 _LOADING: Final[str] = "Wczytuję…"
 """Only line of a connected list whose rows the owner has not produced yet."""
 
@@ -1474,10 +1480,11 @@ class StateController:
         counts: object = self._snapshot.get("material_counts", {})
         values: Mapping[str, object] = counts if isinstance(counts, Mapping) else {}
         counted: tuple[str, ...] = tuple(f"{label} {values[key]}" for key, label in _STATUS_COUNTS if values.get(key))
-        state: str = self._pause_state() or ("Automat: praca" if counted else "Automat: bezczynny")
-        if state == _PAUSED:
-            return fit(state, width)
-        return pack_keys((state, *counted), width, optional=tuple(reversed(counted)), limit=1)[0]
+        paused: str = self._pause_state()
+        state: str = paused or ("Automat: praca" if counted else "Automat: bezczynny")
+        hint: str = _ENABLE_HINT if paused else _DISABLE_HINT
+        shown: tuple[str, ...] = () if state == _PAUSED else counted
+        return pack_keys((state, *shown, hint), width, optional=(*reversed(shown), hint), limit=1)[0]
 
     def _entries(self, columns: int) -> Sequence[str | Text]:
         if self._retry is not None:

@@ -761,7 +761,7 @@ def test_processing_hides_uncertain_downloads_and_handoffs_without_changing_live
         assert "Download.mkv" in frame
         assert "Local.mkv" in frame
         assert "37%" in frame
-        assert "Automat: praca · pobiera 20 · przetwarza 1" in frame
+        assert "Automat: praca · pobiera 20 · przetwarza 1 · O wyłącz" in frame
         assert not any(text in frame for text in ("Ghost", "Materiał", "Niepewne", "99%"))
         assert controller._processing_row_ids() == ["download", "local"]
         assert "X anuluj" not in frame
@@ -786,10 +786,10 @@ def test_processing_hides_uncertain_downloads_and_handoffs_without_changing_live
 @pytest.mark.parametrize(
     ("snapshot", "action", "status"),
     [
-        ({"auto_enabled": True}, "O automat", "Automat: bezczynny"),
-        ({"auto_enabled": False}, "O automat", "Automat wstrzymany"),
-        ({"auto_enabled": False, "pausing": True}, "O automat", "Automat: zatrzymywanie"),
-        ({"auto_enabled": False, "pause_incomplete": True}, "O automat", "Automat: pauza niepełna"),
+        ({"auto_enabled": True}, "O automat", "Automat: bezczynny · O wyłącz"),
+        ({"auto_enabled": False}, "O automat", "Automat wstrzymany · O włącz"),
+        ({"auto_enabled": False, "pausing": True}, "O automat", "Automat: zatrzymywanie · O włącz"),
+        ({"auto_enabled": False, "pause_incomplete": True}, "O automat", "Automat: pauza niepełna · O włącz"),
     ],
 )
 def test_processing_footer_names_the_explicit_owner_action_and_current_pause_state(
@@ -869,7 +869,7 @@ def test_processing_only_shows_live_material_bars_from_a_mixed_legacy_snapshot( 
         assert "--" not in frame
         assert "0%" in frame
         assert len(controller._processing_rows()) == 3
-        assert frame.splitlines()[-1].strip() == "Automat: praca · pobiera 8 · przetwarza 9 · czeka 7"
+        assert frame.splitlines()[-1].strip() == "Automat: praca · pobiera 8 · przetwarza 9 · czeka 7 · O wyłącz"
         assert "Queued.mkv" in frame
         assert "Przygotowanie" in frame
         assert not any(text in frame for text in ("a" * 40, "Missing", "Relocation", "Kosz", "Czeka", "↓ 8"))
@@ -2067,7 +2067,7 @@ def test_each_panel_tab_retains_contextual_actions_and_owner_counts_at_feasible_
         frame: str = interactive_app._fit_frame(
             controller.render(columns, rows), "test", "workspace", columns, rows
         ).plain
-        assert "Automat: praca · pobiera 2 · przetwarza 3 · czeka 4" in frame
+        assert "Automat: praca · pobiera 2 · przetwarza 3 · czeka 4 · O wyłącz" in frame
         assert "? więcej · Esc wróć" in frame
         assert ("/ dodaj", "H historia", "? więcej")[tab - 1] in frame
         assert len(frame.splitlines()) <= rows
@@ -2374,7 +2374,7 @@ def test_every_list_tab_pins_heading_and_keys_and_centers_its_content(
         right: int = columns - max(len(lines[index].rstrip()) for index in content)
         assert len(lines) == rows - 1
         assert occupied[-1] == len(lines) - 1
-        assert lines[-1].strip() == "Automat: bezczynny"
+        assert lines[-1].strip() == "Automat: bezczynny · O wyłącz"
         assert lines[0].strip() == "PANEL"
         assert "Subskrypcje" in lines[2]
         assert not lines[crumb].strip()

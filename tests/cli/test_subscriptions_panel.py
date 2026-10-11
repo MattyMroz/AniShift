@@ -342,9 +342,9 @@ def test_the_status_row_names_why_monitoring_does_not_progress(
 @pytest.mark.parametrize(
     ("snapshot", "status"),
     [
-        ({"auto_enabled": False, "pausing": True}, "Automat: zatrzymywanie"),
-        ({"auto_enabled": False, "pause_incomplete": True}, "Automat: pauza niepełna"),
-        ({"auto_enabled": False}, "Automat wstrzymany"),
+        ({"auto_enabled": False, "pausing": True}, "Automat: zatrzymywanie · O włącz"),
+        ({"auto_enabled": False, "pause_incomplete": True}, "Automat: pauza niepełna · O włącz"),
+        ({"auto_enabled": False}, "Automat wstrzymany · O włącz"),
     ],
 )
 def test_the_pause_state_shows_only_in_the_status_line(
@@ -365,8 +365,8 @@ def test_the_global_pause_changes_only_the_status_line(panel: StateController, c
     paused: list[str] = _frame(panel, columns, rows).splitlines()
 
     assert paused[:-1] == running[:-1]
-    assert paused[-1].strip() == "Automat wstrzymany"
-    assert running[-1].strip() == "Automat: bezczynny"
+    assert paused[-1].strip() == "Automat wstrzymany · O włącz"
+    assert running[-1].strip() == "Automat: bezczynny · O wyłącz"
     assert "O wznów" not in "\n".join(running)
 
 
@@ -385,7 +385,7 @@ def test_a_check_result_leads_the_text_beneath_the_table_of_a_narrow_terminal(
     lines: list[str] = _frame(panel, 50, rows).splitlines()
 
     assert lines[_line(lines, "13 kandydatów")].strip().startswith("Sprawdzono E6: 13 kandydatów")
-    assert lines[-1].strip() == "Automat: bezczynny"
+    assert lines[-1].strip() == "Automat: bezczynny · O wyłącz"
 
 
 @pytest.mark.parametrize(("columns", "rows"), _SIZES)
