@@ -440,11 +440,11 @@ def test_the_list_fits_and_every_row_and_key_stays_reachable(panel: StateControl
         assert hint in frame
     panel.handle_key("text:?")
     pages: list[str] = []
-    for _ in range(12):
+    for _ in range(40):
         pages.append(" ".join(_frame(panel, columns, rows).split()))
         panel.handle_key("down")
     shown: str = " ".join(pages)
-    for hint in ("R sprawdź teraz", "X usuń", "Ctrl+Z cofnij"):
+    for hint in ("R sprawdź teraz", "Del usuń", "Ctrl+Z cofnij"):
         assert hint in shown
 
 

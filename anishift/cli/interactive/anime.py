@@ -1032,7 +1032,7 @@ class AnimeController:
         toggle: Action = ("W", "wznów" if row.get("paused") else "wstrzymaj")
         waiting: bool = self._waiting_number() is not None
         footer.append(("T", "pobierz teraz") if waiting else toggle)
-        subscription: tuple[Action, ...] = (*((toggle,) if waiting else ()), ("R", "sprawdź teraz"), ("X", "usuń"))
+        subscription: tuple[Action, ...] = (*((toggle,) if waiting else ()), ("R", "sprawdź teraz"), ("Del", "usuń"))
         return ScreenActions(tuple(footer), (*subscription, *more, ("S", "subskrybuj"), *_LISTED))
 
     def _on_episode(self) -> bool:

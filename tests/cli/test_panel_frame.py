@@ -253,14 +253,13 @@ def test_a_tiny_library_frame_with_a_notice_and_a_relocation_problem_fills_the_t
 
 
 @pytest.mark.parametrize("rows", range(12, 31))
-def test_library_details_help_shows_its_heading_only_with_a_hint_below(
+def test_library_details_list_only_the_set_files_without_a_help_block(
     build: Callable[[str], _Probe], rows: int
 ) -> None:
     lines: list[str] = [line.strip() for line in _lines(build("library_details"), 80, rows)]
 
-    heading: int | None = lines.index("Ten ekran") if "Ten ekran" in lines else None
-
-    assert heading is None or bool(lines[heading + 1])
+    assert "Ten ekran" not in lines
+    assert "Wszędzie" not in lines
 
 
 @pytest.mark.parametrize(("name", "columns", "rows"), _BREADCRUMB_CASES)

@@ -42,11 +42,13 @@ from anishift.application.control_views import (
     RunProgressSnapshot,
     encode_view,
 )
+from anishift.cli.interactive import actions as actions_module
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive import state as state_module
 from anishift.cli.interactive import state_processing as processing_module
 from anishift.cli.interactive.actions import (
     ACTION_NOTICES,
+    EVERYWHERE,
     Action,
     ScreenActions,
     footer_segments,
@@ -102,7 +104,7 @@ _U08: Final[tuple[Action, ...]] = (
     ("D", "pobierz"),
     ("W", "wstrzymaj"),
     ("R", "sprawdź teraz"),
-    ("X", "usuń"),
+    ("Del", "usuń"),
     *_EPISODE_MORE,
     ("S", "subskrybuj"),
     *_LISTED,
@@ -539,7 +541,7 @@ _ACTIONS: Final[dict[str, tuple[Action, ...]]] = {
         ("Enter", "otwórz"),
         ("W", "wstrzymaj"),
         ("R", "sprawdź teraz"),
-        ("X", "usuń"),
+        ("Del", "usuń"),
         ("Z", "zakres"),
         ("A", "wszystkie"),
         ("S", "subskrybuj"),
@@ -550,7 +552,7 @@ _ACTIONS: Final[dict[str, tuple[Action, ...]]] = {
         ("D", "dodaj"),
         ("W", "wstrzymaj"),
         ("R", "sprawdź teraz"),
-        ("X", "usuń"),
+        ("Del", "usuń"),
         ("Ctrl+Z", "cofnij"),
         *_PANEL,
     ),
@@ -572,11 +574,11 @@ _ALIASES: Final[dict[str, frozenset[str]]] = {
     "problem": frozenset({"enter"}),
     "episodes_file": frozenset({"text:i"}),
     "episodes": frozenset({"enter"}),
-    "u08": frozenset({"text:f", "delete", "enter"}),
-    "u08_waiting": frozenset({"text:f", "delete", "enter"}),
-    "u08_ready": frozenset({"text:f", "delete"}),
-    "u08_extra": frozenset({"text:f", "delete"}),
-    "subscriptions": frozenset({"text:f", "space", "delete", "text:/"}),
+    "u08": frozenset({"text:f", "text:x", "enter"}),
+    "u08_waiting": frozenset({"text:f", "text:x", "enter"}),
+    "u08_ready": frozenset({"text:f", "text:x"}),
+    "u08_extra": frozenset({"text:f", "text:x"}),
+    "subscriptions": frozenset({"text:f", "space", "text:x", "text:/"}),
     "subscriptions_empty": frozenset({"enter", "text:/"}),
     "processing_download": frozenset({"text:c", "delete"}),
     "processing_run": frozenset({"text:c", "delete"}),
@@ -798,7 +800,7 @@ def test_question_mark_opens_and_closes_the_help_block(build: Callable[[str], _P
     assert probe.panel._help
     frame: str = probe.panel.render(80, 24).plain
     assert "Ten ekran" in frame
-    assert "↑↓ wybierz ←→ Tab zakładki O automat Esc wróć" in " ".join(frame.split())
+    assert all(part in " ".join(frame.split()) for part in ("↑↓ wybierz", "←→ Tab zakładki", "O automat", "Esc wróć"))
     probe.panel.handle_key("text:?")
     assert not probe.panel._help
 
@@ -819,7 +821,7 @@ def test_anime_help_lists_only_this_screen_without_aliases(build: Callable[[str]
     probe: _Probe = build("candidates")
     probe.panel.handle_key("text:?")
     text: str = " ".join(item.title for item in probe.anime._view.items)
-    assert "Space zaznacz D pobierz / szukaj C kopiuj" in " ".join(text.split())
+    assert all(part in " ".join(text.split()) for part in ("Space zaznacz", "D pobierz", "/ szukaj", "C kopiuj"))
     assert "I " not in text.split("Ten ekran")[1]
     assert "Z zakres" not in text
 
@@ -887,7 +889,7 @@ def test_help_block_scrolls_closes_and_switches_tabs(build: Callable[[str], _Pro
     assert probe.panel._tab == _Tab.PROGRESS
 
 
-def test_library_question_mark_opens_details_whose_keys_reach_the_right_file(
+def test_library_d_opens_details_whose_keys_reach_the_right_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
@@ -900,10 +902,10 @@ def test_library_question_mark_opens_details_whose_keys_reach_the_right_file(
     panel._connected = True
     panel._snapshot = {"library": [{"set_id": "set", "name": "Slime"}]}
     try:
-        panel.handle_key("text:?")
+        panel.handle_key("text:d")
         assert panel._details is not None
         frame: str = panel.render(80, 24).plain
-        assert "Ten ekran" in frame
+        assert "Ten ekran" not in frame
         for _ in range(5):
             panel.handle_key("down")
             assert panel._selected < 4
@@ -923,12 +925,9 @@ def test_library_question_mark_opens_details_whose_keys_reach_the_right_file(
         panel._thread.join(5)
 
 
-def test_library_details_drop_their_help_before_any_file_row(build: Callable[[str], _Probe]) -> None:
+def test_library_details_keep_their_file_rows_on_a_low_terminal(build: Callable[[str], _Probe]) -> None:
     probe: _Probe = build("library_details")
-    tall: str = probe.panel.render(80, 24).plain
     low: str = probe.panel.render(80, 9).plain
-    assert "Wszędzie" in tall
-    assert "Wszędzie" not in low
     assert "ready/Slime.mkv" in low
 
 
@@ -943,11 +942,18 @@ def test_arriving_library_details_close_the_help_block(build: Callable[[str], _P
 
 
 @pytest.mark.parametrize("busy", [False, True])
-def test_library_question_mark_without_a_readable_row_opens_help(build: Callable[[str], _Probe], *, busy: bool) -> None:
+def test_library_d_without_a_readable_row_does_nothing(build: Callable[[str], _Probe], *, busy: bool) -> None:
     probe: _Probe = build("library")
     probe.panel._busy = busy
     probe.panel._connected = busy
     probe.panel.handle_key("text:d")
+    assert not probe.panel._help
+    assert probe.work == []
+
+
+def test_library_question_mark_on_a_set_opens_the_help_not_the_files(build: Callable[[str], _Probe]) -> None:
+    probe: _Probe = build("library")
+    probe.panel.handle_key("text:?")
     assert probe.panel._help
     assert probe.work == []
 
@@ -1325,18 +1331,27 @@ def test_only_files_to_check_leave_the_automation_idle_but_listed(build: Callabl
     assert "Brak napisów" in frame
 
 
+@pytest.mark.parametrize("name", sorted(_ACTIONS))
+def test_every_action_a_screen_lists_explains_itself_in_the_help(build: Callable[[str], _Probe], name: str) -> None:
+    missing: list[Action] = [
+        action for action in (*_listed(build(name)), *EVERYWHERE) if action not in actions_module._DESCRIPTIONS
+    ]
+
+    assert missing == []
+
+
 def test_the_help_is_a_table_of_keys_and_what_they_do() -> None:
     lines: tuple[str, ...] = help_lines((("Enter", "szczegóły"), ("Ctrl+Z", "cofnij")), 80)
 
     assert lines == (
         "Ten ekran",
-        "  Enter   szczegóły",
-        "  Ctrl+Z  cofnij",
+        "  Enter   szczegóły  Otwiera listę odcinków wybranej subskrypcji",
+        "  Ctrl+Z  cofnij     Przywraca ostatnio usuniętą pozycję",
         "Wszędzie",
-        "  ↑↓      wybierz",
-        "  ←→ Tab  zakładki",
-        "  O       automat",
-        "  Esc     wróć",
+        "  ↑↓      wybierz    Przesuwa kursor po liście",
+        "  ←→ Tab  zakładki   Przełącza zakładki panelu",
+        "  O       automat    Włącza albo wyłącza cały automat",
+        "  Esc     wróć       Wraca poziom wyżej",
     )
 
 
@@ -2131,7 +2146,7 @@ _INTERFACE: Final[tuple[str, ...]] = ("PANEL", *state_module._TABS, "Esc wróć"
         ("candidates", "[Group] Slime - 04", ("Wydanie", "Pewność", "*", "[ ]", _POINTER)),
         ("draft", "E3  Episode 3", ("[x]", "Już wyemitowane", "Dodaj subskrypcję", "Anuluj", _POINTER)),
         ("history", "2026-10-09 20:15:00 · Slime · ukończono", ("Historia", "P ponów", _POINTER)),
-        ("library_details", "ready/Slime.pl.mkv · MKV", ("Ten ekran", "F folder", "Wszędzie", _POINTER)),
+        ("library_details", "ready/Slime.pl.mkv · MKV", ("F folder", _POINTER)),
         ("u08", "Ostatnie sprawdzenie 14:00", ("Tytuł", "[ ]", "W wstrzymaj", _POINTER)),
         ("problem", "Źródło wydań nie odpowiada", ()),
         ("subscriptions_empty", "", ("Brak subskrypcji",)),

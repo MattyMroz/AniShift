@@ -81,7 +81,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   catalogue, and „Dodatki tego sezonu” with related OVA/special entries whose Enter opens their U03), D (footer `D dodaj`;
   `/` and Enter on an empty list are silent aliases) switches to the Anime tab and its own search (`start_search`, owner
   decision 2026-10-11): no subscription context, Esc behaves as in the Anime tab; W (alias Space) pauses/resumes, R (alias F) sends `subscription_check`,
-  X/Delete remove, Ctrl+Z restores. U08 hands W/R/F/X to the panel through `take_subscription_command`, so command
+  Del removes (footer `Del usuń`, silent alias X), Ctrl+Z restores. U08 hands W/R/F/X to the panel through `take_subscription_command`, so command
   workers stay in `StateController`; its `/` opens the Anime tab search without the old subscription. T, only on a
   highlighted target whose `EpisodeStatus.polish_wait_until`
   is set, sends `subscription_check` with its `number` and replaces the W toggle in the footer; the row Stan
@@ -275,6 +275,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   the keys, the table keeps its position when they change, and `AnimeFrame.first_row` locates
   the first data row. Columns are sized from content, using the shared menu pointer,
   `pack_keys` footer and existing theme roles.
+  The `?` help (`actions.help_lines`) is a table of key, action and one sentence from `actions._DESCRIPTIONS`
+  (owner request 2026-10-12; a test requires a sentence for every listed action); Library set details show no help.
   Every footer line and the `O` hint of the status line go through `pointer.mark_keys`: each `Key verb` segment is a
   `ClickKind.KEY` target, and `app._follow_click` presses that key the way the keyboard does (owner decision 2026-10-11).
   Key hints come from the screen's actions (`actions.py`): `Enter …`, at most three actions, `? klawisze`,

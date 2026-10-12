@@ -82,7 +82,7 @@ def subscription_actions(row: Mapping[str, object] | None, *, loaded: bool) -> S
         return ScreenActions(((_ADD_KEYS, "dodaj pierwszą"),) if loaded else (), undo)
     toggle: Action = ("W", "wznów" if row.get("paused") else "wstrzymaj")
     details: tuple[Action, ...] = (("Enter", "szczegóły"),) if type(row.get("anilist_id")) is int else ()
-    return ScreenActions((*details, (_ADD_KEYS, "dodaj"), toggle), (("R", "sprawdź teraz"), ("X", "usuń"), *undo))
+    return ScreenActions((*details, (_ADD_KEYS, "dodaj"), toggle), (("R", "sprawdź teraz"), ("Del", "usuń"), *undo))
 
 
 def subscription_warning(*, problem: bool, shadow: bool) -> str:

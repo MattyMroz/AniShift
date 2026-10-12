@@ -157,12 +157,6 @@ _STATUS_COUNTS: Final[tuple[tuple[str, str], ...]] = (
 _WORK_COUNTS: Final[tuple[str, ...]] = ("downloading", "processing", "waiting")
 """Owner counters of work that runs or will start by itself, which make the automation read as working."""
 
-_HELP_TITLES: Final[frozenset[str]] = frozenset({"Ten ekran", "Wszędzie"})
-"""Section titles of the ? help, never left as the last shown line of a cut help."""
-
-_DETAIL_HELP_ROWS: Final[int] = 3
-"""Rows the help under Library files needs: a blank line, the "Ten ekran" heading and one hint line."""
-
 _HISTORY_CRUMB: Final[tuple[str, ...]] = ("Przetwarzanie", "Historia")
 """Breadcrumb levels above the History list."""
 
@@ -765,8 +759,6 @@ class StateController:
             self._load_history()
         elif key == "o":
             self._command("set_auto", {"enabled": not self._snapshot.get("auto_enabled", False)})
-        elif self._tab == _Tab.FILES and key in {"?", "d"}:
-            self._library_details()
         elif key == "?":
             self._open_help()
         elif self._tab == _Tab.SUBSCRIPTIONS and key in {"/", "d", "f", "r", "w", "x"}:
@@ -777,12 +769,6 @@ class StateController:
             self._file_action(key)
         self._invalidate()
         return StateResult.CONTINUE
-
-    def _library_details(self) -> None:
-        if self._selected < len(self._library()) and self._connected and not self._busy:
-            self._file_action("d")
-        else:
-            self._open_help()
 
     def _processing_action(self, key: str) -> None:
         item: Mapping[str, object] | None = self._selected_material()
@@ -896,7 +882,8 @@ class StateController:
             return
         if key == "d":
             generation: int = self._view_generation
-            self._work(lambda session: self._show_details(session, set_id, generation))
+            if self._connected and not self._busy:
+                self._work(lambda session: self._show_details(session, set_id, generation))
             return
         self._work(lambda session: _open_episode(session, set_id, show_folder=key == "f"))
 
@@ -1296,12 +1283,6 @@ class StateController:
             append_wrapped_row(content, left, lines, index == selected, "", index=index)
             remaining -= len(lines)
             self._page = max(index - start + 1, 1)
-        if self._details is not None and remaining >= _DETAIL_HELP_ROWS:
-            shown: list[str] = list(("", *help_lines(self._actions().listed, max(columns - left - 4, 1)))[:remaining])
-            while shown and shown[-1] in _HELP_TITLES:
-                shown.pop()
-            for line in shown:
-                content.append_text(mark_inert(Text(f"{' ' * (left + 2)}{line}\n", style="gray")))
         if not entries:
             content.append("\n")
             content.append_text(self._empty_line(columns))
