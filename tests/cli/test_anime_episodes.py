@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Final, cast
@@ -67,6 +68,7 @@ from anishift.application.episode_search import EpisodeSearch
 from anishift.application.episode_selection import (
     OFFER_REASONS,
     AniZipMapping,
+    CandidateNumbering,
     episode_listing,
     rank_candidates,
     streams_releases,
@@ -78,7 +80,7 @@ from anishift.application.watch_state import WatchStateStore
 from anishift.cli.interactive import anime as anime_module
 from anishift.cli.interactive import anime_texts, anime_view
 from anishift.cli.interactive.anime import EPISODE_REASON_LABELS, AnimeController, _Screen
-from anishift.cli.interactive.anime_releases import _REASON_TEXTS, UNKNOWN_PREVIOUS_WARNING
+from anishift.cli.interactive.anime_releases import _REASON_TEXTS, UNKNOWN_PREVIOUS_WARNING, _candidate_numbering
 from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
 from anishift.config.presets import default_preset_file
@@ -349,9 +351,30 @@ def test_conflict_row_shows_reason() -> None:
     assert controller._view.items[0].confidence == "inny sezon"
     _key(controller, "text:?")
     details: str = " ".join(_frame(controller).split())
-    assert "Odczyt H1 (S/E): sezon" in details
-    assert "Cel: lokalny 4; S/E: sezon 2, odcinek 4; absolutny 28" in details
+    assert "W nazwie: sezon" in details
+    assert "Szukam: odcinek 4 · w katalogu sezon 2, odcinek 4 · w całej serii 28" in details
     assert "sezon 1, odcinek 4" in details
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("numbers", "film", "wanted"),
+    [
+        ((4, None, 2, 28), False, "Szukam: odcinek 4 · w katalogu sezon 2 · w całej serii 28"),
+        ((4, 0, 2, 28), False, "Szukam: odcinek 4 · w katalogu sezon 2, odcinek 0 · w całej serii 28"),
+        ((1, 13, 1, 13), False, "Szukam: odcinek 1 · w katalogu sezon 1, odcinek 13 · w całej serii 13"),
+        ((1, None, None, None), True, "Szukam: film"),
+    ],
+)
+def test_release_details_name_each_numbering_system_apart(
+    numbers: tuple[int, int | None, int | None, int | None], *, film: bool, wanted: str
+) -> None:
+    local, episode, season, absolute = numbers
+    evidence: CandidateNumbering = CandidateNumbering(
+        "mapped", 2, Decimal(4), None, local, episode, absolute, season, None, None
+    )
+
+    assert _candidate_numbering(evidence, film=film) == ["W nazwie: sezon 2, odcinek 4", wanted]
 
 
 @pytest.mark.unit
@@ -373,9 +396,8 @@ def test_details_confidence_uncalibrated_note(release_only: bool) -> None:
         frames.append(" ".join(controller.render(50, 12).plain.split()))
         _key(controller, "down")
     text: str = " ".join(" ".join(item.title for item in controller._view.items).split())
-    assert "Kalibracja pewności potwierdzona tylko dla korpusu E1." in text
-    assert "Dla nowych źródeł i ocen bez nazwy pliku: estymata bez potwierdzonej kalibracji." in text
-    assert any("kalibracji." in frame for frame in frames)
+    assert "Pewność to szacunek sprawdzony tylko na znanych przykładach" in text
+    assert any("znanych przykładach" in frame for frame in frames)
     assert ("· bez nazwy pliku ·" in text) is release_only
 
 

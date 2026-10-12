@@ -174,7 +174,7 @@ _REASON_TEXTS: Final[dict[str, str]] = {
 
 
 def release_rows(
-    candidates: tuple[RankedCandidate, ...], offer: EpisodeOffer | None, *, searching: bool
+    candidates: tuple[RankedCandidate, ...], offer: EpisodeOffer | None, *, searching: bool, film: bool = False
 ) -> tuple[AnimeRow, ...]:
     """Return the release list rows, or the one row saying the list is still searched or empty."""
     suggested: RankedCandidate | None = (
@@ -191,7 +191,7 @@ def release_rows(
             seeds=str(item.stream.seeders) if item.stream.seeders is not None else "?",
             quality=quality_text(item),
             confidence=_candidate_confidence(item, suggested=item == suggested),
-            detail=candidate_reason(item) + " · " + _candidate_details(item),
+            detail=candidate_reason(item) + " · " + _candidate_details(item, film=film),
             eligible=item.supported is not False,
             uncertain=item.identity.verdict is not IdentityVerdict.MATCH,
             suggested=item == suggested,
@@ -253,7 +253,7 @@ def _language(item: RankedCandidate) -> str:
     )
 
 
-def _candidate_details(item: RankedCandidate) -> str:
+def _candidate_details(item: RankedCandidate, *, film: bool) -> str:
     details: list[str] = []
     if item.stream.path or item.stream.file_name:
         details.append(f"Plik: {safe(item.stream.path or item.stream.file_name or '')}")
@@ -267,11 +267,8 @@ def _candidate_details(item: RankedCandidate) -> str:
         details.append("niejednoznaczny plik")
     if item.traits.dub_only:
         details.append("sam dubbing")
-    details.extend(_candidate_numbering(item.numbering))
-    details.append(
-        "Kalibracja pewności potwierdzona tylko dla korpusu E1. "
-        "Dla nowych źródeł i ocen bez nazwy pliku: estymata bez potwierdzonej kalibracji."
-    )
+    details.extend(_candidate_numbering(item.numbering, film=film))
+    details.append("Pewność to szacunek sprawdzony tylko na znanych przykładach")
     return " · ".join(details)
 
 
@@ -291,18 +288,23 @@ def _candidate_confidence(item: RankedCandidate, *, suggested: bool) -> str:
     return value + (" · niepewne" if suggested and item.identity.verdict is not IdentityVerdict.MATCH else "")
 
 
-def _candidate_numbering(evidence: CandidateNumbering | None) -> list[str]:
+def _candidate_numbering(evidence: CandidateNumbering | None, *, film: bool) -> list[str]:
     if evidence is None:
         return []
-    mode: str = {"mapped": "S/E", "plain": "bez znacznika numeracji", "missing": "brak numeru"}[evidence.mode]
-    return [
-        f"Odczyt H1 ({mode}): sezon {evidence.season if evidence.season is not None else '?'}, "
-        f"odcinek {evidence.number if evidence.number is not None else '?'}, "
-        f"część {evidence.part if evidence.part is not None else '?'}",
-        f"Cel: lokalny {evidence.local if evidence.local is not None else '?'}; "
-        f"S/E: sezon {evidence.target_season if evidence.target_season is not None else '?'}, "
-        f"odcinek {evidence.episode if evidence.episode is not None else '?'}; "
-        f"absolutny {evidence.absolute if evidence.absolute is not None else '?'}; "
-        f"sezon w tytule {evidence.named_season if evidence.named_season is not None else '?'}; "
-        f"część {evidence.target_part if evidence.target_part is not None else '?'}",
+    read: str = _known((("sezon", evidence.season), ("odcinek", evidence.number), ("część", evidence.part)))
+    named: str = f"W nazwie: {read or 'brak numeru'}"
+    if film:
+        return [named, "Szukam: film"]
+    catalog: str = _known(
+        (("sezon", evidence.target_season), ("odcinek", evidence.episode), ("część", evidence.target_part))
+    )
+    wanted: list[str] = [
+        *((f"odcinek {evidence.local}",) if evidence.local is not None else ()),
+        *((f"w katalogu {catalog}",) if catalog else ()),
+        *((f"w całej serii {evidence.absolute}",) if evidence.absolute is not None else ()),
     ]
+    return [named, f"Szukam: {' · '.join(wanted) or '?'}"]
+
+
+def _known(pairs: tuple[tuple[str, object], ...]) -> str:
+    return ", ".join(f"{label} {value}" for label, value in pairs if value is not None)

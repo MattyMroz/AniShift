@@ -1076,7 +1076,10 @@ class AnimeController:
             offer: EpisodeOffer | None = self._offer
             self._view.global_status = offer.status or "" if offer is not None else ""
             return release_rows(
-                self._release_candidates, offer, searching=self._offers_running and self._offer_view is None
+                self._release_candidates,
+                offer,
+                searching=self._offers_running and self._offer_view is None,
+                film=self._entry is not None and self._entry.format == "MOVIE",
             )
         if self._screen is _Screen.BUSY:
             return (AnimeRow("busy", self._busy, navigable=False),)
