@@ -192,8 +192,49 @@ Zakres wyłącznie w zgodzie z warunkami dostawców, bez obchodzenia płatności
 **pomysł:** później manga (wspólne heurystyki z MangaShift), może filmy i inne treści — o ile
 będzie to wykonalne.
 
-## 16. otwarte pytania techniczne
+## 16. do zrobienia kiedyś: podział `automation.py`
 
-- Czy dzielić duże moduły `application/` (np. `automation.py`) na podfoldery i ile to kosztuje.
-- Czy przepisanie części na Rust daje realny zysk, skoro czas zjada głównie pobieranie,
-  LLM i TTS.
+> status: ODŁOŻONE — decyzja właściciela z 2026-10-12: na razie nie ciąć, wszystko w jednym
+> pliku jest akceptowalne.
+
+**stan (odczyt astry z 2026-10-12, commit `287cb20`):** plik ma 9372 linie. Klasa
+`AutomationOwner` zajmuje około 7600 z nich (linie 772–8394).
+
+Da się w niej wskazać obszary:
+- biblioteka i usuwanie;
+- preview i start;
+- subskrypcje;
+- transfery;
+- zapis stanu i zdarzenia.
+
+Obszary są jednak przeplecione i dzielą pola konstruktora. Na przykład `_save` jednocześnie:
+- rozlicza subskrypcje;
+- zapisuje stan;
+- dopisuje historię;
+- emituje zdarzenia;
+- planuje transfery.
+
+Rozbicie na mixiny tylko rozrzuciłoby te zależności.
+
+**jeśli kiedyś, to w tej kolejności:**
+1. Tani pierwszy krok: funkcje `_selection_confirmed`, `_restorable`, `_selection_basis` i
+   `_selection_mismatch` przyjmują jawne dane, a nie ownera, więc można je przenieść do
+   `application/transfers.py` bez zmiany zachowania.
+2. Przy pracy nad API: uporządkować projekcje z użyciem `control_views.py`. Zachować oba
+   formaty odpowiedzi.
+3. Większe wydzielenie dopiero przy udowodnionej granicy. Przykład: rozliczenie subskrypcji
+   jako funkcja „snapshot, czas i fakty transferów → nowy stan”, z zapisem dalej u jednego
+   ownera.
+
+Podfoldery w `application/` poprawiają tylko nawigację, nie spójność.
+
+**sygnał, że już trzeba:**
+- kolejna funkcja wymaga zmian w kilku niezwiązanych obszarach ownera;
+- regresje wracają na ich styku;
+- API zmusza do powielania reguł.
+
+## 17. otwarte pytania techniczne
+
+- Rust: pełne przepisanie nie ma uzasadnienia. Czas zjadają pobieranie, LLM, TTS i ffmpeg,
+  a nie Python. Przed jakąkolwiek optymalizacją najpierw zmierzyć czasy etapów na kilku
+  odcinkach.
