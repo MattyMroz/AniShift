@@ -116,3 +116,84 @@ anishift/cli/settings_panel.py   # ZMIANA: edytor mapy postać -> głos (tylko g
 **szkic:** bez nowych plików — pole "zużycie" w wynikach kroków pipeline (`pipeline/types.py`), sumowane w podsumowaniu przebiegu ("TTS: 48 210 znaków ≈ $X"). Wyłącznie szacunek, wyraźnie opisany jako szacunek.
 
 **rekomendacja:** tani dodatek przy okazji dowolnej pracy w pipeline po etapie 7; nie zasługuje na osobny etap.
+
+---
+
+# Pomysły właściciela z 2026-10-12
+
+> status: POMYSŁ — kierunek na lata, nie zlecenie. Kolejność i zakres wymagają osobnej
+> rozmowy przed planem. Cel nadrzędny bez zmian: kliknąć, chwilę poczekać, obejrzeć w
+> najwyższej jakości (4K, napisy PL, polski lektor) bez szukania wydań i grup tłumaczy.
+
+## 8. centrum rozrywki w przeglądarce
+
+**pomysł:** strona zamiast TUI jako główny interfejs; TUI zostaje obok. AniShift na
+własnym VPS pobiera i przetwarza w tle, a odcinek jest gotowy, zanim właściciel chce go
+obejrzeć. Oglądanie z dowolnego miejsca, także na telefonie, najlepiej z odtwarzaniem
+jakości mpv i przyspieszeniem GPU w przeglądarce. Wzorzec doświadczenia: Stremio/Netflix,
+ale z polskim lektorem i bez wypalonych napisów.
+
+**otwarte pytania:**
+- gdzie trzymać media (~1,5 GB na odcinek, dziesiątki serii);
+- czy wystarczy SQLite;
+- czy odtwarzanie MKV z ASS w przeglądarce jest realne bez transkodowania;
+- co z gotowych narzędzi (Jellyfin, Stremio) da się użyć zamiast budować.
+
+Strona na Cloudflare jest już opłacona.
+
+## 9. lista obejrzanych i statystyki
+
+**pomysł:** własna lista w stylu MAL: co obejrzane, co w trakcie, co zaplanowane, oceny i
+statystyki. Źródło prawdy we własnej bazie, nie u zewnętrznego serwisu.
+
+## 10. agregator: harmonogram, banery, newsy
+
+**pomysł:** jedno miejsce z harmonogramem emisji, banerami i newsami z wielu stron, z
+którego od razu zakłada się subskrypcję.
+
+## 11. agent i API w środku
+
+**pomysł:** API AniShift oraz agent albo serwer MCP, któremu można powiedzieć „pobierz mi ten
+odcinek” albo „napraw to”. Ryzyko: każda warstwa dokłada złożoności, więc najpierw API, agent
+dopiero na nim.
+
+## 12. automatyczny typesetting napisów i piosenek
+
+**pomysł:** automatyczne rozpoznawanie i składanie szyldów oraz piosenek (OP/ED) tak, żeby
+wyglądały jak ręczny typesetting. Heurystyki pozycjonowania tekstu w przestrzeni ekranu:
+- współrzędne względne i bezwzględne, ustandaryzowane dla każdego typu ekranu, także
+  szerokokątnego i zakrzywionego;
+- wspólny rdzeń do ponownego użycia w MangaShift.
+
+Powiązane: [silnik layoutu napisów](subtitle-layout-engine.md) i
+[style_classifier](#2-style_classifier-napisów-ass).
+
+## 13. jakość tłumaczenia
+
+**pomysł:**
+- poprawne tłumaczenie nazw własnych;
+- dopracowane prompty;
+- lepsze rozgraniczanie napisów (heurystyki podziału linii).
+
+Dziś najlepiej wypada Gemini 3.8 Flash: oddaje żarty i nie jest sztywny. Do porównania
+warto wziąć Groka.
+
+## 14. niezależność lektora od jednego dostawcy TTS
+
+**pomysł:** nie zależeć od limitów jednego płatnego dostawcy. Kierunki:
+- lokalny model TTS;
+- własny głos lektora;
+- dodatkowe legalne źródło syntezy.
+
+Zakres wyłącznie w zgodzie z warunkami dostawców, bez obchodzenia płatności i limitów.
+
+## 15. rozszerzenia treści
+
+**pomysł:** później manga (wspólne heurystyki z MangaShift), może filmy i inne treści — o ile
+będzie to wykonalne.
+
+## 16. otwarte pytania techniczne
+
+- Czy dzielić duże moduły `application/` (np. `automation.py`) na podfoldery i ile to kosztuje.
+- Czy przepisanie części na Rust daje realny zysk, skoro czas zjada głównie pobieranie,
+  LLM i TTS.
