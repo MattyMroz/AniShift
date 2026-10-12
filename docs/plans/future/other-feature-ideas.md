@@ -125,7 +125,22 @@ anishift/cli/settings_panel.py   # ZMIANA: edytor mapy postać -> głos (tylko g
 > rozmowy przed planem. Cel nadrzędny bez zmian: kliknąć, chwilę poczekać, obejrzeć w
 > najwyższej jakości (4K, napisy PL, polski lektor) bez szukania wydań i grup tłumaczy.
 
-## 8. centrum rozrywki w przeglądarce
+## 8. najbliższy kierunek: wygoda na własnym komputerze
+
+> status: DECYZJA WŁAŚCICIELA z 2026-10-12 — oglądanie tylko lokalnie na PC. Bez Jellyfin,
+> bez zdalnego dostępu, bez telefonu i tabletu, bo z nich właściciel i tak nie ogląda.
+
+**cel:** zobaczyć obrazek, poznać tytuł, wybrać, pobrać, obejrzeć, usunąć. Koniec.
+
+**co z tego wynika:**
+- najpierw jakość lokalnego wyniku: tłumaczenie, nazwy własne, szyldy i piosenki, lektor;
+- połączenie z listą anime właściciela, tak żeby AniShift wiedział, co jest obejrzane i co
+  dalej. Konto MAL: Matty_Mroz. Czy synchronizować z MAL, z AniList, czy z obiema, jeszcze
+  do ustalenia;
+- podgląd z okładkami, żeby od razu było widać, który to tytuł. Dziś panel pokazuje tylko
+  tekst; okładki z AniList nie są jeszcze pobierane ani pokazywane.
+
+## 8a. centrum rozrywki w przeglądarce (dalekie, odłożone)
 
 **pomysł:** strona zamiast TUI jako główny interfejs; TUI zostaje obok. AniShift na
 własnym VPS pobiera i przetwarza w tle, a odcinek jest gotowy, zanim właściciel chce go
