@@ -15,7 +15,7 @@ baseline: c58392ad1fdd97413f57d8828bdb5dc11acf5a7b
 | 2 | [spec.md](spec.md) | Co ma być prawdą: cel, ustalenia, wymagania, zakazy, warunki sukcesu |
 | 3 | [ux.md](ux.md) | Ekrany, przejścia, klawisze, scenariusze odbioru |
 | 4 | [masterplan.md](masterplan.md) | Etapy E0, E00, E1–E5 i ich warunki wyjścia |
-| 5 | [plans/e1-wybor-odcinka.md](plans/e1-wybor-odcinka.md) | Szczegółowy plan etapu E1 (startuje po E00) |
+| 5 | [plans/e1-episode-selection.md](plans/e1-episode-selection.md) | Szczegółowy plan etapu E1 (startuje po E00) |
 | 6 | [research/summary.md](research/summary.md) | Wnioski z badań źródeł danych; raporty, na które powołują się spec i plan E1, leżą obok w `research/` |
 
 ### Archiwum lokalne (poza gitem)
@@ -46,13 +46,13 @@ Lista weta rozliczona z właścicielem 2026-09-23. Wszystkie ustalenia w spec ob
 | Lista MAL | Niepotrzebna; próbka pomiaru z Twoich subskrypcji i popularnych tytułów w emisji. |
 | Sprawdzenie heurystyki | Na co najmniej 2000 tytułach (TV, kontynuacje, OVA, filmy, różne lata). Każde wydanie z korpusu oceniają dwa modele różnych rodzin („oceniający”), wywoływane skryptem przez silnik LLM AniShift (`anishift.services.llm`, silnik Palantir, modele z katalogu po E00) z poleceniem oceny i Twoim kluczem Palantir; w każdej paczce są wydania kontrolne o znanej odpowiedzi. Niezgodności rozstrzyga trzeci model, a trudne przypadki i 50 losowych trafiają do Ciebie. Cel: 0 błędnie uznanych za zgodne w całym korpusie (zawężone 2026-09-28 — niżej). |
 
-Zmiany z 2026-09-28 (szczegóły: [plans/e1-przeplyw-subskrypcji.md](plans/e1-przeplyw-subskrypcji.md)):
+Zmiany z 2026-09-28 (szczegóły: [plans/e1-subscription-flow.md](plans/e1-subscription-flow.md)):
 
 | Temat | Ustalenie |
 | --- | --- |
 | Subskrypcja a zaległe | Subskrypcja pobiera tylko odcinki emitowane po jej dodaniu; wyemitowane zaznaczasz i pobierasz ręcznie. |
 | Limit prób w subskrypcji | 3 automatyczne próby na odcinek, potem problem i powiadomienie; bez budżetu GB (wielkość świeżego wydania WEB nie świadczy o poprawności). Ścieżka ręczna: dwa pobrania jak dotąd. |
-| Źródło wydań | Tylko Torrentio, dla subskrypcji i Pobierz; Nyaa nie jest drugim źródłem. Zamiast 7-dniowego pomiaru na żywo (N-01) rozstrzygnął pilot historyczny ([plans/e1-przeplyw-subskrypcji.md](plans/e1-przeplyw-subskrypcji.md) §5.1); opóźnienie potwierdzi rejestr po uruchomieniu. |
+| Źródło wydań | Tylko Torrentio, dla subskrypcji i Pobierz; Nyaa nie jest drugim źródłem. Zamiast 7-dniowego pomiaru na żywo (N-01) rozstrzygnął pilot historyczny ([plans/e1-subscription-flow.md](plans/e1-subscription-flow.md) §5.1); opóźnienie potwierdzi rejestr po uruchomieniu. |
 | Strojenie parametrów | Pełny symulator odłożony; czas na `niepewny` (tymczasowo 72 h) i czekanie na 1080p (0) stroimy na rejestrze decyzji po uruchomieniu. |
 | Bramka heurystyki | 0 błędnie uznanych za zgodne wśród przypadków rozpoznawalnych z nazwy/metadanych; pozostałe raportowane jako „domena heurystyki 2”. |
 
@@ -62,7 +62,7 @@ Wszystkie decyzje są rozstrzygnięte. Kodek i pochodzenie wydania (WEB/Blu-ray)
 
 | Nr | Zgoda | Stan |
 | --- | --- | --- |
-| Z-1 | Pomiar świeżości i pokrycia Torrentio vs Nyaa przez 7 dni oraz korpus 2000 tytułów (~4000 zapytań Torrentio w 2–3 doby) | Zgoda. Aktualnie: korpus lokalnie na Windows (Torrentio z VPS blokowane 403); 7-dniowy pomiar zastąpiony 2026-09-28 pilotem historycznym ([plans/e1-przeplyw-subskrypcji.md](plans/e1-przeplyw-subskrypcji.md) §5.1). Historycznie: VPS przez `VpsOracleManager` |
+| Z-1 | Pomiar świeżości i pokrycia Torrentio vs Nyaa przez 7 dni oraz korpus 2000 tytułów (~4000 zapytań Torrentio w 2–3 doby) | Zgoda. Aktualnie: korpus lokalnie na Windows (Torrentio z VPS blokowane 403); 7-dniowy pomiar zastąpiony 2026-09-28 pilotem historycznym ([plans/e1-subscription-flow.md](plans/e1-subscription-flow.md) §5.1). Historycznie: VPS przez `VpsOracleManager` |
 | Z-2 | Odczyt listy MAL | Wycofana — niepotrzebna |
 | Z-3 | Próba metadanych magnetu w tymczasowym qBittorrencie | Zgoda |
 
@@ -71,6 +71,6 @@ Wszystkie decyzje są rozstrzygnięte. Kodek i pochodzenie wydania (WEB/Blu-ray)
 | Etap | Plan | Wynik | Status |
 | --- | --- | --- | --- |
 | E0 | ten pakiet | — | current |
-| E00 | `plans/e00-katalog-modeli.md` — do napisania i akceptacji przez właściciela przed rozpoczęciem pracy | `outcomes/e00.md` (powstanie) | planned |
-| E1 | [plans/e1-wybor-odcinka.md](plans/e1-wybor-odcinka.md) | `outcomes/e1.md` (powstanie) | planned |
+| E00 | `plans/e00-model-catalog.md` — do napisania i akceptacji przez właściciela przed rozpoczęciem pracy | `outcomes/e00.md` (powstanie) | planned |
+| E1 | [plans/e1-episode-selection.md](plans/e1-episode-selection.md) | `outcomes/e1.md` (powstanie) | planned |
 | E2–E5 | powstaną po wyniku poprzedniego etapu | — | planned |

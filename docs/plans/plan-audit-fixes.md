@@ -57,7 +57,7 @@ duplikacji i wydajności. Branch roboczy: `chore/stage-6.3-audit-fixes`.
   Gwarancję zapewniał usunięty `pipeline/runner.py`, więc po etapie 10 przestała
   obowiązywać: `application/runtime.py` przepuszczał łańcuch bez warunku i przy
   `translation_engine = "llm"` plik po cichu kończył na Google. Pole usunięto
-  2026-09-01; następcę opisuje [kolejka-tlumaczenia-wymagania.md](kolejka-tlumaczenia-wymagania.md).
+  2026-09-01; następcę opisuje [translation-queue-requirements.md](translation-queue-requirements.md).
 
 - Rozmiar `pipeline/runner.py` (1441 linii) i `open_settings_panel` (~300
   linii) — uzasadnione `noqa`, refaktor UI/pipeline planowany osobno.

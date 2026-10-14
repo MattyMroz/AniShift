@@ -1,9 +1,9 @@
 # plan strategiczny: AniShift (pakiet `anishift`) — FINAL
 
 > Status: legacy roadmap zakończony — etapy 1–8 ukończone.
-> Dalszy kierunek: [`etap-9-wymagania.md`](etap-9-wymagania.md),
-> [`etap-9-interfejs-wymagania.md`](etap-9-interfejs-wymagania.md) i
-> [`etap-9-plan.md`](etap-9-plan.md).
+> Dalszy kierunek: [`stage-9-requirements.md`](stage-9-requirements.md),
+> [`stage-9-interface-requirements.md`](stage-9-interface-requirements.md) i
+> [`stage-9-plan.md`](stage-9-plan.md).
 > data: 2026-07-12 | autor: Fable | zastępuje `2026-07-12-plan-anishift-fable-v2.md` (v2 + wbudowane korekty usera z `_korekty-planu-anishift.md`) | aktualizacja: dodany serwis llm (decyzja usera)
 > zasada nadrzędna: **recykling MangaShift w 100%** — struktura, nazewnictwo, wzorce. druga zasada (od usera): **wszystko ma być proste** — zero rozdmuchanych folderów i mechanizmów.
 > repo: obecne (3 gwiazdki zostają), przebudowa na nowym branchu. nazwy `mm_avh` i `working_space` znikają z nowego kodu.
@@ -28,7 +28,7 @@ Z obecnego mm_avh bierzemy wyłącznie dwie rzeczy: **logikę działania pipelin
 Etap 2 użył **prompt_toolkit + rich** do małego REPL-a wzorowanego na Claude Code.
 Ta decyzja opisuje stan historyczny, nie docelowy interfejs większego produktu.
 Etap 9 zastępuje REPL pełnoekranowym TUI w `Textual`, zgodnie z
-[`etap-9-interfejs-wymagania.md`](etap-9-interfejs-wymagania.md). Typer pozostaje
+[`stage-9-interface-requirements.md`](stage-9-interface-requirements.md). Typer pozostaje
 cienkim CLI dla `doctor`, `setup` i automatyzacji presetów.
 
 ### config i klucze
@@ -322,7 +322,7 @@ jak testować: SRT polski → WAV lektora każdym dostępnym silnikiem; elevenby
 chunkerów translation/TTS bez łączenia ich odmiennych kontraktów domenowych.
 
 Szczegółowy zakres, struktura i kryteria:
-[`etap-6.1-shared-text-primitives.md`](etap-6.1-shared-text-primitives.md).
+[`stage-6.1-shared-text-primitives.md`](stage-6.1-shared-text-primitives.md).
 DoD: pełny lektor elevenbytes na realnym odcinku brzmi/wygląda jak z obecnego kodu; edge i SAPI działają; jeden `Ctrl+C` kończy worker SAPI; żaden plik serwisu nie przekracza ~300 linii; poza tmp/ nie powstaje żaden folder stanu.
 
 ### etap 7 — składanie + pełne e2e
@@ -345,8 +345,8 @@ tworzenia migratora, EXE ani nowej infrastruktury.
 
 pliki:
 - `run_anishift.bat` — prosty launcher Windows dla `uv run anishift`;
-- [`etap-8-wymagania.md`](etap-8-wymagania.md) — zatwierdzone decyzje;
-- [`etap-8-dystrybucja-binarek.md`](etap-8-dystrybucja-binarek.md) — plan domknięcia zachowany pod starą ścieżką dla stabilności linków.
+- [`stage-8-requirements.md`](stage-8-requirements.md) — zatwierdzone decyzje;
+- [`stage-8-binary-distribution.md`](stage-8-binary-distribution.md) — plan domknięcia zachowany pod starą ścieżką dla stabilności linków.
 
 zależności: ukończony etap 7.
 jak testować: pełne bramki jakości + `run_anishift.bat doctor` uruchomiony spoza repo.
@@ -354,15 +354,15 @@ DoD: brak zależności runtime od starego `mm_avh`, zielone testy i zgodne statu
 
 ### etap 9 — model produktu, workflow i ustawień
 **status:** wymagania domknięte, plan wykonawczy gotowy do akceptacji.
-**cel:** przekształcić analizę w [`etap-9-wymagania.md`](etap-9-wymagania.md)
+**cel:** przekształcić analizę w [`stage-9-requirements.md`](stage-9-requirements.md)
 w decyzje o artefaktach, trybach pracy, stanach, konfiguracji, planowaniu oraz
 pełnoekranowym TUI.
 
 Etap 9 najpierw stabilizuje zachowanie produktu oraz application API, a następnie
 podłącza pełnoekranowe TUI na `Textual` i cienkie CLI zgodnie z
-[`etap-9-interfejs-wymagania.md`](etap-9-interfejs-wymagania.md).
+[`stage-9-interface-requirements.md`](stage-9-interface-requirements.md).
 Dokładna kolejność plików, testów i inkrementów znajduje się w
-[`etap-9-plan.md`](etap-9-plan.md).
+[`stage-9-plan.md`](stage-9-plan.md).
 W tym samym etapie mechanicznie zmienia kontrakt katalogu roboczego z
 `workspace/tmp` na `workspace/temp` i aktualizuje wszystkie testy oraz instrukcje.
 

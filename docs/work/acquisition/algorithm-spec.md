@@ -7,7 +7,7 @@ baseline: 9d828708
 
 # Specyfikacja: algorytm pozyskiwania odcinka
 
-Kontrakt tego, jak AniShift znajduje wydania odcinka, ocenia je i wybiera jedno. Ma pierwszeństwo przed [spec.md](spec.md) i [planem przepływu](plans/e1-przeplyw-subskrypcji.md) w punktach wymienionych w §10; reszta obu dokumentów obowiązuje bez zmian, w tym bezpieczniki planu przepływu (wykluczenie wypróbowanych, ochrona plików innych celów, limit 3 prób, bramka przyjęcia, H2). Podstawa: ustalenia właściciela i trzy pomiary z 2026-10-05 w [intent.md](intent.md).
+Kontrakt tego, jak AniShift znajduje wydania odcinka, ocenia je i wybiera jedno. Ma pierwszeństwo przed [spec.md](spec.md) i [planem przepływu](plans/e1-subscription-flow.md) w punktach wymienionych w §10; reszta obu dokumentów obowiązuje bez zmian, w tym bezpieczniki planu przepływu (wykluczenie wypróbowanych, ochrona plików innych celów, limit 3 prób, bramka przyjęcia, H2). Podstawa: ustalenia właściciela i trzy pomiary z 2026-10-05 w [intent.md](intent.md).
 
 ## 1. Cel i warunek sukcesu
 
@@ -104,7 +104,7 @@ Kontrakt tego, jak AniShift znajduje wydania odcinka, ocenia je i wybiera jedno.
 ## 4. Pewność odcinka
 
 - Kolumna **Pewność** pokazuje estymatę w %: model `conf_frozen_model.json` z badania 2 (regresja logistyczna L2 + kalibracja sigmoidowa, bez wet), przeniesiony do repo z niezmienionymi współczynnikami.
-- Cechy liczy publiczna projekcja dowodów H1 (jedna funkcja w `episode_identity.py`, bez drugiego parsera), o dokładnie tej semantyce co `conf_model.py` z badania (w tym skalowanie i wybór tekstu bez pliku). Test: identyczne wektory cech i predykcje jak w badaniu na zapisanych przypadkach. Zmiana H1 przechodzi istniejącą procedurę (`plans/e1-integracja.md` §10.6).
+- Cechy liczy publiczna projekcja dowodów H1 (jedna funkcja w `episode_identity.py`, bez drugiego parsera), o dokładnie tej semantyce co `conf_model.py` z badania (w tym skalowanie i wybór tekstu bez pliku). Test: identyczne wektory cech i predykcje jak w badaniu na zapisanych przypadkach. Zmiana H1 przechodzi istniejącą procedurę (`plans/e1-integration.md` §10.6).
 - Kandydat z konfliktem pokazuje zamiast % krótki powód H1, np. „inny sezon (S01)”; szczegóły pokazują porównane numery i ich numeracje.
 - Kalibracja potwierdzona jest tylko dla populacji korpusu E1; dla nowych źródeł i ocen bez nazwy pliku wartość jest estymatą bez potwierdzonej kalibracji (§7).
 - Procent wpływa tylko na kolejność listy i sugestię (§6.1). Automat go nie używa (§6.2). To wyjątek od zakazu ML do tożsamości (spec.md §9): model nie rozstrzyga tożsamości w automacie.

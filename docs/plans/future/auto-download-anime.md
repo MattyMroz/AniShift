@@ -9,7 +9,7 @@
 > cel: user wpisuje `/download <nazwa anime>`, program znajduje odcinki, pobiera MKV prosto do `workspace/`, a Enter przetwarza je jak każde inne pliki.
 > Uwaga: opis `/download` i Enter pochodzi ze starego REPL-a. Docelowy punkt
 > rozszerzenia `Acquire` definiuje
-> [etap-9-interfejs-wymagania.md](../etap-9-interfejs-wymagania.md); domena
+> [stage-9-interface-requirements.md](../stage-9-interface-requirements.md); domena
 > pobierania poniżej pozostaje pomysłem do ponownego zaplanowania.
 
 ## ⚠️ legalność — przeczytaj zanim cokolwiek powstanie

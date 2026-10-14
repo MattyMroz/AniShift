@@ -1,6 +1,6 @@
 # A1 K0 — rekonesans źródeł i zestaw wzorcowy
 
-Raport kroku K0 planu `plans/a1-algorytm-pozyskiwania.md` (§9, §10.2). Bez kodu produkcyjnego.
+Raport kroku K0 planu `plans/a1-acquisition-algorithm.md` (§9, §10.2). Bez kodu produkcyjnego.
 Oczekiwania w `expectations.json` potwierdził właściciel 2026-10-06 (`confirmed_by_owner: true`
 we wszystkich przypadkach). Wersja po review K0 („DO POPRAWY”) i decyzjach właściciela oraz
 orkiestratora.
