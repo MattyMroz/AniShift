@@ -53,6 +53,15 @@ _GEMINI_VARIANTS: Final[Mapping[str, Mapping[str, object]]] = {
 }
 """Explicit thinking budgets shared by Gemini models."""
 
+_GEMINI_LEVEL_OPTIONS: Final[Mapping[str, object]] = {"generationConfig": {"thinkingConfig": {"includeThoughts": True}}}
+"""Default thinking for Gemini models that reject a thinking budget."""
+
+_GEMINI_LEVEL_VARIANTS: Final[Mapping[str, Mapping[str, object]]] = {
+    level: {"generationConfig": {"thinkingConfig": {"includeThoughts": True, "thinkingLevel": level.upper()}}}
+    for level in ("low", "medium", "high")
+}
+"""Thinking levels in the upper-case form the Foundry proxy accepts."""
+
 _THINKING_LEVELS: Final[tuple[str, ...]] = ("low", "medium", "high", "xhigh", "max")
 """Full thinking effort range for recent GPT and Claude models."""
 
@@ -95,15 +104,21 @@ def _claude(model_id: str, label: str, levels: tuple[str, ...]) -> PalantirModel
     )
 
 
-def _gemini(model_id: str, label: str) -> PalantirModel:
+def _gemini(
+    model_id: str,
+    label: str,
+    *,
+    options: Mapping[str, object] = _GEMINI_OPTIONS,
+    variants: Mapping[str, Mapping[str, object]] = _GEMINI_VARIANTS,
+) -> PalantirModel:
     return PalantirModel(
         alias=f"foundry-google/{model_id}",
         provider_id="foundry-google",
         model_id=model_id,
         label=label,
         file_modalities=frozenset({"image", "pdf", "audio", "video"}),
-        options=_GEMINI_OPTIONS,
-        variants=_GEMINI_VARIANTS,
+        options=options,
+        variants=variants,
     )
 
 
@@ -148,6 +163,9 @@ PALANTIR_MODELS: Final[tuple[PalantirModel, ...]] = (
     _claude("claude-sonnet-5", "Foundry: Claude Sonnet 5", _THINKING_LEVELS),
     _claude("claude-sonnet-4-6", "Foundry: Claude Sonnet 4.6", ("low", "medium", "high", "max")),
     _claude("claude-haiku-5-5", "Foundry: Claude Haiku 5.5", _THINKING_LEVELS),
+    _gemini(
+        "gemini-4-argon", "Foundry: Gemini 4 Argon", options=_GEMINI_LEVEL_OPTIONS, variants=_GEMINI_LEVEL_VARIANTS
+    ),
     _gemini("gemini-3.1-pro-preview", "Foundry: Gemini 3.1 Pro Preview"),
     _gemini("gemini-3.8-flash", "Foundry: Gemini 3.8 Flash"),
     _gemini("gemini-3.7-flash", "Foundry: Gemini 3.7 Flash"),

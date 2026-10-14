@@ -45,6 +45,13 @@ def test_palantir_options_and_variants_use_known_request_fields(
             assert model.options == {}
             assert model.variants == {}
             continue
+        if model.model_id == "gemini-4-argon":
+            assert _field_paths(model.options) == {"generationConfig.thinkingConfig.includeThoughts"}
+            assert model.variants == {
+                variant: {"generationConfig": {"thinkingConfig": {"includeThoughts": True, "thinkingLevel": level}}}
+                for variant, level in (("low", "LOW"), ("medium", "MEDIUM"), ("high", "HIGH"))
+            }
+            continue
         assert _field_paths(model.options) == option_paths
         assert model.variants
         assert all(_field_paths(options) == variant_paths for options in model.variants.values())
