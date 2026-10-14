@@ -67,7 +67,7 @@ ElevenBytes został połączony z natywnym transportem 1VPN, domyślnie włączo
 - Pierwsze równoległe uruchomienie bramek miało jeden przejściowy fail `test_service_stops_timer_after_batch_completion` z komunikatem `TTS service is closed`. Test uruchomiony osobno przeszedł, a następujący po nim pełny pytest również przeszedł 1668/1668. To potencjalny flake lifecycle, nie odtworzony ponownie.
 - Runtime smoke utworzył ignorowane artefakty resume w `workspace/tmp`; nie są częścią commita.
 - `scripts/one_vpn_production.py` pozostaje lokalnym, untracked plikiem i zgodnie z decyzją użytkownika nie jest częścią commita.
-- Niepowiązane, istniejące wcześniej pliki dokumentacyjne oraz `docs/plans/_index.md` celowo nie należą do tego zadania i nie powinny wejść do jego commita.
+- Niepowiązane, istniejące wcześniej pliki dokumentacyjne oraz `docs/README.md` celowo nie należą do tego zadania i nie powinny wejść do jego commita.
 
 ## Root cause i poprawka
 

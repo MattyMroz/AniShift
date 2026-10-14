@@ -1,155 +1,138 @@
 # AniShift
 
+[Polski](README.pl.md)
+
 Terminal-based Polish voice-over pipeline for anime.
 
-AniShift turns MKV sources into Polish subtitles or a Polish lector track through
-subtitle extraction, translation, TTS, audio processing, and final media composition.
-Completed sources and products collect in the flat `workspace/ready/` directory.
+AniShift finds and downloads anime episodes, then turns MKV sources into Polish subtitles or a
+Polish lector track: subtitle extraction, translation, TTS, audio processing and final media
+composition. Completed sources and products collect in the flat `workspace/ready/` directory.
 Regeneration runs there without moving files back. Temporary run data stays in `workspace/temp/`.
+
+AniShift currently supports Windows only.
 
 ## Quick start
 
 ```bash
 uv sync                                   # Python dependencies
-uv run anishift setup                     # MKVToolNix and FFmpeg into external/bin/ (Windows)
+uv run anishift setup                     # MKVToolNix and FFmpeg into external/bin/
 uv run anishift doctor                    # everything green? then:
 uv run anishift                           # the interactive interface
 ```
 
 API keys go into `.env` (see "Configuration"); `doctor` lists which engines have one.
-Opening the interface starts or connects to one background resident. A new configuration
-starts with Auto off and no subscriptions. Enable Auto and select subscription ranges explicitly
-in **Panel**. Optionally run `uv run anishift autostart enable` to start the resident
-after every logon; this does not enable Auto or add subscriptions.
+Opening the interface starts or connects to one background resident. Optionally run
+`uv run anishift autostart enable` to start the resident after every logon.
 
 If the shell still has another project's virtual environment active, start with
 `uv run --no-active anishift`. This selects AniShift's `.venv` and silences the
-mismatch warning. Do not use `--active` to target a different project's environment.
-See [uv project environment documentation](https://docs.astral.sh/uv/concepts/projects/config/#project-environment-path).
+mismatch warning. See the
+[uv project environment documentation](https://docs.astral.sh/uv/concepts/projects/config/#project-environment-path).
 
-Running `anishift` without a subcommand opens the interactive interface:
+## The interface
 
-- **Auto** processes every ready workspace group with the default preset.
-- **Ręczny** lets you choose sources, output, and per-run overrides before execution.
-- **Anime** searches nyaa.si for a title and hands the chosen releases to qBittorrent.
-- **Panel** shows progress, transfers, subscriptions and files while work continues.
-- **Ustawienia** edits supported preferences and provides a read-only model catalogue.
-- **Wyjście** closes the interface; accepted work continues in the resident.
+Running `anishift` without a subcommand opens Home with four items:
 
-The interface uses one Prompt Toolkit renderer. Home and Auto display the packaged animated
-pixel-art slime on terminals with SIXEL support. The animation is prepared before
-the first interactive frame, so it appears without a startup placeholder. Terminals
-without image support use the available text fallback; small windows can omit the mascot.
+- **Panel** — the main window with four tabs: Anime, Subskrypcje, Przetwarzanie and Biblioteka.
+- **Ręczny** — choose sources, output and per-run overrides before execution.
+- **Ustawienia** — edit preferences, engines, models, download sources and connections.
+- **Wyjście** — close the interface; accepted work continues in the resident.
 
-Use arrows or Tab/Shift+Tab to navigate Settings, Right/Enter to open, and Left/Esc
-to go back. Text editors support cursor movement, Delete and paste; secret values
-are masked and require explicit confirmation. Auto supports arrows, PageUp/PageDown
-and Home to browse the queue; End resumes following the active file. Resizing keeps
-the same application screen and preserves the previous console history on exit.
+Home shows an animated pixel-art slime on terminals with SIXEL support; other terminals
+use a text fallback. The interface uses one Prompt Toolkit renderer.
 
-All text fields share Prompt Toolkit's editing buffer: Ctrl+Left/Right moves by words,
-Ctrl+Backspace/Delete removes words, Shift with arrows or Home/End selects text,
-Ctrl+A selects all, and Ctrl+Z/Y undo or redo. Selected text is replaced when typing.
-Ctrl+C copies a selection to the application clipboard; without a selection it retains
-the screen's interrupt action. Ctrl+X/V cut and paste between fields; terminal paste
-also accepts text from outside the application. Secrets remain masked.
+In Panel, switch tabs with Left/Right, Tab/Shift+Tab or a click. **O** turns the automation
+on or off from any tab, **?** lists the keys of the current screen and **Esc** goes back.
+Panel opens on Subskrypcje.
 
-Before inspecting media, AniShift prepares missing MKVToolNix and FFmpeg tools from
-the verified manifest. Windows downloads use SHA256 verification and run outside
-the renderer. TXT-only workspaces do not trigger media-tool downloads.
+### Anime: search and download
 
-## Searching and downloading
+Type a title the way you would say it, for example `frieren` or `solo leveling`. AniList
+turns it into a series, you pick the entry (season, film, special) and get its episodes
+with titles and air dates. For each episode AniShift searches Torrentio, Nyaa, Knaben,
+nekoBT and TsukiHime, merges the results and ranks the releases with **Jakość** (quality)
+and **Pewność** (confidence that the release is this episode).
 
-The **Anime** row in the interactive interface takes a title the way you would say it:
-`solo leveling`, `mushoku tensei`, `frieren 2`, `solo leveling 1` (the trailing number is
-an episode, `4-10` a range). AniList turns the phrase into one series with its romaji and
-English names, so you pick the season from a short list that shows year, format, episode
-count and whether the series is finished or still airing. nyaa.si is then searched with
-every name of that series, in both the English and the non-English subtitle categories,
-and the 1080p+ releases are listed by release group with the subtitle language (`EN`,
-`FR`, `MULTI`), newest release first. English dubs and releases of unknown language stay
-hidden. When a release group numbers episodes across seasons (`Solo Leveling - 13` for
-the first episode of season 2), the row shows both numbers: `odc. 1 (13)`.
+In the episode list:
 
-In the results, Space ticks one episode, **A** ticks every episode of the highlighted
-group, **Z** asks for a range (`4-10`, `5-`, `-3`), **S** switches between newest and
-most seeded, **F** drops the episode filter from your phrase, and Enter sends the ticked
-episodes to qBittorrent. Files of one series always land in one folder,
-`workspace/<English title>/` (romaji when AniList has no English title), whichever
-group you took. If AniList does not answer, the phrase goes to nyaa.si as typed and the
-groups arrive ordered by seeders instead of by newest release; **S** switches that too.
+- **Space** ticks an episode, **A** ticks all, **Z** asks for a range;
+- **D** downloads the ticked episodes, or the highlighted one;
+- **I** (or Enter) opens the release list for the episode, where **D** downloads a chosen release;
+- **P** downloads an episode again;
+- **S** subscribes to the series;
+- Enter on a ready episode plays it.
 
-AniShift prepares its own verified qBittorrent executable in `external/bin/qbittorrent/`
-for the first download. Its profile, credentials and history live in `config/qbittorrent/`,
-separate from your personal installation. It selects its own available Web UI port.
-Downloads run concurrently. Completed jobs stop seeding and release their files before
-relocation; AniShift retains their acquisition history. Uploading during a download is possible.
+Release rows are ranked so that releases with Polish subtitles come first. Subscriptions
+wait for Polish subtitles (2 hours by default, configurable in Ustawienia › Pobieranie)
+before taking the best other release; a manual **D** downloads at once. Each source can be
+switched off in the same place.
+
+Downloads go through AniShift's own verified qBittorrent in `external/bin/qbittorrent/`.
+Its profile, credentials and history live in `config/qbittorrent/`, separate from your
+personal installation, and it picks its own free Web UI port. Downloads run concurrently;
+completed jobs stop seeding and release their files before processing.
 
 ```bash
-uv run anishift qbit setup    # optional: prepare the private binary ahead of the first download
+uv run anishift qbit setup    # optional: prepare the private client before the first download
 uv run anishift qbit status   # inspect readiness without starting the client
 ```
 
-The resident confirms selected torrent files through the client and disk before admitting Auto.
-An allocated full-size file or an unchanged timestamp alone is not proof of completion.
+### Subscriptions
 
-### Following a series
+**S** in the episode list opens a subscription draft; already aired episodes are ticked and
+download right away, later ones download after they air. The **Subskrypcje** tab lists
+subscriptions:
 
-In the Anime results press **O** on an episode to follow that series from that
-episode on, with that release group. AniShift queues the episodes already available
-and the resident checks according to episode air dates, release delays and bounded search windows. Highlight the first
-episode to collect the whole season, the latest one to get only what comes next.
+- **Enter** opens the season's episodes, where **T** downloads a waiting episode now;
+- **D** adds a new subscription through the Anime search;
+- **W** pauses or resumes, **R** checks now;
+- **Del** removes, **Ctrl+Z** restores the last removed one.
+
+A subscription closes itself when the season has finished and every episode is in place.
+Subscriptions are stored in the resident state, `config/watch/state.json`.
 
 ```bash
-uv run anishift subs list        # followed series, next episode, last check
-uv run anishift subs check       # check every followed series now
-uv run anishift subs remove ID   # stop following; downloaded files stay
+uv run anishift subs list        # subscriptions, next episode, last check
+uv run anishift subs check ID    # check one subscription now
+uv run anishift subs remove ID   # remove one subscription
 ```
 
-Followed series live in `config/subscriptions.json`. The State screen supports adding,
-enabling, disabling and removing subscriptions. Disabling stops new orders; accepted
-transfers have separate Stop, Resume and Cancel actions. Removing a subscription keeps media.
-Unlinked series use the configured hourly fallback; ended seasons do not poll indefinitely.
+### Processing and the library
 
-## Watching the library
+**Przetwarzanie** shows downloads and processing: **W** pauses or resumes a transfer,
+**Del** cancels it after confirmation and **H** opens the history.
 
-`workspace/` may hold one subfolder per series, for example `workspace/Frieren/`.
-Discovery reads the root and every subfolder except the managed `temp/` directory,
-and ignores hidden directories. Drop files directly into the workspace root. After successful
-processing, sources and related products move to `ready/` without rewriting their contents
-on the same volume. Name collisions preserve both episodes. Regenerate directly in `ready/`.
+`workspace/` may hold one subfolder per series. Discovery reads the root and every subfolder
+except the managed `temp/` directory and hidden directories. With the automation on,
+stable inputs enter the same scheduler used by Ręczny; confirmed existing products are reused.
+After successful processing, sources and products move to `ready/` without rewriting their
+contents on the same volume. Name collisions keep both episodes.
 
-In **Biblioteka**, Enter opens the final video or the recorded source video when the
-result consists of separate sidecars; F reveals the confirmed main product. In **Details**,
-Enter and F act on the selected file. Delete moves the whole set to the Recycle Bin
-immediately, without confirmation. Ctrl+Z restores the last deleted set
-from the Windows Recycle Bin, including after a resident restart. It never overwrites an
-occupied destination; action refusals appear as a concise error in the library.
-Undo is a single last-deletion action, not a stack of earlier deletions.
+In **Biblioteka**, Enter opens the result, **F** shows it in Explorer and **Del** moves the
+whole set to the Recycle Bin without confirmation. **Ctrl+Z** restores the last deleted set,
+also after a resident restart; it never overwrites an occupied destination and is a single
+undo, not a stack.
 
-Undo adds optional restore evidence to the existing schema-2 resident state. Builds from
-before this feature reject that state after the first Undo admission. Downgrading then
-requires coordinated recovery of the state and media; do not remove the restore fields
-or replace the ledger with an older backup to bypass validation.
+The resident state in `config/watch/state.json` is versioned (schema 5). A build reads
+older schemas and migrates them, but an older build refuses a newer state, so do not run
+an older AniShift on a state a newer one has written.
+
+After an interruption the resident verifies saved work and resumes safe unfinished operations.
+An unconfirmed remote operation or an exhausted retry budget stays visible for manual recovery.
+Existing products stay available while a replacement is being prepared.
+
+## Resident and autostart
 
 ```bash
-uv run anishift autostart enable    # register the logon task and start watching now
-uv run anishift autostart disable   # remove the task and stop watching
+uv run anishift autostart enable    # register the logon task and start the resident now
+uv run anishift autostart disable   # remove the task and stop the resident
 uv run anishift autostart status    # enabled | disabled | missing
-uv run anishift watch               # watch in this terminal instead of the logon task
+uv run anishift watch               # run the resident in this terminal instead
 uv run anishift watch status        # running (pid N) | stopped
-uv run anishift watch stop          # stop the watching process
+uv run anishift watch stop          # stop the resident
 ```
 
-The resident runs without spawning batch windows. Its tray icon opens the existing panel
-or one new panel. Progress and settings remain independently accessible. With Auto enabled,
-stable available inputs enter the same scheduler used by Manual; confirmed existing products
-are reused. Changing preferences does not regenerate old episodes.
-
-After interruption, the resident verifies saved work and resumes safe unfinished operations.
-An unconfirmed remote operation or exhausted retry budget remains visible for explicit manual
-recovery. Pending moves remain visible under Files; **P** retries them. Existing products stay
-available while a replacement is being prepared. `watch batch` only reports its replacement.
+The resident runs without console windows and has a tray icon that opens AniShift.
 
 ## Technical commands
 
@@ -159,41 +142,42 @@ uv run anishift doctor            # inspect tools, credentials, workspace, encod
 uv run anishift setup [--force]   # download and verify tools in external/bin/
 ```
 
+Before inspecting media, AniShift prepares missing MKVToolNix and FFmpeg from the verified
+manifest (SHA256). TXT-only workspaces do not trigger these downloads.
+
 Non-interactive runs use the resident and exit with `0` for full success, `1` when
 refused before start, `3` for a failed or partial run, and `4` when cancelled.
-User-facing refusals and errors remain concise; developer diagnostics are written
-to the structured log.
+User-facing errors stay concise; developer diagnostics go to the structured log.
 
 ## Configuration
 
-Interactive Settings persists individual supported values immediately. Configuration
-files remain available for advanced or initial setup:
+Ustawienia saves each supported value immediately. Configuration files remain available
+for advanced or initial setup:
 
 | File | Contents |
 |---|---|
-| `config/presets.json` | Automatic presets and the default preset |
-| `config/settings.json` | Workflow and engine preferences |
+| `config/presets.json` | Presets for `run --preset` and the default preset |
+| `config/settings.json` | Workflow, engine and download preferences |
 | `.env` | API keys and tokens |
 
-The Palantir model list is built into `anishift/services/llm/engines/palantir/constants.py`.
-The LLM provider is Palantir Foundry. Its token is read from
-`ANISHIFT_PALANTIR_TOKEN`, or from `FOUNDRY_API_TOKEN` when the prefixed value is
-absent. Secrets are never displayed; diagnostics only report whether one is
-configured.
+Translation uses Google by default; LLM translation is chosen in Ustawienia, where the
+provider and model are picked (Gemini by default). Each provider reads its own key from
+`.env`. Palantir Foundry is one of the providers; its model list is built into
+`anishift/services/llm/engines/palantir/constants.py` and its token is read from
+`ANISHIFT_PALANTIR_TOKEN`, or from `FOUNDRY_API_TOKEN` when the prefixed value is absent.
+Secrets are never displayed; diagnostics only report whether one is configured.
 
 ## Requirements
 
-- Python 3.14+
-- MKVToolNix and FFmpeg (`external/bin/` on Windows; installed on demand or by
-  `anishift setup`; non-Windows systems can use tools already on `PATH`)
-- On Windows, AniShift downloads and configures its private qBittorrent on demand;
-  a personal installation is not required. Managed torrent downloads require Windows.
+- Windows and Python 3.14+
+- MKVToolNix and FFmpeg in `external/bin/`, installed on demand or by `anishift setup`
+- qBittorrent is prepared privately on demand; a personal installation is not required
 - API credentials required by the selected translation or TTS engines
 - Optional Windows SAPI voices must be installed separately with a valid license
   and be available to the Python process architecture. AniShift does not install
   or activate commercial voices; an expired voice can display its own vendor dialog.
 
-## Documentation and plans
+## Documentation
 
-See the [documentation map](docs/README.md) for the current product direction,
-planning handoff and historical implementation records.
+See the [documentation map](docs/README.md) for the current work, the ideas file and
+historical implementation records.

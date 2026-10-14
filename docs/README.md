@@ -1,44 +1,37 @@
 # Dokumenty AniShift: zacznij tutaj
 
-## Używanie działającej aplikacji
-
 [README projektu](../README.md) opisuje uruchomienie, komendy i konfigurację.
-[Ustawienia](reference/settings.md) wyjaśniają ustawienia panelu.
-Plany opisują zamawiane zmiany, nie gwarantują obecnego zachowania programu.
+[Reference](reference/_index.md) zbiera niezależne materiały źródłowe, [ustawienia panelu](reference/settings.md)
+i [materiał do przyszłego layoutu napisów](reference/subtitle-layout-engine.md).
+Obowiązujące kontrakty związane z wdrożeniami pozostają przy swoich workstreamach:
+[zapis stanu panelu — §1](work/02-plain-cli/plans/05-panel-state-persistence.md#1-manifest--jak-ma-się-zachowywać-zapis-stanu)
+oraz [regresje tożsamości odcinka H1 — §10.6](work/08-acquisition/plans/07-episode-identity-integration.md#106-zasada-regresji).
 
-## Aktualna praca: lokalna automatyzacja, etap 06
+## Workstreamy
 
-**[Manual, Auto i niezależne subskrypcje: pakiet dla wykonawcy](work/local-automation/06-efficiency/README.md).**
+Każdy workstream pozostaje w `work/<nn>-<nazwa>/`, niezależnie od statusu; numer to kolejność powstania.
+Artefakty mają układ ze skilla `workflow` (§11): `specification.md`, `masterplan.md`,
+`intent.md`, `research/`, `plans/`, `reviews/`, `outcomes/` i `session-logs/` — tylko gdy istnieje treść.
+Historyczne plany i wyniki opisują swoje baseline'y, nie gwarantują dzisiejszego zachowania aplikacji.
+„Zrobione” oznacza dostarczony zakres, niekoniecznie scalony do `main`; PR #57 i #59 czekają na merge.
+„—” oznacza brak osobno ustalonego PR. Statusy poniżej: stan dokumentacji z 2026-10-14.
 
-Kolejność: [specyfikacja](work/local-automation/06-efficiency/spec.md), następnie
-[plan implementacji P01–P08](work/local-automation/06-efficiency/plan.md).
-[Research](work/local-automation/06-efficiency/research/2026-09-08-control-model-research.md)
-uzasadnia decyzje kodem i oficjalnymi kontraktami. Pakiet jest gotowy do implementacji;
-nie oznacza wdrożenia ani wykonanych testów Windows.
+| Katalog | Czym był | Status | PR |
+|---|---|---|---|
+| [00-rebuild/](work/00-rebuild/masterplan.md) | Przebudowa aplikacji, etapy 1–9; szczegóły etapów i PR w masterplanie | zrobione: rdzeń; porzucone: Textual etapu 9; zastąpione: pierwotna roadmapa | [#9](https://github.com/MattyMroz/AniShift/pull/9)–[#41](https://github.com/MattyMroz/AniShift/pull/41) |
+| [01-textual-tui/](work/01-textual-tui/) | Etap 10: Palantir, katalog modeli, usunięcie pipeline i Textual TUI | zrobione: wspólny rdzeń; porzucone: interfejs Textual (snapshot na gałęzi `archive/textual-tui`) | [#41](https://github.com/MattyMroz/AniShift/pull/41) |
+| [02-plain-cli/](work/02-plain-cli/) | Frontend Prompt Toolkit, ustawienia i zapis stanu panelu | zrobione | [#41](https://github.com/MattyMroz/AniShift/pull/41) |
+| [03-llm-translation/](work/03-llm-translation/) | Tłumaczenie LLM i przejście z JSON na numerowane linie | zrobione | — |
+| [04-reliability-audit/](work/04-reliability-audit/) | Audyt niezawodności, hardening i dopracowanie terminala | zrobione; dalszy odbiór i kwalifikacja w ideas.md | [#41](https://github.com/MattyMroz/AniShift/pull/41), [#50](https://github.com/MattyMroz/AniShift/pull/50) |
+| [05-automation/](work/05-automation/) | Pierwszy pakiet automatyzacji | zastąpione przez lokalną automatyzację | — |
+| [06-local-automation/](work/06-local-automation/) | Watch, wyszukiwanie, pobieranie i subskrypcje | zrobione; dalszy zakres zastąpiły etap 06 i pozyskiwanie | [#51](https://github.com/MattyMroz/AniShift/pull/51) |
+| [06-local-automation/06-efficiency/](work/06-local-automation/06-efficiency/) | Manual, Auto i niezależne subskrypcje | zrobione | [#56](https://github.com/MattyMroz/AniShift/pull/56) |
+| [07-local-automation-2/](work/07-local-automation-2/) | Foldery zadaniowe i dalszy model lokalnej pracy | zastąpione przez etap 06 i pozyskiwanie | [#56](https://github.com/MattyMroz/AniShift/pull/56), [#59](https://github.com/MattyMroz/AniShift/pull/59) |
+| [08-acquisition/](work/08-acquisition/) | Katalog modeli, wybór odcinka, pobieranie, subskrypcje i algorytm E00–A1 | zrobione na stosie; E6/E4/E5 odłożone w ideas.md | [#57](https://github.com/MattyMroz/AniShift/pull/57), [#59](https://github.com/MattyMroz/AniShift/pull/59) |
+| [09-tui-unify/](work/09-tui-unify/) | Ujednolicenie czterech zakładek panelu | zrobione na stosie; dalsze pomysły w ideas.md | [#59](https://github.com/MattyMroz/AniShift/pull/59) |
 
-Model: Manual wybiera odcinki; Auto reaguje na pliki; subskrypcje mają osobne
-Dodaj/Włącz/Wyłącz/Usuń; Regeneruj korzysta z Auto z żądaniem odtworzenia.
-Wszystko rozszerza obecny rdzeń, bez konkurencyjnych wykonawców.
+## Dalsza praca i wznowienie
 
-## Dowody dostarczonego kodu
-
-[Audyt i wyniki](work/reliability-audit/masterplan.md),
-[Auto](work/reliability-audit/outcomes/05-auto-preset-controls.md),
-[terminal](work/reliability-audit/outcomes/04-terminal-polish.md).
-[Starsze etapy lokalnej automatyzacji](plans/local-automation/README.md)
-pozostają historią implementacji. Wyniki odnoszą się do opisanych commitów,
-nie gwarantują dzisiejszej całości ani realizacji nowego planu 06.
-
-## Historia i referencje
-
-- [Etapy 1–10](plans/_index.md): historia przebudowy, nie bieżąca kolejka.
-- [Dawny pakiet lokalnej automatyzacji](plans/local-automation/README.md): starsze spec/brief/masterplan/handoff, zastąpione dla obecnej pracy przez pakiet etapu 06.
-- [Wcześniejszy pakiet automatyzacji](plans/automation/README.md): historia ustaleń.
-- `plans/future/`: odłożone pomysły, nie aktywne polecenia.
-- `work/10-tui/`: odrzucony Textual; nie przywracać na podstawie dawnych planów.
-- `work/plain-cli/`: geneza obecnego Prompt Toolkit i kontrakty interakcji.
-- `work/llm-translation/`: wcześniejszy workstream LLM.
-- `reference/` i `reports/`: materiały źródłowe, nie nowe zlecenia.
-
-Nie przenosimy masowo historii ani nie zrywamy jej odnośników. Bieżący kontrakt
-etapu 06 ma jedno miejsce w `docs/work/local-automation/06-efficiency/`.
+Obecnie nie ma aktywnego pakietu wykonawczego. Kolejny kierunek to jakość tłumaczenia,
+napisów, typesettingu i piosenek. Priorytety i odłożone etapy zbiera [ideas.md](ideas.md).
+[Session logs](session-logs/) zawierają punkty wznowienia sesji używane przez `load-session`.

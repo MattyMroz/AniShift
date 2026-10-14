@@ -7,8 +7,10 @@ the code:
 
 - `settings.json` stores workflow and engine preferences;
 - `presets.json` stores reusable run presets and the default preset;
-- `subscriptions.json` stores followed series and episode scheduling;
-- `watch/` stores resident control state and its local endpoint credentials;
+- `watch/` stores resident control state, including subscriptions in
+  `watch/state.json`, and its local endpoint credentials;
+- `subscriptions.json` is a frozen file from an earlier version, read only
+  once to migrate its subscriptions into `watch/state.json`;
 - `qbittorrent/` stores the resident's private client profile, process
   receipt and credentials. The executable is in `external/bin/qbittorrent/`.
 

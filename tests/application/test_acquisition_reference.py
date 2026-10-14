@@ -29,7 +29,8 @@ pytestmark = pytest.mark.integration
 type Outcome = tuple[str, str | None, PolishState | None, bool, str | None]
 
 _SEASON_CONFLICT_WITHDRAWN: Final[str] = (
-    "a1-recon.md §8: O7 withdrawn, an explicit other season in the name stays insufficient instead of a conflict"
+    "docs/work/08-acquisition/outcomes/04-a1-recon.md §8: O7 withdrawn, an explicit other season in the name stays"
+    " insufficient instead of a conflict"
 )
 _PUBLICATION_DATE_PENDING: Final[str] = "awaits the owner's decision of 2026-10-11: the publication date rule"
 _DOCUMENTED: Final[dict[str, str]] = {
