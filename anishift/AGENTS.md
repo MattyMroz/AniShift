@@ -5,8 +5,8 @@ Pakiet aplikacji. Composition root i hierarchia błędów tutaj; reszta w moduł
 ## Moduły (każdy ma własny AGENTS.md)
 
 - `application/` — czysty model produktu, planowanie i wykonawcze use case'y
-- `cli/` — Typer entry point, jedyne wejście: subkomendy techniczne i `run --preset`
-- `services/` — domeny audio, catalog, extraction, llm, subtitles, torrents, translation i tts
+- `cli/` — Typer entry point: gołe `anishift` otwiera interfejs Prompt Toolkit, plus subkomendy techniczne i `run --preset`
+- `services/` — domeny audio, catalog, composition, extraction, llm, media, subtitles, torrents, translation i tts
 - `text/` — bezdomenowe granice Unicode, skróty i segmentacja grafemów
 - `setup/` — pobieranie i instalacja zewnętrznych binarek
 - `platform/` — kod zależny od systemu (binarki, wykrycie OS)

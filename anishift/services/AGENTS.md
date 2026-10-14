@@ -5,10 +5,13 @@ Domeny usług. Każda domena z wyborem silnika ma rejestr w `engines/`; reszta t
 ## Domeny (każda ma własny AGENTS.md)
 
 - `audio/` — timeline, normalizacja, kanały, miks, codec i resume sidecara
+- `catalog/` — rozpoznanie tytułu i numeracja sezonów oraz odcinków (AniList, ani.zip, Kitsu, ARM)
+- `composition/` — składanie źródłowego kontenera i gotowych artefaktów w jeden zweryfikowany plik
 - `extraction/` — neutralna ekstrakcja pojedynczych ścieżek z MKV/MP4 oraz legacy ekstrakcja MKV
 - `llm/` — providerzy modeli językowych z leniwym rejestrem
 - `media/` — neutralne rozpoznawanie kontenerów i ścieżek MKV/MP4
 - `subtitles/` — klasyfikacja stylów ASS, split spoken/displayed, zapis ASS/SRT
+- `torrents/` — źródła wydań (Torrentio, Nyaa, Knaben, nekoBT, TsukiHime), rozpoznanie nazw i klient qBittorrent
 - `translation/` — tłumaczenie z rejestrem silników (deepl/google/llm)
 - `tts/` — neutralna synteza mowy z rejestrem providerów i resume klipów
 

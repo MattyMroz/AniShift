@@ -2,7 +2,7 @@
 
 Terminalowy lektor anime po polsku: MKV → napisy → tłumaczenie → TTS → merge. Siostra MangaShift.
 
-Uruchamianie i bieżący interfejs: `README.md`. `docs/plans/plan-anishift.md` jest historyczną roadmapą; aktualny frontend to Prompt Toolkit w `anishift/cli/interactive/`.
+Uruchamianie i bieżący interfejs: `README.md`. `docs/plans/plan-anishift.md` jest historyczną roadmapą; aktualny frontend to Prompt Toolkit w `anishift/cli/interactive/`: Home (Panel, Ręczny, Ustawienia, Wyjście) i Panel z czterema zakładkami — Anime, Subskrypcje, Przetwarzanie, Biblioteka. Pomysły i odłożone etapy: `docs/ideas.md`.
 Wzorzec do recyklingu struktury i nazewnictwa: `../MangaShift/mangashift/` — bierz dobre, słabe rób lepiej.
 
 ## Bramki jakości (przed każdym commitem)
@@ -70,7 +70,8 @@ Każdy obszar poniżej ma własny AGENTS.md z pułapkami i konwencjami — wczyt
 - `anishift/` — pakiet aplikacji (composition root, hierarchia błędów); ma własny AGENTS.md
 - `tests/` — testy pytest; konwencje i markery w jego AGENTS.md
 - `docs/plans/` — historyczne plany etapów; `docs/reference/` — audyt mm_avh + wzorzec mangashift
-- `docs/work/` — artefakty aktywnego workstreamu (spec + plan + graf zadań), poza `docs/plans/`
+- `docs/work/` — workstreamy (spec + plan + wyniki); bieżący wskazuje `docs/README.md`
+- `docs/ideas.md` — jedyny plik pomysłów i odłożonych etapów
 - `external/` — pobrane binarki (gitignored) + docs HTML narzędzi; szczegóły w `external/README.md`
 - `config/` — runtime katalog na `settings.json` panelu (gitignored); opis w `config/README.md`
 - `scripts/hooks/` — hook `check_commit_msg.py` (Conventional Commits); `scripts/tmp/` — jednorazowe
