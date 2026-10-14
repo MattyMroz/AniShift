@@ -121,10 +121,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   (U08) the Subscriptions tab is highlighted, tab keys count from it, and any tab switch
   drops that context first, including an open range editor and marks (an admitted batch survives). `anishift subs` offers `list`, `check` and `remove` through the owner. `interactive/state.py`,
   `interactive/anime_view.py`, `main.py`
-- Cztery zakładki panelu mają jeden słownik klawiszy (`docs/work/tui-unify/plan.md` §3–§7). Stopka i pomoc
+- Cztery zakładki panelu mają jeden słownik klawiszy (`interactive/actions.py`, `tests/cli/test_panel_keys.py`). Stopka i pomoc
   `?` powstają z jednej funkcji akcji ekranu (`ScreenActions` w `actions.py`); łańcuchy `if` obsługi klawiszy
   zostają, a złote zestawy i sonda klawiszy w `tests/cli/test_panel_keys.py` pilnują zgodności. Ciche aliasy
-  (§3.1) działają, ale nie trafiają do stopki ani pomocy. Panel startuje na Subskrypcjach, także z zasobnika
+  (testy w `tests/cli/test_panel_keys.py`) działają, ale nie trafiają do stopki ani pomocy. Panel startuje na Subskrypcjach, także z zasobnika
   (`--state`). `Backspace` poza polem tekstowym działa jak Esc w Anime (także BUSY i PROBLEM), w Ręcznym
   i w zakładkach; w polach tekstowych kasuje znak. Anulowanie w Przetwarzaniu (`X`, `Delete`, `C`) uzbraja
   `_question`; anuluje dopiero Enter (także klik w `Enter tak`), a każdy inny klawisz (także Tab i ←→), klik w wiersz
@@ -400,7 +400,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   dwóch białych komórek i przerwy między zaznaczonymi regionami jednego wiersza płaski `SELECTION_GAP_STYLE`.
   `interactive/pointer.py`, `interactive/app.py`
 - Zapis stanu panelu ma dziesięć reguł i JEDNO źródło:
-  `docs/work/plain-cli/06_state_persistence.md`. Cztery łamane najczęściej:
+  `docs/reference/panel-state-persistence.md`. Cztery łamane najczęściej:
   (1) nawigacja — `↑↓`, `PageUp`/`PageDown`, `Home`/`End`, kółko — NIGDY nie zmienia
   stanu; kulka `●` stoi na zapisanej wartości, a wybiera `Enter`;
   (2) zapis jest cichy, sukces nie ma komunikatu — także reset — a `Przywróć domyślne`

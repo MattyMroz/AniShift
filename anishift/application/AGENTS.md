@@ -154,7 +154,7 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - Zmiana H1 wymaga minimalnego przypadku padającego w
   `tests/fixtures/acquisition/identity-regressions.json`, poprawki konkretnej przyczyny, tłumaczeń
   powodów, testów tożsamości/golden i raportu porównania; procedura w
-  `docs/work/acquisition/plans/e1-integration.md` §10.6, a zmiana golden wymaga niezależnego review.
+  `docs/reference/episode-identity-integration.md` §10.6, a zmiana golden wymaga niezależnego review.
   Nigdy nie zamieniaj wyjątku programistycznego w niepewny werdykt.
 - `AcquisitionService.franchise/episodes/offer` to operacje katalogu tylko do odczytu wystawione
   przez IPC ownera. Grafy, mapowania i harmonogramy zostają w pamięci usługi; nie powstaje przyjęcie

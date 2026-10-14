@@ -1,41 +1,26 @@
 # Dokumenty AniShift: zacznij tutaj
 
-## Używanie działającej aplikacji
+## Co obowiązuje
 
 [README projektu](../README.md) opisuje uruchomienie, komendy i konfigurację.
-[Ustawienia](reference/settings.md) wyjaśniają ustawienia panelu.
-Plany opisują zamawiane zmiany, nie gwarantują obecnego zachowania programu.
+[Reference](reference/_index.md) zbiera bieżące kontrakty i wiedzę do dalszej pracy:
+
+- [ustawienia panelu](reference/settings.md);
+- [manifest zapisu stanu panelu — §1](reference/panel-state-persistence.md#1-manifest--jak-ma-się-zachowywać-zapis-stanu);
+- [procedura regresji tożsamości odcinka H1 — §10.6](reference/episode-identity-integration.md#106-zasada-regresji);
+- [materiał do przyszłego layoutu napisów](reference/subtitle-layout-engine.md).
 
 ## Aktualna praca
 
-Pobieranie anime, subskrypcje i ujednolicony panel z czterema zakładkami leżą na
-stosie PR #57 → PR #59 i czekają na merge do `main`:
+Obecnie nie ma aktywnego pakietu wykonawczego w `work/`. Pozyskiwanie E00–A1
+i ujednolicenie panelu są zakończone na stosie PR #57 → #59, oczekującym na merge.
+Kolejny kierunek to jakość tłumaczenia, napisów, typesettingu i piosenek.
+Priorytety, pomysły oraz odłożone etapy zbiera [ideas.md](ideas.md).
+`work/` powstanie dopiero dla przyjętej bieżącej pracy.
 
-- [masterplan pozyskiwania](work/acquisition/masterplan.md) ze
-  [specyfikacją](work/acquisition/spec.md), [kontraktem algorytmu](work/acquisition/algorithm-spec.md)
-  i [ekranami](work/acquisition/ux.md);
-- [jeden panel, cztery zakładki](work/tui-unify/plan.md) i jego
-  [drugi plan](work/tui-unify/plan-02.md).
+## Historia
 
-Pomysły na później, odłożone etapy i decyzje „nie teraz” zbiera jeden plik:
-[ideas.md](ideas.md).
+- [Archiwum](archive/README.md) — jedna lista etapów, statusów i PR, wraz z dawnymi raportami i dowodami.
+- [Session logs](session-logs/) — punkty wznowienia sesji; ścieżkę wykorzystuje `load-session`.
 
-## Dowody dostarczonego kodu
-
-- [Etap 06: Manual, Auto i subskrypcje](work/local-automation/06-efficiency/README.md), scalony w PR #56.
-- [Audyt niezawodności i wyniki](work/reliability-audit/masterplan.md).
-- [Wyniki etapów pozyskiwania](work/acquisition/outcomes/).
-
-Wyniki odnoszą się do opisanych commitów, nie gwarantują dzisiejszej całości.
-
-## Historia i referencje
-
-- [Etapy 1–10](plans/_index.md): historia przebudowy, nie bieżąca kolejka.
-- [Dawny pakiet lokalnej automatyzacji](plans/local-automation/README.md) i
-  [wcześniejszy pakiet automatyzacji](plans/automation/README.md): historia ustaleń.
-- `work/local-automation-2/`: historyczna specyfikacja folderów zadaniowych, wchłonięta przez etap 06 i pozyskiwanie.
-- `plans/future/subtitle-layout-engine.md`: koncepcja silnika układu napisów (issue #22).
-- `work/10-tui/`: odrzucony Textual; nie przywracać na podstawie dawnych planów.
-- `work/plain-cli/`: geneza obecnego Prompt Toolkit i kontrakty interakcji.
-- `work/llm-translation/`: wcześniejszy workstream LLM, wdrożony.
-- `reference/` i `reports/`: materiały źródłowe, nie nowe zlecenia.
+Archiwalne plany i wyniki odnoszą się do opisanych commitów, nie do dzisiejszej całości.

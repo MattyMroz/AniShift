@@ -19,7 +19,7 @@ albo połączenia; miejsce zapisu kluczy API opisuje sekcja Połączenia.
 
 ## Jak panel zapisuje
 
-Reguły zapisu opisuje [kontrakt panelu](../work/plain-cli/06_state_persistence.md).
+Reguły zapisu opisuje [kontrakt panelu](panel-state-persistence.md).
 W skrócie:
 
 - Chodzenie po liście (`↑↓`, `PageUp`/`PageDown`, `Home`/`End`, kółko) nic nie zmienia.
