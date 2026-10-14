@@ -1,10 +1,10 @@
 # docs/reference — materiały referencyjne
 
-Baza wiedzy dla AniShift: kontrakty i materiały źródłowe. Historia etapów: [archiwum](../archive/README.md). Pomysły na przyszłość: [`../ideas.md`](../ideas.md).
+Baza wiedzy dla AniShift: kontrakty i materiały źródłowe. Historia etapów: [workstreamy](../README.md). Pomysły na przyszłość: [`../ideas.md`](../ideas.md).
 
 - [Ustawienia](settings.md) — bieżąca dokumentacja panelu.
-- [Zapis stanu panelu](panel-state-persistence.md) — obowiązujący manifest w §1; pozostała część zachowuje plan i baseline wdrożenia.
-- [Integracja tożsamości odcinka](episode-identity-integration.md) — obowiązująca procedura regresji H1 w §10.6; pozostała część zachowuje kontekst historycznej integracji.
+- [Zapis stanu panelu](../work/plain-cli/plans/05-panel-state-persistence.md) — obowiązujący manifest w §1; pozostała część zachowuje plan i baseline wdrożenia.
+- [Integracja tożsamości odcinka](../work/acquisition/plans/07-episode-identity-integration.md) — obowiązująca procedura regresji H1 w §10.6; pozostała część zachowuje kontekst historycznej integracji.
 - [Silnik layoutu napisów](subtitle-layout-engine.md) — materiał do przyszłej pracy, nie gotowa implementacja.
 
 ## `mm-avh-audit/` — audyt starego kodu mm_avh

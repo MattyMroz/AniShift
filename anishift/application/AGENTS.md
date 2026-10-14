@@ -86,7 +86,7 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   projekcje, fakty wydań i ranking. Produkcja przekazuje tylko `target` i `candidate`; cel buduj z pełnego
   `FranchiseGraph` i surowych odcinków ani.zip, nigdy z wyświetlanej franczyzy. Zmiana klasyfikacji: minimalny
   przypadek w `tests/fixtures/acquisition/identity-regressions.json` i procedura
-  `docs/reference/episode-identity-integration.md` §10.6; zmiana golden wymaga niezależnego review. Nigdy nie zamieniaj
+  `docs/work/acquisition/plans/07-episode-identity-integration.md` §10.6; zmiana golden wymaga niezależnego review. Nigdy nie zamieniaj
   wyjątku programistycznego w niepewny werdykt.
 - `AcquisitionService.franchise/episodes/offer` to odczyty katalogu przez IPC ownera, bez przyjęcia i receipt; awaria
   harmonogramu zachowuje mapowanie z ostrzeżeniem. Reguły sugestii: `test_episode_selection.py`, `test_acquisition.py`.

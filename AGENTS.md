@@ -2,7 +2,7 @@
 
 Terminalowy lektor anime po polsku: MKV → napisy → tłumaczenie → TTS → merge. Siostra MangaShift.
 
-Uruchamianie i bieżący interfejs: `README.md`. `docs/archive/stages/plan-anishift.md` jest historyczną roadmapą; aktualny frontend to Prompt Toolkit w `anishift/cli/interactive/`: Home (Panel, Ręczny, Ustawienia, Wyjście) i Panel z czterema zakładkami — Anime, Subskrypcje, Przetwarzanie, Biblioteka. Pomysły i odłożone etapy: `docs/ideas.md`.
+Uruchamianie i bieżący interfejs: `README.md`. `docs/work/rebuild/masterplan.md` jest historyczną roadmapą; aktualny frontend to Prompt Toolkit w `anishift/cli/interactive/`: Home (Panel, Ręczny, Ustawienia, Wyjście) i Panel z czterema zakładkami — Anime, Subskrypcje, Przetwarzanie, Biblioteka. Pomysły i odłożone etapy: `docs/ideas.md`.
 Wzorzec do recyklingu struktury i nazewnictwa: `../MangaShift/mangashift/` — bierz dobre, słabe rób lepiej.
 
 ## Bramki jakości (przed każdym commitem)
@@ -69,12 +69,7 @@ Każdy obszar poniżej ma własny AGENTS.md z pułapkami i konwencjami — wczyt
 
 - `anishift/` — pakiet aplikacji (composition root, hierarchia błędów); ma własny AGENTS.md
 - `tests/` — testy pytest; konwencje i markery w jego AGENTS.md
-- `docs/README.md` — mapa dokumentacji i aktualnej pracy
-- `docs/reference/` — obowiązujące kontrakty, materiały źródłowe i wiedza na przyszłość
-- `docs/work/` — tylko bieżąca praca; katalog powstaje, gdy istnieje aktywny workstream
-- `docs/archive/` — zakończone, porzucone i zastąpione etapy; statusy i PR w `docs/archive/README.md`
-- `docs/ideas.md` — jedyny plik pomysłów i odłożonych etapów
-- `docs/session-logs/` — punkty wznowienia sesji, czytane przez skill `load-session`
+- `docs/` — mapa i statusy workstreamów w `README.md`, pomysły w `ideas.md`, niezależne materiały w `reference/`, punkty wznowienia w `session-logs/`. Każdy workstream, również zakończony, pozostaje w `docs/work/<nazwa>/` z artefaktami według skilla `workflow` (§11).
 - `external/` — pobrane binarki (gitignored) + docs HTML narzędzi; szczegóły w `external/README.md`
 - `config/` — runtime katalog na `settings.json` panelu (gitignored); opis w `config/README.md`
 - `scripts/hooks/` — hook `check_commit_msg.py` (Conventional Commits); `scripts/tmp/` — jednorazowe

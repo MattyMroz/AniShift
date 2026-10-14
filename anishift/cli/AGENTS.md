@@ -176,7 +176,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 
 ## Ustawienia
 
-- Reguły zapisu: `docs/reference/panel-state-persistence.md` §1; zakresy resetu: `docs/reference/settings.md`. Każde
+- Reguły zapisu: `docs/work/plain-cli/plans/05-panel-state-persistence.md` §1; zakresy resetu: `docs/reference/settings.md`. Każde
   wyjście utrwala `_pending` przez `SettingsController.close()` (`app._close_settings`, też z `finally` sesji).
 - Strzałka na liczbie ląduje w `_pending` i utrwala się po `_SAVE_DELAY_SECONDS` w `after_render`. Wiersz niesie
   wartość z BUDOWY listy, więc natychmiast widoczna zmiana wymaga `_refresh_menu`. Nieudany zapis zachowuje
