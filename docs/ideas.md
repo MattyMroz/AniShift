@@ -93,6 +93,7 @@ Oglądanie tylko lokalnie na PC. Cel: zobaczyć obrazek, poznać tytuł, wybrać
 - **Opisy ustawień i nazwy limitów** — `potem`. Issue [#42](https://github.com/MattyMroz/AniShift/issues/42).
 - **Drobne długi z etapu 10** — `do zbadania`. Pozycje „Odłożone świadomie” niezwiązane z Textualem (reset wyboru głosu po zmianie nazwy, zmienna środowiska wygrywająca z `.env`, walidacja międzypolowa `LlmConfig`, nieużywany `EventBuffer`, ciężki import `anishift/config/settings.py`) w [decisions.md](work/01-textual-tui/decisions.md); każdą sprawdzić w obecnym kodzie przed pracą.
 - **Uwagi dla MangaShift** — `kiedyś`. W MangaShift binarki nie są weryfikowane hashem, a hash modelu jest w dwóch miejscach. Szkic jednego katalogu zasobów (binarki i modele, `kind` oddzielony od `source.type`) przyda się, gdy AniShift dostanie lokalny model. Pełny tekst: `git show bede512:docs/reference/todo-mangashift.md`.
+- **Backport paska wielu zadań do MangaShift** — `kiedyś`. AniShift dołożył do wspólnego `utils/rich_console` klasę `MultiProgressManager` (`progress/multi.py`: wiele pasków naraz, kolor na zadanie, karmienie bajtami); żeby `utils/` pozostał wspólny 1:1, trzeba ją przenieść do MangaShift. Szczegóły: `git show bede512:docs/reference/todo-mangashift.md`, sekcja „Backport do MangaShift”.
 
 ## 6. Dalekie
 

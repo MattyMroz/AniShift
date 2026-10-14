@@ -62,9 +62,10 @@ In the episode list:
 - **S** subscribes to the series;
 - Enter on a ready episode plays it.
 
-AniShift prefers releases with Polish subtitles. When none exists yet, it waits for them
-(2 hours by default, configurable in Ustawienia › Pobieranie) and then takes the best other
-release. Each source can be switched off in the same place.
+Release rows are ranked so that releases with Polish subtitles come first. Subscriptions
+wait for Polish subtitles (2 hours by default, configurable in Ustawienia › Pobieranie)
+before taking the best other release; a manual **D** downloads at once. Each source can be
+switched off in the same place.
 
 Downloads go through AniShift's own verified qBittorrent in `external/bin/qbittorrent/`.
 Its profile, credentials and history live in `config/qbittorrent/`, separate from your
@@ -112,10 +113,9 @@ whole set to the Recycle Bin without confirmation. **Ctrl+Z** restores the last 
 also after a resident restart; it never overwrites an occupied destination and is a single
 undo, not a stack.
 
-Undo adds optional restore evidence to the existing schema-2 resident state. Builds from
-before this feature reject that state after the first Undo admission. Downgrading then
-requires coordinated recovery of the state and media; do not remove the restore fields
-or replace the ledger with an older backup to bypass validation.
+The resident state in `config/watch/state.json` is versioned (schema 5). A build reads
+older schemas and migrates them, but an older build refuses a newer state, so do not run
+an older AniShift on a state a newer one has written.
 
 After an interruption the resident verifies saved work and resumes safe unfinished operations.
 An unconfirmed remote operation or an exhausted retry budget stays visible for manual recovery.
@@ -160,8 +160,10 @@ for advanced or initial setup:
 | `config/settings.json` | Workflow, engine and download preferences |
 | `.env` | API keys and tokens |
 
-The LLM provider is Palantir Foundry; its model list is built into
-`anishift/services/llm/engines/palantir/constants.py`. The token is read from
+Translation uses Google by default; LLM translation is chosen in Ustawienia, where the
+provider and model are picked (Gemini by default). Each provider reads its own key from
+`.env`. Palantir Foundry is one of the providers; its model list is built into
+`anishift/services/llm/engines/palantir/constants.py` and its token is read from
 `ANISHIFT_PALANTIR_TOKEN`, or from `FOUNDRY_API_TOKEN` when the prefixed value is absent.
 Secrets are never displayed; diagnostics only report whether one is configured.
 

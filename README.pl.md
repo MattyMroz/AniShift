@@ -64,9 +64,9 @@ Na liście odcinków:
 - **S** subskrybuje serię;
 - Enter na gotowym odcinku go odtwarza.
 
-AniShift woli wydania z polskimi napisami. Gdy takiego jeszcze nie ma, czeka na nie
-(domyślnie 2 godziny, do zmiany w Ustawienia › Pobieranie), a potem bierze najlepsze inne
-wydanie. W tym samym miejscu wyłączysz każde źródło osobno.
+Wydania z polskimi napisami są na liście wyżej. Subskrypcje czekają na polskie napisy
+(domyślnie 2 godziny, do zmiany w Ustawienia › Pobieranie), a potem biorą najlepsze inne
+wydanie; ręczne **D** pobiera od razu. W tym samym miejscu wyłączysz każde źródło osobno.
 
 Pobieraniem zajmuje się własny, zweryfikowany qBittorrent AniShift w `external/bin/qbittorrent/`.
 Jego profil, dane logowania i historia leżą w `config/qbittorrent/`, osobno od twojej
@@ -114,10 +114,9 @@ cały zestaw do Kosza bez pytania. **Ctrl+Z** przywraca ostatnio usunięty zesta
 restarcie rezydenta. Nigdy nie nadpisuje zajętego miejsca i cofa tylko jedno, ostatnie
 usunięcie.
 
-Cofanie dopisuje opcjonalne dane przywracania do stanu rezydenta w schemacie 2. Wersje sprzed
-tej funkcji odrzucą taki stan po pierwszym cofnięciu. Powrót do starszej wersji wymaga wtedy
-wspólnego odtworzenia stanu i mediów. Nie usuwaj pól przywracania i nie podmieniaj ledgera
-starszą kopią, żeby ominąć walidację.
+Stan rezydenta w `config/watch/state.json` ma wersję (schemat 5). Nowsza wersja AniShift
+czyta i migruje starsze schematy, ale starsza odrzuci stan zapisany przez nowszą, więc nie
+uruchamiaj starszego AniShift na stanie zapisanym przez nowszy.
 
 Po przerwie rezydent sprawdza zapisaną pracę i wznawia bezpieczne, niedokończone operacje.
 Niepotwierdzona operacja zdalna albo wyczerpany limit ponowień zostaje widoczny do ręcznego
@@ -162,8 +161,10 @@ przy pierwszej konfiguracji i zaawansowanych zmianach:
 | `config/settings.json` | Preferencje przepływu, silników i pobierania |
 | `.env` | Klucze API i tokeny |
 
-Dostawcą LLM jest Palantir Foundry; lista modeli jest wbudowana w
-`anishift/services/llm/engines/palantir/constants.py`. Token pochodzi z
+Domyślnie tłumaczy Google; tłumaczenie przez LLM wybierasz w Ustawieniach, razem z dostawcą
+i modelem (domyślnie Gemini). Każdy dostawca czyta własny klucz z `.env`. Palantir Foundry
+jest jednym z dostawców: jego lista modeli jest wbudowana w
+`anishift/services/llm/engines/palantir/constants.py`, a token pochodzi z
 `ANISHIFT_PALANTIR_TOKEN`, a gdy go brak, z `FOUNDRY_API_TOKEN`. Sekrety nigdy nie są
 wyświetlane; diagnostyka mówi tylko, czy są ustawione.
 
