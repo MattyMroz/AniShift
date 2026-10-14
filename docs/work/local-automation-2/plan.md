@@ -1,6 +1,6 @@
 # AniShift: plan wdrożenia folderów i nowego przepływu
 
-Status: **READY do wykonania, z opisanymi próbami platformowymi**
+Status: **historyczny** — zakres wchłonęły etap 06 (PR #56) i workstream `acquisition`
 Specyfikacja: [spec.md](spec.md)
 Baseline: `25121038fbf4ff1e1cecec3d4e644fdb235be679`
 Odczytana gałąź: `work/local-automation/06-efficiency`

@@ -1,6 +1,6 @@
 # Historyczne plany etapów AniShift
 
-> Bieżący punkt wejścia: [dokumenty](../README.md), [aktualna automatyzacja](automation/README.md). Poniższy spis jest historią, nie kolejką wykonania.
+> Bieżący punkt wejścia: [dokumenty](../README.md); pomysły na później: [ideas.md](../ideas.md). Poniższy spis jest historią, nie kolejką wykonania.
 
 > źródło historyczne dla etapów 1–8: [`plan-anishift.md`](plan-anishift.md) (legacy roadmap). wzorce: [`../reference/mangashift-architecture/`](../reference/mangashift-architecture/) (engine-factory-standard, engine-standard, naming-glossary).
 > zasady wspólne: recykling MangaShift 1:1, prostota (KISS/YAGNI), rejestr silników TYLKO w tts/translation/llm, fasady sync, zero kodu poza planem etapu.

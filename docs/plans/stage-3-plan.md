@@ -1,7 +1,7 @@
 # Etap 3.1 + 3 — plan wykonawczy
 
 > Data: 2026-07-17 | Autor: Fable | Realizuje: `docs/plans/stage-3-requirements.md` (zaakceptowane wymagania — kontrakt).
-> Źródła zweryfikowane w kodzie: `docs/reference/stan-repo.md` (mapa repo), `../mm_avh_working_space/modules/{mkvtoolnix,track_selector,subtitle,style_classifier}.py` + `start.py` (materiał źródłowy portu), `utils/rich_console/progress/manager.py` (676 linii, przeczytany w całości), `external/docs/mkvtoolnix/mkvextract.html` (`--gui-mode` → `#GUI#progress N%`, potwierdzone w :191-198).
+> Źródła zweryfikowane w kodzie: stan-repo.md (usunięta mapa repo, w historii git) (mapa repo), `../mm_avh_working_space/modules/{mkvtoolnix,track_selector,subtitle,style_classifier}.py` + `start.py` (materiał źródłowy portu), `utils/rich_console/progress/manager.py` (676 linii, przeczytany w całości), `external/docs/mkvtoolnix/mkvextract.html` (`--gui-mode` → `#GUI#progress N%`, potwierdzone w :191-198).
 > Zasada: **KOD > AUDYT**. Wszystkie liczby w tym planie pochodzą z pomiarów opisanych w wymaganiach albo z lektury kodu — nic z pamięci.
 
 Plan jest pisany tak, żeby agent kodujący **nie podejmował żadnych decyzji projektowych** — każda sygnatura, stała, nazwa pliku i wartość progu jest rozstrzygnięta tutaj. Tam, gdzie wartość musi wyjść z pomiaru (sufit równoległości, próg FBF, lista 2 znanych pudeł), plan podaje **dokładną procedurę pomiaru** i miejsce wpisania wyniku.
@@ -532,7 +532,7 @@ Twarde zakazy importowe (agent NIE robi):
 
 ### 9.3 Wzorce obowiązujące każdy nowy plik
 
-Szkielet modułu, fabryka błędów `_fail`, osobne bloki `except` na typ (bug ruff 0.15.21 format psuje `except (A, B):`), `msg` do zmiennej przed `raise` (TRY003/EM101), `from __future__ import annotations` pierwszy, `__all__` po importach, stałe `Final` z docstringiem w sekcji `# ── Constants ──`, `dataclass(slots=True[, frozen=True])`, `Literal` dla zamkniętych zbiorów, max 2 poziomy zagnieżdżeń, guard clauses — wszystko wg wzorców 4.1–4.4 z `docs/reference/stan-repo.md`. `console.print` zamiast `print` (T20) — ale w serwisach i runnerze **żadnego printowania w ogóle**.
+Szkielet modułu, fabryka błędów `_fail`, osobne bloki `except` na typ (bug ruff 0.15.21 format psuje `except (A, B):`), `msg` do zmiennej przed `raise` (TRY003/EM101), `from __future__ import annotations` pierwszy, `__all__` po importach, stałe `Final` z docstringiem w sekcji `# ── Constants ──`, `dataclass(slots=True[, frozen=True])`, `Literal` dla zamkniętych zbiorów, max 2 poziomy zagnieżdżeń, guard clauses — wszystko wg wzorców 4.1–4.4 z stan-repo.md (usunięta mapa repo, w historii git). `console.print` zamiast `print` (T20) — ale w serwisach i runnerze **żadnego printowania w ogóle**.
 
 ## 10. `anishift/services/extraction/` — plik po pliku
 
@@ -2775,4 +2775,4 @@ Część II (kolejność kroków §15): `feat(extraction): domain skeleton and t
 
 ---
 
-Koniec planu. Wymagania → `docs/plans/stage-3-requirements.md`; mapa repo → `docs/reference/stan-repo.md`. Przy każdej sprzeczności między tym planem a kodem źródłowym mm_avh w kwestii portowanych wartości: **KOD mm_avh > plan** (wartości portu mają być bit w bit; plan cytuje je wtórnie).
+Koniec planu. Wymagania → `docs/plans/stage-3-requirements.md`; mapa repo → stan-repo.md (usunięta mapa repo, w historii git). Przy każdej sprzeczności między tym planem a kodem źródłowym mm_avh w kwestii portowanych wartości: **KOD mm_avh > plan** (wartości portu mają być bit w bit; plan cytuje je wtórnie).

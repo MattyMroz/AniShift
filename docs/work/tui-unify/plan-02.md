@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: projekt do rozmowy z właścicielem; punkty „Do decyzji” rozstrzyga właściciel ekran po ekranie
+status: w toku na work/tui/02-unified-tabs (PR #59); punkty „Do decyzji” rozstrzyga właściciel ekran po ekranie
 created: 2026-10-11
 baseline: work/tui/02-unified-tabs @ 49dd9ec
 execution branch: work/tui/02-unified-tabs

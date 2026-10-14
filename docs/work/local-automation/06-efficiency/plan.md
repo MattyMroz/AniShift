@@ -1,6 +1,6 @@
 ---
 kind: implementation-plan
-status: IN_PROGRESS
+status: done (PR #56 merged 2026-09-23)
 created: 2026-09-08
 updated: 2026-09-13
 baseline: a7d319f334a062d0fe016c774d9a5fb4fccbe9b6

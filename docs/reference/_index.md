@@ -1,6 +1,6 @@
 # docs/reference — materiały referencyjne
 
-Baza wiedzy dla AniShift (materiały historyczne, nie aktywne plany). Aktywne plany etapów: `../plans/`. Pomysły na przyszłość: `../plans/future/`.
+Baza wiedzy dla AniShift (materiały historyczne, nie aktywne plany). Historia etapów: `../plans/`. Pomysły na przyszłość: [`../ideas.md`](../ideas.md).
 
 ## `mm-avh-audit/` — audyt starego kodu mm_avh
 

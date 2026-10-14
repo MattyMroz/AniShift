@@ -6,39 +6,36 @@
 [Ustawienia](reference/settings.md) wyjaśniają ustawienia panelu.
 Plany opisują zamawiane zmiany, nie gwarantują obecnego zachowania programu.
 
-## Aktualna praca: lokalna automatyzacja, etap 06
+## Aktualna praca
 
-**[Manual, Auto i niezależne subskrypcje: pakiet dla wykonawcy](work/local-automation/06-efficiency/README.md).**
+Pobieranie anime, subskrypcje i ujednolicony panel z czterema zakładkami leżą na
+stosie PR #57 → PR #59 i czekają na merge do `main`:
 
-Kolejność: [specyfikacja](work/local-automation/06-efficiency/spec.md), następnie
-[plan implementacji P01–P08](work/local-automation/06-efficiency/plan.md).
-[Research](work/local-automation/06-efficiency/research/2026-09-08-control-model-research.md)
-uzasadnia decyzje kodem i oficjalnymi kontraktami. Pakiet jest gotowy do implementacji;
-nie oznacza wdrożenia ani wykonanych testów Windows.
+- [masterplan pozyskiwania](work/acquisition/masterplan.md) ze
+  [specyfikacją](work/acquisition/spec.md), [kontraktem algorytmu](work/acquisition/algorithm-spec.md)
+  i [ekranami](work/acquisition/ux.md);
+- [jeden panel, cztery zakładki](work/tui-unify/plan.md) i jego
+  [drugi plan](work/tui-unify/plan-02.md).
 
-Model: Manual wybiera odcinki; Auto reaguje na pliki; subskrypcje mają osobne
-Dodaj/Włącz/Wyłącz/Usuń; Regeneruj korzysta z Auto z żądaniem odtworzenia.
-Wszystko rozszerza obecny rdzeń, bez konkurencyjnych wykonawców.
+Pomysły na później, odłożone etapy i decyzje „nie teraz” zbiera jeden plik:
+[ideas.md](ideas.md).
 
 ## Dowody dostarczonego kodu
 
-[Audyt i wyniki](work/reliability-audit/masterplan.md),
-[Auto](work/reliability-audit/outcomes/05-auto-preset-controls.md),
-[terminal](work/reliability-audit/outcomes/04-terminal-polish.md).
-[Starsze etapy lokalnej automatyzacji](plans/local-automation/README.md)
-pozostają historią implementacji. Wyniki odnoszą się do opisanych commitów,
-nie gwarantują dzisiejszej całości ani realizacji nowego planu 06.
+- [Etap 06: Manual, Auto i subskrypcje](work/local-automation/06-efficiency/README.md), scalony w PR #56.
+- [Audyt niezawodności i wyniki](work/reliability-audit/masterplan.md).
+- [Wyniki etapów pozyskiwania](work/acquisition/outcomes/).
+
+Wyniki odnoszą się do opisanych commitów, nie gwarantują dzisiejszej całości.
 
 ## Historia i referencje
 
 - [Etapy 1–10](plans/_index.md): historia przebudowy, nie bieżąca kolejka.
-- [Dawny pakiet lokalnej automatyzacji](plans/local-automation/README.md): starsze spec/brief/masterplan/handoff, zastąpione dla obecnej pracy przez pakiet etapu 06.
-- [Wcześniejszy pakiet automatyzacji](plans/automation/README.md): historia ustaleń.
-- `plans/future/`: odłożone pomysły, nie aktywne polecenia.
+- [Dawny pakiet lokalnej automatyzacji](plans/local-automation/README.md) i
+  [wcześniejszy pakiet automatyzacji](plans/automation/README.md): historia ustaleń.
+- `work/local-automation-2/`: historyczna specyfikacja folderów zadaniowych, wchłonięta przez etap 06 i pozyskiwanie.
+- `plans/future/subtitle-layout-engine.md`: koncepcja silnika układu napisów (issue #22).
 - `work/10-tui/`: odrzucony Textual; nie przywracać na podstawie dawnych planów.
 - `work/plain-cli/`: geneza obecnego Prompt Toolkit i kontrakty interakcji.
-- `work/llm-translation/`: wcześniejszy workstream LLM.
+- `work/llm-translation/`: wcześniejszy workstream LLM, wdrożony.
 - `reference/` i `reports/`: materiały źródłowe, nie nowe zlecenia.
-
-Nie przenosimy masowo historii ani nie zrywamy jej odnośników. Bieżący kontrakt
-etapu 06 ma jedno miejsce w `docs/work/local-automation/06-efficiency/`.

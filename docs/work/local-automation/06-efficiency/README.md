@@ -1,6 +1,6 @@
 ---
 kind: handoff
-status: ready-for-implementation
+status: done (PR #56 merged 2026-09-23)
 updated: 2026-09-08
 baseline: a7d319f334a062d0fe016c774d9a5fb4fccbe9b6
 branch: work/local-automation/06-efficiency

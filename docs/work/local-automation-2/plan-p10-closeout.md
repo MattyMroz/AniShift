@@ -1,6 +1,6 @@
 # Plan: domknięcie P10 i wejście w P11
 
-Status: **READY do wykonania**
+Status: **historyczny** — zakres wchłonęły etap 06 (PR #56) i workstream `acquisition`
 Specyfikacja: [spec.md](spec.md)
 Plan workstreamu: [plan.md](plan.md)
 Gałąź: `work/local-automation/06-efficiency`

@@ -1,6 +1,6 @@
 # AniShift: foldery zadaniowe i bezobsługowy przepływ
 
-Status: **READY do planowania i implementacji zachowania**
+Status: **historyczny** — zakres wchłonęły etap 06 (PR #56) i workstream `acquisition`
 Data: 2026-09-13
 Aktualizacja aktywnego workstreamu: `docs/work/local-automation/06-efficiency/spec.md`
 Podstawa kodowa: `25121038fbf4ff1e1cecec3d4e644fdb235be679`, gałąź `work/local-automation/06-efficiency`

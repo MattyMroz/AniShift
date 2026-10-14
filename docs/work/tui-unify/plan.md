@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: przyjęty do wykonania 2026-10-10 (rundy 5 i 6: AKCEPTUJĘ, 0 B + 0 I; drobne wprowadzone); decyzje delegowane przez właściciela, punkty „Do potwierdzenia” w intent.md
+status: wykonany na work/tui/02-unified-tabs; czeka na merge w PR #59 (przyjęty 2026-10-10, punkty „Do potwierdzenia” w intent.md)
 created: 2026-10-10
 baseline: work/acquisition/05-h1-season-alias @ 0f6fde8 (stos 04-algorithm → tui/01-mouse-everywhere 973a9eb → 05)
 execution branch: work/tui/02-unified-tabs

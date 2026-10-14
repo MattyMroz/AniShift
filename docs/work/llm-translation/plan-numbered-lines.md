@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: ready
+status: implemented
 updated: 2026-09-02
 ---
 
