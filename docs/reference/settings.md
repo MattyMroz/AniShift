@@ -44,8 +44,9 @@ resetu osobną akcję usunięcia klucza.
 | --- | --- |
 | Ogólne, Napisy, Tłumaczenie, Lektor | tylko pola tego ekranu; pomija pola, które po drodze przestały być aktywne (np. opcje LLM po powrocie silnika do Google) |
 | Własne głosy | tylko lista własnych głosów ElevenBytes |
-| Wynik, Auto | cały domyślny preset Auto (produkty i polityki razem — to jeden plik) |
-| Ustawienia (root, „WSZYSTKO”) | `settings.json` w całości oprócz adresu Palantira, plus domyślny preset Auto |
+| Wynik | cały domyślny preset Auto (produkty i polityki razem — to jeden plik) |
+| Auto | domyślny preset Auto i wszystkie receptury bazowe trzymane przez rezydenta; ekrany podrzędne Auto przywracają tylko własną recepturę (receptura video to preset Auto) |
+| Ustawienia (root, „WSZYSTKO”) | `settings.json` w całości oprócz adresu Palantira, domyślny preset Auto i receptury rezydenta |
 
 Reset nigdy nie usuwa kluczy z `.env`; służy do tego `Usuń klucz` w Połączeniach.
 Adres enrollmentu Palantira zostaje po każdym resecie.
