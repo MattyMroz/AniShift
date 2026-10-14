@@ -29,9 +29,10 @@ Historyczne plany i wyniki opisują swoje baseline'y, nie gwarantują dzisiejsze
 | [07-local-automation-2/](work/07-local-automation-2/) | Foldery zadaniowe i dalszy model lokalnej pracy | zastąpione przez etap 06 i pozyskiwanie | [#56](https://github.com/MattyMroz/AniShift/pull/56), [#59](https://github.com/MattyMroz/AniShift/pull/59) |
 | [08-acquisition/](work/08-acquisition/) | Katalog modeli, wybór odcinka, pobieranie, subskrypcje i algorytm E00–A1 | zrobione na stosie; E6/E4/E5 odłożone w ideas.md | [#57](https://github.com/MattyMroz/AniShift/pull/57), [#59](https://github.com/MattyMroz/AniShift/pull/59) |
 | [09-tui-unify/](work/09-tui-unify/) | Ujednolicenie czterech zakładek panelu | zrobione na stosie; dalsze pomysły w ideas.md | [#59](https://github.com/MattyMroz/AniShift/pull/59) |
+| [10-quality/](work/10-quality/masterplan.md) | Jakość wyniku: wzorzec, glosariusz postaci, piosenki, miks lektora, szyldy | aktywne: plan do akceptacji | — |
 
 ## Dalsza praca i wznowienie
 
-Obecnie nie ma aktywnego pakietu wykonawczego. Kolejny kierunek to jakość tłumaczenia,
-napisów, typesettingu i piosenek. Priorytety i odłożone etapy zbiera [ideas.md](ideas.md).
+Aktywny workstream: [10-quality](work/10-quality/masterplan.md), jakość tłumaczenia,
+napisów, typesettingu, piosenek i lektora. Priorytety i odłożone etapy zbiera [ideas.md](ideas.md).
 [Session logs](session-logs/) zawierają punkty wznowienia sesji używane przez `load-session`.
