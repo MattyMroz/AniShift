@@ -6,301 +6,507 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 
 - `artifacts.py`, `control.py`, `intents.py`, `planning.py`, `selection.py` i `planner.py`
   nie importują I/O, `anishift.services`, `anishift.config` ani CLI.
-- Kontrolowane I/O należy do `discovery.py`, `inspection.py`, `publisher.py`,
-  `sessions.py`, `watch_state.py`, `acquisition.py` (katalog wydań, katalog tytułów i wysyłka do klienta torrent
-  przez wstrzyknięte protokoły `TorrentSource`/`TitleCatalog`/`TorrentClient`; typy z
-  `services.torrents` i `services.catalog` tylko pod `TYPE_CHECKING`, poza czystymi
-  `season_hint`/`strip_season`, adapterem zachowanej referencji Nyaa i rekonstrukcją `Release`
-  dla jawnego ponowienia), handlerów oraz fasady
-  `service.py`; koordynator publikuje zwalidowany staging przez `scheduler_runtime.py`.
-  Decyzje produktowe pozostają w plannerze.
+- Kontrolowane I/O należy do `discovery.py`, `inspection.py`, `publisher.py`, `sessions.py`,
+  `watch_state.py`, handlerów, fasady `service.py` i `acquisition.py`. `acquisition.py` (katalog
+  wydań, katalog tytułów, wysyłka do klienta) używa wstrzykniętych protokołów
+  `TorrentSource`/`TitleCatalog`/`TorrentClient`; typy z `services.torrents` i `services.catalog`
+  importuje tylko pod `TYPE_CHECKING`, poza czystymi `season_hint`/`strip_season`, adapterem
+  zachowanej referencji Nyaa i rekonstrukcją `Release` dla jawnego ponowienia. Koordynator publikuje
+  zwalidowany staging przez `scheduler_runtime.py`. Decyzje produktowe pozostają w plannerze.
+- `library.py` obok `acquisition.py` importuje czyste funkcje `services.torrents.names`
+  (`parse_release_name`, `episode_range`, `season_hint`, `strip_season`, `before_season`) dla etykiety
+  Biblioteki `library_label` (Nazwa · Odcinek), wystawionej panelowi przez fasadę, i nazwy serii
+  `series_title`.
 - Nazwy trwałych produktów pochodzą wyłącznie z `products.py`; żaden inny moduł nie zapisuje
   literałów `.pl`, `.spoken.pl`, `.displayed.pl`, `.pl.mkv`, `.pl.mp4` ani `.m4a`.
-- CLI używa publicznej fasady `anishift.application`; nie importuje
-  wewnętrznych helperów I/O ani schedulera.
-- Oczekiwany konflikt wejścia jest `PlanProblem`. `PlanningError` oznacza uszkodzony
-  kontrakt albo graf, nie zwykłą decyzję użytkownika.
+- CLI używa publicznej fasady `anishift.application`; nie importuje wewnętrznych helperów I/O
+  ani schedulera.
+- Oczekiwany konflikt wejścia jest `PlanProblem`. `PlanningError` oznacza uszkodzony kontrakt
+  albo graf, nie zwykłą decyzję użytkownika.
 
-## Inwarianty
+## Owner i stan rezydenta
 
-- `AutomationOwner` zapisuje przyjęcie pracy i jest jedynym autorem stanu rezydenta.
-  `RunJournal` zapisuje pozostały graf i potwierdzenia publikacji; niepewne operacje zdalne
-  po przerwaniu procesu wymagają jawnego wznowienia, bez automatycznego powtarzania opłat.
-- Result notifications follow saved completion and ready provenance, never `GROUP_FINISHED`
-  alone. A ready main result may notify while its torrent source is still held. `notified`
-  is the durable at-most-once offer guard; ephemeral IDs bind an attempt, set and exact file
-  revision. Callbacks revalidate current confirmations and file identity, never History or
-  a latest-result fallback. `automation.py`
-  Legacy ready inventory refresh runs on the existing I/O pool; notification clicks reuse
-  the owner's Library projection plus current confirmations and file identity, without waiting
-  for the service discovery lock on the owner thread.
-- `history.py` is an owner-written, non-authoritative JSONL beside `WatchState`; its 30-day
-  retention and failures never alter admission, deduplication or recovery. Only torn tails
-  are repaired; corrupt middle records preserve bytes and produce a History read refusal.
-  Recovered terminal observations label admission-time provenance, not a fabricated finish time.
-- Retry classification belongs to `AutomationOwner`: resume keeps the entire recorded scope,
-  local rebuild enters Manual, and reacquire persists its correlated intent before sending.
-  `AcquisitionConfirmation` retains only a verified numeric Nyaa ID and original release title;
-  older or unsupported references remain absent. URL restoration belongs to `services/torrents/nyaa.py`.
-- Library deletion ignores a matching acquisition only when it is `COMPLETE` and the existing
-  manager receipt proves release. Read release evidence on the I/O pool and revalidate owner
-  state before admission; historical relocated paths alone do not prove active ownership.
-- Undo persists `PendingDeletion.restore` admission and per-file start before native effects.
-  Select the latest deletion with effects by append order; successful Undo consumes that target.
-  `DeletionRestore.unsettled` protects unresolved started effects after restart, not a harmless
-  preflight refusal. Keep original receipts, product proofs and dedup records. `automation.py`
-- `ReadyStore` przenosi ukończoną grupę do `ready/` przez wyłączne dowiązanie i usunięcie
-  starej nazwy na tym samym woluminie. Dziennik pozostaje do zapisania nowych tożsamości
-  w stanie właściciela; znany torrent musi wcześniej zwolnić pliki. Blokada relokacji
-  chroni oba ID grupy przed Auto. Nie przenoś plików bezpośrednio z renderera.
-- Discovery skanuje root workspace rekurencyjnie: pomija `temp/` bezpośrednio pod rootem,
-  katalogi i pliki od kropki oraz nie wchodzi w dowiązania symboliczne. ID grupy liczy się
-  z katalogu względem roota i stemu, więc `A/01.mkv` i `B/01.mkv` to dwie grupy, a plik
-  w root zachowuje dotychczasowe ID. `discovery.py`
-- `watch.py` sprawdza stabilność pliku, `needs_work` i `WatchLedger`; dostępność źródła
-  deleguje do `platform/directory_watch.py`. Windows otwiera plik do odczytu ze współdzieleniem
-  wyłącznie odczytu: blokuje aktywnych writerów, dopuszcza odtwarzacz i pliki tylko do odczytu.
-  Eksport przez fasadę: `SCAN_INTERVAL_S`, `WatchLedger`. `watch.py`
-- Numer odcinka widziany przez aplikację to `choice.episode`, nigdy `choice.name.episode`:
-  `read_episode` interpretuje nazwę w `SeasonContext` (indeks sezonu, offset odcinków, liczba
-  odcinków). Nazwa ze znacznikiem sezonu (`name.season` albo `season_hint(series)`) zachowuje
-  numer i dostaje `other_season`, gdy znacznik wskazuje inny sezon; nazwa bez znacznika i z
-  numerem powyżej offsetu jest numeracją absolutną (`absolute`), a poniżej offsetu to inny
-  sezon. `acquisition.py`
-- `catalog_releases` rozdziela trzy powody pominięcia: `hidden` to wydania poniżej
-  `min_resolution`, `excluded` — dubbingowane oraz te, którym indeks nie podał języka napisów,
-  `filtered` — odrzucone filtrem odcinków (paczki i numery spoza zakresu). Klucz grupy powstaje
-  z serii złożonej do liter, cyfr i spacji (`normalize_series`), więc
-  `Mushoku Tensei: Jobless Reincarnation` i wersja bez dwukropka to jedna grupa — etykietą
-  zostaje pierwszy napotkany zapis. Kolejność grup ma jedno źródło, `order_groups`; ekran nie
-  powtarza tej reguły u siebie. `acquisition.py`
-- `matches_title` porównuje zbiory `title_forms`: zapis wprost, bez znacznika sezonu i `base_title`
-  (bez sezonu i bez podtytułu po `" - "`, `" -"`, `":"` albo `" –"`). Dzięki temu `Solo Leveling`
-  Tsundere-Raws trafia w alias `Solo Leveling Season 2 -Arise from the Shadow-`. `acquisition.py`
-- `search_title` odpytuje indeks tytułem romaji i angielskim; przy zakresie najwyżej
-  `MAX_EPISODE_SPAN` odcinków dokłada zapytania po numerze (`"{base} - 01"`, a przy sezonie > 1
-  także `"{base} S02E01"` i numer absolutny), bo RSS oddaje tylko 75 najnowszych trafień i stary
-  odcinek inaczej nie wypłynie. Potem `"{seria} {grupa}"` dla maks. `MAX_GROUP_QUERIES` pasujących
-  grup wybranych po sumie seedów odcinków wybranego sezonu — nie po dacie, żeby wieloletni
-  uploader nie wypadł za nowszymi. Zapytania po numerze idą tylko dla jednego zapisu tytułu —
-  angielskiego, a bez niego romaji. Budżet liczy się w żądaniach HTTP, nie w zapytaniach:
-  `MAX_REQUESTS`, gdzie zapytanie tytułem albo numerem kosztuje dwa (obie kategorie), a
-  doprecyzowanie grupy jeden — grupę pyta się wyłącznie w kategorii, w której ją widziano
-  (`fr` → `1_3`, reszta → `1_2`). Scalanie idzie po `info_hash` casefold, pierwszy wpis wygrywa.
-  `acquisition.py`
-- `season_context` liczy sezony, nie wpisy: `PrequelEntry.cour` (tytuł z `Part N`/`Cour N`) podnosi
-  offset, ale nie indeks, a kandydat będący cour zostaje w sezonie swojego poprzednika. Bez tego
-  Mushoku Tensei III wychodziło jako sezon 5. `acquisition.py`, `services/catalog/anilist.py`
-- `Subscription` trzyma `directory` (jeden folder biblioteki niezależny od serii w nazwie
-  wydania), trójkę `season_index`/`episode_offset`/`season_episodes` oraz `taken_episodes`
-  (numery odcinków jako teksty dziesiętne). Wszystkie pola spoza pierwotnej dziewiątki są
-  opcjonalne przy odczycie, więc starsze pliki wczytują się bez ręcznej naprawy; zapis jest
-  zawsze pełny. `subscriptions.py`
-- `SCHEMA_VERSION` to `4`, a loader przyjmuje 1, 2, 3 i 4. Starszy plik `load()` migruje raz: zostawia
-  kopię `subscriptions.json.v<wersja>.bak` i przepisuje plik w wersji 4, więc drugi `load()` nie zmienia
-  już bajtów. Każdy numer z `taken_episodes` staje się `EpisodeOrder(..., ORDERED)` bez hasha —
-  `taken` dowodzi przekazania wydania klientowi, nigdy kompletnego pliku. Kod sprzed schematu 2
-  odrzuca plik w wersji 2 (`ConfigError`), więc cofnięcie wersji wymaga przywrócenia kopii
-  `subscriptions.json.v1.bak` na miejsce `subscriptions.json` i restartu czuwania. `resolve_subscription_id`
-  współdzielony przez ownera i `add` zachowuje ID rozpoznanego sezonu; nowe sezony AniList dostają
-  deterministyczne ID uwzględniające sezon. Niepowiązany wpis nie może nadpisać znanego sezonu.
-  Przyjęte receipt i późniejsze powiązanie zachowują pierwotne ID oraz historię. `subscriptions.py`
-- Rezydent planuje `check_due` według zapisanych terminów odcinków. Niepowiązane wpisy zachowują
-  godzinne szukanie wydań; osobne próby powiązania respektują opóźnienia i budżet retry. Kalendarz
-  ma osobny trwały budżet i błąd; jego awaria nie blokuje wydań o potwierdzonym terminie.
-  HIATUS i najbliższa znana data odległa o ponad dobę oznaczają dobowe odświeżanie; daty bliskie
-  i nieznane używają `recheck_interval_s`. Jawne sprawdzenie pozwala na jedną próbę po wyczerpaniu
-  budżetu, respektując blokadę dostawcy. `subscriptions.py`
-- `requested_at` zapisuje jawny wybór, a `awaiting_airing` zachowuje oczekiwanie na konkretną emisję:
-  początek sezonu ani jego liczba odcinków nie uruchamiają wszystkich okien. Jawnie wybrany numer
-  bez daty może mieć ograniczone okno szukania, jeśli brak znanej przeszkody przyszłej emisji.
-  HIATUS zachowuje przyszły zamiar; FINISHED/CANCELLED nie otwierają okien nieemitowanych numerów.
-  Terminalne okno nie odradza się po restarcie ani powtórzeniu receipt. `subscriptions.py`
-- `RequestControl` opakowuje wspólny transport HTTP metadanych i qBittorrenta. Liczy rzeczywiste
-  wywołania, współdzieli aktywne odczyty i blokady dostawców; trwałe terminy blokad zapisuje owner.
-  Budżet jednej operacji obejmuje zagnieżdżone zapytania, bez retry transportu. `services/http_requests.py`
-- `subscription_add` zapisuje receipt przed zmianą drugiego pliku; `added_by_command` pozwala
-  dokończyć potwierdzenie bez ponownego podniesienia generacji. Ręczne `download` zapisuje receipt
-  i hashe przed wysłaniem. Panel w trybie rezydenta prowadzi także wyszukiwanie przez ownera.
-- `enable`/`disable`/`set_anilist_id` są idempotentne: bez zmiany wartości nie zapisują i nie
-  podnoszą `generation`; ze zmianą podnoszą je o 1. `check_all` pomija wpisy wyłączone i te z
-  `end_state != ACTIVE`, a `check` wyłączonego wpisu zwraca `CheckOutcome` z problemem i nie
-  dotyka źródła. `subscriptions.py`
-- `AutomationPolicy.effective_auto`: globalne wyłączenie wygrywa zawsze, inaczej decyduje
-  najbliższy jawny wyjątek katalogu idąc w górę do roota (`""`), a katalog bez wyjątku dziedziczy
-  ustawienie biblioteki. Rezerwację kluczuje `group_id` (jej `fingerprint` służy tylko do
-  unieważnienia podglądu), a marker ręcznej obsługi (R-028) para `(group_id, source_fingerprint)`
-  z `watch.py`, więc publikacja produktu nie unieważnia decyzji użytkownika. `control.py`
-- `AutomationOwner` (`automation.py`) jest jedynym właścicielem `WatchState`: jeden wątek
-  `anishift-owner` zdejmuje polecenia z kolejki, a `preview` i `subscriptions_check` idą na pulę
-  `anishift-owner-io`, więc `set_auto` nie czeka na skan biblioteki ani na sieć. Pętla śpi na
-  kolejce bez timeoutu — bezczynny rezydent nie wykonuje pracy. `automation.py`
+- `AutomationOwner` (`automation.py`) jest jedynym autorem `WatchState`: wątek `anishift-owner`
+  zdejmuje polecenia z kolejki, a `preview` idzie na pulę `anishift-owner-io`,
+  więc `set_auto` nie czeka na skan. Pętla śpi na kolejce bez timeoutu — bezczynny
+  rezydent nie wykonuje pracy.
 - Polecenie mutujące zapisuje stan RAZEM z `CommandReceipt` PRZED pozytywną odpowiedzią; nieudany
-  zapis daje `INTERNAL` i zero skutku, a powtórzony `command_id` zwraca zapisany wynik bez
-  drugiego wykonania (AC-042). `start` zapisuje `ProcessingRequest` razem z receipt przed
-  `submit_plan`: odpowiedź potwierdza przyjęcie zamiaru; późniejsza awaria wykonania ma stan
-  `FAILED`, a ponowienie polecenia zwraca ten sam `run_id`. `automation.py`
-- `ProcessingRequest.state == ACCEPTED` can include executing tasks. Public progress events
-  prove per-group activity; retained `run_progress` views also include terminal attempts.
-  The technical `materials` snapshot includes downloads and waiting/problem rows; the panel
-  selects admitted downloads, live requests awaiting their first task and proven active tasks. Ordinary download
-  admission protects every recorded hash, including failed acquisitions; explicit reacquire
-  retains the old confirmation and correlates the new attempt. Progress labels select primary source artifacts
-  using the group's workflow route, including standalone subtitles and audio. `automation.py`
-- Rezerwacje są własnością sesji klientów jednej instancji: `AutomationOwner` porzuca je przy
-  wczytaniu stanu i po rozłączeniu panelu. Rozłączenie unieważnia także podglądy, również
-  kończące się po zwolnieniu rezerwacji.
-  `automation.py`
-- Startup discards previous-session reservations in memory even when persisting that cleanup
-  fails; the failed write must not revive dead clients' ownership. `automation.py`
-- Zdarzenia plików są scalane w jednym oczekującym powiadomieniu; ponad 4096 ścieżek zastępuje
-  pełne uzgodnienie. Inspekcja działa w puli I/O, a właściciel decyduje o Auto po stabilizacji.
-  Zmiana źródeł lub produktów unieważnia podgląd właściwej grupy; nowy podgląd klienta zastępuje
-  poprzedni. `automation.py`
-- Sygnał zakończenia procesu omija zapis receipt i zawsze rozpoczyna drain, także gdy zapis
-  stanu zawodzi. Polecenia sterowania nadal zachowują trwałość przed potwierdzeniem.
-  `automation.py`
-- `shutdown` zamyka dopuszczanie tasków; aktywne zadania kończą się bez anulowania, pozostały
-  graf otrzymuje `PAUSED`. Staging zatrzymanych runów pozostaje chroniony przed cleanup.
+  zapis daje `INTERNAL` i zero skutku, a powtórzony `command_id` zwraca zapisany wynik bez drugiego
+  wykonania. `start` zapisuje `ProcessingRequest` z receipt przed `submit_plan`; późniejsza awaria
+  wykonania ma stan `FAILED`, a ponowienie zwraca ten sam `run_id`.
+- `RunJournal` zapisuje pozostały graf i potwierdzenia publikacji; niepewne operacje zdalne po
+  przerwaniu procesu wymagają jawnego wznowienia, bez automatycznego powtarzania opłat.
+- Rezerwacje należą do sesji klientów jednej instancji: owner porzuca je przy wczytaniu stanu
+  (także gdy zapis tego sprzątania zawiedzie) i po rozłączeniu panelu. Rozłączenie unieważnia też
+  podglądy, również kończące się po zwolnieniu rezerwacji.
+- Zdarzenia plików scalają się w jednym oczekującym powiadomieniu; ponad 4096 ścieżek zastępuje
+  pełne uzgodnienie. Inspekcja działa w puli I/O, a owner decyduje o Auto po stabilizacji. Zmiana
+  źródeł lub produktów unieważnia podgląd grupy; nowy podgląd klienta zastępuje poprzedni.
+  Aktualność podglądu sprawdza ponowny `source_fingerprint` (kilka `stat`), nie pełny `discover()`.
+- Sygnał zakończenia procesu omija zapis receipt i zawsze zaczyna drain, także gdy zapis stanu
+  zawodzi; polecenia sterowania nadal zapisują stan przed potwierdzeniem. Pętla ownera kończy się dopiero, gdy po `shutdown` nie ma aktywnych runów ani zleceń
+  nierozliczonych przez ownera (`_drained`); samo `active_run_ids()` nie wystarcza, bo run bywa
+  zdjęty z rejestru fasady przed zapisem stanu końcowego. Drain czeka też na dopuszczenia pobrań
+  i inne wyniki wracające z puli I/O.
+- `shutdown` zamyka dopuszczanie tasków; aktywne zadania kończą się bez anulowania, reszta grafu
+  dostaje `PAUSED`, a staging zatrzymanych runów jest chroniony przed cleanup.
   `scheduler.py`, `service.py`, `sessions.py`
-- Pętla właściciela kończy się dopiero, gdy po `shutdown` nie ma ani aktywnych runów, ani
-  zleceń nierozliczonych przez samego właściciela (`_drained`). Sam `active_run_ids()` nie
-  wystarcza: run bywa zdjęty z rejestru fasady, zanim właściciel zapisze jego stan końcowy.
-  `automation.py`
-- Dopuszczenie pobrania i zapis wyniku subskrypcji wracają z puli I/O do właściciela;
-  drain czeka także na te komendy. `AcquisitionConfirmation` jest zapisywane przed add,
-  a niepewne przekazanie blokuje ponowne dodanie hasha i innej wersji tego samego numeru.
-  Usunięcie subskrypcji nie usuwa potwierdzenia. Obecność hasha w kliencie oznacza
-  `ACCEPTED`, nigdy kompletność pliku. `automation.py`, `subscriptions.py`
-- `TransferInspector` odczytuje zbiorczą listę aktywnych transferów; metadane plików
-  odświeża po ich uzyskaniu i przy przejściu do kompletności. Do Auto dopuszcza wybrane
-  pliki po dowodzie klienta, zgodności rozmiaru i lokalnej dostępności. Nieznane nazwy
-  przyjętego transferu blokują Auto w jego katalogu do odczytania metadanych. Po `COMPLETE`
-  właściciel zleca zwykłą inspekcję plików; gdy brak `ACCEPTED`, nie odpytuje klienta.
-  `transfers.py`, `automation.py`
-- `ProcessingRequest` zachowuje pełny niejawny dla UI `RunSettingsSnapshot`, wybrane
-  `GroupIntent` i `RebuildRequest`. Zagnieżdżone listy ustawień z JSON wracają do krotek;
-  nazwy pól zawierające segment sekretu są odrzucane. Stare zlecenia bez `intents` nadal
-  się wczytują, ale nie pozwalają odtworzyć wyborów, których dawny zapis nie zachował.
-  `automation.py`, `control.py`, `control_payloads.py`, `watch_state.py`
-- `recipe_update` changes only a validated target delta and commits its receipt with
-  `WatchState.recipes`. Video remains an `AutoPreset`; subs inherits video and cover
-  inherits audiobook. Preview captures recipe preferences alongside its plan; admission
-  and recovery must not relabel an older plan with current recipe preferences. `automation.py`
-- Aktualność podglądu sprawdza się przez ponowny `source_fingerprint` grup podglądu (kilka
-  `stat`), nie przez pełny `discover()` na wątku właściciela. `automation.py`
-- `AppService.reload_preferences()` wczytuje ponownie `settings.json` i `.env` pod `_run_lock`;
-  trwające zlecenia zachowują snapshot ustawień, który mają w planie (D-09). `service.py`
-- `AppService.execute()` po przerwaniu anuluje run i CZEKA na domknięcie kontekstu, zanim
-  przekaże wyjątek dalej — inaczej taski, procesy narzędzi i katalog `temp/` przeżyłyby
-  wywołującego. `_finish_run` zawsze zamyka handler i sesję oraz zawsze rozwiązuje `RunHandle`,
-  bo nierozwiązany handle wiesza `execute` na zawsze. `service.py`
-- `WatchStateStore` zapisuje atomowo: `state.json.tmp` + `fsync`, kopia czytelnego `state.json`
-  do `state.json.bak`, dopiero potem `replace`. Uszkodzony JSON, nieznany klucz i nieobsługiwana
-  wersja schematu dają `ConfigError`, nigdy pustego stanu; brak pliku to stan domyślny z pracującą
-  automatyzacją, a zapisana pauza pozostaje pauzą. `WATCH_STATE_SCHEMA_VERSION` to `2`, a loader przyjmuje 1 i 2: starszy plik `load()` migruje
-  raz, zostawia kopię `state.json.v1.bak` i przepisuje plik, więc drugi `load()` nie zmienia bajtów.
-  Walidacja jest wersjonowana — dokument wersji 2 musi zawierać wszystkie sekcje schematu 2
-  (`recipes`, `ready_groups`, `pause_owned_transfers`, `pending_deletions`, `complete_files`), a
-  dokument wersji 1 nie może zawierać żadnej z nich. Migracja nadaje `complete_files` z
-  `required_files` wyłącznie potwierdzeniom w stanie `COMPLETE`. Trwałe ścieżki `ReadyGroup`
-  i `PendingDeletion` przechodzą przez `require_relative_paths`. `watch_state.py`, `control.py`
-  Optional nested `PendingDeletion.restore` remains in schema 2; pre-Undo strict readers reject
-  it after the first Undo admission. Never strip recovery evidence to make a downgrade load.
-- `subscription_id` i `_matches` porównują serię po postaci znormalizowanej (`normalize_series`,
-  `series_forms`), nie po surowym zapisie wybranego wydania. Etykietą grupy w katalogu jest
-  pierwszy napotkany zapis, więc dosłowne porównanie cicho zabijało subskrypcję. `subscriptions.py`
-- `next_episode` przesuwa się do PIERWSZEGO całkowitego numeru od siebie w górę, którego nie ma
-  w `taken_episodes` ani wśród odcinków widzianych w tym sprawdzeniu — nigdy za lukę. Numer
-  ułamkowy (7.5) trafia do `taken_episodes`, ale licznika nie rusza. `subscriptions.py`
-- Gdy surowe wyszukanie nie ma odcinka równego `next_episode`, `check` dokłada jedno zapytanie
-  `"{query} NN"`; jego awaria jest logowana i nie przerywa sprawdzenia, bo główne wyszukanie już
-  się udało. `subscriptions.py`
-- ID grup i odkrytych artefaktów powstają wyłącznie z normalizowanych ścieżek
-  względnych. Ręcznie zarejestrowany plik spoza workspace używa znormalizowanej
-  ścieżki zewnętrznej wyłącznie jako wejścia stabilnego skrótu; nie używaj `hash()`
-  ani losowego UUID.
-- `SOURCE` ma `planned_destination == path`, `INTERMEDIATE` nie ma trwałego celu,
-  a `DURABLE` otrzymuje `planned_destination` przed wykonaniem.
-- `AUTO` nie zawiera ręcznych artifact/track ID. `MANUAL` może wskazać artefakt albo
-  embedded track danego rodzaju, nigdy oba jednocześnie.
-- `ExecutionPlan.tasks` musi wejść już w porządku zwróconym przez
-  `stable_topological_order()`. Porządek jest stabilny względem naturalnie ułożonego
-  wejścia, więc niezależne taski grupy `2` nie mogą przeskoczyć za grupę `10` przez
-  hash w `task_id`. Każdy produkowany artefakt ma jednego producenta.
-- Auto wymagające osadzonego audio i napisów z jednego MKV planuje jeden
-  `EXTRACT_TRACKS`. Produkcyjny handler uruchamia jeden istniejący
-  `mkvextract --gui-mode`, a każde prawdziwe `#GUI#progress N%` przekazuje bez
-  uśredniania. Pula ekstrakcji ma rozmiar
-  `min(file_count, round(sqrt(cpu_count)) + 2)`.
-- LLM wykonuje gotowe pliki równolegle dokładnie do `llm_max_concurrency` (1-16);
-  scheduler nie przycina tej liczby drugi raz. TTS
-  syntetyzuje jeden plik naraz, ale `tts_request_concurrency` aktywnego profilu nie
-  jest zmniejszane; audio może pracować równolegle z następną syntezą.
-- Wykonywalny plan nie zawiera `MISSING` bez producenta. Task produkuje wyłącznie
-  `MISSING` o lifetime `INTERMEDIATE` albo `DURABLE`, a parametry odpowiadają jego
-  `TaskKind`.
-- Worker otrzymuje w `ArtifactSnapshot` gotowe wejścia i niezmienne deskryptory
-  planowanych wyjść, po czym zwraca `TaskResult`; mutable store pozostaje prywatny
-  dla schedulera.
-- `ABSENT` is valid only for non-source `DISPLAYED_PL` with no runtime path.
-  Successful classification and an empty displayed writer establish absence; conversion,
-  publication and composition propagate it. `require_ready` stays strict. `RunJournal`
-  retains absence without a file proof, including explicit execution of saved joint splits.
-  Auto reuses journal snapshots verified during background inspection for unchanged sources;
-  journal revisions and current missing products gate reuse. Result warnings explain omissions.
-  Displayed-only no-ops
-  create no Library entry, and regeneration retains an existing good result.
-- `GraphCoordinator` przyjmuje wiele niezależnych kontekstów planów (`RunRequest` →
-  `RunHandle`). Kontekst ma własny plan, sesję, handler, emitter, `ArtifactStore`,
-  cancellation i `NaturalOrderGate`; wspólne są wyłącznie kolejki gotowych tasków per
-  zasób, executory i limity z `limits_provider()`. `GraphScheduler.run()` to adapter
-  jednego planu: prywatny koordynator, `submit`, czekanie na wynik, `close()`. Błąd
-  pętli koordynatora anuluje tokeny wszystkich kontekstów przed joinem executorów i
-  wraca do wywołującego przez `RunHandle.result()`. `scheduler.py`
-- Element wspólnej kolejki to `(rank, sequence, task_index, run_id, task_id)`, gdzie
-  `rank` = 0 dla `RequestOrigin.USER` i 1 dla `BACKGROUND`. Wybór następuje dopiero przy
-  realnie wolnym slocie, a liczba wysłanych tasków per zasób nie przekracza
-  `worker_limit` — koordynator nie dokłada zapasu `max_pending_per_resource` do puli
-  executora. Limity liczbowe pochodzą z `ResourceLimits` (`plan.settings` tylko dla
-  domyślnego profilu tłumaczenia), pula ekstrakcji z liczby grup ekstrakcyjnych
-  WSZYSTKICH aktywnych kontekstów. `scheduler.py`, `scheduler_contracts.py`
-- `RequestOrigin` określa priorytet, a `RunRequest.automatic` dodatkowo podporządkowuje
-  pilny plik wyjątkowi Auto dla katalogu pliku. Wyłączony katalog zatrzymuje kolejne taski
-  automatycznego zlecenia, ale jawne zlecenie tego pliku nadal działa. Dotychczasowe
-  `BACKGROUND` zawsze podlega temu wyjątkowi.
-  `scheduler_runtime.py`, `scheduler.py`
-- Globalna pauza (`AutomationPolicy.auto_enabled == False`) jest szersza od wyjątków katalogów:
-  `GraphCoordinator.pause()` wstrzymuje dopuszczanie wszystkich zleceń, więc pod pauzą nie
-  przechodzi też jawny start ani jawne pobranie. `resume()` zwalnia dopuszczanie, chyba że
-  koordynator już się zamyka. `scheduler.py`, `service.py`, `automation.py`
-- Wątek `anishift-coordinator` istnieje tylko wtedy, gdy koordynator ma zlecenia:
-  `submit` go startuje, pusta runda zamyka executory i kończy wątek, `close()` anuluje
-  resztę i dołącza go. Bezczynny koordynator nie budzi się (licznik `wakeups`).
-- `AppService` prowadzi rejestr aktywnych runów: `submit_plan` nie blokuje, `execute`
-  to `submit_plan(...).result()`, a `cancel(run_id)` działa dla każdego aktywnego runu.
-  Druga praca nad tą samą grupą jest odrzucana (`RunConflictError`, I-001), a
-  `cleanup_orphaned_temp` dostaje komplet aktywnych `run_id`. Sesję zamyka wątek
-  domykający run — bez nazwy `anishift-`, bo ten prefiks jest zarezerwowany dla pul,
-  które muszą zostać dołączone. `service.py`
-- Blokada docelowego produktu odkłada ponowienie atomowego `replace` w koordynatorze.
-  Nie usypiaj całej koordynacji na czas retry: niezależne grupy nadal przekazują
-  postęp i kończą pracę, a każda próba ponownie sprawdza cancellation i generację sesji.
-  `scheduler.py`, `scheduler_runtime.py`
-- `WorkspaceInspector.inspect()` probuje grupy równolegle (`_MAX_INSPECTION_WORKERS`),
-  bo każda grupa to osobny `mkvmerge`. Kolejność grup i ostrzeżeń pozostaje
-  kolejnością discovery — nie zbieraj wyników w kolejności ukończenia.
+- `ProcessingRequest` zachowuje pełny, niejawny dla UI `RunSettingsSnapshot`, wybrane `GroupIntent`
+  i `RebuildRequest`. Zagnieżdżone listy z JSON wracają do krotek; pola z segmentem sekretu są
+  odrzucane. Stare zlecenia bez `intents` wczytują się, ale nie odtwarzają niezapisanych wyborów.
+  `control.py`, `control_payloads.py`, `watch_state.py`
+- `ProcessingRequest.state == ACCEPTED` może obejmować wykonujące się taski. Publiczne zdarzenia
+  postępu dowodzą aktywności grupy; zachowane `run_progress` obejmują też próby terminalne. Migawka
+  `materials` zawiera pobrania i wiersze oczekujące/problemowe; panel wybiera przyjęte pobrania,
+  żywe zlecenia czekające na pierwszy task i dowiedzione aktywne taski. Etykiety postępu wybierają
+  główne artefakty źródłowe według trasy workflow grupy, także dla samodzielnych napisów i audio.
+- `recipe_update` zmienia tylko zwalidowaną różnicę celu i zapisuje receipt razem z
+  `WatchState.recipes`. Video pozostaje `AutoPreset`; subs dziedziczy po video, cover po audiobook.
+  Podgląd utrwala preferencje receptury razem z planem; dopuszczenie i recovery nie przepisują
+  starszego planu bieżącymi preferencjami.
+- `AutomationPolicy.effective_auto`: globalne wyłączenie wygrywa zawsze, inaczej decyduje najbliższy
+  jawny wyjątek katalogu w górę do roota (`""`), a katalog bez wyjątku dziedziczy ustawienie
+  biblioteki. Rezerwację kluczuje `group_id` (`fingerprint` tylko unieważnia podgląd), a marker
+  ręcznej obsługi para `(group_id, source_fingerprint)` z `watch.py`, więc publikacja produktu nie
+  unieważnia decyzji użytkownika. `control.py`
+- Pauza automatyzacji (`auto_enabled == False`) blokuje powtórki i automatyczne dopuszczenie
+  workspace przez `set_background_admission`, nigdy
+  `pause_runs`. Praca zlecona przez użytkownika nie jest odrzucana: Start, Ręczny, ponowienie i
+  ponowne pobranie z panelu oraz D. Pobranie jest ręczne, gdy `AcquisitionConfirmation.manual`
+  dowodzi pochodzenia USER bez subskrypcji albo jawnego ponownego pobrania. Recovery przy starcie
+  i potwierdzanie add obejmują tylko potwierdzenia przyjmowane przez `_working`, więc transfery
+  ręczne wracają mimo pauzy. Partie odcinków, metadane, selekcja, treść i publikacja ręcznych
+  pobrań trwają w pauzie; ich pliki przechodzą zwykłe kontrole z `explicit=True` i idą z
+  `automatic=False`. Sam priorytet USER świeżego pliku nie zwalnia z pauzy. Wznowienie zachowuje
+  deduplikację zleceń/receipt i restartuje tylko automatyczne transfery wstrzymane przez pauzę.
+  `control.py`, `automation.py`, `scheduler.py`
+- Klasyfikacja ponowienia należy do ownera: wznowienie zachowuje cały zapisany zakres, lokalna
+  przebudowa przechodzi do Ręcznego, a ponowne pobranie zapisuje skorelowany zamiar przed wysłaniem.
+  `AcquisitionConfirmation` zachowuje tylko zweryfikowane liczbowe ID Nyaa i oryginalny tytuł
+  wydania; starsze lub nieobsługiwane referencje pozostają puste. Odtwarzanie URL należy do
+  `services/torrents/nyaa.py`.
+- `WatchStateStore` zapisuje atomowo: `state.json.tmp` + `fsync`, kopia czytelnego `state.json` do
+  `state.json.bak` (bez parsowania po udanym `load()`/`save()` tej instancji; nieznany plik wymaga
+  walidacji), potem `replace`. Uszkodzony JSON, nieznany klucz i nieobsługiwana wersja dają
+  `ConfigError`, nigdy pustego stanu; brak pliku to stan domyślny z działającą automatyzacją, a
+  zapisana pauza pozostaje pauzą. `WATCH_STATE_SCHEMA_VERSION` to `5`; loader przyjmuje 1-5, starszy
+  plik migruje raz z kopią `state.json.v<wersja>.bak`, więc drugi `load()` nie zmienia bajtów.
+  Przed pierwszym zapisem schematów 3, 4 i 5 (także przy pierwszym `save()` bez `state.json`)
+  kopiuje bajt w bajt `state.json` i `subscriptions.json` do `*.e2-migration.bak`,
+  `*.e3-migration.bak` i `*.a1-migration.bak`: istniejącej kopii nie nadpisuje, brak pliku tylko
+  loguje, a błąd kopii to `ConfigError` `IO_ERROR` bez zapisu nowego formatu. Migracja 4→5
+  (`subscription_migration.migrate_to_five`) nie czyta `subscriptions.json`, nadaje `started =
+  attempts` i zmienia tylko domyślne `transfer_stall_s` 1800 na 600.
+  Walidacja jest wersjonowana: dokument 2+ musi mieć sekcje `recipes`, `ready_groups`,
+  `pause_owned_transfers`, `pending_deletions`, `complete_files`, dokument 1 żadnej z nich;
+  dokument 4+ musi mieć `subscriptions`, `removed_subscription` i `legacy_orders`, starsze nie mogą;
+  pola wyboru schematu 5 (`started`, `threshold`, `failures`, `polish`, `sources_down_since`,
+  `polish_skip`, `tsukihime_id`, `mapping_tvdb_season`, `stopped`, `traits`) są wymagane w 5 i
+  zakazane w 4; opcjonalne `blocker` i `polish_buffer_min` celu dopuszcza tylko 5, a ich brak czyta się jako `None`;
+  potwierdzenie wersji 3+ musi mieć `assignments` i `legacy_scope`, starsze nie mogą. Migracja nadaje
+  `complete_files` z `required_files` tylko potwierdzeniom `COMPLETE`. Trwałe ścieżki `ReadyGroup` i
+  `PendingDeletion` przechodzą przez `require_relative_paths`. Opcjonalne `PendingDeletion.restore`
+  jest w schemacie 2; czytniki sprzed Undo odrzucają je po pierwszym Undo. Nie usuwaj dowodów
+  recovery, żeby umożliwić downgrade. `watch_state.py`, `control.py`
+
+## Biblioteka, gotowe wyniki i historia
+
+- Powiadomienia o wyniku wynikają z zapisanego ukończenia i pochodzenia gotowego wyniku, nigdy z
+  samego `GROUP_FINISHED`. Gotowy wynik główny może powiadomić, gdy źródło torrent jest jeszcze
+  trzymane. `notified` to trwała ochrona jednokrotnej oferty; ulotne ID wiążą próbę, zestaw i
+  dokładną rewizję plików. Callbacki sprawdzają ponownie bieżące potwierdzenia i tożsamość plików,
+  nigdy Historii ani „ostatniego wyniku”.
+- Odświeżanie starego inwentarza `ready/` działa w istniejącej puli I/O; kliknięcia powiadomień
+  używają projekcji Biblioteki ownera z bieżącymi potwierdzeniami i tożsamością plików, bez
+  czekania na blokadę discovery fasady na wątku ownera.
+- `history.py` to pisany przez ownera, nieautorytatywny JSONL obok `WatchState`; retencja 30 dni i
+  awarie nie zmieniają dopuszczenia, deduplikacji ani recovery. Naprawiany jest tylko urwany ogon;
+  uszkodzony rekord w środku zachowuje bajty i daje odmowę odczytu Historii. Odzyskane obserwacje
+  terminalne opisują pochodzenie z chwili przyjęcia, nie zmyślony czas zakończenia.
+- `ReadyStore` przenosi ukończoną grupę do `ready/` przez wyłączne dowiązanie i usunięcie starej
+  nazwy na tym samym woluminie. Dziennik zostaje do zapisu nowych tożsamości w stanie ownera; znany
+  torrent musi wcześniej zwolnić pliki. Blokada relokacji chroni oba ID grupy przed Auto. Nie
+  przenoś plików z renderera. Przygotowanie czyta plan dziennika bez walidacji wejść całego runu;
+  grupa już w `ready/` traci wpis problemu bez czytania dziennika, a grupa spoza `ready/` ze
+  zmienionym źródłem jest pomijana bez problemu i bez przenoszenia.
+- Zestaw pobrany przez AniShift wiąże z odcinkiem `downloaded_episodes`: `EpisodeAssignment.group_id`
+  równy `ReadyGroup.set_id` (albo `group_id`), a dla zamówienia `download` — `legacy_scope` i jego pliki
+  w `ReadyGroup.sources`. `name_series` dokłada `LibrarySet.series/season/episode` przy emisji (status,
+  `library_details`, `library_refresh`), nigdy w zapisanym stanie: tytuł subskrypcji tego `anilist_id`,
+  inaczej tytuł z katalogu (`franchise`, raz na instancję w puli I/O, wynik w `_series_titles` ownera),
+  przycięty przez `series_title`. Sezon to `season_hint` tytułu, inaczej sezon z mapowania subskrypcji;
+  numer to lokalny numer klucza. Bez sezonu lub numeru `episode` zostaje puste i panel bierze odcinek z
+  nazwy pliku. Zestaw ręczny nie dostaje pól. `library.py`, `automation.py`
+- Usuwanie z Biblioteki pomija pasujące pobranie tylko w stanie `COMPLETE` z receipt managera
+  dowodzącym zwolnienia. Dowód zwolnienia czytaj w puli I/O i sprawdź stan ownera ponownie przed
+  przyjęciem; same historyczne ścieżki relokacji nie dowodzą aktywnego posiadania.
+- Undo zapisuje przyjęcie `PendingDeletion.restore` i start każdego pliku przed skutkami natywnymi.
+  Cel to ostatnie usunięcie ze skutkami w kolejności dopisania; udane Undo go konsumuje.
+  `DeletionRestore.unsettled` chroni nierozstrzygnięte rozpoczęte skutki po restarcie, nie
+  nieszkodliwą odmowę wstępną. Zachowuj oryginalne receipt, dowody produktów i rekordy deduplikacji.
+
+## Pobieranie odcinków
+
+- `episode_identity.py` posiada zamrożoną klasyfikację H1; `episode_selection.py` jej czysty
+  builder wejścia, projekcje franczyzy i odcinków, fakty wydań i ranking. Produkcja przekazuje tylko
+  `target` i `candidate`, bez dowodów, dodatków roku, etykiet i hashy. Cel buduj z pełnego
+  `FranchiseGraph` i surowych odcinków ani.zip, nigdy z wyświetlanej franczyzy.
+- Zmiana H1 wymaga minimalnego przypadku padającego w
+  `tests/fixtures/acquisition/identity-regressions.json`, poprawki konkretnej przyczyny, tłumaczeń
+  powodów, testów tożsamości/golden i raportu porównania; procedura w
+  `docs/work/acquisition/plans/e1-integracja.md` §10.6, a zmiana golden wymaga niezależnego review.
+  Nigdy nie zamieniaj wyjątku programistycznego w niepewny werdykt.
+- `AcquisitionService.franchise/episodes/offer` to operacje katalogu tylko do odczytu wystawione
+  przez IPC ownera. Grafy, mapowania i harmonogramy zostają w pamięci usługi; nie powstaje przyjęcie
+  ani receipt. Awaria harmonogramu zachowuje mapowanie z ostrzeżeniem i terminem ponowienia. `offer`
+  używa zapamiętanego grafu bez rozwijania niepełnego liścia; filmy wołają `movie_streams` z
+  `EpisodeKey(id, 1)`. Sugestie pomijają niezgodne wydania, znane nieobsługiwane kontenery i wydania z 0
+  seedów, a gdy jakiś `MATCH` nadaje się do sugestii, wybierają `MATCH` i pełny plik przed małym przekodowaniem.
+  `rank_candidates(single=...)` oznacza `traits.small`: plik jednego odcinka poniżej `SMALL_SHARE` największego
+  nieodstającego pliku tej rozdzielczości; paczki i zakresy (`names.single_episode`) nie wyznaczają odniesienia.
+  Cel subskrypcji z blokerem `PENDING` (`next_search_at`) wraca do sprawdzenia po 15 min, poza siatką U-14.
+- `AutomationOwner.admit_episode` to synchroniczna bramka przyjęcia: jeden zapis `ADMITTED`
+  (selektywne `AcquisitionConfirmation` z `EpisodeAssignment`) razem z receipt, bez skutków w qB.
+  Wysyłkę przejmuje cykl transferów (niżej); komenda `transfer` na hash w stanie `ADMITTED` dostaje
+  `transfer_not_started`. Nowy klucz odcinka dołącza do jedynego aktywnego transferu selektywnego
+  swojego hasha; po `COMPLETE` albo `FAILED` dostaje nową operację i staging. Przed ponownym dodaniem
+  tego samego hasha zwolnij poprzedni wpis klienta; stare klucze pozostają chronione. Hashe legacy
+  i kilka niedokończonych transferów odmawiają z `transfer_recorded`.
+- Konflikt liczy `control.episode_conflict`: klucz → `episode_admitted`, `LegacyScope` zapisany w
+  potwierdzeniu albo w `WatchState.legacy_orders` → `episode_possibly_admitted`.
+  Polecenie `download` (stare wydania wg grup) nie ma klucza odcinka, bo przed
+  przyjęciem brak nazwy pliku dla H1; dostaje `LegacyScope(ID, numer lokalny)` i odmawia wobec
+  przyjęć kluczowych (`legacy_conflict`), także przy powtórzeniu. Wywołujący `download` podaje ID
+  tytułu i offset sezonu; nieznany offset daje zakres całego ID. Zapisane numery są lokalne — offset
+  odejmuje się tylko od surowego numeru wydania bez odczytu sezonu. `automation.py`, `control.py`
+- `episode_download` zapisuje receipt partii przed odczytem źródeł; każde przyjęcie ma receipt
+  kluczowany ID partii i numerem odcinka. Rozłączenie zachowuje partię, restart oznacza niedokończone
+  partie jako przerwane bez wznawiania pozostałych kluczy. Wynik przyjęć odzyskuj z pojedynczych
+  receipt, gdy zapis wyniku partii został przerwany. Koniec partii emituje `episode_batch` nawet przy
+  nieudanym końcowym zapisie; zdarzenie opisuje bieżącą próbę, autorytatywne są trwałe receipt.
+  Lokalne powody odmów i stanów ownera to `EpisodeReason`; pola `reason` zostają `str`, bo historyczne
+  receipt mogą zawierać dowolną wartość. `episode_commands.py`, `automation.py`
+- `episode_offer_start` otwiera jedną ofertę na sesję katalogu i zleca pracę w `_active_io`.
+  Owner zachowuje jej rewizje; `episode_offer_partial` sygnalizuje odczyt przez `episode_offer_get`
+  (`searching`/`ready`/`failed`). Koniec zapisuje nową rewizję także bez nowych kandydatów.
+  Nowa oferta i zamknięcie sesji katalogu unieważniają poprzednią. `episode_choose` wybiera przez
+  `offer_id/revision/info_hash/path` z zapisanej rewizji: zmiana reprezentanta, oceny H1, konfliktu
+  lub wymaganych potwierdzeń daje `offer_changed`; same seedy i jakość nie unieważniają wyboru. Niepewne
+  automatyczne sugestie są dozwolone, ale jawny wybór niepewnego/niezgodnego wymaga osobnego
+  potwierdzenia. Zgoda na powtórkę wiąże bieżące tożsamości zamówień legacy i ostatnie przyjęcie.
+  Nieznane transfery legacy zostają nietknięte; znane zastąpione przypisania zachowują pliki i tracą
+  tylko aktywny zakres. Nowa treść czeka na zastosowaną rewizję poprzedniego zakresu.
+- Projekcja `episode_states` nie mutuje stanu: nierozliczony lub problemowy poprzednik daje
+  `waiting_previous_transfer`; gotowy odcinek bez `ReadyGroup.main_result` (lub źródłowego wideo,
+  gdy wyniku brak) daje `not_ordered` + `result_missing`, a D powtarza go bez wykluczania
+  poprzedniego wydania. Gdy niedokończony transfer tego wydania trzyma poprzednie przypisanie,
+  D odmawia z `pack_in_progress`. `automation.py`
+- `episode_file_choose` czyta świeżą mapę plików, sprawdza rewizję oraz dokładne index/path/size i
+  zapisuje wideo z napisami/audio o tym samym stemie razem z receipt przed selekcją. Po odczycie
+  sprawdź receipt ponownie na wątku ownera, żeby równoległe ponowienia rozliczyły się idempotentnie.
+  Nie używaj wideo ze starszego przypisania. Sprawdzaj rewizję selekcji i przypisanie, nie całe
+  potwierdzenie: zmiana samego znacznika czasu nie unieważnia wyboru pliku.
+- Pomocnicze funkcje metadanych w `transfers.py` liczą najpierw pliki `zgodne` H1 na oryginalnych
+  pełnych ścieżkach: więcej niż jeden daje pustą selekcję, dopiero potem wygrywa unikalna dokładna
+  nazwa wideo, a na końcu jedyny zgodny plik; `fileIdx` źródła nigdy nie wybiera pliku. Pusta
+  selekcja ręcznego przypisania to ręczny wybór pliku (U-18c). Próba subskrypcji przechodzi
+  `metadata_check`: niejednoznaczny plik, paczka (więcej niż jedno wideo odcinka w spisie), brak
+  zgodnego, plik niezgodny w H1 albo nieużyteczny (`recheck`) i plik chroniony dla innego celu
+  innego transferu (`taken`) zapisują `EpisodeAssignment.stopped` bez plików, więc treść nie startuje.
+  Nieużyteczny to zapisany snapshot `choice.traits.unusable`, a gdy spis ujawnia inną nazwę pliku niż
+  `reference.file_name` - także `release_traits` tej nazwy z nazwą wydania. Wideo odcinków liczy jedno
+  `episode_identity.episode_video_count` (dla `is_pack` i `metadata_check`) według zasady: niejednoznaczny
+  plik zostaje w zliczaniu. Dodatkiem (`is_extra_path`) jest tylko znacznik NCOP/NCED/creditless albo
+  katalog `EXTRA_FOLDERS`/sufiks `PLEX_SUFFIX`, gdy w całej ścieżce (katalogi i stem) po usunięciu tagów
+  technicznych, CRC i numeru znacznika nie zostaje znak `str.isnumeric`; dodatki liczą się, gdy innego
+  wideo nie ma. PV, CM,
+  trailer, teaser, menu, preview, yokoku, OP i ED liczą się jako odcinek.
+  Pliki towarzyszące wymagają tego samego katalogu i stemu. `file_map_revision` pomija postęp i
+  priorytety oraz waliduje unikalne ścieżki Windows i indeksy. Zbiór wybranych plików to `AcquisitionConfirmation.wanted_files` (indeksy
+  aktywnych przypisań); przed `select_files` `_apply_selection` odrzuca mapę, której rewizja różni
+  się od `file_map` któregokolwiek aktywnego przypisania. `automation.py`
+- Cykl selektywny prowadzi istniejący poller, tylko gdy `AcquisitionService.selective`: `ADMITTED` →
+  trwałe `PENDING_SEND` → `add_metadata` → `ACCEPTED` (wyjątek add → `UNCERTAIN`). Po mapie plików
+  owner zapisuje przypisania z podniesionym `selection_revision` PRZED `select_files`; potwierdzenie
+  zapisuje `applied_revision` tylko dla niezmienionej rewizji i zeruje `content_started`. Start
+  wymaga potwierdzonej selekcji, niepustego zestawu, stanu stop i braku żądanego stop/cancel.
+  Działający transfer przed nową selekcją dostaje stop i czeka na kolejną rundę. Wynik workera
+  scala się tylko przy niezmienionym `_selection_basis`, a `_may_settle` odrzuca go po stop/cancel
+  zleconym w trakcie rundy.
+- Przed KAŻDYM startem i KAŻDYM resume selektywnym (także po restarcie i końcu pauzy) owner czyta
+  klienta na świeżo (`_mismatched`) i porównuje `save_path` ze stagingiem, mapę index/path/size z
+  przypisaniami i priorytety z `wanted_files`; niezgodność albo brak transferu zatrzymuje go z
+  `_SELECTION_MISMATCH` — cache inspektora tu nie wystarcza. Tuż przed startem owner ponownie
+  sprawdza `_may_start_selection` (polityka, action ID, `_selection_basis`); resume chroni
+  `_mark_sent`, który odrzuca akcję zastąpioną w trakcie odczytu.
+- qBittorrent potrafi zgubić świeże priorytety przy wyłączeniu. Start ownera i pierwsza udana runda
+  po nieudanej (`_recheck_selections`) oznaczają każdy `ACCEPTED` z `_selection_confirmed` w
+  `_unverified`; tylko wtedy runda czyta `_mismatched`, także dla nieręcznych transferów w pauzie.
+  Niezgodność: stop, ta sama rewizja przez `_apply_selection(restoring=True)` (bramka bez polityki),
+  start zwykłą ścieżką (`content_started` wraca do `False`), więc pauza nadal blokuje nieręczne.
+  Nienaprawialna mapa lub folder daje `_SELECTION_MISMATCH`. Wynik rundy dla przywróconego rekordu
+  nie jest scalany. Restart qB wewnątrz wywołania managera bez nieudanej rundy nie daje sygnału.
+- Rekord selektywny nie przechodzi w `COMPLETE`/release, dopóki selekcja nie jest zastosowana i
+  każde aktywne przypisanie nie ma przekazanego zestawu (`handed_off`); inspektor zachowuje listę
+  plików ukończonego transferu (`stale`). Timeout metadanych (`METADATA_TIMEOUT_S`) liczy się w
+  pamięci na próbę; jawne resume zaczyna nową (`restart_idle`). Resume bez potwierdzonej selekcji
+  nie wysyła `resume`: w `metaDL` metadane nadal się pobierają, a zatrzymany transfer bez metadanych
+  dostaje `_METADATA_STOPPED` (bez ponownego add). Pauza automatyzacji zatrzymuje tylko nieręczne
+  transfery z `applied_revision > 0`. Selektywne `PENDING_SEND` uzgadnia się z klientem bez
+  ponownego add: niewidoczny hash dostaje do `_SEND_CHECKS` odczytów, potem `UNCERTAIN` z
+  `_SEND_UNCONFIRMED`, a resume sprawdza go od nowa. `automation.py`, `transfers.py`
+- Potwierdzony transfer selektywny nieobecny w udanym odczycie klienta przechodzi w `FAILED` z
+  `removed_from_client`; start uzgadnia stare `UNCERTAIN` tylko przy trwałym potwierdzeniu
+  (`content_started` albo `applied_revision > 0`). Niepotwierdzone wysyłki zachowują ochronę.
+  `protected_assignments` współdzielą konflikty i status: usunięcie lub potwierdzone anulowanie
+  zwalnia tylko przyjęcia bez publikacji; dowody publikacji, pliki i rekordy historyczne zostają.
+- `TransferInspector` czyta zbiorczą listę aktywnych transferów; metadane plików odświeża po ich
+  uzyskaniu i przy przejściu do kompletności. Do Auto dopuszcza wybrane pliki po dowodzie klienta,
+  zgodności rozmiaru i lokalnej dostępności. Nieznane nazwy przyjętego transferu blokują Auto w jego
+  katalogu do odczytu metadanych. Przejście w uncertain/removed wymaga trzech kolejnych udanych
+  odczytów listy bez hasha; licznik w pamięci zeruje obecność albo zdjęcie z inspekcji. Po
+  `COMPLETE` owner zleca zwykłą inspekcję plików; bez `ACCEPTED` nie odpytuje klienta.
+- `AcquisitionConfirmation` zapisuje się przed add; niepewne przekazanie blokuje ponowne dodanie
+  hasha i innej wersji tego samego numeru. Zwykłe dopuszczenie chroni każdy zapisany hash, także
+  nieudanych pobrań; jawne ponowne pobranie zachowuje stare potwierdzenie i koreluje nową próbę.
+  Usunięcie subskrypcji nie usuwa potwierdzenia. Obecność hasha w kliencie oznacza `ACCEPTED`,
+  nigdy kompletność pliku. `automation.py`
+- `acquisition_staging.py` wylicza `temp/.acquisition/<operation_id>/data` z podanego workspace i
+  nie tworzy markera runu. Ścieżki Windows i przodków od podanego katalogu w dół sprawdzaj pod kątem
+  dowiązań przed I/O; junction powyżej workspace jest poza tą granicą. Helpery nie przyjmują pracy
+  ani nie startują treści; każdą publikację i cleanup rozstrzyga owner.
+- Publikacja selektywna zapisuje płaskie nazwy i zweryfikowane prywatne kopie przed wyłącznymi
+  dowiązaniami do roota. Auto wymaga kompletnego przekazanego zestawu; istniejące zlecenia
+  deduplikują przyjęcie po restarcie. Scalanie wyników workera zachowuje publikacje i manifesty
+  zapisane przez ownera. Cleanup wymaga zwolnienia przez managera oraz zgodnej tożsamości pliku i
+  skrótu w roocie albo w dowiedzionym miejscu `ReadyStore`; niedowiedzione oryginały zostają w
+  stagingu. Udany cleanup zapisuje się także, gdy chronione pliki zostały, więc polling ich nie
+  hashuje ponownie. Dowody kompaktuj dopiero, gdy cleanup potwierdzi brak katalogu operacji;
+  chronione oryginały zachowują manifest i dowody publikacji. Usuwane są tylko pliki manifestu i
+  puste katalogi; prawdziwe błędy I/O ponawiają się w procesie w ograniczonym budżecie, potem po
+  restarcie. Oczekiwanie na zwolnienie lub odroczoną relokację nie jest błędem; ponowienia stoją,
+  gdy klient nie może postępować (zewnętrzny, przejęty, zamknięty), i wracają przy pollingu albo
+  restarcie. Relokacja po wyczerpaniu prób wraca sama co `TRANSFER_BACKOFF_CEILING_S` przez osobny
+  termin `_ready_retry_at`, nie `_transfers_at`, więc nie udaje trwającej pauzy; bez takich ruchów
+  termin nie budzi rezydenta. Przekazany zestaw nie potrzebuje oryginałów ze stagingu do
+  ukończenia transferu; brak opublikowanych plików przed przetwarzaniem daje `publication_missing`
+  bez blokowania zwolnienia pozostałych odcinków. Rekordy schematu 3 sprzed `manifest`, `cleaned` i
+  `publication` pozostają czytelne. `automation.py`, `acquisition_staging.py`, `watch_state.py`
+
+## Katalog wydań i subskrypcje
+
+- Numer odcinka widziany przez aplikację to `choice.episode`, nigdy `choice.name.episode`:
+  `read_episode` interpretuje nazwę w `SeasonContext` (indeks sezonu, offset, liczba odcinków).
+  Nazwa ze znacznikiem sezonu (`name.season` albo `season_hint(series)`) zachowuje numer i dostaje
+  `other_season`, gdy znacznik wskazuje inny sezon; bez znacznika numer powyżej offsetu to numeracja
+  absolutna (`absolute`), a poniżej offsetu — inny sezon. `acquisition.py`
+- `catalog_releases` rozdziela powody pominięcia: `hidden` (poniżej `min_resolution`), `excluded`
+  (dubbing i brak języka napisów w indeksie), `filtered` (paczki i numery spoza zakresu). Klucz
+  grupy to seria złożona do liter, cyfr i spacji (`normalize_series`), więc wersje z dwukropkiem i
+  bez są jedną grupą z etykietą pierwszego zapisu. Kolejność grup ma jedno źródło, `order_groups`;
+  ekran nie powtarza tej reguły.
+- `matches_title` porównuje zbiory `title_forms`: zapis wprost, bez znacznika sezonu i `base_title`
+  (bez sezonu i podtytułu po `" - "`, `" -"`, `":"` albo `" –"`), więc `Solo Leveling` trafia w alias
+  `Solo Leveling Season 2 -Arise from the Shadow-`. `acquisition.py`
+- `search_title` pyta tytułem romaji i angielskim; przy zakresie do `MAX_EPISODE_SPAN` odcinków
+  dokłada zapytania po numerze (`"{base} - 01"`, przy sezonie > 1 także `"{base} S02E01"` i numer
+  absolutny) tylko dla jednego zapisu tytułu (angielski, bez niego romaji), bo RSS oddaje 75
+  najnowszych trafień. Potem `"{seria} {grupa}"` dla najwyżej `MAX_GROUP_QUERIES` grup wybranych po
+  sumie seedów odcinków sezonu, nie po dacie (wieloletni uploader nie wypada za nowszymi). Budżet `MAX_REQUESTS` liczy żądania HTTP: zapytanie
+  tytułem lub numerem kosztuje dwa (obie kategorie), grupa jeden — tylko w kategorii, w której ją
+  widziano (`fr` → `1_3`, reszta → `1_2`). Scalanie po `info_hash` casefold, pierwszy wpis wygrywa.
+- `season_context` liczy sezony, nie wpisy: `PrequelEntry.cour` (`Part N`/`Cour N`) podnosi offset,
+  nie indeks, a kandydat będący cour zostaje w sezonie poprzednika. `acquisition.py`,
+  `services/catalog/anilist.py`
+- Brak S/E w ani.zip nie blokuje samodzielnego 1. sezonu (`_first_season`: TV/ONA z wczytanymi relacjami, indeks 1,
+  jedyna relacja anime to `SEQUEL`, mapowanie i TVDB bez sezonu innego niż 1): cel dostaje S1, odcinek = absolutny =
+  lokalny (`first_season_numbering`), a sugestią może być tylko `zgodny` (`EpisodeOffer.derived_numbering`).
+  `acquisition.py`, `algorithm-spec.md` §3.5
+- Subskrypcje żyją w `WatchState.subscriptions` jako `SubscriptionRecord`; wiersze, limit
+  `MAX_SUBSCRIPTIONS` (100) i kolejność listy (`display_order`: problem, termin, bez terminu,
+  pauza) mają jedno źródło w `subscription_targets.py`; tam też są reguły celów (`cut_point`,
+  `is_target`, `merge_listing`) i terminów (`next_search_at`, `next_check_at`). Odczyt ani.zip, który
+  przesuwa numery zapisanych odcinków w ich sezonach, zastępuje mapowanie od razu (`renumbered`, wpis
+  `renumbered` w `check`); konfliktem `CATALOG_CONFLICT` jest tylko zmiana sezonu odcinka albo wpisu kitsu
+  (decyzja właściciela 2026-10-11, przypadek Sword). `SubscriptionRow` niesie `aired` (cięcie + cele
+  poza `awaiting_airing`), `ready` i najwcześniejszy niedokończony cel (`due_number`, `due_state`). Owner obsługuje
+  `subscriptions_list`, `subscription_get`, `subscription_add`, `subscription_check` i
+  `subscription_pause/resume/remove/restore`; każdy inny rodzaj `subscription*` to
+  `UNKNOWN_COMMAND`. Mutacja zapisuje receipt razem ze stanem. Sprawdzenie biegnie w puli I/O,
+  jedno na subskrypcję, z izolacją wyjątków; jeden `read_listing` (ze zapisanym mapowaniem jako
+  fallback) zasila `AcquisitionService.subscription_check` każdego celu. Budżet źródeł trzyma
+  `EpisodeSearch.subscription_check`: TsukiHime najwyżej 2 strony + 10 uzupełnień, Knaben/nekoBT
+  raz na 60 min na cel (między odczytami ostatni udany wynik), szybkie źródło w cooldownie jest
+  `SKIPPED` z wynikiem z pamięci do 30 min; pominięcie nie liczy się jako niepowodzenie wydania.
+  Pamięci są w procesie: wyłączenie źródła i restart je usuwają. Wybór robi czysty
+  `subscription_choice.choose` (pewność listy nie wpływa; kolejność `choice_key`); pliki innych
+  celów chroni `protected_files` po hashu i ścieżce qBittorrenta, a przypisanie bez znanej
+  ścieżki chroni cały hash do metadanych. `tried` zapisuje hash i wyklucza go tylko dla własnego
+  celu. `sources_down_since` celu ustawia sprawdzenie, w którym wszystkie włączone źródła
+  zawiodły, a czyści udane sprawdzenie albo wyjście celu z `due`. `replacement` (R-07) zwraca
+  pierwsze przyjmowalne wydanie bez czekania na polskie i bez progu; wywołuje go E4. Czekanie na PL
+  rozstrzyga `decide`: pierwszy wybór z PL bierze od razu, bez PL czeka do `wait_until` (historia
+  `polish_history`: lokalny dowód z `traits.polish` przypisań poprzedniego odcinka przed ostatnią
+  obserwacją TsukiHime; `subscription_polish_wait_h` z bieżących ustawień). `previous_history` czyta
+  tylko, gdy bufor jeszcze trwa; `None` zachowuje ostatnią obserwację. „PL nie ma” wymaga
+  `ReleaseTraits.subtitles_listed` (pełna lista napisów w zakresie pliku wg §5.2, także paczki; deklaracje
+  plików tylko z zapamiętanych spisów, bez nowych odczytów). Historia mieści się w budżecie 14 żądań
+  TsukiHime celu: odczyt ID tytułu (`SearchOutcome.title_read`) zabiera jej jedną stronę.
+  `subscription_check` z `number`
+  („Pobierz teraz”) zapisuje `PolishSkip` dla bieżącego terminu razem z receipt, odmawia
+  `target_not_waiting` celowi, który nie czeka; `next_search_at` daje pominięciu bez `settled` i bez
+  `tried` termin od razu. Rozliczenie idzie tylko ze snapshotu rundy: przeszukanie tego celu bez
+  niedostępności źródeł i bez wyjątku daje `settled`, nieobsłużenie przez rundę, której snapshot miał
+  pominięcie, daje `tried` (powrót na siatkę), a runda ze snapshotem sprzed prośby niczego nie zmienia.
+  Zegar ani `checked_at` nie dowodzą obsługi prośby. `subscriptions_revision` w statusie rośnie przy zmianie
+  subskrypcji. Wynik trafia do `last_check` i
+  `decisions.jsonl`; `checked_at` zmienia tylko udane sprawdzenie: bez błędu i (ani.zip
+  odpowiedział — `ListingRead.answered`, także pustym mapowaniem lub 404 — albo jest zapisane
+  mapowanie, albo poszło zapytanie o wydania); inaczej `checked_at` zostaje, a ponowienie idzie z
+  opóźnieniem. `ListingRead.live` (niepuste odcinki zastępujące zapisane mapowanie) nie decyduje o
+  sukcesie. Niedostępność źródeł albo obsługiwany wyjątek jednego celu nie przerywa rundy: cel
+  dostaje `sources_down_since`, kolejne cele są sprawdzane. Wyjątek celu nadal jest wynikiem rundy
+  (`last_check`, bez `checked_at`); niedostępność kończy rundę błędem tylko, gdy dotyczyła
+  wszystkich przeszukanych celów. Błąd wspólnego odczytu listy kończy rundę. TsukiHime
+  jest niedostępny przy awarii listy, limicie czasu albo `429`/błędzie, także w uzupełnieniach;
+  wtedy licznik dostaje każde oczekujące wydanie, a kolejka uzupełnień wybiera wydania nadal
+  blokujące przed rozstrzygniętymi, rotując wizyty tylko w grupie. Bez `ANISHIFT_SUBSCRIPTION_SHADOW`
+  owner przyjmuje próbę przez `_admit_episode` z receipt `sub:{id}:{numer}:{próba}`, zapisując cel
+  `attempting` w tym samym zapisie; tryb cienia tylko proponuje. Każdy `_save` rozlicza cele
+  (`settle_target`) na przypisaniach, zamyka skończone próby (anulowanie własnego transferu albo
+  wycofanie zakresu współdzielonego), a ostatni spełniony cel sezonu zakończonego przenosi rekord do
+  Historii. Cel spełnia dopiero przekazany zestaw (`handed_off`), ręczne zamówienie wygrywa (`manual`).
+  Próba zatrzymana po metadanych (`stopped`) zamyka się jak inne, zostaje w `tried`, ale zwraca
+  `attempts` (`started` rośnie dalej), więc nawet trzecia nie wyczerpuje celu. Tylko martwa próba
+  (`stalled` albo `metadata_timeout`: 10 min bez przyrostu bajtów w stanie pobierania, czas pauzy i
+  kolejki się nie liczy) podnosi `threshold` do najlepszej klasy z `choice.traits.resolution`, bez
+  snapshotu z `reference.release` (pusta nazwa daje `UNKNOWN`); `failed`, usunięcie z klienta,
+  odrzucenie H2 i zatrzymanie po metadanych progu nie zmieniają.
+  Kontrola H2 (`download_verification.py`) biegnie przed nazwaniem plików na wideo ze stagingu;
+  `media_probe` dostarcza `AppService.media_probe` (bez importu `services` w CLI), a sprawdzony
+  `verified_stamp` trafia do `copy_staged(expected=)`. Odrzucenie zamyka próbę, brak sondy lub
+  błąd po jednym ponowieniu daje `verification_skipped`. `removed_subscription` trzyma jedną
+  usuniętą subskrypcję dla Ctrl+Z; przywrócenie odmawia `subscription_exists` albo
+  `subscription_limit` i zachowuje ją. Wznowienie czyści `pause_reason`. `automation.py`
+- Powiadomienia §8 mają jeden kanał: trwały `WatchState.notified` z kluczem
+  `(subscription:{id}:{numer}, powód, szczegół)`, wpis `escalation` w `decisions.jsonl` i
+  `_publish_notification`. Klucz trafia do `notified` w tym samym zapisie co zdarzenie, a publikacja
+  idzie dopiero po udanym zapisie. `late`, `exhausted` i nieudaną próbę publikuje
+  `_observe_subscriptions` z różnicy `notified`; próbę zgłasza `_settled_targets` przy jej zamknięciu
+  do `due` lub `awaiting_airing` (szczegół = `started`, każda próba osobno; bez `replaced`), z dopiskiem
+  „szukam następnego”, a cel wyczerpany dostaje tylko `exhausted`. Blokadę wyboru (`no_admissible`,
+  `threshold`, `pending`; pusty szczegół, także przy 0 wydań) i `sources_down` publikuje samo
+  sprawdzenie (`_escalations`, `_CHECK_NOTICES`), bo tylko ono zna liczby: blokadę od
+  `decision_deadline` (koniec czekania na PL, co najmniej `t_due` + 2 h), źródła po
+  `SOURCES_DOWN_NOTICE_H` od `sources_down_since` należnego celu. Liczby blokady: wydania, zgodne
+  niewykluczone i zgodne już próbowane. Ostatnią blokadę trzyma `SubscriptionTarget.blocker`; czyści
+  ją wybór wydania i wyjście z `due`. Pobranie bez PL nie powiadamia. `automation.py`,
+  `subscription_choice.py`
+- Szczegóły odcinka niosą `EpisodeStatus.notices` (`TargetNotice`: kod i przyczyna): nieudaną próbę
+  (odrzucenie z kodem H2), blokadę, niedostępne źródła, a dla przyjęcia subskrypcji bez PL
+  `no_polish_after_wait` z buforem `SubscriptionTarget.polish_buffer_min`, zapisanym przy decyzji tylko
+  po faktycznym czekaniu (`wait_until − t_due` > 0; nie przy „PL nie ma”, czekaniu 0 ani „Pobierz
+  teraz”). Polskie zdania zasobnika i CLI składa jedno `episode_commands.notice_text`; nieczytelna
+  przyczyna daje ogólne zdanie powodu. Wpis `check` celu w rejestrze ma `sources` (stan każdego
+  źródła), `candidates` (`selection_view`: hash, werdykt, jakość, pewność, konflikt, paczka,
+  `after_metadata`, bez nazw i URL-i), `blocker` i `numbering` (`numbering_gap` albo
+  `ListingRead.numbering_source`); historię PL niesie wpis `polish` (`result`, `source`).
+  `acquisition_decisions.py`
+- `config/subscriptions.json` jest zamrożonym plikiem poprzedniej wersji: owner go nigdy nie
+  zapisuje, a `subscriptions.py` służy tylko do jego dekodowania (schemat 1-4). Migracja stanu do
+  schematu 4 przenosi go czystym `subscription_migration.migrate` do rekordów i `legacy_orders`
+  (referencje konfliktów starych zamówień) i rozlicza oczekujące receipt dawnych poleceń
+  subskrypcji. Wynik powstaje i przechodzi walidację przed kopiami; uszkodzony lub nieczytelny plik
+  daje `ConfigError` `CONFIG_INVALID` z podpowiedzią przywrócenia kopii, bez zmiany obu plików.
+  `watch_state.py`, `subscription_migration.py`
+- Pobranie starej subskrypcji nie ma zdalnego ponowienia z Historii (`legacy_subscription_retry`);
+  lokalne wznowienie i przebudowa działają. Ręczne `download` zapisuje receipt i hashe przed
+  wysłaniem. Panel prowadzi wyszukiwanie i odczyty katalogu przez ownera. `automation.py`
+- `RequestControl` opakowuje wspólny transport HTTP metadanych i qBittorrenta: liczy rzeczywiste
+  wywołania, współdzieli aktywne odczyty i blokady dostawców; trwałe terminy blokad zapisuje owner.
+  Callback cooldownu tylko kolejkuje zapis, nie czeka na ownera. Znane ograniczenie: cooldown
+  przychodzący po końcu pętli zostaje wyłącznie w pamięci. Transport zamyka `AcquisitionService.close`
+  przez `_close_acquisition`, po `_close_client`; `AutomationOwner.serve` go nie zamyka.
+  Budżet operacji obejmuje zagnieżdżone zapytania, bez retry transportu. `services/http_requests.py`
+
+## Workspace, planowanie i wykonanie
+
+- Discovery skanuje root rekurencyjnie: pomija `temp/` bezpośrednio pod rootem, pliki i katalogi od
+  kropki i nie wchodzi w dowiązania. ID grupy liczy się z katalogu względem roota i stemu, więc
+  `A/01.mkv` i `B/01.mkv` to dwie grupy, a plik w roocie zachowuje dotychczasowe płaskie ID.
+  `discovery.py`
+- ID grup i artefaktów powstają wyłącznie z normalizowanych ścieżek względnych; plik spoza
+  workspace używa znormalizowanej ścieżki zewnętrznej tylko jako wejścia stabilnego skrótu. Nie
+  używaj `hash()` ani losowego UUID.
+- `watch.py` sprawdza stabilność pliku, `needs_work` i `WatchLedger`; dostępność źródła deleguje do
+  `platform/directory_watch.py`, który otwiera plik ze współdzieleniem wyłącznie odczytu: blokuje
+  aktywnych writerów, dopuszcza odtwarzacz i pliki tylko do odczytu. Fasada eksportuje
+  `SCAN_INTERVAL_S` i `WatchLedger`.
+- `AppService.discover()` jest serializowane (`_discover_lock`); oczekiwanie sprawdza anulowanie,
+  także w prewarmie Home. Bez `changed_paths` uzgadnia pełną listę plików, z listą zdarzeń
+  aktualizuje `DiscoveryIndex` bez przechodzenia reszty. `WorkspaceInspector` zachowuje inspekcję
+  niezmienionych grup i katalogi ścieżek niezmienionych mediów, także po dodaniu napisów; usunięte
+  grupy wypadają z cache. Nie dodawaj osobnego cache w UI. `service.py`, `discovery.py`,
   `inspection.py`
-- `AppService.discover()` jest serializowane (`_discover_lock`). Bez `changed_paths` uzgadnia
-  pełną listę plików; z listą zdarzeń aktualizuje `DiscoveryIndex` bez przechodzenia pozostałych
-  katalogów. `WorkspaceInspector` zachowuje inspekcję niezmienionych grup i katalogi ścieżek
-  niezmienionych mediów, również po dodaniu napisów. Usunięte grupy wypadają z cache.
-  Nie dodawaj osobnego cache w UI. `service.py`, `discovery.py`, `inspection.py`
-- Produkcyjne `discover()` przygotowuje brakujące narzędzia przed probe, przez
-  callback z `bootstrap.py` i istniejący instalator. MKV wymaga MKVToolNix i FFmpeg,
-  MP4/audio — FFmpeg; sam TXT lub napisy nie uruchamiają instalacji. Przygotowanie
-  jest ciche dla terminala; konstruktory i renderer nie pobierają plików.
-  Oczekiwanie na `_discover_lock` sprawdza anulowanie, również podczas Home prewarm.
+- Produkcyjne `discover()` przygotowuje brakujące narzędzia przed probe przez callback z
+  `bootstrap.py` i istniejący instalator: MKV wymaga MKVToolNix i FFmpeg, MP4/audio FFmpeg, sam TXT
+  lub napisy nic nie instalują. Przygotowanie jest ciche dla terminala; konstruktory i renderer nie
+  pobierają plików.
+- `WorkspaceInspector.inspect()` sonduje grupy równolegle (`_MAX_INSPECTION_WORKERS`), bo każda to
+  osobny `mkvmerge`. Kolejność grup i ostrzeżeń pozostaje kolejnością discovery.
+- `SOURCE` ma `planned_destination == path`, `INTERMEDIATE` nie ma trwałego celu, a `DURABLE`
+  dostaje `planned_destination` przed wykonaniem.
+- `AUTO` nie zawiera ręcznych artifact/track ID. `MANUAL` wskazuje artefakt albo osadzoną ścieżkę
+  danego rodzaju, nigdy oba.
+- `ExecutionPlan.tasks` musi wejść w porządku `stable_topological_order()`, stabilnym względem
+  naturalnie ułożonego wejścia, więc taski grupy `2` nie przeskoczą za grupę `10` przez hash w
+  `task_id`. Każdy produkowany artefakt ma jednego producenta.
+- Wykonywalny plan nie zawiera `MISSING` bez producenta. Task produkuje wyłącznie `MISSING` o
+  lifetime `INTERMEDIATE` albo `DURABLE`, a parametry odpowiadają jego `TaskKind`.
+- Worker dostaje w `ArtifactSnapshot` gotowe wejścia i niezmienne deskryptory planowanych wyjść i
+  zwraca `TaskResult`; mutowalny store pozostaje prywatny dla schedulera.
+- `ABSENT` jest poprawne tylko dla nieźródłowego `DISPLAYED_PL` bez ścieżki runtime. Udana
+  klasyfikacja i pusty writer napisów wyświetlanych ustalają brak; konwersja, publikacja i
+  kompozycja go przenoszą, a `require_ready` pozostaje ścisłe. `RunJournal` zachowuje brak bez dowodu
+  pliku, także przy jawnym wykonaniu zapisanych podziałów. Auto używa migawek dziennika
+  zweryfikowanych w inspekcji tła dla niezmienionych źródeł; o użyciu decydują rewizje dziennika i
+  bieżące brakujące produkty. Ostrzeżenia wyniku wyjaśniają pominięcia. Puste przebiegi samych
+  napisów wyświetlanych nie tworzą wpisu Biblioteki, a regeneracja zachowuje istniejący dobry wynik.
+- Auto wymagające osadzonego audio i napisów z jednego MKV planuje jeden `EXTRACT_TRACKS`; handler
+  uruchamia jeden `mkvextract --gui-mode` i przekazuje każde prawdziwe `#GUI#progress N%` bez
+  uśredniania. Pula ekstrakcji ma rozmiar `min(file_count, round(sqrt(cpu_count)) + 2)`.
+- LLM wykonuje gotowe pliki równolegle dokładnie do `llm_max_concurrency` (1-16); scheduler nie
+  przycina tej liczby drugi raz. TTS syntetyzuje jeden plik naraz bez zmniejszania
+  `tts_request_concurrency` profilu; audio może pracować równolegle z następną syntezą.
+- `GraphCoordinator` przyjmuje wiele niezależnych kontekstów planów (`RunRequest` → `RunHandle`).
+  Kontekst ma własny plan, sesję, handler, emitter, `ArtifactStore`, cancellation i
+  `NaturalOrderGate`; wspólne są tylko kolejki gotowych tasków per zasób, executory i limity z
+  `limits_provider()`. `GraphScheduler.run()` to adapter jednego planu: prywatny koordynator,
+  `submit`, czekanie na wynik i zawsze `close()`. Błąd pętli koordynatora
+  anuluje tokeny wszystkich kontekstów przed joinem executorów i wraca przez `RunHandle.result()`.
+- Element wspólnej kolejki to `(rank, sequence, task_index, run_id, task_id)`, `rank` = 0 dla
+  `RequestOrigin.USER` i 1 dla `BACKGROUND`. Wybór następuje przy realnie wolnym slocie, a liczba
+  wysłanych tasków per zasób nie przekracza `worker_limit` (bez zapasu `max_pending_per_resource`).
+  Limity pochodzą z `ResourceLimits` (`plan.settings` tylko dla domyślnego profilu tłumaczenia), pula
+  ekstrakcji z liczby grup ekstrakcyjnych WSZYSTKICH aktywnych kontekstów. `scheduler_contracts.py`
+- `RequestOrigin` określa priorytet, a `RunRequest.automatic` podporządkowuje plik wyjątkowi Auto
+  jego katalogu: wyłączony katalog zatrzymuje kolejne taski automatycznego zlecenia, ale jawne
+  zlecenie tego pliku działa. `BACKGROUND` zawsze podlega temu wyjątkowi. `scheduler_runtime.py`
+- Wątek `anishift-coordinator` istnieje tylko, gdy koordynator ma zlecenia: `submit` go startuje,
+  pusta runda zamyka executory i kończy wątek, `close()` anuluje resztę i go dołącza. Bezczynny
+  koordynator nie budzi się, także gdy czeka na pracujący task — bez pollingu (licznik `wakeups`).
+- Blokada docelowego produktu odkłada ponowienie atomowego `replace` w koordynatorze bez usypiania
+  całej koordynacji: inne grupy nadal raportują postęp i kończą, a każda próba sprawdza cancellation
+  i generację sesji. `scheduler.py`, `scheduler_runtime.py`
+- `AppService` prowadzi rejestr aktywnych runów: `submit_plan` nie blokuje, `execute` to
+  `submit_plan(...).result()`, a `cancel(run_id)` działa dla każdego aktywnego runu. Druga praca nad
+  tą samą grupą dostaje `RunConflictError`, a `cleanup_orphaned_temp` komplet aktywnych `run_id`.
+  Sesję zamyka wątek domykający run bez prefiksu `anishift-`, zarezerwowanego dla pul do dołączenia.
+- `AppService.execute()` po przerwaniu anuluje run i CZEKA na domknięcie kontekstu, zanim przekaże
+  wyjątek — inaczej taski, procesy narzędzi i `temp/` przeżyłyby wywołującego. `_finish_run` zawsze
+  zamyka handler i sesję i rozwiązuje `RunHandle`, bo nierozwiązany handle wiesza `execute`.
+- `AppService.reload_preferences()` wczytuje ponownie `settings.json` i `.env` pod `_run_lock`;
+  trwające zlecenia zachowują snapshot ustawień z planu. `service.py`
 
 ## Testy
 

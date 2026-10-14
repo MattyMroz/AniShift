@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
+from decimal import Decimal
+from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING, Final
 
 from natsort import os_sorted
 
 from anishift.application.artifacts import SourceGroup
 from anishift.application.control import (
+    AcquisitionConfirmation,
+    LegacyScope,
     ProcessingRequest,
     ProductConfirmation,
     ReadyGroup,
@@ -20,10 +27,224 @@ from anishift.application.control import (
 )
 from anishift.application.control_views import LibraryFile, LibraryFileIdentity, LibrarySet
 from anishift.application.discovery import ArtifactName, classify_artifact
+from anishift.application.episode_identity import TECHNICAL, VIDEO_EXTENSIONS
 from anishift.application.intents import GroupIntent
 from anishift.application.products import main_product
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, WorkspacePlace
 from anishift.paths import READY_DIRECTORY
+from anishift.services.torrents.names import (
+    before_season,
+    episode_range,
+    parse_release_name,
+    season_hint,
+    strip_season,
+)
+
+if TYPE_CHECKING:
+    from anishift.application.subscription_targets import SubscriptionRecord
+    from anishift.services.torrents.types import ReleaseName
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+NO_EPISODE: Final[str] = "—"
+"""Episode column of a film or a file without an episode number."""
+RANGE_DASH: Final[str] = "–"
+"""Join the first and last episode of an episode range."""
+FILM_TAIL: Final[re.Pattern[str]] = re.compile(
+    r"(?i)(?<=[\s.])(?:\(?(?:19|20)\d{2}\)?|\d{3,4}[pi]|blu-?ray|bdrip|web-?dl|webrip)(?=[\s.]|$)"
+)
+"""Open the release tail of a film name: a year, a resolution or a source after a space or a dot."""
+EPISODE_MARKER: Final[re.Pattern[str]] = re.compile(
+    r"(?i)^(?:ep\.?|e)\s*\d|\b(?:episode|cap[ií]tulo)\s*\d|\bs\d{1,2}[ .]?ep?\d|\d+x\d+"
+    r"|\b(?:season|temporada|saison|staffel)\s*\d"
+)
+"""Find an episode or season marker that keeps a subtitle out of a film title."""
+WORD_DOT: Final[re.Pattern[str]] = re.compile(r"(?<!\d)\.|\.(?!\d)")
+"""Find a dot standing for a space, leaving the dot of a decimal number such as ``2.22``."""
+EPISODE_NUMBER: Final[re.Pattern[str]] = re.compile(r"\d+(?:v\d+)?")
+"""Match a bare episode number with an optional version, as in ``01v3``."""
+SUBTITLE_DASH: Final[re.Pattern[str]] = re.compile(r"([ .])-\1")
+"""Find a dash between two spaces or two dots that opens a subtitle."""
+LEADING_PARENTHESES: Final[re.Pattern[str]] = re.compile(r"^\(([^)]*)\)")
+"""Find a release group written in parentheses at the very start of a name."""
+EMPTY_BRACKETS: Final[re.Pattern[str]] = re.compile(r"\s*[(\[]\s*[)\]]")
+"""Find the empty brackets a removed season marker leaves behind."""
+TITLE_EDGE: Final[str] = " -–:,"
+"""Characters left dangling at the end of a title once its tail is cut off."""
+NUMBERED_PARTS: Final[frozenset[str]] = frozenset({"movie", "film", "part", "case", "chapter", "vol", "ova"})
+"""Words whose trailing number belongs to the title rather than to an episode."""
+LABEL_CACHE_SIZE: Final[int] = 4096
+"""Bound the labels kept for Library names read again on every panel frame."""
+SERIES_PART: Final[re.Pattern[str]] = re.compile(r"(?i)\s+(?:part|cour)\s*\d+$")
+"""Find the trailing part or cour number of a catalogue title, which numbers a broadcast block, not a series."""
+
+SERIES_YEAR: Final[re.Pattern[str]] = re.compile(r"\s*\((?:19|20)\d{2}\)")
+"""Find a parenthesised year of a catalogue title, which tells remakes apart, not seasons."""
+
+
+@dataclass(frozen=True, slots=True)
+class LibraryLabel:
+    """Series title and episode read from one Library file name."""
+
+    title: str
+    season: int | None
+    episode: Decimal | None
+    last: Decimal | None = None
+
+    @property
+    def episode_text(self) -> str:
+        """Return the Episode column: ``SxxEyy``, ``SxxEyy–Ezz`` or a dash without an episode."""
+        if self.episode is None:
+            return NO_EPISODE
+        text: str = f"S{self.season:02}E{_number(self.episode)}"
+        return text if self.last is None else f"{text}{RANGE_DASH}E{_number(self.last)}"
+
+    @property
+    def text(self) -> str:
+        """Return the title followed by the episode, or the title alone without an episode."""
+        return self.title if self.episode is None else f"{self.title} {self.episode_text}"
+
+
+@lru_cache(maxsize=LABEL_CACHE_SIZE)
+def library_label(name: str) -> LibraryLabel:
+    """Read the series title, season and episode from a Library file name, keeping an unrecognized name whole."""
+    path: Path = Path(name)
+    stem: str = path.stem if path.suffix.removeprefix(".").casefold() in VIDEO_EXTENSIONS else name
+    text: str = LEADING_PARENTHESES.sub(r"[\1]", stem.replace("_", " " if " " in stem else "."))
+    release: ReleaseName = parse_release_name(text)
+    span: tuple[Decimal, Decimal] | None = episode_range(text)
+    episode: Decimal | None = span[0] if span is not None else release.episode
+    hint: int | None = season_hint(release.series)
+    season: int | None = release.season if release.season is not None else hint
+    series: str = strip_season(release.series) if hint is not None else release.series
+    joined: ReleaseName | None = _subtitled(release, text) if episode is None and release.season is None else None
+    if joined is not None:
+        release, series = joined, joined.series
+    if episode is None and season is None and release.group is None and release.resolution is None:
+        return LibraryLabel(stem, None, None)
+    title: str = _title(series, film=episode is None)
+    return LibraryLabel(
+        title or stem,
+        (1 if season is None else season) if episode is not None else season,
+        episode,
+        None if span is None else span[1],
+    )
+
+
+def series_title(title: str) -> str:
+    """Return a catalogue title without its season, what follows it, its part or its year, shared by every season."""
+    base: str = SERIES_PART.sub("", SERIES_YEAR.sub("", before_season(title))).removesuffix(" -").removesuffix(" :")
+    return base or " ".join(title.split())
+
+
+def _subtitled(release: ReleaseName, text: str) -> ReleaseName | None:
+    joined: ReleaseName = parse_release_name(SUBTITLE_DASH.sub(r"\1", text))
+    subtitle: list[str] = joined.series.removeprefix(release.series).split()
+    keep: bool = bool(subtitle) and joined.series.startswith(release.series) and not _episode_subtitle(subtitle)
+    return joined if keep and EPISODE_MARKER.search(release.series) is None else None
+
+
+def _episode_subtitle(words: list[str]) -> bool:
+    if len(words) == 1 and any(char.isdigit() for char in words[0]):
+        return True
+    if EPISODE_MARKER.search(" ".join(words)):
+        return True
+    previous: list[str] = [word.casefold().rstrip(".") for word in words[-2:-1]]
+    return bool(words) and EPISODE_NUMBER.fullmatch(words[-1]) is not None and not set(previous) & NUMBERED_PARTS
+
+
+def _title(series: str, *, film: bool) -> str:
+    text: str = series.strip()
+    tail: re.Match[str] | None = FILM_TAIL.search(text) if film else None
+    if tail is not None or " " not in text:
+        text = WORD_DOT.sub(" ", text[: len(text) if tail is None else tail.start()])
+    words: list[str] = text.split()
+    while film and len(words) > 1 and TECHNICAL.fullmatch(words[-1].casefold()):
+        words.pop()
+    return EMPTY_BRACKETS.sub("", " ".join(words)).rstrip(TITLE_EDGE)
+
+
+def _number(value: Decimal) -> str:
+    whole, _, fraction = format(value.normalize(), "f").partition(".")
+    return f"{whole:0>2}.{fraction}" if fraction else f"{whole:0>2}"
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadedEpisode:
+    """AniList entry, and its local episode when known, one completed set was downloaded as."""
+
+    anilist_id: int
+    number: int | None
+
+
+def assigned_files(acquisition: AcquisitionConfirmation) -> frozenset[str]:
+    """Return every workspace name one transfer owns, whether reserved up front or observed later."""
+    return frozenset(acquisition.required_files) | frozenset(path for _index, path, _size in acquisition.file_layout)
+
+
+def downloaded_episodes(state: WatchState) -> dict[str, DownloadedEpisode]:
+    """Map the set ID of each completed set AniShift downloaded to the episode it was ordered as."""
+    groups: dict[str, DownloadedEpisode] = {}
+    sources: dict[str, DownloadedEpisode] = {}
+    for acquisition in state.acquisitions:
+        groups.update(
+            (item.group_id, DownloadedEpisode(item.choice.anilist_id, item.choice.number))
+            for item in acquisition.assignments
+            if item.group_id is not None
+        )
+        scope: LegacyScope | None = acquisition.legacy_scope
+        if scope is not None:
+            sources.update(
+                ((Path(acquisition.directory) / name).as_posix(), DownloadedEpisode(scope.anilist_id, scope.number))
+                for name in assigned_files(acquisition)
+            )
+    result: dict[str, DownloadedEpisode] = {}
+    for record in state.ready_groups:
+        episode: DownloadedEpisode | None = groups.get(record.set_id) or groups.get(record.group_id)
+        episode = episode or next((sources[name] for name in record.sources if name in sources), None)
+        if episode is not None:
+            result[record.set_id] = episode
+    return result
+
+
+def untitled_series(state: WatchState, titles: Mapping[int, str]) -> frozenset[int]:
+    """Return the AniList entries of downloaded sets that neither a subscription nor *titles* names."""
+    followed: frozenset[int | None] = frozenset(item.anilist_id for item in state.subscriptions)
+    return frozenset(
+        item.anilist_id
+        for item in downloaded_episodes(state).values()
+        if item.anilist_id not in followed and item.anilist_id not in titles
+    )
+
+
+def name_series(sets: Sequence[LibrarySet], state: WatchState, titles: Mapping[int, str]) -> tuple[LibrarySet, ...]:
+    """Name each set AniShift downloaded after its catalogue series, leaving every other set to its file name."""
+    episodes: dict[str, DownloadedEpisode] = downloaded_episodes(state)
+    followed: dict[int, SubscriptionRecord] = {
+        item.anilist_id: item for item in state.subscriptions if item.anilist_id is not None
+    }
+    named: list[LibrarySet] = []
+    for item in sets:
+        episode: DownloadedEpisode | None = episodes.get(item.set_id)
+        record: SubscriptionRecord | None = None if episode is None else followed.get(episode.anilist_id)
+        title: str | None = record.title if record is not None else None
+        if title is None and episode is not None:
+            title = titles.get(episode.anilist_id)
+        if episode is None or title is None:
+            named.append(item)
+            continue
+        season: int | None = None if episode.number is None else _series_season(title, record, episode.number)
+        named.append(
+            replace(item, series=series_title(title), season=season, episode=None if season is None else episode.number)
+        )
+    return tuple(named)
+
+
+def _series_season(title: str, record: SubscriptionRecord | None, number: int) -> int | None:
+    hint: int | None = season_hint(title)
+    if hint is not None or record is None or record.mapping is None:
+        return hint
+    return next((item.season for item in record.mapping.episodes if item.number == number), None)
 
 
 def file_identity(root: Path, name: str) -> LibraryFileIdentity | None:

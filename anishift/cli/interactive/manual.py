@@ -44,6 +44,7 @@ from anishift.application import (
     preview_plan,
 )
 from anishift.application.events import sanitize_event_message
+from anishift.cli.interactive.anime_view import spinner_frame
 from anishift.cli.interactive.menu import (
     append_row as _append_row,
 )
@@ -60,6 +61,7 @@ from anishift.cli.interactive.menu import (
     visible_window as _visible_window,
 )
 from anishift.cli.interactive.menu import with_footer
+from anishift.cli.interactive.pointer import mark_inert
 from anishift.cli.interactive.state import refusal_text
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
@@ -69,10 +71,10 @@ __all__ = ["ManualController", "ManualDraft", "ManualResult", "ManualRun", "defa
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_MENU_HINT: Final[str] = "↑↓ · Enter · Esc"
+_MENU_HINT: Final[str] = "Enter wybierz · Esc wróć"
 """Keyboard hint used by single-choice menus."""
 
-_MULTI_HINT: Final[str] = "↑↓ · Enter/Space zmień · Esc wróć"
+_MULTI_HINT: Final[str] = "Enter zmień · Esc wróć"
 """Keyboard hint used by multi-choice menus."""
 
 _GROUP_ACTIONS: Final[tuple[tuple[str, ProductKind | None], ...]] = (
@@ -467,6 +469,7 @@ class ManualController:
     def handle_key(self, key: str) -> ManualResult:
         """Apply one normalized terminal key without render-time I/O."""
         with self._lock:
+            key = "escape" if key == "backspace" and self._screen is not _Screen.INPUT else key
             if self._screen is _Screen.BUSY:
                 result: ManualResult = self._handle_busy_key(key)
             elif self._screen is _Screen.INPUT:
@@ -574,7 +577,7 @@ class ManualController:
         return ManualResult.STAY
 
     def _handle_groups(self, key: str) -> ManualResult:
-        row_count: int = len(self._group_ids) + len(self._scope_actions)
+        row_count: int = self._row_count()
         if key == "up":
             self._move(-1, row_count)
         elif key == "down":
@@ -584,7 +587,7 @@ class ManualController:
             self._select_scope(self._selected_groups ^ {group_id})
         elif key == "enter":
             return self._handle_scope_action(self._selected - len(self._group_ids))
-        elif key == "a":
+        elif key.casefold() == "text:a":
             self._select_scope(set() if self._selected_groups else set(self._group_ids))
         elif key == "home":
             self._selected = 0
@@ -665,7 +668,7 @@ class ManualController:
         threading.Thread(target=prepare, name="anishift-manual-preview", daemon=True).start()
 
     def _handle_group_action(self, key: str) -> ManualResult:
-        if not self._navigate(key, 3):
+        if not self._navigate(key, self._row_count()):
             return ManualResult.STAY
         group_id: str = self._current_group_id()
         if self._selected == 0:
@@ -692,7 +695,7 @@ class ManualController:
 
     def _handle_custom(self, key: str) -> ManualResult:
         rows: tuple[_CustomRow, ...] = self._custom_rows()
-        if not self._navigate(key, len(rows)):
+        if not self._navigate(key, self._row_count()):
             return ManualResult.STAY
         chosen: _CustomRow = rows[self._selected]
         if chosen is _CustomRow.PRODUCTS:
@@ -729,7 +732,7 @@ class ManualController:
 
     def _handle_timeline(self, key: str) -> None:
         rows: tuple[tuple[NarrationTimeline, str], ...] = self._timeline_rows()
-        if not self._navigate(key, len(rows) + 1):
+        if not self._navigate(key, self._row_count()):
             return
         if self._selected == len(rows):
             self._open(_Screen.CUSTOM)
@@ -742,9 +745,9 @@ class ManualController:
         save_index: int = len(self._product_rows)
         back_index: int = save_index + 1
         if key == "up":
-            self._move(-1, back_index + 1)
+            self._move(-1, self._row_count())
         elif key == "down":
-            self._move(1, back_index + 1)
+            self._move(1, self._row_count())
         elif key in {"space", "enter"} and self._selected < len(self._product_rows):
             product: ProductKind = self._product_rows[self._selected][0]
             if product in self._product_selection:
@@ -767,10 +770,10 @@ class ManualController:
 
     def _handle_source(self, key: str) -> None:
         if key == "up":
-            self._move(-1, len(self._source_choices))
+            self._move(-1, self._row_count())
             return
         if key == "down":
-            self._move(1, len(self._source_choices))
+            self._move(1, self._row_count())
             return
         if key != "enter" or not self._source_choices:
             return
@@ -799,8 +802,7 @@ class ManualController:
 
     def _handle_preview(self, key: str) -> ManualResult:
         plan: ExecutionPlan | PlanPreview | None = self._plan
-        option_count: int = 3 if plan is not None and plan.can_execute else 2
-        if not self._navigate(key, option_count):
+        if not self._navigate(key, self._row_count()):
             return ManualResult.STAY
         if plan is not None and plan.can_execute and self._selected == 0:
             resident: ResidentSession | None = self._service if isinstance(self._service, ResidentSession) else None
@@ -817,6 +819,40 @@ class ManualController:
         """Copy the selected external-source path without leaving its editor."""
         with self._lock:
             return self._screen is _Screen.INPUT and self._input.handle("interrupt")
+
+    def place(self, index: int, anchor: int | None = None) -> None:
+        """Put the text cursor of the external-source path before a clicked character, selecting from ``anchor``."""
+        with self._lock:
+            if self._screen is _Screen.INPUT:
+                self._input.place(index, anchor)
+
+    def select(self, index: int) -> bool:
+        """Move the cursor to a clicked list row without choosing it and report whether it stands there."""
+        with self._lock:
+            if not 0 <= index < self._row_count():
+                return False
+            self._selected = index
+            self._feedback = None
+            return True
+
+    def view_key(self) -> tuple[object, ...]:
+        """Identify the painted screen, so a selection never outlives it."""
+        with self._lock:
+            return (self._screen, self._edit_index)
+
+    def _row_count(self) -> int:
+        counts: dict[_Screen, Callable[[], int]] = {
+            _Screen.GROUPS: lambda: len(self._group_ids) + len(self._scope_actions),
+            _Screen.GROUP_ACTION: lambda: 3,
+            _Screen.CUSTOM: lambda: len(self._custom_rows()),
+            _Screen.PRODUCTS: lambda: len(self._product_rows) + 2,
+            _Screen.TIMELINE: lambda: len(self._timeline_rows()) + 1,
+            _Screen.SUBTITLES: lambda: len(self._source_choices),
+            _Screen.AUDIO: lambda: len(self._source_choices),
+            _Screen.VIDEO: lambda: len(self._source_choices),
+            _Screen.PREVIEW: lambda: 3 if self._plan is not None and self._plan.can_execute else 2,
+        }
+        return counts.get(self._screen, lambda: 0)()
 
     def _handle_input_key(self, key: str) -> None:
         if self._input.handle(key):
@@ -1073,8 +1109,11 @@ class ManualController:
             marker: str = (
                 f"{'●' if self._group_ids[index] in self._selected_groups else '○'} " if index < len(labels) else "  "
             )
-            _append_row(content, left, shown[index], index == self._selected, marker)
-        return self._finish(content, columns, rows, "↑↓ · Space wybierz · A wszystkie · End podgląd · Esc wróć")
+            _append_row(content, left, shown[index], index == self._selected, marker, index=index)
+        every: str = "A odznacz wszystkie" if self._selected_groups else "A zaznacz wszystkie"
+        on_group: bool = self._selected < len(self._group_ids)
+        hint: str = f"Space zaznacz · {every} · Esc wróć" if on_group else f"Enter wybierz · {every} · Esc wróć"
+        return self._finish(content, columns, rows, hint)
 
     def _render_group_action(self, columns: int, rows: int) -> Text:
         entries: tuple[str, ...] = ("Użyj ustawień domyślnych", "Dostosuj ten odcinek", "Wróć")
@@ -1094,7 +1133,7 @@ class ManualController:
         left: int = _left_padding(columns, shown)
         for index, _label in enumerate(entries):
             marker: str = f"{'●' if index == current else '○'} " if index < len(offered) else "  "
-            _append_row(content, left, shown[index], index == self._selected, marker)
+            _append_row(content, left, shown[index], index == self._selected, marker, index=index)
         return self._finish(content, columns, rows, _MENU_HINT)
 
     def _render_products(self, columns: int, rows: int) -> Text:
@@ -1109,7 +1148,7 @@ class ManualController:
                 if index < len(rows_offered)
                 else "  "
             )
-            _append_row(content, left, shown[index], index == self._selected, marker)
+            _append_row(content, left, shown[index], index == self._selected, marker, index=index)
         return self._finish(content, columns, rows, _MULTI_HINT)
 
     def _render_sources(self, columns: int, rows: int) -> Text:
@@ -1130,7 +1169,7 @@ class ManualController:
                 if self._source_choices[index].kind is _ChoiceKind.EXTERNAL
                 else f"{'●' if index == current else '○'} "
             )
-            _append_row(content, left, shown[index], index == self._selected, marker)
+            _append_row(content, left, shown[index], index == self._selected, marker, index=index)
         return self._finish(content, columns, rows, _MENU_HINT)
 
     def _render_preview(self, columns: int, rows: int) -> Text:
@@ -1156,7 +1195,7 @@ class ManualController:
             content.append(f"{' ' * left}{line}\n", style="warning")
         content.append("\n")
         for index, label in enumerate(entries):
-            _append_row(content, left, label, index == self._selected)
+            _append_row(content, left, label, index == self._selected, index=index)
         return self._finish(content, columns, rows, _MENU_HINT)
 
     def _preview_summary(self, plan: ExecutionPlan | PlanPreview | None) -> tuple[str, ...]:
@@ -1210,13 +1249,14 @@ class ManualController:
         content: Text = _header(title, columns, rows, 3)
         left: int = max((columns - min(max(len(self._input.text) + 3, 24), columns)) // 2, 0)
         width: int = max(columns - left - 3, 1)
-        content.append(f"{' ' * left}> ", style="white_bold")
+        content.append(" " * left)
+        content.append_text(mark_inert(Text("> ", style="white_bold")))
         content.append_text(self._input.render(width))
         content.append("\n")
         return self._finish(content, columns, rows, _INPUT_HINT)
 
     def _render_busy(self, columns: int, rows: int) -> Text:
-        spinner: str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[int(time.monotonic() * 10) % 10]
+        spinner: str = spinner_frame(time.monotonic())
         line: str = f"{spinner} Sprawdzanie pliku…"
         content: Text = _header("TRYB RĘCZNY", columns, rows, 2)
         left: int = max((columns - len(line)) // 2, 0)
@@ -1229,7 +1269,7 @@ class ManualController:
         content: Text = _header(title, columns, rows, end - start)
         left: int = _left_padding(columns, shown)
         for index in range(start, end):
-            _append_row(content, left, shown[index], index == self._selected)
+            _append_row(content, left, shown[index], index == self._selected, index=index)
         return self._finish(content, columns, rows, _MENU_HINT)
 
     def _finish(self, content: Text, columns: int, rows: int, hint: str) -> Text:

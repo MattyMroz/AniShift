@@ -1,0 +1,293 @@
+"""Polish texts of subscription drafts, list rows and checks, computed without I/O."""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from datetime import datetime
+from types import MappingProxyType
+from typing import Final
+
+from anishift.application import (
+    AIRING_STATUSES,
+    EpisodeListing,
+    ListedEpisode,
+    TargetNotice,
+    anilist_date,
+    cut_point,
+    is_target,
+    notice_text,
+)
+from anishift.application.events import sanitize_event_message
+
+__all__ = [
+    "CHECK_SHOWN_S",
+    "SubscriptionDraft",
+    "SubscriptionState",
+    "check_state",
+    "check_text",
+    "clock_time",
+    "notice_line",
+    "polish_line",
+    "row_columns",
+    "row_state",
+    "row_summary",
+    "subscription_draft",
+]
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+CHECK_SHOWN_S: Final[float] = 10.0
+"""Seconds a requested check result stays in its subscription row."""
+
+_HOUR_S: Final[int] = 3600
+"""Seconds in one hour."""
+
+_DAILY_AFTER_S: Final[int] = 72 * _HOUR_S
+"""Wait after which the owner looks for a missing episode only once a day."""
+
+_PAUSES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "user": "Wstrzymana",
+        "migrated_due": "Wstrzymana — przeniesiona; zaległe odcinki",
+        "migrated_missing": "Wstrzymana — zakończona przez starą wersję",
+    }
+)
+"""Polish explanation of each reason a subscription waits for the user."""
+
+_ISSUES: Final[Mapping[str, tuple[str, str]]] = MappingProxyType(
+    {
+        "season_unrecognized": ("Nie rozpoznano sezonu", "Nie rozpoznano sezonu — usuń i dodaj ponownie"),
+        "catalog_conflict": (
+            "Zmienił się sezon",
+            "Lista odcinków przypisała ten tytuł do innego sezonu · usuń subskrypcję i dodaj ponownie",
+        ),
+    }
+)
+"""Short state and full explanation of each problem that stops a whole subscription."""
+
+_DUE_STATES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "searching": "szukam",
+        "pending": "szukam",
+        "polish": "czekam na PL",
+        "downloading": "pobieram",
+        "no_release": "brak wydania",
+        "exhausted": "nie udało się",
+    }
+)
+"""Short Polish words of what the earliest unfinished episode of a subscription is waiting for."""
+
+_FAILED_CHECKS: Final[frozenset[str]] = frozenset({"source_failed", "rate_limited"})
+"""Check outcomes in which a source did not answer."""
+
+_POLISH_HISTORY: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "present": "zwykle jest",
+        "absent": "brak w poprzednim odcinku",
+        "unknown": "nieznane",
+    }
+)
+"""Polish wording of what the previous episode says about Polish subtitles."""
+
+
+@dataclass(frozen=True, slots=True)
+class SubscriptionDraft:
+    """Sentences of one subscription draft, whether it can be added and the aired episodes it never targets."""
+
+    lines: tuple[str, ...]
+    addable: bool
+    aired: tuple[ListedEpisode, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SubscriptionState:
+    """Short state of a subscription row and its full explanation."""
+
+    text: str
+    detail: str
+
+
+def subscription_draft(listing: EpisodeListing, now: datetime, *, paused: bool) -> SubscriptionDraft | None:
+    """Describe the subscription *listing* would get at *now*, or nothing for an entry without future episodes."""
+    if listing.status not in AIRING_STATUSES:
+        return None
+    cut: int | None = cut_point(listing, now)
+    if cut is None:
+        return SubscriptionDraft(("Nie wiadomo, ile odcinków już wyemitowano · spróbuj później",), False)
+    targets: list[ListedEpisode] = [item for item in listing.episodes if is_target(item, now, cut)]
+    lines: list[str] = [f"Kolejne odcinki pobiorę po emisji · {_next_airing(targets, now)}"]
+    if paused:
+        lines.append("Automat jest wstrzymany · zacznę po wznowieniu")
+    aired: tuple[ListedEpisode, ...] = tuple(
+        item for item in listing.episodes if item.aired and not is_target(item, now, cut)
+    )
+    return SubscriptionDraft(tuple(lines), True, aired)
+
+
+def episode_label(numbers: Iterable[int]) -> str:
+    """Name episode numbers as one span when they are consecutive, else as a list."""
+    shown: list[int] = sorted(numbers)
+    if not shown:
+        return ""
+    if shown[-1] - shown[0] + 1 == len(shown):
+        return _span(shown[0], shown[-1])
+    return ", ".join(f"E{number}" for number in shown)
+
+
+def row_columns(row: Mapping[str, object]) -> tuple[str, str]:
+    """Return the aired episodes out of the season count, and the ready count."""
+    count: object = row.get("episode_count")
+    episodes: str = f"{_safe(row.get('aired', 0))}/{_safe(count) if isinstance(count, int) else '?'}"
+    return episodes, _safe(row.get("ready", 0))
+
+
+def row_summary(row: Mapping[str, object]) -> str:
+    """Join the counters of one subscription row into one caption."""
+    episodes, ready = row_columns(row)
+    return f"odcinki {episodes} · gotowe {ready}"
+
+
+def row_state(row: Mapping[str, object], now: datetime) -> SubscriptionState:
+    """Return the one state a subscription row shows at *now*."""
+    issue: SubscriptionState | None = _issue(row)
+    if issue is not None:
+        return issue
+    if row.get("paused"):
+        return SubscriptionState("Wstrzymana", f"{_PAUSES.get(str(row.get('pause_reason')), 'Wstrzymana')} · W wznów")
+    if row.get("review_pending"):
+        return SubscriptionState("Weryfikuję", "Sprawdzam przeniesioną subskrypcję")
+    checking: object = row.get("checking_number")
+    if isinstance(checking, int):
+        return _plain(f"E{checking} · sprawdzam plik")
+    due: object = row.get("due_at")
+    if not isinstance(due, str):
+        return _plain("Przerwa w emisji" if row.get("catalog_status") == "HIATUS" else "Termin nieznany")
+    number: object = row.get("due_number")
+    return _due_state(f"E{number}" if isinstance(number, int) else "Odcinek", datetime.fromisoformat(due), row, now)
+
+
+def _plain(text: str) -> SubscriptionState:
+    return SubscriptionState(text, text)
+
+
+def _issue(row: Mapping[str, object]) -> SubscriptionState | None:
+    problem: object = row.get("problem")
+    if problem is not None:
+        text, detail = _ISSUES.get(str(problem), ("Wymaga uwagi", "Wymaga uwagi"))
+        return SubscriptionState(text, detail)
+    count: object = row.get("episode_count")
+    beyond: object = row.get("beyond_count")
+    if isinstance(count, int) and isinstance(beyond, int):
+        return SubscriptionState(
+            "Konflikt liczby odcinków",
+            f"AniList podaje {count} {_episodes(count)}, a subskrypcja czeka na E{beyond} · pobierz ręcznie albo usuń",
+        )
+    return None
+
+
+def _due_state(label: str, due: datetime, row: Mapping[str, object], now: datetime) -> SubscriptionState:
+    state: str = str(row.get("due_state"))
+    if state not in _DUE_STATES:
+        if due > now:
+            return _plain(f"{label} · {_when(due, now)}")
+        state = "searching"
+    text: str = f"{label} · {_DUE_STATES[state]}"
+    if state == "exhausted":
+        return SubscriptionState(text, f"{label} · nie udało się pobrać · pobierz ręcznie w szczegółach")
+    if state == "searching" and (now - due).total_seconds() >= _DAILY_AFTER_S:
+        return SubscriptionState(text, f"{text} · sprawdzam raz dziennie")
+    return _plain(text)
+
+
+def check_state(check: Mapping[str, object]) -> str:
+    """Name one finished subscription check in the few words a list row has room for."""
+    if check.get("outcome") in _FAILED_CHECKS:
+        return "Sprawdzenie nieudane"
+    number: object = check.get("number")
+    return f"Sprawdzono E{number}" if isinstance(number, int) else "Sprawdzono listę odcinków"
+
+
+def check_text(check: Mapping[str, object]) -> str:
+    """Summarize one subscription check the way the list and the details show it."""
+    number: object = check.get("number")
+    outcome: object = check.get("outcome")
+    source: str = f"E{number}: źródło wydań" if isinstance(number, int) else "Katalog odcinków"
+    if outcome == "source_failed":
+        return f"{source} nie odpowiada · ponowię później"
+    if outcome == "rate_limited":
+        return f"{source} ogranicza zapytania · ponowię później"
+    if not isinstance(number, int):
+        return "Sprawdzono listę odcinków"
+    counts: tuple[int, int, int] = (
+        _count(check.get("matching")),
+        _count(check.get("uncertain")),
+        _count(check.get("mismatched")),
+    )
+    total: int = sum(counts)
+    if not total:
+        return f"Sprawdzono E{number}: brak wydań w źródle"
+    noun: str = "kandydat" if total == 1 else "kandydatów"
+    text: str = f"Sprawdzono E{number}: {total} {noun}, {counts[0]} zgodnych"
+    if counts[1] or counts[2]:
+        text += f" ({counts[1]} niepewnych, {counts[2]} niezgodnych)"
+    return text + (" · tryb próbny" if outcome == "proposed" else "")
+
+
+def clock_time(moment: str) -> str:
+    """Return the local hour and minute of one ISO moment."""
+    return f"{datetime.fromisoformat(moment).astimezone():%H:%M}"
+
+
+def polish_line(history: str | None, wait_until: str | None, *, skipped: bool) -> str:
+    """Say what the previous episode tells about Polish subtitles and whether the target waits for them."""
+    seen: str = _POLISH_HISTORY.get(str(history), _POLISH_HISTORY["unknown"])
+    if skipped:
+        return f"PL: {seen} · pobieram bez czekania"
+    if wait_until is not None:
+        return f"PL: {seen} · czekam do {clock_time(wait_until)}"
+    return f"PL: {seen} · pobieram od razu"
+
+
+def notice_line(number: int, notices: Iterable[TargetNotice]) -> str:
+    """Say why one subscription target has no download yet, or took one without Polish, or nothing."""
+    texts: list[str] = [notice_text(item) for item in notices]
+    return f"E{number}: {' · '.join(texts)}" if texts else ""
+
+
+def _next_airing(targets: list[ListedEpisode], now: datetime) -> str:
+    for item in targets:
+        moment: datetime | None = anilist_date(item)
+        if moment is not None:
+            return f"najbliższy E{item.number} {_when(moment, now)}"
+    return "terminy jeszcze nieznane"
+
+
+def _when(moment: datetime, now: datetime) -> str:
+    local: datetime = moment.astimezone()
+    days: int = (local.date() - now.astimezone().date()).days
+    if days == 0:
+        return f"dziś {local:%H:%M}"
+    if days == 1:
+        return f"jutro {local:%H:%M}"
+    return f"{local:%d.%m %H:%M}"
+
+
+def _span(first: int, last: int) -> str:
+    return f"E{first}" if last <= first else f"E{first}–E{last}"
+
+
+def _episodes(count: int) -> str:
+    if count == 1:
+        return "odcinek"
+    if count % 10 in {2, 3, 4} and count % 100 not in {12, 13, 14}:
+        return "odcinki"
+    return "odcinków"
+
+
+def _count(value: object) -> int:
+    return value if isinstance(value, int) else 0
+
+
+def _safe(value: object) -> str:
+    return sanitize_event_message(str(value)) or ""

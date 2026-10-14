@@ -24,6 +24,7 @@ from anishift.application import (
     TranslationModelOption,
 )
 from anishift.cli.interactive.menu import with_footer
+from anishift.cli.interactive.pointer import mark_inert, mark_row
 from anishift.cli.interactive.settings_editors import format_voice_input, parse_setting_input, parse_voice_input
 from anishift.cli.interactive.text_input import TextInput, is_edit_key
 from anishift.cli.resident import ResidentSession
@@ -48,26 +49,32 @@ __all__ = ["SettingsController", "SettingsResult"]
 _POINTER: Final[str] = "\u276f"
 """Marker placed before the active interactive row."""
 
-_MENU_HINT: Final[str] = "↑↓/Tab · ←→ · Enter · Esc"
-"""Keyboard hint used by settings menus."""
+_MENU_HINT: Final[str] = "Enter otwórz · Esc wróć"
+"""Keyboard hint used by settings menus on a category, reset or back row."""
 
-_MULTI_HINT: Final[str] = "↑↓ · Enter/Space zmień · Esc wróć"
+_SETTING_HINT: Final[str] = "Enter zmień · Esc wróć"
+"""Keyboard hint used by settings menus on a setting row, whose arrows also step its value."""
+
+_MULTI_HINT: Final[str] = "Enter zmień · Esc wróć"
 """Keyboard hint used by the output product selector."""
 
-_MULTI_SELECT_HINT: Final[str] = "↑↓ · Space zmień · Esc wróć"
+_MULTI_SELECT_HINT: Final[str] = "Space zmień · Esc wróć"
 """Keyboard hint used by multi-choice setting editors."""
 
-_SELECT_HINT: Final[str] = "↑↓/Tab · Enter/→ wybierz · Esc/← cofnij"
+_SELECT_HINT: Final[str] = "Enter wybierz · Esc wróć"
 """Keyboard hint used by single-choice editors, where moving is not choosing."""
 
 _SECRET_HINT: Final[str] = "Enter zatwierdź · Esc anuluj"  # noqa: S105 - keyboard hint, never a credential
 """Keyboard hint used by the secret editor, the only value not saved on its own."""
 
-_INPUT_HINT: Final[str] = "←→ kursor · Enter/Esc wróć · zapis automatyczny"
+_INPUT_HINT: Final[str] = "Enter zatwierdź · Esc wróć"
 """Keyboard hint used by editors that persist what was typed on their own."""
 
-_VOICE_HINT: Final[str] = "alias | nazwa | ID głosu · Enter zatwierdź · puste usuwa · Esc wróć"
-"""Keyboard hint used by the custom voice editor, including its line format."""
+_VOICE_HINT: Final[str] = "alias | nazwa | ID głosu · Enter zatwierdź · Esc wróć"
+"""Keyboard hint used by the editor of a new custom voice, including its line format."""
+
+_VOICE_EDIT_HINT: Final[str] = "alias | nazwa | ID głosu · Enter zatwierdź · pusta linia usuwa · Esc wróć"
+"""Keyboard hint used by the editor of an existing custom voice, which an emptied line removes."""
 
 _VOICES_SETTING_ID: Final[str] = "elevenbytes_custom_voices"
 """Setting holding the list of user-defined ElevenBytes voices."""
@@ -154,6 +161,7 @@ _ROOT_ITEMS: Final[tuple[tuple[str, str], ...]] = (
     ("Lektor", "category:tts"),
     ("Wynik", "category:output"),
     ("Auto", "category:auto"),
+    ("Pobieranie", "category:download"),
     ("Połączenia", "category:connections"),
     (_RESET_LABEL, _RESET_KEY),
     (_BACK_LABEL, _BACK_KEY),
@@ -176,6 +184,16 @@ _SUBTITLE_FIELDS: Final[tuple[_SettingField, ...]] = (
     ("subtitle_max_lines_per_event", "Linii na napis", "UKŁAD TEKSTU"),
 )
 """Persisted subtitle layout fields exposed by the product."""
+
+_DOWNLOAD_FIELDS: Final[tuple[_SettingField, ...]] = (
+    ("source_tsukihime", "TsukiHime", "ŹRÓDŁA WYDAŃ"),
+    ("source_torrentio", "Torrentio", "ŹRÓDŁA WYDAŃ"),
+    ("source_nyaa", "Nyaa", "ŹRÓDŁA WYDAŃ"),
+    ("source_knaben", "Knaben", "ŹRÓDŁA WYDAŃ"),
+    ("source_nekobt", "nekoBT", "ŹRÓDŁA WYDAŃ"),
+    ("subscription_polish_wait_h", "Czekanie na polskie napisy (h)", "SUBSKRYPCJE"),
+)
+"""Release source switches and subtitle waiting time exposed by the product."""
 
 _TRANSLATION_FIELDS: Final[tuple[_SettingField, ...]] = (
     ("translation_engine", "Silnik tłumaczenia", "PODSTAWOWE"),
@@ -264,6 +282,7 @@ _FIELDS_COVERED_ELSEWHERE: Final[dict[str, str]] = {
     "llm_provider_model_id": "chosen atomically together with the provider",
     "openai_compatible_base_url": "edited inside the connections category",
     "palantir_enrollment_base_url": "edited inside the connections category",
+    "palantir_fallback_enrollment_base_url": "edited inside the connections category",
     "primary_model_alias": "deliberately hidden from the product surface",
 }
 """Editable fields intentionally absent from the section layout, with the reason."""
@@ -347,11 +366,13 @@ class _Category(StrEnum):
     TTS = "tts"
     OUTPUT = "output"
     AUTO = "auto"
+    DOWNLOAD = "download"
     CONNECTIONS = "connections"
 
 
 _SCOPE_FIELDS: Final[dict[str, tuple[_SettingField, ...]]] = {
     _Category.GENERAL.value: _GENERAL_FIELDS,
+    _Category.DOWNLOAD.value: _DOWNLOAD_FIELDS,
     _Category.SUBTITLES.value: _SUBTITLE_FIELDS,
     # The model goes before `translation_engine` on purpose: both its fields depend on
     # the `llm` engine, so restoring the engine first would make the reset skip them.
@@ -459,6 +480,12 @@ class _Feedback:
 
 _CONNECTIONS: Final[tuple[_Connection, ...]] = (
     _Connection("palantir", "Palantir Foundry", "palantir_token", "palantir_enrollment_base_url", True),
+    _Connection(
+        "palantir-secondary",
+        "Palantir Foundry · konto 2",
+        "palantir_secondary_token",
+        "palantir_fallback_enrollment_base_url",
+    ),
     _Connection("gemini", "Gemini", "gemini_api_key"),
     _Connection("openai", "OpenAI", "openai_api_key"),
     _Connection("anthropic", "Anthropic", "anthropic_api_key"),
@@ -553,6 +580,39 @@ class SettingsController:
             return
         self._follow_cursor = False
         self._offset = min(max(self._offset + direction * _WHEEL_ROWS, 0), max(length - 1, 0))
+
+    def place(self, index: int, anchor: int | None = None) -> None:
+        """Put the text cursor of the open editor before a clicked character, selecting from ``anchor``."""
+        self._discard_armed = False
+        if self._editor is not None and not self._busy:
+            self._editor.input.place(index, anchor)
+
+    def select(self, index: int) -> bool:
+        """Point at a clicked row without choosing it, saving a pending edit, and report whether it stands there."""
+        self._discard_armed = False
+        if self._busy:
+            return False
+        editor: _Editor | None = self._editor
+        if editor is not None:
+            if 0 <= index < len(editor.options):
+                editor.selected = index
+            return editor.selected == index
+        output: bool = self._category is _Category.OUTPUT
+        if not 0 <= index < (len(_PRODUCTS) + 2 if output else len(self._items)) or index == self._selected:
+            return index == self._selected
+        key: str = "" if output else self._items[index].key
+        if not self._commit_pending():
+            return False
+        if output:
+            self._selected = index
+        else:
+            self._selected = next((row for row, item in enumerate(self._items) if item.key == key), self._selected)
+        self._feedback = None
+        return self._selected == index
+
+    def view_key(self) -> tuple[object, ...]:
+        """Identify the painted screen, so a selection never outlives it."""
+        return (self._category, self._connection, self._voices_open, self._recipe, self._editor is not None)
 
     def _scrollable_length(self) -> int:
         if self._category is _Category.OUTPUT:
@@ -1022,6 +1082,8 @@ class SettingsController:
             items: tuple[_MenuItem, ...] = self._setting_items(_GENERAL_FIELDS)
         elif self._category is _Category.SUBTITLES:
             items = self._setting_items(_SUBTITLE_FIELDS)
+        elif self._category is _Category.DOWNLOAD:
+            items = self._setting_items(_DOWNLOAD_FIELDS)
         elif self._category is _Category.TRANSLATION:
             items = self._translation_items()
         elif self._category is _Category.TTS:
@@ -1146,8 +1208,8 @@ class SettingsController:
         return tuple(items)
 
     def _connection_address(self, connection: _Connection) -> str:
-        if connection.address_id == "palantir_enrollment_base_url":
-            return self._service.settings_snapshot().palantir_enrollment_base_url or "brak"
+        if connection.address_id in {"palantir_enrollment_base_url", "palantir_fallback_enrollment_base_url"}:
+            return str(getattr(self._service.settings_snapshot(), connection.address_id)) or "brak"
         value: str = getattr(self._service.current_settings(), connection.address_id, "")
         return value or "brak"
 
@@ -1174,8 +1236,6 @@ class SettingsController:
         entry: ModelEntry | None = catalog.models.get(alias)
         if entry is None:
             return f"Palantir · {alias}"
-        if entry.model_id.casefold().startswith("replace-with-"):
-            return "Palantir · model nieustawiony"
         return f"Palantir · {entry.label}"
 
     def _open_setting_editor(self, setting_id: str) -> None:
@@ -1393,7 +1453,7 @@ class SettingsController:
             current = ""
         action: _EditorAction = (
             _EditorAction.UPDATE_SETTING
-            if connection.address_id == "palantir_enrollment_base_url"
+            if connection.address_id in {"palantir_enrollment_base_url", "palantir_fallback_enrollment_base_url"}
             else _EditorAction.UPDATE_ENVIRONMENT
         )
         self._editor = _Editor(
@@ -1594,7 +1654,7 @@ class SettingsController:
             )
         self._invalidate()
 
-    def _render_menu(self, columns: int, rows: int) -> Text:
+    def _render_menu(self, columns: int, rows: int) -> Text:  # noqa: PLR0915
         title: str = _VOICES_TITLE if self._voices_open else _menu_title(self._category, self._connection)
         if self._recipe is not None:
             title = f"AUTO · {_RECIPE_LABELS[self._recipe].upper()}"
@@ -1621,43 +1681,51 @@ class SettingsController:
         left: int = _menu_left_padding(columns, visible if back is None else (*visible, back))
         content: Text = Text("\n" * max((max(rows - 1, 1) - body_rows) // 2, 0))
         content.append(" " * left)
-        content.append(_truncate_right(title, max(columns - left, 1)), style="white_bold")
+        content.append_text(mark_inert(Text(_truncate_right(title, max(columns - left, 1)), style="white_bold")))
         content.append("\n\n")
         if has_above:
             content.append(" " * left)
-            content.append("↑ więcej\n", style="gray")
+            content.append_text(mark_inert(Text("↑ więcej\n", style="gray")))
         previous_section: str = ""
         for index, item in enumerate(visible, start=start):
             if item.section and item.section != previous_section:
                 content.append(" " * left)
-                content.append(f"{_truncate_right(item.section, max(columns - left, 1))}\n", style="gray")
+                section: str = _truncate_right(item.section, max(columns - left, 1))
+                content.append_text(mark_inert(Text(f"{section}\n", style="gray")))
                 previous_section = item.section
             content.append(" " * left)
-            content.append(f"{_POINTER} " if index == self._selected else "  ", style="brand_accent")
             available: int = max(columns - left - 2, 1)
             current: str = _truncate_right(item.current, max(available // 2, 1)) if item.current else ""
             label_width: int = max(available - len(current) - (3 if current else 0), 1)
-            content.append(
+            label: Text = Text(f"{_POINTER} " if index == self._selected else "  ", style="brand_accent")
+            label.append(
                 _truncate_right(item.label, label_width),
                 style="brand_accent" if index == self._selected else "white_bold",
             )
+            content.append_text(mark_inert(label))
             if current:
-                content.append(f" · {current}", style="gray")
+                content.append_text(mark_inert(Text(" · ", style="gray")))
+                content.append(current, style="gray")
+            mark_row(content, index)
             content.append("\n")
         if has_below:
             content.append(" " * left)
-            content.append("↓ więcej\n", style="gray")
+            content.append_text(mark_inert(Text("↓ więcej\n", style="gray")))
         if back is not None:
             selected_back: bool = self._selected == len(self._items) - 1
             content.append(" " * left)
-            content.append(f"{_POINTER} " if selected_back else "  ", style="brand_accent")
-            content.append(
+            back_label: Text = Text(f"{_POINTER} " if selected_back else "  ", style="brand_accent")
+            back_label.append(
                 _truncate_right(back.label, max(columns - left - 2, 1)),
                 style="brand_accent" if selected_back else "white_bold",
             )
+            content.append_text(mark_inert(back_label))
+            mark_row(content, len(self._items) - 1)
             content.append("\n")
         self._append_feedback(content, left, columns)
         hint: str = _MENU_HINT
+        if self._items and self._items[self._selected].key.startswith("setting:"):
+            hint = _SETTING_HINT
         if self._recipe is not None and rows >= _RECIPE_DESCRIPTION_MIN_ROWS:
             hint = _RECIPE_DESCRIPTIONS[self._recipe] + "\n" + hint
         return self._finish(content, hint, columns, rows)
@@ -1697,6 +1765,7 @@ class SettingsController:
                 _truncate_right(label, max(columns - left - 4, 1)),
                 style="brand_accent" if index == self._selected else "white_bold",
             )
+            mark_row(content, index)
             content.append("\n")
         if has_below:
             content.append(" " * left + "↓ więcej\n", style="gray")
@@ -1710,9 +1779,13 @@ class SettingsController:
                 _truncate_right(label, max(columns - left - 2, 1)),
                 style="brand_accent" if self._selected == index else "white_bold",
             )
+            mark_row(content, index)
             content.append("\n")
-        self._append_feedback(content, left, columns)
-        return self._finish(content, _MULTI_HINT, columns, rows)
+        self._append_feedback(mark_inert(content), left, columns)
+        hint: str = _MENU_HINT if self._selected >= reset_index else _MULTI_HINT
+        if self._selected < reset_index and self._output_products == {_PRODUCTS[self._selected][0]}:
+            hint = "Esc wróć"
+        return self._finish(content, hint, columns, rows)
 
     def _render_editor(self, columns: int, rows: int, editor: _Editor) -> Text:
         start, end, body_rows = _editor_window(
@@ -1750,18 +1823,20 @@ class SettingsController:
                     _truncate_right(option.label, option_width),
                     style="brand_accent" if index == editor.selected else "white_bold",
                 )
+                mark_row(content, index, opens=editor.kind is not _EditorKind.CONFIRM)
                 content.append("\n")
             if has_below:
                 content.append(" " * left)
                 content.append("↓ więcej\n", style="gray")
+            mark_inert(content)
         else:
-            _append_editor_buffer(content, editor, columns, left)
+            _append_editor_buffer(mark_inert(content), editor, columns, left)
         self._append_feedback(content, left, columns)
         hint: str = _INPUT_HINT if not editor.options else _SELECT_HINT
         if editor.kind is _EditorKind.MULTI_SELECT:
             hint = _MULTI_SELECT_HINT
         elif editor.kind is _EditorKind.VOICE:
-            hint = _VOICE_HINT
+            hint = _VOICE_EDIT_HINT if editor.current_value else _VOICE_HINT
         elif editor.kind is _EditorKind.PASSWORD:
             hint = _SECRET_HINT
         elif editor.action is _EditorAction.SELECT_CUSTOM_MODEL:
@@ -1769,6 +1844,8 @@ class SettingsController:
         return self._finish(content, hint, columns, rows)
 
     def _finish(self, content: Text, hint: str, columns: int, rows: int) -> Text:
+        if self._busy:
+            hint = "Esc anuluj"
         lines: list[Text] = list(content.split("\n", allow_blank=True))
         feedback: Text = lines[-2]
         feedback = feedback[len(feedback.plain) - len(feedback.plain.lstrip()) :]
@@ -1857,6 +1934,8 @@ def _field_title(setting_id: str) -> str:
         field_id: label
         for field_id, label, _section in (
             *_GENERAL_FIELDS,
+            *_SUBTITLE_FIELDS,
+            *_DOWNLOAD_FIELDS,
             *_TRANSLATION_FIELDS,
             *_TTS_FIELDS,
             *(item for recipe in _RECIPE_FIELDS.values() for item in recipe),
@@ -1940,7 +2019,7 @@ def _model_group_label(group_id: str) -> str:
         "openai": "OPENAI",
         "openai_compatible": "OPENAI-COMPATIBLE",
         "openrouter": "OPENROUTER",
-        "palantir:openai_chat": "PALANTIR FOUNDRY · OPENAI",
+        "palantir:openai_responses": "PALANTIR FOUNDRY · OPENAI",
         "palantir:anthropic_messages": "PALANTIR FOUNDRY · ANTHROPIC",
         "palantir:google_generate": "PALANTIR FOUNDRY · GOOGLE",
         "palantir:xai_responses": "PALANTIR FOUNDRY · XAI",
@@ -1960,6 +2039,7 @@ def _menu_title(category: _Category | None, connection: _Connection | None) -> s
     titles: dict[_Category | None, str] = {
         None: "USTAWIENIA",
         _Category.GENERAL: "OGÓLNE",
+        _Category.DOWNLOAD: "POBIERANIE",
         _Category.SUBTITLES: "NAPISY",
         _Category.TRANSLATION: "TŁUMACZENIE",
         _Category.TTS: "LEKTOR",
@@ -2081,7 +2161,7 @@ def _stepped_value(spec: SettingSpec, current: SettingValue, direction: int) -> 
 
 def _append_editor_buffer(content: Text, editor: _Editor, columns: int, left: int) -> None:
     content.append(" " * left)
-    content.append(f"{_POINTER} ", style="brand_accent")
+    content.append_text(mark_inert(Text(f"{_POINTER} ", style="brand_accent")))
     content.append_text(editor.input.render(max(columns - left - 4, 1), masked=editor.kind is _EditorKind.PASSWORD))
     content.append("\n")
 

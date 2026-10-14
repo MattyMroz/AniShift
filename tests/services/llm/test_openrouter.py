@@ -116,7 +116,8 @@ def test_openrouter_server_error_is_transient() -> None:
         service.complete(_request())
 
 
+@pytest.mark.unit
 def test_openrouter_suggestions_are_small_unique_slugs() -> None:
     assert 2 <= len(SUGGESTED_MODEL_IDS) <= 4
-    assert len(SUGGESTED_MODEL_IDS) == len(set(SUGGESTED_MODEL_IDS))
-    assert all("/" in model for model in SUGGESTED_MODEL_IDS)
+    assert len(set(SUGGESTED_MODEL_IDS)) == len(SUGGESTED_MODEL_IDS)
+    assert all("/" in model_id for model_id in SUGGESTED_MODEL_IDS)

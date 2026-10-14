@@ -74,7 +74,9 @@ def _install(monkeypatch: pytest.MonkeyPatch) -> tuple[list[_Renderer], _Clock]:
         key_handler: Callable[[str], None],
         idle_handler: Callable[[], None] | None = None,
         scroll_handler: Callable[[int], None] | None = None,
+        **handlers: object,
     ) -> _Renderer:
+        del handlers
         renderer: _Renderer = _Renderer(frame_provider, key_handler, idle_handler, scroll_handler)
         made.append(renderer)
         return renderer
@@ -255,7 +257,7 @@ def test_a_refused_batch_exits_refused_after_showing_the_reason(monkeypatch: pyt
     code: int = application.run()
 
     assert code == EXIT_REFUSED
-    assert "Żadna wykryta grupa nie jest gotowa" in _frame(application)
+    assert "Żaden odcinek nie jest gotowy" in _frame(application)
 
 
 def test_interrupting_a_batch_cancels_its_run_and_exits_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:

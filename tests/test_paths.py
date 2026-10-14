@@ -8,13 +8,13 @@ from anishift import paths
 from anishift.application.watch_state import watch_state_path
 from anishift.cli.watch import watch_state_dir
 from anishift.config.env_file import env_path
-from anishift.config.model_catalog import model_catalog_path
 from anishift.config.presets import presets_path
 from anishift.config.workspace import resolve_workspace_root, run_temp_dir
 from anishift.platform.binaries import external_bin_root
 from anishift.setup.manifest import manifest_path
 
 
+@pytest.mark.integration
 def test_application_locations_share_one_repository_anchor_and_config_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -32,7 +32,6 @@ def test_application_locations_share_one_repository_anchor_and_config_override(
     assert env_path() == repository / ".env"
     assert paths.config_path() == configuration / "settings.json"
     assert presets_path() == configuration / "presets.json"
-    assert model_catalog_path() == configuration / "anishift.models.jsonc"
     assert watch_state_dir() == configuration / "watch"
     assert watch_state_path() == watch_state_dir() / "state.json"
     assert paths.relocation_journal_dir(watch_state_dir()) == configuration / "watch/relocations"

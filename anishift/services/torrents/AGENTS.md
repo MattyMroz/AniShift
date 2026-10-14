@@ -13,11 +13,19 @@ te decyzje należą do warstwy aplikacyjnej.
 - `names.py` — `parse_release_name`: czysty regex, zero sieci
 - `query.py` — `parse_query` i `EpisodeRange`; `EpisodeRange.text` jest neutralne językowo
 - `nyaa.py` — `parse_feed` (RSS) i `search_releases` (po jednym GET na kategorię)
+- `torrentio.py` — `TorrentioSource.streams/movie_streams` and `parse_streams`, without ranking
 - `qbittorrent.py` — `QBittorrentClient`: wersja, preferencje, dodanie torrenta, lista
 
 ## Inwarianty
 
 - `httpx.Client` jest wstrzykiwany przez wywołującego; moduły go nie tworzą i nie zamykają.
+- Torrentio series requests use `/stream/series/kitsu:{id}:{number}.json`; movies use
+  `/stream/movie/kitsu:{id}.json` without an episode suffix. Preserve separate files sharing a
+  hash, absent filenames/indexes and source order; do not infer selected files from release names.
+  Errors use `TORRENT_SOURCE_FAILED`, shared with Nyaa, but cooldowns remain provider-specific.
+- H1 consumes release/path/filename through `application/episode_selection.py`, without evidence
+  or hashes. Identity fixes belong to the regression procedure in `application/AGENTS.md`, not
+  adapter heuristics. Nyaa and Torrentio share `services/http_requests.py:USER_AGENT`.
 - Nyaa: `search_releases` pyta dokładnie te kategorie, które dostanie w `categories` (domyślnie
   `SEARCH_CATEGORIES`, czyli `1_2` i `1_3`) — jedna kategoria to jedno żądanie GET, czyli jednostka
   budżetu liczonego w `application/acquisition.py`. Ciało ponad `MAX_BODY_BYTES` (4 MiB), status ≠ 200,
@@ -42,6 +50,11 @@ te decyzje należą do warstwy aplikacyjnej.
 - qBittorrent: 403 wywołuje jednorazowy `auth/login` i jedno ponowienie; drugi 403 lub `Fails.`
   to `TORRENT_CLIENT_UNAUTHORIZED`, brak połączenia to `TORRENT_CLIENT_UNAVAILABLE`.
 - Hasło klienta nie trafia do logów ani do `ErrorContext.details`.
+- `add_metadata` uses `MetadataReceived`, `stopped=false`, `autoTMM=false`, original layout and
+  no download path. Keep legacy stopped-add semantics separate. qB 5.2.3 can return successful
+  add reports as JSON with HTTP 200 as well as 202; legacy `Ok.` remains accepted.
+- Magnets use encoded v1 hashes and credential-free public tracker URLs. Query-bearing trackers
+  are refused rather than retaining possible credentials. Never copy pilot SSRF preferences into runtime.
 - `TorrentInfo.amount_left` jest `None`, gdy brak poprawnej liczby bajtów; brak pola nie
   oznacza zera. `files()` waliduje typy i zakresy metadanych przed użyciem ich jako dowodu
   kompletności. Priorytet pliku `0` oznacza pominięcie. `qbittorrent.py`, `types.py`

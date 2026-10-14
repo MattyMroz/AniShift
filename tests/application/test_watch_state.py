@@ -6,16 +6,22 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from test_episode_selection import _fixture_graph, _fixture_mapping
 
 from anishift.application.control import (
     WATCH_STATE_SCHEMA_VERSION,
     AcquisitionConfirmation,
     AcquisitionState,
+    AdmissionSource,
     AudiobookRecipe,
     AutomationPolicy,
+    ChoiceTraits,
     CommandReceipt,
     DeletionOutcome,
     DeletionStatus,
+    EpisodeAssignment,
+    EpisodeChoice,
+    LegacyScope,
     ManualHandledMarker,
     NarrationTimeline,
     PendingDeletion,
@@ -29,10 +35,27 @@ from anishift.application.control import (
     SourceFingerprint,
     SourceSelection,
     TextResultFormat,
+    TorrentioReference,
     TranslateRecipe,
     WatchState,
+    choice_traits,
+    compact_acquisition,
 )
+from anishift.application.episode_identity import IdentityVerdict
+from anishift.application.episode_selection import AniZipMapping, FranchiseGraph, identity_target
 from anishift.application.intents import ProductKind, RebuildRequest, RequestOrigin, TranslationAction
+from anishift.application.release_quality import AudioClass, PolishClass, ReleaseTraits, ResolutionClass
+from anishift.application.subscription_targets import (
+    MAX_TRANSIENT_FAILURES,
+    Blocker,
+    PolishObservation,
+    PolishSkip,
+    PolishState,
+    ReleaseFailure,
+    SubscriptionRecord,
+    SubscriptionTarget,
+    TargetState,
+)
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore, watch_state_path
 from anishift.application.workflows import WorkflowTarget
 from anishift.errors import ConfigError, ErrorCode
@@ -41,7 +64,18 @@ _TIMESTAMP: str = "2026-09-08T12:00:00+00:00"
 
 _FINGERPRINT: SourceFingerprint = (("episode-01.mkv", 1024, 111),)
 
+_SCHEMA_FOUR_SECTIONS: tuple[str, ...] = ("subscriptions", "removed_subscription", "legacy_orders")
+
 _SCHEMA_TWO_SECTIONS: tuple[str, ...] = ("recipes", "ready_groups", "pause_owned_transfers", "pending_deletions")
+
+_SCHEMA_THREE_FIELDS: tuple[str, ...] = (
+    "assignments",
+    "legacy_scope",
+    "selection_revision",
+    "applied_revision",
+    "manifest",
+    "cleaned",
+)
 
 
 def test_deletion_evidence_round_trips_and_legacy_scope_never_gains_invented_identity(tmp_path: Path) -> None:
@@ -162,9 +196,20 @@ def _write(tmp_path: Path, document: object) -> None:
     (tmp_path / WATCH_STATE_FILE_NAME).write_text(json.dumps(document), encoding="utf-8")
 
 
-def _schema_one_document(tmp_path: Path, state: WatchState) -> dict[str, object]:
+def _schema_two_document(tmp_path: Path, state: WatchState) -> dict[str, object]:
     _store(tmp_path).save(state)
     document: dict[str, object] = json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
+    document["schema_version"] = 2
+    for key in _SCHEMA_FOUR_SECTIONS:
+        document.pop(key)
+    for acquisition in document["acquisitions"]:  # type: ignore[attr-defined]
+        for key in _SCHEMA_THREE_FIELDS:
+            acquisition.pop(key)
+    return document
+
+
+def _schema_one_document(tmp_path: Path, state: WatchState) -> dict[str, object]:
+    document: dict[str, object] = _schema_two_document(tmp_path, state)
     document["schema_version"] = 1
     for key in _SCHEMA_TWO_SECTIONS:
         document.pop(key)
@@ -194,9 +239,7 @@ def test_legacy_transfer_actions_do_not_invent_a_durable_send_record(tmp_path: P
     store: WatchStateStore = _store(tmp_path)
     store.save(state)
     document: dict[str, object] = (
-        _schema_one_document(tmp_path, state)
-        if schema == 1
-        else json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
+        _schema_one_document(tmp_path, state) if schema == 1 else _schema_two_document(tmp_path, state)
     )
     for acquisition in document["acquisitions"]:  # type: ignore[attr-defined]
         acquisition.pop("action_sent")
@@ -304,6 +347,39 @@ def test_a_temporary_file_left_by_a_crash_changes_nothing(tmp_path: Path) -> Non
     (tmp_path / f"{WATCH_STATE_FILE_NAME}.tmp").write_text("{ not json", encoding="utf-8")
 
     assert store.load() == state
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("loaded", [False, True])
+def test_saving_a_known_readable_file_copies_bytes_without_parsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, loaded: bool
+) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    first: WatchState = _state()
+    store.save(first)
+    if loaded:
+        store = _store(tmp_path)
+        assert store.load() == first
+    original: bytes = (tmp_path / WATCH_STATE_FILE_NAME).read_bytes()
+
+    def unexpected_parse(text: str) -> WatchState:
+        raise AssertionError(text)
+
+    monkeypatch.setattr("anishift.application.watch_state._parse", unexpected_parse)
+    store.save(replace(first, policy=AutomationPolicy(auto_enabled=False)))
+    assert (tmp_path / f"{WATCH_STATE_FILE_NAME}.bak").read_bytes() == original
+    assert (tmp_path / WATCH_STATE_FILE_NAME).is_file()
+
+
+@pytest.mark.integration
+def test_saving_an_unknown_corrupt_file_preserves_the_existing_backup(tmp_path: Path) -> None:
+    path: Path = tmp_path / WATCH_STATE_FILE_NAME
+    backup: Path = path.with_name(f"{path.name}.bak")
+    path.write_bytes(b"{broken")
+    backup.write_bytes(b"previous-readable-backup")
+    _store(tmp_path).save(_state())
+    assert backup.read_bytes() == b"previous-readable-backup"
+    assert _store(tmp_path).load() == _state()
 
 
 def test_saving_overwrites_a_temporary_file_left_by_a_crash(tmp_path: Path) -> None:
@@ -523,6 +599,470 @@ def test_the_store_round_trips_the_facts_added_by_schema_two(tmp_path: Path) -> 
     store.save(state)
 
     assert store.load() == state
+
+
+def _selective() -> AcquisitionConfirmation:
+    choice: EpisodeChoice = EpisodeChoice(
+        anilist_id=500,
+        number=3,
+        reference=TorrentioReference("FFEE", 2, "Neko S2 - 03.mkv"),
+        target={"aliases": ["Neko"], "local_episode": 3, "absolute": 27},
+        verdict=IdentityVerdict.INSUFFICIENT,
+        reason="Bare number",
+        deviation_confirmed=True,
+    )
+    return AcquisitionConfirmation(
+        operation_id="operation-3",
+        info_hash="ffee",
+        directory="",
+        required_files=(),
+        state=AcquisitionState.ADMITTED,
+        origin=RequestOrigin.USER,
+        subscription_id=None,
+        episode=None,
+        updated_at=_TIMESTAMP,
+        assignments=(EpisodeAssignment("admission-1", _TIMESTAMP, AdmissionSource.MANUAL, choice),),
+    )
+
+
+def _owner_files(tmp_path: Path) -> tuple[WatchStateStore, Path]:
+    subscriptions: Path = tmp_path / "subscriptions.json"
+    subscriptions.write_bytes(b'{"schema_version": 4, "subscriptions": []}\r\n')
+    return WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME, subscriptions_path=subscriptions), subscriptions
+
+
+def _migration_backup(path: Path) -> Path:
+    return path.with_name(f"{path.name}.e2-migration.bak")
+
+
+def test_schema_three_round_trips_episode_assignments_and_legacy_scopes(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    legacy: AcquisitionConfirmation = replace(_state().acquisitions[0], legacy_scope=LegacyScope(500, None))
+    numbered: AcquisitionConfirmation = replace(legacy, operation_id="operation-4", legacy_scope=LegacyScope(500, 4))
+    state: WatchState = replace(_state(), acquisitions=(legacy, numbered, _selective()))
+
+    store.save(state)
+
+    assert store.load() == state
+    assert [item.selective for item in store.load().acquisitions] == [False, False, True]
+
+
+def test_schema_three_before_publication_loads_without_rewriting_or_losing_admissions(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    state: WatchState = replace(_state(), acquisitions=(_state().acquisitions[0], _selective()))
+    store.save(state)
+    path: Path = tmp_path / WATCH_STATE_FILE_NAME
+    document: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+    for acquisition in cast("list[dict[str, object]]", document["acquisitions"]):
+        acquisition.pop("manifest")
+        acquisition.pop("cleaned")
+        for assignment in cast("list[dict[str, object]]", acquisition["assignments"]):
+            assignment.pop("publication")
+    _write(tmp_path, document)
+    original: bytes = path.read_bytes()
+
+    assert store.load() == state
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("schema", [1, 2])
+def test_an_older_state_migrates_once_to_schema_three_after_preserving_both_owner_files(
+    tmp_path: Path, schema: int
+) -> None:
+    store, subscriptions = _owner_files(tmp_path)
+    state_path: Path = tmp_path / WATCH_STATE_FILE_NAME
+    document: dict[str, object] = (
+        _schema_one_document(tmp_path, _state()) if schema == 1 else _schema_two_document(tmp_path, _state())
+    )
+    state_path.write_bytes(json.dumps(document).encode() + b"\r\n")
+    original: bytes = state_path.read_bytes()
+    listing: bytes = subscriptions.read_bytes()
+
+    migrated: WatchState = store.load()
+    written: bytes = state_path.read_bytes()
+    again: WatchState = store.load()
+
+    assert migrated == again == _state()
+    assert json.loads(written)["schema_version"] == WATCH_STATE_SCHEMA_VERSION
+    assert state_path.read_bytes() == written
+    assert _migration_backup(state_path).read_bytes() == original
+    assert _migration_backup(subscriptions).read_bytes() == listing
+    assert subscriptions.read_bytes() == listing
+    assert len(migrated.acquisitions) == 1
+    assert not migrated.acquisitions[0].selective
+    assert migrated.acquisitions[0].legacy_scope is None
+
+
+def test_a_schema_three_state_loads_without_any_migration_copy(tmp_path: Path) -> None:
+    store, subscriptions = _owner_files(tmp_path)
+    store.save(_state())
+    _migration_backup(subscriptions).unlink()
+
+    assert store.load() == _state()
+    assert not _migration_backup(tmp_path / WATCH_STATE_FILE_NAME).exists()
+    assert not _migration_backup(subscriptions).exists()
+
+
+def test_migration_without_subscriptions_preserves_the_state_and_invents_no_listing(tmp_path: Path) -> None:
+    store, subscriptions = _owner_files(tmp_path)
+    subscriptions.unlink()
+    original: str = _write_schema_one(tmp_path, _state())
+
+    assert store.load() == _state()
+    assert _migration_backup(tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8") == original
+    assert not subscriptions.exists()
+    assert not _migration_backup(subscriptions).exists()
+
+
+def test_migration_keeps_an_earlier_migration_copy(tmp_path: Path) -> None:
+    store, subscriptions = _owner_files(tmp_path)
+    _write_schema_one(tmp_path, _state())
+    _migration_backup(subscriptions).write_bytes(b"kept")
+
+    store.load()
+
+    assert _migration_backup(subscriptions).read_bytes() == b"kept"
+
+
+def test_a_copy_that_cannot_be_made_blocks_the_first_schema_three_write(tmp_path: Path) -> None:
+    store, subscriptions = _owner_files(tmp_path)
+    (tmp_path / f"{subscriptions.name}.e2-migration.bak.tmp").mkdir()
+    original: str = _write_schema_one(tmp_path, _state())
+
+    with pytest.raises(ConfigError) as failure:
+        store.load()
+
+    assert failure.value.context.code is ErrorCode.IO_ERROR
+    assert (tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8") == original
+
+
+def test_the_first_write_without_a_state_preserves_existing_subscriptions_once(tmp_path: Path) -> None:
+    store, subscriptions = _owner_files(tmp_path)
+    original: bytes = subscriptions.read_bytes()
+
+    store.save(_state())
+    subscriptions.write_bytes(b"changed")
+    store.save(_state())
+
+    assert _migration_backup(subscriptions).read_bytes() == original
+    assert not _migration_backup(tmp_path / WATCH_STATE_FILE_NAME).exists()
+
+
+def test_a_copy_that_cannot_be_made_blocks_the_first_write_without_a_state(tmp_path: Path) -> None:
+    store, subscriptions = _owner_files(tmp_path)
+    (tmp_path / f"{subscriptions.name}.e2-migration.bak.tmp").mkdir()
+
+    with pytest.raises(ConfigError) as failure:
+        store.save(_state())
+
+    assert failure.value.context.code is ErrorCode.IO_ERROR
+    assert not (tmp_path / WATCH_STATE_FILE_NAME).exists()
+
+
+@pytest.mark.parametrize("field", _SCHEMA_THREE_FIELDS)
+def test_a_schema_two_acquisition_carrying_episode_identity_is_refused(tmp_path: Path, field: str) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    document: dict[str, object] = _schema_two_document(tmp_path, _state())
+    cast("list[dict[str, object]]", document["acquisitions"])[0][field] = [] if field == "assignments" else None
+    _write(tmp_path, document)
+
+    with pytest.raises(ConfigError, match="Automation state file is invalid"):
+        store.load()
+
+
+@pytest.mark.parametrize("field", _SCHEMA_THREE_FIELDS)
+def test_a_schema_three_acquisition_without_its_episode_identity_is_refused(tmp_path: Path, field: str) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    store.save(_state())
+    document: dict[str, object] = json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
+    cast("list[dict[str, object]]", document["acquisitions"])[0].pop(field)
+    _write(tmp_path, document)
+
+    with pytest.raises(ConfigError, match="Automation state file is invalid"):
+        store.load()
+
+
+def test_an_admission_without_an_episode_assignment_is_refused() -> None:
+    with pytest.raises(ValueError, match="selective"):
+        replace(_selective(), assignments=())
+
+
+def test_a_mismatched_episode_choice_requires_a_confirmed_deviation() -> None:
+    with pytest.raises(ValueError, match="deviation"):
+        replace(_selective().assignments[0].choice, verdict=IdentityVerdict.MISMATCH, deviation_confirmed=False)
+
+
+def test_an_uncertain_suggestion_preserves_the_absence_of_explicit_confirmation() -> None:
+    choice: EpisodeChoice = replace(_selective().assignments[0].choice, deviation_confirmed=False)
+    assert choice.verdict is IdentityVerdict.INSUFFICIENT
+    assert not choice.deviation_confirmed
+
+
+def test_a_saved_episode_mapping_loads_equal_and_builds_the_same_identity_target_for_every_number(
+    tmp_path: Path,
+) -> None:
+    season: int = 182205
+    mapping: AniZipMapping = replace(_fixture_mapping(season), max_age_s=None)
+    record: SubscriptionRecord = SubscriptionRecord(
+        "s", season, "Slime", _TIMESTAMP, 0, kitsu_id=mapping.kitsu_id, mapping=mapping
+    )
+    store: WatchStateStore = _store(tmp_path)
+    store.save(replace(_state(), subscriptions=(record,)))
+    loaded: AniZipMapping | None = store.load().subscriptions[0].mapping
+    graph: FranchiseGraph = _fixture_graph(101280)
+    assert loaded == mapping
+    assert loaded is not None
+    assert json.dumps(loaded.raw_episodes) == json.dumps(mapping.raw_episodes)
+    assert [identity_target(graph, season, loaded, number) for number in range(1, 30)] == [
+        identity_target(graph, season, mapping, number) for number in range(1, 30)
+    ]
+
+
+_FIVE_KEYS: dict[str, tuple[str, ...]] = {
+    "subscription": ("tsukihime_id", "mapping_tvdb_season"),
+    "target": ("started", "threshold", "failures", "polish", "sources_down_since", "polish_skip"),
+    "assignment": ("traits", "stopped"),
+}
+
+_OPTIONAL_FIVE_KEYS: dict[str, tuple[str, ...]] = {
+    "subscription": (),
+    "target": ("blocker", "polish_buffer_min"),
+    "assignment": (),
+}
+
+
+def _schema_five_state() -> WatchState:
+    target: SubscriptionTarget = SubscriptionTarget(
+        1,
+        _TIMESTAMP,
+        TargetState.DUE,
+        attempts=1,
+        tried=("a" * 40, "ffee:2"),
+        started=2,
+        threshold=ResolutionClass.HD,
+        failures=(ReleaseFailure("b" * 40, decisive=True), ReleaseFailure("c" * 40, transient=MAX_TRANSIENT_FAILURES)),
+        polish=PolishObservation(PolishState.ABSENT, _TIMESTAMP),
+        sources_down_since=_TIMESTAMP,
+        polish_skip=PolishSkip(_TIMESTAMP, _TIMESTAMP, settled=True),
+    )
+    record: SubscriptionRecord = SubscriptionRecord(
+        "s",
+        500,
+        "Neko",
+        _TIMESTAMP,
+        0,
+        mapping=AniZipMapping(None, "TV", 12, (), (), None, {"1": {"seasonNumber": 2, "episodeNumber": 1}}),
+        targets=(target,),
+        tsukihime_id=77,
+        mapping_tvdb_season=2,
+    )
+    selective: AcquisitionConfirmation = _selective()
+    assignment: EpisodeAssignment = selective.assignments[0]
+    traits: ChoiceTraits = ChoiceTraits(PolishClass.BARE, ResolutionClass.FULL_HD, ("hardsub", "raw"))
+    chosen: EpisodeAssignment = replace(assignment, choice=replace(assignment.choice, traits=traits), stopped="pack")
+    return replace(
+        _state(),
+        subscriptions=(record,),
+        removed_subscription=replace(record, subscription_id="gone", anilist_id=501),
+        acquisitions=(replace(selective, assignments=(chosen,)),),
+    )
+
+
+def _five_objects(document: dict[str, object]) -> dict[str, list[dict[str, object]]]:
+    records: list[dict[str, object]] = [
+        *cast("list[dict[str, object]]", document["subscriptions"]),
+        cast("dict[str, object]", document["removed_subscription"]),
+    ]
+    return {
+        "subscription": records,
+        "target": [item for record in records for item in cast("list[dict[str, object]]", record["targets"])],
+        "assignment": [
+            item
+            for acquisition in cast("list[dict[str, object]]", document["acquisitions"])
+            for item in cast("list[dict[str, object]]", acquisition["assignments"])
+        ],
+    }
+
+
+def _schema_four(document: dict[str, object]) -> dict[str, object]:
+    document["schema_version"] = 4
+    for place, items in _five_objects(document).items():
+        for item in items:
+            for key in (*_FIVE_KEYS[place], *_OPTIONAL_FIVE_KEYS[place]):
+                item.pop(key)
+    return document
+
+
+def _saved_document(tmp_path: Path, state: WatchState) -> dict[str, object]:
+    _store(tmp_path).save(state)
+    return cast("dict[str, object]", json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8")))
+
+
+def test_schema_five_roundtrip(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    state: WatchState = _schema_five_state()
+
+    store.save(state)
+
+    assert store.load() == state
+    assert json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))["schema_version"] == 5
+
+
+@pytest.mark.parametrize("tsukihime_id", [None, 77])
+def test_tsukihime_id_roundtrip(tmp_path: Path, tsukihime_id: int | None) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    state: WatchState = _schema_five_state()
+    record: SubscriptionRecord = replace(state.subscriptions[0], tsukihime_id=tsukihime_id)
+
+    store.save(replace(state, subscriptions=(record,)))
+
+    assert store.load().subscriptions[0].tsukihime_id == tsukihime_id
+
+
+@pytest.mark.parametrize("tried", [False, True])
+def test_polish_skip_roundtrip_and_reads_a_skip_saved_without_tried(tmp_path: Path, tried: bool) -> None:
+    state: WatchState = _schema_five_state()
+    target: SubscriptionTarget = state.subscriptions[0].targets[0]
+    skip: PolishSkip = PolishSkip(_TIMESTAMP, _TIMESTAMP, tried=tried)
+    record: SubscriptionRecord = replace(state.subscriptions[0], targets=(replace(target, polish_skip=skip),))
+    document: dict[str, object] = _saved_document(tmp_path, replace(state, subscriptions=(record,)))
+    saved: dict[str, object] = cast("dict[str, object]", _five_objects(document)["target"][0]["polish_skip"])
+
+    assert saved == {"due": _TIMESTAMP, "at": _TIMESTAMP, "settled": False, "tried": tried}
+    assert _store(tmp_path).load().subscriptions[0].targets[0].polish_skip == skip
+    saved.pop("tried")
+    (tmp_path / WATCH_STATE_FILE_NAME).write_text(json.dumps(document), encoding="utf-8")
+    assert _store(tmp_path).load().subscriptions[0].targets[0].polish_skip == replace(skip, tried=False)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "saved_value"),
+    [
+        ("blocker", None, None),
+        ("blocker", Blocker.THRESHOLD, "threshold"),
+        ("polish_buffer_min", None, None),
+        ("polish_buffer_min", 120, 120),
+    ],
+)
+def test_optional_target_fact_roundtrip_and_reads_a_target_saved_without_it(
+    tmp_path: Path, field: str, value: object, saved_value: object
+) -> None:
+    state: WatchState = _schema_five_state()
+    target: SubscriptionTarget = replace(state.subscriptions[0].targets[0], **{field: value})  # type: ignore[arg-type]
+    record: SubscriptionRecord = replace(state.subscriptions[0], targets=(target,))
+    document: dict[str, object] = _saved_document(tmp_path, replace(state, subscriptions=(record,)))
+    saved: dict[str, object] = _five_objects(document)["target"][0]
+
+    assert saved[field] == saved_value
+    assert getattr(_store(tmp_path).load().subscriptions[0].targets[0], field) == value
+    saved.pop(field)
+    _write(tmp_path, document)
+    assert getattr(_store(tmp_path).load().subscriptions[0].targets[0], field) is None
+
+
+def test_failures_roundtrip(tmp_path: Path) -> None:
+    document: dict[str, object] = _saved_document(tmp_path, _schema_five_state())
+    target: dict[str, object] = _five_objects(document)["target"][0]
+
+    assert target["failures"] == [
+        {"hash": "b" * 40, "decisive": True, "transient": 0},
+        {"hash": "c" * 40, "decisive": False, "transient": MAX_TRANSIENT_FAILURES},
+    ]
+    assert (
+        _store(tmp_path).load().subscriptions[0].targets[0].failures
+        == _schema_five_state().subscriptions[0].targets[0].failures
+    )
+
+
+def test_choice_traits_are_saved_under_the_assignment(tmp_path: Path) -> None:
+    document: dict[str, object] = _saved_document(tmp_path, _schema_five_state())
+    assignment: dict[str, object] = _five_objects(document)["assignment"][0]
+
+    assert (assignment["traits"], assignment["stopped"]) == (
+        {"polish": "bare", "resolution": 0, "unusable": ["hardsub", "raw"]},
+        "pack",
+    )
+
+
+@pytest.mark.parametrize(
+    ("place", "key"),
+    [(place, key) for keys in (_FIVE_KEYS, _OPTIONAL_FIVE_KEYS) for place, names in keys.items() for key in names],
+)
+def test_schema_four_rejects_five_keys(tmp_path: Path, place: str, key: str) -> None:
+    document: dict[str, object] = _schema_four(_saved_document(tmp_path, _schema_five_state()))
+    _five_objects(document)[place][0][key] = None
+    _write(tmp_path, document)
+
+    with pytest.raises(ConfigError, match="Automation state file is invalid"):
+        _store(tmp_path).load()
+
+
+@pytest.mark.parametrize(("place", "key"), [(place, key) for place, keys in _FIVE_KEYS.items() for key in keys])
+def test_schema_five_requires_keys(tmp_path: Path, place: str, key: str) -> None:
+    document: dict[str, object] = _saved_document(tmp_path, _schema_five_state())
+    _five_objects(document)[place][0].pop(key)
+    _write(tmp_path, document)
+
+    with pytest.raises(ConfigError, match="Automation state file is invalid"):
+        _store(tmp_path).load()
+
+
+@pytest.mark.parametrize(
+    ("place", "key", "value"),
+    [
+        ("target", "started", 0),
+        ("target", "threshold", 5),
+        ("target", "failures", [{"hash": "B" * 40, "decisive": False, "transient": 0}]),
+        ("target", "failures", [{"hash": "b" * 40, "decisive": False, "transient": MAX_TRANSIENT_FAILURES + 1}]),
+        ("target", "polish", {"state": "maybe", "observed_at": _TIMESTAMP}),
+        ("assignment", "traits", {"polish": "Polish", "resolution": 0, "unusable": []}),
+        ("assignment", "traits", {"polish": "polish", "resolution": 0, "unusable": ["raw", "hardsub"]}),
+        ("assignment", "stopped", "later"),
+    ],
+)
+def test_schema_five_rejects_an_invalid_choice_fact(tmp_path: Path, place: str, key: str, value: object) -> None:
+    document: dict[str, object] = _saved_document(tmp_path, _schema_five_state())
+    _five_objects(document)[place][0][key] = value
+    _write(tmp_path, document)
+
+    with pytest.raises(ConfigError, match="Automation state file is invalid"):
+        _store(tmp_path).load()
+
+
+def test_a_schema_four_document_loads_without_choice_facts_and_counts_its_attempts_as_started(tmp_path: Path) -> None:
+    document: dict[str, object] = _schema_four(_saved_document(tmp_path, _schema_five_state()))
+    _write(tmp_path, document)
+
+    loaded: WatchState = _store(tmp_path).load()
+
+    target: SubscriptionTarget = loaded.subscriptions[0].targets[0]
+    assert (target.attempts, target.started, target.failures, target.threshold) == (1, 1, (), None)
+    assert (loaded.subscriptions[0].tsukihime_id, loaded.subscriptions[0].mapping_tvdb_season) == (None, None)
+    assert loaded.acquisitions[0].assignments[0].choice.traits is None
+    assert loaded.acquisitions[0].assignments[0].stopped is None
+
+
+def test_compaction_keeps_the_choice_traits_through_a_restart(tmp_path: Path) -> None:
+    state: WatchState = _schema_five_state()
+    finished: AcquisitionConfirmation = compact_acquisition(
+        replace(state.acquisitions[0], state=AcquisitionState.COMPLETE, cleaned=True)
+    )
+    store: WatchStateStore = _store(tmp_path)
+
+    store.save(replace(state, acquisitions=(finished,)))
+
+    assert finished.assignments[0].choice.target == {}
+    assert store.load().acquisitions[0].assignments[0].choice.traits == ChoiceTraits(
+        PolishClass.BARE, ResolutionClass.FULL_HD, ("hardsub", "raw")
+    )
+
+
+def test_choice_traits_snapshot_the_ranked_release_facts() -> None:
+    traits: ReleaseTraits = ReleaseTraits(
+        PolishClass.POLISH, False, False, AudioClass.ORIGINAL, True, True, False, 720, False, False, None, False
+    )
+
+    assert choice_traits(traits) == ChoiceTraits(PolishClass.POLISH, ResolutionClass.HD, ("dub_only", "raw"))
 
 
 def test_the_state_lives_beside_the_other_watch_files() -> None:

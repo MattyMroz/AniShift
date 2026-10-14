@@ -4,16 +4,22 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from decimal import Decimal
 from pathlib import Path
 from secrets import token_hex
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from anishift.application import (
-    CatalogOrder,
     DeletionPreview,
     DownloadReceipt,
-    EpisodeRange,
+    EpisodeBatch,
+    EpisodeFile,
+    EpisodeFiles,
+    EpisodeKey,
+    EpisodeListing,
+    EpisodeOffer,
+    EpisodeOfferView,
+    EpisodeStatus,
+    Franchise,
     HistoryEvent,
     InspectedSourceGroup,
     InspectedWorkspace,
@@ -24,13 +30,12 @@ from anishift.application import (
     ReleaseCatalog,
     ReleaseChoice,
     RetryProposal,
-    SeasonContext,
-    Subscription,
-    SubscriptionOrder,
+    StreamCandidate,
     TitleCandidate,
     decode_view,
     encode_intent,
     encode_view,
+    episode_read_timeout_s,
 )
 from anishift.application.cancellation import NeverCancelledToken
 from anishift.application.events import RunEvent, RunEventKind
@@ -43,6 +48,14 @@ if TYPE_CHECKING:
     from anishift.application.events import RunEventSink
     from anishift.application.intents import AutoPreset, ExternalAudioRole, GroupIntent, RebuildRequest
 
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+_SESSION_CLOSED: Final[str] = "The panel session is closed"
+"""Refusal raised for a catalogue read started after the session closed."""
+
+_READ_INTERRUPTED: Final[str] = "The catalogue read was interrupted"
+"""Refusal raised for a catalogue read started before the latest `interrupt_reads`."""
+
 
 class ResidentSession:
     """Keep one editing identity and delegate its work to the authenticated owner."""
@@ -50,11 +63,17 @@ class ResidentSession:
     def __init__(self, workspace_root: Path, connect: Callable[[], ControlClient]) -> None:
         self.workspace_root: Path = workspace_root
         self._connect: Callable[[], ControlClient] = connect
-        self._client: ControlClient = connect()
+        self._client: ControlClient | None = connect()
         self._client_id: str = token_hex(16)
         self._lock: threading.Lock = threading.Lock()
         self._reserved: tuple[str, ...] = ()
         self._events: ControlClient | None = None
+        self._catalog: ControlClient | None = None
+        self._catalog_lock: threading.Lock = threading.Lock()
+        self._state_lock: threading.Lock = threading.Lock()
+        self._closed: bool = False
+        self._interrupts: int = 0
+        self._open_offer: str | None = None
         self._external: dict[str, dict[str, object]] = {}
 
     def discover(self, *, cancel: CancellationToken | None = None) -> InspectedWorkspace:
@@ -102,19 +121,6 @@ class ResidentSession:
     def retry_proposal(self, material_id: str) -> RetryProposal:
         """Classify explicit retry using current owner state without starting work."""
         return decode_view(RetryProposal, self._call("retry_prepare", {"material_id": material_id}))
-
-    def subscription_retry_proposal(self, subscription_id: str, episodes: Sequence[Decimal]) -> RetryProposal:
-        """Resolve the complete explicit range before choosing a local or remote route."""
-        return decode_view(
-            RetryProposal,
-            self._call(
-                "subscription_retry_prepare",
-                {
-                    "subscription_id": subscription_id,
-                    "episodes": [str(number) for number in episodes],
-                },
-            ),
-        )
 
     def reacquire(self, operation_id: str) -> str:
         """Explicitly repeat one retained internet order after owner revalidation."""
@@ -187,91 +193,140 @@ class ResidentSession:
         """Read releases through the owner's shared request limits."""
         return decode_view(ReleaseCatalog, self._call("acquisition", {"operation": "search", "query": query}))
 
-    def season_context(self, candidate: TitleCandidate) -> SeasonContext:
-        """Resolve season numbering at the owner."""
+    def franchise(self, anilist_id: int, *, cancel: CancellationToken | None = None) -> Franchise:
+        """Read the franchise view of one entry through the owner; `interrupt_reads` stops its expansion."""
+        token: CancellationToken = cancel or NeverCancelledToken()
+        view: Franchise = decode_view(
+            Franchise, self._episode_read({"operation": "franchise", "anilist_id": anilist_id}, token)
+        )
+        token.raise_if_cancelled()
+        return view
+
+    def interrupt_reads(self) -> None:
+        """Refuse reads started earlier and close the catalogue channel, so the owner cancels its read."""
+        with self._state_lock:
+            self._interrupts += 1
+            self._open_offer = None
+            catalog: ControlClient | None = self._catalog
+            self._catalog = None
+        if catalog is not None:
+            catalog.close()
+
+    def episodes(self, anilist_id: int) -> EpisodeListing:
+        """Read the episode list of one entry through the owner."""
+        return decode_view(EpisodeListing, self._episode_read({"operation": "episodes", "anilist_id": anilist_id}))
+
+    def offer(self, key: EpisodeKey) -> EpisodeOffer:
+        """Read the ranked live candidates of one episode through the owner."""
         return decode_view(
-            SeasonContext,
-            self._call(
-                "acquisition",
-                {"operation": "season", "candidate": encode_view(candidate)},
-            ),
+            EpisodeOffer,
+            self._episode_read({"operation": "offer", "anilist_id": key.anilist_id, "number": key.number}),
         )
 
-    def search_title(
+    def download(
         self,
-        candidate: TitleCandidate,
+        choices: Sequence[ReleaseChoice],
         *,
-        episodes: EpisodeRange | None = None,
-        order: CatalogOrder = CatalogOrder.NEWEST,
-        context: SeasonContext | None = None,
-    ) -> ReleaseCatalog:
-        """Search the selected title and episode range without a second network client."""
+        anilist_id: int | None = None,
+        episode_offset: int | None = None,
+    ) -> DownloadReceipt:
+        """Persist a download order at the owner, with the catalogue entry and numbering it was read in."""
+        payload: dict[str, object] = {"choices": [encode_view(choice) for choice in choices]}
+        if anilist_id is not None:
+            payload["anilist_id"] = anilist_id
+        if episode_offset is not None:
+            payload["episode_offset"] = episode_offset
+        return decode_view(DownloadReceipt, self._call("download", payload))
+
+    def episode_download(self, keys: Sequence[EpisodeKey], *, command_id: str) -> EpisodeBatch:
+        """Admit one owner batch, or recover its receipt using the original command identifier."""
         return decode_view(
-            ReleaseCatalog,
-            self._call(
-                "acquisition",
-                {
-                    "operation": "releases",
-                    "candidate": encode_view(candidate),
-                    "order": order.value,
-                    "episodes": encode_view(episodes) if episodes is not None else None,
-                    "context": encode_view(context) if context is not None else None,
-                },
-            ),
+            EpisodeBatch,
+            self._call("episode_download", {"keys": [encode_view(key) for key in keys]}, command_id=command_id),
         )
 
-    def download(self, choices: Sequence[ReleaseChoice]) -> DownloadReceipt:
-        """Persist a download order at the owner before it contacts the torrent client."""
-        return decode_view(
-            DownloadReceipt,
-            self._call("download", {"choices": [encode_view(choice) for choice in choices]}),
-        )
-
-    def set_range(
+    def episode_offer_start(
         self,
-        subscription_id: str,
+        key: EpisodeKey,
         *,
-        selected: Sequence[Decimal],
-        future_from: Decimal | None,
-    ) -> Subscription:
-        """Store the whole ordered range of a standing order in one durable command."""
-        self._call(
-            "subscription_range",
+        repeat: bool = False,
+        previous_admission_id: str | None = None,
+        command_id: str,
+    ) -> Mapping[str, object]:
+        """Start a session-bound search without holding the catalogue channel while sources run."""
+        return self._episode_interaction(
+            "episode_offer_start",
             {
-                "subscription_id": subscription_id,
-                "selected": [str(number) for number in selected],
-                "future_from": None if future_from is None else str(future_from),
+                "key": encode_view(key),
+                "repeat": repeat,
+                "previous_admission_id": previous_admission_id,
             },
+            command_id=command_id,
         )
-        return self._subscription(subscription_id)
 
-    def repeat(self, subscription_id: str, numbers: Sequence[Decimal]) -> Subscription:
-        """Order finished episodes again without erasing what the earlier operation proved."""
-        self._call(
-            "subscription_repeat",
-            {"subscription_id": subscription_id, "episodes": [str(number) for number in numbers]},
-        )
-        return self._subscription(subscription_id)
+    def episode_offer_get(self, offer_id: str) -> Mapping[str, object]:
+        """Read the newest retained revision or the terminal failure of an open offer."""
+        try:
+            return self._episode_interaction("episode_offer_get", {"offer_id": offer_id})
+        except ControlError as error:
+            if error.connection_lost or (error.code is ControlErrorCode.REFUSED and not error.reason):
+                message: str = "The episode offer expired"
+                raise ControlError(message, code=ControlErrorCode.STALE_PREVIEW, reason="offer_expired") from error
+            raise
 
-    def _subscription(self, subscription_id: str) -> Subscription:
-        return decode_view(Subscription, self._call("subscription_get", {"subscription_id": subscription_id}))
-
-    def follow(
+    def episode_choose(
         self,
-        order: SubscriptionOrder,
+        offer: EpisodeOfferView,
+        candidate: StreamCandidate,
         *,
-        selected: Sequence[Decimal] | None = None,
-        future_from: Decimal | None = None,
-    ) -> Subscription:
-        """Add a durable standing order and let the owner's schedule check it."""
-        payload: dict[str, object] = {"order": encode_view(order)}
-        if selected is not None:
-            payload.update(
-                selected=[str(number) for number in selected],
-                future_from=None if future_from is None else str(future_from),
-            )
-        answer: Mapping[str, object] = self._call("subscription_add", payload)
-        return self._subscription(str(answer["subscription_id"]))
+        command_id: str,
+        deviation_confirmed: bool = False,
+        conflict_confirmed: bool = False,
+    ) -> Mapping[str, object]:
+        """Accept the exact inspected candidate with independently confirmed identity and legacy deviations."""
+        return self._episode_interaction(
+            "episode_choose",
+            {
+                "offer_id": offer.offer_id,
+                "revision": offer.revision,
+                "info_hash": candidate.info_hash,
+                "path": candidate.path,
+                "deviation_confirmed": deviation_confirmed,
+                "conflict_confirmed": conflict_confirmed,
+            },
+            instance_id=offer.instance_id,
+            command_id=command_id,
+        )
+
+    def episode_files(self, admission_id: str) -> EpisodeFiles:
+        """Read safe video choices from the current torrent file map."""
+        return decode_view(EpisodeFiles, self._call("episode_files", {"admission_id": admission_id}))
+
+    def episode_file_choose(
+        self, files: EpisodeFiles, selected: EpisodeFile, *, command_id: str
+    ) -> Mapping[str, object]:
+        """Bind the exact inspected video and its sidecars through the owner."""
+        return self._call(
+            "episode_file_choose",
+            {
+                "admission_id": files.admission_id,
+                "revision": files.revision,
+                "file": encode_view(selected),
+            },
+            command_id=command_id,
+        )
+
+    def episode_states(self, anilist_id: int, numbers: Sequence[int]) -> tuple[EpisodeStatus, ...]:
+        """Read bounded episode states without a catalogue request."""
+        items: object = self._call("episode_states", {"anilist_id": anilist_id, "numbers": list(numbers)}).get("items")
+        if not isinstance(items, list):
+            msg = "The owner returned invalid episode states"
+            raise TypeError(msg)
+        return tuple(decode_view(EpisodeStatus, item) for item in items)
+
+    def subscription_add(self, anilist_id: int, *, command_id: str) -> Mapping[str, object]:
+        """Ask the owner to follow one airing season; a repeated *command_id* returns the first answer."""
+        return self._call("subscription_add", {"anilist_id": anilist_id}, command_id=command_id)
 
     def command(self, kind: str, payload: Mapping[str, object] | None = None) -> Mapping[str, object]:
         """Send a validated user action through the owner's command boundary."""
@@ -429,16 +484,155 @@ class ResidentSession:
 
     def close(self) -> None:
         """Detach the panel and release editing ownership without cancelling a run."""
-        self._client.close()
-        events: ControlClient | None = self._events
-        if events is not None:
-            events.close()
+        with self._state_lock:
+            self._closed = True
+            client: ControlClient | None = self._client
+            catalog: ControlClient | None = self._catalog
+        for other in (client, self._events, catalog):
+            if other is not None:
+                other.close()
+
+    def disconnect(self) -> None:
+        """Close idle command and catalogue connections so their next call reaches the current resident."""
+        dropped: list[ControlClient] = []
+        if self._lock.acquire(blocking=False):
+            try:
+                with self._state_lock:
+                    if self._client is not None:
+                        dropped.append(self._client)
+                    self._client = None
+            finally:
+                self._lock.release()
+        if self._catalog_lock.acquire(blocking=False):
+            try:
+                with self._state_lock:
+                    if self._catalog is not None and self._open_offer is None:
+                        dropped.append(self._catalog)
+                        self._catalog = None
+            finally:
+                self._catalog_lock.release()
+        for client in dropped:
+            client.close()
 
     def _call(
-        self, kind: str, payload: Mapping[str, object] | None = None, *, instance_id: str | None = None
+        self,
+        kind: str,
+        payload: Mapping[str, object] | None = None,
+        *,
+        instance_id: str | None = None,
+        command_id: str | None = None,
     ) -> Mapping[str, object]:
         with self._lock:
-            return self._client.call(kind, {"client_id": self._client_id, **(payload or {})}, instance_id=instance_id)
+            client: ControlClient = self._command_channel()
+            try:
+                return client.call(
+                    kind,
+                    {"client_id": self._client_id, **(payload or {})},
+                    instance_id=instance_id,
+                    command_id=command_id,
+                )
+            except ControlError as error:
+                if error.connection_lost:
+                    self._drop(client)
+                raise
+
+    def _command_channel(self) -> ControlClient:
+        with self._state_lock:
+            if self._closed:
+                raise ControlError(_SESSION_CLOSED, code=ControlErrorCode.REFUSED)
+            if self._client is not None:
+                return self._client
+        opened: ControlClient = self._connect()
+        with self._state_lock:
+            if not self._closed:
+                self._client = opened
+                return opened
+        opened.close()
+        raise ControlError(_SESSION_CLOSED, code=ControlErrorCode.REFUSED)
+
+    def _drop(self, client: ControlClient) -> None:
+        with self._state_lock:
+            if self._client is client:
+                self._client = None
+            if self._catalog is client:
+                self._catalog = None
+                self._open_offer = None
+        client.close()
+
+    def _episode_read(
+        self, payload: Mapping[str, object], cancel: CancellationToken | None = None
+    ) -> Mapping[str, object]:
+        token: CancellationToken = cancel or NeverCancelledToken()
+        with self._state_lock:
+            interrupts: int = self._interrupts
+        with self._catalog_lock:
+            token.raise_if_cancelled()
+            channel: ControlClient = self._catalog_channel(interrupts)
+            token.raise_if_cancelled()
+            with self._state_lock:
+                self._require_current(interrupts)
+            try:
+                return channel.call("acquisition", payload, timeout_s=episode_read_timeout_s())
+            except ControlError as error:
+                if error.connection_lost:
+                    self._drop(channel)
+                raise
+
+    def _episode_interaction(
+        self,
+        kind: str,
+        payload: Mapping[str, object],
+        *,
+        instance_id: str | None = None,
+        command_id: str | None = None,
+    ) -> Mapping[str, object]:
+        with self._state_lock:
+            interrupts: int = self._interrupts
+        with self._catalog_lock:
+            channel: ControlClient = self._catalog_channel(interrupts)
+            try:
+                result: Mapping[str, object] = channel.call(
+                    kind,
+                    payload,
+                    instance_id=instance_id,
+                    command_id=command_id,
+                    timeout_s=episode_read_timeout_s(),
+                )
+            except ControlError as error:
+                if error.connection_lost:
+                    self._drop(channel)
+                elif error.reason == "offer_expired":
+                    with self._state_lock:
+                        self._open_offer = None
+                raise
+            with self._state_lock:
+                self._require_current(interrupts)
+                if kind == "episode_offer_start":
+                    self._open_offer = decode_view(str, result.get("offer_id"))
+                elif kind == "episode_choose" or result.get("state") == "failed":
+                    self._open_offer = None
+            return result
+
+    def _catalog_channel(self, interrupts: int) -> ControlClient:
+        with self._state_lock:
+            self._require_current(interrupts)
+            if self._catalog is not None:
+                return self._catalog
+        opened: ControlClient = self._connect()
+        with self._state_lock:
+            if not self._closed and self._interrupts == interrupts:
+                self._catalog = opened
+                return opened
+        opened.close()
+        with self._state_lock:
+            self._require_current(interrupts)
+        raise ControlError(_SESSION_CLOSED, code=ControlErrorCode.REFUSED)
+
+    def _require_current(self, interrupts: int) -> None:
+        if self._closed:
+            raise ControlError(_SESSION_CLOSED, code=ControlErrorCode.REFUSED)
+        if self._interrupts != interrupts:
+            raise ControlError(_READ_INTERRUPTED, code=ControlErrorCode.REFUSED)
 
     def _register(self, payload: Mapping[str, object], cancel: CancellationToken | None) -> InspectedSourceGroup:
         token: CancellationToken = cancel or NeverCancelledToken()

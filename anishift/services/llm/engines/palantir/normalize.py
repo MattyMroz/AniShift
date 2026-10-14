@@ -11,6 +11,7 @@ from anishift.services.llm.engines._sdk_helpers import normalize_finish_reason, 
 from anishift.services.llm.engines.palantir.errors import (
     PalantirResponseDefect,
     palantir_blocked_error,
+    palantir_generation_error,
     palantir_response_error,
     palantir_unavailable_error,
     raise_palantir_config_error,
@@ -22,9 +23,9 @@ from anishift.utils.logger import get_logger
 __all__ = [
     "google_stream_delta",
     "merge_google_stream",
-    "merge_openai_stream",
+    "merge_responses_stream",
     "normalize_palantir_response",
-    "openai_stream_delta",
+    "responses_stream_delta",
 ]
 
 logger = get_logger(__name__)
@@ -81,7 +82,7 @@ def merge_google_stream(events: tuple[Mapping[str, Any], ...]) -> Mapping[str, A
             usage = event["usageMetadata"]
         if "promptFeedback" in event:
             prompt_feedback = event["promptFeedback"]
-        candidate: Mapping[str, Any] | None = _optional_first(event, key="candidates")
+        candidate: Mapping[str, Any] | None = _optional_first(event)
         if candidate is None:
             continue
         if "finishReason" in candidate:
@@ -100,53 +101,26 @@ def merge_google_stream(events: tuple[Mapping[str, Any], ...]) -> Mapping[str, A
     return payload
 
 
-def merge_openai_stream(events: tuple[Mapping[str, Any], ...]) -> Mapping[str, Any]:
-    """Assemble Chat Completions SSE events into one normalizable response mapping."""
-    texts: list[str] = []
-    refusals: list[str] = []
-    finish_reason: object = None
-    usage: object = None
-    for event in events:
-        if event.get("usage") is not None:
-            usage = event["usage"]
-        choice: Mapping[str, Any] | None = _optional_first(event, key="choices")
-        if choice is None:
-            continue
-        if choice.get("finish_reason") is not None:
-            finish_reason = choice["finish_reason"]
-        delta: object = choice.get("delta")
-        if not isinstance(delta, Mapping):
-            continue
-        content: object = delta.get("content")
-        if isinstance(content, str):
-            texts.append(content)
-        refusal: object = delta.get("refusal")
-        if isinstance(refusal, str):
-            refusals.append(refusal)
-    message: dict[str, Any] = {"role": "assistant", "content": "".join(texts)}
-    if refusals:
-        message["refusal"] = "".join(refusals)
-    payload: dict[str, Any] = {"choices": [{"message": message, "finish_reason": finish_reason}]}
-    if usage is not None:
-        payload["usage"] = usage
-    return payload
+def merge_responses_stream(events: tuple[Mapping[str, Any], ...]) -> Mapping[str, Any]:
+    """Return the last terminal Responses object, without reconstructing missing results."""
+    for event in reversed(events):
+        if event.get("type") in {"response.completed", "response.incomplete", "response.failed"}:
+            response: object = event.get("response")
+            return response if isinstance(response, Mapping) else {}
+    return {}
 
 
-def openai_stream_delta(event: Mapping[str, Any]) -> str:
-    """Return the visible text one Chat Completions stream event carries."""
-    choice: Mapping[str, Any] | None = _optional_first(event, key="choices")
-    if choice is None:
+def responses_stream_delta(event: Mapping[str, Any]) -> str:
+    """Return visible text only from a Responses output-text delta."""
+    if event.get("type") != "response.output_text.delta":
         return ""
-    delta: object = choice.get("delta")
-    if not isinstance(delta, Mapping):
-        return ""
-    content: object = delta.get("content")
-    return content if isinstance(content, str) else ""
+    delta: object = event.get("delta")
+    return delta if isinstance(delta, str) else ""
 
 
 def google_stream_delta(event: Mapping[str, Any]) -> str:
     """Return the visible text one generateContent stream event carries."""
-    candidate: Mapping[str, Any] | None = _optional_first(event, key="candidates")
+    candidate: Mapping[str, Any] | None = _optional_first(event)
     if candidate is None:
         return ""
     return "".join(_google_stream_texts(candidate))
@@ -188,6 +162,9 @@ def normalize_palantir_response(  # noqa: PLR0913 - one explicit argument per re
         )
     if not isinstance(payload, Mapping):
         raise palantir_response_error(alias=alias, defect=PalantirResponseDefect.UNEXPECTED_SHAPE)
+    if payload.get("status") == "failed":
+        error: object = payload.get("error")
+        raise palantir_generation_error(error.get("code") if isinstance(error, Mapping) else None, alias=alias)
     blocked_reason: str = reader.block_signal(payload)
     if blocked_reason:
         raise palantir_blocked_error(alias=alias, finish_reason=blocked_reason)
@@ -199,12 +176,11 @@ def normalize_palantir_response(  # noqa: PLR0913 - one explicit argument per re
         "end_turn",
         "stop_sequence",
         "completed",
-        "length",
         "max_tokens",
         "max_output_tokens",
     }:
         raise palantir_response_error(alias=alias, defect=PalantirResponseDefect.INCOMPLETE_RESPONSE)
-    if not extracted.text.strip() and extracted.finish_reason not in {"length", "max_tokens", "max_output_tokens"}:
+    if not extracted.text.strip() and extracted.finish_reason not in {"max_tokens", "max_output_tokens"}:
         raise palantir_response_error(alias=alias, defect=PalantirResponseDefect.EMPTY_TEXT)
     logger.debug(
         "Palantir response normalized",
@@ -222,17 +198,6 @@ def normalize_palantir_response(  # noqa: PLR0913 - one explicit argument per re
     )
 
 
-def _chat_block_signal(payload: Mapping[str, Any]) -> str:
-    """Probe a Chat Completions body for a refusal or a blocking finish reason."""
-    choice: Mapping[str, Any] | None = _optional_first(payload, key="choices")
-    if choice is None:
-        return ""
-    message: object = choice.get("message")
-    if isinstance(message, Mapping) and _is_visible_text(message.get("refusal")):
-        return "refusal"
-    return _blocking_reason(choice.get("finish_reason"))
-
-
 def _anthropic_block_signal(payload: Mapping[str, Any]) -> str:
     """Probe an Anthropic Messages body for a blocking stop reason."""
     return _blocking_reason(payload.get("stop_reason"))
@@ -243,7 +208,7 @@ def _google_block_signal(payload: Mapping[str, Any]) -> str:
     prompt_block: str = _prompt_block_reason(payload)
     if prompt_block:
         return prompt_block
-    candidate: Mapping[str, Any] | None = _optional_first(payload, key="candidates")
+    candidate: Mapping[str, Any] | None = _optional_first(payload)
     if candidate is None:
         return ""
     return _blocking_reason(candidate.get("finishReason"))
@@ -296,9 +261,9 @@ def _blocking_reason(value: object) -> str:
     return reason if reason in _BLOCKED_FINISH_REASONS else ""
 
 
-def _optional_first(payload: Mapping[str, Any], *, key: str) -> Mapping[str, Any] | None:
+def _optional_first(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """Return the first candidate mapping, or ``None`` for any other shape."""
-    candidates: object = payload.get(key)
+    candidates: object = payload.get("candidates")
     if not isinstance(candidates, (list, tuple)) or not candidates:
         return None
     first: object = candidates[0]
@@ -308,19 +273,6 @@ def _optional_first(payload: Mapping[str, Any], *, key: str) -> Mapping[str, Any
 def _is_visible_text(value: object) -> bool:
     """Return whether the value is a string carrying visible characters."""
     return isinstance(value, str) and bool(value.strip())
-
-
-def _extract_chat_completions(payload: Mapping[str, Any], alias: str) -> _Extracted:
-    """Read text, finish reason and usage from a Chat Completions body."""
-    choice: Mapping[str, Any] = _first_choice(payload, alias, key="choices")
-    message: object = choice.get("message")
-    if not isinstance(message, Mapping):
-        raise palantir_response_error(alias=alias, defect=PalantirResponseDefect.UNEXPECTED_SHAPE)
-    return _Extracted(
-        text=_string_field(message.get("content"), alias),
-        finish_reason=normalize_finish_reason(choice.get("finish_reason")),
-        usage=_chat_usage(payload.get("usage")),
-    )
 
 
 def _extract_anthropic_messages(payload: Mapping[str, Any], alias: str) -> _Extracted:
@@ -337,7 +289,7 @@ def _extract_anthropic_messages(payload: Mapping[str, Any], alias: str) -> _Extr
 
 def _extract_google_generate(payload: Mapping[str, Any], alias: str) -> _Extracted:
     """Read text, finish reason and usage from a generateContent body."""
-    candidate: Mapping[str, Any] = _first_choice(payload, alias, key="candidates")
+    candidate: Mapping[str, Any] = _first_candidate(payload, alias)
     content: object = candidate.get("content")
     if not isinstance(content, Mapping):
         raise palantir_response_error(alias=alias, defect=PalantirResponseDefect.UNEXPECTED_SHAPE)
@@ -351,9 +303,11 @@ def _extract_google_generate(payload: Mapping[str, Any], alias: str) -> _Extract
     )
 
 
-def _extract_xai_responses(payload: Mapping[str, Any], alias: str) -> _Extracted:
-    """Read message text, status and usage from an xAI Responses body."""
+def _extract_responses(payload: Mapping[str, Any], alias: str) -> _Extracted:
+    """Read message text, status and usage from a Responses body."""
     finish_reason: str = normalize_finish_reason(payload.get("status"))
+    if finish_reason == "unknown":
+        return _Extracted("", "unknown", _responses_usage(payload.get("usage")))
     details: object = payload.get("incomplete_details")
     if finish_reason == "incomplete" and isinstance(details, Mapping) and details.get("reason") == "max_output_tokens":
         finish_reason = "max_output_tokens"
@@ -379,15 +333,15 @@ def _extract_xai_responses(payload: Mapping[str, Any], alias: str) -> _Extracted
     )
 
 
-def _first_choice(payload: Mapping[str, Any], alias: str, *, key: str) -> Mapping[str, Any]:
+def _first_candidate(payload: Mapping[str, Any], alias: str) -> Mapping[str, Any]:
     """Return the first completion candidate, or a typed defect when absent."""
-    choices: object = payload.get(key)
-    if not isinstance(choices, (list, tuple)) or not choices:
+    candidates: object = payload.get("candidates")
+    if not isinstance(candidates, (list, tuple)) or not candidates:
         raise palantir_response_error(alias=alias, defect=PalantirResponseDefect.MISSING_CHOICE)
-    choice: object = choices[0]
-    if not isinstance(choice, Mapping):
+    candidate: object = candidates[0]
+    if not isinstance(candidate, Mapping):
         raise palantir_response_error(alias=alias, defect=PalantirResponseDefect.UNEXPECTED_SHAPE)
-    return choice
+    return candidate
 
 
 def _string_field(value: object, alias: str) -> str:
@@ -415,7 +369,7 @@ def _joined_text_parts(parts: list[Any] | tuple[Any, ...], alias: str) -> str:
     for part in parts:
         if not isinstance(part, Mapping):
             raise palantir_response_error(alias=alias, defect=PalantirResponseDefect.UNEXPECTED_SHAPE)
-        if "text" not in part:
+        if "text" not in part or part.get("thought"):
             continue
         texts.append(_string_field(part.get("text"), alias))
     return "".join(texts)
@@ -430,17 +384,6 @@ def _responses_text_parts(parts: list[Any] | tuple[Any, ...], alias: str) -> lis
             continue
         texts.append(_string_field(part.get("text"), alias))
     return texts
-
-
-def _chat_usage(usage: object) -> LlmUsage:
-    """Read Chat Completions usage counters, tolerating a missing block."""
-    if not isinstance(usage, Mapping):
-        return LlmUsage()
-    return LlmUsage(
-        input_tokens=optional_int(usage.get("prompt_tokens")),
-        output_tokens=optional_int(usage.get("completion_tokens")),
-        total_tokens=optional_int(usage.get("total_tokens")),
-    )
 
 
 def _anthropic_usage(usage: object) -> LlmUsage:
@@ -478,8 +421,8 @@ def _responses_usage(usage: object) -> LlmUsage:
 
 _READERS: Final[Mapping[ModelProtocol, _ProtocolReader]] = MappingProxyType(
     {
-        ModelProtocol.OPENAI_CHAT: _ProtocolReader(_chat_block_signal, _extract_chat_completions),
-        ModelProtocol.XAI_RESPONSES: _ProtocolReader(_responses_block_signal, _extract_xai_responses),
+        ModelProtocol.OPENAI_RESPONSES: _ProtocolReader(_responses_block_signal, _extract_responses),
+        ModelProtocol.XAI_RESPONSES: _ProtocolReader(_responses_block_signal, _extract_responses),
         ModelProtocol.ANTHROPIC_MESSAGES: _ProtocolReader(_anthropic_block_signal, _extract_anthropic_messages),
         ModelProtocol.GOOGLE_GENERATE: _ProtocolReader(_google_block_signal, _extract_google_generate),
     },

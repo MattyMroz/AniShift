@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from copy import deepcopy
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from http import HTTPStatus
-from typing import Any, Final
+from time import perf_counter
+from typing import TYPE_CHECKING, Any, Final
 
 import httpx
 
+from anishift.application.episode_selection import FranchiseGraph, JsonObject, franchise_traversal
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.catalog.errors import TitleCatalogError
 from anishift.services.catalog.types import (
@@ -22,12 +25,16 @@ from anishift.services.catalog.types import (
 )
 from anishift.utils.logger import get_logger
 
+if TYPE_CHECKING:
+    from anishift.application.cancellation import CancellationToken
+
 __all__ = [
     "ANILIST_URL",
     "DEFAULT_SEARCH_LIMIT",
     "MAX_PREQUEL_HOPS",
     "OFFSET_FORMATS",
     "AniListCatalog",
+    "parse_franchise_page",
 ]
 
 logger = get_logger(__name__)
@@ -51,8 +58,8 @@ OFFSET_FORMATS: Final[frozenset[str]] = frozenset({"TV", "TV_SHORT", "ONA"})
 
 SEARCH_QUERY: Final[str] = """
 query ($search: String, $limit: Int) { Page(perPage: $limit) { media(search: $search, type: ANIME, sort: SEARCH_MATCH) {
-  id title { romaji english native } synonyms seasonYear season format episodes status
-  relations { edges { relationType node { id episodes format } } } } } }
+  id title { romaji english native } synonyms seasonYear startDate { year month day } season format episodes status
+  countryOfOrigin relations { edges { relationType node { id episodes format } } } } } }
 """
 """Search request returning the candidate fields and the direct relation edges."""
 
@@ -87,6 +94,22 @@ _SHORTENED_WORD_RATIO: Final[float] = 0.6
 
 _CATALOG_SUGGESTION: Final[str] = "Search again in a minute or type the title exactly"
 """Recovery hint shown for every catalog failure."""
+
+_MAX_FRANCHISE_REQUESTS: Final[int] = 4
+"""Bound entry latency under AniList's roughly thirty requests per minute limit."""
+
+_FRANCHISE_FIELDS: Final[str] = (
+    "id type format status episodes countryOfOrigin seasonYear startDate { year month day }"
+    " title { romaji english native }"
+)
+"""Entry projection preserved at every franchise depth."""
+
+
+def _franchise_query() -> str:
+    fragment: str = _FRANCHISE_FIELDS
+    for _ in range(3):
+        fragment = _FRANCHISE_FIELDS + " relations { edges { relationType node { " + fragment + " } } }"
+    return "query ($ids: [Int]) { Page(perPage: 50) { media(id_in: $ids, type: ANIME) { " + fragment + " } } }"
 
 
 class _CatalogFailure(StrEnum):
@@ -125,23 +148,39 @@ class AniListCatalog:
 
     def prequel_episodes(self, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
         """Return every entry airing before *candidate*, direct prequel first."""
-        seen: set[int] = {candidate.anilist_id}
-        pending: list[int] = [prequel_id for prequel_id in candidate.prequel_ids if prequel_id not in seen]
-        entries: list[PrequelEntry] = []
-        while pending and len(entries) < MAX_PREQUEL_HOPS:
-            current: int = pending.pop(0)
-            if current in seen:
-                continue
-            seen.add(current)
-            media: Mapping[str, Any] | None = self._media(current)
-            entries.append(_prequel_entry(media))
-            if media is not None:
-                pending.extend(prequel_id for prequel_id in _prequel_ids(media) if prequel_id not in seen)
-        return tuple(entries)
+        return _walk_prequels(candidate, self._media)
 
     def episode_offset(self, candidate: TitleCandidate) -> int:
         """Return how many episodes aired before *candidate*, following its prequel chain."""
         return sum(entry.episodes for entry in self.prequel_episodes(candidate))
+
+    def franchise(self, anilist_id: int, *, cancel: CancellationToken | None = None) -> FranchiseGraph:
+        """Fetch the depth-three anime graph, expanding missing chain frontiers at most four times."""
+        started: float = perf_counter()
+        graph: FranchiseGraph = FranchiseGraph(anilist_id, {}, frozenset(), False)
+        pending: list[int] = [anilist_id]
+        try:
+            for _ in range(_MAX_FRANCHISE_REQUESTS):
+                if cancel is not None:
+                    cancel.raise_if_cancelled()
+                data: Mapping[str, Any] = self._post(_franchise_query(), {"ids": pending})
+                graph = parse_franchise_page(data, anilist_id, frozenset(pending), graph)
+                if graph.complete:
+                    break
+                _, _, missing = franchise_traversal(anilist_id, graph.nodes, graph.queried)
+                pending = sorted(missing)
+        except TitleCatalogError:
+            logger.warning("Franchise lookup failed", provider="anilist", code=ErrorCode.TITLE_CATALOG_FAILED)
+            raise
+        logger.info(
+            "Franchise lookup completed",
+            provider="anilist",
+            operation="franchise",
+            count=len(graph.nodes),
+            complete=graph.complete,
+            elapsed_s=perf_counter() - started,
+        )
+        return graph
 
     def airing_schedule(self, anilist_id: int) -> SeasonAiring:
         """Read all available episode dates for that season without inventing missing history."""
@@ -176,7 +215,7 @@ class AniListCatalog:
             raise _catalog_error(_CatalogFailure.MALFORMED)
         candidates: list[TitleCandidate] = []
         for node in media:
-            candidate: TitleCandidate | None = _candidate(node) if isinstance(node, Mapping) else None
+            candidate: TitleCandidate | None = candidate_from_node(node) if isinstance(node, Mapping) else None
             if candidate is not None:
                 candidates.append(candidate)
         return tuple(candidates)
@@ -211,6 +250,61 @@ class AniListCatalog:
         if not isinstance(data, Mapping):
             raise _catalog_error(_CatalogFailure.MALFORMED)
         return data
+
+
+def parse_franchise_page(
+    data: object,
+    root_id: int,
+    queried: frozenset[int],
+    previous: FranchiseGraph | None = None,
+) -> FranchiseGraph:
+    """Merge one GraphQL data page without reordering nodes, titles or relation edges."""
+    page: object = data.get("Page") if isinstance(data, Mapping) else None
+    media: object = page.get("media") if isinstance(page, Mapping) else None
+    if not isinstance(media, list):
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    nodes: dict[int, JsonObject] = dict(previous.nodes) if previous else {}
+    for node in media:
+        _collect_franchise(deepcopy(node), nodes)
+    if root_id not in nodes:
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    all_queried: frozenset[int] = queried | (previous.queried if previous else frozenset())
+    _, _, missing = franchise_traversal(root_id, nodes, all_queried)
+    return FranchiseGraph(root_id, nodes, all_queried, not missing)
+
+
+def _collect_franchise(raw: object, nodes: dict[int, JsonObject]) -> None:
+    if not isinstance(raw, dict) or not isinstance(raw.get("type"), str):
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    if raw["type"] != "ANIME":
+        return
+    identifier: object = raw.get("id")
+    if type(identifier) is not int or identifier <= 0 or "format" not in raw:
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    title: object = raw.get("title")
+    if not isinstance(title, dict) or any(value is not None and not isinstance(value, str) for value in title.values()):
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    relations: object = raw.get("relations", {"edges": []})
+    if not isinstance(relations, Mapping) or not isinstance(relations.get("edges"), list):
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    edges: list[Any] = relations["edges"]
+    for edge in edges:
+        if not isinstance(edge, dict) or not isinstance(edge.get("relationType"), str):
+            raise _catalog_error(_CatalogFailure.MALFORMED)
+        child: object = edge.get("node")
+        if not isinstance(child, dict) or type(child.get("id")) is not int:
+            raise _catalog_error(_CatalogFailure.MALFORMED)
+    if identifier not in nodes:
+        nodes[identifier] = raw
+    elif "relations" in raw:
+        previous: JsonObject = nodes[identifier]
+        merged: dict[tuple[int, str], JsonObject] = {
+            (edge["node"]["id"], edge["relationType"]): edge for edge in previous.get("relations", {}).get("edges", [])
+        }
+        merged.update({(edge["node"]["id"], edge["relationType"]): edge for edge in edges})
+        nodes[identifier] = {**previous, "relations": {"edges": list(merged.values())}}
+    for edge in edges:
+        _collect_franchise(edge["node"], nodes)
 
 
 def _schedule_page(raw: object, page: int) -> tuple[tuple[EpisodeAiring, ...], bool]:
@@ -262,7 +356,7 @@ def _start_date(raw: object) -> date | None:
         raise _catalog_error(_CatalogFailure.MALFORMED) from error
 
 
-def _candidate(node: Mapping[str, Any]) -> TitleCandidate | None:
+def candidate_from_node(node: Mapping[str, Any]) -> TitleCandidate | None:
     """Build one candidate, or ``None`` when the node carries no id or romaji title."""
     anilist_id: object = node.get("id")
     title: object = node.get("title")
@@ -270,19 +364,50 @@ def _candidate(node: Mapping[str, Any]) -> TitleCandidate | None:
     romaji: str = _text(names.get("romaji"))
     if not isinstance(anilist_id, int) or not romaji:
         return None
+    start: object = node.get("startDate")
+    started: Mapping[str, Any] = start if isinstance(start, Mapping) else {}
+    try:
+        premiere: date | None = _start_date(started)
+    except TitleCatalogError:
+        premiere = None
     return TitleCandidate(
         anilist_id=anilist_id,
         romaji=romaji,
         english=_text(names.get("english")) or None,
         native=_text(names.get("native")) or None,
         synonyms=_synonyms(node.get("synonyms")),
-        year=_number(node.get("seasonYear")),
+        year=_number(started.get("year")) or _number(node.get("seasonYear")),
         season=_text(node.get("season")) or None,
         format=_text(node.get("format")) or None,
         episodes=_number(node.get("episodes")),
         status=_status(node.get("status")),
         prequel_ids=_prequel_ids(node),
+        start=premiere,
+        country=_text(node.get("countryOfOrigin")) or None,
     )
+
+
+def graph_prequels(graph: FranchiseGraph, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
+    """Read the existing prequel traversal from fetched nodes without issuing catalog requests."""
+    return _walk_prequels(candidate, graph.nodes.get)
+
+
+def _walk_prequels(
+    candidate: TitleCandidate, read: Callable[[int], Mapping[str, Any] | None]
+) -> tuple[PrequelEntry, ...]:
+    pending: list[int] = list(candidate.prequel_ids)
+    seen: set[int] = {candidate.anilist_id}
+    entries: list[PrequelEntry] = []
+    while pending and len(entries) < MAX_PREQUEL_HOPS:
+        current: int = pending.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        media: Mapping[str, Any] | None = read(current)
+        entries.append(_prequel_entry(media))
+        if media is not None:
+            pending.extend(identifier for identifier in _prequel_ids(media) if identifier not in seen)
+    return tuple(entries)
 
 
 def _prequel_ids(node: Mapping[str, Any]) -> tuple[int, ...]:

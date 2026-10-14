@@ -10,7 +10,7 @@ __all__ = ["ModelProtocol"]
 class ModelProtocol(StrEnum):
     """Wire protocol a Foundry proxy provider speaks."""
 
-    OPENAI_CHAT = "openai_chat"
+    OPENAI_RESPONSES = "openai_responses"
     ANTHROPIC_MESSAGES = "anthropic_messages"
     GOOGLE_GENERATE = "google_generate"
     XAI_RESPONSES = "xai_responses"

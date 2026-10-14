@@ -19,6 +19,7 @@ _PROVIDER: Final[OpenAiCompatibleProvider] = OpenAiCompatibleProvider(
     requires_api_key=False,
     api_key_env_var=None,
     max_tokens_parameter="max_tokens",
+    file_modalities=frozenset({"image"}),
 )
 """Custom endpoint settings for the shared transport."""
 

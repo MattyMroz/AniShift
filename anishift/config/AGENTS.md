@@ -9,7 +9,7 @@ Ustawienia i `Settings` (pydantic-settings, prefix `ANISHIFT_`, z `.env`), prefe
 - `field_catalog.py` — typowany, niezależny od UI katalog pól ustawień (`SettingSpec`)
 - `field_access.py` — jedyne tłumaczenie między `SettingSpec` a polem `UserSettings`
 - `env_file.py` — atomowa edycja pojedynczej wartości w `.env` (zapis sekretu)
-- `model_catalog.py` — katalog dostawców i aliasów modeli z `config/anishift.models.jsonc`
+- `model_catalog.py` — projekcja wbudowanej listy z `services/llm/engines/palantir/constants.py` na DTO aplikacji; bez odczytu plików i sieci
 - `presets.py` — wersjonowane presety trybu automatycznego w `config/presets.json`
 - `workspace.py` — rozwiązywanie i bootstrap katalogu workspace
 
@@ -23,11 +23,11 @@ Ustawienia i `Settings` (pydantic-settings, prefix `ANISHIFT_`, z `.env`), prefe
 - `_clean_number` celowo odrzuca `bool` przed sprawdzeniem `int|float` (bo `bool` jest podklasą `int`) — `true` w JSON nie przejdzie jako liczba. `user_settings.py:523`
 - `resolve_workspace_root` zwraca ścieżkę, ale NIE tworzy jej na dysku — katalog powstaje dopiero przez `ensure_workspace_dir`. `workspace.py:102,128`
 - `ensure_workspace_dir` rzuca `NotADirectoryError` (spoza hierarchii AniShift), gdy root istnieje jako plik nie-katalog. `workspace.py:136`
-- `model_catalog` jest tylko do CZYTANIA — nic w aplikacji nie zapisuje `anishift.models.jsonc`, bo zapis zniszczyłby komentarze użytkownika. Adres enrollmentu jest więc preferencją (`UserSettings.palantir_enrollment_base_url`), nie polem katalogu. `model_catalog.py:1-18`
+- Modele, możliwości i opcje Palantira należą do serwisu LLM; `model_catalog.py` tylko je projektuje. Nie dodawaj tu parsera ani drugiej listy modeli. Adres enrollmentu pozostaje preferencją (`UserSettings.palantir_enrollment_base_url`), nie polem katalogu.
 
 ## Konwencje
 
-- `settings.json`, `presets.json` i `anishift.models.jsonc` leżą w `<repo>/config/`, celowo POZA `workspace/`, by folder na MKV został czysty. Wszystkie trzy są gitignorowane i edytowane ręcznie. `anishift/paths.py:38`
+- `settings.json` i `presets.json` leżą w `<repo>/config/`, celowo POZA `workspace/`, by folder na MKV został czysty. Oba są gitignorowane i edytowane ręcznie. Katalog modeli jest wbudowany w kod serwisu LLM.
 - Wbudowany preset `default` żąda `full_pl` oraz `narration_audio`, więc normalny Auto
   planuje prawdziwy TTS i miks. Silnik oraz głos nadal pochodzą z `UserSettings`.
   `presets.py`, `field_catalog.py`

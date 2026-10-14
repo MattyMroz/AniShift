@@ -19,7 +19,7 @@ from anishift.application.cancellation import CancellationToken, EventCancellati
 from anishift.application.control_payloads import decode_overrides
 from anishift.application.discovery import DiscoveryIndex, DiscoveryResult
 from anishift.application.events import RunEventSink
-from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace, WorkspaceInspector
+from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace, WorkspaceInspector, path_stamp
 from anishift.application.intents import (
     AutoPreset,
     ExternalAudioRole,
@@ -42,7 +42,7 @@ from anishift.application.workflows import WorkflowTarget
 from anishift.config.env_file import env_path, update_env_value
 from anishift.config.field_access import assign_setting_value, setting_is_active, setting_is_persisted
 from anishift.config.field_catalog import SettingCatalogContext, SettingSpec, SettingValue, setting_catalog
-from anishift.config.model_catalog import ModelCatalog, ModelCatalogError, load_model_catalog
+from anishift.config.model_catalog import ModelCatalog, ProviderEntry, load_model_catalog
 from anishift.config.presets import AutoPresetFile, load_presets, save_presets
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings, load_user_settings, save_user_settings
@@ -77,8 +77,8 @@ if TYPE_CHECKING:
     from anishift.application.artifacts import SourceGroup
     from anishift.application.control import RecipePreferences
     from anishift.application.recovery import RunJournal
-    from anishift.application.subscriptions import SubscriptionService
     from anishift.services.llm import LlmConfig
+    from anishift.services.media.probe import MediaProbe
 
 __all__ = [
     "AppService",
@@ -226,7 +226,6 @@ class AppService:
         env_file: Path | None = None,
         prepare_workspace: Callable[[DiscoveryResult, CancellationToken], None] | None = None,
         acquisition: AcquisitionService | None = None,
-        subscriptions: SubscriptionService | None = None,
     ) -> None:
         self._workspace_root: Path = workspace_root
         self._settings: Settings = settings
@@ -251,7 +250,6 @@ class AppService:
         self._discover_lock: threading.Lock = threading.Lock()
         self._prepare_workspace: Callable[[DiscoveryResult, CancellationToken], None] | None = prepare_workspace
         self._acquisition: AcquisitionService | None = acquisition
-        self._subscriptions: SubscriptionService | None = subscriptions
         self._retained_runs: set[str] = set()
 
     @property
@@ -260,9 +258,9 @@ class AppService:
         return self._acquisition
 
     @property
-    def subscriptions(self) -> SubscriptionService | None:
-        """Followed series and their hourly checks, absent when no torrent client was composed."""
-        return self._subscriptions
+    def media_probe(self) -> MediaProbe:
+        """Container probe composed for workspace inspection, shared by the download check."""
+        return self._inspector.probe
 
     @property
     def workspace_root(self) -> Path:
@@ -687,7 +685,7 @@ class AppService:
         return tuple(options)
 
     def model_catalog(self) -> ModelCatalog:
-        """Return the validated local catalog of Palantir providers and models."""
+        """Return the built-in list of Palantir providers and models."""
         return self._catalog_loader()
 
     def probe_model(self, alias: str) -> ModelProbeResult:
@@ -782,13 +780,14 @@ class AppService:
         return not any(
             model_id == getattr(settings, name)
             for name in Settings.model_fields
-            if name.endswith("_api_key") or name.startswith("palantir_token")
+            if name.endswith("_api_key") or (name.startswith("palantir_") and "token" in name)
         )
 
     def reset_settings(self) -> UserSettings:
         """Restore persisted panel preferences without touching secrets or presets."""
         defaults: UserSettings = UserSettings()
         defaults.palantir_enrollment_base_url = self.settings_snapshot().palantir_enrollment_base_url
+        defaults.palantir_fallback_enrollment_base_url = self.settings_snapshot().palantir_fallback_enrollment_base_url
         self._settings_saver(defaults)
         with self._run_lock:
             self._user_settings = deepcopy(defaults)
@@ -944,12 +943,7 @@ class AppService:
         preferences: UserSettings = self.settings_snapshot()
         if not preferences.palantir_enrollment_base_url.strip():
             return False, "missing palantir_enrollment_base_url; set the enrollment address in Tools"
-        try:
-            catalog: ModelCatalog = self.model_catalog()
-        except ModelCatalogError:
-            return False, "unusable model catalog; fix the catalog file the setup describes"
-        if not catalog.models:
-            return False, "empty model catalog; add one model entry with a usable provider"
+        catalog: ModelCatalog = self.model_catalog()
         alias: str = preferences.llm_provider_model_id.strip()
         if require_selected_model and preferences.llm_provider == _PALANTIR_ENGINE_ID and alias not in catalog.models:
             return False, "translation model alias is absent from the catalog; select one again"
@@ -959,11 +953,7 @@ class AppService:
         catalog: ModelCatalog = self.model_catalog()
         options: list[TranslationModelOption] = []
         for entry in catalog.models.values():
-            if _is_placeholder_model_id(entry.model_id):
-                continue
-            provider = catalog.providers.get(entry.provider_id)
-            if provider is None:
-                continue
+            provider: ProviderEntry = catalog.providers[entry.provider_id]
             options.append(
                 TranslationModelOption(
                     provider_id=_PALANTIR_ENGINE_ID,
@@ -983,6 +973,8 @@ class AppService:
             alias,
             enrollment_base_url=preferences.palantir_enrollment_base_url,
             token=self.current_settings().palantir_token,
+            fallback_enrollment_base_url=preferences.palantir_fallback_enrollment_base_url,
+            fallback_token=self.current_settings().palantir_secondary_token,
         )
 
     def _prober(self) -> ModelProber:
@@ -1021,11 +1013,6 @@ def _has_system_override(setting_id: str) -> bool:
     if _env_variable(setting_id) in os.environ:
         return True
     return setting_id == "palantir_token" and PALANTIR_TOKEN_COMPAT_ENV_VAR in os.environ
-
-
-def _is_placeholder_model_id(model_id: str) -> bool:
-    normalized: str = model_id.strip().casefold()
-    return normalized.startswith("replace-with-") or normalized.startswith("<select-")
 
 
 def _tts_allowed_voice_ids(preferences: UserSettings) -> tuple[str, ...]:
@@ -1119,17 +1106,7 @@ def _settle(handle: RunHandle, result: RunResult | None, failure: BaseException 
 
 
 def _workspace_fingerprint(discovery: DiscoveryResult) -> WorkspaceFingerprint:
-    return tuple(_file_identity(artifact.path) for group in discovery.groups for artifact in group.artifacts)
-
-
-def _file_identity(path: Path | None) -> tuple[str, int, int]:
-    if path is None:
-        return "", 0, 0
-    try:
-        status: os.stat_result = path.stat()
-    except OSError:
-        return path.as_posix(), -1, -1
-    return path.as_posix(), status.st_size, status.st_mtime_ns
+    return tuple(path_stamp(artifact.path) for group in discovery.groups for artifact in group.artifacts)
 
 
 def _commit_if_active(token: CancellationToken, action: Callable[[], None]) -> None:

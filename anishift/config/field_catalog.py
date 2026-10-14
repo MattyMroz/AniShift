@@ -311,6 +311,12 @@ _EDGE_PITCH_PATTERN: Final[str] = r"[+-](?:100|[0-9]{1,2})Hz"
 USER_SETTING_DISPOSITIONS: Final[MappingProxyType[str, SettingDisposition]] = MappingProxyType(
     {
         "schema_version": SettingDisposition.INTERNAL,
+        "source_tsukihime": SettingDisposition.VISIBLE,
+        "source_torrentio": SettingDisposition.VISIBLE,
+        "source_nyaa": SettingDisposition.VISIBLE,
+        "source_knaben": SettingDisposition.VISIBLE,
+        "source_nekobt": SettingDisposition.VISIBLE,
+        "subscription_polish_wait_h": SettingDisposition.VISIBLE,
         "mode": SettingDisposition.REMOVED,
         "processing_order_policy": SettingDisposition.VISIBLE,
         "translation_engine": SettingDisposition.VISIBLE,
@@ -329,6 +335,7 @@ USER_SETTING_DISPOSITIONS: Final[MappingProxyType[str, SettingDisposition]] = Ma
         "llm_max_concurrency": SettingDisposition.VISIBLE,
         "primary_model_alias": SettingDisposition.VISIBLE,
         "palantir_enrollment_base_url": SettingDisposition.VISIBLE,
+        "palantir_fallback_enrollment_base_url": SettingDisposition.VISIBLE,
         "tts_engine": SettingDisposition.VISIBLE,
         "tts_provider_model_id": SettingDisposition.CONDITIONAL,
         "tts_voice_id": SettingDisposition.CONDITIONAL,
@@ -364,6 +371,7 @@ def setting_catalog(context: SettingCatalogContext | None = None) -> tuple[Setti
         *_profile_specs(resolved_context),
         *_audio_and_composition_specs(defaults),
         *_environment_specs(),
+        *_acquisition_specs(defaults),
     )
     setting_ids: tuple[str, ...] = tuple(spec.setting_id for spec in catalog)
     if len(setting_ids) != len(set(setting_ids)):
@@ -381,6 +389,38 @@ def setting_catalog(context: SettingCatalogContext | None = None) -> tuple[Setti
         msg = f"Settings catalog references unknown dependencies: {rendered}"
         raise ValueError(msg)
     return catalog
+
+
+def _acquisition_specs(defaults: UserSettings) -> tuple[SettingSpec, ...]:
+    return (
+        *(
+            SettingSpec(
+                setting_id=f"source_{source}",
+                label=label,
+                description=f"Search {label} for episode releases.",
+                value_type=SettingValueType.BOOLEAN,
+                default=True,
+                scope=SettingScope.GLOBAL,
+            )
+            for source, label in (
+                ("tsukihime", "TsukiHime"),
+                ("torrentio", "Torrentio"),
+                ("nyaa", "Nyaa"),
+                ("knaben", "Knaben"),
+                ("nekobt", "nekoBT"),
+            )
+        ),
+        SettingSpec(
+            setting_id="subscription_polish_wait_h",
+            label="Wait for Polish subtitles",
+            description="Hours to wait for confirmed Polish subtitles after an episode is due.",
+            value_type=SettingValueType.INTEGER,
+            default=defaults.subscription_polish_wait_h,
+            scope=SettingScope.GLOBAL,
+            minimum=0,
+            maximum=48,
+        ),
+    )
 
 
 def recipe_setting_specs() -> tuple[SettingSpec, ...]:
@@ -847,6 +887,16 @@ def _model_specs(defaults: UserSettings) -> tuple[SettingSpec, ...]:
             validation_pattern=PALANTIR_ENROLLMENT_URL_PATTERN,
             invalidates=_TRANSLATION_INVALIDATES,
         ),
+        SettingSpec(
+            setting_id="palantir_fallback_enrollment_base_url",
+            label="Second Palantir enrollment address",
+            description="Configure the https origin belonging to Palantir account 2.",
+            value_type=SettingValueType.STRING,
+            default=defaults.palantir_fallback_enrollment_base_url,
+            scope=SettingScope.GLOBAL,
+            validation_pattern=PALANTIR_ENROLLMENT_URL_PATTERN,
+            invalidates=_TRANSLATION_INVALIDATES,
+        ),
     )
 
 
@@ -1274,6 +1324,12 @@ def _environment_specs() -> tuple[SettingSpec, ...]:
                 "palantir_token",
                 "Palantir token",
                 "Configure the Foundry token used by every Palantir model.",
+                (),
+            ),
+            (
+                "palantir_secondary_token",
+                "Second Palantir token",
+                "Configure the Foundry token belonging to Palantir account 2.",
                 (),
             ),
         )

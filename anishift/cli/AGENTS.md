@@ -12,9 +12,28 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `control.py` — cienki klient rezydenta: `open_control()` (start na żądanie) i `resident_status()`
 - `resident.py` — sesja panelu: biblioteka, rezerwacje, podgląd zamiaru, zewnętrzne źródła, Start i wynik przez kanał
 - `interactive/` — lazy-loaded Home, jeden renderer Prompt Toolkit, maskotka, Settings, Manual i wspólny postęp
+- `interactive/state.py` — `StateController` panelu: szkielet (zakładki, okruszek, stopka, pomoc, status, pytanie, mysz),
+  klawisze, workery i strumień zdarzeń ownera. Treść i akcje zakładek są w czystych funkcjach: `state_subscriptions.py`,
+  `state_processing.py` (Przetwarzanie i Historia), `state_library.py`; `state_texts.py` to liść z odmowami,
+  `safe_text` i `rows`. Zależności tylko `state` → `state_*` → `state_texts`; `PANEL_ACTIONS` leży w `actions.py`
 
 ## Pułapki
 
+- `interactive/anime_panel.py`, `anime_state.py` and `anime_view.py` render every live
+  `AnimeController` screen. The controller projects owner views and delegates input to the panel.
+  The pure renderer receives a snapshot and clock; its text hit map excludes tabs, markers,
+  checkboxes and padding. Selection summaries and range editing reserve bottom rows.
+  `anime_clipboard.py` sends BOM-prefixed UTF-16LE bytes to Windows `clip.exe`.
+  Selected-text Ctrl+C/C precedes navigation; unselected Ctrl+C keeps back/blur semantics.
+  `_WheelControl` converts Prompt Toolkit character positions to terminal cells before the
+  optional mouse callback. Keep CJK/combining characters aligned with the hit map.
+  `anime.py` (`AnimeController`) owns state, keys, mouse and workers; its rows and texts are pure
+  functions: `anime_rows.py` (titles, entries, episodes, U08 extras, files, draft), `anime_releases.py`
+  (release rows, `_REASON_TEXTS`, suggestion position) and the leaf `anime_texts.py` (labels, `stated`,
+  `refused_result`, `safe`; `stated` imports `state.refusal_text` lazily). Imports run `anime` →
+  `anime_rows`/`anime_releases` → `anime_texts`; `anime.py` re-exports `EPISODE_REASON_LABELS` for `state_processing.py`.
+- `main._default` catches resident `ControlError`, reports a Polish connection failure and
+  exits with `EXIT_REFUSED`; service cleanup also runs when session construction fails.
 - `anishift watch` uruchamia rezydenta bez importu Prompt Toolkit; `watch resident` jest aliasem.
   `watch batch` odmawia z komunikatem migracyjnym. Panel i `run --preset` łączą się z właścicielem
   lub uruchamiają go na żądanie. Zamknięcie panelu nie anuluje zaakceptowanej pracy.
@@ -30,26 +49,107 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `interactive/state.py`, `interactive/app.py`
 - Rezydent uruchamia `DirectoryWatch` przed pierwszym uzgodnieniem biblioteki i zamyka go przed
   zwolnieniem blokady. Zdarzenia i kontrola trafiają do tego samego właściciela; tylko inspekcja
-  działa w puli I/O. Stare `run_daemon` pozostaje domyślne do przełączenia w P08. `watch.py`
+  działa w puli I/O. `watch.py`
 - `spawn_resident()` startuje `pythonw -m anishift.cli.main watch resident` z
   `DETACHED_PROCESS | CREATE_NO_WINDOW` i strumieniami do `DEVNULL`; poza Windows
   `start_new_session=True`. `watch.py`
 - `resident_status()` nie startuje rezydenta — czyta `instance.json` i próbuje `status`; tylko
   udana odpowiedź dowodzi działania. `open_control()` jest jedynym miejscem, które uruchamia
   rezydenta na żądanie klienta. `control.py`
-- Ukryte `anishift --resident` podłącza istniejący panel do rezydenta przed domyślnym
-  przełączeniem w P08. Auto, Ręczny i regeneracja korzystają wtedy z `ResidentSession`;
+- Panel zawsze łączy się z rezydentem; ukryte flagi `--resident` niczego nie zmieniają
+  (`del resident` w `main.py`). Auto, Ręczny i regeneracja korzystają z `ResidentSession`;
   panel dostaje `PlanPreview`, nie graf wykonania. Oddzielna sesja edycji chroni wybrane
   grupy od zaznaczenia do Start lub Esc. Wyjście z panelu odłącza go bez anulowania runu.
   Zewnętrzne źródła są ponownie rejestrowane przy podglądzie po odświeżeniu biblioteki.
   „Dokończ poprzednią pracę” w Ręcznym wymaga tego samego zakresu grup co zapisane zlecenie;
   `plan_resume` odczytuje zweryfikowany pozostały graf, a Start zachowuje ID zlecenia.
-  Pełne recovery po zabiciu aktywnego procesu pozostaje osobnym zakresem P08.
-- Ekran Anime w trybie rezydenta używa `ResidentSession` także do katalogu, wydań,
-  pobrania i dodania subskrypcji. Nie twórz w tym ekranie drugiego klienta HTTP ani
-  lokalnego zapisu subskrypcji; receipt i admission pobrań należą do ownera.
-- Processing uses `StateController._processing_rows` for rendering, selection, actions and
-  counts. A processing request plus `RichRunProgress.group_active` must prove started,
+- Anime uses `ResidentSession` for catalogue reads, offers, episode downloads and `subscription_add`.
+  It has no group catalogue. Receipts and admissions belong to the owner.
+- `S` on titles, entries (announcements included) and episodes opens the U06 draft, computed locally
+  by `subscription_texts.subscription_draft` from the facade's `cut_point`/`is_target`; Esc returns
+  to the source screen. The draft lists aired, unordered episodes before the cut, all marked, with
+  the cursor on the first one; a successful add first orders the marked ones through the ordinary
+  D batch (its own `command_id`; a refusal never undoes the subscription), then calls the panel's
+  `show_list(id, notice)`, which opens Subscriptions, shows a batch refusal and highlights the new
+  row once the owner lists it. A draft batch (`_list_batch`) keeps reporting to the list through
+  `notify_list`: late per-episode refusals, and an unknown answer that Enter on the list replays
+  under the same command ID (`replay_list_batch`) before Enter opens details again.
+  `_list_hold` defers late notices until `show_list` has opened the list.
+  `interactive/anime.py`, `interactive/subscription_texts.py`, `interactive/state.py`
+- The Subscriptions tab in `StateController` renders owner `subscriptions_list` rows. Enter opens U08
+  (the Anime episode screen with a subscription status row, every target including numbers beyond the
+  catalogue, and „Dodatki tego sezonu” with related OVA/special entries whose Enter opens their U03), D (footer `D dodaj`;
+  `/` and Enter on an empty list are silent aliases) switches to the Anime tab and its own search (`start_search`, owner
+  decision 2026-10-11): no subscription context, Esc behaves as in the Anime tab; W (alias Space) pauses/resumes, R (alias F) sends `subscription_check`,
+  Del removes (footer `Del usuń`, silent alias X), Ctrl+Z restores. U08 hands W/R/F/X to the panel through `take_subscription_command`, so command
+  workers stay in `StateController`; its `/` opens the Anime tab search without the old subscription. T, only on a
+  highlighted target whose `EpisodeStatus.polish_wait_until`
+  is set, sends `subscription_check` with its `number` and replaces the W toggle in the footer; the row Stan
+  is `Czeka na PL`/`Bez czekania PL`, the facts line `E{n} polish_line` names the wait of the highlighted
+  target (else the lowest target with a Polish state), the next line `notice_line` (`E{n}: …`) joins
+  the same target's `EpisodeStatus.notices` through the facade's `notice_text`, the only source of those
+  Polish phrases (`_focused_status` picks both targets), and a
+  `target_not_waiting` refusal rereads episode states (`refused`). Enter or a double click on a `ready` episode
+  (Stan „Gotowe”, footer `Enter obejrzyj`) hands its `EpisodeStatus.set_id` to the panel through `take_playback`;
+  `StateController._play` opens it through Library's `_open_episode` and shows a refusal with `refused`. R/F shows `Sprawdzam…`, then the `subscription_checked` result
+  for `CHECK_SHOWN_S`, measured by the injected clock: `check_state` in the Stan column, `check_text`
+  first beneath the table. Beneath the table stands only what the highlighted row hides: the full state
+  when it differs from the short one, dropped columns, then a truncated title (`anime_view._unshown`). U08 leads its notice with the last check;
+  `?` there lists every subscription fact (`_subscription_facts`) wrapped and scrollable, so 50-column
+  terminals reach the full title, Odcinki (`aired/episode_count`: aired episodes, owner decision 2026-10-11) and Gotowe
+  (episodes on disk). Stan names the earliest unfinished target (`due_number`) and what it waits for (`due_state`:
+  `E3 · szukam`, `czekam na PL`, `pobieram`, `brak wydania`, `nie udało się`), else the airing of the next one
+  (`E4 · 18.10 16:30`). Row states and columns come only from `subscription_texts` (`row_state`,
+  `row_columns`, `row_summary`). The list is `render_anime` with `AnimeScreen.SUBSCRIPTIONS` through `_table_body`, shared with Library: one row
+  per subscription, fixed Stan width, optional columns dropped before the title shrinks below
+  `_TITLE_FLOOR`; an empty list renders as DETAILS with the one row „Brak subskrypcji”. Every empty tab list
+  (both `_table_body` and `_list_body`) takes its text from `StateController._empty_text` and its gray, centered line
+  from `_empty_line`, on the same row: „Łączenie…” before the first snapshot, „Wczytuję…” while the owner's status
+  says `library_loading` (no inventory yet) or History loads (`_busy`), then the tab's own empty text. The context's status row
+  shows a monitoring problem, else the `_pause_state` text of the status line plus ` · O wznów` (2026-10-10),
+  else shadow mode; the global pause also stays in the bottom status line, kept at 50×12 by dropping the blank row beneath the table.
+  A table longer than the centered layout holds (`anime_view.overflows`; `_table_body` for Subscriptions and Library,
+  `AnimeController.render` for Anime titles, entries, episodes and releases set `AnimeSnapshot.fill`) fills every row
+  below the one blank line under the tabs, which `StateController.render` always keeps in the heading from 16 rows.
+  The empty context row is dropped, and without a context so is an empty status row (the automation pause shows only
+  in the bottom status line, never above the Subscriptions list); only the rows the screen draws under the
+  table stay above the keys: one notice row, plus the „Zaznaczone…” row on episodes, and three notice rows on releases
+  for the full name (`anime_view.shown_rows` is the single row count for render and paging; a fitting table keeps the
+  centered layout). A layout too low for the centered table also fills; when not even one data row fits, the
+  context and status rows go too (`anime_view._filled`). The table stays while its header and one row fit; only then
+  does Library list plain names (`_table_body` returns `None`) and the other tables ask for a larger terminal. Problem and conflict states use the ordinary state style. While `AnimeController.in_subscriptions`
+  (U08) the Subscriptions tab is highlighted, tab keys count from it, and any tab switch
+  drops that context first, including an open range editor and marks (an admitted batch survives). `anishift subs` offers `list`, `check` and `remove` through the owner. `interactive/state.py`,
+  `interactive/anime_view.py`, `main.py`
+- Cztery zakładki panelu mają jeden słownik klawiszy (`docs/work/tui-unify/plan.md` §3–§7). Stopka i pomoc
+  `?` powstają z jednej funkcji akcji ekranu (`ScreenActions` w `actions.py`); łańcuchy `if` obsługi klawiszy
+  zostają, a złote zestawy i sonda klawiszy w `tests/cli/test_panel_keys.py` pilnują zgodności. Ciche aliasy
+  (§3.1) działają, ale nie trafiają do stopki ani pomocy. Panel startuje na Subskrypcjach, także z zasobnika
+  (`--state`). `Backspace` poza polem tekstowym działa jak Esc w Anime (także BUSY i PROBLEM), w Ręcznym
+  i w zakładkach; w polach tekstowych kasuje znak. Anulowanie w Przetwarzaniu (`X`, `Delete`, `C`) uzbraja
+  `_question`; anuluje dopiero Enter (także klik w `Enter tak`), a każdy inny klawisz (także Tab i ←→), klik w wiersz
+  (`select` kasuje pytanie bez wyboru) i opuszczenie zakładki je kasują; samo wciśnięcie myszy go nie kasuje. Linia
+  statusu automatu (`_global_status`) liczy wyłącznie `material_counts` i stoi w czterech zakładkach: `w kolejce`
+  (`waiting`, ruszy samo) i osobno `do sprawdzenia` (`attention`: plik z folderu, który nie jest gotowy, np. bez napisów
+  lub wideo; wiersz Przetwarzania podaje powód z `state_processing._READINESS_LABELS`; decyzja właściciela 2026-10-12).
+  Okruszek `Zakładka › Element` stoi nad treścią i jest pusty na poziomie listy. `interactive/actions.py`,
+  `interactive/state.py`, `interactive/anime.py`, `interactive/manual.py`
+- `ResidentSession.episode_offer_start/get` i `episode_choose` współdzielą kanał katalogu; oferta
+  należy do jego sesji. Panel wywołuje `get` po starcie i `episode_offer_partial`, przyjmuje tylko
+  rosnące rewizje, a `failed` kończy ofertę niezależnie od rewizji. Wybór wysyła
+  `offer_id/revision/info_hash/path`; zmiana reprezentanta lub oceny/potwierdzeń daje `offer_changed`.
+  `interrupt_reads` unieważnia ofertę. Partie używają głównego kanału i przeżywają rozłączenie.
+  Mutacje odcinków wymagają jawnego `command_id`; zachowuj go przy odzyskiwaniu utraconej odpowiedzi.
+  `ControlError.connection_lost` (EOF/OSError, timeout odpowiedzi, obcy `command_id`; nie
+  `request_too_large`) zamyka połączenie klienta w `ControlClient.call`; kolejne wywołanie łączy się
+  od nowa i niczego nie wysyła ponownie. Spóźniona odpowiedź ginie z połączeniem — wynik odzyskuje
+  się przez receipt, powtarzając polecenie z tym samym `command_id`. `platform/local_control.py`
+  Utrata obserwacji wywołuje `disconnect()` przed ponownym połączeniem: zamyka bezczynne kanały,
+  ale zachowuje kanał katalogu z `_open_offer` i wywołania w toku. Po ponownym `observe` panel
+  odzyskuje ofertę przez `get`. Tylko odebrana odmowa kończy partię D; błąd bez odpowiedzi
+  zachowuje jej `command_id` do ponowienia przez Enter.
+- Processing uses `StateController._processing_rows` for rendering, selection and actions; the
+  status line counts only the owner's `material_counts`. A processing request plus `RichRunProgress.group_active` must prove started,
   nonterminal work; the owner's `accepted` state can already contain executing tasks.
   Cached progress alone is insufficient. Every live admitted request awaiting its first
   task appears as preparation, including local Manual work before progress restore. All visible
@@ -58,11 +158,13 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   Recorded downloads also appear, using measured transfer bars and static metadata/pause/problem labels.
   Uncertain acquisitions are excluded from download/handoff rows regardless of cached transfer state;
   live admitted processing remains governed by its request and events. Filtered rows lose their timers.
-  Explicit Anime admission is consumed once by the visible panel's idle loop; navigation
-  invalidates late completions. Recorded hashes come from owner snapshots, never a UI store.
-  Terminal work is reached through History, and recycling/relocation actions through Library.
+  Anime admission updates its episode rows without changing tabs. Recorded hashes come
+  from owner snapshots, never a UI store.
+  Terminal work is reached through History and recycling through Library. Library shows no relocation line
+  and has no P action (owner decision 2026-10-10); the owner retries failed relocations by itself.
   Progress labels come from the preview's source names, with `Materiał` for absent/ID-only
-  legacy labels. `interactive/state.py`, `interactive/progress.py`, `interactive/anime.py`
+  legacy labels. Download rows name the episode file, then the release (`_download_materials`),
+  then `Materiał`. `interactive/state.py`, `interactive/progress.py`, `interactive/anime.py`
 - `StateController` opens History with H inside Processing; S or `/` uses the shared
   `TextInput` and suppresses application hotkeys while typing. Default rows are the latest
   50 terminal materials; explicit search includes retained order/download/regeneration boundaries.
@@ -72,16 +174,22 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   F passes `playback=False` to reveal the confirmed main product. History
   failures remain visible across renders. `interactive/state.py`, `resident.py`
 - Library Details Enter/F submits the exact selected `LibraryFileIdentity` for owner membership
-  and freshness validation; informational rows have no file action. Delete previews and submits
-  the whole set in one worker session without a confirmation screen. Ctrl+Z delegates
-  last-deletion Undo to the owner. Library shows material names, not operation rows or routine
-  busy/success/global-progress messages; completed deletion removes the row and Undo restores it.
+  and freshness validation; informational rows have no file action. Del (silent alias X) hides the row in the same
+  frame and previews then submits the whole set on its own background thread, so further Dels never wait; the row
+  stays hidden until a snapshot reports the accepted operation and returns with the refusal text. Ctrl+Z delegates
+  last-deletion Undo to the owner. Library is a naturally sorted `Nazwa · Odcinek` table (`_table_body` with
+  `AnimeScreen.LIBRARY`, labels from the facade's `library_label`); a row or `LibrarySet` with the owner's `series`
+  takes that Nazwa and, with `season`/`episode`, that Odcinek (`state_library._series_label`, also the breadcrumb via
+  `details_label`); a row without them, as from an older owner, keeps the file label. Below 50×12 it lists `label.text`. It shows no operation rows or routine
+  busy/global-progress messages; a completed deletion removes the row and keeps „Usunięto · Ctrl+Z cofnij”
+  until the next move, and Undo restores it. `?` (alias D) opens set details.
   Partial leftovers remain accessible. Synchronous action
   refusals survive unrelated snapshots but not a changed selection/view; late action results
   cannot overwrite a newer context. `interactive/state.py`, `resident.py`
 - P prepares the owner's retry proposal; confirmation transfers local work to Manual with
-  owner revalidation, or admits an explicit remote repeat. Pause permits History reads and
-  validated result opening, but blocks new work. `interactive/state.py`, `interactive/app.py`
+  owner revalidation, or admits an explicit remote repeat. Pause never blocks P; under pause only
+  rows with owner-projected `automatic` (request origin, or `AcquisitionConfirmation.manual` for
+  downloads) show `Wstrzymano` and freeze their timers; a missing field counts as automatic. `interactive/state.py`, `interactive/app.py`
 - `run_interactive(service, batch=...)` zwraca kod wyjścia jak `run --preset` i po wyniku odlicza
   10 s w `_handle_idle`, dowolny klawisz zamyka; `interrupt` w partii anuluje run i kończy kodem 4.
   Test buduje aplikację ręcznie? Ustaw też `_batch` i `_closing_at`. `interactive/app.py`
@@ -135,13 +243,19 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   or lost confirmation; never derive it from acquisition timestamps. Unobserved elapsed
   time displays fixed-width numeric zero. ID-only label suppression belongs to remote
   `from_snapshot`, not the local source-label constructor.
-  `Extracted`, `Translate`, `Translated` i `TTS` reużywają ten sam
-  wiersz. Procent pochodzi z pomiaru backendu; `progress_percent=None` z komunikatem
+  `Wyodrębniono`, `Tłumaczenie`, `Przetłumaczono` i `Synteza mowy` reużywają ten sam
+  wiersz. Etykiety etapów są po polsku w jednym miejscu (`_ACTIVE_LABEL`, `_AUDIO_LABEL`);
+  etap bez wpisu pokazuje `Przetwarzanie`, nigdy identyfikator. Szerokości nazwy, paska i pól
+  liczbowych liczy jedno `_row_geometry` z liczby kolumn i najdłuższej nazwy całej listy
+  (`names`); każdy wiersz pobierania i przetwarzania renderowany osobno musi dostać te same
+  `names`, inaczej kolumny się rozjadą. Blok wyśrodkowuje wywołujący: lista panelu
+  i `centered_block` w oknie Ręcznego.
+  Procent pochodzi z pomiaru backendu; `progress_percent=None` z komunikatem
   oznacza aktywność bez znanego procentu. Nie wyliczaj pozornego postępu z upływu czasu.
   Techniczne taski nie otrzymują osobnych wierszy. Etykieta zachowuje konkretną nazwę
   źródła wraz z rozszerzeniem; przycinanie odbywa się dopiero w renderze według
-  komórek terminala. `✓ Done` zachowuje gradient. Procent opisuje bieżący task; etykiety `Extracted`
-  i `Translated` wymagają ukończenia wszystkich tasków danego etapu.
+  komórek terminala. `✓ Gotowe` zachowuje gradient. Procent opisuje bieżący task; etykiety `Wyodrębniono`
+  i `Przetłumaczono` wymagają ukończenia wszystkich tasków danego etapu.
   `interactive/progress.py`
 - Run niepełny, anulowany albo z ostrzeżeniami pokazuje przewijany wynik grup:
   przyczyny błędów, zapisane i zachowane produkty oraz lokalizację logu.
@@ -152,37 +266,75 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   zewnętrzne przez `AppService`, waliduje przez `plan_manual()` i przekazuje zaakceptowany
   plan do tej samej ścieżki wykonania oraz postępu co Auto.
   `interactive/app.py`, `interactive/settings.py`, `interactive/manual.py`, `run.py`
-- `AnimeController` jest jedynym właścicielem stanu ekranu Anime (QUERY → BUSY → TITLES → BUSY →
-  RESULTS → DONE/PROBLEM); `StateController` osadza go w zakładce Anime i przekazuje klawisze. Sieć
-  (`AppService.acquisition.find_titles`/`season_context`/`search_title`/`search`/`download`) idzie do
-  wątku `anishift-anime`, a licznik generacji odrzuca wynik spóźniony po `Esc`; `render()` nigdy nie
-  blokuje i nie robi I/O.
-  `_HOME_MENU_ROWS` i `_HOME_CHROME_ROWS` liczą rzeczywiste wiersze menu.
-  `interactive/anime.py`, `interactive/state.py`, `interactive/prompts.py`
-- `O` w wynikach Anime przygotowuje draft subskrypcji PODŚWIETLONEGO odcinka, nie zaznaczonych wierszy: paczka, brak numeru
-  albo `other_season` daje wyłącznie jednolinijkową notkę zamiast stopki, kasowaną następnym
-  klawiszem. Panel otwiera wybór numerów; dopiero Enter przyjmuje zakres przez ownera.
-  Po wyborze tytułu `O` używa PODŚWIETLONEJ grupy. `interactive/anime.py`, `interactive/state.py`
-- Pusta lista wyników nie jest ślepym zaułkiem: przy `filtered > 0` nazywa filtr, a `F` i `Esc`
-  działają jak na pełnej liście. `Esc` z wyników wraca do TITLES, gdy kandydaci są w pamięci —
-  dlatego nowe hasło czyści `_candidates`. Teksty błędów tłumaczy `_PROBLEM_TEXTS`
-  (`ErrorCode` → polskie zdanie), a nie warstwa domenowa. `interactive/anime.py`
-- Anime opens a group locally; Enter/Space toggles a release and explicit Download submits
-  only the open group's draft. Each numbered episode has at most one pending variant;
-  explicit replacement shows a notice, and bulk selection preserves an existing choice.
-  `A` and `Z` skip packs, other-season releases and owner-recorded hashes. `Z` opens the range prompt; `S`
-  przestawia grupy LOKALNIE przez `order_groups` fasady — bez sieci, bez drugiej reguły porządku,
-  a znaczniki wracają po `info_hash`, nie po numerze wiersza —
-  a `F` powtarza `search_title` bez filtra. Nowe pobrania i subskrypcje używają płaskiego
-  roota workspace, bez katalogu `candidate.folder_title()`. `interactive/anime.py`
-- Gdy AniList nie odpowiada albo nie zna tytułu, ekran pomija TITLES i pokazuje wyniki surowego
-  hasła z notką w stopce; ta notka jest osobnym polem, bo `_notice` znika po następnym klawiszu.
-  Ta ścieżka wraca posortowana po seedach, więc `_show_results` przyjmuje `_Listing` z faktyczną
-  kolejnością katalogu — podpowiedź `S` kłamałaby, gdyby `_order` został przy `NEWEST`.
-  Nieudany `season_context` nie przerywa wyszukiwania: zostawia w tym samym polu notkę
-  „numeracja sezonu niedostępna", bo bez niej te same wyniki znaczą dwie różne rzeczy.
-  Wysokość listy liczy się PO zmierzeniu stopki (`_visible_window(..., reserved)`): dłuższa stopka
-  zabiera wiersze listy, zamiast wypchnąć klatkę poza ekran. `interactive/anime.py`
+- `AnimeController` owns catalogue navigation and owner command correlation. `StateController`
+  renders the same PANEL heading and tabs for every tab pinned to the top (below 16 rows without
+  blank lines, below 12 without PANEL); the episode title column yields width so Stan stays whole; key hints are pinned
+  to the bottom above the status line, and only the content between them is centered vertically
+  and by its actual cell width. `_anime_top` is the heading height for mouse hit-testing.
+  `anime_view` returns a body of exactly the given rows: notice and summary sit directly above
+  the keys, the table keeps its position when they change, and `AnimeFrame.first_row` locates
+  the first data row. Columns are sized from content, using the shared menu pointer,
+  `pack_keys` footer and existing theme roles.
+  The `?` help (`actions.help_lines`) is a table of key, action and one sentence from `actions._DESCRIPTIONS`
+  (owner request 2026-10-12; a test requires a sentence for every listed action); Library set details show no help.
+  Every footer line and the `O` hint of the status line go through `pointer.mark_keys`: each `Key verb` segment is a
+  `ClickKind.KEY` target, and `app._follow_click` presses that key the way the keyboard does (owner decision 2026-10-11).
+  Key hints come from the screen's actions (`actions.py`): `Enter …`, at most three actions, `? klawisze`,
+  `Esc wróć`, packed into at most two lines that break only at ` · `; actions drop from the end, never `?` or
+  Esc. Navigation keys appear only in the `?` help.
+  Never introduce an Anime-specific palette, background, tab strip or separators. Render performs
+  no I/O. `AnimePanel` owns text selection,
+  copying and row interactions. Mouse events travel through `app` → `state` → `AnimePanel`.
+  TITLES is skipped only when every result belongs to visible `Franchise.entries`; one complete,
+  released entry can skip ENTRIES. Premiere ordering uses the application facade. The initial
+  cursor is the first released row; announcements can be highlighted for `S`, but Enter only names them.
+  D submits at most 100 keys and stays on the episode list. Pending mutations are blocked;
+  I reads only the cursor. Owner events and receipts correlate by command ID and episode key.
+  Each admitted result clears its mark without a background flash; marks keep `[x]` while sending
+  and after a refusal, whose Stan label and notice name the owner's reason.
+  A truncated release name is shown in full in the notice; its details stay under `?`. Unknown results retain their exact
+  ID/payload for Enter replay; a fresh controller reads `episode_states` instead. Esc/Tab discard
+  late catalogue navigation but never cancel an admitted batch. Anime never gates D/I/P on the
+  global pause; the pause shows only in the shared status line, which Anime drops below 13 rows. Only an
+  owner refusal is reported, keeping marks. O outside the query toggles automation explicitly and never
+  resubmits a refused download.
+  On table and list screens the context line sits directly above the column labels, separated by
+  the global-status row (blank unless set); context and table form one block centered between
+  tabs and keys, and a scrolling table keeps the context fixed above its labels.
+  The search screen, and work started from it (`_busy_return` QUERY), has no context line: the field
+  sits on the middle content row, with `ANIME` and one blank line above it; the field is `> ` plus `TextInput.render` at
+  `anime_state.query_left` (a 32-cell box centered until the text widens it) or the blue busy sentence.
+  The context names the current screen: `_shown_entry` (episodes/releases of that entry) is set
+  when an entry opens and cleared by the `_screen` setter on QUERY/TITLES/ENTRIES, whose breadcrumb is
+  empty; deeper screens show `Anime › Tytuł (rok)`. `_entry` only remembers the last entry for a fast reopen and never drives the text.
+- Every aired, inactive episode remains selectable, including ready, downloaded and failed ones.
+  D submits new and repeated keys together through the owner's durable batch. The owner reuses
+  repeat candidate exclusion and protected admission replacement. Active ordered/downloading/processing
+  rows show cancellation guidance instead of submitting duplicate work. I and P open the release list
+  (`_Screen.CANDIDATES`) at once, with the cursor on the `*` suggestion until the user moves it; there is
+  no single-release offer screen (owner decision 2026-10-10). Esc returns to the episodes or U08. A choice refused
+  for a repeatable reason (`REPEATABLE_REASONS`) keeps the release list with the notice `… · P pobierz ponownie`;
+  P there (footer `P pobierz ponownie` only for an ordered episode outside a repeat offer) reopens the list as a
+  repeat (`_repeatable_offer`, owner report 2026-10-11).
+  The list is `episode_selection.visible(offer.candidates, offer.suggestion)`: it drops H1 `MISMATCH`
+  rows, rows with 0 seeders and U-24 low resolutions; beside a live `MATCH` only matches stay (owner decision
+  2026-10-11), so `!` rows show only when no match exists; small re-encodes (`traits.small`) follow the full files
+  of their class, and a list of only mismatches shows the single `Brak wydania` row. Cursor, marks and R-04 follow rows by hash or equality, never by offer index.
+  `_Screen.FILES` is only the file choice of an unresolved pack.
+- Zakres odcinków zastępuje zaznaczenia i przyjmuje nieciągłe numery całkowite; nawigacja i powroty
+  z podglądu zachowują zaznaczenia oraz kursor. Film ma jeden wiersz Film i `EpisodeKey(id, 1)`;
+  podgląd wymaga mapowania. Enter na kandydacie nic nie robi. `interactive/anime.py`
+- `_REASON_TEXTS` pokrywa dokładnie `episode_identity.REASONS`. Błąd programistyczny oceny tożsamości
+  przerywa cały podgląd, loguje tylko `error_class` i nigdy nie tworzy niepewnej sugestii.
+  Tylko IPC INTERNAL + `command_failed` nowej operacji katalogowej sugeruje restart rezydenta;
+  `response_too_large` jest osobnym problemem. Wejście H1 i reguły regresji: `application/AGENTS.md`.
+- Terminy ponowienia pochodzą z `provider_locks` ownera, przekazywanych przy dołączeniu i zdarzeniu
+  `state_changed`, albo lokalnego `AcquisitionService.blocked_until`. Terminy Nyaa i Torrentio są
+  osobne. Awaria harmonogramu zachowuje listę odcinków i ostrzeżenie; jawne ponowne wejście ponawia
+  odczyt harmonogramu. Renderowanie odliczania nie ponawia zapytań. `interactive/anime.py`, `interactive/state.py`
+- Empty AniList results show `Nie znaleziono tytułu`; no Nyaa fallback opens. Missing ani.zip
+  mapping retains the domain's AniList episode rows. D/I use the ordinary episode APIs.
+  `anime_view.spinner_frame` is the shared Rich dots animation for Anime and Manual.
 - `SettingsController.render()` korzysta wyłącznie z lokalnego, odświeżonego snapshotu;
   nie wykonuj w nim I/O ani wywołań sieciowych, bo renderer odświeża klatkę cyklicznie.
   Katalog modeli jest tylko do odczytu, a probe działa wyłącznie po jawnej akcji.
@@ -195,18 +347,19 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   się go odróżnić. `interactive/prompts.py`
 - Paste uses `Keys.BracketedPaste` → `paste:`; the editor rejects control characters
   and masks secrets. Left/Right/Home/End move the text cursor in shared `TextInput`.
-  AnimeController owns explicit input focus: Enter activates the idle query; focused
+  AnimeController owns input focus: the first character, paste or Backspace activates the idle query and
+  edits its text; Enter and `/` also activate it. This implicit activation is query-only. Focused
   arrows edit, Enter submits, and Esc or unselected Ctrl+C blurs without clearing.
-  Selected Ctrl+C copies without blurring. Range/group prompts open
-  focused; a second Esc closes the blurred prompt. Panel derives arrow routing from
+  Selected Ctrl+C copies without blurring. Range prompts open focused and close on one Esc or
+  unselected Ctrl+C without applying. Panel derives arrow routing from
   that focus; Tab/Backtab always switch, preserving drafts but blurring inputs and
   invalidating late completions. Only focused fields render a caret or selection;
   the shared block caret highlights the existing grapheme, or one trailing space at
   end of input, without inserting a character into the text.
   `interactive/text_input.py`, `interactive/state.py`, `interactive/anime.py`
 - Edycja pól tekstowych ma jeden model `interactive/text_input.py`, oparty na `Buffer`
-  i `Document` Prompt Toolkit. Wyszukiwarka, zakres odcinków, ścieżki Manual, ustawienia
-  i formularz subskrypcji używają tego samego kursora, zaznaczenia, kasowania i undo.
+  i `Document` Prompt Toolkit. Wyszukiwarka, zakres odcinków, ścieżki Manual i ustawienia
+  używają tego samego kursora, zaznaczenia, kasowania i undo.
   Nie dopisuj osobnych operacji na stringach w kontrolerach. Kopiowanie zaznaczenia
   ma pierwszeństwo przed wyjściem przez Ctrl+C; walidacja i moment zapisu należą do pola.
 - Nieudany zapis zachowuje `_pending` i widoczny błąd; idle nie ponawia go co klatkę.
@@ -223,6 +376,29 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Kółko myszy wymaga `_WheelControl`, bo klatka ma dokładnie tyle wierszy co okno i
   domyślny scroller Prompt Toolkit gubi zdarzenie. Nie zastępuj tego
   `ScrollablePane` ani drugim oknem. `interactive/prompts.py`
+- Mysz działa w każdym widoku według jednego źródła `pointer.py`: `PointerGesture` odróżnia przeciągnięcie
+  (zaznacza tekst ramki) od kliknięcia, a `click_at` czyta tagi `mark_row`, `mark_target` (zakładki),
+  `mark_crumbs` (wcześniejsze człony okruszka) i pole, które `TextInput.render` oznacza samo. Anime idzie przez
+  `AnimePanel`, reszta i nagłówek z zakładkami przez `FrameSelection`; `app._follow_click` zamienia `Click` na
+  istniejące ścieżki. Klik w wiersz tylko ustawia kursor (`select` zwraca, czy kursor tam stoi; wiersz bez kursora
+  kasuje zapamiętany klik); drugi klik w ten sam wiersz EKRANU w `DOUBLE_CLICK_SECONDS`, znów trafiający w wiersz
+  listy, to sam Enter na kursorze z pierwszego kliku, bez ponownego `select` — lista może się przesunąć albo zmienić między klikami; przeciągnięcie
+  i kółko przerywają podwójny klik. Ekrany tekstowe (szczegóły `?`, PROBLEM, BUSY w Anime; pytanie CONFIRM w Ustawieniach)
+  tagują wiersze `mark_row(..., opens=False)`: podwójny klik tylko wskazuje, zatwierdza wyłącznie Enter. Klik
+  w nazwę zakładki wysyła klawisz `tab_key(n)` tą samą drogą co Tab (blokowany tam, gdzie Tab). Okruszek to krotka
+  członów (`breadcrumb()`, `AnimeViewState.crumbs`); klik w człon `n` naciska Esc, dopóki okruszek pokazuje ten człon
+  i głębsze (najwyżej `_CRUMB_ESCAPES`). Prawy przycisk (tylko `MOUSE_DOWN`) to Esc, także w polu. Klik w dowolne
+  miejsce linii pola tekstowego (też `> ` i puste pole) daje mu fokus i stawia kursor (`TextInput.place`), za końcem
+  tekstu — na końcu, przed nim — na początku. Przeciągnięcie zaczęte i skończone w jednym polu (`pointer._field_drag`)
+  zaznacza tekst w tym polu (`Click.anchor` → `TextInput.place(index, anchor)`), nie w ramce, więc Backspace/Delete
+  usuwają zaznaczenie, a pisanie je zastępuje (zgłoszenie właściciela 2026-10-11). Klik w `[ ]`/`[x]` (`_Canvas.box` tagi `ClickKind.TOGGLE`) ustawia kursor
+  i naciska Space; przy otwartym polu zakresu Z to zwykły klik w wiersz. Enter i podwójny klik na odcinku bez gotowego
+  pliku otwierają wydania jak `I`. Hover (`FrameSelection.hover`, `light_targets`): białe i szare litery celu pod
+  myszą dostają `HOVER_STYLE`, inne kolory, kursor pola (`reverse`) i wiersz z `❯` zostają; wiersz świeci tylko nad
+  zakresem listy, przeciąganie i klawisz go gaszą, klik nie; przerysowanie tylko przy zmianie celu. Zaznaczenie
+  (`paint_selection`): tekst i pojedyncze spacje dostają `reverse` (`SELECTION_STYLE`), a przebiegi co najmniej
+  dwóch białych komórek i przerwy między zaznaczonymi regionami jednego wiersza płaski `SELECTION_GAP_STYLE`.
+  `interactive/pointer.py`, `interactive/app.py`
 - Zapis stanu panelu ma dziesięć reguł i JEDNO źródło:
   `docs/work/plain-cli/06_state_persistence.md`. Cztery łamane najczęściej:
   (1) nawigacja — `↑↓`, `PageUp`/`PageDown`, `Home`/`End`, kółko — NIGDY nie zmienia

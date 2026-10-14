@@ -2,27 +2,52 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Final
 
-from anishift.application.control import AcquisitionState
+from anishift.application.acquisition_staging import lexical_path, staged_file, torrent_relative_path
+from anishift.application.control import REMOVED_FROM_CLIENT, AcquisitionState, choice_traits
+from anishift.application.discovery import SOURCE_SUBTITLE_FORMATS, VIDEO_SOURCE_SUFFIXES
+from anishift.application.episode_identity import IdentityVerdict, classify, episode_video_count
 from anishift.application.events import failure_code, sanitize_event_message
+from anishift.application.products import PRODUCT_SUFFIXES
+from anishift.application.release_quality import release_traits
+from anishift.application.subscription_choice import is_taken
 from anishift.errors import AniShiftError
 from anishift.platform.directory_watch import source_is_available
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Collection, Mapping, Sequence
 
     from anishift.application.acquisition import AcquisitionService
-    from anishift.application.control import AcquisitionConfirmation
+    from anishift.application.control import (
+        AcquisitionConfirmation,
+        EpisodeChoice,
+        FileReservation,
+        TorrentioReference,
+    )
+    from anishift.application.release_quality import ReleaseTraits
+    from anishift.application.subscription_choice import ProtectedFile
     from anishift.services.torrents import TorrentFile, TorrentInfo
 
-__all__ = ["TransferInspector", "flat_layout", "reserved_stem"]
+__all__ = [
+    "MetadataCheck",
+    "TransferInspector",
+    "episode_files",
+    "file_map_revision",
+    "flat_layout",
+    "flat_names",
+    "metadata_check",
+    "reserved_stem",
+    "video_sidecars",
+]
 
 logger = get_logger(__name__)
 
@@ -58,11 +83,23 @@ _FIRST_ORDINAL: Final[int] = 2
 _FAILURES_BEFORE_PROBLEM: Final[int] = 3
 """Consecutive failed inspections of one transfer before its release stops with a visible problem."""
 
+_MISSING_BEFORE_TRANSITION: Final[int] = 3
+"""Consecutive successful list reads missing a hash before its transfer becomes uncertain or removed."""
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataCheck:
+    """Files a subscription attempt binds after metadata, or the reason it stops before content starts."""
+
+    files: tuple[TorrentFile, ...]
+    stopped: str | None = None
+
 
 @dataclass(frozen=True, slots=True)
 class _Files:
     entries: tuple[TorrentFile, ...]
     signature: tuple[str, str, bool, float, int | None]
+    stale: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +121,7 @@ class TransferInspector:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._acquisition: AcquisitionService = acquisition
-        self._root: Path = workspace_root.resolve()
+        self._root: Path = lexical_path(workspace_root)
         self._files: dict[str, _Files] = {}
         self._clock: Callable[[], float] = clock
         self._progress: dict[str, _Progress] = {}
@@ -93,6 +130,7 @@ class TransferInspector:
         self._snapshot: tuple[TorrentInfo, ...] = ()
         self._failures: frozenset[tuple[str, str]] = frozenset()
         self._refused: dict[str, int] = {}
+        self._missing: dict[str, int] = {}
 
     def snapshot(self) -> tuple[TorrentInfo, ...]:
         """Read the last transfer observations without contacting the client."""
@@ -115,23 +153,58 @@ class TransferInspector:
         acquisitions: Sequence[AcquisitionConfirmation],
         *,
         stall_after_s: float = float("inf"),
+        held: frozenset[str] = frozenset(),
     ) -> tuple[AcquisitionConfirmation, ...]:
-        """Read the client once and refresh the details of the selected files whenever the transfer moved bytes."""
+        """Read the client once and refresh the details of the selected files whenever the transfer moved bytes.
+
+        A hash in *held* is not observed now, so its accrued idle time survives as a suspended measurement.
+        """
         if not acquisitions:
             self._files.clear()
             self._refused.clear()
+            self._missing.clear()
             self._note_failures(frozenset(), None)
             return ()
         self._acquisition.resume_unconfirmed(frozenset(item.info_hash for item in acquisitions))
         transfers: dict[str, TorrentInfo] = {item.info_hash.casefold(): item for item in self._acquisition.transfers()}
         active: set[str] = {item.info_hash for item in acquisitions}
-        self._record_progress({key: value for key, value in transfers.items() if key in active}, stall_after_s)
+        self._missing = {key: self._missing.get(key, 0) + 1 for key in active if key not in transfers}
+        missing: frozenset[str] = frozenset(
+            item.info_hash
+            for item in acquisitions
+            if item.selective
+            and item.client_confirmed
+            and item.state is not AcquisitionState.FAILED
+            and item.info_hash not in transfers
+            and self._missing[item.info_hash] >= _MISSING_BEFORE_TRANSITION
+        )
+        removed: frozenset[str] = (
+            (self._acquisition.finalizable_hashes(missing) - self._acquisition.released_hashes(missing))
+            if missing
+            else frozenset()
+        )
+        self._record_progress({key: value for key, value in transfers.items() if key in active}, stall_after_s, held)
         self._files = {key: value for key, value in self._files.items() if key in active}
         self._refused = {key: value for key, value in self._refused.items() if key in active}
         results: list[AcquisitionConfirmation] = []
         natures: set[tuple[str, str]] = set()
         reason: str | None = None
         for acquisition in acquisitions:
+            if 0 < self._missing.get(acquisition.info_hash, 0) < _MISSING_BEFORE_TRANSITION:
+                results.append(acquisition)
+                continue
+            if (
+                acquisition.info_hash in removed
+                and acquisition.client_confirmed
+                and acquisition.state is not AcquisitionState.FAILED
+            ):
+                results.append(
+                    _updated(
+                        acquisition, replace(acquisition, state=AcquisitionState.FAILED, problem=REMOVED_FROM_CLIENT)
+                    )
+                )
+                logger.info("Previously confirmed transfer removed from its managed client")
+                continue
             if acquisition.state is AcquisitionState.FAILED or acquisition.problem is not None:
                 results.append(acquisition)
                 continue
@@ -179,11 +252,17 @@ class TransferInspector:
             reason=reason,
         )
 
-    def _record_progress(self, transfers: dict[str, TorrentInfo], stall_after_s: float) -> None:
+    def _record_progress(
+        self, transfers: dict[str, TorrentInfo], stall_after_s: float, held: frozenset[str] = frozenset()
+    ) -> None:
         now: float = self._clock()
         progress: dict[str, _Progress] = {}
         with self._progress_lock:
             self._snapshot = tuple(transfers.values())
+            for key in held:
+                suspended: _Progress | None = self._progress.get(key.casefold())
+                if suspended is not None and key.casefold() not in transfers:
+                    progress[key.casefold()] = replace(suspended, downloading=False)
             for key, transfer in transfers.items():
                 previous: _Progress | None = self._progress.get(key)
                 value: tuple[float, int | None] = (transfer.progress, transfer.completed)
@@ -199,6 +278,17 @@ class TransferInspector:
                 key for key, item in progress.items() if item.downloading and item.idle_s >= stall_after_s
             )
 
+    def idle_s(self, info_hash: str) -> float:
+        """Return how long the observed transfer kept working without any progress."""
+        with self._progress_lock:
+            progress: _Progress | None = self._progress.get(info_hash.casefold())
+            return 0.0 if progress is None else progress.idle_s
+
+    def restart_idle(self, info_hash: str) -> None:
+        """Start a new idle measurement for one transfer, as an explicit resume begins a new attempt."""
+        with self._progress_lock:
+            self._progress.pop(info_hash.casefold(), None)
+
     def declared(self, info_hash: str) -> tuple[TorrentFile, ...]:
         """Return the file identities the last inspection read, contacting no client of its own."""
         cached: _Files | None = self._files.get(info_hash.casefold())
@@ -210,23 +300,37 @@ class TransferInspector:
 
     def _inspect(self, acquisition: AcquisitionConfirmation, transfer: TorrentInfo | None) -> AcquisitionConfirmation:
         if transfer is None:
-            return _updated(acquisition, replace(acquisition, state=AcquisitionState.UNCERTAIN))
-        directory: Path = Path(transfer.save_path).resolve()
+            return self._uncertain(acquisition, "missing_from_list")
+        directory: Path = lexical_path(transfer.save_path)
         if not directory.is_relative_to(self._root):
-            return _updated(acquisition, replace(acquisition, state=AcquisitionState.UNCERTAIN))
+            return self._uncertain(acquisition, "save_path_outside_workspace")
+        relative: Path = directory.relative_to(self._root)
+        try:
+            if relative.parts:
+                staged_file(self._root, relative.as_posix())
+        except ValueError:
+            return self._uncertain(acquisition, "save_path_invalid")
         finished: bool = transfer.progress == 1.0 and transfer.amount_left == 0 and transfer.state in _COMPLETE_STATES
         files: tuple[TorrentFile, ...] = self._inspect_files(transfer, ready=finished)
         selected: tuple[TorrentFile, ...] = tuple(item for item in files if item.priority > 0)
         names: tuple[str, ...] = tuple(item.name.replace("\\", "/") for item in selected)
-        if any(not _safe_path(directory, name) for name in names) or _reservation_broken(acquisition, selected, names):
-            return _updated(acquisition, replace(acquisition, state=AcquisitionState.UNCERTAIN))
+        if any(not _safe_path(directory, name) for name in names):
+            return self._uncertain(acquisition, "file_name_invalid")
+        if _reservation_broken(acquisition, selected, names):
+            return self._uncertain(acquisition, "reservation_mismatch")
         complete: tuple[str, ...] = _complete_files(
             directory, selected, names, settling=transfer.state in _SETTLING_STATES
         )
-        if finished:
-            self._files.pop(acquisition.info_hash, None)
-        relative: Path = directory.relative_to(self._root)
-        whole: bool = finished and bool(selected) and len(complete) == len(names)
+        if finished and transfer.info_hash.casefold() in self._files:
+            key: str = transfer.info_hash.casefold()
+            self._files[key] = replace(self._files[key], stale=True)
+        handed_off: frozenset[str] = frozenset(
+            path
+            for assignment in acquisition.assignments
+            if assignment.publication is not None and assignment.publication.handed_off
+            for _index, path, _size in assignment.files
+        )
+        whole: bool = finished and bool(selected) and set(names) <= set(complete) | handed_off
         candidate: AcquisitionConfirmation = replace(
             acquisition,
             directory=relative.as_posix() if relative.parts else "",
@@ -235,6 +339,11 @@ class TransferInspector:
             state=AcquisitionState.COMPLETE if whole else AcquisitionState.ACCEPTED,
         )
         return _updated(acquisition, candidate)
+
+    def _uncertain(self, acquisition: AcquisitionConfirmation, reason: str) -> AcquisitionConfirmation:
+        if acquisition.state is not AcquisitionState.UNCERTAIN:
+            logger.info("Transfer became uncertain", reason=reason)
+        return _updated(acquisition, replace(acquisition, state=AcquisitionState.UNCERTAIN))
 
     def _inspect_files(self, transfer: TorrentInfo, *, ready: bool) -> tuple[TorrentFile, ...]:
         info_hash: str = transfer.info_hash.casefold()
@@ -246,7 +355,7 @@ class TransferInspector:
             transfer.completed,
         )
         cached: _Files | None = self._files.get(info_hash)
-        if cached is None or not cached.entries or cached.signature != signature:
+        if cached is None or cached.stale or not cached.entries or cached.signature != signature:
             cached = _Files(self._acquisition.transfer_files(info_hash), signature)
             self._files[info_hash] = cached
         return cached.entries
@@ -257,17 +366,120 @@ def reserved_stem(name: str) -> str:
     return Path(name.replace("\\", "/")).stem.casefold()
 
 
-def flat_layout(files: Sequence[TorrentFile], reserved: frozenset[str]) -> tuple[tuple[int, str, int], ...]:
-    """Reserve one free flat name per selected file, sharing a core between a video and its sidecars."""
-    selected: tuple[TorrentFile, ...] = tuple(item for item in files if item.priority > 0)
-    if not selected:
+def file_map_revision(files: Sequence[TorrentFile]) -> str:
+    """Identify a unique safe metadata map independently of progress and priorities."""
+    identities: list[tuple[int, str, int]] = sorted((item.index, item.name, item.size) for item in files)
+    paths: list[str] = [str(torrent_relative_path(name)).casefold() for _index, name, _size in identities]
+    if len({item.index for item in files}) != len(files) or len(set(paths)) != len(paths):
+        msg = "A torrent file map requires unique indexes and Windows paths"
+        raise ValueError(msg)
+    return hashlib.sha256(json.dumps(identities, ensure_ascii=True).encode()).hexdigest()
+
+
+def episode_files(
+    files: Sequence[TorrentFile], reference: TorrentioReference, target: Mapping[str, object], release: str
+) -> tuple[TorrentFile, ...]:
+    """Select nothing for several H1 matches, else one uniquely named video or the one match, with exact sidecars."""
+    file_map_revision(files)
+    videos: tuple[TorrentFile, ...] = tuple(
+        item for item in files if torrent_relative_path(item.name).suffix.casefold() in VIDEO_SOURCE_SUFFIXES
+    )
+    matched: tuple[TorrentFile, ...] = tuple(item for item in videos if _matches(item, target, release))
+    if len(matched) > 1:
         return ()
+    named: tuple[TorrentFile, ...] = tuple(
+        item for item in videos if torrent_relative_path(item.name).name == reference.file_name
+    )
+    if len(named) == 1:
+        return video_sidecars(files, named[0])
+    return video_sidecars(files, matched[0]) if matched else ()
+
+
+def metadata_check(
+    files: Sequence[TorrentFile], choice: EpisodeChoice, protected: Collection[ProtectedFile]
+) -> MetadataCheck:
+    """Bind the file of a subscription attempt from the client list, or name why the attempt stops before content."""
+    reference: TorrentioReference = choice.reference
+    paths: list[str] = [torrent_relative_path(item.name).as_posix() for item in files]
+    videos: tuple[TorrentFile, ...] = tuple(
+        item for item in files if torrent_relative_path(item.name).suffix.casefold() in VIDEO_SOURCE_SUFFIXES
+    )
+    matched: int = sum(1 for item in videos if _matches(item, choice.target, reference.release))
+    chosen: tuple[TorrentFile, ...] = episode_files(files, reference, choice.target, reference.release)
+    if matched > 1 or episode_video_count(paths) > 1:
+        return MetadataCheck((), "ambiguous" if matched > 1 else "pack")
+    if not chosen:
+        return MetadataCheck((), "no_match")
+    video: TorrentFile = next(item for item in chosen if item in videos)
+    path: str = torrent_relative_path(video.name).as_posix()
+    stops: tuple[tuple[bool, str], ...] = (
+        (not _matches(video, choice.target, reference.release), "recheck"),
+        (is_taken(reference.info_hash, path, protected), "taken"),
+        (_unusable(choice, path), "recheck"),
+    )
+    stopped: str | None = next((reason for hit, reason in stops if hit), None)
+    return MetadataCheck(() if stopped else chosen, stopped)
+
+
+def _unusable(choice: EpisodeChoice, path: str) -> bool:
+    if choice.traits is not None and choice.traits.unusable:
+        return True
+    name: str = PurePosixPath(path).name
+    if name == choice.reference.file_name:
+        return False
+    names: tuple[str, ...] = (choice.reference.release,) if choice.reference.release else ()
+    traits: ReleaseTraits = release_traits(
+        names, (), (), file=path, pack=False, donghua=False, seeders=None, file_names=(name,)
+    )
+    return bool(choice_traits(traits).unusable)
+
+
+def _matches(file: TorrentFile, target: Mapping[str, object], release: str) -> bool:
+    candidate: dict[str, object] = {
+        "release": release,
+        "path": file.name,
+        "filename": torrent_relative_path(file.name).name,
+    }
+    return classify(target, candidate).verdict is IdentityVerdict.MATCH
+
+
+def video_sidecars(files: Sequence[TorrentFile], video: TorrentFile) -> tuple[TorrentFile, ...]:
+    """Bind an exact video identity and only supported same-directory, same-stem sidecars."""
+    file_map_revision(files)
+    path: PurePosixPath = torrent_relative_path(video.name)
+    if path.suffix.casefold() not in VIDEO_SOURCE_SUFFIXES or not any(
+        (item.index, item.name, item.size) == (video.index, video.name, video.size) for item in files
+    ):
+        msg = "The selected video is not in the current file map"
+        raise ValueError(msg)
+    suffixes: frozenset[str] = frozenset(SOURCE_SUBTITLE_FORMATS) | frozenset(
+        item.suffix for item in PRODUCT_SUFFIXES if item.audio_profile is not None
+    )
+    return tuple(
+        item
+        for item in files
+        if item.index == video.index
+        or (
+            torrent_relative_path(item.name).parent == path.parent
+            and torrent_relative_path(item.name).stem == path.stem
+            and torrent_relative_path(item.name).suffix.casefold() in suffixes
+        )
+    )
+
+
+def flat_layout(files: Sequence[TorrentFile], reserved: frozenset[str]) -> tuple[FileReservation, ...]:
+    """Reserve one free flat name per selected file, sharing a core between a video and its sidecars."""
+    return flat_names(tuple((item.index, item.name, item.size) for item in files if item.priority > 0), reserved)
+
+
+def flat_names(files: Sequence[FileReservation], reserved: frozenset[str]) -> tuple[FileReservation, ...]:
+    """Give every file one free flat name, sharing a core between a video and its sidecars."""
     taken: set[str] = {value.casefold() for value in reserved}
     cores: dict[str, str] = {}
     used: dict[str, set[str]] = {}
-    layout: list[tuple[int, str, int]] = []
-    for item in sorted(selected, key=lambda entry: entry.index):
-        stem, suffix = _split(item.name)
+    layout: list[FileReservation] = []
+    for index, name, size in sorted(files):
+        stem, suffix = _split(name)
         core: str | None = cores.get(stem.casefold())
         if core is None or suffix.casefold() in used[core]:
             core = _free_core(stem, taken)
@@ -275,7 +487,7 @@ def flat_layout(files: Sequence[TorrentFile], reserved: frozenset[str]) -> tuple
             cores[stem.casefold()] = core
             used[core] = set()
         used[core].add(suffix.casefold())
-        layout.append((item.index, f"{core}{suffix}", item.size))
+        layout.append((index, f"{core}{suffix}", size))
     return tuple(layout)
 
 
@@ -328,13 +540,16 @@ def _safe_path(directory: Path, name: str) -> bool:
         not path.is_absolute()
         and not PureWindowsPath(name).drive
         and ".." not in path.parts
-        and (directory / path).resolve().is_relative_to(directory)
+        and lexical_path(directory / path).is_relative_to(directory)
     )
 
 
 def _ready_file(directory: Path, file: TorrentFile) -> bool:
     """Return whether the client verified every piece of this file and the local bytes match its declared size."""
-    path: Path = directory / file.name.replace("\\", "/")
+    try:
+        path: Path = staged_file(directory, file.name)
+    except ValueError:
+        return False
     if file.progress != 1.0 or not source_is_available(path):
         return False
     try:

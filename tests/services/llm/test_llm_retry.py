@@ -9,15 +9,11 @@ from anishift.errors import AniShiftError, TransientError
 from anishift.services.llm import (
     LlmAuthError,
     LlmCancelledError,
-    LlmMessage,
     LlmProviderUnavailableError,
     LlmRateLimitError,
-    LlmRequest,
     LlmResponse,
-    LlmRole,
     LlmTimeoutError,
     LlmUsage,
-    TextPart,
 )
 from anishift.services.llm._retry import retry_transient
 
@@ -269,11 +265,8 @@ def test_retry_transient_discards_success_completed_after_cancellation() -> None
 
 
 def _response(text: str) -> LlmResponse:
-    request = LlmRequest(
-        messages=(LlmMessage(role=LlmRole.USER, parts=(TextPart(text),)),),
-    )
     return LlmResponse(
-        text=request.messages[0].parts[0].text,
+        text=text,
         engine_id="fake",
         provider_model_id="fake-model",
         finish_reason="stop",

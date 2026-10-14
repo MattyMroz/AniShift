@@ -65,7 +65,6 @@ from anishift.application.scheduler import RunHandle
 from anishift.application.scheduler_contracts import ResourceLimits, TaskHandler, extraction_worker_count
 from anishift.application.scheduler_runtime import extraction_group_ids
 from anishift.application.service import AppService, AutoPresetDraft
-from anishift.application.subscriptions import SubscriptionService
 from anishift.application.tts_handler import TtsExecutor
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
 from anishift.application.workflows import WorkflowTarget
@@ -75,7 +74,7 @@ from anishift.cli.interactive.manual import ManualController, ManualResult, Manu
 from anishift.cli.interactive.state import StateController, StateResult
 from anishift.cli.resident import ResidentSession
 from anishift.cli.watch import run_resident
-from anishift.config.model_catalog import ModelCatalog, parse_model_catalog
+from anishift.config.model_catalog import ModelCatalog, ModelEntry, ModelProtocol, ProviderEntry
 from anishift.config.presets import AutoPresetFile, default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
@@ -124,7 +123,6 @@ def _service(  # noqa: PLR0913 - one builder for every service variant the tests
     catalog_loader: Callable[[], ModelCatalog] | None = None,
     prepare_workspace: Callable[[DiscoveryResult, CancellationToken], None] | None = None,
     acquisition: AcquisitionService | None = None,
-    subscriptions: SubscriptionService | None = None,
     tts: TtsExecutor | None = None,
 ) -> AppService:
     stored: list[AutoPresetFile] = preset_store if preset_store is not None else [default_preset_file()]
@@ -161,19 +159,18 @@ def _service(  # noqa: PLR0913 - one builder for every service variant the tests
         catalog_loader=catalog_loader or _catalog,
         prepare_workspace=prepare_workspace,
         acquisition=acquisition,
-        subscriptions=subscriptions,
     )
 
 
 def _catalog() -> ModelCatalog:
-    source = """
-    {
-      "schema_version": 1,
-      "providers": { "foundry-openai": { "protocol": "openai_chat", "path": "/api/v2/llm/proxy/openai/v1" } },
-      "models": { "foundry/gpt-main": { "provider": "foundry-openai", "model": "id-1" } }
-    }
-    """
-    return parse_model_catalog(source)
+    return ModelCatalog(
+        providers={
+            "foundry-openai": ProviderEntry(
+                "foundry-openai", ModelProtocol.OPENAI_RESPONSES, "/api/v2/llm/proxy/openai/v1"
+            ),
+        },
+        models={"foundry/gpt-main": ModelEntry("foundry/gpt-main", "foundry-openai", "id-1", "foundry/gpt-main")},
+    )
 
 
 @contextmanager
@@ -255,9 +252,8 @@ def test_panel_executes_only_selected_episodes_through_the_resident(tmp_path: Pa
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("early", [False, True])
-def test_global_resume_finishes_the_same_real_graph_without_repeating_its_translation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, early: bool
+def test_global_pause_lets_a_started_user_graph_finish_without_repeating_its_translation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("ANISHIFT_WORKSPACE_ROOT", str(tmp_path))
@@ -277,23 +273,13 @@ def test_global_resume_finishes_the_same_real_graph_without_repeating_its_transl
             run_id: str = session.start(preview)
             assert entered.wait(1.0)
             session.command("set_auto", {"enabled": False})
-            assert session.command("status")["pausing"] is True
-            if early:
-                time.sleep(0.1)
-                session.command("set_auto", {"enabled": True})
             release.set()
-            if not early:
-                assert _wait_for_resident(session, lambda state: state["paused"] is True)
-                assert store.load().requests[0].state is RequestState.PAUSED
-                assert store.load().markers == ()
-                paused_status: Mapping[str, object] = session.command("status")
-                assert paused_status["material_counts"] == {"downloading": 0, "processing": 0, "waiting": 1}
-                assert cast("list[dict[str, object]]", paused_status["materials"])[0]["state"] == "paused"
-                session.command("set_auto", {"enabled": True})
             assert _wait_for_resident(
                 session,
                 lambda _state: session.command("run_result", {"run_id": run_id})["state"] == "succeeded",
             )
+            assert session.command("status")["paused"] is True
+            assert store.load().requests[0].state is RequestState.SUCCEEDED
             assert len(translation.calls) == 1
             assert len(store.load().requests) == 1
             assert store.load().requests[0].attempts == 1
@@ -590,7 +576,7 @@ def test_failed_regeneration_stays_in_processing_beside_the_old_confirmed_librar
 
 
 @pytest.mark.integration
-def test_history_retry_discloses_multigroup_scope_respects_pause_and_releases_reservations(
+def test_history_retry_discloses_multigroup_scope_under_pause_and_releases_reservations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _PALANTIR_TOKEN)
@@ -599,6 +585,7 @@ def test_history_retry_discloses_multigroup_scope_respects_pause_and_releases_re
         run_id: str = _execute_mixed_materials(session, groups)
         completed_stamp: os.stat_result = (tmp_path / "01.spoken.pl.srt").stat()
         controller: StateController = StateController(session, lambda: None)
+        controller.show_processing()
         try:
             assert _wait_for_resident(session, lambda _status: controller._connected)
             assert "Brak aktywnego przetwarzania" in controller.render(120, 40).plain
@@ -608,7 +595,7 @@ def test_history_retry_discloses_multigroup_scope_respects_pause_and_releases_re
             session.command("set_auto", {"enabled": False})
             controller.handle_key("text:p")
             assert _wait_for_resident(session, lambda _status: not controller._busy)
-            assert "AniShift jest wstrzymany" in controller.render(120, 40).plain
+            assert "Dokończ całe zapisane zlecenie · 2 materiałów" in controller.render(120, 40).plain
             assert _wait_for_resident(session, lambda status: status["reservations"] == [])
             assert store.load().requests[0].attempts == 1
             session.command("set_auto", {"enabled": True})
@@ -676,10 +663,13 @@ def test_processing_cancel_targets_the_disclosed_whole_manual_run(
             run_id: str = session.start(preview)
             assert entered.wait(1.0)
             controller: StateController = StateController(session, lambda: None)
+            controller.show_processing()
             try:
                 assert _wait_for_resident(session, lambda _status: controller._connected)
-                assert "C anuluj całe zlecenie · 2 materiałów" in controller.render(120, 40).plain
+                assert "X anuluj" in controller.render(120, 40).plain
                 controller.handle_key("text:c")
+                assert "Anulować całe zlecenie (2 materiałów)? Enter tak · Esc nie" in controller.render(120, 40).plain
+                controller.handle_key("enter")
                 assert _wait_for_resident(session, lambda _status: not controller._busy)
                 release.set()
                 assert _wait_for_resident(
@@ -699,7 +689,7 @@ def test_processing_cancel_targets_the_disclosed_whole_manual_run(
 
 @pytest.mark.integration
 @pytest.mark.parametrize("key", ["text:u", "text:m"])
-def test_panel_settings_and_manual_return_preserve_idle_processing_without_waiting_rows(
+def test_panel_settings_and_manual_return_preserve_the_processing_list_of_files_to_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str
 ) -> None:
     monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _PALANTIR_TOKEN)
@@ -716,7 +706,7 @@ def test_panel_settings_and_manual_return_preserve_idle_processing_without_waiti
     ):
         session.discover()
         application: _InteractiveApplication = _InteractiveApplication(service, resident=session)
-        application._show_state()
+        application._show_state(processing=True)
         panel: StateController | None = application._state
         assert panel is not None
         try:
@@ -738,8 +728,9 @@ def test_panel_settings_and_manual_return_preserve_idle_processing_without_waiti
             assert application._mode is _ViewMode.STATE
             assert application._state is panel
             assert panel._tab == 2
-            assert panel._selected == 0
-            assert "Brak aktywnego przetwarzania" in before
+            assert panel._selected == 34
+            assert "do sprawdzenia 35" in before
+            assert all(item.get("attention") for item in panel._processing_rows())
             assert panel._offsets[2] == offset
             assert application._render_frame(80, 24).plain == before
         finally:
@@ -748,7 +739,7 @@ def test_panel_settings_and_manual_return_preserve_idle_processing_without_waiti
 
 
 @pytest.mark.integration
-def test_restarting_a_paused_owner_preserves_the_graph_and_only_resume_finishes_its_products(
+def test_restarting_a_paused_owner_keeps_the_finished_user_graph_without_rerunning_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
@@ -769,8 +760,10 @@ def test_restarting_a_paused_owner_preserves_the_graph_and_only_resume_finishes_
             assert entered.wait(1.0)
             session.command("set_auto", {"enabled": False})
             release.set()
-            assert _wait_for_resident(session, lambda state: state["paused"] is True)
-            assert store.load().requests[0].state is RequestState.PAUSED
+            assert _wait_for_resident(
+                session,
+                lambda _state: session.command("run_result", {"run_id": run_id})["state"] == "succeeded",
+            )
     finally:
         release.set()
         service.close()
@@ -779,12 +772,7 @@ def test_restarting_a_paused_owner_preserves_the_graph_and_only_resume_finishes_
         with _panel_owner(restarted, tmp_path) as (session, store):
             assert session.command("status")["paused"] is True
             assert restarted.active_run_ids() == ()
-            assert store.load().products == ()
-            session.command("set_auto", {"enabled": True})
-            assert _wait_for_resident(
-                session,
-                lambda _state: session.command("run_result", {"run_id": run_id})["state"] == "succeeded",
-            )
+            assert session.command("run_result", {"run_id": run_id})["state"] == "succeeded"
             assert len(translation.calls) == 1
             assert len(store.load().requests) == 1
             assert store.load().requests[0].attempts == 1

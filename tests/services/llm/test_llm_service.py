@@ -10,6 +10,7 @@ from anishift.services.llm import (
     LlmAuthError,
     LlmConfig,
     LlmConfigError,
+    LlmContentPart,
     LlmMessage,
     LlmRequest,
     LlmResponse,
@@ -30,7 +31,9 @@ class FakeEngine:
 
     def complete(self, request: LlmRequest) -> LlmResponse:
         self.complete_calls += 1
-        return _response(request.messages[0].parts[0].text)
+        part: LlmContentPart = request.messages[0].parts[0]
+        assert isinstance(part, TextPart)
+        return _response(part.text)
 
     def close(self) -> None:
         self.close_calls += 1
@@ -48,7 +51,9 @@ class FakeStreamingEngine(FakeEngine):
         on_text: Callable[[str], None] | None = None,
     ) -> LlmResponse:
         self.stream_calls += 1
-        response: LlmResponse = _response(request.messages[0].parts[0].text)
+        part: LlmContentPart = request.messages[0].parts[0]
+        assert isinstance(part, TextPart)
+        response: LlmResponse = _response(part.text)
         if on_text is not None:
             on_text(response.text)
         return response

@@ -90,6 +90,11 @@ class Settings(BaseSettings):
         repr=False,
     )
     palantir_token: str = Field(default="", description="Palantir Foundry token", repr=False)
+    palantir_secondary_token: str = Field(
+        default="",
+        description="Second Palantir account token",
+        repr=False,
+    )
     # The compatibility name carries no ``ANISHIFT_`` prefix, so it needs an
     # explicit alias. It is a raw input of the precedence rule, not a setting.
     palantir_token_compat: str = Field(
@@ -104,6 +109,9 @@ class Settings(BaseSettings):
     qbittorrent_url: str = Field(default="http://127.0.0.1:8080", description="qBittorrent Web UI address")
     qbittorrent_username: str = Field(default="", description="qBittorrent Web UI user name", repr=False)
     qbittorrent_password: str = Field(default="", description="qBittorrent Web UI password", repr=False)
+
+    # Subscriptions
+    subscription_shadow: bool = Field(default=False, description="Record subscription proposals without admitting")
 
     # Workspace
     workspace_root: str = Field(default="", description="Workspace root override", repr=False)

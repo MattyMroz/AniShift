@@ -5,8 +5,9 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Final, cast
@@ -14,12 +15,23 @@ from typing import Any, Final, cast
 import pytest
 
 import anishift.application as application_module
-from anishift.application import AppService, InspectedWorkspace
+from anishift.application import (
+    AppService,
+    EpisodeKey,
+    EpisodeListing,
+    EpisodeOffer,
+    Franchise,
+    InspectedWorkspace,
+    ListedEpisode,
+    encode_view,
+)
+from anishift.application.acquisition import episode_read_timeout_s
 from anishift.cli import control as cli_control
 from anishift.cli import watch as watch_module
 from anishift.cli.exit_codes import EXIT_INCOMPLETE, EXIT_REFUSED, EXIT_SUCCESS
 from anishift.cli.resident import ResidentSession
 from anishift.cli.watch import RESIDENT_LOCK_FILE_NAME, run_resident, spawn_resident
+from anishift.config.settings import Settings
 from anishift.platform import autostart
 from anishift.platform import tray as tray_module
 from anishift.platform.autostart import AutostartStatus, resident_command
@@ -27,9 +39,15 @@ from anishift.platform.local_control import (
     INSTANCE_FILE_NAME,
     KEY_FILE_NAME,
     ControlClient,
+    ControlError,
+    ControlErrorCode,
+    ControlRequest,
     ControlResponse,
+    ControlServer,
     connect,
+    connect_or_start,
     control_endpoint,
+    ensure_authkey,
     read_instance,
 )
 from anishift.platform.process_lock import ProcessLock
@@ -39,6 +57,49 @@ _TIMEOUT_S: Final[float] = 15.0
 _CLOSE_REFUSED: Final[str] = "The private torrent client did not finish shutting down"
 
 _WATCH_STUCK: Final[str] = "The workspace watcher did not finish closing"
+
+
+@pytest.mark.integration
+def test_offer_start_releases_catalog_lock(tmp_path: Path) -> None:
+    endpoint: str = control_endpoint(tmp_path)
+    key: bytes = b"offer-test"
+    server: ControlServer = ControlServer(
+        endpoint, key, lambda request: ControlResponse.succeeded({"offer_id": "one", "instance_id": "test"})
+    )
+    session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
+    try:
+        assert session.episode_offer_start(EpisodeKey(1, 1), command_id="start")["offer_id"] == "one"
+        assert session._catalog_lock.acquire(blocking=False)
+        session._catalog_lock.release()
+    finally:
+        session.close()
+        server.close()
+
+
+@pytest.mark.integration
+def test_disconnect_keeps_catalog_with_open_offer(tmp_path: Path) -> None:
+    endpoint: str = control_endpoint(tmp_path)
+    key: bytes = b"offer-test"
+    sessions: list[str | None] = []
+
+    def respond(request: ControlRequest) -> ControlResponse:
+        sessions.append(request.session_id)
+        return ControlResponse.succeeded({"offer_id": "one", "instance_id": "test", "state": "searching"})
+
+    server: ControlServer = ControlServer(endpoint, key, respond)
+    session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
+    try:
+        session.episode_offer_start(EpisodeKey(1, 1), command_id="start")
+        session.disconnect()
+        assert session.episode_offer_get("one")["state"] == "searching"
+        assert sessions[0] == sessions[1]
+        session.interrupt_reads()
+        session.episode_offer_get("one")
+        assert sessions[2] != sessions[0]
+    finally:
+        session.close()
+        server.close()
+
 
 _RESIDENT_SCRIPT: Final[str] = """
 import sys, time
@@ -53,6 +114,7 @@ from anishift.cli.watch import run_resident
 class _Service:
     subscriptions = None
     acquisition = None
+    media_probe = None
 
     def __init__(self, workspace_root):
         self.workspace_root = workspace_root
@@ -76,6 +138,9 @@ class _Service:
     def retain_runs(self, run_ids):
         del run_ids
 
+    def current_settings(self):
+        return SimpleNamespace(subscription_shadow=False)
+
 
 state_dir = Path(sys.argv[1])
 ready = Path(sys.argv[2])
@@ -94,6 +159,7 @@ class _Service:
         workspace_root.mkdir(parents=True, exist_ok=True)
         self.subscriptions: None = None
         self.acquisition: None = None
+        self.media_probe: None = None
         self.admissions: list[bool] = []
 
     def discover(self, *, changed_paths: Sequence[Path] | None = None) -> InspectedWorkspace:
@@ -112,6 +178,9 @@ class _Service:
     def retain_runs(self, run_ids: Sequence[str]) -> None:
         del run_ids
 
+    def current_settings(self) -> Settings:
+        return Settings.model_construct()
+
 
 def _as_service(service: _Service) -> AppService:
     return cast("AppService", service)
@@ -119,8 +188,15 @@ def _as_service(service: _Service) -> AppService:
 
 @pytest.mark.parametrize("playback", [True, False])
 def test_library_result_sends_playback_only_for_confirmed_product_selection(tmp_path: Path, playback: bool) -> None:
-    def call(kind: str, payload: Mapping[str, object], *, instance_id: str | None = None) -> Mapping[str, object]:
+    def call(
+        kind: str,
+        payload: Mapping[str, object],
+        *,
+        instance_id: str | None = None,
+        command_id: str | None = None,
+    ) -> Mapping[str, object]:
         assert kind == "library_open"
+        assert command_id is None
         assert instance_id is None
         assert isinstance(payload["client_id"], str)
         assert {key: value for key, value in payload.items() if key != "client_id"} == {
@@ -133,6 +209,329 @@ def test_library_result_sends_playback_only_for_confirmed_product_selection(tmp_
     session: ResidentSession = ResidentSession(tmp_path, lambda: client)
     result: Path = session.library_result("episode") if playback else session.library_result("episode", playback=False)
     assert result == tmp_path / ("ready/01.mkv" if playback else "ready/01.eac3")
+
+
+def test_episode_selection_reads_send_only_their_keys_and_decode_the_owner_views(tmp_path: Path) -> None:
+    franchise: Franchise = Franchise(selected_id=7, entries=(), relations=(), complete=False)
+    listing: EpisodeListing = EpisodeListing(7, 70, "TV", "RELEASING", 1, (ListedEpisode(1),), (), None, None, None)
+    offer: EpisodeOffer = EpisodeOffer(
+        EpisodeKey(7, 1), (), None, datetime(2026, 9, 29, 12, tzinfo=UTC), {"match": 0, "insufficient_evidence": 0}
+    )
+    answers: dict[str, Franchise | EpisodeListing | EpisodeOffer] = {
+        "franchise": franchise,
+        "episodes": listing,
+        "offer": offer,
+    }
+    sent: list[dict[str, object]] = []
+    waits: list[float | None] = []
+
+    def call(
+        kind: str, payload: Mapping[str, object], *, instance_id: str | None = None, timeout_s: float | None = None
+    ) -> Mapping[str, object]:
+        assert (kind, instance_id) == ("acquisition", None)
+        sent.append(dict(payload))
+        waits.append(timeout_s)
+        return encode_view(answers[str(payload["operation"])])
+
+    session: ResidentSession = ResidentSession(tmp_path, lambda: cast("ControlClient", SimpleNamespace(call=call)))
+    assert session.franchise(7) == franchise
+    assert session.episodes(7) == listing
+    assert session.offer(EpisodeKey(7, 1)) == offer
+    assert sent == [
+        {"operation": "franchise", "anilist_id": 7},
+        {"operation": "episodes", "anilist_id": 7},
+        {"operation": "offer", "anilist_id": 7, "number": 1},
+    ]
+    assert waits == [episode_read_timeout_s()] * 3
+
+
+class _Channel:
+    def __init__(self, reply: threading.Event | None = None) -> None:
+        self.sent: list[Mapping[str, object]] = []
+        self.closed: threading.Event = threading.Event()
+        self.calling: threading.Event = threading.Event()
+        self._reply: threading.Event | None = reply
+
+    def call(
+        self,
+        kind: str,
+        payload: Mapping[str, object],
+        *,
+        instance_id: str | None = None,
+        command_id: str | None = None,
+        timeout_s: float | None = None,
+    ) -> Mapping[str, object]:
+        self.sent.append(payload)
+        self.calling.set()
+        if self._reply is not None:
+            assert self._reply.wait(_TIMEOUT_S)
+        return encode_view(EpisodeListing(1, None, None, "UNKNOWN", None, (), (), None, None, None))
+
+    def close(self) -> None:
+        self.closed.set()
+
+
+def test_an_episode_read_after_close_is_refused_without_opening_a_channel(tmp_path: Path) -> None:
+    channels: list[_Channel] = []
+
+    def opened() -> ControlClient:
+        channels.append(_Channel())
+        return cast("ControlClient", channels[-1])
+
+    session: ResidentSession = ResidentSession(tmp_path, opened)
+    session.close()
+    with pytest.raises(ControlError, match="closed"):
+        session.episodes(1)
+    assert len(channels) == 1
+    assert channels[0].sent == []
+
+
+def test_a_channel_opened_while_the_session_closes_is_closed_without_sending_the_read(tmp_path: Path) -> None:
+    connecting: threading.Event = threading.Event()
+    proceed: threading.Event = threading.Event()
+    main: _Channel = _Channel()
+    late: _Channel = _Channel()
+    replies: list[_Channel] = [main, late]
+
+    def opened() -> ControlClient:
+        channel: _Channel = replies.pop(0)
+        if channel is late:
+            connecting.set()
+            assert proceed.wait(_TIMEOUT_S)
+        return cast("ControlClient", channel)
+
+    session: ResidentSession = ResidentSession(tmp_path, opened)
+    failures: list[ControlError] = []
+
+    def read() -> None:
+        try:
+            session.episodes(1)
+        except ControlError as error:
+            failures.append(error)
+
+    reader: threading.Thread = threading.Thread(target=read)
+    reader.start()
+    assert connecting.wait(_TIMEOUT_S)
+    session.close()
+    proceed.set()
+    reader.join(_TIMEOUT_S)
+    assert not reader.is_alive()
+    assert [error.code for error in failures] == [ControlErrorCode.REFUSED]
+    assert late.closed.is_set()
+    assert late.sent == []
+
+
+def test_close_returns_during_an_unanswered_episode_read_and_closes_its_channel(tmp_path: Path) -> None:
+    reply: threading.Event = threading.Event()
+    channels: list[_Channel] = [_Channel(), _Channel(reply)]
+    session: ResidentSession = ResidentSession(tmp_path, lambda: cast("ControlClient", channels.pop(0)))
+    catalog: _Channel = channels[-1]
+    reader: threading.Thread = threading.Thread(target=lambda: session.episodes(1))
+    reader.start()
+    try:
+        assert catalog.calling.wait(_TIMEOUT_S)
+        session.close()
+        assert catalog.closed.is_set()
+    finally:
+        reply.set()
+        reader.join(_TIMEOUT_S)
+    assert not reader.is_alive()
+
+
+class _LostChannel(_Channel):
+    def __init__(self, problem: ControlError) -> None:
+        super().__init__()
+        self._problem: ControlError = problem
+
+    def call(
+        self,
+        kind: str,
+        payload: Mapping[str, object],
+        *,
+        instance_id: str | None = None,
+        command_id: str | None = None,
+        timeout_s: float | None = None,
+    ) -> Mapping[str, object]:
+        self.sent.append(payload)
+        raise self._problem
+
+
+@pytest.mark.parametrize(
+    ("problem", "reopened"),
+    [
+        (ControlError("lost", code=ControlErrorCode.REFUSED), True),
+        (ControlError("refused", code=ControlErrorCode.REFUSED, answered=True), False),
+        (ControlError("late", code=ControlErrorCode.INTERNAL), True),
+        (ControlError("large", code=ControlErrorCode.REFUSED, reason="request_too_large"), False),
+    ],
+)
+@pytest.mark.parametrize("catalog", [False, True])
+def test_only_a_lost_connection_is_replaced_on_the_next_call(
+    tmp_path: Path, problem: ControlError, *, reopened: bool, catalog: bool
+) -> None:
+    lost: _LostChannel = _LostChannel(problem)
+    healthy: _Channel = _Channel()
+    channels: list[_Channel] = [_Channel(), lost, healthy] if catalog else [lost, healthy]
+    session: ResidentSession = ResidentSession(tmp_path, lambda: cast("ControlClient", channels.pop(0)))
+
+    def read() -> object:
+        return session.episodes(1) if catalog else session.command("status")
+
+    with pytest.raises(ControlError):
+        read()
+    assert lost.closed.is_set() is reopened
+    if reopened:
+        read()
+        assert len(healthy.sent) == 1
+    else:
+        with pytest.raises(ControlError):
+            read()
+        assert len(lost.sent) == 2
+        assert channels == [healthy]
+
+
+def test_a_command_after_a_timed_out_answer_reconnects_and_receives_its_own_result(tmp_path: Path) -> None:
+    release: threading.Event = threading.Event()
+    late: threading.Event = threading.Event()
+
+    def answer(request: ControlRequest) -> ControlResponse:
+        if request.payload.get("order") != "first":
+            return ControlResponse.succeeded({"order": request.payload.get("order")})
+        assert release.wait(_TIMEOUT_S)
+        late.set()
+        return ControlResponse.refused(ControlErrorCode.REFUSED, "first only", "first_only")
+
+    endpoint: str = control_endpoint(tmp_path)
+    key: bytes = ensure_authkey(tmp_path)
+    server: ControlServer = ControlServer(endpoint, key, answer)
+    timeouts: list[float] = [0.2]
+    session: ResidentSession = ResidentSession(
+        tmp_path, lambda: ControlClient(endpoint, key, timeout_s=timeouts.pop() if timeouts else _TIMEOUT_S)
+    )
+    try:
+        with pytest.raises(ControlError) as timeout:
+            session.command("probe", {"order": "first"})
+        release.set()
+        assert late.wait(_TIMEOUT_S)
+        second: Mapping[str, object] = session.command("probe", {"order": "second"})
+        third: Mapping[str, object] = session.command("probe", {"order": "third"})
+    finally:
+        release.set()
+        session.close()
+        server.close()
+
+    assert not timeout.value.answered
+    assert second["order"] == "second"
+    assert third["order"] == "third"
+
+
+def test_disconnect_reopens_both_channels_on_the_next_call_but_never_after_close(tmp_path: Path) -> None:
+    opened: list[_Channel] = []
+
+    def connect_channel() -> ControlClient:
+        opened.append(_Channel())
+        return cast("ControlClient", opened[-1])
+
+    session: ResidentSession = ResidentSession(tmp_path, connect_channel)
+    session.episodes(1)
+    session.disconnect()
+    assert all(channel.closed.is_set() for channel in opened)
+    session.command("status")
+    session.episodes(1)
+    assert [len(channel.sent) for channel in opened] == [0, 1, 1, 1]
+    session.close()
+    session.disconnect()
+    with pytest.raises(ControlError, match="closed"):
+        session.command("status")
+    assert len(opened) == 4
+
+
+@pytest.mark.parametrize("catalog", [False, True])
+def test_disconnect_leaves_a_call_in_flight_to_finish_on_its_own_connection(tmp_path: Path, *, catalog: bool) -> None:
+    reply: threading.Event = threading.Event()
+    busy: _Channel = _Channel(reply)
+    channels: list[_Channel] = [_Channel(), busy] if catalog else [busy]
+    session: ResidentSession = ResidentSession(tmp_path, lambda: cast("ControlClient", channels.pop(0)))
+    results: list[object] = []
+
+    def call() -> None:
+        results.append(session.episodes(1) if catalog else session.command("episode_download"))
+
+    caller: threading.Thread = threading.Thread(target=call)
+    caller.start()
+    try:
+        assert busy.calling.wait(_TIMEOUT_S)
+        session.disconnect()
+        assert not busy.closed.is_set()
+    finally:
+        reply.set()
+        caller.join(_TIMEOUT_S)
+    assert not caller.is_alive()
+    assert len(results) == 1
+    assert not busy.closed.is_set()
+
+
+def _serve_resident(state_dir: Path) -> threading.Thread:
+    ready: threading.Event = threading.Event()
+    thread: threading.Thread = threading.Thread(
+        target=lambda: run_resident(
+            _as_service(_Service(state_dir / "workspace")), state_dir=state_dir, on_ready=ready.set
+        ),
+        daemon=True,
+    )
+    thread.start()
+    assert ready.wait(timeout=_TIMEOUT_S)
+    return thread
+
+
+def _stop_resident(state_dir: Path, thread: threading.Thread) -> None:
+    stopper: ControlClient | None = connect(state_dir)
+    if stopper is not None:
+        try:
+            stopper.call("shutdown")
+        finally:
+            stopper.close()
+    thread.join(timeout=_TIMEOUT_S)
+    assert not thread.is_alive()
+
+
+def test_a_panel_session_reaches_a_restarted_resident_and_observes_it_again(tmp_path: Path) -> None:
+    residents: list[threading.Thread] = [_serve_resident(tmp_path)]
+
+    def opened() -> ControlClient:
+        return connect_or_start(tmp_path, spawn=lambda: residents.append(_serve_resident(tmp_path)))
+
+    lazy: ResidentSession = ResidentSession(tmp_path, opened)
+    notified: ResidentSession = ResidentSession(tmp_path, opened)
+    try:
+        first: object = lazy.command("status")["instance_id"]
+        assert notified.command("status")["instance_id"] == first
+        observer: ResidentSession = notified.new_session()
+        frames: Iterator[Mapping[str, object]] = observer.observe()
+        assert next(frames)["event"] == "state_changed"
+        _stop_resident(tmp_path, residents[0])
+        list(frames)
+        observer.close()
+        notified.disconnect()
+        second: object = notified.command("status")["instance_id"]
+        assert second != first
+        with pytest.raises(ControlError) as lost:
+            lazy.command("status")
+        assert not lost.value.answered
+        assert lazy.command("status")["instance_id"] == second
+        resumed: ResidentSession = notified.new_session()
+        try:
+            restored: Mapping[str, object] = next(resumed.observe())
+        finally:
+            resumed.close()
+        payload: object = restored["payload"]
+        assert isinstance(payload, Mapping)
+        assert (restored["event"], payload["instance_id"]) == ("state_changed", second)
+        assert len(residents) == 2
+    finally:
+        lazy.close()
+        notified.close()
+        _stop_resident(tmp_path, residents[-1])
 
 
 def test_a_second_resident_is_refused_and_records_no_instance(tmp_path: Path) -> None:
@@ -314,6 +713,7 @@ class _Acquisition:
         self.events: list[str] = []
         self.request_control: None = None
         self.refusing: bool = refusing
+        self.selective: bool = False
 
     def prepare_client(self) -> None:
         self.events.append("prepare")

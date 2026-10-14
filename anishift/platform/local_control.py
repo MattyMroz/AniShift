@@ -124,6 +124,15 @@ _SUBSCRIBE_KIND: Final[str] = "subscribe"
 _HANDLER_FAILED: Final[str] = "The resident could not complete the command"
 """Reason returned when the owner of the state raised instead of answering."""
 
+_RESPONSE_TOO_LARGE: Final[str] = "Response too large"
+"""Refusal sent instead of an answer whose frame would pass the size limit."""
+
+_RESPONSE_TOO_LARGE_REASON: Final[str] = "response_too_large"
+"""Machine-readable reason of an answer refused for its size."""
+
+_REQUEST_TOO_LARGE_REASON: Final[str] = "request_too_large"
+"""Machine-readable reason of a request refused before it was sent."""
+
 _ACCEPT_JOIN_S: Final[float] = 5.0
 """Wait for the accept thread to notice that the server is closing."""
 
@@ -183,6 +192,11 @@ class ControlError(AniShiftError):
         self.code: ControlErrorCode = code
         self.reason: str = reason
         self.answered: bool = answered
+
+    @property
+    def connection_lost(self) -> bool:
+        """Whether the connection that raised this error can no longer carry another command."""
+        return not self.answered and self.reason != _REQUEST_TOO_LARGE_REASON
 
 
 @dataclass(frozen=True, slots=True)
@@ -468,7 +482,14 @@ class ControlServer:
                 reason=ControlErrorCode.INTERNAL.value,
             )
             return _error_frame(request.command_id, ControlErrorCode.INTERNAL, _HANDLER_FAILED)
-        return _response_frame(request.command_id, response)
+        frame: dict[str, object] = _response_frame(request.command_id, response)
+        size: int = len(_encode_frame(frame))
+        if size <= MAX_FRAME_BYTES:
+            return frame
+        logger.warning("A control response passed the frame limit", command_kind=request.kind, size=size)
+        return _error_frame(
+            request.command_id, ControlErrorCode.REFUSED, _RESPONSE_TOO_LARGE, reason=_RESPONSE_TOO_LARGE_REASON
+        )
 
     def _forget(self, served: _ServedConnection) -> None:
         with self._lock:
@@ -511,22 +532,28 @@ class ControlClient:
         *,
         command_id: str | None = None,
         instance_id: str | None = None,
+        timeout_s: float | None = None,
     ) -> Mapping[str, object]:
-        """Send one command and return its result."""
+        """Send one command and return its result; a lost answer closes this connection for good."""
         if self._subscribed:
             msg = "A subscribed connection carries events, not commands"
             raise ControlError(msg, code=ControlErrorCode.REFUSED)
         identity: str = command_id if command_id is not None else _new_command_id()
-        self._send(
-            {
-                "v": PROTOCOL_VERSION,
-                "command_id": identity,
-                "instance_id": instance_id,
-                "kind": kind,
-                "payload": dict(payload) if payload is not None else {},
-            }
-        )
-        return _accepted_result(self._receive(), identity)
+        try:
+            self._send(
+                {
+                    "v": PROTOCOL_VERSION,
+                    "command_id": identity,
+                    "instance_id": instance_id,
+                    "kind": kind,
+                    "payload": dict(payload) if payload is not None else {},
+                }
+            )
+            return _accepted_result(self._receive(timeout_s), identity)
+        except ControlError as problem:
+            if problem.connection_lost:
+                self.close()
+            raise
 
     def subscribe(self) -> None:
         """Turn this connection into the event stream of the resident."""
@@ -553,15 +580,19 @@ class ControlClient:
             _close_quietly(self._connection)
 
     def _send(self, frame: Mapping[str, object]) -> None:
+        encoded: bytes = _encode_frame(frame)
+        if len(encoded) > MAX_FRAME_BYTES:
+            message: str = "The request exceeds the frame limit"
+            raise ControlError(message, code=ControlErrorCode.REFUSED, reason=_REQUEST_TOO_LARGE_REASON)
         try:
-            self._connection.send_bytes(_encode_frame(frame))
+            self._connection.send_bytes(encoded)
         except (OSError, ValueError) as problem:
             msg = "The resident closed the control connection"
             raise ControlError(msg, code=ControlErrorCode.REFUSED) from problem
 
-    def _receive(self) -> Mapping[str, object]:
+    def _receive(self, timeout_s: float | None = None) -> Mapping[str, object]:
         try:
-            if not self._connection.poll(self._timeout_s):
+            if not self._connection.poll(self._timeout_s if timeout_s is None else timeout_s):
                 msg = "The resident did not answer in time"
                 raise ControlError(msg, code=ControlErrorCode.INTERNAL)
             raw: bytes = self._connection.recv_bytes(maxlength=MAX_FRAME_BYTES)
@@ -640,12 +671,29 @@ class _ServedConnection:
 
     def publish(self, frame: Mapping[str, object], terminal: bool) -> None:
         """Queue one event, replacing the pending event of the same task or state."""
+        if len(_encode_frame(frame)) > MAX_FRAME_BYTES:
+            logger.warning("A control event passed the frame limit")
+            frame = {
+                "v": PROTOCOL_VERSION,
+                "event": "control_problem",
+                "payload": {"reason": "event_too_large", "refresh_required": True},
+            }
+            terminal = True
         self._outbox.put(frame, terminal=terminal)
         self._pending.set()
 
     def send(self, frame: Mapping[str, object]) -> bool:
         """Write one frame, reporting whether the connection is still usable."""
         payload: bytes = _encode_frame(frame)
+        if len(payload) > MAX_FRAME_BYTES:
+            logger.warning("Refused an oversized outgoing control frame")
+            payload = _encode_frame(
+                {
+                    "v": PROTOCOL_VERSION,
+                    "event": "control_problem",
+                    "payload": {"reason": "event_too_large", "refresh_required": True},
+                }
+            )
         with self._send_lock:
             try:
                 self._connection.send_bytes(payload)
@@ -773,6 +821,10 @@ def _close_quietly(connection: ChannelConnection) -> None:
 def _event_key(frame: Mapping[str, object]) -> tuple[str, str, str]:
     payload: object = frame.get("payload")
     fields: Mapping[str, object] = payload if isinstance(payload, Mapping) else {}
+    if frame.get("event") == "episode_offer_partial":
+        return ("episode_offer_partial", _key_text(fields.get("offer_id")), "")
+    if frame.get("event") in {"episode_searching", "episode_result", "episode_batch"}:
+        return (_key_text(frame.get("event")), _key_text(fields.get("command_id")), str(fields.get("key", "")))
     subject: str = _key_text(fields.get("task_id")) or _key_text(fields.get("group_id"))
     return (_key_text(frame.get("event")), _key_text(fields.get("run_id")), subject)
 
@@ -836,6 +888,10 @@ def _error_frame(command_id: str, code: ControlErrorCode, message: str, reason: 
 
 
 def _accepted_result(frame: Mapping[str, object], command_id: str) -> Mapping[str, object]:
+    answered_id: object = frame.get("command_id")
+    if answered_id != command_id and not (answered_id == "" and frame.get("ok") is False):
+        msg = "The resident answered a different command"
+        raise ControlError(msg, code=ControlErrorCode.INVALID_PAYLOAD)
     if frame.get("ok") is not True:
         error: object = frame.get("error")
         code: str = error.get("code", "") if isinstance(error, dict) else ""
@@ -849,9 +905,6 @@ def _accepted_result(frame: Mapping[str, object], command_id: str) -> Mapping[st
             answered=True,
             details=details if isinstance(details, dict) else None,
         )
-    if frame.get("command_id") != command_id:
-        msg = "The resident answered a different command"
-        raise ControlError(msg, code=ControlErrorCode.INVALID_PAYLOAD, answered=True)
     result: object = frame.get("result")
     if not isinstance(result, dict):
         msg = "The resident answered without a result document"

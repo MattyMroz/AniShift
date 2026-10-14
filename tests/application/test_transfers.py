@@ -75,6 +75,44 @@ def test_stall_time_excludes_pauses_checks_and_sleep(tmp_path: Path, interruptio
     assert not inspector.stalled
 
 
+class _TwoTransfers(_Acquisition):
+    def transfers(self) -> tuple[TorrentInfo, ...]:
+        assert self.info is not None
+        return (self.info, replace(self.info, info_hash="def", state="downloading"))
+
+    def transfer_files(self, info_hash: str) -> tuple[TorrentFile, ...]:
+        return self.entries
+
+
+@pytest.mark.parametrize("polled", [(), ("def",)])
+def test_a_held_transfer_keeps_its_idle_time_through_a_pause_and_stalls_after_the_rest(
+    tmp_path: Path, polled: tuple[str, ...]
+) -> None:
+    now: list[float] = [0.0]
+    acquisition: _TwoTransfers = _TwoTransfers(tmp_path)
+    assert acquisition.info is not None
+    acquisition.info = replace(acquisition.info, progress=0.5, completed=2, state="downloading", amount_left=2)
+    inspector: TransferInspector = TransferInspector(acquisition, tmp_path, clock=lambda: now[0])
+    manual: tuple[AcquisitionConfirmation, ...] = tuple(
+        replace(_confirmation(), operation_id=f"op-{key}", info_hash=key) for key in polled
+    )
+    inspector.inspect((_confirmation(), *manual), stall_after_s=600)
+    now[0] = 540
+    inspector.inspect((_confirmation(), *manual), stall_after_s=600)
+    for _ in range(3):
+        now[0] += 400
+        inspector.inspect(manual, stall_after_s=600, held=frozenset({"abc"}))
+    inspector.reset_clock()
+    inspector.inspect((_confirmation(), *manual), stall_after_s=600)
+    now[0] += 59
+    inspector.inspect((_confirmation(), *manual), stall_after_s=600)
+    assert "abc" not in inspector.stalled
+    now[0] += 1
+    inspector.inspect((_confirmation(), *manual), stall_after_s=600)
+    assert "abc" in inspector.stalled
+    assert inspector.idle_s("abc") == 600
+
+
 @pytest.mark.parametrize("state", ["uploading", "stalledUP", "queuedUP", "pausedUP", "stoppedUP", "forcedUP"])
 def test_completed_selected_files_are_ready_without_unselected_pack_files(tmp_path: Path, state: str) -> None:
     (tmp_path / "Episode.mkv").write_bytes(b"data")
@@ -155,6 +193,62 @@ def test_external_save_directory_is_not_treated_as_a_library_transfer(tmp_path: 
     assert acquisition.file_calls == 0
 
 
+@pytest.mark.parametrize("directory", ["Mushoku Tensei", "../Outside", "../Sibling/Mushoku Tensei"])
+def test_legacy_transfer_preserves_directory_case_and_rejects_escaped_roots(tmp_path: Path, directory: str) -> None:
+    root: Path = tmp_path / "Workspace"
+    target: Path = root / directory
+    target.mkdir(parents=True)
+    (target / "Episode.mkv").write_bytes(b"data")
+    acquisition: _Acquisition = _Acquisition(target)
+
+    result: AcquisitionConfirmation = TransferInspector(acquisition, root).inspect((_confirmation(),))[0]
+
+    if directory == "Mushoku Tensei":
+        assert result.directory == directory
+        assert result.state is AcquisitionState.COMPLETE
+    else:
+        assert result.state is AcquisitionState.UNCERTAIN
+        assert acquisition.file_calls == 0
+
+
+def test_windows_root_comparison_ignores_case_without_lowercasing_the_directory(tmp_path: Path) -> None:
+    root: Path = tmp_path / "Workspace"
+    target: Path = root / "Mushoku Tensei"
+    target.mkdir(parents=True)
+    (target / "Episode.mkv").write_bytes(b"data")
+    acquisition: _Acquisition = _Acquisition(target)
+
+    result: AcquisitionConfirmation = TransferInspector(acquisition, Path(str(root).swapcase())).inspect(
+        (_confirmation(),)
+    )[0]
+
+    assert result.state is AcquisitionState.COMPLETE
+    assert result.directory == "Mushoku Tensei"
+
+
+@pytest.mark.parametrize("extended", [False, True])
+def test_transfer_paths_ignore_resolve_prefix_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, extended: bool
+) -> None:
+    directory: Path = tmp_path / "temp" / ".acquisition" / "operation" / "data"
+    directory.mkdir(parents=True)
+    (directory / "Episode.mkv").write_bytes(b"data")
+    acquisition: _Acquisition = _Acquisition(directory)
+    assert acquisition.info is not None
+    if extended:
+        acquisition.info = replace(acquisition.info, save_path="\\\\?\\" + str(directory))
+
+    def forbidden_resolve(path: Path, *, strict: bool = False) -> Path:
+        raise AssertionError("Transfer containment must not resolve filesystem paths")
+
+    monkeypatch.setattr(Path, "resolve", forbidden_resolve)
+    result: AcquisitionConfirmation = TransferInspector(acquisition, tmp_path).inspect((_confirmation(),))[0]
+
+    assert result.state is AcquisitionState.COMPLETE
+    assert result.directory == "temp/.acquisition/operation/data"
+    assert result.complete_files == ("Episode.mkv",)
+
+
 def test_file_details_follow_progress_and_are_reused_while_it_stands_still(tmp_path: Path) -> None:
     (tmp_path / "Episode.mkv").write_bytes(b"data")
     acquisition: _Acquisition = _Acquisition(tmp_path)
@@ -179,7 +273,10 @@ def test_a_missing_transfer_keeps_its_identity_as_uncertain(tmp_path: Path) -> N
     acquisition: _Acquisition = _Acquisition(tmp_path)
     acquisition.info = None
 
-    result: AcquisitionConfirmation = TransferInspector(acquisition, tmp_path).inspect((_confirmation(),))[0]
+    inspector: TransferInspector = TransferInspector(acquisition, tmp_path)
+    for _ in range(2):
+        assert inspector.inspect((_confirmation(),)) == (_confirmation(),)
+    result: AcquisitionConfirmation = inspector.inspect((_confirmation(),))[0]
 
     assert result.state is AcquisitionState.UNCERTAIN
     assert result.operation_id == "op-1"

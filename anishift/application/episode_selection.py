@@ -1,0 +1,1170 @@
+"""Project catalogue facts into E1 episode lists, H1 targets and owner-ranked stream offers without I/O."""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta
+from decimal import Decimal
+from enum import StrEnum
+from itertools import groupby
+from statistics import median
+from typing import Any, Final
+
+from anishift.application.discovery import VIDEO_SOURCE_SUFFIXES
+from anishift.application.episode_confidence import confidence
+from anishift.application.episode_identity import (
+    FIRST_BRACKET,
+    IdentityAssessment,
+    IdentityEvidence,
+    IdentityVerdict,
+    classify_release_name,
+    identity_evidence,
+    is_conflict,
+)
+from anishift.application.episode_releases import NAME_PRIORITY, EpisodeRelease, ReleaseFile, merge_releases
+from anishift.application.release_quality import ReleaseTraits, class_key, quality_score, release_traits
+
+__all__ = [
+    "OFFER_REASONS",
+    "AniZipMapping",
+    "CandidateNumbering",
+    "EntryGroup",
+    "EpisodeKey",
+    "EpisodeListing",
+    "EpisodeOffer",
+    "Franchise",
+    "FranchiseEntry",
+    "FranchiseGraph",
+    "FranchiseRelation",
+    "IdentityAssessment",
+    "IdentityVerdict",
+    "JsonObject",
+    "ListedEpisode",
+    "ListedSpecial",
+    "RankedCandidate",
+    "SeasonDates",
+    "StreamCandidate",
+    "confidence_text",
+    "episode_listing",
+    "first_season_numbering",
+    "franchise_traversal",
+    "franchise_view",
+    "identity_target",
+    "list_order",
+    "numbering_gap",
+    "premiere_order",
+    "quality_text",
+    "rank_candidates",
+    "representative",
+    "season_dates",
+    "size_bytes",
+    "streams_releases",
+    "suggestion",
+    "visible",
+]
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+type JsonObject = Mapping[str, Any]
+"""Raw JSON object of a catalogue response, kept exactly as the provider returned it."""
+
+_CHAIN_RELATIONS: Final[frozenset[str]] = frozenset({"PREQUEL", "SEQUEL"})
+"""AniList relations that extend the identity chain of the selected entry."""
+
+_LEAF_RELATIONS: Final[frozenset[str]] = frozenset({"SIDE_STORY", "SPIN_OFF", "ALTERNATIVE", "SUMMARY", "PARENT"})
+"""AniList relations that attach an entry without expanding its own chain."""
+
+_PARENT_RELATION: Final[str] = "PARENT"
+"""Relation through which a directly selected extra reaches its parent chain."""
+
+_SELF_RELATION: Final[str] = "SELF"
+"""Relation label of the selected entry in its own franchise view."""
+
+_ANIME_TYPE: Final[str] = "ANIME"
+"""AniList media type of every node the franchise graph keeps."""
+
+_SEASON_FORMATS: Final[frozenset[str]] = frozenset({"TV", "TV_SHORT", "ONA"})
+"""AniList formats that count as a season of the identity chain."""
+
+_EXTRA_FORMATS: Final[frozenset[str]] = frozenset({"OVA", "SPECIAL"})
+"""AniList formats shown as extras of a franchise."""
+
+_UNKNOWN_YEAR: Final[int] = 9999
+"""Sort year of a season without a start year, placing it after every dated season."""
+
+_UNKNOWN_STATUS: Final[str] = "UNKNOWN"
+"""Status value of an entry whose AniList status is absent."""
+
+_YEAR_END_MONTH: Final[int] = 13
+"""Sort month placing a premiere known only by its year after every full date of that year."""
+
+_RELEASING: Final[str] = "RELEASING"
+"""AniList status whose aired count comes from past schedule dates."""
+
+_FINISHED: Final[str] = "FINISHED"
+"""AniList status whose aired count is the AniList episode count."""
+
+_EXTRA_PREFIX: Final[str] = "Extra: "
+"""Prefix ani.zip puts before titles of extra episodes."""
+
+_HIGH_RESOLUTIONS: Final[frozenset[int]] = frozenset({1080, 2160})
+"""Heights whose matching candidate hides lower resolutions from the list (U-24)."""
+
+_HIDDEN_MAX_HEIGHT: Final[int] = 720
+"""Tallest known height hidden while a matching high-resolution candidate exists."""
+
+SMALL_SHARE: Final[float] = 0.5
+"""Share of the reference episode file of one resolution below which a release counts as a small re-encode."""
+
+SIZE_OUTLIER: Final[float] = 4.0
+"""Multiple of the median file size above which a release, such as a batch or collection, sets no reference."""
+
+_SIZE: Final[re.Pattern[str]] = re.compile(r"(?i)(\d+(?:[.,]\d+)?)\s*([KMGT])(i?)B\b")
+"""Read a human size such as ``1.4 GiB`` or ``395.9 MB``."""
+
+_SIZE_POWERS: Final[Mapping[str, int]] = {"K": 1, "M": 2, "G": 3, "T": 4}
+"""Power of the unit base each size prefix stands for."""
+
+_CONTAINER: Final[re.Pattern[str]] = re.compile(r"[^/\\]\.([^\s./\\()\[\]{}]+)$")
+"""Final suffix of the selected file name; a dot followed by spaces or brackets, as in ``(TrueHD 5.1)``, is not one."""
+
+_EARLY: Final[timedelta] = timedelta(days=2)
+"""Margin before an episode's air date within which a release may still be that episode."""
+
+_MATCH_EARLY: Final[timedelta] = timedelta(days=30)
+"""Margin before an episode's air date beyond which even a matching release is an older episode."""
+
+_ECHO_BEFORE: Final[timedelta] = timedelta(days=1)
+"""Earliest publication before a season episode aired that still counts as its weekly release."""
+
+_ECHO_AFTER: Final[timedelta] = timedelta(days=3)
+"""Latest publication after a season episode aired that still counts as its weekly release."""
+
+_ECHO_GAP: Final[timedelta] = timedelta(days=14)
+"""Shortest delay after the target aired for a weekly release of another episode number."""
+
+_WEEKLY_MARGIN: Final[timedelta] = timedelta(days=14)
+"""Margin before an unscheduled episode's weekly estimated air date."""
+
+_ABSOLUTE_LATE: Final[timedelta] = timedelta(days=14)
+"""Latest publication after the target aired at which a bare absolute number may still be the target."""
+
+_NUMBERING_REASONS: Final[frozenset[str]] = frozenset(
+    {
+        "A franchise alias does not identify this installment.",
+        "Bare number is not the local episode; absolute numbering is not established.",
+        "Mapped number equals the target absolute number; numbering is ambiguous.",
+    }
+)
+"""H1 reasons that leave only the numbering system of a bare number unresolved."""
+
+_CHECKSUM: Final[re.Pattern[str]] = re.compile(r"[\[(]([0-9A-Fa-f]{8})[\])]")
+"""CRC32 of a file written in brackets or parentheses."""
+
+_PUBLISHED_EARLY: Final[IdentityAssessment] = IdentityAssessment(
+    IdentityVerdict.MISMATCH, "Published before the target episode aired."
+)
+"""Verdict of a release published more than the margin before the target episode aired."""
+
+_ABSOLUTE_ONLY: Final[IdentityAssessment] = IdentityAssessment(
+    IdentityVerdict.MATCH, "Bare number is the target absolute number; no local episode had that number yet."
+)
+"""Verdict of a bare absolute number published near the target air date that the season rules out as local."""
+
+_WEEKLY_ECHO: Final[IdentityAssessment] = IdentityAssessment(
+    IdentityVerdict.MISMATCH, "Published when the season episode with this number aired."
+)
+"""Verdict of another episode number published with that season episode, weeks after the target aired."""
+
+_BEYOND_SEASON: Final[IdentityAssessment] = IdentityAssessment(
+    IdentityVerdict.MISMATCH, "Bare number lies beyond the target season."
+)
+"""Verdict of a bare number above the last absolute number of the target season."""
+
+_GROUP_NUMBERING: Final[IdentityAssessment] = IdentityAssessment(
+    IdentityVerdict.MISMATCH, "Release group numbers this season from 1."
+)
+"""Verdict of a group's SxxEyy absolute-number echo published once that local episode aired, beside its local match."""
+
+_GROUP_SEASON: Final[IdentityAssessment] = IdentityAssessment(
+    IdentityVerdict.MISMATCH, "Release group marks the target season elsewhere in the offer."
+)
+"""Verdict of a group's unmarked franchise-alias local number once it marks the target season in a match."""
+
+_CHECKSUM_REASON: Final[str] = "File checksum equals an assessed release."
+"""Explain a verdict taken over from another row carrying the same CRC32."""
+
+OFFER_REASONS: Final[frozenset[str]] = frozenset(
+    {
+        _PUBLISHED_EARLY.reason,
+        _ABSOLUTE_ONLY.reason,
+        _WEEKLY_ECHO.reason,
+        _BEYOND_SEASON.reason,
+        _GROUP_NUMBERING.reason,
+        _GROUP_SEASON.reason,
+        _CHECKSUM_REASON,
+    }
+)
+"""Explanations the offer rules give beside the frozen H1 reasons."""
+
+
+class EntryGroup(StrEnum):
+    """Group of a franchise entry in the view, in display order."""
+
+    SEASON = "season"
+    EXTRA = "extra"
+    OTHER = "other"
+
+
+@dataclass(frozen=True, slots=True)
+class FranchiseEntry:
+    """One AniList entry of a franchise view."""
+
+    anilist_id: int
+    romaji: str
+    english: str | None
+    native: str | None
+    format: str | None
+    status: str
+    year: int | None
+    start: date | None
+    relation: str
+    group: EntryGroup
+
+
+@dataclass(frozen=True, slots=True)
+class FranchiseRelation:
+    """One fetched AniList relation between two anime entries."""
+
+    source_id: int
+    target_id: int
+    relation: str
+
+
+@dataclass(frozen=True, slots=True)
+class Franchise:
+    """Franchise view of the selected entry with its real relations."""
+
+    selected_id: int
+    entries: tuple[FranchiseEntry, ...]
+    relations: tuple[FranchiseRelation, ...]
+    complete: bool
+
+
+@dataclass(frozen=True, slots=True)
+class FranchiseGraph:
+    """Every fetched franchise node as raw AniList JSON, internal to the service and the H1 target builder."""
+
+    root_id: int
+    nodes: Mapping[int, JsonObject]
+    queried: frozenset[int]
+    complete: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ListedEpisode:
+    """One numbered episode of an entry."""
+
+    number: int
+    title: str | None = None
+    airs_at: datetime | None = None
+    season: int | None = None
+    episode: int | None = None
+    absolute: int | None = None
+    aired: bool = False
+    airs_at_fallback: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ListedSpecial:
+    """One ani.zip special keyed ``S1``, ``S2`` and so on."""
+
+    key: str
+    title: str | None
+    airs_on: date | None
+
+
+@dataclass(frozen=True, slots=True)
+class AniZipMapping:
+    """Parsed ani.zip mapping of one entry together with its raw ``episodes`` object."""
+
+    kitsu_id: int | None
+    catalog_type: str | None
+    episode_count: int | None
+    episodes: tuple[ListedEpisode, ...]
+    specials: tuple[ListedSpecial, ...]
+    max_age_s: int | None
+    raw_episodes: Mapping[str, JsonObject]
+
+
+@dataclass(frozen=True, slots=True)
+class EpisodeListing:
+    """Episode list of one entry joined from ani.zip, the AniList schedule and the episode count."""
+
+    anilist_id: int
+    kitsu_id: int | None
+    catalog_type: str | None
+    status: str
+    episode_count: int | None
+    episodes: tuple[ListedEpisode, ...]
+    specials: tuple[ListedSpecial, ...]
+    aired: int | None
+    schedule_warning: str | None
+    schedule_retry_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class StreamCandidate:
+    """One release stream as its source returned it, with the language declarations that source made."""
+
+    info_hash: str
+    name: str | None
+    file_index: int | None
+    file_name: str | None
+    release: str
+    path: str | None
+    seeders: int | None
+    size_text: str | None
+    provider: str | None
+    tags: tuple[str, ...]
+    trackers: tuple[str, ...]
+    source: str = "torrentio"
+    subtitle_languages: tuple[str, ...] = ()
+    audio_languages: tuple[str, ...] = ()
+    language_tags: tuple[str, ...] = ()
+    file_count: int | None = None
+    torrent_id: int | None = None
+    file_size: int | None = None
+    published: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SeasonDates:
+    """Air dates of the season's local episodes, its AniList episode count and whether AniList schedules it."""
+
+    aired: Mapping[int, datetime]
+    episodes: int | None
+    scheduled: bool
+
+
+@dataclass(frozen=True, slots=True)
+class EpisodeKey:
+    """One episode of one AniList entry."""
+
+    anilist_id: int
+    number: int
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateNumbering:
+    """Expose only the parsed and target numbers needed to explain a release row."""
+
+    mode: str
+    season: int | None
+    number: Decimal | None
+    part: int | None
+    local: int | None
+    episode: int | None
+    absolute: int | None
+    target_season: int | None
+    named_season: int | None
+    target_part: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class RankedCandidate:
+    """One release row assessed on its representative file, with quality, confidence and usability."""
+
+    stream: StreamCandidate
+    identity: IdentityAssessment
+    traits: ReleaseTraits
+    quality: float
+    confidence: float | None
+    conflict: bool
+    ambiguous: bool
+    release_name_only: bool
+    supported: bool | None
+    files: tuple[str, ...]
+    numbering: CandidateNumbering | None = None
+    pack: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class EpisodeOffer:
+    """Ranked streams of one episode with the suggested index; derived numbering suggests only a match."""
+
+    key: EpisodeKey
+    candidates: tuple[RankedCandidate, ...]
+    suggestion: int | None
+    checked_at: datetime
+    counts: dict[str, int]
+    numbering: bool = True
+    source_lines: tuple[str, ...] = ()
+    status: str | None = None
+    pending: tuple[str, ...] = ()
+    derived_numbering: bool = False
+
+
+def franchise_traversal(
+    selected_id: int, nodes: Mapping[int, JsonObject], queried: frozenset[int]
+) -> tuple[frozenset[int], frozenset[int], frozenset[int]]:
+    """Return the identity chain, the displayed entries and the unexpanded chain nodes of *selected_id*."""
+    chain, attached, missing = _walk(selected_id, nodes, queried)
+    return frozenset(chain), frozenset(attached), missing
+
+
+def franchise_view(graph: FranchiseGraph, selected_id: int) -> Franchise:
+    """Project the franchise view of *selected_id* from the fetched graph."""
+    chain, attached, missing = _walk(selected_id, graph.nodes, graph.queried)
+    members: frozenset[int] = frozenset(chain)
+    entries: list[FranchiseEntry] = [
+        _entry(graph.nodes[identifier], relation, in_chain=identifier in members)
+        for identifier, relation in attached.items()
+    ]
+    entries.sort(key=_entry_order, reverse=True)
+    return Franchise(
+        selected_id=selected_id,
+        entries=tuple(entries),
+        relations=_relations(graph.nodes),
+        complete=not missing,
+    )
+
+
+def identity_target(
+    graph: FranchiseGraph, selected_id: int, mapping: AniZipMapping, number: int, *, numbering: bool = True
+) -> dict[str, object]:
+    """Build the H1 target of one local episode; without *numbering* its episode fields stay empty."""
+    nodes: Mapping[int, JsonObject] = graph.nodes
+    chain, _, missing = _walk(selected_id, nodes, graph.queried)
+    members: frozenset[int] = frozenset(chain)
+    titles: list[str] = _titles(nodes[selected_id], sort_keys=True)
+    first_season: JsonObject | None = None if missing else _first_season(chain, nodes)
+    if first_season is not None:
+        titles.extend(_titles(first_season))
+    key: str = str(number)
+    episode: JsonObject = (mapping.raw_episodes.get(key) or {}) if numbering else {}
+    return {
+        "aliases": list(dict.fromkeys(titles)),
+        "type": nodes[selected_id]["format"],
+        "local_episode": number,
+        "episodes": nodes[selected_id].get("episodes"),
+        "season": episode.get("seasonNumber"),
+        "episode": episode.get("episodeNumber"),
+        "absolute": episode.get("absoluteEpisodeNumber"),
+        "episode_title": _episode_title(episode),
+        "other_series": list(
+            dict.fromkeys(
+                title for identifier, node in nodes.items() if identifier not in members for title in _titles(node)
+            )
+        ),
+        "other_episode_titles": [
+            title for other, value in mapping.raw_episodes.items() if other != key and (title := _episode_title(value))
+        ],
+    }
+
+
+def first_season_numbering(mapping: AniZipMapping, number: int) -> AniZipMapping:
+    """Return *mapping* numbering local episode *number* as season one with the same episode and absolute number."""
+    key: str = str(number)
+    episode: dict[str, object] = {
+        **(mapping.raw_episodes.get(key) or {}),
+        "seasonNumber": 1,
+        "episodeNumber": number,
+        "absoluteEpisodeNumber": number,
+    }
+    return replace(mapping, raw_episodes={**mapping.raw_episodes, key: episode})
+
+
+def numbering_gap(mapping: AniZipMapping, number: int, tvdb_season: int | None, *, movie: bool) -> str | None:
+    """Return why local episode *number* lacks target numbering: ``none``, ``duplicate`` or ``tvdb_season``."""
+    if movie:
+        return None
+    pair: tuple[int, int] | None = _season_episode(mapping.raw_episodes.get(str(number)))
+    if pair is None:
+        return "none"
+    if any(
+        key.isascii() and key.isdecimal() and int(key) < number and _season_episode(value) == pair
+        for key, value in mapping.raw_episodes.items()
+    ):
+        return "duplicate"
+    if tvdb_season is not None and pair[0] != tvdb_season:
+        return "tvdb_season"
+    return None
+
+
+def _season_episode(episode: JsonObject | None) -> tuple[int, int] | None:
+    if episode is None:
+        return None
+    season: object = episode.get("seasonNumber")
+    number: object = episode.get("episodeNumber")
+    return (season, number) if type(season) is int and type(number) is int else None
+
+
+def episode_listing(  # noqa: PLR0913
+    anilist_id: int,
+    mapping: AniZipMapping,
+    status: str,
+    episode_count: int | None,
+    schedule: Sequence[ListedEpisode],
+    now: datetime,
+    *,
+    schedule_warning: str | None = None,
+    schedule_retry_at: datetime | None = None,
+) -> EpisodeListing:
+    """Join ani.zip episodes with the AniList schedule and fill numbers up to the known episode count.
+
+    Without an AniList count the ani.zip count stands, raised to the highest AniList schedule number.
+    An episode is aired when its AniList date has passed; without an AniList date, when U-15 confirms
+    its number against the AniList aired count. An ani.zip date never confirms airing and marks
+    the episode with ``airs_at_fallback``.
+    """
+    count: int | None = episode_count
+    if count is None and mapping.episode_count is not None:
+        count = max((mapping.episode_count, *(planned.number for planned in schedule)))
+    aired: int | None = _aired(status, episode_count, schedule, now)
+    dated: dict[int, datetime] = {
+        planned.number: planned.airs_at for planned in schedule if planned.airs_at is not None
+    }
+    listed: dict[int, ListedEpisode] = {episode.number: episode for episode in mapping.episodes}
+    for planned in schedule:
+        known: ListedEpisode | None = listed.get(planned.number)
+        listed[planned.number] = planned if known is None else replace(known, airs_at=planned.airs_at or known.airs_at)
+    for number in range(1, (count or 0) + 1):
+        listed.setdefault(number, ListedEpisode(number=number))
+    return EpisodeListing(
+        anilist_id=anilist_id,
+        kitsu_id=mapping.kitsu_id,
+        catalog_type=mapping.catalog_type,
+        status=status,
+        episode_count=count,
+        episodes=tuple(
+            replace(
+                listed[number],
+                aired=_episode_aired(number, dated.get(number), aired, now),
+                airs_at_fallback=listed[number].airs_at is not None and number not in dated,
+            )
+            for number in sorted(listed)
+        ),
+        specials=mapping.specials,
+        aired=aired,
+        schedule_warning=schedule_warning,
+        schedule_retry_at=schedule_retry_at,
+    )
+
+
+def season_dates(listing: EpisodeListing, episodes: int | None) -> SeasonDates:
+    """Return the dated local episodes of *listing*, the AniList count *episodes* and whether AniList dates any."""
+    return SeasonDates(
+        aired={episode.number: episode.airs_at for episode in listing.episodes if episode.airs_at is not None},
+        episodes=episodes,
+        scheduled=any(episode.airs_at is not None and not episode.airs_at_fallback for episode in listing.episodes),
+    )
+
+
+def streams_releases(
+    streams: Sequence[StreamCandidate], *, pack_name: Callable[[str], bool]
+) -> tuple[EpisodeRelease, ...]:
+    """Merge source streams without file inventories into releases for ranking."""
+    return merge_releases(streams, {}, pack_name=pack_name)
+
+
+def representative(
+    assessed: Sequence[tuple[ReleaseFile, IdentityEvidence]],
+) -> tuple[ReleaseFile, IdentityEvidence]:
+    """Return the file best matching the target: match, uncertain, conflict, then confidence, then path."""
+    return min(
+        assessed,
+        key=lambda item: (_identity_rank(item[1].assessment), -confidence(item[1]), item[0].scope or ""),
+    )
+
+
+def rank_candidates(
+    target: Mapping[str, object],
+    releases: Sequence[EpisodeRelease],
+    *,
+    donghua: bool,
+    dates: SeasonDates | None = None,
+    single: Callable[[str], bool] | None = None,
+) -> tuple[RankedCandidate, ...]:
+    """Assess every release, apply the offer rules, mark small re-encodes when *single* names one episode, order."""
+    assessed: tuple[tuple[RankedCandidate, IdentityEvidence], ...] = tuple(
+        _ranked(target, release, donghua=donghua) for release in releases
+    )
+    marking: frozenset[str] = frozenset(
+        group for row, evidence in assessed if _marks_season(row, evidence) and (group := _release_group(row))
+    )
+    local: frozenset[str] = frozenset(
+        group for row, evidence in assessed if _local_match(row, evidence) and (group := _release_group(row))
+    )
+    ruled: tuple[RankedCandidate, ...] = tuple(
+        _offer_rule(row, evidence, dates, marking=marking, local=local) for row, evidence in assessed
+    )
+    checked: tuple[RankedCandidate, ...] = _same_checksum(ruled)
+    return list_order(checked if single is None else _mark_small(checked, single))
+
+
+def list_order(candidates: Sequence[RankedCandidate]) -> tuple[RankedCandidate, ...]:
+    """Order rows by group, class and weighted quality; adjacent rows showing equal values go by match, then seeds."""
+    ordered: list[RankedCandidate] = sorted(candidates, key=_list_key)
+    return tuple(row for _, run in groupby(ordered, key=_shown_signature) for row in sorted(run, key=_tie_key))
+
+
+def quality_text(candidate: RankedCandidate) -> str:
+    """Return the quality exactly as the release list shows it."""
+    return f"{candidate.quality:.0f}"
+
+
+def confidence_text(candidate: RankedCandidate) -> str | None:
+    """Return the confidence exactly as the release list shows it, or None when it is unknown."""
+    return None if candidate.confidence is None else f"{candidate.confidence:.0%}"
+
+
+def _suggestible(candidate: RankedCandidate) -> bool:
+    return not candidate.conflict and not candidate.traits.dub_only and candidate.supported is not False
+
+
+def size_bytes(text: str) -> int | None:
+    """Return the bytes a human size names, ``GiB`` on base 1024 and ``GB`` on base 1000, or None without one."""
+    found: re.Match[str] | None = _SIZE.search(text)
+    if found is None:
+        return None
+    base: int = 1024 if found.group(3) else 1000
+    return int(float(found.group(1).replace(",", ".")) * base ** _SIZE_POWERS[found.group(2).upper()])
+
+
+def visible(candidates: Sequence[RankedCandidate], keep: int | None = None) -> tuple[RankedCandidate, ...]:
+    """Hide mismatches, unseeded rows, others beside a live match, low beside high (U-24); small re-encodes go last."""
+    live: list[RankedCandidate] = [candidate for candidate in candidates if candidate.traits.seeders != 0]
+    matched: bool = any(candidate.identity.verdict is IdentityVerdict.MATCH for candidate in live)
+    high: bool = any(
+        candidate.identity.verdict is IdentityVerdict.MATCH
+        and candidate.traits.resolution in _HIGH_RESOLUTIONS
+        and _suggestible(candidate)
+        for candidate in live
+    )
+    shown: list[RankedCandidate] = [
+        candidate
+        for index, candidate in enumerate(candidates)
+        if candidate.identity.verdict is not IdentityVerdict.MISMATCH
+        and (index == keep or candidate.traits.seeders != 0)
+        and (not matched or index == keep or candidate.identity.verdict is IdentityVerdict.MATCH)
+        and (
+            not high
+            or index == keep
+            or candidate.traits.resolution is None
+            or candidate.traits.resolution > _HIDDEN_MAX_HEIGHT
+        )
+    ]
+    return _small_last(shown)
+
+
+def suggestion(
+    candidates: Sequence[RankedCandidate], *, numbering: bool, match_only: bool = False
+) -> tuple[int | None, bool]:
+    """Return the first seeded usable row, a match when usable and no small re-encode first, and whether uncertain."""
+    usable: list[tuple[int, RankedCandidate]] = [
+        (position, candidate)
+        for position, candidate in enumerate(candidates)
+        if _suggestible(candidate) and candidate.traits.seeders != 0
+    ]
+    matches: list[int] = [position for position, item in usable if item.identity.verdict is IdentityVerdict.MATCH]
+    pool: list[int] = matches if match_only or matches else [position for position, _item in usable]
+    index: int | None = _full_first(candidates, pool)
+    if not numbering or index is None:
+        return None, False
+    return index, candidates[index].identity.verdict is not IdentityVerdict.MATCH
+
+
+def _walk(
+    selected_id: int, nodes: Mapping[int, JsonObject], queried: frozenset[int]
+) -> tuple[tuple[int, ...], dict[int, str], frozenset[int]]:
+    pending: list[int] = [selected_id]
+    chain: dict[int, None] = {}
+    attached: dict[int, str] = {selected_id: _SELF_RELATION}
+    missing: set[int] = set()
+    while pending:
+        identifier: int = pending.pop()
+        if identifier in chain:
+            continue
+        chain[identifier] = None
+        node: JsonObject = nodes[identifier]
+        if "relations" not in node or (not node["relations"]["edges"] and identifier not in queried):
+            missing.add(identifier)
+            continue
+        parent_entry: bool = identifier == selected_id and node["format"] in _EXTRA_FORMATS
+        edges: list[tuple[str, int]] = list(_followed_edges(node))
+        for relation, target_id in edges:
+            attached.setdefault(target_id, relation)
+        pending.extend(
+            target_id
+            for relation, target_id in edges
+            if relation in _CHAIN_RELATIONS or (parent_entry and relation == _PARENT_RELATION)
+        )
+    return tuple(chain), attached, frozenset(missing)
+
+
+def _followed_edges(node: JsonObject) -> Iterator[tuple[str, int]]:
+    for edge in node["relations"]["edges"]:
+        relation: str = edge["relationType"]
+        if edge["node"]["type"] == _ANIME_TYPE and relation in _CHAIN_RELATIONS | _LEAF_RELATIONS:
+            yield relation, edge["node"]["id"]
+
+
+def _anime_edges(node: JsonObject) -> Iterator[tuple[str, int]]:
+    for edge in (node.get("relations") or {}).get("edges") or ():
+        if edge["node"]["type"] == _ANIME_TYPE:
+            yield edge["relationType"], edge["node"]["id"]
+
+
+def _relations(nodes: Mapping[int, JsonObject]) -> tuple[FranchiseRelation, ...]:
+    edges: set[tuple[int, int, str]] = {
+        (identifier, target_id, relation)
+        for identifier, node in nodes.items()
+        for relation, target_id in _anime_edges(node)
+    }
+    return tuple(FranchiseRelation(source, target, relation) for source, target, relation in sorted(edges))
+
+
+def _entry(node: JsonObject, relation: str, *, in_chain: bool) -> FranchiseEntry:
+    title: JsonObject = node.get("title") or {}
+    start: JsonObject = node.get("startDate") or {}
+    status: object = node.get("status")
+    return FranchiseEntry(
+        anilist_id=node["id"],
+        romaji=str(title.get("romaji") or ""),
+        english=title.get("english"),
+        native=title.get("native"),
+        format=node.get("format"),
+        status=status if isinstance(status, str) else _UNKNOWN_STATUS,
+        year=start.get("year") or node.get("seasonYear"),
+        start=_start_date(start),
+        relation=relation,
+        group=_group(node.get("format"), in_chain=in_chain),
+    )
+
+
+def _group(media_format: str | None, *, in_chain: bool) -> EntryGroup:
+    if media_format in _EXTRA_FORMATS:
+        return EntryGroup.EXTRA
+    if media_format in _SEASON_FORMATS and in_chain:
+        return EntryGroup.SEASON
+    return EntryGroup.OTHER
+
+
+def _start_date(start: JsonObject) -> date | None:
+    parts: tuple[object, ...] = (start.get("year"), start.get("month"), start.get("day"))
+    if not all(isinstance(part, int) for part in parts):
+        return None
+    return date(start["year"], start["month"], start["day"])
+
+
+def premiere_order(year: int | None, start: date | None) -> tuple[bool, int, int, int]:
+    """Order premieres ascending with undated announcements as the newest; a bare year closes its year."""
+    if year is None:
+        return True, 0, 0, 0
+    if start is None:
+        return False, year, _YEAR_END_MONTH, 0
+    return False, year, start.month, start.day
+
+
+def _entry_order(entry: FranchiseEntry) -> tuple[bool, int, int, int, int]:
+    return *premiere_order(entry.year, entry.start), entry.anilist_id
+
+
+def _titles(node: JsonObject, *, sort_keys: bool = False) -> list[str]:
+    title: JsonObject = node.get("title") or {}
+    keys: list[str] = sorted(title) if sort_keys else list(title)
+    return [title[key] for key in keys if title[key]]
+
+
+def _first_season(chain: Sequence[int], nodes: Mapping[int, JsonObject]) -> JsonObject | None:
+    seasons: list[JsonObject] = [
+        nodes[identifier]
+        for identifier in chain
+        if identifier in nodes and nodes[identifier]["format"] in _SEASON_FORMATS
+    ]
+    return min(seasons, key=_season_order, default=None)
+
+
+def _season_order(node: JsonObject) -> tuple[int, int]:
+    return (node.get("startDate") or {}).get("year") or _UNKNOWN_YEAR, node["id"]
+
+
+def _episode_title(episode: JsonObject) -> str | None:
+    value: object = episode.get("title")
+    if isinstance(value, Mapping):
+        value = value.get("en") or value.get("x-jat")
+    return value.removeprefix(_EXTRA_PREFIX).replace("`", "'") if isinstance(value, str) and value else None
+
+
+def _aired(status: str, episode_count: int | None, schedule: Sequence[ListedEpisode], now: datetime) -> int | None:
+    if status == _FINISHED:
+        return episode_count
+    if status != _RELEASING or not schedule:
+        return None
+    return sum(1 for planned in schedule if planned.airs_at is not None and planned.airs_at <= now)
+
+
+def _episode_aired(number: int, anilist_date: datetime | None, aired: int | None, now: datetime) -> bool:
+    if anilist_date is not None:
+        return anilist_date <= now
+    return aired is not None and number <= aired
+
+
+def _container(file_name: str | None) -> str | None:
+    found: re.Match[str] | None = _CONTAINER.search(file_name or "")
+    return f".{found.group(1).casefold()}" if found else None
+
+
+def _identity_rank(assessment: IdentityAssessment) -> int:
+    if assessment.verdict is IdentityVerdict.MATCH:
+        return 0
+    return 2 if is_conflict(assessment) else 1
+
+
+def _ranked(
+    target: Mapping[str, object], release: EpisodeRelease, *, donghua: bool
+) -> tuple[RankedCandidate, IdentityEvidence]:
+    assessed: tuple[tuple[ReleaseFile, IdentityEvidence], ...] = tuple(
+        (file, identity_evidence(target, file.identity_candidate(release.name))) for file in release.files
+    )
+    file: ReleaseFile | None = None
+    identity: IdentityAssessment
+    evidence: IdentityEvidence
+    if assessed:
+        file, evidence = representative(assessed)
+        identity = evidence.assessment
+    else:
+        identity = classify_release_name(target, release.name)
+        evidence = identity_evidence(target, {"release": release.name})
+    traits: ReleaseTraits = release_traits(
+        release.names,
+        release.tags,
+        release.declarations,
+        file=None if file is None else file.scope,
+        pack=release.pack,
+        donghua=donghua,
+        seeders=release.seeders,
+        file_names=() if file is None else file.names,
+    )
+    container: str | None = _container(None if file is None else file.filename or file.path)
+    conflict: bool = is_conflict(identity)
+    row: RankedCandidate = RankedCandidate(
+        stream=_row_stream(release, file),
+        identity=identity,
+        traits=traits,
+        quality=quality_score(traits),
+        confidence=None if conflict else confidence(evidence),
+        conflict=conflict,
+        ambiguous=sum(1 for _, item in assessed if item.assessment.verdict is IdentityVerdict.MATCH) > 1,
+        release_name_only=not assessed,
+        supported=None if container is None else container in VIDEO_SOURCE_SUFFIXES,
+        files=tuple(scope for item in release.files if (scope := item.scope) is not None),
+        numbering=CandidateNumbering(
+            mode=evidence.mode,
+            season=evidence.season,
+            number=evidence.number,
+            part=evidence.part,
+            local=evidence.local,
+            episode=evidence.episode,
+            absolute=evidence.absolute,
+            target_season=evidence.target_season,
+            named_season=evidence.named_season,
+            target_part=evidence.target_part,
+        ),
+        pack=release.pack,
+    )
+    return row, evidence
+
+
+def _release_group(row: RankedCandidate) -> str | None:
+    found: re.Match[str] | None = FIRST_BRACKET.match(row.stream.release)
+    return found.group(1).strip().casefold() if found else None
+
+
+def _offer_rule(
+    row: RankedCandidate,
+    evidence: IdentityEvidence,
+    dates: SeasonDates | None,
+    *,
+    marking: frozenset[str],
+    local: frozenset[str],
+) -> RankedCandidate:
+    if row.identity.verdict is IdentityVerdict.MATCH:
+        return _ruled(row, _PUBLISHED_EARLY) if _published_early(row, evidence, dates, _MATCH_EARLY) else row
+    if row.identity.verdict is not IdentityVerdict.INSUFFICIENT:
+        return row
+    assessment: IdentityAssessment | None = None
+    if dates is not None and _beyond_season(evidence, dates):
+        assessment = _BEYOND_SEASON
+    elif _published_early(row, evidence, dates, _EARLY):
+        assessment = _PUBLISHED_EARLY
+    elif dates is not None and _absolute_only(row, evidence, dates):
+        assessment = _ABSOLUTE_ONLY
+    elif dates is not None and _weekly_echo(row, evidence, dates):
+        assessment = _WEEKLY_ECHO
+    elif dates is not None and _release_group(row) in local and _group_echo(row, evidence, dates):
+        assessment = _GROUP_NUMBERING
+    elif _release_group(row) in marking and _unmarked_local(row, evidence):
+        assessment = _GROUP_SEASON
+    return row if assessment is None else _ruled(row, assessment)
+
+
+def _ruled(row: RankedCandidate, assessment: IdentityAssessment) -> RankedCandidate:
+    if assessment.verdict is IdentityVerdict.MATCH:
+        return replace(row, identity=assessment, conflict=False)
+    return replace(row, identity=assessment, conflict=True, confidence=None)
+
+
+def _bare(evidence: IdentityEvidence) -> bool:
+    return evidence.mode == "plain" and evidence.season is None
+
+
+def _season_marked(evidence: IdentityEvidence) -> bool:
+    return evidence.season is not None and evidence.season in (evidence.target_season, evidence.named_season)
+
+
+def _whole(number: Decimal | None) -> int | None:
+    return int(number) if number is not None and number == int(number) else None
+
+
+def _published_early(
+    row: RankedCandidate, evidence: IdentityEvidence, dates: SeasonDates | None, margin: timedelta
+) -> bool:
+    published: datetime | None = row.stream.published
+    aired: datetime | None = None if dates is None or evidence.local is None else dates.aired.get(evidence.local)
+    return published is not None and aired is not None and published < aired - margin
+
+
+def _beyond_season(evidence: IdentityEvidence, dates: SeasonDates) -> bool:
+    number: int | None = _whole(evidence.number)
+    return (
+        _bare(evidence)
+        and number is not None
+        and dates.episodes is not None
+        and evidence.absolute is not None
+        and evidence.local is not None
+        and number > evidence.absolute - evidence.local + dates.episodes
+    )
+
+
+def _absolute_only(row: RankedCandidate, evidence: IdentityEvidence, dates: SeasonDates) -> bool:
+    return (
+        not row.conflict
+        and row.identity.reason in _NUMBERING_REASONS
+        and _bare(evidence)
+        and evidence.local is not None
+        and evidence.number is not None
+        and evidence.number == evidence.absolute
+        and evidence.number != evidence.local
+        and evidence.residual_ok
+        and evidence.year_ok
+        and not evidence.multiple_works
+        and _local_impossible(row.stream.published, int(evidence.number), evidence.local, dates)
+    )
+
+
+def _local_impossible(published: datetime | None, number: int, local: int, dates: SeasonDates) -> bool:
+    target: datetime | None = dates.aired.get(local)
+    if published is None or target is None or published > target + _ABSOLUTE_LATE:
+        return False
+    if dates.episodes is not None and number > dates.episodes:
+        return True
+    aired: datetime | None = dates.aired.get(number)
+    if aired is not None:
+        return published < aired - _EARLY
+    return dates.scheduled and published < target + timedelta(weeks=number - local) - _WEEKLY_MARGIN
+
+
+def _weekly_echo(row: RankedCandidate, evidence: IdentityEvidence, dates: SeasonDates) -> bool:
+    number: int | None = _whole(evidence.number)
+    published: datetime | None = row.stream.published
+    if number is None or evidence.local is None or published is None or number == evidence.local:
+        return False
+    aired: datetime | None = dates.aired.get(number)
+    target: datetime | None = dates.aired.get(evidence.local)
+    return (
+        (_bare(evidence) or _season_marked(evidence))
+        and not evidence.episode_anchor
+        and aired is not None
+        and target is not None
+        and aired - _ECHO_BEFORE <= published <= aired + _ECHO_AFTER
+        and published > target + _ECHO_GAP
+    )
+
+
+def _local_match(row: RankedCandidate, evidence: IdentityEvidence) -> bool:
+    return (
+        row.identity.verdict is IdentityVerdict.MATCH
+        and evidence.number is not None
+        and evidence.number == evidence.local
+    )
+
+
+def _group_echo(row: RankedCandidate, evidence: IdentityEvidence, dates: SeasonDates) -> bool:
+    number: int | None = _whole(evidence.number)
+    published: datetime | None = row.stream.published
+    aired: datetime | None = None if number is None else dates.aired.get(number)
+    return (
+        not row.conflict
+        and evidence.mode == "mapped"
+        and _season_marked(evidence)
+        and number is not None
+        and number == evidence.absolute
+        and number != evidence.local
+        and not evidence.episode_anchor
+        and published is not None
+        and aired is not None
+        and published >= aired - _ECHO_BEFORE
+    )
+
+
+def _marks_season(row: RankedCandidate, evidence: IdentityEvidence) -> bool:
+    return row.identity.verdict is IdentityVerdict.MATCH and (
+        _season_marked(evidence) or (evidence.anchor and not evidence.broad)
+    )
+
+
+def _unmarked_local(row: RankedCandidate, evidence: IdentityEvidence) -> bool:
+    return (
+        not row.conflict
+        and _bare(evidence)
+        and evidence.broad
+        and evidence.number is not None
+        and evidence.number == evidence.local
+        and evidence.absolute is not None
+        and evidence.absolute != evidence.local
+    )
+
+
+def _checksum(row: RankedCandidate) -> str | None:
+    for text in (row.stream.file_name or "", row.stream.release):
+        found: list[str] = _CHECKSUM.findall(text)
+        if found:
+            return found[-1].upper()
+    return None
+
+
+def _same_checksum(rows: tuple[RankedCandidate, ...]) -> tuple[RankedCandidate, ...]:
+    decided: dict[str, set[IdentityVerdict]] = {}
+    for row in rows:
+        checksum: str | None = _checksum(row)
+        if checksum is not None and row.identity.verdict is not IdentityVerdict.INSUFFICIENT:
+            decided.setdefault(checksum, set()).add(row.identity.verdict)
+    return tuple(_checksum_verdict(row, decided) for row in rows)
+
+
+def _checksum_verdict(row: RankedCandidate, decided: Mapping[str, set[IdentityVerdict]]) -> RankedCandidate:
+    checksum: str | None = _checksum(row)
+    verdicts: set[IdentityVerdict] = decided.get(checksum, set()) if checksum is not None else set()
+    if row.identity.verdict is not IdentityVerdict.INSUFFICIENT or len(verdicts) != 1:
+        return row
+    return _ruled(row, IdentityAssessment(next(iter(verdicts)), _CHECKSUM_REASON))
+
+
+def _row_stream(release: EpisodeRelease, file: ReleaseFile | None) -> StreamCandidate:
+    return StreamCandidate(
+        info_hash=release.info_hash,
+        name=None,
+        file_index=release.file_hint if file is None else file.file_index,
+        file_name=None if file is None else file.filename,
+        release=release.name,
+        path=None if file is None else file.path,
+        seeders=release.seeders,
+        size_text=release.size_text,
+        provider=None,
+        tags=release.tags,
+        trackers=release.trackers,
+        source=next(source for source in NAME_PRIORITY if source in release.sources),
+        torrent_id=release.torrent_id,
+        file_size=None if file is None else file.size,
+        published=release.published,
+    )
+
+
+def _list_key(candidate: RankedCandidate) -> tuple[float | str, ...]:
+    certainty: float = 0.0 if candidate.confidence is None else candidate.confidence
+    return (
+        *_class_prefix(candidate),
+        -_weighted(candidate),
+        -certainty,
+        -_seeders(candidate),
+        candidate.stream.info_hash,
+    )
+
+
+def _class_prefix(candidate: RankedCandidate) -> tuple[int, ...]:
+    group: int = 2 if candidate.conflict else int(candidate.traits.dub_only)
+    return group, int(candidate.supported is False), *class_key(candidate.traits)
+
+
+def _shown_signature(candidate: RankedCandidate) -> tuple[object, ...]:
+    return *_class_prefix(candidate), quality_text(candidate), confidence_text(candidate)
+
+
+def _tie_key(candidate: RankedCandidate) -> tuple[float | str, ...]:
+    return (
+        candidate.identity.verdict is not IdentityVerdict.MATCH,
+        -_seeders(candidate),
+        -_weighted(candidate),
+        candidate.stream.info_hash,
+    )
+
+
+def _small_last(rows: Sequence[RankedCandidate]) -> tuple[RankedCandidate, ...]:
+    return tuple(
+        row
+        for _prefix, run in groupby(rows, key=_class_prefix)
+        for row in sorted(run, key=lambda item: item.traits.small)
+    )
+
+
+def _full_first(candidates: Sequence[RankedCandidate], pool: Sequence[int]) -> int | None:
+    if not pool:
+        return None
+    prefix: tuple[int, ...] = _class_prefix(candidates[pool[0]])
+    return next(
+        (
+            position
+            for position in pool
+            if _class_prefix(candidates[position]) == prefix and not candidates[position].traits.small
+        ),
+        pool[0],
+    )
+
+
+def _mark_small(rows: Sequence[RankedCandidate], single: Callable[[str], bool]) -> tuple[RankedCandidate, ...]:
+    sizes: dict[int | None, list[int]] = {}
+    for row in rows:
+        size: int | None = _episode_bytes(row, single)
+        if size is not None and row.identity.verdict is not IdentityVerdict.MISMATCH:
+            sizes.setdefault(row.traits.resolution, []).append(size)
+    typical: dict[int | None, float] = {
+        resolution: max(size for size in known if size <= SIZE_OUTLIER * median(known))
+        for resolution, known in sizes.items()
+    }
+    return tuple(
+        replace(row, traits=replace(row.traits, small=True))
+        if (size := _episode_bytes(row, single)) is not None
+        and size < SMALL_SHARE * typical.get(row.traits.resolution, 0)
+        else row
+        for row in rows
+    )
+
+
+def _episode_bytes(row: RankedCandidate, single: Callable[[str], bool]) -> int | None:
+    if row.stream.file_size is not None:
+        return row.stream.file_size
+    if row.pack or not single(row.stream.release or row.stream.file_name or ""):
+        return None
+    return size_bytes(row.stream.size_text or "")
+
+
+def _weighted(candidate: RankedCandidate) -> float:
+    return candidate.quality if candidate.confidence is None else candidate.quality * candidate.confidence
+
+
+def _seeders(candidate: RankedCandidate) -> int:
+    return -1 if candidate.traits.seeders is None else candidate.traits.seeders

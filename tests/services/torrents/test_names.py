@@ -5,7 +5,14 @@ from typing import Final
 
 import pytest
 
-from anishift.services.torrents.names import base_title, parse_release_name, season_hint, strip_season, title_forms
+from anishift.services.torrents.names import (
+    base_title,
+    episode_range,
+    parse_release_name,
+    season_hint,
+    strip_season,
+    title_forms,
+)
 from anishift.services.torrents.types import ReleaseName
 
 _CASES: Final[tuple[tuple[str, ReleaseName], ...]] = (
@@ -420,6 +427,27 @@ def test_parse_release_name_reads_a_bare_episode_range_as_a_pack() -> None:
     assert parse_release_name("[Group] Show - 01-12 (1080p)").is_pack is True
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "title",
+    [
+        "[ZigZag] Bocchi the Rock! S01 [1080p REPACK CR WEB-DL E-AC3] [Multi-Audio]",
+        "[Breeze] Frieren S01 [1080p AV1 Opus]",
+    ],
+)
+def test_season_only_before_quality_block_is_pack(title: str) -> None:
+    name: ReleaseName = parse_release_name(title)
+    assert name.season == 1
+    assert name.episode is None
+    assert name.is_pack
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("title", ["Example S01E01 [1080p]", "Example S01 [Story title]"])
+def test_season_quality_block_does_not_turn_single_episode_or_title_into_pack(title: str) -> None:
+    assert not parse_release_name(title).is_pack
+
+
 def test_parse_release_name_keeps_a_season_written_in_the_series_of_a_numbered_release() -> None:
     parsed = parse_release_name("[SubsPlease] Kusuriya no Hitorigoto - Season 2 - 05 (1080p)")
     assert season_hint(parsed.series) == 2
@@ -492,3 +520,18 @@ def test_title_forms_meet_when_a_release_drops_the_subtitle() -> None:
 
 def test_title_forms_of_unrelated_titles_do_not_meet() -> None:
     assert not (title_forms("Solo Leveling") & title_forms("Ore dake Level Up na Ken"))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Show.S01E01-E02.1080p.WEB.mkv", (Decimal(1), Decimal(2))),
+        ("[Group] Show - 01-12 (1080p)", (Decimal(1), Decimal(12))),
+        ("[Group] Show - S02E03~E04 [1080p]", (Decimal(3), Decimal(4))),
+        ("[Group] Show - 05 (1080p)", None),
+        ("Show.S01E05.1080p.WEB.mkv", None),
+    ],
+)
+def test_episode_range_reads_the_first_and_last_episode(title: str, expected: tuple[Decimal, Decimal] | None) -> None:
+    assert episode_range(title) == expected

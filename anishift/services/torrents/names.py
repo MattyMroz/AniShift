@@ -6,9 +6,19 @@ import re
 from decimal import Decimal
 from typing import Final
 
+from anishift.application.release_quality import DUBBED_RE
 from anishift.services.torrents.types import ReleaseName
 
-__all__ = ["base_title", "parse_release_name", "season_hint", "strip_season", "title_forms"]
+__all__ = [
+    "base_title",
+    "before_season",
+    "episode_range",
+    "parse_release_name",
+    "season_hint",
+    "single_episode",
+    "strip_season",
+    "title_forms",
+]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -65,7 +75,7 @@ _SEASON_EPISODE_RE: Final[re.Pattern[str]] = re.compile(r"\bS(\d{1,2})E(\d{1,3})
 """Combined ``SxxEyy`` season and episode form, with an optional version."""
 
 _SEASON_ONLY_RE: Final[re.Pattern[str]] = re.compile(
-    rf"(?<!\w)S(\d{{1,2}})(?!\w)(?=\s+(?:{_TAG_ALTERNATION})(?!\w)|$)", re.IGNORECASE
+    rf"(?<!\w)S(\d{{1,2}})(?!\w)(?=\s+[(\[]?\s*(?:{_TAG_ALTERNATION})(?!\w)|$)", re.IGNORECASE
 )
 """Season marker without an episode, recognized only when a technical tag or the title end follows."""
 
@@ -75,7 +85,10 @@ _EPISODE_RE: Final[re.Pattern[str]] = re.compile(r"^(\d{1,4}(?:\.\d+)?)(?:v(\d+)
 _BATCH_RANGE_RE: Final[re.Pattern[str]] = re.compile(r"\(\s*\d+\s*-\s*\d+\s*\)")
 """Parenthesised episode range marking a multi-episode pack."""
 
-_BARE_RANGE_RE: Final[re.Pattern[str]] = re.compile(rf"{SERIES_SEPARATOR}\d{{1,4}}\s*[-~]\s*\d{{1,4}}(?!\d)")
+_EPISODE_RANGE_RE: Final[re.Pattern[str]] = re.compile(r"(?i)(?<!\w)(?:S\d{1,2})?E(\d{1,3})\s*[-~]\s*E(\d{1,3})(?!\w)")
+"""Explicit episode range with optional season, as in S01E01-E04."""
+
+_BARE_RANGE_RE: Final[re.Pattern[str]] = re.compile(rf"{SERIES_SEPARATOR}(\d{{1,4}})\s*[-~]\s*(\d{{1,4}})(?!\d)")
 """Episode range written without parentheses right after the separator, as in ``- 01-12``."""
 
 _BATCH_TAG_RE: Final[re.Pattern[str]] = re.compile(r"[(\[][^)\]]*\bbatch\b[^)\]]*[)\]]", re.IGNORECASE)
@@ -86,9 +99,6 @@ _FRENCH_RE: Final[re.Pattern[str]] = re.compile(r"(?<!\w)(?:VOSTFR|SUBFRENCH|FRE
 
 _MULTI_RE: Final[re.Pattern[str]] = re.compile(r"(?<!\w)(?:MultiSub|Multi-Subs|Multi Sub|MULTi)(?!\w)", re.IGNORECASE)
 """Markers of a release carrying several subtitle languages."""
-
-_DUBBED_RE: Final[re.Pattern[str]] = re.compile(r"\[Dub\]|(?<!\w)(?:(?:English|Eng)\s+Dub|Dubbed)(?!\w)", re.IGNORECASE)
-"""Markers of a dubbed audio track; ``Dual-Audio`` alone does not qualify."""
 
 _FRENCH_SUBTITLES: Final[str] = "fr"
 """Subtitle language reported for a French release."""
@@ -136,8 +146,15 @@ def parse_release_name(title: str) -> ReleaseName:
         batch=_is_batch(remainder),
         version=version,
         subtitle_language=_subtitle_language(remainder),
-        dubbed=_DUBBED_RE.search(remainder) is not None,
+        dubbed=DUBBED_RE.search(remainder) is not None,
     )
+
+
+def episode_range(title: str) -> tuple[Decimal, Decimal] | None:
+    """Return the first and last episode of the explicit range in *title*, or ``None`` without one."""
+    cleaned: str = _clean(title)
+    match: re.Match[str] | None = _EPISODE_RANGE_RE.search(cleaned) or _BARE_RANGE_RE.search(cleaned)
+    return None if match is None else (Decimal(match.group(1)), Decimal(match.group(2)))
 
 
 def season_hint(series: str) -> int | None:
@@ -152,6 +169,18 @@ def strip_season(series: str) -> str:
     if marker is None:
         return " ".join(series.split())
     return " ".join(f"{series[: marker.start()]} {series[marker.end() :]}".split())
+
+
+def single_episode(name: str) -> bool:
+    """Whether release *name* holds exactly one numbered episode, never a range, batch or season pack."""
+    parsed: ReleaseName = parse_release_name(name)
+    return parsed.episode is not None and not parsed.is_pack and episode_range(name) is None
+
+
+def before_season(series: str) -> str:
+    """Return the part of *series* before its only season marker, or all of it, with spaces collapsed."""
+    marker: re.Match[str] | None = _season_marker(series)
+    return " ".join((series if marker is None else series[: marker.start()]).split())
 
 
 def base_title(text: str) -> str:
@@ -273,7 +302,10 @@ def _resolution(remainder: str) -> int | None:
 
 def _is_batch(remainder: str) -> bool:
     """Whether the title advertises a multi-episode pack."""
-    return any(pattern.search(remainder) is not None for pattern in (_BATCH_RANGE_RE, _BARE_RANGE_RE, _BATCH_TAG_RE))
+    return any(
+        pattern.search(remainder) is not None
+        for pattern in (_BATCH_RANGE_RE, _BARE_RANGE_RE, _BATCH_TAG_RE, _EPISODE_RANGE_RE)
+    )
 
 
 def _optional_int(value: str | None) -> int | None:

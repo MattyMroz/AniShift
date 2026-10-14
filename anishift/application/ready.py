@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 from typing import Final
 
@@ -186,9 +187,9 @@ class ReadyStore:
         pending: Path = self._path(group.group_id)
         if pending.exists():
             return TypeAdapter(ReadyMove).validate_json(pending.read_bytes(), strict=True)
-        ready: Path = ready_dir(self._workspace)
-        if group.directory.resolve() == ready.resolve():
+        if in_ready(group.directory, self._workspace):
             return None
+        ready: Path = ready_dir(self._workspace)
         if ready.is_symlink() or not ready.resolve().is_relative_to(self._workspace):
             message: str = "The ready directory must remain inside the workspace"
             raise ExecutionError(message)
@@ -278,18 +279,7 @@ class ReadyStore:
         return tuple(destinations)
 
     def _relocate(self, item: ReadyFile) -> None:
-        attempts: int = 0
-        while True:
-            try:
-                self._move_file(item)
-            except OSError as error:
-                if attempts >= _RELEASE_ATTEMPTS or getattr(error, "winerror", None) not in _TRANSIENT_DENIALS:
-                    raise
-                attempts += 1
-                logger.debug("Relocation waits for a reader to release a file", attempts=attempts)
-                time.sleep(_RELEASE_DELAY_S)
-                continue
-            return
+        retry_file_release(partial(self._move_file, item))
 
     def _move_file(self, item: ReadyFile) -> None:
         source: Path = self._workspace / item.source
@@ -328,6 +318,27 @@ class ReadyStore:
             message: str = "Relocation requires a safe group identifier"
             raise ExecutionError(message)
         return self._directory / f"{group_id}.json"
+
+
+def in_ready(directory: Path, workspace: Path) -> bool:
+    """Whether the directory is the workspace's ready folder itself, not one of its subfolders."""
+    return directory.resolve() == ready_dir(workspace).resolve()
+
+
+def retry_file_release(operation: Callable[[], None]) -> None:
+    """Retry a file operation while Windows reports a transient handle denial."""
+    attempts: int = 0
+    while True:
+        try:
+            operation()
+        except OSError as error:
+            if attempts >= _RELEASE_ATTEMPTS or getattr(error, "winerror", None) not in _TRANSIENT_DENIALS:
+                raise
+            attempts += 1
+            logger.debug("File operation waits for handle release", attempts=attempts)
+            time.sleep(_RELEASE_DELAY_S)
+            continue
+        return
 
 
 def _relative_posix(directory: Path, root: Path) -> str:

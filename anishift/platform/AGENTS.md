@@ -7,12 +7,25 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
 - `child_processes.py` przypisuje proces rezydenta Windows do Job Object: narzędzia
   potomne kończą się także po nagłym zabiciu właściciela. Prywatny qBittorrent i panel
   są uruchamiane z jawnym breakaway. Nie zamykaj uchwytu joba ręcznie w żywym rezydencie.
+- `write_managed_profile` disables qBittorrent update checks only in the private profile; updates arrive through the `anishift setup` manifest.
 - `ManagedQBittorrent` dowodzi własności przez PID, czas utworzenia, własną binarkę
   i katalog profilu potwierdzony w API. GUI przejęte przez użytkownika blokuje automatyczne
   zamknięcie. Zwolnienie ukończonego torrenta zachowuje media (`deleteFiles=false`).
-- `ManagedQBittorrent.released_hashes()` reads and validates only the existing `process.json`.
+- `finish_transfers()` zatrzymuje ukończone seedy, ale zamyka klienta tylko wtedy, gdy każdy jego
+  wpis ma hash w `state.released` z `process.json`. Sam `progress=1` nie wystarcza: owner może
+  jeszcze sprawdzać i publikować kompletny transfer. Nowe przyjęcie po zamknięciu startuje klienta
+  ponownie przez `download_scope`. `qbittorrent_process.py`
+- `ManagedQBittorrent.released_hashes()` reads and validates only the existing `process.json`,
+  under the manager thread lock but never the process lock: on Windows an unlocked read and the
+  `_save` replace fail each other with `PermissionError`.
   Do not replace it with `_load()`: that path can initialize the profile and change ACLs.
   New download admission invalidates the matching release receipt.
+- Metadata admission refuses existing client entries and requires persisted hash ownership;
+  `download_scope` refuses to claim a foreign hash already present in the private client.
+  `select_files` serializes a complete saved union under the manager lock, requires stopped state
+  and the expected staging path/map, reads back all-zero then selected priorities, and never resumes.
+  Validate a nonempty matching file map before attempting stop, so premature selection cannot halt metadata acquisition.
+  The owner remains responsible for durable revisions and refusing stale workers before this boundary.
 - `recycle.py` runs bounded native workers. `restore_worker.py` resolves the exact saved receipt
   inside the virtual Recycle Bin, moves it through Shell to recorded same-volume staging and
   publishes by checked file handle without replacement. Keep parent/path/identity guards;
@@ -50,7 +63,9 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
   z sha256 katalogu stanu>`, poza nim `<state_dir>/control.sock`. Nigdy TCP i nigdy `send`/`recv`
   (pickle) — wyłącznie `send_bytes`/`recv_bytes` z JSON i limitem `MAX_FRAME_BYTES`; `recv_bytes`
   z limitem podnosi `OSError` i psuje połączenie, więc ramka ponad limit kończy je bez odpowiedzi.
-  `local_control.py`
+  Dlatego `ControlServer._respond` mierzy zakodowaną odpowiedź: ponad limit wysyła odmowę
+  `REFUSED` z `reason="response_too_large"` (bez obcinania treści), a połączenie obsługuje
+  kolejne polecenia. `local_control.py`
 - `PipeListener.accept()` blokuje na `WaitForMultipleObjects(..., INFINITE)`, więc `close()` budzi
   wątek accept własnym połączeniem do siebie; samo zamknięcie listenera go nie odblokuje.
   `local_control.py`
@@ -76,6 +91,9 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
 - Serwer przypisuje `session_id` połączenia, którego klient nie może podać w JSON. Odpowiedzi
   obsługuje osobny wątek z ograniczoną kolejką, więc wolny podgląd nie blokuje odczytu EOF
   i zwolnienia rezerwacji przez `on_disconnect`. `local_control.py`
+- Episode events coalesce by event type, batch `command_id` and episode key, not the absent run/task IDs.
+  Terminal episode results and batch completion remain recoverable through the batch receipt when an
+  outbox evicts them. `local_control.py`
 - `resident_command()` to `watch_command()` z dopiskiem `resident`, więc obie drogi startu mają
   jedno źródło ścieżki `pythonw.exe`. `autostart.py`
 - `autostart.py` zarządza wyłącznie zadaniem `AniShift Watch`. Rejestruje je z pliku XML

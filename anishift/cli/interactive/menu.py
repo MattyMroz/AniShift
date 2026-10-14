@@ -7,6 +7,8 @@ from collections.abc import Sequence
 from rich.console import Console
 from rich.text import Text
 
+from anishift.cli.interactive.pointer import mark_inert, mark_keys, mark_row
+
 
 def header(title: str, columns: int, rows: int, content_rows: int) -> Text:
     """Build the centered heading used by selectable lists."""
@@ -14,19 +16,25 @@ def header(title: str, columns: int, rows: int, content_rows: int) -> Text:
     shown: str = truncate_right(title, max(columns - 2, 1))
     left: int = max((columns - len(shown)) // 2, 0)
     content: Text = Text("\n" * top)
-    content.append(f"{' ' * left}{shown}\n\n", style="white_bold")
+    content.append(" " * left)
+    content.append_text(mark_inert(Text(shown, style="white_bold")))
+    content.append("\n\n")
     return content
 
 
-def append_row(content: Text, left: int, label: str | Text, active: bool, marker: str = "  ") -> None:
-    """Append one selectable row using the shared pointer and palette."""
+def append_row(  # noqa: PLR0913
+    content: Text, left: int, label: str | Text, active: bool, marker: str = "  ", *, index: int | None = None
+) -> None:
+    """Append one selectable row using the shared pointer and palette, tagged with its list ``index``."""
     content.append(" " * left)
-    content.append("\u276f " if active else "  ", style="brand_accent" if active else "white_bold")
-    content.append(marker, style="brand_accent" if active else "white_bold")
+    pointer: Text = Text("\u276f " if active else "  ", style="brand_accent" if active else "white_bold")
+    content.append_text(mark_inert(pointer.append(marker)))
     if isinstance(label, Text):
         content.append_text(label)
     else:
         content.append(label, style="brand_accent" if active else "white_bold")
+    if index is not None:
+        mark_row(content, index)
     content.append("\n")
 
 
@@ -75,22 +83,59 @@ def visible_window(count: int, selected: int, rows: int, *, heights: Sequence[in
 
 
 def wrap_entries(entries: Sequence[str | Text], columns: int) -> tuple[tuple[str | Text, ...], ...]:
-    """Wrap plain labels through Rich while retaining measured progress rows intact."""
+    """Wrap plain labels through Rich, indenting continuations like their line, keeping progress rows intact."""
     width: int = max(columns - 8, 1)
     console: Console = Console(width=width)
     return tuple(
-        (label,) if isinstance(label, Text) else tuple(line.plain for line in Text(label).wrap(console, width)) or ("",)
-        for label in entries
+        (label,) if isinstance(label, Text) else _wrap_label(label, console, width) or ("",) for label in entries
     )
 
 
-def append_wrapped_row(content: Text, left: int, lines: Sequence[str | Text], active: bool, marker: str) -> None:
+def _wrap_label(label: str, console: Console, width: int) -> tuple[str, ...]:
+    lines: list[str] = []
+    for paragraph in label.split("\n"):
+        text: str = paragraph.lstrip(" ")
+        indent: str = paragraph[: len(paragraph) - len(text)]
+        room: int = max(width - len(indent), 1)
+        lines.extend(f"{indent}{line.plain}" for line in Text(text).wrap(console, room))
+    return tuple(lines)
+
+
+def append_wrapped_row(  # noqa: PLR0913
+    content: Text, left: int, lines: Sequence[str | Text], active: bool, marker: str, *, index: int | None = None
+) -> None:
     """Keep a wrapped title under its label with one pointer and one selection marker."""
-    for index, line in enumerate(lines):
+    for line_index, line in enumerate(lines):
         label: str | Text = line
-        if index and isinstance(line, str):
+        if line_index and isinstance(line, str):
             label = Text(line, style="brand_accent" if active else "white_bold")
-        append_row(content, left, label, active and index == 0, marker if index == 0 else " " * len(marker))
+        first: bool = line_index == 0
+        append_row(content, left, label, active and first, marker if first else " " * len(marker), index=index)
+
+
+def pack_keys(keys: Sequence[str], width: int, *, optional: Sequence[str] = (), limit: int = 2) -> tuple[str, ...]:
+    """Pack key hints into at most ``limit`` lines, dropping ``optional`` hints before cutting the rest."""
+    unique: list[str] = list(dict.fromkeys(segment for key in keys for segment in key.split(" · ") if segment))
+    lines: list[str] = _pack(unique, width)
+    for dropped in optional:
+        if len(lines) <= limit:
+            break
+        unique = [segment for segment in unique if segment != dropped]
+        lines = _pack(unique, width)
+    if len(lines) > limit:
+        lines = [*lines[: limit - 1], truncate_right(" · ".join(lines[limit - 1 :]), width)]
+    return tuple(lines)
+
+
+def _pack(segments: Sequence[str], width: int) -> list[str]:
+    lines: list[str] = []
+    for segment in segments:
+        joined: str = f"{lines[-1]} · {segment}" if lines else segment
+        if lines and Text(joined).cell_len <= width:
+            lines[-1] = joined
+        else:
+            lines.append(truncate_right(segment, width))
+    return lines
 
 
 def with_footer(content: Text, hints: Sequence[str | Text], columns: int, rows: int) -> Text:
@@ -100,7 +145,10 @@ def with_footer(content: Text, hints: Sequence[str | Text], columns: int, rows: 
     footer: list[Text] = [
         line
         for hint in hints
-        for line in ((hint if isinstance(hint, Text) else Text(hint, style="gray")).wrap(console, width) or (Text(),))
+        for line in (
+            (hint if isinstance(hint, Text) else mark_keys(mark_inert(Text(hint, style="gray")))).wrap(console, width)
+            or (Text(),)
+        )
     ]
     footer = footer[: max(rows - 1, 1)]
     budget: int = max(rows - 1 - len(footer), 0)

@@ -5,6 +5,8 @@ import os
 import subprocess
 import sys
 import threading
+from collections.abc import Iterator
+from dataclasses import replace
 from typing import cast
 
 import httpx
@@ -15,6 +17,7 @@ from anishift.services.llm import (
     LlmAuthError,
     LlmCancelledError,
     LlmConfig,
+    LlmConfigError,
     LlmEngine,
     LlmMessage,
     LlmOutputBlockedError,
@@ -58,7 +61,7 @@ def _isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _config(
     *,
-    protocol: ModelProtocol = ModelProtocol.OPENAI_CHAT,
+    protocol: ModelProtocol = ModelProtocol.OPENAI_RESPONSES,
     provider_path: str = _OPENAI_ROUTE,
     provider_model_id: str = "gpt-main-5",
     max_output_tokens: int | None = 256,
@@ -68,7 +71,12 @@ def _config(
         engine_id="palantir",
         provider_model_id=provider_model_id,
         api_key=api_key,
-        alias="foundry/main",
+        alias={
+            ModelProtocol.OPENAI_RESPONSES: "foundry/gpt-5.6-sol",
+            ModelProtocol.XAI_RESPONSES: "foundry-xai/grok-4.6",
+            ModelProtocol.ANTHROPIC_MESSAGES: "foundry-anthropic/claude-sonnet-5",
+            ModelProtocol.GOOGLE_GENERATE: "foundry-google/gemini-3.8-flash",
+        }[protocol],
         provider_id="foundry-openai",
         protocol=protocol,
         base_url=f"{_ENROLLMENT}{provider_path}",
@@ -111,15 +119,17 @@ def _modules_added_by_importing(module: str) -> list[str]:
     return cast("list[str]", json.loads(completed.stdout))
 
 
-def test_openai_chat_maps_the_request_and_normalizes_the_response() -> None:
+@pytest.mark.integration
+def test_openai_responses_maps_the_request_and_normalizes_the_response() -> None:
     captured: list[httpx.Request] = []
     response = httpx.Response(
         200,
         json={
             "model": "gpt-main-5",
             "system_fingerprint": _BODY_SENTINEL,
-            "choices": [{"message": {"content": "Przetłumaczony tekst."}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            "status": "completed",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "Przetłumaczony tekst."}]}],
+            "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
         },
     )
     engine = _engine(_recording_transport(response, captured))
@@ -128,15 +138,18 @@ def test_openai_chat_maps_the_request_and_normalizes_the_response() -> None:
 
     sent = captured[0]
     body = json.loads(sent.content)
-    assert str(sent.url) == f"{_ENROLLMENT}{_OPENAI_ROUTE}/chat/completions"
+    assert str(sent.url) == f"{_ENROLLMENT}{_OPENAI_ROUTE}/responses"
     assert sent.headers["authorization"] == f"Bearer {_TOKEN}"
     assert body["model"] == "gpt-main-5"
-    assert body["messages"][1] == {"role": "user", "content": "First line.\nSecond line."}
-    assert body["max_completion_tokens"] == 256
+    assert body["input"][1] == {
+        "role": "user",
+        "content": [{"type": "input_text", "text": "First line.\nSecond line."}],
+    }
+    assert body["max_output_tokens"] == 256
     assert result.text == "Przetłumaczony tekst."
     assert result.engine_id == "palantir"
     assert result.provider_model_id == "gpt-main-5"
-    assert result.finish_reason == "stop"
+    assert result.finish_reason == "completed"
     assert result.usage.input_tokens == 10
     assert result.usage.output_tokens == 5
     assert result.usage.total_tokens == 15
@@ -273,50 +286,50 @@ def test_google_generate_streams_sse_chunks_and_assembles_the_response() -> None
     assert result.usage.total_tokens == 9
 
 
-def test_openai_chat_streams_sse_deltas_and_assembles_the_response() -> None:
+@pytest.mark.integration
+def test_responses_stream_reports_deltas_and_uses_terminal_response() -> None:
     captured: list[httpx.Request] = []
-    chunks = [
-        {"choices": [{"delta": {"role": "assistant", "content": "[0] Pierwsza"}}]},
-        {"choices": [{"delta": {"content": "\n[1] Druga"}}]},
+    chunks: list[dict[str, object]] = [
+        {"type": "response.reasoning_text.delta", "delta": "hidden"},
+        {"type": "response.output_text.delta", "delta": "[0] Pierwsza"},
+        {"type": "response.output_text.delta", "delta": "\n[1] Druga"},
         {
-            "choices": [{"delta": {}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 6, "completion_tokens": 3, "total_tokens": 9},
+            "type": "response.completed",
+            "response": {
+                "status": "completed",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "Terminal text"}]}],
+                "usage": {"input_tokens": 6, "output_tokens": 3, "total_tokens": 9},
+            },
         },
     ]
-    stream_body = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
-    response = httpx.Response(200, text=stream_body, headers={"content-type": "text/event-stream"})
-    engine = _engine(_recording_transport(response, captured))
+    arrived: list[str] = []
 
-    result = engine.complete_stream(_request())
+    class _Stream(httpx.SyncByteStream):
+        def __iter__(self) -> Iterator[bytes]:
+            yield f"data: {json.dumps(chunks[0])}\n\n".encode()
+            yield f"data: {json.dumps(chunks[1])}\n\n".encode()
+            assert arrived == ["[0] Pierwsza"]
+            yield f"data: {json.dumps(chunks[2])}\n\n".encode()
+            assert arrived == ["[0] Pierwsza", "\n[1] Druga"]
+            yield f"data: {json.dumps(chunks[3])}\n\n".encode()
 
-    assert str(captured[0].url) == f"{_ENROLLMENT}{_OPENAI_ROUTE}/chat/completions"
+    response: httpx.Response = httpx.Response(200, stream=_Stream(), headers={"content-type": "text/event-stream"})
+    with _engine(_recording_transport(response, captured)) as engine:
+        result: LlmResponse = engine.complete_stream(_request(), on_text=arrived.append)
+
+    assert str(captured[0].url) == f"{_ENROLLMENT}{_OPENAI_ROUTE}/responses"
     assert json.loads(captured[0].content)["stream"] is True
-    assert result.text == "[0] Pierwsza\n[1] Druga"
-    assert result.finish_reason == "stop"
+    assert result.text == "Terminal text"
+    assert result.finish_reason == "completed"
     assert result.usage.total_tokens == 9
 
 
-def test_openai_chat_stream_hands_over_every_delta_as_it_arrives() -> None:
-    chunks = [
-        {"choices": [{"delta": {"content": "[0] Jeden\n"}}]},
-        {"choices": [{"delta": {"content": "[1] Dwa\n"}}]},
-        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
-    ]
-    stream_body = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
-    response = httpx.Response(200, text=stream_body, headers={"content-type": "text/event-stream"})
-    engine = _engine(httpx.MockTransport(lambda request: response))
-    arrived: list[str] = []
-
-    engine.complete_stream(_request(), on_text=arrived.append)
-
-    assert arrived == ["[0] Jeden\n", "[1] Dwa\n"]
-
-
-@pytest.mark.parametrize("protocol", [ModelProtocol.OPENAI_CHAT, ModelProtocol.GOOGLE_GENERATE])
+@pytest.mark.integration
+@pytest.mark.parametrize("protocol", [ModelProtocol.OPENAI_RESPONSES, ModelProtocol.GOOGLE_GENERATE])
 def test_stream_without_terminal_reason_rejects_partial_translation(protocol: ModelProtocol) -> None:
     chunk: dict[str, object] = (
-        {"choices": [{"delta": {"content": "[0] Urwane zdanie"}}]}
-        if protocol is ModelProtocol.OPENAI_CHAT
+        {"type": "response.output_text.delta", "delta": "[0] Urwane zdanie"}
+        if protocol is ModelProtocol.OPENAI_RESPONSES
         else {"candidates": [{"content": {"parts": [{"text": "[0] Urwane zdanie"}]}}]}
     )
     response = httpx.Response(200, text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n")
@@ -327,13 +340,16 @@ def test_stream_without_terminal_reason_rejects_partial_translation(protocol: Mo
         engine.complete_stream(_request())
 
 
+@pytest.mark.integration
 def test_stream_error_event_is_not_silently_ignored() -> None:
     chunks: list[dict[str, object]] = [
-        {"choices": [{"delta": {"content": "[0] Partial"}}]},
+        {"candidates": [{"content": {"parts": [{"text": "[0] Partial"}]}}]},
         {"error": {"code": 429, "message": _BODY_SENTINEL}},
     ]
     response = httpx.Response(200, text="".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks))
-    engine: PalantirService = _engine(_recording_transport(response, []))
+    engine: PalantirService = _engine(
+        _recording_transport(response, []), _config(protocol=ModelProtocol.GOOGLE_GENERATE)
+    )
     try:
         with pytest.raises(LlmRateLimitError) as raised:
             engine.complete_stream(_request())
@@ -342,22 +358,73 @@ def test_stream_error_event_is_not_silently_ignored() -> None:
         engine.close()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("text", ["[0] Urwane", ""])
-def test_xai_incomplete_token_limit_preserves_split_signal(text: str) -> None:
+@pytest.mark.parametrize("protocol", [ModelProtocol.OPENAI_RESPONSES, ModelProtocol.XAI_RESPONSES])
+def test_responses_token_limit_preserves_split_signal(text: str, protocol: ModelProtocol) -> None:
     payload: dict[str, object] = {
         "status": "incomplete",
         "incomplete_details": {"reason": "max_output_tokens"},
-        "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}],
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}]
+        if text
+        else [{"type": "reasoning", "summary": []}],
     }
-    result: LlmResponse = normalize_palantir_response(
-        ModelProtocol.XAI_RESPONSES,
-        payload,
-        alias="test",
-        engine_id="palantir",
-        provider_model_id="test",
-        latency_ms=0,
+    response: httpx.Response = (
+        httpx.Response(200, text=f"data: {json.dumps({'type': 'response.incomplete', 'response': payload})}\n\n")
+        if protocol is ModelProtocol.OPENAI_RESPONSES
+        else httpx.Response(200, json=payload)
     )
+    with _engine(_recording_transport(response, []), _config(protocol=protocol)) as engine:
+        result: LlmResponse = engine.complete_stream(_request())
     assert result.finish_reason == "max_output_tokens"
+    assert result.text == text
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("event_type", ["response.failed", "error"])
+def test_responses_stream_reports_generation_failure(event_type: str) -> None:
+    event: dict[str, object] = (
+        {"type": "error", "code": "server_error", "message": _BODY_SENTINEL}
+        if event_type == "error"
+        else {
+            "type": "response.failed",
+            "response": {"status": "failed", "error": {"code": "server_error", "message": _BODY_SENTINEL}},
+        }
+    )
+    response: httpx.Response = httpx.Response(200, text=f"data: {json.dumps(event)}\n\n")
+    with _engine(_recording_transport(response, [])) as engine, pytest.raises(LlmProviderUnavailableError) as failure:
+        engine.complete_stream(_request())
+    assert _BODY_SENTINEL not in repr(failure.value.context)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("stream", [False, True])
+def test_google_filters_thought_parts(*, stream: bool) -> None:
+    payload: dict[str, object] = {
+        "candidates": [
+            {
+                "content": {"parts": [{"text": _BODY_SENTINEL, "thought": True}, {"text": "Visible"}]},
+                "finishReason": "STOP",
+            }
+        ],
+    }
+    response: httpx.Response = (
+        httpx.Response(200, text=f"data: {json.dumps(payload)}\n\n") if stream else httpx.Response(200, json=payload)
+    )
+    arrived: list[str] = []
+    with _engine(_recording_transport(response, []), _config(protocol=ModelProtocol.GOOGLE_GENERATE)) as engine:
+        result: LlmResponse = (
+            engine.complete_stream(_request(), on_text=arrived.append) if stream else engine.complete(_request())
+        )
+    assert result.text == "Visible"
+    assert arrived == (["Visible"] if stream else [])
+
+
+@pytest.mark.unit
+def test_palantir_rejects_unknown_alias() -> None:
+    with pytest.raises(LlmConfigError) as rejected:
+        PalantirService(replace(_config(), alias="foundry/absent"))
+    assert rejected.value.context.details["field"] == "alias"
 
 
 @pytest.mark.parametrize("status", ["incomplete", "failed", "in_progress", "queued"])
@@ -409,12 +476,13 @@ def test_google_stream_rejects_a_malformed_sse_event() -> None:
     assert rejected.value.context.details["defect"] == PalantirResponseDefect.UNREADABLE_BODY.value
 
 
+@pytest.mark.integration
 def test_a_stream_shaped_body_is_rejected_as_a_typed_defect_without_leaking_chunks() -> None:
     captured: list[str] = []
     handler_id = loguru_logger.add(captured.append, format="{message} {extra}", level="DEBUG")
     stream_body = (
-        f'data: {{"choices":[{{"delta":{{"content":"{_BODY_SENTINEL}"}}}}]}}\n\n'
-        'data: {"choices":[{"delta":{"content":" tail"}}]}\n\n'
+        f'data: {{"type":"response.output_text.delta","delta":"{_BODY_SENTINEL}"}}\n\n'
+        'data: {"type":"response.output_text.delta","delta":" tail"}\n\n'
         "data: [DONE]\n\n"
     )
     response = httpx.Response(200, text=stream_body, headers={"content-type": "text/event-stream"})
@@ -434,11 +502,15 @@ def test_a_stream_shaped_body_is_rejected_as_a_typed_defect_without_leaking_chun
     assert all(_TOKEN not in surface for surface in surfaces)
 
 
+@pytest.mark.unit
 def test_an_empty_completion_is_a_typed_defect() -> None:
-    payload = {"choices": [{"message": {"content": "   "}, "finish_reason": "stop"}]}
+    payload: dict[str, object] = {
+        "status": "completed",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "   "}]}],
+    }
     with pytest.raises(LlmRequestError) as rejected:
         normalize_palantir_response(
-            ModelProtocol.OPENAI_CHAT,
+            ModelProtocol.OPENAI_RESPONSES,
             payload,
             alias="foundry/main",
             engine_id="palantir",
@@ -449,11 +521,12 @@ def test_an_empty_completion_is_a_typed_defect() -> None:
     assert rejected.value.context.details["defect"] == PalantirResponseDefect.EMPTY_TEXT.value
 
 
+@pytest.mark.unit
 def test_a_missing_choice_is_a_typed_defect() -> None:
     with pytest.raises(LlmRequestError) as rejected:
         normalize_palantir_response(
-            ModelProtocol.OPENAI_CHAT,
-            {"choices": []},
+            ModelProtocol.OPENAI_RESPONSES,
+            {"status": "completed", "output": []},
             alias="foundry/main",
             engine_id="palantir",
             provider_model_id="gpt-main-5",
@@ -463,11 +536,12 @@ def test_a_missing_choice_is_a_typed_defect() -> None:
     assert rejected.value.context.details["defect"] == PalantirResponseDefect.MISSING_CHOICE.value
 
 
-@pytest.mark.parametrize("payload", [[], {"choices": [{"message": "not-a-mapping"}]}])
+@pytest.mark.unit
+@pytest.mark.parametrize("payload", [[], {"status": "completed", "output": ["not-a-mapping"]}])
 def test_a_malformed_shape_is_a_typed_defect(payload: object) -> None:
     with pytest.raises(LlmRequestError) as rejected:
         normalize_palantir_response(
-            ModelProtocol.OPENAI_CHAT,
+            ModelProtocol.OPENAI_RESPONSES,
             payload,
             alias="foundry/main",
             engine_id="palantir",
@@ -478,11 +552,16 @@ def test_a_malformed_shape_is_a_typed_defect(payload: object) -> None:
     assert rejected.value.context.details["defect"] == PalantirResponseDefect.UNEXPECTED_SHAPE.value
 
 
-def test_a_chat_content_filter_finish_reason_is_a_blocked_error() -> None:
-    payload = {"choices": [{"message": {"content": ""}, "finish_reason": "content_filter"}]}
+@pytest.mark.unit
+def test_a_responses_content_filter_finish_reason_is_a_blocked_error() -> None:
+    payload: dict[str, object] = {
+        "status": "incomplete",
+        "incomplete_details": {"reason": "content_filter"},
+        "output": [],
+    }
     with pytest.raises(LlmOutputBlockedError) as blocked:
         normalize_palantir_response(
-            ModelProtocol.OPENAI_CHAT,
+            ModelProtocol.OPENAI_RESPONSES,
             payload,
             alias="foundry/main",
             engine_id="palantir",
@@ -508,12 +587,13 @@ def test_a_google_prompt_block_is_a_blocked_error() -> None:
     assert blocked.value.context.details["finish_reason"] == "safety"
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("protocol", "payload", "finish_reason"),
     [
         pytest.param(
-            ModelProtocol.OPENAI_CHAT,
-            {"choices": [{"message": {"content": None, "refusal": None}, "finish_reason": "content_filter"}]},
+            ModelProtocol.OPENAI_RESPONSES,
+            {"status": "incomplete", "incomplete_details": {"reason": "content_filter"}, "output": None},
             "content_filter",
             id="openai-null-content",
         ),
@@ -550,12 +630,13 @@ def test_a_blocked_completion_wins_over_a_text_shape_defect(
     assert "defect" not in blocked.value.context.details
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("protocol", "payload", "defect"),
     [
         pytest.param(
-            ModelProtocol.OPENAI_CHAT,
-            {"choices": [{"message": {"content": None}, "finish_reason": "stop"}]},
+            ModelProtocol.OPENAI_RESPONSES,
+            {"status": "completed", "output": [{"type": "message", "content": None}]},
             PalantirResponseDefect.UNEXPECTED_SHAPE,
             id="openai-null-content-without-block",
         ),
@@ -592,10 +673,17 @@ def test_a_malformed_body_without_a_blocking_signal_keeps_its_typed_defect(
     assert "finish_reason" not in rejected.value.context.details
 
 
+@pytest.mark.integration
 def test_the_token_reaches_the_engine_through_the_config_not_the_environment() -> None:
     assert resolve_palantir_token() == ""
     captured: list[httpx.Request] = []
-    response = httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+    response: httpx.Response = httpx.Response(
+        200,
+        json={
+            "status": "completed",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+        },
+    )
     engine = _engine(_recording_transport(response, captured), _config(api_key=_TOKEN))
 
     engine.complete(_request())
@@ -655,8 +743,15 @@ def test_close_is_idempotent_and_closes_the_owned_client_once() -> None:
         engine.complete(_request())
 
 
+@pytest.mark.integration
 def test_cancellation_before_an_attempt_rejects_the_operation() -> None:
-    response = httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+    response: httpx.Response = httpx.Response(
+        200,
+        json={
+            "status": "completed",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+        },
+    )
     engine = _engine(httpx.MockTransport(lambda request: response))
     cancel = threading.Event()
     cancel.set()
@@ -665,12 +760,19 @@ def test_cancellation_before_an_attempt_rejects_the_operation() -> None:
         retry_transient(lambda: engine.complete(_request()), max_retries=0, cancel=cancel)
 
 
+@pytest.mark.integration
 def test_a_provider_success_completed_after_cancel_is_rejected() -> None:
     cancel = threading.Event()
 
     def handler(request: httpx.Request) -> httpx.Response:
         cancel.set()
-        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+            },
+        )
 
     engine = _engine(httpx.MockTransport(handler))
 
@@ -694,6 +796,7 @@ def test_cancellation_between_attempts_stops_before_a_second_attempt() -> None:
     assert len(calls) == 1
 
 
+@pytest.mark.integration
 def test_the_success_path_never_leaks_the_token_or_provider_body_fields() -> None:
     captured: list[str] = []
     handler_id = loguru_logger.add(captured.append, format="{message} {extra}", level="DEBUG")
@@ -702,8 +805,9 @@ def test_the_success_path_never_leaks_the_token_or_provider_body_fields() -> Non
         json={
             "model": "gpt-main-5",
             "system_fingerprint": _BODY_SENTINEL,
-            "choices": [{"message": {"content": "Bezpieczny tekst."}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+            "status": "completed",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "Bezpieczny tekst."}]}],
+            "usage": {"input_tokens": 3, "output_tokens": 1, "total_tokens": 4},
         },
     )
     engine = _engine(httpx.MockTransport(lambda request: response))

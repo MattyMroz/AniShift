@@ -9,17 +9,22 @@ import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
+import httpx
 import pytest
 
+from anishift.application.acquisition import AcquisitionService
 from anishift.application.cancellation import CancellationToken, EventCancellationToken
+from anishift.application.episode_search import EpisodeRequest, SearchOutcome, SourceSwitches
+from anishift.application.episode_selection import EpisodeKey
 from anishift.application.service import AppService
-from anishift.bootstrap import AppContext, bootstrap, create_app_service
+from anishift.bootstrap import AppContext, _acquisition_service, bootstrap, create_app_service
 from anishift.config.env_file import update_env_value
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError
 from anishift.platform import binaries
 from anishift.platform.binaries import Binary
+from anishift.services.http_requests import RequestControl
 from anishift.services.media import DefaultMediaProbe
 from anishift.services.media.types import ContainerKind, MediaCatalog
 from anishift.setup import installer
@@ -36,6 +41,35 @@ def test_config_imports_in_a_fresh_process() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.integration
+def test_acquisition_sources_are_exactly_five(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    hosts: set[str] = set()
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        hosts.add(request.url.host)
+        return httpx.Response(403)
+
+    control: RequestControl = RequestControl(httpx.MockTransport(respond))
+    monkeypatch.setattr("anishift.services.http_requests.RequestControl", lambda transport: control)
+    service: AcquisitionService = _acquisition_service(AppContext(Settings(_env_file=None), UserSettings(), tmp_path))
+    try:
+        assert service._episode_search is not None
+        outcome: SearchOutcome = service._episode_search.manual_offer(
+            EpisodeRequest(EpisodeKey(1, 1), 1, False, False, 1, None, ("Title - 01",), {}, True),
+            SourceSwitches(),
+        )
+        assert {row.source for row in outcome.snapshot.sources} == {
+            "nyaa",
+            "tsukihime",
+            "torrentio",
+            "knaben",
+            "nekobt",
+        }
+        assert hosts == {"nyaa.si", "api.tsukihime.org", "torrentio.strem.fun", "api.knaben.org", "nekobt.to"}
+    finally:
+        control.close()
 
 
 def test_bootstrap_reloads_changed_dotenv_without_injecting_process_env(

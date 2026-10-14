@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -11,7 +12,6 @@ from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.service import AppService
 from anishift.cli.interactive.settings import SettingsController
 from anishift.config.model_catalog import (
-    CatalogDefaults,
     ModelCatalog,
     ModelEntry,
     ModelProtocol,
@@ -34,11 +34,8 @@ def _unused_handler(
 
 def _catalog() -> ModelCatalog:
     return ModelCatalog(
-        1,
-        {"proxy": ProviderEntry("proxy", ModelProtocol.OPENAI_CHAT, "/proxy")},
+        {"proxy": ProviderEntry("proxy", ModelProtocol.OPENAI_RESPONSES, "/proxy")},
         {"valid": ModelEntry("valid", "proxy", "model-1", "Valid model")},
-        CatalogDefaults(),
-        (),
     )
 
 
@@ -59,6 +56,20 @@ def _service(
         catalog_loader=_catalog,
         env_file=tmp_path / "unused.env",
     )
+
+
+@pytest.mark.integration
+def test_palantir_responses_group_keeps_openai_label(tmp_path: Path) -> None:
+    service: AppService = _service(
+        tmp_path,
+        [],
+        settings=Settings.model_construct(palantir_token="synthetic-token-sentinel"),  # noqa: S106
+        preferences=UserSettings(palantir_enrollment_base_url="https://enrollment.example.invalid"),
+    )
+    panel: SettingsController = SettingsController(service, lambda: None)
+    panel._open_model_editor()
+
+    assert "PALANTIR FOUNDRY · OPENAI" in panel.render(100, 30).plain
 
 
 def test_first_custom_model_is_selectable_without_editing_configuration_files(tmp_path: Path) -> None:
@@ -207,3 +218,38 @@ def test_stepping_a_value_does_not_reload_the_model_catalog(tmp_path: Path, monk
 
     assert calls == ["load"]
     assert saved == []
+
+
+@pytest.mark.integration
+def test_second_palantir_connection_edits_address_and_masked_token_independently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in tuple(os.environ):
+        if name.startswith("ANISHIFT_") or name == "FOUNDRY_API_TOKEN":
+            monkeypatch.delenv(name, raising=False)
+    saved: list[UserSettings] = []
+    service: AppService = _service(tmp_path, saved)
+    panel: SettingsController = SettingsController(service, lambda: None)
+    panel._selected = next(index for index, item in enumerate(panel._items) if item.key == "category:connections")
+    panel.handle_key("enter")
+    panel._selected = next(
+        index for index, item in enumerate(panel._items) if item.key == "connection:palantir-secondary"
+    )
+    panel.handle_key("enter")
+    panel.handle_key("enter")
+    panel.handle_key("paste:synthetic-fallback-sentinel")
+    assert "synthetic-fallback-sentinel" not in panel.render(100, 30).plain
+    assert not (tmp_path / "unused.env").exists()
+    panel.handle_key("enter")
+    assert service.current_settings().palantir_secondary_token == "synthetic-fallback-sentinel"  # noqa: S105
+    assert service.current_settings().palantir_token == ""
+    panel.handle_key("down")
+    panel.handle_key("enter")
+    panel.handle_key("paste:https://second.example.invalid")
+    panel.handle_key("enter")
+    assert service.settings_snapshot().palantir_fallback_enrollment_base_url == "https://second.example.invalid"
+    assert service.settings_snapshot().palantir_enrollment_base_url == ""
+    assert saved[-1].palantir_fallback_enrollment_base_url == "https://second.example.invalid"
+    panel.handle_key("escape")
+    assert "skonfigurowane" in panel.render(100, 30).plain

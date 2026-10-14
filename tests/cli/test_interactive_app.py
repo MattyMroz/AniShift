@@ -103,6 +103,9 @@ class _Manual:
         del columns, rows
         return Text("MANUAL LIST")
 
+    def view_key(self) -> tuple[object, ...]:
+        return ()
+
 
 def _install_renderer(monkeypatch: pytest.MonkeyPatch, script: tuple[str, ...] = ()) -> list[_Renderer]:
     made: list[_Renderer] = []
@@ -112,7 +115,9 @@ def _install_renderer(monkeypatch: pytest.MonkeyPatch, script: tuple[str, ...] =
         key_handler: Callable[[str], None],
         idle_handler: Callable[[], None] | None = None,
         scroll_handler: Callable[[int], None] | None = None,
+        **handlers: object,
     ) -> _Renderer:
+        del handlers
         renderer: _Renderer = _Renderer(frame_provider, key_handler, idle_handler, scroll_handler)
         renderer.script = list(script)
         made.append(renderer)
@@ -250,6 +255,23 @@ def test_notification_opens_library_and_icon_activation_returns_home(
         application._mascot.close()
 
 
+def test_the_tray_state_window_opens_the_panel_on_subscriptions(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_renderer(monkeypatch)
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    session: ResidentSession = cast(
+        "ResidentSession",
+        SimpleNamespace(command=lambda kind: {"subscriptions": []}, close=lambda: None, interrupt_reads=lambda: None),
+    )
+    application: interactive_app._InteractiveApplication = interactive_app._InteractiveApplication(
+        cast("AppService", _service(acquisition=None)), resident=session, show_state=True
+    )
+    monkeypatch.setattr(application, "_start_prewarm", lambda: None)
+    application.run()
+    assert _mode(application) is interactive_app._ViewMode.STATE
+    assert application._state is not None
+    assert application._state._tab == _Tab.SUBSCRIPTIONS
+
+
 def _frame(application: interactive_app._InteractiveApplication, columns: int = 120, rows: int = 40) -> str:
     return application._render_frame(columns, rows).plain
 
@@ -367,9 +389,9 @@ def test_an_auto_refusal_stays_a_sentence_with_a_hint_and_returns_home(monkeypat
     _settle(application)
     refused: str = _frame(application)
 
-    assert "Workspace nie zawiera materiału do uruchomienia" in refused
-    assert "Umieść plik wideo lub napisów w workspace i spróbuj ponownie" in refused
-    assert "dowolny inny klawisz: powrót" in refused
+    assert "W folderze AniShift nie ma odcinka do przetworzenia" in refused
+    assert "Wrzuć plik wideo lub napisy do folderu AniShift i spróbuj ponownie" in refused
+    assert "Esc wróć" in refused
     assert "source group" not in refused
     assert "Traceback" not in refused
 

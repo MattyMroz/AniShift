@@ -11,10 +11,12 @@ from collections.abc import Callable
 from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Final, cast
 
 import httpx
 import pytest
+from conftest import hidden_window_options
 
 from anishift.platform import qbittorrent_process as processes
 from anishift.platform.binaries import Binary, bundled_binary_path, external_bin_root
@@ -38,18 +40,98 @@ def _encode(value: object) -> bytes:
     raise TypeError(type(value).__name__)
 
 
-def _receipt(root: Path, executable: Path) -> None:
+def _receipt(
+    root: Path, executable: Path, hashes: tuple[str, ...] = ("a" * 40,), released: tuple[str, ...] = ()
+) -> None:
     root.mkdir(parents=True)
     document: dict[str, object] = {
         "pid": 123,
         "created": 456,
         "port": 18081,
         "executable": str(executable),
-        "hashes": ["a" * 40],
+        "hashes": list(hashes),
         "active": True,
         "taken_over": False,
+        "released": list(released),
     }
     (root / "process.json").write_text(json.dumps(document), encoding="utf-8")
+
+
+class _PortSocket:
+    def __init__(self, refused: int, opened: list[_PortSocket], family: int, kind: int) -> None:
+        del family
+        self.refused: int = refused
+        self.kind: int = kind
+        self.port: int = 0
+        self.closed: bool = False
+        opened.append(self)
+
+    def __enter__(self) -> _PortSocket:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.closed = True
+
+    def bind(self, address: tuple[str, int]) -> None:
+        assert address[0] == "0.0.0.0"  # noqa: S104
+        if self.kind == socket.SOCK_DGRAM and address[1] == self.refused:
+            raise OSError(address[1])
+        self.port = address[1]
+
+
+def _fake_ports(monkeypatch: pytest.MonkeyPatch, draws: list[int], refused: int) -> list[_PortSocket]:
+    opened: list[_PortSocket] = []
+
+    def make(family: int, kind: int) -> _PortSocket:
+        return _PortSocket(refused, opened, family, kind)
+
+    monkeypatch.setattr(
+        processes,
+        "socket",
+        SimpleNamespace(
+            socket=make, AF_INET=socket.AF_INET, SOCK_DGRAM=socket.SOCK_DGRAM, SOCK_STREAM=socket.SOCK_STREAM
+        ),
+    )
+    monkeypatch.setattr(processes, "secrets", SimpleNamespace(randbelow=lambda count: draws.pop(0)))
+    return opened
+
+
+def test_peer_port_skips_a_port_udp_refuses_and_holds_both_sockets_until_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened: list[_PortSocket] = _fake_ports(monkeypatch, [51277 - 49152, 51400 - 49152], 51277)
+    with processes._peer_port() as port:
+        assert port == 51400
+        assert [(item.kind, item.port, item.closed) for item in opened] == [
+            (socket.SOCK_DGRAM, 0, True),
+            (socket.SOCK_STREAM, 0, True),
+            (socket.SOCK_DGRAM, 51400, False),
+            (socket.SOCK_STREAM, 51400, False),
+        ]
+    assert all(item.closed for item in opened)
+
+
+def test_peer_port_refuses_after_bounded_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
+    opened: list[_PortSocket] = _fake_ports(monkeypatch, [51277 - 49152] * processes._PEER_PORT_ATTEMPTS, 51277)
+    with pytest.raises(TorrentClientError, match="both TCP and UDP"), processes._peer_port():
+        pytest.fail("A refused port was reserved")
+    assert len(opened) == processes._PEER_PORT_ATTEMPTS * 2
+    assert all(item.closed for item in opened)
+
+
+def test_peer_port_is_unavailable_to_tcp_and_udp_while_held() -> None:
+    refused: list[int] = []
+    with processes._peer_port() as port:
+        for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+            with socket.socket(socket.AF_INET, kind) as probe:
+                try:
+                    probe.bind(("0.0.0.0", port))  # noqa: S104
+                except OSError:
+                    refused.append(kind)
+    assert refused == [socket.SOCK_STREAM, socket.SOCK_DGRAM]
+    for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+        with socket.socket(socket.AF_INET, kind) as probe:
+            probe.bind(("0.0.0.0", port))  # noqa: S104
 
 
 def test_start_timeout_is_bounded_and_restart_waits_for_explicit_resume(
@@ -144,12 +226,83 @@ def test_uncertain_or_taken_over_process_is_never_closed(
             manager.close()
 
 
+@pytest.mark.parametrize("ownership", ["owned", "taken_over", "pid_reused", "closed"])
+def test_finalizable_hashes_requires_a_matching_managed_process_or_release_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ownership: str
+) -> None:
+    executable: Path = bundled_binary_path(Binary.QBITTORRENT, root=tmp_path / "bin")
+    monkeypatch.setattr(
+        processes,
+        "_process_identity",
+        lambda pid: None if ownership == "closed" else (789 if ownership == "pid_reused" else 456, str(executable)),
+    )
+    with httpx.Client() as http:
+        manager: ManagedQBittorrent = ManagedQBittorrent(tmp_path / "profile", http=http, bin_root=tmp_path / "bin")
+        manager._state = processes._ProcessState(
+            pid=123,
+            created=456,
+            executable=str(executable),
+            hashes=frozenset({"a", "b"}),
+            taken_over=ownership == "taken_over",
+            released=frozenset({"b"}),
+        )
+        assert manager.finalizable_hashes(frozenset({"a", "b", "foreign"})) == (
+            frozenset({"a", "b"}) if ownership == "owned" else frozenset({"b"})
+        )
+
+
+def test_released_hashes_and_a_concurrent_receipt_save_never_block_each_other(tmp_path: Path) -> None:
+    root: Path = tmp_path / "profile"
+    root.mkdir()
+    failures: list[str] = []
+    stop: threading.Event = threading.Event()
+    with httpx.Client() as http:
+        manager: ManagedQBittorrent = ManagedQBittorrent(root, http=http, bin_root=tmp_path / "bin")
+        manager._save(processes._ProcessState(released=frozenset({"a"})))
+
+        def save_repeatedly() -> None:
+            port: int = 0
+            while not stop.is_set():
+                port += 1
+                try:
+                    with manager._lock:
+                        manager._save(processes._ProcessState(port=port, released=frozenset({"a"})))
+                except PermissionError:
+                    failures.append("save")
+
+        writer: threading.Thread = threading.Thread(target=save_repeatedly)
+        writer.start()
+        try:
+            deadline: float = time.monotonic() + 1.0
+            while time.monotonic() < deadline and not failures:
+                try:
+                    assert manager.released_hashes(frozenset({"a", "b"})) == {"a"}
+                except PermissionError:
+                    failures.append("read")
+        finally:
+            stop.set()
+            writer.join(_TIMEOUT_S)
+    assert failures == []
+
+
+def test_process_exit_can_outlast_startup_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    elapsed: list[float] = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: elapsed[0])
+    monkeypatch.setattr(time, "sleep", lambda delay: elapsed.__setitem__(0, elapsed[0] + delay))
+    monkeypatch.setattr(ManagedQBittorrent, "_matches_process", lambda self, state: elapsed[0] < 30.0)
+    with httpx.Client() as http:
+        manager: ManagedQBittorrent = ManagedQBittorrent(tmp_path / "profile", http=http)
+        manager._wait_for_exit(processes._ProcessState())
+    assert elapsed[0] == 30.0
+    assert processes._START_TIMEOUT_S == 15.0
+
+
 def test_an_open_own_window_keeps_ownership_and_blocks_only_the_automatic_close(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root: Path = tmp_path / "profile"
     executable: Path = tmp_path / "bin/qbittorrent/qbittorrent.exe"
-    _receipt(root, executable)
+    _receipt(root, executable, released=("a" * 40,))
     monkeypatch.setattr(processes, "_process_identity", lambda pid: (456, str(executable)))
     monkeypatch.setattr(processes, "_visible_process_window", lambda pid: True)
     requests: list[str] = []
@@ -175,6 +328,42 @@ def test_an_open_own_window_keeps_ownership_and_blocks_only_the_automatic_close(
     assert receipt["active"] is True
     assert any(path.endswith("/stop") for path in requests)
     assert not any(path.endswith("/shutdown") for path in requests)
+
+
+@pytest.mark.parametrize("released", [("a" * 40,), ("a" * 40, "b" * 40)])
+def test_the_idle_close_waits_until_the_owner_released_every_transfer_the_client_still_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, released: tuple[str, ...]
+) -> None:
+    root: Path = tmp_path / "profile"
+    executable: Path = tmp_path / "bin/qbittorrent/qbittorrent.exe"
+    _receipt(root, executable, hashes=("a" * 40, "b" * 40), released=released)
+    alive: list[bool] = [True]
+    monkeypatch.setattr(processes, "_process_identity", lambda pid: (456, str(executable)) if alive[0] else None)
+    monkeypatch.setattr(processes, "_visible_process_window", lambda pid: False)
+    requests: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        if request.url.path.endswith("preferences"):
+            return httpx.Response(200, json={"save_path": str(root / "qBittorrent/downloads")})
+        if request.url.path.endswith("/info"):
+            return httpx.Response(200, json=[{"hash": "b" * 40, "progress": 1, "amount_left": 0, "state": "stoppedUP"}])
+        if request.url.path.endswith("/shutdown"):
+            alive[0] = False
+        return httpx.Response(200, text="v5.2.3")
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        manager: ManagedQBittorrent = ManagedQBittorrent(root, http=http, bin_root=tmp_path / "bin")
+        try:
+            manager.finish_transfers()
+        finally:
+            manager.close()
+
+    receipt: dict[str, object] = json.loads((root / "process.json").read_text(encoding="utf-8"))
+    closed: bool = len(released) == 2
+    assert any(path.endswith("/shutdown") for path in requests) is closed
+    assert alive[0] is not closed
+    assert (receipt["active"], receipt["pid"]) == ((False, 0) if closed else (True, 123))
 
 
 def test_closed_manual_window_is_not_reported_as_a_start_failure_or_restarted(
@@ -326,7 +515,7 @@ def test_private_clients_download_concurrently_reconnect_and_stop_independently(
         else:
             occupied.close()
             monkeypatch.setattr(processes, "_START_TIMEOUT_S", 15.0)
-        child: subprocess.Popen[bytes] = launch(command, **kwargs)
+        child: subprocess.Popen[bytes] = launch(command, **kwargs, **hidden_window_options())
         children.append(child)
         return child
 
@@ -405,7 +594,8 @@ def test_private_clients_download_concurrently_reconnect_and_stop_independently(
                 "Session\\LSDEnabled=false\n"
                 "Session\\PeXEnabled=false\n"
                 "[Preferences]\n"
-                "Connection\\UPnP=false\n",
+                "Connection\\UPnP=false\n"
+                "Advanced\\updateCheck=false\n",
                 encoding="utf-8",
             )
         first: ManagedQBittorrent = ManagedQBittorrent(tmp_path / "first", http=http)

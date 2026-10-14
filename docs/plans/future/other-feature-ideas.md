@@ -116,3 +116,140 @@ anishift/cli/settings_panel.py   # ZMIANA: edytor mapy postać -> głos (tylko g
 **szkic:** bez nowych plików — pole "zużycie" w wynikach kroków pipeline (`pipeline/types.py`), sumowane w podsumowaniu przebiegu ("TTS: 48 210 znaków ≈ $X"). Wyłącznie szacunek, wyraźnie opisany jako szacunek.
 
 **rekomendacja:** tani dodatek przy okazji dowolnej pracy w pipeline po etapie 7; nie zasługuje na osobny etap.
+
+---
+
+# Pomysły właściciela z 2026-10-12
+
+> status: POMYSŁ — kierunek na lata, nie zlecenie. Kolejność i zakres wymagają osobnej
+> rozmowy przed planem. Cel nadrzędny bez zmian: kliknąć, chwilę poczekać, obejrzeć w
+> najwyższej jakości (4K, napisy PL, polski lektor) bez szukania wydań i grup tłumaczy.
+
+## 8. najbliższy kierunek: wygoda na własnym komputerze
+
+> status: DECYZJA WŁAŚCICIELA z 2026-10-12 — oglądanie tylko lokalnie na PC. Bez Jellyfin,
+> bez zdalnego dostępu, bez telefonu i tabletu, bo z nich właściciel i tak nie ogląda.
+
+**cel:** zobaczyć obrazek, poznać tytuł, wybrać, pobrać, obejrzeć, usunąć. Koniec.
+
+**co z tego wynika:**
+- najpierw jakość lokalnego wyniku: tłumaczenie, nazwy własne, szyldy i piosenki, lektor;
+- połączenie z listą anime właściciela, tak żeby AniShift wiedział, co jest obejrzane i co
+  dalej. Konto MAL: Matty_Mroz. Czy synchronizować z MAL, z AniList, czy z obiema, jeszcze
+  do ustalenia;
+- podgląd z okładkami, żeby od razu było widać, który to tytuł. Dziś panel pokazuje tylko
+  tekst; okładki z AniList nie są jeszcze pobierane ani pokazywane.
+
+## 8a. centrum rozrywki w przeglądarce (dalekie, odłożone)
+
+**pomysł:** strona zamiast TUI jako główny interfejs; TUI zostaje obok. AniShift na
+własnym VPS pobiera i przetwarza w tle, a odcinek jest gotowy, zanim właściciel chce go
+obejrzeć. Oglądanie z dowolnego miejsca, także na telefonie, najlepiej z odtwarzaniem
+jakości mpv i przyspieszeniem GPU w przeglądarce. Wzorzec doświadczenia: Stremio/Netflix,
+ale z polskim lektorem i bez wypalonych napisów.
+
+**otwarte pytania:**
+- gdzie trzymać media (~1,5 GB na odcinek, dziesiątki serii);
+- czy wystarczy SQLite;
+- czy odtwarzanie MKV z ASS w przeglądarce jest realne bez transkodowania;
+- co z gotowych narzędzi (Jellyfin, Stremio) da się użyć zamiast budować.
+
+Strona na Cloudflare jest już opłacona.
+
+## 9. lista obejrzanych i statystyki
+
+**pomysł:** własna lista w stylu MAL: co obejrzane, co w trakcie, co zaplanowane, oceny i
+statystyki. Źródło prawdy we własnej bazie, nie u zewnętrznego serwisu.
+
+## 10. agregator: harmonogram, banery, newsy
+
+**pomysł:** jedno miejsce z harmonogramem emisji, banerami i newsami z wielu stron, z
+którego od razu zakłada się subskrypcję.
+
+## 11. agent i API w środku
+
+**pomysł:** API AniShift oraz agent albo serwer MCP, któremu można powiedzieć „pobierz mi ten
+odcinek” albo „napraw to”. Ryzyko: każda warstwa dokłada złożoności, więc najpierw API, agent
+dopiero na nim.
+
+## 12. automatyczny typesetting napisów i piosenek
+
+**pomysł:** automatyczne rozpoznawanie i składanie szyldów oraz piosenek (OP/ED) tak, żeby
+wyglądały jak ręczny typesetting. Heurystyki pozycjonowania tekstu w przestrzeni ekranu:
+- współrzędne względne i bezwzględne, ustandaryzowane dla każdego typu ekranu, także
+  szerokokątnego i zakrzywionego;
+- wspólny rdzeń do ponownego użycia w MangaShift.
+
+Powiązane: [silnik layoutu napisów](subtitle-layout-engine.md) i
+[style_classifier](#2-style_classifier-napisów-ass).
+
+## 13. jakość tłumaczenia
+
+**pomysł:**
+- poprawne tłumaczenie nazw własnych;
+- dopracowane prompty;
+- lepsze rozgraniczanie napisów (heurystyki podziału linii).
+
+Dziś najlepiej wypada Gemini 3.8 Flash: oddaje żarty i nie jest sztywny. Do porównania
+warto wziąć Groka.
+
+## 14. niezależność lektora od jednego dostawcy TTS
+
+**pomysł:** nie zależeć od limitów jednego płatnego dostawcy. Kierunki:
+- lokalny model TTS;
+- własny głos lektora;
+- dodatkowe legalne źródło syntezy.
+
+Zakres wyłącznie w zgodzie z warunkami dostawców, bez obchodzenia płatności i limitów.
+
+## 15. rozszerzenia treści
+
+**pomysł:** później manga (wspólne heurystyki z MangaShift), może filmy i inne treści — o ile
+będzie to wykonalne.
+
+## 16. do zrobienia kiedyś: podział `automation.py`
+
+> status: ODŁOŻONE — decyzja właściciela z 2026-10-12: na razie nie ciąć, wszystko w jednym
+> pliku jest akceptowalne.
+
+**stan (odczyt astry z 2026-10-12, commit `287cb20`):** plik ma 9372 linie. Klasa
+`AutomationOwner` zajmuje około 7600 z nich (linie 772–8394).
+
+Da się w niej wskazać obszary:
+- biblioteka i usuwanie;
+- preview i start;
+- subskrypcje;
+- transfery;
+- zapis stanu i zdarzenia.
+
+Obszary są jednak przeplecione i dzielą pola konstruktora. Na przykład `_save` jednocześnie:
+- rozlicza subskrypcje;
+- zapisuje stan;
+- dopisuje historię;
+- emituje zdarzenia;
+- planuje transfery.
+
+Rozbicie na mixiny tylko rozrzuciłoby te zależności.
+
+**jeśli kiedyś, to w tej kolejności:**
+1. Tani pierwszy krok: funkcje `_selection_confirmed`, `_restorable`, `_selection_basis` i
+   `_selection_mismatch` przyjmują jawne dane, a nie ownera, więc można je przenieść do
+   `application/transfers.py` bez zmiany zachowania.
+2. Przy pracy nad API: uporządkować projekcje z użyciem `control_views.py`. Zachować oba
+   formaty odpowiedzi.
+3. Większe wydzielenie dopiero przy udowodnionej granicy. Przykład: rozliczenie subskrypcji
+   jako funkcja „snapshot, czas i fakty transferów → nowy stan”, z zapisem dalej u jednego
+   ownera.
+
+Podfoldery w `application/` poprawiają tylko nawigację, nie spójność.
+
+**sygnał, że już trzeba:**
+- kolejna funkcja wymaga zmian w kilku niezwiązanych obszarach ownera;
+- regresje wracają na ich styku;
+- API zmusza do powielania reguł.
+
+## 17. otwarte pytania techniczne
+
+- Rust: pełne przepisanie nie ma uzasadnienia. Czas zjadają pobieranie, LLM, TTS i ffmpeg,
+  a nie Python. Przed jakąkolwiek optymalizacją najpierw zmierzyć czasy etapów na kilku
+  odcinkach.

@@ -14,6 +14,7 @@ from xml.etree import ElementTree
 import httpx
 
 from anishift.errors import ErrorCode, ErrorContext
+from anishift.services.http_requests import USER_AGENT
 from anishift.services.torrents.categories import (
     CATEGORY_ENGLISH_TRANSLATED,
     CATEGORY_NON_ENGLISH_TRANSLATED,
@@ -36,6 +37,7 @@ __all__ = [
     "SEARCH_CATEGORIES",
     "USER_AGENT",
     "parse_feed",
+    "published_date",
     "search_releases",
 ]
 
@@ -63,9 +65,6 @@ _DEFAULT_LANGUAGES: Final[dict[str, str | None]] = {
 
 MAX_BODY_BYTES: Final[int] = 4 * 1024 * 1024
 """Largest feed body accepted before the response is rejected."""
-
-USER_AGENT: Final[str] = "AniShift/0.1"
-"""Client identity sent with every search request."""
 
 DEFAULT_SEARCH_TIMEOUT_S: Final[float] = 20.0
 """Timeout applied to one search request."""
@@ -161,7 +160,9 @@ def _search_category(
     except httpx.HTTPError as error:
         raise _source_error(_SourceFailure.UNREACHABLE) from error
     if response.status_code != HTTPStatus.OK:
-        raise _source_error(_SourceFailure.REJECTED)
+        raise _source_error(_SourceFailure.REJECTED) from httpx.HTTPStatusError(
+            "Nyaa rejected the search", request=response.request, response=response
+        )
     if len(response.content) > MAX_BODY_BYTES:
         raise _source_error(_SourceFailure.OVERSIZED)
     content_type: str = response.headers.get("content-type", "").lower()
@@ -182,7 +183,7 @@ def _release_from_item(item: ElementTree.Element) -> Release | None:
         info_hash=info_hash,
         seeders=_seeders(_text(item, f"{{{NYAA_NAMESPACE}}}seeders")),
         size_text=_text(item, f"{{{NYAA_NAMESPACE}}}size"),
-        published=_published(_text(item, "pubDate")),
+        published=published_date(_text(item, "pubDate")),
     )
 
 
@@ -202,7 +203,7 @@ def _seeders(raw: str) -> int:
         return 0
 
 
-def _published(raw: str) -> datetime | None:
+def published_date(raw: str) -> datetime | None:
     """Return the publication moment as an aware UTC value, or ``None`` when unreadable."""
     if not raw:
         return None

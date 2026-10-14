@@ -38,6 +38,7 @@ class HistoryKind(StrEnum):
     ERROR = "processing_error"
     REGENERATION = "regeneration"
     DELETE = "delete_outcome"
+    SUBSCRIPTION_FINISHED = "subscription_finished"
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +148,7 @@ class HistoryJournal:
             HistoryKind.ERROR,
             HistoryKind.INTERRUPTED,
             HistoryKind.DELETE,
+            HistoryKind.SUBSCRIPTION_FINISHED,
         }
         for event in sorted(self.events(now), key=lambda item: datetime.fromisoformat(item.occurred_at)):
             if (query and query.casefold() in event.name.casefold()) or (not query and event.kind in terminal):

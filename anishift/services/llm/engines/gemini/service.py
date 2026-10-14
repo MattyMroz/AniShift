@@ -15,6 +15,7 @@ from anishift.services.llm.config import LlmConfig
 from anishift.services.llm.engines._sdk_helpers import (
     error_with_context,
     raise_request_error,
+    require_file_modalities,
     status_code,
     transient_error_with_context,
 )
@@ -44,9 +45,14 @@ from anishift.services.llm.errors import (
     LlmRequestError,
     LlmTimeoutError,
 )
-from anishift.services.llm.types import LlmRequest, LlmResponse, LlmUsage, TextPart
+from anishift.services.llm.types import LlmContentPart, LlmRequest, LlmResponse, LlmUsage, Modality, TextPart
 
 __all__ = ["ClientFactory", "GeminiService"]
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+_FILE_MODALITIES: Final[frozenset[Modality]] = frozenset({"image", "pdf", "audio", "video"})
+"""File modalities supported by Google Gemini."""
 
 _PAYMENT_FRAGMENTS: Final[tuple[str, ...]] = ("billing", "credit", "payment")
 """Structured Gemini marker fragments representing payment failures."""
@@ -156,8 +162,8 @@ class GeminiService:
                 "Gemini provider is already closed",
                 suggestion="Create a new provider instance before sending another request.",
             )
-        client: _GeminiClient = self._ensure_client()
         contents, generate_config = self._build_request(request)
+        client: _GeminiClient = self._ensure_client()
         started_at: float = time.perf_counter()
         try:
             response: Any = client.models.generate_content(
@@ -203,11 +209,12 @@ class GeminiService:
         return self._client
 
     def _build_request(self, request: LlmRequest) -> tuple[list[object], object]:
+        require_file_modalities(request, accepted=_FILE_MODALITIES, engine_id=self.engine_id)
         types_module: ModuleType = _load_google_types()
         system_parts: list[object] = []
         contents: list[object] = []
         for message in request.messages:
-            parts: list[object] = _google_text_parts(message.parts, types_module=types_module)
+            parts: list[object] = _google_parts(message.parts, types_module=types_module)
             if message.role.value == "system":
                 system_parts.extend(parts)
                 continue
@@ -272,20 +279,13 @@ class GeminiService:
         return cast("type[BaseException]", errors_module.APIError)
 
 
-def _google_text_parts(parts: tuple[TextPart, ...], *, types_module: ModuleType) -> list[object]:
-    if not parts:
-        _raise_request_error(
-            "Gemini messages must contain at least one text part",
-            suggestion="Add text content to every LLM message.",
-        )
+def _google_parts(parts: tuple[LlmContentPart, ...], *, types_module: ModuleType) -> list[object]:
     mapped_parts: list[object] = []
     for part in parts:
-        if not isinstance(part, TextPart):
-            _raise_request_error(
-                "Gemini received an unsupported content part",
-                suggestion="Use text content parts for this provider.",
-            )
-        mapped_parts.append(types_module.Part(text=part.text))
+        if isinstance(part, TextPart):
+            mapped_parts.append(types_module.Part(text=part.text))
+            continue
+        mapped_parts.append(types_module.Part.from_bytes(data=part.data, mime_type=part.media_type))
     return mapped_parts
 
 

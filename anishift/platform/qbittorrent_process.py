@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -43,8 +44,20 @@ _START_ATTEMPTS: Final[int] = 3
 _START_TIMEOUT_S: Final[float] = 15.0
 """Readiness deadline for one private process launch."""
 
+_EXIT_TIMEOUT_S: Final[float] = 60.0
+"""Deadline for an owned process to flush active downloads and exit after shutdown."""
+
 _POLL_S: Final[float] = 0.25
 """Delay between readiness checks during process startup and shutdown."""
+
+_PEER_PORT_ATTEMPTS: Final[int] = 20
+"""Bounded random draws for a peer port that both TCP and UDP can bind."""
+
+_PEER_PORT_FIRST: Final[int] = 49152
+"""First port of the IANA dynamic range the peer port is drawn from."""
+
+_PEER_PORT_COUNT: Final[int] = 16384
+"""Size of the dynamic range, drawn at random because sequential ports cross whole excluded blocks."""
 
 _MANAGED_PREFERENCES: Final[dict[str, object]] = {
     "queueing_enabled": False,
@@ -102,6 +115,16 @@ class ManagedQBittorrent:
         """Persist ownership of the ordered hashes before sending any download."""
         with self._lock:
             state: _ProcessState = self._load()
+            hashes = frozenset(value.casefold() for value in hashes)
+            if self._matches_process(state):
+                client: QBittorrentClient = self._required_client()
+                self._assert_ownership(client)
+                foreign: frozenset[str] = (
+                    frozenset(item.info_hash.casefold() for item in client.all_torrents()) - state.hashes
+                )
+                if foreign & hashes:
+                    message: str = "A requested hash is already present without a managed admission"
+                    raise _unavailable(message)
             self._save(
                 replace(
                     state,
@@ -161,9 +184,79 @@ class ManagedQBittorrent:
     def rename_file(self, info_hash: str, old_path: str, new_path: str) -> None:
         """Reserve one destination name in a private transfer that owns the file."""
         with self._lock:
+            self._assert_hash(info_hash)
             client: QBittorrentClient = self._required_client()
             self._assert_ownership(client)
             client.rename_file(info_hash, old_path, new_path)
+
+    def add_metadata(self, info_hash: str, *, trackers: tuple[str, ...] = (), save_path: Path, category: str) -> None:
+        """Submit an owned new hash for metadata only, refusing any existing client entry."""
+        with self._lock:
+            self._assert_hash(info_hash)
+            client: QBittorrentClient = self._required_client()
+            self._assert_ownership(client)
+            if any(item.info_hash.casefold() == info_hash.casefold() for item in client.all_torrents()):
+                message: str = "The transfer already exists and requires reconciliation before metadata admission"
+                raise _unavailable(message)
+            client.add_metadata(info_hash, trackers=trackers, save_path=save_path, category=category)
+
+    def select_files(
+        self, info_hash: str, files: tuple[TorrentFile, ...], selected: frozenset[int], *, save_path: Path
+    ) -> tuple[TorrentFile, ...]:
+        """Apply a complete selection to a stopped owned transfer and return verified readback without starting it."""
+        with self._lock:
+            self._assert_hash(info_hash)
+            client: QBittorrentClient = self._required_client()
+            self._assert_ownership(client)
+            observed: tuple[TorrentFile, ...] = client.files(info_hash)
+            expected: tuple[tuple[int, str, int], ...] = _file_identities(files)
+            indexes: frozenset[int] = frozenset(item.index for item in files)
+            if (
+                not files
+                or len(indexes) != len(files)
+                or not selected <= indexes
+                or _file_identities(observed) != expected
+            ):
+                message: str = "The selected file map changed; refresh metadata before selecting files"
+                raise _unavailable(message)
+            self._assert_stopped(client, info_hash, save_path)
+            self._assert_ownership(client)
+            client.set_file_priority(info_hash, indexes, 0)
+            zero: tuple[TorrentFile, ...] = client.files(info_hash)
+            if _file_identities(zero) != expected or any(item.priority != 0 for item in zero):
+                message = "The client did not confirm the omitted file priorities"
+                raise _unavailable(message)
+            if selected:
+                self._assert_ownership(client)
+                self._assert_stopped(client, info_hash, save_path)
+                client.set_file_priority(info_hash, selected, 1)
+            result: tuple[TorrentFile, ...] = client.files(info_hash)
+            self._assert_stopped(client, info_hash, save_path)
+            if _file_identities(result) != expected or any(
+                item.priority != int(item.index in selected) for item in result
+            ):
+                message = "The client did not confirm the requested file priorities"
+                raise _unavailable(message)
+            logger.info("Verified selective torrent priorities", selected_files=len(selected), total_files=len(files))
+            return result
+
+    def _assert_hash(self, info_hash: str) -> None:
+        if info_hash.casefold() not in self._load().hashes:
+            message: str = "The transfer is not managed by AniShift"
+            raise _unavailable(message)
+
+    def _assert_stopped(self, client: QBittorrentClient, info_hash: str, save_path: Path) -> None:
+        entries: tuple[TorrentInfo, ...] = tuple(
+            item for item in client.all_torrents() if item.info_hash.casefold() == info_hash.casefold()
+        )
+        if len(entries) != 1 or Path(entries[0].save_path).resolve() != save_path.resolve():
+            message: str = "The transfer staging location could not be confirmed"
+            raise _unavailable(message)
+        if entries[0].state not in {"stoppedDL", "stoppedUP", "pausedDL", "pausedUP"}:
+            self._assert_ownership(client)
+            client.stop(info_hash)
+            message = "The transfer must be confirmed stopped before file selection"
+            raise _unavailable(message)
 
     def torrents(self, category: str) -> tuple[TorrentInfo, ...]:
         """Read managed transfers, restoring a previously active private process if needed."""
@@ -214,7 +307,7 @@ class ManagedQBittorrent:
                 client.stop(info_hash)
 
     def finish_transfers(self) -> None:
-        """Stop completed seeds and close only an idle client with proven ownership."""
+        """Stop completed seeds and close a proven own client only once the owner released every transfer it holds."""
         with self._lock:
             state: _ProcessState = self._load()
             if not self._matches_process(state) or state.taken_over:
@@ -233,7 +326,7 @@ class ManagedQBittorrent:
                     and item.state in {"uploading", "stalledUP", "forcedUP"}
                 ):
                     client.stop(item.info_hash)
-            if any(item.progress < 1.0 or item.amount_left != 0 for item in entries):
+            if any(item.info_hash.casefold() not in state.released for item in entries):
                 return
             if _visible_process_window(state.pid):
                 logger.info("Kept the private torrent client running while its own window is open")
@@ -273,11 +366,12 @@ class ManagedQBittorrent:
             return released
 
     def released_hashes(self, hashes: frozenset[str]) -> frozenset[str]:
-        """Read only the existing process receipt, without locks, profile setup or client access."""
-        try:
-            payload: bytes = (self._root / "process.json").read_bytes()
-        except FileNotFoundError:
-            return frozenset()
+        """Read only the existing process receipt under the manager lock, without profile setup or client access."""
+        with self._lock:
+            try:
+                payload: bytes = (self._root / "process.json").read_bytes()
+            except FileNotFoundError:
+                return frozenset()
         return _STATE.validate_json(payload, strict=True).released & hashes
 
     def close_owned(self) -> None:
@@ -296,6 +390,19 @@ class ManagedQBittorrent:
             self._process_lock.release()
             self._client = None
             logger.info("Private torrent client closed on request")
+
+    def finalizable_hashes(self, hashes: frozenset[str]) -> frozenset[str]:
+        """Return released or owned live-process hashes without network or process startup."""
+        with self._lock:
+            state: _ProcessState | None = self._state
+            if state is None:
+                try:
+                    state = _STATE.validate_json((self._root / "process.json").read_bytes(), strict=True)
+                except FileNotFoundError:
+                    return frozenset()
+            if state.taken_over or not self._matches_process(state):
+                return state.released & hashes
+            return (state.hashes | state.released) & hashes
 
     def close(self) -> None:
         """Release management while leaving active downloads available for recovery."""
@@ -389,11 +496,9 @@ class ManagedQBittorrent:
     def _start(self) -> QBittorrentClient | None:
         state: _ProcessState = self._load()
         executable: Path = bundled_binary_path(Binary.QBITTORRENT, root=self._bin_root)
-        with socket.socket() as web_socket, socket.socket() as torrent_socket:
+        with socket.socket() as web_socket, _peer_port() as torrent_port:
             web_socket.bind(("127.0.0.1", 0))
-            torrent_socket.bind(("0.0.0.0", 0))  # noqa: S104 - reserve the torrent peer port, separate from loopback Web UI
             port: int = web_socket.getsockname()[1]
-            torrent_port: int = torrent_socket.getsockname()[1]
             write_managed_profile(self._root, web_port=port, torrent_port=torrent_port, password=self._password())
         child: subprocess.Popen[bytes] = subprocess.Popen(  # noqa: S603 - bundled executable and private profile argv
             [
@@ -480,14 +585,14 @@ class ManagedQBittorrent:
             raise _unavailable(message)
 
     def _wait_for_exit(self, state: _ProcessState) -> None:
-        deadline: float = time.monotonic() + _START_TIMEOUT_S
+        deadline: float = time.monotonic() + _EXIT_TIMEOUT_S
         while self._matches_process(state) and time.monotonic() < deadline:
             time.sleep(_POLL_S)
         if self._matches_process(state):
             message: str = "The private torrent client did not finish shutting down"
             raise _unavailable(message)
         if self._child is not None:
-            self._child.wait(timeout=_START_TIMEOUT_S)
+            self._child.wait(timeout=_EXIT_TIMEOUT_S)
             self._child = None
 
 
@@ -499,6 +604,30 @@ def _unavailable(message: str) -> TorrentClientError:
             suggestion="Open AniShift State and retry after resolving the torrent client problem",
         )
     )
+
+
+@contextmanager
+def _peer_port() -> Iterator[int]:
+    """Hold one peer port bound for both UDP and TCP on every interface until the profile is written."""
+    for _attempt in range(_PEER_PORT_ATTEMPTS):
+        port: int = _PEER_PORT_FIRST + secrets.randbelow(_PEER_PORT_COUNT)
+        with (
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp,
+            socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp,
+        ):
+            try:
+                udp.bind(("0.0.0.0", port))  # noqa: S104 - peers reach the torrent port on every interface
+                tcp.bind(("0.0.0.0", port))  # noqa: S104 - peers reach the torrent port on every interface
+            except OSError:
+                continue
+            yield port
+            return
+    message: str = "No torrent peer port accepts both TCP and UDP; check excluded port ranges"
+    raise _unavailable(message)
+
+
+def _file_identities(files: tuple[TorrentFile, ...]) -> tuple[tuple[int, str, int], ...]:
+    return tuple(sorted((item.index, item.name, item.size) for item in files))
 
 
 def _protect_profile(root: Path) -> None:

@@ -379,5 +379,162 @@
       "chosen_id": 176496,
       "romaji": "Ore dake Level Up na Ken: Season 2 - Arise from the Shadow"
     }
+  ],
+  "anizip": [
+    {
+      "source": "sources/metadata/slime-s1.raw.json",
+      "file": "anizip__101280.json",
+      "anilist_id": 101280,
+      "sha256": "dc35db0c1165d35bc5486dad141c5323329065044188d8a4c1077488c9a0a45b",
+      "bytes": 38009,
+      "trimmed": false,
+      "recorded_at": "2026-09-22"
+    },
+    {
+      "source": "sources/metadata/slime-s4.raw.json",
+      "file": "anizip__182205.json",
+      "anilist_id": 182205,
+      "sha256": "362e7b2e8e6846cb888324b7cafa19b0491a91543750ab9fdebcd690115e9a6d",
+      "bytes": 16043,
+      "trimmed": false,
+      "recorded_at": "2026-09-22"
+    },
+    {
+      "source": "sources/metadata/slime-ova.raw.json",
+      "file": "anizip__106509.json",
+      "anilist_id": 106509,
+      "sha256": "a5d06cd4fd64792558aad3afd22d9d3d1f76b03196ba8e1fbf8cb3ae230ce32a",
+      "bytes": 5824,
+      "trimmed": false,
+      "recorded_at": "2026-09-22"
+    },
+    {
+      "source": "sources/metadata/haibane.raw.json",
+      "file": "anizip__387.json",
+      "anilist_id": 387,
+      "sha256": "58886a4535e12c87612274fc8c724830d9d626e76a80794a68dfbf74f0088c75",
+      "bytes": 20461,
+      "trimmed": false,
+      "recorded_at": "2026-09-22"
+    }
+  ],
+  "torrentio": [
+    {
+      "source": "sources/releases/slime-s1e4.body.json",
+      "file": "torrentio__kitsu-41024-4.json",
+      "kitsu_id": 41024,
+      "number": 4,
+      "sha256": "c984ce58ac27f1b2da083fcba6ba11e52f3a742e3c04c7042504bd56914042c7",
+      "bytes": 75794,
+      "trimmed": false,
+      "recorded_at": "2026-09-22"
+    },
+    {
+      "source": "sources/releases/slime-s4e10.body.json",
+      "file": "torrentio__kitsu-49235-10.json",
+      "kitsu_id": 49235,
+      "number": 10,
+      "sha256": "032c10a2b229873cc244102f783d8e8ac089cc575678988e2fddfe55365937aa",
+      "bytes": 76916,
+      "trimmed": false,
+      "recorded_at": "2026-09-22"
+    },
+    {
+      "source": "sources/releases/slime-s4e23.body.json",
+      "file": "torrentio__kitsu-49235-23.json",
+      "kitsu_id": 49235,
+      "number": 23,
+      "sha256": "a310a3d11a44015e3b6fee11c393dd6cbfbeee3f207ee0c63cfc9f02b452bc72",
+      "bytes": 24436,
+      "trimmed": false,
+      "recorded_at": "2026-09-22"
+    },
+    {
+      "source": "sources/releases/slime-s4e24.body.json",
+      "file": "torrentio__kitsu-49235-24.json",
+      "kitsu_id": 49235,
+      "number": 24,
+      "sha256": "bbfc2e250b02778efa04738d4dc7812b113be2cd4fb4429b3de2c7415af0e4cc",
+      "bytes": 76,
+      "trimmed": false,
+      "recorded_at": "2026-09-22"
+    },
+    {
+      "source": "sources/releases/haibane-e1.body.json",
+      "file": "torrentio__kitsu-354-1.json",
+      "kitsu_id": 354,
+      "number": 1,
+      "sha256": "3b876e9a48cb4798c3c99dded1d4821c5149b4a1d0d92c46c054c0f65cba21df",
+      "bytes": 17169,
+      "trimmed": false,
+      "recorded_at": "2026-09-22"
+    },
+    {
+      "source": "sources/releases/bebop-e1.body.json",
+      "file": "torrentio__kitsu-1-1.json",
+      "kitsu_id": 1,
+      "number": 1,
+      "sha256": "741b3cc76384d284a2a2d7deef0b9ed74d01c03f4bf07e398a88c7875ea91c8d",
+      "bytes": 53995,
+      "trimmed": false,
+      "recorded_at": "2026-09-22"
+    },
+    {
+      "source": "sources/ova/ova-1.raw.json",
+      "file": "torrentio__kitsu-42022-1.json",
+      "kitsu_id": 42022,
+      "number": 1,
+      "sha256": "217208b9d6b66570537afc3994b369178ac00dd05919918f43e068cd588406a8",
+      "bytes": 34225,
+      "trimmed": false,
+      "recorded_at": "2026-09-22"
+    },
+    {
+      "source": "sources/ova/ova-4.raw.json",
+      "file": "torrentio__kitsu-42022-4.json",
+      "kitsu_id": 42022,
+      "number": 4,
+      "sha256": "73d660032e57b62928e0f36826147f71760660ff639fab59a8c4714e0a907d09",
+      "bytes": 28191,
+      "trimmed": false,
+      "recorded_at": "2026-09-22"
+    }
+  ],
+  "anilist_franchise": [
+    {
+      "selected_id": 101280,
+      "depth": 3,
+      "request_count": 3,
+      "file": "anilist__franchise__101280.json",
+      "sha256": "f6625b1ca74d7165f29c1e9498cd3b56eb2c166eab8e1a2e31c1db4c63318c70"
+    },
+    {
+      "selected_id": 151807,
+      "depth": 3,
+      "request_count": 2,
+      "file": "anilist__franchise__151807.json",
+      "sha256": "161bd9866e062635bb96545927861c324042b9ff1c6428c89032d17a033b3fec"
+    },
+    {
+      "selected_id": 387,
+      "depth": 3,
+      "request_count": 1,
+      "file": "anilist__franchise__387.json",
+      "sha256": "e61e5616d3f78917b2a5b225e12becd2ca4d776accb1d6d72ab0e53799517895"
+    },
+    {
+      "selected_id": 106509,
+      "depth": 3,
+      "request_count": 4,
+      "file": "anilist__franchise__106509.json",
+      "sha256": "3fa7f9103d487c266c9390020b6f11bd37d8293cefcbaf5a442c16981949f388"
+    },
+    {
+      "selected_id": 116741,
+      "depth": 3,
+      "request_count": 1,
+      "file": "anilist__franchise__116741.json",
+      "sha256": "0e3cc949c5b38adc26009b89ceb5cc7ea2059e06db63906f0fa977d9a063d01e"
+    }
   ]
 }

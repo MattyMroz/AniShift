@@ -479,21 +479,21 @@ def _translation_service(settings: Settings, plan: ExecutionPlan) -> _Translatio
     return _TranslationRuntime(service, llm_cancel)
 
 
-def palantir_llm_config(
+def palantir_llm_config(  # noqa: PLR0913
     catalog: ModelCatalog,
     alias: str,
     *,
     enrollment_base_url: str,
     token: str,
     max_retries: int = 0,
+    fallback_enrollment_base_url: str = "",
+    fallback_token: str = "",
 ) -> LlmConfig:
     """Resolve one catalog alias into a complete Palantir configuration."""
     entry: ModelEntry | None = catalog.models.get(alias.strip())
     if entry is None:
         raise _alias_error(alias)
-    provider: ProviderEntry | None = catalog.providers.get(entry.provider_id)
-    if provider is None:
-        raise _alias_error(alias)
+    provider: ProviderEntry = catalog.providers[entry.provider_id]
     model: PalantirModelConfig = palantir_model_config(
         alias=entry.alias,
         provider_id=provider.provider_id,
@@ -512,6 +512,8 @@ def palantir_llm_config(
         alias=model.alias,
         provider_id=model.provider_id,
         protocol=model.protocol,
+        fallback_origin=fallback_enrollment_base_url,
+        fallback_api_key=fallback_token,
     )
 
 
@@ -527,12 +529,12 @@ def probe_palantir_model(config: LlmConfig) -> None:
 
 
 def _alias_error(alias: str) -> ConfigError:
-    """Build the failure of an alias no usable catalog entry serves."""
+    """Build the failure for an alias outside the built-in Palantir model list."""
     return ConfigError(
         context=ErrorContext(
             code=ErrorCode.CONFIG_INVALID,
-            message=f"Model alias is not served by the local catalog: {alias}",
-            suggestion="Select one of the aliases the model catalog defines with a usable provider",
+            message=f"Model alias is not in the built-in Palantir model list: {alias}",
+            suggestion="Select one of the aliases from the built-in Palantir model list",
         ),
     )
 
@@ -588,6 +590,8 @@ def _palantir_translation_config(settings: Settings, snapshot: RunSettingsSnapsh
         enrollment_base_url=preferences.palantir_enrollment_base_url,
         token=settings.palantir_token,
         max_retries=snapshot.translation_max_retries,
+        fallback_enrollment_base_url=preferences.palantir_fallback_enrollment_base_url,
+        fallback_token=settings.palantir_secondary_token,
     )
     return replace(
         config,

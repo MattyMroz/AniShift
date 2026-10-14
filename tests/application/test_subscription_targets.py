@@ -1,0 +1,923 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from anishift.application.acquisition import ListingRead
+from anishift.application.control import LegacyScope
+from anishift.application.episode_selection import (
+    AniZipMapping,
+    EpisodeListing,
+    ListedEpisode,
+)
+from anishift.application.release_quality import ResolutionClass
+from anishift.application.subscription_targets import (
+    ATTEMPT_ACTIVE,
+    ATTEMPT_SATISFIED,
+    LEGACY_ORDERED,
+    MAX_ATTEMPTS,
+    MAX_TRANSIENT_FAILURES,
+    Blocker,
+    PauseReason,
+    PolishSkip,
+    ReleaseFailure,
+    SubscriptionProblem,
+    SubscriptionRecord,
+    SubscriptionRow,
+    SubscriptionTarget,
+    TargetFacts,
+    TargetState,
+    after_close,
+    completed,
+    cut_point,
+    display_order,
+    excluded,
+    is_target,
+    late,
+    merge_listing,
+    next_check_at,
+    next_search_at,
+    renumbered,
+    search_targets,
+    settle_target,
+    skip_active,
+    subscription_row,
+)
+
+_NOW: datetime = datetime(2026, 10, 2, 12, tzinfo=UTC)
+
+
+def _record(identifier: str = "a", title: str = "Series", **changes: object) -> SubscriptionRecord:
+    record: SubscriptionRecord = SubscriptionRecord(
+        subscription_id=identifier,
+        anilist_id=1,
+        title=title,
+        subscribed_at=_NOW.isoformat(),
+        cut=0,
+    )
+    return replace(record, **changes)  # type: ignore[arg-type]
+
+
+def _target(number: int, state: TargetState = TargetState.DUE, due: datetime | None = _NOW) -> SubscriptionTarget:
+    return SubscriptionTarget(
+        number,
+        None if due is None else due.isoformat(),
+        state,
+        admission_id="admission" if state is TargetState.ATTEMPTING else None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("attempts", "due", "state"),
+    [
+        (MAX_ATTEMPTS, _NOW - timedelta(hours=1), TargetState.EXHAUSTED),
+        (1, _NOW + timedelta(hours=1), TargetState.AWAITING_AIRING),
+        (1, None, TargetState.AWAITING_AIRING),
+        (1, _NOW - timedelta(hours=1), TargetState.DUE),
+    ],
+)
+def test_a_closed_attempt_without_a_download_moves_the_target_by_its_budget_and_deadline(
+    attempts: int, due: datetime | None, state: TargetState
+) -> None:
+    target: SubscriptionTarget = replace(
+        _target(4, TargetState.ATTEMPTING, due), attempts=attempts, started=attempts, admission_id="admission-1"
+    )
+
+    closed: SubscriptionTarget = after_close(target, _NOW)
+
+    assert closed.state is state
+    assert closed.admission_id == "admission-1"
+    assert closed.attempts == attempts
+
+
+def test_a_row_names_the_earliest_unfinished_target_and_counts_the_aired_episodes() -> None:
+    record: SubscriptionRecord = _record(
+        cut=2,
+        targets=(
+            _target(3, TargetState.SATISFIED, _NOW - timedelta(days=2)),
+            _target(4, TargetState.DUE, _NOW + timedelta(days=3)),
+            _target(5, TargetState.AWAITING_AIRING, _NOW + timedelta(days=1)),
+            _target(6, TargetState.MANUAL, _NOW),
+        ),
+    )
+
+    assert subscription_row(record) == SubscriptionRow(
+        subscription_id="a",
+        anilist_id=1,
+        title="Series",
+        due_at=(_NOW + timedelta(days=3)).isoformat(),
+        paused=False,
+        pause_reason=None,
+        problem=None,
+        review_pending=False,
+        due_number=4,
+        aired=5,
+        due_state="searching",
+    )
+
+
+@pytest.mark.parametrize(
+    ("state", "blocker", "shown"),
+    [
+        (TargetState.AWAITING_AIRING, None, "airing"),
+        (TargetState.DUE, None, "searching"),
+        (TargetState.DUE, Blocker.PENDING, "pending"),
+        (TargetState.DUE, Blocker.WAITING_POLISH, "polish"),
+        (TargetState.DUE, Blocker.NO_ADMISSIBLE, "no_release"),
+        (TargetState.DUE, Blocker.THRESHOLD, "no_release"),
+        (TargetState.ATTEMPTING, None, "downloading"),
+        (TargetState.EXHAUSTED, None, "exhausted"),
+    ],
+)
+def test_a_row_names_what_its_earliest_unfinished_target_waits_for(
+    state: TargetState, blocker: Blocker | None, shown: str
+) -> None:
+    spent: int = MAX_ATTEMPTS if state is TargetState.EXHAUSTED else 0
+    target: SubscriptionTarget = SubscriptionTarget(
+        3,
+        (_NOW - timedelta(hours=1)).isoformat(),
+        state,
+        attempts=spent,
+        started=spent,
+        admission_id="admission" if state is TargetState.ATTEMPTING else None,
+        blocker=blocker,
+    )
+    record: SubscriptionRecord = _record(cut=2, targets=(target, _target(4, TargetState.AWAITING_AIRING, _NOW)))
+
+    row: SubscriptionRow = subscription_row(record)
+
+    assert (row.due_number, row.due_state) == (3, shown)
+
+
+@pytest.mark.parametrize(("cut", "aired"), [(3, 3), (0, 0), (None, 0)])
+def test_a_row_without_targets_counts_the_episodes_before_its_cut_point_as_aired(cut: int | None, aired: int) -> None:
+    record: SubscriptionRecord = _record(cut=cut, migrated_at=_NOW.isoformat())
+
+    assert subscription_row(record).aired == aired
+
+
+@pytest.mark.parametrize(("count", "beyond"), [(4, 6), (6, None), (None, None)])
+def test_a_row_names_the_last_target_beyond_the_catalogue_episode_count(count: int | None, beyond: int | None) -> None:
+    record: SubscriptionRecord = _record(episode_count=count, targets=tuple(_target(number) for number in range(3, 7)))
+
+    row: SubscriptionRow = subscription_row(record)
+
+    assert (row.episode_count, row.beyond_count) == (count, beyond)
+
+
+def test_a_stored_stale_episode_count_heals_on_the_next_read_and_clears_the_count_conflict() -> None:
+    stale: SubscriptionRecord = _record(
+        episode_count=4, targets=tuple(_target(number, due=_NOW - _DAY) for number in range(1, 7))
+    )
+    read: ListingRead = _read(_listing(*(_episode(number, _NOW - _DAY) for number in range(1, 13)), count=12))
+
+    healed: SubscriptionRecord = merge_listing(stale, read, _NOW)
+
+    assert subscription_row(stale).beyond_count == 6
+    assert (healed.episode_count, subscription_row(healed).beyond_count) == (12, None)
+
+
+def test_a_migrated_row_waiting_for_review_names_its_pause() -> None:
+    record: SubscriptionRecord = _record(
+        cut=None,
+        migrated_at=_NOW.isoformat(),
+        review_pending=True,
+        paused=True,
+        pause_reason=PauseReason.MIGRATED_MISSING,
+    )
+
+    row: SubscriptionRow = subscription_row(record)
+
+    assert (row.pause_reason, row.review_pending) == ("migrated_missing", True)
+
+
+def test_the_list_orders_problem_then_deadline_then_undated_then_paused_with_title_ties() -> None:
+    problem: SubscriptionRecord = _record(
+        "p",
+        "Zeta",
+        anilist_id=None,
+        problem=SubscriptionProblem.SEASON_UNRECOGNIZED,
+        cut=None,
+        migrated_at=_NOW.isoformat(),
+    )
+    later: SubscriptionRecord = _record("l", "Alpha", targets=(_target(1, due=_NOW + timedelta(days=2)),))
+    sooner: SubscriptionRecord = _record("s", "Omega", targets=(_target(1, due=_NOW + timedelta(days=1)),))
+    undated_b: SubscriptionRecord = _record("ub", "beta")
+    undated_a: SubscriptionRecord = _record("ua", "Alpha")
+    paused: SubscriptionRecord = _record("x", "Aardvark", paused=True, pause_reason=PauseReason.USER)
+
+    ordered: tuple[SubscriptionRecord, ...] = display_order((paused, undated_b, later, problem, undated_a, sooner))
+
+    assert [item.subscription_id for item in ordered] == ["p", "s", "l", "ua", "ub", "x"]
+
+
+def test_a_paused_record_with_a_problem_sorts_with_the_problems() -> None:
+    troubled: SubscriptionRecord = _record(
+        "t",
+        "Zeta",
+        anilist_id=None,
+        problem=SubscriptionProblem.SEASON_UNRECOGNIZED,
+        cut=None,
+        migrated_at=_NOW.isoformat(),
+        paused=True,
+        pause_reason=PauseReason.USER,
+    )
+    dated: SubscriptionRecord = _record("d", "Alpha", targets=(_target(1, due=_NOW + timedelta(days=1)),))
+
+    assert [item.subscription_id for item in display_order((dated, troubled))] == ["t", "d"]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"anilist_id": None},
+        {"cut": None},
+        {"review_pending": True},
+        {"paused": True},
+        {"pause_reason": PauseReason.USER},
+        {"targets": (_target(1), _target(1))},
+        {"merged_from": ("",)},
+        {"subscribed_at": "2026-10-02T12:00:00"},
+        {"title": " "},
+    ],
+)
+def test_a_record_refuses_an_inconsistent_shape(changes: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match=r"."):
+        replace(_record(), **changes)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"number": 0},
+        {"attempts": MAX_ATTEMPTS + 1},
+        {"state": TargetState.ATTEMPTING},
+        {"state": TargetState.EXHAUSTED, "attempts": 1, "started": 1},
+        {"tried": ("Upper",)},
+        {"attempts": 1},
+        {"threshold": 2},
+        {"failures": (ReleaseFailure("b" * 40), ReleaseFailure("b" * 40))},
+        {"sources_down_since": "2026-10-02T12:00:00"},
+    ],
+)
+def test_a_target_refuses_an_inconsistent_shape(changes: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match=r"."):
+        replace(_target(1), **changes)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("info_hash", "transient"),
+    [("B" * 40, 0), ("b" * 39, 0), ("b" * 32, 0), ("b" * 40, MAX_TRANSIENT_FAILURES + 1), ("b" * 40, -1)],
+)
+def test_a_release_failure_refuses_an_unusable_hash_or_count(info_hash: str, transient: int) -> None:
+    with pytest.raises(ValueError, match="release failure"):
+        ReleaseFailure(info_hash, transient=transient)
+
+
+def _episode(
+    number: int, airs: datetime | None = None, *, fallback: bool = False, aired: bool = False
+) -> ListedEpisode:
+    return ListedEpisode(number, airs_at=airs, aired=aired, airs_at_fallback=fallback)
+
+
+def _listing(
+    *episodes: ListedEpisode, status: str = "RELEASING", warning: str | None = None, count: int | None = None
+) -> EpisodeListing:
+    return EpisodeListing(1, 10, "TV", status, count, episodes, (), None, warning, None)
+
+
+def _mapping(kitsu: int | None = 10) -> AniZipMapping:
+    return AniZipMapping(kitsu, "TV", None, (), (), 300, {"1": {"episodeNumber": 1}})
+
+
+def _read(listing: EpisodeListing, *, kitsu: int | None = 10, live: bool = True) -> ListingRead:
+    return ListingRead(listing, _mapping(kitsu), live)
+
+
+_DAY: timedelta = timedelta(days=1)
+
+
+@pytest.mark.parametrize(
+    ("listing", "cut"),
+    [
+        (_listing(_episode(1, _NOW - _DAY), _episode(2, _NOW), _episode(3, _NOW + _DAY)), 2),
+        (_listing(_episode(1, _NOW - _DAY), _episode(2, _NOW + _DAY), status="HIATUS"), 1),
+        (_listing(_episode(1), _episode(2), status="HIATUS"), None),
+        (_listing(_episode(1), status="NOT_YET_RELEASED"), 0),
+        (_listing(_episode(1, _NOW - _DAY), warning="TITLE_CATALOG_FAILED"), None),
+        (_listing(_episode(1, _NOW - _DAY, fallback=True), _episode(2, _NOW + _DAY, fallback=True)), None),
+        (_listing(_episode(1, _NOW - _DAY), status="FINISHED"), None),
+    ],
+    ids=["releasing", "hiatus-dated", "hiatus-undated", "announced", "schedule-failed", "anizip-dates", "finished"],
+)
+def test_the_cut_point_counts_only_aired_anilist_dates_of_an_airing_entry(
+    listing: EpisodeListing, cut: int | None
+) -> None:
+    assert cut_point(listing, _NOW) == cut
+
+
+@pytest.mark.parametrize(
+    ("episode", "cut", "expected"),
+    [
+        (_episode(1, _NOW + timedelta(seconds=1)), 5, True),
+        (_episode(9, _NOW), 0, False),
+        (_episode(9, _NOW - _DAY), 0, False),
+        (_episode(3), 2, True),
+        (_episode(2), 2, False),
+        (_episode(2, _NOW + _DAY, fallback=True), 2, False),
+        (_episode(3), None, False),
+    ],
+    ids=["dated-after", "dated-at", "dated-before", "undated-after-cut", "undated-at-cut", "anizip-date", "no-cut"],
+)
+def test_membership_follows_the_anilist_date_and_otherwise_the_cut(
+    episode: ListedEpisode, cut: int | None, expected: bool
+) -> None:
+    assert is_target(episode, _NOW, cut) is expected
+
+
+def test_an_announced_entry_targets_every_episode_and_waits_for_unknown_dates() -> None:
+    merged: SubscriptionRecord = merge_listing(
+        _record(), _read(_listing(_episode(1), _episode(2), status="NOT_YET_RELEASED")), _NOW
+    )
+    assert [(item.number, item.due_at, item.state) for item in merged.targets] == [
+        (1, None, TargetState.AWAITING_AIRING),
+        (2, None, TargetState.AWAITING_AIRING),
+    ]
+
+
+def test_an_undated_target_is_due_from_its_first_observation_as_aired_and_never_moves_later() -> None:
+    first: SubscriptionRecord = merge_listing(_record(), _read(_listing(_episode(1, aired=True))), _NOW)
+    later: SubscriptionRecord = merge_listing(first, _read(_listing(_episode(1, aired=True))), _NOW + _DAY)
+    assert (first.targets[0].due_at, first.targets[0].state) == (_NOW.isoformat(), TargetState.DUE)
+    assert later.targets == first.targets
+
+
+def test_a_moved_date_moves_an_open_target_but_never_an_attempted_one_nor_its_membership() -> None:
+    record: SubscriptionRecord = _record(
+        targets=(_target(1, TargetState.DUE, _NOW - _DAY), _target(2, TargetState.ATTEMPTING, _NOW - _DAY))
+    )
+    moved: SubscriptionRecord = merge_listing(
+        record, _read(_listing(_episode(1, _NOW + _DAY), _episode(2, _NOW + _DAY))), _NOW
+    )
+    back: SubscriptionRecord = merge_listing(moved, _read(_listing(_episode(1, _NOW - _DAY))), _NOW)
+    assert [(item.due_at, item.state) for item in moved.targets] == [
+        ((_NOW + _DAY).isoformat(), TargetState.AWAITING_AIRING),
+        ((_NOW - _DAY).isoformat(), TargetState.ATTEMPTING),
+    ]
+    assert [item.number for item in back.targets] == [1, 2]
+    assert back.targets[0].state is TargetState.DUE
+
+
+def test_a_live_read_records_its_mapping_and_a_snapshot_read_changes_only_the_targets() -> None:
+    listing: EpisodeListing = _listing(_episode(1, _NOW + _DAY))
+    live: SubscriptionRecord = merge_listing(_record(), _read(listing), _NOW)
+    snapshot: SubscriptionRecord = merge_listing(
+        live, _read(_listing(_episode(1, _NOW + _DAY), _episode(2, _NOW + 2 * _DAY)), live=False), _NOW + _DAY
+    )
+    assert (live.kitsu_id, live.mapping, live.refreshed_at) == (
+        10,
+        replace(_mapping(), max_age_s=None),
+        _NOW.isoformat(),
+    )
+    assert (snapshot.mapping, snapshot.refreshed_at) == (live.mapping, live.refreshed_at)
+    assert [item.number for item in snapshot.targets] == [1, 2]
+
+
+def test_a_live_read_of_another_kitsu_entry_is_a_conflict_until_a_consistent_live_read() -> None:
+    record: SubscriptionRecord = merge_listing(_record(), _read(_listing(_episode(1, _NOW + _DAY))), _NOW)
+    conflict: SubscriptionRecord = merge_listing(record, _read(_listing(_episode(2, _NOW + _DAY)), kitsu=11), _NOW)
+    unchanged: SubscriptionRecord = merge_listing(conflict, _read(_listing(_episode(2, _NOW + _DAY)), live=False), _NOW)
+    repaired: SubscriptionRecord = merge_listing(conflict, _read(_listing(_episode(1, _NOW + _DAY))), _NOW)
+    assert conflict == replace(record, problem=SubscriptionProblem.CATALOG_CONFLICT)
+    assert unchanged.problem is SubscriptionProblem.CATALOG_CONFLICT
+    assert repaired.problem is None
+
+
+type _Numbers = tuple[int | None, int | None, int | None]
+
+
+def _numbered(numbers: dict[int, _Numbers], *, kitsu: int | None = 10, **extra: object) -> AniZipMapping:
+    raw: dict[str, dict[str, object]] = {
+        str(number): {"seasonNumber": season, "episodeNumber": episode, "absoluteEpisodeNumber": absolute, **extra}
+        for number, (season, episode, absolute) in numbers.items()
+    }
+    return AniZipMapping(kitsu, "TV", None, (), (), None, raw)
+
+
+def _saved(mapping: AniZipMapping, tvdb_season: int | None = None) -> SubscriptionRecord:
+    return _record(kitsu_id=mapping.kitsu_id, mapping=mapping, mapping_tvdb_season=tvdb_season)
+
+
+def _live(mapping: AniZipMapping, tvdb_season: int | None = None) -> ListingRead:
+    return ListingRead(_listing(_episode(1, _NOW + _DAY)), mapping, live=True, tvdb_season=tvdb_season)
+
+
+_SEASON: dict[int, _Numbers] = {1: (1, 1, 1), 2: (1, 2, 2), 3: (1, 3, 3)}
+
+
+def test_record_mapping_without_kitsu() -> None:
+    record: SubscriptionRecord = _saved(_numbered(_SEASON, kitsu=None))
+
+    assert (record.kitsu_id, record.mapping is not None) == (None, True)
+    with pytest.raises(ValueError, match="mapping identity"):
+        replace(_record(), kitsu_id=10)
+
+
+def test_excluded_legacy_pair_key() -> None:
+    target: SubscriptionTarget = replace(_target(4), tried=("abc:0", "abc:", "d" * 40))
+
+    assert excluded(target) == frozenset({"abc", "d" * 40})
+
+
+def test_a_shifted_absolute_number_without_kitsu_is_accepted_as_renumbering() -> None:
+    saved: SubscriptionRecord = _saved(_numbered(_SEASON, kitsu=None))
+    current: AniZipMapping = _numbered({**_SEASON, 3: (1, 3, 30)}, kitsu=None)
+
+    merged: SubscriptionRecord = merge_listing(saved, _live(current), _NOW)
+
+    assert (merged.problem, merged.mapping) == (None, current)
+    assert renumbered(saved, _live(current))
+
+
+def test_episode_numbers_shifted_within_their_season_replace_a_conflicted_mapping() -> None:
+    saved: SubscriptionRecord = replace(
+        _saved(_numbered({1: (2, 1, 13), 2: (2, 1, 13), 3: (2, 2, 14)})),
+        problem=SubscriptionProblem.CATALOG_CONFLICT,
+    )
+    current: AniZipMapping = _numbered({1: (2, 1, 13), 2: (2, 2, 14), 3: (2, 3, 15)})
+
+    merged: SubscriptionRecord = merge_listing(saved, _live(current), _NOW)
+
+    assert (merged.problem, merged.mapping) == (None, current)
+    assert renumbered(saved, _live(current))
+
+
+def test_a_moved_season_is_a_conflict_and_never_counts_as_renumbering() -> None:
+    saved: SubscriptionRecord = _saved(_numbered(_SEASON))
+    moved: ListingRead = _live(_numbered({**_SEASON, 2: (2, 2, 2)}))
+
+    merged: SubscriptionRecord = merge_listing(saved, moved, _NOW)
+
+    assert merged == replace(saved, problem=SubscriptionProblem.CATALOG_CONFLICT)
+    assert not renumbered(saved, moved)
+    assert not renumbered(saved, _live(_numbered(_SEASON)))
+
+
+@pytest.mark.parametrize("removed", [2, 3])
+def test_a_numbered_episode_missing_from_the_new_mapping_is_a_conflict(removed: int) -> None:
+    current: dict[int, _Numbers] = {number: value for number, value in _SEASON.items() if number != removed}
+
+    merged: SubscriptionRecord = merge_listing(_saved(_numbered(_SEASON)), _live(_numbered(current)), _NOW)
+
+    assert merged.problem is SubscriptionProblem.CATALOG_CONFLICT
+
+
+def test_added_episode_or_title_date_not_conflict() -> None:
+    current: AniZipMapping = _numbered({**_SEASON, 4: (1, 4, 4)}, title={"en": "New"}, airDateUtc="2026-10-01")
+
+    merged: SubscriptionRecord = merge_listing(_saved(_numbered(_SEASON)), _live(current), _NOW)
+
+    assert merged.problem is None
+    assert merged.mapping == current
+
+
+def test_kitsu_disappears_same_numbering_not_conflict() -> None:
+    current: AniZipMapping = _numbered(_SEASON, kitsu=None)
+
+    merged: SubscriptionRecord = merge_listing(_saved(_numbered(_SEASON)), _live(current), _NOW)
+
+    assert (merged.problem, merged.kitsu_id, merged.mapping) == (None, None, current)
+
+
+def test_conflict_keeps_previous_mapping() -> None:
+    saved: SubscriptionRecord = _saved(_numbered(_SEASON), tvdb_season=1)
+
+    merged: SubscriptionRecord = merge_listing(saved, _live(_numbered({**_SEASON, 1: (2, 1, 1)}), tvdb_season=2), _NOW)
+
+    assert (merged.mapping, merged.mapping_tvdb_season, merged.kitsu_id) == (saved.mapping, 1, 10)
+    assert merged.targets == saved.targets
+
+
+@pytest.mark.parametrize(
+    "saved",
+    [{**_SEASON, 3: (None, None, None)}, {**_SEASON, 3: (1, 3, None)}, {1: (1, 1, 1), 2: (1, 2, 2)}],
+    ids=["no-numbering", "no-absolute", "new-key"],
+)
+def test_numbering_filled_from_none_not_conflict(saved: dict[int, _Numbers]) -> None:
+    current: AniZipMapping = _numbered(_SEASON)
+
+    merged: SubscriptionRecord = merge_listing(_saved(_numbered(saved)), _live(current), _NOW)
+
+    assert (merged.problem, merged.mapping) == (None, current)
+
+
+def test_duplicate_repaired_not_conflict() -> None:
+    current: AniZipMapping = _numbered(_SEASON)
+
+    merged: SubscriptionRecord = merge_listing(_saved(_numbered({**_SEASON, 3: (1, 2, 2)})), _live(current), _NOW)
+
+    assert (merged.problem, merged.mapping) == (None, current)
+
+
+def test_saved_season_mismatch_then_fixed_without_bridge_not_conflict() -> None:
+    current: AniZipMapping = _numbered({1: (2, 1, 1)})
+
+    merged: SubscriptionRecord = merge_listing(_saved(_numbered({1: (1, 1, 1)}), tvdb_season=2), _live(current), _NOW)
+
+    assert (merged.problem, merged.mapping, merged.mapping_tvdb_season) == (None, current, None)
+
+
+def test_saved_numbering_change_with_new_bridge_season_is_conflict() -> None:
+    saved: SubscriptionRecord = _saved(_numbered({1: (1, 1, 1)}), tvdb_season=1)
+
+    merged: SubscriptionRecord = merge_listing(saved, _live(_numbered({1: (2, 1, 1)}), tvdb_season=2), _NOW)
+
+    assert merged == replace(saved, problem=SubscriptionProblem.CATALOG_CONFLICT)
+
+
+def test_a_live_read_records_the_bridge_season_beside_its_mapping() -> None:
+    merged: SubscriptionRecord = merge_listing(_record(), _live(_numbered(_SEASON), tvdb_season=1), _NOW)
+
+    assert (merged.mapping_tvdb_season, merged.mapping) == (1, _numbered(_SEASON))
+
+
+def test_a_snapshot_read_never_judges_the_numbering() -> None:
+    saved: SubscriptionRecord = _saved(_numbered(_SEASON))
+    snapshot: ListingRead = replace(_live(_numbered({**_SEASON, 3: (1, 3, 30)})), live=False)
+
+    assert merge_listing(saved, snapshot, _NOW).problem is None
+
+
+_MIGRATED: datetime = _NOW - 2 * _DAY
+
+
+def _reviewing() -> SubscriptionRecord:
+    return _record(
+        cut=None,
+        subscribed_at=(_NOW - 10 * _DAY).isoformat(),
+        migrated_at=_MIGRATED.isoformat(),
+        review_pending=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        _read(_listing(_episode(1, _NOW - 3 * _DAY)), live=False),
+        _read(_listing(_episode(1, _NOW - 3 * _DAY)), kitsu=None, live=False),
+        _read(_listing(_episode(1, _NOW - 3 * _DAY), warning="TITLE_CATALOG_FAILED")),
+    ],
+    ids=["snapshot", "empty-404", "schedule-failed"],
+)
+def test_a_migration_review_finishes_only_on_complete_live_data(read: ListingRead) -> None:
+    record: SubscriptionRecord = _reviewing()
+    assert merge_listing(record, read, _NOW) == record
+
+
+def test_a_finished_review_pauses_for_a_target_due_before_migration_that_no_old_order_covers() -> None:
+    read: ListingRead = _read(_listing(_episode(1, _MIGRATED - _DAY), _episode(2, _NOW + _DAY)))
+    paused: SubscriptionRecord = merge_listing(_reviewing(), read, _NOW)
+    covered: SubscriptionRecord = merge_listing(_reviewing(), read, _NOW, (LegacyScope(1, 1),))
+    assert (paused.review_pending, paused.paused, paused.pause_reason) == (False, True, PauseReason.MIGRATED_DUE)
+    assert (covered.review_pending, covered.paused) == (False, False)
+    assert (covered.targets[0].state, covered.targets[0].reason) == (TargetState.MANUAL, "legacy_ordered")
+
+
+def test_a_late_review_keeps_a_target_aired_after_migration_as_a_normal_due_target() -> None:
+    reviewed: SubscriptionRecord = merge_listing(_reviewing(), _read(_listing(_episode(1, _MIGRATED + _DAY))), _NOW)
+    assert (reviewed.review_pending, reviewed.paused) == (False, False)
+    assert reviewed.targets[0].state is TargetState.DUE
+
+
+_DUE: datetime = datetime(2026, 10, 1, 12, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("checked", "expected"),
+    [
+        (None, timedelta(0)),
+        (-timedelta(minutes=1), timedelta(0)),
+        (timedelta(0), timedelta(minutes=15)),
+        (timedelta(minutes=20), timedelta(minutes=30)),
+        (timedelta(hours=23, minutes=59), timedelta(hours=24)),
+        (timedelta(hours=24), timedelta(hours=25)),
+        (timedelta(hours=71, minutes=30), timedelta(hours=72)),
+        (timedelta(hours=72), timedelta(hours=96)),
+        (timedelta(hours=100), timedelta(hours=120)),
+    ],
+)
+def test_a_due_target_is_searched_on_a_grid_of_15_min_then_hours_then_days_from_its_deadline(
+    checked: timedelta | None, expected: timedelta
+) -> None:
+    target: SubscriptionTarget = _target(1, TargetState.DUE, _DUE)
+    assert next_search_at(target, None if checked is None else _DUE + checked) == _DUE + expected
+
+
+@pytest.mark.parametrize("age", [timedelta(minutes=5), timedelta(hours=30), timedelta(days=4)])
+def test_a_target_waiting_for_pending_reads_is_searched_again_a_quarter_hour_after_its_check(age: timedelta) -> None:
+    target: SubscriptionTarget = replace(_target(1, TargetState.DUE, _DUE), blocker=Blocker.PENDING)
+    assert next_search_at(target, _DUE + age) == _DUE + age + timedelta(minutes=15)
+
+
+def test_next_search_at_unsettled_skip_is_now() -> None:
+    asked: datetime = _DUE + timedelta(minutes=50)
+    skip: PolishSkip = PolishSkip(_DUE.isoformat(), asked.isoformat())
+    target: SubscriptionTarget = replace(_target(1, TargetState.DUE, _DUE), polish_skip=skip)
+
+    assert skip_active(target)
+    assert next_search_at(target, _DUE + timedelta(minutes=45)) == asked
+    assert next_search_at(target, asked + timedelta(minutes=1)) == asked
+    assert next_search_at(replace(target, polish_skip=replace(skip, tried=True)), asked) == _DUE + timedelta(hours=1)
+    assert next_search_at(replace(target, polish_skip=replace(skip, settled=True)), asked) == _DUE + timedelta(hours=1)
+
+
+def test_skip_wait_binds_only_the_deadline_it_was_made_for() -> None:
+    skip: PolishSkip = PolishSkip((_DUE - timedelta(days=7)).isoformat(), _DUE.isoformat())
+    target: SubscriptionTarget = replace(_target(1, TargetState.DUE, _DUE), polish_skip=skip)
+
+    assert not skip_active(target)
+    assert next_search_at(target, None) == _DUE
+
+
+@pytest.mark.parametrize("state", [TargetState.AWAITING_AIRING, TargetState.ATTEMPTING, TargetState.SATISFIED])
+def test_only_a_due_target_has_a_search_moment(state: TargetState) -> None:
+    assert next_search_at(_target(1, state, _DUE), _DUE) is None
+
+
+def test_frequent_checks_of_a_fresh_target_never_starve_an_old_one() -> None:
+    old: SubscriptionTarget = _target(1, TargetState.DUE, _NOW - timedelta(hours=96, minutes=10))
+    fresh: SubscriptionTarget = _target(2, TargetState.DUE, _NOW - timedelta(hours=1))
+    record: SubscriptionRecord = _record(targets=(old, fresh), checked_at=(_NOW - timedelta(minutes=15)).isoformat())
+    assert [item.number for item in search_targets(record, _NOW, manual=False)] == [1, 2]
+    assert [item.number for item in search_targets(record, _NOW - timedelta(minutes=11), manual=False)] == []
+    assert [item.number for item in search_targets(record, _NOW - timedelta(minutes=11), manual=True)] == [1, 2]
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        ({"review_pending": True, "cut": None, "migrated_at": _NOW.isoformat()}, _NOW),
+        (
+            {
+                "review_pending": True,
+                "cut": None,
+                "migrated_at": _NOW.isoformat(),
+                "paused": True,
+                "pause_reason": PauseReason.USER,
+            },
+            _NOW,
+        ),
+        ({"paused": True, "pause_reason": PauseReason.USER}, None),
+        ({"problem": SubscriptionProblem.CATALOG_CONFLICT}, _NOW),
+        (
+            {
+                "anilist_id": None,
+                "problem": SubscriptionProblem.SEASON_UNRECOGNIZED,
+                "cut": None,
+                "migrated_at": _NOW.isoformat(),
+            },
+            None,
+        ),
+        ({}, _NOW),
+        ({"checked_at": _NOW.isoformat()}, _NOW + _DAY),
+        (
+            {
+                "checked_at": _NOW.isoformat(),
+                "targets": (_target(1, TargetState.AWAITING_AIRING, _NOW + 3 * _DAY / 4),),
+            },
+            _NOW + 3 * _DAY / 4,
+        ),
+        (
+            {
+                "checked_at": _NOW.isoformat(),
+                "catalog_status": "HIATUS",
+                "targets": (_target(1, TargetState.AWAITING_AIRING, _NOW + _DAY / 4),),
+            },
+            _NOW + _DAY,
+        ),
+        ({"checked_at": _NOW.isoformat(), "targets": (_target(1, TargetState.DUE, _NOW),)}, _NOW + _DAY / 96),
+    ],
+    ids=[
+        "review",
+        "review-paused",
+        "paused",
+        "conflict",
+        "unrecognized",
+        "never-checked",
+        "daily-refresh",
+        "airing",
+        "hiatus",
+        "due",
+    ],
+)
+def test_the_next_check_follows_review_repair_airing_and_search_moments(
+    changes: dict[str, object], expected: datetime | None
+) -> None:
+    assert next_check_at(replace(_record(), **changes), _NOW) == expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        ({}, True),
+        ({"catalog_status": "RELEASING"}, False),
+        ({"episode_count": None}, False),
+        ({"episode_count": 3}, False),
+        (
+            {
+                "targets": (
+                    _target(1, TargetState.SATISFIED),
+                    replace(
+                        _target(2, TargetState.DUE),
+                        state=TargetState.EXHAUSTED,
+                        attempts=MAX_ATTEMPTS,
+                        started=MAX_ATTEMPTS,
+                    ),
+                )
+            },
+            False,
+        ),
+        ({"targets": (_target(1, TargetState.SATISFIED),)}, False),
+        ({"targets": (_target(1, TargetState.SATISFIED), _target(3, TargetState.SATISFIED))}, False),
+        (
+            {
+                "targets": (
+                    _target(1, TargetState.SATISFIED),
+                    _target(2, TargetState.SATISFIED),
+                    _target(3, TargetState.DUE),
+                )
+            },
+            False,
+        ),
+        (
+            {
+                "targets": (
+                    _target(1, TargetState.SATISFIED),
+                    _target(2, TargetState.SATISFIED),
+                    _target(3, TargetState.SATISFIED),
+                )
+            },
+            True,
+        ),
+        ({"cut": None, "migrated_at": _NOW.isoformat(), "targets": (_target(2, TargetState.SATISFIED),)}, True),
+    ],
+    ids=[
+        "closed",
+        "airing",
+        "unknown-count",
+        "count-grew",
+        "exhausted",
+        "missing",
+        "beyond-count",
+        "beyond-count-waiting",
+        "beyond-count-downloaded",
+        "migrated",
+    ],
+)
+def test_a_finished_season_closes_only_with_every_target_satisfied(changes: dict[str, object], expected: bool) -> None:
+    record: SubscriptionRecord = _record(
+        catalog_status="FINISHED",
+        episode_count=2,
+        targets=(_target(1, TargetState.SATISFIED), _target(2, TargetState.SATISFIED)),
+    )
+    assert completed(replace(record, **changes)) is expected  # type: ignore[arg-type]
+
+
+_ATTEMPT: SubscriptionTarget = replace(
+    _target(4, TargetState.ATTEMPTING, _NOW - timedelta(hours=1)), attempts=1, started=1, admission_id="attempt-1"
+)
+
+
+@pytest.mark.parametrize(
+    ("target", "facts", "state", "reason"),
+    [
+        (_ATTEMPT, TargetFacts(attempt=ATTEMPT_ACTIVE), TargetState.ATTEMPTING, None),
+        (_ATTEMPT, TargetFacts(attempt=ATTEMPT_SATISFIED), TargetState.SATISFIED, None),
+        (_ATTEMPT, TargetFacts(attempt="rejected"), TargetState.DUE, "rejected"),
+        (
+            replace(_ATTEMPT, attempts=MAX_ATTEMPTS, started=MAX_ATTEMPTS),
+            TargetFacts(attempt="stalled"),
+            TargetState.EXHAUSTED,
+            "stalled",
+        ),
+        (_ATTEMPT, TargetFacts(attempt="replaced", manual=ATTEMPT_ACTIVE), TargetState.MANUAL, None),
+        (_ATTEMPT, TargetFacts(attempt=ATTEMPT_SATISFIED, manual=ATTEMPT_ACTIVE), TargetState.MANUAL, None),
+        (_target(4), TargetFacts(manual=ATTEMPT_SATISFIED), TargetState.SATISFIED, None),
+        (replace(_ATTEMPT, state=TargetState.MANUAL), TargetFacts(), TargetState.DUE, None),
+        (
+            replace(_ATTEMPT, state=TargetState.MANUAL, reason=LEGACY_ORDERED),
+            TargetFacts(),
+            TargetState.MANUAL,
+            LEGACY_ORDERED,
+        ),
+        (
+            replace(_ATTEMPT, state=TargetState.MANUAL, reason=LEGACY_ORDERED),
+            TargetFacts(legacy_complete=True),
+            TargetState.SATISFIED,
+            None,
+        ),
+        (_target(4), TargetFacts(), TargetState.DUE, None),
+    ],
+    ids=[
+        "active",
+        "handed-off",
+        "rejected",
+        "last-stalled",
+        "replaced-by-hand",
+        "manual-wins",
+        "manual-done",
+        "manual-released",
+        "legacy-open",
+        "legacy-done",
+        "untouched",
+    ],
+)
+def test_a_target_settles_on_what_the_transfers_of_its_episode_prove(
+    target: SubscriptionTarget, facts: TargetFacts, state: TargetState, reason: str | None
+) -> None:
+    settled: SubscriptionTarget = settle_target(target, facts, _NOW)
+
+    assert (settled.state, settled.reason) == (state, reason)
+    assert (settled.attempts, settled.admission_id) == (target.attempts, target.admission_id)
+
+
+def test_an_attempt_stopped_after_metadata_returns_its_spent_attempt_even_at_the_limit() -> None:
+    last: SubscriptionTarget = replace(_ATTEMPT, attempts=MAX_ATTEMPTS, started=MAX_ATTEMPTS)
+
+    settled: SubscriptionTarget = settle_target(last, TargetFacts(attempt="pack", refunded=True), _NOW)
+
+    assert (settled.state, settled.reason) == (TargetState.DUE, "pack")
+    assert (settled.attempts, settled.started, settled.threshold) == (MAX_ATTEMPTS - 1, MAX_ATTEMPTS, None)
+
+
+@pytest.mark.parametrize(
+    ("threshold", "dead", "expected"),
+    [
+        (None, ResolutionClass.HD, ResolutionClass.HD),
+        (ResolutionClass.HD, ResolutionClass.FULL_HD, ResolutionClass.FULL_HD),
+        (ResolutionClass.FULL_HD, ResolutionClass.HD, ResolutionClass.FULL_HD),
+        (ResolutionClass.FULL_HD, None, ResolutionClass.FULL_HD),
+    ],
+    ids=["first-dead", "better-dead", "worse-dead", "not-dead"],
+)
+def test_a_dead_attempt_keeps_the_best_resolution_class_as_the_target_threshold(
+    threshold: ResolutionClass | None, dead: ResolutionClass | None, expected: ResolutionClass
+) -> None:
+    settled: SubscriptionTarget = settle_target(
+        replace(_ATTEMPT, threshold=threshold), TargetFacts(attempt="stalled", dead=dead), _NOW
+    )
+
+    assert (settled.state, settled.attempts, settled.threshold) == (TargetState.DUE, 1, expected)
+
+
+def test_a_satisfied_target_never_moves_and_a_skipped_check_stays_marked() -> None:
+    done: SubscriptionTarget = _target(4, TargetState.SATISFIED)
+
+    assert settle_target(done, TargetFacts(attempt="rejected", manual=ATTEMPT_ACTIVE), _NOW) is done
+    marked: SubscriptionTarget = settle_target(_ATTEMPT, TargetFacts(attempt=ATTEMPT_ACTIVE, check_skipped=True), _NOW)
+    assert marked.check_skipped
+    assert settle_target(marked, TargetFacts(attempt=ATTEMPT_SATISFIED), _NOW).check_skipped
+
+
+@pytest.mark.parametrize(
+    ("target", "facts", "kept"),
+    [
+        (_target(4), TargetFacts(), True),
+        (_target(4), TargetFacts(manual=ATTEMPT_SATISFIED), False),
+        (_target(4), TargetFacts(manual=ATTEMPT_ACTIVE), False),
+        (replace(_ATTEMPT, attempts=MAX_ATTEMPTS, started=MAX_ATTEMPTS), TargetFacts(attempt="stalled"), False),
+        (_ATTEMPT, TargetFacts(attempt=ATTEMPT_ACTIVE), False),
+    ],
+    ids=["still-due", "satisfied", "ordered-by-hand", "exhausted", "attempting"],
+)
+def test_sources_down_cleared_when_target_settles(target: SubscriptionTarget, facts: TargetFacts, kept: bool) -> None:
+    down: SubscriptionTarget = replace(target, sources_down_since=_NOW.isoformat(), blocker=Blocker.THRESHOLD)
+
+    settled: SubscriptionTarget = settle_target(down, facts, _NOW)
+
+    assert (settled.sources_down_since is not None) is kept
+    assert (settled.blocker is not None) is kept
+
+
+@pytest.mark.parametrize(
+    ("age", "state", "notified", "expected"),
+    [
+        (timedelta(days=7), TargetState.DUE, False, True),
+        (timedelta(days=7) - timedelta(seconds=1), TargetState.DUE, False, False),
+        (timedelta(days=8), TargetState.DUE, True, False),
+        (timedelta(days=8), TargetState.ATTEMPTING, False, False),
+    ],
+    ids=["week", "under-week", "told", "attempting"],
+)
+def test_a_target_is_late_once_a_week_after_its_deadline_until_told(
+    age: timedelta, state: TargetState, notified: bool, expected: bool
+) -> None:
+    target: SubscriptionTarget = replace(
+        _target(4, state, _NOW - age),
+        notified_late=notified,
+        admission_id="a" if state is TargetState.ATTEMPTING else None,
+    )
+
+    assert late(target, _NOW) is expected

@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from anishift.application.cancellation import CancellationToken
     from anishift.application.discovery import DiscoveryResult
     from anishift.application.service import AppService
-    from anishift.application.subscriptions import SubscriptionService
     from anishift.services.torrents import Release
 
 __all__ = ["AppContext", "bootstrap", "create_app_service", "production_service"]
@@ -84,7 +83,6 @@ def create_app_service(context: AppContext, *, managed_torrents: bool = False) -
             lambda: service.current_settings(),  # noqa: PLW0108 - defers the lookup until the service exists
         ),
         acquisition=acquisition,
-        subscriptions=_subscription_service(acquisition),
     )
     return service
 
@@ -94,12 +92,21 @@ def _acquisition_service(context: AppContext, *, managed_torrents: bool = False)
     import httpx  # noqa: PLC0415
 
     from anishift.application.acquisition import AcquisitionService, TorrentClient  # noqa: PLC0415
+    from anishift.application.episode_search import EpisodeSearch  # noqa: PLC0415
     from anishift.paths import torrent_profile_dir  # noqa: PLC0415
     from anishift.platform.qbittorrent_process import ManagedQBittorrent  # noqa: PLC0415
-    from anishift.services.catalog import AniListCatalog  # noqa: PLC0415
+    from anishift.services.catalog import AniListCatalog, AniZipCatalog, ArmCatalog, KitsuCatalog  # noqa: PLC0415
     from anishift.services.http_requests import RequestControl  # noqa: PLC0415
-    from anishift.services.torrents import QBittorrentClient, parse_release_name, search_releases  # noqa: PLC0415
+    from anishift.services.torrents import (  # noqa: PLC0415
+        QBittorrentClient,
+        TorrentioSource,
+        parse_release_name,
+        search_releases,
+    )
     from anishift.services.torrents.categories import SEARCH_CATEGORIES  # noqa: PLC0415
+    from anishift.services.torrents.knaben import KnabenSource  # noqa: PLC0415
+    from anishift.services.torrents.nekobt import NekoBTSource  # noqa: PLC0415
+    from anishift.services.torrents.tsukihime import TsukiHimeSource  # noqa: PLC0415
 
     request_control: RequestControl = RequestControl(httpx.HTTPTransport(retries=0))
     http: httpx.Client = httpx.Client(transport=request_control, follow_redirects=True)
@@ -121,28 +128,32 @@ def _acquisition_service(context: AppContext, *, managed_torrents: bool = False)
         ManagedQBittorrent(torrent_profile_dir(), http=http, previous=external) if managed_torrents else None
     )
     client: TorrentClient = managed if managed is not None else external
+    nyaa: NyaaSource = NyaaSource()
+    torrentio: TorrentioSource = TorrentioSource(http)
+    anizip: AniZipCatalog = AniZipCatalog(http)
     return AcquisitionService(
-        source=NyaaSource(),
+        source=nyaa,
         client=client,
         workspace_root=context.workspace_root,
         parse_name=parse_release_name,
         title_catalog=AniListCatalog(http),
         request_control=request_control,
         torrent_management=managed,
+        episode_catalog=anizip,
+        id_catalog=ArmCatalog(http),
+        anidb_catalog=anizip,
+        kitsu_catalog=KitsuCatalog(http),
+        stream_source=torrentio,
+        episode_search=EpisodeSearch(
+            torrentio=torrentio,
+            nyaa=nyaa,
+            knaben=KnabenSource(http),
+            nekobt=NekoBTSource(http),
+            tsukihime=TsukiHimeSource(http),
+            request_control=request_control,
+            pack_name=lambda name: parse_release_name(name).is_pack,
+        ),
     )
-
-
-def _subscription_service(acquisition: AcquisitionService) -> SubscriptionService:
-    """Wire the followed-series store beside the panel preferences onto the acquisition boundary."""
-    from anishift.application.subscriptions import (  # noqa: PLC0415
-        SUBSCRIPTIONS_FILE_NAME,
-        SubscriptionService,
-        SubscriptionStore,
-    )
-    from anishift.paths import config_dir  # noqa: PLC0415
-
-    store: SubscriptionStore = SubscriptionStore(config_dir() / SUBSCRIPTIONS_FILE_NAME)
-    return SubscriptionService(store=store, acquisition=acquisition)
 
 
 def _prepare_workspace_binaries(discovery: DiscoveryResult, cancel: CancellationToken) -> None:

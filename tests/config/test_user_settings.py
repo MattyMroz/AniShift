@@ -38,6 +38,22 @@ def test_load_missing_file_returns_defaults() -> None:
     assert settings.composition_quality_preset == "balanced"
 
 
+def test_sources_default_all_enabled(config_file: Path) -> None:
+    config_file.write_text('{"schema_version": 3}', encoding="utf-8")
+    settings: UserSettings = load_user_settings()
+    assert all(
+        getattr(settings, f"source_{source}") for source in ("tsukihime", "torrentio", "nyaa", "knaben", "nekobt")
+    )
+    assert settings.subscription_polish_wait_h == 2
+
+
+@pytest.mark.parametrize("value", [0, 2, 48, -1, 49, True, "2"])
+def test_polish_wait_range(config_file: Path, value: object) -> None:
+    config_file.write_text(json.dumps({"schema_version": 3, "subscription_polish_wait_h": value}), encoding="utf-8")
+    expected: int = value if type(value) is int and 0 <= value <= 48 else 2
+    assert load_user_settings().subscription_polish_wait_h == expected
+
+
 @pytest.mark.usefixtures("config_file")
 def test_save_then_load_roundtrip() -> None:
     save_user_settings(UserSettings(mode="manual", composition_quality_preset="compact"))

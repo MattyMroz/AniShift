@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Never
+from collections.abc import Iterable, Iterator, Mapping
+from itertools import groupby
+from typing import Final, Never
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.llm.errors import (
@@ -12,17 +13,66 @@ from anishift.services.llm.errors import (
     LlmRateLimitError,
     LlmRequestError,
 )
+from anishift.services.llm.types import FilePart, LlmContentPart, LlmRequest, Modality, TextPart
 
 __all__ = [
+    "DEFAULT_PDF_NAME",
+    "anthropic_content_block",
     "error_with_context",
+    "group_adjacent_text_parts",
+    "joined_text",
     "normalize_finish_reason",
     "optional_int",
     "raise_request_error",
+    "require_file_modalities",
     "retry_after_seconds",
     "status_code",
     "structured_markers",
     "transient_error_with_context",
 ]
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+DEFAULT_PDF_NAME: Final[str] = "document.pdf"
+"""Filename sent for a PDF without a caller-supplied name."""
+
+
+def require_file_modalities(request: LlmRequest, *, accepted: frozenset[Modality], engine_id: str) -> None:
+    """Reject unsupported files across the request before serializing any content."""
+    files: Iterator[FilePart] = (
+        part for message in request.messages for part in message.parts if isinstance(part, FilePart)
+    )
+    for part in files:
+        if part.modality not in accepted:
+            raise_request_error(
+                f"{engine_id} does not support {part.modality} files ({part.media_type})",
+                suggestion="Choose a provider that accepts this file type.",
+                engine_id=engine_id,
+            )
+
+
+def anthropic_content_block(part: LlmContentPart) -> dict[str, object]:
+    """Shape a validated text, image or PDF part for Anthropic Messages."""
+    if isinstance(part, TextPart):
+        return {"type": "text", "text": part.text}
+    return {
+        "type": "image" if part.modality == "image" else "document",
+        "source": {"type": "base64", "media_type": part.media_type, "data": part.base64},
+    }
+
+
+def joined_text(parts: Iterable[LlmContentPart]) -> str:
+    """Join text parts with newlines in their original order."""
+    return "\n".join(part.text for part in parts if isinstance(part, TextPart))
+
+
+def group_adjacent_text_parts(parts: tuple[LlmContentPart, ...]) -> Iterator[LlmContentPart]:
+    """Join adjacent text parts with newlines while preserving file positions."""
+    for is_text, group in groupby(parts, key=lambda part: isinstance(part, TextPart)):
+        if is_text:
+            yield TextPart(joined_text(group))
+        else:
+            yield from group
 
 
 def normalize_finish_reason(value: object) -> str:

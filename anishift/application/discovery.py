@@ -39,6 +39,11 @@ _PRIMARY_SOURCE_KINDS: Final[Mapping[str, ArtifactKind]] = MappingProxyType(
 PRIMARY_SOURCE_SUFFIXES: Final[frozenset[str]] = frozenset(_PRIMARY_SOURCE_KINDS)
 """Folded suffixes of every primary source of plain video work, for any caller judging one filename."""
 
+VIDEO_SOURCE_SUFFIXES: Final[frozenset[str]] = frozenset(
+    suffix for suffix, kind in _PRIMARY_SOURCE_KINDS.items() if kind.name.startswith("VIDEO_")
+)
+"""Folded suffixes of the video containers the workflow accepts as a main source."""
+
 SOURCE_SUBTITLE_FORMATS: Final[Mapping[str, str]] = MappingProxyType({".ass": "ass", ".ssa": "ass", ".srt": "srt"})
 """Subtitle suffixes discovery accepts and the working format each one is read and written as."""
 

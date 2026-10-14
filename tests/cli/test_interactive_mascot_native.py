@@ -27,6 +27,7 @@ from anishift.cli.interactive.app import _auto_content, _home_content, _message_
 from anishift.cli.interactive.home import brand_for_geometry
 from anishift.cli.interactive.mascot import MascotController, MascotState
 from anishift.cli.interactive.mascot_native import NATIVE_MASCOT_ANCHOR, NativeMascotImage
+from anishift.cli.interactive.pointer import FrameSelection
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.prompts import (
     HomeGeometry,
@@ -72,6 +73,7 @@ def _renderer_with(image: NativeMascotImage | None, writes: list[str]) -> Termin
         ),
     )
     renderer._native_mascot = image
+    renderer._use_mascot = True
     return renderer
 
 
@@ -441,7 +443,7 @@ def test_settings_view_does_not_render_the_mascot() -> None:
     application._progress = None
     application._settings = cast(
         "SettingsController",
-        SimpleNamespace(render=lambda _columns, _rows: Text("Ustawienia")),
+        SimpleNamespace(render=lambda _columns, _rows: Text("Ustawienia"), view_key=tuple),
     )
     application._manual = None
     application._batch = None
@@ -449,6 +451,7 @@ def test_settings_view_does_not_render_the_mascot() -> None:
     application._mascot = cast("MascotController", SimpleNamespace(state=MascotState.IDLE))
     application._renderer = cast("TerminalRenderer", SimpleNamespace(native_mascot_size=(20, 10)))
     application._directory = "~"
+    application._frame_selection = FrameSelection()
 
     content: Text = application._render_frame(120, 40)
 

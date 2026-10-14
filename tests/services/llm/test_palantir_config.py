@@ -4,13 +4,11 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
-from typing import Any, cast
+from typing import cast
 
 import httpx
 import pytest
 
-from anishift.config.model_catalog import ModelCatalog, parse_model_catalog
 from anishift.config.model_catalog import ModelProtocol as CatalogModelProtocol
 from anishift.errors import ErrorCode, FatalError, TransientError
 from anishift.services.llm.engines.palantir import (
@@ -85,14 +83,9 @@ def _isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FOUNDRY_API_TOKEN", raising=False)
 
 
-@dataclass(frozen=True, slots=True)
-class _UnsupportedPart:
-    kind: str
-
-
 def _config(
     *,
-    protocol: ModelProtocol = ModelProtocol.OPENAI_CHAT,
+    protocol: ModelProtocol = ModelProtocol.OPENAI_RESPONSES,
     enrollment_base_url: str = _ENROLLMENT,
     provider_path: str = _ROUTE,
     provider_model_id: str = "gpt-main-5",
@@ -122,21 +115,12 @@ def _request() -> LlmRequest:
     )
 
 
-def _catalog_source(providers: dict[str, Any], models: dict[str, Any]) -> str:
-    return json.dumps(
-        {
-            "schema_version": 1,
-            "providers": providers,
-            "models": models,
-        },
-    )
-
-
+@pytest.mark.unit
 def test_palantir_model_config_joins_the_enrollment_address_with_the_provider_route() -> None:
     config = _config()
 
     assert config.base_url == f"{_ENROLLMENT}{_ROUTE}"
-    assert config.protocol is ModelProtocol.OPENAI_CHAT
+    assert config.protocol is ModelProtocol.OPENAI_RESPONSES
     assert config.provider_model_id == "gpt-main-5"
 
 
@@ -149,6 +133,7 @@ def test_palantir_model_config_keeps_an_enrollment_path_prefix_and_normalizes_sl
     assert config.base_url == "https://example.palantirfoundry.com/tenant/api/v2/llm/proxy/openai/v1"
 
 
+@pytest.mark.unit
 def test_palantir_model_config_rejects_a_missing_token_before_any_request() -> None:
     with pytest.raises(LlmAuthError) as rejected:
         _config(token="")
@@ -157,6 +142,7 @@ def test_palantir_model_config_rejects_a_missing_token_before_any_request() -> N
     assert rejected.value.context.details["field"] == palantir_auth.PALANTIR_TOKEN_ENV_VAR
     assert isinstance(rejected.value, FatalError)
     assert palantir_auth.PALANTIR_TOKEN_ENV_VAR in rejected.value.context.suggestion
+    assert rejected.value.context.suggestion.endswith("in the environment or the .env file.")
 
 
 @pytest.mark.parametrize("token", ["   ", "with space", "with\ttab", "with\nnewline", "bad\x00byte"])
@@ -184,6 +170,7 @@ def test_only_a_token_failure_is_an_auth_error_and_every_other_defect_is_a_confi
         request_builder(cast("ModelProtocol", "made_up_protocol"))
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("alias", "provider_id", "provider_model_id"),
     [
@@ -201,7 +188,7 @@ def test_palantir_model_config_rejects_a_blank_identifier(
         palantir_model_config(
             alias=alias,
             provider_id=provider_id,
-            protocol=ModelProtocol.OPENAI_CHAT,
+            protocol=ModelProtocol.OPENAI_RESPONSES,
             enrollment_base_url=_ENROLLMENT,
             provider_path=_ROUTE,
             provider_model_id=provider_model_id,
@@ -261,43 +248,26 @@ def test_palantir_model_config_keeps_the_token_out_of_its_repr() -> None:
     assert config.token == _CANARY
 
 
-def test_model_catalog_load_keeps_an_unsupported_protocol_visible_as_a_configuration_issue() -> None:
-    source = _catalog_source(
-        {
-            "foundry-openai": {"protocol": "openai_chat", "path": _ROUTE},
-            "foundry-legacy": {"protocol": "cohere_chat", "path": "/api/v2/llm/proxy/legacy/v1"},
-        },
-        {
-            "foundry/gpt-main": {"provider": "foundry-openai", "model": "gpt-main-5"},
-            "foundry/legacy": {"provider": "foundry-legacy", "model": "legacy-1"},
-        },
-    )
-
-    catalog: ModelCatalog = parse_model_catalog(source)
-
-    assert set(catalog.providers) == {"foundry-openai"}
-    assert set(catalog.models) == {"foundry/gpt-main"}
-    assert {issue.key for issue in catalog.issues} == {"foundry-legacy", "foundry/legacy"}
-
-
+@pytest.mark.unit
 def test_request_builder_covers_every_protocol_the_catalog_can_declare() -> None:
     builders = {protocol: request_builder(protocol) for protocol in ModelProtocol}
 
     assert len(builders) == 4
     assert all(callable(builder) for builder in builders.values())
-    assert len(set(builders.values())) == 4
 
 
+@pytest.mark.unit
 def test_request_builder_rejects_a_protocol_outside_the_catalog_vocabulary() -> None:
     with pytest.raises(LlmConfigError) as rejected:
         request_builder(cast("ModelProtocol", "cohere_chat"))
 
     assert rejected.value.context.details["field"] == "protocol"
-    assert "openai_chat" in rejected.value.context.suggestion
+    assert "openai_responses" in rejected.value.context.suggestion
 
 
-def test_openai_chat_request_posts_to_chat_completions_with_the_openai_output_limit() -> None:
-    config = _config(protocol=ModelProtocol.OPENAI_CHAT)
+@pytest.mark.unit
+def test_openai_responses_request_posts_to_responses_with_the_output_limit() -> None:
+    config: PalantirModelConfig = _config(protocol=ModelProtocol.OPENAI_RESPONSES)
 
     built: PalantirHttpRequest = build_palantir_request(
         config,
@@ -306,44 +276,26 @@ def test_openai_chat_request_posts_to_chat_completions_with_the_openai_output_li
     )
 
     assert built.method == "POST"
-    assert built.url == f"{_ENROLLMENT}{_ROUTE}/chat/completions"
+    assert built.url == f"{_ENROLLMENT}{_ROUTE}/responses"
     assert built.headers["Authorization"] == f"Bearer {_CANARY}"
     assert built.headers["Content-Type"] == "application/json"
     assert built.body["model"] == "gpt-main-5"
-    assert built.body["messages"] == [
+    assert built.body["input"] == [
         {"role": "system", "content": "You translate subtitles."},
-        {"role": "user", "content": "First line.\nSecond line."},
+        {"role": "user", "content": [{"type": "input_text", "text": "First line.\nSecond line."}]},
         {"role": "assistant", "content": "Ready."},
     ]
-    assert built.body["max_completion_tokens"] == 512
+    assert built.body["max_output_tokens"] == 512
     assert built.body["temperature"] == 0.2
     assert built.body["top_p"] == 0.9
     assert "max_tokens" not in built.body
 
 
-def test_xai_responses_request_uses_the_foundry_compatible_shape() -> None:
-    config = _config(
-        protocol=ModelProtocol.XAI_RESPONSES,
-        provider_path="/api/v2/llm/proxy/xai/v1",
-        provider_model_id="grok-4",
-    )
-
-    built = build_palantir_request(config, _request(), PalantirGenerationOptions(max_output_tokens=256))
-
-    assert built.url == f"{_ENROLLMENT}/api/v2/llm/proxy/xai/v1/responses"
-    assert built.body["input"] == [
-        {"role": "system", "content": "You translate subtitles."},
-        {"role": "user", "content": "First line.\nSecond line."},
-        {"role": "assistant", "content": "Ready."},
-    ]
-    assert built.body["stream"] is False
-    assert built.body["max_output_tokens"] == 256
-
-
-def test_chat_completions_request_omits_generation_limits_that_are_unset() -> None:
+@pytest.mark.unit
+def test_responses_request_omits_generation_limits_that_are_unset() -> None:
     built = build_palantir_request(_config(), _request())
 
-    assert set(built.body) == {"model", "messages"}
+    assert set(built.body) == {"model", "input", "stream"}
 
 
 def test_anthropic_messages_request_hoists_system_content_and_always_sets_max_tokens() -> None:
@@ -387,29 +339,6 @@ def test_google_generate_request_encodes_the_model_in_the_route_and_maps_roles()
         {"role": "model", "parts": [{"text": "Ready."}]},
     ]
     assert built.body["generationConfig"] == {"topP": 0.8, "maxOutputTokens": 128}
-
-
-@pytest.mark.parametrize("protocol", list(ModelProtocol))
-def test_every_protocol_rejects_an_unsupported_content_part(protocol: ModelProtocol) -> None:
-    request = LlmRequest(
-        messages=(
-            LlmMessage(
-                role=LlmRole.USER,
-                parts=(cast("TextPart", _UnsupportedPart(kind="image")),),
-            ),
-        ),
-    )
-
-    with pytest.raises(LlmRequestError):
-        build_palantir_request(_config(protocol=protocol), request)
-
-
-@pytest.mark.parametrize("protocol", list(ModelProtocol))
-def test_every_protocol_rejects_a_message_without_any_text_part(protocol: ModelProtocol) -> None:
-    request = LlmRequest(messages=(LlmMessage(role=LlmRole.USER, parts=()),))
-
-    with pytest.raises(LlmRequestError):
-        build_palantir_request(_config(protocol=protocol), request)
 
 
 @pytest.mark.parametrize(
@@ -505,8 +434,12 @@ def test_configuration_and_request_building_create_no_http_client(monkeypatch: p
         assert not hasattr(module, "httpx")
 
 
-def test_importing_the_palantir_package_loads_no_http_client_no_sdk_and_no_other_engine() -> None:
-    added = _modules_added_by_importing("anishift.services.llm.engines.palantir")
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "module", ["anishift.services.llm.engines.palantir", "anishift.services.llm.engines.palantir.constants"]
+)
+def test_importing_the_palantir_package_loads_no_http_client_no_sdk_and_no_other_engine(module: str) -> None:
+    added: list[str] = _modules_added_by_importing(module)
 
     heavy = [name for name in added if name.split(".")[0] in _HEAVY_ROOTS]
     other_engines = [
@@ -517,11 +450,19 @@ def test_importing_the_palantir_package_loads_no_http_client_no_sdk_and_no_other
         and name not in _SHARED_ENGINE_MODULES
     ]
     configuration_layer = [name for name in added if name.startswith("anishift.config")]
+    application_layer: list[str] = [name for name in added if name.startswith("anishift.application")]
+    transport: list[str] = [
+        name
+        for name in added
+        if name in {"anishift.services.llm.engines.palantir.http", "anishift.services.llm.engines.palantir.service"}
+    ]
 
     assert added
     assert heavy == []
     assert other_engines == []
     assert configuration_layer == []
+    assert application_layer == []
+    assert transport == []
 
 
 def test_the_shared_wire_protocol_module_is_a_leaf_the_configuration_layer_can_import() -> None:

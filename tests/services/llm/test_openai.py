@@ -100,7 +100,6 @@ def test_openai_missing_key_is_unavailable_and_fatal() -> None:
     assert not client.calls
 
 
-def test_openai_suggestions_are_small_unique_strings() -> None:
-    assert 2 <= len(SUGGESTED_MODEL_IDS) <= 4
-    assert len(SUGGESTED_MODEL_IDS) == len(set(SUGGESTED_MODEL_IDS))
-    assert all(model.strip() for model in SUGGESTED_MODEL_IDS)
+@pytest.mark.unit
+def test_openai_suggestions_match_provider_documentation() -> None:
+    assert SUGGESTED_MODEL_IDS == ("gpt-6-luna", "gpt-6-sol", "gpt-6-astra")

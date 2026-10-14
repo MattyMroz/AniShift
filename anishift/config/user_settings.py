@@ -75,6 +75,9 @@ type JsonScalar = str | int | float | bool | None
 SETTINGS_SCHEMA_VERSION: Final[int] = 3
 """Current persisted user-settings schema."""
 
+DEFAULT_POLISH_WAIT_H: Final[int] = 2
+"""Default subscription wait for confirmed Polish subtitles, in hours."""
+
 TEMPO_RANGE: Final[tuple[float, float]] = (0.5, 2.0)
 """Allowed inclusive range for the speech tempo multiplier."""
 
@@ -243,6 +246,12 @@ class UserSettings:
     """Panel preferences (mode, engines, voice, output placement)."""
 
     schema_version: int = SETTINGS_SCHEMA_VERSION
+    source_tsukihime: bool = True
+    source_torrentio: bool = True
+    source_nyaa: bool = True
+    source_knaben: bool = True
+    source_nekobt: bool = True
+    subscription_polish_wait_h: int = DEFAULT_POLISH_WAIT_H
     mode: Mode = "auto"
     processing_order_policy: ProcessingOrderPolicy = "ready_first"
     translation_engine: str = "google"
@@ -261,6 +270,7 @@ class UserSettings:
     llm_max_concurrency: int = 4
     primary_model_alias: str = ""
     palantir_enrollment_base_url: str = ""
+    palantir_fallback_enrollment_base_url: str = field(default="", repr=False)
     tts_engine: str = "elevenbytes"
     tts_provider_model_id: str = "run6"
     tts_voice_id: str = DALLIN_ALIAS
@@ -540,9 +550,8 @@ def _clean_free_string(raw: dict[str, Any], key: str) -> None:
     raw[key] = value.strip()
 
 
-def _clean_enrollment_base_url(raw: dict[str, Any]) -> None:
+def _clean_enrollment_base_url(raw: dict[str, Any], key: str) -> None:
     """Keep a valid https enrollment address, or drop the field to its default."""
-    key: str = "palantir_enrollment_base_url"
     value = raw.get(key)
     if not isinstance(value, str):
         raw.pop(key, None)
@@ -836,13 +845,17 @@ def load_user_settings() -> UserSettings:  # noqa: PLR0915 - explicit tolerant f
     _clean_prompt_selection(filtered)
     _clean_integer(filtered, "llm_max_concurrency", *LLM_MAX_CONCURRENCY_RANGE)
     _clean_free_string(filtered, "primary_model_alias")
-    _clean_enrollment_base_url(filtered)
+    _clean_enrollment_base_url(filtered, "palantir_enrollment_base_url")
+    _clean_enrollment_base_url(filtered, "palantir_fallback_enrollment_base_url")
     filtered["schema_version"] = SETTINGS_SCHEMA_VERSION
     _clean_string(filtered, "tts_engine", tts_engine_ids)
     _clean_free_string(filtered, "tts_provider_model_id")
     _clean_free_string(filtered, "tts_voice_id")
     _clean_integer(filtered, "tts_max_retries", *TTS_MAX_RETRIES_RANGE)
     _clean_bool(filtered, "elevenbytes_vpn_enabled")
+    for source in ("tsukihime", "torrentio", "nyaa", "knaben", "nekobt"):
+        _clean_bool(filtered, f"source_{source}")
+    _clean_integer(filtered, "subscription_polish_wait_h", 0, 48)
     _clean_string(filtered, "tts_output_profile", _TTS_OUTPUT_PROFILES)
     _clean_tts_bitrate(filtered)
     _clean_string(filtered, "tts_timeline_policy", _TTS_TIMELINE_POLICIES)

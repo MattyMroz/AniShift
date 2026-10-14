@@ -9,6 +9,7 @@ from enum import StrEnum
 from time import monotonic
 from typing import Final
 
+from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from rich.text import Text
 
 from anishift import __version__
@@ -25,11 +26,20 @@ from anishift.application.cancellation import EventCancellationToken
 from anishift.application.events import sanitize_event_message
 from anishift.cli.exit_codes import EXIT_CANCELLED, EXIT_INCOMPLETE, EXIT_REFUSED, EXIT_SUCCESS, run_exit_code
 from anishift.cli.interactive.anime import AnimeController
-from anishift.cli.interactive.home import HomeAction, brand_for_geometry, working_directory_label
+from anishift.cli.interactive.home import HomeAction, brand_for_geometry, centered_block, working_directory_label
 from anishift.cli.interactive.manual import ManualController, ManualResult, ManualRun
 from anishift.cli.interactive.mascot import MascotController, MascotState
 from anishift.cli.interactive.mascot_native import MASCOT_REST_TOP_ROWS, NATIVE_MASCOT_ANCHOR
 from anishift.cli.interactive.menu import with_footer
+from anishift.cli.interactive.pointer import (
+    Click,
+    ClickKind,
+    FrameSelection,
+    TextPoint,
+    mark_inert,
+    mark_keys,
+    mark_row,
+)
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.prompts import (
     TEXT_MASCOT_SIZE,
@@ -41,7 +51,7 @@ from anishift.cli.interactive.prompts import (
     status_line,
 )
 from anishift.cli.interactive.settings import SettingsController, SettingsResult
-from anishift.cli.interactive.state import StateController, StateResult, refusal_text
+from anishift.cli.interactive.state import StateController, StateResult, refusal_text, tab_key
 from anishift.cli.resident import ResidentSession
 from anishift.cli.run import AutoRunRefusal, PreparedAutoRun, execute_plan, prepare_auto_run
 from anishift.errors import AniShiftError
@@ -66,7 +76,7 @@ _HOME_CHOICES: Final[tuple[tuple[str, HomeAction], ...]] = (
 )
 """Home actions in their product-defined display order."""
 
-_HOME_HINT: Final[str] = "↑↓ · Enter"
+_HOME_HINT: Final[str] = "Enter wybierz"
 """Compact keyboard hint shown below Home choices."""
 
 _HOME_FOOTER_ROWS: Final[int] = 2
@@ -84,28 +94,31 @@ _QUEUE_WHEEL_ROWS: Final[int] = 3
 _QUEUE_MARKER_ROWS: Final[int] = 2
 """Rows reserved above and below the queue for the hidden-row markers."""
 
+_CRUMB_ESCAPES: Final[int] = 4
+"""Most Esc presses one breadcrumb click sends; details over a problem over the Anime release list need four."""
+
 _MINIMUM_BRANDED_ROWS: Final[int] = 8
 """Minimum terminal height for a brand, gap, queue markers and progress."""
 
 _BATCH_CLOSE_SECONDS: Final[float] = 10.0
 """Seconds a finished batch window stays readable before it closes itself."""
 
-_BATCH_CLOSING: Final[str] = "Okno zamknie się za {seconds} s · dowolny klawisz zamyka"
+_BATCH_CLOSING: Final[str] = "Okno zamknie się za {seconds} s · Esc zamknij"
 """Footer of a finished batch window while it counts down."""
 
 _REFUSAL_MESSAGES: Final[dict[str, str]] = {
-    "The workspace holds no source group to run.": "Workspace nie zawiera materiału do uruchomienia",
-    "No discovered source group is ready to run.": "Żadna wykryta grupa nie jest gotowa do uruchomienia",
+    "The workspace holds no source group to run.": "W folderze AniShift nie ma odcinka do przetworzenia",
+    "No discovered source group is ready to run.": "Żaden odcinek nie jest gotowy do przetworzenia",
     "The plan cannot run because of a blocking problem.": "Plan nie może zostać uruchomiony",
 }
 """Polish presentation of stable UI-neutral Auto refusals."""
 
 _REFUSAL_SUGGESTIONS: Final[dict[str, str]] = {
     "Put a video or a subtitle file in the workspace and run the preset again.": (
-        "Umieść plik wideo lub napisów w workspace i spróbuj ponownie"
+        "Wrzuć plik wideo lub napisy do folderu AniShift i spróbuj ponownie"
     ),
     "Give every group usable text, resolve its conflict, then run the preset again.": (
-        "Usuń konflikty i zapewnij każdej grupie użyteczne napisy"
+        "Każdy odcinek potrzebuje napisów, z których powstanie lektor"
     ),
 }
 """Polish presentation of stable UI-neutral Auto suggestions."""
@@ -204,8 +217,11 @@ class _InteractiveApplication:
             self._handle_key,
             self._handle_idle,
             self._handle_scroll,
+            mouse_handler=self._handle_mouse,
+            hover_handler=self._handle_hover,
         )
         self._mascot: MascotController = MascotController(self._renderer.invalidate)
+        self._frame_selection: FrameSelection = FrameSelection()
 
     def run(self) -> int:
         """Run the session until Home exits, or until one batch finishes and its window closes."""
@@ -279,6 +295,12 @@ class _InteractiveApplication:
         return controller is not None and controller.copy_selection()
 
     def _handle_key(self, key: str) -> None:
+        if self._frame_selection.copy(key):
+            self._renderer.invalidate()
+            return
+        self._route_key(key)
+
+    def _route_key(self, key: str) -> None:
         with self._lock:
             mode: _ViewMode = self._mode
         if mode is _ViewMode.SETTINGS:
@@ -325,8 +347,6 @@ class _InteractiveApplication:
         self._renderer.exit()
 
     def _handle_idle(self) -> None:
-        if self._mode is _ViewMode.STATE and self._state is not None:
-            self._state.poll()
         if self._state is not None and self._state.finished():
             self._renderer.exit()
             return
@@ -352,7 +372,89 @@ class _InteractiveApplication:
         if closing_at is not None and monotonic() >= closing_at:
             self._renderer.exit()
 
+    def _handle_mouse(self, event: MouseEvent) -> None:
+        taken: Click | None = (
+            self._state.mouse(event) if self._mode is _ViewMode.STATE and self._state is not None else None
+        )
+        if taken is not None:
+            self._frame_selection.clear()
+            self._follow_click(taken)
+        else:
+            self._follow_click(self._frame_selection.mouse(event))
+        if event.event_type is MouseEventType.MOUSE_UP:
+            self._frame_selection.hover(TextPoint(event.position.y, event.position.x))
+        if taken is None:
+            self._renderer.invalidate()
+
+    def _handle_hover(self, event: MouseEvent) -> bool:
+        return self._frame_selection.hover(TextPoint(event.position.y, event.position.x))
+
+    def _follow_click(self, click: Click) -> None:
+        """Point at a clicked row or text, or run what Enter, Tab or Esc does for the other clicks."""
+        if click.kind in {ClickKind.ROW, ClickKind.LINE, ClickKind.OPEN}:
+            self._point_at(click)
+        elif click.kind is ClickKind.TAB:
+            self._handle_key(tab_key(click.value))
+        elif click.kind is ClickKind.CRUMB:
+            self._leave_crumb(click.value)
+        elif click.kind is ClickKind.BACK:
+            self._handle_key("escape")
+        elif click.kind is ClickKind.FIELD:
+            self._place_cursor(click.value, click.anchor)
+        elif click.kind is ClickKind.TOGGLE and self._select_row(click.value):
+            self._handle_key("space")
+        elif click.kind is ClickKind.KEY:
+            self._handle_key(click.key)
+
+    def _place_cursor(self, index: int, anchor: int | None = None) -> None:
+        """Focus the clicked text field and put its cursor before a clicked character, selecting a dragged span."""
+        with self._lock:
+            mode: _ViewMode = self._mode
+            settings: SettingsController | None = self._settings
+            manual: ManualController | None = self._manual
+        if mode is _ViewMode.SETTINGS and settings is not None:
+            settings.place(index, anchor)
+        elif mode is _ViewMode.MANUAL and manual is not None:
+            manual.place(index, anchor)
+        elif mode is _ViewMode.STATE and self._state is not None:
+            self._state.place(index, anchor)
+
+    def _point_at(self, click: Click) -> None:
+        """Point at a clicked row or run Enter on the cursor for a double click; a row without a cursor forgets it."""
+        if click.kind is ClickKind.OPEN:
+            self._handle_key("enter")
+        elif not self._select_row(click.value):
+            self._frame_selection.clear()
+
+    def _leave_crumb(self, level: int) -> None:
+        """Press Esc while the breadcrumb still shows the clicked ``level`` with deeper levels below it."""
+        state: StateController | None = self._state
+        if state is None:
+            return
+        clicked: tuple[str, ...] = state.breadcrumb()[: level + 1]
+        for _step in range(_CRUMB_ESCAPES):
+            shown: tuple[str, ...] = state.breadcrumb()
+            if self._mode is not _ViewMode.STATE or len(shown) <= level + 1 or shown[: level + 1] != clicked:
+                return
+            self._handle_key("escape")
+
+    def _select_row(self, index: int) -> bool:
+        """Point the current list at a clicked row without running its action and report whether it stands there."""
+        with self._lock:
+            mode: _ViewMode = self._mode
+            settings: SettingsController | None = self._settings
+            manual: ManualController | None = self._manual
+            if mode is _ViewMode.HOME and index < len(self._home_choices):
+                self._selected = index
+                return True
+        if mode is _ViewMode.SETTINGS and settings is not None:
+            return settings.select(index)
+        if mode is _ViewMode.MANUAL and manual is not None:
+            return manual.select(index)
+        return mode is _ViewMode.STATE and self._state is not None and self._state.select(index)
+
     def _handle_scroll(self, direction: int) -> None:
+        self._frame_selection.clear()
         with self._lock:
             mode: _ViewMode = self._mode
             controller: SettingsController | None = self._settings if mode is _ViewMode.SETTINGS else None
@@ -862,6 +964,7 @@ class _InteractiveApplication:
         mascot_state: MascotState = self._mascot.state
         native_size: tuple[int, int] | None = getattr(self._renderer, "native_mascot_size", None)
         animation_phase: int = getattr(self._renderer, "animation_phase", 0)
+        screen: tuple[object, ...] = ()
         if mode in {_ViewMode.HOME, _ViewMode.PREPARING, _ViewMode.MANUAL_PREPARING}:
             content: Text = _home_content(
                 columns,
@@ -874,6 +977,7 @@ class _InteractiveApplication:
             )
         elif mode is _ViewMode.MANUAL and manual is not None:
             content = manual.render(columns, rows)
+            screen = manual.view_key()
         elif mode in {_ViewMode.AUTO, _ViewMode.AUTO_DONE} and progress is not None:
             content = _auto_content(
                 (columns, rows),
@@ -883,14 +987,23 @@ class _InteractiveApplication:
                 native_size=native_size,
                 animation_phase=animation_phase,
             )
+            screen = (self._queue.offset, progress.row_count)
         elif mode is _ViewMode.SETTINGS and settings is not None:
             content = settings.render(columns, rows)
+            screen = settings.view_key()
         elif mode is _ViewMode.STATE and self._state is not None:
             content = self._state.render(columns, rows)
+            screen = self._state.view_key()
         else:
-            content = _message_content(columns, rows, message, mascot_state, view=message_view)
-        footer: str = self._directory if closing_at is None else _closing_label(closing_at)
-        return _fit_frame(content, __version__, footer, columns, rows)
+            content = _message_content(
+                columns, rows, message, mascot_state, view=message_view, closing=closing_at is not None
+            )
+            screen = (message.plain, message_view.offset)
+        footer: str = self._frame_selection.notice or self._directory
+        if closing_at is not None:
+            footer = _closing_label(closing_at)
+        frame: Text = _fit_frame(content, __version__, footer, columns, rows)
+        return self._frame_selection.paint(frame, (mode, columns, rows, screen))
 
 
 def run_interactive(
@@ -959,8 +1072,9 @@ def _home_content(  # noqa: PLR0913
             content.append(label, style="brand_accent")
         else:
             content.append(f"  {label}", style="white_bold")
+        mark_row(content, index)
         content.append("\n")
-    return with_footer(content, (_HOME_HINT,), columns, rows)
+    return with_footer(mark_inert(content), (_HOME_HINT,), columns, rows)
 
 
 def _small_home_content(
@@ -973,7 +1087,10 @@ def _small_home_content(
     for index in range(start, min(start + visible, len(choices))):
         label: str = choices[index][0]
         pointer: str = _HOME_POINTER if index == selected else " "
-        content.append(f"{pointer} {label}\n", style="brand_accent" if index == selected else "white_bold")
+        content.append(f"{pointer} {label}", style="brand_accent" if index == selected else "white_bold")
+        mark_row(content, index)
+        content.append("\n")
+    mark_inert(content)
     if rows > _HOME_FOOTER_ROWS:
         return with_footer(content, (_HOME_HINT,), columns, rows)
     return content
@@ -993,7 +1110,7 @@ def _auto_content(  # noqa: PLR0913
         visible_rows: int = max(rows - 2, 1)
         view.fit(progress.active_row, progress.row_count, visible_rows)
         tiny = Text(f"↑ {view.offset} · ↓ {max(progress.row_count - view.offset - visible_rows, 0)}\n", style="gray")
-        tiny.append_text(progress.render(columns, offset=view.offset, limit=visible_rows))
+        tiny.append_text(centered_block(progress.render(columns, offset=view.offset, limit=visible_rows), columns))
         return tiny
     geometry: AutoGeometry = resolve_auto_geometry(columns, rows, progress.row_count, native_size or TEXT_MASCOT_SIZE)
     brand: Text = brand_for_geometry(
@@ -1009,7 +1126,7 @@ def _auto_content(  # noqa: PLR0913
     content.append("\n\n")
     if paged:
         content.append_text(_queue_marker("↑", view.offset))
-    content.append_text(progress.render(columns, offset=view.offset, limit=visible))
+    content.append_text(centered_block(progress.render(columns, offset=view.offset, limit=visible), columns))
     if paged:
         content.append("\n")
         content.append_text(_queue_marker("↓", total - view.offset - visible))
@@ -1026,13 +1143,14 @@ def _last_offset(total: int, visible: int) -> int:
     return max(total - visible, 0)
 
 
-def _message_content(
+def _message_content(  # noqa: PLR0913
     columns: int,
     rows: int,
     message: Text,
     mascot_state: MascotState,
     *,
     view: _QueueView | None = None,
+    closing: bool = False,
 ) -> Text:
     geometry: HomeGeometry = resolve_home_geometry(columns, rows)
     content = Text("\n" * geometry.top_padding)
@@ -1043,7 +1161,7 @@ def _message_content(
     window: _QueueView = view if view is not None else _QueueView(following=False)
     window.fit(len(lines) - 1, len(lines), budget)
     content.append_text(Text("\n").join(lines[window.offset : window.offset + budget]))
-    return with_footer(content, ("↑↓ przewijanie · dowolny inny klawisz: powrót",), columns, rows)
+    return with_footer(content, ("" if closing else "Esc wróć",), columns, rows)
 
 
 def _result_message(result: RunResult, workspace: InspectedWorkspace) -> Text:
@@ -1072,7 +1190,7 @@ def _fit_frame(content: Text, version: str, directory: str, columns: int, rows: 
         # move the screen row the native mascot is anchored to.
         line.truncate(max(columns, 1), overflow="crop")
     lines.extend(Text() for _ in range(body_rows - len(lines)))
-    lines.append(Text(status_line(version, directory, columns), style="gray"))
+    lines.append(mark_keys(mark_inert(Text(status_line(version, directory, columns), style="gray"))))
     frame = Text()
     for index, line in enumerate(lines):
         frame.append_text(line)

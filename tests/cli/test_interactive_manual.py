@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Final
+
+import pytest
 
 from anishift.application import (
     AppService,
@@ -29,6 +32,7 @@ from anishift.cli.interactive.manual import (
     ManualResult,
     ManualRun,
     _first_product,
+    _Screen,
 )
 from anishift.cli.interactive.state import refusal_text
 from anishift.cli.resident import ResidentSession
@@ -106,6 +110,14 @@ def test_manual_previews_and_starts_only_episodes_three_and_eight(tmp_path: Path
     assert {group.source.stem for group in run.workspace.groups if group.group_id in selected} == {"03", "08"}
     completed_id: str = next(group.group_id for group in run.workspace.groups if group.source.stem == "03")
     assert not [task for task in run.plan.tasks if task.group_id == completed_id]
+
+
+def test_a_typed_a_selects_every_episode_for_the_preview(tmp_path: Path) -> None:
+    controller: ManualController = _controller(tmp_path)
+    for key in ("text:a", "end", "enter"):
+        assert controller.handle_key(key) is ManualResult.STAY
+
+    assert "8 odcinków" in controller.render(120, 40).plain
 
 
 def test_manual_regeneration_rebuilds_existing_subtitles_without_deleting_them(tmp_path: Path) -> None:
@@ -234,3 +246,62 @@ def test_every_place_can_name_the_first_product_it_offers() -> None:
     for allowed in offered:
         assert _first_product(allowed) <= allowed
         assert _first_product(allowed) <= named
+
+
+_CUSTOM: Final[tuple[str, ...]] = ("space", "end", "down", "enter", "down", "enter")
+
+_ROUTES: Final[dict[_Screen, tuple[str, ...]]] = {
+    _Screen.GROUPS: (),
+    _Screen.PREVIEW: ("space", "end", "enter"),
+    _Screen.GROUP_ACTION: _CUSTOM[:4],
+    _Screen.CUSTOM: _CUSTOM,
+    _Screen.PRODUCTS: (*_CUSTOM, "enter"),
+    _Screen.SUBTITLES: (*_CUSTOM, "down", "enter"),
+    _Screen.AUDIO: (*_CUSTOM, "down", "down", "enter"),
+    _Screen.TIMELINE: (*_CUSTOM, "down", "down", "down", "enter"),
+    _Screen.INPUT: (*_CUSTOM, "down", "enter", "down", "enter"),
+    _Screen.BUSY: _CUSTOM,
+}
+
+
+def _manual_at(tmp_path: Path, screen: _Screen) -> ManualController:
+    tmp_path.mkdir()
+    controller: ManualController = (_audiobook_controller if screen is _Screen.TIMELINE else _controller)(tmp_path)
+    for key in _ROUTES[screen]:
+        controller.handle_key(key)
+    if screen is _Screen.BUSY:
+        controller._screen = _Screen.BUSY
+    assert controller._screen is screen
+    return controller
+
+
+@pytest.mark.parametrize("screen", sorted(set(_ROUTES) - {_Screen.INPUT}))
+def test_backspace_goes_back_like_escape_on_every_manual_screen_without_a_field(
+    tmp_path: Path, screen: _Screen
+) -> None:
+    outcomes: list[tuple[object, ...]] = []
+    for key in ("escape", "backspace"):
+        controller: ManualController = _manual_at(tmp_path / key, screen)
+        result: ManualResult = controller.handle_key(key)
+        outcomes.append((result, controller._screen, controller._selected, controller._edit_index))
+    assert outcomes[0] == outcomes[1]
+    assert outcomes[1][0] is ManualResult.BACK_HOME or outcomes[1][1] is not screen
+
+
+def test_backspace_edits_the_external_file_path(tmp_path: Path) -> None:
+    controller: ManualController = _manual_at(tmp_path / "manual", _Screen.INPUT)
+    for key in ("text:ab", "backspace"):
+        assert controller.handle_key(key) is ManualResult.STAY
+    assert controller._screen is _Screen.INPUT
+    assert controller._input.text == "a"
+
+
+def test_the_episode_list_names_space_on_an_episode_and_enter_on_an_action(tmp_path: Path) -> None:
+    controller: ManualController = _controller(tmp_path)
+    on_episode: str = controller.render(120, 40).plain
+    controller.handle_key("end")
+    on_action: str = controller.render(120, 40).plain
+
+    assert "Space zaznacz · A " in on_episode
+    assert "Enter wybierz · A " in on_action
+    assert "Space zaznacz" not in on_action

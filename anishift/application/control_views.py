@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from decimal import Decimal
+from functools import cache
 from typing import TYPE_CHECKING, cast
 
 from pydantic import TypeAdapter
@@ -17,6 +18,8 @@ from anishift.application.workflows import WorkflowTarget
 from anishift.services.torrents import Release, ReleaseName
 
 if TYPE_CHECKING:
+    from collections.abc import Hashable
+
     from anishift.application.planning import ExecutionPlan
 
 
@@ -99,6 +102,9 @@ class LibrarySet:
     available: bool
     problem: str | None = None
     provisional_timing: bool = False
+    series: str | None = None
+    season: int | None = None
+    episode: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,6 +166,11 @@ def decode_view[T](model: type[T], payload: object) -> T:
 
 
 def _adapter[T](model: type[T]) -> TypeAdapter[T]:
-    adapter: TypeAdapter[T] = TypeAdapter(model)
+    return cast("TypeAdapter[T]", _built_adapter(cast("Hashable", model)))
+
+
+@cache
+def _built_adapter(model: Hashable) -> TypeAdapter[object]:
+    adapter: TypeAdapter[object] = TypeAdapter(model)
     adapter.rebuild(_types_namespace={"Release": Release, "ReleaseName": ReleaseName})
     return adapter

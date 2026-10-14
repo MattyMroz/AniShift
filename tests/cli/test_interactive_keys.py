@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 
 import pytest
 from prompt_toolkit.application.current import create_app_session
@@ -15,6 +16,10 @@ from anishift.cli.interactive.prompts import TerminalRenderer
 
 if TYPE_CHECKING:
     from prompt_toolkit.key_binding.key_processor import KeyPressEvent
+
+_DEFAULT_KEY_PREFIX_S: Final[float] = 1.0
+
+_HANG_GUARD_S: Final[float] = 30.0
 
 _EXPECTED_KEYS = [
     (Keys.Up, "up"),
@@ -112,16 +117,23 @@ def test_bracketed_paste_arrives_as_one_literal_edit(renderer: TerminalRenderer,
 
 def test_escape_is_delivered_without_waiting_for_a_one_second_key_prefix() -> None:
     seen: list[str] = []
+    moments: list[float] = []
 
     async def run() -> None:
         with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
 
+            def send() -> None:
+                moments.append(time.monotonic())
+                pipe.send_text("\x1b")
+
             def key_received(key: str) -> None:
+                moments.append(time.monotonic())
                 seen.append(key)
                 escape_renderer.exit()
 
             escape_renderer: TerminalRenderer = TerminalRenderer(lambda _columns, _rows: Text(), key_received)
-            await asyncio.wait_for(escape_renderer._application.run_async(pre_run=lambda: pipe.send_text("\x1b")), 0.3)
+            await asyncio.wait_for(escape_renderer._application.run_async(pre_run=send), _HANG_GUARD_S)
 
     asyncio.run(run())
     assert seen == ["escape"]
+    assert moments[1] - moments[0] < _DEFAULT_KEY_PREFIX_S

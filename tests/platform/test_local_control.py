@@ -264,6 +264,71 @@ def test_a_command_can_execute_after_its_client_times_out_without_an_answer(tmp_
         server.close()
 
 
+def test_a_timed_out_client_never_takes_the_late_answer_as_the_next_result(tmp_path: Path) -> None:
+    release: threading.Event = threading.Event()
+    answered: threading.Event = threading.Event()
+
+    def delayed(request: ControlRequest) -> ControlResponse:
+        if request.payload.get("echo") != "first":
+            return _echo(request)
+        assert release.wait(_TIMEOUT_S)
+        answered.set()
+        return ControlResponse.refused(ControlErrorCode.REFUSED, "first only", "first_only")
+
+    server, endpoint, key = _serving(_state_dir(tmp_path), delayed)
+    client: ControlClient = ControlClient(endpoint, key, timeout_s=0.1)
+    try:
+        with pytest.raises(ControlError) as timeout:
+            client.call("echo", {"echo": "first"})
+        release.set()
+        assert answered.wait(_TIMEOUT_S)
+        with pytest.raises(ControlError) as later:
+            client.call("echo", {"echo": "second"}, timeout_s=_TIMEOUT_S)
+    finally:
+        release.set()
+        client.close()
+        server.close()
+
+    assert later.value.reason != "first_only"
+    assert not later.value.answered
+    assert later.value.connection_lost
+    assert timeout.value.connection_lost
+
+
+@pytest.mark.parametrize(
+    ("frame", "answered", "lost"),
+    [
+        ({"command_id": "other", "ok": False, "error": {"code": "refused", "message": "x"}}, False, True),
+        ({"command_id": "other", "ok": True, "result": {}}, False, True),
+        ({"command_id": "", "ok": False, "error": {"code": "invalid_payload", "message": "x"}}, True, False),
+        ({"command_id": "", "ok": True, "result": {}}, False, True),
+        ({"command_id": "mine", "ok": False, "error": {"code": "refused", "message": "x"}}, True, False),
+    ],
+)
+def test_an_answer_belongs_to_the_command_only_by_its_identity(
+    frame: Mapping[str, object], *, answered: bool, lost: bool
+) -> None:
+    with pytest.raises(ControlError) as problem:
+        local_control._accepted_result(frame, "mine")
+
+    assert problem.value.answered is answered
+    assert problem.value.connection_lost is lost
+
+
+@pytest.mark.parametrize(
+    ("problem", "lost"),
+    [
+        (ControlError("timeout", code=ControlErrorCode.INTERNAL), True),
+        (ControlError("closed", code=ControlErrorCode.REFUSED), True),
+        (ControlError("large", code=ControlErrorCode.REFUSED, reason="request_too_large"), False),
+        (ControlError("refused", code=ControlErrorCode.REFUSED, answered=True), False),
+        (ControlError("failed", code=ControlErrorCode.INTERNAL, answered=True), False),
+    ],
+)
+def test_only_an_unanswered_transport_failure_loses_the_connection(problem: ControlError, *, lost: bool) -> None:
+    assert problem.connection_lost is lost
+
+
 def test_a_flooded_subscriber_receives_merged_events_instead_of_every_frame(tmp_path: Path) -> None:
     state_dir: Path = _state_dir(tmp_path)
     server, endpoint, key = _serving(state_dir)
@@ -325,6 +390,15 @@ def test_the_outbox_merges_every_state_change_into_one_entry() -> None:
 
     assert len(drained) == 1
     assert _payload(drained[0])["auto_enabled"] is False
+
+
+def test_offer_partial_events_coalesce_per_offer() -> None:
+    outbox = local_control._EventOutbox(MAX_OUTBOX_EVENTS)
+    for offer_id in ("first", "second", "first", "second"):
+        outbox.put({"event": "episode_offer_partial", "payload": {"offer_id": offer_id}}, terminal=False)
+    drained: tuple[Mapping[str, object], ...] = outbox.drain()
+    assert len(drained) == 2
+    assert {_payload(frame)["offer_id"] for frame in drained} == {"first", "second"}
 
 
 def test_the_outbox_drops_progress_before_a_terminal_event() -> None:
@@ -736,6 +810,105 @@ def test_a_handler_fault_is_answered_without_dropping_the_channel(tmp_path: Path
     assert "handler-fault" in "".join(captured)
     assert "internal" in "".join(captured)
     assert "private-handler-payload" not in "".join(captured)
+
+
+def test_an_answer_above_the_frame_limit_is_refused_and_the_connection_keeps_serving(tmp_path: Path) -> None:
+    state_dir: Path = _state_dir(tmp_path)
+
+    def bulky(request: ControlRequest) -> ControlResponse:
+        if request.kind == "bulky":
+            return ControlResponse.succeeded({"blob": "x" * (MAX_FRAME_BYTES + 1)})
+        if request.kind == "status":
+            return ControlResponse.succeeded({"alive": True})
+        return _echo(request)
+
+    server, endpoint, key = _serving(state_dir, bulky)
+    client = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+    captured: list[str] = []
+    handler_id: int = loguru_logger.add(
+        captured.append,
+        format="{message} {extra}",
+        level="WARNING",
+        filter=lambda record: record["extra"].get("command_kind") == "bulky",
+    )
+    try:
+        with pytest.raises(ControlError) as refusal:
+            client.call("bulky")
+        status: Mapping[str, object] = client.call("status")
+    finally:
+        loguru_logger.remove(handler_id)
+        client.close()
+        server.close()
+
+    assert refusal.value.code is ControlErrorCode.REFUSED
+    assert refusal.value.reason == "response_too_large"
+    assert refusal.value.answered
+    assert status == {"alive": True}
+    assert "size" in "".join(captured)
+    assert "xxxx" not in "".join(captured)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("over", [0, 1])
+def test_utf8_event_boundary_preserves_the_channel(tmp_path: Path, over: int) -> None:
+    frame: dict[str, object] = {"v": PROTOCOL_VERSION, "event": "boundary", "payload": {"text": ""}}
+    remaining: int = MAX_FRAME_BYTES - len(local_control._encode_frame(frame)) + over
+    frame["payload"] = {"text": "ą" * (remaining // 2) + "x" * (remaining % 2)}
+    assert len(local_control._encode_frame(frame)) == MAX_FRAME_BYTES + over
+    server, endpoint, key = _serving(_state_dir(tmp_path), _echo)
+    client: ControlClient = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+    commands: ControlClient = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+    try:
+        client.subscribe()
+        events: Iterator[Mapping[str, object]] = client.events()
+        server.broadcast(frame)
+        first: Mapping[str, object] = next(events)
+        assert first["event"] == ("control_problem" if over else "boundary")
+        server.broadcast({"event": "following", "payload": {}})
+        assert next(events)["event"] == "following"
+        assert commands.call("echo", {"echo": "alive"})["echo"] == "alive"
+    finally:
+        client.close()
+        commands.close()
+        server.close()
+
+
+@pytest.mark.unit
+def test_oversized_request_is_refused_locally_and_next_command_works(tmp_path: Path) -> None:
+    server, endpoint, key = _serving(_state_dir(tmp_path), _echo)
+    client: ControlClient = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+    try:
+        with pytest.raises(ControlError, match="frame limit"):
+            client.call("echo", {"echo": "ą" * MAX_FRAME_BYTES})
+        assert client.call("echo", {"echo": "alive"})["echo"] == "alive"
+    finally:
+        client.close()
+        server.close()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("over", [0, 1])
+def test_utf8_response_boundary_preserves_the_same_command_channel(tmp_path: Path, over: int) -> None:
+    frame: dict[str, object] = local_control._response_frame("boundary", ControlResponse.succeeded({"text": ""}))
+    remaining: int = MAX_FRAME_BYTES - len(local_control._encode_frame(frame)) + over
+    text: str = "ą" * (remaining // 2) + "x" * (remaining % 2)
+
+    def handler(request: ControlRequest) -> ControlResponse:
+        return ControlResponse.succeeded({"text": text}) if request.kind == "boundary" else _echo(request)
+
+    server, endpoint, key = _serving(_state_dir(tmp_path), handler)
+    client: ControlClient = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+    try:
+        if over:
+            with pytest.raises(ControlError) as refused:
+                client.call("boundary", command_id="boundary")
+            assert refused.value.reason == "response_too_large"
+        else:
+            assert client.call("boundary", command_id="boundary") == {"text": text}
+        assert client.call("echo", {"echo": "alive"})["echo"] == "alive"
+    finally:
+        client.close()
+        server.close()
 
 
 def test_a_slow_handler_never_blocks_another_connection(tmp_path: Path) -> None:

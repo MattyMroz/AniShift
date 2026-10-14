@@ -31,7 +31,8 @@ worker = (
 command = [sys.executable, '-c', worker, str(root / 'stop')]
 tool = subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW)
 client = subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW | independent_child_flags())
-(root / 'pids.json').write_text(json.dumps([tool.pid, client.pid]), encoding='utf-8')
+(root / 'pids.tmp').write_text(json.dumps([tool.pid, client.pid]), encoding='utf-8')
+(root / 'pids.tmp').replace(root / 'pids.json')
 time.sleep(30)
 """
     parent: subprocess.Popen[bytes] = subprocess.Popen(  # noqa: S603

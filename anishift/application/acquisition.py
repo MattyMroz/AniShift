@@ -3,30 +3,80 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 import unicodedata
-from collections import Counter
-from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass
-from datetime import datetime
+from collections import Counter, OrderedDict
+from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextvars import ContextVar, Token
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Protocol
+from typing import TYPE_CHECKING, Final, Protocol, cast
 
-from anishift.errors import AniShiftError
+from anishift.application.acquisition_decisions import offer_check, source_error
+from anishift.application.episode_identity import IdentityVerdict
+from anishift.application.episode_search import (
+    TSUKIHIME_PAGES,
+    EpisodeRequest,
+    EpisodeSearch,
+    SourceSwitches,
+    episode_phrases,
+    offer_status,
+    source_line,
+    sources_answered,
+    sources_unavailable,
+)
+from anishift.application.episode_selection import (
+    AniZipMapping,
+    EpisodeKey,
+    EpisodeOffer,
+    ListedEpisode,
+    episode_listing,
+    first_season_numbering,
+    franchise_traversal,
+    franchise_view,
+    identity_target,
+    numbering_gap,
+    rank_candidates,
+    season_dates,
+    streams_releases,
+    suggestion,
+)
+from anishift.application.subscription_choice import ABSENT_AFTER_H
+from anishift.application.subscription_targets import PolishState
+from anishift.errors import AniShiftError, ErrorCode
 from anishift.services.torrents.categories import (
     CATEGORY_ENGLISH_TRANSLATED,
     CATEGORY_NON_ENGLISH_TRANSLATED,
     SEARCH_CATEGORIES,
 )
-from anishift.services.torrents.names import base_title, season_hint, title_forms
+from anishift.services.torrents.names import (
+    base_title,
+    parse_release_name,
+    season_hint,
+    single_episode,
+    title_forms,
+)
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 
-    from anishift.services.catalog import PrequelEntry, SeasonAiring, TitleCandidate
+    from anishift.application.cancellation import CancellationToken
+    from anishift.application.episode_search import SearchOutcome, SearchSnapshot
+    from anishift.application.episode_selection import (
+        EpisodeListing,
+        Franchise,
+        FranchiseGraph,
+        JsonObject,
+        RankedCandidate,
+        StreamCandidate,
+    )
+    from anishift.application.subscription_targets import ReleaseFailure
+    from anishift.services.catalog import ArmIds, PrequelEntry, SeasonAiring, TitleCandidate
     from anishift.services.http_requests import RequestControl
     from anishift.services.torrents import Release, ReleaseName, TorrentFile, TorrentInfo
     from anishift.services.torrents.query import EpisodeRange
@@ -38,18 +88,27 @@ __all__ = [
     "MIN_RESOLUTION",
     "TITLE_SEARCH_LIMIT",
     "AcquisitionService",
+    "AnidbCatalog",
     "CatalogOrder",
     "ClientStatus",
     "DownloadReceipt",
+    "EpisodeCatalog",
     "EpisodeReading",
+    "IdCatalog",
+    "KitsuLookup",
+    "ListingRead",
     "ReleaseCatalog",
     "ReleaseChoice",
     "SeasonContext",
+    "SelectiveTorrentClient",
     "SeriesGroup",
+    "StreamSource",
+    "SubscriptionSearch",
     "TitleCatalog",
     "TorrentClient",
     "TorrentSource",
     "catalog_releases",
+    "episode_read_timeout_s",
     "normalize_series",
     "order_groups",
     "read_episode",
@@ -111,6 +170,30 @@ _FALLBACK_DIRECTORY: Final[str] = "Nieznana seria"
 _NON_ENGLISH_LANGUAGE: Final[str] = "fr"
 """Subtitle language whose releases the index keeps outside the English-translated category."""
 
+_FALLBACK_CACHE_S: Final[int] = 900
+"""Freshness of remembered entry data when ani.zip omits it; its ``Cache-Control`` measured 2026-09-22."""
+
+_REMEMBERED_ENTRIES: Final[int] = 64
+"""Entries the resident process keeps in memory before forgetting the least recently used one."""
+
+_SCHEDULE_WARNING: Final[str] = "TITLE_CATALOG_FAILED"
+"""Listing warning code when the airing schedule is unavailable."""
+
+_UNKNOWN_STATUS: Final[str] = "UNKNOWN"
+"""Status value used when no catalog source names one."""
+
+_MOVIE_FORMAT: Final[str] = "MOVIE"
+"""AniList format whose only row is fetched as a Torrentio movie."""
+
+_DONGHUA_COUNTRY: Final[str] = "CN"
+"""AniList country of origin whose original audio also includes Chinese."""
+
+_ANIME_TYPE: Final[str] = "ANIME"
+"""AniList media type of a related entry that can be mistaken for the selected one."""
+
+_SEQUEL_RELATION: Final[str] = "SEQUEL"
+"""Only anime relation a lone first season may have."""
+
 
 class TorrentSource(Protocol):
     """Index of public releases answering one free-text title query."""
@@ -133,6 +216,54 @@ class TitleCatalog(Protocol):
 
     def airing_schedule(self, anilist_id: int) -> SeasonAiring:
         """Return the known episode dates of one season."""
+        ...
+
+    def franchise(self, anilist_id: int, *, cancel: CancellationToken | None = None) -> FranchiseGraph:
+        """Return the anime relation graph rooted at one entry, stopping before a request after *cancel*."""
+        ...
+
+
+class EpisodeCatalog(Protocol):
+    """Episode mapping of one catalog entry."""
+
+    def mapping(self, anilist_id: int) -> AniZipMapping:
+        """Return the episode mapping, empty for an unknown entry."""
+        ...
+
+
+class AnidbCatalog(Protocol):
+    """Episode mapping of one AniDB entry."""
+
+    def mapping_by_anidb(self, anidb_id: int) -> AniZipMapping:
+        """Return the episode mapping, empty for an unknown entry."""
+        ...
+
+
+class IdCatalog(Protocol):
+    """Bridge from an AniList entry to its AniDB ID and TheTVDB season."""
+
+    def ids(self, anilist_id: int) -> ArmIds:
+        """Return the bridge IDs, ``None`` where unknown."""
+        ...
+
+
+class KitsuLookup(Protocol):
+    """Kitsu ID of an AniList entry confirmed in both directions."""
+
+    def kitsu_id(self, anilist_id: int) -> int | None:
+        """Return the Kitsu ID, ``None`` when unresolved."""
+        ...
+
+
+class StreamSource(Protocol):
+    """Live stream candidates of one episode or movie."""
+
+    def streams(self, kitsu_id: int, number: int) -> tuple[StreamCandidate, ...]:
+        """Return the candidates of one local episode."""
+        ...
+
+    def movie_streams(self, kitsu_id: int) -> tuple[StreamCandidate, ...]:
+        """Return the candidates of one movie."""
         ...
 
 
@@ -203,12 +334,30 @@ class TorrentManagement(Protocol):
         """Read persisted release evidence without activating or changing the client."""
         ...
 
+    def finalizable_hashes(self, hashes: frozenset[str]) -> frozenset[str]:
+        """Return released or still managed hashes that can make finalization progress."""
+        ...
+
     def transfer_action(self, info_hash: str, action: str) -> None:
         """Apply an explicit action to a managed transfer."""
         ...
 
     def close(self) -> None:
         """Release process management resources."""
+        ...
+
+
+class SelectiveTorrentClient(TorrentClient, Protocol):
+    """Metadata-only admission and verified selection supported by a managed private client."""
+
+    def add_metadata(self, info_hash: str, *, trackers: tuple[str, ...] = (), save_path: Path, category: str) -> None:
+        """Fetch metadata of a recorded new hash and stop before downloading its content."""
+        ...
+
+    def select_files(
+        self, info_hash: str, files: tuple[TorrentFile, ...], selected: frozenset[int], *, save_path: Path
+    ) -> tuple[TorrentFile, ...]:
+        """Apply the saved union to a stopped owned transfer and verify it without resuming."""
         ...
 
 
@@ -292,6 +441,43 @@ class DownloadReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class ListingRead:
+    """One episode list with the exact mapping it was built from, whether it was read live, and its numbering facts.
+
+    ``live`` means ani.zip returned episodes that replace the saved mapping; ``answered`` means ani.zip answered at
+    all, also with an absent or empty mapping; ``episode_count`` is the AniList count alone, without ani.zip fallback.
+    """
+
+    listing: EpisodeListing
+    mapping: AniZipMapping
+    live: bool
+    tvdb_season: int | None = None
+    numbering_source: str = "anilist"
+    movie: bool = False
+    answered: bool = False
+    episode_count: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SubscriptionSearch:
+    """One subscription target search: its offer and H1 target, the target failures after it and source facts.
+
+    ``polish`` is the Polish history the previous episode's TsukiHime list proved, None when nothing was proved;
+    ``sources`` names the state each source ended this search in.
+    """
+
+    offer: EpisodeOffer
+    target: dict[str, object]
+    failures: tuple[ReleaseFailure, ...] = ()
+    tsukihime: bool = False
+    unavailable: bool = False
+    tsukihime_id: int | None = None
+    queried: bool = False
+    polish: PolishState | None = None
+    sources: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ClientStatus:
     """Whether the client answers and whether it marks incomplete files."""
 
@@ -301,6 +487,29 @@ class ClientStatus:
     seeding_stops: bool = False
     problem: str = ""
     suggestion: str = ""
+
+
+@dataclass(slots=True)
+class _Remembered:
+    graph: FranchiseGraph | None = None
+    graph_at: float = 0.0
+    mapping: AniZipMapping | None = None
+    mapping_at: float = 0.0
+    schedule: SeasonAiring | None = None
+    schedule_at: float = 0.0
+
+    def fresh(self, fetched_at: float, now: float) -> bool:
+        age: int | None = self.mapping.max_age_s if self.mapping is not None else None
+        return now - fetched_at < (age if age is not None else _FALLBACK_CACHE_S)
+
+
+def _movie(graph_movie: bool | None, mapping: AniZipMapping) -> bool:
+    return graph_movie if graph_movie is not None else mapping.catalog_type == _MOVIE_FORMAT
+
+
+def _bridge_failed(provider: str, error: AniShiftError | OSError | ValueError) -> None:
+    code: ErrorCode | None = error.context.code if isinstance(error, AniShiftError) else None
+    logger.warning("Numbering bridge failed", provider=provider, code=code, error_class=type(error).__name__)
 
 
 def read_episode(name: ReleaseName, context: SeasonContext | None) -> EpisodeReading:
@@ -318,6 +527,15 @@ def read_episode(name: ReleaseName, context: SeasonContext | None) -> EpisodeRea
     if episode > context.offset:
         return EpisodeReading(episode - context.offset, absolute=episode)
     return EpisodeReading(episode, other_season=True)
+
+
+def episode_read_timeout_s() -> float:
+    """Client wait for one budgeted episode read: every schedule page at the AniList spacing plus the answer margin."""
+    from anishift.platform.local_control import DEFAULT_TIMEOUT_S  # noqa: PLC0415
+    from anishift.services.catalog.anilist import MAX_SCHEDULE_PAGES  # noqa: PLC0415
+    from anishift.services.http_requests import REMOTE_INTERVAL_S  # noqa: PLC0415
+
+    return MAX_SCHEDULE_PAGES * REMOTE_INTERVAL_S + DEFAULT_TIMEOUT_S
 
 
 def catalog_releases(  # noqa: PLR0913 - every listing rule stays an explicit call-site choice
@@ -401,6 +619,13 @@ class AcquisitionService:
         title_catalog: TitleCatalog | None = None,
         request_control: RequestControl | None = None,
         torrent_management: TorrentManagement | None = None,
+        episode_catalog: EpisodeCatalog | None = None,
+        stream_source: StreamSource | None = None,
+        episode_search: EpisodeSearch | None = None,
+        id_catalog: IdCatalog | None = None,
+        anidb_catalog: AnidbCatalog | None = None,
+        kitsu_catalog: KitsuLookup | None = None,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self._source: TorrentSource = source
         self._client: TorrentClient = client
@@ -410,12 +635,46 @@ class AcquisitionService:
         self._title_catalog: TitleCatalog | None = title_catalog
         self.request_control: RequestControl | None = request_control
         self._torrent_management: TorrentManagement | None = torrent_management
+        self._episode_catalog: EpisodeCatalog | None = episode_catalog
+        self._stream_source: StreamSource | None = stream_source
+        self._episode_search: EpisodeSearch | None = episode_search
+        self._id_catalog: IdCatalog | None = id_catalog
+        self._anidb_catalog: AnidbCatalog | None = anidb_catalog
+        self._kitsu_catalog: KitsuLookup | None = kitsu_catalog
+        self._clock: Callable[[], float] = clock
+        self._memory: OrderedDict[int, _Remembered] = OrderedDict()
+        self._memory_lock: threading.Lock = threading.Lock()
+        self._decision_sink: ContextVar[Callable[[dict[str, object]], None] | None] = ContextVar(
+            "decision_sink", default=None
+        )
+
+    @contextmanager
+    def observe_decisions(self, sink: Callable[[dict[str, object]], None]) -> Iterator[None]:
+        """Forward actual source reads to the current operation's owner."""
+        token: Token[Callable[[dict[str, object]], None] | None] = self._decision_sink.set(sink)
+        try:
+            yield
+        finally:
+            self._decision_sink.reset(token)
+
+    def _decision(self, payload: dict[str, object]) -> None:
+        sink: Callable[[dict[str, object]], None] | None = self._decision_sink.get()
+        if sink is not None:
+            sink(payload)
 
     def requests(self, reason: str) -> AbstractContextManager[None]:
         """Share one metadata budget across the adapters used by an operation."""
         if self.request_control is None:
             return nullcontext()
         return self.request_control.scope(reason, {"nyaa": MAX_REQUESTS, "anilist": MAX_REQUESTS})
+
+    def episode_requests(self) -> AbstractContextManager[None]:
+        """Budget one franchise, episode or offer read to the AniList schedule pagination."""
+        from anishift.services.catalog.anilist import MAX_SCHEDULE_PAGES  # noqa: PLC0415
+
+        if self.request_control is None:
+            return nullcontext()
+        return self.request_control.scope("user", {"anilist": MAX_SCHEDULE_PAGES})
 
     def blocked_until(self, providers: tuple[str, ...]) -> float:
         """Return the earliest allowed provider retry, or zero when unblocked."""
@@ -444,12 +703,7 @@ class AcquisitionService:
         if self._title_catalog is None:
             return SeasonContext(index=1, offset=0, episodes=candidate.episodes)
         prequels: tuple[PrequelEntry, ...] = self._title_catalog.prequel_episodes(candidate)
-        seasons: int = sum(1 for entry in prequels if not entry.cour)
-        return SeasonContext(
-            index=seasons + (0 if candidate.is_cour() else 1),
-            offset=sum(entry.episodes for entry in prequels),
-            episodes=candidate.episodes,
-        )
+        return _season_context(candidate, prequels)
 
     def search_title(
         self,
@@ -535,6 +789,29 @@ class AcquisitionService:
         """Let a transfer write content once every one of its names is reserved."""
         self._client.resume(info_hash)
 
+    def add_metadata(self, info_hash: str, trackers: tuple[str, ...], save_path: Path) -> None:
+        """Own one admitted hash and ask the private client for its file list only."""
+        client: SelectiveTorrentClient = self._selective()
+        with cast("TorrentManagement", self._torrent_management).download_scope(frozenset({info_hash.casefold()})):
+            client.add_metadata(info_hash, trackers=trackers, save_path=save_path, category=self._category)
+
+    def select_files(
+        self, info_hash: str, files: tuple[TorrentFile, ...], selected: frozenset[int], save_path: Path
+    ) -> tuple[TorrentFile, ...]:
+        """Apply one recorded union to a stopped private transfer and return the verified readback."""
+        return self._selective().select_files(info_hash, files, selected, save_path=save_path)
+
+    @property
+    def selective(self) -> bool:
+        """Whether the private client can fetch metadata only and verify a file selection."""
+        return self._torrent_management is not None and hasattr(self._client, "select_files")
+
+    def _selective(self) -> SelectiveTorrentClient:
+        if not self.selective:
+            msg = "Selective downloads require the private torrent client"
+            raise ValueError(msg)
+        return cast("SelectiveTorrentClient", self._client)
+
     def queued_hashes(self) -> frozenset[str]:
         """Lowercase info hashes of every torrent the client already tracks under the AniShift category."""
         return frozenset(info.info_hash.casefold() for info in self._client.torrents(self._category))
@@ -577,6 +854,490 @@ class AcquisitionService:
             raise ValueError(msg)
         return self._title_catalog.airing_schedule(anilist_id)
 
+    def franchise(self, anilist_id: int, *, cancel: CancellationToken | None = None) -> Franchise:
+        """Return the franchise view rooted at one entry, remembering its graph while fresh."""
+        return franchise_view(self._franchise_graph(anilist_id, cancel), anilist_id)
+
+    def _franchise_graph(self, anilist_id: int, cancel: CancellationToken | None = None) -> FranchiseGraph:
+        now: float = self._clock()
+        with self._memory_lock:
+            entry: _Remembered = self._remembered(anilist_id)
+            graph: FranchiseGraph | None = entry.graph if entry.fresh(entry.graph_at, now) else None
+        if graph is None:
+            fetched: FranchiseGraph = self._titles().franchise(anilist_id, cancel=cancel)
+            with self._memory_lock:
+                entry = self._remembered(anilist_id)
+                if fetched.complete or entry.graph is None or not entry.graph.complete:
+                    entry.graph = fetched
+                entry.graph_at = now
+                graph = entry.graph
+        return graph
+
+    def episodes(self, anilist_id: int) -> EpisodeListing:
+        """Return the episode list, keeping ani.zip data when the airing schedule is unavailable."""
+        return self.read_listing(anilist_id).listing
+
+    def read_listing(
+        self, anilist_id: int, *, saved: AniZipMapping | None = None, targets: Collection[int] = ()
+    ) -> ListingRead:
+        """Read the episode list with bridged numbering and saved mapping fallback.
+
+        A remembered mapping leaving any of *targets* without numbering is read again from ani.zip.
+        Without the franchise graph the list keeps a warning and the entry counts as a movie only when
+        the chosen mapping says so.
+        """
+        now: float = self._clock()
+        graph_movie: bool | None = self._graph_movie(anilist_id, now)
+        remembered: bool = self._remembered_mapping(anilist_id, now) is not None
+        empty: AniZipMapping = AniZipMapping(None, None, None, (), (), None, {})
+        fresh: AniZipMapping | None
+        try:
+            fresh = self._mapping(anilist_id, now)
+        except AniShiftError, OSError, ValueError:
+            fresh = None
+        ids: ArmIds | None = self._bridge_ids(anilist_id)
+        tvdb_season: int | None = ids.tvdb_season if ids is not None else None
+        if (
+            remembered
+            and fresh is not None
+            and any(
+                numbering_gap(fresh, number, tvdb_season, movie=_movie(graph_movie, fresh)) is not None
+                for number in targets
+            )
+        ):
+            try:
+                fresh = self._mapping(anilist_id, now, refresh=True)
+            except AniShiftError, OSError, ValueError:
+                logger.info("Remembered episode mapping kept", provider="anizip")
+        from_anidb: bool = False
+        if fresh is not None:
+            fresh, from_anidb = self._anidb_numbering(fresh, ids)
+        live: bool = fresh is not None and bool(fresh.raw_episodes)
+        mapping: AniZipMapping = fresh if fresh is not None and live else saved or fresh or empty
+        if mapping is not fresh:
+            from_anidb = False
+        if saved is not None and mapping is saved:
+            logger.info("Episode mapping snapshot used", provider="anizip")
+        kitsu: int | None = mapping.kitsu_id if mapping.kitsu_id is not None else self._kitsu_id(anilist_id, fresh)
+        if kitsu != mapping.kitsu_id:
+            mapping = replace(mapping, kitsu_id=kitsu)
+        movie: bool = _movie(graph_movie, mapping)
+        schedule: SeasonAiring | None
+        failed: bool
+        schedule, failed = self._schedule(anilist_id, now)
+        failed = failed or graph_movie is None
+        retry: float = self.blocked_until(("anilist",)) if failed else 0.0
+        listing: EpisodeListing = episode_listing(
+            anilist_id,
+            mapping,
+            schedule.status.value if schedule is not None else self._known_status(anilist_id),
+            schedule.episode_count if schedule is not None else None,
+            tuple(ListedEpisode(item.episode, airs_at=item.airing_at) for item in schedule.episodes)
+            if schedule is not None
+            else (),
+            datetime.fromtimestamp(now, UTC),
+            schedule_warning=_SCHEDULE_WARNING if failed else None,
+            schedule_retry_at=datetime.fromtimestamp(retry, UTC) if retry > now else None,
+        )
+        source: str = "anidb" if from_anidb else "anilist" if mapping.episodes else "none"
+        return ListingRead(
+            listing,
+            mapping,
+            live,
+            tvdb_season,
+            source,
+            movie,
+            answered=fresh is not None,
+            episode_count=schedule.episode_count if schedule is not None else None,
+        )
+
+    def _bridge_ids(self, anilist_id: int) -> ArmIds | None:
+        if self._id_catalog is None:
+            return None
+        try:
+            return self._id_catalog.ids(anilist_id)
+        except (AniShiftError, OSError, ValueError) as error:
+            _bridge_failed("arm", error)
+            return None
+
+    def _graph_movie(self, anilist_id: int, now: float) -> bool | None:
+        try:
+            graph: FranchiseGraph = self._context_graph(anilist_id, now)
+        except (AniShiftError, OSError, ValueError) as error:
+            code: ErrorCode | None = error.context.code if isinstance(error, AniShiftError) else None
+            logger.warning("Listing franchise unavailable", provider="anilist", code=code)
+            return None
+        return graph.nodes[anilist_id].get("format") == _MOVIE_FORMAT
+
+    def _anidb_numbering(self, mapping: AniZipMapping, ids: ArmIds | None) -> tuple[AniZipMapping, bool]:
+        anidb: AniZipMapping | None = None
+        if not mapping.episodes and ids is not None and ids.anidb_id is not None and self._anidb_catalog is not None:
+            try:
+                anidb = self._anidb_catalog.mapping_by_anidb(ids.anidb_id)
+            except (AniShiftError, OSError, ValueError) as error:
+                _bridge_failed("anizip", error)
+        if anidb is not None:
+            mapping = replace(
+                mapping,
+                kitsu_id=anidb.kitsu_id if anidb.kitsu_id is not None else mapping.kitsu_id,
+                catalog_type=anidb.catalog_type if anidb.catalog_type is not None else mapping.catalog_type,
+            )
+        if anidb is not None and anidb.raw_episodes:
+            mapping = replace(
+                mapping,
+                episode_count=anidb.episode_count if anidb.episode_count is not None else mapping.episode_count,
+                episodes=anidb.episodes,
+                specials=anidb.specials or mapping.specials,
+                raw_episodes=anidb.raw_episodes,
+            )
+        return mapping, anidb is not None and bool(anidb.episodes)
+
+    def _kitsu_id(self, anilist_id: int, fresh: AniZipMapping | None) -> int | None:
+        if fresh is not None and fresh.kitsu_id is not None:
+            return fresh.kitsu_id
+        if self._kitsu_catalog is None:
+            return None
+        try:
+            return self._kitsu_catalog.kitsu_id(anilist_id)
+        except (AniShiftError, OSError, ValueError) as error:
+            _bridge_failed("kitsu", error)
+            return None
+
+    def offer(self, key: EpisodeKey, switches: SourceSwitches | None = None) -> EpisodeOffer:
+        """Rank the live stream candidates of one episode against its remembered identity."""
+        return self.search_episode(key, switches or SourceSwitches())[0]
+
+    def search_episode(
+        self,
+        key: EpisodeKey,
+        switches: SourceSwitches,
+        *,
+        read: ListingRead | None = None,
+        on_partial: Callable[[EpisodeOffer, dict[str, object]], None] | None = None,
+        exclude: Callable[[StreamCandidate], bool] | None = None,
+    ) -> tuple[EpisodeOffer, dict[str, object]]:
+        """Search the enabled sources using exactly the mapping used for the episode listing."""
+        read = read or self.read_listing(key.anilist_id)
+        if self._episode_search is None:
+            return self._torrentio_offer(key, read, exclude=exclude)
+        request: EpisodeRequest = self._episode_request(key, read, manual=True, tsukihime_id=None)
+        numbering: bool = request.numbering
+        derived: bool = _derived_numbering(read, key.number, movie=request.movie, numbering=numbering)
+        target: dict[str, object] = dict(request.target)
+
+        def publish(snapshot: SearchSnapshot) -> None:
+            if on_partial is not None:
+                on_partial(
+                    self._snapshot_offer(key, snapshot, numbering=numbering, derived=derived, exclude=exclude), target
+                )
+
+        result: SearchOutcome = self._episode_search.manual_offer(request, switches, publish)
+        offer: EpisodeOffer = self._snapshot_offer(
+            key, result.snapshot, numbering=numbering, derived=derived, exclude=exclude
+        )
+        logger.info(
+            "Episode search completed",
+            count=len(offer.candidates),
+            numbering=numbering,
+            suggested=offer.suggestion is not None,
+        )
+        return offer, target
+
+    def subscription_check(  # noqa: PLR0913 - the persisted target facts stay explicit at the owner boundary
+        self,
+        key: EpisodeKey,
+        read: ListingRead,
+        switches: SourceSwitches,
+        *,
+        failures: Sequence[ReleaseFailure],
+        excluded: Collection[str],
+        tsukihime_id: int | None,
+        history_at: datetime | None = None,
+    ) -> SubscriptionSearch:
+        """Search one subscription target against the mapping of *read*, within the subscription source budget.
+
+        With *history_at* it also reads the Polish history of the previous episode as of that moment.
+        """
+        if self._episode_search is None:
+            offer, target = self._torrentio_offer(key, read)
+            queried: bool = read.mapping.kitsu_id is not None
+            return SubscriptionSearch(
+                offer,
+                target,
+                tuple(failures),
+                tsukihime_id=tsukihime_id,
+                queried=queried,
+                sources=(("torrentio", "done" if queried else "no_kitsu"),),
+            )
+        request: EpisodeRequest = self._episode_request(key, read, manual=False, tsukihime_id=tsukihime_id)
+        result: SearchOutcome = self._episode_search.subscription_check(request, switches, failures, excluded)
+        title: int | None = result.tsukihime_id or tsukihime_id
+        return SubscriptionSearch(
+            self._snapshot_offer(
+                key,
+                result.snapshot,
+                numbering=request.numbering,
+                derived=_derived_numbering(read, key.number, movie=request.movie, numbering=request.numbering),
+                exclude=None,
+            ),
+            dict(request.target),
+            result.failures,
+            switches.tsukihime,
+            sources_unavailable(result.snapshot.sources),
+            result.tsukihime_id,
+            sources_answered(result.snapshot.sources),
+            None
+            if history_at is None
+            else self._previous_history(
+                request, read, switches, title, history_at, pages=TSUKIHIME_PAGES - result.title_read
+            ),
+            tuple((row.source, row.state.value) for row in result.snapshot.sources),
+        )
+
+    def _previous_history(  # noqa: PLR0913 - the shared request budget stays explicit
+        self,
+        request: EpisodeRequest,
+        read: ListingRead,
+        switches: SourceSwitches,
+        title: int | None,
+        now: datetime,
+        *,
+        pages: int,
+    ) -> PolishState | None:
+        if request.movie or request.number == 1 or self._episode_search is None:
+            return PolishState.UNKNOWN
+        key: EpisodeKey = EpisodeKey(request.key.anilist_id, request.number - 1)
+        aired: datetime | None = next(
+            (item.airs_at for item in read.listing.episodes if item.number == key.number), None
+        )
+        return self._episode_search.previous_history(
+            self._episode_request(key, read, manual=False, tsukihime_id=title),
+            switches,
+            settled=aired is not None and aired + timedelta(hours=ABSENT_AFTER_H) <= now,
+            pages=pages,
+        )
+
+    def _episode_request(
+        self, key: EpisodeKey, read: ListingRead, *, manual: bool, tsukihime_id: int | None
+    ) -> EpisodeRequest:
+        graph: FranchiseGraph = self._context_graph(key.anilist_id, self._clock())
+        candidate: TitleCandidate = graph_candidate(graph, key.anilist_id)
+        movie: bool = candidate.format == _MOVIE_FORMAT
+        if movie and key.number != 1:
+            msg: str = "A movie has only its first row"
+            raise ValueError(msg)
+        target: dict[str, object]
+        numbering: bool
+        target, numbering = _numbered_target(graph, candidate, read, key.number, movie=movie)
+        absolute: object = target.get("absolute")
+        return EpisodeRequest(
+            key,
+            key.number,
+            movie,
+            candidate.country == _DONGHUA_COUNTRY,
+            read.mapping.kitsu_id,
+            tsukihime_id,
+            episode_phrases(
+                candidate,
+                graph_season_context(graph, candidate),
+                key.number,
+                manual=manual,
+                absolute=absolute if type(absolute) is int else None,
+            ),
+            target,
+            numbering,
+            season_dates(read.listing, read.episode_count),
+        )
+
+    def _snapshot_offer(
+        self,
+        key: EpisodeKey,
+        snapshot: SearchSnapshot,
+        *,
+        numbering: bool,
+        derived: bool,
+        exclude: Callable[[StreamCandidate], bool] | None,
+    ) -> EpisodeOffer:
+        ranked: tuple[RankedCandidate, ...] = tuple(
+            row for row in snapshot.candidates if exclude is None or not exclude(row.stream)
+        )
+        counts: dict[str, int] = {
+            verdict.value: sum(row.identity.verdict is verdict for row in ranked) for verdict in IdentityVerdict
+        }
+        return EpisodeOffer(
+            key,
+            ranked,
+            suggestion(ranked, numbering=numbering, match_only=derived)[0],
+            datetime.fromtimestamp(self._clock(), UTC),
+            counts,
+            numbering,
+            tuple(source_line(row) for row in snapshot.sources),
+            "brak numeracji" if not numbering else (None if snapshot.pending else offer_status(snapshot.sources)),
+            snapshot.pending,
+            derived,
+        )
+
+    def _torrentio_offer(
+        self,
+        key: EpisodeKey,
+        read: ListingRead,
+        *,
+        exclude: Callable[[StreamCandidate], bool] | None = None,
+    ) -> tuple[EpisodeOffer, dict[str, object]]:
+        now: float = self._clock()
+        graph: FranchiseGraph = self._context_graph(key.anilist_id, now)
+        mapping: AniZipMapping = read.mapping
+        movie: bool = graph.nodes[key.anilist_id].get("format") == _MOVIE_FORMAT
+        if movie and key.number != 1:
+            msg = "A movie has only its first row"
+            raise ValueError(msg)
+        streams: tuple[StreamCandidate, ...] = ()
+        target: dict[str, object]
+        numbering: bool
+        target, numbering = _numbered_target(
+            graph, graph_candidate(graph, key.anilist_id), read, key.number, movie=movie
+        )
+        try:
+            if mapping.kitsu_id is not None and movie:
+                streams = self._streams().movie_streams(mapping.kitsu_id)
+            elif mapping.kitsu_id is not None:
+                streams = self._streams().streams(mapping.kitsu_id, key.number)
+        except (AniShiftError, OSError, ValueError) as error:
+            self._decision(source_error("torrentio", key.anilist_id, key.number, error))
+            raise
+        if exclude is not None:
+            streams = tuple(stream for stream in streams if not exclude(stream))
+        donghua: bool = graph.nodes[key.anilist_id].get("countryOfOrigin") == _DONGHUA_COUNTRY
+        ranked: tuple[RankedCandidate, ...] = rank_candidates(
+            target,
+            streams_releases(streams, pack_name=_pack_name),
+            donghua=donghua,
+            dates=season_dates(read.listing, read.episode_count),
+            single=single_episode,
+        )
+        counts: dict[str, int] = {
+            verdict.value: sum(1 for item in ranked if item.identity.verdict is verdict) for verdict in IdentityVerdict
+        }
+        derived: bool = _derived_numbering(read, key.number, movie=movie, numbering=numbering)
+        suggested: int | None = suggestion(ranked, numbering=numbering, match_only=derived)[0]
+        logger.info("Episode offer ranked", count=len(ranked), suggested=suggested is not None, movie=movie)
+        offer: EpisodeOffer = EpisodeOffer(
+            key,
+            ranked,
+            suggested,
+            datetime.fromtimestamp(self._clock(), UTC),
+            counts,
+            numbering,
+            status=None if numbering else "brak numeracji",
+            derived_numbering=derived,
+        )
+        if mapping.kitsu_id is not None:
+            self._decision(offer_check(offer, target, streams, donghua=donghua))
+        return offer, target
+
+    def _titles(self) -> TitleCatalog:
+        if self._title_catalog is None:
+            msg = "No title catalog is configured"
+            raise ValueError(msg)
+        return self._title_catalog
+
+    def _streams(self) -> StreamSource:
+        if self._stream_source is None:
+            msg = "No stream source is configured"
+            raise ValueError(msg)
+        return self._stream_source
+
+    def _remembered(self, anilist_id: int) -> _Remembered:
+        entry: _Remembered = self._memory.setdefault(anilist_id, _Remembered())
+        self._memory.move_to_end(anilist_id)
+        while len(self._memory) > _REMEMBERED_ENTRIES:
+            self._memory.popitem(last=False)
+        return entry
+
+    def _remembered_mapping(self, anilist_id: int, now: float) -> AniZipMapping | None:
+        with self._memory_lock:
+            entry: _Remembered = self._remembered(anilist_id)
+            return entry.mapping if entry.mapping is not None and entry.fresh(entry.mapping_at, now) else None
+
+    def _mapping(self, anilist_id: int, now: float, *, refresh: bool = False) -> AniZipMapping:
+        remembered: AniZipMapping | None = None if refresh else self._remembered_mapping(anilist_id, now)
+        if remembered is not None:
+            return remembered
+        if self._episode_catalog is None:
+            msg = "No episode catalog is configured"
+            raise ValueError(msg)
+        try:
+            mapping: AniZipMapping = self._episode_catalog.mapping(anilist_id)
+        except (AniShiftError, OSError, ValueError) as error:
+            self._decision(source_error("ani.zip", anilist_id, None, error))
+            raise
+        self._decision(
+            {
+                "source": "ani.zip",
+                "key": {"anilist_id": anilist_id, "number": None},
+                "episodes": len(mapping.raw_episodes),
+                "with_length": sum(row.get("length") is not None for row in mapping.raw_episodes.values()),
+            }
+        )
+        with self._memory_lock:
+            entry: _Remembered = self._remembered(anilist_id)
+            entry.mapping, entry.mapping_at = mapping, now
+        return mapping
+
+    def _schedule(self, anilist_id: int, now: float) -> tuple[SeasonAiring | None, bool]:
+        with self._memory_lock:
+            entry: _Remembered = self._remembered(anilist_id)
+            if entry.schedule is not None and entry.fresh(entry.schedule_at, now):
+                return entry.schedule, False
+        if self.blocked_until(("anilist",)) > now:
+            return None, True
+        try:
+            schedule: SeasonAiring = self._titles().airing_schedule(anilist_id)
+        except AniShiftError as error:
+            if error.context.code is not ErrorCode.TITLE_CATALOG_FAILED:
+                raise
+            logger.warning("Airing schedule unavailable", provider="anilist", code=error.context.code)
+            return None, True
+        with self._memory_lock:
+            entry = self._remembered(anilist_id)
+            entry.schedule, entry.schedule_at = schedule, now
+        return schedule, False
+
+    def _known_status(self, anilist_id: int) -> str:
+        with self._memory_lock:
+            for entry in self._memory.values():
+                status: object = entry.graph.nodes.get(anilist_id, {}).get("status") if entry.graph else None
+                if isinstance(status, str):
+                    return status
+        return _UNKNOWN_STATUS
+
+    def _context_graph(self, anilist_id: int, now: float) -> FranchiseGraph:
+        known: FranchiseGraph | None = self._known_graph(anilist_id, now)
+        graph: FranchiseGraph = known if known is not None else self._franchise_graph(anilist_id)
+        if anilist_id not in graph.nodes:
+            msg = "The entry is absent from its own franchise"
+            raise ValueError(msg)
+        return graph
+
+    def _known_graph(self, anilist_id: int, now: float) -> FranchiseGraph | None:
+        """Pick a fresh graph holding the entry: complete traversal, then its own root, then the lowest root ID."""
+        with self._memory_lock:
+            known: list[tuple[bool, bool, int, FranchiseGraph]] = [
+                (
+                    bool(franchise_traversal(anilist_id, entry.graph.nodes, entry.graph.queried)[2]),
+                    root != anilist_id,
+                    root,
+                    entry.graph,
+                )
+                for root, entry in self._memory.items()
+                if entry.graph is not None and anilist_id in entry.graph.nodes and entry.fresh(entry.graph_at, now)
+            ]
+            if not known:
+                return None
+            chosen: tuple[bool, bool, int, FranchiseGraph] = min(known, key=lambda item: item[:3])
+            self._memory.move_to_end(chosen[2])
+        return chosen[3]
+
     def transfer_files(self, info_hash: str) -> tuple[TorrentFile, ...]:
         """Read selection and completion for one tracked transfer."""
         return self._client.files(info_hash)
@@ -616,9 +1377,19 @@ class AcquisitionService:
         return self._torrent_management.released_hashes(hashes)
 
     def close(self) -> None:
-        """Release private torrent process resources."""
-        if self._torrent_management is not None:
-            self._torrent_management.close()
+        """Release private torrent process resources and their shared HTTP transport."""
+        try:
+            if self._torrent_management is not None:
+                self._torrent_management.close()
+        finally:
+            if self.request_control is not None:
+                self.request_control.close()
+
+    def finalizable_hashes(self, hashes: frozenset[str]) -> frozenset[str]:
+        """Read which hashes can progress without starting or contacting a torrent client."""
+        if self._torrent_management is None:
+            return frozenset()
+        return self._torrent_management.finalizable_hashes(hashes)
 
     def series_directory(self, choice: ReleaseChoice) -> Path:
         """Return the library directory the files of *choice* will be saved into."""
@@ -647,6 +1418,66 @@ class AcquisitionService:
         self._client.set_preferences({INCOMPLETE_EXTENSION_PREFERENCE: True, **SEEDING_STOP_PREFERENCES})
         logger.info("Torrent client configured for incomplete-file suffixes and no seeding")
         return self.client_status()
+
+
+def graph_candidate(graph: FranchiseGraph, selected_id: int) -> TitleCandidate:
+    """Project an already fetched catalog node with the catalog's canonical decoder."""
+    from anishift.services.catalog.anilist import candidate_from_node  # noqa: PLC0415
+
+    candidate: TitleCandidate | None = candidate_from_node(graph.nodes[selected_id])
+    if candidate is None:
+        msg: str = "The selected catalog entry has no title"
+        raise ValueError(msg)
+    return candidate
+
+
+def graph_season_context(graph: FranchiseGraph, candidate: TitleCandidate) -> SeasonContext:
+    """Calculate the same season context as catalog traversal using only fetched nodes."""
+    from anishift.services.catalog.anilist import graph_prequels  # noqa: PLC0415
+
+    return _season_context(candidate, graph_prequels(graph, candidate))
+
+
+def _numbered_target(
+    graph: FranchiseGraph, candidate: TitleCandidate, read: ListingRead, number: int, *, movie: bool
+) -> tuple[dict[str, object], bool]:
+    """Build the H1 target and whether it is numbered; a lone first season numbers itself without a mapping."""
+    mapping: AniZipMapping = read.mapping
+    gap: str | None = numbering_gap(mapping, number, read.tvdb_season, movie=movie)
+    if gap == "none" and _first_season(graph, candidate, read):
+        mapping, gap = first_season_numbering(mapping, number), None
+    numbering: bool = gap is None
+    return identity_target(graph, candidate.anilist_id, mapping, number, numbering=numbering), numbering
+
+
+def _first_season(graph: FranchiseGraph, candidate: TitleCandidate, read: ListingRead) -> bool:
+    from anishift.services.catalog.anilist import OFFSET_FORMATS  # noqa: PLC0415
+
+    _, _, missing = franchise_traversal(candidate.anilist_id, graph.nodes, graph.queried)
+    if candidate.format not in OFFSET_FORMATS or candidate.anilist_id in missing or read.tvdb_season not in {None, 1}:
+        return False
+    edges: list[JsonObject] = graph.nodes[candidate.anilist_id]["relations"]["edges"]
+    return (
+        graph_season_context(graph, candidate).index == 1
+        and all(edge["node"]["type"] != _ANIME_TYPE or edge["relationType"] == _SEQUEL_RELATION for edge in edges)
+        and all(
+            episode.get("seasonNumber") in (None, 1)
+            for key, episode in read.mapping.raw_episodes.items()
+            if key.isascii() and key.isdecimal()
+        )
+    )
+
+
+def _derived_numbering(read: ListingRead, number: int, *, movie: bool, numbering: bool) -> bool:
+    return numbering and numbering_gap(read.mapping, number, read.tvdb_season, movie=movie) is not None
+
+
+def _season_context(candidate: TitleCandidate, prequels: Sequence[PrequelEntry]) -> SeasonContext:
+    return SeasonContext(
+        index=sum(not entry.cour for entry in prequels) + (0 if candidate.is_cour() else 1),
+        offset=sum(entry.episodes for entry in prequels),
+        episodes=candidate.episodes,
+    )
 
 
 def _title_queries(candidate: TitleCandidate) -> tuple[str, ...]:
@@ -773,6 +1604,10 @@ def _series_group(
         newest=max(published) if published else None,
         matches_title=bool(series_forms(series) & alias_keys),
     )
+
+
+def _pack_name(name: str) -> bool:
+    return parse_release_name(name).is_pack
 
 
 def _seeding_stops(preferences: Mapping[str, object]) -> bool:

@@ -5,14 +5,20 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Any, Final
+from typing import Any, Final, cast
 from urllib.parse import quote
 
-from anishift.services.llm.engines._sdk_helpers import raise_request_error
+from anishift.services.llm.engines._sdk_helpers import (
+    DEFAULT_PDF_NAME,
+    anthropic_content_block,
+    group_adjacent_text_parts,
+    joined_text,
+    require_file_modalities,
+)
 from anishift.services.llm.engines.palantir.auth import authorization_headers
 from anishift.services.llm.engines.palantir.config import PalantirGenerationOptions, PalantirModelConfig
 from anishift.services.llm.engines.palantir.errors import PALANTIR_ENGINE_ID, raise_palantir_config_error
-from anishift.services.llm.types import LlmMessage, LlmRequest, LlmRole, TextPart
+from anishift.services.llm.types import FilePart, LlmContentPart, LlmMessage, LlmRequest, LlmRole, TextPart
 from anishift.services.llm.wire_protocol import ModelProtocol
 from anishift.utils.logger import get_logger
 
@@ -47,11 +53,8 @@ type PalantirRequestBuilder = Callable[
 _HTTP_METHOD: Final[str] = "POST"
 """Only method the four completion protocols use."""
 
-_CHAT_COMPLETIONS_ROUTE: Final[str] = "/chat/completions"
-"""Route of the OpenAI Chat Completions protocol."""
-
 _RESPONSES_ROUTE: Final[str] = "/responses"
-"""Route used by the Foundry xAI proxy for Grok models."""
+"""Route used by the Foundry OpenAI and xAI proxies."""
 
 _MESSAGES_ROUTE: Final[str] = "/messages"
 """Route of the Anthropic Messages protocol."""
@@ -70,12 +73,6 @@ _ANTHROPIC_VERSION: Final[str] = "2023-06-01"
 
 _ANTHROPIC_DEFAULT_MAX_TOKENS: Final[int] = 8192
 """Output limit written when the caller configured none."""
-
-_OPENAI_MAX_TOKENS_KEY: Final[str] = "max_completion_tokens"
-"""Output limit keyword of the OpenAI Chat Completions endpoint."""
-
-_COMPATIBLE_MAX_TOKENS_KEY: Final[str] = "max_tokens"
-"""Output limit keyword every other Chat Completions endpoint accepts."""
 
 _GOOGLE_ROLES: Final[Mapping[LlmRole, str]] = MappingProxyType(
     {
@@ -106,6 +103,7 @@ def build_palantir_request(
     stream: bool = False,
 ) -> PalantirHttpRequest:
     """Build the request one configuration and one neutral prompt describe."""
+    require_file_modalities(request, accepted=config.file_modalities, engine_id=PALANTIR_ENGINE_ID)
     builder: PalantirRequestBuilder = request_builder(config.protocol)
     built: PalantirHttpRequest = builder(config, request, options or PalantirGenerationOptions())
     if stream:
@@ -121,7 +119,7 @@ def build_palantir_request(
 
 def _streaming_variant(config: PalantirModelConfig, built: PalantirHttpRequest) -> PalantirHttpRequest:
     """Turn one built request into the server-sent-events variant of its protocol."""
-    if config.protocol is ModelProtocol.OPENAI_CHAT:
+    if config.protocol is ModelProtocol.OPENAI_RESPONSES:
         return replace(built, body={**dict(built.body), "stream": True})
     if config.protocol is not ModelProtocol.GOOGLE_GENERATE:
         raise_palantir_config_error(
@@ -133,32 +131,15 @@ def _streaming_variant(config: PalantirModelConfig, built: PalantirHttpRequest) 
     return replace(built, url=f"{config.base_url}{route}")
 
 
-def _build_openai_chat(
+def _build_responses(
     config: PalantirModelConfig,
     request: LlmRequest,
     options: PalantirGenerationOptions,
 ) -> PalantirHttpRequest:
-    """Shape one OpenAI-compatible Chat Completions request."""
-    return _chat_completions_request(
-        config,
-        request,
-        options,
-        max_tokens_key=_OPENAI_MAX_TOKENS_KEY,
-    )
-
-
-def _build_xai_responses(
-    config: PalantirModelConfig,
-    request: LlmRequest,
-    options: PalantirGenerationOptions,
-) -> PalantirHttpRequest:
-    """Shape one non-streaming xAI Responses request."""
-    input_items: list[dict[str, str]] = [
-        {"role": message.role.value, "content": _joined_text(message)} for message in request.messages
-    ]
     body: dict[str, Any] = {
+        **options.request_options,
         "model": config.provider_model_id,
-        "input": input_items,
+        "input": [_responses_item(message) for message in request.messages],
         "stream": False,
     }
     if options.temperature is not None:
@@ -175,30 +156,26 @@ def _build_xai_responses(
     )
 
 
-def _chat_completions_request(
-    config: PalantirModelConfig,
-    request: LlmRequest,
-    options: PalantirGenerationOptions,
-    *,
-    max_tokens_key: str,
-) -> PalantirHttpRequest:
-    """Shape a Chat Completions body, differing only in the output limit key."""
-    messages: list[dict[str, str]] = [
-        {"role": message.role.value, "content": _joined_text(message)} for message in request.messages
+def _responses_item(message: LlmMessage) -> dict[str, Any]:
+    if message.role is not LlmRole.USER:
+        return {"role": message.role.value, "content": joined_text(message.parts)}
+    blocks: list[dict[str, Any]] = [
+        {"type": "input_text", "text": part.text} if isinstance(part, TextPart) else _responses_file(part)
+        for part in group_adjacent_text_parts(message.parts)
     ]
-    body: dict[str, Any] = {"model": config.provider_model_id, "messages": messages}
-    if options.temperature is not None:
-        body["temperature"] = options.temperature
-    if options.top_p is not None:
-        body["top_p"] = options.top_p
-    if options.max_output_tokens is not None:
-        body[max_tokens_key] = options.max_output_tokens
-    return PalantirHttpRequest(
-        method=_HTTP_METHOD,
-        url=f"{config.base_url}{_CHAT_COMPLETIONS_ROUTE}",
-        headers=authorization_headers(config.token),
-        body=body,
-    )
+    return {"role": message.role.value, "content": blocks}
+
+
+def _responses_file(part: FilePart) -> dict[str, Any]:
+    if part.modality == "image":
+        return {"type": "input_image", "image_url": part.data_url}
+    return {"type": "input_file", "filename": part.name or DEFAULT_PDF_NAME, "file_data": part.data_url}
+
+
+def _google_part(part: LlmContentPart) -> dict[str, Any]:
+    if isinstance(part, TextPart):
+        return {"text": part.text}
+    return {"inlineData": {"mimeType": part.media_type, "data": part.base64}}
 
 
 def _build_anthropic_messages(
@@ -207,15 +184,16 @@ def _build_anthropic_messages(
     options: PalantirGenerationOptions,
 ) -> PalantirHttpRequest:
     """Shape one Anthropic Messages request, hoisting system content."""
-    system_blocks: list[dict[str, str]] = []
+    system_blocks: list[dict[str, Any]] = []
     messages: list[dict[str, Any]] = []
     for message in request.messages:
-        blocks: list[dict[str, str]] = [{"type": "text", "text": text} for text in _texts(message)]
+        blocks: list[dict[str, object]] = [anthropic_content_block(part) for part in message.parts]
         if message.role is LlmRole.SYSTEM:
             system_blocks.extend(blocks)
             continue
         messages.append({"role": message.role.value, "content": blocks})
     body: dict[str, Any] = {
+        **options.request_options,
         "model": config.provider_model_id,
         "max_tokens": options.max_output_tokens or _ANTHROPIC_DEFAULT_MAX_TOKENS,
         "messages": messages,
@@ -242,10 +220,10 @@ def _build_google_generate(
     options: PalantirGenerationOptions,
 ) -> PalantirHttpRequest:
     """Shape one Google generateContent request, hoisting system content."""
-    system_parts: list[dict[str, str]] = []
+    system_parts: list[dict[str, Any]] = []
     contents: list[dict[str, Any]] = []
     for message in request.messages:
-        parts: list[dict[str, str]] = [{"text": text} for text in _texts(message)]
+        parts: list[dict[str, Any]] = [_google_part(part) for part in message.parts]
         if message.role is LlmRole.SYSTEM:
             system_parts.extend(parts)
             continue
@@ -267,7 +245,7 @@ def _build_google_generate(
 
 def _generation_config(options: PalantirGenerationOptions) -> dict[str, Any]:
     """Collect the Google generation limits that are actually configured."""
-    generation: dict[str, Any] = {}
+    generation: dict[str, Any] = dict(cast("Mapping[str, object]", options.request_options.get("generationConfig", {})))
     if options.temperature is not None:
         generation["temperature"] = options.temperature
     if options.top_p is not None:
@@ -277,39 +255,14 @@ def _generation_config(options: PalantirGenerationOptions) -> dict[str, Any]:
     return generation
 
 
-def _texts(message: LlmMessage) -> list[str]:
-    """Return the text of every part, rejecting a part no protocol can carry."""
-    texts: list[str] = []
-    for part in message.parts:
-        if not isinstance(part, TextPart):
-            raise_request_error(
-                "Palantir received an unsupported content part",
-                suggestion="Use text content parts for the Palantir proxy protocols.",
-                engine_id=PALANTIR_ENGINE_ID,
-            )
-        texts.append(part.text)
-    if not texts:
-        raise_request_error(
-            "Palantir message must contain at least one text part",
-            suggestion="Add text content to every LLM message.",
-            engine_id=PALANTIR_ENGINE_ID,
-        )
-    return texts
-
-
-def _joined_text(message: LlmMessage) -> str:
-    """Join every text part of one message into a single content string."""
-    return "\n".join(_texts(message))
-
-
 # ── Constants ────────────────────────────────────────────────────────────────
 
 _BUILDERS: Final[Mapping[ModelProtocol, PalantirRequestBuilder]] = MappingProxyType(
     {
-        ModelProtocol.OPENAI_CHAT: _build_openai_chat,
+        ModelProtocol.OPENAI_RESPONSES: _build_responses,
         ModelProtocol.ANTHROPIC_MESSAGES: _build_anthropic_messages,
         ModelProtocol.GOOGLE_GENERATE: _build_google_generate,
-        ModelProtocol.XAI_RESPONSES: _build_xai_responses,
+        ModelProtocol.XAI_RESPONSES: _build_responses,
     },
 )
 """Builder of every supported protocol, defined after the builders it names."""

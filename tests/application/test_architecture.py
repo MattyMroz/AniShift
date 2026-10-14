@@ -16,11 +16,17 @@ _APPLICATION_ROOT: Final[Path] = _REPO_ROOT / "anishift" / "application"
 _UI_PACKAGES: Final[tuple[str, ...]] = ("cli", "tui")
 
 _PURE_MODULES: Final[tuple[str, ...]] = (
+    "episode_confidence.py",
     "artifacts.py",
+    "episode_identity.py",
+    "episode_releases.py",
+    "episode_selection.py",
     "intents.py",
     "planning.py",
     "planner.py",
+    "release_quality.py",
     "selection.py",
+    "subscription_choice.py",
     "workflows.py",
 )
 
@@ -29,6 +35,7 @@ _PURE_FORBIDDEN: Final[tuple[str, ...]] = (
     "anishift.config",
     "anishift.services",
     "anishift.tui",
+    "httpx",
     "os",
     "rich",
     "subprocess",

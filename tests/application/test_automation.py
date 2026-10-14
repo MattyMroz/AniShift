@@ -8,10 +8,9 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import closing, contextmanager, nullcontext
+from contextlib import closing, nullcontext
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Final, cast
@@ -56,12 +55,16 @@ from anishift.application.automation import (
     TRANSFER_CHECK_INTERVAL_S,
     AutomationOwner,
 )
+from anishift.application.cancellation import EventCancellationToken
 from anishift.application.control import (
     AcquisitionConfirmation,
     AcquisitionState,
+    AdmissionSource,
     AudiobookRecipe,
     AutomationPolicy,
     DeletionStatus,
+    EpisodeAssignment,
+    EpisodeChoice,
     FileReservation,
     ManualHandledMarker,
     NarrationTimeline,
@@ -75,11 +78,14 @@ from anishift.application.control import (
     SourceFingerprint,
     SourceSelection,
     TextResultFormat,
+    TorrentioReference,
     TranslateRecipe,
     WatchState,
 )
 from anishift.application.control_views import DeletionPreview, LibrarySet, PlanPreview, decode_view, encode_view
 from anishift.application.discovery import discover_groups
+from anishift.application.episode_identity import IdentityVerdict
+from anishift.application.episode_selection import EpisodeKey, EpisodeListing, EpisodeOffer
 from anishift.application.events import RunEvent, RunEventKind
 from anishift.application.history import HistoryJournal, HistoryKind
 from anishift.application.inspection import (
@@ -91,26 +97,13 @@ from anishift.application.inspection import (
 from anishift.application.intents import GroupIntent, ProductIntent, ProductKind, RebuildRequest, RequestOrigin, RunMode
 from anishift.application.planning import ExecutionPlan
 from anishift.application.products import classify_product
-from anishift.application.ready import ReadyMove, ReadyStore
+from anishift.application.ready import ReadyMove, ReadyStore, in_ready
 from anishift.application.recovery import RunJournal
 from anishift.application.results import GroupResult, GroupStatus, RunResult
 from anishift.application.scheduler import RunHandle
 from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.service import AppService, AutoPresetDraft
-from anishift.application.subscriptions import (
-    CheckOutcome,
-    CheckRecorder,
-    EpisodeOrder,
-    EpisodeState,
-    Subscription,
-    SubscriptionAdmission,
-    SubscriptionEnd,
-    SubscriptionOrder,
-    SubscriptionService,
-    SubscriptionStore,
-    SubscriptionUpdater,
-    subscription_id,
-)
+from anishift.application.subscription_targets import PauseReason, SubscriptionRecord
 from anishift.application.tts_handler import TtsProgressObserver
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
 from anishift.application.workflows import WorkflowTarget
@@ -133,16 +126,25 @@ from anishift.platform.local_control import (
     control_endpoint,
 )
 from anishift.platform.recycle import RecycleResult
-from anishift.services.catalog import AniListCatalog
+from anishift.services.catalog import AniListCatalog, AniZipCatalog
 from anishift.services.http_requests import RequestControl
 from anishift.services.media import DefaultMediaProbe
-from anishift.services.torrents import Release, TorrentClientError, TorrentFile, TorrentInfo, parse_release_name
+from anishift.services.torrents import (
+    Release,
+    TorrentClientError,
+    TorrentFile,
+    TorrentInfo,
+    TorrentioSource,
+    parse_release_name,
+)
 from anishift.services.torrents.categories import SEARCH_CATEGORIES
 from anishift.services.torrents.nyaa import search_releases
 from anishift.services.torrents.qbittorrent import QBittorrentClient
 from anishift.services.tts import SpeechBatch, SpeechBatchResult
 
 _TIMEOUT_S: Final[float] = 5.0
+
+_SHARING_VIOLATION: Final[int] = 32
 
 _INSTANCE: Final[str] = "instance-1"
 
@@ -223,6 +225,9 @@ class _TorrentNetwork:
         self.released.append(hashes)
         return hashes
 
+    def finalizable_hashes(self, hashes: frozenset[str]) -> frozenset[str]:
+        return hashes
+
     def released_hashes(self, hashes: frozenset[str]) -> frozenset[str]:
         return hashes & frozenset(value for batch in self.released for value in batch)
 
@@ -291,78 +296,6 @@ class _TorrentNetwork:
         return self.per_hash.get(info_hash, self.entries)
 
 
-class _Subscriptions:
-    def __init__(self) -> None:
-        self.entries: list[SimpleNamespace] = [
-            SimpleNamespace(
-                subscription_id="a",
-                series="Series",
-                group="Group",
-                next_episode="3",
-                enabled=True,
-                end_state=SimpleNamespace(value="active"),
-            )
-        ]
-        self.checks: int = 0
-        self.stored_ranges: list[tuple[tuple[Decimal, ...], Decimal | None]] = []
-        self.ordered_again: list[tuple[Decimal, ...]] = []
-        self.due_at: datetime | None = None
-
-    def list(self) -> tuple[SimpleNamespace, ...]:
-        return tuple(self.entries)
-
-    def set_range(self, subscription_id: str, *, selected: Sequence[Decimal], future_from: Decimal | None) -> None:
-        del subscription_id
-        self.stored_ranges.append((tuple(selected), future_from))
-
-    def repeat(
-        self,
-        subscription_id: str,
-        numbers: Sequence[Decimal],
-        *,
-        command_id: str | None = None,
-        requested_at: str | None = None,
-    ) -> None:
-        del command_id, requested_at
-        del subscription_id
-        self.ordered_again.append(tuple(numbers))
-
-    def next_check_at(self, policy: AutomationPolicy) -> datetime | None:
-        del policy
-        return self.due_at
-
-    def reconcile_sources(self, confirmations: Sequence[AcquisitionConfirmation]) -> None:
-        del confirmations
-
-    def check_due(
-        self,
-        policy: AutomationPolicy,
-        *,
-        admit: SubscriptionAdmission | None = None,
-        record: CheckRecorder | None = None,
-        update: SubscriptionUpdater | None = None,
-        refresh_calendar: bool = False,
-    ) -> tuple[CheckOutcome, ...]:
-        del policy, admit, record, update, refresh_calendar
-        self.checks += 1
-        subscription: Subscription = Subscription(
-            "s1", "Series Group", "Series", "Group", Decimal(3), 1080, frozenset(), _MOMENT.isoformat(), None
-        )
-        return (CheckOutcome(subscription, downloaded=2),)
-
-    def enable(self, subscription_id: str) -> SimpleNamespace:
-        del subscription_id
-        return SimpleNamespace(enabled=True)
-
-    def disable(self, subscription_id: str) -> SimpleNamespace:
-        del subscription_id
-        return SimpleNamespace(enabled=False)
-
-    def remove(self, subscription_id: str) -> bool:
-        del subscription_id
-        return True
-
-
 class _Service:
     def __init__(
         self,
@@ -370,10 +303,8 @@ class _Service:
         *,
         discovered: object,
         plan: ExecutionPlan,
-        subscriptions: _Subscriptions | None = None,
     ) -> None:
         self.workspace_root: Path = workspace_root
-        self.subscriptions: _Subscriptions | None = subscriptions
         self.acquisition: AcquisitionService | None = None
         self._discovered: object = discovered
         self._plan: ExecutionPlan = plan
@@ -392,6 +323,7 @@ class _Service:
         self.submitted_event: threading.Event = threading.Event()
         self.discover_release: threading.Event | None = None
         self.paused: list[bool] = []
+        self.user_settings: UserSettings = UserSettings(subscription_polish_wait_h=0)
 
     def discover(self, *, changed_paths: Sequence[Path] | None = None) -> object:
         del changed_paths
@@ -403,6 +335,9 @@ class _Service:
 
     def default_preset_id(self) -> str:
         return "preview"
+
+    def settings_snapshot(self) -> UserSettings:
+        return self.user_settings
 
     def get_preset(self, preset_id: str) -> object:
         del preset_id
@@ -495,45 +430,73 @@ def _owner(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("scenario", ["titles", "empty", "catalog_failed", "both_failed", "internal", "planning", "io"])
+@pytest.mark.parametrize(
+    "scenario", ["titles", "empty", "catalog_failed", "source_failed", "internal", "planning", "io"]
+)
 def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0915
     tmp_path: Path, scenario: str
 ) -> None:
     sent: list[str] = []
     now: list[float] = [1000.0]
-    feed: str = (
-        '<rss xmlns:nyaa="https://nyaa.si/xmlns/nyaa"><channel><item>'
-        "<title>[SubsPlease] Fixture - 01 (1080p)</title>"
-        "<link>https://nyaa.si/download/1.torrent</link>"
-        "<nyaa:infoHash>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</nyaa:infoHash>"
-        "<nyaa:seeders>10</nyaa:seeders><pubDate>Sat, 05 Sep 2026 19:51:11 -0000</pubDate>"
-        "</item></channel></rss>"
-    )
 
     def respond(request: httpx.Request) -> httpx.Response:
         sent.append(request.url.host)
-        assert request.url.host in {"graphql.anilist.co", "nyaa.si"}
-        if scenario == "internal":
-            raise RuntimeError("private-provider-payload")
-        if scenario == "planning":
-            raise PlanningError(context=ErrorContext(code=ErrorCode.IO_ERROR, message="private-provider-payload"))
-        if scenario == "io":
-            raise OSError("private-provider-payload")
-        if request.url.host == "nyaa.si":
+        assert request.url.host in {"graphql.anilist.co", "api.ani.zip", "torrentio.strem.fun"}
+        if request.url.host == "api.ani.zip":
             return httpx.Response(
-                503 if scenario == "both_failed" else 200, text=feed, headers={"Content-Type": "application/rss+xml"}
+                200,
+                json={
+                    "mappings": {"kitsu_id": 10, "type": "TV"},
+                    "episodeCount": 1,
+                    "episodes": {"1": {"episodeNumber": 1, "seasonNumber": 1}},
+                },
             )
+        if request.url.host == "torrentio.strem.fun":
+            return httpx.Response(503)
+        failures: dict[str, Exception] = {
+            "internal": RuntimeError("private-provider-payload"),
+            "planning": PlanningError(
+                context=ErrorContext(code=ErrorCode.IO_ERROR, message="private-provider-payload")
+            ),
+            "io": OSError("private-provider-payload"),
+        }
+        if scenario in failures:
+            raise failures[scenario]
         body: dict[str, object] = {
             "data": {
                 "Page": {
                     "media": []
                     if scenario == "empty"
-                    else [{"id": 1, "title": {"romaji": "Fixture"}, "status": "FINISHED"}]
+                    else [
+                        {
+                            "id": 1,
+                            "type": "ANIME",
+                            "format": "TV",
+                            "title": {"romaji": "Fixture"},
+                            "status": "FINISHED",
+                            "relations": {"edges": []},
+                        }
+                    ]
                 }
             }
         }
-        if scenario in {"catalog_failed", "both_failed"}:
+        if scenario == "catalog_failed":
             body = {"errors": [{"message": "private-provider-payload"}]}
+        if scenario == "source_failed":
+            node: dict[str, object] = {
+                "id": 1,
+                "type": "ANIME",
+                "format": "TV",
+                "title": {"romaji": "Fixture"},
+                "status": "FINISHED",
+                "episodes": 1,
+                "relations": {"edges": []},
+                "airingSchedule": {
+                    "pageInfo": {"currentPage": 1, "hasNextPage": False},
+                    "nodes": [{"episode": 1, "airingAt": 1}],
+                },
+            }
+            body = {"data": {"Page": {"media": [node]}, "Media": node}}
         return httpx.Response(
             200, headers={"Content-Encoding": "gzip"}, stream=httpx.ByteStream(gzip.compress(json.dumps(body).encode()))
         )
@@ -556,6 +519,8 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
             parse_name=parse_release_name,
             title_catalog=AniListCatalog(http),
             request_control=control,
+            episode_catalog=AniZipCatalog(http),
+            stream_source=TorrentioSource(http),
         )
         service: AppService = _real_service(tmp_path, acquisition=acquisition)
         owner: AutomationOwner = _owner(service, WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME))
@@ -570,7 +535,7 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
             captured.append,
             format="{message} {extra}",
             level="WARNING",
-            filter=lambda record: record["extra"].get("command_kind") == "acquisition",
+            filter=lambda record: record["extra"].get("command_kind") in {"acquisition", "episode_offer_start"},
         )
         try:
             controller.handle_key("enter")
@@ -580,16 +545,38 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
             if worker is not None:
                 worker.join(_TIMEOUT_S)
                 assert not worker.is_alive()
+            if scenario == "source_failed":
+                controller.handle_key("text:i")
+                worker = controller._worker
+                assert worker is not None
+                worker.join(_TIMEOUT_S)
+                assert not worker.is_alive()
+                deadline: float = time.monotonic() + _TIMEOUT_S
+                while controller._offers_running and time.monotonic() < deadline:
+                    controller.refresh_offer()
+                    time.sleep(0.01)
+                assert not controller._offers_running
             frame: str = controller.render(120, 30).plain
             assert "private-provider-payload" not in frame
             if scenario == "titles":
-                assert "Enter wybierz" in frame
+                assert "Nr" in frame
+                assert "Nie wyemitowano" in frame
+                assert "Brak terminów emisji (AniList)" in frame
+                assert sent == ["graphql.anilist.co", "graphql.anilist.co", "api.ani.zip", "graphql.anilist.co"]
+            elif scenario == "catalog_failed":
+                assert "AniList nie odpowiada" in frame
                 assert sent == ["graphql.anilist.co"]
-            elif scenario == "both_failed":
-                assert "Nyaa nie odpowiada" in frame
-                assert sent == ["graphql.anilist.co", "nyaa.si"]
                 assert "TitleCatalogError" in "".join(captured)
                 assert "TITLE_CATALOG_FAILED" in "".join(captured)
+            elif scenario == "source_failed":
+                assert "Źródło wydań nie odpowiada" in frame
+                assert sent == [
+                    "graphql.anilist.co",
+                    "graphql.anilist.co",
+                    "api.ani.zip",
+                    "graphql.anilist.co",
+                    "torrentio.strem.fun",
+                ]
                 assert "TorrentSourceError" in "".join(captured)
                 assert "TORRENT_SOURCE_FAILED" in "".join(captured)
                 assert "command_id" in "".join(captured)
@@ -601,10 +588,8 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
                 ]
                 assert expected_class in "".join(captured)
             else:
-                assert "SubsPlease" in frame
-                assert "wyniki dla hasła" in frame
-                assert sent[-2:] == ["nyaa.si", "nyaa.si"]
-                assert controller._groups[0].newest == datetime(2026, 9, 5, 19, 51, 11, tzinfo=UTC)
+                assert "Nie znaleziono tytułu" in frame
+                assert sent == ["graphql.anilist.co", "graphql.anilist.co"]
             assert not owner.state.acquisitions
             assert all(value not in "".join(captured) for value in ("private-provider-payload", "Fixture", "https://"))
         finally:
@@ -615,15 +600,6 @@ def test_anime_enter_search_crosses_owner_ipc_and_controlled_http(  # noqa: PLR0
             thread.join(_TIMEOUT_S)
             service.close()
         assert not thread.is_alive()
-
-
-def _anime_enter(controller: AnimeController, key: str = "enter") -> str:
-    controller.handle_key(key)
-    worker: threading.Thread | None = controller._worker
-    if worker is not None:
-        worker.join(_TIMEOUT_S)
-        assert not worker.is_alive()
-    return controller.render(160, 30).plain
 
 
 @pytest.mark.integration
@@ -727,7 +703,7 @@ def test_async_url_add_is_observed_once_through_owner_ipc_before_content_starts(
         assert saved.state is AcquisitionState.ACCEPTED
         assert saved.file_layout == ((0, "09.mkv", 4),)
         assert not saved.content_started
-        assert store.load().policy.auto_enabled
+        assert store.load().acquisitions[-1].manual or store.load().policy.auto_enabled
         started.set()
         return httpx.Response(200)
 
@@ -821,7 +797,8 @@ def test_async_url_add_is_observed_once_through_owner_ipc_before_content_starts(
                 assert saved.acquisitions[0].state is AcquisitionState.ACCEPTED
             calls: tuple[str, ...] = tuple(paths)
             time.sleep(0.1)
-            assert tuple(paths) == calls
+            assert paths.count("add") == calls.count("add")
+            assert paths.count("resume") == calls.count("resume")
             if scenario != "shutdown":
 
                 def refuse_inventory() -> tuple[SourceGroup, ...]:
@@ -837,7 +814,8 @@ def test_async_url_add_is_observed_once_through_owner_ipc_before_content_starts(
                 )
                 assert state_path.stat().st_mtime_ns == stamp
                 assert store.load() == saved
-                assert tuple(paths) == calls
+                assert paths.count("add") == calls.count("add")
+                assert paths.count("resume") == calls.count("resume")
             if scenario == "exhausted":
                 assert reads == 3
                 assert all(item.state is AcquisitionState.UNCERTAIN for item in saved.acquisitions)
@@ -856,16 +834,16 @@ def test_async_url_add_is_observed_once_through_owner_ipc_before_content_starts(
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
-    ("scenario", "expected", "reason"),
+    ("scenario", "reason"),
     [
-        ("unavailable", "qBittorrent nie odpowiada", "TORRENT_CLIENT_UNAVAILABLE"),
-        ("unauthorized", "qBittorrent odrzucił logowanie", "TORRENT_CLIENT_UNAUTHORIZED"),
-        ("refused", "qBittorrent odrzucił żądanie", "TORRENT_CLIENT_REFUSED"),
-        ("accepted", "Przyjęto 1 zamówień · pobieranie w prywatnym kliencie AniShift", ""),
+        ("unavailable", "TORRENT_CLIENT_UNAVAILABLE"),
+        ("unauthorized", "TORRENT_CLIENT_UNAUTHORIZED"),
+        ("refused", "TORRENT_CLIENT_REFUSED"),
+        ("accepted", ""),
     ],
 )
-def test_anime_download_failure_and_dedup_cross_owner_ipc_and_qbittorrent_http(  # noqa: PLR0915
-    tmp_path: Path, scenario: str, expected: str, reason: str
+def test_download_failure_and_dedup_cross_owner_ipc_and_qbittorrent_http(  # noqa: PLR0915
+    tmp_path: Path, scenario: str, reason: str
 ) -> None:
     network: _TorrentNetwork = _TorrentNetwork()
     store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
@@ -930,7 +908,6 @@ def test_anime_download_failure_and_dedup_cross_owner_ipc_and_qbittorrent_http( 
         endpoint: str = control_endpoint(tmp_path)
         server: ControlServer = ControlServer(endpoint, key, handle, on_disconnect=owner.disconnect)
         session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
-        controller: AnimeController = AnimeController(service, lambda: None, resident=session)
         captured: list[str] = []
         handler_id: int = loguru_logger.add(
             captured.append,
@@ -939,13 +916,15 @@ def test_anime_download_failure_and_dedup_cross_owner_ipc_and_qbittorrent_http( 
             filter=lambda record: record["extra"].get("command_kind") == "download",
         )
         try:
-            controller.handle_key("enter")
-            controller.handle_key("text:Neko")
-            assert "SubsPlease" in _anime_enter(controller)
-            _anime_enter(controller)
-            controller.handle_key("space")
-            frame: str = _anime_enter(controller, "text:d")
-            assert expected in frame
+            catalog: ReleaseCatalog = session.search("Neko")
+            choices: tuple[ReleaseChoice, ...] = catalog.groups[0].choices
+            assert len(choices) == 2
+            if failing:
+                with pytest.raises(ControlError) as error:
+                    session.download(choices[:1])
+                assert error.value.reason == reason
+            else:
+                assert session.download(choices[:1]).count == 1
             first: ControlRequest = requests[0]
             saved: WatchState = store.load()
             assert len(saved.acquisitions) == 1
@@ -954,9 +933,6 @@ def test_anime_download_failure_and_dedup_cross_owner_ipc_and_qbittorrent_http( 
             if failing:
                 assert responses[0].code is ControlErrorCode.INTERNAL
                 assert responses[0].reason == reason
-                assert "Sprawdź prywatny klient AniShift i log" in frame
-                assert "Web UI" not in frame
-                assert ".env" not in frame
                 assert "TorrentClientError" in "".join(captured)
                 assert first.command_id in "".join(captured)
                 assert reason in "".join(captured)
@@ -969,7 +945,9 @@ def test_anime_download_failure_and_dedup_cross_owner_ipc_and_qbittorrent_http( 
             calls: tuple[str, ...] = tuple(paths)
             state_path: Path = tmp_path / "control" / WATCH_STATE_FILE_NAME
             modified: int = state_path.stat().st_mtime_ns
-            replay: Mapping[str, object] = session._client.call("download", first.payload, command_id=first.command_id)
+            replay: Mapping[str, object] = session._command_channel().call(
+                "download", first.payload, command_id=first.command_id
+            )
             assert replay == saved.command_receipts[0].outcome
             assert replay == {"count": 1, "directory": str(tmp_path)}
             assert responses[-1] == ControlResponse.succeeded(dict(saved.command_receipts[0].outcome))
@@ -977,38 +955,25 @@ def test_anime_download_failure_and_dedup_cross_owner_ipc_and_qbittorrent_http( 
             assert paths.count("/api/v2/torrents/add") == calls.count("/api/v2/torrents/add")
             assert store.load() == saved
             if failing:
-                _anime_enter(controller)
-            else:
-                controller.cancel()
-                controller.handle_key("space")
-            duplicate: str = _anime_enter(controller, "text:d")
-            assert "Wysłano 0 do" not in duplicate
-            if failing:
-                assert "Przyjęto: 0 · już przyjęte: 0 · wynik przekazania niepotwierdzony: 1" in duplicate
-                assert "Sprawdź prywatny klient AniShift i log" in duplicate
+                with pytest.raises(ControlError) as duplicate:
+                    session.download(choices[:1])
+                assert duplicate.value.reason == "download_recorded"
                 assert responses[-1].reason == "download_recorded"
             else:
-                assert "Zamówienia już zapisane · sprawdź prywatny klient AniShift" in duplicate
+                assert session.download(choices[:1]).count == 0
                 assert responses[-1].ok
                 assert responses[-1].result == {"count": 0, "directory": str(tmp_path)}
-            assert controller.render(160, 30).plain == duplicate
             assert paths.count("/api/v2/torrents/add") == calls.count("/api/v2/torrents/add")
-            if failing:
-                _anime_enter(controller)
-            else:
-                controller.cancel()
-            controller.handle_key("text:a")
             failing = False
-            mixed: str = _anime_enter(controller, "text:d")
             if scenario == "accepted":
-                assert "Przyjęto 1 zamówień · pobieranie w prywatnym kliencie AniShift" in mixed
+                assert session.download(choices).count == 1
                 assert responses[-1].ok
                 assert responses[-1].result["count"] == 1
             else:
-                assert "Przyjęto: 1 · już przyjęte: 0 · wynik przekazania niepotwierdzony: 1" in mixed
-                assert "Sprawdź prywatny klient AniShift i log" in mixed
+                with pytest.raises(ControlError) as mixed:
+                    session.download(choices)
+                assert mixed.value.reason == "download_recorded"
                 assert responses[-1].reason == "download_recorded"
-            assert controller.render(160, 30).plain == mixed
             assert paths.count("/api/v2/torrents/add") == 2
             assert store.load().acquisitions[0] == saved.acquisitions[0]
             assert len(store.load().acquisitions) == 2
@@ -1023,7 +988,7 @@ def test_anime_download_failure_and_dedup_cross_owner_ipc_and_qbittorrent_http( 
 
 
 @pytest.mark.integration
-def test_panel_search_download_and_follow_use_the_resident_and_durable_receipts(tmp_path: Path) -> None:
+def test_panel_search_and_download_use_the_resident_and_durable_receipts(tmp_path: Path) -> None:
     network: _TorrentNetwork = _TorrentNetwork()
     acquisition: AcquisitionService = AcquisitionService(
         source=network,
@@ -1031,12 +996,7 @@ def test_panel_search_download_and_follow_use_the_resident_and_durable_receipts(
         workspace_root=tmp_path,
         parse_name=parse_release_name,
     )
-    subscriptions: SubscriptionService = SubscriptionService(
-        store=SubscriptionStore(tmp_path / "subscriptions.json"),
-        acquisition=acquisition,
-        clock=lambda: _MOMENT,
-    )
-    service: AppService = _real_service(tmp_path, acquisition=acquisition, subscriptions=subscriptions)
+    service: AppService = _real_service(tmp_path, acquisition=acquisition)
     store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
     owner: AutomationOwner = _owner(service, store)
     thread: threading.Thread = _serving(owner)
@@ -1054,11 +1014,6 @@ def test_panel_search_download_and_follow_use_the_resident_and_durable_receipts(
         receipt: DownloadReceipt = session.download(choices)
         assert receipt.count == 2
         assert session.download(choices).count == 0
-        subscription: Subscription = session.follow(
-            SubscriptionOrder("Neko to Ryuu", "SubsPlease", "neko", Decimal(20))
-        )
-        assert subscription.added_by_command is not None
-        assert subscription.subscription_id == subscriptions.list()[0].subscription_id
         assert all(item.origin is RequestOrigin.USER for item in store.load().acquisitions)
         assert all(item.pending is None for item in store.load().command_receipts)
         assert network.added == [choice.release.info_hash for choice in choices]
@@ -1123,78 +1078,6 @@ def test_transfer_action_survives_restart_and_receipt_replay_does_not_repeat_it(
     finally:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
-    assert not thread.is_alive()
-
-
-@pytest.mark.parametrize("ranged", [False, True])
-@pytest.mark.parametrize("identified", [False, True])
-def test_subscription_addition_replays_after_its_confirmation_could_not_be_saved(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    ranged: bool,
-    identified: bool,
-) -> None:
-    network: _TorrentNetwork = _TorrentNetwork()
-    acquisition: AcquisitionService = AcquisitionService(
-        source=network,
-        client=cast("TorrentClient", network),
-        workspace_root=tmp_path,
-        parse_name=parse_release_name,
-    )
-    subscriptions: SubscriptionService = SubscriptionService(
-        store=SubscriptionStore(tmp_path / "subscriptions.json"),
-        acquisition=acquisition,
-        clock=lambda: _MOMENT,
-    )
-    service: AppService = _real_service(tmp_path, acquisition=acquisition, subscriptions=subscriptions)
-    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    save: Callable[[WatchState], None] = store.save
-
-    def fail_confirmation(state: WatchState) -> None:
-        if state.command_receipts and all(item.pending is None for item in state.command_receipts):
-            raise OSError("Injected confirmation failure")
-        save(state)
-
-    order: SubscriptionOrder = SubscriptionOrder(
-        "Neko to Ryuu", "SubsPlease", "neko", Decimal(20), anilist_id=101 if identified else None
-    )
-    payload: dict[str, object] = {"order": encode_view(order)}
-    if ranged:
-        payload.update(selected=["3", "7.5", "8"], future_from=None)
-    command: ControlRequest = _request("subscription_add", payload)
-    try:
-        with monkeypatch.context() as failure:
-            failure.setattr(store, "save", fail_confirmation)
-            assert not owner.handle(command).ok
-        assert subscriptions.list()[0].generation == (2 if ranged else 1)
-        assert store.load().command_receipts[0].pending == "subscription_add"
-        accepted_id: object = store.load().command_receipts[0].outcome["subscription_id"]
-        assert accepted_id == subscriptions.list()[0].subscription_id
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-    restored: AutomationOwner = _owner(service, store)
-    thread = _serving(restored)
-    try:
-        assert restored.handle(command).ok
-        assert restored.handle(command).ok
-        assert subscriptions.list()[0].generation == (2 if ranged else 1)
-        assert subscriptions.list()[0].subscription_id == accepted_id
-        if ranged:
-            assert {item.number for item in subscriptions.list()[0].episodes if item.selected} == {
-                Decimal(3),
-                Decimal("7.5"),
-                Decimal(8),
-            }
-            assert subscriptions.list()[0].future_from is None
-        assert network.added == []
-        assert store.load().command_receipts[0].pending is None
-    finally:
-        restored.request_shutdown()
-        thread.join(_TIMEOUT_S)
-        service.close()
     assert not thread.is_alive()
 
 
@@ -1550,7 +1433,7 @@ def _library(tmp_path: Path) -> tuple[_Service, WatchStateStore, str]:
     workspace = real.discover()
     group_id: str = workspace.groups[0].group_id
     plan: ExecutionPlan = real.plan_auto((group_id,), _PRESET)
-    service = _Service(tmp_path, discovered=workspace, plan=plan, subscriptions=_Subscriptions())
+    service = _Service(tmp_path, discovered=workspace, plan=plan)
     return service, WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME), group_id
 
 
@@ -1558,7 +1441,7 @@ def _real_service(
     tmp_path: Path,
     *,
     acquisition: AcquisitionService | None = None,
-    subscriptions: SubscriptionService | None = None,
+    polish_wait_h: int = 0,
 ) -> AppService:
     def unused(
         run_root: Path,
@@ -1571,14 +1454,13 @@ def _real_service(
     return AppService(
         workspace_root=tmp_path,
         settings=Settings(_env_file=None),
-        user_settings=UserSettings(),
+        user_settings=UserSettings(subscription_polish_wait_h=polish_wait_h),
         inspector=WorkspaceInspector(DefaultMediaProbe()),
         handler_factory=unused,
         preset_loader=default_preset_file,
         preset_saver=lambda value: None,
         settings_saver=lambda value: None,
         acquisition=acquisition,
-        subscriptions=subscriptions,
     )
 
 
@@ -2448,28 +2330,6 @@ def test_active_deletion_excludes_processing_and_expires_scope_after_a_survivor_
         service.close()
 
 
-def _subscription_library(tmp_path: Path) -> tuple[AppService, WatchStateStore, _TorrentNetwork, Subscription]:
-    network: _TorrentNetwork = _TorrentNetwork()
-    acquisition: AcquisitionService = AcquisitionService(
-        source=network,
-        client=cast("TorrentClient", network),
-        workspace_root=tmp_path,
-        parse_name=parse_release_name,
-    )
-    subscriptions: SubscriptionService = SubscriptionService(
-        store=SubscriptionStore(tmp_path / "subscriptions.json"),
-        acquisition=acquisition,
-        sleep=lambda _: None,
-    )
-    subscription: Subscription = subscriptions.add("Neko to Ryuu", "SubsPlease", query="neko", first_episode=Decimal(9))
-    return (
-        _real_service(tmp_path, acquisition=acquisition, subscriptions=subscriptions),
-        WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME),
-        network,
-        subscription,
-    )
-
-
 def _started(owner: AutomationOwner) -> str:
     preview: ControlResponse = owner.handle(
         _request("preview", {"client_id": _CLIENT, "preset_id": "preview"}, command_id="preview-1")
@@ -2525,57 +2385,6 @@ def test_cancellation_never_reaches_the_run_when_acceptance_cannot_be_saved(
         service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
-    assert not thread.is_alive()
-
-
-@pytest.mark.parametrize("fail_confirmation", [False, True])
-def test_subscription_changes_survive_the_gap_between_intent_and_confirmation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, fail_confirmation: bool
-) -> None:
-    service, store, _, subscription = _subscription_library(tmp_path)
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    save: Callable[[WatchState], None] = store.save
-    command: ControlRequest = _request("subscription_disable", {"subscription_id": subscription.subscription_id})
-
-    def fail_save(state: WatchState) -> None:
-        pending: bool = any(receipt.pending is not None for receipt in state.command_receipts)
-        if pending != fail_confirmation:
-            raise OSError("Injected write failure")
-        save(state)
-
-    try:
-        with monkeypatch.context() as failure:
-            failure.setattr(store, "save", fail_save)
-            answer: ControlResponse = owner.handle(command)
-        assert not answer.ok
-        assert service.subscriptions is not None
-        assert service.subscriptions.list()[0].enabled is not fail_confirmation
-        assert bool(store.load().command_receipts) is fail_confirmation
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-    assert not thread.is_alive()
-    restored: AutomationOwner = _owner(service, store)
-    updates: list[Mapping[str, object]] = []
-
-    def record_update(frame: Mapping[str, object], terminal: bool) -> None:
-        del terminal
-        updates.append(frame)
-
-    restored.attach_broadcast(record_update)
-    thread = _serving(restored)
-    try:
-        assert restored.handle(command).ok
-        assert restored.handle(command).ok
-        assert service.subscriptions.list()[0].enabled is False
-        assert any(frame.get("event") == "state_changed" for frame in updates)
-        assert service.subscriptions.list()[0].generation == subscription.generation + 1
-        assert all(receipt.pending is None for receipt in store.load().command_receipts)
-    finally:
-        restored.request_shutdown()
-        thread.join(_TIMEOUT_S)
-        service.close()
     assert not thread.is_alive()
 
 
@@ -3068,6 +2877,18 @@ def test_a_terminal_run_fault_is_recorded_as_a_failed_request(tmp_path: Path, fa
 
 def test_status_reports_the_instance_the_switch_and_the_subscription_counts(tmp_path: Path) -> None:
     service, store, _ = _library(tmp_path)
+    active: SubscriptionRecord = SubscriptionRecord(
+        subscription_id="a",
+        anilist_id=1,
+        title="Series",
+        subscribed_at=_MOMENT.isoformat(),
+        cut=0,
+        merged_from=(),
+    )
+    paused: SubscriptionRecord = replace(
+        active, subscription_id="b", anilist_id=2, paused=True, pause_reason=PauseReason.USER
+    )
+    store.save(replace(store.load(), subscriptions=(active, paused)))
     owner: AutomationOwner = _owner(service, store)
     thread: threading.Thread = _serving(owner)
     try:
@@ -3079,7 +2900,7 @@ def test_status_reports_the_instance_the_switch_and_the_subscription_counts(tmp_
 
     assert answer.result["instance_id"] == _INSTANCE
     assert answer.result["auto_enabled"] is True
-    assert answer.result["subscriptions"] == {"enabled": 1, "disabled": 0}
+    assert answer.result["subscriptions"] == {"enabled": 1, "disabled": 1}
 
 
 def test_a_paused_request_keeps_its_intent_without_marking_manual_work_complete(tmp_path: Path) -> None:
@@ -3140,169 +2961,6 @@ def test_reloading_settings_reaches_the_facade(tmp_path: Path) -> None:
 
     assert answer.ok
     assert service.reloads == 1
-
-
-def test_a_subscription_check_runs_off_the_owner_thread(tmp_path: Path) -> None:
-    service, store, _ = _library(tmp_path)
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    try:
-        answer: ControlResponse = owner.handle(_request("subscriptions_check", command_id="check-1"))
-    finally:
-        owner.request_shutdown()
-        thread.join(timeout=_TIMEOUT_S)
-
-    assert answer.ok
-    assert {key: answer.result[key] for key in ("checked", "downloaded", "problems")} == {
-        "checked": 1,
-        "downloaded": 2,
-        "problems": 0,
-    }
-    outcomes: object = answer.result["outcomes"]
-    assert isinstance(outcomes, list)
-    assert len(outcomes) == 1
-    assert service.subscriptions is not None
-    assert service.subscriptions.checks == 1
-
-
-@pytest.mark.parametrize("phase", ["search", "add"])
-@pytest.mark.parametrize("action", ["disable", "remove", "shutdown", "pause"])
-def test_subscription_control_blocks_late_adds_and_keeps_admitted_transfers(  # noqa: PLR0915
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    phase: str,
-    action: str,
-) -> None:
-    service, store, network, subscription = _subscription_library(tmp_path)
-    entered: threading.Event = threading.Event()
-    release: threading.Event = threading.Event()
-    saves: list[str] = []
-    save: Callable[[WatchState], None] = store.save
-
-    def saving(state: WatchState) -> None:
-        saves.append(threading.current_thread().name)
-        save(state)
-
-    def blocked() -> None:
-        if phase == "add":
-            persisted: WatchState = store.load()
-            assert len(persisted.acquisitions) == 1
-            assert persisted.acquisitions[0].state is AcquisitionState.PENDING_SEND
-            assert persisted.acquisitions[0].info_hash == "9"
-        entered.set()
-        assert release.wait(_TIMEOUT_S)
-
-    monkeypatch.setattr(store, "save", saving)
-    if phase == "search":
-        network.before_search = blocked
-    else:
-        network.before_add = blocked
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    answers: list[ControlResponse] = []
-    checking: threading.Thread = threading.Thread(
-        target=lambda: answers.append(owner.handle(_request("subscriptions_check", command_id="check")))
-    )
-    checking.start()
-    try:
-        assert entered.wait(_TIMEOUT_S)
-        kind: str = {"shutdown": "shutdown", "pause": "set_auto"}.get(action, f"subscription_{action}")
-        payload: dict[str, object] = (
-            {"enabled": False} if action == "pause" else {"subscription_id": subscription.subscription_id}
-        )
-        changed: ControlResponse = owner.handle(_request(kind, payload))
-        assert changed.ok
-        if action == "shutdown":
-            assert thread.is_alive()
-    finally:
-        release.set()
-        checking.join(_TIMEOUT_S)
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-        service.close()
-
-    assert not thread.is_alive()
-    assert not checking.is_alive()
-    assert len(answers) == 1
-    assert answers[0].ok
-    assert network.added == (["9"] if phase == "add" else [])
-    assert set(saves) == {"anishift-owner"}
-    acquisitions: tuple[AcquisitionConfirmation, ...] = store.load().acquisitions
-    assert len(acquisitions) == (1 if phase == "add" else 0)
-    if acquisitions:
-        assert acquisitions[0].state is AcquisitionState.ACCEPTED
-    if action == "pause":
-        assert store.load().policy.auto_enabled is False
-        assert all(item.state == "stoppedDL" for item in network.tracked.values())
-        assert network.started == []
-
-
-@pytest.mark.parametrize("remove", [False, True])
-@pytest.mark.parametrize("retained", [False, True])
-def test_a_restart_reconciles_a_lost_add_response_without_adding_again(
-    tmp_path: Path, *, remove: bool, retained: bool
-) -> None:
-    service, store, network, subscription = _subscription_library(tmp_path)
-    network.releases = network.releases[:1]
-    network.lose_response = True
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    try:
-        answer: ControlResponse = owner.handle(_request("subscriptions_check", command_id="check"))
-        assert answer.ok
-        assert answer.result["problems"] == 1
-        if remove:
-            assert owner.handle(_request("subscription_remove", {"subscription_id": subscription.subscription_id})).ok
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-    assert not thread.is_alive()
-    uncertain: tuple[AcquisitionConfirmation, ...] = store.load().acquisitions
-    assert len(uncertain) == 1
-    assert uncertain[0].state is AcquisitionState.UNCERTAIN
-    network.lose_response = False
-    if not retained:
-        network.tracked.clear()
-        network.releases = (replace(network.releases[0], info_hash="replacement-9"),)
-    owner = _owner(service, store)
-    thread = _serving(owner)
-    try:
-        answer = owner.handle(_request("subscriptions_check", command_id="recheck"))
-        assert answer.ok
-        assert answer.result["downloaded"] == 0
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-        service.close()
-
-    assert not thread.is_alive()
-    assert network.added == ["9"]
-    confirmed: tuple[AcquisitionConfirmation, ...] = store.load().acquisitions
-    assert confirmed[0].operation_id == uncertain[0].operation_id
-    assert confirmed[0].state is (AcquisitionState.ACCEPTED if retained else AcquisitionState.UNCERTAIN)
-
-
-def test_a_failed_acquisition_journal_save_prevents_the_add(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    service, store, network, _ = _subscription_library(tmp_path)
-    owner: AutomationOwner = _owner(service, store)
-
-    def refuse(state: WatchState) -> None:
-        del state
-        raise OSError("no disk")
-
-    monkeypatch.setattr(store, "save", refuse)
-    thread: threading.Thread = _serving(owner)
-    try:
-        answer: ControlResponse = owner.handle(_request("subscriptions_check", command_id="check"))
-        assert not answer.ok
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-        service.close()
-
-    assert not thread.is_alive()
-    assert not network.added
-    assert not store.load().acquisitions
 
 
 def test_accepted_transfer_waits_for_file_completion_then_enters_auto_once(
@@ -3642,6 +3300,39 @@ def test_auto_off_keeps_the_library_current_and_auto_on_admits_without_another_f
     assert len(service.submitted) == 1
 
 
+def test_the_status_reports_the_library_as_loading_until_the_first_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(watch_module, "QUIET_S", 0.02)
+    monkeypatch.setattr(watch_module, "SCAN_INTERVAL_S", 0.01)
+    service, store, _group_id = _library(tmp_path)
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=False)))
+    owner: AutomationOwner = _owner(service, store, scan_interval_s=0.01)
+    loaded: list[object] = []
+    observed: threading.Event = threading.Event()
+
+    def broadcast(frame: Mapping[str, object], terminal: bool) -> None:
+        del terminal
+        payload: object = frame.get("payload")
+        if isinstance(payload, Mapping) and payload.get("library_groups") == 1:
+            loaded.append(payload.get("library_loading"))
+            observed.set()
+
+    owner.attach_broadcast(broadcast)
+    before: object = owner._status()["library_loading"]
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+        assert observed.wait(_TIMEOUT_S)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert not thread.is_alive()
+    assert before is True
+    assert loaded[0] is False
+
+
 def test_automatic_work_plans_with_the_persisted_recipe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(watch_module, "QUIET_S", 0.02)
     monkeypatch.setattr(watch_module, "SCAN_INTERVAL_S", 0.01)
@@ -3756,7 +3447,7 @@ def test_an_image_arriving_in_cover_invalidates_the_preview_of_its_own_group(tmp
     workspace = real.discover()
     assert [group.source.stem for group in workspace.groups] == ["Episode"]
     plan: ExecutionPlan = real.plan_auto((workspace.groups[0].group_id,), _PRESET)
-    service = _Service(tmp_path, discovered=workspace, plan=plan, subscriptions=_Subscriptions())
+    service = _Service(tmp_path, discovered=workspace, plan=plan)
     store: WatchStateStore = WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME)
     owner: AutomationOwner = _owner(service, store)
     thread: threading.Thread = _serving(owner)
@@ -3816,9 +3507,24 @@ def test_new_sidecars_and_changed_products_invalidate_the_affected_preview(tmp_p
 
 def _await(condition: Callable[[], bool]) -> bool:
     deadline: float = time.monotonic() + _TIMEOUT_S
-    while not condition() and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        if condition():
+            return True
         time.sleep(0.01)
     return condition()
+
+
+def _unlink_when_released(path: Path) -> None:
+    deadline: float = time.monotonic() + _TIMEOUT_S
+    while True:
+        try:
+            path.unlink()
+        except PermissionError as problem:
+            if getattr(problem, "winerror", None) != _SHARING_VIOLATION or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
+        else:
+            return
 
 
 def _settled_starts(service: _Service, expected: int) -> int:
@@ -3864,7 +3570,7 @@ def _two_sources(tmp_path: Path) -> tuple[_Service, WatchStateStore, dict[str, s
     workspace = real.discover()
     groups: dict[str, str] = {group.source.stem: group.group_id for group in workspace.groups}
     plan: ExecutionPlan = real.plan_auto((groups["Film"],), _PRESET)
-    service = _Service(tmp_path, discovered=workspace, plan=plan, subscriptions=_Subscriptions())
+    service = _Service(tmp_path, discovered=workspace, plan=plan)
     return service, WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME), groups
 
 
@@ -4018,6 +3724,32 @@ def test_a_stopped_transfer_reserves_flat_names_before_its_content_is_started(tm
     assert running.state is AcquisitionState.ACCEPTED
 
 
+@pytest.mark.parametrize(("subscription", "automatic"), [(None, False), ("a", True)])
+def test_a_downloaded_episode_row_carries_the_origin_of_its_order(
+    tmp_path: Path, subscription: str | None, *, automatic: bool
+) -> None:
+    service, store, _ = _library(tmp_path)
+    item: AcquisitionConfirmation = AcquisitionConfirmation(
+        "operation-9",
+        "9",
+        "",
+        ("09.mkv",),
+        AcquisitionState.COMPLETE,
+        RequestOrigin.USER,
+        subscription,
+        "9",
+        _MOMENT.isoformat(),
+        file_layout=((0, "09.mkv", 4),),
+        complete_files=("09.mkv",),
+    )
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=False), acquisitions=(item,)))
+    owner: AutomationOwner = _owner(service, store)
+
+    rows: list[dict[str, object]] = list(owner._download_materials(item).values())
+
+    assert [(row["stage"], row["reason"], row["automatic"]) for row in rows] == [("waiting", "preparing", automatic)]
+
+
 def test_a_transfer_whose_names_are_not_reserved_yet_defers_the_resume_a_client_asked_for(tmp_path: Path) -> None:
     service, store, _ = _library(tmp_path)
     network: _TorrentNetwork = _TorrentNetwork()
@@ -4055,94 +3787,6 @@ def test_a_transfer_whose_names_are_not_reserved_yet_defers_the_resume_a_client_
     assert network.actions == [("9", "resume")]
     assert settled.action_pending is False
     assert settled.problem is None
-
-
-def test_the_stored_range_of_a_subscription_is_applied_once_for_a_repeated_command(tmp_path: Path) -> None:
-    service, store, _ = _library(tmp_path)
-    subscriptions: _Subscriptions = cast("_Subscriptions", service.subscriptions)
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    command: ControlRequest = _request(
-        "subscription_range",
-        {"subscription_id": "a", "selected": ["3", "8"], "future_from": "12"},
-    )
-    try:
-        answer: ControlResponse = owner.handle(command)
-        again: ControlResponse = owner.handle(command)
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-    assert not thread.is_alive()
-    assert answer.ok, answer.message
-    assert again.result == answer.result
-    assert subscriptions.stored_ranges == [((Decimal(3), Decimal(8)), Decimal(12))]
-    assert all(item.pending is None for item in store.load().command_receipts)
-
-
-def test_a_repeat_command_orders_the_named_episodes_again(tmp_path: Path) -> None:
-    service, store, _ = _library(tmp_path)
-    subscriptions: _Subscriptions = cast("_Subscriptions", service.subscriptions)
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    try:
-        answer: ControlResponse = owner.handle(
-            _request("subscription_repeat", {"subscription_id": "a", "episodes": ["7.5", "9"]})
-        )
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-    assert not thread.is_alive()
-    assert answer.ok, answer.message
-    assert subscriptions.ordered_again == [(Decimal("7.5"), Decimal(9))]
-    assert all(item.pending is None for item in store.load().command_receipts)
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"subscription_id": "a", "selected": ["nine"]},
-        {"subscription_id": "a", "selected": ["0"]},
-        {"subscription_id": "a", "selected": "3"},
-        {"subscription_id": "a", "selected": ["3"], "future_from": "later"},
-        {"subscription_id": "unknown", "selected": ["3"]},
-        {"selected": ["3"]},
-    ],
-)
-def test_a_range_command_without_valid_numbers_of_a_followed_subscription_is_refused(
-    tmp_path: Path,
-    payload: dict[str, object],
-) -> None:
-    service, store, _ = _library(tmp_path)
-    subscriptions: _Subscriptions = cast("_Subscriptions", service.subscriptions)
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    try:
-        answer: ControlResponse = owner.handle(_request("subscription_range", payload))
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-    assert not thread.is_alive()
-    assert not answer.ok
-    assert subscriptions.stored_ranges == []
-    assert store.load().command_receipts == ()
-
-
-@pytest.mark.parametrize("episodes", [[], ["nine"], ["-2"]])
-def test_a_repeat_command_without_valid_episode_numbers_is_refused(tmp_path: Path, episodes: list[str]) -> None:
-    service, store, _ = _library(tmp_path)
-    subscriptions: _Subscriptions = cast("_Subscriptions", service.subscriptions)
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    try:
-        answer: ControlResponse = owner.handle(
-            _request("subscription_repeat", {"subscription_id": "a", "episodes": episodes})
-        )
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-    assert not thread.is_alive()
-    assert not answer.ok
-    assert subscriptions.ordered_again == []
 
 
 def test_the_status_names_the_library_group_each_transfer_owns(tmp_path: Path) -> None:
@@ -4216,6 +3860,7 @@ def test_material_identity_survives_bundle_metadata_preparation_processing_and_r
                 "downloading": 1 + int(bundle),
                 "processing": 0,
                 "waiting": 0,
+                "attention": 0,
             }
             assert _await(lambda: all(item["content_started"] for item in _material_rows(session)))
             write_media_source(tmp_path / "09.mkv")
@@ -4290,6 +3935,46 @@ def test_admitted_download_without_metadata_uses_retained_release_name(tmp_path:
     assert rows[0]["name"] == (title or "Materiał")
     assert rows[0]["progress"] is None
     assert rows[0]["acquisition_state"] == "pending_send"
+
+
+@pytest.mark.parametrize(
+    ("files", "file_name", "release", "expected"),
+    [
+        (((0, "Neko/Neko - 09.mkv", 4), (1, "Neko/Neko - 09.ass", 4)), None, "", "Neko - 09.mkv"),
+        ((), "Neko - 09.mkv", "[Group] Neko", "Neko - 09.mkv"),
+        ((), None, "[Group] Neko - 09 (1080p)", "[Group] Neko - 09 (1080p)"),
+        ((), None, "", "Materiał"),
+    ],
+)
+def test_a_selective_download_names_its_episode_file_then_its_release(
+    tmp_path: Path, files: tuple[FileReservation, ...], file_name: str | None, release: str, expected: str
+) -> None:
+    service, store, _ = _library(tmp_path)
+    choice: EpisodeChoice = EpisodeChoice(
+        anilist_id=1,
+        number=9,
+        reference=TorrentioReference("c" * 40, None, file_name, release),
+        target={"local_episode": 9},
+        verdict=IdentityVerdict.MATCH,
+        reason="Specific work title and local episode match",
+    )
+    assignment: EpisodeAssignment = EpisodeAssignment(
+        "admission",
+        _MOMENT.isoformat(),
+        AdmissionSource.MANUAL,
+        choice,
+        file_map="map" if files else None,
+        files=files,
+    )
+    confirmation: AcquisitionConfirmation = replace(
+        _accepted_transfer("c" * 40, origin=RequestOrigin.USER), assignments=(assignment,)
+    )
+    store.save(WatchState(acquisitions=(confirmation,)))
+    owner: AutomationOwner = _owner(service, store)
+
+    rows: list[dict[str, object]] = list(owner._download_materials(confirmation).values())
+
+    assert [row["name"] for row in rows] == [expected]
 
 
 def _projection_request(tmp_path: Path, state: RequestState) -> tuple[AutomationOwner, Path, tuple[str, ...]]:
@@ -4395,72 +4080,6 @@ def test_processing_projection_retries_an_unavailable_terminal_checkpoint(
         owner._pool.shutdown(wait=True)
 
 
-def test_subscription_list_keeps_valid_rows_when_one_saved_airing_is_malformed(tmp_path: Path) -> None:
-    service, store, network, subscription = _subscription_library(tmp_path)
-    subscriptions: SubscriptionStore = SubscriptionStore(tmp_path / "subscriptions.json")
-    subscriptions.save(
-        (
-            replace(subscription, episodes=(EpisodeOrder(Decimal(9), airing_at="not-a-date"),)),
-            replace(
-                subscription,
-                subscription_id="valid",
-                series="Valid series",
-                episodes=(EpisodeOrder(Decimal(9), airing_at="2030-01-01T21:00:00+00:00"),),
-            ),
-        )
-    )
-    before: bytes = (tmp_path / "subscriptions.json").read_bytes()
-    store.save(WatchState(policy=AutomationPolicy(auto_enabled=False)))
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    try:
-        response: ControlResponse = owner.handle(_request("subscriptions_list"))
-        assert response.ok
-        rows: list[dict[str, object]] = cast("list[dict[str, object]]", response.result["subscriptions"])
-        assert {row["subscription_id"]: row["airing_at"] for row in rows} == {
-            subscription.subscription_id: None,
-            "valid": "2030-01-01T21:00:00+00:00",
-        }
-        assert cast("list[dict[str, object]]", rows[0]["episodes"])[0]["airing_at"] == "not-a-date"
-        assert (tmp_path / "subscriptions.json").read_bytes() == before
-        assert network.added == []
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-        service.close()
-
-
-def test_subscription_list_projects_the_nearest_selected_unfinished_airing(tmp_path: Path) -> None:
-    service, store, network, subscription = _subscription_library(tmp_path)
-    SubscriptionStore(tmp_path / "subscriptions.json").save(
-        (
-            replace(
-                subscription,
-                episodes=(
-                    EpisodeOrder(Decimal(1), airing_at="2030-01-01T18:00:00+00:00", selected=False),
-                    EpisodeOrder(Decimal(2), airing_at="2030-01-01T19:00:00+00:00", state=EpisodeState.COMPLETE),
-                    EpisodeOrder(Decimal(3), airing_at="2030-01-01T21:00:00+00:00"),
-                    EpisodeOrder(Decimal(4), airing_at="2030-01-01T22:00:00+02:00"),
-                ),
-            ),
-        )
-    )
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    try:
-        response: ControlResponse = owner.handle(_request("subscriptions_list"))
-        assert response.ok
-        assert (
-            cast("list[dict[str, object]]", response.result["subscriptions"])[0]["airing_at"]
-            == "2030-01-01T22:00:00+02:00"
-        )
-        assert network.added == []
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-        service.close()
-
-
 @pytest.mark.integration
 def test_library_retry_after_refused_deletion_only_relocates(  # noqa: PLR0915
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -4506,18 +4125,21 @@ def test_library_retry_after_refused_deletion_only_relocates(  # noqa: PLR0915
         session.delete_set(preview)
         assert _await(lambda: len(recycled) == 1)
         controller: StateController = StateController(session, lambda: None)
+        controller.show_processing()
         try:
             assert _await(lambda: controller._connected)
-            assert "Brak aktywnego przetwarzania" in controller.render(120, 40).plain
+            controller.render(120, 40)
+            assert all(item.get("attention") for item in controller._processing_rows())
             controller.handle_key("right")
             assert _await(lambda: not controller._busy)
             controller.handle_key("home")
             frame: str = controller.render(120, 40).plain
             assert "P ponów pozostałe pliki" not in frame
-            assert "P ponów przenoszenie do biblioteki" in frame
+            assert "przenoszenie" not in frame
+            assert _await(lambda: bool(links))
             attempts: int = len(links)
             fail = False
-            controller.handle_key("text:p")
+            session.command("ready_retry")
             assert _await((tmp_path / "ready/Book.m4a").is_file)
             assert len(links) > attempts
             assert recycled == ["01.pl.txt"]
@@ -4570,93 +4192,6 @@ class _FailedTts:
         return
 
 
-@pytest.mark.integration
-@pytest.mark.parametrize("tts_failed", [False, True])
-def test_subscription_card_uses_product_completion_and_keeps_download_memory_after_restart(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tts_failed: bool
-) -> None:
-    monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", "isolated-test-token")
-    network: _TorrentNetwork = _TorrentNetwork()
-    acquisition: AcquisitionService = AcquisitionService(
-        source=network,
-        client=cast("TorrentClient", network),
-        workspace_root=tmp_path,
-        parse_name=parse_release_name,
-    )
-    subscriptions: SubscriptionService = SubscriptionService(
-        store=SubscriptionStore(tmp_path / ".subscriptions.json"),
-        acquisition=acquisition,
-        clock=lambda: _MOMENT,
-    )
-    subscription: Subscription = subscriptions.add("Neko to Ryuu", "SubsPlease", query="neko", first_episode=Decimal(9))
-    subscriptions.set_range(subscription.subscription_id, selected=(Decimal(9),), future_from=None)
-    write_media_source(tmp_path / "09.mkv")
-    files: tuple[str, ...] = ("09.srt", "09.mkv")
-    owned: AcquisitionConfirmation = replace(
-        _owned(files, files, RequestOrigin.USER, 0, directory=""),
-        state=AcquisitionState.COMPLETE,
-        subscription_id=subscription.subscription_id,
-        file_layout=tuple((index, name, (tmp_path / name).stat().st_size) for index, name in enumerate(files)),
-    )
-    subscriptions.reconcile_sources((owned,))
-    store: WatchStateStore = WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME)
-    store.save(WatchState(acquisitions=(owned,)))
-    tts: _FailedTts = _FailedTts()
-    service: AppService = _processing_service(
-        tmp_path,
-        FakeTranslationService(),
-        inspector=WorkspaceInspector(FakeMediaProbe()),
-        acquisition=acquisition,
-        subscriptions=subscriptions,
-        tts=tts,
-    )
-    with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, store):
-        group_id: str = session.discover().groups[0].group_id
-        session.reserve((group_id,))
-        session.command("set_auto", {"enabled": True})
-        products: frozenset[ProductKind] = frozenset(
-            {ProductKind.SPOKEN_PL, ProductKind.NARRATION_AUDIO} if tts_failed else {ProductKind.SPOKEN_PL}
-        )
-        preview: PlanPreview = session.plan_manual((GroupIntent(group_id, RunMode.MANUAL, ProductIntent(products)),))
-        result: RunResult = session.execute(preview, CollectingRunSink())
-        assert result.succeeded is not tts_failed
-        assert tts.calls == int(tts_failed)
-        session.command("set_auto", {"enabled": False})
-    if not tts_failed:
-        for product in store.load().products:
-            (tmp_path / product.path).unlink()
-    restarted: AppService = _processing_service(
-        tmp_path,
-        FakeTranslationService(),
-        inspector=WorkspaceInspector(FakeMediaProbe()),
-        acquisition=acquisition,
-        subscriptions=subscriptions,
-        tts=tts,
-    )
-    with closing(restarted), _panel_owner(restarted, tmp_path, ready=True) as (session, store):
-        controller: StateController = StateController(session, lambda: None)
-        try:
-            assert _await(lambda: controller._connected)
-            controller.handle_key("left")
-            controller.handle_key("enter")
-            assert _await(lambda: not controller._busy)
-            frame: str = controller.render(120, 40).plain
-            assert ("● 9 · pobrano · błąd przetwarzania" if tts_failed else "○ 9 · ukończono produkty") in frame
-            controller.handle_key("text:a")
-            controller.handle_key("enter")
-            assert _await(lambda: not controller._busy)
-            current: Subscription = subscriptions.list()[0]
-            assert current.episodes[0].acquisition_id == owned.operation_id
-            assert current.episodes[0].state.value == "complete"
-            assert current.repeats == ()
-            assert network.added == []
-            assert len(store.load().requests) == 1
-            assert len(_material_rows(session)) == int(tts_failed)
-        finally:
-            controller.close()
-            controller._thread.join(_TIMEOUT_S)
-
-
 def _relocating_owner(tmp_path: Path, service: AppService, store: WatchStateStore) -> AutomationOwner:
     return AutomationOwner(
         service,
@@ -4699,6 +4234,453 @@ def test_a_finished_group_relocates_its_product_and_leaves_the_source_its_transf
     assert recorded.sources == ()
     assert (audiobook / "Book.txt").read_text(encoding="utf-8") == "Zażółć gęślą jaźń."
     assert not (tmp_path / "ready" / "Book.txt").exists()
+
+
+def test_relocation_retries_a_single_failure_without_any_active_transfer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    _prepared_audiobook(tmp_path)
+    folder: Path = tmp_path / "audiobook"
+    write_text_source(folder / "Other.txt", "Text")
+    (folder / "Other.m4a").write_bytes(b"recording")
+    journal: ReadyStore = ReadyStore(tmp_path / "control" / "relocations", tmp_path)
+    group: SourceGroup = next(item for item in discover_groups(tmp_path).groups if item.stem == "Other")
+    assert journal.prepare(group, (folder / "Other.m4a",)) is not None
+    execute: Callable[[ReadyStore, ReadyMove], None] = ReadyStore.execute
+    failed: list[str] = []
+
+    def transient(store: ReadyStore, move: ReadyMove) -> None:
+        if not failed:
+            failed.append(move.group_id)
+            raise OSError(13, "Temporary relocation failure")
+        execute(store, move)
+
+    monkeypatch.setattr(ReadyStore, "execute", transient)
+    service: AppService = _real_service(tmp_path)
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    owner: AutomationOwner = _relocating_owner(tmp_path, service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _await(lambda: len(owner.state.ready_groups) == 2)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert len(failed) == 1
+    assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("deferred", [False, True])
+def test_relocation_counts_only_real_failures_and_reports_exhaustion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, deferred: bool
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    _prepared_audiobook(tmp_path)
+    service: AppService = _real_service(tmp_path)
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    owner: AutomationOwner = _relocating_owner(tmp_path, service, store)
+    journal: ReadyStore = cast("ReadyStore", owner._ready_store)
+    execute: Callable[[ReadyMove], None] = journal.execute
+    defer: Callable[[ReadyMove, tuple[str, ...]], ReadyMove] = journal.defer
+    calls: list[str] = []
+
+    def held(current: ReadyMove, names: tuple[str, ...]) -> ReadyMove:
+        if len(calls) <= automation_module._FINALIZE_ATTEMPTS + 2:
+            return defer(current, (current.files[0].source,))
+        return defer(current, names)
+
+    def attempt(current: ReadyMove) -> None:
+        calls.append(current.group_id)
+        if not deferred:
+            raise OSError(13, "Relocation unavailable")
+        execute(current)
+
+    monkeypatch.setattr(journal, "execute", attempt)
+    if deferred:
+        monkeypatch.setattr(journal, "defer", held)
+    thread: threading.Thread = _serving(owner)
+    try:
+        if deferred:
+            for count in range(1, automation_module._FINALIZE_ATTEMPTS + 4):
+
+                def settled(expected: int = count) -> bool:
+                    return len(calls) >= expected and not owner._ready_inflight
+
+                assert _await(settled)
+                assert owner.handle(_request("ready_retry")).ok
+            assert _await(lambda: bool(owner.state.ready_groups) and not owner.state.ready_groups[0].pending_sources)
+            assert len(calls) > automation_module._FINALIZE_ATTEMPTS + 2
+        else:
+            assert _await(lambda: len(calls) == automation_module._FINALIZE_ATTEMPTS)
+            assert _await(lambda: bool(owner._ready_problems))
+            response: ControlResponse = owner.handle(_request("status"))
+            relocations: list[dict[str, object]] = cast("list[dict[str, object]]", response.result["relocations"])
+            assert any("Relocation unavailable" in str(item["problem"]) for item in relocations)
+            time.sleep(0.1)
+            assert len(calls) == automation_module._FINALIZE_ATTEMPTS
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+
+
+def _translated_pair(tmp_path: Path, *, ready: bool) -> str:
+    for number in (1, 2):
+        write_text_source(_library_dir(tmp_path) / f"{number:02d}.txt", f"Episode {number}")
+    service: AppService = _processing_service(tmp_path, FakeTranslationService())
+    with closing(service), _panel_owner(service, tmp_path, ready=ready) as (session, store):
+        groups: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
+        session.reserve(groups)
+        preview: PlanPreview = session.plan_manual(tuple(_translation_intent(group_id) for group_id in groups))
+        result: RunResult = session.execute(preview, CollectingRunSink())
+        assert result.succeeded
+        assert _await(lambda: len(store.load().ready_groups) == (2 if ready else 0))
+    return result.run_id
+
+
+def _translation_intent(group_id: str) -> GroupIntent:
+    return GroupIntent(
+        group_id,
+        RunMode.MANUAL,
+        ProductIntent(frozenset({ProductKind.FULL_PL})),
+        target=WorkflowTarget.TRANSLATE,
+    )
+
+
+def _recovered_owner(tmp_path: Path, service: AppService) -> tuple[AutomationOwner, threading.Thread]:
+    owner: AutomationOwner = AutomationOwner(
+        service,
+        WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME),
+        instance_id=_INSTANCE,
+        clock=lambda: _MOMENT,
+        ready_store=ReadyStore(relocation_journal_dir(tmp_path / ".control"), tmp_path),
+    )
+    thread: threading.Thread = _serving(owner)
+    owner.files_changed(DirectoryChange(reconcile=True, reason="startup"))
+    assert _await(lambda: owner._on_owner(lambda: owner._recovery_started and not owner._recovering))
+    return owner, thread
+
+
+def _workspace_files(root: Path) -> dict[Path, bytes]:
+    return {
+        path.relative_to(root): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file() and ".control" not in path.relative_to(root).parts
+    }
+
+
+@pytest.mark.integration
+def test_a_changed_source_in_ready_leaves_its_finished_neighbour_free_to_start(tmp_path: Path) -> None:
+    run_id: str = _translated_pair(tmp_path, ready=True)
+    (tmp_path / READY_DIRECTORY / "01.txt").write_text("Replaced episode", encoding="utf-8")
+    store: WatchStateStore = WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME)
+    journal: bytes = store.run_path(run_id).read_bytes()
+    files: dict[Path, bytes] = _workspace_files(tmp_path)
+    kept: str = next(group.group_id for group in store.load().ready_groups if group.stem == "02")
+    service: AppService = _processing_service(tmp_path, FakeTranslationService())
+    owner, thread = _recovered_owner(tmp_path, service)
+    try:
+        assert owner.handle(_request("status")).result["relocations"] == []
+        assert store.run_path(run_id).read_bytes() == journal
+        assert _workspace_files(tmp_path) == files
+        assert owner.handle(_request("reserve", {"client_id": _CLIENT, "group_ids": [kept]})).ok
+        preview: ControlResponse = owner.handle(
+            _request(
+                "preview",
+                {
+                    "client_id": _CLIENT,
+                    "source_selection": "manual",
+                    "group_ids": [kept],
+                    "intents": [encode_view(_translation_intent(kept))],
+                },
+                command_id="preview-1",
+            )
+        )
+        assert preview.ok, preview.message
+        started: ControlResponse = owner.handle(
+            _request("start", {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]}, command_id="start-1")
+        )
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+    assert started.reason != RefusalReason.GROUP_RELOCATING.value
+    assert started.ok, started.message
+
+
+@pytest.mark.integration
+def test_retrying_relocation_clears_a_stale_problem_of_a_finished_set(tmp_path: Path) -> None:
+    _translated_pair(tmp_path, ready=True)
+    (tmp_path / READY_DIRECTORY / "01.txt").write_text("Replaced episode", encoding="utf-8")
+    groups: tuple[str, ...] = tuple(
+        group.group_id for group in WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME).load().ready_groups
+    )
+    service: AppService = _processing_service(tmp_path, FakeTranslationService())
+    owner, thread = _recovered_owner(tmp_path, service)
+    try:
+        owner._on_owner(lambda: owner._ready_problems.update(dict.fromkeys(groups, "stale")))
+        assert owner.handle(_request("ready_retry")).ok
+        problems: dict[str, str] = owner._on_owner(lambda: dict(owner._ready_problems))
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+    assert problems == {}
+
+
+@pytest.mark.integration
+def test_a_changed_source_stays_in_place_while_its_finished_neighbour_reaches_ready(tmp_path: Path) -> None:
+    _translated_pair(tmp_path, ready=False)
+    (_library_dir(tmp_path) / "01.txt").write_text("Replaced episode", encoding="utf-8")
+    service: AppService = _processing_service(tmp_path, FakeTranslationService())
+    owner, thread = _recovered_owner(tmp_path, service)
+    try:
+        assert _await(lambda: len(owner.state.ready_groups) == 1)
+        relocations: object = owner.handle(_request("status")).result["relocations"]
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+    assert relocations == []
+    recorded: ReadyGroup = owner.state.ready_groups[0]
+    assert recorded.stem == "02"
+    assert recorded.sources == ("ready/02.txt",)
+    assert (_library_dir(tmp_path) / "01.txt").read_text(encoding="utf-8") == "Replaced episode"
+    assert not (tmp_path / READY_DIRECTORY / "01.txt").exists()
+
+
+@pytest.mark.integration
+def test_preparing_a_finished_run_again_keeps_the_problem_of_its_pending_relocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id: str = _translated_pair(tmp_path, ready=False)
+
+    def interrupted(store: ReadyStore, move: ReadyMove) -> None:
+        del store, move
+        raise OSError(13, "Relocation interrupted")
+
+    monkeypatch.setattr(ReadyStore, "execute", interrupted)
+    service: AppService = _processing_service(tmp_path, FakeTranslationService())
+    owner, thread = _recovered_owner(tmp_path, service)
+    try:
+        assert _await(lambda: owner._on_owner(lambda: len(owner._ready_problems) == 2 and not owner._ready_inflight))
+
+        def prepared_again() -> dict[str, str]:
+            owner._ready_attempts.update(dict.fromkeys(owner._ready_moves, automation_module._FINALIZE_ATTEMPTS))
+            owner._prepare_ready(owner._run_results[run_id])
+            return dict(owner._ready_problems)
+
+        problems: dict[str, str] = owner._on_owner(prepared_again)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+    assert len(problems) == 2
+    assert all("Relocation interrupted" in problem for problem in problems.values())
+
+
+@pytest.mark.integration
+def test_retrying_relocation_leaves_a_changed_source_in_place_and_moves_its_finished_neighbour(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _translated_pair(tmp_path, ready=False)
+    (_library_dir(tmp_path) / "01.txt").write_text("Replaced episode", encoding="utf-8")
+    execute: Callable[[ReadyStore, ReadyMove], None] = ReadyStore.execute
+    failing: list[bool] = [True]
+
+    def interrupted(store: ReadyStore, move: ReadyMove) -> None:
+        if failing:
+            raise OSError(13, "Relocation interrupted")
+        execute(store, move)
+
+    monkeypatch.setattr(ReadyStore, "execute", interrupted)
+    service: AppService = _processing_service(tmp_path, FakeTranslationService())
+    owner, thread = _recovered_owner(tmp_path, service)
+    try:
+        assert _await(lambda: owner._on_owner(lambda: len(owner._ready_problems) == 1 and not owner._ready_inflight))
+        failing.clear()
+        assert owner.handle(_request("ready_retry")).ok
+        assert _await(lambda: len(owner.state.ready_groups) == 1)
+        assert _await(lambda: owner._on_owner(lambda: not owner._ready_problems and not owner._ready_moves))
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+    assert owner.state.ready_groups[0].sources == ("ready/02.txt",)
+    assert (_library_dir(tmp_path) / "01.txt").read_text(encoding="utf-8") == "Replaced episode"
+    assert not (tmp_path / READY_DIRECTORY / "01.txt").exists()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("damage", ["json", "version"])
+@pytest.mark.parametrize("ready", [False, True])
+def test_an_unreadable_run_checkpoint_blocks_only_sets_outside_ready(
+    tmp_path: Path, damage: str, *, ready: bool
+) -> None:
+    run_id: str = _translated_pair(tmp_path, ready=ready)
+    path: Path = WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME).run_path(run_id)
+    document: dict[str, object] = json.loads(path.read_bytes())
+    path.write_bytes(b"{" if damage == "json" else json.dumps({**document, "version": 99}).encode())
+    service: AppService = _processing_service(tmp_path, FakeTranslationService())
+    owner, thread = _recovered_owner(tmp_path, service)
+    try:
+        relocations: list[dict[str, object]] = cast(
+            "list[dict[str, object]]", owner.handle(_request("status")).result["relocations"]
+        )
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+    if ready:
+        assert relocations == []
+        assert len(owner.state.ready_groups) == 2
+        return
+    assert len(relocations) == 2
+    assert all(item["problem"] for item in relocations)
+    assert owner.state.ready_groups == ()
+    assert (_library_dir(tmp_path) / "01.txt").is_file()
+
+
+def test_exhausted_relocation_retries_on_its_own_once_the_backoff_ceiling_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    monkeypatch.setattr(automation_module, "TRANSFER_BACKOFF_CEILING_S", 1.0)
+    _prepared_audiobook(tmp_path)
+    service: AppService = _real_service(tmp_path)
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=False)))
+    owner: AutomationOwner = _relocating_owner(tmp_path, service, store)
+    journal: ReadyStore = cast("ReadyStore", owner._ready_store)
+    execute: Callable[[ReadyMove], None] = journal.execute
+    moments: list[float] = []
+
+    def attempt(current: ReadyMove) -> None:
+        moments.append(time.monotonic())
+        if len(moments) <= automation_module._FINALIZE_ATTEMPTS:
+            raise OSError(13, "Relocation unavailable")
+        execute(current)
+
+    monkeypatch.setattr(journal, "execute", attempt)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _await(lambda: owner._on_owner(lambda: bool(owner._ready_exhausted) and not owner._ready_inflight))
+        owner._on_owner(owner._retry_ready)
+        early: tuple[int, bool] = owner._on_owner(lambda: (len(moments), bool(owner._ready_inflight)))
+        pausing: object = owner.handle(_request("status")).result["pausing"]
+        assert _await((tmp_path / "ready" / "Book.m4a").exists)
+        assert _await(lambda: owner._on_owner(lambda: not owner._ready_problems and not owner._ready_moves))
+        idle: tuple[float | None, float | None] = owner._on_owner(lambda: (owner._transfers_at, owner._ready_retry_at))
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+    assert not thread.is_alive()
+    assert early == (automation_module._FINALIZE_ATTEMPTS, False)
+    assert pausing is False
+    assert len(moments) == automation_module._FINALIZE_ATTEMPTS + 1
+    assert moments[-1] - moments[-2] >= automation_module.TRANSFER_BACKOFF_CEILING_S
+    assert idle == (None, None)
+
+
+@pytest.mark.parametrize(("folder", "expected"), [("ready", True), ("ready/Show", False), ("", False)])
+def test_only_the_ready_folder_itself_counts_as_ready(tmp_path: Path, folder: str, *, expected: bool) -> None:
+    assert in_ready(tmp_path / folder, tmp_path) is expected
+
+
+@pytest.mark.parametrize(
+    ("fingerprints", "expected"), [({"group-a": (("ready/Show - 05.mkv", 1, 2),)}, "Show - 05.mkv"), ({}, None)]
+)
+def test_a_relocation_row_names_its_set_from_the_request_and_never_by_the_group_id(
+    tmp_path: Path, fingerprints: dict[str, tuple[tuple[str, int, int], ...]], expected: str | None
+) -> None:
+    service, store, state = _completed_library(tmp_path)
+    request: ProcessingRequest = ProcessingRequest(
+        "relocated",
+        1,
+        ("group-a",),
+        fingerprints,
+        RequestOrigin.USER,
+        SourceSelection.MANUAL,
+        None,
+        {},
+        RequestState.SUCCEEDED,
+        1,
+        _MOMENT.isoformat(),
+    )
+    store.save(replace(state, requests=(request,)))
+    owner: AutomationOwner = _owner(service, store)
+    try:
+        owner._ready_problems.update({"group-a": "failed", "group-b": "failed"})
+
+        assert owner._status()["relocations"] == [
+            {"group_id": "group-a", "name": expected, "problem": "failed"},
+            {"group_id": "group-b", "name": None, "problem": "failed"},
+        ]
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_unmanageable_deferred_relocation_does_not_keep_an_idle_timer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, external: bool
+) -> None:
+    monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
+    audiobook: Path = _prepared_audiobook(tmp_path)
+    size: int = (audiobook / "Book.txt").stat().st_size
+    network: _TorrentNetwork = _TorrentNetwork()
+    monkeypatch.setattr(network, "finalizable_hashes", lambda hashes: frozenset(), raising=False)
+    acquisition: AcquisitionService = AcquisitionService(
+        source=network,
+        client=cast("TorrentClient", network),
+        workspace_root=tmp_path,
+        parse_name=parse_release_name,
+        torrent_management=None if external else cast("TorrentManagement", network),
+    )
+    attempts: list[frozenset[str]] = []
+
+    def held(hashes: frozenset[str]) -> frozenset[str]:
+        attempts.append(hashes)
+        return frozenset()
+
+    monkeypatch.setattr(acquisition, "release_completed", held)
+    service: AppService = _real_service(tmp_path, acquisition=acquisition)
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    store.save(
+        WatchState(
+            policy=AutomationPolicy(auto_enabled=True),
+            acquisitions=(
+                replace(
+                    _owned(("Book.txt",), (), RequestOrigin.USER, size, directory="audiobook"),
+                    state=AcquisitionState.COMPLETE,
+                ),
+            ),
+        )
+    )
+    owner: AutomationOwner = _relocating_owner(tmp_path, service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert _await(lambda: bool(owner.state.ready_groups) and bool(attempts))
+        time.sleep(0.1)
+        count: int = len(attempts)
+        time.sleep(0.1)
+        assert len(attempts) == count
+        assert owner._on_owner(lambda: owner._transfers_at) is None
+        assert owner.state.ready_groups[0].pending_sources == ("audiobook/Book.txt",)
+        assert owner.handle(_request("ready_retry")).ok
+        assert _await(lambda: len(attempts) > count)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
 
 
 def test_a_transfer_that_released_its_file_lets_the_deferred_source_reach_ready(
@@ -4747,439 +4729,6 @@ def test_a_transfer_that_released_its_file_lets_the_deferred_source_reach_ready(
     assert list(audiobook.iterdir()) == []
     assert store.load().ready_groups[0].pending_sources == ()
     assert store.load().ready_groups[0].sources == ("ready/Book.txt",)
-
-
-@pytest.mark.integration
-def test_the_panel_stores_a_whole_range_and_repeats_an_episode_through_the_resident(tmp_path: Path) -> None:
-    network: _TorrentNetwork = _TorrentNetwork()
-    acquisition: AcquisitionService = AcquisitionService(
-        source=network,
-        client=cast("TorrentClient", network),
-        workspace_root=tmp_path,
-        parse_name=parse_release_name,
-    )
-    subscriptions: SubscriptionService = SubscriptionService(
-        store=SubscriptionStore(tmp_path / "subscriptions.json"),
-        acquisition=acquisition,
-        clock=lambda: _MOMENT,
-    )
-    service: AppService = _real_service(tmp_path, acquisition=acquisition, subscriptions=subscriptions)
-    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    key: bytes = os.urandom(32)
-    server: ControlServer = ControlServer(control_endpoint(tmp_path), key, owner.handle, on_disconnect=owner.disconnect)
-    session: ResidentSession = ResidentSession(
-        tmp_path,
-        lambda: ControlClient(control_endpoint(tmp_path), key, timeout_s=_TIMEOUT_S),
-    )
-    try:
-        followed: Subscription = session.follow(SubscriptionOrder("Neko to Ryuu", "SubsPlease", "neko", Decimal(20)))
-        stored: Subscription = session.set_range(
-            followed.subscription_id, selected=(Decimal(9), Decimal(10)), future_from=Decimal(11)
-        )
-        repeated: Subscription = session.repeat(followed.subscription_id, (Decimal(9),))
-    finally:
-        session.close()
-        server.close()
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-        service.close()
-    assert not thread.is_alive()
-    assert stored.future_from == Decimal(11)
-    assert {item.number for item in stored.episodes if item.selected} == {Decimal(9), Decimal(10)}
-    assert stored.generation > followed.generation
-    assert repeated.generation > stored.generation
-    assert next(item.repeat_id for item in repeated.episodes if item.number == Decimal(9)) is not None
-    assert next(item.number for item in repeated.repeats) == Decimal(9)
-    assert all(item.pending is None for item in store.load().command_receipts)
-
-
-@contextmanager
-def _calendar_resident(
-    root: Path,
-    network: _TorrentNetwork,
-    moments: list[datetime],
-    respond: Callable[[httpx.Request], httpx.Response],
-) -> Iterator[tuple[ResidentSession, SubscriptionService, WatchStateStore, httpx.Client]]:
-    control: RequestControl = RequestControl(
-        httpx.MockTransport(respond),
-        clock=lambda: moments[0].timestamp(),  # noqa: PLW0108 - the clock value changes between requests
-        sleep=lambda delay: moments.__setitem__(0, moments[0] + timedelta(seconds=delay)),
-    )
-    http: httpx.Client = httpx.Client(transport=control)
-    acquisition: AcquisitionService = AcquisitionService(
-        source=network,
-        client=cast("TorrentClient", network),
-        workspace_root=root,
-        parse_name=parse_release_name,
-        title_catalog=AniListCatalog(http),
-        request_control=control,
-    )
-    subscriptions: SubscriptionService = SubscriptionService(
-        store=SubscriptionStore(root / "subscriptions.json"), acquisition=acquisition, clock=lambda: moments[0]
-    )
-    service: AppService = _real_service(root, acquisition=acquisition, subscriptions=subscriptions)
-    store: WatchStateStore = WatchStateStore(root / "control" / WATCH_STATE_FILE_NAME)
-    owner: AutomationOwner = AutomationOwner(service, store, instance_id=_INSTANCE, clock=lambda: moments[0])
-    thread: threading.Thread = _serving(owner)
-    key: bytes = os.urandom(32)
-    server: ControlServer = ControlServer(control_endpoint(root), key, owner.handle, on_disconnect=owner.disconnect)
-    session: ResidentSession = ResidentSession(
-        root, lambda: ControlClient(control_endpoint(root), key, timeout_s=_TIMEOUT_S)
-    )
-    try:
-        yield session, subscriptions, store, http
-    finally:
-        session.close()
-        server.close()
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-        service.close()
-        http.close()
-    assert not thread.is_alive()
-
-
-@pytest.mark.integration
-def test_one_resident_order_downloads_backlog_then_only_due_eight_across_restart_and_cooldown(tmp_path: Path) -> None:
-    moments: list[datetime] = [_MOMENT]
-    dates: dict[int, datetime] = {number: _MOMENT + timedelta(days=(number - 8) * 7 + 30) for number in range(8, 13)}
-    dates.update({number: _MOMENT - timedelta(days=(8 - number) * 7) for number in range(1, 8)})
-    calendars: list[datetime] = []
-    searches: list[datetime] = []
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        if request.url.host == "nyaa.si":
-            return httpx.Response(429, headers={"Retry-After": "120"})
-        assert request.url.host == "graphql.anilist.co"
-        calendars.append(moments[0])
-        return httpx.Response(
-            200,
-            json={
-                "data": {
-                    "Media": {
-                        "id": 1,
-                        "status": "RELEASING",
-                        "episodes": 12,
-                        "airingSchedule": {
-                            "pageInfo": {"currentPage": 1, "hasNextPage": False},
-                            "nodes": [
-                                {"episode": number, "airingAt": int(date.timestamp())} for number, date in dates.items()
-                            ],
-                        },
-                    }
-                }
-            },
-        )
-
-    network: _TorrentNetwork = _TorrentNetwork()
-    network.releases = tuple(
-        replace(
-            network.releases[0],
-            title=f"[SubsPlease] Neko to Ryuu - {number:02d} (1080p)",
-            torrent_url=f"https://example.test/{number}.torrent",
-            info_hash=str(number),
-        )
-        for number in range(1, 13)
-    )
-    network.before_search = lambda: searches.append(moments[0])
-    WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME).save(
-        WatchState(policy=AutomationPolicy(auto_enabled=True))
-    )
-    with _calendar_resident(tmp_path, network, moments, respond) as (session, subscriptions, store, http):
-        followed: Subscription = session.follow(
-            SubscriptionOrder("Neko to Ryuu", "SubsPlease", "neko", Decimal(2), anilist_id=1),
-            selected=tuple(Decimal(number) for number in range(2, 13)),
-            future_from=None,
-        )
-        assert _await(lambda: len(subscriptions.list()[0].taken_episodes) == 6)
-        assert network.added == ["2", "3", "4", "5", "6", "7"]
-        session.command("set_auto", {"enabled": False})
-        moments[0] += timedelta(days=1)
-        dates[8] = moments[0] + timedelta(hours=1)
-        session.command("set_auto", {"enabled": True})
-        assert _await(lambda: subscriptions.list()[0].episodes[6].airing_at == dates[8].isoformat())
-        assert len(searches) == 1
-        session.command("set_auto", {"enabled": False})
-        moments[0] = dates[8] + timedelta(hours=3)
-        assert http.get("https://nyaa.si/").status_code == 429
-        assert store.load().provider_locks[0].provider == "nyaa"
-    with _calendar_resident(tmp_path, network, moments, respond) as (session, subscriptions, store, _http):
-        assert subscriptions.list()[0].subscription_id == followed.subscription_id
-        assert subscriptions.list()[0].future_from is None
-        session.command("set_auto", {"enabled": True})
-        session.command("subscriptions_check")
-        assert network.added == ["2", "3", "4", "5", "6", "7"]
-        assert len(searches) == 1
-        moments[0] += timedelta(seconds=120)
-        session.command("subscriptions_check")
-        assert _await(lambda: len(subscriptions.list()[0].taken_episodes) == 7)
-        assert network.added == ["2", "3", "4", "5", "6", "7", "8"]
-        assert {item.episode for item in store.load().acquisitions} == {str(number) for number in range(2, 9)}
-        assert all(item.selected for item in subscriptions.list()[0].episodes)
-
-
-@pytest.mark.parametrize("provider_failed", [False, True])
-def test_manual_calendar_limiter_preserves_saved_dates_and_prior_errors_across_resident_restart(
-    tmp_path: Path, provider_failed: bool
-) -> None:
-    moments: list[datetime] = [_MOMENT]
-    airing: datetime = _MOMENT + timedelta(days=30)
-    calls: list[httpx.Request] = []
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        calls.append(request)
-        assert request.url.host == "graphql.anilist.co"
-        return httpx.Response(
-            429 if provider_failed else 200,
-            headers={"Retry-After": "86400"},
-            json={
-                "data": {
-                    "Media": {
-                        "id": 1,
-                        "status": "RELEASING",
-                        "episodes": 1,
-                        "airingSchedule": {
-                            "pageInfo": {"currentPage": 1, "hasNextPage": False},
-                            "nodes": [{"episode": 1, "airingAt": int(airing.timestamp())}],
-                        },
-                    }
-                }
-            },
-        )
-
-    path: Path = tmp_path / "subscriptions.json"
-    SubscriptionStore(path).save(
-        (
-            Subscription(
-                subscription_id("Neko to Ryuu", "SubsPlease"),
-                "neko",
-                "Neko to Ryuu",
-                "SubsPlease",
-                Decimal(1),
-                1080,
-                frozenset(),
-                _MOMENT.isoformat(),
-                None,
-                anilist_id=1,
-                season_episodes=1,
-                calendar_checked_at=_MOMENT.isoformat(),
-                calendar_status="RELEASING",
-                episodes=(
-                    EpisodeOrder(
-                        Decimal(1),
-                        airing_at=airing.isoformat(),
-                        due_at=(airing + timedelta(hours=3)).isoformat(),
-                        window_until=(airing + timedelta(hours=75)).isoformat(),
-                    ),
-                ),
-            ),
-        )
-    )
-    WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME).save(
-        WatchState(policy=AutomationPolicy(auto_enabled=True))
-    )
-    network: _TorrentNetwork = _TorrentNetwork()
-    with _calendar_resident(tmp_path, network, moments, respond) as (session, subscriptions, store, _http):
-        first: Mapping[str, object] = session.command("subscriptions_check")
-        assert first["checked"] == 1
-        assert first["problems"] == int(provider_failed)
-        saved: Subscription = subscriptions.list()[0]
-        assert saved.calendar_problem == (ErrorCode.TITLE_CATALOG_FAILED if provider_failed else None)
-        assert saved.calendar_attempts == int(provider_failed)
-        before: bytes = path.read_bytes()
-        second: Mapping[str, object] = session.command("subscriptions_check")
-        assert second["problems"] == 1
-        outcomes: object = second["outcomes"]
-        assert isinstance(outcomes, list)
-        outcome: CheckOutcome = decode_view(CheckOutcome, outcomes[0])
-        assert outcome.problem == "calendar_cooldown"
-        assert outcome.subscription == saved
-        assert path.read_bytes() == before
-        assert len(calls) == 1
-        assert store.load().provider_locks[0].provider == "anilist"
-    with _calendar_resident(tmp_path, network, moments, respond) as (session, subscriptions, _store, _http):
-        assert subscriptions.list() == (saved,)
-        controller: StateController = StateController(session, lambda: None)
-        try:
-            assert _await(lambda: controller._connected and bool(controller._subscriptions))
-            controller.handle_key("left")
-            controller.handle_key("text:f")
-            assert _await(lambda: not controller._busy)
-            frame: str = controller.render(160, 40).plain
-            assert "Emisja za" in frame
-            assert controller._subscriptions[0]["airing_at"] == airing.isoformat()
-            assert ("Kalendarz niedostępny" in frame) is provider_failed
-            assert "F sprawdź" in frame
-            assert subscriptions.list() == (saved,)
-            assert path.read_bytes() == before
-            assert len(calls) == 1
-            assert network.added == []
-        finally:
-            controller.close()
-            controller._thread.join(_TIMEOUT_S)
-
-
-def test_resident_keeps_known_seasons_separate_and_refuses_raw_ambiguity_before_a_receipt(tmp_path: Path) -> None:
-    network: _TorrentNetwork = _TorrentNetwork()
-    moments: list[datetime] = [_MOMENT]
-    WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME).save(
-        WatchState(policy=AutomationPolicy(auto_enabled=False))
-    )
-    with _calendar_resident(tmp_path, network, moments, lambda _request: httpx.Response(500)) as (
-        session,
-        subscriptions,
-        store,
-        _http,
-    ):
-        first: Subscription = session.follow(
-            SubscriptionOrder("Neko to Ryuu", "SubsPlease", "first", Decimal(1), anilist_id=101),
-            selected=(Decimal(1),),
-        )
-        second: Subscription = session.follow(
-            SubscriptionOrder("Neko to Ryuu", "SubsPlease", "second", Decimal(1), anilist_id=202),
-            selected=(Decimal(2),),
-            future_from=None,
-        )
-        assert second.subscription_id != first.subscription_id
-        assert len(subscriptions.list()) == 2
-        assert first in subscriptions.list()
-        receipts: int = len(store.load().command_receipts)
-        with pytest.raises(ControlError) as caught:
-            session.follow(SubscriptionOrder("Neko to Ryuu", "SubsPlease", "second", Decimal(1)))
-        assert caught.value.reason == "subscription_season_ambiguous"
-        assert second in subscriptions.list()
-        assert len(store.load().command_receipts) == receipts
-        assert network.added == []
-    with _calendar_resident(tmp_path, network, moments, lambda _request: httpx.Response(500)) as (
-        session,
-        subscriptions,
-        store,
-        _http,
-    ):
-        with pytest.raises(ControlError) as paused:
-            session.repeat(second.subscription_id, (Decimal(2),))
-        assert paused.value.reason == "paused"
-        session.command("subscription_disable", {"subscription_id": first.subscription_id})
-        session.command("subscription_disable", {"subscription_id": second.subscription_id})
-        first = subscriptions.list()[0]
-        session.command("set_auto", {"enabled": True})
-        repeated: Subscription = session.repeat(second.subscription_id, (Decimal(2),))
-        assert first in subscriptions.list()
-        assert repeated.subscription_id == second.subscription_id
-        assert len(repeated.repeats) == 1
-        assert repeated.taken == frozenset()
-        assert len(subscriptions.list()) == 2
-        assert store.load().acquisitions == ()
-
-
-def test_resident_repeat_preserves_a_local_source_and_allows_remote_repeat_after_its_removal(tmp_path: Path) -> None:
-    network: _TorrentNetwork = _TorrentNetwork()
-    moments: list[datetime] = [_MOMENT]
-    subscriptions: SubscriptionService = SubscriptionService(
-        store=SubscriptionStore(tmp_path / "subscriptions.json"),
-        acquisition=AcquisitionService(
-            source=network,
-            client=cast("TorrentClient", network),
-            workspace_root=tmp_path,
-            parse_name=parse_release_name,
-        ),
-        clock=lambda: moments[0],
-    )
-    item: Subscription = subscriptions.add("Neko to Ryuu", "SubsPlease", query="neko", first_episode=Decimal(9))
-    source: Path = tmp_path / "09.txt"
-    source.write_text("source", encoding="utf-8")
-    confirmation: AcquisitionConfirmation = AcquisitionConfirmation(
-        "old-operation",
-        "old-hash",
-        "",
-        ("09.txt",),
-        AcquisitionState.COMPLETE,
-        RequestOrigin.USER,
-        item.subscription_id,
-        "9",
-        _MOMENT.isoformat(),
-        complete_files=("09.txt",),
-    )
-    WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME).save(
-        WatchState(policy=AutomationPolicy(auto_enabled=False), acquisitions=(confirmation,))
-    )
-    with _calendar_resident(tmp_path, network, moments, lambda _request: httpx.Response(500)) as (
-        session,
-        subscriptions,
-        store,
-        _http,
-    ):
-        with pytest.raises(ControlError) as paused:
-            session.repeat(item.subscription_id, (Decimal(9), Decimal(10)))
-        assert paused.value.reason == "paused"
-        session.command("subscription_disable", {"subscription_id": item.subscription_id})
-        session.command("set_auto", {"enabled": True})
-        receipts: int = len(store.load().command_receipts)
-        with pytest.raises(ControlError) as caught:
-            session.repeat(item.subscription_id, (Decimal(9), Decimal(10)))
-        assert caught.value.reason == "subscription_source_available"
-        assert caught.value.context.details == {"episodes": ["9"]}
-        assert len(store.load().command_receipts) == receipts
-        assert subscriptions.list()[0].repeats == ()
-        assert store.load().acquisitions == (confirmation,)
-        assert network.added == []
-        source.unlink()
-        repeated: Subscription = session.repeat(item.subscription_id, (Decimal(9),))
-        assert len(repeated.repeats) == 1
-        assert store.load().acquisitions == (confirmation,)
-
-
-def test_resident_repeat_downloads_an_expired_old_episode_in_a_fresh_window(tmp_path: Path) -> None:
-    network: _TorrentNetwork = _TorrentNetwork()
-    moments: list[datetime] = [_MOMENT]
-    WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME).save(
-        WatchState(policy=AutomationPolicy(auto_enabled=False))
-    )
-    expired: Subscription = Subscription(
-        subscription_id("Neko to Ryuu", "SubsPlease"),
-        "neko",
-        "Neko to Ryuu",
-        "SubsPlease",
-        Decimal(9),
-        1080,
-        frozenset(),
-        (_MOMENT - timedelta(days=30)).isoformat(),
-        None,
-        anilist_id=1,
-        end_state=SubscriptionEnd.MISSING,
-        episodes=(EpisodeOrder(Decimal(9), state=EpisodeState.EXPIRED, attempts=3),),
-    )
-    SubscriptionStore(tmp_path / "subscriptions.json").save((expired,))
-
-    def respond(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "data": {
-                    "Media": {
-                        "id": 1,
-                        "status": "FINISHED",
-                        "episodes": 9,
-                        "airingSchedule": {
-                            "pageInfo": {"currentPage": 1, "hasNextPage": False},
-                            "nodes": [{"episode": 9, "airingAt": int((_MOMENT - timedelta(days=30)).timestamp())}],
-                        },
-                    }
-                }
-            },
-        )
-
-    with _calendar_resident(tmp_path, network, moments, respond) as (session, subscriptions, _store, _http):
-        with pytest.raises(ControlError) as paused:
-            session.repeat(expired.subscription_id, (Decimal(9),))
-        assert paused.value.reason == "paused"
-        session.command("set_auto", {"enabled": True})
-        repeated: Subscription = session.repeat(expired.subscription_id, (Decimal(9),))
-        assert repeated.episodes[0].requested_at == _MOMENT.isoformat()
-        assert _await(lambda: subscriptions.list()[0].taken_episodes == ("9",))
-        assert network.added == ["9"]
-        assert subscriptions.list()[0].episodes[0].window_until == (_MOMENT + timedelta(hours=72)).isoformat()
 
 
 def test_two_transfers_of_one_file_name_reserve_separate_names_beside_ready_and_deleted_files(tmp_path: Path) -> None:
@@ -5308,6 +4857,7 @@ def _accepted_transfer(
     *,
     layout: tuple[FileReservation, ...] = (),
     started: bool = False,
+    origin: RequestOrigin = RequestOrigin.BACKGROUND,
 ) -> AcquisitionConfirmation:
     return AcquisitionConfirmation(
         f"operation-{info_hash}",
@@ -5315,7 +4865,7 @@ def _accepted_transfer(
         "",
         (),
         AcquisitionState.ACCEPTED,
-        RequestOrigin.USER,
+        origin,
         None,
         info_hash,
         _MOMENT.isoformat(),
@@ -5751,6 +5301,7 @@ def _pausable(
     monkeypatch: pytest.MonkeyPatch,
     *,
     subscription_id: str | None = None,
+    subscriptions: tuple[SubscriptionRecord, ...] = (),
 ) -> tuple[AutomationOwner, _TorrentNetwork, WatchStateStore, _Service]:
     monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
     service, store, _ = _library(tmp_path)
@@ -5762,11 +5313,13 @@ def _pausable(
     store.save(
         WatchState(
             policy=AutomationPolicy(auto_enabled=True),
+            subscriptions=subscriptions,
             acquisitions=(
-                replace(mine, subscription_id=subscription_id),
+                replace(mine, subscription_id=subscription_id, origin=RequestOrigin.BACKGROUND),
                 replace(
                     _accepted_transfer("10", layout=((0, "10.mkv", 4),), started=True),
                     requested_action="stop",
+                    origin=RequestOrigin.BACKGROUND,
                 ),
             ),
         )
@@ -5791,7 +5344,6 @@ def test_one_pause_stops_the_schedule_the_polling_and_records_only_the_transfers
         settled: int = network.info_calls
         time.sleep(0.3)
         assert network.info_calls == settled
-        assert owner._subscriptions_at is None
         assert owner._transfers_at is None
     finally:
         owner.request_shutdown()
@@ -5799,7 +5351,7 @@ def test_one_pause_stops_the_schedule_the_polling_and_records_only_the_transfers
 
     state: WatchState = store.load()
     assert state.pause_owned_transfers == ("9",)
-    assert service.paused == [True]
+    assert service.paused == []
     assert ("10", "stop") not in network.actions
 
 
@@ -5823,27 +5375,42 @@ def test_a_resume_restarts_only_the_transfers_that_pause_stopped(
     assert state.pause_owned_transfers == ()
     assert ("10", "resume") not in network.actions
     assert hand_stopped.requested_action == "stop"
-    assert service.paused == [True, False]
+    assert service.paused == []
 
 
-def test_a_resume_leaves_the_transfer_of_a_disabled_subscription_stopped(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("followed", "paused"),
+    [("a", True), ("old", True), ("gone", False), ("a", False), ("old", False)],
+)
+def test_a_resume_takes_up_only_the_transfer_of_a_followed_active_subscription(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, followed: str, paused: bool
 ) -> None:
-    owner, network, store, service = _pausable(tmp_path, monkeypatch, subscription_id="a")
-    assert service.subscriptions is not None
-    service.subscriptions.entries[0].enabled = False
+    record: SubscriptionRecord = SubscriptionRecord(
+        subscription_id="a",
+        anilist_id=1,
+        title="Series",
+        subscribed_at=_MOMENT.isoformat(),
+        cut=0,
+        merged_from=("old",),
+        paused=paused,
+        pause_reason=PauseReason.USER if paused else None,
+    )
+    owner, network, store, _ = _pausable(tmp_path, monkeypatch, subscription_id=followed, subscriptions=(record,))
+    resumed: bool = followed != "gone" and not paused
     thread: threading.Thread = _serving(owner)
     try:
         assert _await(lambda: network.info_calls > 1)
         assert _switched(owner, enabled=False, command_id="pause-1")
         assert _await(lambda: ("9", "stop") in network.actions)
         assert _switched(owner, enabled=True, command_id="resume-1")
+        if resumed:
+            assert _await(lambda: ("9", "resume") in network.actions)
         time.sleep(0.2)
     finally:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
 
-    assert ("9", "resume") not in network.actions
+    assert (("9", "resume") in network.actions) is resumed
     assert store.load().pause_owned_transfers == ()
 
 
@@ -5872,8 +5439,8 @@ def test_repeating_pause_and_resume_never_touches_the_separately_stopped_transfe
     assert hand_stopped.requested_action == "stop"
 
 
-def test_a_paused_resident_refuses_an_explicit_start_and_an_explicit_download(tmp_path: Path) -> None:
-    service, store, _ = _library(tmp_path)
+def test_a_paused_resident_admits_an_explicit_start_as_user_work(tmp_path: Path) -> None:
+    service, store, group_id = _library(tmp_path)
     store.save(WatchState(policy=AutomationPolicy(auto_enabled=False)))
     owner: AutomationOwner = _owner(service, store)
     thread: threading.Thread = _serving(owner)
@@ -5889,41 +5456,21 @@ def test_a_paused_resident_refuses_an_explicit_start_and_an_explicit_download(tm
                 command_id="start-1",
             )
         )
-        _chosen, download = owner._accept_download(_request("download", {}, command_id="download-1"), ())
+        materials: list[dict[str, object]] = cast(
+            "list[dict[str, object]]", owner.handle(_request("status", {}, command_id="status-1")).result["materials"]
+        )
     finally:
+        for run_id in tuple(service.active):
+            service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
 
-    assert started.code is ControlErrorCode.REFUSED
-    assert started.reason == RefusalReason.PAUSED.value
-    assert download.code is ControlErrorCode.REFUSED
-    assert download.reason == RefusalReason.PAUSED.value
-    assert service.submitted == []
-    assert store.load().requests == ()
-
-
-def test_a_late_subscription_result_is_refused_by_a_pause_that_landed_during_the_search(tmp_path: Path) -> None:
-    service, store, network, subscription = _subscription_library(tmp_path)
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-
-    def pause_during_search() -> None:
-        _switched(owner, enabled=False, command_id="pause-1")
-
-    network.before_search = pause_during_search
-    try:
-        assert _switched(owner, enabled=True, command_id="resume-0")
-        answer: ControlResponse = owner.handle(_request("subscriptions_check", command_id="check-1"))
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-
-    state: WatchState = store.load()
-    assert answer.ok
-    assert state.policy.auto_enabled is False
-    assert network.added == []
-    assert state.acquisitions == ()
-    assert subscription.enabled is True
+    assert not thread.is_alive()
+    assert started.ok
+    assert [row["automatic"] for row in materials if row.get("stage") == "processing"] == [False]
+    assert len(service.submitted) == 1
+    assert [item.automatic for item in store.load().requests] == [False]
+    assert store.load().policy.auto_enabled is False
 
 
 def test_a_stored_pause_is_still_a_pause_after_a_restart(tmp_path: Path) -> None:
@@ -5940,7 +5487,7 @@ def test_a_stored_pause_is_still_a_pause_after_a_restart(tmp_path: Path) -> None
 
     assert answer.result["paused"] is True
     assert answer.result["auto_enabled"] is False
-    assert service.paused == [True]
+    assert service.paused == []
     assert admissions == [False]
 
 
@@ -5993,22 +5540,6 @@ def test_a_client_that_cannot_be_prepared_is_reported_without_stopping_the_resid
     assert answer.result["transfers_problem"] is not None
 
 
-def test_an_empty_subscription_orders_nothing_while_the_resident_works(tmp_path: Path) -> None:
-    service, store, network, _ = _subscription_library(tmp_path)
-    network.releases = ()
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    try:
-        assert _switched(owner, enabled=True, command_id="resume-0")
-        assert owner.handle(_request("subscriptions_check", command_id="check-1")).ok
-    finally:
-        owner.request_shutdown()
-        thread.join(_TIMEOUT_S)
-
-    assert network.added == []
-    assert store.load().acquisitions == ()
-
-
 def _qbittorrent_replies(root: Path) -> Callable[[httpx.Request], httpx.Response]:
     def respond(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/torrents/info"):
@@ -6049,11 +5580,9 @@ def _measured_acquisition(
     return management
 
 
-def _idle_counts(
-    control: RequestControl, service: _Service, subscriptions: _Subscriptions, management: _TorrentNetwork
-) -> tuple[int, int, int, int]:
+def _idle_counts(control: RequestControl, service: _Service, management: _TorrentNetwork) -> tuple[int, int, int]:
     requests: int = sum(int(cast("int", item["count"])) for item in control.counts())
-    return (requests, service.discover_calls, subscriptions.checks, management.resume_calls)
+    return (requests, service.discover_calls, management.resume_calls)
 
 
 @pytest.mark.integration
@@ -6204,7 +5733,9 @@ def test_paused_broadcast_and_ipc_wait_for_completed_transfer_release_http(
         pending: AcquisitionConfirmation = replace(
             _accepted_transfer("9"), requested_action="stop", action_pending=True, action_id="stop-test"
         )
-        store.save(WatchState(policy=AutomationPolicy(auto_enabled=False), acquisitions=(completed, pending)))
+        store.save(
+            WatchState(policy=AutomationPolicy(auto_enabled=False), acquisitions=(_accepted_transfer("10"), pending))
+        )
         owner: AutomationOwner = _owner(service, store)
         owner.attach_broadcast(lambda frame, terminal: frames.append(frame))
         thread: threading.Thread = _serving(owner)
@@ -6213,6 +5744,8 @@ def test_paused_broadcast_and_ipc_wait_for_completed_transfer_release_http(
         server: ControlServer = ControlServer(endpoint, key, owner.handle, on_disconnect=owner.disconnect)
         panel: ControlClient = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
         try:
+            owner._on_owner(lambda: owner._replace_acquisition(completed))
+            owner._on_owner(owner._finalize_transfers)
             assert releasing.wait(_TIMEOUT_S)
             assert panel.call("status")["pausing"] is True
             assert not any(cast("Mapping[str, object]", frame["payload"])["paused"] for frame in frames)
@@ -6239,9 +5772,6 @@ def test_a_full_pause_stops_every_real_request_and_probe_that_a_live_panel_canno
 ) -> None:
     monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
     service, store, _ = _library(tmp_path)
-    subscriptions: _Subscriptions | None = service.subscriptions
-    assert subscriptions is not None
-    subscriptions.due_at = _MOMENT + timedelta(hours=1)
     control: RequestControl = RequestControl(httpx.MockTransport(_qbittorrent_replies(tmp_path)))
     http: httpx.Client = httpx.Client(transport=control)
     management: _TorrentNetwork = _measured_acquisition(tmp_path, service, http, control)
@@ -6263,22 +5793,22 @@ def test_a_full_pause_stops_every_real_request_and_probe_that_a_live_panel_canno
     reader: threading.Thread = threading.Thread(target=lambda: frames.extend(stream.events()), daemon=True)
     reader.start()
     try:
-        assert _await(lambda: _idle_counts(control, service, subscriptions, management)[0] > 1)
+        assert _await(lambda: _idle_counts(control, service, management)[0] > 1)
         assert panel.call("set_auto", {"enabled": False})["auto_enabled"] is False
         assert _await(lambda: ("9", "stop") in management.actions)
         assert _await(lambda: panel.call("status")["paused"] is True)
-        watched: tuple[int, int, int, int] = _idle_counts(control, service, subscriptions, management)
+        watched: tuple[int, int, int] = _idle_counts(control, service, management)
         time.sleep(0.4)
-        assert _idle_counts(control, service, subscriptions, management) == watched
+        assert _idle_counts(control, service, management) == watched
         for index in range(3):
             assert panel.call("status", command_id=f"status-{index}")["paused"] is True
-        assert _idle_counts(control, service, subscriptions, management) == watched
+        assert _idle_counts(control, service, management) == watched
         assert frames != []
         panel.close()
         stream.close()
         assert _await(lambda: not reader.is_alive())
         time.sleep(0.4)
-        assert _idle_counts(control, service, subscriptions, management) == watched
+        assert _idle_counts(control, service, management) == watched
     finally:
         panel.close()
         stream.close()
@@ -6288,7 +5818,7 @@ def test_a_full_pause_stops_every_real_request_and_probe_that_a_live_panel_canno
         http.close()
 
     assert watched[0] > 1
-    assert watched[3] > 0
+    assert watched[2] > 0
     assert store.load().pause_owned_transfers == ("9",)
 
 
@@ -6298,9 +5828,6 @@ def test_a_settled_working_resident_polls_nothing_while_its_schedule_stays_armed
 ) -> None:
     monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.01)
     service, store, _ = _library(tmp_path)
-    subscriptions: _Subscriptions | None = service.subscriptions
-    assert subscriptions is not None
-    subscriptions.due_at = _MOMENT + timedelta(hours=1)
     control: RequestControl = RequestControl(httpx.MockTransport(_qbittorrent_replies(tmp_path)))
     http: httpx.Client = httpx.Client(transport=control)
     management: _TorrentNetwork = _measured_acquisition(tmp_path, service, http, control)
@@ -6315,17 +5842,15 @@ def test_a_settled_working_resident_polls_nothing_while_its_schedule_stays_armed
         owner._on_owner(lambda: owner._save(replace(owner.state, acquisitions=(replace(finished, state=state),))))
         assert owner.handle(_request("panel_attach", session_id="panel")).ok
         time.sleep(0.3)
-        measured: tuple[int, int, int, int] = _idle_counts(control, service, subscriptions, management)
+        measured: tuple[int, int, int] = _idle_counts(control, service, management)
         time.sleep(0.4)
-        assert _idle_counts(control, service, subscriptions, management) == measured
-        armed: float | None = owner._subscriptions_at
+        assert _idle_counts(control, service, management) == measured
     finally:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
         http.close()
 
-    assert measured == (0, 0, 0, 0)
-    assert armed is not None
+    assert measured == (0, 0, 0)
 
 
 def test_pausing_is_reported_until_the_started_work_reaches_its_boundary(tmp_path: Path) -> None:
@@ -6496,10 +6021,9 @@ def test_a_confirmed_pause_already_carries_its_recorded_stop_in_the_stored_state
     assert stopped.action_pending is True
 
 
-def test_a_full_pause_refuses_a_client_resume_and_a_manual_subscription_check(tmp_path: Path) -> None:
+def test_a_full_pause_refuses_a_client_resume(tmp_path: Path) -> None:
     service, store, _ = _library(tmp_path)
     network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.5, 1),))
-    subscriptions: _Subscriptions = cast("_Subscriptions", service.subscriptions)
     store.save(
         WatchState(
             policy=AutomationPolicy(auto_enabled=False),
@@ -6512,7 +6036,6 @@ def test_a_full_pause_refuses_a_client_resume_and_a_manual_subscription_check(tm
         resumed: ControlResponse = owner.handle(
             _request("transfer", {"info_hash": "9", "action": "resume"}, command_id="resume-1")
         )
-        checked: ControlResponse = owner.handle(_request("subscriptions_check", command_id="check-1"))
         browsed: ControlResponse = owner.handle(
             _request("acquisition", {"operation": "search", "query": "Neko"}, command_id="browse-1")
         )
@@ -6525,11 +6048,8 @@ def test_a_full_pause_refuses_a_client_resume_and_a_manual_subscription_check(tm
 
     assert resumed.code is ControlErrorCode.REFUSED
     assert resumed.reason == RefusalReason.PAUSED.value
-    assert checked.code is ControlErrorCode.REFUSED
-    assert checked.reason == RefusalReason.PAUSED.value
     assert browsed.ok
     assert stopped.ok
-    assert subscriptions.checks == 0
     assert network.added == []
     assert [item for item in network.actions if item[1] == "resume"] == []
     assert store.load().acquisitions[0].requested_action == "stop"
@@ -6616,6 +6136,18 @@ def _request_states(owner: AutomationOwner) -> list[object]:
 def _pause_flags(owner: AutomationOwner) -> tuple[object, object, object]:
     result: Mapping[str, object] = owner.handle(_request("status", command_id="status-pause")).result
     return result["paused"], result["pausing"], result["pause_incomplete"]
+
+
+def _as_background(owner: AutomationOwner) -> None:
+    def convert() -> bool:
+        current: AcquisitionConfirmation = owner.state.acquisitions[0]
+        if current.origin is RequestOrigin.BACKGROUND:
+            return True
+        if owner._transfers_inspecting:
+            return False
+        return owner._replace_acquisition(replace(current, origin=RequestOrigin.BACKGROUND))
+
+    assert _await(lambda: owner._on_owner(convert))
 
 
 def _acquisition_fields(owner: AutomationOwner, field: str) -> list[object]:
@@ -6774,7 +6306,7 @@ def test_a_pause_waits_for_a_relocation_in_flight_and_settles_with_a_parked_one(
     store.save(
         WatchState(
             policy=AutomationPolicy(auto_enabled=True),
-            acquisitions=(_owned(("Book.txt",), (), RequestOrigin.USER, size, directory="audiobook"),),
+            acquisitions=(_owned(("Book.txt",), (), RequestOrigin.BACKGROUND, size, directory="audiobook"),),
         )
     )
     journal: _GatedReadyStore = _GatedReadyStore(tmp_path / "control" / "relocations", tmp_path)
@@ -7267,6 +6799,7 @@ def test_global_pause_settles_a_public_resume_waiting_for_metadata_after_the_tra
         )
         assert downloaded.ok
         assert _acquisition_fields(owner, "state") == [AcquisitionState.ACCEPTED.value]
+        _as_background(owner)
         info_hash: str = network.added[0]
         if state is AcquisitionState.FAILED:
             assert owner.handle(_request("transfer", {"info_hash": info_hash, "action": "cancel"})).ok
@@ -7340,6 +6873,7 @@ def test_a_pause_of_an_uncertain_resume_waits_for_stop_and_reports_a_refusal(
         ).ok
         info_hash: str = network.added[0]
         transfer: TorrentInfo = network.tracked.pop(info_hash)
+        _as_background(owner)
         assert _await(lambda: _acquisition_fields(owner, "state") == [AcquisitionState.UNCERTAIN.value])
         network.before_action = stop_returning_transfer
         assert owner.handle(
@@ -7362,3 +6896,391 @@ def test_a_pause_of_an_uncertain_resume_waits_for_stop_and_reports_a_refusal(
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
     assert not thread.is_alive()
+
+
+_SEARCH_FIXTURES: Final[Path] = Path(__file__).parents[1] / "fixtures" / "search"
+
+_SLIME_S1: Final[int] = 101280
+
+
+def _slime_replay(scenario: str, sent: list[str]) -> Callable[[httpx.Request], httpx.Response]:
+    recorded: dict[str, object] = json.loads(
+        (_SEARCH_FIXTURES / f"anilist__franchise__{_SLIME_S1}.json").read_text(encoding="utf-8")
+    )
+    requests: object = recorded["requests"]
+    assert isinstance(requests, list)
+    pages: dict[tuple[int, ...], object] = {tuple(sorted(page["ids"])): page["body"] for page in requests}
+    schedule: dict[str, object] = {
+        "data": {
+            "Media": {
+                "id": _SLIME_S1,
+                "status": "FINISHED",
+                "episodes": 24,
+                "startDate": {"year": 2018, "month": 10, "day": 2},
+                "airingSchedule": {"pageInfo": {"currentPage": 1, "hasNextPage": False}, "nodes": []},
+            }
+        }
+    }
+
+    failing: str | None = {
+        "anilist_failed": "graphql.anilist.co",
+        "anizip_failed": "api.ani.zip",
+        "torrentio_failed": "torrentio.strem.fun",
+    }.get(scenario)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        host: str = request.url.host
+        sent.append(host)
+        variables: dict[str, object] = json.loads(request.content)["variables"] if request.content else {}
+        if host == failing:
+            return httpx.Response(503)
+        if host == "graphql.anilist.co" and "ids" not in variables and scenario == "long_schedule":
+            page: object = variables["page"]
+            assert isinstance(page, int)
+            return httpx.Response(200, json=_long_schedule_page(page))
+        if host == "graphql.anilist.co" and "ids" not in variables:
+            return (
+                httpx.Response(429, headers={"Retry-After": "60"})
+                if scenario == "schedule_limited"
+                else (httpx.Response(200, json=schedule))
+            )
+        if host == "graphql.anilist.co":
+            ids: object = variables["ids"]
+            assert isinstance(ids, list)
+            return httpx.Response(200, json=pages[tuple(sorted(ids))])
+        if host == "api.ani.zip":
+            return httpx.Response(200, content=(_SEARCH_FIXTURES / f"anizip__{_SLIME_S1}.json").read_bytes())
+        assert (host, request.url.path) == ("torrentio.strem.fun", "/stream/series/kitsu:41024:4.json")
+        return httpx.Response(200, content=(_SEARCH_FIXTURES / "torrentio__kitsu-41024-4.json").read_bytes())
+
+    return respond
+
+
+_LONG_SCHEDULE_EPISODES: Final[int] = 425
+
+
+def _long_schedule_page(page: int) -> dict[str, object]:
+    numbers: range = range((page - 1) * 25 + 1, min(page * 25, _LONG_SCHEDULE_EPISODES) + 1)
+    return {
+        "data": {
+            "Media": {
+                "id": _SLIME_S1,
+                "status": "RELEASING",
+                "episodes": None,
+                "startDate": {"year": 2018, "month": 10, "day": 2},
+                "airingSchedule": {
+                    "pageInfo": {"currentPage": page, "hasNextPage": numbers.stop <= _LONG_SCHEDULE_EPISODES},
+                    "nodes": [{"episode": number, "airingAt": number} for number in numbers],
+                },
+            }
+        }
+    }
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "scenario",
+    ["ok", "schedule_limited", "long_schedule", "anilist_failed", "anizip_failed", "torrentio_failed", "offer_raises"],
+)
+def test_episode_selection_crosses_owner_ipc_with_the_provider_reason_preserved(  # noqa: PLR0915
+    tmp_path: Path, scenario: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sent: list[str] = []
+    now: list[float] = [1000.0]
+    control: RequestControl = RequestControl(
+        httpx.MockTransport(_slime_replay(scenario, sent)),
+        clock=lambda: now[0],
+        sleep=lambda delay: now.__setitem__(0, now[0] + delay),
+    )
+    with httpx.Client(transport=control) as http:
+        acquisition: AcquisitionService = AcquisitionService(
+            source=_NoSource(),
+            client=QBittorrentClient("http://unused.test", http=http),
+            workspace_root=tmp_path,
+            parse_name=parse_release_name,
+            title_catalog=AniListCatalog(http),
+            request_control=control,
+            episode_catalog=AniZipCatalog(http),
+            stream_source=TorrentioSource(http),
+            clock=lambda: now[0],
+        )
+        if scenario == "offer_raises":
+
+            def broken(key: EpisodeKey, switches: object = None) -> EpisodeOffer:
+                raise ValueError(key.number)
+
+            monkeypatch.setattr(acquisition, "offer", broken)
+        service: AppService = _real_service(tmp_path, acquisition=acquisition)
+        owner: AutomationOwner = _owner(service, WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME))
+        thread: threading.Thread = _serving(owner)
+        key: bytes = os.urandom(32)
+        endpoint: str = control_endpoint(tmp_path)
+        server: ControlServer = ControlServer(endpoint, key, owner.handle, on_disconnect=owner.disconnect)
+        session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
+        captured: list[str] = []
+        handler_id: int = loguru_logger.add(
+            captured.append,
+            format="{message} {extra}",
+            level="WARNING",
+            filter=lambda record: record["extra"].get("command_kind") == "acquisition",
+        )
+        try:
+            failures: dict[str, ControlError] = {}
+            for name, call in (
+                ("franchise", lambda: session.franchise(_SLIME_S1)),
+                ("episodes", lambda: session.episodes(_SLIME_S1)),
+                ("offer", lambda: session.offer(EpisodeKey(_SLIME_S1, 4))),
+            ):
+                try:
+                    call()
+                except ControlError as error:
+                    failures[name] = error
+            expected: dict[str, tuple[str, str]] = {
+                "anilist_failed": ("franchise", ErrorCode.TITLE_CATALOG_FAILED.value),
+                "torrentio_failed": ("offer", ErrorCode.TORRENT_SOURCE_FAILED.value),
+                "offer_raises": ("offer", "command_failed"),
+            }
+            if scenario in expected:
+                operation, reason = expected[scenario]
+                assert operation in failures
+                assert (failures[operation].code, failures[operation].reason) == (ControlErrorCode.INTERNAL, reason)
+                assert "error_class" in "".join(captured)
+            if scenario == "offer_raises":
+                assert "ValueError" in "".join(captured)
+            if scenario == "anizip_failed":
+                assert not failures
+                unmapped: EpisodeOffer = session.offer(EpisodeKey(_SLIME_S1, 4))
+                assert not unmapped.numbering
+                assert unmapped.suggestion is None
+                assert unmapped.status == "brak numeracji"
+            if scenario in {"ok", "schedule_limited"}:
+                assert not failures
+                listing: EpisodeListing = session.episodes(_SLIME_S1)
+                offer: EpisodeOffer = session.offer(EpisodeKey(_SLIME_S1, 4))
+                assert offer.suggestion is not None
+                assert offer.candidates[offer.suggestion].identity.verdict is IdentityVerdict.MATCH
+                assert len(listing.episodes) == 24
+            if scenario == "schedule_limited":
+                assert (listing.schedule_warning, listing.schedule_retry_at) == (
+                    "TITLE_CATALOG_FAILED",
+                    datetime.fromtimestamp(control.blocked_until(("anilist",)), UTC),
+                )
+                assert (listing.status, listing.aired) == ("FINISHED", None)
+                assert not any(episode.aired for episode in listing.episodes)
+            if scenario == "ok":
+                assert (listing.schedule_warning, listing.aired) == (None, 24)
+                assert all(episode.aired for episode in listing.episodes)
+                assert sent.count("api.ani.zip") == 1
+            if scenario == "long_schedule":
+                assert not failures
+                long: EpisodeListing = session.episodes(_SLIME_S1)
+                assert (long.schedule_warning, long.status, long.aired) == (None, "RELEASING", _LONG_SCHEDULE_EPISODES)
+                assert len(long.episodes) == _LONG_SCHEDULE_EPISODES
+                assert all(episode.aired for episode in long.episodes)
+                assert sent.count("graphql.anilist.co") == 3 + 17
+            assert all(value not in "".join(captured) for value in ("https://", "Slime", "kitsu"))
+        finally:
+            loguru_logger.remove(handler_id)
+            session.close()
+            server.close()
+            owner.request_shutdown()
+            thread.join(_TIMEOUT_S)
+            service.close()
+        assert not thread.is_alive()
+
+
+@pytest.mark.integration
+def test_interrupted_catalogue_channel_stops_the_owner_franchise_expansion(tmp_path: Path) -> None:
+    requested: list[int] = []
+    entered: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        identifier: int = json.loads(request.content)["variables"]["ids"][0]
+        requested.append(identifier)
+        entered.set()
+        assert release.wait(_TIMEOUT_S)
+        child: dict[str, object] = {"id": identifier + 1, "type": "ANIME", "format": "TV", "title": {"romaji": "Next"}}
+        node: dict[str, object] = {
+            "id": identifier,
+            "type": "ANIME",
+            "format": "TV",
+            "title": {"romaji": "Root"},
+            "relations": {"edges": [{"relationType": "SEQUEL", "node": child}]},
+        }
+        return httpx.Response(200, json={"data": {"Page": {"media": [node]}}})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        acquisition: AcquisitionService = AcquisitionService(
+            source=_NoSource(),
+            client=QBittorrentClient("http://unused.test", http=http),
+            workspace_root=tmp_path,
+            parse_name=parse_release_name,
+            title_catalog=AniListCatalog(http),
+        )
+        service: AppService = _real_service(tmp_path, acquisition=acquisition)
+        owner: AutomationOwner = _owner(service, WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME))
+        thread: threading.Thread = _serving(owner)
+        key: bytes = os.urandom(32)
+        endpoint: str = control_endpoint(tmp_path)
+        server: ControlServer = ControlServer(endpoint, key, owner.handle, on_disconnect=owner.disconnect)
+        session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key))
+        failures: list[ControlError] = []
+
+        def read() -> None:
+            try:
+                session.franchise(1)
+            except ControlError as error:
+                failures.append(error)
+
+        reader: threading.Thread = threading.Thread(target=read, daemon=True)
+        try:
+            reader.start()
+            assert entered.wait(_TIMEOUT_S)
+            session.interrupt_reads()
+            reader.join(_TIMEOUT_S)
+            assert failures
+            deadline: float = time.monotonic() + _TIMEOUT_S
+            while owner._catalog_reads and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert not owner._catalog_reads
+            release.set()
+        finally:
+            release.set()
+            session.close()
+            server.close()
+            owner.request_shutdown()
+            thread.join(_TIMEOUT_S)
+            service.close()
+        assert not thread.is_alive()
+    assert requested == [1]
+
+
+@pytest.mark.integration
+def test_a_catalogue_channel_opened_after_an_interrupt_is_discarded_and_the_next_read_works(tmp_path: Path) -> None:
+    requested: list[int] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requested.append(json.loads(request.content)["variables"]["ids"][0])
+        media: list[dict[str, object]] = [
+            {"id": requested[-1], "type": "ANIME", "format": "TV", "title": {"romaji": "R"}, "relations": {"edges": []}}
+        ]
+        return httpx.Response(200, json={"data": {"Page": {"media": media}}})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        acquisition: AcquisitionService = AcquisitionService(
+            source=_NoSource(),
+            client=QBittorrentClient("http://unused.test", http=http),
+            workspace_root=tmp_path,
+            parse_name=parse_release_name,
+            title_catalog=AniListCatalog(http),
+        )
+        service: AppService = _real_service(tmp_path, acquisition=acquisition)
+        owner: AutomationOwner = _owner(service, WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME))
+        thread: threading.Thread = _serving(owner)
+        key: bytes = os.urandom(32)
+        endpoint: str = control_endpoint(tmp_path)
+        server: ControlServer = ControlServer(endpoint, key, owner.handle, on_disconnect=owner.disconnect)
+        connecting: threading.Event = threading.Event()
+        proceed: threading.Event = threading.Event()
+        opened: list[ControlClient] = []
+
+        def connect() -> ControlClient:
+            if opened:
+                connecting.set()
+                assert proceed.wait(_TIMEOUT_S)
+            client: ControlClient = ControlClient(endpoint, key)
+            opened.append(client)
+            return client
+
+        session: ResidentSession = ResidentSession(tmp_path, connect)
+        cancel: EventCancellationToken = EventCancellationToken()
+        failures: list[Exception] = []
+
+        def read() -> None:
+            try:
+                session.franchise(1, cancel=cancel)
+            except (ControlError, ExecutionError) as error:
+                failures.append(error)
+
+        reader: threading.Thread = threading.Thread(target=read, daemon=True)
+        try:
+            reader.start()
+            assert connecting.wait(_TIMEOUT_S)
+            cancel.cancel()
+            session.interrupt_reads()
+            proceed.set()
+            reader.join(_TIMEOUT_S)
+            assert [type(failure) for failure in failures] == [ControlError]
+            assert requested == []
+            assert session.franchise(1).selected_id == 1
+            assert requested == [1]
+        finally:
+            proceed.set()
+            session.close()
+            server.close()
+            owner.request_shutdown()
+            thread.join(_TIMEOUT_S)
+            service.close()
+        assert not thread.is_alive()
+
+
+@pytest.mark.integration
+def test_a_long_schedule_read_outlasts_the_default_answer_wait_while_other_commands_stay_answered(
+    tmp_path: Path,
+) -> None:
+    sent: list[str] = []
+    paging: threading.Event = threading.Event()
+    replay: Callable[[httpx.Request], httpx.Response] = _slime_replay("long_schedule", sent)
+
+    def slow(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "graphql.anilist.co" and "ids" not in json.loads(request.content)["variables"]:
+            paging.set()
+            time.sleep(0.04)
+        return replay(request)
+
+    now: list[float] = [1000.0]
+    control: RequestControl = RequestControl(
+        httpx.MockTransport(slow), clock=lambda: now[0], sleep=lambda delay: now.__setitem__(0, now[0] + delay)
+    )
+    with httpx.Client(transport=control) as http:
+        acquisition: AcquisitionService = AcquisitionService(
+            source=_NoSource(),
+            client=QBittorrentClient("http://unused.test", http=http),
+            workspace_root=tmp_path,
+            parse_name=parse_release_name,
+            title_catalog=AniListCatalog(http),
+            request_control=control,
+            episode_catalog=AniZipCatalog(http),
+            stream_source=TorrentioSource(http),
+            clock=lambda: now[0],
+        )
+        service: AppService = _real_service(tmp_path, acquisition=acquisition)
+        owner: AutomationOwner = _owner(service, WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME))
+        thread: threading.Thread = _serving(owner)
+        key: bytes = os.urandom(32)
+        endpoint: str = control_endpoint(tmp_path)
+        server: ControlServer = ControlServer(endpoint, key, owner.handle, on_disconnect=owner.disconnect)
+        session: ResidentSession = ResidentSession(tmp_path, lambda: ControlClient(endpoint, key, timeout_s=0.2))
+        listings: list[EpisodeListing] = []
+        reader: threading.Thread = threading.Thread(target=lambda: listings.append(session.episodes(_SLIME_S1)))
+        try:
+            reader.start()
+            assert paging.wait(_TIMEOUT_S)
+            assert "material_counts" in session.command("status")
+            reader.join(_TIMEOUT_S)
+            assert not reader.is_alive()
+            assert [len(listing.episodes) for listing in listings] == [_LONG_SCHEDULE_EPISODES]
+            assert sent.count("graphql.anilist.co") == 20
+        finally:
+            session.close()
+            server.close()
+            owner.request_shutdown()
+            thread.join(_TIMEOUT_S)
+            service.close()
+        assert not thread.is_alive()
+
+
+class _NoSource:
+    def search(self, query: str, *, categories: Sequence[str] = SEARCH_CATEGORIES) -> tuple[Release, ...]:
+        raise AssertionError(query)
