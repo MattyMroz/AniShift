@@ -2147,7 +2147,7 @@ _INTERFACE: Final[tuple[str, ...]] = ("PANEL", *state_module._TABS, "Esc wróć"
         ("draft", "E3  Episode 3", ("[x]", "Już wyemitowane", "Dodaj subskrypcję", "Anuluj", _POINTER)),
         ("history", "2026-10-09 20:15:00 · Slime · ukończono", ("Historia", "P ponów", _POINTER)),
         ("library_details", "ready/Slime.pl.mkv · MKV", ("F folder", _POINTER)),
-        ("u08", "Ostatnie sprawdzenie 14:00", ("Tytuł", "[ ]", "W wstrzymaj", _POINTER)),
+        ("u08", "Sprawdzono E3: brak wydań w źródle", ("Tytuł", "[ ]", "W wstrzymaj", _POINTER)),
         ("problem", "Źródło wydań nie odpowiada", ()),
         ("subscriptions_empty", "", ("Brak subskrypcji",)),
         ("busy", "", ("Wczytuję",)),
