@@ -3,7 +3,7 @@
 > Status: wymagania gotowe do akceptacji przed planem implementacji.
 > Ostatnia aktualizacja: 2026-08-09.
 > Kontrakt produktu: [stage-9-requirements.md](stage-9-requirements.md).
-> Przyszłe pobieranie: [future/auto-download-anime.md](future/auto-download-anime.md).
+> Przyszłe pobieranie (zrealizowane): [docs/ideas.md](../ideas.md).
 
 ## 1. Cel
 

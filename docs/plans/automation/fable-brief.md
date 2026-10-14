@@ -36,8 +36,8 @@ odcinków, operacje na torrentach, modyfikacje procesów. Nie czytaj ani nie zmi
    `plans/05-auto-preset-controls.md` w tym workstreamie.
 4. Pasujące zagnieżdżone `AGENTS.md` przed badaniem kodu. Kod i aktualne wymagania
    mają pierwszeństwo przed historycznymi roadmapami.
-5. Historyczne pomysły: `docs/plans/future/auto-download-anime.md`,
-   `subtitle-layout-engine.md`, `other-feature-ideas.md`, `mkv-integration-plugin.md`.
+5. Historyczne pomysły: `docs/ideas.md` (scalone dawne pliki `docs/plans/future/`)
+   i `docs/plans/future/subtitle-layout-engine.md`.
    Czytaj sekcje istotne dla decyzji; nie kopiuj całych starych roadmap.
 
 ## Stan sprawdzony przez prowadzącego
