@@ -10,7 +10,8 @@ Szczegółowo zaplanowany jest tylko etap 0. Każdy kolejny etap dostaje własny
 | 1 | Glosariusz postaci z AniList (pisownia, płeć, rola), mówca linii z pola `Actor` i oznaczenie szyldów w prompcie | niespójne pisownie imion z glosariusza = 0; średnia długość szyldów krótsza | imiona i rodzaj gramatyczny lepsze | tłumaczenie |
 | 2 | Kategoria „piosenka”, znaczniki `SIGN`/`SFX`/`Text` z pola `Actor` jako sygnał szyldu i niepewne linie nie wypadają po cichu | linie OP/ED i karaoke w `spoken` = 0; niepewne linie poza lektorem i napisami = 0 | lektor nie czyta piosenek ani szyldów i nie gubi kwestii | podział + lektor |
 | 3 | Miks: ducking oryginału pod lektorem i przyspieszanie pojedynczych długich kwestii (z limitem tempa) | p95 opóźnienia lektora (`drift_ms`) niższe o ≥ 50%; kwestii z opóźnieniem > 1,5 s mniej | lektor słyszalny, oryginał nie ginie, lektor nie zostaje w tyle | lektor |
-| 4 | Szyldy mieszczą się w ramce przy dłuższym polskim tekście i w aktywnym obszarze obrazu (#23) | szyldy z `\pos` lub `\clip` wychodzące poza ramkę: ≥ 85% mniej | szyldy czytelne, nic nie wychodzi poza kadr | tłumaczenie (zapis ASS) |
+| 4 | Szyldy mieszczą się w ramce przy dłuższym polskim tekście, a wszystkie napisy w aktywnym obszarze obrazu, także na monitorze szerokokątnym innym niż 16:9; nic nie wychodzi poza ekran (#23) | szyldy z `\pos` lub `\clip` wychodzące poza ramkę: ≥ 85% mniej | szyldy czytelne, nic nie wychodzi poza kadr | tłumaczenie (zapis ASS) |
+| 5 | Nadpisanie stylu dialogów (MVP): jeden font i rozmiar wybrany przez właściciela, skalowany do obszaru obrazu; szyldy i piosenki zachowują oryginalny styl | dialogi mają wybrany font; szyldy bez zmian | czytelność i wygląd napisów na monitorze właściciela | zapis ASS |
 
 ## Metryki etapu 0
 

@@ -37,6 +37,8 @@ Najbliższy priorytet właściciela to jakość tego, co program generuje. Kolej
 - **Silnik layoutu napisów** — `potem`. Deterministyczny layout i kontrola jakości: [reference/subtitle-layout-engine.md](reference/subtitle-layout-engine.md), wcześniejszy plan [03-subtitle-layout.md](work/05-automation/plans/03-subtitle-layout.md).
 - **Jak pracują profesjonalni tłumacze napisów** — `do zbadania`. Czas wyświetlania, tempo czytania, podział napisów i długość wypowiedzi TTS to osobne zagadnienia. Style i pozycje ASS świadczą o obecności typesettingu, nie o jego jakości. Punkty wyjścia: [Netflix Polish Timed Text Style Guide](https://partnerhelp.netflixstudios.com/hc/en-us/articles/216787928-Polish-Timed-Text-Style-Guide), [Subtitle Timing Guidelines](https://partnerhelp.netflixstudios.com/hc/en-us/articles/360051554394-Timed-Text-Style-Guide-Subtitle-Timing-Guidelines), [Subtitle Templates](https://partnerhelp.netflixstudios.com/hc/en-us/articles/219375728-Timed-Text-Style-Guide-Subtitle-Templates). Pary EN/PL z Netflixa nie zostały zweryfikowane.
 
+- **Font napisów zależny od gatunku lub tytułu** — `do zbadania`. Po MVP z etapu 5 workstreamu [10-quality](work/10-quality/masterplan.md) (jeden font dialogów): osobny font dla gatunku albo tytułu, z kilku fontów, które lubi właściciel. Nie wiadomo jeszcze, czy to dobry pomysł.
+
 ### 1.4 Piosenki OP/ED
 
 - **Tłumaczenie i styl piosenek** — `teraz` (kategoria w kroku 2), reszta `potem`. Dopracowane polskie tłumaczenia piosenek, kolorowe lub stylizowane napisy. Karaoke to możliwa interpretacja do ustalenia, nie wymaganie. Wideo, audio i zrzuty jako kontekst to hipotezy: widoczna postać nie musi być mówiącym.

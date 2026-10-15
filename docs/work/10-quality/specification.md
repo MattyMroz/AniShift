@@ -8,7 +8,8 @@ Odcinek obejrzany po AniShift ma brzmieć i wyglądać lepiej niż dziś:
 - poprawne imiona i rodzaj gramatyczny postaci;
 - lektor czyta tylko dialogi, bez szyldów i piosenek, i nie zostaje w tyle za postaciami;
 - oryginał nie zagłusza lektora ani lektor oryginału;
-- szyldy mieszczą się w swojej ramce.
+- szyldy mieszczą się w swojej ramce, a napisy nie wychodzą poza obraz na żadnym monitorze;
+- dialogi mają czytelny font wybrany przez właściciela.
 
 Każda zmiana musi dać mierzalny zysk na stałym zestawie odcinków, a nie tylko „wyglądać lepiej” w kodzie.
 
@@ -23,7 +24,8 @@ W zakresie, w kolejności z [masterplanu](masterplan.md):
 - glosariusz postaci z AniList i oznaczanie szyldów w prompcie;
 - kategoria „piosenka” i niepewne linie;
 - miks lektora;
-- dopasowanie szyldów.
+- dopasowanie szyldów i napisów do obszaru obrazu, także na monitorze szerokokątnym;
+- nadpisanie fontu i rozmiaru dialogów (MVP).
 
 Poza zakresem:
 - lokalny TTS (odrzucony na teraz, `docs/ideas.md` §4);
@@ -32,6 +34,7 @@ Poza zakresem:
 - wielogłosowa obsada;
 - API i strona WWW;
 - podział `automation.py`.
+- font zależny od gatunku lub tytułu (pomysł do zbadania po MVP, `docs/ideas.md`).
 
 ## Ustalenia
 
