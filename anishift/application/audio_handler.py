@@ -176,6 +176,9 @@ class AudioTaskHandler:
             product_suffix(ArtifactKind.NARRATION_AUDIO, audio_profile=profile),
         )
         observer: _ProgressObserver = _ProgressObserver(task.task_id, progress)
+        source_offset_us: str | int | bool = dict(task.parameters).get("source_offset_us", 0)
+        if type(source_offset_us) is not int or source_offset_us < 0:
+            _raise_execution("Audio source_offset_us parameter must be a non-negative integer")
         rendered: AudioRenderResult = self._mixer.render(
             AudioRenderRequest(
                 manifest.scope_id,
@@ -185,6 +188,7 @@ class AudioTaskHandler:
                 self._run_root / task.group_id / "audio",
                 destination,
                 paragraph_pauses=manifest.timeline is NarrationTimeline.CONTINUOUS,
+                source_offset_us=source_offset_us,
             ),
             callbacks=observer,
             on_percent=observer.on_percent,

@@ -86,7 +86,17 @@ def _map_stream(stream: dict[str, Any]) -> MediaTrack | None:
         is_default=bool(disposition.get("default", 0)),
         is_forced=bool(disposition.get("forced", 0)),
         subtitle_format=subtitle_format,
+        start_us=_stream_start_us(stream.get("start_time")),
     )
+
+
+def _stream_start_us(value: object) -> int | None:
+    if value is None or value == "N/A":
+        return None
+    seconds: Decimal = Decimal(str(value))
+    if not seconds.is_finite():
+        raise ValueError("start_time")
+    return int((seconds * 1_000_000).to_integral_value(rounding=ROUND_HALF_UP))
 
 
 def _subtitle_format(

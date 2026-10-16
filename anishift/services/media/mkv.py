@@ -75,6 +75,7 @@ def _map_track(track: TrackInfo) -> MediaTrack | None:
         is_default=track.default,
         is_forced=track.forced,
         subtitle_format=subtitle_format,
+        start_us=track.start_us,
     )
 
 

@@ -183,6 +183,64 @@ def _task(plan: ExecutionPlan, kind: TaskKind) -> PlanTask:
     return next(task for task in plan.tasks if task.kind is kind)
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("external", [False, True])
+@pytest.mark.parametrize("container", [ArtifactKind.VIDEO_MKV, ArtifactKind.VIDEO_MP4])
+@pytest.mark.parametrize(
+    ("video_start", "audio_start", "expected"),
+    [
+        (0, 5_005_000, 5_005_000),
+        (2_000_000, 500_000, 500_000),
+        (500_000, 0, 0),
+        (None, 5_005_000, 5_005_000),
+        (0, -21_333, 0),
+        (0, None, 0),
+    ],
+)
+def test_mix_plans_source_offset_from_selected_track(
+    container: ArtifactKind, video_start: int | None, audio_start: int | None, expected: int, *, external: bool
+) -> None:
+    video: Artifact = _artifact(container, "1.mkv" if container is ArtifactKind.VIDEO_MKV else "1.mp4")
+    audio: Artifact = _artifact(ArtifactKind.SOURCE_AUDIO, "outside.flac", audio_codec="flac")
+    tracks: tuple[MediaTrack, ...] = (
+        MediaTrack(0, MediaTrackKind.VIDEO, "h264", None, None, True, False, start_us=video_start),
+        MediaTrack(1, MediaTrackKind.AUDIO, "aac", "eng", None, True, False, start_us=9_000_000),
+        MediaTrack(2, MediaTrackKind.AUDIO, "aac", "jpn", None, False, False, start_us=audio_start),
+        MediaTrack(3, MediaTrackKind.SUBTITLES, "ass", "eng", None, False, False, "ass"),
+    )
+    group: InspectedSourceGroup = _group(video, audio, tracks=tracks)
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.NARRATION_AUDIO}))
+    plan: ExecutionPlan = (
+        plan_manual(
+            (group,),
+            {
+                group.group_id: _manual(
+                    group,
+                    products,
+                    selected_audio_artifact_id=audio.artifact_id,
+                    external_audio_role=ExternalAudioRole.SOURCE_AUDIO,
+                )
+            },
+            _settings(),
+        )
+        if external
+        else plan_auto((group,), _preset(products), _settings())
+    )
+
+    assert plan.can_execute
+    mix: PlanTask = _task(plan, TaskKind.MIX_NARRATION)
+    assert dict(mix.parameters)["source_offset_us"] == (0 if external else expected)
+    if external:
+        assert audio.artifact_id in mix.requires
+        assert TaskKind.EXTRACT_TRACKS not in _task_kinds(plan)
+        assert TaskKind.EXTRACT_AUDIO not in _task_kinds(plan)
+    else:
+        extraction: TaskKind = (
+            TaskKind.EXTRACT_TRACKS if container is ArtifactKind.VIDEO_MKV else TaskKind.EXTRACT_AUDIO
+        )
+        assert extraction in _task_kinds(plan)
+
+
 def _complete_products() -> tuple[InspectedSourceGroup, AutoPreset]:
     artifacts: list[Artifact] = [
         _artifact(ArtifactKind.VIDEO_MKV, "1.mkv"),
