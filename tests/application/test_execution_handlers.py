@@ -1013,6 +1013,52 @@ def test_planner_scheduler_completes_independent_subtitle_branches(tmp_path: Pat
     )
 
 
+def test_plain_srt_containers_report_the_omitted_displayed_layer_without_translation(tmp_path: Path) -> None:
+    source_path: Path = tmp_path / "episode.srt"
+    _write_srt(source_path)
+    source: Artifact = replace(
+        _ready("source", ArtifactKind.SOURCE_SUBTITLES, source_path), subtitle_format="srt", language="eng"
+    )
+    video_path: Path = tmp_path / "episode.mkv"
+    video_path.write_bytes(b"video source")
+    video: Artifact = replace(_ready("video", ArtifactKind.VIDEO_MKV, video_path), duration_us=10_000_000)
+    source_group: SourceGroup = SourceGroup("group-1", "episode", tmp_path, (source, video))
+    inspected: InspectedSourceGroup = InspectedSourceGroup(
+        source_group,
+        source_group.artifacts,
+        {video.artifact_id: FakeMediaProbe().identify(video_path, cancel=NeverCancelledToken(), timeout_s=30.0)},
+        (),
+    )
+    products: ProductIntent = ProductIntent(
+        frozenset({ProductKind.MKV, ProductKind.MP4}),
+        burn_subtitle_product=BurnSubtitleProduct.DISPLAYED_PL,
+        mkv_tracks=frozenset({MkvTrackProduct.DISPLAYED_PL_SUBTITLES}),
+    )
+    plan: ExecutionPlan = plan_auto((inspected,), AutoPreset("signless", "Signless", products), _settings())
+    translation: Mock = Mock(wraps=_TranslationService())
+    composer: _Composer = _Composer()
+    run_root: Path = tmp_path / "temp" / "run-srt"
+
+    with RunSession(run_root) as session:
+        handlers: ExecutionHandlers = ExecutionHandlers(
+            ExtractionTaskHandler(_ExtractionService(), run_root=run_root, timeout_s=30.0),
+            SubtitleTaskHandler(run_root=run_root),
+            TranslationTaskHandler(translation, run_root=run_root),
+            composition=CompositionTaskHandler(composer, run_root=run_root),
+            publish=PublishTaskHandler(run_root=run_root, source_groups={"group-1": source_group}),
+        )
+        result: RunResult = GraphScheduler(
+            handlers, limits=ResourceLimits.from_settings(plan.settings), run_id="run-srt", session=session
+        ).run(plan, cancel=NeverCancelledToken(), events=_RunEventSink())
+
+    translation.translate_file.assert_not_called()
+    assert result.succeeded
+    assert result.warnings == (DISPLAYED_ABSENCE_NOTE,)
+    assert {product.path.name for product in result.groups[0].products} == {"episode.pl.mkv", "episode.pl.mp4"}
+    assert len(composer.requests) == 2
+    assert all(request.burn_subtitle is None and not request.attached_subtitles for request in composer.requests)
+
+
 def _subtitle_branch_group(tmp_path: Path, streams: str) -> InspectedSourceGroup:
     source_path: Path = tmp_path / "episode.ass"
     _write_ass(source_path)

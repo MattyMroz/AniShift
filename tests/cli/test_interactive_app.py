@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -24,6 +25,7 @@ from anishift.application import (
     RunEventSink,
     RunResult,
 )
+from anishift.application.results import DISPLAYED_ABSENCE_NOTE
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive.prompts import TerminalRenderer
 from anishift.cli.interactive.state import StateController, _Tab
@@ -440,6 +442,23 @@ def test_a_partial_run_shows_its_failure_and_preserved_products(monkeypatch: pyt
     assert "episode.pl.srt" in finished
     assert "Composition failed" in finished
     assert "Gotowe" not in finished
+
+
+def test_an_omitted_displayed_layer_is_stated_in_polish_after_a_successful_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result: RunResult = replace(_result(GroupStatus.SUCCEEDED), warnings=(DISPLAYED_ABSENCE_NOTE,))
+    monkeypatch.setattr(interactive_app, "prepare_auto_run", _accept(_prepared()))
+    monkeypatch.setattr(interactive_app, "execute_plan", _returns(result))
+    application, _renderer = _application(monkeypatch, _service())
+
+    application._start_auto()
+    _settle(application)
+    finished: str = _frame(application)
+
+    assert _mode(application) is interactive_app._ViewMode.MESSAGE
+    assert "Brak napisów ekranowych w źródle · pominięto je w wyniku" in finished
+    assert DISPLAYED_ABSENCE_NOTE not in finished
 
 
 def test_result_scrolling_clamps_edges_and_end_reaches_the_last_line(monkeypatch: pytest.MonkeyPatch) -> None:

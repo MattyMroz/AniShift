@@ -17,7 +17,16 @@ import anishift.application.runtime as runtime_module
 import anishift.config.presets as presets_module
 import anishift.config.user_settings as user_settings_module
 import anishift.platform.binaries as binaries_module
-from anishift.application import AppService, ArtifactKind, AutoPreset, ExecutionPlan, RunEvent, RunResult, TaskKind
+from anishift.application import (
+    AppService,
+    ArtifactKind,
+    ArtifactState,
+    AutoPreset,
+    ExecutionPlan,
+    RunEvent,
+    RunResult,
+    TaskKind,
+)
 from anishift.application.cancellation import NeverCancelledToken
 from anishift.application.intents import (
     VIDEO_PRODUCTS,
@@ -840,15 +849,20 @@ def test_displayed_products_from_a_plain_srt_succeed_with_an_absence_note_withou
     plan, result = harness.run()
 
     assert plan.groups[0].intent.products.requested_products == frozenset({ProductKind.DISPLAYED_PL})
+    assert _kinds(plan) == {TaskKind.PUBLISH_ARTIFACT}
+    assert [problem.code for problem in plan.problems] == ["displayed_cues_absent"]
     assert result.succeeded
     assert result.groups[0].error_messages == ()
     assert result.groups[0].products == ()
     assert result.warnings == ("No displayed subtitle cues; no displayed subtitle file was created.",)
     assert {artifact_id for task in result.groups[0].task_results for artifact_id in task.absent_outputs} == {
-        artifact.artifact_id for artifact in plan.artifacts if artifact.kind is ArtifactKind.DISPLAYED_PL
+        artifact.artifact_id
+        for artifact in plan.artifacts
+        if artifact.kind is ArtifactKind.DISPLAYED_PL and artifact.state is ArtifactState.MISSING
     }
     assert not (harness.workspace / "Episode 20.displayed.pl.srt").exists()
     assert {path for path in harness.workspace.iterdir() if path.is_file()} == {source}
+    assert harness.translated == []
     assert harness.synthesized == []
 
 
