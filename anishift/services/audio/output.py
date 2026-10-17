@@ -61,7 +61,7 @@ class RenderInputs:
     original_audio: Path | None
     config: AudioConfig
     channel_plan: ChannelPlan
-    source_offset_ms: int = 0
+    source_offset_samples: int = 0
 
 
 def codec_spec(
@@ -111,8 +111,8 @@ def render_command(
             channel_plan,
             gain_db=config.original_gain_db,
         )
-        if inputs.source_offset_ms > 0:
-            source_chain = f"asetpts=PTS-STARTPTS,adelay={inputs.source_offset_ms}:all=1,{source_chain}"
+        if inputs.source_offset_samples > 0:
+            source_chain = f"asetpts=PTS-STARTPTS,adelay={inputs.source_offset_samples}S:all=1,{source_chain}"
         narrator_gain_db: float = config.narrator_mix_base_gain_db + config.voice_mix_offset_db
         filter_complex: str = (
             f"[0:a:0]{source_chain}[source];"

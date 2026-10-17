@@ -106,10 +106,10 @@ def test_narrator_only_command_has_no_mix_gain() -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("offset_ms", "prefix"),
-    [(5005, "asetpts=PTS-STARTPTS,adelay=5005:all=1,"), (0, "")],
+    ("offset_samples", "prefix"),
+    [(239_216, "asetpts=PTS-STARTPTS,adelay=239216S:all=1,"), (0, "")],
 )
-def test_mix_command_offsets_only_source(offset_ms: int, prefix: str) -> None:
+def test_mix_command_offsets_only_source(offset_samples: int, prefix: str) -> None:
     inputs: RenderInputs = RenderInputs(
         Path("narrator.wav"), Path("source.wav"), AudioConfig(), build_channel_plan(AudioCodecProfile.EAC3, "stereo")
     )
@@ -120,7 +120,7 @@ def test_mix_command_offsets_only_source(offset_ms: int, prefix: str) -> None:
         "[source][narrator]amix=inputs=2:duration=longest:dropout_transition=2:normalize=true[mixed]"
     )
     actual: tuple[str, ...] = render_command(
-        Path("ffmpeg"), Path("out.eac3"), inputs=replace(inputs, source_offset_ms=offset_ms)
+        Path("ffmpeg"), Path("out.eac3"), inputs=replace(inputs, source_offset_samples=offset_samples)
     )
     expected: tuple[str, ...] = tuple(arg.replace("[0:a:0]", f"[0:a:0]{prefix}") for arg in baseline)
 

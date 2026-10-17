@@ -22,7 +22,7 @@ __all__ = [
 _NARRATION_ALGORITHM_VERSION: Final[int] = 1
 """Version of normalization and serialized timeline semantics."""
 
-_MIX_ALGORITHM_VERSION: Final[int] = 2
+_MIX_ALGORITHM_VERSION: Final[int] = 3
 """Version of source alignment, gain, channel mapping, and amix semantics."""
 
 _NORMALIZATION_ALGORITHM_VERSION: Final[int] = 1

@@ -190,6 +190,11 @@ class AudioService:
             request,
             cancel=cancel,
         )
+        source_offset_samples: int = (
+            0
+            if original_probe is None
+            else (request.source_offset_us * original_probe.sample_rate + 500_000) // 1_000_000
+        )
         channel_plan: ChannelPlan = build_channel_plan(
             self._config.codec_profile,
             original_probe.channel_layout if original_probe is not None else "mono",
@@ -243,6 +248,7 @@ class AudioService:
             channel_plan,
             expected_duration_ms,
             mix_id,
+            source_offset_samples=source_offset_samples,
             on_percent=on_percent,
             cancel=cancel,
         )
@@ -501,6 +507,7 @@ class AudioService:
         expected_duration_ms: int,
         mix_id: str,
         *,
+        source_offset_samples: int,
         on_percent: Callable[[int], None] | None,
         cancel: threading.Event | None,
     ) -> AudioProbe:
@@ -514,7 +521,7 @@ class AudioService:
                     inputs=RenderInputs(
                         narrator=narrator_path,
                         original_audio=request.source_audio_path,
-                        source_offset_ms=request.source_offset_ms,
+                        source_offset_samples=source_offset_samples,
                         config=self._config,
                         channel_plan=channel_plan,
                     ),
