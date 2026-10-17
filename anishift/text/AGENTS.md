@@ -20,6 +20,7 @@ subtitle line breaking.
 - `hard_split_graphemes()` mierzy limit w punktach kodowych. Zachowuje grafem,
   gdy mieści się w limicie; jeśli pojedynczy grafem jest większy, rozcina go,
   żeby zachować twardy limit callera.
+- `markers.py` jest jedynym właścicielem składni znaczników `<sN>…</sN>`: subtitles je tworzy i czyta, silniki translation tylko je usuwają.
 - Apostrofy nie są separatorami fraz. Znaki otwierające z kategorii `Ps`/`Pi`
   także nie mogą zaczynać granicy.
 

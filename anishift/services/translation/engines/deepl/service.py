@@ -19,6 +19,7 @@ from anishift.services.translation.errors import (
     TranslationRateLimitError,
 )
 from anishift.services.translation.types import BatchedLine
+from anishift.text.markers import strip_span_markers
 
 if TYPE_CHECKING:
     from anishift.services.translation.config import TranslationConfig
@@ -123,7 +124,8 @@ class DeeplService:
         source = to_deepl_source_code(source_lang)
         max_attempts = self._config.max_retries + 1
         out: list[BatchedLine] = []
-        for chunk in _chunk_batches(texts, self._config.batch_size, MAX_PAYLOAD_BYTES):
+        plain: list[str] = [strip_span_markers(text) for text in texts]
+        for chunk in _chunk_batches(plain, self._config.batch_size, MAX_PAYLOAD_BYTES):
             out.extend(
                 call_with_retry(
                     partial(self._translate_once, chunk, target, source),

@@ -4,6 +4,7 @@ from anishift.services.translation.engines.deepl._lang_codes import to_deepl_cod
 from anishift.services.translation.engines.deepl.config import DeeplConfig
 from anishift.services.translation.engines.deepl.service import DeeplService
 from anishift.services.translation.errors import TranslationAuthError
+from anishift.services.translation.types import BatchedLine
 
 
 class _Result:
@@ -103,3 +104,10 @@ def test_batch_size_limits_lines_per_request() -> None:
     engine._client = _CountingClient()
     engine.translate_batch(["a", "b", "c", "d", "e"], source_lang="auto", target_lang="pl")
     assert seen == [2, 2, 1]
+
+
+def test_deepl_never_sends_span_markers() -> None:
+    engine: DeeplService = DeeplService(DeeplConfig(api_key="key:fx"))
+    engine._client = _FakeClient()
+    result: list[BatchedLine] = engine.translate_batch(["I <s1>did</s1> knock."], source_lang="auto", target_lang="pl")
+    assert [line.text for line in result] == ["PL:I did knock."]
