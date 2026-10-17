@@ -8,15 +8,9 @@ Bieżący stan prac: [docs/README.md](README.md).
 
 ## 1. Teraz: jakość wyniku
 
-Najbliższy priorytet właściciela to jakość tego, co program generuje. Kolejność:
+Najbliższy priorytet właściciela to jakość tego, co program generuje. Bieżąca kolejność (2026-10-17) i dowody: [masterplan 10-quality](work/10-quality/masterplan.md) — baza testowa, szyldy, podział dialog / szyld, granice stylów, polski podział wierszy, czasy wyświetlania, głośność lektora.
 
-| Nr | Krok | Dlaczego / dowód w kodzie |
-| --- | --- | --- |
-| 0 | Wzorzec z 3 odcinków ocenianych przez właściciela | Bez stałego zestawu nie da się porównać zmian tłumaczenia, napisów i miksu. |
-| 1 | Glosariusz postaci z AniList (imię, płeć, rola) i oznaczanie szyldów w prompcie | Prompt przewiduje glosariusz (`anishift/services/translation/engines/llm/prompts/translation.md:22`), ale silnik wysyła tylko prompt, styl i linie (`anishift/services/translation/engines/llm/service.py:247-251`). |
-| 2 | Kategoria „piosenka” i naprawa wypadających niepewnych linii | Klasyfikator zna tylko `DIALOG`/`SIGN`/`UNCERTAIN`, a styl piosenki trafia do `SIGN` (`anishift/services/subtitles/classifier.py:96-101`, `:153-156`); lektor czyta wyłącznie `DIALOG`, więc `UNCERTAIN` wypada z lektora (`anishift/services/subtitles/service.py:226`). |
-| 3 | Miks lektora z duckingiem (`sidechaincompress`) i przyspieszanie pojedynczych długich kwestii | Miks to stała głośność i `amix` (`anishift/services/audio/output.py:113-119`); tempo jest jedno dla całego lektora (`anishift/services/audio/fingerprint.py:39`). |
-| 4 | Dopasowanie szyldów do ramki obrazu | Issue [#23](https://github.com/MattyMroz/AniShift/issues/23): layout liczony dla całej klatki, także przy ultrawide. |
+Odłożone 2026-10-17: glosariusz postaci (wymaga nowej struktury; jeśli wróci, to jeden na całą serię, powiązany z subskrypcją), przyspieszanie lektora (testowane, wybijało z narracji), ściszanie oryginału pod lektorem (drażni właściciela).
 
 ### 1.1 Tłumaczenie
 
@@ -37,9 +31,11 @@ Najbliższy priorytet właściciela to jakość tego, co program generuje. Kolej
 - **Silnik layoutu napisów** — `potem`. Deterministyczny layout i kontrola jakości: [reference/subtitle-layout-engine.md](reference/subtitle-layout-engine.md), wcześniejszy plan [03-subtitle-layout.md](work/05-automation/plans/03-subtitle-layout.md).
 - **Jak pracują profesjonalni tłumacze napisów** — `do zbadania`. Czas wyświetlania, tempo czytania, podział napisów i długość wypowiedzi TTS to osobne zagadnienia. Style i pozycje ASS świadczą o obecności typesettingu, nie o jego jakości. Punkty wyjścia: [Netflix Polish Timed Text Style Guide](https://partnerhelp.netflixstudios.com/hc/en-us/articles/216787928-Polish-Timed-Text-Style-Guide), [Subtitle Timing Guidelines](https://partnerhelp.netflixstudios.com/hc/en-us/articles/360051554394-Timed-Text-Style-Guide-Subtitle-Timing-Guidelines), [Subtitle Templates](https://partnerhelp.netflixstudios.com/hc/en-us/articles/219375728-Timed-Text-Style-Guide-Subtitle-Templates). Pary EN/PL z Netflixa nie zostały zweryfikowane.
 
+- **Font napisów zależny od gatunku lub tytułu** — `kiedyś`. Font i rozmiar dialogów to dziś ustawienie odtwarzacza, nie AniShift; wraca razem z własnym odtwarzaczem albo globalnymi stylami.
+
 ### 1.4 Piosenki OP/ED
 
-- **Tłumaczenie i styl piosenek** — `teraz` (kategoria w kroku 2), reszta `potem`. Dopracowane polskie tłumaczenia piosenek, kolorowe lub stylizowane napisy. Karaoke to możliwa interpretacja do ustalenia, nie wymaganie. Wideo, audio i zrzuty jako kontekst to hipotezy: widoczna postać nie musi być mówiącym.
+- **Tłumaczenie i styl piosenek** — `kiedyś`. Dopracowane polskie tłumaczenia piosenek, kolorowe lub stylizowane napisy; karaoke to opcja, nie wymaganie. Rozpoznanie 2026-10-17: żaden z 37 MKV w bibliotece nie ma w napisach tekstów OP/ED (Erai-raws, SubsPlease, CR/AMZN/NF przez ToonsHub, Judas), a 24 mają rozdziały z miejscem openingu i endingu (`Opening`/`Ending` albo `Intro`/`Credits`). Tekst musiałby więc przyjść z zewnątrz (strony z tekstami, napisy innych grup) albo z transkrypcji śpiewu, która przy muzyce jest słaba. OP/ED są identyczne w całej serii, więc raz zgrany tekst można przesuwać do miejsca piosenki (rozdziały, porównanie dźwięku z wzorcem, AniSkip). Lektor piosenek nie czyta, więc dołożenie ich później to tylko przepisanie napisów. Odłożone, bo OP/ED zwykle się przewija po pierwszym odcinku.
 
 ### 1.5 Gotowe polskie napisy z zewnątrz
 
