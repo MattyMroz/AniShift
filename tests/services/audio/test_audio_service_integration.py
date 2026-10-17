@@ -95,8 +95,12 @@ def test_audio_progress_observer_cannot_fail_audio_execution() -> None:
 
 @pytest.mark.integration
 @pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
-@pytest.mark.parametrize(("offset_us", "offset_ms"), [(5_005_000, 5005), (5_005_500, 5006)])
-def test_source_offset_moves_decoded_signal_and_reuses_narrator(tmp_path: Path, offset_us: int, offset_ms: int) -> None:
+@pytest.mark.parametrize(
+    ("offset_us", "offset_ms", "offset_samples"), [(5_005_000, 5005, 240_240), (4_983_667, 4984, 239_216)]
+)
+def test_source_offset_moves_decoded_signal_and_reuses_narrator(
+    tmp_path: Path, offset_us: int, offset_ms: int, offset_samples: int
+) -> None:
     source: Path = tmp_path / "source.wav"
     clip: Path = tmp_path / "clip.wav"
     write_wav(source, frames=24_000, sample=b"\x00\x20")
@@ -123,7 +127,7 @@ def test_source_offset_moves_decoded_signal_and_reuses_narrator(tmp_path: Path, 
         int.from_bytes(frames[index : index + 2], "little", signed=True) for index in range(0, len(frames), 2)
     ]
     active: list[int] = [index for index, sample in enumerate(samples) if abs(sample) > 100]
-    assert active[0] == offset_ms * 48
+    assert active[0] == offset_samples
 
 
 @pytest.mark.skipif(
