@@ -198,13 +198,14 @@ class AudioService:
             narration_fingerprint_value=narration_id,
             narrator_path=narrator_path,
             original_audio_path=request.source_audio_path,
+            source_offset_us=request.source_offset_us,
             channel_plan=channel_plan,
             config=self._config,
         )
         destination: Path = request.destination
         expected_duration_ms: int = max(
             narrator_probe.duration_ms,
-            original_duration_ms,
+            original_duration_ms + request.source_offset_ms,
         )
         hit_probe: AudioProbe | None = self._output_hit(
             repository,
@@ -513,6 +514,7 @@ class AudioService:
                     inputs=RenderInputs(
                         narrator=narrator_path,
                         original_audio=request.source_audio_path,
+                        source_offset_ms=request.source_offset_ms,
                         config=self._config,
                         channel_plan=channel_plan,
                     ),
@@ -569,6 +571,8 @@ def _result(  # noqa: PLR0913
 
 
 def _validate_request(request: AudioRenderRequest) -> None:
+    if type(request.source_offset_us) is not int or request.source_offset_us < 0:
+        _raise_config("Audio source offset must be a non-negative integer number of microseconds")
     if _SAFE_SCOPE.fullmatch(request.scope_id) is None or request.scope_id.upper() in _WINDOWS_DEVICE_NAMES:
         _raise_config("Audio scope_id must be one safe opaque path segment")
     if not math.isfinite(request.post_process_tempo) or request.post_process_tempo <= 0:

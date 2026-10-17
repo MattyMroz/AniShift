@@ -22,8 +22,8 @@ __all__ = [
 _NARRATION_ALGORITHM_VERSION: Final[int] = 1
 """Version of normalization and serialized timeline semantics."""
 
-_MIX_ALGORITHM_VERSION: Final[int] = 1
-"""Version of gain, channel mapping, and amix semantics."""
+_MIX_ALGORITHM_VERSION: Final[int] = 2
+"""Version of source alignment, gain, channel mapping, and amix semantics."""
 
 _NORMALIZATION_ALGORITHM_VERSION: Final[int] = 1
 """Version of provider-clip conversion semantics."""
@@ -73,13 +73,14 @@ def narration_fingerprint(
     return _digest(payload)
 
 
-def mix_fingerprint(
+def mix_fingerprint(  # noqa: PLR0913 - source alignment is independent of content and output settings
     *,
     narration_fingerprint_value: str,
     narrator_path: Path,
     original_audio_path: Path | None,
     channel_plan: ChannelPlan,
     config: AudioConfig,
+    source_offset_us: int = 0,
 ) -> str:
     """Hash only inputs and settings that affect the final sidecar."""
     original_identity: dict[str, object] | None = None
@@ -93,6 +94,7 @@ def mix_fingerprint(
         "narration_fingerprint": narration_fingerprint_value,
         "narrator_hash": sha256_file(narrator_path),
         "original_audio": original_identity,
+        "source_offset_us": source_offset_us,
         "gain": {
             "narrator_base_db": _canonical_float(config.narrator_mix_base_gain_db),
             "voice_offset_db": _canonical_float(config.voice_mix_offset_db),

@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
+from conftest import DATA_DIR
 
 from anishift.application.cancellation import CancellationToken, NeverCancelledToken
 from anishift.errors import ErrorCode, UnsupportedMediaError
+from anishift.services.extraction.service import parse_media_info
 from anishift.services.media import probe
 from anishift.services.media._process import (
     ProcessExecutionError,
@@ -116,6 +119,36 @@ def test_missing_or_und_language_maps_to_none() -> None:
     mp4 = parse_mp4_catalog(Path("episode.mp4"), _mp4_payload())
     assert mkv.tracks[0].language is None
     assert mp4.tracks[0].language is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("start_ns", [None, 0, 5_005_000_000, -5_005_000_000])
+def test_mkv_track_start_survives_legacy_and_neutral_mapping(start_ns: int | None) -> None:
+    raw: dict[str, Any] = json.loads((DATA_DIR / "youjo-senki-ii-01.json").read_text(encoding="utf-8"))
+    for track in raw["tracks"]:
+        track["properties"].pop("minimum_timestamp", None)
+    if start_ns is not None:
+        raw["tracks"][0]["properties"]["minimum_timestamp"] = start_ns
+    payload: str = json.dumps(raw)
+    expected: int | None = None if start_ns is None else start_ns // 1000
+
+    assert parse_media_info(Path("episode.mkv"), payload).tracks[0].start_us == expected
+    assert parse_mkv_catalog(Path("episode.mkv"), payload).tracks[0].start_us == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("start", "expected"),
+    [(None, None), ("N/A", None), ("0", 0), ("5.005", 5_005_000), ("-0.0000015", -2), ("1.0000005", 1_000_001)],
+)
+def test_mp4_track_start_uses_decimal_microseconds(start: str | None, expected: int | None) -> None:
+    raw: dict[str, Any] = json.loads(_mp4_payload())
+    if start is not None:
+        raw["streams"][1]["start_time"] = start
+    catalog: MediaCatalog = parse_mp4_catalog(Path("episode.mp4"), json.dumps(raw))
+
+    assert catalog.tracks[0].start_us is None
+    assert catalog.tracks[1].start_us == expected
 
 
 def test_default_probe_forwards_cancel_and_timeout(

@@ -34,6 +34,7 @@ class MediaTrack:
     is_default: bool
     is_forced: bool
     subtitle_format: str | None = None
+    start_us: int | None = None
 
     def __post_init__(self) -> None:
         if self.track_id < 0:
