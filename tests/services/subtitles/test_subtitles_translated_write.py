@@ -8,6 +8,7 @@ import pytest
 from conftest import MM_AVH_TEMP
 from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
+from anishift.services.subtitles.classifier import Category, StyleVerdict
 from anishift.services.subtitles.service import (
     load_subtitles,
     split_subtitles,
@@ -286,3 +287,26 @@ def test_real_ass_bit_round_trip_keeps_every_event(tmp_path: Path) -> None:
     assert translated_events > 0
     assert split.stats.spoken_events > 0
     assert split.stats.displayed_events > 0
+
+
+@pytest.mark.parametrize(("style", "actor"), [("Black", "SIGN"), ("Default", "YUNO"), ("Black", "")])
+def test_uncertain_style_line_is_translated_in_whole_file(tmp_path: Path, style: str, actor: str) -> None:
+    source: SSAFile = SSAFile()
+    source.events.extend(
+        [
+            SSAEvent(start=0, end=1000, style="Speech", text="Hello there."),
+            SSAEvent(start=1000, end=2000, style=style, name=actor, text="Club Activities"),
+        ]
+    )
+    verdicts: tuple[StyleVerdict, ...] = (
+        StyleVerdict("Speech", Category.DIALOG, 0.9, 1, 1),
+        StyleVerdict(style, Category.UNCERTAIN, 0.5, 1, 1),
+    )
+    split: SubtitleSplit = split_subtitles(source, kind="ass", verdicts=verdicts)
+    displayed_verses, spoken_verses = _fake_translation(split)
+
+    translated: Path | None = write_translated(split, displayed_verses, spoken_verses, tmp_path / "out.pl.ass")
+
+    assert translated is not None
+    after: SSAFile = load_subtitles(translated)
+    assert [visible_text(event.text) for event in after.events] == ["PL:Hello there.", "PL:Club Activities"]

@@ -9,9 +9,11 @@ from enum import Enum
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from pysubs2 import SSAEvent, SSAFile
 
-__all__ = ["Category", "StyleVerdict", "classify_styles", "dedup_animation"]
+__all__ = ["Category", "StyleVerdict", "classify_styles", "dedup_animation", "line_category", "main_dialogue_style"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -32,6 +34,9 @@ _RE_KARA: Final[re.Pattern[str]] = re.compile(_BACKSLASH + _BACKSLASH + r"[kK][f
 _RE_PUNCT: Final[re.Pattern[str]] = re.compile(r'[.!?…»"]')
 """Sentence punctuation signalling dialogue."""
 
+_RE_MID_ALIGN: Final[re.Pattern[str]] = re.compile(_BACKSLASH + _BACKSLASH + r"an[456]")
+"""Inline alignment tags placing a line at mid frame height."""
+
 
 # ── Style-name signatures (supporting, not decisive on their own) ───────────
 _RE_SONG: Final[re.Pattern[str]] = re.compile(
@@ -48,9 +53,14 @@ _RE_SIGN: Final[re.Pattern[str]] = re.compile(
 """Style names suggesting an on-screen sign, title or chapter card."""
 
 _RE_DLG: Final[re.Pattern[str]] = re.compile(
-    r"default|main|dialog|narrat|italic|flashback|tirets|thought|mysli|myśli|alter|overlap", re.I
+    r"default|main|dialog|narrat|italic|flashback|tirets|thought|mysli|myśli|alter|overlap|\bsub(title)?\b", re.I
 )
 """Style names suggesting dialogue, narration or thoughts."""
+
+
+# ── Actor-name signatures ───────────────────────────────────────────────────
+_RE_SIGN_ACTOR: Final[re.Pattern[str]] = re.compile(r"signs?|signtext|signsrtol|signl|titlecard|nexteptitle", re.I)
+"""Whole actor names that mark a positioned, unpunctuated or secondary-style line as an on-screen sign."""
 
 
 # ── Animation deduplication thresholds ──────────────────────────────────────
@@ -208,3 +218,27 @@ def classify_styles(subs: SSAFile) -> list[StyleVerdict]:
         category, confidence = _classify_metrics(entry, style, total)
         verdicts.append(StyleVerdict(style, category, confidence, entry.n, entry.raw_n))
     return verdicts
+
+
+def main_dialogue_style(verdicts: Sequence[StyleVerdict]) -> str | None:
+    """Return the DIALOG style with the most lines, or None when no style is DIALOG."""
+    dialogue: list[StyleVerdict] = [verdict for verdict in verdicts if verdict.category is Category.DIALOG]
+    return max(dialogue, key=lambda verdict: verdict.line_count).style if dialogue else None
+
+
+def _sign_actor(event: SSAEvent, *, in_main_style: bool) -> bool:
+    if not _RE_SIGN_ACTOR.fullmatch(event.name.strip()):
+        return False
+    return not in_main_style or bool(_RE_POS.search(event.text)) or not _RE_PUNCT.search(event.plaintext)
+
+
+def line_category(event: SSAEvent, style_category: Category, *, in_main_style: bool) -> Category:
+    """Return the DIALOG or SIGN category of one event, refining its style verdict by actor and alignment."""
+    if _sign_actor(event, in_main_style=in_main_style):
+        return Category.SIGN
+    category: Category = style_category
+    if category is Category.UNCERTAIN:
+        category = Category.DIALOG if _RE_DLG.search(event.style) else Category.SIGN
+    if category is Category.DIALOG and _RE_MID_ALIGN.search(event.text):
+        return Category.SIGN
+    return category
