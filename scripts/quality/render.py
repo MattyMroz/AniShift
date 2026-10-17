@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Final
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont
@@ -17,7 +18,7 @@ from anishift.services.extraction.service import identify
 from scripts.quality.metrics import NUMBER
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Sequence
     from pathlib import Path
 
     from pysubs2 import SSAEvent, SSAStyle
@@ -37,6 +38,9 @@ _CAPTION_SIZE: Final[int] = 20
 
 _BACKGROUND: Final[tuple[int, int, int]] = (1, 2, 3)
 """Measurement canvas colour unlikely to appear in rendered text."""
+
+_BACKGROUND_PIXEL: Final[bytes] = bytes(_BACKGROUND)
+"""Measurement canvas colour as one raw RGB pixel."""
 
 _GALLERY_BACKGROUND: Final[tuple[int, int, int]] = (64, 64, 64)
 """Neutral gallery background when no video is available."""
@@ -228,9 +232,6 @@ def measure_boxes(
     if not events:
         return [], FontReport((), {})
     canvas, slot_s = measurement_file(subs, events, size)
-    frames: Path = work / f"{name}-frames"
-    shutil.rmtree(frames, ignore_errors=True)
-    frames.mkdir(parents=True)
     canvas.save(str(work / f"{name}.ass"), encoding="utf-8")
     width: int = int(canvas.info["PlayResX"])
     height: int = int(canvas.info["PlayResY"])
@@ -239,23 +240,31 @@ def measure_boxes(
         f":r=1/{slot_s}:d={(len(events) + 1) * slot_s},format=rgb24"
     )
     arguments: list[str] = ["-v", "verbose", "-f", "lavfi", "-i", source, "-vf", _ass_filter(f"{name}.ass", work)]
-    log: str = _ffmpeg([*arguments, "-fps_mode", "passthrough", f"{frames.name}/%05d.png"], work)
-    boxes: list[Box | None] = [_frame_box(frames / f"{number:05d}.png", size) for number in range(2, len(events) + 2)]
-    shutil.rmtree(frames, ignore_errors=True)
-    return boxes, parse_font_log(log)
+    raw: list[str] = [*arguments, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+    log: Path = work / f"{name}.log"
+    frames: Iterator[bytes] = _ffmpeg_frames(raw, work, log, 3 * width * height)
+    boxes: list[Box | None] = [_frame_box(frame, width, size) for frame in frames][1 : len(events) + 1]
+    boxes.extend([None] * (len(events) - len(boxes)))
+    return boxes, parse_font_log(log.read_text(encoding="utf-8", errors="replace"))
 
 
-def _frame_box(path: Path, size: Size) -> Box | None:
-    if not path.is_file():
+def _frame_box(frame: bytes, width: int, size: Size) -> Box | None:
+    stride: int = 3 * width
+    blank: bytes = _BACKGROUND_PIXEL * width
+    changed: list[int] = [
+        row for row in range(len(frame) // stride) if frame[row * stride : (row + 1) * stride] != blank
+    ]
+    if not changed:
         return None
-    with Image.open(path) as frame:
-        rgb: Image.Image = frame.convert("RGB")
-    background: Image.Image = Image.new("RGB", rgb.size, _BACKGROUND)
-    box: tuple[int, int, int, int] | None = ImageChops.difference(rgb, background).getbbox()
+    top, bottom = changed[0], changed[-1] + 1
+    band: Image.Image = Image.frombytes("RGB", (width, bottom - top), frame[top * stride : bottom * stride])
+    box: tuple[int, int, int, int] | None = ImageChops.difference(
+        band, Image.new("RGB", band.size, _BACKGROUND)
+    ).getbbox()
     if box is None:
         return None
     dx, dy = _padding(size)
-    return box[0] - dx, box[1] - dy, box[2] - dx, box[3] - dy
+    return box[0] - dx, top + box[1] - dy, box[2] - dx, top + box[3] - dy
 
 
 def _ass_filter(filename: str, work: Path) -> str:
@@ -275,11 +284,34 @@ def _ffmpeg(arguments: list[str], work: Path) -> str:
         check=False,
         creationflags=_NO_WINDOW,
     )
-    if completed.returncode != 0:
-        tail: str = "\n".join(completed.stderr.strip().splitlines()[-5:])
-        message: str = f"ffmpeg failed with {completed.returncode}: {tail}"
-        raise RuntimeError(message)
+    _check(completed.returncode, completed.stderr)
     return completed.stderr
+
+
+def _ffmpeg_frames(arguments: list[str], work: Path, log: Path, frame_bytes: int) -> Iterator[bytes]:
+    """Yield the complete raw frames FFmpeg writes to stdout, keeping its log in a file."""
+    with (
+        log.open("wb") as log_file,
+        subprocess.Popen(  # noqa: S603 - argv built here
+            [str(require_binary(Binary.FFMPEG)), "-hide_banner", "-nostdin", "-y", *arguments],
+            cwd=work,
+            stdout=subprocess.PIPE,
+            stderr=log_file,
+            creationflags=_NO_WINDOW,
+        ) as process,
+    ):
+        if process.stdout is not None:
+            chunks: Iterator[bytes] = iter(partial(process.stdout.read, frame_bytes), b"")
+            yield from (frame for frame in chunks if len(frame) == frame_bytes)
+        returncode: int = process.wait(timeout=_FFMPEG_TIMEOUT_S)
+    _check(returncode, log.read_text(encoding="utf-8", errors="replace"))
+
+
+def _check(returncode: int, log: str) -> None:
+    if returncode != 0:
+        tail: str = "\n".join(log.strip().splitlines()[-5:])
+        message: str = f"ffmpeg failed with {returncode}: {tail}"
+        raise RuntimeError(message)
 
 
 # ── Gallery ───────────────────────────────────────────────────────────────────

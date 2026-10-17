@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -54,14 +57,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--gallery", type=Path, default=QUALITY_ROOT / "gallery", help="gallery folder")
     parser.add_argument("--gallery-size", type=int, default=GALLERY_SIZE, help="worst cases per metric")
     parser.add_argument("--no-render", action="store_true", help="skip libass rendering and the gallery")
+    parser.add_argument("--jobs", type=int, default=os.process_cpu_count() or 1, help="episodes measured at once")
     args: argparse.Namespace = parser.parse_args(argv)
-    setup_mode(LoggerMode.SILENT, file=FileConfig(enable=False))
+    silence: partial[None] = partial(setup_mode, LoggerMode.SILENT, file=FileConfig(enable=False))
+    silence()
     roots: list[Path] = list(args.roots) or [root for root in DEFAULT_ROOTS if root.is_dir()]
     render: bool = not args.no_render
+    measure: partial[EpisodeResult] = partial(analyse, cache=QUALITY_ROOT / "cache", render=render)
     results: list[EpisodeResult] = []
-    for directory in episode_dirs(roots):
-        print(f"measuring {directory.name}", file=sys.stderr)
-        results.append(analyse(directory, QUALITY_ROOT / "cache", render=render))
+    with ProcessPoolExecutor(max(1, args.jobs), initializer=silence) as pool:
+        for result in pool.map(measure, episode_dirs(roots)):
+            print(f"measured {result.name}", file=sys.stderr)
+            results.append(result)
     args.out.mkdir(parents=True, exist_ok=True)
     report.write_json(results, args.out / "metrics.json")
     report.write_split_csv(results, args.out / "split.csv")

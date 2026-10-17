@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import math
 import re
+from bisect import bisect_left
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from itertools import combinations
 from typing import TYPE_CHECKING, Final
 
 from anishift.services.subtitles.classifier import Category, classify_styles
@@ -99,6 +99,9 @@ type Box = tuple[int, int, int, int]
 
 type Size = tuple[int, int]
 """Script resolution ``(width, height)``."""
+
+type Span = tuple[int, int]
+"""Event timing ``(start, end)`` in milliseconds."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +243,17 @@ def pair_events(source: Sequence[SSAEvent], output: Sequence[SSAEvent]) -> list[
     ]
 
 
+def concurrent_pairs(spans: Sequence[Span]) -> list[tuple[int, int]]:
+    """Return every index pair of spans that overlap in time, found by a sweep over start times."""
+    order: list[int] = sorted(range(len(spans)), key=lambda index: spans[index][0])
+    starts: list[int] = [spans[index][0] for index in order]
+    pairs: list[tuple[int, int]] = []
+    for position, first in enumerate(order):
+        stop: int = bisect_left(starts, spans[first][1], lo=position + 1)
+        pairs.extend((first, second) for second in order[position + 1 : stop] if spans[first][0] < spans[second][1])
+    return pairs
+
+
 def is_dialogue_line(event: SSAEvent, verdicts: dict[str, Category]) -> bool:
     """Tell whether an event is visible dialogue by its style verdict."""
     if verdicts.get(event.style) is not Category.DIALOG or is_drawing(event.text):
@@ -326,10 +340,8 @@ def new_overlaps(signs: Sequence[Sign]) -> list[tuple[int, bool]]:
     """Return per sign its new visible output overlaps and whether every concurrent pair was static and measured."""
     counts: list[int] = [0] * len(signs)
     measured: list[bool] = [True] * len(signs)
-    for first_index, second_index in combinations(range(len(signs)), 2):
+    for first_index, second_index in concurrent_pairs([(sign.start, sign.end) for sign in signs]):
         first, second = signs[first_index], signs[second_index]
-        if not (first.start < second.end and second.start < first.end):
-            continue
         if not (_static_geometry(first) and _static_geometry(second)):
             measured[first_index] = measured[second_index] = False
             continue
@@ -417,13 +429,19 @@ def classification_rows(subs: SSAFile, verdicts: dict[str, Category]) -> list[Cl
     """Return one feature row per source Dialogue line with suspicion flags."""
     events: list[SSAEvent] = dialogue(subs)
     height: int = play_size(subs)[1]
-    return [_classification_row(index, event, events, subs, verdicts, height) for index, event in enumerate(events)]
+    overlaps: list[int] = [0] * len(events)
+    for first, second in concurrent_pairs([(event.start, event.end) for event in events]):
+        overlaps[first] += 1
+        overlaps[second] += 1
+    return [
+        _classification_row(index, event, overlaps[index], subs, verdicts, height) for index, event in enumerate(events)
+    ]
 
 
 def _classification_row(  # noqa: PLR0913 - one row gathers every labelling feature
     index: int,
     event: SSAEvent,
-    events: Sequence[SSAEvent],
+    overlaps: int,
     subs: SSAFile,
     verdicts: dict[str, Category],
     height: int,
@@ -434,9 +452,6 @@ def _classification_row(  # noqa: PLR0913 - one row gathers every labelling feat
     alignment: int = int(align_match.group(1)) if align_match else int(style_alignment)
     positioned: bool = bool(_RE_POSITIONED.search(event.text))
     top: bool = _inline_top(event.text, height)
-    overlaps: int = sum(
-        1 for other_index, other in enumerate(events) if other_index != index and _concurrent(event, other)
-    )
     flags: tuple[str, ...] = _flags(event, category, positioned=positioned, top=top)
     return ClassificationRow(
         index=index,
@@ -462,10 +477,6 @@ def _inline_top(text: str, height: int) -> bool:
         return True
     pos_match: re.Match[str] | None = _RE_POS_Y.search(text)
     return pos_match is not None and float(pos_match.group(2)) < height * TOP_FRACTION
-
-
-def _concurrent(first: SSAEvent, second: SSAEvent) -> bool:
-    return first.start < second.end and second.start < first.end
 
 
 def _flags(event: SSAEvent, category: Category, *, positioned: bool, top: bool) -> tuple[str, ...]:
