@@ -116,10 +116,11 @@ def prepare_fonts(episode_dir: Path, video: Path | None, work: Path) -> int:
         return len(list(target.iterdir()))
     if video is None or not video.is_file():
         return 0
-    return _extract_attachments(video, work)
+    return extract_attachments(video, work)
 
 
-def _extract_attachments(video: Path, work: Path) -> int:
+def extract_attachments(video: Path, work: Path) -> int:
+    """Extract the font attachments of a video into ``work/fonts``; return font count."""
     names: tuple[str, ...] = identify(video).attachments
     stems: frozenset[str] = attachment_font_names(names)
     specs: list[str] = [f"{number}:fonts/{name}" for number, name in enumerate(names, start=1) if _stem(name) in stems]
@@ -300,7 +301,8 @@ def _ass_filter(filename: str, work: Path) -> str:
     return f"ass={filename}{fonts}"
 
 
-def _ffmpeg(arguments: list[str], work: Path) -> str:
+def run_ffmpeg(arguments: list[str], work: Path, *, timeout_s: int = _FFMPEG_TIMEOUT_S) -> str:
+    """Run FFmpeg in a folder and return its log, raising on failure."""
     completed: subprocess.CompletedProcess[str] = subprocess.run(  # noqa: S603 - argv built here
         [str(require_binary(Binary.FFMPEG)), "-hide_banner", "-nostdin", "-y", *arguments],
         cwd=work,
@@ -308,7 +310,7 @@ def _ffmpeg(arguments: list[str], work: Path) -> str:
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=_FFMPEG_TIMEOUT_S,
+        timeout=timeout_s,
         check=False,
         creationflags=_NO_WINDOW,
     )
@@ -356,20 +358,29 @@ class Shot:
     output_box: Box | None = None
 
 
-def render_shot(shot: Shot, video: Path | None, size: Size, work: Path) -> None:
-    """Render the full source above the full output at one moment, on a video frame when available."""
+def nearest_frame(frames: Path, time_ms: int) -> Path | None:
+    """Return the ``<ms>.jpg`` frame in a folder closest to a moment, or None when there is none."""
+    images: list[Path] = [path for path in frames.glob("*.jpg") if path.stem.isdigit()]
+    return min(images, key=lambda path: abs(int(path.stem) - time_ms), default=None)
+
+
+def render_shot(shot: Shot, video: Path | None, frames: Path, size: Size, work: Path) -> None:
+    """Render the full source above the full output at one moment, on a saved or video frame when available."""
     height: int = round(GALLERY_WIDTH * size[1] / size[0] / 2) * 2
     base: Path = work / "shot-base.png"
-    if video is not None and video.is_file():
-        seek: list[str] = ["-ss", f"{shot.time_ms / 1000:.3f}", "-i", str(video), "-frames:v", "1"]
-        _ffmpeg([*seek, "-vf", f"scale={GALLERY_WIDTH}:{height}", base.name], work)
+    output: list[str] = ["-frames:v", "1", "-vf", f"scale={GALLERY_WIDTH}:{height}", base.name]
+    frame: Path | None = nearest_frame(frames, shot.time_ms)
+    if frame is not None:
+        run_ffmpeg(["-i", str(frame.resolve()), *output], work)
+    elif video is not None and video.is_file():
+        run_ffmpeg(["-ss", f"{shot.time_ms / 1000:.3f}", "-i", str(video), *output], work)
     else:
         Image.new("RGB", (GALLERY_WIDTH, height), _GALLERY_BACKGROUND).save(base)
     graph: str = (
         f"[0:v]setpts=PTS+{shot.time_ms / 1000:.3f}/TB,split[a][b];"
         f"[a]{_ass_filter('source.ass', work)}[x];[b]{_ass_filter('output.ass', work)}[y];[x][y]vstack"
     )
-    _ffmpeg(["-i", base.name, "-filter_complex", graph, "-frames:v", "1", "shot.png"], work)
+    run_ffmpeg(["-i", base.name, "-filter_complex", graph, "-frames:v", "1", "shot.png"], work)
     shot.target.parent.mkdir(parents=True, exist_ok=True)
     _annotate(work / "shot.png", shot, GALLERY_WIDTH / size[0], height).save(shot.target)
 
