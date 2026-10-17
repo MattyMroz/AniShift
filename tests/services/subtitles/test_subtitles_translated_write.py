@@ -10,6 +10,7 @@ from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
 from anishift.services.subtitles.service import (
     load_subtitles,
+    reflow_polish_dialogue,
     split_subtitles,
     write_displayed,
     write_full,
@@ -60,6 +61,51 @@ def _fake_translation(split: SubtitleSplit, prefix: str = "PL:"):  # type: ignor
 def test_returns_none_when_no_dialogue_events(tmp_path: Path) -> None:
     split = split_subtitles(SSAFile(), kind="ass", spoken_styles=set())
     assert write_translated(split, [], [], tmp_path / "out.ass") is None
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("translated", [False, True])
+@pytest.mark.parametrize("stream", ["full", "spoken", "displayed"])
+def test_writers_preserve_embedded_assets_and_editor_metadata(tmp_path: Path, *, translated: bool, stream: str) -> None:
+    subs: SSAFile = _ass_with_both_streams()
+    subs.fonts_opaque = {"sample.ttf": ["!!!!"]}
+    subs.graphics_opaque = {"sample.bmp": ["!!!!"]}
+    subs.aegisub_project = {"Last Style Storage": "Default", "Video Zoom Percent": "1.000000"}
+    split: SubtitleSplit = split_subtitles(subs, kind="ass", spoken_styles={"Dialog"})
+    dest: Path = tmp_path / "out.ass"
+    displayed: list[tuple[str, ...]]
+    spoken: list[tuple[str, ...]]
+    displayed, spoken = _fake_translation(split)
+    if translated and stream == "full":
+        write_translated(split, displayed, spoken, dest)
+    elif translated and stream == "spoken":
+        write_translated_spoken(split, spoken, dest)
+    elif translated:
+        write_translated_displayed(split, displayed, dest)
+    else:
+        {"full": write_full, "spoken": write_spoken, "displayed": write_displayed}[stream](split, dest)
+    after: SSAFile = load_subtitles(dest)
+    assert after.fonts_opaque == subs.fonts_opaque
+    assert after.graphics_opaque == subs.graphics_opaque
+    assert after.aegisub_project == subs.aegisub_project
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (r"{\i1}-Idziesz?{\i0}\N-Tak.", r"{\i1}-Idziesz?{\i0}\N-Tak."),
+        (r"{\i1}–Idziesz?{\i0} –Tak.", r"{\i1}–Idziesz?{\i0}\N–Tak."),
+        ("- Myślę - powiedział cicho.", "- Myślę - powiedział cicho."),
+    ],
+)
+def test_polish_reflow_preserves_speakers_and_inline_tags(source: str, expected: str) -> None:
+    subs: SSAFile = SSAFile()
+    subs.events.append(SSAEvent(start=1230, end=4560, text=source))
+    result: SubtitleSplit = reflow_polish_dialogue(split_subtitles(subs, kind="srt"))
+    assert result.subs.events[0].text == expected
+    assert (result.subs.events[0].start, result.subs.events[0].end) == (1230, 4560)
+    assert subs.events[0].text == source
 
 
 def test_ass_keeps_every_event_and_translates_both_streams(tmp_path: Path) -> None:

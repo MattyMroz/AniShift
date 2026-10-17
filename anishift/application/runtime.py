@@ -178,7 +178,7 @@ class ProductionHandlerFactory:
                 timeout_s=_EXTRACTION_TIMEOUT_S,
                 legacy=LegacyExtractionAdapter(identify, extract_tracks),
             ),
-            SubtitleTaskHandler(run_root=run_root),
+            SubtitleTaskHandler(run_root=run_root, layout=_layout_config(plan)),
             TranslationTaskHandler(
                 _translation_service(settings, plan),
                 run_root=run_root,

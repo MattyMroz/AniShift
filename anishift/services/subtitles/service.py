@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Collection, Sequence
+from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from typing import Final
 
@@ -13,7 +15,7 @@ from pysubs2 import SSAEvent, SSAFile
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.subtitles.classifier import Category, StyleVerdict, classify_styles
 from anishift.services.subtitles.errors import SubtitleError
-from anishift.services.subtitles.text import is_drawing, replace_visible_text, visible_text
+from anishift.services.subtitles.text import is_drawing, reflow_visible_text, replace_visible_text, visible_text
 from anishift.services.subtitles.types import (
     Decision,
     SplitStats,
@@ -21,6 +23,8 @@ from anishift.services.subtitles.types import (
     SubtitleKind,
     SubtitleSplit,
 )
+from anishift.services.translation.layout_config import LayoutConfig
+from anishift.services.translation.linebreak import split_line
 from anishift.utils.logger import get_logger
 
 __all__ = [
@@ -28,6 +32,7 @@ __all__ = [
     "load_subtitles",
     "normalize_subtitles",
     "preview_styles",
+    "reflow_polish_dialogue",
     "split_subtitles",
     "subtitle_kind",
     "write_displayed",
@@ -109,12 +114,40 @@ def load_subtitles(path: Path) -> SSAFile:
     return subtitles
 
 
-def normalize_subtitles(source: Path, destination: Path, *, kind: SubtitleKind) -> Path:
+def normalize_subtitles(
+    source: Path, destination: Path, *, kind: SubtitleKind, layout: LayoutConfig | None = None
+) -> Path:
     """Convert one supported subtitle file while preserving its complete event stream."""
     subtitles: SSAFile = load_subtitles(source)
     if not any(event.type == "Dialogue" for event in subtitles.events):
         raise _fail(ErrorCode.SUBTITLE_PARSE_FAILED, "Subtitle file contains no dialogue events")
+    if layout is not None:
+        source_kind: SubtitleKind | None = subtitle_kind(source)
+        if source_kind is None:
+            raise _fail(ErrorCode.SUBTITLE_PARSE_FAILED, "Subtitle source format is unsupported")
+        subtitles = reflow_polish_dialogue(split_subtitles(subtitles, kind=source_kind), layout).subs
     return _write_output(subtitles, destination, kind, subject="Normalized")
+
+
+def reflow_polish_dialogue(split: SubtitleSplit, layout: LayoutConfig | None = None) -> SubtitleSplit:
+    """Reflow Polish spoken events on a copy, preserving signs and exact inline formatting."""
+    limits: LayoutConfig = layout if layout is not None else LayoutConfig()
+    subtitles: SSAFile = deepcopy(split.subs)
+    dialogue_index: int = 0
+    for event in subtitles.events:
+        if event.type != "Dialogue":
+            continue
+        decision: Decision = split.decisions[dialogue_index]
+        dialogue_index += 1
+        if decision != "spoken" or is_drawing(event.text):
+            continue
+        verses: tuple[str, ...] = split_line(
+            visible_text(event.text, preserve_hard_spaces=True),
+            max_chars=limits.max_chars_per_line,
+            max_lines=limits.max_lines_per_event,
+        )
+        event.text = reflow_visible_text(event.text, verses)
+    return replace(split, subs=subtitles)
 
 
 def preview_styles(subs: SSAFile) -> tuple[tuple[StyleVerdict, ...], dict[str, tuple[str, ...]]]:
@@ -266,10 +299,18 @@ def split_subtitles(
     return SubtitleSplit(kind, subs, tuple(decisions), final_verdicts, spoken, stats)
 
 
+def _copy_metadata(subs: SSAFile) -> SSAFile:
+    out: SSAFile = SSAFile()
+    out.info = dict(subs.info)
+    out.styles = {name: style.copy() for name, style in subs.styles.items()}
+    out.fonts_opaque = deepcopy(subs.fonts_opaque)
+    out.graphics_opaque = deepcopy(subs.graphics_opaque)
+    out.aegisub_project = dict(subs.aegisub_project)
+    return out
+
+
 def _stream_file(split: SubtitleSplit, selected: Decision | None) -> SSAFile:
-    out = SSAFile()
-    out.info = dict(split.subs.info)
-    out.styles = {name: style.copy() for name, style in split.subs.styles.items()}
+    out: SSAFile = _copy_metadata(split.subs)
     dialogue_index = 0
     for event in split.subs.events:
         if event.type != "Dialogue":
@@ -326,9 +367,7 @@ def _translated_file(
     *,
     selected: Decision | None = None,
 ) -> SSAFile:
-    out = SSAFile()
-    out.info = dict(split.subs.info)
-    out.styles = {name: style.copy() for name, style in split.subs.styles.items()}
+    out: SSAFile = _copy_metadata(split.subs)
     line_break = _LINE_BREAKS[split.kind]
     translated_spoken = tuple(zip(split.spoken, spoken_verses, strict=True)) if selected in {None, "spoken"} else ()
     spoken_by_order: dict[int, tuple[str, ...]] = {spoken.order: verses for spoken, verses in translated_spoken}
@@ -368,6 +407,8 @@ def _translated_file(
             continue
         replaced = event.copy()
         replaced.text = replace_visible_text(event.text, line_break.join(verses))
+        if decision == "spoken" and visible_text(event.text) == visible_text(line_break.join(verses)):
+            replaced.text = reflow_visible_text(event.text, verses)
         out.events.append(replaced)
     return out
 

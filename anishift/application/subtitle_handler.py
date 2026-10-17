@@ -23,6 +23,7 @@ from anishift.services.subtitles import (
     SubtitleSplit,
     load_subtitles,
     normalize_subtitles,
+    reflow_polish_dialogue,
     split_subtitles,
     subtitle_kind,
     write_displayed,
@@ -32,6 +33,7 @@ from anishift.services.subtitles import (
     write_translated_displayed,
     write_translated_spoken,
 )
+from anishift.services.translation.layout_config import LayoutConfig
 
 __all__ = ["LegacySubtitleAdapter", "LegacySubtitleProducts", "SubtitleTaskHandler"]
 
@@ -100,11 +102,12 @@ class LegacySubtitleAdapter:
 class SubtitleTaskHandler:
     """Execute local subtitle transformations inside one run scope."""
 
-    __slots__ = ("_run_root",)
+    __slots__ = ("_layout", "_run_root")
 
-    def __init__(self, *, run_root: Path) -> None:
+    def __init__(self, *, run_root: Path, layout: LayoutConfig | None = None) -> None:
         """Bind subtitle staging to one scheduler-owned run root."""
         self._run_root: Path = run_root
+        self._layout: LayoutConfig = layout if layout is not None else LayoutConfig()
 
     def execute(
         self,
@@ -137,7 +140,12 @@ class SubtitleTaskHandler:
         source: Artifact = artifacts.require_ready(task.requires[0])
         source_path: Path = _subtitle_path(source)
         destination: Path = task_staging_path(self._run_root, task, output, f".{output_kind}")
-        normalize_subtitles(source_path, destination, kind=output_kind)
+        normalize_subtitles(
+            source_path,
+            destination,
+            kind=output_kind,
+            layout=None if output.kind is ArtifactKind.DISPLAYED_PL else self._layout,
+        )
         return TaskResult(task.task_id, (ProducedArtifact(output.artifact_id, destination, {}),))
 
     def _split(self, task: PlanTask, artifacts: ArtifactSnapshot) -> TaskResult:
@@ -151,6 +159,7 @@ class SubtitleTaskHandler:
             msg = "Subtitle split source format is unsupported"
             raise ExecutionError(msg)
         source_split: SubtitleSplit = split_subtitles(load_subtitles(source_path), kind=source_kind)
+        source_split = reflow_polish_dialogue(source_split, self._layout)
         produced: list[ProducedArtifact] = []
         absent: list[str] = []
         for artifact_id in task.produces:

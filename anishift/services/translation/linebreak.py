@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Final
 
 from anishift.services.translation.chunking import SENTENCE_ENDINGS, phrase_cut_chars
+from anishift.text.boundaries import BREAKABLE_SPACES, CLOSING_MARKS, is_false_sentence_break
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -152,34 +154,11 @@ _CONJUNCTIONS_MULTIWORD: Final[frozenset[tuple[str, ...]]] = frozenset(
 # source: https://pl.wiktionary.org/wiki/Kategoria:Język_polski_-_przyimki
 _NON_BREAKING_HEADS: Final[frozenset[str]] = frozenset(
     {
-        "bez",
-        "beze",
-        "dla",
-        "do",
-        "ku",
-        "między",
-        "na",
-        "nad",
-        "nade",
-        "o",
-        "od",
-        "ode",
-        "po",
-        "pod",
-        "pode",
-        "przed",
-        "przede",
-        "przez",
-        "przeze",
-        "przy",
-        "u",
-        "w",
-        "we",
-        "z",
-        "za",
-        "ze",
+        "bez", "beze", "dla", "do", "ku", "między", "na", "nad", "nade", "o", "od", "ode",
+        "po", "pod", "pode", "przed", "przede", "przez", "przeze", "przy", "u", "w", "we", "z", "za", "ze",
+        "według", "wśród", "obok", "zza", "spod", "poza", "wobec", "podczas", "około", "ponad", "pomiędzy",
     }
-)
+)  # fmt: skip
 """Simple prepositions (with phonetic variants) never detached from their noun."""
 
 # source: https://pl.wiktionary.org/wiki/Kategoria:Język_polski_-_przyimki
@@ -251,11 +230,67 @@ _TRAILING_CONJUNCTION_PENALTY: Final[float] = 8.0
 _RE_SPACES: Final[re.Pattern[str]] = re.compile(r"\s+")
 """Whitespace run, collapsed to a single space before splitting."""
 
+_DIALOGUE_DASHES: Final[frozenset[str]] = frozenset({"-", "–", "—"})
+"""Standalone or attached markers introducing a speaker's turn."""
+
+_PRONOUN_HEADS: Final[frozenset[str]] = frozenset(
+    [
+        "ja", "ty", "on", "ona", "ono", "my", "wy", "oni", "one", "ten", "ta", "to", "te",
+        "tego", "tej", "temu", "tym", "tych", "tamten", "taki", "taka", "takie", "mój", "moja",
+        "moje", "twój", "twoja", "twoje", "swój", "nasz", "wasz", "każdy", "każda", "każde",
+        "jakiś", "jakaś", "które", "który", "która",
+    ]
+)  # fmt: skip
+"""Common personal pronouns and determiners kept with their following phrase."""
+
+_VERB_HEADS: Final[frozenset[str]] = frozenset(
+    [
+        "będę", "będziesz", "będzie", "będziemy", "będziecie", "będą", "był", "była", "było", "byli", "były",
+        "jestem", "jesteś", "jest", "jesteśmy", "jesteście", "są", "musi", "muszę", "musisz", "musimy", "musicie",
+        "muszą", "mogę", "możesz", "może", "możemy", "możecie", "mogą", "mógł", "mogła", "mogli", "powinien",
+        "powinna", "powinno", "powinni", "powinny", "chciał", "chciała", "chcę", "chcesz", "chce",
+    ]
+)  # fmt: skip
+"""Common auxiliary and modal forms kept with the following predicate component."""
+
+_TITLE_HEADS: Final[frozenset[str]] = frozenset(
+    ["dr", "mgr", "prof", "pan", "pani", "panie", "profesor", "doktor", "kapitan", "król"]
+)
+"""Titles and undotted abbreviations kept with the name that follows."""
+
+_ADJECTIVE_ENDINGS: Final[tuple[str, ...]] = ("ego", "emu", "ych", "ymi", "ym", "ny", "na", "ne", "ry", "ra", "re")
+"""Conservative surface hints for an attributive adjective, without a morphological parser."""
+
+_TOP_HEAVY_PENALTY: Final[int] = 6
+"""Extra imbalance characters assigned to a longer upper dialogue verse."""
+
+_OVERFLOW_TOLERANCE: Final[int] = 2
+"""Extra characters allowed for safer syntax only when every legal cut overflows."""
+
+_REFLEXIVE_HEADS: Final[frozenset[str]] = _PRONOUN_HEADS | _CONJUNCTIONS | {"nie"}
+"""Heads that bind a following reflexive particle to its predicate."""
+
 
 def split_line(text: str, *, max_chars: int = DEFAULT_MAX_CHARS, max_lines: int = MAX_LINES) -> tuple[str, ...]:
     """Split ``text`` into readable verses; return one entry when it fits."""
-    text = _RE_SPACES.sub(" ", text).strip()
-    return _split(text, max_chars, max_lines)
+    text = BREAKABLE_SPACES.sub(" ", text).strip()
+    words: list[str] = text.split(" ")
+    markers: list[int] = [index for index in range(len(words)) if _speaker_start(words, index)]
+    if max_lines >= MAX_LINES and len(markers) == MAX_LINES and markers[0] == 0:
+        return " ".join(words[: markers[1]]), " ".join(words[markers[1] :])
+    return _split(text, max_chars, max_lines, dialogue=True)
+
+
+def _speaker_start(words: list[str], index: int) -> bool:
+    word: str = words[index]
+    if word[:1] not in _DIALOGUE_DASHES:
+        return False
+    spoken: str = word[1:] if len(word) > 1 else " ".join(words[index + 1 : index + 2])
+    if not spoken:
+        return False
+    if index == 0:
+        return True
+    return _tail(words[index - 1])[-1:] in SENTENCE_ENDINGS or (word in _DIALOGUE_DASHES and spoken[0].isupper())
 
 
 def split_for_layout(
@@ -268,7 +303,7 @@ def split_for_layout(
     """Split displayed text using authored verse count as the layout contract."""
     normalised = _RE_SPACES.sub(" ", text).strip()
     if len(source_verses) <= 1:
-        return split_line(normalised, max_chars=max_chars, max_lines=max_lines)
+        return _split(normalised, max_chars, max_lines)
     words = normalised.split()
     if len(words) < len(source_verses):
         return tuple(words) if words else ("",)
@@ -311,17 +346,109 @@ def _proportional_boundaries(words: list[str], source_verses: tuple[str, ...]) -
     return tuple(boundaries)
 
 
-def _split(text: str, max_chars: int, budget: int) -> tuple[str, ...]:
+def _split(text: str, max_chars: int, budget: int, *, dialogue: bool = False) -> tuple[str, ...]:
     """Recursively split ``text`` into at most ``budget`` verses."""
     if len(text) <= max_chars or " " not in text or budget <= 1:
         return (text,)
-    point = _best_cut(text, max_chars)
+    point: int = _dialogue_cut(text, max_chars, budget) if dialogue else _best_cut(text, max_chars)
     left = text[:point].strip()
     right = text[point:].strip()
     if not left or not right:
         return (text,)
+    if dialogue:
+        return (left, *_split(right, max_chars, budget - 1, dialogue=True))
     verses = _split(left, max_chars, budget - 1)
     return verses + _split(right, max_chars, budget - len(verses))
+
+
+def _dialogue_cut(text: str, max_chars: int, budget: int) -> int:
+    candidates: list[tuple[tuple[int, bool, int, bool, int], int]] = _dialogue_candidates(
+        text, max_chars, budget, keep_names=True
+    ) or _dialogue_candidates(text, max_chars, budget, keep_names=False)
+    if not candidates:
+        return len(text)
+    minimum: int = min(rank[0] for rank, _ in candidates)
+    if minimum == 0:
+        return min(candidates)[1]
+    return min(
+        (candidate for candidate in candidates if candidate[0][0] <= minimum + _OVERFLOW_TOLERANCE),
+        key=lambda candidate: (candidate[0][1], candidate[0][0], *candidate[0][2:]),
+    )[1]
+
+
+def _dialogue_candidates(
+    text: str, max_chars: int, budget: int, *, keep_names: bool
+) -> list[tuple[tuple[int, bool, int, bool, int], int]]:
+    words: list[str] = text.split(" ")
+    candidates: list[tuple[tuple[int, bool, int, bool, int], int]] = []
+    for index, offset in enumerate(_word_offsets(words)[1:], start=1):
+        if _dialogue_protected(words, index, keep_names=keep_names):
+            continue
+        cut: int = offset - 1
+        left: str = text[:cut]
+        right: str = text[offset:]
+        overflow: int = max(0, len(left) - max_chars, len(right) - max_chars * (budget - 1))
+        rank: tuple[int, bool, int, bool, int] = (
+            overflow,
+            _syntactic_risk(words, index),
+            _boundary_rank(words, index),
+            _is_orphan(left, right),
+            abs(len(left) - len(right)) + _TOP_HEAVY_PENALTY * (len(left) > len(right)),
+        )
+        candidates.append((rank, cut))
+    return candidates
+
+
+def _dialogue_protected(words: list[str], index: int, *, keep_names: bool = True) -> bool:
+    previous: str = words[index - 1]
+    following: str = words[index]
+    tail: str = _tail(previous)
+    clean: str = _clean(previous)
+    if is_false_sentence_break(tail, following):
+        return True
+    if tail[-1:] in SENTENCE_ENDINGS + ",;:":
+        return False
+    if _protected(words, index) or previous in _DIALOGUE_DASHES:
+        return True
+    if clean == "nie" or clean in _TITLE_HEADS:
+        return True
+    return (
+        (keep_names and _names_pair(previous, following))
+        or (len(clean) == 1 and clean.isalpha() and clean.isascii())
+        or unicodedata.category(previous[-1]) in {"Ps", "Pi"}
+        or following[0] in CLOSING_MARKS + ",.;:!?%"
+        or (clean == "się" and index > 1 and _clean(words[index - 2]) in _REFLEXIVE_HEADS)
+    )
+
+
+def _names_pair(previous: str, following: str) -> bool:
+    return previous[0].isupper() and following[0].isupper() and not previous.isupper() and not following.isupper()
+
+
+def _syntactic_risk(words: list[str], index: int) -> bool:
+    previous: str = words[index - 1]
+    following: str = words[index]
+    clean: str = _clean(previous)
+    if _tail(previous)[-1:] in SENTENCE_ENDINGS + ",;:":
+        return False
+    return clean in _PRONOUN_HEADS | _VERB_HEADS | _CONJUNCTIONS or (
+        clean.endswith(_ADJECTIVE_ENDINGS) and _clean(following) not in _NON_BREAKING_HEADS | _CONJUNCTIONS
+    )
+
+
+def _boundary_rank(words: list[str], index: int) -> int:
+    tail: str = _tail(words[index - 1])
+    if tail[-1:] in SENTENCE_ENDINGS:
+        return 0
+    if _starts_conjunction(words, index):
+        return 1
+    if tail[-1:] in ",;:":
+        return 2
+    return 3
+
+
+def _tail(word: str) -> str:
+    return word.rstrip(CLOSING_MARKS + '"')
 
 
 def _best_cut(text: str, max_chars: int) -> int:

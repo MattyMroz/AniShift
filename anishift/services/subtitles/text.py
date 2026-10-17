@@ -7,8 +7,11 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Final
 
+from anishift.text.boundaries import BREAKABLE_SPACES
+
 __all__ = [
     "is_drawing",
+    "reflow_visible_text",
     "replace_visible_text",
     "visible_text",
     "visible_verses",
@@ -33,6 +36,9 @@ _RE_SPACES: Final[re.Pattern[str]] = re.compile(r"\s+")
 
 _RE_LAYOUT_TOKEN: Final[re.Pattern[str]] = re.compile(r"(\{[^}]*\}|<[^>]+>|\\[Nnh]|\r?\n)")
 """Formatting or layout token embedded in subtitle event text."""
+
+_RE_REFLOW_TOKEN: Final[re.Pattern[str]] = re.compile(_RE_LAYOUT_TOKEN.pattern + "|" + BREAKABLE_SPACES.pattern + "|.")
+"""Layout tokens, breakable whitespace runs, and individual visible characters."""
 
 _BREAK_TOKENS: Final[frozenset[str]] = frozenset(("\\N", "\\n", "\n", "\r\n"))
 """ASS and SRT line-break tokens."""
@@ -81,11 +87,15 @@ def is_drawing(text: str) -> bool:
     return bool(_RE_DRAW_TAG.search(text))
 
 
-def visible_text(text: str) -> str:
+def visible_text(text: str, *, preserve_hard_spaces: bool = False) -> str:
     """Return the human-visible text of an event as a single line."""
     without_tags = _RE_TAG_BLOCK.sub("", text)
     without_html = _RE_HTML_TAG.sub("", without_tags)
+    if preserve_hard_spaces:
+        without_html = without_html.replace(_ASS_HARD_SPACE, "\u00a0")
     normalised = _RE_SOFT_BREAKS.sub(" ", without_html)
+    if preserve_hard_spaces:
+        return BREAKABLE_SPACES.sub(" ", normalised).strip()
     return _RE_SPACES.sub(" ", normalised).strip()
 
 
@@ -107,6 +117,42 @@ def replace_visible_text(text: str, new_text: str) -> str:
     rendered = [_render_segment(segment, index, tags, hard_spaces) for index, segment in enumerate(target.segments)]
     breaks = source.breaks if len(source.segments) == len(target.segments) else target.breaks
     return _join_segments(rendered, breaks)
+
+
+def reflow_visible_text(text: str, verses: tuple[str, ...]) -> str:
+    """Replace whitespace-only layout without moving tags relative to visible characters."""
+    if is_drawing(text):
+        return text
+    if visible_text(text) != visible_text(" ".join(verses)):
+        msg: str = "Reflow must preserve the visible words"
+        raise ValueError(msg)
+    boundaries: set[int] = set()
+    boundary: int = 0
+    for verse in verses[:-1]:
+        boundary += len("".join(verse.split()))
+        boundaries.add(boundary)
+    parts: list[str] = []
+    offset: int = 0
+    previous_space: bool = False
+    for match in _RE_REFLOW_TOKEN.finditer(text):
+        token: str = match.group(0)
+        space: bool = token in _BREAK_TOKENS or bool(BREAKABLE_SPACES.fullmatch(token))
+        if space and offset and not previous_space:
+            parts.append("\\N" if offset in boundaries else " ")
+        if space:
+            previous_space = True
+            continue
+        if token in {_ASS_HARD_SPACE, "\u00a0", "\u202f"}:
+            parts.append(token)
+            previous_space = False
+            continue
+        if _RE_TAG_BLOCK.fullmatch(token) or _RE_HTML_TAG.fullmatch(token):
+            parts.append(token)
+            continue
+        previous_space = False
+        parts.append(token)
+        offset += 1
+    return "".join(parts)
 
 
 def _parse_layout(text: str) -> _TextLayout:
