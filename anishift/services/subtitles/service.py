@@ -11,7 +11,13 @@ import pysubs2
 from pysubs2 import SSAEvent, SSAFile
 
 from anishift.errors import ErrorCode, ErrorContext
-from anishift.services.subtitles.classifier import Category, StyleVerdict, classify_styles
+from anishift.services.subtitles.classifier import (
+    Category,
+    StyleVerdict,
+    classify_styles,
+    line_category,
+    main_dialogue_style,
+)
 from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.text import is_drawing, replace_visible_text, visible_text
 from anishift.services.subtitles.types import (
@@ -184,20 +190,37 @@ def _collapse_fbf_indexed(
     return tuple(lines), collapsed_away
 
 
+def _spoken_mask(
+    dialogue: Sequence[SSAEvent],
+    spoken_styles: Collection[str] | None,
+    verdicts: Sequence[StyleVerdict],
+) -> list[bool]:
+    if spoken_styles is not None:
+        selected: set[str] = set(spoken_styles)
+        return [event.style in selected for event in dialogue]
+    categories: dict[str, Category] = {verdict.style: verdict.category for verdict in verdicts}
+    main_style: str | None = main_dialogue_style(verdicts)
+    return [
+        line_category(event, categories.get(event.style, Category.UNCERTAIN), in_main_style=event.style == main_style)
+        is Category.DIALOG
+        for event in dialogue
+    ]
+
+
 def _dialogue_decisions(
     dialogue: Sequence[SSAEvent],
-    spoken_styles: Collection[str],
+    spoken_mask: Sequence[bool],
     *,
     allow_fallback: bool,
 ) -> tuple[list[Decision], int, int, int]:
     decisions: list[Decision] = []
     drawing_events = 0
-    for event in dialogue:
+    for event, spoken in zip(dialogue, spoken_mask, strict=True):
         if is_drawing(event.text):
             decisions.append("displayed")
             drawing_events += 1
             continue
-        decisions.append("spoken" if event.style in spoken_styles else "displayed")
+        decisions.append("spoken" if spoken else "displayed")
     spoken_events = decisions.count("spoken")
     if allow_fallback and spoken_events == 0 and len(dialogue) > drawing_events:
         decisions = ["displayed" if is_drawing(event.text) else "spoken" for event in dialogue]
@@ -220,14 +243,9 @@ def split_subtitles(
         drawing_events = 0
     else:
         final_verdicts = tuple(verdicts) if verdicts is not None else tuple(classify_styles(subs))
-        styles = (
-            set(spoken_styles)
-            if spoken_styles is not None
-            else {verdict.style for verdict in final_verdicts if verdict.category is Category.DIALOG}
-        )
         decisions, _, drawing_events, _ = _dialogue_decisions(
             dialogue,
-            styles,
+            _spoken_mask(dialogue, spoken_styles, final_verdicts),
             allow_fallback=spoken_styles is None,
         )
     spoken_events = decisions.count("spoken")

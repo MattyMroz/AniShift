@@ -17,6 +17,7 @@ Napisy: klasyfikacja stylów ASS (DIALOG/SIGN/UNCERTAIN), split spoken/displayed
 - Regexy sygnatur ASS budowane z `chr(92)+chr(92)` (dwa literalne backslashe, nie escape) — świadomy obchód reguły ruff psującej `\\`. `classifier.py:18,23`, `text.py:15`
 - `classify_styles` liczy `raw_n` po WSZYSTKICH eventach, ale metryki tylko po zdeduplikowanych — dwie pętle po innych zbiorach. `classifier.py:189-203`
 - `split_subtitles` ma cichy fallback: gdy żaden styl nie jest „spoken", a są nierysunkowe eventy, WSZYSTKIE nierysunkowe stają się „spoken". `service.py:167-169`
+- W trybie auto decyzja zapada per linia przez `line_category`: actor szyldu → SIGN, chyba że linia jest zwykłym zdaniem (interpunkcja, bez `_RE_POS`) w głównym stylu dialogu (`main_dialogue_style`); styl UNCERTAIN → DIALOG tylko przy dialogowej nazwie stylu (`_RE_DLG`); inline `\an4`–`\an6` na DIALOG → SIGN. Jawne `spoken_styles` wybiera wyłącznie po stylu. `classifier.py`, `service.py`
 - Translated writery pomijają spoken bez klucza `(style, visible_text)` (np. pusty tekst) — kopiują event bez zmian. `service.py`
 - `replace_visible_text` zwraca raw event 1:1 dla niezmienionego visible text; przy tłumaczeniu mapuje tagi inline na granicach grafemów, a `\h` zastępuje najbliższy whitespace targetu bez rozcinania słowa. `text.py`
 - `displayed_verses` nie zawiera eventów `\pN`; writer kopiuje rysunki raw i nie konsumuje dla nich pozycji tłumaczenia. `service.py`
