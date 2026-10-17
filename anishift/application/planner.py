@@ -1349,6 +1349,11 @@ class _GroupPlanner:
                     artifacts=(selected,),
                 )
             return
+        if needs_displayed and selected is not None and self._lacks_displayed_layer(selected):
+            self._displayed_pl = self._absent_displayed(selected)
+            needs_displayed = False
+            if not needs_spoken:
+                return
         full: Artifact | None = self._ensure_full_pl()
         if full is None:
             return
@@ -1377,6 +1382,29 @@ class _GroupPlanner:
                 variant=output.kind.value,
                 resource_key="subtitles",
             )
+
+    def _lacks_displayed_layer(self, selected: Artifact | _EmbeddedTrack) -> bool:
+        planned: bool = isinstance(selected, Artifact) and selected.state is ArtifactState.MISSING
+        origin: Artifact | _EmbeddedTrack | None = self._subtitle_input if planned else selected
+        if origin is None or origin.subtitle_format not in {"ass", "srt"}:
+            return selected.subtitle_format == "srt"
+        return "srt" in {selected.subtitle_format, origin.subtitle_format, self._output_format(origin.subtitle_format)}
+
+    def _absent_displayed(self, selected: Artifact | _EmbeddedTrack) -> Artifact:
+        planned: Artifact = self._intermediate(
+            ArtifactKind.DISPLAYED_PL,
+            "split-displayed",
+            subtitle_format=self._output_format(selected.subtitle_format),
+            language="pol",
+        )
+        absent: Artifact = replace(planned, state=ArtifactState.ABSENT)
+        self.artifacts[absent.artifact_id] = absent
+        self._problem(
+            "displayed_cues_absent",
+            "SRT subtitles have no on-screen layer, so no displayed subtitle file will be created",
+            is_blocking=False,
+        )
+        return absent
 
     def _convert_partial_product(self, source: Artifact, requested_kind: ProductKind) -> Artifact:
         if requested_kind not in self.intent.products.requested_products or self._requested_format_matches(source):

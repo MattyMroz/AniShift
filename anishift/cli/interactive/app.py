@@ -24,6 +24,7 @@ from anishift.application import (
 )
 from anishift.application.cancellation import EventCancellationToken
 from anishift.application.events import sanitize_event_message
+from anishift.application.results import DISPLAYED_ABSENCE_NOTE
 from anishift.cli.exit_codes import EXIT_CANCELLED, EXIT_INCOMPLETE, EXIT_REFUSED, EXIT_SUCCESS, run_exit_code
 from anishift.cli.interactive.anime import AnimeController
 from anishift.cli.interactive.home import HomeAction, brand_for_geometry, centered_block, working_directory_label
@@ -122,6 +123,11 @@ _REFUSAL_SUGGESTIONS: Final[dict[str, str]] = {
     ),
 }
 """Polish presentation of stable UI-neutral Auto suggestions."""
+
+_RESULT_WARNINGS: Final[dict[str, str]] = {
+    DISPLAYED_ABSENCE_NOTE: "Brak napisów ekranowych w źródle · pominięto je w wyniku",
+}
+"""Polish presentation of stable run result warnings."""
 
 
 @dataclass(slots=True)
@@ -1177,7 +1183,7 @@ def _result_message(result: RunResult, workspace: InspectedWorkspace) -> Text:
         for product in (*group.products, *group.preserved_products):
             message.append(f"\n  ✓ Zachowano: {_safe(product.path.name)}", style="brand_accent")
     for warning in result.warnings:
-        message.append(f"\n{_safe(warning)}", style="warning")
+        message.append(f"\n{_RESULT_WARNINGS.get(warning, _safe(warning))}", style="warning")
     message.append(f"\n\nSzczegóły: {_LOG_LOCATION}", style="gray")
     return message
 

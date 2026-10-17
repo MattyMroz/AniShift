@@ -1246,6 +1246,103 @@ def test_mkv_and_mp4_share_one_generated_narration_artifact() -> None:
     assert mix_output in _task(plan, TaskKind.COMPOSE_MP4).requires
 
 
+def _srt_group(source: str) -> InspectedSourceGroup:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    tracks: tuple[MediaTrack, ...] = (
+        MediaTrack(0, MediaTrackKind.VIDEO, "h264", None, None, True, False),
+        MediaTrack(1, MediaTrackKind.AUDIO, "aac", "jpn", "Japanese", True, False),
+        MediaTrack(2, MediaTrackKind.SUBTITLES, "subrip", "eng", "English", True, False, "srt"),
+    )
+    extra: dict[str, Artifact] = {
+        "sidecar": _artifact(ArtifactKind.SOURCE_SUBTITLES, "1.srt", language="eng", subtitle_format="srt"),
+        "ready_full": _artifact(ArtifactKind.FULL_PL, "1.pl.srt", language="pol", subtitle_format="srt"),
+        "ass_sidecar": _artifact(ArtifactKind.SOURCE_SUBTITLES, "1.ass", language="eng", subtitle_format="ass"),
+    }
+    return _group(video, extra[source], tracks=tracks) if source in extra else _group(video, tracks=tracks)
+
+
+def _absent_displayed(plan: ExecutionPlan) -> Artifact:
+    return next(
+        artifact
+        for artifact in plan.artifacts
+        if artifact.kind is ArtifactKind.DISPLAYED_PL and artifact.lifetime is ArtifactLifetime.INTERMEDIATE
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "output_format"),
+    [
+        ("sidecar", SubtitleOutputFormat.PRESERVE),
+        ("sidecar", SubtitleOutputFormat.ASS),
+        ("embedded", SubtitleOutputFormat.PRESERVE),
+        ("ready_full", SubtitleOutputFormat.PRESERVE),
+        ("ass_sidecar", SubtitleOutputFormat.SRT),
+    ],
+)
+def test_displayed_from_srt_subtitles_is_planned_absent_without_translation(
+    source: str, output_format: SubtitleOutputFormat
+) -> None:
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.DISPLAYED_PL}))
+
+    plan: ExecutionPlan = plan_auto(
+        (_srt_group(source),), _preset(products, subtitle_output_format=output_format), _settings()
+    )
+
+    displayed: Artifact = _absent_displayed(plan)
+    assert plan.can_execute
+    assert _task_kinds(plan) == (TaskKind.PUBLISH_ARTIFACT,)
+    assert displayed.state is ArtifactState.ABSENT
+    assert _task(plan, TaskKind.PUBLISH_ARTIFACT).requires == (displayed.artifact_id,)
+    assert [(problem.code, problem.is_blocking) for problem in plan.problems] == [("displayed_cues_absent", False)]
+
+
+@pytest.mark.parametrize("output_format", [SubtitleOutputFormat.PRESERVE, SubtitleOutputFormat.ASS])
+def test_containers_from_plain_srt_omit_the_displayed_layer_without_splitting_it(
+    output_format: SubtitleOutputFormat,
+) -> None:
+    products: ProductIntent = ProductIntent(
+        frozenset({ProductKind.MKV, ProductKind.MP4, ProductKind.NARRATION_AUDIO}),
+        burn_subtitle_product=BurnSubtitleProduct.DISPLAYED_PL,
+        mkv_tracks=frozenset({MkvTrackProduct.DISPLAYED_PL_SUBTITLES, MkvTrackProduct.NARRATION_AUDIO}),
+        mp4_audio_source=Mp4AudioSource.NARRATION,
+    )
+
+    plan: ExecutionPlan = plan_auto(
+        (_srt_group("sidecar"),), _preset(products, subtitle_output_format=output_format), _settings()
+    )
+
+    displayed: Artifact = _absent_displayed(plan)
+    kinds: dict[str, ArtifactKind] = {artifact.artifact_id: artifact.kind for artifact in plan.artifacts}
+    split_outputs: set[ArtifactKind] = {
+        kinds[artifact_id]
+        for task in plan.tasks
+        if task.kind is TaskKind.SPLIT_SUBTITLES
+        for artifact_id in task.produces
+    }
+    assert plan.can_execute
+    assert displayed.state is ArtifactState.ABSENT
+    assert split_outputs == {ArtifactKind.SPOKEN_PL}
+    assert all(displayed.artifact_id not in task.produces for task in plan.tasks)
+    assert displayed.artifact_id in _task(plan, TaskKind.COMPOSE_MKV).requires
+    assert displayed.artifact_id in _task(plan, TaskKind.COMPOSE_MP4).requires
+    assert TaskKind.TRANSLATE_SUBTITLES in _task_kinds(plan)
+
+
+def test_displayed_from_ass_keeps_the_split_for_runtime_classification() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    sidecar: Artifact = _artifact(ArtifactKind.SOURCE_SUBTITLES, "1.ass", language="eng", subtitle_format="ass")
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.DISPLAYED_PL}))
+
+    plan: ExecutionPlan = plan_auto((_group(video, sidecar),), _preset(products), _settings())
+
+    assert plan.problems == ()
+    assert _task_kinds(plan) == (
+        TaskKind.TRANSLATE_SUBTITLES,
+        TaskKind.SPLIT_SUBTITLES,
+        TaskKind.PUBLISH_ARTIFACT,
+    )
+
+
 def test_three_manual_groups_keep_independent_products_and_sources() -> None:
     groups: list[InspectedSourceGroup] = []
     intents: dict[str, GroupIntent] = {}

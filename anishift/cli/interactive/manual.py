@@ -126,13 +126,14 @@ _PROBLEM_MESSAGES: Final[dict[str, str]] = {
     "audio_duration_mismatch": "Wybrane audio ma inną długość niż wideo",
     "audio_selection_invalid": "Wybrane audio jest niedostępne lub nieprawidłowe",
     "audio_source_missing": "Brak zgodnego źródła audio",
+    "displayed_cues_absent": "Napisy SRT nie mają warstwy ekranowej · napisy ekranowe zostaną pominięte",
     "source_conflict": "Grupa zawiera nierozwiązany konflikt źródeł",
     "subtitle_selection_invalid": "Wybrane napisy są niedostępne lub nieprawidłowe",
     "subtitle_selection_missing": "Wybrany rodzaj napisów wymaga wskazania źródła",
     "subtitle_source_missing": "Brak zgodnego źródła napisów",
     "video_missing": "Brak prawidłowego źródła wideo",
 }
-"""Polish presentation of common planner blockers."""
+"""Polish presentation of common planner problems."""
 
 
 class ManualResult(StrEnum):
@@ -1239,7 +1240,8 @@ class ManualController:
         if plan is None:
             return ()
         return tuple(
-            f"! {self._labels.get(problem.group_id or '', 'Plan')} · {_safe(problem.message)}"
+            f"! {self._labels.get(problem.group_id or '', 'Plan')} · "
+            f"{_PROBLEM_MESSAGES.get(problem.code, _safe(problem.message))}"
             for problem in plan.problems
             if not problem.is_blocking
         )

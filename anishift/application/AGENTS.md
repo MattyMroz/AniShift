@@ -178,6 +178,9 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - `ExecutionPlan.tasks` w porządku `stable_topological_order()` (grupa `2` przed `10`); każdy artefakt ma jednego
   producenta, plan nie zawiera `MISSING` bez producenta. Worker dostaje `ArtifactSnapshot` i zwraca `TaskResult`;
   mutowalny store zostaje prywatny. `ABSENT` jest poprawne tylko dla nieźródłowego `DISPLAYED_PL` bez ścieżki runtime.
+  Split czytający SRT (źródło SRT albo wyjście SRT) nie ma warstwy ekranowej: planner od razu tworzy `ABSENT` (bez
+  splitu i tłumaczenia, ostrzeżenie `displayed_cues_absent`), ASS rozstrzyga split w runtime; ABSENT w planie daje
+  notkę w `RunResult`.
 - Auto z audio i napisami z jednego MKV planuje jeden `EXTRACT_TRACKS` (jeden `mkvextract --gui-mode`, każdy
   `#GUI#progress` bez uśredniania). LLM równolegle dokładnie do `llm_max_concurrency` — scheduler nie przycina drugi
   raz; TTS jeden plik naraz.

@@ -11,11 +11,12 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from typing import Final
 
+from anishift.application.artifacts import ArtifactState
 from anishift.application.cancellation import CommitCancellationToken
 from anishift.application.events import RunEventKind, RunEventSink, WorkerNotification, WorkerNotificationKind
 from anishift.application.intents import RequestOrigin
 from anishift.application.planning import ExecutionPlan, PlanTask, TaskState
-from anishift.application.results import ArtifactSnapshot, GroupResult, RunResult, TaskResult
+from anishift.application.results import DISPLAYED_ABSENCE_NOTE, ArtifactSnapshot, GroupResult, RunResult, TaskResult
 from anishift.application.scheduler_contracts import (
     NaturalOrderGate,
     ResourceLimits,
@@ -407,7 +408,10 @@ class GraphCoordinator:
         paused: bool = (
             draining and not context.cancel.is_cancelled() and TaskState.CANCELLED in context.state.task_states.values()
         )
-        result: RunResult = RunResult(run_id=context.run_id, groups=groups, paused=paused)
+        absent: bool = any(artifact.state is ArtifactState.ABSENT for artifact in context.plan.artifacts)
+        result: RunResult = RunResult(
+            run_id=context.run_id, groups=groups, paused=paused, warnings=(DISPLAYED_ABSENCE_NOTE,) if absent else ()
+        )
         context.emitter.emit(RunEventKind.RUN_FINISHED, state=run_result_state(result))
         handle: RunHandle | None = self._detach(context.run_id)
         if handle is not None:
