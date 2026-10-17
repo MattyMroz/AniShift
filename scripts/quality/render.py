@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
+from itertools import batched
 from typing import TYPE_CHECKING, Final
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont
@@ -50,6 +53,9 @@ _SOURCE_COLOUR: Final[str] = "#33ff66"
 
 _OUTPUT_COLOUR: Final[str] = "#ff3355"
 """Outline colour of the translated sign box."""
+
+_LAST_ASS_SECOND: Final[int] = 35999
+"""Last whole second an ASS timestamp can hold (9:59:59.99)."""
 
 _FFMPEG_TIMEOUT_S: Final[int] = 600
 """Upper bound of one FFmpeg run."""
@@ -199,10 +205,20 @@ def measurement_file(subs: SSAFile, events: Sequence[SSAEvent], size: Size) -> t
         }
     )
     canvas.styles = {name: style.copy() for name, style in subs.styles.items()}
-    slot_s: int = max((event.end - event.start for event in events), default=0) // 1000 + 2
+    slot_s: int = slot_length(events)
     for number, event in enumerate(events, start=1):
         canvas.events.append(_slotted(event, subs, number * slot_s * 1000, dx, dy))
     return canvas, slot_s
+
+
+def slot_length(events: Sequence[SSAEvent]) -> int:
+    """Return the measurement slot in seconds: the longest event plus a margin."""
+    return max((event.end - event.start for event in events), default=0) // 1000 + 2
+
+
+def batch_size(events: Sequence[SSAEvent]) -> int:
+    """Return how many events fit in one measurement file before ASS timestamps overflow."""
+    return max(1, _LAST_ASS_SECOND // slot_length(events) - 1)
 
 
 def _slotted(event: SSAEvent, subs: SSAFile, sample_ms: int, dx: int, dy: int) -> SSAEvent:
@@ -231,6 +247,18 @@ def measure_boxes(
     """Render each event alone at its midpoint and return its box in script pixels."""
     if not events:
         return [], FontReport((), {})
+    batches: list[tuple[SSAEvent, ...]] = list(batched(events, batch_size(events), strict=False))
+    names: list[str] = [f"{name}-{number}" for number in range(1, len(batches) + 1)]
+    measure: partial[tuple[list[Box | None], str]] = partial(_measure_batch, subs, size=size, work=work)
+    with ThreadPoolExecutor(min(len(batches), os.process_cpu_count() or 1)) as pool:
+        measured: list[tuple[list[Box | None], str]] = list(pool.map(measure, batches, names))
+    boxes: list[Box | None] = [box for batch_boxes, _ in measured for box in batch_boxes]
+    return boxes, parse_font_log("\n".join(log for _, log in measured))
+
+
+def _measure_batch(
+    subs: SSAFile, events: Sequence[SSAEvent], name: str, *, size: Size, work: Path
+) -> tuple[list[Box | None], str]:
     canvas, slot_s = measurement_file(subs, events, size)
     canvas.save(str(work / f"{name}.ass"), encoding="utf-8")
     width: int = int(canvas.info["PlayResX"])
@@ -245,7 +273,7 @@ def measure_boxes(
     frames: Iterator[bytes] = _ffmpeg_frames(raw, work, log, 3 * width * height)
     boxes: list[Box | None] = [_frame_box(frame, width, size) for frame in frames][1 : len(events) + 1]
     boxes.extend([None] * (len(events) - len(boxes)))
-    return boxes, parse_font_log(log.read_text(encoding="utf-8", errors="replace"))
+    return boxes, log.read_text(encoding="utf-8", errors="replace")
 
 
 def _frame_box(frame: bytes, width: int, size: Size) -> Box | None:

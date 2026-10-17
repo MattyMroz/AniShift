@@ -84,3 +84,17 @@ def test_measure_boxes_finds_text_extent_beyond_the_screen(tmp_path: Path) -> No
     assert overflowing[0] >= 595
     assert overflowing[2] > _SIZE[0] + 100
     assert not (tmp_path / "measure-frames").exists()
+
+
+@pytest.mark.integration
+def test_measure_boxes_measures_events_beyond_the_ass_time_limit(tmp_path: Path) -> None:
+    if resolve_binary(Binary.FFMPEG) is None:
+        pytest.skip("ffmpeg is not installed")
+    subs = _subs()
+    long_sign = subs.events[0].copy()
+    long_sign.end = long_sign.start + 3_598_000
+    events = [long_sign.copy() for _ in range(12)]
+    boxes, _ = render.measure_boxes(subs, events, _SIZE, tmp_path, "measure")
+    assert len(boxes) == 12
+    assert all(box is not None for box in boxes)
+    assert render.batch_size(events) == 8
