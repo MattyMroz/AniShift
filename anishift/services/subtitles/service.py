@@ -19,6 +19,7 @@ from anishift.services.subtitles.classifier import (
     main_dialogue_style,
 )
 from anishift.services.subtitles.errors import SubtitleError
+from anishift.services.subtitles.fitting import fit_sign_text
 from anishift.services.subtitles.text import is_drawing, replace_visible_text, visible_text
 from anishift.services.subtitles.types import (
     Decision,
@@ -386,6 +387,8 @@ def _translated_file(
             continue
         replaced = event.copy()
         replaced.text = replace_visible_text(event.text, line_break.join(verses))
+        if split.kind == "ass" and decision == "displayed":
+            replaced.text = fit_sign_text(event, replaced.text, split.subs)
         out.events.append(replaced)
     return out
 
