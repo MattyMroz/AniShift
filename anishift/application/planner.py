@@ -135,6 +135,7 @@ class _EmbeddedTrack:
     codec_id: str
     language: str | None
     subtitle_format: str | None = None
+    source_offset_us: int = 0
 
 
 def plan_auto(  # noqa: PLR0913 - every automatic planning input stays an explicit call-site choice
@@ -366,6 +367,7 @@ class _GroupPlanner:
         self._spoken_pl: Artifact | None = None
         self._displayed_pl: Artifact | None = None
         self._source_audio: Artifact | None = None
+        self._source_offset_us: int = 0
         self._narration: Artifact | None = None
 
     def build(self) -> tuple[GroupPlan, tuple[Artifact, ...], tuple[PlanTask, ...]]:
@@ -1140,12 +1142,14 @@ class _GroupPlanner:
                     "Only signs, songs, or forced subtitle tracks are embedded, so the narration follows them",
                     is_blocking=False,
                 )
+        source_offset_us: int = max(0, selected.start_us or 0) if kind == "audio" else 0
         return _EmbeddedTrack(
             video=video,
             track_id=selected.track_id,
             codec_id=selected.codec_id,
             language=selected.language,
             subtitle_format=selected.subtitle_format,
+            source_offset_us=source_offset_us,
         )
 
     def _ensure_source_subtitles(self) -> Artifact | None:
@@ -1200,6 +1204,7 @@ class _GroupPlanner:
             or not isinstance(selected, _EmbeddedTrack)
             or selected.subtitle_format is None
             or selected.video.kind is not ArtifactKind.VIDEO_MKV
+            or self.intent.selected_audio_artifact_id is not None
         ):
             return
         audio: _EmbeddedTrack | None = self._select_embedded_track("audio")
@@ -1230,6 +1235,7 @@ class _GroupPlanner:
             ),
         )
         self._source_audio = source_audio
+        self._source_offset_us = audio.source_offset_us
         self._source_subtitles = subtitles
 
     def _ensure_full_pl(  # noqa: PLR0911 - each compatible manual starting point terminates independently
@@ -1432,7 +1438,11 @@ class _GroupPlanner:
             produces=(narration,),
             variant=f"narration-{timeline.value}",
             resource_key=f"audio:{self.settings.audio_profile_id}",
-            parameters=(("mix_source", "video"), ("output_profile", profile)),
+            parameters=(
+                ("mix_source", "video"),
+                ("output_profile", profile),
+                ("source_offset_us", self._source_offset_us),
+            ),
         )
         self._narration = narration
         return narration
@@ -1481,6 +1491,7 @@ class _GroupPlanner:
             ),
         )
         self._source_audio = source_audio
+        self._source_offset_us = embedded.source_offset_us
         return source_audio
 
     def _publish_source_subtitles(self, source: Artifact) -> Artifact | None:

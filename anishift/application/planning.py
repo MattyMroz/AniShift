@@ -520,7 +520,7 @@ def _validate_task_parameter_names(kind: TaskKind, names: frozenset[str]) -> Non
         TaskKind.TRANSCODE_AUDIO: (frozenset({"output_profile"}), frozenset({"output_profile"})),
         TaskKind.MIX_NARRATION: (
             frozenset({"mix_source", "output_profile"}),
-            frozenset({"mix_source", "output_profile"}),
+            frozenset({"mix_source", "output_profile", "source_offset_us"}),
         ),
         TaskKind.COMPOSE_MKV: (frozenset({"mkv_tracks"}), frozenset({"mkv_tracks"})),
         TaskKind.COMPOSE_MP4: (

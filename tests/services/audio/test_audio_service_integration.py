@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import threading
+import wave
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -89,6 +91,43 @@ class _RecordingRunner:
 
 def test_audio_progress_observer_cannot_fail_audio_execution() -> None:
     _notify(_ThrowingProgress(), "scope", "mixing")
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+@pytest.mark.parametrize(
+    ("offset_us", "offset_ms", "offset_samples"), [(5_005_000, 5005, 240_240), (4_983_667, 4984, 239_216)]
+)
+def test_source_offset_moves_decoded_signal_and_reuses_narrator(
+    tmp_path: Path, offset_us: int, offset_ms: int, offset_samples: int
+) -> None:
+    source: Path = tmp_path / "source.wav"
+    clip: Path = tmp_path / "clip.wav"
+    write_wav(source, frames=24_000, sample=b"\x00\x20")
+    write_wav(clip, frames=9_600, sample=b"\x00\x00")
+    runner: _RecordingRunner = _RecordingRunner()
+    service: AudioService = AudioService(
+        AudioConfig(codec_profile=AudioCodecProfile.WAV), runner=runner, ffmpeg=FFMPEG, ffprobe=FFPROBE
+    )
+    request: AudioRenderRequest = AudioRenderRequest(
+        "offset", tmp_path / "Episode.mkv", source, (_timed_clip(clip),), tmp_path / "temp", tmp_path / "mix.wav"
+    )
+    baseline: AudioRenderResult = service.render(request)
+    result: AudioRenderResult = service.render(replace(request, source_offset_us=offset_us))
+
+    assert result.status is AudioRenderStatus.COMPLETED
+    assert result.narration_fingerprint == baseline.narration_fingerprint
+    assert result.mix_fingerprint != baseline.mix_fingerprint
+    assert runner.operations.count("wrap_narrator") == 1
+    assert result.output_probe is not None
+    assert result.output_probe.duration_ms == max(300, 500 + offset_ms)
+    with wave.open(str(request.destination), "rb") as decoded:
+        frames: bytes = decoded.readframes(decoded.getnframes())
+    samples: list[int] = [
+        int.from_bytes(frames[index : index + 2], "little", signed=True) for index in range(0, len(frames), 2)
+    ]
+    active: list[int] = [index for index, sample in enumerate(samples) if abs(sample) > 100]
+    assert active[0] == offset_samples
 
 
 @pytest.mark.skipif(

@@ -101,6 +101,15 @@ def test_mix_fingerprint_tracks_original_gain_and_codec(tmp_path: Path) -> None:
 
     assert baseline != gain_changed
     assert baseline != codec_changed
+    offset_changed: str = mix_fingerprint(
+        narration_fingerprint_value="sha256:narration",
+        narrator_path=narrator,
+        original_audio_path=original,
+        channel_plan=plan,
+        config=config,
+        source_offset_us=5_005_000,
+    )
+    assert baseline != offset_changed
 
 
 def test_normalization_fingerprint_reuses_timing_changes_but_tracks_audio_inputs(

@@ -37,6 +37,9 @@ class _Progress:
 
 
 class _Mixer:
+    def __init__(self) -> None:
+        self.requests: list[AudioRenderRequest] = []
+
     def render(
         self,
         request: AudioRenderRequest,
@@ -45,6 +48,7 @@ class _Mixer:
         on_percent: Callable[[int], None] | None = None,
         cancel: threading.Event | None = None,
     ) -> AudioRenderResult:
+        self.requests.append(request)
         assert cancel is not None
         assert cancel.is_set() is False
         if callbacks is not None:
@@ -93,7 +97,9 @@ def _output(artifact_id: str) -> Artifact:
     )
 
 
-def test_audio_handler_mixes_manifest_and_source_audio(tmp_path: Path) -> None:
+@pytest.mark.unit
+@pytest.mark.parametrize("offset", [None, 5_005_000, -1_234_500, True, "5005"])
+def test_audio_handler_mixes_manifest_and_source_audio(tmp_path: Path, offset: int | str | None) -> None:
     source_path = tmp_path / "source.ac3"
     source_path.write_bytes(b"source")
     clip_path = tmp_path / "clip.mp3"
@@ -132,19 +138,29 @@ def test_audio_handler_mixes_manifest_and_source_audio(tmp_path: Path) -> None:
         ("narration",),
         (),
         "audio:default",
-        (("mix_source", "video"), ("output_profile", "eac3")),
+        (("mix_source", "video"), ("output_profile", "eac3"))
+        + (() if offset is None else (("source_offset_us", offset),)),
     )
 
     progress: _Progress = _Progress()
-    result: TaskResult = AudioTaskHandler(_Mixer(), _Transcoder(), run_root=tmp_path / "run").execute(
+    mixer: _Mixer = _Mixer()
+    handler: AudioTaskHandler = AudioTaskHandler(mixer, _Transcoder(), run_root=tmp_path / "run")
+    snapshot: ArtifactSnapshot = ArtifactSnapshot({"source": source, "manifest": manifest}, {"narration": output})
+    if offset is not None and (type(offset) is not int or offset < 0):
+        with pytest.raises(ExecutionError, match="non-negative integer"):
+            handler.execute(task, snapshot, NeverCancelledToken(), progress)
+        assert mixer.requests == []
+        return
+    result: TaskResult = handler.execute(
         task,
-        ArtifactSnapshot({"source": source, "manifest": manifest}, {"narration": output}),
+        snapshot,
         NeverCancelledToken(),
         progress,
     )
 
     assert result.outputs[0].path.read_bytes() == b"mixed"
     assert result.outputs[0].metadata["validated"] is True
+    assert mixer.requests[0].source_offset_us == (offset or 0)
     assert [event.progress_percent for event in progress.notifications] == [None, 40, 99, 100]
 
 

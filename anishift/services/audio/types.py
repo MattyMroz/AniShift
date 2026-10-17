@@ -177,6 +177,14 @@ class AudioRenderRequest:
     destination: Path
     post_process_tempo: float = 1.0
     paragraph_pauses: bool = False
+    source_offset_us: int = 0
+
+    @property
+    def source_offset_ms(self) -> int:
+        """Round the non-negative source offset to milliseconds, with ties rounded up."""
+        if self.source_audio_path is None:
+            return 0
+        return (self.source_offset_us + 500) // 1000
 
 
 @dataclass(frozen=True, slots=True)

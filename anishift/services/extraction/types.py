@@ -85,6 +85,7 @@ class TrackInfo:
     default: bool
     num_entries: int | None
     forced: bool = False
+    start_us: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

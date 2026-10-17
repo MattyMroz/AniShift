@@ -190,6 +190,11 @@ class AudioService:
             request,
             cancel=cancel,
         )
+        source_offset_samples: int = (
+            0
+            if original_probe is None
+            else (request.source_offset_us * original_probe.sample_rate + 500_000) // 1_000_000
+        )
         channel_plan: ChannelPlan = build_channel_plan(
             self._config.codec_profile,
             original_probe.channel_layout if original_probe is not None else "mono",
@@ -198,13 +203,14 @@ class AudioService:
             narration_fingerprint_value=narration_id,
             narrator_path=narrator_path,
             original_audio_path=request.source_audio_path,
+            source_offset_us=request.source_offset_us,
             channel_plan=channel_plan,
             config=self._config,
         )
         destination: Path = request.destination
         expected_duration_ms: int = max(
             narrator_probe.duration_ms,
-            original_duration_ms,
+            original_duration_ms + request.source_offset_ms,
         )
         hit_probe: AudioProbe | None = self._output_hit(
             repository,
@@ -242,6 +248,7 @@ class AudioService:
             channel_plan,
             expected_duration_ms,
             mix_id,
+            source_offset_samples=source_offset_samples,
             on_percent=on_percent,
             cancel=cancel,
         )
@@ -500,6 +507,7 @@ class AudioService:
         expected_duration_ms: int,
         mix_id: str,
         *,
+        source_offset_samples: int,
         on_percent: Callable[[int], None] | None,
         cancel: threading.Event | None,
     ) -> AudioProbe:
@@ -513,6 +521,7 @@ class AudioService:
                     inputs=RenderInputs(
                         narrator=narrator_path,
                         original_audio=request.source_audio_path,
+                        source_offset_samples=source_offset_samples,
                         config=self._config,
                         channel_plan=channel_plan,
                     ),
@@ -569,6 +578,8 @@ def _result(  # noqa: PLR0913
 
 
 def _validate_request(request: AudioRenderRequest) -> None:
+    if type(request.source_offset_us) is not int or request.source_offset_us < 0:
+        _raise_config("Audio source offset must be a non-negative integer number of microseconds")
     if _SAFE_SCOPE.fullmatch(request.scope_id) is None or request.scope_id.upper() in _WINDOWS_DEVICE_NAMES:
         _raise_config("Audio scope_id must be one safe opaque path segment")
     if not math.isfinite(request.post_process_tempo) or request.post_process_tempo <= 0:

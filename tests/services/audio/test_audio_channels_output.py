@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -101,6 +102,29 @@ def test_narrator_only_command_has_no_mix_gain() -> None:
     assert "-filter_complex" not in command
     assert "volume=7dB" not in command
     assert "amix=" not in " ".join(command)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("offset_samples", "prefix"),
+    [(239_216, "asetpts=PTS-STARTPTS,adelay=239216S:all=1,"), (0, "")],
+)
+def test_mix_command_offsets_only_source(offset_samples: int, prefix: str) -> None:
+    inputs: RenderInputs = RenderInputs(
+        Path("narrator.wav"), Path("source.wav"), AudioConfig(), build_channel_plan(AudioCodecProfile.EAC3, "stereo")
+    )
+    baseline: tuple[str, ...] = render_command(Path("ffmpeg"), Path("out.eac3"), inputs=inputs)
+    assert baseline[baseline.index("-filter_complex") + 1] == (
+        "[0:a:0]aformat=channel_layouts=stereo,volume=0dB[source];"
+        "[1:a:0]pan=stereo|FL=0.70710678*c0|FR=0.70710678*c0,volume=7dB[narrator];"
+        "[source][narrator]amix=inputs=2:duration=longest:dropout_transition=2:normalize=true[mixed]"
+    )
+    actual: tuple[str, ...] = render_command(
+        Path("ffmpeg"), Path("out.eac3"), inputs=replace(inputs, source_offset_samples=offset_samples)
+    )
+    expected: tuple[str, ...] = tuple(arg.replace("[0:a:0]", f"[0:a:0]{prefix}") for arg in baseline)
+
+    assert actual == expected
 
 
 @pytest.mark.parametrize(

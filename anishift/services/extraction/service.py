@@ -134,7 +134,16 @@ def _parse_track(raw: dict[str, Any]) -> TrackInfo:
         default=properties.get("default_track", False),
         num_entries=properties.get("num_index_entries"),
         forced=properties.get("forced_track", False),
+        start_us=_parse_start_us(properties.get("minimum_timestamp")),
     )
+
+
+def _parse_start_us(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | str):
+        raise TypeError("track.properties.minimum_timestamp")
+    return int(value) // 1000
 
 
 def _parse_duration_us(container: dict[str, Any]) -> int:

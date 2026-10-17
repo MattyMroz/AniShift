@@ -442,7 +442,7 @@ def test_explicit_reacquire_retains_deleted_subscription_provenance_and_never_re
 
 
 def test_history_redacts_public_labels_and_orders_instants_across_timezones(tmp_path: Path) -> None:
-    now: datetime = datetime.now(UTC)
+    now: datetime = datetime(2026, 9, 17, tzinfo=UTC)
     journal: HistoryJournal = HistoryJournal(tmp_path / "history.jsonl")
     earlier: HistoryEvent = HistoryEvent.create(
         "earlier",
