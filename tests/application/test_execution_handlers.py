@@ -94,6 +94,7 @@ from anishift.services.subtitles import (
     write_full,
     write_spoken,
 )
+from anishift.services.subtitles.text import visible_verses
 from anishift.services.translation.layout_config import LayoutConfig
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
 from anishift.services.translation.types import FileTranslation, TranslatedLine
@@ -449,6 +450,97 @@ def test_subtitle_handler_normalizes_srt_to_ass(tmp_path: Path) -> None:
 
     assert result.outputs[0].path.suffix == ".ass"
     assert "[Events]" in result.outputs[0].path.read_text(encoding="utf-8")
+
+
+@pytest.mark.integration
+def test_polish_source_normalization_reflows_dialogue_but_preserves_signs(tmp_path: Path) -> None:
+    source_path: Path = tmp_path / "episode.ass"
+    dialogue: str = r"{\i1}Pierwsza część zdania{\i0}\Njest krótka, ale druga powinna być dłuższa."
+    sign: str = r"{\pos(10,20)}Bardzo długi napis ekranowy\Npozostaje dokładnie taki jak w źródle."
+    subtitles: SSAFile = _ass_split(
+        [
+            SSAEvent(start=0, end=3000, style="Dialog", text=dialogue),
+            SSAEvent(start=0, end=3000, style="Sign", text=sign),
+        ]
+    ).subs
+    subtitles.fonts_opaque = {"sample.ttf": ["!!!!"]}
+    subtitles.graphics_opaque = {"sample.bmp": ["!!!!"]}
+    subtitles.aegisub_project = {"Last Style Storage": "Default"}
+    subtitles.save(str(source_path))
+    source: Artifact = _ready("source", ArtifactKind.SOURCE_SUBTITLES, source_path)
+    output: Artifact = _output("full", ArtifactKind.FULL_PL, subtitle_format="ass")
+    result: TaskResult = SubtitleTaskHandler(run_root=tmp_path / "run").execute(
+        _task(TaskKind.NORMALIZE_SUBTITLES, ("source",), ("full",), (("output_format", "ass"),)),
+        ArtifactSnapshot({"source": source}, {"full": output}),
+        NeverCancelledToken(),
+        _ProgressSink(),
+    )
+    written: SSAFile = load_subtitles(result.outputs[0].path)
+    assert written.events[0].text != dialogue
+    assert max(map(len, visible_verses(written.events[0].text))) <= 42
+    assert r"{\i1}Pierwsza część zdania{\i0}" in written.events[0].text
+    assert written.events[1].text == sign
+    assert [(event.start, event.end) for event in written] == [(0, 3000), (0, 3000)]
+    assert written.fonts_opaque == subtitles.fonts_opaque
+    assert written.graphics_opaque == subtitles.graphics_opaque
+    assert written.aegisub_project == subtitles.aegisub_project
+    assert load_subtitles(source_path).events[0].text == dialogue
+
+
+@pytest.mark.integration
+def test_polish_split_reflows_spoken_and_preserves_displayed_text_and_times(tmp_path: Path) -> None:
+    source_path: Path = tmp_path / "episode.ass"
+    dialogue: str = r"{\i1}-Idziesz ze mną?{\i0} -Tak."
+    sign: str = r"{\pos(10,20)}Bardzo długi napis ekranowy\Npozostaje dokładnie taki jak w źródle."
+    subtitles: SSAFile = _ass_split(
+        [
+            SSAEvent(start=1230, end=4560, style="Dialog", text=dialogue),
+            SSAEvent(start=2340, end=5670, style="Sign", text=sign),
+        ]
+    ).subs
+    subtitles.save(str(source_path))
+    source: Artifact = _ready("full", ArtifactKind.FULL_PL, source_path)
+    spoken: Artifact = _output("spoken", ArtifactKind.SPOKEN_PL, subtitle_format="ass")
+    displayed: Artifact = _output("displayed", ArtifactKind.DISPLAYED_PL, subtitle_format="ass")
+    result: TaskResult = SubtitleTaskHandler(run_root=tmp_path / "run").execute(
+        _task(TaskKind.SPLIT_SUBTITLES, ("full",), ("spoken", "displayed")),
+        ArtifactSnapshot({"full": source}, {"spoken": spoken, "displayed": displayed}),
+        NeverCancelledToken(),
+        _ProgressSink(),
+    )
+    spoken_event: SSAEvent = load_subtitles(result.outputs[0].path).events[0]
+    displayed_event: SSAEvent = load_subtitles(result.outputs[1].path).events[0]
+    assert spoken_event.text == r"{\i1}-Idziesz ze mną?{\i0}\N-Tak."
+    assert (spoken_event.start, spoken_event.end) == (1230, 4560)
+    assert displayed_event.text == sign
+    assert (displayed_event.start, displayed_event.end) == (2340, 5670)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("task_kind", [TaskKind.NORMALIZE_SUBTITLES, TaskKind.SPLIT_SUBTITLES])
+def test_polish_srt_handler_reflows_without_changing_timing(tmp_path: Path, task_kind: TaskKind) -> None:
+    source_path: Path = tmp_path / "episode.srt"
+    source_path.write_text("1\n00:00:01,234 --> 00:00:04,567\n-Idziesz ze mną? -Tak.\n", encoding="utf-8")
+    source: Artifact = _ready("source", ArtifactKind.FULL_PL, source_path)
+    output: Artifact = _output(
+        "output",
+        ArtifactKind.FULL_PL if task_kind is TaskKind.NORMALIZE_SUBTITLES else ArtifactKind.SPOKEN_PL,
+        subtitle_format="srt",
+    )
+    result: TaskResult = SubtitleTaskHandler(run_root=tmp_path / "run").execute(
+        _task(
+            task_kind,
+            ("source",),
+            ("output",),
+            (("output_format", "srt"),) if task_kind is TaskKind.NORMALIZE_SUBTITLES else (),
+        ),
+        ArtifactSnapshot({"source": source}, {"output": output}),
+        NeverCancelledToken(),
+        _ProgressSink(),
+    )
+    event: SSAEvent = load_subtitles(result.outputs[0].path).events[0]
+    assert visible_verses(event.text) == ("-Idziesz ze mną?", "-Tak.")
+    assert (event.start, event.end) == (1234, 4567)
 
 
 def test_subtitle_handler_splits_spoken_and_displayed_outputs(tmp_path: Path) -> None:

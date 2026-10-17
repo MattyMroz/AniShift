@@ -20,6 +20,9 @@ SENTENCE_ENDINGS: Final[str] = LATIN_SENTENCE_ENDINGS + CJK_SENTENCE_ENDINGS
 ZERO_WIDTH: Final[str] = "\u200b"
 """Zero-width space some subtitle sources emit after a sentence mark."""
 
+BREAKABLE_SPACES: Final[re.Pattern[str]] = re.compile(r"[^\S\u00a0\u202f]+")
+"""Whitespace runs excluding Unicode non-breaking spaces."""
+
 _APOSTROPHES: Final[str] = "'’"  # noqa: RUF001 - typographic apostrophe is intentional
 """Apostrophes excluded from phrase boundaries so contractions stay whole."""
 

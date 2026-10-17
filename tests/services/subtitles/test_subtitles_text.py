@@ -1,11 +1,49 @@
+import pytest
+
 from anishift.services.subtitles.text import (
     is_drawing,
     marked_text,
+    reflow_visible_text,
     replace_visible_text,
     restore_markers,
     visible_text,
     visible_verses,
 )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (r"{\i1}Pierwszy\Ndrugi{\i0} trzeci czwarty", r"{\i1}Pierwszy drugi{\i0}\Ntrzeci czwarty"),
+        (r"Pierwszy {\b1}drugi{\b0} trzeci czwarty", r"Pierwszy {\b1}drugi{\b0}\Ntrzeci czwarty"),
+        (r"Pierwszy\hdrugi trzeci czwarty", r"Pierwszy\hdrugi\Ntrzeci czwarty"),
+        (r"Pierwszy drugi\h\Ntrzeci czwarty", r"Pierwszy drugi\h\Ntrzeci czwarty"),
+        (r"Pierwszy drugi\h trzeci czwarty", r"Pierwszy drugi\h\Ntrzeci czwarty"),
+    ],
+)
+def test_reflow_moves_only_breaks_and_keeps_exact_style_spans(source: str, expected: str) -> None:
+    assert reflow_visible_text(source, ("Pierwszy drugi", "trzeci czwarty")) == expected
+
+
+@pytest.mark.unit
+def test_reflow_keeps_a_drawing_unchanged() -> None:
+    source: str = r"{\p1}m 0 0 l 10 10"
+    assert reflow_visible_text(source, ("m 0 0", "l 10 10")) == source
+
+
+@pytest.mark.unit
+def test_visible_text_can_preserve_nonbreaking_spaces_for_reflow() -> None:
+    assert visible_text(r"{\i1}Jan\hKowalski\Nwrócił.", preserve_hard_spaces=True) == "Jan\u00a0Kowalski wrócił."
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("space", ["\u00a0", "\u202f"])
+def test_reflow_preserves_literal_nonbreaking_space(space: str) -> None:
+    text: str = f"Jan{space}Kowalski wrócił do domu."
+    assert (
+        reflow_visible_text(text, (f"Jan{space}Kowalski", "wrócił do domu.")) == f"Jan{space}Kowalski\\Nwrócił do domu."
+    )
 
 
 def test_visible_text_strips_override_blocks_and_html() -> None:

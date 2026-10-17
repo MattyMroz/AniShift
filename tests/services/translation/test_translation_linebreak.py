@@ -14,6 +14,174 @@ def test_empty_text_returns_single_empty_verse() -> None:
     assert split_line("") == ("",)
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("dash", ["-", "–", "—"])
+@pytest.mark.parametrize("space", ["", " "])
+def test_attached_speaker_markers_keep_turns_separate(dash: str, space: str) -> None:
+    first: str = f"{dash}{space}Idziesz ze mną?"
+    second: str = f"{dash}{space}Tak."
+    assert split_line(f"{first} {second}") == (first, second)
+
+
+@pytest.mark.unit
+def test_dash_aside_is_not_a_speaker_turn() -> None:
+    text: str = "- Myślę - powiedział cicho."
+    assert split_line(text) == (text,)
+
+
+@pytest.mark.unit
+def test_three_speakers_still_use_the_line_budget() -> None:
+    text: str = "- Idziesz ze mną? - Tak, już wychodzę. - Na pewno?"
+    verses: tuple[str, ...] = split_line(text)
+    assert len(verses) == 2
+    assert max(map(len, verses)) <= 42
+    assert " ".join(verses) == text
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "preposition", ["według", "wśród", "obok", "zza", "spod", "poza", "wobec", "podczas", "około", "ponad", "pomiędzy"]
+)
+def test_additional_prepositions_never_end_a_verse(preposition: str) -> None:
+    text: str = f"Wczoraj szedłem {preposition} domu ponownie"
+    assert f"{preposition} domu" in "\n".join(split_line(text, max_chars=20))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("limit", [8, 13, 16])
+def test_name_is_protected_even_when_that_requires_overflow(limit: int) -> None:
+    assert "Jan Kowalski" in "\n".join(split_line("Wczoraj Jan Kowalski ponownie", max_chars=limit))
+
+
+@pytest.mark.unit
+def test_capitalised_run_without_other_cuts_still_breaks() -> None:
+    text: str = "Święty Imperator Wilhelm Ludwig Evernatten."
+    verses: tuple[str, ...] = split_line(text)
+    assert len(verses) == 2
+    assert max(map(len, verses)) <= 42
+    assert " ".join(verses) == text
+
+
+@pytest.mark.unit
+def test_all_caps_dialogue_is_not_one_protected_name() -> None:
+    text: str = "NIE WIEM CO MAM TERAZ ZROBIĆ Z TYM WSZYSTKIM NAPRAWDĘ"
+    verses: tuple[str, ...] = split_line(text)
+    assert len(verses) == 2
+    assert max(map(len, verses)) <= 42
+    assert " ".join(verses) == text
+
+
+@pytest.mark.unit
+def test_unavoidable_overflow_tolerates_two_characters_for_intact_adjective_phrase() -> None:
+    text: str = "Wczoraj widziałem ogromnego smoka daleko stąd."
+    assert split_line(text, max_chars=24) == ("Wczoraj widziałem", "ogromnego smoka daleko stąd.")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Powiedziałem mu wszystko, co wiedziałem o tamtej strasznej nocy w lesie.",
+    ],
+)
+def test_dialogue_chooses_a_fitting_boundary_before_punctuation_bonus(text: str) -> None:
+    verses: tuple[str, ...] = split_line(text)
+    assert len(verses) == 2
+    assert max(map(len, verses)) <= 42
+    assert " ".join(verses) == text
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dash", ["-", "–", "—"])
+@pytest.mark.parametrize("first", ["Tak.", "Tak", "To jest bardzo długa wypowiedź pierwszego rozmówcy."])
+def test_two_speakers_get_exactly_one_verse_each(dash: str, first: str) -> None:
+    assert split_line(f"{dash} {first} {dash} Nie.") == (f"{dash} {first}", f"{dash} Nie.")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("abbreviation", ["np.", "dr", "dr.", "ok.", "p.", "ul.", "tzn.", "itd.", "itp.", "godz."])
+def test_abbreviations_stay_with_the_following_word(abbreviation: str) -> None:
+    text: str = f"Zobacz koniecznie {abbreviation} Kowalski przekazał wiadomość dla ciebie."
+    assert not split_line(text, max_chars=30)[0].endswith(abbreviation)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "nie wróci",
+        "on wróci",
+        "będzie biegać",
+        "musi wyjść",
+        "stary dom",
+        "czerwonego smoka",
+        "Jan Kowalski",
+        "pan Kowalski",
+        "on się boi",
+        "boi się",
+    ],
+)
+def test_protected_polish_phrase_is_not_split(phrase: str) -> None:
+    text: str = f"Wczoraj {phrase} ponownie"
+    verses: tuple[str, ...] = split_line(text, max_chars=len(text) - len("Wczoraj "))
+    assert phrase in "\n".join(verses)
+    assert " ".join(verses) == text
+
+
+@pytest.mark.unit
+def test_nonbreaking_space_is_never_a_cut_candidate() -> None:
+    text: str = "Widziałem Jan\u00a0Kowalski ponownie"
+    assert "Jan\u00a0Kowalski" in "\n".join(split_line(text, max_chars=15))
+
+
+@pytest.mark.unit
+def test_no_legal_boundary_preserves_one_overlong_verse() -> None:
+    assert split_line("w nie tak", max_chars=3) == ("w nie tak",)
+
+
+@pytest.mark.unit
+def test_unavoidable_overflow_minimizes_the_longest_verse() -> None:
+    text: str = (
+        "Dobra, wczoraj wieczorem poszedłem sam do sklepu, a tam spotkałem starego przyjaciela "
+        "z liceum, który mnie nie poznał."
+    )
+    verses: tuple[str, ...] = split_line(text)
+    assert max(map(len, verses)) <= 62
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("budget", [3, 4])
+def test_dialogue_reserves_remaining_line_budget_for_the_right_side(budget: int) -> None:
+    text: str = " ".join(["abcdefghij"] * (budget * 5))
+    verses: tuple[str, ...] = split_line(text, max_lines=budget)
+    assert len(verses) == budget
+    assert max(map(len, verses)) <= 76
+    assert " ".join(verses) == text
+
+
+@pytest.mark.unit
+def test_sentence_boundary_wins_over_comma_when_both_fit() -> None:
+    assert split_line("Wróciłem. Zjadłem obiad, potem zasnąłem.", max_chars=30) == (
+        "Wróciłem.",
+        "Zjadłem obiad, potem zasnąłem.",
+    )
+
+
+@pytest.mark.unit
+def test_conjunction_boundary_wins_over_comma_when_both_fit() -> None:
+    assert split_line("Zjadłem obiad, odpocząłem ale potem wyszedłem.", max_chars=35) == (
+        "Zjadłem obiad, odpocząłem",
+        "ale potem wyszedłem.",
+    )
+
+
+@pytest.mark.unit
+def test_equally_natural_breaks_prefer_bottom_heavy_shape() -> None:
+    verses: tuple[str, ...] = split_line("Wczoraj wróciłem samotnie wieczorem ponownie", max_chars=28)
+    assert len(verses) == 2
+    assert len(verses[0]) <= len(verses[1])
+
+
 def test_single_word_is_not_split() -> None:
     assert split_line("Słowo") == ("Słowo",)
 
@@ -106,7 +274,7 @@ def test_polish_reflow_never_reorders_or_rewrites_words(text: str) -> None:
 
 
 def test_cut_prefers_comma() -> None:
-    verses = split_line("Zjadłem obiad, potem poszedłem na spacer do parku", max_chars=28)
+    verses = split_line("Zjadłem obiad, potem poszedłem na spacer do parku", max_chars=34)
     assert verses[0].rstrip().endswith(",")
 
 
@@ -168,7 +336,10 @@ def test_split_for_layout_prefers_semantic_boundary_over_source_ratio() -> None:
 
 def test_split_for_layout_keeps_one_source_verse_on_normal_policy() -> None:
     text = "To jest długie polskie zdanie, które powinno zostać czytelnie podzielone na ekranie"
-    assert split_for_layout(text, ("One source line",)) == split_line(text)
+    assert split_for_layout(text, ("One source line",)) == (
+        "To jest długie polskie zdanie,",
+        "które powinno zostać czytelnie podzielone na ekranie",
+    )
 
 
 def test_split_for_layout_does_not_break_one_target_word_artificially() -> None:
