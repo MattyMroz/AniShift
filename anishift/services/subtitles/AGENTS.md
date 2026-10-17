@@ -18,7 +18,8 @@ Napisy: klasyfikacja stylów ASS (DIALOG/SIGN/UNCERTAIN), split spoken/displayed
 - `classify_styles` liczy `raw_n` po WSZYSTKICH eventach, ale metryki tylko po zdeduplikowanych — dwie pętle po innych zbiorach. `classifier.py:189-203`
 - `split_subtitles` ma cichy fallback: gdy żaden styl nie jest „spoken", a są nierysunkowe eventy, WSZYSTKIE nierysunkowe stają się „spoken". `service.py:167-169`
 - Translated writery pomijają spoken bez klucza `(style, visible_text)` (np. pusty tekst) — kopiują event bez zmian. `service.py`
-- `replace_visible_text` zwraca raw event 1:1 dla niezmienionego visible text; przy tłumaczeniu mapuje tagi inline na granicach grafemów, a `\h` zastępuje najbliższy whitespace targetu bez rozcinania słowa. `text.py`
+- `replace_visible_text` zwraca raw event 1:1 dla niezmienionego visible text. Tagi z krawędzi wersu zostają na krawędzi, tagi przy granicy słowa trafiają na granicę słowa targetu, a tagi w środku słowa (gradienty) dostają osobne grafemy. Nienaruszone znaczniki `<sN>…</sN>` mają pierwszeństwo, uszkodzone są pomijane. `\h` zastępuje najbliższy whitespace targetu bez rozcinania słowa. `text.py`
+- `marked_text` owija znacznikami tylko 1–4 śródwersowe granice tagów leżące przy krawędzi słowa; po `strip_span_markers` daje dokładnie `visible_text`. `SpokenLine.text` zostaje bez znaczników (klucz FBF i wejście TTS) — znaczniki dodają dopiero `spoken_lines`/`displayed_lines` w `application/translation_handler.py`. `text.py`
 - `displayed_verses` nie zawiera eventów `\pN`; writer kopiuje rysunki raw i nie konsumuje dla nich pozycji tłumaczenia. `service.py`
 - `spoken_to_srt` używa realnych czasów tylko gdy `end > start`; inaczej generuje czasy od kursora (15 znaków/s, 1200–8000 ms, gap 80 ms). `srt.py:49-56`
 - Zapisy atomowe przez `.tmp` + `replace`, ale nazwa temp = `dest.name + ".tmp"` (dokleja do pełnej nazwy, nie podmienia suffiksu). `service.py`, `srt.py`

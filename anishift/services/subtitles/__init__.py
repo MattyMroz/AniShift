@@ -19,7 +19,14 @@ from anishift.services.subtitles.service import (
     write_translated_spoken,
 )
 from anishift.services.subtitles.srt import spoken_to_srt
-from anishift.services.subtitles.text import is_drawing, replace_visible_text, visible_text, visible_verses
+from anishift.services.subtitles.text import (
+    is_drawing,
+    marked_text,
+    replace_visible_text,
+    restore_markers,
+    visible_text,
+    visible_verses,
+)
 from anishift.services.subtitles.txt import read_txt, txt_to_spoken
 from anishift.services.subtitles.types import (
     Decision,
@@ -45,10 +52,12 @@ __all__ = [
     "dedup_animation",
     "is_drawing",
     "load_subtitles",
+    "marked_text",
     "normalize_subtitles",
     "preview_styles",
     "read_txt",
     "replace_visible_text",
+    "restore_markers",
     "split_subtitles",
     "spoken_to_srt",
     "subtitle_kind",

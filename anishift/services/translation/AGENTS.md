@@ -25,6 +25,7 @@ Serwis tłumaczenia: synchroniczna fasada `TranslationService` nad jednym silnik
 - Anulowanie sprawdzane tylko na starcie każdej iteracji łańcucha, nie w trakcie tłumaczenia pliku; rzuca `TranslationError` z `ErrorCode.CANCELLED`. `service.py:76-78`
 - `_prepare_file` pomija puste/whitespace linie (mapa `-1`); pominięte pozycje przechodzą bez tłumaczenia jako sukces. `service.py:208-241`
 - `chunk_text` gwarantuje, że konkatenacja kawałków odtwarza wejście DOKŁADNIE (separatory po lewej stronie) — nie wolno trymować kawałków. `chunking.py:334-346`
+- Tekst dla silnika może zawierać znaczniki stylu `<sN>…</sN>`. LLM ma je zachować (`prompts/system.md`), a Google i DeepL usuwają je przed wysłaniem, więc ich wynik wraca do proporcjonalnego mapowania tagów. `anishift/text/markers.py`
 - Efektywny limit cięcia to `min(chunk_limit, char_limit)` — sam duży `char_limit` bez zmiany `chunk_limit` nie da większych kawałków. `chunking.py:474`
 
 ## Konwencje

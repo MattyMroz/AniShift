@@ -62,7 +62,12 @@ from anishift.application.service import AppService
 from anishift.application.sessions import RunSession
 from anishift.application.subtitle_handler import LegacySubtitleAdapter
 from anishift.application.task_paths import task_staging_path
-from anishift.application.translation_handler import displayed_lines
+from anishift.application.translation_handler import (
+    TranslationVerses,
+    displayed_lines,
+    spoken_lines,
+    translation_verses,
+)
 from anishift.application.tts_handler import TtsTaskHandler
 from anishift.application.watch_state import WatchStateStore
 from anishift.config.presets import AutoPresetFile
@@ -89,6 +94,7 @@ from anishift.services.subtitles import (
     write_full,
     write_spoken,
 )
+from anishift.services.translation.layout_config import LayoutConfig
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
 from anishift.services.translation.types import FileTranslation, TranslatedLine
 from anishift.services.tts import (
@@ -661,6 +667,101 @@ def test_displayed_lines_never_send_a_vector_drawing_to_the_translator() -> None
     ]
 
     assert [line.text for line in displayed_lines(_ass_split(events))] == ["Translate me"]
+
+
+def test_displayed_lines_mark_a_mid_line_style_range_for_the_translator() -> None:
+    events: list[SSAEvent] = [
+        SSAEvent(start=0, end=1000, style="Sign", text=r"{\pos(1,2)}The {\c&H0000FF&}Red{\c&HFFFFFF&} Sword")
+    ]
+
+    assert [line.text for line in displayed_lines(_ass_split(events))] == ["The <s1>Red</s1> Sword"]
+
+
+def test_spoken_lines_mark_a_mid_line_style_range_without_changing_the_split() -> None:
+    split: SubtitleSplit = _ass_split([SSAEvent(start=0, end=1000, style="Dialog", text=r"I {\i1}did{\i0} knock.")])
+
+    assert [line.text for line in spoken_lines(split)] == ["I <s1>did</s1> knock."]
+    assert [line.text for line in split.spoken] == ["I did knock."]
+
+
+def test_translation_verses_keep_span_markers_across_new_line_breaks() -> None:
+    split: SubtitleSplit = _ass_split(
+        [SSAEvent(start=0, end=1000, style="Dialog", text=r"Why are you after {\i1}me{\i0}?!")]
+    )
+    translated: str = "Czemu uwziąłeś się akurat na <s1>mnie</s1>?!"
+    result: FileTranslation = FileTranslation(
+        spoken=(TranslatedLine(0, 1000, "Why are you after <s1>me</s1>?!", translated, (translated,), "Dialog"),),
+    )
+
+    verses: TranslationVerses = translation_verses(split, result, LayoutConfig(max_chars_per_line=20))
+
+    assert verses.spoken == (("Czemu uwziąłeś się", "akurat na <s1>mnie</s1>?!"),)
+
+
+def test_translation_handler_keeps_italics_on_the_word_the_translator_marked(tmp_path: Path) -> None:
+    source_path: Path = tmp_path / "episode.srt"
+    _write_srt(source_path, "I <i>did</i> knock.")
+    source: Artifact = _ready("source", ArtifactKind.SOURCE_SUBTITLES, source_path)
+    output: Artifact = _output("full", ArtifactKind.FULL_PL, subtitle_format="srt")
+    task: PlanTask = _task(
+        TaskKind.TRANSLATE_SUBTITLES,
+        (source.artifact_id,),
+        (output.artifact_id,),
+        (("output_format", "srt"),),
+    )
+
+    result: TaskResult = TranslationTaskHandler(_TranslationService(), run_root=tmp_path / "run").execute(
+        task,
+        ArtifactSnapshot({source.artifact_id: source}, {output.artifact_id: output}),
+        NeverCancelledToken(),
+        _ProgressSink(),
+    )
+
+    assert "PL I <i>did</i> knock." in result.outputs[0].path.read_text(encoding="utf-8")
+
+
+def test_translation_verses_drop_markers_the_source_line_never_had() -> None:
+    split: SubtitleSplit = _ass_split([SSAEvent(start=0, end=1000, style="Dialog", text="Plain line")])
+    translated: str = "Zwykła <s1>linia</s1>"
+    result: FileTranslation = FileTranslation(
+        spoken=(TranslatedLine(0, 1000, "Plain line", translated, (translated,), "Dialog"),),
+    )
+
+    verses: TranslationVerses = translation_verses(split, result)
+
+    assert verses.spoken == (("Zwykła linia",),)
+
+
+def test_translation_handler_never_writes_span_markers_into_text_srt(tmp_path: Path) -> None:
+    source_path: Path = tmp_path / "episode.txt"
+    source_path.write_text("First sentence.", encoding="utf-8")
+    source: Artifact = _ready("source", ArtifactKind.STANDALONE_TEXT, source_path)
+    output: Artifact = _output("full", ArtifactKind.FULL_PL, subtitle_format="srt")
+    task: PlanTask = _task(
+        TaskKind.TRANSLATE_SUBTITLES,
+        (source.artifact_id,),
+        (output.artifact_id,),
+        (("source_kind", "txt"), ("output_format", "srt")),
+    )
+
+    def hallucinate(translation: FileTranslation) -> FileTranslation:
+        marked: tuple[TranslatedLine, ...] = tuple(
+            replace(line, text=f"<s1>{line.text}</s1>") for line in translation.spoken
+        )
+        return replace(translation, spoken=marked)
+
+    result: TaskResult = TranslationTaskHandler(
+        _TranslationService(transform=hallucinate), run_root=tmp_path / "run"
+    ).execute(
+        task,
+        ArtifactSnapshot({source.artifact_id: source}, {output.artifact_id: output}),
+        NeverCancelledToken(),
+        _ProgressSink(),
+    )
+
+    written: str = result.outputs[0].path.read_text(encoding="utf-8")
+    assert "PL First sentence." in written
+    assert "<s1>" not in written
 
 
 def test_translation_handler_writes_complete_polish_staging(tmp_path: Path) -> None:

@@ -15,6 +15,7 @@ from anishift.services.translation.engines.google.constants import (
     RETRY_BACKOFF_BASE_S,
     RETRY_MAX_WAIT_S,
 )
+from anishift.text.markers import strip_span_markers
 
 if TYPE_CHECKING:
     from anishift.services.translation.config import TranslationConfig
@@ -78,7 +79,7 @@ class GoogleService:
             return self._translate_with_retry(joined, source=source, target=target, observer=observer)
 
         return translate_lines(
-            texts,
+            [strip_span_markers(text) for text in texts],
             batch_size=self._config.batch_size,
             max_chars=self._config.max_chars_per_request,
             translate_joined=translate_joined,

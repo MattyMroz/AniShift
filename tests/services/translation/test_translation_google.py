@@ -11,6 +11,7 @@ from anishift.services.translation.engines.google.constants import LINE_SEPARATO
 from anishift.services.translation.engines.google.service import GoogleService
 from anishift.services.translation.errors import TranslationEngineError, TranslationRateLimitError
 from anishift.services.translation.protocols import TranslationObserver
+from anishift.services.translation.types import BatchedLine
 
 
 class _Observer:
@@ -191,3 +192,24 @@ def test_close_is_idempotent() -> None:
     engine.close()
 
     assert engine._client is None
+
+
+def test_google_never_sends_span_markers() -> None:
+    sent: list[str] = []
+
+    class _Client:
+        def translate(self, text: str, *, source_lang: str, target_lang: str) -> str:
+            del source_lang, target_lang
+            sent.append(text)
+            return text
+
+        def close(self) -> None:
+            pass
+
+    engine: GoogleService = GoogleService(TranslationConfig(engine="google"))
+    engine._client = _Client()  # type: ignore[assignment]
+
+    result: list[BatchedLine] = engine.translate_batch(["I <s1>did</s1> knock."], source_lang="en", target_lang="pl")
+
+    assert sent == ["I did knock."]
+    assert [line.text for line in result] == ["I did knock."]
