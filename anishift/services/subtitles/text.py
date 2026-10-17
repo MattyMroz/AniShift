@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Final
 
 __all__ = [
+    "RE_TAG_BLOCK",
     "is_drawing",
     "replace_visible_text",
     "visible_text",
@@ -16,7 +17,7 @@ __all__ = [
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_RE_TAG_BLOCK: Final[re.Pattern[str]] = re.compile(r"\{[^}]*\}")
+RE_TAG_BLOCK: Final[re.Pattern[str]] = re.compile(r"\{[^}]*\}")
 """One ASS override-tag block, ``{...}``."""
 
 _RE_DRAW_TAG: Final[re.Pattern[str]] = re.compile(chr(92) + chr(92) + r"p[1-9]")
@@ -83,7 +84,7 @@ def is_drawing(text: str) -> bool:
 
 def visible_text(text: str) -> str:
     """Return the human-visible text of an event as a single line."""
-    without_tags = _RE_TAG_BLOCK.sub("", text)
+    without_tags = RE_TAG_BLOCK.sub("", text)
     without_html = _RE_HTML_TAG.sub("", without_tags)
     normalised = _RE_SOFT_BREAKS.sub(" ", without_html)
     return _RE_SPACES.sub(" ", normalised).strip()
