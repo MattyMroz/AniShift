@@ -1,59 +1,35 @@
 # Jakość wyniku: specyfikacja
 
-Status: projekt do akceptacji właściciela (2026-10-15).
+Status: zaakceptowany kierunek właściciela (2026-10-17).
 
 ## Cel
 
-Odcinek obejrzany po AniShift ma brzmieć i wyglądać lepiej niż dziś:
-- poprawne imiona i rodzaj gramatyczny postaci;
-- lektor czyta tylko dialogi, bez szyldów i piosenek, i nie zostaje w tyle za postaciami;
-- oryginał nie zagłusza lektora ani lektor oryginału;
-- szyldy mieszczą się w swojej ramce, a napisy nie wychodzą poza obraz na żadnym monitorze;
-- dialogi mają czytelny font wybrany przez właściciela.
+Napisy po AniShift mają wyglądać jak zrobione ręcznie: szyldy mieszczą się w swojej ramce i na ekranie, lektor czyta tylko dialogi, polskie linie są dobrze złamane i wyświetlane wystarczająco długo, a lektor jest słyszalny, ale nie za głośny.
 
-Każda zmiana musi dać mierzalny zysk na stałym zestawie odcinków, a nie tylko „wyglądać lepiej” w kodzie.
+Właściciel ogląda z lektorem, często na x2. Dialogi słyszy, więc z ekranu czyta głównie szyldy. Dlatego szyldy idą pierwsze.
 
 ## Kto ocenia
 
-Właściciel, na trzech odcinkach wzorca (etap 0), przed zmianą i po niej. Testy i metryki są warunkiem koniecznym, ale nie wystarczającym.
+Właściciel, na zrzutach i fragmentach z bazy testowej, przed zmianą i po niej. Testy i metryki są warunkiem koniecznym, ale nie wystarczającym.
 
 ## Zakres
 
-W zakresie, w kolejności z [masterplanu](masterplan.md):
-- wzorzec i pomiar bazowy;
-- glosariusz postaci z AniList i oznaczanie szyldów w prompcie;
-- kategoria „piosenka” i niepewne linie;
-- miks lektora;
-- dopasowanie szyldów i napisów do obszaru obrazu, także na monitorze szerokokątnym;
-- nadpisanie fontu i rozmiaru dialogów (MVP).
+W kolejności z [masterplanu](masterplan.md): baza testowa, szyldy, podział dialog / szyld, granice stylów, polski podział wierszy, czasy wyświetlania (najpierw weryfikacja hipotezy), głośność lektora.
 
-Poza zakresem:
-- lokalny TTS (odrzucony na teraz, `docs/ideas.md` §4);
-- ElevenReader (bada właściciel);
-- typesetting z samego obrazu (OCR, VLM);
-- wielogłosowa obsada;
-- API i strona WWW;
-- podział `automation.py`.
-- font zależny od gatunku lub tytułu (pomysł do zbadania po MVP, `docs/ideas.md`).
+Poza zakresem: glosariusz postaci, nazwy własne w prompcie, kontekst z innych języków napisów, gotowe polskie napisy z zewnątrz, przyspieszanie lektora, ściszanie oryginału pod lektorem, własny font dialogów, piosenki OP/ED, lokalny TTS, okładki i inne zmiany TUI.
 
 ## Ustalenia
 
-- **Kolejność** wynika z audytu z 2026-10-14 (astra, argon) i decyzji właściciela: najpierw największy zysk przy najmniejszym koszcie.
-- **Fakty z kodu, na których stoi plan:**
-  - prompt przewiduje glosariusz i profil tytułu (`anishift/services/translation/engines/llm/prompts/system.md:11`), ale silnik wysyła tylko prompt, styl i linie (`anishift/services/translation/engines/llm/service.py:247-251`);
-  - klasyfikator zna tylko `DIALOG`, `SIGN` i `UNCERTAIN`, a piosenki trafiają do `SIGN` (`anishift/services/subtitles/classifier.py:96-101`);
-  - miks to stałe +7 dB dla lektora i `amix` bez duckingu (`anishift/services/audio/config.py:47-49`, `anishift/services/audio/output.py:113-119`);
-  - oś czasu nigdy nie przyspiesza pojedynczej kwestii, tylko ją przesuwa (`anishift/services/audio/timeline.py:59-72`);
-  - pole `Actor` (`SSAEvent.name`) nie jest nigdzie używane w `anishift/services/subtitles/`, choć w bibliotece właściciela ma je 17 z 21 źródłowych plików ASS: napisy Crunchyroll podają przy każdej linii imię mówiącego (np. `Maomao`, `Jinshi`) albo znacznik `SIGN`, `SFX`, `Text` przy szyldach (pomiar z 2026-10-15 na `workspace/ready/`).
-- **Domyślne zachowanie** po każdym etapie ma być co najmniej tak dobre jak przed nim na wszystkich trzech odcinkach wzorca. Pogorszenie jednego odcinka blokuje etap.
-- **Koszt:** każdy przebieg wzorca zużywa tokeny LLM i znaki TTS właściciela. Etap ponawia tylko kroki, których dotyczy (tłumaczenie albo lektor), nie cały pipeline.
+- **Baza testowa** leży w `workspace/.quality/` (katalog od kropki, pomijany przez skaner biblioteki). Nie zmienia `workspace/ready/`, `config/` ani stanu rezydenta. Tytuły wskazane przez właściciela: Grand Blue S2 i Kaguya-sama, plus komedie z bogatym typesettingiem.
+- **Lektora nie generujemy** dla bazy testowej, chyba że etap dotyczy lektora (etap 6). Koszt etapu to najwyżej ponowne tłumaczenie.
+- **Fakty z rozpoznania 2026-10-17:**
+  - żaden z 37 MKV w bibliotece właściciela nie ma w napisach tekstów OP/ED; 24 z nich mają rozdziały z miejscem openingu i endingu;
+  - nagłówki polskich ASS (rozdzielczość skryptu 16:9, `WrapStyle: 0`) są poprawne; ucieczka napisów w czarne pasy na ultrawide wynikała z `sub-ass-force-margins = yes` w mpv;
+  - klasyfikator zna tylko `DIALOG`, `SIGN` i `UNCERTAIN` (`anishift/services/subtitles/classifier.py:96-101`); pole `Actor` nie jest używane w `anishift/services/subtitles/`, choć wiele źródłowych ASS podaje w nim mówcę albo znacznik `SIGN`/`Text`/`SFX`.
+- **Domyślny tryb** zapisu zostaje: polskie dialogi i szyldy, wszystko wyświetlane.
 
 ## Kryteria sukcesu całości
 
-- Właściciel ocenia każdy odcinek wzorca nie gorzej niż w pomiarze bazowym w każdym kryterium arkusza i lepiej w kryterium, którego dotyczył etap.
-- Metryki automatyczne etapu (masterplan) przechodzą próg z planu etapu.
+- Na bazie testowej metryka etapu się poprawia, a żadna inna nie pogarsza.
+- Właściciel potwierdza poprawę na zrzutach.
 - Bramki jakości repo przechodzą.
-
-## Nierozstrzygnięte
-
-- Czy przebieg wzorca może działać w osobnym `ANISHIFT_WORKSPACE_ROOT` obok żywego rezydenta. Rozstrzyga etap 0, krok 1.
