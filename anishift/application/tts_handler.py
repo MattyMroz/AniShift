@@ -450,14 +450,14 @@ def _prepare(
     temporary_root: Path,
     cancel: CancellationToken,
 ) -> tuple[NormalizedClip, ...]:
-    event = threading.Event()
-    stop = threading.Event()
+    event: threading.Event = threading.Event()
+    stop: threading.Event = threading.Event()
 
     def prepare(clip: NarrationManifestClip) -> NormalizedClip:
         cancel.raise_if_cancelled()
         return audio.prepare_clip(timed_clip(clip), temporary_root=temporary_root, cancel=event)
 
-    watcher = threading.Thread(target=mirror_cancel, args=(cancel, event, stop), daemon=True)
+    watcher: threading.Thread = threading.Thread(target=mirror_cancel, args=(cancel, event, stop), daemon=True)
     watcher.start()
     try:
         with ThreadPoolExecutor(max_workers=_PREPARE_WORKERS, thread_name_prefix="anishift-tts-prepare") as pool:

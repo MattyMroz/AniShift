@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Never, Protocol
 
 from anishift.application.artifacts import Artifact, ArtifactKind, SourceGroup
-from anishift.application.cancellation import CancellationToken
+from anishift.application.cancellation import CancellationToken, mirror_cancel
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
 from anishift.application.planning import PlanTask, TaskKind
 from anishift.application.publisher import ArtifactPublisher, PublishRequest
@@ -81,7 +81,7 @@ class PublishTaskHandler:
         )
         event = threading.Event()
         stop = threading.Event()
-        watcher = threading.Thread(target=_mirror_cancel, args=(cancel, event, stop), daemon=True)
+        watcher = threading.Thread(target=mirror_cancel, args=(cancel, event, stop), daemon=True)
         watcher.start()
         try:
             path: Path = self._publisher.stage(request, staging, cancel=event)
@@ -97,10 +97,3 @@ class PublishTaskHandler:
 
 def _raise_execution(message: str) -> Never:
     raise ExecutionError(message)
-
-
-def _mirror_cancel(cancel: CancellationToken, event: threading.Event, stop: threading.Event) -> None:
-    while not stop.wait(0.05):
-        if cancel.is_cancelled():
-            event.set()
-            return
