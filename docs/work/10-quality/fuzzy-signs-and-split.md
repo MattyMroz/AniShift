@@ -1,4 +1,4 @@
-# Rozmyte heurystyki szyldów: dopasowanie, podział dialog/szyld, granice stylów — v3.2
+# Rozmyte heurystyki szyldów: dopasowanie, podział dialog/szyld, granice stylów — v4
 
 Status: projekt do akceptacji (runda 3.2). Najpierw akceptują agenci, potem właściciel; kod powstaje po obu akceptacjach.
 Data: 2026-10-18. Gałąź robocza: `work/quality/07-fuzzy-line-breaks`.
@@ -6,6 +6,31 @@ Dowody: audyt `workspace/.quality/experiments/rigidity-audit/report.md`, galeria
 Siostra: `fuzzy-line-breaks.md` (v3.1, zaakceptowana). Ten dokument używa jej modułu łamania do cięć wielowierszowych.
 
 **Zakres dowodów.** `model_b.py` liczy reguły §B na korpusie. `model.py` sprawdza tylko **wybór** §A.4–A.6 wśród kandydatów wyrenderowanych przez libass: filtry działają na prostokątach `measure_boxes`, a szkody na wymiarach wariantów wyliczonych z `fx`, `fy` i `e` ze skali szerokości i wysokości K0 zmierzonych przez libass (`model.py:95–96`). Geometria produkcyjna z A.2–A.3 (spany, pomiar fontem, zawijanie, prostokąty) jest estymacją. Jej zgodność z libass wykazujemy dopiero przy kalibracji (krok F1). Liczby w §A.7 i §B.6 pochodzą z przebiegu modeli z 2026-10-18.
+
+## Aneks v4 (2026-10-18) — nadrzędny wobec wskazanych sekcji
+
+Powód: research [measurement.md](research/measurement.md), [fonts.md](research/fonts.md), [split-and-styles.md](research/split-and-styles.md), cel [visual-quality.md](visual-quality.md) v2.1 i przegląd planu 01 (`reviews/01-plan-*.md`). Gdzie aneks przeczy dalszym sekcjom, obowiązuje aneks.
+
+**A.3 Pomiar (zastępuje metodę „getlength z kerningiem w rozmiarze fs”).** Pillow + fontTools: pomiar glifów w stałym rozmiarze 1000 px i skalowanie liniowe; skala `fs / (winAscent + winDescent)` (fallback typo/bbox jak libass) × `fscx/100`; bez kerningu (libass nie kerninguje bez `Kerning: yes`; taki plik dostaje status przybliżony); szerokość wiersza od lewej krawędzi atramentu pierwszego glifu do prawej ostatniego, plus `fsp·fscx/100` między znakami; obrys tylko przy `\3a < FF` lub `BorderStyle 3`, cień tylko przy `\4a < FF`; blur `+1,83·σ` na stronę (σ = max(`\blur`, `\be`)); `BorderStyle 3`: pudełko z advance + `2·bord` (+`shad`), wysokość +2 px; synteza kursywy + 0,34 × wznios; wysokość z atramentu, interlinia `fs·fscy/100`. Zmierzona zgodność z libass: p90 1,14%, p99 3,4% (n = 4622). Tolerancja `u` dla prawdziwego fontu = 0,012 (p90 zmierzone); dla zdarzeń z glifem zastępczym ten sam pomiar z krojem zastępczym, status przybliżony.
+
+**A.3 Dopasowanie czcionek (zastępuje klucz „1/16, 4, 6”).** Klucze: p3 ID1 (rodzina), p3 ID4 (pełna nazwa), nazwa PostScript; bez rozróżniania wielkości liter; ID16 nie jest kluczem. Pełna nazwa/PS wybiera krój od razu; rodzina wybiera wariant o najmniejszym `73·|Δwaga|/256` + kara kursywy (+1 brak, +4 niechciana). Gdy rodzina jest w czcionkach odcinka (załączniki MKV, czcionka dialogów), wybór tylko spośród nich; w przeciwnym razie czcionki systemowe. Synteza pogrubienia, gdy waga żądana > waga kroju + 150. Brakujący glif: inne kroje tej rodziny z glifem, potem **Arial** tej samej wagi i nachylenia (tak robi FFmpeg i domyślne mpv; mpv właściciela używa węższej Officiny, więc pomiar jest ostrożny). Osadzone `[Fonts]` ASS: poza zakresem tej wersji (status przybliżony, gdy rodzina nie jest znaleziona).
+
+**A.2/A.5 Ramka i kolizje.** Znana ramka = maska `\clip` szyldu. Rysunków `\p` nie łączymy z tekstem (G). Kara FRAME rośnie wolniej dla szyldu bez `\clip` niż z `\clip` (wartości do kalibracji na galerii, decyzja właściciela otwarta). Filtr kolizji ma tolerancję pomiaru jak filtr ekranu: prostokąty sąsiadów i kandydata zmniejszamy o `1 px + u·W/2` z każdej strony przed liczeniem `ΔI`. Ruch (`\move`, `\t`) oceniamy w stanie początkowym i końcowym, status przybliżony. Raport liczy też kolizje szyldu z dialogiem.
+
+**A.4 Szyld wielowierszowy.** Bez zmian: liczba wierszy jak w źródle, D nie istnieje. Zmiana liczby wierszy jest odłożona (visual-quality §3). Cięcia wielowierszowe i kandydat D biorą wyłącznie z modułu łamania (`linebreak.split_lines`), nie z własnej logiki.
+
+**B Podział dialog/szyld — obowiązuje wariant minimalny, pełna reguła B jest odłożona.** Na 245 + 182 plikach wariant minimalny daje 120/120 zmian zgodnych z B, naprawia 23 szyldy z etykiet bez nowych błędów i utrzymuje test regresji 0,9888; pełne B dokłada tylko 5 unikalnych kwestii kosztem 43 szyldów, 12 dubli, 12 niepewnych i spadku regresji do 0,933 (split-and-styles.md H2). Zmiany w obecnym `classifier.py`/`service.py`:
+1. `\balt\b` w nazwach dialogowych (`_RE_DLG`).
+2. `RE_SONG_NAME` w rozpoznaniu stylu piosenki.
+3. Weto linii w stylu DIALOG → SIGN, gdy jednocześnie **etykieta** (brak `[.!?…"»”]`, brak przecinka, brak końcowego myślnika) i **forma** (wersaliki: `rise(udział; 0,6; 0,85) ≥ 0,5`, albo zapis tytułowy z położeniem); linia chroniona (≤ 3 słowa, przy krawędzi, bez położenia) zostaje.
+4. Fallback „nic nie czytane → czytaj wszystko” pomija style piosenek (`_RE_SONG`, `RE_SONG_NAME`), karaoke > 0,3 i rysunki > 0,3.
+5. Kopie tej samej kwestii w różnych stylach (ten sam znormalizowany tekst, start w odległości ≤ 500 ms) są czytane raz.
+6. Decyzje liczymy raz, na źródle: `SPLIT_SUBTITLES` dostaje źródło jako opcjonalne drugie wejście i przenosi decyzje na zdarzenia `Dialogue` `FULL_PL` w tej samej kolejności, sprawdzając tożsamość (czas startu i końca). Brak źródła, SRT bez zgodności albo różnica tożsamości → klasyfikacja `FULL_PL` jak dziś i ostrzeżenie w logu. TTS nie klasyfikuje ponownie `SPOKEN_PL`; dla `FULL_PL` i `SOURCE_SUBTITLES` zostaje klasyfikacja.
+Test regresji E8 zostaje na progu 0,9586 (wariant minimalny ma 0,9888).
+
+**C Granice stylów — obowiązuje wariant minimalny, pełne C (StyleState, T1/T2) jest odłożone.** Zmiany w `text.py`: (1) bloki bez `\` (komentarze) nie tworzą granic ani znaczników; (2) T3 zastąpione faktem o stylu: `\i0`/`\b0` otwiera zakres, gdy styl bazowy ma ten atrybut. Daje 447 odzyskanych akcentów (98% strat T3) i usuwa 869 fałszywych zakresów (split-and-styles.md H4). Wyróżnienie pominięte przez tłumacza: jak dziś, rozkład na granicach słów (usuwanie odłożone).
+
+**E — wartości domyślne do czasu galerii (właściciel 18.10 przyjął rekomendacje jako domyślne):** E1 a7 = C, a10 = D; E2 czytelność wg A.6, parametry do kalibracji; E3 FRAME na wolnym tle łagodniej (wyżej); E4 fonttools — zgoda właściciela; E5 próg 0,3 — nie dotyczy (B odłożone); E6–E7 — nie dotyczy w wariancie minimalnym (weto „etykieta × forma” decyduje o wersalikach); E8 próg regresji bez zmian; E9 fallback bez stylów piosenek — przyjęte (B.4 wyżej).
 
 ## W skrócie dla właściciela
 
