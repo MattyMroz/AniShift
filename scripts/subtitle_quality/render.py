@@ -16,8 +16,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFont
 from pysubs2 import SSAFile
 
 from anishift.platform.binaries import Binary, require_binary
-from anishift.services.composition.fonts import attachment_font_names
-from anishift.services.extraction.service import identify
+from anishift.services.extraction import extract_attachments
 from scripts.subtitle_quality.metrics import NUMBER
 
 if TYPE_CHECKING:
@@ -59,9 +58,6 @@ _LAST_ASS_SECOND: Final[int] = 35999
 
 _FFMPEG_TIMEOUT_S: Final[int] = 600
 """Upper bound of one FFmpeg run."""
-
-_MKVEXTRACT_OK: Final[frozenset[int]] = frozenset((0, 1))
-"""mkvextract exit codes meaning success or success with warnings."""
 
 _NO_WINDOW: Final[int] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 """Windows flag keeping console children from opening a window."""
@@ -116,35 +112,7 @@ def prepare_fonts(episode_dir: Path, video: Path | None, work: Path) -> int:
         return len(list(target.iterdir()))
     if video is None or not video.is_file():
         return 0
-    return extract_attachments(video, work)
-
-
-def extract_attachments(video: Path, work: Path) -> int:
-    """Extract the font attachments of a video into ``work/fonts``; return font count."""
-    names: tuple[str, ...] = identify(video).attachments
-    stems: frozenset[str] = attachment_font_names(names)
-    specs: list[str] = [f"{number}:fonts/{name}" for number, name in enumerate(names, start=1) if _stem(name) in stems]
-    if not specs:
-        return 0
-    (work / "fonts").mkdir(parents=True, exist_ok=True)
-    completed: subprocess.CompletedProcess[str] = subprocess.run(  # noqa: S603 - argv built here
-        [str(require_binary(Binary.MKVEXTRACT)), "--ui-language", "en", str(video), "attachments", *specs],
-        cwd=work,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=_FFMPEG_TIMEOUT_S,
-        check=False,
-        creationflags=_NO_WINDOW,
-    )
-    if completed.returncode not in _MKVEXTRACT_OK:
-        return 0
-    return len(specs)
-
-
-def _stem(name: str) -> str:
-    return name.rsplit(".", 1)[0].casefold()
+    return len(extract_attachments(video, target))
 
 
 def event_fonts(subs: SSAFile, event: SSAEvent) -> frozenset[str]:

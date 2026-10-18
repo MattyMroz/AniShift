@@ -37,6 +37,7 @@ from anishift.utils.timer import Timer
 
 __all__ = [
     "ExtractionService",
+    "extract_attachments",
     "extract_tracks",
     "format_extension",
     "identify",
@@ -51,6 +52,9 @@ _RE_GUI_PROGRESS: Final[re.Pattern[str]] = re.compile(r"^#GUI#progress\s+(\d+)%"
 
 _IDENTIFY_TIMEOUT_S: Final[float] = 120.0
 """Upper bound for ``mkvmerge -J`` on one file."""
+
+_ATTACHMENTS_TIMEOUT_S: Final[float] = 600.0
+"""Upper bound for extracting the font attachments of one file."""
 
 _ERROR_TAIL_LINES: Final[int] = 8
 """How many trailing non-progress output lines land in an error message."""
@@ -196,6 +200,51 @@ def identify(path: Path) -> MediaInfo:
         duration_ms=round(timer.duration_ms),
     )
     return info
+
+
+def extract_attachments(container: Path, dest: Path) -> tuple[Path, ...]:
+    """Extract the font attachments of a Matroska container into ``dest``, replacing older copies; return them."""
+    from anishift.services.composition.fonts import attachment_font_names  # noqa: PLC0415 - import cycle via media
+
+    names: tuple[str, ...] = identify(container).attachments
+    fonts: frozenset[str] = attachment_font_names(names)
+    targets: dict[str, tuple[int, Path]] = {}
+    for number, name in enumerate(names, start=1):
+        file_name: str = Path(name).name
+        if file_name and Path(name).stem.casefold() in fonts:
+            targets.setdefault(file_name.casefold(), (number, dest / file_name))
+    specs: list[tuple[int, Path]] = list(targets.values())
+    if not specs:
+        return ()
+    dest.mkdir(parents=True, exist_ok=True)
+    exe: Path = ensure_binary(Binary.MKVEXTRACT)
+    arguments: list[str] = [f"{number}:{target.name}" for number, target in specs]
+    try:
+        completed = subprocess.run(  # noqa: S603
+            [str(exe), "--ui-language", "en", str(container), "attachments", *arguments],
+            cwd=dest,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_ATTACHMENTS_TIMEOUT_S,
+            check=False,
+            creationflags=_NO_WINDOW,
+        )
+    except subprocess.TimeoutExpired as exc:
+        msg = f"{container.name}: font attachment extraction timed out"
+        raise _fail(ErrorCode.TIMEOUT, msg) from exc
+    except OSError as exc:
+        msg = f"{container.name}: could not run mkvextract: {exc}"
+        raise _fail(ErrorCode.IO_ERROR, msg) from exc
+    if completed.returncode not in {0, 1}:
+        msg = f"{container.name}: mkvextract could not extract font attachments"
+        raise _fail(ErrorCode.EXTRACTION_FAILED, msg)
+    _validate_outputs(specs, container, completed.returncode)
+    if completed.returncode == 1:
+        logger.warning("Font attachments extracted with warnings", source=container.name, font_count=len(specs))
+    logger.info("Font attachments extracted", source=container.name, font_count=len(specs))
+    return tuple(target for _, target in specs)
 
 
 def _track_for(info: MediaInfo, track_id: int) -> TrackInfo:

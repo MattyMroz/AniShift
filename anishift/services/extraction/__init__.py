@@ -6,7 +6,13 @@ from importlib import import_module
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
-    from anishift.services.extraction.service import ExtractionService, extract_tracks, identify, parse_media_info
+    from anishift.services.extraction.service import (
+        ExtractionService,
+        extract_attachments,
+        extract_tracks,
+        identify,
+        parse_media_info,
+    )
 
 from anishift.services.extraction.errors import ExtractionError
 from anishift.services.extraction.types import (
@@ -31,6 +37,7 @@ __all__ = [
     "MediaInfo",
     "TrackInfo",
     "TrackSelection",
+    "extract_attachments",
     "extract_tracks",
     "format_extension",
     "identify",
@@ -40,6 +47,7 @@ __all__ = [
 
 _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "ExtractionService": ("anishift.services.extraction.service", "ExtractionService"),
+    "extract_attachments": ("anishift.services.extraction.service", "extract_attachments"),
     "extract_tracks": ("anishift.services.extraction.service", "extract_tracks"),
     "identify": ("anishift.services.extraction.service", "identify"),
     "parse_media_info": ("anishift.services.extraction.service", "parse_media_info"),
