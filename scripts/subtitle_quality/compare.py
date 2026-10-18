@@ -27,7 +27,7 @@ from scripts.subtitle_quality.render import (
     prepare_fonts,
     render_shot,
 )
-from scripts.subtitle_quality.replay import _matched_pairs
+from scripts.subtitle_quality.replay import matched_pairs
 from scripts.subtitle_quality.report import format_time
 
 if TYPE_CHECKING:
@@ -238,7 +238,7 @@ def load_hard_cases(path: Path) -> tuple[HardCase, ...]:
 
 def find_cases(base: Path, other: Path, pairs_root: Path, work_root: Path, hard: Sequence[HardCase] = ()) -> Selection:
     """Find every case of two replays with equal inputs, leaving out excluded events."""
-    matched, skipped = _matched_pairs(base, other)
+    matched, skipped = matched_pairs(base, other)
     cases: list[Case] = []
     pairs: dict[str, PairFiles] = {}
     undecided: list[str] = []
