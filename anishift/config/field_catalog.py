@@ -21,6 +21,7 @@ from anishift.application.intents import (
     SubtitleSourcePolicy,
     TranslationAction,
 )
+from anishift.application.planning import SIGN_NARRATION_MODES
 from anishift.config.user_settings import (
     BATCH_SIZE_RANGE,
     CHUNK_CHARS_RANGE,
@@ -323,6 +324,7 @@ USER_SETTING_DISPOSITIONS: Final[MappingProxyType[str, SettingDisposition]] = Ma
         "subtitle_max_chars_per_line": SettingDisposition.VISIBLE,
         "subtitle_max_lines_per_event": SettingDisposition.VISIBLE,
         "dialogue_font_file": SettingDisposition.VISIBLE,
+        "sign_narration": SettingDisposition.VISIBLE,
         "translation_chunk_chars": SettingDisposition.VISIBLE,
         "translation_batch_size": SettingDisposition.VISIBLE,
         "translation_concurrency": SettingDisposition.VISIBLE,
@@ -750,6 +752,16 @@ def _translation_specs(
             default=defaults.dialogue_font_file,
             scope=SettingScope.GLOBAL,
             invalidates=_TRANSLATION_INVALIDATES,
+        ),
+        SettingSpec(
+            setting_id="sign_narration",
+            label="Narrator and on-screen signs",
+            description="Skip on-screen signs, read those that fit a pause and matter, or read every one that fits.",
+            value_type=SettingValueType.STRING,
+            default=defaults.sign_narration,
+            scope=SettingScope.GLOBAL,
+            allowed_values=SIGN_NARRATION_MODES,
+            invalidates=_TTS_INVALIDATES,
         ),
         SettingSpec(
             setting_id="translation_chunk_chars",

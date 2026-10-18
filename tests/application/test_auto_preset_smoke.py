@@ -552,7 +552,7 @@ def test_all_seven_products_with_mkv_tracks_burned_mp4_and_narration_audio(harne
     assert subtitle_languages == ["eng", "eng", "pol"]
     assert products[ArtifactKind.FINAL_MP4].name == "Episode 02.pl.mp4"
     harness.check_mp4(products[ArtifactKind.FINAL_MP4], harness.workspace / "Episode 02.mkv", narration=True, burn=True)
-    assert Counter(harness.synthesized) == Counter(_translated(_EN_LINES))
+    assert Counter(harness.synthesized) == Counter(_translated((*_EN_LINES, _SIGN_LINE)))
 
 
 def test_source_subtitles_alone_need_no_translation_or_speech(harness: _Harness) -> None:
@@ -744,7 +744,7 @@ def test_mkv_with_source_and_displayed_tracks_carries_the_narration(harness: _Ha
     )
     assert subtitle_languages == ["eng", "eng", "pol"]
     assert not (harness.workspace / "Episode 15.pl.ass").exists()
-    assert Counter(harness.synthesized) == Counter(_translated(_EN_LINES))
+    assert Counter(harness.synthesized) == Counter(_translated((*_EN_LINES, _SIGN_LINE)))
 
 
 def test_mkv_without_tracks_only_repacks_the_video(harness: _Harness) -> None:

@@ -9,7 +9,7 @@ from types import MappingProxyType
 from typing import Final, Never, Protocol
 
 from anishift.application.artifacts import Artifact, ArtifactKind
-from anishift.application.cancellation import CancellationToken
+from anishift.application.cancellation import CancellationToken, mirror_cancel
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
 from anishift.application.intents import NarrationTimeline
 from anishift.application.planning import PlanTask, TaskKind
@@ -17,10 +17,9 @@ from anishift.application.products import product_suffix
 from anishift.application.results import ArtifactSnapshot, ProducedArtifact, TaskResult
 from anishift.application.scheduler_contracts import TaskProgressSink
 from anishift.application.task_paths import task_staging_path
-from anishift.application.tts_handler import load_narration_manifest
+from anishift.application.tts_handler import load_narration_manifest, timed_clip
 from anishift.errors import ExecutionError
 from anishift.services.audio import AudioRenderRequest, AudioRenderResult, AudioRenderStatus, TimedClip
-from anishift.services.audio.types import AudioFormat
 
 __all__ = ["AudioTaskHandler"]
 
@@ -116,7 +115,7 @@ class AudioTaskHandler:
         cancel.raise_if_cancelled()
         event = threading.Event()
         stop = threading.Event()
-        watcher = threading.Thread(target=_mirror_cancel, args=(cancel, event, stop), daemon=True)
+        watcher = threading.Thread(target=mirror_cancel, args=(cancel, event, stop), daemon=True)
         watcher.start()
         try:
             if task.kind is TaskKind.MIX_NARRATION:
@@ -154,20 +153,7 @@ class AudioTaskHandler:
             _raise_execution("Narration mixing received an invalid artifact contract")
         profile: str = _profile(task, output)
         manifest = load_narration_manifest(manifest_artifact.path)
-        clips: tuple[TimedClip, ...] = tuple(
-            TimedClip(
-                clip.request_id,
-                clip.start_ms,
-                clip.end_ms,
-                clip.source_order,
-                clip.path,
-                AudioFormat(clip.format),
-                clip.sample_rate,
-                clip.channels,
-                clip.duration_ms,
-            )
-            for clip in manifest.clips
-        )
+        clips: tuple[TimedClip, ...] = tuple(timed_clip(clip) for clip in manifest.clips)
         synthetic_source: Path = task_staging_path(self._run_root, task, output, ".source")
         destination: Path = task_staging_path(
             self._run_root,
@@ -253,13 +239,6 @@ def _profile(task: PlanTask, output: Artifact) -> str:
     if not isinstance(value, str) or output.audio_codec != value:
         _raise_execution("Audio output profile does not match the planned artifact")
     return value
-
-
-def _mirror_cancel(cancel: CancellationToken, event: threading.Event, stop: threading.Event) -> None:
-    while not stop.wait(0.05):
-        if cancel.is_cancelled():
-            event.set()
-            return
 
 
 def _raise_execution(message: str) -> Never:

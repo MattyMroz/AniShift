@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Final, Never, Protocol
 
 from anishift.application.artifacts import COVER_AUDIO_KINDS, Artifact, ArtifactKind, ArtifactState
-from anishift.application.cancellation import CancellationToken
+from anishift.application.cancellation import CancellationToken, mirror_cancel
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
 from anishift.application.intents import BurnSubtitleProduct, MkvTrackProduct
 from anishift.application.planning import PlanTask, TaskKind
@@ -177,7 +177,7 @@ class CompositionTaskHandler:
         """Run one composition call while a watcher mirrors cancellation into the event the service understands."""
         event = threading.Event()
         stop = threading.Event()
-        watcher = threading.Thread(target=_mirror_cancel, args=(cancel, event, stop), daemon=True)
+        watcher = threading.Thread(target=mirror_cancel, args=(cancel, event, stop), daemon=True)
         watcher.start()
         try:
             return operation(event)
@@ -386,13 +386,6 @@ def _string_parameter(parameters: dict[str, str | int | bool], name: str) -> str
     if not isinstance(value, str):
         _raise_execution(f"Composition parameter must be a string: {name}")
     return value
-
-
-def _mirror_cancel(cancel: CancellationToken, event: threading.Event, stop: threading.Event) -> None:
-    while not stop.wait(0.05):
-        if cancel.is_cancelled():
-            event.set()
-            return
 
 
 def _raise_execution(message: str) -> Never:

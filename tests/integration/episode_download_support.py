@@ -32,9 +32,9 @@ from anishift.application.handlers import (
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
 from anishift.application.planning import ExecutionPlan, TaskKind
 from anishift.application.ready import ReadyStore
-from anishift.application.runtime import ProductionHandlerFactory
+from anishift.application.runtime import ProductionHandlerFactory, _audio_service
 from anishift.application.service import AppService
-from anishift.application.tts_handler import TtsProgressObserver
+from anishift.application.tts_handler import ClipPreparer, TtsProgressObserver
 from anishift.application.watch_state import WatchStateStore
 from anishift.config.presets import default_preset_file
 from anishift.config.settings import Settings
@@ -373,11 +373,13 @@ class Handlers(ProductionHandlerFactory):
         run_root: Path,
         plan: ExecutionPlan,
         kinds: frozenset[TaskKind],
+        audio: ClipPreparer | None,
     ) -> TtsTaskHandler:
         return TtsTaskHandler(
             Tone(run_root / "tones"),
             run_root=run_root,
             group_ranks={group.group_id: rank for rank, group in enumerate(plan.groups)},
+            audio=audio,
         )
 
     def __call__(
@@ -387,6 +389,7 @@ class Handlers(ProductionHandlerFactory):
         source_groups: Mapping[str, InspectedSourceGroup],
     ) -> ExecutionHandlers:
         kinds: frozenset[TaskKind] = frozenset(task.kind for task in plan.tasks)
+        audio = _audio_service(plan, kinds)
         return ExecutionHandlers(
             ExtractionTaskHandler(
                 ExtractionService(),
@@ -396,8 +399,8 @@ class Handlers(ProductionHandlerFactory):
             ),
             SubtitleTaskHandler(run_root=run_root),
             TranslationTaskHandler(Translation(), run_root=run_root),
-            tts=self._tts_handler(self._settings_provider(), run_root, plan, kinds),
-            audio=self._audio_handler(run_root, plan, kinds),
+            tts=self._tts_handler(self._settings_provider(), run_root, plan, kinds, audio),
+            audio=self._audio_handler(run_root, plan, kinds, audio),
             composition=self._composition_handler(run_root, plan, kinds),
             publish=PublishTaskHandler(
                 run_root=run_root, source_groups={key: group.source for key, group in source_groups.items()}

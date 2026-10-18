@@ -42,7 +42,7 @@ from anishift.services.audio import (
 )
 from anishift.services.audio.commands import SubprocessRunner
 from anishift.services.audio.service import AudioProgressSink
-from anishift.services.audio.types import AudioCodecProfile, TimelinePolicy
+from anishift.services.audio.types import AudioCodecProfile, NormalizedClip, TimedClip, TimelinePolicy
 from anishift.services.composition import CompositionConfig, CompositionService, QualityPreset
 from anishift.services.extraction import ExtractionService, extract_tracks, identify
 from anishift.services.llm import (
@@ -170,8 +170,9 @@ class ProductionHandlerFactory:
         settings: Settings = self._settings_provider()
         kinds: frozenset[TaskKind] = frozenset(task.kind for task in plan.tasks)
         dialogue_font: DialogueFont | None = _dialogue_font(plan, kinds)
-        tts_handler: TtsTaskHandler | None = self._tts_handler(settings, run_root, plan, kinds)
-        audio_handler: AudioTaskHandler | None = self._audio_handler(run_root, plan, kinds)
+        audio: _ConfiguredAudioService | None = _audio_service(plan, kinds)
+        tts_handler: TtsTaskHandler | None = self._tts_handler(settings, run_root, plan, kinds, audio)
+        audio_handler: AudioTaskHandler | None = self._audio_handler(run_root, plan, kinds, audio)
         composition_handler: CompositionTaskHandler | None = self._composition_handler(
             run_root,
             plan,
@@ -211,6 +212,7 @@ class ProductionHandlerFactory:
         run_root: Path,
         plan: ExecutionPlan,
         kinds: frozenset[TaskKind],
+        audio: _ConfiguredAudioService | None,
     ) -> TtsTaskHandler | None:
         if TaskKind.SYNTHESIZE_SPEECH not in kinds:
             return None
@@ -238,6 +240,7 @@ class ProductionHandlerFactory:
             group_ranks=ranks,
             voice_id=plan.settings.tts_voice_id,
             allowed_voice_ids=frozenset(plan.settings.tts_allowed_voice_ids),
+            audio=audio,
         )
 
     @staticmethod
@@ -245,15 +248,11 @@ class ProductionHandlerFactory:
         run_root: Path,
         plan: ExecutionPlan,
         kinds: frozenset[TaskKind],
+        audio: _ConfiguredAudioService | None,
     ) -> AudioTaskHandler | None:
-        if not kinds.intersection({TaskKind.MIX_NARRATION, TaskKind.TRANSCODE_AUDIO}):
+        if audio is None or not kinds.intersection({TaskKind.MIX_NARRATION, TaskKind.TRANSCODE_AUDIO}):
             return None
-        config: AudioConfig = _audio_config(plan)
-        return AudioTaskHandler(
-            _ConfiguredAudioService(AudioService(config), plan.settings.tts_postprocess_tempo),
-            AudioTranscodeService(config),
-            run_root=run_root,
-        )
+        return AudioTaskHandler(audio, AudioTranscodeService(_audio_config(plan)), run_root=run_root)
 
     @staticmethod
     def _composition_handler(
@@ -310,6 +309,21 @@ class _ConfiguredAudioService:
     ) -> AudioRenderResult:
         configured: AudioRenderRequest = replace(request, post_process_tempo=self._post_process_tempo)
         return self._service.render(configured, callbacks=callbacks, on_percent=on_percent, cancel=cancel)
+
+    def prepare_clip(self, clip: TimedClip, *, temporary_root: Path, cancel: threading.Event | None) -> NormalizedClip:
+        return self._service.prepare_clip(
+            clip, temporary_root=temporary_root, tempo=self._post_process_tempo, cancel=cancel
+        )
+
+
+def _audio_service(plan: ExecutionPlan, kinds: frozenset[TaskKind]) -> _ConfiguredAudioService | None:
+    """Build the one audio service a run shares between measuring clips in synthesis and mixing them."""
+    audio_kinds: frozenset[TaskKind] = frozenset(
+        {TaskKind.SYNTHESIZE_SPEECH, TaskKind.MIX_NARRATION, TaskKind.TRANSCODE_AUDIO}
+    )
+    if not kinds & audio_kinds:
+        return None
+    return _ConfiguredAudioService(AudioService(_audio_config(plan)), plan.settings.tts_postprocess_tempo)
 
 
 class _TranslationRuntime:

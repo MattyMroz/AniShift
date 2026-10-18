@@ -814,19 +814,44 @@ class _GroupPlanner:
         )
         self._narration = narration
 
-    def _synthesize_speech(self, script: Artifact, timeline: NarrationTimeline) -> Artifact:
+    def _synthesize_speech(
+        self, script: Artifact, timeline: NarrationTimeline, signs: Artifact | None = None
+    ) -> Artifact:
         manifest: Artifact = self._intermediate(ArtifactKind.TTS_MANIFEST, f"tts-manifest-{timeline.value}")
+        parameters: tuple[tuple[str, str | int | bool], ...] = (
+            ("narration_timeline", timeline.value),
+            ("script_kind", script.kind.value),
+        )
+        if signs is not None:
+            parameters = (*parameters, ("sign_narration", self.settings.sign_narration))
         self._add_task(
             TaskKind.SYNTHESIZE_SPEECH,
-            requires=(script,),
+            requires=(script,) if signs is None else (script, signs),
             produces=(manifest,),
             variant=f"narration-{timeline.value}",
             resource_key=f"tts:{self.settings.tts_profile_id}",
-            parameters=(("narration_timeline", timeline.value), ("script_kind", script.kind.value)),
+            parameters=parameters,
             is_network=self.settings.tts_is_network,
             is_paid=self.settings.tts_is_paid,
         )
         return manifest
+
+    def _sign_candidates(self, spoken: Artifact) -> Artifact | None:
+        """Make the split of the spoken ASS also write the on-screen signs the narrator may read."""
+        mode: str = self.settings.sign_narration
+        task_id: str | None = self.producer_by_artifact.get(spoken.artifact_id)
+        if mode == "off" or task_id is None or self._subtitle_format(spoken) != "ass":
+            return None
+        index: int = next(index for index, task in enumerate(self.tasks) if task.task_id == task_id)
+        split: PlanTask = self.tasks[index]
+        if split.kind is not TaskKind.SPLIT_SUBTITLES:
+            return None
+        signs: Artifact = self._intermediate(ArtifactKind.SIGN_CANDIDATES, "sign-candidates")
+        self.tasks[index] = replace(
+            split, produces=(*split.produces, signs.artifact_id), parameters=(("sign_narration", mode),)
+        )
+        self.producer_by_artifact[signs.artifact_id] = task_id
+        return signs
 
     def _document_source(self, missing_code: str, ambiguous_code: str) -> Artifact | None:
         """Pick the one validated text or subtitle document the place of this group reads."""
@@ -1504,7 +1529,7 @@ class _GroupPlanner:
         if spoken is None or source_audio is None:
             return None
         timeline: NarrationTimeline = NarrationTimeline.SOURCE_TIMES
-        manifest: Artifact = self._synthesize_speech(spoken, timeline)
+        manifest: Artifact = self._synthesize_speech(spoken, timeline, self._sign_candidates(spoken))
         profile: str = self.settings.audio_output_profile.casefold()
         narration: Artifact = self._intermediate(
             ArtifactKind.NARRATION_AUDIO,

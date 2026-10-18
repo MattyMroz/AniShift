@@ -12,6 +12,7 @@ Napisy: klasyfikacja stylów ASS (DIALOG/SIGN/UNCERTAIN), split spoken/displayed
 - `text.py` — tag-bezpieczne operacje na tekście eventu ASS/SRT
 - `linebreak.py` — polski reflow (`split_line`, `layout_dialogue`) i odtwarzanie authored layoutu (`split_for_layout`, `split_lines`)
 - `layout.py` — `LayoutLimits`: limity długości i liczby wierszy wybrane dla przebiegu
+- `signs.py` — wagi rozmyte „za” i „przeciw” czytania szyldu przez lektora (statyczne na źródle i zależne od pauzy); grupy i `SignCandidate` liczy `service.py`, wybór pauzy `application/sign_narration.py`
 - `fuzzy.py` — stopnie rozmyte `rise`/`fall` (0–1, liniowo między progami) i ich łączenie `nor`
 - `txt.py` — wczytanie UTF-8 i pocięcie na linie lektora
 - `srt.py` — zapis przetłumaczonych linii lektora do SRT

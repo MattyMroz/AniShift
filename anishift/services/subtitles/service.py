@@ -21,14 +21,20 @@ from anishift.services.subtitles.classifier import (
     classify_styles,
     line_category,
     main_dialogue_style,
+    never_narrated,
+    screen_edge,
+    sung,
+    title_like,
+    word_count,
     written_in_capitals,
 )
 from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.fitting import fit_signs
-from anishift.services.subtitles.geometry import RenderProfile
+from anishift.services.subtitles.geometry import RenderProfile, TextBox, measure_text
 from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.subtitles.linebreak import layout_dialogue, split_for_layout
 from anishift.services.subtitles.restyle import clone_source, restyle_dialogue
+from anishift.services.subtitles.signs import static_weights
 from anishift.services.subtitles.text import (
     is_drawing,
     replace_visible_text,
@@ -40,6 +46,8 @@ from anishift.services.subtitles.types import (
     Decision,
     FontSources,
     LayoutReport,
+    SignCandidate,
+    SignWeight,
     SplitStats,
     SpokenLine,
     SubtitleKind,
@@ -59,6 +67,7 @@ __all__ = [
     "load_subtitles",
     "normalize_subtitles",
     "reflow_polish_dialogue",
+    "sign_candidates",
     "split_subtitles",
     "spoken_groups",
     "subtitle_kind",
@@ -75,6 +84,12 @@ _FBF_MAX_GAP_MS: Final[int] = 500
 
 _COPY_WINDOW_MS: Final[int] = 500
 """Largest start distance, or gap after the original ends, at which an equal line in another form is a copy."""
+
+_SIGN_ECHO_MS: Final[int] = 2000
+"""Largest distance between a sign's screen window and the start or end of a spoken line it echoes."""
+
+_SONG_GAP_MS: Final[int] = 5000
+"""Largest gap between consecutive song or karaoke lines that still belongs to the same song."""
 
 _RE_NON_WORD: Final[re.Pattern[str]] = re.compile(r"\W+")
 """Run of non-word characters ignored when comparing copies of one spoken line."""
@@ -253,7 +268,11 @@ def _merge_echoes(runs: list[_Run]) -> list[_Run]:
 
 
 def _echo_key(run: _Run) -> str:
-    return _RE_NON_WORD.sub(" ", visible_text(run[0][1].text).casefold()).strip()
+    return _text_key(visible_text(run[0][1].text))
+
+
+def _text_key(text: str) -> str:
+    return _RE_NON_WORD.sub(" ", text.casefold()).strip()
 
 
 def _run_start(run: _Run) -> int:
@@ -328,7 +347,8 @@ def split_subtitles(
         final_verdicts = tuple(verdicts) if verdicts is not None else tuple(classify_styles(subs))
         mask: list[bool] = _spoken_mask(subs, dialogue, spoken_styles, final_verdicts)
         decisions = tuple(_decision(event, spoken=spoken) for event, spoken in zip(dialogue, mask, strict=True))
-    split: SubtitleSplit = _split_with(kind, subs, dialogue, decisions, final_verdicts)
+    unweighed: SubtitleSplit = _split_with(kind, subs, dialogue, decisions, final_verdicts)
+    split: SubtitleSplit = replace(unweighed, sign_weights=_sign_weights(unweighed, dialogue))
     logger.info(
         "Subtitles classified",
         kind=kind,
@@ -356,7 +376,9 @@ def inherit_split(source: SubtitleSplit, subs: SSAFile) -> SubtitleSplit | None:
         if not _same_event(event, original):
             logger.debug("Subtitle decisions not inherited", reason="event_identity", position=position)
             return None
-    split: SubtitleSplit = _split_with("ass", subs, dialogue, source.decisions, source.verdicts)
+    split: SubtitleSplit = replace(
+        _split_with("ass", subs, dialogue, source.decisions, source.verdicts), sign_weights=source.sign_weights
+    )
     logger.info(
         "Subtitle decisions inherited",
         total_events=split.stats.total_events,
@@ -389,6 +411,98 @@ def _split_with(
         collapsed_away=_collapsed(runs),
     )
     return SubtitleSplit(kind, subs, decisions, verdicts, spoken, stats)
+
+
+def _sign_weights(split: SubtitleSplit, dialogue: Sequence[SSAEvent]) -> tuple[SignWeight | None, ...]:
+    weights: list[SignWeight | None] = [None] * len(dialogue)
+    if split.kind != "ass":
+        return tuple(weights)
+    candidates: list[tuple[int, SSAEvent]] = [
+        (order, event)
+        for order, (event, decision) in enumerate(zip(dialogue, split.decisions, strict=True))
+        if decision == "displayed" and not never_narrated(event)
+    ]
+    songs: list[tuple[int, int]] = _songs(dialogue)
+    runs: list[_Run] = [
+        run
+        for run in _merge_echoes(_fbf_runs(candidates))
+        if not any(start <= (_run_start(run) + _run_end(run)) / 2 < end for start, end in songs)
+    ]
+    windows: list[tuple[int, int]] = [(_run_start(run), _run_end(run)) for run in runs]
+    profile: RenderProfile = RenderProfile.from_subs(split.subs, None)
+    for index, run in enumerate(runs):
+        weight: SignWeight = _sign_weight(run, windows, index, split.spoken, profile)
+        for order, _ in run:
+            weights[order] = weight
+    return tuple(weights)
+
+
+def _songs(dialogue: Sequence[SSAEvent]) -> list[tuple[int, int]]:
+    """Return each song as one span over its sung lines, joining lines up to ``_SONG_GAP_MS`` apart."""
+    songs: list[tuple[int, int]] = []
+    for start, end in sorted((event.start, event.end) for event in dialogue if sung(event)):
+        if songs and start - songs[-1][1] <= _SONG_GAP_MS:
+            songs[-1] = (songs[-1][0], max(songs[-1][1], end))
+            continue
+        songs.append((start, end))
+    return songs
+
+
+def _sign_weight(
+    run: _Run, windows: Sequence[tuple[int, int]], index: int, spoken: Sequence[SpokenLine], profile: RenderProfile
+) -> SignWeight:
+    group, first = min(run, key=lambda item: item[0])
+    start, end = windows[index]
+    text: str = visible_text(first.text)
+    edge: float = screen_edge(first, profile.styles.get(first.style), profile.play_res_y)
+    key: str = _text_key(text)
+    words: list[str] = key.split()
+    weight_for, weight_against = static_weights(
+        height=_line_height(first, profile),
+        centre=max(1.0 - edge, float(title_like(text))),
+        on_screen_ms=end - start,
+        words=word_count(text),
+        alone=not any(
+            other != index and other_start < end and start < other_end
+            for other, (other_start, other_end) in enumerate(windows)
+        ),
+        edge=edge,
+        echo=any(
+            _text_key(line.text) == key and (_near(line.start, start, end) or _near(line.end, start, end))
+            for line in spoken
+        ),
+        sound=len(words) > 1 and len(set(words)) == 1,
+    )
+    return SignWeight(group, weight_for, weight_against)
+
+
+def _line_height(event: SSAEvent, profile: RenderProfile) -> float:
+    box: TextBox = measure_text(event, event.text, profile)
+    if profile.play_res_y <= 0 or not box.line_widths:
+        return 0.0
+    return box.height / len(box.line_widths) / profile.play_res_y
+
+
+def _near(moment: int, start: int, end: int) -> bool:
+    return start - _SIGN_ECHO_MS <= moment <= end + _SIGN_ECHO_MS
+
+
+def sign_candidates(split: SubtitleSplit) -> tuple[SignCandidate, ...]:
+    """Return one narrator candidate per sign group, with its screen window and the text of its first event."""
+    dialogue: list[SSAEvent] = [event for event in split.subs.events if event.type == "Dialogue"]
+    windows: dict[SignWeight, tuple[int, int]] = {}
+    for event, weight in zip(dialogue, split.sign_weights, strict=False):
+        if weight is None:
+            continue
+        start, end = windows.get(weight, (event.start, event.end))
+        windows[weight] = (min(start, event.start), max(end, event.end))
+    candidates: list[SignCandidate] = []
+    for weight, (start, end) in windows.items():
+        text: str = visible_text(dialogue[weight.group].text)
+        candidates.append(
+            SignCandidate(weight.group, start, end, text, _text_key(text), weight.weight_for, weight.weight_against)
+        )
+    return tuple(sorted(candidates, key=lambda candidate: (candidate.start, candidate.group)))
 
 
 def _copy_metadata(subs: SSAFile) -> SSAFile:

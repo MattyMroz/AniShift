@@ -17,7 +17,7 @@ __all__ = [
     "ZOFIA_VOICE_ID",
 ]
 
-SUPPORTED_EDGE_TTS_VERSION: Final[str] = "7.2.8"
+SUPPORTED_EDGE_TTS_VERSION: Final[str] = "7.3.1"
 """Exact edge-tts release supported by the source quality patch."""
 
 ADAPTER_VERSION: Final[str] = "edge-v1"

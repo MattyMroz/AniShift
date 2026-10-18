@@ -1080,6 +1080,7 @@ def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
         subtitle_max_chars_per_line=preferences.subtitle_max_chars_per_line,
         subtitle_max_lines_per_event=preferences.subtitle_max_lines_per_event,
         dialogue_font_file=preferences.dialogue_font_file,
+        sign_narration=preferences.sign_narration,
         translation_chunk_chars=preferences.translation_chunk_chars,
         translation_batch_size=preferences.translation_batch_size,
         llm_model_id=preferences.llm_provider_model_id,

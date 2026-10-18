@@ -24,6 +24,11 @@ __all__ = [
     "dedup_animation",
     "line_category",
     "main_dialogue_style",
+    "never_narrated",
+    "screen_edge",
+    "sung",
+    "title_like",
+    "word_count",
     "written_in_capitals",
 ]
 
@@ -79,6 +84,12 @@ _RE_SENTENCE: Final[re.Pattern[str]] = re.compile("[" + re.escape(LATIN_SENTENCE
 
 _RE_WORD: Final[re.Pattern[str]] = re.compile(r"[^\W\d_]+(?:['’-][^\W\d_]+)*")  # noqa: RUF001 - typographic apostrophe
 """One word of letters, joined across apostrophes and hyphens."""
+
+_RE_SOUND_EFFECT: Final[re.Pattern[str]] = re.compile(r"\*.*\*", re.S)
+"""Visible text wholly between asterisks, a sound effect rather than a sign."""
+
+_MIN_LETTERS: Final[int] = 2
+"""Fewest letters an on-screen line needs before the narrator may read it."""
 
 _RE_PLACED: Final[re.Pattern[str]] = re.compile(
     _BACKSLASH + _BACKSLASH + r"(?:pos|move|org)\(|" + _BACKSLASH + _BACKSLASH + r"fr[xyz]?\s*-?(?:0*[1-9]|0*\.0*[1-9])"
@@ -323,13 +334,49 @@ def written_in_capitals(text: str) -> bool:
     return rise(sum(char.isupper() for char in letters) / len(letters), *_CAPS_SHARE) >= _DEGREE_TRUE
 
 
+def screen_edge(event: SSAEvent, style: SSAStyle | None, play_res_y: int) -> float:
+    """Return the degree, from 0 to 1, to which a line sits at the top or bottom edge of the screen."""
+    return _edge(event, _alignment(event, style), play_res_y)
+
+
+def title_like(text: str) -> bool:
+    """Tell whether a visible text is written in capitals or in title case."""
+    return written_in_capitals(text) or _title_case(_RE_WORD.findall(text))
+
+
+def word_count(text: str) -> int:
+    """Count the words of letters in a visible text."""
+    return len(_RE_WORD.findall(text))
+
+
+def sung(event: SSAEvent) -> bool:
+    """Tell whether a line belongs to a song by its style name or karaoke tags."""
+    return bool(_RE_SONG.search(event.style) or _RE_SONG_NAME.search(event.style) or _RE_KARA.search(event.text))
+
+
+def never_narrated(event: SSAEvent) -> bool:
+    """Tell whether an on-screen line is a song, drawing, sound effect or near letterless text never read aloud."""
+    if sung(event) or is_drawing(event.text):
+        return True
+    plain: str = visible_text(event.text)
+    return sum(char.isalpha() for char in plain) < _MIN_LETTERS or bool(_RE_SOUND_EFFECT.fullmatch(plain))
+
+
+def _alignment(event: SSAEvent, style: SSAStyle | None) -> int:
+    inline: list[str] = _RE_ALIGN.findall(event.text)
+    return int(inline[-1]) if inline else _style_alignment(style)
+
+
+def _style_alignment(style: SSAStyle | None) -> int:
+    return int(style.alignment) if style is not None else _DEFAULT_ALIGNMENT
+
+
 def _vetoed(event: SSAEvent, style: SSAStyle | None, play_res_y: int) -> bool:
     plain: str = visible_text(event.text)
     if _RE_SENTENCE.search(plain) or "," in plain:
         return False
-    style_alignment: int = int(style.alignment) if style is not None else _DEFAULT_ALIGNMENT
-    inline: list[str] = _RE_ALIGN.findall(event.text)
-    alignment: int = int(inline[-1]) if inline else style_alignment
+    style_alignment: int = _style_alignment(style)
+    alignment: int = _alignment(event, style)
     placed: bool = _placed(event, alignment, style_alignment)
     words: list[str] = _RE_WORD.findall(plain)
     if len(words) <= _PROTECTED_MAX_WORDS and not placed and _edge(event, alignment, play_res_y) >= _DEGREE_TRUE:

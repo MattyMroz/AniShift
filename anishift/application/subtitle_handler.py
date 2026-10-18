@@ -13,21 +13,25 @@ from anishift.application.events import WorkerNotification, WorkerNotificationKi
 from anishift.application.planning import PlanTask, TaskKind
 from anishift.application.results import ArtifactSnapshot, ProducedArtifact, TaskResult
 from anishift.application.scheduler_contracts import TaskProgressSink
+from anishift.application.sign_narration import write_sign_candidates
 from anishift.application.task_paths import task_staging_path
 from anishift.errors import ExecutionError
 from anishift.services.subtitles import (
+    SignCandidate,
     SubtitleKind,
     SubtitleSplit,
     inherit_split,
     load_subtitles,
     normalize_subtitles,
     reflow_polish_dialogue,
+    sign_candidates,
     split_subtitles,
     subtitle_kind,
     write_displayed,
     write_spoken,
 )
 from anishift.services.subtitles.layout import LayoutLimits
+from anishift.services.tts.validation import is_speech_text
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -116,12 +120,15 @@ class SubtitleTaskHandler:
         if polish_kind is None:
             msg = "Subtitle split source format is unsupported"
             raise ExecutionError(msg)
-        source_split: SubtitleSplit = _polish_split(task, artifacts, load_subtitles(polish_path), polish_kind)
-        source_split = reflow_polish_dialogue(source_split, self._layout)
+        decided: SubtitleSplit = _polish_split(task, artifacts, load_subtitles(polish_path), polish_kind)
+        source_split: SubtitleSplit = reflow_polish_dialogue(decided, self._layout)
         produced: list[ProducedArtifact] = []
         absent: list[str] = []
         for artifact_id in task.produces:
             output: Artifact = artifacts.require_output(artifact_id)
+            if output.kind is ArtifactKind.SIGN_CANDIDATES:
+                produced.append(_signs(task, output, decided, task_staging_path(self._run_root, task, output, ".json")))
+                continue
             output_kind: SubtitleKind = _artifact_subtitle_kind(output)
             output_split: SubtitleSplit = replace(source_split, kind=output_kind)
             destination: Path = task_staging_path(self._run_root, task, output, f".{output_kind}")
@@ -147,6 +154,15 @@ class SubtitleTaskHandler:
                 raise ExecutionError(msg)
             produced.append(ProducedArtifact(output.artifact_id, written, {}))
         return TaskResult(task.task_id, tuple(produced), tuple(absent))
+
+
+def _signs(task: PlanTask, output: Artifact, split: SubtitleSplit, destination: Path) -> ProducedArtifact:
+    candidates: tuple[SignCandidate, ...] = tuple(
+        candidate for candidate in sign_candidates(split) if is_speech_text(candidate.text)
+    )
+    logger.info("Sign candidates written", task_id=task.task_id, candidate_count=len(candidates))
+    path: Path = write_sign_candidates(candidates, destination)
+    return ProducedArtifact(output.artifact_id, path, {"sign_candidates": len(candidates)})
 
 
 def _polish_split(task: PlanTask, artifacts: ArtifactSnapshot, subs: SSAFile, kind: SubtitleKind) -> SubtitleSplit:
