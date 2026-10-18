@@ -135,6 +135,25 @@ def test_a_spoken_group_follows_its_first_event_and_is_excluded_whole_when_that_
     assert mapping["pairs"][0]["excluded"] == [2, 3, 5]
 
 
+def test_a_copy_in_another_style_is_excluded_with_the_spoken_line_the_writer_reads_it_in(tmp_path: Path) -> None:
+    source: str = (
+        "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Right away!\n"
+        "Dialogue: 0,0:00:01.00,0:00:02.00,Overlap,,0,0,0,,{\\an8}Right away!\n"
+        "Dialogue: 0,0:00:04.00,0:00:06.00,Default,,0,0,0,,See you.\n"
+    )
+    output: str = "Dialogue: 0,0:00:04.00,0:00:06.00,Default,,0,0,0,,Na razie.\n"
+    _pair(tmp_path / "library", "copy", source=source, output=output)
+
+    mapping: dict[str, Any] = _mapping(replay.replay([tmp_path / "library"], tmp_path / "run"))
+
+    assert _texts(tmp_path / "run" / "library" / f"copy{replay.REPLAY_SUFFIX}") == [
+        "Right away!",
+        "Right away!",
+        "Na razie.",
+    ]
+    assert mapping["pairs"][0]["excluded"] == [0, 1]
+
+
 def test_replay_writes_a_mapping_when_every_pair_is_skipped_or_the_corpus_is_empty(tmp_path: Path) -> None:
     _pair(tmp_path / "library", "lonely", output=None)
     (tmp_path / "empty").mkdir()

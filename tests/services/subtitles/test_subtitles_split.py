@@ -4,7 +4,7 @@ import pytest
 from pysubs2 import SSAEvent, SSAFile
 
 from anishift.services.subtitles.classifier import Category, StyleVerdict
-from anishift.services.subtitles.service import inherit_split, split_subtitles, write_displayed
+from anishift.services.subtitles.service import inherit_split, split_subtitles, spoken_groups, write_displayed
 from anishift.services.subtitles.types import SubtitleSplit
 
 
@@ -289,6 +289,7 @@ def test_split_reads_a_copy_of_a_line_in_another_style_once() -> None:
         (2, 3000, 4000, "Next line."),
     ]
     assert split.stats.collapsed_away == 1
+    assert spoken_groups(split) == {0: 0, 1: 0, 2: 2}
 
 
 @pytest.mark.unit

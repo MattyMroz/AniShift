@@ -60,6 +60,7 @@ __all__ = [
     "normalize_subtitles",
     "reflow_polish_dialogue",
     "split_subtitles",
+    "spoken_groups",
     "subtitle_kind",
     "write_displayed",
     "write_full",
@@ -510,14 +511,21 @@ def _laid_out_text(event: SSAEvent, text: str, decision: Decision, profile: Rend
 
 def _event_translations(split: SubtitleSplit, translations: Mapping[int, str]) -> dict[int, str]:
     texts: dict[int, str] = dict(translations)
-    dialogue: list[SSAEvent] = [event for event in split.subs.events if event.type == "Dialogue"]
-    for run in _spoken_runs(dialogue, split.decisions, split.kind):
-        text: str | None = translations.get(min(order for order, _ in run))
-        if text is None:
-            continue
-        for order, _ in run:
+    for order, first in spoken_groups(split).items():
+        text: str | None = translations.get(first)
+        if text is not None:
             texts.setdefault(order, text)
     return texts
+
+
+def spoken_groups(split: SubtitleSplit) -> dict[int, int]:
+    """Map every event read aloud to the Dialogue index of the first event of the spoken line it belongs to."""
+    dialogue: list[SSAEvent] = [event for event in split.subs.events if event.type == "Dialogue"]
+    return {
+        order: min(member for member, _ in run)
+        for run in _spoken_runs(dialogue, split.decisions, split.kind)
+        for order, _ in run
+    }
 
 
 def _font_index(fonts: FontSources | None, dialogue_font: DialogueFont | None) -> FontIndex | None:
