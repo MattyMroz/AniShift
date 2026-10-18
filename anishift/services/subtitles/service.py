@@ -28,7 +28,7 @@ from anishift.services.subtitles.fitting import fit_signs
 from anishift.services.subtitles.geometry import RenderProfile
 from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.subtitles.linebreak import layout_dialogue, split_for_layout
-from anishift.services.subtitles.restyle import DIALOGUE_CLONE_SUFFIX, restyle_dialogue
+from anishift.services.subtitles.restyle import clone_source, restyle_dialogue
 from anishift.services.subtitles.text import (
     is_drawing,
     replace_visible_text,
@@ -353,7 +353,7 @@ def inherit_split(source: SubtitleSplit, subs: SSAFile) -> SubtitleSplit | None:
         logger.debug("Subtitle decisions not inherited", reason="event_count", events=len(dialogue), source=len(origin))
         return None
     for position, (event, original) in enumerate(zip(dialogue, origin, strict=True)):
-        if _identity(event) != (original.start, original.end, original.layer, original.style):
+        if not _same_event(event, original):
             logger.debug("Subtitle decisions not inherited", reason="event_identity", position=position)
             return None
     split: SubtitleSplit = _split_with("ass", subs, dialogue, source.decisions, source.verdicts)
@@ -366,8 +366,9 @@ def inherit_split(source: SubtitleSplit, subs: SSAFile) -> SubtitleSplit | None:
     return split
 
 
-def _identity(event: SSAEvent) -> tuple[int, int, int, str]:
-    return event.start, event.end, event.layer, event.style.removesuffix(DIALOGUE_CLONE_SUFFIX)
+def _same_event(event: SSAEvent, original: SSAEvent) -> bool:
+    same_style: bool = event.style == original.style or clone_source(event.style) == original.style
+    return same_style and (event.start, event.end, event.layer) == (original.start, original.end, original.layer)
 
 
 def _split_with(

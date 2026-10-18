@@ -10,8 +10,8 @@ from pysubs2 import SSAEvent, SSAFile, SSAStyle
 from anishift.errors import ErrorCode
 from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.layout import LayoutLimits
-from anishift.services.subtitles.restyle import DIALOGUE_CLONE_SUFFIX, DialogueFont, restyle_dialogue
-from anishift.services.subtitles.service import load_subtitles, split_subtitles, write_translated
+from anishift.services.subtitles.restyle import DialogueFont, clone_source, restyle_dialogue
+from anishift.services.subtitles.service import inherit_split, load_subtitles, split_subtitles, write_translated
 from anishift.services.subtitles.types import LayoutReport
 
 if TYPE_CHECKING:
@@ -165,15 +165,57 @@ def test_restyle_dialogue_clones_only_the_mostly_spoken_style() -> None:
 
 
 @pytest.mark.unit
-def test_restyle_dialogue_adds_another_suffix_when_the_clone_name_is_taken() -> None:
+def test_restyle_dialogue_numbers_the_clone_when_its_name_is_taken() -> None:
     subs: SSAFile = _subs()
-    subs.styles["Default" + DIALOGUE_CLONE_SUFFIX] = SSAStyle(fontname="Other")
+    subs.styles["Default (dialog)"] = SSAStyle(fontname="Other")
+    subs.styles["Default (dialog 2)"] = SSAStyle(fontname="Other")
 
     restyled: SSAFile = restyle_dialogue(subs, _DECISIONS, _FONT, LayoutReport())
 
-    assert restyled.events[0].style == "Default (dialog) (dialog)"
+    assert restyled.events[0].style == "Default (dialog 3)"
     assert restyled.styles["Default (dialog)"].fontname == "Other"
-    assert restyled.styles["Default (dialog) (dialog)"].fontname == _FAMILY
+    assert restyled.styles["Default (dialog 3)"].fontname == _FAMILY
+    assert clone_source("Default (dialog 3)") == "Default"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("name", "source"),
+    [
+        ("Default (dialog)", "Default"),
+        ("Default (dialog 2)", "Default"),
+        ("Main - Top (dialog 12)", "Main - Top"),
+        ("Default (dialog) (dialog)", "Default (dialog)"),
+        ("Default", "Default"),
+        ("Default (dialog 1)", "Default (dialog 1)"),
+        ("Default (dialogue)", "Default (dialogue)"),
+        ("(dialog)", "(dialog)"),
+    ],
+)
+def test_clone_source_names_the_style_a_clone_was_made_from(name: str, source: str) -> None:
+    assert clone_source(name) == source
+
+
+@pytest.mark.integration
+def test_a_translation_with_a_numbered_clone_inherits_the_source_decisions(tmp_path: Path) -> None:
+    subs: SSAFile = _subs()
+    subs.styles["Default (dialog)"] = SSAStyle(fontname="Typesetter")
+    subs.events.append(SSAEvent(start=6000, end=7000, style="Default (dialog)", text="{\\an8}Sign"))
+    source: Path = tmp_path / "source.ass"
+    source.write_text(subs.to_string("ass"), encoding="utf-8")
+    split = split_subtitles(load_subtitles(source), kind="ass", spoken_styles={"Default"})
+    destination: Path = tmp_path / "out.pl.ass"
+
+    write_translated(split, {0: "Cześć"}, destination, fonts=None, limits=LayoutLimits(), dialogue_font=_FONT)
+
+    written: SSAFile = load_subtitles(destination)
+    inherited = inherit_split(split, written)
+    assert [event.style for event in written.events if event.type == "Dialogue"][-2:] == [
+        "Default (dialog 2)",
+        "Default (dialog)",
+    ]
+    assert inherited is not None
+    assert inherited.decisions == split.decisions
 
 
 @pytest.mark.unit

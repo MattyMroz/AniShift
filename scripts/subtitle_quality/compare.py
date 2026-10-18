@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Final
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 from anishift.services.subtitles import is_drawing, load_subtitles, visible_text, visible_verses
+from anishift.services.subtitles.restyle import clone_source
 from anishift.services.subtitles.text import RE_TAG_BLOCK
 from anishift.utils.logger import LoggerMode, setup_mode
 from anishift.utils.logger.config import FileConfig
@@ -80,9 +81,6 @@ KINDS: Final[tuple[str, ...]] = (
     KIND_DECISION,
 )
 """Order of the kinds in the gallery."""
-
-DIALOGUE_CLONE_SUFFIX: Final[str] = " (dialog)"
-"""Suffix of a dialogue-font style clone, ignored when matching event identity."""
 
 DECISIONS_KEY: Final[str] = "decisions"
 """Optional mapping entry field: the reader decision of every source Dialogue event."""
@@ -279,7 +277,7 @@ def mismatched_events(before: SSAFile, after: SSAFile, excluded: frozenset[int])
 
 
 def _identity(event: SSAEvent) -> tuple[int, int, int, str]:
-    return event.start, event.end, event.layer, event.style.removesuffix(DIALOGUE_CLONE_SUFFIX)
+    return event.start, event.end, event.layer, clone_source(event.style)
 
 
 def _wording(event: SSAEvent) -> str:

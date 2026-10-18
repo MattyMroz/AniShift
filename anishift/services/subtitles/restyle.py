@@ -22,12 +22,15 @@ if TYPE_CHECKING:
 
     from anishift.services.subtitles.types import Decision, LayoutReport
 
-__all__ = ["DIALOGUE_CLONE_SUFFIX", "DialogueFont", "restyle_dialogue"]
+__all__ = ["DialogueFont", "clone_source", "restyle_dialogue"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-DIALOGUE_CLONE_SUFFIX: Final[str] = " (dialog)"
-"""Suffix of the style cloned for the dialogue font, ignored when matching a translation to its source."""
+_CLONE_LABEL: Final[str] = "dialog"
+"""Word in the parenthesized suffix of a style cloned for the dialogue font, numbered from 2 when a name is taken."""
+
+_RE_CLONE: Final[re.Pattern[str]] = re.compile(rf"(?P<source>.+) \({_CLONE_LABEL}(?: (?:[2-9]|[1-9][0-9]+))?\)")
+"""Whole name of a dialogue clone, capturing the style it was made from."""
 
 _RE_NAMED_RESET: Final[re.Pattern[str]] = re.compile(r"\\r([^\\}]+)")
 """ASS ``\\r<style>`` reset naming the style it restores, inside one override block."""
@@ -69,6 +72,12 @@ def restyle_dialogue(subs: SSAFile, decisions: Sequence[Decision], font: Dialogu
     return out
 
 
+def clone_source(name: str) -> str:
+    """Return the style a dialogue clone name was made from, or the name itself when it names no clone."""
+    match: re.Match[str] | None = _RE_CLONE.fullmatch(name)
+    return name if match is None else match.group("source")
+
+
 def _clone_names(subs: SSAFile, decisions: Sequence[Decision]) -> dict[str, str]:
     dialogue: list[SSAEvent] = [event for event in subs.events if event.type == "Dialogue"]
     lines: Counter[str] = Counter(event.style for event in dialogue)
@@ -80,12 +89,19 @@ def _clone_names(subs: SSAFile, decisions: Sequence[Decision]) -> dict[str, str]
     for style in subs.styles:
         if 2 * spoken[style] <= lines[style]:
             continue
-        name: str = style + DIALOGUE_CLONE_SUFFIX
-        while name in taken:
-            name += DIALOGUE_CLONE_SUFFIX
+        name: str = _clone_name(style, taken)
         taken.add(name)
         clones[style] = name
     return clones
+
+
+def _clone_name(style: str, taken: set[str]) -> str:
+    name: str = f"{style} ({_CLONE_LABEL})"
+    number: int = 1
+    while name in taken:
+        number += 1
+        name = f"{style} ({_CLONE_LABEL} {number})"
+    return name
 
 
 def _with_clones(styles: Mapping[str, SSAStyle], clones: Mapping[str, str], family: str) -> dict[str, SSAStyle]:
