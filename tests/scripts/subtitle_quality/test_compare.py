@@ -150,6 +150,23 @@ def test_changed_events_leave_excluded_events_out_and_count_style_definition_cha
 
 
 @pytest.mark.unit
+def test_mismatched_events_differ_in_identity_or_wording_but_not_in_layout_tags_or_dialogue_clone() -> None:
+    before: SSAFile = SSAFile.from_string(_script(_BEFORE))
+    after: SSAFile = SSAFile.from_string(_script(_AFTER))
+    assert compare.mismatched_events(before, after, frozenset({0})) == []
+    after.events[1].style = "Default (dialog)"
+    after.events[3].text = r"{\pos(440,100)}Wejście"
+    after.events[4].end += 10
+    after.events[2].layer = 1
+    assert compare.mismatched_events(before, after, frozenset({0})) == [2, 3, 4]
+
+
+@pytest.mark.unit
+def test_hidden_text_appends_full_transparency_after_every_override() -> None:
+    assert compare.hidden_text(r"{\1a&H00&}Hi{\i1}x") == r"{\alpha&HFF&}{\1a&H00&\alpha&HFF&}Hi{\i1\alpha&HFF&}x"
+
+
+@pytest.mark.unit
 def test_chosen_keeps_every_hard_case_and_the_highest_ranked_cases_of_each_kind() -> None:
     cases: list[compare.Case] = [
         compare.Case(_PAIR, compare.KIND_BREAKS, 1, (1,), "", "", "", 1.0),
@@ -201,7 +218,7 @@ def test_pairs_with_different_inputs_or_event_counts_are_skipped(tmp_path: Path)
 def test_line_style_tag_and_reader_decision_changes_become_cases_without_rendering(tmp_path: Path) -> None:
     pairs: Path = _pairs(tmp_path / "pairs")
     decisions: list[str] = ["spoken", "spoken", "displayed", "displayed", "spoken"]
-    flipped: list[str] = ["spoken", "spoken", "displayed", "spoken", "spoken"]
+    flipped: list[str] = ["displayed", "spoken", "displayed", "spoken", "spoken"]
     texts: tuple[str, ...] = (_AFTER[0], _AFTER[1], _BEFORE[2], _BEFORE[3], _AFTER[4])
     base: Path = _run(tmp_path, "base", _BEFORE, decisions=decisions)
     other: Path = _run(tmp_path, "other", texts, decisions=flipped)
@@ -216,7 +233,28 @@ def test_line_style_tag_and_reader_decision_changes_become_cases_without_renderi
     assert cases[compare.KIND_DECISION].indexes == (3,)
     assert cases[compare.KIND_DECISION].tags == (compare.TAG_SCREEN, compare.TAG_SPOKEN)
     assert selection.undecided == ()
+    assert selection.mismatches == ()
     assert not (tmp_path / "work").exists()
+
+
+@pytest.mark.integration
+def test_events_with_other_wording_or_timing_are_reported_apart_and_never_as_layout_changes(tmp_path: Path) -> None:
+    pairs: Path = _pairs(tmp_path / "pairs")
+    texts: tuple[str, ...] = (_BEFORE[0], r"Naprawdę muszę znaleźć\Nsiostrę.", _BEFORE[2], _BEFORE[3], _AFTER[4])
+    base: Path = _run(tmp_path, "base", _BEFORE, decisions=["spoken"] * 5)
+    other: Path = _run(tmp_path, "other", texts, decisions=["spoken", "displayed", "spoken", "spoken", "displayed"])
+    output: Path = other / f"{_PAIR}.pl.ass"
+    output.write_text(output.read_text(encoding="utf-8").replace("0:00:07.00", "0:00:07.10"), encoding="utf-8")
+    hard: tuple[compare.HardCase, ...] = (compare.HardCase(_PAIR, 5000, "Opis"),)
+    selection: compare.Selection = compare.find_cases(base, other, pairs, tmp_path / "work", hard)
+    assert [(mismatch.index, mismatch.after) for mismatch in selection.mismatches] == [
+        (1, "Naprawdę muszę znaleźć / siostrę."),
+        (4, "Na razie."),
+    ]
+    assert [(case.kind, case.indexes) for case in selection.cases] == [(compare.KIND_HARD, (2, 3))]
+    index: str = compare.index_text(selection, [], ("base", "other"))
+    assert "## Inny tekst — poza porównaniem" in index
+    assert "| pair | 2 | 0:00:04.00 | Naprawdę muszę / znaleźć brata. | Naprawdę muszę znaleźć / siostrę. |" in index
 
 
 @pytest.mark.integration
@@ -235,13 +273,19 @@ def test_sign_width_and_new_collision_are_found_and_reversed_into_a_removed_coll
     collision: compare.Case = next(case for case in forward.cases if case.kind == compare.KIND_NEW_COLLISION)
     assert collision.indexes == (2, 3)
     assert collision.time_ms == 5000
+    assert collision.description == (
+        "Prostokąty obwiedni szyldów „Piekarnia” i „Wyjście” przecinają się po zmianie, a przed nią się nie przecinały."
+    )
     backward: compare.Selection = compare.find_cases(other, base, pairs, tmp_path / "work")
-    assert compare.KIND_REMOVED_COLLISION in _kinds(backward)
+    removed: compare.Case = next(case for case in backward.cases if case.kind == compare.KIND_REMOVED_COLLISION)
+    assert removed.description.endswith("przecinały się przed zmianą, a po niej przestały się przecinać.")
     assert compare.KIND_NEW_COLLISION not in _kinds(backward)
 
 
 @pytest.mark.integration
-def test_hard_case_frames_the_events_visible_at_its_moment(tmp_path: Path) -> None:
+def test_hard_case_frames_the_compared_events_visible_at_its_moment_and_leaves_excluded_ones_out(
+    tmp_path: Path,
+) -> None:
     _requires_ffmpeg()
     pairs: Path = _pairs(tmp_path / "pairs")
     base: Path = _run(tmp_path, "base", _BEFORE)
@@ -250,9 +294,42 @@ def test_hard_case_frames_the_events_visible_at_its_moment(tmp_path: Path) -> No
     selection: compare.Selection = compare.find_cases(base, other, pairs, tmp_path / "work", hard)
     cases: list[compare.Case] = [case for case in selection.cases if case.kind == compare.KIND_HARD]
     assert [(case.indexes, case.description) for case in cases] == [
-        ((0,), "Opis (zmienione zdarzenia w tej chwili: 0 z 1)."),
+        ((), "Opis (zmienione zdarzenia w tej chwili: 0 z 0)."),
         ((1, 2, 3), "Opis (zmienione zdarzenia w tej chwili: 3 z 3)."),
     ]
+
+
+@pytest.mark.integration
+def test_placed_boxes_find_events_where_the_rendered_frame_draws_them_among_concurrent_lines(tmp_path: Path) -> None:
+    _requires_ffmpeg()
+    script: Path = tmp_path / "stack.ass"
+    lines: list[str] = [
+        r"Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,Pierwsza kwestia",
+        r"Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,Druga kwestia",
+        r"Dialogue: 0,0:00:01.00,0:00:03.00,Sign,,0,0,0,,{\pos(200,100)}Piekarnia",
+        r"Dialogue: 0,0:00:05.00,0:00:06.00,Sign,,0,0,0,,{\pos(440,100)}Wyjście",
+    ]
+    script.write_text(_HEADER + "\n".join(lines) + "\n", encoding="utf-8")
+    (tmp_path / "work").mkdir()
+    files: compare.PairFiles = compare.PairFiles(tmp_path / "pair", script, script, tmp_path / "work")
+    size: tuple[int, int] = (640, 360)
+    shown: tuple[Image.Image, Image.Image] = compare.render_halves(files, (script, script), 2000, size)
+
+    def boxes(*indexes: int) -> tuple[metrics.Box | None, metrics.Box | None]:
+        case: compare.Case = compare.Case(_PAIR, compare.KIND_HARD, 2000, indexes, "", "", "")
+        return compare.placed_boxes(files, case, shown, size)
+
+    lower, lower_after = boxes(0)
+    upper, _ = boxes(1)
+    sign, _ = boxes(2)
+    assert lower is not None
+    assert upper is not None
+    assert sign is not None
+    assert lower == lower_after
+    assert upper[3] <= lower[1] + 4
+    assert sign[0] < 400 < sign[2]
+    assert sign[1] < 200 < sign[3]
+    assert boxes(3) == (None, None)
 
 
 @pytest.mark.integration
@@ -280,9 +357,10 @@ def test_compare_command_renders_a_gallery_with_an_index_and_reports_changes(tmp
 
 
 @pytest.mark.unit
-def test_decision_cases_compare_reader_decisions_event_by_event() -> None:
+def test_decision_cases_compare_reader_decisions_event_by_event_outside_excluded_events() -> None:
     events: list[SSAEvent] = metrics.dialogue(SSAFile.from_string(_script(_BEFORE)))
-    cases: list[compare.Case] = compare.decision_cases(_PAIR, events, ["spoken"] * 5, ["spoken"] * 4 + ["displayed"])
+    decisions: tuple[list[str], list[str]] = (["spoken"] * 5, ["displayed"] + ["spoken"] * 3 + ["displayed"])
+    cases: list[compare.Case] = compare.decision_cases(_PAIR, events, decisions, frozenset({0}))
     assert [(case.indexes, case.description) for case in cases] == [
         ((4,), "Decyzja lektora zmieniła się z „czyta” na „tylko ekran”.")
     ]

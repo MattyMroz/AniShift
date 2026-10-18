@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 from anishift.services.subtitles import is_drawing, load_subtitles, visible_text, visible_verses
 from anishift.services.subtitles.text import RE_TAG_BLOCK
@@ -20,7 +20,6 @@ from anishift.utils.logger.config import FileConfig
 from scripts.subtitle_quality import metrics
 from scripts.subtitle_quality.episode import FRAMES_NAME, SOURCE_NAME, video_path
 from scripts.subtitle_quality.render import (
-    GALLERY_WIDTH,
     Shot,
     copy_scripts,
     measure_boxes,
@@ -82,6 +81,9 @@ KINDS: Final[tuple[str, ...]] = (
 )
 """Order of the kinds in the gallery."""
 
+DIALOGUE_CLONE_SUFFIX: Final[str] = " (dialog)"
+"""Suffix of a dialogue-font style clone, ignored when matching event identity."""
+
 DECISIONS_KEY: Final[str] = "decisions"
 """Optional mapping entry field: the reader decision of every source Dialogue event."""
 
@@ -139,6 +141,12 @@ _ZOOM_INDENT: Final[int] = 170
 _ZOOM_FACTOR: Final[float] = 5.0
 """Largest zoom magnification."""
 
+_HIDDEN_TAG: Final[str] = r"{\alpha&HFF&}"
+"""Override block making the rest of an event fully transparent."""
+
+_MASK_THRESHOLD: Final[int] = 40
+"""Brightness difference above which a pixel belongs to the hidden events."""
+
 _RE_BRACKETS: Final[re.Pattern[str]] = re.compile(r"\[[^\]]*\]|\([^)]*\)")
 """Release-group, checksum and quality groups in an episode folder name."""
 
@@ -184,13 +192,25 @@ class PairFiles:
 
 
 @dataclass(frozen=True, slots=True)
+class Mismatch:
+    """Event left out of the comparison because its timing, layer, style or visible wording differs."""
+
+    pair: str
+    index: int
+    time_ms: int
+    before: str
+    after: str
+
+
+@dataclass(frozen=True, slots=True)
 class Selection:
-    """Every case found in two replays, the pairs left out and the pairs whose reader decisions are unknown."""
+    """Every case of two replays, the events and pairs left out and the pairs whose reader decisions are unknown."""
 
     cases: tuple[Case, ...]
     pairs: dict[str, PairFiles]
     skipped: tuple[tuple[str, str], ...]
     undecided: tuple[str, ...]
+    mismatches: tuple[Mismatch, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +242,7 @@ def find_cases(base: Path, other: Path, pairs_root: Path, work_root: Path, hard:
     cases: list[Case] = []
     pairs: dict[str, PairFiles] = {}
     undecided: list[str] = []
+    mismatches: list[Mismatch] = []
     for position, (pair_id, first, second) in enumerate(matched):
         if first["inputs"] != second["inputs"]:
             skipped.append((pair_id, "inputs differ"))
@@ -239,10 +260,39 @@ def find_cases(base: Path, other: Path, pairs_root: Path, work_root: Path, hard:
         if decisions is None:
             undecided.append(pair_id)
         excluded: frozenset[int] = frozenset(first["excluded"]) | frozenset(second["excluded"])
+        foreign: list[int] = mismatched_events(before, after, excluded)
+        mismatches.extend(_mismatch(pair_id, index, before, after) for index in foreign)
         pair_hard: list[HardCase] = [case for case in hard if case.pair == pair_id]
-        cases.extend(pair_cases(pair_id, files, (before, after), excluded, decisions, pair_hard))
+        left_out: frozenset[int] = excluded | frozenset(foreign)
+        cases.extend(pair_cases(pair_id, files, (before, after), left_out, decisions, pair_hard))
     skipped.extend((case.pair, "hard case pair not compared") for case in hard if case.pair not in pairs)
-    return Selection(tuple(cases), pairs, tuple(skipped), tuple(undecided))
+    return Selection(tuple(cases), pairs, tuple(skipped), tuple(undecided), tuple(mismatches))
+
+
+def mismatched_events(before: SSAFile, after: SSAFile, excluded: frozenset[int]) -> list[int]:
+    """Return the events, outside the excluded ones, whose timing, layer, style or visible wording differs."""
+    return [
+        index
+        for index, (left, right) in enumerate(zip(metrics.dialogue(before), metrics.dialogue(after), strict=True))
+        if index not in excluded and (_identity(left), _wording(left)) != (_identity(right), _wording(right))
+    ]
+
+
+def _identity(event: SSAEvent) -> tuple[int, int, int, str]:
+    return event.start, event.end, event.layer, event.style.removesuffix(DIALOGUE_CLONE_SUFFIX)
+
+
+def _wording(event: SSAEvent) -> str:
+    return "".join(visible_text(event.text).split())
+
+
+def _mismatch(pair_id: str, index: int, before: SSAFile, after: SSAFile) -> Mismatch:
+    left, right = metrics.dialogue(before)[index], metrics.dialogue(after)[index]
+    return Mismatch(pair_id, index, left.start, _lines(left.text), _lines(right.text))
+
+
+def _lines(text: str) -> str:
+    return " / ".join(visible_verses(text))
 
 
 def _decisions(first: dict[str, Any], second: dict[str, Any]) -> tuple[list[str], list[str]] | None:
@@ -263,9 +313,9 @@ def pair_cases(  # noqa: PLR0913 - one pair gathers every kind of change
     before, after = subs
     events: tuple[list[SSAEvent], list[SSAEvent]] = (metrics.dialogue(before), metrics.dialogue(after))
     changed: list[int] = changed_events(before, after, excluded)
-    cases: list[Case] = [_hard_case(pair_id, case, events, changed) for case in hard]
+    cases: list[Case] = [_hard_case(pair_id, case, events, changed, excluded) for case in hard]
     if decisions is not None:
-        cases.extend(decision_cases(pair_id, events[0], *decisions))
+        cases.extend(decision_cases(pair_id, events[0], decisions, excluded))
     if not changed:
         return cases
     verdicts: dict[str, Category] = metrics.style_verdicts(load_subtitles(files.directory / SOURCE_NAME))
@@ -372,11 +422,11 @@ def _swapped(sign: metrics.Sign) -> metrics.Sign:
 def _collision(pair_id: str, pair: Sequence[metrics.Sign], *, new: bool) -> Case:
     names: str = f"„{pair[0].source_text}” i „{pair[1].source_text}”"
     time_ms: int = (max(sign.start for sign in pair) + min(sign.end for sign in pair)) // 2
-    overlap: tuple[str, str] = ("nie nachodzą na siebie", "nachodzą na siebie")
+    crossing: tuple[str, str] = ("nie przecinają się", "przecinają się")
     description: str = (
-        f"Szyldy {names} nachodzą na siebie po zmianie, a przed nią nie nachodziły."
+        f"Prostokąty obwiedni szyldów {names} przecinają się po zmianie, a przed nią się nie przecinały."
         if new
-        else f"Szyldy {names} nachodziły na siebie przed zmianą, a po niej nie nachodzą."
+        else f"Prostokąty obwiedni szyldów {names} przecinały się przed zmianą, a po niej przestały się przecinać."
     )
     return Case(
         pair_id,
@@ -384,8 +434,8 @@ def _collision(pair_id: str, pair: Sequence[metrics.Sign], *, new: bool) -> Case
         time_ms,
         tuple(sign.source_index for sign in pair),
         description,
-        f"Szyldy {names} {overlap[not new]}.",
-        f"Szyldy „{pair[0].output_text}” i „{pair[1].output_text}” {overlap[new]}.",
+        f"Prostokąty obwiedni szyldów {names} {crossing[not new]}.",
+        f"Prostokąty obwiedni szyldów „{pair[0].output_text}” i „{pair[1].output_text}” {crossing[new]}.",
     )
 
 
@@ -467,13 +517,15 @@ def _reads(decision: str) -> str:
     return "czyta" if decision == SPOKEN else "tylko ekran"
 
 
-def decision_cases(pair_id: str, events: Sequence[SSAEvent], before: list[str], after: list[str]) -> list[Case]:
-    """Return a case for every event whose reader decision differs."""
+def decision_cases(
+    pair_id: str, events: Sequence[SSAEvent], decisions: tuple[list[str], list[str]], excluded: frozenset[int]
+) -> list[Case]:
+    """Return a case for every event, outside the excluded ones, whose reader decision differs."""
     cases: list[Case] = []
-    for index, (event, old, new) in enumerate(zip(events, before, after, strict=True)):
-        if old == new:
+    for index, (event, old, new) in enumerate(zip(events, *decisions, strict=True)):
+        if old == new or index in excluded:
             continue
-        text: str = " / ".join(visible_verses(event.text))
+        text: str = _lines(event.text)
         cases.append(
             Case(
                 pair_id,
@@ -493,11 +545,20 @@ def _tag(decision: str) -> str:
     return TAG_SPOKEN if decision == SPOKEN else TAG_SCREEN
 
 
-def _hard_case(pair_id: str, case: HardCase, events: tuple[list[SSAEvent], list[SSAEvent]], changed: list[int]) -> Case:
+def _hard_case(
+    pair_id: str,
+    case: HardCase,
+    events: tuple[list[SSAEvent], list[SSAEvent]],
+    changed: list[int],
+    excluded: frozenset[int],
+) -> Case:
     visible: list[int] = [
         index
         for index, event in enumerate(events[0])
-        if event.start <= case.time_ms < event.end and visible_text(event.text) and not is_drawing(event.text)
+        if event.start <= case.time_ms < event.end
+        and index not in excluded
+        and visible_text(event.text)
+        and not is_drawing(event.text)
     ]
     active: tuple[int, ...] = tuple(index for index in visible if index in changed)
     shown: tuple[int, ...] = active or tuple(visible)
@@ -507,8 +568,8 @@ def _hard_case(pair_id: str, case: HardCase, events: tuple[list[SSAEvent], list[
         case.time_ms,
         shown,
         f"{case.description} (zmienione zdarzenia w tej chwili: {len(active)} z {len(visible)}).",
-        "; ".join(f"„{' / '.join(visible_verses(events[0][index].text))}”" for index in shown),
-        "; ".join(f"„{' / '.join(visible_verses(events[1][index].text))}”" for index in shown),
+        "; ".join(f"„{_lines(events[0][index].text)}”" for index in shown),
+        "; ".join(f"„{_lines(events[1][index].text)}”" for index in shown),
     )
 
 
@@ -550,23 +611,9 @@ def _frame_note(files: PairFiles, time_ms: int) -> str:
 def render_case(case: Case, number: int, files: PairFiles, labels: tuple[str, str], target: Path) -> None:
     """Render one case: both replays on one frame, outlines and a zoom of the change, with Polish captions."""
     _prepare(files)
-    copy_scripts(files.before, files.after, files.work)
-    before: SSAFile = load_subtitles(files.before)
-    after: SSAFile = load_subtitles(files.after)
-    size: Size = metrics.play_size(before)
-    shot: Shot = Shot(case.time_ms, files.work / "annotated.png", "")
-    render_shot(shot, video_path(files.directory), files.directory / FRAMES_NAME, size, files.work)
-    with Image.open(files.work / "shot.png") as raw:
-        image: Image.Image = raw.convert("RGB")
-    half: int = image.height // 2
-    halves: tuple[Image.Image, Image.Image] = (
-        image.crop((0, 0, image.width, half)),
-        image.crop((0, half, image.width, image.height)),
-    )
-    boxes: tuple[Box | None, Box | None] = (
-        _union_box(before, case.indexes, size, files.work, "box-before"),
-        _union_box(after, case.indexes, size, files.work, "box-after"),
-    )
+    size: Size = metrics.play_size(load_subtitles(files.before))
+    halves: tuple[Image.Image, Image.Image] = render_halves(files, (files.before, files.after), case.time_ms, size)
+    boxes: tuple[Box | None, Box | None] = placed_boxes(files, case, halves, size)
     panel: Panel = Panel(
         title=f"{number:02d}. {case.kind[:1].upper()}{case.kind[1:]}",
         subtitle=f"{episode_title(case.pair)} — {format_time(case.time_ms)} ({_frame_note(files, case.time_ms)}). "
@@ -578,28 +625,57 @@ def render_case(case: Case, number: int, files: PairFiles, labels: tuple[str, st
         tags=case.tags,
         footer=(
             "Te same wejścia replay po obu stronach; różnicę robi wyłącznie kod. Ta sama chwila i ta sama klatka. "
-            "Ramka: zdarzenia przypadku zmierzone przez libass każde osobno, bez sąsiednich napisów."
+            "Ramka: miejsce zdarzeń przypadku na tym obrazie (różnica renderu libass z tymi zdarzeniami i bez nich)."
         ),
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     compose(panel).save(target)
 
 
-def _union_box(subs: SSAFile, indexes: Sequence[int], size: Size, work: Path, name: str) -> Box | None:
-    if not indexes:
-        return None
-    events: list[SSAEvent] = metrics.dialogue(subs)
-    boxes, _ = measure_boxes(subs, [events[index] for index in indexes], size, work, name)
-    found: list[Box] = [box for box in boxes if box is not None]
-    if not found:
-        return None
-    scale: float = GALLERY_WIDTH / size[0]
-    return (
-        round(min(box[0] for box in found) * scale),
-        round(min(box[1] for box in found) * scale),
-        round(max(box[2] for box in found) * scale),
-        round(max(box[3] for box in found) * scale),
-    )
+def render_halves(
+    files: PairFiles, scripts: tuple[Path, Path], time_ms: int, size: Size
+) -> tuple[Image.Image, Image.Image]:
+    """Render two whole scripts at one moment on the pair's frame and return the two gallery-sized images."""
+    copy_scripts(scripts[0], scripts[1], files.work)
+    shot: Shot = Shot(time_ms, files.work / "annotated.png", "")
+    render_shot(shot, video_path(files.directory), files.directory / FRAMES_NAME, size, files.work)
+    with Image.open(files.work / "shot.png") as raw:
+        image: Image.Image = raw.convert("RGB")
+    half: int = image.height // 2
+    return image.crop((0, 0, image.width, half)), image.crop((0, half, image.width, image.height))
+
+
+def placed_boxes(
+    files: PairFiles, case: Case, shown: tuple[Image.Image, Image.Image], size: Size
+) -> tuple[Box | None, Box | None]:
+    """Return where the case events are drawn on each rendered half, from a second render with them invisible."""
+    if not case.indexes:
+        return None, None
+    hidden: list[Path] = []
+    for number, script in enumerate((files.before, files.after)):
+        subs: SSAFile = load_subtitles(script)
+        events: list[SSAEvent] = metrics.dialogue(subs)
+        for index in case.indexes:
+            events[index].text = hidden_text(events[index].text)
+        path: Path = files.work / f"hidden-{number}.ass"
+        subs.save(str(path), encoding="utf-8")
+        hidden.append(path)
+    without: tuple[Image.Image, Image.Image] = render_halves(files, (hidden[0], hidden[1]), case.time_ms, size)
+    return _difference_box(shown[0], without[0]), _difference_box(shown[1], without[1])
+
+
+def hidden_text(text: str) -> str:
+    """Return an event's text made fully transparent, keeping its layout and the space it takes."""
+    return _HIDDEN_TAG + RE_TAG_BLOCK.sub(lambda block: block.group(0)[:-1] + _HIDDEN_TAG[1:], text)
+
+
+def _difference_box(shown: Image.Image, without: Image.Image) -> Box | None:
+    mask: Image.Image = ImageChops.difference(shown, without).convert("L").point(_mask_level)
+    return mask.getbbox()
+
+
+def _mask_level(value: int) -> int:
+    return 255 if value > _MASK_THRESHOLD else 0
 
 
 def _font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -767,6 +843,8 @@ def index_text(selection: Selection, shown: Sequence[Case], names: tuple[str, st
             f"{_cell(case.description)} | [{number:02d}.png]({number:02d}.png) |"
             for number, case in enumerate(shown, start=1)
         )
+    if selection.mismatches:
+        lines.extend(_mismatch_lines(selection.mismatches))
     if selection.skipped:
         lines.extend(["", "## Pominięte pary", ""])
         lines.extend(f"- `{pair}`: {reason}" for pair, reason in selection.skipped)
@@ -783,12 +861,35 @@ def index_text(selection: Selection, shown: Sequence[Case], names: tuple[str, st
     return "\n".join(lines) + "\n"
 
 
+def _mismatch_lines(mismatches: Sequence[Mismatch]) -> list[str]:
+    by_pair: dict[str, list[Mismatch]] = {}
+    for mismatch in mismatches:
+        by_pair.setdefault(mismatch.pair, []).append(mismatch)
+    lines: list[str] = [
+        "",
+        "## Inny tekst — poza porównaniem",
+        "",
+        f"Zdarzenia z innym czasem, warstwą, stylem albo widocznym tekstem po obu stronach: {len(mismatches)}. "
+        "Nie trafiają do żadnego rodzaju zmiany ani do obrazów.",
+        "",
+        "| Odcinek | Zdarzeń | Pierwsze: czas | Przed | Po |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for pair, rows in by_pair.items():
+        first: Mismatch = rows[0]
+        lines.append(
+            f"| {_cell(episode_title(pair))} | {len(rows)} | {format_time(first.time_ms)} | "
+            f"{_cell(first.before)} | {_cell(first.after)} |"
+        )
+    return lines
+
+
 def _cell(text: str) -> str:
     return text.replace("|", "/").replace("\n", " ")
 
 
 def main(argv: Sequence[str], quality_root: Path) -> int:
-    """Compare two replay folders and render the gallery; return 1 when any change is found."""
+    """Compare two replay folders and render the gallery; return 1 when any change or mismatched event is found."""
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
         prog="python -m scripts.subtitle_quality compare",
         description=(
@@ -815,7 +916,8 @@ def main(argv: Sequence[str], quality_root: Path) -> int:
         shutil.rmtree(out / _WORK_NAME, ignore_errors=True)
     changes: int = sum(case.kind != KIND_HARD for case in selection.cases)
     print(
-        f"cases {changes}  hard {len(selection.cases) - changes}  shown {len(shown)}  skipped {len(selection.skipped)}"
+        f"cases {changes}  hard {len(selection.cases) - changes}  shown {len(shown)}  "
+        f"mismatched {len(selection.mismatches)}  skipped {len(selection.skipped)}"
     )
     print(f"gallery {out / INDEX_NAME}", file=sys.stderr)
-    return 1 if changes else 0
+    return 1 if changes or selection.mismatches else 0
