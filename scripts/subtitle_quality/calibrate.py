@@ -30,7 +30,7 @@ from anishift.utils.logger import LoggerMode, setup_mode
 from anishift.utils.logger.config import FileConfig
 from scripts.subtitle_quality import metrics
 from scripts.subtitle_quality.episode import FONTS_NAME, OUTPUT_NAME, SOURCE_NAME, pair_fonts, work_dir
-from scripts.subtitle_quality.render import PAD_FRACTION, measure_boxes, prepare_fonts
+from scripts.subtitle_quality.render import PAD_FRACTION, measure_boxes, prepare_fonts, wrap_breaks
 from scripts.subtitle_quality.replay import REPLAY_ROOTS, pair_dirs
 
 if TYPE_CHECKING:
@@ -67,9 +67,6 @@ WIDTH_P99_LIMIT: Final[float] = 4.0
 HEIGHT_P90_LIMIT: Final[float] = 5.0
 """Largest allowed 90th percentile of the height error in percent."""
 
-WRAP_BORDERLINE: Final[float] = 1.0
-"""Distance in percent between a line's ink and the wrap limit within which the measurement cannot decide."""
-
 CONTROL_MARGIN: Final[float] = 0.25
 """Share of the script width given to each side margin of a margin control."""
 
@@ -88,6 +85,25 @@ SUMMARY_NAME: Final[str] = "summary.txt"
 PERCENTILES: Final[tuple[float, ...]] = (0.5, 0.9, 0.99)
 """Error percentiles reported for every group."""
 
+VERDICTS: Final[tuple[str, ...]] = ("agree", "disagree", "unresolved")
+"""Outcomes of comparing the automatic line breaks of a sample with the ones libass logged."""
+
+KNOWN_WRAPS: Final[tuple[tuple[str, str, str, str], ...]] = (
+    ("corpus-pairs/grand-blue-s2-01", "pl", "Disclaimer", "Niniejsze dzieło jest fikcją"),
+    ("corpus-pairs/grand-blue-s2-02", "pl", "Disclaimer", "Niniejszy utwór jest fikcją"),
+    ("corpus-pairs/grand-blue-s2-04", "pl", "Disclaimer", "Niniejsze dzieło jest fikcją"),
+    ("corpus-pairs/grand-blue-s2-05", "pl", "Disclaimer", "Niniejszy utwór jest fikcją"),
+    ("corpus-pairs/grand-blue-s2-06", "pl", "Disclaimer", "Niniejszy utwór jest fikcją"),
+    ("corpus-pairs/grand-blue-s2-07", "pl", "Disclaimer", "Niniejsze dzieło jest fikcją"),
+    ("corpus-pairs/grand-blue-s2-08", "pl", "Disclaimer", "Niniejsze dzieło jest fikcją"),
+    ("corpus-pairs/grand-blue-s2-09", "pl", "Disclaimer", "Niniejsze dzieło jest fikcją"),
+    ("corpus-pairs/grand-blue-s2-10", "pl", "boxed", "Metodologia powiększania biustu"),
+    ("corpus-pairs/grand-blue-s2-11", "pl", "Disclaimer", "Niniejsze dzieło jest fikcją"),
+    ("corpus-pairs/grand-blue-s2-12", "en", "handwritten", "As our smart viewers have probably figured"),
+    ("corpus-pairs/grand-blue-s2-12", "pl", "Disclaimer", "Niniejsze dzieło jest fikcją"),
+)
+"""The twelve automatic wraps libass drew in the measurement research: pair, language, style and text start."""
+
 _NO_WRAP: Final[str] = r"{\q2}"
 """Override block prepended to a no-wrap control."""
 
@@ -99,14 +115,11 @@ _RE_DYNAMIC: Final[re.Pattern[str]] = re.compile(
 _RE_FADE: Final[re.Pattern[str]] = re.compile(r"\\fad\(\s*([0-9]+)\s*,\s*([0-9]+)\s*\)")
 """Simple fade whose in or out time may keep the event translucent at its midpoint."""
 
-VERDICTS: Final[tuple[str, ...]] = ("agree", "borderline", "disagree")
-"""Outcomes of comparing a line count after wrapping with libass."""
-
 type Case = str
 """Sample case: ``static`` for corpus events, ``no-wrap`` and ``margins`` for the controls."""
 
 type Verdict = str
-"""Line count outcome, one of ``VERDICTS``."""
+"""Line break outcome, one of ``VERDICTS``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +135,7 @@ class Sample:
 
 @dataclass(frozen=True, slots=True)
 class Row:
-    """Measured and libass-rendered extent of one sample in script pixels."""
+    """Measured and libass-rendered extent and automatic line breaks of one sample."""
 
     pair: str
     lang: str
@@ -131,8 +144,8 @@ class Row:
     style: str
     text: str
     status: str
-    lines: int
-    wrapped: bool
+    breaks: int
+    libass_breaks: int | None
     wrap_slack: float
     estimate: tuple[float, float, float, float] | None
     libass: Box | None
@@ -161,23 +174,30 @@ class Row:
         return _error(self.estimate, self.libass, horizontal=False)
 
     @property
-    def libass_lines(self) -> int:
-        """Return the line count libass drew, read from how far its height differs from the estimate's."""
-        if self.estimate is None or self.libass is None or self.estimate[3] <= self.estimate[1]:
-            return self.lines
-        height: float = self.estimate[3] - self.estimate[1]
-        return self.lines + round((self.libass[3] - self.libass[1] - height) / (height / self.lines))
+    def verdict(self) -> Verdict:
+        """Compare the automatic line breaks the layout predicts with the ones libass logged."""
+        if self.libass_breaks is None:
+            return "unresolved"
+        return "agree" if self.libass_breaks == self.breaks else "disagree"
 
 
 @dataclass(frozen=True, slots=True)
 class Job:
-    """Samples of one pair language rendered by one libass run."""
+    """Samples of one pair language rendered by libass."""
 
     directory: Path
     lang: str
     subs: SSAFile
     profile: RenderProfile
     samples: tuple[Sample, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Gate:
+    """One calibration requirement with what was measured."""
+
+    name: str
+    passed: bool
 
 
 # ── Sampling ──────────────────────────────────────────────────────────────────
@@ -204,10 +224,18 @@ def spaced[T](items: Sequence[T], limit: int) -> list[T]:
     return [items[int(number * step)] for number in range(limit)]
 
 
+def is_known_wrap(pair: str, lang: str, style: str, text: str) -> bool:
+    """Tell whether an event is one of the automatic wraps in ``KNOWN_WRAPS``."""
+    return any(
+        (pair, lang, style) == (known_pair, known_lang, known_style) and text.startswith(prefix)
+        for known_pair, known_lang, known_style, prefix in KNOWN_WRAPS
+    )
+
+
 def sample_pair(
     pair: str, source: SSAFile, output: SSAFile, profiles: tuple[RenderProfile, RenderProfile]
 ) -> list[Sample]:
-    """Pick static paired events like the measurement research, plus every pair the layout wraps automatically."""
+    """Pick static paired events like the measurement research, plus every predicted or known automatic wrap."""
     originals: list[SSAEvent] = metrics.dialogue(source)
     targets: list[SSAEvent] = metrics.dialogue(output)
     verdicts: dict[str, Category] = metrics.style_verdicts(source)
@@ -230,7 +258,7 @@ def sample_pair(
         (kind, events)
         for kind, candidates in chosen.items()
         for events in candidates
-        if id(events) not in taken and _wraps(events, profiles)
+        if id(events) not in taken and _wanted(pair, events, profiles)
     )
     return [
         Sample(pair, lang, kind, "static", event)
@@ -257,8 +285,11 @@ def controls(samples: Sequence[Sample], profile: RenderProfile) -> list[Sample]:
     return [*no_wrap, *margins]
 
 
-def _wraps(events: tuple[SSAEvent, SSAEvent], profiles: tuple[RenderProfile, RenderProfile]) -> bool:
-    return any(_wrapped(event, profile) for event, profile in zip(events, profiles, strict=True))
+def _wanted(pair: str, events: tuple[SSAEvent, SSAEvent], profiles: tuple[RenderProfile, RenderProfile]) -> bool:
+    return any(
+        _wrapped(event, profile) or is_known_wrap(pair, lang, event.style, visible_text(event.text))
+        for lang, event, profile in zip(("en", "pl"), events, profiles, strict=True)
+    )
 
 
 def _wrapped(event: SSAEvent, profile: RenderProfile) -> bool:
@@ -303,25 +334,27 @@ def pair_jobs(pair: str, directory: Path) -> list[Job]:
 
 
 def run_job(job: Job, work_root: Path) -> list[Row]:
-    """Render every sample of a job with libass and measure it with the layout geometry."""
+    """Render every sample of a job with libass, count its logged line breaks and measure it with the geometry."""
     work: Path = work_dir(work_root, job.directory) / job.lang
     work.mkdir(parents=True, exist_ok=True)
     prepare_fonts(job.directory, None, work)
     size: Size = metrics.play_size(job.subs)
-    boxes, _ = measure_boxes(job.subs, [sample.event for sample in job.samples], size, work, "calibrate")
-    return [_row(sample, box, job.profile, size) for sample, box in zip(job.samples, boxes, strict=True)]
+    events: list[SSAEvent] = [sample.event for sample in job.samples]
+    boxes, _ = measure_boxes(job.subs, events, size, work, "calibrate")
+    breaks: list[int | None] = wrap_breaks(job.subs, events, size, work, "wraps")
+    return [
+        _row(sample, (box, libass_breaks), job.profile, size)
+        for sample, box, libass_breaks in zip(job.samples, boxes, breaks, strict=True)
+    ]
 
 
-def _row(sample: Sample, box: Box | None, profile: RenderProfile, size: Size) -> Row:
+def _row(sample: Sample, rendered: tuple[Box | None, int | None], profile: RenderProfile, size: Size) -> Row:
     event: SSAEvent = sample.event
-    wrapped: str = wrap_text(event, event.text, profile)
-    measured: TextBox = measure_text(event, wrapped, profile)
+    box, libass_breaks = rendered
+    wrapped: TextBox = measure_text(event, wrap_text(event, event.text, profile), profile)
     unwrapped: TextBox = measure_text(event, event.text, profile)
     limit: float = available_width(event, profile)
     rects: tuple[Rect, ...] = screen_rects(event, event.text, profile)
-    estimate: tuple[float, float, float, float] | None = None
-    if rects:
-        estimate = (rects[0].left, rects[0].top, rects[0].right, rects[0].bottom)
     return Row(
         pair=sample.pair,
         lang=sample.lang,
@@ -329,14 +362,14 @@ def _row(sample: Sample, box: Box | None, profile: RenderProfile, size: Size) ->
         case=sample.case,
         style=event.style,
         text=visible_text(event.text)[:80],
-        status=measured.status,
-        lines=max(1, len(measured.line_widths)),
-        wrapped=wrapped != event.text,
+        status=wrapped.status,
+        breaks=len(wrapped.line_widths) - len(unwrapped.line_widths),
+        libass_breaks=libass_breaks,
         wrap_slack=min(
             (abs(width - unwrapped.edge - limit) / limit * 100 for width in unwrapped.line_widths if width),
             default=float("inf"),
         ),
-        estimate=estimate,
+        estimate=(rects[0].left, rects[0].top, rects[0].right, rects[0].bottom) if rects else None,
         libass=box,
         clipped=box is not None and _clipped(box, size),
     )
@@ -358,105 +391,100 @@ def _error(estimate: tuple[float, float, float, float] | None, box: Box | None, 
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 
-@dataclass(frozen=True, slots=True)
-class Gate:
-    """One calibration threshold with the measured value."""
-
-    name: str
-    value: float
-    limit: float
-
-    @property
-    def passed(self) -> bool:
-        """Tell whether the measured value stays within the limit."""
-        return self.value <= self.limit
-
-
 def gates(rows: Sequence[Row]) -> list[Gate]:
-    """Return the width and height gates over exact, unwrapped static samples."""
-    exact: list[Row] = [row for row in rows if _gated(row)]
-    wide: list[float] = [row.width_error for row in exact if row.libass_width >= GATE_MIN_WIDTH]
-    heights: list[float] = [row.height_error for row in exact]
+    """Return every calibration requirement: errors of static samples, libass line breaks and required cases."""
+    static: list[Row] = [row for row in rows if row.case == "static" and row.comparable]
+    wide: list[float] = [row.width_error for row in static if row.libass_width >= GATE_MIN_WIDTH]
+    heights: list[float] = [row.height_error for row in static]
+    counts: Counter[Verdict] = Counter(row.verdict for row in rows)
+    missing: list[str] = missing_known_wraps(rows)
+    present: Counter[Case] = Counter(row.case for row in rows)
     return [
+        _percentile_gate(f"width p90, static samples >= {GATE_MIN_WIDTH} px", wide, 0.9, WIDTH_P90_LIMIT),
+        _percentile_gate(f"width p99, static samples >= {GATE_MIN_WIDTH} px", wide, 0.99, WIDTH_P99_LIMIT),
+        _percentile_gate("height p90, static samples", heights, 0.9, HEIGHT_P90_LIMIT),
         Gate(
-            f"width p90 (static exact >= {GATE_MIN_WIDTH} px, n={len(wide)})",
-            metrics.percentile(wide, 0.9),
-            WIDTH_P90_LIMIT,
+            f"line breaks equal to libass on every sample: agree {counts['agree']} of {len(rows)}, "
+            f"disagree {counts['disagree']}, unresolved {counts['unresolved']}",
+            bool(rows) and counts["agree"] == len(rows),
         ),
+        Gate(f"known automatic wraps covered and agreeing, missing or failing: {missing or 'none'}", not missing),
         Gate(
-            f"width p99 (static exact >= {GATE_MIN_WIDTH} px, n={len(wide)})",
-            metrics.percentile(wide, 0.99),
-            WIDTH_P99_LIMIT,
+            f"wrap controls present: no-wrap {present['no-wrap']}, margins {present['margins']}",
+            present["no-wrap"] > 0 and present["margins"] > 0,
         ),
-        Gate(f"height p90 (static exact, n={len(heights)})", metrics.percentile(heights, 0.9), HEIGHT_P90_LIMIT),
     ]
 
 
-def wrap_verdicts(rows: Sequence[Row]) -> list[tuple[Row, Verdict]]:
-    """Return every comparable wrapped or control sample with how its line count compares with libass."""
-    checked: list[Row] = [row for row in rows if row.comparable and (row.wrapped or row.case != "static")]
-    return [(row, _verdict(row)) for row in checked]
-
-
-def wraps_pass(rows: Sequence[Row]) -> bool:
-    """Tell whether every line count matches libass or differs only for a line at the wrap limit."""
-    return all(verdict != "disagree" for _, verdict in wrap_verdicts(rows))
-
-
-def _verdict(row: Row) -> Verdict:
-    if row.libass_lines == row.lines:
-        return "agree"
-    return "borderline" if row.wrap_slack <= WRAP_BORDERLINE else "disagree"
+def missing_known_wraps(rows: Sequence[Row]) -> list[str]:
+    """Return the known wraps of the calibrated pairs that are absent, not wrapped by libass or not agreeing."""
+    pairs: set[str] = {row.pair for row in rows}
+    missing: list[str] = []
+    for pair, lang, style, prefix in KNOWN_WRAPS:
+        found: list[Row] = [
+            row
+            for row in rows
+            if row.case == "static"
+            and (row.pair, row.lang, row.style) == (pair, lang, style)
+            and row.text.startswith(prefix)
+        ]
+        if pair in pairs and not any(row.verdict == "agree" and row.libass_breaks for row in found):
+            missing.append(f"{pair} {lang} {style}")
+    return missing
 
 
 def summary(rows: Sequence[Row], elapsed: dict[str, float]) -> str:
-    """Return the calibration report: groups, percentiles, gates, wrap agreement and timing."""
+    """Return the calibration report: groups, percentiles, gates, line breaks and timing."""
     comparable: list[Row] = [row for row in rows if row.comparable]
+    static: list[Row] = [row for row in comparable if row.case == "static"]
     groups: dict[str, list[Row]] = {
-        "static exact, unwrapped": [row for row in comparable if _gated(row)],
-        f"static exact, unwrapped, >= {GATE_MIN_WIDTH} px": [
-            row for row in comparable if _gated(row) and row.libass_width >= GATE_MIN_WIDTH
-        ],
-        "static approximate (substitute face, kerning, outline scale)": [
-            row for row in comparable if row.case == "static" and row.status != "exact" and not row.wrapped
-        ],
-        "static wrapped": [row for row in comparable if row.case == "static" and row.wrapped],
-        "control no-wrap": [row for row in comparable if row.case == "no-wrap"],
-        "control margins": [row for row in comparable if row.case == "margins"],
+        "static (gate)": static,
+        f"static >= {GATE_MIN_WIDTH} px (gate)": [row for row in static if row.libass_width >= GATE_MIN_WIDTH],
+        "diagnostic: static exact, unwrapped": [row for row in static if row.status == "exact" and not row.breaks],
+        "diagnostic: static approximate": [row for row in static if row.status != "exact"],
+        "diagnostic: static wrapped": [row for row in static if row.breaks or row.libass_breaks],
+        "diagnostic: control no-wrap": [row for row in comparable if row.case == "no-wrap"],
+        "diagnostic: control margins": [row for row in comparable if row.case == "margins"],
     }
     lines: list[str] = [
         f"samples {len(rows)}  comparable {len(comparable)}  "
         f"pairs {len({row.pair for row in rows})}  clipped {sum(row.clipped for row in rows)}",
         "",
         "group | n | width p50/p90/p99 % | height p50/p90/p99 %",
+        *(_group_line(name, group) for name, group in groups.items()),
+        "",
+        "gates:",
+        *(f"  {'OK  ' if gate.passed else 'FAIL'} {gate.name}" for gate in gates(rows)),
+        "",
+        "line breaks against the libass log, by case:",
     ]
-    lines.extend(_group_line(name, group) for name, group in groups.items())
-    lines.extend(["", "gates:"])
-    lines.extend(
-        f"  {'OK  ' if gate.passed else 'FAIL'} {gate.name}: {gate.value:.2f} <= {gate.limit}" for gate in gates(rows)
-    )
-    verdicts: list[tuple[Row, Verdict]] = wrap_verdicts(rows)
-    lines.extend(["", f"line count after wrapping ({'OK' if wraps_pass(rows) else 'FAIL'}):"])
     for case in ("static", "no-wrap", "margins"):
-        counts: Counter[Verdict] = Counter(verdict for row, verdict in verdicts if row.case == case)
+        counts: Counter[Verdict] = Counter(row.verdict for row in rows if row.case == case)
         lines.append(f"  {case}: " + ", ".join(f"{verdict} {counts[verdict]}" for verdict in VERDICTS))
-    lines.extend(["", f"line counts that differ (borderline: ink within {WRAP_BORDERLINE}% of the wrap limit):"])
-    lines.extend(_wrap_line(row, verdict) for row, verdict in verdicts if verdict != "agree")
-    lines.extend(["", "automatic wraps in the corpus:"])
-    lines.extend(_wrap_line(row, verdict) for row, verdict in verdicts if row.case == "static")
+    lines.extend(["", "samples whose line breaks differ from libass or could not be read:"])
+    lines.extend(_wrap_line(row) for row in rows if row.verdict != "agree")
+    lines.extend(["", "known automatic wraps:"])
+    lines.extend(_wrap_line(row) for row in rows if row.case == "static" and _known(row))
+    lines.extend(["", "automatic wraps in the corpus samples:"])
+    lines.extend(_wrap_line(row) for row in rows if row.case == "static" and (row.breaks or row.libass_breaks))
     lines.extend(["", "timing: " + ", ".join(f"{name} {seconds:.1f} s" for name, seconds in elapsed.items())])
     return "\n".join(lines)
 
 
-def _wrap_line(row: Row, verdict: Verdict) -> str:
+def _known(row: Row) -> bool:
+    return is_known_wrap(row.pair, row.lang, row.style, row.text)
+
+
+def _percentile_gate(name: str, errors: Sequence[float], share: float, limit: float) -> Gate:
+    value: float = metrics.percentile(errors, share)
+    return Gate(f"{name}: {value:.2f}% <= {limit}% (n={len(errors)})", bool(errors) and value <= limit)
+
+
+def _wrap_line(row: Row) -> str:
     return (
-        f"  {verdict:10} {row.case:8} {row.pair[:48]} {row.lang} {row.style}: {row.lines} vs libass "
-        f"{row.libass_lines}, width {row.width_error:.1f}%, slack {row.wrap_slack:.2f}%  {row.text[:40]}"
+        f"  {row.verdict:10} {row.case:8} {row.pair[:48]} {row.lang} {row.style}: breaks {row.breaks} vs libass "
+        f"{row.libass_breaks}, width {row.width_error:.1f}%, slack {row.wrap_slack:.2f}%  {row.text[:40]}"
     )
-
-
-def _gated(row: Row) -> bool:
-    return row.comparable and row.case == "static" and row.status == "exact" and not row.wrapped
 
 
 def _group_line(name: str, rows: Sequence[Row]) -> str:
@@ -493,13 +521,13 @@ def calibrate(roots: Sequence[Path], out: Path, jobs: int) -> tuple[list[Row], s
 
 
 def main(argv: Sequence[str], quality_root: Path) -> int:
-    """Run the calibration and print its summary; return 1 when a gate or a wrap line count fails."""
+    """Run the calibration and print its summary; return 1 when any gate fails."""
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
         prog="python -m scripts.subtitle_quality calibrate",
         description=(
             "Render static paired events of every pair folder with libass and compare their boxes with the layout "
-            "measurement: width and height errors, gates, and line counts of automatic wrapping with no-wrap and "
-            "margin controls."
+            "measurement, and compare the automatic line breaks libass logs for every sample, the no-wrap and "
+            "margin controls and the known wraps of the research with the ones the layout predicts."
         ),
     )
     parser.add_argument("roots", nargs="*", type=Path, help="pair folders or roots searched recursively")
@@ -510,6 +538,5 @@ def main(argv: Sequence[str], quality_root: Path) -> int:
     roots: list[Path] = list(args.roots) or [quality_root / folder for folder in REPLAY_ROOTS]
     rows, report = calibrate(roots, args.out, args.jobs)
     print(report)
-    failed: bool = any(not gate.passed for gate in gates(rows)) or not wraps_pass(rows)
     print(f"report {args.out / SUMMARY_NAME}", file=sys.stderr)
-    return 1 if failed else 0
+    return 0 if all(gate.passed for gate in gates(rows)) else 1

@@ -55,13 +55,18 @@ _ROW = calibrate.Row(
     style="Default",
     text="text",
     status="exact",
-    lines=1,
-    wrapped=False,
+    breaks=0,
+    libass_breaks=0,
     wrap_slack=10.0,
     estimate=(100.0, 300.0, 300.0, 330.0),
     libass=(100, 300, 300, 330),
     clipped=False,
 )
+_CONTROLS = (replace(_ROW, case="no-wrap"), replace(_ROW, case="margins"))
+
+
+def _passed(rows: list[calibrate.Row]) -> list[bool]:
+    return [gate.passed for gate in calibrate.gates(rows)]
 
 
 @pytest.mark.unit
@@ -100,14 +105,14 @@ def test_spaced_spreads_the_kept_items_evenly() -> None:
 
 
 @pytest.mark.unit
-def test_row_errors_are_relative_to_the_libass_box_and_lines_follow_the_height_difference() -> None:
-    row = replace(_ROW, estimate=(100.0, 300.0, 303.0, 330.0), libass=(100, 300, 300, 330), lines=1)
-    two_lines = replace(_ROW, estimate=(100.0, 300.0, 300.0, 330.0), libass=(100, 286, 300, 344), lines=1)
+def test_row_errors_are_relative_to_the_libass_box_and_breaks_compare_with_the_libass_log() -> None:
+    row = replace(_ROW, estimate=(100.0, 300.0, 303.0, 330.0), libass=(100, 300, 300, 330))
 
     assert row.width_error == pytest.approx(1.5)
     assert row.height_error == 0.0
-    assert row.libass_lines == 1
-    assert two_lines.libass_lines == 2
+    assert replace(_ROW, breaks=2, libass_breaks=2).verdict == "agree"
+    assert replace(_ROW, breaks=1, libass_breaks=0).verdict == "disagree"
+    assert replace(_ROW, breaks=0, libass_breaks=None).verdict == "unresolved"
 
 
 @pytest.mark.unit
@@ -119,30 +124,39 @@ def test_row_is_comparable_only_with_a_whole_large_enough_libass_box() -> None:
 
 
 @pytest.mark.unit
-def test_gates_check_width_on_wide_exact_static_samples_and_height_on_all_exact_ones() -> None:
+def test_gates_check_width_on_every_wide_static_sample_and_height_on_every_static_one() -> None:
     accurate = [replace(_ROW, estimate=(100.0, 300.0, 300.5, 330.5)) for _ in range(20)]
     narrow_miss = [replace(_ROW, estimate=(100.0, 300.0, 160.0, 340.0), libass=(100, 300, 150, 330)) for _ in range(5)]
-    approximate_miss = [replace(_ROW, status="approximate", estimate=(100.0, 300.0, 400.0, 360.0)) for _ in range(5)]
+    approximate_miss = [replace(_ROW, status="approximate", estimate=(100.0, 300.0, 330.0, 330.0)) for _ in range(5)]
+    control_miss = [replace(_ROW, case="margins", estimate=(100.0, 300.0, 400.0, 400.0)) for _ in range(5)]
 
-    passing = calibrate.gates([*accurate, *narrow_miss, *approximate_miss])
-    failing = calibrate.gates([*accurate, *(replace(_ROW, estimate=(100.0, 300.0, 310.0, 340.0)) for _ in range(5))])
-
-    assert [gate.passed for gate in passing] == [True, True, False]
-    assert [gate.passed for gate in failing] == [False, False, False]
+    assert _passed([*accurate, *narrow_miss, *_CONTROLS]) == [True, True, False, True, True, True]
+    assert _passed([*accurate, *approximate_miss, *_CONTROLS]) == [False, False, True, True, True, True]
+    assert _passed([*accurate, *control_miss, *_CONTROLS]) == [True, True, True, True, True, True]
 
 
 @pytest.mark.unit
-def test_wrap_verdicts_accept_a_different_line_count_only_at_the_wrap_limit() -> None:
-    agree = replace(_ROW, wrapped=True, lines=2, estimate=(100.0, 300.0, 300.0, 360.0), libass=(100, 300, 300, 360))
-    borderline = replace(_ROW, case="margins", lines=2, wrap_slack=0.3, estimate=(0.0, 300.0, 300.0, 360.0))
-    wrong = replace(borderline, wrap_slack=5.0)
-    unwrapped = _ROW
+def test_gates_fail_without_samples_controls_or_on_any_line_break_not_matching_libass() -> None:
+    agreeing = [_ROW, *_CONTROLS]
 
-    verdicts = calibrate.wrap_verdicts([agree, borderline, wrong, unwrapped])
+    assert _passed([]) == [False, False, False, False, True, False]
+    assert _passed([_ROW]) == [True, True, True, True, True, False]
+    assert _passed([*agreeing, replace(_ROW, breaks=1, wrap_slack=0.1)])[3] is False
+    assert _passed([*agreeing, replace(_ROW, case="margins", libass_breaks=None)])[3] is False
+    assert all(_passed(agreeing))
 
-    assert [verdict for _, verdict in verdicts] == ["agree", "borderline", "disagree"]
-    assert calibrate.wraps_pass([agree, borderline])
-    assert not calibrate.wraps_pass([agree, wrong])
+
+@pytest.mark.unit
+def test_known_wraps_must_be_sampled_wrapped_by_libass_and_agree_when_their_pair_is_calibrated() -> None:
+    pair, lang, style, prefix = calibrate.KNOWN_WRAPS[0]
+    other = replace(_ROW, pair=pair, text="Another line")
+    known = replace(_ROW, pair=pair, lang=lang, style=style, text=prefix + "...", breaks=12, libass_breaks=12)
+
+    assert calibrate.missing_known_wraps([_ROW]) == []
+    assert calibrate.missing_known_wraps([other]) == [f"{pair} {lang} {style}"]
+    assert calibrate.missing_known_wraps([other, replace(known, breaks=11)]) == [f"{pair} {lang} {style}"]
+    assert calibrate.missing_known_wraps([other, known]) == []
+    assert calibrate.is_known_wrap(pair, lang, style, prefix + " and more")
 
 
 @pytest.mark.integration
@@ -164,7 +178,9 @@ def test_calibrate_renders_static_samples_and_wrap_controls_and_writes_the_repor
     assert {row.case for row in rows} == {"static", "no-wrap", "margins"}
     assert all(row.comparable for row in rows)
     assert max(row.width_error for row in static) < 3
-    assert calibrate.wraps_pass(rows)
+    assert {row.verdict for row in rows} == {"agree"}
+    assert any(row.libass_breaks for row in static)
+    assert [gate.passed for gate in calibrate.gates(rows)][3:] == [True, True, True]
     assert "gates:" in report
     assert (tmp_path / "out" / calibrate.SUMMARY_NAME).read_text(encoding="utf-8").startswith("samples ")
     assert len(json.loads((tmp_path / "out" / calibrate.ROWS_NAME).read_text(encoding="utf-8"))) == len(rows)
