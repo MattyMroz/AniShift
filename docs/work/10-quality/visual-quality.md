@@ -148,7 +148,7 @@ Wymagania:
 
 ## 8. Wypalanie do MP4
 
-Wypalony napis musi wyglądać jak w MKV, w tych samych czcionkach. Fakt z 18.10: wypalanie przekazuje FFmpeg plik ASS bez katalogu czcionek, więc szyldy wychodzą Arialem ([fonts.md](research/fonts.md)). To błąd do naprawy razem z czcionką dialogów, bo oba wymagają katalogu czcionek odcinka.
+Wypalony napis musi wyglądać jak w MKV, w tych samych czcionkach. Wyjątek: litery brakujące w czcionce szyldu FFmpeg dorysowuje Arialem, a mpv właściciela Officiną, więc same te litery mogą się różnić. Fakt z 18.10: wypalanie przekazuje FFmpeg plik ASS bez katalogu czcionek, więc szyldy wychodzą Arialem ([fonts.md](research/fonts.md)). To błąd do naprawy razem z czcionką dialogów, bo oba wymagają katalogu czcionek odcinka.
 
 ## 9. Czego program nie widzi i jak to zastępujemy
 

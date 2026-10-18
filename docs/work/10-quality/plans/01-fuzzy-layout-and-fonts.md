@@ -283,7 +283,13 @@ class DialogueFont:
 def restyle_dialogue(subs: SSAFile, decisions: Sequence[Decision], font: DialogueFont, report: LayoutReport) -> SSAFile
 ```
 
-`Decision`, `SubtitleSplit`, `split_subtitles`, `marked_text`, `replace_visible_text`, `restore_markers` zachowują dzisiejsze sygnatury publiczne.
+`Decision`, `SubtitleSplit`, `split_subtitles`, `restore_markers` zachowują dzisiejsze sygnatury publiczne. F0b dodaje styl bazowy do dwóch operacji C i przekazuje go we wszystkich wywołaniach (handler tłumaczenia, writer, normalizacja):
+
+```python
+# anishift/services/subtitles/text.py  (F0b: parametr i przekazanie; U3: użycie)
+def marked_text(text: str, style: SSAStyle | None = None) -> str
+def replace_visible_text(text: str, new_text: str, style: SSAStyle | None = None) -> str
+```
 
 ### Edge cases i failures
 
@@ -308,25 +314,25 @@ Każda jednostka: osobny worktree i gałąź od aktualnego `work/quality/08-fuzz
 
 ### Fala 0 (równolegle)
 
-**F0a — przebudowa mechaniczna** (`work/quality/09-restructure`): `uv add fonttools`; przeniesienie `linebreak.py` i podział `layout_config.py` (D9) z testami; `scripts/quality` → `scripts/subtitle_quality` z testami i odwołaniami w aktywnych dokumentach; usunięcie martwego i zdublowanego kodu z D10, które nie zależy od nowych modułów (grafemy, `insertions`, `_RE_DRAW*`, import granic, `LegacySubtitleAdapter`, `preview_styles`); `fuzzy.py` z testami. Grafemy: definicja `\X` różni się od własnej dla rzadkich klastrów; dopuszczalne, jeśli replay korpusu jest identyczny (sprawdza F0b) — odchylenie zapisać. **Gate:** bramki zielone.
+**F0a — przebudowa mechaniczna** (`work/quality/09-restructure`): **pierwszy commit** to `scripts/quality/replay.py` z adapterem do dzisiejszej ścieżki (`split_subtitles` → `translation_verses` → `write_translated`) i parowaniem `pair_events`; uruchomiony na niezmienionym kodzie zapisuje katalog „baseline” w `workspace/.quality/experiments/replay/baseline/`. Dalej: `uv add fonttools`; przeniesienie `linebreak.py` i podział `layout_config.py` (D9) z testami; `scripts/quality` → `scripts/subtitle_quality` z testami i odwołaniami w aktywnych dokumentach; usunięcie martwego i zdublowanego kodu z D10, które nie zależy od nowych modułów (grafemy, `insertions`, `_RE_DRAW*`, import granic, `LegacySubtitleAdapter`, `preview_styles`); `fuzzy.py` z testami. Grafemy: definicja `\X` różni się od własnej dla rzadkich klastrów; dopuszczalne, jeśli replay korpusu jest identyczny — odchylenie zapisać. **Gate:** bramki zielone; replay po F0a bajtowo identyczny z „baseline” dla wszystkich sparowanych par.
 
 **U1a — domena czcionek** (`work/quality/10-fonts`, tylko nowe pliki): `services/fonts/{types,index,metrics,__init__,AGENTS.md}` wg D1/D2, `tests/services/fonts/` na plikach z `workspace/.quality/library/*/fonts`, `corpus-pairs/*/fonts` i folderu mpv właściciela (testy pomijane, gdy danych brak — wzorzec z `tests/AGENTS.md`). **Gate:** bramki zielone, testy odtwarzają przypadki z logów libass (Gandhi Sans → Arial dla `ż`, Comic Sans warianty, Officina „PL Book” → Bold).
 
 ### Fala 0b (po scaleniu F0a i U1a)
 
-**F0b — zamknięty pion** (`work/quality/11-contracts`): kontrakty z sekcji wyżej z implementacją zachowującą wynik; `layout_translated` z dzisiejszym układem przeniesionym z `translation_verses`; `translation_handler` oddaje nierozbity przekład; `extract_attachments` w `extraction` (narzędzie woła produkcję); opcjonalne wejście kontenera w planerze dla TRANSLATE i NORMALIZE (D3) z budową `FontSources` w handlerze (na razie nieużywany przez pomiar Arialem); `scripts/subtitle_quality/replay.py`. Replay: dla każdej pary `pair_events` (reuse) paruje zdarzenia EN↔PL; przekład = widoczny tekst sparowanego PL bez starych `\N` (wiersze złączone spacją); niesparowane zdarzenia zostają po angielsku i są wyłączone z porównań; jeden stały punkt wejścia `layout_translated`. **Pierwszy commit F0b** to replay z adapterem do dzisiejszej ścieżki (`translation_verses` + `write_translated`) — uruchomiony na kodzie sprzed zmian daje katalog „baseline”. **Gate:** bramki zielone; replay po F0b bajtowo identyczny z „baseline” dla wszystkich sparowanych par; lista par pominiętych z powodem.
+**F0b — zamknięty pion** (`work/quality/11-contracts`): kontrakty z sekcji wyżej z implementacją zachowującą wynik; `layout_translated` z dzisiejszym układem przeniesionym z `translation_verses`; `translation_handler` oddaje nierozbity przekład; `extract_attachments` w `extraction` (narzędzie woła produkcję); opcjonalne wejście kontenera w planerze dla TRANSLATE i NORMALIZE (D3) z budową `FontSources` w handlerze (na razie nieużywany przez pomiar Arialem); parametr stylu bazowego w `marked_text` i `replace_visible_text` z przekazaniem we wszystkich wywołaniach (bez zmiany wyniku); przełączenie replay na stały punkt wejścia `layout_translated`. Replay (od F0a): `pair_events` (reuse) paruje zdarzenia EN↔PL; przekład = widoczny tekst sparowanego PL bez starych `\N` (wiersze złączone spacją); niesparowane zdarzenia zostają po angielsku i są wyłączone z porównań; wejścia zamrożone w pliku mapowania obok „baseline”. **Gate:** bramki zielone; replay po F0b bajtowo identyczny z „baseline”; lista par pominiętych z powodem.
 
-**U3 — style, wariant minimalny** (`work/quality/12-style-ranges`, równolegle z F0b; tylko `text.py`, `text/markers.py` gdyby trzeba, testy): aneks v4 C pkt 1–2. Dowód C: testy jednostkowe z przypadków split-and-styles H4 (T3, komentarze) oraz zapisane odpowiedzi LLM ze znacznikami z `workspace/.quality/experiments/styles/` (bez nowych wywołań). Replay nie jest dowodem C. **Gate:** bramki; liczby H4 odtworzone skryptem na korpusie (≥ 440 akcentów T3 odzyskanych, 0 zakresów z samych komentarzy).
+**U3 — style, wariant minimalny** (`work/quality/12-style-ranges`, **po scaleniu F0b**, w fali A; tylko wnętrze `text.py`, testy): aneks v4 C pkt 1–2. Dowód C: testy jednostkowe z przypadków split-and-styles H4 (T3, komentarze) oraz zapisane odpowiedzi LLM ze znacznikami z `workspace/.quality/experiments/styles/` (bez nowych wywołań). Replay nie jest dowodem C. **Gate:** bramki; liczby H4 odtworzone skryptem na korpusie (≥ 440 akcentów T3 odzyskanych, 0 zakresów z samych komentarzy).
 
-### Fala A (po scaleniu F0b i U3)
+### Fala A (po scaleniu F0b; U3 równolegle z U1b, U2, U7)
 
 | Jednostka | Cel | Write scope | Gate |
 | --- | --- | --- | --- |
 | **U1b Pomiar w geometrii** `13-measurement` | wnętrze `geometry.py` wg D1 na `FontIndex`; `FontSources` → `FontIndex` w `layout_translated`; `scripts/subtitle_quality/calibrate.py` (test regresji wobec `measure_boxes`: szerokość, wysokość, liczba wierszy po zawinięciu, `\q2`, marginesy); przejście narzędzia na moduły aplikacji (D10, render/metrics) | `geometry.py`, `services/fonts/*` (poprawki), `scripts/subtitle_quality/*`, testy | progi z „Warunków końcowych”; czas replay 36 par |
-| **U2 Lektor** `14-lector` | aneks v4 B pkt 1–6: klasyfikator, fallback, deduplikacja między stylami (z mapowaniem przekładów w writerze), opcjonalne wejście źródła w SPLIT (planer, `subtitle_handler`), TTS bez reklasyfikacji SPOKEN_PL | `classifier.py`, `service.py` (split i mapowanie), `planner.py` (SPLIT), `subtitle_handler.py`, `tts_handler.py`, testy | etykiety 425/425; 9 kwestii `Alt` odzyskanych; 0 zdań utraconych; regresja ≥ 0,9586; pliki NC/ED bez tekstu piosenki; replay: zmiany decyzji = lista z `minimal_veto2.json` |
+| **U2 Lektor** `14-lector` | aneks v4 B pkt 1–6: klasyfikator, fallback, deduplikacja między stylami (z mapowaniem przekładów w writerze), opcjonalne wejście źródła w SPLIT (planer, `subtitle_handler`), TTS bez reklasyfikacji SPOKEN_PL | `classifier.py`, `service.py` (split i mapowanie), `planner.py` (SPLIT), `subtitle_handler.py`, `tts_handler.py`, testy | trzy reguły klasyfikatora: lista zmian = `research-split/minimal_veto2.json`; etykiety 425/425; 9 kwestii `Alt` odzyskanych; 0 zdań utraconych; regresja ≥ 0,9586; usunięty fallback: pliki NC/ED, TS i z samymi szyldami mają 0 linii spoken (lista plików z H3); deduplikacja: 26 par z H5 czytanych raz, bez innych zmian |
 | **U7 Galerie** `15-gallery` | `scripts/subtitle_quality/compare.py`: obraz przed/po z dwóch katalogów replay, wybór przypadków (zmiany szerokości, kolizji, cięć, decyzji lektora + lista przypadków trudnych z visual-quality §10.4), powiększenie, podpisy po polsku; reuse `visual-fixes` | `scripts/subtitle_quality/compare.py`, testy | galeria baseline vs baseline = brak różnic; vs F0b = brak różnic |
 
-### Fala B (po scaleniu U1b i U2)
+### Fala B (po scaleniu U1b, U2 i U3)
 
 | Jednostka | Cel | Write scope | Gate |
 | --- | --- | --- | --- |
@@ -383,7 +389,7 @@ Każda jednostka: osobny worktree i gałąź od aktualnego `work/quality/08-fuzz
 | Sprzężenia semantyczne fal, U4↔U5 (wszyscy) | fale 0/0b/A/B/C wg zależności; `split_lines` |
 | Limit 2 instancji (astra, claude) | „Warunek wejścia”: polecenie właściciela 18.10 |
 | Trzy wiersze vs COUNT, przypadek 07 (astra, claude) | ratunek w visual-quality §4 i aneksie LB; pytanie do właściciela |
-| Fallback czyta piosenki, kopie między stylami (astra, sol6, claude) | aneks v4 B pkt 4–5 |
+| Fallback czyta piosenki i szyldy, kopie między stylami (astra, sol6, claude) | aneks v4 B pkt 4 (fallback usunięty) i pkt 5 |
 | Krój zastępczy mpv vs FFmpeg (astra, claude) | Arial w pomiarze, uzasadnienie w visual-quality §9 |
 | Deduplikacja załączników po nazwie (sol6, astra) | sha256 + `--attachment-name` |
 | Ostrzeżenie w panelu (sol6, claude) | walidacja w Ustawieniach + ostrzeżenie planu |

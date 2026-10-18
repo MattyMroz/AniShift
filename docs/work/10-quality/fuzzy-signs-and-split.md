@@ -1,6 +1,6 @@
 # Rozmyte heurystyki szyldów: dopasowanie, podział dialog/szyld, granice stylów — v4
 
-Status: projekt do akceptacji (runda 3.2). Najpierw akceptują agenci, potem właściciel; kod powstaje po obu akceptacjach.
+Status: v4. Właściciel 18.10: implementacja rusza po akceptacji planu 01 i tej specyfikacji przez trzech recenzentów (astra, sol6, claude); decyzje otwarte mają wartości domyślne (rekomendacje przyjęte 18.10), a właściciel akceptuje wynik na galerii przed/po.
 Data: 2026-10-18. Gałąź robocza: `work/quality/07-fuzzy-line-breaks`.
 Dowody: audyt `workspace/.quality/experiments/rigidity-audit/report.md`, galeria i modele w `workspace/.quality/experiments/fuzzy-spec2/`: `cases/index.md`, `model.py` → `model-v31.md`, `model_b.py` → `model_b.json` i `model_b_changes.txt`, `model_b_regression.py` → `model_b_regression.txt`. Historia i ograniczenia dowodów: `fuzzy-spec2/notes.md`; stan v2 w `fuzzy-spec2/v2-snapshot/`.
 Siostra: `fuzzy-line-breaks.md` (v3.1, zaakceptowana). Ten dokument używa jej modułu łamania do cięć wielowierszowych.
@@ -23,14 +23,14 @@ Powód: research [measurement.md](research/measurement.md), [fonts.md](research/
 1. `\balt\b` w nazwach dialogowych (`_RE_DLG`).
 2. `RE_SONG_NAME` w rozpoznaniu stylu piosenki.
 3. Weto linii w stylu DIALOG → SIGN, gdy jednocześnie **etykieta** (brak `[.!?…"»”]`, brak przecinka, brak końcowego myślnika) i **forma** (wersaliki: `rise(udział; 0,6; 0,85) ≥ 0,5`, albo zapis tytułowy z położeniem); linia chroniona (≤ 3 słowa, przy krawędzi, bez położenia) zostaje.
-4. Fallback „nic nie czytane → czytaj wszystko” pomija style piosenek (`_RE_SONG`, `RE_SONG_NAME`), karaoke > 0,3 i rysunki > 0,3.
+4. Fallback „nic nie czytane → czytaj wszystko” jest usunięty: na 427 plikach nie uratował żadnej kwestii, a czytał piosenki (14 plików) i szyldy (3 pliki z samymi szyldami; split-and-styles.md H3). Plik ASS bez linii spoken zostaje bez lektora; writer loguje ostrzeżenie, gdy plik ma zdarzenia `Dialogue`, a żadna linia nie jest spoken.
 5. Kopie tej samej kwestii w różnych stylach (ten sam znormalizowany tekst, start w odległości ≤ 500 ms) są czytane raz.
-6. Decyzje liczymy raz, na źródle: `SPLIT_SUBTITLES` dostaje źródło jako opcjonalne drugie wejście i przenosi decyzje na zdarzenia `Dialogue` `FULL_PL` w tej samej kolejności, sprawdzając tożsamość (czas startu i końca). Brak źródła, SRT bez zgodności albo różnica tożsamości → klasyfikacja `FULL_PL` jak dziś i ostrzeżenie w logu. TTS nie klasyfikuje ponownie `SPOKEN_PL`; dla `FULL_PL` i `SOURCE_SUBTITLES` zostaje klasyfikacja.
+6. Decyzje liczymy raz, na źródle: `SPLIT_SUBTITLES` dostaje źródło jako opcjonalne drugie wejście i przenosi decyzje na zdarzenia `Dialogue` `FULL_PL` w tej samej kolejności, sprawdzając tożsamość na każdej pozycji: start, koniec, warstwa i styl (w `FULL_PL` bez sufiksu klonu stylu dialogów); writer zachowuje kolejność zdarzeń, więc porównanie po pozycji jest jednoznaczne. Brak źródła, inna liczba zdarzeń albo jakakolwiek niezgodność → klasyfikacja `FULL_PL` jak dziś i ostrzeżenie w logu. TTS nie klasyfikuje ponownie `SPOKEN_PL`; dla `FULL_PL` i `SOURCE_SUBTITLES` zostaje klasyfikacja.
 Test regresji E8 zostaje na progu 0,9586 (wariant minimalny ma 0,9888).
 
-**C Granice stylów — obowiązuje wariant minimalny, pełne C (StyleState, T1/T2) jest odłożone.** Zmiany w `text.py`: (1) bloki bez `\` (komentarze) nie tworzą granic ani znaczników; (2) T3 zastąpione faktem o stylu: `\i0`/`\b0` otwiera zakres, gdy styl bazowy ma ten atrybut. Daje 447 odzyskanych akcentów (98% strat T3) i usuwa 869 fałszywych zakresów (split-and-styles.md H4). Wyróżnienie pominięte przez tłumacza: jak dziś, rozkład na granicach słów (usuwanie odłożone).
+**C Granice stylów — obowiązuje wariant minimalny, pełne C (StyleState, T1/T2) jest odłożone.** Zmiany w `text.py`: (1) bloki bez `\` (komentarze) nie tworzą granic ani znaczników; (2) T3 zastąpione faktem o stylu: `\i0`/`\b0` otwiera zakres, gdy styl bazowy ma ten atrybut. Styl bazowy przychodzi parametrem `style` w `marked_text` i `replace_visible_text` (plan 01, kontrakty). Daje 447 odzyskanych akcentów (98% strat T3) i usuwa 869 fałszywych zakresów (split-and-styles.md H4). Wyróżnienie pominięte przez tłumacza: jak dziś, rozkład na granicach słów (usuwanie odłożone).
 
-**E — wartości domyślne do czasu galerii (właściciel 18.10 przyjął rekomendacje jako domyślne):** E1 a7 = C, a10 = D; E2 czytelność wg A.6, parametry do kalibracji; E3 FRAME na wolnym tle łagodniej (wyżej); E4 fonttools — zgoda właściciela; E5 próg 0,3 — nie dotyczy (B odłożone); E6–E7 — nie dotyczy w wariancie minimalnym (weto „etykieta × forma” decyduje o wersalikach); E8 próg regresji bez zmian; E9 fallback bez stylów piosenek — przyjęte (B.4 wyżej).
+**E — wartości domyślne do czasu galerii (właściciel 18.10 przyjął rekomendacje jako domyślne):** E1 a7 = C, a10 = D; E2 czytelność wg A.6, parametry do kalibracji; E3 FRAME na wolnym tle łagodniej (wyżej); E4 fonttools — zgoda właściciela; E5 próg 0,3 — nie dotyczy (B odłożone); E6–E7 — nie dotyczy w wariancie minimalnym (weto „etykieta × forma” decyduje o wersalikach); E8 próg regresji bez zmian; E9 fallback usunięty (B.4 wyżej).
 
 ## W skrócie dla właściciela
 

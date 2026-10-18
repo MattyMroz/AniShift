@@ -1,10 +1,12 @@
 ---
 kind: specification
-status: draft
+status: v4
 updated: 2026-10-18
 ---
 
 # Rozmyte łamanie polskich dialogów — v4
+
+Właściciel 18.10: implementacja rusza po akceptacji planu 01 i tej specyfikacji przez trzech recenzentów (astra, sol6, claude); decyzje otwarte mają wartości domyślne (rekomendacje przyjęte 18.10), a właściciel akceptuje wynik na galerii przed/po.
 
 ## Aneks v4 (2026-10-18) — nadrzędny wobec wskazanych sekcji
 
@@ -12,8 +14,8 @@ Powód: cel [visual-quality.md](visual-quality.md) v2.1, research [measurement.m
 
 1. **Czcionka (zastępuje zakaz zmiany fontu z §1 i „W skrócie”).** Style dialogowe mogą dostać czcionkę właściciela przez klon stylu (visual-quality §5, plan 01 D7). Łamanie mierzy czcionką klonu.
 2. **Pomiar (§2, „Dopasowanie”).** Metoda i dopasowanie czcionek jak w aneksie v4 A.3 `fuzzy-signs-and-split.md`: Pillow + fontTools, 1000 px, atrament, widoczny obrys/cień, blur; p90 zgodności z libass 1,14%, dla dialogów 0,59%, więc τ = 0,98 pokrywa p95 dialogów (0,92%).
-3. **Liczba wierszy — ratunek dwustopniowy (zastępuje miękkie COUNT jako jedyny mechanizm, §3–§4).** Kandydaci z trzema wierszami wchodzą do oceny tylko wtedy, gdy żaden kandydat z ≤ 2 wierszami nie przechodzi filtra mieszczenia. Kolejność ratunku: (1) ≤ 2 wiersze z ochronami; (2) ≤ 2 wiersze z rozluźnionymi ochronami fraz (`relaxed_phrases`); (3) 3 wiersze; (4) `overflow_unavoidable`. Wynik na 01–39: zmienia się tylko 07 (B, 3 wiersze → A/C, 2 wiersze); 06, 26, 27, 33 bez zmian, bo żaden układ dwuwierszowy się tam nie mieści.
-4. **Jednoliterowe słowo na końcu wiersza (§2, SYN).** Cięcie bezpośrednio po słowie jednoliterowym (w, z, o, u, i, a…) dostaje SYN = 1, czyli ochronę jak przyimek. Wynik na 01–39: żaden wybór się nie zmienia (rośnie tylko Q przegranych 02 D i 39 A).
+3. **Liczba wierszy — ratunek dwustopniowy (zastępuje miękkie COUNT jako jedyny mechanizm, §3–§4).** Kandydaci z trzema lub więcej wierszami (generator: do trzech cięć) wchodzą do oceny tylko wtedy, gdy żaden kandydat z ≤ 2 wierszami nie przechodzi filtra mieszczenia. Kolejność ratunku: (1) ≤ 2 wiersze z ochronami; (2) ≤ 2 wiersze z rozluźnionymi ochronami fraz (`relaxed_phrases`); (3) 3 lub więcej wierszy; (4) `overflow_unavoidable`. Wynik na 01–39: zmienia się tylko 07 (B, 3 wiersze → A/C, 2 wiersze); 06, 26, 27, 33 bez zmian, bo żaden układ dwuwierszowy się tam nie mieści.
+4. **Jednoliterowe słowo na końcu wiersza (§2, SYN).** Cięcie bezpośrednio po słowie jednoliterowym (w, z, o, u, i, a…) jest chronione jak cięcie po przyimku (ochrona, nie tylko SYN = 1); rozluźniane tylko w kroku ratunku (2). Wynik na 01–39: żaden wybór się nie zmienia (rośnie tylko Q przegranych 02 D i 39 A).
 5. **Kształt przy mocnej granicy (§3, SHAPE).** SHAPE pomija parę wierszy rozdzieloną mocną granicą INT (koniec zdania, przecinek, średnik, dwukropek), tak jak dziś pomija zmianę osoby. Powód: przypadek 38 („…anielsko-apostolskim duetem, / który za nią pobiegł…”) wygrywał cięciem po przecinku tylko w części zakresu szerokości; z tą regułą wygrywa przy każdej skali ≥ 0,52. Wynik na 01–39: zmienia się tylko 18 (A → B, zgodnie z rekomendacją galerii; usuwa znany wyjątek z §5 pyt. 8).
 6. **Przypadki 37–39 jako kontrakt testów:** 37 A (cięcie po przecinku), 38 A (cięcie po przecinku), 39 B (cięcie przed „i”). To przypadki z galerii przed/po 18.10 (`visual-fixes/line-breaks/05.png`, `06.png`), które nocny kod złamał źle.
 7. **SRT.** SRT zapisywane z ASS dostaje podziały mierzone profilem stylu źródła (te same co ASS). SRT ze źródła SRT nie ma stylów, więc działa tryb `unmeasured`; jego filtr znakowy jest jawnym wyjątkiem od zasady „bez twardych progów”, bo bez pomiaru nie ma innej miary.
@@ -193,5 +195,5 @@ Wyjątki pozostają: 18 oraz nierozwiązywalny 31. Mini-tabela: wszystkie 7 wier
 8. **18 A/B:** zaakceptować A przy tej heurystyce, czy zamówić ogólną regułę domknięcia wtrącenia z osobną walidacją? Nie dodawać wyjątku dla `wersja`/`Nanaki`.
 9. **Limit znaków:** zaakceptować brak wpływu `max_chars_per_line` przy pomiarze i jego użycie wyłącznie w `unmeasured`?
 
-Przed implementacją: decyzje właściciela, niezależny przegląd, pełny generator, tagi,
+Przed implementacją (zmienione aneksem v4 i decyzją właściciela 18.10): akceptacja trzech recenzentów, wartości domyślne decyzji z aneksu pkt 8, pełny generator, tagi,
 idempotencja i wspólna ścieżka ASS/SRT. Galeria jest lokalna/gitignored, nie dołączona do klonu Git.
