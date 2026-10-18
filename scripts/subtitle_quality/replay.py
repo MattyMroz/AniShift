@@ -160,6 +160,7 @@ def pair_dirs(roots: Sequence[Path]) -> list[tuple[str, Path]]:
 
 def replay(roots: Sequence[Path], out: Path) -> Path:
     """Replay every pair folder under the roots into ``out`` and write its mapping file; return the mapping path."""
+    out.mkdir(parents=True, exist_ok=True)
     pairs: list[Entry] = []
     skipped: list[dict[str, str]] = []
     for pair_id, directory in pair_dirs(roots):

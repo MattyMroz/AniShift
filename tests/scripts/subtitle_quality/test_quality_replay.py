@@ -134,6 +134,15 @@ def test_a_spoken_group_follows_its_first_event_and_is_excluded_whole_when_that_
     assert mapping["pairs"][0]["excluded"] == [2, 3, 5]
 
 
+def test_replay_writes_a_mapping_when_every_pair_is_skipped_or_the_corpus_is_empty(tmp_path: Path) -> None:
+    _pair(tmp_path / "library", "lonely", output=None)
+    (tmp_path / "empty").mkdir()
+    skipped: dict[str, Any] = _mapping(replay.replay([tmp_path / "library"], tmp_path / "skipped" / "run"))
+    empty: dict[str, Any] = _mapping(replay.replay([tmp_path / "empty"], tmp_path / "empty-run"))
+    assert (skipped["pairs"], skipped["skipped"]) == ([], [{"pair": "library/lonely", "reason": f"no {OUTPUT_NAME}"}])
+    assert (empty["pairs"], empty["skipped"]) == ([], [])
+
+
 def test_pairs_with_one_folder_name_under_two_roots_keep_separate_ids(tmp_path: Path) -> None:
     _pair(tmp_path / "library", "pair")
     _pair(tmp_path / "corpus-pairs", "pair")
