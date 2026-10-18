@@ -13,11 +13,11 @@ from anishift.paths import config_path
 from anishift.services.audio.types import AudioCodecProfile, TimelinePolicy
 from anishift.services.extraction.tracks import DEFAULT_AUDIO_PRIORITY, DEFAULT_SUBTITLE_PRIORITY
 from anishift.services.llm.engines import available_engine_ids as available_llm_engine_ids
+from anishift.services.subtitles.linebreak import DEFAULT_MAX_CHARS, MAX_LINES
 from anishift.services.translation.chunking import DEFAULT_CHAR_LIMIT
 from anishift.services.translation.engines import available_engine_ids
 from anishift.services.translation.engines.llm.constants import DEFAULT_STYLE_NAME
 from anishift.services.translation.engines.llm.prompts import available_style_names
-from anishift.services.translation.linebreak import DEFAULT_MAX_CHARS, MAX_LINES
 from anishift.services.tts.engines import available_engine_ids as available_tts_engine_ids
 from anishift.services.tts.engines.edge.constants import (
     DEFAULT_RATE,

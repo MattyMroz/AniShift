@@ -33,7 +33,7 @@ from anishift.services.subtitles import (
     write_translated_displayed,
     write_translated_spoken,
 )
-from anishift.services.translation.layout_config import LayoutConfig
+from anishift.services.subtitles.layout import LayoutLimits
 
 __all__ = ["LegacySubtitleAdapter", "LegacySubtitleProducts", "SubtitleTaskHandler"]
 
@@ -104,10 +104,10 @@ class SubtitleTaskHandler:
 
     __slots__ = ("_layout", "_run_root")
 
-    def __init__(self, *, run_root: Path, layout: LayoutConfig | None = None) -> None:
+    def __init__(self, *, run_root: Path, layout: LayoutLimits | None = None) -> None:
         """Bind subtitle staging to one scheduler-owned run root."""
         self._run_root: Path = run_root
-        self._layout: LayoutConfig = layout if layout is not None else LayoutConfig()
+        self._layout: LayoutLimits = layout if layout is not None else LayoutLimits()
 
     def execute(
         self,

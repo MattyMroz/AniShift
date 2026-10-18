@@ -2,45 +2,20 @@ from __future__ import annotations
 
 import pytest
 
-from anishift.services.translation.chunking import DEFAULT_CHAR_LIMIT, DEFAULT_CHUNK_LIMIT
-from anishift.services.translation.layout_config import LayoutConfig
-from anishift.services.translation.linebreak import DEFAULT_MAX_CHARS, MAX_LINES, split_for_layout, split_line
+from anishift.services.subtitles.layout import LayoutLimits
+from anishift.services.subtitles.linebreak import DEFAULT_MAX_CHARS, MAX_LINES, split_for_layout, split_line
 
 _LONG_LINE = "Zupełnie przypadkowe zdanie o tym jak długo potrafi ciągnąć się jedna kwestia bohatera"
 
 
 def test_defaults_match_the_shipped_pipeline() -> None:
-    config = LayoutConfig()
-    assert config.max_chars_per_line == DEFAULT_MAX_CHARS
-    assert config.max_lines_per_event == MAX_LINES
-    assert config.chunk_chars == DEFAULT_CHAR_LIMIT
+    assert LayoutLimits() == LayoutLimits(max_chars=DEFAULT_MAX_CHARS, max_lines=MAX_LINES)
 
 
-def test_the_default_chunk_size_keeps_the_shipped_piece_size() -> None:
-    assert LayoutConfig().chunk_pieces == DEFAULT_CHUNK_LIMIT
-
-
-@pytest.mark.parametrize(("chunk_chars", "pieces"), [(300, 100), (900, 300), (4000, 1333)])
-def test_the_piece_size_follows_the_request_size(chunk_chars: int, pieces: int) -> None:
-    assert LayoutConfig(chunk_chars=chunk_chars).chunk_pieces == pieces
-
-
-def test_a_tiny_request_still_leaves_a_usable_piece() -> None:
-    assert LayoutConfig(chunk_chars=1).chunk_pieces == 1
-
-
-@pytest.mark.parametrize(
-    "changes",
-    [
-        {"max_chars_per_line": 0},
-        {"max_chars_per_line": -1},
-        {"max_lines_per_event": 0},
-        {"chunk_chars": 0},
-    ],
-)
+@pytest.mark.parametrize("changes", [{"max_chars": 0}, {"max_chars": -1}, {"max_lines": 0}])
 def test_a_limit_that_cannot_produce_output_is_rejected(changes: dict[str, int]) -> None:
     with pytest.raises(ValueError, match="must be positive"):
-        LayoutConfig(**changes)
+        LayoutLimits(**changes)
 
 
 @pytest.mark.parametrize("budget", [1, 2, 3])

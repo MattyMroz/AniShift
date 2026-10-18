@@ -22,6 +22,8 @@ from anishift.services.subtitles.classifier import (
 )
 from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.fitting import fit_sign_text
+from anishift.services.subtitles.layout import LayoutLimits
+from anishift.services.subtitles.linebreak import split_line
 from anishift.services.subtitles.text import is_drawing, reflow_visible_text, replace_visible_text, visible_text
 from anishift.services.subtitles.types import (
     Decision,
@@ -30,8 +32,6 @@ from anishift.services.subtitles.types import (
     SubtitleKind,
     SubtitleSplit,
 )
-from anishift.services.translation.layout_config import LayoutConfig
-from anishift.services.translation.linebreak import split_line
 from anishift.utils.logger import get_logger
 
 __all__ = [
@@ -122,7 +122,7 @@ def load_subtitles(path: Path) -> SSAFile:
 
 
 def normalize_subtitles(
-    source: Path, destination: Path, *, kind: SubtitleKind, layout: LayoutConfig | None = None
+    source: Path, destination: Path, *, kind: SubtitleKind, layout: LayoutLimits | None = None
 ) -> Path:
     """Convert one supported subtitle file while preserving its complete event stream."""
     subtitles: SSAFile = load_subtitles(source)
@@ -136,9 +136,9 @@ def normalize_subtitles(
     return _write_output(subtitles, destination, kind, subject="Normalized")
 
 
-def reflow_polish_dialogue(split: SubtitleSplit, layout: LayoutConfig | None = None) -> SubtitleSplit:
+def reflow_polish_dialogue(split: SubtitleSplit, layout: LayoutLimits | None = None) -> SubtitleSplit:
     """Reflow Polish spoken events on a copy, preserving signs and exact inline formatting."""
-    limits: LayoutConfig = layout if layout is not None else LayoutConfig()
+    limits: LayoutLimits = layout if layout is not None else LayoutLimits()
     subtitles: SSAFile = deepcopy(split.subs)
     dialogue_index: int = 0
     for event in subtitles.events:
@@ -150,8 +150,8 @@ def reflow_polish_dialogue(split: SubtitleSplit, layout: LayoutConfig | None = N
             continue
         verses: tuple[str, ...] = split_line(
             visible_text(event.text, preserve_hard_spaces=True),
-            max_chars=limits.max_chars_per_line,
-            max_lines=limits.max_lines_per_event,
+            max_chars=limits.max_chars,
+            max_lines=limits.max_lines,
         )
         event.text = reflow_visible_text(event.text, verses)
     return replace(split, subs=subtitles)

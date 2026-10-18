@@ -58,7 +58,7 @@ from anishift.services.extraction import ExtractionRequest, ExtractionResult
 from anishift.services.media._process import ProcessResult
 from anishift.services.media.types import ContainerKind, MediaCatalog, MediaTrack, MediaTrackKind
 from anishift.services.subtitles import DisplayedLine, SpokenLine
-from anishift.services.translation.layout_config import LayoutConfig
+from anishift.services.translation.chunk_config import ChunkConfig
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
 from anishift.services.translation.types import FileTranslation, TranslatedLine
 from anishift.services.tts import (
@@ -739,7 +739,7 @@ def test_a_plain_text_document_is_translated_paragraph_by_paragraph(tmp_path: Pa
 
 
 def _document(text: str) -> TextDocument:
-    return read_text_document(text, LayoutConfig())
+    return read_text_document(text, ChunkConfig())
 
 
 def test_every_paragraph_keeps_its_own_identifier_and_order() -> None:

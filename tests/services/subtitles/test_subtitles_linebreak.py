@@ -1,6 +1,6 @@
 import pytest
 
-from anishift.services.translation.linebreak import (
+from anishift.services.subtitles.linebreak import (
     _CONJUNCTIONS,
     _CONJUNCTIONS_MULTIWORD,
     _PREPOSITIONS_MULTIWORD,

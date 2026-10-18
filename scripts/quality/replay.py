@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from anishift.application.translation_handler import displayed_lines, spoken_lines, translation_verses
 from anishift.services.subtitles import is_drawing, load_subtitles, split_subtitles, visible_text, write_translated
-from anishift.services.translation.layout_config import LayoutConfig
+from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.translation.types import FileTranslation, TranslatedLine
 from anishift.utils.logger import LoggerMode, setup_mode
 from anishift.utils.logger.config import FileConfig
@@ -87,7 +87,7 @@ def replay_pair(directory: Path, destination: Path) -> tuple[PairInput, Path | N
     source: SSAFile = load_subtitles(directory / SOURCE_NAME)
     inputs: PairInput = pair_input(source, load_subtitles(directory / OUTPUT_NAME))
     split: SubtitleSplit = split_subtitles(source, kind="ass")
-    verses: TranslationVerses = translation_verses(split, translation(split, inputs), LayoutConfig())
+    verses: TranslationVerses = translation_verses(split, translation(split, inputs), LayoutLimits())
     return inputs, write_translated(split, verses.displayed, verses.spoken, destination)
 
 

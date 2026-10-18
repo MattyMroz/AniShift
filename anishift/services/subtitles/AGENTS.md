@@ -7,6 +7,8 @@ Napisy: klasyfikacja stylów ASS (DIALOG/SIGN/UNCERTAIN), split spoken/displayed
 - `classifier.py` — heurystyka klasyfikacji stylów ASS + deduplikacja animacji
 - `service.py` — load/preview/split/write + zwijanie FBF
 - `text.py` — tag-bezpieczne operacje na tekście eventu ASS/SRT
+- `linebreak.py` — polski reflow (`split_line`) i odtwarzanie authored layoutu (`split_for_layout`)
+- `layout.py` — `LayoutLimits`: limity długości i liczby wierszy wybrane dla przebiegu
 - `txt.py` — wczytanie UTF-8 i pocięcie na linie lektora
 - `srt.py` — zapis przetłumaczonych linii lektora do SRT
 - `types.py` — value objecty (Decision, SplitStats, SpokenLine, SubtitleKind, SubtitleSplit)
@@ -32,6 +34,8 @@ Napisy: klasyfikacja stylów ASS (DIALOG/SIGN/UNCERTAIN), split spoken/displayed
 - Dla `kind == "srt"` split pomija klasyfikację: każdy Dialogue z góry „spoken", `verdicts` puste. `service.py:182-184`
 - Progi klasyfikacji/scoringu to nazwane `Final` z docstringami — zmiana zachowania klasyfikatora = zmiana stałych, nie logiki. `classifier.py:56-93`
 - Klucz zwijania FBF/spoken to para `(style, visible_text)`; translated writer musi dostać `spoken_verses` na tym samym kluczu — sprzężenie `collapse_fbf` ↔ `_translated_file`. `service.py`
+- `split_line` buduje nowy polski podział, a `split_for_layout` zachowuje authored line count dla złożonych `displayed`, jeśli target ma dość granic słów; nigdy nie rozcina pojedynczego słowa ani nie tworzy pustej linii. `linebreak.py`
+- `linebreak` reużywa zbiorów z `translation/chunking` (`SENTENCE_ENDINGS`, `phrase_cut_chars()`) jako SSOT. `linebreak.py`
 
 ## Decyzje i odesłania
 

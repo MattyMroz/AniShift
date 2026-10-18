@@ -94,8 +94,8 @@ from anishift.services.subtitles import (
     write_full,
     write_spoken,
 )
+from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.subtitles.text import visible_verses
-from anishift.services.translation.layout_config import LayoutConfig
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
 from anishift.services.translation.types import FileTranslation, TranslatedLine
 from anishift.services.tts import (
@@ -785,7 +785,7 @@ def test_translation_verses_keep_span_markers_across_new_line_breaks() -> None:
         spoken=(TranslatedLine(0, 1000, "Why are you after <s1>me</s1>?!", translated, (translated,), "Dialog"),),
     )
 
-    verses: TranslationVerses = translation_verses(split, result, LayoutConfig(max_chars_per_line=20))
+    verses: TranslationVerses = translation_verses(split, result, LayoutLimits(max_chars=20))
 
     assert verses.spoken == (("Czemu uwziąłeś się", "akurat na <s1>mnie</s1>?!"),)
 
