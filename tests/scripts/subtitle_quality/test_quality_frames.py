@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from anishift.platform.binaries import Binary, resolve_binary
-from scripts.quality import frames
+from scripts.subtitle_quality import frames
 
 if TYPE_CHECKING:
     from pathlib import Path

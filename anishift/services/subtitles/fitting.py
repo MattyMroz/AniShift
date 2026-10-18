@@ -10,6 +10,7 @@ from typing import Final
 from PIL import ImageFont
 from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
+from anishift.services.subtitles.linebreak import split_for_layout
 from anishift.services.subtitles.text import (
     RE_TAG_BLOCK,
     is_drawing,
@@ -17,7 +18,6 @@ from anishift.services.subtitles.text import (
     visible_text,
     visible_verses,
 )
-from anishift.services.translation.linebreak import split_for_layout
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 

@@ -12,6 +12,7 @@ dependencies = [
     "deepl>=1.30.0",
     "edge-tts>=7.2.8",
     "elevenlabs>=2.59.0",
+    "fonttools>=4.67.0",
     "google-genai>=2.11.0",
     "httpx>=0.28.1",
     "loguru>=0.7.3",

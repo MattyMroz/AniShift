@@ -13,14 +13,14 @@ from typing import TYPE_CHECKING, Final
 from anishift.paths import default_workspace_dir
 from anishift.utils.logger import LoggerMode, setup_mode
 from anishift.utils.logger.config import FileConfig
-from scripts.quality import report
-from scripts.quality.episode import FRAMES_NAME, OUTPUT_NAME, SOURCE_NAME, EpisodeResult, analyse, episode_dirs
-from scripts.quality.render import Shot, copy_scripts, render_shot
+from scripts.subtitle_quality import replay, report
+from scripts.subtitle_quality.episode import FRAMES_NAME, OUTPUT_NAME, SOURCE_NAME, EpisodeResult, analyse, episode_dirs
+from scripts.subtitle_quality.render import Shot, copy_scripts, render_shot
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from scripts.quality import metrics
+    from scripts.subtitle_quality import metrics
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -39,18 +39,25 @@ SIGNS_GALLERY: Final[str] = "signs"
 BREAKS_GALLERY: Final[str] = "line-breaks"
 """Gallery folder of badly broken Polish dialogue lines."""
 
+REPLAY_COMMAND: Final[str] = "replay"
+"""First argument handing the command line to the writer replay."""
+
 type Entry = tuple[str, str, str, str]
 """Gallery index row: episode, time, metric value and image file."""
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Measure every episode folder, write the report and optionally the gallery."""
+    """Measure every episode folder, write the report and optionally the gallery, or run the writer replay."""
+    arguments: list[str] = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:1] == [REPLAY_COMMAND]:
+        return replay.main(arguments[1:], QUALITY_ROOT)
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
-        prog="python -m scripts.quality",
+        prog="python -m scripts.subtitle_quality",
         description=(
             "Measure subtitle quality. An episode folder holds source.en.ass and optionally output.pl.ass, "
             "video.txt (video path relative to the repository root), frames/ (<ms>.jpg gallery backgrounds "
-            "made by python -m scripts.quality.frames) and fonts/."
+            "made by python -m scripts.subtitle_quality.frames) and fonts/. "
+            f"'{REPLAY_COMMAND}' as the first argument runs the writer replay instead."
         ),
     )
     parser.add_argument("roots", nargs="*", type=Path, help="episode folders or roots searched recursively")
@@ -59,7 +66,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--gallery-size", type=int, default=GALLERY_SIZE, help="worst cases per metric")
     parser.add_argument("--no-render", action="store_true", help="skip libass rendering and the gallery")
     parser.add_argument("--jobs", type=int, default=os.process_cpu_count() or 1, help="episodes measured at once")
-    args: argparse.Namespace = parser.parse_args(argv)
+    args: argparse.Namespace = parser.parse_args(arguments)
     silence: partial[None] = partial(setup_mode, LoggerMode.SILENT, file=FileConfig(enable=False))
     silence()
     roots: list[Path] = list(args.roots) or [root for root in DEFAULT_ROOTS if root.is_dir()]

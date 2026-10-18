@@ -9,6 +9,7 @@ from itertools import accumulate, groupby, pairwise
 from typing import Final, Literal
 
 from anishift.text.boundaries import BREAKABLE_SPACES
+from anishift.text.graphemes import split_graphemes
 from anishift.text.markers import SPAN_MARKER, span_marker
 
 __all__ = [
@@ -50,19 +51,6 @@ _BREAK_TOKENS: Final[frozenset[str]] = frozenset(("\\N", "\\n", "\n", "\r\n"))
 
 _ASS_HARD_SPACE: Final[str] = "\\h"
 """ASS non-breaking hard-space token."""
-
-_ZERO_WIDTH_JOINER: Final[str] = "‍"
-"""Unicode joiner that binds adjacent emoji code points into one grapheme."""
-
-_GRAPHEME_EXTENDER_RANGES: Final[tuple[tuple[int, int], ...]] = (
-    (0xFE00, 0xFE0F),
-    (0xE0100, 0xE01EF),
-    (0x1F3FB, 0x1F3FF),
-)
-"""Unicode ranges for variation selectors and emoji skin-tone modifiers."""
-
-_REGIONAL_INDICATOR_RANGE: Final[tuple[int, int]] = (0x1F1E6, 0x1F1FF)
-"""Unicode regional indicators paired into flag grapheme clusters."""
 
 _MAX_MARKED_BOUNDARIES: Final[int] = 4
 """Most mid-verse style boundaries, two ranges, sent to the translator as span markers."""
@@ -138,7 +126,7 @@ def marked_text(text: str) -> str:
     markers: tuple[str, ...] = _span_markers(len(boundaries))
     inserts: dict[tuple[int, int], str] = {}
     for boundary, marker in zip(boundaries, markers[: len(boundaries)], strict=True):
-        graphemes: tuple[str, ...] = _graphemes(layout.segments[boundary.segment])
+        graphemes: tuple[str, ...] = split_graphemes(layout.segments[boundary.segment])
         key: tuple[int, int] = (boundary.segment, _hugged_offset(graphemes, boundary.offset, closing=marker[1] == "/"))
         inserts[key] = inserts.get(key, "") + marker
     verses: list[str] = [_with_markers(segment, index, inserts) for index, segment in enumerate(layout.segments)]
@@ -247,7 +235,7 @@ def _parse_layout(text: str) -> _TextLayout:
 
 def _boundaries(layout: _TextLayout, *, merge_verses: bool) -> tuple[_Boundary, ...]:
     """Group source tags by position, across verse breaks when the verses are re-flowed."""
-    graphemes: tuple[tuple[str, ...], ...] = tuple(_graphemes(segment) for segment in layout.segments)
+    graphemes: tuple[tuple[str, ...], ...] = tuple(split_graphemes(segment) for segment in layout.segments)
     starts: tuple[int, ...] = _segment_starts(layout.segments)
     boundaries: list[_Boundary] = []
     previous: tuple[int, int] | None = None
@@ -312,7 +300,7 @@ def _hugged_offset(graphemes: tuple[str, ...], offset: int, *, closing: bool) ->
 
 def _with_markers(segment: str, index: int, inserts: dict[tuple[int, int], str]) -> str:
     """Render one source verse with its span markers inserted."""
-    graphemes: tuple[str, ...] = _graphemes(segment)
+    graphemes: tuple[str, ...] = split_graphemes(segment)
     marked: str = "".join(inserts.get((index, offset), "") + grapheme for offset, grapheme in enumerate(graphemes))
     return marked + inserts.get((index, len(graphemes)), "")
 
@@ -374,7 +362,7 @@ def _has_unmarked_words(segments: tuple[str, ...], cuts: list[int]) -> bool:
 
 def _pieces(segments: tuple[str, ...], cuts: list[int]) -> list[tuple[str, ...]]:
     """Return the graphemes between consecutive global ``cuts`` across all verses."""
-    graphemes: tuple[str, ...] = tuple(grapheme for segment in segments for grapheme in _graphemes(segment))
+    graphemes: tuple[str, ...] = tuple(grapheme for segment in segments for grapheme in split_graphemes(segment))
     return [graphemes[start:end] for start, end in pairwise((0, *cuts, len(graphemes)))]
 
 
@@ -506,7 +494,7 @@ def _word_spans(text: str) -> tuple[tuple[int, int], ...]:
     """Return grapheme spans of each whitespace-separated word without its outer punctuation."""
     spans: list[tuple[int, int]] = []
     index: int = 0
-    for _, group in groupby(_graphemes(text), key=str.isspace):
+    for _, group in groupby(split_graphemes(text), key=str.isspace):
         token: tuple[str, ...] = tuple(group)
         letters: list[int] = [index + offset for offset, grapheme in enumerate(token) if _is_word_grapheme(grapheme)]
         if letters:
@@ -560,78 +548,35 @@ def _render_segment(
     hard_spaces: tuple[_Anchor, ...],
 ) -> str:
     """Insert mapped tags and hard spaces into one translated verse."""
-    graphemes = _graphemes(text)
+    graphemes = split_graphemes(text)
     tag_map: dict[int, list[str]] = {}
     for anchor in tags:
         if anchor.segment == segment_index:
             tag_map.setdefault(anchor.offset, []).append(anchor.value)
     hard_offsets = [anchor.offset for anchor in hard_spaces if anchor.segment == segment_index]
-    replacements, insertions = _hard_space_positions(graphemes, hard_offsets)
+    replacements: set[int] = _hard_space_positions(graphemes, hard_offsets)
     parts: list[str] = []
     for offset in range(len(graphemes) + 1):
         parts.extend(tag_map.get(offset, ()))
-        if offset in insertions:
-            parts.append("\\h")
         if offset < len(graphemes):
             parts.append("\\h" if offset in replacements else graphemes[offset])
     return "".join(parts)
 
 
-def _hard_space_positions(
-    graphemes: tuple[str, ...],
-    offsets: list[int],
-) -> tuple[set[int], set[int]]:
+def _hard_space_positions(graphemes: tuple[str, ...], offsets: list[int]) -> set[int]:
     """Choose nearest whitespace replacements without splitting target words."""
     spaces = [index for index, grapheme in enumerate(graphemes) if grapheme.isspace()]
     replacements: set[int] = set()
-    insertions: set[int] = set()
     for offset in offsets:
         available = [index for index in spaces if index not in replacements]
         if available:
             replacements.add(min(available, key=lambda index: abs(index - offset)))
-    return replacements, insertions
+    return replacements
 
 
 def _grapheme_count(text: str) -> int:
-    """Count common Unicode clusters used as safe insertion boundaries."""
-    return len(_graphemes(text))
-
-
-def _graphemes(text: str) -> tuple[str, ...]:
-    """Group combining marks and joined emoji into insertion-safe clusters."""
-    clusters: list[str] = []
-    for character in text:
-        if not clusters:
-            clusters.append(character)
-            continue
-        previous = clusters[-1]
-        if (
-            _extends_grapheme(character)
-            or character == _ZERO_WIDTH_JOINER
-            or previous.endswith(_ZERO_WIDTH_JOINER)
-            or (previous == "\r" and character == "\n")
-            or (_is_regional_indicator(character) and len(previous) == 1 and _is_regional_indicator(previous))
-        ):
-            clusters[-1] += character
-        else:
-            clusters.append(character)
-    return tuple(clusters)
-
-
-def _extends_grapheme(character: str) -> bool:
-    """Tell whether a code point extends the preceding grapheme cluster."""
-    code_point = ord(character)
-    return (
-        bool(unicodedata.combining(character))
-        or unicodedata.category(character) in {"Mc", "Me", "Mn"}
-        or any(start <= code_point <= end for start, end in _GRAPHEME_EXTENDER_RANGES)
-    )
-
-
-def _is_regional_indicator(character: str) -> bool:
-    """Tell whether a code point is one half of a Unicode flag pair."""
-    start, end = _REGIONAL_INDICATOR_RANGE
-    return start <= ord(character) <= end
+    """Count extended grapheme clusters, the safe insertion boundaries."""
+    return len(split_graphemes(text))
 
 
 def _join_segments(segments: list[str], breaks: tuple[str, ...]) -> str:

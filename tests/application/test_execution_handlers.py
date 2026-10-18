@@ -60,7 +60,6 @@ from anishift.application.scheduler import GraphCoordinator, GraphScheduler, Res
 from anishift.application.scheduler_runtime import ArtifactStore
 from anishift.application.service import AppService
 from anishift.application.sessions import RunSession
-from anishift.application.subtitle_handler import LegacySubtitleAdapter
 from anishift.application.task_paths import task_staging_path
 from anishift.application.translation_handler import (
     TranslationVerses,
@@ -90,12 +89,9 @@ from anishift.services.subtitles import (
     SubtitleSplit,
     load_subtitles,
     split_subtitles,
-    write_displayed,
-    write_full,
-    write_spoken,
 )
+from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.subtitles.text import visible_verses
-from anishift.services.translation.layout_config import LayoutConfig
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
 from anishift.services.translation.types import FileTranslation, TranslatedLine
 from anishift.services.tts import (
@@ -713,32 +709,6 @@ def test_subtitle_absence_does_not_mask_real_failures(
         )
 
 
-def test_legacy_subtitle_adapter_keeps_split_and_product_parity(tmp_path: Path) -> None:
-    source = tmp_path / "episode.ass"
-    _write_ass(source)
-    adapter = LegacySubtitleAdapter()
-    adapted_split = adapter.split(adapter.load(source), kind="ass")
-    direct_split = split_subtitles(load_subtitles(source), kind="ass")
-    assert adapted_split.decisions == direct_split.decisions
-    assert adapted_split.spoken == direct_split.spoken
-
-    adapted_root = tmp_path / "adapted"
-    direct_root = tmp_path / "direct"
-    adapted_root.mkdir()
-    direct_root.mkdir()
-    adapted = adapter.write_polish(adapted_split, adapted_root / "episode", "ass")
-    direct = (
-        write_full(direct_split, direct_root / "episode.pl.ass"),
-        write_spoken(direct_split, direct_root / "episode.spoken.pl.ass"),
-        write_displayed(direct_split, direct_root / "episode.displayed.pl.ass"),
-    )
-
-    adapted_paths = (adapted.full, adapted.spoken, adapted.displayed)
-    assert tuple(path.read_text(encoding="utf-8") if path is not None else None for path in adapted_paths) == tuple(
-        path.read_text(encoding="utf-8") if path is not None else None for path in direct
-    )
-
-
 def test_displayed_lines_keep_their_source_file_order() -> None:
     events = [
         SSAEvent(start=0, end=1000, style="Dialog", text="Spoken line"),
@@ -785,7 +755,7 @@ def test_translation_verses_keep_span_markers_across_new_line_breaks() -> None:
         spoken=(TranslatedLine(0, 1000, "Why are you after <s1>me</s1>?!", translated, (translated,), "Dialog"),),
     )
 
-    verses: TranslationVerses = translation_verses(split, result, LayoutConfig(max_chars_per_line=20))
+    verses: TranslationVerses = translation_verses(split, result, LayoutLimits(max_chars=20))
 
     assert verses.spoken == (("Czemu uwziąłeś się", "akurat na <s1>mnie</s1>?!"),)
 

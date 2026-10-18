@@ -22,6 +22,8 @@ from anishift.services.subtitles.classifier import (
 )
 from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.fitting import fit_sign_text
+from anishift.services.subtitles.layout import LayoutLimits
+from anishift.services.subtitles.linebreak import split_line
 from anishift.services.subtitles.text import is_drawing, reflow_visible_text, replace_visible_text, visible_text
 from anishift.services.subtitles.types import (
     Decision,
@@ -30,15 +32,12 @@ from anishift.services.subtitles.types import (
     SubtitleKind,
     SubtitleSplit,
 )
-from anishift.services.translation.layout_config import LayoutConfig
-from anishift.services.translation.linebreak import split_line
 from anishift.utils.logger import get_logger
 
 __all__ = [
     "collapse_fbf",
     "load_subtitles",
     "normalize_subtitles",
-    "preview_styles",
     "reflow_polish_dialogue",
     "split_subtitles",
     "subtitle_kind",
@@ -54,12 +53,6 @@ __all__ = [
 
 _FBF_MAX_GAP_MS: Final[int] = 500
 """Maximum gap between consecutive identical events merged as one FBF run."""
-
-_SAMPLES_PER_STYLE: Final[int] = 3
-"""Number of preview samples collected per style."""
-
-_SAMPLE_MAX_CHARS: Final[int] = 60
-"""Maximum preview sample length."""
 
 _SUFFIX_KIND: Final[dict[str, SubtitleKind]] = {".ass": "ass", ".ssa": "ass", ".srt": "srt"}
 """Supported subtitle suffixes and their working formats."""
@@ -122,7 +115,7 @@ def load_subtitles(path: Path) -> SSAFile:
 
 
 def normalize_subtitles(
-    source: Path, destination: Path, *, kind: SubtitleKind, layout: LayoutConfig | None = None
+    source: Path, destination: Path, *, kind: SubtitleKind, layout: LayoutLimits | None = None
 ) -> Path:
     """Convert one supported subtitle file while preserving its complete event stream."""
     subtitles: SSAFile = load_subtitles(source)
@@ -136,9 +129,9 @@ def normalize_subtitles(
     return _write_output(subtitles, destination, kind, subject="Normalized")
 
 
-def reflow_polish_dialogue(split: SubtitleSplit, layout: LayoutConfig | None = None) -> SubtitleSplit:
+def reflow_polish_dialogue(split: SubtitleSplit, layout: LayoutLimits | None = None) -> SubtitleSplit:
     """Reflow Polish spoken events on a copy, preserving signs and exact inline formatting."""
-    limits: LayoutConfig = layout if layout is not None else LayoutConfig()
+    limits: LayoutLimits = layout if layout is not None else LayoutLimits()
     subtitles: SSAFile = deepcopy(split.subs)
     dialogue_index: int = 0
     for event in subtitles.events:
@@ -150,25 +143,11 @@ def reflow_polish_dialogue(split: SubtitleSplit, layout: LayoutConfig | None = N
             continue
         verses: tuple[str, ...] = split_line(
             visible_text(event.text, preserve_hard_spaces=True),
-            max_chars=limits.max_chars_per_line,
-            max_lines=limits.max_lines_per_event,
+            max_chars=limits.max_chars,
+            max_lines=limits.max_lines,
         )
         event.text = reflow_visible_text(event.text, verses)
     return replace(split, subs=subtitles)
-
-
-def preview_styles(subs: SSAFile) -> tuple[tuple[StyleVerdict, ...], dict[str, tuple[str, ...]]]:
-    """Classify styles and collect short, visible-text samples per style."""
-    verdicts = tuple(classify_styles(subs))
-    samples: dict[str, list[str]] = defaultdict(list)
-    for event in subs.events:
-        if event.type != "Dialogue" or is_drawing(event.text):
-            continue
-        text = visible_text(event.text)
-        if not text or text in samples[event.style] or len(samples[event.style]) >= _SAMPLES_PER_STYLE:
-            continue
-        samples[event.style].append(text[: _SAMPLE_MAX_CHARS - 1] + "…" if len(text) > _SAMPLE_MAX_CHARS else text)
-    return verdicts, {style: tuple(lines) for style, lines in samples.items()}
 
 
 def _make_run(events: list[tuple[int, SSAEvent]], text: str, style: str) -> SpokenLine:

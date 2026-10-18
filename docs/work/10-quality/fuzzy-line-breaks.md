@@ -95,7 +95,7 @@ rozpoznane przepełnienie raportować. Niepewna relacja językowa stosuje tabel�
 Produkcja współdzieli [pomiar §A.3](fuzzy-signs-and-split.md#a3-pomiar-warunek-wstępny): FreeType/Pillow,
 prawdziwy font odcinka (`\fn/\fs`, wariant i zakres tagów), advance z `\fscx/\fsp` oraz bbox
 powiększony o `\bord/\shad` jako `W`; `A` = szerokość po marginesach w tych samych jednostkach.
-libass przez FFmpeg (`scripts/quality/render.py`) służy wyłącznie jako wzorzec kalibracji.
+libass przez FFmpeg (`scripts/subtitle_quality/render.py`) służy wyłącznie jako wzorzec kalibracji.
 Auto-wrap przewidujemy oddzielnie: skorygowany advance > A przy efektywnym wrap innym niż 2
 (`\q2`/`WrapStyle 2` wyłącza go); taki wiersz odrzucamy. Cache metryk segmentów: O(b²) na event.
 Próg obowiązuje w generatorze, obu grafach ratunkowych i wyborze; `0,98<u≤1` nie spełnia dopasowania.

@@ -15,9 +15,9 @@ from anishift.services.subtitles.service import load_subtitles
 from anishift.services.subtitles.text import is_drawing, visible_text
 from anishift.utils.logger import LoggerMode, setup_mode
 from anishift.utils.logger.config import FileConfig
-from scripts.quality import metrics
-from scripts.quality.episode import FRAMES_NAME, OUTPUT_NAME, SOURCE_NAME, episode_dirs, video_path
-from scripts.quality.render import extract_attachments, run_ffmpeg
+from scripts.subtitle_quality import metrics
+from scripts.subtitle_quality.episode import FRAMES_NAME, OUTPUT_NAME, SOURCE_NAME, episode_dirs, video_path
+from scripts.subtitle_quality.render import extract_attachments, run_ffmpeg
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -101,7 +101,7 @@ def extract(directory: Path) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     """Extract gallery frames for every episode pair with a ``video.txt`` under the given roots."""
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
-        prog="python -m scripts.quality.frames",
+        prog="python -m scripts.subtitle_quality.frames",
         description=(
             "Save the video frame at every subtitle moment of each episode pair into frames/<ms>.jpg "
             "and its fonts into fonts/, so the gallery and measurement no longer need the video."

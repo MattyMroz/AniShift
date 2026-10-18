@@ -67,7 +67,9 @@ from anishift.services.llm import (
     TextPart,
 )
 from anishift.services.llm.engines.palantir import PALANTIR_ENGINE_ID, PalantirModelConfig, palantir_model_config
+from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.translation import TranslationConfig, TranslationService
+from anishift.services.translation.chunk_config import ChunkConfig
 from anishift.services.translation.constants import DEFAULT_BATCH_SIZE
 from anishift.services.translation.engines import create_engine
 from anishift.services.translation.engines.llm import LlmTranslateConfig, LlmTranslateService
@@ -79,7 +81,6 @@ from anishift.services.translation.errors import (
     TranslationQuotaError,
     TranslationRateLimitError,
 )
-from anishift.services.translation.layout_config import LayoutConfig
 from anishift.services.translation.protocols import (
     LlmCompletionRequest,
     LlmCompletionResult,
@@ -178,11 +179,12 @@ class ProductionHandlerFactory:
                 timeout_s=_EXTRACTION_TIMEOUT_S,
                 legacy=LegacyExtractionAdapter(identify, extract_tracks),
             ),
-            SubtitleTaskHandler(run_root=run_root, layout=_layout_config(plan)),
+            SubtitleTaskHandler(run_root=run_root, layout=_layout_limits(plan)),
             TranslationTaskHandler(
                 _translation_service(settings, plan),
                 run_root=run_root,
-                layout=_layout_config(plan),
+                layout=_layout_limits(plan),
+                chunk_config=_chunk_config(plan),
             ),
             tts=tts_handler,
             audio=audio_handler,
@@ -639,13 +641,16 @@ def _audio_config(plan: ExecutionPlan) -> AudioConfig:
     )
 
 
-def _layout_config(plan: ExecutionPlan) -> LayoutConfig:
+def _layout_limits(plan: ExecutionPlan) -> LayoutLimits:
     snapshot = plan.settings
-    return LayoutConfig(
-        max_chars_per_line=snapshot.subtitle_max_chars_per_line,
-        max_lines_per_event=snapshot.subtitle_max_lines_per_event,
-        chunk_chars=snapshot.translation_chunk_chars,
+    return LayoutLimits(
+        max_chars=snapshot.subtitle_max_chars_per_line,
+        max_lines=snapshot.subtitle_max_lines_per_event,
     )
+
+
+def _chunk_config(plan: ExecutionPlan) -> ChunkConfig:
+    return ChunkConfig(chunk_chars=plan.settings.translation_chunk_chars)
 
 
 def _mirror_translation_cancel(

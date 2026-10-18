@@ -32,9 +32,10 @@ from anishift.services.subtitles import (
     visible_verses,
     write_translated,
 )
+from anishift.services.subtitles.layout import LayoutLimits
+from anishift.services.subtitles.linebreak import split_for_layout, split_line
+from anishift.services.translation.chunk_config import ChunkConfig
 from anishift.services.translation.errors import TranslationError
-from anishift.services.translation.layout_config import LayoutConfig
-from anishift.services.translation.linebreak import split_for_layout, split_line
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
 from anishift.services.translation.types import FileTranslation, TranslatedLine
 from anishift.text.markers import SPAN_MARKER, strip_span_markers
@@ -159,19 +160,21 @@ class TextDocument:
 class TranslationTaskHandler:
     """Translate one subtitle artifact and write a complete Polish staging file."""
 
-    __slots__ = ("_layout", "_run_root", "_service")
+    __slots__ = ("_chunk_config", "_layout", "_run_root", "_service")
 
     def __init__(
         self,
         service: TranslationExecutor,
         *,
         run_root: Path,
-        layout: LayoutConfig | None = None,
+        layout: LayoutLimits | None = None,
+        chunk_config: ChunkConfig | None = None,
     ) -> None:
         """Bind one configured translation facade to the run scope."""
         self._service: TranslationExecutor = service
         self._run_root: Path = run_root
-        self._layout: LayoutConfig = layout if layout is not None else LayoutConfig()
+        self._layout: LayoutLimits = layout if layout is not None else LayoutLimits()
+        self._chunk_config: ChunkConfig = chunk_config if chunk_config is not None else ChunkConfig()
 
     def execute(
         self,
@@ -240,7 +243,7 @@ class TranslationTaskHandler:
         if parameters.get("source_kind") != "txt" or parameters.get("output_format") != "txt" or source.path is None:
             msg = "Text document translation requires source_kind=txt and a txt output"
             raise ExecutionError(msg)
-        document: TextDocument = read_text_document(read_txt(source.path), self._layout)
+        document: TextDocument = read_text_document(read_txt(source.path), self._chunk_config)
         spoken: tuple[SpokenLine, ...] = tuple(
             SpokenLine(start=0, end=0, text=fragment.text, style=fragment.identity) for fragment in document.fragments
         )
@@ -269,7 +272,7 @@ class TranslationTaskHandler:
         if parameters.get("source_kind") != "txt" or output.subtitle_format != "srt" or source.path is None:
             msg = "Text translation requires source_kind=txt and an SRT output"
             raise ExecutionError(msg)
-        spoken: tuple[SpokenLine, ...] = text_spoken_lines(read_txt(source.path), self._layout)
+        spoken: tuple[SpokenLine, ...] = text_spoken_lines(read_txt(source.path), self._chunk_config)
         result: FileTranslation = self._service.translate_file(
             list(spoken),
             [],
@@ -360,11 +363,11 @@ def translate_subtitle_split(
     )
 
 
-def read_text_document(text: str, layout: LayoutConfig | None = None) -> TextDocument:
+def read_text_document(text: str, chunk_config: ChunkConfig | None = None) -> TextDocument:
     """Split one plain text document into identified paragraph fragments, keeping every blank line verbatim."""
     from anishift.services.translation.chunking import chunk_text, split_paragraphs  # noqa: PLC0415 - keep engines lazy
 
-    limits: LayoutConfig = layout if layout is not None else LayoutConfig()
+    limits: ChunkConfig = chunk_config if chunk_config is not None else ChunkConfig()
     fragments: list[TextFragment] = []
     breaks: list[str] = []
     for paragraph, raw in enumerate(split_paragraphs(text)):
@@ -404,11 +407,11 @@ def write_text_document(document: TextDocument, translated: Sequence[str], desti
     return destination
 
 
-def text_spoken_lines(text: str, layout: LayoutConfig | None = None) -> tuple[SpokenLine, ...]:
+def text_spoken_lines(text: str, chunk_config: ChunkConfig | None = None) -> tuple[SpokenLine, ...]:
     """Chunk plain text hierarchically and wrap each chunk as a narrator line."""
     from anishift.services.translation.chunking import chunk_text  # noqa: PLC0415 - keep engines lazy
 
-    limits: LayoutConfig = layout if layout is not None else LayoutConfig()
+    limits: ChunkConfig = chunk_config if chunk_config is not None else ChunkConfig()
     chunks = chunk_text(text, char_limit=limits.chunk_chars, chunk_limit=limits.chunk_pieces)
     flattened = (" ".join(chunk.split()) for chunk in chunks)
     return tuple(SpokenLine(start=0, end=0, text=chunk, style="") for chunk in flattened if chunk)
@@ -438,10 +441,10 @@ def displayed_lines(split: SubtitleSplit) -> tuple[DisplayedLine, ...]:
 def translation_verses(
     split: SubtitleSplit,
     result: FileTranslation,
-    layout: LayoutConfig | None = None,
+    layout: LayoutLimits | None = None,
 ) -> TranslationVerses:
     """Build authored displayed layout and readable spoken line breaks."""
-    limits: LayoutConfig = layout if layout is not None else LayoutConfig()
+    limits: LayoutLimits = layout if layout is not None else LayoutLimits()
     dialogue = [event for event in split.subs.events if event.type == "Dialogue"]
     displayed_events = [
         event
@@ -455,8 +458,8 @@ def translation_verses(
             split_for_layout(
                 strip_span_markers(text),
                 visible_verses(event.text),
-                max_chars=limits.max_chars_per_line,
-                max_lines=limits.max_lines_per_event,
+                max_chars=limits.max_chars,
+                max_lines=limits.max_lines,
             ),
         )
         for event, text in zip(displayed_events, result.displayed, strict=True)
@@ -467,8 +470,8 @@ def translation_verses(
             line.text,
             split_line(
                 strip_span_markers(line.text),
-                max_chars=limits.max_chars_per_line,
-                max_lines=limits.max_lines_per_event,
+                max_chars=limits.max_chars,
+                max_lines=limits.max_lines,
             ),
         )
         for line in result.spoken

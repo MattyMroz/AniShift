@@ -11,9 +11,9 @@ from anishift.services.subtitles import (
     visible_text,
     write_translated,
 )
+from anishift.services.subtitles.linebreak import split_line
 from anishift.services.subtitles.types import DisplayedLine, SpokenLine
 from anishift.services.translation.config import TranslationConfig
-from anishift.services.translation.linebreak import split_line
 from anishift.services.translation.service import TranslationService
 
 pytestmark = pytest.mark.network

@@ -1,4 +1,4 @@
-"""Text layout limits the translation handler applies to finished subtitles."""
+"""Translation request size chosen for one run."""
 
 from __future__ import annotations
 
@@ -6,9 +6,8 @@ from dataclasses import dataclass
 from typing import Final
 
 from anishift.services.translation.chunking import DEFAULT_CHAR_LIMIT
-from anishift.services.translation.linebreak import DEFAULT_MAX_CHARS, MAX_LINES
 
-__all__ = ["LayoutConfig"]
+__all__ = ["ChunkConfig"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -17,21 +16,13 @@ _CHUNK_SPLIT_RATIO: Final[int] = 3
 
 
 @dataclass(frozen=True, slots=True)
-class LayoutConfig:
-    """Line and chunk limits chosen by the user for one run."""
+class ChunkConfig:
+    """Request size chosen by the user for one run."""
 
-    max_chars_per_line: int = DEFAULT_MAX_CHARS
-    max_lines_per_event: int = MAX_LINES
     chunk_chars: int = DEFAULT_CHAR_LIMIT
 
     def __post_init__(self) -> None:
-        """Reject limits that would make the splitters unable to produce output."""
-        if self.max_chars_per_line <= 0:
-            msg = "Maximum characters per line must be positive"
-            raise ValueError(msg)
-        if self.max_lines_per_event <= 0:
-            msg = "Maximum lines per event must be positive"
-            raise ValueError(msg)
+        """Reject a request size that would make the chunker unable to produce output."""
         if self.chunk_chars <= 0:
             msg = "Chunk size must be positive"
             raise ValueError(msg)

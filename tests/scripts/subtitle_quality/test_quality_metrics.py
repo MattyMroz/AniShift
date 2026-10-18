@@ -6,7 +6,7 @@ import pytest
 from pysubs2 import SSAEvent, SSAFile
 
 from anishift.services.subtitles.classifier import Category
-from scripts.quality import metrics
+from scripts.subtitle_quality import metrics
 
 _HEADER = """[Script Info]
 ScriptType: v4.00+

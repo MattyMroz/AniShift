@@ -7,7 +7,7 @@ from PIL import Image
 from pysubs2 import SSAFile
 
 from anishift.platform.binaries import Binary, resolve_binary
-from scripts.quality import metrics, render
+from scripts.subtitle_quality import metrics, render
 
 _SCRIPT = """[Script Info]
 ScriptType: v4.00+
