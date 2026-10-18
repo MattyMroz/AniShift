@@ -313,4 +313,44 @@ def test_real_font_attachment_survives_merge_without_false_missing_warning(tmp_p
     )
     assert extracted_font.read_bytes() == font.read_bytes()
     assert source.read_bytes() == source_bytes
-    assert result.warnings == ("font embedding not verified: Segoe UI",)
+    assert result.warnings == ()
+
+
+@pytest.mark.skipif(FFMPEG is None or MKVMERGE is None, reason="bundled tools are unavailable")
+def test_real_font_files_join_the_source_attachments_without_duplicates(tmp_path: Path) -> None:
+    fonts: Path = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+    if not (fonts / "segoeui.ttf").is_file() or not (fonts / "arial.ttf").is_file():
+        pytest.skip("The locally installed Segoe UI and Arial fonts are unavailable")
+    video: Path = tmp_path / "video.mkv"
+    _sample_video(video, duration_s=1)
+    source: Path = tmp_path / "Episode.mkv"
+    subprocess.run(  # noqa: S603
+        [str(MKVMERGE), "-o", str(source), str(video), "--attach-file", str(fonts / "segoeui.ttf")],
+        check=True,
+        capture_output=True,
+        timeout=15.0,
+    )
+    owner: Path = tmp_path / "owner"
+    owner.mkdir()
+    same_content: Path = owner / "Segoe Copy.ttf"
+    same_content.write_bytes((fonts / "segoeui.ttf").read_bytes())
+    same_name: Path = owner / "segoeui.ttf"
+    same_name.write_bytes((fonts / "arial.ttf").read_bytes())
+    subtitle: Path = tmp_path / "Episode.pl.ass"
+    subtitle.write_text(_ASS, encoding="utf-8")
+
+    result: ContainerCompositionResult = CompositionService(CompositionConfig()).compose_container(
+        ContainerCompositionRequest(
+            source_video=source,
+            destination=tmp_path / "Episode.pl.mkv",
+            target=ContainerTarget.MKV,
+            burn_subtitle=None,
+            attached_subtitles=(AttachedSubtitle(subtitle, SubtitleRole.FULL, "pol", "Napisy PL"),),
+            narration_audio=None,
+            keep_original_audio=True,
+            font_files=(same_content, same_name),
+        )
+    )
+
+    assert sorted(identify(result.output_path).attachments) == ["segoeui (2).ttf", "segoeui.ttf"]
+    assert result.warnings == ()

@@ -322,6 +322,7 @@ USER_SETTING_DISPOSITIONS: Final[MappingProxyType[str, SettingDisposition]] = Ma
         "translation_engine": SettingDisposition.VISIBLE,
         "subtitle_max_chars_per_line": SettingDisposition.VISIBLE,
         "subtitle_max_lines_per_event": SettingDisposition.VISIBLE,
+        "dialogue_font_file": SettingDisposition.VISIBLE,
         "translation_chunk_chars": SettingDisposition.VISIBLE,
         "translation_batch_size": SettingDisposition.VISIBLE,
         "translation_concurrency": SettingDisposition.VISIBLE,
@@ -739,6 +740,15 @@ def _translation_specs(
             scope=SettingScope.GLOBAL,
             minimum=EVENT_LINES_RANGE[0],
             maximum=EVENT_LINES_RANGE[1],
+            invalidates=_TRANSLATION_INVALIDATES,
+        ),
+        SettingSpec(
+            setting_id="dialogue_font_file",
+            label="Dialogue font file",
+            description="Draw dialogue with this font file and attach it to MKV; empty keeps the episode's fonts.",
+            value_type=SettingValueType.STRING,
+            default=defaults.dialogue_font_file,
+            scope=SettingScope.GLOBAL,
             invalidates=_TRANSLATION_INVALIDATES,
         ),
         SettingSpec(

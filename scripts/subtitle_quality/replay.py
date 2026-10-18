@@ -21,6 +21,7 @@ from anishift.services.subtitles import (
     write_full,
 )
 from anishift.services.subtitles.layout import LayoutLimits
+from anishift.services.subtitles.restyle import DialogueFont
 from anishift.utils.logger import LoggerMode, setup_mode
 from anishift.utils.logger.config import FileConfig
 from scripts.subtitle_quality import metrics
@@ -116,13 +117,19 @@ def translations(split: SubtitleSplit, inputs: PairInput) -> dict[int, str]:
     return {index: inputs.translations[index] for index in keys}
 
 
-def replay_pair(directory: Path, destination: Path) -> tuple[PairInput, SubtitleSplit, Path | None]:
-    """Lay out one pair's Polish text with the default limits and write it."""
+def replay_pair(
+    directory: Path, destination: Path, dialogue_font: DialogueFont | None = None
+) -> tuple[PairInput, SubtitleSplit, Path | None]:
+    """Lay out one pair's Polish text with the default limits, and the dialogue font when given, and write it."""
     source: SSAFile = load_subtitles(directory / SOURCE_NAME)
     inputs: PairInput = pair_input(source, load_subtitles(directory / OUTPUT_NAME))
     split: SubtitleSplit = split_subtitles(source, kind="ass")
     laid_out: TranslatedLayout = layout_translated(
-        split, translations(split, inputs), fonts=pair_fonts(directory), limits=LayoutLimits(), dialogue_font=None
+        split,
+        translations(split, inputs),
+        fonts=pair_fonts(directory),
+        limits=LayoutLimits(),
+        dialogue_font=dialogue_font,
     )
     return inputs, split, write_full(replace(split, subs=laid_out.subs), destination)
 
@@ -140,7 +147,7 @@ def pair_dirs(roots: Sequence[Path]) -> list[tuple[str, Path]]:
     return sorted(found.items())
 
 
-def replay(roots: Sequence[Path], out: Path) -> Path:
+def replay(roots: Sequence[Path], out: Path, dialogue_font: DialogueFont | None = None) -> Path:
     """Replay every pair folder under the roots into ``out`` and write its mapping file; return the mapping path."""
     out.mkdir(parents=True, exist_ok=True)
     pairs: list[Entry] = []
@@ -151,7 +158,7 @@ def replay(roots: Sequence[Path], out: Path) -> Path:
             continue
         destination: Path = out / f"{pair_id}{REPLAY_SUFFIX}"
         destination.parent.mkdir(parents=True, exist_ok=True)
-        inputs, split, written = replay_pair(directory, destination)
+        inputs, split, written = replay_pair(directory, destination, dialogue_font)
         if written is None:
             skipped.append({"pair": pair_id, "reason": "writer produced no output"})
             continue
@@ -248,6 +255,7 @@ def main(argv: Sequence[str], quality_root: Path) -> int:
     parser.add_argument("--out", type=Path, help="replay folder to write")
     parser.add_argument("--compare", nargs=2, type=Path, metavar=("BASE", "OTHER"), help="replay folders to compare")
     parser.add_argument("--events", action="store_true", help="compare event by event, leaving excluded events out")
+    parser.add_argument("--dialogue-font", type=Path, help="font file drawing dialogue, as the dialogue font setting")
     args: argparse.Namespace = parser.parse_args(argv)
     setup_mode(LoggerMode.SILENT, file=FileConfig(enable=False))
     if args.compare is not None and args.events:
@@ -261,7 +269,8 @@ def main(argv: Sequence[str], quality_root: Path) -> int:
     if args.out is None:
         parser.error("give --out to replay or --compare to compare")
     roots: list[Path] = list(args.roots) or [quality_root / folder for folder in REPLAY_ROOTS]
-    print(f"mapping {replay(roots, args.out)}", file=sys.stderr)
+    font: DialogueFont | None = None if args.dialogue_font is None else DialogueFont.from_file(args.dialogue_font)
+    print(f"mapping {replay(roots, args.out, font)}", file=sys.stderr)
     return 0
 
 

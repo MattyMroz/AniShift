@@ -7,7 +7,8 @@ jeden zweryfikowany plik wynikowy.
 
 - Composition przyjmuje `CompositionPlan` albo `ContainerCompositionRequest` ze ścieżkami i decyzją, co dołożyć.
 - Nie wykonuje podziału ani tłumaczenia napisów; nie zna `pysubs2`, `SubtitleSplit`,
-  `FileTranslation` ani `SpeechBatch`. `fonts.py` tylko odczytuje nazwy fontów ASS do diagnostyki.
+  `FileTranslation` ani `SpeechBatch`. `fonts.py` odczytuje nazwy fontów ASS, sprawdza je rodzinami z
+  `services/fonts` i wybiera pliki czcionek do dołączenia.
 - Decyzję „co dołożyć" podejmuje `application/planner.py`, a request buduje
   `application/composition_handler.py`; composition odpowiada wyłącznie za
   „jak to złożyć".
@@ -52,8 +53,13 @@ jeden zweryfikowany plik wynikowy.
 - Filtr `ass=` dla ASS (pełna wierność stylów), `subtitles=` tylko dla SRT.
 - MP4 nie przyjmuje ASS ani załączników; stylowane napisy istnieją tam wyłącznie
   jako wypalone w obrazie.
-- Nazwa załącznika fontu NIE potwierdza rodziny. Przy obecnych font attachments
-  `fonts.py` raportuje niezweryfikowane osadzenie; nie twierdzi, że fontu brakuje.
-  Pełna walidacja wymaga metadanych rodziny, nie porównania basename.
+- Nazwa załącznika fontu NIE potwierdza rodziny: diagnostyka czyta rodziny z wyciągniętych
+  załączników źródła (`extract_attachments`) i z `font_files` przez `FontIndex`, nigdy z basename.
+- `font_files` (czcionka dialogów) to oferta: trafia do wyniku tylko plik, którego rodzinę nazywa
+  styl albo `\fn` dołączanych lub wypalanych napisów (`used_font_files`); bieżące ustawienie nie
+  zastępuje rodziny użytej w starszym `.pl.ass` (zostaje ostrzeżenie diagnostyki). Do MKV idą jako
+  `--attachment-name` + `--attach-file`; plik o zawartości (sha256) obecnej wśród załączników źródła
+  jest pomijany, zajęta nazwa dostaje sufiks ` (2)`. Wypalanie MP4 dostaje `fontsdir` z załącznikami
+  kontenera i użytymi `font_files` w prywatnym katalogu pracy obok celu. `fonts.py`, `service.py`
 - Rozdziały źródła przechodzą do MP4 same, jako ścieżka `bin_data`/`text`
   z handlerem `SubtitleHandler` — to rozdziały QuickTime, nie zabłąkane napisy.

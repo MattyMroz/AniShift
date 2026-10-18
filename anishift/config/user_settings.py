@@ -257,6 +257,7 @@ class UserSettings:
     translation_engine: str = "google"
     subtitle_max_chars_per_line: int = DEFAULT_MAX_CHARS
     subtitle_max_lines_per_event: int = MAX_LINES
+    dialogue_font_file: str = ""
     translation_chunk_chars: int = DEFAULT_CHAR_LIMIT
     translation_batch_size: int = 0
     translation_concurrency: int = 1
@@ -832,6 +833,7 @@ def load_user_settings() -> UserSettings:  # noqa: PLR0915 - explicit tolerant f
     _clean_string(filtered, "translation_engine", engine_ids)
     _clean_integer(filtered, "subtitle_max_chars_per_line", *LINE_CHARS_RANGE)
     _clean_integer(filtered, "subtitle_max_lines_per_event", *EVENT_LINES_RANGE)
+    _clean_free_string(filtered, "dialogue_font_file")
     _clean_integer(filtered, "translation_chunk_chars", *CHUNK_CHARS_RANGE)
     _clean_integer(filtered, "translation_batch_size", *BATCH_SIZE_RANGE)
     _clean_integer(filtered, "translation_concurrency", *CONCURRENCY_RANGE)

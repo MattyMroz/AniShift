@@ -71,7 +71,7 @@ class AttachedSubtitle:
 
 @dataclass(frozen=True, slots=True)
 class ContainerCompositionRequest:
-    """Exact inputs and destination for one container product."""
+    """Exact inputs and destination for one container product; a font file joins it when its subtitles use it."""
 
     source_video: Path
     destination: Path
@@ -80,6 +80,7 @@ class ContainerCompositionRequest:
     attached_subtitles: tuple[AttachedSubtitle, ...]
     narration_audio: Path | None
     keep_original_audio: bool
+    font_files: tuple[Path, ...] = ()
 
     def __post_init__(self) -> None:
         if self.source_video == self.destination:

@@ -118,6 +118,17 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
 - Zakres · domyślnie: 1–4 · 2.
 - Przykład: 3, gdy dopuszczasz trzy wersy tekstu w jednym zdarzeniu napisów.
 
+### Plik czcionki dialogów (`dialogue_font_file`)
+
+- Co robi: kwestie czytane przez lektora dostają kopię swojego stylu z tą czcionką (styl
+  `<nazwa> (dialog)`); szyldy zostają w czcionkach wydania. Plik i jego warianty z tego samego
+  katalogu (ta sama rodzina, wszystkie polskie litery) trafiają do MKV jako załączniki i do
+  katalogu czcionek przy wypalaniu MP4, gdy napisy używają tej rodziny. Napisy SRT się nie zmieniają.
+- Wartości · domyślnie: ścieżka do pliku czcionki · puste (wyłączone).
+- Zależność: zapis odrzuca plik nieczytelny, bez nazwy rodziny albo bez polskich liter. Gdy plik
+  zniknie później, plan pokazuje ostrzeżenie, a dialogi zostają w czcionce wydania.
+- Przykład: `C:\Users\Ja\Videos\mpv\portable_config\fonts\ITC Officina Sans Std PL - Bold.ttf`.
+
 ## Tłumaczenie
 
 ### Silnik tłumaczenia (`translation_engine`)

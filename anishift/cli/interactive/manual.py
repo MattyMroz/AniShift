@@ -126,6 +126,7 @@ _PROBLEM_MESSAGES: Final[dict[str, str]] = {
     "audio_duration_mismatch": "Wybrane audio ma inną długość niż wideo",
     "audio_selection_invalid": "Wybrane audio jest niedostępne lub nieprawidłowe",
     "audio_source_missing": "Brak zgodnego źródła audio",
+    "dialogue_font_unusable": "Czcionki dialogów nie da się użyć · dialogi zostaną w czcionce wydania",
     "displayed_cues_absent": "Napisy SRT nie mają warstwy ekranowej · napisy ekranowe zostaną pominięte",
     "source_conflict": "Grupa zawiera nierozwiązany konflikt źródeł",
     "subtitle_selection_invalid": "Wybrane napisy są niedostępne lub nieprawidłowe",

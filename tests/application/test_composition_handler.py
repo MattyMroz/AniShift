@@ -177,6 +177,21 @@ def test_composition_handler_rejects_cancelled_task_before_service_call(tmp_path
     assert service.requests == []
 
 
+def test_composition_handler_offers_the_dialogue_font_files_to_the_container_request(tmp_path: Path) -> None:
+    task, snapshot, _ = _snapshot(tmp_path)
+    fonts: tuple[Path, ...] = (tmp_path / "Officina - Bold.ttf", tmp_path / "Officina - Bold Italic.ttf")
+    service: _Composer = _Composer()
+
+    CompositionTaskHandler(service, run_root=tmp_path / "run", font_files=fonts).execute(
+        task,
+        snapshot,
+        NeverCancelledToken(),
+        _Progress(),
+    )
+
+    assert service.requests[0].font_files == fonts
+
+
 def _cover_snapshot(
     tmp_path: Path,
     *,
