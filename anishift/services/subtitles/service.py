@@ -88,6 +88,9 @@ _COPY_WINDOW_MS: Final[int] = 500
 _SIGN_ECHO_MS: Final[int] = 2000
 """Largest distance between a sign's screen window and the start or end of a spoken line it echoes."""
 
+_SONG_GAP_MS: Final[int] = 5000
+"""Largest gap between consecutive song or karaoke lines that still belongs to the same song."""
+
 _RE_NON_WORD: Final[re.Pattern[str]] = re.compile(r"\W+")
 """Run of non-word characters ignored when comparing copies of one spoken line."""
 
@@ -419,7 +422,7 @@ def _sign_weights(split: SubtitleSplit, dialogue: Sequence[SSAEvent]) -> tuple[S
         for order, (event, decision) in enumerate(zip(dialogue, split.decisions, strict=True))
         if decision == "displayed" and not never_narrated(event)
     ]
-    songs: list[tuple[int, int]] = [(event.start, event.end) for event in dialogue if sung(event)]
+    songs: list[tuple[int, int]] = _songs(dialogue)
     runs: list[_Run] = [
         run
         for run in _merge_echoes(_fbf_runs(candidates))
@@ -432,6 +435,17 @@ def _sign_weights(split: SubtitleSplit, dialogue: Sequence[SSAEvent]) -> tuple[S
         for order, _ in run:
             weights[order] = weight
     return tuple(weights)
+
+
+def _songs(dialogue: Sequence[SSAEvent]) -> list[tuple[int, int]]:
+    """Return each song as one span over its sung lines, joining lines up to ``_SONG_GAP_MS`` apart."""
+    songs: list[tuple[int, int]] = []
+    for start, end in sorted((event.start, event.end) for event in dialogue if sung(event)):
+        if songs and start - songs[-1][1] <= _SONG_GAP_MS:
+            songs[-1] = (songs[-1][0], max(songs[-1][1], end))
+            continue
+        songs.append((start, end))
+    return songs
 
 
 def _sign_weight(

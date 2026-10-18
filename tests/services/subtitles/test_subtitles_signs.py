@@ -148,6 +148,23 @@ def test_signs_during_a_song_and_single_letters_are_never_sign_candidates() -> N
     assert split.sign_weights[2:5] == (None, None, None)
 
 
+@pytest.mark.parametrize(("second_verse", "candidate"), [("0:00:25.00", False), ("0:00:30.00", True)])
+def test_a_sign_in_a_gap_between_verses_belongs_to_the_song_only_up_to_five_seconds(
+    second_verse: str, candidate: bool
+) -> None:
+    events: str = (
+        "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Good morning, everyone.\n"
+        "Dialogue: 0,0:00:20.00,0:00:22.00,OP,,0,0,0,,Fly away\n"
+        "Dialogue: 0,0:00:22.50,0:00:24.50,Sign,,0,0,0,,{\\pos(320,40)}DREAM SERIES\n"
+        f"Dialogue: 0,{second_verse},0:00:40.00,OP,,0,0,0,,Far away\n"
+    )
+
+    split: SubtitleSplit = split_subtitles(SSAFile.from_string(_HEADER + events), kind="ass")
+
+    assert split.decisions[2] == "displayed"
+    assert (split.sign_weights[2] is not None) is candidate
+
+
 def test_sounds_written_as_repeated_words_weigh_against_reading_like_a_repeat() -> None:
     split: SubtitleSplit = split_subtitles(SSAFile.from_string(_HEADER + _SONG_EVENTS), kind="ass")
     school, tup, pik = split.sign_weights[1], split.sign_weights[5], split.sign_weights[6]
