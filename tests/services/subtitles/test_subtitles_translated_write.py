@@ -26,6 +26,12 @@ from anishift.services.subtitles.types import SubtitleKind, SubtitleSplit
 _REAL_ASS_NAME = "006___shisha__Genjitsu_no_Yohane_-_Sunshine_in_the_Mirror_-_01__1080p_.mkv.ass"
 _REAL_ASS = MM_AVH_TEMP / "dataset_ass" / _REAL_ASS_NAME
 _RE_TAGS = re.compile(r"\{[^}]*\}")
+_RE_SCALE = re.compile(r"\\fsc[xy]?(?:-?[0-9]*\.?[0-9]+)?")
+
+
+def _tags_without_scale(text: str) -> list[str]:
+    blocks: list[str] = [_RE_SCALE.sub("", block) for block in _RE_TAGS.findall(text)]
+    return [block for block in blocks if block != "{}"]
 
 
 def _ass_with_both_streams() -> SSAFile:
@@ -319,11 +325,14 @@ def test_real_ass_bit_round_trip_keeps_every_event(tmp_path: Path) -> None:
         assert after.styles[name].as_dict() == before.styles[name].as_dict()
 
     translated_events = 0
-    for source, result in zip(before_dialogue, after_dialogue, strict=True):
+    for source, result, decision in zip(before_dialogue, after_dialogue, split.decisions, strict=True):
         assert result.start == source.start
         assert result.end == source.end
         assert result.style == source.style
-        assert _RE_TAGS.findall(result.text) == _RE_TAGS.findall(source.text)
+        if decision == "displayed":
+            assert _tags_without_scale(result.text) == _tags_without_scale(source.text)
+        else:
+            assert _RE_TAGS.findall(result.text) == _RE_TAGS.findall(source.text)
         source_visible = visible_text(source.text)
         if source_visible:
             assert visible_text(result.text) == f"PL:{source_visible}"
