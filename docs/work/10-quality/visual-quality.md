@@ -140,7 +140,7 @@ Wymagania:
 
 Decyzja właściciela z 18.10: woli, gdy lektor czyta też napisy ekranowe, ale nie zawsze, bo czasem jest to nieporządne; zależy to od kontekstu. Ważność napisu dla fabuły lub żartu jest poza zasięgiem programu (nie rozumie sceny), więc decyduje ważenie cech obserwowalnych, jak w całym dokumencie.
 
-**Twarde:** lektor nigdy nie mówi dwoma głosami naraz. Czytanie napisu nie może nachodzić na czytaną kwestię. Piosenki, karaoke i odgłosy w gwiazdkach (`*...*`) zostają tylko na ekranie.
+**Twarde:** lektor nigdy nie mówi dwoma głosami naraz, a czytanie napisu **nigdy nie przesuwa kwestii**: kwestie zostają w czasie swoich napisów, więc nie powstaje kaskada opóźnień. Napis wchodzi tylko w pauzę, która zostaje po kwestiach; gdy się nie mieści, nie jest czytany. O tym, czy się mieści, decyduje prawdziwa długość nagrania napisu, a nie szacunek ani stały limit sekund. Piosenki, karaoke i odgłosy w gwiazdkach (`*...*`) zostają tylko na ekranie.
 
 **Gdzie lektor może przeczytać napis:** w dowolnej pauzie między czytanymi kwestiami w czasie, gdy napis jest na ekranie, także zaraz przed kwestią albo zaraz po niej, a przy ważnym napisie chwilę po jego zniknięciu. To, że ktoś mówi, nie wyklucza czytania, jeśli jest pauza.
 
@@ -156,7 +156,7 @@ Decyzja właściciela z 18.10: woli, gdy lektor czyta też napisy ekranowe, ale 
 
 Lektor czyta napis, gdy przewaga „za” nad „przeciw” jest wyraźna. Duży tytuł przeczyta nawet w krótkiej pauzie, drobny napis w tle tylko przy dużej ilości czasu. Wartości kalibrujemy na odsłuchu fragmentów.
 
-Ustawienie panelu „Lektor czyta napisy ekranowe”: **nie** / **gdy pasuje** (domyślnie, ważenie wyżej) / **zawsze** (każdy napis poza piosenkami i odgłosami, w najbliższej pauzie). Właściciel ocenia warianty na odsłuchu.
+Przełącznik w panelu „Lektor a napisy ekranowe”: **nie czyta** / **czyta inteligentnie** (domyślnie, ważenie wyżej) / **czyta zawsze** (każdy napis, który mieści się w jakiejś pauzie, bez oceny ważności; nadal bez przesuwania kwestii). Część widzów nie lubi czytania napisów, dlatego to przełącznik. Właściciel ocenia warianty na odsłuchu.
 
 ## 7. Kursywa i kolory
 
