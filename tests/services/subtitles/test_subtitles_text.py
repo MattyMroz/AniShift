@@ -376,6 +376,23 @@ def test_marked_text_leaves_emphasis_opened_at_the_line_start_and_closed_mid_lin
 
 
 @pytest.mark.unit
+def test_marked_text_leaves_a_negation_reopened_only_at_a_verse_end_unmarked() -> None:
+    source: str = r"{\i1\q2}Isn't it just oh so {\i0}convenient{\i1}\N that the door would get stuck?"
+    assert marked_text(source, SSAStyle(bold=True)) == "Isn't it just oh so convenient that the door would get stuck?"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("source", [r"{\i0}Why {\i0}are you here?{\i1}", r"{\i0}Why\N{\i1}are {\i0}you here?"])
+def test_marked_text_leaves_a_style_emphasis_switched_off_before_the_first_grapheme_unmarked(source: str) -> None:
+    assert marked_text(source, SSAStyle(italic=True)) == "Why are you here?"
+
+
+@pytest.mark.unit
+def test_marked_text_opens_a_range_for_the_base_emphasis_of_a_block_also_switching_off_inactive_ones() -> None:
+    assert marked_text(r"For {\i0\b0}you{\i1} to call them,", SSAStyle(italic=True)) == "For <s1>you</s1> to call them,"
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("source", "expected"),
     [

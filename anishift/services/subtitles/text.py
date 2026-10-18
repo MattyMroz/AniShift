@@ -278,7 +278,7 @@ def _marked_boundaries(layout: _TextLayout, style: SSAStyle | None) -> tuple[_Bo
     )
     if len(interior) > _MAX_MARKED_BOUNDARIES or any(boundary.edge == "inside" for boundary in interior):
         return ()
-    if not interior or _closes_a_range(layout, interior[0], style):
+    if not interior or _closes_a_range(layout, interior, style):
         return ()
     starts: tuple[int, ...] = _segment_starts(layout.segments)
     cuts: list[int] = [starts[boundary.segment] + boundary.offset for boundary in interior]
@@ -292,24 +292,27 @@ def _is_comment(value: str) -> bool:
     return value.startswith("{") and "\\" not in value
 
 
-def _closes_a_range(layout: _TextLayout, boundary: _Boundary, style: SSAStyle | None) -> bool:
-    """Tell whether a boundary switches off an emphasis outside the line's base, closing a range opened before it."""
-    switched_off: set[str] = {
-        letter for value in boundary.values for letter, state in _RE_EMPHASIS.findall(value) if state == "0"
-    }
-    return bool(switched_off) and not switched_off <= _base_emphasis(layout, style)
-
-
-def _base_emphasis(layout: _TextLayout, style: SSAStyle | None) -> set[str]:
-    """Return the emphasis letters on in ``style`` or on at both the first and the last visible grapheme of the line."""
+def _closes_a_range(layout: _TextLayout, interior: tuple[_Boundary, ...], style: SSAStyle | None) -> bool:
+    """Tell whether the first boundary's emphasis switch-off fails to open a marked range over the line's base."""
+    first: _Boundary = interior[0]
+    switched_off: set[str] = _switched(first, on=False)
+    if not switched_off:
+        return False
     styled: dict[str, bool] = (
         {} if style is None else {"i": style.italic, "b": style.bold, "u": style.underline, "s": style.strikeout}
     )
-    base: set[str] = {letter for letter, enabled in styled.items() if enabled}
-    count: int = sum(map(_grapheme_count, layout.segments))
-    if not count:
-        return base
-    return base | (_emphasis_at(layout, 0, styled) & _emphasis_at(layout, count - 1, styled))
+    starts: tuple[int, ...] = _segment_starts(layout.segments)
+    active: set[str] = switched_off & _emphasis_at(layout, starts[first.segment] + first.offset - 1, styled)
+    base: set[str] = _emphasis_at(layout, 0, styled) & _emphasis_at(layout, starts[-1] - 1, styled)
+    reopened: set[str] = {letter for boundary in interior[1:] for letter in _switched(boundary, on=True)}
+    return not active or not active <= base & reopened
+
+
+def _switched(boundary: _Boundary, *, on: bool) -> set[str]:
+    """Return the emphasis letters a boundary's tags switch on, or off."""
+    return {
+        letter for value in boundary.values for letter, state in _RE_EMPHASIS.findall(value) if (state == "1") == on
+    }
 
 
 def _emphasis_at(layout: _TextLayout, position: int, styled: dict[str, bool]) -> set[str]:
