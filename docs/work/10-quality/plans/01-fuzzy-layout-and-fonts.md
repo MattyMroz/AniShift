@@ -191,12 +191,14 @@ Wiążące. F0 tworzy je z implementacją zachowującą dzisiejszy wynik (pomiar
 class FontFace:
     path: Path; face_index: int
     family_names: frozenset[str]   # p3 ID1, casefold
-    full_names: frozenset[str]     # p3 ID4 + PostScript, casefold
-    weight: int; italic: bool; units_per_em: int; ascent: int; descent: int
+    full_names: frozenset[str]     # p3 ID4, casefold
+    postscript_name: str | None    # casefold; dopasowanie ID4 vs PS wg rodzaju obrysów jak libass
+    weight: int; bold: bool; italic: bool; units_per_em: int; ascent: int; descent: int
     codepoints: frozenset[int]
 @dataclass(frozen=True, slots=True)
 class FontMatch:
     face: FontFace; exact: bool; synthetic_bold: bool; synthetic_italic: bool
+    requested_weight: int; requested_italic: bool   # żądanie, z którego glyph_match dobiera krój zastępczy
 
 # anishift/services/fonts/index.py  (U1)
 def read_faces(path: Path) -> tuple[FontFace, ...]
