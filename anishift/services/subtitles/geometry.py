@@ -16,7 +16,7 @@ from anishift.services.fonts import REFERENCE_SIZE, font_scale, glyph_metrics
 from anishift.services.subtitles.text import is_drawing, reflow_visible_text, visible_verses
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Iterable, Iterator, Mapping, Sequence
 
     from pysubs2 import SSAEvent, SSAFile
 
@@ -150,6 +150,9 @@ _ROTATION_TAGS: Final[frozenset[str]] = frozenset({"frx", "fry", "frz", "fr", "f
 
 _STYLE_ROTATIONS: Final[frozenset[str]] = frozenset({"frz", "fr"})
 """Rotation tags that fall back to the style angle without an argument."""
+
+_COLOUR_TAGS: Final[frozenset[str]] = frozenset({"c", "1c", "2c", "3c", "4c", "2a"})
+"""Tags a ``\\t`` may animate without changing where or how large the text is drawn."""
 
 _FALLBACK_STYLE: Final[SSAStyle] = SSAStyle()
 """Style measuring an event whose style the file does not define."""
@@ -395,13 +398,8 @@ class _Parser:
             self._line.extend(_Char(_ESCAPES.get(char, char), self._state) for char in _ESCAPES.get(piece, piece))
 
     def _tags(self, content: str, *, nested: bool) -> None:
-        for match in _RE_TAG.finditer(content):
-            body: str = match[1].lstrip()
-            name: str | None = next((tag for tag in _TAG_NAMES if body.startswith(tag)), None)
-            if name is None:
-                continue
-            arguments: list[str] = _arguments(match[2])
-            self._tag(name, arguments[0] if arguments else body[len(name) :].rstrip(), arguments, nested=nested)
+        for name, value, arguments in _tag_tokens(content):
+            self._tag(name, value, arguments, nested=nested)
 
     def _tag(self, name: str, value: str, arguments: list[str], *, nested: bool) -> None:
         if name in _STATE_TAGS:
@@ -444,9 +442,12 @@ class _Parser:
 
     def _transform(self, arguments: list[str], *, nested: bool) -> None:
         self._transformed = True
-        if nested or not self._final or not arguments or "\\" not in arguments[-1]:
+        inner: str = arguments[-1] if arguments and "\\" in arguments[-1] else ""
+        if any(name not in _COLOUR_TAGS for name, _, _ in _tag_tokens(inner)):
+            self._approximate = True
+        if nested or not self._final:
             return
-        self._tags(arguments[-1], nested=True)
+        self._tags(inner, nested=True)
 
     def _rotated(self, name: str, value: str) -> bool:
         if not value:
@@ -456,6 +457,17 @@ class _Parser:
 
 def _parse(event: SSAEvent, text: str, profile: RenderProfile, *, final: bool) -> _Parse:
     return _Parser(event, profile, final=final).parse(text)
+
+
+def _tag_tokens(content: str) -> Iterator[tuple[str, str, list[str]]]:
+    """Yield the known override tags of a block as name, first argument and parenthesised arguments."""
+    for match in _RE_TAG.finditer(content):
+        body: str = match[1].lstrip()
+        name: str | None = next((tag for tag in _TAG_NAMES if body.startswith(tag)), None)
+        if name is None:
+            continue
+        arguments: list[str] = _arguments(match[2])
+        yield name, arguments[0] if arguments else body[len(name) :].rstrip(), arguments
 
 
 def _arguments(content: str | None) -> list[str]:

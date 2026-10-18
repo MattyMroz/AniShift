@@ -226,6 +226,34 @@ def test_measure_text_marks_kerning_moves_transforms_rotation_and_unscaled_outli
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize(
+    "text",
+    [
+        r"{\t(0,1000,\frz90)}Sign",
+        r"{\t(\fry30)}Sign",
+        r"{\t(0,500,\clip(0,0,10,10))}Sign",
+        r"{\t(0,500,\iclip(0,0,10,10))}Sign",
+        r"{\t(0,500,\bord6)}Sign",
+        r"{\t(0,500,\1a&HFF&)}Sign",
+    ],
+)
+def test_measure_text_marks_a_transform_of_rotation_clip_outline_or_opacity_approximate(
+    system_fonts: FontIndex, text: str
+) -> None:
+    profile: RenderProfile = _profile(system_fonts, _style(outline=2))
+
+    assert measure_text(SSAEvent(text=text), text, profile).status == "approximate"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("text", [r"{\clip(0,0,500,500)}Sign", r"{\t(0,500,\c&H0000FF&\3c&H00FF00&)}Sign"])
+def test_measure_text_keeps_a_static_clip_and_colour_transforms_exact(system_fonts: FontIndex, text: str) -> None:
+    profile: RenderProfile = _profile(system_fonts, _style(outline=2))
+
+    assert measure_text(SSAEvent(text=text), text, profile).status == "exact"
+
+
+@pytest.mark.integration
 def test_measure_text_gives_an_empty_line_half_the_line_height(system_fonts: FontIndex) -> None:
     profile: RenderProfile = _profile(system_fonts, _style())
 
