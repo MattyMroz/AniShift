@@ -1,11 +1,11 @@
 ---
 kind: specification
-status: v1.1 (po przeglądzie astra, sol6, opus55)
+status: v1.2 (po przeglądzie i weryfikacji astra, sol6, opus55)
 updated: 2026-10-19
 supersedes: fuzzy-line-breaks.md (dla dialogów)
 ---
 
-# Łamanie polskich dialogów na wiersze — specyfikacja v1.1
+# Łamanie polskich dialogów na wiersze — specyfikacja v1.2
 
 Właściciel 18.10 odrzucił przepisany algorytm z gałęzi `work/quality/16-line-breaks` jako błędny i przekombinowany. Wskazał stary algorytm z `work/quality/08-fuzzy-quality` (replay `u6-font`) jako lepszy i działający. Ta specyfikacja zastępuje `fuzzy-line-breaks.md` w części o dialogach. Opiera się na trzech niezależnych badaniach z 18–19.10:
 
@@ -13,7 +13,7 @@ Właściciel 18.10 odrzucił przepisany algorytm z gałęzi `work/quality/16-lin
 - [research/line-breaking-opus55.md](research/line-breaking-opus55.md) — literatura, pomiar sześciu narzędzi, korpus profesjonalnych polskich napisów (Netflix, Amazon, Crunchyroll), prototyp jednej funkcji kosztu;
 - [research/line-breaking-inventory.md](research/line-breaking-inventory.md) — co już mamy w kodzie i dokumentach, stary a odrzucony algorytm, MangaShift.
 
-v1.1 zamyka przegląd v1:
+v1.2 zamyka weryfikację v1.1: `ζ` = 0,1, jedna granica liczby wierszy, zerowa szerokość jako tryb bez pomiaru, wyjątki dla myślnika mówcy i znaków otwierających, pierwszeństwo klas, ochrona nazw, operacyjne bramki. v1.1 zamknęła przegląd v1:
 - trzy poziomy reguł zamiast jednej skończonej kary (§3);
 - koszt każdego dodatkowego wiersza (§5.3);
 - ratunek minimalizujący przepełnienie (§5.4);
@@ -57,7 +57,7 @@ Zgodnie z `visual-quality.md` (nienaruszalne / unikane za wszelką cenę / ważo
 1. **Nienaruszalne** (filtr kandydatów, nigdy nie łamane):
    - tekst, kolejność słów, interpunkcja, grafemy, tagi ASS i znaczniki stylu są identyczne przed i po; zmieniają się tylko podziały `\N`;
    - słowa nie rozcinamy, a twarda spacja (`\h`, NBSP) nie jest miejscem cięcia;
-   - znak otwierający (`„`, `(`, `«`, `[`) nie kończy wiersza, a zamykający lub interpunkcja nie zaczyna wiersza;
+   - znak otwierający (`„`, `(`, `«`, `[`) nie kończy wiersza; znak zamykający (`”`, `)`, `»`, `]`) i interpunkcja (`.`, `,`, `;`, `:`, `!`, `?`, `…`) nie zaczynają wiersza; myślnik zaczyna wiersz wyłącznie jako znacznik mówcy (§4.2), więc przerwa przed każdym innym myślnikiem jest `banned`;
    - przed każdą zmianą mówcy (§4.2) jest podział wiersza.
 2. **Unikane za wszelką cenę** (przerwa `protected`): cięcia, które profesjonaliści robią w 0% przypadków albo które wytyczne zakazują. Układ z takim cięciem wchodzi do wyboru tylko w ratunku (§5.4), gdy nie ma żadnego mieszczącego się układu bez niego. Lista klas w §4.3.
 3. **Ważone** — wszystko inne. Rozstrzyga koszt z §5.3.
@@ -87,7 +87,9 @@ Siła przerwy `A(kind)` pochodzi z tabeli §4.3. Jedna funkcja `gaps()` zastępu
 - **Zmiana mówcy (`turn`):** myślnik dialogowy (`-`, `–` albo `—`, po którym następuje spacja), stojący na początku tekstu albo po końcu zdania (`.`, `!`, `?`, `…`) i spacji. Myślnik na początku tekstu kwestii jednego mówcy nie wymusza cięcia (przed nim nie ma przerwy).
 - **Wtrącenie:** para myślników `–`/`—` otoczonych spacjami wewnątrz zdania („wszyscy – a zwłaszcza Przewodniczący – poszli”). Przerwa po pierwszym myślniku i po drugim to klasa `parenthetical`; myślnik zostaje na końcu wiersza („wszyscy – / a zwłaszcza…”), bo wiersz zaczynający się od myślnika wygląda jak nowy mówca. Przerwa przed myślnikiem wtrącenia: `banned`.
 - **Łącznik i półpauza bez spacji** (`biało-czerwony`, `20–30`, `Kaguya-sama`) są częścią słowa i nie tworzą przerwy.
-- Pojedynczy myślnik ze spacjami w zdaniu, bez pary, to klasa `dash`.
+- Pojedynczy myślnik ze spacjami w zdaniu, bez pary, to klasa `dash` (przerwa po nim); przerwa przed nim jest `banned`, jak przy wtrąceniu.
+
+**Pierwszeństwo klas.** Przerwa bezpośrednio po interpunkcji (po rozstrzygnięciu skrótów przez `is_false_sentence_break`) ma klasę interpunkcyjną (`sentence` > `clause` > `ellipsis` > `parenthetical` > `dash`). Pozostałe: `banned` > dowolna klasa chroniona > klasa ważona o najmniejszym `A`. Parser nie zmienia klasy interpunkcyjnej.
 
 ### 4.3 Klasy przerw
 
@@ -104,7 +106,7 @@ Siła przerwy `A(kind)` pochodzi z tabeli §4.3. Jedna funkcja `gaps()` zastępu
 | `dash` — po pojedynczym myślniku | §4.2 | — | 0,34 | ważone | dane |
 | `phrase` — inna granica bez interpunkcji | domyślna | podmiot / orzeczenie, granica dużych części zdania | 0,50 | ważone | dane |
 | `nominal` — rzeczownik / dopełniacz | — | `nmod` | 0,40 | ważone | dane |
-| `name` — wewnątrz nazwy wielowyrazowej | para słów z wielkiej litery (poza początkiem zdania), tytuł + nazwa | `flat`, `fixed`, `flat:foreign` | 0,39 | ważone | dane |
+| `name` — wewnątrz nazwy wielowyrazowej, imię z nazwiskiem, tytuł z nazwą | dwa sąsiednie słowa z wielkiej litery, gdy drugie nie zaczyna zdania; tytuł z listy + nazwa | `flat`, `flat:foreign`, `flat:name` | 0 | chronione | `visual-quality.md` §2.2 (imię z nazwiskiem razem) |
 | `object` — czasownik / dopełnienie obok | — | `obj`, `iobj` | 0,26 | ważone | dane |
 | `auxiliary` — posiłkowy / główny | lista czasowników posiłkowych i modalnych | `aux` | 0,24 | ważone | dane |
 | `modifier` — przymiotnik / rzeczownik | końcówki przymiotnikowe (słaby dowód) | `amod`, `det` | 0,16 | ważone | dane |
@@ -135,8 +137,7 @@ Układ mieści się, gdy każdy wiersz mieści się na ekranie tak, jak go narys
 
 - **zdarzenie zawijane przez libass:** emulacja `wrap_text` nie przewiduje zawinięcia, a glify mieszczą się w dostępnej szerokości (`geometry.measure_text`, `available_width`; zgodność emulacji z libass 5406/5406);
 - **zdarzenie niezawijane** (`\q2`, `WrapStyle 2`, rozpoznane przez efektywny tryb zawijania): rzeczywisty zasięg poziomy wiersza, liczony od kotwicy (`\pos`, `\an`, marginesy), mieści się w wyśrodkowanym obszarze 90% `PlayResX`. Jeżeli najszerszy wiersz źródła wychodził poza ten obszar, granicą jest zasięg źródła: polski napis nie wychodzi poza ekran bardziej niż angielski;
-- **brak pomiaru** (SRT bez stylów, metryki animowane przez `\t` zmieniające `\fs`/`\fscx`/`\fsp`, brak fontu z glifami): szacunek fizycznego zawijania odtwarzacza w znakach `W_c` [K, start 70 przy domyślnym foncie mpv w 1080p]. To granica techniczna, nie jakościowa; rampa długości (§5.3) kończy się przed nią (`b_c < W_c`), więc nie powstaje klif w środku oceny;
-- **dostępna szerokość ≤ 0:** żaden układ się nie mieści; ratunek §5.4 krok 5.
+- **brak pomiaru** (SRT bez stylów, metryki animowane przez `\t` zmieniające `\fs`/`\fscx`/`\fsp`, brak fontu z glifami, dostępna szerokość ≤ 0): szacunek fizycznego zawijania odtwarzacza w znakach `W_c = max(70, b_c + 4)` [K, 70 przy domyślnym foncie mpv w 1080p]. To granica techniczna, nie jakościowa; zawsze leży za końcem rampy długości (§5.3), więc nie powstaje klif w środku oceny. W tym trybie `u` nie istnieje, a DŁUGI liczy tylko znaki.
 
 ### 5.3 Koszt układu
 
@@ -149,11 +150,11 @@ DŁUGI(w) = max(rise(znaki(w); a_c; b_c), rise(u(w); 0,60; 1,00))          a_c =
 
 koszt(U) = λ_k · max_i DŁUGI(wᵢ)                                            λ₁ = 1, λ_{k≥2} = λ = 0,3 [K]
          + Σ_wolnych cięć [ (1 − A(cⱼ)) + β · span(cⱼ) · [cⱼ bez interpunkcji] ]   β = 0,6 [K]
-         + ζ · (k − k_mówców)                                               ζ = 0,2 [K]
+         + ζ · (k − k_mówców)                                               ζ = 0,1 [K]
          + γ · nierównowaga(U)                                              γ = 0,6 [K]
          + δ · liczba wierszy jednowyrazowych utworzonych przez wolne cięcia   δ = 0,4 [K]
 
-nierównowaga(U) = (najdłuższy − najkrótszy) / suma znaków wierszy oddzielonych wolnymi cięciami (0 bez wolnych cięć)
+nierównowaga(U) = największa po blokach mówców wartość (najdłuższy − najkrótszy) / suma znaków wierszy bloku, liczona tylko w blokach z wolnym cięciem (0 bez wolnych cięć)
 k_mówców        = liczba wierszy wymuszona zmianami mówcy (1 bez zmian)
 ```
 
@@ -161,23 +162,30 @@ k_mówców        = liczba wierszy wymuszona zmianami mówcy (1 bez zmian)
 
 **Dlaczego dwie miary długości** [W]: znaki mierzą ilość tekstu do przeczytania i nie zależą od fontu; szerokość mierzy drogę oka po ekranie („zamiatanie wzrokiem”). Sama szerokość zawiodła z wąską Officiną (60 znaków ≈ 0,8 szerokości, w odrzuconym U5 jeden wiersz), same znaki zawodzą przy szerokich fontach. Start rampy znakowej 40–66 [B, recenzja opus55] zostawia c04 (55 znaków) w jednym wierszu i dzieli galerię 02 (60 znaków), zgodnie z wyborami właściciela.
 
-**Przykłady kontrolne kosztu** (wartości startowe, miara znakowa; ostateczne liczby z kalibracji):
-- „Dzisiaj będzie pięknie. Chodźmy na spacer.” (42): jeden wiersz 0,077; po kropce 0 + 0,2 + 0,6 · 5/41 = 0,27 → **jeden wiersz**;
-- „Idę spać. Idź spać.” (19): jeden wiersz 0; po kropce 0,2 → **jeden wiersz**;
-- „Ludzie zamieszkujący te ziemie popełnili straszliwe grzechy.” (60): jeden wiersz 0,77; podmiot / orzeczenie 0,5 + 0,2 + γ · 1/61 ≈ 0,71 → **dwa wiersze** (blisko; kalibracja ma utrzymać ten wybór);
-- „Dlaczego się na mnie z taką złością cały czas patrzysz?” (55): jeden wiersz 0,58; najlepsze cięcie `phrase` 0,5 + 0,2 + nierównowaga ≥ 0,7 → **jeden wiersz**.
+**Przykłady kontrolne kosztu** (wartości startowe, tryb list, miara znakowa; ostateczne liczby z kalibracji). To przypadki kotwiczne: ich wynik nie może się zmienić przy kalibracji ani w G6.
+- „Dzisiaj będzie pięknie. Chodźmy na spacer.” (42): jeden wiersz 0,077; po kropce 0 + 0,1 + 0,6 · 5/41 = 0,17 → **jeden wiersz**;
+- „Idę spać. Idź spać.” (19): jeden wiersz 0; po kropce 0,1 → **jeden wiersz**;
+- „Ludzie zamieszkujący te ziemie popełnili straszliwe grzechy.” (60): jeden wiersz 0,77; podmiot / orzeczenie 0,5 + 0,1 + 0,6 · 1/61 ≈ 0,61 → **dwa wiersze**;
+- „Poczuj przepływ całej prima materii otaczającej twoje ciało.” (60): jeden wiersz 0,77; „…prima materii / otaczającej twoje ciało.” 0,5 + 0,1 + 0,6 · 11/59 ≈ 0,71 → **dwa wiersze**;
+- „Dlaczego się na mnie z taką złością cały czas patrzysz?” (55): jeden wiersz 0,58; najlepsze cięcie 0,5 + 0,1 + 0,6 · 15/55 ≈ 0,76 → **jeden wiersz**;
+- „Osiągnęliśmy rozejm z Sokołem z klanu Estebanów.” (48): jeden wiersz 0,31; każde cięcie ≥ 0,6 → **jeden wiersz**.
 
 ### 5.4 Liczba wierszy i ratunek
 
-`L = max_lines` z `LayoutLimits` (ustawienie panelu 1–4, domyślnie 2) to liczba wierszy dopuszczona w zwykłym wyborze. Kroki, pierwszy niepusty wygrywa (wewnątrz kroku: koszt §5.3):
+`L = max_lines` z `LayoutLimits` (ustawienie panelu 1–4, domyślnie 2). Granice:
 
-1. układy z ≤ L wierszami, mieszczące się, bez przerw `protected`;
-2. układy z ≤ L wierszami, mieszczące się, z przerwami `protected` (raport `protected_cut`);
-3. układy z L + 1 wierszami (najwyżej 3), mieszczące się, bez `protected` (raport `extra_line`);
+- `N = max(L, k_mówców)` — liczba wierszy w zwykłym wyborze (ustawienie 3 lub 4 to jawna zgoda użytkownika na więcej wierszy; `ζ` nadal ich nie premiuje);
+- `M = max(min(L + 1, 3), N)` — granica ratunku.
+
+Kroki, pierwszy niepusty wygrywa (wewnątrz kroku: koszt §5.3):
+
+1. układy z ≤ N wierszami, mieszczące się, bez przerw `protected`;
+2. układy z ≤ N wierszami, mieszczące się, z przerwami `protected` (raport `protected_cut`);
+3. układy z ≤ M wierszami, mieszczące się, bez `protected` (raport `extra_line`, gdy wierszy jest więcej niż N);
 4. jak 3, z `protected`;
-5. przepełnienie: spośród istniejących układów z ≤ max(L + 1, 3) wierszami najmniejsze największe wyjście poza dostępną szerokość (w pikselach albo znakach), przy remisie koszt §5.3 (raport `overflow_unavoidable`).
+5. żaden układ z ≤ M wierszami się nie mieści: spośród istniejących układów z ≤ M wierszami najmniejsze największe wyjście poza dostępną szerokość (w pikselach albo znakach), przy remisie koszt §5.3 (raport `overflow_unavoidable`).
 
-Zmiany mówcy są nienaruszalne: gdy mówców jest więcej niż wierszy dopuszczonych w krokach 1–5, liczba wierszy równa się liczbie mówców (raport `many_speakers`). Tekst z mniejszą liczbą słów niż wierszy ma tyle wierszy, ile słów. Przy L = 1 kwestia jednego mówcy zostaje w jednym wierszu, o ile się mieści.
+Zmiany mówcy są nienaruszalne (`k_mówców` wymusza liczbę wierszy; raport `many_speakers`, gdy `k_mówców` > 3). Tekst z mniejszą liczbą słów niż wierszy ma tyle wierszy, ile słów. Przy L = 1 kwestia jednego mówcy zostaje w jednym wierszu, o ile się mieści.
 
 Dlaczego trzeci wiersz tylko w ratunku: właściciel ocenił trzy wiersze tam, gdzie mieszczą się dwa, jako przesadę (galeria 20), a korpus profesjonalny nie ma trzywierszowych napisów.
 
@@ -203,17 +211,19 @@ Każdy wiersz to kontrakt testu i wynika z §3–§5, chyba że kolumna „Statu
 | pusty tekst albo same tagi | `{\an8}` | bez zmian | brak słów | test |
 | jedno słowo | „Uciekaj!” | 1 wiersz | brak przerw | test |
 | same wykrzyknienia, onomatopeje | „Hę?!”, „Ehhh…” | 1 wiersz | koszt 0 jednego wiersza | test |
-| krótka kwestia z dwóch zdań | „Idę spać. Idź spać.” | 1 wiersz | `ζ` > 0 | test |
+| krótka kwestia z dwóch zdań | „Idę spać. Idź spać.” | 1 wiersz | `ζ` > 0 | test kotwiczny |
+| „nie” na końcu zdania | „Wcale nie. Idę już.” | cięcie po „nie.” dozwolone | klasa interpunkcyjna ma pierwszeństwo | test |
 | tuż pod 42 znakami | „Czy aby na pewno zajmują się tylko masażem?” (43) | 1 wiersz | DŁUGI ≈ 0,12 | test (c24) |
-| tuż nad 42, cięcia średnie | „Osiągnęliśmy rozejm z Sokołem z klanu Estebanów.” (48) | 1 wiersz | DŁUGI ≈ 0,31 < cięcie + `ζ` | test (c13) |
-| 55 znaków, cięcia średnie | „Dlaczego się na mnie z taką złością cały czas patrzysz?” | 1 wiersz | 0,58 < 0,7 | test (c04) |
-| 60 znaków, dobre cięcie | „Ludzie zamieszkujący te ziemie / popełnili straszliwe grzechy.” | 2 wiersze | 0,77 > 0,71 | test (galeria 02) |
+| tuż nad 42, cięcia średnie | „Osiągnęliśmy rozejm z Sokołem z klanu Estebanów.” (48) | 1 wiersz | DŁUGI ≈ 0,31 < cięcie + `ζ` | test kotwiczny (c13) |
+| 55 znaków, cięcia średnie | „Dlaczego się na mnie z taką złością cały czas patrzysz?” | 1 wiersz | 0,58 < 0,76 | test kotwiczny (c04) |
+| 60 znaków, dobre cięcie | „Ludzie zamieszkujący te ziemie / popełnili straszliwe grzechy.” | 2 wiersze | 0,77 > 0,61 | test kotwiczny (galeria 02) |
+| 60 znaków, wyraz obcy w środku | „Poczuj przepływ całej prima materii / otaczającej twoje ciało.” | 2 wiersze | 0,77 > 0,71 | test kotwiczny (galeria 10) |
 | dwa zdania, pierwsze dłuższe | „Przepraszam. Idź z Midorikawą i resztą. / Baw się dobrze.” | po kropce | nierównowaga mała wobec cięcia w zdaniu | test (galeria 20 starej rundy) |
 | dwa zdania, pierwsze jednowyrazowe | „Wiem. Zrobiłeś wszystko, o co cię prosiłam.” | 1 wiersz, gdy DŁUGI mały; inaczej „Wiem. Zrobiłeś wszystko, / o co cię prosiłam.” | `δ` za „Wiem.” | test |
 | trzy krótkie zdania | „Wiem. Rozumiem. Zaczekam.” | 1 wiersz | `ζ` | test |
 | trzy długie zdania, 2 wiersze się nie mieszczą | c26 | 3 wiersze, po zdaniu w wierszu | §5.4 krok 3 | test (c26) |
 | dwóch mówców | „- Kufer ze złotem? / - Widać? Całe szczęście.” | wiersz na mówcę | `turn` | test (c05) |
-| trzech mówców | „- Idziesz? / - Za chwilę. / - Poczekajcie!” | 3 wiersze | `turn` | test (c06) |
+| trzech mówców | „- Idziesz? / - Za chwilę. / - Poczekajcie!” | 3 wiersze, bez flagi `extra_line` | `turn`, `N` = 3 | test (c06) |
 | czterech mówców | „- Idziesz? - Za chwilę. - Poczekajcie! - Już!” | 4 wiersze, raport `many_speakers` | mówcy nienaruszalni | test |
 | mówca z długą kwestią | c27 | mówca 1 / mówca 2 / reszta mówcy 2 | wolne cięcie w ratunku | test (c27) |
 | jeden mówca z myślnikiem na początku | „- Chodźmy już.” | bez wymuszonego cięcia | myślnik na początku tekstu | test |
@@ -257,7 +267,7 @@ Każdy wiersz to kontrakt testu i wynika z §3–§5, chyba że kolumna „Statu
 | metryki animowane | `{\t(0,1000,\fs80)}` | tryb znakowy | §5.2 | test |
 | nie mieści się w dwóch | c33 | 3 wiersze, jeśli rzeczywisty pomiar nie mieści dwóch | §5.4 | [D] c33 |
 | nie mieści się w trzech | tekst > 3 szerokości | najmniejsze przepełnienie z ≤ 3 wierszy | §5.4 krok 5 | test |
-| zerowa dostępna szerokość | marginesy 500/500 przy 1000 | 1 wiersz (lub wiersze mówców), raport | §5.2, §5.4 | test |
+| zerowa dostępna szerokość | marginesy 500/500 przy 1000 | tryb bez pomiaru (znaki, `W_c`) | §5.2 | test |
 | piosenki, szyldy, rysunki | — | poza dialogami: `split_for_layout`, `fit_signs` | zakres | — |
 | szyld-lista | ranking kaguya | poza tą specyfikacją | aneks szyldów (U4) | — |
 
@@ -285,19 +295,19 @@ Każdy wiersz to kontrakt testu i wynika z §3–§5, chyba że kolumna „Statu
 
 | Bramka | Warunek |
 | --- | --- |
-| G1 nienaruszalne | zero zmian tekstu, zgubionych tagów, rozciętych słów, wierszy zaczynających się od interpunkcji, mówców bez własnego wiersza |
-| G2 zbiór właściciela | walidacja grupowa: co najmniej 80% zgodnych układów i co najmniej o 8 punktów procentowych więcej niż stary algorytm; ze znanych złych cięć powtarza się najwyżej „woli / Artemis” (znane ograniczenie, §6) |
-| G3 NF+AMZN | trafność miejsca cięcia (referencje dwuwierszowe, walidacja po seriach) co najmniej 75% i co najmniej 10 pp więcej niż stary algorytm |
-| G4 replay | dla każdej klasy chronionej częstość nie wyższa niż u starego algorytmu; pojedyncze wiersze z DŁUGI ≥ 0,8 w najwyżej 0,5% kwestii jednowierszowych; trzy wiersze tylko z przyczyn §5.4 |
-| G5 parser | wariant z parserem wchodzi tylko, gdy w G2 i G3 jest nie gorszy, w G3 lepszy z dolną granicą 95% CI bootstrap > 0, a w G4 bez nowych regresji; inaczej produkcja działa na listach |
-| G6 wrażliwość | zmiana każdej stałej [K] o ±10% zmienia wynik G2 najwyżej o 2 przypadki i G3 najwyżej o 2 pp |
+| G1 nienaruszalne | zero zmian tekstu, zgubionych tagów, rozciętych słów, wierszy zaczynających się od znaku zamykającego, interpunkcji albo myślnika innego niż znacznik mówcy, mówców bez własnego wiersza |
+| G2 zbiór właściciela | mianownik: rekordy po deduplikacji (przy sprzecznych etykietach duplikatu obowiązuje późniejsza decyzja właściciela); walidacja z pominięciem grupy tekstu: co najmniej 75% zgodnych układów i więcej niż stary algorytm; przypadki kotwiczne z §5.3 i §8 zgodne zawsze; ze znanych złych cięć powtarza się najwyżej „woli / Artemis” (ograniczenie, §6) |
+| G3 NF+AMZN | trafność miejsca cięcia warunkowo dla referencji dwuwierszowych przy swobodnym wyniku algorytmu (wynik jedno- lub trzywierszowy to błąd), walidacja po seriach: co najmniej 75% oraz różnica ze starym algorytmem z dolną granicą 95% CI (bootstrap grupowany po seriach) > 0; stary algorytm mierzony najpierw, tym samym kodem |
+| G4 replay | dla każdej klasy chronionej: liczba cięć tej klasy / liczba wszystkich cięć w kwestiach wielowierszowych nie wyższa niż u starego algorytmu (ten sam klasyfikator `gaps()` w trybie list); pojedyncze wiersze z DŁUGI ≥ 0,8 w najwyżej 0,5% kwestii jednowierszowych; wiersze ponad `N` tylko w krokach 3–5 §5.4 |
+| G5 parser | wariant z parserem wchodzi tylko, gdy w G2 jest nie gorszy, w G3 lepszy od wariantu list z dolną granicą 95% CI (bootstrap grupowany po seriach) > 0, a w G4 nie podnosi częstości żadnej klasy chronionej względem wariantu list i nie zmienia przypadków kotwicznych; wariant list musi sam przejść G1–G4 i G6–G8 |
+| G6 wrażliwość | zmiana każdej stałej [K] o ±10% (z zachowaniem `a_c < b_c` i `W_c = max(70, b_c + 4)`) zmienia wynik G2 najwyżej o 2 rekordy i G3 najwyżej o 2 pp, a przypadków kotwicznych wcale |
 | G7 czas | ułożenie 500 kwestii z zimnym importem modelu: najwyżej 60 s (właściciel dopuszcza kilka minut na odcinek) |
 | G8 galeria | przed/po z czcionką właściciela po obu stronach (`compare --font`), obejrzana przez orkiestratora obraz po obrazie, potem właściciel |
 
 ## 10. Integracja i kontrakty
 
 - `layout_translated(...)`, `layout_dialogue(event, text, profile, limits) -> DialogueLayout`, `split_lines(event, text, count, profile)`, `split_for_layout(...)`: sygnatury bez zmian. W `layout_dialogue` rekurencyjne `_split`/`_dialogue_cut` ustępuje `gaps()` + wyborowi z §5; `profile` służy pomiarowi.
-- `LayoutLimits(max_chars, max_lines)`: `max_chars` (domyślnie 42) przesuwa rampę znakową (`a_c` = `max_chars` − 2, `b_c` = `max_chars` + 24 przy wartościach startowych); `max_lines` to `L` z §5.4. Ustawienia w panelu zostają.
+- `LayoutLimits(max_chars, max_lines)`: `max_chars` (domyślnie 42) przesuwa rampę znakową (`a_c` = `max_chars` − 2, `b_c` = `max_chars` + 24 przy wartościach startowych, `W_c` = max(70, `b_c` + 4)); `max_lines` to `L` z §5.4. Ustawienia w panelu zostają.
 - Testy, które kodują twardy limit 42 znaków (`test_subtitles_linebreak.py:87-91, 225-229`), zmieniają oczekiwania zgodnie z §5; pozostałe testy starego kontraktu (zakazy, mówcy, frazy, skróty, NBSP, kolejność słów) zostają.
 - Infrastruktura z odrzuconej gałęzi do przeniesienia (sprawdzona): rozpoznanie efektywnego trybu zawijania (`wraps_automatically`), obsługa braku miejsca między marginesami, tryb znakowy dla metryk animowanych, test znaczników „błagała”.
 - Chunkery tłumaczenia i TTS bez zmian (twarde limity żądań).
