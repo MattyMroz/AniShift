@@ -16,6 +16,7 @@ from anishift.application.translation_handler import displayed_lines
 from anishift.services.audio.types import AudioFormat, NormalizedClip, PcmStorage, TimedClip
 from anishift.services.subtitles import (
     SignCandidate,
+    inherit_split,
     is_drawing,
     layout_translated,
     load_subtitles,
@@ -156,17 +157,21 @@ def pair_dirs(roots: Sequence[Path]) -> list[tuple[str, Path]]:
     return sorted(found.items())
 
 
-def sign_narration(split: SubtitleSplit, inputs: PairInput, mode: str) -> Entry:
-    """Choose the signs the narrator would read with estimated durations; return decisions and accepted readings."""
+def polish_split(source: SubtitleSplit, written: Path) -> SubtitleSplit:
+    """Split the written Polish file with the decisions of its source, as the production split does."""
+    polish: SSAFile = load_subtitles(written)
+    inherited: SubtitleSplit | None = inherit_split(source, polish)
+    return split_subtitles(polish, kind="ass") if inherited is None else inherited
+
+
+def sign_narration(split: SubtitleSplit, mode: str) -> Entry:
+    """Choose the signs the narrator would read in a Polish split with estimated durations; return the decisions."""
     lines: tuple[NormalizedClip, ...] = tuple(
-        _estimated(f"line-{line.order}", line.start, inputs.translations.get(line.order, line.text), line.order)
-        for line in split.spoken
+        _estimated(f"line-{line.order}", line.start, line.text, line.order) for line in split.spoken
     )
-    candidates: list[SignCandidate] = [
-        replace(candidate, text=inputs.translations.get(candidate.group, candidate.text))
-        for candidate in sign_candidates(split)
+    readable: list[SignCandidate] = [
+        candidate for candidate in sign_candidates(split) if is_speech_text(candidate.text)
     ]
-    readable: list[SignCandidate] = [candidate for candidate in candidates if is_speech_text(candidate.text)]
     clips: dict[int, NormalizedClip] = {
         candidate.group: _estimated(f"sign-{candidate.group}", 0, candidate.text, candidate.group)
         for candidate in readable
@@ -241,7 +246,7 @@ def replay(
             "decisions": list(split.decisions),
         }
         if signs is not None:
-            entry["signs"] = sign_narration(split, inputs, signs)
+            entry["signs"] = sign_narration(polish_split(split, written), signs)
         pairs.append(entry)
     mapping: Path = out / MAPPING_NAME
     content: Entry = {"rule": EXCLUSION_RULE, "pairs": pairs, "skipped": skipped}

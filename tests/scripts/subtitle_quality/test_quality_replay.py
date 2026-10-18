@@ -205,6 +205,25 @@ def test_event_comparison_leaves_excluded_events_out_and_counts_changed_ones(tmp
     assert changed.pairs == (replay.EventCounts("library/pair", 2, 1, 1),)
 
 
+def test_sign_repeats_are_judged_on_the_polish_text_the_narrator_reads(tmp_path: Path) -> None:
+    source: str = (
+        "Dialogue: 0,0:00:01.00,0:00:03.00,Sign,,0,0,0,,{\\pos(320,180)}GATE\n"
+        "Dialogue: 0,0:00:06.00,0:00:08.00,Sign,,0,0,0,,{\\pos(320,180)}DOOR\n"
+        "Dialogue: 0,0:01:00.00,0:01:02.00,Default,,0,0,0,,See you.\n"
+    )
+    output: str = (
+        "Dialogue: 0,0:00:01.00,0:00:03.00,Sign,,0,0,0,,{\\pos(320,180)}BRAMA\n"
+        "Dialogue: 0,0:00:06.00,0:00:08.00,Sign,,0,0,0,,{\\pos(320,180)}BRAMA\n"
+        "Dialogue: 0,0:01:00.00,0:01:02.00,Default,,0,0,0,,Na razie.\n"
+    )
+    _pair(tmp_path / "library", "repeat", source=source, output=output)
+
+    mapping: dict[str, Any] = _mapping(replay.replay([tmp_path / "library"], tmp_path / "run", signs="smart"))
+
+    decisions: list[dict[str, Any]] = mapping["pairs"][0]["signs"]["decisions"]
+    assert [(item["text"], item["decision"]) for item in decisions] == [("BRAMA", "read"), ("BRAMA", "weight")]
+
+
 def test_quality_command_line_hands_replay_arguments_to_the_replay(tmp_path: Path) -> None:
     pairs: Path = tmp_path / "pairs"
     _pair(pairs, "pair")
