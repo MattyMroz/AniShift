@@ -23,6 +23,7 @@ from anishift.services.subtitles.classifier import (
     main_dialogue_style,
     never_narrated,
     screen_edge,
+    sung,
     title_like,
     word_count,
     written_in_capitals,
@@ -418,7 +419,12 @@ def _sign_weights(split: SubtitleSplit, dialogue: Sequence[SSAEvent]) -> tuple[S
         for order, (event, decision) in enumerate(zip(dialogue, split.decisions, strict=True))
         if decision == "displayed" and not never_narrated(event)
     ]
-    runs: list[_Run] = _merge_echoes(_fbf_runs(candidates))
+    songs: list[tuple[int, int]] = [(event.start, event.end) for event in dialogue if sung(event)]
+    runs: list[_Run] = [
+        run
+        for run in _merge_echoes(_fbf_runs(candidates))
+        if not any(start <= (_run_start(run) + _run_end(run)) / 2 < end for start, end in songs)
+    ]
     windows: list[tuple[int, int]] = [(_run_start(run), _run_end(run)) for run in runs]
     profile: RenderProfile = RenderProfile.from_subs(split.subs, None)
     for index, run in enumerate(runs):
@@ -436,6 +442,7 @@ def _sign_weight(
     text: str = visible_text(first.text)
     edge: float = screen_edge(first, profile.styles.get(first.style), profile.play_res_y)
     key: str = _text_key(text)
+    words: list[str] = key.split()
     weight_for, weight_against = static_weights(
         height=_line_height(first, profile),
         centre=max(1.0 - edge, float(title_like(text))),
@@ -450,6 +457,7 @@ def _sign_weight(
             _text_key(line.text) == key and (_near(line.start, start, end) or _near(line.end, start, end))
             for line in spoken
         ),
+        sound=len(words) > 1 and len(set(words)) == 1,
     )
     return SignWeight(group, weight_for, weight_against)
 

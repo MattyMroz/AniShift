@@ -11,7 +11,7 @@ from anishift.services.subtitles import (
     sign_candidates,
     split_subtitles,
 )
-from anishift.services.subtitles.signs import place_weight_against, static_weights
+from anishift.services.subtitles.signs import SIGN_MARGIN, place_weight_against, static_weights
 
 _HEADER = (
     "[Script Info]\nScriptType: v4.00+\nPlayResX: 640\nPlayResY: 360\n\n"
@@ -42,18 +42,27 @@ def _split() -> SubtitleSplit:
 
 def test_small_edge_sign_and_large_title_have_the_specified_static_weights() -> None:
     small: tuple[float, float] = static_weights(
-        height=0.035, centre=0.0, on_screen_ms=3000, words=2, alone=True, edge=1.0, echo=False
+        height=0.035, centre=0.0, on_screen_ms=3000, words=2, alone=True, edge=1.0, echo=False, sound=False
     )
     title: tuple[float, float] = static_weights(
-        height=0.12, centre=1.0, on_screen_ms=2000, words=3, alone=True, edge=0.0, echo=False
+        height=0.12, centre=1.0, on_screen_ms=2000, words=3, alone=True, edge=0.0, echo=False, sound=False
     )
     strongest: tuple[float, float] = static_weights(
-        height=0.2, centre=1.0, on_screen_ms=5000, words=1, alone=True, edge=0.0, echo=False
+        height=0.2, centre=1.0, on_screen_ms=5000, words=1, alone=True, edge=0.0, echo=False, sound=False
     )
 
     assert small == pytest.approx((0.5408, 0.3))
     assert title == pytest.approx((0.84208, 0.0))
     assert strongest == pytest.approx((0.8824, 0.0))
+
+
+def test_a_sound_written_as_a_repeated_word_keeps_even_the_strongest_sign_below_the_margin() -> None:
+    weight_for, weight_against = static_weights(
+        height=0.2, centre=1.0, on_screen_ms=5000, words=1, alone=True, edge=0.0, echo=False, sound=True
+    )
+
+    assert weight_against == pytest.approx(0.8)
+    assert weight_for - weight_against < SIGN_MARGIN
 
 
 @pytest.mark.parametrize(
@@ -118,3 +127,34 @@ def test_translation_inherits_the_sign_weights_and_groups_of_its_source() -> Non
     assert inherited is not None
     assert inherited.sign_weights == source.sign_weights
     assert [candidate.text for candidate in sign_candidates(inherited)] == ["BRAMA SZKOŁY"]
+
+
+_SONG_EVENTS = (
+    "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Good morning, everyone.\n"
+    "Dialogue: 0,0:00:15.00,0:00:21.00,Sign,,0,0,0,,{\\pos(320,40)}SCHOOL GATE\n"
+    "Dialogue: 0,0:00:20.00,0:00:30.00,OP,,0,0,0,,Fly away\n"
+    "Dialogue: 0,0:00:24.00,0:00:26.00,Sign,,0,0,0,,{\\pos(320,40)}DREAM SERIES\n"
+    "Dialogue: 0,0:00:40.00,0:00:42.00,Sign,,0,0,0,,{\\pos(320,40)}y\n"
+    "Dialogue: 0,0:00:50.00,0:00:52.00,Sign,,0,0,0,,{\\pos(320,40)}TUP TUP\n"
+    "Dialogue: 0,0:00:55.00,0:00:57.00,Sign,,0,0,0,,{\\pos(320,40)}pik-pik pik-pik\n"
+)
+
+
+def test_signs_during_a_song_and_single_letters_are_never_sign_candidates() -> None:
+    split: SubtitleSplit = split_subtitles(SSAFile.from_string(_HEADER + _SONG_EVENTS), kind="ass")
+
+    assert split.decisions[1:5] == ("displayed", "displayed", "displayed", "displayed")
+    assert split.sign_weights[1] is not None
+    assert split.sign_weights[2:5] == (None, None, None)
+
+
+def test_sounds_written_as_repeated_words_weigh_against_reading_like_a_repeat() -> None:
+    split: SubtitleSplit = split_subtitles(SSAFile.from_string(_HEADER + _SONG_EVENTS), kind="ass")
+    school, tup, pik = split.sign_weights[1], split.sign_weights[5], split.sign_weights[6]
+
+    assert school is not None
+    assert tup is not None
+    assert pik is not None
+    assert school.weight_against < 0.8
+    assert tup.weight_against >= 0.8
+    assert pik.weight_against >= 0.8

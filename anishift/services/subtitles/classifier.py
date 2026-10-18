@@ -26,6 +26,7 @@ __all__ = [
     "main_dialogue_style",
     "never_narrated",
     "screen_edge",
+    "sung",
     "title_like",
     "word_count",
     "written_in_capitals",
@@ -86,6 +87,9 @@ _RE_WORD: Final[re.Pattern[str]] = re.compile(r"[^\W\d_]+(?:['’-][^\W\d_]+)*")
 
 _RE_SOUND_EFFECT: Final[re.Pattern[str]] = re.compile(r"\*.*\*", re.S)
 """Visible text wholly between asterisks, a sound effect rather than a sign."""
+
+_MIN_LETTERS: Final[int] = 2
+"""Fewest letters an on-screen line needs before the narrator may read it."""
 
 _RE_PLACED: Final[re.Pattern[str]] = re.compile(
     _BACKSLASH + _BACKSLASH + r"(?:pos|move|org)\(|" + _BACKSLASH + _BACKSLASH + r"fr[xyz]?\s*-?(?:0*[1-9]|0*\.0*[1-9])"
@@ -345,12 +349,17 @@ def word_count(text: str) -> int:
     return len(_RE_WORD.findall(text))
 
 
+def sung(event: SSAEvent) -> bool:
+    """Tell whether a line belongs to a song by its style name or karaoke tags."""
+    return bool(_RE_SONG.search(event.style) or _RE_SONG_NAME.search(event.style) or _RE_KARA.search(event.text))
+
+
 def never_narrated(event: SSAEvent) -> bool:
-    """Tell whether an on-screen line is a song, karaoke, drawing or sound effect the narrator never reads."""
-    if _RE_SONG.search(event.style) or _RE_SONG_NAME.search(event.style) or _RE_KARA.search(event.text):
+    """Tell whether an on-screen line is a song, drawing, sound effect or near letterless text never read aloud."""
+    if sung(event) or is_drawing(event.text):
         return True
     plain: str = visible_text(event.text)
-    return is_drawing(event.text) or not plain or bool(_RE_SOUND_EFFECT.fullmatch(plain))
+    return sum(char.isalpha() for char in plain) < _MIN_LETTERS or bool(_RE_SOUND_EFFECT.fullmatch(plain))
 
 
 def _alignment(event: SSAEvent, style: SSAStyle | None) -> int:

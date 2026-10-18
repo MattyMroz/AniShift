@@ -42,7 +42,7 @@ _REPEAT_MS: Final[tuple[float, float]] = (10_000.0, 60_000.0)
 
 
 def static_weights(  # noqa: PLR0913 - one argument per weighed feature
-    *, height: float, centre: float, on_screen_ms: int, words: int, alone: bool, edge: float, echo: bool
+    *, height: float, centre: float, on_screen_ms: int, words: int, alone: bool, edge: float, echo: bool, sound: bool
 ) -> tuple[float, float]:
     """Return the weight for reading a sign and its weight against that do not depend on the pause."""
     weight_for: float = nor(
@@ -56,6 +56,7 @@ def static_weights(  # noqa: PLR0913 - one argument per weighed feature
         0.4 * rise(words, *_MANY_WORDS),
         0.4 * fall(height, *_HEIGHT_SMALL) * edge,
         0.7 * float(echo),
+        0.8 * float(sound),
     )
     return weight_for, weight_against
 
