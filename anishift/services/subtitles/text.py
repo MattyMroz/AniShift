@@ -58,8 +58,8 @@ _ASS_HARD_SPACE: Final[str] = "\\h"
 _MAX_MARKED_BOUNDARIES: Final[int] = 4
 """Most mid-verse style boundaries, two ranges, sent to the translator as span markers."""
 
-_RE_EMPHASIS_OFF: Final[re.Pattern[str]] = re.compile(r"\\[ibus]0")
-"""ASS command switching italic, bold, underline or strikeout off, closing a range opened before it."""
+_RE_EMPHASIS: Final[re.Pattern[str]] = re.compile(r"\\([ibus])([01])(?![0-9])")
+"""ASS command switching italic, bold, underline or strikeout on or off, captured as attribute letter and state."""
 
 type _Edge = Literal["start", "end", "inside", "outside"]
 """Where a source tag sits relative to the word graphemes around it."""
@@ -123,7 +123,7 @@ def visible_verses(text: str) -> tuple[str, ...]:
 def marked_text(text: str, style: SSAStyle | None = None) -> str:
     """Return visible text with up to two mid-verse style ranges, over the event's base ``style``, as span markers."""
     layout: _TextLayout = _parse_layout(text)
-    boundaries: tuple[_Boundary, ...] = _marked_boundaries(layout)
+    boundaries: tuple[_Boundary, ...] = _marked_boundaries(layout, style)
     if not boundaries:
         return visible_text(text)
     markers: tuple[str, ...] = _span_markers(len(boundaries))
@@ -169,7 +169,7 @@ def replace_visible_text(text: str, new_text: str, style: SSAStyle | None = None
         return text
     source = _parse_layout(text)
     target = _parse_layout(new_text)
-    tags: tuple[_Anchor, ...] = _placed_tags(source, target)
+    tags: tuple[_Anchor, ...] = _placed_tags(source, target, style)
     hard_spaces = _map_anchors(source.hard_spaces, source.segments, target.segments)
     rendered = [_render_segment(segment, index, tags, hard_spaces) for index, segment in enumerate(target.segments)]
     breaks = source.breaks if len(source.segments) == len(target.segments) else target.breaks
@@ -268,23 +268,62 @@ def _edge(graphemes: tuple[str, ...], offset: int) -> _Edge:
     return "end" if before else "outside"
 
 
-def _marked_boundaries(layout: _TextLayout) -> tuple[_Boundary, ...]:
+def _marked_boundaries(layout: _TextLayout, style: SSAStyle | None) -> tuple[_Boundary, ...]:
     """Return the mid-verse word-edge boundaries sent as span markers, or none when markers do not fit."""
     lengths: tuple[int, ...] = tuple(_grapheme_count(segment) for segment in layout.segments)
     interior: tuple[_Boundary, ...] = tuple(
         boundary
         for boundary in _boundaries(layout, merge_verses=False)
-        if 0 < boundary.offset < lengths[boundary.segment]
+        if 0 < boundary.offset < lengths[boundary.segment] and not all(map(_is_comment, boundary.values))
     )
     if len(interior) > _MAX_MARKED_BOUNDARIES or any(boundary.edge == "inside" for boundary in interior):
         return ()
-    if not interior or any(_RE_EMPHASIS_OFF.search(value) for value in interior[0].values):
+    if not interior or _closes_a_range(layout, interior, style):
         return ()
     starts: tuple[int, ...] = _segment_starts(layout.segments)
     cuts: list[int] = [starts[boundary.segment] + boundary.offset for boundary in interior]
     if not all(_has_words(piece) for piece in _pieces(layout.segments, cuts)[1::2]):
         return ()
     return interior
+
+
+def _is_comment(value: str) -> bool:
+    """Tell whether a tag token is an override block without commands, an invisible comment."""
+    return value.startswith("{") and "\\" not in value
+
+
+def _closes_a_range(layout: _TextLayout, interior: tuple[_Boundary, ...], style: SSAStyle | None) -> bool:
+    """Tell whether the first boundary's emphasis switch-off fails to open a marked range over the line's base."""
+    first: _Boundary = interior[0]
+    switched_off: set[str] = _switched(first, on=False)
+    if not switched_off:
+        return False
+    styled: dict[str, bool] = (
+        {} if style is None else {"i": style.italic, "b": style.bold, "u": style.underline, "s": style.strikeout}
+    )
+    starts: tuple[int, ...] = _segment_starts(layout.segments)
+    active: set[str] = switched_off & _emphasis_at(layout, starts[first.segment] + first.offset - 1, styled)
+    base: set[str] = _emphasis_at(layout, 0, styled) & _emphasis_at(layout, starts[-1] - 1, styled)
+    reopened: set[str] = {letter for boundary in interior[1:] for letter in _switched(boundary, on=True)}
+    return not active or not active <= base & reopened
+
+
+def _switched(boundary: _Boundary, *, on: bool) -> set[str]:
+    """Return the emphasis letters a boundary's tags switch on, or off."""
+    return {
+        letter for value in boundary.values for letter, state in _RE_EMPHASIS.findall(value) if (state == "1") == on
+    }
+
+
+def _emphasis_at(layout: _TextLayout, position: int, styled: dict[str, bool]) -> set[str]:
+    """Return the emphasis letters on at a global grapheme ``position`` after the tags placed before it."""
+    starts: tuple[int, ...] = _segment_starts(layout.segments)
+    state: dict[str, bool] = dict(styled)
+    for anchor in layout.tags:
+        if starts[anchor.segment] + anchor.offset > position:
+            break
+        state.update((letter, value == "1") for letter, value in _RE_EMPHASIS.findall(anchor.value))
+    return {letter for letter, enabled in state.items() if enabled}
 
 
 def _span_markers(count: int) -> tuple[str, ...]:
@@ -308,7 +347,7 @@ def _with_markers(segment: str, index: int, inserts: dict[tuple[int, int], str])
     return marked + inserts.get((index, len(graphemes)), "")
 
 
-def _placed_tags(source: _TextLayout, target: _TextLayout) -> tuple[_Anchor, ...]:
+def _placed_tags(source: _TextLayout, target: _TextLayout, style: SSAStyle | None) -> tuple[_Anchor, ...]:
     """Place every source tag on the translated text, honouring intact span markers."""
     boundaries: tuple[_Boundary, ...] = _boundaries(source, merge_verses=len(source.segments) != len(target.segments))
     positions: tuple[_Anchor, ...] = _map_anchors(
@@ -322,7 +361,7 @@ def _placed_tags(source: _TextLayout, target: _TextLayout) -> tuple[_Anchor, ...
         snapped.append(_snapped(position, boundary.edge, target.segments, floor))
     positions = tuple(snapped)
     positions = _spread_inside(boundaries, positions, target.segments)
-    marked: tuple[_Boundary, ...] = _marked_boundaries(source)
+    marked: tuple[_Boundary, ...] = _marked_boundaries(source, style)
     markers: tuple[_Anchor, ...] | None = _marker_anchors(source, marked, target) if marked else None
     placed: dict[tuple[int, int], _Anchor] = (
         {}

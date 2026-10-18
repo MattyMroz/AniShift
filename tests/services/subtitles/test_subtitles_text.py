@@ -1,4 +1,12 @@
+import json
+from dataclasses import dataclass
+from functools import cache
+from pathlib import Path
+from typing import Any, Final
+
+import pysubs2
 import pytest
+from pysubs2 import SSAStyle
 
 from anishift.services.subtitles.text import (
     is_drawing,
@@ -9,6 +17,49 @@ from anishift.services.subtitles.text import (
     visible_text,
     visible_verses,
 )
+
+_STYLE_EXPERIMENT: Final[Path] = (
+    Path(__file__).resolve().parents[3] / "workspace" / ".quality" / "experiments" / "styles"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _SavedRun:
+    examples: tuple[tuple[str, str], ...]
+    events: tuple[tuple[str, SSAStyle | None], ...]
+
+
+@cache
+def _load_saved_runs() -> tuple[_SavedRun, ...]:
+    runs: list[_SavedRun] = []
+    for path in sorted((_STYLE_EXPERIMENT / "runs").glob("*.json")):
+        data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+        source: Path = _STYLE_EXPERIMENT / "pairs" / data["episode"] / "source.en.ass"
+        subs: pysubs2.SSAFile = pysubs2.load(str(source), encoding="utf-8")
+        examples: list[list[str]] = data["marked_examples"]
+        events: tuple[tuple[str, SSAStyle | None], ...] = tuple(
+            (event.text, subs.styles.get(event.style)) for event in subs.events if event.type == "Dialogue"
+        )
+        runs.append(_SavedRun(tuple(dict.fromkeys((english, polish) for english, polish in examples)), events))
+    return tuple(runs)
+
+
+def _saved_runs() -> tuple[_SavedRun, ...]:
+    runs: tuple[_SavedRun, ...] = _load_saved_runs()
+    if not runs:
+        pytest.skip("saved LLM style runs are not available")
+    return runs
+
+
+def _saved_sources(english: str) -> list[tuple[str, SSAStyle | None, str]]:
+    return [
+        (raw, style, polish)
+        for run in _saved_runs()
+        for marked, polish in run.examples
+        if marked == english
+        for raw, style in run.events
+        if marked_text(raw, style) == english
+    ]
 
 
 @pytest.mark.unit
@@ -277,3 +328,170 @@ def test_marked_text_leaves_a_range_opened_at_a_later_verse_start_unmarked() -> 
 def test_replace_visible_text_keeps_a_verse_start_range_on_whole_words_without_markers() -> None:
     result: str = replace_visible_text(r"{\i1}Why{\i0} are you here?", "Czemu tu jesteś?")
     assert result == r"{\i1}Czemu{\i0} tu jesteś?"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "style", "expected"),
+    [
+        (r"For {\i0}you{\i1} to call them,", SSAStyle(italic=True), "For <s1>you</s1> to call them,"),
+        (r"How {\i0}weak{\i1}.", SSAStyle(italic=True), "How <s1>weak</s1>."),
+        (r"Not {\b0}this{\b1} one", SSAStyle(bold=True), "Not <s1>this</s1> one"),
+    ],
+)
+def test_marked_text_wraps_a_word_negating_the_style_emphasis(source: str, style: SSAStyle, expected: str) -> None:
+    assert marked_text(source, style) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("style", [None, SSAStyle()])
+def test_marked_text_leaves_a_switch_off_unmarked_when_the_style_lacks_the_emphasis(style: SSAStyle | None) -> None:
+    assert marked_text(r"How {\i0}weak{\i1}.", style) == "How weak."
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            r"{\i1}I {\i0}may{\i1} consider molding him\N into a man worthy of me.",
+            "I <s1>may</s1> consider molding him into a man worthy of me.",
+        ),
+        (
+            r"{\i1}Have I really no choice but to use {\i0}that{\i1}?",
+            "Have I really no choice but to use <s1>that</s1>?",
+        ),
+    ],
+)
+def test_marked_text_wraps_a_word_negating_emphasis_held_from_the_first_to_the_last_grapheme(
+    source: str, expected: str
+) -> None:
+    assert marked_text(source, SSAStyle(bold=True)) == expected
+
+
+@pytest.mark.unit
+def test_marked_text_leaves_emphasis_opened_at_the_line_start_and_closed_mid_line_unmarked() -> None:
+    source: str = r"{\i1}You're{\i0} society's darker side!"
+    assert marked_text(source, SSAStyle(bold=True)) == "You're society's darker side!"
+
+
+@pytest.mark.unit
+def test_marked_text_leaves_a_negation_reopened_only_at_a_verse_end_unmarked() -> None:
+    source: str = r"{\i1\q2}Isn't it just oh so {\i0}convenient{\i1}\N that the door would get stuck?"
+    assert marked_text(source, SSAStyle(bold=True)) == "Isn't it just oh so convenient that the door would get stuck?"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("source", [r"{\i0}Why {\i0}are you here?{\i1}", r"{\i0}Why\N{\i1}are {\i0}you here?"])
+def test_marked_text_leaves_a_style_emphasis_switched_off_before_the_first_grapheme_unmarked(source: str) -> None:
+    assert marked_text(source, SSAStyle(italic=True)) == "Why are you here?"
+
+
+@pytest.mark.unit
+def test_marked_text_opens_a_range_for_the_base_emphasis_of_a_block_also_switching_off_inactive_ones() -> None:
+    assert marked_text(r"For {\i0\b0}you{\i1} to call them,", SSAStyle(italic=True)) == "For <s1>you</s1> to call them,"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (r"Kaguya{**-san}, let's go home together!", "Kaguya, let's go home together!"),
+        (r"{*}Mistress Kaguya{*Kaguya-sama}, please!", "Mistress Kaguya, please!"),
+    ],
+)
+def test_marked_text_ignores_comment_blocks(source: str, expected: str) -> None:
+    assert marked_text(source) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            r"It means that you actually {\i1}do{\i0} like him, Kashiwagi{**-san}.",
+            "It means that you actually <s1>do</s1> like him, Kashiwagi.",
+        ),
+        (r"Kashi{*}wagi is {\i1}here{\i0} now", "Kashiwagi is <s1>here</s1> now"),
+    ],
+)
+def test_marked_text_marks_a_range_next_to_a_comment_block(source: str, expected: str) -> None:
+    assert marked_text(source) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("source", [r"The {*note}{\c&H0000FF&}Red{\c&HFFFFFF&} Sword", "The <i>Red</i> Sword"])
+def test_marked_text_keeps_command_blocks_and_srt_tags_as_range_boundaries(source: str) -> None:
+    assert marked_text(source) == "The <s1>Red</s1> Sword"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "translation", "style", "expected"),
+    [
+        (
+            r"{\i1}I {\i0}may{\i1} consider it.",
+            "Rozważę to, <s1>być może</s1>.",
+            SSAStyle(bold=True),
+            r"{\i1}Rozważę to, {\i0}być może{\i1}.",
+        ),
+        (
+            r"For {\i0}you{\i1} to call them excellent,",
+            "Że nazywasz je wspaniałymi właśnie <s1>ty</s1>,",
+            SSAStyle(italic=True),
+            r"Że nazywasz je wspaniałymi właśnie {\i0}ty{\i1},",
+        ),
+        (
+            r"It means that you actually {\i1}do{\i0} like him, Kashiwagi{**-san}.",
+            "To znaczy, że naprawdę go <s1>lubisz</s1>, Kashiwagi.",
+            None,
+            r"To znaczy, że naprawdę go {\i1}lubisz{\i0}, Kashiwagi{**-san}.",
+        ),
+    ],
+)
+def test_replace_visible_text_places_the_range_on_the_marked_word_after_reordering(
+    source: str, translation: str, style: SSAStyle | None, expected: str
+) -> None:
+    assert replace_visible_text(source, translation, style) == expected
+
+
+@pytest.mark.integration
+def test_marked_text_reproduces_every_marked_line_of_the_saved_llm_runs() -> None:
+    runs: tuple[_SavedRun, ...] = _saved_runs()
+    missing: list[str] = [
+        english
+        for run in runs
+        for english, _ in run.examples
+        if all(marked_text(raw, style) != english for raw, style in run.events)
+    ]
+    assert sum(len(run.examples) for run in runs) >= 12
+    assert missing == []
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "english",
+    [
+        "Look at all these people in <s1>yukata</s1>.",
+        "Do you ever wear <s1>yukata</s1>, Minato?",
+        "Why, why, why, <s1>why</s1>?!",
+        "How <s1>weak</s1>.",
+        "No, you <s1>didn't</s1>!",
+        "Episode <s1>15</s1>",
+        "EP 2 <s1>Death Games and Demons</s1>",
+        "Fresh Bread <s1>Angel</s1>",
+        "Wait a minute! Why are you after <s1>me</s1>?!",
+        "So... Why are we here, wearing these, and doing whatever <s1>this</s1> is?",
+    ],
+)
+def test_replace_visible_text_puts_the_range_on_the_words_marked_in_a_saved_llm_run(english: str) -> None:
+    sources: list[tuple[str, SSAStyle | None, str]] = _saved_sources(english)
+    assert sources
+    for raw, style, polish in sources:
+        assert marked_text(replace_visible_text(raw, polish, style), style) == polish
+
+
+@pytest.mark.integration
+def test_replace_visible_text_opens_a_saved_llm_range_at_the_translated_line_start() -> None:
+    [(raw, style, polish)] = _saved_sources("I <s1>do</s1> want her to regain them!")
+    assert replace_visible_text(raw, polish, style) == r"{\i1}Chcę{\i0}, żeby je odzyskała!"
