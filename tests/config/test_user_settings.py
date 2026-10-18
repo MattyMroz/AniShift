@@ -584,3 +584,20 @@ def test_custom_elevenbytes_alias_resolves_profile_by_provider_voice_id() -> Non
 
 def test_default_elevenbytes_voice_keeps_the_legacy_human_label() -> None:
     assert UserSettings().tts_voice_label == "Dallin"
+
+
+@pytest.mark.parametrize(
+    ("stored", "loaded_value"),
+    [
+        ("  C:/Fonts/Officina - Bold.ttf  ", "C:/Fonts/Officina - Bold.ttf"),
+        ("   ", ""),
+        (12, ""),
+        (None, ""),
+    ],
+)
+def test_load_keeps_the_dialogue_font_file_only_as_a_stripped_path(
+    stored: object, loaded_value: str, config_file: Path
+) -> None:
+    config_file.write_text(json.dumps({"dialogue_font_file": stored}), encoding="utf-8")
+
+    assert load_user_settings().dialogue_font_file == loaded_value

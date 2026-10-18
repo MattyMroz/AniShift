@@ -168,6 +168,10 @@ jest jednym z dostawców: jego lista modeli jest wbudowana w
 `ANISHIFT_PALANTIR_TOKEN`, a gdy go brak, z `FOUNDRY_API_TOKEN`. Sekrety nigdy nie są
 wyświetlane; diagnostyka mówi tylko, czy są ustawione.
 
+Ustawienia › Napisy › Plik czcionki dialogów wybiera czcionkę kwestii czytanych przez lektora.
+AniShift rysuje nimi te kwestie, dołącza ten plik i jego warianty z tego samego katalogu do MKV
+i wypala nimi napisy w MP4; szyldy zostają w czcionkach wydania.
+
 ## Wymagania
 
 - Windows i Python 3.14+

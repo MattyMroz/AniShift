@@ -67,6 +67,7 @@ from anishift.services.llm import (
     TextPart,
 )
 from anishift.services.llm.engines.palantir import PALANTIR_ENGINE_ID, PalantirModelConfig, palantir_model_config
+from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.subtitles.restyle import DialogueFont
 from anishift.services.translation import TranslationConfig, TranslationService
@@ -94,12 +95,15 @@ from anishift.services.translation.protocols import (
 from anishift.services.translation.types import BatchedLine, FileTranslation
 from anishift.services.tts import SpeechBatch, SpeechBatchResult, TtsConfig, TtsService
 from anishift.services.tts.config import DEFAULT_RETRY_BACKOFF_SECONDS
+from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from anishift.config.settings import Settings
     from anishift.services.subtitles import DisplayedLine, SpokenLine
 
 __all__ = ["ProductionHandlerFactory", "palantir_llm_config", "probe_palantir_model"]
+
+logger = get_logger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -128,6 +132,11 @@ _TTS_RETRY_BACKOFF_S: Final[dict[str, tuple[float, ...]]] = {
     "elevenbytes": (5.0, 10.0, 15.0, 30.0),
 }
 """Provider retry delays retained from the validated legacy runtime."""
+
+_DIALOGUE_FONT_TASKS: Final[frozenset[TaskKind]] = frozenset(
+    {TaskKind.TRANSLATE_SUBTITLES, TaskKind.NORMALIZE_SUBTITLES, TaskKind.COMPOSE_MKV, TaskKind.COMPOSE_MP4}
+)
+"""Tasks drawing dialogue with the owner's font or carrying its files into a container."""
 
 
 class _TranslationExecutor(Protocol):
@@ -160,13 +169,14 @@ class ProductionHandlerFactory:
         """Construct a run-owned dispatcher from immutable execution choices."""
         settings: Settings = self._settings_provider()
         kinds: frozenset[TaskKind] = frozenset(task.kind for task in plan.tasks)
-        dialogue_font: DialogueFont | None = None
+        dialogue_font: DialogueFont | None = _dialogue_font(plan, kinds)
         tts_handler: TtsTaskHandler | None = self._tts_handler(settings, run_root, plan, kinds)
         audio_handler: AudioTaskHandler | None = self._audio_handler(run_root, plan, kinds)
         composition_handler: CompositionTaskHandler | None = self._composition_handler(
             run_root,
             plan,
             kinds,
+            dialogue_font,
         )
         publish_handler: PublishTaskHandler | None = None
         if TaskKind.PUBLISH_ARTIFACT in kinds:
@@ -250,13 +260,18 @@ class ProductionHandlerFactory:
         run_root: Path,
         plan: ExecutionPlan,
         kinds: frozenset[TaskKind],
+        dialogue_font: DialogueFont | None = None,
     ) -> CompositionTaskHandler | None:
         if not kinds.intersection({TaskKind.COMPOSE_MKV, TaskKind.COMPOSE_MP4, TaskKind.COMPOSE_COVER}):
             return None
         service = CompositionService(
             CompositionConfig(quality_preset=QualityPreset(plan.settings.composition_profile_id)),
         )
-        return CompositionTaskHandler(service, run_root=run_root)
+        return CompositionTaskHandler(
+            service,
+            run_root=run_root,
+            font_files=dialogue_font.files if dialogue_font is not None else (),
+        )
 
 
 class _RunTtsService:
@@ -642,6 +657,17 @@ def _audio_config(plan: ExecutionPlan) -> AudioConfig:
         original_gain_db=snapshot.original_gain_db,
         timeline_policy=TimelinePolicy(snapshot.tts_timeline_policy),
     )
+
+
+def _dialogue_font(plan: ExecutionPlan, kinds: frozenset[TaskKind]) -> DialogueFont | None:
+    font_file: str = plan.settings.dialogue_font_file
+    if not font_file or not kinds & _DIALOGUE_FONT_TASKS:
+        return None
+    try:
+        return DialogueFont.from_file(Path(font_file))
+    except SubtitleError as error:
+        logger.warning("Dialogue font unusable, dialogue keeps the episode fonts", error_code=error.context.code.value)
+        return None
 
 
 def _layout_limits(plan: ExecutionPlan) -> LayoutLimits:

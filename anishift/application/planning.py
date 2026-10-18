@@ -162,6 +162,7 @@ class RunSettingsSnapshot:
     tts_is_paid: bool = True
     subtitle_max_chars_per_line: int = 42
     subtitle_max_lines_per_event: int = 2
+    dialogue_font_file: str = ""
     translation_chunk_chars: int = 750
     translation_batch_size: int = 0
     llm_model_id: str = "default"

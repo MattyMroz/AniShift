@@ -148,6 +148,7 @@ def plan_auto(  # noqa: PLR0913 - every automatic planning input stays an explic
     recipes: RecipePreferences | None = None,
     targets: Mapping[str, WorkflowTarget] | None = None,
     published: frozenset[Path] | None = None,
+    dialogue_font_unusable: bool = False,
 ) -> ExecutionPlan:
     """Build one fresh automatic plan for every selected inspected group, each for the target of its own place."""
     ordered_groups: tuple[InspectedSourceGroup, ...] = _ordered_unique_groups(groups)
@@ -161,7 +162,14 @@ def plan_auto(  # noqa: PLR0913 - every automatic planning input stays an explic
         for group in ordered_groups
     }
     snapshot: RunSettingsSnapshot = settings if overrides is None else settings.with_overrides(overrides)
-    return _plan(ordered_groups, intents, snapshot, rebuild=rebuild, published=published)
+    return _plan(
+        ordered_groups,
+        intents,
+        snapshot,
+        rebuild=rebuild,
+        published=published,
+        dialogue_font_unusable=dialogue_font_unusable,
+    )
 
 
 def recorded_target(
@@ -245,6 +253,7 @@ def plan_manual(
     settings: RunSettingsSnapshot,
     *,
     published: frozenset[Path] | None = None,
+    dialogue_font_unusable: bool = False,
 ) -> ExecutionPlan:
     """Build independent manual plans using the exact intent of every group."""
     ordered_groups: tuple[InspectedSourceGroup, ...] = _ordered_unique_groups(groups)
@@ -255,7 +264,7 @@ def plan_manual(
     if any(intent.mode is not RunMode.MANUAL for intent in intents.values()):
         msg = "Manual planning accepts only manual group intents"
         raise PlanningError(msg)
-    return _plan(ordered_groups, intents, settings, published=published)
+    return _plan(ordered_groups, intents, settings, published=published, dialogue_font_unusable=dialogue_font_unusable)
 
 
 def _ordered_unique_groups(groups: Sequence[InspectedSourceGroup]) -> tuple[InspectedSourceGroup, ...]:
@@ -275,13 +284,14 @@ def _ordered_unique_groups(groups: Sequence[InspectedSourceGroup]) -> tuple[Insp
     )
 
 
-def _plan(
+def _plan(  # noqa: PLR0913 - every planning input stays an explicit call-site choice
     groups: tuple[InspectedSourceGroup, ...],
     intents: Mapping[str, GroupIntent],
     settings: RunSettingsSnapshot,
     *,
     rebuild: RebuildRequest | None = None,
     published: frozenset[Path] | None = None,
+    dialogue_font_unusable: bool = False,
 ) -> ExecutionPlan:
     group_plans: list[GroupPlan] = []
     artifacts: list[Artifact] = []
@@ -289,7 +299,14 @@ def _plan(
     problems: list[PlanProblem] = []
     for group in groups:
         intent: GroupIntent = intents[group.group_id]
-        builder: _GroupPlanner = _GroupPlanner(group, intent, settings, rebuild=rebuild, published=published)
+        builder: _GroupPlanner = _GroupPlanner(
+            group,
+            intent,
+            settings,
+            rebuild=rebuild,
+            published=published,
+            dialogue_font_unusable=dialogue_font_unusable,
+        )
         group_plan, group_artifacts, group_tasks = builder.build()
         group_plans.append(group_plan)
         artifacts.extend(group_artifacts)
@@ -341,7 +358,7 @@ def _without_planned_artifacts(problem: PlanProblem, source_ids: tuple[str, ...]
 
 
 class _GroupPlanner:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - every planning input stays an explicit call-site choice
         self,
         group: InspectedSourceGroup,
         intent: GroupIntent,
@@ -349,11 +366,13 @@ class _GroupPlanner:
         *,
         rebuild: RebuildRequest | None = None,
         published: frozenset[Path] | None = None,
+        dialogue_font_unusable: bool = False,
     ) -> None:
         self.group: InspectedSourceGroup = group
         self.intent: GroupIntent = intent
         self.settings: RunSettingsSnapshot = settings
         self._published: frozenset[Path] = frozenset() if published is None else published
+        self._dialogue_font_unusable: bool = dialogue_font_unusable
         self._rebuild: frozenset[ProductKind] = frozenset() if rebuild is None else rebuild.products
         self._invalidated: frozenset[ArtifactKind] = _invalidated_products(intent, self._rebuild)
         self.artifacts: dict[str, Artifact] = {artifact.artifact_id: artifact for artifact in group.artifacts}
@@ -1015,7 +1034,13 @@ class _GroupPlanner:
         return candidate
 
     def _with_font_container(self, subtitles: Artifact) -> tuple[Artifact, ...]:
-        """Return the subtitle input and its MKV: the container of its embedded track, else the group's only MKV."""
+        """Return a layout task's subtitles and their MKV, warning when the dialogue font cannot be used."""
+        if self._dialogue_font_unusable:
+            self._problem(
+                "dialogue_font_unusable",
+                "The dialogue font file cannot be read or lacks Polish letters, so dialogue keeps the episode fonts",
+                is_blocking=False,
+            )
         container: Artifact | None = self._track_containers.get(subtitles.artifact_id) or self._only_mkv()
         if container is None or container.kind is not ArtifactKind.VIDEO_MKV:
             return (subtitles,)

@@ -1538,3 +1538,26 @@ def test_split_of_polish_srt_reads_only_the_polish_subtitles() -> None:
 
     assert plan.can_execute
     assert _task(plan, TaskKind.SPLIT_SUBTITLES).requires == _task(plan, TaskKind.TRANSLATE_SUBTITLES).produces
+
+
+def test_a_subtitle_layout_plan_warns_once_when_the_dialogue_font_is_unusable() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.FULL_PL, ProductKind.SPOKEN_PL}))
+
+    plan: ExecutionPlan = plan_auto((_group(video),), _preset(products), _settings(), dialogue_font_unusable=True)
+
+    assert plan.can_execute
+    assert TaskKind.TRANSLATE_SUBTITLES in _task_kinds(plan)
+    assert [(problem.code, problem.is_blocking) for problem in plan.problems] == [("dialogue_font_unusable", False)]
+
+
+def test_a_plan_without_subtitle_layout_does_not_warn_about_the_dialogue_font() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    products: ProductIntent = ProductIntent(
+        frozenset({ProductKind.MP4}), burn_subtitle_product=BurnSubtitleProduct.SOURCE
+    )
+
+    plan: ExecutionPlan = plan_auto((_group(video),), _preset(products), _settings(), dialogue_font_unusable=True)
+
+    assert TaskKind.TRANSLATE_SUBTITLES not in _task_kinds(plan)
+    assert plan.problems == ()

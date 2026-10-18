@@ -116,6 +116,7 @@ def test_catalog_contract_is_complete_and_self_consistent() -> None:
         "translation_action",
         "subtitle_max_chars_per_line",
         "subtitle_max_lines_per_event",
+        "dialogue_font_file",
         "translation_batch_size",
         "translation_chunk_chars",
         "translation_concurrency",

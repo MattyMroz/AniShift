@@ -64,6 +64,8 @@ from anishift.services.llm.engines import (
     suggested_model_ids,
 )
 from anishift.services.llm.palantir_token import PALANTIR_TOKEN_COMPAT_ENV_VAR
+from anishift.services.subtitles import SubtitleError
+from anishift.services.subtitles.restyle import DialogueFont
 from anishift.services.translation.engines import available_engine_ids as available_translation_engine_ids
 from anishift.services.tts.engines import available_engine_ids as available_tts_engine_ids
 from anishift.services.tts.engines.edge.constants import MAREK_VOICE_ID, ZOFIA_VOICE_ID
@@ -118,6 +120,9 @@ _TTS_GROUP_JOBS: Final[int] = 1
 
 _UNRESOLVED_RUN: Final[str] = "The coordinator produced neither a result nor a failure"
 """Failure a run is settled with when its context ended without either outcome."""
+
+_DIALOGUE_FONT_SETTING: Final[str] = "dialogue_font_file"
+"""Preference naming the owner's dialogue font file, checked before it is saved."""
 
 
 class ModelAvailability(StrEnum):
@@ -396,6 +401,7 @@ class AppService:
             recipes=recipes,
             targets=targets,
             published=published,
+            dialogue_font_unusable=_dialogue_font_error(settings.dialogue_font_file) is not None,
         )
 
     def plan_manual(
@@ -414,7 +420,13 @@ class AppService:
         settings: RunSettingsSnapshot = self._settings_snapshot()
         if overrides:
             settings = decode_overrides(settings, overrides)
-        return build_manual_plan(groups, intent_by_group, settings, published=published)
+        return build_manual_plan(
+            groups,
+            intent_by_group,
+            settings,
+            published=published,
+            dialogue_font_unusable=_dialogue_font_error(settings.dialogue_font_file) is not None,
+        )
 
     def execute(self, plan: ExecutionPlan, sink: RunEventSink) -> RunResult:
         """Execute one accepted immutable plan and wait for its complete result."""
@@ -733,6 +745,12 @@ class AppService:
         candidate: UserSettings = self.settings_snapshot()
         spec: SettingSpec = self._editable_spec(setting_id, candidate)
         spec.validate_value(value)
+        font_error: SubtitleError | None = (
+            _dialogue_font_error(value) if setting_id == _DIALOGUE_FONT_SETTING and isinstance(value, str) else None
+        )
+        if font_error is not None:
+            msg = "Dialogue font file is unusable"
+            raise ValueError(msg) from font_error
         assign_setting_value(candidate, spec, value)
         candidate.__post_init__()
         self._settings_saver(candidate)
@@ -1025,6 +1043,17 @@ def _tts_allowed_voice_ids(preferences: UserSettings) -> tuple[str, ...]:
     return ()
 
 
+def _dialogue_font_error(font_file: str) -> SubtitleError | None:
+    """Return why a configured dialogue font file cannot be used, or None when it can or none is configured."""
+    if not font_file:
+        return None
+    try:
+        DialogueFont.from_file(Path(font_file))
+    except SubtitleError as error:
+        return error
+    return None
+
+
 def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
     profile = preferences.active_tts_profile
     request_concurrency: int = profile.concurrency or 1
@@ -1050,6 +1079,7 @@ def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
         tts_is_paid=preferences.tts_engine in {"elevenbytes", "elevenlabs"},
         subtitle_max_chars_per_line=preferences.subtitle_max_chars_per_line,
         subtitle_max_lines_per_event=preferences.subtitle_max_lines_per_event,
+        dialogue_font_file=preferences.dialogue_font_file,
         translation_chunk_chars=preferences.translation_chunk_chars,
         translation_batch_size=preferences.translation_batch_size,
         llm_model_id=preferences.llm_provider_model_id,

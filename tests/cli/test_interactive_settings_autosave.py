@@ -1133,3 +1133,40 @@ def test_another_key_disarms_the_unsaved_edit_discard(
 
     assert panel.handle_key("interrupt") is SettingsResult.STAY
     assert panel._pending is not None
+
+
+def test_the_dialogue_font_row_shows_the_file_name_or_none(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    _activate(panel, "category:subtitles")
+    empty: str = next(item.current for item in panel._items if item.key == "setting:dialogue_font_file")
+    service.settings.dialogue_font_file = "C:/Fonts/ITC Officina Sans Std PL - Bold.ttf"
+    panel.handle_key("escape")
+    _activate(panel, "category:subtitles")
+
+    chosen: str = next(item.current for item in panel._items if item.key == "setting:dialogue_font_file")
+
+    assert (empty, chosen) == ("brak", "ITC Officina Sans Std PL - Bold.ttf")
+
+
+def test_an_unusable_dialogue_font_keeps_the_editor_open_with_a_polish_reason(
+    panel: SettingsController,
+    service: FakeSettingsService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse(setting_id: str, value: SettingValue) -> UserSettings:
+        del setting_id, value
+        msg = "Dialogue font file is unusable"
+        raise ValueError(msg)
+
+    monkeypatch.setattr(service, "update_setting", refuse)
+    _open_field(panel, "subtitles", "dialogue_font_file")
+    panel.handle_key("paste:C:/Fonts/marlett.ttf")
+
+    panel.handle_key("enter")
+
+    assert panel._editor is not None
+    assert panel._feedback == _Feedback(
+        "✗ Nie można użyć tej czcionki · potrzebny istniejący plik z polskimi literami", "error"
+    )
