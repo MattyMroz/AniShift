@@ -331,3 +331,20 @@ def test_percentile_uses_nearest_rank() -> None:
     assert metrics.percentile([5.0, 1.0, 3.0, 2.0, 4.0], 0.9) == 5.0
     assert metrics.percentile([5.0, 1.0, 3.0, 2.0, 4.0], 0.5) == 3.0
     assert metrics.percentile([], 0.5) == 0.0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("info", "expected"),
+    [
+        ({"PlayResX": "1920", "PlayResY": "1080"}, (1920, 1080)),
+        ({"PlayResX": "1920"}, (1920, 1440)),
+        ({"PlayResY": "360"}, (480, 360)),
+        ({}, (384, 288)),
+    ],
+)
+def test_play_size_completes_missing_header_values_like_libass(info: dict[str, str], expected: tuple[int, int]) -> None:
+    subs = SSAFile()
+    subs.info = info
+
+    assert metrics.play_size(subs) == expected

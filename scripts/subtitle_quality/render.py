@@ -77,9 +77,6 @@ _RE_FONTSELECT: Final[re.Pattern[str]] = re.compile(r"fontselect: \((.+?), \d+, 
 _RE_MISSING_GLYPH: Final[re.Pattern[str]] = re.compile(r"Glyph 0x([0-9A-Fa-f]+) not found.*?\((.+?), \d+, \d+\)")
 """libass report of a glyph absent from the requested font."""
 
-_RE_INLINE_FONT: Final[re.Pattern[str]] = re.compile(r"\\fn([^\\}]+)")
-"""Inline font override."""
-
 _RE_NON_ALNUM: Final[re.Pattern[str]] = re.compile(r"[^0-9a-z]")
 """Characters ignored when comparing font names."""
 
@@ -90,12 +87,6 @@ class FontReport:
 
     fallbacks: tuple[str, ...]
     missing_glyphs: dict[str, str]
-
-    def affects(self, fonts: frozenset[str]) -> bool:
-        """Tell whether any of the given font families fell back or missed glyphs."""
-        replaced: set[str] = {name.split(" -> ")[0].casefold() for name in self.fallbacks}
-        replaced.update(name.casefold() for name in self.missing_glyphs)
-        return any(font.casefold() in replaced for font in fonts)
 
 
 # ── Fonts ─────────────────────────────────────────────────────────────────────
@@ -113,14 +104,6 @@ def prepare_fonts(episode_dir: Path, video: Path | None, work: Path) -> int:
     if video is None or not video.is_file():
         return 0
     return len(extract_attachments(video, target))
-
-
-def event_fonts(subs: SSAFile, event: SSAEvent) -> frozenset[str]:
-    """Return the style font and inline font overrides of one event."""
-    names: set[str] = {match.group(1).strip().lstrip("@") for match in _RE_INLINE_FONT.finditer(event.text)}
-    if event.style in subs.styles:
-        names.add(subs.styles[event.style].fontname.lstrip("@"))
-    return frozenset(names)
 
 
 def parse_font_log(log: str) -> FontReport:

@@ -62,9 +62,6 @@ def test_parse_font_log_reports_fallbacks_and_missing_glyphs() -> None:
     report = render.parse_font_log(log)
     assert report.fallbacks == ("Missing Sans -> ArialMT",)
     assert report.missing_glyphs == {"Comic Hand": "ą"}
-    assert report.affects(frozenset({"missing sans"}))
-    assert report.affects(frozenset({"Comic Hand"}))
-    assert not report.affects(frozenset({"Arial"}))
 
 
 @pytest.mark.integration
