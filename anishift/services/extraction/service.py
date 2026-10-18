@@ -207,11 +207,10 @@ def extract_attachments(container: Path, dest: Path) -> tuple[Path, ...]:
     from anishift.services.composition.fonts import attachment_font_names  # noqa: PLC0415 - import cycle via media
 
     names: tuple[str, ...] = identify(container).attachments
-    fonts: frozenset[str] = attachment_font_names(names)
     targets: dict[str, tuple[int, Path]] = {}
     for number, name in enumerate(names, start=1):
         file_name: str = Path(name).name
-        if file_name and Path(name).stem.casefold() in fonts:
+        if file_name and attachment_font_names((file_name,)):
             targets.setdefault(file_name.casefold(), (number, dest / file_name))
     specs: list[tuple[int, Path]] = list(targets.values())
     if not specs:

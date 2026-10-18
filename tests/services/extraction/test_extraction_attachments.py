@@ -28,6 +28,28 @@ def test_extract_attachments_skips_a_container_without_fonts(monkeypatch: pytest
 
 
 @pytest.mark.unit
+def test_extract_attachments_picks_each_attachment_by_its_own_extension(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    requested: list[list[str]] = []
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        requested.append(command[5:])
+        for spec in command[5:]:
+            (tmp_path / "fonts" / spec.split(":", 1)[1]).write_bytes(b"font")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(service, "identify", lambda _: _media("Font.txt", "Font.ttf", "Cover.jpg", "Second.OTF"))
+    monkeypatch.setattr(service, "ensure_binary", lambda _: Path("mkvextract.exe"))
+    monkeypatch.setattr(subprocess, "run", run)
+
+    extracted: tuple[Path, ...] = service.extract_attachments(Path("episode.mkv"), tmp_path / "fonts")
+
+    assert requested == [["2:Font.ttf", "4:Second.OTF"]]
+    assert extracted == (tmp_path / "fonts" / "Font.ttf", tmp_path / "fonts" / "Second.OTF")
+
+
+@pytest.mark.unit
 def test_extract_attachments_fails_when_mkvextract_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(service, "identify", lambda _: _media("Font.ttf"))
     monkeypatch.setattr(service, "ensure_binary", lambda _: Path("mkvextract.exe"))
