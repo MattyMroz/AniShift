@@ -129,24 +129,34 @@ Wymagania:
 ## 6. Lektor: kiedy decyduje dobrze
 
 1. Lektor czyta każdą kwestię mówioną przez postać, także krótkie okrzyki („Huh?”, „Can it!”).
-2. Szyldy i inne napisy ekranowe zostają zawsze na ekranie. Lektor czyta je dodatkowo tylko wtedy, gdy pasuje to do sytuacji (sekcja 6.1); odgłosów w gwiazdkach i piosenek nie czyta nigdy.
+2. Szyldy i inne napisy ekranowe zostają zawsze na ekranie. Lektor czyta je dodatkowo, gdy pasuje to do sytuacji (sekcja 6.1, ważenie, nie zakaz); odgłosów w gwiazdkach i piosenek nie czyta nigdy.
 3. Przy wątpliwości lektor raczej czyta. Zgubiona kwestia kosztuje więcej niż przeczytany szyld, bo widz traci treść, a szyld nadal widzi na ekranie.
 4. Kopie tej samej linii (animacja, warstwy poświaty) lektor czyta raz, także gdy kopie są w różnych stylach.
 5. Decyzję podejmujemy raz, na angielskim źródle. Polski plik, ścieżka lektora i plik szyldów ją dziedziczą. Dziś klasyfikacja działa trzy razy, na różnych plikach, i może dać różne wyniki ([code-map.md](research/code-map.md) §0.2).
 
 **Granice rozpoznania.** Program nie słyszy dźwięku i nie widzi obrazu. Rozpoznaje kwestie po stylu, położeniu, interpunkcji, wersalikach i polu aktora. Zawsze zostaną przypadki sporne, np. „Next Time” i „Preview”, tytuł odcinka w stylu dialogu albo przyśpiewka w tekście. Jak je traktować, rozstrzyga właściciel ([fuzzy-signs-and-split.md](fuzzy-signs-and-split.md) §E). Research nie znalazł profesjonalnych zasad dla polskiego lektora.
 
-### 6.1 Lektor czyta napisy ekranowe, gdy jest miejsce
+### 6.1 Lektor czyta napisy ekranowe, gdy pasuje to do sytuacji
 
-Decyzja właściciela z 18.10: woli, gdy lektor czyta też napisy ekranowe, ale nie zawsze, bo czasem jest to nieporządne. Ważność napisu dla fabuły lub żartu jest poza zasięgiem programu (nie rozumie sceny), więc decydują warunki obserwowalne. Lektor czyta napis ekranowy, gdy wszystkie są spełnione:
+Decyzja właściciela z 18.10: woli, gdy lektor czyta też napisy ekranowe, ale nie zawsze, bo czasem jest to nieporządne; zależy to od kontekstu. Ważność napisu dla fabuły lub żartu jest poza zasięgiem programu (nie rozumie sceny), więc decyduje ważenie cech obserwowalnych, jak w całym dokumencie.
 
-1. **Nikt wtedy nie mówi:** w oknie napisu nie ma czytanej kwestii (z małym marginesem), więc lektor nie przerywa postaci ani nie nakłada się na nią.
-2. **Zdąży:** szacowany czas przeczytania tekstu mieści się w wolnym oknie. Długi tekst w krótkim oknie zostaje tylko na ekranie.
-3. **To nie powtórka:** ten sam tekst nie był przed chwilą czytany i nie powtarza kwestii, którą postać właśnie powiedziała.
-4. **To nie piosenka ani odgłos:** style piosenek, karaoke i odgłosy w gwiazdkach (`*...*`) zostają tylko na ekranie.
-5. **To nie drobiazg w tle:** bardzo mały napis (czytelność „bardzo źle” z sekcji 3) lektor pomija.
+**Twarde:** lektor nigdy nie mówi dwoma głosami naraz. Czytanie napisu nie może nachodzić na czytaną kwestię. Piosenki, karaoke i odgłosy w gwiazdkach (`*...*`) zostają tylko na ekranie.
 
-Ustawienie panelu „Lektor czyta napisy ekranowe”: **nie** / **gdy jest miejsce** (domyślnie) / **zawsze** (zawsze = bez warunku 1–2, nadal bez piosenek i odgłosów). Właściciel ocenia warianty na odsłuchu fragmentów.
+**Gdzie lektor może przeczytać napis:** w dowolnej pauzie między czytanymi kwestiami w czasie, gdy napis jest na ekranie, także zaraz przed kwestią albo zaraz po niej, a przy ważnym napisie chwilę po jego zniknięciu. To, że ktoś mówi, nie wyklucza czytania, jeśli jest pauza.
+
+**Ważenie:**
+
+| Za czytaniem (napis wygląda na ważny) | Przeciw czytaniu |
+| --- | --- |
+| duży, czytelny napis | trzeba się zmieścić w ciasnej pauzie |
+| na środku kadru albo jako tytuł | lektor skończyłby długo po zniknięciu napisu |
+| długo na ekranie | długi tekst |
+| krótki i treściwy | powtórka: ten sam tekst przed chwilą albo to samo, co powiedziała postać |
+| jedyny napis w kadrze | drobny napis w tle |
+
+Lektor czyta napis, gdy przewaga „za” nad „przeciw” jest wyraźna. Duży tytuł przeczyta nawet w krótkiej pauzie, drobny napis w tle tylko przy dużej ilości czasu. Wartości kalibrujemy na odsłuchu fragmentów.
+
+Ustawienie panelu „Lektor czyta napisy ekranowe”: **nie** / **gdy pasuje** (domyślnie, ważenie wyżej) / **zawsze** (każdy napis poza piosenkami i odgłosami, w najbliższej pauzie). Właściciel ocenia warianty na odsłuchu.
 
 ## 7. Kursywa i kolory
 
