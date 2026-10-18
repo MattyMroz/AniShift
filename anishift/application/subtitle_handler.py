@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Final
 
 from anishift.application.artifacts import Artifact, ArtifactKind
 from anishift.application.cancellation import CancellationToken
+from anishift.application.episode_fonts import MAX_LAYOUT_INPUTS, episode_fonts
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
 from anishift.application.planning import PlanTask, TaskKind
 from anishift.application.results import ArtifactSnapshot, ProducedArtifact, TaskResult
@@ -72,8 +73,8 @@ class SubtitleTaskHandler:
         return result
 
     def _normalize(self, task: PlanTask, artifacts: ArtifactSnapshot) -> TaskResult:
-        if len(task.requires) != 1 or len(task.produces) != 1:
-            msg = "Subtitle normalization requires exactly one input and output"
+        if not 1 <= len(task.requires) <= MAX_LAYOUT_INPUTS or len(task.produces) != 1:
+            msg = "Subtitle normalization requires one source, an optional source container and one output"
             raise ExecutionError(msg)
         output: Artifact = artifacts.require_output(task.produces[0])
         output_kind: SubtitleKind = _output_kind(task, output)
@@ -88,6 +89,7 @@ class SubtitleTaskHandler:
             destination,
             kind=output_kind,
             layout=layout,
+            fonts=None if layout is None else episode_fonts(self._run_root, task, artifacts, output),
             dialogue_font=self._dialogue_font,
         )
         return TaskResult(task.task_id, (ProducedArtifact(output.artifact_id, destination, {}),))

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Final, Protocol
 
 from anishift.application.artifacts import Artifact, ArtifactKind
 from anishift.application.cancellation import CancellationToken
+from anishift.application.episode_fonts import MAX_LAYOUT_INPUTS, episode_fonts
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
 from anishift.application.planning import PlanTask, TaskKind
 from anishift.application.results import ArtifactSnapshot, ProducedArtifact, TaskResult
@@ -18,6 +19,7 @@ from anishift.application.task_paths import task_staging_path
 from anishift.errors import ExecutionError
 from anishift.services.subtitles import (
     DisplayedLine,
+    FontSources,
     SpokenLine,
     SubtitleKind,
     SubtitleSplit,
@@ -179,8 +181,8 @@ class TranslationTaskHandler:
         if task.kind is not TaskKind.TRANSLATE_SUBTITLES:
             msg = "Translation handler received a non-translation task"
             raise ExecutionError(msg)
-        if len(task.requires) != 1 or len(task.produces) != 1:
-            msg = "Translation task must have exactly one input and output"
+        if not 1 <= len(task.requires) <= MAX_LAYOUT_INPUTS or len(task.produces) != 1:
+            msg = "Translation task must have one source, an optional source container and one output"
             raise ExecutionError(msg)
         source: Artifact = artifacts.require_ready(task.requires[0])
         if source.path is None or source.kind not in {ArtifactKind.SOURCE_SUBTITLES, ArtifactKind.STANDALONE_TEXT}:
@@ -298,6 +300,7 @@ class TranslationTaskHandler:
             msg = "Translation source must be ASS or SRT"
             raise ExecutionError(msg)
         split: SubtitleSplit = split_subtitles(load_subtitles(source.path), kind=source_kind)
+        fonts: FontSources = episode_fonts(self._run_root, task, artifacts, output)
         result: FileTranslation = translate_subtitle_split(self._service, split, cancel, observer=observer)
         if not result.is_success:
             return result, None
@@ -308,7 +311,7 @@ class TranslationTaskHandler:
             replace(split, kind=output_kind),
             translated_texts(split, result),
             destination,
-            fonts=None,
+            fonts=fonts,
             limits=self._layout,
             dialogue_font=self._dialogue_font,
         )

@@ -1393,3 +1393,80 @@ def test_manual_planning_requires_exact_intent_map() -> None:
     group = _group(video)
     with pytest.raises(PlanningError, match="exactly one intent"):
         plan_manual((group,), {}, _settings())
+
+
+def _full_polish(group: InspectedSourceGroup, rebuild: RebuildRequest | None = None) -> ExecutionPlan:
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.FULL_PL}))
+    return plan_auto((group,), _preset(products), _settings(), rebuild=rebuild)
+
+
+@pytest.mark.unit
+def test_translation_of_embedded_subtitles_takes_their_mkv_as_the_font_input() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+
+    plan: ExecutionPlan = _full_polish(_group(video))
+
+    extraction: PlanTask = _task(plan, TaskKind.EXTRACT_SUBTITLES)
+    translation: PlanTask = _task(plan, TaskKind.TRANSLATE_SUBTITLES)
+    assert plan.can_execute
+    assert translation.requires == (*extraction.produces, video.artifact_id)
+    assert translation.depends_on == (extraction.task_id,)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("language", "kind"), [("eng", TaskKind.TRANSLATE_SUBTITLES), ("pol", TaskKind.NORMALIZE_SUBTITLES)]
+)
+def test_sidecar_layout_task_adds_the_group_mkv_without_changing_its_identity(language: str, kind: TaskKind) -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    sidecar: Artifact = _artifact(ArtifactKind.SOURCE_SUBTITLES, "1.ass", language=language, subtitle_format="ass")
+
+    with_video: PlanTask = _task(_full_polish(_group(video, sidecar)), kind)
+    without_video: PlanTask = _task(_full_polish(_group(sidecar)), kind)
+
+    assert with_video.requires == (sidecar.artifact_id, video.artifact_id)
+    assert without_video.requires == (sidecar.artifact_id,)
+    assert with_video.task_id == without_video.task_id
+    assert with_video.produces == without_video.produces
+
+
+@pytest.mark.unit
+def test_mp4_or_unready_video_is_not_a_font_input() -> None:
+    sidecar: Artifact = _artifact(ArtifactKind.SOURCE_SUBTITLES, "1.ass", language="eng", subtitle_format="ass")
+    mp4: Artifact = _artifact(ArtifactKind.VIDEO_MP4, "1.mp4")
+    broken: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv", state=ArtifactState.INVALID)
+
+    for group in (_group(mp4, sidecar), _group(broken, sidecar)):
+        assert _task(_full_polish(group), TaskKind.TRANSLATE_SUBTITLES).requires == (sidecar.artifact_id,)
+
+
+@pytest.mark.unit
+def test_ready_polish_product_stays_reused_and_its_rebuild_takes_the_font_input() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    sidecar: Artifact = _artifact(ArtifactKind.SOURCE_SUBTITLES, "1.ass", language="eng", subtitle_format="ass")
+    ready: Artifact = _artifact(ArtifactKind.FULL_PL, "1.pl.ass", language="pol", subtitle_format="ass")
+    group: InspectedSourceGroup = _group(video, sidecar, ready)
+
+    reused: ExecutionPlan = _full_polish(group)
+    rebuilt: ExecutionPlan = _full_polish(group, RebuildRequest(frozenset({ProductKind.FULL_PL})))
+
+    assert TaskKind.TRANSLATE_SUBTITLES not in _task_kinds(reused)
+    assert _task(rebuilt, TaskKind.TRANSLATE_SUBTITLES).requires == (sidecar.artifact_id, video.artifact_id)
+
+
+@pytest.mark.unit
+def test_manual_format_conversion_of_a_polish_product_takes_the_font_input() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    ready: Artifact = _artifact(ArtifactKind.FULL_PL, "1.pl.srt", language="pol", subtitle_format="srt")
+    group: InspectedSourceGroup = _group(video, ready)
+    intent: GroupIntent = _manual(
+        group,
+        ProductIntent(frozenset({ProductKind.FULL_PL})),
+        subtitle_source_policy=SubtitleSourcePolicy.READY_POLISH,
+        selected_subtitle_artifact_id=ready.artifact_id,
+        subtitle_output_format=SubtitleOutputFormat.ASS,
+    )
+
+    plan: ExecutionPlan = plan_manual((group,), {group.group_id: intent}, _settings())
+
+    assert _task(plan, TaskKind.NORMALIZE_SUBTITLES).requires == (ready.artifact_id, video.artifact_id)

@@ -16,6 +16,7 @@ from test_automation import _await, _owned, _request
 from test_composition_handler import FFMPEG, FFPROBE, _Composer
 from test_notification import _notifications, _reconcile_automatic
 
+from anishift.application import episode_fonts
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState, SourceGroup
 from anishift.application.audio_handler import AudioTaskHandler
 from anishift.application.cancellation import CancellationToken, NeverCancelledToken
@@ -71,17 +72,19 @@ from anishift.application.watch_state import WatchStateStore
 from anishift.config.presets import AutoPresetFile
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
-from anishift.errors import AniShiftError, ExecutionError
+from anishift.errors import AniShiftError, ErrorCode, ErrorContext, ExecutionError
 from anishift.platform.local_control import ControlResponse
 from anishift.services.audio import AudioRenderRequest, AudioRenderResult, AudioRenderStatus
 from anishift.services.composition import CompositionConfig, CompositionService
 from anishift.services.extraction import (
+    ExtractionError,
     ExtractionRequest,
     ExtractionResult,
     LegacyExtractionResult,
     MediaInfo,
     TrackSelection,
 )
+from anishift.services.fonts import FontIndex
 from anishift.services.subtitles import (
     DisplayedLine,
     SpokenLine,
@@ -447,6 +450,97 @@ def test_subtitle_handler_normalizes_srt_to_ass(tmp_path: Path) -> None:
 
     assert result.outputs[0].path.suffix == ".ass"
     assert "[Events]" in result.outputs[0].path.read_text(encoding="utf-8")
+
+
+def _record_font_layout(monkeypatch: pytest.MonkeyPatch) -> tuple[list[tuple[Path, Path]], list[tuple[Path, ...]]]:
+    extracted: list[tuple[Path, Path]] = []
+    indexed: list[tuple[Path, ...]] = []
+
+    def extract(container: Path, dest: Path) -> tuple[Path, ...]:
+        extracted.append((container, dest))
+        return (dest / "Episode.ttf",)
+
+    def build(cls: type[FontIndex], episode: tuple[Path, ...], system: tuple[Path, ...]) -> FontIndex:
+        indexed.append(tuple(episode))
+        return cls((), {})
+
+    monkeypatch.setattr(episode_fonts, "extract_attachments", extract)
+    monkeypatch.setattr(episode_fonts, "system_font_paths", lambda: ())
+    monkeypatch.setattr(FontIndex, "build", classmethod(build))
+    return extracted, indexed
+
+
+@pytest.mark.integration
+def test_translation_handler_lays_out_with_the_fonts_of_its_optional_source_container(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extracted, indexed = _record_font_layout(monkeypatch)
+    source_path: Path = tmp_path / "episode.srt"
+    _write_srt(source_path)
+    source: Artifact = _ready("source", ArtifactKind.SOURCE_SUBTITLES, source_path)
+    video: Artifact = _ready("video", ArtifactKind.VIDEO_MKV, tmp_path / "episode.mkv")
+    output: Artifact = _output("full", ArtifactKind.FULL_PL, subtitle_format="srt")
+    task: PlanTask = _task(TaskKind.TRANSLATE_SUBTITLES, ("source", "video"), ("full",), (("output_format", "srt"),))
+
+    result: TaskResult = TranslationTaskHandler(_TranslationService(), run_root=tmp_path / "run").execute(
+        task,
+        ArtifactSnapshot({"source": source, "video": video}, {"full": output}),
+        NeverCancelledToken(),
+        _ProgressSink(),
+    )
+
+    staging: Path = task_staging_path(tmp_path / "run", task, output, ".fonts")
+    assert extracted == [(video.path, staging)]
+    assert indexed == [(staging / "Episode.ttf",)]
+    assert "PL Hello" in result.outputs[0].path.read_text(encoding="utf-8")
+
+
+@pytest.mark.integration
+def test_layout_tasks_keep_working_when_the_container_fonts_cannot_be_extracted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(container: Path, dest: Path) -> tuple[Path, ...]:
+        raise ExtractionError(context=ErrorContext(code=ErrorCode.EXTRACTION_FAILED, message="broken"))
+
+    monkeypatch.setattr(episode_fonts, "extract_attachments", fail)
+    source_path: Path = tmp_path / "episode.srt"
+    _write_srt(source_path)
+    source: Artifact = _ready("source", ArtifactKind.SOURCE_SUBTITLES, source_path)
+    video: Artifact = _ready("video", ArtifactKind.VIDEO_MKV, tmp_path / "episode.mkv")
+    output: Artifact = _output("full", ArtifactKind.FULL_PL, subtitle_format="ass")
+    task: PlanTask = _task(TaskKind.NORMALIZE_SUBTITLES, ("source", "video"), ("full",), (("output_format", "ass"),))
+
+    result: TaskResult = SubtitleTaskHandler(run_root=tmp_path / "run").execute(
+        task,
+        ArtifactSnapshot({"source": source, "video": video}, {"full": output}),
+        NeverCancelledToken(),
+        _ProgressSink(),
+    )
+
+    assert "Hello" in result.outputs[0].path.read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("kind", [TaskKind.TRANSLATE_SUBTITLES, TaskKind.NORMALIZE_SUBTITLES])
+def test_layout_tasks_reject_a_second_input_that_is_not_an_mkv_or_a_third_input(tmp_path: Path, kind: TaskKind) -> None:
+    source_path: Path = tmp_path / "episode.srt"
+    _write_srt(source_path)
+    inputs: dict[str, Artifact] = {
+        "source": _ready("source", ArtifactKind.SOURCE_SUBTITLES, source_path),
+        "audio": _ready("audio", ArtifactKind.SOURCE_AUDIO, tmp_path / "episode.flac"),
+        "video": _ready("video", ArtifactKind.VIDEO_MKV, tmp_path / "episode.mkv"),
+    }
+    output: Artifact = _output("full", ArtifactKind.FULL_PL, subtitle_format="srt")
+    handler: TranslationTaskHandler | SubtitleTaskHandler = (
+        TranslationTaskHandler(_TranslationService(), run_root=tmp_path / "run")
+        if kind is TaskKind.TRANSLATE_SUBTITLES
+        else SubtitleTaskHandler(run_root=tmp_path / "run")
+    )
+
+    for requires in (("source", "audio"), ("source", "video", "audio")):
+        task: PlanTask = _task(kind, requires, ("full",), (("output_format", "srt"),))
+        with pytest.raises(ExecutionError):
+            handler.execute(task, ArtifactSnapshot(inputs, {"full": output}), NeverCancelledToken(), _ProgressSink())
 
 
 @pytest.mark.integration

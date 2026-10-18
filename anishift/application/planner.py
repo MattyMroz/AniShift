@@ -1012,6 +1012,13 @@ class _GroupPlanner:
         self._video = candidate
         return candidate
 
+    def _with_font_container(self, subtitles: Artifact) -> tuple[Artifact, ...]:
+        """Return the subtitle input and, when the group has a ready MKV, that container for its fonts."""
+        video: Artifact | None = choose_primary_video(tuple(self.artifacts.values()))
+        if video is None or video.kind is not ArtifactKind.VIDEO_MKV or video.state is not ArtifactState.READY:
+            return (subtitles,)
+        return subtitles, video
+
     def _select_subtitle_input(  # noqa: C901,PLR0911,PLR0912 - explicit source policies stay visible
         self,
     ) -> Artifact | _EmbeddedTrack | None:
@@ -1263,7 +1270,7 @@ class _GroupPlanner:
             )
             self._add_task(
                 TaskKind.NORMALIZE_SUBTITLES,
-                requires=(selected,),
+                requires=self._with_font_container(selected),
                 produces=(converted,),
                 variant="manual-format-conversion",
                 resource_key="subtitles",
@@ -1303,7 +1310,7 @@ class _GroupPlanner:
         if should_translate:
             self._add_task(
                 TaskKind.TRANSLATE_SUBTITLES,
-                requires=(source,),
+                requires=self._with_font_container(source),
                 produces=(full,),
                 variant="polish",
                 resource_key=_translation_resource_key(self.settings),
@@ -1314,7 +1321,7 @@ class _GroupPlanner:
         else:
             self._add_task(
                 TaskKind.NORMALIZE_SUBTITLES,
-                requires=(source,),
+                requires=self._with_font_container(source),
                 produces=(full,),
                 variant="polish-bypass",
                 resource_key="subtitles",
@@ -1419,7 +1426,7 @@ class _GroupPlanner:
             return converted
         self._add_task(
             TaskKind.NORMALIZE_SUBTITLES,
-            requires=(source,),
+            requires=self._with_font_container(source),
             produces=(converted,),
             variant=f"manual-{source.kind.value}-format-conversion",
             resource_key="subtitles",
