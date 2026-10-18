@@ -307,9 +307,7 @@ class TtsTaskHandler:
         lines: tuple[NormalizedClip, ...] = _prepare(self._audio, manifest.clips, temporary_root, cancel)
         baseline: TimelinePlan | None = plan_timeline(lines)
         wanted: tuple[SignCandidate, ...] = (
-            ()
-            if baseline is None
-            else reachable_signs(candidates, free_intervals(baseline), baseline.sample_rate, mode)
+            () if baseline is None else reachable_signs(candidates, free_intervals(baseline), baseline.sample_rate)
         )
         recorded: dict[int, NarrationManifestClip] = self._record_signs(task, wanted, cancel, progress)
         prepared: tuple[NormalizedClip, ...] = _prepare(self._audio, tuple(recorded.values()), temporary_root, cancel)

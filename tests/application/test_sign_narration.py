@@ -15,6 +15,7 @@ from anishift.application.sign_narration import (
 from anishift.services.audio.timeline import plan_timeline
 from anishift.services.audio.types import AudioFormat, NormalizedClip, PcmStorage, TimedClip, TimelinePlan
 from anishift.services.subtitles import SignCandidate
+from anishift.services.subtitles.signs import static_weights
 
 _SMALL: tuple[float, float] = (0.5408, 0.3)
 
@@ -167,12 +168,33 @@ def test_always_reads_a_sign_smart_rejects_for_its_weight() -> None:
     assert selection.placements[0].start_ms == 1000
 
 
-def test_always_never_reads_past_the_end_of_the_sign_window() -> None:
+def test_always_reads_in_the_same_span_after_the_sign_window_as_smart() -> None:
     lines: tuple[NormalizedClip, ...] = (_clip("line-1", 0, 3000, 0),)
 
     selection: SignSelection = select_signs((_sign(3, 1000, 2500, (0.9, 0.0)),), _recordings(3), lines, "always")
 
+    assert _decision(selection, 3) == "read"
+    assert selection.placements[0].start_ms == 3200
+
+
+def test_always_never_reads_past_three_seconds_after_the_sign_window() -> None:
+    lines: tuple[NormalizedClip, ...] = (_clip("line-1", 0, 3000, 0),)
+
+    selection: SignSelection = select_signs((_sign(3, 0, 500, (0.9, 0.0)),), _recordings(3), lines, "always")
+
     assert _decision(selection, 3) == "no_pause"
+
+
+@pytest.mark.parametrize(("mode", "decision"), [("smart", "weight"), ("always", "read")])
+def test_a_sound_written_as_a_repeated_word_is_read_only_in_always(mode: str, decision: str) -> None:
+    lines: tuple[NormalizedClip, ...] = (_clip("line-1", 100_000, 800, 50),)
+    weights: tuple[float, float] = static_weights(
+        height=0.12, centre=1.0, on_screen_ms=2000, words=2, alone=True, edge=0.0, echo=False, sound=True
+    )
+
+    selection: SignSelection = select_signs((_sign(3, 1000, 3000, weights, "tup tup"),), _recordings(3), lines, mode)
+
+    assert _decision(selection, 3) == decision
 
 
 def test_a_sign_without_a_recording_is_missing() -> None:

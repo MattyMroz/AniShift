@@ -133,10 +133,12 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
 
 - Co robi: lektor czyta polskie napisy ekranowe (szyldy, tytuły) w pauzach między kwestiami.
   Kwestie zostają dokładnie w tych samych miejscach; napis nigdy nie nachodzi na kwestię ani na
-  inny napis. Piosenek, karaoke, odgłosów w `*...*` i rysunków lektor nie czyta w żadnym trybie.
+  inny napis. Piosenek, karaoke, odgłosów w `*...*`, rysunków, napisów w czasie piosenek
+  (czołówka, tyłówka) i tekstów z mniej niż dwiema literami lektor nie czyta w żadnym trybie.
 - Wartości  domyślnie: `off` (nie czyta), `smart` (czyta, gdy napis jest ważny i mieści się w
-  pauzie; napisu przeczytanego w ciągu 10 s nie powtarza), `always` (czyta każdy napis, który
-  mieści się w pauzie w czasie jego wyświetlania)  `smart`.
+  pauzie; napisu przeczytanego w ciągu 10 s ani odgłosu zapisanego powtórzonym słowem, np.
+  „TUP TUP”, nie czyta), `always` (czyta każdy napis, który mieści się w pauzie w czasie jego
+  wyświetlania lub do 3 s po nim)  `smart`.
 - Zależność: działa tylko dla napisów ASS z czasami źródła. Syntezowane są napisy, dla których
   jest wolna pauza, więc rośnie liczba znaków wysyłanych do silnika TTS (zwykle kilkanaście
   procent); dla płatnych silników to koszt.

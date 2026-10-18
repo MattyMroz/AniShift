@@ -112,13 +112,13 @@ def free_intervals(plan: TimelinePlan) -> tuple[Interval, ...]:
 
 
 def reachable_signs(
-    candidates: Sequence[SignCandidate], intervals: Sequence[Interval], sample_rate: int, mode: str
+    candidates: Sequence[SignCandidate], intervals: Sequence[Interval], sample_rate: int
 ) -> tuple[SignCandidate, ...]:
     """Return the candidates with free frames inside the span their reading may take."""
     return tuple(
         candidate
         for candidate in candidates
-        if any(_overlap(interval, _area(candidate, sample_rate, mode)) for interval in intervals)
+        if any(_overlap(interval, _area(candidate, sample_rate)) for interval in intervals)
     )
 
 
@@ -165,7 +165,7 @@ class _Selector:
         self.margins: list[tuple[int, float]] = []
 
     def consider(self, candidate: SignCandidate, clip: NormalizedClip | None) -> None:
-        area: tuple[int, int] = _area(candidate, self._sample_rate, self._mode)
+        area: tuple[int, int] = _area(candidate, self._sample_rate)
         if not any(_overlap(interval, area) for interval in self._intervals):
             self.decisions.append((candidate.group, "no_pause"))
             return
@@ -248,9 +248,8 @@ class _Selector:
         self.decisions.append((candidate.group, "read"))
 
 
-def _area(candidate: SignCandidate, sample_rate: int, mode: str) -> tuple[int, int]:
-    after: int = SIGN_AFTER_MS if mode == _SMART else 0
-    return _frames(max(candidate.start, 0), sample_rate), _frames(max(candidate.end, 0) + after, sample_rate)
+def _area(candidate: SignCandidate, sample_rate: int) -> tuple[int, int]:
+    return _frames(max(candidate.start, 0), sample_rate), _frames(max(candidate.end, 0) + SIGN_AFTER_MS, sample_rate)
 
 
 def _overlap(interval: Interval, area: tuple[int, int]) -> bool:
