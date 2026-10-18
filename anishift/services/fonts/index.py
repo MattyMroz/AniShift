@@ -99,7 +99,7 @@ _FONT_SUFFIXES: Final[frozenset[str]] = frozenset({".ttf", ".otf", ".ttc", ".otc
 _WINDOWS_DIR: Final[str] = r"C:\Windows"
 """Windows folder used when ``WINDIR`` is not set."""
 
-_READ_ERRORS: Final[tuple[type[Exception], ...]] = (
+FONT_READ_ERRORS: Final[tuple[type[Exception], ...]] = (
     OSError, TTLibError, KeyError, ValueError, AssertionError, IndexError, struct.error,
 )  # fmt: skip
 """Failures fontTools raises for missing, damaged or non-font files."""
@@ -135,7 +135,7 @@ def _read_fonts[T](path: Path, read: Callable[[Any, int], T]) -> tuple[T, ...]:
     try:
         with _open_fonts(path) as fonts:
             return tuple(read(font, index) for index, font in enumerate(fonts))
-    except _READ_ERRORS as error:
+    except FONT_READ_ERRORS as error:
         logger.debug("Font file skipped", file=path.name, reason=type(error).__name__)
         return ()
 

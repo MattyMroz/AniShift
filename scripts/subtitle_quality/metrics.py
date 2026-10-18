@@ -10,6 +10,7 @@ from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Final
 
 from anishift.services.subtitles.classifier import Category, classify_styles
+from anishift.services.subtitles.geometry import RenderProfile
 from anishift.services.subtitles.text import is_drawing, visible_text, visible_verses
 
 if TYPE_CHECKING:
@@ -222,10 +223,9 @@ def dialogue(subs: SSAFile) -> list[SSAEvent]:
 
 
 def play_size(subs: SSAFile) -> Size:
-    """Return the script resolution, with the ASS default for missing values."""
-    width: int = int(float(subs.info.get("PlayResX", 384)))
-    height: int = int(float(subs.info.get("PlayResY", 288)))
-    return width, height
+    """Return the script resolution libass renders the file at, completing missing header values as it does."""
+    profile: RenderProfile = RenderProfile.from_subs(subs, None)
+    return profile.play_res_x, profile.play_res_y
 
 
 def style_verdicts(subs: SSAFile) -> dict[str, Category]:

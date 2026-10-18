@@ -11,9 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
 from anishift.application.translation_handler import displayed_lines
-from anishift.services.fonts import system_font_paths
 from anishift.services.subtitles import (
-    FontSources,
     is_drawing,
     layout_translated,
     load_subtitles,
@@ -26,7 +24,7 @@ from anishift.services.subtitles.layout import LayoutLimits
 from anishift.utils.logger import LoggerMode, setup_mode
 from anishift.utils.logger.config import FileConfig
 from scripts.subtitle_quality import metrics
-from scripts.subtitle_quality.episode import OUTPUT_NAME, SOURCE_NAME, episode_dirs
+from scripts.subtitle_quality.episode import OUTPUT_NAME, SOURCE_NAME, episode_dirs, pair_fonts
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -42,9 +40,6 @@ REPLAY_ROOTS: Final[tuple[str, ...]] = ("library", "corpus-pairs")
 
 MAPPING_NAME: Final[str] = "mapping.json"
 """File in a replay folder recording every pair's writer inputs, exclusions, source decisions and skips."""
-
-FONTS_NAME: Final[str] = "fonts"
-"""Folder of a pair holding the fonts attached to its episode."""
 
 REPLAY_SUFFIX: Final[str] = ".pl.ass"
 """Suffix of a replayed pair's output file, written at the pair id inside the replay folder."""
@@ -119,15 +114,6 @@ def translations(split: SubtitleSplit, inputs: PairInput) -> dict[int, str]:
     """Return the unbroken text the subtitle handler would lay out: one per spoken line and displayed event."""
     keys: list[int] = [line.order for line in split.spoken] + [line.order for line in displayed_lines(split)]
     return {index: inputs.translations[index] for index in keys}
-
-
-def pair_fonts(directory: Path) -> FontSources:
-    """Return the pair's episode fonts, when it keeps them, and the system fonts."""
-    folder: Path = directory / FONTS_NAME
-    episode: tuple[Path, ...] = (
-        tuple(sorted(path for path in folder.iterdir() if path.is_file())) if folder.is_dir() else ()
-    )
-    return FontSources(episode=episode, system=system_font_paths())
 
 
 def replay_pair(directory: Path, destination: Path) -> tuple[PairInput, SubtitleSplit, Path | None]:

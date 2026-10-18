@@ -13,7 +13,7 @@ from itertools import batched
 from typing import TYPE_CHECKING, Final
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont
-from pysubs2 import SSAFile
+from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
 from anishift.platform.binaries import Binary, require_binary
 from anishift.services.extraction import extract_attachments
@@ -22,8 +22,6 @@ from scripts.subtitle_quality.metrics import NUMBER
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
     from pathlib import Path
-
-    from pysubs2 import SSAEvent, SSAStyle
 
     from scripts.subtitle_quality.metrics import Box, Size
 
@@ -77,11 +75,23 @@ _RE_FONTSELECT: Final[re.Pattern[str]] = re.compile(r"fontselect: \((.+?), \d+, 
 _RE_MISSING_GLYPH: Final[re.Pattern[str]] = re.compile(r"Glyph 0x([0-9A-Fa-f]+) not found.*?\((.+?), \d+, \d+\)")
 """libass report of a glyph absent from the requested font."""
 
-_RE_INLINE_FONT: Final[re.Pattern[str]] = re.compile(r"\\fn([^\\}]+)")
-"""Inline font override."""
-
 _RE_NON_ALNUM: Final[re.Pattern[str]] = re.compile(r"[^0-9a-z]")
 """Characters ignored when comparing font names."""
+
+_RE_WRAP_LOG: Final[re.Pattern[str]] = re.compile(r"\] line break at -?\d+")
+"""libass debug report of one automatic line break; forced breaks report ``forced line break``."""
+
+_RE_FRAME_LOG: Final[re.Pattern[str]] = re.compile(r"Change happened at time ms:([0-9.]+)")
+"""FFmpeg debug report closing a frame whose subtitle image changed, with its time."""
+
+_MARK_STYLE: Final[str] = "slot mark"
+"""Style of the drawing marking every counted frame."""
+
+_MARK: Final[str] = r"{\an7\pos(0,0)\p1}m 0 0 l 4 0 4 4 0 4"
+"""Small square drawn in every counted frame so FFmpeg reports it even when its event draws nothing."""
+
+_MARK_MS: Final[int] = 500
+"""Half the time the frame mark is shown around its frame."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,18 +101,12 @@ class FontReport:
     fallbacks: tuple[str, ...]
     missing_glyphs: dict[str, str]
 
-    def affects(self, fonts: frozenset[str]) -> bool:
-        """Tell whether any of the given font families fell back or missed glyphs."""
-        replaced: set[str] = {name.split(" -> ")[0].casefold() for name in self.fallbacks}
-        replaced.update(name.casefold() for name in self.missing_glyphs)
-        return any(font.casefold() in replaced for font in fonts)
-
 
 # ── Fonts ─────────────────────────────────────────────────────────────────────
 
 
 def prepare_fonts(episode_dir: Path, video: Path | None, work: Path) -> int:
-    """Fill ``work/fonts`` from the episode font folder or the video attachments; return font count."""
+    """Fill ``work/fonts`` for FFmpeg, return the font count: tool staging kept for ``compare.py``, a D10 exception."""
     target: Path = work / "fonts"
     if target.is_dir() and any(target.iterdir()):
         return len(list(target.iterdir()))
@@ -113,14 +117,6 @@ def prepare_fonts(episode_dir: Path, video: Path | None, work: Path) -> int:
     if video is None or not video.is_file():
         return 0
     return len(extract_attachments(video, target))
-
-
-def event_fonts(subs: SSAFile, event: SSAEvent) -> frozenset[str]:
-    """Return the style font and inline font overrides of one event."""
-    names: set[str] = {match.group(1).strip().lstrip("@") for match in _RE_INLINE_FONT.finditer(event.text)}
-    if event.style in subs.styles:
-        names.add(subs.styles[event.style].fontname.lstrip("@"))
-    return frozenset(names)
 
 
 def parse_font_log(log: str) -> FontReport:
@@ -160,8 +156,8 @@ def _shift_text(text: str, dx: int, dy: int) -> str:
     return _RE_MOVE.sub(shift_move, _RE_POS.sub(shift_point, unclipped))
 
 
-def measurement_file(subs: SSAFile, events: Sequence[SSAEvent], size: Size) -> tuple[SSAFile, int]:
-    """Lay events into isolated time slots on a padded canvas; return the file and slot length in seconds."""
+def measurement_file(subs: SSAFile, events: Sequence[SSAEvent], size: Size, *, every: int = 1) -> tuple[SSAFile, int]:
+    """Lay events into isolated time slots, ``every`` slots apart, on a padded canvas; return it and the slot length."""
     dx, dy = _padding(size)
     canvas: SSAFile = SSAFile()
     canvas.info = dict(subs.info)
@@ -176,7 +172,7 @@ def measurement_file(subs: SSAFile, events: Sequence[SSAEvent], size: Size) -> t
     canvas.styles = {name: style.copy() for name, style in subs.styles.items()}
     slot_s: int = slot_length(events)
     for number, event in enumerate(events, start=1):
-        canvas.events.append(_slotted(event, subs, number * slot_s * 1000, dx, dy))
+        canvas.events.append(_slotted(event, subs, number * every * slot_s * 1000, dx, dy))
     return canvas, slot_s
 
 
@@ -243,6 +239,49 @@ def _measure_batch(
     boxes: list[Box | None] = [_frame_box(frame, width, size) for frame in frames][1 : len(events) + 1]
     boxes.extend([None] * (len(events) - len(boxes)))
     return boxes, log.read_text(encoding="utf-8", errors="replace")
+
+
+def wrap_breaks(subs: SSAFile, events: Sequence[SSAEvent], size: Size, work: Path, name: str) -> list[int | None]:
+    """Count the automatic line breaks libass logs for each event rendered alone; None when its frame is not found."""
+    counts: list[int | None] = []
+    for number, batch in enumerate(batched(events, max(1, batch_size(events) // 2), strict=False), start=1):
+        counts.extend(_batch_breaks(subs, batch, size, work, f"{name}-{number}"))
+    return counts
+
+
+def _batch_breaks(subs: SSAFile, events: Sequence[SSAEvent], size: Size, work: Path, name: str) -> list[int | None]:
+    canvas, slot_s = measurement_file(subs, events, size, every=2)
+    canvas.styles[_MARK_STYLE] = SSAStyle()
+    for number in range(1, len(events) + 1):
+        moment: int = 2 * number * slot_s * 1000
+        mark: SSAEvent = SSAEvent(start=moment - _MARK_MS, end=moment + _MARK_MS, style=_MARK_STYLE, text=_MARK)
+        canvas.events.append(mark)
+    canvas.save(str(work / f"{name}.ass"), encoding="utf-8")
+    width: int = int(canvas.info["PlayResX"])
+    height: int = int(canvas.info["PlayResY"])
+    source: str = f"color=c=black:s={width}x{height}:r=1/{slot_s}:d={(2 * len(events) + 2) * slot_s},format=rgb24"
+    log: str = run_ffmpeg(
+        ["-v", "debug", "-f", "lavfi", "-i", source, "-vf", _ass_filter(f"{name}.ass", work), "-f", "null", "-"], work
+    )
+    return logged_breaks(log, slot_s, len(events))
+
+
+def logged_breaks(log: str, slot_s: int, count: int) -> list[int | None]:
+    """Read per event slot the automatic line breaks libass logged before FFmpeg reported the frame of that slot."""
+    counts: list[int | None] = [None] * count
+    pending: int = 0
+    for line in log.splitlines():
+        if _RE_WRAP_LOG.search(line):
+            pending += 1
+            continue
+        frame: re.Match[str] | None = _RE_FRAME_LOG.search(line)
+        if frame is None:
+            continue
+        number, separator = divmod(round(float(frame[1]) / 1000 / slot_s), 2)
+        if not separator and 1 <= number <= count:
+            counts[number - 1] = pending
+        pending = 0
+    return counts
 
 
 def _frame_box(frame: bytes, width: int, size: Size) -> Box | None:

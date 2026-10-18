@@ -62,9 +62,6 @@ def test_parse_font_log_reports_fallbacks_and_missing_glyphs() -> None:
     report = render.parse_font_log(log)
     assert report.fallbacks == ("Missing Sans -> ArialMT",)
     assert report.missing_glyphs == {"Comic Hand": "ą"}
-    assert report.affects(frozenset({"missing sans"}))
-    assert report.affects(frozenset({"Comic Hand"}))
-    assert not report.affects(frozenset({"Arial"}))
 
 
 @pytest.mark.integration
@@ -125,3 +122,39 @@ def test_render_shot_uses_the_nearest_relative_saved_frame(tmp_path: Path, monke
     assert isinstance(pixel, tuple)
     assert pixel[0] > 150
     assert max(pixel[1:]) < 80
+
+
+@pytest.mark.unit
+def test_logged_breaks_assign_the_automatic_breaks_to_the_frame_of_their_slot() -> None:
+    log = "\n".join(
+        (
+            "[Parsed_ass_0 @ 1] line break at 12",
+            "[Parsed_ass_0 @ 1] forced line break at 30",
+            "[Parsed_ass_0 @ 1] line break at 41",
+            "[Parsed_ass_0 @ 1] Change happened at time ms:6000.000000",
+            "[Parsed_ass_0 @ 1] Change happened at time ms:9000.000000",
+            "[Parsed_ass_0 @ 1] Change happened at time ms:12000.000000",
+            "[Parsed_ass_0 @ 1] Change happened at time ms:15000.000000",
+        )
+    )
+
+    assert render.logged_breaks(log, 3, 3) == [2, 0, None]
+
+
+@pytest.mark.integration
+def test_wrap_breaks_count_the_automatic_breaks_libass_makes_for_each_event(tmp_path: Path) -> None:
+    if resolve_binary(Binary.FFMPEG) is None:
+        pytest.skip("ffmpeg is not installed")
+    subs = _subs()
+    long_line = "This translated sign is far too long to fit between the margins of the small screen"
+    texts = ("Short", long_line, r"Hard\Nbreak", r"{\q2}" + long_line, r"{\alpha&HFF&}" + long_line)
+    events = [subs.events[0].copy() for _ in texts]
+    for event, text in zip(events, texts, strict=True):
+        event.text = text
+
+    breaks = render.wrap_breaks(subs, events, _SIZE, tmp_path, "wraps")
+
+    assert breaks[0] == breaks[2] == breaks[3] == 0
+    assert breaks[1] is not None
+    assert breaks[1] > 0
+    assert breaks[4] == breaks[1]

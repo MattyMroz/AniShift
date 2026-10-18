@@ -8,9 +8,12 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Final
 
 from anishift.paths import repo_root
+from anishift.services.fonts import FontIndex, system_font_paths
+from anishift.services.subtitles.geometry import RenderProfile, measure_text
 from anishift.services.subtitles.service import load_subtitles
+from anishift.services.subtitles.types import FontSources
 from scripts.subtitle_quality import metrics
-from scripts.subtitle_quality.render import FontReport, event_fonts, measure_boxes, prepare_fonts
+from scripts.subtitle_quality.render import FontReport, measure_boxes, prepare_fonts
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -32,6 +35,9 @@ VIDEO_NAME: Final[str] = "video.txt"
 
 FRAMES_NAME: Final[str] = "frames"
 """Optional folder of ``<ms>.jpg`` video frames used as gallery backgrounds instead of the video."""
+
+FONTS_NAME: Final[str] = "fonts"
+"""Optional folder holding the fonts attached to the episode."""
 
 PAIRING_MIN: Final[float] = 0.9
 """Share of source events that must pair with the output for it to count as made from this source."""
@@ -103,6 +109,15 @@ def video_path(directory: Path) -> Path | None:
         return None
     video: Path = repo_root() / pointer.read_text(encoding="utf-8").strip()
     return video if video.is_file() else None
+
+
+def pair_fonts(directory: Path) -> FontSources:
+    """Return the fonts in a folder's ``fonts/``, when it has one, and the system fonts."""
+    folder: Path = directory / FONTS_NAME
+    episode: tuple[Path, ...] = (
+        tuple(sorted(path for path in folder.iterdir() if path.is_file())) if folder.is_dir() else ()
+    )
+    return FontSources(episode=episode, system=system_font_paths())
 
 
 def analyse(directory: Path, cache: Path, *, render: bool) -> EpisodeResult:
@@ -183,16 +198,23 @@ def _render_signs(
     chosen_output: list[SSAEvent] = [output_events[sign.output_index] for sign in signs]
     source_boxes, source_report = measure_boxes(source, chosen_source, result.size, result.work, "measure-source")
     output_boxes, output_report = measure_boxes(output, chosen_output, result.size, result.work, "measure-output")
+    fonts: FontSources = pair_fonts(result.work)
+    index: FontIndex = FontIndex.build(fonts.episode, fonts.system)
+    source_profile: RenderProfile = RenderProfile.from_subs(source, index)
+    output_profile: RenderProfile = RenderProfile.from_subs(output, index)
     measured: list[metrics.Sign] = [
         replace(
             sign,
             source_box=source_box,
             output_box=output_box,
-            font_fallback=source_report.affects(event_fonts(source, source_event))
-            or output_report.affects(event_fonts(output, output_event)),
+            font_fallback=_substituted(source_event, source_profile) or _substituted(output_event, output_profile),
         )
         for sign, source_box, output_box, source_event, output_event in zip(
             signs, source_boxes, output_boxes, chosen_source, chosen_output, strict=True
         )
     ]
     return measured, {"source": source_report, "output": output_report}
+
+
+def _substituted(event: SSAEvent, profile: RenderProfile) -> bool:
+    return measure_text(event, event.text, profile).fallback_glyphs > 0
