@@ -1,11 +1,11 @@
 ---
 kind: specification
-status: v1.2 (po przeglądzie i weryfikacji astra, sol6, opus55)
+status: v1.3 (po przeglądzie i dwóch weryfikacjach)
 updated: 2026-10-19
 supersedes: fuzzy-line-breaks.md (dla dialogów)
 ---
 
-# Łamanie polskich dialogów na wiersze — specyfikacja v1.2
+# Łamanie polskich dialogów na wiersze — specyfikacja v1.3
 
 Właściciel 18.10 odrzucił przepisany algorytm z gałęzi `work/quality/16-line-breaks` jako błędny i przekombinowany. Wskazał stary algorytm z `work/quality/08-fuzzy-quality` (replay `u6-font`) jako lepszy i działający. Ta specyfikacja zastępuje `fuzzy-line-breaks.md` w części o dialogach. Opiera się na trzech niezależnych badaniach z 18–19.10:
 
@@ -13,7 +13,7 @@ Właściciel 18.10 odrzucił przepisany algorytm z gałęzi `work/quality/16-lin
 - [research/line-breaking-opus55.md](research/line-breaking-opus55.md) — literatura, pomiar sześciu narzędzi, korpus profesjonalnych polskich napisów (Netflix, Amazon, Crunchyroll), prototyp jednej funkcji kosztu;
 - [research/line-breaking-inventory.md](research/line-breaking-inventory.md) — co już mamy w kodzie i dokumentach, stary a odrzucony algorytm, MangaShift.
 
-v1.2 zamyka weryfikację v1.1: `ζ` = 0,1, jedna granica liczby wierszy, zerowa szerokość jako tryb bez pomiaru, wyjątki dla myślnika mówcy i znaków otwierających, pierwszeństwo klas, ochrona nazw, operacyjne bramki. v1.1 zamknęła przegląd v1:
+v1.3 zamyka drugą weryfikację (astra): kotwice liczby wierszy, ochrona w granicy `N`, `W_c` jako wartość pochodna, interpunkcja oderwana przez cięcie, kolejność klas chronionych, predykaty G2. v1.2 zamknęła weryfikację v1.1: `ζ` = 0,1, jedna granica liczby wierszy, zerowa szerokość jako tryb bez pomiaru, wyjątki dla myślnika mówcy i znaków otwierających, pierwszeństwo klas, ochrona nazw, operacyjne bramki. v1.1 zamknęła przegląd v1:
 - trzy poziomy reguł zamiast jednej skończonej kary (§3);
 - koszt każdego dodatkowego wiersza (§5.3);
 - ratunek minimalizujący przepełnienie (§5.4);
@@ -57,9 +57,9 @@ Zgodnie z `visual-quality.md` (nienaruszalne / unikane za wszelką cenę / ważo
 1. **Nienaruszalne** (filtr kandydatów, nigdy nie łamane):
    - tekst, kolejność słów, interpunkcja, grafemy, tagi ASS i znaczniki stylu są identyczne przed i po; zmieniają się tylko podziały `\N`;
    - słowa nie rozcinamy, a twarda spacja (`\h`, NBSP) nie jest miejscem cięcia;
-   - znak otwierający (`„`, `(`, `«`, `[`) nie kończy wiersza; znak zamykający (`”`, `)`, `»`, `]`) i interpunkcja (`.`, `,`, `;`, `:`, `!`, `?`, `…`) nie zaczynają wiersza; myślnik zaczyna wiersz wyłącznie jako znacznik mówcy (§4.2), więc przerwa przed każdym innym myślnikiem jest `banned`;
+   - znak otwierający (`„`, `(`, `«`, `[`) nie kończy wiersza; wiersz nie zaczyna się od samodzielnego tokenu złożonego wyłącznie ze znaków zamykających (`”`, `)`, `»`, `]`) lub interpunkcji (`.`, `,`, `;`, `:`, `!`, `?`, `…`), czyli od interpunkcji oderwanej przez cięcie od poprzedniego słowa; słowo z doklejonym znakiem („…nie”) może zaczynać wiersz; myślnik zaczyna wiersz wyłącznie jako znacznik mówcy (§4.2), więc przerwa przed każdym innym myślnikiem jest `banned`;
    - przed każdą zmianą mówcy (§4.2) jest podział wiersza.
-2. **Unikane za wszelką cenę** (przerwa `protected`): cięcia, które profesjonaliści robią w 0% przypadków albo które wytyczne zakazują. Układ z takim cięciem wchodzi do wyboru tylko w ratunku (§5.4), gdy nie ma żadnego mieszczącego się układu bez niego. Lista klas w §4.3.
+2. **Unikane za wszelką cenę** (przerwa `protected`): cięcia, które profesjonaliści robią w 0% przypadków albo które wytyczne zakazują. Układ z takim cięciem wchodzi do wyboru tylko w ratunku (§5.4), gdy w tej samej granicy liczby wierszy (`N`, potem `M`) nie ma żadnego mieszczącego się układu bez niego. Lista klas w §4.3.
 3. **Ważone** — wszystko inne. Rozstrzyga koszt z §5.3.
 
 ## 4. Analiza przerw
@@ -89,7 +89,7 @@ Siła przerwy `A(kind)` pochodzi z tabeli §4.3. Jedna funkcja `gaps()` zastępu
 - **Łącznik i półpauza bez spacji** (`biało-czerwony`, `20–30`, `Kaguya-sama`) są częścią słowa i nie tworzą przerwy.
 - Pojedynczy myślnik ze spacjami w zdaniu, bez pary, to klasa `dash` (przerwa po nim); przerwa przed nim jest `banned`, jak przy wtrąceniu.
 
-**Pierwszeństwo klas.** Przerwa bezpośrednio po interpunkcji (po rozstrzygnięciu skrótów przez `is_false_sentence_break`) ma klasę interpunkcyjną (`sentence` > `clause` > `ellipsis` > `parenthetical` > `dash`). Pozostałe: `banned` > dowolna klasa chroniona > klasa ważona o najmniejszym `A`. Parser nie zmienia klasy interpunkcyjnej.
+**Pierwszeństwo klas.** Przerwa bezpośrednio po interpunkcji (po rozstrzygnięciu skrótów przez `is_false_sentence_break`) ma klasę interpunkcyjną (`sentence` > `clause` > `ellipsis` > `parenthetical` > `dash`). Pozostałe: `banned` > klasa chroniona w stałej kolejności `after_preposition` > `negation` > `reflexive` > `number` > `abbreviation` > `name` > `idiom` > `before_conjunction_end` > `after_single_letter` > klasa ważona o najmniejszym `A`. Parser nie zmienia klasy interpunkcyjnej.
 
 ### 4.3 Klasy przerw
 
@@ -162,7 +162,7 @@ k_mówców        = liczba wierszy wymuszona zmianami mówcy (1 bez zmian)
 
 **Dlaczego dwie miary długości** [W]: znaki mierzą ilość tekstu do przeczytania i nie zależą od fontu; szerokość mierzy drogę oka po ekranie („zamiatanie wzrokiem”). Sama szerokość zawiodła z wąską Officiną (60 znaków ≈ 0,8 szerokości, w odrzuconym U5 jeden wiersz), same znaki zawodzą przy szerokich fontach. Start rampy znakowej 40–66 [B, recenzja opus55] zostawia c04 (55 znaków) w jednym wierszu i dzieli galerię 02 (60 znaków), zgodnie z wyborami właściciela.
 
-**Przykłady kontrolne kosztu** (wartości startowe, tryb list, miara znakowa; ostateczne liczby z kalibracji). To przypadki kotwiczne: ich wynik nie może się zmienić przy kalibracji ani w G6.
+**Przykłady kontrolne kosztu** (wartości startowe, tryb list, miara znakowa; ostateczne liczby z kalibracji). To przypadki kotwiczne: ich **liczba wierszy** nie może się zmienić przy kalibracji ani w G6; dokładne miejsce cięcia jest kotwiczne tylko tam, gdzie tryb list rozpoznaje klasy obu kandydatów (w „prima materii” tylko z parserem).
 - „Dzisiaj będzie pięknie. Chodźmy na spacer.” (42): jeden wiersz 0,077; po kropce 0 + 0,1 + 0,6 · 5/41 = 0,17 → **jeden wiersz**;
 - „Idę spać. Idź spać.” (19): jeden wiersz 0; po kropce 0,1 → **jeden wiersz**;
 - „Ludzie zamieszkujący te ziemie popełnili straszliwe grzechy.” (60): jeden wiersz 0,77; podmiot / orzeczenie 0,5 + 0,1 + 0,6 · 1/61 ≈ 0,61 → **dwa wiersze**;
@@ -287,7 +287,7 @@ Każdy wiersz to kontrakt testu i wynika z §3–§5, chyba że kolumna „Statu
 
 1. Zbiory deduplikowane po znormalizowanym tekście; walidacja grupowa (zbiór właściciela: z pominięciem grupy tekstu; NF+AMZN: z pominięciem całej serii). Tabela `A` i stałe [K] liczone wyłącznie na części treningowej każdego podziału.
 2. Klasy przerw przypisuje ten sam kod `gaps()`, który działa w produkcji. Dwie tabele `A`: dla trybu list i dla trybu z parserem, z tego samego korpusu.
-3. Stałe [K] (`a_c`, `b_c`, `λ`, `β`, `γ`, `δ`, `ζ`, `W_c`) dobierane w siatce na prawdziwym pomiarze fontu (profil zdarzenia, a w galerii czcionka właściciela).
+3. Stałe [K] (`a_c`, `b_c`, `λ`, `β`, `γ`, `δ`, `ζ`) dobierane w siatce na prawdziwym pomiarze fontu (profil zdarzenia, a w galerii czcionka właściciela); `W_c` = max(70, `b_c` + 4) jest wartością pochodną, przeliczaną po każdej zmianie `b_c`.
 4. Metryki raportowane osobno: zgodność całego układu (liczba wierszy i miejsca cięć) oraz trafność miejsca cięcia **warunkowo** dla referencji dwuwierszowych.
 5. Stary algorytm mierzony tym samym kodem oceny, tym samym klasyfikatorem klas i na tych samych zbiorach.
 
@@ -296,11 +296,11 @@ Każdy wiersz to kontrakt testu i wynika z §3–§5, chyba że kolumna „Statu
 | Bramka | Warunek |
 | --- | --- |
 | G1 nienaruszalne | zero zmian tekstu, zgubionych tagów, rozciętych słów, wierszy zaczynających się od znaku zamykającego, interpunkcji albo myślnika innego niż znacznik mówcy, mówców bez własnego wiersza |
-| G2 zbiór właściciela | mianownik: rekordy po deduplikacji (przy sprzecznych etykietach duplikatu obowiązuje późniejsza decyzja właściciela); walidacja z pominięciem grupy tekstu: co najmniej 75% zgodnych układów i więcej niż stary algorytm; przypadki kotwiczne z §5.3 i §8 zgodne zawsze; ze znanych złych cięć powtarza się najwyżej „woli / Artemis” (ograniczenie, §6) |
+| G2 zbiór właściciela | mianownik: wszystkie rekordy po deduplikacji (przy sprzecznych etykietach duplikatu obowiązuje późniejsza decyzja właściciela), każdy ze swoim predykatem: pełna referencja → identyczny układ; referencja „liczba wierszy” → ta sama liczba wierszy; znane złe cięcie → algorytm nie tworzy tego układu; walidacja z pominięciem grupy tekstu: co najmniej 75% zgodnych układów i więcej niż stary algorytm; przypadki kotwiczne z §5.3 i §8 zgodne zawsze; ze znanych złych cięć powtarza się najwyżej „woli / Artemis” (ograniczenie, §6) |
 | G3 NF+AMZN | trafność miejsca cięcia warunkowo dla referencji dwuwierszowych przy swobodnym wyniku algorytmu (wynik jedno- lub trzywierszowy to błąd), walidacja po seriach: co najmniej 75% oraz różnica ze starym algorytmem z dolną granicą 95% CI (bootstrap grupowany po seriach) > 0; stary algorytm mierzony najpierw, tym samym kodem |
 | G4 replay | dla każdej klasy chronionej: liczba cięć tej klasy / liczba wszystkich cięć w kwestiach wielowierszowych nie wyższa niż u starego algorytmu (ten sam klasyfikator `gaps()` w trybie list); pojedyncze wiersze z DŁUGI ≥ 0,8 w najwyżej 0,5% kwestii jednowierszowych; wiersze ponad `N` tylko w krokach 3–5 §5.4 |
 | G5 parser | wariant z parserem wchodzi tylko, gdy w G2 jest nie gorszy, w G3 lepszy od wariantu list z dolną granicą 95% CI (bootstrap grupowany po seriach) > 0, a w G4 nie podnosi częstości żadnej klasy chronionej względem wariantu list i nie zmienia przypadków kotwicznych; wariant list musi sam przejść G1–G4 i G6–G8 |
-| G6 wrażliwość | zmiana każdej stałej [K] o ±10% (z zachowaniem `a_c < b_c` i `W_c = max(70, b_c + 4)`) zmienia wynik G2 najwyżej o 2 rekordy i G3 najwyżej o 2 pp, a przypadków kotwicznych wcale |
+| G6 wrażliwość | zmiana każdej stałej [K] o ±10% (z zachowaniem `a_c < b_c`; `W_c` przeliczane) zmienia wynik G2 najwyżej o 2 rekordy i G3 najwyżej o 2 pp, a liczby wierszy przypadków kotwicznych wcale |
 | G7 czas | ułożenie 500 kwestii z zimnym importem modelu: najwyżej 60 s (właściciel dopuszcza kilka minut na odcinek) |
 | G8 galeria | przed/po z czcionką właściciela po obu stronach (`compare --font`), obejrzana przez orkiestratora obraz po obrazie, potem właściciel |
 
@@ -318,7 +318,8 @@ Każdy wiersz to kontrakt testu i wynika z §3–§5, chyba że kolumna „Statu
 2. **Przypadek 07 (wtrącenie w myślnikach):** wybrałeś trzy wiersze, choć mieszczą się dwa. Specyfikacja daje dwa wiersze z cięciem po myślniku wtrącenia. Do potwierdzenia na galerii.
 3. **Przypadek 33:** wybrałeś trzy wiersze; przy rzeczywistym pomiarze dwa mogą się mieścić, a wtedy reguła da dwa. Do potwierdzenia na galerii.
 4. **Długi jeden wiersz a dobre cięcie (11: u = 0,90; 15: u = 0,98):** porównywałeś jeden wiersz tylko ze złym cięciem („1,4 / miliarda”, „się / bawił”). Reguła wybierze dwa wiersze z dobrym cięciem, jeśli takie istnieje. Do potwierdzenia na galerii.
-5. **Dzielenie wyrazów w szyldach** (z myślą o MangaShift): poza zakresem; reguła nienaruszalna 2.1.1 `visual-quality.md` zostaje.
+5. **Ustawienie „Linii na napis” 3 lub 4:** specyfikacja traktuje je jako jawną zgodę na więcej wierszy w zwykłym wyborze (domyślne 2 bez zmian), co odbiega od `visual-quality.md` §2.2 („unikaj więcej niż dwóch”). Do potwierdzenia.
+6. **Dzielenie wyrazów w szyldach** (z myślą o MangaShift): poza zakresem; reguła nienaruszalna 2.1.1 `visual-quality.md` zostaje.
 
 ## 12. Poza zakresem
 
