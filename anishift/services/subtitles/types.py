@@ -17,6 +17,8 @@ __all__ = [
     "DisplayedLine",
     "FontSources",
     "LayoutReport",
+    "SignCandidate",
+    "SignWeight",
     "SplitStats",
     "SpokenLine",
     "SubtitleKind",
@@ -65,8 +67,30 @@ class SplitStats:
 
 
 @dataclass(frozen=True, slots=True)
+class SignWeight:
+    """Static weights of one on-screen sign group the narrator may read, shared by every member event."""
+
+    group: int
+    weight_for: float
+    weight_against: float
+
+
+@dataclass(frozen=True, slots=True)
+class SignCandidate:
+    """One sign group the narrator may read: its screen window, text, comparison key and static weights."""
+
+    group: int
+    start: int
+    end: int
+    text: str
+    key: str
+    weight_for: float
+    weight_against: float
+
+
+@dataclass(frozen=True, slots=True)
 class SubtitleSplit:
-    """Complete result of splitting one subtitle file."""
+    """Complete result of splitting one subtitle file; ``sign_weights`` runs parallel to ``decisions``."""
 
     kind: SubtitleKind
     subs: SSAFile
@@ -74,6 +98,7 @@ class SubtitleSplit:
     verdicts: tuple[StyleVerdict, ...]
     spoken: tuple[SpokenLine, ...]
     stats: SplitStats
+    sign_weights: tuple[SignWeight | None, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
