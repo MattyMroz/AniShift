@@ -7,9 +7,12 @@ import pytest
 from PIL import ImageFont
 from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
-from anishift.services.subtitles.fitting import fit_sign_text
+from anishift.services.subtitles.fitting import fit_signs
+from anishift.services.subtitles.geometry import RenderProfile
+from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.subtitles.service import load_subtitles, split_subtitles, write_translated
 from anishift.services.subtitles.text import visible_text, visible_verses
+from anishift.services.subtitles.types import LayoutReport
 
 _FULL_HD: dict[str, str] = {"PlayResX": "1920", "PlayResY": "1080", "WrapStyle": "0"}
 
@@ -24,7 +27,10 @@ def _fit(
     subs: SSAFile = SSAFile()
     subs.styles = {"Default": style if style is not None else SSAStyle(), **(styles or {})}
     subs.info.update(info or {})
-    return fit_sign_text(SSAEvent(text=source), target, subs)
+    subs.events = [SSAEvent(text=source)]
+    translated: SSAFile = SSAFile()
+    translated.events = [SSAEvent(text=target)]
+    return fit_signs(subs, translated, [0], RenderProfile.from_subs(subs, None), LayoutReport())[0]
 
 
 def _scale(text: str) -> float:
@@ -168,7 +174,18 @@ def test_translated_writer_fits_signs_but_does_not_resize_dialogue(tmp_path: Pat
     ]
     split = split_subtitles(subs, kind="ass", spoken_styles={"Default"})
     path: Path = tmp_path / "output.pl.ass"
-    write_translated(split, [("Czerwony",)], [("Czerwony",)], path)
+    write_translated(split, {0: "Czerwony", 1: "Czerwony"}, path, fonts=None, limits=LayoutLimits(), dialogue_font=None)
     result: SSAFile = load_subtitles(path)
     assert result.events[0].text == "Czerwony"
     assert result.events[1].text == r"{\fscx72\fscy72\pos(10,10)}Czerwony"
+
+
+@pytest.mark.unit
+def test_fit_signs_returns_texts_only_for_the_requested_events() -> None:
+    subs: SSAFile = SSAFile()
+    subs.styles = {"Default": SSAStyle()}
+    subs.events = [SSAEvent(text="Red"), SSAEvent(text=r"{\pos(10,10)}Red")]
+    translated: SSAFile = SSAFile()
+    translated.events = [SSAEvent(text="Czerwony"), SSAEvent(text=r"{\pos(10,10)}Czerwony")]
+    fitted: dict[int, str] = fit_signs(subs, translated, [1], RenderProfile.from_subs(subs, None), LayoutReport())
+    assert fitted == {1: r"{\fscx72\fscy72\pos(10,10)}Czerwony"}

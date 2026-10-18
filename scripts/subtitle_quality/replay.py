@@ -6,14 +6,23 @@ import argparse
 import json
 import sys
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import zip_longest
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
-from anishift.application.translation_handler import displayed_lines, spoken_lines, translation_verses
-from anishift.services.subtitles import is_drawing, load_subtitles, split_subtitles, visible_text, write_translated
-from anishift.services.translation.types import FileTranslation, TranslatedLine
+from anishift.application.translation_handler import displayed_lines
+from anishift.services.fonts import system_font_paths
+from anishift.services.subtitles import (
+    FontSources,
+    is_drawing,
+    layout_translated,
+    load_subtitles,
+    split_subtitles,
+    visible_text,
+    write_full,
+)
+from anishift.services.subtitles.layout import LayoutLimits
 from anishift.utils.logger import LoggerMode, setup_mode
 from anishift.utils.logger.config import FileConfig
 from scripts.subtitle_quality import metrics
@@ -24,8 +33,7 @@ if TYPE_CHECKING:
 
     from pysubs2 import SSAEvent, SSAFile
 
-    from anishift.application.translation_handler import TranslationVerses
-    from anishift.services.subtitles import SpokenLine, SubtitleSplit
+    from anishift.services.subtitles import SpokenLine, SubtitleSplit, TranslatedLayout
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -33,7 +41,10 @@ REPLAY_ROOTS: Final[tuple[str, ...]] = ("library", "corpus-pairs")
 """Quality-root folders replayed when no roots are given."""
 
 MAPPING_NAME: Final[str] = "mapping.json"
-"""File in a replay folder recording every pair's writer inputs, exclusions and skips."""
+"""File in a replay folder recording every pair's writer inputs, exclusions, source decisions and skips."""
+
+FONTS_NAME: Final[str] = "fonts"
+"""Folder of a pair holding the fonts attached to its episode."""
 
 REPLAY_SUFFIX: Final[str] = ".pl.ass"
 """Suffix of a replayed pair's output file, written at the pair id inside the replay folder."""
@@ -125,24 +136,30 @@ def excluded_events(split: SubtitleSplit, inputs: PairInput) -> tuple[int, ...]:
     return tuple(sorted(spoken | displayed))
 
 
-def translation(split: SubtitleSplit, inputs: PairInput) -> FileTranslation:
-    """Return the translator result the subtitle handler would receive for these inputs."""
-    spoken: list[TranslatedLine] = []
-    for line in spoken_lines(split):
-        text: str = inputs.translations[line.order]
-        spoken.append(TranslatedLine(line.start, line.end, line.text, text, (text,), line.style))
-    displayed: tuple[str, ...] = tuple(inputs.translations[line.order] for line in displayed_lines(split))
-    return FileTranslation(spoken=tuple(spoken), displayed=displayed)
+def translations(split: SubtitleSplit, inputs: PairInput) -> dict[int, str]:
+    """Return the unbroken text the subtitle handler would lay out: one per spoken line and displayed event."""
+    keys: list[int] = [line.order for line in split.spoken] + [line.order for line in displayed_lines(split)]
+    return {index: inputs.translations[index] for index in keys}
 
 
-def replay_pair(directory: Path, destination: Path) -> tuple[PairInput, tuple[int, ...], Path | None]:
-    """Write one pair's Polish text through the default translation layout and the writer."""
+def pair_fonts(directory: Path) -> FontSources:
+    """Return the pair's episode fonts, when it keeps them, and the system fonts."""
+    folder: Path = directory / FONTS_NAME
+    episode: tuple[Path, ...] = (
+        tuple(sorted(path for path in folder.iterdir() if path.is_file())) if folder.is_dir() else ()
+    )
+    return FontSources(episode=episode, system=system_font_paths())
+
+
+def replay_pair(directory: Path, destination: Path) -> tuple[PairInput, SubtitleSplit, Path | None]:
+    """Lay out one pair's Polish text with the default limits and write it."""
     source: SSAFile = load_subtitles(directory / SOURCE_NAME)
     inputs: PairInput = pair_input(source, load_subtitles(directory / OUTPUT_NAME))
     split: SubtitleSplit = split_subtitles(source, kind="ass")
-    verses: TranslationVerses = translation_verses(split, translation(split, inputs))
-    written: Path | None = write_translated(split, verses.displayed, verses.spoken, destination)
-    return inputs, excluded_events(split, inputs), written
+    laid_out: TranslatedLayout = layout_translated(
+        split, translations(split, inputs), fonts=pair_fonts(directory), limits=LayoutLimits(), dialogue_font=None
+    )
+    return inputs, split, write_full(replace(split, subs=laid_out.subs), destination)
 
 
 def pair_dirs(roots: Sequence[Path]) -> list[tuple[str, Path]]:
@@ -169,14 +186,23 @@ def replay(roots: Sequence[Path], out: Path) -> Path:
             continue
         destination: Path = out / f"{pair_id}{REPLAY_SUFFIX}"
         destination.parent.mkdir(parents=True, exist_ok=True)
-        inputs, excluded, written = replay_pair(directory, destination)
+        inputs, split, written = replay_pair(directory, destination)
         if written is None:
             skipped.append({"pair": pair_id, "reason": "writer produced no output"})
             continue
+        excluded: tuple[int, ...] = excluded_events(split, inputs)
         print(f"replayed {pair_id}  excluded {len(excluded)}", file=sys.stderr)
         rows: list[Entry] = [{"index": index, "text": text} for index, text in inputs.translations.items()]
         output: str = destination.relative_to(out).as_posix()
-        pairs.append({"pair": pair_id, "output": output, "inputs": rows, "excluded": list(excluded)})
+        pairs.append(
+            {
+                "pair": pair_id,
+                "output": output,
+                "inputs": rows,
+                "excluded": list(excluded),
+                "decisions": list(split.decisions),
+            }
+        )
     mapping: Path = out / MAPPING_NAME
     content: Entry = {"rule": EXCLUSION_RULE, "pairs": pairs, "skipped": skipped}
     mapping.write_text(json.dumps(content, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -185,7 +211,7 @@ def replay(roots: Sequence[Path], out: Path) -> Path:
 
 def compare(base: Path, other: Path) -> Comparison:
     """Compare two replay folders: equal inputs and identical output bytes count as identical."""
-    matched, skipped = _matched_pairs(base, other)
+    matched, skipped = matched_pairs(base, other)
     identical: list[str] = []
     different: list[tuple[str, str]] = []
     for pair_id, first, second in matched:
@@ -200,7 +226,7 @@ def compare(base: Path, other: Path) -> Comparison:
 
 def compare_events(base: Path, other: Path) -> EventComparison:
     """Compare two replay folders event by event, leaving out every event either mapping excludes."""
-    matched, skipped = _matched_pairs(base, other)
+    matched, skipped = matched_pairs(base, other)
     counts: list[EventCounts] = []
     for pair_id, first, second in matched:
         if first["inputs"] != second["inputs"]:
@@ -220,7 +246,8 @@ def compare_events(base: Path, other: Path) -> EventComparison:
     return EventComparison(tuple(counts), tuple(skipped))
 
 
-def _matched_pairs(base: Path, other: Path) -> tuple[list[tuple[str, Entry, Entry]], list[tuple[str, str]]]:
+def matched_pairs(base: Path, other: Path) -> tuple[list[tuple[str, Entry, Entry]], list[tuple[str, str]]]:
+    """Return the pairs both replay folders wrote with their two records, and every other pair with its reason."""
     base_pairs, base_skipped = _read_mapping(base)
     other_pairs, other_skipped = _read_mapping(other)
     matched: list[tuple[str, Entry, Entry]] = []

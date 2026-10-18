@@ -4,12 +4,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from functools import lru_cache
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
-from PIL import ImageFont
-from pysubs2 import SSAEvent, SSAFile, SSAStyle
-
+from anishift.services.subtitles.geometry import _reference_width, _wraps
 from anishift.services.subtitles.linebreak import split_for_layout
 from anishift.services.subtitles.text import (
     RE_TAG_BLOCK,
@@ -19,6 +16,16 @@ from anishift.services.subtitles.text import (
     visible_verses,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from pysubs2 import SSAEvent, SSAFile, SSAStyle
+
+    from anishift.services.subtitles.geometry import RenderProfile
+    from anishift.services.subtitles.types import LayoutReport
+
+__all__ = ["fit_signs"]
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 _MIN_SCALE: Final[float] = 0.72
@@ -26,15 +33,6 @@ _MIN_SCALE: Final[float] = 0.72
 
 _WIDTH_TOLERANCE: Final[float] = 1.03
 """Estimated width growth allowed before resizing a translated sign."""
-
-_FONT_SIZE: Final[int] = 64
-"""Reference font size for language-independent advance-width ratios."""
-
-_DEFAULT_PLAY_RES_X: Final[int] = 384
-"""ASS script width assumed when the header omits ``PlayResX``."""
-
-_NO_WRAP_STYLE: Final[str] = "2"
-"""ASS ``WrapStyle`` value that disables automatic line wrapping."""
 
 _BALANCED_LINES: Final[tuple[str, str]] = ("", "")
 """Two equal-weight verses requesting a balanced two-line layout."""
@@ -44,27 +42,12 @@ _RE_SCALING: Final[re.Pattern[str]] = re.compile(
 )
 """Scale overrides, transform targets, and resets requiring proportional sizes."""
 
-_RE_PREFIX: Final[re.Pattern[str]] = re.compile(r"^(?:\{[^}]*\})*")
-"""Leading override blocks setting the initial font size and horizontal scale."""
 
-_RE_SIZE: Final[re.Pattern[str]] = re.compile(r"\\fs(cx)?\s*(-?[0-9]+(?:\.[0-9]*)?)")
-"""Font size or horizontal scale override with an explicit value."""
-
-_RE_NO_WRAP: Final[re.Pattern[str]] = re.compile(r"\\q\s*2")
-"""Inline override disabling automatic line wrapping."""
-
-
-@lru_cache(maxsize=1)
-def _font() -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    try:
-        return ImageFont.truetype("arial.ttf", _FONT_SIZE)
-    except OSError:
-        return ImageFont.load_default(size=_FONT_SIZE)
-
-
-@lru_cache(maxsize=4096)
-def _width(text: str) -> float:
-    return max((float(_font().getlength(verse)) for verse in visible_verses(text)), default=0.0)
+def fit_signs(
+    source: SSAFile, target: SSAFile, signs: Sequence[int], profile: RenderProfile, report: LayoutReport
+) -> dict[int, str]:
+    """Fit the translated signs at event positions ``signs`` of both files and return their new texts."""
+    return {index: _fit_sign(source.events[index], target.events[index].text, profile) for index in signs}
 
 
 def _scales(style: SSAStyle, factor: float) -> str:
@@ -92,64 +75,39 @@ def _scale_text(text: str, factor: float, style: SSAStyle, styles: Mapping[str, 
     return RE_TAG_BLOCK.sub(lambda block: _RE_SCALING.sub(replace_command, block[0]), text)
 
 
-def _pixel_scale(text: str, style: SSAStyle) -> float:
-    size: float = style.fontsize
-    scale: float = style.scalex
-    prefix: re.Match[str] | None = _RE_PREFIX.match(text)
-    for match in _RE_SIZE.finditer(prefix[0] if prefix else ""):
-        if match[1]:
-            scale = abs(float(match[2]))
-        else:
-            size = float(match[2])
-    return size * scale / 100 / _FONT_SIZE
+def _wraps_only_translation(event: SSAEvent, translated: str, profile: RenderProfile) -> bool:
+    return not _wraps(event, event.text, profile) and _wraps(event, translated, profile)
 
 
-def _play_width(subs: SSAFile) -> float:
-    try:
-        return float(subs.info.get("PlayResX") or _DEFAULT_PLAY_RES_X)
-    except ValueError:
-        return _DEFAULT_PLAY_RES_X
-
-
-def _wraps_only_translation(event: SSAEvent, translated: str, subs: SSAFile) -> bool:
-    style: SSAStyle = subs.styles[event.style]
-    if subs.info.get("WrapStyle", "0").strip() == _NO_WRAP_STYLE or _RE_NO_WRAP.search(event.text):
-        return False
-    wrap_width: float = _play_width(subs) - (event.marginl or style.marginl) - (event.marginr or style.marginr)
-    pixels: float = _pixel_scale(event.text, style)
-    return _width(event.text) * pixels <= wrap_width < _width(translated) * pixels
-
-
-def _reflow(event: SSAEvent, translated: str, subs: SSAFile) -> str:
+def _reflow(event: SSAEvent, translated: str, profile: RenderProfile) -> str:
     layout: tuple[str, ...] = visible_verses(event.text)
-    if len(layout) <= 1 and _wraps_only_translation(event, translated, subs):
+    if len(layout) <= 1 and _wraps_only_translation(event, translated, profile):
         layout = _BALANCED_LINES
     if len(layout) <= 1:
         return translated
     verses: tuple[str, ...] = split_for_layout(visible_text(translated), layout)
     reflowed: str = replace_visible_text(event.text, "\\N".join(verses))
-    return reflowed if _width(reflowed) < _width(translated) else translated
+    return reflowed if _reference_width(reflowed) < _reference_width(translated) else translated
 
 
-def fit_sign_text(event: SSAEvent, translated: str, subs: SSAFile) -> str:
-    """Fit an already classified sign, preserving geometry and a 72% size floor."""
+def _fit_sign(event: SSAEvent, translated: str, profile: RenderProfile) -> str:
     source: str = event.text
-    style: SSAStyle | None = subs.styles.get(event.style)
+    style: SSAStyle | None = profile.styles.get(event.style)
     if style is None or is_drawing(source) or is_drawing(translated):
         return translated
     if visible_text(source) == visible_text(translated):
         return translated
-    source_width: float = _width(source)
-    target_width: float = _width(translated)
+    source_width: float = _reference_width(source)
+    target_width: float = _reference_width(translated)
     if source_width <= 0 or target_width <= source_width * _WIDTH_TOLERANCE:
         return translated
     if source_width / target_width < _MIN_SCALE:
-        translated = _reflow(event, translated, subs)
-        target_width = _width(translated)
+        translated = _reflow(event, translated, profile)
+        target_width = _reference_width(translated)
     factor: float = max(_MIN_SCALE, min(1.0, source_width / target_width))
     if factor == 1:
         return translated
-    scaled: str = _scale_text(translated, factor, style, subs.styles)
+    scaled: str = _scale_text(translated, factor, style, profile.styles)
     if scaled.startswith("{"):
         return "{" + _scales(style, factor) + scaled[1:]
     return "{" + _scales(style, factor) + "}" + scaled

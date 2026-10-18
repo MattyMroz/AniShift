@@ -6,11 +6,14 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from itertools import accumulate, groupby, pairwise
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 from anishift.text.boundaries import BREAKABLE_SPACES
 from anishift.text.graphemes import split_graphemes
 from anishift.text.markers import SPAN_MARKER, span_marker
+
+if TYPE_CHECKING:
+    from pysubs2 import SSAStyle
 
 __all__ = [
     "RE_TAG_BLOCK",
@@ -117,8 +120,8 @@ def visible_verses(text: str) -> tuple[str, ...]:
     return tuple(_RE_SPACES.sub(" ", segment).strip() for segment in layout.segments)
 
 
-def marked_text(text: str) -> str:
-    """Return visible text with up to two mid-verse style ranges wrapped in numbered span markers."""
+def marked_text(text: str, style: SSAStyle | None = None) -> str:
+    """Return visible text with up to two mid-verse style ranges, over the event's base ``style``, as span markers."""
     layout: _TextLayout = _parse_layout(text)
     boundaries: tuple[_Boundary, ...] = _marked_boundaries(layout)
     if not boundaries:
@@ -160,8 +163,8 @@ def restore_markers(marked: str, verses: tuple[str, ...]) -> tuple[str, ...]:
     return tuple("".join(parts) for parts in restored)
 
 
-def replace_visible_text(text: str, new_text: str) -> str:
-    """Replace visible text while retaining authored formatting anchors."""
+def replace_visible_text(text: str, new_text: str, style: SSAStyle | None = None) -> str:
+    """Replace visible text while retaining authored formatting anchors over the event's base ``style``."""
     if visible_text(text) == visible_text(new_text):
         return text
     source = _parse_layout(text)

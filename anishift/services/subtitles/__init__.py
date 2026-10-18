@@ -6,6 +6,7 @@ from anishift.services.subtitles.classifier import Category, StyleVerdict, class
 from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.service import (
     collapse_fbf,
+    layout_translated,
     load_subtitles,
     normalize_subtitles,
     reflow_polish_dialogue,
@@ -31,26 +32,33 @@ from anishift.services.subtitles.txt import read_txt, txt_to_spoken
 from anishift.services.subtitles.types import (
     Decision,
     DisplayedLine,
+    FontSources,
+    LayoutReport,
     SplitStats,
     SpokenLine,
     SubtitleKind,
     SubtitleSplit,
+    TranslatedLayout,
 )
 
 __all__ = [
     "Category",
     "Decision",
     "DisplayedLine",
+    "FontSources",
+    "LayoutReport",
     "SplitStats",
     "SpokenLine",
     "StyleVerdict",
     "SubtitleError",
     "SubtitleKind",
     "SubtitleSplit",
+    "TranslatedLayout",
     "classify_styles",
     "collapse_fbf",
     "dedup_animation",
     "is_drawing",
+    "layout_translated",
     "load_subtitles",
     "marked_text",
     "normalize_subtitles",

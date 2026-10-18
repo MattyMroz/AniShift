@@ -62,10 +62,9 @@ from anishift.application.service import AppService
 from anishift.application.sessions import RunSession
 from anishift.application.task_paths import task_staging_path
 from anishift.application.translation_handler import (
-    TranslationVerses,
     displayed_lines,
     spoken_lines,
-    translation_verses,
+    translated_texts,
 )
 from anishift.application.tts_handler import TtsTaskHandler
 from anishift.application.watch_state import WatchStateStore
@@ -87,6 +86,8 @@ from anishift.services.subtitles import (
     DisplayedLine,
     SpokenLine,
     SubtitleSplit,
+    TranslatedLayout,
+    layout_translated,
     load_subtitles,
     split_subtitles,
 )
@@ -746,7 +747,7 @@ def test_spoken_lines_mark_a_mid_line_style_range_without_changing_the_split() -
     assert [line.text for line in split.spoken] == ["I did knock."]
 
 
-def test_translation_verses_keep_span_markers_across_new_line_breaks() -> None:
+def test_translated_text_keeps_span_markers_that_place_the_tags_across_new_line_breaks() -> None:
     split: SubtitleSplit = _ass_split(
         [SSAEvent(start=0, end=1000, style="Dialog", text=r"Why are you after {\i1}me{\i0}?!")]
     )
@@ -755,9 +756,13 @@ def test_translation_verses_keep_span_markers_across_new_line_breaks() -> None:
         spoken=(TranslatedLine(0, 1000, "Why are you after <s1>me</s1>?!", translated, (translated,), "Dialog"),),
     )
 
-    verses: TranslationVerses = translation_verses(split, result, LayoutLimits(max_chars=20))
+    texts: dict[int, str] = translated_texts(split, result)
+    laid_out: TranslatedLayout = layout_translated(
+        split, texts, fonts=None, limits=LayoutLimits(max_chars=20), dialogue_font=None
+    )
 
-    assert verses.spoken == (("Czemu uwziąłeś się", "akurat na <s1>mnie</s1>?!"),)
+    assert texts == {0: translated}
+    assert laid_out.subs.events[0].text == r"Czemu uwziąłeś się\Nakurat na {\i1}mnie{\i0}?!"
 
 
 def test_translation_handler_keeps_italics_on_the_word_the_translator_marked(tmp_path: Path) -> None:
@@ -782,16 +787,14 @@ def test_translation_handler_keeps_italics_on_the_word_the_translator_marked(tmp
     assert "PL I <i>did</i> knock." in result.outputs[0].path.read_text(encoding="utf-8")
 
 
-def test_translation_verses_drop_markers_the_source_line_never_had() -> None:
+def test_translated_texts_drop_markers_the_source_line_never_had() -> None:
     split: SubtitleSplit = _ass_split([SSAEvent(start=0, end=1000, style="Dialog", text="Plain line")])
     translated: str = "Zwykła <s1>linia</s1>"
     result: FileTranslation = FileTranslation(
         spoken=(TranslatedLine(0, 1000, "Plain line", translated, (translated,), "Dialog"),),
     )
 
-    verses: TranslationVerses = translation_verses(split, result)
-
-    assert verses.spoken == (("Zwykła linia",),)
+    assert translated_texts(split, result) == {0: "Zwykła linia"}
 
 
 def test_translation_handler_never_writes_span_markers_into_text_srt(tmp_path: Path) -> None:

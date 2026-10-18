@@ -115,6 +115,7 @@ def test_replay_writes_polish_output_and_mapping_under_pair_ids_and_skips_pairs_
     assert [(pair["pair"], pair["output"]) for pair in mapping["pairs"]] == [("library/pair", "library/pair.pl.ass")]
     assert mapping["pairs"][0]["excluded"] == [3]
     assert mapping["pairs"][0]["inputs"][1] == {"index": 1, "text": "Naprawdę muszę znaleźć brata."}
+    assert mapping["pairs"][0]["decisions"] == ["spoken", "spoken", "displayed", "spoken"]
     assert mapping["skipped"] == [{"pair": "library/lonely", "reason": f"no {OUTPUT_NAME}"}]
 
 
@@ -160,6 +161,11 @@ def test_compare_reports_identical_different_and_skipped_pairs(tmp_path: Path) -
     replay.replay([tmp_path / "library"], tmp_path / "other")
     same: replay.Comparison = replay.compare(tmp_path / "base", tmp_path / "other")
     assert same == replay.Comparison(("library/pair",), (), (("library/lonely", f"no {OUTPUT_NAME}"),))
+    matched, skipped = replay.matched_pairs(tmp_path / "base", tmp_path / "other")
+    assert [(pair_id, first["output"], second["output"]) for pair_id, first, second in matched] == [
+        ("library/pair", "library/pair.pl.ass", "library/pair.pl.ass")
+    ]
+    assert skipped == [("library/lonely", f"no {OUTPUT_NAME}")]
     output: Path = tmp_path / "other" / "library" / f"pair{replay.REPLAY_SUFFIX}"
     output.write_bytes(output.read_bytes() + b"\n")
     changed: replay.Comparison = replay.compare(tmp_path / "base", tmp_path / "other")

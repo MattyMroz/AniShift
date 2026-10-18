@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import pysubs2
 from pysubs2 import SSAEvent, SSAFile
 
 from anishift.errors import ErrorCode, ErrorContext
+from anishift.services.fonts import FontIndex
 from anishift.services.subtitles.classifier import (
     Category,
     StyleVerdict,
@@ -21,21 +22,37 @@ from anishift.services.subtitles.classifier import (
     main_dialogue_style,
 )
 from anishift.services.subtitles.errors import SubtitleError
-from anishift.services.subtitles.fitting import fit_sign_text
+from anishift.services.subtitles.fitting import fit_signs
+from anishift.services.subtitles.geometry import RenderProfile
 from anishift.services.subtitles.layout import LayoutLimits
-from anishift.services.subtitles.linebreak import split_line
-from anishift.services.subtitles.text import is_drawing, reflow_visible_text, replace_visible_text, visible_text
+from anishift.services.subtitles.linebreak import layout_dialogue, split_for_layout
+from anishift.services.subtitles.restyle import restyle_dialogue
+from anishift.services.subtitles.text import (
+    is_drawing,
+    replace_visible_text,
+    restore_markers,
+    visible_text,
+    visible_verses,
+)
 from anishift.services.subtitles.types import (
     Decision,
+    FontSources,
+    LayoutReport,
     SplitStats,
     SpokenLine,
     SubtitleKind,
     SubtitleSplit,
+    TranslatedLayout,
 )
+from anishift.text.markers import strip_span_markers
 from anishift.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from anishift.services.subtitles.restyle import DialogueFont
 
 __all__ = [
     "collapse_fbf",
+    "layout_translated",
     "load_subtitles",
     "normalize_subtitles",
     "reflow_polish_dialogue",
@@ -60,8 +77,8 @@ _SUFFIX_KIND: Final[dict[str, SubtitleKind]] = {".ass": "ass", ".ssa": "ass", ".
 _ENCODING: Final[str] = "utf-8"
 """Subtitle file encoding."""
 
-_LINE_BREAKS: Final[dict[SubtitleKind, str]] = {"ass": "\\N", "srt": "\n"}
-"""Soft line break joining a displayed event's verses, per subtitle format."""
+_ASS_LINE_BREAK: Final[str] = "\\N"
+"""ASS hard line break joining a sign's verses; the SRT export turns it into a new line."""
 
 _NOTICE_URL: Final[str] = "https://github.com/MattyMroz/AniShift"
 """Project URL written into the Script Info notice of generated ASS files."""
@@ -114,10 +131,16 @@ def load_subtitles(path: Path) -> SSAFile:
     return subtitles
 
 
-def normalize_subtitles(
-    source: Path, destination: Path, *, kind: SubtitleKind, layout: LayoutLimits | None = None
+def normalize_subtitles(  # noqa: PLR0913 - layout inputs mirror layout_translated
+    source: Path,
+    destination: Path,
+    *,
+    kind: SubtitleKind,
+    layout: LayoutLimits | None = None,
+    fonts: FontSources | None = None,
+    dialogue_font: DialogueFont | None = None,
 ) -> Path:
-    """Convert one supported subtitle file while preserving its complete event stream."""
+    """Convert one supported subtitle file with its complete event stream, laid out when limits are given."""
     subtitles: SSAFile = load_subtitles(source)
     if not any(event.type == "Dialogue" for event in subtitles.events):
         raise _fail(ErrorCode.SUBTITLE_PARSE_FAILED, "Subtitle file contains no dialogue events")
@@ -125,29 +148,28 @@ def normalize_subtitles(
         source_kind: SubtitleKind | None = subtitle_kind(source)
         if source_kind is None:
             raise _fail(ErrorCode.SUBTITLE_PARSE_FAILED, "Subtitle source format is unsupported")
-        subtitles = reflow_polish_dialogue(split_subtitles(subtitles, kind=source_kind), layout).subs
+        split: SubtitleSplit = split_subtitles(subtitles, kind=source_kind)
+        texts: dict[int, str] = _source_texts(split)
+        subtitles = layout_translated(split, texts, fonts=fonts, limits=layout, dialogue_font=dialogue_font).subs
     return _write_output(subtitles, destination, kind, subject="Normalized")
 
 
 def reflow_polish_dialogue(split: SubtitleSplit, layout: LayoutLimits | None = None) -> SubtitleSplit:
-    """Reflow Polish spoken events on a copy, preserving signs and exact inline formatting."""
+    """Lay out Polish events on a copy with their own text as the translation, keeping exact inline formatting."""
     limits: LayoutLimits = layout if layout is not None else LayoutLimits()
-    subtitles: SSAFile = deepcopy(split.subs)
-    dialogue_index: int = 0
-    for event in subtitles.events:
-        if event.type != "Dialogue":
-            continue
-        decision: Decision = split.decisions[dialogue_index]
-        dialogue_index += 1
-        if decision != "spoken" or is_drawing(event.text):
-            continue
-        verses: tuple[str, ...] = split_line(
-            visible_text(event.text, preserve_hard_spaces=True),
-            max_chars=limits.max_chars,
-            max_lines=limits.max_lines,
-        )
-        event.text = reflow_visible_text(event.text, verses)
-    return replace(split, subs=subtitles)
+    laid_out: TranslatedLayout = layout_translated(
+        split, _source_texts(split), fonts=None, limits=limits, dialogue_font=None
+    )
+    return replace(split, subs=laid_out.subs)
+
+
+def _source_texts(split: SubtitleSplit) -> dict[int, str]:
+    dialogue: list[SSAEvent] = [event for event in split.subs.events if event.type == "Dialogue"]
+    return {
+        index: visible_text(event.text, preserve_hard_spaces=True)
+        for index, event in enumerate(dialogue)
+        if not is_drawing(event.text)
+    }
 
 
 def _make_run(events: list[tuple[int, SSAEvent]], text: str, style: str) -> SpokenLine:
@@ -358,93 +380,145 @@ def write_displayed(split: SubtitleSplit, dest: Path) -> Path | None:
     return _write_output(_stream_file(split, "displayed"), dest, split.kind, subject="Displayed")
 
 
-def _translated_file(
+def layout_translated(
     split: SubtitleSplit,
-    displayed_verses: Sequence[tuple[str, ...]],
-    spoken_verses: Sequence[tuple[str, ...]],
+    translations: Mapping[int, str],
     *,
-    selected: Decision | None = None,
-) -> SSAFile:
-    out: SSAFile = _copy_metadata(split.subs)
-    line_break = _LINE_BREAKS[split.kind]
-    translated_spoken = tuple(zip(split.spoken, spoken_verses, strict=True)) if selected in {None, "spoken"} else ()
-    spoken_by_order: dict[int, tuple[str, ...]] = {spoken.order: verses for spoken, verses in translated_spoken}
-    spoken_by_key: defaultdict[tuple[str, str], list[tuple[SpokenLine, tuple[str, ...]]]] = defaultdict(list)
-    for spoken, translated in translated_spoken:
-        spoken_by_key[spoken.style, spoken.text].append((spoken, translated))
-    dialogue_index = 0
-    displayed_index = 0
-    for event in split.subs.events:
+    fonts: FontSources | None,
+    limits: LayoutLimits,
+    dialogue_font: DialogueFont | None,
+) -> TranslatedLayout:
+    """Lay out unbroken translations, keyed by Dialogue index, on a copy of the split file.
+
+    Keys are the first event of every spoken line and every displayed event; the other events of a spoken line
+    take its translation unless they carry their own key. Drawings and events without a translation stay as they are.
+    """
+    report: LayoutReport = LayoutReport()
+    source: SSAFile = split.subs
+    if dialogue_font is not None:
+        source = restyle_dialogue(source, split.decisions, dialogue_font, report)
+    profile: RenderProfile = RenderProfile.from_subs(source, _font_index(fonts, dialogue_font))
+    texts: dict[int, str] = _event_translations(split, translations)
+    out: SSAFile = _copy_metadata(source)
+    signs: list[int] = []
+    dialogue_index: int = 0
+    for position, event in enumerate(source.events):
         if event.type != "Dialogue":
             out.events.append(event)
             continue
-        decision = split.decisions[dialogue_index]
+        decision: Decision = split.decisions[dialogue_index]
+        text: str | None = texts.get(dialogue_index)
         dialogue_index += 1
-        if selected is not None and decision != selected:
-            continue
-        if decision == "displayed":
-            if is_drawing(event.text):
-                verses: tuple[str, ...] | None = None
-            else:
-                verses = displayed_verses[displayed_index]
-                displayed_index += 1
-        else:
-            visible = visible_text(event.text)
-            verses = spoken_by_order.get(dialogue_index - 1)
-            if verses is None:
-                verses = next(
-                    (
-                        translated
-                        for spoken, translated in spoken_by_key.get((event.style, visible), ())
-                        if spoken.start <= event.start and event.end <= spoken.end
-                    ),
-                    None,
-                )
-        if verses is None:
+        if text is None or is_drawing(event.text):
             out.events.append(event)
             continue
-        replaced = event.copy()
-        replaced.text = replace_visible_text(event.text, line_break.join(verses))
-        if decision == "spoken" and visible_text(event.text) == visible_text(line_break.join(verses)):
-            replaced.text = reflow_visible_text(event.text, verses)
+        laid_out: SSAEvent = event.copy()
+        laid_out.text = _laid_out_text(event, text, decision, profile, limits)
         if split.kind == "ass" and decision == "displayed":
-            replaced.text = fit_sign_text(event, replaced.text, split.subs)
-        out.events.append(replaced)
-    return out
+            signs.append(position)
+        out.events.append(laid_out)
+    for position, fitted in fit_signs(source, out, signs, profile, report).items():
+        out.events[position].text = fitted
+    return TranslatedLayout(out, report)
 
 
-def write_translated(
+def _laid_out_text(event: SSAEvent, text: str, decision: Decision, profile: RenderProfile, limits: LayoutLimits) -> str:
+    if decision == "spoken":
+        return layout_dialogue(event, text, profile, limits).text
+    verses: tuple[str, ...] = split_for_layout(
+        strip_span_markers(text),
+        visible_verses(event.text),
+        max_chars=limits.max_chars,
+        max_lines=limits.max_lines,
+    )
+    target: str = _ASS_LINE_BREAK.join(restore_markers(text, verses))
+    return replace_visible_text(event.text, target, profile.styles.get(event.style))
+
+
+def _event_translations(split: SubtitleSplit, translations: Mapping[int, str]) -> dict[int, str]:
+    texts: dict[int, str] = dict(translations)
+    lines: defaultdict[tuple[str, str], list[tuple[SpokenLine, str]]] = defaultdict(list)
+    for line in split.spoken:
+        if line.order in translations:
+            lines[line.style, line.text].append((line, translations[line.order]))
+    dialogue: list[SSAEvent] = [event for event in split.subs.events if event.type == "Dialogue"]
+    for index, (event, decision) in enumerate(zip(dialogue, split.decisions, strict=True)):
+        if decision != "spoken" or index in texts:
+            continue
+        copy: str | None = next(
+            (
+                text
+                for line, text in lines.get((event.style, visible_text(event.text)), ())
+                if line.start <= event.start and event.end <= line.end
+            ),
+            None,
+        )
+        if copy is not None:
+            texts[index] = copy
+    return texts
+
+
+def _font_index(fonts: FontSources | None, dialogue_font: DialogueFont | None) -> FontIndex | None:
+    if fonts is None and dialogue_font is None:
+        return None
+    episode: tuple[Path, ...] = (
+        *(fonts.episode if fonts is not None else ()),
+        *(dialogue_font.files if dialogue_font is not None else ()),
+    )
+    return FontIndex.build(episode, fonts.system if fonts is not None else ())
+
+
+def write_translated(  # noqa: PLR0913 - layout inputs mirror layout_translated
     split: SubtitleSplit,
-    displayed_verses: Sequence[tuple[str, ...]],
-    spoken_verses: Sequence[tuple[str, ...]],
+    translations: Mapping[int, str],
     dest: Path,
+    *,
+    fonts: FontSources | None,
+    limits: LayoutLimits,
+    dialogue_font: DialogueFont | None,
 ) -> Path | None:
-    """Write the whole translated subtitle file atomically, or None when empty."""
+    """Lay out and write the whole translated subtitle file atomically, or return None when it is empty."""
     if split.stats.total_events == 0:
         return None
-    output = _translated_file(split, displayed_verses, spoken_verses)
-    return _write_output(output, dest, split.kind, subject="Translated")
+    laid_out: TranslatedLayout = layout_translated(
+        split, translations, fonts=fonts, limits=limits, dialogue_font=dialogue_font
+    )
+    return _write_output(laid_out.subs, dest, split.kind, subject="Translated")
 
 
-def write_translated_spoken(
+def write_translated_spoken(  # noqa: PLR0913 - layout inputs mirror layout_translated
     split: SubtitleSplit,
-    spoken_verses: Sequence[tuple[str, ...]],
+    translations: Mapping[int, str],
     dest: Path,
+    *,
+    fonts: FontSources | None,
+    limits: LayoutLimits,
+    dialogue_font: DialogueFont | None,
 ) -> Path | None:
-    """Write the translated spoken-only subtitle product atomically."""
+    """Lay out and write the translated spoken-only subtitle product atomically, or return None when it is empty."""
     if split.stats.spoken_events == 0:
         return None
-    output = _translated_file(split, (), spoken_verses, selected="spoken")
+    laid_out: TranslatedLayout = layout_translated(
+        split, translations, fonts=fonts, limits=limits, dialogue_font=dialogue_font
+    )
+    output: SSAFile = _stream_file(replace(split, subs=laid_out.subs), "spoken")
     return _write_output(output, dest, split.kind, subject="Translated spoken")
 
 
-def write_translated_displayed(
+def write_translated_displayed(  # noqa: PLR0913 - layout inputs mirror layout_translated
     split: SubtitleSplit,
-    displayed_verses: Sequence[tuple[str, ...]],
+    translations: Mapping[int, str],
     dest: Path,
+    *,
+    fonts: FontSources | None,
+    limits: LayoutLimits,
+    dialogue_font: DialogueFont | None,
 ) -> Path | None:
-    """Write the translated displayed-only subtitle product atomically."""
+    """Lay out and write the translated displayed-only subtitle product atomically, or return None when it is empty."""
     if split.stats.displayed_events == 0:
         return None
-    output = _translated_file(split, displayed_verses, (), selected="displayed")
+    laid_out: TranslatedLayout = layout_translated(
+        split, translations, fonts=fonts, limits=limits, dialogue_font=dialogue_font
+    )
+    output: SSAFile = _stream_file(replace(split, subs=laid_out.subs), "displayed")
     return _write_output(output, dest, split.kind, subject="Translated displayed")
