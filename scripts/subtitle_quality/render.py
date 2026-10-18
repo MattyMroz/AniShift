@@ -106,7 +106,7 @@ class FontReport:
 
 
 def prepare_fonts(episode_dir: Path, video: Path | None, work: Path) -> int:
-    """Fill ``work/fonts`` from the episode font folder or the video attachments; return font count."""
+    """Fill ``work/fonts`` for FFmpeg, return the font count: tool staging kept for ``compare.py``, a D10 exception."""
     target: Path = work / "fonts"
     if target.is_dir() and any(target.iterdir()):
         return len(list(target.iterdir()))
