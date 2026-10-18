@@ -6,6 +6,8 @@ updated: 2026-10-18
 
 # Rozmyte łamanie polskich dialogów — v4
 
+> **Zastąpiona przez [line-breaking.md](line-breaking.md) (19.10.2026).** Właściciel odrzucił algorytm z tej specyfikacji (gałąź `work/quality/16-line-breaks`); dokument zostaje jako historia decyzji.
+
 Właściciel 18.10: implementacja rusza po akceptacji planu 01 i tej specyfikacji przez trzech recenzentów (astra, sol6, claude); decyzje otwarte mają wartości domyślne (rekomendacje przyjęte 18.10), a właściciel akceptuje wynik na galerii przed/po.
 
 ## Aneks v5 (2026-10-18) — kalibracja na galerii, nadrzędny wobec aneksu v4 i dalszych sekcji
