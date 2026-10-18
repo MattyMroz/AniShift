@@ -7,10 +7,12 @@ import wave
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
 from fakes import FakeMediaProbe
+from loguru import logger as loguru_logger
 from pysubs2 import SSAEvent, SSAFile
 from test_automation import _await, _owned, _request
 from test_composition_handler import FFMPEG, FFPROBE, _Composer
@@ -95,7 +97,7 @@ from anishift.services.subtitles import (
     split_subtitles,
 )
 from anishift.services.subtitles.layout import LayoutLimits
-from anishift.services.subtitles.text import visible_verses
+from anishift.services.subtitles.text import visible_text, visible_verses
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
 from anishift.services.translation.types import FileTranslation, TranslatedLine
 from anishift.services.tts import (
@@ -108,6 +110,9 @@ from anishift.services.tts import (
     SynthesisStatus,
     SynthesizedRequest,
 )
+
+if TYPE_CHECKING:
+    from loguru import Record
 
 
 def _ass_split(events: list[SSAEvent]) -> SubtitleSplit:
@@ -275,10 +280,12 @@ def _write_ass(path: Path) -> None:
         "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
         "Style: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,"
         "2,10,10,10,1\n"
+        "Style: Sign,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,"
+        "8,10,10,10,1\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
         "Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,Hello\n"
-        "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\p1}m 0 0 l 1 1\n",
+        "Dialogue: 0,0:00:01.00,0:00:02.00,Sign,,0,0,0,,{\\p1}m 0 0 l 1 1\n",
         encoding="utf-8",
     )
 
@@ -605,6 +612,76 @@ def test_polish_split_reflows_spoken_and_preserves_displayed_text_and_times(tmp_
     assert (spoken_event.start, spoken_event.end) == (1230, 4560)
     assert displayed_event.text == sign
     assert (displayed_event.start, displayed_event.end) == (2340, 5670)
+
+
+def _decided_pair(tmp_path: Path, polish_end: int = 4000) -> tuple[Artifact, Artifact]:
+    source: SSAFile = SSAFile()
+    source.info.update({"PlayResX": "1280", "PlayResY": "720"})
+    source.events.extend(
+        [
+            SSAEvent(start=0, end=2000, style="Default", text="Hello there."),
+            SSAEvent(start=2000, end=4000, style="Default", text=r"{\an7}IRRITATED"),
+        ]
+    )
+    source.save(str(tmp_path / "episode.en.ass"))
+    polish: SSAFile = SSAFile()
+    polish.info.update(source.info)
+    polish.events.extend(
+        [
+            SSAEvent(start=0, end=2000, style="Default", text="Cześć."),
+            SSAEvent(start=2000, end=polish_end, style="Default", text=r"{\an7}Wkurzony"),
+        ]
+    )
+    polish.save(str(tmp_path / "episode.pl.ass"))
+    return (
+        _ready("source", ArtifactKind.SOURCE_SUBTITLES, tmp_path / "episode.en.ass"),
+        _ready("full", ArtifactKind.FULL_PL, tmp_path / "episode.pl.ass"),
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("inputs", "polish_end", "spoken", "reason"),
+    [
+        (("full", "source"), 4000, ["Cześć."], None),
+        (("full",), 4000, ["Cześć.", "Wkurzony"], "no_source"),
+        (("full", "source"), 4500, ["Cześć.", "Wkurzony"], "source_mismatch"),
+    ],
+)
+def test_polish_split_reads_what_its_source_reads_and_classifies_itself_only_without_a_matching_source(
+    tmp_path: Path, inputs: tuple[str, ...], polish_end: int, spoken: list[str], reason: str | None
+) -> None:
+    source, full = _decided_pair(tmp_path, polish_end)
+    output: Artifact = _output("spoken", ArtifactKind.SPOKEN_PL, subtitle_format="ass")
+    records: list[Record] = []
+    handler: int = loguru_logger.add(lambda message: records.append(message.record), level="WARNING")
+    try:
+        result: TaskResult = SubtitleTaskHandler(run_root=tmp_path / "run").execute(
+            _task(TaskKind.SPLIT_SUBTITLES, inputs, ("spoken",)),
+            ArtifactSnapshot({"full": full, "source": source}, {"spoken": output}),
+            NeverCancelledToken(),
+            _ProgressSink(),
+        )
+    finally:
+        loguru_logger.remove(handler)
+
+    assert [visible_text(event.text) for event in load_subtitles(result.outputs[0].path)] == spoken
+    assert [record["extra"].get("reason") for record in records] == ([] if reason is None else [reason])
+
+
+@pytest.mark.unit
+def test_polish_split_rejects_a_second_input_that_is_not_the_source_subtitles(tmp_path: Path) -> None:
+    _source, full = _decided_pair(tmp_path)
+    video: Artifact = _ready("video", ArtifactKind.VIDEO_MKV, tmp_path / "episode.mkv")
+    output: Artifact = _output("spoken", ArtifactKind.SPOKEN_PL, subtitle_format="ass")
+
+    with pytest.raises(ExecutionError, match="source subtitles"):
+        SubtitleTaskHandler(run_root=tmp_path / "run").execute(
+            _task(TaskKind.SPLIT_SUBTITLES, ("full", "video"), ("spoken",)),
+            ArtifactSnapshot({"full": full, "video": video}, {"spoken": output}),
+            NeverCancelledToken(),
+            _ProgressSink(),
+        )
 
 
 @pytest.mark.integration
@@ -1236,7 +1313,7 @@ def test_planner_scheduler_completes_independent_subtitle_branches(tmp_path: Pat
     translation.translate_file.assert_called_once()
     assert result.groups[0].status is (GroupStatus.PARTIAL if streams == "displayed" else GroupStatus.SUCCEEDED)
     assert result.groups[0].error_messages == (
-        ("Requested subtitle stream is empty: spoken_pl",) if streams == "displayed" else ()
+        ("Subtitle file contains no lines to read aloud",) if streams == "displayed" else ()
     )
     expected: set[str] = {"episode.pl.ass"}
     if streams != "displayed":

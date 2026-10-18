@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections import defaultdict
 from dataclasses import dataclass, replace
 from itertools import zip_longest
 from pathlib import Path
@@ -19,6 +18,7 @@ from anishift.services.subtitles import (
     layout_translated,
     load_subtitles,
     split_subtitles,
+    spoken_groups,
     visible_text,
     write_full,
 )
@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
     from pysubs2 import SSAEvent, SSAFile
 
-    from anishift.services.subtitles import SpokenLine, SubtitleSplit, TranslatedLayout
+    from anishift.services.subtitles import SubtitleSplit, TranslatedLayout
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -106,27 +106,6 @@ def pair_input(source: SSAFile, output: SSAFile) -> PairInput:
             match: int | None = pairs.get(index)
             translations[index] = visible_text(event.text if match is None else output_events[match].text)
     return PairInput(translations, frozenset(index for index in translations if index in pairs))
-
-
-def spoken_groups(split: SubtitleSplit) -> dict[int, int]:
-    """Map every spoken event to the first event of the narrator line whose text the writer gives it."""
-    firsts: set[int] = {line.order for line in split.spoken}
-    lines: defaultdict[tuple[str, str], list[SpokenLine]] = defaultdict(list)
-    for line in split.spoken:
-        lines[line.style, line.text].append(line)
-    groups: dict[int, int] = {}
-    for index, (event, decision) in enumerate(zip(metrics.dialogue(split.subs), split.decisions, strict=True)):
-        if decision != "spoken":
-            continue
-        first: int | None = index if index in firsts else _containing_line(lines, event)
-        if first is not None:
-            groups[index] = first
-    return groups
-
-
-def _containing_line(lines: dict[tuple[str, str], list[SpokenLine]], event: SSAEvent) -> int | None:
-    candidates: list[SpokenLine] = lines.get((event.style, visible_text(event.text)), [])
-    return next((line.order for line in candidates if line.start <= event.start and event.end <= line.end), None)
 
 
 def excluded_events(split: SubtitleSplit, inputs: PairInput) -> tuple[int, ...]:

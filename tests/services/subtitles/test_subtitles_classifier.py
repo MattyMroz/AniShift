@@ -3,7 +3,7 @@ import pytest
 from conftest import MM_AVH_TEMP
 from pysubs2 import SSAEvent, SSAFile
 
-from anishift.services.subtitles.classifier import Category, classify_styles
+from anishift.services.subtitles.classifier import Category, classify_styles, written_in_capitals
 from anishift.services.subtitles.service import collapse_fbf
 
 _FUJI_ASS = MM_AVH_TEMP / "dataset_ass" / "140___Fuji__Kimi_to_Koete_Koi_ni_Naru_-_03__1080p_.mkv.ass"
@@ -63,3 +63,34 @@ def test_collapse_fbf_keeps_distant_repeats_separate() -> None:
 
     assert len(lines) == 2
     assert removed == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("style", "category"),
+    [
+        ("EDup", Category.SIGN),
+        ("OPdown", Category.SIGN),
+        ("OP_EN_blue", Category.SIGN),
+        ("ED1 - ENG", Category.SIGN),
+        ("IN01", Category.SIGN),
+        ("NCOP2", Category.SIGN),
+        ("OP1-Light_cyber_main", Category.SIGN),
+        ("Main", Category.DIALOG),
+        ("Speed", Category.DIALOG),
+        ("Insanity", Category.DIALOG),
+    ],
+)
+def test_classify_styles_treats_release_coded_song_styles_as_signs(style: str, category: Category) -> None:
+    subs: SSAFile = _subs([_event(f"Sung line number {index}.", start=index * 3000, style=style) for index in range(8)])
+
+    assert classify_styles(subs)[0].category is category
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "capitals"),
+    [("YAY", True), ("NUMBER ONE...", True), ("Yay!", False), ("OK", True), ("Ok", False), ("I", False), ("", False)],
+)
+def test_written_in_capitals_needs_most_of_at_least_two_letters_in_capitals(text: str, *, capitals: bool) -> None:
+    assert written_in_capitals(text) is capitals

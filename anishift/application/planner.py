@@ -365,6 +365,7 @@ class _GroupPlanner:
         self._source_subtitles: Artifact | None = None
         self._track_containers: dict[str, Artifact] = {}
         self._full_pl: Artifact | None = None
+        self._full_pl_source: Artifact | None = None
         self._spoken_pl: Artifact | None = None
         self._displayed_pl: Artifact | None = None
         self._source_audio: Artifact | None = None
@@ -1339,6 +1340,7 @@ class _GroupPlanner:
                 parameters=(("output_format", output_format),),
             )
         self._full_pl = full
+        self._full_pl_source = source
         return full
 
     def _ensure_split_outputs(self, *, needs_spoken: bool, needs_displayed: bool) -> None:
@@ -1395,11 +1397,17 @@ class _GroupPlanner:
         for output in outputs:
             self._add_task(
                 TaskKind.SPLIT_SUBTITLES,
-                requires=(full,),
+                requires=self._split_inputs(full),
                 produces=(output,),
                 variant=output.kind.value,
                 resource_key="subtitles",
             )
+
+    def _split_inputs(self, full: Artifact) -> tuple[Artifact, ...]:
+        """Return the Polish subtitles and, for ASS made from source subtitles in this plan, that deciding source."""
+        if self._full_pl_source is None or self._subtitle_format(full) != "ass":
+            return (full,)
+        return full, self._full_pl_source
 
     def _lacks_displayed_layer(self, selected: Artifact | _EmbeddedTrack) -> bool:
         planned: bool = isinstance(selected, Artifact) and selected.state is ArtifactState.MISSING

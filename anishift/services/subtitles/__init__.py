@@ -6,18 +6,18 @@ from anishift.services.subtitles.classifier import Category, StyleVerdict, class
 from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.service import (
     collapse_fbf,
+    inherit_split,
     layout_translated,
     load_subtitles,
     normalize_subtitles,
     reflow_polish_dialogue,
     split_subtitles,
+    spoken_groups,
     subtitle_kind,
     write_displayed,
     write_full,
     write_spoken,
     write_translated,
-    write_translated_displayed,
-    write_translated_spoken,
 )
 from anishift.services.subtitles.srt import spoken_to_srt
 from anishift.services.subtitles.text import (
@@ -57,6 +57,7 @@ __all__ = [
     "classify_styles",
     "collapse_fbf",
     "dedup_animation",
+    "inherit_split",
     "is_drawing",
     "layout_translated",
     "load_subtitles",
@@ -67,6 +68,7 @@ __all__ = [
     "replace_visible_text",
     "restore_markers",
     "split_subtitles",
+    "spoken_groups",
     "spoken_to_srt",
     "subtitle_kind",
     "txt_to_spoken",
@@ -76,6 +78,4 @@ __all__ = [
     "write_full",
     "write_spoken",
     "write_translated",
-    "write_translated_displayed",
-    "write_translated_spoken",
 ]

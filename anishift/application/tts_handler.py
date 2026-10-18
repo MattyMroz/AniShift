@@ -7,7 +7,7 @@ import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Final, Never, Protocol
+from typing import TYPE_CHECKING, Final, Never, Protocol
 
 from anishift.application.artifacts import Artifact, ArtifactKind
 from anishift.application.cancellation import CancellationToken
@@ -36,6 +36,9 @@ from anishift.services.tts import (
     SpeechRetryProgress,
 )
 from anishift.services.tts.validation import is_speech_text
+
+if TYPE_CHECKING:
+    from pysubs2 import SSAFile
 
 __all__ = [
     "NarrationManifest",
@@ -349,13 +352,17 @@ def _planned_timeline(task: PlanTask) -> NarrationTimeline:
 
 
 def _script_lines(kind: ArtifactKind, path: Path) -> tuple[SpokenLine, ...]:
-    """Read one script into narrator lines, keeping file order as the only order that exists."""
+    """Read one script into narrator lines in file order; a spoken-only script is read whole, unclassified."""
     if kind in _UNTIMED_SCRIPT_KINDS:
         return tuple(replace(line, order=order) for order, line in enumerate(txt_to_spoken(path)))
     subtitles: SubtitleKind | None = subtitle_kind(path)
     if subtitles is None:
         _raise_execution("TTS subtitle script must be ASS or SRT")
-    return split_subtitles(load_subtitles(path), kind=subtitles).spoken
+    document: SSAFile = load_subtitles(path)
+    if kind is not ArtifactKind.SPOKEN_PL:
+        return split_subtitles(document, kind=subtitles).spoken
+    every_style: frozenset[str] = frozenset(event.style for event in document.events)
+    return split_subtitles(document, kind=subtitles, spoken_styles=every_style, verdicts=()).spoken
 
 
 def _narration_batch(
