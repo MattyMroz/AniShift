@@ -10,7 +10,7 @@ from pysubs2 import SSAFile
 from anishift.platform.binaries import Binary, resolve_binary
 from scripts.subtitle_quality import __main__ as quality_main
 from scripts.subtitle_quality import compare, metrics
-from scripts.subtitle_quality.episode import SOURCE_NAME
+from scripts.subtitle_quality.episode import FONTS_NAME, SOURCE_NAME
 from scripts.subtitle_quality.render import GALLERY_WIDTH
 from scripts.subtitle_quality.replay import MAPPING_NAME
 
@@ -330,6 +330,29 @@ def test_placed_boxes_find_events_where_the_rendered_frame_draws_them_among_conc
     assert sign[0] < 400 < sign[2]
     assert sign[1] < 200 < sign[3]
     assert boxes(3) == (None, None)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("episode_fonts", [(), ("episode.ttf",)])
+def test_render_case_adds_the_given_font_files_to_the_pair_fonts_before_rendering(
+    tmp_path: Path, episode_fonts: tuple[str, ...]
+) -> None:
+    _requires_ffmpeg()
+    pair: Path = tmp_path / "pair"
+    for name in episode_fonts:
+        (pair / FONTS_NAME).mkdir(parents=True, exist_ok=True)
+        (pair / FONTS_NAME / name).write_bytes(b"episode")
+    script: Path = tmp_path / "script.ass"
+    script.write_text(_script(_BEFORE), encoding="utf-8")
+    owner: Path = tmp_path / "owner.ttf"
+    owner.write_bytes(b"owner")
+    files: compare.PairFiles = compare.PairFiles(pair, script, script, tmp_path / "work", (owner,))
+    case: compare.Case = compare.Case(_PAIR, compare.KIND_HARD, 2000, (), "", "", "")
+    compare.render_case(case, 1, files, ("PRZED", "PO"), tmp_path / "01.png")
+    fonts: Path = tmp_path / "work" / FONTS_NAME
+    assert sorted(path.name for path in fonts.iterdir()) == sorted([*episode_fonts, owner.name])
+    assert (fonts / owner.name).read_bytes() == b"owner"
+    assert (tmp_path / "01.png").is_file()
 
 
 @pytest.mark.integration

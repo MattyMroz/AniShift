@@ -19,7 +19,7 @@ from anishift.services.subtitles.text import RE_TAG_BLOCK
 from anishift.utils.logger import LoggerMode, setup_mode
 from anishift.utils.logger.config import FileConfig
 from scripts.subtitle_quality import metrics
-from scripts.subtitle_quality.episode import FRAMES_NAME, SOURCE_NAME, video_path
+from scripts.subtitle_quality.episode import FONTS_NAME, FRAMES_NAME, SOURCE_NAME, video_path
 from scripts.subtitle_quality.render import (
     Shot,
     copy_scripts,
@@ -181,12 +181,13 @@ class Case:
 
 @dataclass(frozen=True, slots=True)
 class PairFiles:
-    """Replay outputs before and after the change, the pair folder and its render work folder."""
+    """Replay outputs before and after the change, the pair folder, its render work folder and extra render fonts."""
 
     directory: Path
     before: Path
     after: Path
     work: Path
+    fonts: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,8 +235,15 @@ def load_hard_cases(path: Path) -> tuple[HardCase, ...]:
     return tuple(HardCase(str(row["pair"]), int(row["time_ms"]), str(row["description"])) for row in rows)
 
 
-def find_cases(base: Path, other: Path, pairs_root: Path, work_root: Path, hard: Sequence[HardCase] = ()) -> Selection:
-    """Find every case of two replays with equal inputs, leaving out excluded events."""
+def find_cases(  # noqa: PLR0913 - the extra fonts reach every pair's render work
+    base: Path,
+    other: Path,
+    pairs_root: Path,
+    work_root: Path,
+    hard: Sequence[HardCase] = (),
+    fonts: tuple[Path, ...] = (),
+) -> Selection:
+    """Find every case of two replays with equal inputs, leaving out excluded events; ``fonts`` join every pair."""
     matched, skipped = matched_pairs(base, other)
     cases: list[Case] = []
     pairs: dict[str, PairFiles] = {}
@@ -246,7 +254,7 @@ def find_cases(base: Path, other: Path, pairs_root: Path, work_root: Path, hard:
             skipped.append((pair_id, "inputs differ"))
             continue
         files: PairFiles = PairFiles(
-            pairs_root / pair_id, base / first["output"], other / second["output"], work_root / f"{position:03d}"
+            pairs_root / pair_id, base / first["output"], other / second["output"], work_root / f"{position:03d}", fonts
         )
         before: SSAFile = load_subtitles(files.before)
         after: SSAFile = load_subtitles(files.after)
@@ -586,6 +594,12 @@ def chosen(cases: Sequence[Case], size: int) -> list[Case]:
 def _prepare(files: PairFiles) -> None:
     files.work.mkdir(parents=True, exist_ok=True)
     prepare_fonts(files.directory, video_path(files.directory), files.work)
+    if not files.fonts:
+        return
+    target: Path = files.work / FONTS_NAME
+    target.mkdir(exist_ok=True)
+    for font in files.fonts:
+        shutil.copy(font, target)
 
 
 def episode_title(pair_id: str) -> str:
@@ -902,12 +916,16 @@ def main(argv: Sequence[str], quality_root: Path) -> int:
     parser.add_argument("--pairs", type=Path, default=quality_root, help="folder holding the pair folders by pair id")
     parser.add_argument("--hard", type=Path, help='JSON list of hard cases {"pair", "time_ms", "description"}')
     parser.add_argument("--size", type=int, default=CASES_PER_KIND, help="cases rendered per kind of change")
+    parser.add_argument(
+        "--font", type=Path, action="append", default=[], help="font file added to every pair's fonts; repeatable"
+    )
     args: argparse.Namespace = parser.parse_args(argv)
     setup_mode(LoggerMode.SILENT, file=FileConfig(enable=False))
     out: Path = args.out or quality_root / GALLERY_ROOT / f"{args.base.name}-vs-{args.other.name}"
     hard: tuple[HardCase, ...] = load_hard_cases(args.hard) if args.hard else ()
+    fonts: tuple[Path, ...] = tuple(args.font)
     try:
-        selection: Selection = find_cases(args.base, args.other, args.pairs, out / _WORK_NAME, hard)
+        selection: Selection = find_cases(args.base, args.other, args.pairs, out / _WORK_NAME, hard, fonts)
         shown: list[Case] = chosen(selection.cases, args.size)
         write_gallery(selection, shown, out, (args.base.name, args.other.name))
     finally:
