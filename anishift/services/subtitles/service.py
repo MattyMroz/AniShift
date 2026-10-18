@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Collection, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -144,14 +144,16 @@ def normalize_subtitles(  # noqa: PLR0913 - layout inputs mirror layout_translat
     subtitles: SSAFile = load_subtitles(source)
     if not any(event.type == "Dialogue" for event in subtitles.events):
         raise _fail(ErrorCode.SUBTITLE_PARSE_FAILED, "Subtitle file contains no dialogue events")
-    if layout is not None:
-        source_kind: SubtitleKind | None = subtitle_kind(source)
-        if source_kind is None:
-            raise _fail(ErrorCode.SUBTITLE_PARSE_FAILED, "Subtitle source format is unsupported")
-        split: SubtitleSplit = split_subtitles(subtitles, kind=source_kind)
-        texts: dict[int, str] = _source_texts(split)
-        subtitles = layout_translated(split, texts, fonts=fonts, limits=layout, dialogue_font=dialogue_font).subs
-    return _write_output(subtitles, destination, kind, subject="Normalized")
+    if layout is None:
+        return _write_output(subtitles, destination, kind, subject="Normalized")
+    source_kind: SubtitleKind | None = subtitle_kind(source)
+    if source_kind is None:
+        raise _fail(ErrorCode.SUBTITLE_PARSE_FAILED, "Subtitle source format is unsupported")
+    split: SubtitleSplit = split_subtitles(subtitles, kind=source_kind)
+    laid_out: TranslatedLayout = layout_translated(
+        split, _source_texts(split), fonts=fonts, limits=layout, dialogue_font=dialogue_font
+    )
+    return _write_laid_out(laid_out.subs, laid_out.report, destination, kind, subject="Normalized")
 
 
 def reflow_polish_dialogue(split: SubtitleSplit, layout: LayoutLimits | None = None) -> SubtitleSplit:
@@ -483,7 +485,7 @@ def write_translated(  # noqa: PLR0913 - layout inputs mirror layout_translated
     laid_out: TranslatedLayout = layout_translated(
         split, translations, fonts=fonts, limits=limits, dialogue_font=dialogue_font
     )
-    return _write_output(laid_out.subs, dest, split.kind, subject="Translated")
+    return _write_laid_out(laid_out.subs, laid_out.report, dest, split.kind, subject="Translated")
 
 
 def write_translated_spoken(  # noqa: PLR0913 - layout inputs mirror layout_translated
@@ -502,7 +504,7 @@ def write_translated_spoken(  # noqa: PLR0913 - layout inputs mirror layout_tran
         split, translations, fonts=fonts, limits=limits, dialogue_font=dialogue_font
     )
     output: SSAFile = _stream_file(replace(split, subs=laid_out.subs), "spoken")
-    return _write_output(output, dest, split.kind, subject="Translated spoken")
+    return _write_laid_out(output, laid_out.report, dest, split.kind, subject="Translated spoken")
 
 
 def write_translated_displayed(  # noqa: PLR0913 - layout inputs mirror layout_translated
@@ -521,4 +523,10 @@ def write_translated_displayed(  # noqa: PLR0913 - layout inputs mirror layout_t
         split, translations, fonts=fonts, limits=limits, dialogue_font=dialogue_font
     )
     output: SSAFile = _stream_file(replace(split, subs=laid_out.subs), "displayed")
-    return _write_output(output, dest, split.kind, subject="Translated displayed")
+    return _write_laid_out(output, laid_out.report, dest, split.kind, subject="Translated displayed")
+
+
+def _write_laid_out(output: SSAFile, report: LayoutReport, dest: Path, kind: SubtitleKind, *, subject: str) -> Path:
+    written: Path = _write_output(output, dest, kind, subject=subject)
+    logger.info("Subtitle layout summarized", product=subject, destination=dest.name, **asdict(report))
+    return written

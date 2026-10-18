@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import re
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from conftest import MM_AVH_TEMP
+from loguru import logger as loguru_logger
 from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
 from anishift.services.subtitles.classifier import Category, StyleVerdict
@@ -24,6 +26,9 @@ from anishift.services.subtitles.service import (
 )
 from anishift.services.subtitles.text import is_drawing, visible_text
 from anishift.services.subtitles.types import LayoutReport, SubtitleKind, SubtitleSplit, TranslatedLayout
+
+if TYPE_CHECKING:
+    from loguru import Record
 
 _REAL_ASS_NAME = "006___shisha__Genjitsu_no_Yohane_-_Sunshine_in_the_Mirror_-_01__1080p_.mkv.ass"
 _REAL_ASS = MM_AVH_TEMP / "dataset_ass" / _REAL_ASS_NAME
@@ -414,3 +419,23 @@ def test_layout_translated_breaks_dialogue_and_keeps_drawings_and_events_without
     assert visible_text(laid_out.subs.events[0].text) == "Cześć tobie, mój drogi przyjacielu"
     assert laid_out.subs.events[1].text == source.events[1].text
     assert laid_out.subs.events[2].text == source.events[2].text
+
+
+def test_translated_writer_logs_one_layout_summary_without_texts_or_absolute_paths(tmp_path: Path) -> None:
+    subs: SSAFile = _ass_with_both_streams()
+    split: SubtitleSplit = split_subtitles(subs, kind="ass", spoken_styles={"Dialog"})
+    records: list[Record] = []
+    handler: int = loguru_logger.add(lambda message: records.append(message.record), level="DEBUG")
+    try:
+        _write(split, _fake_translation(split), tmp_path / "out.pl.ass")
+    finally:
+        loguru_logger.remove(handler)
+
+    summaries: list[Record] = [record for record in records if record["message"] == "Subtitle layout summarized"]
+    assert len(summaries) == 1
+    extra: dict[str, Any] = summaries[0]["extra"]
+    assert extra["destination"] == "out.pl.ass"
+    assert extra["product"] == "Translated"
+    assert {key: extra[key] for key in asdict(LayoutReport())} == asdict(LayoutReport())
+    assert str(tmp_path) not in repr(summaries[0]["extra"])
+    assert "PL:" not in repr(summaries[0]["extra"])
