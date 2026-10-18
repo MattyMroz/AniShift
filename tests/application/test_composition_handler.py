@@ -177,39 +177,8 @@ def test_composition_handler_rejects_cancelled_task_before_service_call(tmp_path
     assert service.requests == []
 
 
-def _burn_snapshot(tmp_path: Path, subtitle_name: str, burn: str) -> tuple[PlanTask, ArtifactSnapshot]:
+def test_composition_handler_offers_the_dialogue_font_files_to_the_container_request(tmp_path: Path) -> None:
     task, snapshot, _ = _snapshot(tmp_path)
-    subtitle_path: Path = tmp_path / subtitle_name
-    subtitle_path.write_text("[Script Info]", encoding="utf-8")
-    subtitle = Artifact(
-        "full-pl",
-        "group-1",
-        ArtifactKind.FULL_PL,
-        subtitle_path,
-        ArtifactState.READY,
-        ArtifactLifetime.DURABLE,
-        subtitle_path,
-    )
-    burned: PlanTask = replace(
-        task,
-        requires=(*task.requires, subtitle.artifact_id),
-        parameters=(("audio_source", "original"), ("burn_subtitles", burn)),
-    )
-    ready = ArtifactSnapshot({**snapshot.artifacts, subtitle.artifact_id: subtitle}, snapshot.planned_outputs)
-    return burned, ready
-
-
-@pytest.mark.parametrize(
-    ("subtitle_name", "burn", "carries_fonts"),
-    [("Episode.pl.ass", "full_pl", True), ("Episode.pl.srt", "full_pl", False), ("Episode.pl.ass", "none", False)],
-)
-def test_composition_handler_passes_the_dialogue_font_only_with_ass_subtitles(
-    tmp_path: Path,
-    subtitle_name: str,
-    burn: str,
-    carries_fonts: bool,
-) -> None:
-    task, snapshot = _burn_snapshot(tmp_path, subtitle_name, burn)
     fonts: tuple[Path, ...] = (tmp_path / "Officina - Bold.ttf", tmp_path / "Officina - Bold Italic.ttf")
     service: _Composer = _Composer()
 
@@ -220,7 +189,7 @@ def test_composition_handler_passes_the_dialogue_font_only_with_ass_subtitles(
         _Progress(),
     )
 
-    assert service.requests[0].font_files == (fonts if carries_fonts else ())
+    assert service.requests[0].font_files == fonts
 
 
 def _cover_snapshot(

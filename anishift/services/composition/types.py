@@ -71,7 +71,7 @@ class AttachedSubtitle:
 
 @dataclass(frozen=True, slots=True)
 class ContainerCompositionRequest:
-    """Exact inputs and destination for one container product; font files join the source container's fonts."""
+    """Exact inputs and destination for one container product; a font file joins it when its subtitles use it."""
 
     source_video: Path
     destination: Path

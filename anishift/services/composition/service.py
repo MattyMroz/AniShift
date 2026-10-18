@@ -25,7 +25,7 @@ from anishift.services.composition.commands import (
 )
 from anishift.services.composition.config import CompositionConfig
 from anishift.services.composition.errors import CompositionConfigError, CompositionValidationError
-from anishift.services.composition.fonts import font_attachments, font_embedding_warnings
+from anishift.services.composition.fonts import font_attachments, font_embedding_warnings, used_font_files
 from anishift.services.composition.paths import filter_safe_copy, temporary_sibling
 from anishift.services.composition.probe import (
     audio_codec_name,
@@ -273,7 +273,7 @@ class CompositionService:
         work_dir: Path = Path(tempfile.mkdtemp(dir=request.destination.parent, prefix=_WORK_PREFIX))
         try:
             present: tuple[Path, ...] = _source_fonts(request, work_dir)
-            attachments: tuple[tuple[Path, str], ...] = font_attachments(request.font_files, present)
+            attachments: tuple[tuple[Path, str], ...] = _new_fonts(request, present)
             warnings: tuple[str, ...] = _container_font_warnings(
                 request, (*present, *(path for path, _ in attachments))
             )
@@ -593,38 +593,45 @@ def _font_warnings(plan: CompositionPlan) -> tuple[str, ...]:
     if subtitle is None:
         return ()
     with tempfile.TemporaryDirectory(prefix=_WORK_PREFIX) as folder:
-        warnings: tuple[str, ...] = font_embedding_warnings(subtitle, _extracted_fonts(plan.source_path, Path(folder)))
+        warnings: tuple[str, ...] = font_embedding_warnings(
+            (subtitle,), _extracted_fonts(plan.source_path, Path(folder))
+        )
     if warnings:
         logger.warning("Composition font embedding warning", scope_id=plan.scope_id, font_count=len(warnings))
     return warnings
 
 
 def _container_font_warnings(request: ContainerCompositionRequest, fonts: tuple[Path, ...]) -> tuple[str, ...]:
-    """Report the fonts the request's first subtitles name that none of the container's font files carries."""
-    subtitle: Path | None = request.burn_subtitle
-    if subtitle is None and request.attached_subtitles:
-        subtitle = request.attached_subtitles[0].path
-    if subtitle is None:
-        return ()
-    warnings: tuple[str, ...] = font_embedding_warnings(subtitle, fonts)
+    """Report the fonts the request's subtitles name that none of the container's font files carries."""
+    warnings: tuple[str, ...] = font_embedding_warnings(_subtitle_files(request), fonts)
     if warnings:
         logger.warning("Container font embedding warning", target=request.target.value, font_count=len(warnings))
     return warnings
 
 
+def _subtitle_files(request: ContainerCompositionRequest) -> tuple[Path, ...]:
+    burned: tuple[Path, ...] = (request.burn_subtitle,) if request.burn_subtitle is not None else ()
+    return (*burned, *(subtitle.path for subtitle in request.attached_subtitles))
+
+
 def _source_fonts(request: ContainerCompositionRequest, folder: Path) -> tuple[Path, ...]:
-    """Extract the source container's fonts when the request carries subtitles or fonts of its own."""
-    if not request.attached_subtitles and request.burn_subtitle is None and not request.font_files:
+    """Extract the source container's fonts when the request carries subtitles."""
+    if not _subtitle_files(request):
         return ()
     return _extracted_fonts(request.source_video, folder)
 
 
+def _new_fonts(request: ContainerCompositionRequest, present: tuple[Path, ...]) -> tuple[tuple[Path, str], ...]:
+    """Return the request's font files its subtitles use and the container lacks, each with its attachment name."""
+    return font_attachments(used_font_files(request.font_files, _subtitle_files(request)), present)
+
+
 def _gathered_fonts(request: ContainerCompositionRequest, folder: Path) -> tuple[Path, ...]:
-    """Collect the source container's fonts and the request's new font files in one folder for libass."""
+    """Collect the source container's fonts and the request's used font files in one folder for libass."""
     present: tuple[Path, ...] = _source_fonts(request, folder)
     folder.mkdir(parents=True, exist_ok=True)
     added: list[Path] = []
-    for path, name in font_attachments(request.font_files, present):
+    for path, name in _new_fonts(request, present):
         shutil.copyfile(path, folder / name)
         added.append(folder / name)
     return (*present, *added)

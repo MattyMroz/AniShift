@@ -55,9 +55,11 @@ jeden zweryfikowany plik wynikowy.
   jako wypalone w obrazie.
 - Nazwa załącznika fontu NIE potwierdza rodziny: diagnostyka czyta rodziny z wyciągniętych
   załączników źródła (`extract_attachments`) i z `font_files` przez `FontIndex`, nigdy z basename.
-- `font_files` (czcionka dialogów) trafiają do MKV jako `--attachment-name` + `--attach-file`;
-  plik o zawartości (sha256) obecnej wśród załączników źródła jest pomijany, zajęta nazwa dostaje
-  sufiks ` (2)`. Wypalanie MP4 dostaje `fontsdir` z załącznikami kontenera i `font_files` w
-  prywatnym katalogu pracy obok celu. `fonts.py`, `service.py`
+- `font_files` (czcionka dialogów) to oferta: trafia do wyniku tylko plik, którego rodzinę nazywa
+  styl albo `\fn` dołączanych lub wypalanych napisów (`used_font_files`); bieżące ustawienie nie
+  zastępuje rodziny użytej w starszym `.pl.ass` (zostaje ostrzeżenie diagnostyki). Do MKV idą jako
+  `--attachment-name` + `--attach-file`; plik o zawartości (sha256) obecnej wśród załączników źródła
+  jest pomijany, zajęta nazwa dostaje sufiks ` (2)`. Wypalanie MP4 dostaje `fontsdir` z załącznikami
+  kontenera i użytymi `font_files` w prywatnym katalogu pracy obok celu. `fonts.py`, `service.py`
 - Rozdziały źródła przechodzą do MP4 same, jako ścieżka `bin_data`/`text`
   z handlerem `SubtitleHandler` — to rozdziały QuickTime, nie zabłąkane napisy.

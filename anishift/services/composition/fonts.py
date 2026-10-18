@@ -12,7 +12,7 @@ from anishift.services.fonts import FontIndex, FontMatch
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-__all__ = ["attachment_font_names", "font_attachments", "font_embedding_warnings", "font_names"]
+__all__ = ["attachment_font_names", "font_attachments", "font_embedding_warnings", "font_names", "used_font_files"]
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -47,10 +47,16 @@ def attachment_font_names(attachment_names: tuple[str, ...]) -> frozenset[str]:
     )
 
 
-def font_embedding_warnings(subtitle: Path, fonts: Sequence[Path]) -> tuple[str, ...]:
+def font_embedding_warnings(subtitles: Sequence[Path], fonts: Sequence[Path]) -> tuple[str, ...]:
     """Return a warning for every font the subtitles name that no face of the given font files carries."""
     index: FontIndex = FontIndex.build(fonts, ())
-    return tuple(f"font not embedded: {name}" for name in sorted(font_names(subtitle)) if not _carried(index, name))
+    return tuple(f"font not embedded: {name}" for name in sorted(_used_names(subtitles)) if not _carried(index, name))
+
+
+def used_font_files(fonts: Sequence[Path], subtitles: Sequence[Path]) -> tuple[Path, ...]:
+    """Return the font files carrying a font name the subtitles use in a style or an inline override."""
+    names: frozenset[str] = _used_names(subtitles)
+    return tuple(path for path in fonts if _carries_any(FontIndex.build((path,), ()), names))
 
 
 def font_attachments(fonts: Sequence[Path], present: Sequence[Path]) -> tuple[tuple[Path, str], ...]:
@@ -67,6 +73,14 @@ def font_attachments(fonts: Sequence[Path], present: Sequence[Path]) -> tuple[tu
         names.add(name.casefold())
         chosen.append((path, name))
     return tuple(chosen)
+
+
+def _used_names(subtitles: Sequence[Path]) -> frozenset[str]:
+    return frozenset(name for subtitle in subtitles for name in font_names(subtitle))
+
+
+def _carries_any(index: FontIndex, names: frozenset[str]) -> bool:
+    return any(_carried(index, name) for name in names)
 
 
 def _carried(index: FontIndex, name: str) -> bool:

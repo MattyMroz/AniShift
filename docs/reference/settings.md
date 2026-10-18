@@ -123,7 +123,7 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
 - Co robi: kwestie czytane przez lektora dostają kopię swojego stylu z tą czcionką (styl
   `<nazwa> (dialog)`); szyldy zostają w czcionkach wydania. Plik i jego warianty z tego samego
   katalogu (ta sama rodzina, wszystkie polskie litery) trafiają do MKV jako załączniki i do
-  katalogu czcionek przy wypalaniu MP4. Napisy SRT się nie zmieniają.
+  katalogu czcionek przy wypalaniu MP4, gdy napisy używają tej rodziny. Napisy SRT się nie zmieniają.
 - Wartości · domyślnie: ścieżka do pliku czcionki · puste (wyłączone).
 - Zależność: zapis odrzuca plik nieczytelny, bez nazwy rodziny albo bez polskich liter. Gdy plik
   zniknie później, plan pokazuje ostrzeżenie, a dialogi zostają w czcionce wydania.

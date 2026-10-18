@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -17,6 +18,12 @@ from anishift.services.composition.types import (
     ContainerTarget,
     OutputVariant,
     SubtitleRole,
+)
+
+_SYSTEM_FONTS: Final[Path] = Path("C:/Windows/Fonts")
+_needs_fonts = pytest.mark.skipif(
+    not all((_SYSTEM_FONTS / name).is_file() for name in ("arial.ttf", "times.ttf", "verdana.ttf")),
+    reason="Windows system fonts are not available",
 )
 
 
@@ -205,31 +212,40 @@ def test_compose_container_builds_mkv_with_selected_tracks(
     assert str(subtitle) in runner.commands[0]
 
 
-def test_compose_container_mkv_attaches_only_font_files_the_source_lacks(
+def _font(target: Path, system: str) -> Path:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes((_SYSTEM_FONTS / system).read_bytes())
+    return target
+
+
+def _styled_subtitle(path: Path, *families: str) -> Path:
+    styles: str = "\n".join(f"Style: Style{index},{family},40" for index, family in enumerate(families))
+    path.write_text(f"[V4+ Styles]\nFormat: Name, Fontname, Fontsize\n{styles}\n", encoding="utf-8")
+    return path
+
+
+def _extracting(*systems: tuple[str, str]) -> Callable[[Path, Path], tuple[Path, ...]]:
+    def extract(_container: Path, folder: Path) -> tuple[Path, ...]:
+        return tuple(_font(folder / name, system) for name, system in systems)
+
+    return extract
+
+
+@_needs_fonts
+def test_compose_container_mkv_attaches_only_used_font_files_the_source_lacks(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "Episode.mkv"
     source.write_bytes(b"source")
-    subtitle = tmp_path / "Episode.pl.ass"
-    subtitle.write_text("[Script Info]", encoding="utf-8")
-    owner = tmp_path / "owner"
-    owner.mkdir()
-    duplicate = owner / "Gandhi Copy.otf"
-    duplicate.write_bytes(b"gandhi")
-    italic = owner / "Officina - Bold Italic.ttf"
-    italic.write_bytes(b"italic")
-    extracted: list[Path] = []
-
-    def extract(container: Path, folder: Path) -> tuple[Path, ...]:
-        folder.mkdir(parents=True, exist_ok=True)
-        attachment = folder / "Gandhi.otf"
-        attachment.write_bytes(b"gandhi")
-        extracted.append(container)
-        return (attachment,)
-
+    subtitle = _styled_subtitle(tmp_path / "Episode.pl.ass", "Arial", "Times New Roman")
+    duplicate = _font(tmp_path / "owner" / "Arial Copy.ttf", "arial.ttf")
+    used = _font(tmp_path / "owner" / "Times.ttf", "times.ttf")
+    unused = _font(tmp_path / "owner" / "Verdana.ttf", "verdana.ttf")
     runner = _ContainerRunner()
-    monkeypatch.setattr("anishift.services.composition.service.extract_attachments", extract)
+    monkeypatch.setattr(
+        "anishift.services.composition.service.extract_attachments", _extracting(("arial.ttf", "arial.ttf"))
+    )
     monkeypatch.setattr("anishift.services.composition.service.validate_merged", lambda *_args, **_kwargs: None)
     request = ContainerCompositionRequest(
         source_video=source,
@@ -239,35 +255,61 @@ def test_compose_container_mkv_attaches_only_font_files_the_source_lacks(
         attached_subtitles=(AttachedSubtitle(subtitle, SubtitleRole.FULL, "pol", "Polish"),),
         narration_audio=None,
         keep_original_audio=True,
-        font_files=(duplicate, italic),
+        font_files=(duplicate, used, unused),
     )
 
-    _service(runner, tmp_path).compose_container(request)
+    result = _service(runner, tmp_path).compose_container(request)
 
-    assert extracted == [source]
-    assert runner.commands[0][-4:] == ("--attachment-name", italic.name, "--attach-file", str(italic))
+    assert runner.commands[0][-4:] == ("--attachment-name", used.name, "--attach-file", str(used))
     assert str(duplicate) not in runner.commands[0]
+    assert str(unused) not in runner.commands[0]
+    assert result.warnings == ()
     assert list(tmp_path.glob(".anishift-compose-*")) == []
 
 
-def test_compose_container_mp4_burns_with_the_source_fonts_and_the_dialogue_font_in_one_folder(
+@_needs_fonts
+@pytest.mark.parametrize("current", [("verdana.ttf",), ()])
+def test_subtitles_made_with_an_earlier_dialogue_font_get_no_other_font_and_a_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    current: tuple[str, ...],
+) -> None:
+    source = tmp_path / "Episode.mkv"
+    source.write_bytes(b"source")
+    earlier = _styled_subtitle(tmp_path / "Episode.pl.ass", "Arial", "Times New Roman")
+    runner = _ContainerRunner()
+    monkeypatch.setattr(
+        "anishift.services.composition.service.extract_attachments", _extracting(("arial.ttf", "arial.ttf"))
+    )
+    monkeypatch.setattr("anishift.services.composition.service.validate_merged", lambda *_args, **_kwargs: None)
+    request = ContainerCompositionRequest(
+        source_video=source,
+        destination=tmp_path / "Episode.pl.mkv",
+        target=ContainerTarget.MKV,
+        burn_subtitle=None,
+        attached_subtitles=(AttachedSubtitle(earlier, SubtitleRole.FULL, "pol", "Polish"),),
+        narration_audio=None,
+        keep_original_audio=True,
+        font_files=tuple(_font(tmp_path / "owner" / name, name) for name in current),
+    )
+
+    result = _service(runner, tmp_path).compose_container(request)
+
+    assert "--attach-file" not in runner.commands[0]
+    assert result.warnings == ("font not embedded: Times New Roman",)
+
+
+@_needs_fonts
+def test_compose_container_mp4_burns_with_the_source_fonts_and_the_used_dialogue_font_in_one_folder(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "Episode.mkv"
-    source.write_bytes(b"source")
-    subtitle = tmp_path / "Episode.pl.ass"
-    subtitle.write_text("[Script Info]", encoding="utf-8")
-    owner_font = tmp_path / "owner" / "Officina - Bold.ttf"
-    owner_font.parent.mkdir()
-    owner_font.write_bytes(b"officina")
+    source.write_bytes(b"source" * 100)
+    subtitle = _styled_subtitle(tmp_path / "Episode.pl.ass", "Arial", "Times New Roman")
+    used = _font(tmp_path / "owner" / "Times.ttf", "times.ttf")
+    unused = _font(tmp_path / "owner" / "Verdana.ttf", "verdana.ttf")
     folders: list[list[str]] = []
-
-    def extract(_container: Path, folder: Path) -> tuple[Path, ...]:
-        folder.mkdir(parents=True, exist_ok=True)
-        attachment = folder / "Gandhi.otf"
-        attachment.write_bytes(b"gandhi")
-        return (attachment,)
 
     class _BurnRunner(_ContainerRunner):
         def run(self, command: Any, **kwargs: Any) -> CommandOutcome:
@@ -275,7 +317,9 @@ def test_compose_container_mp4_burns_with_the_source_fonts_and_the_dialogue_font
             return super().run(command, **kwargs)
 
     runner = _BurnRunner()
-    monkeypatch.setattr("anishift.services.composition.service.extract_attachments", extract)
+    monkeypatch.setattr(
+        "anishift.services.composition.service.extract_attachments", _extracting(("Episode Arial.ttf", "arial.ttf"))
+    )
     monkeypatch.setattr("anishift.services.composition.service.source_duration_us", lambda *_args, **_kwargs: 1)
     monkeypatch.setattr("anishift.services.composition.service.audio_codec_name", lambda *_args, **_kwargs: "aac")
     monkeypatch.setattr("anishift.services.composition.service.validate_burned", lambda *_args, **_kwargs: None)
@@ -287,15 +331,16 @@ def test_compose_container_mp4_burns_with_the_source_fonts_and_the_dialogue_font
         attached_subtitles=(),
         narration_audio=None,
         keep_original_audio=True,
-        font_files=(owner_font,),
+        font_files=(used, unused),
     )
 
-    _service(runner, tmp_path).compose_container(request)
+    result = _service(runner, tmp_path).compose_container(request)
 
     filter_value: str = runner.commands[0][runner.commands[0].index("-vf") + 1]
     assert filter_value.startswith("ass=")
     assert filter_value.endswith(":fontsdir='fonts'")
-    assert folders == [["Gandhi.otf", "Officina - Bold.ttf"]]
+    assert folders == [["Episode Arial.ttf", "Times.ttf"]]
+    assert result.warnings == ()
     assert list(tmp_path.glob(".anishift-compose-*")) == []
 
 

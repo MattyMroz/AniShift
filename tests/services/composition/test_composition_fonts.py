@@ -11,6 +11,7 @@ from anishift.services.composition.fonts import (
     font_attachments,
     font_embedding_warnings,
     font_names,
+    used_font_files,
 )
 
 _ASS = """[Script Info]
@@ -83,9 +84,21 @@ def test_font_embedding_warnings_check_families_inside_the_font_files_not_their_
     for system, name in files:
         fonts.append(Path(shutil.copyfile(_SYSTEM_FONTS / system, tmp_path / name)))
 
-    warnings: tuple[str, ...] = font_embedding_warnings(_subtitle(tmp_path, _FAMILY_ASS), fonts)
+    warnings: tuple[str, ...] = font_embedding_warnings((_subtitle(tmp_path, _FAMILY_ASS),), fonts)
 
     assert warnings == tuple(f"font not embedded: {name}" for name in missing)
+
+
+@_needs_fonts
+def test_used_font_files_keep_only_files_whose_family_the_subtitles_name(tmp_path: Path) -> None:
+    arial: Path = Path(shutil.copyfile(_SYSTEM_FONTS / "arial.ttf", tmp_path / "Officina - Bold.ttf"))
+    times: Path = Path(shutil.copyfile(_SYSTEM_FONTS / "times.ttf", tmp_path / "Times.ttf"))
+    plain: Path = tmp_path / "plain.srt"
+    plain.write_text("1\n00:00:01,000 --> 00:00:02,000\nArial\n", encoding="utf-8")
+
+    assert used_font_files((arial, times), (_subtitle(tmp_path, _FAMILY_ASS),)) == (arial, times)
+    assert used_font_files((arial, times), (_subtitle(tmp_path, _ASS),)) == ()
+    assert used_font_files((arial, times), (plain,)) == ()
 
 
 def test_font_attachments_skip_content_the_container_has_and_rename_a_taken_name(tmp_path: Path) -> None:

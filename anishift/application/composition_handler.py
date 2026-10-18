@@ -42,9 +42,6 @@ __all__ = [
 _IN_PROGRESS_PERCENT: Final[int] = 99
 """Highest reported percentage before output validation succeeds."""
 
-_STYLED_SUFFIX: Final[str] = ".ass"
-"""Suffix of subtitles whose styles can name the owner's dialogue font."""
-
 
 class ContainerComposer(Protocol):
     """Configured service producing one validated container at a time."""
@@ -122,10 +119,10 @@ class CompositionTaskHandler:
         cancel.raise_if_cancelled()
         if task.kind is TaskKind.COMPOSE_COVER:
             return self._execute_cover(task, artifacts, cancel, progress)
-        planned: ContainerCompositionRequest = build_composition_request(task, artifacts, font_files=self._font_files)
+        planned: ContainerCompositionRequest = build_composition_request(task, artifacts)
         output: Artifact = artifacts.require_output(task.produces[0])
         staging: Path = task_staging_path(self._run_root, task, output, f".{planned.target.value}")
-        request: ContainerCompositionRequest = replace(planned, destination=staging)
+        request: ContainerCompositionRequest = replace(planned, destination=staging, font_files=self._font_files)
         result: ContainerCompositionResult = self._guarded(
             lambda event: self._service.compose_container(
                 request,
@@ -207,10 +204,8 @@ class _ProgressObserver:
         )
 
 
-def build_composition_request(
-    task: PlanTask, artifacts: ArtifactSnapshot, *, font_files: tuple[Path, ...] = ()
-) -> ContainerCompositionRequest:
-    """Translate one composition task into an exact single-container request, with fonts when it carries ASS."""
+def build_composition_request(task: PlanTask, artifacts: ArtifactSnapshot) -> ContainerCompositionRequest:
+    """Translate one composition task into an exact single-container request."""
     if task.kind not in {TaskKind.COMPOSE_MKV, TaskKind.COMPOSE_MP4}:
         _raise_execution("Only composition tasks can build a container request")
     if len(task.produces) != 1:
@@ -231,18 +226,9 @@ def build_composition_request(
     if destination is None or destination.parent != source_video.parent:
         _raise_execution("Container destination must be planned next to its selected source")
     parameters: dict[str, str | int | bool] = dict(task.parameters)
-    request: ContainerCompositionRequest = (
-        _build_mkv_request(inputs, source_video=source_video, destination=destination, parameters=parameters)
-        if task.kind is TaskKind.COMPOSE_MKV
-        else _build_mp4_request(inputs, source_video=source_video, destination=destination, parameters=parameters)
-    )
-    subtitles: tuple[Path | None, ...] = (
-        request.burn_subtitle,
-        *(subtitle.path for subtitle in request.attached_subtitles),
-    )
-    if not any(path is not None and path.suffix.casefold() == _STYLED_SUFFIX for path in subtitles):
-        return request
-    return replace(request, font_files=font_files)
+    if task.kind is TaskKind.COMPOSE_MKV:
+        return _build_mkv_request(inputs, source_video=source_video, destination=destination, parameters=parameters)
+    return _build_mp4_request(inputs, source_video=source_video, destination=destination, parameters=parameters)
 
 
 def _build_mkv_request(
