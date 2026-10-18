@@ -6,8 +6,13 @@ import re
 import unicodedata
 from typing import Final
 
-from anishift.services.translation.chunking import SENTENCE_ENDINGS, phrase_cut_chars
-from anishift.text.boundaries import BREAKABLE_SPACES, CLOSING_MARKS, is_false_sentence_break
+from anishift.text.boundaries import (
+    BREAKABLE_SPACES,
+    CLOSING_MARKS,
+    PHRASE_CUT_CHARS,
+    SENTENCE_ENDINGS,
+    is_false_sentence_break,
+)
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -20,7 +25,7 @@ MAX_LINES: Final[int] = 2
 _STRONG_CUT: Final[str] = SENTENCE_ENDINGS + ":"
 """Strong cut points (sentence endings plus colon); cut just after the mark."""
 
-_WEAK_CUT: Final[str] = phrase_cut_chars()
+_WEAK_CUT: Final[str] = PHRASE_CUT_CHARS
 """Weak cut points: every Unicode phrase separator (commas, dashes, closers)."""
 
 _TRAILING_PUNCT: Final[str] = _STRONG_CUT + _WEAK_CUT

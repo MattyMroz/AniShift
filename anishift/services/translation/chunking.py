@@ -11,7 +11,6 @@ from anishift.text.boundaries import (
     CLOSING_MARKS,
     LATIN_SENTENCE_ENDINGS,
     PHRASE_CUT_CHARS,
-    SENTENCE_ENDINGS,
     ZERO_WIDTH,
     is_false_sentence_break,
 )
@@ -136,11 +135,6 @@ def _pack(pieces: list[str], limit: int) -> list[str]:
     return chunks
 
 
-def phrase_cut_chars() -> str:
-    """Return every Unicode phrase-cut char; shared with ``linebreak`` as the one cutting base."""
-    return _PHRASE_CUT_CHARS
-
-
 def chunk_text(
     text: str,
     *,
@@ -157,10 +151,8 @@ def chunk_text(
 __all__ = [
     "DEFAULT_CHAR_LIMIT",
     "DEFAULT_CHUNK_LIMIT",
-    "SENTENCE_ENDINGS",
     "ZERO_WIDTH",
     "chunk_text",
-    "phrase_cut_chars",
     "split_paragraphs",
     "split_phrases",
     "split_sentences",

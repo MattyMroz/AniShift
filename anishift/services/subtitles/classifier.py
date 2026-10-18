@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Final
 
+from anishift.services.subtitles.text import is_drawing
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -22,9 +24,6 @@ _BACKSLASH: Final[str] = chr(92)
 
 
 # ── ASS tag signatures ──────────────────────────────────────────────────────
-_RE_DRAW: Final[re.Pattern[str]] = re.compile(_BACKSLASH + _BACKSLASH + r"p[1-9]")
-"""Vector-drawing tag marking a shape rather than text."""
-
 _RE_POS: Final[re.Pattern[str]] = re.compile(_BACKSLASH + _BACKSLASH + r"(pos|move|clip|frz|fad|org|t\()")
 """Positioning and animation tags typical of on-screen typesetting."""
 
@@ -203,7 +202,7 @@ def classify_styles(subs: SSAFile) -> list[StyleVerdict]:
         entry.n += 1
         if _RE_POS.search(event.text):
             entry.pos += 1
-        if _RE_DRAW.search(event.text):
+        if is_drawing(event.text):
             entry.draw += 1
         if _RE_KARA.search(event.text):
             entry.kara += 1

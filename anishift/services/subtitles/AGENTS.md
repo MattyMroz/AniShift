@@ -35,7 +35,7 @@ Napisy: klasyfikacja stylów ASS (DIALOG/SIGN/UNCERTAIN), split spoken/displayed
 - Progi klasyfikacji/scoringu to nazwane `Final` z docstringami — zmiana zachowania klasyfikatora = zmiana stałych, nie logiki. `classifier.py:56-93`
 - Klucz zwijania FBF/spoken to para `(style, visible_text)`; translated writer musi dostać `spoken_verses` na tym samym kluczu — sprzężenie `collapse_fbf` ↔ `_translated_file`. `service.py`
 - `split_line` buduje nowy polski podział, a `split_for_layout` zachowuje authored line count dla złożonych `displayed`, jeśli target ma dość granic słów; nigdy nie rozcina pojedynczego słowa ani nie tworzy pustej linii. `linebreak.py`
-- `linebreak` reużywa zbiorów z `translation/chunking` (`SENTENCE_ENDINGS`, `phrase_cut_chars()`) jako SSOT. `linebreak.py`
+- `linebreak` bierze `SENTENCE_ENDINGS` i `PHRASE_CUT_CHARS` wprost z `anishift/text/boundaries.py` (SSOT), a `text.py` grafemy z `anishift/text/graphemes.py`; rysunek `\pN` rozpoznaje wyłącznie `is_drawing`. `linebreak.py`, `text.py`
 
 ## Decyzje i odesłania
 
