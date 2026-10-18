@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Final
 from anishift.paths import default_workspace_dir
 from anishift.utils.logger import LoggerMode, setup_mode
 from anishift.utils.logger.config import FileConfig
-from scripts.subtitle_quality import replay, report
+from scripts.subtitle_quality import compare, replay, report
 from scripts.subtitle_quality.episode import FRAMES_NAME, OUTPUT_NAME, SOURCE_NAME, EpisodeResult, analyse, episode_dirs
 from scripts.subtitle_quality.render import Shot, copy_scripts, render_shot
 
@@ -42,22 +42,28 @@ BREAKS_GALLERY: Final[str] = "line-breaks"
 REPLAY_COMMAND: Final[str] = "replay"
 """First argument handing the command line to the writer replay."""
 
+COMPARE_COMMAND: Final[str] = "compare"
+"""First argument handing the command line to the before/after gallery of two replays."""
+
 type Entry = tuple[str, str, str, str]
 """Gallery index row: episode, time, metric value and image file."""
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Measure every episode folder, write the report and optionally the gallery, or run the writer replay."""
+    """Measure every episode folder, write the report and optionally the gallery, or run the replay or comparison."""
     arguments: list[str] = list(sys.argv[1:] if argv is None else argv)
     if arguments[:1] == [REPLAY_COMMAND]:
         return replay.main(arguments[1:], QUALITY_ROOT)
+    if arguments[:1] == [COMPARE_COMMAND]:
+        return compare.main(arguments[1:], QUALITY_ROOT)
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
         prog="python -m scripts.subtitle_quality",
         description=(
             "Measure subtitle quality. An episode folder holds source.en.ass and optionally output.pl.ass, "
             "video.txt (video path relative to the repository root), frames/ (<ms>.jpg gallery backgrounds "
             "made by python -m scripts.subtitle_quality.frames) and fonts/. "
-            f"'{REPLAY_COMMAND}' as the first argument runs the writer replay instead."
+            f"'{REPLAY_COMMAND}' as the first argument runs the writer replay instead, "
+            f"'{COMPARE_COMMAND}' renders the before/after gallery of two replay folders."
         ),
     )
     parser.add_argument("roots", nargs="*", type=Path, help="episode folders or roots searched recursively")
