@@ -1,0 +1,7 @@
+**AKCEPTUJĘ Z UWAGAMI**
+
+Runda 3, recenzent `claude`, HEAD `baac425` (porównanie z `c3cf292`), tylko odczyt.
+
+- Bloker rundy 2 — **zamknięty**. Kontrakt `marked_text(text, style=None)` i `replace_visible_text(text, new_text, style=None)` jest w planie, aneks C wskazuje na niego, F0b przekazuje styl we wszystkich wywołaniach, a U3 przechodzi po F0b do fali A i zmienia tylko wnętrze `text.py`.
+- Uwagi WAŻNE — **zamknięte**: `FontIndex.build` w `layout_translated` robi teraz F0b, `dialogue_font` przechodzi przez `runtime.py` i handlery w F0b (U6 tylko podaje wartość), a klucze `translations` i przenoszenie przekładu na kopie serii opisuje kontrakt. Drobne — **zamknięte**: D10 obejmuje oba writery, 2.1.7 ma wyjątek dla klonu, a warunek końcowy nie obejmuje odłożonych 7.4 i zmiany liczby wierszy szyldu. Nowa kolejność fal (U3 po F0b, fala B po U1b, U2 i U3) nie tworzy konfliktów zakresów.
+- [WAŻNE, nowe w tej rundzie] Aneks B pkt 4 usuwa fallback i obiecuje, że plik ASS bez linii spoken „zostaje bez lektora” i dostaje tylko ostrzeżenie. Tymczasem SPLIT kończy się wtedy błędem `Requested subtitle stream is empty` (`subtitle_handler.py:185-187`), a stan `ABSENT` jest obsługiwany tylko dla DISPLAYED_PL (`composition_handler.py:260`). Zadanie z lektorem na pliku NC/ED albo z samymi szyldami zakończy się więc błędem, a nie „bez lektora”. — Poprawka: jedno zdanie w aneksie. Albo jawny błąd z czytelnym komunikatem (zostaje dzisiejsza ścieżka), albo `SPOKEN_PL` jako `ABSENT` z pominięciem TTS, ale wtedy z właścicielem zmiany w planerze i composition.
