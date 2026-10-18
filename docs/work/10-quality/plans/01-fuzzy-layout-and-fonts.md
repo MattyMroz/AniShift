@@ -246,6 +246,7 @@ class Rect: left: float; top: float; right: float; bottom: float
 class RenderProfile:
     play_res_x: int; play_res_y: int; wrap_style: int; scaled_border: bool
     styles: Mapping[str, SSAStyle]; fonts: FontIndex | None
+    kerning: bool = False                         # nagłówek `Kerning: yes` → pomiar przybliżony (U1b)
     @classmethod
     def from_subs(cls, subs: SSAFile, fonts: FontIndex | None) -> RenderProfile
 @dataclass(frozen=True, slots=True)
