@@ -363,6 +363,7 @@ class _GroupPlanner:
         self._video: Artifact | None = None
         self._subtitle_input: Artifact | _EmbeddedTrack | None = None
         self._source_subtitles: Artifact | None = None
+        self._track_containers: dict[str, Artifact] = {}
         self._full_pl: Artifact | None = None
         self._spoken_pl: Artifact | None = None
         self._displayed_pl: Artifact | None = None
@@ -1013,11 +1014,19 @@ class _GroupPlanner:
         return candidate
 
     def _with_font_container(self, subtitles: Artifact) -> tuple[Artifact, ...]:
-        """Return the subtitle input and, when the group has a ready MKV, that container for its fonts."""
-        video: Artifact | None = choose_primary_video(tuple(self.artifacts.values()))
-        if video is None or video.kind is not ArtifactKind.VIDEO_MKV or video.state is not ArtifactState.READY:
+        """Return the subtitle input and its MKV: the container of its embedded track, else the group's only MKV."""
+        container: Artifact | None = self._track_containers.get(subtitles.artifact_id) or self._only_mkv()
+        if container is None or container.kind is not ArtifactKind.VIDEO_MKV:
             return (subtitles,)
-        return subtitles, video
+        return subtitles, container
+
+    def _only_mkv(self) -> Artifact | None:
+        containers: list[Artifact] = [
+            artifact
+            for artifact in self.artifacts.values()
+            if artifact.kind is ArtifactKind.VIDEO_MKV and artifact.state is ArtifactState.READY
+        ]
+        return containers[0] if len(containers) == 1 else None
 
     def _select_subtitle_input(  # noqa: C901,PLR0911,PLR0912 - explicit source policies stay visible
         self,
@@ -1202,6 +1211,7 @@ class _GroupPlanner:
             parameters=(("track_id", selected.track_id), ("target_format", selected.subtitle_format)),
         )
         self._source_subtitles = extracted
+        self._track_containers[extracted.artifact_id] = selected.video
         return extracted
 
     def _prepare_bulk_extraction(self, *, needs_generated_narration: bool) -> None:
@@ -1244,6 +1254,7 @@ class _GroupPlanner:
         self._source_audio = source_audio
         self._source_offset_us = audio.source_offset_us
         self._source_subtitles = subtitles
+        self._track_containers[subtitles.artifact_id] = selected.video
 
     def _ensure_full_pl(  # noqa: PLR0911 - each compatible manual starting point terminates independently
         self,

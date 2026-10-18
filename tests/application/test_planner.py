@@ -1470,3 +1470,33 @@ def test_manual_format_conversion_of_a_polish_product_takes_the_font_input() -> 
     plan: ExecutionPlan = plan_manual((group,), {group.group_id: intent}, _settings())
 
     assert _task(plan, TaskKind.NORMALIZE_SUBTITLES).requires == (ready.artifact_id, video.artifact_id)
+
+
+@pytest.mark.unit
+def test_manually_chosen_embedded_track_takes_the_fonts_of_its_own_mkv() -> None:
+    primary: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    other: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "2.mkv")
+    group: InspectedSourceGroup = _group(primary, other)
+    intent: GroupIntent = _manual(
+        group,
+        ProductIntent(frozenset({ProductKind.FULL_PL})),
+        preferred_video_artifact_id=other.artifact_id,
+        selected_subtitle_track_id=2,
+    )
+
+    plan: ExecutionPlan = plan_manual((group,), {group.group_id: intent}, _settings())
+
+    extraction: PlanTask = _task(plan, TaskKind.EXTRACT_SUBTITLES)
+    assert extraction.requires == (other.artifact_id,)
+    assert _task(plan, TaskKind.TRANSLATE_SUBTITLES).requires == (*extraction.produces, other.artifact_id)
+
+
+@pytest.mark.unit
+def test_sidecar_in_a_group_with_several_mkvs_takes_no_font_input() -> None:
+    first: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    second: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "2.mkv")
+    sidecar: Artifact = _artifact(ArtifactKind.SOURCE_SUBTITLES, "1.ass", language="eng", subtitle_format="ass")
+
+    plan: ExecutionPlan = _full_polish(_group(first, second, sidecar))
+
+    assert _task(plan, TaskKind.TRANSLATE_SUBTITLES).requires == (sidecar.artifact_id,)
