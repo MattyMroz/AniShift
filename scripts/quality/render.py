@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
+from itertools import batched
 from typing import TYPE_CHECKING, Final
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont
@@ -17,7 +21,7 @@ from anishift.services.extraction.service import identify
 from scripts.quality.metrics import NUMBER
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Sequence
     from pathlib import Path
 
     from pysubs2 import SSAEvent, SSAStyle
@@ -38,6 +42,9 @@ _CAPTION_SIZE: Final[int] = 20
 _BACKGROUND: Final[tuple[int, int, int]] = (1, 2, 3)
 """Measurement canvas colour unlikely to appear in rendered text."""
 
+_BACKGROUND_PIXEL: Final[bytes] = bytes(_BACKGROUND)
+"""Measurement canvas colour as one raw RGB pixel."""
+
 _GALLERY_BACKGROUND: Final[tuple[int, int, int]] = (64, 64, 64)
 """Neutral gallery background when no video is available."""
 
@@ -46,6 +53,9 @@ _SOURCE_COLOUR: Final[str] = "#33ff66"
 
 _OUTPUT_COLOUR: Final[str] = "#ff3355"
 """Outline colour of the translated sign box."""
+
+_LAST_ASS_SECOND: Final[int] = 35999
+"""Last whole second an ASS timestamp can hold (9:59:59.99)."""
 
 _FFMPEG_TIMEOUT_S: Final[int] = 600
 """Upper bound of one FFmpeg run."""
@@ -106,10 +116,11 @@ def prepare_fonts(episode_dir: Path, video: Path | None, work: Path) -> int:
         return len(list(target.iterdir()))
     if video is None or not video.is_file():
         return 0
-    return _extract_attachments(video, work)
+    return extract_attachments(video, work)
 
 
-def _extract_attachments(video: Path, work: Path) -> int:
+def extract_attachments(video: Path, work: Path) -> int:
+    """Extract the font attachments of a video into ``work/fonts``; return font count."""
     names: tuple[str, ...] = identify(video).attachments
     stems: frozenset[str] = attachment_font_names(names)
     specs: list[str] = [f"{number}:fonts/{name}" for number, name in enumerate(names, start=1) if _stem(name) in stems]
@@ -195,10 +206,20 @@ def measurement_file(subs: SSAFile, events: Sequence[SSAEvent], size: Size) -> t
         }
     )
     canvas.styles = {name: style.copy() for name, style in subs.styles.items()}
-    slot_s: int = max((event.end - event.start for event in events), default=0) // 1000 + 2
+    slot_s: int = slot_length(events)
     for number, event in enumerate(events, start=1):
         canvas.events.append(_slotted(event, subs, number * slot_s * 1000, dx, dy))
     return canvas, slot_s
+
+
+def slot_length(events: Sequence[SSAEvent]) -> int:
+    """Return the measurement slot in seconds: the longest event plus a margin."""
+    return max((event.end - event.start for event in events), default=0) // 1000 + 2
+
+
+def batch_size(events: Sequence[SSAEvent]) -> int:
+    """Return how many events fit in one measurement file before ASS timestamps overflow."""
+    return max(1, _LAST_ASS_SECOND // slot_length(events) - 1)
 
 
 def _slotted(event: SSAEvent, subs: SSAFile, sample_ms: int, dx: int, dy: int) -> SSAEvent:
@@ -227,10 +248,19 @@ def measure_boxes(
     """Render each event alone at its midpoint and return its box in script pixels."""
     if not events:
         return [], FontReport((), {})
+    batches: list[tuple[SSAEvent, ...]] = list(batched(events, batch_size(events), strict=False))
+    names: list[str] = [f"{name}-{number}" for number in range(1, len(batches) + 1)]
+    measure: partial[tuple[list[Box | None], str]] = partial(_measure_batch, subs, size=size, work=work)
+    with ThreadPoolExecutor(min(len(batches), os.process_cpu_count() or 1)) as pool:
+        measured: list[tuple[list[Box | None], str]] = list(pool.map(measure, batches, names))
+    boxes: list[Box | None] = [box for batch_boxes, _ in measured for box in batch_boxes]
+    return boxes, parse_font_log("\n".join(log for _, log in measured))
+
+
+def _measure_batch(
+    subs: SSAFile, events: Sequence[SSAEvent], name: str, *, size: Size, work: Path
+) -> tuple[list[Box | None], str]:
     canvas, slot_s = measurement_file(subs, events, size)
-    frames: Path = work / f"{name}-frames"
-    shutil.rmtree(frames, ignore_errors=True)
-    frames.mkdir(parents=True)
     canvas.save(str(work / f"{name}.ass"), encoding="utf-8")
     width: int = int(canvas.info["PlayResX"])
     height: int = int(canvas.info["PlayResY"])
@@ -239,23 +269,31 @@ def measure_boxes(
         f":r=1/{slot_s}:d={(len(events) + 1) * slot_s},format=rgb24"
     )
     arguments: list[str] = ["-v", "verbose", "-f", "lavfi", "-i", source, "-vf", _ass_filter(f"{name}.ass", work)]
-    log: str = _ffmpeg([*arguments, "-fps_mode", "passthrough", f"{frames.name}/%05d.png"], work)
-    boxes: list[Box | None] = [_frame_box(frames / f"{number:05d}.png", size) for number in range(2, len(events) + 2)]
-    shutil.rmtree(frames, ignore_errors=True)
-    return boxes, parse_font_log(log)
+    raw: list[str] = [*arguments, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+    log: Path = work / f"{name}.log"
+    frames: Iterator[bytes] = _ffmpeg_frames(raw, work, log, 3 * width * height)
+    boxes: list[Box | None] = [_frame_box(frame, width, size) for frame in frames][1 : len(events) + 1]
+    boxes.extend([None] * (len(events) - len(boxes)))
+    return boxes, log.read_text(encoding="utf-8", errors="replace")
 
 
-def _frame_box(path: Path, size: Size) -> Box | None:
-    if not path.is_file():
+def _frame_box(frame: bytes, width: int, size: Size) -> Box | None:
+    stride: int = 3 * width
+    blank: bytes = _BACKGROUND_PIXEL * width
+    changed: list[int] = [
+        row for row in range(len(frame) // stride) if frame[row * stride : (row + 1) * stride] != blank
+    ]
+    if not changed:
         return None
-    with Image.open(path) as frame:
-        rgb: Image.Image = frame.convert("RGB")
-    background: Image.Image = Image.new("RGB", rgb.size, _BACKGROUND)
-    box: tuple[int, int, int, int] | None = ImageChops.difference(rgb, background).getbbox()
+    top, bottom = changed[0], changed[-1] + 1
+    band: Image.Image = Image.frombytes("RGB", (width, bottom - top), frame[top * stride : bottom * stride])
+    box: tuple[int, int, int, int] | None = ImageChops.difference(
+        band, Image.new("RGB", band.size, _BACKGROUND)
+    ).getbbox()
     if box is None:
         return None
     dx, dy = _padding(size)
-    return box[0] - dx, box[1] - dy, box[2] - dx, box[3] - dy
+    return box[0] - dx, top + box[1] - dy, box[2] - dx, top + box[3] - dy
 
 
 def _ass_filter(filename: str, work: Path) -> str:
@@ -263,7 +301,8 @@ def _ass_filter(filename: str, work: Path) -> str:
     return f"ass={filename}{fonts}"
 
 
-def _ffmpeg(arguments: list[str], work: Path) -> str:
+def run_ffmpeg(arguments: list[str], work: Path, *, timeout_s: int = _FFMPEG_TIMEOUT_S) -> str:
+    """Run FFmpeg in a folder and return its log, raising on failure."""
     completed: subprocess.CompletedProcess[str] = subprocess.run(  # noqa: S603 - argv built here
         [str(require_binary(Binary.FFMPEG)), "-hide_banner", "-nostdin", "-y", *arguments],
         cwd=work,
@@ -271,15 +310,38 @@ def _ffmpeg(arguments: list[str], work: Path) -> str:
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=_FFMPEG_TIMEOUT_S,
+        timeout=timeout_s,
         check=False,
         creationflags=_NO_WINDOW,
     )
-    if completed.returncode != 0:
-        tail: str = "\n".join(completed.stderr.strip().splitlines()[-5:])
-        message: str = f"ffmpeg failed with {completed.returncode}: {tail}"
-        raise RuntimeError(message)
+    _check(completed.returncode, completed.stderr)
     return completed.stderr
+
+
+def _ffmpeg_frames(arguments: list[str], work: Path, log: Path, frame_bytes: int) -> Iterator[bytes]:
+    """Yield the complete raw frames FFmpeg writes to stdout, keeping its log in a file."""
+    with (
+        log.open("wb") as log_file,
+        subprocess.Popen(  # noqa: S603 - argv built here
+            [str(require_binary(Binary.FFMPEG)), "-hide_banner", "-nostdin", "-y", *arguments],
+            cwd=work,
+            stdout=subprocess.PIPE,
+            stderr=log_file,
+            creationflags=_NO_WINDOW,
+        ) as process,
+    ):
+        if process.stdout is not None:
+            chunks: Iterator[bytes] = iter(partial(process.stdout.read, frame_bytes), b"")
+            yield from (frame for frame in chunks if len(frame) == frame_bytes)
+        returncode: int = process.wait(timeout=_FFMPEG_TIMEOUT_S)
+    _check(returncode, log.read_text(encoding="utf-8", errors="replace"))
+
+
+def _check(returncode: int, log: str) -> None:
+    if returncode != 0:
+        tail: str = "\n".join(log.strip().splitlines()[-5:])
+        message: str = f"ffmpeg failed with {returncode}: {tail}"
+        raise RuntimeError(message)
 
 
 # ── Gallery ───────────────────────────────────────────────────────────────────
@@ -296,20 +358,29 @@ class Shot:
     output_box: Box | None = None
 
 
-def render_shot(shot: Shot, video: Path | None, size: Size, work: Path) -> None:
-    """Render the full source above the full output at one moment, on a video frame when available."""
+def nearest_frame(frames: Path, time_ms: int) -> Path | None:
+    """Return the ``<ms>.jpg`` frame in a folder closest to a moment, or None when there is none."""
+    images: list[Path] = [path for path in frames.glob("*.jpg") if path.stem.isdigit()]
+    return min(images, key=lambda path: abs(int(path.stem) - time_ms), default=None)
+
+
+def render_shot(shot: Shot, video: Path | None, frames: Path, size: Size, work: Path) -> None:
+    """Render the full source above the full output at one moment, on a saved or video frame when available."""
     height: int = round(GALLERY_WIDTH * size[1] / size[0] / 2) * 2
     base: Path = work / "shot-base.png"
-    if video is not None and video.is_file():
-        seek: list[str] = ["-ss", f"{shot.time_ms / 1000:.3f}", "-i", str(video), "-frames:v", "1"]
-        _ffmpeg([*seek, "-vf", f"scale={GALLERY_WIDTH}:{height}", base.name], work)
+    output: list[str] = ["-frames:v", "1", "-vf", f"scale={GALLERY_WIDTH}:{height}", base.name]
+    frame: Path | None = nearest_frame(frames, shot.time_ms)
+    if frame is not None:
+        run_ffmpeg(["-i", str(frame.resolve()), *output], work)
+    elif video is not None and video.is_file():
+        run_ffmpeg(["-ss", f"{shot.time_ms / 1000:.3f}", "-i", str(video), *output], work)
     else:
         Image.new("RGB", (GALLERY_WIDTH, height), _GALLERY_BACKGROUND).save(base)
     graph: str = (
         f"[0:v]setpts=PTS+{shot.time_ms / 1000:.3f}/TB,split[a][b];"
         f"[a]{_ass_filter('source.ass', work)}[x];[b]{_ass_filter('output.ass', work)}[y];[x][y]vstack"
     )
-    _ffmpeg(["-i", base.name, "-filter_complex", graph, "-frames:v", "1", "shot.png"], work)
+    run_ffmpeg(["-i", base.name, "-filter_complex", graph, "-frames:v", "1", "shot.png"], work)
     shot.target.parent.mkdir(parents=True, exist_ok=True)
     _annotate(work / "shot.png", shot, GALLERY_WIDTH / size[0], height).save(shot.target)
 

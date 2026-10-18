@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
+import pytest
+
+from scripts.quality import __main__ as quality_main
 from scripts.quality import report
 from scripts.quality.episode import OUTPUT_NAME, SOURCE_NAME, analyse
 
@@ -55,3 +59,21 @@ def test_summarise_compares_languages_on_paired_lines_of_current_outputs_only(tm
     assert isinstance(source_only, dict)
     assert source_only["timing"]["count"] == 21
     assert source_only["breaks"]["events"] == 21
+
+
+@pytest.mark.integration
+def test_parallel_jobs_write_the_serial_report_in_episode_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(quality_main, "QUALITY_ROOT", tmp_path / "quality")
+    episodes = tmp_path / "episodes"
+    episodes.mkdir()
+    for count, name in enumerate(("delta", "alpha", "charlie", "bravo"), start=2):
+        source = [(second, f"Line {second} of {name} runs a little longer than usual.") for second in range(count)]
+        _episode(episodes, name, source, source[:-1])
+    for jobs in ("1", "3"):
+        assert quality_main.main([str(episodes), "--no-render", "--jobs", jobs, "--out", str(tmp_path / jobs)]) == 0
+    serial = (tmp_path / "1" / "metrics.json").read_bytes()
+    assert (tmp_path / "3" / "metrics.json").read_bytes() == serial
+    assert (tmp_path / "3" / "split.csv").read_bytes() == (tmp_path / "1" / "split.csv").read_bytes()
+    assert list(json.loads(serial)["episodes"]) == ["alpha", "bravo", "charlie", "delta"]

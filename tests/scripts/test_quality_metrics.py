@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from itertools import combinations
+
 import pytest
 from pysubs2 import SSAEvent, SSAFile
 
@@ -108,6 +110,18 @@ def test_select_signs_keeps_typeset_sign_text_only() -> None:
 def test_offscreen_px_sums_overflow_on_every_side() -> None:
     assert metrics.offscreen_px((-5, -2, 650, 370), (640, 360)) == 5 + 2 + 10 + 10
     assert metrics.offscreen_px((0, 0, 640, 360), (640, 360)) == 0
+
+
+def test_concurrent_pairs_find_every_overlapping_pair_including_empty_and_reversed_spans() -> None:
+    spans = [((index * 350) % 5000, (index * 350) % 5000 + (index * 530) % 1100 - 200) for index in range(300)]
+    expected = {
+        (first, second)
+        for first, second in combinations(range(len(spans)), 2)
+        if spans[first][0] < spans[second][1] and spans[second][0] < spans[first][1]
+    }
+    pairs = metrics.concurrent_pairs(spans)
+    assert len(pairs) == len(expected)
+    assert {(min(pair), max(pair)) for pair in pairs} == expected
 
 
 def test_new_overlaps_ignore_overlaps_already_in_source() -> None:

@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
+from PIL import Image
 from pysubs2 import SSAFile
 
 from anishift.platform.binaries import Binary, resolve_binary
 from scripts.quality import metrics, render
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 _SCRIPT = """[Script Info]
 ScriptType: v4.00+
@@ -84,3 +82,46 @@ def test_measure_boxes_finds_text_extent_beyond_the_screen(tmp_path: Path) -> No
     assert overflowing[0] >= 595
     assert overflowing[2] > _SIZE[0] + 100
     assert not (tmp_path / "measure-frames").exists()
+
+
+@pytest.mark.integration
+def test_measure_boxes_measures_events_beyond_the_ass_time_limit(tmp_path: Path) -> None:
+    if resolve_binary(Binary.FFMPEG) is None:
+        pytest.skip("ffmpeg is not installed")
+    subs = _subs()
+    long_sign = subs.events[0].copy()
+    long_sign.end = long_sign.start + 3_598_000
+    events = [long_sign.copy() for _ in range(12)]
+    boxes, _ = render.measure_boxes(subs, events, _SIZE, tmp_path, "measure")
+    assert len(boxes) == 12
+    assert all(box is not None for box in boxes)
+    assert render.batch_size(events) == 8
+
+
+def test_nearest_frame_picks_the_closest_saved_moment(tmp_path: Path) -> None:
+    assert render.nearest_frame(tmp_path / "missing", 1000) is None
+    for name in ("1000.jpg", "5000.jpg", "cover.jpg", "3000.png"):
+        (tmp_path / name).touch()
+    assert render.nearest_frame(tmp_path, 2900) == tmp_path / "1000.jpg"
+    assert render.nearest_frame(tmp_path, 3100) == tmp_path / "5000.jpg"
+
+
+@pytest.mark.integration
+def test_render_shot_uses_the_nearest_relative_saved_frame(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    if resolve_binary(Binary.FFMPEG) is None:
+        pytest.skip("ffmpeg is not installed")
+    work = tmp_path / "work"
+    work.mkdir()
+    script = tmp_path / "script.ass"
+    script.write_text(_SCRIPT, encoding="utf-8")
+    render.copy_scripts(script, None, work)
+    (tmp_path / "frames").mkdir()
+    Image.new("RGB", (640, 360), (200, 30, 30)).save(tmp_path / "frames" / "2100.jpg")
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "shot" / "01.png"
+    render.render_shot(render.Shot(2000, target, "caption"), None, Path("frames"), _SIZE, work)
+    with Image.open(target) as shot:
+        pixel = shot.convert("RGB").getpixel((render.GALLERY_WIDTH - 10, 300))
+    assert isinstance(pixel, tuple)
+    assert pixel[0] > 150
+    assert max(pixel[1:]) < 80

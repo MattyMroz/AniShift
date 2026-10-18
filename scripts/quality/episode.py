@@ -30,6 +30,9 @@ OUTPUT_NAME: Final[str] = "output.pl.ass"
 VIDEO_NAME: Final[str] = "video.txt"
 """Optional file naming the episode video, relative to the repository root."""
 
+FRAMES_NAME: Final[str] = "frames"
+"""Optional folder of ``<ms>.jpg`` video frames used as gallery backgrounds instead of the video."""
+
 PAIRING_MIN: Final[float] = 0.9
 """Share of source events that must pair with the output for it to count as made from this source."""
 

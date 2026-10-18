@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -11,7 +14,7 @@ from anishift.paths import default_workspace_dir
 from anishift.utils.logger import LoggerMode, setup_mode
 from anishift.utils.logger.config import FileConfig
 from scripts.quality import report
-from scripts.quality.episode import OUTPUT_NAME, SOURCE_NAME, EpisodeResult, analyse, episode_dirs
+from scripts.quality.episode import FRAMES_NAME, OUTPUT_NAME, SOURCE_NAME, EpisodeResult, analyse, episode_dirs
 from scripts.quality.render import Shot, copy_scripts, render_shot
 
 if TYPE_CHECKING:
@@ -46,7 +49,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         prog="python -m scripts.quality",
         description=(
             "Measure subtitle quality. An episode folder holds source.en.ass and optionally output.pl.ass, "
-            "video.txt (video path relative to the repository root) and fonts/."
+            "video.txt (video path relative to the repository root), frames/ (<ms>.jpg gallery backgrounds "
+            "made by python -m scripts.quality.frames) and fonts/."
         ),
     )
     parser.add_argument("roots", nargs="*", type=Path, help="episode folders or roots searched recursively")
@@ -54,14 +58,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--gallery", type=Path, default=QUALITY_ROOT / "gallery", help="gallery folder")
     parser.add_argument("--gallery-size", type=int, default=GALLERY_SIZE, help="worst cases per metric")
     parser.add_argument("--no-render", action="store_true", help="skip libass rendering and the gallery")
+    parser.add_argument("--jobs", type=int, default=os.process_cpu_count() or 1, help="episodes measured at once")
     args: argparse.Namespace = parser.parse_args(argv)
-    setup_mode(LoggerMode.SILENT, file=FileConfig(enable=False))
+    silence: partial[None] = partial(setup_mode, LoggerMode.SILENT, file=FileConfig(enable=False))
+    silence()
     roots: list[Path] = list(args.roots) or [root for root in DEFAULT_ROOTS if root.is_dir()]
     render: bool = not args.no_render
+    measure: partial[EpisodeResult] = partial(analyse, cache=QUALITY_ROOT / "cache", render=render)
     results: list[EpisodeResult] = []
-    for directory in episode_dirs(roots):
-        print(f"measuring {directory.name}", file=sys.stderr)
-        results.append(analyse(directory, QUALITY_ROOT / "cache", render=render))
+    with ProcessPoolExecutor(max(1, args.jobs), initializer=silence) as pool:
+        for result in pool.map(measure, episode_dirs(roots)):
+            print(f"measured {result.name}", file=sys.stderr)
+            results.append(result)
     args.out.mkdir(parents=True, exist_ok=True)
     report.write_json(results, args.out / "metrics.json")
     report.write_split_csv(results, args.out / "split.csv")
@@ -129,7 +137,7 @@ def _shoot(result: EpisodeResult, shot: Shot, value: str) -> Entry:
     print(f"rendering {shot.target.parent.name}/{shot.target.name}", file=sys.stderr)
     output: Path = result.directory / OUTPUT_NAME
     copy_scripts(result.directory / SOURCE_NAME, output if output.is_file() else None, result.work)
-    render_shot(shot, result.video, result.size, result.work)
+    render_shot(shot, result.video, result.directory / FRAMES_NAME, result.size, result.work)
     return result.name, report.format_time(shot.time_ms), value.replace("|", "/"), shot.target.name
 
 
