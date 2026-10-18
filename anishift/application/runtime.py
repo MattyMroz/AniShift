@@ -68,6 +68,7 @@ from anishift.services.llm import (
 )
 from anishift.services.llm.engines.palantir import PALANTIR_ENGINE_ID, PalantirModelConfig, palantir_model_config
 from anishift.services.subtitles.layout import LayoutLimits
+from anishift.services.subtitles.restyle import DialogueFont
 from anishift.services.translation import TranslationConfig, TranslationService
 from anishift.services.translation.chunk_config import ChunkConfig
 from anishift.services.translation.constants import DEFAULT_BATCH_SIZE
@@ -159,6 +160,7 @@ class ProductionHandlerFactory:
         """Construct a run-owned dispatcher from immutable execution choices."""
         settings: Settings = self._settings_provider()
         kinds: frozenset[TaskKind] = frozenset(task.kind for task in plan.tasks)
+        dialogue_font: DialogueFont | None = None
         tts_handler: TtsTaskHandler | None = self._tts_handler(settings, run_root, plan, kinds)
         audio_handler: AudioTaskHandler | None = self._audio_handler(run_root, plan, kinds)
         composition_handler: CompositionTaskHandler | None = self._composition_handler(
@@ -179,12 +181,13 @@ class ProductionHandlerFactory:
                 timeout_s=_EXTRACTION_TIMEOUT_S,
                 legacy=LegacyExtractionAdapter(identify, extract_tracks),
             ),
-            SubtitleTaskHandler(run_root=run_root, layout=_layout_limits(plan)),
+            SubtitleTaskHandler(run_root=run_root, layout=_layout_limits(plan), dialogue_font=dialogue_font),
             TranslationTaskHandler(
                 _translation_service(settings, plan),
                 run_root=run_root,
                 layout=_layout_limits(plan),
                 chunk_config=_chunk_config(plan),
+                dialogue_font=dialogue_font,
             ),
             tts=tts_handler,
             audio=audio_handler,

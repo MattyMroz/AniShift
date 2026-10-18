@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from anishift.application.artifacts import Artifact, ArtifactKind
 from anishift.application.cancellation import CancellationToken
+from anishift.application.episode_fonts import MAX_LAYOUT_INPUTS, episode_fonts
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
 from anishift.application.planning import PlanTask, TaskKind
 from anishift.application.results import ArtifactSnapshot, ProducedArtifact, TaskResult
@@ -27,6 +28,9 @@ from anishift.services.subtitles import (
 )
 from anishift.services.subtitles.layout import LayoutLimits
 
+if TYPE_CHECKING:
+    from anishift.services.subtitles.restyle import DialogueFont
+
 __all__ = ["SubtitleTaskHandler"]
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -38,12 +42,15 @@ _MAX_SPLIT_OUTPUTS: Final[int] = 2
 class SubtitleTaskHandler:
     """Execute local subtitle transformations inside one run scope."""
 
-    __slots__ = ("_layout", "_run_root")
+    __slots__ = ("_dialogue_font", "_layout", "_run_root")
 
-    def __init__(self, *, run_root: Path, layout: LayoutLimits | None = None) -> None:
+    def __init__(
+        self, *, run_root: Path, layout: LayoutLimits | None = None, dialogue_font: DialogueFont | None = None
+    ) -> None:
         """Bind subtitle staging to one scheduler-owned run root."""
         self._run_root: Path = run_root
         self._layout: LayoutLimits = layout if layout is not None else LayoutLimits()
+        self._dialogue_font: DialogueFont | None = dialogue_font
 
     def execute(
         self,
@@ -66,8 +73,8 @@ class SubtitleTaskHandler:
         return result
 
     def _normalize(self, task: PlanTask, artifacts: ArtifactSnapshot) -> TaskResult:
-        if len(task.requires) != 1 or len(task.produces) != 1:
-            msg = "Subtitle normalization requires exactly one input and output"
+        if not 1 <= len(task.requires) <= MAX_LAYOUT_INPUTS or len(task.produces) != 1:
+            msg = "Subtitle normalization requires one source, an optional source container and one output"
             raise ExecutionError(msg)
         output: Artifact = artifacts.require_output(task.produces[0])
         output_kind: SubtitleKind = _output_kind(task, output)
@@ -76,11 +83,14 @@ class SubtitleTaskHandler:
         source: Artifact = artifacts.require_ready(task.requires[0])
         source_path: Path = _subtitle_path(source)
         destination: Path = task_staging_path(self._run_root, task, output, f".{output_kind}")
+        layout: LayoutLimits | None = None if output.kind is ArtifactKind.DISPLAYED_PL else self._layout
         normalize_subtitles(
             source_path,
             destination,
             kind=output_kind,
-            layout=None if output.kind is ArtifactKind.DISPLAYED_PL else self._layout,
+            layout=layout,
+            fonts=None if layout is None else episode_fonts(self._run_root, task, artifacts, output),
+            dialogue_font=self._dialogue_font,
         )
         return TaskResult(task.task_id, (ProducedArtifact(output.artifact_id, destination, {}),))
 

@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import re
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from conftest import MM_AVH_TEMP
+from loguru import logger as loguru_logger
 from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
 from anishift.services.subtitles.classifier import Category, StyleVerdict
+from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.subtitles.service import (
+    layout_translated,
     load_subtitles,
     reflow_polish_dialogue,
     split_subtitles,
@@ -21,11 +25,20 @@ from anishift.services.subtitles.service import (
     write_translated_spoken,
 )
 from anishift.services.subtitles.text import is_drawing, visible_text
-from anishift.services.subtitles.types import SubtitleKind, SubtitleSplit
+from anishift.services.subtitles.types import LayoutReport, SubtitleKind, SubtitleSplit, TranslatedLayout
+
+if TYPE_CHECKING:
+    from loguru import Record
 
 _REAL_ASS_NAME = "006___shisha__Genjitsu_no_Yohane_-_Sunshine_in_the_Mirror_-_01__1080p_.mkv.ass"
 _REAL_ASS = MM_AVH_TEMP / "dataset_ass" / _REAL_ASS_NAME
 _RE_TAGS = re.compile(r"\{[^}]*\}")
+_RE_SCALE = re.compile(r"\\fsc[xy]?(?:-?[0-9]*\.?[0-9]+)?")
+
+
+def _tags_without_scale(text: str) -> list[str]:
+    blocks: list[str] = [_RE_SCALE.sub("", block) for block in _RE_TAGS.findall(text)]
+    return [block for block in blocks if block != "{}"]
 
 
 def _ass_with_both_streams() -> SSAFile:
@@ -48,20 +61,26 @@ def _ass_with_both_streams() -> SSAFile:
     return subs
 
 
-def _fake_translation(split: SubtitleSplit, prefix: str = "PL:"):  # type: ignore[no-untyped-def]
+def _fake_translation(split: SubtitleSplit, prefix: str = "PL:") -> dict[int, str]:
     dialogue = [event for event in split.subs.events if event.type == "Dialogue"]
-    displayed_verses = [
-        (f"{prefix}{visible_text(event.text)}",)
-        for event, decision in zip(dialogue, split.decisions, strict=True)
+    displayed: dict[int, str] = {
+        index: f"{prefix}{visible_text(event.text)}"
+        for index, (event, decision) in enumerate(zip(dialogue, split.decisions, strict=True))
         if decision == "displayed"
-    ]
-    spoken_verses = [(f"{prefix}{line.text}",) for line in split.spoken]
-    return displayed_verses, spoken_verses
+    }
+    return displayed | {line.order: f"{prefix}{line.text}" for line in split.spoken}
+
+
+def _write(
+    split: SubtitleSplit, translations: dict[int, str], dest: Path, limits: LayoutLimits | None = None
+) -> Path | None:
+    chosen: LayoutLimits = limits if limits is not None else LayoutLimits()
+    return write_translated(split, translations, dest, fonts=None, limits=chosen, dialogue_font=None)
 
 
 def test_returns_none_when_no_dialogue_events(tmp_path: Path) -> None:
     split = split_subtitles(SSAFile(), kind="ass", spoken_styles=set())
-    assert write_translated(split, [], [], tmp_path / "out.ass") is None
+    assert _write(split, {}, tmp_path / "out.ass") is None
 
 
 @pytest.mark.integration
@@ -74,15 +93,13 @@ def test_writers_preserve_embedded_assets_and_editor_metadata(tmp_path: Path, *,
     subs.aegisub_project = {"Last Style Storage": "Default", "Video Zoom Percent": "1.000000"}
     split: SubtitleSplit = split_subtitles(subs, kind="ass", spoken_styles={"Dialog"})
     dest: Path = tmp_path / "out.ass"
-    displayed: list[tuple[str, ...]]
-    spoken: list[tuple[str, ...]]
-    displayed, spoken = _fake_translation(split)
+    texts: dict[int, str] = _fake_translation(split)
     if translated and stream == "full":
-        write_translated(split, displayed, spoken, dest)
+        _write(split, texts, dest)
     elif translated and stream == "spoken":
-        write_translated_spoken(split, spoken, dest)
+        write_translated_spoken(split, texts, dest, fonts=None, limits=LayoutLimits(), dialogue_font=None)
     elif translated:
-        write_translated_displayed(split, displayed, dest)
+        write_translated_displayed(split, texts, dest, fonts=None, limits=LayoutLimits(), dialogue_font=None)
     else:
         {"full": write_full, "spoken": write_spoken, "displayed": write_displayed}[stream](split, dest)
     after: SSAFile = load_subtitles(dest)
@@ -112,8 +129,7 @@ def test_polish_reflow_preserves_speakers_and_inline_tags(source: str, expected:
 def test_ass_keeps_every_event_and_translates_both_streams(tmp_path: Path) -> None:
     subs = _ass_with_both_streams()
     split = split_subtitles(subs, kind="ass", spoken_styles={"Dialog"})
-    displayed_verses, spoken_verses = _fake_translation(split)
-    translated = write_translated(split, displayed_verses, spoken_verses, tmp_path / "out.pl.ass")
+    translated = _write(split, _fake_translation(split), tmp_path / "out.pl.ass")
     assert translated is not None
 
     after = load_subtitles(translated)
@@ -134,8 +150,7 @@ def test_ass_keeps_every_event_and_translates_both_streams(tmp_path: Path) -> No
 def test_ass_stamps_anishift_notice(tmp_path: Path) -> None:
     subs = _ass_with_both_streams()
     split = split_subtitles(subs, kind="ass", spoken_styles={"Dialog"})
-    displayed_verses, spoken_verses = _fake_translation(split)
-    translated = write_translated(split, displayed_verses, spoken_verses, tmp_path / "out.pl.ass")
+    translated = _write(split, _fake_translation(split), tmp_path / "out.pl.ass")
     assert translated is not None
     header = translated.read_text(encoding="utf-8")
     assert "Script generated by AniShift" in header
@@ -146,8 +161,7 @@ def test_ass_stamps_anishift_notice(tmp_path: Path) -> None:
 def test_ass_preserves_override_tags(tmp_path: Path) -> None:
     subs = _ass_with_both_streams()
     split = split_subtitles(subs, kind="ass", spoken_styles={"Dialog"})
-    displayed_verses, spoken_verses = _fake_translation(split)
-    translated = write_translated(split, displayed_verses, spoken_verses, tmp_path / "out.pl.ass")
+    translated = _write(split, _fake_translation(split), tmp_path / "out.pl.ass")
     assert translated is not None
     after = load_subtitles(translated)
     signs = [event for event in after.events if event.style == "Sign"]
@@ -158,9 +172,8 @@ def test_ass_preserves_override_tags(tmp_path: Path) -> None:
 def test_ass_uses_hard_backslash_n_between_verses(tmp_path: Path) -> None:
     subs = _ass_with_both_streams()
     split = split_subtitles(subs, kind="ass", spoken_styles={"Dialog"})
-    displayed_verses = [("Pierwszy wers", "drugi wers")] * split.stats.displayed_events
-    spoken_verses = [("Pierwszy wers", "drugi wers") for _line in split.spoken]
-    translated = write_translated(split, displayed_verses, spoken_verses, tmp_path / "out.pl.ass")
+    texts: dict[int, str] = dict.fromkeys(_fake_translation(split), "Pierwszy wers drugi wers")
+    translated = _write(split, texts, tmp_path / "out.pl.ass", LayoutLimits(max_chars=14))
     assert translated is not None
     body = translated.read_text(encoding="utf-8")
     assert "Pierwszy wers\\Ndrugi wers" in body
@@ -178,8 +191,8 @@ def test_srt_round_trip_keeps_all_events_and_uses_newline(tmp_path: Path) -> Non
     source_path.write_text(source.to_string(format_="srt"), encoding="utf-8")
 
     split = split_subtitles(load_subtitles(source_path), kind="srt")
-    spoken_verses = [("Pierwszy wers", "drugi wers") for _line in split.spoken]
-    translated = write_translated(split, [], spoken_verses, tmp_path / "out.pl.srt")
+    texts: dict[int, str] = {line.order: "Pierwszy wers drugi wers" for line in split.spoken}
+    translated = _write(split, texts, tmp_path / "out.pl.srt", LayoutLimits(max_chars=14))
     assert translated is not None
 
     after = load_subtitles(translated)
@@ -206,12 +219,7 @@ def test_duplicate_spoken_occurrences_keep_distinct_translations(
     )
     split = split_subtitles(source, kind="ass", spoken_styles={"Dialog"})
     assert len(split.spoken) == 2
-    translated = write_translated(
-        split,
-        [],
-        [("Pierwszy kontekst",), ("Drugi kontekst",)],
-        tmp_path / "out.pl.ass",
-    )
+    translated = _write(split, {0: "Pierwszy kontekst", 1: "Drugi kontekst"}, tmp_path / "out.pl.ass")
     assert translated is not None
     after = load_subtitles(translated)
     visible = [visible_text(event.text) for event in after.events if event.type == "Dialogue"]
@@ -235,12 +243,7 @@ def test_repeated_srt_occurrences_keep_individual_translations(
     split: SubtitleSplit = split_subtitles(source, kind="srt")
     split = replace(split, kind=output_kind)
 
-    translated: Path | None = write_translated(
-        split,
-        [],
-        [("Nie!",), ("Nie, nie!",)],
-        tmp_path / f"out.pl.{output_kind}",
-    )
+    translated: Path | None = _write(split, {0: "Nie!", 1: "Nie, nie!"}, tmp_path / f"out.pl.{output_kind}")
 
     assert translated is not None
     after: SSAFile = load_subtitles(translated)
@@ -258,7 +261,14 @@ def test_translated_displayed_file_contains_only_overlay_events(tmp_path: Path) 
         ]
     )
     split = split_subtitles(source, kind="ass", spoken_styles={"Dialog"})
-    dest = write_translated_displayed(split, [("Tytuł odcinka",)], tmp_path / "show.displayed.pl.ass")
+    dest = write_translated_displayed(
+        split,
+        {1: "Tytuł odcinka"},
+        tmp_path / "show.displayed.pl.ass",
+        fonts=None,
+        limits=LayoutLimits(),
+        dialogue_font=None,
+    )
     assert dest is not None
     after = load_subtitles(dest)
     dialogue = [event for event in after.events if event.type == "Dialogue"]
@@ -290,9 +300,14 @@ def test_source_products_split_polish_ass_without_changing_events(tmp_path: Path
 def test_translated_spoken_file_contains_only_spoken_events(tmp_path: Path) -> None:
     source = _ass_with_both_streams()
     split = split_subtitles(source, kind="ass", spoken_styles={"Dialog"})
-    _displayed_verses, spoken_verses = _fake_translation(split)
-
-    dest = write_translated_spoken(split, spoken_verses, tmp_path / "show.spoken.pl.ass")
+    dest = write_translated_spoken(
+        split,
+        _fake_translation(split),
+        tmp_path / "show.spoken.pl.ass",
+        fonts=None,
+        limits=LayoutLimits(),
+        dialogue_font=None,
+    )
 
     assert dest is not None
     dialogue = [event for event in load_subtitles(dest).events if event.type == "Dialogue"]
@@ -304,8 +319,7 @@ def test_translated_spoken_file_contains_only_spoken_events(tmp_path: Path) -> N
 def test_real_ass_bit_round_trip_keeps_every_event(tmp_path: Path) -> None:
     before = load_subtitles(_REAL_ASS)
     split = split_subtitles(before, kind="ass")
-    displayed_verses, spoken_verses = _fake_translation(split)
-    translated = write_translated(split, displayed_verses, spoken_verses, tmp_path / "out.pl.ass")
+    translated = _write(split, _fake_translation(split), tmp_path / "out.pl.ass")
     assert translated is not None
 
     after = load_subtitles(translated)
@@ -319,11 +333,14 @@ def test_real_ass_bit_round_trip_keeps_every_event(tmp_path: Path) -> None:
         assert after.styles[name].as_dict() == before.styles[name].as_dict()
 
     translated_events = 0
-    for source, result in zip(before_dialogue, after_dialogue, strict=True):
+    for source, result, decision in zip(before_dialogue, after_dialogue, split.decisions, strict=True):
         assert result.start == source.start
         assert result.end == source.end
         assert result.style == source.style
-        assert _RE_TAGS.findall(result.text) == _RE_TAGS.findall(source.text)
+        if decision == "displayed":
+            assert _tags_without_scale(result.text) == _tags_without_scale(source.text)
+        else:
+            assert _RE_TAGS.findall(result.text) == _RE_TAGS.findall(source.text)
         source_visible = visible_text(source.text)
         if source_visible:
             assert visible_text(result.text) == f"PL:{source_visible}"
@@ -349,10 +366,76 @@ def test_uncertain_style_line_is_translated_in_whole_file(tmp_path: Path, style:
         StyleVerdict(style, Category.UNCERTAIN, 0.5, 1, 1),
     )
     split: SubtitleSplit = split_subtitles(source, kind="ass", verdicts=verdicts)
-    displayed_verses, spoken_verses = _fake_translation(split)
-
-    translated: Path | None = write_translated(split, displayed_verses, spoken_verses, tmp_path / "out.pl.ass")
+    translated: Path | None = _write(split, _fake_translation(split), tmp_path / "out.pl.ass")
 
     assert translated is not None
     after: SSAFile = load_subtitles(translated)
     assert [visible_text(event.text) for event in after.events] == ["PL:Hello there.", "PL:Club Activities"]
+
+
+def test_layout_translated_gives_every_copy_of_a_spoken_line_its_translation_unless_keyed() -> None:
+    source: SSAFile = SSAFile()
+    source.events.extend(
+        [
+            SSAEvent(start=1000, end=1500, style="Dialog", text="Hold on!"),
+            SSAEvent(start=1500, end=2000, style="Dialog", text="{\\fad(0,200)}Hold on!"),
+            SSAEvent(start=4000, end=4500, style="Dialog", text="Run!"),
+            SSAEvent(start=4500, end=5000, style="Dialog", text="Run!"),
+        ]
+    )
+    split: SubtitleSplit = split_subtitles(source, kind="ass", spoken_styles={"Dialog"})
+    assert [line.order for line in split.spoken] == [0, 2]
+    laid_out: TranslatedLayout = layout_translated(
+        split, {0: "Czekaj!", 2: "Uciekaj!", 3: "Biegnij!"}, fonts=None, limits=LayoutLimits(), dialogue_font=None
+    )
+    assert [event.text for event in laid_out.subs.events] == [
+        "Czekaj!",
+        "{\\fad(0,200)}Czekaj!",
+        "Uciekaj!",
+        "Biegnij!",
+    ]
+    assert source.events[0].text == "Hold on!"
+    assert laid_out.report == LayoutReport()
+
+
+def test_layout_translated_breaks_dialogue_and_keeps_drawings_and_events_without_translation() -> None:
+    source: SSAFile = SSAFile()
+    source.events.extend(
+        [
+            SSAEvent(start=0, end=1000, style="Dialog", text="{\\i1}Hello{\\i0} there, my friend"),
+            SSAEvent(start=0, end=1000, style="Sign", text="{\\p1}m 0 0 l 10 10"),
+            SSAEvent(start=0, end=1000, style="Sign", text="{\\pos(5,5)}Exit"),
+        ]
+    )
+    split: SubtitleSplit = split_subtitles(source, kind="ass", spoken_styles={"Dialog"})
+    laid_out: TranslatedLayout = layout_translated(
+        split,
+        {0: "Cześć tobie, mój drogi przyjacielu", 1: "rysunek"},
+        fonts=None,
+        limits=LayoutLimits(max_chars=20),
+        dialogue_font=None,
+    )
+    assert laid_out.subs.events[0].text.count("\\N") == 1
+    assert visible_text(laid_out.subs.events[0].text) == "Cześć tobie, mój drogi przyjacielu"
+    assert laid_out.subs.events[1].text == source.events[1].text
+    assert laid_out.subs.events[2].text == source.events[2].text
+
+
+def test_translated_writer_logs_one_layout_summary_without_texts_or_absolute_paths(tmp_path: Path) -> None:
+    subs: SSAFile = _ass_with_both_streams()
+    split: SubtitleSplit = split_subtitles(subs, kind="ass", spoken_styles={"Dialog"})
+    records: list[Record] = []
+    handler: int = loguru_logger.add(lambda message: records.append(message.record), level="DEBUG")
+    try:
+        _write(split, _fake_translation(split), tmp_path / "out.pl.ass")
+    finally:
+        loguru_logger.remove(handler)
+
+    summaries: list[Record] = [record for record in records if record["message"] == "Subtitle layout summarized"]
+    assert len(summaries) == 1
+    extra: dict[str, Any] = summaries[0]["extra"]
+    assert extra["destination"] == "out.pl.ass"
+    assert extra["product"] == "Translated"
+    assert {key: extra[key] for key in asdict(LayoutReport())} == asdict(LayoutReport())
+    assert str(tmp_path) not in repr(summaries[0]["extra"])
+    assert "PL:" not in repr(summaries[0]["extra"])

@@ -11,13 +11,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Final
 
+from anishift.services.extraction import extract_attachments
 from anishift.services.subtitles.service import load_subtitles
 from anishift.services.subtitles.text import is_drawing, visible_text
 from anishift.utils.logger import LoggerMode, setup_mode
 from anishift.utils.logger.config import FileConfig
 from scripts.subtitle_quality import metrics
 from scripts.subtitle_quality.episode import FRAMES_NAME, OUTPUT_NAME, SOURCE_NAME, episode_dirs, video_path
-from scripts.subtitle_quality.render import extract_attachments, run_ffmpeg
+from scripts.subtitle_quality.render import run_ffmpeg
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -81,7 +82,7 @@ def extract(directory: Path) -> int:
     if video is None or target.is_dir():
         return len(list(target.glob("*.jpg")))
     if not (directory / "fonts").is_dir():
-        extract_attachments(video, directory)
+        extract_attachments(video, directory / "fonts")
     times: list[int] = moments(directory)
     if not times:
         return 0

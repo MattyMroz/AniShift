@@ -345,7 +345,10 @@ def test_a_film_in_subs_translates_the_sidecar_even_when_the_preset_prefers_embe
 
     assert plan.can_execute
     assert TaskKind.EXTRACT_SUBTITLES not in _kinds(plan)
-    assert _sources(plan, TaskKind.TRANSLATE_SUBTITLES) == (tmp_path / "subs" / "Film.srt",)
+    assert _sources(plan, TaskKind.TRANSLATE_SUBTITLES) == (
+        tmp_path / "subs" / "Film.srt",
+        tmp_path / "subs" / "Film.mkv",
+    )
 
 
 def test_a_manual_run_in_subs_cannot_waive_the_mandatory_pair(tmp_path: Path) -> None:

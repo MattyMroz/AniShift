@@ -4,8 +4,16 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Final
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Final
 
+from anishift.services.subtitles.text import (
+    reflow_visible_text,
+    replace_visible_text,
+    restore_markers,
+    visible_text,
+    visible_verses,
+)
 from anishift.text.boundaries import (
     BREAKABLE_SPACES,
     CLOSING_MARKS,
@@ -13,6 +21,13 @@ from anishift.text.boundaries import (
     SENTENCE_ENDINGS,
     is_false_sentence_break,
 )
+from anishift.text.markers import strip_span_markers
+
+if TYPE_CHECKING:
+    from pysubs2 import SSAEvent, SSAStyle
+
+    from anishift.services.subtitles.geometry import RenderProfile
+    from anishift.services.subtitles.layout import LayoutLimits
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -274,6 +289,41 @@ _OVERFLOW_TOLERANCE: Final[int] = 2
 
 _REFLEXIVE_HEADS: Final[frozenset[str]] = _PRONOUN_HEADS | _CONJUNCTIONS | {"nie"}
 """Heads that bind a following reflexive particle to its predicate."""
+
+_ASS_LINE_BREAK: Final[str] = "\\N"
+"""ASS hard line break written between laid-out verses; the SRT export turns it into a new line."""
+
+
+@dataclass(frozen=True, slots=True)
+class DialogueLayout:
+    """Laid-out event text of one dialogue line and the rescue steps its layout needed."""
+
+    text: str
+    flags: frozenset[str]
+
+
+def layout_dialogue(event: SSAEvent, text: str, profile: RenderProfile | None, limits: LayoutLimits) -> DialogueLayout:
+    """Break the unbroken translation ``text`` of a dialogue event and place it in the event with its tags."""
+    verses: tuple[str, ...] = restore_markers(
+        text,
+        split_line(strip_span_markers(text), max_chars=limits.max_chars, max_lines=limits.max_lines),
+    )
+    joined: str = _ASS_LINE_BREAK.join(verses)
+    if visible_text(event.text) == visible_text(joined):
+        return DialogueLayout(reflow_visible_text(event.text, verses), frozenset())
+    style: SSAStyle | None = profile.styles.get(event.style) if profile is not None else None
+    return DialogueLayout(replace_visible_text(event.text, joined, style), frozenset())
+
+
+def split_lines(event: SSAEvent, text: str, count: int, profile: RenderProfile | None) -> tuple[str, ...] | None:
+    """Split ``text`` into exactly ``count`` lines shaped like the event's own lines, or return None when impossible."""
+    if count < 1:
+        return None
+    if count == 1:
+        return (_RE_SPACES.sub(" ", text).strip(),)
+    source: tuple[str, ...] = visible_verses(event.text)
+    verses: tuple[str, ...] = split_for_layout(text, source if len(source) == count else ("",) * count)
+    return verses if len(verses) == count else None
 
 
 def split_line(text: str, *, max_chars: int = DEFAULT_MAX_CHARS, max_lines: int = MAX_LINES) -> tuple[str, ...]:
@@ -544,4 +594,12 @@ def _greedy_cut(text: str, max_chars: int) -> int:
     return cut if cut > 0 else text.find(" ")
 
 
-__all__ = ["DEFAULT_MAX_CHARS", "MAX_LINES", "split_for_layout", "split_line"]
+__all__ = [
+    "DEFAULT_MAX_CHARS",
+    "MAX_LINES",
+    "DialogueLayout",
+    "layout_dialogue",
+    "split_for_layout",
+    "split_line",
+    "split_lines",
+]

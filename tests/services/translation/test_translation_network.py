@@ -11,7 +11,7 @@ from anishift.services.subtitles import (
     visible_text,
     write_translated,
 )
-from anishift.services.subtitles.linebreak import split_line
+from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.subtitles.types import DisplayedLine, SpokenLine
 from anishift.services.translation.config import TranslationConfig
 from anishift.services.translation.service import TranslationService
@@ -107,8 +107,10 @@ def test_google_real_ass_displayed_round_trip_to_disk(tmp_path: Path) -> None:
     assert result.is_success
     assert len(result.displayed) == len(displayed_lines)
 
-    verses = [split_line(text) for text in result.displayed]
-    dest = write_translated(split, verses, [], tmp_path / "out.pl.ass")
+    texts = {line.order: text for line, text in zip(displayed_lines, result.displayed, strict=True)}
+    dest = write_translated(
+        split, texts, tmp_path / "out.pl.ass", fonts=None, limits=LayoutLimits(), dialogue_font=None
+    )
     assert dest is not None
 
     written = load_subtitles(dest)

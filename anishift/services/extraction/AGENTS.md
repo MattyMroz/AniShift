@@ -53,3 +53,4 @@ Neutralna ekstrakcja pojedynczej ścieżki z MKV/MP4 do jawnej ścieżki celu or
 - Wagi języków to LISTA priorytetów (`DEFAULT_AUDIO_PRIORITY`, `DEFAULT_SUBTITLE_PRIORITY`), podawana z preferencji (`config/settings.json`); pozycja na liście daje 100, 90, 80..., spoza listy 0. `tracks.py`
 - Bonus za ścieżkę domyślną (1) MUSI być mniejszy niż krok priorytetu (10) — przy równych wartościach ścieżka domyślna przebijała preferowany język. `tracks.py`
 - `MediaInfo.attachments` niesie nazwy plików załączników (czcionki) z `mkvmerge -J`; domyślnie pusta krotka. `types.py`, `service.py`
+- `extract_attachments` wyciąga tylko załączniki-czcionki, każdy po własnym rozszerzeniu (`attachment_font_names`, import lokalny przez cykl composition → media → extraction) pod nazwą pliku bez katalogów, nadpisując starsze kopie; bez czcionek nie tworzy katalogu. Exit 0/1 wymaga niepustych plików jak przy ścieżkach. `service.py`
