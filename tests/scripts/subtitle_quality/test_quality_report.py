@@ -5,9 +5,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from scripts.quality import __main__ as quality_main
-from scripts.quality import report
-from scripts.quality.episode import OUTPUT_NAME, SOURCE_NAME, analyse
+from scripts.subtitle_quality import __main__ as quality_main
+from scripts.subtitle_quality import report
+from scripts.subtitle_quality.episode import OUTPUT_NAME, SOURCE_NAME, analyse
 
 if TYPE_CHECKING:
     from pathlib import Path

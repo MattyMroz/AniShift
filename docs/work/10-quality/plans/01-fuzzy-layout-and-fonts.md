@@ -65,8 +65,8 @@ Przesuwanie napisów; analiza obrazu; limit długości tłumaczenia; pełna regu
 | Szerokość ekranu | `fitting.py` `_play_width` | do `geometry.py` |
 | Listy językowe | `linebreak.py` l.30–270 + helpery | do `lexicon.py` |
 | Grafemy, granice | `anishift/text/graphemes.py`, `boundaries.py` | jedyne źródła |
-| Parowanie zdarzeń | `scripts/quality/metrics.py::pair_events` (l.236) | replay |
-| Ekstrakcja załączników | `scripts/quality/render.py::extract_attachments` (l.122) | przenieść do `services/extraction`, skrypt woła produkcję |
+| Parowanie zdarzeń | `scripts/subtitle_quality/metrics.py::pair_events` (l.236) | replay |
+| Ekstrakcja załączników | `scripts/subtitle_quality/render.py::extract_attachments` (l.122) | przenieść do `services/extraction`, skrypt woła produkcję |
 | Galerie przed/po | `workspace/.quality/experiments/visual-fixes/*/*.py` | `compare.py` |
 | Wariant minimalny B | `.../research-split/minimal.py` | reguły aneksu v4 B |
 | Ustawienia | `config/user_settings.py`, `field_catalog.py`, wzorzec `subtitle_max_chars_per_line` | pole `dialogue_font_file` |

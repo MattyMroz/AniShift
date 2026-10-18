@@ -88,7 +88,7 @@ Audyt: 982 zmienione szyldy, z czego 192 wymaga skali poniżej podłogi, a 176 p
 ### A.3 Pomiar prawdziwym fontem
 
 - **Indeks fontów** budujemy raz na odcinek z trzech źródeł:
-  1. załączniki MKV, jednym `mkvextract attachments`, jak `scripts/quality/render.py::_extract_attachments`;
+  1. załączniki MKV, jednym `mkvextract attachments`, jak `scripts/subtitle_quality/render.py::_extract_attachments`;
   2. katalog `fonts/` pary w skryptach jakości;
   3. fonty systemu.
 

@@ -15,8 +15,8 @@ from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.translation.types import FileTranslation, TranslatedLine
 from anishift.utils.logger import LoggerMode, setup_mode
 from anishift.utils.logger.config import FileConfig
-from scripts.quality import metrics
-from scripts.quality.episode import OUTPUT_NAME, SOURCE_NAME, episode_dirs
+from scripts.subtitle_quality import metrics
+from scripts.subtitle_quality.episode import OUTPUT_NAME, SOURCE_NAME, episode_dirs
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -158,7 +158,7 @@ def _read_mapping(run: Path) -> tuple[dict[str, dict[str, Any]], dict[str, str]]
 def main(argv: Sequence[str], quality_root: Path) -> int:
     """Replay pairs into a folder, or compare two replay folders; return 1 when a comparison finds differences."""
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
-        prog="python -m scripts.quality replay",
+        prog="python -m scripts.subtitle_quality replay",
         description=(
             "Write each pair's Polish text (paired by timing and style, unpaired events in English) through the "
             "current translation layout and subtitle writer, or compare two replay folders byte for byte."

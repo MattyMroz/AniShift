@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING
 import pytest
 
 from anishift.services.subtitles import load_subtitles, visible_text
-from scripts.quality import __main__ as quality_main
-from scripts.quality import replay
-from scripts.quality.episode import OUTPUT_NAME, SOURCE_NAME
+from scripts.subtitle_quality import __main__ as quality_main
+from scripts.subtitle_quality import replay
+from scripts.subtitle_quality.episode import OUTPUT_NAME, SOURCE_NAME
 
 if TYPE_CHECKING:
     from pathlib import Path

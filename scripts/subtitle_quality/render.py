@@ -18,7 +18,7 @@ from pysubs2 import SSAFile
 from anishift.platform.binaries import Binary, require_binary
 from anishift.services.composition.fonts import attachment_font_names
 from anishift.services.extraction.service import identify
-from scripts.quality.metrics import NUMBER
+from scripts.subtitle_quality.metrics import NUMBER
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
     from pysubs2 import SSAEvent, SSAStyle
 
-    from scripts.quality.metrics import Box, Size
+    from scripts.subtitle_quality.metrics import Box, Size
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 

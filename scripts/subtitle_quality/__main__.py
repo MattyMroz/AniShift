@@ -13,14 +13,14 @@ from typing import TYPE_CHECKING, Final
 from anishift.paths import default_workspace_dir
 from anishift.utils.logger import LoggerMode, setup_mode
 from anishift.utils.logger.config import FileConfig
-from scripts.quality import replay, report
-from scripts.quality.episode import FRAMES_NAME, OUTPUT_NAME, SOURCE_NAME, EpisodeResult, analyse, episode_dirs
-from scripts.quality.render import Shot, copy_scripts, render_shot
+from scripts.subtitle_quality import replay, report
+from scripts.subtitle_quality.episode import FRAMES_NAME, OUTPUT_NAME, SOURCE_NAME, EpisodeResult, analyse, episode_dirs
+from scripts.subtitle_quality.render import Shot, copy_scripts, render_shot
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from scripts.quality import metrics
+    from scripts.subtitle_quality import metrics
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -52,11 +52,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments[:1] == [REPLAY_COMMAND]:
         return replay.main(arguments[1:], QUALITY_ROOT)
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
-        prog="python -m scripts.quality",
+        prog="python -m scripts.subtitle_quality",
         description=(
             "Measure subtitle quality. An episode folder holds source.en.ass and optionally output.pl.ass, "
             "video.txt (video path relative to the repository root), frames/ (<ms>.jpg gallery backgrounds "
-            "made by python -m scripts.quality.frames) and fonts/. "
+            "made by python -m scripts.subtitle_quality.frames) and fonts/. "
             f"'{REPLAY_COMMAND}' as the first argument runs the writer replay instead."
         ),
     )

@@ -7,14 +7,14 @@ import json
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Final
 
-from scripts.quality import metrics
-from scripts.quality.episode import PAIRING_MIN
+from scripts.subtitle_quality import metrics
+from scripts.subtitle_quality.episode import PAIRING_MIN
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
-    from scripts.quality.episode import EpisodeResult
+    from scripts.subtitle_quality.episode import EpisodeResult
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 

@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, Final
 
 from anishift.paths import repo_root
 from anishift.services.subtitles.service import load_subtitles
-from scripts.quality import metrics
-from scripts.quality.render import FontReport, event_fonts, measure_boxes, prepare_fonts
+from scripts.subtitle_quality import metrics
+from scripts.subtitle_quality.render import FontReport, event_fonts, measure_boxes, prepare_fonts
 
 if TYPE_CHECKING:
     from pathlib import Path
