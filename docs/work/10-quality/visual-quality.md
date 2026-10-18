@@ -1,6 +1,6 @@
 # Jak mają wyglądać polskie napisy
 
-Status: projekt v2.1 do akceptacji agentów i właściciela (po przeglądzie planu 01). Data: 2026-10-18.
+Status: projekt v2.2 (v2.1 zaakceptowana przez agentów; §6.1 dodana 18.10 na życzenie właściciela). Data: 2026-10-18.
 
 Ten dokument jest nadrzędny wobec specyfikacji technicznych: [fuzzy-signs-and-split.md](fuzzy-signs-and-split.md) (szyldy, lektor, kursywa i kolory) i [fuzzy-line-breaks.md](fuzzy-line-breaks.md) (łamanie dialogów). Mówi, **co chcemy osiągnąć, po czym poznać, że się udało, i gdzie są granice tego, co program może wiedzieć**. Gdy specyfikacja techniczna przeczy temu dokumentowi, poprawiamy specyfikację.
 
@@ -129,12 +129,24 @@ Wymagania:
 ## 6. Lektor: kiedy decyduje dobrze
 
 1. Lektor czyta każdą kwestię mówioną przez postać, także krótkie okrzyki („Huh?”, „Can it!”).
-2. Lektor nie czyta szyldów, tytułów odcinków, odgłosów ani piosenek.
+2. Szyldy i inne napisy ekranowe zostają zawsze na ekranie. Lektor czyta je dodatkowo tylko wtedy, gdy pasuje to do sytuacji (sekcja 6.1); odgłosów w gwiazdkach i piosenek nie czyta nigdy.
 3. Przy wątpliwości lektor raczej czyta. Zgubiona kwestia kosztuje więcej niż przeczytany szyld, bo widz traci treść, a szyld nadal widzi na ekranie.
 4. Kopie tej samej linii (animacja, warstwy poświaty) lektor czyta raz, także gdy kopie są w różnych stylach.
 5. Decyzję podejmujemy raz, na angielskim źródle. Polski plik, ścieżka lektora i plik szyldów ją dziedziczą. Dziś klasyfikacja działa trzy razy, na różnych plikach, i może dać różne wyniki ([code-map.md](research/code-map.md) §0.2).
 
 **Granice rozpoznania.** Program nie słyszy dźwięku i nie widzi obrazu. Rozpoznaje kwestie po stylu, położeniu, interpunkcji, wersalikach i polu aktora. Zawsze zostaną przypadki sporne, np. „Next Time” i „Preview”, tytuł odcinka w stylu dialogu albo przyśpiewka w tekście. Jak je traktować, rozstrzyga właściciel ([fuzzy-signs-and-split.md](fuzzy-signs-and-split.md) §E). Research nie znalazł profesjonalnych zasad dla polskiego lektora.
+
+### 6.1 Lektor czyta napisy ekranowe, gdy jest miejsce
+
+Decyzja właściciela z 18.10: woli, gdy lektor czyta też napisy ekranowe, ale nie zawsze, bo czasem jest to nieporządne. Ważność napisu dla fabuły lub żartu jest poza zasięgiem programu (nie rozumie sceny), więc decydują warunki obserwowalne. Lektor czyta napis ekranowy, gdy wszystkie są spełnione:
+
+1. **Nikt wtedy nie mówi:** w oknie napisu nie ma czytanej kwestii (z małym marginesem), więc lektor nie przerywa postaci ani nie nakłada się na nią.
+2. **Zdąży:** szacowany czas przeczytania tekstu mieści się w wolnym oknie. Długi tekst w krótkim oknie zostaje tylko na ekranie.
+3. **To nie powtórka:** ten sam tekst nie był przed chwilą czytany i nie powtarza kwestii, którą postać właśnie powiedziała.
+4. **To nie piosenka ani odgłos:** style piosenek, karaoke i odgłosy w gwiazdkach (`*...*`) zostają tylko na ekranie.
+5. **To nie drobiazg w tle:** bardzo mały napis (czytelność „bardzo źle” z sekcji 3) lektor pomija.
+
+Ustawienie panelu „Lektor czyta napisy ekranowe”: **nie** / **gdy jest miejsce** (domyślnie) / **zawsze** (zawsze = bez warunku 1–2, nadal bez piosenek i odgłosów). Właściciel ocenia warianty na odsłuchu fragmentów.
 
 ## 7. Kursywa i kolory
 

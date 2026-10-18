@@ -350,6 +350,10 @@ Każda jednostka: osobny worktree i gałąź od aktualnego `work/quality/08-fuzz
 
 **U4 Szyldy** `18-signs`: `fitting.py` wg A + aneks v4 (obiekty, K0/A/B/C/D, filtry ekranu i kolizji z tolerancją, szkody, poziomy ostateczne, licznik kolizji z dialogiem), `split_lines` z U5 dla D i źródeł wielowierszowych. **Gate:** testy a0–a10 i b1; render libass wyników dla statycznych zmierzonych szyldów: 0 przyrostów wyjścia poza ekran i kolizji, gdy istniał dopuszczalny kandydat; replay bez wyjątków.
 
+### Fala D (po scaleniu U4) — lektor czyta napisy ekranowe, gdy jest miejsce
+
+**U8** `work/quality/19-sign-narration`: visual-quality §6.1. Trzeci stan decyzji linii „ekran + lektor, gdy jest miejsce”, liczony raz na źródle razem z decyzjami B: wolne okno = okno napisu minus czytane kwestie (margines), szacowany czas czytania z liczby znaków i tempa lektora z ustawień, powtórki (ten sam znormalizowany tekst czytany w ostatnich 60 s albo równy przyległej kwestii), wykluczenia (style piosenek, karaoke, `*...*`, czytelność „bardzo źle”). Ustawienie panelu `sign_narration`: `off` / `when_free` (domyślnie) / `always`. `SPOKEN_PL` zawiera napisy wybrane do czytania z ich czasem; TTS i miks bez zmian kontraktu. Najpierw dopisek do aneksu B specyfikacji i przegląd innego modelu, potem kod. **Gate:** testy warunków 1–5, replay z listą napisów wybranych do czytania na korpusie (ich liczba i przykłady w raporcie), 3–5 fragmentów audio do odsłuchu przez właściciela.
+
 ### Faza I — integracja i dowód wizualny (orkiestrator)
 
 1. Pełne bramki na 08 po scaleniu wszystkich jednostek.
