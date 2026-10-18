@@ -183,7 +183,7 @@ def test_compose_container_builds_mkv_with_selected_tracks(
     destination = tmp_path / "Episode.pl.mkv"
     runner = _ContainerRunner()
     service = _service(runner, tmp_path)
-    monkeypatch.setattr(service, "_container_font_warnings", lambda _request, **_kwargs: ())
+    monkeypatch.setattr("anishift.services.composition.service.extract_attachments", lambda *_args: ())
     monkeypatch.setattr("anishift.services.composition.service.validate_merged", lambda *_args, **_kwargs: None)
     request = ContainerCompositionRequest(
         source_video=source,
@@ -203,6 +203,100 @@ def test_compose_container_builds_mkv_with_selected_tracks(
     assert narration.read_bytes() == b"audio"
     assert str(narration) in runner.commands[0]
     assert str(subtitle) in runner.commands[0]
+
+
+def test_compose_container_mkv_attaches_only_font_files_the_source_lacks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "Episode.mkv"
+    source.write_bytes(b"source")
+    subtitle = tmp_path / "Episode.pl.ass"
+    subtitle.write_text("[Script Info]", encoding="utf-8")
+    owner = tmp_path / "owner"
+    owner.mkdir()
+    duplicate = owner / "Gandhi Copy.otf"
+    duplicate.write_bytes(b"gandhi")
+    italic = owner / "Officina - Bold Italic.ttf"
+    italic.write_bytes(b"italic")
+    extracted: list[Path] = []
+
+    def extract(container: Path, folder: Path) -> tuple[Path, ...]:
+        folder.mkdir(parents=True, exist_ok=True)
+        attachment = folder / "Gandhi.otf"
+        attachment.write_bytes(b"gandhi")
+        extracted.append(container)
+        return (attachment,)
+
+    runner = _ContainerRunner()
+    monkeypatch.setattr("anishift.services.composition.service.extract_attachments", extract)
+    monkeypatch.setattr("anishift.services.composition.service.validate_merged", lambda *_args, **_kwargs: None)
+    request = ContainerCompositionRequest(
+        source_video=source,
+        destination=tmp_path / "Episode.pl.mkv",
+        target=ContainerTarget.MKV,
+        burn_subtitle=None,
+        attached_subtitles=(AttachedSubtitle(subtitle, SubtitleRole.FULL, "pol", "Polish"),),
+        narration_audio=None,
+        keep_original_audio=True,
+        font_files=(duplicate, italic),
+    )
+
+    _service(runner, tmp_path).compose_container(request)
+
+    assert extracted == [source]
+    assert runner.commands[0][-4:] == ("--attachment-name", italic.name, "--attach-file", str(italic))
+    assert str(duplicate) not in runner.commands[0]
+    assert list(tmp_path.glob(".anishift-compose-*")) == []
+
+
+def test_compose_container_mp4_burns_with_the_source_fonts_and_the_dialogue_font_in_one_folder(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "Episode.mkv"
+    source.write_bytes(b"source")
+    subtitle = tmp_path / "Episode.pl.ass"
+    subtitle.write_text("[Script Info]", encoding="utf-8")
+    owner_font = tmp_path / "owner" / "Officina - Bold.ttf"
+    owner_font.parent.mkdir()
+    owner_font.write_bytes(b"officina")
+    folders: list[list[str]] = []
+
+    def extract(_container: Path, folder: Path) -> tuple[Path, ...]:
+        folder.mkdir(parents=True, exist_ok=True)
+        attachment = folder / "Gandhi.otf"
+        attachment.write_bytes(b"gandhi")
+        return (attachment,)
+
+    class _BurnRunner(_ContainerRunner):
+        def run(self, command: Any, **kwargs: Any) -> CommandOutcome:
+            folders.append(sorted(path.name for path in (kwargs["cwd"] / "fonts").iterdir()))
+            return super().run(command, **kwargs)
+
+    runner = _BurnRunner()
+    monkeypatch.setattr("anishift.services.composition.service.extract_attachments", extract)
+    monkeypatch.setattr("anishift.services.composition.service.source_duration_us", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr("anishift.services.composition.service.audio_codec_name", lambda *_args, **_kwargs: "aac")
+    monkeypatch.setattr("anishift.services.composition.service.validate_burned", lambda *_args, **_kwargs: None)
+    request = ContainerCompositionRequest(
+        source_video=source,
+        destination=tmp_path / "Episode.pl.mp4",
+        target=ContainerTarget.MP4,
+        burn_subtitle=subtitle,
+        attached_subtitles=(),
+        narration_audio=None,
+        keep_original_audio=True,
+        font_files=(owner_font,),
+    )
+
+    _service(runner, tmp_path).compose_container(request)
+
+    filter_value: str = runner.commands[0][runner.commands[0].index("-vf") + 1]
+    assert filter_value.startswith("ass=")
+    assert filter_value.endswith(":fontsdir='fonts'")
+    assert folders == [["Gandhi.otf", "Officina - Bold.ttf"]]
+    assert list(tmp_path.glob(".anishift-compose-*")) == []
 
 
 def test_compose_container_builds_mp4_without_burn_or_narration(

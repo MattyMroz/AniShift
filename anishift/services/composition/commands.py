@@ -141,8 +141,9 @@ def container_merge_command(
     *,
     mkvmerge: Path,
     destination: Path,
+    attachments: Sequence[tuple[Path, str]] = (),
 ) -> tuple[str, ...]:
-    """Build one MKV command from the target-specific composition contract."""
+    """Build one MKV command from the target-specific composition contract, attaching each file under its name."""
     arguments: list[str] = [str(mkvmerge), "--gui-mode", "--output", str(destination)]
     if not request.keep_original_audio:
         arguments.append("--no-audio")
@@ -157,6 +158,8 @@ def container_merge_command(
                 language=subtitle.language,
             )
         )
+    for path, name in attachments:
+        arguments.extend(("--attachment-name", name, "--attach-file", str(path)))
     return tuple(arguments)
 
 

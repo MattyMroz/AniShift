@@ -25,12 +25,11 @@ from anishift.services.composition.commands import (
 )
 from anishift.services.composition.config import CompositionConfig
 from anishift.services.composition.errors import CompositionConfigError, CompositionValidationError
-from anishift.services.composition.fonts import font_embedding_warnings
+from anishift.services.composition.fonts import font_attachments, font_embedding_warnings
 from anishift.services.composition.paths import filter_safe_copy, temporary_sibling
 from anishift.services.composition.probe import (
     audio_codec_name,
     source_duration_us,
-    source_tracks,
     validate_burned,
     validate_cover,
     validate_merged,
@@ -46,7 +45,7 @@ from anishift.services.composition.types import (
     CoverCompositionResult,
     OutputVariant,
 )
-from anishift.services.media import MediaCatalog
+from anishift.services.extraction import ExtractionError, extract_attachments
 from anishift.services.media._process import ProcessRunner
 from anishift.services.media._process import SubprocessRunner as ProbeSubprocessRunner
 from anishift.utils.logger import get_logger
@@ -59,6 +58,12 @@ __all__ = ["CompositionProgressSink", "CompositionService"]
 
 _MKVMERGE_WARNING_EXIT: Final[int] = 1
 """mkvmerge exit code meaning the result exists but carries warnings."""
+
+_WORK_PREFIX: Final[str] = ".anishift-compose-"
+"""Prefix of the private folder a composition keeps its filter-safe subtitle and fonts in."""
+
+_FONTS_FOLDER: Final[str] = "fonts"
+"""Folder inside that private folder holding every font libass may draw burned subtitles with."""
 
 logger = get_logger(__name__)
 
@@ -263,12 +268,19 @@ class CompositionService:
         expected: tuple[str, ...] = tuple(subtitle.track_name for subtitle in request.attached_subtitles)
         if request.narration_audio is not None:
             expected = (*expected, NARRATION_TRACK_NAME)
-        warnings: tuple[str, ...] = self._container_font_warnings(request, cancel=cancel)
         source_size: int = request.source_video.stat().st_size
         output_size: int
+        work_dir: Path = Path(tempfile.mkdtemp(dir=request.destination.parent, prefix=_WORK_PREFIX))
         try:
+            present: tuple[Path, ...] = _source_fonts(request, work_dir)
+            attachments: tuple[tuple[Path, str], ...] = font_attachments(request.font_files, present)
+            warnings: tuple[str, ...] = _container_font_warnings(
+                request, (*present, *(path for path, _ in attachments))
+            )
             outcome: CommandOutcome = self._runner.run(
-                container_merge_command(request, mkvmerge=self._mkvmerge_path, destination=temporary),
+                container_merge_command(
+                    request, mkvmerge=self._mkvmerge_path, destination=temporary, attachments=attachments
+                ),
                 operation="merge_container",
                 timeout_s=self._config.operation_timeout_s,
                 progress=parse_mkvmerge_progress,
@@ -286,6 +298,7 @@ class CompositionService:
             temporary.replace(request.destination)
         finally:
             temporary.unlink(missing_ok=True)
+            shutil.rmtree(work_dir, ignore_errors=True)
         timer.stop()
         if outcome.had_warnings:
             warnings = (*warnings, "mkvmerge reported warnings")
@@ -316,18 +329,21 @@ class CompositionService:
             keep_original_audio=request.keep_original_audio,
             cancel=cancel,
         )
-        warnings: tuple[str, ...] = self._container_font_warnings(request, cancel=cancel)
+        warnings: tuple[str, ...] = ()
         source_size: int = request.source_video.stat().st_size
         output_size: int
         work_dir: Path | None = None
         try:
             subtitle_argument: str | None = None
             if request.burn_subtitle is not None:
-                work_dir = Path(tempfile.mkdtemp(dir=request.destination.parent, prefix=".anishift-compose-"))
+                work_dir = Path(tempfile.mkdtemp(dir=request.destination.parent, prefix=_WORK_PREFIX))
                 safe_subtitle: Path = filter_safe_copy(request.burn_subtitle, work_dir)
+                fonts: tuple[Path, ...] = _gathered_fonts(request, work_dir / _FONTS_FOLDER)
+                warnings = _container_font_warnings(request, fonts)
                 subtitle_argument = subtitle_filter_argument(
                     Path(safe_subtitle.name),
                     kind=request.burn_subtitle.suffix.removeprefix(".").casefold(),
+                    fonts_dir=Path(_FONTS_FOLDER),
                 )
             audio_source: Path | None = request.narration_audio
             if audio_source is None and request.keep_original_audio:
@@ -417,7 +433,7 @@ class CompositionService:
         destination: Path = plan.destination
         temporary: Path = temporary_sibling(destination)
         expected: tuple[str, ...] = _appended_track_names(plan)
-        warnings: tuple[str, ...] = self._font_warnings(plan, cancel=cancel)
+        warnings: tuple[str, ...] = _font_warnings(plan)
         try:
             outcome: CommandOutcome = self._runner.run(
                 merge_command(plan, mkvmerge=self._mkvmerge_path, destination=temporary),
@@ -479,7 +495,7 @@ class CompositionService:
             cancel=cancel,
         )
         subtitle_argument: str | None = self._burn_filter(plan)
-        warnings: tuple[str, ...] = self._font_warnings(plan, cancel=cancel)
+        warnings: tuple[str, ...] = _font_warnings(plan)
         audio_source: Path = plan.narration_audio or plan.source_path
         try:
             self._runner.run(
@@ -570,37 +586,57 @@ class CompositionService:
         )
         return video_us, max(durations)
 
-    def _font_warnings(
-        self,
-        plan: CompositionPlan,
-        *,
-        cancel: threading.Event | None,
-    ) -> tuple[str, ...]:
-        """Report absent attachments or unverified font-family coverage."""
-        subtitle: Path | None = plan.burn_subtitle or (plan.subtitles[0].path if plan.subtitles else None)
-        if subtitle is None:
-            return ()
-        info: MediaCatalog = source_tracks(plan.source_path, cancel=cancel, runner=self._probe_runner)
-        warnings: tuple[str, ...] = font_embedding_warnings(subtitle, info.attachments)
-        if not warnings:
-            return ()
-        logger.warning("Composition font embedding warning", scope_id=plan.scope_id, font_count=len(warnings))
-        return warnings
 
-    def _container_font_warnings(
-        self,
-        request: ContainerCompositionRequest,
-        *,
-        cancel: threading.Event | None,
-    ) -> tuple[str, ...]:
-        """Report font embedding uncertainty for a target-specific request."""
-        subtitle: Path | None = request.burn_subtitle
-        if subtitle is None and request.attached_subtitles:
-            subtitle = request.attached_subtitles[0].path
-        if subtitle is None:
-            return ()
-        info: MediaCatalog = source_tracks(request.source_video, cancel=cancel, runner=self._probe_runner)
-        return font_embedding_warnings(subtitle, info.attachments)
+def _font_warnings(plan: CompositionPlan) -> tuple[str, ...]:
+    """Report the fonts a legacy plan's subtitles name that no font attachment of its source carries."""
+    subtitle: Path | None = plan.burn_subtitle or (plan.subtitles[0].path if plan.subtitles else None)
+    if subtitle is None:
+        return ()
+    with tempfile.TemporaryDirectory(prefix=_WORK_PREFIX) as folder:
+        warnings: tuple[str, ...] = font_embedding_warnings(subtitle, _extracted_fonts(plan.source_path, Path(folder)))
+    if warnings:
+        logger.warning("Composition font embedding warning", scope_id=plan.scope_id, font_count=len(warnings))
+    return warnings
+
+
+def _container_font_warnings(request: ContainerCompositionRequest, fonts: tuple[Path, ...]) -> tuple[str, ...]:
+    """Report the fonts the request's first subtitles name that none of the container's font files carries."""
+    subtitle: Path | None = request.burn_subtitle
+    if subtitle is None and request.attached_subtitles:
+        subtitle = request.attached_subtitles[0].path
+    if subtitle is None:
+        return ()
+    warnings: tuple[str, ...] = font_embedding_warnings(subtitle, fonts)
+    if warnings:
+        logger.warning("Container font embedding warning", target=request.target.value, font_count=len(warnings))
+    return warnings
+
+
+def _source_fonts(request: ContainerCompositionRequest, folder: Path) -> tuple[Path, ...]:
+    """Extract the source container's fonts when the request carries subtitles or fonts of its own."""
+    if not request.attached_subtitles and request.burn_subtitle is None and not request.font_files:
+        return ()
+    return _extracted_fonts(request.source_video, folder)
+
+
+def _gathered_fonts(request: ContainerCompositionRequest, folder: Path) -> tuple[Path, ...]:
+    """Collect the source container's fonts and the request's new font files in one folder for libass."""
+    present: tuple[Path, ...] = _source_fonts(request, folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    added: list[Path] = []
+    for path, name in font_attachments(request.font_files, present):
+        shutil.copyfile(path, folder / name)
+        added.append(folder / name)
+    return (*present, *added)
+
+
+def _extracted_fonts(source: Path, folder: Path) -> tuple[Path, ...]:
+    """Extract the font attachments of one container, none when they cannot be read."""
+    try:
+        return extract_attachments(source, folder)
+    except ExtractionError as error:
+        logger.warning("Source fonts unavailable", source=source.name, error_code=error.context.code.value)
+        return ()
 
 
 def _appended_track_names(plan: CompositionPlan) -> tuple[str, ...]:
