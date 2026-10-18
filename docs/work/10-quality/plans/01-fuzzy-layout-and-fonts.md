@@ -204,6 +204,7 @@ class FontMatch:
 # anishift/services/fonts/index.py  (U1)
 def read_faces(path: Path) -> tuple[FontFace, ...]
 def polish_missing(face: FontFace) -> str                      # brakujące z „ąćęłńóśźżĄĆĘŁŃÓŚŹŻ”
+def family_name(path: Path) -> str                            # p3 ID1 w oryginalnej pisowni (Fontname klonu stylu, U6)
 class FontIndex:
     @classmethod
     def build(cls, episode: Iterable[Path], system: Iterable[Path]) -> FontIndex   # dwa poziomy, D2
