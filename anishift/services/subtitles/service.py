@@ -70,7 +70,10 @@ __all__ = [
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 _FBF_MAX_GAP_MS: Final[int] = 500
-"""Maximum gap between consecutive identical events, or copies of one line, merged as one spoken line."""
+"""Maximum gap between consecutive identical events merged as one FBF run."""
+
+_COPY_WINDOW_MS: Final[int] = 500
+"""Largest start distance, or gap after the original ends, at which an equal line in another form is a copy."""
 
 _RE_NON_WORD: Final[re.Pattern[str]] = re.compile(r"\W+")
 """Run of non-word characters ignored when comparing copies of one spoken line."""
@@ -239,11 +242,14 @@ def _merge_echoes(runs: list[_Run]) -> list[_Run]:
     merged: list[_Run] = []
     for group in by_text.values():
         clusters: list[list[_Run]] = []
+        placed: list[tuple[_Run, int]] = []
         for run in sorted(group, key=_run_start):
-            if clusters and _echoes(clusters[-1], run):
-                clusters[-1].append(run)
-                continue
-            clusters.append([run])
+            home: int | None = next((index for original, index in placed if _copies(original, run)), None)
+            if home is None:
+                home = len(clusters)
+                clusters.append([])
+            clusters[home].append(run)
+            placed.append((run, home))
         merged.extend([item for run in cluster for item in run] for cluster in clusters)
     return merged
 
@@ -260,11 +266,12 @@ def _run_end(run: _Run) -> int:
     return max(event.end for _, event in run)
 
 
-def _echoes(cluster: list[_Run], run: _Run) -> bool:
-    latest: _Run = max(cluster, key=_run_end)
-    if _run_start(run) - _run_end(latest) > _FBF_MAX_GAP_MS:
+def _copies(original: _Run, run: _Run) -> bool:
+    start: int = _run_start(run)
+    together: bool = abs(start - _run_start(original)) <= _COPY_WINDOW_MS
+    if not together and not 0 <= start - _run_end(original) <= _COPY_WINDOW_MS:
         return False
-    previous: SSAEvent = latest[0][1]
+    previous: SSAEvent = original[0][1]
     current: SSAEvent = run[0][1]
     if previous.style != current.style:
         return True

@@ -292,12 +292,29 @@ def test_split_reads_a_copy_of_a_line_in_another_style_once() -> None:
 
 
 @pytest.mark.unit
-def test_split_reads_a_capital_echo_in_the_same_style_once() -> None:
-    subs: SSAFile = _subs([_event("Yay!", style="Default"), _event("YAY", style="Default", start=700)])
+@pytest.mark.parametrize("echo_start", [300, 1200])
+def test_split_reads_a_capital_echo_starting_together_or_right_after_the_line_once(echo_start: int) -> None:
+    subs: SSAFile = _subs([_event("Yay!", style="Default"), _event("YAY", style="Default", start=echo_start)])
 
     split: SubtitleSplit = split_subtitles(subs, kind="ass", spoken_styles={"Default"})
 
     assert [line.text for line in split.spoken] == ["Yay!"]
+
+
+@pytest.mark.unit
+def test_split_reads_repeats_starting_inside_a_long_copy_again() -> None:
+    subs: SSAFile = _subs(
+        [
+            SSAEvent(start=1600, end=3200, style="Main", text="Wahaha."),
+            SSAEvent(start=3200, end=25100, style="Overlap", text=r"{\an8}Wahaha."),
+            SSAEvent(start=15300, end=16700, style="Main", text="Wahaha."),
+            SSAEvent(start=21600, end=23600, style="Main", text='"Wahaha"?'),
+        ]
+    )
+
+    split: SubtitleSplit = split_subtitles(subs, kind="ass", spoken_styles={"Main", "Overlap"})
+
+    assert [(line.order, line.text) for line in split.spoken] == [(0, "Wahaha."), (2, "Wahaha."), (3, '"Wahaha"?')]
 
 
 @pytest.mark.unit
@@ -307,6 +324,7 @@ def test_split_reads_a_capital_echo_in_the_same_style_once() -> None:
         (_event("Right away!", style="Main"), _event("Right away!", style="Overlap", start=1600)),
         (_event("Wahaha.", style="Main"), _event("Wahaha!", style="Main", start=1200)),
         (_event("Wait!", style="Main"), _event("Hold on!", style="Overlap", start=200)),
+        (_event("Number one...", style="Main"), _event("NUMBER ONE", style="Main", start=660)),
     ],
 )
 def test_split_reads_distant_repeats_and_same_style_variants_twice(first: SSAEvent, second: SSAEvent) -> None:
