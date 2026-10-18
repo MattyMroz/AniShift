@@ -187,6 +187,7 @@ _SUBTITLE_FIELDS: Final[tuple[_SettingField, ...]] = (
     ("subtitle_max_chars_per_line", "Znaków w linii", "UKŁAD TEKSTU"),
     ("subtitle_max_lines_per_event", "Linii na napis", "UKŁAD TEKSTU"),
     ("dialogue_font_file", "Plik czcionki dialogów", "CZCIONKA"),
+    ("sign_narration", "Lektor a napisy ekranowe", "LEKTOR"),
 )
 """Persisted subtitle layout fields exposed by the product."""
 
@@ -311,6 +312,9 @@ _CHOICE_LABELS: Final[dict[tuple[str, str], str]] = {
     **{("requested_products", product.value): label for product, label in _PRODUCTS},
     ("processing_order_policy", "ready_first"): "Najpierw gotowe",
     ("processing_order_policy", "strict_natural"): "Ścisła kolejność plików",
+    ("sign_narration", "off"): "Nie czyta",
+    ("sign_narration", "smart"): "Czyta inteligentnie",
+    ("sign_narration", "always"): "Czyta zawsze",
     ("composition_quality_preset", "high"): "Wysoka",
     ("composition_quality_preset", "balanced"): "Zrównoważona",
     ("composition_quality_preset", "compact"): "Kompaktowa",

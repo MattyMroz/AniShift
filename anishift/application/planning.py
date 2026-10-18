@@ -22,6 +22,9 @@ _MAX_LLM_TEMPERATURE: Final[float] = 2.0
 DEFAULT_AUDIO_TOLERANCE_US: Final[int] = 1_000_000
 """Accepted duration difference between supplied audio and the selected video."""
 
+SIGN_NARRATION_MODES: Final[tuple[str, ...]] = ("off", "smart", "always")
+"""Whether the narrator skips on-screen signs, reads those that fit and matter, or reads every one that fits."""
+
 
 class TaskKind(StrEnum):
     """Operations that can appear in an AniShift execution graph."""
@@ -185,6 +188,7 @@ class RunSettingsSnapshot:
     voice_mix_offset_db: float = 0.0
     original_gain_db: float = 0.0
     tts_timeline_policy: str = "serialize"
+    sign_narration: str = "off"
 
     def __post_init__(self) -> None:
         _validate_profile_settings(self)
@@ -297,6 +301,9 @@ def _validate_runtime_settings(settings: RunSettingsSnapshot) -> None:
         raise ValueError(msg)
     if settings.tts_timeline_policy != "serialize":
         msg = "TTS timeline policy is unsupported"
+        raise ValueError(msg)
+    if settings.sign_narration not in SIGN_NARRATION_MODES:
+        msg = "Sign narration mode is unsupported"
         raise ValueError(msg)
 
 
@@ -514,9 +521,10 @@ def _validate_task_parameter_names(kind: TaskKind, names: frozenset[str]) -> Non
             frozenset({"output_format"}),
             frozenset({"output_format", "source_kind"}),
         ),
+        TaskKind.SPLIT_SUBTITLES: (frozenset(), frozenset({"sign_narration"})),
         TaskKind.SYNTHESIZE_SPEECH: (
             frozenset({"narration_timeline", "script_kind"}),
-            frozenset({"narration_timeline", "script_kind"}),
+            frozenset({"narration_timeline", "script_kind", "sign_narration"}),
         ),
         TaskKind.TRANSCODE_AUDIO: (frozenset({"output_profile"}), frozenset({"output_profile"})),
         TaskKind.MIX_NARRATION: (

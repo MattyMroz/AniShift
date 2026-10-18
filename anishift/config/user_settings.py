@@ -9,6 +9,7 @@ import warnings
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Final, Literal
 
+from anishift.application.planning import SIGN_NARRATION_MODES
 from anishift.paths import config_path
 from anishift.services.audio.types import AudioCodecProfile, TimelinePolicy
 from anishift.services.extraction.tracks import DEFAULT_AUDIO_PRIORITY, DEFAULT_SUBTITLE_PRIORITY
@@ -147,6 +148,9 @@ _TTS_OUTPUT_PROFILES: Final[frozenset[str]] = frozenset(profile.value for profil
 _TTS_TIMELINE_POLICIES: Final[frozenset[str]] = frozenset(policy.value for policy in TimelinePolicy)
 """Accepted narration timeline policies."""
 
+_SIGN_NARRATION_MODES: Final[frozenset[str]] = frozenset(SIGN_NARRATION_MODES)
+"""Accepted ways the narrator treats on-screen signs."""
+
 _LOSSY_OUTPUT_PROFILES: Final[frozenset[str]] = frozenset(("aac", "eac3", "mp3", "opus"))
 """Output profiles for which a bitrate may be persisted."""
 
@@ -258,6 +262,7 @@ class UserSettings:
     subtitle_max_chars_per_line: int = DEFAULT_MAX_CHARS
     subtitle_max_lines_per_event: int = MAX_LINES
     dialogue_font_file: str = ""
+    sign_narration: str = "smart"
     translation_chunk_chars: int = DEFAULT_CHAR_LIMIT
     translation_batch_size: int = 0
     translation_concurrency: int = 1
@@ -834,6 +839,7 @@ def load_user_settings() -> UserSettings:  # noqa: PLR0915 - explicit tolerant f
     _clean_integer(filtered, "subtitle_max_chars_per_line", *LINE_CHARS_RANGE)
     _clean_integer(filtered, "subtitle_max_lines_per_event", *EVENT_LINES_RANGE)
     _clean_free_string(filtered, "dialogue_font_file")
+    _clean_string(filtered, "sign_narration", _SIGN_NARRATION_MODES)
     _clean_integer(filtered, "translation_chunk_chars", *CHUNK_CHARS_RANGE)
     _clean_integer(filtered, "translation_batch_size", *BATCH_SIZE_RANGE)
     _clean_integer(filtered, "translation_concurrency", *CONCURRENCY_RANGE)

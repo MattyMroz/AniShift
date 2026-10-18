@@ -17,10 +17,9 @@ from anishift.application.products import product_suffix
 from anishift.application.results import ArtifactSnapshot, ProducedArtifact, TaskResult
 from anishift.application.scheduler_contracts import TaskProgressSink
 from anishift.application.task_paths import task_staging_path
-from anishift.application.tts_handler import load_narration_manifest
+from anishift.application.tts_handler import load_narration_manifest, timed_clip
 from anishift.errors import ExecutionError
 from anishift.services.audio import AudioRenderRequest, AudioRenderResult, AudioRenderStatus, TimedClip
-from anishift.services.audio.types import AudioFormat
 
 __all__ = ["AudioTaskHandler"]
 
@@ -154,20 +153,7 @@ class AudioTaskHandler:
             _raise_execution("Narration mixing received an invalid artifact contract")
         profile: str = _profile(task, output)
         manifest = load_narration_manifest(manifest_artifact.path)
-        clips: tuple[TimedClip, ...] = tuple(
-            TimedClip(
-                clip.request_id,
-                clip.start_ms,
-                clip.end_ms,
-                clip.source_order,
-                clip.path,
-                AudioFormat(clip.format),
-                clip.sample_rate,
-                clip.channels,
-                clip.duration_ms,
-            )
-            for clip in manifest.clips
-        )
+        clips: tuple[TimedClip, ...] = tuple(timed_clip(clip) for clip in manifest.clips)
         synthetic_source: Path = task_staging_path(self._run_root, task, output, ".source")
         destination: Path = task_staging_path(
             self._run_root,
