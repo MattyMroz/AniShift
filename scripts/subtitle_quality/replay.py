@@ -10,11 +10,16 @@ from itertools import zip_longest
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
+from anishift.application.planning import SIGN_NARRATION_MODES
+from anishift.application.sign_narration import SignSelection, select_signs
 from anishift.application.translation_handler import displayed_lines
+from anishift.services.audio.types import AudioFormat, NormalizedClip, PcmStorage, TimedClip
 from anishift.services.subtitles import (
+    SignCandidate,
     is_drawing,
     layout_translated,
     load_subtitles,
+    sign_candidates,
     split_subtitles,
     spoken_groups,
     visible_text,
@@ -22,6 +27,7 @@ from anishift.services.subtitles import (
 )
 from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.subtitles.restyle import DialogueFont
+from anishift.services.tts.validation import is_speech_text
 from anishift.utils.logger import LoggerMode, setup_mode
 from anishift.utils.logger.config import FileConfig
 from scripts.subtitle_quality import metrics
@@ -51,6 +57,9 @@ EXCLUSION_RULE: Final[str] = (
     "A displayed event is excluded when it is unpaired."
 )
 """Rule deciding which events are written from English text and left out of event comparisons."""
+
+ESTIMATED_CHARS_PER_SECOND: Final[int] = 15
+"""Polish narrator speed estimating reading durations when replaying sign narration without synthesis."""
 
 type Entry = dict[str, Any]
 """One pair record of a mapping file."""
@@ -147,7 +156,65 @@ def pair_dirs(roots: Sequence[Path]) -> list[tuple[str, Path]]:
     return sorted(found.items())
 
 
-def replay(roots: Sequence[Path], out: Path, dialogue_font: DialogueFont | None = None) -> Path:
+def sign_narration(split: SubtitleSplit, inputs: PairInput, mode: str) -> Entry:
+    """Choose the signs the narrator would read with estimated durations; return decisions and accepted readings."""
+    lines: tuple[NormalizedClip, ...] = tuple(
+        _estimated(f"line-{line.order}", line.start, inputs.translations.get(line.order, line.text), line.order)
+        for line in split.spoken
+    )
+    candidates: list[SignCandidate] = [
+        replace(candidate, text=inputs.translations.get(candidate.group, candidate.text))
+        for candidate in sign_candidates(split)
+    ]
+    readable: list[SignCandidate] = [candidate for candidate in candidates if is_speech_text(candidate.text)]
+    clips: dict[int, NormalizedClip] = {
+        candidate.group: _estimated(f"sign-{candidate.group}", 0, candidate.text, candidate.group)
+        for candidate in readable
+    }
+    selection: SignSelection = select_signs(readable, clips, lines, mode)
+    margins: dict[int, float] = dict(selection.margins)
+    by_group: dict[int, SignCandidate] = {candidate.group: candidate for candidate in readable}
+    return {
+        "mode": mode,
+        "candidates": len(readable),
+        "read": len(selection.placements),
+        "decisions": [
+            {
+                "group": group,
+                "decision": decision,
+                "start_ms": by_group[group].start,
+                "text": by_group[group].text,
+                "weight_for": round(by_group[group].weight_for, 3),
+                "weight_against": round(by_group[group].weight_against, 3),
+                "margin": None if group not in margins else round(margins[group], 3),
+            }
+            for group, decision in selection.decisions
+        ],
+        "readings": [
+            {"group": item.group, "start_ms": item.start_ms, "end_ms": item.end_ms} for item in selection.placements
+        ],
+    }
+
+
+def _estimated(request_id: str, start_ms: int, text: str, order: int) -> NormalizedClip:
+    duration_ms: int = max(1, len(visible_text(text)) * 1000 // ESTIMATED_CHARS_PER_SECOND)
+    timed: TimedClip = TimedClip(
+        request_id,
+        start_ms,
+        start_ms + duration_ms,
+        order,
+        Path(f"{request_id}.mp3"),
+        AudioFormat.MP3,
+        1000,
+        1,
+        duration_ms,
+    )
+    return NormalizedClip(timed, Path(f"{request_id}.pcm"), 1000, 2, 1, duration_ms, PcmStorage.RAW, False)
+
+
+def replay(
+    roots: Sequence[Path], out: Path, dialogue_font: DialogueFont | None = None, signs: str | None = None
+) -> Path:
     """Replay every pair folder under the roots into ``out`` and write its mapping file; return the mapping path."""
     out.mkdir(parents=True, exist_ok=True)
     pairs: list[Entry] = []
@@ -166,15 +233,16 @@ def replay(roots: Sequence[Path], out: Path, dialogue_font: DialogueFont | None 
         print(f"replayed {pair_id}  excluded {len(excluded)}", file=sys.stderr)
         rows: list[Entry] = [{"index": index, "text": text} for index, text in inputs.translations.items()]
         output: str = destination.relative_to(out).as_posix()
-        pairs.append(
-            {
-                "pair": pair_id,
-                "output": output,
-                "inputs": rows,
-                "excluded": list(excluded),
-                "decisions": list(split.decisions),
-            }
-        )
+        entry: Entry = {
+            "pair": pair_id,
+            "output": output,
+            "inputs": rows,
+            "excluded": list(excluded),
+            "decisions": list(split.decisions),
+        }
+        if signs is not None:
+            entry["signs"] = sign_narration(split, inputs, signs)
+        pairs.append(entry)
     mapping: Path = out / MAPPING_NAME
     content: Entry = {"rule": EXCLUSION_RULE, "pairs": pairs, "skipped": skipped}
     mapping.write_text(json.dumps(content, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -256,6 +324,11 @@ def main(argv: Sequence[str], quality_root: Path) -> int:
     parser.add_argument("--compare", nargs=2, type=Path, metavar=("BASE", "OTHER"), help="replay folders to compare")
     parser.add_argument("--events", action="store_true", help="compare event by event, leaving excluded events out")
     parser.add_argument("--dialogue-font", type=Path, help="font file drawing dialogue, as the dialogue font setting")
+    parser.add_argument(
+        "--sign-narration",
+        choices=[mode for mode in SIGN_NARRATION_MODES if mode != "off"],
+        help="also record the signs the narrator would read, with durations estimated from the Polish text",
+    )
     args: argparse.Namespace = parser.parse_args(argv)
     setup_mode(LoggerMode.SILENT, file=FileConfig(enable=False))
     if args.compare is not None and args.events:
@@ -270,7 +343,7 @@ def main(argv: Sequence[str], quality_root: Path) -> int:
         parser.error("give --out to replay or --compare to compare")
     roots: list[Path] = list(args.roots) or [quality_root / folder for folder in REPLAY_ROOTS]
     font: DialogueFont | None = None if args.dialogue_font is None else DialogueFont.from_file(args.dialogue_font)
-    print(f"mapping {replay(roots, args.out, font)}", file=sys.stderr)
+    print(f"mapping {replay(roots, args.out, font, args.sign_narration)}", file=sys.stderr)
     return 0
 
 
