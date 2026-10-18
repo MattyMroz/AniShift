@@ -52,7 +52,7 @@ def test_gandhi_sans_missing_polish_glyph_uses_arial_of_the_same_style(
     found = index.glyph_match(request, ord("ż"))
 
     postscript, in_episode, synthetic_bold, synthetic_italic = expected
-    assert postscript in found.face.full_names
+    assert found.face.postscript_name == postscript
     assert (found.face.path.parent == folder, found.synthetic_bold, found.synthetic_italic) == (
         in_episode,
         synthetic_bold,
@@ -66,10 +66,10 @@ def test_comic_sans_missing_polish_glyph_uses_bold_variant_of_the_family() -> No
     request = index.match("Comic Sans MS", weight=400, italic=False)
 
     assert request is not None
-    assert "comicsansms" in request.face.full_names
+    assert request.face.postscript_name == "comicsansms"
     found = index.glyph_match(request, ord("ż"))
 
-    assert "comicsansms-bold" in found.face.full_names
+    assert found.face.postscript_name == "comicsansms-bold"
     assert (found.exact, found.synthetic_bold) == (True, False)
 
 
@@ -97,13 +97,24 @@ def test_officina_book_family_request_draws_with_bold_file(weight: int, italic: 
     match = index.match(_OFFICINA_FAMILY, weight=weight, italic=italic)
 
     assert match is not None
-    assert (expected in match.face.full_names, match.exact, match.synthetic_bold, match.synthetic_italic) == (
-        True,
+    assert (match.face.postscript_name, match.exact, match.synthetic_bold, match.synthetic_italic) == (
+        expected,
         True,
         False,
         False,
     )
     assert polish_missing(match.face) == ""
+
+
+def test_officina_book_request_draws_missing_glyph_with_regular_arial() -> None:
+    index = _index(_MPV_FONTS)
+    request = index.match(_OFFICINA_FAMILY, weight=400, italic=False)
+
+    assert request is not None
+    assert request.face.weight == 700
+    found = index.glyph_match(request, ord("Ж"))
+
+    assert (found.face.postscript_name, found.exact, found.synthetic_bold) == ("arialmt", False, False)
 
 
 def test_officina_typographic_family_does_not_match() -> None:

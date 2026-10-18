@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from fontTools.fontBuilder import FontBuilder  # type: ignore[import-untyped]
+from fontTools.pens.t2CharStringPen import T2CharStringPen  # type: ignore[import-untyped]
 from fontTools.pens.ttGlyphPen import TTGlyphPen  # type: ignore[import-untyped]
 from fontTools.ttLib import TTCollection  # type: ignore[import-untyped]
 
@@ -27,6 +28,7 @@ class FontSpec:
     typographic: str = ""
     mac_family: str = ""
     windows_family: bool = True
+    cff: bool = False
     win: tuple[int, int] = (800, 200)
     hhea: tuple[int, int] = (800, 200)
     typo: tuple[int, int] = (800, 200)
@@ -35,10 +37,16 @@ class FontSpec:
 def build_font(family: str, **options: Any) -> Any:
     spec = FontSpec(family, **options)
     names: list[str] = [".notdef", *(f"uni{ord(char):04X}" for char in spec.chars)]
-    builder: Any = FontBuilder(1000, isTTF=True)
+    builder: Any = FontBuilder(1000, isTTF=not spec.cff)
     builder.setupGlyphOrder(names)
     builder.setupCharacterMap({ord(char): f"uni{ord(char):04X}" for char in spec.chars})
-    builder.setupGlyf({name: _glyph(blank=name == "uni0020") for name in names})
+    if spec.cff:
+        outlines = {name: _draw(T2CharStringPen(ADVANCE, None), blank=name == "uni0020") for name in names}
+        builder.setupCFF(
+            spec.postscript or "Font", {}, {name: pen.getCharString() for name, pen in outlines.items()}, {}
+        )
+    else:
+        builder.setupGlyf({name: _draw(TTGlyphPen(None), blank=name == "uni0020").glyph() for name in names})
     builder.setupHorizontalMetrics(dict.fromkeys(names, (ADVANCE, INK_BOX[0])))
     builder.setupHorizontalHeader(ascent=spec.hhea[0], descent=-spec.hhea[1])
     builder.setupNameTable({}, mac=False)
@@ -78,8 +86,7 @@ def _set_names(table: Any, spec: FontSpec) -> None:
         table.setName(spec.mac_family, 1, 1, 0, 0)
 
 
-def _glyph(*, blank: bool) -> Any:
-    pen: Any = TTGlyphPen(None)
+def _draw(pen: Any, *, blank: bool) -> Any:
     if not blank:
         left, bottom, right, top = INK_BOX
         pen.moveTo((left, bottom))
@@ -87,4 +94,4 @@ def _glyph(*, blank: bool) -> Any:
         pen.lineTo((right, top))
         pen.lineTo((right, bottom))
         pen.closePath()
-    return pen.glyph()
+    return pen

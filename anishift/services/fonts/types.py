@@ -19,7 +19,9 @@ class FontFace:
     face_index: int
     family_names: frozenset[str]
     full_names: frozenset[str]
+    postscript_name: str | None
     weight: int
+    bold: bool
     italic: bool
     units_per_em: int
     ascent: int
@@ -35,3 +37,5 @@ class FontMatch:
     exact: bool
     synthetic_bold: bool
     synthetic_italic: bool
+    requested_weight: int
+    requested_italic: bool

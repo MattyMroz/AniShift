@@ -10,10 +10,10 @@ Czcionki odcinka i systemu: odczyt krojów (fontTools), wybór kroju tak jak lib
 
 ## Pułapki
 
-- Klucze to tylko p3 ID1 (wszystkie języki), p3 ID4 i nazwa PostScript (p3, a bez niej p1). ID16 i rodzina z platformy Mac nie są kluczami, gdy krój ma p3 ID1 — „ITC Officina Sans Std” nie trafia w Officinę właściciela. Rodzina z innej platformy tylko, gdy p3 ID1 brak.
+- Rodzina to tylko p3 ID1 (wszystkie języki); krój bez p3 ID1 jest pomijany. ID16 i rodzina z platformy Mac nie są kluczami — „ITC Officina Sans Std” nie trafia w Officinę właściciela. Pełna nazwa (p3 ID4) i PostScript działają jak `matches_full_or_postscript_name` w libass: krój z obrysami CFF/CFF2 trafia tylko nazwą PostScript, krój TrueType tylko pełną nazwą. `FontFace` nie niesie rodzaju obrysów, więc `FontIndex` trzyma go we własnym zbiorze.
 - Nazwa znaleziona w czcionkach odcinka wyklucza system, także dla zastępczego Ariala: Grand Blue (załącznik tylko Arial Bold) rysuje brakujące `ż` w Gandhi Sans kursywą syntetyczną z załącznika, Kaguya (bez Ariala) systemowym `arialbi.ttf`. Tak samo w logach libass.
-- `glyph_match` nie zna żądanej wagi (`FontMatch` jej nie niesie): wyprowadza ją z kroju i flag syntezy (synteza pogrubienia = 700). Różni się od libass tylko, gdy żądanie trafiło w wariant o innej wadze bez syntezy.
-- Brak flagi `FT_STYLE_FLAG_BOLD` w `FontFace`: synteza pogrubienia i premia +120 w ocenie wariantu zależą tylko od warunku „waga żądana > waga kroju + 150”.
+- `glyph_match` dobiera krój rodziny i zastępczy Arial dla żądania (`requested_weight`, `requested_italic`), nie dla wybranego kroju: Officina Book przy wadze 400 rysuje się plikiem Bold, ale brakujący glif Arialem 400.
+- Synteza pogrubienia i premia +120 w ocenie wariantu tylko dla kroju bez flagi bold (`fsSelection` bit 5, bez OS/2 `macStyle`) i przy wadze żądanej > waga kroju + 150.
 - `build` czyta z plików systemowych tylko tabele `name`; pełny krój (`cmap`) dopiero dla dopasowanej nazwy. Pełny odczyt ~370 krojów systemu to ~2,3 s i ~60 MB.
 - Pillow ładuje plik do pamięci, nie po ścieżce: FreeType trzymałby otwarty uchwyt i blokował usuwanie stagingu na Windows.
 - Cache metryk i krojów Pillow jest procesowy, po (ścieżka, indeks kroju[, znak]): plik pod tą samą ścieżką nie może zmienić treści w trakcie procesu.

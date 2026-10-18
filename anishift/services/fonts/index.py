@@ -70,7 +70,7 @@ _MAC_STYLE_ITALIC: Final[int] = 2
 """``head.macStyle`` italic bit read when the font has no OS/2 table."""
 
 _MAC_PLATFORM: Final[int] = 1
-"""Name table platform of Macintosh records."""
+"""Name table platform of Macintosh records, read only for a PostScript name missing on Windows."""
 
 _WINDOWS_PLATFORM: Final[int] = 3
 """Name table platform of Windows records, the only one libass reads names from."""
@@ -83,6 +83,9 @@ _FULL_NAME_ID: Final[int] = 4
 
 _POSTSCRIPT_NAME_ID: Final[int] = 6
 """Name table identifier of the PostScript name."""
+
+_POSTSCRIPT_OUTLINE_TABLES: Final[tuple[str, ...]] = ("CFF ", "CFF2")
+"""Outline tables of faces libass matches by PostScript name instead of full name."""
 
 _SIGNED_SHORT: Final[int] = 0x8000
 """First unsigned 16-bit value that libass reads as negative."""
@@ -107,8 +110,7 @@ _READ_ERRORS: Final[tuple[type[Exception], ...]] = (
 
 def read_faces(path: Path) -> tuple[FontFace, ...]:
     """Read every usable face of a font file; a missing or unreadable file gives no faces."""
-    faces: tuple[FontFace | None, ...] = _read_fonts(path, lambda font, index: _face(font, path, index))
-    return tuple(face for face in faces if face is not None)
+    return tuple(face for face, _ in _read_entries(path))
 
 
 def polish_missing(face: FontFace) -> str:
@@ -128,6 +130,11 @@ def system_font_paths() -> tuple[Path, ...]:
     return tuple(path for path in files if path.suffix.casefold() in _FONT_SUFFIXES)
 
 
+def _read_entries(path: Path) -> tuple[tuple[FontFace, bool], ...]:
+    entries: tuple[tuple[FontFace, bool] | None, ...] = _read_fonts(path, lambda font, index: _entry(font, path, index))
+    return tuple(entry for entry in entries if entry is not None)
+
+
 def _read_fonts[T](path: Path, read: Callable[[Any, int], T]) -> tuple[T, ...]:
     try:
         with _open_fonts(path) as fonts:
@@ -145,52 +152,56 @@ def _open_fonts(path: Path) -> Iterator[Sequence[Any]]:
         yield TTCollection(handle, lazy=True).fonts if collection else [TTFont(handle, lazy=True)]
 
 
-def _face(font: Any, path: Path, index: int) -> FontFace | None:
-    families, full_names = _names(font)
+def _entry(font: Any, path: Path, index: int) -> tuple[FontFace, bool] | None:
+    families, full_names, postscript_name = _names(font)
     ascent, descent = _vertical_metrics(font)
     units_per_em: int = font["head"].unitsPerEm
     if not families or units_per_em <= 0 or ascent + descent <= 0:
         return None
-    weight, italic = _style(font)
+    weight, bold, italic = _style(font)
     cmap: Mapping[int, str] = font.getBestCmap() or {}
-    return FontFace(
+    face: FontFace = FontFace(
         path=path,
         face_index=index,
         family_names=families,
         full_names=full_names,
+        postscript_name=postscript_name,
         weight=weight,
+        bold=bold,
         italic=italic,
         units_per_em=units_per_em,
         ascent=ascent,
         descent=descent,
         codepoints=frozenset(cmap),
     )
+    return face, any(table in font for table in _POSTSCRIPT_OUTLINE_TABLES)
 
 
-def _names(font: Any) -> tuple[frozenset[str], frozenset[str]]:
+def _names(font: Any) -> tuple[frozenset[str], frozenset[str], str | None]:
     records: list[Any] = font["name"].names
     windows: list[Any] = [record for record in records if record.platformID == _WINDOWS_PLATFORM]
     mac: list[Any] = [record for record in records if record.platformID == _MAC_PLATFORM]
-    families: frozenset[str] = _texts(windows, _FAMILY_NAME_ID) or _texts(records, _FAMILY_NAME_ID)
-    postscript: frozenset[str] = _texts(windows, _POSTSCRIPT_NAME_ID) or _texts(mac, _POSTSCRIPT_NAME_ID)
-    return families, _texts(windows, _FULL_NAME_ID) | postscript
+    postscript: list[str] = _texts(windows, _POSTSCRIPT_NAME_ID) or _texts(mac, _POSTSCRIPT_NAME_ID)
+    families: frozenset[str] = frozenset(_texts(windows, _FAMILY_NAME_ID))
+    return families, frozenset(_texts(windows, _FULL_NAME_ID)), postscript[0] if postscript else None
 
 
-def _texts(records: Iterable[Any], name_id: int) -> frozenset[str]:
-    texts: set[str] = {record.toUnicode(errors="ignore").casefold() for record in records if record.nameID == name_id}
-    return frozenset(texts - {""})
+def _texts(records: Iterable[Any], name_id: int) -> list[str]:
+    texts: list[str] = [record.toUnicode(errors="ignore").casefold() for record in records if record.nameID == name_id]
+    return [text for text in texts if text]
 
 
-def _style(font: Any) -> tuple[int, bool]:
+def _style(font: Any) -> tuple[int, bool, bool]:
     if "OS/2" not in font:
         mac_style: int = font["head"].macStyle
-        weight: int = _BOLD_WEIGHT if mac_style & _MAC_STYLE_BOLD else _REGULAR_WEIGHT
-        return weight, bool(mac_style & _MAC_STYLE_ITALIC)
+        mac_bold: bool = bool(mac_style & _MAC_STYLE_BOLD)
+        return (_BOLD_WEIGHT if mac_bold else _REGULAR_WEIGHT), mac_bold, bool(mac_style & _MAC_STYLE_ITALIC)
     selection: int = font["OS/2"].fsSelection
+    bold: bool = bool(selection & _SELECTION_BOLD)
     weight_class: int = font["OS/2"].usWeightClass
     if weight_class == 0:
-        weight_class = _BOLD_WEIGHT if selection & _SELECTION_BOLD else _REGULAR_WEIGHT
-    return _LEGACY_WEIGHTS.get(weight_class, weight_class), bool(selection & _SELECTION_ITALIC)
+        weight_class = _BOLD_WEIGHT if bold else _REGULAR_WEIGHT
+    return _LEGACY_WEIGHTS.get(weight_class, weight_class), bold, bool(selection & _SELECTION_ITALIC)
 
 
 def _vertical_metrics(font: Any) -> tuple[int, int]:
@@ -215,16 +226,18 @@ def _signed(value: int) -> int:
 class FontIndex:
     """Two-level font lookup: episode fonts first, system fonts only for names the episode lacks."""
 
-    def __init__(self, episode: tuple[FontFace, ...], system_files: Mapping[str, tuple[Path, ...]]) -> None:
-        self._episode: tuple[FontFace, ...] = episode
+    def __init__(self, episode: Sequence[tuple[FontFace, bool]], system_files: Mapping[str, tuple[Path, ...]]) -> None:
+        self._episode: tuple[FontFace, ...] = tuple(face for face, _ in episode)
         self._system_files: Mapping[str, tuple[Path, ...]] = system_files
         self._system_faces: dict[Path, tuple[FontFace, ...]] = {}
+        self._postscript_outlines: set[tuple[Path, int]] = set()
+        self._remember_outlines(episode)
 
     @classmethod
     def build(cls, episode: Iterable[Path], system: Iterable[Path]) -> FontIndex:
         """Read episode font files and index system font files by name for reading on demand."""
-        faces: tuple[FontFace, ...] = tuple(face for path in episode for face in read_faces(path))
-        return cls(faces, _files_by_name(system))
+        entries: tuple[tuple[FontFace, bool], ...] = tuple(entry for path in episode for entry in _read_entries(path))
+        return cls(entries, _files_by_name(system))
 
     def match(self, name: str, *, weight: int, italic: bool) -> FontMatch | None:
         """Choose the face for an ASS font name, Arial when no face carries the name."""
@@ -235,11 +248,11 @@ class FontIndex:
         return None if fallback is None else _matched(fallback, weight, italic, exact=False)
 
     def glyph_match(self, request: FontMatch, codepoint: int) -> FontMatch:
-        """Choose the face drawing one character: the request, its family, then Arial of the same style."""
+        """Choose the face drawing one character: the request, its family, then Arial for the requested style."""
         if codepoint in request.face.codepoints:
             return request
-        weight: int = _BOLD_WEIGHT if request.synthetic_bold else request.face.weight
-        italic: bool = request.face.italic or request.synthetic_italic
+        weight: int = request.requested_weight
+        italic: bool = request.requested_italic
         for family in sorted(request.face.family_names):
             face: FontFace | None = self._find(family, weight, italic, codepoint)
             if face is not None:
@@ -251,17 +264,30 @@ class FontIndex:
 
     def _find(self, name: str, weight: int, italic: bool, codepoint: int | None = None) -> FontFace | None:
         key: str = name.strip().lstrip("@").casefold()
-        named: list[FontFace] = _named(self._episode, key) or _named(self._system(key), key)
+        named: list[FontFace] = self._named(self._episode, key) or self._named(self._system(key), key)
         usable: list[FontFace] = [face for face in named if codepoint is None or codepoint in face.codepoints]
         return min(usable, key=lambda face: _score(face, key, weight, italic), default=None)
+
+    def _named(self, faces: Iterable[FontFace], key: str) -> list[FontFace]:
+        return [face for face in faces if key in face.family_names or self._full_or_postscript(face, key)]
+
+    def _full_or_postscript(self, face: FontFace, key: str) -> bool:
+        if (face.path, face.face_index) in self._postscript_outlines:
+            return key == face.postscript_name
+        return key in face.full_names
 
     def _system(self, name: str) -> tuple[FontFace, ...]:
         faces: list[FontFace] = []
         for path in self._system_files.get(name, ()):
             if path not in self._system_faces:
-                self._system_faces[path] = read_faces(path)
+                entries: tuple[tuple[FontFace, bool], ...] = _read_entries(path)
+                self._system_faces[path] = tuple(face for face, _ in entries)
+                self._remember_outlines(entries)
             faces.extend(self._system_faces[path])
         return tuple(faces)
+
+    def _remember_outlines(self, entries: Iterable[tuple[FontFace, bool]]) -> None:
+        self._postscript_outlines.update((face.path, face.face_index) for face, postscript in entries if postscript)
 
 
 def _files_by_name(paths: Iterable[Path]) -> dict[str, tuple[Path, ...]]:
@@ -273,12 +299,10 @@ def _files_by_name(paths: Iterable[Path]) -> dict[str, tuple[Path, ...]]:
 
 
 def _file_names(path: Path) -> set[str]:
-    faces: tuple[tuple[frozenset[str], frozenset[str]], ...] = _read_fonts(path, lambda font, _: _names(font))
-    return {name for families, full_names in faces for name in families | full_names}
-
-
-def _named(faces: Iterable[FontFace], key: str) -> list[FontFace]:
-    return [face for face in faces if key in face.family_names or key in face.full_names]
+    faces: tuple[tuple[frozenset[str], frozenset[str], str | None], ...] = _read_fonts(
+        path, lambda font, _: _names(font)
+    )
+    return {name for families, full, postscript in faces for name in (*families, *full, postscript) if name}
 
 
 def _score(face: FontFace, key: str, weight: int, italic: bool) -> int:
@@ -300,8 +324,10 @@ def _matched(face: FontFace, weight: int, italic: bool, *, exact: bool) -> FontM
         exact=exact,
         synthetic_bold=_emboldens(face, weight),
         synthetic_italic=italic and not face.italic,
+        requested_weight=weight,
+        requested_italic=italic,
     )
 
 
 def _emboldens(face: FontFace, weight: int) -> bool:
-    return weight > face.weight + _FAUX_BOLD_MARGIN
+    return not face.bold and weight > face.weight + _FAUX_BOLD_MARGIN

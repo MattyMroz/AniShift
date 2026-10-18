@@ -24,12 +24,13 @@ def _arial(folder: Path) -> list[Path]:
     ]
 
 
-def test_read_faces_windows_family_and_full_names_are_casefolded_keys(tmp_path: Path) -> None:
+def test_read_faces_windows_names_are_casefolded_keys(tmp_path: Path) -> None:
     path = write_font(
         tmp_path / "officina.ttf",
         "Officina Sans PL Book",
         weight=700,
-        full="OfficinaSansPL-Bold",
+        bold_flag=True,
+        full="Officina Sans PL Bold",
         postscript="OfficinaSansPL-Bold",
         typographic="Officina Sans",
         mac_family="Officina Sans",
@@ -38,16 +39,9 @@ def test_read_faces_windows_family_and_full_names_are_casefolded_keys(tmp_path: 
     (face,) = read_faces(path)
 
     assert face.family_names == frozenset({"officina sans pl book"})
-    assert face.full_names == frozenset({"officinasanspl-bold"})
-    assert (face.path, face.face_index, face.weight, face.italic) == (path, 0, 700, False)
-
-
-def test_read_faces_without_windows_family_uses_other_platform_family(tmp_path: Path) -> None:
-    path = write_font(tmp_path / "mac.ttf", "Unused", windows_family=False, mac_family="Mac Only")
-
-    (face,) = read_faces(path)
-
-    assert face.family_names == frozenset({"mac only"})
+    assert face.full_names == frozenset({"officina sans pl bold"})
+    assert face.postscript_name == "officinasanspl-bold"
+    assert (face.path, face.face_index, face.weight, face.bold, face.italic) == (path, 0, 700, True, False)
 
 
 @pytest.mark.parametrize(
@@ -59,7 +53,9 @@ def test_read_faces_weight_follows_libass_table(
 ) -> None:
     path = write_font(tmp_path / "font.ttf", "Weighted", weight=weight_class, bold_flag=bold_flag)
 
-    assert read_faces(path)[0].weight == expected
+    face = read_faces(path)[0]
+
+    assert (face.weight, face.bold) == (expected, bold_flag)
 
 
 @pytest.mark.parametrize(
@@ -110,20 +106,28 @@ def test_polish_missing_lists_letters_absent_from_cmap(tmp_path: Path) -> None:
     assert polish_missing(face) == "ąćęńśźżĄĆĘŃŚŹŻ"
 
 
-def test_match_full_or_postscript_name_selects_that_face(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("cff", "suffix", "matching", "ignored"),
+    [(False, "ttf", "FAMILY BOLD", "family-bold"), (True, "otf", "family-bold", "FAMILY BOLD")],
+)
+def test_match_full_or_postscript_name_follows_outline_kind(
+    tmp_path: Path, cff: bool, suffix: str, matching: str, ignored: str
+) -> None:
     files = [
-        write_font(tmp_path / "regular.ttf", "Family", full="Family Regular", postscript="Family-Regular"),
-        write_font(tmp_path / "bold.ttf", "Family", weight=700, full="Family Bold", postscript="Family-Bold"),
+        write_font(
+            tmp_path / f"regular.{suffix}", "Family", full="Family Regular", postscript="Family-Regular", cff=cff
+        ),
+        write_font(
+            tmp_path / f"bold.{suffix}", "Family", weight=700, full="Family Bold", postscript="Family-Bold", cff=cff
+        ),
     ]
     index = FontIndex.build(files, ())
 
-    by_full = index.match("FAMILY BOLD", weight=400, italic=False)
-    by_postscript = index.match("family-bold", weight=400, italic=False)
+    found = index.match(matching, weight=400, italic=False)
 
-    assert by_full is not None
-    assert by_postscript is not None
-    assert by_full.face.path == by_postscript.face.path == files[1]
-    assert by_full.exact
+    assert found is not None
+    assert (found.face.path, found.exact) == (files[1], True)
+    assert index.match(ignored, weight=400, italic=False) is None
 
 
 def test_match_typographic_family_is_not_a_key(tmp_path: Path) -> None:
@@ -159,9 +163,15 @@ def test_match_family_picks_variant_by_libass_score(
     assert (match.face.path.name, match.synthetic_bold, match.synthetic_italic) == expected
 
 
-def test_match_bold_request_prefers_emboldened_regular_over_black(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("regular_bold_flag", "expected"),
+    [(False, ("regular.ttf", True)), (True, ("black.ttf", False))],
+)
+def test_match_bold_request_credits_faux_bold_only_to_faces_without_bold_flag(
+    tmp_path: Path, regular_bold_flag: bool, expected: tuple[str, bool]
+) -> None:
     files = [
-        write_font(tmp_path / "regular.ttf", "Family"),
+        write_font(tmp_path / "regular.ttf", "Family", bold_flag=regular_bold_flag),
         write_font(tmp_path / "black.ttf", "Family", weight=900, bold_flag=True),
     ]
     index = FontIndex.build(files, ())
@@ -169,7 +179,19 @@ def test_match_bold_request_prefers_emboldened_regular_over_black(tmp_path: Path
     match = index.match("Family", weight=700, italic=False)
 
     assert match is not None
-    assert (match.face.path.name, match.synthetic_bold) == ("regular.ttf", True)
+    assert (match.face.path.name, match.synthetic_bold) == expected
+
+
+@pytest.mark.parametrize(("bold_flag", "synthetic_bold"), [(False, True), (True, False)])
+def test_match_synthesizes_bold_only_for_faces_without_bold_flag(
+    tmp_path: Path, bold_flag: bool, synthetic_bold: bool
+) -> None:
+    index = FontIndex.build([write_font(tmp_path / "font.ttf", "Family", bold_flag=bold_flag)], ())
+
+    match = index.match("Family", weight=700, italic=False)
+
+    assert match is not None
+    assert (match.synthetic_bold, match.requested_weight, match.requested_italic) == (synthetic_bold, 700, False)
 
 
 def test_match_family_in_episode_ignores_system_variants(tmp_path: Path) -> None:
@@ -243,6 +265,23 @@ def test_glyph_match_without_family_glyph_uses_arial_of_the_same_style(tmp_path:
         False,
         False,
         False,
+    )
+
+
+def test_glyph_match_picks_arial_for_the_requested_weight_not_the_face_weight(tmp_path: Path) -> None:
+    episode = [write_font(tmp_path / "book-bold.ttf", "Book", weight=700, bold_flag=True, chars="Hab")]
+    index = FontIndex.build(episode, _arial(tmp_path / "system"))
+    request = index.match("Book", weight=400, italic=False)
+
+    assert request is not None
+    assert (request.face.path, request.synthetic_bold) == (episode[0], False)
+    found = index.glyph_match(request, ord("ż"))
+
+    assert (found.face.path.name, found.exact, found.synthetic_bold, found.requested_weight) == (
+        "arial.ttf",
+        False,
+        False,
+        400,
     )
 
 
