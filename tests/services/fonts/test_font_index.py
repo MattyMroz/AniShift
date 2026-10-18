@@ -126,7 +126,7 @@ def test_match_full_or_postscript_name_follows_outline_kind(
     found = index.match(matching, weight=400, italic=False)
 
     assert found is not None
-    assert (found.face.path, found.exact) == (files[1], True)
+    assert (found.face.path, found.exact, found.face.postscript_outlines) == (files[1], True, cff)
     assert index.match(ignored, weight=400, italic=False) is None
 
 

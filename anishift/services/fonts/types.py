@@ -26,6 +26,7 @@ class FontFace:
     units_per_em: int
     ascent: int
     descent: int
+    postscript_outlines: bool
     codepoints: frozenset[int]
 
 
