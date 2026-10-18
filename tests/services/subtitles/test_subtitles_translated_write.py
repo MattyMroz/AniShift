@@ -21,10 +21,8 @@ from anishift.services.subtitles.service import (
     write_full,
     write_spoken,
     write_translated,
-    write_translated_displayed,
-    write_translated_spoken,
 )
-from anishift.services.subtitles.text import is_drawing, visible_text
+from anishift.services.subtitles.text import visible_text
 from anishift.services.subtitles.types import LayoutReport, SubtitleKind, SubtitleSplit, TranslatedLayout
 
 if TYPE_CHECKING:
@@ -84,22 +82,16 @@ def test_returns_none_when_no_dialogue_events(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("translated", [False, True])
-@pytest.mark.parametrize("stream", ["full", "spoken", "displayed"])
-def test_writers_preserve_embedded_assets_and_editor_metadata(tmp_path: Path, *, translated: bool, stream: str) -> None:
+@pytest.mark.parametrize("stream", ["translated", "full", "spoken", "displayed"])
+def test_writers_preserve_embedded_assets_and_editor_metadata(tmp_path: Path, stream: str) -> None:
     subs: SSAFile = _ass_with_both_streams()
     subs.fonts_opaque = {"sample.ttf": ["!!!!"]}
     subs.graphics_opaque = {"sample.bmp": ["!!!!"]}
     subs.aegisub_project = {"Last Style Storage": "Default", "Video Zoom Percent": "1.000000"}
     split: SubtitleSplit = split_subtitles(subs, kind="ass", spoken_styles={"Dialog"})
     dest: Path = tmp_path / "out.ass"
-    texts: dict[int, str] = _fake_translation(split)
-    if translated and stream == "full":
-        _write(split, texts, dest)
-    elif translated and stream == "spoken":
-        write_translated_spoken(split, texts, dest, fonts=None, limits=LayoutLimits(), dialogue_font=None)
-    elif translated:
-        write_translated_displayed(split, texts, dest, fonts=None, limits=LayoutLimits(), dialogue_font=None)
+    if stream == "translated":
+        _write(split, _fake_translation(split), dest)
     else:
         {"full": write_full, "spoken": write_spoken, "displayed": write_displayed}[stream](split, dest)
     after: SSAFile = load_subtitles(dest)
@@ -251,33 +243,6 @@ def test_repeated_srt_occurrences_keep_individual_translations(
     assert [(event.start, event.end) for event in after.events] == [(0, 500), (second_start, second_start + 500)]
 
 
-def test_translated_displayed_file_contains_only_overlay_events(tmp_path: Path) -> None:
-    source = SSAFile()
-    source.events.extend(
-        [
-            SSAEvent(start=0, end=1000, style="Dialog", text="Spoken"),
-            SSAEvent(start=1000, end=2000, style="Sign", text=r"{\an8}Episode title"),
-            SSAEvent(start=2000, end=3000, style="Sign", text=r"{\p1}m 0 0 l 10 10"),
-        ]
-    )
-    split = split_subtitles(source, kind="ass", spoken_styles={"Dialog"})
-    dest = write_translated_displayed(
-        split,
-        {1: "Tytuł odcinka"},
-        tmp_path / "show.displayed.pl.ass",
-        fonts=None,
-        limits=LayoutLimits(),
-        dialogue_font=None,
-    )
-    assert dest is not None
-    after = load_subtitles(dest)
-    dialogue = [event for event in after.events if event.type == "Dialogue"]
-    assert len(dialogue) == 2
-    assert visible_text(dialogue[0].text) == "Tytuł odcinka"
-    assert is_drawing(dialogue[1].text)
-    assert dialogue[1].text == source.events[2].text
-
-
 def test_source_products_split_polish_ass_without_changing_events(tmp_path: Path) -> None:
     source = _ass_with_both_streams()
     split = split_subtitles(source, kind="ass", spoken_styles={"Dialog"})
@@ -295,24 +260,6 @@ def test_source_products_split_polish_ass_without_changing_events(tmp_path: Path
     assert [event.text for event in full_events] == [event.text for event in source.events]
     assert [event.text for event in spoken_events] == [source.events[0].text]
     assert [event.text for event in displayed_events] == [event.text for event in source.events[1:]]
-
-
-def test_translated_spoken_file_contains_only_spoken_events(tmp_path: Path) -> None:
-    source = _ass_with_both_streams()
-    split = split_subtitles(source, kind="ass", spoken_styles={"Dialog"})
-    dest = write_translated_spoken(
-        split,
-        _fake_translation(split),
-        tmp_path / "show.spoken.pl.ass",
-        fonts=None,
-        limits=LayoutLimits(),
-        dialogue_font=None,
-    )
-
-    assert dest is not None
-    dialogue = [event for event in load_subtitles(dest).events if event.type == "Dialogue"]
-    assert len(dialogue) == 1
-    assert visible_text(dialogue[0].text) == "PL:Hello there"
 
 
 @pytest.mark.skipif(not _REAL_ASS.is_file(), reason="dataset_ass corpus not available")

@@ -62,8 +62,6 @@ __all__ = [
     "write_full",
     "write_spoken",
     "write_translated",
-    "write_translated_displayed",
-    "write_translated_spoken",
 ]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -486,44 +484,6 @@ def write_translated(  # noqa: PLR0913 - layout inputs mirror layout_translated
         split, translations, fonts=fonts, limits=limits, dialogue_font=dialogue_font
     )
     return _write_laid_out(laid_out.subs, laid_out.report, dest, split.kind, subject="Translated")
-
-
-def write_translated_spoken(  # noqa: PLR0913 - layout inputs mirror layout_translated
-    split: SubtitleSplit,
-    translations: Mapping[int, str],
-    dest: Path,
-    *,
-    fonts: FontSources | None,
-    limits: LayoutLimits,
-    dialogue_font: DialogueFont | None,
-) -> Path | None:
-    """Lay out and write the translated spoken-only subtitle product atomically, or return None when it is empty."""
-    if split.stats.spoken_events == 0:
-        return None
-    laid_out: TranslatedLayout = layout_translated(
-        split, translations, fonts=fonts, limits=limits, dialogue_font=dialogue_font
-    )
-    output: SSAFile = _stream_file(replace(split, subs=laid_out.subs), "spoken")
-    return _write_laid_out(output, laid_out.report, dest, split.kind, subject="Translated spoken")
-
-
-def write_translated_displayed(  # noqa: PLR0913 - layout inputs mirror layout_translated
-    split: SubtitleSplit,
-    translations: Mapping[int, str],
-    dest: Path,
-    *,
-    fonts: FontSources | None,
-    limits: LayoutLimits,
-    dialogue_font: DialogueFont | None,
-) -> Path | None:
-    """Lay out and write the translated displayed-only subtitle product atomically, or return None when it is empty."""
-    if split.stats.displayed_events == 0:
-        return None
-    laid_out: TranslatedLayout = layout_translated(
-        split, translations, fonts=fonts, limits=limits, dialogue_font=dialogue_font
-    )
-    output: SSAFile = _stream_file(replace(split, subs=laid_out.subs), "displayed")
-    return _write_laid_out(output, laid_out.report, dest, split.kind, subject="Translated displayed")
 
 
 def _write_laid_out(output: SSAFile, report: LayoutReport, dest: Path, kind: SubtitleKind, *, subject: str) -> Path:
