@@ -5,7 +5,7 @@ Napisy: klasyfikacja stylów ASS (DIALOG/SIGN/UNCERTAIN), split spoken/displayed
 ## Pliki
 
 - `classifier.py` — heurystyka klasyfikacji stylów ASS + deduplikacja animacji
-- `service.py` — load/preview/split/write + zwijanie FBF
+- `service.py` — load/split/write + zwijanie FBF
 - `text.py` — tag-bezpieczne operacje na tekście eventu ASS/SRT
 - `linebreak.py` — polski reflow (`split_line`) i odtwarzanie authored layoutu (`split_for_layout`)
 - `layout.py` — `LayoutLimits`: limity długości i liczby wierszy wybrane dla przebiegu

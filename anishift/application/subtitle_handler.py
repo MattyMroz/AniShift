@@ -2,23 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Final
-
-from pysubs2 import SSAFile
 
 from anishift.application.artifacts import Artifact, ArtifactKind
 from anishift.application.cancellation import CancellationToken
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
 from anishift.application.planning import PlanTask, TaskKind
-from anishift.application.products import product_path
 from anishift.application.results import ArtifactSnapshot, ProducedArtifact, TaskResult
 from anishift.application.scheduler_contracts import TaskProgressSink
 from anishift.application.task_paths import task_staging_path
 from anishift.errors import ExecutionError
 from anishift.services.subtitles import (
-    StyleVerdict,
     SubtitleKind,
     SubtitleSplit,
     load_subtitles,
@@ -27,76 +23,16 @@ from anishift.services.subtitles import (
     split_subtitles,
     subtitle_kind,
     write_displayed,
-    write_full,
     write_spoken,
-    write_translated,
-    write_translated_displayed,
-    write_translated_spoken,
 )
 from anishift.services.subtitles.layout import LayoutLimits
 
-__all__ = ["LegacySubtitleAdapter", "LegacySubtitleProducts", "SubtitleTaskHandler"]
+__all__ = ["SubtitleTaskHandler"]
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
 _MAX_SPLIT_OUTPUTS: Final[int] = 2
 """Largest supported pair of spoken and displayed subtitle outputs."""
-
-
-@dataclass(frozen=True, slots=True)
-class LegacySubtitleProducts:
-    """Paths written for the three subtitle products of the REPL pipeline."""
-
-    full: Path | None
-    spoken: Path | None
-    displayed: Path | None
-
-
-class LegacySubtitleAdapter:
-    """Application boundary around existing subtitle load, split, and write operations."""
-
-    def load(self, source: Path) -> SSAFile:
-        """Load one subtitle file through the existing parser."""
-        return load_subtitles(source)
-
-    def split(
-        self,
-        subtitles: SSAFile,
-        *,
-        kind: SubtitleKind,
-        spoken_styles: set[str] | None = None,
-        verdicts: tuple[StyleVerdict, ...] | None = None,
-    ) -> SubtitleSplit:
-        """Classify one loaded subtitle document with the existing policy."""
-        return split_subtitles(
-            subtitles,
-            kind=kind,
-            spoken_styles=spoken_styles,
-            verdicts=verdicts,
-        )
-
-    def write_polish(self, split: SubtitleSplit, base: Path, kind: SubtitleKind) -> LegacySubtitleProducts:
-        """Write complete, spoken, and displayed products from a Polish source."""
-        return LegacySubtitleProducts(
-            write_full(split, _product_path(base, ArtifactKind.FULL_PL, kind)),
-            write_spoken(split, _product_path(base, ArtifactKind.SPOKEN_PL, kind)),
-            write_displayed(split, _product_path(base, ArtifactKind.DISPLAYED_PL, kind)),
-        )
-
-    def write_translated_products(
-        self,
-        split: SubtitleSplit,
-        displayed: tuple[tuple[str, ...], ...],
-        spoken: tuple[tuple[str, ...], ...],
-        base: Path,
-        kind: SubtitleKind,
-    ) -> LegacySubtitleProducts:
-        """Write the three translated products with the existing layout policy."""
-        return LegacySubtitleProducts(
-            write_translated(split, displayed, spoken, _product_path(base, ArtifactKind.FULL_PL, kind)),
-            write_translated_spoken(split, spoken, _product_path(base, ArtifactKind.SPOKEN_PL, kind)),
-            write_translated_displayed(split, displayed, _product_path(base, ArtifactKind.DISPLAYED_PL, kind)),
-        )
 
 
 class SubtitleTaskHandler:
@@ -187,10 +123,6 @@ class SubtitleTaskHandler:
                 raise ExecutionError(msg)
             produced.append(ProducedArtifact(output.artifact_id, written, {}))
         return TaskResult(task.task_id, tuple(produced), tuple(absent))
-
-
-def _product_path(base: Path, kind: ArtifactKind, subtitle_format: SubtitleKind) -> Path:
-    return product_path(base.parent, base.name, kind, subtitle_format=subtitle_format)
 
 
 def _subtitle_path(artifact: Artifact) -> Path:

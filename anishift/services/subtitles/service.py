@@ -38,7 +38,6 @@ __all__ = [
     "collapse_fbf",
     "load_subtitles",
     "normalize_subtitles",
-    "preview_styles",
     "reflow_polish_dialogue",
     "split_subtitles",
     "subtitle_kind",
@@ -54,12 +53,6 @@ __all__ = [
 
 _FBF_MAX_GAP_MS: Final[int] = 500
 """Maximum gap between consecutive identical events merged as one FBF run."""
-
-_SAMPLES_PER_STYLE: Final[int] = 3
-"""Number of preview samples collected per style."""
-
-_SAMPLE_MAX_CHARS: Final[int] = 60
-"""Maximum preview sample length."""
 
 _SUFFIX_KIND: Final[dict[str, SubtitleKind]] = {".ass": "ass", ".ssa": "ass", ".srt": "srt"}
 """Supported subtitle suffixes and their working formats."""
@@ -155,20 +148,6 @@ def reflow_polish_dialogue(split: SubtitleSplit, layout: LayoutLimits | None = N
         )
         event.text = reflow_visible_text(event.text, verses)
     return replace(split, subs=subtitles)
-
-
-def preview_styles(subs: SSAFile) -> tuple[tuple[StyleVerdict, ...], dict[str, tuple[str, ...]]]:
-    """Classify styles and collect short, visible-text samples per style."""
-    verdicts = tuple(classify_styles(subs))
-    samples: dict[str, list[str]] = defaultdict(list)
-    for event in subs.events:
-        if event.type != "Dialogue" or is_drawing(event.text):
-            continue
-        text = visible_text(event.text)
-        if not text or text in samples[event.style] or len(samples[event.style]) >= _SAMPLES_PER_STYLE:
-            continue
-        samples[event.style].append(text[: _SAMPLE_MAX_CHARS - 1] + "…" if len(text) > _SAMPLE_MAX_CHARS else text)
-    return verdicts, {style: tuple(lines) for style, lines in samples.items()}
 
 
 def _make_run(events: list[tuple[int, SSAEvent]], text: str, style: str) -> SpokenLine:
