@@ -28,7 +28,7 @@ from anishift.services.subtitles.fitting import fit_signs
 from anishift.services.subtitles.geometry import RenderProfile
 from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.subtitles.linebreak import layout_dialogue, split_for_layout
-from anishift.services.subtitles.restyle import restyle_dialogue
+from anishift.services.subtitles.restyle import DIALOGUE_CLONE_SUFFIX, restyle_dialogue
 from anishift.services.subtitles.text import (
     is_drawing,
     replace_visible_text,
@@ -78,9 +78,6 @@ _COPY_WINDOW_MS: Final[int] = 500
 
 _RE_NON_WORD: Final[re.Pattern[str]] = re.compile(r"\W+")
 """Run of non-word characters ignored when comparing copies of one spoken line."""
-
-_DIALOGUE_CLONE_SUFFIX: Final[str] = " (dialog)"
-"""Suffix of the style cloned for the dialogue font, ignored when matching a translation to its source."""
 
 type _Run = list[tuple[int, SSAEvent]]
 """Dialogue events read as one spoken line, each with its Dialogue index."""
@@ -370,7 +367,7 @@ def inherit_split(source: SubtitleSplit, subs: SSAFile) -> SubtitleSplit | None:
 
 
 def _identity(event: SSAEvent) -> tuple[int, int, int, str]:
-    return event.start, event.end, event.layer, event.style.removesuffix(_DIALOGUE_CLONE_SUFFIX)
+    return event.start, event.end, event.layer, event.style.removesuffix(DIALOGUE_CLONE_SUFFIX)
 
 
 def _split_with(

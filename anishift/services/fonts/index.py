@@ -19,7 +19,7 @@ from anishift.utils.logger import get_logger
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
-__all__ = ["FontIndex", "polish_missing", "read_faces", "system_font_paths"]
+__all__ = ["FontIndex", "family_name", "polish_missing", "read_faces", "system_font_paths"]
 
 logger = get_logger(__name__)
 
@@ -117,6 +117,20 @@ def read_faces(path: Path) -> tuple[FontFace, ...]:
 def polish_missing(face: FontFace) -> str:
     """Return the Polish letters the face cannot draw."""
     return "".join(letter for letter in _POLISH_LETTERS if ord(letter) not in face.codepoints)
+
+
+def family_name(path: Path) -> str:
+    """Return the first Windows family name of the file's first face as written, empty when it has none."""
+    families: tuple[list[str], ...] = _read_fonts(
+        path,
+        lambda font, _: [
+            record.toUnicode(errors="ignore")
+            for record in font["name"].names
+            if record.platformID == _WINDOWS_PLATFORM and record.nameID == _FAMILY_NAME_ID
+        ],
+    )
+    first: list[str] = families[0] if families else []
+    return next((name for name in first if name), "")
 
 
 def system_font_paths() -> tuple[Path, ...]:

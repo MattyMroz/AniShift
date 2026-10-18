@@ -5,7 +5,7 @@ Czcionki odcinka i systemu: odczyt krojów (fontTools), wybór kroju tak jak lib
 ## Pliki
 
 - `types.py` — `FontFace` (nazwy po `casefold`, waga, kursywa, metryki pionowe, `cmap`), `FontMatch`
-- `index.py` — `read_faces`, `polish_missing`, `system_font_paths`, `FontIndex` (`build`, `match`, `glyph_match`)
+- `index.py` — `read_faces`, `polish_missing`, `family_name` (p3 ID1 pierwszego kroju w oryginalnej pisowni), `system_font_paths`, `FontIndex` (`build`, `match`, `glyph_match`)
 - `metrics.py` — `GlyphMetrics`, `glyph_metrics` (Pillow, 1000 px, bez kerningu), `font_scale`
 
 ## Pułapki

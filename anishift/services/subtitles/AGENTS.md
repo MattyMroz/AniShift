@@ -8,7 +8,7 @@ Napisy: klasyfikacja stylów ASS (DIALOG/SIGN/UNCERTAIN), split spoken/displayed
 - `service.py` — load/split/write + zwijanie FBF i kopii kwestii; `inherit_split` przenosi decyzje źródła na przekład; `layout_translated` układa nierozbity przekład (dialog, szyldy, raport) dla writerów i normalizacji
 - `geometry.py` — `RenderProfile` pliku, pomiar tekstu (`measure_text`, dziś Arialem 64 px), szerokość między marginesami, zawijanie i prostokąty na ekranie
 - `fitting.py` — `fit_signs`: dopasowanie szerokości szyldów do autorskiej geometrii
-- `restyle.py` — `DialogueFont` (czcionka dialogów właściciela z wariantami) i `restyle_dialogue`
+- `restyle.py` — `DialogueFont` (rodzina p3 ID1 w oryginalnej pisowni i warianty z polskimi literami z katalogu pliku) i `restyle_dialogue`: klon `<styl> (dialog)` (`DIALOGUE_CLONE_SUFFIX`, przy kolizji kolejny sufiks) dla każdego stylu z większością linii spoken; linie spoken i ich `\r<styl>` przechodzą do klonu, displayed zostają bajtowo identyczne
 - `text.py` — tag-bezpieczne operacje na tekście eventu ASS/SRT
 - `linebreak.py` — polski reflow (`split_line`, `layout_dialogue`) i odtwarzanie authored layoutu (`split_for_layout`, `split_lines`)
 - `layout.py` — `LayoutLimits`: limity długości i liczby wierszy wybrane dla przebiegu
