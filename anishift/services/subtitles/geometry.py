@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Final, Literal
 from PIL import ImageFont
 from pysubs2 import SSAStyle
 
-from anishift.services.fonts import font_scale, glyph_metrics
+from anishift.services.fonts import REFERENCE_SIZE, font_scale, glyph_metrics
 from anishift.services.subtitles.text import is_drawing, reflow_visible_text, visible_verses
 
 if TYPE_CHECKING:
@@ -595,13 +595,15 @@ def _alpha(value: str) -> int:
 
 @dataclass(frozen=True, slots=True)
 class _Glyph:
-    """One measured character in script pixels: pen advance, outline box from its origin and line metrics."""
+    """One measured character in script pixels: advance, ink and outline control box from its origin, line metrics."""
 
     char: str
     state: _State
     advance: float
     left: float
     right: float
+    box_left: float
+    box_right: float
     ascent: float
     descent: float
     visible: bool
@@ -641,36 +643,38 @@ def _glyph(char: _Char, request: FontMatch, fonts: FontIndex, fx: float, fy: flo
     state: _State = char.state
     match: FontMatch = request if char.text == _BREAK else fonts.glyph_match(request, ord(char.text))
     face: FontFace = match.face
-    height: float = state.size * state.scale_y / _PERCENT * fy
-    line_ascent: float = height * face.ascent / (face.ascent + face.descent)
-    if char.text == _BREAK:
-        return _Glyph(_BREAK, state, 0.0, 0.0, 0.0, 0.0, 0.0, False, line_ascent, height - line_ascent, False, True)
-    metrics: GlyphMetrics | None = _metrics(face, char.text)
-    if metrics is None:
-        return None
     scale_x: float = font_scale(face, state.size) * state.scale_x / _PERCENT * fx
     scale_y: float = font_scale(face, state.size) * state.scale_y / _PERCENT * fy
+    unit_y: float = scale_y * REFERENCE_SIZE / face.units_per_em
+    line_ascent: float = face.ascent * unit_y
+    line_descent: float = face.descent * unit_y
+    if char.text == _BREAK:
+        return _Glyph(_BREAK, state, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, line_ascent, line_descent, False, True)
     slant: float = _POSTSCRIPT_SHEAR if face.postscript_outlines else _TRUETYPE_SHEAR
-    shear: float = slant if match.synthetic_italic else 0.0
+    metrics: GlyphMetrics | None = _metrics(face, char.text, slant if match.synthetic_italic else 0.0)
+    if metrics is None:
+        return None
     return _Glyph(
         char=char.text,
         state=state,
         advance=metrics.advance * scale_x + state.spacing * state.scale_x / _PERCENT * fx,
         left=metrics.ink_left * scale_x,
-        right=metrics.ink_right * scale_x + shear * metrics.ink_ascent * scale_y,
+        right=metrics.ink_right * scale_x,
+        box_left=metrics.outline_left * scale_x,
+        box_right=metrics.outline_right * scale_x,
         ascent=metrics.ink_ascent * scale_y,
         descent=metrics.ink_descent * scale_y,
         visible=metrics.has_ink and _visible(state),
         line_ascent=line_ascent,
-        line_descent=height - line_ascent,
+        line_descent=line_descent,
         substitute=match is not request or not request.exact,
         exact=match.exact,
     )
 
 
-def _metrics(face: FontFace, char: str) -> GlyphMetrics | None:
+def _metrics(face: FontFace, char: str, slant: float) -> GlyphMetrics | None:
     try:
-        return glyph_metrics(face, char)
+        return glyph_metrics(face, char, slant=slant)
     except OSError:
         return None
 
@@ -683,11 +687,11 @@ def _widen_italic(glyphs: list[_Glyph]) -> None:
 
 
 def _widen(glyphs: list[_Glyph], back: int) -> None:
-    while back and glyphs[back].right == glyphs[back].left and glyphs[back].state.italic:
+    while back and glyphs[back].box_right == glyphs[back].box_left and glyphs[back].state.italic:
         back -= 1
     glyph: _Glyph = glyphs[back]
-    if glyph.right > glyph.advance:
-        glyphs[back] = replace(glyph, advance=glyph.right)
+    if glyph.box_right > glyph.advance:
+        glyphs[back] = replace(glyph, advance=glyph.box_right)
 
 
 def _visible(state: _State) -> bool:
@@ -721,7 +725,7 @@ def _greedy_starts(line: list[_Glyph], pens: list[float], limit: float) -> list[
     for index, glyph in enumerate(line):
         if glyph.char == _BREAK:
             continue
-        overflows: bool = _ink_right(line, pens, index) - _ink_left(line, pens, starts[-1]) >= limit
+        overflows: bool = _box_right(line, pens, index) - _box_left(line, pens, starts[-1]) >= limit
         if overflows and glyph.char != _SPACE and breakable >= 0:
             starts.append(breakable + 1)
             breakable = -1
@@ -757,10 +761,10 @@ def _balanced_start(line: list[_Glyph], pens: list[float], bounds: tuple[int, in
         word += 1
     if word == first:
         return second
-    tail_right: float = _ink_right(line, pens, _before_spaces(line, second, end))
-    head_left: float = _ink_left(line, pens, first)
-    before: float = abs(_ink_right(line, pens, last) - head_left - (tail_right - _ink_left(line, pens, second)))
-    after: float = abs(_ink_right(line, pens, shortened) - head_left - (tail_right - _ink_left(line, pens, word)))
+    tail_right: float = _box_right(line, pens, _before_spaces(line, second, end))
+    head_left: float = _box_left(line, pens, first)
+    before: float = abs(_box_right(line, pens, last) - head_left - (tail_right - _box_left(line, pens, second)))
+    after: float = abs(_box_right(line, pens, shortened) - head_left - (tail_right - _box_left(line, pens, word)))
     return word if after < before else second
 
 
@@ -771,12 +775,12 @@ def _before_spaces(line: list[_Glyph], start: int, stop: int) -> int:
     return index
 
 
-def _ink_left(line: list[_Glyph], pens: list[float], index: int) -> float:
-    return pens[index] + line[index].left
+def _box_left(line: list[_Glyph], pens: list[float], index: int) -> float:
+    return pens[index] + line[index].box_left
 
 
-def _ink_right(line: list[_Glyph], pens: list[float], index: int) -> float:
-    return pens[index] + line[index].right
+def _box_right(line: list[_Glyph], pens: list[float], index: int) -> float:
+    return pens[index] + line[index].box_right
 
 
 def _wrapped_verses(event: SSAEvent, text: str, profile: RenderProfile) -> tuple[str, ...] | None:
