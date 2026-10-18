@@ -175,30 +175,31 @@ class _Selector:
         choice: tuple[int, int] | None = self._place(candidate, clip.frame_count, area)
         if choice is None:
             return
-        index, start = choice
-        placed: NormalizedClip = self._timed(clip, start)
+        index, start_ms = choice
+        placed: NormalizedClip = self._timed(clip, start_ms)
         if not self._keeps_lines(placed):
             self.decisions.append((candidate.group, "late"))
             return
-        self._accept(candidate, placed, index, start)
+        self._accept(candidate, placed, index)
 
     def _place(self, candidate: SignCandidate, frames: int, area: tuple[int, int]) -> tuple[int, int] | None:
         area_start, area_end = area
         fitted: bool = False
         best_margin: float | None = None
         for index, (start, end) in enumerate(self._intervals):
-            reading: int = max(area_start, start)
+            start_ms: int = math.ceil(max(area_start, start) * 1000 / self._sample_rate)
+            reading: int = _frames(start_ms, self._sample_rate)
             limit: int = _bounded(end, area_end)
             if reading + frames > limit:
                 continue
             fitted = True
             if self._mode != _SMART:
-                return index, reading
+                return index, start_ms
             margin: float = candidate.weight_for - self._against(candidate, frames, reading, end)
             best_margin = margin if best_margin is None else max(best_margin, margin)
             if margin >= SIGN_MARGIN:
                 self.margins.append((candidate.group, margin))
-                return index, reading
+                return index, start_ms
         if best_margin is not None:
             self.margins.append((candidate.group, best_margin))
         self.decisions.append((candidate.group, "weight" if fitted else "no_pause"))
@@ -216,8 +217,7 @@ class _Selector:
             repeat_gap_ms=None if previous is None else reading_ms - previous,
         )
 
-    def _timed(self, clip: NormalizedClip, start: int) -> NormalizedClip:
-        start_ms: int = math.ceil(start * 1000 / self._sample_rate)
+    def _timed(self, clip: NormalizedClip, start_ms: int) -> NormalizedClip:
         end_ms: int = start_ms + math.ceil(clip.frame_count * 1000 / self._sample_rate)
         return replace(clip, timed_clip=replace(clip.timed_clip, start_ms=start_ms, end_ms=end_ms))
 
@@ -231,8 +231,9 @@ class _Selector:
             if item.request_id in self._baseline_starts
         )
 
-    def _accept(self, candidate: SignCandidate, placed: NormalizedClip, index: int, start: int) -> None:
+    def _accept(self, candidate: SignCandidate, placed: NormalizedClip, index: int) -> None:
         breath: int = _frames(SIGN_BREATH_MS, self._sample_rate)
+        start: int = _frames(placed.timed_clip.start_ms, self._sample_rate)
         interval_start, interval_end = self._intervals.pop(index)
         pieces: list[Interval] = []
         if start - breath > interval_start:

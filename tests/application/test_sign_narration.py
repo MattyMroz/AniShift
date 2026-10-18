@@ -248,6 +248,25 @@ def test_read_signs_never_move_a_line_even_after_rounding_frames_to_milliseconds
     assert all(end <= next_start for (_, end), (next_start, _) in pairwise(starts))
 
 
+@pytest.mark.parametrize(("frames", "decision"), [(14_399, "no_pause"), (14_376, "read")])
+def test_a_read_sign_keeps_a_full_breath_after_its_start_is_rounded_to_milliseconds(frames: int, decision: str) -> None:
+    rate: int = 24_000
+    lines: tuple[NormalizedClip, ...] = (_clip("line-1", 0, 24_001, 10, rate), _clip("line-2", 2000, 120_000, 20, rate))
+    recordings: dict[int, NormalizedClip] = {3: _clip("sign-3", 0, frames, 3, rate)}
+
+    selection: SignSelection = select_signs((_sign(3, 1000, 1900, (0.9, 0.0)),), recordings, lines, "always")
+    read: tuple[NormalizedClip, ...] = tuple(
+        replace(recordings[3], timed_clip=replace(recordings[3].timed_clip, start_ms=item.start_ms, end_ms=item.end_ms))
+        for item in selection.placements
+    )
+    together: TimelinePlan | None = plan_timeline((*lines, *read))
+
+    assert _decision(selection, 3) == decision
+    assert together is not None
+    spans: list[tuple[int, int]] = sorted((item.start_frame, item.end_frame) for item in together.placements)
+    assert all(next_start - end >= 4800 for (_, end), (next_start, _) in pairwise(spans))
+
+
 def test_the_same_inputs_always_give_the_same_selection() -> None:
     lines: tuple[NormalizedClip, ...] = (_clip("line-1", 0, 800, 0), _clip("line-2", 2300, 800, 10))
     candidates: tuple[SignCandidate, ...] = (_sign(3, 1000, 4000), _sign(7, 1200, 4500, _TITLE, "title"))
