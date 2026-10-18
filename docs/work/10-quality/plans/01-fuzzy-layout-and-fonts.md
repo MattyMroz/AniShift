@@ -194,6 +194,7 @@ class FontFace:
     full_names: frozenset[str]     # p3 ID4, casefold
     postscript_name: str | None    # casefold; dopasowanie ID4 vs PS wg rodzaju obrysów jak libass
     weight: int; bold: bool; italic: bool; units_per_em: int; ascent: int; descent: int
+    postscript_outlines: bool      # CFF/CFF2: dopasowanie po PS i pochylenie sztucznej kursywy tan 10° jak libass
     codepoints: frozenset[int]
 @dataclass(frozen=True, slots=True)
 class FontMatch:
