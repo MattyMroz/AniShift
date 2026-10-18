@@ -243,6 +243,36 @@ def test_repeated_srt_occurrences_keep_individual_translations(
     assert [(event.start, event.end) for event in after.events] == [(0, 500), (second_start, second_start + 500)]
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("output_kind", ["srt", "ass"])
+def test_every_copy_of_an_ass_spoken_line_keeps_its_translation_whatever_format_is_written(
+    tmp_path: Path, output_kind: SubtitleKind
+) -> None:
+    source: SSAFile = SSAFile()
+    source.events.extend(
+        [
+            SSAEvent(start=1000, end=1500, style="Main", text="Hello."),
+            SSAEvent(start=1500, end=2000, style="Main", text="Hello."),
+            SSAEvent(start=1000, end=2000, style="Overlap", text="Hello."),
+            SSAEvent(start=4000, end=5000, style="Main", text="Bye."),
+        ]
+    )
+    split: SubtitleSplit = split_subtitles(source, kind="ass", spoken_styles={"Main", "Overlap"})
+    assert [line.order for line in split.spoken] == [0, 3]
+
+    translated: Path | None = _write(
+        replace(split, kind=output_kind), {0: "Cześć.", 3: "Pa."}, tmp_path / f"out.pl.{output_kind}"
+    )
+
+    assert translated is not None
+    assert [visible_text(event.text) for event in load_subtitles(translated).events] == [
+        "Cześć.",
+        "Cześć.",
+        "Cześć.",
+        "Pa.",
+    ]
+
+
 def test_source_products_split_polish_ass_without_changing_events(tmp_path: Path) -> None:
     source = _ass_with_both_streams()
     split = split_subtitles(source, kind="ass", spoken_styles={"Dialog"})

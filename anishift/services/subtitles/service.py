@@ -519,13 +519,14 @@ def _event_translations(split: SubtitleSplit, translations: Mapping[int, str]) -
 
 
 def spoken_groups(split: SubtitleSplit) -> dict[int, int]:
-    """Map every event read aloud to the Dialogue index of the first event of the spoken line it belongs to."""
+    """Map every event read aloud to the first event of its spoken line, as split, whatever kind it is written as."""
     dialogue: list[SSAEvent] = [event for event in split.subs.events if event.type == "Dialogue"]
-    return {
-        order: min(member for member, _ in run)
-        for run in _spoken_runs(dialogue, split.decisions, split.kind)
-        for order, _ in run
-    }
+    firsts: set[int] = {line.order for line in split.spoken}
+    groups: dict[int, int] = {}
+    for run in _spoken_runs(dialogue, split.decisions, "ass"):
+        first: int = min(order for order, _ in run)
+        groups.update({order: order if order in firsts else first for order, _ in run})
+    return groups
 
 
 def _font_index(fonts: FontSources | None, dialogue_font: DialogueFont | None) -> FontIndex | None:
