@@ -42,7 +42,7 @@ Tych reguł program nie łamie nigdy, także w wyjściu awaryjnym. Wariant, któ
 4. Czcionka szyldu zostaje czcionką typesettera. Wyjątek dotyczy tylko stylów dialogowych (sekcja 5).
 5. Litery szyldu nie są większe niż w oryginale. Powiększanie nie ma podstawy, bo program nie wie, czy obok jest miejsce.
 6. Rysunki (`\p`) i karaoke openingów oraz endingów zostają nietknięte.
-7. Napis identyczny z angielskim zostaje bajtowo identyczny.
+7. Napis identyczny z angielskim zostaje bajtowo identyczny. Wyjątek: linia dialogu przeniesiona do klonu stylu z czcionką właściciela (sekcja 5) zmienia tylko nazwę stylu.
 
 ### 2.2 Unikane za wszelką cenę
 
