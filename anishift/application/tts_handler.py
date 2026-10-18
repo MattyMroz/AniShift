@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, Never, Protocol
 
 from anishift.application.artifacts import Artifact, ArtifactKind
-from anishift.application.cancellation import CancellationToken
+from anishift.application.cancellation import CancellationToken, mirror_cancel
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
 from anishift.application.intents import NarrationTimeline
 from anishift.application.planning import PlanTask, TaskKind
@@ -450,12 +450,21 @@ def _prepare(
     temporary_root: Path,
     cancel: CancellationToken,
 ) -> tuple[NormalizedClip, ...]:
+    event = threading.Event()
+    stop = threading.Event()
+
     def prepare(clip: NarrationManifestClip) -> NormalizedClip:
         cancel.raise_if_cancelled()
-        return audio.prepare_clip(timed_clip(clip), temporary_root=temporary_root, cancel=None)
+        return audio.prepare_clip(timed_clip(clip), temporary_root=temporary_root, cancel=event)
 
-    with ThreadPoolExecutor(max_workers=_PREPARE_WORKERS, thread_name_prefix="anishift-tts-prepare") as pool:
-        prepared: tuple[NormalizedClip, ...] = tuple(pool.map(prepare, clips))
+    watcher = threading.Thread(target=mirror_cancel, args=(cancel, event, stop), daemon=True)
+    watcher.start()
+    try:
+        with ThreadPoolExecutor(max_workers=_PREPARE_WORKERS, thread_name_prefix="anishift-tts-prepare") as pool:
+            prepared: tuple[NormalizedClip, ...] = tuple(pool.map(prepare, clips))
+    finally:
+        stop.set()
+        watcher.join()
     cancel.raise_if_cancelled()
     return prepared
 

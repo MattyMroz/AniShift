@@ -9,7 +9,7 @@ from types import MappingProxyType
 from typing import Final, Never, Protocol
 
 from anishift.application.artifacts import Artifact, ArtifactKind
-from anishift.application.cancellation import CancellationToken
+from anishift.application.cancellation import CancellationToken, mirror_cancel
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
 from anishift.application.intents import NarrationTimeline
 from anishift.application.planning import PlanTask, TaskKind
@@ -115,7 +115,7 @@ class AudioTaskHandler:
         cancel.raise_if_cancelled()
         event = threading.Event()
         stop = threading.Event()
-        watcher = threading.Thread(target=_mirror_cancel, args=(cancel, event, stop), daemon=True)
+        watcher = threading.Thread(target=mirror_cancel, args=(cancel, event, stop), daemon=True)
         watcher.start()
         try:
             if task.kind is TaskKind.MIX_NARRATION:
@@ -239,13 +239,6 @@ def _profile(task: PlanTask, output: Artifact) -> str:
     if not isinstance(value, str) or output.audio_codec != value:
         _raise_execution("Audio output profile does not match the planned artifact")
     return value
-
-
-def _mirror_cancel(cancel: CancellationToken, event: threading.Event, stop: threading.Event) -> None:
-    while not stop.wait(0.05):
-        if cancel.is_cancelled():
-            event.set()
-            return
 
 
 def _raise_execution(message: str) -> Never:

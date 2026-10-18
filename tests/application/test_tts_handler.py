@@ -273,6 +273,63 @@ def test_signs_are_read_in_free_pauses_and_rejected_signs_stay_out_of_the_manife
     assert preparer.roots == {tmp_path / "run" / "group-1" / "audio"}
 
 
+class _CancellingPreparer(_Preparer):
+    def __init__(self, token: EventCancellationToken) -> None:
+        super().__init__()
+        self.token: EventCancellationToken = token
+        self.signalled: list[bool] = []
+
+    def prepare_clip(self, clip: TimedClip, *, temporary_root: Path, cancel: threading.Event | None) -> NormalizedClip:
+        self.token.cancel()
+        self.signalled.append(cancel is not None and cancel.wait(5))
+        return super().prepare_clip(clip, temporary_root=temporary_root, cancel=cancel)
+
+
+def test_cancelling_the_task_stops_the_normalization_of_its_clips(tmp_path: Path) -> None:
+    task, snapshot = _signed_synthesis(tmp_path)
+    token = EventCancellationToken()
+    preparer = _CancellingPreparer(token)
+    handler = TtsTaskHandler(_Tts(tmp_path), run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=preparer)
+
+    with pytest.raises(ExecutionError) as caught:
+        handler.execute(task, snapshot, token, _Progress())
+
+    assert caught.value.context.code is ErrorCode.CANCELLED
+    assert preparer.signalled == [True]
+
+
+def test_without_sign_narration_the_manifest_holds_only_the_spoken_lines_in_their_times(tmp_path: Path) -> None:
+    script_path = tmp_path / "episode.spoken.pl.srt"
+    script_path.write_text(
+        "1\n00:00:01,000 --> 00:00:02,000\nCześć\n\n2\n00:00:05,000 --> 00:00:06,500\nNa razie\n", encoding="utf-8"
+    )
+    spoken = Artifact(
+        "spoken", "group-1", ArtifactKind.SPOKEN_PL, script_path, ArtifactState.READY, ArtifactLifetime.INTERMEDIATE
+    )
+    output = Artifact(
+        "manifest", "group-1", ArtifactKind.TTS_MANIFEST, None, ArtifactState.MISSING, ArtifactLifetime.INTERMEDIATE
+    )
+    task = PlanTask(
+        "tts", "group-1", TaskKind.SYNTHESIZE_SPEECH, ("spoken",), ("manifest",), (), "tts:edge", _SPOKEN_PARAMETERS
+    )
+    service = _Tts(tmp_path)
+    preparer = _Preparer()
+    handler = TtsTaskHandler(service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=preparer)
+
+    result: TaskResult = handler.execute(
+        task, ArtifactSnapshot({"spoken": spoken}, {"manifest": output}), NeverCancelledToken(), _Progress()
+    )
+
+    manifest = load_narration_manifest(result.outputs[0].path)
+    assert [(clip.request_id, clip.start_ms, clip.end_ms, clip.source_order) for clip in manifest.clips] == [
+        ("group-1-0", 1000, 2000, 0),
+        ("group-1-1", 5000, 6500, 1),
+    ]
+    assert result.outputs[0].metadata == {"clip_count": 2}
+    assert len(service.batches) == 1
+    assert preparer.roots == set()
+
+
 def test_sign_narration_without_the_run_audio_service_is_refused(tmp_path: Path) -> None:
     task, snapshot = _signed_synthesis(tmp_path)
     handler = TtsTaskHandler(_Tts(tmp_path), run_root=tmp_path / "run", group_ranks={"group-1": 0})
