@@ -1,12 +1,23 @@
 ---
 kind: specification
-status: v4
+status: v5
 updated: 2026-10-18
 ---
 
 # Rozmyte łamanie polskich dialogów — v4
 
 Właściciel 18.10: implementacja rusza po akceptacji planu 01 i tej specyfikacji przez trzech recenzentów (astra, sol6, claude); decyzje otwarte mają wartości domyślne (rekomendacje przyjęte 18.10), a właściciel akceptuje wynik na galerii przed/po.
+
+## Aneks v5 (2026-10-18) — kalibracja na galerii, nadrzędny wobec aneksu v4 i dalszych sekcji
+
+Powód: galeria `baseline-vs-u5` rund 2–4 pokazała dwie skrajności: jeden wiersz na ok. 90% szerokości (brak szkody za samą długość) i trzy wiersze tam, gdzie dwa mieściły się na ekranie (twardy próg τ działał jak klif). Decyzje orkiestratora (gust delegowany przez właściciela 18.10), sprawdzone na korpusie 37 par.
+
+1. **Filtr mieszczenia (zastępuje τ z aneksu v4 pkt 2 i §5 pyt. 6).** Zdarzenie zawijane przez libass: wiersz przechodzi, gdy emulacja `wrap_text` nie przewiduje zawinięcia i glify bez obrysu mieszczą się między marginesami (zgodność emulacji z libass 5406/5406). Zdarzenie niezawijane (`\q2`, WrapStyle 2): glify mieszczą się w wyśrodkowanym obszarze bezpiecznym 90% PlayResX (title-safe). Tryb `unmeasured` (SRT bez stylów) zostaje przy τ = 0,99.
+2. **TIGHT jako szkoda, nie filtr.** `rise(u; 0,97; 1,0)` z wagą 0,45; dla zdarzeń niezawijanych dalej `rise(u; 1; u_safe)` z wagą 0,45 (wyjście poza margines stylu w obszarze bezpiecznym), gdzie `u_safe` = obszar bezpieczny / szerokość między marginesami.
+3. **LENGTH (nowa szkoda pojedynczego wiersza).** `rise(u; 0,70; 0,90)` z wagą 0,70: krótkie i średnie kwestie zostają w jednym wierszu, wiersz bliski pełnej szerokości przegrywa z dwoma wierszami (standard: jeden wiersz tylko do ok. 42 znaków). Wynik: pojedyncze wiersze z u ≥ 0,90 spadły ze 144 do 6.
+4. **Słownik złych cięć (§2, SYN).** Szkoda 0,9 (nie zakaz) dla: utartych wyrażeń (`FIXED_PHRASES`, np. „raz na zawsze”, „po prostu”, „na serio”), miejsca tuż po przyimku złożonym, stopniowania z określanym („najbardziej / na serio”), rzeczownika z wymaganym dopełniaczem lub liczbą („woli / Artemis”, „numer / jeden”), enklityk i „by”, przymiotnika po rzeczowniku zamykającego frazę, krótkiego drugiego członu współrzędnego, odmienionych określników („z tej / dwójki”). Wiersz z jednego słowa bez pauzy: szkoda ≥ 0,6. Szerszy zbiór przyimków dotyczy tylko dialogów (szyldy bez zmian). Zostaje ok. 4% złych cięć wśród nowych (próbka) — znane klasy: „się” przed przyimkiem, rzeczownik + nazwa w dopełniaczu, wtrącenia obcojęzyczne.
+5. **Sierota w układzie dwuwierszowym.** Rampa (1,5; 3) zamiast (1; 3), ale wiersz zakończony mocną granicą (przecinek, koniec zdania, średnik, dwukropek, myślnik) nie jest sierotą („No jasne, / u nas…”).
+6. **Wynik kontrolny:** trójwierszowe 34 → 7; przypadki 01–39 bez zmian wyborów poza 07 (2 wiersze) i 11 (2 wiersze); galeria 20 (kaguya) wraca do dwóch wierszy bazy.
 
 ## Aneks v4 (2026-10-18) — nadrzędny wobec wskazanych sekcji
 
