@@ -139,11 +139,12 @@ def _write_ass(path: Path) -> None:
         "ScriptType: v4.00+\n\n"
         "[V4+ Styles]\n"
         "Format: Name\n"
-        "Style: Default\n\n"
+        "Style: Default\n"
+        "Style: Sign\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
         "Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{\\i1}Zażółć{\\i0} gęślą jaźń\n"
-        "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\p1}m 0 0 l 10 0 10 10{\\p0}\n",
+        "Dialogue: 0,0:00:01.00,0:00:02.00,Sign,,0,0,0,,{\\p1}m 0 0 l 10 0 10 10{\\p0}\n",
         encoding="utf-8",
     )
 

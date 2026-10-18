@@ -6,6 +6,7 @@ from anishift.services.subtitles.classifier import Category, StyleVerdict, class
 from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.service import (
     collapse_fbf,
+    inherit_split,
     layout_translated,
     load_subtitles,
     normalize_subtitles,
@@ -55,6 +56,7 @@ __all__ = [
     "classify_styles",
     "collapse_fbf",
     "dedup_animation",
+    "inherit_split",
     "is_drawing",
     "layout_translated",
     "load_subtitles",

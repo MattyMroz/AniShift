@@ -345,6 +345,26 @@ def test_layout_translated_gives_every_copy_of_a_spoken_line_its_translation_unl
     assert laid_out.report == LayoutReport()
 
 
+@pytest.mark.unit
+def test_layout_translated_gives_a_copy_in_another_style_the_translation_of_the_line_read_once() -> None:
+    source: SSAFile = SSAFile()
+    source.events.extend(
+        [
+            SSAEvent(start=1000, end=2000, style="Main", text="Right away!"),
+            SSAEvent(start=1000, end=2000, style="Overlap", text="{\\an8}Right away!"),
+            SSAEvent(start=1000, end=2000, style="Echo", text="RIGHT AWAY"),
+        ]
+    )
+    split: SubtitleSplit = split_subtitles(source, kind="ass", spoken_styles={"Main", "Overlap", "Echo"})
+    assert [line.order for line in split.spoken] == [0]
+
+    laid_out: TranslatedLayout = layout_translated(
+        split, {0: "Już!", 2: "JUŻ"}, fonts=None, limits=LayoutLimits(), dialogue_font=None
+    )
+
+    assert [event.text for event in laid_out.subs.events] == ["Już!", "{\\an8}Już!", "JUŻ"]
+
+
 def test_layout_translated_breaks_dialogue_and_keeps_drawings_and_events_without_translation() -> None:
     source: SSAFile = SSAFile()
     source.events.extend(

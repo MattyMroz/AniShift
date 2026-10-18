@@ -705,3 +705,33 @@ def test_the_production_speech_handler_refuses_a_voice_its_own_engine_never_offe
             NeverCancelledToken(),
             _Progress(),
         )
+
+
+def _ass_script(path: Path) -> Path:
+    path.write_text(
+        "[Script Info]\nScriptType: v4.00+\nPlayResX: 1280\nPlayResY: 720\n\n"
+        "[V4+ Styles]\nFormat: Name\nStyle: Default\n\n"
+        "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Cześć wszystkim.\n"
+        "Dialogue: 0,0:00:03.00,0:00:04.00,Default,,0,0,0,,{\\an7}WKURZONY\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("kind", "texts"),
+    [
+        (ArtifactKind.SPOKEN_PL, ["Cześć wszystkim.", "WKURZONY"]),
+        (ArtifactKind.FULL_PL, ["Cześć wszystkim."]),
+    ],
+)
+def test_a_spoken_only_script_is_read_whole_while_a_full_script_is_classified(
+    tmp_path: Path, kind: ArtifactKind, texts: list[str]
+) -> None:
+    service: _Tts = _Tts(tmp_path)
+
+    _read_aloud(tmp_path, _ass_script(tmp_path / "episode.ass"), kind, "source_times", service)
+
+    assert [request.text for request in service.batches[0].requests] == texts

@@ -706,8 +706,9 @@ def test_subtitle_branches_share_translation_but_not_failure_dependencies() -> N
         ArtifactKind.SPOKEN_PL,
         ArtifactKind.DISPLAYED_PL,
     }
-    assert all(task.requires == translation.produces for task in splits)
-    assert all(task.depends_on == (translation.task_id,) for task in splits)
+    extraction: PlanTask = _task(plan, TaskKind.EXTRACT_TRACKS)
+    assert all(task.requires == (*translation.produces, translation.requires[0]) for task in splits)
+    assert all(task.depends_on == tuple(sorted((extraction.task_id, translation.task_id))) for task in splits)
     spoken: PlanTask = next(task for task in splits if artifacts[task.produces[0]].kind is ArtifactKind.SPOKEN_PL)
     assert _task(plan, TaskKind.SYNTHESIZE_SPEECH).depends_on == (spoken.task_id,)
     assert _task_kinds(plan).count(TaskKind.TRANSLATE_SUBTITLES) == 1
@@ -1500,3 +1501,40 @@ def test_sidecar_in_a_group_with_several_mkvs_takes_no_font_input() -> None:
     plan: ExecutionPlan = _full_polish(_group(first, second, sidecar))
 
     assert _task(plan, TaskKind.TRANSLATE_SUBTITLES).requires == (sidecar.artifact_id,)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("container", [ArtifactKind.VIDEO_MKV, ArtifactKind.VIDEO_MP4])
+def test_split_of_polish_ass_made_in_the_plan_takes_its_source_subtitles_to_decide_what_is_read(
+    container: ArtifactKind,
+) -> None:
+    video: Artifact = _artifact(container, "1.mkv" if container is ArtifactKind.VIDEO_MKV else "1.mp4")
+    sidecar: tuple[Artifact, ...] = (
+        ()
+        if container is ArtifactKind.VIDEO_MKV
+        else (_artifact(ArtifactKind.SOURCE_SUBTITLES, "1.ass", subtitle_format="ass"),)
+    )
+    plan: ExecutionPlan = plan_auto(
+        (_group(video, *sidecar),), _preset(ProductIntent(frozenset({ProductKind.SPOKEN_PL}))), _settings()
+    )
+    artifacts: dict[str, Artifact] = {artifact.artifact_id: artifact for artifact in plan.artifacts}
+    translation: PlanTask = _task(plan, TaskKind.TRANSLATE_SUBTITLES)
+    split: PlanTask = _task(plan, TaskKind.SPLIT_SUBTITLES)
+
+    assert plan.can_execute
+    assert split.requires == (*translation.produces, translation.requires[0])
+    assert artifacts[split.requires[1]].kind is ArtifactKind.SOURCE_SUBTITLES
+    assert translation.task_id in split.depends_on
+
+
+@pytest.mark.unit
+def test_split_of_polish_srt_reads_only_the_polish_subtitles() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    plan: ExecutionPlan = plan_auto(
+        (_group(video),),
+        _preset(ProductIntent(frozenset({ProductKind.SPOKEN_PL})), subtitle_output_format=SubtitleOutputFormat.SRT),
+        _settings(),
+    )
+
+    assert plan.can_execute
+    assert _task(plan, TaskKind.SPLIT_SUBTITLES).requires == _task(plan, TaskKind.TRANSLATE_SUBTITLES).produces
