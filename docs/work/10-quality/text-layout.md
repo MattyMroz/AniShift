@@ -46,8 +46,8 @@ Rdzeń dostaje tekst (z tagami ASS zakotwiczonymi w widocznym tekście) i **pole
 | Pole | Dialog (napis główny) | Napis poboczny w jednym wierszu | Napis poboczny wielowierszowy | Piosenka | Dymek MangaShift (później) |
 | --- | --- | --- | --- | --- | --- |
 | Szerokość wygodna | ok. 42 znaków czcionki dialogu | szerokość angielskiego oryginału | szerokość najszerszego wiersza oryginału | jak dialog lub oryginał | kształt dymka |
-| Szerokość maksymalna | 90% szerokości ekranu (`\q2`) albo zawijanie libass | ekran / ramka `\clip` / sąsiedzi | jw. | jw. | dymek |
-| Preferowana liczba wierszy | 1, dopóki mieści się z marginesem; 2, gdy szeroko; 3 tylko w ratunku | 1 | **otwarte** — „jak w oryginale” było regułą agenta, właściciel ją zakwestionował („KAŻDE ZE SWOJĄ / ZDOBYCZĄ”, rejestr nr 11); rozstrzyga ankieta, runda 2 | jak dialog | tyle, ile wypełnia kształt |
+| Szerokość maksymalna | obszar bezpieczny: 90% szerokości ekranu, także gdy marginesy stylu są węższe (r7); wiersz musi mieścić się bez zawijania libass (przy zawijaniu stylu — `\q2` lub odpowiednik dla tego zdarzenia) | ekran / ramka `\clip` / sąsiedzi | jw. | pas / ekran | dymek |
+| Preferowana liczba wierszy | 1, dopóki mieści się z marginesem; 2, gdy szeroko; 3 tylko w ratunku (r6, r7) | 1 | najmniejsza, która mieści się w polu bez nadmiernego zmniejszenia; liczba wierszy oryginału nie wiąże (r2) | 1 ze zmniejszeniem, potem 2 (r1) | tyle, ile wypełnia kształt |
 | Kształt dwóch wierszy | krótsza góra (wyraźnie), bez skrajnej nierównowagi | — | zrównoważony; proporcje oryginału tylko wtedy, gdy nie dają klepsydry ani poszarpania (s10, s29) | jak dialog | wypukły (środek najszerszy) |
 | Zmniejszanie / ściskanie | nie | tak; zmniejszenie z zachowaniem proporcji przed ściśnięciem (q15) | jw. | tak, zmniejszenie, żeby zmieścić się w pasie / na ekranie (s17, s18, s28), przed dodaniem wiersza | tak (rozmiar czcionki) |
 | Dzielenie wyrazów | nie | nie | nie | nie | tak (miękki dywiz) |
@@ -114,7 +114,7 @@ Pomiar 19.10 (`scratchpad/v4-agree`, model warunkowego wyboru na 1668 kwestiach 
 
 ### 4.7 Czego listy słów nie widzą
 
-Ślepa ocena 19.10: złe cięcia algorytmów to głównie przymiotnik | rzeczownik, terminy i frazeologizmy; listy słów z `08` wykryły 5 z 31. Źródło wiedzy o składni to decyzja z pomiarem: listy + morfologia (Morfeusz 2: zgoda przymiotnika z rzeczownikiem w przypadku, liczbie i rodzaju, rozpoznanie „się” przy czasowniku; `morfeusz2` 1.99.15 uruchomiony 19.10 na Pythonie 3.14 w środowisku tymczasowym; słownik `pl.sgjp.sgjp-2026.06.01` na licencji typu BSD z prawem redystrybucji; analiza bez dezambiguacji, więc cecha to „istnieje zgodna para analiz”). Parser spaCy odpada (modele GPL-3.0, wcześniej gorszy na danych). Morfologia wchodzi tylko, jeśli obniża odsetek złych cięć w ślepej ocenie (§7.3), i zawsze z listami jako źródłem awaryjnym.
+Ślepa ocena 19.10: złe cięcia algorytmów to głównie przymiotnik | rzeczownik, terminy i frazeologizmy; listy słów z `08` wykryły 5 z 31. Źródło wiedzy o składni to decyzja z pomiarem: listy + morfologia (Morfeusz 2: zgoda przymiotnika z rzeczownikiem w przypadku, liczbie i rodzaju, rozpoznanie „się” przy czasowniku; zgoda właściciela 19.10 pod warunkiem, że poprawia całość — wchodzi tylko, jeśli ślepa ocena (§7.3) z morfologią ma mniej złych cięć niż bez niej, a katalog i ankieta nie tracą; `morfeusz2` 1.99.15 uruchomiony 19.10 na Pythonie 3.14 w środowisku tymczasowym; słownik `pl.sgjp.sgjp-2026.06.01` na licencji typu BSD z prawem redystrybucji; analiza bez dezambiguacji, więc cecha to „istnieje zgodna para analiz”). Parser spaCy odpada (modele GPL-3.0, wcześniej gorszy na danych). Morfologia wchodzi tylko, jeśli obniża odsetek złych cięć w ślepej ocenie (§7.3), i zawsze z listami jako źródłem awaryjnym.
 
 ### 4.5 Dodatkowy wiersz
 
@@ -218,6 +218,20 @@ Odpowiedzi trafiają do rejestru preferencji parowych z obrazem i dokładnymi uk
 | 19 | kształt | „Gdzie się podziała / moja stara pianka? Przecież tu leżała.” 18/38 | 37/19 po kropce | „dobry podział słownictwa” |
 | 20 | długość, słabe cięcie | jeden wiersz 0,68 | 26/21 między przymiotnikami | „margines po obu stronach” |
 
+**Runda 2 (19.10, `v4-quiz/round2/`, `round2.json`):**
+
+| Pyt. | Oś | Wybór właściciela | Przegrany | Komentarz właściciela |
+| --- | --- | --- | --- | --- |
+| r1 | piosenka w pasie | jeden wiersz zmniejszony do 83% | dwa wiersze zmniejszone do 60%; dwa w pełnym rozmiarze zjeżdżające z pasa | „muzyka powinna być w jednej linijce” |
+| r2 | krótki napis dwuwierszowy w oryginale („KAŻDE / ZDOBYCZĄ”) | bez różnicy, skłania się ku jednemu wierszowi | — | „krótkie zdanie, może być w jednej linii” |
+| r3 | zgoda przymiotnika a krótsza góra | „Czy cosplay na przyjęciu powitalnym / jest naprawdę konieczny?” | „…przyjęciu / powitalnym jest…” | „przyjęcie powitalne to jedna sentencja” |
+| r4 | pauza na końcu wiersza a przecinek | „Jeśli to prawdziwa miłość, przyjmę ją — / nawet za cenę wyrzucenia ze szkoły.” (39/35) | „…miłość, / przyjmę ją — nawet…” (26/49) | |
+| r5 | długa kwestia u góry ekranu | pytanie niejasne dla właściciela; rozstrzyga zasada z q3 (jeden wiersz 0,86 szerokości → dwa wiersze) | | „górny może być trochę dłuższy od dolnego, ale przy strasznie dużej proporcji wykluczone — złota proporcja” |
+| r6 | dwa szerokie a trzy wiersze | „…czterdzieści procent wyparcia, / a na dobitkę permanentny brak snu.” (dwa) | trzy wiersze po przecinkach | |
+| r7 | jw. | dwa wiersze, choć dolny (1713 px) wychodzi poza marginesy stylu (pole 1470 px), mieszcząc się na ekranie | trzy wiersze | „trzykolumnowe to przesada” |
+
+Wnioski: (1) piosenka — jeden wiersz ze zmniejszeniem przed dodaniem wiersza; (2) liczba wierszy szyldu nie jest wiązana z oryginałem — krótki tekst w jednym wierszu (zamyka otwarte pole w §3.2); (3) zgoda przymiotnika z rzeczownikiem waży więcej niż odwrócona piramida; (4) piramida nie jest bezwzględna — przy dobrej granicy (pauza na końcu wiersza) równowaga 39/35 wygrywa z przecinkiem 26/49; (5) trzeci wiersz dialogu ma szkodę większą niż szeroki dolny wiersz, a szerokością maksymalną dialogu jest obszar bezpieczny ekranu (90% szerokości), nie marginesy stylu.
+
 Uwaga właściciela o wielkości napisów: układ zapisujemy względem rozdzielczości skryptu, a skala napisów w mpv powiększa wszystko proporcjonalnie, więc marginesy zostają; zawijania zależnego od rozmiaru nie robimy (libass tnie bez sensu zdania). Właściciel: „chyba nie warto komplikować”.
 
 ## 6. Katalog przypadków
@@ -240,18 +254,18 @@ Każdy przypadek ma **zbiór dopuszczalnych układów** i **zakazy**. Wynik rdze
 | d10 | Pozwoli mi to również w pełni legalnie i w usprawiedliwiony sposób uwiecznić cyfrowo tę niewypowiedzianie słodką istotę! (120) | 59/60 | dwa wiersze, jeśli mieszczą się w polu; inaczej trzy, każdy cięty na granicy frazy [A: runda 2] | „usprawiedliwiony / sposób”, „słodką / istotę”, „niewypowiedzianie / słodką”, „uwiecznić / cyfrowo”; wiersz poza polem |
 | d11 | Zorganizujmy więc imprezę świąteczną dla całego samorządu! Udostępnię swoją chatę na tę zacną okoliczność! (106) | 58/47 | „…samorządu! / Udostępnię…”; trzy wiersze [A: kształt, trzy wiersze] | cięcie wewnątrz frazy przy dostępnej granicy zdania |
 | d12 | (1) W SPRAWIE RELACJI Z PRZEWODNICZĄCYM (2) W SPRAWIE STUDIÓW ZA GRANICĄ (3) W SPRAWIE TEGO DOROSŁEGO POCAŁUNKU (111) | 2 wiersze + zawinięcie libass | trzy wiersze, każdy od znacznika „(n)” | cięcie wewnątrz punktu listy |
-| d13 | Jeśli to prawdziwa miłość, przyjmę ją — nawet za cenę wyrzucenia ze szkoły. (75) | … ją / — nawet… | „Jeśli to prawdziwa miłość, przyjmę ją — / nawet za cenę wyrzucenia ze szkoły.”; „Jeśli to prawdziwa miłość, / przyjmę ją — nawet za cenę wyrzucenia ze szkoły.” (jak q14: przecinek, dół dłuższy) | wiersz zaczynający się od pauzy wtrącenia (wygląda jak drugi mówca) |
+| d13 | Jeśli to prawdziwa miłość, przyjmę ją — nawet za cenę wyrzucenia ze szkoły. (75) | … ją / — nawet… | „Jeśli to prawdziwa miłość, przyjmę ją — / nawet za cenę wyrzucenia ze szkoły.” (r4: wygrało z „…miłość, / przyjmę ją — nawet…”) | wiersz zaczynający się od pauzy wtrącenia (wygląda jak drugi mówca) |
 | d14 | a dzięki tej nienagannej postawie — mimo że przyszedł z zewnątrz — (66) | … / — mimo… — | „a dzięki tej nienagannej postawie — / mimo że przyszedł z zewnątrz —” | jw. |
-| d15 | Czy cosplay na przyjęciu powitalnym jest naprawdę konieczny? (60) | … przyjęciu / powitalnym… | „Czy cosplay na przyjęciu powitalnym / jest naprawdę konieczny?” | przymiotnik \| rzeczownik; „Czy cosplay /” |
+| d15 | Czy cosplay na przyjęciu powitalnym jest naprawdę konieczny? (60) | … przyjęciu / powitalnym… | „Czy cosplay na przyjęciu powitalnym / jest naprawdę konieczny?” (r3) | przymiotnik \| rzeczownik; „Czy cosplay /” |
 | d16 | W następnym odcinku „The Iceblade Sorcerer Shall Rule the World”: (65) | … „The / Iceblade… | „W następnym odcinku / „The Iceblade Sorcerer Shall Rule the World”:” | cięcie wewnątrz tytułu w cudzysłowie, gdy mieści się w wierszu |
-| d17 | W relacjach damsko-męskich zasada „Kto pierwszy się zakocha, ten przegrywa” to absolutny dogmat! (96) | … się / zakocha… | „W relacjach damsko-męskich zasada / „Kto pierwszy się zakocha, ten przegrywa” to absolutny dogmat!”, jeśli dolny wiersz mieści się w polu (dwa > trzy, rejestr nr 13); inaczej trzy wiersze „… zasada / „Kto pierwszy się zakocha, ten przegrywa” / to absolutny dogmat!” | „się / zakocha”; cięcie wewnątrz cytatu, gdy cytat mieści się w wierszu |
+| d17 | W relacjach damsko-męskich zasada „Kto pierwszy się zakocha, ten przegrywa” to absolutny dogmat! (96) | … się / zakocha… | „W relacjach damsko-męskich zasada / „Kto pierwszy się zakocha, ten przegrywa” to absolutny dogmat!” (r7: dwa > trzy, choć dolny wychodzi poza marginesy stylu) | „się / zakocha”; cięcie wewnątrz cytatu, gdy cytat mieści się w wierszu |
 | d18 | Co tam jeszcze jest? „Szum rzecznego nurtu”... „Podwodny szmer”... (66) | „Szum / rzecznego… | „Co tam jeszcze jest? / „Szum rzecznego nurtu”... „Podwodny szmer”...” | cięcie wewnątrz krótkiego cytatu |
 | d19 | Skąd aż tylu ludzi, którzy już TO zrobili?! (43) | Skąd / … | jeden wiersz; „Skąd aż tylu ludzi, / którzy już TO zrobili?!” [A] | sierota „Skąd” |
 | d20 | Jeszcze ani razu w życiu się nie spóźniłem! (43) | Jeszcze / … | jeden wiersz [A]; „Jeszcze ani razu w życiu / się nie spóźniłem!” | sierota „Jeszcze” |
 | d21 | Przecież to twoja ukochana młodsza siostrzyczka. (48) | … młodsza / siostrzyczka. | jeden wiersz; „Przecież to twoja / ukochana młodsza siostrzyczka.” [A] | przymiotnik \| rzeczownik, sierota |
 | d22 | Jeśli napiszę do pana Jinshiego z prośbą... (43) | 13/29 | jeden wiersz [A] | „do pana / Jinshiego” |
 | d23 | nie spłonie, dopóki cała woda nie wyparuje? (43) | 12/30 | jeden wiersz; „nie spłonie, / dopóki…” [A: przecinek, długość] | — |
-| d24 | Sześćdziesiąt procent szczęścia, czterdzieści procent wyparcia, a na dobitkę permanentny brak snu. (98) | … czterdzieści / procent… | dwa wiersze po przecinku, jeśli mieszczą się w polu; inaczej „Sześćdziesiąt procent szczęścia, / czterdzieści procent wyparcia, / a na dobitkę permanentny brak snu.” [A: runda 2] | liczebnik \| rzeczownik; cięcie wewnątrz członu wyliczenia („czterdzieści procent / wyparcia”) |
+| d24 | Sześćdziesiąt procent szczęścia, czterdzieści procent wyparcia, a na dobitkę permanentny brak snu. (98) | … czterdzieści / procent… | „Sześćdziesiąt procent szczęścia, czterdzieści procent wyparcia, / a na dobitkę permanentny brak snu.” (r6: dwa > trzy) | liczebnik \| rzeczownik; cięcie wewnątrz członu wyliczenia („czterdzieści procent / wyparcia”) |
 | d25 | Czy oni nie zdają sobie sprawy, że są uprzywilejowanymi uczniami tej prestiżowej akademii? (90) | … że są / uprzywilejowanymi… | „Czy oni nie zdają sobie sprawy, / że są uprzywilejowanymi uczniami tej prestiżowej akademii?”; „…że są uprzywilejowanymi / uczniami…”; trzy wiersze [A] | „że są /” na końcu wiersza |
 | d26 | Wystarczy, że wskoczę w kostium kąpielowy, a przewodniczący straci dla mnie głowę w ułamku sekundy! (99) | 42/56 | „Wystarczy, że wskoczę w kostium kąpielowy, / a przewodniczący straci dla mnie głowę w ułamku sekundy!”, jeśli dolny mieści się w polu; inaczej trzy wiersze na granicach fraz | „kostium / kąpielowy”, „w ułamku / sekundy”, „głowę / w”; wiersz poza polem |
 | d27 | Dziwię się, że same chcą sobie zrobić taką krzywdę. (51) | 10/37 | jeden wiersz | „Dziwię się, /” (sierota z przecinkiem); „…chcą / sobie zrobić…” |
