@@ -45,7 +45,7 @@ Rdzeń dostaje tekst (z tagami ASS zakotwiczonymi w widocznym tekście) i **pole
 
 | Pole | Dialog (napis główny) | Napis poboczny w jednym wierszu | Napis poboczny wielowierszowy | Piosenka | Dymek MangaShift (później) |
 | --- | --- | --- | --- | --- | --- |
-| Szerokość wygodna | ok. 42 znaków czcionki dialogu | szerokość angielskiego oryginału | szerokość najszerszego wiersza oryginału | jak dialog lub oryginał | kształt dymka |
+| Szerokość wygodna | ok. 42 znaków czcionki dialogu | szerokość angielskiego oryginału | szerokość najszerszego wiersza oryginału | jak dialog (r1; nie szerokość oryginału) | kształt dymka |
 | Szerokość maksymalna | obszar bezpieczny: 90% szerokości ekranu, także gdy marginesy stylu są węższe (r7); wiersz musi mieścić się bez zawijania libass (przy zawijaniu stylu — `\q2` lub odpowiednik dla tego zdarzenia) | ekran / ramka `\clip` / sąsiedzi | jw. | pas / ekran | dymek |
 | Preferowana liczba wierszy | 1, dopóki mieści się z marginesem; 2, gdy szeroko; 3 tylko w ratunku (r6, r7) | 1 | najmniejsza, która mieści się w polu bez nadmiernego zmniejszenia; liczba wierszy oryginału nie wiąże (r2) | 1 ze zmniejszeniem, potem 2 (r1) | tyle, ile wypełnia kształt |
 | Kształt dwóch wierszy | krótsza góra (wyraźnie), bez skrajnej nierównowagi | — | zrównoważony; proporcje oryginału tylko wtedy, gdy nie dają klepsydry ani poszarpania (s10, s29) | jak dialog | wypukły (środek najszerszy) |
@@ -88,7 +88,7 @@ Jak bardzo cięcie rozrywa sens. Stopień zależy od klasy przerwy między wyraz
 
 Zakazane zawsze (nienaruszalne): **wiersz zaczynający się od pauzy wtrącenia** (— / –), która nie jest myślnikiem mówcy — czytelnik bierze ją za kwestię drugiej osoby (d13, d14). Wymuszone granice: znaczniki punktów listy „(1)”, „(2)”… zaczynają wiersz, gdy punkty mieszczą się w swoich wierszach (d12).
 
-Słowo otwierające frazę na końcu wiersza („który”, „że”, „żeby”, spójnik) jest szkodą ważoną.
+Słowo otwierające frazę na końcu wiersza („który”, „że”, „żeby”, spójnik) jest szkodą ważoną. Przysłówek stopnia oderwany od słowa, które określa („tak / bardzo”, „zbyt / długo”), jest szkodą ważoną (t02).
 
 ### 4.3 Nierówne wiersze i kształt
 
@@ -157,14 +157,14 @@ Narzędzie kalibracji rozwiązuje ten układ (program liniowy z marginesem) z wy
 - odpowiedzi „oba dobre” z ankiety (q09, q16, q17) to pary miękkie z małym zapasem, nie twarde;
 - ocena zawsze w **pełnej** przestrzeni kandydatów: najlepszy kandydat przypadku musi należeć do zbioru dopuszczalnych (dla pytań ankiety: wybór właściciela albo układ, który recenzent uzna za co najmniej równy — taki układ dopisuje się do zbioru jawnie);
 - test z pominięciem jednego przypadku (każdy przypadek katalogu i ankiety liczony przy wagach z pozostałych) raportowany obok wyniku treningowego;
-- wrażliwość ±10% każdej wagi policzona, nie zakładana.
+- wrażliwość ±10% każdej wagi policzona i raportowana (nie jest warunkiem wykonalności — zob. niżej).
 
 Wynik:
 
 - **wykonalny** → wagi z największym marginesem; zapisane w kodzie jako nazwane stałe z odwołaniem do raportu kalibracji;
 - **niewykonalny** → lista najmniejszego zbioru sprzecznych przypadków; idzie do właściciela jako pytanie z obrazami, nigdy jako łatka.
 
-Wrażliwość: przy wagach ±10% żaden przypadek katalogu nie zmienia wyniku (margines to gwarantuje i raport to pokazuje).
+Wrażliwość (zmiana 19.10 po kalibracji): wymóg „przy wagach ±10% żaden przypadek nie zmienia wyniku” odpada. Granica właściciela przy długości jest z natury ostra (jeden wiersz 0,77 szerokości wygrywa, 0,80 przegrywa — d28, q11), więc żaden zestaw wag nie utrzyma przypadków przy kolanie przy dowolnej zmianie o 10%; wymóg dawał niewykonalność bez wartości dla właściciela. Kalibracja wymaga marginesu (twardego dla katalogu i ankiety, miękkiego dla odpowiedzi „oba dobre” i zawodowców), a wrażliwość ±10% i test z pominięciem jednego przypadku są raportowane z listą przypadków przy kolanie.
 
 **Prototyp 19.10** (`scratchpad/v4-cal/cal2.py`; cechy: szerokość z węzłami 0,55–0,90, klasy przerw `gaps()`, nierównowaga i dłuższa góra w szerokości, drugi i trzeci wiersz, sierota, związki chronione, pauza na początku wiersza, cytat, zgoda z Morfeusza, słowo otwierające na końcu wiersza; program liniowy `highs`):
 
@@ -230,7 +230,9 @@ Odpowiedzi trafiają do rejestru preferencji parowych z obrazem i dokładnymi uk
 | r6 | dwa szerokie a trzy wiersze | „…czterdzieści procent wyparcia, / a na dobitkę permanentny brak snu.” (dwa) | trzy wiersze po przecinkach | |
 | r7 | jw. | dwa wiersze, choć dolny (1713 px) wychodzi poza marginesy stylu (pole 1470 px), mieszcząc się na ekranie | trzy wiersze | „trzykolumnowe to przesada” |
 
-Wnioski: (1) piosenka — jeden wiersz ze zmniejszeniem przed dodaniem wiersza; (2) liczba wierszy szyldu nie jest wiązana z oryginałem — krótki tekst w jednym wierszu (zamyka otwarte pole w §3.2); (3) zgoda przymiotnika z rzeczownikiem waży więcej niż odwrócona piramida; (4) piramida nie jest bezwzględna — przy dobrej granicy (pauza na końcu wiersza) równowaga 39/35 wygrywa z przecinkiem 26/49; (5) trzeci wiersz dialogu ma szkodę większą niż szeroki dolny wiersz, a szerokością maksymalną dialogu jest obszar bezpieczny ekranu (90% szerokości), nie marginesy stylu.
+**Runda 3 (19.10, `v4-quiz/round3/`) — rozstrzyga sprzeczności kalibracji:** t01 (d24) „…czterdzieści procent / wyparcia, a na dobitkę…” (53/44) > „…wyparcia, / a na dobitkę…” (63/34) — równowaga wygrywa ze słabym cięciem wewnątrz frazy rzeczownikowej; t02 (d06) „…dzisiaj / tak bardzo chciałem…” > „…dzisiaj tak / bardzo…” — przysłówek stopnia zostaje ze słowem, które określa (§4.2). Korekta r1: jeden wiersz piosenki w pełnym rozmiarze mieści się (0,69 ekranu; wcześniejsza notatka 2116 px była błędem pomiaru czcionką zastępczą); wybór właściciela bez zmian.
+
+Wnioski: (1) piosenka — jeden wiersz (w pełnym rozmiarze, a gdy się nie mieści — ze zmniejszeniem) przed dodaniem wiersza; (2) liczba wierszy szyldu nie jest wiązana z oryginałem — krótki tekst w jednym wierszu (zamyka otwarte pole w §3.2); (3) zgoda przymiotnika z rzeczownikiem waży więcej niż odwrócona piramida; (4) piramida nie jest bezwzględna — przy dobrej granicy (pauza na końcu wiersza) równowaga 39/35 wygrywa z przecinkiem 26/49; (5) trzeci wiersz dialogu ma szkodę większą niż szeroki dolny wiersz, a szerokością maksymalną dialogu jest obszar bezpieczny ekranu (90% szerokości), nie marginesy stylu.
 
 Uwaga właściciela o wielkości napisów: układ zapisujemy względem rozdzielczości skryptu, a skala napisów w mpv powiększa wszystko proporcjonalnie, więc marginesy zostają; zawijania zależnego od rozmiaru nie robimy (libass tnie bez sensu zdania). Właściciel: „chyba nie warto komplikować”.
 
@@ -265,7 +267,7 @@ Każdy przypadek ma **zbiór dopuszczalnych układów** i **zakazy**. Wynik rdze
 | d21 | Przecież to twoja ukochana młodsza siostrzyczka. (48) | … młodsza / siostrzyczka. | jeden wiersz; „Przecież to twoja / ukochana młodsza siostrzyczka.” [A] | przymiotnik \| rzeczownik, sierota |
 | d22 | Jeśli napiszę do pana Jinshiego z prośbą... (43) | 13/29 | jeden wiersz [A] | „do pana / Jinshiego” |
 | d23 | nie spłonie, dopóki cała woda nie wyparuje? (43) | 12/30 | jeden wiersz; „nie spłonie, / dopóki…” [A: przecinek, długość] | — |
-| d24 | Sześćdziesiąt procent szczęścia, czterdzieści procent wyparcia, a na dobitkę permanentny brak snu. (98) | … czterdzieści / procent… | „Sześćdziesiąt procent szczęścia, czterdzieści procent wyparcia, / a na dobitkę permanentny brak snu.” (r6: dwa > trzy) | liczebnik \| rzeczownik; cięcie wewnątrz członu wyliczenia („czterdzieści procent / wyparcia”) |
+| d24 | Sześćdziesiąt procent szczęścia, czterdzieści procent wyparcia, a na dobitkę permanentny brak snu. (98) | … czterdzieści / procent… | „Sześćdziesiąt procent szczęścia, czterdzieści procent / wyparcia, a na dobitkę permanentny brak snu.” (t01: 53/44 > 63/34); „…wyparcia, / a na dobitkę…” (r6: dwa > trzy) | liczebnik \| rzeczownik; trzy wiersze (zakaz „cięcia wewnątrz członu wyliczenia” był regułą orkiestratora — właściciel go odrzucił w t01) |
 | d25 | Czy oni nie zdają sobie sprawy, że są uprzywilejowanymi uczniami tej prestiżowej akademii? (90) | … że są / uprzywilejowanymi… | „Czy oni nie zdają sobie sprawy, / że są uprzywilejowanymi uczniami tej prestiżowej akademii?”; „…że są uprzywilejowanymi / uczniami…”; trzy wiersze [A] | „że są /” na końcu wiersza |
 | d26 | Wystarczy, że wskoczę w kostium kąpielowy, a przewodniczący straci dla mnie głowę w ułamku sekundy! (99) | 42/56 | „Wystarczy, że wskoczę w kostium kąpielowy, / a przewodniczący straci dla mnie głowę w ułamku sekundy!”, jeśli dolny mieści się w polu; inaczej trzy wiersze na granicach fraz | „kostium / kąpielowy”, „w ułamku / sekundy”, „głowę / w”; wiersz poza polem |
 | d27 | Dziwię się, że same chcą sobie zrobić taką krzywdę. (51) | 10/37 | jeden wiersz | „Dziwię się, /” (sierota z przecinkiem); „…chcą / sobie zrobić…” |
