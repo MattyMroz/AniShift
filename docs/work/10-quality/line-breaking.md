@@ -1,11 +1,11 @@
 ---
 kind: specification
-status: v1.8 (po weryfikacji kodu)
+status: v1.9 (po przeglądzie galerii przez orkiestratora)
 updated: 2026-10-19
 supersedes: fuzzy-line-breaks.md (dla dialogów)
 ---
 
-# Łamanie polskich dialogów na wiersze — specyfikacja v1.8
+# Łamanie polskich dialogów na wiersze — specyfikacja v1.9
 
 Właściciel 18.10 odrzucił przepisany algorytm z gałęzi `work/quality/16-line-breaks` jako błędny i przekombinowany. Wskazał stary algorytm z `work/quality/08-fuzzy-quality` (replay `u6-font`) jako lepszy i działający. Ta specyfikacja zastępuje `fuzzy-line-breaks.md` w części o dialogach. Opiera się na trzech niezależnych badaniach z 18–19.10:
 
@@ -13,7 +13,7 @@ Właściciel 18.10 odrzucił przepisany algorytm z gałęzi `work/quality/16-lin
 - [research/line-breaking-opus55.md](research/line-breaking-opus55.md) — literatura, pomiar sześciu narzędzi, korpus profesjonalnych polskich napisów (Netflix, Amazon, Crunchyroll), prototyp jednej funkcji kosztu;
 - [research/line-breaking-inventory.md](research/line-breaking-inventory.md) — co już mamy w kodzie i dokumentach, stary a odrzucony algorytm, MangaShift.
 
-v1.8 zamyka weryfikację kodu: rozpoznawanie czasownika po końcówkach myliło się w 8 z 15 zdań, więc reguła „się” nie zgaduje czasownika; „czy” jest spójnikiem współrzędnym. v1.7 zamknęła czwarty pomiar: rampa długości (`a_c`, `b_c`) to zapisany liczbą gust właściciela, a jego wybory leżą gęsto przy granicy 55–57 znaków, więc G6 perturbuje tylko wagi, a rampę raportuje przesunięciem w znakach. v1.6 zamknęła trzeci pomiar: klasa „przed spójnikiem” łączyła spójniki zdań („że”, „bo”) ze spójnikami łączącymi wyrazy („z Midorikawą / i resztą”), więc dzieli się na dwie; bramki G3, G4 i G6 dopasowane do mocy próby i do kotwic oddalonych o 1 znak. v1.5 zamknęła drugi pomiar: na prawdziwej geometrii odcinków rampa 40–66 zostawiała 1214 kwestii dwuwierszowych w jednym wierszu (do 64 znaków), bo zbiór właściciela liczono na profilu zastępczym. Kalibracja tylko na prawdziwej geometrii, nowa kotwica g08, bramka długich pojedynczych wierszy, dwie klasy z danych (przed spójnikiem, przed przyimkiem). v1.4 zamknęła pierwszy pomiar implementacji: profesjonaliści NF+AMZN łamią każdą kwestię powyżej 42 znaków (twarda norma dostawcy), a właściciel chce jednego wiersza przy 43–55 znakach, więc G3 mierzy tylko miejsce cięcia przy dwóch wierszach; wtrącenie w myślnikach ma siłę przecinka; utarte zwroty jako klasa chroniona; mówcy po myślniku otwierającym. v1.3 zamknęła drugą weryfikację (astra): kotwice liczby wierszy, ochrona w granicy `N`, `W_c` jako wartość pochodna, interpunkcja oderwana przez cięcie, kolejność klas chronionych, predykaty G2. v1.2 zamknęła weryfikację v1.1: `ζ` = 0,1, jedna granica liczby wierszy, zerowa szerokość jako tryb bez pomiaru, wyjątki dla myślnika mówcy i znaków otwierających, pierwszeństwo klas, ochrona nazw, operacyjne bramki. v1.1 zamknęła przegląd v1:
+v1.9 zamyka przegląd galerii: koszt długości nasycał się przy `b_c`, więc 65 znaków w jednym wierszu kosztowało tyle samo co 58 i wygrywało ze średnim cięciem (galeria trudna 14); dochodzi wartość „bardzo długi”. Po „się” nazwa z wielkiej litery otwiera frazę. v1.8 zamknęła weryfikację kodu: rozpoznawanie czasownika po końcówkach myliło się w 8 z 15 zdań, więc reguła „się” nie zgaduje czasownika; „czy” jest spójnikiem współrzędnym. v1.7 zamknęła czwarty pomiar: rampa długości (`a_c`, `b_c`) to zapisany liczbą gust właściciela, a jego wybory leżą gęsto przy granicy 55–57 znaków, więc G6 perturbuje tylko wagi, a rampę raportuje przesunięciem w znakach. v1.6 zamknęła trzeci pomiar: klasa „przed spójnikiem” łączyła spójniki zdań („że”, „bo”) ze spójnikami łączącymi wyrazy („z Midorikawą / i resztą”), więc dzieli się na dwie; bramki G3, G4 i G6 dopasowane do mocy próby i do kotwic oddalonych o 1 znak. v1.5 zamknęła drugi pomiar: na prawdziwej geometrii odcinków rampa 40–66 zostawiała 1214 kwestii dwuwierszowych w jednym wierszu (do 64 znaków), bo zbiór właściciela liczono na profilu zastępczym. Kalibracja tylko na prawdziwej geometrii, nowa kotwica g08, bramka długich pojedynczych wierszy, dwie klasy z danych (przed spójnikiem, przed przyimkiem). v1.4 zamknęła pierwszy pomiar implementacji: profesjonaliści NF+AMZN łamią każdą kwestię powyżej 42 znaków (twarda norma dostawcy), a właściciel chce jednego wiersza przy 43–55 znakach, więc G3 mierzy tylko miejsce cięcia przy dwóch wierszach; wtrącenie w myślnikach ma siłę przecinka; utarte zwroty jako klasa chroniona; mówcy po myślniku otwierającym. v1.3 zamknęła drugą weryfikację (astra): kotwice liczby wierszy, ochrona w granicy `N`, `W_c` jako wartość pochodna, interpunkcja oderwana przez cięcie, kolejność klas chronionych, predykaty G2. v1.2 zamknęła weryfikację v1.1: `ζ` = 0,1, jedna granica liczby wierszy, zerowa szerokość jako tryb bez pomiaru, wyjątki dla myślnika mówcy i znaków otwierających, pierwszeństwo klas, ochrona nazw, operacyjne bramki. v1.1 zamknęła przegląd v1:
 - trzy poziomy reguł zamiast jednej skończonej kary (§3);
 - koszt każdego dodatkowego wiersza (§5.3);
 - ratunek minimalizujący przepełnienie (§5.4);
@@ -117,7 +117,7 @@ Siła przerwy `A(kind)` pochodzi z tabeli §4.3. Jedna funkcja `gaps()` zastępu
 | `after_single_letter` — po słowie jednoliterowym | długość słowa | — | 0 | chronione | wytyczne |
 | `before_conjunction_end` — spójnik na końcu wiersza | lista spójników | `cc`, `mark` | 0 | chronione | wytyczne + dane |
 | `negation` — oderwane „nie” od czasownika | „nie” przed słowem, z wyjątkami („na nie”) | `advmod:neg` | 0 | chronione | wytyczne + dane |
-| `reflexive` — przerwa przy „się” | przerwa przed „się” zawsze; przerwa po „się”, chyba że następne słowo zaczyna frazę rozpoznaną listą (spójnik, przyimek) albo po „się” stoi interpunkcja | — | 0 | chronione | wytyczne + dane (oderwane „się” 0% w korpusie) |
+| `reflexive` — przerwa przy „się” | przerwa przed „się” zawsze; przerwa po „się”, chyba że następne słowo zaczyna frazę rozpoznaną listą (spójnik, przyimek), zaczyna nazwę (wielka litera poza początkiem zdania, np. „nazywa się / Magiczna Różowa…”) albo po „się” stoi interpunkcja | — | 0 | chronione | wytyczne + dane (oderwane „się” 0% w korpusie) |
 | `number` — liczba / rzeczownik lub jednostka | cyfry, liczebnik + słowo | `nummod` | 0 | chronione | wytyczne |
 | `abbreviation` — skrót / następne słowo | `is_false_sentence_break` (np., dr, godz., ul.) | — | 0 | chronione | wytyczne |
 | `idiom` — wewnątrz stałego wyrażenia | lista wyrażeń wielowyrazowych ze starego `linebreak.py` oraz lista utartych zwrotów przysłówkowych i partykułowych ze źródłem słownikowym (np. „po prostu”, „w ogóle”, „na pewno”, „raz na zawsze”, „od razu”, „na razie”, „w końcu”, „przede wszystkim”, „na serio”, „mimo wszystko”, „w każdym razie”, „tak czy inaczej”) | `fixed` | 0 | chronione | wytyczne (FKBB pkt 4: frazeologizmy razem) |
@@ -150,8 +150,9 @@ Dla układu `U` z `k` wierszami `w₁…wₖ`; „wolne cięcia” to cięcia ni
 znaki(w) = liczba widocznych grafemów wiersza
 u(w)     = zmierzona szerokość wiersza / dostępna szerokość (§5.2); w trybie bez pomiaru nie istnieje
 DŁUGI(w) = max(rise(znaki(w); a_c; b_c), rise(u(w); 0,60; 1,00))          a_c = 40, b_c = 62 [K]
+BARDZO_DŁUGI(w) = max(0, znaki(w) − b_c) / (b_c − a_c)                    bez górnej granicy
 
-koszt(U) = λ_k · max_i DŁUGI(wᵢ)                                            λ₁ = 1, λ_{k≥2} = λ = 0,3 [K]
+koszt(U) = λ_k · max_i (DŁUGI(wᵢ) + BARDZO_DŁUGI(wᵢ))                       λ₁ = 1, λ_{k≥2} = λ = 0,3 [K]
          + Σ_wolnych cięć [ (1 − A(cⱼ)) + β · span(cⱼ) · [cⱼ bez interpunkcji] ]   β = 0,6 [K]
          + ζ · (k − k_mówców)                                               ζ = 0,1 [K]
          + γ · nierównowaga(U)                                              γ = 0,6 [K]
@@ -161,7 +162,7 @@ nierównowaga(U) = największa po blokach mówców wartość (najdłuższy − n
 k_mówców        = liczba wierszy wymuszona zmianami mówcy (1 bez zmian)
 ```
 
-`rise(x; a; b)` to 0 dla x ≤ a, liniowo do 1 dla x ≥ b (istniejące `anishift/services/subtitles/fuzzy.py`). `ζ` to koszt zasłonięcia obrazu przez każdy dodatkowy wiersz. Wybór: najmniejszy koszt; przy remisie mniej wierszy, potem wcześniejsze pierwsze cięcie.
+`rise(x; a; b)` to 0 dla x ≤ a, liniowo do 1 dla x ≥ b (istniejące `anishift/services/subtitles/fuzzy.py`). „Długi” nasyca się przy `b_c`, więc „bardzo długi” mierzy nadmiar ponad `b_c` w tej samej skali: wiersz o 10 znaków dłuższy od drugiego, oba ponad `b_c`, kosztuje więcej, zamiast tyle samo. `ζ` to koszt zasłonięcia obrazu przez każdy dodatkowy wiersz. Wybór: najmniejszy koszt; przy remisie mniej wierszy, potem wcześniejsze pierwsze cięcie.
 
 **Dlaczego dwie miary długości** [W]: znaki mierzą ilość tekstu do przeczytania i nie zależą od fontu; szerokość mierzy drogę oka po ekranie („zamiatanie wzrokiem”). Sama szerokość zawiodła z wąską Officiną (60 znaków ≈ 0,8 szerokości, w odrzuconym U5 jeden wiersz), same znaki zawodzą przy szerokich fontach. Start rampy znakowej 40–62 zostawia c04 (55 znaków, słabe cięcia) w jednym wierszu i dzieli galerie 02 (60 znaków) i 08 (57 znaków, dobre cięcie), zgodnie z wyborami właściciela.
 
