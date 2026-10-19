@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
@@ -117,10 +117,14 @@ def _accepted(item: dict[str, Any]) -> Accepted:
 
 
 def _field(spec: dict[str, Any], measured: dict[str, Any]) -> Field:
+    breaks: frozenset[int] = frozenset(spec.get("breaks", ()))
+    styles: frozenset[int] = frozenset(spec.get("style_breaks", ()))
     if spec["kind"] == "dialogue":
-        return dialogue_field()
+        return replace(dialogue_field(), breaks=breaks, style_breaks=styles)
     preferred: int = measured["original_lines"]
     return Field(
+        breaks=breaks,
+        style_breaks=styles,
         max_width=measured.get("max_width", 1.0),
         preferred_lines=preferred,
         max_lines=max(3, preferred + 1),

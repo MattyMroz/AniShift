@@ -2615,9 +2615,23 @@
    "text": "Odcinek pierwszy: Chłopiec, który jest najsilniejszym magikiem na świecie, bierze udział w wielkim turnieju bitew magicznych",
    "field": {
     "kind": "sign",
-    "original": "Episode 01 / The Boy Who Is the World's Strongest Sorcerer / Participates in a Large Scale Magic Battle Tournament"
+    "original": "Episode 01 / The Boy Who Is the World's Strongest Sorcerer / Participates in a Large Scale Magic Battle Tournament",
+    "breaks": [
+     1
+    ],
+    "style_breaks": [
+     1
+    ]
    },
-   "accept": [],
+   "accept": [
+    {
+     "lines": [
+      "Odcinek pierwszy:",
+      "Chłopiec, który jest najsilniejszym magikiem na świecie,",
+      "bierze udział w wielkim turnieju bitew magicznych"
+     ]
+    }
+   ],
    "accept_rule": "no_hourglass",
    "measure": {
     "kind": "words",
@@ -2666,7 +2680,6 @@
      ]
     }
    ],
-   "accept_rule": "no_hourglass",
    "measure": {
     "kind": "words",
     "words": {
@@ -2687,7 +2700,8 @@
     "original_lines": 3,
     "letter_height": 54.0,
     "comfort": 0.492678
-   }
+   },
+   "accept_rule": "no_hourglass"
   },
   {
    "id": "s14",

@@ -290,3 +290,25 @@ def test_forced_breaks_beyond_the_rescue_lines_are_joined_and_reported(text: str
     assert " ".join(layout.lines) == text
     assert len(layout.lines) <= dialogue_field().rescue_lines
     assert Flag.JOINED in layout.flags
+
+
+@pytest.mark.unit
+def test_line_mixing_two_text_styles_is_avoided_while_a_cut_between_them_exists() -> None:
+    field: Field = Field(max_width=1.0, max_lines=3, style_breaks=frozenset({1}))
+
+    found: list[Layout] = candidates("Odcinek pierwszy: Chłopiec, który wygrał", field, chars_measure)
+    mixed: Layout = _find(found, "Odcinek pierwszy: Chłopiec,", "który wygrał")
+    best: Layout = lay_out("Odcinek pierwszy: Chłopiec, który wygrał", field, chars_measure, _FLAT)
+
+    assert Flag.MIXED in mixed.flags
+    assert best.lines[0] == "Odcinek pierwszy:"
+
+
+@pytest.mark.unit
+def test_style_break_that_is_also_forced_is_never_reported_as_mixed() -> None:
+    field: Field = Field(max_width=1.0, max_lines=3, breaks=frozenset({1}), style_breaks=frozenset({1}))
+
+    found: list[Layout] = candidates("Odcinek pierwszy: Chłopiec, który wygrał", field, chars_measure)
+
+    assert all(any(line.endswith("pierwszy:") for line in layout.lines) for layout in found)
+    assert not any(Flag.MIXED in layout.flags for layout in found)

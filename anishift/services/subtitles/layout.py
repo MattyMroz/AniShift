@@ -68,6 +68,7 @@ class Flag(StrEnum):
     QUOTE = "quote"
     ORPHAN = "orphan"
     JOINED = "joined"
+    MIXED = "mixed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +81,7 @@ class Scale:
 
 @dataclass(frozen=True, slots=True)
 class Field:
-    """Where a text has to fit and how it may look; widths are fractions of the script width."""
+    """Where a text has to fit and how it may look; widths are script width fractions, breaks are gap indices."""
 
     max_width: float
     preferred_lines: int = 1
@@ -95,6 +96,7 @@ class Field:
     height_lines: float | None = None
     pattern: tuple[float, ...] = ()
     breaks: frozenset[int] = frozenset()
+    style_breaks: frozenset[int] = frozenset()
     speaker_lines: bool = False
 
 
@@ -167,41 +169,41 @@ HARMS: Final[tuple[str, ...]] = (
 
 WEIGHTS: Final[Mapping[str, float]] = MappingProxyType(
     {
-        "length_comfortable": 284.044,
-        "length_wide": 3.51762,
+        "length_comfortable": 284.049,
+        "length_wide": 3.51236,
         "cut_sentence": 0.001,
         "cut_clause": 0.001,
         "cut_ellipsis": 0.001,
         "cut_parenthetical": 0.001,
         "cut_dash": 0.001,
-        "cut_before_subordinator": 2.67449,
+        "cut_before_subordinator": 0.001,
         "cut_before_coordinator": 0.00919162,
         "cut_before_preposition": 5.02557,
         "cut_phrase": 5.02557,
-        "cut_auxiliary": 26.4232,
+        "cut_auxiliary": 26.423,
         "cut_modifier": 6.02557,
         "cut_abbreviation": 5.02557,
-        "cut_after_opener": 26.5283,
-        "cut_degree": 30.168,
+        "cut_after_opener": 26.5282,
+        "cut_degree": 30.1685,
         "cut_particle": 15.7236,
         "cut_prepositional": 5.02557,
-        "cut_name": 30.168,
-        "cut_after_preposition": 30.168,
-        "cut_negation": 30.168,
-        "cut_reflexive": 30.168,
-        "cut_number": 30.168,
-        "cut_idiom": 30.168,
-        "cut_label": 30.168,
-        "cut_repetition": 30.168,
-        "cut_after_single_letter": 30.168,
+        "cut_name": 30.1685,
+        "cut_after_preposition": 30.1685,
+        "cut_negation": 30.1685,
+        "cut_reflexive": 30.1685,
+        "cut_number": 30.1685,
+        "cut_idiom": 30.1685,
+        "cut_label": 30.1685,
+        "cut_repetition": 30.1685,
+        "cut_after_single_letter": 30.1685,
         "agreement": 5.68168,
-        "imbalance_20": 0.447445,
+        "imbalance_20": 0.44742,
         "top_longer": 0.334699,
-        "extra_line": 58.6483,
-        "missing_line": 2.14131,
-        "squeeze": 22.952,
-        "shrink": 17.3742,
-        "over_comfort": 46.3263,
+        "extra_line": 58.6494,
+        "missing_line": 2.14113,
+        "squeeze": 22.9526,
+        "shrink": 17.3747,
+        "over_comfort": 46.3272,
     }
 )
 """Harm weights from the layout calibration (docs/work/10-quality/research/text-layout-calibration.md)."""
@@ -378,6 +380,7 @@ def _line_shape(case: _Case, place: tuple[int, int, int, int]) -> _Part:
     start, end, index, count = place
     harms: dict[str, float] = _imbalance_harms(case, _chars(" ".join(case.words[start:end])), index, count)
     flags: list[Flag] = [Flag.JOINED for cut in case.released if start <= cut < end - 1]
+    flags.extend(Flag.MIXED for cut in case.field.style_breaks - case.forced if start <= cut < end - 1)
     if count > 1 and end - start == 1 and not _exempt_orphan(case, start):
         flags.append(Flag.ORPHAN)
     if end < len(case.words):
