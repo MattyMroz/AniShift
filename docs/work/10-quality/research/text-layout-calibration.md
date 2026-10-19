@@ -2,7 +2,7 @@
 kind: report
 status: blocked
 baseline: work/quality/21-text-layout @ 56da1979
-resulting-state: work/quality/21-text-layout @ 8ac6e96f
+resulting-state: work/quality/21-text-layout @ 61992e09
 completed: 2026-10-19
 ---
 
@@ -10,9 +10,23 @@ completed: 2026-10-19
 
 Kontrakt: [text-layout.md](../text-layout.md) §5.3, plan [02-text-layout.md](../plans/02-text-layout.md) faza C. Stan po rundzie 3 ankiety (t01, t02) i decyzjach koordynatora z 19.10.
 
-## Wynik w jednym zdaniu
+## Stan po drugiej decyzji koordynatora (19.10, wieczór)
 
-Kalibracja nadal jest **niewykonalna**: z morfologią wyłącznie przez wymóg odporności ±10% na parach ankiety (z samym marginesem jest wykonalna), bez morfologii także bez tego wymogu. Wag nie wpisano do kodu, testu „każdy przypadek w zbiorze dopuszczalnych” i próby ślepej nie zbudowano.
+Decyzje: wymóg odporności ±10% odpada (pary twarde katalogu i ankiety z samym marginesem; wrażliwość i LOO tylko raportowane), pole piosenki „jak dialog” potwierdzone, morfologia zostaje, d10 dostaje dwa jawne układy ważne tylko w polu dialogu, s29 przyjmuje każdy układ bez bardzo poszarpanego wiersza (żaden wiersz nie odbiega od średniej ponad najwyższe kolano nierównowagi z §4.4) i bez wyjścia poza pole.
+
+Wynik: kalibracja nadal **niewykonalna** — z morfologią jedynym minimalnym zbiorem sprzecznym jest **{d10}**, bez morfologii {r03}, {d15}, {d10}.
+
+**d10:** pierwszy jawny układ („…w usprawiedliwiony sposób / uwiecznić cyfrowo…”) ma górny wiersz 0,94 szerokości, więc nie mieści się w polu; wygrywać ma drugi: „Pozwoli mi to również w pełni legalnie / i w usprawiedliwiony sposób uwiecznić cyfrowo / tę niewypowiedzianie słodką istotę!” (0,54/0,66/0,50). Dominuje go „…sposób uwiecznić / cyfrowo tę niewypowiedzianie słodką istotę!” (te same klasy przerw: przed spójnikiem i `phrase`, lepsza równowaga, krótsza dłuższa góra). Zakaz „uwiecznić / cyfrowo” (czasownik | przysłówek) pochodzi z katalogu §6, a rdzeń nie ma cechy, która go wyraża; właściciel tej pary nie oceniał.
+
+Diagnostyka bez d10 (wagi niewpisane): wykonalne, **75/76** przypadków w zbiorze dopuszczalnych; jedyny niespełniony to d10, dla którego rdzeń wybiera dwa wiersze z zakazanym „usprawiedliwiony / sposób” (zgoda przymiotnika przegrywa tu z długością trzeciego wiersza). 192 z 1414 par zawodowców naruszonych.
+
+Do decyzji: (a) pokazać właścicielowi „…uwiecznić / cyfrowo…” obok drugiego jawnego układu d10 — jeśli gorszy, rdzeń potrzebuje klasy „czasownik | określający go przysłówek”; (b) albo zdjąć zakaz z §6. Wag `Final`, testu katalogu i próby ślepej nadal nie ma; po rozstrzygnięciu jedna komenda (`layout_calibrate --blind`) da wyniki, LOO, wrażliwość, listę przypadków przy kolanie i arkusz ślepy (zawodowiec kontra rdzeń z morfologią, identyczne układy poza arkuszem).
+
+Niżej stan sprzed tej decyzji.
+
+## Wynik w jednym zdaniu (przed drugą decyzją)
+
+Kalibracja była **niewykonalna**: z morfologią wyłącznie przez wymóg odporności ±10% na parach ankiety (z samym marginesem wykonalna), bez morfologii także bez tego wymogu.
 
 ## Jak liczono
 
