@@ -25,7 +25,11 @@ subtitle line breaking.
   flagi; nie zna wag — siłę klas ustala kalibracja rdzenia układu.
 - `morphology.agrees()` to „istnieje zgodna para analiz” Morfeusza bez
   dezambiguacji: przymiotniki z odczytem rzeczownikowym („ukochana”) i
-  „który” też się liczą.
+  „który” też się liczą. Słowo odpada tylko przy odczycie osobowym lub
+  przeszłym (`fin`, `praet`, `bedzie`, `aglt`, `winien`); tryb rozkazujący
+  i bezokolicznik („sposób”) są pomijane. `modifies()` dopuszcza także
+  przymiotnik + przymiotnik i jest predykatem `gaps(words, modifies)` dla
+  frazy przyimkowej; bez niego chronią ją tylko listy (zaimki dzierżawcze).
 - Apostrofy nie są separatorami fraz. Znaki otwierające z kategorii `Ps`/`Pi`
   także nie mogą zaczynać granicy.
 

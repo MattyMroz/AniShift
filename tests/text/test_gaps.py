@@ -27,7 +27,7 @@ def _gap(text: str, left: str) -> Gap:
         ("Czekał pan Kowalski.", "pan", GapKind.NAME),
         ("Musimy iść do domu.", "do", GapKind.AFTER_PREPOSITION),
         ("Zrobił to bez względu na koszty.", "względu", GapKind.AFTER_PREPOSITION),
-        ("Kupiłem chleb i masło.", "i", GapKind.AFTER_OPENER),
+        ("Kupiłem chleb i masło.", "i", GapKind.AFTER_SINGLE_LETTER),
         ("Witamina C działa.", "C", GapKind.AFTER_SINGLE_LETTER),
         ("Wiem, że wrócisz.", "że", GapKind.AFTER_OPENER),
         ("To dom, który kupiłem.", "który", GapKind.AFTER_OPENER),
@@ -43,7 +43,7 @@ def _gap(text: str, left: str) -> Gap:
         ("Zrobię to raz na zawsze.", "raz", GapKind.IDIOM),
         ("Tak czy inaczej idę.", "czy", GapKind.IDIOM),
         ("Mimo wszystko wrócę.", "Mimo", GapKind.IDIOM),
-        ("Idziemy w końcu do domu.", "w", GapKind.AFTER_PREPOSITION),
+        ("Idziemy w końcu do domu.", "w", GapKind.AFTER_SINGLE_LETTER),
         ("Musi wrócić dziś.", "Musi", GapKind.AUXILIARY),
         ("Widziałem czerwonego smoka.", "czerwonego", GapKind.MODIFIER),
         ("Widziałem tego smoka.", "tego", GapKind.MODIFIER),
@@ -215,6 +215,8 @@ def test_tiers_rank_every_class_and_protect_exactly_the_bound_pairs_of_the_spec(
         GapKind.REFLEXIVE,
         GapKind.NUMBER,
         GapKind.IDIOM,
+        GapKind.LABEL,
+        GapKind.REPETITION,
         GapKind.AFTER_SINGLE_LETTER,
     } == PROTECTED_KINDS
     assert TIERS[GapKind.SENTENCE] < TIERS[GapKind.CLAUSE] < TIERS[GapKind.BEFORE_SUBORDINATOR]
@@ -318,9 +320,165 @@ def test_degree_adverb_stays_with_the_word_it_grades(text: str, left: str) -> No
         ("Akurat dzisiaj tak bardzo chciałem.", "dzisiaj"),
         ("Było tak w ogóle fajnie.", "tak"),
         ("Jest tak, jak mówisz.", "tak,"),
+        ("Jest tak że wyszedł.", "tak"),
     ],
 )
-def test_degree_adverb_before_a_preposition_or_a_comma_or_after_another_word_is_no_degree_gap(
+def test_degree_adverb_before_an_idiom_a_conjunction_or_a_comma_or_after_another_word_is_no_degree_gap(
     text: str, left: str
 ) -> None:
     assert _gap(text, left).kind != GapKind.DEGREE
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "left"),
+    [("Nie możesz zjawiać się tak bez zapowiedzi.", "tak"), ("Mamy dużo pracy.", "dużo"), ("To sporo wody.", "sporo")],
+)
+def test_degree_or_quantity_adverb_stays_with_the_phrase_or_noun_it_grades(text: str, left: str) -> None:
+    assert _gap(text, left).kind == GapKind.DEGREE
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "left", "kind"),
+    [
+        ("Kupiłem chleb i masło.", "i", GapKind.AFTER_SINGLE_LETTER),
+        ("Wróciłem, a potem zasnąłem.", "a", GapKind.AFTER_SINGLE_LETTER),
+        ("Przyszedł dr. Kowalski.", "dr.", GapKind.NAME),
+        ("Prof. Nowak przyszedł.", "Prof.", GapKind.NAME),
+    ],
+)
+def test_gap_with_evidence_of_several_classes_takes_the_most_harmful_one(text: str, left: str, kind: GapKind) -> None:
+    assert _gap(text, left).kind == kind
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "left"),
+    [
+        ("Po drodze załatwiliśmy kilka zabłąkanych.", "kilka"),
+        ("Przyszło wielu ludzi.", "wielu"),
+        ("Mam dwoje dzieci.", "dwoje"),
+        ("Zostało tyle jedzenia.", "tyle"),
+    ],
+)
+def test_indefinite_or_collective_numeral_stays_with_the_noun_it_counts(text: str, left: str) -> None:
+    gap: Gap = _gap(text, left)
+
+    assert gap.kind == GapKind.NUMBER
+    assert gap.protected
+
+
+@pytest.mark.unit
+def test_indefinite_numeral_before_a_preposition_is_not_bound() -> None:
+    assert _gap("Kilka z nich zostało.", "Kilka").kind != GapKind.NUMBER
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "left"),
+    [("Nawet czujniki milczą.", "Nawet"), ("Właśnie ty to zrobiłeś.", "Właśnie"), ("Już idę.", "Już")],
+)
+def test_focus_particle_at_a_line_end_is_a_weighted_particle_gap(text: str, left: str) -> None:
+    gap: Gap = _gap(text, left)
+
+    assert gap.kind == GapKind.PARTICLE
+    assert not gap.protected
+
+
+@pytest.mark.unit
+def test_focus_particle_followed_by_a_comma_is_a_clause_gap() -> None:
+    assert _gap("Ja też, ale później.", "też,").kind == GapKind.CLAUSE
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "left"),
+    [
+        ("A ja nie wyobrażam sobie siebie w roli.", "wyobrażam"),
+        ("A ja nie wyobrażam sobie siebie w roli.", "sobie"),
+        ("Zrobiłem to sam dla siebie.", "dla"),
+        ("Rozmawiali ze sobą długo.", "ze"),
+    ],
+)
+def test_reflexive_pronoun_is_bound_like_the_reflexive_particle(text: str, left: str) -> None:
+    assert _gap(text, left).protected
+
+
+@pytest.mark.unit
+def test_reflexive_pronoun_before_a_new_phrase_leaves_the_gap_weighted() -> None:
+    assert not _gap("Nie możemy pozwolić sobie na błędy.", "sobie").protected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "left"),
+    [
+        ("Muszę trenować co najmniej godzinę.", "co"),
+        ("To tak zwany geniusz.", "tak"),
+        ("Przyszedł wraz z bratem.", "wraz"),
+    ],
+)
+def test_fixed_phrase_from_the_dictionary_is_never_broken_inside(text: str, left: str) -> None:
+    gap: Gap = _gap(text, left)
+
+    assert gap.kind == GapKind.IDIOM
+    assert gap.protected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "left"),
+    [
+        ("Podpiąłeś się tylko pod jej uczucia.", "jej"),
+        ("Wrócił do naszych drzwi.", "naszych"),
+        ("Zrobił to z punktu widzenia zarówno nas, jak i was.", "widzenia"),
+        ("Czytam na temat wojny.", "temat"),
+    ],
+)
+def test_prepositional_phrase_is_bound_up_to_its_noun_without_morphology(text: str, left: str) -> None:
+    gap: Gap = _gap(text, left)
+
+    assert gap.kind == GapKind.AFTER_PREPOSITION
+    assert gap.protected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("text", "left"), [("Dałem jej książkę.", "jej"), ("Nie chcę o tym mówić.", "tym")])
+def test_pronoun_outside_or_heading_a_prepositional_phrase_is_not_bound_to_the_next_word(text: str, left: str) -> None:
+    assert _gap(text, left).kind != GapKind.AFTER_PREPOSITION
+
+
+@pytest.mark.unit
+def test_prepositional_phrase_is_bound_through_every_modifier_the_predicate_accepts() -> None:
+    words: list[str] = ["Uczę", "się", "w", "tej", "prestiżowej", "akademii."]
+    pairs: set[tuple[str, str]] = {("tej", "prestiżowej"), ("prestiżowej", "akademii.")}
+
+    with_modifiers: tuple[Gap, ...] = gaps(words, lambda left, right: (left, right) in pairs)
+    without: tuple[Gap, ...] = gaps(words)
+
+    assert [gap.kind for gap in with_modifiers[3:]] == [GapKind.AFTER_PREPOSITION, GapKind.AFTER_PREPOSITION]
+    assert without[4].kind != GapKind.AFTER_PREPOSITION
+
+
+@pytest.mark.unit
+def test_label_ending_in_a_colon_stays_with_its_numeric_value() -> None:
+    gap: Gap = _gap("MEGAMIASTO NA ETOROFU WYS.: 4,5 KM", "WYS.:")
+
+    assert gap.kind == GapKind.LABEL
+    assert gap.protected
+
+
+@pytest.mark.unit
+def test_colon_before_a_word_is_a_clause_gap() -> None:
+    assert _gap("Powiem ci jedno: idź.", "jedno:").kind == GapKind.CLAUSE
+
+
+@pytest.mark.unit
+def test_dash_between_repeated_words_joins_them() -> None:
+    words: list[str] = ["STRZELNICA", "BAM", "-", "BAM", "-", "BAM"]
+    found: tuple[Gap, ...] = gaps(words)
+
+    assert [found[2].kind, found[4].kind] == [GapKind.REPETITION, GapKind.REPETITION]
+    assert found[2].protected
+    assert found[1].banned

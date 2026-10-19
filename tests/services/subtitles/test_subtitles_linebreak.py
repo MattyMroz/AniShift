@@ -1,13 +1,7 @@
 import pytest
 
-from anishift.services.subtitles.linebreak import (
-    _CONJUNCTIONS,
-    _CONJUNCTIONS_MULTIWORD,
-    _PREPOSITIONS_MULTIWORD,
-    MAX_LINES,
-    split_for_layout,
-    split_line,
-)
+from anishift.services.subtitles.linebreak import MAX_LINES, split_for_layout, split_line
+from anishift.text.gaps import CONJUNCTIONS, CONJUNCTIONS_MULTIWORD, PREPOSITIONS_MULTIWORD
 
 
 def test_empty_text_returns_single_empty_verse() -> None:
@@ -298,16 +292,16 @@ def test_multiword_preposition_kept_whole() -> None:
 
 
 def test_complete_conjunction_list_loaded() -> None:
-    assert len(_CONJUNCTIONS) == 76
+    assert len(CONJUNCTIONS) == 76
     for word in ("aczkolwiek", "aniżeli", "wszelako", "niżeli", "ilekroć"):
-        assert word in _CONJUNCTIONS
+        assert word in CONJUNCTIONS
 
 
 def test_multiword_conjunction_at_line_start_is_kept_whole() -> None:
     verses = split_line("Zostań w domu chyba że wolisz iść ze mną dzisiaj wieczorem", max_chars=24)
     joined = "\n".join(verses)
     assert "chyba\nże" not in joined
-    assert ("chyba", "że") in _CONJUNCTIONS_MULTIWORD
+    assert ("chyba", "że") in CONJUNCTIONS_MULTIWORD
 
 
 def test_multiword_preposition_three_words_is_kept_whole() -> None:
@@ -315,7 +309,7 @@ def test_multiword_preposition_three_words_is_kept_whole() -> None:
     joined = "\n".join(verses)
     assert "bez\nwzględu" not in joined
     assert "względu\nna" not in joined
-    assert ("bez", "względu", "na") in _PREPOSITIONS_MULTIWORD
+    assert ("bez", "względu", "na") in PREPOSITIONS_MULTIWORD
 
 
 def test_split_for_layout_preserves_authored_displayed_line_count() -> None:
@@ -357,7 +351,7 @@ def test_split_for_layout_does_not_break_one_target_word_artificially() -> None:
 def test_no_conjunction_dangling_at_line_end(text: str) -> None:
     verses = split_line(text, max_chars=42)
     assert len(verses) == 2
-    assert verses[0].split()[-1].lower() not in _CONJUNCTIONS
+    assert verses[0].split()[-1].lower() not in CONJUNCTIONS
 
 
 def test_split_for_layout_keeps_balanced_paragraph_balanced() -> None:

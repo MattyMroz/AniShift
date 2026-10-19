@@ -2,6 +2,9 @@
 # source: https://pl.wiktionary.org/wiki/Kategoria:Język_polski_-_frazy_przysłówkowe (multi-word entries of two to four words)
 # source: https://pl.wiktionary.org/wiki/Kategoria:Język_polski_-_partykuły (multi-word entries)
 # source: https://pl.wiktionary.org/wiki/raz (frazeologia: raz na zawsze)
+# source: https://pl.wiktionary.org/wiki/Kategoria:Język_polski_-_frazy_przyimkowe (multi-word entries of two to four words that are not multi-word prepositions in gaps.py)
+# source: https://pl.wiktionary.org/wiki/tak_zwany (fraza przymiotnikowa with the forms of its declension table)
+# source: https://pl.wiktionary.org/wiki/co_do (fraza zaimkowa)
 a battuta
 a capella
 a cappella
@@ -84,6 +87,7 @@ ciemno jak w dupie
 co chwila
 co chwilę
 co dnia
+co do
 co do joty
 co do zasady
 co dopiero
@@ -91,6 +95,7 @@ co dzień
 co i rusz
 co krok
 co miesiąc
+co najmniej
 co najwyżej
 co prawda
 co roku
@@ -259,6 +264,7 @@ na baczność
 na bakier
 na bank
 na barana
+na bazie
 na bańce
 na bezrok
 na bieżąco
@@ -278,6 +284,7 @@ na czas
 na czczo
 na czele
 na czerwono
+na cześć
 na czwartej
 na dobitek
 na dobitkę
@@ -328,6 +335,7 @@ na koń
 na końcu świata
 na krzywy ryj
 na krzyż
+na kształt
 na lewo
 na lewą stronę
 na luzie
@@ -378,6 +386,7 @@ na prawo
 na priv
 na przekór
 na przemian
+na przestrzeni
 na przestrzeni wieków
 na przełaj
 na przykład
@@ -422,6 +431,7 @@ na trwogę
 na trzeciej
 na ucho
 na ukos
+na umór
 na upartego
 na ustęp
 na waleta
@@ -553,6 +563,7 @@ par excellence
 per analogiam
 per nogam
 per rectum
+per se
 pewnego razu
 pełną gębą
 pi razy drzwi
@@ -592,6 +603,7 @@ po herbacie
 po hiszpańsku
 po japońsku
 po katolicku
+po kawalersku
 po kaznodziejsku
 po kobiecemu
 po kolei
@@ -656,15 +668,21 @@ po łotewsku
 po śląsku
 po żydowsku
 poco a poco
+pod auspicjami
+pod dyktando
 pod gazem
 pod gołym niebem
 pod kluczem
 pod koniec
 pod kątem
 pod nosem
+pod opieką
 pod publiczkę
+pod rygorem
 pod rząd
+pod wezwaniem
 pod wieczór
+pod wodzą
 pod wodą
 pod wpływem
 post mortem
@@ -691,6 +709,7 @@ raz na ruski rok
 raz na sto lat
 raz na zawsze
 raz po raz
+rodem z
 rok po roku
 rok w rok
 ruski miesiąc
@@ -714,6 +733,17 @@ tak samo
 tak się składa
 tak sobie
 tak więc
+tak zwana
+tak zwane
+tak zwanego
+tak zwanej
+tak zwanemu
+tak zwani
+tak zwany
+tak zwanych
+tak zwanym
+tak zwanymi
+tak zwaną
 taka prawda
 tego lata
 tempo di ballo
@@ -730,6 +760,8 @@ tym razem
 tym samym
 u dołu
 u góry
+u kresu
+u schyłku
 u spodu
 u stóp
 una corda
@@ -756,6 +788,7 @@ w dwójnasób
 w dyrdy
 w dzień
 w dół
+w formie
 w grudniu po południu
 w górę
 w głos
@@ -768,10 +801,12 @@ w koło
 w koło macieju
 w końcu
 w krótkich abcugach
+w kształcie
 w kucki
 w kółko
 w lansadach
 w lewo
+w liczbie
 w majestacie prawa
 w mgnieniu oka
 w miarę
@@ -797,9 +832,12 @@ w pobliżu
 w pocie czoła
 w pojedynkę
 w poprzek
+w porządku
 w porząsiu
 w porę
+w postaci
 w praktyce
+w przeciągu
 w przybliżeniu
 w przód
 w półkole
@@ -816,6 +854,7 @@ w stroju adamowym
 w stroju ewy
 w sumie
 w swoim czasie
+w sytuacji
 w szczególności
 w te pędy
 w trakcie
@@ -833,6 +872,7 @@ w środku
 w żółwim tempie
 we dwójnasób
 we własnej osobie
+wraz z
 wsio rawno
 wsio ryba
 wszem wobec
@@ -879,6 +919,7 @@ z marszu
 z miejsca
 z miesiąca na miesiąc
 z miłą chęcią
+z myślą o
 z nagła
 z nastaniem nocy
 z oddali
@@ -895,6 +936,7 @@ z premedytacją
 z przodu
 z przymrużeniem oka
 z prądem
+z ramienia
 z reguły
 z roku na rok
 z rozsądku
@@ -905,11 +947,14 @@ z rąsi
 z ręki
 z ręką na sercu
 z tygodnia na tydzień
+z tytułu
 z tyłu
+z udziałem
 z ukosa
 z ukrycia
 z uporem maniaka
 z urzędu
+z użyciem
 z wiatrem
 z wieczora
 z wierzchu
@@ -937,6 +982,7 @@ za facke
 za frajer
 za friko
 za granicą
+za grosz
 za grosze
 za górami za lasami
 za każdym razem
@@ -966,6 +1012,8 @@ ze słuchu
 ze wszystkich sił
 zgadza się
 zimno jak w psiarni
+zważywszy na
+à la
 à la carte
 à propos
 à rebours

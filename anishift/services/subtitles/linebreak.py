@@ -21,6 +21,7 @@ from anishift.text.boundaries import (
     SENTENCE_ENDINGS,
     is_false_sentence_break,
 )
+from anishift.text.gaps import CONJUNCTIONS, CONJUNCTIONS_MULTIWORD, DASHES, PREPOSITIONS, PREPOSITIONS_MULTIWORD
 from anishift.text.markers import strip_span_markers
 
 if TYPE_CHECKING:
@@ -46,198 +47,6 @@ _WEAK_CUT: Final[str] = PHRASE_CUT_CHARS
 _TRAILING_PUNCT: Final[str] = _STRONG_CUT + _WEAK_CUT
 """Characters stripped from a word before matching it against the word lists."""
 
-# source: https://pl.wiktionary.org/wiki/Kategoria:Język_polski_-_spójniki
-_CONJUNCTIONS: Final[frozenset[str]] = frozenset(
-    {
-        "a",
-        "aby",
-        "aczkolwiek",
-        "albo",
-        "albowiem",
-        "ale",
-        "ani",
-        "aniżeli",
-        "atoli",
-        "aż",
-        "ażeby",
-        "bądź",
-        "bo",
-        "bodaj",
-        "bowiem",
-        "by",
-        "byle",
-        "choć",
-        "chociaż",
-        "choćby",
-        "czy",
-        "czyli",
-        "dlatego",
-        "dopóki",
-        "dopóty",
-        "dotąd",
-        "gdy",
-        "gdyby",
-        "gdyż",
-        "i",
-        "ile",
-        "ilekroć",
-        "im",
-        "iż",
-        "jak",
-        "jakby",
-        "jakkolwiek",
-        "jako",
-        "jakoby",
-        "jednak",
-        "jednakże",
-        "jeśli",
-        "jeżeli",
-        "kiedy",
-        "lecz",
-        "ledwie",
-        "ledwo",
-        "lub",
-        "mianowicie",
-        "minus",
-        "natomiast",
-        "niby",
-        "niczym",
-        "niemniej",
-        "nim",
-        "niż",
-        "niżeli",
-        "oraz",
-        "plus",
-        "ponieważ",
-        "póki",
-        "póty",
-        "przeto",
-        "skoro",
-        "toteż",
-        "tudzież",
-        "tylko",
-        "więc",
-        "wprawdzie",
-        "wszelako",
-        "zanim",
-        "zarówno",
-        "zaś",
-        "zatem",
-        "że",
-        "żeby",
-    }
-)
-"""All single-word Polish conjunctions; a cut is preferred just before one."""
-
-# source: https://pl.wiktionary.org/wiki/Kategoria:Język_polski_-_spójniki
-_CONJUNCTIONS_MULTIWORD: Final[frozenset[tuple[str, ...]]] = frozenset(
-    {
-        ("a", "co", "więcej"),
-        ("a", "również"),
-        ("a", "także"),
-        ("a", "w", "szczególności"),
-        ("a", "zwłaszcza"),
-        ("ale", "również"),
-        ("ale", "też"),
-        ("chyba", "że"),
-        ("co", "gorsza"),
-        ("dlatego", "że"),
-        ("gdy", "tylko"),
-        ("jak", "gdyby"),
-        ("jak", "i"),
-        ("jako", "że"),
-        ("mimo", "to"),
-        ("mimo", "że"),
-        ("niemniej", "jednak"),
-        ("o", "ile"),
-        ("oprócz", "tego"),
-        ("po", "czym"),
-        ("podczas", "gdy"),
-        ("poza", "tym"),
-        ("przy", "czym"),
-        ("przy", "tym"),
-        ("to", "jest"),
-        ("to", "znaczy"),
-        ("w", "przeciwnym", "razie"),
-        ("w", "sensie"),
-        ("w", "takim", "razie"),
-        ("w", "związku", "z", "czym"),
-        ("wobec", "tego"),
-        ("z", "tego", "powodu"),
-        ("z", "tym", "że"),
-        ("za", "to"),
-        ("żeby", "tylko"),
-    }
-)
-"""Multi-word Polish conjunctions; a cut is preferred just before the phrase."""
-
-# source: https://pl.wiktionary.org/wiki/Kategoria:Język_polski_-_przyimki
-_NON_BREAKING_HEADS: Final[frozenset[str]] = frozenset(
-    {
-        "bez", "beze", "dla", "do", "ku", "między", "na", "nad", "nade", "o", "od", "ode",
-        "po", "pod", "pode", "przed", "przede", "przez", "przeze", "przy", "u", "w", "we", "z", "za", "ze",
-        "według", "wśród", "obok", "zza", "spod", "poza", "wobec", "podczas", "około", "ponad", "pomiędzy",
-    }
-)  # fmt: skip
-"""Simple prepositions (with phonetic variants) never detached from their noun."""
-
-# source: https://pl.wiktionary.org/wiki/Kategoria:Język_polski_-_przyimki
-_PREPOSITIONS_MULTIWORD: Final[frozenset[tuple[str, ...]]] = frozenset(
-    {
-        ("aż", "do"),
-        ("bez", "względu", "na"),
-        ("na", "czele"),
-        ("na", "korzyść"),
-        ("na", "podstawie"),
-        ("na", "przekór"),
-        ("na", "rzecz"),
-        ("na", "skutek"),
-        ("na", "temat"),
-        ("na", "tle"),
-        ("na", "wzór"),
-        ("na", "zewnątrz"),
-        ("o", "włos", "od"),
-        ("odnośnie", "do"),
-        ("począwszy", "od"),
-        ("pod", "kątem"),
-        ("pod", "względem"),
-        ("przy", "pomocy"),
-        ("przy", "użyciu"),
-        ("w", "celu"),
-        ("w", "ciągu"),
-        ("w", "czasie"),
-        ("w", "imieniu"),
-        ("w", "imię"),
-        ("w", "miarę"),
-        ("w", "obliczu"),
-        ("w", "obrębie"),
-        ("w", "odniesieniu", "do"),
-        ("w", "oparciu", "o"),
-        ("w", "porównaniu", "z"),
-        ("w", "przeciwieństwie", "do"),
-        ("w", "ramach"),
-        ("w", "razie"),
-        ("w", "sprawie"),
-        ("w", "stosunku", "do"),
-        ("w", "wyniku"),
-        ("w", "zależności", "od"),
-        ("w", "związku", "z"),
-        ("w", "ślad", "za"),
-        ("z", "okazji"),
-        ("z", "powodu"),
-        ("z", "punktu", "widzenia"),
-        ("z", "uwagi", "na"),
-        ("z", "wyjątkiem"),
-        ("z", "wyłączeniem"),
-        ("za", "pomocą"),
-        ("za", "pośrednictwem"),
-        ("za", "sprawą"),
-        ("ze", "strony"),
-        ("ze", "względu", "na"),
-    }
-)
-"""Multi-word Polish prepositions; never cut inside one of these phrases."""
-
 _MAX_PHRASE_WORDS: Final[int] = 4
 """Longest multi-word phrase looked up (``w związku z czym``)."""
 
@@ -249,9 +58,6 @@ _TRAILING_CONJUNCTION_PENALTY: Final[float] = 8.0
 
 _RE_SPACES: Final[re.Pattern[str]] = re.compile(r"\s+")
 """Whitespace run, collapsed to a single space before splitting."""
-
-_DIALOGUE_DASHES: Final[frozenset[str]] = frozenset({"-", "–", "—"})
-"""Standalone or attached markers introducing a speaker's turn."""
 
 _PRONOUN_HEADS: Final[frozenset[str]] = frozenset(
     [
@@ -287,7 +93,7 @@ _TOP_HEAVY_PENALTY: Final[int] = 6
 _OVERFLOW_TOLERANCE: Final[int] = 2
 """Extra characters allowed for safer syntax only when every legal cut overflows."""
 
-_REFLEXIVE_HEADS: Final[frozenset[str]] = _PRONOUN_HEADS | _CONJUNCTIONS | {"nie"}
+_REFLEXIVE_HEADS: Final[frozenset[str]] = _PRONOUN_HEADS | CONJUNCTIONS | {"nie"}
 """Heads that bind a following reflexive particle to its predicate."""
 
 _ASS_LINE_BREAK: Final[str] = "\\N"
@@ -338,14 +144,14 @@ def split_line(text: str, *, max_chars: int = DEFAULT_MAX_CHARS, max_lines: int 
 
 def _speaker_start(words: list[str], index: int) -> bool:
     word: str = words[index]
-    if word[:1] not in _DIALOGUE_DASHES:
+    if word[:1] not in DASHES:
         return False
     spoken: str = word[1:] if len(word) > 1 else " ".join(words[index + 1 : index + 2])
     if not spoken:
         return False
     if index == 0:
         return True
-    return _tail(words[index - 1])[-1:] in SENTENCE_ENDINGS or (word in _DIALOGUE_DASHES and spoken[0].isupper())
+    return _tail(words[index - 1])[-1:] in SENTENCE_ENDINGS or (word in DASHES and spoken[0].isupper())
 
 
 def split_for_layout(
@@ -463,7 +269,7 @@ def _dialogue_protected(words: list[str], index: int, *, keep_names: bool = True
         return True
     if tail[-1:] in SENTENCE_ENDINGS + ",;:":
         return False
-    if _protected(words, index) or previous in _DIALOGUE_DASHES:
+    if _protected(words, index) or previous in DASHES:
         return True
     if clean == "nie" or clean in _TITLE_HEADS:
         return True
@@ -486,8 +292,8 @@ def _syntactic_risk(words: list[str], index: int) -> bool:
     clean: str = _clean(previous)
     if _tail(previous)[-1:] in SENTENCE_ENDINGS + ",;:":
         return False
-    return clean in _PRONOUN_HEADS | _VERB_HEADS | _CONJUNCTIONS or (
-        clean.endswith(_ADJECTIVE_ENDINGS) and _clean(following) not in _NON_BREAKING_HEADS | _CONJUNCTIONS
+    return clean in _PRONOUN_HEADS | _VERB_HEADS | CONJUNCTIONS or (
+        clean.endswith(_ADJECTIVE_ENDINGS) and _clean(following) not in PREPOSITIONS | CONJUNCTIONS
     )
 
 
@@ -546,7 +352,7 @@ def _weight(prev_word: str, words: list[str], word_index: int) -> float:
         return 1 / 8
     if last_char in _WEAK_CUT:
         return 1 / 4
-    if _clean(prev_word) in _CONJUNCTIONS:
+    if _clean(prev_word) in CONJUNCTIONS:
         return _TRAILING_CONJUNCTION_PENALTY
     if _starts_conjunction(words, word_index):
         return 1 / 3
@@ -555,7 +361,7 @@ def _weight(prev_word: str, words: list[str], word_index: int) -> float:
 
 def _protected(words: list[str], word_index: int) -> bool:
     """True when a cut before ``words[word_index]`` would break a fixed phrase."""
-    if _clean(words[word_index]) == "się" or _clean(words[word_index - 1]) in _NON_BREAKING_HEADS:
+    if _clean(words[word_index]) == "się" or _clean(words[word_index - 1]) in PREPOSITIONS:
         return True
     for length in range(2, _MAX_PHRASE_WORDS + 1):
         for start in range(max(0, word_index - length + 1), word_index):
@@ -563,17 +369,17 @@ def _protected(words: list[str], word_index: int) -> bool:
             if end > len(words) or word_index >= end:
                 continue
             phrase = tuple(_clean(w) for w in words[start:end])
-            if phrase in _PREPOSITIONS_MULTIWORD or phrase in _CONJUNCTIONS_MULTIWORD:
+            if phrase in PREPOSITIONS_MULTIWORD or phrase in CONJUNCTIONS_MULTIWORD:
                 return True
     return False
 
 
 def _starts_conjunction(words: list[str], word_index: int) -> bool:
     """True when ``words[word_index]`` begins a conjunction (single or phrase)."""
-    if _clean(words[word_index]) in _CONJUNCTIONS:
+    if _clean(words[word_index]) in CONJUNCTIONS:
         return True
     return any(
-        tuple(_clean(w) for w in words[word_index : word_index + length]) in _CONJUNCTIONS_MULTIWORD
+        tuple(_clean(w) for w in words[word_index : word_index + length]) in CONJUNCTIONS_MULTIWORD
         for length in range(2, _MAX_PHRASE_WORDS + 1)
     )
 

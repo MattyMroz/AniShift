@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING, Final
 from anishift.services.subtitles.fuzzy import fall
 from anishift.services.subtitles.linebreak import DEFAULT_MAX_CHARS, MAX_LINES
 from anishift.text.boundaries import BREAKABLE_SPACES
-from anishift.text.gaps import Gap, GapKind, gaps, list_markers, quote_spans
+from anishift.text.gaps import DASHES, Gap, GapKind, gaps, list_markers, quote_spans
 from anishift.text.graphemes import split_graphemes
-from anishift.text.morphology import agrees
+from anishift.text.morphology import agrees, modifies
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -144,9 +144,6 @@ _ENUMERATED_LINES: Final[int] = 3
 _MIN_LIST_ITEMS: Final[int] = 2
 """Numbered markers needed before the text counts as a list."""
 
-_DASHES: Final[str] = "-–—"
-"""Characters a speaker turn starts with."""
-
 HARMS: Final[tuple[str, ...]] = (
     "length_comfortable",
     "length_wide",
@@ -255,7 +252,7 @@ class _Case:
 
 def _case(text: str, field: Field, measure: Measure, *, morphology: bool) -> _Case:
     words: tuple[str, ...] = tuple(word for word in BREAKABLE_SPACES.split(text.strip()) if word)
-    found: tuple[Gap, ...] = gaps(words)
+    found: tuple[Gap, ...] = gaps(words, modifies if morphology else None)
     turns: frozenset[int] = frozenset(index for index, gap in enumerate(found) if gap.turn and field.speaker_lines)
     return _Case(
         words=words,
@@ -414,7 +411,7 @@ def _imbalance_harms(case: _Case, chars: int, index: int, count: int) -> dict[st
 def _exempt_orphan(case: _Case, start: int) -> bool:
     if start - 1 in case.forced or (start > 0 and case.gaps[start - 1].turn):
         return True
-    return start == 0 and case.words[0][:1] in _DASHES and any(gap.turn for gap in case.gaps)
+    return start == 0 and case.words[0][:1] in DASHES and any(gap.turn for gap in case.gaps)
 
 
 def _inside_fitting_quote(case: _Case, cut: int, scale: Scale) -> bool:
