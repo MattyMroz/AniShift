@@ -450,15 +450,26 @@ def test_pronoun_outside_or_heading_a_prepositional_phrase_is_not_bound_to_the_n
 
 
 @pytest.mark.unit
-def test_prepositional_phrase_is_bound_through_every_modifier_the_predicate_accepts() -> None:
+def test_prepositional_phrase_through_agreeing_adjectives_is_a_weighted_gap() -> None:
     words: list[str] = ["Uczę", "się", "w", "tej", "prestiżowej", "akademii."]
     pairs: set[tuple[str, str]] = {("tej", "prestiżowej"), ("prestiżowej", "akademii.")}
 
     with_modifiers: tuple[Gap, ...] = gaps(words, lambda left, right: (left, right) in pairs)
     without: tuple[Gap, ...] = gaps(words)
 
-    assert [gap.kind for gap in with_modifiers[3:]] == [GapKind.AFTER_PREPOSITION, GapKind.AFTER_PREPOSITION]
-    assert without[4].kind != GapKind.AFTER_PREPOSITION
+    assert [gap.kind for gap in with_modifiers[3:]] == [GapKind.PREPOSITIONAL, GapKind.PREPOSITIONAL]
+    assert not any(gap.protected for gap in with_modifiers[3:])
+    assert without[4].kind != GapKind.PREPOSITIONAL
+
+
+@pytest.mark.unit
+def test_prepositional_phrase_binds_its_possessive_and_weighs_its_adjective() -> None:
+    words: list[str] = ["Wrócił", "do", "naszego", "starego", "domu."]
+
+    found: tuple[Gap, ...] = gaps(words, lambda left, right: (left, right) == ("starego", "domu."))
+
+    assert found[2].kind == GapKind.AFTER_PREPOSITION
+    assert found[3].kind == GapKind.PREPOSITIONAL
 
 
 @pytest.mark.unit

@@ -50,6 +50,7 @@ class GapKind(StrEnum):
     AFTER_OPENER = "after_opener"
     DEGREE = "degree"
     PARTICLE = "particle"
+    PREPOSITIONAL = "prepositional"
     NAME = "name"
     AFTER_PREPOSITION = "after_preposition"
     NEGATION = "negation"
@@ -84,7 +85,7 @@ TIERS: Final[Mapping[GapKind, int]] = MappingProxyType(
         GapKind.BEFORE_SUBORDINATOR: 2, GapKind.BEFORE_COORDINATOR: 2,
         GapKind.BEFORE_PREPOSITION: 3, GapKind.PHRASE: 3,
         GapKind.AUXILIARY: 4, GapKind.MODIFIER: 4, GapKind.ABBREVIATION: 4, GapKind.AFTER_OPENER: 4,
-        GapKind.DEGREE: 4, GapKind.PARTICLE: 4,
+        GapKind.DEGREE: 4, GapKind.PARTICLE: 4, GapKind.PREPOSITIONAL: 4,
         GapKind.NAME: 5, GapKind.AFTER_PREPOSITION: 5, GapKind.NEGATION: 5, GapKind.REFLEXIVE: 5,
         GapKind.NUMBER: 5, GapKind.IDIOM: 5, GapKind.LABEL: 5, GapKind.REPETITION: 5,
         GapKind.AFTER_SINGLE_LETTER: 6,
@@ -484,8 +485,10 @@ def _bound_kinds(words: Sequence[str], index: int, modifies: Modifies | None) ->
     previous: str = word_core(words[index - 1])
     following: str = word_core(words[index])
     preposition: bool = _follows_preposition(words, index) or _inside(words, index, PREPOSITIONS_MULTIWORD)
+    phrase: GapKind | None = _prepositional_phrase(words, index, modifies)
     evidence: tuple[tuple[GapKind, bool], ...] = (
-        (GapKind.AFTER_PREPOSITION, preposition or _inside_prepositional_phrase(words, index, modifies)),
+        (GapKind.AFTER_PREPOSITION, preposition or phrase == GapKind.AFTER_PREPOSITION),
+        (GapKind.PREPOSITIONAL, phrase == GapKind.PREPOSITIONAL),
         (GapKind.NEGATION, previous == _NEGATION and word_core(_earlier(words, index)) not in PREPOSITIONS),
         (GapKind.REFLEXIVE, _reflexive(words, index)),
         (GapKind.NUMBER, _counts(previous, following)),
@@ -564,21 +567,25 @@ def _follows_preposition(words: Sequence[str], index: int) -> bool:
     )
 
 
-def _inside_prepositional_phrase(words: Sequence[str], index: int, modifies: Modifies | None) -> bool:
+def _prepositional_phrase(words: Sequence[str], index: int, modifies: Modifies | None) -> GapKind | None:
+    adjectival: bool = False
     for left in range(index - 1, max(0, index - 1 - _MAX_PHRASE_MODIFIERS), -1):
-        if not _modifier(words[left], words[left + 1], modifies, preposed=_follows_preposition(words, left)):
-            return False
-        if _follows_preposition(words, left):
-            return True
-    return False
+        preposed: bool = _follows_preposition(words, left)
+        link: GapKind | None = _modifier(words[left], words[left + 1], modifies, preposed=preposed)
+        if link is None:
+            return None
+        adjectival = adjectival or link == GapKind.PREPOSITIONAL
+        if preposed:
+            return GapKind.PREPOSITIONAL if adjectival else GapKind.AFTER_PREPOSITION
+    return None
 
 
-def _modifier(word: str, following: str, modifies: Modifies | None, *, preposed: bool) -> bool:
+def _modifier(word: str, following: str, modifies: Modifies | None, *, preposed: bool) -> GapKind | None:
     if unicodedata.category(word[-1]).startswith("P"):
-        return False
+        return None
     if preposed and word_core(word) in _PREPOSED_POSSESSIVES:
-        return True
-    return modifies is not None and modifies(word, following)
+        return GapKind.AFTER_PREPOSITION
+    return GapKind.PREPOSITIONAL if modifies is not None and modifies(word, following) else None
 
 
 def _group_words(word: str) -> list[str]:
