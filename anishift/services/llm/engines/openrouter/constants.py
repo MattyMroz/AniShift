@@ -9,6 +9,8 @@ __all__ = ["SUGGESTED_MODEL_IDS"]
 SUGGESTED_MODEL_IDS: Final[tuple[str, ...]] = (
     "openai/gpt-6-luna",
     "deepseek/deepseek-v4.1-flash",
+    "deepseek/deepseek-v4.1-flash-1017",
+    "google/gemini-3.8-flash",
     "google/gemini-3.5-flash-lite",
     "anthropic/claude-haiku-4.5",
 )
