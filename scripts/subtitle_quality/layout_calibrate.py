@@ -44,9 +44,6 @@ POSITIVE: Final[float] = 1e-3
 TOLERANCE: Final[float] = 1e-6
 """Relative slack allowed when a stage keeps the optimum of the previous stage."""
 
-QUIZ_SOURCE: Final[str] = "owner quiz"
-"""Source prefix of quiz cases, whose pairs need a margin but not the catalogue robustness."""
-
 CUT_HARMS: Final[tuple[str, ...]] = tuple(f"cut_{kind.value}" for kind in GapKind)
 """Harm names of the cut classes, ranked by ``TIERS``."""
 
@@ -141,7 +138,7 @@ def gather(
     conflicts: dict[str, list[str]] = {}
     for case in cases:
         hard, soft, conflict = case_pairs(case, morphology=morphology)
-        rows[case.id] = (hard, soft, not case.source.startswith(QUIZ_SOURCE))
+        rows[case.id] = (hard, soft, not case.soft)
         if conflict:
             conflicts[case.id] = conflict
     return rows, conflicts
@@ -165,7 +162,7 @@ def monotone_rows() -> list[np.ndarray]:
 
 
 def solve(pairs: Pairs) -> Fit:
-    """Return weights meeting hard rows (catalogue ones robustly), then nearest soft rows, professionals and margin."""
+    """Return weights meeting hard rows (robust unless both were good), then soft rows, professionals, margin."""
     size: int = len(HARMS)
     soft_count: int = len(pairs.soft)
     pro_count: int = len(pairs.professional)
@@ -234,7 +231,7 @@ class _Rows:
 
 
 def feasible(rows: Mapping[str, tuple[Any, ...]], ids: Iterable[str]) -> bool:
-    """Return whether the hard rows of ``ids`` admit weights meeting them, catalogue rows robustly."""
+    """Return whether the hard rows of ``ids`` admit weights meeting them, robustly where required."""
     pairs: Pairs = Pairs(hard=[(case, row, rows[case][2]) for case in ids for row in rows[case][0]])
     return solve(pairs).weights is not None
 

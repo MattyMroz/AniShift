@@ -933,7 +933,7 @@
   },
   {
    "id": "d24",
-   "source": "r6; text-layout spec §6.1",
+   "source": "t01, r6; text-layout spec §6.1",
    "scope": "core",
    "pair": "corpus-pairs/first-kiss-01",
    "event": 87,
@@ -944,15 +944,21 @@
    "accept": [
     {
      "lines": [
+      "Sześćdziesiąt procent szczęścia, czterdzieści procent",
+      "wyparcia, a na dobitkę permanentny brak snu."
+     ]
+    },
+    {
+     "lines": [
       "Sześćdziesiąt procent szczęścia, czterdzieści procent wyparcia,",
       "a na dobitkę permanentny brak snu."
      ]
     }
    ],
+   "note": "t01: the owner chose 53/44 over 63/34; three lines lost in r6",
    "forbid": [
     "Sześćdziesiąt|procent",
-    "czterdzieści|procent",
-    "procent|wyparcia,"
+    "czterdzieści|procent"
    ],
    "measure": {
     "kind": "words",
@@ -2171,6 +2177,12 @@
    "accept": [
     {
      "lines": [
+      "Sześćdziesiąt procent szczęścia, czterdzieści procent",
+      "wyparcia, a na dobitkę permanentny brak snu."
+     ]
+    },
+    {
+     "lines": [
       "Sześćdziesiąt procent szczęścia, czterdzieści procent wyparcia,",
       "a na dobitkę permanentny brak snu."
      ]
@@ -2181,6 +2193,52 @@
      "lines": [
       "Sześćdziesiąt procent szczęścia,",
       "czterdzieści procent wyparcia,",
+      "a na dobitkę permanentny brak snu."
+     ]
+    }
+   ],
+   "note": "the owner chose two lines over three; t01 then put 53/44 before 63/34",
+   "measure": {
+    "kind": "words",
+    "words": {
+     "Sześćdziesiąt": 0.186462,
+     "a": 0.015869,
+     "brak": 0.062683,
+     "czterdzieści": 0.166626,
+     "dobitkę": 0.109021,
+     "na": 0.033643,
+     "permanentny": 0.186462,
+     "procent": 0.108069,
+     "snu.": 0.059509,
+     "szczęścia,": 0.138062,
+     "wyparcia,": 0.133936
+    },
+    "space": 0.009839,
+    "edge": 0.004063
+   }
+  },
+  {
+   "id": "t01",
+   "source": "owner quiz round 3 (spec §5.4)",
+   "scope": "core",
+   "pair": "corpus-pairs/first-kiss-01",
+   "event": 87,
+   "text": "Sześćdziesiąt procent szczęścia, czterdzieści procent wyparcia, a na dobitkę permanentny brak snu.",
+   "field": {
+    "kind": "dialogue"
+   },
+   "accept": [
+    {
+     "lines": [
+      "Sześćdziesiąt procent szczęścia, czterdzieści procent",
+      "wyparcia, a na dobitkę permanentny brak snu."
+     ]
+    }
+   ],
+   "shown": [
+    {
+     "lines": [
+      "Sześćdziesiąt procent szczęścia, czterdzieści procent wyparcia,",
       "a na dobitkę permanentny brak snu."
      ]
     }
@@ -2199,6 +2257,51 @@
      "snu.": 0.059509,
      "szczęścia,": 0.138062,
      "wyparcia,": 0.133936
+    },
+    "space": 0.009839,
+    "edge": 0.004063
+   }
+  },
+  {
+   "id": "t02",
+   "source": "owner quiz round 3 (spec §5.4)",
+   "scope": "core",
+   "pair": "corpus-pairs/first-kiss-01",
+   "event": 196,
+   "text": "Niech to szlag! Akurat dzisiaj tak bardzo chciałem porozmawiać z Shinomyią!",
+   "field": {
+    "kind": "dialogue"
+   },
+   "accept": [
+    {
+     "lines": [
+      "Niech to szlag! Akurat dzisiaj",
+      "tak bardzo chciałem porozmawiać z Shinomyią!"
+     ]
+    }
+   ],
+   "shown": [
+    {
+     "lines": [
+      "Niech to szlag! Akurat dzisiaj tak",
+      "bardzo chciałem porozmawiać z Shinomyią!"
+     ]
+    }
+   ],
+   "measure": {
+    "kind": "words",
+    "words": {
+     "Akurat": 0.09458,
+     "Niech": 0.07998,
+     "Shinomyią!": 0.15885,
+     "bardzo": 0.094421,
+     "chciałem": 0.127588,
+     "dzisiaj": 0.092676,
+     "porozmawiać": 0.182813,
+     "szlag!": 0.082361,
+     "tak": 0.045386,
+     "to": 0.029675,
+     "z": 0.014282
     },
     "space": 0.009839,
     "edge": 0.004063
@@ -2289,8 +2392,8 @@
     "space": 0.010192,
     "edge": 0.004687,
     "original_lines": 1,
-    "comfort": 0.513245,
-    "letter_height": 69.0
+    "letter_height": 69.0,
+    "comfort": 0.513245
    }
   },
   {
@@ -2353,8 +2456,8 @@
     "space": 0.00647,
     "edge": 0.0,
     "original_lines": 1,
-    "comfort": 0.491421,
     "letter_height": 60.0,
+    "comfort": 0.491421,
     "max_width": 0.555208,
     "height_lines": 1.3
    }
@@ -2371,16 +2474,19 @@
     "original": "Wink! In a blink you'll graduate, so do something now!",
     "max_width_px": 1770,
     "height_px": 107,
-    "tags": "{\\q2\\blur2.25\\fad(150,150)}"
+    "tags": "{\\q2\\blur2.25\\fad(150,150)}",
+    "song": true
    },
    "accept": [
     {
      "lines": [
       "Oczko! Nim mrugniesz, skończysz szkołę, więc ruszaj do dzieła!"
-     ]
+     ],
+     "fx": 1.0,
+     "fy": 1.0
     }
    ],
-   "note": "song in the black band: 1770 px between the margins, band height 130 - 23 px; the owner saw one line at 83% because the quiz note took the full line for 2116 px, but it measures about 1333 px (0.69 of the width), so the answer fixes one line over two lines, not the scale",
+   "note": "song in the black band: 1770 px between the margins, band height 130 - 23 px; the full line measures about 1333 px (0.69 of the width); the owner chose one full-size line over two lines after the image was rendered again",
    "shown": [
     {
      "lines": [
@@ -2415,7 +2521,6 @@
     "space": 0.010301,
     "edge": 0.007102,
     "original_lines": 1,
-    "comfort": 0.584614,
     "letter_height": 83.0,
     "max_width": 0.921875,
     "height_lines": 1.2869
@@ -2458,8 +2563,8 @@
     "space": 0.008514,
     "edge": 0.002656,
     "original_lines": 2,
-    "comfort": 0.362374,
-    "letter_height": 67.5
+    "letter_height": 67.5,
+    "comfort": 0.362374
    }
   },
   {
@@ -2493,8 +2598,8 @@
     "space": 0.009741,
     "edge": 0.00625,
     "original_lines": 2,
-    "comfort": 0.590368,
-    "letter_height": 84.0
+    "letter_height": 84.0,
+    "comfort": 0.590368
    }
   },
   {
@@ -2533,8 +2638,8 @@
     "space": 0.007031,
     "edge": 0.00625,
     "original_lines": 3,
-    "comfort": 0.652798,
-    "letter_height": 54.0
+    "letter_height": 54.0,
+    "comfort": 0.652798
    }
   },
   {
@@ -2576,8 +2681,8 @@
     "space": 0.007031,
     "edge": 0.00625,
     "original_lines": 3,
-    "comfort": 0.492678,
-    "letter_height": 54.0
+    "letter_height": 54.0,
+    "comfort": 0.492678
    }
   },
   {
@@ -2615,8 +2720,8 @@
     "space": 0.009613,
     "edge": 0.0,
     "original_lines": 4,
-    "comfort": 0.170136,
-    "letter_height": 75.0
+    "letter_height": 75.0,
+    "comfort": 0.170136
    }
   },
   {
@@ -2653,8 +2758,8 @@
     "space": 0.008087,
     "edge": 0.0,
     "original_lines": 1,
-    "comfort": 0.68606,
-    "letter_height": 75.0
+    "letter_height": 75.0,
+    "comfort": 0.68606
    }
   },
   {
@@ -2689,8 +2794,8 @@
     "space": 0.008087,
     "edge": 0.0,
     "original_lines": 1,
-    "comfort": 0.477625,
-    "letter_height": 75.0
+    "letter_height": 75.0,
+    "comfort": 0.477625
    }
   },
   {
@@ -2727,8 +2832,8 @@
     "space": 0.006641,
     "edge": 0.015625,
     "original_lines": 2,
-    "comfort": 0.341846,
-    "letter_height": 51.0
+    "letter_height": 51.0,
+    "comfort": 0.341846
    }
   },
   {
@@ -2808,8 +2913,8 @@
     "space": 0.00661,
     "edge": 0.01875,
     "original_lines": 13,
-    "comfort": 0.8971,
-    "letter_height": 57.0
+    "letter_height": 57.0,
+    "comfort": 0.8971
    }
   },
   {

@@ -119,7 +119,7 @@ def _field(spec: dict[str, Any], measured: dict[str, Any]) -> Field:
         preferred_lines=preferred,
         max_lines=max(3, preferred + 1),
         rescue_lines=max(3, preferred + 1),
-        comfort_width=measured["comfort"],
+        comfort_width=measured.get("comfort"),
         scalable=True,
         letter_height=measured["letter_height"],
         height_lines=measured.get("height_lines"),
@@ -281,9 +281,10 @@ def _sign_measurement(spec: dict[str, Any], event: SSAEvent, profile: RenderProf
     to_screen: float = SCREEN_HEIGHT / profile.play_res_y
     result: dict[str, Any] = {
         "original_lines": len(originals),
-        "comfort": round(comfort, 6),
         "letter_height": round(_font_size(event, profile, tags) * to_screen, 3),
     }
+    if not spec.get("song"):
+        result["comfort"] = round(comfort, 6)
     if "max_width_px" in spec:
         result["max_width"] = round(spec["max_width_px"] / SCREEN_WIDTH, 6)
     if "height_px" in spec:
