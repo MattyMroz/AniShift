@@ -21,6 +21,11 @@ subtitle line breaking.
   gdy mieści się w limicie; jeśli pojedynczy grafem jest większy, rozcina go,
   żeby zachować twardy limit callera.
 - `markers.py` jest jedynym właścicielem składni znaczników `<sN>…</sN>`: subtitles je tworzy i czyta, silniki translation tylko je usuwają.
+- `gaps.py` daje każdej przerwie jedną klasę (najszkodliwszą wg `TIERS`) i
+  flagi; nie zna wag — siłę klas ustala kalibracja rdzenia układu.
+- `morphology.agrees()` to „istnieje zgodna para analiz” Morfeusza bez
+  dezambiguacji: przymiotniki z odczytem rzeczownikowym („ukochana”) i
+  „który” też się liczą.
 - Apostrofy nie są separatorami fraz. Znaki otwierające z kategorii `Ps`/`Pi`
   także nie mogą zaczynać granicy.
 
