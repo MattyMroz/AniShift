@@ -281,7 +281,7 @@ _PHRASE_OPENERS: Final[frozenset[str]] = _SUBORDINATORS | _COORDINATORS | PREPOS
 """Words recognised as opening a new phrase, after which a reflexive ``się`` may end a line."""
 
 # source: M. Grochowski, „Gradacja”, IJP PAN, https://gramsem.ijppan.pl/wp-content/uploads/2024/06/Gradacja.pdf
-# (operatory gradacji i aproksymacji, stopniowanie analityczne); wyjątkowo, niezwykle, okropnie as intensifiers
+# (gradation and approximation operators, analytic comparison); wyjątkowo, niezwykle, okropnie as intensifiers
 _DEGREE_ADVERBS: Final[frozenset[str]] = frozenset(
     {
         "tak", "bardzo", "zbyt", "za", "coraz", "aż", "całkiem", "nieco", "trochę", "dość", "dosyć", "równie", "dużo",
@@ -464,7 +464,7 @@ def _punctuation_kind(
     if previous in DASHES and index - 1 not in speakers:
         return _dash_kind(words, index, paired)
     tail: str = _tail(previous)
-    if tail.endswith(_LABEL_MARK) and (words[index][:1].isdigit() or (_label(previous) and words[index][:1].isupper())):
+    if tail.endswith(_LABEL_MARK) and (words[index][:1].isdigit() or _label(words, index - 1)):
         return GapKind.LABEL
     if tail.endswith(_ELLIPSES):
         return GapKind.ELLIPSIS
@@ -535,13 +535,20 @@ def _degree(words: Sequence[str], index: int) -> bool:
 
 
 def _named(words: Sequence[str], index: int) -> bool:
-    if not _capitalised(words[index]) or _label(words[index]):
+    if not _capitalised(words[index]) or _next_label(words, index):
         return False
     return _capitalised(words[index - 1]) or word_core(words[index - 1]) in _TITLES
 
 
-def _label(word: str) -> bool:
-    return _tail(word).endswith(_LABEL_MARK) and word[:1].isupper()
+def _label(words: Sequence[str], index: int) -> bool:
+    word: str = words[index]
+    if not _tail(word).endswith(_LABEL_MARK) or not word[:1].isupper() or index + 2 >= len(words):
+        return False
+    return _capitalised(words[index + 1]) and _capitalised(words[index + 2])
+
+
+def _next_label(words: Sequence[str], index: int) -> bool:
+    return _label(words, index) and any(_label(words, earlier) for earlier in range(index - 1))
 
 
 def _counts(previous: str, following: str) -> bool:

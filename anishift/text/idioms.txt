@@ -5,7 +5,7 @@
 # source: https://pl.wiktionary.org/wiki/Kategoria:Język_polski_-_frazy_przyimkowe (multi-word entries of two to four words that are not multi-word prepositions in gaps.py)
 # source: https://pl.wiktionary.org/wiki/tak_zwany (fraza przymiotnikowa with the forms of its declension table)
 # source: https://pl.wiktionary.org/wiki/co_do (fraza zaimkowa)
-# source: discourse phrases of the particle no (https://pl.wiktionary.org/wiki/no) and conjunction phrases listed by the coordinator after the 2026-10-19 Crunchyroll blind evaluation: no to, no i, no więc, no cóż, a więc, a zatem, i tak; fixed form field pairs: imię i nazwisko, data i miejsce
+# source: https://pl.wiktionary.org/wiki/no (discourse phrases of the particle: no to, no i, no więc, no cóż); conjunction phrases a więc, a zatem, i tak; fixed form field pairs imię i nazwisko, data i miejsce
 a battuta
 a capella
 a cappella

@@ -496,6 +496,19 @@ def test_label_ending_in_a_colon_stays_with_the_name_after_it() -> None:
 
 
 @pytest.mark.unit
+def test_name_before_a_colon_and_a_sentence_stays_bound() -> None:
+    gap: Gap = _gap("Powiedział nam wtedy Jan Kowalski: Nie wrócę tu już nigdy więcej.", "Jan")
+
+    assert gap.kind == GapKind.NAME
+    assert gap.protected
+
+
+@pytest.mark.unit
+def test_capitalised_word_with_a_colon_before_a_sentence_is_no_label() -> None:
+    assert _gap("Pamiętaj: To jest nasz wspólny sekret.", "Pamiętaj:").kind != GapKind.LABEL
+
+
+@pytest.mark.unit
 def test_name_before_a_label_is_not_bound_to_it() -> None:
     assert not _gap("Tłumaczenie: Kuba Siodłak Korekta: Michał Sienkiewicz", "Siodłak").protected
 
