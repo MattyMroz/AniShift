@@ -1,14 +1,37 @@
 ---
 kind: report
-status: blocked
+status: pending-human
 baseline: work/quality/21-text-layout @ 56da1979
-resulting-state: work/quality/21-text-layout (after the d10 catalogue update)
+resulting-state: work/quality/21-text-layout (weights in layout.py)
 completed: 2026-10-19
 ---
 
 # Kalibracja rdzenia układu tekstu — raport
 
 Kontrakt: [text-layout.md](../text-layout.md) §5.3, plan [02-text-layout.md](../plans/02-text-layout.md) faza C. Stan po rundzie 3 ankiety (t01, t02) i decyzjach koordynatora z 19.10.
+
+## Wynik końcowy (czwarta decyzja koordynatora: d10 w dwóch wierszach)
+
+d10 przyjmuje wyłącznie „Pozwoli mi to również w pełni legalnie i w usprawiedliwiony / sposób uwiecznić cyfrowo tę niewypowiedzianie słodką istotę!” (dwa wiersze mieszczą się w polu, więc trzy wiersze są niedopuszczalne; r6, r7, §5.2); zakazane „słodką / istotę” i „niewypowiedzianie / słodką”.
+
+Kalibracja z morfologią jest **wykonalna**: brak zbiorów sprzecznych i konfliktów poziomów. Pary twarde katalogu i ankiety z marginesem, pary „oba dobre” (q09, q16, q17, r02) i zawodowców miękkie. Wagi wpisane jako `WEIGHTS` w `anishift/services/subtitles/layout.py` (zaokrąglone do 6 cyfr znaczących; test sprawdza je ponownie).
+
+| Miara | Wynik |
+| --- | --- |
+| Katalog i ankieta w pełnej przestrzeni kandydatów | **76/76** w zbiorze dopuszczalnych (test `tests/services/subtitles/test_text_layout_catalogue.py`) |
+| Test z pominięciem jednego zdarzenia | **65/76**; niespełnione: d06, d15, d25, d28, q06, q10, q11, q19, r03, s14, t02 |
+| Wrażliwość ±10% (tylko raport) | `length_comfortable` ×0,9 → q10, q11, q17, q19; ×1,1 → d06, d28, t02; `extra_line` ×0,9 → d28, ×1,1 → q10, q11, q17, q19; `cut_degree` ×0,9 → d06, t02; `cut_phrase` ×0,9 → s29, ×1,1 → e13; `cut_modifier` ×0,9 → e13 |
+| Przypadki przy kolanie (jeden wiersz 0,74–0,80) | d28 0,771 (jeden wiersz), q04 0,741 (jeden), q10 0,748 (dwa), q11 0,800 (dwa), q14 0,789 (dwa), q17 0,768 (dwa), q19 0,783 (dwa), e14 0,798 (dwa) |
+| Zawodowcy | 192 z 1414 par naruszonych; strata par „oba dobre” 3,19 |
+| Bez morfologii | niewykonalne: {r03}, {d15} — morfologia zostaje (bramka „katalog i ankieta nie tracą”) |
+
+LOO i wrażliwość pokazują, że wynik przy kolanie długości i przy krótszej górze zależy od pojedynczych odpowiedzi właściciela: bez odpowiedzi danego zdarzenia rdzeń w 11 przypadkach wybiera inaczej. Granica 0,76/0,80 jest z natury ostra (decyzja koordynatora 19.10).
+
+Najważniejsze wagi: długość 157,1 (od 0,55) i 130,5 (od 0,76), drugi wiersz 32,0, wystawanie poza oryginał 40,3, ściśnięcie 18,7, zmniejszenie 13,9, związki chronione 29,0, `auxiliary` 29,0, `degree` 18,2, `after_opener` 17,2, `before_preposition`, `modifier`, `abbreviation` 6,0, `phrase` 5,0, zgoda przymiotnika 5,7, nierównowaga ponad 20 znaków 0,82 na znak, dłuższa góra 0,33 na znak, brakujący wiersz szyldu 3,4. Klasy przerw od końca zdania do „przed spójnikiem współrzędnym” mają wagi bliskie zeru (0,001–0,009), więc o takich cięciach decyduje kształt.
+
+**Próba ślepa:** arkusz `scratchpad/v4-blind/blind.txt`, klucz `scratchpad/v4-blind/key.json` (pełna ścieżka scratchpadu sesji orkiestratora). 160 losowych kwestii dwuwierszowych NF+AMZN z części odłożonej (ziarno 20261019); rdzeń (najlepszy układ dwuwierszowy, z morfologią, pomiar w znakach) daje układ identyczny z zawodowcem w **122 z 160 (76,3%)** — w kluczu z `same: true`, poza arkuszem. W arkuszu **38** par A/B w losowej kolejności liter.
+
+**Słabość morfologii znaleziona przy d10:** Morfeusz nie zgłasza zgody dla „usprawiedliwiony sposób”, bo „sposób” ma też odczyt czasownikowy (tryb rozkazujący od „sposobić”), a reguła z §4.2 odrzuca parę, gdy którekolwiek słowo ma jakikolwiek odczyt czasownikowy. To za szerokie: rzadkie homografy rzeczowników (tryb rozkazujący, bezokolicznik) wyłączają prawdziwe pary. Propozycja (niewdrożona): odrzucać parę tylko wtedy, gdy słowo ma odczyt czasownika osobowego lub przeszłego (`fin`, `praet`, `bedzie`, `aglt`, `winien`) i jednocześnie nie ma odczytu zgodnego z drugą formą; odczyty `impt`, `inf`, `imps`, `pcon`, `pant` pominąć. Przed wdrożeniem zmierzyć odsetek oznaczeń na cięciach zawodowców NF+AMZN (dziś ok. 1%) i na pozostałych przerwach (ok. 10%), żeby nie zgubić rozdzielczości cechy.
 
 ## Stan po trzeciej decyzji koordynatora (zakaz „uwiecznić / cyfrowo” zdjęty)
 
