@@ -8,7 +8,7 @@ completed: 2026-10-19
 
 # Kalibracja rdzenia układu tekstu — raport
 
-Kontrakt: [text-layout.md](../text-layout.md) §4.2, §5.3, §7, plan [02-text-layout.md](../plans/02-text-layout.md) faza C. Stan po czwartej rundzie: nowe klasy przerw z polskiej składni (po ślepej ocenie 160 kwestii NF+AMZN, w której rdzeń ciął źle w 5,0% kwestii), poprawki z przeglądu kodu faz A–C i ponowna kalibracja.
+Kontrakt: [text-layout.md](../text-layout.md) §4.2, §5.3, §7, plan [02-text-layout.md](../plans/02-text-layout.md) faza C. Stan po piątej rundzie (sekcja niżej); czwarta runda: nowe klasy przerw z polskiej składni (po ślepej ocenie 160 kwestii NF+AMZN, w której rdzeń ciął źle w 5,0% kwestii), poprawki z przeglądu kodu faz A–C i ponowna kalibracja.
 
 ## Wynik
 
@@ -29,6 +29,25 @@ LOO i wrażliwość pokazują to samo co wcześniej: przy kolanie długości (0,
 Najważniejsze wagi: długość 284,0 (od 0,55) i 3,5 (od 0,76), drugi wiersz 58,6, wystawanie poza oryginał 46,3, ściśnięcie 23,0, zmniejszenie 17,4, brakujący wiersz szyldu 2,1, związki chronione i jednoliterowy wyraz 30,2, `degree` 30,2, `after_opener` 26,5, `auxiliary` 26,4, `particle` 15,7, `modifier` 6,0, `before_preposition`, `phrase`, `abbreviation`, `prepositional` 5,0, zgoda przymiotnika 5,7, nierównowaga ponad 20 znaków 0,45 na znak, dłuższa góra 0,33 na znak. Klasy od końca zdania do „przed spójnikiem współrzędnym” mają wagi bliskie zeru (0,001–0,009), więc o takich cięciach decyduje kształt.
 
 **Szkoda „za mały” (`small`) ma wagę 0 — to brak danych, nie błąd cechy.** Stopień liczy się poprawnie (np. 15 391 z 45 729 kandydatów s29 ma go powyżej zera). W katalogu są pary, w których przegrany ma mniejsze litery od zwycięzcy (r01: 51, s14: 19, s10: 15, q15: 2), ale każdy taki przegrany przegrywa już przez zmniejszenie: litery spadają poniżej 30 px dopiero przy skali ok. 0,36–0,59 (litery 51–84 px), gdzie szkoda zmniejszenia jest duża. Program liniowy minimalizuje sumę wag przy zachowanym marginesie, więc wagi, której żadna para nie wymaga, nie podnosi. Żeby szkoda działała, katalog potrzebuje przypadku, w którym zmniejszenie samo przegrywa tylko przez czytelność (np. drobny tekst s06, s11 — dziś poza rdzeniem).
+
+## Runda 5 (po ślepej ocenie Crunchyroll)
+
+Ślepa ocena 200 kwestii CR (dwóch sędziów zgodnie) wskazała dziewięć złych cięć rdzenia. Zmiany klas (`gaps.py`, `idioms.txt`, testy w `tests/text/test_gaps.py`):
+
+| Klasa / reguła | Zmiana | NF+AMZN: cięcia zawodowców / pozostałe | CR: cięcia / pozostałe |
+| --- | --- | --- | --- |
+| `degree` | zamknięta lista operatorów gradacji, aproksymacji i stopniowania analitycznego z M. Grochowski, „Gradacja” (IJP PAN): znacznie, nieznacznie, zupełnie, całkowicie, kompletnie, absolutnie, zanadto, zbytnio, nazbyt, nadmiernie, wielce, wysoce, strasznie, ogromnie, odrobinę, prawie, niemal, niemalże, niespełna, raczej, mniej, bardziej, najmniej, najbardziej, dosyć; wyjątkowo, niezwykle, okropnie jako intensyfikatory tej samej klasy | 0 / 0,16% | 0,63% / 0,33% |
+| `idiom` | no to, no i, no więc, no cóż, a więc, a zatem, i tak; pary formularzowe imię i nazwisko, data i miejsce | 0 / 0,05% | 0 / 0,01% |
+| `label` | wyraz z wielkiej litery zakończony dwukropkiem przed wartością z wielkiej litery („Korekta: Michał”); nazwa własna nie wiąże się z następującą etykietą („Siodłak / Korekta:”) | 0 / 0 | 0 / 0,08% (etykieta), 0,27% / 0,03% (zdjęte `name`) |
+| `auxiliary` | forma „być” lub czasownika modalnego przed frazą przyimkową, która nie jest utartym zwrotem, nie jest przerwą posiłkową („będziemy / w tej samej klasie”) | 0 / 0,50% (zdjęte) | 0,89% / 0,53% (zdjęte) |
+
+Fraza przyimkowa przez przymiotnik („w tej / samej klasie”) nie wymagała zmiany wagi: przegrywała, bo jedyna alternatywa („będziemy / w tej…”) była błędnie liczona jako przerwa posiłkowa. „w południowym / regionie” (CR #61) to skutek wymuszenia dwóch wierszy w próbie: alternatywa „przechowywanych / w południowym regionie Binan.” ma sierotę, czyli poziom ratunku, a w zwykłym układzie kwestia mieści się w jednym wierszu.
+
+Granica stylu (wskazanie właściciela 19.10): `Field.style_breaks` — przerwy, na których zmienia się krój, rozmiar, skala albo waga (`geometry.style_changes`). Wiersz łączący dwa style podnosi poziom ratunku (flaga `mixed`), a zmiana stylu w miejscu końca wiersza źródła jest granicą wymuszoną. s09 ma w katalogu wymuszoną granicę po „Odcinek pierwszy:” i układ właściciela. s10 nie ma zmiany stylu w źródle („Episode 02\NThe Boy Who Is the\N…” bez tagów): wymaganie układu właściciela z osobnym nagłówkiem daje niewykonalność ({s10}), bo żadna cecha rdzenia nie odróżnia nagłówka bez zmiany stylu — s10 zostaje z regułą `no_hourglass`, decyzja do właściciela.
+
+Kalibracja po rundzie 5: wykonalna, katalog i ankieta 76/76, test z pominięciem jednego zdarzenia 64/76 (bez zmian: d06, d15, d25, d28, q10, q11, q15, q19, r03, s14, s29, t02), wariant bez morfologii nadal niewykonalny ({r03}, {d15}). Wagi prawie bez zmian; `cut_before_subordinator` spadła z 2,67 do 0,001.
+
+Próby ślepe przeliczone przy nowych wagach (bez nowej oceny sędziów): NF+AMZN — 13 ze 160 układów inne niż w kluczu, identyczne z zawodowcem 130 (wcześniej 122), z 12 złych pozycji zmieniło się 10 (bez zmian: „wrócimy / i wyruszymy”, „z tobą / poćwiczę”); CR — 7 z 200 innych, identyczne z zawodowcem 125 (wcześniej 121), z 9 złych pozycji zmieniło się 6 (bez zmian: „Nie dali / nam”, „Imię / i nazwiskoTani” — sklejony wyraz w źródle, utarty zwrot go nie obejmuje, „w południowym / regionie”).
 
 ## Nowe klasy przerw (runda 4)
 
