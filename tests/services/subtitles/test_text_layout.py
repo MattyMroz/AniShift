@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from itertools import combinations
+
 import pytest
 
+from anishift.services.subtitles import layout as core
 from anishift.services.subtitles.layout import (
     CHAR_WIDTH,
     DIALOGUE_MAX_WIDTH,
     HARMS,
+    WEIGHTS,
     Field,
     Flag,
     Layout,
@@ -223,3 +227,66 @@ def test_dynamic_programming_keeps_forced_breaks() -> None:
     layout: Layout = lay_out(text, narrow, chars_measure, _FLAT)
 
     assert layout.lines[0] == "Pierwsza pozycja"
+
+
+def _exhaustive(text: str, field: Field, weights: dict[str, float]) -> Layout:
+    case: core._Case = core._case(text, field, chars_measure, morphology=True)
+    allowed: list[int] = [index for index in range(len(case.gaps)) if core._allowed_cut(case, index)]
+    found: list[Layout] = [
+        core._evaluate(case, cuts, scale)
+        for lines in range(1, field.rescue_lines + 1)
+        for cuts in combinations(allowed, lines - 1)
+        if case.forced <= set(cuts)
+        for scale in core._scales(case, cuts)
+    ]
+    return min(found, key=lambda layout: (layout.rescue, layout.score(weights)))
+
+
+_DISCLAIMER: str = "Niniejsze dzieło jest fikcją i nie zachęcamy nikogo do picia alkoholu w żadnej postaci ani formie."
+_FICTION: str = (
+    "Wszystkie postacie i wydarzenia przedstawione w tym filmie są fikcyjne, a podobieństwo jest przypadkowe."
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "width", "pyramid"),
+    [
+        (_FICTION, 0.2, False),
+        (_FICTION, 0.25, False),
+        (_FICTION, 0.3, False),
+        (_DISCLAIMER, 0.35, True),
+        (_DISCLAIMER, 0.4, True),
+        (_DISCLAIMER, 0.45, True),
+    ],
+)
+def test_dynamic_programming_finds_the_optimum_of_the_exhaustive_search(
+    text: str, width: float, *, pyramid: bool
+) -> None:
+    field: Field = Field(
+        max_width=width,
+        preferred_lines=4,
+        max_lines=6,
+        rescue_lines=6,
+        pyramid=pyramid,
+        scalable=not pyramid,
+        comfort_width=None if pyramid else width * 0.8,
+        letter_height=0.0 if pyramid else 40.0,
+    )
+    weights: dict[str, float] = {**WEIGHTS, "top_longer": 1.0}
+
+    programmed: Layout = lay_out(text, field, chars_measure, weights)
+    exhaustive: Layout = _exhaustive(text, field, weights)
+
+    assert programmed.rescue == exhaustive.rescue
+    assert programmed.score(weights) == pytest.approx(exhaustive.score(weights))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("text", ["- Tak. - Nie. - Może. - Jutro.", "(1) RAZ (2) DWA (3) TRZY (4) CZTERY"])
+def test_forced_breaks_beyond_the_rescue_lines_are_joined_and_reported(text: str) -> None:
+    layout: Layout = lay_out(text, dialogue_field(), chars_measure)
+
+    assert " ".join(layout.lines) == text
+    assert len(layout.lines) <= dialogue_field().rescue_lines
+    assert Flag.JOINED in layout.flags

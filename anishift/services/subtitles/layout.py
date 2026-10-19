@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from enum import StrEnum
-from functools import cache
+from functools import cache, lru_cache
 from itertools import combinations, pairwise
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
@@ -67,6 +67,7 @@ class Flag(StrEnum):
     BOUND_PAIR = "bound_pair"
     QUOTE = "quote"
     ORPHAN = "orphan"
+    JOINED = "joined"
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +117,9 @@ class Layout:
 
 DIALOGUE_MAX_WIDTH: Final[float] = 0.9
 """Safe screen area a dialogue line must fit even when the style margins are narrower (text-layout spec §3.2, r7)."""
+
+_CHARS_CACHE: Final[int] = 1 << 16
+"""Line texts whose grapheme count is remembered."""
 
 _DIALOGUE_RESCUE_LINES: Final[int] = 3
 """Dialogue lines allowed in rescue only (text-layout spec §3.2, q13, r6, r7)."""
@@ -230,8 +234,9 @@ def lay_out(
     """Return the layout with the lowest rescue level and then the lowest weighted harm."""
     case: _Case = _case(text, field, measure, morphology=morphology)
     found: list[Layout] = _enumerated(case)
+    best: Layout = min(found, key=lambda layout: (layout.rescue, layout.score(weights)))
     if field.rescue_lines > _ENUMERATED_LINES:
-        found.extend(_programmed(case, weights))
+        found.extend(_programmed(case, weights, (best.rescue, best.score(weights))))
     return min(found, key=lambda layout: (layout.rescue, layout.score(weights)))
 
 
@@ -244,6 +249,7 @@ class _Case:
     gaps: tuple[Gap, ...]
     quotes: tuple[tuple[int, int], ...]
     forced: frozenset[int]
+    released: frozenset[int]
     chars: int
     field: Field
     measure: Measure
@@ -254,14 +260,18 @@ def _case(text: str, field: Field, measure: Measure, *, morphology: bool) -> _Ca
     words: tuple[str, ...] = tuple(word for word in BREAKABLE_SPACES.split(text.strip()) if word)
     found: tuple[Gap, ...] = gaps(words, modifies if morphology else None)
     turns: frozenset[int] = frozenset(index for index, gap in enumerate(found) if gap.turn and field.speaker_lines)
+    cached: Measure = cache(measure)
+    forced: frozenset[int] = field.breaks | _list_breaks(words, field, cached) | turns
+    fits: bool = len(forced) < field.rescue_lines
     return _Case(
         words=words,
         gaps=found,
         quotes=quote_spans(words),
-        forced=field.breaks | _list_breaks(words, field, measure) | turns,
+        forced=forced if fits else frozenset(),
+        released=frozenset() if fits else forced,
         chars=_chars(" ".join(words)),
         field=field,
-        measure=measure,
+        measure=cached,
         morphology=morphology,
     )
 
@@ -289,7 +299,7 @@ def _splits(case: _Case) -> Iterator[tuple[int, ...]]:
 
 
 def _allowed_cut(case: _Case, index: int) -> bool:
-    return not case.gaps[index].banned or index in case.forced
+    return not case.gaps[index].banned or index in case.forced | case.released
 
 
 # ── Scales ────────────────────────────────────────────────────────────────────
@@ -310,8 +320,10 @@ def _breakpoints(field: Field, widths: Sequence[float]) -> set[float]:
 
 
 def _scale_options(points: set[float]) -> list[Scale]:
-    steps: set[float] = {math.floor(point * _PERCENT) / _PERCENT for point in points if 0 < point < 1}
-    steps.discard(0.0)
+    steps: set[float] = {
+        rounded(point * _PERCENT) / _PERCENT for point in points if 0 < point < 1 for rounded in (math.floor, math.ceil)
+    }
+    steps -= {0.0, 1.0}
     return [Scale()] + [option for step in sorted(steps) for option in (Scale(step, step), Scale(step))]
 
 
@@ -353,15 +365,15 @@ def _evaluate(case: _Case, cuts: tuple[int, ...], scale: Scale) -> Layout:
 
 
 def _line_part(case: _Case, place: tuple[int, int, int, int], scale: Scale) -> _Part:
+    shape: _Part = _line_shape(case, place)
+    size: _Part = _line_size(case, place[0], place[1], scale.fx)
+    return _Part(harms=shape.harms | size.harms, outside=size.outside, flags=shape.flags + size.flags)
+
+
+def _line_shape(case: _Case, place: tuple[int, int, int, int]) -> _Part:
     start, end, index, count = place
-    field: Field = case.field
-    text: str = " ".join(case.words[start:end])
-    width: float = case.measure(text, scale.fx)
-    chars: int = _chars(text)
-    harms: dict[str, float] = _length_harms(field, width, chars) | _imbalance_harms(case, chars, index, count)
-    if field.comfort_width is not None:
-        harms["over_comfort"] = max(0.0, width - field.comfort_width)
-    flags: list[Flag] = []
+    harms: dict[str, float] = _imbalance_harms(case, _chars(" ".join(case.words[start:end])), index, count)
+    flags: list[Flag] = [Flag.JOINED for cut in case.released if start <= cut < end - 1]
     if count > 1 and end - start == 1 and not _exempt_orphan(case, start):
         flags.append(Flag.ORPHAN)
     if end < len(case.words):
@@ -370,11 +382,20 @@ def _line_part(case: _Case, place: tuple[int, int, int, int], scale: Scale) -> _
         harms[f"cut_{gap.kind.value}"] = 1.0
         if case.morphology and agrees(case.words[cut], case.words[end]):
             harms["agreement"] = 1.0
-        if gap.protected and cut not in case.forced:
+        if gap.protected and cut not in case.forced | case.released:
             flags.append(Flag.BOUND_PAIR)
-        if _inside_fitting_quote(case, cut, scale):
-            flags.append(Flag.QUOTE)
-    return _Part(harms=harms, outside=int(width > field.max_width), flags=tuple(flags))
+    return _Part(harms=harms, outside=0, flags=tuple(flags))
+
+
+def _line_size(case: _Case, start: int, end: int, fx: float) -> _Part:
+    field: Field = case.field
+    text: str = " ".join(case.words[start:end])
+    width: float = case.measure(text, fx)
+    harms: dict[str, float] = _length_harms(field, width, _chars(text))
+    if field.comfort_width is not None:
+        harms["over_comfort"] = max(0.0, width - field.comfort_width)
+    quote: bool = end < len(case.words) and _inside_fitting_quote(case, end - 1, fx)
+    return _Part(harms=harms, outside=int(width > field.max_width), flags=(Flag.QUOTE,) if quote else ())
 
 
 def _global_harms(field: Field, count: int, scale: Scale) -> dict[str, float]:
@@ -409,15 +430,15 @@ def _imbalance_harms(case: _Case, chars: int, index: int, count: int) -> dict[st
 
 
 def _exempt_orphan(case: _Case, start: int) -> bool:
-    if start - 1 in case.forced or (start > 0 and case.gaps[start - 1].turn):
+    if start - 1 in case.forced | case.released or (start > 0 and case.gaps[start - 1].turn):
         return True
     return start == 0 and case.words[0][:1] in DASHES and any(gap.turn for gap in case.gaps)
 
 
-def _inside_fitting_quote(case: _Case, cut: int, scale: Scale) -> bool:
+def _inside_fitting_quote(case: _Case, cut: int, fx: float) -> bool:
     for first, last in case.quotes:
         if first <= cut < last:
-            return case.measure(" ".join(case.words[first : last + 1]), scale.fx) <= case.field.max_width
+            return case.measure(" ".join(case.words[first : last + 1]), fx) <= case.field.max_width
     return False
 
 
@@ -426,6 +447,7 @@ def _lines(words: Sequence[str], cuts: tuple[int, ...]) -> tuple[str, ...]:
     return tuple(" ".join(words[start:end]) for start, end in pairwise(bounds))
 
 
+@lru_cache(maxsize=_CHARS_CACHE)
 def _chars(text: str) -> int:
     return len(split_graphemes(text))
 
@@ -436,53 +458,165 @@ def _chars(text: str) -> int:
 type _Key = tuple[int, int, float]
 """Partial layout key: lines outside the field, avoided harms and weighted harm."""
 
+type _Bound = tuple[tuple[int, int, int], float]
+"""Rescue level and weighted harm of a whole layout, or a lower bound of them."""
 
-def _programmed(case: _Case, weights: Mapping[str, float]) -> list[Layout]:
+
+def _programmed(case: _Case, weights: Mapping[str, float], best: _Bound) -> list[Layout]:
     found: list[Layout] = []
+    costs: _Costs = _Costs(case, weights)
+    widths: list[float] = _programmed_widths(case)
     for count in range(_ENUMERATED_LINES + 1, min(case.field.rescue_lines, len(case.words)) + 1):
-        unscaled: tuple[int, ...] | None = _Solver(case, weights, count, Scale()).best_cuts()
-        if unscaled is None:
+        floor: _Key | None = _line_floor(costs, count, widths[-1])
+        if floor is None:
             continue
-        found.append(_evaluate(case, unscaled, Scale()))
-        for scale in _scales(case, unscaled)[1:]:
-            cuts: tuple[int, ...] | None = _Solver(case, weights, count, scale).best_cuts()
-            if cuts is not None:
-                found.append(_evaluate(case, cuts, scale))
+        for fx in widths:
+            if _lower_bound(case, weights, (count, fx), floor) >= best:
+                continue
+            fewest: int | None = _fewest_fitting_lines(costs, fx)
+            solver: _Solver = _Solver(costs, count, fx, fitting=fewest is not None and count >= fewest)
+            cuts: tuple[int, ...] | None = solver.best_cuts()
+            if cuts is None:
+                continue
+            layouts: list[Layout] = [_evaluate(case, cuts, scale) for scale in _heights(case, fx)]
+            found.extend(layouts)
+            best = min([best, *((layout.rescue, layout.score(weights)) for layout in layouts)])
     return found
 
 
-class _Solver:
-    """Best split into a fixed number of lines at one scale, line by line."""
+def _line_floor(costs: _Costs, count: int, fx: float) -> _Key | None:
+    fewest: int | None = _fewest_fitting_lines(costs, fx)
+    return _Solver(costs, count, fx, fitting=fewest is not None and count >= fewest, floor=True).best_key()
 
-    def __init__(self, case: _Case, weights: Mapping[str, float], count: int, scale: Scale) -> None:
-        self._case: _Case = case
+
+def _lower_bound(case: _Case, weights: Mapping[str, float], size: tuple[int, float], floor: _Key) -> _Bound:
+    count, fx = size
+    field: Field = case.field
+    bounds: list[_Bound] = []
+    for scale in _heights(case, fx):
+        tall: int = int(field.height_lines is not None and count * scale.fy > field.height_lines)
+        harms: dict[str, float] = _global_harms(field, count, scale)
+        score: float = sum(weights.get(name, 0.0) * degree for name, degree in harms.items())
+        bounds.append(((tall + floor[0], max(0, count - field.max_lines), floor[1]), score + floor[2]))
+    return min(bounds)
+
+
+def _programmed_widths(case: _Case) -> list[float]:
+    if not case.field.scalable:
+        return [1.0]
+    size: int = len(case.words)
+    widths: list[float] = [
+        case.measure(" ".join(case.words[start:end]), 1.0)
+        for start in range(size)
+        for end in range(start + 1, size + 1)
+    ]
+    return sorted({scale.fx for scale in _scale_options(_breakpoints(case.field, widths))}, reverse=True)
+
+
+def _fewest_fitting_lines(costs: _Costs, fx: float) -> int | None:
+    case: _Case = costs.case
+    size: int = len(case.words)
+    start: int = 0
+    lines: int = 0
+    while start < size:
+        reach: int | None = None
+        for end in range(start + 1, size + 1):
+            if costs.size(start, end, fx)[0]:
+                break
+            if end == size or _allowed_cut(case, end - 1):
+                reach = end
+            if end - 1 in case.forced:
+                break
+        if reach is None:
+            return None
+        start, lines = reach, lines + 1
+    return lines
+
+
+def _heights(case: _Case, fx: float) -> list[Scale]:
+    if not case.field.scalable or fx == 1.0:
+        return [Scale()]
+    return [Scale(fx, fx), Scale(fx)]
+
+
+class _Costs:
+    """Weighted harms of one line, split into the part fixed by its words and the part set by its width."""
+
+    def __init__(self, case: _Case, weights: Mapping[str, float]) -> None:
+        self.case: _Case = case
+        self.top_longer: float = weights.get("top_longer", 0.0) if case.field.pyramid else 0.0
         self._weights: Mapping[str, float] = weights
+        self.shape: Callable[[int, int, int, int], tuple[int, float]] = cache(self._shape)
+        self.size: Callable[[int, int, float], tuple[int, int, float]] = cache(self._size)
+        self.chars: Callable[[int, int], int] = cache(self._chars)
+
+    def _shape(self, start: int, end: int, index: int, count: int) -> tuple[int, float]:
+        part: _Part = _line_shape(self.case, (start, end, index, count))
+        return len(part.flags), self._score(part)
+
+    def _size(self, start: int, end: int, fx: float) -> tuple[int, int, float]:
+        part: _Part = _line_size(self.case, start, end, fx)
+        return part.outside, len(part.flags), self._score(part)
+
+    def _chars(self, start: int, end: int) -> int:
+        return _chars(" ".join(self.case.words[start:end]))
+
+    def _score(self, part: _Part) -> float:
+        return sum(self._weights.get(name, 0.0) * degree for name, degree in part.harms.items())
+
+
+class _Solver:
+    """Best split into a fixed number of lines at one horizontal scale; ``floor`` leaves out the quotation flags."""
+
+    def __init__(self, costs: _Costs, count: int, fx: float, *, fitting: bool, floor: bool = False) -> None:
+        self._costs: _Costs = costs
+        self._case: _Case = costs.case
         self._count: int = count
-        self._scale: Scale = scale
-        self._best: Callable[[int, int], tuple[_Key, tuple[int, ...]] | None] = cache(self._solve)
+        self._fx: float = fx
+        self._fitting: bool = fitting
+        self._floor: bool = floor
+        self._best: Callable[[int, int, int], tuple[_Key, tuple[int, ...]] | None] = cache(self._solve)
 
     def best_cuts(self) -> tuple[int, ...] | None:
         """Return the cuts of the best split, or None when no allowed split exists."""
-        result: tuple[_Key, tuple[int, ...]] | None = self._best(0, 0)
+        result: tuple[_Key, tuple[int, ...]] | None = self._best(0, 0, -1)
         return None if result is None else result[1]
 
-    def _solve(self, start: int, index: int) -> tuple[_Key, tuple[int, ...]] | None:
+    def best_key(self) -> _Key | None:
+        """Return the key of the best split, or None when no allowed split exists."""
+        result: tuple[_Key, tuple[int, ...]] | None = self._best(0, 0, -1)
+        return None if result is None else result[0]
+
+    def _solve(self, start: int, index: int, above: int) -> tuple[_Key, tuple[int, ...]] | None:
         size: int = len(self._case.words)
         if index == self._count - 1:
-            return None if self._skips_forced(start, size) else (self._key(start, size, index), ())
+            if self._skips_forced(start, size) or self._outside(start, size):
+                return None
+            return self._key(start, size, index, above), ()
         options: list[tuple[_Key, tuple[int, ...]]] = []
         for end in range(start + 1, size - (self._count - index - 1) + 1):
-            rest: tuple[_Key, tuple[int, ...]] | None = self._best(end, index + 1)
-            if rest is None or not _allowed_cut(self._case, end - 1) or self._skips_forced(start, end):
+            if self._skips_forced(start, end) or self._outside(start, end):
+                break
+            if not _allowed_cut(self._case, end - 1):
                 continue
-            key: _Key = self._key(start, end, index)
+            line: int = self._costs.chars(start, end) if self._costs.top_longer else -1
+            rest: tuple[_Key, tuple[int, ...]] | None = self._best(end, index + 1, line)
+            if rest is None:
+                continue
+            key: _Key = self._key(start, end, index, above)
             options.append(((key[0] + rest[0][0], key[1] + rest[0][1], key[2] + rest[0][2]), (end - 1, *rest[1])))
         return min(options, default=None, key=lambda option: option[0])
 
     def _skips_forced(self, start: int, end: int) -> bool:
         return any(start <= cut < end - 1 for cut in self._case.forced)
 
-    def _key(self, start: int, end: int, index: int) -> _Key:
-        part: _Part = _line_part(self._case, (start, end, index, self._count), self._scale)
-        score: float = sum(self._weights.get(name, 0.0) * degree for name, degree in part.harms.items())
-        return part.outside, len(part.flags), score
+    def _outside(self, start: int, end: int) -> bool:
+        return self._fitting and bool(self._costs.size(start, end, self._fx)[0])
+
+    def _key(self, start: int, end: int, index: int, above: int) -> _Key:
+        shape_flags, shape_score = self._costs.shape(start, end, index, self._count)
+        outside, size_flags, size_score = self._costs.size(start, end, self._fx)
+        score: float = shape_score + size_score
+        if above >= 0:
+            score += self._costs.top_longer * max(0, above - self._costs.chars(start, end))
+        return outside, shape_flags + (0 if self._floor else size_flags), score
