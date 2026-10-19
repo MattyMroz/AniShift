@@ -11,7 +11,6 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
 from anishift.services.subtitles.fuzzy import fall
-from anishift.services.subtitles.linebreak import DEFAULT_MAX_CHARS, MAX_LINES
 from anishift.text.boundaries import BREAKABLE_SPACES
 from anishift.text.gaps import DASHES, Gap, GapKind, gaps, list_markers, quote_spans
 from anishift.text.graphemes import split_graphemes
@@ -22,8 +21,10 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CHAR_WIDTH",
+    "DEFAULT_MAX_CHARS",
     "DIALOGUE_MAX_WIDTH",
     "HARMS",
+    "MAX_LINES",
     "WEIGHTS",
     "Field",
     "Flag",
@@ -36,6 +37,13 @@ __all__ = [
     "dialogue_field",
     "lay_out",
 ]
+
+
+DEFAULT_MAX_CHARS: Final[int] = 42
+"""Preferred readable line length for on-screen subtitles (Netflix/BBC-ish)."""
+
+MAX_LINES: Final[int] = 2
+"""Maximum on-screen verses before an over-length line is accepted."""
 
 
 @dataclass(frozen=True, slots=True)

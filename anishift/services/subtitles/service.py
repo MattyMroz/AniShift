@@ -31,8 +31,8 @@ from anishift.services.subtitles.classifier import (
 from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.fitting import fit_signs
 from anishift.services.subtitles.geometry import RenderProfile, TextBox, measure_text
-from anishift.services.subtitles.layout import LayoutLimits
-from anishift.services.subtitles.linebreak import layout_dialogue, split_for_layout
+from anishift.services.subtitles.layout import Flag, LayoutLimits
+from anishift.services.subtitles.linebreak import DialogueLayout, layout_dialogue, split_for_layout
 from anishift.services.subtitles.restyle import clone_source, restyle_dialogue
 from anishift.services.subtitles.signs import static_weights
 from anishift.services.subtitles.text import (
@@ -599,7 +599,12 @@ def layout_translated(
             out.events.append(event)
             continue
         laid_out: SSAEvent = event.copy()
-        laid_out.text = _laid_out_text(event, text, decision, profile, limits)
+        if decision == "spoken":
+            dialogue: DialogueLayout = layout_dialogue(event, text, profile if split.kind == "ass" else None)
+            _count_dialogue(report, dialogue)
+            laid_out.text = dialogue.text
+        else:
+            laid_out.text = _laid_out_sign(event, text, profile, limits)
         if split.kind == "ass" and decision == "displayed":
             signs.append(position)
         out.events.append(laid_out)
@@ -608,9 +613,14 @@ def layout_translated(
     return TranslatedLayout(out, report)
 
 
-def _laid_out_text(event: SSAEvent, text: str, decision: Decision, profile: RenderProfile, limits: LayoutLimits) -> str:
-    if decision == "spoken":
-        return layout_dialogue(event, text, profile, limits).text
+def _count_dialogue(report: LayoutReport, dialogue: DialogueLayout) -> None:
+    report.dialogue_unmeasured += dialogue.approximate
+    report.dialogue_three_lines += Flag.EXTRA_LINE in dialogue.flags
+    report.dialogue_overflow += Flag.OUTSIDE in dialogue.flags
+    report.dialogue_relaxed_phrases += bool(dialogue.flags - {Flag.EXTRA_LINE, Flag.OUTSIDE})
+
+
+def _laid_out_sign(event: SSAEvent, text: str, profile: RenderProfile, limits: LayoutLimits) -> str:
     verses: tuple[str, ...] = split_for_layout(
         strip_span_markers(text),
         visible_verses(event.text),

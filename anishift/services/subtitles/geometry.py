@@ -22,7 +22,17 @@ if TYPE_CHECKING:
 
     from anishift.services.fonts import FontFace, FontIndex, FontMatch, GlyphMetrics
 
-__all__ = ["Rect", "RenderProfile", "TextBox", "available_width", "measure_text", "screen_rects", "wrap_text"]
+__all__ = [
+    "Rect",
+    "RenderProfile",
+    "TextBox",
+    "available_width",
+    "measure_text",
+    "safe_width",
+    "screen_rects",
+    "style_changes",
+    "wrap_text",
+]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -257,6 +267,38 @@ def available_width(event: SSAEvent, profile: RenderProfile) -> float:
     return profile.play_res_x - (event.marginl or style.marginl) - (event.marginr or style.marginr)
 
 
+def safe_width(event: SSAEvent, profile: RenderProfile, share: float) -> float:
+    """Return the widest line the event may draw from its horizontal anchor inside the canvas share ``share``."""
+    parse: _Parse = _parse(event, event.text, profile, final=False)
+    column: int = (parse.alignment - 1) % 3
+    style: SSAStyle = _style(event, profile)
+    left: float = (event.marginl or style.marginl) + available_width(event, profile) * column / 2
+    anchor: float = left if parse.anchors is None else parse.anchors[0][0]
+    low: float = profile.play_res_x * (1 - share) / 2
+    high: float = profile.play_res_x - low
+    reach: float = (high - anchor, 2 * min(anchor - low, high - anchor), anchor - low)[column]
+    return max(0.0, reach)
+
+
+def style_changes(event: SSAEvent, text: str, profile: RenderProfile) -> tuple[bool, ...]:
+    """Return for every gap between the words of ``text`` whether the font, size, scale or weight changes across it."""
+    parse: _Parse = _parse(event, text, profile, final=False)
+    words: list[tuple[_State, _State]] = []
+    first: _State | None = None
+    last: _State | None = None
+    for char in (char for line in parse.lines for char in line):
+        if char.text in _TRIMMED:
+            if first is not None and last is not None:
+                words.append((first, last))
+            first = None
+            continue
+        first = char.state if first is None else first
+        last = char.state
+    if first is not None and last is not None:
+        words.append((first, last))
+    return tuple(_typeface(left[1]) != _typeface(right[0]) for left, right in pairwise(words))
+
+
 def wrap_text(event: SSAEvent, text: str, profile: RenderProfile) -> str:
     """Return ``text`` with the line breaks libass adds when it wraps the event automatically."""
     verses: tuple[str, ...] | None = _wrapped_verses(event, text, profile)
@@ -480,6 +522,10 @@ def _arguments(content: str | None) -> list[str]:
         head, _, last = content[:slash].rpartition(",")
         parts = [*(head.split(",") if head else []), last + content[slash:]]
     return [part.strip() for part in parts if part.strip()]
+
+
+def _typeface(state: _State) -> tuple[str, float, float, float, int]:
+    return state.font, state.size, state.scale_x, state.scale_y, state.weight
 
 
 def _style(event: SSAEvent, profile: RenderProfile) -> SSAStyle:

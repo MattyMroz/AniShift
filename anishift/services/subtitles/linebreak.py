@@ -1,42 +1,41 @@
-"""Re-split a translated line into readable on-screen subtitle verses."""
+"""Lay out translated dialogue with the layout core and re-split displayed text into authored verses."""
 
 from __future__ import annotations
 
 import re
-import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final
 
+from anishift.services.subtitles.geometry import measure_text, safe_width, style_changes, wrap_text
+from anishift.services.subtitles.layout import (
+    DEFAULT_MAX_CHARS,
+    DIALOGUE_MAX_WIDTH,
+    MAX_LINES,
+    Field,
+    Flag,
+    Layout,
+    chars_measure,
+    dialogue_field,
+    lay_out,
+)
 from anishift.services.subtitles.text import (
+    RE_TAG_BLOCK,
     reflow_visible_text,
     replace_visible_text,
     restore_markers,
     visible_text,
-    visible_verses,
 )
-from anishift.text.boundaries import (
-    BREAKABLE_SPACES,
-    CLOSING_MARKS,
-    PHRASE_CUT_CHARS,
-    SENTENCE_ENDINGS,
-    is_false_sentence_break,
-)
-from anishift.text.gaps import CONJUNCTIONS, CONJUNCTIONS_MULTIWORD, DASHES, PREPOSITIONS, PREPOSITIONS_MULTIWORD
+from anishift.text.boundaries import BREAKABLE_SPACES, PHRASE_CUT_CHARS, SENTENCE_ENDINGS
+from anishift.text.gaps import CONJUNCTIONS, CONJUNCTIONS_MULTIWORD, PREPOSITIONS, PREPOSITIONS_MULTIWORD
 from anishift.text.markers import strip_span_markers
 
 if TYPE_CHECKING:
     from pysubs2 import SSAEvent, SSAStyle
 
     from anishift.services.subtitles.geometry import RenderProfile
-    from anishift.services.subtitles.layout import LayoutLimits
+    from anishift.services.subtitles.layout import Measure
 
 # ── Constants ──────────────────────────────────────────────────────────────
-
-DEFAULT_MAX_CHARS: Final[int] = 42
-"""Preferred readable line length for on-screen subtitles (Netflix/BBC-ish)."""
-
-MAX_LINES: Final[int] = 2
-"""Maximum on-screen verses before an over-length line is accepted."""
 
 _STRONG_CUT: Final[str] = SENTENCE_ENDINGS + ":"
 """Strong cut points (sentence endings plus colon); cut just after the mark."""
@@ -59,99 +58,44 @@ _TRAILING_CONJUNCTION_PENALTY: Final[float] = 8.0
 _RE_SPACES: Final[re.Pattern[str]] = re.compile(r"\s+")
 """Whitespace run, collapsed to a single space before splitting."""
 
-_PRONOUN_HEADS: Final[frozenset[str]] = frozenset(
-    [
-        "ja", "ty", "on", "ona", "ono", "my", "wy", "oni", "one", "ten", "ta", "to", "te",
-        "tego", "tej", "temu", "tym", "tych", "tamten", "taki", "taka", "takie", "mój", "moja",
-        "moje", "twój", "twoja", "twoje", "swój", "nasz", "wasz", "każdy", "każda", "każde",
-        "jakiś", "jakaś", "które", "który", "która",
-    ]
-)  # fmt: skip
-"""Common personal pronouns and determiners kept with their following phrase."""
+_RE_WORD_BREAK: Final[re.Pattern[str]] = re.compile(r"(\{[^}]*\}|\\[Nn]|" + BREAKABLE_SPACES.pattern + ")")
+"""Override block, line break escape or breakable whitespace run of tagged event text."""
 
-_VERB_HEADS: Final[frozenset[str]] = frozenset(
-    [
-        "będę", "będziesz", "będzie", "będziemy", "będziecie", "będą", "był", "była", "było", "byli", "były",
-        "jestem", "jesteś", "jest", "jesteśmy", "jesteście", "są", "musi", "muszę", "musisz", "musimy", "musicie",
-        "muszą", "mogę", "możesz", "może", "możemy", "możecie", "mogą", "mógł", "mogła", "mogli", "powinien",
-        "powinna", "powinno", "powinni", "powinny", "chciał", "chciała", "chcę", "chcesz", "chce",
-    ]
-)  # fmt: skip
-"""Common auxiliary and modal forms kept with the following predicate component."""
-
-_TITLE_HEADS: Final[frozenset[str]] = frozenset(
-    ["dr", "mgr", "prof", "pan", "pani", "panie", "profesor", "doktor", "kapitan", "król"]
-)
-"""Titles and undotted abbreviations kept with the name that follows."""
-
-_ADJECTIVE_ENDINGS: Final[tuple[str, ...]] = ("ego", "emu", "ych", "ymi", "ym", "ny", "na", "ne", "ry", "ra", "re")
-"""Conservative surface hints for an attributive adjective, without a morphological parser."""
-
-_TOP_HEAVY_PENALTY: Final[int] = 6
-"""Extra imbalance characters assigned to a longer upper dialogue verse."""
-
-_OVERFLOW_TOLERANCE: Final[int] = 2
-"""Extra characters allowed for safer syntax only when every legal cut overflows."""
-
-_REFLEXIVE_HEADS: Final[frozenset[str]] = _PRONOUN_HEADS | CONJUNCTIONS | {"nie"}
-"""Heads that bind a following reflexive particle to its predicate."""
-
-_ASS_LINE_BREAK: Final[str] = "\\N"
-"""ASS hard line break written between laid-out verses; the SRT export turns it into a new line."""
+_NO_WRAP: Final[str] = "{\\q2}"
+"""Override that stops libass from wrapping the lines the layout core chose."""
 
 
 @dataclass(frozen=True, slots=True)
 class DialogueLayout:
-    """Laid-out event text of one dialogue line and the rescue steps its layout needed."""
+    """Laid-out event text of one dialogue line, the rescue steps its layout needed and its measurement quality."""
 
     text: str
-    flags: frozenset[str]
+    flags: frozenset[Flag]
+    approximate: bool = False
 
 
-def layout_dialogue(event: SSAEvent, text: str, profile: RenderProfile | None, limits: LayoutLimits) -> DialogueLayout:
-    """Break the unbroken translation ``text`` of a dialogue event and place it in the event with its tags."""
-    verses: tuple[str, ...] = restore_markers(
-        text,
-        split_line(strip_span_markers(text), max_chars=limits.max_chars, max_lines=limits.max_lines),
-    )
-    joined: str = _ASS_LINE_BREAK.join(verses)
-    if visible_text(event.text) == visible_text(joined):
-        return DialogueLayout(reflow_visible_text(event.text, verses), frozenset())
-    style: SSAStyle | None = profile.styles.get(event.style) if profile is not None else None
-    return DialogueLayout(replace_visible_text(event.text, joined, style), frozenset())
+def layout_dialogue(event: SSAEvent, text: str, profile: RenderProfile | None) -> DialogueLayout:
+    """Lay out the unbroken translation ``text`` of a dialogue event and place it in the event with its tags.
 
-
-def split_lines(event: SSAEvent, text: str, count: int, profile: RenderProfile | None) -> tuple[str, ...] | None:
-    """Split ``text`` into exactly ``count`` lines shaped like the event's own lines, or return None when impossible."""
-    if count < 1:
-        return None
-    if count == 1:
-        return (_RE_SPACES.sub(" ", text).strip(),)
-    source: tuple[str, ...] = visible_verses(event.text)
-    verses: tuple[str, ...] = split_for_layout(text, source if len(source) == count else ("",) * count)
-    return verses if len(verses) == count else None
-
-
-def split_line(text: str, *, max_chars: int = DEFAULT_MAX_CHARS, max_lines: int = MAX_LINES) -> tuple[str, ...]:
-    """Split ``text`` into readable verses; return one entry when it fits."""
-    text = BREAKABLE_SPACES.sub(" ", text).strip()
-    words: list[str] = text.split(" ")
-    markers: list[int] = [index for index in range(len(words)) if _speaker_start(words, index)]
-    if max_lines >= MAX_LINES and len(markers) == MAX_LINES and markers[0] == 0:
-        return " ".join(words[: markers[1]]), " ".join(words[markers[1] :])
-    return _split(text, max_chars, max_lines, dialogue=True)
-
-
-def _speaker_start(words: list[str], index: int) -> bool:
-    word: str = words[index]
-    if word[:1] not in DASHES:
-        return False
-    spoken: str = word[1:] if len(word) > 1 else " ".join(words[index + 1 : index + 2])
-    if not spoken:
-        return False
-    if index == 0:
-        return True
-    return _tail(words[index - 1])[-1:] in SENTENCE_ENDINGS or (word in DASHES and spoken[0].isupper())
+    Without a render profile (SRT) lines are measured by their graphemes; otherwise with the event's fonts and the
+    tags of each line, inside the safe screen area from the event's anchor, and libass never wraps the chosen lines.
+    """
+    tagged: str = _tagged_line(event, text, profile)
+    plain: str = visible_text(tagged, preserve_hard_spaces=True)
+    words: tuple[str, ...] = tuple(word for word in BREAKABLE_SPACES.split(plain) if word)
+    if profile is None:
+        chosen: Layout = lay_out(plain, dialogue_field(), chars_measure)
+        return DialogueLayout(reflow_visible_text(tagged, chosen.lines), chosen.flags)
+    field: Field = dialogue_field(max_width=safe_width(event, profile, DIALOGUE_MAX_WIDTH) / profile.play_res_x)
+    changes: tuple[bool, ...] = style_changes(event, tagged, profile)
+    if len(changes) == len(words) - 1:
+        field = replace(field, style_breaks=frozenset(index for index, change in enumerate(changes) if change))
+    chosen = lay_out(plain, field, _measure(event, profile, words, _tagged_words(tagged, words)))
+    laid_out: str = reflow_visible_text(tagged, chosen.lines)
+    if wrap_text(event, laid_out, profile) != laid_out:
+        laid_out = _NO_WRAP + laid_out
+    approximate: bool = measure_text(event, laid_out, profile).status == "approximate"
+    return DialogueLayout(laid_out, chosen.flags, approximate)
 
 
 def split_for_layout(
@@ -207,109 +151,17 @@ def _proportional_boundaries(words: list[str], source_verses: tuple[str, ...]) -
     return tuple(boundaries)
 
 
-def _split(text: str, max_chars: int, budget: int, *, dialogue: bool = False) -> tuple[str, ...]:
+def _split(text: str, max_chars: int, budget: int) -> tuple[str, ...]:
     """Recursively split ``text`` into at most ``budget`` verses."""
     if len(text) <= max_chars or " " not in text or budget <= 1:
         return (text,)
-    point: int = _dialogue_cut(text, max_chars, budget) if dialogue else _best_cut(text, max_chars)
+    point: int = _best_cut(text, max_chars)
     left = text[:point].strip()
     right = text[point:].strip()
     if not left or not right:
         return (text,)
-    if dialogue:
-        return (left, *_split(right, max_chars, budget - 1, dialogue=True))
     verses = _split(left, max_chars, budget - 1)
     return verses + _split(right, max_chars, budget - len(verses))
-
-
-def _dialogue_cut(text: str, max_chars: int, budget: int) -> int:
-    candidates: list[tuple[tuple[int, bool, int, bool, int], int]] = _dialogue_candidates(
-        text, max_chars, budget, keep_names=True
-    ) or _dialogue_candidates(text, max_chars, budget, keep_names=False)
-    if not candidates:
-        return len(text)
-    minimum: int = min(rank[0] for rank, _ in candidates)
-    if minimum == 0:
-        return min(candidates)[1]
-    return min(
-        (candidate for candidate in candidates if candidate[0][0] <= minimum + _OVERFLOW_TOLERANCE),
-        key=lambda candidate: (candidate[0][1], candidate[0][0], *candidate[0][2:]),
-    )[1]
-
-
-def _dialogue_candidates(
-    text: str, max_chars: int, budget: int, *, keep_names: bool
-) -> list[tuple[tuple[int, bool, int, bool, int], int]]:
-    words: list[str] = text.split(" ")
-    candidates: list[tuple[tuple[int, bool, int, bool, int], int]] = []
-    for index, offset in enumerate(_word_offsets(words)[1:], start=1):
-        if _dialogue_protected(words, index, keep_names=keep_names):
-            continue
-        cut: int = offset - 1
-        left: str = text[:cut]
-        right: str = text[offset:]
-        overflow: int = max(0, len(left) - max_chars, len(right) - max_chars * (budget - 1))
-        rank: tuple[int, bool, int, bool, int] = (
-            overflow,
-            _syntactic_risk(words, index),
-            _boundary_rank(words, index),
-            _is_orphan(left, right),
-            abs(len(left) - len(right)) + _TOP_HEAVY_PENALTY * (len(left) > len(right)),
-        )
-        candidates.append((rank, cut))
-    return candidates
-
-
-def _dialogue_protected(words: list[str], index: int, *, keep_names: bool = True) -> bool:
-    previous: str = words[index - 1]
-    following: str = words[index]
-    tail: str = _tail(previous)
-    clean: str = _clean(previous)
-    if is_false_sentence_break(tail, following):
-        return True
-    if tail[-1:] in SENTENCE_ENDINGS + ",;:":
-        return False
-    if _protected(words, index) or previous in DASHES:
-        return True
-    if clean == "nie" or clean in _TITLE_HEADS:
-        return True
-    return (
-        (keep_names and _names_pair(previous, following))
-        or (len(clean) == 1 and clean.isalpha() and clean.isascii())
-        or unicodedata.category(previous[-1]) in {"Ps", "Pi"}
-        or following[0] in CLOSING_MARKS + ",.;:!?%"
-        or (clean == "się" and index > 1 and _clean(words[index - 2]) in _REFLEXIVE_HEADS)
-    )
-
-
-def _names_pair(previous: str, following: str) -> bool:
-    return previous[0].isupper() and following[0].isupper() and not previous.isupper() and not following.isupper()
-
-
-def _syntactic_risk(words: list[str], index: int) -> bool:
-    previous: str = words[index - 1]
-    following: str = words[index]
-    clean: str = _clean(previous)
-    if _tail(previous)[-1:] in SENTENCE_ENDINGS + ",;:":
-        return False
-    return clean in _PRONOUN_HEADS | _VERB_HEADS | CONJUNCTIONS or (
-        clean.endswith(_ADJECTIVE_ENDINGS) and _clean(following) not in PREPOSITIONS | CONJUNCTIONS
-    )
-
-
-def _boundary_rank(words: list[str], index: int) -> int:
-    tail: str = _tail(words[index - 1])
-    if tail[-1:] in SENTENCE_ENDINGS:
-        return 0
-    if _starts_conjunction(words, index):
-        return 1
-    if tail[-1:] in ",;:":
-        return 2
-    return 3
-
-
-def _tail(word: str) -> str:
-    return word.rstrip(CLOSING_MARKS + '"')
 
 
 def _best_cut(text: str, max_chars: int) -> int:
@@ -400,12 +252,40 @@ def _greedy_cut(text: str, max_chars: int) -> int:
     return cut if cut > 0 else text.find(" ")
 
 
-__all__ = [
-    "DEFAULT_MAX_CHARS",
-    "MAX_LINES",
-    "DialogueLayout",
-    "layout_dialogue",
-    "split_for_layout",
-    "split_line",
-    "split_lines",
-]
+def _tagged_line(event: SSAEvent, text: str, profile: RenderProfile | None) -> str:
+    plain: str = strip_span_markers(text)
+    if visible_text(event.text) == visible_text(plain):
+        return event.text
+    style: SSAStyle | None = profile.styles.get(event.style) if profile is not None else None
+    return replace_visible_text(event.text, restore_markers(text, (plain,))[0], style)
+
+
+def _tagged_words(tagged: str, words: tuple[str, ...]) -> tuple[str, ...]:
+    found: list[str] = [""]
+    for piece in _RE_WORD_BREAK.split(tagged):
+        if RE_TAG_BLOCK.fullmatch(piece) or not _RE_WORD_BREAK.fullmatch(piece):
+            found[-1] += piece
+        elif visible_text(found[-1]):
+            found.append("")
+    if len(found) > 1 and not visible_text(found[-1]):
+        found[-2] += found.pop()
+    visible: tuple[str, ...] = tuple(visible_text(word, preserve_hard_spaces=True) for word in found)
+    return tuple(found) if visible == words else words
+
+
+def _measure(event: SSAEvent, profile: RenderProfile, words: tuple[str, ...], tagged: tuple[str, ...]) -> Measure:
+    spans: dict[str, list[str]] = {}
+    prefix: str = ""
+    for start in range(len(words)):
+        for end in range(start + 1, len(words) + 1):
+            spans.setdefault(" ".join(words[start:end]), []).append(prefix + " ".join(tagged[start:end]))
+        prefix += "".join(RE_TAG_BLOCK.findall(tagged[start]))
+
+    def width(line: str, fx: float) -> float:
+        texts: list[str] = spans.get(line, [line])
+        return max(measure_text(event, text, profile, fx=fx).width for text in texts) / profile.play_res_x
+
+    return width
+
+
+__all__ = ["DialogueLayout", "layout_dialogue", "split_for_layout"]
