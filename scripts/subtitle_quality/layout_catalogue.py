@@ -22,7 +22,7 @@ from scripts.subtitle_quality.episode import FONTS_NAME
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from pysubs2 import SSAEvent
+    from pysubs2 import SSAEvent, SSAFile
 
     from anishift.services.subtitles.layout import Measure
 
@@ -53,6 +53,9 @@ RAGGED_HARM: Final[str] = "imbalance_30"
 
 _RE_LINES: Final[re.Pattern[str]] = re.compile(r"lines:(\d+)")
 """Rule demanding an exact line count."""
+
+_RE_FONT_SIZE: Final[re.Pattern[str]] = re.compile(r"\\fs(\d+(?:\.\d+)?)")
+"""Font size override tag of an ASS event."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,7 +254,7 @@ def measure_catalogue(path: Path, quality_root: Path, fonts: Path) -> int:
 
 def _measurement(entry: dict[str, Any], quality_root: Path, fonts: Path) -> dict[str, Any]:
     pair: Path = Path(entry["pair"])
-    subs = load_subtitles(quality_root / BASELINE / pair.parent / f"{pair.name}.pl.ass")
+    subs: SSAFile = load_subtitles(quality_root / BASELINE / pair.parent / f"{pair.name}.pl.ass")
     folder: Path = quality_root / pair / FONTS_NAME
     episode: list[Path] = sorted(folder.iterdir()) if folder.is_dir() else []
     index: FontIndex = FontIndex.build([*episode, *sorted(fonts.iterdir())], system_font_paths())
@@ -298,7 +301,7 @@ def _sign_measurement(spec: dict[str, Any], event: SSAEvent, profile: RenderProf
 
 
 def _font_size(event: SSAEvent, profile: RenderProfile, tags: str) -> float:
-    override: re.Match[str] | None = re.search(r"\\fs(\d+(?:\.\d+)?)", tags)
+    override: re.Match[str] | None = _RE_FONT_SIZE.search(tags)
     if override is not None:
         return float(override.group(1))
     return float(profile.styles[event.style].fontsize)

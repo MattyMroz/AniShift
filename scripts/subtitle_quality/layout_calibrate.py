@@ -14,9 +14,17 @@ from scipy.optimize import linprog  # type: ignore[import-untyped]
 from scipy.sparse import coo_matrix  # type: ignore[import-untyped]
 
 from anishift.paths import default_workspace_dir
-from anishift.services.subtitles.layout import HARMS, Layout, candidates, chars_measure, dialogue_field, lay_out
+from anishift.services.subtitles.layout import (
+    HARMS,
+    WEIGHTS,
+    Layout,
+    candidates,
+    chars_measure,
+    dialogue_field,
+    lay_out,
+)
 from anishift.text.gaps import TIERS, GapKind
-from scripts.subtitle_quality.layout_catalogue import CatalogueCase, faults, load, winner
+from scripts.subtitle_quality.layout_catalogue import RAGGED_HARM, CatalogueCase, faults, load, winner
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -46,6 +54,18 @@ POSITIVE: Final[float] = 1e-3
 
 TOLERANCE: Final[float] = 1e-6
 """Relative slack allowed when a stage keeps the optimum of the previous stage."""
+
+ENUMERATED_LINES: Final[int] = 3
+"""Most lines the candidate list enumerates; longer layouts come from the core's dynamic programming."""
+
+PROGRAMMED_ROUNDS: Final[int] = 20
+"""Most rounds of adding rows for layouts of more than three lines that beat an acceptable one."""
+
+NOT_RAGGED: Final[str] = "not_ragged"
+"""Catalogue rule accepting any layout inside the field without a very ragged line."""
+
+RAGGED_WEIGHT: Final[float] = 1e4
+"""Weight of the very ragged harm that finds the best layout a ``not_ragged`` case accepts, as its target."""
 
 CUT_HARMS: Final[tuple[str, ...]] = tuple(f"cut_{kind.value}" for kind in GapKind)
 """Harm names of the cut classes, ranked by ``TIERS``."""
@@ -100,16 +120,16 @@ def case_pairs(case: CatalogueCase, *, morphology: bool) -> tuple[list[np.ndarra
     return hard, soft, conflicts
 
 
-def professional_cues(quality_root: Path) -> list[dict[str, Any]]:
-    """Return the Netflix and Amazon two-line cues of the professional dataset."""
+def professional_cues(quality_root: Path, families: frozenset[str] = FAMILIES) -> list[dict[str, Any]]:
+    """Return the two-line cues of the professional dataset from ``families``."""
     corpus: list[dict[str, Any]] = json.loads((quality_root / PROFESSIONAL).read_text(encoding="utf-8"))["corpus"]
-    return [cue for cue in corpus if cue["family"] in FAMILIES and len(cue["gold"]) == 2]  # noqa: PLR2004
+    return [cue for cue in corpus if cue["family"] in families and len(cue["gold"]) == 2]  # noqa: PLR2004
 
 
-def blind_ids(cues: Sequence[dict[str, Any]]) -> list[str]:
-    """Return the ids of the blind sample, drawn with the fixed seed."""
-    return random.Random(SEED).sample(  # noqa: S311 - a reproducible sample, not a secret
-        sorted(cue["id"] for cue in cues), BLIND_SIZE
+def blind_ids(cues: Sequence[dict[str, Any]], seed: int = SEED, size: int = BLIND_SIZE) -> list[str]:
+    """Return the ids of a blind sample drawn with ``seed``."""
+    return random.Random(seed).sample(  # noqa: S311 - a reproducible sample, not a secret
+        sorted(cue["id"] for cue in cues), size
     )
 
 
@@ -287,12 +307,17 @@ def calibrate(
     rows, conflicts = gather(cases, morphology=morphology)
     ids: list[str] = [case.id for case in cases]
     report: dict[str, Any] = {"morphology": morphology, "level_conflicts": conflicts}
-    if not feasible(rows, ids):
-        report["feasible"] = False
-        report["conflict_sets"] = conflict_sets(rows, ids)
-        return report
-    fit: Fit = solve(_pairs(rows, ids, pro_rows))
-    assert fit.weights is not None  # noqa: S101 - feasible hard rows always solve with soft professional rows
+    fit: Fit = Fit(weights=None)
+    for _ in range(PROGRAMMED_ROUNDS):
+        if not feasible(rows, ids):
+            report["feasible"] = False
+            report["conflict_sets"] = conflict_sets(rows, ids)
+            return report
+        fit = solve(_pairs(rows, ids, pro_rows))
+        assert fit.weights is not None  # noqa: S101 - feasible hard rows always solve with soft professional rows
+        if not programmed_rows(cases, rows, conflicts, fit.weights, morphology=morphology):
+            break
+    assert fit.weights is not None  # noqa: S101 - the loop solved at least once
     report |= {
         "feasible": not conflicts,
         "weights": fit.weights,
@@ -307,6 +332,40 @@ def calibrate(
     if leave_one_out:
         report["leave_one_out"] = loo(cases, rows, pro_rows, morphology=morphology)
     return report
+
+
+def programmed_rows(
+    cases: Sequence[CatalogueCase],
+    rows: Mapping[str, tuple[Any, ...]],
+    conflicts: dict[str, list[str]],
+    weights: Mapping[str, float],
+    *,
+    morphology: bool,
+) -> int:
+    """Add a hard row for every case whose layout of more than three lines beats its first acceptable one."""
+    added: int = 0
+    for case in cases:
+        if case.field.rescue_lines <= ENUMERATED_LINES:
+            continue
+        found: list[Layout] = candidates(case.text, case.field, case.measure, morphology=morphology)
+        best: Layout = lay_out(case.text, case.field, case.measure, weights, morphology=morphology)
+        target: Layout | None = winner(case, found) or _unragged(case, weights, morphology=morphology)
+        if target is None or not faults(case, best, [*found, best]):
+            continue
+        if best.rescue < target.rescue:
+            conflicts.setdefault(case.id, []).append(" / ".join(best.lines))
+            continue
+        rows[case.id][0].append(vector(best) - vector(target))
+        added += 1
+    return added
+
+
+def _unragged(case: CatalogueCase, weights: Mapping[str, float], *, morphology: bool) -> Layout | None:
+    if case.rule != NOT_RAGGED:
+        return None
+    steep: dict[str, float] = {**weights, RAGGED_HARM: RAGGED_WEIGHT}
+    layout: Layout = lay_out(case.text, case.field, case.measure, steep, morphology=morphology)
+    return None if faults(case, layout, [layout]) else layout
 
 
 def _pairs(rows: Mapping[str, tuple[Any, ...]], ids: Iterable[str], pro_rows: list[np.ndarray]) -> Pairs:
@@ -362,10 +421,16 @@ def sensitivity(
 # ── Blind sample ──────────────────────────────────────────────────────────────
 
 
-def blind_sample(cues: Sequence[dict[str, Any]], weights: Mapping[str, float], out: Path) -> dict[str, int]:
+def blind_sample(
+    cues: Sequence[dict[str, Any]],
+    weights: Mapping[str, float],
+    out: Path,
+    sample: tuple[int, int] = (SEED, BLIND_SIZE),
+) -> dict[str, int]:
     """Write the blind A/B sheet of professional and core layouts, leaving identical ones out, and its separate key."""
-    chosen: set[str] = set(blind_ids(cues))
-    rng: random.Random = random.Random(SEED + 1)  # noqa: S311 - a reproducible shuffle, not a secret
+    seed, size = sample
+    chosen: set[str] = set(blind_ids(cues, seed, size))
+    rng: random.Random = random.Random(seed + 1)  # noqa: S311 - a reproducible shuffle, not a secret
     sheet: list[str] = []
     key: list[dict[str, Any]] = []
     picked: list[dict[str, Any]] = [cue for cue in cues if cue["id"] in chosen]
@@ -394,7 +459,7 @@ def blind_sample(cues: Sequence[dict[str, Any]], weights: Mapping[str, float], o
         key.append({**entry, "same": False, "pos": position, "letters": letters})
     out.mkdir(parents=True, exist_ok=True)
     (out / "blind.txt").write_text("\n".join(sheet), encoding="utf-8", newline="\n")
-    (out / "key.json").write_text(json.dumps({"seed": SEED, "key": key}, ensure_ascii=False, indent=1),
+    (out / "key.json").write_text(json.dumps({"seed": seed, "key": key}, ensure_ascii=False, indent=1),
                                   encoding="utf-8", newline="\n")  # fmt: skip
     return {"sampled": len(picked), "judged": position, "same": len(picked) - position}
 
@@ -432,7 +497,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, required=True, help="JSON file with the results of both variants")
     parser.add_argument("--blind", type=Path, help="folder for the blind sample sheet and its key")
     parser.add_argument("--no-loo", action="store_true", help="skip the leave-one-out check")
+    parser.add_argument("--blind-only", action="store_true", help="only write the blind sample with WEIGHTS")
+    parser.add_argument("--blind-families", default=",".join(sorted(FAMILIES)), help="families of the blind cues")
+    parser.add_argument("--blind-seed", type=int, default=SEED, help="seed of the blind sample")
+    parser.add_argument("--blind-size", type=int, default=BLIND_SIZE, help="cues in the blind sample")
     arguments: argparse.Namespace = parser.parse_args(argv)
+    if arguments.blind_only:
+        return _blind_only(arguments)
     cases: list[CatalogueCase] = load()
     cues: list[dict[str, Any]] = professional_cues(arguments.quality_root)
     held: set[str] = set(blind_ids(cues))
@@ -448,6 +519,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.blind is not None and results["morphology"].get("weights"):
         results["blind"] = blind_sample(cues, results["morphology"]["weights"], arguments.blind)
     arguments.out.write_text(json.dumps(results, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n")
+    return 0
+
+
+def _blind_only(arguments: argparse.Namespace) -> int:
+    families: frozenset[str] = frozenset(arguments.blind_families.split(","))
+    if families & FAMILIES and arguments.blind_seed != SEED:
+        print("a blind sample of the calibration families must use the held-out seed")
+        return 2
+    cues: list[dict[str, Any]] = professional_cues(arguments.quality_root, families)
+    counts: dict[str, int] = blind_sample(cues, WEIGHTS, arguments.blind, (arguments.blind_seed, arguments.blind_size))
+    arguments.out.write_text(json.dumps(counts, indent=1), encoding="utf-8", newline="\n")
+    print(counts)
     return 0
 
 

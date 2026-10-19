@@ -5,9 +5,18 @@ from typing import Any
 import numpy as np
 import pytest
 
-from anishift.services.subtitles.layout import HARMS
+from anishift.services.subtitles.layout import HARMS, Field, Layout, candidates, chars_measure
 from anishift.text.gaps import TIERS, GapKind
-from scripts.subtitle_quality.layout_calibrate import Fit, Pairs, conflict_set, conflict_sets, feasible, solve
+from scripts.subtitle_quality.layout_calibrate import (
+    Fit,
+    Pairs,
+    conflict_set,
+    conflict_sets,
+    feasible,
+    programmed_rows,
+    solve,
+)
+from scripts.subtitle_quality.layout_catalogue import Accepted, CatalogueCase
 
 
 def _row(**degrees: float) -> np.ndarray:
@@ -65,3 +74,34 @@ def test_professional_rows_are_soft_and_report_their_violations() -> None:
 
     assert fit.weights is not None
     assert fit.violated_professional == 1
+
+
+@pytest.mark.unit
+def test_programmed_rows_add_a_row_for_a_longer_layout_that_beats_the_accepted_one() -> None:
+    text: str = "Niniejsze dzieło jest fikcją i nie zachęcamy nikogo do picia alkoholu w żadnej postaci ani formie."
+    field: Field = Field(max_width=0.6, preferred_lines=4, max_lines=5, rescue_lines=5)
+    accepted: Layout = next(
+        layout
+        for layout in candidates(text, field, chars_measure)
+        if len(layout.lines) == 3 and layout.rescue == (0, 0, 0)
+    )
+    case: CatalogueCase = CatalogueCase(
+        id="x",
+        group="x",
+        source="test",
+        text=text,
+        field=field,
+        measure=chars_measure,
+        accept=(Accepted(lines=accepted.lines),),
+        rule=None,
+        if_fits=False,
+        soft=False,
+        forbid=frozenset(),
+        forbid_lines=frozenset(),
+    )
+    rows: dict[str, tuple[Any, ...]] = {"x": ([], [])}
+
+    added: int = programmed_rows([case], rows, {}, {"missing_line": 10.0}, morphology=True)
+
+    assert added == 1
+    assert rows["x"][0][0][HARMS.index("missing_line")] == -1.0
