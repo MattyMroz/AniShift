@@ -291,3 +291,36 @@ def test_list_markers_find_each_numbered_item() -> None:
 @pytest.mark.parametrize("words", [[], [""], ["Uciekaj!"]])
 def test_text_without_neighbouring_words_has_no_gaps(words: list[str]) -> None:
     assert gaps(words) == ()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "left"),
+    [
+        ("Akurat dzisiaj tak bardzo chciałem porozmawiać.", "tak"),
+        ("Akurat dzisiaj tak bardzo chciałem porozmawiać.", "bardzo"),
+        ("To jest zbyt długie zdanie.", "zbyt"),
+        ("Zrobił to tak samo dobrze.", "samo"),
+        ("Jest coraz zimniej.", "coraz"),
+    ],
+)
+def test_degree_adverb_stays_with_the_word_it_grades(text: str, left: str) -> None:
+    gap: Gap = _gap(text, left)
+
+    assert gap.kind == GapKind.DEGREE
+    assert not gap.protected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "left"),
+    [
+        ("Akurat dzisiaj tak bardzo chciałem.", "dzisiaj"),
+        ("Było tak w ogóle fajnie.", "tak"),
+        ("Jest tak, jak mówisz.", "tak,"),
+    ],
+)
+def test_degree_adverb_before_a_preposition_or_a_comma_or_after_another_word_is_no_degree_gap(
+    text: str, left: str
+) -> None:
+    assert _gap(text, left).kind != GapKind.DEGREE

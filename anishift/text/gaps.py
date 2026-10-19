@@ -47,6 +47,7 @@ class GapKind(StrEnum):
     MODIFIER = "modifier"
     ABBREVIATION = "abbreviation"
     AFTER_OPENER = "after_opener"
+    DEGREE = "degree"
     NAME = "name"
     AFTER_PREPOSITION = "after_preposition"
     NEGATION = "negation"
@@ -75,6 +76,7 @@ TIERS: Final[Mapping[GapKind, int]] = MappingProxyType(
         GapKind.BEFORE_SUBORDINATOR: 2, GapKind.BEFORE_COORDINATOR: 2,
         GapKind.BEFORE_PREPOSITION: 3, GapKind.PHRASE: 3,
         GapKind.AUXILIARY: 4, GapKind.MODIFIER: 4, GapKind.ABBREVIATION: 4, GapKind.AFTER_OPENER: 4,
+        GapKind.DEGREE: 4,
         GapKind.NAME: 5, GapKind.AFTER_PREPOSITION: 5, GapKind.NEGATION: 5, GapKind.REFLEXIVE: 5,
         GapKind.NUMBER: 5, GapKind.IDIOM: 5,
         GapKind.AFTER_SINGLE_LETTER: 6,
@@ -258,6 +260,14 @@ _SUBORDINATING_PHRASES: Final[frozenset[tuple[str, ...]]] = frozenset(
 
 _PHRASE_OPENERS: Final[frozenset[str]] = _SUBORDINATORS | _COORDINATORS | PREPOSITIONS
 """Words recognised as opening a new phrase, after which a reflexive ``się`` may end a line."""
+
+_DEGREE_ADVERBS: Final[frozenset[str]] = frozenset(
+    {"tak", "bardzo", "zbyt", "za", "coraz", "aż", "całkiem", "nieco", "trochę", "dość", "równie"}
+)
+"""Degree adverbs kept with the word they grade (owner quiz t02: „tak bardzo”)."""
+
+_DEGREE_PHRASES: Final[frozenset[tuple[str, str]]] = frozenset({("tak", "samo")})
+"""Two-word degree phrases kept with the word they grade."""
 
 _MAX_PHRASE_WORDS: Final[int] = 4
 """Longest multi-word phrase looked up (``w związku z czym``)."""
@@ -454,7 +464,14 @@ def _weighted_kind(words: Sequence[str], index: int) -> GapKind:
         kinds.append(conjunction)
     if following in PREPOSITIONS or _opens(words, index, PREPOSITIONS_MULTIWORD):
         kinds.append(GapKind.BEFORE_PREPOSITION)
+    if _degree(words, index) and following not in PREPOSITIONS | CONJUNCTIONS:
+        kinds.append(GapKind.DEGREE)
     return max(kinds, key=TIERS.__getitem__, default=GapKind.PHRASE)
+
+
+def _degree(words: Sequence[str], index: int) -> bool:
+    previous: str = word_core(words[index - 1])
+    return previous in _DEGREE_ADVERBS or (word_core(_earlier(words, index)), previous) in _DEGREE_PHRASES
 
 
 def _counts(previous: str, following: str) -> bool:
