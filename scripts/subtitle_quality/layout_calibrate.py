@@ -294,7 +294,7 @@ def calibrate(
     fit: Fit = solve(_pairs(rows, ids, pro_rows))
     assert fit.weights is not None  # noqa: S101 - feasible hard rows always solve with soft professional rows
     report |= {
-        "feasible": True,
+        "feasible": not conflicts,
         "weights": fit.weights,
         "soft_loss": fit.soft_loss,
         "professional_rows": len(pro_rows),
@@ -442,7 +442,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         pro_rows, skipped = professional_pairs(training, morphology=morphology)
         results[name] = calibrate(cases, pro_rows, morphology=morphology, leave_one_out=not arguments.no_loo)
         results[name]["professional_skipped"] = skipped
-        print(f"{name}: feasible={results[name]['feasible']}")
+        print(
+            f"{name}: feasible={results[name]['feasible']} level_conflicts={sorted(results[name]['level_conflicts'])}"
+        )
     if arguments.blind is not None and results["morphology"].get("weights"):
         results["blind"] = blind_sample(cues, results["morphology"]["weights"], arguments.blind)
     arguments.out.write_text(json.dumps(results, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n")

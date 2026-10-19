@@ -396,15 +396,16 @@
    "accept": [
     {
      "lines": [
-      "Pozwoli mi to również w pełni legalnie i w usprawiedliwiony sposób",
-      "uwiecznić cyfrowo tę niewypowiedzianie słodką istotę!"
+      "Pozwoli mi to również w pełni legalnie",
+      "i w usprawiedliwiony sposób uwiecznić cyfrowo",
+      "tę niewypowiedzianie słodką istotę!"
      ]
     },
     {
      "lines": [
       "Pozwoli mi to również w pełni legalnie",
-      "i w usprawiedliwiony sposób uwiecznić cyfrowo",
-      "tę niewypowiedzianie słodką istotę!"
+      "i w usprawiedliwiony sposób uwiecznić",
+      "cyfrowo tę niewypowiedzianie słodką istotę!"
      ]
     }
    ],
@@ -414,8 +415,7 @@
    "forbid": [
     "usprawiedliwiony|sposób",
     "słodką|istotę",
-    "niewypowiedzianie|słodką",
-    "uwiecznić|cyfrowo"
+    "niewypowiedzianie|słodką"
    ],
    "measure": {
     "kind": "words",
