@@ -30,6 +30,17 @@ Najważniejsze wagi: długość 284,0 (od 0,55) i 3,5 (od 0,76), drugi wiersz 58
 
 **Szkoda „za mały” (`small`) ma wagę 0 — to brak danych, nie błąd cechy.** Stopień liczy się poprawnie (np. 15 391 z 45 729 kandydatów s29 ma go powyżej zera). W katalogu są pary, w których przegrany ma mniejsze litery od zwycięzcy (r01: 51, s14: 19, s10: 15, q15: 2), ale każdy taki przegrany przegrywa już przez zmniejszenie: litery spadają poniżej 30 px dopiero przy skali ok. 0,36–0,59 (litery 51–84 px), gdzie szkoda zmniejszenia jest duża. Program liniowy minimalizuje sumę wag przy zachowanym marginesie, więc wagi, której żadna para nie wymaga, nie podnosi. Żeby szkoda działała, katalog potrzebuje przypadku, w którym zmniejszenie samo przegrywa tylko przez czytelność (np. drobny tekst s06, s11 — dziś poza rdzeniem).
 
+## Runda 6 (ścieżka produkcyjna)
+
+Galeria replayu v4 pokazała jednowierszowe kwestie ponad kolanem ankiety (q11 0,80, „Cóż z ciebie…” 0,83, „Kraina Cienia…” 0,80), choć katalog przechodził. Przyczyny:
+
+- **Pomiar katalogu a pomiar produkcji.** Katalog sumuje szerokości słów, produkcja mierzy cały wiersz; całe wiersze dialogu wychodzą o 0,13–0,94% węższe. Kalibracja trzymała q11 z marginesem 0,08 punktu oceny, czyli ok. 0,0003 szerokości, więc 0,4% różnicy odwracało wynik. Teraz każda para twarda dialogu ma też wiersz policzony przy szerokościach o 1% mniejszych (`MEASURE_TOLERANCE`); waga stromej części długości wzrosła z 3,5 do 36,3.
+- **Cytat na całą kwestię.** Cięcie wewnątrz cytatu było poziomem ratunku, gdy cytat mieścił się w polu (90% ekranu), więc cytat szeroki na 0,83 nigdy nie dzielił się na dwa wiersze. „Krótki cytat” (§4.2) to teraz cytat nie szerszy niż kolano długości pola (0,76 dla dialogu).
+
+Po przeglądzie fazy D: granica stylu w polu dialogu jest szkodą ważoną `mixed_style`, a nie poziomem ratunku (w polach szyldów bez zmian). Katalog nie ma przypadku dialogu z granicą stylu, więc kalibracja daje jej wagę 0. Etykieta wymaga po dwukropku nazwy z dwóch wyrazów z wielkiej litery, a nazwisko przestaje się wiązać tylko przed drugą etykietą tego samego tekstu („Siodłak / Korekta:”; „Jan Kowalski: Nie wrócę” i „Pamiętaj: To jest” bez zmian).
+
+Kalibracja: wykonalna, katalog i ankieta 76/76, test z pominięciem jednego zdarzenia 66/76 (d06, d15, d25, d28, q10, q11, q19, r03, s14, t02), bez morfologii niewykonalna ({r03}, {d15}). Nowy test `test_text_layout_production.py` puszcza 54 przypadki dialogu katalogu i ankiety przez `layout_translated` z ich parami i czcionką dialogu właściciela; na kodzie sprzed poprawki pada na q11.
+
 ## Runda 5 (po ślepej ocenie Crunchyroll)
 
 Ślepa ocena 200 kwestii CR (dwóch sędziów zgodnie) wskazała dziewięć złych cięć rdzenia. Zmiany klas (`gaps.py`, `idioms.txt`, testy w `tests/text/test_gaps.py`):
