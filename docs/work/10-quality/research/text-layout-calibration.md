@@ -1,147 +1,94 @@
 ---
 kind: report
 status: pending-human
-baseline: work/quality/21-text-layout @ 56da1979
-resulting-state: work/quality/21-text-layout (weights in layout.py)
+baseline: work/quality/21-text-layout @ 1b67f0d1
+resulting-state: work/quality/21-text-layout (WEIGHTS w layout.py, nowe klasy przerw w gaps.py)
 completed: 2026-10-19
 ---
 
 # Kalibracja rdzenia układu tekstu — raport
 
-Kontrakt: [text-layout.md](../text-layout.md) §5.3, plan [02-text-layout.md](../plans/02-text-layout.md) faza C. Stan po rundzie 3 ankiety (t01, t02) i decyzjach koordynatora z 19.10.
+Kontrakt: [text-layout.md](../text-layout.md) §4.2, §5.3, §7, plan [02-text-layout.md](../plans/02-text-layout.md) faza C. Stan po czwartej rundzie: nowe klasy przerw z polskiej składni (po ślepej ocenie 160 kwestii NF+AMZN, w której rdzeń ciął źle w 5,0% kwestii), poprawki z przeglądu kodu faz A–C i ponowna kalibracja.
 
-## Wynik końcowy (czwarta decyzja koordynatora: d10 w dwóch wierszach)
+## Wynik
 
-d10 przyjmuje wyłącznie „Pozwoli mi to również w pełni legalnie i w usprawiedliwiony / sposób uwiecznić cyfrowo tę niewypowiedzianie słodką istotę!” (dwa wiersze mieszczą się w polu, więc trzy wiersze są niedopuszczalne; r6, r7, §5.2); zakazane „słodką / istotę” i „niewypowiedzianie / słodką”.
-
-Kalibracja z morfologią jest **wykonalna**: brak zbiorów sprzecznych i konfliktów poziomów. Pary twarde katalogu i ankiety z marginesem, pary „oba dobre” (q09, q16, q17, r02) i zawodowców miękkie. Wagi wpisane jako `WEIGHTS` w `anishift/services/subtitles/layout.py` (zaokrąglone do 6 cyfr znaczących; test sprawdza je ponownie).
+Kalibracja z morfologią jest **wykonalna**: brak zbiorów sprzecznych i konfliktów poziomów. Pary twarde katalogu i ankiety mają margines, pary „oba dobre” (q09, q16, q17, r02) i pary zawodowców są miękkie. Wagi są w `WEIGHTS` w `anishift/services/subtitles/layout.py` (6 cyfr znaczących); test katalogu liczy wynik ponownie na tych zaokrąglonych wagach.
 
 | Miara | Wynik |
 | --- | --- |
-| Katalog i ankieta w pełnej przestrzeni kandydatów | **76/76** w zbiorze dopuszczalnych (test `tests/services/subtitles/test_text_layout_catalogue.py`) |
-| Test z pominięciem jednego zdarzenia | **65/76**; niespełnione: d06, d15, d25, d28, q06, q10, q11, q19, r03, s14, t02 |
-| Wrażliwość ±10% (tylko raport) | `length_comfortable` ×0,9 → q10, q11, q17, q19; ×1,1 → d06, d28, t02; `extra_line` ×0,9 → d28, ×1,1 → q10, q11, q17, q19; `cut_degree` ×0,9 → d06, t02; `cut_phrase` ×0,9 → s29, ×1,1 → e13; `cut_modifier` ×0,9 → e13 |
-| Przypadki przy kolanie (jeden wiersz 0,74–0,80) | d28 0,771 (jeden wiersz), q04 0,741 (jeden), q10 0,748 (dwa), q11 0,800 (dwa), q14 0,789 (dwa), q17 0,768 (dwa), q19 0,783 (dwa), e14 0,798 (dwa) |
-| Zawodowcy | 192 z 1414 par naruszonych; strata par „oba dobre” 3,19 |
-| Bez morfologii | niewykonalne: {r03}, {d15} — morfologia zostaje (bramka „katalog i ankieta nie tracą”) |
+| Katalog i ankieta w pełnej przestrzeni kandydatów (z układami powyżej trzech wierszy) | **76/76** (`tests/services/subtitles/test_text_layout_catalogue.py`) |
+| Test z pominięciem jednego zdarzenia | **64/76**; niespełnione: d06, d15, d25, d28, q10, q11, q15, q19, r03, s14, s29, t02 |
+| Wrażliwość ±10% (tylko raport) | `length_comfortable` ×0,9 → d25, q10, q11, q17, q19; ×1,1 → d06, d28, t02; `extra_line` ×0,9 → d28, ×1,1 → q10, q11, q17, q19; `cut_degree` ×0,9 → d06, t02; `cut_auxiliary` ×0,9 → d25; `cut_before_preposition` ×0,9 → s10; `cut_phrase` ×1,1 → e13; `cut_modifier` ×0,9 → e13 |
+| Przypadki przy kolanie (jeden wiersz 0,74–0,80) | d28 0,771 (jeden wiersz), q04 0,741 (jeden), q10 0,748 (dwa), q11 0,800 (dwa), q14 0,789 (dwa), q17 0,768 (dwa; „oba dobre”), q19 0,783 (dwa), e14 0,798 (dwa) |
+| Zawodowcy NF+AMZN | 441 kwestii uczących, 13 pominiętych (układ zawodowca poza poziomem 0), 1320 par miękkich, 178 naruszonych; strata par „oba dobre” 3,19 |
+| Bez morfologii | niewykonalne: {r03}, {d15} — morfologia zostaje |
+| Czas pełnej kalibracji (oba warianty, LOO, wrażliwość) | 6 min 45 s (wcześniej 28 min) |
 
-LOO i wrażliwość pokazują, że wynik przy kolanie długości i przy krótszej górze zależy od pojedynczych odpowiedzi właściciela: bez odpowiedzi danego zdarzenia rdzeń w 11 przypadkach wybiera inaczej. Granica 0,76/0,80 jest z natury ostra (decyzja koordynatora 19.10).
+LOO i wrażliwość pokazują to samo co wcześniej: przy kolanie długości (0,74–0,80) i przy krótszej górze wynik zależy od pojedynczych odpowiedzi właściciela. q15 (szyld zmniejszony do szerokości oryginału) i s29 (lista zastrzeżeń) doszły do listy LOO, bo bez swojego zdarzenia kalibracja nie ma przypadku, który wiąże wagi zmniejszenia i nierówności wielu wierszy.
 
-Najważniejsze wagi: długość 157,1 (od 0,55) i 130,5 (od 0,76), drugi wiersz 32,0, wystawanie poza oryginał 40,3, ściśnięcie 18,7, zmniejszenie 13,9, związki chronione 29,0, `auxiliary` 29,0, `degree` 18,2, `after_opener` 17,2, `before_preposition`, `modifier`, `abbreviation` 6,0, `phrase` 5,0, zgoda przymiotnika 5,7, nierównowaga ponad 20 znaków 0,82 na znak, dłuższa góra 0,33 na znak, brakujący wiersz szyldu 3,4. Klasy przerw od końca zdania do „przed spójnikiem współrzędnym” mają wagi bliskie zeru (0,001–0,009), więc o takich cięciach decyduje kształt.
+Najważniejsze wagi: długość 284,0 (od 0,55) i 3,5 (od 0,76), drugi wiersz 58,6, wystawanie poza oryginał 46,3, ściśnięcie 23,0, zmniejszenie 17,4, brakujący wiersz szyldu 2,1, związki chronione i jednoliterowy wyraz 30,2, `degree` 30,2, `after_opener` 26,5, `auxiliary` 26,4, `particle` 15,7, `modifier` 6,0, `before_preposition`, `phrase`, `abbreviation`, `prepositional` 5,0, zgoda przymiotnika 5,7, nierównowaga ponad 20 znaków 0,45 na znak, dłuższa góra 0,33 na znak. Klasy od końca zdania do „przed spójnikiem współrzędnym” mają wagi bliskie zeru (0,001–0,009), więc o takich cięciach decyduje kształt.
 
-**Próba ślepa:** arkusz `scratchpad/v4-blind/blind.txt`, klucz `scratchpad/v4-blind/key.json` (pełna ścieżka scratchpadu sesji orkiestratora). 160 losowych kwestii dwuwierszowych NF+AMZN z części odłożonej (ziarno 20261019); rdzeń (najlepszy układ dwuwierszowy, z morfologią, pomiar w znakach) daje układ identyczny z zawodowcem w **122 z 160 (76,3%)** — w kluczu z `same: true`, poza arkuszem. W arkuszu **38** par A/B w losowej kolejności liter.
+**Szkoda „za mały” (`small`) ma wagę 0 — to brak danych, nie błąd cechy.** Stopień liczy się poprawnie (np. 15 391 z 45 729 kandydatów s29 ma go powyżej zera). W katalogu są pary, w których przegrany ma mniejsze litery od zwycięzcy (r01: 51, s14: 19, s10: 15, q15: 2), ale każdy taki przegrany przegrywa już przez zmniejszenie: litery spadają poniżej 30 px dopiero przy skali ok. 0,36–0,59 (litery 51–84 px), gdzie szkoda zmniejszenia jest duża. Program liniowy minimalizuje sumę wag przy zachowanym marginesie, więc wagi, której żadna para nie wymaga, nie podnosi. Żeby szkoda działała, katalog potrzebuje przypadku, w którym zmniejszenie samo przegrywa tylko przez czytelność (np. drobny tekst s06, s11 — dziś poza rdzeniem).
 
-**Słabość morfologii znaleziona przy d10:** Morfeusz nie zgłasza zgody dla „usprawiedliwiony sposób”, bo „sposób” ma też odczyt czasownikowy (tryb rozkazujący od „sposobić”), a reguła z §4.2 odrzuca parę, gdy którekolwiek słowo ma jakikolwiek odczyt czasownikowy. To za szerokie: rzadkie homografy rzeczowników (tryb rozkazujący, bezokolicznik) wyłączają prawdziwe pary. Propozycja (niewdrożona): odrzucać parę tylko wtedy, gdy słowo ma odczyt czasownika osobowego lub przeszłego (`fin`, `praet`, `bedzie`, `aglt`, `winien`) i jednocześnie nie ma odczytu zgodnego z drugą formą; odczyty `impt`, `inf`, `imps`, `pcon`, `pant` pominąć. Przed wdrożeniem zmierzyć odsetek oznaczeń na cięciach zawodowców NF+AMZN (dziś ok. 1%) i na pozostałych przerwach (ok. 10%), żeby nie zgubić rozdzielczości cechy.
+## Nowe klasy przerw (runda 4)
 
-## Stan po trzeciej decyzji koordynatora (zakaz „uwiecznić / cyfrowo” zdjęty)
+Wszystkie z zamkniętych list albo morfologii, z testami w `tests/text/test_gaps.py`; źródła list w kodzie i w `idioms.txt`. Fałszywe alarmy: odsetek oznaczonych cięć zawodowców (601 cięć NF+AMZN, 1118 CR) wobec odsetka oznaczonych pozostałych przerw (3787 NF+AMZN, 7337 CR); liczone tylko tam, gdzie nowa reguła zmienia klasę przerwy.
 
-Katalog d10: dopuszczalne tylko dwa układy trójwierszowe (w polu dialogu), zakazane „usprawiedliwiony / sposób”, „słodką / istotę”, „niewypowiedzianie / słodką” i wiersz poza polem.
+| Klasa / reguła | Poziom | NF+AMZN: cięcia zawodowców / pozostałe | CR: cięcia / pozostałe |
+| --- | --- | --- | --- |
+| liczebnik nieokreślony lub zbiorowy \| rzeczownik (`number`: kilka, wielu, parę, tyle, dwoje, oboje…) | chroniony | 0 / 0,24% | 0,27% / 0,33% |
+| `dużo`, `mało`, `sporo` jako `degree`; `degree` także przed frazą przyimkową („tak / bez zapowiedzi”), chyba że po nim utarty zwrot („tak w ogóle”) | ważony | 0 / 0,18% | 0,09% / 0,11% |
+| partykuła przed słowem, które określa (`particle`: nawet, jedynie, właśnie, już, jeszcze, też, także, również, przynajmniej, zwłaszcza, szczególnie, akurat) | ważony (poziom 4, jak słowo otwierające) | 0 / 1,40% | 1,25% / 1,36% |
+| `sobie`, `siebie`, `sobą` jak „się” (ta sama reguła i wyjątki) | chroniony | 0 / 0,82% | 0,27% / 0,48% |
+| utarte zwroty z Wikisłownika (frazy przyimkowe spoza przyimków złożonych: „co najmniej”, „w porządku”, „wraz z”…; „tak zwany” z odmianą; „co do”) | chroniony | 0 / 0,11% | 0 / 0,03% |
+| fraza przyimkowa przez zaimek dzierżawczy („pod jej / uczucia”; po przyimku „jej/jego/ich” są dzierżawcze) i koniec przyimka złożonego („z punktu widzenia / …”) | chroniony (`after_preposition`) | 0 / 0,42% i 0 / 0,26% | 0,18% / 0,52% i 0,09% / 0,10% |
+| fraza przyimkowa przez przymiotnik zgodny z Morfeusza („w tej / sprawie”) | ważony (`prepositional`) | 0 / 1,58% | 1,07% / 1,84% |
+| etykieta z dwukropkiem i wartością liczbową („WYS.: / 4,5 KM”, `label`) | chroniony | 0 / 0,05% | 0 / 0 |
+| powtórzenie z myślnikiem („BAM - / BAM”, `repetition`) | chroniony | 0 / 0,05% | 0 / 0 |
+| przerwa bierze klasę najszkodliwszą ze wszystkich dowodów (przegląd kodu): „i / …”, „a / …” → jednoliterowy wyraz; „dr. / Kowalski” → `name` | jak klasa | 0 / 9,48% | 0,54% / 7,29% |
 
-Wynik pełnej kalibracji (z morfologią, sam margines): program liniowy **wykonalny**, ale zostaje **konflikt poziomów w d10**, więc kalibracja jako całość jest niewykonalna (narzędzie raportuje teraz `feasible: false` także przy konflikcie poziomów). Bez morfologii: {r03}, {d15}.
+Fraza przyimkowa przez przymiotnik była najpierw chroniona; wtedy q11 („Magia ingerująca we wszystkie / ciągi przyczynowo-skutkowe.”, wybór właściciela) dawał konflikt poziomów, bo „we wszystkie / ciągi” leżało na poziomie ratunku. Zgodnie z §4.2 (zgoda przymiotnika jest szkodą ważoną właśnie z powodu q11) dostała własną klasę ważoną.
 
-**d10 — konflikt poziomów (spec, nie wagi):** jedyny układ dwuwierszowy mieszczący się w polu to zakazany „Pozwoli mi to również w pełni legalnie i w usprawiedliwiony / sposób uwiecznić cyfrowo tę niewypowiedzianie słodką istotę!” (0,835/0,864). Leży na poziomie 0, a każdy układ trójwierszowy jest ratunkiem (wiersz ponad maksimum dialogu, §5.2), więc wygrywa przy dowolnych wagach. Zgoda przymiotnika nie może tego zmienić, bo według §4.2 jest szkodą ważoną, nie poziomem (q11); tu zresztą w ogóle się nie zapala: „sposób” ma w Morfeuszu odczyt czasownikowy (tryb rozkazujący od „sposobić”), a §4.2 wyklucza pary ze słowem o odczycie czasownikowym. Do rozstrzygnięcia przez właściciela: d10 w dwóch wierszach z „usprawiedliwiony / sposób” czy w trzech (wtedy spec musi dopuścić trzeci wiersz zamiast cięcia przymiotnik | rzeczownik, np. przez traktowanie takiej pary jak związku chronionego w ratunku).
+**Węższa reguła Morfeusza (wdrożona):** słowo odpada z pary tylko przy odczycie osobowym lub przeszłym (`fin`, `praet`, `bedzie`, `aglt`, `winien`); tryb rozkazujący, bezokolicznik i inne odczyty czasownikowe są pomijane. Zgoda zapala się przy 3 z 601 cięć zawodowców NF+AMZN (0,50%, bez zmian) i przy 9,19% pozostałych przerw (wcześniej 8,93%); na CR 5,19% wobec 9,43% (wcześniej 5,10% wobec 9,21%). Rozdzielczość cechy rośnie, „usprawiedliwiony sposób” jest już parą zgodną.
 
-Wyniki przy wagach z tego przebiegu (wag nie wpisano do kodu, bo całość jest niewykonalna):
+## Poprawki z przeglądu kodu (fazy A–C)
 
-- W zbiorze dopuszczalnych: **75/76**; jedyny niespełniony: d10.
-- Test z pominięciem jednego zdarzenia: **64/76**; niespełnione: d06, d10, d15, d25, d28, q06, q10, q11, q19, r03, s14, t02.
-- Wrażliwość ±10% (przypadki, których układ się zmienia): `length_comfortable` ×0,9 → q10, q11, q17, q19; ×1,1 → d06, d28, t02; `extra_line` ×0,9 → d28, ×1,1 → q10, q11, q17, q19; `cut_degree` ×0,9 → d06, t02; `cut_phrase` ×0,9 → s29, ×1,1 → e13; `cut_modifier` ×0,9 → e13.
-- Przypadki przy kolanie długości (jeden wiersz 0,74–0,80): d28 0,771 (wybrany jeden wiersz), q04 0,741 (jeden), q10 0,748 (dwa), q11 0,800 (dwa), q14 0,789 (dwa), q17 0,768 (dwa; „oba dobre”), q19 0,783 (dwa), e14 0,798 (dwa).
-- Zawodowcy: 192 z 1414 par naruszonych; strata par „oba dobre” 3,19.
-- Najważniejsze wagi: długość 157,1 (od 0,55) i 130,5 (od 0,76), drugi wiersz 32,0, wystawanie poza oryginał 40,3, ściśnięcie 18,7, zmniejszenie 13,9, związki chronione 29,0, `degree` 18,2, `after_opener` 17,2, `phrase` 5,0, zgoda przymiotnika 5,7, dłuższa góra 0,33 na znak.
+1. **Programowanie dynamiczne = pełny przegląd.** DP liczy się dla każdej skali poziomej, której wymaga jakikolwiek odcinek słów (nie tylko skale najlepszego układu bez skali), a przy polu z krótszą górą trzyma poprzedni wiersz w stanie. Siatka skal zaokrągla każdy punkt załamania w dół i w górę do pełnego procentu — bez tego DP znajdował skale lepsze od pełnego przeglądu (5 z 48 przypadków recenzenta). Reproducer recenzenta: 0 rozbieżności z 48; test `test_dynamic_programming_finds_the_optimum_of_the_exhaustive_search` pada po usunięciu siatki albo stanu krótszej góry.
+2. **Za dużo wymuszonych granic** (czterech mówców, lista „(1)…(4)” przy trzech wierszach ratunku) nie wywraca już rdzenia: granice są zwalniane, wiersz może je połączyć i dostaje flagę `joined` w poziomie ratunku (e04, e19). Test.
+3. **Najszkodliwsza klasa** — jak w tabeli wyżej; test `test_gaps` utrwalający „i” jako `after_opener` poprawiony.
+4. **Wydajność:** pamięć podręczna szerokości wierszy i liczby grafemów, DP tylko w polu, gdy wszystkie wiersze mogą się zmieścić, pomijanie przebiegów DP, których dolne ograniczenie (szkody globalne plus szkody wierszy przy najmniejszej skali) nie może pobić najlepszego układu. s29: 2,6 s zamiast 25 s; kalibracja 6 min 45 s zamiast 28 min.
+5. **Kalibracja widzi układy powyżej trzech wierszy:** gdy DP rdzenia znajduje taki układ lepszy od pierwszego dopuszczalnego, narzędzie dopisuje parę twardą i rozwiązuje ponownie (aż do braku nowych par); przypadek z regułą `not_ragged` (s29) dostaje za cel najlepszy układ bez bardzo poszarpanego wiersza. Bez tego s29 wypadał ze zbioru dopuszczalnych przy nowych wagach.
+6. Raport: ten dokument zastępuje wcześniejsze zdania o odporności par na ±10% i o braku wag i testu.
+7. Jakość: jednolinijkowy docstring `_COORDINATORS`, typ `SSAFile` i stała `_RE_FONT_SIZE` w `layout_catalogue.py`, listy spójników i przyimków oraz myślniki mówców mają jedno źródło w `gaps.py` (`linebreak.py` i `layout.py` je importują).
 
-**Próba ślepa (wstępna, z wagami tego przebiegu):** `scratchpad/v4-blind/blind.txt` (arkusz) i `scratchpad/v4-blind/key.json` (klucz). Z 160 losowych kwestii NF+AMZN z części odłożonej 122 mają układ identyczny z zawodowcem (w kluczu z `same: true`, poza arkuszem); w arkuszu jest **38** par A/B. Rozstrzygnięcie d10 może zmienić wagi; wtedy arkusz trzeba wygenerować ponownie tą samą komendą.
+## Próby ślepe
 
-## Stan po drugiej decyzji koordynatora (19.10, wieczór)
+**Nowa próba (CR):** arkusz `scratchpad/v4-blind2/blind.txt`, klucz `scratchpad/v4-blind2/key.json` (scratchpad sesji orkiestratora). 200 losowych kwestii dwuwierszowych Crunchyroll (ziarno 20261020); kalibracja używa tylko NF+AMZN, a poprzednia próba była z NF+AMZN, więc żadna z tych kwestii nie była widziana. Rdzeń (najlepszy układ dwuwierszowy, morfologia, pomiar w znakach) daje układ identyczny z zawodowcem w **121 z 200 (60,5%)** — w kluczu `same: true`, poza arkuszem; w arkuszu **79** par A/B w losowej kolejności liter. Komenda: `python -m scripts.subtitle_quality.layout_calibrate --blind-only --blind-families cr --blind-seed 20261020 --blind-size 200 --blind <katalog> --out <plik>`.
 
-Decyzje: wymóg odporności ±10% odpada (pary twarde katalogu i ankiety z samym marginesem; wrażliwość i LOO tylko raportowane), pole piosenki „jak dialog” potwierdzone, morfologia zostaje, d10 dostaje dwa jawne układy ważne tylko w polu dialogu, s29 przyjmuje każdy układ bez bardzo poszarpanego wiersza (żaden wiersz nie odbiega od średniej ponad najwyższe kolano nierównowagi z §4.4) i bez wyjścia poza pole.
-
-Wynik: kalibracja nadal **niewykonalna** — z morfologią jedynym minimalnym zbiorem sprzecznym jest **{d10}**, bez morfologii {r03}, {d15}, {d10}.
-
-**d10:** pierwszy jawny układ („…w usprawiedliwiony sposób / uwiecznić cyfrowo…”) ma górny wiersz 0,94 szerokości, więc nie mieści się w polu; wygrywać ma drugi: „Pozwoli mi to również w pełni legalnie / i w usprawiedliwiony sposób uwiecznić cyfrowo / tę niewypowiedzianie słodką istotę!” (0,54/0,66/0,50). Dominuje go „…sposób uwiecznić / cyfrowo tę niewypowiedzianie słodką istotę!” (te same klasy przerw: przed spójnikiem i `phrase`, lepsza równowaga, krótsza dłuższa góra). Zakaz „uwiecznić / cyfrowo” (czasownik | przysłówek) pochodzi z katalogu §6, a rdzeń nie ma cechy, która go wyraża; właściciel tej pary nie oceniał.
-
-Diagnostyka bez d10 (wagi niewpisane): wykonalne, **75/76** przypadków w zbiorze dopuszczalnych; jedyny niespełniony to d10, dla którego rdzeń wybiera dwa wiersze z zakazanym „usprawiedliwiony / sposób” (zgoda przymiotnika przegrywa tu z długością trzeciego wiersza). 192 z 1414 par zawodowców naruszonych.
-
-Do decyzji: (a) pokazać właścicielowi „…uwiecznić / cyfrowo…” obok drugiego jawnego układu d10 — jeśli gorszy, rdzeń potrzebuje klasy „czasownik | określający go przysłówek”; (b) albo zdjąć zakaz z §6. Wag `Final`, testu katalogu i próby ślepej nadal nie ma; po rozstrzygnięciu jedna komenda (`layout_calibrate --blind`) da wyniki, LOO, wrażliwość, listę przypadków przy kolanie i arkusz ślepy (zawodowiec kontra rdzeń z morfologią, identyczne układy poza arkuszem).
-
-Niżej stan sprzed tej decyzji.
-
-## Wynik w jednym zdaniu (przed drugą decyzją)
-
-Kalibracja była **niewykonalna**: z morfologią wyłącznie przez wymóg odporności ±10% na parach ankiety (z samym marginesem wykonalna), bez morfologii także bez tego wymogu.
+**Poprzednia próba (NF+AMZN, 160 kwestii) przy nowych wagach:** z 38 spornych pozycji układ rdzenia zmienił się w **10**; 8 z nich jest teraz identycznych z zawodowcem. Z 12 spornych pozycji, w których któryś sędzia ocenił rdzeń jako zły, zmieniło się 9 („pod jej uczucia”, „kilka zabłąkanych”, „z punktu widzenia zarówno rojalistów”, „sobie siebie / w roli”, „WYS.: 4,5 KM”, „co najmniej”, „tak bez zapowiedzi”, „Nawet czujniki”, „BAM - BAM - BAM”); bez oceny nowych układów. Słabe cięcia przy dostępnym lepszym („rozświetla / serca”, „wrócimy / i wyruszymy”, „z tobą / poćwiczę”) zostały bez zmian — to nie są błędy klas, tylko wymiana równowagi na miejsce cięcia. Dwie pozycje wcześniej identyczne z zawodowcem są teraz inne: „A rycerze / tylko pilnują…” i „Jeśli stanowią zagrożenie / dla wioski, musimy…” (waga nierównowagi spadła z 0,82 do 0,45 na znak).
 
 ## Jak liczono
 
-Narzędzie: `python -m scripts.subtitle_quality.layout_calibrate --out <plik.json> [--blind <katalog>]`. Katalog z pomiarami: `tests/services/subtitles/data/text_layout_catalogue.json` (odświeża go `python -m scripts.subtitle_quality.layout_catalogue --fonts <folder czcionek mpv>`).
+Narzędzie: `python -m scripts.subtitle_quality.layout_calibrate --out <plik.json>` (z `--quality-root` wskazującym `workspace/.quality`). Katalog z pomiarami: `tests/services/subtitles/data/text_layout_catalogue.json` (odświeża go `python -m scripts.subtitle_quality.layout_catalogue --fonts <folder czcionek mpv>`).
 
 | Element | Ustawienie | Źródło |
 | --- | --- | --- |
-| Cechy (szkody) | `HARMS` w `layout.py`: dwie miary długości (szerokość i znaki × 0,76/56), klasy przerw z `gaps.py` (od rundy 3 także `degree`: przysłówek stopnia przed słowem, które określa), zgoda przymiotnika (Morfeusz), nierównowaga w znakach z kolanami 6/10/20/25/30, dłuższa góra, liczba wierszy względem preferowanej, ściśnięcie, zmniejszenie, małe litery (16–30 px), wystawanie poza szerokość oryginału | spec §4.1–§4.6, t02 |
-| Poziomy przed wagami | 1) wiersz poza polem (90% ekranu dla dialogu), 2) wiersz ponad maksimum pola, 3) rozerwany związek chroniony, cięcie w krótkim cytacie, sierota | spec §5.2 |
+| Cechy (szkody) | `HARMS` w `layout.py`: dwie miary długości (szerokość i znaki × 0,76/56), klasy przerw z `gaps.py`, zgoda przymiotnika (Morfeusz), nierównowaga w znakach z kolanami 6/10/20/25/30, dłuższa góra, liczba wierszy względem preferowanej, ściśnięcie, zmniejszenie, małe litery (16–30 px), wystawanie poza szerokość oryginału | spec §4.1–§4.6 |
+| Poziomy przed wagami | 1) wiersz poza polem (90% ekranu dla dialogu), 2) wiersz ponad maksimum pola, 3) rozerwany związek chroniony, cięcie w krótkim cytacie, sierota, połączone wymuszone granice | spec §5.2 |
 | Filtry | słowo nigdy nierozcięte, wiersz nie zaczyna się od pauzy wtrącenia, wiersz na mówcę, punkty listy „(n)” od nowego wiersza, gdy się mieszczą | spec §4.2, e03 |
-| Pary twarde | pierwszy dopuszczalny układ każdego przypadku wygrywa ze **wszystkimi** niedopuszczalnymi kandydatami swojego poziomu ratunku; każda para odporna na zmianę dowolnej wagi o ±10%, poza przypadkami ocenionymi „oba dobre” (q09, q16, q17, r02) | spec §5.3, decyzja koordynatora 19.10 |
+| Pary twarde | pierwszy dopuszczalny układ każdego przypadku wygrywa z marginesem ze wszystkimi niedopuszczalnymi kandydatami swojego poziomu ratunku (do trzech wierszy z pełnego przeglądu, powyżej — z DP rdzenia, dopisywane w kolejnych rundach) | spec §5.3 |
 | Pary miękkie | q09, q16, q17, r02 | spec §5.3 |
-| Zawodowcy | NF+AMZN, 601 kwestii dwuwierszowych; 160 odłożonych na próbę ślepą (ziarno 20261019); z 441 pozostałych 13 pominiętych (układ zawodowca poza poziomem 0), 1414 par miękkich | spec §5.3 p. 3, §7.3 |
+| Zawodowcy | NF+AMZN, 601 kwestii dwuwierszowych; 160 odłożonych na próbę ślepą (ziarno 20261019) | spec §5.3 p. 3, §7.3 |
 | Monotoniczność | waga klasy przerwy nie maleje z poziomem `TIERS` (§4.2); każda waga klasy ≥ 0,001 marginesu | spec §5.3 |
-| Cel | kolejno: najmniejsza strata par miękkich ankiety, najmniejsza strata zawodowców, największy margines | spec §5.3 |
+| Cel | kolejno: najmniejsza strata par miękkich ankiety, najmniejsza strata zawodowców, najmniejsza suma wag | spec §5.3 |
 
-Katalog: 76 przypadków rdzenia (d01–d30, s07, s09, s10, s14, s19, s20, s26, s29, e01–e04, e06, e13, e14, e18, e19 oraz 29 pytań ankiety z rund 1–3), 34 przypadki warstwy sceny lub integracji bez testu rdzenia (fazy D–E). Pomiar sumą słów zgadza się z pomiarem całych wierszy prototypu do 0,005 szerokości ekranu.
+Katalog: 76 przypadków rdzenia (d01–d30, s07, s09, s10, s14, s19, s20, s26, s29, e01–e04, e06, e13, e14, e18, e19 oraz 29 pytań ankiety z rund 1–3), 34 przypadki warstwy sceny lub integracji bez testu rdzenia (fazy D–E).
 
-## Zmiany po rundzie 3
+## Historia rozstrzygnięć (skrót)
 
-- **t01:** właściciel wybrał „…czterdzieści procent / wyparcia, a na dobitkę…” (53/44) zamiast 63/34. Zakaz „cięcia wewnątrz członu wyliczenia” z d24 usunięty; d24 i r06 przyjmują 53/44, potem 63/34. Sprzeczność {q19, r06} i {d24, q19} znikła.
-- **t02:** właściciel wybrał „…dzisiaj / tak bardzo…”. Nowa klasa przerwy `degree` w `gaps.py` (tak, bardzo, zbyt, za, coraz, aż, całkiem, nieco, trochę, dość, równie, „tak samo”). Sprzeczność {d06} znikła.
-- **r1:** jeden wiersz w pełnym rozmiarze (0,69 ekranu) wygrywa z dwoma. Pojawiła się sprzeczność {q15, r01}: q15 wymaga, by szyld zmniejszony do szerokości oryginału wygrał z szyldem szerszym od oryginału, a r01 — by piosenka w pełnym rozmiarze, szersza od oryginału, wygrała ze zmniejszoną. Rozwiązanie bez nowej wagi: spec §3.2 daje piosence szerokość wygodną „jak dialog lub oryginał”; przyjąłem „jak dialog” (pole piosenki bez odniesienia do szerokości oryginału). **To interpretacja do potwierdzenia.**
-
-## Sprzeczności (stan obecny)
-
-| Wariant | Minimalne zbiory sprzeczne | Bez wymogu ±10% |
-| --- | --- | --- |
-| z morfologią | {q04, q11, q13, q19, r03}, {d15, q04, q11, q13, q19}, {d15, d28, q06, q10, q11, q13, q18, r05} | wykonalne |
-| bez morfologii | {r03}, {d15} | niewykonalne |
-
-Konfliktów poziomów nie ma.
-
-### Z morfologią: tylko odporność ±10%
-
-Przy najlepszym kompromisie odporność łamią pary, w których o wyniku decyduje długość jednego wiersza blisko kolana:
-
-| Przypadek | Wybór (musi wygrać) | Rywal |
-| --- | --- | --- |
-| q04 | jeden wiersz 0,74 | „myślę, że on może znaleźć / odpowiedź na twoje pytanie.” |
-| d28 | jeden wiersz 0,77 | „Taki właśnie bezmiar / geniuszu kryje Kaguya Shinomiya!” |
-| q18 | jeden wiersz 0,64 | „W sumie to myślałem, / żeby nic nie odpisywać.” |
-| q11 | „Magia ingerująca we wszystkie / ciągi przyczynowo-skutkowe.” | jeden wiersz 0,80 |
-| q13 | „Zabawa, … odgadnąć, / o czym myśli drugi, …” | „…odgadnąć, o czym / myśli drugi, …” |
-| r03, d15 | „…przyjęciu powitalnym / jest naprawdę konieczny?” | „…przyjęciu / powitalnym jest…” |
-
-Jeden wiersz o szerokości 0,77 ma wygrać (d28), a 0,80 przegrać (q11); różnica 0,03 szerokości nie wytrzymuje zmiany wag długości lub drugiego wiersza o 10%. Podobnie zgoda przymiotnika ma wygrać z dłuższą górą (r03, d15) przy jednoczesnej silnej preferencji krótszej góry (q19). Z samym marginesem wszystko się godzi, więc nie jest to sprzeczność gustu, tylko za mały odstęp między decyzjami właściciela jak na wymóg ±10%.
-
-### Bez morfologii
-
-r03 i d15 przegrywają na każdej cesze: lista końcówek klasyfikuje „powitalnym | jest” jako `modifier`, a górny wiersz jest dłuższy. Bez zgody przymiotnika z Morfeusza katalog i ankieta tracą — warunek bramki morfologii „katalog i ankieta nie tracą” (§4.7) przemawia za morfologią; warunku „mniej złych cięć w ślepej ocenie” nie da się sprawdzić bez wag.
-
-## Diagnostyka: z morfologią, z samym marginesem (nie wynik kalibracji)
-
-Ten sam program, ale pary twarde bez wymogu ±10% (skrypt poza repozytorium). Wag z tego przebiegu nie wpisano do kodu.
-
-- W zbiorze dopuszczalnych przy wagach z całości: **74/76**. Niespełnione: d10 (zakazane „usprawiedliwiony / sposób”; przypadek bez jawnego układu, więc bez pary w kalibracji), s29 (11 wierszy zamiast 13 źródłowych).
-- Test z pominięciem jednego zdarzenia: **63/76**. Niespełnione: d06, d10, d15, d25, d28, q06, q10, q11, q19, r03, s14, s29, t02.
-- Wrażliwość ±10% (przypadki, których układ się zmienia): `length_comfortable` ×0,9 → q10, q11, q17, q19; ×1,1 → d06, d28, t02; `extra_line` ×0,9 → d28; ×1,1 → q10, q11, q17, q19; `cut_degree` ×0,9 → d06, t02; `cut_phrase` ×0,9 → s29, ×1,1 → e13; `cut_modifier` ×0,9 → e13.
-- Zawodowcy: 192 z 1414 par naruszonych.
-
-## Odkrycie w danych ankiety (r1)
-
-Notatka pytania r1 podawała ok. 2116 px dla pełnego wiersza piosenki; pomiar i przerenderowany obraz dają ok. 1333 px (0,69 szerokości). Koordynator potwierdził błąd; r1 zakodowano jako „jeden wiersz w pełnym rozmiarze wygrywa z dwoma”.
-
-## Czego nie zrobiono
-
-- Wagi `Final` w `layout.py`, test „każdy przypadek katalogu i każde pytanie ankiety w zbiorze dopuszczalnych”, oficjalne LOO i wrażliwość — wymagają wykonalnej kalibracji.
-- Próba ślepa morfologii — wymaga wag obu wariantów, a wariant bez morfologii jest niewykonalny nawet z samym marginesem. Komenda z `--blind` zapisze `blind.txt` i `key.json`, gdy wagi będą istnieć.
-
-## Do decyzji
-
-1. **Wymóg ±10% na parach ankiety:** pozostałe sprzeczności wynikają wyłącznie z niego. Możliwości: odporność tylko dla katalogu §6 (sprawdzone: nadal jeden zbiór sprzeczny {d15, d28, q11, q13, q19}, bo d15 i d28 są przypadkami katalogu), mniejszy wymóg, sam margines (wykonalne, wyniki jak w diagnostyce), albo dodatkowe pytanie do właściciela o kwestie w odstępie 0,74–0,80 szerokości (q04, d28, q11), żeby rozsunąć jego decyzje.
-2. **Pole piosenki:** potwierdzić „szerokość wygodna jak dialog” (r01 a q15).
-3. **Bramka morfologii:** bez morfologii katalog i ankieta są niewykonalne (r03, d15). Czy to wystarcza, czy próba ślepa ma porównać wariant z morfologią z wariantem bez niej skalibrowanym bez r03 i d15.
-4. **d10 i s29** nie mają jawnego układu w katalogu, więc nie wchodzą do kalibracji i przegrywają; warto dopisać po jednym dopuszczalnym układzie.
+- Wymóg odporności każdej pary na ±10% odpadł (decyzja koordynatora 19.10): granica właściciela przy długości jest ostra (d28 0,77 jeden wiersz, q11 0,80 dwa), więc wymóg dawał niewykonalność. Wrażliwość i LOO są tylko raportowane.
+- Runda 3 ankiety: t01 (d24, 53/44 > 63/34) usunęła zakaz cięcia wewnątrz członu wyliczenia; t02 (d06, „…dzisiaj / tak bardzo…”) dała klasę `degree`.
+- r1: notatka pytania podawała ok. 2116 px dla wiersza piosenki; pomiar daje ok. 1333 px (0,69 szerokości) — jeden wiersz w pełnym rozmiarze wygrywa z dwoma. Pole piosenki ma szerokość wygodną „jak dialog” (r01 a q15).
+- d10: dwa wiersze mieszczą się w polu, więc trzy są niedopuszczalne; przyjęty tylko „Pozwoli mi to również w pełni legalnie i w usprawiedliwiony / sposób uwiecznić cyfrowo tę niewypowiedzianie słodką istotę!” (decyzja koordynatora, do potwierdzenia przez właściciela).
+- s29 przyjmuje każdy układ w polu bez bardzo poszarpanego wiersza.
+- Bez morfologii katalog i ankieta są niewykonalne ({r03}, {d15}), więc morfologia zostaje (bramka §4.7 „katalog i ankieta nie tracą”); warunek „mniej złych cięć w ślepej ocenie” rozstrzygną oceny sędziów.
