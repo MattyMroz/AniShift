@@ -2,13 +2,32 @@
 kind: report
 status: blocked
 baseline: work/quality/21-text-layout @ 56da1979
-resulting-state: work/quality/21-text-layout @ 61992e09
+resulting-state: work/quality/21-text-layout (after the d10 catalogue update)
 completed: 2026-10-19
 ---
 
 # Kalibracja rdzenia układu tekstu — raport
 
 Kontrakt: [text-layout.md](../text-layout.md) §5.3, plan [02-text-layout.md](../plans/02-text-layout.md) faza C. Stan po rundzie 3 ankiety (t01, t02) i decyzjach koordynatora z 19.10.
+
+## Stan po trzeciej decyzji koordynatora (zakaz „uwiecznić / cyfrowo” zdjęty)
+
+Katalog d10: dopuszczalne tylko dwa układy trójwierszowe (w polu dialogu), zakazane „usprawiedliwiony / sposób”, „słodką / istotę”, „niewypowiedzianie / słodką” i wiersz poza polem.
+
+Wynik pełnej kalibracji (z morfologią, sam margines): program liniowy **wykonalny**, ale zostaje **konflikt poziomów w d10**, więc kalibracja jako całość jest niewykonalna (narzędzie raportuje teraz `feasible: false` także przy konflikcie poziomów). Bez morfologii: {r03}, {d15}.
+
+**d10 — konflikt poziomów (spec, nie wagi):** jedyny układ dwuwierszowy mieszczący się w polu to zakazany „Pozwoli mi to również w pełni legalnie i w usprawiedliwiony / sposób uwiecznić cyfrowo tę niewypowiedzianie słodką istotę!” (0,835/0,864). Leży na poziomie 0, a każdy układ trójwierszowy jest ratunkiem (wiersz ponad maksimum dialogu, §5.2), więc wygrywa przy dowolnych wagach. Zgoda przymiotnika nie może tego zmienić, bo według §4.2 jest szkodą ważoną, nie poziomem (q11); tu zresztą w ogóle się nie zapala: „sposób” ma w Morfeuszu odczyt czasownikowy (tryb rozkazujący od „sposobić”), a §4.2 wyklucza pary ze słowem o odczycie czasownikowym. Do rozstrzygnięcia przez właściciela: d10 w dwóch wierszach z „usprawiedliwiony / sposób” czy w trzech (wtedy spec musi dopuścić trzeci wiersz zamiast cięcia przymiotnik | rzeczownik, np. przez traktowanie takiej pary jak związku chronionego w ratunku).
+
+Wyniki przy wagach z tego przebiegu (wag nie wpisano do kodu, bo całość jest niewykonalna):
+
+- W zbiorze dopuszczalnych: **75/76**; jedyny niespełniony: d10.
+- Test z pominięciem jednego zdarzenia: **64/76**; niespełnione: d06, d10, d15, d25, d28, q06, q10, q11, q19, r03, s14, t02.
+- Wrażliwość ±10% (przypadki, których układ się zmienia): `length_comfortable` ×0,9 → q10, q11, q17, q19; ×1,1 → d06, d28, t02; `extra_line` ×0,9 → d28, ×1,1 → q10, q11, q17, q19; `cut_degree` ×0,9 → d06, t02; `cut_phrase` ×0,9 → s29, ×1,1 → e13; `cut_modifier` ×0,9 → e13.
+- Przypadki przy kolanie długości (jeden wiersz 0,74–0,80): d28 0,771 (wybrany jeden wiersz), q04 0,741 (jeden), q10 0,748 (dwa), q11 0,800 (dwa), q14 0,789 (dwa), q17 0,768 (dwa; „oba dobre”), q19 0,783 (dwa), e14 0,798 (dwa).
+- Zawodowcy: 192 z 1414 par naruszonych; strata par „oba dobre” 3,19.
+- Najważniejsze wagi: długość 157,1 (od 0,55) i 130,5 (od 0,76), drugi wiersz 32,0, wystawanie poza oryginał 40,3, ściśnięcie 18,7, zmniejszenie 13,9, związki chronione 29,0, `degree` 18,2, `after_opener` 17,2, `phrase` 5,0, zgoda przymiotnika 5,7, dłuższa góra 0,33 na znak.
+
+**Próba ślepa (wstępna, z wagami tego przebiegu):** `scratchpad/v4-blind/blind.txt` (arkusz) i `scratchpad/v4-blind/key.json` (klucz). Z 160 losowych kwestii NF+AMZN z części odłożonej 122 mają układ identyczny z zawodowcem (w kluczu z `same: true`, poza arkuszem); w arkuszu jest **38** par A/B. Rozstrzygnięcie d10 może zmienić wagi; wtedy arkusz trzeba wygenerować ponownie tą samą komendą.
 
 ## Stan po drugiej decyzji koordynatora (19.10, wieczór)
 
