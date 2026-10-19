@@ -54,7 +54,7 @@ Rdzeń dostaje tekst (z tagami ASS zakotwiczonymi w widocznym tekście) i **pole
 
 Nienaruszalne dla każdego pola: wyraz (grafem) nigdy nie jest rozcięty bez jawnego dywizu, treść się nie zmienia, położenie, ruch, obrót, maska, kolory szyldu zostają, litery szyldu nie rosną ponad oryginał, rysunki i karaoke bez zmian (visual-quality §2.1).
 
-**Dzielenie wyrazów (pole dymka MangaShift, AniShift nie dzieli):** miejsca podziału z polskich wzorców przenoszenia TeX/LibreOffice (Python: `pyphen` `pl_PL`; TypeScript: Hyphenopoly albo `hyphen` z wzorcami `pl`) jako miękkie łączniki U+00AD, które Pretext traktuje jako dozwolone cięcie z widocznym „-”. Wyjątki: słowa pisane wielką literą i obce (wzorce polskie dzielą je źle: „Ice-bla-de”, „Shi-no-miya”) tylko w ratunku; wyraz z łącznikiem łamany na istniejącym łączniku z powtórzeniem łącznika na początku nowego wiersza („przyczynowo- / -skutkowe”). Podział wyrazu to szkoda ważona, zawsze droższa niż cięcie między słowami.
+**Dzielenie wyrazów (pole dymka MangaShift; AniShift nie dzieli — także w szyldach, decyzja właściciela 20.10: „chyba nie ma sensu”):** miejsca podziału z polskich wzorców przenoszenia TeX/LibreOffice (Python: `pyphen` `pl_PL`; TypeScript: Hyphenopoly albo `hyphen` z wzorcami `pl`) jako miękkie łączniki U+00AD, które Pretext traktuje jako dozwolone cięcie z widocznym „-”. Wyjątki: słowa pisane wielką literą i obce (wzorce polskie dzielą je źle: „Ice-bla-de”, „Shi-no-miya”) tylko w ratunku; wyraz z łącznikiem łamany na istniejącym łączniku z powtórzeniem łącznika na początku nowego wiersza („przyczynowo- / -skutkowe”). Podział wyrazu to szkoda ważona, zawsze droższa niż cięcie między słowami.
 
 ### 3.3 Granica rdzenia
 
