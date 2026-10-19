@@ -396,24 +396,13 @@
    "accept": [
     {
      "lines": [
-      "Pozwoli mi to również w pełni legalnie",
-      "i w usprawiedliwiony sposób uwiecznić cyfrowo",
-      "tę niewypowiedzianie słodką istotę!"
-     ]
-    },
-    {
-     "lines": [
-      "Pozwoli mi to również w pełni legalnie",
-      "i w usprawiedliwiony sposób uwiecznić",
-      "cyfrowo tę niewypowiedzianie słodką istotę!"
+      "Pozwoli mi to również w pełni legalnie i w usprawiedliwiony",
+      "sposób uwiecznić cyfrowo tę niewypowiedzianie słodką istotę!"
      ]
     }
    ],
-   "accept_rule": "phrase",
-   "if_fits": true,
-   "note": "the listed layouts in this order when they fit the dialogue field (coordinator 19.10), otherwise lines cut at phrase boundaries",
+   "note": "coordinator 19.10: two lines fit the field, so three lines are not acceptable (r6, r7, spec §5.2)",
    "forbid": [
-    "usprawiedliwiony|sposób",
     "słodką|istotę",
     "niewypowiedzianie|słodką"
    ],

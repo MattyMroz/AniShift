@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from functools import cache
 from itertools import combinations, pairwise
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
 from anishift.services.subtitles.fuzzy import fall
@@ -23,6 +24,7 @@ __all__ = [
     "CHAR_WIDTH",
     "DIALOGUE_MAX_WIDTH",
     "HARMS",
+    "WEIGHTS",
     "Field",
     "Flag",
     "Layout",
@@ -162,6 +164,44 @@ HARMS: Final[tuple[str, ...]] = (
 """Names of the harm degrees a layout is scored on, in the order of the calibration report."""
 
 
+WEIGHTS: Final[Mapping[str, float]] = MappingProxyType(
+    {
+        "length_comfortable": 157.087,
+        "length_wide": 130.474,
+        "cut_sentence": 0.001,
+        "cut_clause": 0.001,
+        "cut_ellipsis": 0.001,
+        "cut_parenthetical": 0.001,
+        "cut_dash": 0.001,
+        "cut_before_subordinator": 1.80557,
+        "cut_before_coordinator": 0.00919162,
+        "cut_before_preposition": 6.02557,
+        "cut_phrase": 5.02557,
+        "cut_auxiliary": 29.0231,
+        "cut_modifier": 6.02557,
+        "cut_abbreviation": 6.02557,
+        "cut_after_opener": 17.1909,
+        "cut_degree": 18.1805,
+        "cut_name": 29.0231,
+        "cut_after_preposition": 29.0231,
+        "cut_negation": 29.0231,
+        "cut_reflexive": 29.0231,
+        "cut_number": 29.0231,
+        "cut_idiom": 29.0231,
+        "cut_after_single_letter": 29.0231,
+        "agreement": 5.68168,
+        "imbalance_20": 0.818867,
+        "top_longer": 0.334699,
+        "extra_line": 31.9874,
+        "missing_line": 3.37479,
+        "squeeze": 18.7006,
+        "shrink": 13.9387,
+        "over_comfort": 40.3125,
+    }
+)
+"""Harm weights from the layout calibration (docs/work/10-quality/research/text-layout-calibration.md)."""
+
+
 # ── Public functions ──────────────────────────────────────────────────────────
 
 
@@ -188,7 +228,7 @@ def candidates(text: str, field: Field, measure: Measure, *, morphology: bool = 
 
 
 def lay_out(
-    text: str, field: Field, measure: Measure, weights: Mapping[str, float], *, morphology: bool = True
+    text: str, field: Field, measure: Measure, weights: Mapping[str, float] = WEIGHTS, *, morphology: bool = True
 ) -> Layout:
     """Return the layout with the lowest rescue level and then the lowest weighted harm."""
     case: _Case = _case(text, field, measure, morphology=morphology)
