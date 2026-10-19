@@ -15,23 +15,23 @@ def _row(**degrees: float) -> np.ndarray:
 
 
 def _rows(cases: dict[str, list[np.ndarray]]) -> dict[str, tuple[Any, ...]]:
-    return {case: (rows, [], True) for case, rows in cases.items()}
+    return {case: (rows, []) for case, rows in cases.items()}
 
 
 @pytest.mark.unit
-def test_solve_meets_every_hard_row_with_a_robust_margin() -> None:
+def test_solve_meets_every_hard_row_with_the_margin() -> None:
     row: np.ndarray = _row(cut_phrase=1.0, cut_sentence=-1.0, extra_line=0.5)
 
-    fit: Fit = solve(Pairs(hard=[("a", row, True)]))
+    fit: Fit = solve(Pairs(hard=[("a", row)]))
 
     assert fit.weights is not None
     weights: np.ndarray = np.array([fit.weights[name] for name in HARMS])
-    assert float(weights @ (row - 0.1 * np.abs(row))) >= 1.0 - 1e-6
+    assert float(weights @ row) >= 1.0 - 1e-6
 
 
 @pytest.mark.unit
 def test_solve_keeps_cut_weights_positive_and_ordered_by_tier() -> None:
-    fit: Fit = solve(Pairs(hard=[("a", _row(length_wide=1.0), True)]))
+    fit: Fit = solve(Pairs(hard=[("a", _row(length_wide=1.0))]))
 
     assert fit.weights is not None
     for lower in GapKind:
@@ -61,7 +61,7 @@ def test_professional_rows_are_soft_and_report_their_violations() -> None:
     hard: np.ndarray = _row(top_longer=1.0)
     against: np.ndarray = _row(top_longer=-1.0)
 
-    fit: Fit = solve(Pairs(hard=[("a", hard, True)], professional=[against]))
+    fit: Fit = solve(Pairs(hard=[("a", hard)], professional=[against]))
 
     assert fit.weights is not None
     assert fit.violated_professional == 1

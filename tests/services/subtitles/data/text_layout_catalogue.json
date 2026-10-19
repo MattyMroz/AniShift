@@ -393,9 +393,24 @@
    "field": {
     "kind": "dialogue"
    },
-   "accept": [],
+   "accept": [
+    {
+     "lines": [
+      "Pozwoli mi to również w pełni legalnie i w usprawiedliwiony sposób",
+      "uwiecznić cyfrowo tę niewypowiedzianie słodką istotę!"
+     ]
+    },
+    {
+     "lines": [
+      "Pozwoli mi to również w pełni legalnie",
+      "i w usprawiedliwiony sposób uwiecznić cyfrowo",
+      "tę niewypowiedzianie słodką istotę!"
+     ]
+    }
+   ],
    "accept_rule": "phrase",
-   "note": "open after the quiz: two lines when they fit the field, otherwise three, each cut at a phrase boundary",
+   "if_fits": true,
+   "note": "the listed layouts in this order when they fit the dialogue field (coordinator 19.10), otherwise lines cut at phrase boundaries",
    "forbid": [
     "usprawiedliwiony|sposób",
     "słodką|istotę",
@@ -2848,8 +2863,8 @@
     "original": "This is a work of fiction. Underage drinking is strongly prohibited / and illegal. We also do not encourage the forceful or excessive / consumption of alcohol, nor do we / endorse the litany of depraved and / shameful acts / portrayed in the / binge-drinking scenes. / We ask that you view this / as a comedy anime and / nothing more. / Furthermore, all / characters drinking in / this work are of legal age."
    },
    "accept": [],
-   "accept_rule": "source_lines",
-   "note": "ragged shape is judged on the image; the core check is the source line count",
+   "accept_rule": "not_ragged",
+   "note": "line count not bound to the source (r2); any layout inside the field without a very ragged line",
    "measure": {
     "kind": "words",
     "words": {

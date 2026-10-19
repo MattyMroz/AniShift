@@ -36,7 +36,10 @@ BLIND_SIZE: Final[int] = 160
 """Professional two-line cues in the blind sample (spec §7.3 asks for at least 150)."""
 
 SENSITIVITY: Final[float] = 0.1
-"""Relative change of every single weight the chosen layouts must survive (spec §5.3)."""
+"""Relative change of every single weight whose effect on the chosen layouts is reported (spec §5.3)."""
+
+KNEE_BAND: Final[tuple[float, float]] = (0.74, 0.80)
+"""One-line widths between the owner's nearest decisions, q04 won at 0.74 and q11 lost at 0.80."""
 
 POSITIVE: Final[float] = 1e-3
 """Smallest weight of a cut class, in units of the pair margin, so every class stays positive (spec §5.3)."""
@@ -52,7 +55,7 @@ CUT_HARMS: Final[tuple[str, ...]] = tuple(f"cut_{kind.value}" for kind in GapKin
 class Pairs:
     """Preference rows ``f(loser) - f(winner)`` with the case each comes from."""
 
-    hard: list[tuple[str, np.ndarray, bool]] = field(default_factory=list)
+    hard: list[tuple[str, np.ndarray]] = field(default_factory=list)
     soft: list[tuple[str, np.ndarray]] = field(default_factory=list)
     professional: list[np.ndarray] = field(default_factory=list)
 
@@ -138,7 +141,7 @@ def gather(
     conflicts: dict[str, list[str]] = {}
     for case in cases:
         hard, soft, conflict = case_pairs(case, morphology=morphology)
-        rows[case.id] = (hard, soft, not case.soft)
+        rows[case.id] = (hard, soft)
         if conflict:
             conflicts[case.id] = conflict
     return rows, conflicts
@@ -162,15 +165,14 @@ def monotone_rows() -> list[np.ndarray]:
 
 
 def solve(pairs: Pairs) -> Fit:
-    """Return weights meeting hard rows (robust unless both were good), then soft rows, professionals, margin."""
+    """Return weights meeting every hard row with a margin, then nearest the soft rows, professionals and margin."""
     size: int = len(HARMS)
     soft_count: int = len(pairs.soft)
     pro_count: int = len(pairs.professional)
     width: int = size + soft_count + pro_count
     builder: _Rows = _Rows(width)
-    for _, row, robust in pairs.hard:
-        guard: float = SENSITIVITY if robust else 0.0
-        builder.add({index: -(value - guard * abs(value)) for index, value in enumerate(row)}, -1.0)
+    for _, row in pairs.hard:
+        builder.add({index: -value for index, value in enumerate(row)}, -1.0)
     for offset, (_, row) in enumerate(pairs.soft):
         builder.add({**{index: -value for index, value in enumerate(row)}, size + offset: -1.0}, 0.0)
     for offset, row in enumerate(pairs.professional):
@@ -231,8 +233,8 @@ class _Rows:
 
 
 def feasible(rows: Mapping[str, tuple[Any, ...]], ids: Iterable[str]) -> bool:
-    """Return whether the hard rows of ``ids`` admit weights meeting them, robustly where required."""
-    pairs: Pairs = Pairs(hard=[(case, row, rows[case][2]) for case in ids for row in rows[case][0]])
+    """Return whether the hard rows of ``ids`` admit weights meeting them with a margin."""
+    pairs: Pairs = Pairs(hard=[(case, row) for case in ids for row in rows[case][0]])
     return solve(pairs).weights is not None
 
 
@@ -301,6 +303,7 @@ def calibrate(
         "catalogue": evaluate(cases, fit.weights, morphology=morphology),
         "sensitivity": sensitivity(cases, fit.weights, morphology=morphology),
     }
+    report["near_knee"] = near_knee(cases, report["catalogue"])
     if leave_one_out:
         report["leave_one_out"] = loo(cases, rows, pro_rows, morphology=morphology)
     return report
@@ -309,7 +312,7 @@ def calibrate(
 def _pairs(rows: Mapping[str, tuple[Any, ...]], ids: Iterable[str], pro_rows: list[np.ndarray]) -> Pairs:
     chosen: list[str] = list(ids)
     return Pairs(
-        hard=[(case, row, rows[case][2]) for case in chosen for row in rows[case][0]],
+        hard=[(case, row) for case in chosen for row in rows[case][0]],
         soft=[(case, row) for case in chosen for row in rows[case][1]],
         professional=pro_rows,
     )
@@ -359,36 +362,51 @@ def sensitivity(
 # ── Blind sample ──────────────────────────────────────────────────────────────
 
 
-def blind_sample(cues: Sequence[dict[str, Any]], variants: Mapping[str, Mapping[str, float]], out: Path) -> None:
-    """Write the blind A/B/C sheet of professional, morphology and no-morphology layouts and its separate key."""
+def blind_sample(cues: Sequence[dict[str, Any]], weights: Mapping[str, float], out: Path) -> dict[str, int]:
+    """Write the blind A/B sheet of professional and core layouts, leaving identical ones out, and its separate key."""
     chosen: set[str] = set(blind_ids(cues))
     rng: random.Random = random.Random(SEED + 1)  # noqa: S311 - a reproducible shuffle, not a secret
     sheet: list[str] = []
     key: list[dict[str, Any]] = []
     picked: list[dict[str, Any]] = [cue for cue in cues if cue["id"] in chosen]
     rng.shuffle(picked)
-    for position, cue in enumerate(picked, 1):
+    position: int = 0
+    for cue in picked:
         text: str = " ".join(cue["text"].split())
         layouts: dict[str, tuple[str, ...]] = {
             "professional": tuple(" ".join(line.split()) for line in cue["gold"]),
-            "morphology": _two_lines(text, variants["morphology"], morphology=True),
-            "plain": _two_lines(text, variants["plain"], morphology=False),
+            "core": _two_lines(text, weights, morphology=True),
         }
+        entry: dict[str, Any] = {"id": cue["id"], "text": text, "layouts": {k: list(v) for k, v in layouts.items()}}
+        if layouts["professional"] == layouts["core"]:
+            key.append({**entry, "same": True})
+            continue
+        position += 1
         sources: list[str] = list(layouts)
         rng.shuffle(sources)
-        letters: dict[str, str] = dict(zip("ABC", sources, strict=True))
+        letters: dict[str, str] = dict(zip("AB", sources, strict=True))
         sheet.append(f"#{position:03d}")
         sheet.extend(
             f" {letter}: {'  /  '.join(layouts[source])}   [{'/'.join(str(len(line)) for line in layouts[source])}]"
             for letter, source in letters.items()
         )
         sheet.append("")
-        key.append({"pos": position, "id": cue["id"], "text": text, "letters": letters,
-                    "layouts": {source: list(lines) for source, lines in layouts.items()}})  # fmt: skip
+        key.append({**entry, "same": False, "pos": position, "letters": letters})
     out.mkdir(parents=True, exist_ok=True)
     (out / "blind.txt").write_text("\n".join(sheet), encoding="utf-8", newline="\n")
     (out / "key.json").write_text(json.dumps({"seed": SEED, "key": key}, ensure_ascii=False, indent=1),
                                   encoding="utf-8", newline="\n")  # fmt: skip
+    return {"sampled": len(picked), "judged": position, "same": len(picked) - position}
+
+
+def near_knee(cases: Sequence[CatalogueCase], outcome: Mapping[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Return the cases whose one-line width falls between the owner's nearest one-line decisions."""
+    found: dict[str, dict[str, Any]] = {}
+    for case in cases:
+        width: float = case.measure(case.text, 1.0)
+        if KNEE_BAND[0] <= width <= KNEE_BAND[1] and case.field.length_knots:
+            found[case.id] = {"width": round(width, 3), "chosen_lines": len(outcome[case.id]["lines"])}
+    return found
 
 
 def _two_lines(text: str, weights: Mapping[str, float], *, morphology: bool) -> tuple[str, ...]:
@@ -425,9 +443,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         results[name] = calibrate(cases, pro_rows, morphology=morphology, leave_one_out=not arguments.no_loo)
         results[name]["professional_skipped"] = skipped
         print(f"{name}: feasible={results[name]['feasible']}")
+    if arguments.blind is not None and results["morphology"].get("weights"):
+        results["blind"] = blind_sample(cues, results["morphology"]["weights"], arguments.blind)
     arguments.out.write_text(json.dumps(results, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n")
-    if arguments.blind is not None and all(results[name].get("weights") for name in ("morphology", "plain")):
-        blind_sample(cues, {name: results[name]["weights"] for name in ("morphology", "plain")}, arguments.blind)
     return 0
 
 

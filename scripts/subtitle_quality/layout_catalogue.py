@@ -48,6 +48,9 @@ SCREEN_HEIGHT: Final[float] = 1080.0
 PHRASE_TIER: Final[int] = TIERS[GapKind.PHRASE]
 """Highest gap tier that still counts as a phrase boundary for the ``phrase`` rule."""
 
+RAGGED_HARM: Final[str] = "imbalance_30"
+"""Harm past the top imbalance knot of spec §4.4, the very ragged shape the ``not_ragged`` rule forbids."""
+
 _RE_LINES: Final[re.Pattern[str]] = re.compile(r"lines:(\d+)")
 """Rule demanding an exact line count."""
 
@@ -184,6 +187,8 @@ def _ruled(case: CatalogueCase, layout: Layout, found: Sequence[Layout]) -> bool
         return True
     if rule == "source_lines":
         return len(layout.lines) == case.field.preferred_lines
+    if rule == "not_ragged":
+        return Flag.OUTSIDE not in layout.flags and not layout.harms.get(RAGGED_HARM, 0.0)
     if rule == "no_hourglass":
         return Flag.OUTSIDE not in layout.flags and not _hourglass(layout)
     if rule == "phrase":
