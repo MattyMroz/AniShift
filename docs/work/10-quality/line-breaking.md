@@ -1,11 +1,11 @@
 ---
 kind: specification
-status: v1.4 (po przeglądzie, dwóch weryfikacjach i pierwszym pomiarze implementacji)
+status: v1.5 (po drugim pomiarze implementacji na prawdziwych odcinkach)
 updated: 2026-10-19
 supersedes: fuzzy-line-breaks.md (dla dialogów)
 ---
 
-# Łamanie polskich dialogów na wiersze — specyfikacja v1.4
+# Łamanie polskich dialogów na wiersze — specyfikacja v1.5
 
 Właściciel 18.10 odrzucił przepisany algorytm z gałęzi `work/quality/16-line-breaks` jako błędny i przekombinowany. Wskazał stary algorytm z `work/quality/08-fuzzy-quality` (replay `u6-font`) jako lepszy i działający. Ta specyfikacja zastępuje `fuzzy-line-breaks.md` w części o dialogach. Opiera się na trzech niezależnych badaniach z 18–19.10:
 
@@ -13,7 +13,7 @@ Właściciel 18.10 odrzucił przepisany algorytm z gałęzi `work/quality/16-lin
 - [research/line-breaking-opus55.md](research/line-breaking-opus55.md) — literatura, pomiar sześciu narzędzi, korpus profesjonalnych polskich napisów (Netflix, Amazon, Crunchyroll), prototyp jednej funkcji kosztu;
 - [research/line-breaking-inventory.md](research/line-breaking-inventory.md) — co już mamy w kodzie i dokumentach, stary a odrzucony algorytm, MangaShift.
 
-v1.4 zamyka pierwszy pomiar implementacji: profesjonaliści NF+AMZN łamią każdą kwestię powyżej 42 znaków (twarda norma dostawcy), a właściciel chce jednego wiersza przy 43–55 znakach, więc G3 mierzy tylko miejsce cięcia przy dwóch wierszach; wtrącenie w myślnikach ma siłę przecinka; utarte zwroty jako klasa chroniona; mówcy po myślniku otwierającym. v1.3 zamknęła drugą weryfikację (astra): kotwice liczby wierszy, ochrona w granicy `N`, `W_c` jako wartość pochodna, interpunkcja oderwana przez cięcie, kolejność klas chronionych, predykaty G2. v1.2 zamknęła weryfikację v1.1: `ζ` = 0,1, jedna granica liczby wierszy, zerowa szerokość jako tryb bez pomiaru, wyjątki dla myślnika mówcy i znaków otwierających, pierwszeństwo klas, ochrona nazw, operacyjne bramki. v1.1 zamknęła przegląd v1:
+v1.5 zamyka drugi pomiar: na prawdziwej geometrii odcinków rampa 40–66 zostawiała 1214 kwestii dwuwierszowych w jednym wierszu (do 64 znaków), bo zbiór właściciela liczono na profilu zastępczym. Kalibracja tylko na prawdziwej geometrii, nowa kotwica g08, bramka długich pojedynczych wierszy, dwie klasy z danych (przed spójnikiem, przed przyimkiem). v1.4 zamknęła pierwszy pomiar implementacji: profesjonaliści NF+AMZN łamią każdą kwestię powyżej 42 znaków (twarda norma dostawcy), a właściciel chce jednego wiersza przy 43–55 znakach, więc G3 mierzy tylko miejsce cięcia przy dwóch wierszach; wtrącenie w myślnikach ma siłę przecinka; utarte zwroty jako klasa chroniona; mówcy po myślniku otwierającym. v1.3 zamknęła drugą weryfikację (astra): kotwice liczby wierszy, ochrona w granicy `N`, `W_c` jako wartość pochodna, interpunkcja oderwana przez cięcie, kolejność klas chronionych, predykaty G2. v1.2 zamknęła weryfikację v1.1: `ζ` = 0,1, jedna granica liczby wierszy, zerowa szerokość jako tryb bez pomiaru, wyjątki dla myślnika mówcy i znaków otwierających, pierwszeństwo klas, ochrona nazw, operacyjne bramki. v1.1 zamknęła przegląd v1:
 - trzy poziomy reguł zamiast jednej skończonej kary (§3);
 - koszt każdego dodatkowego wiersza (§5.3);
 - ratunek minimalizujący przepełnienie (§5.4);
@@ -104,6 +104,8 @@ Siła przerwy `A(kind)` pochodzi z tabeli §4.3. Jedna funkcja `gaps()` zastępu
 | `ellipsis` — po wielokropku w środku | znak | — | 0,74 | ważone | dane |
 | `parenthetical` — po myślniku wtrącenia (pierwszym albo drugim) | §4.2 | — | = `A(clause)` | ważone | polska interpunkcja: myślniki wtrącenia zastępują przecinki (wartość wiązana z `clause`, nie osobno kalibrowana) |
 | `dash` — po pojedynczym myślniku | §4.2 | — | 0,34 | ważone | dane |
+| `before_conjunction` — przed spójnikiem lub zaimkiem względnym (i, a, ale, że, bo, który…) | lista spójników | `cc`, `mark` po prawej | z danych | ważone | dane |
+| `before_preposition` — przed przyimkiem (także złożonym) | lista przyimków | `case` po prawej | z danych | ważone | dane |
 | `phrase` — inna granica bez interpunkcji | domyślna | podmiot / orzeczenie, granica dużych części zdania | 0,50 | ważone | dane |
 | `nominal` — rzeczownik / dopełniacz | — | `nmod` | 0,40 | ważone | dane |
 | `name` — wewnątrz nazwy wielowyrazowej, imię z nazwiskiem, tytuł z nazwą | dwa sąsiednie słowa z wielkiej litery, gdy drugie nie zaczyna zdania; tytuł z listy + nazwa | `flat`, `flat:foreign`, `flat:name` | 0 | chronione | `visual-quality.md` §2.2 (imię z nazwiskiem razem) |
@@ -146,7 +148,7 @@ Dla układu `U` z `k` wierszami `w₁…wₖ`; „wolne cięcia” to cięcia ni
 ```text
 znaki(w) = liczba widocznych grafemów wiersza
 u(w)     = zmierzona szerokość wiersza / dostępna szerokość (§5.2); w trybie bez pomiaru nie istnieje
-DŁUGI(w) = max(rise(znaki(w); a_c; b_c), rise(u(w); 0,60; 1,00))          a_c = 40, b_c = 66 [K]
+DŁUGI(w) = max(rise(znaki(w); a_c; b_c), rise(u(w); 0,60; 1,00))          a_c = 40, b_c = 62 [K]
 
 koszt(U) = λ_k · max_i DŁUGI(wᵢ)                                            λ₁ = 1, λ_{k≥2} = λ = 0,3 [K]
          + Σ_wolnych cięć [ (1 − A(cⱼ)) + β · span(cⱼ) · [cⱼ bez interpunkcji] ]   β = 0,6 [K]
@@ -160,7 +162,7 @@ k_mówców        = liczba wierszy wymuszona zmianami mówcy (1 bez zmian)
 
 `rise(x; a; b)` to 0 dla x ≤ a, liniowo do 1 dla x ≥ b (istniejące `anishift/services/subtitles/fuzzy.py`). `ζ` to koszt zasłonięcia obrazu przez każdy dodatkowy wiersz. Wybór: najmniejszy koszt; przy remisie mniej wierszy, potem wcześniejsze pierwsze cięcie.
 
-**Dlaczego dwie miary długości** [W]: znaki mierzą ilość tekstu do przeczytania i nie zależą od fontu; szerokość mierzy drogę oka po ekranie („zamiatanie wzrokiem”). Sama szerokość zawiodła z wąską Officiną (60 znaków ≈ 0,8 szerokości, w odrzuconym U5 jeden wiersz), same znaki zawodzą przy szerokich fontach. Start rampy znakowej 40–66 [B, recenzja opus55] zostawia c04 (55 znaków) w jednym wierszu i dzieli galerię 02 (60 znaków), zgodnie z wyborami właściciela.
+**Dlaczego dwie miary długości** [W]: znaki mierzą ilość tekstu do przeczytania i nie zależą od fontu; szerokość mierzy drogę oka po ekranie („zamiatanie wzrokiem”). Sama szerokość zawiodła z wąską Officiną (60 znaków ≈ 0,8 szerokości, w odrzuconym U5 jeden wiersz), same znaki zawodzą przy szerokich fontach. Start rampy znakowej 40–62 zostawia c04 (55 znaków, słabe cięcia) w jednym wierszu i dzieli galerie 02 (60 znaków) i 08 (57 znaków, dobre cięcie), zgodnie z wyborami właściciela.
 
 **Przykłady kontrolne kosztu** (wartości startowe, tryb list, miara znakowa; ostateczne liczby z kalibracji). To przypadki kotwiczne: ich **liczba wierszy** nie może się zmienić przy kalibracji ani w G6; dokładne miejsce cięcia jest kotwiczne tylko tam, gdzie tryb list rozpoznaje klasy obu kandydatów (w „prima materii” tylko z parserem).
 - „Dzisiaj będzie pięknie. Chodźmy na spacer.” (42): jeden wiersz 0,077; po kropce 0 + 0,1 + 0,6 · 5/41 = 0,17 → **jeden wiersz**;
@@ -168,6 +170,7 @@ k_mówców        = liczba wierszy wymuszona zmianami mówcy (1 bez zmian)
 - „Ludzie zamieszkujący te ziemie popełnili straszliwe grzechy.” (60): jeden wiersz 0,77; podmiot / orzeczenie 0,5 + 0,1 + 0,6 · 1/61 ≈ 0,61 → **dwa wiersze**;
 - „Poczuj przepływ całej prima materii otaczającej twoje ciało.” (60): jeden wiersz 0,77; „…prima materii / otaczającej twoje ciało.” 0,5 + 0,1 + 0,6 · 11/59 ≈ 0,71 → **dwa wiersze**;
 - „Dlaczego się na mnie z taką złością cały czas patrzysz?” (55): jeden wiersz 0,58; najlepsze cięcie 0,5 + 0,1 + 0,6 · 15/55 ≈ 0,76 → **jeden wiersz**;
+- „Jednak po rebelii klanu Shi wiele osób zostało stracone.” (57): wybór właściciela **dwa wiersze** („…klanu Shi / wiele osób…”, galeria 08); razem z c04 wyznacza granicę: przy dobrym cięciu (`phrase`) dwa wiersze wygrywają od ok. 56 znaków, przy słabych cięciach jeden wiersz zostaje do ok. 58. Wartość startowa zgodna z obiema kotwicami: rampa `a_c` = 40, `b_c` = 62;
 - „Osiągnęliśmy rozejm z Sokołem z klanu Estebanów.” (48): jeden wiersz 0,31; każde cięcie ≥ 0,6 → **jeden wiersz**.
 
 ### 5.4 Liczba wierszy i ratunek
@@ -287,7 +290,7 @@ Każdy wiersz to kontrakt testu i wynika z §3–§5, chyba że kolumna „Statu
 
 1. Zbiory deduplikowane po znormalizowanym tekście; walidacja grupowa (zbiór właściciela: z pominięciem grupy tekstu; NF+AMZN: z pominięciem całej serii). Tabela `A` i stałe [K] liczone wyłącznie na części treningowej każdego podziału.
 2. Klasy przerw przypisuje ten sam kod `gaps()`, który działa w produkcji. Dwie tabele `A`: dla trybu list i dla trybu z parserem, z tego samego korpusu.
-3. Stałe [K] (`a_c`, `b_c`, `λ`, `β`, `γ`, `δ`, `ζ`) dobierane w siatce na prawdziwym pomiarze fontu (profil zdarzenia, a w galerii czcionka właściciela); `W_c` = max(70, `b_c` + 4) jest wartością pochodną, przeliczaną po każdej zmianie `b_c`.
+3. Stałe [K] (`a_c`, `b_c`, `λ`, `β`, `γ`, `δ`, `ζ`) dobierane w siatce **wyłącznie na prawdziwym pomiarze fontu**: przypadki 01–39 na własnych profilach z `A.ass` i fontach przypadku, rekordy galerii na profilu zdarzenia z odcinka i czcionce właściciela (`replay/u6-font`), nigdy na profilu zastępczym; `W_c` = max(70, `b_c` + 4) jest wartością pochodną, przeliczaną po każdej zmianie `b_c`.
 4. Metryki raportowane osobno: zgodność całego układu (liczba wierszy i miejsca cięć) oraz trafność miejsca cięcia **warunkowo** dla referencji dwuwierszowych.
 5. Stary algorytm mierzony tym samym kodem oceny, tym samym klasyfikatorem klas i na tych samych zbiorach.
 
@@ -298,7 +301,7 @@ Każdy wiersz to kontrakt testu i wynika z §3–§5, chyba że kolumna „Statu
 | G1 nienaruszalne | zero zmian tekstu, zgubionych tagów, rozciętych słów, wierszy zaczynających się od znaku zamykającego, interpunkcji albo myślnika innego niż znacznik mówcy, mówców bez własnego wiersza |
 | G2 zbiór właściciela | mianownik: wszystkie rekordy po deduplikacji (przy sprzecznych etykietach duplikatu obowiązuje późniejsza decyzja właściciela), każdy ze swoim predykatem: pełna referencja → identyczny układ; referencja „liczba wierszy” → ta sama liczba wierszy; znane złe cięcie → algorytm nie tworzy tego układu; walidacja z pominięciem grupy tekstu: co najmniej 75% zgodnych układów i więcej niż stary algorytm; przypadki kotwiczne z §5.3 i §8 zgodne zawsze; ze znanych złych cięć powtarza się najwyżej „woli / Artemis” (ograniczenie, §6) |
 | G3 NF+AMZN | trafność **miejsca cięcia** dla referencji dwuwierszowych przy wymuszonych dwóch wierszach (wybór najtańszego układu dwuwierszowego tym samym kosztem), walidacja po seriach: co najmniej 75% i nie gorzej niż stary algorytm (dolna granica 95% CI różnicy, bootstrap grupowany po seriach, ≥ −2 pp). Zgodność **liczby wierszy** z NF+AMZN tylko raportowana: dostawca stosuje twardą normę 42 znaków, którą właściciel odrzucił, więc o liczbie wierszy rozstrzygają G2 i G4 |
-| G4 replay | dla każdej klasy chronionej: liczba cięć tej klasy / liczba wszystkich cięć w kwestiach wielowierszowych nie wyższa niż u starego algorytmu (ten sam klasyfikator `gaps()` w trybie list); pojedyncze wiersze z DŁUGI ≥ 0,8 w najwyżej 0,5% kwestii jednowierszowych; wiersze ponad `N` tylko w krokach 3–5 §5.4 |
+| G4 replay | dla każdej klasy chronionej: liczba cięć tej klasy / liczba wszystkich cięć w kwestiach wielowierszowych nie wyższa niż u starego algorytmu (ten sam klasyfikator `gaps()` w trybie list); pojedyncze wiersze z DŁUGI ≥ 0,8 w najwyżej 0,5% kwestii jednowierszowych; pojedyncze wiersze dłuższe niż 55 znaków, dla których istnieje mieszczący się układ dwuwierszowy bez przerw chronionych, w najwyżej 1% kwestii jednowierszowych (wartość z kotwic c04 i galerii 08); liczba kwestii zmienionych z dwóch wierszy starego algorytmu na jeden raportowana z rozkładem długości; wiersze ponad `N` tylko w krokach 3–5 §5.4 |
 | G5 parser | wariant z parserem wchodzi tylko, gdy w G2 jest nie gorszy, w G3 (miejsce cięcia) lepszy od wariantu list z dolną granicą 95% CI (bootstrap grupowany po seriach) > 0, a w G4 nie podnosi częstości żadnej klasy chronionej względem wariantu list i nie zmienia przypadków kotwicznych; wariant list musi sam przejść G1–G4 i G6–G8 |
 | G6 wrażliwość | zmiana każdej stałej [K] o ±10% (z zachowaniem `a_c < b_c`; `W_c` przeliczane) zmienia wynik G2 najwyżej o 2 rekordy i G3 najwyżej o 2 pp, a liczby wierszy przypadków kotwicznych wcale |
 | G7 czas | ułożenie 500 kwestii z zimnym importem modelu: najwyżej 60 s (właściciel dopuszcza kilka minut na odcinek) |
