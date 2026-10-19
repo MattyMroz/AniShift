@@ -5,6 +5,7 @@
 # source: https://pl.wiktionary.org/wiki/Kategoria:Język_polski_-_frazy_przyimkowe (multi-word entries of two to four words that are not multi-word prepositions in gaps.py)
 # source: https://pl.wiktionary.org/wiki/tak_zwany (fraza przymiotnikowa with the forms of its declension table)
 # source: https://pl.wiktionary.org/wiki/co_do (fraza zaimkowa)
+# source: discourse phrases of the particle no (https://pl.wiktionary.org/wiki/no) and conjunction phrases listed by the coordinator after the 2026-10-19 Crunchyroll blind evaluation: no to, no i, no więc, no cóż, a więc, a zatem, i tak; fixed form field pairs: imię i nazwisko, data i miejsce
 a battuta
 a capella
 a cappella
@@ -21,6 +22,8 @@ a tergo
 a to
 a tu
 a tymczasem
+a więc
+a zatem
 ab initio
 ab intra
 ab urbe condita
@@ -108,6 +111,7 @@ co więcej
 con anima
 czy aby
 czym prędzej
+data i miejsce
 dawno dawno temu
 dawno i nieprawda
 dawno temu
@@ -179,11 +183,13 @@ gołymi rękami
 grosso modo
 huzia na józia
 i już
+i tak
 i tak dalej
 ianuis clausis
 ile dusza zapragnie
 ile fabryka dała
 ile sił
+imię i nazwisko
 in blanco
 in extenso
 in flagranti
@@ -502,7 +508,11 @@ nie za bardzo
 nigdy indziej
 nigdy w świecie
 nigdzie indziej
+no cóż
+no i
+no to
 no to co
+no więc
 noga za nogą
 nomen omen
 non stop

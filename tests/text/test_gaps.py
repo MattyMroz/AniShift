@@ -304,6 +304,11 @@ def test_text_without_neighbouring_words_has_no_gaps(words: list[str]) -> None:
         ("To jest zbyt długie zdanie.", "zbyt"),
         ("Zrobił to tak samo dobrze.", "samo"),
         ("Jest coraz zimniej.", "coraz"),
+        ("Jest znacznie mniej skłonny.", "znacznie"),
+        ("Jest znacznie mniej skłonny.", "mniej"),
+        ("Stała się znacznie łagodniejsza.", "znacznie"),
+        ("Jesteś już zupełnie obcym człowiekiem.", "zupełnie"),
+        ("To prawie każdy dzień.", "prawie"),
     ],
 )
 def test_degree_adverb_stays_with_the_word_it_grades(text: str, left: str) -> None:
@@ -417,6 +422,8 @@ def test_reflexive_pronoun_before_a_new_phrase_leaves_the_gap_weighted() -> None
         ("Muszę trenować co najmniej godzinę.", "co"),
         ("To tak zwany geniusz.", "tak"),
         ("Przyszedł wraz z bratem.", "wraz"),
+        ("Dobrze, no to zobaczymy się po szkole.", "no"),
+        ("Wpisz imię i nazwisko tutaj.", "imię"),
     ],
 )
 def test_fixed_phrase_from_the_dictionary_is_never_broken_inside(text: str, left: str) -> None:
@@ -481,8 +488,27 @@ def test_label_ending_in_a_colon_stays_with_its_numeric_value() -> None:
 
 
 @pytest.mark.unit
-def test_colon_before_a_word_is_a_clause_gap() -> None:
-    assert _gap("Powiem ci jedno: idź.", "jedno:").kind == GapKind.CLAUSE
+def test_label_ending_in_a_colon_stays_with_the_name_after_it() -> None:
+    gap: Gap = _gap("Tłumaczenie: Kuba Siodłak Korekta: Michał Sienkiewicz", "Korekta:")
+
+    assert gap.kind == GapKind.LABEL
+    assert gap.protected
+
+
+@pytest.mark.unit
+def test_name_before_a_label_is_not_bound_to_it() -> None:
+    assert not _gap("Tłumaczenie: Kuba Siodłak Korekta: Michał Sienkiewicz", "Siodłak").protected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("text", ["Powiem ci jedno: idź.", "Powiem ci jedno: Kaguya wygra."])
+def test_colon_after_a_lowercase_word_is_a_clause_gap(text: str) -> None:
+    assert _gap(text, "jedno:").kind == GapKind.CLAUSE
+
+
+@pytest.mark.unit
+def test_auxiliary_before_a_prepositional_phrase_is_no_auxiliary_gap() -> None:
+    assert _gap("Będziemy w tej samej klasie.", "Będziemy").kind == GapKind.BEFORE_PREPOSITION
 
 
 @pytest.mark.unit

@@ -280,11 +280,18 @@ _SUBORDINATING_PHRASES: Final[frozenset[tuple[str, ...]]] = frozenset(
 _PHRASE_OPENERS: Final[frozenset[str]] = _SUBORDINATORS | _COORDINATORS | PREPOSITIONS
 """Words recognised as opening a new phrase, after which a reflexive ``się`` may end a line."""
 
+# source: M. Grochowski, „Gradacja”, IJP PAN, https://gramsem.ijppan.pl/wp-content/uploads/2024/06/Gradacja.pdf
+# (operatory gradacji i aproksymacji, stopniowanie analityczne); wyjątkowo, niezwykle, okropnie as intensifiers
 _DEGREE_ADVERBS: Final[frozenset[str]] = frozenset(
-    {"tak", "bardzo", "zbyt", "za", "coraz", "aż", "całkiem", "nieco", "trochę", "dość", "równie", "dużo", "mało",
-     "sporo"}
+    {
+        "tak", "bardzo", "zbyt", "za", "coraz", "aż", "całkiem", "nieco", "trochę", "dość", "dosyć", "równie", "dużo",
+        "mało", "sporo", "znacznie", "nieznacznie", "zupełnie", "całkowicie", "kompletnie", "absolutnie", "zanadto",
+        "zbytnio", "nazbyt", "nadmiernie", "wielce", "wysoce", "strasznie", "ogromnie", "okropnie", "wyjątkowo",
+        "niezwykle", "odrobinę", "prawie", "niemal", "niemalże", "niespełna", "raczej", "mniej", "bardziej",
+        "najmniej", "najbardziej",
+    }
 )  # fmt: skip
-"""Degree and quantity adverbs kept with the word they grade or count (owner quiz t02: „tak bardzo”)."""
+"""Degree, approximation and comparison adverbs kept with the word they grade or count (owner quiz t02)."""
 
 # source: https://pl.wiktionary.org/wiki/Kategoria:Język_polski_-_partykuły (focus particles; szczególnie as zwłaszcza)
 _PARTICLES: Final[frozenset[str]] = frozenset(
@@ -354,7 +361,7 @@ _TRAILING_MARKS: Final[str] = ".,;:!?…"
 """Punctuation that may follow a closing quotation mark."""
 
 _LABEL_MARK: Final[str] = ":"
-"""Mark ending a label whose value follows (``WYS.: 4,5 KM``)."""
+"""Mark ending a label whose value follows (``WYS.: 4,5 KM``, ``Korekta: Michał``)."""
 
 _RE_LIST_MARKER: Final[re.Pattern[str]] = re.compile(r"\(\d+\)")
 """Marker of a numbered list item, such as ``(1)``."""
@@ -457,7 +464,7 @@ def _punctuation_kind(
     if previous in DASHES and index - 1 not in speakers:
         return _dash_kind(words, index, paired)
     tail: str = _tail(previous)
-    if tail.endswith(_LABEL_MARK) and words[index][:1].isdigit():
+    if tail.endswith(_LABEL_MARK) and (words[index][:1].isdigit() or (_label(previous) and words[index][:1].isupper())):
         return GapKind.LABEL
     if tail.endswith(_ELLIPSES):
         return GapKind.ELLIPSIS
@@ -493,7 +500,7 @@ def _bound_kinds(words: Sequence[str], index: int, modifies: Modifies | None) ->
         (GapKind.REFLEXIVE, _reflexive(words, index)),
         (GapKind.NUMBER, _counts(previous, following)),
         (GapKind.ABBREVIATION, _tail(words[index - 1]).endswith(_FULL_STOP)),
-        (GapKind.NAME, _capitalised(words[index]) and (_capitalised(words[index - 1]) or previous in _TITLES)),
+        (GapKind.NAME, _named(words, index)),
         (GapKind.IDIOM, _inside(words, index, _IDIOMS)),
         (GapKind.AFTER_OPENER, previous in CONJUNCTIONS or previous in _RELATIVES),
         (GapKind.PARTICLE, previous in _PARTICLES),
@@ -506,7 +513,8 @@ def _weighted_kinds(words: Sequence[str], index: int) -> list[GapKind]:
     previous: str = word_core(words[index - 1])
     following: str = word_core(words[index])
     kinds: list[GapKind] = []
-    if previous in _AUXILIARIES:
+    phrase: bool = following in PREPOSITIONS and not _opens(words, index, _IDIOMS)
+    if previous in _AUXILIARIES and following not in CONJUNCTIONS and not phrase:
         kinds.append(GapKind.AUXILIARY)
     adjective: bool = previous.endswith(_ADJECTIVE_ENDINGS) and following not in PREPOSITIONS | CONJUNCTIONS
     if previous in _DETERMINERS or adjective:
@@ -524,6 +532,16 @@ def _weighted_kinds(words: Sequence[str], index: int) -> list[GapKind]:
 def _degree(words: Sequence[str], index: int) -> bool:
     previous: str = word_core(words[index - 1])
     return previous in _DEGREE_ADVERBS or (word_core(_earlier(words, index)), previous) in _DEGREE_PHRASES
+
+
+def _named(words: Sequence[str], index: int) -> bool:
+    if not _capitalised(words[index]) or _label(words[index]):
+        return False
+    return _capitalised(words[index - 1]) or word_core(words[index - 1]) in _TITLES
+
+
+def _label(word: str) -> bool:
+    return _tail(word).endswith(_LABEL_MARK) and word[:1].isupper()
 
 
 def _counts(previous: str, following: str) -> bool:
