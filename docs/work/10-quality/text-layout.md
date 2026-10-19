@@ -88,6 +88,8 @@ Jak bardzo cięcie rozrywa sens. Stopień zależy od klasy przerwy między wyraz
 
 Zakazane zawsze (nienaruszalne): **wiersz zaczynający się od pauzy wtrącenia** (— / –), która nie jest myślnikiem mówcy — czytelnik bierze ją za kwestię drugiej osoby (d13, d14). Wymuszone granice: znaczniki punktów listy „(1)”, „(2)”… zaczynają wiersz, gdy punkty mieszczą się w swoich wierszach (d12).
 
+**Granica stylu** (właściciel 20.10, s09): zmiana wielkości lub kroju między słowami (`s`, `n`, ``, `scx`/`scy`) oznacza granicę elementów. Jeśli w źródle był tam koniec wiersza — granica wymuszona; w przeciwnym razie silna preferencja cięcia w tym miejscu i szkoda za sklejenie tekstu o różnych wielkościach w jednym wierszu.
+
 Słowo otwierające frazę na końcu wiersza („który”, „że”, „żeby”, spójnik) jest szkodą ważoną. Przysłówek stopnia oderwany od słowa, które określa („tak / bardzo”, „zbyt / długo”), jest szkodą ważoną (t02).
 
 ### 4.3 Nierówne wiersze i kształt
@@ -291,7 +293,7 @@ Wspólne dla wszystkich dialogów: tagi (kursywa, kolor) zostają na tych samych
 | s06 | drobny tekst plakatu | prawie nieczytelny | czytelny przy x2 albo zgłoszony w raporcie | — |
 | s07 | „trzeci sezon Grand Blue Dreaming został potwierdzony!” | „Grand / Blue Dreaming” | nazwa własna w jednym wierszu | cięcie wewnątrz nazwy |
 | s08 | tytuł zapowiedzi 23 → 37 znaków | szerszy niż japoński tytuł | w szerokości oryginału albo lekko szerszy bez nachodzenia | nachodzenie na japoński tytuł |
-| s09, s10 | tytuły odcinków w trzech wierszach | trzeci wiersz najdłuższy i ściśnięty / krótki środek | zrównoważony kształt bez zlewania liter, np. „Odcinek drugi: / Chłopiec, który jest najsilniejszym magiem / na świecie, przywdziewa maskę” (proporcje źródła same dają klepsydrę, więc nie są wzorcem) | kształt klepsydry, ściśnięcie zlewające litery |
+| s09, s10 | tytuły odcinków: większy nagłówek „Odcinek pierwszy:” + tytuł | trzeci wiersz najdłuższy i ściśnięty / krótki środek | nagłówek w osobnym wierszu (zmiana `s`, właściciel 20.10: „Odcinek pierwszy jest wyraźnie inny”), reszta zrównoważona: „Odcinek pierwszy: / Chłopiec, który jest najsilniejszym magikiem na świecie, / bierze udział w wielkim turnieju bitew magicznych” | sklejenie nagłówka z tytułem w jednym wierszu; kształt klepsydry; ściśnięcie zlewające litery |
 | s11 | tabliczka „Grynszpanowy Pawilon” | kilka pikseli | czytelna albo raport | zmniejszenie poniżej czytelności bez konfliktu, który by je wymuszał |
 | s12 | ranking z punktami | „406 / pkt” | liczba z jednostką razem | rozbicie liczby i jednostki |
 | s13 | podpis „Has a tea ceremony license” + 6 pustych wierszy + „Knowledgeable” | 7 wierszy po jednym słowie na japońskim tekście | dwa wiersze z tekstem na miejscach wierszy źródła, puste odstępy na swoich miejscach | traktowanie pustych wierszy jako miejsc do wypełnienia |
