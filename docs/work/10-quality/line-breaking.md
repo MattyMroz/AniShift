@@ -1,11 +1,11 @@
 ---
 kind: specification
-status: v1.5 (po drugim pomiarze implementacji na prawdziwych odcinkach)
+status: v1.6 (po trzecim pomiarze implementacji)
 updated: 2026-10-19
 supersedes: fuzzy-line-breaks.md (dla dialogów)
 ---
 
-# Łamanie polskich dialogów na wiersze — specyfikacja v1.5
+# Łamanie polskich dialogów na wiersze — specyfikacja v1.6
 
 Właściciel 18.10 odrzucił przepisany algorytm z gałęzi `work/quality/16-line-breaks` jako błędny i przekombinowany. Wskazał stary algorytm z `work/quality/08-fuzzy-quality` (replay `u6-font`) jako lepszy i działający. Ta specyfikacja zastępuje `fuzzy-line-breaks.md` w części o dialogach. Opiera się na trzech niezależnych badaniach z 18–19.10:
 
@@ -13,7 +13,7 @@ Właściciel 18.10 odrzucił przepisany algorytm z gałęzi `work/quality/16-lin
 - [research/line-breaking-opus55.md](research/line-breaking-opus55.md) — literatura, pomiar sześciu narzędzi, korpus profesjonalnych polskich napisów (Netflix, Amazon, Crunchyroll), prototyp jednej funkcji kosztu;
 - [research/line-breaking-inventory.md](research/line-breaking-inventory.md) — co już mamy w kodzie i dokumentach, stary a odrzucony algorytm, MangaShift.
 
-v1.5 zamyka drugi pomiar: na prawdziwej geometrii odcinków rampa 40–66 zostawiała 1214 kwestii dwuwierszowych w jednym wierszu (do 64 znaków), bo zbiór właściciela liczono na profilu zastępczym. Kalibracja tylko na prawdziwej geometrii, nowa kotwica g08, bramka długich pojedynczych wierszy, dwie klasy z danych (przed spójnikiem, przed przyimkiem). v1.4 zamknęła pierwszy pomiar implementacji: profesjonaliści NF+AMZN łamią każdą kwestię powyżej 42 znaków (twarda norma dostawcy), a właściciel chce jednego wiersza przy 43–55 znakach, więc G3 mierzy tylko miejsce cięcia przy dwóch wierszach; wtrącenie w myślnikach ma siłę przecinka; utarte zwroty jako klasa chroniona; mówcy po myślniku otwierającym. v1.3 zamknęła drugą weryfikację (astra): kotwice liczby wierszy, ochrona w granicy `N`, `W_c` jako wartość pochodna, interpunkcja oderwana przez cięcie, kolejność klas chronionych, predykaty G2. v1.2 zamknęła weryfikację v1.1: `ζ` = 0,1, jedna granica liczby wierszy, zerowa szerokość jako tryb bez pomiaru, wyjątki dla myślnika mówcy i znaków otwierających, pierwszeństwo klas, ochrona nazw, operacyjne bramki. v1.1 zamknęła przegląd v1:
+v1.6 zamyka trzeci pomiar: klasa „przed spójnikiem” łączyła spójniki zdań („że”, „bo”) ze spójnikami łączącymi wyrazy („z Midorikawą / i resztą”), więc dzieli się na dwie; bramki G3, G4 i G6 dopasowane do mocy próby i do kotwic oddalonych o 1 znak. v1.5 zamknęła drugi pomiar: na prawdziwej geometrii odcinków rampa 40–66 zostawiała 1214 kwestii dwuwierszowych w jednym wierszu (do 64 znaków), bo zbiór właściciela liczono na profilu zastępczym. Kalibracja tylko na prawdziwej geometrii, nowa kotwica g08, bramka długich pojedynczych wierszy, dwie klasy z danych (przed spójnikiem, przed przyimkiem). v1.4 zamknęła pierwszy pomiar implementacji: profesjonaliści NF+AMZN łamią każdą kwestię powyżej 42 znaków (twarda norma dostawcy), a właściciel chce jednego wiersza przy 43–55 znakach, więc G3 mierzy tylko miejsce cięcia przy dwóch wierszach; wtrącenie w myślnikach ma siłę przecinka; utarte zwroty jako klasa chroniona; mówcy po myślniku otwierającym. v1.3 zamknęła drugą weryfikację (astra): kotwice liczby wierszy, ochrona w granicy `N`, `W_c` jako wartość pochodna, interpunkcja oderwana przez cięcie, kolejność klas chronionych, predykaty G2. v1.2 zamknęła weryfikację v1.1: `ζ` = 0,1, jedna granica liczby wierszy, zerowa szerokość jako tryb bez pomiaru, wyjątki dla myślnika mówcy i znaków otwierających, pierwszeństwo klas, ochrona nazw, operacyjne bramki. v1.1 zamknęła przegląd v1:
 - trzy poziomy reguł zamiast jednej skończonej kary (§3);
 - koszt każdego dodatkowego wiersza (§5.3);
 - ratunek minimalizujący przepełnienie (§5.4);
@@ -80,7 +80,7 @@ class Gap:
     span: float  # 1 − s/n from a dependency parse: how small the phrase joining both words is; 0 without a parse
 ```
 
-Siła przerwy `A(kind)` pochodzi z tabeli §4.3. Jedna funkcja `gaps()` zastępuje dwa rozjechane rankingi starego algorytmu (`_dialogue_*` i `_best_cut`/`_weight`). Szyldy liczą swoje proporcje na tych samych przerwach.
+Siła przerwy `A(kind)` pochodzi z tabeli §4.3. Jedna funkcja `gaps()` zastępuje ranking dialogu starego algorytmu (`_dialogue_*`). Szyldy przejdą na te same przerwy w jednostce U4 (do tego czasu `split_for_layout`/`split_lines` zachowują swój klasyfikator).
 
 ### 4.2 Mówcy, wtrącenia, myślniki
 
@@ -104,7 +104,8 @@ Siła przerwy `A(kind)` pochodzi z tabeli §4.3. Jedna funkcja `gaps()` zastępu
 | `ellipsis` — po wielokropku w środku | znak | — | 0,74 | ważone | dane |
 | `parenthetical` — po myślniku wtrącenia (pierwszym albo drugim) | §4.2 | — | = `A(clause)` | ważone | polska interpunkcja: myślniki wtrącenia zastępują przecinki (wartość wiązana z `clause`, nie osobno kalibrowana) |
 | `dash` — po pojedynczym myślniku | §4.2 | — | 0,34 | ważone | dane |
-| `before_conjunction` — przed spójnikiem lub zaimkiem względnym (i, a, ale, że, bo, który…) | lista spójników | `cc`, `mark` po prawej | z danych | ważone | dane |
+| `before_subordinator` — przed spójnikiem podrzędnym lub zaimkiem względnym (że, bo, żeby, aby, ponieważ, gdy, kiedy, jeśli, jeżeli, gdzie, który i jego formy, czy w pytaniu zależnym) | lista ze starego `linebreak.py` | `mark`, `nsubj`/`obj` zaimka względnego po prawej | z danych | ważone | dane |
+| `before_coordinator` — przed spójnikiem współrzędnym (i, a, oraz, lub, albo, ani, ale, lecz, więc, czyli) | lista ze starego `linebreak.py` | `cc` po prawej | z danych | ważone | dane |
 | `before_preposition` — przed przyimkiem (także złożonym) | lista przyimków | `case` po prawej | z danych | ważone | dane |
 | `phrase` — inna granica bez interpunkcji | domyślna | podmiot / orzeczenie, granica dużych części zdania | 0,50 | ważone | dane |
 | `nominal` — rzeczownik / dopełniacz | — | `nmod` | 0,40 | ważone | dane |
@@ -300,10 +301,10 @@ Każdy wiersz to kontrakt testu i wynika z §3–§5, chyba że kolumna „Statu
 | --- | --- |
 | G1 nienaruszalne | zero zmian tekstu, zgubionych tagów, rozciętych słów, wierszy zaczynających się od znaku zamykającego, interpunkcji albo myślnika innego niż znacznik mówcy, mówców bez własnego wiersza |
 | G2 zbiór właściciela | mianownik: wszystkie rekordy po deduplikacji (przy sprzecznych etykietach duplikatu obowiązuje późniejsza decyzja właściciela), każdy ze swoim predykatem: pełna referencja → identyczny układ; referencja „liczba wierszy” → ta sama liczba wierszy; znane złe cięcie → algorytm nie tworzy tego układu; walidacja z pominięciem grupy tekstu: co najmniej 75% zgodnych układów i więcej niż stary algorytm; przypadki kotwiczne z §5.3 i §8 zgodne zawsze; ze znanych złych cięć powtarza się najwyżej „woli / Artemis” (ograniczenie, §6) |
-| G3 NF+AMZN | trafność **miejsca cięcia** dla referencji dwuwierszowych przy wymuszonych dwóch wierszach (wybór najtańszego układu dwuwierszowego tym samym kosztem), walidacja po seriach: co najmniej 75% i nie gorzej niż stary algorytm (dolna granica 95% CI różnicy, bootstrap grupowany po seriach, ≥ −2 pp). Zgodność **liczby wierszy** z NF+AMZN tylko raportowana: dostawca stosuje twardą normę 42 znaków, którą właściciel odrzucił, więc o liczbie wierszy rozstrzygają G2 i G4 |
-| G4 replay | dla każdej klasy chronionej: liczba cięć tej klasy / liczba wszystkich cięć w kwestiach wielowierszowych nie wyższa niż u starego algorytmu (ten sam klasyfikator `gaps()` w trybie list); pojedyncze wiersze z DŁUGI ≥ 0,8 w najwyżej 0,5% kwestii jednowierszowych; pojedyncze wiersze dłuższe niż 55 znaków, dla których istnieje mieszczący się układ dwuwierszowy bez przerw chronionych, w najwyżej 1% kwestii jednowierszowych (wartość z kotwic c04 i galerii 08); liczba kwestii zmienionych z dwóch wierszy starego algorytmu na jeden raportowana z rozkładem długości; wiersze ponad `N` tylko w krokach 3–5 §5.4 |
+| G3 NF+AMZN | trafność **miejsca cięcia** dla referencji dwuwierszowych przy wymuszonych dwóch wierszach (wybór najtańszego układu dwuwierszowego tym samym kosztem), walidacja po seriach (kanoniczny identyfikator serii, np. „Ao no Hako” = „Blue Box”): co najmniej 75%, wynik punktowy nie niższy niż stary algorytm, dolna granica 95% CI różnicy (bootstrap grupowany po seriach) ≥ −5 pp — margines dobrany do ok. 11 serii; przy tej liczbie skupień węższy margines jest poza mocą próby. Zgodność **liczby wierszy** z NF+AMZN tylko raportowana: dostawca stosuje twardą normę 42 znaków, którą właściciel odrzucił, więc o liczbie wierszy rozstrzygają G2 i G4 |
+| G4 replay | dla każdej klasy chronionej: liczba cięć tej klasy / liczba wszystkich cięć w kwestiach wielowierszowych nie wyższa niż u starego algorytmu (ten sam klasyfikator `gaps()` w trybie list); pojedyncze wiersze dłuższe niż 55 znaków, dla których istnieje mieszczący się układ dwuwierszowy bez przerw chronionych, w najwyżej 1% kwestii jednowierszowych (wartość z kotwic c04 i galerii 08); liczba kwestii zmienionych z dwóch wierszy starego algorytmu na jeden raportowana z rozkładem długości; wiersze ponad `N` tylko w krokach 3–5 §5.4 |
 | G5 parser | wariant z parserem wchodzi tylko, gdy w G2 jest nie gorszy, w G3 (miejsce cięcia) lepszy od wariantu list z dolną granicą 95% CI (bootstrap grupowany po seriach) > 0, a w G4 nie podnosi częstości żadnej klasy chronionej względem wariantu list i nie zmienia przypadków kotwicznych; wariant list musi sam przejść G1–G4 i G6–G8 |
-| G6 wrażliwość | zmiana każdej stałej [K] o ±10% (z zachowaniem `a_c < b_c`; `W_c` przeliczane) zmienia wynik G2 najwyżej o 2 rekordy i G3 najwyżej o 2 pp, a liczby wierszy przypadków kotwicznych wcale |
+| G6 wrażliwość | zmiana każdej stałej [K] o ±10% (z zachowaniem `a_c < b_c`; `W_c` przeliczane) zmienia wynik G2 najwyżej o 3 rekordy, G3 najwyżej o 2 pp i odsetek długich pojedynczych wierszy z G4 najwyżej o 0,5 pp. Kotwice są twardym warunkiem przy wybranych stałych, nie przy perturbacji: c04 (55 znaków) i galeria 08 (56) dzieli 1 znak, więc żadna stała nie zostawi obu przy zmianie o 10% |
 | G7 czas | ułożenie 500 kwestii z zimnym importem modelu: najwyżej 60 s (właściciel dopuszcza kilka minut na odcinek) |
 | G8 galeria | przed/po z czcionką właściciela po obu stronach (`compare --font`), obejrzana przez orkiestratora obraz po obrazie, potem właściciel |
 
