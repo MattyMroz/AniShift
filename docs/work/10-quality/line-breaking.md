@@ -1,11 +1,11 @@
 ---
 kind: specification
-status: v1.7 (po czwartym pomiarze implementacji)
+status: v1.8 (po weryfikacji kodu)
 updated: 2026-10-19
 supersedes: fuzzy-line-breaks.md (dla dialogów)
 ---
 
-# Łamanie polskich dialogów na wiersze — specyfikacja v1.7
+# Łamanie polskich dialogów na wiersze — specyfikacja v1.8
 
 Właściciel 18.10 odrzucił przepisany algorytm z gałęzi `work/quality/16-line-breaks` jako błędny i przekombinowany. Wskazał stary algorytm z `work/quality/08-fuzzy-quality` (replay `u6-font`) jako lepszy i działający. Ta specyfikacja zastępuje `fuzzy-line-breaks.md` w części o dialogach. Opiera się na trzech niezależnych badaniach z 18–19.10:
 
@@ -13,7 +13,7 @@ Właściciel 18.10 odrzucił przepisany algorytm z gałęzi `work/quality/16-lin
 - [research/line-breaking-opus55.md](research/line-breaking-opus55.md) — literatura, pomiar sześciu narzędzi, korpus profesjonalnych polskich napisów (Netflix, Amazon, Crunchyroll), prototyp jednej funkcji kosztu;
 - [research/line-breaking-inventory.md](research/line-breaking-inventory.md) — co już mamy w kodzie i dokumentach, stary a odrzucony algorytm, MangaShift.
 
-v1.7 zamyka czwarty pomiar: rampa długości (`a_c`, `b_c`) to zapisany liczbą gust właściciela, a jego wybory leżą gęsto przy granicy 55–57 znaków, więc G6 perturbuje tylko wagi, a rampę raportuje przesunięciem w znakach. v1.6 zamknęła trzeci pomiar: klasa „przed spójnikiem” łączyła spójniki zdań („że”, „bo”) ze spójnikami łączącymi wyrazy („z Midorikawą / i resztą”), więc dzieli się na dwie; bramki G3, G4 i G6 dopasowane do mocy próby i do kotwic oddalonych o 1 znak. v1.5 zamknęła drugi pomiar: na prawdziwej geometrii odcinków rampa 40–66 zostawiała 1214 kwestii dwuwierszowych w jednym wierszu (do 64 znaków), bo zbiór właściciela liczono na profilu zastępczym. Kalibracja tylko na prawdziwej geometrii, nowa kotwica g08, bramka długich pojedynczych wierszy, dwie klasy z danych (przed spójnikiem, przed przyimkiem). v1.4 zamknęła pierwszy pomiar implementacji: profesjonaliści NF+AMZN łamią każdą kwestię powyżej 42 znaków (twarda norma dostawcy), a właściciel chce jednego wiersza przy 43–55 znakach, więc G3 mierzy tylko miejsce cięcia przy dwóch wierszach; wtrącenie w myślnikach ma siłę przecinka; utarte zwroty jako klasa chroniona; mówcy po myślniku otwierającym. v1.3 zamknęła drugą weryfikację (astra): kotwice liczby wierszy, ochrona w granicy `N`, `W_c` jako wartość pochodna, interpunkcja oderwana przez cięcie, kolejność klas chronionych, predykaty G2. v1.2 zamknęła weryfikację v1.1: `ζ` = 0,1, jedna granica liczby wierszy, zerowa szerokość jako tryb bez pomiaru, wyjątki dla myślnika mówcy i znaków otwierających, pierwszeństwo klas, ochrona nazw, operacyjne bramki. v1.1 zamknęła przegląd v1:
+v1.8 zamyka weryfikację kodu: rozpoznawanie czasownika po końcówkach myliło się w 8 z 15 zdań, więc reguła „się” nie zgaduje czasownika; „czy” jest spójnikiem współrzędnym. v1.7 zamknęła czwarty pomiar: rampa długości (`a_c`, `b_c`) to zapisany liczbą gust właściciela, a jego wybory leżą gęsto przy granicy 55–57 znaków, więc G6 perturbuje tylko wagi, a rampę raportuje przesunięciem w znakach. v1.6 zamknęła trzeci pomiar: klasa „przed spójnikiem” łączyła spójniki zdań („że”, „bo”) ze spójnikami łączącymi wyrazy („z Midorikawą / i resztą”), więc dzieli się na dwie; bramki G3, G4 i G6 dopasowane do mocy próby i do kotwic oddalonych o 1 znak. v1.5 zamknęła drugi pomiar: na prawdziwej geometrii odcinków rampa 40–66 zostawiała 1214 kwestii dwuwierszowych w jednym wierszu (do 64 znaków), bo zbiór właściciela liczono na profilu zastępczym. Kalibracja tylko na prawdziwej geometrii, nowa kotwica g08, bramka długich pojedynczych wierszy, dwie klasy z danych (przed spójnikiem, przed przyimkiem). v1.4 zamknęła pierwszy pomiar implementacji: profesjonaliści NF+AMZN łamią każdą kwestię powyżej 42 znaków (twarda norma dostawcy), a właściciel chce jednego wiersza przy 43–55 znakach, więc G3 mierzy tylko miejsce cięcia przy dwóch wierszach; wtrącenie w myślnikach ma siłę przecinka; utarte zwroty jako klasa chroniona; mówcy po myślniku otwierającym. v1.3 zamknęła drugą weryfikację (astra): kotwice liczby wierszy, ochrona w granicy `N`, `W_c` jako wartość pochodna, interpunkcja oderwana przez cięcie, kolejność klas chronionych, predykaty G2. v1.2 zamknęła weryfikację v1.1: `ζ` = 0,1, jedna granica liczby wierszy, zerowa szerokość jako tryb bez pomiaru, wyjątki dla myślnika mówcy i znaków otwierających, pierwszeństwo klas, ochrona nazw, operacyjne bramki. v1.1 zamknęła przegląd v1:
 - trzy poziomy reguł zamiast jednej skończonej kary (§3);
 - koszt każdego dodatkowego wiersza (§5.3);
 - ratunek minimalizujący przepełnienie (§5.4);
@@ -104,8 +104,8 @@ Siła przerwy `A(kind)` pochodzi z tabeli §4.3. Jedna funkcja `gaps()` zastępu
 | `ellipsis` — po wielokropku w środku | znak | — | 0,74 | ważone | dane |
 | `parenthetical` — po myślniku wtrącenia (pierwszym albo drugim) | §4.2 | — | = `A(clause)` | ważone | polska interpunkcja: myślniki wtrącenia zastępują przecinki (wartość wiązana z `clause`, nie osobno kalibrowana) |
 | `dash` — po pojedynczym myślniku | §4.2 | — | 0,34 | ważone | dane |
-| `before_subordinator` — przed spójnikiem podrzędnym lub zaimkiem względnym (że, bo, żeby, aby, ponieważ, gdy, kiedy, jeśli, jeżeli, gdzie, który i jego formy, czy w pytaniu zależnym) | lista ze starego `linebreak.py` | `mark`, `nsubj`/`obj` zaimka względnego po prawej | z danych | ważone | dane |
-| `before_coordinator` — przed spójnikiem współrzędnym (i, a, oraz, lub, albo, ani, ale, lecz, więc, czyli) | lista ze starego `linebreak.py` | `cc` po prawej | z danych | ważone | dane |
+| `before_subordinator` — przed spójnikiem podrzędnym lub zaimkiem względnym (że, bo, żeby, aby, ponieważ, gdy, kiedy, jeśli, jeżeli, gdzie, który i jego formy) | lista ze starego `linebreak.py` | `mark`, `nsubj`/`obj` zaimka względnego po prawej | z danych | ważone | dane |
+| `before_coordinator` — przed spójnikiem współrzędnym (i, a, oraz, lub, albo, ani, ale, lecz, więc, czyli, czy, „jak i”) | lista ze starego `linebreak.py` | `cc` po prawej | z danych | ważone | dane |
 | `before_preposition` — przed przyimkiem (także złożonym) | lista przyimków | `case` po prawej | z danych | ważone | dane |
 | `phrase` — inna granica bez interpunkcji | domyślna | podmiot / orzeczenie, granica dużych części zdania | 0,50 | ważone | dane |
 | `nominal` — rzeczownik / dopełniacz | — | `nmod` | 0,40 | ważone | dane |
@@ -117,13 +117,13 @@ Siła przerwy `A(kind)` pochodzi z tabeli §4.3. Jedna funkcja `gaps()` zastępu
 | `after_single_letter` — po słowie jednoliterowym | długość słowa | — | 0 | chronione | wytyczne |
 | `before_conjunction_end` — spójnik na końcu wiersza | lista spójników | `cc`, `mark` | 0 | chronione | wytyczne + dane |
 | `negation` — oderwane „nie” od czasownika | „nie” przed słowem, z wyjątkami („na nie”) | `advmod:neg` | 0 | chronione | wytyczne + dane |
-| `reflexive` — „się” oderwane od sąsiedniego czasownika | „się” obok czasownika z listy / po posiłkowym | `expl:pv` z sąsiednim czasownikiem | 0 | chronione | wytyczne + dane |
+| `reflexive` — przerwa przy „się” | przerwa przed „się” zawsze; przerwa po „się”, chyba że następne słowo zaczyna frazę rozpoznaną listą (spójnik, przyimek) albo po „się” stoi interpunkcja | — | 0 | chronione | wytyczne + dane (oderwane „się” 0% w korpusie) |
 | `number` — liczba / rzeczownik lub jednostka | cyfry, liczebnik + słowo | `nummod` | 0 | chronione | wytyczne |
 | `abbreviation` — skrót / następne słowo | `is_false_sentence_break` (np., dr, godz., ul.) | — | 0 | chronione | wytyczne |
 | `idiom` — wewnątrz stałego wyrażenia | lista wyrażeń wielowyrazowych ze starego `linebreak.py` oraz lista utartych zwrotów przysłówkowych i partykułowych ze źródłem słownikowym (np. „po prostu”, „w ogóle”, „na pewno”, „raz na zawsze”, „od razu”, „na razie”, „w końcu”, „przede wszystkim”, „na serio”, „mimo wszystko”, „w każdym razie”, „tak czy inaczej”) | `fixed` | 0 | chronione | wytyczne (FKBB pkt 4: frazeologizmy razem) |
 
 Uwagi:
-- Klasa `reflexive` dotyczy „się” przy czasowniku, z którym tworzy człon („będziesz się bawił”, „się zakocha”). „Się” odległe od czasownika („Dlaczego się na mnie z taką złością patrzysz?”) nie chroni przerw między frazami pośrednimi: bez parsera ochrona obejmuje tylko przerwę bezpośrednio między „się” a sąsiednim czasownikiem.
+- Klasa `reflexive` nie rozpoznaje czasownika (rozpoznawanie po końcówkach okazało się zawodne): „się” nigdy nie zaczyna wiersza, a po „się” nie tniemy, dopóki następne słowo nie zaczyna nowej frazy. To nigdy nie odrywa „się” od czasownika („boi / się”, „pierwszy się / zakocha”), ale blokuje też część dobrych cięć („boi się / ciemności”); w ratunku (§5.4) te przerwy pozostają dostępne. Dokładniejsza reguła wymaga analizatora morfologicznego (Morfeusz 2, decyzja właściciela, §11).
 - Klasa `modifier` bez parsera to słaby dowód (końcówki przymiotników mylą się z rzeczownikami); dlatego tabela `A` dla trybu bez parsera jest wyliczana osobno tym samym skryptem na klasyfikacji samych list (§9.2).
 - Wyrazy obce pisane małą literą bez kursywy („prima materii”, „déjà vu”) bez parsera nie są rozpoznawane — znane ograniczenie trybu list.
 - Listy pochodzą ze starego `linebreak.py` (adnotacje źródeł Wikisłownika) i ogólnych klas z odrzuconego leksykonu (enklityki, liczba przed rzeczownikiem, „się” po posiłkowym, odmienione określniki). Listy pod pojedyncze przykłady (`GENITIVE_HEADS`, `_NOT_ADJECTIVES` i podobne) nie wracają.
@@ -323,7 +323,8 @@ Każdy wiersz to kontrakt testu i wynika z §3–§5, chyba że kolumna „Statu
 3. **Przypadek 33:** wybrałeś trzy wiersze; przy rzeczywistym pomiarze dwa mogą się mieścić, a wtedy reguła da dwa. Do potwierdzenia na galerii.
 4. **Długi jeden wiersz a dobre cięcie (11: u = 0,90; 15: u = 0,98):** porównywałeś jeden wiersz tylko ze złym cięciem („1,4 / miliarda”, „się / bawił”). Reguła wybierze dwa wiersze z dobrym cięciem, jeśli takie istnieje. Do potwierdzenia na galerii.
 5. **Ustawienie „Linii na napis” 3 lub 4:** specyfikacja traktuje je jako jawną zgodę na więcej wierszy w zwykłym wyborze (domyślne 2 bez zmian), co odbiega od `visual-quality.md` §2.2 („unikaj więcej niż dwóch”). Do potwierdzenia.
-6. **Dzielenie wyrazów w szyldach** (z myślą o MangaShift): poza zakresem; reguła nienaruszalna 2.1.1 `visual-quality.md` zostaje.
+6. **Morfeusz 2** (analizator morfologiczny IPI PAN, koło `cp310-abi3-win_amd64` ok. 10 MB, bez PyTorcha): pozwoliłby rozpoznać czasownik przy „się” i zgodę przymiotnika z rzeczownikiem, odblokowując dobre cięcia, które dziś chroni zachowawcza reguła `reflexive`. Badania: +3,2 pp trafności na profesjonalnych napisach. Licencji słownika nie udało się dziś potwierdzić (strona projektu nie odpowiadała). Do decyzji.
+7. **Dzielenie wyrazów w szyldach** (z myślą o MangaShift): poza zakresem; reguła nienaruszalna 2.1.1 `visual-quality.md` zostaje.
 
 ## 12. Poza zakresem
 
