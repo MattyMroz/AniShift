@@ -1,0 +1,976 @@
+# Fixed Polish adverbial and particle phrases kept on one line (FKBB 2019 point 4), one per line, casefolded.
+# source: https://pl.wiktionary.org/wiki/Kategoria:Język_polski_-_frazy_przysłówkowe (multi-word entries of two to four words)
+# source: https://pl.wiktionary.org/wiki/Kategoria:Język_polski_-_partykuły (multi-word entries)
+# source: https://pl.wiktionary.org/wiki/raz (frazeologia: raz na zawsze)
+a battuta
+a capella
+a cappella
+a conto
+a dyć
+a fronte
+a jak
+a jakże
+a jednak
+a limine
+a posteriori
+a priori
+a tergo
+a to
+a tu
+a tymczasem
+ab initio
+ab intra
+ab urbe condita
+ad acta
+ad hoc
+ad infinitum
+ad mortem defecatam
+al fine
+allegro assai
+allegro con brio
+allegro con moto
+allegro ma non troppo
+allegro maestoso
+allegro moderato
+ani na jotę
+ani trochę
+au rebours
+aż nadto
+bez cienia wątpliwości
+bez dwóch zdań
+bez głowy
+bez jaj
+bez kitu
+bez krępacji
+bez kwestii
+bez lato
+bez obsłonek
+bez ogródek
+bez osłonek
+bez owijania w bawełnę
+bez oznak życia
+bez pamięci
+bez pardonu
+bez pochyby
+bez porównania
+bez pośpiechu
+bez przerwy
+bez przestanku
+bez sensu
+bez serca
+bez słowa
+bez tchu
+bez ustanku
+bez wytchnienia
+bez wątpienia
+bez zarzutu
+bez zima
+bez ładu i składu
+bez życia
+bladym świtem
+bona fide
+byle jak
+być może
+bądź co bądź
+będąc szczerym
+całe szczęście
+cały czas
+całymi dniami
+chcąc nie chcąc
+chlebem i solą
+cicho jak w grobie
+cicho niczym w grobie
+ciemno jak w dupie
+co chwila
+co chwilę
+co dnia
+co do joty
+co do zasady
+co dopiero
+co dzień
+co i rusz
+co krok
+co miesiąc
+co najwyżej
+co prawda
+co roku
+co rusz
+co sił
+co sił w nogach
+co tchu
+co wieczór
+co więcej
+con anima
+czy aby
+czym prędzej
+dawno dawno temu
+dawno i nieprawda
+dawno temu
+dawnymi czasy
+de domo
+de facto
+de iure
+dla beki
+dla pozoru
+dla świętego spokoju
+do chrzanu
+do cna
+do dechy
+do dupy
+do greckich kalend
+do grobowej deski
+do góry
+do góry nogami
+do imentu
+do izna
+do kitu
+do ostatniego tchu
+do ostatniej kropli krwi
+do potęgi
+do przodu
+do rzici
+do rzyci
+do szaleństwa
+do szczęta
+do szczętu
+do szpiku kości
+do tego
+do tej pory
+do tyłu
+do usranego końca
+do usranej śmierci
+do woli
+do wtóru
+do wyboru do koloru
+do zmroku
+do żywego
+dokoła wojtek
+dookoła wojtek
+dopiero co
+dwa kroki
+dwa kroki stąd
+dzień po dniu
+en bloc
+en détail
+en face
+en masse
+et cetera
+ex aequo
+ex nunc
+ex situ
+ex tunc
+expressis verbis
+fa presto
+fair play
+forte fortissimo
+fortissimo possibile
+ganc egal
+ganc pomada
+ganz egal
+gdzie indziej
+gdzie pieprz rośnie
+gołym okiem
+gołymi rękami
+grosso modo
+huzia na józia
+i już
+i tak dalej
+ianuis clausis
+ile dusza zapragnie
+ile fabryka dała
+ile sił
+in blanco
+in extenso
+in flagranti
+in minus
+in plus
+in situ
+in statu nascendi
+in suspenso
+in vitro
+in vivo
+innymi słowy
+inter alia
+jak amen w pacierzu
+jak by nie patrzeć
+jak byk
+jak bóg przykazał
+jak cholera
+jak ciepłe bułeczki
+jak cię mogę
+jak diabli
+jak groch przy drodze
+jak grochem o ścianę
+jak jeden mąż
+jak kot z pęcherzem
+jak krew w piach
+jak na lekarstwo
+jak pan bóg stworzył
+jak po szynach
+jak się należy
+jak się patrzy
+jak skurwysyn
+jak ta lala
+jak w chińskim banku
+jak w dym
+jak w szwajcarskim banku
+jak woda
+jak wół
+jak z bicza trzasł
+jak znalazł
+jak świeże bułeczki
+jak żółw
+jakby co
+jakimś cudem
+jako tako
+jeden za drugim
+jednym słowem
+jeszcze raz
+kapka w kapkę
+kawa na ławę
+każdego dnia
+każdego roku
+kiedy indziej
+kilka razy
+koniec końców
+krok po kroku
+kropka w kropkę
+ku czci
+ku przestrodze
+kubek w kubek
+lata świetlne temu
+lege artis
+lelum polelum
+lepiej nie mówić
+lotem błyskawicy
+mało tego
+mimo wszystko
+między innymi
+między młotem a kowadłem
+mniej więcej
+moim zdaniem
+mówiąc szczerze
+na abarot
+na amen
+na amyn
+na antenie
+na backę
+na baczność
+na bakier
+na bank
+na barana
+na bańce
+na bezrok
+na bieżąco
+na blachę
+na bogato
+na boku
+na bosaka
+na całe gardło
+na całej linii
+na cały regulator
+na chybił trafił
+na chłopczycę
+na cito
+na co dzień
+na cołki łeb
+na czas
+na czczo
+na czele
+na czerwono
+na czwartej
+na dobitek
+na dobitkę
+na dobre
+na dobrej stopie
+na dobrą sprawę
+na dobę
+na dodatek
+na dokładkę
+na dole
+na domiar
+na domiar nieszczęścia
+na domiar złego
+na drodze
+na drugiej
+na dużym ekranie
+na dworze
+na dwunastej
+na dziesiątej
+na dziewiątej
+na dół
+na fajka
+na falach eteru
+na fali
+na fest
+na gapę
+na garnuszku
+na glanc
+na golasa
+na gorąco
+na gorącym uczynku
+na górze
+na gębę
+na głodniaka
+na głos
+na głowę
+na haju
+na hura
+na jedenastej
+na jednej nodze
+na jedno kopyto
+na jeża
+na kacu
+na kilometr
+na koniec
+na koszt firmy
+na koń
+na końcu świata
+na krzywy ryj
+na krzyż
+na lewo
+na lewą stronę
+na luzie
+na małpę
+na małym ekranie
+na miejscu
+na mocy
+na mokro
+na mur
+na myśl
+na niby
+na nowo
+na odchodne
+na odpieprz
+na odpierdol
+na odpierdziel
+na odwal
+na odwrót
+na ogół
+na oko
+na okrągło
+na opak
+na ostatnich nogach
+na oścież
+na pamięć
+na patataj
+na pewniaka
+na pewno
+na pełnej kurwie
+na piechotę
+na pierwszej
+na pierwszy rzut oka
+na piątej
+na piśmie
+na pniu
+na początku
+na podwójnym gazie
+na pohybel
+na pokaz
+na poprzek
+na potęgę
+na pował
+na powietrzu
+na pozoryndziu
+na poły
+na prask
+na prawo
+na priv
+na przekór
+na przemian
+na przestrzeni wieków
+na przełaj
+na przykład
+na próbę
+na próżno
+na pół
+na pół gwizdka
+na pęczki
+na rauszu
+na raz
+na razie
+na rybkę
+na rympał
+na rzadko
+na równi
+na rękę
+na serio
+na setkę
+na siedząco
+na siódmej
+na siłę
+na skraju
+na spokojnie
+na sposób
+na stałe
+na sto dwa
+na sto procent
+na stojąco
+na stronie
+na styk
+na sucho
+na surowo
+na swój sposób
+na szagę
+na szaro
+na szczęście
+na szóstej
+na temat
+na ten raz
+na topie
+na trwogę
+na trzeciej
+na ucho
+na ukos
+na upartego
+na ustęp
+na waleta
+na wczoraj
+na wieczne czasy
+na wieczór
+na wieki
+na wieki wieków
+na wielki kamień
+na wiosnę
+na wolnym ogniu
+na wpół
+na wsiakij słuczaj
+na wsjakij słuczaj
+na wskroś
+na wstępie
+na wszelki wypadek
+na wyciągnięcie ręki
+na wynos
+na wznak
+na węgierski kamień
+na własne oczy
+na własną rękę
+na zamówienie
+na zasadzie
+na zawsze
+na zewnątrz
+na zimno
+na zmianę
+na złamanie karku
+na ósmej
+na ćmiywku
+na ładne oczy
+na łapu-capu
+na łeb na szyję
+na śpiocha
+na świeżym powietrzu
+na świętego dygdy
+na święty nigdy
+na żyletki
+na żywca
+na żywo
+nad ranem
+nad wyraz
+nade wszystko
+nawiasem mówiąc
+ni chuja
+ni mniej ni więcej
+ni stąd ni zowąd
+ni tak ni siak
+ni w ząb
+nic a nic
+nie bardzo
+nie bez kozery
+nie da się ukryć
+nie do końca
+nie do wiary
+nie do wytrzymania
+nie inaczej
+nie kijem to pałką
+nie ma mowy
+nie na miejscu
+nie na żarty
+nie opodal
+nie po drodze
+nie tak
+nie za bardzo
+nigdy indziej
+nigdy w świecie
+nigdzie indziej
+no to co
+noga za nogą
+nomen omen
+non stop
+o brzasku
+o chlebie i wodzie
+o czasie
+o dwa kroki stąd
+o majland
+o mało
+o mało co
+o mały włos
+o poranku
+o rzut kamieniem
+o sto sześć
+o suchym pysku
+o wiele
+o wschodzie
+o włos
+o zmierzchu
+o zmroku
+o świcie
+o świtaniu
+od a do zet
+od czapy
+od czasu do czasu
+od dawna
+od deski do deski
+od do
+od dupy strony
+od dziecka
+od jakiegoś czasu
+od kołyski
+od kołyski do grobu
+od maleńkości
+od małego
+od niedawna
+od nowa
+od początku
+od przedwojny
+od rana do nocy
+od razu
+od rzeczy
+od ręki
+od stóp do głów
+od tylca
+od tyłu
+od wielkiego dzwonu
+od zarania
+od zarania dziejów
+od zawsze
+ode złego amyn
+ogniem i mieczem
+opere citato
+ostatni raz
+ostatnimi czasy
+pa duszam
+par excellence
+per analogiam
+per nogam
+per rectum
+pewnego razu
+pełną gębą
+pi razy drzwi
+pi razy oko
+pic rel
+piąte przez dziesiąte
+piździ jak w kieleckiem
+plus minus
+po angielsku
+po arabsku
+po białorusku
+po birmańsku
+po bratersku
+po chińsku
+po chrystusie
+po chrześcijańsku
+po chuju
+po cichu
+po ciemku
+po cieszyńsku
+po części
+po daleku
+po darmu
+po darymnicy
+po dobroci
+po drodze
+po dzisiejszemu
+po dziś dzień
+po estońsku
+po florencku
+po francusku
+po grecku
+po grób
+po harapie
+po hebrajsku
+po herbacie
+po hiszpańsku
+po japońsku
+po katolicku
+po kaznodziejsku
+po kobiecemu
+po kolei
+po koreańsku
+po krakowsku
+po kryjomu
+po królewsku
+po kumotersku
+po lewej
+po litewsku
+po ludzku
+po macku
+po macoszemu
+po mieczu
+po mistrzowsku
+po mojemu
+po męsku
+po niemiecku
+po nitce do kłębka
+po nocy
+po ojcowsku
+po omacku
+po partnersku
+po pierwsze
+po pijaku
+po pijanemu
+po plotkarsku
+po polskiemu
+po polsku
+po portugalsku
+po południu
+po prawej
+po prostu
+po próżnicy
+po ptakach
+po ptokach
+po swojemu
+po szwedzku
+po sąsiedzku
+po teksańsku
+po trochu
+po trosze
+po turecku
+po ukraińsku
+po uszy
+po wiedeńsku
+po wieki
+po wieki wieków
+po wsze czasy
+po wszystkie czasy
+po wszystkim
+po węgiersku
+po włosku
+po zadku
+po zawodach
+po zmroku
+po ćmi
+po ćmoku
+po łacinie
+po łacińsku
+po łotewsku
+po śląsku
+po żydowsku
+poco a poco
+pod gazem
+pod gołym niebem
+pod kluczem
+pod koniec
+pod kątem
+pod nosem
+pod publiczkę
+pod rząd
+pod wieczór
+pod wodą
+pod wpływem
+post mortem
+prawdę mówiąc
+prawem kaduka
+primo voto
+pro anno
+prosto w nos
+prosto w oczy
+prosto z mostu
+przed chrystusem
+przed laty
+przede wszystkim
+przy drzwiach zamkniętych
+przy kości
+przy okazji
+prędzej czy później
+psim swędem
+pół biedy
+rada w radę
+ramię w ramię
+raz na jakiś czas
+raz na ruski rok
+raz na sto lat
+raz na zawsze
+raz po raz
+rok po roku
+rok w rok
+ruski miesiąc
+rzecz jasna
+rzut beretem
+rękami i nogami
+sam na sam
+sam przez się
+secundo voto
+siłą rzeczy
+skoro świt
+sobie a muzom
+spode łba
+swoją drogą
+szczerze mówiąc
+tak czy inaczej
+tak czy siak
+tak jakby
+tak na dobrą sprawę
+tak samo
+tak się składa
+tak sobie
+tak więc
+taka prawda
+tego lata
+tempo di ballo
+tertio voto
+to znaczy
+toczka w toczkę
+toutes proportions gardées
+trzy cztery
+tu i tam
+tu i ówdzie
+twarzą w twarz
+tym bardziej
+tym razem
+tym samym
+u dołu
+u góry
+u spodu
+u stóp
+una corda
+va banque
+vice versa
+w afekcie
+w biały dzień
+w bród
+w ciąży
+w czas
+w czasach słusznie minionych
+w cztery oczy
+w czwórnasób
+w dalszym ciągu
+w dechę
+w dobie
+w dodatku
+w drobny mak
+w drobną kaszkę
+w dupie
+w dużej mierze
+w dwóch słowach
+w dwójnasób
+w dyrdy
+w dzień
+w dół
+w grudniu po południu
+w górę
+w głos
+w głównej mierze
+w głąb
+w istocie
+w każdym razie
+w kibinimater
+w koło
+w koło macieju
+w końcu
+w krótkich abcugach
+w kucki
+w kółko
+w lansadach
+w lewo
+w majestacie prawa
+w mgnieniu oka
+w miarę
+w mig
+w moich oczach
+w najgorszym przypadku
+w najgorszym razie
+w najgorszym wypadku
+w najlepsze
+w najlepszym przypadku
+w najlepszym razie
+w najlepszym wypadku
+w nieskończoność
+w nocy
+w obliczu śmierci
+w oddali
+w ogóle
+w okamgnieniu
+w ostateczności
+w pełni
+w pizdu
+w pobliżu
+w pocie czoła
+w pojedynkę
+w poprzek
+w porząsiu
+w porę
+w praktyce
+w przybliżeniu
+w przód
+w półkole
+w ramionach morfeusza
+w rumel
+w rzeczywistości
+w sam czas
+w siną dal
+w skrócie
+w sosie własnym
+w sposób
+w stroju adama
+w stroju adamowym
+w stroju ewy
+w sumie
+w swoim czasie
+w szczególności
+w te pędy
+w trakcie
+w try miga
+w trymiga
+w tym
+w ujęciu
+w ukryciu
+w zamian
+w zasadzie
+w zasięgu ręki
+w założeniu
+w ślimaczym tempie
+w środku
+w żółwim tempie
+we dwójnasób
+we własnej osobie
+wsio rawno
+wsio ryba
+wszem wobec
+wszerz i wzdłuż
+wszystko jedno
+wte i wewte
+wzdłuż i wszerz
+wól nie wól
+wólka niy wólka
+wólki niy wólki
+własną piersią
+z angielska
+z automatu
+z biegiem czasu
+z biglem
+z całego serca
+z całej mocy
+z całej siły
+z całych sił
+z cicha
+z czasem
+z czystym sumieniem
+z dala
+z daleka
+z dnia na dzień
+z dobrodziejstwem inwentarza
+z dokładnością do
+z duszą na ramieniu
+z dystansu
+z dziada pradziada
+z grubej rury
+z grubsza
+z górki na pazurki
+z góry
+z głupia frant
+z klejnotami na wierzchu
+z kolei
+z krakowska
+z kretesem
+z kąta w kąt
+z lotu ptaka
+z madziarska
+z marszu
+z miejsca
+z miesiąca na miesiąc
+z miłą chęcią
+z nagła
+z nastaniem nocy
+z oddali
+z osobna
+z otwartymi ramionami
+z pewnością
+z pocałowaniem ręki
+z podniesionym czołem
+z polska
+z pompą
+z powrotem
+z pośpiechem
+z premedytacją
+z przodu
+z przymrużeniem oka
+z prądem
+z reguły
+z roku na rok
+z rozsądku
+z rzadka
+z rzymska
+z rzędu
+z rąsi
+z ręki
+z ręką na sercu
+z tygodnia na tydzień
+z tyłu
+z ukosa
+z ukrycia
+z uporem maniaka
+z urzędu
+z wiatrem
+z wieczora
+z wierzchu
+z wolna
+z wysoka
+z zamkniętymi oczami
+z zasady
+z założenia
+z zimną krwią
+z łatwością
+z żabiej perspektywy
+za bezcen
+za bóg zapłać
+za chiny
+za chiny ludowe
+za chińskiego boga
+za chuja
+za czasem
+za darmo
+za darmochę
+za dnia
+za dziesiątą górą
+za dziesiątą rzeką
+za facke
+za frajer
+za friko
+za granicą
+za grosze
+za górami za lasami
+za każdym razem
+za kółkiem
+za lasami za górami
+za miskę soczewicy
+za młodu
+za nastawnikiem
+za nic
+za nic na świecie
+za nic w świecie
+za pięć dwunasta
+za pobraniem
+za pół ceny
+za siódmą górą
+za siódmą rzeką
+za skarby świata
+za wszelką cenę
+za zamkniętymi drzwiami
+za żadne pieniądze
+za żadne skarby
+za żadne skarby świata
+za żadną cenę
+ze smakiem
+ze szczętem
+ze słuchu
+ze wszystkich sił
+zgadza się
+zimno jak w psiarni
+à la carte
+à propos
+à rebours
+łeb w łeb
+średnio na jeża
+świątek piątek niedziela
+że tak powiem
+żółwim krokiem
