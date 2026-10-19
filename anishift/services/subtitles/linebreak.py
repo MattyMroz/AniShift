@@ -64,6 +64,9 @@ _RE_WORD_BREAK: Final[re.Pattern[str]] = re.compile(r"(\{[^}]*\}|\\[Nn]|" + BREA
 _NO_WRAP: Final[str] = "{\\q2}"
 """Override that stops libass from wrapping the lines the layout core chose."""
 
+_RE_WRAP_BLOCK: Final[re.Pattern[str]] = re.compile(r"\{[^}]*\\q[^}]*\}")
+"""Override block setting a wrap style; libass keeps the last one of the event."""
+
 
 @dataclass(frozen=True, slots=True)
 class DialogueLayout:
@@ -72,14 +75,11 @@ class DialogueLayout:
     text: str
     flags: frozenset[Flag]
     approximate: bool = False
+    untagged: bool = False
 
 
 def layout_dialogue(event: SSAEvent, text: str, profile: RenderProfile | None) -> DialogueLayout:
-    """Lay out the unbroken translation ``text`` of a dialogue event and place it in the event with its tags.
-
-    Without a render profile (SRT) lines are measured by their graphemes; otherwise with the event's fonts and the
-    tags of each line, inside the safe screen area from the event's anchor, and libass never wraps the chosen lines.
-    """
+    """Lay out the unbroken translation ``text`` of a dialogue event with the layout core and place its tags."""
     tagged: str = _tagged_line(event, text, profile)
     plain: str = visible_text(tagged, preserve_hard_spaces=True)
     words: tuple[str, ...] = tuple(word for word in BREAKABLE_SPACES.split(plain) if word)
@@ -90,12 +90,14 @@ def layout_dialogue(event: SSAEvent, text: str, profile: RenderProfile | None) -
     changes: tuple[bool, ...] = style_changes(event, tagged, profile)
     if len(changes) == len(words) - 1:
         field = replace(field, style_breaks=frozenset(index for index, change in enumerate(changes) if change))
-    chosen = lay_out(plain, field, _measure(event, profile, words, _tagged_words(tagged, words)))
+    tagged_words: tuple[str, ...] | None = _tagged_words(tagged, words)
+    chosen = lay_out(plain, field, _measure(event, profile, words, tagged_words or words))
     laid_out: str = reflow_visible_text(tagged, chosen.lines)
     if wrap_text(event, laid_out, profile) != laid_out:
-        laid_out = _NO_WRAP + laid_out
+        laid_out = _without_wrap(laid_out)
     approximate: bool = measure_text(event, laid_out, profile).status == "approximate"
-    return DialogueLayout(laid_out, chosen.flags, approximate)
+    untagged: bool = tagged_words is None or len(changes) != len(words) - 1
+    return DialogueLayout(laid_out, chosen.flags, approximate, untagged)
 
 
 def split_for_layout(
@@ -260,7 +262,15 @@ def _tagged_line(event: SSAEvent, text: str, profile: RenderProfile | None) -> s
     return replace_visible_text(event.text, restore_markers(text, (plain,))[0], style)
 
 
-def _tagged_words(tagged: str, words: tuple[str, ...]) -> tuple[str, ...]:
+def _without_wrap(text: str) -> str:
+    blocks: list[re.Match[str]] = list(_RE_WRAP_BLOCK.finditer(text))
+    if not blocks:
+        return _NO_WRAP + text
+    end: int = blocks[-1].end()
+    return text[:end] + _NO_WRAP + text[end:]
+
+
+def _tagged_words(tagged: str, words: tuple[str, ...]) -> tuple[str, ...] | None:
     found: list[str] = [""]
     for piece in _RE_WORD_BREAK.split(tagged):
         if RE_TAG_BLOCK.fullmatch(piece) or not _RE_WORD_BREAK.fullmatch(piece):
@@ -270,7 +280,7 @@ def _tagged_words(tagged: str, words: tuple[str, ...]) -> tuple[str, ...]:
     if len(found) > 1 and not visible_text(found[-1]):
         found[-2] += found.pop()
     visible: tuple[str, ...] = tuple(visible_text(word, preserve_hard_spaces=True) for word in found)
-    return tuple(found) if visible == words else words
+    return tuple(found) if visible == words else None
 
 
 def _measure(event: SSAEvent, profile: RenderProfile, words: tuple[str, ...], tagged: tuple[str, ...]) -> Measure:

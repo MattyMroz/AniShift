@@ -277,7 +277,7 @@ def safe_width(event: SSAEvent, profile: RenderProfile, share: float) -> float:
     low: float = profile.play_res_x * (1 - share) / 2
     high: float = profile.play_res_x - low
     reach: float = (high - anchor, 2 * min(anchor - low, high - anchor), anchor - low)[column]
-    return max(0.0, reach)
+    return min(max(0.0, reach), high - low)
 
 
 def style_changes(event: SSAEvent, text: str, profile: RenderProfile) -> tuple[bool, ...]:

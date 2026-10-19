@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from itertools import combinations
 
 import pytest
@@ -305,6 +306,17 @@ def test_line_mixing_two_text_styles_is_avoided_while_a_cut_between_them_exists(
 
 
 @pytest.mark.unit
+def test_dialogue_weighs_a_line_mixing_two_text_styles_instead_of_rescuing_it() -> None:
+    field: Field = replace(dialogue_field(), style_breaks=frozenset({1}))
+
+    layout: Layout = lay_out("Ja naprawdę cię kocham.", field, chars_measure, _FLAT)
+
+    assert layout.lines == ("Ja naprawdę cię kocham.",)
+    assert layout.harms["mixed_style"] == 1.0
+    assert Flag.MIXED not in layout.flags
+
+
+@pytest.mark.unit
 def test_style_break_that_is_also_forced_is_never_reported_as_mixed() -> None:
     field: Field = Field(max_width=1.0, max_lines=3, breaks=frozenset({1}), style_breaks=frozenset({1}))
 
@@ -312,3 +324,12 @@ def test_style_break_that_is_also_forced_is_never_reported_as_mixed() -> None:
 
     assert all(any(line.endswith("pierwszy:") for line in layout.lines) for layout in found)
     assert not any(Flag.MIXED in layout.flags for layout in found)
+
+
+@pytest.mark.unit
+def test_quotation_wider_than_a_comfortable_line_may_be_cut_without_a_rescue() -> None:
+    found: list[Layout] = candidates(
+        "„Cóż z ciebie za roszczeniowa gwiazda pierwszej wielkości”.", dialogue_field(), chars_measure
+    )
+
+    assert all(Flag.QUOTE not in layout.flags for layout in found)

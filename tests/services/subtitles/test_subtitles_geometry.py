@@ -8,6 +8,7 @@ from anishift.services.subtitles.geometry import (
     TextBox,
     available_width,
     measure_text,
+    safe_width,
     screen_rects,
     wrap_text,
 )
@@ -95,3 +96,22 @@ def test_screen_rects_anchor_the_box_at_the_margins_the_position_or_both_ends_of
     assert corner.right == pytest.approx(100 + width)
     assert ((start.left + start.right) / 2, (start.top + start.bottom) / 2) == pytest.approx((100, 100))
     assert ((end.left + end.right) / 2, (end.top + end.bottom) / 2) == pytest.approx((300, 200))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "margin", "expected"),
+    [
+        ("x", 10, 0.9),
+        (r"{\an7}x", 10, 0.9),
+        (r"{\an4\pos(50,500)}x", 0, 0.9),
+        (r"{\an1\pos(1056,1000)}x", 0, 0.4),
+        (r"{\pos(960,500)}x", 0, 0.9),
+    ],
+)
+def test_safe_width_stays_inside_the_central_share_of_the_canvas(text: str, margin: int, expected: float) -> None:
+    profile: RenderProfile = _profile(
+        {"PlayResX": "1920", "PlayResY": "1080"}, SSAStyle(marginl=margin, marginr=margin)
+    )
+
+    assert safe_width(SSAEvent(text=text), profile, 0.9) / 1920 == pytest.approx(expected)

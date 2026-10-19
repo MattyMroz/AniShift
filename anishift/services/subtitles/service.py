@@ -177,7 +177,7 @@ def normalize_subtitles(  # noqa: PLR0913 - layout inputs mirror layout_translat
         raise _fail(ErrorCode.SUBTITLE_PARSE_FAILED, "Subtitle source format is unsupported")
     split: SubtitleSplit = split_subtitles(subtitles, kind=source_kind)
     laid_out: TranslatedLayout = layout_translated(
-        split, _source_texts(split), fonts=fonts, limits=layout, dialogue_font=dialogue_font
+        split, _source_texts(split), fonts=fonts, limits=layout, dialogue_font=dialogue_font, own_text=True
     )
     return _write_laid_out(laid_out.subs, laid_out.report, destination, kind, subject="Normalized")
 
@@ -186,7 +186,7 @@ def reflow_polish_dialogue(split: SubtitleSplit, layout: LayoutLimits | None = N
     """Lay out Polish events on a copy with their own text as the translation, keeping exact inline formatting."""
     limits: LayoutLimits = layout if layout is not None else LayoutLimits()
     laid_out: TranslatedLayout = layout_translated(
-        split, _source_texts(split), fonts=None, limits=limits, dialogue_font=None
+        split, _source_texts(split), fonts=None, limits=limits, dialogue_font=None, own_text=True
     )
     return replace(split, subs=laid_out.subs)
 
@@ -566,18 +566,20 @@ def write_displayed(split: SubtitleSplit, dest: Path) -> Path | None:
     return _write_output(_stream_file(split, "displayed"), dest, split.kind, subject="Displayed")
 
 
-def layout_translated(
+def layout_translated(  # noqa: PLR0913 - layout inputs of every writer
     split: SubtitleSplit,
     translations: Mapping[int, str],
     *,
     fonts: FontSources | None,
     limits: LayoutLimits,
     dialogue_font: DialogueFont | None,
+    own_text: bool = False,
 ) -> TranslatedLayout:
     """Lay out unbroken translations, keyed by Dialogue index, on a copy of the split file.
 
     Keys are the first event of every spoken line and every displayed event; the other events of a spoken line
-    take its translation unless they carry their own key. Drawings and events without a translation stay as they are.
+    take its translation unless they carry their own key. Drawings and events without a translation stay as they are,
+    and so does a dialogue event whose translation equals its text, unless ``own_text`` lays out the file's own text.
     """
     report: LayoutReport = LayoutReport()
     source: SSAFile = split.subs
@@ -599,6 +601,9 @@ def layout_translated(
             out.events.append(event)
             continue
         laid_out: SSAEvent = event.copy()
+        if decision == "spoken" and not own_text and visible_text(event.text) == visible_text(strip_span_markers(text)):
+            out.events.append(laid_out)
+            continue
         if decision == "spoken":
             dialogue: DialogueLayout = layout_dialogue(event, text, profile if split.kind == "ass" else None)
             _count_dialogue(report, dialogue)
@@ -617,6 +622,7 @@ def _count_dialogue(report: LayoutReport, dialogue: DialogueLayout) -> None:
     report.dialogue_unmeasured += dialogue.approximate
     report.dialogue_three_lines += Flag.EXTRA_LINE in dialogue.flags
     report.dialogue_overflow += Flag.OUTSIDE in dialogue.flags
+    report.dialogue_untagged += dialogue.untagged
     report.dialogue_relaxed_phrases += bool(dialogue.flags - {Flag.EXTRA_LINE, Flag.OUTSIDE})
 
 

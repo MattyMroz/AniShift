@@ -105,6 +105,7 @@ class Field:
     pattern: tuple[float, ...] = ()
     breaks: frozenset[int] = frozenset()
     style_breaks: frozenset[int] = frozenset()
+    style_rescue: bool = True
     speaker_lines: bool = False
 
 
@@ -163,6 +164,7 @@ HARMS: Final[tuple[str, ...]] = (
     "length_wide",
     *(f"cut_{kind.value}" for kind in GapKind),
     "agreement",
+    "mixed_style",
     *(f"imbalance_{knot}" for knot in _IMBALANCE_KNOTS),
     "top_longer",
     "extra_line",
@@ -177,41 +179,41 @@ HARMS: Final[tuple[str, ...]] = (
 
 WEIGHTS: Final[Mapping[str, float]] = MappingProxyType(
     {
-        "length_comfortable": 284.049,
-        "length_wide": 3.51236,
+        "length_comfortable": 422.175,
+        "length_wide": 36.3444,
         "cut_sentence": 0.001,
         "cut_clause": 0.001,
         "cut_ellipsis": 0.001,
         "cut_parenthetical": 0.001,
         "cut_dash": 0.001,
         "cut_before_subordinator": 0.001,
-        "cut_before_coordinator": 0.00919162,
-        "cut_before_preposition": 5.02557,
-        "cut_phrase": 5.02557,
-        "cut_auxiliary": 26.423,
-        "cut_modifier": 6.02557,
-        "cut_abbreviation": 5.02557,
-        "cut_after_opener": 26.5282,
-        "cut_degree": 30.1685,
-        "cut_particle": 15.7236,
-        "cut_prepositional": 5.02557,
-        "cut_name": 30.1685,
-        "cut_after_preposition": 30.1685,
-        "cut_negation": 30.1685,
-        "cut_reflexive": 30.1685,
-        "cut_number": 30.1685,
-        "cut_idiom": 30.1685,
-        "cut_label": 30.1685,
-        "cut_repetition": 30.1685,
-        "cut_after_single_letter": 30.1685,
-        "agreement": 5.68168,
-        "imbalance_20": 0.44742,
-        "top_longer": 0.334699,
-        "extra_line": 58.6494,
-        "missing_line": 2.14113,
-        "squeeze": 22.9526,
-        "shrink": 17.3747,
-        "over_comfort": 46.3272,
+        "cut_before_coordinator": 0.60857,
+        "cut_before_preposition": 6.82371,
+        "cut_phrase": 6.82371,
+        "cut_auxiliary": 41.4227,
+        "cut_modifier": 7.82371,
+        "cut_abbreviation": 6.82371,
+        "cut_after_opener": 41.0267,
+        "cut_degree": 44.2096,
+        "cut_particle": 19.8194,
+        "cut_prepositional": 6.82371,
+        "cut_name": 44.2096,
+        "cut_after_preposition": 44.2096,
+        "cut_negation": 44.2096,
+        "cut_reflexive": 44.2096,
+        "cut_number": 44.2096,
+        "cut_idiom": 44.2096,
+        "cut_label": 44.2096,
+        "cut_repetition": 44.2096,
+        "cut_after_single_letter": 44.2096,
+        "agreement": 6.78055,
+        "imbalance_20": 0.697147,
+        "top_longer": 0.434595,
+        "extra_line": 87.6558,
+        "missing_line": 5.17293,
+        "squeeze": 19.3825,
+        "shrink": 13.9387,
+        "over_comfort": 40.3125,
     }
 )
 """Harm weights from the layout calibration (docs/work/10-quality/research/text-layout-calibration.md)."""
@@ -228,6 +230,7 @@ def dialogue_field(*, max_width: float = DIALOGUE_MAX_WIDTH) -> Field:
         pyramid=True,
         length_knots=_LENGTH_KNOTS,
         count_chars=True,
+        style_rescue=False,
         speaker_lines=True,
     )
 
@@ -388,7 +391,11 @@ def _line_shape(case: _Case, place: tuple[int, int, int, int]) -> _Part:
     start, end, index, count = place
     harms: dict[str, float] = _imbalance_harms(case, _chars(" ".join(case.words[start:end])), index, count)
     flags: list[Flag] = [Flag.JOINED for cut in case.released if start <= cut < end - 1]
-    flags.extend(Flag.MIXED for cut in case.field.style_breaks - case.forced if start <= cut < end - 1)
+    mixed: int = sum(start <= cut < end - 1 for cut in case.field.style_breaks - case.forced)
+    if mixed:
+        harms["mixed_style"] = float(mixed)
+    if mixed and case.field.style_rescue:
+        flags.append(Flag.MIXED)
     if count > 1 and end - start == 1 and not _exempt_orphan(case, start):
         flags.append(Flag.ORPHAN)
     if end < len(case.words):
@@ -453,8 +460,12 @@ def _exempt_orphan(case: _Case, start: int) -> bool:
 def _inside_fitting_quote(case: _Case, cut: int, fx: float) -> bool:
     for first, last in case.quotes:
         if first <= cut < last:
-            return case.measure(" ".join(case.words[first : last + 1]), fx) <= case.field.max_width
+            return case.measure(" ".join(case.words[first : last + 1]), fx) <= _one_line_width(case.field)
     return False
+
+
+def _one_line_width(field: Field) -> float:
+    return field.length_knots[-1] if field.length_knots else field.max_width
 
 
 def _lines(words: Sequence[str], cuts: tuple[int, ...]) -> tuple[str, ...]:

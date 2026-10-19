@@ -70,6 +70,9 @@ RAGGED_WEIGHT: Final[float] = 1e4
 CUT_HARMS: Final[tuple[str, ...]] = tuple(f"cut_{kind.value}" for kind in GapKind)
 """Harm names of the cut classes, ranked by ``TIERS``."""
 
+MEASURE_TOLERANCE: Final[float] = 0.01
+"""Width share a dialogue decision must survive: whole lines measure up to 0.94% narrower than catalogue word sums."""
+
 
 @dataclass(frozen=True, slots=True)
 class Pairs:
@@ -106,6 +109,7 @@ def case_pairs(case: CatalogueCase, *, morphology: bool) -> tuple[list[np.ndarra
         return [], [], []
     hard: list[np.ndarray] = []
     conflicts: list[str] = []
+    shifted: list[dict[tuple[str, ...], Layout]] = _shifted(case, morphology=morphology)
     for layout in found:
         if not faults(case, layout, found):
             continue
@@ -113,11 +117,37 @@ def case_pairs(case: CatalogueCase, *, morphology: bool) -> tuple[list[np.ndarra
             conflicts.append(" / ".join(layout.lines))
         elif layout.rescue == best.rescue:
             hard.append(vector(layout) - vector(best))
+            hard.extend(_robust_rows(layout, best, shifted))
     soft: list[np.ndarray] = []
     if case.soft and len(case.accept) > 1:
         alternative: list[Layout] = [layout for layout in found if layout.lines == case.accept[1].lines]
         soft = [vector(layout) - vector(best) for layout in alternative[:1] if layout.rescue == best.rescue]
     return hard, soft, conflicts
+
+
+def _shifted(case: CatalogueCase, *, morphology: bool) -> list[dict[tuple[str, ...], Layout]]:
+    if case.field.scalable:
+        return []
+    return [
+        {
+            layout.lines: layout
+            for layout in candidates(
+                case.text, case.field, lambda line, fx, f=factor: case.measure(line, fx) * f, morphology=morphology
+            )
+        }
+        for factor in (1 - MEASURE_TOLERANCE,)
+    ]
+
+
+def _robust_rows(loser: Layout, best: Layout, shifted: Sequence[dict[tuple[str, ...], Layout]]) -> list[np.ndarray]:
+    rows: list[np.ndarray] = []
+    for layouts in shifted:
+        moved_loser: Layout | None = layouts.get(loser.lines)
+        moved_best: Layout | None = layouts.get(best.lines)
+        if moved_loser is None or moved_best is None or moved_loser.rescue != moved_best.rescue:
+            continue
+        rows.append(vector(moved_loser) - vector(moved_best))
+    return rows
 
 
 def professional_cues(quality_root: Path, families: frozenset[str] = FAMILIES) -> list[dict[str, Any]]:

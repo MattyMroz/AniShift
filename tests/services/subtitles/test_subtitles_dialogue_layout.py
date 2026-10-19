@@ -8,13 +8,13 @@ from pysubs2 import SSAEvent, SSAFile, SSAStyle
 from anishift.services.subtitles.geometry import RenderProfile
 from anishift.services.subtitles.layout import Flag, LayoutLimits
 from anishift.services.subtitles.linebreak import DialogueLayout, layout_dialogue
-from anishift.services.subtitles.service import load_subtitles, split_subtitles, write_translated
+from anishift.services.subtitles.service import layout_translated, load_subtitles, split_subtitles, write_translated
 from anishift.services.subtitles.text import visible_text
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from anishift.services.subtitles.types import SubtitleKind, SubtitleSplit
+    from anishift.services.subtitles.types import SubtitleKind, SubtitleSplit, TranslatedLayout
 
 _TRANSLATION = "Wczoraj widziałem ogromnego smoka daleko stąd, a potem jeszcze dwa inne smoki."
 _LAID_OUT = r"Wczoraj widziałem ogromnego smoka daleko\Nstąd, a potem jeszcze dwa inne smoki."
@@ -108,12 +108,45 @@ def test_layout_dialogue_fits_the_safe_area_from_the_event_anchor() -> None:
 
 
 @pytest.mark.unit
-def test_layout_dialogue_cuts_where_the_font_size_changes_between_words() -> None:
-    event: SSAEvent = SSAEvent(text=r"{\fs80}Rozdział pierwszy: {\fs50}Chłopiec, który wygrał")
+@pytest.mark.parametrize("text", [r"Ja {\b1}naprawdę{\b0} cię kocham.", r"To jest {\fs70}naprawdę{\fs50} ważne."])
+def test_layout_dialogue_keeps_a_short_line_with_an_emphasised_word_whole(text: str) -> None:
+    layout: DialogueLayout = layout_dialogue(SSAEvent(text=text), visible_text(text), _profile())
 
-    layout: DialogueLayout = layout_dialogue(event, visible_text(event.text), _profile())
+    assert layout.text == text
 
-    assert layout.text == r"{\fs80}Rozdział pierwszy:\N{\fs50}Chłopiec, który wygrał"
+
+@pytest.mark.unit
+def test_layout_dialogue_stops_wrapping_after_the_event_own_wrap_style() -> None:
+    event: SSAEvent = SSAEvent(text="{\\q1}" + _TRANSLATION)
+
+    layout: DialogueLayout = layout_dialogue(event, _TRANSLATION, _profile(margin=700, size=70.0))
+
+    assert layout.text.startswith("{\\q1}{\\q2}")
+
+
+@pytest.mark.unit
+def test_layout_dialogue_reports_a_translation_it_cannot_measure_with_its_tags() -> None:
+    event: SSAEvent = SSAEvent(text=r"Jan \h Kowalski przyszedł")
+
+    layout: DialogueLayout = layout_dialogue(event, visible_text(event.text, preserve_hard_spaces=True), _profile())
+
+    assert layout.untagged
+
+
+@pytest.mark.unit
+def test_layout_translated_keeps_a_dialogue_line_equal_to_the_source_byte_for_byte() -> None:
+    subs: SSAFile = SSAFile()
+    subs.info.update({"PlayResX": "1920", "PlayResY": "1080"})
+    subs.styles["Default"] = SSAStyle(fontname="Arial", fontsize=70.0, marginl=700, marginr=700)
+    source: str = r"Yesterday I saw a huge dragon far from here,\Nand then two more dragons."
+    subs.events.append(SSAEvent(start=0, end=1000, text=source))
+    split: SubtitleSplit = split_subtitles(subs, kind="ass", spoken_styles={"Default"})
+
+    laid_out: TranslatedLayout = layout_translated(
+        split, {0: visible_text(source)}, fonts=None, limits=LayoutLimits(), dialogue_font=None
+    )
+
+    assert laid_out.subs.events[0].text == source
 
 
 def _write(tmp_path: Path, subs: SSAFile, texts: dict[int, str], name: str, kind: SubtitleKind) -> SSAFile:
