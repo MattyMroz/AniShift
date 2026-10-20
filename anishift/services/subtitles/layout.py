@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import StrEnum
 from functools import cache, lru_cache
 from itertools import combinations, pairwise
@@ -55,6 +55,7 @@ class Flag(StrEnum):
     JOINED = "joined"
     MIXED = "mixed"
     SMALL = "small"
+    SHRUNK = "shrunk"
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,11 +136,14 @@ _PERCENT: Final[float] = 100.0
 _SIGN_LINES: Final[int] = 3
 """Fewest lines a displayed field allows, so a one-line source may still take two or three (catalogue calibration)."""
 
+_MIN_SCALE: Final[float] = 0.6
+"""Smallest scale (either axis) a sign keeps outside rescue; a proposal the owner has to confirm (spec section 4.6)."""
+
 _SHAPED_WORD_SHARE: Final[float] = 0.5
 """Share of its source line a lone word must fill to follow the source shape of a sign instead of being an orphan."""
 
 _HEADING_WORDS: Final[int] = 3
-"""Most words of a leading label ending in a colon that ends the first line of a multi-line displayed text."""
+"""Most words of a leading label ending in a colon where a multi-line displayed text prefers to end its first line."""
 
 _ENUMERATED_LINES: Final[int] = 3
 """Most lines whose every split is enumerated; longer layouts come from dynamic programming (spec §5.1)."""
@@ -153,6 +157,7 @@ HARMS: Final[tuple[str, ...]] = (
     *(f"cut_{kind.value}" for kind in GapKind),
     "agreement",
     "mixed_style",
+    "heading_joined",
     *(f"imbalance_{knot}" for knot in _IMBALANCE_KNOTS),
     "top_longer",
     "extra_line",
@@ -197,6 +202,7 @@ WEIGHTS: Final[Mapping[str, float]] = MappingProxyType(
         "cut_repetition": 54.9332,
         "cut_after_single_letter": 54.9332,
         "agreement": 6.78055,
+        "heading_joined": 7.89112,
         "imbalance_20": 1.58894,
         "imbalance_25": 3.63396,
         "top_longer": 0.434595,
@@ -288,8 +294,7 @@ def ranked(
     found: list[Layout] = _enumerated(case)
     if field.rescue_lines > _ENUMERATED_LINES:
         best: _Bound = min(((layout.rescue, layout.score(weights)) for layout in found), default=_NO_BOUND)
-        headed: list[Layout] = _programmed(replace(case, forced=case.forced | case.heading), weights, best)
-        found.extend(headed or _programmed(case, weights, best))
+        found.extend(_programmed(case, weights, best))
     return sorted(found, key=lambda layout: (layout.rescue, layout.score(weights)))
 
 
@@ -324,16 +329,12 @@ def _case(text: str, field: Field, measure: Measure, *, morphology: bool) -> _Ca
         quotes=quote_spans(words),
         forced=forced if fits else frozenset(),
         released=frozenset() if fits else forced,
-        heading=frozenset() if heading is None or not _headed(forced, field, found[heading]) else frozenset({heading}),
+        heading=frozenset() if heading is None or found[heading].banned else frozenset({heading}),
         chars=_chars(" ".join(words)),
         field=field,
         measure=cached,
         morphology=morphology,
     )
-
-
-def _headed(forced: frozenset[int], field: Field, gap: Gap) -> bool:
-    return len(forced) + 1 < field.rescue_lines and not gap.banned
 
 
 def _list_breaks(words: tuple[str, ...], field: Field, measure: Measure) -> frozenset[int]:
@@ -354,7 +355,7 @@ def _splits(case: _Case) -> Iterator[tuple[int, ...]]:
     allowed: list[int] = [index for index in range(len(case.gaps)) if _allowed_cut(case, index)]
     for lines in range(1, min(case.field.rescue_lines, _ENUMERATED_LINES) + 1):
         for cuts in combinations(allowed, lines - 1):
-            if case.forced <= set(cuts) and (not cuts or case.heading <= set(cuts)):
+            if case.forced <= set(cuts):
                 yield cuts
 
 
@@ -421,6 +422,8 @@ def _evaluate(case: _Case, cuts: tuple[int, ...], scale: Scale) -> Layout:
     extra: int = max(0, count - field.max_lines)
     if field.scalable and 0 < field.letter_height * min(scale.fx, scale.fy) < _SMALL_LETTERS[0]:
         flags.append(Flag.SMALL)
+    if field.scalable and min(scale.fx, scale.fy) < _MIN_SCALE:
+        flags.append(Flag.SHRUNK)
     rescue_flags: list[Flag] = [flag for flag, on in ((Flag.OUTSIDE, outside), (Flag.EXTRA_LINE, extra)) if on]
     return Layout(
         lines=_lines(case.words, cuts),
@@ -455,6 +458,8 @@ def _line_shape(case: _Case, place: tuple[int, int, int, int]) -> _Part:
     harms: dict[str, float] = _imbalance_harms(case, _chars(" ".join(case.words[start:end])), index, count)
     flags: list[Flag] = [Flag.JOINED for cut in case.released if start <= cut < end - 1]
     mixed: int = sum(start <= cut < end - 1 for cut in case.field.style_breaks - case.forced - case.heading)
+    if count > 1 and any(start <= cut < end - 1 for cut in case.heading):
+        harms["heading_joined"] = 1.0
     if mixed:
         harms["mixed_style"] = float(mixed)
     if mixed and case.field.style_rescue:

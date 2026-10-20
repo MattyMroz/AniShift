@@ -419,3 +419,20 @@ def test_lines_past_the_source_count_take_the_width_of_the_last_source_line() ->
 
     over: float = _find(found, "Uwaga", "stromy", "zjazd").harms["over_comfort"]
     assert over == pytest.approx(chars_measure("x", 1.0))
+
+
+@pytest.mark.unit
+def test_scale_below_the_readable_minimum_is_avoided_while_a_larger_layout_exists() -> None:
+    text: str = "Przecież dziewczyny potrzebują więcej czasu na zrobienie się na bóstwo"
+    field: Field = sign_field(source_lines=1, template=(chars_measure(text, 1.0) * 0.45,), letter_height=60.0)
+    chosen: Layout = lay_out(text, field, chars_measure)
+    assert Flag.SHRUNK not in chosen.flags
+    assert min(chosen.scale.fx, chosen.scale.fy) >= 0.6
+    assert len(chosen.lines) > 1
+
+
+@pytest.mark.unit
+def test_leading_label_alone_does_not_win_over_a_balanced_split() -> None:
+    text: str = "Yuuna: No weź, przecież dziewczyny potrzebują więcej czasu na zrobienie się na bóstwo, proszę pana!"
+    field: Field = sign_field(source_lines=1, template=(chars_measure(text, 1.0) * 0.55,), letter_height=60.0)
+    assert lay_out(text, field, chars_measure).lines[0] != "Yuuna:"

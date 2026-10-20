@@ -2726,7 +2726,6 @@
      0.492678
     ]
    },
-   "accept_rule": "no_hourglass",
    "note": "a leading label ending in a colon heads the title on its own line, also without a style change (owner, 20.10)"
   },
   {
@@ -3047,9 +3046,52 @@
   },
   {
    "id": "s03",
-   "source": "text-layout spec §6.2",
-   "scope": "scene",
-   "note": "frame width and the dialogue below come from the scene layer"
+   "source": "text-layout spec §6.2, owner review of the v4 gallery 20.10 (image 31)",
+   "scope": "core",
+   "pair": "corpus-pairs/grand-blue-s2-05",
+   "event": 499,
+   "text": "Yuuna: „No weź! Przecież dziewczyny potrzebują więcej czasu na zrobienie się na bóstwo, proszę pana!”.",
+   "field": {
+    "kind": "sign",
+    "original": "Yuuna: \"Come on! Girls take longer to get ready, Mister!\"",
+    "tags": "{\u0003c&HE6AEE9&\u0004c&H9B11CC&\b0}"
+   },
+   "accept": [
+    {
+     "lines": [
+      "Yuuna: „No weź! Przecież dziewczyny potrzebują więcej",
+      "czasu na zrobienie się na bóstwo, proszę pana!”."
+     ]
+    }
+   ],
+   "accept_rule": "lines:2",
+   "note": "message box: two lines at full or slightly reduced size beat one line shrunk below the readable scale",
+   "measure": {
+    "kind": "words",
+    "words": {
+     "Przecież": 0.095148,
+     "Yuuna:": 0.080518,
+     "bóstwo,": 0.089752,
+     "czasu": 0.065991,
+     "dziewczyny": 0.130737,
+     "na": 0.027704,
+     "pana!”.": 0.081866,
+     "potrzebują": 0.120154,
+     "proszę": 0.076575,
+     "się": 0.032996,
+     "weź!": 0.051465,
+     "więcej": 0.071283,
+     "zrobienie": 0.104382,
+     "„No": 0.043579
+    },
+    "space": 0.006641,
+    "edge": 0.015625,
+    "original_lines": 1,
+    "letter_height": 51.0,
+    "template": [
+     0.661426
+    ]
+   }
   },
   {
    "id": "s04",

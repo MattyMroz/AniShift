@@ -8,7 +8,7 @@ completed: 2026-10-19
 
 # Kalibracja rdzenia układu tekstu — raport
 
-Kontrakt: [text-layout.md](../text-layout.md) §4.2, §5.3, §7, plan [02-text-layout.md](../plans/02-text-layout.md) fazy C i E. Stan po dziewiątej rundzie (czytelność liter szyldu, sekcja „Runda 9”); wcześniej ósma (kształt źródła), siódma (napisy poboczne) i piąta runda (sekcja niżej); czwarta runda: nowe klasy przerw z polskiej składni (po ślepej ocenie 160 kwestii NF+AMZN, w której rdzeń ciął źle w 5,0% kwestii), poprawki z przeglądu kodu faz A–C i ponowna kalibracja.
+Kontrakt: [text-layout.md](../text-layout.md) §4.2, §5.3, §7, plan [02-text-layout.md](../plans/02-text-layout.md) fazy C i E. Stan po dziesiątej rundzie (najmniejsza skala szyldu, sekcja „Runda 10”); wcześniej dziewiąta (czytelność liter), ósma (kształt źródła), siódma (napisy poboczne) i piąta runda (sekcja niżej); czwarta runda: nowe klasy przerw z polskiej składni (po ślepej ocenie 160 kwestii NF+AMZN, w której rdzeń ciął źle w 5,0% kwestii), poprawki z przeglądu kodu faz A–C i ponowna kalibracja.
 
 ## Wynik
 
@@ -16,8 +16,8 @@ Kalibracja z morfologią jest **wykonalna**: brak zbiorów sprzecznych i konflik
 
 | Miara | Wynik |
 | --- | --- |
-| Katalog i ankieta w pełnej przestrzeni kandydatów (z układami powyżej trzech wierszy) | **86/86** (`tests/services/subtitles/test_text_layout_catalogue.py`) |
-| Test z pominięciem jednego zdarzenia | **74/86**; niespełnione: d06, d15, d25, d28, q10, q11, q15, q19, r03, s02, s10, t02 |
+| Katalog i ankieta w pełnej przestrzeni kandydatów (z układami powyżej trzech wierszy) | **87/87** (`tests/services/subtitles/test_text_layout_catalogue.py`) |
+| Test z pominięciem jednego zdarzenia | **75/87**; niespełnione: d06, d15, d28, q10, q11, q15, q19, r03, s02, s10, s26, t02 |
 | Wrażliwość ±10% (tylko raport) | `length_comfortable` ×0,9 → q10; ×1,1 → d06, d28, t02; `extra_line` ×0,9 → d28, s10, ×1,1 → q10, s02; `cut_degree` ×0,9 → d06, t02; `cut_phrase` ×1,1 → e06, e13; `cut_modifier` ×0,9 → e13; `over_comfort` ×0,9 → s02 |
 | Przypadki przy kolanie (jeden wiersz 0,74–0,80) | d28 0,771 (jeden wiersz), q04 0,741 (jeden), q10 0,748 (dwa), q11 0,800 (dwa), q14 0,789 (dwa), q17 0,768 (dwa; „oba dobre”), q19 0,783 (dwa), e14 0,798 (dwa) |
 | Zawodowcy NF+AMZN | 441 kwestii uczących, 13 pominiętych (układ zawodowca poza poziomem 0), 1319 par miękkich, 180 naruszonych; strata par „oba dobre” 4,50 |
@@ -29,6 +29,12 @@ LOO i wrażliwość pokazują to samo co wcześniej: przy kolanie długości (0,
 Najważniejsze wagi (runda 7): długość 165,2 (od 0,55) i 293,3 (od 0,76), drugi wiersz 33,7, wystawanie poza oryginał 152,9, ściśnięcie 86,2, zmniejszenie 78,2, małe litery 0,95, związki chronione, `auxiliary` i jednoliterowy wyraz 52,2, `after_opener` 32,4, `particle` 22,3, `degree` 19,9, `modifier` 7,8, `phrase`, `abbreviation`, `prepositional` 6,8, `before_preposition` 4,2, zgoda przymiotnika 6,8, nierównowaga ponad 20 znaków 2,24 na znak, dłuższa góra 0,43 na znak; brakujący wiersz szyldu 0. Klasy od końca zdania do „przed spójnikiem współrzędnym” mają wagę 0,001, więc o takich cięciach decyduje kształt.
 
 **Szkoda „za mały” (`small`) do rundy 6 miała wagę 0 — to był brak danych, nie błąd cechy** (w rundzie 7 dostała 0,95, bo pary s02 wiążą zmniejszenie). Stopień liczy się poprawnie (np. 15 391 z 45 729 kandydatów s29 ma go powyżej zera). W katalogu są pary, w których przegrany ma mniejsze litery od zwycięzcy (r01: 51, s14: 19, s10: 15, q15: 2), ale każdy taki przegrany przegrywa już przez zmniejszenie: litery spadają poniżej 30 px dopiero przy skali ok. 0,36–0,59 (litery 51–84 px), gdzie szkoda zmniejszenia jest duża. Program liniowy minimalizuje sumę wag przy zachowanym marginesie, więc wagi, której żadna para nie wymaga, nie podnosi. Żeby szkoda działała, katalog potrzebuje przypadku, w którym zmniejszenie samo przegrywa tylko przez czytelność (np. drobny tekst s06, s11 — dziś poza rdzeniem).
+
+## Runda 10 (najmniejsza skala szyldu)
+
+Wiadomość „Yuuna: „No weź! …”” (grand-blue-s2-05, s03) wychodziła w jednym wierszu zmniejszonym do ok. 40%: litery tuż nad progiem 16 px, więc poziom ratunku z rundy 9 jej nie łapał. Skala poniżej 0,6 (mniejsza z osi; `_MIN_SCALE`, propozycja do potwierdzenia przez właściciela — wcześniejsze skrajności U4: 1,6%, 6%, 12%) jest teraz poziomem ratunku `Flag.SHRUNK`, gdy istnieje kandydat ze skalą ≥ 0,6; warstwa sceny bierze go, jeśli przechodzi filtry, także z dodatkowym wierszem przy jednowierszowym źródle. Etykieta z dwukropkiem przestała być granicą wymuszoną układów wielowierszowych: to szkoda ważona `heading_joined` (wiersz z etykietą i dalszym tekstem w układzie z ≥ 2 wierszami), bo wymuszona dawała „Yuuna: / <cała reszta>”. s10 ma tylko listę układów z nagłówkiem w osobnym wierszu (bez reguły „bez klepsydry”, która przepuszczała „Odcinek drugi: Chłopiec, / …”), s03 przeszło do rdzenia z regułą „dwa wiersze”.
+
+Wynik: wykonalna, 87/87, test z pominięciem jednego zdarzenia 75/87. Waga `heading_joined` 7,9; pozostałe wagi bez zmian względem rundy 9. Test produkcyjny: s13 znowu `xfail` — kolumna źródła wystaje poza lewą krawędź, więc w produkcji dwa wiersze wymagałyby skali poniżej 0,6 i wygrywają trzy wiersze w 70%.
 
 ## Runda 9 (czytelność liter szyldu)
 

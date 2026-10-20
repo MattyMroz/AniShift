@@ -114,7 +114,7 @@ def test_scaling_preserves_geometry_and_scales_inline_animation_and_reset() -> N
 
 @pytest.mark.unit
 def test_mirrored_scale_keeps_its_sign() -> None:
-    result: str = _fit(r"{\an7\fscx-50}Red", r"{\an7\fscx-50}Czerwony", SSAStyle(fontsize=160))
+    result: str = _fit(r"{\an7\fscx-50}Red", r"{\an7\fscx-50}Czerwony", SSAStyle(fontsize=600))
     assert [value < 0 for tag, value in _scales(result) if tag == "fscx"] == [False, True]
 
 
@@ -258,8 +258,8 @@ def test_frames_of_one_sign_share_one_layout() -> None:
 @pytest.mark.integration
 def test_translated_writer_fits_signs_but_does_not_resize_dialogue(tmp_path: Path) -> None:
     subs: SSAFile = SSAFile()
-    subs.styles["Default"] = SSAStyle(fontsize=80)
-    subs.styles["Sign"] = SSAStyle(fontsize=80)
+    subs.styles["Default"] = SSAStyle(fontsize=300)
+    subs.styles["Sign"] = SSAStyle(fontsize=300)
     subs.events = [
         SSAEvent(style="Default", text="Red", start=0, end=2000),
         SSAEvent(style="Sign", text=r"{\an7\pos(10,10)}Red", start=0, end=2000),
