@@ -127,6 +127,7 @@ class LayoutReport:
     dialogue_untagged: int = 0
     fallback_glyph_events: int = 0
     restyled_styles: int = 0
+    signs_restyled: int = 0
 
 
 @dataclass(frozen=True, slots=True)

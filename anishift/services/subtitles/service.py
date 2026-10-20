@@ -33,7 +33,13 @@ from anishift.services.subtitles.fitting import fit_signs
 from anishift.services.subtitles.geometry import RenderProfile, TextBox, measure_text
 from anishift.services.subtitles.layout import Flag
 from anishift.services.subtitles.linebreak import DialogueLayout, layout_dialogue, tagged_line
-from anishift.services.subtitles.restyle import clone_source, restyle_dialogue
+from anishift.services.subtitles.restyle import (
+    attached_names,
+    clone_source,
+    restyle_dialogue,
+    restyle_signs,
+    with_family,
+)
 from anishift.services.subtitles.signs import static_weights
 from anishift.services.subtitles.text import is_drawing, is_karaoke, visible_text
 from anishift.services.subtitles.types import (
@@ -573,8 +579,11 @@ def layout_translated(
     """
     report: LayoutReport = LayoutReport()
     source: SSAFile = split.subs
+    plain: dict[int, str] = {}
     if dialogue_font is not None:
         source = restyle_dialogue(source, split.decisions, dialogue_font, report)
+    if dialogue_font is not None and fonts is not None and split.kind == "ass":
+        source, plain = restyle_signs(source, split.decisions, dialogue_font, attached_names(fonts.episode))
     profile: RenderProfile = RenderProfile.from_subs(source, _font_index(fonts, dialogue_font))
     texts: dict[int, str] = _event_translations(split, translations)
     out: SSAFile = _copy_metadata(source)
@@ -599,13 +608,22 @@ def layout_translated(
             _count_dialogue(report, dialogue)
             laid_out.text = dialogue.text
         else:
-            laid_out.text = tagged_line(event, text, profile)
+            _restyle_sign(laid_out, plain.get(dialogue_index - 1), dialogue_font)
+            laid_out.text = tagged_line(laid_out, text, profile)
+            report.signs_restyled += laid_out.style != event.style
         if split.kind == "ass" and decision == "displayed":
             signs.append(position)
         out.events.append(laid_out)
     for position, fitted in fit_signs(source, out, signs, profile, report).items():
         out.events[position].text = fitted
     return TranslatedLayout(out, report)
+
+
+def _restyle_sign(event: SSAEvent, clone: str | None, font: DialogueFont | None) -> None:
+    if clone is None or font is None:
+        return
+    event.style = clone
+    event.text = with_family(event.text, font.family)
 
 
 def _count_dialogue(report: LayoutReport, dialogue: DialogueLayout) -> None:
