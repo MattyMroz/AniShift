@@ -8,7 +8,6 @@ from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
 from anishift.services.subtitles.fitting import fit_signs
 from anishift.services.subtitles.geometry import Rect, RenderProfile, screen_rects
-from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.subtitles.service import load_subtitles, split_subtitles, write_translated
 from anishift.services.subtitles.text import visible_text, visible_verses
 from anishift.services.subtitles.types import LayoutReport
@@ -264,7 +263,7 @@ def test_translated_writer_fits_signs_but_does_not_resize_dialogue(tmp_path: Pat
     ]
     split = split_subtitles(subs, kind="ass", spoken_styles={"Default"})
     path: Path = tmp_path / "output.pl.ass"
-    write_translated(split, {0: "Czerwony", 1: "Czerwony"}, path, fonts=None, limits=LayoutLimits(), dialogue_font=None)
+    write_translated(split, {0: "Czerwony", 1: "Czerwony"}, path, fonts=None, dialogue_font=None)
     result: SSAFile = load_subtitles(path)
     assert result.events[0].text == "Czerwony"
     assert result.events[1].text.startswith(r"{\fscx")
@@ -283,9 +282,7 @@ def test_translated_writer_keeps_karaoke_untouched(tmp_path: Path) -> None:
     ]
     split = split_subtitles(subs, kind="ass", spoken_styles={"Default"})
     path: Path = tmp_path / "output.pl.ass"
-    write_translated(
-        split, {0: "Czerwony", 1: "Pieśń miłości"}, path, fonts=None, limits=LayoutLimits(), dialogue_font=None
-    )
+    write_translated(split, {0: "Czerwony", 1: "Pieśń miłości"}, path, fonts=None, dialogue_font=None)
     assert load_subtitles(path).events[1].text == karaoke
 
 

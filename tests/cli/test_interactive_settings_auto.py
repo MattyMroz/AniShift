@@ -493,14 +493,14 @@ def test_the_output_reset_restores_the_auto_policies_too(panel: SettingsControll
 def test_the_root_reset_restores_preferences_and_the_preset(
     panel: SettingsController, service: FakeAutoService
 ) -> None:
-    service.settings.subtitle_max_chars_per_line = 100
+    service.settings.translation_batch_size = 100
     service.preset = replace(service.preset, translation_action=TranslationAction.TRANSLATE)
     _activate(panel, "reset-settings")
     panel.handle_key("down")
     panel.handle_key("enter")
 
     assert service.resets == 1
-    assert service.settings.subtitle_max_chars_per_line == 42
+    assert service.settings.translation_batch_size == 0
     assert service.preset == default_preset_file().presets[0]
     assert panel._feedback is None
 

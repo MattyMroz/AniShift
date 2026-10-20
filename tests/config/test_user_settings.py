@@ -108,8 +108,6 @@ def test_load_rejects_non_string_choices(key: str, value: object, config_file: P
 @pytest.mark.parametrize(
     ("key", "fraction"),
     [
-        ("subtitle_max_chars_per_line", 40.5),
-        ("subtitle_max_lines_per_event", 1.5),
         ("translation_chunk_chars", 300.5),
         ("translation_batch_size", 1.5),
         ("translation_concurrency", 1.5),
@@ -408,6 +406,23 @@ def test_load_language_priority_normalizes_case_and_duplicates(config_file: Path
 def test_dropped_legacy_output_switch_is_ignored(config_file: Path) -> None:
     config_file.write_text(json.dumps({"move_results_to_output": True}), encoding="utf-8")
     assert not hasattr(load_user_settings(), "move_results_to_output")
+
+
+def test_removed_subtitle_line_limits_load_without_error_and_are_not_saved_again(config_file: Path) -> None:
+    config_file.write_text(
+        json.dumps(
+            {"subtitle_max_chars_per_line": 60, "subtitle_max_lines_per_event": 3, "primary_model_alias": "kept"}
+        ),
+        encoding="utf-8",
+    )
+
+    loaded: UserSettings = load_user_settings()
+    save_user_settings(loaded)
+
+    payload: dict[str, object] = json.loads(config_file.read_text(encoding="utf-8"))
+    assert loaded.primary_model_alias == "kept"
+    assert "subtitle_max_chars_per_line" not in payload
+    assert "subtitle_max_lines_per_event" not in payload
 
 
 def test_save_writes_schema_v3_without_legacy_placeholders(config_file: Path) -> None:

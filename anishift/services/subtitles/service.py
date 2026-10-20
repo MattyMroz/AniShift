@@ -31,7 +31,7 @@ from anishift.services.subtitles.classifier import (
 from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.fitting import fit_signs
 from anishift.services.subtitles.geometry import RenderProfile, TextBox, measure_text
-from anishift.services.subtitles.layout import Flag, LayoutLimits
+from anishift.services.subtitles.layout import Flag
 from anishift.services.subtitles.linebreak import DialogueLayout, layout_dialogue, tagged_line
 from anishift.services.subtitles.restyle import clone_source, restyle_dialogue
 from anishift.services.subtitles.signs import static_weights
@@ -153,31 +153,30 @@ def normalize_subtitles(  # noqa: PLR0913 - layout inputs mirror layout_translat
     destination: Path,
     *,
     kind: SubtitleKind,
-    layout: LayoutLimits | None = None,
+    lay_out: bool = False,
     fonts: FontSources | None = None,
     dialogue_font: DialogueFont | None = None,
 ) -> Path:
-    """Convert one supported subtitle file with its complete event stream, laid out when limits are given."""
+    """Convert one supported subtitle file with its complete event stream, laid out when ``lay_out`` asks for it."""
     subtitles: SSAFile = load_subtitles(source)
     if not any(event.type == "Dialogue" for event in subtitles.events):
         raise _fail(ErrorCode.SUBTITLE_PARSE_FAILED, "Subtitle file contains no dialogue events")
-    if layout is None:
+    if not lay_out:
         return _write_output(subtitles, destination, kind, subject="Normalized")
     source_kind: SubtitleKind | None = subtitle_kind(source)
     if source_kind is None:
         raise _fail(ErrorCode.SUBTITLE_PARSE_FAILED, "Subtitle source format is unsupported")
     split: SubtitleSplit = split_subtitles(subtitles, kind=source_kind)
     laid_out: TranslatedLayout = layout_translated(
-        split, _source_texts(split), fonts=fonts, limits=layout, dialogue_font=dialogue_font, own_text=True
+        split, _source_texts(split), fonts=fonts, dialogue_font=dialogue_font, own_text=True
     )
     return _write_laid_out(laid_out.subs, laid_out.report, destination, kind, subject="Normalized")
 
 
-def reflow_polish_dialogue(split: SubtitleSplit, layout: LayoutLimits | None = None) -> SubtitleSplit:
+def reflow_polish_dialogue(split: SubtitleSplit) -> SubtitleSplit:
     """Lay out Polish events on a copy with their own text as the translation, keeping exact inline formatting."""
-    limits: LayoutLimits = layout if layout is not None else LayoutLimits()
     laid_out: TranslatedLayout = layout_translated(
-        split, _source_texts(split), fonts=None, limits=limits, dialogue_font=None, own_text=True
+        split, _source_texts(split), fonts=None, dialogue_font=None, own_text=True
     )
     return replace(split, subs=laid_out.subs)
 
@@ -557,12 +556,11 @@ def write_displayed(split: SubtitleSplit, dest: Path) -> Path | None:
     return _write_output(_stream_file(split, "displayed"), dest, split.kind, subject="Displayed")
 
 
-def layout_translated(  # noqa: PLR0913 - layout inputs of every writer
+def layout_translated(
     split: SubtitleSplit,
     translations: Mapping[int, str],
     *,
     fonts: FontSources | None,
-    limits: LayoutLimits,
     dialogue_font: DialogueFont | None,
     own_text: bool = False,
 ) -> TranslatedLayout:
@@ -648,21 +646,18 @@ def _font_index(fonts: FontSources | None, dialogue_font: DialogueFont | None) -
     return FontIndex.build(episode, fonts.system if fonts is not None else ())
 
 
-def write_translated(  # noqa: PLR0913 - layout inputs mirror layout_translated
+def write_translated(
     split: SubtitleSplit,
     translations: Mapping[int, str],
     dest: Path,
     *,
     fonts: FontSources | None,
-    limits: LayoutLimits,
     dialogue_font: DialogueFont | None,
 ) -> Path | None:
     """Lay out and write the whole translated subtitle file atomically, or return None when it is empty."""
     if split.stats.total_events == 0:
         return None
-    laid_out: TranslatedLayout = layout_translated(
-        split, translations, fonts=fonts, limits=limits, dialogue_font=dialogue_font
-    )
+    laid_out: TranslatedLayout = layout_translated(split, translations, fonts=fonts, dialogue_font=dialogue_font)
     return _write_laid_out(laid_out.subs, laid_out.report, dest, split.kind, subject="Translated")
 
 

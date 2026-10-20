@@ -32,7 +32,6 @@ from anishift.services.subtitles import (
     subtitle_kind,
     write_translated,
 )
-from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.translation.chunk_config import ChunkConfig
 from anishift.services.translation.errors import TranslationError
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
@@ -152,21 +151,19 @@ class TextDocument:
 class TranslationTaskHandler:
     """Translate one subtitle artifact and write a complete Polish staging file."""
 
-    __slots__ = ("_chunk_config", "_dialogue_font", "_layout", "_run_root", "_service")
+    __slots__ = ("_chunk_config", "_dialogue_font", "_run_root", "_service")
 
     def __init__(
         self,
         service: TranslationExecutor,
         *,
         run_root: Path,
-        layout: LayoutLimits | None = None,
         chunk_config: ChunkConfig | None = None,
         dialogue_font: DialogueFont | None = None,
     ) -> None:
         """Bind one configured translation facade to the run scope."""
         self._service: TranslationExecutor = service
         self._run_root: Path = run_root
-        self._layout: LayoutLimits = layout if layout is not None else LayoutLimits()
         self._chunk_config: ChunkConfig = chunk_config if chunk_config is not None else ChunkConfig()
         self._dialogue_font: DialogueFont | None = dialogue_font
 
@@ -312,7 +309,6 @@ class TranslationTaskHandler:
             translated_texts(split, result),
             destination,
             fonts=fonts,
-            limits=self._layout,
             dialogue_font=self._dialogue_font,
         )
         return result, written

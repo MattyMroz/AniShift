@@ -26,7 +26,6 @@ from anishift.services.subtitles import (
     visible_text,
     write_full,
 )
-from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.subtitles.restyle import DialogueFont
 from anishift.services.tts.validation import is_speech_text
 from anishift.utils.logger import LoggerMode, setup_mode
@@ -130,7 +129,7 @@ def translations(split: SubtitleSplit, inputs: PairInput) -> dict[int, str]:
 def replay_pair(
     directory: Path, destination: Path, dialogue_font: DialogueFont | None = None
 ) -> tuple[PairInput, SubtitleSplit, Path | None]:
-    """Lay out one pair's Polish text with the default limits, and the dialogue font when given, and write it."""
+    """Lay out one pair's Polish text, with the dialogue font when given, and write it."""
     source: SSAFile = load_subtitles(directory / SOURCE_NAME)
     inputs: PairInput = pair_input(source, load_subtitles(directory / OUTPUT_NAME))
     split: SubtitleSplit = split_subtitles(source, kind="ass")
@@ -138,7 +137,6 @@ def replay_pair(
         split,
         translations(split, inputs),
         fonts=pair_fonts(directory),
-        limits=LayoutLimits(),
         dialogue_font=dialogue_font,
     )
     return inputs, split, write_full(replace(split, subs=laid_out.subs), destination)

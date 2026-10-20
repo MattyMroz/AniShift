@@ -9,10 +9,9 @@ import pytest
 
 from anishift.application.control_payloads import decode_intent
 from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot, TaskKind
-from anishift.application.runtime import _chunk_config, _dialogue_font, _layout_limits
+from anishift.application.runtime import _chunk_config, _dialogue_font
 from anishift.application.translation_handler import text_spoken_lines
 from anishift.config.user_settings import UserSettings
-from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.translation.chunk_config import ChunkConfig
 
 _SYSTEM_ARIAL: Final[Path] = Path("C:/Windows/Fonts/arial.ttf")
@@ -41,26 +40,17 @@ def _plan(snapshot: RunSettingsSnapshot) -> ExecutionPlan:
 
 def test_the_snapshot_carries_the_shipped_layout_defaults() -> None:
     snapshot = _snapshot()
-    assert snapshot.subtitle_max_chars_per_line == 42
-    assert snapshot.subtitle_max_lines_per_event == 2
     assert snapshot.translation_chunk_chars == 750
 
 
 def test_user_settings_and_the_snapshot_agree_on_the_defaults() -> None:
     settings = UserSettings()
     snapshot = _snapshot()
-    assert settings.subtitle_max_chars_per_line == snapshot.subtitle_max_chars_per_line
-    assert settings.subtitle_max_lines_per_event == snapshot.subtitle_max_lines_per_event
     assert settings.translation_chunk_chars == snapshot.translation_chunk_chars
 
 
-def test_the_runtime_carries_every_chosen_limit_into_the_layout() -> None:
-    snapshot = _snapshot(
-        subtitle_max_chars_per_line=60,
-        subtitle_max_lines_per_event=3,
-        translation_chunk_chars=1200,
-    )
-    assert _layout_limits(_plan(snapshot)) == LayoutLimits(max_chars=60, max_lines=3)
+def test_the_runtime_carries_the_chosen_chunk_size_into_the_chunk_config() -> None:
+    snapshot = _snapshot(translation_chunk_chars=1200)
     assert _chunk_config(_plan(snapshot)) == ChunkConfig(chunk_chars=1200)
 
 

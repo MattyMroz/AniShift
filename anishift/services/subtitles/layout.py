@@ -1,4 +1,4 @@
-"""Line limits of a run and the layout core: one scored choice of lines and scale for any displayed text in a field."""
+"""Layout core: one scored choice of lines and scale for any displayed text in a field."""
 
 from __future__ import annotations
 
@@ -22,15 +22,12 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CHAR_WIDTH",
-    "DEFAULT_MAX_CHARS",
     "DIALOGUE_MAX_WIDTH",
     "HARMS",
-    "MAX_LINES",
     "WEIGHTS",
     "Field",
     "Flag",
     "Layout",
-    "LayoutLimits",
     "Measure",
     "Scale",
     "candidates",
@@ -41,30 +38,6 @@ __all__ = [
     "ranked",
     "sign_field",
 ]
-
-
-DEFAULT_MAX_CHARS: Final[int] = 42
-"""Preferred readable line length for on-screen subtitles (Netflix/BBC-ish)."""
-
-MAX_LINES: Final[int] = 2
-"""Maximum on-screen verses before an over-length line is accepted."""
-
-
-@dataclass(frozen=True, slots=True)
-class LayoutLimits:
-    """Line length and line count chosen by the user for one run."""
-
-    max_chars: int = DEFAULT_MAX_CHARS
-    max_lines: int = MAX_LINES
-
-    def __post_init__(self) -> None:
-        """Reject limits that would make the line breaker unable to produce output."""
-        if self.max_chars <= 0:
-            msg = "Maximum characters per line must be positive"
-            raise ValueError(msg)
-        if self.max_lines <= 0:
-            msg = "Maximum lines per event must be positive"
-            raise ValueError(msg)
 
 
 type Measure = Callable[[str, float], float]

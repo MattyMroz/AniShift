@@ -27,7 +27,7 @@ _DELAY = 0.5
 
 class FakeSettingsService:
     def __init__(self) -> None:
-        self.settings = UserSettings()
+        self.settings = UserSettings(translation_batch_size=42, translation_concurrency=2)
         self.saves: list[tuple[str, SettingValue]] = []
         self.secrets: list[tuple[str, str | None]] = []
         self.resets = 0
@@ -122,6 +122,11 @@ def _activate(panel: SettingsController, key: str) -> None:
     raise AssertionError(f"{key} is not on this screen")
 
 
+def _select(panel: SettingsController, category: str, setting_id: str) -> None:
+    _activate(panel, f"category:{category}")
+    panel._selected = next(index for index, item in enumerate(panel._items) if item.key == f"setting:{setting_id}")
+
+
 def _open_field(panel: SettingsController, category: str, setting_id: str) -> None:
     _activate(panel, f"category:{category}")
     _activate(panel, f"setting:{setting_id}")
@@ -199,10 +204,7 @@ def test_a_stepped_number_shows_up_before_it_reaches_storage(
     panel: SettingsController,
     service: FakeSettingsService,
 ) -> None:
-    _activate(panel, "category:subtitles")
-    for index, item in enumerate(panel._items):
-        if item.key == "setting:subtitle_max_chars_per_line":
-            panel._selected = index
+    _select(panel, "translation", "translation_batch_size")
     panel.handle_key("right")
 
     assert panel._items[panel._selected].current == "43"
@@ -269,10 +271,7 @@ def test_stepping_a_number_back_to_its_stored_value_saves_nothing(
     panel: SettingsController,
     service: FakeSettingsService,
 ) -> None:
-    _activate(panel, "category:subtitles")
-    for index, item in enumerate(panel._items):
-        if item.key == "setting:subtitle_max_chars_per_line":
-            panel._selected = index
+    _select(panel, "translation", "translation_batch_size")
     panel.handle_key("right")
     panel.handle_key("left")
     _idle(panel)
@@ -346,23 +345,17 @@ def test_closing_the_panel_saves_a_change_younger_than_the_delay(
     panel: SettingsController,
     service: FakeSettingsService,
 ) -> None:
-    _activate(panel, "category:subtitles")
-    for index, item in enumerate(panel._items):
-        if item.key == "setting:subtitle_max_chars_per_line":
-            panel._selected = index
+    _select(panel, "translation", "translation_batch_size")
     panel.handle_key("right")
     assert service.saves == []
 
     panel.close()
 
-    assert _stored(service, "subtitle_max_chars_per_line") == 43
+    assert _stored(service, "translation_batch_size") == 43
 
 
 def test_closing_the_panel_twice_saves_once(panel: SettingsController, service: FakeSettingsService) -> None:
-    _activate(panel, "category:subtitles")
-    for index, item in enumerate(panel._items):
-        if item.key == "setting:subtitle_max_chars_per_line":
-            panel._selected = index
+    _select(panel, "translation", "translation_batch_size")
     panel.handle_key("right")
     panel.close()
     panel.close()
@@ -405,16 +398,16 @@ def test_typing_a_number_saves_itself_once_the_typing_stops(
     panel: SettingsController,
     service: FakeSettingsService,
 ) -> None:
-    _open_field(panel, "subtitles", "subtitle_max_chars_per_line")
+    _open_field(panel, "translation", "translation_batch_size")
     for character in "60":
         panel.handle_key(f"text:{character}")
     _idle(panel)
 
-    assert _stored(service, "subtitle_max_chars_per_line") == 60
+    assert _stored(service, "translation_batch_size") == 60
 
 
 def test_the_first_typed_character_replaces_the_stored_value(panel: SettingsController) -> None:
-    _open_field(panel, "subtitles", "subtitle_max_lines_per_event")
+    _open_field(panel, "translation", "translation_concurrency")
     assert panel._editor is not None
     assert panel._editor.buffer == "2"
     panel.handle_key("text:3")
@@ -423,11 +416,11 @@ def test_the_first_typed_character_replaces_the_stored_value(panel: SettingsCont
 
 
 def test_typing_over_a_short_range_stays_inside_it(panel: SettingsController, service: FakeSettingsService) -> None:
-    _open_field(panel, "subtitles", "subtitle_max_lines_per_event")
+    _open_field(panel, "translation", "translation_concurrency")
     panel.handle_key("text:3")
     _idle(panel)
 
-    assert _stored(service, "subtitle_max_lines_per_event") == 3
+    assert _stored(service, "translation_concurrency") == 3
     assert panel._feedback is None
 
 
@@ -435,7 +428,8 @@ def test_an_out_of_range_number_is_not_announced_while_it_is_typed(
     panel: SettingsController,
     service: FakeSettingsService,
 ) -> None:
-    _open_field(panel, "subtitles", "subtitle_max_lines_per_event")
+    _open_field(panel, "translation", "translation_concurrency")
+    panel.handle_key("text:9")
     panel.handle_key("text:9")
     _idle(panel)
 
@@ -444,7 +438,7 @@ def test_an_out_of_range_number_is_not_announced_while_it_is_typed(
 
 
 def test_backspace_edits_the_stored_value_instead_of_replacing_it(panel: SettingsController) -> None:
-    _open_field(panel, "subtitles", "subtitle_max_chars_per_line")
+    _open_field(panel, "translation", "translation_batch_size")
     assert panel._editor is not None
     assert panel._editor.buffer == "42"
     panel.handle_key("backspace")
@@ -457,7 +451,7 @@ def test_an_unfinished_number_is_not_saved_before_the_typing_stops(
     panel: SettingsController,
     service: FakeSettingsService,
 ) -> None:
-    _open_field(panel, "subtitles", "subtitle_max_chars_per_line")
+    _open_field(panel, "translation", "translation_batch_size")
     panel.handle_key("text:6")
     panel.handle_key("text:0")
 
@@ -555,14 +549,14 @@ def test_a_screen_reset_restores_only_its_own_fields(
     panel: SettingsController,
     service: FakeSettingsService,
 ) -> None:
-    service.settings.subtitle_max_chars_per_line = 100
+    service.settings.sign_narration = "always"
     service.settings.translation_chunk_chars = 2000
     _activate(panel, "category:subtitles")
     _activate(panel, "reset-scope:subtitles")
     panel.handle_key("down")
     panel.handle_key("enter")
 
-    assert _stored(service, "subtitle_max_chars_per_line") == 42
+    assert _stored(service, "sign_narration") == "smart"
     assert _stored(service, "translation_chunk_chars") == 2000
 
 
@@ -583,12 +577,12 @@ def test_the_translation_reset_restores_the_model_row_it_shows(
 
 
 def test_a_refused_reset_changes_nothing(panel: SettingsController, service: FakeSettingsService) -> None:
-    service.settings.subtitle_max_chars_per_line = 100
+    service.settings.sign_narration = "always"
     _activate(panel, "category:subtitles")
     _activate(panel, "reset-scope:subtitles")
     panel.handle_key("enter")
 
-    assert _stored(service, "subtitle_max_chars_per_line") == 100
+    assert _stored(service, "sign_narration") == "always"
 
 
 def test_the_voice_list_offers_a_reset_that_clears_it(
@@ -684,13 +678,13 @@ def test_the_output_reset_leaves_the_cursor_where_it_was(panel: SettingsControll
 
 
 def test_a_confirmed_reset_says_nothing(panel: SettingsController, service: FakeSettingsService) -> None:
-    service.settings.subtitle_max_chars_per_line = 100
+    service.settings.sign_narration = "always"
     _activate(panel, "category:subtitles")
     _activate(panel, "reset-scope:subtitles")
     panel.handle_key("down")
     panel.handle_key("enter")
 
-    assert _stored(service, "subtitle_max_chars_per_line") == 42
+    assert _stored(service, "sign_narration") == "smart"
     assert panel._feedback is None
 
 
@@ -716,7 +710,7 @@ def test_failed_save_keeps_the_edit_and_blocks_navigation(
     service: FakeSettingsService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _activate(panel, "category:subtitles")
+    _select(panel, "translation", "translation_batch_size")
     panel.handle_key("right")
     selected = panel._selected
 
@@ -728,7 +722,7 @@ def test_failed_save_keeps_the_edit_and_blocks_navigation(
     panel.handle_key("down")
 
     assert panel._selected == selected
-    assert service.settings.subtitle_max_chars_per_line == 42
+    assert service.settings.translation_batch_size == 42
     assert panel._pending is not None
     assert panel._pending.value == 43
     assert panel._feedback is not None
@@ -740,7 +734,7 @@ def test_retrying_a_failed_save_commits_before_leaving(
     service: FakeSettingsService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _activate(panel, "category:subtitles")
+    _select(panel, "translation", "translation_batch_size")
     panel.handle_key("right")
     update = service.update_setting
 
@@ -756,7 +750,7 @@ def test_retrying_a_failed_save_commits_before_leaving(
     panel.handle_key("escape")
 
     assert panel._category is None
-    assert service.settings.subtitle_max_chars_per_line == 43
+    assert service.settings.translation_batch_size == 43
     assert len(service.saves) == 1
 
 
@@ -770,18 +764,18 @@ def test_saved_delayed_edit_retries_only_owner_reload_on_user_input(
         cast("AppService", service), lambda: None, resident=cast("ResidentSession", resident)
     )
     if typed:
-        _open_field(panel, "subtitles", "subtitle_max_chars_per_line")
+        _open_field(panel, "translation", "translation_batch_size")
         panel.handle_key("text:43")
     else:
-        _activate(panel, "category:subtitles")
+        _select(panel, "translation", "translation_batch_size")
         panel.handle_key("right")
     assert panel._pending is not None
     panel._pending.deadline = 0.0
 
     panel.flush_pending()
 
-    assert service.settings.subtitle_max_chars_per_line == 43
-    assert service.saves == [("subtitle_max_chars_per_line", 43)]
+    assert service.settings.translation_batch_size == 43
+    assert service.saves == [("translation_batch_size", 43)]
     assert panel._pending is None
     assert panel._owner_reload_pending
     assert panel._feedback is not None
@@ -799,7 +793,7 @@ def test_saved_delayed_edit_retries_only_owner_reload_on_user_input(
 
     assert resident.calls == 2
     assert panel._owner_reload_pending
-    assert service.saves == [("subtitle_max_chars_per_line", 43)]
+    assert service.saves == [("translation_batch_size", 43)]
     resident.error = None
 
     panel.handle_key("escape")
@@ -807,7 +801,7 @@ def test_saved_delayed_edit_retries_only_owner_reload_on_user_input(
     assert resident.calls == 3
     assert not panel._owner_reload_pending
     assert panel._feedback is None
-    assert service.saves == [("subtitle_max_chars_per_line", 43)]
+    assert service.saves == [("translation_batch_size", 43)]
 
 
 @pytest.mark.parametrize("secret", [False, True])
@@ -875,7 +869,7 @@ def test_failed_persistence_never_requests_owner_reload(
 
     monkeypatch.setattr(service, "update_setting", fail_save)
     if typed:
-        _open_field(panel, "subtitles", "subtitle_max_chars_per_line")
+        _open_field(panel, "translation", "translation_batch_size")
         panel.handle_key("text:43")
     else:
         _open_field(panel, "general", "processing_order_policy")
@@ -897,7 +891,7 @@ def test_interrupt_after_reload_failure_does_not_claim_the_saved_edit_was_discar
     panel: SettingsController = SettingsController(
         cast("AppService", service), lambda: None, resident=cast("ResidentSession", resident)
     )
-    _activate(panel, "category:subtitles")
+    _select(panel, "translation", "translation_batch_size")
     panel.handle_key("right")
 
     assert panel.handle_key("interrupt") is SettingsResult.STAY
@@ -905,28 +899,28 @@ def test_interrupt_after_reload_failure_does_not_claim_the_saved_edit_was_discar
     assert "Zapisano" in panel.render(40, 12).plain
     assert "Ctrl+C" in panel.render(40, 12).plain
     assert panel.handle_key("interrupt") is SettingsResult.BACK_HOME
-    assert service.settings.subtitle_max_chars_per_line == 43
-    assert service.saves == [("subtitle_max_chars_per_line", 43)]
+    assert service.settings.translation_batch_size == 43
+    assert service.saves == [("translation_batch_size", 43)]
     assert panel._owner_reload_pending
     assert resident.calls == 1
 
 
 def test_enter_commits_a_typed_value_exactly_once(panel: SettingsController, service: FakeSettingsService) -> None:
-    _open_field(panel, "subtitles", "subtitle_max_chars_per_line")
+    _open_field(panel, "translation", "translation_batch_size")
     panel.handle_key("text:60")
 
     panel.handle_key("enter")
 
-    assert service.saves == [("subtitle_max_chars_per_line", 60)]
+    assert service.saves == [("translation_batch_size", 60)]
 
 
-@pytest.mark.parametrize("field", ["subtitle_max_chars_per_line", "subtitle_max_lines_per_event"])
+@pytest.mark.parametrize("field", ["translation_batch_size", "translation_concurrency"])
 def test_enter_without_editing_writes_nothing(
     panel: SettingsController,
     service: FakeSettingsService,
     field: str,
 ) -> None:
-    _open_field(panel, "subtitles", field)
+    _open_field(panel, "translation", field)
 
     panel.handle_key("enter")
 
@@ -934,7 +928,7 @@ def test_enter_without_editing_writes_nothing(
 
 
 def test_text_cursor_can_replace_an_internal_character(panel: SettingsController) -> None:
-    _open_field(panel, "subtitles", "subtitle_max_chars_per_line")
+    _open_field(panel, "translation", "translation_batch_size")
     panel.handle_key("home")
     panel.handle_key("delete")
     panel.handle_key("text:6")
@@ -1095,7 +1089,7 @@ def test_repeated_interrupt_can_discard_an_unsaved_edit_after_a_write_failure(
     service: FakeSettingsService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _open_field(panel, "subtitles", "subtitle_max_chars_per_line")
+    _open_field(panel, "translation", "translation_batch_size")
     panel.handle_key("text:60")
 
     def fail_save(setting_id: str, value: SettingValue) -> UserSettings:
@@ -1112,7 +1106,7 @@ def test_repeated_interrupt_can_discard_an_unsaved_edit_after_a_write_failure(
 
     assert panel._pending is None
     assert panel._editor is None
-    assert service.settings.subtitle_max_chars_per_line == 42
+    assert service.settings.translation_batch_size == 42
 
 
 def test_another_key_disarms_the_unsaved_edit_discard(
@@ -1120,7 +1114,7 @@ def test_another_key_disarms_the_unsaved_edit_discard(
     service: FakeSettingsService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _activate(panel, "category:subtitles")
+    _select(panel, "translation", "translation_batch_size")
     panel.handle_key("right")
 
     def fail_save(setting_id: str, value: SettingValue) -> UserSettings:

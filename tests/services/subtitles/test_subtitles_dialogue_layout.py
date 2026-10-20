@@ -6,7 +6,7 @@ import pytest
 from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
 from anishift.services.subtitles.geometry import RenderProfile
-from anishift.services.subtitles.layout import Flag, LayoutLimits
+from anishift.services.subtitles.layout import Flag
 from anishift.services.subtitles.linebreak import DialogueLayout, layout_dialogue
 from anishift.services.subtitles.service import layout_translated, load_subtitles, split_subtitles, write_translated
 from anishift.services.subtitles.text import visible_text
@@ -142,18 +142,14 @@ def test_layout_translated_keeps_a_dialogue_line_equal_to_the_source_byte_for_by
     subs.events.append(SSAEvent(start=0, end=1000, text=source))
     split: SubtitleSplit = split_subtitles(subs, kind="ass", spoken_styles={"Default"})
 
-    laid_out: TranslatedLayout = layout_translated(
-        split, {0: visible_text(source)}, fonts=None, limits=LayoutLimits(), dialogue_font=None
-    )
+    laid_out: TranslatedLayout = layout_translated(split, {0: visible_text(source)}, fonts=None, dialogue_font=None)
 
     assert laid_out.subs.events[0].text == source
 
 
 def _write(tmp_path: Path, subs: SSAFile, texts: dict[int, str], name: str, kind: SubtitleKind) -> SSAFile:
     split: SubtitleSplit = split_subtitles(subs, kind=kind, spoken_styles=None if kind == "srt" else {"Default"})
-    written: Path | None = write_translated(
-        split, texts, tmp_path / name, fonts=None, limits=LayoutLimits(), dialogue_font=None
-    )
+    written: Path | None = write_translated(split, texts, tmp_path / name, fonts=None, dialogue_font=None)
     assert written is not None
     return load_subtitles(written)
 

@@ -12,7 +12,7 @@ import pytest
 from anishift.paths import default_workspace_dir
 from anishift.services.fonts import FontIndex
 from anishift.services.subtitles.geometry import Rect, RenderProfile, screen_rects
-from anishift.services.subtitles.layout import Field, Layout, LayoutLimits, Scale, candidates, lay_out
+from anishift.services.subtitles.layout import Field, Layout, Scale, candidates, lay_out
 from anishift.services.subtitles.restyle import DialogueFont
 from anishift.services.subtitles.service import layout_translated, load_subtitles, split_subtitles
 from anishift.services.subtitles.text import is_drawing, visible_text, visible_verses
@@ -68,7 +68,6 @@ def _laid_out(pair: str, event: int, text: str, decision: str) -> TranslatedLayo
         split,
         {event: text},
         fonts=pair_fonts(_QUALITY / pair),
-        limits=LayoutLimits(),
         dialogue_font=DialogueFont.from_file(_OWNER_FONT),
     )
 

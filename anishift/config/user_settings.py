@@ -14,7 +14,6 @@ from anishift.paths import config_path
 from anishift.services.audio.types import AudioCodecProfile, TimelinePolicy
 from anishift.services.extraction.tracks import DEFAULT_AUDIO_PRIORITY, DEFAULT_SUBTITLE_PRIORITY
 from anishift.services.llm.engines import available_engine_ids as available_llm_engine_ids
-from anishift.services.subtitles.layout import DEFAULT_MAX_CHARS, MAX_LINES
 from anishift.services.translation.chunking import DEFAULT_CHAR_LIMIT
 from anishift.services.translation.engines import available_engine_ids
 from anishift.services.translation.engines.llm.constants import DEFAULT_STYLE_NAME
@@ -93,12 +92,6 @@ CONCURRENCY_RANGE: Final[tuple[int, int]] = (1, 16)
 
 MAX_RETRIES_RANGE: Final[tuple[int, int]] = (0, 10)
 """Allowed inclusive range for the translation retry count."""
-
-LINE_CHARS_RANGE: Final[tuple[int, int]] = (20, 120)
-"""Allowed inclusive range for the characters one subtitle verse may hold."""
-
-EVENT_LINES_RANGE: Final[tuple[int, int]] = (1, 4)
-"""Allowed inclusive range for the verses one subtitle event may occupy."""
 
 CHUNK_CHARS_RANGE: Final[tuple[int, int]] = (200, 4000)
 """Allowed inclusive range for the characters packed into one translation request."""
@@ -259,8 +252,6 @@ class UserSettings:
     mode: Mode = "auto"
     processing_order_policy: ProcessingOrderPolicy = "ready_first"
     translation_engine: str = "google"
-    subtitle_max_chars_per_line: int = DEFAULT_MAX_CHARS
-    subtitle_max_lines_per_event: int = MAX_LINES
     dialogue_font_file: str = ""
     sign_narration: str = "smart"
     translation_chunk_chars: int = DEFAULT_CHAR_LIMIT
@@ -805,6 +796,8 @@ def _migrate_schema(raw: dict[str, Any]) -> bool:
     raw.pop("llm_prompt_id", None)
     raw.pop("llm_style_id", None)
     raw.pop("llm_module_ids", None)
+    raw.pop("subtitle_max_chars_per_line", None)
+    raw.pop("subtitle_max_lines_per_event", None)
     return True
 
 
@@ -836,8 +829,6 @@ def load_user_settings() -> UserSettings:  # noqa: PLR0915 - explicit tolerant f
     _clean_string(filtered, "processing_order_policy", _PROCESSING_ORDER_POLICIES)
     _clean_string(filtered, "output_variant", _OUTPUT_VARIANTS)
     _clean_string(filtered, "translation_engine", engine_ids)
-    _clean_integer(filtered, "subtitle_max_chars_per_line", *LINE_CHARS_RANGE)
-    _clean_integer(filtered, "subtitle_max_lines_per_event", *EVENT_LINES_RANGE)
     _clean_free_string(filtered, "dialogue_font_file")
     _clean_string(filtered, "sign_narration", _SIGN_NARRATION_MODES)
     _clean_integer(filtered, "translation_chunk_chars", *CHUNK_CHARS_RANGE)

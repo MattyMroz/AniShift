@@ -11,7 +11,6 @@ from loguru import logger as loguru_logger
 from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
 from anishift.services.subtitles.classifier import Category, StyleVerdict
-from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.subtitles.service import (
     layout_translated,
     load_subtitles,
@@ -71,11 +70,8 @@ def _fake_translation(split: SubtitleSplit, prefix: str = "PL:") -> dict[int, st
     return displayed | {line.order: f"{prefix}{line.text}" for line in split.spoken}
 
 
-def _write(
-    split: SubtitleSplit, translations: dict[int, str], dest: Path, limits: LayoutLimits | None = None
-) -> Path | None:
-    chosen: LayoutLimits = limits if limits is not None else LayoutLimits()
-    return write_translated(split, translations, dest, fonts=None, limits=chosen, dialogue_font=None)
+def _write(split: SubtitleSplit, translations: dict[int, str], dest: Path) -> Path | None:
+    return write_translated(split, translations, dest, fonts=None, dialogue_font=None)
 
 
 def test_returns_none_when_no_dialogue_events(tmp_path: Path) -> None:
@@ -365,7 +361,7 @@ def test_layout_translated_gives_every_copy_of_a_spoken_line_its_translation_unl
     split: SubtitleSplit = split_subtitles(source, kind="ass", spoken_styles={"Dialog"})
     assert [line.order for line in split.spoken] == [0, 2]
     laid_out: TranslatedLayout = layout_translated(
-        split, {0: "Czekaj!", 2: "Uciekaj!", 3: "Biegnij!"}, fonts=None, limits=LayoutLimits(), dialogue_font=None
+        split, {0: "Czekaj!", 2: "Uciekaj!", 3: "Biegnij!"}, fonts=None, dialogue_font=None
     )
     assert [event.text for event in laid_out.subs.events] == [
         "Czekaj!",
@@ -390,9 +386,7 @@ def test_layout_translated_gives_a_copy_in_another_style_the_translation_of_the_
     split: SubtitleSplit = split_subtitles(source, kind="ass", spoken_styles={"Main", "Overlap", "Echo"})
     assert [line.order for line in split.spoken] == [0]
 
-    laid_out: TranslatedLayout = layout_translated(
-        split, {0: "Już!", 2: "JUŻ"}, fonts=None, limits=LayoutLimits(), dialogue_font=None
-    )
+    laid_out: TranslatedLayout = layout_translated(split, {0: "Już!", 2: "JUŻ"}, fonts=None, dialogue_font=None)
 
     assert [event.text for event in laid_out.subs.events] == ["Już!", "{\\an8}Już!", "JUŻ"]
 
@@ -411,7 +405,6 @@ def test_layout_translated_breaks_dialogue_and_keeps_drawings_and_events_without
         split,
         {0: _LONG_TRANSLATION, 1: "rysunek"},
         fonts=None,
-        limits=LayoutLimits(),
         dialogue_font=None,
     )
     assert laid_out.subs.events[0].text.count("\\N") == 1

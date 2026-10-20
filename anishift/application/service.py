@@ -1077,8 +1077,6 @@ def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
         llm_is_paid=True,
         tts_is_network=preferences.tts_engine != "sapi",
         tts_is_paid=preferences.tts_engine in {"elevenbytes", "elevenlabs"},
-        subtitle_max_chars_per_line=preferences.subtitle_max_chars_per_line,
-        subtitle_max_lines_per_event=preferences.subtitle_max_lines_per_event,
         dialogue_font_file=preferences.dialogue_font_file,
         sign_narration=preferences.sign_narration,
         translation_chunk_chars=preferences.translation_chunk_chars,

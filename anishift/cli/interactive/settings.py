@@ -184,8 +184,6 @@ _GENERAL_FIELDS: Final[tuple[_SettingField, ...]] = (
 """General persisted preferences exposed by the product."""
 
 _SUBTITLE_FIELDS: Final[tuple[_SettingField, ...]] = (
-    ("subtitle_max_chars_per_line", "Znaków w linii", "UKŁAD TEKSTU"),
-    ("subtitle_max_lines_per_event", "Linii na napis", "UKŁAD TEKSTU"),
     ("dialogue_font_file", "Plik czcionki dialogów", "CZCIONKA"),
     ("sign_narration", "Lektor a napisy ekranowe", "LEKTOR"),
 )

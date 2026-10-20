@@ -163,8 +163,6 @@ class RunSettingsSnapshot:
     llm_is_paid: bool = True
     tts_is_network: bool = True
     tts_is_paid: bool = True
-    subtitle_max_chars_per_line: int = 42
-    subtitle_max_lines_per_event: int = 2
     dialogue_font_file: str = ""
     translation_chunk_chars: int = 750
     translation_batch_size: int = 0
@@ -251,8 +249,6 @@ def _validate_profile_settings(settings: RunSettingsSnapshot) -> None:
     if settings.audio_duration_tolerance_us < 0:
         msg = "Audio duration tolerance cannot be negative"
         raise ValueError(msg)
-    _require_range(settings.subtitle_max_chars_per_line, 20, 120, "subtitle line length")
-    _require_range(settings.subtitle_max_lines_per_event, 1, 4, "subtitle line count")
     _require_range(settings.translation_chunk_chars, 200, 4000, "translation chunk size")
     if settings.translation_batch_size < 0:
         msg = "Translation batch size cannot be negative"

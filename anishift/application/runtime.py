@@ -68,7 +68,6 @@ from anishift.services.llm import (
 )
 from anishift.services.llm.engines.palantir import PALANTIR_ENGINE_ID, PalantirModelConfig, palantir_model_config
 from anishift.services.subtitles.errors import SubtitleError
-from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.subtitles.restyle import DialogueFont
 from anishift.services.translation import TranslationConfig, TranslationService
 from anishift.services.translation.chunk_config import ChunkConfig
@@ -192,11 +191,10 @@ class ProductionHandlerFactory:
                 timeout_s=_EXTRACTION_TIMEOUT_S,
                 legacy=LegacyExtractionAdapter(identify, extract_tracks),
             ),
-            SubtitleTaskHandler(run_root=run_root, layout=_layout_limits(plan), dialogue_font=dialogue_font),
+            SubtitleTaskHandler(run_root=run_root, dialogue_font=dialogue_font),
             TranslationTaskHandler(
                 _translation_service(settings, plan),
                 run_root=run_root,
-                layout=_layout_limits(plan),
                 chunk_config=_chunk_config(plan),
                 dialogue_font=dialogue_font,
             ),
@@ -682,14 +680,6 @@ def _dialogue_font(plan: ExecutionPlan, kinds: frozenset[TaskKind]) -> DialogueF
     except SubtitleError as error:
         logger.warning("Dialogue font unusable, dialogue keeps the episode fonts", error_code=error.context.code.value)
         return None
-
-
-def _layout_limits(plan: ExecutionPlan) -> LayoutLimits:
-    snapshot = plan.settings
-    return LayoutLimits(
-        max_chars=snapshot.subtitle_max_chars_per_line,
-        max_lines=snapshot.subtitle_max_lines_per_event,
-    )
 
 
 def _chunk_config(plan: ExecutionPlan) -> ChunkConfig:

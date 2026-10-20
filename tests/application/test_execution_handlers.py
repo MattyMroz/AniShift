@@ -96,7 +96,6 @@ from anishift.services.subtitles import (
     load_subtitles,
     split_subtitles,
 )
-from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.subtitles.text import visible_text, visible_verses
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
 from anishift.services.translation.types import FileTranslation, TranslatedLine
@@ -928,7 +927,7 @@ def test_translated_text_keeps_span_markers_that_place_the_tags_across_new_line_
     )
 
     texts: dict[int, str] = translated_texts(split, result)
-    laid_out: TranslatedLayout = layout_translated(split, texts, fonts=None, limits=LayoutLimits(), dialogue_font=None)
+    laid_out: TranslatedLayout = layout_translated(split, texts, fonts=None, dialogue_font=None)
 
     assert texts == {0: translated}
     assert laid_out.subs.events[0].text.split("\\N") == [
