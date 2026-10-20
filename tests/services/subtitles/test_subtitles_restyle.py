@@ -298,6 +298,14 @@ def test_restyle_signs_moves_every_displayed_text_to_a_clone_drawn_with_the_dial
 
 
 @pytest.mark.unit
+def test_clone_of_a_regular_style_is_bold_when_the_font_has_only_bold_faces() -> None:
+    restyled, _ = restyle_signs(_signs(), _SIGN_DECISIONS, DialogueFont(_FAMILY, (), bold=True))
+
+    assert restyled.styles["Sign (dialog)"].bold
+    assert not restyled.styles["Sign"].bold
+
+
+@pytest.mark.unit
 def test_restyle_signs_keeps_drawings_and_karaoke_in_their_style() -> None:
     subs: SSAFile = _signs()
     subs.events[1].text = r"{\p1}m 0 0 l 10 0 10 10"

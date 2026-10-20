@@ -35,6 +35,9 @@ __all__ = [
 _CLONE_LABEL: Final[str] = "dialog"
 """Word in the parenthesized suffix of a style cloned for the dialogue font, numbered from 2 when a name is taken."""
 
+_BOLD_WEIGHT: Final[int] = 600
+"""Smallest weight class libass treats as bold when it matches a face to a style."""
+
 _RE_CLONE: Final[re.Pattern[str]] = re.compile(rf"(?P<source>.+) \({_CLONE_LABEL}(?: (?:[2-9]|[1-9][0-9]+))?\)")
 """Whole name of a dialogue clone, capturing the style it was made from."""
 
@@ -47,10 +50,11 @@ _RE_FONT_NAME: Final[re.Pattern[str]] = re.compile(r"\\fn([^\\}]*)")
 
 @dataclass(frozen=True, slots=True)
 class DialogueFont:
-    """Family of the owner's dialogue font as written and every file of that family drawing all Polish letters."""
+    """Family of the owner's dialogue font as written, every file of it drawing all Polish letters, and bold-only."""
 
     family: str
     files: tuple[Path, ...]
+    bold: bool = False
 
     @classmethod
     def from_file(cls, path: Path) -> DialogueFont:
@@ -66,7 +70,9 @@ class DialogueFont:
         variants: list[Path] = [
             sibling for sibling in sorted(path.parent.iterdir()) if sibling != path and _is_variant(sibling, family)
         ]
-        return cls(family, (path, *variants))
+        files: tuple[Path, ...] = (path, *variants)
+        weights: list[bool] = [face.bold or face.weight >= _BOLD_WEIGHT for file in files for face in read_faces(file)]
+        return cls(family, files, all(weights))
 
 
 def restyle_dialogue(subs: SSAFile, decisions: Sequence[Decision], font: DialogueFont, report: LayoutReport) -> SSAFile:
@@ -75,7 +81,7 @@ def restyle_dialogue(subs: SSAFile, decisions: Sequence[Decision], font: Dialogu
     if not clones:
         return subs
     out: SSAFile = copy(subs)
-    out.styles = _with_clones(subs.styles, clones, font.family)
+    out.styles = _with_clones(subs.styles, clones, font)
     out.events = _restyled_events(subs.events, decisions, clones)
     report.restyled_styles += len(clones)
     return out
@@ -109,7 +115,7 @@ def restyle_signs(subs: SSAFile, decisions: Sequence[Decision], font: DialogueFo
         if name not in clones:
             clones[name] = _clone_name(name, taken)
             taken.add(clones[name])
-            styles[clones[name]] = _family_copy(subs.styles[name], font.family)
+            styles[clones[name]] = _family_copy(subs.styles[name], font)
     out: SSAFile = copy(subs)
     out.styles = styles
     return out, {index: clones[dialogue[index].style] for index in plain}
@@ -154,18 +160,19 @@ def _clone_name(style: str, taken: set[str]) -> str:
     return name
 
 
-def _with_clones(styles: Mapping[str, SSAStyle], clones: Mapping[str, str], family: str) -> dict[str, SSAStyle]:
+def _with_clones(styles: Mapping[str, SSAStyle], clones: Mapping[str, str], font: DialogueFont) -> dict[str, SSAStyle]:
     result: dict[str, SSAStyle] = {}
     for name, style in styles.items():
         result[name] = style
         if name in clones:
-            result[clones[name]] = _family_copy(style, family)
+            result[clones[name]] = _family_copy(style, font)
     return result
 
 
-def _family_copy(style: SSAStyle, family: str) -> SSAStyle:
+def _family_copy(style: SSAStyle, font: DialogueFont) -> SSAStyle:
     clone: SSAStyle = style.copy()
-    clone.fontname = family
+    clone.fontname = font.family
+    clone.bold = clone.bold or font.bold
     return clone
 
 

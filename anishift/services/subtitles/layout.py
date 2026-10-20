@@ -145,8 +145,8 @@ _PERCENT: Final[float] = 100.0
 _SIGN_LINES: Final[int] = 3
 """Fewest lines a displayed field allows, so a one-line source may still take two or three (catalogue calibration)."""
 
-_MIN_SCALE: Final[float] = 0.6
-"""Smallest scale (either axis) a sign keeps outside rescue; a proposal the owner has to confirm (spec section 4.6)."""
+_MIN_SCALE: Final[float] = 0.8
+"""Smallest scale (either axis) a sign takes while any layout at or above it fits (owner 21.10, images 13 and 16)."""
 
 _BOTTOM_ROW: Final[int] = 0
 """Alignment row of text anchored at its bottom edge: ``\\an1`` to ``\\an3``."""
@@ -472,7 +472,7 @@ def _evaluate(case: _Case, cuts: tuple[int, ...], scale: Scale) -> Layout:
         lines=_lines(case.words, cuts),
         scale=scale,
         harms=harms,
-        rescue=(outside, extra, 0),
+        rescue=(outside, extra, int(Flag.SHRUNK in flags)),
         flags=frozenset(flags + rescue_flags),
     )
 
@@ -958,7 +958,7 @@ def _joined(  # noqa: PLR0913 - the block layouts with the gaps between them
     rescue: tuple[int, int, int] = (
         sum(piece.rescue[0] for piece in pieces),
         sum(piece.rescue[1] for piece in pieces),
-        0,
+        sum(piece.rescue[2] for piece in pieces),
     )
     return Layout(
         lines=tuple(line for piece in pieces for line in piece.lines),
