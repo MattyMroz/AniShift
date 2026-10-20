@@ -101,6 +101,18 @@ class _Member:
 
 
 @dataclass(frozen=True, slots=True)
+class _Fitted:
+    """One fitted sign object: its members, chosen layout and texts, and the set it is shown in."""
+
+    members: tuple[_Member, ...]
+    layout: Layout
+    texts: dict[int, str]
+    kit: tuple[str, float]
+    start: int
+    end: int
+
+
+@dataclass(frozen=True, slots=True)
 class _Scene:
     """Events of both files with the fitted texts so far and the rectangles of neighbours already measured."""
 
@@ -121,8 +133,18 @@ def fit_signs(
 ) -> dict[int, str]:
     """Lay out the one-line translated signs at event positions ``signs`` and return their new texts."""
     scene: _Scene = _Scene(source, target, frozenset(signs), profile, _buckets(target), {}, {})
+    objects: list[_Fitted] = []
     for group in _objects(source, target, signs):
-        scene.fitted.update(_fit_object(group, scene, report))
+        fitted: _Fitted | None = _fit_object(group, scene, report)
+        if fitted is not None:
+            objects.append(fitted)
+            scene.fitted.update(fitted.texts)
+    for kit in _kits(objects):
+        scale: Scale = Scale(min(item.layout.scale.fx for item in kit), min(item.layout.scale.fy for item in kit))
+        changed: list[_Fitted] = [item for item in kit if item.layout.scale != scale]
+        report.sign_sets_scaled += bool(changed)
+        for item in changed:
+            scene.fitted.update(_texts(item.members, replace(item.layout, scale=scale), profile))
     return {index: scene.fitted.get(index, target[index].text) for index in signs}
 
 
@@ -161,14 +183,30 @@ def _runs(indices: Sequence[int], source: SSAFile) -> list[tuple[int, ...]]:
     return [tuple(group) for group in groups]
 
 
-def _fit_object(group: tuple[int, ...], scene: _Scene, report: LayoutReport) -> dict[int, str]:
+def _kits(objects: Sequence[_Fitted]) -> list[list[_Fitted]]:
+    """Return the sets of objects of one source style and letter size whose times overlap, two objects or more."""
+    by_kit: defaultdict[tuple[str, float], list[_Fitted]] = defaultdict(list)
+    for item in sorted(objects, key=lambda item: item.start):
+        by_kit[item.kit].append(item)
+    kits: list[list[_Fitted]] = []
+    for items in by_kit.values():
+        end: int = -1
+        for item in items:
+            if item.start >= end:
+                kits.append([])
+            kits[-1].append(item)
+            end = max(end, item.end)
+    return [kit for kit in kits if len(kit) > 1]
+
+
+def _fit_object(group: tuple[int, ...], scene: _Scene, report: LayoutReport) -> _Fitted | None:
     first: int = group[0]
     source: SSAEvent = scene.source[first]
     event: SSAEvent = scene.target[first]
     style: SSAStyle | None = scene.profile.styles.get(event.style)
     words: tuple[str, ...] = _words(event.text)
     if style is None or not words or visible_text(source.text) == visible_text(event.text):
-        return {}
+        return None
     shown: str = wrap_text(source, source.text, scene.profile)
     moves, forced = _structure(source, shown, event, words, scene.profile)
     tagged: str = _moved(event.text, words, moves)
@@ -187,17 +225,21 @@ def _fit_object(group: tuple[int, ...], scene: _Scene, report: LayoutReport) -> 
     report.signs_relaxed += bool(chosen.flags - {Flag.SMALL})
     report.signs_small += Flag.SMALL in chosen.flags
     report.signs_fitted += len(chosen.lines) > 1 or chosen.scale != Scale()
-    texts: dict[int, str] = {
-        member.index: without_wrap(member.event, _render(member, chosen, scene.profile), scene.profile)
-        for member in members
-    }
+    texts: dict[int, str] = _texts(members, chosen, scene.profile)
     report.signs_approximate += measure_text(event, texts[first], scene.profile).status == "approximate"
     report.sign_dialogue_collisions += any(
         _overlap(screen_rects(member.event, NO_WRAP + texts[member.index], scene.profile), member.dialogue, 0.0) > 0
         for member in members
         if member.dialogue
     )
-    return texts
+    kit: tuple[str, float] = (source.style, font_size(source, scene.profile))
+    start: int = min(scene.source[index].start for index in group)
+    end: int = max(scene.source[index].end for index in group)
+    return _Fitted(tuple(members), chosen, texts, kit, start, end)
+
+
+def _texts(members: Sequence[_Member], layout: Layout, profile: RenderProfile) -> dict[int, str]:
+    return {member.index: without_wrap(member.event, _render(member, layout, profile), profile) for member in members}
 
 
 def _words(text: str) -> tuple[str, ...]:
