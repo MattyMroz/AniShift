@@ -8,6 +8,7 @@ from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
 from anishift.services.subtitles.fitting import fit_signs
 from anishift.services.subtitles.geometry import Rect, RenderProfile, screen_rects
+from anishift.services.subtitles.linebreak import NO_WRAP
 from anishift.services.subtitles.service import load_subtitles, split_subtitles, write_translated
 from anishift.services.subtitles.text import visible_text, visible_verses
 from anishift.services.subtitles.types import LayoutReport
@@ -295,3 +296,14 @@ def test_fit_signs_returns_texts_only_for_the_requested_events() -> None:
     fitted: dict[int, str] = fit_signs(subs, translated, [1], profile, LayoutReport())
     assert list(fitted) == [1]
     assert visible_text(fitted[1]) == "Czerwony"
+
+
+@pytest.mark.unit
+def test_sign_that_libass_would_wrap_gets_the_shared_no_wrap_override() -> None:
+    subs, translated, profile = _files(
+        [SSAEvent(text=r"{\an8\pos(960,10)}Sign text", end=1000)],
+        [r"{\an8\pos(960,10)}Napis ekranowy dość długi"],
+        {"Default": SSAStyle(fontsize=60, marginl=800, marginr=800)},
+        _FULL_HD,
+    )
+    assert NO_WRAP in fit_signs(subs, translated, [0], profile, LayoutReport())[0]

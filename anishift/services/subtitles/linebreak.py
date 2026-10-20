@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 _RE_WORD_BREAK: Final[re.Pattern[str]] = re.compile(r"(\{[^}]*\}|\\[Nn]|" + BREAKABLE_SPACES.pattern + ")")
 """Override block, line break escape or breakable whitespace run of tagged event text."""
 
-_NO_WRAP: Final[str] = "{\\q2}"
+NO_WRAP: Final[str] = "{\\q2}"
 """Override that stops libass from wrapping the lines the layout core chose."""
 
 _RE_WRAP_BLOCK: Final[re.Pattern[str]] = re.compile(r"\{[^}]*\\q[^}]*\}")
@@ -100,9 +100,9 @@ def without_wrap(event: SSAEvent, text: str, profile: RenderProfile) -> str:
 def _no_wrap(text: str) -> str:
     blocks: list[re.Match[str]] = list(_RE_WRAP_BLOCK.finditer(text))
     if not blocks:
-        return _NO_WRAP + text
+        return NO_WRAP + text
     end: int = blocks[-1].end()
-    return text[:end] + _NO_WRAP + text[end:]
+    return text[:end] + NO_WRAP + text[end:]
 
 
 def tagged_words(tagged: str, words: tuple[str, ...]) -> tuple[str, ...] | None:
@@ -138,4 +138,12 @@ def _measure(event: SSAEvent, profile: RenderProfile, words: tuple[str, ...], ta
     return width
 
 
-__all__ = ["DialogueLayout", "layout_dialogue", "tagged_line", "tagged_measure", "tagged_words", "without_wrap"]
+__all__ = [
+    "NO_WRAP",
+    "DialogueLayout",
+    "layout_dialogue",
+    "tagged_line",
+    "tagged_measure",
+    "tagged_words",
+    "without_wrap",
+]

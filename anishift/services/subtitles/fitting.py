@@ -21,7 +21,7 @@ from anishift.services.subtitles.geometry import (
     wrap_text,
 )
 from anishift.services.subtitles.layout import Scale, heading_break, ranked, sign_field
-from anishift.services.subtitles.linebreak import tagged_measure, tagged_words, without_wrap
+from anishift.services.subtitles.linebreak import NO_WRAP, tagged_measure, tagged_words, without_wrap
 from anishift.services.subtitles.text import RE_TAG_BLOCK, is_drawing, reflow_visible_text, visible_text, visible_verses
 from anishift.text.boundaries import BREAKABLE_SPACES
 from anishift.text.gaps import DASHES
@@ -65,9 +65,6 @@ _RECT_COORDINATES: Final[int] = 4
 
 _BUCKET_MS: Final[int] = 10_000
 """Length of the time buckets that find the events shown together with a sign."""
-
-_NO_WRAP: Final[str] = "{\\q2}"
-"""Override that measures a candidate as written, without automatic wrapping."""
 
 _BREAK: Final[str] = "\\N"
 """ASS hard line break."""
@@ -194,7 +191,7 @@ def _fit_object(group: tuple[int, ...], scene: _Scene, report: LayoutReport) -> 
     }
     report.signs_approximate += measure_text(event, texts[first], scene.profile).status == "approximate"
     report.sign_dialogue_collisions += any(
-        _overlap(screen_rects(member.event, _NO_WRAP + texts[member.index], scene.profile), member.dialogue, 0.0) > 0
+        _overlap(screen_rects(member.event, NO_WRAP + texts[member.index], scene.profile), member.dialogue, 0.0) > 0
         for member in members
         if member.dialogue
     )
@@ -433,7 +430,7 @@ def _excess(
 
 
 def _member_excess(layout: Layout, member: _Member, profile: RenderProfile) -> tuple[float, float]:
-    rects: tuple[Rect, ...] = screen_rects(member.event, _NO_WRAP + _render(member, layout, profile), profile)
+    rects: tuple[Rect, ...] = screen_rects(member.event, NO_WRAP + _render(member, layout, profile), profile)
     width: float = max((rect.right - rect.left for rect in rects), default=0.0)
     height: float = max((rect.bottom - rect.top for rect in rects), default=0.0)
     loss_x, loss_y = _loss(rects, member.region)
