@@ -393,6 +393,19 @@ def test_text_blocks_keep_the_empty_lines_and_never_shrink_vertically() -> None:
 
 
 @pytest.mark.unit
+def test_still_sign_whose_original_runs_off_screen_keeps_its_translation_on_screen() -> None:
+    subs, translated, profile = _files(
+        [SSAEvent(text=r"{\an4\pos(1500,540)\fs60}Look the Other Way", end=1000)],
+        [r"{\an4\pos(1500,540)\fs60}Patrz w drugą stronę"],
+        info=_FULL_HD,
+    )
+    result: str = fit_signs(subs, translated, [0], profile, LayoutReport())[0]
+    assert _overflow(screen_rects(subs[0], subs[0].text, profile), 1920, 1080) > 0
+    assert _overflow(screen_rects(translated[0], result, profile), 1920, 1080) <= 1 + 0.07 * 420
+    assert visible_text(result) == "Patrz w drugą stronę"
+
+
+@pytest.mark.unit
 def test_signs_shown_together_in_one_style_and_size_share_the_smallest_scale() -> None:
     tags: list[str] = [r"{\an5\pos(400,300)\fs60}", r"{\an5\pos(400,500)\fs60}", r"{\an5\pos(400,700)\fs60}"]
     sources: list[SSAEvent] = [

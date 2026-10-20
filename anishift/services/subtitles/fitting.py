@@ -95,6 +95,7 @@ class _Member:
     spacing: tuple[int, ...]
     rects: tuple[Rect, ...]
     region: Rect
+    lost: tuple[float, float]
     near: tuple[Rect, ...]
     dialogue: tuple[Rect, ...]
     uncertainty: float
@@ -216,9 +217,10 @@ def _fit_object(group: tuple[int, ...], scene: _Scene, report: LayoutReport) -> 
         tagged_measure(event, tagged, scene.profile),
     )
     spacing: tuple[int, ...] = _spacing(visible_verses(shown))
-    members: list[_Member] = [
-        _member(index, _moved(scene.target[index].text, words, moves), spacing, scene) for index in group
-    ]
+    members: list[_Member] = _on_screen(
+        [_member(index, _moved(scene.target[index].text, words, moves), spacing, scene) for index in group],
+        scene.profile,
+    )
     chosen, screen, collision = _choose(layouts, members, scene.profile)
     report.signs_fallback_screen += screen
     report.signs_fallback_collision += collision
@@ -407,13 +409,16 @@ def _member(index: int, text: str, spacing: tuple[int, ...], scene: _Scene) -> _
     source: SSAEvent = scene.source[index]
     near: list[int] = _neighbours(index, scene)
     exact: bool = measure_text(source, source.text, scene.profile).status == "exact"
+    rects: tuple[Rect, ...] = screen_rects(source, source.text, scene.profile)
+    region: Rect = _region(source.text, scene.profile)
     return _Member(
         index=index,
         event=scene.target[index],
         text=text,
         spacing=spacing,
-        rects=screen_rects(source, source.text, scene.profile),
-        region=_region(source.text, scene.profile),
+        rects=rects,
+        region=region,
+        lost=_loss(rects, region),
         near=tuple(rect for other in near for rect in _boxes(other, scene)),
         dialogue=tuple(rect for other in near if other not in scene.signs for rect in _boxes(other, scene)),
         uncertainty=_EXACT_UNCERTAINTY if exact else _APPROXIMATE_UNCERTAINTY,
@@ -511,7 +516,7 @@ def _member_excess(layout: Layout, member: _Member, profile: RenderProfile) -> t
     width: float = max((rect.right - rect.left for rect in rects), default=0.0)
     height: float = max((rect.bottom - rect.top for rect in rects), default=0.0)
     loss_x, loss_y = _loss(rects, member.region)
-    base_x, base_y = _loss(member.rects, member.region)
+    base_x, base_y = member.lost
     screen: float = max(
         0.0,
         loss_x - base_x - _PIXEL - member.uncertainty * width,
@@ -519,6 +524,14 @@ def _member_excess(layout: Layout, member: _Member, profile: RenderProfile) -> t
     )
     grown: float = _overlap(rects, member.near, member.uncertainty) - _overlap(member.rects, member.near, 0.0)
     return screen, max(0.0, grown - _PIXEL)
+
+
+def _on_screen(members: Sequence[_Member], profile: RenderProfile) -> list[_Member]:
+    """Return the members, owed the full screen width when the object stands still on screen without a clip."""
+    screen: Rect = Rect(0, 0, profile.play_res_x, profile.play_res_y)
+    if len({member.rects for member in members}) > 1 or len(members[0].rects) > 1 or members[0].region != screen:
+        return list(members)
+    return [replace(member, lost=(0.0, member.lost[1])) for member in members]
 
 
 def _loss(rects: Sequence[Rect], region: Rect) -> tuple[float, float]:
