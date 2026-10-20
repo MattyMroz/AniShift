@@ -178,6 +178,16 @@ def test_style_change_at_an_authored_line_end_stays_a_line_end() -> None:
 
 
 @pytest.mark.unit
+def test_leading_label_with_a_colon_heads_the_sign_without_a_style_change() -> None:
+    result: str = _fit(
+        r"{\an8\pos(960,100)\fs50}Episode 02\NThe Boy Who Is the\NWorld's Strongest Sorcerer Dons a Mask",
+        r"{\an8\pos(960,100)\fs50}Odcinek drugi: Chłopiec, który jest najsilniejszym magiem, przywdziewa maskę",
+        info=_FULL_HD,
+    )
+    assert visible_verses(result)[0] == "Odcinek drugi:"
+
+
+@pytest.mark.unit
 def test_sign_at_the_screen_edge_does_not_leave_the_screen_more_than_its_original() -> None:
     subs, translated, profile = _files(
         [SSAEvent(text=r"{\an5\pos(40,540)\fs60}Safety Hazard", end=1000)],

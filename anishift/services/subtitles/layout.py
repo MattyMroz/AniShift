@@ -36,6 +36,7 @@ __all__ = [
     "candidates",
     "chars_measure",
     "dialogue_field",
+    "heading_break",
     "lay_out",
     "ranked",
     "sign_field",
@@ -110,6 +111,7 @@ class Field:
     style_breaks: frozenset[int] = frozenset()
     style_rescue: bool = True
     speaker_lines: bool = False
+    headings: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +160,9 @@ _PERCENT: Final[float] = 100.0
 
 _SIGN_LINES: Final[int] = 3
 """Fewest lines a displayed field allows, so a one-line source may still take two or three (catalogue calibration)."""
+
+_HEADING_WORDS: Final[int] = 3
+"""Most words of a leading label ending in a colon that heads displayed text on its own line (owner, 20.10)."""
 
 _ENUMERATED_LINES: Final[int] = 3
 """Most lines whose every split is enumerated; longer layouts come from dynamic programming (spec §5.1)."""
@@ -264,7 +269,16 @@ def sign_field(  # noqa: PLR0913 - one argument per field measurement
         height_lines=height_lines,
         breaks=breaks,
         style_breaks=style_breaks,
+        headings=True,
     )
+
+
+def heading_break(words: Sequence[str]) -> int | None:
+    """Return the gap after a leading label of one to three words ending in a colon, when more text follows it."""
+    for index, word in enumerate(words[:_HEADING_WORDS]):
+        if word.endswith(":"):
+            return index if index < len(words) - 1 else None
+    return None
 
 
 def chars_measure(line: str, fx: float) -> float:
@@ -317,7 +331,9 @@ def _case(text: str, field: Field, measure: Measure, *, morphology: bool) -> _Ca
     found: tuple[Gap, ...] = gaps(words, modifies if morphology else None)
     turns: frozenset[int] = frozenset(index for index, gap in enumerate(found) if gap.turn and field.speaker_lines)
     cached: Measure = cache(measure)
-    forced: frozenset[int] = field.breaks | _list_breaks(words, field, cached) | turns
+    heading: int | None = heading_break(words) if field.headings else None
+    headings: frozenset[int] = frozenset() if heading is None else frozenset({heading})
+    forced: frozenset[int] = field.breaks | _list_breaks(words, field, cached) | turns | headings
     fits: bool = len(forced) < field.rescue_lines
     return _Case(
         words=words,

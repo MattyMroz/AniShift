@@ -18,6 +18,7 @@ from anishift.services.subtitles.layout import (
     candidates,
     chars_measure,
     dialogue_field,
+    heading_break,
     lay_out,
     ranked,
     sign_field,
@@ -335,6 +336,33 @@ def test_quotation_wider_than_a_comfortable_line_may_be_cut_without_a_rescue() -
     )
 
     assert all(Flag.QUOTE not in layout.flags for layout in found)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("words", "gap"),
+    [
+        (("Odcinek", "drugi:", "Chłopiec", "w", "masce"), 1),
+        (("Przypis:", "nie", "umie", "pływać"), 0),
+        (("Odcinek", "numer", "dwanaście:", "Maska"), 2),
+        (("Bardzo", "długi", "tytuł", "odcinka:", "Maska"), None),
+        (("Odcinek", "drugi:"), None),
+        (("Bez", "dwukropka", "w", "tytule"), None),
+    ],
+)
+def test_heading_break_follows_a_leading_label_of_up_to_three_words(words: tuple[str, ...], gap: int | None) -> None:
+    assert heading_break(words) == gap
+
+
+@pytest.mark.unit
+def test_sign_field_gives_a_leading_label_its_own_line() -> None:
+    field: Field = sign_field(source_lines=1, comfort_width=1.0, letter_height=60.0)
+    assert lay_out("Odcinek drugi: Maska", field, chars_measure).lines == ("Odcinek drugi:", "Maska")
+
+
+@pytest.mark.unit
+def test_dialogue_field_does_not_force_a_line_end_after_a_leading_label() -> None:
+    assert lay_out("Odcinek drugi: Maska", dialogue_field(), chars_measure).lines == ("Odcinek drugi: Maska",)
 
 
 @pytest.mark.unit

@@ -20,7 +20,7 @@ from anishift.services.subtitles.geometry import (
     style_changes,
     wrap_text,
 )
-from anishift.services.subtitles.layout import Scale, ranked, sign_field
+from anishift.services.subtitles.layout import Scale, heading_break, ranked, sign_field
 from anishift.services.subtitles.linebreak import tagged_measure, tagged_words, without_wrap
 from anishift.services.subtitles.text import RE_TAG_BLOCK, is_drawing, reflow_visible_text, visible_text, visible_verses
 from anishift.text.boundaries import BREAKABLE_SPACES
@@ -232,8 +232,9 @@ def _structure(
     source: SSAEvent, shown: str, event: SSAEvent, words: tuple[str, ...], profile: RenderProfile
 ) -> tuple[dict[int, int], frozenset[int]]:
     """Return where authored size changes at source line ends move in the translation, and its forced breaks."""
+    heading: int | None = heading_break(words)
     authored: frozenset[int] = _authored_breaks(visible_verses(shown), words)
-    structural: list[int] = sorted(authored)
+    structural: list[int] = sorted(authored | ({heading} if heading is not None else set()))
     changes: tuple[bool, ...] = style_changes(event, event.text, profile)
     found: list[int] = [gap for gap, change in enumerate(changes) if change]
     ends: set[int] = _verse_ends(visible_verses(shown))

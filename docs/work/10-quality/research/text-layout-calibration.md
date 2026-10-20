@@ -36,6 +36,8 @@ Napisy poboczne idą przez rdzeń z polem `sign_field` (to samo pole buduje kata
 
 Wynik: wykonalna, katalog i ankieta 83/83, test z pominięciem jednego zdarzenia 71/83 (doszły s02, s26 — bez nich nic nie wiąże ich wag), bez morfologii nadal niewykonalna ({r03}, {d15}). Test produkcyjny: 54 dialogi przez `layout_translated` bez zmian, 15 przypadków s* katalogu przez `layout_translated` + `fit_signs` (s13 oczekiwanie niespełnione: kolumna źródła wystaje poza lewą krawędź, więc produkcja ogranicza szerokość do szerokości oryginału i wybiera trzy wiersze w 89% zamiast dwóch w 40%; oznaczone `xfail`), 30 przypadków s01–s30: wynik nie wychodzi poza ekran i nie zasłania innych napisów bardziej niż oryginał albo raport liczy ratunek.
 
+Etykieta nagłówka (decyzja właściciela 20.10): w polach napisów pobocznych pierwsze 1–3 słowa zakończone dwukropkiem, po których jest dalszy tekst, dostają granicę wymuszoną (`heading_break`, `Field.headings`), także bez zmiany stylu; dialog bez zmian. s10 ma teraz układ „Odcinek drugi: / Chłopiec, który jest najsilniejszym magiem na świecie, / przywdziewa maskę” z regułą „bez klepsydry” (rdzeń wybiera „…najsilniejszym / magiem na świecie, przywdziewa maskę”), a granica wymuszona sprawia, że przedtem niewykonalne s10 (nagłówek bez zmiany stylu) jest spełnione. Przebieg kalibracji rundy 7 liczono już z tą regułą. W integracji tag zmiany rozmiaru z końca wiersza źródła przechodzi na granicę nagłówka (s09 w teście produkcyjnym).
+
 ## Runda 6 (ścieżka produkcyjna)
 
 Galeria replayu v4 pokazała jednowierszowe kwestie ponad kolanem ankiety (q11 0,80, „Cóż z ciebie…” 0,83, „Kraina Cienia…” 0,80), choć katalog przechodził. Przyczyny:

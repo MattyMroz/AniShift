@@ -37,18 +37,11 @@ _CORE: Final[list[CatalogueCase]] = [case for case in load() if "pair" in _ENTRI
 _CASES: Final[list[CatalogueCase]] = [
     case for case in _CORE if _ENTRIES[case.id]["field"]["kind"] == "dialogue" and case.id[0] in {"d", "q", "r", "t"}
 ]
-_TAG_ON_A_LINE_EDGE: Final[pytest.MarkDecorator] = pytest.mark.xfail(
-    strict=True, reason="a size change at a source line end lands inside the one-line translation"
-)
 _NARROWER_THAN_THE_SCREEN: Final[pytest.MarkDecorator] = pytest.mark.xfail(
     strict=True, reason="the source column is partly off screen, so production limits the width to the original's"
 )
-_MARKS: Final[dict[str, list[pytest.MarkDecorator]]] = {
-    "s09": [_TAG_ON_A_LINE_EDGE],
-    "s13": [_NARROWER_THAN_THE_SCREEN],
-}
 _SIGNS: Final[list[Any]] = [
-    pytest.param(case, id=case.id, marks=_MARKS.get(case.id, []))
+    pytest.param(case, id=case.id, marks=[_NARROWER_THAN_THE_SCREEN] if case.id == "s13" else [])
     for case in _CORE
     if _ENTRIES[case.id]["field"]["kind"] == "sign" and case.id[0] == "s"
 ]

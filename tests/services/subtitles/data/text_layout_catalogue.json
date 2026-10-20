@@ -2675,8 +2675,8 @@
     {
      "lines": [
       "Odcinek drugi:",
-      "Chłopiec, który jest najsilniejszym magiem",
-      "na świecie, przywdziewa maskę"
+      "Chłopiec, który jest najsilniejszym magiem na świecie,",
+      "przywdziewa maskę"
      ]
     }
    ],
@@ -2701,7 +2701,8 @@
     "letter_height": 54.0,
     "comfort": 0.492678
    },
-   "accept_rule": "no_hourglass"
+   "accept_rule": "no_hourglass",
+   "note": "a leading label ending in a colon heads the title on its own line, also without a style change (owner, 20.10)"
   },
   {
    "id": "s14",
