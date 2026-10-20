@@ -58,12 +58,12 @@ def test_modifies_rejects_a_verb_a_noun_on_the_left_a_punctuated_left_word_or_a_
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("word", ["wymknęły", "zaśpiewać", "podwieźć", "brakuje", "odmówiono", "uwolnić"])
+@pytest.mark.parametrize("word", ["wymknęły", "zaśpiewać", "podwieźć", "brakuje", "odmówiono", "uwolnić", "zrobiłeś"])
 def test_verb_reads_finite_past_infinitive_and_impersonal_forms(word: str) -> None:
     assert verb(word)
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("word", ["kołysankę", "pewności", "niebiańska", "mi"])
+@pytest.mark.parametrize("word", ["kołysankę", "pewności", "niebiańska", "mi", "kogoś", "gdzieś"])
 def test_verb_rejects_nouns_adjectives_and_pronouns(word: str) -> None:
     assert not verb(word)

@@ -67,7 +67,7 @@ def verb(word: str) -> bool:
 def _parts(word: str) -> frozenset[str]:
     if not word:
         return frozenset()
-    return frozenset(tag.split(":")[0] for _, _, (_, _, tag, _, _) in _analyser().analyse(word))
+    return frozenset(tag.split(":")[0] for start, _, (_, _, tag, _, _) in _analyser().analyse(word) if start == 0)
 
 
 def _pairs(left: str, right: str) -> list[tuple[_Reading, _Reading]]:
