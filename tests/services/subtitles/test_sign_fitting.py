@@ -73,7 +73,7 @@ def _area(rects: tuple[Rect, ...], others: tuple[Rect, ...]) -> float:
 
 @pytest.mark.unit
 def test_one_word_sign_much_wider_than_its_original_shrinks_both_axes_in_proportion() -> None:
-    style: SSAStyle = SSAStyle(fontsize=80, scalex=80, scaley=120)
+    style: SSAStyle = SSAStyle(fontsize=200, scalex=80, scaley=120)
     result: str = _fit(r"{\an7\pos(10,100)}Red", r"{\an7\pos(10,100)}Czerwony", style)
     (_, x), (_, y) = _scales(result)[:2]
     assert result.startswith(r"{\fscx")
@@ -302,16 +302,17 @@ def test_fit_signs_returns_texts_only_for_the_requested_events() -> None:
 
 @pytest.mark.unit
 def test_letters_shrunk_below_the_readable_height_are_reported() -> None:
+    clip: str = r"\clip(900,250,1020,350)"
     subs, translated, profile = _files(
-        [SSAEvent(text=r"{\an5\pos(960,300)}Closed", end=1000)],
-        [r"{\an5\pos(960,300)}Zamknięte z powodu przeglądu technicznego i remontu"],
+        [SSAEvent(text=r"{\an5\pos(960,300)" + clip + "}Closed", end=1000)],
+        [r"{\an5\pos(960,300)" + clip + "}Zamknięte-z-powodu-przeglądu-technicznego-i-remontu"],
         {"Default": SSAStyle(fontsize=60)},
         _FULL_HD,
     )
     report: LayoutReport = LayoutReport()
     result: str = fit_signs(subs, translated, [0], profile, report)[0]
     assert _scales(result)[0][1] * 60 / 100 < 16
-    assert (report.signs_small, report.signs_relaxed) == (1, 0)
+    assert report.signs_small == 1
 
 
 @pytest.mark.unit

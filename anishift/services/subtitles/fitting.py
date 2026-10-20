@@ -235,7 +235,7 @@ def _structure(
 ) -> tuple[dict[int, int], frozenset[int]]:
     """Return where authored size changes at source line ends move in the translation, and its forced breaks."""
     heading: int | None = heading_break(words)
-    authored: frozenset[int] = _authored_breaks(visible_verses(shown), words) | _positions(shown, event.text)
+    authored: frozenset[int] = _positions(shown, event.text) or _authored_breaks(visible_verses(shown), words)
     structural: list[int] = sorted(authored | ({heading} if heading is not None else set()))
     changes: tuple[bool, ...] = style_changes(event, event.text, profile)
     found: list[int] = [gap for gap, change in enumerate(changes) if change]

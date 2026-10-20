@@ -45,7 +45,7 @@ type Measure = Callable[[str, float], float]
 
 
 class Flag(StrEnum):
-    """Rescue step, avoided harm or letters below the readable height a chosen layout carries, for the run report."""
+    """Rescue step or avoided harm, letters below the readable height included, a chosen layout carries."""
 
     OUTSIDE = "outside"
     EXTRA_LINE = "extra_line"
@@ -135,6 +135,9 @@ _PERCENT: Final[float] = 100.0
 _SIGN_LINES: Final[int] = 3
 """Fewest lines a displayed field allows, so a one-line source may still take two or three (catalogue calibration)."""
 
+_SHAPED_WORD_SHARE: Final[float] = 0.5
+"""Share of its source line a lone word must fill to follow the source shape of a sign instead of being an orphan."""
+
 _HEADING_WORDS: Final[int] = 3
 """Most words of a leading label ending in a colon that ends the first line of a multi-line displayed text."""
 
@@ -156,6 +159,8 @@ HARMS: Final[tuple[str, ...]] = (
     "missing_line",
     "squeeze",
     "shrink",
+    "squeeze_deep",
+    "shrink_deep",
     "small",
     "over_comfort",
 )
@@ -164,43 +169,43 @@ HARMS: Final[tuple[str, ...]] = (
 
 WEIGHTS: Final[Mapping[str, float]] = MappingProxyType(
     {
-        "length_comfortable": 233.388,
-        "length_wide": 225.132,
+        "length_comfortable": 165.233,
+        "length_wide": 293.287,
         "cut_sentence": 0.001,
         "cut_clause": 0.001,
         "cut_ellipsis": 0.001,
         "cut_parenthetical": 0.001,
         "cut_dash": 0.001,
         "cut_before_subordinator": 0.001,
-        "cut_before_coordinator": 0.201947,
+        "cut_before_coordinator": 0.00106163,
         "cut_before_preposition": 6.82371,
         "cut_phrase": 6.82371,
-        "cut_auxiliary": 56.2925,
+        "cut_auxiliary": 54.9332,
         "cut_modifier": 7.82371,
         "cut_abbreviation": 6.82371,
-        "cut_after_opener": 37.3793,
-        "cut_degree": 26.3839,
-        "cut_particle": 33.7387,
+        "cut_after_opener": 35.7834,
+        "cut_degree": 19.9486,
+        "cut_particle": 29.8373,
         "cut_prepositional": 6.82371,
-        "cut_name": 56.2925,
-        "cut_after_preposition": 56.2925,
-        "cut_negation": 56.2925,
-        "cut_reflexive": 56.2925,
-        "cut_number": 56.2925,
-        "cut_idiom": 56.2925,
-        "cut_label": 56.2925,
-        "cut_repetition": 56.2925,
-        "cut_after_single_letter": 56.2925,
+        "cut_name": 54.9332,
+        "cut_after_preposition": 54.9332,
+        "cut_negation": 54.9332,
+        "cut_reflexive": 54.9332,
+        "cut_number": 54.9332,
+        "cut_idiom": 54.9332,
+        "cut_label": 54.9332,
+        "cut_repetition": 54.9332,
+        "cut_after_single_letter": 54.9332,
         "agreement": 6.78055,
-        "imbalance_20": 1.35239,
-        "imbalance_25": 5.14156,
+        "imbalance_20": 1.58894,
+        "imbalance_25": 3.63396,
         "top_longer": 0.434595,
-        "extra_line": 48.0105,
-        "missing_line": 2.11412,
-        "squeeze": 122.145,
-        "shrink": 112.843,
-        "small": 0.107939,
-        "over_comfort": 213.441,
+        "extra_line": 33.698,
+        "squeeze": 47.6322,
+        "shrink": 38.8742,
+        "squeeze_deep": 136.987,
+        "shrink_deep": 136.987,
+        "over_comfort": 158.297,
     }
 )
 """Harm weights from the layout calibration (docs/work/10-quality/research/text-layout-calibration.md)."""
@@ -283,7 +288,8 @@ def ranked(
     found: list[Layout] = _enumerated(case)
     if field.rescue_lines > _ENUMERATED_LINES:
         best: _Bound = min(((layout.rescue, layout.score(weights)) for layout in found), default=_NO_BOUND)
-        found.extend(_programmed(replace(case, forced=case.forced | case.heading), weights, best))
+        headed: list[Layout] = _programmed(replace(case, forced=case.forced | case.heading), weights, best)
+        found.extend(headed or _programmed(case, weights, best))
     return sorted(found, key=lambda layout: (layout.rescue, layout.score(weights)))
 
 
@@ -318,12 +324,16 @@ def _case(text: str, field: Field, measure: Measure, *, morphology: bool) -> _Ca
         quotes=quote_spans(words),
         forced=forced if fits else frozenset(),
         released=frozenset() if fits else forced,
-        heading=frozenset() if heading is None or not fits else frozenset({heading}),
+        heading=frozenset() if heading is None or not _headed(forced, field, found[heading]) else frozenset({heading}),
         chars=_chars(" ".join(words)),
         field=field,
         measure=cached,
         morphology=morphology,
     )
+
+
+def _headed(forced: frozenset[int], field: Field, gap: Gap) -> bool:
+    return len(forced) + 1 < field.rescue_lines and not gap.banned
 
 
 def _list_breaks(words: tuple[str, ...], field: Field, measure: Measure) -> frozenset[int]:
@@ -409,10 +419,9 @@ def _evaluate(case: _Case, cuts: tuple[int, ...], scale: Scale) -> Layout:
         chars: list[int] = [_chars(" ".join(case.words[start:end])) for start, end in pairwise(bounds)]
         harms["top_longer"] = float(sum(max(0, upper - lower) for upper, lower in pairwise(chars)))
     extra: int = max(0, count - field.max_lines)
-    small: bool = field.scalable and 0 < field.letter_height * scale.fy < _SMALL_LETTERS[0]
-    rescue_flags: list[Flag] = [
-        flag for flag, on in ((Flag.OUTSIDE, outside), (Flag.EXTRA_LINE, extra), (Flag.SMALL, small)) if on
-    ]
+    if field.scalable and 0 < field.letter_height * min(scale.fx, scale.fy) < _SMALL_LETTERS[0]:
+        flags.append(Flag.SMALL)
+    rescue_flags: list[Flag] = [flag for flag, on in ((Flag.OUTSIDE, outside), (Flag.EXTRA_LINE, extra)) if on]
     return Layout(
         lines=_lines(case.words, cuts),
         scale=scale,
@@ -450,7 +459,7 @@ def _line_shape(case: _Case, place: tuple[int, int, int, int]) -> _Part:
         harms["mixed_style"] = float(mixed)
     if mixed and case.field.style_rescue:
         flags.append(Flag.MIXED)
-    if count > 1 and end - start == 1 and not _exempt_orphan(case, start):
+    if count > 1 and end - start == 1 and not _follows_shape(case, place) and not _exempt_orphan(case, start):
         flags.append(Flag.ORPHAN)
     if end < len(case.words):
         cut: int = end - 1
@@ -480,6 +489,8 @@ def _global_harms(field: Field, count: int, scale: Scale) -> dict[str, float]:
     if field.scalable:
         harms["squeeze"] = 1.0 - scale.fx / scale.fy
         harms["shrink"] = 1.0 - scale.fy
+        harms["squeeze_deep"] = harms["squeeze"] ** 2
+        harms["shrink_deep"] = harms["shrink"] ** 2
     if field.scalable and field.letter_height > 0:
         harms["small"] = fall(field.letter_height * scale.fy, *_SMALL_LETTERS)
     return harms
@@ -501,6 +512,13 @@ def _imbalance_harms(case: _Case, chars: int, index: int, count: int) -> dict[st
     share: float = pattern[index] / sum(pattern) if len(pattern) == count else 1 / count
     deviation: float = abs(chars - content * share)
     return {f"imbalance_{knot}": max(0.0, deviation - knot / 2) for knot in _IMBALANCE_KNOTS}
+
+
+def _follows_shape(case: _Case, place: tuple[int, int, int, int]) -> bool:
+    start, _, index, count = place
+    if not case.field.template or count > case.field.preferred_lines:
+        return False
+    return case.measure(case.words[start], 1.0) >= _SHAPED_WORD_SHARE * _template_width(case.field, index)
 
 
 def _exempt_orphan(case: _Case, start: int) -> bool:

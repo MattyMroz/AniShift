@@ -2744,12 +2744,13 @@
     {
      "lines": [
       "Mam wrażenie,",
-      "że Pes kogoś",
-      "mi przypomina..."
+      "że Pes",
+      "kogoś mi",
+      "przypomina..."
      ]
     }
    ],
-   "note": "two lines leave the thought bubble (checked on the image); the bubble is not part of the field here",
+   "note": "thought bubble in four narrow lines: the source shape is the template (owner review 20.10); the lone \"mi\" stays forbidden",
    "measure": {
     "kind": "words",
     "words": {
@@ -2771,7 +2772,11 @@
      0.082891,
      0.155424
     ]
-   }
+   },
+   "accept_rule": "source_lines",
+   "forbid_lines": [
+    "mi"
+   ]
   },
   {
    "id": "s19",
@@ -3486,6 +3491,40 @@
      0.321522,
      0.361497,
      0.270473
+    ]
+   }
+  },
+  {
+   "id": "s33",
+   "source": "owner review of the v4 gallery 20.10 (image 31)",
+   "scope": "core",
+   "pair": "corpus-pairs/first-kiss-01",
+   "event": 405,
+   "text": "KOMPLET SZEŚCIU KODEKSÓW JAPONII",
+   "field": {
+    "kind": "sign",
+    "original": "THE COMPLETE / SIX CODES / OF JAPAN",
+    "tags": "{\u0007n6}"
+   },
+   "accept": [],
+   "accept_rule": "source_lines",
+   "note": "book cover in three large lines: three lines fit at full size, one line shrunk to a third is barely readable",
+   "measure": {
+    "kind": "words",
+    "words": {
+     "JAPONII": 0.117908,
+     "KODEKSÓW": 0.164722,
+     "KOMPLET": 0.139966,
+     "SZEŚCIU": 0.122192
+    },
+    "space": 0.007617,
+    "edge": 0.004063,
+    "original_lines": 3,
+    "letter_height": 78.0,
+    "template": [
+     0.226088,
+     0.1539,
+     0.145755
     ]
    }
   },

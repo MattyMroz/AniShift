@@ -369,6 +369,14 @@ def test_leading_label_never_adds_a_line_to_a_one_line_sign() -> None:
     assert lay_out("Urodzeni: 21.03 – 19.04", field, chars_measure).lines == ("Urodzeni: 21.03 – 19.04",)
 
 
+def test_letters_below_the_readable_height_are_avoided_while_a_readable_layout_exists() -> None:
+    template: tuple[float, ...] = (chars_measure("Six codes", 1.0),) * 3
+    field: Field = sign_field(source_lines=3, template=template, letter_height=30.0)
+    chosen: Layout = lay_out("Komplet sześciu kodeksów Japonii", field, chars_measure)
+    assert Flag.SMALL not in chosen.flags
+    assert chosen.scale.fy * 30.0 >= 16
+
+
 @pytest.mark.unit
 def test_dialogue_field_does_not_force_a_line_end_after_a_leading_label() -> None:
     assert lay_out("Odcinek drugi: Maska", dialogue_field(), chars_measure).lines == ("Odcinek drugi: Maska",)

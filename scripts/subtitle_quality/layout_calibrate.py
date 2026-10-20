@@ -107,7 +107,7 @@ def vector(layout: Layout) -> np.ndarray:
 def case_pairs(case: CatalogueCase, *, morphology: bool) -> tuple[list[np.ndarray], list[np.ndarray], list[str]]:
     """Return hard rows, soft rows and level conflicts of one case against every candidate of its full space."""
     found: list[Layout] = candidates(case.text, case.field, case.measure, morphology=morphology)
-    best: Layout | None = winner(case, found)
+    best: Layout | None = winner(case, found) or _counted(case, found)
     if best is None:
         return [], [], []
     hard: list[np.ndarray] = []
@@ -204,8 +204,13 @@ def gather(
 
 
 def monotone_rows() -> list[np.ndarray]:
-    """Return rows ``w_lower - w_upper <= 0`` for every pair of cut classes in neighbouring tiers."""
+    """Return rows ``w_lower - w_upper <= 0`` for neighbouring cut tiers and for shrinking before squeezing (q15)."""
     rows: list[np.ndarray] = []
+    for lower, upper in (("shrink", "squeeze"), ("shrink_deep", "squeeze_deep")):
+        ordered: np.ndarray = np.zeros(len(HARMS))
+        ordered[HARMS.index(lower)] = 1.0
+        ordered[HARMS.index(upper)] = -1.0
+        rows.append(ordered)
     for lower in GapKind:
         for upper in GapKind:
             if TIERS[upper] != TIERS[lower] + 1:
@@ -395,6 +400,13 @@ def programmed_rows(
         rows[case.id][0].append(vector(best) - vector(target))
         added += 1
     return added
+
+
+def _counted(case: CatalogueCase, found: Sequence[Layout]) -> Layout | None:
+    if case.rule != SOURCE_LINES:
+        return None
+    acceptable: list[Layout] = [layout for layout in found if not faults(case, layout, found)]
+    return min(acceptable, key=lambda layout: (layout.rescue, layout.score(WEIGHTS)), default=None)
 
 
 def _shaped(case: CatalogueCase, weights: Mapping[str, float], *, morphology: bool) -> Layout | None:
