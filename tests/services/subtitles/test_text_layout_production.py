@@ -30,6 +30,7 @@ _OWNER_FONT: Final[Path] = (
     Path.home() / "Videos" / "mpv" / "portable_config" / "fonts" / "ITC Officina Sans Std PL - Bold.ttf"
 )
 _TOLERANCE: Final[float] = 0.07
+_LINE_BREAK: Final[str] = chr(92) + "N"
 _ENTRIES: Final[dict[str, dict[str, Any]]] = {
     entry["id"]: entry for entry in json.loads(CATALOGUE.read_text(encoding="utf-8"))["cases"]
 }
@@ -37,13 +38,8 @@ _CORE: Final[list[CatalogueCase]] = [case for case in load() if "pair" in _ENTRI
 _CASES: Final[list[CatalogueCase]] = [
     case for case in _CORE if _ENTRIES[case.id]["field"]["kind"] == "dialogue" and case.id[0] in {"d", "q", "r", "t"}
 ]
-_NARROWER_THAN_THE_SCREEN: Final[pytest.MarkDecorator] = pytest.mark.xfail(
-    strict=True, reason="the source column is partly off screen, so production limits the width to the original's"
-)
-_SIGNS: Final[list[Any]] = [
-    pytest.param(case, id=case.id, marks=[_NARROWER_THAN_THE_SCREEN] if case.id == "s13" else [])
-    for case in _CORE
-    if _ENTRIES[case.id]["field"]["kind"] == "sign" and case.id[0] == "s"
+_SIGNS: Final[list[CatalogueCase]] = [
+    case for case in _CORE if _ENTRIES[case.id]["field"]["kind"] == "sign" and case.id[0] == "s"
 ]
 _SCENE: Final[list[str]] = [f"s{number:02}" for number in range(1, 31)]
 
@@ -93,6 +89,13 @@ def _cuts(lines: tuple[str, ...]) -> frozenset[int]:
     return frozenset(cuts)
 
 
+def _positioned(case: CatalogueCase) -> str:
+    words: list[str] = case.text.split(" ")
+    return "".join(
+        word + (_LINE_BREAK if index in case.field.breaks else " ") for index, word in enumerate(words)
+    ).strip()
+
+
 def _loss(rects: tuple[Rect, ...], width: float, height: float) -> float:
     return max(
         (max(0.0, -r.left) + max(0.0, r.right - width) + max(0.0, -r.top) + max(0.0, r.bottom - height) for r in rects),
@@ -130,10 +133,10 @@ def test_dialogue_case_gets_an_acceptable_layout_through_the_production_writer(c
 
 @pytest.mark.integration
 @pytest.mark.slow
-@pytest.mark.parametrize("case", _SIGNS)
+@pytest.mark.parametrize("case", _SIGNS, ids=[case.id for case in _SIGNS])
 def test_sign_case_gets_an_acceptable_layout_through_the_production_writer(case: CatalogueCase) -> None:
     entry: dict[str, Any] = _ENTRIES[case.id]
-    laid_out: TranslatedLayout = _laid_out(entry["pair"], entry["event"], case.text, "displayed")
+    laid_out: TranslatedLayout = _laid_out(entry["pair"], entry["event"], _positioned(case), "displayed")
     event: SSAEvent = _dialogue(laid_out.subs)[entry["event"]]
     lines: tuple[str, ...] = tuple(verse for verse in visible_verses(event.text) if verse)
     field: Field = replace(case.field, breaks=case.field.breaks | _cuts(lines))

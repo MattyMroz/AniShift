@@ -209,15 +209,19 @@ def _words(text: str) -> tuple[str, ...]:
 def _field(  # noqa: PLR0913 - the source as shown, the anchored translation and its forced breaks
     source: SSAEvent, shown: str, event: SSAEvent, tagged: str, forced: frozenset[int], profile: RenderProfile
 ) -> Field:
-    verses: list[str] = [verse for verse in visible_verses(shown) if verse]
-    width: float = max(measure_text(source, shown, profile).line_widths, default=0.0) / profile.play_res_x
+    verses: tuple[str, ...] = visible_verses(shown)
+    widths: tuple[float, ...] = measure_text(source, shown, profile).line_widths
+    template: tuple[float, ...] = tuple(
+        width / profile.play_res_x for verse, width in zip(verses, widths, strict=False) if verse
+    )
+    width: float = max(template, default=0.0)
     rects: tuple[Rect, ...] = screen_rects(source, source.text, profile)
     region: Rect = _region(source.text, profile)
     reach: float = anchor_reach(event, profile, region.left, region.right) / profile.play_res_x
     changes: tuple[bool, ...] = style_changes(event, tagged, profile)
     return sign_field(
-        source_lines=max(1, len(verses)),
-        comfort_width=None if sung(source) else width,
+        source_lines=max(1, len(template)),
+        template=() if sung(source) else template,
         letter_height=font_size(event, profile) * _SCREEN_HEIGHT / profile.play_res_y,
         max_width=math.inf if rotated(event, event.text, profile) else max(width, reach),
         height_lines=_height_lines(event, rects, region, profile),
@@ -231,7 +235,7 @@ def _structure(
 ) -> tuple[dict[int, int], frozenset[int]]:
     """Return where authored size changes at source line ends move in the translation, and its forced breaks."""
     heading: int | None = heading_break(words)
-    authored: frozenset[int] = _authored_breaks(visible_verses(shown), words)
+    authored: frozenset[int] = _authored_breaks(visible_verses(shown), words) | _positions(shown, event.text)
     structural: list[int] = sorted(authored | ({heading} if heading is not None else set()))
     changes: tuple[bool, ...] = style_changes(event, event.text, profile)
     found: list[int] = [gap for gap, change in enumerate(changes) if change]
@@ -243,6 +247,13 @@ def _structure(
     if structural and len(edges) == len(structural):
         return dict(zip(edges, structural, strict=True)), frozenset(structural)
     return {}, frozenset(structural) | frozenset(edges)
+
+
+def _positions(shown: str, translated: str) -> frozenset[int]:
+    lines: list[str] = [verse for verse in visible_verses(translated) if verse]
+    if len(lines) < _LIST_ITEMS or len(lines) != len([verse for verse in visible_verses(shown) if verse]):
+        return frozenset()
+    return frozenset(_verse_ends(lines) - {sum(len(line.split()) for line in lines) - 1})
 
 
 def _moved(text: str, words: tuple[str, ...], moves: Mapping[int, int]) -> str:

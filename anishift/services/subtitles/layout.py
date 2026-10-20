@@ -76,7 +76,7 @@ class Field:
     pyramid: bool = False
     length_knots: tuple[float, ...] = ()
     count_chars: bool = False
-    comfort_width: float | None = None
+    template: tuple[float, ...] = ()
     scalable: bool = False
     letter_height: float = 0.0
     height_lines: float | None = None
@@ -164,41 +164,43 @@ HARMS: Final[tuple[str, ...]] = (
 
 WEIGHTS: Final[Mapping[str, float]] = MappingProxyType(
     {
-        "length_comfortable": 165.233,
-        "length_wide": 293.287,
+        "length_comfortable": 233.388,
+        "length_wide": 225.132,
         "cut_sentence": 0.001,
         "cut_clause": 0.001,
         "cut_ellipsis": 0.001,
         "cut_parenthetical": 0.001,
         "cut_dash": 0.001,
         "cut_before_subordinator": 0.001,
-        "cut_before_coordinator": 0.001,
-        "cut_before_preposition": 4.23715,
-        "cut_phrase": 6.82372,
-        "cut_auxiliary": 52.1918,
-        "cut_modifier": 7.82372,
-        "cut_abbreviation": 6.82372,
-        "cut_after_opener": 32.3954,
-        "cut_degree": 19.9486,
-        "cut_particle": 22.3037,
-        "cut_prepositional": 6.82372,
-        "cut_name": 52.1918,
-        "cut_after_preposition": 52.1918,
-        "cut_negation": 52.1918,
-        "cut_reflexive": 52.1918,
-        "cut_number": 52.1918,
-        "cut_idiom": 52.1918,
-        "cut_label": 52.1918,
-        "cut_repetition": 52.1918,
-        "cut_after_single_letter": 52.1918,
+        "cut_before_coordinator": 0.201947,
+        "cut_before_preposition": 6.82371,
+        "cut_phrase": 6.82371,
+        "cut_auxiliary": 56.2925,
+        "cut_modifier": 7.82371,
+        "cut_abbreviation": 6.82371,
+        "cut_after_opener": 37.3793,
+        "cut_degree": 26.3839,
+        "cut_particle": 33.7387,
+        "cut_prepositional": 6.82371,
+        "cut_name": 56.2925,
+        "cut_after_preposition": 56.2925,
+        "cut_negation": 56.2925,
+        "cut_reflexive": 56.2925,
+        "cut_number": 56.2925,
+        "cut_idiom": 56.2925,
+        "cut_label": 56.2925,
+        "cut_repetition": 56.2925,
+        "cut_after_single_letter": 56.2925,
         "agreement": 6.78055,
-        "imbalance_20": 2.23559,
+        "imbalance_20": 1.35239,
+        "imbalance_25": 5.14156,
         "top_longer": 0.434595,
-        "extra_line": 33.6979,
-        "squeeze": 86.1991,
-        "shrink": 78.2467,
-        "small": 0.948139,
-        "over_comfort": 152.882,
+        "extra_line": 48.0105,
+        "missing_line": 2.11412,
+        "squeeze": 122.145,
+        "shrink": 112.843,
+        "small": 0.107939,
+        "over_comfort": 213.441,
     }
 )
 """Harm weights from the layout calibration (docs/work/10-quality/research/text-layout-calibration.md)."""
@@ -223,21 +225,22 @@ def dialogue_field(*, max_width: float = DIALOGUE_MAX_WIDTH) -> Field:
 def sign_field(  # noqa: PLR0913 - one argument per field measurement
     *,
     source_lines: int,
-    comfort_width: float | None,
+    template: tuple[float, ...],
     letter_height: float,
     max_width: float = 1.0,
     height_lines: float | None = None,
     breaks: frozenset[int] = frozenset(),
     style_breaks: frozenset[int] = frozenset(),
 ) -> Field:
-    """Return the field of displayed text: the source line count preferred, scaling allowed, extra lines weighed."""
+    """Return the field of displayed text: the source line count and line widths as its shape, scaling allowed."""
     lines: int = max(_SIGN_LINES, source_lines + 1)
     return Field(
         max_width=max_width,
         preferred_lines=source_lines,
         max_lines=lines,
         rescue_lines=lines,
-        comfort_width=comfort_width,
+        template=template,
+        pattern=template,
         scalable=True,
         letter_height=letter_height,
         height_lines=height_lines,
@@ -354,12 +357,17 @@ def _allowed_cut(case: _Case, index: int) -> bool:
 def _scales(case: _Case, cuts: tuple[int, ...]) -> list[Scale]:
     if not case.field.scalable:
         return [Scale()]
-    return _scale_options(_breakpoints(case.field, [case.measure(line, 1.0) for line in _lines(case.words, cuts)]))
+    widths: list[float] = [case.measure(line, 1.0) for line in _lines(case.words, cuts)]
+    shaped: set[float] = {
+        _template_width(case.field, index) / width
+        for index, width in enumerate(widths)
+        if width > 0 and case.field.template
+    }
+    return _scale_options(_breakpoints(case.field, widths, ()) | shaped)
 
 
-def _breakpoints(field: Field, widths: Sequence[float]) -> set[float]:
-    targets: list[float] = [field.max_width] + ([] if field.comfort_width is None else [field.comfort_width])
-    points: set[float] = {target / width for target in targets for width in widths if width > 0}
+def _breakpoints(field: Field, widths: Sequence[float], targets: Sequence[float]) -> set[float]:
+    points: set[float] = {target / width for target in (field.max_width, *targets) for width in widths if width > 0}
     if field.letter_height > 0:
         points.update(height / field.letter_height for height in _SMALL_LETTERS)
     return points
@@ -416,7 +424,20 @@ def _evaluate(case: _Case, cuts: tuple[int, ...], scale: Scale) -> Layout:
 def _line_part(case: _Case, place: tuple[int, int, int, int], scale: Scale) -> _Part:
     shape: _Part = _line_shape(case, place)
     size: _Part = _line_size(case, place[0], place[1], scale.fx)
-    return _Part(harms=shape.harms | size.harms, outside=size.outside, flags=shape.flags + size.flags)
+    harms: dict[str, float] = shape.harms | size.harms | _over_template(case, place, scale.fx)
+    return _Part(harms=harms, outside=size.outside, flags=shape.flags + size.flags)
+
+
+def _over_template(case: _Case, place: tuple[int, int, int, int], fx: float) -> dict[str, float]:
+    if not case.field.template:
+        return {}
+    start, end, index, _ = place
+    width: float = case.measure(" ".join(case.words[start:end]), fx)
+    return {"over_comfort": max(0.0, width - _template_width(case.field, index))}
+
+
+def _template_width(field: Field, index: int) -> float:
+    return field.template[min(index, len(field.template) - 1)]
 
 
 def _line_shape(case: _Case, place: tuple[int, int, int, int]) -> _Part:
@@ -446,8 +467,6 @@ def _line_size(case: _Case, start: int, end: int, fx: float) -> _Part:
     text: str = " ".join(case.words[start:end])
     width: float = case.measure(text, fx)
     harms: dict[str, float] = _length_harms(field, width, _chars(text))
-    if field.comfort_width is not None:
-        harms["over_comfort"] = max(0.0, width - field.comfort_width)
     quote: bool = end < len(case.words) and _inside_fitting_quote(case, end - 1, fx)
     return _Part(harms=harms, outside=int(width > field.max_width), flags=(Flag.QUOTE,) if quote else ())
 
@@ -578,7 +597,8 @@ def _programmed_widths(case: _Case) -> list[float]:
         for end in range(start + 1, size + 1)
         if not any(start <= cut < end - 1 for cut in case.forced)
     ]
-    return sorted({scale.fx for scale in _scale_options(_breakpoints(case.field, widths))}, reverse=True)
+    points: set[float] = _breakpoints(case.field, widths, case.field.template)
+    return sorted({scale.fx for scale in _scale_options(points)}, reverse=True)
 
 
 def _fewest_fitting_lines(costs: _Costs, fx: float) -> int | None:
@@ -616,6 +636,7 @@ class _Costs:
         self._weights: Mapping[str, float] = weights
         self.shape: Callable[[int, int, int, int], tuple[int, float]] = cache(self._shape)
         self.size: Callable[[int, int, float], tuple[int, int, float]] = cache(self._size)
+        self.template: Callable[[int, int, float, int], float] = cache(self._template)
         self.chars: Callable[[int, int], int] = cache(self._chars)
 
     def _shape(self, start: int, end: int, index: int, count: int) -> tuple[int, float]:
@@ -625,6 +646,10 @@ class _Costs:
     def _size(self, start: int, end: int, fx: float) -> tuple[int, int, float]:
         part: _Part = _line_size(self.case, start, end, fx)
         return part.outside, len(part.flags), self._score(part)
+
+    def _template(self, start: int, end: int, fx: float, index: int) -> float:
+        harms: dict[str, float] = _over_template(self.case, (start, end, index, 0), fx)
+        return sum(self._weights.get(name, 0.0) * degree for name, degree in harms.items())
 
     def _chars(self, start: int, end: int) -> int:
         return _chars(" ".join(self.case.words[start:end]))
@@ -684,7 +709,7 @@ class _Solver:
     def _key(self, start: int, end: int, index: int, above: int) -> _Key:
         shape_flags, shape_score = self._costs.shape(start, end, index, self._count)
         outside, size_flags, size_score = self._costs.size(start, end, self._fx)
-        score: float = shape_score + size_score
+        score: float = shape_score + size_score + self._costs.template(start, end, self._fx, index)
         if above >= 0:
             score += self._costs.top_longer * max(0, above - self._costs.chars(start, end))
         return outside, shape_flags + (0 if self._floor else size_flags), score

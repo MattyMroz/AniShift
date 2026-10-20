@@ -65,7 +65,10 @@ NOT_RAGGED: Final[str] = "not_ragged"
 """Catalogue rule accepting any layout inside the field without a very ragged line."""
 
 RAGGED_WEIGHT: Final[float] = 1e4
-"""Weight of the very ragged harm that finds the best layout a ``not_ragged`` case accepts, as its target."""
+"""Weight of the very ragged harm, or of a changed line count, that finds the target of a rule-only case."""
+
+SOURCE_LINES: Final[str] = "source_lines"
+"""Catalogue rule accepting only layouts with the source's number of text lines."""
 
 CUT_HARMS: Final[tuple[str, ...]] = tuple(f"cut_{kind.value}" for kind in GapKind)
 """Harm names of the cut classes, ranked by ``TIERS``."""
@@ -379,7 +382,11 @@ def programmed_rows(
             continue
         found: list[Layout] = candidates(case.text, case.field, case.measure, morphology=morphology)
         best: Layout = lay_out(case.text, case.field, case.measure, weights, morphology=morphology)
-        target: Layout | None = winner(case, found) or _unragged(case, weights, morphology=morphology)
+        target: Layout | None = (
+            winner(case, found)
+            or _unragged(case, weights, morphology=morphology)
+            or _shaped(case, weights, morphology=morphology)
+        )
         if target is None or not faults(case, best, [*found, best]):
             continue
         if best.rescue < target.rescue:
@@ -388,6 +395,18 @@ def programmed_rows(
         rows[case.id][0].append(vector(best) - vector(target))
         added += 1
     return added
+
+
+def _shaped(case: CatalogueCase, weights: Mapping[str, float], *, morphology: bool) -> Layout | None:
+    if case.rule != SOURCE_LINES:
+        return None
+    steep: dict[str, float] = {
+        **weights,
+        "missing_line": weights.get("missing_line", 0.0) + RAGGED_WEIGHT,
+        "extra_line": weights.get("extra_line", 0.0) + RAGGED_WEIGHT,
+    }
+    layout: Layout = lay_out(case.text, case.field, case.measure, steep, morphology=morphology)
+    return None if faults(case, layout, [layout]) else layout
 
 
 def _unragged(case: CatalogueCase, weights: Mapping[str, float], *, morphology: bool) -> Layout | None:

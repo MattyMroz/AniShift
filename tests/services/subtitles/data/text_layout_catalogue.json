@@ -2397,7 +2397,9 @@
     "edge": 0.004687,
     "original_lines": 1,
     "letter_height": 69.0,
-    "comfort": 0.513245
+    "template": [
+     0.513245
+    ]
    }
   },
   {
@@ -2461,7 +2463,9 @@
     "edge": 0.0,
     "original_lines": 1,
     "letter_height": 60.0,
-    "comfort": 0.491421,
+    "template": [
+     0.491421
+    ],
     "max_width": 0.555208,
     "height_lines": 1.3
    }
@@ -2568,7 +2572,10 @@
     "edge": 0.002656,
     "original_lines": 2,
     "letter_height": 67.5,
-    "comfort": 0.362374
+    "template": [
+     0.362374,
+     0.355341
+    ]
    }
   },
   {
@@ -2603,7 +2610,10 @@
     "edge": 0.00625,
     "original_lines": 2,
     "letter_height": 84.0,
-    "comfort": 0.590368
+    "template": [
+     0.439127,
+     0.590368
+    ]
    }
   },
   {
@@ -2657,7 +2667,11 @@
     "edge": 0.00625,
     "original_lines": 3,
     "letter_height": 54.0,
-    "comfort": 0.652798
+    "template": [
+     0.133223,
+     0.572513,
+     0.652798
+    ]
    }
   },
   {
@@ -2672,6 +2686,13 @@
     "original": "Episode 02 / The Boy Who Is the / World's Strongest Sorcerer Dons a Mask"
    },
    "accept": [
+    {
+     "lines": [
+      "Odcinek drugi:",
+      "Chłopiec, który jest najsilniejszym",
+      "magiem na świecie, przywdziewa maskę"
+     ]
+    },
     {
      "lines": [
       "Odcinek drugi:",
@@ -2699,7 +2720,11 @@
     "edge": 0.00625,
     "original_lines": 3,
     "letter_height": 54.0,
-    "comfort": 0.492678
+    "template": [
+     0.136041,
+     0.238236,
+     0.492678
+    ]
    },
    "accept_rule": "no_hourglass",
    "note": "a leading label ending in a colon heads the title on its own line, also without a style change (owner, 20.10)"
@@ -2740,7 +2765,12 @@
     "edge": 0.0,
     "original_lines": 4,
     "letter_height": 75.0,
-    "comfort": 0.170136
+    "template": [
+     0.128267,
+     0.170136,
+     0.082891,
+     0.155424
+    ]
    }
   },
   {
@@ -2778,7 +2808,9 @@
     "edge": 0.0,
     "original_lines": 1,
     "letter_height": 75.0,
-    "comfort": 0.68606
+    "template": [
+     0.68606
+    ]
    }
   },
   {
@@ -2814,7 +2846,9 @@
     "edge": 0.0,
     "original_lines": 1,
     "letter_height": 75.0,
-    "comfort": 0.477625
+    "template": [
+     0.477625
+    ]
    }
   },
   {
@@ -2859,7 +2893,10 @@
     "edge": 0.015625,
     "original_lines": 2,
     "letter_height": 51.0,
-    "comfort": 0.341846
+    "template": [
+     0.341846,
+     0.31134
+    ]
    }
   },
   {
@@ -2874,8 +2911,8 @@
     "original": "This is a work of fiction. Underage drinking is strongly prohibited / and illegal. We also do not encourage the forceful or excessive / consumption of alcohol, nor do we / endorse the litany of depraved and / shameful acts / portrayed in the / binge-drinking scenes. / We ask that you view this / as a comedy anime and / nothing more. / Furthermore, all / characters drinking in / this work are of legal age."
    },
    "accept": [],
-   "accept_rule": "not_ragged",
-   "note": "line count not bound to the source (r2); any layout inside the field without a very ragged line",
+   "accept_rule": "source_lines",
+   "note": "ragged right-aligned block whose short lines leave the burnt-in Japanese text free: the source shape is the width template",
    "measure": {
     "kind": "words",
     "words": {
@@ -2940,7 +2977,21 @@
     "edge": 0.01875,
     "original_lines": 13,
     "letter_height": 57.0,
-    "comfort": 0.8971
+    "template": [
+     0.8971,
+     0.846069,
+     0.480762,
+     0.482368,
+     0.201749,
+     0.235205,
+     0.321768,
+     0.356208,
+     0.327564,
+     0.20824,
+     0.243021,
+     0.317222,
+     0.358269
+    ]
    }
   },
   {
@@ -2984,7 +3035,9 @@
     "edge": 0.0125,
     "original_lines": 1,
     "letter_height": 51.0,
-    "comfort": 0.275635
+    "template": [
+     0.275635
+    ]
    }
   },
   {
@@ -3059,7 +3112,10 @@
     "edge": 0.020016,
     "original_lines": 2,
     "letter_height": 75.0,
-    "comfort": 0.386693
+    "template": [
+     0.386693,
+     0.224797
+    ]
    }
   },
   {
@@ -3151,7 +3207,9 @@
     "edge": 0.007812,
     "original_lines": 1,
     "letter_height": 24.0,
-    "comfort": 0.447867
+    "template": [
+     0.447867
+    ]
    }
   },
   {
@@ -3202,7 +3260,10 @@
     "edge": 0.0,
     "original_lines": 2,
     "letter_height": 60.0,
-    "comfort": 0.29126
+    "template": [
+     0.237039,
+     0.29126
+    ]
    }
   },
   {
@@ -3274,7 +3335,158 @@
     "edge": 0.007812,
     "original_lines": 1,
     "letter_height": 24.0,
-    "comfort": 0.348681
+    "template": [
+     0.348681
+    ]
+   }
+  },
+  {
+   "id": "s31",
+   "source": "text-layout spec §6.2, owner review of the v4 gallery 20.10 (shape of the source)",
+   "scope": "core",
+   "pair": "corpus-pairs/grand-blue-s2-02",
+   "event": 457,
+   "text": "Niniejszy utwór jest fikcją. Spożywanie alkoholu przez osoby nieletnie jest surowo wzbronione i nielegalne. Nie zachęcamy do zmuszania do picia ani do nadużywania alkoholu, jak również nie popieramy całego szeregu haniebnych i deprawujących czynów przedstawionych w scenach pijaństwa. Prosimy traktować tę serię wyłącznie jako komediowe anime i nic ponadto. Ponadto wszyscy bohaterowie pijący alkohol w tym dziele są pełnoletni.",
+   "field": {
+    "kind": "sign",
+    "original": "This is a work of fiction. Underage drinking is strongly prohibited / and illegal. We also do not encourage the forceful or excessive / consumption of alcohol, nor do we / endorse the litany of depraved and / shameful acts / portrayed in the / binge-drinking scenes. / We ask that you view this / as a comedy anime and / nothing more. / Furthermore, all / characters drinking in / this work are of legal age.",
+    "tags": ""
+   },
+   "accept": [],
+   "accept_rule": "source_lines",
+   "note": "disclaimer: ragged block around the burnt-in Japanese text keeps the source line count and shape",
+   "measure": {
+    "kind": "words",
+    "words": {
+     "Nie": 0.046155,
+     "Niniejszy": 0.124084,
+     "Ponadto": 0.112604,
+     "Prosimy": 0.112256,
+     "Spożywanie": 0.159222,
+     "alkohol": 0.100775,
+     "alkoholu": 0.118402,
+     "alkoholu,": 0.126984,
+     "ani": 0.042792,
+     "anime": 0.084308,
+     "bohaterowie": 0.168848,
+     "całego": 0.085004,
+     "czynów": 0.099268,
+     "deprawujących": 0.203406,
+     "do": 0.033862,
+     "dziele": 0.079089,
+     "fikcją.": 0.083032,
+     "haniebnych": 0.156555,
+     "i": 0.009277,
+     "jak": 0.041052,
+     "jako": 0.057635,
+     "jest": 0.047662,
+     "komediowe": 0.155164,
+     "nadużywania": 0.177545,
+     "nic": 0.041168,
+     "nie": 0.042212,
+     "nielegalne.": 0.147162,
+     "nieletnie": 0.118634,
+     "osoby": 0.07793,
+     "pełnoletni.": 0.145654,
+     "picia": 0.065173,
+     "pijaństwa.": 0.139276,
+     "pijący": 0.079553,
+     "ponadto.": 0.120026,
+     "popieramy": 0.145422,
+     "przedstawionych": 0.228455,
+     "przez": 0.073059,
+     "również": 0.108545,
+     "scenach": 0.107385,
+     "serię": 0.066101,
+     "surowo": 0.100195,
+     "szeregu": 0.10321,
+     "są": 0.028876,
+     "traktować": 0.134753,
+     "tym": 0.051489,
+     "tę": 0.025281,
+     "utwór": 0.080597,
+     "w": 0.022498,
+     "wszyscy": 0.105994,
+     "wyłącznie": 0.13139,
+     "wzbronione": 0.159918,
+     "zachęcamy": 0.146466,
+     "zmuszania": 0.143219
+    },
+    "space": 0.00661,
+    "edge": 0.01875,
+    "original_lines": 13,
+    "letter_height": 57.0,
+    "template": [
+     0.8971,
+     0.846069,
+     0.480762,
+     0.482368,
+     0.201749,
+     0.235205,
+     0.321768,
+     0.356208,
+     0.327564,
+     0.20824,
+     0.243021,
+     0.317222,
+     0.358269
+    ]
+   }
+  },
+  {
+   "id": "s32",
+   "source": "text-layout spec §6.2, owner review of the v4 gallery 20.10 (shape of the source)",
+   "scope": "core",
+   "pair": "library/[Erai-raws] Seihantai na Kimi to Boku 2nd Season - 10 [1080p CR WEB-DL AVC AAC][MultiSub][5752ED65]",
+   "event": 59,
+   "text": "literatura praca zatrudnienie brak pracy trudno o pracę pracodawcy",
+   "field": {
+    "kind": "sign",
+    "original": "literature department jobs / literature department employment rate / literature department can't find a job / literature department trouble getting hired / literature department employers",
+    "tags": "{\\an7\\fs15}",
+    "breaks": [
+     1,
+     2,
+     4,
+     7
+    ]
+   },
+   "accept": [
+    {
+     "lines": [
+      "literatura praca",
+      "zatrudnienie",
+      "brak pracy",
+      "trudno o pracę",
+      "pracodawcy"
+     ]
+    }
+   ],
+   "note": "search suggestions: five items on five lines; the Polish layout keeps as many lines as the source, so its line ends are the positions",
+   "measure": {
+    "kind": "words",
+    "words": {
+     "brak": 0.036438,
+     "literatura": 0.078278,
+     "o": 0.008881,
+     "praca": 0.044403,
+     "pracodawcy": 0.092743,
+     "pracy": 0.044403,
+     "pracę": 0.044495,
+     "trudno": 0.052368,
+     "zatrudnienie": 0.09906
+    },
+    "space": 0.007324,
+    "edge": 0.00625,
+    "original_lines": 5,
+    "letter_height": 45.0,
+    "template": [
+     0.224331,
+     0.32616,
+     0.321522,
+     0.361497,
+     0.270473
+    ]
    }
   },
   {

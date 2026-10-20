@@ -347,3 +347,25 @@ def test_sign_that_libass_would_wrap_gets_the_shared_no_wrap_override() -> None:
         _FULL_HD,
     )
     assert NO_WRAP in fit_signs(subs, translated, [0], profile, LayoutReport())[0]
+
+
+@pytest.mark.unit
+def test_translation_with_as_many_lines_as_the_source_keeps_its_line_ends() -> None:
+    result: str = _fit(
+        r"{\an7\pos(10,10)}literature department jobs\Nliterature department employment rate\Nemployers",
+        r"{\an7\pos(10,10)}literatura praca\Nzatrudnienie\Npracodawcy",
+    )
+    assert visible_verses(result) == ("literatura praca", "zatrudnienie", "pracodawcy")
+
+
+@pytest.mark.unit
+def test_ragged_source_shape_keeps_a_short_line_where_the_source_had_one() -> None:
+    result: str = _fit(
+        r"{\an9\pos(1900,10)\fs40}This is a work of fiction and more\Nshort line\Nanother long line of the notice",
+        r"{\an9\pos(1900,10)\fs40}To jest dzieło fikcyjne i tyle krótki wiersz kolejny długi wiersz uwagi",
+        info=_FULL_HD,
+    )
+    lines: list[str] = [verse for verse in visible_verses(result) if verse]
+    assert len(lines) == 3
+    assert len(lines[1]) < len(lines[0])
+    assert len(lines[1]) < len(lines[2])

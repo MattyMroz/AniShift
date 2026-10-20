@@ -27,6 +27,7 @@ from anishift.services.subtitles import (
     write_full,
 )
 from anishift.services.subtitles.restyle import DialogueFont
+from anishift.services.subtitles.text import visible_verses
 from anishift.services.tts.validation import is_speech_text
 from anishift.utils.logger import LoggerMode, setup_mode
 from anishift.utils.logger.config import FileConfig
@@ -44,6 +45,9 @@ if TYPE_CHECKING:
 
 REPLAY_ROOTS: Final[tuple[str, ...]] = ("library", "corpus-pairs")
 """Quality-root folders replayed when no roots are given."""
+
+_LINE_BREAK: Final[str] = chr(92) + "N"
+"""ASS hard line break joining the lines of a displayed Polish event."""
 
 MAPPING_NAME: Final[str] = "mapping.json"
 """File in a replay folder recording every pair's writer inputs, exclusions, source decisions and skips."""
@@ -67,10 +71,11 @@ type Entry = dict[str, Any]
 
 @dataclass(frozen=True, slots=True)
 class PairInput:
-    """Text of every non-drawing source Dialogue event by index, Polish for the paired ones and English otherwise."""
+    """Text of every non-drawing source Dialogue event by index, Polish when paired, unbroken and with its lines."""
 
     translations: dict[int, str]
     paired: frozenset[int]
+    verses: dict[int, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,11 +111,14 @@ def pair_input(source: SSAFile, output: SSAFile) -> PairInput:
     output_events: list[SSAEvent] = metrics.dialogue(output)
     pairs: dict[int, int] = dict(metrics.pair_events(source_events, output_events))
     translations: dict[int, str] = {}
+    verses: dict[int, str] = {}
     for index, event in enumerate(source_events):
         if not is_drawing(event.text):
             match: int | None = pairs.get(index)
-            translations[index] = visible_text(event.text if match is None else output_events[match].text)
-    return PairInput(translations, frozenset(index for index in translations if index in pairs))
+            text: str = event.text if match is None else output_events[match].text
+            translations[index] = visible_text(text)
+            verses[index] = _LINE_BREAK.join(verse for verse in visible_verses(text) if verse)
+    return PairInput(translations, frozenset(index for index in translations if index in pairs), verses)
 
 
 def excluded_events(split: SubtitleSplit, inputs: PairInput) -> tuple[int, ...]:
@@ -121,9 +129,9 @@ def excluded_events(split: SubtitleSplit, inputs: PairInput) -> tuple[int, ...]:
 
 
 def translations(split: SubtitleSplit, inputs: PairInput) -> dict[int, str]:
-    """Return the unbroken text the subtitle handler would lay out: one per spoken line and displayed event."""
-    keys: list[int] = [line.order for line in split.spoken] + [line.order for line in displayed_lines(split)]
-    return {index: inputs.translations[index] for index in keys}
+    """Return the text the subtitle handler would lay out: spoken lines unbroken, displayed events with their lines."""
+    spoken: dict[int, str] = {line.order: inputs.translations[line.order] for line in split.spoken}
+    return spoken | {line.order: inputs.verses[line.order] for line in displayed_lines(split)}
 
 
 def replay_pair(

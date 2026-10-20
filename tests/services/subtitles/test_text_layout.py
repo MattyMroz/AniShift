@@ -186,7 +186,7 @@ def test_agreement_is_read_only_with_morphology() -> None:
 
 @pytest.mark.unit
 def test_scalable_field_offers_the_scale_that_fits_the_comfortable_width() -> None:
-    sign: Field = Field(max_width=1.0, comfort_width=0.4, scalable=True, letter_height=60.0)
+    sign: Field = Field(max_width=1.0, template=(0.4,), scalable=True, letter_height=60.0)
     text: str = "Sekretarz Samorządu Uczniowskiego"
 
     found: list[Layout] = candidates(text, sign, chars_measure)
@@ -274,7 +274,7 @@ def test_dynamic_programming_finds_the_optimum_of_the_exhaustive_search(
         rescue_lines=6,
         pyramid=pyramid,
         scalable=not pyramid,
-        comfort_width=None if pyramid else width * 0.8,
+        template=() if pyramid else (width * 0.8, width * 0.5, width * 0.7),
         letter_height=0.0 if pyramid else 40.0,
     )
     weights: dict[str, float] = {**WEIGHTS, "top_longer": 1.0}
@@ -356,7 +356,7 @@ def test_heading_break_follows_a_leading_label_of_up_to_three_words(words: tuple
 
 @pytest.mark.unit
 def test_sign_field_gives_a_leading_label_its_own_line() -> None:
-    field: Field = sign_field(source_lines=1, comfort_width=1.0, letter_height=60.0)
+    field: Field = sign_field(source_lines=1, template=(1.0,), letter_height=60.0)
     assert lay_out("Odcinek drugi: Maska", field, chars_measure).lines == ("Odcinek drugi:", "Maska")
 
 
@@ -367,7 +367,7 @@ def test_dialogue_field_does_not_force_a_line_end_after_a_leading_label() -> Non
 
 @pytest.mark.unit
 def test_ranked_layouts_start_with_the_chosen_one_and_are_ordered_by_rescue_and_harm() -> None:
-    field: Field = sign_field(source_lines=2, comfort_width=0.2, letter_height=60.0)
+    field: Field = sign_field(source_lines=2, template=(0.2, 0.2), letter_height=60.0)
     found: list[Layout] = ranked("Ma licencję na ceremonię herbacianą", field, chars_measure)
     keys: list[tuple[tuple[int, int, int], float]] = [(layout.rescue, layout.score(WEIGHTS)) for layout in found]
     assert found[0] == lay_out("Ma licencję na ceremonię herbacianą", field, chars_measure)
@@ -378,7 +378,27 @@ def test_ranked_layouts_start_with_the_chosen_one_and_are_ordered_by_rescue_and_
 def test_list_with_a_forced_break_after_every_word_keeps_one_word_per_line() -> None:
     words: list[str] = [f"{number}." for number in range(1, 41)]
     field: Field = replace(
-        sign_field(source_lines=40, comfort_width=chars_measure("40.", 1.0), letter_height=60.0),
+        sign_field(source_lines=40, template=(chars_measure("40.", 1.0),) * 40, letter_height=60.0),
         breaks=frozenset(range(39)),
     )
     assert lay_out(" ".join(words), field, chars_measure).lines == tuple(words)
+
+
+@pytest.mark.unit
+def test_each_line_is_compared_with_the_width_of_its_source_line() -> None:
+    field: Field = sign_field(source_lines=2, template=(0.1, 0.4), letter_height=60.0)
+    found: list[Layout] = candidates("Uwaga bardzo stromy zjazd", field, chars_measure)
+
+    narrow_top: Layout = _find(found, "Uwaga", "bardzo stromy zjazd")
+    wide_top: Layout = _find(found, "Uwaga bardzo stromy", "zjazd")
+    assert narrow_top.harms["over_comfort"] == pytest.approx(0.0)
+    assert wide_top.harms["over_comfort"] > 0.1
+
+
+@pytest.mark.unit
+def test_lines_past_the_source_count_take_the_width_of_the_last_source_line() -> None:
+    field: Field = sign_field(source_lines=1, template=(chars_measure("Uwaga", 1.0),), letter_height=60.0)
+    found: list[Layout] = candidates("Uwaga stromy zjazd", field, chars_measure)
+
+    over: float = _find(found, "Uwaga", "stromy", "zjazd").harms["over_comfort"]
+    assert over == pytest.approx(chars_measure("x", 1.0))

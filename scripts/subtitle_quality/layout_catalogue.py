@@ -123,7 +123,7 @@ def _field(spec: dict[str, Any], measured: dict[str, Any]) -> Field:
         return replace(dialogue_field(), breaks=breaks, style_breaks=styles)
     return sign_field(
         source_lines=measured["original_lines"],
-        comfort_width=measured.get("comfort"),
+        template=tuple(measured.get("template", ())),
         letter_height=measured["letter_height"],
         max_width=measured.get("max_width", 1.0),
         height_lines=measured.get("height_lines"),
@@ -283,7 +283,7 @@ def _measurement(entry: dict[str, Any], quality_root: Path, fonts: Path) -> dict
 def _sign_measurement(spec: dict[str, Any], event: SSAEvent, profile: RenderProfile, tags: str) -> dict[str, Any]:
     originals: list[str] = [line.strip() for line in spec["original"].split(" / ") if line.strip()]
     scale: float = profile.play_res_x
-    comfort: float = max(measure_text(event, tags + line, profile).width for line in originals) / scale
+    template: list[float] = [round(measure_text(event, tags + line, profile).width / scale, 6) for line in originals]
     one: float = measure_text(event, tags + "Xg", profile).height
     pitch: float = measure_text(event, tags + "Xg\\NXg", profile).height - one
     to_screen: float = SCREEN_HEIGHT / profile.play_res_y
@@ -292,7 +292,7 @@ def _sign_measurement(spec: dict[str, Any], event: SSAEvent, profile: RenderProf
         "letter_height": round(_font_size(event, profile, tags) * to_screen, 3),
     }
     if not spec.get("song"):
-        result["comfort"] = round(comfort, 6)
+        result["template"] = template
     if "max_width_px" in spec:
         result["max_width"] = round(spec["max_width_px"] / SCREEN_WIDTH, 6)
     if "height_px" in spec:
