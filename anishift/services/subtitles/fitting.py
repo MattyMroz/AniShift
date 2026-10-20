@@ -5,13 +5,14 @@ from __future__ import annotations
 import math
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import pairwise
 from typing import TYPE_CHECKING, Final
 
 from anishift.services.subtitles.classifier import sung
 from anishift.services.subtitles.geometry import (
     Rect,
+    alignment,
     anchor_reach,
     font_size,
     measure_text,
@@ -94,9 +95,22 @@ class _Member:
     spacing: tuple[int, ...]
     rects: tuple[Rect, ...]
     region: Rect
+    lost: tuple[float, float]
     near: tuple[Rect, ...]
     dialogue: tuple[Rect, ...]
     uncertainty: float
+
+
+@dataclass(frozen=True, slots=True)
+class _Fitted:
+    """One fitted sign object: its members, chosen layout and texts, and the set it is shown in."""
+
+    members: tuple[_Member, ...]
+    layout: Layout
+    texts: dict[int, str]
+    kit: tuple[str, float]
+    start: int
+    end: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,8 +134,18 @@ def fit_signs(
 ) -> dict[int, str]:
     """Lay out the one-line translated signs at event positions ``signs`` and return their new texts."""
     scene: _Scene = _Scene(source, target, frozenset(signs), profile, _buckets(target), {}, {})
+    objects: list[_Fitted] = []
     for group in _objects(source, target, signs):
-        scene.fitted.update(_fit_object(group, scene, report))
+        fitted: _Fitted | None = _fit_object(group, scene, report)
+        if fitted is not None:
+            objects.append(fitted)
+            scene.fitted.update(fitted.texts)
+    for kit in _kits(objects):
+        scale: Scale = Scale(min(item.layout.scale.fx for item in kit), min(item.layout.scale.fy for item in kit))
+        changed: list[_Fitted] = [item for item in kit if item.layout.scale != scale]
+        report.sign_sets_scaled += bool(changed)
+        for item in changed:
+            scene.fitted.update(_texts(item.members, replace(item.layout, scale=scale), profile))
     return {index: scene.fitted.get(index, target[index].text) for index in signs}
 
 
@@ -160,14 +184,30 @@ def _runs(indices: Sequence[int], source: SSAFile) -> list[tuple[int, ...]]:
     return [tuple(group) for group in groups]
 
 
-def _fit_object(group: tuple[int, ...], scene: _Scene, report: LayoutReport) -> dict[int, str]:
+def _kits(objects: Sequence[_Fitted]) -> list[list[_Fitted]]:
+    """Return the sets of objects of one source style and letter size whose times overlap, two objects or more."""
+    by_kit: defaultdict[tuple[str, float], list[_Fitted]] = defaultdict(list)
+    for item in sorted(objects, key=lambda item: item.start):
+        by_kit[item.kit].append(item)
+    kits: list[list[_Fitted]] = []
+    for items in by_kit.values():
+        end: int = -1
+        for item in items:
+            if item.start >= end:
+                kits.append([])
+            kits[-1].append(item)
+            end = max(end, item.end)
+    return [kit for kit in kits if len(kit) > 1]
+
+
+def _fit_object(group: tuple[int, ...], scene: _Scene, report: LayoutReport) -> _Fitted | None:
     first: int = group[0]
     source: SSAEvent = scene.source[first]
     event: SSAEvent = scene.target[first]
     style: SSAStyle | None = scene.profile.styles.get(event.style)
     words: tuple[str, ...] = _words(event.text)
     if style is None or not words or visible_text(source.text) == visible_text(event.text):
-        return {}
+        return None
     shown: str = wrap_text(source, source.text, scene.profile)
     moves, forced = _structure(source, shown, event, words, scene.profile)
     tagged: str = _moved(event.text, words, moves)
@@ -177,26 +217,31 @@ def _fit_object(group: tuple[int, ...], scene: _Scene, report: LayoutReport) -> 
         tagged_measure(event, tagged, scene.profile),
     )
     spacing: tuple[int, ...] = _spacing(visible_verses(shown))
-    members: list[_Member] = [
-        _member(index, _moved(scene.target[index].text, words, moves), spacing, scene) for index in group
-    ]
+    members: list[_Member] = _on_screen(
+        [_member(index, _moved(scene.target[index].text, words, moves), spacing, scene) for index in group],
+        scene.profile,
+    )
     chosen, screen, collision = _choose(layouts, members, scene.profile)
     report.signs_fallback_screen += screen
     report.signs_fallback_collision += collision
     report.signs_relaxed += bool(chosen.flags - {Flag.SMALL})
     report.signs_small += Flag.SMALL in chosen.flags
     report.signs_fitted += len(chosen.lines) > 1 or chosen.scale != Scale()
-    texts: dict[int, str] = {
-        member.index: without_wrap(member.event, _render(member, chosen, scene.profile), scene.profile)
-        for member in members
-    }
+    texts: dict[int, str] = _texts(members, chosen, scene.profile)
     report.signs_approximate += measure_text(event, texts[first], scene.profile).status == "approximate"
     report.sign_dialogue_collisions += any(
         _overlap(screen_rects(member.event, NO_WRAP + texts[member.index], scene.profile), member.dialogue, 0.0) > 0
         for member in members
         if member.dialogue
     )
-    return texts
+    kit: tuple[str, float] = (source.style, font_size(source, scene.profile))
+    start: int = min(scene.source[index].start for index in group)
+    end: int = max(scene.source[index].end for index in group)
+    return _Fitted(tuple(members), chosen, texts, kit, start, end)
+
+
+def _texts(members: Sequence[_Member], layout: Layout, profile: RenderProfile) -> dict[int, str]:
+    return {member.index: without_wrap(member.event, _render(member, layout, profile), profile) for member in members}
 
 
 def _words(text: str) -> tuple[str, ...]:
@@ -219,7 +264,8 @@ def _field(  # noqa: PLR0913 - the source as shown, the anchored translation and
     region: Rect = _region(source.text, profile)
     reach: float = anchor_reach(event, profile, region.left, region.right) / profile.play_res_x
     changes: tuple[bool, ...] = style_changes(event, tagged, profile)
-    return sign_field(
+    blocks, runs = _blocks(verses)
+    field: Field = sign_field(
         source_lines=max(1, len(template)),
         template=() if sung(source) else template,
         letter_height=font_size(event, profile) * _SCREEN_HEIGHT / profile.play_res_y,
@@ -228,6 +274,27 @@ def _field(  # noqa: PLR0913 - the source as shown, the anchored translation and
         breaks=forced,
         style_breaks=frozenset(gap for gap, change in enumerate(changes) if change),
     )
+    if len(blocks) < _LIST_ITEMS or not template:
+        return field
+    return replace(field, blocks=blocks, runs=runs, anchor_row=(alignment(event, profile) - 1) // 3)
+
+
+def _blocks(verses: Sequence[str]) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    blocks: list[int] = []
+    runs: list[int] = []
+    empty: int = 0
+    for verse in verses:
+        if not verse:
+            empty += 1
+            continue
+        if blocks and empty:
+            runs.append(empty)
+            blocks.append(0)
+        if not blocks:
+            blocks.append(0)
+        blocks[-1] += 1
+        empty = 0
+    return tuple(blocks), tuple(runs)
 
 
 def _structure(
@@ -342,13 +409,16 @@ def _member(index: int, text: str, spacing: tuple[int, ...], scene: _Scene) -> _
     source: SSAEvent = scene.source[index]
     near: list[int] = _neighbours(index, scene)
     exact: bool = measure_text(source, source.text, scene.profile).status == "exact"
+    rects: tuple[Rect, ...] = screen_rects(source, source.text, scene.profile)
+    region: Rect = _region(source.text, scene.profile)
     return _Member(
         index=index,
         event=scene.target[index],
         text=text,
         spacing=spacing,
-        rects=screen_rects(source, source.text, scene.profile),
-        region=_region(source.text, scene.profile),
+        rects=rects,
+        region=region,
+        lost=_loss(rects, region),
         near=tuple(rect for other in near for rect in _boxes(other, scene)),
         dialogue=tuple(rect for other in near if other not in scene.signs for rect in _boxes(other, scene)),
         uncertainty=_EXACT_UNCERTAINTY if exact else _APPROXIMATE_UNCERTAINTY,
@@ -446,7 +516,7 @@ def _member_excess(layout: Layout, member: _Member, profile: RenderProfile) -> t
     width: float = max((rect.right - rect.left for rect in rects), default=0.0)
     height: float = max((rect.bottom - rect.top for rect in rects), default=0.0)
     loss_x, loss_y = _loss(rects, member.region)
-    base_x, base_y = _loss(member.rects, member.region)
+    base_x, base_y = member.lost
     screen: float = max(
         0.0,
         loss_x - base_x - _PIXEL - member.uncertainty * width,
@@ -454,6 +524,14 @@ def _member_excess(layout: Layout, member: _Member, profile: RenderProfile) -> t
     )
     grown: float = _overlap(rects, member.near, member.uncertainty) - _overlap(member.rects, member.near, 0.0)
     return screen, max(0.0, grown - _PIXEL)
+
+
+def _on_screen(members: Sequence[_Member], profile: RenderProfile) -> list[_Member]:
+    """Return the members, owed the full screen width when the object stands still on screen without a clip."""
+    screen: Rect = Rect(0, 0, profile.play_res_x, profile.play_res_y)
+    if len({member.rects for member in members}) > 1 or len(members[0].rects) > 1 or members[0].region != screen:
+        return list(members)
+    return [replace(member, lost=(0.0, member.lost[1])) for member in members]
 
 
 def _loss(rects: Sequence[Rect], region: Rect) -> tuple[float, float]:
@@ -481,7 +559,7 @@ def _inset(rect: Rect, uncertainty: float) -> Rect:
 
 
 def _render(member: _Member, layout: Layout, profile: RenderProfile) -> str:
-    text: str = _spaced(reflow_visible_text(member.text, layout.lines), member.spacing)
+    text: str = _spaced(reflow_visible_text(member.text, layout.lines), member.spacing, layout.spacing)
     style: SSAStyle | None = profile.styles.get(member.event.style)
     if layout.scale == Scale() or style is None:
         return text
@@ -494,17 +572,18 @@ def _scaled(text: str, scale: Scale, style: SSAStyle, styles: Mapping[str, SSASt
     return "{" + prefix + scaled[1:] if scaled.startswith("{") else "{" + prefix + "}" + scaled
 
 
-def _spaced(text: str, spacing: tuple[int, ...]) -> str:
+def _spaced(text: str, spacing: tuple[int, ...], blocks: tuple[int, ...]) -> str:
     pieces: list[str] = text.split(_BREAK)
     sources: int = len(spacing) - 1
     lines: int = len(pieces)
-    after: list[int] = [0] * lines
-    for line in range(1, sources):
+    after: list[int] = [*blocks[1:-1], 0] if len(blocks) == lines + 1 else [0] * lines
+    for line in range(1, sources if not blocks else 1):
         if lines > 1:
             after[min(lines - 1, max(1, round(line * lines / sources))) - 1] += spacing[line]
     joined: str = "".join(piece + _BREAK * (1 + after[index]) for index, piece in enumerate(pieces[:-1])) + pieces[-1]
     prefix: str = _prefix(joined)
-    return prefix + _BREAK * spacing[0] + joined[len(prefix) :] + _BREAK * spacing[-1]
+    before, behind = (blocks[0], blocks[-1]) if blocks else (0, 0)
+    return prefix + _BREAK * (spacing[0] + before) + joined[len(prefix) :] + _BREAK * (spacing[-1] + behind)
 
 
 def _prefix(text: str) -> str:

@@ -447,3 +447,53 @@ def test_sign_lines_weigh_their_shape_apart_from_dialogue_balance() -> None:
     )
     assert not any(name.startswith("imbalance_") for name in layout.harms)
     assert any(name.startswith("shape_") for name in layout.harms)
+
+
+@pytest.mark.unit
+def test_text_blocks_keep_their_places_and_their_full_height() -> None:
+    template: tuple[float, ...] = (chars_measure("Has a tea ceremony", 1.0), chars_measure("Knowledgeable", 1.0))
+    field: Field = replace(
+        sign_field(source_lines=2, template=template, letter_height=60.0), blocks=(1, 1), runs=(6,), anchor_row=2
+    )
+    chosen: Layout = lay_out(
+        "Posiada licencję mistrzyni ceremonii herbacianej, wszechstronnie wyedukowana", field, chars_measure
+    )
+    inner: tuple[int, ...] = chosen.spacing[1:-1]
+    assert chosen.scale.fy == 1.0
+    assert len(chosen.spacing) == len(chosen.lines) + 1
+    assert (chosen.spacing[0], chosen.spacing[-1]) == (0, 0)
+    assert sorted(inner)[:-1] == [0] * (len(inner) - 1)
+    assert any(value == 6 - 2 * index for index, value in enumerate(inner))
+
+
+@pytest.mark.unit
+def test_centred_text_blocks_grow_away_from_their_gap_and_keep_it_whole() -> None:
+    template: tuple[float, ...] = (chars_measure("Has a tea ceremony", 1.0), chars_measure("Knowledgeable", 1.0))
+    field: Field = replace(
+        sign_field(source_lines=2, template=template, letter_height=60.0, max_width=template[0]),
+        blocks=(1, 1),
+        runs=(6,),
+        anchor_row=1,
+    )
+    chosen: Layout = lay_out(
+        "Posiada licencję mistrzyni ceremonii herbacianej, wszechstronnie wyedukowana", field, chars_measure
+    )
+    assert chosen.scale.fy == 1.0
+    assert len(chosen.lines) > len(field.blocks)
+    assert 6 in chosen.spacing[1:-1]
+    assert chosen.spacing[0] + chosen.spacing[-1] == 2 * (len(chosen.lines) - 2)
+
+
+@pytest.mark.unit
+def test_long_list_of_text_blocks_without_its_line_breaks_keeps_one_item_per_block() -> None:
+    count: int = 100
+    template: tuple[float, ...] = tuple(chars_measure("406 points", 1.0) for _ in range(count))
+    field: Field = replace(
+        sign_field(source_lines=count, template=template, letter_height=60.0),
+        blocks=(1,) * count,
+        runs=(1,) * (count - 1),
+        anchor_row=2,
+    )
+    chosen: Layout = lay_out(" ".join(f"{400 + item} pkt" for item in range(count)), field, chars_measure)
+    assert chosen.lines == tuple(f"{400 + item} pkt" for item in range(count))
+    assert chosen.spacing == (0, *(1,) * (count - 1), 0)

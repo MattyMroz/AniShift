@@ -9,9 +9,21 @@ from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
 from anishift.errors import ErrorCode
 from anishift.services.subtitles.errors import SubtitleError
-from anishift.services.subtitles.restyle import DialogueFont, clone_source, restyle_dialogue
-from anishift.services.subtitles.service import inherit_split, load_subtitles, split_subtitles, write_translated
-from anishift.services.subtitles.types import LayoutReport
+from anishift.services.subtitles.restyle import (
+    DialogueFont,
+    clone_source,
+    restyle_dialogue,
+    restyle_signs,
+    with_family,
+)
+from anishift.services.subtitles.service import (
+    inherit_split,
+    layout_translated,
+    load_subtitles,
+    split_subtitles,
+    write_translated,
+)
+from anishift.services.subtitles.types import FontSources, LayoutReport
 
 if TYPE_CHECKING:
     from anishift.services.subtitles.types import Decision
@@ -249,3 +261,94 @@ def test_write_translated_with_the_dialogue_font_writes_the_clone_and_keeps_untr
     ]
     sign: str = next(line for line in source.read_text(encoding="utf-8").splitlines() if "Shop" in line)
     assert sign in destination.read_text(encoding="utf-8").splitlines()
+
+
+def _signs() -> SSAFile:
+    subs: SSAFile = SSAFile()
+    subs.info.update({"PlayResX": "1920", "PlayResY": "1080"})
+    subs.styles["Default"] = SSAStyle(fontname="Gandhi Sans", fontsize=75.0)
+    subs.styles["Sign"] = SSAStyle(fontname="Arial", fontsize=60.0)
+    subs.styles["Typeset"] = SSAStyle(fontname="Grobold", fontsize=60.0)
+    subs.events.extend(
+        [
+            SSAEvent(start=0, end=1000, style="Default", text="Hello there"),
+            SSAEvent(start=0, end=1000, style="Sign", text=r"{\pos(960,100)\c&H0000FF&\frz5}ROOM 12"),
+            SSAEvent(start=0, end=1000, style="Typeset", text=r"{\pos(960,300)}Shop"),
+            SSAEvent(start=0, end=1000, style="Sign", text=r"{\pos(960,500)\clip(0,0,1920,600)}Exit"),
+            SSAEvent(start=0, end=1000, style="Sign", text=r"{\pos(960,700)\fnTimes New Roman\blur2}Soft"),
+            SSAEvent(start=0, end=1000, style="Sign", text=r"{\pos(960,900)}Bar"),
+            SSAEvent(start=0, end=1000, style="Sign", layer=1, text=r"{\pos(960,900)\bord0}Bar"),
+            SSAEvent(start=0, end=1000, style="Sign", text=r"{\pos(200,900)\fnTimes New Roman}Note"),
+        ]
+    )
+    return subs
+
+
+_SIGN_DECISIONS: Final[tuple[Decision, ...]] = ("spoken", *("displayed",) * 7)
+
+
+@pytest.mark.unit
+def test_restyle_signs_moves_plain_system_font_signs_to_a_clone_drawn_with_the_dialogue_font() -> None:
+    restyled, clones = restyle_signs(_signs(), _SIGN_DECISIONS, _FONT, frozenset({"grobold"}))
+
+    assert clones == {1: "Sign (dialog)", 7: "Sign (dialog)"}
+    assert restyled.styles["Sign (dialog)"].fontname == _FAMILY
+    assert restyled.styles["Sign"].fontname == "Arial"
+
+
+@pytest.mark.unit
+def test_restyle_signs_keeps_signs_with_attached_fonts_or_fitted_to_the_picture() -> None:
+    _, clones = restyle_signs(_signs(), _SIGN_DECISIONS, _FONT, frozenset({"grobold"}))
+
+    assert not {2, 3, 4, 5, 6} & clones.keys()
+
+
+@pytest.mark.unit
+def test_restyle_signs_moves_a_plain_sign_in_a_system_font_the_release_attached() -> None:
+    _, clones = restyle_signs(_signs(), _SIGN_DECISIONS, _FONT, frozenset({"arial", "times new roman", "grobold"}))
+
+    assert clones == {1: "Sign (dialog)", 7: "Sign (dialog)"}
+
+
+@pytest.mark.unit
+def test_restyle_signs_reuses_the_dialogue_clone_of_the_sign_style() -> None:
+    subs: SSAFile = _signs()
+    subs.styles["Sign (dialog)"] = SSAStyle(fontname=_FAMILY)
+
+    restyled, clones = restyle_signs(subs, _SIGN_DECISIONS, _FONT, frozenset())
+
+    assert clones[1] == "Sign (dialog)"
+    assert "Sign (dialog 2)" not in restyled.styles
+
+
+@pytest.mark.unit
+def test_with_family_replaces_named_font_overrides_and_keeps_resets() -> None:
+    assert with_family(r"{\fnArial\pos(1,2)}A{\fn}B", "Officina") == r"{\fnOfficina\pos(1,2)}A{\fn}B"
+
+
+@pytest.mark.integration
+def test_layout_with_episode_fonts_draws_plain_signs_with_the_dialogue_font_and_keeps_their_look() -> None:
+    split = split_subtitles(_signs(), kind="ass", spoken_styles={"Default"})
+
+    laid_out = layout_translated(
+        split,
+        {1: "POKÓJ 12", 7: "Notatka"},
+        fonts=FontSources(episode=(), system=()),
+        dialogue_font=_FONT,
+    )
+
+    events: list[SSAEvent] = [event for event in laid_out.subs.events if event.type == "Dialogue"]
+    assert [event.style for event in events[1:3]] == ["Sign (dialog)", "Typeset"]
+    assert r"\pos(960,100)\c&H0000FF&\frz5" in events[1].text
+    assert rf"\fn{_FAMILY}" in events[7].text
+    assert laid_out.report.signs_restyled == 2
+
+
+@pytest.mark.integration
+def test_layout_without_a_dialogue_font_keeps_sign_fonts() -> None:
+    split = split_subtitles(_signs(), kind="ass", spoken_styles={"Default"})
+
+    laid_out = layout_translated(split, {1: "POKÓJ 12"}, fonts=FontSources(episode=(), system=()), dialogue_font=None)
+
+    assert [event.style for event in laid_out.subs.events if event.type == "Dialogue"][1] == "Sign"
+    assert laid_out.report.signs_restyled == 0

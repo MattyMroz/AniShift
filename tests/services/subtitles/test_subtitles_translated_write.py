@@ -161,6 +161,7 @@ def test_ass_preserves_override_tags(tmp_path: Path) -> None:
 
 def test_ass_uses_hard_backslash_n_between_verses(tmp_path: Path) -> None:
     subs = _ass_with_both_streams()
+    subs.info.update({"PlayResX": "1920", "PlayResY": "1080"})
     split = split_subtitles(subs, kind="ass", spoken_styles={"Dialog"})
     texts: dict[int, str] = dict.fromkeys(_fake_translation(split), _LONG_TRANSLATION)
     translated = _write(split, texts, tmp_path / "out.pl.ass")
@@ -415,6 +416,7 @@ def test_layout_translated_breaks_dialogue_and_keeps_drawings_and_events_without
 
 def test_translated_writer_logs_one_layout_summary_without_texts_or_absolute_paths(tmp_path: Path) -> None:
     subs: SSAFile = _ass_with_both_streams()
+    subs.info.update({"PlayResX": "1920", "PlayResY": "1080"})
     split: SubtitleSplit = split_subtitles(subs, kind="ass", spoken_styles={"Dialog"})
     records: list[Record] = []
     handler: int = loguru_logger.add(lambda message: records.append(message.record), level="DEBUG")
@@ -429,7 +431,7 @@ def test_translated_writer_logs_one_layout_summary_without_texts_or_absolute_pat
     assert extra["destination"] == "out.pl.ass"
     assert extra["product"] == "Translated"
     assert {key: extra[key] for key in asdict(LayoutReport())} == asdict(
-        LayoutReport(dialogue_unmeasured=1, signs_fitted=2, signs_approximate=2)
+        LayoutReport(dialogue_unmeasured=1, signs_fitted=1, signs_approximate=2)
     )
     assert str(tmp_path) not in repr(summaries[0]["extra"])
     assert "PL:" not in repr(summaries[0]["extra"])

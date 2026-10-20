@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import math
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cache, lru_cache
-from itertools import combinations, pairwise
+from itertools import accumulate, combinations, pairwise
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
@@ -87,17 +87,26 @@ class Field:
     style_rescue: bool = True
     speaker_lines: bool = False
     headings: bool = False
+    fixed_height: bool = False
+    blocks: tuple[int, ...] = ()
+    runs: tuple[int, ...] = ()
+    anchor_row: int = 0
 
 
 @dataclass(frozen=True, slots=True)
 class Layout:
-    """Lines and scale of one candidate with its harm degrees, rescue level and report flags."""
+    """Lines and scale of one candidate with its harm degrees, rescue level, report flags and block spacing.
+
+    ``spacing`` is empty outside text blocks; for blocks it holds the empty lines before the first line, after each
+    line but the last, and after the last line.
+    """
 
     lines: tuple[str, ...]
     scale: Scale
     harms: Mapping[str, float]
     rescue: tuple[int, int, int]
     flags: frozenset[Flag]
+    spacing: tuple[int, ...] = ()
 
     def score(self, weights: Mapping[str, float]) -> float:
         """Return the weighted sum of the harm degrees."""
@@ -138,6 +147,21 @@ _SIGN_LINES: Final[int] = 3
 
 _MIN_SCALE: Final[float] = 0.6
 """Smallest scale (either axis) a sign keeps outside rescue; a proposal the owner has to confirm (spec section 4.6)."""
+
+_BOTTOM_ROW: Final[int] = 0
+"""Alignment row of text anchored at its bottom edge: ``\\an1`` to ``\\an3``."""
+
+_MIDDLE_ROW: Final[int] = 1
+"""Alignment row of text centred on its anchor (numpad 4 to 6)."""
+
+_TOP_ROW: Final[int] = 2
+"""Alignment row of text anchored at its top edge (numpad 7 to 9)."""
+
+_BLOCK_SCALE_STEP: Final[float] = 0.05
+"""Horizontal scale step at which candidate bounds of text blocks are proposed for the core to score."""
+
+_EMPTY_PER_LINE: Final[int] = 2
+"""Empty lines taking the height of one text line: libass draws an empty line at half the font height."""
 
 _SHAPED_WORD_SHARE: Final[float] = 0.5
 """Share of its source line a lone word must fill to follow the source shape of a sign instead of being an orphan."""
@@ -276,7 +300,8 @@ def chars_measure(line: str, fx: float) -> float:
 
 def candidates(text: str, field: Field, measure: Measure, *, morphology: bool = True) -> list[Layout]:
     """Return every allowed layout of up to three lines, each at every scale the field may use."""
-    return _enumerated(_case(text, field, measure, morphology=morphology))
+    blocked: list[Layout] = _block_layouts(text, field, measure, WEIGHTS, morphology=morphology) if field.blocks else []
+    return blocked or _enumerated(_case(text, field, measure, morphology=morphology))
 
 
 def lay_out(
@@ -290,6 +315,9 @@ def ranked(
     text: str, field: Field, measure: Measure, weights: Mapping[str, float] = WEIGHTS, *, morphology: bool = True
 ) -> list[Layout]:
     """Return every enumerated layout and the best programmed ones, best first by rescue level and weighted harm."""
+    blocked: list[Layout] = _block_layouts(text, field, measure, weights, morphology=morphology) if field.blocks else []
+    if blocked:
+        return blocked
     case: _Case = _case(text, field, measure, morphology=morphology)
     found: list[Layout] = _enumerated(case)
     if field.rescue_lines > _ENUMERATED_LINES:
@@ -369,6 +397,12 @@ def _allowed_cut(case: _Case, index: int) -> bool:
 def _scales(case: _Case, cuts: tuple[int, ...]) -> list[Scale]:
     if not case.field.scalable:
         return [Scale()]
+    if case.field.fixed_height:
+        return [
+            scale
+            for scale in _scales(replace(case, field=replace(case.field, fixed_height=False)), cuts)
+            if scale.fy == 1
+        ]
     widths: list[float] = [case.measure(line, 1.0) for line in _lines(case.words, cuts)]
     shaped: set[float] = {
         _template_width(case.field, index) / width
@@ -650,6 +684,8 @@ def _fewest_fitting_lines(costs: _Costs, fx: float) -> int | None:
 def _heights(case: _Case, fx: float) -> list[Scale]:
     if not case.field.scalable or fx == 1.0:
         return [Scale()]
+    if case.field.fixed_height:
+        return [Scale(fx)]
     return [Scale(fx, fx), Scale(fx)]
 
 
@@ -739,3 +775,201 @@ class _Solver:
         if above >= 0:
             score += self._costs.top_longer * max(0, above - self._costs.chars(start, end))
         return outside, shape_flags + (0 if self._floor else size_flags), score
+
+
+# ── Blocks ────────────────────────────────────────────────────────────────────
+
+
+type _BlockKey = tuple[int, float]
+"""Overflowing or bound cuts and weighted harm of the block fills and the cuts between them, summed."""
+
+
+def _block_layouts(
+    text: str, field: Field, measure: Measure, weights: Mapping[str, float], *, morphology: bool
+) -> list[Layout]:
+    words: tuple[str, ...] = tuple(word for word in BREAKABLE_SPACES.split(text.strip()) if word)
+    found: tuple[Gap, ...] = gaps(words, modifies if morphology else None, verb if morphology else None)
+
+    @cache
+    def piece(block: int, start: int, end: int) -> tuple[_Case, Layout]:
+        case: _Case = _case(
+            " ".join(words[start:end]), _block_field(field, block, start, end), measure, morphology=morphology
+        )
+        return case, lay_out(" ".join(case.words), case.field, measure, weights, morphology=morphology)
+
+    layouts: list[Layout] = []
+    for bounds in _block_bounds(field, (words, found), measure, weights, morphology=morphology):
+        edges: tuple[int, ...] = (0, *(cut + 1 for cut in bounds), len(words))
+        pieces: list[tuple[_Case, Layout]] = [piece(block, *span) for block, span in enumerate(pairwise(edges))]
+        fx: float = min(layout.scale.fx for _, layout in pieces)
+        common: list[Layout] = [_rescaled(layout, case, fx) for case, layout in pieces]
+        layouts.append(_joined(field, common, [found[cut] for cut in bounds], words, bounds, morphology=morphology))
+    return sorted(layouts, key=lambda layout: (layout.rescue, layout.score(weights)))
+
+
+def _block_bounds(
+    field: Field,
+    text: tuple[tuple[str, ...], tuple[Gap, ...]],
+    measure: Measure,
+    weights: Mapping[str, float],
+    *,
+    morphology: bool,
+) -> list[tuple[int, ...]]:
+    """Return candidate gaps ending each block but the last: the best by cut harms and block fill at each squeeze."""
+    words, found = text
+    count: int = len(field.blocks)
+    if len(words) < count:
+        return []
+    if len(field.breaks) + 1 == sum(field.blocks):
+        ends: list[int] = sorted(field.breaks)
+        return [tuple(ends[sum(field.blocks[: block + 1]) - 1] for block in range(count - 1))]
+    width: Callable[[int, int], float] = _span_width(words, measure)
+    cuts: list[_BlockKey] = [_cut_key(words, found, cut, weights, morphology=morphology) for cut in range(len(found))]
+    steps: range = range(round(_MIN_SCALE / _BLOCK_SCALE_STEP), round(1 / _BLOCK_SCALE_STEP) + 1)
+    return list(dict.fromkeys(_bounds_at(field, width, cuts, step * _BLOCK_SCALE_STEP, weights) for step in steps))
+
+
+def _cut_key(
+    words: Sequence[str], found: Sequence[Gap], cut: int, weights: Mapping[str, float], *, morphology: bool
+) -> _BlockKey:
+    gap: Gap = found[cut]
+    agreement: bool = morphology and agrees(words[cut], words[cut + 1])
+    return int(gap.protected), weights.get(f"cut_{gap.kind.value}", 0.0) + agreement * weights.get("agreement", 0.0)
+
+
+def _bounds_at(
+    field: Field, width: Callable[[int, int], float], cuts: Sequence[_BlockKey], fx: float, weights: Mapping[str, float]
+) -> tuple[int, ...]:
+    size: int = len(cuts) + 1
+    count: int = len(field.blocks)
+
+    @cache
+    def best(block: int, start: int) -> tuple[_BlockKey, tuple[int, ...]]:
+        if block == count - 1:
+            return _fill_key(field, block, width(start, size) * fx, weights), ()
+        options: list[tuple[_BlockKey, tuple[int, ...]]] = []
+        for end in range(start + 1, size - (count - block - 1) + 1):
+            fill: _BlockKey = _fill_key(field, block, width(start, end) * fx, weights)
+            if fill[0] and options:
+                break
+            rest, ends = best(block + 1, end)
+            options.append((_summed(fill, cuts[end - 1], rest), (end - 1, *ends)))
+        return min(options)
+
+    return best(0, 0)[1]
+
+
+def _span_width(words: Sequence[str], measure: Measure) -> Callable[[int, int], float]:
+    lengths: list[float] = [measure(word, 1.0) for word in words]
+    starts: list[float] = [0.0, *accumulate(lengths)]
+    space: float = max(0.0, measure(" ".join(words), 1.0) - starts[-1]) / max(1, len(words) - 1)
+    return lambda start, end: starts[end] - starts[start] + space * (end - start - 1)
+
+
+def _fill_key(field: Field, block: int, width: float, weights: Mapping[str, float]) -> _BlockKey:
+    first: int = sum(field.blocks[:block])
+    lines: int = field.blocks[block]
+    room: float = sum(field.template[first : first + lines]) / lines
+    options: list[_BlockKey] = []
+    for total in range(lines, _block_cap(field, block) + 1):
+        excess: float = max(0.0, width - total * room)
+        score: float = weights.get("extra_line", 0.0) * (total - lines) + weights.get("over_comfort", 0.0) * excess
+        options.append((int(width > total * field.max_width), score))
+    return min(options)
+
+
+def _summed(*keys: _BlockKey) -> _BlockKey:
+    return sum(key[0] for key in keys), sum(key[1] for key in keys)
+
+
+def _rescaled(piece: Layout, case: _Case, fx: float) -> Layout:
+    if piece.scale.fx == fx:
+        return piece
+    counts: list[int] = [len(BREAKABLE_SPACES.split(line)) for line in piece.lines[:-1]]
+    return _evaluate(case, tuple(end - 1 for end in accumulate(counts)), Scale(fx))
+
+
+def _block_field(field: Field, block: int, start: int, end: int) -> Field:
+    first: int = sum(field.blocks[:block])
+    template: tuple[float, ...] = field.template[first : first + field.blocks[block]]
+    lines: int = _block_cap(field, block)
+    return replace(
+        field,
+        blocks=(),
+        runs=(),
+        template=template,
+        pattern=template,
+        preferred_lines=field.blocks[block],
+        max_lines=lines,
+        rescue_lines=lines,
+        breaks=_inside(field.breaks, start, end),
+        style_breaks=_inside(field.style_breaks, start, end),
+        headings=field.headings and block == 0,
+        fixed_height=True,
+    )
+
+
+def _inside(cuts: frozenset[int], start: int, end: int) -> frozenset[int]:
+    return frozenset(cut - start for cut in cuts if start <= cut < end - 1)
+
+
+def _block_cap(field: Field, block: int) -> int:
+    lines: int = field.blocks[block]
+    gap: int | None = _drawn_gap(field, block)
+    return max(_SIGN_LINES, lines + 1) if gap is None else lines + field.runs[gap] // _EMPTY_PER_LINE
+
+
+def _drawn_gap(field: Field, block: int) -> int | None:
+    """Return the empty run a growing block takes its lines from, or None for a block growing away from the runs."""
+    last: int = len(field.blocks) - 1
+    if block == (0 if field.anchor_row == _BOTTOM_ROW else last) or (field.anchor_row == _MIDDLE_ROW and block == 0):
+        return None
+    return block - 1 if field.anchor_row == _BOTTOM_ROW else block
+
+
+def _joined(  # noqa: PLR0913 - the block layouts with the gaps between them
+    field: Field,
+    pieces: Sequence[Layout],
+    between: Sequence[Gap],
+    words: Sequence[str],
+    bounds: Sequence[int],
+    *,
+    morphology: bool,
+) -> Layout:
+    harms: dict[str, float] = {}
+    for piece in pieces:
+        for name, degree in piece.harms.items():
+            harms[name] = harms.get(name, 0.0) + degree
+    for gap, cut in zip(between, bounds, strict=True):
+        harms[f"cut_{gap.kind.value}"] = harms.get(f"cut_{gap.kind.value}", 0.0) + 1.0
+        if morphology and agrees(words[cut], words[cut + 1]):
+            harms["agreement"] = harms.get("agreement", 0.0) + 1.0
+    rescue: tuple[int, int, int] = (
+        sum(piece.rescue[0] for piece in pieces),
+        sum(piece.rescue[1] for piece in pieces),
+        sum(piece.rescue[2] for piece in pieces) + sum(gap.protected for gap in between),
+    )
+    return Layout(
+        lines=tuple(line for piece in pieces for line in piece.lines),
+        scale=Scale(min(piece.scale.fx for piece in pieces)),
+        harms=harms,
+        rescue=rescue,
+        flags=frozenset(flag for piece in pieces for flag in piece.flags),
+        spacing=_block_spacing(field, [len(piece.lines) for piece in pieces]),
+    )
+
+
+def _block_spacing(field: Field, counts: Sequence[int]) -> tuple[int, ...]:
+    runs: list[int] = list(field.runs)
+    for block, count in enumerate(counts):
+        gap: int | None = _drawn_gap(field, block)
+        if gap is not None:
+            runs[gap] -= _EMPTY_PER_LINE * (count - field.blocks[block])
+    middle: bool = field.anchor_row == _MIDDLE_ROW
+    spacing: list[int] = [_EMPTY_PER_LINE * max(0, counts[-1] - field.blocks[-1]) if middle else 0]
+    for block, count in enumerate(counts):
+        spacing.extend([0] * (count - 1))
+        if block < len(runs):
+            spacing.append(max(0, runs[block]))
+    spacing.append(_EMPTY_PER_LINE * max(0, counts[0] - field.blocks[0]) if middle else 0)
+    return tuple(spacing)

@@ -3139,11 +3139,19 @@
    "field": {
     "kind": "sign",
     "original": "Has a tea ceremony license / Knowledgeable",
-    "tags": "{\\pos(-150.9,654)\\fnIwata Mincho Old Pro B\\c&HFCF9FA&\\blur10.5}"
+    "tags": "{\\pos(-150.9,654)\\fnIwata Mincho Old Pro B\\c&HFCF9FA&\\blur10.5}",
+    "blocks": [
+     1,
+     1
+    ],
+    "runs": [
+     6
+    ],
+    "anchor_row": 1
    },
    "accept": [],
-   "accept_rule": "source_lines",
-   "note": "two text lines on the places of the source lines; the empty authored lines are restored by the integration",
+   "accept_rule": "blocks",
+   "note": "text blocks on their places with the authored empty lines as fixed spacing: vertical scale 1, readable (owner, 20.10)",
    "measure": {
     "kind": "words",
     "words": {

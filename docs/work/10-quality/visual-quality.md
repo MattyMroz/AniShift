@@ -39,7 +39,7 @@ Tych reguł program nie łamie nigdy, także w wyjściu awaryjnym. Wariant, któ
 1. Żaden wyraz ani znak (grafem) nie jest rozcięty między wiersze.
 2. Program nie zmienia, nie skraca ani nie gubi treści przekładu. Zmienia tylko układ: rozmiar, ściśnięcie, podział na wiersze, miejsce cięcia.
 3. Położenie, ruch, obrót, maska (`\clip`), kolory i przezroczystość szyldu zostają jak w oryginale.
-4. Czcionka szyldu zostaje czcionką typesettera. Wyjątek dotyczy tylko stylów dialogowych (sekcja 5).
+4. Czcionka szyldu zostaje czcionką typesettera. Wyjątki: style dialogowe (sekcja 5) i szyldy bez pracy typesettera, gdy ustawiona jest czcionka dialogów (zmiana 20.10, decyzja właściciela: „jeśli typesetter tylko klepnął domyślnego Ariala, po co go zostawiać”). Szyld bez pracy typesettera to zdarzenie wyświetlane, którego krój jest popularną czcionką systemową (zamknięta lista rodzin: Arial, Times New Roman, Verdana, Georgia, Trebuchet MS, Tahoma, Segoe UI i podobne — także gdy wydanie dołączyło ją do MKV, jak robi Crunchyroll) albo nie należy do czcionek dołączonych do odcinka i które nie ma śladów dopasowania do obrazu: maski `\clip`/`\iclip`, perspektywy i pochylenia `\frx`/`\fry`/`\fax`/`\fay`, rozmycia `\blur`/`\be` > 0, animacji `\t`, ruchu `\move`, gradientu (zmiana `\c` wewnątrz słowa) ani kopii warstwowej tego samego tekstu. Taki szyld dostaje czcionkę dialogów tym samym klonem stylu co dialog; kolor, obrys, położenie, `\an`, `\frz` i rozmiar zostają.
 5. Litery szyldu nie są większe niż w oryginale. Powiększanie nie ma podstawy, bo program nie wie, czy obok jest miejsce.
 6. Rysunki (`\p`) i karaoke openingów oraz endingów zostają nietknięte.
 7. Napis identyczny z angielskim zostaje bajtowo identyczny. Wyjątek: linia dialogu przeniesiona do klonu stylu z czcionką właściciela (sekcja 5) zmienia tylko nazwę stylu.
@@ -85,7 +85,7 @@ Jak cechy działają razem, na przykładach z galerii:
 
 **Szyld w czcionce bez polskich liter.** Program nie zmienia czcionki szyldu (reguła 2.1.4), więc libass dorysuje brakujące litery z czcionki zastępczej. Zostaje to raportowane jako szkoda „jednolity krój: bardzo źle”. Czy dla takich szyldów wolno użyć całej czcionki zastępczej, rozstrzyga właściciel (sekcja 12, punkt 6).
 
-**Środki, których nie używamy:** odstępy między literami (`\fsp`; Shisha nie użyła ich w żadnym z 45 szyldów), zmiana czcionki szyldu, przesuwanie szyldu, skracanie tekstu przez program.
+**Środki, których nie używamy:** odstępy między literami (`\fsp`; Shisha nie użyła ich w żadnym z 45 szyldów), zmiana czcionki szyldu (poza szyldami bez pracy typesettera, reguła 2.1.4), przesuwanie szyldu, skracanie tekstu przez program.
 
 ## 4. Dialog: kiedy wygląda dobrze
 

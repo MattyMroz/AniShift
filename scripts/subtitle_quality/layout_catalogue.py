@@ -121,7 +121,7 @@ def _field(spec: dict[str, Any], measured: dict[str, Any]) -> Field:
     styles: frozenset[int] = frozenset(spec.get("style_breaks", ()))
     if spec["kind"] == "dialogue":
         return replace(dialogue_field(), breaks=breaks, style_breaks=styles)
-    return sign_field(
+    field: Field = sign_field(
         source_lines=measured["original_lines"],
         template=tuple(measured.get("template", ())),
         letter_height=measured["letter_height"],
@@ -130,6 +130,9 @@ def _field(spec: dict[str, Any], measured: dict[str, Any]) -> Field:
         breaks=breaks,
         style_breaks=styles,
     )
+    if "blocks" not in spec:
+        return field
+    return replace(field, blocks=tuple(spec["blocks"]), runs=tuple(spec["runs"]), anchor_row=spec["anchor_row"])
 
 
 def _measure(measured: dict[str, Any]) -> Measure:
@@ -190,16 +193,23 @@ def _ruled(case: CatalogueCase, layout: Layout, found: Sequence[Layout]) -> bool
         return True
     if rule == "source_lines":
         return len(layout.lines) == case.field.preferred_lines
-    if rule == "not_ragged":
-        return Flag.OUTSIDE not in layout.flags and not layout.harms.get(RAGGED_HARM, 0.0)
-    if rule == "no_hourglass":
-        return Flag.OUTSIDE not in layout.flags and not _hourglass(layout)
+    if rule in {"not_ragged", "no_hourglass", "blocks"}:
+        return _shaped_rule(rule, layout)
     if rule == "phrase":
         phrased: list[Layout] = [other for other in found if _phrased_or_listed(case, other)]
         fewest: int = min((len(other.lines) for other in phrased), default=0)
         return _phrased_or_listed(case, layout) and len(layout.lines) == fewest
     msg = f"Unknown catalogue rule {rule!r} in {case.id}"
     raise ValueError(msg)
+
+
+def _shaped_rule(rule: str, layout: Layout) -> bool:
+    if rule == "blocks":
+        unreadable: bool = bool({Flag.OUTSIDE, Flag.SMALL, Flag.SHRUNK} & layout.flags)
+        return layout.scale.fy == 1 and not unreadable and min(layout.spacing, default=0) >= 0
+    if Flag.OUTSIDE in layout.flags:
+        return False
+    return not layout.harms.get(RAGGED_HARM, 0.0) if rule == "not_ragged" else not _hourglass(layout)
 
 
 def _phrased_or_listed(case: CatalogueCase, layout: Layout) -> bool:

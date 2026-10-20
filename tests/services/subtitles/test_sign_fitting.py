@@ -377,3 +377,65 @@ def test_one_line_sign_with_a_leading_label_stays_one_line() -> None:
     tags: str = r"{\an1\pos(1065,536)\frz18\fs60}"
     result: str = _fit(tags + "Born 4/20 ~ 5/20", tags + "Urodzeni: 21.03 – 19.04", info=_FULL_HD)
     assert visible_verses(result) == ("Urodzeni: 21.03 – 19.04",)
+
+
+@pytest.mark.unit
+def test_text_blocks_keep_the_empty_lines_and_never_shrink_vertically() -> None:
+    result: str = _fit(
+        r"{\an7\pos(10,10)}Has a tea ceremony license\N\N\N\N\N\NKnowledgeable",
+        r"{\an7\pos(10,10)}Posiada licencję mistrzyni ceremonii herbacianej, wszechstronnie wyedukowana",
+        SSAStyle(fontsize=60),
+        info=_FULL_HD,
+    )
+    text_lines: list[str] = [verse for verse in visible_verses(result) if verse]
+    assert [tag for tag, _ in _scales(result) if tag == "fscy"] == []
+    assert len(visible_verses(result)) == len(text_lines) + 5 - 2 * (len(text_lines) - 2)
+
+
+@pytest.mark.unit
+def test_still_sign_whose_original_runs_off_screen_keeps_its_translation_on_screen() -> None:
+    subs, translated, profile = _files(
+        [SSAEvent(text=r"{\an4\pos(1500,540)\fs60}Look the Other Way", end=1000)],
+        [r"{\an4\pos(1500,540)\fs60}Patrz w drugą stronę"],
+        info=_FULL_HD,
+    )
+    result: str = fit_signs(subs, translated, [0], profile, LayoutReport())[0]
+    assert _overflow(screen_rects(subs[0], subs[0].text, profile), 1920, 1080) > 0
+    assert _overflow(screen_rects(translated[0], result, profile), 1920, 1080) <= 1 + 0.07 * 420
+    assert visible_text(result) == "Patrz w drugą stronę"
+
+
+@pytest.mark.unit
+def test_signs_shown_together_in_one_style_and_size_share_the_smallest_scale() -> None:
+    tags: list[str] = [r"{\an5\pos(400,300)\fs60}", r"{\an5\pos(400,500)\fs60}", r"{\an5\pos(400,700)\fs60}"]
+    sources: list[SSAEvent] = [
+        SSAEvent(start=0, end=2000, text=tags[0] + "Safety Hazard"),
+        SSAEvent(start=0, end=2000, text=tags[1] + "Zero"),
+        SSAEvent(start=500, end=2500, text=tags[2] + "No Interest"),
+    ]
+    subs, translated, profile = _files(
+        sources,
+        [tags[0] + "Zagrożenie dla bezpieczeństwa", tags[1] + "Okrągłe zero", tags[2] + "Brak zainteresowania"],
+        info=_FULL_HD,
+    )
+    report: LayoutReport = LayoutReport()
+    fitted: dict[int, str] = fit_signs(subs, translated, [0, 1, 2], profile, report)
+    scales: set[tuple[tuple[str, float], ...]] = {tuple(_scales(text)) for text in fitted.values()}
+    assert len(scales) == 1
+    assert scales != {()}
+    assert report.sign_sets_scaled == 1
+
+
+@pytest.mark.unit
+def test_signs_in_other_styles_or_at_other_times_keep_their_own_scales() -> None:
+    tags: list[str] = [r"{\an5\pos(400,300)\fs60}", r"{\an5\pos(400,500)\fs60}"]
+    sources: list[SSAEvent] = [
+        SSAEvent(start=0, end=1000, text=tags[0] + "Safety Hazard"),
+        SSAEvent(start=1000, end=2000, text=tags[1] + "Zero"),
+    ]
+    subs, translated, profile = _files(
+        sources, [tags[0] + "Zagrożenie dla bezpieczeństwa", tags[1] + "Okrągłe zero"], info=_FULL_HD
+    )
+    report: LayoutReport = LayoutReport()
+    fit_signs(subs, translated, [0, 1], profile, report)
+    assert report.sign_sets_scaled == 0
