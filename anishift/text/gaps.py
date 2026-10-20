@@ -348,6 +348,15 @@ _QUANTIFIERS: Final[frozenset[str]] = frozenset(
 )  # fmt: skip
 """Indefinite and collective numerals with their inflected forms, kept with the noun they count."""
 
+_NUMBERED: Final[frozenset[str]] = frozenset(
+    {
+        "numer", "numeru", "numerowi", "numerem", "numerze", "nr", "rozdział", "rozdziału", "rozdziałowi",
+        "rozdziałem", "rozdziale", "odcinek", "odcinka", "odcinkowi", "odcinkiem", "odcinku", "pokój", "pokoju",
+        "pokojowi", "pokojem", "strona", "strony", "stronie", "stronę", "stroną",
+    }
+)  # fmt: skip
+"""Nouns naming a numbered item, kept with the number or numeral that follows them (``numer / jeden``)."""
+
 _RE_STUTTER: Final[re.Pattern[str]] = re.compile(r"(\w)-(\1\w+)")
 """Stuttered word (``n-nie``): the repeated letter, a hyphen and the whole word."""
 
@@ -498,7 +507,7 @@ def _bound_kinds(words: Sequence[str], index: int, modifies: Modifies | None) ->
         (GapKind.PREPOSITIONAL, phrase == GapKind.PREPOSITIONAL),
         (GapKind.NEGATION, previous == _NEGATION and word_core(_earlier(words, index)) not in PREPOSITIONS),
         (GapKind.REFLEXIVE, _reflexive(words, index)),
-        (GapKind.NUMBER, _counts(previous, following)),
+        (GapKind.NUMBER, _counts(previous, following) or _numbered(previous, following)),
         (GapKind.ABBREVIATION, _tail(words[index - 1]).endswith(_FULL_STOP)),
         (GapKind.NAME, _named(words, index)),
         (GapKind.IDIOM, _inside(words, index, _IDIOMS)),
@@ -557,6 +566,10 @@ def _counts(previous: str, following: str) -> bool:
     numeral: bool = bool(_RE_NUMBER.fullmatch(previous)) or previous in _NUMERALS | _QUANTIFIERS
     counted: bool = any(character.isalpha() for character in following)
     return numeral and counted and following not in PREPOSITIONS | CONJUNCTIONS
+
+
+def _numbered(previous: str, following: str) -> bool:
+    return previous in _NUMBERED and (bool(_RE_NUMBER.fullmatch(following)) or following in _NUMERALS)
 
 
 def _conjunction_kind(words: Sequence[str], index: int) -> GapKind | None:
