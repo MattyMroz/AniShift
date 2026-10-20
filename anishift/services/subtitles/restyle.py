@@ -47,6 +47,15 @@ _RE_SOFTENED: Final[re.Pattern[str]] = re.compile(r"\\(?:blur|be)\s*([0-9]*\.?[0
 _RE_WORD_COLOUR: Final[re.Pattern[str]] = re.compile(r"[^\s}]\{[^}]*\\1?c\s*&H[^}]*\}(?=[^\s{])")
 """Primary colour change between two letters of one word, the mark of a gradient."""
 
+_SYSTEM_FAMILIES: Final[frozenset[str]] = frozenset(
+    {
+        "arial", "arial black", "arial narrow", "times new roman", "verdana", "georgia", "trebuchet ms",
+        "comic sans ms", "tahoma", "segoe ui", "calibri", "cambria", "garamond", "courier new", "impact", "roboto",
+        "open sans", "noto sans", "noto serif", "liberation sans", "liberation serif", "dejavu sans",
+    }
+)  # fmt: skip
+"""Casefolded common system font families that mark no typesetting work even when a release attaches them."""
+
 
 @dataclass(frozen=True, slots=True)
 class DialogueFont:
@@ -100,8 +109,9 @@ def restyle_signs(
 ) -> tuple[SSAFile, dict[int, str]]:
     """Return a copy with a clone drawn with the font for each plain sign style, and the clone of each plain sign.
 
-    A plain sign is a displayed event drawn only with fonts not attached to the episode, without overrides fitting it
-    to the picture and without a layered copy of its text; its clone is keyed by its Dialogue index.
+    A plain sign is a displayed event drawn only with common system fonts or fonts not attached to the episode,
+    without overrides fitting it to the picture and without a layered copy of its text; its clone is keyed by its
+    Dialogue index.
     """
     dialogue: list[SSAEvent] = [event for event in subs.events if event.type == "Dialogue"]
     shown: list[int] = [
@@ -194,7 +204,8 @@ def _plain(event: SSAEvent, styles: Mapping[str, SSAStyle], attached: frozenset[
         return False
     tags: str = "".join(RE_TAG_BLOCK.findall(event.text))
     names: list[str] = [style.fontname, *(name for name in _RE_FONT_NAME.findall(tags) if name)]
-    if any(name.strip().lstrip("@").casefold() in attached for name in names):
+    keys: set[str] = {name.strip().lstrip("@").casefold() for name in names}
+    if keys & attached - _SYSTEM_FAMILIES:
         return False
     softened: bool = any(float(strength) > 0 for strength in _RE_SOFTENED.findall(tags))
     return not (softened or _RE_FITTED.search(tags) or _RE_WORD_COLOUR.search(event.text))

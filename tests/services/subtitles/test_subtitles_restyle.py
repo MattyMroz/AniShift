@@ -304,6 +304,13 @@ def test_restyle_signs_keeps_signs_with_attached_fonts_or_fitted_to_the_picture(
 
 
 @pytest.mark.unit
+def test_restyle_signs_moves_a_plain_sign_in_a_system_font_the_release_attached() -> None:
+    _, clones = restyle_signs(_signs(), _SIGN_DECISIONS, _FONT, frozenset({"arial", "times new roman", "grobold"}))
+
+    assert clones == {1: "Sign (dialog)", 7: "Sign (dialog)"}
+
+
+@pytest.mark.unit
 def test_restyle_signs_reuses_the_dialogue_clone_of_the_sign_style() -> None:
     subs: SSAFile = _signs()
     subs.styles["Sign (dialog)"] = SSAStyle(fontname=_FAMILY)

@@ -54,7 +54,7 @@ def _hard() -> dict[str, dict[str, Any]]:
     return {case["id"]: case for case in json.loads(_HARD.read_text(encoding="utf-8"))}
 
 
-def _laid_out(pair: str, event: int, text: str, decision: str) -> TranslatedLayout:
+def _laid_out(pair: str, event: int, text: str, decision: str, *, owner_font: bool = True) -> TranslatedLayout:
     if not (_QUALITY / pair / SOURCE_NAME).is_file() or not _OWNER_FONT.is_file():
         pytest.skip("quality pair or the owner's dialogue font is not available")
     split: SubtitleSplit = _split(pair)
@@ -64,7 +64,7 @@ def _laid_out(pair: str, event: int, text: str, decision: str) -> TranslatedLayo
         split,
         {event: text},
         fonts=pair_fonts(_QUALITY / pair),
-        dialogue_font=DialogueFont.from_file(_OWNER_FONT),
+        dialogue_font=DialogueFont.from_file(_OWNER_FONT) if owner_font else None,
     )
 
 
@@ -136,7 +136,9 @@ def test_dialogue_case_gets_an_acceptable_layout_through_the_production_writer(c
 @pytest.mark.parametrize("case", _SIGNS, ids=[case.id for case in _SIGNS])
 def test_sign_case_gets_an_acceptable_layout_through_the_production_writer(case: CatalogueCase) -> None:
     entry: dict[str, Any] = _ENTRIES[case.id]
-    laid_out: TranslatedLayout = _laid_out(entry["pair"], entry["event"], _positioned(case), "displayed")
+    laid_out: TranslatedLayout = _laid_out(
+        entry["pair"], entry["event"], _positioned(case), "displayed", owner_font=False
+    )
     event: SSAEvent = _dialogue(laid_out.subs)[entry["event"]]
     lines: tuple[str, ...] = tuple(verse for verse in visible_verses(event.text) if verse)
     field: Field = replace(case.field, breaks=case.field.breaks | _cuts(lines))
