@@ -242,14 +242,22 @@ def find_cases(  # noqa: PLR0913 - the extra fonts reach every pair's render wor
     work_root: Path,
     hard: Sequence[HardCase] = (),
     fonts: tuple[Path, ...] = (),
+    *,
+    hard_only: bool = False,
 ) -> Selection:
-    """Find every case of two replays with equal inputs, leaving out excluded events; ``fonts`` join every pair."""
+    """Find every case of two replays with equal inputs, leaving out excluded events; ``fonts`` join every pair.
+
+    ``hard_only`` visits only the pairs of the hard cases and finds no other kind of change.
+    """
+    hard_pairs: frozenset[str] = frozenset(case.pair for case in hard)
     matched, skipped = matched_pairs(base, other)
     cases: list[Case] = []
     pairs: dict[str, PairFiles] = {}
     undecided: list[str] = []
     mismatches: list[Mismatch] = []
     for position, (pair_id, first, second) in enumerate(matched):
+        if hard_only and pair_id not in hard_pairs:
+            continue
         if first["inputs"] != second["inputs"]:
             skipped.append((pair_id, "inputs differ"))
             continue
@@ -270,6 +278,11 @@ def find_cases(  # noqa: PLR0913 - the extra fonts reach every pair's render wor
         mismatches.extend(_mismatch(pair_id, index, before, after) for index in foreign)
         pair_hard: list[HardCase] = [case for case in hard if case.pair == pair_id]
         left_out: frozenset[int] = excluded | frozenset(foreign)
+        if hard_only:
+            events: tuple[list[SSAEvent], list[SSAEvent]] = (metrics.dialogue(before), metrics.dialogue(after))
+            changed: list[int] = changed_events(before, after, left_out)
+            cases.extend(_hard_case(pair_id, case, events, changed, left_out) for case in pair_hard)
+            continue
         cases.extend(pair_cases(pair_id, files, (before, after), left_out, decisions, pair_hard))
     skipped.extend((case.pair, "hard case pair not compared") for case in hard if case.pair not in pairs)
     return Selection(tuple(cases), pairs, tuple(skipped), tuple(undecided), tuple(mismatches))
@@ -925,7 +938,9 @@ def main(argv: Sequence[str], quality_root: Path) -> int:
     hard: tuple[HardCase, ...] = load_hard_cases(args.hard) if args.hard else ()
     fonts: tuple[Path, ...] = tuple(args.font)
     try:
-        selection: Selection = find_cases(args.base, args.other, args.pairs, out / _WORK_NAME, hard, fonts)
+        selection: Selection = find_cases(
+            args.base, args.other, args.pairs, out / _WORK_NAME, hard, fonts, hard_only=args.size == 0
+        )
         shown: list[Case] = chosen(selection.cases, args.size)
         write_gallery(selection, shown, out, (args.base.name, args.other.name))
     finally:
