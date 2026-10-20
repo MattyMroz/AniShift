@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import sys
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cache, lru_cache
@@ -36,6 +37,8 @@ __all__ = [
     "chars_measure",
     "dialogue_field",
     "lay_out",
+    "ranked",
+    "sign_field",
 ]
 
 
@@ -153,6 +156,9 @@ _SMALL_LETTERS: Final[tuple[float, float]] = (16.0, 30.0)
 _PERCENT: Final[float] = 100.0
 """Scale steps per unit: ASS writes ``\\fscx`` and ``\\fscy`` in whole percent."""
 
+_SIGN_LINES: Final[int] = 3
+"""Fewest lines a displayed field allows, so a one-line source may still take two or three (catalogue calibration)."""
+
 _ENUMERATED_LINES: Final[int] = 3
 """Most lines whose every split is enumerated; longer layouts come from dynamic programming (spec §5.1)."""
 
@@ -179,41 +185,41 @@ HARMS: Final[tuple[str, ...]] = (
 
 WEIGHTS: Final[Mapping[str, float]] = MappingProxyType(
     {
-        "length_comfortable": 422.175,
-        "length_wide": 36.3444,
+        "length_comfortable": 165.233,
+        "length_wide": 293.287,
         "cut_sentence": 0.001,
         "cut_clause": 0.001,
         "cut_ellipsis": 0.001,
         "cut_parenthetical": 0.001,
         "cut_dash": 0.001,
         "cut_before_subordinator": 0.001,
-        "cut_before_coordinator": 0.60857,
-        "cut_before_preposition": 6.82371,
-        "cut_phrase": 6.82371,
-        "cut_auxiliary": 41.4227,
-        "cut_modifier": 7.82371,
-        "cut_abbreviation": 6.82371,
-        "cut_after_opener": 41.0267,
-        "cut_degree": 44.2096,
-        "cut_particle": 19.8194,
-        "cut_prepositional": 6.82371,
-        "cut_name": 44.2096,
-        "cut_after_preposition": 44.2096,
-        "cut_negation": 44.2096,
-        "cut_reflexive": 44.2096,
-        "cut_number": 44.2096,
-        "cut_idiom": 44.2096,
-        "cut_label": 44.2096,
-        "cut_repetition": 44.2096,
-        "cut_after_single_letter": 44.2096,
+        "cut_before_coordinator": 0.001,
+        "cut_before_preposition": 4.23715,
+        "cut_phrase": 6.82372,
+        "cut_auxiliary": 52.1918,
+        "cut_modifier": 7.82372,
+        "cut_abbreviation": 6.82372,
+        "cut_after_opener": 32.3954,
+        "cut_degree": 19.9486,
+        "cut_particle": 22.3037,
+        "cut_prepositional": 6.82372,
+        "cut_name": 52.1918,
+        "cut_after_preposition": 52.1918,
+        "cut_negation": 52.1918,
+        "cut_reflexive": 52.1918,
+        "cut_number": 52.1918,
+        "cut_idiom": 52.1918,
+        "cut_label": 52.1918,
+        "cut_repetition": 52.1918,
+        "cut_after_single_letter": 52.1918,
         "agreement": 6.78055,
-        "imbalance_20": 0.697147,
+        "imbalance_20": 2.23559,
         "top_longer": 0.434595,
-        "extra_line": 87.6558,
-        "missing_line": 5.17293,
-        "squeeze": 19.3825,
-        "shrink": 13.9387,
-        "over_comfort": 40.3125,
+        "extra_line": 33.6979,
+        "squeeze": 86.1991,
+        "shrink": 78.2467,
+        "small": 0.948139,
+        "over_comfort": 152.882,
     }
 )
 """Harm weights from the layout calibration (docs/work/10-quality/research/text-layout-calibration.md)."""
@@ -235,6 +241,32 @@ def dialogue_field(*, max_width: float = DIALOGUE_MAX_WIDTH) -> Field:
     )
 
 
+def sign_field(  # noqa: PLR0913 - one argument per field measurement
+    *,
+    source_lines: int,
+    comfort_width: float | None,
+    letter_height: float,
+    max_width: float = 1.0,
+    height_lines: float | None = None,
+    breaks: frozenset[int] = frozenset(),
+    style_breaks: frozenset[int] = frozenset(),
+) -> Field:
+    """Return the field of displayed text: the source line count preferred, scaling allowed, extra lines weighed."""
+    lines: int = max(_SIGN_LINES, source_lines + 1)
+    return Field(
+        max_width=max_width,
+        preferred_lines=source_lines,
+        max_lines=lines,
+        rescue_lines=lines,
+        comfort_width=comfort_width,
+        scalable=True,
+        letter_height=letter_height,
+        height_lines=height_lines,
+        breaks=breaks,
+        style_breaks=style_breaks,
+    )
+
+
 def chars_measure(line: str, fx: float) -> float:
     """Measure a line by its graphemes when no render profile exists (text-layout spec §4.1, e10)."""
     return len(split_graphemes(line)) * CHAR_WIDTH * fx
@@ -249,12 +281,19 @@ def lay_out(
     text: str, field: Field, measure: Measure, weights: Mapping[str, float] = WEIGHTS, *, morphology: bool = True
 ) -> Layout:
     """Return the layout with the lowest rescue level and then the lowest weighted harm."""
+    return ranked(text, field, measure, weights, morphology=morphology)[0]
+
+
+def ranked(
+    text: str, field: Field, measure: Measure, weights: Mapping[str, float] = WEIGHTS, *, morphology: bool = True
+) -> list[Layout]:
+    """Return every enumerated layout and the best programmed ones, best first by rescue level and weighted harm."""
     case: _Case = _case(text, field, measure, morphology=morphology)
     found: list[Layout] = _enumerated(case)
-    best: Layout = min(found, key=lambda layout: (layout.rescue, layout.score(weights)))
     if field.rescue_lines > _ENUMERATED_LINES:
-        found.extend(_programmed(case, weights, (best.rescue, best.score(weights))))
-    return min(found, key=lambda layout: (layout.rescue, layout.score(weights)))
+        best: _Bound = min(((layout.rescue, layout.score(weights)) for layout in found), default=_NO_BOUND)
+        found.extend(_programmed(case, weights, best))
+    return sorted(found, key=lambda layout: (layout.rescue, layout.score(weights)))
 
 
 # ── Text analysis ─────────────────────────────────────────────────────────────
@@ -487,12 +526,21 @@ type _Key = tuple[int, int, float]
 type _Bound = tuple[tuple[int, int, int], float]
 """Rescue level and weighted harm of a whole layout, or a lower bound of them."""
 
+_NO_BOUND: Final[_Bound] = ((sys.maxsize, sys.maxsize, sys.maxsize), math.inf)
+"""Bound no layout reaches, before any layout is known."""
+
+_NO_FLOOR: Final[_Key] = (0, 0, 0.0)
+"""Partial layout key no line can go below."""
+
 
 def _programmed(case: _Case, weights: Mapping[str, float], best: _Bound) -> list[Layout]:
     found: list[Layout] = []
     costs: _Costs = _Costs(case, weights)
     widths: list[float] = _programmed_widths(case)
-    for count in range(_ENUMERATED_LINES + 1, min(case.field.rescue_lines, len(case.words)) + 1):
+    counts: range = range(_ENUMERATED_LINES + 1, min(case.field.rescue_lines, len(case.words)) + 1)
+    for count in sorted(counts, key=lambda count: abs(count - case.field.preferred_lines)):
+        if min(_lower_bound(case, weights, (count, fx), _NO_FLOOR) for fx in widths) >= best:
+            continue
         floor: _Key | None = _line_floor(costs, count, widths[-1])
         if floor is None:
             continue
@@ -535,6 +583,7 @@ def _programmed_widths(case: _Case) -> list[float]:
         case.measure(" ".join(case.words[start:end]), 1.0)
         for start in range(size)
         for end in range(start + 1, size + 1)
+        if not any(start <= cut < end - 1 for cut in case.forced)
     ]
     return sorted({scale.fx for scale in _scale_options(_breakpoints(case.field, widths))}, reverse=True)
 

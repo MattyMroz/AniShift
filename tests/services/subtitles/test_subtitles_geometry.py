@@ -38,13 +38,13 @@ def test_render_profile_reads_the_header_and_falls_back_to_the_default_canvas() 
 
 
 @pytest.mark.unit
-def test_measure_text_scales_every_line_by_the_starting_size_and_the_axis_factors() -> None:
+def test_measure_text_scales_every_line_by_the_starting_size_of_the_measured_text_and_the_axis_factors() -> None:
     profile: RenderProfile = _profile(style=SSAStyle(fontsize=32))
     event: SSAEvent = SSAEvent(text=r"Hello\Nworld wide")
 
     box: TextBox = measure_text(event, event.text, profile)
     half: TextBox = measure_text(event, event.text, profile, fx=0.5, fy=0.5)
-    bigger: TextBox = measure_text(SSAEvent(text=r"{\fs64}Hello\Nworld wide"), event.text, profile)
+    bigger: TextBox = measure_text(event, r"{\fs64}Hello\Nworld wide", profile)
 
     assert len(box.line_widths) == 2
     assert box.width == max(box.line_widths) > 0

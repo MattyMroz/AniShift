@@ -19,6 +19,8 @@ from anishift.services.subtitles.layout import (
     chars_measure,
     dialogue_field,
     lay_out,
+    ranked,
+    sign_field,
 )
 
 _FLAT: dict[str, float] = dict.fromkeys(HARMS, 1.0)
@@ -333,3 +335,22 @@ def test_quotation_wider_than_a_comfortable_line_may_be_cut_without_a_rescue() -
     )
 
     assert all(Flag.QUOTE not in layout.flags for layout in found)
+
+
+@pytest.mark.unit
+def test_ranked_layouts_start_with_the_chosen_one_and_are_ordered_by_rescue_and_harm() -> None:
+    field: Field = sign_field(source_lines=2, comfort_width=0.2, letter_height=60.0)
+    found: list[Layout] = ranked("Ma licencję na ceremonię herbacianą", field, chars_measure)
+    keys: list[tuple[tuple[int, int, int], float]] = [(layout.rescue, layout.score(WEIGHTS)) for layout in found]
+    assert found[0] == lay_out("Ma licencję na ceremonię herbacianą", field, chars_measure)
+    assert keys == sorted(keys)
+
+
+@pytest.mark.unit
+def test_list_with_a_forced_break_after_every_word_keeps_one_word_per_line() -> None:
+    words: list[str] = [f"{number}." for number in range(1, 41)]
+    field: Field = replace(
+        sign_field(source_lines=40, comfort_width=chars_measure("40.", 1.0), letter_height=60.0),
+        breaks=frozenset(range(39)),
+    )
+    assert lay_out(" ".join(words), field, chars_measure).lines == tuple(words)

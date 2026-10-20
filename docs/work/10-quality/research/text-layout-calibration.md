@@ -8,7 +8,7 @@ completed: 2026-10-19
 
 # Kalibracja rdzenia układu tekstu — raport
 
-Kontrakt: [text-layout.md](../text-layout.md) §4.2, §5.3, §7, plan [02-text-layout.md](../plans/02-text-layout.md) faza C. Stan po piątej rundzie (sekcja niżej); czwarta runda: nowe klasy przerw z polskiej składni (po ślepej ocenie 160 kwestii NF+AMZN, w której rdzeń ciął źle w 5,0% kwestii), poprawki z przeglądu kodu faz A–C i ponowna kalibracja.
+Kontrakt: [text-layout.md](../text-layout.md) §4.2, §5.3, §7, plan [02-text-layout.md](../plans/02-text-layout.md) fazy C i E. Stan po siódmej rundzie (napisy poboczne, sekcja „Runda 7”); wcześniej piąta runda (sekcja niżej); czwarta runda: nowe klasy przerw z polskiej składni (po ślepej ocenie 160 kwestii NF+AMZN, w której rdzeń ciął źle w 5,0% kwestii), poprawki z przeglądu kodu faz A–C i ponowna kalibracja.
 
 ## Wynik
 
@@ -16,19 +16,25 @@ Kalibracja z morfologią jest **wykonalna**: brak zbiorów sprzecznych i konflik
 
 | Miara | Wynik |
 | --- | --- |
-| Katalog i ankieta w pełnej przestrzeni kandydatów (z układami powyżej trzech wierszy) | **76/76** (`tests/services/subtitles/test_text_layout_catalogue.py`) |
-| Test z pominięciem jednego zdarzenia | **64/76**; niespełnione: d06, d15, d25, d28, q10, q11, q15, q19, r03, s14, s29, t02 |
-| Wrażliwość ±10% (tylko raport) | `length_comfortable` ×0,9 → d25, q10, q11, q17, q19; ×1,1 → d06, d28, t02; `extra_line` ×0,9 → d28, ×1,1 → q10, q11, q17, q19; `cut_degree` ×0,9 → d06, t02; `cut_auxiliary` ×0,9 → d25; `cut_before_preposition` ×0,9 → s10; `cut_phrase` ×1,1 → e13; `cut_modifier` ×0,9 → e13 |
+| Katalog i ankieta w pełnej przestrzeni kandydatów (z układami powyżej trzech wierszy) | **83/83** (`tests/services/subtitles/test_text_layout_catalogue.py`) |
+| Test z pominięciem jednego zdarzenia | **71/83**; niespełnione: d06, d15, d25, d28, q10, q11, q15, q19, r03, s02, s26, t02 |
+| Wrażliwość ±10% (tylko raport) | `length_comfortable` ×0,9 → q10; ×1,1 → d06, d28, t02; `extra_line` ×0,9 → d28, ×1,1 → q10, s02; `cut_degree` ×0,9 → d06, t02; `cut_phrase` ×1,1 → e06, e13; `cut_modifier` ×0,9 → e13; `shrink` ×0,9 → s02; `over_comfort` ×0,9 → s02, ×1,1 → s26 |
 | Przypadki przy kolanie (jeden wiersz 0,74–0,80) | d28 0,771 (jeden wiersz), q04 0,741 (jeden), q10 0,748 (dwa), q11 0,800 (dwa), q14 0,789 (dwa), q17 0,768 (dwa; „oba dobre”), q19 0,783 (dwa), e14 0,798 (dwa) |
-| Zawodowcy NF+AMZN | 441 kwestii uczących, 13 pominiętych (układ zawodowca poza poziomem 0), 1320 par miękkich, 178 naruszonych; strata par „oba dobre” 3,19 |
+| Zawodowcy NF+AMZN | 441 kwestii uczących, 13 pominiętych (układ zawodowca poza poziomem 0), 1319 par miękkich, 174 naruszone; strata par „oba dobre” 4,50 |
 | Bez morfologii | niewykonalne: {r03}, {d15} — morfologia zostaje |
-| Czas pełnej kalibracji (oba warianty, LOO, wrażliwość) | 6 min 45 s (wcześniej 28 min) |
+| Czas pełnej kalibracji (oba warianty, LOO, wrażliwość) | ok. 6 min |
 
 LOO i wrażliwość pokazują to samo co wcześniej: przy kolanie długości (0,74–0,80) i przy krótszej górze wynik zależy od pojedynczych odpowiedzi właściciela. q15 (szyld zmniejszony do szerokości oryginału) i s29 (lista zastrzeżeń) doszły do listy LOO, bo bez swojego zdarzenia kalibracja nie ma przypadku, który wiąże wagi zmniejszenia i nierówności wielu wierszy.
 
-Najważniejsze wagi: długość 284,0 (od 0,55) i 3,5 (od 0,76), drugi wiersz 58,6, wystawanie poza oryginał 46,3, ściśnięcie 23,0, zmniejszenie 17,4, brakujący wiersz szyldu 2,1, związki chronione i jednoliterowy wyraz 30,2, `degree` 30,2, `after_opener` 26,5, `auxiliary` 26,4, `particle` 15,7, `modifier` 6,0, `before_preposition`, `phrase`, `abbreviation`, `prepositional` 5,0, zgoda przymiotnika 5,7, nierównowaga ponad 20 znaków 0,45 na znak, dłuższa góra 0,33 na znak. Klasy od końca zdania do „przed spójnikiem współrzędnym” mają wagi bliskie zeru (0,001–0,009), więc o takich cięciach decyduje kształt.
+Najważniejsze wagi (runda 7): długość 165,2 (od 0,55) i 293,3 (od 0,76), drugi wiersz 33,7, wystawanie poza oryginał 152,9, ściśnięcie 86,2, zmniejszenie 78,2, małe litery 0,95, związki chronione, `auxiliary` i jednoliterowy wyraz 52,2, `after_opener` 32,4, `particle` 22,3, `degree` 19,9, `modifier` 7,8, `phrase`, `abbreviation`, `prepositional` 6,8, `before_preposition` 4,2, zgoda przymiotnika 6,8, nierównowaga ponad 20 znaków 2,24 na znak, dłuższa góra 0,43 na znak; brakujący wiersz szyldu 0. Klasy od końca zdania do „przed spójnikiem współrzędnym” mają wagę 0,001, więc o takich cięciach decyduje kształt.
 
-**Szkoda „za mały” (`small`) ma wagę 0 — to brak danych, nie błąd cechy.** Stopień liczy się poprawnie (np. 15 391 z 45 729 kandydatów s29 ma go powyżej zera). W katalogu są pary, w których przegrany ma mniejsze litery od zwycięzcy (r01: 51, s14: 19, s10: 15, q15: 2), ale każdy taki przegrany przegrywa już przez zmniejszenie: litery spadają poniżej 30 px dopiero przy skali ok. 0,36–0,59 (litery 51–84 px), gdzie szkoda zmniejszenia jest duża. Program liniowy minimalizuje sumę wag przy zachowanym marginesie, więc wagi, której żadna para nie wymaga, nie podnosi. Żeby szkoda działała, katalog potrzebuje przypadku, w którym zmniejszenie samo przegrywa tylko przez czytelność (np. drobny tekst s06, s11 — dziś poza rdzeniem).
+**Szkoda „za mały” (`small`) do rundy 6 miała wagę 0 — to był brak danych, nie błąd cechy** (w rundzie 7 dostała 0,95, bo pary s02 wiążą zmniejszenie). Stopień liczy się poprawnie (np. 15 391 z 45 729 kandydatów s29 ma go powyżej zera). W katalogu są pary, w których przegrany ma mniejsze litery od zwycięzcy (r01: 51, s14: 19, s10: 15, q15: 2), ale każdy taki przegrany przegrywa już przez zmniejszenie: litery spadają poniżej 30 px dopiero przy skali ok. 0,36–0,59 (litery 51–84 px), gdzie szkoda zmniejszenia jest duża. Program liniowy minimalizuje sumę wag przy zachowanym marginesie, więc wagi, której żadna para nie wymaga, nie podnosi. Żeby szkoda działała, katalog potrzebuje przypadku, w którym zmniejszenie samo przegrywa tylko przez czytelność (np. drobny tekst s06, s11 — dziś poza rdzeniem).
+
+## Runda 7 (faza E: napisy poboczne)
+
+Napisy poboczne idą przez rdzeń z polem `sign_field` (to samo pole buduje katalog i produkcja w `fitting.py`). Do katalogu doszły przypadki §6.2 z polem zmierzonym czcionką typesettera (`layout_catalogue.py`, tagi pierwszego bloku angielskiego zdarzenia): s02 (tablica: dwa wiersze zamiast jednego mocno zmniejszonego), s13 (dwa wiersze z tekstem, puste wiersze autorskie odtwarza integracja), s17 i s28 (piosenka w jednym wierszu), s23 i s30 (karta w pasie na jeden wiersz), s25 (podpis od półpauzy, granica wymuszona). s26 dostało jawny układ dopuszczalny, bo przypadek bez listy układów nie daje kalibracji żadnej pary (z samą regułą wynik łamał zakaz „romantyczne / miejsce”). s02 to pierwszy przypadek, w którym dodatkowy wiersz szyldu wygrywa ze zmniejszeniem do 50%: wagi zmniejszenia, ściśnięcia i wystawania wzrosły kilkukrotnie, drugi wiersz staniał z 87,7 do 33,7, a długość dialogu przesunęła się na stromą część (165,2 + 293,3 zamiast 422,2 + 36,3). Kolejność zmniejszenie < ściśnięcie (q15) zostaje.
+
+Wynik: wykonalna, katalog i ankieta 83/83, test z pominięciem jednego zdarzenia 71/83 (doszły s02, s26 — bez nich nic nie wiąże ich wag), bez morfologii nadal niewykonalna ({r03}, {d15}). Test produkcyjny: 54 dialogi przez `layout_translated` bez zmian, 15 przypadków s* katalogu przez `layout_translated` + `fit_signs` (s13 oczekiwanie niespełnione: kolumna źródła wystaje poza lewą krawędź, więc produkcja ogranicza szerokość do szerokości oryginału i wybiera trzy wiersze w 89% zamiast dwóch w 40%; oznaczone `xfail`), 30 przypadków s01–s30: wynik nie wychodzi poza ekran i nie zasłania innych napisów bardziej niż oryginał albo raport liczy ratunek.
 
 ## Runda 6 (ścieżka produkcyjna)
 

@@ -32,16 +32,10 @@ from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.fitting import fit_signs
 from anishift.services.subtitles.geometry import RenderProfile, TextBox, measure_text
 from anishift.services.subtitles.layout import Flag, LayoutLimits
-from anishift.services.subtitles.linebreak import DialogueLayout, layout_dialogue, split_for_layout
+from anishift.services.subtitles.linebreak import DialogueLayout, layout_dialogue, tagged_line
 from anishift.services.subtitles.restyle import clone_source, restyle_dialogue
 from anishift.services.subtitles.signs import static_weights
-from anishift.services.subtitles.text import (
-    is_drawing,
-    replace_visible_text,
-    restore_markers,
-    visible_text,
-    visible_verses,
-)
+from anishift.services.subtitles.text import is_drawing, is_karaoke, visible_text
 from anishift.services.subtitles.types import (
     Decision,
     FontSources,
@@ -102,9 +96,6 @@ _SUFFIX_KIND: Final[dict[str, SubtitleKind]] = {".ass": "ass", ".ssa": "ass", ".
 
 _ENCODING: Final[str] = "utf-8"
 """Subtitle file encoding."""
-
-_ASS_LINE_BREAK: Final[str] = "\\N"
-"""ASS hard line break joining a sign's verses; the SRT export turns it into a new line."""
 
 _NOTICE_URL: Final[str] = "https://github.com/MattyMroz/AniShift"
 """Project URL written into the Script Info notice of generated ASS files."""
@@ -578,8 +569,9 @@ def layout_translated(  # noqa: PLR0913 - layout inputs of every writer
     """Lay out unbroken translations, keyed by Dialogue index, on a copy of the split file.
 
     Keys are the first event of every spoken line and every displayed event; the other events of a spoken line
-    take its translation unless they carry their own key. Drawings and events without a translation stay as they are,
-    and so does a dialogue event whose translation equals its text, unless ``own_text`` lays out the file's own text.
+    take its translation unless they carry their own key. Drawings, karaoke and events without a translation stay as
+    they are, and so does a dialogue event whose translation equals its text, unless ``own_text`` lays out the file's
+    own text.
     """
     report: LayoutReport = LayoutReport()
     source: SSAFile = split.subs
@@ -597,7 +589,7 @@ def layout_translated(  # noqa: PLR0913 - layout inputs of every writer
         decision: Decision = split.decisions[dialogue_index]
         text: str | None = texts.get(dialogue_index)
         dialogue_index += 1
-        if text is None or is_drawing(event.text):
+        if text is None or is_drawing(event.text) or is_karaoke(event.text):
             out.events.append(event)
             continue
         laid_out: SSAEvent = event.copy()
@@ -609,7 +601,7 @@ def layout_translated(  # noqa: PLR0913 - layout inputs of every writer
             _count_dialogue(report, dialogue)
             laid_out.text = dialogue.text
         else:
-            laid_out.text = _laid_out_sign(event, text, profile, limits)
+            laid_out.text = tagged_line(event, text, profile)
         if split.kind == "ass" and decision == "displayed":
             signs.append(position)
         out.events.append(laid_out)
@@ -624,17 +616,6 @@ def _count_dialogue(report: LayoutReport, dialogue: DialogueLayout) -> None:
     report.dialogue_overflow += Flag.OUTSIDE in dialogue.flags
     report.dialogue_untagged += dialogue.untagged
     report.dialogue_relaxed_phrases += bool(dialogue.flags - {Flag.EXTRA_LINE, Flag.OUTSIDE})
-
-
-def _laid_out_sign(event: SSAEvent, text: str, profile: RenderProfile, limits: LayoutLimits) -> str:
-    verses: tuple[str, ...] = split_for_layout(
-        strip_span_markers(text),
-        visible_verses(event.text),
-        max_chars=limits.max_chars,
-        max_lines=limits.max_lines,
-    )
-    target: str = _ASS_LINE_BREAK.join(restore_markers(text, verses))
-    return replace_visible_text(event.text, target, profile.styles.get(event.style))
 
 
 def _event_translations(split: SubtitleSplit, translations: Mapping[int, str]) -> dict[int, str]:

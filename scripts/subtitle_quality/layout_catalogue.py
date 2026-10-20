@@ -14,7 +14,7 @@ from anishift.paths import default_workspace_dir
 from anishift.services.fonts import FontIndex
 from anishift.services.fonts.index import system_font_paths
 from anishift.services.subtitles.geometry import RenderProfile, measure_text
-from anishift.services.subtitles.layout import Field, Flag, Layout, chars_measure, dialogue_field
+from anishift.services.subtitles.layout import Field, Flag, Layout, chars_measure, dialogue_field, sign_field
 from anishift.services.subtitles.service import load_subtitles
 from anishift.text.gaps import TIERS, GapKind, gaps
 from scripts.subtitle_quality.episode import FONTS_NAME
@@ -121,18 +121,14 @@ def _field(spec: dict[str, Any], measured: dict[str, Any]) -> Field:
     styles: frozenset[int] = frozenset(spec.get("style_breaks", ()))
     if spec["kind"] == "dialogue":
         return replace(dialogue_field(), breaks=breaks, style_breaks=styles)
-    preferred: int = measured["original_lines"]
-    return Field(
+    return sign_field(
+        source_lines=measured["original_lines"],
+        comfort_width=measured.get("comfort"),
+        letter_height=measured["letter_height"],
+        max_width=measured.get("max_width", 1.0),
+        height_lines=measured.get("height_lines"),
         breaks=breaks,
         style_breaks=styles,
-        max_width=measured.get("max_width", 1.0),
-        preferred_lines=preferred,
-        max_lines=max(3, preferred + 1),
-        rescue_lines=max(3, preferred + 1),
-        comfort_width=measured.get("comfort"),
-        scalable=True,
-        letter_height=measured["letter_height"],
-        height_lines=measured.get("height_lines"),
     )
 
 

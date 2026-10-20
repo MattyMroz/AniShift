@@ -2827,7 +2827,14 @@
     "kind": "sign",
     "original": "Take him to a romantic place / and give it your best shot!"
    },
-   "accept": [],
+   "accept": [
+    {
+     "lines": [
+      "Zabierz go w jakieś romantyczne miejsce",
+      "i daj z siebie wszystko!"
+     ]
+    }
+   ],
    "accept_rule": "any",
    "forbid": [
     "romantyczne|miejsce"
@@ -2944,8 +2951,40 @@
   {
    "id": "s02",
    "source": "text-layout spec §6.2",
-   "scope": "scene",
-   "note": "frame of the chalkboard comes from the scene layer"
+   "scope": "core",
+   "pair": "corpus-pairs/grand-blue-s2-04",
+   "event": 458,
+   "text": "Rozmowy kwalifikacyjne na osobę towarzyszącą",
+   "field": {
+    "kind": "sign",
+    "original": "+1 Selection Interviews",
+    "tags": "{\\fad(300,1)\\pos(960,81)\\3c&HBDD0B9&\\c&HF9FBF6&}"
+   },
+   "accept": [
+    {
+     "lines": [
+      "Rozmowy kwalifikacyjne",
+      "na osobę towarzyszącą"
+     ]
+    }
+   ],
+   "accept_rule": "lines:2",
+   "note": "chalkboard: two lines in the frame rather than one heavily shrunk line",
+   "measure": {
+    "kind": "words",
+    "words": {
+     "Rozmowy": 0.105524,
+     "kwalifikacyjne": 0.154913,
+     "na": 0.027081,
+     "osobę": 0.064642,
+     "towarzyszącą": 0.147546
+    },
+    "space": 0.007678,
+    "edge": 0.0125,
+    "original_lines": 1,
+    "letter_height": 51.0,
+    "comfort": 0.275635
+   }
   },
   {
    "id": "s03",
@@ -2992,8 +3031,35 @@
   {
    "id": "s13",
    "source": "text-layout spec §6.2",
-   "scope": "scene",
-   "note": "empty authored lines are restored by the integration (phase E)"
+   "scope": "core",
+   "pair": "corpus-pairs/kaguya-s1-04",
+   "event": 2577,
+   "text": "Posiada licencję mistrzyni ceremonii herbacianej, wszechstronnie wyedukowana",
+   "field": {
+    "kind": "sign",
+    "original": "Has a tea ceremony license / Knowledgeable",
+    "tags": "{\\pos(-150.9,654)\\fnIwata Mincho Old Pro B\\c&HFCF9FA&\\blur10.5}"
+   },
+   "accept": [],
+   "accept_rule": "source_lines",
+   "note": "two text lines on the places of the source lines; the empty authored lines are restored by the integration",
+   "measure": {
+    "kind": "words",
+    "words": {
+     "Posiada": 0.103607,
+     "ceremonii": 0.134277,
+     "herbacianej,": 0.166016,
+     "licencję": 0.106354,
+     "mistrzyni": 0.128479,
+     "wszechstronnie": 0.209656,
+     "wyedukowana": 0.19455
+    },
+    "space": 0.008087,
+    "edge": 0.020016,
+    "original_lines": 2,
+    "letter_height": 75.0,
+    "comfort": 0.386693
+   }
   },
   {
    "id": "s15",
@@ -3010,8 +3076,31 @@
   {
    "id": "s17",
    "source": "text-layout spec §6.2",
-   "scope": "scene",
-   "note": "screen edge with the source line count is the scene layer"
+   "scope": "core",
+   "pair": "corpus-pairs/kaguya-s1-01",
+   "event": 649,
+   "text": "Miłość to wojna! Miłość to wojna! Miłość to wojna!",
+   "field": {
+    "kind": "sign",
+    "original": "Love is war! Love is war! Love is war!",
+    "tags": "{\\an2\\pos(960,90)\\bord0\\blur0.75\\fad(0,300)\\clip(429,0,429,225)\\t(0,450,\\clip(429,0,1673,225))}",
+    "song": true
+   },
+   "accept": [],
+   "accept_rule": "source_lines",
+   "note": "song in one line like the source; the screen edge is the scene layer",
+   "measure": {
+    "kind": "words",
+    "words": {
+     "Miłość": 0.093842,
+     "to": 0.029602,
+     "wojna!": 0.096893
+    },
+    "space": 0.007629,
+    "edge": 0.00143,
+    "original_lines": 1,
+    "letter_height": 75.0
+   }
   },
   {
    "id": "s18",
@@ -3034,8 +3123,35 @@
   {
    "id": "s23",
    "source": "text-layout spec §6.2",
-   "scope": "scene",
-   "note": "band height and neighbours come from the scene layer"
+   "scope": "core",
+   "pair": "library/[Erai-raws] Yasei no Last Boss ga Arawareta 2nd Season - 03 [1080p CR WEB-DL AVC AAC][MultiSub][9C6EE816]",
+   "event": 87,
+   "text": "Forma Scorpius bez antropomorfizacji Potwór klasy katastroficznej",
+   "field": {
+    "kind": "sign",
+    "original": "Scorpius's Form After Releasing Anthropomorphism/Disaster-Class Monster",
+    "tags": "{\\fs8\\c&HFCFDFF&\\fad(90,0)\\t(90,257,\\c&HFCFFDF&)\\4c&HFAFE7F&\\t(90,257,\\4c&HB9C45F&)\\3c&HFAFE7F&\\t(90,257,\\3c&HB9C45F&)\\bord2\\shad1\\pos(462.002,297.332)}"
+   },
+   "accept": [],
+   "accept_rule": "lines:1",
+   "note": "card in a band for one line: one line like the source, shrunk",
+   "measure": {
+    "kind": "words",
+    "words": {
+     "Forma": 0.03667,
+     "Potwór": 0.04165,
+     "Scorpius": 0.049756,
+     "antropomorfizacji": 0.103125,
+     "bez": 0.020215,
+     "katastroficznej": 0.086768,
+     "klasy": 0.030127
+    },
+    "space": 0.003516,
+    "edge": 0.007812,
+    "original_lines": 1,
+    "letter_height": 24.0,
+    "comfort": 0.447867
+   }
   },
   {
    "id": "s24",
@@ -3046,8 +3162,47 @@
   {
    "id": "s25",
    "source": "text-layout spec §6.2",
-   "scope": "scene",
-   "note": "authored signature dash needs the authored line mapping of the integration (phase E)"
+   "scope": "core",
+   "pair": "corpus-pairs/grand-blue-s2-07",
+   "event": 435,
+   "text": "Zbiórka na dachu – Starsi z Peek-a-Boo",
+   "field": {
+    "kind": "sign",
+    "original": "Come to the roof / - Peek-a-Boo Seniors",
+    "tags": "{\\pos(671,795)\\frz-0.46\\fry-0.74\\frx2.04\\fax-0.19\\fs60\\bord0\\c&H1B201D&}",
+    "breaks": [
+     2
+    ],
+    "style_breaks": [
+     2
+    ]
+   },
+   "accept": [
+    {
+     "lines": [
+      "Zbiórka na dachu",
+      "– Starsi z Peek-a-Boo"
+     ]
+    }
+   ],
+   "note": "signature from the dash as in the source; the integration maps the authored dash and the size change to this break",
+   "measure": {
+    "kind": "words",
+    "words": {
+     "Peek-a-Boo": 0.160889,
+     "Starsi": 0.08313,
+     "Zbiórka": 0.111816,
+     "dachu": 0.086426,
+     "na": 0.035278,
+     "z": 0.014404,
+     "–": 0.019287
+    },
+    "space": 0.006958,
+    "edge": 0.0,
+    "original_lines": 2,
+    "letter_height": 60.0,
+    "comfort": 0.29126
+   }
   },
   {
    "id": "s27",
@@ -3058,14 +3213,68 @@
   {
    "id": "s28",
    "source": "text-layout spec §6.2",
-   "scope": "scene",
-   "note": "band comes from the scene layer"
+   "scope": "core",
+   "pair": "corpus-pairs/kaguya-s1-03",
+   "event": 1222,
+   "text": "Ciach, ciach, ciach, ciach, ciach, ciach, pyk!",
+   "field": {
+    "kind": "sign",
+    "original": "Poke, poke, poke, poke, poke, poke, pop!",
+    "tags": "{\\blur2.25\\fad(150,150)}",
+    "song": true,
+    "max_width_px": 1770,
+    "height_px": 107
+   },
+   "accept": [],
+   "accept_rule": "lines:1",
+   "note": "song in the black band of r01: one line",
+   "measure": {
+    "kind": "words",
+    "words": {
+     "Ciach,": 0.062649,
+     "ciach,": 0.060284,
+     "pyk!": 0.041034
+    },
+    "space": 0.010301,
+    "edge": 0.007102,
+    "original_lines": 1,
+    "letter_height": 83.0,
+    "max_width": 0.921875,
+    "height_lines": 1.2869
+   }
   },
   {
    "id": "s30",
    "source": "text-layout spec §6.2",
-   "scope": "scene",
-   "note": "band height and neighbours come from the scene layer"
+   "scope": "core",
+   "pair": "library/[Erai-raws] Yasei no Last Boss ga Arawareta 2nd Season - 03 [1080p CR WEB-DL AVC AAC][MultiSub][9C6EE816]",
+   "event": 309,
+   "text": "Syn Króla Demonów, który stworzył Siedmiu Luminarzy",
+   "field": {
+    "kind": "sign",
+    "original": "Son of the Devil King Who Organized the Seven Luminaries",
+    "tags": "{\\fs8\\c&HFCFDFF&\\fad(90,0)\\t(90,257,\\c&HFCFFDF&)\\4c&HFAFE7F&\\t(90,257,\\4c&HB9C45F&)\\3c&HFAFE7F&\\t(90,257,\\3c&HB9C45F&)\\bord2\\shad1\\pos(482.668,311.999)}"
+   },
+   "accept": [],
+   "accept_rule": "lines:1",
+   "note": "card in a band for one line: one line like the source, shrunk",
+   "measure": {
+    "kind": "words",
+    "words": {
+     "Demonów,": 0.061572,
+     "Króla": 0.030566,
+     "Luminarzy": 0.060449,
+     "Siedmiu": 0.046631,
+     "Syn": 0.021338,
+     "który": 0.030518,
+     "stworzył": 0.049561
+    },
+    "space": 0.003516,
+    "edge": 0.007812,
+    "original_lines": 1,
+    "letter_height": 24.0,
+    "comfort": 0.348681
+   }
   },
   {
    "id": "e01",

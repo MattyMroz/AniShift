@@ -116,6 +116,7 @@ class LayoutReport:
     signs_fitted: int = 0
     signs_fallback_screen: int = 0
     signs_fallback_collision: int = 0
+    signs_relaxed: int = 0
     signs_approximate: int = 0
     sign_dialogue_collisions: int = 0
     dialogue_unmeasured: int = 0
