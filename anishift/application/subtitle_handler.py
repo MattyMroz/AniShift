@@ -30,7 +30,6 @@ from anishift.services.subtitles import (
     write_displayed,
     write_spoken,
 )
-from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.tts.validation import is_speech_text
 from anishift.utils.logger import get_logger
 
@@ -58,14 +57,11 @@ logger = get_logger(__name__)
 class SubtitleTaskHandler:
     """Execute local subtitle transformations inside one run scope."""
 
-    __slots__ = ("_dialogue_font", "_layout", "_run_root")
+    __slots__ = ("_dialogue_font", "_run_root")
 
-    def __init__(
-        self, *, run_root: Path, layout: LayoutLimits | None = None, dialogue_font: DialogueFont | None = None
-    ) -> None:
+    def __init__(self, *, run_root: Path, dialogue_font: DialogueFont | None = None) -> None:
         """Bind subtitle staging to one scheduler-owned run root."""
         self._run_root: Path = run_root
-        self._layout: LayoutLimits = layout if layout is not None else LayoutLimits()
         self._dialogue_font: DialogueFont | None = dialogue_font
 
     def execute(
@@ -99,13 +95,13 @@ class SubtitleTaskHandler:
         source: Artifact = artifacts.require_ready(task.requires[0])
         source_path: Path = _subtitle_path(source)
         destination: Path = task_staging_path(self._run_root, task, output, f".{output_kind}")
-        layout: LayoutLimits | None = None if output.kind is ArtifactKind.DISPLAYED_PL else self._layout
+        lay_out: bool = output.kind is not ArtifactKind.DISPLAYED_PL
         normalize_subtitles(
             source_path,
             destination,
             kind=output_kind,
-            layout=layout,
-            fonts=None if layout is None else episode_fonts(self._run_root, task, artifacts, output),
+            lay_out=lay_out,
+            fonts=episode_fonts(self._run_root, task, artifacts, output) if lay_out else None,
             dialogue_font=self._dialogue_font,
         )
         return TaskResult(task.task_id, (ProducedArtifact(output.artifact_id, destination, {}),))
@@ -121,7 +117,7 @@ class SubtitleTaskHandler:
             msg = "Subtitle split source format is unsupported"
             raise ExecutionError(msg)
         decided: SubtitleSplit = _polish_split(task, artifacts, load_subtitles(polish_path), polish_kind)
-        source_split: SubtitleSplit = reflow_polish_dialogue(decided, self._layout)
+        source_split: SubtitleSplit = reflow_polish_dialogue(decided)
         produced: list[ProducedArtifact] = []
         absent: list[str] = []
         for artifact_id in task.produces:

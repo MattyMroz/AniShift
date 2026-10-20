@@ -8,6 +8,7 @@ from anishift.services.subtitles.geometry import (
     TextBox,
     available_width,
     measure_text,
+    safe_width,
     screen_rects,
     wrap_text,
 )
@@ -37,13 +38,13 @@ def test_render_profile_reads_the_header_and_falls_back_to_the_default_canvas() 
 
 
 @pytest.mark.unit
-def test_measure_text_scales_every_line_by_the_starting_size_and_the_axis_factors() -> None:
+def test_measure_text_scales_every_line_by_the_starting_size_of_the_measured_text_and_the_axis_factors() -> None:
     profile: RenderProfile = _profile(style=SSAStyle(fontsize=32))
     event: SSAEvent = SSAEvent(text=r"Hello\Nworld wide")
 
     box: TextBox = measure_text(event, event.text, profile)
     half: TextBox = measure_text(event, event.text, profile, fx=0.5, fy=0.5)
-    bigger: TextBox = measure_text(SSAEvent(text=r"{\fs64}Hello\Nworld wide"), event.text, profile)
+    bigger: TextBox = measure_text(event, r"{\fs64}Hello\Nworld wide", profile)
 
     assert len(box.line_widths) == 2
     assert box.width == max(box.line_widths) > 0
@@ -95,3 +96,33 @@ def test_screen_rects_anchor_the_box_at_the_margins_the_position_or_both_ends_of
     assert corner.right == pytest.approx(100 + width)
     assert ((start.left + start.right) / 2, (start.top + start.bottom) / 2) == pytest.approx((100, 100))
     assert ((end.left + end.right) / 2, (end.top + end.bottom) / 2) == pytest.approx((300, 200))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "margin", "expected"),
+    [
+        ("x", 10, 0.9),
+        (r"{\an7}x", 10, 0.9),
+        (r"{\an4\pos(50,500)}x", 0, 0.9),
+        (r"{\an1\pos(1056,1000)}x", 0, 0.4),
+        (r"{\pos(960,500)}x", 0, 0.9),
+    ],
+)
+def test_safe_width_stays_inside_the_central_share_of_the_canvas(text: str, margin: int, expected: float) -> None:
+    profile: RenderProfile = _profile(
+        {"PlayResX": "1920", "PlayResY": "1080"}, SSAStyle(marginl=margin, marginr=margin)
+    )
+
+    assert safe_width(SSAEvent(text=text), profile, 0.9) / 1920 == pytest.approx(expected)
+
+
+@pytest.mark.unit
+def test_screen_rects_add_the_end_box_of_a_rotation_animated_by_a_transform() -> None:
+    profile: RenderProfile = _profile({"PlayResX": "1920", "PlayResY": "1080"})
+    event: SSAEvent = SSAEvent(text=r"{\an5\pos(960,540)\frz90\t(0,500,\frz0)}Red Button")
+
+    start, end = screen_rects(event, event.text, profile)
+
+    assert start.bottom - start.top > start.right - start.left
+    assert end.right - end.left > end.bottom - end.top

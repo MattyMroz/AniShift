@@ -96,7 +96,6 @@ from anishift.services.subtitles import (
     load_subtitles,
     split_subtitles,
 )
-from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.subtitles.text import visible_text, visible_verses
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
 from anishift.services.translation.types import FileTranslation, TranslatedLine
@@ -922,18 +921,19 @@ def test_translated_text_keeps_span_markers_that_place_the_tags_across_new_line_
     split: SubtitleSplit = _ass_split(
         [SSAEvent(start=0, end=1000, style="Dialog", text=r"Why are you after {\i1}me{\i0}?!")]
     )
-    translated: str = "Czemu uwziąłeś się akurat na <s1>mnie</s1>?!"
+    translated: str = "Czemu uwziąłeś się akurat na <s1>mnie</s1>, skoro nigdy nic złego ci nie zrobiłem?!"
     result: FileTranslation = FileTranslation(
         spoken=(TranslatedLine(0, 1000, "Why are you after <s1>me</s1>?!", translated, (translated,), "Dialog"),),
     )
 
     texts: dict[int, str] = translated_texts(split, result)
-    laid_out: TranslatedLayout = layout_translated(
-        split, texts, fonts=None, limits=LayoutLimits(max_chars=20), dialogue_font=None
-    )
+    laid_out: TranslatedLayout = layout_translated(split, texts, fonts=None, dialogue_font=None)
 
     assert texts == {0: translated}
-    assert laid_out.subs.events[0].text == r"Czemu uwziąłeś się\Nakurat na {\i1}mnie{\i0}?!"
+    assert laid_out.subs.events[0].text.split("\\N") == [
+        r"Czemu uwziąłeś się akurat na {\i1}mnie{\i0},",
+        "skoro nigdy nic złego ci nie zrobiłem?!",
+    ]
 
 
 def test_translation_handler_keeps_italics_on_the_word_the_translator_marked(tmp_path: Path) -> None:

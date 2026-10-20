@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, replace
 from functools import lru_cache
@@ -22,7 +23,20 @@ if TYPE_CHECKING:
 
     from anishift.services.fonts import FontFace, FontIndex, FontMatch, GlyphMetrics
 
-__all__ = ["Rect", "RenderProfile", "TextBox", "available_width", "measure_text", "screen_rects", "wrap_text"]
+__all__ = [
+    "Rect",
+    "RenderProfile",
+    "TextBox",
+    "anchor_reach",
+    "available_width",
+    "font_size",
+    "measure_text",
+    "rotated",
+    "safe_width",
+    "screen_rects",
+    "style_changes",
+    "wrap_text",
+]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -151,6 +165,12 @@ _ROTATION_TAGS: Final[frozenset[str]] = frozenset({"frx", "fry", "frz", "fr", "f
 _STYLE_ROTATIONS: Final[frozenset[str]] = frozenset({"frz", "fr"})
 """Rotation tags that fall back to the style angle without an argument."""
 
+_TILT_TAGS: Final[frozenset[str]] = frozenset({"frx", "fry"})
+"""Rotation tags turning the text out of the screen plane, which the screen box only approximates."""
+
+_FULL_TURN: Final[float] = 360.0
+"""Degrees of a full rotation."""
+
 _COLOUR_TAGS: Final[frozenset[str]] = frozenset({"c", "1c", "2c", "3c", "4c", "2a"})
 """Tags a ``\\t`` may animate without changing where or how large the text is drawn."""
 
@@ -257,6 +277,55 @@ def available_width(event: SSAEvent, profile: RenderProfile) -> float:
     return profile.play_res_x - (event.marginl or style.marginl) - (event.marginr or style.marginr)
 
 
+def safe_width(event: SSAEvent, profile: RenderProfile, share: float) -> float:
+    """Return the widest line the event may draw from its horizontal anchor inside the canvas share ``share``."""
+    low: float = profile.play_res_x * (1 - share) / 2
+    return anchor_reach(event, profile, low, profile.play_res_x - low)
+
+
+def anchor_reach(event: SSAEvent, profile: RenderProfile, left: float, right: float) -> float:
+    """Return the widest line the event may draw from its horizontal anchor between canvas x ``left`` and ``right``."""
+    parse: _Parse = _parse(event, event.text, profile, final=False)
+    column: int = (parse.alignment - 1) % 3
+    style: SSAStyle = _style(event, profile)
+    start: float = (event.marginl or style.marginl) + available_width(event, profile) * column / 2
+    anchor: float = start if parse.anchors is None else parse.anchors[0][0]
+    reach: float = (right - anchor, 2 * min(anchor - left, right - anchor), anchor - left)[column]
+    return min(max(0.0, reach), right - left)
+
+
+def rotated(event: SSAEvent, text: str, profile: RenderProfile) -> bool:
+    """Tell whether the event draws ``text`` turned or tilted at its start or at its end."""
+    return any(
+        parse.angle % _FULL_TURN != 0 or parse.tilted
+        for parse in (_parse(event, text, profile, final=final) for final in (False, True))
+    )
+
+
+def font_size(event: SSAEvent, profile: RenderProfile) -> float:
+    """Return the font size the event text starts with, in script pixels."""
+    return _starting_size(event.text, _style(event, profile))[0]
+
+
+def style_changes(event: SSAEvent, text: str, profile: RenderProfile) -> tuple[bool, ...]:
+    """Return for every gap between the words of ``text`` whether the font, size, scale or weight changes across it."""
+    parse: _Parse = _parse(event, text, profile, final=False)
+    words: list[tuple[_State, _State]] = []
+    first: _State | None = None
+    last: _State | None = None
+    for char in (char for line in parse.lines for char in line):
+        if char.text in _TRIMMED:
+            if first is not None and last is not None:
+                words.append((first, last))
+            first = None
+            continue
+        first = char.state if first is None else first
+        last = char.state
+    if first is not None and last is not None:
+        words.append((first, last))
+    return tuple(_typeface(left[1]) != _typeface(right[0]) for left, right in pairwise(words))
+
+
 def wrap_text(event: SSAEvent, text: str, profile: RenderProfile) -> str:
     """Return ``text`` with the line breaks libass adds when it wraps the event automatically."""
     verses: tuple[str, ...] | None = _wrapped_verses(event, text, profile)
@@ -347,6 +416,9 @@ class _Parse:
     wrap_style: int
     approximate: bool
     transformed: bool
+    angle: float = 0.0
+    origin: tuple[float, float] | None = None
+    tilted: bool = False
 
     @property
     def moving(self) -> bool:
@@ -371,6 +443,9 @@ class _Parser:
         self._drawing: bool = False
         self._approximate: bool = self._style.angle != 0
         self._transformed: bool = False
+        self._angle: float = float(self._style.angle)
+        self._origin: tuple[float, float] | None = None
+        self._tilted: bool = False
 
     def parse(self, text: str) -> _Parse:
         """Return the characters, placement and wrapping of ``text``."""
@@ -385,6 +460,9 @@ class _Parser:
             wrap_style=self._wrap_style,
             approximate=self._approximate,
             transformed=self._transformed,
+            angle=self._angle,
+            origin=self._origin,
+            tilted=self._tilted,
         )
 
     def _piece(self, piece: str) -> None:
@@ -412,8 +490,10 @@ class _Parser:
             self._place(name, arguments)
         elif name == "t":
             self._transform(arguments, nested=nested)
-        elif name == "org" or (name in _ROTATION_TAGS and self._rotated(name, value)):
-            self._approximate = True
+        elif name == "org":
+            self._set_origin(arguments)
+        elif name in _ROTATION_TAGS:
+            self._rotate(name, value)
         elif name == "p":
             self._drawing = _integer(value) > 0
             self._approximate = self._approximate or self._drawing
@@ -449,6 +529,20 @@ class _Parser:
             return
         self._tags(inner, nested=True)
 
+    def _set_origin(self, arguments: list[str]) -> None:
+        self._approximate = True
+        numbers: list[float] = [_number(argument) for argument in arguments]
+        if self._origin is None and len(numbers) == _POINT_ARGUMENTS:
+            self._origin = (numbers[0], numbers[1])
+
+    def _rotate(self, name: str, value: str) -> None:
+        turned: bool = self._rotated(name, value)
+        self._approximate = self._approximate or turned
+        if name in _STYLE_ROTATIONS:
+            self._angle = _number(value) if value else float(self._style.angle)
+        elif name in _TILT_TAGS:
+            self._tilted = self._tilted or turned
+
     def _rotated(self, name: str, value: str) -> bool:
         if not value:
             return name in _STYLE_ROTATIONS and self._style.angle != 0
@@ -480,6 +574,10 @@ def _arguments(content: str | None) -> list[str]:
         head, _, last = content[:slash].rpartition(",")
         parts = [*(head.split(",") if head else []), last + content[slash:]]
     return [part.strip() for part in parts if part.strip()]
+
+
+def _typeface(state: _State) -> tuple[str, float, float, float, int]:
+    return state.font, state.size, state.scale_x, state.scale_y, state.weight
 
 
 def _style(event: SSAEvent, profile: RenderProfile) -> SSAStyle:
@@ -812,10 +910,6 @@ def _wrapped_verses(event: SSAEvent, text: str, profile: RenderProfile) -> tuple
     return tuple("".join(glyph.char for glyph in piece if glyph.char != _BREAK).strip(_SPACE) for piece in pieces)
 
 
-def _wraps(event: SSAEvent, text: str, profile: RenderProfile) -> bool:
-    return _wrapped_verses(event, text, profile) is not None
-
-
 # ── Layout ────────────────────────────────────────────────────────────────────
 
 
@@ -862,15 +956,17 @@ class _Layout:
     alignment: int
     anchor: tuple[float, float] | None
     animated: bool
+    angle: float = 0.0
+    origin: tuple[float, float] | None = None
 
 
 def _layout(event: SSAEvent, text: str, profile: RenderProfile, view: _View) -> _Layout:
     parse: _Parse = _parse(event, text, profile, final=view.final)
+    other: _Parse | None = _parse(event, text, profile, final=not view.final) if parse.transformed else None
     frame: _Frame = _Frame(
         parse=parse,
         anchor=None if parse.anchors is None else parse.anchors[int(view.final)],
-        animated=parse.moving
-        or (parse.transformed and _parse(event, text, profile, final=not view.final).lines != parse.lines),
+        animated=parse.moving or (other is not None and (other.lines != parse.lines or other.angle != parse.angle)),
     )
     lines: list[list[_Glyph]] | None = _measured(parse, profile.fonts, view.fx, view.fy)
     if lines is None:
@@ -911,6 +1007,8 @@ def _assembled(glyph_lines: list[list[_Glyph]], profile: RenderProfile, frame: _
         alignment=parse.alignment,
         anchor=frame.anchor,
         animated=frame.animated,
+        angle=parse.angle,
+        origin=parse.origin,
     )
 
 
@@ -1013,7 +1111,28 @@ def _on_canvas(layout: _Layout, event: SSAEvent, profile: RenderProfile) -> Rect
         margin_v: float = event.marginv or style.marginv
         left = (event.marginl or style.marginl) + (available_width(event, profile) - layout.width) * column / 2
         top = (profile.play_res_y - margin_v - layout.height, (profile.play_res_y - layout.height) / 2, margin_v)[row]
-    return Rect(left + ink.left, top + ink.top, left + ink.right, top + ink.bottom)
+    rect: Rect = Rect(left + ink.left, top + ink.top, left + ink.right, top + ink.bottom)
+    if layout.angle % _FULL_TURN == 0:
+        return rect
+    pivot: tuple[float, float] = layout.origin or (
+        left + layout.width * column / 2,
+        top + layout.height * (2 - row) / 2,
+    )
+    return _turned(rect, layout.angle, pivot)
+
+
+def _turned(rect: Rect, angle: float, pivot: tuple[float, float]) -> Rect:
+    """Return the box around ``rect`` turned counterclockwise on screen by ``angle`` degrees around ``pivot``."""
+    cos: float = math.cos(math.radians(angle))
+    sin: float = math.sin(math.radians(angle))
+    corners: list[tuple[float, float]] = [
+        (pivot[0] + (x - pivot[0]) * cos + (y - pivot[1]) * sin, pivot[1] - (x - pivot[0]) * sin + (y - pivot[1]) * cos)
+        for x in (rect.left, rect.right)
+        for y in (rect.top, rect.bottom)
+    ]
+    return Rect(
+        min(x for x, _ in corners), min(y for _, y in corners), max(x for x, _ in corners), max(y for _, y in corners)
+    )
 
 
 # ── Substitute measurement ────────────────────────────────────────────────────
@@ -1022,7 +1141,7 @@ def _on_canvas(layout: _Layout, event: SSAEvent, profile: RenderProfile) -> Rect
 def _substitute_layout(event: SSAEvent, text: str, profile: RenderProfile, frame: _Frame, view: _View) -> _Layout:
     """Measure with the reference Arial at the size the event starts with, when no face can be measured."""
     style: SSAStyle = _style(event, profile)
-    size, pixels = _starting_size(event.text, style)
+    size, pixels = _starting_size(text, style)
     widths: tuple[float, ...] = tuple(_verse_width(verse) * pixels * view.fx for verse in visible_verses(text))
     width: float = max(widths, default=0.0)
     height: float = len(widths) * size * style.scaley / _PERCENT * view.fy
@@ -1037,11 +1156,13 @@ def _substitute_layout(event: SSAEvent, text: str, profile: RenderProfile, frame
         alignment=frame.parse.alignment,
         anchor=frame.anchor,
         animated=frame.animated,
+        angle=frame.parse.angle,
+        origin=frame.parse.origin,
     )
 
 
 def _substitute_verses(event: SSAEvent, text: str, profile: RenderProfile, limit: float) -> tuple[str, ...] | None:
-    pixels: float = _starting_size(event.text, _style(event, profile))[1]
+    pixels: float = _starting_size(text, _style(event, profile))[1]
     verses: tuple[str, ...] = visible_verses(text)
     lines: list[str] = [line for verse in verses for line in _greedy_lines(verse, pixels, limit)]
     return None if len(lines) == len(verses) else tuple(lines)
@@ -1058,11 +1179,6 @@ def _font() -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
 @lru_cache(maxsize=4096)
 def _verse_width(verse: str) -> float:
     return float(_font().getlength(verse))
-
-
-@lru_cache(maxsize=4096)
-def _reference_width(text: str) -> float:
-    return max((_verse_width(verse) for verse in visible_verses(text)), default=0.0)
 
 
 def _greedy_lines(verse: str, pixels: float, limit: float) -> list[str]:

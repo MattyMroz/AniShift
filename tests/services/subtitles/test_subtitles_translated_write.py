@@ -11,7 +11,6 @@ from loguru import logger as loguru_logger
 from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
 from anishift.services.subtitles.classifier import Category, StyleVerdict
-from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.subtitles.service import (
     layout_translated,
     load_subtitles,
@@ -32,6 +31,8 @@ _REAL_ASS_NAME = "006___shisha__Genjitsu_no_Yohane_-_Sunshine_in_the_Mirror_-_01
 _REAL_ASS = MM_AVH_TEMP / "dataset_ass" / _REAL_ASS_NAME
 _RE_TAGS = re.compile(r"\{[^}]*\}")
 _RE_SCALE = re.compile(r"\\fsc[xy]?(?:-?[0-9]*\.?[0-9]+)?")
+_LONG_TRANSLATION = "Pierwszy wers jest tutaj całkiem długi, a drugi wers też ma sporo słów."
+_LONG_TRANSLATION_LINES = "Pierwszy wers jest tutaj całkiem długi,\na drugi wers też ma sporo słów."
 
 
 def _tags_without_scale(text: str) -> list[str]:
@@ -69,11 +70,8 @@ def _fake_translation(split: SubtitleSplit, prefix: str = "PL:") -> dict[int, st
     return displayed | {line.order: f"{prefix}{line.text}" for line in split.spoken}
 
 
-def _write(
-    split: SubtitleSplit, translations: dict[int, str], dest: Path, limits: LayoutLimits | None = None
-) -> Path | None:
-    chosen: LayoutLimits = limits if limits is not None else LayoutLimits()
-    return write_translated(split, translations, dest, fonts=None, limits=chosen, dialogue_font=None)
+def _write(split: SubtitleSplit, translations: dict[int, str], dest: Path) -> Path | None:
+    return write_translated(split, translations, dest, fonts=None, dialogue_font=None)
 
 
 def test_returns_none_when_no_dialogue_events(tmp_path: Path) -> None:
@@ -164,11 +162,11 @@ def test_ass_preserves_override_tags(tmp_path: Path) -> None:
 def test_ass_uses_hard_backslash_n_between_verses(tmp_path: Path) -> None:
     subs = _ass_with_both_streams()
     split = split_subtitles(subs, kind="ass", spoken_styles={"Dialog"})
-    texts: dict[int, str] = dict.fromkeys(_fake_translation(split), "Pierwszy wers drugi wers")
-    translated = _write(split, texts, tmp_path / "out.pl.ass", LayoutLimits(max_chars=14))
+    texts: dict[int, str] = dict.fromkeys(_fake_translation(split), _LONG_TRANSLATION)
+    translated = _write(split, texts, tmp_path / "out.pl.ass")
     assert translated is not None
     body = translated.read_text(encoding="utf-8")
-    assert "Pierwszy wers\\Ndrugi wers" in body
+    assert _LONG_TRANSLATION_LINES.replace("\n", "\\N") in body
 
 
 def test_srt_round_trip_keeps_all_events_and_uses_newline(tmp_path: Path) -> None:
@@ -183,8 +181,8 @@ def test_srt_round_trip_keeps_all_events_and_uses_newline(tmp_path: Path) -> Non
     source_path.write_text(source.to_string(format_="srt"), encoding="utf-8")
 
     split = split_subtitles(load_subtitles(source_path), kind="srt")
-    texts: dict[int, str] = {line.order: "Pierwszy wers drugi wers" for line in split.spoken}
-    translated = _write(split, texts, tmp_path / "out.pl.srt", LayoutLimits(max_chars=14))
+    texts: dict[int, str] = {line.order: _LONG_TRANSLATION for line in split.spoken}
+    translated = _write(split, texts, tmp_path / "out.pl.srt")
     assert translated is not None
 
     after = load_subtitles(translated)
@@ -195,7 +193,7 @@ def test_srt_round_trip_keeps_all_events_and_uses_newline(tmp_path: Path) -> Non
         assert result.end == source_event.end
 
     body = translated.read_text(encoding="utf-8")
-    assert "Pierwszy wers\ndrugi wers" in body
+    assert _LONG_TRANSLATION_LINES in body
     assert "\\N" not in body
 
 
@@ -363,7 +361,7 @@ def test_layout_translated_gives_every_copy_of_a_spoken_line_its_translation_unl
     split: SubtitleSplit = split_subtitles(source, kind="ass", spoken_styles={"Dialog"})
     assert [line.order for line in split.spoken] == [0, 2]
     laid_out: TranslatedLayout = layout_translated(
-        split, {0: "Czekaj!", 2: "Uciekaj!", 3: "Biegnij!"}, fonts=None, limits=LayoutLimits(), dialogue_font=None
+        split, {0: "Czekaj!", 2: "Uciekaj!", 3: "Biegnij!"}, fonts=None, dialogue_font=None
     )
     assert [event.text for event in laid_out.subs.events] == [
         "Czekaj!",
@@ -372,7 +370,7 @@ def test_layout_translated_gives_every_copy_of_a_spoken_line_its_translation_unl
         "Biegnij!",
     ]
     assert source.events[0].text == "Hold on!"
-    assert laid_out.report == LayoutReport()
+    assert laid_out.report == LayoutReport(dialogue_unmeasured=4)
 
 
 @pytest.mark.unit
@@ -388,9 +386,7 @@ def test_layout_translated_gives_a_copy_in_another_style_the_translation_of_the_
     split: SubtitleSplit = split_subtitles(source, kind="ass", spoken_styles={"Main", "Overlap", "Echo"})
     assert [line.order for line in split.spoken] == [0]
 
-    laid_out: TranslatedLayout = layout_translated(
-        split, {0: "Już!", 2: "JUŻ"}, fonts=None, limits=LayoutLimits(), dialogue_font=None
-    )
+    laid_out: TranslatedLayout = layout_translated(split, {0: "Już!", 2: "JUŻ"}, fonts=None, dialogue_font=None)
 
     assert [event.text for event in laid_out.subs.events] == ["Już!", "{\\an8}Już!", "JUŻ"]
 
@@ -407,13 +403,12 @@ def test_layout_translated_breaks_dialogue_and_keeps_drawings_and_events_without
     split: SubtitleSplit = split_subtitles(source, kind="ass", spoken_styles={"Dialog"})
     laid_out: TranslatedLayout = layout_translated(
         split,
-        {0: "Cześć tobie, mój drogi przyjacielu", 1: "rysunek"},
+        {0: _LONG_TRANSLATION, 1: "rysunek"},
         fonts=None,
-        limits=LayoutLimits(max_chars=20),
         dialogue_font=None,
     )
     assert laid_out.subs.events[0].text.count("\\N") == 1
-    assert visible_text(laid_out.subs.events[0].text) == "Cześć tobie, mój drogi przyjacielu"
+    assert visible_text(laid_out.subs.events[0].text) == _LONG_TRANSLATION
     assert laid_out.subs.events[1].text == source.events[1].text
     assert laid_out.subs.events[2].text == source.events[2].text
 
@@ -433,6 +428,8 @@ def test_translated_writer_logs_one_layout_summary_without_texts_or_absolute_pat
     extra: dict[str, Any] = summaries[0]["extra"]
     assert extra["destination"] == "out.pl.ass"
     assert extra["product"] == "Translated"
-    assert {key: extra[key] for key in asdict(LayoutReport())} == asdict(LayoutReport())
+    assert {key: extra[key] for key in asdict(LayoutReport())} == asdict(
+        LayoutReport(dialogue_unmeasured=1, signs_fitted=2, signs_approximate=2)
+    )
     assert str(tmp_path) not in repr(summaries[0]["extra"])
     assert "PL:" not in repr(summaries[0]["extra"])

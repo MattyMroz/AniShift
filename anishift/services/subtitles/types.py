@@ -116,12 +116,15 @@ class LayoutReport:
     signs_fitted: int = 0
     signs_fallback_screen: int = 0
     signs_fallback_collision: int = 0
+    signs_relaxed: int = 0
+    signs_small: int = 0
     signs_approximate: int = 0
     sign_dialogue_collisions: int = 0
     dialogue_unmeasured: int = 0
     dialogue_relaxed_phrases: int = 0
     dialogue_three_lines: int = 0
     dialogue_overflow: int = 0
+    dialogue_untagged: int = 0
     fallback_glyph_events: int = 0
     restyled_styles: int = 0
 

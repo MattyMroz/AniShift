@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 __all__ = [
     "RE_TAG_BLOCK",
     "is_drawing",
+    "is_karaoke",
     "marked_text",
     "reflow_visible_text",
     "replace_visible_text",
@@ -33,6 +34,9 @@ RE_TAG_BLOCK: Final[re.Pattern[str]] = re.compile(r"\{[^}]*\}")
 
 _RE_DRAW_TAG: Final[re.Pattern[str]] = re.compile(chr(92) + chr(92) + r"p[1-9]")
 """An ASS ``\\p1``-``\\p9`` tag switching the line into vector-drawing mode."""
+
+_RE_KARAOKE_TAG: Final[re.Pattern[str]] = re.compile(chr(92) + chr(92) + r"[kK][fo]?[0-9]")
+"""An ASS ``\\k``, ``\\K``, ``\\kf`` or ``\\ko`` tag timing a karaoke syllable."""
 
 _RE_HTML_TAG: Final[re.Pattern[str]] = re.compile(r"<[^>]+>")
 """One HTML-style formatting tag as found in SRT text."""
@@ -100,6 +104,11 @@ class _Boundary:
 def is_drawing(text: str) -> bool:
     """Tell whether an event's raw text is a vector drawing."""
     return bool(_RE_DRAW_TAG.search(text))
+
+
+def is_karaoke(text: str) -> bool:
+    """Tell whether an event's raw text times karaoke syllables."""
+    return bool(_RE_KARAOKE_TAG.search(text))
 
 
 def visible_text(text: str, *, preserve_hard_spaces: bool = False) -> str:

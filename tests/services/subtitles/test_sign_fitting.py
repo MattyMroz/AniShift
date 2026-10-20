@@ -4,17 +4,36 @@ import re
 from pathlib import Path
 
 import pytest
-from PIL import ImageFont
 from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
+from anishift.services.subtitles import fitting
 from anishift.services.subtitles.fitting import fit_signs
-from anishift.services.subtitles.geometry import RenderProfile
-from anishift.services.subtitles.layout import LayoutLimits
+from anishift.services.subtitles.geometry import Rect, RenderProfile, screen_rects
+from anishift.services.subtitles.layout import Scale
+from anishift.services.subtitles.linebreak import NO_WRAP
 from anishift.services.subtitles.service import load_subtitles, split_subtitles, write_translated
 from anishift.services.subtitles.text import visible_text, visible_verses
 from anishift.services.subtitles.types import LayoutReport
 
 _FULL_HD: dict[str, str] = {"PlayResX": "1920", "PlayResY": "1080", "WrapStyle": "0"}
+
+
+def _files(
+    sources: list[SSAEvent],
+    targets: list[str],
+    styles: dict[str, SSAStyle] | None = None,
+    info: dict[str, str] | None = None,
+) -> tuple[SSAFile, SSAFile, RenderProfile]:
+    subs: SSAFile = SSAFile()
+    subs.styles = {"Default": SSAStyle(), **(styles or {})}
+    subs.info.update(info or {})
+    subs.events = sources
+    translated: SSAFile = SSAFile()
+    translated.styles = subs.styles
+    translated.events = [event.copy() for event in sources]
+    for event, text in zip(translated.events, targets, strict=True):
+        event.text = text
+    return subs, translated, RenderProfile.from_subs(subs, None)
 
 
 def _fit(
@@ -24,29 +43,44 @@ def _fit(
     styles: dict[str, SSAStyle] | None = None,
     info: dict[str, str] | None = None,
 ) -> str:
-    subs: SSAFile = SSAFile()
-    subs.styles = {"Default": style if style is not None else SSAStyle(), **(styles or {})}
-    subs.info.update(info or {})
-    subs.events = [SSAEvent(text=source)]
-    translated: SSAFile = SSAFile()
-    translated.events = [SSAEvent(text=target)]
-    return fit_signs(subs, translated, [0], RenderProfile.from_subs(subs, None), LayoutReport())[0]
+    subs, translated, profile = _files(
+        [SSAEvent(text=source, end=1000)], [target], {"Default": style or SSAStyle(), **(styles or {})}, info
+    )
+    return fit_signs(subs, translated, [0], profile, LayoutReport())[0]
 
 
-def _scale(text: str) -> float:
-    return float(re.findall(r"\\fscx(-?[\d.]+)", text)[0]) / 100
+def _scales(text: str) -> list[tuple[str, float]]:
+    return [(tag, float(value)) for tag, value in re.findall(r"\\(fsc[xy])(-?[\d.]+)", text)]
 
 
-def _arial_ratio(source: str, target: str) -> float:
-    font: ImageFont.FreeTypeFont = ImageFont.truetype("arial.ttf", 64)
-    return float(font.getlength(source) / font.getlength(target))
+def _overflow(rects: tuple[Rect, ...], width: float, height: float) -> float:
+    return max(
+        (
+            max(0.0, -rect.left) + max(0.0, rect.right - width) + max(0.0, -rect.top) + max(0.0, rect.bottom - height)
+            for rect in rects
+        ),
+        default=0.0,
+    )
+
+
+def _area(rects: tuple[Rect, ...], others: tuple[Rect, ...]) -> float:
+    return sum(
+        max(0.0, min(a.right, b.right) - max(a.left, b.left)) * max(0.0, min(a.bottom, b.bottom) - max(a.top, b.top))
+        for a in rects
+        for b in others
+    )
 
 
 @pytest.mark.unit
-def test_long_sign_scales_both_axes_inside_the_first_block_and_respects_readability_floor() -> None:
-    style: SSAStyle = SSAStyle(scalex=80, scaley=120)
-    result: str = _fit(r"{\an7\pos(100,100)}Red", r"{\an7\pos(100,100)}Czerwony", style)
-    assert result == r"{\fscx57.6\fscy86.4\an7\pos(100,100)}Czerwony"
+def test_one_word_sign_much_wider_than_its_original_shrinks_both_axes_in_proportion() -> None:
+    style: SSAStyle = SSAStyle(fontsize=200, scalex=80, scaley=120)
+    result: str = _fit(r"{\an7\pos(10,100)}Red", r"{\an7\pos(10,100)}Czerwony", style)
+    (_, x), (_, y) = _scales(result)[:2]
+    assert result.startswith(r"{\fscx")
+    assert r"\an7\pos(10,100)}" in result
+    assert x / 80 == pytest.approx(y / 120, abs=0.001)
+    assert x / 80 < 1
+    assert visible_text(result) == "Czerwony"
 
 
 @pytest.mark.unit
@@ -56,136 +90,290 @@ def test_shorter_or_unchanged_sign_is_byte_identical(target: str) -> None:
 
 
 @pytest.mark.unit
+def test_slightly_wider_small_sign_keeps_its_size() -> None:
+    assert _fit(r"{\pos(100,100)}Red", r"{\pos(100,100)}Czerwony") == r"{\pos(100,100)}Czerwony"
+
+
+@pytest.mark.unit
 def test_scaling_preserves_geometry_and_scales_inline_animation_and_reset() -> None:
-    style: SSAStyle = SSAStyle(scalex=90, scaley=110)
+    style: SSAStyle = SSAStyle(fontsize=80, scalex=90, scaley=110)
     other: SSAStyle = SSAStyle(scalex=60, scaley=80)
-    tags: str = r"{\an8\move(1,2,3,4)\org(5,6)\clip(1,2,3,4)\fad(80,90)"
+    tags: str = r"{\an7\move(1,2,3,4)\org(5,6)\fad(80,90)"
     tags += r"\fscx120\fscy150\t(0,500,\fscx180\fscy200)}"
     target: str = tags + r"Czerwony{\rOther}Czerwony"
     result: str = _fit(tags + r"Red{\rOther}Red", target, style, {"Other": other})
-    assert r"\an8\move(1,2,3,4)\org(5,6)\clip(1,2,3,4)\fad(80,90)" in result
-    assert r"\fscx86.4\fscy108\t(0,500,\fscx129.6\fscy144)" in result
-    assert r"\rOther\fscx43.2\fscy57.6" in result
+    factor: float = _scales(result)[0][1] / 90
+    assert factor < 1
+    assert r"\an7\move(1,2,3,4)\org(5,6)\fad(80,90)" in result
+    assert [value for _, value in _scales(result)] == pytest.approx(
+        [90 * factor, 110 * factor, 120 * factor, 150 * factor, 180 * factor, 200 * factor, 60 * factor, 80 * factor],
+        abs=0.001,
+    )
     assert visible_text(result) == visible_text(target)
 
 
 @pytest.mark.unit
-def test_reset_style_name_ignores_surrounding_whitespace() -> None:
-    other: SSAStyle = SSAStyle(scalex=60, scaley=80)
-    source: str = r"Red{\rOther }Red"
-    result: str = _fit(source, source.replace("Red", "Czerwony"), SSAStyle(), {"Other": other})
-    assert r"{\rOther \fscx43.2\fscy57.6}" in result
-
-
-@pytest.mark.unit
 def test_mirrored_scale_keeps_its_sign() -> None:
-    source: str = r"{\fscx-50}Red"
-    result: str = _fit(source, source.replace("Red", "Czerwony"))
-    assert result == r"{\fscx72\fscy72\fscx-36}Czerwony"
+    result: str = _fit(r"{\an7\fscx-50}Red", r"{\an7\fscx-50}Czerwony", SSAStyle(fontsize=600))
+    assert [value < 0 for tag, value in _scales(result) if tag == "fscx"] == [False, True]
 
 
 @pytest.mark.unit
 def test_drawing_is_never_scaled() -> None:
     source: str = r"{\p1}m 0 0 l 10 10"
-    target: str = source + " 20 20"
-    assert _fit(source, target) == target
+    assert _fit(source, source + " 20 20") == source + " 20 20"
 
 
 @pytest.mark.unit
-def test_scale_resets_keep_the_fitted_named_style_across_blocks() -> None:
-    style: SSAStyle = SSAStyle(scalex=90, scaley=110)
-    other: SSAStyle = SSAStyle(scalex=60, scaley=80)
-    source: str = r"Red{\rOther}Red{\fsc}Red{\fscx}Red{\fscy}Red"
-    result: str = _fit(source, source.replace("Red", "Czerwony"), style, {"Other": other})
-    assert r"{\fscx43.2\fscy57.6}" in result
-    assert r"{\fscx43.2}" in result
-    assert r"{\fscy57.6}" in result
+def test_two_line_original_keeps_two_lines_for_a_two_word_translation() -> None:
+    result: str = _fit(r"{\pos(200,40)}Public\Nschool", r"{\pos(200,40)}Publiczna szkoła")
+    assert visible_verses(result) == ("Publiczna", "szkoła")
+    assert r"\pos(200,40)" in result
 
 
 @pytest.mark.unit
-def test_intermediate_scale_tracks_measured_width_instead_of_using_the_floor() -> None:
-    expected: float = _arial_ratio("Public school", "Publiczna szkoła")
-    result: str = _fit("Public school", "Publiczna szkoła")
-    assert 0.72 < expected < 0.97
-    assert _scale(result) == pytest.approx(expected, abs=0.00001)
+def test_short_translation_of_a_two_line_original_may_take_one_line() -> None:
+    result: str = _fit(r"{\pos(200,40)}Come back\Nhome", r"{\pos(200,40)}Wróć")
+    assert visible_verses(result) == ("Wróć",)
 
 
 @pytest.mark.unit
-def test_small_width_growth_is_tolerated() -> None:
-    source: str = "M" * 100
-    assert _fit(source, source + "M") == source + "M"
+def test_list_of_single_words_keeps_one_item_per_line_and_its_empty_lines() -> None:
+    result: str = _fit(r"{\an8\pos(192,10)}1st\N\N2nd\N\N3rd", r"{\an8\pos(192,10)}1. 2. 3.")
+    assert result == r"{\an8\pos(192,10)}1.\N\N2.\N\N3."
 
 
 @pytest.mark.unit
-def test_scale_values_accept_ass_whitespace() -> None:
-    source: str = r"{\fscx 120 \fscy150 }Red"
-    result: str = _fit(source, source.replace("Red", "Czerwony"))
-    assert result == r"{\fscx72\fscy72\fscx86.4 \fscy108 }Czerwony"
+def test_spaced_list_with_as_many_translated_words_keeps_its_items_on_their_lines() -> None:
+    result: str = _fit(r"{\an8\pos(192,10)}500 p\N\N497 p\N\N489 p", r"{\an8\pos(192,10)}500 pkt 497 pkt 489 pkt")
+    assert re.sub(r"\{[^}]*\}", "", result) == r"500 pkt\N\N497 pkt\N\N489 pkt"
+    assert r"\an8\pos(192,10)}" in result
 
 
 @pytest.mark.unit
-def test_multiline_source_can_restore_line_break_without_moving_tags() -> None:
-    result: str = _fit(r"{\pos(20,20)}Public\Nschool", r"{\pos(20,20)}Publiczna szkoła")
-    assert r"Publiczna\Nszkoła" in result
-    assert r"\pos(20,20)" in result
+def test_empty_authored_lines_stay_between_the_text_lines() -> None:
+    result: str = _fit(
+        r"{\an7\pos(10,10)}Has a tea ceremony license\N\N\N\NKnowledgeable",
+        r"{\an7\pos(10,10)}Ma licencję na ceremonię herbacianą i ogromną wiedzę",
+    )
+    assert re.sub(r"\{[^}]*\}", "", result).count(r"\N\N\N\N") == 1
+    assert len([verse for verse in visible_verses(result) if verse]) == 2
 
 
 @pytest.mark.unit
-def test_sign_that_libass_would_wrap_gets_a_balanced_break_and_per_line_fit() -> None:
-    style: SSAStyle = SSAStyle(fontsize=75, marginl=18, marginr=15)
-    source: str = r"{\pos(900,1)\fs120}Stu{\c&HF7FCFE&}dent Council Pre{\c&H8DD4F4&}sident"
-    target: str = r"{\pos(900,1)\fs120}Przewodni{\c&HF7FCFE&}czący Samorządu Ucznio{\c&H8DD4F4&}wskiego"
-    result: str = _fit(source, target, style, info=_FULL_HD)
-    expected: float = _arial_ratio("Student Council President", "Samorządu Uczniowskiego")
-    assert visible_verses(result) == ("Przewodniczący", "Samorządu Uczniowskiego")
-    assert result.startswith(r"{\fscx")
-    assert r"\pos(900,1)\fs120}" in result
-    assert result.count("{") == target.count("{")
-    assert _scale(result) == pytest.approx(expected, abs=0.00001)
+def test_signature_dash_of_the_original_starts_its_line() -> None:
+    result: str = _fit(
+        r"{\an5\pos(192,144)}Come to the roof\N- Peek-a-Boo Seniors",
+        r"{\an5\pos(192,144)}Zbiórka na dachu – Starsi z Peek-a-Boo",
+    )
+    assert [verse for verse in visible_verses(result) if verse] == ["Zbiórka na dachu", "– Starsi z Peek-a-Boo"]
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    ("tags", "info"),
-    [
-        (r"\fs40", _FULL_HD),
-        (r"\fs200", _FULL_HD),
-        (r"\fs120", {**_FULL_HD, "WrapStyle": "2"}),
-        (r"\fs120\q2", _FULL_HD),
-        (r"\fs10", {**_FULL_HD, "PlayResX": "wide"}),
-    ],
-    ids=["fits-screen", "source-already-wrapped", "wrap-style-none", "inline-no-wrap", "malformed-width"],
-)
-def test_floor_keeps_one_line_unless_libass_would_wrap_only_the_translation(tags: str, info: dict[str, str]) -> None:
-    style: SSAStyle = SSAStyle(fontsize=75, marginl=18, marginr=15)
-    target: str = "{" + tags + "}Przewodniczący Samorządu Uczniowskiego"
-    result: str = _fit("{" + tags + "}Student Council President", target, style, info=info)
-    assert result == "{" + r"\fscx72\fscy72" + tags + "}Przewodniczący Samorządu Uczniowskiego"
+def test_style_change_at_an_authored_line_end_stays_a_line_end() -> None:
+    result: str = _fit(
+        r"{\an8\pos(960,100)\fs60}Episode 01\N{\fs40}The Boy Who Is the World's Strongest Sorcerer",
+        r"{\an8\pos(960,100)\fs60}Odcinek pierwszy: {\fs40}Chłopiec, który jest najsilniejszym magikiem na świecie",
+        info=_FULL_HD,
+    )
+    assert visible_verses(result)[0] == "Odcinek pierwszy:"
+
+
+@pytest.mark.unit
+def test_leading_label_with_a_colon_heads_the_sign_without_a_style_change() -> None:
+    result: str = _fit(
+        r"{\an8\pos(960,100)\fs50}Episode 02\NThe Boy Who Is the\NWorld's Strongest Sorcerer Dons a Mask",
+        r"{\an8\pos(960,100)\fs50}Odcinek drugi: Chłopiec, który jest najsilniejszym magiem, przywdziewa maskę",
+        info=_FULL_HD,
+    )
+    assert visible_verses(result)[0] == "Odcinek drugi:"
+
+
+@pytest.mark.unit
+def test_sign_at_the_screen_edge_does_not_leave_the_screen_more_than_its_original() -> None:
+    subs, translated, profile = _files(
+        [SSAEvent(text=r"{\an5\pos(40,540)\fs60}Safety Hazard", end=1000)],
+        [r"{\an5\pos(40,540)\fs60}Zagrożenie dla bezpieczeństwa"],
+        info=_FULL_HD,
+    )
+    result: str = fit_signs(subs, translated, [0], profile, LayoutReport())[0]
+    before: float = _overflow(screen_rects(subs[0], subs[0].text, profile), 1920, 1080)
+    after: float = _overflow(screen_rects(translated[0], result, profile), 1920, 1080)
+    assert after <= before + 1 + 0.07 * 400
+    assert visible_text(result) == "Zagrożenie dla bezpieczeństwa"
+
+
+@pytest.mark.unit
+def test_sign_does_not_grow_into_a_sign_shown_beside_it() -> None:
+    sources: list[SSAEvent] = [
+        SSAEvent(text=r"{\an5\pos(700,540)\fs60}Sale", end=1000),
+        SSAEvent(text=r"{\an4\pos(820,540)\fs60}Japanese", end=1000),
+    ]
+    subs, translated, profile = _files(
+        sources, [r"{\an5\pos(700,540)\fs60}Wielka wyprzedaż sezonowa", sources[1].text], info=_FULL_HD
+    )
+    result: str = fit_signs(subs, translated, [0], profile, LayoutReport())[0]
+    neighbour: tuple[Rect, ...] = screen_rects(subs[1], subs[1].text, profile)
+    before: float = _area(screen_rects(subs[0], subs[0].text, profile), neighbour)
+    assert _area(screen_rects(translated[0], result, profile), neighbour) <= before + 1
+    assert visible_text(result) == "Wielka wyprzedaż sezonowa"
+
+
+@pytest.mark.unit
+def test_sign_inside_a_clip_frame_stays_inside_it() -> None:
+    clip: str = r"\clip(600,500,1320,580)"
+    subs, translated, profile = _files(
+        [SSAEvent(text=r"{\an5\pos(960,540)\fs50" + clip + "}Note: can't swim", end=1000)],
+        [r"{\an5\pos(960,540)\fs50" + clip + "}Przypis: nie potrafi pływać ani trochę w ogóle"],
+        info=_FULL_HD,
+    )
+    result: str = fit_signs(subs, translated, [0], profile, LayoutReport())[0]
+    (rect,) = screen_rects(translated[0], result, profile)
+    assert rect.left >= 600 - 0.07 * 720
+    assert rect.right <= 1320 + 0.07 * 720
+
+
+@pytest.mark.unit
+def test_rotated_sign_is_boxed_by_its_turned_corners() -> None:
+    subs, _, profile = _files([SSAEvent(text=r"{\an5\pos(960,540)\fs60}Wide sign text", end=1000)], ["x"])
+    (flat,) = screen_rects(subs[0], subs[0].text, profile)
+    (turned,) = screen_rects(subs[0], r"{\an5\pos(960,540)\fs60\frz90}Wide sign text", profile)
+    assert turned.right - turned.left == pytest.approx(flat.bottom - flat.top, abs=0.01)
+    assert turned.bottom - turned.top == pytest.approx(flat.right - flat.left, abs=0.01)
+
+
+@pytest.mark.unit
+def test_frames_of_one_sign_share_one_layout() -> None:
+    sources: list[SSAEvent] = [
+        SSAEvent(start=0, end=40, text=r"{\an5\pos(192,100)}Public\Nschool"),
+        SSAEvent(start=40, end=80, text=r"{\an5\pos(193,100)}Public\Nschool"),
+    ]
+    subs, translated, profile = _files(
+        sources, [r"{\an5\pos(192,100)}Publiczna szkoła", r"{\an5\pos(193,100)}Publiczna szkoła"]
+    )
+    fitted: dict[int, str] = fit_signs(subs, translated, [0, 1], profile, LayoutReport())
+    assert fitted[0].replace("192", "193") == fitted[1]
 
 
 @pytest.mark.integration
 def test_translated_writer_fits_signs_but_does_not_resize_dialogue(tmp_path: Path) -> None:
     subs: SSAFile = SSAFile()
-    subs.styles["Default"] = SSAStyle()
-    subs.styles["Sign"] = SSAStyle()
+    subs.styles["Default"] = SSAStyle(fontsize=300)
+    subs.styles["Sign"] = SSAStyle(fontsize=300)
     subs.events = [
         SSAEvent(style="Default", text="Red", start=0, end=2000),
-        SSAEvent(style="Sign", text=r"{\pos(10,10)}Red", start=0, end=2000),
+        SSAEvent(style="Sign", text=r"{\an7\pos(10,10)}Red", start=0, end=2000),
     ]
     split = split_subtitles(subs, kind="ass", spoken_styles={"Default"})
     path: Path = tmp_path / "output.pl.ass"
-    write_translated(split, {0: "Czerwony", 1: "Czerwony"}, path, fonts=None, limits=LayoutLimits(), dialogue_font=None)
+    write_translated(split, {0: "Czerwony", 1: "Czerwony"}, path, fonts=None, dialogue_font=None)
     result: SSAFile = load_subtitles(path)
     assert result.events[0].text == "Czerwony"
-    assert result.events[1].text == r"{\fscx72\fscy72\pos(10,10)}Czerwony"
+    assert result.events[1].text.startswith(r"{\fscx")
+    assert visible_text(result.events[1].text) == "Czerwony"
+
+
+@pytest.mark.integration
+def test_translated_writer_keeps_karaoke_untouched(tmp_path: Path) -> None:
+    subs: SSAFile = SSAFile()
+    subs.styles["Default"] = SSAStyle()
+    subs.styles["OP"] = SSAStyle()
+    karaoke: str = r"{\k20}Ai {\ko30}no {\kf40}uta"
+    subs.events = [
+        SSAEvent(style="Default", text="Red", start=0, end=2000),
+        SSAEvent(style="OP", text=karaoke, start=0, end=2000),
+    ]
+    split = split_subtitles(subs, kind="ass", spoken_styles={"Default"})
+    path: Path = tmp_path / "output.pl.ass"
+    write_translated(split, {0: "Czerwony", 1: "Pieśń miłości"}, path, fonts=None, dialogue_font=None)
+    assert load_subtitles(path).events[1].text == karaoke
 
 
 @pytest.mark.unit
 def test_fit_signs_returns_texts_only_for_the_requested_events() -> None:
-    subs: SSAFile = SSAFile()
-    subs.styles = {"Default": SSAStyle()}
-    subs.events = [SSAEvent(text="Red"), SSAEvent(text=r"{\pos(10,10)}Red")]
-    translated: SSAFile = SSAFile()
-    translated.events = [SSAEvent(text="Czerwony"), SSAEvent(text=r"{\pos(10,10)}Czerwony")]
-    fitted: dict[int, str] = fit_signs(subs, translated, [1], RenderProfile.from_subs(subs, None), LayoutReport())
-    assert fitted == {1: r"{\fscx72\fscy72\pos(10,10)}Czerwony"}
+    subs, translated, profile = _files(
+        [SSAEvent(text="Red", end=1000), SSAEvent(text=r"{\pos(10,10)}Red", end=1000)],
+        ["Czerwony", r"{\pos(10,10)}Czerwony"],
+    )
+    fitted: dict[int, str] = fit_signs(subs, translated, [1], profile, LayoutReport())
+    assert list(fitted) == [1]
+    assert visible_text(fitted[1]) == "Czerwony"
+
+
+@pytest.mark.unit
+def test_letters_shrunk_below_the_readable_height_are_reported() -> None:
+    clip: str = r"\clip(900,250,1020,350)"
+    subs, translated, profile = _files(
+        [SSAEvent(text=r"{\an5\pos(960,300)" + clip + "}Closed", end=1000)],
+        [r"{\an5\pos(960,300)" + clip + "}Zamknięte-z-powodu-przeglądu-technicznego-i-remontu"],
+        {"Default": SSAStyle(fontsize=60)},
+        _FULL_HD,
+    )
+    report: LayoutReport = LayoutReport()
+    result: str = fit_signs(subs, translated, [0], profile, report)[0]
+    assert _scales(result)[0][1] * 60 / 100 < 16
+    assert report.signs_small == 1
+
+
+@pytest.mark.unit
+def test_readable_shrunk_sign_is_not_reported_small() -> None:
+    subs, translated, profile = _files(
+        [SSAEvent(text=r"{\an5\pos(960,300)}Closed today", end=1000)],
+        [r"{\an5\pos(960,300)}Zamknięte dzisiaj"],
+        {"Default": SSAStyle(fontsize=60)},
+        _FULL_HD,
+    )
+    report: LayoutReport = LayoutReport()
+    fit_signs(subs, translated, [0], profile, report)
+    assert report.signs_small == 0
+
+
+@pytest.mark.unit
+def test_horizontal_squeeze_writes_no_vertical_scale_that_does_not_change() -> None:
+    assert fitting._scaled(r"{\pos(1,1)}Red", Scale(0.8), SSAStyle(), {}) == r"{\fscx80\pos(1,1)}Red"
+
+
+@pytest.mark.unit
+def test_horizontal_squeeze_keeps_the_vertical_reset_of_a_full_scale_reset() -> None:
+    result: str = fitting._scaled(r"Red{\fsc}Red", Scale(0.8), SSAStyle(scaley=90), {})
+    assert result == r"{\fscx80}Red{\fscx80\fscy90}Red"
+
+
+@pytest.mark.unit
+def test_sign_that_libass_would_wrap_gets_the_shared_no_wrap_override() -> None:
+    subs, translated, profile = _files(
+        [SSAEvent(text=r"{\an8\pos(960,10)}Sign text", end=1000)],
+        [r"{\an8\pos(960,10)}Napis ekranowy dość długi"],
+        {"Default": SSAStyle(fontsize=60, marginl=800, marginr=800)},
+        _FULL_HD,
+    )
+    assert NO_WRAP in fit_signs(subs, translated, [0], profile, LayoutReport())[0]
+
+
+@pytest.mark.unit
+def test_translation_with_as_many_lines_as_the_source_keeps_its_line_ends() -> None:
+    result: str = _fit(
+        r"{\an7\pos(10,10)}literature department jobs\Nliterature department employment rate\Nemployers",
+        r"{\an7\pos(10,10)}literatura praca\Nzatrudnienie\Npracodawcy",
+    )
+    assert visible_verses(result) == ("literatura praca", "zatrudnienie", "pracodawcy")
+
+
+@pytest.mark.unit
+def test_ragged_source_shape_keeps_a_short_line_where_the_source_had_one() -> None:
+    result: str = _fit(
+        r"{\an9\pos(1900,10)\fs40}This is a work of fiction and more\Nshort line\Nanother long line of the notice",
+        r"{\an9\pos(1900,10)\fs40}To jest dzieło fikcyjne i tyle krótki wiersz kolejny długi wiersz uwagi",
+        info=_FULL_HD,
+    )
+    lines: list[str] = [verse for verse in visible_verses(result) if verse]
+    assert len(lines) == 3
+    assert len(lines[1]) < len(lines[0])
+    assert len(lines[1]) < len(lines[2])
+
+
+@pytest.mark.unit
+def test_one_line_sign_with_a_leading_label_stays_one_line() -> None:
+    tags: str = r"{\an1\pos(1065,536)\frz18\fs60}"
+    result: str = _fit(tags + "Born 4/20 ~ 5/20", tags + "Urodzeni: 21.03 – 19.04", info=_FULL_HD)
+    assert visible_verses(result) == ("Urodzeni: 21.03 – 19.04",)

@@ -9,7 +9,6 @@ from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
 from anishift.errors import ErrorCode
 from anishift.services.subtitles.errors import SubtitleError
-from anishift.services.subtitles.layout import LayoutLimits
 from anishift.services.subtitles.restyle import DialogueFont, clone_source, restyle_dialogue
 from anishift.services.subtitles.service import inherit_split, load_subtitles, split_subtitles, write_translated
 from anishift.services.subtitles.types import LayoutReport
@@ -206,7 +205,7 @@ def test_a_translation_with_a_numbered_clone_inherits_the_source_decisions(tmp_p
     split = split_subtitles(load_subtitles(source), kind="ass", spoken_styles={"Default"})
     destination: Path = tmp_path / "out.pl.ass"
 
-    write_translated(split, {0: "Cześć"}, destination, fonts=None, limits=LayoutLimits(), dialogue_font=_FONT)
+    write_translated(split, {0: "Cześć"}, destination, fonts=None, dialogue_font=_FONT)
 
     written: SSAFile = load_subtitles(destination)
     inherited = inherit_split(split, written)
@@ -236,7 +235,7 @@ def test_write_translated_with_the_dialogue_font_writes_the_clone_and_keeps_untr
     split = split_subtitles(load_subtitles(source), kind="ass", spoken_styles={"Default"})
     destination: Path = tmp_path / "out.pl.ass"
 
-    write_translated(split, {0: "Cześć"}, destination, fonts=None, limits=LayoutLimits(), dialogue_font=_FONT)
+    write_translated(split, {0: "Cześć"}, destination, fonts=None, dialogue_font=_FONT)
 
     written: SSAFile = load_subtitles(destination)
     assert written.styles["Default (dialog)"].fontname == _FAMILY

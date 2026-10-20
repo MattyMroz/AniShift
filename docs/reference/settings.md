@@ -103,21 +103,6 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
 
 ## Napisy
 
-### Znaków w linii (`subtitle_max_chars_per_line`)
-
-- Co robi: docelowa długość jednej linii polskich napisów przy podziale tekstu.
-  Dotyczy warstwy ekranowej i podziału linii dialogów. Nie jest gwarancją:
-  pojedyncze długie słowo lub wyczerpanie limitu wersów może przekroczyć tę wartość.
-- Zakres · domyślnie: 20–120 znaków · 42.
-- Silnik: wszystkie silniki tłumaczenia; nie wpływa na napisy źródłowe.
-- Przykład: duży telewizor z daleka — 36.
-
-### Linii na napis (`subtitle_max_lines_per_event`)
-
-- Co robi: ile linii może zająć jeden napis na ekranie po złamaniu.
-- Zakres · domyślnie: 1–4 · 2.
-- Przykład: 3, gdy dopuszczasz trzy wersy tekstu w jednym zdarzeniu napisów.
-
 ### Plik czcionki dialogów (`dialogue_font_file`)
 
 - Co robi: kwestie czytane przez lektora dostają kopię swojego stylu z tą czcionką (styl
