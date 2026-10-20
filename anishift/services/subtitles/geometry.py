@@ -962,11 +962,11 @@ class _Layout:
 
 def _layout(event: SSAEvent, text: str, profile: RenderProfile, view: _View) -> _Layout:
     parse: _Parse = _parse(event, text, profile, final=view.final)
+    other: _Parse | None = _parse(event, text, profile, final=not view.final) if parse.transformed else None
     frame: _Frame = _Frame(
         parse=parse,
         anchor=None if parse.anchors is None else parse.anchors[int(view.final)],
-        animated=parse.moving
-        or (parse.transformed and _parse(event, text, profile, final=not view.final).lines != parse.lines),
+        animated=parse.moving or (other is not None and (other.lines != parse.lines or other.angle != parse.angle)),
     )
     lines: list[list[_Glyph]] | None = _measured(parse, profile.fonts, view.fx, view.fy)
     if lines is None:

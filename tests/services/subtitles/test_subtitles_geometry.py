@@ -115,3 +115,14 @@ def test_safe_width_stays_inside_the_central_share_of_the_canvas(text: str, marg
     )
 
     assert safe_width(SSAEvent(text=text), profile, 0.9) / 1920 == pytest.approx(expected)
+
+
+@pytest.mark.unit
+def test_screen_rects_add_the_end_box_of_a_rotation_animated_by_a_transform() -> None:
+    profile: RenderProfile = _profile({"PlayResX": "1920", "PlayResY": "1080"})
+    event: SSAEvent = SSAEvent(text=r"{\an5\pos(960,540)\frz90\t(0,500,\frz0)}Red Button")
+
+    start, end = screen_rects(event, event.text, profile)
+
+    assert start.bottom - start.top > start.right - start.left
+    assert end.right - end.left > end.bottom - end.top
