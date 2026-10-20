@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from anishift.text.morphology import agrees, modifies
+from anishift.text.morphology import agrees, modifies, verb
 
 
 @pytest.mark.unit
@@ -55,3 +55,15 @@ def test_modifies_adjective_before_an_agreeing_noun_or_adjective(left: str, righ
 )
 def test_modifies_rejects_a_verb_a_noun_on_the_left_a_punctuated_left_word_or_a_mismatch(left: str, right: str) -> None:
     assert not modifies(left, right)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("word", ["wymknęły", "zaśpiewać", "podwieźć", "brakuje", "odmówiono", "uwolnić"])
+def test_verb_reads_finite_past_infinitive_and_impersonal_forms(word: str) -> None:
+    assert verb(word)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("word", ["kołysankę", "pewności", "niebiańska", "mi"])
+def test_verb_rejects_nouns_adjectives_and_pronouns(word: str) -> None:
+    assert not verb(word)

@@ -30,6 +30,7 @@ subtitle line breaking.
   i bezokolicznik („sposób”) są pomijane. `modifies()` dopuszcza także
   przymiotnik + przymiotnik i jest predykatem `gaps(words, modifies)` dla
   frazy przyimkowej; bez niego chronią ją tylko listy (zaimki dzierżawcze).
+- `gaps(words, modifies, verb)`: klityka zaimkowa (`_CLITICS`) obok wyrazu, który `morphology.verb` czyta jako czasownik, daje chronioną klasę `clitic`; przymiotnik przed wyrazem zgodnym według `modifies` daje `modifier` także bez końcówki z listy. Bez predykatów (wariant bez morfologii) te przerwy zostają zwykłymi.
 - Apostrofy nie są separatorami fraz. Znaki otwierające z kategorii `Ps`/`Pi`
   także nie mogą zaczynać granicy.
 

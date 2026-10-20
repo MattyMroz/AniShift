@@ -15,7 +15,7 @@ from anishift.services.subtitles.fuzzy import fall
 from anishift.text.boundaries import BREAKABLE_SPACES
 from anishift.text.gaps import DASHES, Gap, GapKind, gaps, list_markers, quote_spans
 from anishift.text.graphemes import split_graphemes
-from anishift.text.morphology import agrees, modifies
+from anishift.text.morphology import agrees, modifies, verb
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -159,6 +159,7 @@ HARMS: Final[tuple[str, ...]] = (
     "mixed_style",
     "heading_joined",
     *(f"imbalance_{knot}" for knot in _IMBALANCE_KNOTS),
+    *(f"shape_{knot}" for knot in _IMBALANCE_KNOTS),
     "top_longer",
     "extra_line",
     "missing_line",
@@ -174,44 +175,43 @@ HARMS: Final[tuple[str, ...]] = (
 
 WEIGHTS: Final[Mapping[str, float]] = MappingProxyType(
     {
-        "length_comfortable": 165.233,
-        "length_wide": 293.287,
+        "length_comfortable": 238.846,
+        "length_wide": 219.673,
         "cut_sentence": 0.001,
         "cut_clause": 0.001,
         "cut_ellipsis": 0.001,
         "cut_parenthetical": 0.001,
         "cut_dash": 0.001,
         "cut_before_subordinator": 0.001,
-        "cut_before_coordinator": 0.00106163,
+        "cut_before_coordinator": 0.00109549,
         "cut_before_preposition": 6.82371,
         "cut_phrase": 6.82371,
-        "cut_auxiliary": 54.9332,
+        "cut_auxiliary": 45.8768,
         "cut_modifier": 7.82371,
         "cut_abbreviation": 6.82371,
-        "cut_after_opener": 35.7834,
-        "cut_degree": 19.9486,
-        "cut_particle": 29.8373,
+        "cut_after_opener": 28.3193,
+        "cut_degree": 26.8993,
+        "cut_particle": 19.8194,
         "cut_prepositional": 6.82371,
-        "cut_name": 54.9332,
-        "cut_after_preposition": 54.9332,
-        "cut_negation": 54.9332,
-        "cut_reflexive": 54.9332,
-        "cut_number": 54.9332,
-        "cut_idiom": 54.9332,
-        "cut_label": 54.9332,
-        "cut_repetition": 54.9332,
-        "cut_after_single_letter": 54.9332,
+        "cut_name": 45.8768,
+        "cut_after_preposition": 45.8768,
+        "cut_negation": 45.8768,
+        "cut_reflexive": 45.8768,
+        "cut_clitic": 45.8768,
+        "cut_number": 45.8768,
+        "cut_idiom": 45.8768,
+        "cut_label": 45.8768,
+        "cut_repetition": 45.8768,
+        "cut_after_single_letter": 45.8768,
         "agreement": 6.78055,
-        "heading_joined": 7.89112,
-        "imbalance_20": 1.58894,
-        "imbalance_25": 3.63396,
+        "heading_joined": 3.43002,
+        "imbalance_20": 1.33344,
+        "shape_25": 6.97381,
         "top_longer": 0.434595,
-        "extra_line": 33.698,
-        "squeeze": 47.6322,
-        "shrink": 38.8742,
-        "squeeze_deep": 136.987,
-        "shrink_deep": 136.987,
-        "over_comfort": 158.297,
+        "extra_line": 49.1568,
+        "squeeze": 124.395,
+        "shrink": 115.008,
+        "over_comfort": 217.231,
     }
 )
 """Harm weights from the layout calibration (docs/work/10-quality/research/text-layout-calibration.md)."""
@@ -317,7 +317,7 @@ class _Case:
 
 def _case(text: str, field: Field, measure: Measure, *, morphology: bool) -> _Case:
     words: tuple[str, ...] = tuple(word for word in BREAKABLE_SPACES.split(text.strip()) if word)
-    found: tuple[Gap, ...] = gaps(words, modifies if morphology else None)
+    found: tuple[Gap, ...] = gaps(words, modifies if morphology else None, verb if morphology else None)
     turns: frozenset[int] = frozenset(index for index, gap in enumerate(found) if gap.turn and field.speaker_lines)
     cached: Measure = cache(measure)
     heading: int | None = heading_break(words) if field.headings else None
@@ -380,6 +380,7 @@ def _scales(case: _Case, cuts: tuple[int, ...]) -> list[Scale]:
 
 def _breakpoints(field: Field, widths: Sequence[float], targets: Sequence[float]) -> set[float]:
     points: set[float] = {target / width for target in (field.max_width, *targets) for width in widths if width > 0}
+    points.add(_MIN_SCALE)
     if field.letter_height > 0:
         points.update(height / field.letter_height for height in _SMALL_LETTERS)
     return points
@@ -516,7 +517,8 @@ def _imbalance_harms(case: _Case, chars: int, index: int, count: int) -> dict[st
     content: int = case.chars - (count - 1)
     share: float = pattern[index] / sum(pattern) if len(pattern) == count else 1 / count
     deviation: float = abs(chars - content * share)
-    return {f"imbalance_{knot}": max(0.0, deviation - knot / 2) for knot in _IMBALANCE_KNOTS}
+    name: str = "shape" if case.field.template else "imbalance"
+    return {f"{name}_{knot}": max(0.0, deviation - knot / 2) for knot in _IMBALANCE_KNOTS}
 
 
 def _follows_shape(case: _Case, place: tuple[int, int, int, int]) -> bool:

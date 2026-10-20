@@ -241,7 +241,8 @@ def _exhaustive(text: str, field: Field, weights: dict[str, float]) -> Layout:
         for lines in range(1, field.rescue_lines + 1)
         for cuts in combinations(allowed, lines - 1)
         if case.forced <= set(cuts)
-        for scale in core._scales(case, cuts)
+        for fx in core._programmed_widths(case)
+        for scale in core._heights(case, fx)
     ]
     return min(found, key=lambda layout: (layout.rescue, layout.score(weights)))
 
@@ -436,3 +437,13 @@ def test_leading_label_alone_does_not_win_over_a_balanced_split() -> None:
     text: str = "Yuuna: No weź, przecież dziewczyny potrzebują więcej czasu na zrobienie się na bóstwo, proszę pana!"
     field: Field = sign_field(source_lines=1, template=(chars_measure(text, 1.0) * 0.55,), letter_height=60.0)
     assert lay_out(text, field, chars_measure).lines[0] != "Yuuna:"
+
+
+@pytest.mark.unit
+def test_sign_lines_weigh_their_shape_apart_from_dialogue_balance() -> None:
+    field: Field = sign_field(source_lines=2, template=(0.2, 0.6), letter_height=60.0)
+    layout: Layout = _find(
+        candidates("Uwaga bardzo stromy zjazd", field, chars_measure), "Uwaga bardzo", "stromy zjazd"
+    )
+    assert not any(name.startswith("imbalance_") for name in layout.harms)
+    assert any(name.startswith("shape_") for name in layout.harms)

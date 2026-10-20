@@ -11,7 +11,7 @@ import morfeusz2  # type: ignore[import-untyped]
 
 from anishift.text.gaps import word_core
 
-__all__ = ["agrees", "modifies"]
+__all__ = ["agrees", "modifies", "verb"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +33,11 @@ _NOUNS: Final[frozenset[str]] = frozenset({"subst", "depr", "ger"})
 _FINITE_VERBS: Final[frozenset[str]] = frozenset({"fin", "bedzie", "aglt", "praet", "winien"})
 """Morfeusz parts of speech of a personal or past verb form; a word with such a reading never counts as agreeing."""
 
+_VERBS: Final[frozenset[str]] = frozenset(
+    {"fin", "bedzie", "aglt", "praet", "impt", "imps", "inf", "pcon", "pant", "winien", "pred"}
+)
+"""Morfeusz parts of speech of a verb form a clitic pronoun leans on."""
+
 _INFLECTED_FIELDS: Final[int] = 4
 """Tag fields up to the gender: part of speech, number, case and gender."""
 
@@ -51,6 +56,18 @@ def modifies(left: str, right: str) -> bool:
         first.part in _ADJECTIVES and second.part in _ADJECTIVES | _NOUNS and _inflected_alike(first, second)
         for first, second in _pairs(left, right)
     )
+
+
+def verb(word: str) -> bool:
+    """Return whether ``word`` can be read as a verb form."""
+    return bool(_parts(word_core(word)) & _VERBS)
+
+
+@cache
+def _parts(word: str) -> frozenset[str]:
+    if not word:
+        return frozenset()
+    return frozenset(tag.split(":")[0] for _, _, (_, _, tag, _, _) in _analyser().analyse(word))
 
 
 def _pairs(left: str, right: str) -> list[tuple[_Reading, _Reading]]:

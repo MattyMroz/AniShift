@@ -55,6 +55,7 @@ class GapKind(StrEnum):
     AFTER_PREPOSITION = "after_preposition"
     NEGATION = "negation"
     REFLEXIVE = "reflexive"
+    CLITIC = "clitic"
     NUMBER = "number"
     IDIOM = "idiom"
     LABEL = "label"
@@ -75,6 +76,9 @@ class Gap:
 type Modifies = Callable[[str, str], bool]
 """Whether a word modifies the word after it, such as an adjective agreeing with a noun."""
 
+type Verb = Callable[[str], bool]
+"""Whether a word can be read as a verb form."""
+
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -86,7 +90,7 @@ TIERS: Final[Mapping[GapKind, int]] = MappingProxyType(
         GapKind.BEFORE_PREPOSITION: 3, GapKind.PHRASE: 3,
         GapKind.AUXILIARY: 4, GapKind.MODIFIER: 4, GapKind.ABBREVIATION: 4, GapKind.AFTER_OPENER: 4,
         GapKind.DEGREE: 4, GapKind.PARTICLE: 4, GapKind.PREPOSITIONAL: 4,
-        GapKind.NAME: 5, GapKind.AFTER_PREPOSITION: 5, GapKind.NEGATION: 5, GapKind.REFLEXIVE: 5,
+        GapKind.NAME: 5, GapKind.AFTER_PREPOSITION: 5, GapKind.NEGATION: 5, GapKind.REFLEXIVE: 5, GapKind.CLITIC: 5,
         GapKind.NUMBER: 5, GapKind.IDIOM: 5, GapKind.LABEL: 5, GapKind.REPETITION: 5,
         GapKind.AFTER_SINGLE_LETTER: 6,
     }
@@ -142,7 +146,7 @@ PREPOSITIONS: Final[frozenset[str]] = frozenset(
     {
         "bez", "beze", "dla", "do", "ku", "między", "na", "nad", "nade", "o", "od", "ode",
         "po", "pod", "pode", "przed", "przede", "przez", "przeze", "przy", "u", "w", "we", "z", "za", "ze",
-        "według", "wśród", "obok", "zza", "spod", "poza", "wobec", "podczas", "około", "ponad", "pomiędzy",
+        "według", "wśród", "obok", "zza", "spod", "poza", "wobec", "podczas", "około", "ponad", "pomiędzy", "poprzez",
     }
 )  # fmt: skip
 """Simple prepositions (with phonetic variants) never detached from their noun."""
@@ -241,6 +245,12 @@ _ADJECTIVE_ENDINGS: Final[tuple[str, ...]] = ("ego", "emu", "ych", "ymi", "ym", 
 
 _REFLEXIVES: Final[frozenset[str]] = frozenset({"się", "sobie", "siebie", "sobą"})
 """Reflexive particle and pronoun forms never starting a line and kept with the words after them until a new phrase."""
+
+# source: https://pl.wikipedia.org/wiki/Klityka (Polish pronominal clitics; się is a reflexive)
+_CLITICS: Final[frozenset[str]] = frozenset(
+    {"mi", "ci", "mu", "go", "ją", "je", "nas", "was", "nam", "wam", "im", "cię"}
+)
+"""Short unstressed personal pronouns kept with the verb next to them."""
 
 _NEGATION: Final[str] = "nie"
 """Negation particle bound to the verb after it."""
@@ -376,11 +386,11 @@ _RE_LIST_MARKER: Final[re.Pattern[str]] = re.compile(r"\(\d+\)")
 """Marker of a numbered list item, such as ``(1)``."""
 
 
-def gaps(words: Sequence[str], modifies: Modifies | None = None) -> tuple[Gap, ...]:
+def gaps(words: Sequence[str], modifies: Modifies | None = None, verb: Verb | None = None) -> tuple[Gap, ...]:
     """Return the evidence for every gap between neighbouring ``words``: entry ``i`` precedes word ``i + 1``."""
     speakers: frozenset[int] = _speaker_marks(words)
     paired: frozenset[int] = _paired_dashes(words, speakers)
-    return tuple(_gap(words, index, (speakers, paired), modifies) for index in range(1, len(words)))
+    return tuple(_gap(words, index, (speakers, paired), (modifies, verb)) for index in range(1, len(words)))
 
 
 def quote_spans(words: Sequence[str]) -> tuple[tuple[int, int], ...]:
@@ -416,13 +426,16 @@ def word_core(word: str) -> str:
 
 
 def _gap(
-    words: Sequence[str], index: int, dashes: tuple[frozenset[int], frozenset[int]], modifies: Modifies | None
+    words: Sequence[str],
+    index: int,
+    dashes: tuple[frozenset[int], frozenset[int]],
+    morphology: tuple[Modifies | None, Verb | None],
 ) -> Gap:
     speakers, paired = dashes
     previous: str = words[index - 1]
     following: str = words[index]
     turn: bool = index in speakers
-    kind: GapKind = _punctuation_kind(words, index, speakers, paired) or _word_kind(words, index, modifies)
+    kind: GapKind = _punctuation_kind(words, index, speakers, paired) or _word_kind(words, index, morphology)
     banned: bool = not turn and (
         unicodedata.category(previous[-1]) in _OPENING_CATEGORIES
         or all(character in _LEADING_BANNED for character in following)
@@ -492,12 +505,13 @@ def _dash_kind(words: Sequence[str], index: int, paired: frozenset[int]) -> GapK
     return GapKind.PARENTHETICAL if index - 1 in paired else GapKind.DASH
 
 
-def _word_kind(words: Sequence[str], index: int, modifies: Modifies | None) -> GapKind:
-    kinds: list[GapKind] = [*_bound_kinds(words, index, modifies), *_weighted_kinds(words, index)]
+def _word_kind(words: Sequence[str], index: int, morphology: tuple[Modifies | None, Verb | None]) -> GapKind:
+    modifies, verb = morphology
+    kinds: list[GapKind] = [*_bound_kinds(words, index, modifies, verb), *_weighted_kinds(words, index, modifies)]
     return max(kinds, key=TIERS.__getitem__, default=GapKind.PHRASE)
 
 
-def _bound_kinds(words: Sequence[str], index: int, modifies: Modifies | None) -> list[GapKind]:
+def _bound_kinds(words: Sequence[str], index: int, modifies: Modifies | None, verb: Verb | None) -> list[GapKind]:
     previous: str = word_core(words[index - 1])
     following: str = word_core(words[index])
     preposition: bool = _follows_preposition(words, index) or _inside(words, index, PREPOSITIONS_MULTIWORD)
@@ -507,6 +521,7 @@ def _bound_kinds(words: Sequence[str], index: int, modifies: Modifies | None) ->
         (GapKind.PREPOSITIONAL, phrase == GapKind.PREPOSITIONAL),
         (GapKind.NEGATION, previous == _NEGATION and word_core(_earlier(words, index)) not in PREPOSITIONS),
         (GapKind.REFLEXIVE, _reflexive(words, index)),
+        (GapKind.CLITIC, verb is not None and _clitic(words[index - 1], words[index], verb)),
         (GapKind.NUMBER, _counts(previous, following) or _numbered(previous, following)),
         (GapKind.ABBREVIATION, _tail(words[index - 1]).endswith(_FULL_STOP)),
         (GapKind.NAME, _named(words, index)),
@@ -518,14 +533,17 @@ def _bound_kinds(words: Sequence[str], index: int, modifies: Modifies | None) ->
     return [kind for kind, present in evidence if present]
 
 
-def _weighted_kinds(words: Sequence[str], index: int) -> list[GapKind]:
+def _weighted_kinds(words: Sequence[str], index: int, modifies: Modifies | None) -> list[GapKind]:
     previous: str = word_core(words[index - 1])
     following: str = word_core(words[index])
     kinds: list[GapKind] = []
     phrase: bool = following in PREPOSITIONS and not _opens(words, index, _IDIOMS)
     if previous in _AUXILIARIES and following not in CONJUNCTIONS and not phrase:
         kinds.append(GapKind.AUXILIARY)
-    adjective: bool = previous.endswith(_ADJECTIVE_ENDINGS) and following not in PREPOSITIONS | CONJUNCTIONS
+    ending: bool = previous.endswith(_ADJECTIVE_ENDINGS) or (
+        modifies is not None and modifies(words[index - 1], words[index])
+    )
+    adjective: bool = ending and following not in PREPOSITIONS | CONJUNCTIONS
     if previous in _DETERMINERS or adjective:
         kinds.append(GapKind.MODIFIER)
     conjunction: GapKind | None = _conjunction_kind(words, index)
@@ -594,6 +612,14 @@ def _reflexive(words: Sequence[str], index: int) -> bool:
     if word_core(following[0]) in _PHRASE_OPENERS or _capitalised(following[0]):
         return False
     return not any(_opens(following, 0, phrases) for phrases in (CONJUNCTIONS_MULTIWORD, PREPOSITIONS_MULTIWORD))
+
+
+def _clitic(previous: str, following: str, verb: Verb) -> bool:
+    if unicodedata.category(previous[-1]).startswith("P"):
+        return False
+    if word_core(previous) in _CLITICS and verb(following):
+        return True
+    return word_core(following) in _CLITICS and verb(previous)
 
 
 def _follows_preposition(words: Sequence[str], index: int) -> bool:

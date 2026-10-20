@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from anishift.text.gaps import PROTECTED_KINDS, TIERS, Gap, GapKind, gaps, list_markers, quote_spans
+from anishift.text.morphology import modifies, verb
 
 
 def _gap(text: str, left: str) -> Gap:
@@ -218,6 +219,7 @@ def test_tiers_rank_every_class_and_protect_exactly_the_bound_pairs_of_the_spec(
         GapKind.AFTER_PREPOSITION,
         GapKind.NEGATION,
         GapKind.REFLEXIVE,
+        GapKind.CLITIC,
         GapKind.NUMBER,
         GapKind.IDIOM,
         GapKind.LABEL,
@@ -537,3 +539,46 @@ def test_dash_between_repeated_words_joins_them() -> None:
     assert [found[2].kind, found[4].kind] == [GapKind.REPETITION, GapKind.REPETITION]
     assert found[2].protected
     assert found[1].banned
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "left"),
+    [
+        ("Nie chcę, by rzeczy wymknęły mi się spod kontroli.", "wymknęły"),
+        ("Mogłabyś przynajmniej zaśpiewać mi kołysankę.", "zaśpiewać"),
+        ("Wybacz, nie możemy cię podwieźć przy takiej pogodzie.", "cię"),
+        ("Musimy uwolnić ją spod wpływu bogini.", "uwolnić"),
+        ("To nie tak, że brakuje mi pewności siebie.", "brakuje"),
+        ("Nie chcę, by mi odmówiono czegoś.", "mi"),
+    ],
+)
+def test_clitic_pronoun_stays_with_the_verb_next_to_it(text: str, left: str) -> None:
+    words: list[str] = text.split(" ")
+    gap: Gap = gaps(words, modifies, verb)[words.index(left)]
+    assert gap.kind == GapKind.CLITIC
+    assert gap.protected
+
+
+@pytest.mark.unit
+def test_clitic_pronoun_next_to_a_noun_is_not_bound() -> None:
+    words: list[str] = ["Dał", "mi", "książkę", "wczoraj."]
+    assert gaps(words, modifies, verb)[words.index("mi")].kind != GapKind.CLITIC
+
+
+@pytest.mark.unit
+def test_adjective_before_an_agreeing_adjective_is_a_modifier_with_morphology() -> None:
+    words: list[str] = ["Pewnie", "ta", "cała", "niebiańska", "panna", "też", "była", "szpiegiem."]
+    assert gaps(words, modifies, verb)[words.index("cała")].kind == GapKind.MODIFIER
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "left", "kind"),
+    [
+        ("Myślę o rekrutacji poprzez wyznaczony program.", "poprzez", GapKind.AFTER_PREPOSITION),
+        ("Czyż przekąski same w sobie nie są celem?", "same", GapKind.IDIOM),
+    ],
+)
+def test_poprzez_is_a_preposition_and_sam_w_sobie_an_idiom(text: str, left: str, kind: GapKind) -> None:
+    assert _gap(text, left).kind == kind

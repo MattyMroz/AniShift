@@ -8,7 +8,7 @@ completed: 2026-10-19
 
 # Kalibracja rdzenia układu tekstu — raport
 
-Kontrakt: [text-layout.md](../text-layout.md) §4.2, §5.3, §7, plan [02-text-layout.md](../plans/02-text-layout.md) fazy C i E. Stan po dziesiątej rundzie (najmniejsza skala szyldu, sekcja „Runda 10”); wcześniej dziewiąta (czytelność liter), ósma (kształt źródła), siódma (napisy poboczne) i piąta runda (sekcja niżej); czwarta runda: nowe klasy przerw z polskiej składni (po ślepej ocenie 160 kwestii NF+AMZN, w której rdzeń ciął źle w 5,0% kwestii), poprawki z przeglądu kodu faz A–C i ponowna kalibracja.
+Kontrakt: [text-layout.md](../text-layout.md) §4.2, §5.3, §7, plan [02-text-layout.md](../plans/02-text-layout.md) fazy C i E. Stan po jedenastej rundzie (klityki i oddzielny kształt szyldów, sekcja „Runda 11”); wcześniej dziesiąta (najmniejsza skala szyldu), dziewiąta (czytelność liter), ósma (kształt źródła), siódma (napisy poboczne) i piąta runda (sekcja niżej); czwarta runda: nowe klasy przerw z polskiej składni (po ślepej ocenie 160 kwestii NF+AMZN, w której rdzeń ciął źle w 5,0% kwestii), poprawki z przeglądu kodu faz A–C i ponowna kalibracja.
 
 ## Wynik
 
@@ -17,10 +17,10 @@ Kalibracja z morfologią jest **wykonalna**: brak zbiorów sprzecznych i konflik
 | Miara | Wynik |
 | --- | --- |
 | Katalog i ankieta w pełnej przestrzeni kandydatów (z układami powyżej trzech wierszy) | **87/87** (`tests/services/subtitles/test_text_layout_catalogue.py`) |
-| Test z pominięciem jednego zdarzenia | **75/87**; niespełnione: d06, d15, d28, q10, q11, q15, q19, r03, s02, s10, s26, t02 |
+| Test z pominięciem jednego zdarzenia | **74/87**; niespełnione: d06, d15, d25, d28, q10, q11, q15, q19, r03, s02, s10, s26, t02 |
 | Wrażliwość ±10% (tylko raport) | `length_comfortable` ×0,9 → q10; ×1,1 → d06, d28, t02; `extra_line` ×0,9 → d28, s10, ×1,1 → q10, s02; `cut_degree` ×0,9 → d06, t02; `cut_phrase` ×1,1 → e06, e13; `cut_modifier` ×0,9 → e13; `over_comfort` ×0,9 → s02 |
 | Przypadki przy kolanie (jeden wiersz 0,74–0,80) | d28 0,771 (jeden wiersz), q04 0,741 (jeden), q10 0,748 (dwa), q11 0,800 (dwa), q14 0,789 (dwa), q17 0,768 (dwa; „oba dobre”), q19 0,783 (dwa), e14 0,798 (dwa) |
-| Zawodowcy NF+AMZN | 441 kwestii uczących, 13 pominiętych (układ zawodowca poza poziomem 0), 1319 par miękkich, 180 naruszonych; strata par „oba dobre” 4,50 |
+| Zawodowcy NF+AMZN | 441 kwestii uczących, 13 pominiętych (układ zawodowca poza poziomem 0), 1319 par miękkich, 176 naruszonych; strata par „oba dobre” 4,50 |
 | Bez morfologii | niewykonalne: {r03}, {d15} — morfologia zostaje |
 | Czas pełnej kalibracji (oba warianty, LOO, wrażliwość) | ok. 21 min (szablon liczony per wiersz) |
 
@@ -29,6 +29,12 @@ LOO i wrażliwość pokazują to samo co wcześniej: przy kolanie długości (0,
 Najważniejsze wagi (runda 7): długość 165,2 (od 0,55) i 293,3 (od 0,76), drugi wiersz 33,7, wystawanie poza oryginał 152,9, ściśnięcie 86,2, zmniejszenie 78,2, małe litery 0,95, związki chronione, `auxiliary` i jednoliterowy wyraz 52,2, `after_opener` 32,4, `particle` 22,3, `degree` 19,9, `modifier` 7,8, `phrase`, `abbreviation`, `prepositional` 6,8, `before_preposition` 4,2, zgoda przymiotnika 6,8, nierównowaga ponad 20 znaków 2,24 na znak, dłuższa góra 0,43 na znak; brakujący wiersz szyldu 0. Klasy od końca zdania do „przed spójnikiem współrzędnym” mają wagę 0,001, więc o takich cięciach decyduje kształt.
 
 **Szkoda „za mały” (`small`) do rundy 6 miała wagę 0 — to był brak danych, nie błąd cechy** (w rundzie 7 dostała 0,95, bo pary s02 wiążą zmniejszenie). Stopień liczy się poprawnie (np. 15 391 z 45 729 kandydatów s29 ma go powyżej zera). W katalogu są pary, w których przegrany ma mniejsze litery od zwycięzcy (r01: 51, s14: 19, s10: 15, q15: 2), ale każdy taki przegrany przegrywa już przez zmniejszenie: litery spadają poniżej 30 px dopiero przy skali ok. 0,36–0,59 (litery 51–84 px), gdzie szkoda zmniejszenia jest duża. Program liniowy minimalizuje sumę wag przy zachowanym marginesie, więc wagi, której żadna para nie wymaga, nie podnosi. Żeby szkoda działała, katalog potrzebuje przypadku, w którym zmniejszenie samo przegrywa tylko przez czytelność (np. drobny tekst s06, s11 — dziś poza rdzeniem).
+
+## Runda 11 (klityki i oddzielny kształt szyldów)
+
+Ślepa ocena 501 nowych kwestii CR po fazie E: rdzeń 3,4–5,8% złych cięć (przed fazą E 2,0–3,9%), zawodowcy 10,8–11,6%. Reproducer 15 zgodnie złych cięć (`v4-blind4`) pokazał dwie przyczyny. (1) Klityki zaimkowe oderwane od czasownika („wymknęły / mi się”, „nie możemy cię / podwieźć”): nowa chroniona klasa `clitic` (mi, ci, mu, go, ją, je, nas, was, nam, wam, im, cię obok wyrazu, który Morfeusz czyta jako czasownik: `fin`, `praet`, `inf`, `impt`, `imps`, `pcon`, `pant`, `bedzie`, `winien`, `pred`). (2) Wzrost wag nierówności po fazie E: szablon szyldu liczył nierówność względem proporcji źródła tymi samymi szkodami co równowaga dialogu, więc przypadki szyldów podniosły wagę `imbalance_20` z 0,70 do 1,59 i dodały `imbalance_25` 3,63, a dialog zaczął wymieniać cięcia wewnątrz frazy rzeczownikowej na równowagę. Szyldy z szablonem mają teraz własne szkody kształtu `shape_*`; dialog wrócił do `imbalance_20` 1,33. Do tego: „poprzez” na liście przyimków, „sam w sobie” z odmianą w utartych zwrotach, przymiotnik przed zgodnym wyrazem według Morfeusza jako `modifier` (nie tylko po końcówce), skala 0,6 jako punkt siatki skal. Wykluczenie interpunkcji w zgodzie dotyczy tylko lewego słowa („sklepiku / osiedlowym?” ma zgodę) — nie było błędem. Cięcia wewnątrz frazy rzeczownikowej z określnikiem („tego / faktu”, „wszystkich / innych”) mają klasę `modifier` lub `prepositional` i zgodę, ale ich wagi (7,8 i 6,8) wiąże q11 („we wszystkie / ciągi”, wybór właściciela) — kalibracja ich nie podnosi.
+
+Wynik: wykonalna, 87/87, test z pominięciem jednego zdarzenia 74/87. Z 15 zgodnie złych cięć próby `v4-blind4` przy nowych wagach zmieniło układ 8 (bez oceny nowych układów).
 
 ## Runda 10 (najmniejsza skala szyldu)
 

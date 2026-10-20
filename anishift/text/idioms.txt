@@ -5,6 +5,7 @@
 # source: https://pl.wiktionary.org/wiki/Kategoria:Język_polski_-_frazy_przyimkowe (multi-word entries of two to four words that are not multi-word prepositions in gaps.py)
 # source: https://pl.wiktionary.org/wiki/tak_zwany (fraza przymiotnikowa with the forms of its declension table)
 # source: https://pl.wiktionary.org/wiki/co_do (fraza zaimkowa)
+# source: https://pl.wiktionary.org/wiki/sam_w_sobie (fraza przymiotnikowa with the forms of its declension table)
 # source: https://pl.wiktionary.org/wiki/no (discourse phrases of the particle: no to, no i, no więc, no cóż); conjunction phrases a więc, a zatem, i tak; fixed form field pairs imię i nazwisko, data i miejsce
 a battuta
 a capella
@@ -1032,3 +1033,15 @@ zważywszy na
 świątek piątek niedziela
 że tak powiem
 żółwim krokiem
+sam w sobie
+sama w sobie
+samo w sobie
+sami w sobie
+same w sobie
+samego w sobie
+samej w sobie
+samemu w sobie
+samym w sobie
+samą w sobie
+samych w sobie
+samymi w sobie

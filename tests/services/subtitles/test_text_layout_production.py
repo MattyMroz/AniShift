@@ -38,13 +38,8 @@ _CORE: Final[list[CatalogueCase]] = [case for case in load() if "pair" in _ENTRI
 _CASES: Final[list[CatalogueCase]] = [
     case for case in _CORE if _ENTRIES[case.id]["field"]["kind"] == "dialogue" and case.id[0] in {"d", "q", "r", "t"}
 ]
-_NARROWER_THAN_THE_SCREEN: Final[pytest.MarkDecorator] = pytest.mark.xfail(
-    strict=True, reason="the source column is partly off screen, so two lines would shrink below the readable scale"
-)
-_SIGNS: Final[list[Any]] = [
-    pytest.param(case, id=case.id, marks=[_NARROWER_THAN_THE_SCREEN] if case.id == "s13" else [])
-    for case in _CORE
-    if _ENTRIES[case.id]["field"]["kind"] == "sign" and case.id[0] == "s"
+_SIGNS: Final[list[CatalogueCase]] = [
+    case for case in _CORE if _ENTRIES[case.id]["field"]["kind"] == "sign" and case.id[0] == "s"
 ]
 _SCENE: Final[list[str]] = [f"s{number:02}" for number in range(1, 31)]
 
@@ -138,7 +133,7 @@ def test_dialogue_case_gets_an_acceptable_layout_through_the_production_writer(c
 
 @pytest.mark.integration
 @pytest.mark.slow
-@pytest.mark.parametrize("case", _SIGNS)
+@pytest.mark.parametrize("case", _SIGNS, ids=[case.id for case in _SIGNS])
 def test_sign_case_gets_an_acceptable_layout_through_the_production_writer(case: CatalogueCase) -> None:
     entry: dict[str, Any] = _ENTRIES[case.id]
     laid_out: TranslatedLayout = _laid_out(entry["pair"], entry["event"], _positioned(case), "displayed")

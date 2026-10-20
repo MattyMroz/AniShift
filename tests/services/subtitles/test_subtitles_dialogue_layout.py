@@ -66,7 +66,7 @@ def test_layout_dialogue_restores_span_markers_into_the_new_lines() -> None:
         ),
         (
             "Wczoraj wieczorem Jan\u00a0Kowalski przyniósł nam wszystkim mnóstwo pysznego jedzenia.",
-            ("Wczoraj wieczorem Jan\u00a0Kowalski przyniósł", "nam wszystkim mnóstwo pysznego jedzenia."),
+            ("Wczoraj wieczorem Jan\u00a0Kowalski przyniósł nam", "wszystkim mnóstwo pysznego jedzenia."),
         ),
     ],
 )
