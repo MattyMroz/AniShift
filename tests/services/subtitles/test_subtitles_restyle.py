@@ -311,6 +311,16 @@ def test_restyle_signs_moves_a_plain_sign_in_a_system_font_the_release_attached(
 
 
 @pytest.mark.unit
+def test_restyle_signs_moves_a_typeset_sign_whose_attached_font_lacks_polish_letters() -> None:
+    restyled, clones = restyle_signs(
+        _signs(), _SIGN_DECISIONS, _FONT, frozenset({"grobold"}), unpolished=frozenset({"grobold"})
+    )
+
+    assert clones == {1: "Sign (dialog)", 2: "Typeset (dialog)", 7: "Sign (dialog)"}
+    assert restyled.styles["Typeset (dialog)"].fontname == _FAMILY
+
+
+@pytest.mark.unit
 def test_restyle_signs_reuses_the_dialogue_clone_of_the_sign_style() -> None:
     subs: SSAFile = _signs()
     subs.styles["Sign (dialog)"] = SSAStyle(fontname=_FAMILY)
