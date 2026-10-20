@@ -301,6 +301,33 @@ def test_fit_signs_returns_texts_only_for_the_requested_events() -> None:
 
 
 @pytest.mark.unit
+def test_letters_shrunk_below_the_readable_height_are_reported() -> None:
+    subs, translated, profile = _files(
+        [SSAEvent(text=r"{\an5\pos(960,300)}Closed", end=1000)],
+        [r"{\an5\pos(960,300)}Zamknięte z powodu przeglądu technicznego i remontu"],
+        {"Default": SSAStyle(fontsize=60)},
+        _FULL_HD,
+    )
+    report: LayoutReport = LayoutReport()
+    result: str = fit_signs(subs, translated, [0], profile, report)[0]
+    assert _scales(result)[0][1] * 60 / 100 < 16
+    assert (report.signs_small, report.signs_relaxed) == (1, 0)
+
+
+@pytest.mark.unit
+def test_readable_shrunk_sign_is_not_reported_small() -> None:
+    subs, translated, profile = _files(
+        [SSAEvent(text=r"{\an5\pos(960,300)}Closed today", end=1000)],
+        [r"{\an5\pos(960,300)}Zamknięte dzisiaj"],
+        {"Default": SSAStyle(fontsize=60)},
+        _FULL_HD,
+    )
+    report: LayoutReport = LayoutReport()
+    fit_signs(subs, translated, [0], profile, report)
+    assert report.signs_small == 0
+
+
+@pytest.mark.unit
 def test_horizontal_squeeze_writes_no_vertical_scale_that_does_not_change() -> None:
     assert fitting._scaled(r"{\pos(1,1)}Red", Scale(0.8), SSAStyle(), {}) == r"{\fscx80\pos(1,1)}Red"
 

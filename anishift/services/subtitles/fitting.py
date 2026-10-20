@@ -20,7 +20,7 @@ from anishift.services.subtitles.geometry import (
     style_changes,
     wrap_text,
 )
-from anishift.services.subtitles.layout import Scale, heading_break, ranked, sign_field
+from anishift.services.subtitles.layout import Flag, Scale, heading_break, ranked, sign_field
 from anishift.services.subtitles.linebreak import NO_WRAP, tagged_measure, tagged_words, without_wrap
 from anishift.services.subtitles.text import RE_TAG_BLOCK, is_drawing, reflow_visible_text, visible_text, visible_verses
 from anishift.text.boundaries import BREAKABLE_SPACES
@@ -183,7 +183,8 @@ def _fit_object(group: tuple[int, ...], scene: _Scene, report: LayoutReport) -> 
     chosen, screen, collision = _choose(layouts, members, scene.profile)
     report.signs_fallback_screen += screen
     report.signs_fallback_collision += collision
-    report.signs_relaxed += bool(chosen.flags)
+    report.signs_relaxed += bool(chosen.flags - {Flag.SMALL})
+    report.signs_small += Flag.SMALL in chosen.flags
     report.signs_fitted += len(chosen.lines) > 1 or chosen.scale != Scale()
     texts: dict[int, str] = {
         member.index: without_wrap(member.event, _render(member, chosen, scene.profile), scene.profile)

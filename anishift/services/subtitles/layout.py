@@ -45,7 +45,7 @@ type Measure = Callable[[str, float], float]
 
 
 class Flag(StrEnum):
-    """Rescue step or avoided harm a chosen layout carries, for the run report."""
+    """Rescue step, avoided harm or letters below the readable height a chosen layout carries, for the run report."""
 
     OUTSIDE = "outside"
     EXTRA_LINE = "extra_line"
@@ -54,6 +54,7 @@ class Flag(StrEnum):
     ORPHAN = "orphan"
     JOINED = "joined"
     MIXED = "mixed"
+    SMALL = "small"
 
 
 @dataclass(frozen=True, slots=True)
@@ -399,7 +400,10 @@ def _evaluate(case: _Case, cuts: tuple[int, ...], scale: Scale) -> Layout:
         chars: list[int] = [_chars(" ".join(case.words[start:end])) for start, end in pairwise(bounds)]
         harms["top_longer"] = float(sum(max(0, upper - lower) for upper, lower in pairwise(chars)))
     extra: int = max(0, count - field.max_lines)
-    rescue_flags: list[Flag] = [flag for flag, on in ((Flag.OUTSIDE, outside), (Flag.EXTRA_LINE, extra)) if on]
+    small: bool = field.scalable and 0 < field.letter_height * scale.fy < _SMALL_LETTERS[0]
+    rescue_flags: list[Flag] = [
+        flag for flag, on in ((Flag.OUTSIDE, outside), (Flag.EXTRA_LINE, extra), (Flag.SMALL, small)) if on
+    ]
     return Layout(
         lines=_lines(case.words, cuts),
         scale=scale,
