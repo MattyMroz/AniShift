@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 from dataclasses import dataclass, replace
 from itertools import pairwise
@@ -13,11 +14,13 @@ from typing import TYPE_CHECKING, Any, Final
 from anishift.paths import default_workspace_dir
 from anishift.services.fonts import FontIndex
 from anishift.services.fonts.index import system_font_paths
+from anishift.services.subtitles.fitting import sign_input
 from anishift.services.subtitles.geometry import RenderProfile, measure_text
 from anishift.services.subtitles.layout import Field, Flag, Layout, chars_measure, dialogue_field, sign_field
-from anishift.services.subtitles.service import load_subtitles
+from anishift.services.subtitles.linebreak import tagged_line
+from anishift.services.subtitles.service import load_subtitles, split_subtitles
 from anishift.text.gaps import TIERS, GapKind, gaps
-from scripts.subtitle_quality.episode import FONTS_NAME
+from scripts.subtitle_quality.episode import FONTS_NAME, SOURCE_NAME, pair_fonts
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -25,6 +28,7 @@ if TYPE_CHECKING:
     from pysubs2 import SSAEvent, SSAFile
 
     from anishift.services.subtitles.layout import Measure
+    from anishift.services.subtitles.types import FontSources, SubtitleSplit
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -53,9 +57,6 @@ RAGGED_HARM: Final[str] = "imbalance_30"
 
 _RE_LINES: Final[re.Pattern[str]] = re.compile(r"lines:(\d+)")
 """Rule demanding an exact line count."""
-
-_RE_FONT_SIZE: Final[re.Pattern[str]] = re.compile(r"\\fs(\d+(?:\.\d+)?)")
-"""Font size override tag of an ASS event."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +122,8 @@ def _field(spec: dict[str, Any], measured: dict[str, Any]) -> Field:
     styles: frozenset[int] = frozenset(spec.get("style_breaks", ()))
     if spec["kind"] == "dialogue":
         return replace(dialogue_field(), breaks=breaks, style_breaks=styles)
+    if "field" in measured:
+        return _stored_field(measured["field"])
     field: Field = sign_field(
         source_lines=measured["original_lines"],
         template=tuple(measured.get("template", ())),
@@ -286,35 +289,64 @@ def _measurement(entry: dict[str, Any], quality_root: Path, fonts: Path) -> dict
         "edge": round(edge, 6),
     }
     if spec["kind"] == "sign":
-        result |= _sign_measurement(spec, event, profile, tags)
+        return _production_measurement(entry, quality_root)
     return result
 
 
-def _sign_measurement(spec: dict[str, Any], event: SSAEvent, profile: RenderProfile, tags: str) -> dict[str, Any]:
-    originals: list[str] = [line.strip() for line in spec["original"].split(" / ") if line.strip()]
-    scale: float = profile.play_res_x
-    template: list[float] = [round(measure_text(event, tags + line, profile).width / scale, 6) for line in originals]
-    one: float = measure_text(event, tags + "Xg", profile).height
-    pitch: float = measure_text(event, tags + "Xg\\NXg", profile).height - one
+def _production_measurement(entry: dict[str, Any], quality_root: Path) -> dict[str, Any]:
+    split: SubtitleSplit = split_subtitles(load_subtitles(quality_root / entry["pair"] / SOURCE_NAME), kind="ass")
+    fonts: FontSources = pair_fonts(quality_root / entry["pair"])
+    profile: RenderProfile = RenderProfile.from_subs(split.subs, FontIndex.build(fonts.episode, fonts.system))
+    source: SSAEvent = [line for line in split.subs if line.type == "Dialogue"][entry["event"]]
+    target: SSAEvent = source.copy()
+    target.text = tagged_line(target, _positioned(entry), profile)
+    text, field, measure = sign_input(source, target, profile)
+    tokens: list[str] = text.split(" ")
+    space: float = measure(" ".join(tokens[:2]), 1.0) - measure(tokens[0], 1.0) - measure(tokens[1], 1.0)
+    spec: dict[str, Any] = entry["field"]
     to_screen: float = SCREEN_HEIGHT / profile.play_res_y
-    result: dict[str, Any] = {
-        "original_lines": len(originals),
-        "letter_height": round(_font_size(event, profile, tags) * to_screen, 3),
+    pitch: float = measure_text(target, "Xg\\NXg", profile).height - measure_text(target, "Xg", profile).height
+    max_width: float = spec["max_width_px"] / SCREEN_WIDTH if "max_width_px" in spec else field.max_width
+    height: float | None = spec["height_px"] / (to_screen * pitch) if "height_px" in spec else field.height_lines
+    return {
+        "kind": "words",
+        "words": {token: round(measure(token, 1.0), 6) for token in sorted(set(tokens))},
+        "space": round(space, 6) if len(tokens) > 1 else 0.0,
+        "edge": 0.0,
+        "field": {
+            "source_lines": field.preferred_lines,
+            "template": [round(width, 6) for width in field.template],
+            "letter_height": round(field.letter_height, 3),
+            "max_width": None if math.isinf(max_width) else round(max_width, 6),
+            "height_lines": None if height is None else round(height, 4),
+            "breaks": sorted(field.breaks),
+            "style_breaks": sorted(field.style_breaks),
+            "blocks": list(field.blocks),
+            "runs": list(field.runs),
+            "anchor_row": field.anchor_row,
+        },
     }
-    if not spec.get("song"):
-        result["template"] = template
-    if "max_width_px" in spec:
-        result["max_width"] = round(spec["max_width_px"] / SCREEN_WIDTH, 6)
-    if "height_px" in spec:
-        result["height_lines"] = round(spec["height_px"] / (to_screen * pitch), 4)
-    return result
 
 
-def _font_size(event: SSAEvent, profile: RenderProfile, tags: str) -> float:
-    override: re.Match[str] | None = _RE_FONT_SIZE.search(tags)
-    if override is not None:
-        return float(override.group(1))
-    return float(profile.styles[event.style].fontsize)
+def _positioned(entry: dict[str, Any]) -> str:
+    breaks: frozenset[int] = frozenset(entry["field"].get("breaks", ()))
+    words: list[str] = entry["text"].split(" ")
+    return "".join(word + ("\\N" if index in breaks else " ") for index, word in enumerate(words)).strip()
+
+
+def _stored_field(stored: dict[str, Any]) -> Field:
+    field: Field = sign_field(
+        source_lines=stored["source_lines"],
+        template=tuple(stored["template"]),
+        letter_height=stored["letter_height"],
+        max_width=math.inf if stored["max_width"] is None else stored["max_width"],
+        height_lines=stored["height_lines"],
+        breaks=frozenset(stored["breaks"]),
+        style_breaks=frozenset(stored["style_breaks"]),
+    )
+    if not stored["blocks"]:
+        return field
+    return replace(field, blocks=tuple(stored["blocks"]), runs=tuple(stored["runs"]), anchor_row=stored["anchor_row"])
 
 
 def main(argv: Sequence[str] | None = None) -> int:

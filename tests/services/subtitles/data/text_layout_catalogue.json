@@ -996,20 +996,20 @@
    "accept": [
     {
      "lines": [
-      "Czy oni nie zdają sobie sprawy,",
-      "że są uprzywilejowanymi uczniami tej prestiżowej akademii?"
+      "Czy oni nie zdają sobie sprawy, że są",
+      "uprzywilejowanymi uczniami tej prestiżowej akademii?"
      ]
     },
     {
      "lines": [
-      "Czy oni nie zdają sobie sprawy, że są uprzywilejowanymi",
-      "uczniami tej prestiżowej akademii?"
+      "Czy oni nie zdają sobie sprawy,",
+      "że są uprzywilejowanymi uczniami tej prestiżowej akademii?"
      ]
     }
    ],
-   "note": "three lines lose to two by q13",
+   "note": "three lines lose to two by q13; agreement outweighs the inverted pyramid by r3",
    "forbid": [
-    "są|uprzywilejowanymi"
+    "uprzywilejowanymi|uczniami"
    ],
    "measure": {
     "kind": "words",
@@ -1131,13 +1131,13 @@
    "accept": [
     {
      "lines": [
-      "Taki właśnie bezmiar geniuszu kryje Kaguya Shinomiya!"
+      "Taki właśnie bezmiar geniuszu",
+      "kryje Kaguya Shinomiya!"
      ]
     },
     {
      "lines": [
-      "Taki właśnie bezmiar geniuszu",
-      "kryje Kaguya Shinomiya!"
+      "Taki właśnie bezmiar geniuszu kryje Kaguya Shinomiya!"
      ]
     }
    ],
@@ -1157,7 +1157,8 @@
     },
     "space": 0.00946,
     "edge": 0.004531
-   }
+   },
+   "note": "0.77 of the width is past the owner knee of about 0.76 (q19 lost at 0.78), so two lines come first"
   },
   {
    "id": "d29",
@@ -2388,18 +2389,27 @@
    "measure": {
     "kind": "words",
     "words": {
-     "Ruszajmy": 0.14361,
-     "bezludną": 0.137587,
-     "na": 0.036443,
-     "wyspę!": 0.105931
+     "Ruszajmy": 0.145394,
+     "bezludną": 0.141586,
+     "na": 0.037554,
+     "wyspę!": 0.10674
     },
-    "space": 0.010192,
-    "edge": 0.004687,
-    "original_lines": 1,
-    "letter_height": 69.0,
-    "template": [
-     0.513245
-    ]
+    "space": 0.007966,
+    "edge": 0.0,
+    "field": {
+     "source_lines": 1,
+     "template": [
+      0.513245
+     ],
+     "letter_height": 69.0,
+     "max_width": 0.94375,
+     "height_lines": null,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {
@@ -2453,21 +2463,28 @@
    "measure": {
     "kind": "words",
     "words": {
-     "Akademii": 0.103638,
-     "Samorządu": 0.123413,
-     "Sekretarz": 0.106812,
-     "Shuchiin": 0.094482,
-     "Uczniowskiego": 0.161621
+     "Akademii": 0.103832,
+     "Samorządu": 0.123181,
+     "Sekretarz": 0.106533,
+     "Shuchiin": 0.09425,
+     "Uczniowskiego": 0.161668
     },
-    "space": 0.00647,
+    "space": 0.006748,
     "edge": 0.0,
-    "original_lines": 1,
-    "letter_height": 60.0,
-    "template": [
-     0.491421
-    ],
-    "max_width": 0.555208,
-    "height_lines": 1.3
+    "field": {
+     "source_lines": 1,
+     "template": [
+      0.492851
+     ],
+     "letter_height": 60.0,
+     "max_width": 0.555208,
+     "height_lines": 1.04,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {
@@ -2516,22 +2533,30 @@
    "measure": {
     "kind": "words",
     "words": {
-     "Nim": 0.041709,
-     "Oczko!": 0.067039,
-     "do": 0.024148,
-     "dzieła!": 0.064168,
-     "mrugniesz,": 0.115672,
-     "ruszaj": 0.066195,
-     "skończysz": 0.110944,
-     "szkołę,": 0.069572,
-     "więc": 0.046438
+     "Nim": 0.047279,
+     "Oczko!": 0.072992,
+     "do": 0.030378,
+     "dzieła!": 0.070122,
+     "mrugniesz,": 0.121395,
+     "ruszaj": 0.071913,
+     "skończysz": 0.116778,
+     "szkołę,": 0.075329,
+     "więc": 0.05298
     },
-    "space": 0.010301,
-    "edge": 0.007102,
-    "original_lines": 1,
-    "letter_height": 83.0,
-    "max_width": 0.921875,
-    "height_lines": 1.2869
+    "space": 0.004689,
+    "edge": 0.0,
+    "field": {
+     "source_lines": 1,
+     "template": [],
+     "letter_height": 83.0,
+     "max_width": 0.921875,
+     "height_lines": 1.2869,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {
@@ -2563,19 +2588,28 @@
    "measure": {
     "kind": "words",
     "words": {
-     "KAŻDE": 0.07869,
-     "SWOJĄ": 0.083359,
-     "ZDOBYCZĄ": 0.125107,
-     "ZE": 0.028015
+     "KAŻDE": 0.090484,
+     "SWOJĄ": 0.101942,
+     "ZDOBYCZĄ": 0.152068,
+     "ZE": 0.034382
     },
-    "space": 0.008514,
-    "edge": 0.002656,
-    "original_lines": 2,
-    "letter_height": 67.5,
-    "template": [
-     0.362374,
-     0.355341
-    ]
+    "space": 0.008739,
+    "edge": 0.0,
+    "field": {
+     "source_lines": 2,
+     "template": [
+      0.436803,
+      0.426429
+     ],
+     "letter_height": 67.5,
+     "max_width": 1.0,
+     "height_lines": null,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {
@@ -2598,22 +2632,31 @@
    "measure": {
     "kind": "words",
     "words": {
-     "Blue": 0.090234,
-     "Dreaming": 0.198584,
-     "Grand": 0.125952,
-     "potwierdzony!": 0.286426,
-     "sezon": 0.112793,
-     "trzeci": 0.111597,
-     "został": 0.115527
+     "Blue": 0.088222,
+     "Dreaming": 0.197285,
+     "Grand": 0.124559,
+     "potwierdzony!": 0.282628,
+     "sezon": 0.110952,
+     "trzeci": 0.110883,
+     "został": 0.114442
     },
-    "space": 0.009741,
-    "edge": 0.00625,
-    "original_lines": 2,
-    "letter_height": 84.0,
-    "template": [
-     0.439127,
-     0.590368
-    ]
+    "space": 0.011685,
+    "edge": 0.0,
+    "field": {
+     "source_lines": 2,
+     "template": [
+      0.432877,
+      0.584118
+     ],
+     "letter_height": 84.0,
+     "max_width": 1.0,
+     "height_lines": null,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {
@@ -2646,32 +2689,45 @@
    "measure": {
     "kind": "words",
     "words": {
-     "Chłopiec,": 0.113269,
-     "Odcinek": 0.099207,
-     "bierze": 0.072729,
-     "bitew": 0.06427,
-     "jest": 0.043286,
-     "który": 0.061414,
-     "magicznych": 0.144031,
-     "magikiem": 0.116125,
-     "na": 0.029333,
-     "najsilniejszym": 0.170728,
-     "pierwszy:": 0.114587,
-     "turnieju": 0.092285,
-     "udział": 0.071411,
-     "w": 0.019556,
-     "wielkim": 0.090967,
-     "świecie,": 0.09646
+     "Chłopiec,": 0.09444,
+     "Odcinek": 0.104184,
+     "bierze": 0.062369,
+     "bitew": 0.056372,
+     "jest": 0.041586,
+     "który": 0.053759,
+     "magicznych": 0.118891,
+     "magikiem": 0.096598,
+     "na": 0.027672,
+     "najsilniejszym": 0.140098,
+     "pierwszy:": 0.11674,
+     "turnieju": 0.07836,
+     "udział": 0.06194,
+     "w": 0.021828,
+     "wielkim": 0.077618,
+     "świecie,": 0.081476
     },
-    "space": 0.007031,
-    "edge": 0.00625,
-    "original_lines": 3,
-    "letter_height": 54.0,
-    "template": [
-     0.133223,
-     0.572513,
-     0.652798
-    ]
+    "space": 0.002658,
+    "edge": 0.0,
+    "field": {
+     "source_lines": 3,
+     "template": [
+      0.133223,
+      0.45926,
+      0.523488
+     ],
+     "letter_height": 54.0,
+     "max_width": 1.0,
+     "height_lines": null,
+     "breaks": [
+      1
+     ],
+     "style_breaks": [
+      1
+     ],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {
@@ -2704,27 +2760,36 @@
    "measure": {
     "kind": "words",
     "words": {
-     "Chłopiec,": 0.113269,
-     "Odcinek": 0.099207,
-     "drugi:": 0.071301,
-     "jest": 0.043286,
-     "który": 0.061414,
-     "magiem": 0.095142,
-     "maskę": 0.078223,
-     "na": 0.029333,
-     "najsilniejszym": 0.170728,
-     "przywdziewa": 0.153809,
-     "świecie,": 0.09646
+     "Chłopiec,": 0.116488,
+     "Odcinek": 0.104184,
+     "drugi:": 0.074108,
+     "jest": 0.05042,
+     "który": 0.065636,
+     "magiem": 0.098201,
+     "maskę": 0.081992,
+     "na": 0.033028,
+     "najsilniejszym": 0.17356,
+     "przywdziewa": 0.157578,
+     "świecie,": 0.100283
     },
-    "space": 0.007031,
-    "edge": 0.00625,
-    "original_lines": 3,
-    "letter_height": 54.0,
-    "template": [
-     0.136041,
-     0.238236,
-     0.492678
-    ]
+    "space": 0.002004,
+    "edge": 0.0,
+    "field": {
+     "source_lines": 3,
+     "template": [
+      0.136041,
+      0.238236,
+      0.492678
+     ],
+     "letter_height": 54.0,
+     "max_width": 1.0,
+     "height_lines": null,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    },
    "note": "a leading label ending in a colon heads the title on its own line, also without a style change (owner, 20.10)"
   },
@@ -2743,36 +2808,51 @@
     {
      "lines": [
       "Mam wrażenie,",
+      "że Pes kogoś",
+      "mi przypomina..."
+     ]
+    },
+    {
+     "lines": [
+      "Mam wrażenie,",
       "że Pes",
       "kogoś mi",
       "przypomina..."
      ]
     }
    ],
-   "note": "thought bubble in four narrow lines: the source shape is the template (owner review 20.10); the lone \"mi\" stays forbidden",
+   "note": "thought bubble: three or four narrow lines following the source; the lone \"mi\" and one shrunk line are not acceptable",
    "measure": {
     "kind": "words",
     "words": {
-     "Mam": 0.071869,
-     "Pes": 0.048981,
-     "kogoś": 0.09201,
-     "mi": 0.035248,
-     "przypomina...": 0.196381,
-     "wrażenie,": 0.141449,
-     "że": 0.034637
+     "Mam": 0.048815,
+     "Pes": 0.034722,
+     "kogoś": 0.059151,
+     "mi": 0.025632,
+     "przypomina...": 0.134402,
+     "wrażenie,": 0.097643,
+     "że": 0.023244
     },
-    "space": 0.009613,
+    "space": 0.005164,
     "edge": 0.0,
-    "original_lines": 4,
-    "letter_height": 75.0,
-    "template": [
-     0.128267,
-     0.170136,
-     0.082891,
-     0.155424
-    ]
+    "field": {
+     "source_lines": 4,
+     "template": [
+      0.093889,
+      0.119821,
+      0.055692,
+      0.10421
+     ],
+     "letter_height": 49.5,
+     "max_width": 0.579341,
+     "height_lines": null,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    },
-   "accept_rule": "source_lines",
    "forbid_lines": [
     "mi"
    ]
@@ -2797,24 +2877,33 @@
    "measure": {
     "kind": "words",
     "words": {
-     "do": 0.031586,
-     "nie": 0.041199,
-     "nikomu": 0.101929,
-     "oraz": 0.057983,
-     "pozwalasz": 0.136108,
-     "siebie": 0.07782,
-     "się": 0.041351,
-     "to,": 0.036011,
-     "zbliżyć.": 0.110168,
-     "że": 0.032959
+     "do": 0.014626,
+     "nie": 0.019204,
+     "nikomu": 0.043562,
+     "oraz": 0.028076,
+     "pozwalasz": 0.06553,
+     "siebie": 0.037114,
+     "się": 0.019312,
+     "to,": 0.016603,
+     "zbliżyć.": 0.047705,
+     "że": 0.016035
     },
-    "space": 0.008087,
+    "space": 0.00205,
     "edge": 0.0,
-    "original_lines": 1,
-    "letter_height": 75.0,
-    "template": [
-     0.68606
-    ]
+    "field": {
+     "source_lines": 1,
+     "template": [
+      0.305911
+     ],
+     "letter_height": 42.0,
+     "max_width": null,
+     "height_lines": null,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {
@@ -2836,23 +2925,32 @@
    "measure": {
     "kind": "words",
     "words": {
-     "Za": 0.033569,
-     "do": 0.031586,
-     "dopuścić.": 0.135803,
-     "mogę": 0.076447,
-     "nic": 0.040131,
-     "nie": 0.041199,
-     "tego": 0.057983,
-     "w": 0.024109,
-     "świecie": 0.106049
+     "Za": 0.018787,
+     "do": 0.014626,
+     "dopuścić.": 0.055253,
+     "mogę": 0.032729,
+     "nic": 0.018693,
+     "nie": 0.019204,
+     "tego": 0.02826,
+     "w": 0.011688,
+     "świecie": 0.047624
     },
-    "space": 0.008087,
+    "space": 0.003379,
     "edge": 0.0,
-    "original_lines": 1,
-    "letter_height": 75.0,
-    "template": [
-     0.477625
-    ]
+    "field": {
+     "source_lines": 1,
+     "template": [
+      0.211109
+     ],
+     "letter_height": 42.0,
+     "max_width": null,
+     "height_lines": null,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {
@@ -2881,26 +2979,35 @@
    "measure": {
     "kind": "words",
     "words": {
-     "Zabierz": 0.083215,
-     "daj": 0.034344,
-     "go": 0.029053,
-     "i": 0.006641,
-     "jakieś": 0.065991,
-     "miejsce": 0.087158,
-     "romantyczne": 0.146509,
-     "siebie": 0.06734,
-     "w": 0.018469,
-     "wszystko!": 0.113409,
-     "z": 0.011932
+     "Zabierz": 0.091669,
+     "daj": 0.044147,
+     "go": 0.038855,
+     "i": 0.017792,
+     "jakieś": 0.073303,
+     "miejsce": 0.093121,
+     "romantyczne": 0.148529,
+     "siebie": 0.074548,
+     "w": 0.02962,
+     "wszystko!": 0.115741,
+     "z": 0.024432
     },
-    "space": 0.006641,
-    "edge": 0.015625,
-    "original_lines": 2,
-    "letter_height": 51.0,
-    "template": [
-     0.341846,
-     0.31134
-    ]
+    "space": -0.005859,
+    "edge": 0.0,
+    "field": {
+     "source_lines": 2,
+     "template": [
+      0.317657,
+      0.283417
+     ],
+     "letter_height": 51.0,
+     "max_width": null,
+     "height_lines": null,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {
@@ -2920,82 +3027,91 @@
    "measure": {
     "kind": "words",
     "words": {
-     "Co": 0.035254,
-     "Nie": 0.046155,
-     "Niniejsze": 0.124432,
-     "Prosimy": 0.112256,
-     "Spożywanie": 0.159222,
-     "alkohol": 0.100775,
-     "alkoholu": 0.118402,
-     "ani": 0.042792,
-     "anime": 0.084308,
-     "czynów": 0.099268,
-     "do": 0.033862,
-     "dziele": 0.079089,
-     "dzieło": 0.080713,
-     "fikcją.": 0.083032,
-     "haniebnych": 0.156555,
-     "i": 0.009277,
-     "jak": 0.041052,
-     "jako": 0.057635,
-     "jest": 0.047662,
-     "komediowego": 0.186823,
-     "libacji.": 0.091382,
-     "litanii": 0.080597,
-     "nadmiernego": 0.179749,
-     "napojów": 0.115387,
-     "niczego": 0.101471,
-     "nie": 0.042212,
-     "nielegalne.": 0.147162,
-     "nieletnie": 0.118634,
-     "o": 0.016583,
-     "osoby": 0.07793,
-     "pełnoletnie.": 0.160614,
-     "picia": 0.065173,
-     "popieramy": 0.145422,
-     "postacie": 0.111096,
-     "przedstawionych": 0.228455,
-     "przez": 0.073059,
-     "również": 0.108545,
-     "scenach": 0.107385,
-     "spożywające": 0.166876,
-     "spożywania": 0.156207,
-     "surowo": 0.100195,
-     "są": 0.028876,
-     "tego": 0.05694,
-     "też": 0.038965,
-     "traktowanie": 0.163049,
-     "tym": 0.051489,
-     "w": 0.022498,
-     "więcej,": 0.093237,
-     "więcej.": 0.093237,
-     "wszystkie": 0.128491,
-     "wyskokowych,": 0.193896,
-     "wyłącznie": 0.13139,
-     "zabronione": 0.15296,
-     "zachęcamy": 0.146466,
-     "zdeprawowanych": 0.233557,
-     "zmuszania": 0.143219
+     "Co": 0.052241,
+     "Nie": 0.064035,
+     "Niniejsze": 0.142313,
+     "Prosimy": 0.130693,
+     "Spożywanie": 0.176659,
+     "alkohol": 0.11811,
+     "alkoholu": 0.135911,
+     "ani": 0.060066,
+     "anime": 0.101562,
+     "czynów": 0.117359,
+     "do": 0.05085,
+     "dziele": 0.096448,
+     "dzieło": 0.0977,
+     "fikcją.": 0.099959,
+     "haniebnych": 0.174862,
+     "i": 0.027126,
+     "jak": 0.063478,
+     "jako": 0.078563,
+     "jest": 0.069372,
+     "komediowego": 0.204671,
+     "libacji.": 0.10836,
+     "litanii": 0.098863,
+     "nadmiernego": 0.197075,
+     "napojów": 0.133818,
+     "niczego": 0.118797,
+     "nie": 0.05991,
+     "nielegalne.": 0.163593,
+     "nieletnie": 0.136332,
+     "o": 0.033571,
+     "osoby": 0.09634,
+     "pełnoletnie.": 0.177462,
+     "picia": 0.08357,
+     "popieramy": 0.16459,
+     "postacie": 0.129211,
+     "przedstawionych": 0.246657,
+     "przez": 0.091093,
+     "również": 0.126161,
+     "scenach": 0.124883,
+     "spożywające": 0.184287,
+     "spożywania": 0.173899,
+     "surowo": 0.117235,
+     "są": 0.046568,
+     "tego": 0.074814,
+     "też": 0.057129,
+     "traktowanie": 0.181295,
+     "tym": 0.069749,
+     "w": 0.041659,
+     "więcej,": 0.110477,
+     "więcej.": 0.110399,
+     "wszystkie": 0.146919,
+     "wyskokowych,": 0.211136,
+     "wyłącznie": 0.149819,
+     "zabronione": 0.170658,
+     "zachęcamy": 0.165216,
+     "zdeprawowanych": 0.251342,
+     "zmuszania": 0.161198
     },
-    "space": 0.00661,
-    "edge": 0.01875,
-    "original_lines": 13,
-    "letter_height": 57.0,
-    "template": [
-     0.8971,
-     0.846069,
-     0.480762,
-     0.482368,
-     0.201749,
-     0.235205,
-     0.321768,
-     0.356208,
-     0.327564,
-     0.20824,
-     0.243021,
-     0.317222,
-     0.358269
-    ]
+    "space": -0.010748,
+    "edge": 0.0,
+    "field": {
+     "source_lines": 13,
+     "template": [
+      0.8971,
+      0.846069,
+      0.480762,
+      0.482368,
+      0.201749,
+      0.235205,
+      0.321768,
+      0.356208,
+      0.327564,
+      0.20824,
+      0.243021,
+      0.317222,
+      0.358269
+     ],
+     "letter_height": 57.0,
+     "max_width": 0.96875,
+     "height_lines": null,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {
@@ -3029,19 +3145,28 @@
    "measure": {
     "kind": "words",
     "words": {
-     "Rozmowy": 0.105524,
-     "kwalifikacyjne": 0.154913,
-     "na": 0.027081,
-     "osobę": 0.064642,
-     "towarzyszącą": 0.147546
+     "Rozmowy": 0.118024,
+     "kwalifikacyjne": 0.167413,
+     "na": 0.039581,
+     "osobę": 0.077142,
+     "towarzyszącą": 0.160046
     },
-    "space": 0.007678,
-    "edge": 0.0125,
-    "original_lines": 1,
-    "letter_height": 51.0,
-    "template": [
-     0.275635
-    ]
+    "space": -0.004822,
+    "edge": 0.0,
+    "field": {
+     "source_lines": 1,
+     "template": [
+      0.275635
+     ],
+     "letter_height": 51.0,
+     "max_width": 1.0,
+     "height_lines": null,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {
@@ -3069,28 +3194,37 @@
    "measure": {
     "kind": "words",
     "words": {
-     "Przecież": 0.095148,
-     "Yuuna:": 0.080518,
-     "bóstwo,": 0.089752,
-     "czasu": 0.065991,
-     "dziewczyny": 0.130737,
-     "na": 0.027704,
-     "pana!”.": 0.081866,
-     "potrzebują": 0.120154,
-     "proszę": 0.076575,
-     "się": 0.032996,
-     "weź!": 0.051465,
-     "więcej": 0.071283,
-     "zrobienie": 0.104382,
-     "„No": 0.043579
+     "Przecież": 0.10683,
+     "Yuuna:": 0.090851,
+     "bóstwo,": 0.097491,
+     "czasu": 0.077777,
+     "dziewczyny": 0.137231,
+     "na": 0.04198,
+     "pana!”.": 0.089502,
+     "potrzebują": 0.12644,
+     "proszę": 0.086908,
+     "się": 0.046027,
+     "weź!": 0.064496,
+     "więcej": 0.081616,
+     "zrobienie": 0.111914,
+     "„No": 0.053809
     },
-    "space": 0.006641,
-    "edge": 0.015625,
-    "original_lines": 1,
-    "letter_height": 51.0,
-    "template": [
-     0.661426
-    ]
+    "space": -0.008984,
+    "edge": 0.0,
+    "field": {
+     "source_lines": 1,
+     "template": [
+      0.613593
+     ],
+     "letter_height": 51.0,
+     "max_width": 1.0,
+     "height_lines": null,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {
@@ -3155,22 +3289,36 @@
    "measure": {
     "kind": "words",
     "words": {
-     "Posiada": 0.103607,
-     "ceremonii": 0.134277,
-     "herbacianej,": 0.166016,
-     "licencję": 0.106354,
-     "mistrzyni": 0.128479,
-     "wszechstronnie": 0.209656,
-     "wyedukowana": 0.19455
+     "Posiada": 0.122312,
+     "ceremonii": 0.152543,
+     "herbacianej,": 0.182852,
+     "licencję": 0.124221,
+     "mistrzyni": 0.14695,
+     "wszechstronnie": 0.228154,
+     "wyedukowana": 0.213254
     },
-    "space": 0.008087,
-    "edge": 0.020016,
-    "original_lines": 2,
-    "letter_height": 75.0,
-    "template": [
-     0.386693,
-     0.224797
-    ]
+    "space": -0.010617,
+    "edge": 0.0,
+    "field": {
+     "source_lines": 2,
+     "template": [
+      0.386693,
+      0.224797
+     ],
+     "letter_height": 75.0,
+     "max_width": 0.386693,
+     "height_lines": null,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [
+      1,
+      1
+     ],
+     "runs": [
+      6
+     ],
+     "anchor_row": 1
+    }
    }
   },
   {
@@ -3204,14 +3352,24 @@
    "measure": {
     "kind": "words",
     "words": {
-     "Miłość": 0.093842,
-     "to": 0.029602,
-     "wojna!": 0.096893
+     "Miłość": 0.0916,
+     "to": 0.02843,
+     "wojna!": 0.09331
     },
-    "space": 0.007629,
-    "edge": 0.00143,
-    "original_lines": 1,
-    "letter_height": 75.0
+    "space": 0.008422,
+    "edge": 0.0,
+    "field": {
+     "source_lines": 1,
+     "template": [],
+     "letter_height": 75.0,
+     "max_width": 0.553125,
+     "height_lines": 3.0031,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {
@@ -3250,21 +3408,30 @@
    "measure": {
     "kind": "words",
     "words": {
-     "Forma": 0.03667,
-     "Potwór": 0.04165,
-     "Scorpius": 0.049756,
-     "antropomorfizacji": 0.103125,
-     "bez": 0.020215,
-     "katastroficznej": 0.086768,
-     "klasy": 0.030127
+     "Forma": 0.042728,
+     "Potwór": 0.048344,
+     "Scorpius": 0.056688,
+     "antropomorfizacji": 0.109709,
+     "bez": 0.026758,
+     "katastroficznej": 0.092882,
+     "klasy": 0.036958
     },
-    "space": 0.003516,
-    "edge": 0.007812,
-    "original_lines": 1,
-    "letter_height": 24.0,
-    "template": [
-     0.447867
-    ]
+    "space": -0.002945,
+    "edge": 0.0,
+    "field": {
+     "source_lines": 1,
+     "template": [
+      0.447867
+     ],
+     "letter_height": 24.0,
+     "max_width": 0.556244,
+     "height_lines": null,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {
@@ -3303,22 +3470,35 @@
    "measure": {
     "kind": "words",
     "words": {
-     "Peek-a-Boo": 0.160889,
-     "Starsi": 0.08313,
-     "Zbiórka": 0.111816,
-     "dachu": 0.086426,
-     "na": 0.035278,
-     "z": 0.014404,
-     "–": 0.019287
+     "Peek-a-Boo": 0.10604,
+     "Starsi": 0.054513,
+     "Zbiórka": 0.111362,
+     "dachu": 0.085229,
+     "na": 0.034467,
+     "z": 0.008807,
+     "–": 0.011023
     },
-    "space": 0.006958,
+    "space": 0.00777,
     "edge": 0.0,
-    "original_lines": 2,
-    "letter_height": 60.0,
-    "template": [
-     0.237039,
-     0.29126
-    ]
+    "field": {
+     "source_lines": 2,
+     "template": [
+      0.237039,
+      0.194173
+     ],
+     "letter_height": 60.0,
+     "max_width": null,
+     "height_lines": null,
+     "breaks": [
+      2
+     ],
+     "style_breaks": [
+      2
+     ],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {
@@ -3348,16 +3528,24 @@
    "measure": {
     "kind": "words",
     "words": {
-     "Ciach,": 0.062649,
-     "ciach,": 0.060284,
-     "pyk!": 0.041034
+     "Ciach,": 0.068337,
+     "ciach,": 0.066314,
+     "pyk!": 0.046748
     },
-    "space": 0.010301,
-    "edge": 0.007102,
-    "original_lines": 1,
-    "letter_height": 83.0,
-    "max_width": 0.921875,
-    "height_lines": 1.2869
+    "space": 0.004271,
+    "edge": 0.0,
+    "field": {
+     "source_lines": 1,
+     "template": [],
+     "letter_height": 83.0,
+     "max_width": 0.921875,
+     "height_lines": 1.2869,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {
@@ -3378,21 +3566,30 @@
    "measure": {
     "kind": "words",
     "words": {
-     "Demonów,": 0.061572,
-     "Króla": 0.030566,
-     "Luminarzy": 0.060449,
-     "Siedmiu": 0.046631,
-     "Syn": 0.021338,
-     "który": 0.030518,
-     "stworzył": 0.049561
+     "Demonów,": 0.067837,
+     "Króla": 0.036625,
+     "Luminarzy": 0.067187,
+     "Siedmiu": 0.053064,
+     "Syn": 0.027812,
+     "który": 0.037348,
+     "stworzył": 0.056799
     },
-    "space": 0.003516,
-    "edge": 0.007812,
-    "original_lines": 1,
-    "letter_height": 24.0,
-    "template": [
-     0.348681
-    ]
+    "space": -0.002557,
+    "edge": 0.0,
+    "field": {
+     "source_lines": 1,
+     "template": [
+      0.348681
+     ],
+     "letter_height": 24.0,
+     "max_width": 0.491663,
+     "height_lines": null,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {
@@ -3413,79 +3610,88 @@
    "measure": {
     "kind": "words",
     "words": {
-     "Nie": 0.046155,
-     "Niniejszy": 0.124084,
-     "Ponadto": 0.112604,
-     "Prosimy": 0.112256,
-     "Spożywanie": 0.159222,
-     "alkohol": 0.100775,
-     "alkoholu": 0.118402,
-     "alkoholu,": 0.126984,
-     "ani": 0.042792,
-     "anime": 0.084308,
-     "bohaterowie": 0.168848,
-     "całego": 0.085004,
-     "czynów": 0.099268,
-     "deprawujących": 0.203406,
-     "do": 0.033862,
-     "dziele": 0.079089,
-     "fikcją.": 0.083032,
-     "haniebnych": 0.156555,
-     "i": 0.009277,
-     "jak": 0.041052,
-     "jako": 0.057635,
-     "jest": 0.047662,
-     "komediowe": 0.155164,
-     "nadużywania": 0.177545,
-     "nic": 0.041168,
-     "nie": 0.042212,
-     "nielegalne.": 0.147162,
-     "nieletnie": 0.118634,
-     "osoby": 0.07793,
-     "pełnoletni.": 0.145654,
-     "picia": 0.065173,
-     "pijaństwa.": 0.139276,
-     "pijący": 0.079553,
-     "ponadto.": 0.120026,
-     "popieramy": 0.145422,
-     "przedstawionych": 0.228455,
-     "przez": 0.073059,
-     "również": 0.108545,
-     "scenach": 0.107385,
-     "serię": 0.066101,
-     "surowo": 0.100195,
-     "szeregu": 0.10321,
-     "są": 0.028876,
-     "traktować": 0.134753,
-     "tym": 0.051489,
-     "tę": 0.025281,
-     "utwór": 0.080597,
-     "w": 0.022498,
-     "wszyscy": 0.105994,
-     "wyłącznie": 0.13139,
-     "wzbronione": 0.159918,
-     "zachęcamy": 0.146466,
-     "zmuszania": 0.143219
+     "Nie": 0.064035,
+     "Niniejszy": 0.143017,
+     "Ponadto": 0.129617,
+     "Prosimy": 0.130693,
+     "Spożywanie": 0.176659,
+     "alkohol": 0.11811,
+     "alkoholu": 0.135911,
+     "alkoholu,": 0.143049,
+     "ani": 0.060066,
+     "anime": 0.101562,
+     "bohaterowie": 0.187354,
+     "całego": 0.101991,
+     "czynów": 0.117359,
+     "deprawujących": 0.220851,
+     "do": 0.05085,
+     "dziele": 0.096448,
+     "fikcją.": 0.099959,
+     "haniebnych": 0.174862,
+     "i": 0.027126,
+     "jak": 0.063478,
+     "jako": 0.078563,
+     "jest": 0.069372,
+     "komediowe": 0.173383,
+     "nadużywania": 0.195524,
+     "nic": 0.059283,
+     "nie": 0.05991,
+     "nielegalne.": 0.163593,
+     "nieletnie": 0.136332,
+     "osoby": 0.09634,
+     "pełnoletni.": 0.162502,
+     "picia": 0.08357,
+     "pijaństwa.": 0.156124,
+     "pijący": 0.098721,
+     "ponadto.": 0.136874,
+     "popieramy": 0.16459,
+     "przedstawionych": 0.246657,
+     "przez": 0.091093,
+     "również": 0.126161,
+     "scenach": 0.124883,
+     "serię": 0.083512,
+     "surowo": 0.117235,
+     "szeregu": 0.120876,
+     "są": 0.046568,
+     "traktować": 0.153416,
+     "tym": 0.069749,
+     "tę": 0.043526,
+     "utwór": 0.099034,
+     "w": 0.041659,
+     "wszyscy": 0.125474,
+     "wyłącznie": 0.149819,
+     "wzbronione": 0.178346,
+     "zachęcamy": 0.165216,
+     "zmuszania": 0.161198
     },
-    "space": 0.00661,
-    "edge": 0.01875,
-    "original_lines": 13,
-    "letter_height": 57.0,
-    "template": [
-     0.8971,
-     0.846069,
-     0.480762,
-     0.482368,
-     0.201749,
-     0.235205,
-     0.321768,
-     0.356208,
-     0.327564,
-     0.20824,
-     0.243021,
-     0.317222,
-     0.358269
-    ]
+    "space": -0.012505,
+    "edge": 0.0,
+    "field": {
+     "source_lines": 13,
+     "template": [
+      0.8971,
+      0.846069,
+      0.480762,
+      0.482368,
+      0.201749,
+      0.235205,
+      0.321768,
+      0.356208,
+      0.327564,
+      0.20824,
+      0.243021,
+      0.317222,
+      0.358269
+     ],
+     "letter_height": 57.0,
+     "max_width": 0.96875,
+     "height_lines": null,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {
@@ -3521,27 +3727,41 @@
    "measure": {
     "kind": "words",
     "words": {
-     "brak": 0.036438,
-     "literatura": 0.078278,
-     "o": 0.008881,
-     "praca": 0.044403,
-     "pracodawcy": 0.092743,
-     "pracy": 0.044403,
-     "pracę": 0.044495,
-     "trudno": 0.052368,
-     "zatrudnienie": 0.09906
+     "brak": 0.048948,
+     "literatura": 0.090552,
+     "o": 0.017488,
+     "praca": 0.06003,
+     "pracodawcy": 0.125572,
+     "pracy": 0.060387,
+     "pracę": 0.059904,
+     "trudno": 0.07157,
+     "zatrudnienie": 0.128631
     },
-    "space": 0.007324,
-    "edge": 0.00625,
-    "original_lines": 5,
-    "letter_height": 45.0,
-    "template": [
-     0.224331,
-     0.32616,
-     0.321522,
-     0.361497,
-     0.270473
-    ]
+    "space": 0.001676,
+    "edge": 0.0,
+    "field": {
+     "source_lines": 5,
+     "template": [
+      0.256772,
+      0.387122,
+      0.366506,
+      0.422745,
+      0.324036
+     ],
+     "letter_height": 45.0,
+     "max_width": 0.984375,
+     "height_lines": null,
+     "breaks": [
+      1,
+      2,
+      4,
+      7
+     ],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {
@@ -3562,20 +3782,85 @@
    "measure": {
     "kind": "words",
     "words": {
-     "JAPONII": 0.117908,
-     "KODEKSÓW": 0.164722,
-     "KOMPLET": 0.139966,
-     "SZEŚCIU": 0.122192
+     "JAPONII": 0.118814,
+     "KODEKSÓW": 0.165938,
+     "KOMPLET": 0.141255,
+     "SZEŚCIU": 0.123249
     },
-    "space": 0.007617,
-    "edge": 0.004063,
-    "original_lines": 3,
-    "letter_height": 78.0,
-    "template": [
-     0.226088,
-     0.1539,
-     0.145755
-    ]
+    "space": 0.005189,
+    "edge": 0.0,
+    "field": {
+     "source_lines": 3,
+     "template": [
+      0.226088,
+      0.1539,
+      0.145755
+     ],
+     "letter_height": 78.0,
+     "max_width": 0.96875,
+     "height_lines": null,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
+   }
+  },
+  {
+   "id": "s34",
+   "source": "owner review of the v4 hard gallery 20.10 (image 07)",
+   "scope": "core",
+   "pair": "corpus-pairs/grand-blue-s2-02",
+   "event": 465,
+   "text": "Mam chusteczkę haftowaną Papierowe sumo Patrz w drugą stronę",
+   "field": {
+    "kind": "sign",
+    "original": "Drop the Handkerchief Paper Sumo Look the Other Way",
+    "tags": "{\\fs51}",
+    "max_width_px": 945
+   },
+   "accept": [
+    {
+     "lines": [
+      "Mam chusteczkę haftowaną",
+      "Papierowe sumo Patrz w drugą stronę"
+     ],
+     "fx": 1.0,
+     "fy": 1.0
+    }
+   ],
+   "accept_rule": "lines:2",
+   "note": "one line shrunk to the minimum scale is too small (owner); two lines at full size win",
+   "measure": {
+    "kind": "words",
+    "words": {
+     "Mam": 0.066944,
+     "Papierowe": 0.13286,
+     "Patrz": 0.068872,
+     "chusteczkę": 0.136469,
+     "drugą": 0.076021,
+     "haftowaną": 0.133029,
+     "stronę": 0.082664,
+     "sumo": 0.071022,
+     "w": 0.026748
+    },
+    "space": 0.000896,
+    "edge": 0.0,
+    "field": {
+     "source_lines": 1,
+     "template": [
+      0.7651
+     ],
+     "letter_height": 51.0,
+     "max_width": 0.492188,
+     "height_lines": null,
+     "breaks": [],
+     "style_breaks": [],
+     "blocks": [],
+     "runs": [],
+     "anchor_row": 0
+    }
    }
   },
   {

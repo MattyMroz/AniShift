@@ -164,7 +164,7 @@ _EMPTY_PER_LINE: Final[int] = 2
 """Empty lines taking the height of one text line: libass draws an empty line at half the font height."""
 
 _SHAPED_WORD_SHARE: Final[float] = 0.5
-"""Share of its source line a lone word must fill to follow the source shape of a sign instead of being an orphan."""
+"""Share of the widest source line a lone word must fill to follow the source shape of a sign, not be an orphan."""
 
 _HEADING_WORDS: Final[int] = 3
 """Most words of a leading label ending in a colon where a multi-line displayed text prefers to end its first line."""
@@ -199,43 +199,46 @@ HARMS: Final[tuple[str, ...]] = (
 
 WEIGHTS: Final[Mapping[str, float]] = MappingProxyType(
     {
-        "length_comfortable": 238.846,
-        "length_wide": 219.673,
+        "length_comfortable": 383.185,
+        "length_wide": 327.485,
         "cut_sentence": 0.001,
-        "cut_clause": 0.001,
+        "cut_clause": 4.23126,
         "cut_ellipsis": 0.001,
         "cut_parenthetical": 0.001,
         "cut_dash": 0.001,
-        "cut_before_subordinator": 0.001,
-        "cut_before_coordinator": 0.00109549,
-        "cut_before_preposition": 6.82371,
-        "cut_phrase": 6.82371,
-        "cut_auxiliary": 45.8768,
-        "cut_modifier": 7.82371,
-        "cut_abbreviation": 6.82371,
-        "cut_after_opener": 28.3193,
-        "cut_degree": 26.8993,
-        "cut_particle": 19.8194,
-        "cut_prepositional": 6.82371,
-        "cut_name": 45.8768,
-        "cut_after_preposition": 45.8768,
-        "cut_negation": 45.8768,
-        "cut_reflexive": 45.8768,
-        "cut_clitic": 45.8768,
-        "cut_number": 45.8768,
-        "cut_idiom": 45.8768,
-        "cut_label": 45.8768,
-        "cut_repetition": 45.8768,
-        "cut_after_single_letter": 45.8768,
-        "agreement": 6.78055,
-        "heading_joined": 3.43002,
-        "imbalance_20": 1.33344,
-        "shape_25": 6.97381,
-        "top_longer": 0.434595,
-        "extra_line": 49.1568,
-        "squeeze": 124.395,
-        "shrink": 115.008,
-        "over_comfort": 217.231,
+        "cut_before_subordinator": 4.23126,
+        "cut_before_coordinator": 4.23126,
+        "cut_before_preposition": 10.3113,
+        "cut_phrase": 6.06785,
+        "cut_auxiliary": 64.0625,
+        "cut_modifier": 14.9513,
+        "cut_abbreviation": 10.3113,
+        "cut_after_opener": 51.7048,
+        "cut_degree": 43.6857,
+        "cut_particle": 115.193,
+        "cut_prepositional": 15.1706,
+        "cut_name": 115.193,
+        "cut_after_preposition": 115.193,
+        "cut_negation": 115.193,
+        "cut_reflexive": 115.193,
+        "cut_clitic": 115.193,
+        "cut_number": 115.193,
+        "cut_idiom": 115.193,
+        "cut_label": 115.193,
+        "cut_repetition": 115.193,
+        "cut_after_single_letter": 115.193,
+        "agreement": 14.9711,
+        "heading_joined": 13.7682,
+        "imbalance_20": 10.6106,
+        "shape_25": 10.3447,
+        "top_longer": 0.462511,
+        "extra_line": 70.8332,
+        "squeeze": 56.4993,
+        "shrink": 41.5978,
+        "over_comfort": 313.167,
+        "squeeze_deep": 405.509,
+        "shrink_deep": 405.509,
+        "imbalance_6": 0.629178,
     }
 )
 """Harm weights from the layout calibration (docs/work/10-quality/research/text-layout-calibration.md)."""
@@ -556,10 +559,10 @@ def _imbalance_harms(case: _Case, chars: int, index: int, count: int) -> dict[st
 
 
 def _follows_shape(case: _Case, place: tuple[int, int, int, int]) -> bool:
-    start, _, index, count = place
+    start, _, _, count = place
     if not case.field.template or count > case.field.preferred_lines:
         return False
-    return case.measure(case.words[start], 1.0) >= _SHAPED_WORD_SHARE * _template_width(case.field, index)
+    return case.measure(case.words[start], 1.0) >= _SHAPED_WORD_SHARE * max(case.field.template)
 
 
 def _exempt_orphan(case: _Case, start: int) -> bool:

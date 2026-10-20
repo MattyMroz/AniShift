@@ -33,10 +33,10 @@ if TYPE_CHECKING:
     from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
     from anishift.services.subtitles.geometry import RenderProfile
-    from anishift.services.subtitles.layout import Field, Layout
+    from anishift.services.subtitles.layout import Field, Layout, Measure
     from anishift.services.subtitles.types import LayoutReport
 
-__all__ = ["fit_signs"]
+__all__ = ["fit_signs", "sign_input"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -114,6 +114,16 @@ class _Fitted:
 
 
 @dataclass(frozen=True, slots=True)
+class _Prepared:
+    """A sign as the layout core sees it: the source as shown, word moves, field and line measure."""
+
+    shown: str
+    moves: Mapping[int, int]
+    field: Field
+    measure: Measure
+
+
+@dataclass(frozen=True, slots=True)
 class _Scene:
     """Events of both files with the fitted texts so far and the rectangles of neighbours already measured."""
 
@@ -150,6 +160,21 @@ def fit_signs(
 
 
 # ── Objects ───────────────────────────────────────────────────────────────────
+
+
+def sign_input(source: SSAEvent, event: SSAEvent, profile: RenderProfile) -> tuple[str, Field, Measure]:
+    """Return the translated words of a sign, the field the layout core places them in and their line measure."""
+    words: tuple[str, ...] = _words(event.text)
+    prepared: _Prepared = _prepared(source, event, words, profile)
+    return " ".join(words), prepared.field, prepared.measure
+
+
+def _prepared(source: SSAEvent, event: SSAEvent, words: tuple[str, ...], profile: RenderProfile) -> _Prepared:
+    shown: str = wrap_text(source, source.text, profile)
+    moves, forced = _structure(source, shown, event, words, profile)
+    tagged: str = _moved(event.text, words, moves)
+    field: Field = _field(source, shown, event, tagged, forced, profile)
+    return _Prepared(shown, moves, field, tagged_measure(event, tagged, profile))
 
 
 def _buckets(target: SSAFile) -> dict[int, list[int]]:
@@ -208,14 +233,9 @@ def _fit_object(group: tuple[int, ...], scene: _Scene, report: LayoutReport) -> 
     words: tuple[str, ...] = _words(event.text)
     if style is None or not words or visible_text(source.text) == visible_text(event.text):
         return None
-    shown: str = wrap_text(source, source.text, scene.profile)
-    moves, forced = _structure(source, shown, event, words, scene.profile)
-    tagged: str = _moved(event.text, words, moves)
-    layouts: list[Layout] = ranked(
-        " ".join(words),
-        _field(source, shown, event, tagged, forced, scene.profile),
-        tagged_measure(event, tagged, scene.profile),
-    )
+    prepared: _Prepared = _prepared(source, event, words, scene.profile)
+    shown, moves = prepared.shown, prepared.moves
+    layouts: list[Layout] = ranked(" ".join(words), prepared.field, prepared.measure)
     spacing: tuple[int, ...] = _spacing(visible_verses(shown))
     members: list[_Member] = _on_screen(
         [_member(index, _moved(scene.target[index].text, words, moves), spacing, scene) for index in group],

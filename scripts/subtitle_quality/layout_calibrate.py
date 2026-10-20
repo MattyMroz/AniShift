@@ -74,7 +74,7 @@ CUT_HARMS: Final[tuple[str, ...]] = tuple(f"cut_{kind.value}" for kind in GapKin
 """Harm names of the cut classes, ranked by ``TIERS``."""
 
 MEASURE_TOLERANCE: Final[float] = 0.01
-"""Width share a dialogue decision must survive: whole lines measure up to 0.94% narrower than catalogue word sums."""
+"""Width share a dialogue decision must survive either way: production and catalogue widths differ by about 1%."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,9 +118,10 @@ def case_pairs(case: CatalogueCase, *, morphology: bool) -> tuple[list[np.ndarra
             continue
         if layout.rescue < best.rescue:
             conflicts.append(" / ".join(layout.lines))
-        elif layout.rescue == best.rescue:
+            continue
+        if layout.rescue == best.rescue:
             hard.append(vector(layout) - vector(best))
-            hard.extend(_robust_rows(layout, best, shifted))
+        hard.extend(_robust_rows(layout, best, shifted))
     soft: list[np.ndarray] = []
     if case.soft and len(case.accept) > 1:
         alternative: list[Layout] = [layout for layout in found if layout.lines == case.accept[1].lines]
@@ -138,7 +139,7 @@ def _shifted(case: CatalogueCase, *, morphology: bool) -> list[dict[tuple[str, .
                 case.text, case.field, lambda line, fx, f=factor: case.measure(line, fx) * f, morphology=morphology
             )
         }
-        for factor in (1 - MEASURE_TOLERANCE,)
+        for factor in (1 - MEASURE_TOLERANCE, 1 + MEASURE_TOLERANCE)
     ]
 
 
