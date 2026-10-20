@@ -377,3 +377,16 @@ def test_one_line_sign_with_a_leading_label_stays_one_line() -> None:
     tags: str = r"{\an1\pos(1065,536)\frz18\fs60}"
     result: str = _fit(tags + "Born 4/20 ~ 5/20", tags + "Urodzeni: 21.03 – 19.04", info=_FULL_HD)
     assert visible_verses(result) == ("Urodzeni: 21.03 – 19.04",)
+
+
+@pytest.mark.unit
+def test_text_blocks_keep_the_empty_lines_and_never_shrink_vertically() -> None:
+    result: str = _fit(
+        r"{\an7\pos(10,10)}Has a tea ceremony license\N\N\N\N\N\NKnowledgeable",
+        r"{\an7\pos(10,10)}Posiada licencję mistrzyni ceremonii herbacianej, wszechstronnie wyedukowana",
+        SSAStyle(fontsize=60),
+        info=_FULL_HD,
+    )
+    text_lines: list[str] = [verse for verse in visible_verses(result) if verse]
+    assert [tag for tag, _ in _scales(result) if tag == "fscy"] == []
+    assert len(visible_verses(result)) == len(text_lines) + 5 - 2 * (len(text_lines) - 2)

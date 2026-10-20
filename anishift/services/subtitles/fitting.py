@@ -5,13 +5,14 @@ from __future__ import annotations
 import math
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import pairwise
 from typing import TYPE_CHECKING, Final
 
 from anishift.services.subtitles.classifier import sung
 from anishift.services.subtitles.geometry import (
     Rect,
+    alignment,
     anchor_reach,
     font_size,
     measure_text,
@@ -219,7 +220,8 @@ def _field(  # noqa: PLR0913 - the source as shown, the anchored translation and
     region: Rect = _region(source.text, profile)
     reach: float = anchor_reach(event, profile, region.left, region.right) / profile.play_res_x
     changes: tuple[bool, ...] = style_changes(event, tagged, profile)
-    return sign_field(
+    blocks, runs = _blocks(verses)
+    field: Field = sign_field(
         source_lines=max(1, len(template)),
         template=() if sung(source) else template,
         letter_height=font_size(event, profile) * _SCREEN_HEIGHT / profile.play_res_y,
@@ -228,6 +230,27 @@ def _field(  # noqa: PLR0913 - the source as shown, the anchored translation and
         breaks=forced,
         style_breaks=frozenset(gap for gap, change in enumerate(changes) if change),
     )
+    if len(blocks) < _LIST_ITEMS or not template:
+        return field
+    return replace(field, blocks=blocks, runs=runs, anchor_row=(alignment(event, profile) - 1) // 3)
+
+
+def _blocks(verses: Sequence[str]) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    blocks: list[int] = []
+    runs: list[int] = []
+    empty: int = 0
+    for verse in verses:
+        if not verse:
+            empty += 1
+            continue
+        if blocks and empty:
+            runs.append(empty)
+            blocks.append(0)
+        if not blocks:
+            blocks.append(0)
+        blocks[-1] += 1
+        empty = 0
+    return tuple(blocks), tuple(runs)
 
 
 def _structure(
@@ -481,7 +504,7 @@ def _inset(rect: Rect, uncertainty: float) -> Rect:
 
 
 def _render(member: _Member, layout: Layout, profile: RenderProfile) -> str:
-    text: str = _spaced(reflow_visible_text(member.text, layout.lines), member.spacing)
+    text: str = _spaced(reflow_visible_text(member.text, layout.lines), member.spacing, layout.spacing)
     style: SSAStyle | None = profile.styles.get(member.event.style)
     if layout.scale == Scale() or style is None:
         return text
@@ -494,17 +517,18 @@ def _scaled(text: str, scale: Scale, style: SSAStyle, styles: Mapping[str, SSASt
     return "{" + prefix + scaled[1:] if scaled.startswith("{") else "{" + prefix + "}" + scaled
 
 
-def _spaced(text: str, spacing: tuple[int, ...]) -> str:
+def _spaced(text: str, spacing: tuple[int, ...], blocks: tuple[int, ...]) -> str:
     pieces: list[str] = text.split(_BREAK)
     sources: int = len(spacing) - 1
     lines: int = len(pieces)
-    after: list[int] = [0] * lines
-    for line in range(1, sources):
+    after: list[int] = [*blocks[1:-1], 0] if len(blocks) == lines + 1 else [0] * lines
+    for line in range(1, sources if not blocks else 1):
         if lines > 1:
             after[min(lines - 1, max(1, round(line * lines / sources))) - 1] += spacing[line]
     joined: str = "".join(piece + _BREAK * (1 + after[index]) for index, piece in enumerate(pieces[:-1])) + pieces[-1]
     prefix: str = _prefix(joined)
-    return prefix + _BREAK * spacing[0] + joined[len(prefix) :] + _BREAK * spacing[-1]
+    before, behind = (blocks[0], blocks[-1]) if blocks else (0, 0)
+    return prefix + _BREAK * (spacing[0] + before) + joined[len(prefix) :] + _BREAK * (spacing[-1] + behind)
 
 
 def _prefix(text: str) -> str:

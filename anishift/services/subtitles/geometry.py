@@ -27,6 +27,7 @@ __all__ = [
     "Rect",
     "RenderProfile",
     "TextBox",
+    "alignment",
     "anchor_reach",
     "available_width",
     "font_size",
@@ -292,6 +293,11 @@ def anchor_reach(event: SSAEvent, profile: RenderProfile, left: float, right: fl
     anchor: float = start if parse.anchors is None else parse.anchors[0][0]
     reach: float = (right - anchor, 2 * min(anchor - left, right - anchor), anchor - left)[column]
     return min(max(0.0, reach), right - left)
+
+
+def alignment(event: SSAEvent, profile: RenderProfile) -> int:
+    """Return the numpad alignment libass places the event with."""
+    return _parse(event, event.text, profile, final=False).alignment
 
 
 def rotated(event: SSAEvent, text: str, profile: RenderProfile) -> bool:
