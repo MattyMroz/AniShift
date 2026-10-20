@@ -369,3 +369,10 @@ def test_ragged_source_shape_keeps_a_short_line_where_the_source_had_one() -> No
     assert len(lines) == 3
     assert len(lines[1]) < len(lines[0])
     assert len(lines[1]) < len(lines[2])
+
+
+@pytest.mark.unit
+def test_one_line_sign_with_a_leading_label_stays_one_line() -> None:
+    tags: str = r"{\an1\pos(1065,536)\frz18\fs60}"
+    result: str = _fit(tags + "Born 4/20 ~ 5/20", tags + "Urodzeni: 21.03 – 19.04", info=_FULL_HD)
+    assert visible_verses(result) == ("Urodzeni: 21.03 – 19.04",)

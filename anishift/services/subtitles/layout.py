@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cache, lru_cache
 from itertools import combinations, pairwise
@@ -136,7 +136,7 @@ _SIGN_LINES: Final[int] = 3
 """Fewest lines a displayed field allows, so a one-line source may still take two or three (catalogue calibration)."""
 
 _HEADING_WORDS: Final[int] = 3
-"""Most words of a leading label ending in a colon that heads displayed text on its own line (owner, 20.10)."""
+"""Most words of a leading label ending in a colon that ends the first line of a multi-line displayed text."""
 
 _ENUMERATED_LINES: Final[int] = 3
 """Most lines whose every split is enumerated; longer layouts come from dynamic programming (spec §5.1)."""
@@ -283,7 +283,7 @@ def ranked(
     found: list[Layout] = _enumerated(case)
     if field.rescue_lines > _ENUMERATED_LINES:
         best: _Bound = min(((layout.rescue, layout.score(weights)) for layout in found), default=_NO_BOUND)
-        found.extend(_programmed(case, weights, best))
+        found.extend(_programmed(replace(case, forced=case.forced | case.heading), weights, best))
     return sorted(found, key=lambda layout: (layout.rescue, layout.score(weights)))
 
 
@@ -297,6 +297,7 @@ class _Case:
     quotes: tuple[tuple[int, int], ...]
     forced: frozenset[int]
     released: frozenset[int]
+    heading: frozenset[int]
     chars: int
     field: Field
     measure: Measure
@@ -309,8 +310,7 @@ def _case(text: str, field: Field, measure: Measure, *, morphology: bool) -> _Ca
     turns: frozenset[int] = frozenset(index for index, gap in enumerate(found) if gap.turn and field.speaker_lines)
     cached: Measure = cache(measure)
     heading: int | None = heading_break(words) if field.headings else None
-    headings: frozenset[int] = frozenset() if heading is None else frozenset({heading})
-    forced: frozenset[int] = field.breaks | _list_breaks(words, field, cached) | turns | headings
+    forced: frozenset[int] = field.breaks | _list_breaks(words, field, cached) | turns
     fits: bool = len(forced) < field.rescue_lines
     return _Case(
         words=words,
@@ -318,6 +318,7 @@ def _case(text: str, field: Field, measure: Measure, *, morphology: bool) -> _Ca
         quotes=quote_spans(words),
         forced=forced if fits else frozenset(),
         released=frozenset() if fits else forced,
+        heading=frozenset() if heading is None or not fits else frozenset({heading}),
         chars=_chars(" ".join(words)),
         field=field,
         measure=cached,
@@ -343,7 +344,7 @@ def _splits(case: _Case) -> Iterator[tuple[int, ...]]:
     allowed: list[int] = [index for index in range(len(case.gaps)) if _allowed_cut(case, index)]
     for lines in range(1, min(case.field.rescue_lines, _ENUMERATED_LINES) + 1):
         for cuts in combinations(allowed, lines - 1):
-            if case.forced <= set(cuts):
+            if case.forced <= set(cuts) and (not cuts or case.heading <= set(cuts)):
                 yield cuts
 
 
@@ -444,7 +445,7 @@ def _line_shape(case: _Case, place: tuple[int, int, int, int]) -> _Part:
     start, end, index, count = place
     harms: dict[str, float] = _imbalance_harms(case, _chars(" ".join(case.words[start:end])), index, count)
     flags: list[Flag] = [Flag.JOINED for cut in case.released if start <= cut < end - 1]
-    mixed: int = sum(start <= cut < end - 1 for cut in case.field.style_breaks - case.forced)
+    mixed: int = sum(start <= cut < end - 1 for cut in case.field.style_breaks - case.forced - case.heading)
     if mixed:
         harms["mixed_style"] = float(mixed)
     if mixed and case.field.style_rescue:
@@ -457,7 +458,7 @@ def _line_shape(case: _Case, place: tuple[int, int, int, int]) -> _Part:
         harms[f"cut_{gap.kind.value}"] = 1.0
         if case.morphology and agrees(case.words[cut], case.words[end]):
             harms["agreement"] = 1.0
-        if gap.protected and cut not in case.forced | case.released:
+        if gap.protected and cut not in case.forced | case.released | case.heading:
             flags.append(Flag.BOUND_PAIR)
     return _Part(harms=harms, outside=0, flags=tuple(flags))
 
@@ -503,7 +504,7 @@ def _imbalance_harms(case: _Case, chars: int, index: int, count: int) -> dict[st
 
 
 def _exempt_orphan(case: _Case, start: int) -> bool:
-    if start - 1 in case.forced | case.released or (start > 0 and case.gaps[start - 1].turn):
+    if start - 1 in case.forced | case.released | case.heading or (start > 0 and case.gaps[start - 1].turn):
         return True
     return start == 0 and case.words[0][:1] in DASHES and any(gap.turn for gap in case.gaps)
 

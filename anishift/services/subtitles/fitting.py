@@ -242,11 +242,11 @@ def _structure(
     ends: set[int] = _verse_ends(visible_verses(shown))
     at_end: list[bool] = [gap in ends for gap, change in enumerate(style_changes(source, shown, profile)) if change]
     if len(changes) != len(words) - 1 or len(at_end) != len(found):
-        return {}, frozenset(structural)
+        return {}, authored
     edges: list[int] = [gap for gap, end in zip(found, at_end, strict=True) if end]
     if structural and len(edges) == len(structural):
         return dict(zip(edges, structural, strict=True)), frozenset(structural)
-    return {}, frozenset(structural) | frozenset(edges)
+    return {}, authored | frozenset(edges)
 
 
 def _positions(shown: str, translated: str) -> frozenset[int]:

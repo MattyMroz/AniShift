@@ -355,9 +355,18 @@ def test_heading_break_follows_a_leading_label_of_up_to_three_words(words: tuple
 
 
 @pytest.mark.unit
-def test_sign_field_gives_a_leading_label_its_own_line() -> None:
-    field: Field = sign_field(source_lines=1, template=(1.0,), letter_height=60.0)
-    assert lay_out("Odcinek drugi: Maska", field, chars_measure).lines == ("Odcinek drugi:", "Maska")
+def test_sign_field_ends_the_first_of_several_lines_after_a_leading_label() -> None:
+    template: tuple[float, ...] = (chars_measure("Odcinek drugi:", 1.0), chars_measure("Chłopiec w masce", 1.0))
+    field: Field = sign_field(source_lines=2, template=template, letter_height=60.0)
+    assert lay_out("Odcinek drugi: Chłopiec w masce", field, chars_measure).lines == (
+        "Odcinek drugi:",
+        "Chłopiec w masce",
+    )
+
+
+def test_leading_label_never_adds_a_line_to_a_one_line_sign() -> None:
+    field: Field = sign_field(source_lines=1, template=(chars_measure("Born 4/20 ~ 5/20", 1.0),), letter_height=60.0)
+    assert lay_out("Urodzeni: 21.03 – 19.04", field, chars_measure).lines == ("Urodzeni: 21.03 – 19.04",)
 
 
 @pytest.mark.unit
