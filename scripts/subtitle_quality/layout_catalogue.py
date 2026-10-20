@@ -18,6 +18,7 @@ from anishift.services.subtitles.fitting import sign_input
 from anishift.services.subtitles.geometry import RenderProfile, measure_text
 from anishift.services.subtitles.layout import Field, Flag, Layout, chars_measure, dialogue_field, sign_field
 from anishift.services.subtitles.linebreak import tagged_line
+from anishift.services.subtitles.restyle import DialogueFont, restyle_signs, with_family
 from anishift.services.subtitles.service import load_subtitles, split_subtitles
 from anishift.text.gaps import TIERS, GapKind, gaps
 from scripts.subtitle_quality.episode import FONTS_NAME, SOURCE_NAME, pair_fonts
@@ -252,25 +253,25 @@ def _cuts(layout: Layout) -> list[tuple[str, str]]:
 # ── Measurement ───────────────────────────────────────────────────────────────
 
 
-def measure_catalogue(path: Path, quality_root: Path, fonts: Path) -> int:
+def measure_catalogue(path: Path, quality_root: Path, font: DialogueFont) -> int:
     """Write word, space and field measurements into every core case taken from a script; return their count."""
     document: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
     measured: int = 0
     for entry in document["cases"]:
         if entry["scope"] != "core" or "pair" not in entry:
             continue
-        entry["measure"] = _measurement(entry, quality_root, fonts)
+        entry["measure"] = _measurement(entry, quality_root, font)
         measured += 1
     path.write_text(json.dumps(document, ensure_ascii=False, indent=1) + "\n", encoding="utf-8", newline="\n")
     return measured
 
 
-def _measurement(entry: dict[str, Any], quality_root: Path, fonts: Path) -> dict[str, Any]:
+def _measurement(entry: dict[str, Any], quality_root: Path, font: DialogueFont) -> dict[str, Any]:
     pair: Path = Path(entry["pair"])
     subs: SSAFile = load_subtitles(quality_root / BASELINE / pair.parent / f"{pair.name}.pl.ass")
     folder: Path = quality_root / pair / FONTS_NAME
     episode: list[Path] = sorted(folder.iterdir()) if folder.is_dir() else []
-    index: FontIndex = FontIndex.build([*episode, *sorted(fonts.iterdir())], system_font_paths())
+    index: FontIndex = FontIndex.build([*episode, *font.files], system_font_paths())
     profile: RenderProfile = RenderProfile.from_subs(subs, index)
     event: SSAEvent = [line for line in subs if line.type == "Dialogue"][entry["event"]]
     spec: dict[str, Any] = entry["field"]
@@ -289,16 +290,21 @@ def _measurement(entry: dict[str, Any], quality_root: Path, fonts: Path) -> dict
         "edge": round(edge, 6),
     }
     if spec["kind"] == "sign":
-        return _production_measurement(entry, quality_root)
+        return _production_measurement(entry, quality_root, font)
     return result
 
 
-def _production_measurement(entry: dict[str, Any], quality_root: Path) -> dict[str, Any]:
+def _production_measurement(entry: dict[str, Any], quality_root: Path, font: DialogueFont) -> dict[str, Any]:
     split: SubtitleSplit = split_subtitles(load_subtitles(quality_root / entry["pair"] / SOURCE_NAME), kind="ass")
+    restyled, clones = restyle_signs(split.subs, split.decisions, font)
     fonts: FontSources = pair_fonts(quality_root / entry["pair"])
-    profile: RenderProfile = RenderProfile.from_subs(split.subs, FontIndex.build(fonts.episode, fonts.system))
-    source: SSAEvent = [line for line in split.subs if line.type == "Dialogue"][entry["event"]]
+    index: FontIndex = FontIndex.build((*fonts.episode, *font.files), fonts.system)
+    profile: RenderProfile = RenderProfile.from_subs(restyled, index)
+    source: SSAEvent = [line for line in restyled if line.type == "Dialogue"][entry["event"]]
     target: SSAEvent = source.copy()
+    if entry["event"] in clones:
+        target.style = clones[entry["event"]]
+        target.text = with_family(target.text, font.family)
     target.text = tagged_line(target, _positioned(entry), profile)
     text, field, measure = sign_input(source, target, profile)
     tokens: list[str] = text.split(" ")
@@ -354,11 +360,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
         prog="python -m scripts.subtitle_quality.layout_catalogue"
     )
-    parser.add_argument("--fonts", type=Path, required=True, help="folder with the owner's dialogue font files")
+    parser.add_argument("--dialogue-font", type=Path, required=True, help="font file drawing dialogue and signs")
     parser.add_argument("--quality-root", type=Path, default=default_workspace_dir() / ".quality")
     parser.add_argument("--catalogue", type=Path, default=CATALOGUE)
     arguments: argparse.Namespace = parser.parse_args(argv)
-    count: int = measure_catalogue(arguments.catalogue, arguments.quality_root, arguments.fonts)
+    font: DialogueFont = DialogueFont.from_file(arguments.dialogue_font)
+    count: int = measure_catalogue(arguments.catalogue, arguments.quality_root, font)
     print(f"measured {count} cases into {arguments.catalogue}")
     return 0
 

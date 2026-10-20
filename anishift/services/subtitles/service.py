@@ -34,11 +34,9 @@ from anishift.services.subtitles.geometry import RenderProfile, TextBox, measure
 from anishift.services.subtitles.layout import Flag
 from anishift.services.subtitles.linebreak import DialogueLayout, layout_dialogue, tagged_line
 from anishift.services.subtitles.restyle import (
-    attached_names,
     clone_source,
     restyle_dialogue,
     restyle_signs,
-    unpolished_names,
     with_family,
 )
 from anishift.services.subtitles.signs import static_weights
@@ -583,10 +581,8 @@ def layout_translated(
     plain: dict[int, str] = {}
     if dialogue_font is not None:
         source = restyle_dialogue(source, split.decisions, dialogue_font, report)
-    if dialogue_font is not None and fonts is not None and split.kind == "ass":
-        source, plain = restyle_signs(
-            source, split.decisions, dialogue_font, attached_names(fonts.episode), unpolished_names(fonts.episode)
-        )
+    if dialogue_font is not None and split.kind == "ass":
+        source, plain = restyle_signs(source, split.decisions, dialogue_font)
     profile: RenderProfile = RenderProfile.from_subs(source, _font_index(fonts, dialogue_font))
     texts: dict[int, str] = _event_translations(split, translations)
     out: SSAFile = _copy_metadata(source)

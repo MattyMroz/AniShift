@@ -135,7 +135,7 @@ Fraza przyimkowa przez przymiotnik była najpierw chroniona; wtedy q11 („Magia
 
 ## Jak liczono
 
-Narzędzie: `python -m scripts.subtitle_quality.layout_calibrate --out <plik.json>` (z `--quality-root` wskazującym `workspace/.quality`). Katalog z pomiarami: `tests/services/subtitles/data/text_layout_catalogue.json` (odświeża go `python -m scripts.subtitle_quality.layout_catalogue --fonts <folder czcionek mpv>`).
+Narzędzie: `python -m scripts.subtitle_quality.layout_calibrate --out <plik.json>` (z `--quality-root` wskazującym `workspace/.quality`). Katalog z pomiarami: `tests/services/subtitles/data/text_layout_catalogue.json` (odświeża go `python -m scripts.subtitle_quality.layout_catalogue --dialogue-font <plik czcionki dialogów>`).
 
 | Element | Ustawienie | Źródło |
 | --- | --- | --- |

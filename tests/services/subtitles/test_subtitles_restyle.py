@@ -288,36 +288,24 @@ _SIGN_DECISIONS: Final[tuple[Decision, ...]] = ("spoken", *("displayed",) * 7)
 
 
 @pytest.mark.unit
-def test_restyle_signs_moves_plain_system_font_signs_to_a_clone_drawn_with_the_dialogue_font() -> None:
-    restyled, clones = restyle_signs(_signs(), _SIGN_DECISIONS, _FONT, frozenset({"grobold"}))
+def test_restyle_signs_moves_every_displayed_text_to_a_clone_drawn_with_the_dialogue_font() -> None:
+    restyled, clones = restyle_signs(_signs(), _SIGN_DECISIONS, _FONT)
 
-    assert clones == {1: "Sign (dialog)", 7: "Sign (dialog)"}
+    assert clones == dict.fromkeys((1, 3, 4, 5, 6, 7), "Sign (dialog)") | {2: "Typeset (dialog)"}
     assert restyled.styles["Sign (dialog)"].fontname == _FAMILY
+    assert restyled.styles["Typeset (dialog)"].fontname == _FAMILY
     assert restyled.styles["Sign"].fontname == "Arial"
 
 
 @pytest.mark.unit
-def test_restyle_signs_keeps_signs_with_attached_fonts_or_fitted_to_the_picture() -> None:
-    _, clones = restyle_signs(_signs(), _SIGN_DECISIONS, _FONT, frozenset({"grobold"}))
+def test_restyle_signs_keeps_drawings_and_karaoke_in_their_style() -> None:
+    subs: SSAFile = _signs()
+    subs.events[1].text = r"{\p1}m 0 0 l 10 0 10 10"
+    subs.events[2].text = r"{\k20}Shop"
 
-    assert not {2, 3, 4, 5, 6} & clones.keys()
+    _, clones = restyle_signs(subs, _SIGN_DECISIONS, _FONT)
 
-
-@pytest.mark.unit
-def test_restyle_signs_moves_a_plain_sign_in_a_system_font_the_release_attached() -> None:
-    _, clones = restyle_signs(_signs(), _SIGN_DECISIONS, _FONT, frozenset({"arial", "times new roman", "grobold"}))
-
-    assert clones == {1: "Sign (dialog)", 7: "Sign (dialog)"}
-
-
-@pytest.mark.unit
-def test_restyle_signs_moves_a_typeset_sign_whose_attached_font_lacks_polish_letters() -> None:
-    restyled, clones = restyle_signs(
-        _signs(), _SIGN_DECISIONS, _FONT, frozenset({"grobold"}), unpolished=frozenset({"grobold"})
-    )
-
-    assert clones == {1: "Sign (dialog)", 2: "Typeset (dialog)", 7: "Sign (dialog)"}
-    assert restyled.styles["Typeset (dialog)"].fontname == _FAMILY
+    assert not {1, 2} & clones.keys()
 
 
 @pytest.mark.unit
@@ -325,7 +313,7 @@ def test_restyle_signs_reuses_the_dialogue_clone_of_the_sign_style() -> None:
     subs: SSAFile = _signs()
     subs.styles["Sign (dialog)"] = SSAStyle(fontname=_FAMILY)
 
-    restyled, clones = restyle_signs(subs, _SIGN_DECISIONS, _FONT, frozenset())
+    restyled, clones = restyle_signs(subs, _SIGN_DECISIONS, _FONT)
 
     assert clones[1] == "Sign (dialog)"
     assert "Sign (dialog 2)" not in restyled.styles

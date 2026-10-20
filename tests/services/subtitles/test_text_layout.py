@@ -105,11 +105,11 @@ def test_numbered_list_items_start_lines_when_each_fits() -> None:
         (_TEXTS[3], "W następnym odcinku „The Iceblade", "Sorcerer Shall Rule the World”:", Flag.QUOTE),
     ],
 )
-def test_avoided_harms_raise_the_rescue_level(text: str, upper: str, lower: str, flag: Flag) -> None:
+def test_avoided_harms_are_flagged_and_weighted(text: str, upper: str, lower: str, flag: Flag) -> None:
     layout: Layout = _find(candidates(text, dialogue_field(), chars_measure), upper, lower)
 
     assert flag in layout.flags
-    assert layout.rescue[2] >= 1
+    assert layout.harms[f"flag_{flag.value}"] >= 1
 
 
 @pytest.mark.unit

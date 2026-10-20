@@ -1,9 +1,9 @@
-"""Owner's dialogue font and the dialogue and plain sign styles drawn with it."""
+"""Owner's dialogue font and the dialogue and sign styles drawn with it."""
 
 from __future__ import annotations
 
 import re
-from collections import Counter, defaultdict
+from collections import Counter
 from copy import copy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
@@ -12,7 +12,7 @@ from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.fonts import FontFace, polish_missing, read_faces
 from anishift.services.fonts.index import family_name
 from anishift.services.subtitles.errors import SubtitleError
-from anishift.services.subtitles.text import RE_TAG_BLOCK, is_drawing, is_karaoke, visible_text
+from anishift.services.subtitles.text import RE_TAG_BLOCK, is_drawing, is_karaoke
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
@@ -24,11 +24,9 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DialogueFont",
-    "attached_names",
     "clone_source",
     "restyle_dialogue",
     "restyle_signs",
-    "unpolished_names",
     "with_family",
 ]
 
@@ -45,24 +43,6 @@ _RE_NAMED_RESET: Final[re.Pattern[str]] = re.compile(r"\\r([^\\}]+)")
 
 _RE_FONT_NAME: Final[re.Pattern[str]] = re.compile(r"\\fn([^\\}]*)")
 """ASS ``\\fn<name>`` font override; an empty name restores the style font."""
-
-_RE_FITTED: Final[re.Pattern[str]] = re.compile(r"\\(?:i?clip|fr[xy]|fa[xy]|t\s*\(|move\s*\()")
-"""Overrides fitting a sign to the picture: masks, perspective, shear, animation and motion."""
-
-_RE_SOFTENED: Final[re.Pattern[str]] = re.compile(r"\\(?:blur|be)\s*([0-9]*\.?[0-9]+)")
-"""Edge blur override with its strength."""
-
-_RE_WORD_COLOUR: Final[re.Pattern[str]] = re.compile(r"[^\s}]\{[^}]*\\1?c\s*&H[^}]*\}(?=[^\s{])")
-"""Primary colour change between two letters of one word, the mark of a gradient."""
-
-_SYSTEM_FAMILIES: Final[frozenset[str]] = frozenset(
-    {
-        "arial", "arial black", "arial narrow", "times new roman", "verdana", "georgia", "trebuchet ms",
-        "comic sans ms", "tahoma", "segoe ui", "calibri", "cambria", "garamond", "courier new", "impact", "roboto",
-        "open sans", "noto sans", "noto serif", "liberation sans", "liberation serif", "dejavu sans",
-    }
-)  # fmt: skip
-"""Casefolded common system font families that mark no typesetting work even when a release attaches them."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,43 +81,20 @@ def restyle_dialogue(subs: SSAFile, decisions: Sequence[Decision], font: Dialogu
     return out
 
 
-def attached_names(paths: Sequence[Path]) -> frozenset[str]:
-    """Return the casefolded family, full and PostScript names of the font files attached to an episode."""
-    return frozenset(name for path in paths for face in read_faces(path) for name in _face_names(face))
+def restyle_signs(subs: SSAFile, decisions: Sequence[Decision], font: DialogueFont) -> tuple[SSAFile, dict[int, str]]:
+    """Return a copy with a clone drawn with the font for each sign style, and the clone of each displayed text.
 
-
-def unpolished_names(paths: Sequence[Path]) -> frozenset[str]:
-    """Return the casefolded names of the attached font faces that cannot draw every Polish letter."""
-    return frozenset(
-        name for path in paths for face in read_faces(path) if polish_missing(face) for name in _face_names(face)
-    )
-
-
-def restyle_signs(
-    subs: SSAFile,
-    decisions: Sequence[Decision],
-    font: DialogueFont,
-    attached: frozenset[str],
-    unpolished: frozenset[str] = frozenset(),
-) -> tuple[SSAFile, dict[int, str]]:
-    """Return a copy with a clone drawn with the font for each plain sign style, and the clone of each plain sign.
-
-    A plain sign is a displayed event drawn with a font without every Polish letter, or only with common system
-    fonts or fonts not attached to the episode, without overrides fitting it to the picture and without a layered
-    copy of its text; its clone is keyed by its Dialogue index.
+    Every displayed event with text moves to its clone; drawings and karaoke keep their style. Clones are keyed by
+    Dialogue index.
     """
     dialogue: list[SSAEvent] = [event for event in subs.events if event.type == "Dialogue"]
-    by_text: defaultdict[str, list[SSAEvent]] = defaultdict(list)
-    for event in dialogue:
-        by_text[visible_text(event.text)].append(event)
     plain: list[int] = [
         index
         for index, (event, decision) in enumerate(zip(dialogue, decisions, strict=True))
         if decision != "spoken"
-        and (
-            bool(_font_keys(event, subs.styles) & unpolished)
-            or (_plain(event, subs.styles, attached) and not _layered(event, by_text[visible_text(event.text)]))
-        )
+        and event.style in subs.styles
+        and not is_drawing(event.text)
+        and not is_karaoke(event.text)
     ]
     if not plain:
         return subs, {}
@@ -210,35 +167,6 @@ def _family_copy(style: SSAStyle, family: str) -> SSAStyle:
     clone: SSAStyle = style.copy()
     clone.fontname = family
     return clone
-
-
-def _plain(event: SSAEvent, styles: Mapping[str, SSAStyle], attached: frozenset[str]) -> bool:
-    if event.style not in styles or is_drawing(event.text) or is_karaoke(event.text):
-        return False
-    if _font_keys(event, styles) & attached - _SYSTEM_FAMILIES:
-        return False
-    tags: str = "".join(RE_TAG_BLOCK.findall(event.text))
-    softened: bool = any(float(strength) > 0 for strength in _RE_SOFTENED.findall(tags))
-    return not (softened or _RE_FITTED.search(tags) or _RE_WORD_COLOUR.search(event.text))
-
-
-def _font_keys(event: SSAEvent, styles: Mapping[str, SSAStyle]) -> set[str]:
-    style: SSAStyle | None = styles.get(event.style)
-    if style is None or is_drawing(event.text):
-        return set()
-    tags: str = "".join(RE_TAG_BLOCK.findall(event.text))
-    names: list[str] = [style.fontname, *(name for name in _RE_FONT_NAME.findall(tags) if name)]
-    return {name.strip().lstrip("@").casefold() for name in names}
-
-
-def _face_names(face: FontFace) -> tuple[str, ...]:
-    return tuple(name for name in (*face.family_names, *face.full_names, face.postscript_name) if name)
-
-
-def _layered(event: SSAEvent, same_text: Sequence[SSAEvent]) -> bool:
-    return any(
-        other.layer != event.layer and other.start < event.end and event.start < other.end for other in same_text
-    )
 
 
 def _restyled_events(

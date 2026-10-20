@@ -193,52 +193,55 @@ HARMS: Final[tuple[str, ...]] = (
     "shrink_deep",
     "small",
     "over_comfort",
+    *(f"flag_{flag.value}" for flag in Flag if flag not in {Flag.OUTSIDE, Flag.EXTRA_LINE}),
 )
 """Names of the harm degrees a layout is scored on, in the order of the calibration report."""
 
 
 WEIGHTS: Final[Mapping[str, float]] = MappingProxyType(
     {
-        "length_comfortable": 383.185,
-        "length_wide": 327.485,
-        "cut_sentence": 0.001,
-        "cut_clause": 4.23126,
-        "cut_ellipsis": 0.001,
-        "cut_parenthetical": 0.001,
-        "cut_dash": 0.001,
-        "cut_before_subordinator": 4.23126,
-        "cut_before_coordinator": 4.23126,
-        "cut_before_preposition": 10.3113,
-        "cut_phrase": 6.06785,
-        "cut_auxiliary": 64.0625,
-        "cut_modifier": 14.9513,
-        "cut_abbreviation": 10.3113,
-        "cut_after_opener": 51.7048,
-        "cut_degree": 43.6857,
-        "cut_particle": 115.193,
-        "cut_prepositional": 15.1706,
-        "cut_name": 115.193,
-        "cut_after_preposition": 115.193,
-        "cut_negation": 115.193,
-        "cut_reflexive": 115.193,
-        "cut_clitic": 115.193,
-        "cut_number": 115.193,
-        "cut_idiom": 115.193,
-        "cut_label": 115.193,
-        "cut_repetition": 115.193,
-        "cut_after_single_letter": 115.193,
-        "agreement": 14.9711,
-        "heading_joined": 13.7682,
-        "imbalance_20": 10.6106,
-        "shape_25": 10.3447,
-        "top_longer": 0.462511,
-        "extra_line": 70.8332,
-        "squeeze": 56.4993,
-        "shrink": 41.5978,
-        "over_comfort": 313.167,
-        "squeeze_deep": 405.509,
-        "shrink_deep": 405.509,
-        "imbalance_6": 0.629178,
+        "length_comfortable": 146.222,
+        "length_wide": 122.678,
+        "cut_sentence": 5.78707,
+        "cut_clause": 5.78707,
+        "cut_ellipsis": 5.78707,
+        "cut_parenthetical": 5.78707,
+        "cut_dash": 5.78707,
+        "cut_before_subordinator": 5.78707,
+        "cut_before_coordinator": 5.78707,
+        "cut_before_preposition": 8.07075,
+        "cut_phrase": 7.07694,
+        "cut_auxiliary": 29.4486,
+        "cut_modifier": 12.3777,
+        "cut_abbreviation": 8.07075,
+        "cut_after_opener": 23.4762,
+        "cut_degree": 22.6936,
+        "cut_particle": 19.471,
+        "cut_prepositional": 9.03899,
+        "cut_name": 29.4486,
+        "cut_after_preposition": 32.4317,
+        "cut_negation": 29.4486,
+        "cut_reflexive": 29.4486,
+        "cut_clitic": 29.4486,
+        "cut_number": 29.4486,
+        "cut_idiom": 32.4317,
+        "cut_label": 29.4486,
+        "cut_repetition": 29.4486,
+        "cut_after_single_letter": 32.4317,
+        "agreement": 8.1042,
+        "heading_joined": 1.0,
+        "imbalance_20": 0.354799,
+        "shape_25": 3.351,
+        "top_longer": 0.163951,
+        "extra_line": 21.6051,
+        "squeeze": 226.665,
+        "shrink": 136.581,
+        "over_comfort": 129.7,
+        "imbalance_6": 0.330617,
+        "shape_6": 2.21302e-06,
+        "flag_quote": 19.6934,
+        "flag_orphan": 19.4178,
+        "flag_shrunk": 22.8036,
     }
 )
 """Harm weights from the layout calibration (docs/work/10-quality/research/text-layout-calibration.md)."""
@@ -462,12 +465,14 @@ def _evaluate(case: _Case, cuts: tuple[int, ...], scale: Scale) -> Layout:
         flags.append(Flag.SMALL)
     if field.scalable and min(scale.fx, scale.fy) < _MIN_SCALE:
         flags.append(Flag.SHRUNK)
+    for flag in flags:
+        harms[f"flag_{flag.value}"] = harms.get(f"flag_{flag.value}", 0.0) + 1.0
     rescue_flags: list[Flag] = [flag for flag, on in ((Flag.OUTSIDE, outside), (Flag.EXTRA_LINE, extra)) if on]
     return Layout(
         lines=_lines(case.words, cuts),
         scale=scale,
         harms=harms,
-        rescue=(outside, extra, len(flags)),
+        rescue=(outside, extra, 0),
         flags=frozenset(flags + rescue_flags),
     )
 
@@ -706,11 +711,11 @@ class _Costs:
 
     def _shape(self, start: int, end: int, index: int, count: int) -> tuple[int, float]:
         part: _Part = _line_shape(self.case, (start, end, index, count))
-        return len(part.flags), self._score(part)
+        return 0, self._score(part)
 
     def _size(self, start: int, end: int, fx: float) -> tuple[int, int, float]:
         part: _Part = _line_size(self.case, start, end, fx)
-        return part.outside, len(part.flags), self._score(part)
+        return part.outside, 0, self._score(part)
 
     def _template(self, start: int, end: int, fx: float, index: int) -> float:
         harms: dict[str, float] = _over_template(self.case, (start, end, index, 0), fx)
@@ -720,7 +725,8 @@ class _Costs:
         return _chars(" ".join(self.case.words[start:end]))
 
     def _score(self, part: _Part) -> float:
-        return sum(self._weights.get(name, 0.0) * degree for name, degree in part.harms.items())
+        harms: float = sum(self._weights.get(name, 0.0) * degree for name, degree in part.harms.items())
+        return harms + sum(self._weights.get(f"flag_{flag.value}", 0.0) for flag in part.flags)
 
 
 class _Solver:
@@ -945,12 +951,14 @@ def _joined(  # noqa: PLR0913 - the block layouts with the gaps between them
             harms[name] = harms.get(name, 0.0) + degree
     for gap, cut in zip(between, bounds, strict=True):
         harms[f"cut_{gap.kind.value}"] = harms.get(f"cut_{gap.kind.value}", 0.0) + 1.0
+        if gap.protected:
+            harms[f"flag_{Flag.BOUND_PAIR.value}"] = harms.get(f"flag_{Flag.BOUND_PAIR.value}", 0.0) + 1.0
         if morphology and agrees(words[cut], words[cut + 1]):
             harms["agreement"] = harms.get("agreement", 0.0) + 1.0
     rescue: tuple[int, int, int] = (
         sum(piece.rescue[0] for piece in pieces),
         sum(piece.rescue[1] for piece in pieces),
-        sum(piece.rescue[2] for piece in pieces) + sum(gap.protected for gap in between),
+        0,
     )
     return Layout(
         lines=tuple(line for piece in pieces for line in piece.lines),

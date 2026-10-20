@@ -547,17 +547,22 @@ def test_dash_between_repeated_words_joins_them() -> None:
     [
         ("Nie chcę, by rzeczy wymknęły mi się spod kontroli.", "wymknęły"),
         ("Mogłabyś przynajmniej zaśpiewać mi kołysankę.", "zaśpiewać"),
-        ("Wybacz, nie możemy cię podwieźć przy takiej pogodzie.", "cię"),
+        ("Mam wrażenie, że Pes kogoś mi przypomina...", "kogoś"),
         ("Musimy uwolnić ją spod wpływu bogini.", "uwolnić"),
         ("To nie tak, że brakuje mi pewności siebie.", "brakuje"),
-        ("Nie chcę, by mi odmówiono czegoś.", "mi"),
     ],
 )
-def test_clitic_pronoun_stays_with_the_verb_next_to_it(text: str, left: str) -> None:
+def test_clitic_pronoun_leans_on_the_word_before_it(text: str, left: str) -> None:
     words: list[str] = text.split(" ")
     gap: Gap = gaps(words, modifies, verb)[words.index(left)]
     assert gap.kind == GapKind.CLITIC
     assert gap.protected
+
+
+@pytest.mark.unit
+def test_clitic_pronoun_after_punctuation_opens_a_line_freely() -> None:
+    words: list[str] = ["Wybacz,", "cię", "nie", "podwieziemy."]
+    assert gaps(words, modifies, verb)[0].kind != GapKind.CLITIC
 
 
 @pytest.mark.unit

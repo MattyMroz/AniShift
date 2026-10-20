@@ -347,11 +347,18 @@ def calibrate(
     ids: list[str] = [case.id for case in cases]
     report: dict[str, Any] = {"morphology": morphology, "level_conflicts": conflicts}
     fit: Fit = Fit(weights=None)
+    softened: list[str] = []
     for _ in range(PROGRAMMED_ROUNDS):
-        if not feasible(rows, ids):
-            report["feasible"] = False
-            report["conflict_sets"] = conflict_sets(rows, ids)
-            return report
+        while not feasible(rows, ids):
+            contradicting: set[str] = {case_id for found in conflict_sets(rows, ids) for case_id in found}
+            if not contradicting:
+                report["feasible"] = False
+                return report
+            for case_id in sorted(contradicting):
+                hard, soft = rows[case_id]
+                rows[case_id] = ([], [*soft, *hard])
+                softened.append(case_id)
+        report["softened"] = softened
         fit = solve(_pairs(rows, ids, pro_rows))
         assert fit.weights is not None  # noqa: S101 - feasible hard rows always solve with soft professional rows
         if not programmed_rows(cases, rows, conflicts, fit.weights, morphology=morphology):

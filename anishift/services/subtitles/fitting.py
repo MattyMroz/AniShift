@@ -322,7 +322,7 @@ def _structure(
 ) -> tuple[dict[int, int], frozenset[int]]:
     """Return where authored size changes at source line ends move in the translation, and its forced breaks."""
     heading: int | None = heading_break(words)
-    authored: frozenset[int] = _positions(shown, event.text) or _authored_breaks(visible_verses(shown), words)
+    authored: frozenset[int] = _authored_breaks(visible_verses(shown), words)
     structural: list[int] = sorted(authored | ({heading} if heading is not None else set()))
     changes: tuple[bool, ...] = style_changes(event, event.text, profile)
     found: list[int] = [gap for gap, change in enumerate(changes) if change]
@@ -334,13 +334,6 @@ def _structure(
     if structural and len(edges) == len(structural):
         return dict(zip(edges, structural, strict=True)), frozenset(structural)
     return {}, authored | frozenset(edges)
-
-
-def _positions(shown: str, translated: str) -> frozenset[int]:
-    lines: list[str] = [verse for verse in visible_verses(translated) if verse]
-    if len(lines) < _LIST_ITEMS or len(lines) != len([verse for verse in visible_verses(shown) if verse]):
-        return frozenset()
-    return frozenset(_verse_ends(lines) - {sum(len(line.split()) for line in lines) - 1})
 
 
 def _moved(text: str, words: tuple[str, ...], moves: Mapping[int, int]) -> str:

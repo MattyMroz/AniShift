@@ -431,7 +431,7 @@ def test_translated_writer_logs_one_layout_summary_without_texts_or_absolute_pat
     assert extra["destination"] == "out.pl.ass"
     assert extra["product"] == "Translated"
     assert {key: extra[key] for key in asdict(LayoutReport())} == asdict(
-        LayoutReport(dialogue_unmeasured=1, signs_fitted=2, signs_approximate=2)
+        LayoutReport(dialogue_unmeasured=1, signs_fitted=1, signs_approximate=2)
     )
     assert str(tmp_path) not in repr(summaries[0]["extra"])
     assert "PL:" not in repr(summaries[0]["extra"])

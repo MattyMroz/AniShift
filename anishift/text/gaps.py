@@ -250,7 +250,7 @@ _REFLEXIVES: Final[frozenset[str]] = frozenset({"się", "sobie", "siebie", "sob�
 _CLITICS: Final[frozenset[str]] = frozenset(
     {"mi", "ci", "mu", "go", "ją", "je", "nas", "was", "nam", "wam", "im", "cię"}
 )
-"""Short unstressed personal pronouns kept with the verb next to them."""
+"""Short unstressed personal pronouns that lean on the word before them and never open a line."""
 
 _NEGATION: Final[str] = "nie"
 """Negation particle bound to the verb after it."""
@@ -521,7 +521,7 @@ def _bound_kinds(words: Sequence[str], index: int, modifies: Modifies | None, ve
         (GapKind.PREPOSITIONAL, phrase == GapKind.PREPOSITIONAL),
         (GapKind.NEGATION, previous == _NEGATION and word_core(_earlier(words, index)) not in PREPOSITIONS),
         (GapKind.REFLEXIVE, _reflexive(words, index)),
-        (GapKind.CLITIC, verb is not None and _clitic(words[index - 1], words[index], verb)),
+        (GapKind.CLITIC, _clitic(words[index - 1], words[index])),
         (GapKind.NUMBER, _counts(previous, following) or _numbered(previous, following)),
         (GapKind.ABBREVIATION, _tail(words[index - 1]).endswith(_FULL_STOP)),
         (GapKind.NAME, _named(words, index)),
@@ -614,12 +614,8 @@ def _reflexive(words: Sequence[str], index: int) -> bool:
     return not any(_opens(following, 0, phrases) for phrases in (CONJUNCTIONS_MULTIWORD, PREPOSITIONS_MULTIWORD))
 
 
-def _clitic(previous: str, following: str, verb: Verb) -> bool:
-    if unicodedata.category(previous[-1]).startswith("P"):
-        return False
-    if word_core(previous) in _CLITICS and verb(following):
-        return True
-    return word_core(following) in _CLITICS and verb(previous)
+def _clitic(previous: str, following: str) -> bool:
+    return not unicodedata.category(previous[-1]).startswith("P") and word_core(following) in _CLITICS
 
 
 def _follows_preposition(words: Sequence[str], index: int) -> bool:
