@@ -6,8 +6,10 @@ from pathlib import Path
 import pytest
 from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
+from anishift.services.subtitles import fitting
 from anishift.services.subtitles.fitting import fit_signs
 from anishift.services.subtitles.geometry import Rect, RenderProfile, screen_rects
+from anishift.services.subtitles.layout import Scale
 from anishift.services.subtitles.linebreak import NO_WRAP
 from anishift.services.subtitles.service import load_subtitles, split_subtitles, write_translated
 from anishift.services.subtitles.text import visible_text, visible_verses
@@ -296,6 +298,17 @@ def test_fit_signs_returns_texts_only_for_the_requested_events() -> None:
     fitted: dict[int, str] = fit_signs(subs, translated, [1], profile, LayoutReport())
     assert list(fitted) == [1]
     assert visible_text(fitted[1]) == "Czerwony"
+
+
+@pytest.mark.unit
+def test_horizontal_squeeze_writes_no_vertical_scale_that_does_not_change() -> None:
+    assert fitting._scaled(r"{\pos(1,1)}Red", Scale(0.8), SSAStyle(), {}) == r"{\fscx80\pos(1,1)}Red"
+
+
+@pytest.mark.unit
+def test_horizontal_squeeze_keeps_the_vertical_reset_of_a_full_scale_reset() -> None:
+    result: str = fitting._scaled(r"Red{\fsc}Red", Scale(0.8), SSAStyle(scaley=90), {})
+    assert result == r"{\fscx80}Red{\fscx80\fscy90}Red"
 
 
 @pytest.mark.unit

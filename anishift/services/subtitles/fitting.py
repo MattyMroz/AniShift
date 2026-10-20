@@ -473,8 +473,12 @@ def _render(member: _Member, layout: Layout, profile: RenderProfile) -> str:
     style: SSAStyle | None = profile.styles.get(member.event.style)
     if layout.scale == Scale() or style is None:
         return text
-    scaled: str = _scale_text(text, layout.scale, style, profile.styles)
-    prefix: str = _scales(style, layout.scale)
+    return _scaled(text, layout.scale, style, profile.styles)
+
+
+def _scaled(text: str, scale: Scale, style: SSAStyle, styles: Mapping[str, SSAStyle]) -> str:
+    scaled: str = _scale_text(text, scale, style, styles)
+    prefix: str = _scales(style, scale)
     return "{" + prefix + scaled[1:] if scaled.startswith("{") else "{" + prefix + "}" + scaled
 
 
@@ -497,7 +501,8 @@ def _prefix(text: str) -> str:
 
 
 def _scales(style: SSAStyle, scale: Scale) -> str:
-    return _scale_tag("fscx", style.scalex * scale.fx) + _scale_tag("fscy", style.scaley * scale.fy)
+    vertical: str = "" if scale.fy == 1 else _scale_tag("fscy", style.scaley * scale.fy)
+    return _scale_tag("fscx", style.scalex * scale.fx) + vertical
 
 
 def _scale_tag(tag: str, value: float) -> str:
@@ -514,7 +519,7 @@ def _scale_text(text: str, scale: Scale, style: SSAStyle, styles: Mapping[str, S
             return match[0] + _scales(current, scale)
         tag: str = match[1]
         if tag == "fsc":
-            return _scales(current, scale)
+            return _scale_tag("fscx", current.scalex * scale.fx) + _scale_tag("fscy", current.scaley * scale.fy)
         value: float = float(match[2]) if match[2] else getattr(current, "scale" + tag[-1])
         return _scale_tag(tag, value * (scale.fx if tag == "fscx" else scale.fy))
 
