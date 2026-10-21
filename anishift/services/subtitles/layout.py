@@ -85,6 +85,7 @@ class Field:
     pattern: tuple[float, ...] = ()
     breaks: frozenset[int] = frozenset()
     style_breaks: frozenset[int] = frozenset()
+    hidden: frozenset[int] = frozenset()
     style_rescue: bool = True
     speaker_lines: bool = False
     headings: bool = False
@@ -450,7 +451,8 @@ def _evaluate(case: _Case, cuts: tuple[int, ...], scale: Scale) -> Layout:
     bounds: tuple[int, ...] = (0, *(cut + 1 for cut in cuts), len(case.words))
     count: int = len(bounds) - 1
     harms: dict[str, float] = _global_harms(field, count, scale)
-    outside: int = int(field.height_lines is not None and count * scale.fy > field.height_lines)
+    drawn: int = sum(any(word not in field.hidden for word in range(start, end)) for start, end in pairwise(bounds))
+    outside: int = int(field.height_lines is not None and drawn * scale.fy > field.height_lines)
     flags: list[Flag] = []
     for index, (start, end) in enumerate(pairwise(bounds)):
         part: _Part = _line_part(case, (start, end, index, count), scale)
@@ -649,7 +651,7 @@ def _lower_bound(case: _Case, weights: Mapping[str, float], size: tuple[int, flo
     field: Field = case.field
     bounds: list[_Bound] = []
     for scale in _heights(case, fx):
-        tall: int = int(field.height_lines is not None and count * scale.fy > field.height_lines)
+        tall: int = int(field.height_lines is not None and not field.hidden and count * scale.fy > field.height_lines)
         harms: dict[str, float] = _global_harms(field, count, scale)
         score: float = sum(weights.get(name, 0.0) * degree for name, degree in harms.items())
         bounds.append(((tall + floor[0], max(0, count - field.max_lines), floor[1]), score + floor[2]))

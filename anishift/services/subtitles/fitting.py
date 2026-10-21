@@ -100,6 +100,14 @@ _RE_ANIMATED: Final[re.Pattern[str]] = re.compile(r"\\(?:move|t)\s*\(")
 _RE_POINT: Final[re.Pattern[str]] = re.compile(r"-?[0-9]+(?:\.[0-9]*)?")
 """Coordinate of a drawing command."""
 
+_RE_INK: Final[re.Pattern[str]] = re.compile(
+    r"\\(alpha|[134]a|bord|shad|r)(?![a-z])\s*(?:&H([0-9A-Fa-f]{1,2})&?|([0-9.]+))?"
+)
+"""Overrides deciding whether a character draws any ink: alphas, border and shadow sizes and resets."""
+
+_TRANSPARENT: Final[int] = 0xFF
+"""ASS alpha of a fully transparent part."""
+
 _PANEL_SHARE: Final[float] = 0.8
 """Share of the source text box a drawing must cover to be the panel the sign sits on."""
 
@@ -448,9 +456,39 @@ def _field(  # noqa: PLR0913 - the source as shown, the anchored translation and
         breaks=forced,
         style_breaks=frozenset(gap for gap, change in enumerate(changes) if change),
     )
+    field = replace(field, hidden=_hidden_words(event, tagged, profile))
     if len(blocks) < _LIST_ITEMS or not template:
         return field
     return replace(field, blocks=blocks, runs=runs, anchor_row=(alignment(event, profile) - 1) // 3)
+
+
+def _hidden_words(event: SSAEvent, tagged: str, profile: RenderProfile) -> frozenset[int]:
+    style: SSAStyle | None = profile.styles.get(event.style)
+    words: tuple[str, ...] = _words(tagged)
+    pieces: tuple[str, ...] | None = tagged_words(tagged, words)
+    if style is None or pieces is None:
+        return frozenset()
+    base: dict[str, float] = {
+        "1a": style.primarycolor.a, "3a": style.outlinecolor.a, "4a": style.backcolor.a,
+        "bord": float(style.outline), "shad": float(style.shadow),
+    }  # fmt: skip
+    state: dict[str, float] = dict(base)
+    hidden: set[int] = set()
+    for index, piece in enumerate(pieces):
+        for name, alpha, size in _RE_INK.findall("".join(RE_TAG_BLOCK.findall(piece))):
+            if name == "r":
+                state = dict(base)
+            elif name == "alpha" and alpha:
+                state |= dict.fromkeys(("1a", "3a", "4a"), float(int(alpha, 16)))
+            elif alpha:
+                state[name] = float(int(alpha, 16))
+            elif size:
+                state[name] = float(size)
+        outline: bool = state["bord"] > 0 and state["3a"] < _TRANSPARENT
+        shadow: bool = state["shad"] > 0 and state["4a"] < _TRANSPARENT
+        if state["1a"] >= _TRANSPARENT and not outline and not shadow:
+            hidden.add(index)
+    return frozenset(hidden)
 
 
 def _blocks(verses: Sequence[str]) -> tuple[tuple[int, ...], tuple[int, ...]]:

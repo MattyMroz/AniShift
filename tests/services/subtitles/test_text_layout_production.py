@@ -179,3 +179,24 @@ def test_sign_case_leaves_the_screen_and_covers_other_text_no_more_than_its_orig
 
     assert screen <= 1 + _TOLERANCE * (width + height) or laid_out.report.signs_fallback_screen
     assert covered <= 1 + _TOLERANCE * width * height or laid_out.report.signs_fallback_collision
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_label_with_a_transparent_line_keeps_its_size_inside_a_frame_for_one_line() -> None:
+    pair: str = "corpus-pairs/kaguya-s1-01"
+    if not (_QUALITY / pair / SOURCE_NAME).is_file() or not _OWNER_FONT.is_file():
+        pytest.skip("quality pair or the owner's dialogue font is not available")
+    split: SubtitleSplit = _split(pair)
+    labels: list[int] = [
+        index for index, event in enumerate(_dialogue(split.subs)) if visible_text(event.text) == "Fujiwara Chika"
+    ]
+    laid_out: TranslatedLayout = layout_translated(
+        split,
+        dict.fromkeys(labels, r"Chika\NFujiwara"),
+        fonts=pair_fonts(_QUALITY / pair),
+        dialogue_font=DialogueFont.from_file(_OWNER_FONT),
+    )
+
+    assert labels
+    assert all(_scale(laid_out.subs, _dialogue(laid_out.subs)[index]) == Scale() for index in labels)
