@@ -2430,12 +2430,10 @@
     {
      "lines": [
       "Sekretarz Samorządu Uczniowskiego Akademii Shuchiin"
-     ],
-     "fx": 0.8,
-     "fy": 0.8
+     ]
     }
    ],
-   "note": "board 1066 x 78 px is the frame, the English text width the comfortable width; B squeezed is acceptable but lost to C",
+   "note": "board 1066 x 78 px is the frame, the English text width the comfortable width; B squeezed is acceptable but lost to C; any one line inside the board (least evil against r03, q04, q11, s02, s03, s34)",
    "shown": [
     {
      "lines": [
@@ -2485,7 +2483,8 @@
      "runs": [],
      "anchor_row": 0
     }
-   }
+   },
+   "if_fits": true
   },
   {
    "id": "r01",
@@ -2506,12 +2505,10 @@
     {
      "lines": [
       "Oczko! Nim mrugniesz, skończysz szkołę, więc ruszaj do dzieła!"
-     ],
-     "fx": 1.0,
-     "fy": 1.0
+     ]
     }
    ],
-   "note": "song in the black band: 1770 px between the margins, band height 130 - 23 px; the full line measures about 1333 px (0.69 of the width); the owner chose one full-size line over two lines after the image was rendered again",
+   "note": "song in one line; shrunk when it does not fit (owner round 1)",
    "shown": [
     {
      "lines": [
@@ -3794,7 +3791,12 @@
      "letter_height": 45.0,
      "max_width": 0.984375,
      "height_lines": null,
-     "breaks": [],
+     "breaks": [
+      1,
+      2,
+      4,
+      7
+     ],
      "style_breaks": [],
      "blocks": [],
      "runs": [],
@@ -3854,22 +3856,18 @@
    "text": "Mam chusteczkę haftowaną Papierowe sumo Patrz w drugą stronę",
    "field": {
     "kind": "sign",
-    "original": "Drop the Handkerchief Paper Sumo Look the Other Way",
-    "tags": "{\\fs51}",
-    "max_width_px": 945
+    "original": "Drop the Handkerchief Paper Sumo Look the Other Way"
    },
    "accept": [
     {
      "lines": [
-      "Mam chusteczkę haftowaną",
-      "Papierowe sumo Patrz w drugą stronę"
+      "Mam chusteczkę haftowaną Papierowe sumo Patrz w drugą stronę"
      ],
      "fx": 1.0,
      "fy": 1.0
     }
    ],
-   "accept_rule": "lines:2",
-   "note": "one line shrunk to the minimum scale is too small (owner); two lines at full size win",
+   "note": "image 07: one full-size line fits the screen, so it beats a shrunk line and two lines (owner 21.10, images 08 and 13)",
    "measure": {
     "kind": "words",
     "words": {
@@ -3891,7 +3889,7 @@
       0.7651
      ],
      "letter_height": 51.0,
-     "max_width": 0.492188,
+     "max_width": null,
      "height_lines": null,
      "breaks": [],
      "style_breaks": [],

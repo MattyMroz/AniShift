@@ -24,6 +24,7 @@ __all__ = [
     "CHAR_WIDTH",
     "DIALOGUE_MAX_WIDTH",
     "HARMS",
+    "MIN_SCALE",
     "WEIGHTS",
     "Field",
     "Flag",
@@ -145,8 +146,8 @@ _PERCENT: Final[float] = 100.0
 _SIGN_LINES: Final[int] = 3
 """Fewest lines a displayed field allows, so a one-line source may still take two or three (catalogue calibration)."""
 
-_MIN_SCALE: Final[float] = 0.8
-"""Smallest scale (either axis) a sign takes while any layout at or above it fits (owner 21.10, images 13 and 16)."""
+MIN_SCALE: Final[float] = 0.8
+"""Smallest scale (either axis) a sign other than a song takes while any layout at or above it fits (owner 21.10)."""
 
 _BOTTOM_ROW: Final[int] = 0
 """Alignment row of text anchored at its bottom edge: ``\\an1`` to ``\\an3``."""
@@ -420,7 +421,7 @@ def _scales(case: _Case, cuts: tuple[int, ...]) -> list[Scale]:
 
 def _breakpoints(field: Field, widths: Sequence[float], targets: Sequence[float]) -> set[float]:
     points: set[float] = {target / width for target in (field.max_width, *targets) for width in widths if width > 0}
-    points.add(_MIN_SCALE)
+    points.add(MIN_SCALE)
     if field.letter_height > 0:
         points.update(height / field.letter_height for height in _SMALL_LETTERS)
     return points
@@ -463,7 +464,7 @@ def _evaluate(case: _Case, cuts: tuple[int, ...], scale: Scale) -> Layout:
     extra: int = max(0, count - field.max_lines)
     if field.scalable and 0 < field.letter_height * min(scale.fx, scale.fy) < _SMALL_LETTERS[0]:
         flags.append(Flag.SMALL)
-    if field.scalable and min(scale.fx, scale.fy) < _MIN_SCALE:
+    if field.scalable and field.template and min(scale.fx, scale.fy) < MIN_SCALE:
         flags.append(Flag.SHRUNK)
     for flag in flags:
         harms[f"flag_{flag.value}"] = harms.get(f"flag_{flag.value}", 0.0) + 1.0
@@ -472,7 +473,7 @@ def _evaluate(case: _Case, cuts: tuple[int, ...], scale: Scale) -> Layout:
         lines=_lines(case.words, cuts),
         scale=scale,
         harms=harms,
-        rescue=(outside, extra, int(Flag.SHRUNK in flags)),
+        rescue=(outside, extra, sum(flag in {Flag.SHRUNK, Flag.MIXED} for flag in flags)),
         flags=frozenset(flags + rescue_flags),
     )
 
@@ -834,7 +835,7 @@ def _block_bounds(
         return [tuple(ends[sum(field.blocks[: block + 1]) - 1] for block in range(count - 1))]
     width: Callable[[int, int], float] = _span_width(words, measure)
     cuts: list[_BlockKey] = [_cut_key(words, found, cut, weights, morphology=morphology) for cut in range(len(found))]
-    steps: range = range(round(_MIN_SCALE / _BLOCK_SCALE_STEP), round(1 / _BLOCK_SCALE_STEP) + 1)
+    steps: range = range(round(MIN_SCALE / _BLOCK_SCALE_STEP), round(1 / _BLOCK_SCALE_STEP) + 1)
     return list(dict.fromkeys(_bounds_at(field, width, cuts, step * _BLOCK_SCALE_STEP, weights) for step in steps))
 
 

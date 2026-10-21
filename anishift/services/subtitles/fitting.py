@@ -21,11 +21,12 @@ from anishift.services.subtitles.geometry import (
     style_changes,
     wrap_text,
 )
-from anishift.services.subtitles.layout import Flag, Scale, heading_break, ranked, sign_field
+from anishift.services.subtitles.layout import MIN_SCALE, Flag, Scale, heading_break, ranked, sign_field
 from anishift.services.subtitles.linebreak import NO_WRAP, tagged_measure, tagged_words, without_wrap
 from anishift.services.subtitles.text import RE_TAG_BLOCK, is_drawing, reflow_visible_text, visible_text, visible_verses
 from anishift.text.boundaries import BREAKABLE_SPACES
-from anishift.text.gaps import DASHES
+from anishift.text.gaps import DASHES, gaps
+from anishift.text.morphology import modifies, verb
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -151,10 +152,12 @@ def fit_signs(
             objects.append(fitted)
             scene.fitted.update(fitted.texts)
     for kit in _kits(objects):
-        scale: Scale = Scale(min(item.layout.scale.fx for item in kit), min(item.layout.scale.fy for item in kit))
-        changed: list[_Fitted] = [item for item in kit if item.layout.scale != scale]
+        fx: float = min(max(item.layout.scale.fx, MIN_SCALE) for item in kit)
+        fy: float = min(max(item.layout.scale.fy, MIN_SCALE) for item in kit)
+        changed: list[_Fitted] = [item for item in kit if item.layout.scale.fx > fx or item.layout.scale.fy > fy]
         report.sign_sets_scaled += bool(changed)
         for item in changed:
+            scale: Scale = Scale(min(item.layout.scale.fx, fx), min(item.layout.scale.fy, fy))
             scene.fitted.update(_texts(item.members, replace(item.layout, scale=scale), profile))
     return {index: scene.fitted.get(index, target[index].text) for index in signs}
 
@@ -322,7 +325,9 @@ def _structure(
 ) -> tuple[dict[int, int], frozenset[int]]:
     """Return where authored size changes at source line ends move in the translation, and its forced breaks."""
     heading: int | None = heading_break(words)
-    authored: frozenset[int] = _authored_breaks(visible_verses(shown), words)
+    authored: frozenset[int] = (frozenset() if sung(source) else _translator_breaks(shown, event.text, words)) or (
+        _authored_breaks(visible_verses(shown), words)
+    )
     structural: list[int] = sorted(authored | ({heading} if heading is not None else set()))
     changes: tuple[bool, ...] = style_changes(event, event.text, profile)
     found: list[int] = [gap for gap, change in enumerate(changes) if change]
@@ -334,6 +339,14 @@ def _structure(
     if structural and len(edges) == len(structural):
         return dict(zip(edges, structural, strict=True)), frozenset(structural)
     return {}, authored | frozenset(edges)
+
+
+def _translator_breaks(shown: str, translated: str, words: tuple[str, ...]) -> frozenset[int]:
+    lines: list[str] = [verse for verse in visible_verses(translated) if verse]
+    if len(lines) < _LIST_ITEMS or len(lines) != len([verse for verse in visible_verses(shown) if verse]):
+        return frozenset()
+    bound: frozenset[int] = frozenset(index for index, gap in enumerate(gaps(words, modifies, verb)) if gap.protected)
+    return frozenset(_verse_ends(lines) - {len(words) - 1}) - bound
 
 
 def _moved(text: str, words: tuple[str, ...], moves: Mapping[int, int]) -> str:
