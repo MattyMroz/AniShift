@@ -288,6 +288,7 @@ logs/
 # ── Project-specific — fill in, delete the rest ──────────────────────────────
 workspace/**
 external/bin/*
+external/fonts/
 config/settings.json
 config/presets.json
 config/watch/
