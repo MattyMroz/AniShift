@@ -543,7 +543,11 @@ def _member_excess(layout: Layout, member: _Member, profile: RenderProfile) -> t
     rects: tuple[Rect, ...] = screen_rects(member.event, NO_WRAP + _render(member, layout, profile), profile)
     loss_x, loss_y = _loss(rects, member.region)
     base_x, base_y = member.lost
-    screen: float = max(0.0, loss_x - base_x - _PIXEL, loss_y - base_y - _PIXEL)
+    framed: bool = member.region != Rect(0, 0, profile.play_res_x, profile.play_res_y)
+    slack: float = member.uncertainty if framed else 0.0
+    width: float = max((rect.right - rect.left for rect in rects), default=0.0)
+    height: float = max((rect.bottom - rect.top for rect in rects), default=0.0)
+    screen: float = max(0.0, loss_x - base_x - _PIXEL - slack * width, loss_y - base_y - _PIXEL - slack * height)
     grown: float = _overlap(rects, member.near, member.uncertainty) - _overlap(member.rects, member.near, 0.0)
     return screen, max(0.0, grown - _PIXEL)
 
