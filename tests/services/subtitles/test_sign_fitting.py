@@ -351,6 +351,14 @@ def test_sign_that_libass_would_wrap_gets_the_shared_no_wrap_override() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("translated", [r"Obczaj\N to,\hjoł", r"Obczaj\N to,\h joł", r"Obczaj to,\N\hjoł"])
+def test_translation_lines_joined_by_a_hard_space_still_get_a_layout(translated: str) -> None:
+    result: str = _fit(r"{\pos(960,100)}Check it\N out, yo", r"{\pos(960,100)}" + translated)
+
+    assert "joł" in visible_text(result)
+
+
+@pytest.mark.unit
 def test_ragged_source_shape_keeps_a_short_line_where_the_source_had_one() -> None:
     result: str = _fit(
         r"{\an9\pos(1900,10)\fs40}This is a work of fiction and more\Nshort line\Nanother long line of the notice",

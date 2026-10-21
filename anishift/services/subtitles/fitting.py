@@ -345,6 +345,8 @@ def _translator_breaks(shown: str, translated: str, words: tuple[str, ...]) -> f
     lines: list[str] = [verse for verse in visible_verses(translated) if verse]
     if len(lines) < _LIST_ITEMS or len(lines) != len([verse for verse in visible_verses(shown) if verse]):
         return frozenset()
+    if sum(len([word for word in BREAKABLE_SPACES.split(line) if word]) for line in lines) != len(words):
+        return frozenset()
     bound: frozenset[int] = frozenset(index for index, gap in enumerate(gaps(words, modifies, verb)) if gap.protected)
     return frozenset(_verse_ends(lines) - {len(words) - 1}) - bound
 
@@ -376,7 +378,7 @@ def _verse_ends(verses: Sequence[str]) -> set[int]:
     ends: set[int] = set()
     count: int = 0
     for verse in verses:
-        count += len(verse.split())
+        count += len([word for word in BREAKABLE_SPACES.split(verse) if word])
         ends.add(count - 1)
     return ends
 
