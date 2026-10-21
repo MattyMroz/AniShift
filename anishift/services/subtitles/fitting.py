@@ -579,8 +579,9 @@ def _overlap(rects: Sequence[Rect], others: Sequence[Rect], uncertainty: float) 
 
 
 def _inset(rect: Rect, uncertainty: float) -> Rect:
-    delta: float = uncertainty * max(0.0, rect.right - rect.left) / 2
-    return Rect(rect.left + delta, rect.top + delta, rect.right - delta, rect.bottom - delta)
+    across: float = uncertainty * max(0.0, rect.right - rect.left) / 2
+    down: float = uncertainty * max(0.0, rect.bottom - rect.top) / 2
+    return Rect(rect.left + across, rect.top + down, rect.right - across, rect.bottom - down)
 
 
 # ── Writing ───────────────────────────────────────────────────────────────────
