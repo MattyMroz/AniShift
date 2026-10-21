@@ -1,12 +1,18 @@
-"""Report ASS font references and the limits of attachment-name evidence."""
+"""Find the fonts ASS subtitles name, check them by family and choose the font files a container gains."""
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
-__all__ = ["attachment_font_names", "font_embedding_warnings", "font_names", "missing_fonts"]
+from anishift.services.fonts import FontIndex, FontMatch
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+__all__ = ["attachment_font_names", "font_attachments", "font_embedding_warnings", "font_names", "used_font_files"]
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -18,6 +24,9 @@ _INLINE_FONT: Final[re.Pattern[str]] = re.compile(r"\\fn([^\\}]+)")
 
 _FONT_SUFFIXES: Final[frozenset[str]] = frozenset({".ttf", ".otf", ".ttc", ".woff", ".woff2"})
 """Attachment extensions treated as fonts."""
+
+_PRESENCE_WEIGHT: Final[int] = 400
+"""Weight asked for when only whether a font name is carried matters, not which variant draws it."""
 
 
 def font_names(subtitle: Path) -> frozenset[str]:
@@ -38,14 +47,56 @@ def attachment_font_names(attachment_names: tuple[str, ...]) -> frozenset[str]:
     )
 
 
-def missing_fonts(subtitle: Path, available: frozenset[str]) -> tuple[str, ...]:
-    """Compare references against caller-verified, case-folded font families."""
-    referenced: frozenset[str] = font_names(subtitle)
-    missing: set[str] = {name for name in referenced if name.casefold() not in available}
-    return tuple(sorted(missing))
+def font_embedding_warnings(subtitles: Sequence[Path], fonts: Sequence[Path]) -> tuple[str, ...]:
+    """Return a warning for every font the subtitles name that no face of the given font files carries."""
+    index: FontIndex = FontIndex.build(fonts, ())
+    return tuple(f"font not embedded: {name}" for name in sorted(_used_names(subtitles)) if not _carried(index, name))
 
 
-def font_embedding_warnings(subtitle: Path, attachment_names: tuple[str, ...]) -> tuple[str, ...]:
-    """Distinguish absent font attachments from unverified family metadata."""
-    prefix: str = "font embedding not verified" if attachment_font_names(attachment_names) else "font not embedded"
-    return tuple(f"{prefix}: {name}" for name in sorted(font_names(subtitle)))
+def used_font_files(fonts: Sequence[Path], subtitles: Sequence[Path]) -> tuple[Path, ...]:
+    """Return the font files carrying a font name the subtitles use in a style or an inline override."""
+    names: frozenset[str] = _used_names(subtitles)
+    return tuple(path for path in fonts if _carries_any(FontIndex.build((path,), ()), names))
+
+
+def font_attachments(fonts: Sequence[Path], present: Sequence[Path]) -> tuple[tuple[Path, str], ...]:
+    """Return each font file to add with a free attachment name, skipping content the container already has."""
+    digests: set[str] = {_digest(path) for path in present}
+    names: set[str] = {path.name.casefold() for path in present}
+    chosen: list[tuple[Path, str]] = []
+    for path in fonts:
+        digest: str = _digest(path)
+        if digest in digests:
+            continue
+        name: str = _free_name(path, names)
+        digests.add(digest)
+        names.add(name.casefold())
+        chosen.append((path, name))
+    return tuple(chosen)
+
+
+def _used_names(subtitles: Sequence[Path]) -> frozenset[str]:
+    return frozenset(name for subtitle in subtitles for name in font_names(subtitle))
+
+
+def _carries_any(index: FontIndex, names: frozenset[str]) -> bool:
+    return any(_carried(index, name) for name in names)
+
+
+def _carried(index: FontIndex, name: str) -> bool:
+    match: FontMatch | None = index.match(name, weight=_PRESENCE_WEIGHT, italic=False)
+    return match is not None and match.exact
+
+
+def _free_name(path: Path, taken: set[str]) -> str:
+    name: str = path.name
+    number: int = 1
+    while name.casefold() in taken:
+        number += 1
+        name = f"{path.stem} ({number}){path.suffix}"
+    return name
+
+
+def _digest(path: Path) -> str:
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()

@@ -6,10 +6,11 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Final, Protocol
+from typing import TYPE_CHECKING, Final, Protocol
 
 from anishift.application.artifacts import Artifact, ArtifactKind
 from anishift.application.cancellation import CancellationToken
+from anishift.application.episode_fonts import MAX_LAYOUT_INPUTS, episode_fonts
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
 from anishift.application.planning import PlanTask, TaskKind
 from anishift.application.results import ArtifactSnapshot, ProducedArtifact, TaskResult
@@ -18,35 +19,40 @@ from anishift.application.task_paths import task_staging_path
 from anishift.errors import ExecutionError
 from anishift.services.subtitles import (
     DisplayedLine,
+    FontSources,
     SpokenLine,
     SubtitleKind,
     SubtitleSplit,
     is_drawing,
     load_subtitles,
+    marked_text,
     read_txt,
     split_subtitles,
     spoken_to_srt,
     subtitle_kind,
-    visible_text,
-    visible_verses,
     write_translated,
 )
+from anishift.services.translation.chunk_config import ChunkConfig
 from anishift.services.translation.errors import TranslationError
-from anishift.services.translation.layout_config import LayoutConfig
-from anishift.services.translation.linebreak import split_for_layout, split_line
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
-from anishift.services.translation.types import FileTranslation
+from anishift.services.translation.types import FileTranslation, TranslatedLine
+from anishift.text.markers import SPAN_MARKER, strip_span_markers
+
+if TYPE_CHECKING:
+    from pysubs2 import SSAEvent
+
+    from anishift.services.subtitles.restyle import DialogueFont
 
 __all__ = [
     "TextDocument",
     "TextFragment",
     "TranslationTaskHandler",
-    "TranslationVerses",
     "displayed_lines",
     "read_text_document",
+    "spoken_lines",
     "text_spoken_lines",
     "translate_subtitle_split",
-    "translation_verses",
+    "translated_texts",
     "write_text_document",
 ]
 
@@ -116,14 +122,6 @@ class _ProgressObserver:
 
 
 @dataclass(frozen=True, slots=True)
-class TranslationVerses:
-    """Layout-aware translated streams used by legacy and graph adapters."""
-
-    displayed: tuple[tuple[str, ...], ...]
-    spoken: tuple[tuple[str, ...], ...]
-
-
-@dataclass(frozen=True, slots=True)
 class TextFragment:
     """One translator-sized piece of a plain text document, identified by its place in it."""
 
@@ -153,19 +151,21 @@ class TextDocument:
 class TranslationTaskHandler:
     """Translate one subtitle artifact and write a complete Polish staging file."""
 
-    __slots__ = ("_layout", "_run_root", "_service")
+    __slots__ = ("_chunk_config", "_dialogue_font", "_run_root", "_service")
 
     def __init__(
         self,
         service: TranslationExecutor,
         *,
         run_root: Path,
-        layout: LayoutConfig | None = None,
+        chunk_config: ChunkConfig | None = None,
+        dialogue_font: DialogueFont | None = None,
     ) -> None:
         """Bind one configured translation facade to the run scope."""
         self._service: TranslationExecutor = service
         self._run_root: Path = run_root
-        self._layout: LayoutConfig = layout if layout is not None else LayoutConfig()
+        self._chunk_config: ChunkConfig = chunk_config if chunk_config is not None else ChunkConfig()
+        self._dialogue_font: DialogueFont | None = dialogue_font
 
     def execute(
         self,
@@ -178,8 +178,8 @@ class TranslationTaskHandler:
         if task.kind is not TaskKind.TRANSLATE_SUBTITLES:
             msg = "Translation handler received a non-translation task"
             raise ExecutionError(msg)
-        if len(task.requires) != 1 or len(task.produces) != 1:
-            msg = "Translation task must have exactly one input and output"
+        if not 1 <= len(task.requires) <= MAX_LAYOUT_INPUTS or len(task.produces) != 1:
+            msg = "Translation task must have one source, an optional source container and one output"
             raise ExecutionError(msg)
         source: Artifact = artifacts.require_ready(task.requires[0])
         if source.path is None or source.kind not in {ArtifactKind.SOURCE_SUBTITLES, ArtifactKind.STANDALONE_TEXT}:
@@ -201,7 +201,7 @@ class TranslationTaskHandler:
         else:
             result, written = self._translate_subtitles(
                 task,
-                source,
+                artifacts,
                 output,
                 _output_kind(task, output),
                 cancel,
@@ -234,7 +234,7 @@ class TranslationTaskHandler:
         if parameters.get("source_kind") != "txt" or parameters.get("output_format") != "txt" or source.path is None:
             msg = "Text document translation requires source_kind=txt and a txt output"
             raise ExecutionError(msg)
-        document: TextDocument = read_text_document(read_txt(source.path), self._layout)
+        document: TextDocument = read_text_document(read_txt(source.path), self._chunk_config)
         spoken: tuple[SpokenLine, ...] = tuple(
             SpokenLine(start=0, end=0, text=fragment.text, style=fragment.identity) for fragment in document.fragments
         )
@@ -248,7 +248,7 @@ class TranslationTaskHandler:
         _require_complete_translation(result, spoken, ())
         cancel.raise_if_cancelled()
         destination: Path = task_staging_path(self._run_root, task, output, ".txt")
-        translated: tuple[str, ...] = tuple(line.text for line in result.spoken)
+        translated: tuple[str, ...] = tuple(strip_span_markers(line.text) for line in result.spoken)
         return result, write_text_document(document, translated, destination)
 
     def _translate_text(
@@ -263,7 +263,7 @@ class TranslationTaskHandler:
         if parameters.get("source_kind") != "txt" or output.subtitle_format != "srt" or source.path is None:
             msg = "Text translation requires source_kind=txt and an SRT output"
             raise ExecutionError(msg)
-        spoken: tuple[SpokenLine, ...] = text_spoken_lines(read_txt(source.path), self._layout)
+        spoken: tuple[SpokenLine, ...] = text_spoken_lines(read_txt(source.path), self._chunk_config)
         result: FileTranslation = self._service.translate_file(
             list(spoken),
             [],
@@ -274,17 +274,21 @@ class TranslationTaskHandler:
         _require_complete_translation(result, spoken, ())
         cancel.raise_if_cancelled()
         destination: Path = task_staging_path(self._run_root, task, output, ".srt")
-        return result, spoken_to_srt(result.spoken, destination) if result.is_success else None
+        plain: tuple[TranslatedLine, ...] = tuple(
+            replace(line, text=strip_span_markers(line.text)) for line in result.spoken
+        )
+        return result, spoken_to_srt(plain, destination) if result.is_success else None
 
     def _translate_subtitles(  # noqa: PLR0913 - exact task and runtime dependencies stay explicit
         self,
         task: PlanTask,
-        source: Artifact,
+        artifacts: ArtifactSnapshot,
         output: Artifact,
         output_kind: SubtitleKind,
         cancel: CancellationToken,
         observer: TranslationObserver,
     ) -> tuple[FileTranslation, Path | None]:
+        source: Artifact = artifacts.require_ready(task.requires[0])
         if source.path is None:
             msg = "Translation subtitle source requires a runtime path"
             raise ExecutionError(msg)
@@ -293,15 +297,20 @@ class TranslationTaskHandler:
             msg = "Translation source must be ASS or SRT"
             raise ExecutionError(msg)
         split: SubtitleSplit = split_subtitles(load_subtitles(source.path), kind=source_kind)
+        fonts: FontSources = episode_fonts(self._run_root, task, artifacts, output)
         result: FileTranslation = translate_subtitle_split(self._service, split, cancel, observer=observer)
         if not result.is_success:
             return result, None
-        _require_complete_translation(result, split.spoken, displayed_lines(split))
+        _require_complete_translation(result, spoken_lines(split), displayed_lines(split))
         cancel.raise_if_cancelled()
-        verses: TranslationVerses = translation_verses(split, result, self._layout)
-        output_split: SubtitleSplit = replace(split, kind=output_kind)
         destination: Path = task_staging_path(self._run_root, task, output, f".{output_kind}")
-        written: Path | None = write_translated(output_split, verses.displayed, verses.spoken, destination)
+        written: Path | None = write_translated(
+            replace(split, kind=output_kind),
+            translated_texts(split, result),
+            destination,
+            fonts=fonts,
+            dialogue_font=self._dialogue_font,
+        )
         return result, written
 
 
@@ -343,7 +352,7 @@ def translate_subtitle_split(
 ) -> FileTranslation:
     """Translate the two streams of an existing split through one configured facade."""
     return service.translate_file(
-        list(split.spoken),
+        list(spoken_lines(split)),
         list(displayed_lines(split)),
         source_lang="auto",
         cancel=_CancellationView(cancel),
@@ -351,11 +360,11 @@ def translate_subtitle_split(
     )
 
 
-def read_text_document(text: str, layout: LayoutConfig | None = None) -> TextDocument:
+def read_text_document(text: str, chunk_config: ChunkConfig | None = None) -> TextDocument:
     """Split one plain text document into identified paragraph fragments, keeping every blank line verbatim."""
     from anishift.services.translation.chunking import chunk_text, split_paragraphs  # noqa: PLC0415 - keep engines lazy
 
-    limits: LayoutConfig = layout if layout is not None else LayoutConfig()
+    limits: ChunkConfig = chunk_config if chunk_config is not None else ChunkConfig()
     fragments: list[TextFragment] = []
     breaks: list[str] = []
     for paragraph, raw in enumerate(split_paragraphs(text)):
@@ -395,24 +404,30 @@ def write_text_document(document: TextDocument, translated: Sequence[str], desti
     return destination
 
 
-def text_spoken_lines(text: str, layout: LayoutConfig | None = None) -> tuple[SpokenLine, ...]:
+def text_spoken_lines(text: str, chunk_config: ChunkConfig | None = None) -> tuple[SpokenLine, ...]:
     """Chunk plain text hierarchically and wrap each chunk as a narrator line."""
     from anishift.services.translation.chunking import chunk_text  # noqa: PLC0415 - keep engines lazy
 
-    limits: LayoutConfig = layout if layout is not None else LayoutConfig()
+    limits: ChunkConfig = chunk_config if chunk_config is not None else ChunkConfig()
     chunks = chunk_text(text, char_limit=limits.chunk_chars, chunk_limit=limits.chunk_pieces)
     flattened = (" ".join(chunk.split()) for chunk in chunks)
     return tuple(SpokenLine(start=0, end=0, text=chunk, style="") for chunk in flattened if chunk)
 
 
+def spoken_lines(split: SubtitleSplit) -> tuple[SpokenLine, ...]:
+    """Return narrator lines as sent to the translator, with style range markers."""
+    dialogue: list[SSAEvent] = [event for event in split.subs.events if event.type == "Dialogue"]
+    return tuple(replace(line, text=_marked(dialogue[line.order], split)) for line in split.spoken)
+
+
 def displayed_lines(split: SubtitleSplit) -> tuple[DisplayedLine, ...]:
-    """Return translatable displayed events in source-file order."""
-    dialogue = [event for event in split.subs.events if event.type == "Dialogue"]
+    """Return translatable displayed events in source-file order, with style range markers."""
+    dialogue: list[SSAEvent] = [event for event in split.subs.events if event.type == "Dialogue"]
     return tuple(
         DisplayedLine(
             start=event.start,
             end=event.end,
-            text=visible_text(event.text),
+            text=_marked(event, split),
             order=order,
         )
         for order, (event, decision) in enumerate(zip(dialogue, split.decisions, strict=True))
@@ -420,33 +435,26 @@ def displayed_lines(split: SubtitleSplit) -> tuple[DisplayedLine, ...]:
     )
 
 
-def translation_verses(
-    split: SubtitleSplit,
-    result: FileTranslation,
-    layout: LayoutConfig | None = None,
-) -> TranslationVerses:
-    """Build authored displayed layout and readable spoken line breaks."""
-    limits: LayoutConfig = layout if layout is not None else LayoutConfig()
-    dialogue = [event for event in split.subs.events if event.type == "Dialogue"]
-    displayed_events = [
-        event
-        for event, decision in zip(dialogue, split.decisions, strict=True)
-        if decision == "displayed" and not is_drawing(event.text)
-    ]
-    displayed: tuple[tuple[str, ...], ...] = tuple(
-        split_for_layout(
-            text,
-            visible_verses(event.text),
-            max_chars=limits.max_chars_per_line,
-            max_lines=limits.max_lines_per_event,
-        )
-        for event, text in zip(displayed_events, result.displayed, strict=True)
-    )
-    spoken: tuple[tuple[str, ...], ...] = tuple(
-        split_line(line.text, max_chars=limits.max_chars_per_line, max_lines=limits.max_lines_per_event)
-        for line in result.spoken
-    )
-    return TranslationVerses(displayed, spoken)
+def _marked(event: SSAEvent, split: SubtitleSplit) -> str:
+    return marked_text(event.text, split.subs.styles.get(event.style))
+
+
+def translated_texts(split: SubtitleSplit, result: FileTranslation) -> dict[int, str]:
+    """Return the unbroken translation of every spoken line and displayed event by its Dialogue index."""
+    spoken: dict[int, str] = {
+        line.order: _with_source_markers(translated.source_text, translated.text)
+        for line, translated in zip(split.spoken, result.spoken, strict=True)
+    }
+    displayed: dict[int, str] = {
+        line.order: _with_source_markers(line.text, text)
+        for line, text in zip(displayed_lines(split), result.displayed, strict=True)
+    }
+    return spoken | displayed
+
+
+def _with_source_markers(source: str, translated: str) -> str:
+    """Keep the translated span markers only when the source line carried markers."""
+    return translated if SPAN_MARKER.search(source) else strip_span_markers(translated)
 
 
 def _output_kind(task: PlanTask, output: Artifact) -> SubtitleKind:

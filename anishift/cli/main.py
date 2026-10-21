@@ -13,6 +13,7 @@ import typer
 from anishift.cli.exit_codes import EXIT_CANCELLED, EXIT_INCOMPLETE, EXIT_REFUSED, run_exit_code
 from anishift.errors import AniShiftError
 from anishift.setup.doctor import CheckResult, CheckStatus, run_doctor
+from anishift.setup.fonts import install_fonts
 from anishift.setup.installer import run_setup
 from anishift.utils.logger import get_logger
 from anishift.utils.rich_console import StatusType, console, get_status_icon
@@ -197,9 +198,9 @@ def setup(
         typer.Option("--force", help="Re-download everything, even resources already present."),
     ] = False,
 ) -> None:
-    """Download and verify missing external tools into external/bin/."""
+    """Download and verify missing external tools into external/bin/ and the owner's fonts into external/fonts/."""
     try:
-        results = run_setup(force=force)
+        results = [*run_setup(force=force), install_fonts()]
     except AniShiftError as exc:
         console.print(f"[error]{exc}[/error]")
         raise typer.Exit(code=1) from exc

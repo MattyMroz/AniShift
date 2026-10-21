@@ -167,6 +167,14 @@ provider and model are picked (Gemini by default). Each provider reads its own k
 `ANISHIFT_PALANTIR_TOKEN`, or from `FOUNDRY_API_TOKEN` when the prefixed value is absent.
 Secrets are never displayed; diagnostics only report whether one is configured.
 
+Ustawienia › Napisy › Plik czcionki dialogów chooses the font for the lines the narrator
+reads. AniShift draws them with it, attaches that file and its variants from the same
+folder to the MKV and burns MP4 subtitles with them; signs keep the release fonts.
+
+Ustawienia > Napisy > Lektor a napisy ekranowe decides whether the narrator also reads
+on-screen signs in the pauses between lines: never, when they matter and fit (default), or
+whenever they fit. Spoken lines keep their exact places either way.
+
 ## Requirements
 
 - Windows and Python 3.14+

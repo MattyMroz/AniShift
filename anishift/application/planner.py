@@ -148,6 +148,7 @@ def plan_auto(  # noqa: PLR0913 - every automatic planning input stays an explic
     recipes: RecipePreferences | None = None,
     targets: Mapping[str, WorkflowTarget] | None = None,
     published: frozenset[Path] | None = None,
+    dialogue_font_unusable: bool = False,
 ) -> ExecutionPlan:
     """Build one fresh automatic plan for every selected inspected group, each for the target of its own place."""
     ordered_groups: tuple[InspectedSourceGroup, ...] = _ordered_unique_groups(groups)
@@ -161,7 +162,14 @@ def plan_auto(  # noqa: PLR0913 - every automatic planning input stays an explic
         for group in ordered_groups
     }
     snapshot: RunSettingsSnapshot = settings if overrides is None else settings.with_overrides(overrides)
-    return _plan(ordered_groups, intents, snapshot, rebuild=rebuild, published=published)
+    return _plan(
+        ordered_groups,
+        intents,
+        snapshot,
+        rebuild=rebuild,
+        published=published,
+        dialogue_font_unusable=dialogue_font_unusable,
+    )
 
 
 def recorded_target(
@@ -245,6 +253,7 @@ def plan_manual(
     settings: RunSettingsSnapshot,
     *,
     published: frozenset[Path] | None = None,
+    dialogue_font_unusable: bool = False,
 ) -> ExecutionPlan:
     """Build independent manual plans using the exact intent of every group."""
     ordered_groups: tuple[InspectedSourceGroup, ...] = _ordered_unique_groups(groups)
@@ -255,7 +264,7 @@ def plan_manual(
     if any(intent.mode is not RunMode.MANUAL for intent in intents.values()):
         msg = "Manual planning accepts only manual group intents"
         raise PlanningError(msg)
-    return _plan(ordered_groups, intents, settings, published=published)
+    return _plan(ordered_groups, intents, settings, published=published, dialogue_font_unusable=dialogue_font_unusable)
 
 
 def _ordered_unique_groups(groups: Sequence[InspectedSourceGroup]) -> tuple[InspectedSourceGroup, ...]:
@@ -275,13 +284,14 @@ def _ordered_unique_groups(groups: Sequence[InspectedSourceGroup]) -> tuple[Insp
     )
 
 
-def _plan(
+def _plan(  # noqa: PLR0913 - every planning input stays an explicit call-site choice
     groups: tuple[InspectedSourceGroup, ...],
     intents: Mapping[str, GroupIntent],
     settings: RunSettingsSnapshot,
     *,
     rebuild: RebuildRequest | None = None,
     published: frozenset[Path] | None = None,
+    dialogue_font_unusable: bool = False,
 ) -> ExecutionPlan:
     group_plans: list[GroupPlan] = []
     artifacts: list[Artifact] = []
@@ -289,7 +299,14 @@ def _plan(
     problems: list[PlanProblem] = []
     for group in groups:
         intent: GroupIntent = intents[group.group_id]
-        builder: _GroupPlanner = _GroupPlanner(group, intent, settings, rebuild=rebuild, published=published)
+        builder: _GroupPlanner = _GroupPlanner(
+            group,
+            intent,
+            settings,
+            rebuild=rebuild,
+            published=published,
+            dialogue_font_unusable=dialogue_font_unusable,
+        )
         group_plan, group_artifacts, group_tasks = builder.build()
         group_plans.append(group_plan)
         artifacts.extend(group_artifacts)
@@ -341,7 +358,7 @@ def _without_planned_artifacts(problem: PlanProblem, source_ids: tuple[str, ...]
 
 
 class _GroupPlanner:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - every planning input stays an explicit call-site choice
         self,
         group: InspectedSourceGroup,
         intent: GroupIntent,
@@ -349,11 +366,13 @@ class _GroupPlanner:
         *,
         rebuild: RebuildRequest | None = None,
         published: frozenset[Path] | None = None,
+        dialogue_font_unusable: bool = False,
     ) -> None:
         self.group: InspectedSourceGroup = group
         self.intent: GroupIntent = intent
         self.settings: RunSettingsSnapshot = settings
         self._published: frozenset[Path] = frozenset() if published is None else published
+        self._dialogue_font_unusable: bool = dialogue_font_unusable
         self._rebuild: frozenset[ProductKind] = frozenset() if rebuild is None else rebuild.products
         self._invalidated: frozenset[ArtifactKind] = _invalidated_products(intent, self._rebuild)
         self.artifacts: dict[str, Artifact] = {artifact.artifact_id: artifact for artifact in group.artifacts}
@@ -363,7 +382,9 @@ class _GroupPlanner:
         self._video: Artifact | None = None
         self._subtitle_input: Artifact | _EmbeddedTrack | None = None
         self._source_subtitles: Artifact | None = None
+        self._track_containers: dict[str, Artifact] = {}
         self._full_pl: Artifact | None = None
+        self._full_pl_source: Artifact | None = None
         self._spoken_pl: Artifact | None = None
         self._displayed_pl: Artifact | None = None
         self._source_audio: Artifact | None = None
@@ -793,19 +814,44 @@ class _GroupPlanner:
         )
         self._narration = narration
 
-    def _synthesize_speech(self, script: Artifact, timeline: NarrationTimeline) -> Artifact:
+    def _synthesize_speech(
+        self, script: Artifact, timeline: NarrationTimeline, signs: Artifact | None = None
+    ) -> Artifact:
         manifest: Artifact = self._intermediate(ArtifactKind.TTS_MANIFEST, f"tts-manifest-{timeline.value}")
+        parameters: tuple[tuple[str, str | int | bool], ...] = (
+            ("narration_timeline", timeline.value),
+            ("script_kind", script.kind.value),
+        )
+        if signs is not None:
+            parameters = (*parameters, ("sign_narration", self.settings.sign_narration))
         self._add_task(
             TaskKind.SYNTHESIZE_SPEECH,
-            requires=(script,),
+            requires=(script,) if signs is None else (script, signs),
             produces=(manifest,),
             variant=f"narration-{timeline.value}",
             resource_key=f"tts:{self.settings.tts_profile_id}",
-            parameters=(("narration_timeline", timeline.value), ("script_kind", script.kind.value)),
+            parameters=parameters,
             is_network=self.settings.tts_is_network,
             is_paid=self.settings.tts_is_paid,
         )
         return manifest
+
+    def _sign_candidates(self, spoken: Artifact) -> Artifact | None:
+        """Make the split of the spoken ASS also write the on-screen signs the narrator may read."""
+        mode: str = self.settings.sign_narration
+        task_id: str | None = self.producer_by_artifact.get(spoken.artifact_id)
+        if mode == "off" or task_id is None or self._subtitle_format(spoken) != "ass":
+            return None
+        index: int = next(index for index, task in enumerate(self.tasks) if task.task_id == task_id)
+        split: PlanTask = self.tasks[index]
+        if split.kind is not TaskKind.SPLIT_SUBTITLES:
+            return None
+        signs: Artifact = self._intermediate(ArtifactKind.SIGN_CANDIDATES, "sign-candidates")
+        self.tasks[index] = replace(
+            split, produces=(*split.produces, signs.artifact_id), parameters=(("sign_narration", mode),)
+        )
+        self.producer_by_artifact[signs.artifact_id] = task_id
+        return signs
 
     def _document_source(self, missing_code: str, ambiguous_code: str) -> Artifact | None:
         """Pick the one validated text or subtitle document the place of this group reads."""
@@ -1012,6 +1058,27 @@ class _GroupPlanner:
         self._video = candidate
         return candidate
 
+    def _with_font_container(self, subtitles: Artifact) -> tuple[Artifact, ...]:
+        """Return a layout task's subtitles and their MKV, warning when the dialogue font cannot be used."""
+        if self._dialogue_font_unusable:
+            self._problem(
+                "dialogue_font_unusable",
+                "The dialogue font file cannot be read or lacks Polish letters, so dialogue keeps the episode fonts",
+                is_blocking=False,
+            )
+        container: Artifact | None = self._track_containers.get(subtitles.artifact_id) or self._only_mkv()
+        if container is None or container.kind is not ArtifactKind.VIDEO_MKV:
+            return (subtitles,)
+        return subtitles, container
+
+    def _only_mkv(self) -> Artifact | None:
+        containers: list[Artifact] = [
+            artifact
+            for artifact in self.artifacts.values()
+            if artifact.kind is ArtifactKind.VIDEO_MKV and artifact.state is ArtifactState.READY
+        ]
+        return containers[0] if len(containers) == 1 else None
+
     def _select_subtitle_input(  # noqa: C901,PLR0911,PLR0912 - explicit source policies stay visible
         self,
     ) -> Artifact | _EmbeddedTrack | None:
@@ -1195,6 +1262,7 @@ class _GroupPlanner:
             parameters=(("track_id", selected.track_id), ("target_format", selected.subtitle_format)),
         )
         self._source_subtitles = extracted
+        self._track_containers[extracted.artifact_id] = selected.video
         return extracted
 
     def _prepare_bulk_extraction(self, *, needs_generated_narration: bool) -> None:
@@ -1237,6 +1305,7 @@ class _GroupPlanner:
         self._source_audio = source_audio
         self._source_offset_us = audio.source_offset_us
         self._source_subtitles = subtitles
+        self._track_containers[subtitles.artifact_id] = selected.video
 
     def _ensure_full_pl(  # noqa: PLR0911 - each compatible manual starting point terminates independently
         self,
@@ -1263,7 +1332,7 @@ class _GroupPlanner:
             )
             self._add_task(
                 TaskKind.NORMALIZE_SUBTITLES,
-                requires=(selected,),
+                requires=self._with_font_container(selected),
                 produces=(converted,),
                 variant="manual-format-conversion",
                 resource_key="subtitles",
@@ -1303,7 +1372,7 @@ class _GroupPlanner:
         if should_translate:
             self._add_task(
                 TaskKind.TRANSLATE_SUBTITLES,
-                requires=(source,),
+                requires=self._with_font_container(source),
                 produces=(full,),
                 variant="polish",
                 resource_key=_translation_resource_key(self.settings),
@@ -1314,13 +1383,14 @@ class _GroupPlanner:
         else:
             self._add_task(
                 TaskKind.NORMALIZE_SUBTITLES,
-                requires=(source,),
+                requires=self._with_font_container(source),
                 produces=(full,),
                 variant="polish-bypass",
                 resource_key="subtitles",
                 parameters=(("output_format", output_format),),
             )
         self._full_pl = full
+        self._full_pl_source = source
         return full
 
     def _ensure_split_outputs(self, *, needs_spoken: bool, needs_displayed: bool) -> None:
@@ -1349,6 +1419,11 @@ class _GroupPlanner:
                     artifacts=(selected,),
                 )
             return
+        if needs_displayed and selected is not None and self._lacks_displayed_layer(selected):
+            self._displayed_pl = self._absent_displayed(selected)
+            needs_displayed = False
+            if not needs_spoken:
+                return
         full: Artifact | None = self._ensure_full_pl()
         if full is None:
             return
@@ -1372,11 +1447,40 @@ class _GroupPlanner:
         for output in outputs:
             self._add_task(
                 TaskKind.SPLIT_SUBTITLES,
-                requires=(full,),
+                requires=self._split_inputs(full),
                 produces=(output,),
                 variant=output.kind.value,
                 resource_key="subtitles",
             )
+
+    def _split_inputs(self, full: Artifact) -> tuple[Artifact, ...]:
+        """Return the Polish subtitles and, for ASS made from source subtitles in this plan, that deciding source."""
+        if self._full_pl_source is None or self._subtitle_format(full) != "ass":
+            return (full,)
+        return full, self._full_pl_source
+
+    def _lacks_displayed_layer(self, selected: Artifact | _EmbeddedTrack) -> bool:
+        planned: bool = isinstance(selected, Artifact) and selected.state is ArtifactState.MISSING
+        origin: Artifact | _EmbeddedTrack | None = self._subtitle_input if planned else selected
+        if origin is None or origin.subtitle_format not in {"ass", "srt"}:
+            return selected.subtitle_format == "srt"
+        return "srt" in {selected.subtitle_format, origin.subtitle_format, self._output_format(origin.subtitle_format)}
+
+    def _absent_displayed(self, selected: Artifact | _EmbeddedTrack) -> Artifact:
+        planned: Artifact = self._intermediate(
+            ArtifactKind.DISPLAYED_PL,
+            "split-displayed",
+            subtitle_format=self._output_format(selected.subtitle_format),
+            language="pol",
+        )
+        absent: Artifact = replace(planned, state=ArtifactState.ABSENT)
+        self.artifacts[absent.artifact_id] = absent
+        self._problem(
+            "displayed_cues_absent",
+            "SRT subtitles have no on-screen layer, so no displayed subtitle file will be created",
+            is_blocking=False,
+        )
+        return absent
 
     def _convert_partial_product(self, source: Artifact, requested_kind: ProductKind) -> Artifact:
         if requested_kind not in self.intent.products.requested_products or self._requested_format_matches(source):
@@ -1391,7 +1495,7 @@ class _GroupPlanner:
             return converted
         self._add_task(
             TaskKind.NORMALIZE_SUBTITLES,
-            requires=(source,),
+            requires=self._with_font_container(source),
             produces=(converted,),
             variant=f"manual-{source.kind.value}-format-conversion",
             resource_key="subtitles",
@@ -1425,7 +1529,7 @@ class _GroupPlanner:
         if spoken is None or source_audio is None:
             return None
         timeline: NarrationTimeline = NarrationTimeline.SOURCE_TIMES
-        manifest: Artifact = self._synthesize_speech(spoken, timeline)
+        manifest: Artifact = self._synthesize_speech(spoken, timeline, self._sign_candidates(spoken))
         profile: str = self.settings.audio_output_profile.casefold()
         narration: Artifact = self._intermediate(
             ArtifactKind.NARRATION_AUDIO,

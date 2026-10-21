@@ -6,10 +6,10 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Protocol
 
 from anishift.application.artifacts import Artifact, ArtifactKind
-from anishift.application.cancellation import CancellationToken
+from anishift.application.cancellation import CancellationToken, mirror_cancel
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
 from anishift.application.planning import PlanTask, TaskKind
 from anishift.application.results import ArtifactSnapshot, ProducedArtifact, TaskResult
@@ -27,11 +27,6 @@ from anishift.services.extraction import (
 )
 
 __all__ = ["ExtractionTaskHandler", "LegacyExtractionAdapter"]
-
-# ── Constants ─────────────────────────────────────────────────────────────────
-
-_CANCEL_POLL_SECONDS: Final[float] = 0.05
-"""Maximum delay before legacy MKV extraction observes cancellation."""
 
 
 class ExtractionExecutor(Protocol):
@@ -206,7 +201,7 @@ class ExtractionTaskHandler:
         extraction_cancel = threading.Event()
         stop = threading.Event()
         watcher = threading.Thread(
-            target=_mirror_cancel,
+            target=mirror_cancel,
             args=(cancel, extraction_cancel, stop),
             daemon=True,
         )
@@ -275,11 +270,3 @@ def _integer_parameter(parameters: dict[str, str | int | bool], name: str) -> in
         msg = f"Extraction parameter must be an integer: {name}"
         raise ExecutionError(msg)
     return value
-
-
-def _mirror_cancel(cancel: CancellationToken, target: threading.Event, stop: threading.Event) -> None:
-    """Mirror scheduler cancellation into the legacy extraction event."""
-    while not stop.wait(_CANCEL_POLL_SECONDS):
-        if cancel.is_cancelled():
-            target.set()
-            return

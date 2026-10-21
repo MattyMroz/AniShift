@@ -171,6 +171,38 @@ def test_container_merge_command_uses_selected_tracks_and_audio_policy(tmp_path:
     assert str(request.narration_audio) in command
 
 
+def test_container_merge_command_attaches_each_font_file_under_its_attachment_name(tmp_path: Path) -> None:
+    request = ContainerCompositionRequest(
+        source_video=tmp_path / "Episode.mkv",
+        destination=tmp_path / "Episode.pl.mkv",
+        target=ContainerTarget.MKV,
+        burn_subtitle=None,
+        attached_subtitles=(AttachedSubtitle(tmp_path / "full.ass", SubtitleRole.FULL, "pol", "Polish"),),
+        narration_audio=None,
+        keep_original_audio=True,
+    )
+    bold: Path = tmp_path / "fonts" / "Officina - Bold.ttf"
+    italic: Path = tmp_path / "fonts" / "Officina - Bold Italic.ttf"
+
+    command = container_merge_command(
+        request,
+        mkvmerge=Path("mkvmerge"),
+        destination=request.destination,
+        attachments=((bold, "Officina - Bold (2).ttf"), (italic, italic.name)),
+    )
+
+    assert command[-8:] == (
+        "--attachment-name",
+        "Officina - Bold (2).ttf",
+        "--attach-file",
+        str(bold),
+        "--attachment-name",
+        "Officina - Bold Italic.ttf",
+        "--attach-file",
+        str(italic),
+    )
+
+
 def test_container_burn_command_can_copy_video_and_original_audio(tmp_path: Path) -> None:
     request = ContainerCompositionRequest(
         source_video=tmp_path / "Episode.mkv",

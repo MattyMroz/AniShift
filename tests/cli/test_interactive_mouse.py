@@ -371,10 +371,10 @@ def _row_of(frame: Text, index: int) -> int:
 def test_settings_click_saves_a_pending_number_before_leaving_its_row(monkeypatch: pytest.MonkeyPatch) -> None:
     application, _copied = _application(monkeypatch, _Mode.SETTINGS)
     service: FakeSettingsService = FakeSettingsService()
-    controller: SettingsController = _settings(service, "subtitles")
+    controller: SettingsController = _settings(service, "translation")
     application._settings = controller
     controller._selected = next(
-        index for index, item in enumerate(controller._items) if item.key == "setting:subtitle_max_chars_per_line"
+        index for index, item in enumerate(controller._items) if item.key == "setting:translation_batch_size"
     )
     controller.handle_key("right")
     frame: Text = application._render_frame(100, 30)
@@ -382,7 +382,7 @@ def test_settings_click_saves_a_pending_number_before_leaving_its_row(monkeypatc
 
     _click(application, Point(4, _row_of(frame, other)))
 
-    assert service.saves == [("subtitle_max_chars_per_line", 43)]
+    assert service.saves == [("translation_batch_size", 43)]
     assert controller._selected == other
 
 
@@ -433,7 +433,7 @@ def test_settings_drag_over_the_whole_screen_copies_only_setting_values(
 def test_settings_drag_over_a_field_copies_its_text_without_the_pointer(monkeypatch: pytest.MonkeyPatch) -> None:
     application, copied = _application(monkeypatch, _Mode.SETTINGS)
     controller: SettingsController = SettingsController(cast("AppService", FakeSettingsService()), lambda: None)
-    _open_field(controller, "subtitles", "subtitle_max_chars_per_line")
+    _open_field(controller, "translation", "translation_batch_size")
     application._settings = controller
     editor = controller._editor
     assert editor is not None
@@ -1290,7 +1290,7 @@ def test_a_click_in_a_settings_field_puts_the_cursor_there_and_past_the_end_at_i
 ) -> None:
     application, _copied = _application(monkeypatch, _Mode.SETTINGS)
     controller: SettingsController = SettingsController(cast("AppService", FakeSettingsService()), lambda: None)
-    _open_field(controller, "subtitles", "subtitle_max_chars_per_line")
+    _open_field(controller, "translation", "translation_batch_size")
     application._settings = controller
     editor = controller._editor
     assert editor is not None

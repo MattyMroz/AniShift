@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import shutil
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Final
 
 import pytest
 from fakes import write_text_source
@@ -21,6 +23,20 @@ from anishift.errors import ConfigError, ErrorCode
 from anishift.services.media import DefaultMediaProbe
 from anishift.services.tts.engines.edge.constants import MAREK_VOICE_ID
 from anishift.services.tts.engines.elevenbytes.constants import DALLIN_ALIAS, DALLIN_VOICE_ID
+
+_SYSTEM_ARIAL: Final[Path] = Path("C:/Windows/Fonts/arial.ttf")
+_needs_arial = pytest.mark.skipif(not _SYSTEM_ARIAL.is_file(), reason="the Windows Arial font is not available")
+_ASS_SOURCE: Final[str] = """[Script Info]
+ScriptType: v4.00+
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize
+Style: Default,Arial,40
+
+[Events]
+Format: Layer, Start, End, Style, Text
+Dialogue: 0,0:00:01.00,0:00:02.00,Default,Hello
+"""
 
 
 def _unused_handlers(
@@ -230,3 +246,48 @@ def test_active_run_snapshot_ignores_a_later_preference_update(tmp_path: Path) -
 
     assert plan.settings.translation_concurrency == 1
     assert service.settings_snapshot().translation_concurrency == 4
+
+
+@_needs_arial
+def test_update_setting_saves_a_usable_dialogue_font_file(tmp_path: Path) -> None:
+    font: Path = Path(shutil.copyfile(_SYSTEM_ARIAL, tmp_path / "arial.ttf"))
+    saved: list[UserSettings] = []
+    service: AppService = _service(tmp_path, UserSettings(), saved.append)
+
+    updated: UserSettings = service.update_setting("dialogue_font_file", str(font))
+
+    assert updated.dialogue_font_file == str(font)
+    assert saved[-1].dialogue_font_file == str(font)
+
+
+def test_update_setting_rejects_an_unusable_dialogue_font_file_without_writing(tmp_path: Path) -> None:
+    (tmp_path / "notes.ttf").write_text("not a font", encoding="utf-8")
+    saved: list[UserSettings] = []
+    service: AppService = _service(tmp_path, UserSettings(), saved.append)
+
+    for value in (str(tmp_path / "gone.ttf"), str(tmp_path / "notes.ttf")):
+        with pytest.raises(ValueError, match="Dialogue font file is unusable"):
+            service.update_setting("dialogue_font_file", value)
+
+    assert saved == []
+    assert service.update_setting("dialogue_font_file", "").dialogue_font_file == ""
+
+
+@pytest.mark.parametrize(("font_file", "warned"), [("gone.ttf", True), ("", False)])
+def test_planning_warns_when_the_configured_dialogue_font_file_is_unusable(
+    tmp_path: Path, font_file: str, warned: bool
+) -> None:
+    source: Path = tmp_path / "translate" / "Episode.ass"
+    source.parent.mkdir()
+    source.write_text(_ASS_SOURCE, encoding="utf-8")
+    configured: str = str(tmp_path / font_file) if font_file else ""
+    service: AppService = _service(tmp_path, UserSettings(dialogue_font_file=configured), lambda value: None)
+    group_id: str = service.discover().groups[0].group_id
+
+    plan: ExecutionPlan = service.plan_auto(
+        (group_id,), AutoPresetDraft("preview", "Preview", ProductIntent(frozenset({ProductKind.FULL_PL})))
+    )
+
+    assert plan.can_execute
+    assert plan.settings.dialogue_font_file == configured
+    assert [problem.code for problem in plan.problems] == (["dialogue_font_unusable"] if warned else [])

@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from pathlib import Path
 from typing import Final
 
 from rich.text import Text
@@ -98,6 +99,9 @@ _RECIPE_DESCRIPTION_MIN_ROWS: Final[int] = 12
 _ZERO_MEANS_DEFAULT: Final[frozenset[str]] = frozenset({"translation_batch_size"})
 """Fields where zero is not a quantity but a request for the engine default."""
 
+_FONT_FILE_SETTING: Final[str] = "dialogue_font_file"
+"""Field holding the dialogue font path, shown by file name and checked by the service on save."""
+
 _BACK_KEY: Final[str] = "back"
 """Stable action key returning to the parent menu."""
 
@@ -180,8 +184,8 @@ _GENERAL_FIELDS: Final[tuple[_SettingField, ...]] = (
 """General persisted preferences exposed by the product."""
 
 _SUBTITLE_FIELDS: Final[tuple[_SettingField, ...]] = (
-    ("subtitle_max_chars_per_line", "Znaków w linii", "UKŁAD TEKSTU"),
-    ("subtitle_max_lines_per_event", "Linii na napis", "UKŁAD TEKSTU"),
+    ("dialogue_font_file", "Plik czcionki dialogów", "CZCIONKA"),
+    ("sign_narration", "Lektor a napisy ekranowe", "LEKTOR"),
 )
 """Persisted subtitle layout fields exposed by the product."""
 
@@ -306,6 +310,9 @@ _CHOICE_LABELS: Final[dict[tuple[str, str], str]] = {
     **{("requested_products", product.value): label for product, label in _PRODUCTS},
     ("processing_order_policy", "ready_first"): "Najpierw gotowe",
     ("processing_order_policy", "strict_natural"): "Ścisła kolejność plików",
+    ("sign_narration", "off"): "Nie czyta",
+    ("sign_narration", "smart"): "Czyta inteligentnie",
+    ("sign_narration", "always"): "Czyta zawsze",
     ("composition_quality_preset", "high"): "Wysoka",
     ("composition_quality_preset", "balanced"): "Zrównoważona",
     ("composition_quality_preset", "compact"): "Kompaktowa",
@@ -1557,6 +1564,8 @@ class SettingsController:
             spec: SettingSpec = _required_spec(self._catalog_snapshot().specs, setting_id)
         except AniShiftError, OSError, ValueError:
             return "✗ Nieprawidłowa wartość"
+        if setting_id == _FONT_FILE_SETTING:
+            return "✗ Nie można użyć tej czcionki · potrzebny istniejący plik z polskimi literami"
         if spec.minimum is not None and spec.maximum is not None:
             return f"✗ Nieprawidłowa wartość · Zakres: {spec.minimum:g}–{spec.maximum:g}"
         return "✗ Nieprawidłowa wartość"
@@ -1983,12 +1992,18 @@ def _format_value(spec: SettingSpec, value: SettingValue) -> str:
         suffix: str = "×" if setting_id in multiplier_fields else " dB" if setting_id in gain_fields else ""
         return f"{value:g}{suffix}"
     if isinstance(value, str):
-        # Free text such as a language code is shown as typed; only a choice has a label.
-        return _choice_label(setting_id, value) if spec.allowed_values else value
+        return _format_text(spec, value)
     if isinstance(value, frozenset):
         # A set has no order, so the row sorts it to read the same on every refresh.
         return _format_collection(setting_id, sorted(value, key=str))
     return _format_collection(setting_id, value) if isinstance(value, tuple) else str(value)
+
+
+def _format_text(spec: SettingSpec, value: str) -> str:
+    if spec.setting_id == _FONT_FILE_SETTING:
+        return Path(value).name or "brak"
+    # Free text such as a language code is shown as typed; only a choice has a label.
+    return _choice_label(spec.setting_id, value) if spec.allowed_values else value
 
 
 def _format_collection(setting_id: str, value: Iterable[object]) -> str:

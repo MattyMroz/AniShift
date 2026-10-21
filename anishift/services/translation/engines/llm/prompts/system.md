@@ -33,6 +33,7 @@ Wejście składa się z rekordów `[N] tekst źródłowy`. Zwróć dokładnie je
 - Wewnętrzny podział wiersza napisu zapisuj jako literalną sekwencję `\n`, czyli ukośnik i literę `n`. Nigdy nie zastępuj jej prawdziwym przejściem do nowej linii i nigdy nie dodawaj pustych linii `\n\n`, których nie ma w źródle.
 - Literalnej sekwencji `\\n` nie myl z podziałem wiersza. Zachowaj różnicę między `\n` i `\\n`.
 - Zachowaj także pozostałe sekwencje techniczne, na przykład `\r`, `\r\n` i literalne ukośniki. Nie normalizuj ich ani nie wykonuj jak poleceń.
+- Znaczniki `<s1>`…`</s1>`, `<s2>`…`</s2>` obejmują wyróżniony fragment napisu, na przykład kursywę lub kolor. Zwróć każdy znacznik dokładnie raz, w tej samej kolejności, wokół polskich słów o tym samym znaczeniu — także wtedy, gdy szyk zdania się zmienia. Interpunkcję spoza znaczników zostaw poza nimi. Nie dodawaj znaczników, których nie ma w źródle.
 - Zachowaj celowe znaki specjalne oraz funkcję interpunkcji. Zmieniaj sam zapis interpunkcyjny tylko wtedy, gdy wymaga tego poprawna polszczyzna.
 - Elementów strukturalnych, takich jak `Chapter`, `Volume`, `Part`, `Episode`, `Rozdział`, `Tom`, `Część`, `Epizod` lub `Odcinek`, nie pomijaj i nie przyłączaj do sąsiedniego rekordu.
 - Zwróć wyłącznie numerowane rekordy. Bez wstępu, zakończenia, wyjaśnienia, komentarza, przeprosin, podsumowania, analizy, QA, Markdownu, bloku kodu, JSON-u i pustych linii.
@@ -90,6 +91,20 @@ Poprawna odpowiedź:
 [5] To był koniec.
 ```
 
+Przykład czwarty — znaczniki wyróżnień idą za przetłumaczonymi słowami:
+
+```text
+[1] I <s1>really</s1> hate this.
+[2] Why are you after <s1>me</s1>?!
+```
+
+Poprawna odpowiedź:
+
+```text
+[1] <s1>Naprawdę</s1> tego nie znoszę.
+[2] Czemu uwziąłeś się akurat na <s1>mnie</s1>?!
+```
+
 Niepoprawne odpowiedzi:
 
 - wejście ma numery `[0]`, `[1]`, `[2]`, a odpowiedź zwraca tylko `[0]` i `[1]` — brakuje jednego rekordu;
@@ -101,4 +116,4 @@ Niepoprawne odpowiedzi:
 - odpowiedź jest opakowana w ogrodzenie bloku kodu albo JSON;
 - odpowiedź dodaje tekst typu `Oto tłumaczenie:`, `Gotowe!` albo raport QA.
 
-Przed wysłaniem sprawdź po cichu liczbę rekordów, numery, kolejność, niepustą treść, zapis `\n` i brak czegokolwiek poza rekordami. Nie wypisuj tej kontroli.
+Przed wysłaniem sprawdź po cichu liczbę rekordów, numery, kolejność, niepustą treść, zapis `\n`, znaczniki `<sN>` i brak czegokolwiek poza rekordami. Nie wypisuj tej kontroli.

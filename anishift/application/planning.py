@@ -22,6 +22,9 @@ _MAX_LLM_TEMPERATURE: Final[float] = 2.0
 DEFAULT_AUDIO_TOLERANCE_US: Final[int] = 1_000_000
 """Accepted duration difference between supplied audio and the selected video."""
 
+SIGN_NARRATION_MODES: Final[tuple[str, ...]] = ("off", "smart", "always")
+"""Whether the narrator skips on-screen signs, reads those that fit and matter, or reads every one that fits."""
+
 
 class TaskKind(StrEnum):
     """Operations that can appear in an AniShift execution graph."""
@@ -160,8 +163,7 @@ class RunSettingsSnapshot:
     llm_is_paid: bool = True
     tts_is_network: bool = True
     tts_is_paid: bool = True
-    subtitle_max_chars_per_line: int = 42
-    subtitle_max_lines_per_event: int = 2
+    dialogue_font_file: str = ""
     translation_chunk_chars: int = 750
     translation_batch_size: int = 0
     llm_model_id: str = "default"
@@ -184,6 +186,7 @@ class RunSettingsSnapshot:
     voice_mix_offset_db: float = 0.0
     original_gain_db: float = 0.0
     tts_timeline_policy: str = "serialize"
+    sign_narration: str = "off"
 
     def __post_init__(self) -> None:
         _validate_profile_settings(self)
@@ -246,8 +249,6 @@ def _validate_profile_settings(settings: RunSettingsSnapshot) -> None:
     if settings.audio_duration_tolerance_us < 0:
         msg = "Audio duration tolerance cannot be negative"
         raise ValueError(msg)
-    _require_range(settings.subtitle_max_chars_per_line, 20, 120, "subtitle line length")
-    _require_range(settings.subtitle_max_lines_per_event, 1, 4, "subtitle line count")
     _require_range(settings.translation_chunk_chars, 200, 4000, "translation chunk size")
     if settings.translation_batch_size < 0:
         msg = "Translation batch size cannot be negative"
@@ -296,6 +297,9 @@ def _validate_runtime_settings(settings: RunSettingsSnapshot) -> None:
         raise ValueError(msg)
     if settings.tts_timeline_policy != "serialize":
         msg = "TTS timeline policy is unsupported"
+        raise ValueError(msg)
+    if settings.sign_narration not in SIGN_NARRATION_MODES:
+        msg = "Sign narration mode is unsupported"
         raise ValueError(msg)
 
 
@@ -513,9 +517,10 @@ def _validate_task_parameter_names(kind: TaskKind, names: frozenset[str]) -> Non
             frozenset({"output_format"}),
             frozenset({"output_format", "source_kind"}),
         ),
+        TaskKind.SPLIT_SUBTITLES: (frozenset(), frozenset({"sign_narration"})),
         TaskKind.SYNTHESIZE_SPEECH: (
             frozenset({"narration_timeline", "script_kind"}),
-            frozenset({"narration_timeline", "script_kind"}),
+            frozenset({"narration_timeline", "script_kind", "sign_narration"}),
         ),
         TaskKind.TRANSCODE_AUDIO: (frozenset({"output_profile"}), frozenset({"output_profile"})),
         TaskKind.MIX_NARRATION: (

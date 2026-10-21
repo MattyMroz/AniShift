@@ -58,7 +58,7 @@ from anishift.services.extraction import ExtractionRequest, ExtractionResult
 from anishift.services.media._process import ProcessResult
 from anishift.services.media.types import ContainerKind, MediaCatalog, MediaTrack, MediaTrackKind
 from anishift.services.subtitles import DisplayedLine, SpokenLine
-from anishift.services.translation.layout_config import LayoutConfig
+from anishift.services.translation.chunk_config import ChunkConfig
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
 from anishift.services.translation.types import FileTranslation, TranslatedLine
 from anishift.services.tts import (
@@ -139,11 +139,12 @@ def _write_ass(path: Path) -> None:
         "ScriptType: v4.00+\n\n"
         "[V4+ Styles]\n"
         "Format: Name\n"
-        "Style: Default\n\n"
+        "Style: Default\n"
+        "Style: Sign\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
         "Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{\\i1}Zażółć{\\i0} gęślą jaźń\n"
-        "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\p1}m 0 0 l 10 0 10 10{\\p0}\n",
+        "Dialogue: 0,0:00:01.00,0:00:02.00,Sign,,0,0,0,,{\\p1}m 0 0 l 10 0 10 10{\\p0}\n",
         encoding="utf-8",
     )
 
@@ -345,7 +346,10 @@ def test_a_film_in_subs_translates_the_sidecar_even_when_the_preset_prefers_embe
 
     assert plan.can_execute
     assert TaskKind.EXTRACT_SUBTITLES not in _kinds(plan)
-    assert _sources(plan, TaskKind.TRANSLATE_SUBTITLES) == (tmp_path / "subs" / "Film.srt",)
+    assert _sources(plan, TaskKind.TRANSLATE_SUBTITLES) == (
+        tmp_path / "subs" / "Film.srt",
+        tmp_path / "subs" / "Film.mkv",
+    )
 
 
 def test_a_manual_run_in_subs_cannot_waive_the_mandatory_pair(tmp_path: Path) -> None:
@@ -739,7 +743,7 @@ def test_a_plain_text_document_is_translated_paragraph_by_paragraph(tmp_path: Pa
 
 
 def _document(text: str) -> TextDocument:
-    return read_text_document(text, LayoutConfig())
+    return read_text_document(text, ChunkConfig())
 
 
 def test_every_paragraph_keeps_its_own_identifier_and_order() -> None:

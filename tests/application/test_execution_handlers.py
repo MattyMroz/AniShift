@@ -7,15 +7,18 @@ import wave
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
 from fakes import FakeMediaProbe
+from loguru import logger as loguru_logger
 from pysubs2 import SSAEvent, SSAFile
 from test_automation import _await, _owned, _request
 from test_composition_handler import FFMPEG, FFPROBE, _Composer
 from test_notification import _notifications, _reconcile_automatic
 
+from anishift.application import episode_fonts
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState, SourceGroup
 from anishift.application.audio_handler import AudioTaskHandler
 from anishift.application.cancellation import CancellationToken, NeverCancelledToken
@@ -60,35 +63,40 @@ from anishift.application.scheduler import GraphCoordinator, GraphScheduler, Res
 from anishift.application.scheduler_runtime import ArtifactStore
 from anishift.application.service import AppService
 from anishift.application.sessions import RunSession
-from anishift.application.subtitle_handler import LegacySubtitleAdapter
 from anishift.application.task_paths import task_staging_path
-from anishift.application.translation_handler import displayed_lines
+from anishift.application.translation_handler import (
+    displayed_lines,
+    spoken_lines,
+    translated_texts,
+)
 from anishift.application.tts_handler import TtsTaskHandler
 from anishift.application.watch_state import WatchStateStore
 from anishift.config.presets import AutoPresetFile
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
-from anishift.errors import AniShiftError, ExecutionError
+from anishift.errors import AniShiftError, ErrorCode, ErrorContext, ExecutionError
 from anishift.platform.local_control import ControlResponse
 from anishift.services.audio import AudioRenderRequest, AudioRenderResult, AudioRenderStatus
 from anishift.services.composition import CompositionConfig, CompositionService
 from anishift.services.extraction import (
+    ExtractionError,
     ExtractionRequest,
     ExtractionResult,
     LegacyExtractionResult,
     MediaInfo,
     TrackSelection,
 )
+from anishift.services.fonts import FontIndex
 from anishift.services.subtitles import (
     DisplayedLine,
     SpokenLine,
     SubtitleSplit,
+    TranslatedLayout,
+    layout_translated,
     load_subtitles,
     split_subtitles,
-    write_displayed,
-    write_full,
-    write_spoken,
 )
+from anishift.services.subtitles.text import visible_text, visible_verses
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
 from anishift.services.translation.types import FileTranslation, TranslatedLine
 from anishift.services.tts import (
@@ -101,6 +109,9 @@ from anishift.services.tts import (
     SynthesisStatus,
     SynthesizedRequest,
 )
+
+if TYPE_CHECKING:
+    from loguru import Record
 
 
 def _ass_split(events: list[SSAEvent]) -> SubtitleSplit:
@@ -268,10 +279,12 @@ def _write_ass(path: Path) -> None:
         "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
         "Style: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,"
         "2,10,10,10,1\n"
+        "Style: Sign,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,"
+        "8,10,10,10,1\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
         "Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,Hello\n"
-        "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\p1}m 0 0 l 1 1\n",
+        "Dialogue: 0,0:00:01.00,0:00:02.00,Sign,,0,0,0,,{\\p1}m 0 0 l 1 1\n",
         encoding="utf-8",
     )
 
@@ -445,6 +458,258 @@ def test_subtitle_handler_normalizes_srt_to_ass(tmp_path: Path) -> None:
     assert "[Events]" in result.outputs[0].path.read_text(encoding="utf-8")
 
 
+def _record_font_layout(monkeypatch: pytest.MonkeyPatch) -> tuple[list[tuple[Path, Path]], list[tuple[Path, ...]]]:
+    extracted: list[tuple[Path, Path]] = []
+    indexed: list[tuple[Path, ...]] = []
+
+    def extract(container: Path, dest: Path) -> tuple[Path, ...]:
+        extracted.append((container, dest))
+        return (dest / "Episode.ttf",)
+
+    def build(cls: type[FontIndex], episode: tuple[Path, ...], system: tuple[Path, ...]) -> FontIndex:
+        indexed.append(tuple(episode))
+        return cls((), {})
+
+    monkeypatch.setattr(episode_fonts, "extract_attachments", extract)
+    monkeypatch.setattr(episode_fonts, "system_font_paths", lambda: ())
+    monkeypatch.setattr(FontIndex, "build", classmethod(build))
+    return extracted, indexed
+
+
+@pytest.mark.integration
+def test_translation_handler_lays_out_with_the_fonts_of_its_optional_source_container(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extracted, indexed = _record_font_layout(monkeypatch)
+    source_path: Path = tmp_path / "episode.srt"
+    _write_srt(source_path)
+    source: Artifact = _ready("source", ArtifactKind.SOURCE_SUBTITLES, source_path)
+    video: Artifact = _ready("video", ArtifactKind.VIDEO_MKV, tmp_path / "episode.mkv")
+    output: Artifact = _output("full", ArtifactKind.FULL_PL, subtitle_format="srt")
+    task: PlanTask = _task(TaskKind.TRANSLATE_SUBTITLES, ("source", "video"), ("full",), (("output_format", "srt"),))
+
+    result: TaskResult = TranslationTaskHandler(_TranslationService(), run_root=tmp_path / "run").execute(
+        task,
+        ArtifactSnapshot({"source": source, "video": video}, {"full": output}),
+        NeverCancelledToken(),
+        _ProgressSink(),
+    )
+
+    staging: Path = task_staging_path(tmp_path / "run", task, output, ".fonts")
+    assert extracted == [(video.path, staging)]
+    assert indexed == [(staging / "Episode.ttf",)]
+    assert "PL Hello" in result.outputs[0].path.read_text(encoding="utf-8")
+
+
+@pytest.mark.integration
+def test_layout_tasks_keep_working_when_the_container_fonts_cannot_be_extracted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(container: Path, dest: Path) -> tuple[Path, ...]:
+        raise ExtractionError(context=ErrorContext(code=ErrorCode.EXTRACTION_FAILED, message="broken"))
+
+    monkeypatch.setattr(episode_fonts, "extract_attachments", fail)
+    source_path: Path = tmp_path / "episode.srt"
+    _write_srt(source_path)
+    source: Artifact = _ready("source", ArtifactKind.SOURCE_SUBTITLES, source_path)
+    video: Artifact = _ready("video", ArtifactKind.VIDEO_MKV, tmp_path / "episode.mkv")
+    output: Artifact = _output("full", ArtifactKind.FULL_PL, subtitle_format="ass")
+    task: PlanTask = _task(TaskKind.NORMALIZE_SUBTITLES, ("source", "video"), ("full",), (("output_format", "ass"),))
+
+    result: TaskResult = SubtitleTaskHandler(run_root=tmp_path / "run").execute(
+        task,
+        ArtifactSnapshot({"source": source, "video": video}, {"full": output}),
+        NeverCancelledToken(),
+        _ProgressSink(),
+    )
+
+    assert "Hello" in result.outputs[0].path.read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("kind", [TaskKind.TRANSLATE_SUBTITLES, TaskKind.NORMALIZE_SUBTITLES])
+def test_layout_tasks_reject_a_second_input_that_is_not_an_mkv_or_a_third_input(tmp_path: Path, kind: TaskKind) -> None:
+    source_path: Path = tmp_path / "episode.srt"
+    _write_srt(source_path)
+    inputs: dict[str, Artifact] = {
+        "source": _ready("source", ArtifactKind.SOURCE_SUBTITLES, source_path),
+        "audio": _ready("audio", ArtifactKind.SOURCE_AUDIO, tmp_path / "episode.flac"),
+        "video": _ready("video", ArtifactKind.VIDEO_MKV, tmp_path / "episode.mkv"),
+    }
+    output: Artifact = _output("full", ArtifactKind.FULL_PL, subtitle_format="srt")
+    handler: TranslationTaskHandler | SubtitleTaskHandler = (
+        TranslationTaskHandler(_TranslationService(), run_root=tmp_path / "run")
+        if kind is TaskKind.TRANSLATE_SUBTITLES
+        else SubtitleTaskHandler(run_root=tmp_path / "run")
+    )
+
+    for requires in (("source", "audio"), ("source", "video", "audio")):
+        task: PlanTask = _task(kind, requires, ("full",), (("output_format", "srt"),))
+        with pytest.raises(ExecutionError):
+            handler.execute(task, ArtifactSnapshot(inputs, {"full": output}), NeverCancelledToken(), _ProgressSink())
+
+
+@pytest.mark.integration
+def test_polish_source_normalization_reflows_dialogue_but_preserves_signs(tmp_path: Path) -> None:
+    source_path: Path = tmp_path / "episode.ass"
+    dialogue: str = r"{\i1}Pierwsza część zdania{\i0}\Njest krótka, ale druga powinna być dłuższa."
+    sign: str = r"{\pos(10,20)}Bardzo długi napis ekranowy\Npozostaje dokładnie taki jak w źródle."
+    subtitles: SSAFile = _ass_split(
+        [
+            SSAEvent(start=0, end=3000, style="Dialog", text=dialogue),
+            SSAEvent(start=0, end=3000, style="Sign", text=sign),
+        ]
+    ).subs
+    subtitles.fonts_opaque = {"sample.ttf": ["!!!!"]}
+    subtitles.graphics_opaque = {"sample.bmp": ["!!!!"]}
+    subtitles.aegisub_project = {"Last Style Storage": "Default"}
+    subtitles.save(str(source_path))
+    source: Artifact = _ready("source", ArtifactKind.SOURCE_SUBTITLES, source_path)
+    output: Artifact = _output("full", ArtifactKind.FULL_PL, subtitle_format="ass")
+    result: TaskResult = SubtitleTaskHandler(run_root=tmp_path / "run").execute(
+        _task(TaskKind.NORMALIZE_SUBTITLES, ("source",), ("full",), (("output_format", "ass"),)),
+        ArtifactSnapshot({"source": source}, {"full": output}),
+        NeverCancelledToken(),
+        _ProgressSink(),
+    )
+    written: SSAFile = load_subtitles(result.outputs[0].path)
+    assert written.events[0].text != dialogue
+    assert max(map(len, visible_verses(written.events[0].text))) <= 42
+    assert r"{\i1}Pierwsza część zdania{\i0}" in written.events[0].text
+    assert written.events[1].text == sign
+    assert [(event.start, event.end) for event in written] == [(0, 3000), (0, 3000)]
+    assert written.fonts_opaque == subtitles.fonts_opaque
+    assert written.graphics_opaque == subtitles.graphics_opaque
+    assert written.aegisub_project == subtitles.aegisub_project
+    assert load_subtitles(source_path).events[0].text == dialogue
+
+
+@pytest.mark.integration
+def test_polish_split_reflows_spoken_and_preserves_displayed_text_and_times(tmp_path: Path) -> None:
+    source_path: Path = tmp_path / "episode.ass"
+    dialogue: str = r"{\i1}-Idziesz ze mną?{\i0} -Tak."
+    sign: str = r"{\pos(10,20)}Bardzo długi napis ekranowy\Npozostaje dokładnie taki jak w źródle."
+    subtitles: SSAFile = _ass_split(
+        [
+            SSAEvent(start=1230, end=4560, style="Dialog", text=dialogue),
+            SSAEvent(start=2340, end=5670, style="Sign", text=sign),
+        ]
+    ).subs
+    subtitles.save(str(source_path))
+    source: Artifact = _ready("full", ArtifactKind.FULL_PL, source_path)
+    spoken: Artifact = _output("spoken", ArtifactKind.SPOKEN_PL, subtitle_format="ass")
+    displayed: Artifact = _output("displayed", ArtifactKind.DISPLAYED_PL, subtitle_format="ass")
+    result: TaskResult = SubtitleTaskHandler(run_root=tmp_path / "run").execute(
+        _task(TaskKind.SPLIT_SUBTITLES, ("full",), ("spoken", "displayed")),
+        ArtifactSnapshot({"full": source}, {"spoken": spoken, "displayed": displayed}),
+        NeverCancelledToken(),
+        _ProgressSink(),
+    )
+    spoken_event: SSAEvent = load_subtitles(result.outputs[0].path).events[0]
+    displayed_event: SSAEvent = load_subtitles(result.outputs[1].path).events[0]
+    assert spoken_event.text == r"{\i1}-Idziesz ze mną?{\i0}\N-Tak."
+    assert (spoken_event.start, spoken_event.end) == (1230, 4560)
+    assert displayed_event.text == sign
+    assert (displayed_event.start, displayed_event.end) == (2340, 5670)
+
+
+def _decided_pair(tmp_path: Path, polish_end: int = 4000) -> tuple[Artifact, Artifact]:
+    source: SSAFile = SSAFile()
+    source.info.update({"PlayResX": "1280", "PlayResY": "720"})
+    source.events.extend(
+        [
+            SSAEvent(start=0, end=2000, style="Default", text="Hello there."),
+            SSAEvent(start=2000, end=4000, style="Default", text=r"{\an7}IRRITATED"),
+        ]
+    )
+    source.save(str(tmp_path / "episode.en.ass"))
+    polish: SSAFile = SSAFile()
+    polish.info.update(source.info)
+    polish.events.extend(
+        [
+            SSAEvent(start=0, end=2000, style="Default", text="Cześć."),
+            SSAEvent(start=2000, end=polish_end, style="Default", text=r"{\an7}Wkurzony"),
+        ]
+    )
+    polish.save(str(tmp_path / "episode.pl.ass"))
+    return (
+        _ready("source", ArtifactKind.SOURCE_SUBTITLES, tmp_path / "episode.en.ass"),
+        _ready("full", ArtifactKind.FULL_PL, tmp_path / "episode.pl.ass"),
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("inputs", "polish_end", "spoken", "reason"),
+    [
+        (("full", "source"), 4000, ["Cześć."], None),
+        (("full",), 4000, ["Cześć.", "Wkurzony"], "no_source"),
+        (("full", "source"), 4500, ["Cześć.", "Wkurzony"], "source_mismatch"),
+    ],
+)
+def test_polish_split_reads_what_its_source_reads_and_classifies_itself_only_without_a_matching_source(
+    tmp_path: Path, inputs: tuple[str, ...], polish_end: int, spoken: list[str], reason: str | None
+) -> None:
+    source, full = _decided_pair(tmp_path, polish_end)
+    output: Artifact = _output("spoken", ArtifactKind.SPOKEN_PL, subtitle_format="ass")
+    records: list[Record] = []
+    handler: int = loguru_logger.add(lambda message: records.append(message.record), level="WARNING")
+    try:
+        result: TaskResult = SubtitleTaskHandler(run_root=tmp_path / "run").execute(
+            _task(TaskKind.SPLIT_SUBTITLES, inputs, ("spoken",)),
+            ArtifactSnapshot({"full": full, "source": source}, {"spoken": output}),
+            NeverCancelledToken(),
+            _ProgressSink(),
+        )
+    finally:
+        loguru_logger.remove(handler)
+
+    assert [visible_text(event.text) for event in load_subtitles(result.outputs[0].path)] == spoken
+    assert [record["extra"].get("reason") for record in records] == ([] if reason is None else [reason])
+
+
+@pytest.mark.unit
+def test_polish_split_rejects_a_second_input_that_is_not_the_source_subtitles(tmp_path: Path) -> None:
+    _source, full = _decided_pair(tmp_path)
+    video: Artifact = _ready("video", ArtifactKind.VIDEO_MKV, tmp_path / "episode.mkv")
+    output: Artifact = _output("spoken", ArtifactKind.SPOKEN_PL, subtitle_format="ass")
+
+    with pytest.raises(ExecutionError, match="source subtitles"):
+        SubtitleTaskHandler(run_root=tmp_path / "run").execute(
+            _task(TaskKind.SPLIT_SUBTITLES, ("full", "video"), ("spoken",)),
+            ArtifactSnapshot({"full": full, "video": video}, {"spoken": output}),
+            NeverCancelledToken(),
+            _ProgressSink(),
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("task_kind", [TaskKind.NORMALIZE_SUBTITLES, TaskKind.SPLIT_SUBTITLES])
+def test_polish_srt_handler_reflows_without_changing_timing(tmp_path: Path, task_kind: TaskKind) -> None:
+    source_path: Path = tmp_path / "episode.srt"
+    source_path.write_text("1\n00:00:01,234 --> 00:00:04,567\n-Idziesz ze mną? -Tak.\n", encoding="utf-8")
+    source: Artifact = _ready("source", ArtifactKind.FULL_PL, source_path)
+    output: Artifact = _output(
+        "output",
+        ArtifactKind.FULL_PL if task_kind is TaskKind.NORMALIZE_SUBTITLES else ArtifactKind.SPOKEN_PL,
+        subtitle_format="srt",
+    )
+    result: TaskResult = SubtitleTaskHandler(run_root=tmp_path / "run").execute(
+        _task(
+            task_kind,
+            ("source",),
+            ("output",),
+            (("output_format", "srt"),) if task_kind is TaskKind.NORMALIZE_SUBTITLES else (),
+        ),
+        ArtifactSnapshot({"source": source}, {"output": output}),
+        NeverCancelledToken(),
+        _ProgressSink(),
+    )
+    event: SSAEvent = load_subtitles(result.outputs[0].path).events[0]
+    assert visible_verses(event.text) == ("-Idziesz ze mną?", "-Tak.")
+    assert (event.start, event.end) == (1234, 4567)
+
+
 def test_subtitle_handler_splits_spoken_and_displayed_outputs(tmp_path: Path) -> None:
     source_path = tmp_path / "episode.ass"
     _write_ass(source_path)
@@ -615,32 +880,6 @@ def test_subtitle_absence_does_not_mask_real_failures(
         )
 
 
-def test_legacy_subtitle_adapter_keeps_split_and_product_parity(tmp_path: Path) -> None:
-    source = tmp_path / "episode.ass"
-    _write_ass(source)
-    adapter = LegacySubtitleAdapter()
-    adapted_split = adapter.split(adapter.load(source), kind="ass")
-    direct_split = split_subtitles(load_subtitles(source), kind="ass")
-    assert adapted_split.decisions == direct_split.decisions
-    assert adapted_split.spoken == direct_split.spoken
-
-    adapted_root = tmp_path / "adapted"
-    direct_root = tmp_path / "direct"
-    adapted_root.mkdir()
-    direct_root.mkdir()
-    adapted = adapter.write_polish(adapted_split, adapted_root / "episode", "ass")
-    direct = (
-        write_full(direct_split, direct_root / "episode.pl.ass"),
-        write_spoken(direct_split, direct_root / "episode.spoken.pl.ass"),
-        write_displayed(direct_split, direct_root / "episode.displayed.pl.ass"),
-    )
-
-    adapted_paths = (adapted.full, adapted.spoken, adapted.displayed)
-    assert tuple(path.read_text(encoding="utf-8") if path is not None else None for path in adapted_paths) == tuple(
-        path.read_text(encoding="utf-8") if path is not None else None for path in direct
-    )
-
-
 def test_displayed_lines_keep_their_source_file_order() -> None:
     events = [
         SSAEvent(start=0, end=1000, style="Dialog", text="Spoken line"),
@@ -661,6 +900,104 @@ def test_displayed_lines_never_send_a_vector_drawing_to_the_translator() -> None
     ]
 
     assert [line.text for line in displayed_lines(_ass_split(events))] == ["Translate me"]
+
+
+def test_displayed_lines_mark_a_mid_line_style_range_for_the_translator() -> None:
+    events: list[SSAEvent] = [
+        SSAEvent(start=0, end=1000, style="Sign", text=r"{\pos(1,2)}The {\c&H0000FF&}Red{\c&HFFFFFF&} Sword")
+    ]
+
+    assert [line.text for line in displayed_lines(_ass_split(events))] == ["The <s1>Red</s1> Sword"]
+
+
+def test_spoken_lines_mark_a_mid_line_style_range_without_changing_the_split() -> None:
+    split: SubtitleSplit = _ass_split([SSAEvent(start=0, end=1000, style="Dialog", text=r"I {\i1}did{\i0} knock.")])
+
+    assert [line.text for line in spoken_lines(split)] == ["I <s1>did</s1> knock."]
+    assert [line.text for line in split.spoken] == ["I did knock."]
+
+
+def test_translated_text_keeps_span_markers_that_place_the_tags_across_new_line_breaks() -> None:
+    split: SubtitleSplit = _ass_split(
+        [SSAEvent(start=0, end=1000, style="Dialog", text=r"Why are you after {\i1}me{\i0}?!")]
+    )
+    translated: str = "Czemu uwziąłeś się akurat na <s1>mnie</s1>, skoro nigdy nic złego ci nie zrobiłem?!"
+    result: FileTranslation = FileTranslation(
+        spoken=(TranslatedLine(0, 1000, "Why are you after <s1>me</s1>?!", translated, (translated,), "Dialog"),),
+    )
+
+    texts: dict[int, str] = translated_texts(split, result)
+    laid_out: TranslatedLayout = layout_translated(split, texts, fonts=None, dialogue_font=None)
+
+    assert texts == {0: translated}
+    assert laid_out.subs.events[0].text.split("\\N") == [
+        r"Czemu uwziąłeś się akurat na {\i1}mnie{\i0},",
+        "skoro nigdy nic złego ci nie zrobiłem?!",
+    ]
+
+
+def test_translation_handler_keeps_italics_on_the_word_the_translator_marked(tmp_path: Path) -> None:
+    source_path: Path = tmp_path / "episode.srt"
+    _write_srt(source_path, "I <i>did</i> knock.")
+    source: Artifact = _ready("source", ArtifactKind.SOURCE_SUBTITLES, source_path)
+    output: Artifact = _output("full", ArtifactKind.FULL_PL, subtitle_format="srt")
+    task: PlanTask = _task(
+        TaskKind.TRANSLATE_SUBTITLES,
+        (source.artifact_id,),
+        (output.artifact_id,),
+        (("output_format", "srt"),),
+    )
+
+    result: TaskResult = TranslationTaskHandler(_TranslationService(), run_root=tmp_path / "run").execute(
+        task,
+        ArtifactSnapshot({source.artifact_id: source}, {output.artifact_id: output}),
+        NeverCancelledToken(),
+        _ProgressSink(),
+    )
+
+    assert "PL I <i>did</i> knock." in result.outputs[0].path.read_text(encoding="utf-8")
+
+
+def test_translated_texts_drop_markers_the_source_line_never_had() -> None:
+    split: SubtitleSplit = _ass_split([SSAEvent(start=0, end=1000, style="Dialog", text="Plain line")])
+    translated: str = "Zwykła <s1>linia</s1>"
+    result: FileTranslation = FileTranslation(
+        spoken=(TranslatedLine(0, 1000, "Plain line", translated, (translated,), "Dialog"),),
+    )
+
+    assert translated_texts(split, result) == {0: "Zwykła linia"}
+
+
+def test_translation_handler_never_writes_span_markers_into_text_srt(tmp_path: Path) -> None:
+    source_path: Path = tmp_path / "episode.txt"
+    source_path.write_text("First sentence.", encoding="utf-8")
+    source: Artifact = _ready("source", ArtifactKind.STANDALONE_TEXT, source_path)
+    output: Artifact = _output("full", ArtifactKind.FULL_PL, subtitle_format="srt")
+    task: PlanTask = _task(
+        TaskKind.TRANSLATE_SUBTITLES,
+        (source.artifact_id,),
+        (output.artifact_id,),
+        (("source_kind", "txt"), ("output_format", "srt")),
+    )
+
+    def hallucinate(translation: FileTranslation) -> FileTranslation:
+        marked: tuple[TranslatedLine, ...] = tuple(
+            replace(line, text=f"<s1>{line.text}</s1>") for line in translation.spoken
+        )
+        return replace(translation, spoken=marked)
+
+    result: TaskResult = TranslationTaskHandler(
+        _TranslationService(transform=hallucinate), run_root=tmp_path / "run"
+    ).execute(
+        task,
+        ArtifactSnapshot({source.artifact_id: source}, {output.artifact_id: output}),
+        NeverCancelledToken(),
+        _ProgressSink(),
+    )
+
+    written: str = result.outputs[0].path.read_text(encoding="utf-8")
+    assert "PL First sentence." in written
+    assert "<s1>" not in written
 
 
 def test_translation_handler_writes_complete_polish_staging(tmp_path: Path) -> None:
@@ -976,7 +1313,7 @@ def test_planner_scheduler_completes_independent_subtitle_branches(tmp_path: Pat
     translation.translate_file.assert_called_once()
     assert result.groups[0].status is (GroupStatus.PARTIAL if streams == "displayed" else GroupStatus.SUCCEEDED)
     assert result.groups[0].error_messages == (
-        ("Requested subtitle stream is empty: spoken_pl",) if streams == "displayed" else ()
+        ("Subtitle file contains no lines to read aloud",) if streams == "displayed" else ()
     )
     expected: set[str] = {"episode.pl.ass"}
     if streams != "displayed":
@@ -1011,6 +1348,52 @@ def test_planner_scheduler_completes_independent_subtitle_branches(tmp_path: Pat
     assert all(
         event.state is not TaskState.RUNNING for event in sink.events if event.kind is RunEventKind.TASK_FINISHED
     )
+
+
+def test_plain_srt_containers_report_the_omitted_displayed_layer_without_translation(tmp_path: Path) -> None:
+    source_path: Path = tmp_path / "episode.srt"
+    _write_srt(source_path)
+    source: Artifact = replace(
+        _ready("source", ArtifactKind.SOURCE_SUBTITLES, source_path), subtitle_format="srt", language="eng"
+    )
+    video_path: Path = tmp_path / "episode.mkv"
+    video_path.write_bytes(b"video source")
+    video: Artifact = replace(_ready("video", ArtifactKind.VIDEO_MKV, video_path), duration_us=10_000_000)
+    source_group: SourceGroup = SourceGroup("group-1", "episode", tmp_path, (source, video))
+    inspected: InspectedSourceGroup = InspectedSourceGroup(
+        source_group,
+        source_group.artifacts,
+        {video.artifact_id: FakeMediaProbe().identify(video_path, cancel=NeverCancelledToken(), timeout_s=30.0)},
+        (),
+    )
+    products: ProductIntent = ProductIntent(
+        frozenset({ProductKind.MKV, ProductKind.MP4}),
+        burn_subtitle_product=BurnSubtitleProduct.DISPLAYED_PL,
+        mkv_tracks=frozenset({MkvTrackProduct.DISPLAYED_PL_SUBTITLES}),
+    )
+    plan: ExecutionPlan = plan_auto((inspected,), AutoPreset("signless", "Signless", products), _settings())
+    translation: Mock = Mock(wraps=_TranslationService())
+    composer: _Composer = _Composer()
+    run_root: Path = tmp_path / "temp" / "run-srt"
+
+    with RunSession(run_root) as session:
+        handlers: ExecutionHandlers = ExecutionHandlers(
+            ExtractionTaskHandler(_ExtractionService(), run_root=run_root, timeout_s=30.0),
+            SubtitleTaskHandler(run_root=run_root),
+            TranslationTaskHandler(translation, run_root=run_root),
+            composition=CompositionTaskHandler(composer, run_root=run_root),
+            publish=PublishTaskHandler(run_root=run_root, source_groups={"group-1": source_group}),
+        )
+        result: RunResult = GraphScheduler(
+            handlers, limits=ResourceLimits.from_settings(plan.settings), run_id="run-srt", session=session
+        ).run(plan, cancel=NeverCancelledToken(), events=_RunEventSink())
+
+    translation.translate_file.assert_not_called()
+    assert result.succeeded
+    assert result.warnings == (DISPLAYED_ABSENCE_NOTE,)
+    assert {product.path.name for product in result.groups[0].products} == {"episode.pl.mkv", "episode.pl.mp4"}
+    assert len(composer.requests) == 2
+    assert all(request.burn_subtitle is None and not request.attached_subtitles for request in composer.requests)
 
 
 def _subtitle_branch_group(tmp_path: Path, streams: str) -> InspectedSourceGroup:

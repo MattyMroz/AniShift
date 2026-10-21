@@ -14,6 +14,7 @@ __all__ = [
     "EventCancellationToken",
     "NeverCancelledToken",
     "ThreadEventCancellationToken",
+    "mirror_cancel",
 ]
 
 
@@ -125,3 +126,11 @@ class ThreadEventCancellationToken:
             message="Workflow execution was cancelled",
         )
         raise ExecutionError(context=context)
+
+
+def mirror_cancel(cancel: CancellationToken, event: threading.Event, stop: threading.Event) -> None:
+    """Set ``event`` once ``cancel`` is cancelled, polling until ``stop`` is set."""
+    while not stop.wait(0.05):
+        if cancel.is_cancelled():
+            event.set()
+            return

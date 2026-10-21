@@ -42,7 +42,7 @@ from anishift.services.audio import (
 )
 from anishift.services.audio.commands import SubprocessRunner
 from anishift.services.audio.service import AudioProgressSink
-from anishift.services.audio.types import AudioCodecProfile, TimelinePolicy
+from anishift.services.audio.types import AudioCodecProfile, NormalizedClip, TimedClip, TimelinePolicy
 from anishift.services.composition import CompositionConfig, CompositionService, QualityPreset
 from anishift.services.extraction import ExtractionService, extract_tracks, identify
 from anishift.services.llm import (
@@ -67,7 +67,10 @@ from anishift.services.llm import (
     TextPart,
 )
 from anishift.services.llm.engines.palantir import PALANTIR_ENGINE_ID, PalantirModelConfig, palantir_model_config
+from anishift.services.subtitles.errors import SubtitleError
+from anishift.services.subtitles.restyle import DialogueFont
 from anishift.services.translation import TranslationConfig, TranslationService
+from anishift.services.translation.chunk_config import ChunkConfig
 from anishift.services.translation.constants import DEFAULT_BATCH_SIZE
 from anishift.services.translation.engines import create_engine
 from anishift.services.translation.engines.llm import LlmTranslateConfig, LlmTranslateService
@@ -79,7 +82,6 @@ from anishift.services.translation.errors import (
     TranslationQuotaError,
     TranslationRateLimitError,
 )
-from anishift.services.translation.layout_config import LayoutConfig
 from anishift.services.translation.protocols import (
     LlmCompletionRequest,
     LlmCompletionResult,
@@ -92,12 +94,15 @@ from anishift.services.translation.protocols import (
 from anishift.services.translation.types import BatchedLine, FileTranslation
 from anishift.services.tts import SpeechBatch, SpeechBatchResult, TtsConfig, TtsService
 from anishift.services.tts.config import DEFAULT_RETRY_BACKOFF_SECONDS
+from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from anishift.config.settings import Settings
     from anishift.services.subtitles import DisplayedLine, SpokenLine
 
 __all__ = ["ProductionHandlerFactory", "palantir_llm_config", "probe_palantir_model"]
+
+logger = get_logger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -126,6 +131,11 @@ _TTS_RETRY_BACKOFF_S: Final[dict[str, tuple[float, ...]]] = {
     "elevenbytes": (5.0, 10.0, 15.0, 30.0),
 }
 """Provider retry delays retained from the validated legacy runtime."""
+
+_DIALOGUE_FONT_TASKS: Final[frozenset[TaskKind]] = frozenset(
+    {TaskKind.TRANSLATE_SUBTITLES, TaskKind.NORMALIZE_SUBTITLES, TaskKind.COMPOSE_MKV, TaskKind.COMPOSE_MP4}
+)
+"""Tasks drawing dialogue with the owner's font or carrying its files into a container."""
 
 
 class _TranslationExecutor(Protocol):
@@ -158,12 +168,15 @@ class ProductionHandlerFactory:
         """Construct a run-owned dispatcher from immutable execution choices."""
         settings: Settings = self._settings_provider()
         kinds: frozenset[TaskKind] = frozenset(task.kind for task in plan.tasks)
-        tts_handler: TtsTaskHandler | None = self._tts_handler(settings, run_root, plan, kinds)
-        audio_handler: AudioTaskHandler | None = self._audio_handler(run_root, plan, kinds)
+        dialogue_font: DialogueFont | None = _dialogue_font(plan, kinds)
+        audio: _ConfiguredAudioService | None = _audio_service(plan, kinds)
+        tts_handler: TtsTaskHandler | None = self._tts_handler(settings, run_root, plan, kinds, audio)
+        audio_handler: AudioTaskHandler | None = self._audio_handler(run_root, plan, kinds, audio)
         composition_handler: CompositionTaskHandler | None = self._composition_handler(
             run_root,
             plan,
             kinds,
+            dialogue_font,
         )
         publish_handler: PublishTaskHandler | None = None
         if TaskKind.PUBLISH_ARTIFACT in kinds:
@@ -178,11 +191,12 @@ class ProductionHandlerFactory:
                 timeout_s=_EXTRACTION_TIMEOUT_S,
                 legacy=LegacyExtractionAdapter(identify, extract_tracks),
             ),
-            SubtitleTaskHandler(run_root=run_root),
+            SubtitleTaskHandler(run_root=run_root, dialogue_font=dialogue_font),
             TranslationTaskHandler(
                 _translation_service(settings, plan),
                 run_root=run_root,
-                layout=_layout_config(plan),
+                chunk_config=_chunk_config(plan),
+                dialogue_font=dialogue_font,
             ),
             tts=tts_handler,
             audio=audio_handler,
@@ -196,6 +210,7 @@ class ProductionHandlerFactory:
         run_root: Path,
         plan: ExecutionPlan,
         kinds: frozenset[TaskKind],
+        audio: _ConfiguredAudioService | None,
     ) -> TtsTaskHandler | None:
         if TaskKind.SYNTHESIZE_SPEECH not in kinds:
             return None
@@ -223,6 +238,7 @@ class ProductionHandlerFactory:
             group_ranks=ranks,
             voice_id=plan.settings.tts_voice_id,
             allowed_voice_ids=frozenset(plan.settings.tts_allowed_voice_ids),
+            audio=audio,
         )
 
     @staticmethod
@@ -230,28 +246,29 @@ class ProductionHandlerFactory:
         run_root: Path,
         plan: ExecutionPlan,
         kinds: frozenset[TaskKind],
+        audio: _ConfiguredAudioService | None,
     ) -> AudioTaskHandler | None:
-        if not kinds.intersection({TaskKind.MIX_NARRATION, TaskKind.TRANSCODE_AUDIO}):
+        if audio is None or not kinds.intersection({TaskKind.MIX_NARRATION, TaskKind.TRANSCODE_AUDIO}):
             return None
-        config: AudioConfig = _audio_config(plan)
-        return AudioTaskHandler(
-            _ConfiguredAudioService(AudioService(config), plan.settings.tts_postprocess_tempo),
-            AudioTranscodeService(config),
-            run_root=run_root,
-        )
+        return AudioTaskHandler(audio, AudioTranscodeService(_audio_config(plan)), run_root=run_root)
 
     @staticmethod
     def _composition_handler(
         run_root: Path,
         plan: ExecutionPlan,
         kinds: frozenset[TaskKind],
+        dialogue_font: DialogueFont | None = None,
     ) -> CompositionTaskHandler | None:
         if not kinds.intersection({TaskKind.COMPOSE_MKV, TaskKind.COMPOSE_MP4, TaskKind.COMPOSE_COVER}):
             return None
         service = CompositionService(
             CompositionConfig(quality_preset=QualityPreset(plan.settings.composition_profile_id)),
         )
-        return CompositionTaskHandler(service, run_root=run_root)
+        return CompositionTaskHandler(
+            service,
+            run_root=run_root,
+            font_files=dialogue_font.files if dialogue_font is not None else (),
+        )
 
 
 class _RunTtsService:
@@ -290,6 +307,21 @@ class _ConfiguredAudioService:
     ) -> AudioRenderResult:
         configured: AudioRenderRequest = replace(request, post_process_tempo=self._post_process_tempo)
         return self._service.render(configured, callbacks=callbacks, on_percent=on_percent, cancel=cancel)
+
+    def prepare_clip(self, clip: TimedClip, *, temporary_root: Path, cancel: threading.Event | None) -> NormalizedClip:
+        return self._service.prepare_clip(
+            clip, temporary_root=temporary_root, tempo=self._post_process_tempo, cancel=cancel
+        )
+
+
+def _audio_service(plan: ExecutionPlan, kinds: frozenset[TaskKind]) -> _ConfiguredAudioService | None:
+    """Build the one audio service a run shares between measuring clips in synthesis and mixing them."""
+    audio_kinds: frozenset[TaskKind] = frozenset(
+        {TaskKind.SYNTHESIZE_SPEECH, TaskKind.MIX_NARRATION, TaskKind.TRANSCODE_AUDIO}
+    )
+    if not kinds & audio_kinds:
+        return None
+    return _ConfiguredAudioService(AudioService(_audio_config(plan)), plan.settings.tts_postprocess_tempo)
 
 
 class _TranslationRuntime:
@@ -639,13 +671,19 @@ def _audio_config(plan: ExecutionPlan) -> AudioConfig:
     )
 
 
-def _layout_config(plan: ExecutionPlan) -> LayoutConfig:
-    snapshot = plan.settings
-    return LayoutConfig(
-        max_chars_per_line=snapshot.subtitle_max_chars_per_line,
-        max_lines_per_event=snapshot.subtitle_max_lines_per_event,
-        chunk_chars=snapshot.translation_chunk_chars,
-    )
+def _dialogue_font(plan: ExecutionPlan, kinds: frozenset[TaskKind]) -> DialogueFont | None:
+    font_file: str = plan.settings.dialogue_font_file
+    if not font_file or not kinds & _DIALOGUE_FONT_TASKS:
+        return None
+    try:
+        return DialogueFont.from_file(Path(font_file))
+    except SubtitleError as error:
+        logger.warning("Dialogue font unusable, dialogue keeps the episode fonts", error_code=error.context.code.value)
+        return None
+
+
+def _chunk_config(plan: ExecutionPlan) -> ChunkConfig:
+    return ChunkConfig(chunk_chars=plan.settings.translation_chunk_chars)
 
 
 def _mirror_translation_cancel(

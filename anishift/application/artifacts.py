@@ -26,6 +26,7 @@ class ArtifactKind(StrEnum):
     NORMALIZED_SUBTITLES = "normalized_subtitles"
     TTS_CLIP = "tts_clip"
     TTS_MANIFEST = "tts_manifest"
+    SIGN_CANDIDATES = "sign_candidates"
     FINAL_MKV = "final_mkv"
     FINAL_MP4 = "final_mp4"
     COVER_MP4 = "cover_mp4"

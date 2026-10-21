@@ -20,6 +20,17 @@ subtitle line breaking.
 - `hard_split_graphemes()` mierzy limit w punktach kodowych. Zachowuje grafem,
   gdy mieści się w limicie; jeśli pojedynczy grafem jest większy, rozcina go,
   żeby zachować twardy limit callera.
+- `markers.py` jest jedynym właścicielem składni znaczników `<sN>…</sN>`: subtitles je tworzy i czyta, silniki translation tylko je usuwają.
+- `gaps.py` daje każdej przerwie jedną klasę (najszkodliwszą wg `TIERS`) i
+  flagi; nie zna wag — siłę klas ustala kalibracja rdzenia układu.
+- `morphology.agrees()` to „istnieje zgodna para analiz” Morfeusza bez
+  dezambiguacji: przymiotniki z odczytem rzeczownikowym („ukochana”) i
+  „który” też się liczą. Słowo odpada tylko przy odczycie osobowym lub
+  przeszłym (`fin`, `praet`, `bedzie`, `aglt`, `winien`); tryb rozkazujący
+  i bezokolicznik („sposób”) są pomijane. `modifies()` dopuszcza także
+  przymiotnik + przymiotnik i jest predykatem `gaps(words, modifies)` dla
+  frazy przyimkowej; bez niego chronią ją tylko listy (zaimki dzierżawcze).
+- `gaps(words, modifies, verb)`: klityka zaimkowa (`_CLITICS`) obok wyrazu, który `morphology.verb` czyta jako czasownik, daje chronioną klasę `clitic`; przymiotnik przed wyrazem zgodnym według `modifies` daje `modifier` także bez końcówki z listy. Bez predykatów (wariant bez morfologii) te przerwy zostają zwykłymi.
 - Apostrofy nie są separatorami fraz. Znaki otwierające z kategorii `Ps`/`Pi`
   także nie mogą zaczynać granicy.
 

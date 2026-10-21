@@ -103,20 +103,31 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
 
 ## Napisy
 
-### Znaków w linii (`subtitle_max_chars_per_line`)
+### Plik czcionki dialogów (`dialogue_font_file`)
 
-- Co robi: docelowa długość jednej linii polskich napisów przy podziale tekstu.
-  Dotyczy warstwy ekranowej i podziału linii dialogów. Nie jest gwarancją:
-  pojedyncze długie słowo lub wyczerpanie limitu wersów może przekroczyć tę wartość.
-- Zakres · domyślnie: 20–120 znaków · 42.
-- Silnik: wszystkie silniki tłumaczenia; nie wpływa na napisy źródłowe.
-- Przykład: duży telewizor z daleka — 36.
+- Co robi: kwestie czytane przez lektora dostają kopię swojego stylu z tą czcionką (styl
+  `<nazwa> (dialog)`); szyldy zostają w czcionkach wydania. Plik i jego warianty z tego samego
+  katalogu (ta sama rodzina, wszystkie polskie litery) trafiają do MKV jako załączniki i do
+  katalogu czcionek przy wypalaniu MP4, gdy napisy używają tej rodziny. Napisy SRT się nie zmieniają.
+- Wartości · domyślnie: ścieżka do pliku czcionki · puste (wyłączone).
+- Zależność: zapis odrzuca plik nieczytelny, bez nazwy rodziny albo bez polskich liter. Gdy plik
+  zniknie później, plan pokazuje ostrzeżenie, a dialogi zostają w czcionce wydania.
+- Przykład: `C:\Users\Ja\Videos\mpv\portable_config\fonts\ITC Officina Sans Std PL - Bold.ttf`.
 
-### Linii na napis (`subtitle_max_lines_per_event`)
+### Lektor a napisy ekranowe (`sign_narration`)
 
-- Co robi: ile linii może zająć jeden napis na ekranie po złamaniu.
-- Zakres · domyślnie: 1–4 · 2.
-- Przykład: 3, gdy dopuszczasz trzy wersy tekstu w jednym zdarzeniu napisów.
+- Co robi: lektor czyta polskie napisy ekranowe (szyldy, tytuły) w pauzach między kwestiami.
+  Kwestie zostają dokładnie w tych samych miejscach; napis nigdy nie nachodzi na kwestię ani na
+  inny napis. Piosenek, karaoke, odgłosów w `*...*`, rysunków, napisów w czasie piosenek
+  (czołówka, tyłówka) i tekstów z mniej niż dwiema literami lektor nie czyta w żadnym trybie.
+- Wartości  domyślnie: `off` (nie czyta), `smart` (czyta, gdy napis jest ważny i mieści się w
+  pauzie; napisu przeczytanego w ciągu 10 s ani odgłosu zapisanego powtórzonym słowem, np.
+  „TUP TUP”, nie czyta), `always` (czyta każdy napis, który mieści się w pauzie w czasie jego
+  wyświetlania lub do 3 s po nim)  `smart`.
+- Zależność: działa tylko dla napisów ASS z czasami źródła. Syntezowane są napisy, dla których
+  jest wolna pauza, więc rośnie liczba znaków wysyłanych do silnika TTS (zwykle kilkanaście
+  procent); dla płatnych silników to koszt.
+- Przykład: `off`, gdy lektor ma czytać wyłącznie dialogi.
 
 ## Tłumaczenie
 

@@ -12,6 +12,7 @@ from anishift.application import (
     ExecutionPlan,
     InspectedSourceGroup,
     PlanPreview,
+    PlanProblem,
     PlanTask,
     ProductIntent,
     ProductKind,
@@ -93,6 +94,15 @@ def test_a_refusal_reaching_manual_is_stated_in_polish_like_every_other_screen(t
     assert refusal_text(ControlError(english, reason=RefusalReason.GROUP_RESERVED.value)) in frame
     assert english not in frame
     assert "Check whether the resident runs" not in frame
+
+
+def test_a_plain_srt_displayed_warning_is_stated_in_polish(tmp_path: Path) -> None:
+    controller: ManualController = _controller(tmp_path)
+    problem: PlanProblem = PlanProblem("displayed_cues_absent", "English planner text", is_blocking=False)
+
+    lines: tuple[str, ...] = controller._warning_lines(PlanPreview("preview", "instance", (), (), (problem,)))
+
+    assert lines == ("! Plan · Napisy SRT nie mają warstwy ekranowej · napisy ekranowe zostaną pominięte",)
 
 
 def test_manual_previews_and_starts_only_episodes_three_and_eight(tmp_path: Path) -> None:
