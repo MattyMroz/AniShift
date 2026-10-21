@@ -2,9 +2,9 @@
 
 ## Stan
 
-- Gałąź `work/quality/08-fuzzy-quality` w głównym checkoucie, ostatni commit kodu `6daa9f95`. Nic na `main`, bez push. Worktree usunięte (zmiany bez commita w `git stash`). Specyfikacja: `docs/work/10-quality/text-layout.md`; kalibracja: `research/text-layout-calibration.md`.
-- Bramki zielone: ruff, mypy, pełny pytest 9855 testów (niestabilne pod obciążeniem, osobno przechodzą: `tests/platform/test_child_processes.py`, `tests/integration/test_episode_download.py`).
-- Galeria stała: 60 przypadków (30 dialogów, 30 napisów pobocznych), stan wejściowy obok kodu, folder podpisany commitem: `workspace/.quality/experiments/gallery/60-6daa9f95/`. Lista przypadków: `experiments/v4-hard/cases.json` (galeria wymaga pola `description`, które składa się z `id` i `difficulty`). Render tylko trudnych przypadków: `compare --size 0`.
+- Gałąź `work/quality/08-fuzzy-quality` w głównym checkoucie, ostatni commit kodu `821a7020`. Nic na `main`, bez push. Worktree usunięte (zmiany bez commita w `git stash`). Specyfikacja: `docs/work/10-quality/text-layout.md`; kalibracja: `research/text-layout-calibration.md`.
+- Bramki zielone: ruff, mypy, pełny pytest 9856 testów (niestabilne pod obciążeniem, osobno przechodzą: `tests/platform/test_child_processes.py`, `tests/integration/test_episode_download.py`).
+- Galeria stała: 60 przypadków (30 dialogów, 30 napisów pobocznych), stan wejściowy obok kodu, folder podpisany commitem: `workspace/.quality/experiments/gallery/60-821a7020/`. Lista przypadków: `experiments/v4-hard/cases.json` (galeria wymaga pola `description`, które składa się z `id` i `difficulty`). Render tylko trudnych przypadków: `compare --size 0`.
 - Ocena Sonnet (dwóch sędziów, poprzedni commit `196696cd`): dialogi 28/30, poboczne 26/30, nic gorszego niż wejście poza jednym przypadkiem 55, który był złudzeniem powiększenia (ten sam rozmiar liter).
 
 ## Reguły ustalone 20–21.10
@@ -14,6 +14,7 @@
 - Krótki zaimek (mi, ci, go…) nie zaczyna linii. Łamania tłumacza obowiązują, gdy liczba linii zgadza się ze źródłem, poza chronionymi związkami i piosenkami.
 - Twarde tylko: poza ekranem (bez marginesu pomiaru; w ramkach `\clip` z marginesem), za dużo linii, zmniejszenie poniżej 0,8, mieszanie krojów w linii. Reszta dawnych blokad to wagi.
 - Nieruchomy prostokąt ASS pod szyldem rośnie do dłuższego przekładu (marginesy źródła), gdy tekst wychodzi poza połowę marginesu (właściciel 21.10).
+- Linia całkowicie przezroczysta (wypełnienie bez widocznej obwódki i cienia) nie musi mieścić się w ramce `\clip` (`Field.hidden`).
 - Katalog mierzy szyldy tą samą funkcją co program (`fitting.sign_input`, czcionka właściciela); kalibracja sprawdza odporność ±1% i zmiękcza sprzeczne przypadki zamiast odmawiać.
 
 ## Otwarte
@@ -24,4 +25,4 @@
 
 ## Następny krok
 
-Sprawdzian na zbiorze kontrolnym `workspace/.quality/holdout/` (8 nowych odcinków, m.in. isekaje z okienkami statusu), akceptacja właściciela na galerii `60-6daa9f95`, potem push i scalenie `08` → `main`. Nigdy `uv run --active`.
+Nowy zbiór testowy (decyzja właściciela: odcinki z jego AniShift albo tłumaczenie 183 ASS z `mm_avh_working_space/temp/dataset_ass` przez płatne API) i sprawdzian na `workspace/.quality/holdout/`, akceptacja właściciela na galerii `60-821a7020`, potem push i scalenie `08` → `main`. Nigdy `uv run --active`.
