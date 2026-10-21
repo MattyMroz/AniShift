@@ -541,15 +541,9 @@ def _excess(
 
 def _member_excess(layout: Layout, member: _Member, profile: RenderProfile) -> tuple[float, float]:
     rects: tuple[Rect, ...] = screen_rects(member.event, NO_WRAP + _render(member, layout, profile), profile)
-    width: float = max((rect.right - rect.left for rect in rects), default=0.0)
-    height: float = max((rect.bottom - rect.top for rect in rects), default=0.0)
     loss_x, loss_y = _loss(rects, member.region)
     base_x, base_y = member.lost
-    screen: float = max(
-        0.0,
-        loss_x - base_x - _PIXEL - member.uncertainty * width,
-        loss_y - base_y - _PIXEL - member.uncertainty * height,
-    )
+    screen: float = max(0.0, loss_x - base_x - _PIXEL, loss_y - base_y - _PIXEL)
     grown: float = _overlap(rects, member.near, member.uncertainty) - _overlap(member.rects, member.near, 0.0)
     return screen, max(0.0, grown - _PIXEL)
 
