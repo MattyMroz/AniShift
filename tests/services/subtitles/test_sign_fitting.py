@@ -359,6 +359,35 @@ def test_translation_lines_joined_by_a_hard_space_still_get_a_layout(translated:
 
 
 @pytest.mark.unit
+def test_box_drawn_under_a_sign_grows_to_hold_the_longer_translation() -> None:
+    box: str = r"{\an5\pos(960,100)\fscx200\fscy40\p1}m 0 0 l 150 0 150 150 0 150"
+    subs, translated, profile = _files(
+        [SSAEvent(text=box, end=1000, layer=0), SSAEvent(text=r"{\an5\pos(960,100)}Note", end=1000, layer=1)],
+        [box, r"{\an5\pos(960,100)}Przypis: nie potrafi pływać"],
+        {"Default": SSAStyle(fontsize=40.0)},
+        _FULL_HD,
+    )
+
+    fitted: dict[int, str] = fit_signs(subs, translated, [1], profile, LayoutReport())
+
+    assert r"\fscx" in fitted[0]
+    assert float(re.search(r"\\fscx([0-9.]+)", fitted[0])[1]) > 200  # type: ignore[index]
+
+
+@pytest.mark.unit
+def test_box_drawn_under_a_sign_keeps_its_size_when_the_translation_fits() -> None:
+    box: str = r"{\an5\pos(960,100)\fscx600\fscy40\p1}m 0 0 l 150 0 150 150 0 150"
+    subs, translated, profile = _files(
+        [SSAEvent(text=box, end=1000, layer=0), SSAEvent(text=r"{\an5\pos(960,100)}Note", end=1000, layer=1)],
+        [box, r"{\an5\pos(960,100)}Uwaga"],
+        {"Default": SSAStyle(fontsize=40.0)},
+        _FULL_HD,
+    )
+
+    assert 0 not in fit_signs(subs, translated, [1], profile, LayoutReport())
+
+
+@pytest.mark.unit
 def test_ragged_source_shape_keeps_a_short_line_where_the_source_had_one() -> None:
     result: str = _fit(
         r"{\an9\pos(1900,10)\fs40}This is a work of fiction and more\Nshort line\Nanother long line of the notice",

@@ -614,6 +614,7 @@ def layout_translated(
             signs.append(position)
         out.events.append(laid_out)
     for position, fitted in fit_signs(source, out, signs, profile, report).items():
+        out.events[position] = out.events[position].copy()
         out.events[position].text = fitted
     return TranslatedLayout(out, report)
 

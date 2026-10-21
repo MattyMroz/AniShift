@@ -85,6 +85,24 @@ _RE_NUMBER: Final[re.Pattern[str]] = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)")
 _RE_PREFIX: Final[re.Pattern[str]] = re.compile(r"^(?:\{[^}]*\})*")
 """Override blocks before the first visible character."""
 
+_RE_POS: Final[re.Pattern[str]] = re.compile(r"\\pos\(\s*(-?[0-9.]+)\s*,\s*(-?[0-9.]+)\s*\)")
+"""Static anchor override of an event."""
+
+_RE_AXIS_SCALE: Final[re.Pattern[str]] = re.compile(r"\\fsc([xy])\s*(-?[0-9.]+)")
+"""Horizontal or vertical scale override of a drawing."""
+
+_RE_DRAWING_LEVEL: Final[re.Pattern[str]] = re.compile(r"\\p([1-9][0-9]*)")
+"""Drawing mode with the coordinate precision level libass divides points by."""
+
+_RE_ANIMATED: Final[re.Pattern[str]] = re.compile(r"\\(?:move|t)\s*\(")
+"""Motion or animation that keeps a drawing from being a still panel."""
+
+_RE_POINT: Final[re.Pattern[str]] = re.compile(r"-?[0-9]+(?:\.[0-9]*)?")
+"""Coordinate of a drawing command."""
+
+_PANEL_SHARE: Final[float] = 0.8
+"""Share of the source text box a drawing must cover to be the panel the sign sits on."""
+
 
 @dataclass(frozen=True, slots=True)
 class _Member:
@@ -159,7 +177,140 @@ def fit_signs(
         for item in changed:
             scale: Scale = Scale(min(item.layout.scale.fx, fx), min(item.layout.scale.fy, fy))
             scene.fitted.update(_texts(item.members, replace(item.layout, scale=scale), profile))
-    return {index: scene.fitted.get(index, target[index].text) for index in signs}
+    result: dict[int, str] = {index: scene.fitted.get(index, target[index].text) for index in signs}
+    return result | _grown_panels(objects, scene, result)
+
+
+# ── Panels ────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class _Panel:
+    """A still drawing under a sign: its canvas box, scale, anchor and alignment."""
+
+    index: int
+    rect: Rect
+    scale: tuple[float, float]
+    anchor: tuple[float, float]
+    alignment: int
+
+
+def _grown_panels(objects: Sequence[_Fitted], scene: _Scene, texts: Mapping[int, str]) -> dict[int, str]:
+    """Return the drawings under signs grown to hold the laid-out text with the margins the source text had."""
+    panels: list[_Panel] = [
+        panel
+        for index, event in enumerate(scene.target)
+        if event.type == "Dialogue" and (panel := _panel(index, event, scene.profile)) is not None
+    ]
+    grown: dict[int, str] = {}
+    for member in (member for item in objects for member in item.members):
+        source: Rect | None = _union(member.rects)
+        laid_out: SSAEvent = scene.target[member.index].copy()
+        laid_out.text = texts.get(member.index, laid_out.text)
+        text: Rect | None = _union(screen_rects(laid_out, laid_out.text, scene.profile))
+        if source is None or text is None:
+            continue
+        for panel in panels:
+            drawing: SSAEvent = scene.target[panel.index]
+            if panel.index in grown or not (drawing.start < member.event.end and member.event.start < drawing.end):
+                continue
+            if _area(_intersection(source, panel.rect)) < _PANEL_SHARE * _area(source):
+                continue
+            margins: Rect = Rect(
+                max(0.0, source.left - panel.rect.left),
+                max(0.0, source.top - panel.rect.top),
+                max(0.0, panel.rect.right - source.right),
+                max(0.0, panel.rect.bottom - source.bottom),
+            )
+            inner: Rect = Rect(
+                panel.rect.left + margins.left / 2,
+                panel.rect.top + margins.top / 2,
+                panel.rect.right - margins.right / 2,
+                panel.rect.bottom - margins.bottom / 2,
+            )
+            if _intersection(text, inner) == text:
+                continue
+            needed: Rect = Rect(
+                text.left - margins.left,
+                text.top - margins.top,
+                text.right + margins.right,
+                text.bottom + margins.bottom,
+            )
+            box: Rect = Rect(
+                min(panel.rect.left, needed.left),
+                min(panel.rect.top, needed.top),
+                max(panel.rect.right, needed.right),
+                max(panel.rect.bottom, needed.bottom),
+            )
+            if box != panel.rect:
+                grown[panel.index] = _resized(drawing.text, panel, box)
+    return grown
+
+
+def _panel(index: int, event: SSAEvent, profile: RenderProfile) -> _Panel | None:
+    style: SSAStyle | None = profile.styles.get(event.style)
+    tags: str = "".join(RE_TAG_BLOCK.findall(event.text))
+    position: re.Match[str] | None = _RE_POS.search(tags)
+    level: re.Match[str] | None = _RE_DRAWING_LEVEL.search(tags)
+    points: list[float] = [float(point) for point in _RE_POINT.findall(RE_TAG_BLOCK.sub("", event.text))]
+    if style is None or position is None or level is None or _RE_ANIMATED.search(tags) or len(points) < 4:  # noqa: PLR2004
+        return None
+    scales: dict[str, float] = {"x": float(style.scalex), "y": float(style.scaley)}
+    scales |= {axis: float(value) for axis, value in _RE_AXIS_SCALE.findall(tags)}
+    divisor: float = 2 ** (int(level[1]) - 1)
+    xs, ys = points[0::2], points[1::2]
+    width: float = (max(xs) - min(xs)) * scales["x"] / 100 / divisor
+    height: float = (max(ys) - min(ys)) * scales["y"] / 100 / divisor
+    if width <= 0 or height <= 0:
+        return None
+    anchor: tuple[float, float] = (float(position[1]), float(position[2]))
+    place: int = alignment(event, profile)
+    left: float = anchor[0] - width * ((place - 1) % 3) / 2
+    top: float = anchor[1] - height * (2 - (place - 1) // 3) / 2
+    return _Panel(index, Rect(left, top, left + width, top + height), (scales["x"], scales["y"]), anchor, place)
+
+
+def _resized(text: str, panel: _Panel, box: Rect) -> str:
+    old_width: float = panel.rect.right - panel.rect.left
+    old_height: float = panel.rect.bottom - panel.rect.top
+    scale_x: float = panel.scale[0] * (box.right - box.left) / old_width
+    scale_y: float = panel.scale[1] * (box.bottom - box.top) / old_height
+    column: float = ((panel.alignment - 1) % 3) / 2
+    row: float = (2 - (panel.alignment - 1) // 3) / 2
+    x: float = box.left + (box.right - box.left) * column
+    y: float = box.top + (box.bottom - box.top) * row
+    tags: str = f"BBpos({x:.3f},{y:.3f})BBfscx{scale_x:.3f}BBfscy{scale_y:.3f}".replace("BB", chr(92))
+
+    def block(found: re.Match[str]) -> str:
+        cleaned: str = _RE_AXIS_SCALE.sub("", _RE_POS.sub("", found[0]))
+        return cleaned
+
+    stripped: str = RE_TAG_BLOCK.sub(block, text)
+    return "{" + tags + "}" + stripped
+
+
+def _union(rects: Sequence[Rect]) -> Rect | None:
+    if not rects:
+        return None
+    return Rect(
+        min(rect.left for rect in rects),
+        min(rect.top for rect in rects),
+        max(rect.right for rect in rects),
+        max(rect.bottom for rect in rects),
+    )
+
+
+def _intersection(first: Rect, second: Rect) -> Rect:
+    return Rect(
+        max(first.left, second.left),
+        max(first.top, second.top),
+        min(first.right, second.right),
+        min(first.bottom, second.bottom),
+    )
+
+
+def _area(rect: Rect) -> float:
+    return max(0.0, rect.right - rect.left) * max(0.0, rect.bottom - rect.top)
 
 
 # ── Objects ───────────────────────────────────────────────────────────────────
