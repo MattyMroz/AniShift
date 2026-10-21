@@ -12,6 +12,11 @@ from anishift.utils.logger import get_logger
 cli_main = importlib.import_module("anishift.cli.main")
 
 
+@pytest.fixture(autouse=True)
+def _no_font_repository(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli_main, "install_fonts", lambda: ResourceResult("fonts", "skipped", "not in tests"))
+
+
 def test_setup_command_prints_report(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_run_setup(*, force: bool = False) -> list[ResourceResult]:
         return [ResourceResult("ffmpeg", "installed", "downloaded and verified")]

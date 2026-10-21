@@ -9,6 +9,7 @@ external/
 ├── docs/              # official manuals for the pinned versions (tracked)
 │   ├── mkvtoolnix/    # mkvextract, mkvmerge
 │   └── ffmpeg/        # ffmpeg, ffprobe, filters, codecs, formats, utils
+├── fonts/             # clone of the private repo MattyMroz/fonts (gitignored)
 └── bin/               # binaries themselves (gitignored)
     ├── mkvtoolnix/    # mkvextract, mkvmerge
     ├── ffmpeg/        # ffmpeg, ffprobe
@@ -37,3 +38,8 @@ The private profile is in `config/qbittorrent/`, or the corresponding directory
 under `ANISHIFT_CONFIG_DIR`. It has its own credentials, ports and torrent
 history. Media go to the workspace. `anishift doctor` checks binary
 readiness without installing or starting the client.
+
+`anishift setup` also clones the owner's private font repository into `fonts/`
+(or updates it) and, when no dialogue font is set, chooses
+`fonts/video/ITC Officina Sans Std PL - Bold.ttf`. Without access to that
+repository the step is skipped and subtitles keep the episode's fonts.

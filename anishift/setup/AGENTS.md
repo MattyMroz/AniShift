@@ -7,6 +7,7 @@ Pobieranie, weryfikacja SHA256 i instalacja zewnętrznych binarek z manifestu `e
 - `installer.py` — download, weryfikacja SHA256, atomowa instalacja
 - `manifest.py` — wczytanie i walidacja manifestu `external/bin_hashes.json`
 - `doctor.py` — synchroniczne health-checki (lista `CheckResult`)
+- `fonts.py` — `install_fonts`: klon (`gh repo clone`) albo aktualizacja (`git pull --ff-only`) prywatnego repo `MattyMroz/fonts` w `external/fonts/`; pusta czcionka dialogów dostaje `video/ITC Officina Sans Std PL - Bold.ttf`; bez dostępu do repo wynik `skipped`, nigdy błąd
 
 ## Pułapki
 
