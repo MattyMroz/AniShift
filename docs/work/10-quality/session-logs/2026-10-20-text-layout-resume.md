@@ -1,20 +1,26 @@
-# 2026-10-20 — układ tekstu v4: punkt wznowienia
+# 2026-10-21 — układ tekstu v4: punkt wznowienia
 
 ## Stan
 
-- Gałąź `work/quality/21-text-layout` (worktree `AniShift-wt/q-tl`) scalona do `work/quality/08-fuzzy-quality`. Nic na `main`, bez push. Specyfikacja: `docs/work/10-quality/text-layout.md`; plan: `plans/02-text-layout.md`; kalibracja: `research/text-layout-calibration.md`.
-- Gotowe: rdzeń `anishift/services/subtitles/layout.py`, klasy przerw `anishift/text/gaps.py` (+ Morfeusz 2, `anishift/text/morphology.py`), kalibracja `scripts/subtitle_quality/layout_calibrate.py`, dialog i napisy poboczne podpięte (warstwa sceny w `fitting.py`), usunięte ustawienia „Znaków w linii” i „Linii na napis”. Katalog + ankiety 87/87; test produkcyjny `tests/services/subtitles/test_text_layout_production.py` (wymaga junction `workspace\.quality` → główny checkout; nie commitować).
-- Ślepe oceny (dwóch sędziów): odłożone NF+AMZN — rdzeń 1,2–2,5% złych cięć, zawodowcy 1,9–2,5%; świeże CR (501) przed poprawką klityk — rdzeń 3,4–5,8%, zawodowcy CR 10,8–11,6%.
-- Replay `workspace/.quality/experiments/replay/v4`: szyldy poza ekranem bardziej niż oryginał 819 → 93, kolizje 2097 → 496. Galerie: `experiments/gallery/hard-baseline-vs-v4` (60 trudnych scen z programu), `baseline-vs-v4`.
-- Zbiór holdout (8 nieużywanych odcinków z `ready`): `workspace/.quality/holdout/` — zbudowany, jeszcze nie oceniony.
+- Gałąź `work/quality/08-fuzzy-quality` w głównym checkoucie, ostatni commit `d0d8825e`. Nic na `main`, bez push. Worktree usunięte (zmiany bez commita w `git stash`). Specyfikacja: `docs/work/10-quality/text-layout.md`; kalibracja: `research/text-layout-calibration.md`.
+- Bramki zielone: ruff, mypy, pełny pytest 9853 testów (niestabilne pod obciążeniem, osobno przechodzą: `tests/platform/test_child_processes.py`, `tests/integration/test_episode_download.py`).
+- Galeria stała: 60 przypadków (30 dialogów, 30 napisów pobocznych), stan wejściowy obok kodu, folder podpisany commitem: `workspace/.quality/experiments/gallery/60-d0d8825e/`. Lista przypadków: `experiments/v4-hard/cases.json` (galeria wymaga pola `description`, które składa się z `id` i `difficulty`). Render tylko trudnych przypadków: `compare --size 0`.
+- Ocena Sonnet (dwóch sędziów, poprzedni commit `196696cd`): dialogi 28/30, poboczne 26/30, nic gorszego niż wejście poza jednym przypadkiem 55, który był złudzeniem powiększenia (ten sam rozmiar liter).
+
+## Reguły ustalone 20–21.10
+
+- Officina na wszystkich napisach (dialogi i poboczne; rysunki i karaoke bez zmian); klon stylu pogrubiony, gdy czcionka ma tylko krój Bold.
+- Szyld nie mniejszy niż 0,8, chyba że nic innego się nie mieści (poziom ratunku); piosenka może zejść niżej i zostaje w jednej linii; komplet szyldów ujednolica skalę najwyżej do 0,8.
+- Krótki zaimek (mi, ci, go…) nie zaczyna linii. Łamania tłumacza obowiązują, gdy liczba linii zgadza się ze źródłem, poza chronionymi związkami i piosenkami.
+- Twarde tylko: poza ekranem (bez marginesu pomiaru; w ramkach `\clip` z marginesem), za dużo linii, zmniejszenie poniżej 0,8, mieszanie krojów w linii. Reszta dawnych blokad to wagi.
+- Katalog mierzy szyldy tą samą funkcją co program (`fitting.sign_input`, czcionka właściciela); kalibracja sprawdza odporność ±1% i zmiękcza sprzeczne przypadki zamiast odmawiać.
 
 ## Otwarte
 
-1. s13 (podpis z pustymi wierszami, obraz 50 galerii trudnej): WIP w `git stash` na gałęzi 21 („s13 blank-line spacing WIP”); replay padał na `MemoryError` — wybór granic bloków trzeba zrobić programowaniem dynamicznym po blokach albo brać granice z układu tłumacza.
-2. Strojenie pod przypadki: progi 0,6 skali, 16 px, 50% sieroty szyldu bez danych; LOO 74/87. Proponowany audyt reguł szyldów i ślepa ocena szyldów na holdout (oceny na Sonnecie).
-3. Tekst wypalony w obrazie (s13, s29) — niewidoczny dla programu.
-4. Pomysły właściciela do decyzji: Officina dla szyldów bez pracy typesettera („kolorowy Arial”), ustawienie „Wielkość dialogów” jako % wysokości ekranu.
+1. 32: etykieta „Chika” w ramce maleńka i ucięta. 53: „Odcinek drugi” — cięcie 20/51 zamiast 41/31. 30: dialog leży na rankingu (jak w oryginale).
+2. 29 (d28, 53 znaki, szerokość 0,77) i 38 (trzy linie wobec dwóch po ~61): decyzja na progu szerokości, do potwierdzenia przez właściciela.
+3. Foldery `workspace/temp/pytest-*` mają zablokowane uprawnienia — do usunięcia ręcznie.
 
 ## Następny krok
 
-Akceptacja właściciela na obrazach (`hard-baseline-vs-v4`), potem scalenie `08` → `main`. Nigdy `uv run --active`; po pracy agentów sprawdzić `AniShift\.venv\Lib\site-packages\anishift.pth`.
+Akceptacja właściciela na galerii `60-d0d8825e`, potem push i scalenie `08` → `main`. Nigdy `uv run --active`.
