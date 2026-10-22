@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
-from pysubs2 import SSAEvent, SSAFile, SSAStyle
+from pysubs2 import Alignment, Color, SSAEvent, SSAFile, SSAStyle
 
 from anishift.errors import ErrorCode
 from anishift.services.subtitles.errors import SubtitleError
@@ -112,7 +112,7 @@ def test_dialogue_font_file_that_is_missing_or_not_a_font_is_rejected(tmp_path: 
 
 
 @pytest.mark.unit
-def test_restyle_dialogue_clones_a_mostly_spoken_style_with_the_family_and_keeps_its_other_fields() -> None:
+def test_restyle_dialogue_clones_a_mostly_spoken_style_with_the_family_and_keeps_its_placement() -> None:
     report: LayoutReport = LayoutReport()
 
     restyled: SSAFile = restyle_dialogue(_subs(), _DECISIONS, _FONT, report)
@@ -122,8 +122,55 @@ def test_restyle_dialogue_clones_a_mostly_spoken_style_with_the_family_and_keeps
     assert list(restyled.styles) == ["Default", "Default (dialog)", "Sign"]
     assert clone.fontname == _FAMILY
     assert original.fontname == "Gandhi Sans"
-    assert {**clone.as_dict(), "fontname": original.fontname} == original.as_dict()
+    assert (clone.bold, clone.italic, clone.alignment) == (original.bold, original.italic, original.alignment)
     assert report.restyled_styles == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("scaled", "border", "shadow", "bottom"),
+    [("yes", 1.0, 0.62, 22), ("no", 3.0, 1.88, 22)],
+)
+def test_restyle_dialogue_draws_the_clone_in_the_owner_mpv_look_at_the_script_size(
+    scaled: str, border: float, shadow: float, bottom: int
+) -> None:
+    subs: SSAFile = _subs()
+    subs.info.update({"PlayResX": "640", "PlayResY": "360", "ScaledBorderAndShadow": scaled})
+    subs.styles["Default"] = SSAStyle(
+        fontname="Trebuchet MS",
+        fontsize=24.0,
+        italic=True,
+        outlinecolor=Color(0, 5, 83),
+        backcolor=Color(0, 5, 83),
+        outline=2.0,
+        shadow=2.0,
+        scalex=90.0,
+        spacing=1.0,
+        alignment=Alignment.TOP_CENTER,
+        marginl=12,
+        marginr=14,
+    )
+
+    clone: SSAStyle = restyle_dialogue(subs, _DECISIONS, _FONT, LayoutReport()).styles["Default (dialog)"]
+
+    assert (clone.fontsize, clone.outline, clone.shadow) == (25.5, border, shadow)
+    assert (clone.marginl, clone.marginr, clone.marginv) == (12, 14, bottom)
+    assert (clone.primarycolor, clone.outlinecolor, clone.backcolor) == (
+        Color(255, 255, 255, 0),
+        Color(0, 0, 0, 0),
+        Color(0, 0, 0, 128),
+    )
+    assert (clone.scalex, clone.scaley, clone.spacing, clone.borderstyle) == (100.0, 100.0, 0.0, 1)
+    assert (clone.italic, clone.alignment) == (True, Alignment.TOP_CENTER)
+    assert subs.styles["Default"].outline == 2.0
+
+
+@pytest.mark.unit
+def test_restyle_signs_keeps_the_look_of_a_sign_style() -> None:
+    restyled, _clones = restyle_signs(_subs(), _DECISIONS, _FONT)
+
+    clone: SSAStyle = restyled.styles["Sign (dialog)"]
+    assert {**clone.as_dict(), "fontname": "Grobold"} == restyled.styles["Sign"].as_dict()
 
 
 @pytest.mark.unit
