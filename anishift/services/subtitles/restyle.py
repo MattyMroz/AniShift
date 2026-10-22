@@ -8,10 +8,13 @@ from copy import copy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
+from pysubs2 import Color
+
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.fonts import FontFace, polish_missing, read_faces
 from anishift.services.fonts.index import family_name
 from anishift.services.subtitles.errors import SubtitleError
+from anishift.services.subtitles.geometry import RenderProfile
 from anishift.services.subtitles.text import RE_TAG_BLOCK, is_drawing, is_karaoke
 
 if TYPE_CHECKING:
@@ -37,6 +40,33 @@ _CLONE_LABEL: Final[str] = "dialog"
 
 _BOLD_WEIGHT: Final[int] = 600
 """Smallest weight class libass treats as bold when it matches a face to a style."""
+
+_MPV_HEIGHT: Final[float] = 720.0
+"""Window height at which mpv sizes text subtitles, borders, shadows and margins."""
+
+_MPV_SIZE: Final[float] = 51.0
+"""Font size of the owner's mpv text subtitles at ``_MPV_HEIGHT``."""
+
+_MPV_BORDER: Final[float] = 2.0
+"""Border width of the owner's mpv text subtitles at ``_MPV_HEIGHT``."""
+
+_MPV_SHADOW: Final[float] = 1.25
+"""Shadow offset of the owner's mpv text subtitles at ``_MPV_HEIGHT``."""
+
+_MPV_MARGIN_Y: Final[float] = 44.0
+"""Bottom margin of the owner's mpv text subtitles at ``_MPV_HEIGHT``."""
+
+_MPV_TEXT: Final[Color] = Color(255, 255, 255, 0)
+"""Opaque white text of the owner's mpv subtitles."""
+
+_MPV_EDGE: Final[Color] = Color(0, 0, 0, 0)
+"""Opaque black border of the owner's mpv subtitles."""
+
+_MPV_SHADOW_COLOR: Final[Color] = Color(0, 0, 0, 128)
+"""Half transparent black shadow of the owner's mpv subtitles."""
+
+_VIDEO_HEIGHT: Final[float] = 1080.0
+"""Video height assumed for borders and shadows of a file that does not scale them with the script."""
 
 _RE_CLONE: Final[re.Pattern[str]] = re.compile(rf"(?P<source>.+) \({_CLONE_LABEL}(?: (?:[2-9]|[1-9][0-9]+))?\)")
 """Whole name of a dialogue clone, capturing the style it was made from."""
@@ -76,12 +106,12 @@ class DialogueFont:
 
 
 def restyle_dialogue(subs: SSAFile, decisions: Sequence[Decision], font: DialogueFont, report: LayoutReport) -> SSAFile:
-    """Return a copy whose spoken lines of every mostly spoken style use that style's clone drawn with the font."""
+    """Return a copy whose spoken lines of every mostly spoken style use that style's clone in the owner's mpv look."""
     clones: dict[str, str] = _clone_names(subs, decisions)
     if not clones:
         return subs
     out: SSAFile = copy(subs)
-    out.styles = _with_clones(subs.styles, clones, font)
+    out.styles = _with_clones(subs.styles, clones, font, RenderProfile.from_subs(subs, None))
     out.events = _restyled_events(subs.events, decisions, clones)
     report.restyled_styles += len(clones)
     return out
@@ -160,13 +190,32 @@ def _clone_name(style: str, taken: set[str]) -> str:
     return name
 
 
-def _with_clones(styles: Mapping[str, SSAStyle], clones: Mapping[str, str], font: DialogueFont) -> dict[str, SSAStyle]:
+def _with_clones(
+    styles: Mapping[str, SSAStyle], clones: Mapping[str, str], font: DialogueFont, profile: RenderProfile
+) -> dict[str, SSAStyle]:
     result: dict[str, SSAStyle] = {}
     for name, style in styles.items():
         result[name] = style
         if name in clones:
-            result[clones[name]] = _family_copy(style, font)
+            result[clones[name]] = _mpv_look(_family_copy(style, font), profile)
     return result
+
+
+def _mpv_look(style: SSAStyle, profile: RenderProfile) -> SSAStyle:
+    script: float = profile.play_res_y / _MPV_HEIGHT
+    edge: float = script if profile.scaled_border else _VIDEO_HEIGHT / _MPV_HEIGHT
+    style.fontsize = round(_MPV_SIZE * script, 2)
+    style.primarycolor = _MPV_TEXT
+    style.outlinecolor = _MPV_EDGE
+    style.backcolor = _MPV_SHADOW_COLOR
+    style.outline = round(_MPV_BORDER * edge, 2)
+    style.shadow = round(_MPV_SHADOW * edge, 2)
+    style.borderstyle = 1
+    style.scalex = style.scaley = 100.0
+    style.spacing = 0.0
+    style.angle = 0.0
+    style.marginv = round(_MPV_MARGIN_Y * script)
+    return style
 
 
 def _family_copy(style: SSAStyle, font: DialogueFont) -> SSAStyle:

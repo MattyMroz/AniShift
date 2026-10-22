@@ -11,6 +11,7 @@ from loguru import logger as loguru_logger
 from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
 from anishift.services.subtitles.classifier import Category, StyleVerdict
+from anishift.services.subtitles.linebreak import NO_WRAP
 from anishift.services.subtitles.service import (
     layout_translated,
     load_subtitles,
@@ -316,7 +317,7 @@ def test_real_ass_bit_round_trip_keeps_every_event(tmp_path: Path) -> None:
         if decision == "displayed":
             assert _tags_without_scale(result.text) == _tags_without_scale(source.text)
         else:
-            assert _RE_TAGS.findall(result.text) == _RE_TAGS.findall(source.text)
+            assert _RE_TAGS.findall(result.text.replace(NO_WRAP, "")) == _RE_TAGS.findall(source.text)
         source_visible = visible_text(source.text)
         if source_visible:
             assert visible_text(result.text) == f"PL:{source_visible}"

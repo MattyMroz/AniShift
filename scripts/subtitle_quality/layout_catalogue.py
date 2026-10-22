@@ -13,15 +13,15 @@ from typing import TYPE_CHECKING, Any, Final
 
 from anishift.paths import default_workspace_dir
 from anishift.services.fonts import FontIndex
-from anishift.services.fonts.index import system_font_paths
 from anishift.services.subtitles.fitting import sign_input
 from anishift.services.subtitles.geometry import RenderProfile, measure_text
 from anishift.services.subtitles.layout import Field, Flag, Layout, chars_measure, dialogue_field, sign_field
 from anishift.services.subtitles.linebreak import tagged_line
-from anishift.services.subtitles.restyle import DialogueFont, restyle_signs, with_family
+from anishift.services.subtitles.restyle import DialogueFont, restyle_dialogue, restyle_signs, with_family
 from anishift.services.subtitles.service import load_subtitles, split_subtitles
+from anishift.services.subtitles.types import LayoutReport
 from anishift.text.gaps import TIERS, GapKind, gaps
-from scripts.subtitle_quality.episode import FONTS_NAME, SOURCE_NAME, pair_fonts
+from scripts.subtitle_quality.episode import SOURCE_NAME, pair_fonts
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -37,9 +37,6 @@ CATALOGUE: Final[Path] = (
     Path(__file__).resolve().parents[2] / "tests" / "services" / "subtitles" / "data" / "text_layout_catalogue.json"
 )
 """Catalogue file: authored cases plus the measurements this tool writes into them."""
-
-BASELINE: Final[Path] = Path("experiments") / "v4-hard" / "baseline-font"
-"""Input-state scripts with the owner's dialogue font, relative to the quality root."""
 
 SCALE_TOLERANCE: Final[float] = 0.03
 """Largest scale difference that still matches a quiz variant, which the owner saw at a rounded size."""
@@ -267,13 +264,13 @@ def measure_catalogue(path: Path, quality_root: Path, font: DialogueFont) -> int
 
 
 def _measurement(entry: dict[str, Any], quality_root: Path, font: DialogueFont) -> dict[str, Any]:
-    pair: Path = Path(entry["pair"])
-    subs: SSAFile = load_subtitles(quality_root / BASELINE / pair.parent / f"{pair.name}.pl.ass")
-    folder: Path = quality_root / pair / FONTS_NAME
-    episode: list[Path] = sorted(folder.iterdir()) if folder.is_dir() else []
-    index: FontIndex = FontIndex.build([*episode, *font.files], system_font_paths())
-    profile: RenderProfile = RenderProfile.from_subs(subs, index)
-    event: SSAEvent = [line for line in subs if line.type == "Dialogue"][entry["event"]]
+    split: SubtitleSplit = split_subtitles(load_subtitles(quality_root / entry["pair"] / SOURCE_NAME), kind="ass")
+    restyled: SSAFile = restyle_dialogue(split.subs, split.decisions, font, LayoutReport())
+    fonts: FontSources = pair_fonts(quality_root / entry["pair"])
+    profile: RenderProfile = RenderProfile.from_subs(
+        restyled, FontIndex.build((*fonts.episode, *font.files), fonts.system)
+    )
+    event: SSAEvent = [line for line in restyled if line.type == "Dialogue"][entry["event"]]
     spec: dict[str, Any] = entry["field"]
     tags: str = spec.get("tags", "")
     scale: float = profile.play_res_x
