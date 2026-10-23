@@ -7,7 +7,7 @@ from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
 from anishift.services.subtitles.geometry import RenderProfile
 from anishift.services.subtitles.layout import Flag
-from anishift.services.subtitles.linebreak import DialogueLayout, layout_dialogue
+from anishift.services.subtitles.linebreak import DialogueLayout, layout_dialogue, tagged_words
 from anishift.services.subtitles.service import layout_translated, load_subtitles, split_subtitles, write_translated
 from anishift.services.subtitles.text import visible_text
 
@@ -25,6 +25,30 @@ def _profile(*, margin: int = 0, size: float = 50.0) -> RenderProfile:
     subs.info.update({"PlayResX": "1920", "PlayResY": "1080", "WrapStyle": "0"})
     subs.styles["Default"] = SSAStyle(fontname="Arial", fontsize=size, marginl=margin, marginr=margin)
     return RenderProfile.from_subs(subs, None)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("text", [r"Masz!\N", r"{\i1}Tak.\N", r"Oj.\N{\i0}", "Wiem. "])
+def test_layout_dialogue_keeps_a_single_word_ending_in_a_break(text: str) -> None:
+    event: SSAEvent = SSAEvent(text=text)
+
+    layout: DialogueLayout = layout_dialogue(event, visible_text(text), _profile())
+
+    assert visible_text(layout.text) == visible_text(text)
+    assert not layout.untagged
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("tagged", "words"),
+    [
+        (r"Masz!\N", ("Masz!",)),
+        (r"{\i1}Tak.\N{\i0}", (r"{\i1}Tak.{\i0}",)),
+        (r"Dwa słowa\N", ("Dwa", "słowa")),
+    ],
+)
+def test_tagged_words_joins_trailing_tags_to_the_last_word(tagged: str, words: tuple[str, ...]) -> None:
+    assert tagged_words(tagged, tuple(visible_text(word) for word in words)) == words
 
 
 @pytest.mark.unit

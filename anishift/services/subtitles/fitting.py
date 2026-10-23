@@ -85,14 +85,17 @@ _RE_NUMBER: Final[re.Pattern[str]] = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)")
 _RE_PREFIX: Final[re.Pattern[str]] = re.compile(r"^(?:\{[^}]*\})*")
 """Override blocks before the first visible character."""
 
-_RE_POS: Final[re.Pattern[str]] = re.compile(r"\\pos\(\s*(-?[0-9.]+)\s*,\s*(-?[0-9.]+)\s*\)")
+_RE_POS: Final[re.Pattern[str]] = re.compile(rf"\\pos\(\s*({_RE_NUMBER.pattern})\s*,\s*({_RE_NUMBER.pattern})\s*\)")
 """Static anchor override of an event."""
 
-_RE_AXIS_SCALE: Final[re.Pattern[str]] = re.compile(r"\\fsc([xy])\s*(-?[0-9.]+)")
+_RE_AXIS_SCALE: Final[re.Pattern[str]] = re.compile(rf"\\fsc([xy])\s*({_RE_NUMBER.pattern})")
 """Horizontal or vertical scale override of a drawing."""
 
 _RE_DRAWING_LEVEL: Final[re.Pattern[str]] = re.compile(r"\\p([1-9][0-9]*)")
 """Drawing mode with the coordinate precision level libass divides points by."""
+
+_MAX_DRAWING_LEVEL: Final[int] = 64
+"""Highest drawing or clip precision level measured; a higher one leaves the shape unmeasured."""
 
 _RE_ANIMATED: Final[re.Pattern[str]] = re.compile(r"\\(?:move|t)\s*\(")
 """Motion or animation that keeps a drawing from being a still panel."""
@@ -101,7 +104,7 @@ _RE_POINT: Final[re.Pattern[str]] = re.compile(r"-?[0-9]+(?:\.[0-9]*)?")
 """Coordinate of a drawing command."""
 
 _RE_INK: Final[re.Pattern[str]] = re.compile(
-    r"\\(alpha|[134]a|bord|shad|r)(?![a-z])\s*(?:&H([0-9A-Fa-f]{1,2})&?|([0-9.]+))?"
+    r"\\(alpha|[134]a|bord|shad|r)(?![a-z])\s*(?:&H([0-9A-Fa-f]{1,2})&?|(\d+(?:\.\d*)?|\.\d+))?"
 )
 """Overrides deciding whether a character draws any ink: alphas, border and shadow sizes and resets."""
 
@@ -263,6 +266,8 @@ def _panel(index: int, event: SSAEvent, profile: RenderProfile) -> _Panel | None
     points: list[float] = [float(point) for point in _RE_POINT.findall(RE_TAG_BLOCK.sub("", event.text))]
     if style is None or position is None or level is None or _RE_ANIMATED.search(tags) or len(points) < 4:  # noqa: PLR2004
         return None
+    if int(level[1]) > _MAX_DRAWING_LEVEL:
+        return None
     scales: dict[str, float] = {"x": float(style.scalex), "y": float(style.scaley)}
     scales |= {axis: float(value) for axis, value in _RE_AXIS_SCALE.findall(tags)}
     divisor: float = 2 ** (int(level[1]) - 1)
@@ -378,9 +383,9 @@ def _kits(objects: Sequence[_Fitted]) -> list[list[_Fitted]]:
         by_kit[item.kit].append(item)
     kits: list[list[_Fitted]] = []
     for items in by_kit.values():
-        end: int = -1
+        end: int = items[0].start
         for item in items:
-            if item.start >= end:
+            if item is items[0] or item.start >= end:
                 kits.append([])
             kits[-1].append(item)
             end = max(end, item.end)
@@ -611,6 +616,8 @@ def _clip(content: str) -> Rect | None:
         return Rect(*values) if len(values) == _RECT_COORDINATES else None
     scale: float = 1.0
     if "," in content:
+        if not values or values[0] > _MAX_DRAWING_LEVEL:
+            return None
         scale = 2 ** (values.pop(0) - 1)
     if len(values) < _RECT_COORDINATES or len(values) % 2 or scale <= 0:
         return None

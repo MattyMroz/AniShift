@@ -467,3 +467,43 @@ def test_signs_in_other_styles_or_at_other_times_keep_their_own_scales() -> None
     report: LayoutReport = LayoutReport()
     fit_signs(subs, translated, [0, 1], profile, report)
     assert report.sign_sets_scaled == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("sign_tags", "drawing_tags"),
+    [
+        (r"{\pos(640,100)\clip(,m)}", r"{\pos(640,100)\p1}"),
+        (r"{\pos(640,100)\clip(m,)}", r"{\pos(640,100)\p1}"),
+        (r"{\pos(640,100)\clip(2000,m 0 0 100 0 100 100)}", r"{\pos(640,100)\p1}"),
+        (r"{\pos(640,100)\bord1.2.3\shad.}", r"{\pos(640,100)\p1}"),
+        (r"{\pos(.,5)}", r"{\pos(640,100)\p1}"),
+        (r"{\pos(1.2.3,4)}", r"{\pos(640,100)\p1}"),
+        (r"{\pos(640,100)}", r"{\pos(640,100)\p1\fscx.}"),
+        (r"{\pos(640,100)}", r"{\pos(.,100)\p1}"),
+        (r"{\pos(640,100)}", r"{\pos(640,100)\p5000}"),
+    ],
+)
+def test_malformed_sign_or_drawing_overrides_keep_the_translation(sign_tags: str, drawing_tags: str) -> None:
+    drawing: str = drawing_tags + r"m 0 0 l 100 0 100 100 0 100{\p0}"
+    subs, translated, profile = _files(
+        [SSAEvent(end=3000, text=sign_tags + "SCHOOL GATE"), SSAEvent(end=3000, text=drawing)],
+        [sign_tags + "BRAMA SZKOŁY", drawing],
+        info=_FULL_HD,
+    )
+    fitted: dict[int, str] = fit_signs(subs, translated, [0], profile, LayoutReport())
+    assert visible_text(fitted[0]) == "BRAMA SZKOŁY"
+
+
+@pytest.mark.unit
+def test_signs_starting_before_zero_form_their_own_set() -> None:
+    tags: list[str] = [r"{\an5\pos(400,300)\fs60}", r"{\an5\pos(400,500)\fs60}"]
+    sources: list[SSAEvent] = [
+        SSAEvent(start=-2000, end=1000, text=tags[0] + "Safety Hazard"),
+        SSAEvent(start=-2000, end=1000, text=tags[1] + "Zero"),
+    ]
+    subs, translated, profile = _files(
+        sources, [tags[0] + "Zagrożenie dla bezpieczeństwa", tags[1] + "Okrągłe zero"], info=_FULL_HD
+    )
+    fitted: dict[int, str] = fit_signs(subs, translated, [0, 1], profile, LayoutReport())
+    assert set(fitted) == {0, 1}
