@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 import pytest
 from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
+from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.geometry import RenderProfile
 from anishift.services.subtitles.layout import Flag
 from anishift.services.subtitles.linebreak import DialogueLayout, layout_dialogue, tagged_words
@@ -25,6 +26,29 @@ def _profile(*, margin: int = 0, size: float = 50.0) -> RenderProfile:
     subs.info.update({"PlayResX": "1920", "PlayResY": "1080", "WrapStyle": "0"})
     subs.styles["Default"] = SSAStyle(fontname="Arial", fontsize=size, marginl=margin, marginr=margin)
     return RenderProfile.from_subs(subs, None)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("style", "dialogue"),
+    [
+        ("Default,Arial,abc", "0,0:00:01.00,0:00:02.00"),
+        ("Default,Arial,50", "0,xx,0:00:02.00"),
+    ],
+)
+def test_load_subtitles_reports_a_malformed_ass_field_as_a_parse_failure(
+    tmp_path: Path, style: str, dialogue: str
+) -> None:
+    path: Path = tmp_path / "bad.ass"
+    path.write_text(
+        "[Script Info]\nPlayResX: 1920\nPlayResY: 1080\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize\n"
+        f"Style: {style}\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        f"Dialogue: {dialogue},Default,,0,0,0,,Tak\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SubtitleError):
+        load_subtitles(path)
 
 
 @pytest.mark.unit
