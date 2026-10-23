@@ -70,6 +70,13 @@ repos:
         language: system
         files: ^anishift/.*\.py$
         stages: [pre-commit]
+      - id: no-mutating-assign
+        name: no assignment that mutates its own target container
+        entry: python scripts/hooks/check_mutating_assign.py
+        language: system
+        files: \.py$
+        exclude: ^external/
+        stages: [pre-commit]
       - id: conventional-commit
         name: conventional commit message
         entry: python scripts/hooks/check_commit_msg.py

@@ -117,9 +117,8 @@ def get_mode_config(mode: LoggerMode, **overrides: Any) -> LoggerConfig:
 
     if overrides:
         if "file_path" in overrides:
-            overrides["file"] = FileConfig(
-                **{**config.file.model_dump(), "path": overrides.pop("file_path")},
-            )
+            file_path = overrides.pop("file_path")
+            overrides["file"] = FileConfig(**{**config.file.model_dump(), "path": file_path})
 
         config_dict = config.model_dump()
         config_dict.update(overrides)

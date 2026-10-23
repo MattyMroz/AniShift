@@ -5,9 +5,10 @@ from typing import TYPE_CHECKING
 import pytest
 from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
+from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.geometry import RenderProfile
 from anishift.services.subtitles.layout import Flag
-from anishift.services.subtitles.linebreak import DialogueLayout, layout_dialogue
+from anishift.services.subtitles.linebreak import DialogueLayout, layout_dialogue, tagged_words
 from anishift.services.subtitles.service import layout_translated, load_subtitles, split_subtitles, write_translated
 from anishift.services.subtitles.text import visible_text
 
@@ -25,6 +26,53 @@ def _profile(*, margin: int = 0, size: float = 50.0) -> RenderProfile:
     subs.info.update({"PlayResX": "1920", "PlayResY": "1080", "WrapStyle": "0"})
     subs.styles["Default"] = SSAStyle(fontname="Arial", fontsize=size, marginl=margin, marginr=margin)
     return RenderProfile.from_subs(subs, None)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("style", "dialogue"),
+    [
+        ("Default,Arial,abc", "0,0:00:01.00,0:00:02.00"),
+        ("Default,Arial,50", "0,xx,0:00:02.00"),
+    ],
+)
+def test_load_subtitles_reports_a_malformed_ass_field_as_a_parse_failure(
+    tmp_path: Path, style: str, dialogue: str
+) -> None:
+    path: Path = tmp_path / "bad.ass"
+    path.write_text(
+        "[Script Info]\nPlayResX: 1920\nPlayResY: 1080\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize\n"
+        f"Style: {style}\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        f"Dialogue: {dialogue},Default,,0,0,0,,Tak\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SubtitleError):
+        load_subtitles(path)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("text", [r"Masz!\N", r"{\i1}Tak.\N", r"Oj.\N{\i0}", "Wiem. "])
+def test_layout_dialogue_keeps_a_single_word_ending_in_a_break(text: str) -> None:
+    event: SSAEvent = SSAEvent(text=text)
+
+    layout: DialogueLayout = layout_dialogue(event, visible_text(text), _profile())
+
+    assert visible_text(layout.text) == visible_text(text)
+    assert not layout.untagged
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("tagged", "words"),
+    [
+        (r"Masz!\N", ("Masz!",)),
+        (r"{\i1}Tak.\N{\i0}", (r"{\i1}Tak.{\i0}",)),
+        (r"Dwa słowa\N", ("Dwa", "słowa")),
+    ],
+)
+def test_tagged_words_joins_trailing_tags_to_the_last_word(tagged: str, words: tuple[str, ...]) -> None:
+    assert tagged_words(tagged, tuple(visible_text(word) for word in words)) == words
 
 
 @pytest.mark.unit

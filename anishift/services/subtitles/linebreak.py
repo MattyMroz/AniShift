@@ -114,7 +114,8 @@ def tagged_words(tagged: str, words: tuple[str, ...]) -> tuple[str, ...] | None:
         elif visible_text(found[-1]):
             found.append("")
     if len(found) > 1 and not visible_text(found[-1]):
-        found[-2] += found.pop()
+        trailing: str = found.pop()
+        found[-1] += trailing
     visible: tuple[str, ...] = tuple(visible_text(word, preserve_hard_spaces=True) for word in found)
     return tuple(found) if visible == words else None
 

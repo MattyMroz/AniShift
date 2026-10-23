@@ -141,7 +141,7 @@ def load_subtitles(path: Path) -> SSAFile:
     except OSError as exc:
         msg = f"Subtitle file could not be read: {path}"
         raise _fail(ErrorCode.SUBTITLE_PARSE_FAILED, msg) from exc
-    except pysubs2.exceptions.Pysubs2Error as exc:
+    except (pysubs2.exceptions.Pysubs2Error, ValueError) as exc:
         msg = f"Subtitle file could not be parsed: {path}"
         raise _fail(ErrorCode.SUBTITLE_PARSE_FAILED, msg) from exc
     logger.debug(
