@@ -166,7 +166,7 @@ class AudioService:
                 mix_fingerprint=None,
             )
         repository: AudioResumeRepository = AudioResumeRepository(
-            request.temporary_root,
+            request.tmp_root,
             request.scope_id,
         )
         _check_cancel(cancel)
@@ -355,7 +355,7 @@ class AudioService:
         def normalize_one(clip: TimedClip) -> NormalizedClip:
             return self.prepare_clip(
                 clip,
-                temporary_root=request.temporary_root,
+                tmp_root=request.tmp_root,
                 tempo=request.post_process_tempo,
                 cancel=cancel,
             )
@@ -370,12 +370,12 @@ class AudioService:
         self,
         clip: TimedClip,
         *,
-        temporary_root: Path,
+        tmp_root: Path,
         tempo: float,
         cancel: threading.Event | None,
     ) -> NormalizedClip:
         """Normalize one committed TTS clip into its reusable audio artifact."""
-        normalized_dir: Path = temporary_root / "narration" / "normalized"
+        normalized_dir: Path = tmp_root / "narration" / "normalized"
         key: str = _digest_name(
             normalization_fingerprint(
                 clip,

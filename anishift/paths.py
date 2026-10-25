@@ -11,6 +11,7 @@ __all__ = [
     "COVER_DIRECTORY",
     "ENV_CONFIG_DIR",
     "READY_DIRECTORY",
+    "RESTORE_STAGING_PREFIX",
     "SUBS_DIRECTORY",
     "TASK_DIRECTORIES",
     "TMP_DIRECTORY",
@@ -56,6 +57,9 @@ WORKSPACE_DIRECTORY: Final[str] = "workspace"
 
 TMP_DIRECTORY: Final[str] = "tmp"
 """Private run staging directory inside a workspace."""
+
+RESTORE_STAGING_PREFIX: Final[str] = f"{TMP_DIRECTORY}/.restore-"
+"""Workspace-relative beginning of every private staging path a restore reserves."""
 
 WATCH_DIRECTORY: Final[str] = "watch"
 """Resident state directory inside runtime configuration."""

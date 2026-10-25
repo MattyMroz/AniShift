@@ -80,7 +80,7 @@ def test_merge_keeps_source_tracks_first_and_adds_ours_last(tmp_path: Path) -> N
         variant=OutputVariant.MERGE,
         subtitles=(AttachedSubtitle(subtitle, SubtitleRole.FULL, "pol", "Napisy PL"),),
         destination=tmp_path / "output" / "Episode.pl.mkv",
-        temporary_root=tmp_path / "tmp",
+        tmp_root=tmp_path / "tmp",
     )
     service = CompositionService(CompositionConfig(), runner=StreamingRunner())
 
@@ -110,7 +110,7 @@ def test_merge_appends_the_lector_after_the_original_audio(tmp_path: Path) -> No
         variant=OutputVariant.MERGE,
         narration_audio=lector,
         destination=tmp_path / "output" / "Episode.pl.mkv",
-        temporary_root=tmp_path / "tmp",
+        tmp_root=tmp_path / "tmp",
     )
     service = CompositionService(CompositionConfig(), runner=StreamingRunner())
 
@@ -138,7 +138,7 @@ def test_burn_handles_difficult_path_characters(tmp_path: Path, container_reques
         variant=OutputVariant.BURN,
         burn_subtitle=subtitle,
         destination=media_dir / "output" / "Zażółć - 04.pl.mp4",
-        temporary_root=media_dir / "tmp",
+        tmp_root=media_dir / "tmp",
     )
     service = CompositionService(CompositionConfig(), runner=StreamingRunner())
 

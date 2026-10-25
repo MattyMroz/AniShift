@@ -517,7 +517,7 @@ class CompositionService:
                 progress=lambda line: parse_ffmpeg_progress(line, total_us=total_us),
                 on_percent=lambda percent: _notify(callbacks, plan.scope_id, "burning", percent),
                 cancel=cancel,
-                cwd=plan.temporary_root / "composition" if subtitle_argument is not None else None,
+                cwd=plan.tmp_root / "composition" if subtitle_argument is not None else None,
             )
             validate_burned(
                 temporary,
@@ -557,7 +557,7 @@ class CompositionService:
         """Return the subtitle filter value, copying the file when needed."""
         if plan.burn_subtitle is None:
             return None
-        work_dir: Path = plan.temporary_root / "composition"
+        work_dir: Path = plan.tmp_root / "composition"
         safe_subtitle: Path = filter_safe_copy(plan.burn_subtitle, work_dir)
         return subtitle_filter_argument(Path(safe_subtitle.name), kind=plan.source_subtitle_kind)
 

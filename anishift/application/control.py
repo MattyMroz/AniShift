@@ -20,7 +20,7 @@ from anishift.application.intents import (
 )
 from anishift.application.release_quality import PolishClass, ResolutionClass, resolution_class
 from anishift.application.workflows import WorkflowTarget
-from anishift.paths import TMP_DIRECTORY
+from anishift.paths import RESTORE_STAGING_PREFIX
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -95,9 +95,6 @@ VERIFICATION_SKIPPED: Final[str] = "skipped"
 
 WATCH_STATE_SCHEMA_VERSION: Final[int] = 5
 """Current schema of the persisted automation state."""
-
-RESTORE_STAGING_PREFIX: Final[str] = f"{TMP_DIRECTORY}/.restore-"
-"""Workspace-relative beginning of every private staging path a restore reserves."""
 
 type SourceFingerprint = tuple[tuple[str, int, int], ...]
 """Identity of one group input, exactly what ``watch.source_fingerprint`` returns."""

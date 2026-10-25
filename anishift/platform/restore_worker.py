@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Final
 
-from anishift.paths import TMP_DIRECTORY, tmp_dir
+from anishift.paths import RESTORE_STAGING_PREFIX, tmp_dir
 from anishift.platform.recycle import RecycleResult
 from anishift.platform.recycle_worker import (
     _FAIL,
@@ -360,7 +360,7 @@ def _restore(payload: dict[str, object]) -> RecycleResult:  # noqa: C901, PLR091
         raise ValueError("restore_invalid_path")
     path: Path = root / relative
     staging: Path = root / staged
-    if not staged.as_posix().startswith(f"{TMP_DIRECTORY}/.restore-") or not all(map(_safe_parents, (path, staging))):
+    if not staged.as_posix().startswith(RESTORE_STAGING_PREFIX) or not all(map(_safe_parents, (path, staging))):
         return RecycleResult("refused", "restore_unsafe_path")
     values: object = payload["identity"]
     if (

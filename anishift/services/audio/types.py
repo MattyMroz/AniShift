@@ -173,7 +173,7 @@ class AudioRenderRequest:
     source_path: Path
     source_audio_path: Path | None
     clips: tuple[TimedClip, ...]
-    temporary_root: Path
+    tmp_root: Path
     destination: Path
     post_process_tempo: float = 1.0
     paragraph_pauses: bool = False

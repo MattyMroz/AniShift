@@ -308,10 +308,8 @@ class _ConfiguredAudioService:
         configured: AudioRenderRequest = replace(request, post_process_tempo=self._post_process_tempo)
         return self._service.render(configured, callbacks=callbacks, on_percent=on_percent, cancel=cancel)
 
-    def prepare_clip(self, clip: TimedClip, *, temporary_root: Path, cancel: threading.Event | None) -> NormalizedClip:
-        return self._service.prepare_clip(
-            clip, temporary_root=temporary_root, tempo=self._post_process_tempo, cancel=cancel
-        )
+    def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
+        return self._service.prepare_clip(clip, tmp_root=tmp_root, tempo=self._post_process_tempo, cancel=cancel)
 
 
 def _audio_service(plan: ExecutionPlan, kinds: frozenset[TaskKind]) -> _ConfiguredAudioService | None:

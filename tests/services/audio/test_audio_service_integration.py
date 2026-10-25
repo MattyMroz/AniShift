@@ -110,7 +110,7 @@ def test_source_offset_moves_decoded_signal_and_reuses_narrator(
         AudioConfig(codec_profile=AudioCodecProfile.WAV), runner=runner, ffmpeg=FFMPEG, ffprobe=FFPROBE
     )
     request: AudioRenderRequest = AudioRenderRequest(
-        "offset", tmp_path / "Episode.mkv", source, (_timed_clip(clip),), tmp_path / "temp", tmp_path / "mix.wav"
+        "offset", tmp_path / "Episode.mkv", source, (_timed_clip(clip),), tmp_path / "tmp", tmp_path / "mix.wav"
     )
     baseline: AudioRenderResult = service.render(request)
     result: AudioRenderResult = service.render(replace(request, source_offset_us=offset_us))
@@ -144,7 +144,7 @@ def test_audio_service_renders_and_resumes_real_eac3(tmp_path: Path) -> None:
         source_path=tmp_path / "Episode.mkv",
         source_audio_path=None,
         clips=(_timed_clip(clip_path),),
-        temporary_root=tmp_path / "tmp" / "episode-scope" / "audio",
+        tmp_root=tmp_path / "tmp" / "episode-scope" / "audio",
         destination=output_path,
     )
     runner = _RecordingRunner()
@@ -243,7 +243,7 @@ def test_small_real_rf64_clip_normalizes_and_renders_rf64_narrator_and_sidecar(t
         source_path=tmp_path / "Episode.mkv",
         source_audio_path=None,
         clips=(_timed_clip(clip_path),),
-        temporary_root=tmp_path / "audio-temp",
+        tmp_root=tmp_path / "audio-temp",
         destination=tmp_path / "Episode.wav",
     )
 
@@ -280,7 +280,7 @@ def test_a_recovered_render_still_reports_the_times_its_audio_really_has(tmp_pat
         source_path=tmp_path / "Episode.mkv",
         source_audio_path=None,
         clips=(_timed_clip(clip_path),),
-        temporary_root=tmp_path / "tmp" / "placement-resume" / "audio",
+        tmp_root=tmp_path / "tmp" / "placement-resume" / "audio",
         destination=tmp_path / "Episode.eac3",
     )
     runner = _RecordingRunner()
@@ -317,7 +317,7 @@ def test_stream_preparation_is_reused_without_second_normalization(
         source_path=tmp_path / "Episode.mkv",
         source_audio_path=None,
         clips=(clip,),
-        temporary_root=tmp_path / "tmp" / "stream-reuse" / "audio",
+        tmp_root=tmp_path / "tmp" / "stream-reuse" / "audio",
         destination=tmp_path / "Episode.eac3",
         post_process_tempo=1.25,
     )
@@ -331,7 +331,7 @@ def test_stream_preparation_is_reused_without_second_normalization(
 
     service.prepare_clip(
         clip,
-        temporary_root=request.temporary_root,
+        tmp_root=request.tmp_root,
         tempo=request.post_process_tempo,
         cancel=None,
     )
@@ -358,7 +358,7 @@ def test_failed_output_validation_preserves_existing_sidecar_bit_for_bit(
         source_path=tmp_path / "Episode.mkv",
         source_audio_path=None,
         clips=(_timed_clip(clip_path),),
-        temporary_root=tmp_path / "tmp" / "failed-replacement" / "audio",
+        tmp_root=tmp_path / "tmp" / "failed-replacement" / "audio",
         destination=output_path,
     )
     service = AudioService(
@@ -385,7 +385,7 @@ def test_audio_service_skips_empty_speech_without_sidecar(tmp_path: Path) -> Non
         source_path=tmp_path / "Episode.mkv",
         source_audio_path=None,
         clips=(),
-        temporary_root=tmp_path / "audio",
+        tmp_root=tmp_path / "audio",
         destination=tmp_path / "Episode.eac3",
     )
 
@@ -491,7 +491,7 @@ def test_audio_service_real_codec_and_channel_matrix(
         source_path=tmp_path / "Episode.mkv",
         source_audio_path=original_path,
         clips=(_timed_clip(clip_path),),
-        temporary_root=tmp_path / "tmp" / profile.value / "audio",
+        tmp_root=tmp_path / "tmp" / profile.value / "audio",
         destination=tmp_path / f"Episode{product_suffix(ArtifactKind.NARRATION_AUDIO, audio_profile=profile.value)}",
     )
     service = AudioService(
@@ -565,7 +565,7 @@ def test_audio_service_uses_decoded_duration_for_vbr_adts_aac(
         source_path=tmp_path / "Episode.mkv",
         source_audio_path=original_path,
         clips=(_timed_clip(clip_path),),
-        temporary_root=tmp_path / "tmp" / "vbr-aac" / "audio",
+        tmp_root=tmp_path / "tmp" / "vbr-aac" / "audio",
     )
     service = AudioService(
         AudioConfig(codec_profile=AudioCodecProfile.EAC3),
