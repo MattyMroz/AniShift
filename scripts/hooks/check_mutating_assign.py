@@ -2,10 +2,9 @@
 
 ``items[-2] += items.pop()`` reads the target, then shortens the list, then
 writes to an index that no longer exists. Any assignment, augmented or plain,
-whose subscript or attribute target is based on the same object that the value
-calls a mutating method on depends on evaluation order this way. Split the
-mutation into its own statement first. Paths come from argv (pre-commit passes
-staged files).
+whose subscript target indexes the same object that the value calls a mutating
+method on depends on evaluation order this way. Split the mutation into its own
+statement first. Paths come from argv (pre-commit passes staged files).
 """
 
 from __future__ import annotations
@@ -22,10 +21,10 @@ MUTATING_METHODS = frozenset({
 
 
 def _target_bases(target: ast.expr) -> set[str]:
-    """Return the source text of every object a subscript or attribute target is based on."""
+    """Return the source text of every object a subscript target indexes."""
     bases: set[str] = set()
     for node in ast.walk(target):
-        if isinstance(node, ast.Subscript | ast.Attribute):
+        if isinstance(node, ast.Subscript):
             bases.add(ast.unparse(node.value))
     return bases
 
