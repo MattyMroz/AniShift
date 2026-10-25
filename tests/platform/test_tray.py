@@ -452,3 +452,49 @@ def test_failed_exit_notification_has_bounded_wait_and_shutdown_revokes_active_c
     assert not sleeps
     assert not tray._notifications
     assert tray._active is None
+
+
+@pytest.mark.unit
+def test_app_identity_registers_the_anishift_name_and_an_existing_mascot_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    winreg = pytest.importorskip("winreg")
+
+    written: dict[str, str] = {}
+    keys: list[str] = []
+
+    class _Key:
+        def __enter__(self) -> _Key:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+    def create(root: int, path: str) -> _Key:
+        assert root == winreg.HKEY_CURRENT_USER
+        keys.append(path)
+        return _Key()
+
+    def set_value(_key: _Key, name: str, _reserved: int, kind: int, value: str) -> None:
+        assert kind == winreg.REG_SZ
+        written[name] = value
+
+    monkeypatch.setattr(winreg, "CreateKey", create)
+    monkeypatch.setattr(winreg, "SetValueEx", set_value)
+
+    tray_module.register_app_identity()
+
+    assert keys == [r"Software\Classes\AppUserModelId\AniShift.Desktop"]
+    assert written["DisplayName"] == "AniShift"
+    assert Path(written["IconUri"]).is_file()
+    assert Path(written["IconUri"]).suffix == ".png"
+
+
+@pytest.mark.unit
+def test_app_identity_failure_is_logged_and_does_not_stop_the_tray(monkeypatch: pytest.MonkeyPatch) -> None:
+    winreg = pytest.importorskip("winreg")
+
+    def refuse(_root: int, _path: str) -> None:
+        raise PermissionError
+
+    monkeypatch.setattr(winreg, "CreateKey", refuse)
+
+    tray_module.register_app_identity()

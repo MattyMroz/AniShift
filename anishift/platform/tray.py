@@ -22,7 +22,7 @@ from typing import Final
 
 from anishift.utils.logger import get_logger
 
-__all__ = ["TrayIcon", "open_path", "raise_panel"]
+__all__ = ["TrayIcon", "open_path", "raise_panel", "register_app_identity"]
 
 logger = get_logger(__name__)
 
@@ -39,6 +39,15 @@ _ICON_PARTS: Final[tuple[str, ...]] = ("cli", "interactive", "assets", "mascot",
 
 _APP_ID: Final[str] = "AniShift.Desktop"
 """Stable Windows identity shared by resident windows and their notifications."""
+
+_APP_NAME: Final[str] = "AniShift"
+"""Name Windows shows on notifications and in the notification center for the app identity."""
+
+_APP_ICON_PARTS: Final[tuple[str, ...]] = ("cli", "interactive", "assets", "mascot", "idle", "01.png")
+"""Pixel-art mascot image Windows shows beside the app name on notifications."""
+
+_APP_ID_KEY: Final[str] = rf"Software\Classes\AppUserModelId\{_APP_ID}"
+"""Per-user registry key that gives the app identity its notification name and icon."""
 
 _MAX_BALLOONS: Final[int] = 32
 """Maximum pending notifications retained by the desktop adapter."""
@@ -397,6 +406,7 @@ class TrayIcon:
         shell.Shell_NotifyIconW.argtypes = [wintypes.DWORD, ctypes.POINTER(_NotifyIcon)]
         shell.SetCurrentProcessExplicitAppUserModelID.argtypes = [wintypes.LPCWSTR]
         shell.SetCurrentProcessExplicitAppUserModelID.restype = ctypes.c_long
+        register_app_identity()
         shell.SetCurrentProcessExplicitAppUserModelID(_APP_ID)
         kernel.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
         kernel.GetModuleHandleW.restype = wintypes.HMODULE
@@ -515,6 +525,21 @@ def _mode(*, enabled: bool, pausing: bool, incomplete: bool) -> str:
     if pausing:
         return "Zatrzymywanie"
     return "Pauza niepełna" if incomplete else "Wstrzymano"
+
+
+def register_app_identity() -> None:
+    """Give the app identity its name and mascot icon so Windows shows and keeps its notifications as AniShift."""
+    if sys.platform != "win32":
+        return
+    import winreg  # noqa: PLC0415 - Windows-only module
+
+    icon: Path = Path(str(files("anishift").joinpath(*_APP_ICON_PARTS)))
+    try:
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _APP_ID_KEY) as key:
+            winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, _APP_NAME)
+            winreg.SetValueEx(key, "IconUri", 0, winreg.REG_SZ, str(icon))
+    except OSError as error:
+        logger.warning("Notification identity was not registered", error_class=type(error).__name__)
 
 
 def _load_mascot_icon(user: ctypes.CDLL, resources: ExitStack, width: int, height: int) -> int:
