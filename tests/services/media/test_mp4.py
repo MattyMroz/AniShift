@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -45,3 +46,20 @@ def test_identify_mp4_preserves_safe_path_as_one_argument(
 def test_parse_mp4_catalog_rejects_invalid_payload(payload: str) -> None:
     with pytest.raises(MediaProbeError):
         parse_mp4_catalog(Path("episode.mp4"), payload)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("frames", "expected"), [("312", 312), ("N/A", None), (None, None)])
+def test_mp4_subtitle_stream_carries_its_frame_count(frames: str | None, expected: int | None) -> None:
+    stream: dict[str, object] = {"index": 0, "codec_type": "subtitle", "codec_name": "mov_text"}
+    if frames is not None:
+        stream["nb_frames"] = frames
+    payload: str = json.dumps({"streams": [stream], "format": {"duration": "1440"}})
+    assert parse_mp4_catalog(Path("episode.mp4"), payload).tracks[0].entries == expected
+
+
+@pytest.mark.unit
+def test_mp4_audio_stream_has_no_entries() -> None:
+    stream: dict[str, object] = {"index": 0, "codec_type": "audio", "codec_name": "aac", "nb_frames": "6000"}
+    payload: str = json.dumps({"streams": [stream], "format": {"duration": "1440"}})
+    assert parse_mp4_catalog(Path("episode.mp4"), payload).tracks[0].entries is None

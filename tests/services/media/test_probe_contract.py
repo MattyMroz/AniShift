@@ -76,7 +76,7 @@ def _mp4_payload() -> str:
                 },
                 {
                     "index": 2,
-                    "codec_type": "subtitles",
+                    "codec_type": "subtitle",
                     "codec_name": "mov_text",
                     "codec_tag_string": "tx3g",
                     "tags": {"language": "pol"},
@@ -222,3 +222,37 @@ def test_media_track_rejects_subtitle_format_on_audio() -> None:
             is_forced=False,
             subtitle_format="srt",
         )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("count", "expected"), [(303, 303), (0, 0), (None, None)])
+def test_mkv_subtitle_track_carries_its_event_count(count: int | None, expected: int | None) -> None:
+    payload: dict[str, Any] = json.loads(_mkv_payload())
+    payload["tracks"][1]["properties"]["num_index_entries"] = 40
+    if count is not None:
+        payload["tracks"][2]["properties"]["num_index_entries"] = count
+    catalog: MediaCatalog = parse_mkv_catalog(Path("episode.mkv"), json.dumps(payload))
+    assert catalog.tracks[1].entries is None
+    assert catalog.tracks[2].entries == expected
+
+
+@pytest.mark.unit
+def test_mp4_subtitle_stream_is_kept_as_a_subtitle_track() -> None:
+    catalog: MediaCatalog = parse_mp4_catalog(Path("episode.mp4"), _mp4_payload())
+    assert [track.kind for track in catalog.tracks] == [
+        MediaTrackKind.VIDEO,
+        MediaTrackKind.AUDIO,
+        MediaTrackKind.SUBTITLES,
+    ]
+
+
+@pytest.mark.unit
+def test_media_track_rejects_entries_on_audio() -> None:
+    with pytest.raises(ValueError, match="Only subtitle"):
+        MediaTrack(1, MediaTrackKind.AUDIO, "aac", None, None, is_default=False, is_forced=False, entries=3)
+
+
+@pytest.mark.unit
+def test_media_track_rejects_negative_entries() -> None:
+    with pytest.raises(ValueError, match="negative"):
+        MediaTrack(2, MediaTrackKind.SUBTITLES, "ass", None, None, is_default=False, is_forced=False, entries=-1)
