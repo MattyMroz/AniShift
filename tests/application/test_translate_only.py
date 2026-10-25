@@ -209,7 +209,7 @@ def test_a_translate_only_run_never_reaches_the_voice_or_container_services(tmp_
     words: _PrefixTranslation = _PrefixTranslation()
     voice: _CountingTts = _CountingTts(tmp_path / "clips")
 
-    result: RunResult = _run(plan, groups, tmp_path / "temp" / "run-translate", words, voice)
+    result: RunResult = _run(plan, groups, tmp_path / "tmp" / "run-translate", words, voice)
 
     assert plan.can_execute
     assert not _VOICE_TASKS.intersection(_kinds(plan))
@@ -226,7 +226,7 @@ def test_a_lone_subtitle_file_in_the_root_is_never_translated_or_spoken(tmp_path
     words: _PrefixTranslation = _PrefixTranslation()
     voice: _CountingTts = _CountingTts(tmp_path / "clips")
 
-    result: RunResult = _run(plan, groups, tmp_path / "temp" / "run-root", words, voice)
+    result: RunResult = _run(plan, groups, tmp_path / "tmp" / "run-root", words, voice)
 
     assert [group.source.stem for group in groups] == ["Book"]
     assert [group.status for group in result.groups] == [GroupStatus.SUCCEEDED]
@@ -267,7 +267,7 @@ def test_the_voice_boundary_counts_a_synthesis_the_same_handlers_dispatch(tmp_pa
     )
     voice: _CountingTts = _CountingTts(tmp_path / "clips")
     handlers: ExecutionHandlers = _handlers(
-        tmp_path / "temp" / "run-voice", _PrefixTranslation(), voice, {}, {"group-1": 0}
+        tmp_path / "tmp" / "run-voice", _PrefixTranslation(), voice, {}, {"group-1": 0}
     )
 
     handlers.execute(

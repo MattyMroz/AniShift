@@ -46,7 +46,7 @@ from anishift.config.model_catalog import ModelCatalog, ProviderEntry, load_mode
 from anishift.config.presets import AutoPresetFile, load_presets, save_presets
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings, load_user_settings, save_user_settings
-from anishift.config.workspace import cleanup_orphaned_temp, run_temp_dir
+from anishift.config.workspace import cleanup_orphaned_tmp, run_tmp_dir
 from anishift.errors import (
     AniShiftError,
     ConfigError,
@@ -479,7 +479,7 @@ class AppService:
         return True
 
     def active_run_ids(self) -> tuple[str, ...]:
-        """Return every run this service still owns a temporary directory for."""
+        """Return every run this service still owns a tmp directory for."""
         with self._run_lock:
             return tuple(self._active_runs)
 
@@ -508,7 +508,7 @@ class AppService:
         self._graph_coordinator().resume()
 
     def retain_runs(self, run_ids: Sequence[str]) -> None:
-        """Protect durable unfinished requests from orphaned-temp cleanup."""
+        """Protect durable unfinished requests from orphaned-tmp cleanup."""
         with self._run_lock:
             self._retained_runs.update(run_ids)
 
@@ -526,11 +526,11 @@ class AppService:
     ) -> RunHandle:
         with self._run_lock:
             protected: tuple[str, ...] = (*self._active_runs, *self._retained_runs)
-        cleanup_orphaned_temp(self._workspace_root, active_run_ids=protected)
+        cleanup_orphaned_tmp(self._workspace_root, active_run_ids=protected)
         source_groups: dict[str, InspectedSourceGroup] = {
             group.group_id: group for group in self._selected_groups(tuple(item.group_id for item in plan.groups))
         }
-        run_root: Path = run_temp_dir(self._workspace_root, run_id)
+        run_root: Path = run_tmp_dir(self._workspace_root, run_id)
         session = RunSession(run_root, resume=resume)
         session.__enter__()
         try:

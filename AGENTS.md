@@ -28,6 +28,8 @@ Zawsze na `anishift/ tests/`, nigdy na podkatalogu — na podkatalogu ruff sypie
 - Przed większą lub planowaną zmianą potwierdź zakres z userem. Nie ruszaj od razu.
 - Nie commituj na `main`. Feature branch → PR → merge.
 - KISS/YAGNI — użyj skilla `simple` przy pisaniu i przeglądzie kodu.
+- Wycinanie raka (zasada Elona Muska „najpierw usuń”): zmiana jest ostateczna. Nie zostawiaj starego kodu, aliasów, nazw `legacy`/`old`/`deprecated`, podwójnych ścieżek ani zgodności wstecznej w produkcie. Stara nazwa, format czy ścieżka znika w tym samym diffie, a wszystkie wywołania przechodzą na nowe. Istniejące dane użytkownika przenosi jednorazowy skrypt w `scripts/tmp/`, uruchomiony raz i potem usunięty, nie kod produktu.
+- Katalogi i ich identyfikatory nazywaj po linuksowemu, krótko i trzyliterowo, gdy istnieje taka konwencja (`tmp`, `bin`, `lib`, `etc`, `src`), nie `temp`/`temporary`.
 - Reuse przed nowym kodem. Zanim napiszesz funkcję, komponent, stałą, helper lub widok, sprawdź repo (`anishift/utils/`, istniejące moduły i komponenty UI) oraz używane biblioteki (Rich, Prompt Toolkit, stdlib) i użyj tego, co już jest. Nie twórz drugiej wersji tego samego; duplikat znaleziony przy zmianie zastąp istniejącym źródłem. Obowiązuje każdego wykonawcę i każdy brief.
 - Orkiestrator (Claude) koordynuje, decyduje, integruje i sprawdza dowody.
   Równorzędni wykonawcy: `astra` (GPT-6 Astra) i `opus55` (Claude Opus 5.5) —
@@ -73,7 +75,7 @@ Każdy obszar poniżej ma własny AGENTS.md z pułapkami i konwencjami — wczyt
 - `external/` — pobrane binarki (gitignored) + docs HTML narzędzi; szczegóły w `external/README.md`
 - `config/` — runtime katalog na `settings.json` panelu (gitignored); opis w `config/README.md`
 - `scripts/hooks/` — hook `check_commit_msg.py` (Conventional Commits); `scripts/tmp/` — jednorazowe
-- `workspace/` — user wrzuca MKV do roota; gotowe odcinki zbiera `ready/`, staging leży w `temp/` (patrz Dane runtime)
+- `workspace/` — user wrzuca MKV do roota; gotowe odcinki zbiera `ready/`, staging leży w `tmp/` (patrz Dane runtime)
 
 ## Twarde strażniki
 
@@ -90,7 +92,7 @@ Instalacja: `uv run pre-commit install --hook-type pre-commit --hook-type commit
 
 ## Dane runtime
 
-- `workspace/` — wejście w root i podfolderach serii, skanowane rekurencyjnie z pominięciem `temp/` i katalogów od kropki. Po sukcesie źródło i produkty trafiają do płaskiego `ready/`; regeneracja działa tam na miejscu. `temp/` trzyma staging. Zero wymaganego `input/`, `output/`, `cache/`, `logs/`, `settings.json`. Override przez `ANISHIFT_WORKSPACE_ROOT`; wspólny układ katalogów wylicza `anishift/paths.py`.
+- `workspace/` — wejście w root i podfolderach serii, skanowane rekurencyjnie z pominięciem `tmp/` i katalogów od kropki. Po sukcesie źródło i produkty trafiają do płaskiego `ready/`; regeneracja działa tam na miejscu. `tmp/` trzyma staging. Zero wymaganego `input/`, `output/`, `cache/`, `logs/`, `settings.json`. Override przez `ANISHIFT_WORKSPACE_ROOT`; wspólny układ katalogów wylicza `anishift/paths.py`.
 - Preferencje panelu: `config/settings.json` (gitignored, poza workspace). Stan rezydenta: `config/watch/` (ledger, blokada, endpoint, chroniony klucz IPC, `runs/` i `relocations/`); subskrypcje są w stanie ownera `config/watch/state.json`, a `config/subscriptions.json` to zamrożony plik poprzedniej wersji, czytany tylko przy migracji. `config/watch/decisions.jsonl` to rejestr decyzji automatu (tylko dopisywanie), `config/watch/cases.jsonl` — lokalna baza zweryfikowanych przypadków; oba bez sekretów, mediów i ścieżek absolutnych. Prywatny profil klienta: `config/qbittorrent/` (gitignored, chronione dane uwierzytelnienia). Ledger nie zawiera kluczy usług ani mediów.
 - Settings API/env: pydantic-settings, prefix `ANISHIFT_`, z `.env`, wszystkie opcjonalne. Klient torrent: `ANISHIFT_QBITTORRENT_URL` (domyślnie `http://127.0.0.1:8080`), `ANISHIFT_QBITTORRENT_USERNAME`, `ANISHIFT_QBITTORRENT_PASSWORD`.
 - Diagnostyka runtime używa wyłącznie `from anishift.utils.logger import get_logger`

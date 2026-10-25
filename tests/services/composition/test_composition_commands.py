@@ -44,7 +44,7 @@ def _plan(tmp_path: Path, **overrides: object) -> CompositionPlan:
     defaults: dict[str, object] = {
         "source_path": tmp_path / "Episode.mkv",
         "variant": OutputVariant.MERGE,
-        "temporary_root": tmp_path / "tmp",
+        "tmp_root": tmp_path / "tmp",
         "destination": tmp_path / "output" / "Episode.pl.mkv",
     }
     defaults.update(overrides)

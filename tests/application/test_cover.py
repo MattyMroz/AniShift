@@ -364,7 +364,7 @@ def test_executing_a_cover_from_finished_audio_calls_no_voice_and_no_translator(
     groups: tuple[InspectedSourceGroup, ...] = _groups(tmp_path)
     plan: ExecutionPlan = plan_auto(groups, _preset(), _settings())
 
-    executed: _Executed = _execute(plan, groups, tmp_path / "temp" / "run-cover")
+    executed: _Executed = _execute(plan, groups, tmp_path / "tmp" / "run-cover")
 
     assert executed.result.succeeded
     assert executed.voice.calls == 0
@@ -502,7 +502,7 @@ def test_executing_a_cover_from_the_recording_it_published_really_writes_the_fil
     groups: tuple[InspectedSourceGroup, ...] = _groups(tmp_path)
     plan: ExecutionPlan = plan_auto(groups, _preset(), _settings(), published=_published(tmp_path))
 
-    executed: _Executed = _execute(plan, groups, tmp_path / "temp" / "run-own")
+    executed: _Executed = _execute(plan, groups, tmp_path / "tmp" / "run-own")
 
     assert _kinds(plan) == (TaskKind.COMPOSE_COVER,)
     assert executed.result.succeeded
@@ -519,7 +519,7 @@ def test_executing_a_cover_in_ready_whose_recording_a_person_overwrote_uses_thei
     group: InspectedSourceGroup = _only(tmp_path)
     plan: ExecutionPlan = _regenerated(group)
 
-    executed: _Executed = _execute(plan, (group,), tmp_path / "temp" / "run-ready")
+    executed: _Executed = _execute(plan, (group,), tmp_path / "tmp" / "run-ready")
 
     assert _kinds(plan) == (TaskKind.COMPOSE_COVER,)
     assert executed.result.succeeded

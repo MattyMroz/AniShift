@@ -95,9 +95,7 @@ def test_selected_pack_survives_owner_and_qb_restart_to_two_library_results_with
             _record(owner.state, times, start)
             assert len(receiver.torrents("AniShift")) == 1
             operation: str = owner.state.acquisitions[0].operation_id
-            unordered: Path = (
-                tmp_path / "workspace/temp/.acquisition" / operation / "data/F7-pack/Neko to Ryuu - 02.mkv"
-            )
+            unordered: Path = tmp_path / "workspace/tmp/.acquisition" / operation / "data/F7-pack/Neko to Ryuu - 02.mkv"
             unordered.parent.mkdir(parents=True, exist_ok=True)
             unordered.write_bytes(b"unrequested-fragment")
             assert service.discover().groups == ()
@@ -189,7 +187,7 @@ def test_selected_pack_survives_owner_and_qb_restart_to_two_library_results_with
                     )
                 )
             workspace: Path = tmp_path / "workspace"
-            data: Path = workspace / "temp/.acquisition" / operation / "data"
+            data: Path = workspace / "tmp/.acquisition" / operation / "data"
             owner.files_changed(DirectoryChange(reconcile=True))
             owner.files_changed(DirectoryChange(paths=(data / "F7-pack/Neko to Ryuu - 02.mkv",)))
             groups: set[str] = {group.source.stem for group in service.discover().groups}

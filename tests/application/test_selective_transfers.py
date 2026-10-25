@@ -340,7 +340,7 @@ def test_unsafe_windows_paths_never_enter_a_file_map_or_staging(tmp_path: Path, 
 
 def test_staging_is_isolated_without_creating_a_run_marker(tmp_path: Path) -> None:
     destination: Path = staging_path(tmp_path, "operation-1")
-    assert destination == tmp_path / "temp/.acquisition/operation-1/data"
+    assert destination == tmp_path / "tmp/.acquisition/operation-1/data"
     assert not destination.exists()
     assert staged_file(destination, r"Pack\E01.mkv") == destination / "Pack/E01.mkv"
     with pytest.raises(ValueError, match="one directory component"):
@@ -348,7 +348,7 @@ def test_staging_is_isolated_without_creating_a_run_marker(tmp_path: Path) -> No
 
 
 def test_staging_rejects_a_linked_ancestor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    linked: Path = tmp_path / "temp"
+    linked: Path = tmp_path / "tmp"
     monkeypatch.setattr(Path, "is_junction", lambda path: path == linked)
     with pytest.raises(ValueError, match="symlink or junction"):
         staging_path(tmp_path, "operation-1")
@@ -365,6 +365,6 @@ def test_workspace_below_a_junction_does_not_validate_outside_its_boundary(
         return path == tmp_path
 
     monkeypatch.setattr(Path, "is_junction", junction)
-    assert staging_path(workspace, "operation-1") == workspace / "temp/.acquisition/operation-1/data"
+    assert staging_path(workspace, "operation-1") == workspace / "tmp/.acquisition/operation-1/data"
     assert checked
     assert all(path.is_relative_to(workspace) for path in checked)

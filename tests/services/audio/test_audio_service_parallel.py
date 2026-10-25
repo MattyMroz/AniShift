@@ -65,7 +65,7 @@ def test_audio_service_normalizes_clips_concurrently_in_source_order(tmp_path: P
         source_path=tmp_path / "Episode.mkv",
         source_audio_path=None,
         clips=tuple(clips),
-        temporary_root=tmp_path / "audio",
+        tmp_root=tmp_path / "audio",
         destination=tmp_path / "Episode.eac3",
     )
     runner = ConcurrentNormalizationRunner()

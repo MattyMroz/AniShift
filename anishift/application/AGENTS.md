@@ -128,7 +128,7 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   usunięcie zwalnia tylko przyjęcia bez publikacji. Obecność hasha w kliencie znaczy `ACCEPTED`, nie kompletność.
 - `AcquisitionConfirmation` zapisuje się przed add; niepewne przekazanie blokuje ponowne dodanie hasha i innej wersji
   numeru, zwykłe dopuszczenie chroni każdy zapisany hash. Usunięcie subskrypcji nie usuwa potwierdzenia.
-- `acquisition_staging.py` wylicza `temp/.acquisition/<operation_id>/data` i sprawdza dowiązania przed I/O; nie
+- `acquisition_staging.py` wylicza `tmp/.acquisition/<operation_id>/data` i sprawdza dowiązania przed I/O; nie
   przyjmuje pracy ani nie startuje treści — publikację i cleanup rozstrzyga owner.
 - Publikacja selektywna zapisuje zweryfikowane prywatne kopie przed wyłącznymi dowiązaniami do roota. Cleanup wymaga
   zwolnienia przez managera i zgodnej tożsamości oraz skrótu; niedowiedzione oryginały zostają w stagingu, dowody
@@ -166,7 +166,7 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 
 ## Workspace, planowanie i wykonanie
 
-- Discovery skanuje rekurencyjnie, pomija `temp/` pod rootem, pliki/katalogi od kropki i dowiązania. ID grup i
+- Discovery skanuje rekurencyjnie, pomija `tmp/` pod rootem, pliki/katalogi od kropki i dowiązania. ID grup i
   artefaktów tylko z normalizowanych ścieżek względnych (katalog + stem; plik w roocie ma płaskie ID); nie używaj
   `hash()` ani losowego UUID. `watch.py` deleguje dostępność źródła do `platform/directory_watch.py`.
 - `AppService.discover()` jest serializowane (`_discover_lock`), oczekiwanie sprawdza anulowanie. `WorkspaceInspector`

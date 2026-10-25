@@ -78,7 +78,7 @@ from anishift.config.model_catalog import ModelCatalog, ModelEntry, ModelProtoco
 from anishift.config.presets import AutoPresetFile, default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
-from anishift.config.workspace import cleanup_orphaned_temp
+from anishift.config.workspace import cleanup_orphaned_tmp
 from anishift.errors import ErrorCode, ExecutionError, RunConflictError
 from anishift.paths import TRANSLATE_DIRECTORY, relocation_journal_dir
 from anishift.platform.directory_watch import DirectoryChange
@@ -1366,7 +1366,7 @@ def test_real_service_flows_from_discovery_through_partial_execution(tmp_path: P
     assert (tmp_path / "Episode 1.spoken.pl.srt").is_file()
     assert (tmp_path / "Episode 2.pl.srt").is_file()
     assert not (tmp_path / "Episode 2.spoken.pl.srt").exists()
-    assert not any((tmp_path / "temp").iterdir())
+    assert not any((tmp_path / "tmp").iterdir())
     assert service.list_presets() == default_preset_file().presets
     assert sink.events[0].kind.value == "run_started"
     assert sink.events[-1].kind.value == "run_finished"
@@ -1405,7 +1405,7 @@ def test_active_run_rejects_a_second_execute_before_creating_another_scope(tmp_p
     with pytest.raises(RunConflictError, match="already active"):
         service.execute(plan, CollectingRunSink())
 
-    assert len(tuple((tmp_path / "temp").iterdir())) == 1
+    assert len(tuple((tmp_path / "tmp").iterdir())) == 1
     assert service.cancel(sink.events[0].run_id)
     assert not service.cancel("another-run")
     release.set()
@@ -1413,7 +1413,7 @@ def test_active_run_rejects_a_second_execute_before_creating_another_scope(tmp_p
     assert not thread.is_alive()
     assert len(results) == 1
     assert results[0].cancelled
-    assert not any((tmp_path / "temp").iterdir())
+    assert not any((tmp_path / "tmp").iterdir())
 
 
 def test_draining_retains_staging_and_protects_it_from_the_next_runs_cleanup(tmp_path: Path) -> None:
@@ -1438,7 +1438,7 @@ def test_draining_retains_staging_and_protects_it_from_the_next_runs_cleanup(tmp
     finally:
         release.set()
     result: RunResult = handle.result(timeout=5.0)
-    retained: Path = tmp_path / "temp" / handle.run_id
+    retained: Path = tmp_path / "tmp" / handle.run_id
     staged: dict[Path, bytes] = {path: path.read_bytes() for path in retained.rglob("*") if path.is_file()}
     service.close()
 
@@ -1460,7 +1460,7 @@ def test_draining_retains_staging_and_protects_it_from_the_next_runs_cleanup(tmp
     assert {path: path.read_bytes() for path in staged} == staged
 
 
-def test_an_interrupted_execute_cancels_its_run_and_leaves_no_temporary_directory(
+def test_an_interrupted_execute_cancels_its_run_and_leaves_no_tmp_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1503,7 +1503,7 @@ def test_an_interrupted_execute_cancels_its_run_and_leaves_no_temporary_director
     assert not thread.is_alive()
     assert len(raised) == 1
     assert service.active_run_ids() == ()
-    assert not any((tmp_path / "temp").iterdir())
+    assert not any((tmp_path / "tmp").iterdir())
 
 
 def test_two_submitted_plans_stay_independent_and_share_one_cleanup(
@@ -1523,9 +1523,9 @@ def test_two_submitted_plans_stay_independent_and_share_one_cleanup(
 
     def spy(root: Path, *, active_run_ids: Collection[str]) -> tuple[Path, ...]:
         cleaned.append(tuple(active_run_ids))
-        return cleanup_orphaned_temp(root, active_run_ids=active_run_ids)
+        return cleanup_orphaned_tmp(root, active_run_ids=active_run_ids)
 
-    monkeypatch.setattr(service_module, "cleanup_orphaned_temp", spy)
+    monkeypatch.setattr(service_module, "cleanup_orphaned_tmp", spy)
 
     first: RunHandle = service.submit_plan(first_plan, CollectingRunSink(), origin=RequestOrigin.USER)
     assert entered.wait(timeout=2.0)
@@ -1539,7 +1539,7 @@ def test_two_submitted_plans_stay_independent_and_share_one_cleanup(
         assert second.result(timeout=10.0).cancelled
         assert (tmp_path / "Episode 1.pl.srt").is_file()
         assert not (tmp_path / "Episode 2.pl.srt").exists()
-        assert not any((tmp_path / "temp").iterdir())
+        assert not any((tmp_path / "tmp").iterdir())
 
         replayed: RunResult = service.execute(second_plan, CollectingRunSink())
         assert replayed.succeeded

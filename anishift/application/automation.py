@@ -229,9 +229,9 @@ from anishift.application.transfers import (
 )
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, resolve_route
-from anishift.config.workspace import run_temp_dir
+from anishift.config.workspace import cleanup_orphaned_tmp, run_tmp_dir
 from anishift.errors import AniShiftError, ErrorCode, ExecutionError, MediaProbeError, UnsupportedMediaError
-from anishift.paths import READY_DIRECTORY
+from anishift.paths import READY_DIRECTORY, RESTORE_STAGING_PREFIX, TMP_DIRECTORY
 from anishift.platform.binaries import BinaryNotFoundError
 from anishift.platform.directory_watch import DirectoryChange, source_is_available
 from anishift.platform.local_control import ControlErrorCode, ControlRequest, ControlResponse
@@ -761,6 +761,14 @@ class _DiskInventory:
     ready: frozenset[str]
 
 
+class _Resumability(Enum):
+    """What the saved checkpoint of one finished request proves about resuming it."""
+
+    RESUMABLE = auto()
+    DEAD = auto()
+    UNKNOWN = auto()
+
+
 @dataclass(frozen=True, slots=True)
 class _NotificationTarget:
     set_id: str
@@ -836,9 +844,23 @@ class AutomationOwner:
         self._completion_parked: set[str] = set()
         self._recovery_started: bool = False
         self._recovering: bool = False
-        service.retain_runs(
-            tuple(item.request_id for item in self._state.requests if item.state is not RequestState.SUCCEEDED)
+        relocating: frozenset[str] = frozenset(
+            group for move in self._ready_moves.values() for group in (move.group_id, move.destination_group_id)
         )
+        retained: tuple[str, ...] = tuple(
+            item.request_id
+            for item in self._state.requests
+            if item.state in _ACTIVE_STATES
+            or relocating.intersection(item.group_ids)
+            or self._resumable_run(item) is not _Resumability.DEAD
+        )
+        service.retain_runs(retained)
+        try:
+            removed: tuple[Path, ...] = cleanup_orphaned_tmp(service.workspace_root, active_run_ids=retained)
+        except OSError as problem:
+            logger.warning("Abandoned run staging cleanup failed", error_class=type(problem).__name__)
+        else:
+            logger.info("Abandoned run staging cleaned", removed=len(removed), retained=len(retained))
         self._queue: SimpleQueue[
             _Command | _Completion | _Disconnected | _FilesChanged | _Inspected | Callable[[], None] | None
         ] = SimpleQueue()
@@ -970,7 +992,7 @@ class AutomationOwner:
         if not path.is_relative_to(self._service.workspace_root):
             return False
         parts: tuple[str, ...] = path.relative_to(self._service.workspace_root).parts
-        return not any(part.startswith(".") for part in parts) and (not parts or parts[0].casefold() != "temp")
+        return not any(part.startswith(".") for part in parts) and (not parts or parts[0].casefold() != TMP_DIRECTORY)
 
     @property
     def instance_id(self) -> str:
@@ -1295,6 +1317,33 @@ class AutomationOwner:
             return RunJournal.load(self._store.run_path(request.request_id))
         except AniShiftError, OSError, ValueError:
             return None
+
+    def _resumable_run(self, request: ProcessingRequest) -> _Resumability:
+        if request.state not in {RequestState.FAILED, RequestState.PARTIAL, RequestState.PAUSED}:
+            return _Resumability.DEAD
+        verdict: _Resumability = self._checkpoint_verdict(request)
+        return self._checkpoint_verdict(request) if verdict is _Resumability.DEAD else verdict
+
+    def _checkpoint_verdict(self, request: ProcessingRequest) -> _Resumability:
+        path: Path = self._store.run_path(request.request_id)
+        try:
+            RunJournal.load(path)
+        except FileNotFoundError as problem:
+            missing: Path = Path(str(problem.filename))
+            if missing == path or missing.is_relative_to(self._service.workspace_root):
+                return _Resumability.DEAD
+            logger.warning("A run checkpoint input is unreachable", request_id=request.request_id)
+            return _Resumability.UNKNOWN
+        except ExecutionError, ValueError:
+            return _Resumability.DEAD
+        except (AniShiftError, OSError) as problem:
+            logger.warning(
+                "A run checkpoint could not be checked",
+                request_id=request.request_id,
+                error_class=type(problem).__name__,
+            )
+            return _Resumability.UNKNOWN
+        return _Resumability.RESUMABLE
 
     def _inspect_ready_changes(self, paths: tuple[Path, ...]) -> None:
         groups: tuple[SourceGroup, ...] | None = None
@@ -2373,7 +2422,7 @@ class AutomationOwner:
         restore: DeletionRestore = operation.restore or DeletionRestore(
             f"restore-{token_hex(_ID_BYTES)}",
             tuple(
-                RestoreOutcome(name, f"temp/.restore-{token_hex(_ID_BYTES)}/{index}")
+                RestoreOutcome(name, f"{RESTORE_STAGING_PREFIX}{token_hex(_ID_BYTES)}/{index}")
                 for index, (name, _size, _stamp) in enumerate(operation.files)
             ),
         )
@@ -3312,7 +3361,7 @@ class AutomationOwner:
             RunJournal.load(self._store.run_path(run_id))
             if previous is not None
             else RunJournal.create(
-                self._store.run_path(run_id), preview.plan, run_temp_dir(self._service.workspace_root, run_id)
+                self._store.run_path(run_id), preview.plan, run_tmp_dir(self._service.workspace_root, run_id)
             )
         )
         if journal.plan != preview.plan:
@@ -3379,7 +3428,7 @@ class AutomationOwner:
                 run_id=run_id,
                 automatic=preview.automatic,
                 journal=journal,
-                resume=previous is not None and run_temp_dir(self._service.workspace_root, run_id).exists(),
+                resume=previous is not None and run_tmp_dir(self._service.workspace_root, run_id).exists(),
             )
             submitted = True
         finally:
@@ -7909,23 +7958,18 @@ class AutomationOwner:
         )
         if conflict is not None:
             return conflict
-        if current is not None and current.state in {RequestState.FAILED, RequestState.PARTIAL, RequestState.PAUSED}:
-            try:
-                RunJournal.load(self._store.run_path(current.request_id))
-            except AniShiftError, OSError, ValueError:
-                pass
-            else:
-                return ControlResponse.succeeded(
-                    encode_view(
-                        RetryProposal(
-                            identifier,
-                            "resume",
-                            current.group_ids,
-                            current.intents,
-                            current.request_id,
-                        )
+        if current is not None and self._resumable_run(current) is _Resumability.RESUMABLE:
+            return ControlResponse.succeeded(
+                encode_view(
+                    RetryProposal(
+                        identifier,
+                        "resume",
+                        current.group_ids,
+                        current.intents,
+                        current.request_id,
                     )
                 )
+            )
         if group is not None and self._local_primary(group):
             intents: tuple[GroupIntent, ...] = (
                 ()

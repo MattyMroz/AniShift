@@ -157,7 +157,7 @@ def _deliver(setup: _Setup, owner: AutomationOwner) -> Path:
     _until(lambda: bool(setup.network.metadata_added))
     setup.network.deliver(_HASH, _PACK[:2])
     _until(_starts(setup))
-    data: Path = setup.root / "temp" / ".acquisition" / str(_view(owner)["operation_id"]) / "data" / "Pack"
+    data: Path = setup.root / "tmp" / ".acquisition" / str(_view(owner)["operation_id"]) / "data" / "Pack"
     data.mkdir(parents=True, exist_ok=True)
     (data / _NAMES[0]).write_bytes(_VIDEO)
     (data / _NAMES[1]).write_bytes(_SUBTITLES)
@@ -309,7 +309,7 @@ def test_a_video_changed_during_its_check_is_checked_again(setup: _Setup) -> Non
     with _attempting(setup, probe) as owner:
         _until(lambda: bool(setup.network.metadata_added))
         operation: str = str(_view(owner)["operation_id"])
-        probe.during.append(setup.root / "temp" / ".acquisition" / operation / "data" / "Pack" / _NAMES[0])
+        probe.during.append(setup.root / "tmp" / ".acquisition" / operation / "data" / "Pack" / _NAMES[0])
         _deliver(setup, owner)
         _until(lambda: _target(owner).state is TargetState.SATISFIED)
 

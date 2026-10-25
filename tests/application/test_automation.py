@@ -32,7 +32,9 @@ from test_service import _service as _processing_service
 
 import anishift.application.automation as automation_module
 import anishift.application.library as library_module
+import anishift.application.recovery as recovery_module
 import anishift.application.watch as watch_module
+import anishift.config.workspace as workspace_module
 from anishift.application import SCAN_INTERVAL_S, TaskState
 from anishift.application.acquisition import (
     AcquisitionService,
@@ -113,6 +115,7 @@ from anishift.cli.resident import ResidentSession
 from anishift.config.presets import default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
+from anishift.config.workspace import RUN_OWNER_MARKER_NAME, run_tmp_dir
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError, PlanningError
 from anishift.paths import COVER_DIRECTORY, READY_DIRECTORY, TRANSLATE_DIRECTORY, relocation_journal_dir
 from anishift.platform.directory_watch import DirectoryChange
@@ -2604,6 +2607,206 @@ def _end_watcher(service: _Service, run_id: str, group_id: str, watcher: threadi
     watcher.join()
 
 
+def _abandoned_run(
+    root: Path, store: WatchStateStore, run_id: str, plan: ExecutionPlan, state: RequestState
+) -> ProcessingRequest:
+    run_root: Path = run_tmp_dir(root, run_id)
+    RunJournal.create(store.run_path(run_id), plan, run_root)
+    run_root.mkdir(parents=True)
+    marker: dict[str, str | int] = {"pid": 1, "run_id": run_id, "token": "token"}
+    (run_root / RUN_OWNER_MARKER_NAME).write_text(json.dumps(marker), encoding="utf-8")
+    return ProcessingRequest(
+        run_id,
+        1,
+        tuple(group.group_id for group in plan.groups),
+        {},
+        RequestOrigin.USER,
+        SourceSelection.AUTO,
+        None,
+        {},
+        state,
+        1,
+        _MOMENT.isoformat(),
+    )
+
+
+@pytest.mark.integration
+def test_restarted_owner_removes_staging_of_runs_that_cannot_resume(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for stem in ("Dead", "Paused", "Failed"):
+        write_text_source(_library_dir(tmp_path) / f"{stem}.txt", "Text")
+    real: AppService = _real_service(tmp_path)
+    real.discover()
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    requests: tuple[ProcessingRequest, ...] = tuple(
+        _abandoned_run(
+            tmp_path,
+            store,
+            f"run-{stem.casefold()}",
+            real.plan_auto((create_group_id(Path(TRANSLATE_DIRECTORY), stem),), _PRESET),
+            state,
+        )
+        for stem, state in (
+            ("Dead", RequestState.FAILED),
+            ("Paused", RequestState.PAUSED),
+            ("Failed", RequestState.FAILED),
+        )
+    )
+    (_library_dir(tmp_path) / "Dead.txt").unlink()
+    store.save(WatchState(requests=requests))
+    monkeypatch.setattr(workspace_module, "_process_is_running", lambda pid: False)
+
+    _owner(real, store)
+
+    assert not run_tmp_dir(tmp_path, "run-dead").exists()
+    assert run_tmp_dir(tmp_path, "run-paused").is_dir()
+    assert run_tmp_dir(tmp_path, "run-failed").is_dir()
+
+
+def _restarted_with_one_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, state: RequestState
+) -> tuple[AppService, WatchStateStore, Path]:
+    write_text_source(_library_dir(tmp_path) / "Episode.txt", "Text")
+    real: AppService = _real_service(tmp_path)
+    real.discover()
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    plan: ExecutionPlan = real.plan_auto((create_group_id(Path(TRANSLATE_DIRECTORY), "Episode"),), _PRESET)
+    store.save(WatchState(requests=(_abandoned_run(tmp_path, store, "run-one", plan, state),)))
+    monkeypatch.setattr(workspace_module, "_process_is_running", lambda pid: False)
+    return real, store, _library_dir(tmp_path) / "Episode.txt"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("unreadable", ["journal", "input"])
+def test_restarted_owner_keeps_staging_whose_checkpoint_cannot_be_read_now(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, unreadable: str
+) -> None:
+    real, store, source = _restarted_with_one_run(monkeypatch, tmp_path, RequestState.FAILED)
+    blocked: Path = store.run_path("run-one") if unreadable == "journal" else source
+    proof: Callable[..., object] = recovery_module._proof
+    revision: Callable[..., object] = recovery_module._revision
+
+    def refuse(original: Callable[..., object]) -> Callable[..., object]:
+        def read(path: Path, *args: object) -> object:
+            if path == blocked:
+                raise PermissionError(13, "Synthetic lock", str(path))
+            return original(path, *args)
+
+        return read
+
+    monkeypatch.setattr(recovery_module, "_proof", refuse(proof))
+    monkeypatch.setattr(recovery_module, "_revision", refuse(revision))
+
+    _owner(real, store)
+
+    assert run_tmp_dir(tmp_path, "run-one").is_dir()
+
+
+@pytest.mark.integration
+def test_restarted_owner_keeps_staging_whose_missing_input_lies_outside_the_workspace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    real, store, source = _restarted_with_one_run(monkeypatch, tmp_path, RequestState.FAILED)
+    outside: Path = tmp_path.parent / f"{tmp_path.name}-external" / "Episode.ass"
+    proof: Callable[..., object] = recovery_module._proof
+
+    def unplugged(path: Path, *args: object) -> object:
+        if path == source:
+            raise FileNotFoundError(2, "Synthetic unplugged drive", str(outside))
+        return proof(path, *args)
+
+    monkeypatch.setattr(recovery_module, "_proof", unplugged)
+
+    _owner(real, store)
+
+    assert run_tmp_dir(tmp_path, "run-one").is_dir()
+
+
+@pytest.mark.integration
+def test_restarted_owner_keeps_staging_whose_checkpoint_changed_only_while_it_was_checked(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    real, store, _source = _restarted_with_one_run(monkeypatch, tmp_path, RequestState.FAILED)
+    load: Callable[[Path], RunJournal] = RunJournal.load
+    calls: list[Path] = []
+
+    def changing(path: Path) -> RunJournal:
+        calls.append(path)
+        if len(calls) == 1:
+            raise ExecutionError("Synthetic checkpoint change")
+        return load(path)
+
+    monkeypatch.setattr(RunJournal, "load", staticmethod(changing))
+
+    _owner(real, store)
+
+    assert run_tmp_dir(tmp_path, "run-one").is_dir()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("state", [RequestState.CANCELLED, RequestState.SUCCEEDED])
+def test_restarted_owner_removes_staging_of_runs_without_a_resume_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, state: RequestState
+) -> None:
+    real, store, _source = _restarted_with_one_run(monkeypatch, tmp_path, state)
+
+    _owner(real, store)
+
+    assert not run_tmp_dir(tmp_path, "run-one").exists()
+
+
+@pytest.mark.integration
+def test_restarted_owner_removes_staging_whose_checkpoint_cannot_be_parsed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    real, store, _source = _restarted_with_one_run(monkeypatch, tmp_path, RequestState.FAILED)
+    store.run_path("run-one").write_text("{not a checkpoint", encoding="utf-8")
+
+    _owner(real, store)
+
+    assert not run_tmp_dir(tmp_path, "run-one").exists()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("state", [RequestState.ACCEPTED, RequestState.RUNNING, RequestState.PARTIAL])
+def test_restarted_owner_keeps_staging_of_interrupted_and_resumable_runs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, state: RequestState
+) -> None:
+    real, store, source = _restarted_with_one_run(monkeypatch, tmp_path, state)
+    if state is not RequestState.PARTIAL:
+        store.run_path("run-one").unlink()
+
+    _owner(real, store)
+
+    assert run_tmp_dir(tmp_path, "run-one").is_dir()
+    assert source.is_file()
+
+
+@pytest.mark.integration
+def test_restarted_owner_keeps_staging_of_a_run_whose_ready_relocation_is_unfinished(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    real, store, source = _restarted_with_one_run(monkeypatch, tmp_path, RequestState.PARTIAL)
+    product: Path = source.with_name("Episode.pl.txt")
+    product.write_text("Tekst", encoding="utf-8")
+    relocations: ReadyStore = ReadyStore(tmp_path / "control" / "relocations", tmp_path)
+    move: ReadyMove | None = relocations.prepare(discover_groups(tmp_path).groups[0], (product,))
+    assert move is not None
+    relocations.execute(move)
+    assert not source.exists()
+
+    AutomationOwner(
+        real,
+        store,
+        instance_id=_INSTANCE,
+        clock=lambda: _MOMENT,
+        ready_store=ReadyStore(tmp_path / "control" / "relocations", tmp_path),
+    )
+
+    assert run_tmp_dir(tmp_path, "run-one").is_dir()
+
+
 def _drain_owner_queue(owner: AutomationOwner) -> None:
     action: object = owner._queue.get(timeout=_TIMEOUT_S)
     assert callable(action)
@@ -4010,7 +4213,7 @@ def _projection_request(tmp_path: Path, state: RequestState) -> tuple[Automation
     )
     store.save(WatchState(policy=AutomationPolicy(auto_enabled=False), requests=(request,)))
     path: Path = store.run_path(request.request_id)
-    RunJournal.create(path, remaining, tmp_path / "temp" / "projection")
+    RunJournal.create(path, remaining, tmp_path / "tmp" / "projection")
     owner: AutomationOwner = _owner(_Service(tmp_path, discovered=workspace, plan=plan), store)
     owner._run_events[request.request_id] = {
         (RunEventKind.GROUP_FINISHED.value, identifier, None): RunEvent(

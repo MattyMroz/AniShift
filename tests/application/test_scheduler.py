@@ -305,7 +305,7 @@ def _submit(  # noqa: PLR0913 - one coordinator context needs every collaborator
     origin: RequestOrigin = RequestOrigin.USER,
     automatic: bool = False,
 ) -> tuple[RunHandle, _FakeHandler, _CollectingSink]:
-    run_root: Path = tmp_path / "temp" / run_id
+    run_root: Path = tmp_path / "tmp" / run_id
     session: RunSession = stack.enter_context(RunSession(run_root))
     handler: _FakeHandler = handler_factory(run_root)
     sink: _CollectingSink = _CollectingSink()
@@ -339,7 +339,7 @@ def _run(
     *,
     cancel: EventCancellationToken | NeverCancelledToken | None = None,
 ) -> tuple[RunResult, _FakeHandler, _CollectingSink]:
-    run_root: Path = tmp_path / "temp" / "run-1"
+    run_root: Path = tmp_path / "tmp" / "run-1"
     sink: _CollectingSink = _CollectingSink()
     token: EventCancellationToken | NeverCancelledToken = cancel or NeverCancelledToken()
     with RunSession(run_root) as session:
@@ -548,7 +548,7 @@ def test_strict_natural_keeps_later_durable_staging_private(tmp_path: Path) -> N
         _TaskSpec("group-2", "fast-durable", durable=True),
     )
     plan: ExecutionPlan = _plan(tmp_path, specs, policy=ProcessingOrderPolicy.STRICT_NATURAL)
-    run_root: Path = tmp_path / "temp" / "run-1"
+    run_root: Path = tmp_path / "tmp" / "run-1"
     destination: Path = tmp_path / "fast-durable.pl.ass"
     sink: _CollectingSink = _CollectingSink()
     hold: threading.Barrier = threading.Barrier(2)
@@ -586,7 +586,7 @@ def test_cancel_before_admission_executes_no_handler(tmp_path: Path) -> None:
 def test_cancel_rejects_noncooperative_late_durable_result(tmp_path: Path) -> None:
     specs: tuple[_TaskSpec, ...] = (_TaskSpec("group-1", "late", durable=True),)
     plan: ExecutionPlan = _plan(tmp_path, specs)
-    run_root: Path = tmp_path / "temp" / "run-1"
+    run_root: Path = tmp_path / "tmp" / "run-1"
     token: EventCancellationToken = EventCancellationToken()
     sink: _CollectingSink = _CollectingSink()
     with RunSession(run_root) as session:
@@ -659,7 +659,7 @@ def test_blocking_plan_is_rejected_before_run_event(tmp_path: Path) -> None:
     problem = PlanProblem("blocked", "Resolve input", "group-1")
     plan: ExecutionPlan = _plan(tmp_path, (), extra_groups=("group-1",), problem=problem)
     sink: _CollectingSink = _CollectingSink()
-    run_root: Path = tmp_path / "temp" / "run-1"
+    run_root: Path = tmp_path / "tmp" / "run-1"
     with RunSession(run_root) as session:
         scheduler = GraphScheduler(
             _FakeHandler(run_root),
@@ -760,7 +760,7 @@ def test_locked_publication_allows_other_group_to_finish(
     monkeypatch.setattr(scheduler_runtime, "_PUBLICATION_LOCK_RETRIES", 3)
     monkeypatch.setattr(scheduler_runtime, "_PUBLICATION_LOCK_RETRY_DELAY_S", 0.01)
     sink: ReleasingSink = ReleasingSink()
-    run_root: Path = tmp_path / "temp" / "run-1"
+    run_root: Path = tmp_path / "tmp" / "run-1"
     with RunSession(run_root) as session:
         handler: _FakeHandler = _FakeHandler(run_root)
         scheduler: GraphScheduler = GraphScheduler(

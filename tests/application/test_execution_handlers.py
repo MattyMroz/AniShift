@@ -753,7 +753,7 @@ def test_saved_joint_split_executes_with_confirmed_absence_without_rewriting_bef
         _settings(),
         (),
     )
-    run_root: Path = tmp_path / "temp" / "legacy-run"
+    run_root: Path = tmp_path / "tmp" / "legacy-run"
     journal_path: Path = tmp_path / "legacy-run.json"
     RunJournal.create(journal_path, plan, run_root)
     saved: bytes = journal_path.read_bytes()
@@ -1207,7 +1207,7 @@ def test_scheduler_executes_real_increment_10a_handlers(tmp_path: Path) -> None:
     )
     settings: RunSettingsSnapshot = _settings()
     plan = ExecutionPlan((group,), (video, source, full, spoken), (extract, translate, split), settings, ())
-    run_root = tmp_path / "temp" / "run-1"
+    run_root = tmp_path / "tmp" / "run-1"
     sink = _RunEventSink()
 
     with RunSession(run_root) as session:
@@ -1242,7 +1242,7 @@ def test_planner_to_scheduler_executes_standalone_text_plan(tmp_path: Path) -> N
         AutoPreset("default", "Default", products),
         _settings(),
     )
-    run_root = tmp_path / "temp" / "run-txt"
+    run_root = tmp_path / "tmp" / "run-txt"
     published = tmp_path / "episode.pl.srt"
 
     with RunSession(run_root) as session:
@@ -1292,7 +1292,7 @@ def test_planner_scheduler_completes_independent_subtitle_branches(tmp_path: Pat
     tts.synthesize.side_effect = lambda batch, **kwargs: _synthesize_pcm_batch(batch, tmp_path)
     mixer: Mock = Mock()
     mixer.render.side_effect = lambda request, **kwargs: _render_pcm_clip(request)
-    run_root: Path = tmp_path / "temp" / "run-branches"
+    run_root: Path = tmp_path / "tmp" / "run-branches"
     sink: _RunEventSink = _RunEventSink()
     composer: _Composer = _Composer()
 
@@ -1374,7 +1374,7 @@ def test_plain_srt_containers_report_the_omitted_displayed_layer_without_transla
     plan: ExecutionPlan = plan_auto((inspected,), AutoPreset("signless", "Signless", products), _settings())
     translation: Mock = Mock(wraps=_TranslationService())
     composer: _Composer = _Composer()
-    run_root: Path = tmp_path / "temp" / "run-srt"
+    run_root: Path = tmp_path / "tmp" / "run-srt"
 
     with RunSession(run_root) as session:
         handlers: ExecutionHandlers = ExecutionHandlers(
@@ -1437,7 +1437,7 @@ def test_confirmed_absence_restarts_before_real_composition_without_retranslatio
         mkv_tracks=frozenset({MkvTrackProduct.DISPLAYED_PL_SUBTITLES}) if target is ProductKind.MKV else frozenset(),
     )
     plan: ExecutionPlan = plan_auto((inspected,), AutoPreset("signless", "Signless", products), _settings())
-    run_root: Path = tmp_path / "temp" / "restart"
+    run_root: Path = tmp_path / "tmp" / "restart"
     journal_path: Path = tmp_path / "restart.json"
     journal: RunJournal = RunJournal.create(journal_path, plan, run_root)
     with RunSession(run_root) as initial_session:

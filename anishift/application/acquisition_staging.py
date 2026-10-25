@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Final
 
 from anishift.application.ready import retry_file_release
-from anishift.paths import TEMP_DIRECTORY
+from anishift.paths import TMP_DIRECTORY
 
 if TYPE_CHECKING:
     from _hashlib import HASH
@@ -229,7 +229,7 @@ def _operation_path(workspace_root: Path, operation_id: str, part: str) -> Path:
     if len(relative.parts) != 1:
         msg = "An acquisition operation requires one directory component"
         raise ValueError(msg)
-    return staged_file(workspace_root.absolute(), f"{TEMP_DIRECTORY}/.acquisition/{operation_id}/{part}")
+    return staged_file(workspace_root.absolute(), f"{TMP_DIRECTORY}/.acquisition/{operation_id}/{part}")
 
 
 def _present(path: Path) -> bool:

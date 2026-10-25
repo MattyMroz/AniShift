@@ -137,7 +137,7 @@ def _download(setup: _Setup, owner: AutomationOwner, *, sidecar: bool = True) ->
     _until(lambda: bool(setup.network.metadata_added))
     setup.network.deliver(_HASH)
     _until(_starts(setup))
-    data: Path = setup.root / "temp" / ".acquisition" / str(_view(owner)["operation_id"]) / "data"
+    data: Path = setup.root / "tmp" / ".acquisition" / str(_view(owner)["operation_id"]) / "data"
     (data / "Pack").mkdir(parents=True, exist_ok=True)
     (data / "Pack" / _NAMES[0]).write_bytes(_VIDEO)
     if sidecar:
@@ -784,7 +784,7 @@ def test_episode_states_follow_an_episode_from_ordering_to_its_ready_set(setup: 
         _until(_starts(setup))
         _until(lambda: _current(owner).content_started)
         downloading: dict[str, object] = _status(owner)
-        data: Path = setup.root / "temp" / ".acquisition" / str(_view(owner)["operation_id"]) / "data" / "Pack"
+        data: Path = setup.root / "tmp" / ".acquisition" / str(_view(owner)["operation_id"]) / "data" / "Pack"
         data.mkdir(parents=True, exist_ok=True)
         (data / _NAMES[0]).write_bytes(_VIDEO)
         (data / _NAMES[1]).write_bytes(_SUBTITLES)

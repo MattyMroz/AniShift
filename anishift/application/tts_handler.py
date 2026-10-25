@@ -112,7 +112,7 @@ class TtsExecutor(Protocol):
 class ClipPreparer(Protocol):
     """Run audio service normalizing one clip exactly as the narration mix will."""
 
-    def prepare_clip(self, clip: TimedClip, *, temporary_root: Path, cancel: threading.Event | None) -> NormalizedClip:
+    def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
         """Normalize one clip into its reusable PCM artifact."""
         ...
 
@@ -303,14 +303,14 @@ class TtsTaskHandler:
         except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
             msg: str = "Sign candidates are invalid"
             raise ExecutionError(msg) from error
-        temporary_root: Path = self._run_root / task.group_id / "audio"
-        lines: tuple[NormalizedClip, ...] = _prepare(self._audio, manifest.clips, temporary_root, cancel)
+        tmp_root: Path = self._run_root / task.group_id / "audio"
+        lines: tuple[NormalizedClip, ...] = _prepare(self._audio, manifest.clips, tmp_root, cancel)
         baseline: TimelinePlan | None = plan_timeline(lines)
         wanted: tuple[SignCandidate, ...] = (
             () if baseline is None else reachable_signs(candidates, free_intervals(baseline), baseline.sample_rate)
         )
         recorded: dict[int, NarrationManifestClip] = self._record_signs(task, wanted, cancel, progress)
-        prepared: tuple[NormalizedClip, ...] = _prepare(self._audio, tuple(recorded.values()), temporary_root, cancel)
+        prepared: tuple[NormalizedClip, ...] = _prepare(self._audio, tuple(recorded.values()), tmp_root, cancel)
         selection: SignSelection = select_signs(
             candidates, {clip.timed_clip.source_order: clip for clip in prepared}, lines, mode
         )
@@ -447,7 +447,7 @@ def build_narration_manifest(
 def _prepare(
     audio: ClipPreparer,
     clips: tuple[NarrationManifestClip, ...],
-    temporary_root: Path,
+    tmp_root: Path,
     cancel: CancellationToken,
 ) -> tuple[NormalizedClip, ...]:
     event: threading.Event = threading.Event()
@@ -455,7 +455,7 @@ def _prepare(
 
     def prepare(clip: NarrationManifestClip) -> NormalizedClip:
         cancel.raise_if_cancelled()
-        return audio.prepare_clip(timed_clip(clip), temporary_root=temporary_root, cancel=event)
+        return audio.prepare_clip(timed_clip(clip), tmp_root=tmp_root, cancel=event)
 
     watcher: threading.Thread = threading.Thread(target=mirror_cancel, args=(cancel, event, stop), daemon=True)
     watcher.start()

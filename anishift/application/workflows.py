@@ -13,7 +13,7 @@ from anishift.paths import (
     COVER_DIRECTORY,
     READY_DIRECTORY,
     SUBS_DIRECTORY,
-    TEMP_DIRECTORY,
+    TMP_DIRECTORY,
     TRANSLATE_DIRECTORY,
 )
 
@@ -48,7 +48,7 @@ class WorkspacePlace(StrEnum):
     AUDIOBOOK = "audiobook"
     COVER = "cover"
     READY = "ready"
-    TEMP = "temp"
+    TMP = TMP_DIRECTORY
     HIDDEN = "hidden"
     OUTSIDE = "outside"
 
@@ -88,7 +88,7 @@ _RESERVED_ROUTES: Final[Mapping[str, WorkflowRoute]] = MappingProxyType(
         AUDIOBOOK_DIRECTORY: WorkflowRoute(WorkspacePlace.AUDIOBOOK, WorkflowTarget.AUDIOBOOK),
         COVER_DIRECTORY: WorkflowRoute(WorkspacePlace.COVER, WorkflowTarget.COVER),
         READY_DIRECTORY: WorkflowRoute(WorkspacePlace.READY, None),
-        TEMP_DIRECTORY: WorkflowRoute(WorkspacePlace.TEMP, None),
+        TMP_DIRECTORY: WorkflowRoute(WorkspacePlace.TMP, None),
     }
 )
 """Every reserved first segment of a workspace-relative path, matched without case."""

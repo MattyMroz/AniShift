@@ -209,10 +209,10 @@ class _Preparer:
     def __init__(self) -> None:
         self.roots: set[Path] = set()
 
-    def prepare_clip(self, clip: TimedClip, *, temporary_root: Path, cancel: threading.Event | None) -> NormalizedClip:
+    def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
         del cancel
-        self.roots.add(temporary_root)
-        return NormalizedClip(clip, temporary_root / f"{clip.request_id}.pcm", 1000, 2, 1, 500, PcmStorage.RAW, False)
+        self.roots.add(tmp_root)
+        return NormalizedClip(clip, tmp_root / f"{clip.request_id}.pcm", 1000, 2, 1, 500, PcmStorage.RAW, False)
 
 
 def _signed_synthesis(tmp_path: Path) -> tuple[PlanTask, ArtifactSnapshot]:
@@ -279,10 +279,10 @@ class _CancellingPreparer(_Preparer):
         self.token: EventCancellationToken = token
         self.signalled: list[bool] = []
 
-    def prepare_clip(self, clip: TimedClip, *, temporary_root: Path, cancel: threading.Event | None) -> NormalizedClip:
+    def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
         self.token.cancel()
         self.signalled.append(cancel is not None and cancel.wait(5))
-        return super().prepare_clip(clip, temporary_root=temporary_root, cancel=cancel)
+        return super().prepare_clip(clip, tmp_root=tmp_root, cancel=cancel)
 
 
 def test_cancelling_the_task_stops_the_normalization_of_its_clips(tmp_path: Path) -> None:

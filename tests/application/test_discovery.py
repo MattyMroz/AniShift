@@ -332,18 +332,18 @@ def test_a_workspace_reached_through_a_junction_still_routes_its_task_folders(tm
     )
 
 
-def test_managed_temp_tree_below_root_is_never_discovered(tmp_path: Path) -> None:
-    _touch(tmp_path, "temp/run-1/01.mkv")
+def test_managed_tmp_tree_below_root_is_never_discovered(tmp_path: Path) -> None:
+    _touch(tmp_path, "tmp/run-1/01.mkv")
     result = discover_groups(tmp_path)
     assert result.groups == ()
     assert result.warnings == ()
 
 
-def test_temp_folder_below_a_subfolder_is_still_discovered(tmp_path: Path) -> None:
-    _touch(tmp_path, "Series A/temp/01.mkv")
+def test_tmp_folder_below_a_subfolder_is_still_discovered(tmp_path: Path) -> None:
+    _touch(tmp_path, "Series A/tmp/01.mkv")
     groups = discover_groups(tmp_path).groups
     assert len(groups) == 1
-    assert groups[0].directory == tmp_path / "Series A" / "temp"
+    assert groups[0].directory == tmp_path / "Series A" / "tmp"
 
 
 def test_hidden_directories_and_files_are_never_discovered(tmp_path: Path) -> None:
@@ -515,14 +515,14 @@ def test_polish_names_survive_classification_and_grouping(tmp_path: Path) -> Non
 
 
 def test_a_directory_rename_replaces_its_indexed_groups_and_preserves_exclusions(tmp_path: Path) -> None:
-    _touch(tmp_path, "Series/01.mkv", "Series/.hidden/02.mkv", "temp/work/03.mkv", ".hidden/04.mkv")
+    _touch(tmp_path, "Series/01.mkv", "Series/.hidden/02.mkv", "tmp/work/03.mkv", ".hidden/04.mkv")
     index: DiscoveryIndex = DiscoveryIndex(tmp_path)
     initial = index.discover()
     original: Path = tmp_path / "Series"
     renamed: Path = tmp_path / "Renamed"
     original.rename(renamed)
 
-    changed = index.discover((original, renamed, tmp_path / "temp" / "work"))
+    changed = index.discover((original, renamed, tmp_path / "tmp" / "work"))
 
     assert len(changed.groups) == 1
     assert changed.groups[0].directory == renamed

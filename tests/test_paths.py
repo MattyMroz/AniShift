@@ -9,7 +9,7 @@ from anishift.application.watch_state import watch_state_path
 from anishift.cli.watch import watch_state_dir
 from anishift.config.env_file import env_path
 from anishift.config.presets import presets_path
-from anishift.config.workspace import resolve_workspace_root, run_temp_dir
+from anishift.config.workspace import resolve_workspace_root, run_tmp_dir
 from anishift.platform.binaries import external_bin_root
 from anishift.setup.manifest import manifest_path
 
@@ -48,5 +48,5 @@ def test_selected_workspace_keeps_ready_and_run_staging_together(
     monkeypatch.setenv("ANISHIFT_WORKSPACE_ROOT", str(root))
     assert resolve_workspace_root() == root
     assert paths.ready_dir(root) == root / "ready"
-    assert run_temp_dir(root, "run-1") == paths.temp_dir(root) / "run-1"
+    assert run_tmp_dir(root, "run-1") == paths.tmp_dir(root) / "run-1"
     assert not root.exists()

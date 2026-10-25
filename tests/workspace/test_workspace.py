@@ -30,7 +30,7 @@ def test_ensure_workspace_dir_creates_only_default_subdirs(tmp_path: Path) -> No
     assert ensure_workspace_dir(root) == ()
     assert root.is_dir()
     assert sorted(p.name for p in root.iterdir()) == sorted(DEFAULT_SUBDIRS)
-    assert DEFAULT_SUBDIRS == ("temp", "subs", "translate", "audiobook", "cover")
+    assert DEFAULT_SUBDIRS == ("tmp", "subs", "translate", "audiobook", "cover")
     assert DEFAULT_SUBDIRS[1:] == TASK_DIRECTORIES
 
 
@@ -39,7 +39,7 @@ def test_ensure_workspace_dir_is_idempotent(tmp_path: Path) -> None:
     ensure_workspace_dir(root)
     (root / "subs" / "01.mkv").write_bytes(b"kept")
     assert ensure_workspace_dir(root) == ()
-    assert (root / "temp").is_dir()
+    assert (root / "tmp").is_dir()
     assert (root / "subs" / "01.mkv").read_bytes() == b"kept"
 
 
@@ -51,7 +51,7 @@ def test_a_file_holding_a_task_name_refuses_only_that_place_and_survives(tmp_pat
     assert [(item.name, item.kind) for item in conflicts] == [("cover", ReservedNameConflict.NOT_A_DIRECTORY)]
     assert (root / "cover").read_text(encoding="utf-8") == "mine"
     assert conflicts[0].message.startswith("cover: ")
-    assert all((root / name).is_dir() for name in ("temp", "subs", "translate", "audiobook"))
+    assert all((root / name).is_dir() for name in ("tmp", "subs", "translate", "audiobook"))
 
 
 def test_a_link_holding_a_task_name_is_refused_and_never_followed(tmp_path: Path) -> None:
@@ -75,7 +75,7 @@ def test_occupied_task_dirs_reports_content_without_changing_the_workspace(tmp_p
     ensure_workspace_dir(root)
     assert occupied_task_dirs(root) == ()
     (root / "audiobook" / "01.mkv").write_bytes(b"already here")
-    (root / "temp" / "staging").mkdir()
+    (root / "tmp" / "staging").mkdir()
     assert occupied_task_dirs(root) == ("audiobook",)
     assert sorted(p.name for p in root.iterdir()) == sorted(DEFAULT_SUBDIRS)
 

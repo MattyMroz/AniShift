@@ -11,8 +11,9 @@ from secrets import token_hex
 from types import TracebackType
 from typing import Final, Literal
 
-from anishift.config.workspace import RUN_OWNER_MARKER_NAME, group_temp_dir, run_temp_dir
+from anishift.config.workspace import RUN_OWNER_MARKER_NAME, group_tmp_dir, run_tmp_dir
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError, RunConflictError
+from anishift.paths import TMP_DIRECTORY
 from anishift.utils.logger import get_logger
 from anishift.utils.safe_fs import safe_rmtree
 
@@ -46,9 +47,9 @@ class RunSession:
 
     def __init__(self, run_root: Path, *, resume: bool = False) -> None:
         """Store an explicit run directory that this session alone will create."""
-        expected: Path = run_temp_dir(run_root.parent.parent, run_root.name)
+        expected: Path = run_tmp_dir(run_root.parent.parent, run_root.name)
         if run_root != expected:
-            msg = "Run root must be an exact workspace/temp child directory"
+            msg = f"Run root must be an exact workspace/{TMP_DIRECTORY} child directory"
             raise ValueError(msg)
         self._run_root: Path = run_root
         self._resume: bool = resume
@@ -153,16 +154,16 @@ class RunSession:
         with self._lock:
             return tuple(self._cleanup_warnings)
 
-    def group_temp(self, group_id: str) -> Path:
+    def group_tmp(self, group_id: str) -> Path:
         """Create and return one group directory inside the active run root."""
         if not group_id.strip() or Path(group_id).name != group_id or group_id in {".", ".."}:
-            msg = "Group temporary directory requires one safe group ID"
+            msg = "Group tmp directory requires one safe group ID"
             raise ValueError(msg)
         with self._lock:
             if not self._active:
-                msg = "Run session must be active before creating group temporary files"
+                msg = "Run session must be active before creating group tmp files"
                 raise ExecutionError(msg)
-            group_root: Path = group_temp_dir(
+            group_root: Path = group_tmp_dir(
                 self._run_root.parent.parent,
                 self._run_root.name,
                 group_id,

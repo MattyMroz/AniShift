@@ -8,7 +8,7 @@ AniShift wyszukuje i pobiera odcinki anime, a potem robi z plików MKV polskie n
 ścieżkę lektora: wyciąga napisy, tłumaczy je, czyta syntezatorem mowy, obrabia dźwięk
 i składa gotowy plik. Źródła i gotowe produkty trafiają do płaskiego katalogu
 `workspace/ready/`. Regeneracja działa tam na miejscu, bez przenoszenia plików z powrotem.
-Dane robocze leżą w `workspace/temp/`.
+Dane robocze leżą w `workspace/tmp/`.
 
 AniShift działa obecnie tylko na Windowsie.
 
@@ -103,7 +103,7 @@ uv run anishift subs remove ID   # usuń jedną subskrypcję
 **Del** anuluje go po potwierdzeniu, a **H** otwiera historię.
 
 W `workspace/` może być osobny podfolder na każdą serię. Wyszukiwanie plików czyta katalog
-główny i wszystkie podfoldery poza zarządzanym `temp/` i katalogami ukrytymi. Przy włączonym
+główny i wszystkie podfoldery poza zarządzanym `tmp/` i katalogami ukrytymi. Przy włączonym
 automacie stabilne pliki trafiają do tego samego harmonogramu co w trybie Ręcznym, a gotowe,
 potwierdzone produkty są używane ponownie. Po udanej obróbce źródła i produkty przechodzą
 do `ready/`, a na tym samym dysku ich zawartość nie jest przepisywana. Przy kolizji nazw
