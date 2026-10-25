@@ -4,9 +4,9 @@ Testy pytest. Konwencje testowe całego drzewa; komenda bramki jakości i marker
 
 ## Pułapki
 
-- Testy importują wprost `from conftest import ...` (bez `pythonpath` w configu) — działają tylko dzięki domyślnemu prepend-mode pytesta wstawiającemu `tests/` do sys.path. Dodanie `__init__.py` do dowolnego podkatalogu testowego to zepsuje. `services/extraction/test_regression_tracks.py:7`
+- Testy importują wprost `from conftest import ...` (bez `pythonpath` w configu) — działają tylko dzięki domyślnemu prepend-mode pytesta wstawiającemu `tests/` do sys.path. Dodanie `__init__.py` do dowolnego podkatalogu testowego to zepsuje. `platform/test_qbittorrent_process.py:19`
 - Istnieje dokładnie JEDEN `__init__.py` (`services/translation/`), reszta katalogów go nie ma — niespójność, którą łatwo nieświadomie „naprawić" i rozwalić importy conftest. `services/translation/__init__.py:1`
-- Progi dokładności są zaszyte w asercjach (`>= 0.95`, `>= 0.9586`, `>= 0.9`) — to bramki regresji, nie luźne sanity. `services/extraction/test_regression_tracks.py:63`
+- Progi dokładności są zaszyte w asercjach (`>= 0.9586`) — to bramki regresji, nie luźne sanity. `services/subtitles/test_regression_classifier.py:45`
 - Regresja klasyfikatora ma allowlistę znanych pudeł (`_KNOWN_MISSED_DIALOG`) i faila na KAŻDE nowe pudło, nie tylko na spadek dokładności. `services/subtitles/test_regression_classifier.py:10`
 - Wątek `AnimeController` zeruje `_worker` przed swoimi ostatnimi skutkami (np. przejściem na listę subskrypcji), więc `_worker is None` nie dowodzi końca pracy; czekaj na koniec wątków `_WORKER_NAME` uruchomionych przez klawisz (`test_subscription_draft._keys`). `cli/test_subscription_draft.py`
 - Pomocnik oczekiwania ma zwracać sukces przy pierwszej obserwacji warunku, nie oceniać go drugi raz: `run_result` wraca chwilowo do `running` przy ponowieniu odroczonej relokacji. Plik przekazany do Auto bywa otwarty przez sondę `mkvmerge`; test usuwający go na Windows używa `_unlink_when_released`. `application/test_automation.py`
@@ -18,8 +18,8 @@ Testy pytest. Konwencje testowe całego drzewa; komenda bramki jakości i marker
   katalogach oraz `conftest.py`. Hook odrzuca także samodzielne stringi pod stałymi;
   dopuszcza dyrektywy `# noqa`, `# type:` i `# pragma`. Opis scenariusza należy do nazwy testu.
 - Testy `network` domyślnie SKIPowane; uruchamiają się tylko z `-m network` (logika w `pytest_collection_modifyitems`, nie w addopts). `conftest.py:26`
-- Testy zależne od datasetu spoza repo gate'ują się przez `skipif(not PATH.is_file())` / `pytest.skip()` — brak pliku = zielono, nie czerwono. `services/extraction/test_regression_tracks.py:12`
-- Dataset selekcji ścieżek (`TRACKS_DATASET`) i korpus ASS (`MM_AVH_TEMP`) leżą POZA repo, w siostrzanym `../mm_avh_working_space/temp/`. `conftest.py:19`
+- Testy zależne od datasetu spoza repo gate'ują się przez `skipif(not PATH.is_file())` / `pytest.skip()` — brak pliku = zielono, nie czerwono. `services/subtitles/test_regression_classifier.py:22`
+- Korpus ASS (`MM_AVH_TEMP`) leży POZA repo, w siostrzanym `../mm_avh_working_space/temp/`. `conftest.py:19`
 - Izolacja stanu przez `monkeypatch.setattr` (config_path/resolve_binary/is_windows/Popen), brak globalnego autouse fixture — każdy test patchuje sam. `config/test_user_settings.py:19`, `platform/test_binaries.py:18`
 - Testy zależne od systemu wymuszają zachowanie przez `monkeypatch.setattr(..., "is_windows", ...)` zamiast realnego OS. `platform/test_binaries.py:19`
 
@@ -34,4 +34,3 @@ Testy pytest. Konwencje testowe całego drzewa; komenda bramki jakości i marker
 
 - `data/youjo-senki-ii-01.json` — surowy output mkvmerge, używany w `test_extraction_service.py`
 - `data/mushoku-tensei-s3-03.json` — surowy output mkvmerge, do żadnego testu nie podpięty
-- `test_regression_tracks.py` sam mapuje kodeki datasetu na codec_id (`SubStationAlpha`→`S_TEXT/ASS`) — dataset trzyma nazwy ludzkie. `services/extraction/test_regression_tracks.py:15`

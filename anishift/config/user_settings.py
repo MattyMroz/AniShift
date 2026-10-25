@@ -12,7 +12,6 @@ from typing import Any, Final, Literal
 from anishift.application.planning import SIGN_NARRATION_MODES
 from anishift.paths import config_path
 from anishift.services.audio.types import AudioCodecProfile, TimelinePolicy
-from anishift.services.extraction.tracks import DEFAULT_AUDIO_PRIORITY, DEFAULT_SUBTITLE_PRIORITY
 from anishift.services.llm.engines import available_engine_ids as available_llm_engine_ids
 from anishift.services.translation.chunking import DEFAULT_CHAR_LIMIT
 from anishift.services.translation.engines import available_engine_ids
@@ -74,6 +73,12 @@ type JsonScalar = str | int | float | bool | None
 
 SETTINGS_SCHEMA_VERSION: Final[int] = 3
 """Current persisted user-settings schema."""
+
+DEFAULT_AUDIO_PRIORITY: Final[tuple[str, ...]] = ("jpn", "eng", "zho")
+"""Audio languages preferred by default, most wanted first."""
+
+DEFAULT_SUBTITLE_PRIORITY: Final[tuple[str, ...]] = ("pol", "eng")
+"""Subtitle languages preferred by default, most wanted first."""
 
 DEFAULT_POLISH_WAIT_H: Final[int] = 2
 """Default subscription wait for confirmed Polish subtitles, in hours."""
