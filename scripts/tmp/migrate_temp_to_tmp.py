@@ -14,10 +14,11 @@ from pydantic import TypeAdapter
 
 from anishift.application.recovery import RunJournal, _Checkpoint
 from anishift.application.watch_state import WatchStateStore
+from anishift.bootstrap import bootstrap
 from anishift.cli.watch import RESIDENT_LOCK_FILE_NAME
 from anishift.config.workspace import run_tmp_dir
 from anishift.errors import AniShiftError
-from anishift.paths import TMP_DIRECTORY, run_journal_dir
+from anishift.paths import TMP_DIRECTORY, run_journal_dir, watch_dir
 from anishift.platform.process_lock import ProcessLock
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -63,12 +64,12 @@ class Plan:
 
 def main() -> int:
     """Run the migration on the given watch directory and workspace, answering the process exit code."""
-    parser: argparse.ArgumentParser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--watch", type=Path, required=True, help="config/watch directory of the resident")
-    parser.add_argument("--workspace", type=Path, required=True, help="workspace root holding temp/")
-    arguments: argparse.Namespace = parser.parse_args()
-    watch: Path = arguments.watch.absolute()
-    workspace: Path = arguments.workspace.absolute()
+    argparse.ArgumentParser(description=__doc__).parse_args()
+    watch: Path = watch_dir()
+    workspace: Path = bootstrap(create_dirs=False).workspace_root
+    if not (watch / "state.json").is_file() or not workspace.is_dir():
+        print("Refused: the resident state or the workspace is not where the resident reads it.", file=sys.stderr)
+        return 1
     lock: ProcessLock = ProcessLock(watch / RESIDENT_LOCK_FILE_NAME)
     if not lock.acquire():
         print("Refused: the resident is running; close AniShift first.", file=sys.stderr)
@@ -89,13 +90,15 @@ def migrate(watch: Path, workspace: Path) -> None:
     if plan.empty:
         print("Nothing to migrate: the staging directory and every stored path already use tmp.")
         return
-    before: dict[Path, str] = _journal_loads(tuple(plan.journals))
+    before: dict[Path, str] = _journal_loads(tuple(sorted(run_journal_dir(watch).glob("*.json"))))
     _back_up(watch)
     try:
         _apply(plan, watch, workspace)
         _verify(watch, workspace, before)
-    except Exception as problem:  # noqa: BLE001 - any failure after the backups restores them
+    except BaseException as problem:
         _restore(plan, watch, workspace)
+        if not isinstance(problem, Exception):
+            raise
         raise MigrationError(f"{type(problem).__name__}: {problem}") from problem
     print(f"Directory moved: {'yes' if plan.move else 'no'} (placeholder replaced: {plan.placeholder})")
     print(f"State fields rewritten: acquisitions[].directory={plan.acquisitions}, restore staging={plan.restores}")
@@ -167,7 +170,7 @@ def _old_paths(value: object, place: str = "") -> list[str]:
 
 def _rewrite_journal(path: Path, workspace: Path) -> tuple[bytes, int] | None:
     document: object = json.loads(path.read_bytes())
-    old: Path = workspace / OLD_NAME
+    old: Path = (workspace / OLD_NAME).resolve()
     current: Path = workspace / TMP_DIRECTORY
     count: list[int] = [0]
 
@@ -176,9 +179,9 @@ def _rewrite_journal(path: Path, workspace: Path) -> tuple[bytes, int] | None:
             return {key: moved(item) for key, item in value.items()}
         if isinstance(value, list):
             return [moved(item) for item in value]
-        if isinstance(value, str) and Path(value).is_absolute() and Path(value).is_relative_to(old):
+        if isinstance(value, str) and Path(value).is_absolute() and Path(value).resolve().is_relative_to(old):
             count[0] += 1
-            return str(current / Path(value).relative_to(old))
+            return str(current / Path(value).resolve().relative_to(old))
         return value
 
     rewritten: object = moved(document)
@@ -214,6 +217,8 @@ def _back_up(watch: Path) -> None:
 
 
 def _apply(plan: Plan, watch: Path, workspace: Path) -> None:
+    for path, content in plan.journals.items():
+        _write(path, content)
     if plan.move:
         current: Path = workspace / TMP_DIRECTORY
         if plan.placeholder:
@@ -226,8 +231,6 @@ def _apply(plan: Plan, watch: Path, workspace: Path) -> None:
             plan.created = True
     if plan.state is not None:
         _write(watch / "state.json", (json.dumps(plan.state, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
-    for path, content in plan.journals.items():
-        _write(path, content)
 
 
 def _write(path: Path, content: bytes) -> None:
@@ -243,8 +246,11 @@ def _verify(watch: Path, workspace: Path, before: dict[Path, str]) -> None:
         if _old_paths(json.loads(state.read_text(encoding="utf-8"))):
             raise MigrationError("the state still names temp/")
     lost: list[str] = []
+    old: Path = (workspace / OLD_NAME).resolve()
     for path, outcome in _journal_loads(tuple(before)).items():
         checkpoint: _Checkpoint = CHECKPOINTS.validate_json(path.read_bytes(), strict=True)
+        if checkpoint.run_root.resolve().is_relative_to(old) or checkpoint.run_root.parent.name == OLD_NAME:
+            raise MigrationError(f"checkpoint {path.name} still points at the temp staging directory")
         if checkpoint.run_root != run_tmp_dir(workspace, path.stem):
             raise MigrationError(f"checkpoint {path.name} does not point at its tmp run directory")
         if before[path] == "loaded" and outcome != "loaded":
