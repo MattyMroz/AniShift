@@ -94,8 +94,8 @@ _RE_AXIS_SCALE: Final[re.Pattern[str]] = re.compile(rf"\\fsc([xy])\s*({_RE_NUMBE
 _RE_DRAWING_LEVEL: Final[re.Pattern[str]] = re.compile(r"\\p([1-9][0-9]*)")
 """Drawing mode with the coordinate precision level libass divides points by."""
 
-_MAX_DRAWING_LEVEL: Final[int] = 64
-"""Highest drawing or clip precision level measured; a higher one leaves the shape unmeasured."""
+_MAX_DRAWING_LEVEL: Final[int] = 31
+"""Highest drawing or clip precision level measured, the widest shift libass applies; a higher one is unmeasured."""
 
 _RE_ANIMATED: Final[re.Pattern[str]] = re.compile(r"\\(?:move|t)\s*\(")
 """Motion or animation that keeps a drawing from being a still panel."""
@@ -383,9 +383,10 @@ def _kits(objects: Sequence[_Fitted]) -> list[list[_Fitted]]:
         by_kit[item.kit].append(item)
     kits: list[list[_Fitted]] = []
     for items in by_kit.values():
-        end: int = items[0].start
-        for item in items:
-            if item is items[0] or item.start >= end:
+        kits.append([items[0]])
+        end: int = items[0].end
+        for item in items[1:]:
+            if item.start >= end:
                 kits.append([])
             kits[-1].append(item)
             end = max(end, item.end)
