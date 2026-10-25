@@ -34,6 +34,8 @@ jobs:
         run: uv run python scripts/hooks/check_test_comments.py $(git ls-files ':(glob)tests/**/*.py' ':(glob)anishift/**/tests/**/*.py' ':(glob)**/conftest.py')
       - name: Docstring under every constant
         run: uv run python scripts/hooks/check_const_docstrings.py $(git ls-files 'anishift/**/*.py')
+      - name: No assignment that mutates its own target container
+        run: uv run python scripts/hooks/check_mutating_assign.py $(git ls-files '*.py' ':!:external/**')
 
   audit:
     name: Security (pip-audit) [${{ matrix.os }}]
