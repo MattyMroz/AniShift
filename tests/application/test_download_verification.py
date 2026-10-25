@@ -106,5 +106,28 @@ def test_a_catalog_is_measured_by_its_container_duration_and_stream_counts() -> 
         ),
     )
 
-    assert measured_media(catalog) == MeasuredMedia(1440.0, 1, 2)
-    assert measured_media(MediaCatalog(Path("x.mkv"), ContainerKind.MKV, 0, ())).duration_seconds is None
+    assert measured_media(catalog, companion=False) == MeasuredMedia(1440.0, 1, 2, "none")
+    empty: MediaCatalog = MediaCatalog(Path("x.mkv"), ContainerKind.MKV, 0, ())
+    assert measured_media(empty, companion=False).duration_seconds is None
+
+
+def _subtitled(*tracks: MediaTrack) -> MediaCatalog:
+    video: MediaTrack = MediaTrack(0, MediaTrackKind.VIDEO, "h264", None, None, True, False)
+    return MediaCatalog(Path("episode.mkv"), ContainerKind.MKV, 1_440_000_000, (video, *tracks))
+
+
+@pytest.mark.unit
+def test_a_catalog_is_measured_with_its_subtitle_content() -> None:
+    polish: MediaTrack = MediaTrack(2, MediaTrackKind.SUBTITLES, "ass", "pol", None, True, False, "ass", entries=300)
+    unmeasured: MediaTrack = MediaTrack(3, MediaTrackKind.SUBTITLES, "ass", "eng", None, False, False, "ass")
+    assert measured_media(_subtitled(polish), companion=False).subtitles == "polish"
+    foreign: MeasuredMedia = measured_media(_subtitled(unmeasured), companion=False)
+    assert (foreign.subtitles, foreign.subtitles_uncertain) == ("foreign", True)
+    assert measured_media(_subtitled(), companion=True).subtitles == "foreign"
+
+
+@pytest.mark.unit
+def test_a_catalog_without_dialogue_subtitles_measures_none() -> None:
+    signs: MediaTrack = MediaTrack(2, MediaTrackKind.SUBTITLES, "ass", "eng", "Signs", False, True, "ass", entries=16)
+    assert measured_media(_subtitled(), companion=False).subtitles == "none"
+    assert measured_media(_subtitled(signs), companion=False) == MeasuredMedia(1440.0, 1, 0, "none")

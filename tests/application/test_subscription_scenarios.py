@@ -36,7 +36,13 @@ from anishift.application.control import (
     WatchState,
 )
 from anishift.application.control_views import decode_view, encode_view
-from anishift.application.episode_commands import EpisodeBatch, EpisodeReason, EpisodeResult
+from anishift.application.episode_commands import (
+    EpisodeBatch,
+    EpisodeReason,
+    EpisodeResult,
+    EpisodeStatus,
+    TargetNotice,
+)
 from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.episode_selection import (
     AniZipMapping,
@@ -569,6 +575,71 @@ def test_three_attempts_on_own_transfers_each_wait_for_the_confirmed_cancel_and_
     assert [key for key in saved.notified if key[1] == "exhausted"] == [("subscription:a:3", "exhausted", "")]
     reasons: dict[str, str] = {"metadata": "stalled", "video": "rejected", "stall": "stalled"}
     assert _escalations(world) == [reasons[how] for how in order[:2]] + ["exhausted"]
+
+
+def _bare(world: _World, owner: AutomationOwner, info_hash: str) -> None:
+    _stage(world, owner, info_hash, listing=(_PACK[0],))
+    world.network.finish(info_hash)
+
+
+def _checked_subtitles(world: _World) -> list[object]:
+    return [item["subtitles"] for item in _decisions(world, "check") if item.get("source") == "h2"]
+
+
+@pytest.mark.integration
+def test_a_release_without_subtitles_is_replaced_by_the_next_ranked_one(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    messages: list[str] = _published(monkeypatch)
+    world.season.offered[3] = _offered(_FIRST, _SECOND)
+    with _running(world, _following()) as owner:
+        _reaches(owner, TargetState.ATTEMPTING)
+        _bare(world, owner, _FIRST)
+        _until(_failed(owner, _FIRST))
+        _check(owner, "after-bare")
+        _reaches(owner, TargetState.ATTEMPTING)
+        _download(world, owner, _SECOND)
+        _reaches(owner, TargetState.SATISFIED)
+        saved: WatchState = _stored(owner, world)
+
+    attempts: list[EpisodeAssignment] = _attempts(saved)
+    assert _hashes(attempts) == [_FIRST, _SECOND]
+    assert (attempts[0].verification, attempts[0].publication) == ("reject:no_dialogue_subtitles", None)
+    assert attempts[1].publication is not None
+    assert attempts[1].publication.handed_off
+    assert _closures(world) == [(1, "rejected"), (2, "accepted")]
+    assert _checked_subtitles(world) == ["none", "foreign"]
+    assert messages == ["Neko to Ryuu E3: wydanie odrzucone (brak napisów dialogowych), szukam następnego"]
+
+
+@pytest.mark.integration
+def test_three_releases_without_subtitles_exhaust_the_target_with_the_subtitle_reason(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    messages: list[str] = _published(monkeypatch)
+    world.season.offered[3] = _offered(_FIRST, _SECOND, _THIRD, _FOURTH)
+    with _running(world, _following()) as owner:
+        for index, info_hash in enumerate((_FIRST, _SECOND, _THIRD), start=1):
+            _reaches(owner, TargetState.ATTEMPTING)
+            _bare(world, owner, info_hash)
+            _until(_failed(owner, info_hash))
+            _check(owner, f"after-{index}")
+        _reaches(owner, TargetState.EXHAUSTED)
+        status: EpisodeStatus = owner._on_owner(lambda: owner._episode_status(EpisodeKey(_ENTRY, 3)))
+        saved: WatchState = _stored(owner, world)
+
+    attempts: list[EpisodeAssignment] = _attempts(saved)
+    assert _hashes(attempts) == [_FIRST, _SECOND, _THIRD]
+    assert {item.verification for item in attempts} == {"reject:no_dialogue_subtitles"}
+    assert not _root_files(world)
+    assert _checked_subtitles(world) == ["none", "none", "none"]
+    assert status.reason == EpisodeReason.SUBSCRIPTION_EXHAUSTED
+    assert status.notices == (TargetNotice("rejected", "no_dialogue_subtitles"),)
+    assert _escalations(world) == ["rejected", "rejected", "exhausted"]
+    assert (
+        messages[-1]
+        == "Neko to Ryuu E3: wyczerpano próby (3 z 3), ostatnio wydanie odrzucone (brak napisów dialogowych)"
+    )
 
 
 def test_next_release_chosen_content_waits_for_previous_settlement(world: _World) -> None:

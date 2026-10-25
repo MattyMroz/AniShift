@@ -29,7 +29,7 @@ from anishift.application.control import (
     FileStamp,
     WatchState,
 )
-from anishift.application.episode_commands import EpisodeReason
+from anishift.application.episode_commands import EpisodeReason, EpisodeStatus, TargetNotice
 from anishift.application.episode_selection import EpisodeKey
 from anishift.application.history import HistoryEvent, HistoryJournal, HistoryKind
 from anishift.application.subscription_targets import (
@@ -56,8 +56,16 @@ def _matching() -> EpisodeChoice:
 
 
 class _Probe:
-    def __init__(self, *, video: bool = True, failures: int = 0, error: AniShiftError | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        video: bool = True,
+        failures: int = 0,
+        error: AniShiftError | None = None,
+        subtitles: tuple[MediaTrack, ...] = (),
+    ) -> None:
         self.video: bool = video
+        self.subtitles: tuple[MediaTrack, ...] = subtitles
         self.failures: int = failures
         self.error: AniShiftError = error or MediaProbeError(
             context=ErrorContext(code=ErrorCode.MEDIA_PROBE_FAILED, message="probe")
@@ -79,7 +87,8 @@ class _Probe:
         if self.failures:
             self.failures -= 1
             raise self.error
-        return MediaCatalog(path, ContainerKind.MKV, 1_440_000_000, (_VIDEO_TRACK,) if self.video else ())
+        video: tuple[MediaTrack, ...] = (_VIDEO_TRACK,) if self.video else ()
+        return MediaCatalog(path, ContainerKind.MKV, 1_440_000_000, (*video, *self.subtitles))
 
 
 def _reason(owner: AutomationOwner) -> str | None:
@@ -153,14 +162,15 @@ def _attempting(
     assert not thread.is_alive()
 
 
-def _deliver(setup: _Setup, owner: AutomationOwner) -> Path:
+def _deliver(setup: _Setup, owner: AutomationOwner, *, companion: bool = True) -> Path:
     _until(lambda: bool(setup.network.metadata_added))
-    setup.network.deliver(_HASH, _PACK[:2])
+    setup.network.deliver(_HASH, _PACK[:2] if companion else _PACK[:1])
     _until(_starts(setup))
     data: Path = setup.root / "tmp" / ".acquisition" / str(_view(owner)["operation_id"]) / "data" / "Pack"
     data.mkdir(parents=True, exist_ok=True)
     (data / _NAMES[0]).write_bytes(_VIDEO)
-    (data / _NAMES[1]).write_bytes(_SUBTITLES)
+    if companion:
+        (data / _NAMES[1]).write_bytes(_SUBTITLES)
     _until(lambda: setup.network.tracked[_HASH].state == "downloading")
     setup.network.finish(_HASH)
     return data
@@ -205,6 +215,7 @@ def test_an_attempt_is_checked_on_its_staged_video_before_naming_and_satisfies_i
     ]
     assert trail == [("selection", None, None), ("check", "h2", None), ("attempt", None, "accepted")]
     assert all(item["entry"] == "subscription" for item in _decisions(setup))
+    assert [item.get("subtitles") for item in _decisions(setup) if item["kind"] == "check"] == ["foreign"]
 
 
 @pytest.mark.parametrize(("attempts", "state"), [(0, TargetState.DUE), (MAX_ATTEMPTS - 1, TargetState.EXHAUSTED)])
@@ -238,6 +249,54 @@ def test_a_rejected_attempt_is_never_named_and_cancels_its_own_transfer_before_t
     kinds: list[tuple[object, object]] = [(item["kind"], item.get("reason")) for item in _decisions(setup)]
     assert ("attempt", "rejected") in kinds
     assert (("escalation", "exhausted") in kinds) is escalated
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "subtitles",
+    [
+        (),
+        (MediaTrack(1, MediaTrackKind.SUBTITLES, "S_TEXT/ASS", "eng", None, False, True, "ass", entries=16),),
+        (MediaTrack(1, MediaTrackKind.SUBTITLES, "S_TEXT/ASS", "eng", None, False, True, "ass", entries=None),),
+    ],
+    ids=["bare", "signs-only", "forced-unmeasured"],
+)
+def test_an_attempt_without_dialogue_subtitles_is_rejected_before_naming_also_in_record_only(
+    setup: _Setup, subtitles: tuple[MediaTrack, ...]
+) -> None:
+    probe: _Probe = _Probe(subtitles=subtitles)
+    with _attempting(setup, probe) as owner:
+        _deliver(setup, owner, companion=False)
+        _until(lambda: _target(owner).state is TargetState.DUE)
+        rejected: EpisodeAssignment = _assignment(owner)
+        status: EpisodeStatus = owner._on_owner(lambda: owner._episode_status(EpisodeKey(_ENTRY, 3)))
+        _until(lambda: owner.state.acquisitions[0].state is AcquisitionState.FAILED)
+
+    assert probe.seen == [(_NAMES[0], False, EpisodeReason.SUBSCRIPTION_CHECKING)]
+    assert rejected.verification == "reject:no_dialogue_subtitles"
+    assert rejected.publication is None
+    assert not set(_NAMES) & _root_files(setup)
+    assert (_target_of(setup).attempts, _target_of(setup).reason) == (1, "rejected")
+    assert status.reason == EpisodeReason.SUBSCRIPTION_AWAITING_RELEASE
+    assert TargetNotice("rejected", "no_dialogue_subtitles") in status.notices
+    checks: list[dict[str, object]] = [item for item in _decisions(setup) if item["kind"] == "check"]
+    assert [(item["verdict"], item["reason"], item["subtitles"]) for item in checks] == [
+        ("reject", "no_dialogue_subtitles", "none")
+    ]
+
+
+@pytest.mark.integration
+def test_an_unchecked_attempt_is_never_rejected_for_subtitles(setup: _Setup) -> None:
+    probe: _Probe = _Probe(failures=2)
+    with _attempting(setup, probe) as owner:
+        _deliver(setup, owner, companion=False)
+        _until(lambda: _target(owner).state is TargetState.SATISFIED)
+        assignment: EpisodeAssignment = _assignment(owner)
+
+    assert assignment.verification == VERIFICATION_SKIPPED
+    assert assignment.publication is not None
+    assert assignment.publication.handed_off
+    assert _NAMES[0] in _root_files(setup)
 
 
 def _target_of(setup: _Setup) -> SubscriptionTarget:

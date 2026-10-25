@@ -35,6 +35,7 @@ class MediaTrack:
     is_forced: bool
     subtitle_format: str | None = None
     start_us: int | None = None
+    entries: int | None = None
 
     def __post_init__(self) -> None:
         if self.track_id < 0:
@@ -45,6 +46,14 @@ class MediaTrack:
             raise ValueError(msg)
         if self.kind is not MediaTrackKind.SUBTITLES and self.subtitle_format is not None:
             msg = "Only subtitle tracks can declare a subtitle format"
+            raise ValueError(msg)
+        if self.entries is None:
+            return
+        if self.kind is not MediaTrackKind.SUBTITLES:
+            msg = "Only subtitle tracks can declare an event count"
+            raise ValueError(msg)
+        if self.entries < 0:
+            msg = "Subtitle event count cannot be negative"
             raise ValueError(msg)
 
 

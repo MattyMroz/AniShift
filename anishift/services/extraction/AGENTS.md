@@ -7,17 +7,14 @@ Neutralna ekstrakcja pojedynczej ścieżki z MKV/MP4 do jawnej ścieżki celu or
 - `service.py` — publiczny `ExtractionService` oraz legacy identify/extract
 - `mkv.py`, `mp4.py` — adaptery ekstrakcji dla kontenerów
 - `_adapter.py` — wspólna walidacja wyniku i mapowanie kontrolowanego procesu
-- `tracks.py` — scoring i wybór ścieżek (NIE re-eksportowany)
 - `types.py` — neutralne request/result/format oraz typy legacy
 - `errors.py` — `ExtractionError` (dziedziczy `FatalError`)
 
 ## Pułapki
 
-- `tracks.py` NIE jest re-eksportowany w `__init__.py` ani importowany przez `service.py` — scoring/wybór ścieżek dostępny tylko przez bezpośredni import modułu. `__init__.py:5`
 - `ExtractionRequest.target_path` jest dokładnym celem w katalogu run-scope; adapter nie może go zastąpić, zmienić rozszerzenia ani nadpisać istniejącego pliku.
 - MP4 używa indeksów streamów z `ffprobe`; napisy `mov_text`/`tx3g` są normalizowane przez FFmpeg do SRT. Audio jest kopiowane bez transkodowania.
 - Neutralny adapter usuwa pusty lub częściowy cel po błędzie, timeout i anulowanie mapuje na kontrolowany `ExtractionError`.
-- Funkcje scoringu przyjmują płaski `dict[str, Any]`, nie `TrackInfo`; `select_tracks` przepakowuje przez `_selector_shape`, który przemianowuje `num_entries`→`num_lines`. `tracks.py:132`
 - Legacy `extract_tracks` czyta stdout w osobnym wątku, a wątek wywołujący pilnuje
   cancellation i jednego deadline'u, także po EOF. Cleanup czeka najwyżej 5 s po
   terminate, potem używa kill i kolejnego ograniczonego wait. Błąd callbacka również
@@ -46,11 +43,6 @@ Neutralna ekstrakcja pojedynczej ścieżki z MKV/MP4 do jawnej ścieżki celu or
 
 ## Decyzje (scoring)
 
-- „Tekstowe napisy" = tylko `ass`/`srt`/`ssa` (przez tabelę codec→rozszerzenie), reszta odfiltrowana przed wyborem. `types.py:67`, `tracks.py:147`
-- Ścieżki signs/song/forced dostają karę -200 — praktycznie nigdy nie wybrane. `tracks.py:43,52`
-- `already_polish` (pol/pl) liczone po wyborze napisów, by pipeline mógł pominąć tłumaczenie. `tracks.py:55,155`
-- Przy remisie scoringu wybierana niższa `id` (klucz `-int(id)`). `tracks.py:119,128`
-- Wagi języków to LISTA priorytetów (`DEFAULT_AUDIO_PRIORITY`, `DEFAULT_SUBTITLE_PRIORITY`), podawana z preferencji (`config/settings.json`); pozycja na liście daje 100, 90, 80..., spoza listy 0. `tracks.py`
-- Bonus za ścieżkę domyślną (1) MUSI być mniejszy niż krok priorytetu (10) — przy równych wartościach ścieżka domyślna przebijała preferowany język. `tracks.py`
+- „Tekstowe napisy" = tylko `ass`/`srt`/`ssa` (przez tabelę codec→rozszerzenie), reszta odfiltrowana przed wyborem. `types.py:67`; wybór ścieżki i rolę dialog / szyldy rozstrzyga `anishift/application/selection.py`
 - `MediaInfo.attachments` niesie nazwy plików załączników (czcionki) z `mkvmerge -J`; domyślnie pusta krotka. `types.py`, `service.py`
 - `extract_attachments` wyciąga tylko załączniki-czcionki, każdy po własnym rozszerzeniu (`attachment_font_names`, import lokalny przez cykl composition → media → extraction) pod nazwą pliku bez katalogów, nadpisując starsze kopie; bez czcionek nie tworzy katalogu. Exit 0/1 wymaga niepustych plików jak przy ścieżkach. `service.py`

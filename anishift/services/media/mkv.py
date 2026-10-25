@@ -62,10 +62,12 @@ def _map_track(track: TrackInfo) -> MediaTrack | None:
     except ValueError:
         return None
     subtitle_format: str | None = None
+    entries: int | None = None
     if kind is MediaTrackKind.SUBTITLES:
         extension: str = format_extension(track.codec_id)
         if extension in {"ass", "ssa", "srt"}:
             subtitle_format = "ass" if extension == "ssa" else extension
+        entries = track.num_entries
     return MediaTrack(
         track_id=track.id,
         kind=kind,
@@ -76,6 +78,7 @@ def _map_track(track: TrackInfo) -> MediaTrack | None:
         is_forced=track.forced,
         subtitle_format=subtitle_format,
         start_us=track.start_us,
+        entries=entries,
     )
 
 

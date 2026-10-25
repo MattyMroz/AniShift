@@ -42,6 +42,7 @@ _REJECTIONS: Final[Mapping[str, str]] = MappingProxyType(
         "no_video_stream": "brak obrazu",
         "fragment_duration": "za krótki plik",
         "compilation_or_extended_duration": "za długi plik",
+        "no_dialogue_subtitles": "brak napisów dialogowych",
     }
 )
 """Polish cause of each download check rejection."""

@@ -16,8 +16,6 @@ DATA_DIR: Final[Path] = Path(__file__).resolve().parent / "data"
 
 MM_AVH_TEMP: Final[Path] = _REPO_ROOT.parent / "mm_avh_working_space" / "temp"
 
-TRACKS_DATASET: Final[Path] = MM_AVH_TEMP / "dataset.json"
-
 
 def hidden_window_options() -> dict[str, object]:
     if sys.platform == "win32":

@@ -105,8 +105,15 @@ from anishift.application.control_views import (
     encode_view,
     preview_plan,
 )
-from anishift.application.discovery import VIDEO_SOURCE_SUFFIXES, ArtifactName, classify_artifact, is_derived_product
+from anishift.application.discovery import (
+    SOURCE_SUBTITLE_FORMATS,
+    VIDEO_SOURCE_SUFFIXES,
+    ArtifactName,
+    classify_artifact,
+    is_derived_product,
+)
 from anishift.application.download_verification import (
+    NO_DIALOGUE_SUBTITLES,
     NO_VIDEO_STREAM,
     ExpectedEpisode,
     MeasuredMedia,
@@ -164,7 +171,7 @@ from anishift.application.recovery import CHECKPOINT_VERSION, RunJournal
 from anishift.application.release_quality import ResolutionClass, resolution, resolution_class
 from anishift.application.results import DISPLAYED_ABSENCE_NOTE, GroupResult, GroupStatus, ProducedArtifact, RunResult
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
-from anishift.application.selection import ready_group_ids, resolve_readiness
+from anishift.application.selection import ReadinessReason, ready_group_ids, resolve_readiness
 from anishift.application.subscription_choice import (
     NO_POLISH_AFTER_WAIT,
     SOURCES_DOWN_NOTICE_H,
@@ -914,6 +921,7 @@ class AutomationOwner:
         self._inspecting: bool = False
         self._inspection_at: float | None = None
         self._library: InspectedWorkspace | None = None
+        self._subtitles_missing: frozenset[str] = frozenset()
         self._ready_library: tuple[LibrarySet, ...] = ()
         self._series_titles: dict[int, str] = {}
         self._series_requested: set[int] = set()
@@ -1216,6 +1224,7 @@ class AutomationOwner:
         }
         if workspace is not None:
             self._library = workspace
+            self._report_missing_subtitles(workspace)
             self._ready_library = project_library(
                 self._state, self._service.workspace_root, tuple(group.source for group in workspace.groups)
             )
@@ -1237,6 +1246,20 @@ class AutomationOwner:
             ):
                 self._inspection_at = time.monotonic() + self._scan_interval_s
         self._inspect_changes()
+
+    def _report_missing_subtitles(self, workspace: InspectedWorkspace) -> None:
+        """Log once each video group that waits because it has no subtitles at all."""
+        missing: frozenset[str] = frozenset(
+            group.group_id
+            for group in workspace.groups
+            if resolve_readiness(group).reason is ReadinessReason.SUBTITLE_SOURCE_MISSING
+        )
+        for group_id in sorted(missing - self._subtitles_missing):
+            logger.warning(
+                "A video has no subtitles and waits; add an .ass or .srt file with the same name beside it",
+                group_id=group_id,
+            )
+        self._subtitles_missing = missing
 
     def _on_owner[T](self, action: Callable[[], T]) -> T:
         future: Future[T] = Future()
@@ -4619,15 +4642,15 @@ class AutomationOwner:
         if record is None:
             return
         title: str = _subscription_title(record)
+        target: SubscriptionTarget | None = next((item for item in record.targets if item.number == int(number)), None)
+        failed: TargetNotice | None = None if target is None else self._attempt_notice(target)
         message: str = f"{title} E{number}: wyczerpano próby ({MAX_ATTEMPTS} z {MAX_ATTEMPTS})"
         if key[1] == "late":
             message = f"Nie znaleziono {title} E{number} od 7 dni"
         elif key[1] != "exhausted":
-            target: SubscriptionTarget | None = next(
-                (item for item in record.targets if item.number == int(number)), None
-            )
-            failed: TargetNotice = (None if target is None else self._attempt_notice(target)) or TargetNotice(key[1])
-            message = f"{title} E{number}: {notice_text(failed, searching=True)}"
+            message = f"{title} E{number}: {notice_text(failed or TargetNotice(key[1]), searching=True)}"
+        elif failed is not None:
+            message = f"{message}, ostatnio {notice_text(failed)}"
         self._escalate(record, _Escalation(int(number), key, message), journal)
 
     def _escalate(self, record: SubscriptionRecord, escalation: _Escalation, journal: Path) -> None:
@@ -6696,8 +6719,8 @@ class AutomationOwner:
         logger.info("Episode set names reserved", files=len(publication.files))
         return updated, None if check is None else check[1]
 
-    def _check_basis(self, operation_id: str, admission_id: str) -> tuple[str, ExpectedEpisode] | None:
-        """Return the staged video and catalogue runtime a subscription attempt is checked against before naming."""
+    def _check_basis(self, operation_id: str, admission_id: str) -> tuple[str, ExpectedEpisode, bool] | None:
+        """Return the staged video, catalogue runtime and companion subtitles a subscription attempt is checked with."""
         current: AcquisitionConfirmation | None = self._confirmation(operation_id)
         assignment: EpisodeAssignment | None = (
             None
@@ -6726,18 +6749,24 @@ class AutomationOwner:
             if mapping is None
             else expected_episode(mapping.raw_episodes, str(assignment.choice.number))
         )
-        return video, expected
+        companion: bool = any(
+            Path(path).suffix.casefold() in SOURCE_SUBTITLE_FORMATS for _index, path, _size in assignment.files
+        )
+        return video, expected, companion
 
     def _passed_check(
         self, item: AcquisitionConfirmation, admission_id: str
     ) -> tuple[bool, tuple[str, FileStamp | None] | None]:
         """Whether an episode set may be named now, with the download check result a subscription attempt needs."""
-        basis: tuple[str, ExpectedEpisode] | None = self._owned(
+        basis: tuple[str, ExpectedEpisode, bool] | None = self._owned(
             partial(self._check_basis, item.operation_id, admission_id)
         )
         if basis is None:
             return True, None
-        check: tuple[str, FileStamp | None] | None = self._check_episode(item.operation_id, admission_id, *basis)
+        video, expected, companion = basis
+        check: tuple[str, FileStamp | None] | None = self._check_episode(
+            item.operation_id, admission_id, video, expected, companion=companion
+        )
         if check is None or not self._may_settle(item):
             return False, None
         if check[0].startswith(VERIFICATION_REJECT):
@@ -6746,7 +6775,7 @@ class AutomationOwner:
         return True, check
 
     def _check_episode(
-        self, operation_id: str, admission_id: str, video: str, expected: ExpectedEpisode
+        self, operation_id: str, admission_id: str, video: str, expected: ExpectedEpisode, *, companion: bool
     ) -> tuple[str, FileStamp | None] | None:
         """Check the staged video of one attempt, or answer nothing when the check has to wait for a later round."""
         deadline: float | None = self._check_retries.get(admission_id)
@@ -6759,7 +6788,7 @@ class AutomationOwner:
         self._owned(partial(self._mark_checking, admission_id, checking=True))
         try:
             measured: MeasuredMedia | tuple[str, FileStamp | None] | None = self._identify(
-                path, admission_id, retried=deadline is not None
+                path, admission_id, retried=deadline is not None, companion=companion
             )
         finally:
             self._owned(partial(self._mark_checking, admission_id, checking=False))
@@ -6770,8 +6799,16 @@ class AutomationOwner:
             return None
         self._check_retries.pop(admission_id, None)
         result: Verification = verify(expected, measured, mode="record_only")
-        logger.info("Download checked", verdict=result.verdict, reason=result.reason)
-        self._owned(partial(self._record_check, admission_id, result))
+        if result.verdict != "reject" and measured.subtitles == "none":
+            result = replace(result, verdict="reject", reason=NO_DIALOGUE_SUBTITLES)
+        logger.info(
+            "Download checked",
+            verdict=result.verdict,
+            reason=result.reason,
+            subtitles=measured.subtitles,
+            subtitles_uncertain=measured.subtitles_uncertain,
+        )
+        self._owned(partial(self._record_check, admission_id, result, measured))
         rejected: bool = result.verdict == "reject"
         return (f"{VERIFICATION_REJECT}{result.reason}", None) if rejected else (result.verdict, before)
 
@@ -6783,7 +6820,7 @@ class AutomationOwner:
         self._publish_state()
 
     def _identify(
-        self, path: Path, admission_id: str, *, retried: bool
+        self, path: Path, admission_id: str, *, retried: bool, companion: bool
     ) -> MeasuredMedia | tuple[str, FileStamp | None] | None:
         if self._media_probe is None:
             return self._skipped_check(admission_id, _CHECK_UNAVAILABLE)
@@ -6801,7 +6838,7 @@ class AutomationOwner:
             logger.warning("Download check failed and is retried once", error_code=problem.context.code.value)
             self._check_retries[admission_id] = time.monotonic() + _CHECK_TIMEOUT_S
             return None
-        return measured_media(catalog)
+        return measured_media(catalog, companion=companion)
 
     def _skipped_check(self, admission_id: str, reason: str) -> tuple[str, FileStamp | None]:
         self._check_retries.pop(admission_id, None)
@@ -6809,7 +6846,7 @@ class AutomationOwner:
         self._owned(partial(self._record_check, admission_id, Verification("inconclusive", reason)))
         return VERIFICATION_SKIPPED, None
 
-    def _record_check(self, admission_id: str, result: Verification) -> None:
+    def _record_check(self, admission_id: str, result: Verification, measured: MeasuredMedia | None = None) -> None:
         assignment: EpisodeAssignment | None = next(
             (row for item in self._state.acquisitions for row in item.assignments if row.admission_id == admission_id),
             None,
@@ -6829,6 +6866,8 @@ class AutomationOwner:
                 "measured_s": result.measured_seconds,
                 "expected_s": result.expected_seconds,
                 "duration_source": result.duration_source,
+                "subtitles": None if measured is None else measured.subtitles,
+                "subtitles_uncertain": None if measured is None else measured.subtitles_uncertain,
             },
             entry="subscription",
         )

@@ -17,6 +17,7 @@ Neutralna granica identyfikacji kontenerów MKV i MP4. Zwraca wspólny `MediaCat
 - Obsługiwane źródła to wyłącznie `.mkv` i `.mp4`; inne rozszerzenie kończy się `UnsupportedMediaError`.
 - Probe niczego nie zapisuje i nie pozostawia otwartych zasobów. Nie wolno uruchamiać procesu przez shell.
 - MKV zachowuje attachments i flagi default/forced; MP4 mapuje napisy `mov_text`/`tx3g` na docelowy format SRT.
+- `MediaTrack.entries` niesie liczbę zdarzeń ścieżki napisów (MKV: `num_index_entries` z `mkvmerge -J`); rolę dialog / szyldy liczy z niej `application/selection.py`. ffprobe podaje `codec_type: "subtitle"` (liczba pojedyncza), nie `"subtitles"`.
 - Błąd startu, timeout, anulowanie, niezerowy exit i uszkodzony JSON są kontrolowanymi `MediaProbeError`, nigdy surowym błędem subprocess/JSON.
 
 ## Testy

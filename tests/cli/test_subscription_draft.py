@@ -1459,6 +1459,10 @@ def test_download_now_refusal_refreshes(panel: StateController, owner: _Owner, m
         ((TargetNotice("metadata_timeout"),), "E6: wydanie stoi"),
         ((TargetNotice("rejected", "no_video_stream"),), "E6: wydanie odrzucone (brak obrazu)"),
         ((TargetNotice("rejected", "fragment_duration"),), "E6: wydanie odrzucone (za krótki plik)"),
+        (
+            (TargetNotice("rejected", "no_dialogue_subtitles"),),
+            "E6: wydanie odrzucone (brak napisów dialogowych)",
+        ),
         ((TargetNotice("pack"),), "E6: wydanie okazało się paczką"),
         ((TargetNotice("ambiguous"),), "E6: wydanie ma niejednoznaczny plik"),
         ((TargetNotice("no_match"),), "E6: plik to nie ten odcinek"),

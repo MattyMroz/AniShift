@@ -82,6 +82,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 
 ## Pobieranie odcinków
 
+- Kontrola po pobraniu subskrypcji (`_check_episode`) odrzuca wydanie z werdyktem napisów `none` (brak ścieżek tekstowych
+  albo same szyldy, także niepewnie) przed nazwaniem pliku, również w trybie `record_only`; subskrypcja bierze następne
+  wydanie w budżecie prób, właściciel dostaje toast. Rolę ścieżki liczy jedna reguła `selection.subtitle_role`;
+  pominięta kontrola (brak sondy lub binarki) nigdy nie odrzuca.
 - `episode_identity.py` posiada zamrożoną klasyfikację tożsamości; `episode_selection.py` jej czysty builder wejścia,
   projekcje, fakty wydań i ranking. Produkcja przekazuje tylko `target` i `candidate`; cel buduj z pełnego
   `FranchiseGraph` i surowych odcinków ani.zip, nigdy z wyświetlanej franczyzy. Zmiana klasyfikacji: minimalny

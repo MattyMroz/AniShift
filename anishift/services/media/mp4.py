@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Final
 
 from anishift.application.cancellation import CancellationToken
 from anishift.platform.binaries import Binary, require_binary
 from anishift.services.media._errors import invalid_probe_payload, process_probe_error
 from anishift.services.media._process import ProcessExecutionError, ProcessRunner, SubprocessRunner
 from anishift.services.media.types import ContainerKind, MediaCatalog, MediaTrack, MediaTrackKind
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+_STREAM_KINDS: Final[Mapping[str, MediaTrackKind]] = MappingProxyType(
+    {"video": MediaTrackKind.VIDEO, "audio": MediaTrackKind.AUDIO, "subtitle": MediaTrackKind.SUBTITLES}
+)
+"""Neutral kind of each FFprobe ``codec_type`` the catalog keeps."""
 
 
 def identify_mp4(
@@ -63,12 +72,8 @@ def parse_mp4_catalog(path: Path, payload: str) -> MediaCatalog:
 
 
 def _map_stream(stream: dict[str, Any]) -> MediaTrack | None:
-    kind_value: object = stream.get("codec_type")
-    if not isinstance(kind_value, str):
-        return None
-    try:
-        kind: MediaTrackKind = MediaTrackKind(kind_value)
-    except ValueError:
+    kind: MediaTrackKind | None = _STREAM_KINDS.get(str(stream.get("codec_type")))
+    if kind is None:
         return None
     track_id: int = _required_nonnegative_int(stream.get("index"), "index")
     codec_id: str = _required_text(stream.get("codec_name"), "codec_name")
@@ -87,7 +92,16 @@ def _map_stream(stream: dict[str, Any]) -> MediaTrack | None:
         is_forced=bool(disposition.get("forced", 0)),
         subtitle_format=subtitle_format,
         start_us=_stream_start_us(stream.get("start_time")),
+        entries=_frame_count(stream.get("nb_frames")) if kind is MediaTrackKind.SUBTITLES else None,
     )
+
+
+def _frame_count(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    if isinstance(value, str) and value.isascii() and value.isdecimal():
+        return int(value)
+    return None
 
 
 def _stream_start_us(value: object) -> int | None:
