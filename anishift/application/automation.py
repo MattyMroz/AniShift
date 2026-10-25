@@ -761,6 +761,14 @@ class _DiskInventory:
     ready: frozenset[str]
 
 
+class _Resumability(Enum):
+    """What the saved checkpoint of one finished request proves about resuming it."""
+
+    RESUMABLE = auto()
+    DEAD = auto()
+    UNKNOWN = auto()
+
+
 @dataclass(frozen=True, slots=True)
 class _NotificationTarget:
     set_id: str
@@ -836,17 +844,23 @@ class AutomationOwner:
         self._completion_parked: set[str] = set()
         self._recovery_started: bool = False
         self._recovering: bool = False
+        relocating: frozenset[str] = frozenset(
+            group for move in self._ready_moves.values() for group in (move.group_id, move.destination_group_id)
+        )
         retained: tuple[str, ...] = tuple(
             item.request_id
             for item in self._state.requests
-            if item.state in {RequestState.ACCEPTED, RequestState.RUNNING, RequestState.PAUSED}
-            or self._resumable_run(item)
+            if item.state in _ACTIVE_STATES
+            or relocating.intersection(item.group_ids)
+            or self._resumable_run(item) is not _Resumability.DEAD
         )
         service.retain_runs(retained)
         try:
-            cleanup_orphaned_temp(service.workspace_root, active_run_ids=retained)
+            removed: tuple[Path, ...] = cleanup_orphaned_temp(service.workspace_root, active_run_ids=retained)
         except OSError as problem:
             logger.warning("Abandoned run staging cleanup failed", error_class=type(problem).__name__)
+        else:
+            logger.info("Abandoned run staging cleaned", removed=len(removed), retained=len(retained))
         self._queue: SimpleQueue[
             _Command | _Completion | _Disconnected | _FilesChanged | _Inspected | Callable[[], None] | None
         ] = SimpleQueue()
@@ -1304,14 +1318,28 @@ class AutomationOwner:
         except AniShiftError, OSError, ValueError:
             return None
 
-    def _resumable_run(self, request: ProcessingRequest) -> bool:
+    def _resumable_run(self, request: ProcessingRequest) -> _Resumability:
         if request.state not in {RequestState.FAILED, RequestState.PARTIAL, RequestState.PAUSED}:
-            return False
+            return _Resumability.DEAD
+        path: Path = self._store.run_path(request.request_id)
         try:
-            RunJournal.load(self._store.run_path(request.request_id))
-        except AniShiftError, OSError, ValueError:
-            return False
-        return True
+            RunJournal.load(path)
+        except FileNotFoundError as problem:
+            missing: Path = Path(str(problem.filename))
+            if missing == path or missing.is_relative_to(self._service.workspace_root):
+                return _Resumability.DEAD
+            logger.warning("A run checkpoint input is unreachable", request_id=request.request_id)
+            return _Resumability.UNKNOWN
+        except ExecutionError, ValueError:
+            return _Resumability.DEAD
+        except Exception as problem:  # noqa: BLE001 - an unproven checkpoint keeps its staging instead of failing the start
+            logger.warning(
+                "A run checkpoint could not be checked",
+                request_id=request.request_id,
+                error_class=type(problem).__name__,
+            )
+            return _Resumability.UNKNOWN
+        return _Resumability.RESUMABLE
 
     def _inspect_ready_changes(self, paths: tuple[Path, ...]) -> None:
         groups: tuple[SourceGroup, ...] | None = None
@@ -7926,7 +7954,7 @@ class AutomationOwner:
         )
         if conflict is not None:
             return conflict
-        if current is not None and self._resumable_run(current):
+        if current is not None and self._resumable_run(current) is _Resumability.RESUMABLE:
             return ControlResponse.succeeded(
                 encode_view(
                     RetryProposal(

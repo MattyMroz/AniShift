@@ -32,6 +32,7 @@ from test_service import _service as _processing_service
 
 import anishift.application.automation as automation_module
 import anishift.application.library as library_module
+import anishift.application.recovery as recovery_module
 import anishift.application.watch as watch_module
 import anishift.config.workspace as workspace_module
 from anishift.application import SCAN_INTERVAL_S, TaskState
@@ -2661,6 +2662,84 @@ def test_restarted_owner_removes_staging_of_runs_that_cannot_resume(
     assert not run_temp_dir(tmp_path, "run-dead").exists()
     assert run_temp_dir(tmp_path, "run-paused").is_dir()
     assert run_temp_dir(tmp_path, "run-failed").is_dir()
+
+
+def _restarted_with_one_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, state: RequestState
+) -> tuple[AppService, WatchStateStore, Path]:
+    write_text_source(_library_dir(tmp_path) / "Episode.txt", "Text")
+    real: AppService = _real_service(tmp_path)
+    real.discover()
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    plan: ExecutionPlan = real.plan_auto((create_group_id(Path(TRANSLATE_DIRECTORY), "Episode"),), _PRESET)
+    store.save(WatchState(requests=(_abandoned_run(tmp_path, store, "run-one", plan, state),)))
+    monkeypatch.setattr(workspace_module, "_process_is_running", lambda pid: False)
+    return real, store, _library_dir(tmp_path) / "Episode.txt"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("unreadable", ["journal", "input"])
+def test_restarted_owner_keeps_staging_whose_checkpoint_cannot_be_read_now(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, unreadable: str
+) -> None:
+    real, store, source = _restarted_with_one_run(monkeypatch, tmp_path, RequestState.FAILED)
+    blocked: Path = store.run_path("run-one") if unreadable == "journal" else source
+    proof: Callable[..., object] = recovery_module._proof
+    revision: Callable[..., object] = recovery_module._revision
+
+    def refuse(original: Callable[..., object]) -> Callable[..., object]:
+        def read(path: Path, *args: object) -> object:
+            if path == blocked:
+                raise PermissionError(13, "Synthetic lock", str(path))
+            return original(path, *args)
+
+        return read
+
+    monkeypatch.setattr(recovery_module, "_proof", refuse(proof))
+    monkeypatch.setattr(recovery_module, "_revision", refuse(revision))
+
+    _owner(real, store)
+
+    assert run_temp_dir(tmp_path, "run-one").is_dir()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("state", [RequestState.ACCEPTED, RequestState.RUNNING, RequestState.PARTIAL])
+def test_restarted_owner_keeps_staging_of_interrupted_and_resumable_runs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, state: RequestState
+) -> None:
+    real, store, source = _restarted_with_one_run(monkeypatch, tmp_path, state)
+    if state is not RequestState.PARTIAL:
+        store.run_path("run-one").unlink()
+
+    _owner(real, store)
+
+    assert run_temp_dir(tmp_path, "run-one").is_dir()
+    assert source.is_file()
+
+
+@pytest.mark.integration
+def test_restarted_owner_keeps_staging_of_a_run_whose_ready_relocation_is_unfinished(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    real, store, source = _restarted_with_one_run(monkeypatch, tmp_path, RequestState.PARTIAL)
+    product: Path = source.with_name("Episode.pl.txt")
+    product.write_text("Tekst", encoding="utf-8")
+    relocations: ReadyStore = ReadyStore(tmp_path / "control" / "relocations", tmp_path)
+    move: ReadyMove | None = relocations.prepare(discover_groups(tmp_path).groups[0], (product,))
+    assert move is not None
+    relocations.execute(move)
+    assert not source.exists()
+
+    AutomationOwner(
+        real,
+        store,
+        instance_id=_INSTANCE,
+        clock=lambda: _MOMENT,
+        ready_store=ReadyStore(tmp_path / "control" / "relocations", tmp_path),
+    )
+
+    assert run_temp_dir(tmp_path, "run-one").is_dir()
 
 
 def _drain_owner_queue(owner: AutomationOwner) -> None:
