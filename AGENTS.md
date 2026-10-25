@@ -28,6 +28,8 @@ Zawsze na `anishift/ tests/`, nigdy na podkatalogu — na podkatalogu ruff sypie
 - Przed większą lub planowaną zmianą potwierdź zakres z userem. Nie ruszaj od razu.
 - Nie commituj na `main`. Feature branch → PR → merge.
 - KISS/YAGNI — użyj skilla `simple` przy pisaniu i przeglądzie kodu.
+- Wycinanie raka (zasada Elona Muska „najpierw usuń”): zmiana jest ostateczna. Nie zostawiaj starego kodu, aliasów, nazw `legacy`/`old`/`deprecated`, podwójnych ścieżek ani zgodności wstecznej w produkcie. Stara nazwa, format czy ścieżka znika w tym samym diffie, a wszystkie wywołania przechodzą na nowe. Istniejące dane użytkownika przenosi jednorazowy skrypt w `scripts/tmp/`, uruchomiony raz i potem usunięty, nie kod produktu.
+- Katalogi i ich identyfikatory nazywaj po linuksowemu, krótko i trzyliterowo, gdy istnieje taka konwencja (`tmp`, `bin`, `lib`, `etc`, `src`), nie `temp`/`temporary`.
 - Reuse przed nowym kodem. Zanim napiszesz funkcję, komponent, stałą, helper lub widok, sprawdź repo (`anishift/utils/`, istniejące moduły i komponenty UI) oraz używane biblioteki (Rich, Prompt Toolkit, stdlib) i użyj tego, co już jest. Nie twórz drugiej wersji tego samego; duplikat znaleziony przy zmianie zastąp istniejącym źródłem. Obowiązuje każdego wykonawcę i każdy brief.
 - Orkiestrator (Claude) koordynuje, decyduje, integruje i sprawdza dowody.
   Równorzędni wykonawcy: `astra` (GPT-6 Astra) i `opus55` (Claude Opus 5.5) —
