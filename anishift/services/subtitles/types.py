@@ -125,6 +125,7 @@ class LayoutReport:
     dialogue_three_lines: int = 0
     dialogue_overflow: int = 0
     dialogue_untagged: int = 0
+    dialogue_too_long: int = 0
     fallback_glyph_events: int = 0
     restyled_styles: int = 0
     signs_restyled: int = 0

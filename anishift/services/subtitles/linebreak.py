@@ -26,12 +26,15 @@ from anishift.services.subtitles.text import (
 )
 from anishift.text.boundaries import BREAKABLE_SPACES
 from anishift.text.markers import strip_span_markers
+from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from pysubs2 import SSAEvent, SSAStyle
 
     from anishift.services.subtitles.geometry import RenderProfile, TextBox
     from anishift.services.subtitles.layout import Measure
+
+logger = get_logger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -44,6 +47,9 @@ NO_WRAP: Final[str] = "{\\q2}"
 _RE_WRAP_BLOCK: Final[re.Pattern[str]] = re.compile(r"\{[^}]*\\q[^}]*\}")
 """Override block setting a wrap style; libass keeps the last one of the event."""
 
+MAX_DIALOGUE_WORDS: Final[int] = 50
+"""Most words a dialogue line is laid out with; longer lines stay unbroken, since three lines cannot hold them."""
+
 
 @dataclass(frozen=True, slots=True)
 class DialogueLayout:
@@ -53,6 +59,7 @@ class DialogueLayout:
     flags: frozenset[Flag]
     approximate: bool = False
     untagged: bool = False
+    too_long: bool = False
 
 
 def layout_dialogue(event: SSAEvent, text: str, profile: RenderProfile | None) -> DialogueLayout:
@@ -60,6 +67,9 @@ def layout_dialogue(event: SSAEvent, text: str, profile: RenderProfile | None) -
     tagged: str = tagged_line(event, text, profile)
     plain: str = visible_text(tagged, preserve_hard_spaces=True)
     words: tuple[str, ...] = tuple(word for word in BREAKABLE_SPACES.split(plain) if word)
+    if len(words) > MAX_DIALOGUE_WORDS:
+        logger.warning("Dialogue line left unbroken over the word limit", words=len(words), limit=MAX_DIALOGUE_WORDS)
+        return DialogueLayout(tagged, frozenset(), too_long=True)
     if profile is None:
         chosen: Layout = lay_out(plain, dialogue_field(), chars_measure)
         return DialogueLayout(reflow_visible_text(tagged, chosen.lines), chosen.flags)

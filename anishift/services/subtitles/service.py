@@ -631,6 +631,7 @@ def _count_dialogue(report: LayoutReport, dialogue: DialogueLayout) -> None:
     report.dialogue_three_lines += Flag.EXTRA_LINE in dialogue.flags
     report.dialogue_overflow += Flag.OUTSIDE in dialogue.flags
     report.dialogue_untagged += dialogue.untagged
+    report.dialogue_too_long += dialogue.too_long
     report.dialogue_relaxed_phrases += bool(dialogue.flags - {Flag.EXTRA_LINE, Flag.OUTSIDE})
 
 
