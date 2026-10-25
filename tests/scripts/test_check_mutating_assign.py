@@ -41,7 +41,8 @@ def _run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: str) -> int:
         "data['a'] = data.pop('b')\n",
         "row.cells[0] = row.cells.pop()\n",
         "x: int\nlookup[k] = lookup.setdefault(k, 0) + 1\n",
-        "box.value += box.update(1)\n",
+        "a.b[0] = a.b.pop()\n",
+        "x[i] = y.pop() + x.pop()\n",
     ],
 )
 def test_assignment_mutating_its_target_container_rejected(
@@ -58,6 +59,8 @@ def test_assignment_mutating_its_target_container_rejected(
         "value = found.pop()\n",
         "found[-1] += found[-2]\n",
         "count += 1\n",
+        "obj.last = obj.pop()\n",
+        "box.value += box.update(1)\n",
         "found: list[str] = []\n",
     ],
 )
