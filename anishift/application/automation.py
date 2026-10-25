@@ -229,7 +229,7 @@ from anishift.application.transfers import (
 )
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, resolve_route
-from anishift.config.workspace import run_temp_dir
+from anishift.config.workspace import cleanup_orphaned_temp, run_temp_dir
 from anishift.errors import AniShiftError, ErrorCode, ExecutionError, MediaProbeError, UnsupportedMediaError
 from anishift.paths import READY_DIRECTORY
 from anishift.platform.binaries import BinaryNotFoundError
@@ -836,9 +836,17 @@ class AutomationOwner:
         self._completion_parked: set[str] = set()
         self._recovery_started: bool = False
         self._recovering: bool = False
-        service.retain_runs(
-            tuple(item.request_id for item in self._state.requests if item.state is not RequestState.SUCCEEDED)
+        retained: tuple[str, ...] = tuple(
+            item.request_id
+            for item in self._state.requests
+            if item.state in {RequestState.ACCEPTED, RequestState.RUNNING, RequestState.PAUSED}
+            or self._resumable_run(item)
         )
+        service.retain_runs(retained)
+        try:
+            cleanup_orphaned_temp(service.workspace_root, active_run_ids=retained)
+        except OSError as problem:
+            logger.warning("Abandoned run staging cleanup failed", error_class=type(problem).__name__)
         self._queue: SimpleQueue[
             _Command | _Completion | _Disconnected | _FilesChanged | _Inspected | Callable[[], None] | None
         ] = SimpleQueue()
@@ -1295,6 +1303,15 @@ class AutomationOwner:
             return RunJournal.load(self._store.run_path(request.request_id))
         except AniShiftError, OSError, ValueError:
             return None
+
+    def _resumable_run(self, request: ProcessingRequest) -> bool:
+        if request.state not in {RequestState.FAILED, RequestState.PARTIAL, RequestState.PAUSED}:
+            return False
+        try:
+            RunJournal.load(self._store.run_path(request.request_id))
+        except AniShiftError, OSError, ValueError:
+            return False
+        return True
 
     def _inspect_ready_changes(self, paths: tuple[Path, ...]) -> None:
         groups: tuple[SourceGroup, ...] | None = None
@@ -7909,23 +7926,18 @@ class AutomationOwner:
         )
         if conflict is not None:
             return conflict
-        if current is not None and current.state in {RequestState.FAILED, RequestState.PARTIAL, RequestState.PAUSED}:
-            try:
-                RunJournal.load(self._store.run_path(current.request_id))
-            except AniShiftError, OSError, ValueError:
-                pass
-            else:
-                return ControlResponse.succeeded(
-                    encode_view(
-                        RetryProposal(
-                            identifier,
-                            "resume",
-                            current.group_ids,
-                            current.intents,
-                            current.request_id,
-                        )
+        if current is not None and self._resumable_run(current):
+            return ControlResponse.succeeded(
+                encode_view(
+                    RetryProposal(
+                        identifier,
+                        "resume",
+                        current.group_ids,
+                        current.intents,
+                        current.request_id,
                     )
                 )
+            )
         if group is not None and self._local_primary(group):
             intents: tuple[GroupIntent, ...] = (
                 ()

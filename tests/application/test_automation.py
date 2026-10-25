@@ -33,6 +33,7 @@ from test_service import _service as _processing_service
 import anishift.application.automation as automation_module
 import anishift.application.library as library_module
 import anishift.application.watch as watch_module
+import anishift.config.workspace as workspace_module
 from anishift.application import SCAN_INTERVAL_S, TaskState
 from anishift.application.acquisition import (
     AcquisitionService,
@@ -113,6 +114,7 @@ from anishift.cli.resident import ResidentSession
 from anishift.config.presets import default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
+from anishift.config.workspace import RUN_OWNER_MARKER_NAME, run_temp_dir
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError, PlanningError
 from anishift.paths import COVER_DIRECTORY, READY_DIRECTORY, TRANSLATE_DIRECTORY, relocation_journal_dir
 from anishift.platform.directory_watch import DirectoryChange
@@ -2602,6 +2604,63 @@ def _end_watcher(service: _Service, run_id: str, group_id: str, watcher: threadi
         return
     service.handles[run_id].resolve(_stopped_run(run_id, group_id))
     watcher.join()
+
+
+def _abandoned_run(
+    root: Path, store: WatchStateStore, run_id: str, plan: ExecutionPlan, state: RequestState
+) -> ProcessingRequest:
+    run_root: Path = run_temp_dir(root, run_id)
+    RunJournal.create(store.run_path(run_id), plan, run_root)
+    run_root.mkdir(parents=True)
+    marker: dict[str, str | int] = {"pid": 1, "run_id": run_id, "token": "token"}
+    (run_root / RUN_OWNER_MARKER_NAME).write_text(json.dumps(marker), encoding="utf-8")
+    return ProcessingRequest(
+        run_id,
+        1,
+        tuple(group.group_id for group in plan.groups),
+        {},
+        RequestOrigin.USER,
+        SourceSelection.AUTO,
+        None,
+        {},
+        state,
+        1,
+        _MOMENT.isoformat(),
+    )
+
+
+@pytest.mark.integration
+def test_restarted_owner_removes_staging_of_runs_that_cannot_resume(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for stem in ("Dead", "Paused", "Failed"):
+        write_text_source(_library_dir(tmp_path) / f"{stem}.txt", "Text")
+    real: AppService = _real_service(tmp_path)
+    real.discover()
+    store: WatchStateStore = WatchStateStore(tmp_path / "control" / WATCH_STATE_FILE_NAME)
+    requests: tuple[ProcessingRequest, ...] = tuple(
+        _abandoned_run(
+            tmp_path,
+            store,
+            f"run-{stem.casefold()}",
+            real.plan_auto((create_group_id(Path(TRANSLATE_DIRECTORY), stem),), _PRESET),
+            state,
+        )
+        for stem, state in (
+            ("Dead", RequestState.FAILED),
+            ("Paused", RequestState.PAUSED),
+            ("Failed", RequestState.FAILED),
+        )
+    )
+    (_library_dir(tmp_path) / "Dead.txt").unlink()
+    store.save(WatchState(requests=requests))
+    monkeypatch.setattr(workspace_module, "_process_is_running", lambda pid: False)
+
+    _owner(real, store)
+
+    assert not run_temp_dir(tmp_path, "run-dead").exists()
+    assert run_temp_dir(tmp_path, "run-paused").is_dir()
+    assert run_temp_dir(tmp_path, "run-failed").is_dir()
 
 
 def _drain_owner_queue(owner: AutomationOwner) -> None:
