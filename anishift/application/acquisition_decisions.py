@@ -104,6 +104,8 @@ _FIELDS: Final[frozenset[str]] = frozenset(
         "measured_s",
         "expected_s",
         "duration_source",
+        "subtitles",
+        "subtitles_uncertain",
         "sources",
         "blocker",
         "numbering",

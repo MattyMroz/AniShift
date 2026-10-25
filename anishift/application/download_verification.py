@@ -1,4 +1,4 @@
-"""Structural check of one downloaded episode file against its catalogue runtime, without asserting its identity."""
+"""Structural check of one downloaded episode: picture, dialogue subtitles and runtime, never its identity."""
 
 from __future__ import annotations
 
@@ -7,12 +7,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final, Literal
 
+from anishift.application.selection import ContentJudgement, SubtitleContent, subtitle_content
 from anishift.services.media.types import MediaTrackKind
 
 if TYPE_CHECKING:
     from anishift.services.media.types import MediaCatalog
 
 __all__ = [
+    "NO_DIALOGUE_SUBTITLES",
     "ExpectedEpisode",
     "MeasuredMedia",
     "Verification",
@@ -62,6 +64,9 @@ MICROSECONDS_PER_SECOND: Final[float] = 1_000_000.0
 NO_VIDEO_STREAM: Final[str] = "no_video_stream"
 """Reason of the only rejection the record-only mode keeps."""
 
+NO_DIALOGUE_SUBTITLES: Final[str] = "no_dialogue_subtitles"
+"""Reason of rejecting a file whose subtitles carry no dialogue, which the owner applies after any mode."""
+
 
 @dataclass(frozen=True, slots=True)
 class ExpectedEpisode:
@@ -74,11 +79,13 @@ class ExpectedEpisode:
 
 @dataclass(frozen=True, slots=True)
 class MeasuredMedia:
-    """Carry the measured runtime and stream counts of one file."""
+    """Carry the measured runtime, stream counts and dialogue subtitles of one file; ``None`` means not judged."""
 
     duration_seconds: float | None
     video_streams: int
     audio_streams: int = 0
+    subtitles: SubtitleContent | None = None
+    subtitles_uncertain: bool = False
 
     def __post_init__(self) -> None:
         counts: tuple[int, ...] = (self.video_streams, self.audio_streams)
@@ -89,7 +96,7 @@ class MeasuredMedia:
 
 @dataclass(frozen=True, slots=True)
 class Verification:
-    """Carry effective and observed results without asserting identity or subtitle usability."""
+    """Carry effective and observed results without asserting identity."""
 
     verdict: Verdict
     reason: str
@@ -121,13 +128,16 @@ def expected_episode(episodes: Mapping[str, object], episode_key: str) -> Expect
     )
 
 
-def measured_media(catalog: MediaCatalog) -> MeasuredMedia:
-    """Measure the container duration and stream counts an identified file reports."""
+def measured_media(catalog: MediaCatalog, *, companion: bool) -> MeasuredMedia:
+    """Measure what an identified file reports; *companion* says a subtitle file of its set lies beside it."""
     duration: float = catalog.duration_us / MICROSECONDS_PER_SECOND
+    subtitles: ContentJudgement = subtitle_content(catalog.tracks, catalog.duration_us, companion=companion)
     return MeasuredMedia(
         duration_seconds=duration if _positive_finite(duration) else None,
         video_streams=sum(1 for track in catalog.tracks if track.kind is MediaTrackKind.VIDEO),
         audio_streams=sum(1 for track in catalog.tracks if track.kind is MediaTrackKind.AUDIO),
+        subtitles=subtitles.content,
+        subtitles_uncertain=subtitles.uncertain,
     )
 
 

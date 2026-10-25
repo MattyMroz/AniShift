@@ -324,3 +324,12 @@ def test_numbering_field(tmp_path: Path, *, unnumbered: bool, numbering: str) ->
         world.episodes.mappings[_S4] = replace(_renumbered(_UNNUMBERED), max_age_s=0)
 
     assert _target_check(tmp_path, world, record)["numbering"] == numbering
+
+
+@pytest.mark.unit
+def test_a_check_entry_keeps_the_subtitle_verdict(tmp_path: Path) -> None:
+    path: Path = tmp_path / "decisions.jsonl"
+    payload: dict[str, object] = {"source": "h2", "verdict": "reject", "subtitles": "none", "subtitles_uncertain": True}
+    acquisition_decisions.append_decision(path, "check", payload, entry="subscription")
+    entry: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+    assert (entry["subtitles"], entry["subtitles_uncertain"]) == ("none", True)
