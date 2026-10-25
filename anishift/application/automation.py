@@ -171,7 +171,7 @@ from anishift.application.recovery import CHECKPOINT_VERSION, RunJournal
 from anishift.application.release_quality import ResolutionClass, resolution, resolution_class
 from anishift.application.results import DISPLAYED_ABSENCE_NOTE, GroupResult, GroupStatus, ProducedArtifact, RunResult
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
-from anishift.application.selection import ready_group_ids, resolve_readiness
+from anishift.application.selection import ReadinessReason, ready_group_ids, resolve_readiness
 from anishift.application.subscription_choice import (
     NO_POLISH_AFTER_WAIT,
     SOURCES_DOWN_NOTICE_H,
@@ -921,6 +921,7 @@ class AutomationOwner:
         self._inspecting: bool = False
         self._inspection_at: float | None = None
         self._library: InspectedWorkspace | None = None
+        self._subtitles_missing: frozenset[str] = frozenset()
         self._ready_library: tuple[LibrarySet, ...] = ()
         self._series_titles: dict[int, str] = {}
         self._series_requested: set[int] = set()
@@ -1223,6 +1224,7 @@ class AutomationOwner:
         }
         if workspace is not None:
             self._library = workspace
+            self._report_missing_subtitles(workspace)
             self._ready_library = project_library(
                 self._state, self._service.workspace_root, tuple(group.source for group in workspace.groups)
             )
@@ -1244,6 +1246,20 @@ class AutomationOwner:
             ):
                 self._inspection_at = time.monotonic() + self._scan_interval_s
         self._inspect_changes()
+
+    def _report_missing_subtitles(self, workspace: InspectedWorkspace) -> None:
+        """Log once each video group that waits because it has no subtitles at all."""
+        missing: frozenset[str] = frozenset(
+            group.group_id
+            for group in workspace.groups
+            if resolve_readiness(group).reason is ReadinessReason.SUBTITLE_SOURCE_MISSING
+        )
+        for group_id in sorted(missing - self._subtitles_missing):
+            logger.warning(
+                "A video has no subtitles and waits; add an .ass or .srt file with the same name beside it",
+                group_id=group_id,
+            )
+        self._subtitles_missing = missing
 
     def _on_owner[T](self, action: Callable[[], T]) -> T:
         future: Future[T] = Future()

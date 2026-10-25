@@ -2890,6 +2890,32 @@ def test_a_client_that_cannot_be_started_logs_once_and_slows_down_instead_of_flo
     assert delays == [20.0, 40.0, 80.0, 160.0, TRANSFER_BACKOFF_CEILING_S]
 
 
+@pytest.mark.integration
+def test_a_video_without_subtitles_is_logged_once_with_the_sidecar_remedy(tmp_path: Path) -> None:
+    (tmp_path / "Episode.mkv").write_bytes(b"fake media")
+    service: AppService = _processing_service(
+        tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(FakeMediaProbe())
+    )
+    captured: list[str] = []
+    with closing(service):
+        owner: AutomationOwner = _owner(service, WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME))
+        bare: InspectedWorkspace = service.discover()
+        handler_id: int = loguru_logger.add(captured.append, format="{message} {extra}", level="DEBUG")
+        try:
+            owner._report_missing_subtitles(bare)
+            owner._report_missing_subtitles(bare)
+            write_text_source(tmp_path / "Episode.srt", "1\n00:00:00,000 --> 00:00:01,000\nHello\n")
+            owner._report_missing_subtitles(service.discover())
+        finally:
+            loguru_logger.remove(handler_id)
+
+    lines: list[str] = [line for line in captured if "has no subtitles" in line]
+    assert len(lines) == 1
+    assert "add an .ass or .srt file with the same name beside it" in lines[0]
+    assert bare.groups[0].group_id in lines[0]
+    assert str(tmp_path) not in lines[0]
+
+
 def test_the_transfer_poll_delay_never_grows_past_its_ceiling(tmp_path: Path) -> None:
     service, store, _ = _library(tmp_path)
     owner: AutomationOwner = _owner(service, store)
