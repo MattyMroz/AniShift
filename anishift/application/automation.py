@@ -51,7 +51,6 @@ from anishift.application.cancellation import EventCancellationToken, NeverCance
 from anishift.application.control import (
     ASSIGNMENT_STOPS,
     REMOVED_FROM_CLIENT,
-    RESTORE_STAGING_PREFIX,
     VERIFICATION_REJECT,
     VERIFICATION_SKIPPED,
     AcquisitionConfirmation,
@@ -232,7 +231,7 @@ from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_so
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, resolve_route
 from anishift.config.workspace import cleanup_orphaned_tmp, run_tmp_dir
 from anishift.errors import AniShiftError, ErrorCode, ExecutionError, MediaProbeError, UnsupportedMediaError
-from anishift.paths import READY_DIRECTORY, TMP_DIRECTORY
+from anishift.paths import READY_DIRECTORY, RESTORE_STAGING_PREFIX, TMP_DIRECTORY
 from anishift.platform.binaries import BinaryNotFoundError
 from anishift.platform.directory_watch import DirectoryChange, source_is_available
 from anishift.platform.local_control import ControlErrorCode, ControlRequest, ControlResponse
@@ -1322,6 +1321,10 @@ class AutomationOwner:
     def _resumable_run(self, request: ProcessingRequest) -> _Resumability:
         if request.state not in {RequestState.FAILED, RequestState.PARTIAL, RequestState.PAUSED}:
             return _Resumability.DEAD
+        verdict: _Resumability = self._checkpoint_verdict(request)
+        return self._checkpoint_verdict(request) if verdict is _Resumability.DEAD else verdict
+
+    def _checkpoint_verdict(self, request: ProcessingRequest) -> _Resumability:
         path: Path = self._store.run_path(request.request_id)
         try:
             RunJournal.load(path)
@@ -1333,7 +1336,7 @@ class AutomationOwner:
             return _Resumability.UNKNOWN
         except ExecutionError, ValueError:
             return _Resumability.DEAD
-        except Exception as problem:  # noqa: BLE001 - an unproven checkpoint keeps its staging instead of failing the start
+        except (AniShiftError, OSError) as problem:
             logger.warning(
                 "A run checkpoint could not be checked",
                 request_id=request.request_id,

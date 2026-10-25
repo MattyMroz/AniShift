@@ -2704,6 +2704,71 @@ def test_restarted_owner_keeps_staging_whose_checkpoint_cannot_be_read_now(
 
 
 @pytest.mark.integration
+def test_restarted_owner_keeps_staging_whose_missing_input_lies_outside_the_workspace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    real, store, source = _restarted_with_one_run(monkeypatch, tmp_path, RequestState.FAILED)
+    outside: Path = tmp_path.parent / f"{tmp_path.name}-external" / "Episode.ass"
+    proof: Callable[..., object] = recovery_module._proof
+
+    def unplugged(path: Path, *args: object) -> object:
+        if path == source:
+            raise FileNotFoundError(2, "Synthetic unplugged drive", str(outside))
+        return proof(path, *args)
+
+    monkeypatch.setattr(recovery_module, "_proof", unplugged)
+
+    _owner(real, store)
+
+    assert run_tmp_dir(tmp_path, "run-one").is_dir()
+
+
+@pytest.mark.integration
+def test_restarted_owner_keeps_staging_whose_checkpoint_changed_only_while_it_was_checked(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    real, store, _source = _restarted_with_one_run(monkeypatch, tmp_path, RequestState.FAILED)
+    load: Callable[[Path], RunJournal] = RunJournal.load
+    calls: list[Path] = []
+
+    def changing(path: Path) -> RunJournal:
+        calls.append(path)
+        if len(calls) == 1:
+            raise ExecutionError("Synthetic checkpoint change")
+        return load(path)
+
+    monkeypatch.setattr(RunJournal, "load", staticmethod(changing))
+
+    _owner(real, store)
+
+    assert run_tmp_dir(tmp_path, "run-one").is_dir()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("state", [RequestState.CANCELLED, RequestState.SUCCEEDED])
+def test_restarted_owner_removes_staging_of_runs_without_a_resume_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, state: RequestState
+) -> None:
+    real, store, _source = _restarted_with_one_run(monkeypatch, tmp_path, state)
+
+    _owner(real, store)
+
+    assert not run_tmp_dir(tmp_path, "run-one").exists()
+
+
+@pytest.mark.integration
+def test_restarted_owner_removes_staging_whose_checkpoint_cannot_be_parsed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    real, store, _source = _restarted_with_one_run(monkeypatch, tmp_path, RequestState.FAILED)
+    store.run_path("run-one").write_text("{not a checkpoint", encoding="utf-8")
+
+    _owner(real, store)
+
+    assert not run_tmp_dir(tmp_path, "run-one").exists()
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize("state", [RequestState.ACCEPTED, RequestState.RUNNING, RequestState.PARTIAL])
 def test_restarted_owner_keeps_staging_of_interrupted_and_resumable_runs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, state: RequestState
