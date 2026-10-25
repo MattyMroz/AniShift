@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 import pytest
@@ -8,7 +9,13 @@ from pysubs2 import SSAEvent, SSAFile, SSAStyle
 from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.geometry import RenderProfile
 from anishift.services.subtitles.layout import Flag
-from anishift.services.subtitles.linebreak import DialogueLayout, layout_dialogue, tagged_words
+from anishift.services.subtitles.linebreak import (
+    MAX_DIALOGUE_WORDS,
+    NO_WRAP,
+    DialogueLayout,
+    layout_dialogue,
+    tagged_words,
+)
 from anishift.services.subtitles.service import layout_translated, load_subtitles, split_subtitles, write_translated
 from anishift.services.subtitles.text import visible_text
 
@@ -193,6 +200,45 @@ def test_layout_translated_keeps_a_dialogue_line_equal_to_the_source_byte_for_by
     laid_out: TranslatedLayout = layout_translated(split, {0: visible_text(source)}, fonts=None, dialogue_font=None)
 
     assert laid_out.subs.events[0].text == source
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("measured", [True, False])
+def test_layout_dialogue_leaves_a_line_far_over_the_word_limit_unbroken_quickly(measured: bool) -> None:
+    text: str = "a b " * 500
+    started: float = perf_counter()
+
+    layout: DialogueLayout = layout_dialogue(SSAEvent(text="x"), text, _profile() if measured else None)
+
+    assert perf_counter() - started < 2.0
+    assert layout.too_long
+    assert "\\N" not in layout.text
+    assert NO_WRAP not in layout.text
+    assert visible_text(layout.text) == text.strip()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("words", "too_long"), [(MAX_DIALOGUE_WORDS, False), (MAX_DIALOGUE_WORDS + 1, True)])
+def test_layout_dialogue_lays_out_a_line_up_to_the_word_limit(words: int, too_long: bool) -> None:
+    text: str = " ".join(["słowo"] * words)
+
+    layout: DialogueLayout = layout_dialogue(SSAEvent(text="x"), text, None)
+
+    assert layout.too_long is too_long
+    assert ("\\N" in layout.text) is not too_long
+
+
+@pytest.mark.unit
+def test_layout_translated_counts_a_dialogue_line_left_unbroken_over_the_word_limit() -> None:
+    subs: SSAFile = SSAFile()
+    subs.info.update({"PlayResX": "1920", "PlayResY": "1080"})
+    subs.styles["Default"] = SSAStyle(fontname="Arial", fontsize=50.0)
+    subs.events.append(SSAEvent(start=0, end=1000, text="Hello there."))
+    split: SubtitleSplit = split_subtitles(subs, kind="ass", spoken_styles={"Default"})
+
+    laid_out: TranslatedLayout = layout_translated(split, {0: "a b " * 100}, fonts=None, dialogue_font=None)
+
+    assert laid_out.report.dialogue_too_long == 1
 
 
 def _write(tmp_path: Path, subs: SSAFile, texts: dict[int, str], name: str, kind: SubtitleKind) -> SSAFile:
