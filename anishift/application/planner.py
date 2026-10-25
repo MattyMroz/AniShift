@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from hashlib import sha256
@@ -54,7 +53,12 @@ from anishift.application.planning import (
     stable_topological_order,
 )
 from anishift.application.products import product_path
-from anishift.application.selection import choose_auto_sidecar, choose_primary_video
+from anishift.application.selection import (
+    choose_auto_sidecar,
+    choose_primary_video,
+    is_polish_language,
+    subtitle_role,
+)
 from anishift.application.workflows import WorkflowTarget
 from anishift.errors import PlanningError
 
@@ -93,9 +97,6 @@ _COVER_DOCUMENT_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
 )
 """Documents a cover reads aloud, whose voice this program records itself."""
 
-_NON_DIALOGUE_SUBTITLE_NAME: Final[re.Pattern[str]] = re.compile(r"sign|song|forced", re.I)
-"""Track names announcing signs, songs, or forced captions instead of full dialogue."""
-
 
 class _TrackKindView(Protocol):
     @property
@@ -126,6 +127,9 @@ class _MediaTrackView(Protocol):
 
     @property
     def subtitle_format(self) -> str | None: ...
+
+    @property
+    def entries(self) -> int | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -1198,12 +1202,14 @@ class _GroupPlanner:
             )
             selected = min(
                 candidates,
-                key=lambda track: _track_rank(track, priorities, demote_non_dialogue=demote),
+                key=lambda track: _track_rank(
+                    track, priorities, signs_duration_us=catalog.duration_us if demote else None
+                ),
                 default=None,
             )
             if selected is None:
                 return None
-            if demote and all(_is_non_dialogue(track) for track in candidates):
+            if demote and all(_is_signs(track, catalog.duration_us) for track in candidates):
                 self._problem(
                     "subtitle_dialogue_missing",
                     "Only signs, songs, or forced subtitle tracks are embedded, so the narration follows them",
@@ -1934,7 +1940,7 @@ class _GroupPlanner:
         if value is None:
             return None
         normalized: str = value.strip().casefold()
-        if normalized in {"pl", "pol", "pl-pl"}:
+        if is_polish_language(normalized):
             return "pol"
         return normalized or None
 
@@ -1975,17 +1981,15 @@ class _GroupPlanner:
         return _same_path(artifact.path, expected)
 
 
-def _is_non_dialogue(track: _MediaTrackView) -> bool:
-    if track.is_forced:
-        return True
-    return track.name is not None and _NON_DIALOGUE_SUBTITLE_NAME.search(track.name) is not None
+def _is_signs(track: _MediaTrackView, duration_us: int) -> bool:
+    return subtitle_role(track, duration_us).role == "signs"
 
 
 def _track_rank(
     track: _MediaTrackView,
     priorities: tuple[str, ...],
     *,
-    demote_non_dialogue: bool,
+    signs_duration_us: int | None,
 ) -> tuple[int, int, int, int, int]:
     normalized_priorities: tuple[str, ...] = tuple(language.casefold() for language in priorities)
     language: str | None = track.language.casefold() if track.language is not None else None
@@ -1995,7 +1999,7 @@ def _track_rank(
     except ValueError:
         priority = len(normalized_priorities)
         preferred = 1
-    non_dialogue: int = 1 if demote_non_dialogue and _is_non_dialogue(track) else 0
+    non_dialogue: int = 1 if signs_duration_us is not None and _is_signs(track, signs_duration_us) else 0
     return non_dialogue, preferred, priority, 0 if track.is_default else 1, track.track_id
 
 

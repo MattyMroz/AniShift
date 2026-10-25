@@ -588,6 +588,48 @@ def test_manual_selected_signs_track_is_honoured_without_demotion() -> None:
     assert plan.problems == ()
 
 
+@pytest.mark.unit
+def test_a_forced_track_with_a_dialogue_rate_is_not_demoted() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv", duration_us=24 * 60_000_000)
+    group: InspectedSourceGroup = _group(
+        video,
+        tracks=(
+            MediaTrack(0, MediaTrackKind.VIDEO, "h264", None, None, True, False),
+            MediaTrack(1, MediaTrackKind.AUDIO, "aac", "jpn", "Japanese", True, False),
+            MediaTrack(2, MediaTrackKind.SUBTITLES, "ass", "eng", "English subs", True, True, "ass", entries=251),
+        ),
+    )
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.FULL_PL}))
+
+    plan: ExecutionPlan = plan_auto((group,), _preset(products), _settings())
+
+    assert plan.can_execute is True
+    assert dict(_task(plan, TaskKind.EXTRACT_SUBTITLES).parameters)["track_id"] == 2
+    assert plan.problems == ()
+
+
+@pytest.mark.unit
+def test_a_polish_signs_track_with_a_count_loses_to_polish_dialogue() -> None:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv", duration_us=24 * 60_000_000)
+    group: InspectedSourceGroup = _group(
+        video,
+        tracks=(
+            MediaTrack(0, MediaTrackKind.VIDEO, "h264", None, None, True, False),
+            MediaTrack(1, MediaTrackKind.AUDIO, "aac", "jpn", "Japanese", True, False),
+            MediaTrack(54, MediaTrackKind.SUBTITLES, "subrip", "pol", None, False, False, "srt", entries=10),
+            MediaTrack(55, MediaTrackKind.SUBTITLES, "subrip", "pol", None, False, False, "srt", entries=296),
+            MediaTrack(57, MediaTrackKind.SUBTITLES, "subrip", "pol", "Dubtitle", False, False, "srt", entries=343),
+        ),
+    )
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.FULL_PL}))
+    settings: RunSettingsSnapshot = replace(_settings(), subtitle_language_priority=("pol", "eng"))
+
+    plan: ExecutionPlan = plan_auto((group,), _preset(products), settings)
+
+    assert dict(_task(plan, TaskKind.EXTRACT_SUBTITLES).parameters)["track_id"] == 55
+    assert plan.problems == ()
+
+
 def test_audio_selection_ignores_the_signs_pattern_and_forced_flag() -> None:
     video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
     group: InspectedSourceGroup = _group(

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Literal, Protocol
 
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactState, GroupConflictKind
 from anishift.application.intents import (
@@ -57,6 +58,100 @@ _CONTAINER_PRODUCTS: Final[frozenset[ProductKind]] = frozenset({ProductKind.MKV,
 
 _TEXT_ONLY_PRODUCTS: Final[frozenset[ProductKind]] = frozenset({ProductKind.FULL_PL})
 """The single document a plain text file can become, because it carries neither styles nor a picture."""
+
+SIGNS_EVENT_RATE: Final[float] = 2.5
+"""Events per minute below which a measured subtitle track carries only signs or songs."""
+
+DIALOGUE_EVENT_RATE: Final[float] = 5.0
+"""Events per minute from which a measured subtitle track carries full dialogue."""
+
+_MICROSECONDS_PER_MINUTE: Final[int] = 60_000_000
+"""Convert a container duration to minutes."""
+
+_SIGNS_TRACK_NAME: Final[re.Pattern[str]] = re.compile(r"sign|song|forced", re.IGNORECASE)
+"""Track names announcing signs, songs, or forced captions instead of full dialogue."""
+
+_TEXT_SUBTITLE_FORMATS: Final[frozenset[str]] = frozenset({"ass", "srt"})
+"""Embedded subtitle formats a run can read as text."""
+
+_POLISH_LANGUAGES: Final[frozenset[str]] = frozenset({"pl", "pol", "pl-pl"})
+"""Language tags naming Polish."""
+
+type SubtitleRole = Literal["dialogue", "signs"]
+"""What one subtitle track carries: the whole dialogue, or only signs, songs and forced captions."""
+
+type SubtitleContent = Literal["polish", "foreign", "none"]
+"""Which dialogue subtitles one downloaded file carries."""
+
+
+class _SubtitleTrackView(Protocol):
+    @property
+    def language(self) -> str | None: ...
+
+    @property
+    def name(self) -> str | None: ...
+
+    @property
+    def is_forced(self) -> bool: ...
+
+    @property
+    def subtitle_format(self) -> str | None: ...
+
+    @property
+    def entries(self) -> int | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class RoleJudgement:
+    """The role of one subtitle track and whether only the name and flag decided it."""
+
+    role: SubtitleRole
+    uncertain: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ContentJudgement:
+    """The dialogue subtitles of one file and whether only names and flags decided them."""
+
+    content: SubtitleContent
+    uncertain: bool = False
+
+
+def is_polish_language(language: str | None) -> bool:
+    """Whether a language tag names Polish."""
+    return language is not None and language.strip().casefold() in _POLISH_LANGUAGES
+
+
+def subtitle_role(track: _SubtitleTrackView, duration_us: int) -> RoleJudgement:
+    """Judge one subtitle track by its event rate, falling back to its name and forced flag when unmeasured."""
+    if track.entries and duration_us > 0:
+        rate: float = track.entries * _MICROSECONDS_PER_MINUTE / duration_us
+        if rate < SIGNS_EVENT_RATE:
+            return RoleJudgement("signs")
+        if rate >= DIALOGUE_EVENT_RATE:
+            return RoleJudgement("dialogue")
+    named: bool = track.name is not None and _SIGNS_TRACK_NAME.search(track.name) is not None
+    return RoleJudgement("signs" if track.is_forced or named else "dialogue", uncertain=True)
+
+
+def subtitle_content(tracks: Iterable[_SubtitleTrackView], duration_us: int, *, companion: bool) -> ContentJudgement:
+    """Judge the dialogue subtitles of one file; a companion subtitle file counts as foreign dialogue."""
+    judged: tuple[tuple[_SubtitleTrackView, RoleJudgement], ...] = tuple(
+        (track, subtitle_role(track, duration_us))
+        for track in tracks
+        if track.subtitle_format in _TEXT_SUBTITLE_FORMATS
+    )
+    dialogue: tuple[tuple[_SubtitleTrackView, RoleJudgement], ...] = tuple(
+        item for item in judged if item[1].role == "dialogue"
+    )
+    polish: tuple[RoleJudgement, ...] = tuple(role for track, role in dialogue if is_polish_language(track.language))
+    if polish:
+        return ContentJudgement("polish", uncertain=all(role.uncertain for role in polish))
+    if companion:
+        return ContentJudgement("foreign")
+    if dialogue:
+        return ContentJudgement("foreign", uncertain=all(role.uncertain for _track, role in dialogue))
+    return ContentJudgement("none", uncertain=any(role.uncertain for _track, role in judged))
 
 
 def choose_primary_video(candidates: Sequence[Artifact]) -> Artifact | None:
