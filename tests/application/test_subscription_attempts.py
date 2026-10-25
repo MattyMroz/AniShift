@@ -254,8 +254,12 @@ def test_a_rejected_attempt_is_never_named_and_cancels_its_own_transfer_before_t
 @pytest.mark.integration
 @pytest.mark.parametrize(
     "subtitles",
-    [(), (MediaTrack(1, MediaTrackKind.SUBTITLES, "S_TEXT/ASS", "eng", None, False, True, "ass", entries=16),)],
-    ids=["bare", "signs-only"],
+    [
+        (),
+        (MediaTrack(1, MediaTrackKind.SUBTITLES, "S_TEXT/ASS", "eng", None, False, True, "ass", entries=16),),
+        (MediaTrack(1, MediaTrackKind.SUBTITLES, "S_TEXT/ASS", "eng", None, False, True, "ass", entries=None),),
+    ],
+    ids=["bare", "signs-only", "forced-unmeasured"],
 )
 def test_an_attempt_without_dialogue_subtitles_is_rejected_before_naming_also_in_record_only(
     setup: _Setup, subtitles: tuple[MediaTrack, ...]

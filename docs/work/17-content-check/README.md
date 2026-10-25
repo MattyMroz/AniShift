@@ -1,6 +1,6 @@
 # 17 — kontrola zawartości po pobraniu (E4)
 
-Status: **plan gotowy do przeglądu krzyżowego i decyzji właściciela**; kodu nie zmieniano. Baseline: `main` @ `4365a51`.
+Status: **F1 i F2 zrobione (PR #74)**: reguła roli ścieżki i odrzucanie wydania bez napisów dialogowych w subskrypcji. F3 (zamiana przy pobraniu ręcznym) odłożona; decyzje D1–D8 przyjęte według rekomendacji, D6 bez migracji w produkcie.
 
 Po pobraniu odcinka AniShift sprawdza napisy w pliku: polskie dialogi → bez tłumaczenia, tylko obce → tłumaczenie, brak napisów dialogowych → jedno inne wydanie (subskrypcja: w budżecie 3 prób), lektor zawsze. Źródło pozycji: `docs/ideas.md` §2 „Kontrola zawartości po pobraniu”, etap E4 w `docs/work/08-acquisition/masterplan.md`.
 
