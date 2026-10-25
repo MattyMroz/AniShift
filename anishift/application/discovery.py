@@ -23,7 +23,7 @@ from anishift.application.artifacts import (
 )
 from anishift.application.products import ProductName, classify_product
 from anishift.application.workflows import ROOT_ROUTE, WorkflowRoute, WorkflowTarget, WorkspacePlace, route_within
-from anishift.paths import TEMP_DIRECTORY
+from anishift.paths import TMP_DIRECTORY
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -160,7 +160,7 @@ class DiscoveryIndex:
         if not path.is_relative_to(self._root):
             return False
         relative: Path = path.relative_to(self._root)
-        if relative.parts and relative.parts[0].casefold() == TEMP_DIRECTORY:
+        if relative.parts and relative.parts[0].casefold() == TMP_DIRECTORY:
             return False
         if any(part.startswith(".") or part == ".." for part in relative.parts):
             return False
@@ -264,7 +264,7 @@ def _grouped(candidates: Sequence[ArtifactName], root: Path, resolver: _RouteRes
 
 def _iter_source_paths(root: Path) -> Iterator[Path]:
     for entry in _iter_visible_entries(root):
-        if entry.name.casefold() == TEMP_DIRECTORY and entry.is_dir():
+        if entry.name.casefold() == TMP_DIRECTORY and entry.is_dir():
             continue
         yield from _iter_entry_sources(entry)
 

@@ -111,7 +111,7 @@ def _error(
         context=ErrorContext(
             code=code,
             message=f"{message}: {request.media_path.name}",
-            suggestion="Check the selected track, external tools, and run temp directory.",
+            suggestion="Check the selected track, external tools, and run tmp directory.",
             details={
                 "operation": "track_extraction",
                 "track_id": request.track_id,

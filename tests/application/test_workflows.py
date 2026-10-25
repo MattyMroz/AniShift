@@ -58,7 +58,7 @@ def test_a_reserved_name_deeper_in_the_tree_is_ordinary_video_work() -> None:
         ("AudioBook", WorkspacePlace.AUDIOBOOK, WorkflowTarget.AUDIOBOOK, False),
         ("COVER", WorkspacePlace.COVER, WorkflowTarget.COVER, False),
         ("Ready", WorkspacePlace.READY, None, False),
-        ("TEMP", WorkspacePlace.TEMP, None, False),
+        ("TMP", WorkspacePlace.TMP, None, False),
     ],
 )
 def test_a_reserved_name_is_recognised_whatever_its_case(
@@ -75,7 +75,7 @@ def test_a_reserved_name_is_recognised_whatever_its_case(
         ("subs ", WorkspacePlace.SUBS, WorkflowTarget.VIDEO),
         ("Cover. ..", WorkspacePlace.COVER, WorkflowTarget.COVER),
         ("ready.", WorkspacePlace.READY, None),
-        ("temp ", WorkspacePlace.TEMP, None),
+        ("tmp ", WorkspacePlace.TMP, None),
     ],
 )
 def test_a_trailing_dot_or_space_never_smuggles_a_reserved_name_past_the_router(
@@ -92,7 +92,7 @@ def test_a_path_carrying_a_drive_or_a_root_anchor_is_outside(relative: str) -> N
     assert not route.starts_automatic_work
 
 
-@pytest.mark.parametrize("relative", ["ready", "ready/Frieren", "temp", "temp/run-1"])
+@pytest.mark.parametrize("relative", ["ready", "ready/Frieren", "tmp", "tmp/run-1"])
 def test_the_places_owned_by_the_application_never_start_automatic_work(relative: str) -> None:
     assert not resolve_route(Path(relative)).starts_automatic_work
 

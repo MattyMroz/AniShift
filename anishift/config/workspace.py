@@ -17,11 +17,11 @@ from typing import TYPE_CHECKING, Final
 from anishift.errors import ErrorCode, ErrorContext, FatalError
 from anishift.paths import (
     TASK_DIRECTORIES,
-    TEMP_DIRECTORY,
+    TMP_DIRECTORY,
     default_workspace_dir,
     repo_root,
     task_dir,
-    temp_dir,
+    tmp_dir,
 )
 from anishift.utils.logger import get_logger
 from anishift.utils.safe_fs import safe_rmtree
@@ -36,12 +36,12 @@ __all__ = [
     "ReservedNameConflict",
     "WorkspaceConflict",
     "WorkspaceRootNotResolvedError",
-    "cleanup_orphaned_temp",
+    "cleanup_orphaned_tmp",
     "ensure_workspace_dir",
-    "group_temp_dir",
+    "group_tmp_dir",
     "occupied_task_dirs",
     "resolve_workspace_root",
-    "run_temp_dir",
+    "run_tmp_dir",
 ]
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -52,14 +52,14 @@ ENV_WORKSPACE_ROOT: Final[str] = "ANISHIFT_WORKSPACE_ROOT"
 _REPO_MARKER: Final[str] = "pyproject.toml"
 """File whose presence identifies the repository root."""
 
-DEFAULT_SUBDIRS: Final[tuple[str, ...]] = (TEMP_DIRECTORY, *TASK_DIRECTORIES)
+DEFAULT_SUBDIRS: Final[tuple[str, ...]] = (TMP_DIRECTORY, *TASK_DIRECTORIES)
 """Subdirectories materialised by :func:`ensure_workspace_dir`."""
 
 RUN_OWNER_MARKER_NAME: Final[str] = ".anishift-owner"
 """Marker carrying the PID and run identity of one active owner."""
 
 _SAFE_RUNTIME_ID: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
-"""Allowed generated run and group identifiers in the temporary tree."""
+"""Allowed generated run and group identifiers in the tmp tree."""
 
 _PROCESS_QUERY_LIMITED_INFORMATION: Final[int] = 0x1000
 """Windows process access needed only to query whether an owner is alive."""
@@ -168,30 +168,30 @@ def occupied_task_dirs(root: Path) -> tuple[str, ...]:
     return tuple(name for name in TASK_DIRECTORIES if _holds_content(task_dir(root, name)))
 
 
-def run_temp_dir(root: Path, run_id: str) -> Path:
+def run_tmp_dir(root: Path, run_id: str) -> Path:
     """Return the exact private directory for one validated run ID."""
     _validate_runtime_id(run_id, "run")
-    return temp_dir(root) / run_id
+    return tmp_dir(root) / run_id
 
 
-def group_temp_dir(root: Path, run_id: str, group_id: str) -> Path:
+def group_tmp_dir(root: Path, run_id: str, group_id: str) -> Path:
     """Return one validated group directory inside a run-owned scope."""
     _validate_runtime_id(group_id, "group")
-    return run_temp_dir(root, run_id) / group_id
+    return run_tmp_dir(root, run_id) / group_id
 
 
-def cleanup_orphaned_temp(root: Path, *, active_run_ids: Collection[str]) -> tuple[Path, ...]:
+def cleanup_orphaned_tmp(root: Path, *, active_run_ids: Collection[str]) -> tuple[Path, ...]:
     """Remove direct inactive run directories while preserving every live owner."""
     active: frozenset[str] = frozenset(active_run_ids)
     for run_id in active:
         _validate_runtime_id(run_id, "active run")
-    temp_root: Path = temp_dir(root)
-    if not temp_root.exists():
+    tmp_root: Path = tmp_dir(root)
+    if not tmp_root.exists():
         return ()
-    if not temp_root.is_dir():
-        raise NotADirectoryError(temp_root)
+    if not tmp_root.is_dir():
+        raise NotADirectoryError(tmp_root)
     removed: list[Path] = []
-    for candidate in temp_root.iterdir():
+    for candidate in tmp_root.iterdir():
         owner_pid: int | None = _owner_pid(candidate)
         if (
             candidate.name in active
@@ -202,7 +202,7 @@ def cleanup_orphaned_temp(root: Path, *, active_run_ids: Collection[str]) -> tup
             or _process_is_running(owner_pid)
         ):
             continue
-        if candidate.resolve(strict=False).parent != temp_root.resolve(strict=False):
+        if candidate.resolve(strict=False).parent != tmp_root.resolve(strict=False):
             continue
         try:
             safe_rmtree(candidate)

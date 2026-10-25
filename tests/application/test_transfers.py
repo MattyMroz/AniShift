@@ -230,7 +230,7 @@ def test_windows_root_comparison_ignores_case_without_lowercasing_the_directory(
 def test_transfer_paths_ignore_resolve_prefix_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, extended: bool
 ) -> None:
-    directory: Path = tmp_path / "temp" / ".acquisition" / "operation" / "data"
+    directory: Path = tmp_path / "tmp" / ".acquisition" / "operation" / "data"
     directory.mkdir(parents=True)
     (directory / "Episode.mkv").write_bytes(b"data")
     acquisition: _Acquisition = _Acquisition(directory)
@@ -245,7 +245,7 @@ def test_transfer_paths_ignore_resolve_prefix_changes(
     result: AcquisitionConfirmation = TransferInspector(acquisition, tmp_path).inspect((_confirmation(),))[0]
 
     assert result.state is AcquisitionState.COMPLETE
-    assert result.directory == "temp/.acquisition/operation/data"
+    assert result.directory == "tmp/.acquisition/operation/data"
     assert result.complete_files == ("Episode.mkv",)
 
 

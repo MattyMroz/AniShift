@@ -335,9 +335,9 @@ def test_an_admitted_episode_gets_metadata_then_a_saved_verified_selection_befor
     assert waiting == []
     stored: AcquisitionConfirmation = _stored(setup)
     assert setup.network.metadata_added == [
-        (_HASH, ("udp://t.test:1",), setup.root / "temp" / ".acquisition" / stored.operation_id / "data")
+        (_HASH, ("udp://t.test:1",), setup.root / "tmp" / ".acquisition" / stored.operation_id / "data")
     ]
-    assert stored.directory == f"temp/.acquisition/{stored.operation_id}/data"
+    assert stored.directory == f"tmp/.acquisition/{stored.operation_id}/data"
     assert stored.assignments[0].files == (
         (0, "Pack/Neko to Ryuu - 03.mkv", 400),
         (1, "Pack/Neko to Ryuu - 03.ass", 40),
@@ -759,7 +759,7 @@ def test_a_finished_transfer_with_an_unselected_joined_episode_is_neither_comple
         _until(lambda: bool(setup.network.metadata_added))
         setup.network.deliver(_HASH)
         _until(_starts(setup))
-        staging: Path = setup.root / "temp" / ".acquisition" / str(_view(owner)["operation_id"]) / "data" / "Pack"
+        staging: Path = setup.root / "tmp" / ".acquisition" / str(_view(owner)["operation_id"]) / "data" / "Pack"
         staging.mkdir(parents=True, exist_ok=True)
         (staging / "Neko to Ryuu - 03.mkv").write_bytes(b"v" * 400)
         (staging / "Neko to Ryuu - 03.ass").write_bytes(b"s" * 40)
@@ -916,7 +916,7 @@ def test_a_finished_transfer_with_an_unresolved_episode_is_neither_complete_nor_
         _until(lambda: bool(setup.network.metadata_added))
         setup.network.deliver(_HASH)
         _until(_starts(setup))
-        staging: Path = setup.root / "temp" / ".acquisition" / str(_view(owner)["operation_id"]) / "data" / "Pack"
+        staging: Path = setup.root / "tmp" / ".acquisition" / str(_view(owner)["operation_id"]) / "data" / "Pack"
         staging.mkdir(parents=True, exist_ok=True)
         (staging / "Neko to Ryuu - 03.mkv").write_bytes(b"v" * 400)
         (staging / "Neko to Ryuu - 03.ass").write_bytes(b"s" * 40)

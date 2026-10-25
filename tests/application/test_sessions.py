@@ -13,17 +13,17 @@ from anishift.errors import ExecutionError, RunConflictError
 
 def _raise_inside_session(run_root: Path) -> None:
     with RunSession(run_root) as session:
-        session.group_temp("group-1")
+        session.group_tmp("group-1")
         raise RuntimeError("handler failed")
 
 
 def test_run_session_cleans_successful_scope_and_rejects_late_generation(tmp_path: Path) -> None:
-    run_root = tmp_path / "temp" / "run-1"
+    run_root = tmp_path / "tmp" / "run-1"
     session = RunSession(run_root)
 
     with session:
         generation: int = session.generation
-        group_root: Path = session.group_temp("group-1")
+        group_root: Path = session.group_tmp("group-1")
         (group_root / "clip.wav").write_bytes(b"audio")
         assert session.accepts_generation(generation)
 
@@ -32,7 +32,7 @@ def test_run_session_cleans_successful_scope_and_rejects_late_generation(tmp_pat
 
 
 def test_run_session_cleans_scope_after_exception(tmp_path: Path) -> None:
-    run_root = tmp_path / "temp" / "run-1"
+    run_root = tmp_path / "tmp" / "run-1"
 
     with pytest.raises(RuntimeError, match="handler failed"):
         _raise_inside_session(run_root)
@@ -41,11 +41,11 @@ def test_run_session_cleans_scope_after_exception(tmp_path: Path) -> None:
 
 
 def test_run_session_cleans_scope_after_cancel(tmp_path: Path) -> None:
-    run_root = tmp_path / "temp" / "run-1"
+    run_root = tmp_path / "tmp" / "run-1"
     cancel = EventCancellationToken()
 
     with RunSession(run_root) as session:
-        session.group_temp("group-1")
+        session.group_tmp("group-1")
         cancel.cancel()
         assert cancel.is_cancelled()
 
@@ -53,10 +53,10 @@ def test_run_session_cleans_scope_after_cancel(tmp_path: Path) -> None:
 
 
 def test_preserved_session_keeps_staging_and_rejects_late_publication(tmp_path: Path) -> None:
-    run_root: Path = tmp_path / "temp" / "run-paused"
+    run_root: Path = tmp_path / "tmp" / "run-paused"
     with RunSession(run_root) as session:
         generation: int = session.generation
-        staged: Path = session.group_temp("group-1") / "clip.wav"
+        staged: Path = session.group_tmp("group-1") / "clip.wav"
         staged.write_bytes(b"audio")
         session.preserve()
 
@@ -65,7 +65,7 @@ def test_preserved_session_keeps_staging_and_rejects_late_publication(tmp_path: 
 
 
 def test_run_session_refuses_existing_directory_without_deleting_it(tmp_path: Path) -> None:
-    run_root = tmp_path / "temp" / "run-1"
+    run_root = tmp_path / "tmp" / "run-1"
     run_root.mkdir(parents=True)
     sentinel = run_root / "owned-by-other-process"
     sentinel.write_text("keep", encoding="utf-8")
@@ -77,7 +77,7 @@ def test_run_session_refuses_existing_directory_without_deleting_it(tmp_path: Pa
 
 
 def test_old_session_does_not_delete_recreated_root_owned_by_another_run(tmp_path: Path) -> None:
-    run_root = tmp_path / "temp" / "run-1"
+    run_root = tmp_path / "tmp" / "run-1"
     session = RunSession(run_root)
     session.__enter__()
     shutil.rmtree(run_root)
@@ -92,7 +92,7 @@ def test_old_session_does_not_delete_recreated_root_owned_by_another_run(tmp_pat
 
 
 def test_active_session_claim_prevents_same_process_reuse_after_root_disappears(tmp_path: Path) -> None:
-    run_root = tmp_path / "temp" / "run-1"
+    run_root = tmp_path / "tmp" / "run-1"
     first = RunSession(run_root)
 
     with first:
@@ -104,7 +104,7 @@ def test_active_session_claim_prevents_same_process_reuse_after_root_disappears(
 def test_failed_enter_releases_process_local_root_claim(tmp_path: Path) -> None:
     parent = tmp_path / "blocked-parent"
     parent.write_text("file", encoding="utf-8")
-    run_root = parent / "temp" / "run-1"
+    run_root = parent / "tmp" / "run-1"
 
     with pytest.raises((RunConflictError, OSError)):
         RunSession(run_root).__enter__()
@@ -114,22 +114,22 @@ def test_failed_enter_releases_process_local_root_claim(tmp_path: Path) -> None:
         assert run_root.is_dir()
 
 
-def test_group_temp_rejects_escape_and_inactive_session(tmp_path: Path) -> None:
-    session = RunSession(tmp_path / "temp" / "run-1")
+def test_group_tmp_rejects_escape_and_inactive_session(tmp_path: Path) -> None:
+    session = RunSession(tmp_path / "tmp" / "run-1")
 
     with pytest.raises(ExecutionError, match="active"):
-        session.group_temp("group-1")
+        session.group_tmp("group-1")
     with session, pytest.raises(ValueError, match="safe group ID"):
-        session.group_temp("../outside")
+        session.group_tmp("../outside")
 
 
-def test_run_session_rejects_a_root_outside_workspace_temp(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="workspace/temp"):
+def test_run_session_rejects_a_root_outside_workspace_tmp(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="workspace/tmp"):
         RunSession(tmp_path / "run-1")
 
 
 def test_generation_commit_is_serialized_with_session_close(tmp_path: Path) -> None:
-    run_root = tmp_path / "temp" / "run-1"
+    run_root = tmp_path / "tmp" / "run-1"
     destination = tmp_path / "published.ass"
     session = RunSession(run_root)
     session.__enter__()

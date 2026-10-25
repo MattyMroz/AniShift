@@ -7,7 +7,7 @@ Terminal-based Polish voice-over pipeline for anime.
 AniShift finds and downloads anime episodes, then turns MKV sources into Polish subtitles or a
 Polish lector track: subtitle extraction, translation, TTS, audio processing and final media
 composition. Completed sources and products collect in the flat `workspace/ready/` directory.
-Regeneration runs there without moving files back. Temporary run data stays in `workspace/temp/`.
+Regeneration runs there without moving files back. Temporary run data stays in `workspace/tmp/`.
 
 AniShift currently supports Windows only.
 
@@ -103,7 +103,7 @@ uv run anishift subs remove ID   # remove one subscription
 **Del** cancels it after confirmation and **H** opens the history.
 
 `workspace/` may hold one subfolder per series. Discovery reads the root and every subfolder
-except the managed `temp/` directory and hidden directories. With the automation on,
+except the managed `tmp/` directory and hidden directories. With the automation on,
 stable inputs enter the same scheduler used by Ręczny; confirmed existing products are reused.
 After successful processing, sources and products move to `ready/` without rewriting their
 contents on the same volume. Name collisions keep both episodes.

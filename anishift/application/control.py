@@ -20,6 +20,7 @@ from anishift.application.intents import (
 )
 from anishift.application.release_quality import PolishClass, ResolutionClass, resolution_class
 from anishift.application.workflows import WorkflowTarget
+from anishift.paths import TMP_DIRECTORY
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -94,6 +95,9 @@ VERIFICATION_SKIPPED: Final[str] = "skipped"
 
 WATCH_STATE_SCHEMA_VERSION: Final[int] = 5
 """Current schema of the persisted automation state."""
+
+RESTORE_STAGING_PREFIX: Final[str] = f"{TMP_DIRECTORY}/.restore-"
+"""Workspace-relative beginning of every private staging path a restore reserves."""
 
 type SourceFingerprint = tuple[tuple[str, int, int], ...]
 """Identity of one group input, exactly what ``watch.source_fingerprint`` returns."""
@@ -814,8 +818,8 @@ class RestoreOutcome:
         if self.status not in {"prepared", "inflight", "restored", "refused", "uncertain"}:
             msg = "Unknown restore outcome"
             raise ValueError(msg)
-        if not self.staging.startswith("temp/.restore-") or self.staging == self.path:
-            msg = "Restore staging must stay in its private workspace temporary directory"
+        if not self.staging.startswith(RESTORE_STAGING_PREFIX) or self.staging == self.path:
+            msg = "Restore staging must stay in its private workspace tmp directory"
             raise ValueError(msg)
         if type(self.started) is not bool or (self.status in {"inflight", "restored"} and not self.started):
             msg = "Restore effects require a persisted start"

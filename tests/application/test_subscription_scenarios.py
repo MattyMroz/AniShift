@@ -403,7 +403,7 @@ def _stage(
     world: _World, owner: AutomationOwner, info_hash: str, number: int = 3, *, listing: tuple[TorrentFile, ...] = ()
 ) -> None:
     _started(world, info_hash, number, listing=listing)
-    data: Path = world.root / "temp" / ".acquisition" / _transfer(owner, info_hash).operation_id / "data"
+    data: Path = world.root / "tmp" / ".acquisition" / _transfer(owner, info_hash).operation_id / "data"
     for item in _files(number):
         path: Path = data / item.name
         path.parent.mkdir(parents=True, exist_ok=True)

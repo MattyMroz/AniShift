@@ -145,7 +145,7 @@ def test_restore_schema_two_roundtrip_and_strict_scope(tmp_path: Path) -> None:
     store.save(state)
     assert '"restore"' not in (tmp_path / "state.json").read_text()
     restored: DeletionRestore = DeletionRestore(
-        "restore", (RestoreOutcome("ready/01.txt", "temp/.restore-one/0", "inflight", "pending", True),)
+        "restore", (RestoreOutcome("ready/01.txt", "tmp/.restore-one/0", "inflight", "pending", True),)
     )
     state = replace(state, pending_deletions=(replace(operation, restore=restored),))
     store.save(state)
@@ -172,7 +172,7 @@ def test_restore_refusal_protects_only_unsettled_native_effects_after_restart(tm
         identities=(("ready/01.txt", 3, 4),),
         restore=DeletionRestore(
             "restore",
-            (RestoreOutcome("ready/01.txt", "temp/.restore-one/0", "refused", "restore_receipt_missing", started),),
+            (RestoreOutcome("ready/01.txt", "tmp/.restore-one/0", "refused", "restore_receipt_missing", started),),
         ),
     )
     owned: AcquisitionConfirmation = AcquisitionConfirmation(
@@ -201,8 +201,8 @@ def test_fresh_exact_bin_proof_settles_previous_noop_before_other_preflight_refu
         restore=DeletionRestore(
             "restore",
             (
-                RestoreOutcome("ready/01.txt", "temp/.restore-one/0", "uncertain", "restore_incomplete", True),
-                RestoreOutcome("ready/01.pl.txt", "temp/.restore-two/1"),
+                RestoreOutcome("ready/01.txt", "tmp/.restore-one/0", "uncertain", "restore_incomplete", True),
+                RestoreOutcome("ready/01.pl.txt", "tmp/.restore-two/1"),
             ),
         ),
     )

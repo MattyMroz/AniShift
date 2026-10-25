@@ -13,7 +13,7 @@ __all__ = [
     "READY_DIRECTORY",
     "SUBS_DIRECTORY",
     "TASK_DIRECTORIES",
-    "TEMP_DIRECTORY",
+    "TMP_DIRECTORY",
     "TRANSLATE_DIRECTORY",
     "WATCH_DIRECTORY",
     "WORKSPACE_DIRECTORY",
@@ -30,7 +30,7 @@ __all__ = [
     "repo_root",
     "run_journal_dir",
     "task_dir",
-    "temp_dir",
+    "tmp_dir",
     "torrent_data_dir",
     "torrent_download_dir",
     "torrent_profile_dir",
@@ -54,7 +54,7 @@ READY_DIRECTORY: Final[str] = "ready"
 WORKSPACE_DIRECTORY: Final[str] = "workspace"
 """Default library directory under the repository root."""
 
-TEMP_DIRECTORY: Final[str] = "temp"
+TMP_DIRECTORY: Final[str] = "tmp"
 """Private run staging directory inside a workspace."""
 
 WATCH_DIRECTORY: Final[str] = "watch"
@@ -78,7 +78,7 @@ TASK_DIRECTORIES: Final[tuple[str, ...]] = (
     AUDIOBOOK_DIRECTORY,
     COVER_DIRECTORY,
 )
-"""The one collection of workspace task folders, beside the data areas ``ready`` and ``temp``."""
+"""The one collection of workspace task folders, beside the data areas ``ready`` and ``tmp``."""
 
 
 def repo_root() -> Path:
@@ -134,9 +134,9 @@ def relocation_journal_dir(state_dir: Path) -> Path:
     return state_dir / "relocations"
 
 
-def temp_dir(workspace: Path) -> Path:
+def tmp_dir(workspace: Path) -> Path:
     """Return private run staging inside the selected workspace."""
-    return workspace / TEMP_DIRECTORY
+    return workspace / TMP_DIRECTORY
 
 
 def task_dir(workspace: Path, task: str) -> Path:

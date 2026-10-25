@@ -2036,7 +2036,7 @@ def _resume_fixture(
 ) -> tuple[AcquisitionConfirmation, AcquisitionService, _SelectiveNetwork]:
     transfer = replace(
         transfer,
-        directory=f"temp/.acquisition/{transfer.operation_id}/data",
+        directory=f"tmp/.acquisition/{transfer.operation_id}/data",
         requested_action="resume",
         action_id="resume",
         action_pending=True,
@@ -2089,7 +2089,7 @@ def test_restored_repeat_starts_past_an_uncertain_predecessor_only_for_another_h
     old: AcquisitionConfirmation
     files: tuple[TorrentFile, ...]
     old, files = _mapped_transfer(replaced=True)
-    old = replace(old, state=AcquisitionState.UNCERTAIN, directory="temp/.acquisition/old-transfer/data")
+    old = replace(old, state=AcquisitionState.UNCERTAIN, directory="tmp/.acquisition/old-transfer/data")
     info_hash: str = old.info_hash if same_hash else "b" * 40
     assignment: EpisodeAssignment = replace(
         old.assignments[0],

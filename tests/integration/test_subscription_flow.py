@@ -165,7 +165,7 @@ def _assert_finished_season(store: WatchStateStore, final: WatchState, workspace
     assert group.main_result is not None
     assert (workspace / group.main_result).is_file()
     assert "Neko to Ryuu - 03" in group.main_result
-    assert not (workspace / "temp/.acquisition" / final.acquisitions[-1].operation_id).exists()
+    assert not (workspace / "tmp/.acquisition" / final.acquisitions[-1].operation_id).exists()
     history: list[str] = [
         item.name
         for item in HistoryJournal(store.history_path()).events(_NOW - timedelta(days=1))

@@ -115,7 +115,7 @@ from anishift.cli.resident import ResidentSession
 from anishift.config.presets import default_preset_file
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
-from anishift.config.workspace import RUN_OWNER_MARKER_NAME, run_temp_dir
+from anishift.config.workspace import RUN_OWNER_MARKER_NAME, run_tmp_dir
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError, PlanningError
 from anishift.paths import COVER_DIRECTORY, READY_DIRECTORY, TRANSLATE_DIRECTORY, relocation_journal_dir
 from anishift.platform.directory_watch import DirectoryChange
@@ -2610,7 +2610,7 @@ def _end_watcher(service: _Service, run_id: str, group_id: str, watcher: threadi
 def _abandoned_run(
     root: Path, store: WatchStateStore, run_id: str, plan: ExecutionPlan, state: RequestState
 ) -> ProcessingRequest:
-    run_root: Path = run_temp_dir(root, run_id)
+    run_root: Path = run_tmp_dir(root, run_id)
     RunJournal.create(store.run_path(run_id), plan, run_root)
     run_root.mkdir(parents=True)
     marker: dict[str, str | int] = {"pid": 1, "run_id": run_id, "token": "token"}
@@ -2659,9 +2659,9 @@ def test_restarted_owner_removes_staging_of_runs_that_cannot_resume(
 
     _owner(real, store)
 
-    assert not run_temp_dir(tmp_path, "run-dead").exists()
-    assert run_temp_dir(tmp_path, "run-paused").is_dir()
-    assert run_temp_dir(tmp_path, "run-failed").is_dir()
+    assert not run_tmp_dir(tmp_path, "run-dead").exists()
+    assert run_tmp_dir(tmp_path, "run-paused").is_dir()
+    assert run_tmp_dir(tmp_path, "run-failed").is_dir()
 
 
 def _restarted_with_one_run(
@@ -2700,7 +2700,7 @@ def test_restarted_owner_keeps_staging_whose_checkpoint_cannot_be_read_now(
 
     _owner(real, store)
 
-    assert run_temp_dir(tmp_path, "run-one").is_dir()
+    assert run_tmp_dir(tmp_path, "run-one").is_dir()
 
 
 @pytest.mark.integration
@@ -2714,7 +2714,7 @@ def test_restarted_owner_keeps_staging_of_interrupted_and_resumable_runs(
 
     _owner(real, store)
 
-    assert run_temp_dir(tmp_path, "run-one").is_dir()
+    assert run_tmp_dir(tmp_path, "run-one").is_dir()
     assert source.is_file()
 
 
@@ -2739,7 +2739,7 @@ def test_restarted_owner_keeps_staging_of_a_run_whose_ready_relocation_is_unfini
         ready_store=ReadyStore(tmp_path / "control" / "relocations", tmp_path),
     )
 
-    assert run_temp_dir(tmp_path, "run-one").is_dir()
+    assert run_tmp_dir(tmp_path, "run-one").is_dir()
 
 
 def _drain_owner_queue(owner: AutomationOwner) -> None:
@@ -4148,7 +4148,7 @@ def _projection_request(tmp_path: Path, state: RequestState) -> tuple[Automation
     )
     store.save(WatchState(policy=AutomationPolicy(auto_enabled=False), requests=(request,)))
     path: Path = store.run_path(request.request_id)
-    RunJournal.create(path, remaining, tmp_path / "temp" / "projection")
+    RunJournal.create(path, remaining, tmp_path / "tmp" / "projection")
     owner: AutomationOwner = _owner(_Service(tmp_path, discovered=workspace, plan=plan), store)
     owner._run_events[request.request_id] = {
         (RunEventKind.GROUP_FINISHED.value, identifier, None): RunEvent(

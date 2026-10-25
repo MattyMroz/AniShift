@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Final, Never
 
 from anishift.errors import ErrorCode, ErrorContext
+from anishift.paths import TMP_DIRECTORY
 from anishift.services.tts.errors import TtsResumeError
 from anishift.services.tts.fingerprint import artifact_key
 from anishift.services.tts.types import AudioFormat
@@ -33,7 +34,7 @@ _SUGGESTION_REMOVE_REDIRECT: Final[str] = (
 """Suggestion for artifact paths that resolve through symlinks or junctions."""
 
 _SUGGESTION_RESET_ARTIFACTS: Final[str] = (
-    "Delete the TTS artifacts directory under workspace/temp and run the file again."
+    f"Delete the TTS artifacts directory under workspace/{TMP_DIRECTORY} and run the file again."
 )
 """Suggestion for artifacts that violate the resume repository layout contract."""
 

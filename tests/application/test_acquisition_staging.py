@@ -170,7 +170,7 @@ def test_cleanup_of_a_fully_exported_staging_removes_its_operation_directory(tmp
     clean_staging(tmp_path, _OPERATION, "hash", ("Pack/Deep/03.mkv",), frozenset(), frozenset())
 
     assert not data.parent.exists()
-    assert (tmp_path / "temp" / ".acquisition").is_dir()
+    assert (tmp_path / "tmp" / ".acquisition").is_dir()
 
 
 def test_cleanup_refuses_to_remove_a_directory_standing_at_a_listed_file_name(tmp_path: Path) -> None:

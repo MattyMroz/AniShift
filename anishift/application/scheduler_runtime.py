@@ -357,7 +357,7 @@ def create_runtime(
     plan: ExecutionPlan = request.plan
     run_cancel: EventCancellationToken = EventCancellationToken(parent=request.cancel)
     generation: int = request.session.generation
-    group_roots: dict[str, Path] = {group.group_id: request.session.group_temp(group.group_id) for group in plan.groups}
+    group_roots: dict[str, Path] = {group.group_id: request.session.group_tmp(group.group_id) for group in plan.groups}
     return SchedulerRuntime(
         run_id=request.run_id,
         origin=request.origin,

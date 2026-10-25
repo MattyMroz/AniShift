@@ -73,7 +73,7 @@ def test_restore_reconciles_only_exact_recorded_locations(
     receipt.write_bytes(b"synthetic")
     identity = _identity(receipt)
     assert identity is not None
-    staging: Path = tmp_path / "temp/.restore-one/file"
+    staging: Path = tmp_path / "tmp/.restore-one/file"
     staging.parent.mkdir(parents=True)
     moves: list[Path] = []
 
@@ -105,7 +105,7 @@ def test_restore_reconciles_only_exact_recorded_locations(
         "parent_pid": os.getpid(),
         "workspace": str(tmp_path),
         "path": "ready/01.txt",
-        "staging": "temp/.restore-one/file",
+        "staging": "tmp/.restore-one/file",
         "identity": list(identity),
         "receipt": str(receipt),
         "started": place in {"staging", "destination"},

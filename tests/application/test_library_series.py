@@ -71,7 +71,7 @@ def _downloaded(
     return AcquisitionConfirmation(
         operation_id=f"operation-{set_id}",
         info_hash=info_hash,
-        directory=f"temp/.acquisition/{set_id}/data",
+        directory=f"tmp/.acquisition/{set_id}/data",
         required_files=(),
         state=AcquisitionState.COMPLETE,
         origin=RequestOrigin.USER if subscription is None else RequestOrigin.BACKGROUND,

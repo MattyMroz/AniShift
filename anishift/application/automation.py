@@ -51,6 +51,7 @@ from anishift.application.cancellation import EventCancellationToken, NeverCance
 from anishift.application.control import (
     ASSIGNMENT_STOPS,
     REMOVED_FROM_CLIENT,
+    RESTORE_STAGING_PREFIX,
     VERIFICATION_REJECT,
     VERIFICATION_SKIPPED,
     AcquisitionConfirmation,
@@ -229,9 +230,9 @@ from anishift.application.transfers import (
 )
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, resolve_route
-from anishift.config.workspace import cleanup_orphaned_temp, run_temp_dir
+from anishift.config.workspace import cleanup_orphaned_tmp, run_tmp_dir
 from anishift.errors import AniShiftError, ErrorCode, ExecutionError, MediaProbeError, UnsupportedMediaError
-from anishift.paths import READY_DIRECTORY
+from anishift.paths import READY_DIRECTORY, TMP_DIRECTORY
 from anishift.platform.binaries import BinaryNotFoundError
 from anishift.platform.directory_watch import DirectoryChange, source_is_available
 from anishift.platform.local_control import ControlErrorCode, ControlRequest, ControlResponse
@@ -856,7 +857,7 @@ class AutomationOwner:
         )
         service.retain_runs(retained)
         try:
-            removed: tuple[Path, ...] = cleanup_orphaned_temp(service.workspace_root, active_run_ids=retained)
+            removed: tuple[Path, ...] = cleanup_orphaned_tmp(service.workspace_root, active_run_ids=retained)
         except OSError as problem:
             logger.warning("Abandoned run staging cleanup failed", error_class=type(problem).__name__)
         else:
@@ -992,7 +993,7 @@ class AutomationOwner:
         if not path.is_relative_to(self._service.workspace_root):
             return False
         parts: tuple[str, ...] = path.relative_to(self._service.workspace_root).parts
-        return not any(part.startswith(".") for part in parts) and (not parts or parts[0].casefold() != "temp")
+        return not any(part.startswith(".") for part in parts) and (not parts or parts[0].casefold() != TMP_DIRECTORY)
 
     @property
     def instance_id(self) -> str:
@@ -2418,7 +2419,7 @@ class AutomationOwner:
         restore: DeletionRestore = operation.restore or DeletionRestore(
             f"restore-{token_hex(_ID_BYTES)}",
             tuple(
-                RestoreOutcome(name, f"temp/.restore-{token_hex(_ID_BYTES)}/{index}")
+                RestoreOutcome(name, f"{RESTORE_STAGING_PREFIX}{token_hex(_ID_BYTES)}/{index}")
                 for index, (name, _size, _stamp) in enumerate(operation.files)
             ),
         )
@@ -3357,7 +3358,7 @@ class AutomationOwner:
             RunJournal.load(self._store.run_path(run_id))
             if previous is not None
             else RunJournal.create(
-                self._store.run_path(run_id), preview.plan, run_temp_dir(self._service.workspace_root, run_id)
+                self._store.run_path(run_id), preview.plan, run_tmp_dir(self._service.workspace_root, run_id)
             )
         )
         if journal.plan != preview.plan:
@@ -3424,7 +3425,7 @@ class AutomationOwner:
                 run_id=run_id,
                 automatic=preview.automatic,
                 journal=journal,
-                resume=previous is not None and run_temp_dir(self._service.workspace_root, run_id).exists(),
+                resume=previous is not None and run_tmp_dir(self._service.workspace_root, run_id).exists(),
             )
             submitted = True
         finally:
