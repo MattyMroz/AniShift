@@ -166,6 +166,36 @@ def test_restyle_dialogue_draws_the_clone_in_the_owner_mpv_look_at_the_script_si
 
 
 @pytest.mark.unit
+def test_restyle_dialogue_keeps_the_colors_that_set_a_style_apart_from_the_main_dialogue() -> None:
+    subs: SSAFile = _subs()
+    subs.styles["Flashback"] = SSAStyle(
+        fontname="Trebuchet MS",
+        primarycolor=Color(255, 255, 255),
+        outlinecolor=Color(0, 4, 67),
+        backcolor=Color(0, 4, 67),
+    )
+    subs.styles["Overlap"] = SSAStyle(fontname="Trebuchet MS", primarycolor=Color(246, 209, 123))
+    subs.styles["Default"].primarycolor = Color(255, 255, 255)
+    subs.events.extend(
+        [
+            SSAEvent(start=6000, end=7000, style="Flashback", text="Back then"),
+            SSAEvent(start=7000, end=8000, style="Overlap", text="Me too"),
+        ]
+    )
+
+    styles = restyle_dialogue(subs, (*_DECISIONS, "spoken", "spoken"), _FONT, LayoutReport()).styles
+
+    assert [
+        (styles[name].primarycolor, styles[name].outlinecolor, styles[name].backcolor)
+        for name in ("Default (dialog)", "Flashback (dialog)", "Overlap (dialog)")
+    ] == [
+        (Color(255, 255, 255, 0), Color(0, 0, 0, 0), Color(0, 0, 0, 128)),
+        (Color(255, 255, 255, 0), Color(0, 4, 67), Color(0, 4, 67)),
+        (Color(246, 209, 123), Color(0, 0, 0, 0), Color(0, 0, 0, 128)),
+    ]
+
+
+@pytest.mark.unit
 def test_restyle_signs_keeps_the_look_of_a_sign_style() -> None:
     restyled, _clones = restyle_signs(_subs(), _DECISIONS, _FONT)
 
@@ -203,23 +233,36 @@ def test_restyle_dialogue_keeps_displayed_lines_byte_identical_and_leaves_the_so
 
 
 @pytest.mark.unit
-def test_restyle_dialogue_clones_only_the_mostly_spoken_style() -> None:
+def test_restyle_dialogue_moves_spoken_lines_of_a_mostly_displayed_style_to_its_clone() -> None:
     decisions: tuple[Decision, ...] = ("displayed", "displayed", "spoken", "spoken", "displayed")
     report: LayoutReport = LayoutReport()
 
     restyled: SSAFile = restyle_dialogue(_subs(), decisions, _FONT, report)
 
-    assert list(restyled.styles) == ["Default", "Sign", "Sign (dialog)"]
+    assert list(restyled.styles) == ["Default", "Default (dialog)", "Sign", "Sign (dialog)"]
     assert [event.style for event in restyled.events] == [
         "Default",
         "Default",
-        "Default",
+        "Default (dialog)",
         "Sign (dialog)",
         "Default",
         "Default",
     ]
-    assert restyled.events[2].text == "Wait{\\rSign} sign {\\rDefault}back{\\r} done"
-    assert report.restyled_styles == 1
+    assert restyled.events[2].text == "Wait{\\rSign (dialog)} sign {\\rDefault (dialog)}back{\\r} done"
+    assert report.restyled_styles == 2
+
+
+@pytest.mark.unit
+def test_restyle_signs_keeps_the_look_of_signs_in_a_mostly_displayed_style_with_spoken_lines() -> None:
+    decisions: tuple[Decision, ...] = ("displayed", "displayed", "spoken", "spoken", "displayed")
+    subs: SSAFile = restyle_dialogue(_subs(), decisions, _FONT, LayoutReport())
+
+    restyled, clones = restyle_signs(subs, decisions, _FONT)
+
+    assert clones == {0: "Default (dialog 2)", 1: "Default (dialog 2)", 4: "Default (dialog 2)"}
+    assert {**restyled.styles["Default (dialog 2)"].as_dict(), "fontname": "Gandhi Sans"} == (
+        restyled.styles["Default"].as_dict()
+    )
 
 
 @pytest.mark.unit
