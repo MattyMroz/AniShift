@@ -524,12 +524,7 @@ class EpisodeSearch:
     def previous_history(
         self, request: EpisodeRequest, switches: SourceSwitches, *, settled: bool, pages: int = TSUKIHIME_PAGES
     ) -> PolishState | None:
-        """Read up to *pages* of the previous episode's TsukiHime list; None when the read proves nothing.
-
-        Polish on any page read proves presence; absence needs the complete list, a release whose file
-        scope lists its subtitles, and a *settled* previous episode. A failed or truncated list without
-        Polish keeps the last observation. Remembered inventories supply file declarations.
-        """
+        """Read up to *pages* of the previous episode's TsukiHime list; None when the read proves nothing."""
         if not switches.tsukihime:
             return PolishState.UNKNOWN
         result: SourceResult = self._answer("tsukihime", request, pages=pages)
