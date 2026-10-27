@@ -171,7 +171,7 @@ _NON_ENGLISH_LANGUAGE: Final[str] = "fr"
 """Subtitle language whose releases the index keeps outside the English-translated category."""
 
 _FALLBACK_CACHE_S: Final[int] = 900
-"""Freshness of remembered entry data when ani.zip omits it; its ``Cache-Control`` measured 2026-09-22."""
+"""Freshness of remembered entry data when ani.zip sends no ``Cache-Control``."""
 
 _REMEMBERED_ENTRIES: Final[int] = 64
 """Entries the resident process keeps in memory before forgetting the least recently used one."""

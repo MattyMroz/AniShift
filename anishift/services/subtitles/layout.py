@@ -97,11 +97,7 @@ class Field:
 
 @dataclass(frozen=True, slots=True)
 class Layout:
-    """Lines and scale of one candidate with its harm degrees, rescue level, report flags and block spacing.
-
-    ``spacing`` is empty outside text blocks; for blocks it holds the empty lines before the first line, after each
-    line but the last, and after the last line.
-    """
+    """Lines and scale of one candidate with its harm degrees, rescue level, flags and empty lines around blocks."""
 
     lines: tuple[str, ...]
     scale: Scale
@@ -118,37 +114,37 @@ class Layout:
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 DIALOGUE_MAX_WIDTH: Final[float] = 0.9
-"""Safe screen area a dialogue line must fit even when the style margins are narrower (text-layout spec §3.2, r7)."""
+"""Safe screen area a dialogue line must fit even when the style margins are narrower."""
 
 _CHARS_CACHE: Final[int] = 1 << 16
 """Line texts whose grapheme count is remembered."""
 
 _DIALOGUE_RESCUE_LINES: Final[int] = 3
-"""Dialogue lines allowed in rescue only (text-layout spec §3.2, q13, r6, r7)."""
+"""Dialogue lines allowed in rescue only."""
 
 _LENGTH_KNOTS: Final[tuple[float, float]] = (0.55, 0.76)
-"""Widths where the long line harm starts and turns steeper (text-layout spec §4.1; 0.76 is the q17 limit)."""
+"""Widths where the long line harm starts and turns steeper."""
 
 _KNEE_CHARS: Final[int] = 56
-"""Characters of the longest one-line answer the owner still accepted (q17; q11 at 57 lost)."""
+"""Characters a dialogue line holds at the width where the long line harm turns steeper."""
 
 CHAR_WIDTH: Final[float] = _LENGTH_KNOTS[1] / _KNEE_CHARS
-"""Screen width a character stands for, so the character and width knees coincide (text-layout spec §4.1)."""
+"""Screen width a character stands for, so the character and width knees coincide."""
 
 _IMBALANCE_KNOTS: Final[tuple[int, ...]] = (6, 10, 20, 25, 30)
-"""Line length differences in characters where the exchange rate of punctuation for balance changes (spec §4.4)."""
+"""Line length differences in characters where the exchange rate of punctuation for balance changes."""
 
 _SMALL_LETTERS: Final[tuple[float, float]] = (16.0, 30.0)
-"""Letter heights in screen pixels where the too small harm is full and where it starts (text-layout spec §4.6)."""
+"""Letter heights in screen pixels where the too small harm is full and where it starts."""
 
 _PERCENT: Final[float] = 100.0
 """Scale steps per unit: ASS writes ``\\fscx`` and ``\\fscy`` in whole percent."""
 
 _SIGN_LINES: Final[int] = 3
-"""Fewest lines a displayed field allows, so a one-line source may still take two or three (catalogue calibration)."""
+"""Fewest lines a displayed field allows, so a one-line source may still take two or three."""
 
 MIN_SCALE: Final[float] = 0.8
-"""Smallest scale (either axis) a sign other than a song takes while any layout at or above it fits (owner 21.10)."""
+"""Smallest scale (either axis) a sign other than a song takes while any layout at or above it fits."""
 
 _BOTTOM_ROW: Final[int] = 0
 """Alignment row of text anchored at its bottom edge: ``\\an1`` to ``\\an3``."""
@@ -172,7 +168,7 @@ _HEADING_WORDS: Final[int] = 3
 """Most words of a leading label ending in a colon where a multi-line displayed text prefers to end its first line."""
 
 _ENUMERATED_LINES: Final[int] = 3
-"""Most lines whose every split is enumerated; longer layouts come from dynamic programming (spec §5.1)."""
+"""Most lines whose every split is enumerated; longer layouts come from dynamic programming."""
 
 _MIN_LIST_ITEMS: Final[int] = 2
 """Numbered markers needed before the text counts as a list."""
@@ -243,7 +239,7 @@ WEIGHTS: Final[Mapping[str, float]] = MappingProxyType(
         "flag_orphan": 34.1472,
     }
 )
-"""Harm weights from the layout calibration (docs/work/10-quality/research/text-layout-calibration.md)."""
+"""Weight of each harm in the summed score of a layout."""
 
 
 # ── Public functions ──────────────────────────────────────────────────────────
@@ -299,7 +295,7 @@ def heading_break(words: Sequence[str]) -> int | None:
 
 
 def chars_measure(line: str, fx: float) -> float:
-    """Measure a line by its graphemes when no render profile exists (text-layout spec §4.1, e10)."""
+    """Measure a line by its graphemes when no render profile exists."""
     return len(split_graphemes(line)) * CHAR_WIDTH * fx
 
 

@@ -4669,7 +4669,7 @@ class AutomationOwner:
     def _escalations(
         self, record: SubscriptionRecord, decided: Mapping[int, _Decided], now: datetime
     ) -> tuple[_Escalation, ...]:
-        """Return the §8 notices one check owes for the due targets of *record*, each reason at most once."""
+        """Return the escalation notices one check owes for the due targets of *record*, each reason at most once."""
         found: list[_Escalation] = []
         for target in record.targets:
             if target.state is not TargetState.DUE:

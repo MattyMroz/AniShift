@@ -95,13 +95,13 @@ TIERS: Final[Mapping[GapKind, int]] = MappingProxyType(
         GapKind.AFTER_SINGLE_LETTER: 6,
     }
 )  # fmt: skip
-"""Rank of the harm of a cut in each class, from the sentence end up (text-layout spec §4.2); never cheaper upwards."""
+"""Rank of the harm of a cut in each class, from the sentence end up; never cheaper upwards."""
 
 _PROTECTED_TIER: Final[int] = TIERS[GapKind.NAME]
 """Lowest tier of a bound pair: every class from it up is protected."""
 
 PROTECTED_KINDS: Final[frozenset[GapKind]] = frozenset(kind for kind, tier in TIERS.items() if tier >= _PROTECTED_TIER)
-"""Classes of a bound pair (text-layout spec §4.2) a line is cut inside only in rescue."""
+"""Classes of a bound pair a line is cut inside only in rescue."""
 
 # source: https://pl.wiktionary.org/wiki/Kategoria:Język_polski_-_spójniki
 CONJUNCTIONS: Final[frozenset[str]] = frozenset(

@@ -569,13 +569,7 @@ def layout_translated(
     dialogue_font: DialogueFont | None,
     own_text: bool = False,
 ) -> TranslatedLayout:
-    """Lay out unbroken translations, keyed by Dialogue index, on a copy of the split file.
-
-    Keys are the first event of every spoken line and every displayed event; the other events of a spoken line
-    take its translation unless they carry their own key. Drawings, karaoke and events without a translation stay as
-    they are, and so does a dialogue event whose translation equals its text, unless ``own_text`` lays out the file's
-    own text.
-    """
+    """Lay out unbroken translations, keyed by Dialogue index, on a copy of the split file."""
     report: LayoutReport = LayoutReport()
     source: SSAFile = split.subs
     plain: dict[int, str] = {}
