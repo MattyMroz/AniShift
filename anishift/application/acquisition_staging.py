@@ -104,10 +104,7 @@ def file_stamp(path: Path) -> FileStamp | None:
 def copy_staged(
     source: Path, destination: Path, size: int, *, expected: FileStamp | None = None
 ) -> tuple[str, FileStamp]:
-    """Copy one finished staged file into private storage, returning its content digest and the copy's stamp.
-
-    With *expected*, refuse a source whose stamp differs from the one a download check recorded.
-    """
+    """Copy one finished staged file into private storage, returning its content digest and the copy's stamp."""
     before: FileStamp | None = file_stamp(source)
     if expected is not None and before != expected:
         raise OSError(_CHANGED_WHILE_COPIED)

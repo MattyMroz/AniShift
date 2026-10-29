@@ -106,24 +106,23 @@ class DialogueFont:
 
 
 def restyle_dialogue(subs: SSAFile, decisions: Sequence[Decision], font: DialogueFont, report: LayoutReport) -> SSAFile:
-    """Return a copy whose spoken lines of every mostly spoken style use that style's clone in the owner's mpv look."""
-    clones: dict[str, str] = _clone_names(subs, decisions)
+    """Return a copy whose spoken lines use their style's clone in the owner's mpv look."""
+    spoken: Counter[str] = _spoken_counts(subs, decisions)
+    clones: dict[str, str] = _clone_names(subs, spoken)
     if not clones:
         return subs
+    main: SSAStyle = subs.styles[spoken.most_common(1)[0][0]]
     out: SSAFile = copy(subs)
-    out.styles = _with_clones(subs.styles, clones, font, RenderProfile.from_subs(subs, None))
+    out.styles = _with_clones(subs.styles, clones, font, main, RenderProfile.from_subs(subs, None))
     out.events = _restyled_events(subs.events, decisions, clones)
     report.restyled_styles += len(clones)
     return out
 
 
 def restyle_signs(subs: SSAFile, decisions: Sequence[Decision], font: DialogueFont) -> tuple[SSAFile, dict[int, str]]:
-    """Return a copy with a clone drawn with the font for each sign style, and the clone of each displayed text.
-
-    Every displayed event with text moves to its clone; drawings and karaoke keep their style. Clones are keyed by
-    Dialogue index.
-    """
+    """Return a copy with a font clone of each sign style and the clone of each displayed text by Dialogue index."""
     dialogue: list[SSAEvent] = [event for event in subs.events if event.type == "Dialogue"]
+    minority: set[str] = _minority_spoken(dialogue, decisions)
     plain: list[int] = [
         index
         for index, (event, decision) in enumerate(zip(dialogue, decisions, strict=True))
@@ -137,7 +136,7 @@ def restyle_signs(subs: SSAFile, decisions: Sequence[Decision], font: DialogueFo
     clones: dict[str, str] = {
         clone_source(name): name
         for name, style in subs.styles.items()
-        if clone_source(name) != name and style.fontname == font.family
+        if clone_source(name) not in {name, *minority} and style.fontname == font.family
     }
     taken: set[str] = set(subs.styles)
     styles: dict[str, SSAStyle] = dict(subs.styles)
@@ -164,21 +163,33 @@ def clone_source(name: str) -> str:
     return name if match is None else match.group("source")
 
 
-def _clone_names(subs: SSAFile, decisions: Sequence[Decision]) -> dict[str, str]:
+def _spoken_counts(subs: SSAFile, decisions: Sequence[Decision]) -> Counter[str]:
     dialogue: list[SSAEvent] = [event for event in subs.events if event.type == "Dialogue"]
-    lines: Counter[str] = Counter(event.style for event in dialogue)
-    spoken: Counter[str] = Counter(
-        event.style for event, decision in zip(dialogue, decisions, strict=True) if decision == "spoken"
+    return Counter(
+        event.style
+        for event, decision in zip(dialogue, decisions, strict=True)
+        if decision == "spoken" and event.style in subs.styles
     )
+
+
+def _clone_names(subs: SSAFile, spoken: Counter[str]) -> dict[str, str]:
     taken: set[str] = set(subs.styles)
     clones: dict[str, str] = {}
     for style in subs.styles:
-        if 2 * spoken[style] <= lines[style]:
+        if style not in spoken:
             continue
         name: str = _clone_name(style, taken)
         taken.add(name)
         clones[style] = name
     return clones
+
+
+def _minority_spoken(dialogue: Sequence[SSAEvent], decisions: Sequence[Decision]) -> set[str]:
+    lines: Counter[str] = Counter(clone_source(event.style) for event in dialogue)
+    spoken: Counter[str] = Counter(
+        clone_source(event.style) for event, decision in zip(dialogue, decisions, strict=True) if decision == "spoken"
+    )
+    return {style for style, count in spoken.items() if 2 * count <= lines[style]}
 
 
 def _clone_name(style: str, taken: set[str]) -> str:
@@ -191,23 +202,27 @@ def _clone_name(style: str, taken: set[str]) -> str:
 
 
 def _with_clones(
-    styles: Mapping[str, SSAStyle], clones: Mapping[str, str], font: DialogueFont, profile: RenderProfile
+    styles: Mapping[str, SSAStyle],
+    clones: Mapping[str, str],
+    font: DialogueFont,
+    main: SSAStyle,
+    profile: RenderProfile,
 ) -> dict[str, SSAStyle]:
     result: dict[str, SSAStyle] = {}
     for name, style in styles.items():
         result[name] = style
         if name in clones:
-            result[clones[name]] = _mpv_look(_family_copy(style, font), profile)
+            result[clones[name]] = _mpv_look(_family_copy(style, font), main, profile)
     return result
 
 
-def _mpv_look(style: SSAStyle, profile: RenderProfile) -> SSAStyle:
+def _mpv_look(style: SSAStyle, main: SSAStyle, profile: RenderProfile) -> SSAStyle:
     script: float = profile.play_res_y / _MPV_HEIGHT
     edge: float = script if profile.scaled_border else _VIDEO_HEIGHT / _MPV_HEIGHT
     style.fontsize = round(_MPV_SIZE * script, 2)
-    style.primarycolor = _MPV_TEXT
-    style.outlinecolor = _MPV_EDGE
-    style.backcolor = _MPV_SHADOW_COLOR
+    style.primarycolor = _MPV_TEXT if style.primarycolor == main.primarycolor else style.primarycolor
+    style.outlinecolor = _MPV_EDGE if style.outlinecolor == main.outlinecolor else style.outlinecolor
+    style.backcolor = _MPV_SHADOW_COLOR if style.backcolor == main.backcolor else style.backcolor
     style.outline = round(_MPV_BORDER * edge, 2)
     style.shadow = round(_MPV_SHADOW * edge, 2)
     style.borderstyle = 1

@@ -144,12 +144,7 @@ class EpisodeFiles:
 
 @dataclass(frozen=True, slots=True)
 class TargetNotice:
-    """One reason a subscription target has no download yet, or took one without Polish subtitles.
-
-    ``cause`` is the rejection reason, ``total/untried matching/tried matching`` releases, ``threshold class/height``,
-    the pending height, whole hours without sources or minutes waited for Polish subtitles, by *reason*; a cause
-    that cannot be read leaves the plain phrase.
-    """
+    """One reason a subscription target has no download yet, or took one without Polish subtitles."""
 
     reason: str
     cause: str | None = None
@@ -157,13 +152,7 @@ class TargetNotice:
 
 @dataclass(frozen=True, slots=True)
 class EpisodeStatus:
-    """Project the latest real admission or the scoped legacy uncertainty of one episode.
-
-    ``attempt`` marks an unfinished subscription attempt, which an explicit order replaces instead of waiting for it.
-    A due subscription target carries its Polish history in ``polish``, the end of its Polish wait in
-    ``polish_wait_until`` while it waits, and ``polish_skipped`` once the user ended that wait; ``notices`` say
-    why a subscription target has no download yet, or took one without Polish subtitles.
-    """
+    """Latest real admission or scoped uncertainty of one episode."""
 
     key: EpisodeKey
     state: str

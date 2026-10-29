@@ -155,10 +155,7 @@ class TransferInspector:
         stall_after_s: float = float("inf"),
         held: frozenset[str] = frozenset(),
     ) -> tuple[AcquisitionConfirmation, ...]:
-        """Read the client once and refresh the details of the selected files whenever the transfer moved bytes.
-
-        A hash in *held* is not observed now, so its accrued idle time survives as a suspended measurement.
-        """
+        """Read the client once and refresh the details of the selected files whenever the transfer moved bytes."""
         if not acquisitions:
             self._files.clear()
             self._refused.clear()

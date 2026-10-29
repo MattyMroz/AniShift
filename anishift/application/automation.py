@@ -4669,7 +4669,7 @@ class AutomationOwner:
     def _escalations(
         self, record: SubscriptionRecord, decided: Mapping[int, _Decided], now: datetime
     ) -> tuple[_Escalation, ...]:
-        """Return the §8 notices one check owes for the due targets of *record*, each reason at most once."""
+        """Return the escalation notices one check owes for the due targets of *record*, each reason at most once."""
         found: list[_Escalation] = []
         for target in record.targets:
             if target.state is not TargetState.DUE:
@@ -8872,10 +8872,7 @@ def _selection_mismatch(
 def _episode_bindings(
     item: AcquisitionConfirmation, files: Sequence[TorrentFile], others: Sequence[AcquisitionConfirmation]
 ) -> dict[str, tuple[tuple[FileReservation, ...], str | None]]:
-    """Bind every unbound episode to its files; a subscription attempt that may not start names its stop reason.
-
-    A manual episode whose video is already taken stays without a file; *others* are the remaining transfers.
-    """
+    """Bind every unbound episode to its files; a subscription attempt that may not start names its stop reason."""
     bound: set[int] = set()
     bindings: dict[str, tuple[tuple[FileReservation, ...], str | None]] = {}
     for assignment in item.active_assignments:

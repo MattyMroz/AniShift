@@ -109,13 +109,7 @@ class Verification:
 
 
 def expected_episode(episodes: Mapping[str, object], episode_key: str) -> ExpectedEpisode:
-    """Build the expectation from raw ani.zip episodes using the exact local episode key.
-
-    Prefer a positive numeric ``length``, then ``runtime``; conflicting values are never averaged.
-
-    Raises:
-        ValueError: The key is empty or padded.
-    """
+    """Build the expectation from raw ani.zip episodes using the exact local episode key."""
     if not episode_key or episode_key.strip() != episode_key:
         msg: str = "An exact nonempty local episode key is required"
         raise ValueError(msg)

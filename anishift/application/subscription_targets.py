@@ -383,13 +383,7 @@ class SubscriptionRow:
 
 @dataclass(frozen=True, slots=True)
 class TargetFacts:
-    """What the transfers of one target episode prove, projected by the owner from its state.
-
-    ``attempt`` is ``ATTEMPT_ACTIVE``, ``ATTEMPT_SATISFIED`` or the reason the attempt closed;
-    ``manual`` is ``ATTEMPT_ACTIVE`` or ``ATTEMPT_SATISFIED`` for a retained manual order of the episode;
-    ``refunded`` returns the spent attempt of one stopped after metadata, and ``dead`` is the resolution
-    class of a dead attempt, which raises the target threshold.
-    """
+    """What the transfers of one target episode prove, projected by the owner from its state."""
 
     attempt: str | None = None
     manual: str | None = None
@@ -400,10 +394,7 @@ class TargetFacts:
 
 
 def settle_target(target: SubscriptionTarget, facts: TargetFacts, now: datetime) -> SubscriptionTarget:
-    """Return *target* after the transfers of its episode moved, never satisfied by an order alone.
-
-    A target that is no longer due forgets when its sources became unavailable and what blocked its choice.
-    """
+    """Return *target* after the transfers of its episode moved, never satisfied by an order alone."""
     settled: SubscriptionTarget = _settle(target, facts, now)
     if settled.state is TargetState.DUE or (settled.sources_down_since is None and settled.blocker is None):
         return settled

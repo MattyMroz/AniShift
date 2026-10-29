@@ -1037,11 +1037,7 @@ def preflight(
     refused_names: Sequence[str] = (),
     occupied_names: Sequence[str] = (),
 ) -> tuple[PreflightFinding, ...]:
-    """Report every pre-existing fact a controlled transition has to settle, changing nothing.
-
-    *refused_names* are the reserved workspace names left untouched, *occupied_names* the ones
-    that already hold content; both come from the caller that may read the filesystem.
-    """
+    """Report every pre-existing fact a controlled transition has to settle, changing nothing."""
     paused: tuple[PreflightFinding, ...] = (
         () if state.policy.auto_enabled else (PreflightFinding(PreflightFindingKind.AUTOMATION_PAUSED),)
     )

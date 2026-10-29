@@ -171,7 +171,7 @@ _NON_ENGLISH_LANGUAGE: Final[str] = "fr"
 """Subtitle language whose releases the index keeps outside the English-translated category."""
 
 _FALLBACK_CACHE_S: Final[int] = 900
-"""Freshness of remembered entry data when ani.zip omits it; its ``Cache-Control`` measured 2026-09-22."""
+"""Freshness of remembered entry data when ani.zip sends no ``Cache-Control``."""
 
 _REMEMBERED_ENTRIES: Final[int] = 64
 """Entries the resident process keeps in memory before forgetting the least recently used one."""
@@ -442,11 +442,7 @@ class DownloadReceipt:
 
 @dataclass(frozen=True, slots=True)
 class ListingRead:
-    """One episode list with the exact mapping it was built from, whether it was read live, and its numbering facts.
-
-    ``live`` means ani.zip returned episodes that replace the saved mapping; ``answered`` means ani.zip answered at
-    all, also with an absent or empty mapping; ``episode_count`` is the AniList count alone, without ani.zip fallback.
-    """
+    """One episode list with the mapping it was built from and its numbering facts."""
 
     listing: EpisodeListing
     mapping: AniZipMapping
@@ -460,11 +456,7 @@ class ListingRead:
 
 @dataclass(frozen=True, slots=True)
 class SubscriptionSearch:
-    """One subscription target search: its offer and H1 target, the target failures after it and source facts.
-
-    ``polish`` is the Polish history the previous episode's TsukiHime list proved, None when nothing was proved;
-    ``sources`` names the state each source ended this search in.
-    """
+    """One subscription target search: its offer, H1 target, target failures and source facts."""
 
     offer: EpisodeOffer
     target: dict[str, object]
@@ -880,12 +872,7 @@ class AcquisitionService:
     def read_listing(
         self, anilist_id: int, *, saved: AniZipMapping | None = None, targets: Collection[int] = ()
     ) -> ListingRead:
-        """Read the episode list with bridged numbering and saved mapping fallback.
-
-        A remembered mapping leaving any of *targets* without numbering is read again from ani.zip.
-        Without the franchise graph the list keeps a warning and the entry counts as a movie only when
-        the chosen mapping says so.
-        """
+        """Read the episode list with bridged numbering and saved mapping fallback."""
         now: float = self._clock()
         graph_movie: bool | None = self._graph_movie(anilist_id, now)
         remembered: bool = self._remembered_mapping(anilist_id, now) is not None
@@ -1054,10 +1041,7 @@ class AcquisitionService:
         tsukihime_id: int | None,
         history_at: datetime | None = None,
     ) -> SubscriptionSearch:
-        """Search one subscription target against the mapping of *read*, within the subscription source budget.
-
-        With *history_at* it also reads the Polish history of the previous episode as of that moment.
-        """
+        """Search one subscription target against the mapping of *read* within the subscription source budget."""
         if self._episode_search is None:
             offer, target = self._torrentio_offer(key, read)
             queried: bool = read.mapping.kitsu_id is not None

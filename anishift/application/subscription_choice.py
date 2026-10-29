@@ -131,10 +131,7 @@ class ChoiceState:
 
 @dataclass(frozen=True, slots=True)
 class ChoiceDecision:
-    """The release one check admits for a target, or what blocks it, with the end of its Polish wait.
-
-    ``blocked`` is the best release the threshold refuses, or the best pending release that blocks the choice.
-    """
+    """The release one check admits for a target, or what blocks it, with the end of its Polish wait."""
 
     candidate: ChoiceCandidate | None
     blocker: Blocker
@@ -295,12 +292,7 @@ def polish_admitted(acquisitions: Sequence[AcquisitionConfirmation], anilist_id:
 
 
 def replacement(candidates: Sequence[ChoiceCandidate], *, excluded: Collection[str]) -> ChoiceCandidate | None:
-    """Return the R-07 replacement: the first admissible release by ``choice_key``, or None for a manual choice.
-
-    It ignores the Polish wait and the target threshold, and *excluded* drops every file of each tried hash, so
-    an uncertain release never qualifies. E4 calls it from the U-08 trigger on ``search_episode`` candidates and
-    admits the result through ``_admit_episode`` with the rejected admission as ``previous``.
-    """
+    """Return the first admissible release by ``choice_key``, or None for a manual choice."""
     allowed: list[ChoiceCandidate] = sorted(
         (item for item in candidates if admissible(item, excluded=excluded, threshold=None)), key=choice_key
     )

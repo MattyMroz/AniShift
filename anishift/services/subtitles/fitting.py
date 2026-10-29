@@ -45,7 +45,7 @@ _OBJECT_GAP_MS: Final[int] = 500
 """Largest gap after which an event with the same source and translated text still belongs to one sign object."""
 
 _EXACT_UNCERTAINTY: Final[float] = 0.012
-"""Relative width error allowed when every glyph is measured in its real font (p90 against libass)."""
+"""Relative width error allowed when every glyph is measured in its real font."""
 
 _APPROXIMATE_UNCERTAINTY: Final[float] = 0.07
 """Relative width error allowed when a font, glyph, rotation or animation is only approximated."""
@@ -54,7 +54,7 @@ _PIXEL: Final[float] = 1.0
 """Script pixels any screen or overlap comparison tolerates on top of the measurement error."""
 
 _SCREEN_HEIGHT: Final[float] = 1080.0
-"""Screen height in pixels letter heights are expressed in (text-layout spec §4.6)."""
+"""Screen height in pixels letter heights are expressed in."""
 
 _PROBE: Final[str] = "Xg"
 """Text whose one- and two-line heights give the line pitch of a sign."""

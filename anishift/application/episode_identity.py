@@ -1,4 +1,4 @@
-"""Assess selected-file identity with H1 v10.10 without inspecting media or performing I/O."""
+"""Assess selected-file identity without inspecting media or performing I/O."""
 
 from __future__ import annotations
 
