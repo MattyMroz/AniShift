@@ -295,6 +295,26 @@ def test_a_timed_out_client_never_takes_the_late_answer_as_the_next_result(tmp_p
     assert timeout.value.connection_lost
 
 
+@pytest.mark.integration
+def test_a_connection_closed_during_a_read_loses_the_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def closed_handle(*args: object, **kwargs: object) -> bytes:
+        raise TypeError("ReadFile() argument 1 must be int, not None")
+
+    server, endpoint, key = _serving(_state_dir(tmp_path))
+    client: ControlClient = ControlClient(endpoint, key, timeout_s=_TIMEOUT_S)
+    monkeypatch.setattr(client._connection, "recv_bytes", closed_handle)
+    try:
+        with pytest.raises(ControlError) as problem:
+            client.call("echo", {"echo": "first"})
+    finally:
+        client.close()
+        server.close()
+
+    assert problem.value.connection_lost
+
+
 @pytest.mark.parametrize(
     ("frame", "answered", "lost"),
     [
