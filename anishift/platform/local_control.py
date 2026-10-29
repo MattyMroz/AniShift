@@ -568,7 +568,7 @@ class ControlClient:
         while True:
             try:
                 raw: bytes = self._connection.recv_bytes(maxlength=MAX_FRAME_BYTES)
-            except EOFError, OSError:
+            except EOFError, OSError, TypeError:
                 return
             frame: Mapping[str, object] | None = _decode_frame(raw)
             if frame is not None and "event" in frame:
@@ -586,7 +586,7 @@ class ControlClient:
             raise ControlError(message, code=ControlErrorCode.REFUSED, reason=_REQUEST_TOO_LARGE_REASON)
         try:
             self._connection.send_bytes(encoded)
-        except (OSError, ValueError) as problem:
+        except (OSError, TypeError, ValueError) as problem:
             msg = "The resident closed the control connection"
             raise ControlError(msg, code=ControlErrorCode.REFUSED) from problem
 
@@ -596,7 +596,7 @@ class ControlClient:
                 msg = "The resident did not answer in time"
                 raise ControlError(msg, code=ControlErrorCode.INTERNAL)
             raw: bytes = self._connection.recv_bytes(maxlength=MAX_FRAME_BYTES)
-        except (EOFError, OSError) as problem:
+        except (EOFError, OSError, TypeError) as problem:
             msg = "The resident closed the control connection"
             raise ControlError(msg, code=ControlErrorCode.REFUSED) from problem
         frame: Mapping[str, object] | None = _decode_frame(raw)
@@ -697,7 +697,7 @@ class _ServedConnection:
         with self._send_lock:
             try:
                 self._connection.send_bytes(payload)
-            except OSError, ValueError:
+            except OSError, TypeError, ValueError:
                 return False
         return True
 
@@ -705,7 +705,7 @@ class _ServedConnection:
         """Read one frame, returning ``None`` when the connection ended or overflowed."""
         try:
             return self._connection.recv_bytes(maxlength=MAX_FRAME_BYTES)
-        except EOFError:
+        except EOFError, TypeError:
             return None
         except OSError:
             logger.warning("Dropped a control connection whose frame passed the size limit")
