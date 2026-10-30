@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from conftest import MM_AVH_TEMP
 
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState
 from anishift.application.cancellation import EventCancellationToken, NeverCancelledToken
@@ -20,9 +21,11 @@ from anishift.application.runtime import ProductionHandlerFactory
 from anishift.application.sign_narration import write_sign_candidates
 from anishift.application.tts_clips import FfmpegClipService
 from anishift.application.tts_handler import (
+    NarrationManifest,
     NarrationTiming,
     TtsProgressObserver,
     TtsTaskHandler,
+    _narration_batch,
     build_narration_manifest,
     load_narration_manifest,
 )
@@ -32,7 +35,7 @@ from anishift.platform.binaries import Binary, resolve_binary
 from anishift.services.audio.commands import CommandResult
 from anishift.services.audio.errors import AudioProcessError
 from anishift.services.audio.types import NormalizedClip, PcmStorage, TimedClip
-from anishift.services.subtitles import SignCandidate
+from anishift.services.subtitles import SignCandidate, SpokenLine
 from anishift.services.tts import (
     AudioFormat,
     ClipExpectation,
@@ -51,6 +54,9 @@ _SPOKEN_PARAMETERS: tuple[tuple[str, str | int | bool], ...] = (
     ("narration_timeline", "source_times"),
     ("script_kind", "spoken_pl"),
 )
+
+_OPEN_PAIR: tuple[tuple[int, int, str], ...] = ((1_000, 2_000, "Kiedy wrócisz"), (2_000, 3_500, "do domu?"))
+_TANTEI_LINES: Path = MM_AVH_TEMP / "elevenreader" / "tantei" / "lines.json"
 
 
 class _Progress:
@@ -872,3 +878,112 @@ def test_a_spoken_only_script_is_read_whole_while_a_full_script_is_classified(
     _read_aloud(tmp_path, _ass_script(tmp_path / "episode.ass"), kind, "source_times", service)
 
     assert [request.text for request in service.batches[0].requests] == texts
+
+
+def _cues_srt(tmp_path: Path, cues: tuple[tuple[int, int, str], ...]) -> Path:
+    path: Path = tmp_path / "cues.pl.srt"
+    blocks: list[str] = [
+        f"{number}\n{_srt_time(start)} --> {_srt_time(end)}\n{text}\n"
+        for number, (start, end, text) in enumerate(cues, start=1)
+    ]
+    path.write_text("\n".join(blocks), encoding="utf-8")
+    return path
+
+
+def _srt_time(milliseconds: int) -> str:
+    seconds, millis = divmod(milliseconds, 1_000)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02}:{minutes:02}:{seconds:02},{millis:03}"
+
+
+def _joined_reading(
+    tmp_path: Path, cues: tuple[tuple[int, int, str], ...], *, join_open_lines: bool, timeline: str = "source_times"
+) -> tuple[SpeechBatch, NarrationManifest]:
+    service = _Tts(tmp_path)
+    path: Path = _cues_srt(tmp_path, cues)
+    result: TaskResult = TtsTaskHandler(
+        service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, join_open_lines=join_open_lines
+    ).execute(
+        _speech_task(timeline, ArtifactKind.FULL_PL),
+        ArtifactSnapshot({"script": _script(path, ArtifactKind.FULL_PL)}, {"manifest": _manifest_slot()}),
+        NeverCancelledToken(),
+        _Progress(),
+    )
+    return service.batches[0], load_narration_manifest(result.outputs[0].path)
+
+
+def test_narration_without_joining_open_pair_keeps_two_requests(tmp_path: Path) -> None:
+    batch, manifest = _joined_reading(tmp_path, _OPEN_PAIR, join_open_lines=False)
+
+    assert [(request.request_id, request.text) for request in batch.requests] == [
+        ("group-1-0", "Kiedy wrócisz"),
+        ("group-1-1", "do domu?"),
+    ]
+    assert [(clip.start_ms, clip.end_ms, clip.source_order) for clip in manifest.clips] == [
+        (1_000, 2_000, 0),
+        (2_000, 3_500, 1),
+    ]
+
+
+def test_narration_joining_open_pair_without_gap_sends_one_request_over_both_windows(tmp_path: Path) -> None:
+    batch, manifest = _joined_reading(tmp_path, _OPEN_PAIR, join_open_lines=True)
+
+    assert [(request.request_id, request.text) for request in batch.requests] == [
+        ("group-1-0", "Kiedy wrócisz do domu?"),
+    ]
+    assert [(clip.start_ms, clip.end_ms, clip.source_order) for clip in manifest.clips] == [(1_000, 3_500, 0)]
+
+
+def test_narration_joining_open_pair_with_one_ms_gap_keeps_two_requests(tmp_path: Path) -> None:
+    cues: tuple[tuple[int, int, str], ...] = ((1_000, 2_000, "Kiedy wrócisz"), (2_001, 3_500, "do domu?"))
+
+    batch, _ = _joined_reading(tmp_path, cues, join_open_lines=True)
+
+    assert [request.request_id for request in batch.requests] == ["group-1-0", "group-1-1"]
+
+
+def test_narration_joining_closed_line_keeps_two_requests(tmp_path: Path) -> None:
+    cues: tuple[tuple[int, int, str], ...] = ((1_000, 2_000, "Wróciłem."), (2_000, 3_500, "Jestem w domu."))
+
+    batch, _ = _joined_reading(tmp_path, cues, join_open_lines=True)
+
+    assert [request.request_id for request in batch.requests] == ["group-1-0", "group-1-1"]
+
+
+def test_narration_joining_three_open_lines_joins_only_the_first_pair(tmp_path: Path) -> None:
+    cues: tuple[tuple[int, int, str], ...] = (
+        (1_000, 2_000, "Kiedy"),
+        (2_000, 3_000, "wrócisz"),
+        (3_000, 4_000, "do domu"),
+    )
+
+    batch, manifest = _joined_reading(tmp_path, cues, join_open_lines=True)
+
+    assert [(request.request_id, request.text, request.request_rank) for request in batch.requests] == [
+        ("group-1-0", "Kiedy wrócisz", 0),
+        ("group-1-2", "do domu", 1),
+    ]
+    assert [(clip.start_ms, clip.end_ms, clip.source_order) for clip in manifest.clips] == [
+        (1_000, 3_000, 0),
+        (3_000, 4_000, 2),
+    ]
+
+
+def test_narration_joining_continuous_timeline_keeps_every_line(tmp_path: Path) -> None:
+    batch, manifest = _joined_reading(tmp_path, _OPEN_PAIR, join_open_lines=True, timeline="continuous")
+
+    assert [request.request_id for request in batch.requests] == ["group-1-0", "group-1-1"]
+    assert [(clip.start_ms, clip.end_ms) for clip in manifest.clips] == [(0, 1), (0, 1)]
+
+
+@pytest.mark.skipif(not _TANTEI_LINES.is_file(), reason="Tantei lines.json is not available")
+def test_narration_joining_tantei_lines_makes_eleven_joins() -> None:
+    raw: list[dict[str, str | int]] = json.loads(_TANTEI_LINES.read_text(encoding="utf-8"))
+    lines: tuple[SpokenLine, ...] = tuple(
+        SpokenLine(int(line["start"]), int(line["end"]), str(line["text"]), "", int(line["order"])) for line in raw
+    )
+
+    requests, _ = _narration_batch("tantei", lines, NarrationTimeline.SOURCE_TIMES, join_open_lines=True)
+
+    assert len(lines) - len(requests) == 11

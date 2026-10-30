@@ -48,6 +48,7 @@ from anishift.services.tts import (
     SpeechRetryProgress,
 )
 from anishift.services.tts.validation import is_speech_text
+from anishift.text.boundaries import ends_sentence
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -195,7 +196,15 @@ class _ProgressObserver:
 class TtsTaskHandler:
     """Read one planned script aloud through a run-scoped facade, whatever document carries it."""
 
-    __slots__ = ("_allowed_voice_ids", "_audio", "_group_ranks", "_run_root", "_service", "_voice_id")
+    __slots__ = (
+        "_allowed_voice_ids",
+        "_audio",
+        "_group_ranks",
+        "_join_open_lines",
+        "_run_root",
+        "_service",
+        "_voice_id",
+    )
 
     def __init__(  # noqa: PLR0913 - keyword-only run dependencies
         self,
@@ -206,8 +215,10 @@ class TtsTaskHandler:
         voice_id: str = "",
         allowed_voice_ids: frozenset[str] = frozenset(),
         audio: ClipPreparer | None = None,
+        join_open_lines: bool = False,
     ) -> None:
         self._service: TtsExecutor = service
+        self._join_open_lines: bool = join_open_lines
         self._audio: ClipPreparer | None = audio
         self._run_root: Path = run_root
         self._voice_id: str = voice_id
@@ -243,7 +254,7 @@ class TtsTaskHandler:
         if timeline is NarrationTimeline.SOURCE_TIMES and source.kind in _UNTIMED_SCRIPT_KINDS:
             _raise_execution("A plain text script carries no times a recording could keep")
         lines: tuple[SpokenLine, ...] = _script_lines(source.kind, source.path)
-        requests, timings = _narration_batch(task.group_id, lines, timeline)
+        requests, timings = _narration_batch(task.group_id, lines, timeline, join_open_lines=self._join_open_lines)
         batch_rank: int | None = self._group_ranks.get(task.group_id)
         if batch_rank is None:
             _raise_execution("TTS task group is missing its natural-order rank")
@@ -542,24 +553,46 @@ def _narration_batch(
     group_id: str,
     lines: tuple[SpokenLine, ...],
     timeline: NarrationTimeline,
+    *,
+    join_open_lines: bool,
 ) -> tuple[tuple[SpeechRequest, ...], tuple[NarrationTiming, ...]]:
     """Pair every pronounceable line with the window *timeline* reads it in, refusing an unreadable script."""
-    requests: list[SpeechRequest] = []
-    timings: list[NarrationTiming] = []
+    spoken: list[SpokenLine] = []
     previous_order: int | None = None
     for line in lines:
         if previous_order is not None and line.order <= previous_order:
             _raise_execution("TTS script lines must arrive in strictly increasing reading order")
         previous_order = line.order
-        if not is_speech_text(line.text):
-            continue
+        if is_speech_text(line.text):
+            spoken.append(line)
+    if not spoken:
+        _raise_execution("TTS script carries no pronounceable text")
+    if join_open_lines and timeline is NarrationTimeline.SOURCE_TIMES:
+        spoken = _join_open_lines(spoken)
+    requests: list[SpeechRequest] = []
+    timings: list[NarrationTiming] = []
+    for line in spoken:
         request_id: str = f"{group_id}-{line.order}"
         requests.append(SpeechRequest(request_id, line.text, len(requests)))
         start, end = _timing_window(line, timeline)
         timings.append(NarrationTiming(request_id, start, end, line.order))
-    if not requests:
-        _raise_execution("TTS script carries no pronounceable text")
     return tuple(requests), tuple(timings)
+
+
+def _join_open_lines(lines: list[SpokenLine]) -> list[SpokenLine]:
+    """Join each line left open into the next one starting before it ends, pairs only."""
+    joined: list[SpokenLine] = []
+    index: int = 0
+    while index < len(lines):
+        line: SpokenLine = lines[index]
+        following: SpokenLine | None = lines[index + 1] if index + 1 < len(lines) else None
+        index += 1
+        if following is None or ends_sentence(line.text) or following.start > line.end:
+            joined.append(line)
+            continue
+        joined.append(replace(line, text=f"{line.text} {following.text}", end=max(line.end, following.end)))
+        index += 1
+    return joined
 
 
 def _timing_window(line: SpokenLine, timeline: NarrationTimeline) -> tuple[int, int]:

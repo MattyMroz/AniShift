@@ -239,6 +239,7 @@ class ProductionHandlerFactory:
             voice_id=plan.settings.tts_voice_id,
             allowed_voice_ids=frozenset(plan.settings.tts_allowed_voice_ids),
             audio=audio,
+            join_open_lines=False,
         )
 
     @staticmethod
