@@ -58,6 +58,9 @@ WORKSPACE_DIRECTORY: Final[str] = "workspace"
 TMP_DIRECTORY: Final[str] = "tmp"
 """Private run staging directory inside a workspace."""
 
+QUALITY_DIRECTORY: Final[str] = ".quality"
+"""Default-workspace subdirectory holding untracked quality corpora and test recordings."""
+
 RESTORE_STAGING_PREFIX: Final[str] = f"{TMP_DIRECTORY}/.restore-"
 """Workspace-relative beginning of every private staging path a restore reserves."""
 
@@ -101,6 +104,11 @@ def config_dir() -> Path:
 def default_workspace_dir() -> Path:
     """Return the default library location before workspace overrides and validation."""
     return repo_root() / WORKSPACE_DIRECTORY
+
+
+def quality_dir() -> Path:
+    """Return the untracked quality corpus and test recording root inside the default workspace."""
+    return default_workspace_dir() / QUALITY_DIRECTORY
 
 
 def config_path() -> Path:

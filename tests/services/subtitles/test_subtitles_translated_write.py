@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from conftest import MM_AVH_TEMP
 from loguru import logger as loguru_logger
 from pysubs2 import SSAEvent, SSAFile, SSAStyle
 
+from anishift.paths import quality_dir
 from anishift.services.subtitles.classifier import Category, StyleVerdict
 from anishift.services.subtitles.linebreak import NO_WRAP
 from anishift.services.subtitles.service import (
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from loguru import Record
 
 _REAL_ASS_NAME = "006___shisha__Genjitsu_no_Yohane_-_Sunshine_in_the_Mirror_-_01__1080p_.mkv.ass"
-_REAL_ASS = MM_AVH_TEMP / "dataset_ass" / _REAL_ASS_NAME
+_REAL_ASS = quality_dir() / "dataset_ass" / _REAL_ASS_NAME
 _RE_TAGS = re.compile(r"\{[^}]*\}")
 _RE_SCALE = re.compile(r"\\fsc[xy]?(?:-?[0-9]*\.?[0-9]+)?")
 _LONG_TRANSLATION = "Pierwszy wers jest tutaj całkiem długi, a drugi wers też ma sporo słów."

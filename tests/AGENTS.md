@@ -10,7 +10,6 @@ Testy pytest. Konwencje testowe całego drzewa; komenda bramki jakości i marker
 - Regresja klasyfikatora ma allowlistę znanych pudeł (`_KNOWN_MISSED_DIALOG`) i faila na KAŻDE nowe pudło, nie tylko na spadek dokładności. `services/subtitles/test_regression_classifier.py:10`
 - Wątek `AnimeController` zeruje `_worker` przed swoimi ostatnimi skutkami (np. przejściem na listę subskrypcji), więc `_worker is None` nie dowodzi końca pracy; czekaj na koniec wątków `_WORKER_NAME` uruchomionych przez klawisz (`test_subscription_draft._keys`). `cli/test_subscription_draft.py`
 - Pomocnik oczekiwania ma zwracać sukces przy pierwszej obserwacji warunku, nie oceniać go drugi raz: `run_result` wraca chwilowo do `running` przy ponowieniu odroczonej relokacji. Plik przekazany do Auto bywa otwarty przez sondę `mkvmerge`; test usuwający go na Windows używa `_unlink_when_released`. `application/test_automation.py`
-- `test_translation_network.py` liczy ścieżkę datasetu względną `../mm_avh_working_space/...` — działa tylko gdy CWD = katalog repo. `services/translation/test_translation_network.py:20`
 
 ## Konwencje
 
@@ -19,7 +18,7 @@ Testy pytest. Konwencje testowe całego drzewa; komenda bramki jakości i marker
   dopuszcza dyrektywy `# noqa`, `# type:` i `# pragma`. Opis scenariusza należy do nazwy testu.
 - Testy `network` domyślnie SKIPowane; uruchamiają się tylko z `-m network` (logika w `pytest_collection_modifyitems`, nie w addopts). `conftest.py:26`
 - Testy zależne od datasetu spoza repo gate'ują się przez `skipif(not PATH.is_file())` / `pytest.skip()` — brak pliku = zielono, nie czerwono. `services/subtitles/test_regression_classifier.py:22`
-- Korpus ASS (`MM_AVH_TEMP`) leży POZA repo, w siostrzanym `../mm_avh_working_space/temp/`. `conftest.py:19`
+- Dane testowe spoza gita leżą w gitignorowanym `workspace/.quality/` (`anishift.paths.quality_dir()`, jedyne źródło tej ścieżki): korpus `dataset_ass/`, `ground_truth/`, nagrania `elevenreader/`.
 - Izolacja stanu przez `monkeypatch.setattr` (config_path/resolve_binary/is_windows/Popen), brak globalnego autouse fixture — każdy test patchuje sam. `config/test_user_settings.py:19`, `platform/test_binaries.py:18`
 - Testy zależne od systemu wymuszają zachowanie przez `monkeypatch.setattr(..., "is_windows", ...)` zamiast realnego OS. `platform/test_binaries.py:19`
 

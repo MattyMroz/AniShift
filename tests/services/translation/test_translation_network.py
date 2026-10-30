@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from anishift.config.settings import Settings
+from anishift.paths import quality_dir
 from anishift.services.subtitles import (
     is_drawing,
     load_subtitles,
@@ -17,7 +18,7 @@ from anishift.services.translation.service import TranslationService
 
 pytestmark = pytest.mark.network
 
-_DATASET_ASS = Path("../mm_avh_working_space/temp/dataset_ass")
+_DATASET_ASS = quality_dir() / "dataset_ass"
 
 
 def _spoken(*texts: str) -> list[SpokenLine]:

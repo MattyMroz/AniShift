@@ -10,11 +10,7 @@ import pytest
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
-
 DATA_DIR: Final[Path] = Path(__file__).resolve().parent / "data"
-
-MM_AVH_TEMP: Final[Path] = _REPO_ROOT.parent / "mm_avh_working_space" / "temp"
 
 
 def hidden_window_options() -> dict[str, object]:

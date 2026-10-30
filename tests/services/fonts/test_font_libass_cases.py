@@ -5,11 +5,12 @@ from typing import Final
 
 import pytest
 
+from anishift.paths import quality_dir
 from anishift.services.fonts.index import FontIndex, polish_missing, system_font_paths
 
 pytestmark = pytest.mark.integration
 
-_QUALITY: Final[Path] = Path(__file__).resolve().parents[3] / "workspace" / ".quality"
+_QUALITY: Final[Path] = quality_dir()
 _GRAND_BLUE: Final[Path] = _QUALITY / "corpus-pairs" / "grand-blue-s2-01" / "fonts"
 _KAGUYA: Final[Path] = _QUALITY / "corpus-pairs" / "kaguya-s1-01" / "fonts"
 _ICEBLADE: Final[Path] = (

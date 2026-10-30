@@ -2,8 +2,8 @@ import json
 from typing import Final
 
 import pytest
-from conftest import MM_AVH_TEMP as DATASET
 
+from anishift.paths import quality_dir
 from anishift.services.subtitles.classifier import Category, classify_styles
 from anishift.services.subtitles.service import load_subtitles
 
@@ -16,8 +16,8 @@ _KNOWN_MISSED_DIALOG: Final[frozenset[tuple[str, str]]] = frozenset(
 
 
 def test_classifier_regression_matches_mm_avh_baseline() -> None:
-    ground_truth = DATASET / "ground_truth"
-    dataset_ass = DATASET / "dataset_ass"
+    ground_truth = quality_dir() / "ground_truth"
+    dataset_ass = quality_dir() / "dataset_ass"
     if not ground_truth.is_dir() or not dataset_ass.is_dir():
         pytest.skip("mm_avh regression dataset is not available")
     truth: dict[str, dict[str, dict[str, object]]] = {}

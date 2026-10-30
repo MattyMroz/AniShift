@@ -6,6 +6,7 @@ from typing import Final
 import pytest
 from pysubs2 import Alignment, Color, SSAEvent, SSAFile, SSAStyle
 
+from anishift.paths import quality_dir
 from anishift.services.fonts import FontIndex, system_font_paths
 from anishift.services.subtitles.geometry import (
     Rect,
@@ -18,7 +19,7 @@ from anishift.services.subtitles.geometry import (
 )
 from anishift.services.subtitles.text import visible_text, visible_verses
 
-_QUALITY: Final[Path] = Path(__file__).resolve().parents[3] / "workspace" / ".quality"
+_QUALITY: Final[Path] = quality_dir()
 _ICEBLADE_FONTS: Final[Path] = (
     _QUALITY
     / "library"

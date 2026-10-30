@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 import pytest
 
-from anishift.paths import default_workspace_dir
+from anishift.paths import quality_dir
 from anishift.services.fonts import FontIndex
 from anishift.services.subtitles.geometry import Rect, RenderProfile, screen_rects
 from anishift.services.subtitles.layout import Field, Layout, Scale, candidates, lay_out
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
     from anishift.services.subtitles.types import FontSources, SubtitleSplit, TranslatedLayout
 
-_QUALITY: Final[Path] = default_workspace_dir() / ".quality"
+_QUALITY: Final[Path] = quality_dir()
 _HARD: Final[Path] = _QUALITY / "experiments" / "v4-hard" / "cases.json"
 _OWNER_FONT: Final[Path] = (
     Path.home() / "Videos" / "mpv" / "portable_config" / "fonts" / "ITC Officina Sans Std PL - Bold.ttf"

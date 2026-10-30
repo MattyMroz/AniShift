@@ -1,12 +1,12 @@
 import pysubs2
 import pytest
-from conftest import MM_AVH_TEMP
 from pysubs2 import SSAEvent, SSAFile
 
+from anishift.paths import quality_dir
 from anishift.services.subtitles.classifier import Category, classify_styles, written_in_capitals
 from anishift.services.subtitles.service import collapse_fbf
 
-_FUJI_ASS = MM_AVH_TEMP / "dataset_ass" / "140___Fuji__Kimi_to_Koete_Koi_ni_Naru_-_03__1080p_.mkv.ass"
+_FUJI_ASS = quality_dir() / "dataset_ass" / "140___Fuji__Kimi_to_Koete_Koi_ni_Naru_-_03__1080p_.mkv.ass"
 
 
 def _event(text: str, *, start: int, style: str = "Default", end: int | None = None) -> SSAEvent:

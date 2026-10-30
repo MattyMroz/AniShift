@@ -8,6 +8,7 @@ import pysubs2
 import pytest
 from pysubs2 import SSAStyle
 
+from anishift.paths import quality_dir
 from anishift.services.subtitles.text import (
     is_drawing,
     marked_text,
@@ -18,9 +19,7 @@ from anishift.services.subtitles.text import (
     visible_verses,
 )
 
-_STYLE_EXPERIMENT: Final[Path] = (
-    Path(__file__).resolve().parents[3] / "workspace" / ".quality" / "experiments" / "styles"
-)
+_STYLE_EXPERIMENT: Final[Path] = quality_dir() / "experiments" / "styles"
 
 
 @dataclass(frozen=True, slots=True)
