@@ -103,7 +103,9 @@ To katalog tymczasowy sesji; faza 0 planu kopiuje dane poza niego.
   znaki wewnątrz kwestii na pojedyncze spacje. Dokument ma postać `"\n\n…\n\n".join(kwestie) + "\n"`, bez `<break>`
   i bez `[pause]`; wielokropek na końcu kwestii zostaje w jej tekście. Limit znaków dokumentu dotyczy całego tego
   tekstu razem z separatorami.
-- **F6.** Czytane szyldy idą tą samą drogą, jako osobny dokument tej samej grupy.
+- **F6.** Przy silniku dokumentowym wszystkie kandydaty szyldów (tryb `sign_narration` inny niż `off`) idą w tym
+  samym batchu co kwestie, więc w tym samym dokumencie i nagraniu; wybór i rozmieszczenie szyldów po syntezie są takie
+  same jak przy silnikach „kwestia po kwestii”. Drugiego dokumentu nie ma.
 - **F7.** Silnik nagrywa przy prędkości czytania 1x i przerywa próbę, gdy strumień zgłosi inną prędkość (model v2).
 - **F8.** Silnik odmawia zatwierdzenia nagrania, gdy adres strumienia nie zawiera identyfikatora wybranego głosu.
 
@@ -123,6 +125,8 @@ To katalog tymczasowy sesji; faza 0 planu kopiuje dane poza niego.
 
 - **F13.** Przy miksie z oryginałem AudioService mierzy zintegrowaną głośność narratora i oryginału (`ebur128`) i
   ustawia wzmocnienie narratora tak, by był `narrator_over_source_lu + voice_mix_offset_db` LU ponad oryginałem.
+  Oryginał jest mierzony po standardowym downmiksie FFmpeg do stereo, więc cel znaczy to samo przy źródle stereo i
+  5.1.
 - **F14.** Miks kończy limiter szczytów −1 dBFS bez normalizacji (`alimiter … level=0`). Ścieżka tylko z
   narratorem zostaje bez wzmocnienia i bez limitera.
 - **F15.** Profile głosów mają domyślnie: Fronczewski tempo 1,45 i korekta 0 dB; Adam 1,35 i +2 dB; Dallin

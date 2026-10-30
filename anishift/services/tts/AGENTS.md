@@ -64,6 +64,8 @@ narratora ani finalnego sidecara.
 - `accept_result` sprawdza własność nagrania i kolejność `PartTiming`, tnie nagranie
   (`open_end = not ends_sentence(text)`) i waliduje każdy klip; błąd splittera albo
   niezgodne czasy to `TtsClipValidationError`, więc dokument jest ponawiany w całości.
+- Identyfikator dokumentu `{scope_id}:document:{n}` bierze `n` z licznika `TtsService`, więc jest unikalny w
+  całym przebiegu, także między batchami tego samego scope.
 - Nagranie i niezatwierdzone klipy są usuwane przed każdą kolejną próbą i po każdym
   dokumencie. `provider_calls` i `retries` dokumentu liczą się na jego pierwszej kwestii.
 - `TtsScheduler` dostaje od silnika tylko `locality` (silnik `SYSTEM` ponawia bez

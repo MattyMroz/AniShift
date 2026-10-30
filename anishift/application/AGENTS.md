@@ -189,9 +189,11 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `#GUI#progress` bez uśredniania). LLM równolegle dokładnie do `llm_max_concurrency` — scheduler nie przycina drugi
   raz; TTS jeden plik naraz.
 - TTS w `runtime.py`: jeden `FfmpegClipService` jest walidatorem, assemblerem i splitterem `TtsService`. Wiedza
-  „silnik czyta dokumentem” pochodzi tylko z `is_document_engine` rejestru TTS: daje `join_open_lines` handlera i
-  przebieg dokumentu w `_tts_config` (współbieżność 1, bez `asyncio.timeout` schedulera, bo silnik sam pilnuje
-  terminu i sprzątania konta; dłuższy `shutdown_deadline_s`). `split_clip` dekoduje nagranie z jawnym `-f mp3`
+  „silnik czyta dokumentem” pochodzi tylko z `is_document_engine` rejestru TTS: daje `reads_document` handlera
+  (łączenie kwestii urwanych i wszystkie kandydaty szyldów w batchu kwestii, czyli jeden dokument na odcinek; silniki
+  „kwestia po kwestii” dostają drugi batch tylko z szyldami osiągalnymi po ułożeniu kwestii) i przebieg dokumentu w
+  `_tts_config` (współbieżność 1, bez `asyncio.timeout` schedulera, bo silnik sam pilnuje terminu i sprzątania
+  konta; dłuższy `shutdown_deadline_s`). `split_clip` dekoduje nagranie z jawnym `-f mp3`
   (obce bajty na początku zmylą rozpoznanie formatu), czasy ramek bierze z `utils.mp3_frames`, regułę cięcia z
   `services/audio/segmentation.py`; granice bez pauzy idą do logu jako ostrzeżenie z liczbą. `tts_clips.py`
 - Sesję ElevenReadera panel czyta i odświeża przez fasadę (`elevenreader_session`, `elevenreader_sign_in`);

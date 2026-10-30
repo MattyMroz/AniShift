@@ -179,7 +179,7 @@ Nowy adapter za `TtsEngine.synthesize` nie wystarczy: scheduler podaje silnikowi
 
 | Element | Odpowiada za | Owner stanu | Nie odpowiada za |
 |---|---|---|---|
-| `TtsTaskHandler` | skrypt → `SpeechBatch`, łączenie kwestii urwanych (tylko z flagą `join_open_lines`), manifest narracji | czasy napisów | silnik, dokument |
+| `TtsTaskHandler` | skrypt → `SpeechBatch`, łączenie kwestii urwanych i szyldy w batchu kwestii (tylko z flagą `reads_document`), manifest narracji | czasy napisów | silnik, dokument |
 | rejestr TTS (`engines/__init__.py`) | `is_document_engine(engine_id)`: jedyne źródło wiedzy, który silnik czyta dokumentem | — | budowa silnika |
 | `TtsService` | ścieżka per kwestia albo dokument, resume, commit klipów, postęp, `open_end` granic | manifest resume | strona, Chrome, cięcie |
 | `TtsScheduler` | kolejka, retry, circuit, timeout prób | stan circuit | budowa żądania |
@@ -329,7 +329,7 @@ granica bez pauzy, której nie da się bezpiecznie przeciąć. Silniki „kwesti
 
 Miejsce: `TtsTaskHandler._narration_batch`, bo tylko tam są czasy napisów potrzebne do reguły i do okna
 połączonej kwestii; domena TTS czasów nie zna (I2), a kontrakt „klip na żądanie” zostaje nietknięty. Handler
-dostaje keyword-only `join_open_lines: bool` w konstruktorze; `runtime._tts_handler` ustawia go z
+dostaje keyword-only `reads_document: bool` w konstruktorze; `runtime._tts_handler` ustawia go z
 `is_document_engine(snapshot.tts_profile_id)` z rejestru TTS (`frozenset({"elevenreader"})` obok `_REGISTRY`,
 bez importu silnika). Dla `elevenbytes` i `elevenlabs` flaga jest `False`, więc `_narration_batch` działa jak dziś.
 
@@ -337,7 +337,7 @@ bez importu silnika). Dla `elevenbytes` i `elevenlabs` flaga jest `False`, więc
 `SENTENCE_ENDINGS`, `CLOSING_MARKS` albo `"` (zbiór prototypu `. ! ? … " ”` jest w nim zawarty).
 
 ```text
-tylko gdy join_open_lines i timeline is SOURCE_TIMES, po odfiltrowaniu kwestii bez mowy:
+tylko gdy reads_document i timeline is SOURCE_TIMES, po odfiltrowaniu kwestii bez mowy:
   kwestia i łączy się z i+1, gdy not ends_sentence(text_i) i start_{i+1} ≤ end_i
   łączymy wyłącznie pary: wynik połączenia nie łączy się dalej
   połączona: request_id = f"{group_id}-{order_i}", text = text_i + " " + text_{i+1},
@@ -346,6 +346,18 @@ tylko gdy join_open_lines i timeline is SOURCE_TIMES, po odfiltrowaniu kwestii b
 
 Próg „przerwa ≤ 0 ms” pochodzi z pomiaru: wszystkie 11 kwestii urwanych Tantei miało przerwę 0 ms
 (`SCR:snap-report.md` §4). Szyldy się nie łączą.
+
+**Szyldy w tym samym dokumencie.** Przy `reads_document` i trybie `sign_narration` innym niż `off` handler dokłada
+do batcha kwestii żądania wszystkich kandydatów szyldów (`{group_id}-sign-{grupa}`, rangi po kwestiach, okno napisu
+szyldu). Jedna synteza daje jeden dokument i jedno nagranie (dopóki limit znaków nie podzieli batcha). Wynik dzieli
+się po `request_id`: kwestie przechodzą ścisły `build_narration_manifest`, szyldy wersję dopuszczającą pominięte.
+Dalej działa bez zmian ta sama ścieżka: normalizacja kwestii, `select_signs` na zmierzonych klipach, okna szyldów z
+wyboru. Silnik „kwestia po kwestii” (`reads_document = False`) robi to co dotąd: najpierw kwestie, potem
+`reachable_signs` na ułożonych kwestiach i drugi batch tylko z szyldami osiągalnymi. Różnica jest jedna i świadoma:
+silnik dokumentowy czyta też szyldy, których nie da się umieścić (długości kwestii nie są znane przed nagraniem), a
+`sign_chars_synthesized` to pokazuje. Walidacja wejścia szyldów (rodzaj, tryb, serwis audio, plik) biega przed
+syntezą w obu ścieżkach. Identyfikator dokumentu bierze numer z licznika `TtsService`, więc jest unikalny w
+przebiegu.
 
 ### 7.7. Przycinanie ciszy na brzegach (`normalize_clip`)
 
@@ -368,7 +380,8 @@ przetwarzania). `normalization_fingerprint`: wersja 1 → 2 i sekcja `edge_trim`
 
 ```text
 commands.loudness_command(ffmpeg, path):
-  ffmpeg -hide_banner -nostdin -nostats -v info -i <path> -map 0:a:0 -af ebur128=framelog=quiet -f null -
+  ffmpeg -hide_banner -nostdin -nostats -v info -i <path> -map 0:a:0
+         -af aformat=channel_layouts=stereo,ebur128=framelog=quiet -f null -
 probe.measure_integrated_loudness(path, *, ffmpeg, runner, timeout_s, cancel) -> float
   parsuje ze stderr wartość I z bloku "Summary:"; "-inf" albo brak → AudioDecodeError (typowany, z sugestią)
 AudioService._render_output, tylko gdy request.source_audio_path is not None:
@@ -378,10 +391,17 @@ RenderInputs + narrator_gain_db: float
 render_command: volume narratora = narrator_gain_db; po amix:
   [mixed]alimiter=limit=0.891251:attack=5:release=50:level=0:latency=1[limited]   # −1 dBFS; level=0 obowiązkowe
 AudioConfig: narrator_mix_base_gain_db → narrator_over_source_lu: float = 7.5 (bez aliasu)
-mix_fingerprint: wersja 3 → 4; gain: narrator_over_source_lu, voice_offset_db, original_db; limiter: parametry
+mix_fingerprint: wersja 3 → 4 → 5; gain: narrator_over_source_lu, voice_offset_db, original_db; limiter: parametry;
+                 wersja 5 = pomiar oryginału po downmiksie do stereo
 ```
 
-Pomiar źródła dotyczy oryginału przed `original_gain_db` (wzór z `SCR:loudness-report.md` §4). Trafienie resume
+Pomiar źródła dotyczy oryginału przed `original_gain_db` (wzór z `SCR:loudness-report.md` §4), słyszanego jak w
+stereo: przed `ebur128` stoi standardowy downmix swresample (`aformat=channel_layouts=stereo`). Cel +7,5 LU
+kalibrowano na stereo, więc przy źródle 5.1 lektor w kanale centralnym ma ten sam odstęp od oryginału, który słychać
+po downmiksie. Mono i stereo mierzą się identycznie jak wcześniej (sprawdzone: −28,6 i −25,6 LUFS bez zmian). Samo
+`-ac 2` jako opcja wyjścia nie wystarcza: FFmpeg przekształca dźwięk dopiero za filtrem pomiaru (5.1 testowe:
+−22,9 LUFS z `-ac 2` i bez). Pomiar na Edgerunners 2 E02 (E-AC-3 5.1(side)): całość −24,5 LUFS, po downmiksie
+−25,2 LUFS, studyjna ścieżka AAC stereo tego samego pliku −21,7 LUFS. Trafienie resume
 (`_output_hit`) nie mierzy. Narrator-only bez zmian (bez gainu, bez limitera). Zmierzone wartości są funkcją już
 hashowanych wejść, więc nie wchodzą do fingerprintu.
 
@@ -812,12 +832,12 @@ potomnym nie ładuje `playwright`; test logów: żaden rekord nie zawiera tokenu
 
 **Cel:** F11, U5, I1.
 **Pliki:** MODIFY `anishift/text/boundaries.py` (`ends_sentence`), `anishift/text/AGENTS.md`,
-`anishift/application/tts_handler.py` (`TtsTaskHandler(…, join_open_lines: bool)`, `_narration_batch`),
-`anishift/application/runtime.py` (`_tts_handler` przekazuje na razie `join_open_lines=False`; E9 podmienia na
+`anishift/application/tts_handler.py` (`TtsTaskHandler(…, reads_document: bool)`, `_narration_batch`),
+`anishift/application/runtime.py` (`_tts_handler` przekazuje na razie `reads_document=False`; E9 podmienia na
 `is_document_engine(...)`); testy `tests/text/` i `tests/application/test_tts_handler.py`.
 **Kontrakt:** §7.6.
-**Testy:** `ends_sentence` dla `. ! ? … " ” »` i przecinka; `join_open_lines=False` → żądania identyczne jak przed
-zmianą (ten sam skrypt, te same `request_id`, teksty i okna); `join_open_lines=True`: para urwana z przerwą 0 ms →
+**Testy:** `ends_sentence` dla `. ! ? … " ” »` i przecinka; `reads_document=False` → żądania identyczne jak przed
+zmianą (ten sam skrypt, te same `request_id`, teksty i okna); `reads_document=True`: para urwana z przerwą 0 ms →
 jedno żądanie z oknem obu; przerwa 1 ms → dwa żądania; kwestia zakończona kropką → dwa; trzy kolejne urwane → para + pojedyncza;
 `CONTINUOUS` (TXT) → bez łączenia; kolejność `order` rosnąca; manifest narracji z połączoną kwestią przechodzi
 `build_narration_manifest`. Na DATA (`skipif`): `lines.json` Tantei daje 11 połączeń.
@@ -831,7 +851,7 @@ jedno żądanie z oknem obu; przerwa 1 ms → dwa żądania; kwestia zakończona
 
 - `anishift/application/tts_clips.py`: `FfmpegClipService.split_clip` (§7.4, adapter) i parametr
   `recording_timeout_s`; `anishift/application/runtime.py`: `_tts_config` (§7.14), `_tts_handler` wstrzykuje
-  `splitter` i `join_open_lines=is_document_engine(snapshot.tts_profile_id)`.
+  `splitter` i `reads_document=is_document_engine(snapshot.tts_profile_id)`.
 - `anishift/paths.py`: `elevenreader_dir() = config_dir() / "elevenreader"`; `config/README.md`.
 - `anishift/config/user_settings.py`: gałąź `elevenreader` w `tts_voice_label`, `resolved_tts_voice_id`,
   `_normalize_tts_selection` (F19: obcy alias → głos domyślny silnika docelowego), profile §7.9.

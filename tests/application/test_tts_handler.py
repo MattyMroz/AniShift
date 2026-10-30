@@ -267,7 +267,9 @@ def test_signs_are_read_in_free_pauses_and_rejected_signs_stay_out_of_the_manife
         ("group-1-0", 5000, 5500),
         ("group-1-sign-3", 1000, 1500),
     ]
+    assert [request.request_id for request in service.batches[0].requests] == ["group-1-0"]
     assert [request.request_id for request in service.batches[1].requests] == ["group-1-sign-3", "group-1-sign-7"]
+    assert len(service.batches) == 4
     assert first.outputs[0].metadata == {
         "sign_decisions": "3:read,7:weight",
         "sign_chars_synthesized": len("Brama szkoły") + len("Napis"),
@@ -277,6 +279,113 @@ def test_signs_are_read_in_free_pauses_and_rejected_signs_stay_out_of_the_manife
     assert second.outputs[0].metadata == first.outputs[0].metadata
     assert load_narration_manifest(second.outputs[0].path) == manifest
     assert preparer.roots == {tmp_path / "run" / "group-1" / "audio"}
+
+
+class _WindowPreparer:
+    def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
+        del cancel
+        return NormalizedClip(clip, tmp_root / f"{clip.request_id}.pcm", 1000, 2, 1, clip.end_ms - clip.start_ms)
+
+
+def _hidden_sign_synthesis(tmp_path: Path) -> tuple[PlanTask, ArtifactSnapshot]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    script_path = tmp_path / "episode.spoken.pl.srt"
+    script_path.write_text("1\n00:00:01,000 --> 00:00:09,000\nCześć\n", encoding="utf-8")
+    signs_path: Path = write_sign_candidates(
+        (
+            SignCandidate(3, 2000, 3000, "Brama szkoły", "brama szkoły", 0.9, 0.0),
+            SignCandidate(7, 10_000, 10_500, "Napis", "napis", 0.9, 0.0),
+        ),
+        tmp_path / "signs.json",
+    )
+    spoken = Artifact(
+        "spoken", "group-1", ArtifactKind.SPOKEN_PL, script_path, ArtifactState.READY, ArtifactLifetime.INTERMEDIATE
+    )
+    signs = Artifact(
+        "signs", "group-1", ArtifactKind.SIGN_CANDIDATES, signs_path, ArtifactState.READY, ArtifactLifetime.INTERMEDIATE
+    )
+    output = Artifact(
+        "manifest", "group-1", ArtifactKind.TTS_MANIFEST, None, ArtifactState.MISSING, ArtifactLifetime.INTERMEDIATE
+    )
+    task = PlanTask(
+        "tts",
+        "group-1",
+        TaskKind.SYNTHESIZE_SPEECH,
+        ("spoken", "signs"),
+        ("manifest",),
+        (),
+        "tts:edge",
+        (*_SPOKEN_PARAMETERS, ("sign_narration", "always")),
+    )
+    return task, ArtifactSnapshot({"spoken": spoken, "signs": signs}, {"manifest": output})
+
+
+def _signed_reading(tmp_path: Path, *, reads_document: bool) -> tuple[_Tts, TaskResult]:
+    task, snapshot = _hidden_sign_synthesis(tmp_path)
+    service = _Tts(tmp_path)
+    handler = TtsTaskHandler(
+        service,
+        run_root=tmp_path / "run",
+        group_ranks={"group-1": 0},
+        audio=_WindowPreparer(),
+        reads_document=reads_document,
+    )
+    return service, handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
+
+
+def _placements(result: TaskResult) -> list[tuple[str, int, int, int]]:
+    return [
+        (clip.request_id, clip.start_ms, clip.end_ms, clip.source_order)
+        for clip in load_narration_manifest(result.outputs[0].path).clips
+    ]
+
+
+def test_tts_handler_line_by_line_engine_records_only_reachable_signs_in_second_batch(tmp_path: Path) -> None:
+    service, result = _signed_reading(tmp_path, reads_document=False)
+
+    assert [[request.request_id for request in batch.requests] for batch in service.batches] == [
+        ["group-1-0"],
+        ["group-1-sign-7"],
+    ]
+    assert _placements(result) == [("group-1-0", 1000, 9000, 0), ("group-1-sign-7", 10_000, 10_500, 7)]
+    assert result.outputs[0].metadata == {
+        "sign_decisions": "3:no_pause,7:read",
+        "sign_chars_synthesized": len("Napis"),
+        "signs_read": 1,
+        "clip_count": 2,
+    }
+
+
+def test_tts_handler_document_engine_reads_signs_in_script_batch_with_line_by_line_placements(
+    tmp_path: Path,
+) -> None:
+    _, line_by_line = _signed_reading(tmp_path / "line_by_line", reads_document=False)
+    service, document = _signed_reading(tmp_path / "document", reads_document=True)
+
+    assert len(service.batches) == 1
+    assert [(request.request_id, request.request_rank) for request in service.batches[0].requests] == [
+        ("group-1-0", 0),
+        ("group-1-sign-3", 1),
+        ("group-1-sign-7", 2),
+    ]
+    assert _placements(document) == _placements(line_by_line)
+    assert document.outputs[0].metadata == {
+        "sign_decisions": "3:no_pause,7:read",
+        "sign_chars_synthesized": len("Brama szkoły") + len("Napis"),
+        "signs_read": 1,
+        "clip_count": 2,
+    }
+
+
+def test_tts_handler_document_engine_without_audio_service_refuses_signs_before_synthesis(tmp_path: Path) -> None:
+    task, snapshot = _signed_synthesis(tmp_path)
+    service = _Tts(tmp_path)
+    handler = TtsTaskHandler(service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, reads_document=True)
+
+    with pytest.raises(ExecutionError):
+        handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
+
+    assert service.batches == []
 
 
 class _CancellingPreparer(_Preparer):
@@ -856,7 +965,7 @@ def test_the_production_speech_handler_refuses_a_voice_its_own_engine_never_offe
     ("profile", "joins"),
     [(("elevenreader", "eleven_v4", "fronczewski"), True), (("elevenbytes", "run6", "dallin"), False)],
 )
-def test_production_tts_handler_document_engine_joins_open_lines(
+def test_production_tts_handler_document_engine_reads_document(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     profile: tuple[str, str, str],
@@ -892,7 +1001,7 @@ def test_production_tts_handler_document_engine_joins_open_lines(
     )
 
     assert handler is not None
-    assert handler._join_open_lines is joins
+    assert handler._reads_document is joins
 
 
 def _ass_script(path: Path) -> Path:
@@ -948,7 +1057,7 @@ def _joined_reading(
     service = _Tts(tmp_path)
     path: Path = _cues_srt(tmp_path, cues)
     result: TaskResult = TtsTaskHandler(
-        service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, join_open_lines=join_open_lines
+        service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, reads_document=join_open_lines
     ).execute(
         _speech_task(timeline, ArtifactKind.FULL_PL),
         ArtifactSnapshot({"script": _script(path, ArtifactKind.FULL_PL)}, {"manifest": _manifest_slot()}),

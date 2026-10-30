@@ -94,9 +94,9 @@ Operacje: **DODAĆ**, **ZMIENIĆ**, **USUNĄĆ**, **BEZ ZMIAN** (czytać, nie ru
 
 | Ścieżka | Operacja | Zmiana | Etap |
 |---|---|---|---|
-| `anishift/application/tts_handler.py` | ZMIENIĆ | łączenie kwestii urwanych w `_narration_batch` za flagą `join_open_lines` | E8 |
+| `anishift/application/tts_handler.py` | ZMIENIĆ | łączenie kwestii urwanych w `_narration_batch` i szyldy w batchu kwestii za flagą `reads_document` | E8 |
 | `anishift/application/planning.py` | ZMIENIĆ | pole snapshotu `narrator_over_source_lu` | E3 |
-| `anishift/application/runtime.py` | ZMIENIĆ | `_audio_config` (E3); `join_open_lines=False` (E8); `_tts_config`, `splitter`, `join_open_lines=is_document_engine(...)` (E9) | E3, E8, E9 |
+| `anishift/application/runtime.py` | ZMIENIĆ | `_audio_config` (E3); `reads_document=False` (E8); `_tts_config`, `splitter`, `reads_document=is_document_engine(...)` (E9) | E3, E8, E9 |
 | `anishift/application/service.py` | ZMIENIĆ | snapshot (E3); głosy, `tts_is_paid`, sesja i logowanie ElevenReader (E9) | E3, E9 |
 | `anishift/application/__init__.py` | ZMIENIĆ | eksport DTO sesji | E9 |
 | `anishift/application/tts_clips.py` | ZMIENIĆ | `split_clip`, `recording_timeout_s` | E9 |

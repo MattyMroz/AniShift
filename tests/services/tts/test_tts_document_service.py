@@ -108,6 +108,7 @@ class _DocumentEngine:
     ) -> None:
         self.separator: str = separator
         self.documents: list[tuple[str, ...]] = []
+        self.document_ids: list[str] = []
         self.recordings: list[Path] = []
         self.stale_files: list[list[str]] = []
         self.failures: list[TtsError] = list(failures)
@@ -148,6 +149,7 @@ class _DocumentEngine:
         for part in request.parts:
             self.validate_part(part)
         self.documents.append(tuple(part.request_id for part in request.parts))
+        self.document_ids.append(request.request_id)
         self.recordings.append(request.recording)
         self.stale_files.append(
             sorted(path.name for path in request.recording.parent.glob("*.tmp") if path != request.recording)
@@ -354,6 +356,15 @@ def test_document_batch_lines_within_limit_but_over_it_with_separators_start_nex
     assert len(line) * 2 <= 40
     assert engine.documents == [("line-0",), ("line-1",)]
     assert result.status is SpeechBatchStatus.COMPLETED
+
+
+def test_document_batch_same_scope_documents_in_one_run_get_distinct_ids(tmp_path: Path) -> None:
+    engine = _DocumentEngine()
+    line: str = "Piętnaście zn."
+
+    _run(tmp_path, engine, _Splitter(), _batch(line, line, line), _batch("Raz dwa."))
+
+    assert engine.document_ids == ["episode:document:0", "episode:document:1", "episode:document:2"]
 
 
 def test_document_batch_line_over_text_limit_fails_only_that_line(tmp_path: Path) -> None:

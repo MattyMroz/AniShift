@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import itertools
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -457,6 +458,7 @@ class TtsService:
         "_cancel",
         "_closed",
         "_config",
+        "_documents",
         "_engine",
         "_engine_factory",
         "_lifecycle_lock",
@@ -496,6 +498,7 @@ class TtsService:
         self._engine: TtsEngine | None = None
         self._scheduler: TtsScheduler | None = None
         self._repositories: dict[str, TtsResumeRepository] = {}
+        self._documents: itertools.count[int] = itertools.count()
 
     def synthesize(
         self,
@@ -1049,9 +1052,9 @@ class TtsService:
                 pending.append(prepared)
             else:
                 await progress.record(index, prepared)
-        for number, lines in enumerate(_group_documents(pending, document_engine, max_document_chars)):
+        for lines in _group_documents(pending, document_engine, max_document_chars):
             attempt: _DocumentAttempt = _DocumentAttempt(
-                document_id=f"{batch.scope_id}:document:{number}",
+                document_id=f"{batch.scope_id}:document:{next(self._documents)}",
                 lines=lines,
                 engine=document_engine,
                 splitter=splitter,
