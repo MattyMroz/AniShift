@@ -12,6 +12,7 @@ Portable utilities with no host application dependencies. The package facade exp
 
 - `_retry.py` — presety tenacity (`NETWORK_RETRY` dekorator, `build_retry()` per-call)
 - `device.py` — wybór CUDA>CPU bez importu torcha
+- `mp3_frames.py` — ramki MPEG Layer III: nagłówki, ID3v2, czas serwera, cięcie przed czasem, miejsca sklejeń i przeliczenie na oś zdekodowaną; jedyny parser ramek w repo
 - `safe_fs.py` — `safe_rmtree`/`safe_move` z retry na `PermissionError`
 - `safe_path.py` — `safe_resolve` chroniący przed path traversal
 - `secrets.py` — niemutujące redagowanie sekretów w dictach
@@ -27,6 +28,7 @@ Portable utilities with no host application dependencies. The package facade exp
 - `_is_retryable_network_error` rozpoznaje `DownloadError` po nazwach w `__mro__` (lazy) i celowo NIE ponawia gdy w MRO jest też `OfflineError`. `_retry.py:77-81`
 - `safe_rmtree`/`safe_move` pętlą `range(retries + 1)` — przy `retries=3` to 4 próby, backoff 0.5→1.0→2.0 s. `safe_fs.py:46,53,80`
 - `safe_resolve` używa `is_relative_to` na już rozwiązanych ścieżkach (po `.resolve()` obu stron) — symlinki są śledzone przed sprawdzeniem. `safe_path.py:33-36`
+- `mp3_frames`: ramka jest ważna tylko wtedy, gdy po niej stoi poprawny nagłówek albo kończą się dane, więc ramka tuż przed obcymi bajtami też odpada. Każdy ciąg bajtów między ważnymi ramkami to jedno sklejenie: dekoder je pomija, a czas serwera (`frames_duration_ms`, `cut_before_ms`) liczy je jako jedną ramkę. `splice_times` zwraca czasy na osi zdekodowanej; `to_decoded` wymaga długości ramki strumienia (`FrameHeader.duration_ms`). `mp3_frames.py`
 - Dwa różne `timing.py`: `utils/timing.py` (`elapsed_ms`) i `utils/logger/timing.py` — nie mylić przy imporcie.
 
 ## Konwencje
