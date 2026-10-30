@@ -17,10 +17,12 @@ from elevenreader_fakes import (
     READS_URL,
     TOKEN,
     FakePage,
+    FakeSession,
     FakeSite,
     audio_frame,
     fake_engine,
     stream_frames,
+    tts_config,
 )
 from loguru import logger as loguru_logger
 
@@ -43,7 +45,8 @@ from anishift.services.tts import (
     TtsUnsupportedError,
     TtsVoiceError,
 )
-from anishift.services.tts.engines.elevenreader import CLEANUP_WARNING, read_session, service
+from anishift.services.tts.engines.elevenreader import CLEANUP_WARNING, ElevenReaderTtsEngine, read_session, service
+from anishift.services.tts.engines.elevenreader import browser as browser_module
 from anishift.services.tts.engines.elevenreader.api_backend import write_session
 from anishift.services.tts.engines.elevenreader.recorder import StreamRecorder
 from anishift.services.tts.engines.elevenreader.service import document_text, part_spans
@@ -54,8 +57,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from loguru import Message
-
-    from anishift.services.tts.engines.elevenreader import ElevenReaderTtsEngine
 
 pytestmark = pytest.mark.unit
 
@@ -162,6 +163,27 @@ def test_synthesize_document_signed_out_raises_auth_error_and_records_session(tm
     record = read_session(tmp_path)
     assert record is not None
     assert not record.signed_in
+
+
+def test_synthesize_document_default_browser_starts_chrome_headless(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    site = FakeSite(library=LibraryState.SIGNED_OUT)
+    modes: list[bool] = []
+
+    def session(root: Path, *, headless: bool) -> FakeSession:
+        modes.append(headless)
+        created: FakeSession = FakeSession(site)
+        site.sessions.append(created)
+        return created
+
+    monkeypatch.setattr(browser_module, "ChromeSession", session)
+
+    with pytest.raises(TtsAuthError):
+        _run(_record(ElevenReaderTtsEngine(tts_config(tmp_path)), _request(tmp_path)))
+
+    assert modes == [True]
 
 
 def test_synthesize_document_unavailable_library_raises_transient_error_and_closes_browser(tmp_path: Path) -> None:

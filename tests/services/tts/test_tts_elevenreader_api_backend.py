@@ -596,6 +596,8 @@ def _library_page(scenario: str) -> FakePlaywrightPage:
         page.visible = {SIGN_IN_BUTTON}
     elif scenario == "sign_in_address":
         page.url = "https://elevenreader.io/sign-in"
+    elif scenario == "sign_up_address":
+        page.url = "https://elevenreader.io/reader/sign-up"
     elif scenario == "browser_broke":
         page.wait_error = PlaywrightError("Target closed")
     return page
@@ -609,6 +611,7 @@ def _library_page(scenario: str) -> FakePlaywrightPage:
         ("import", LibraryState.READY),
         ("sign_in_button", LibraryState.SIGNED_OUT),
         ("sign_in_address", LibraryState.SIGNED_OUT),
+        ("sign_up_address", LibraryState.SIGNED_OUT),
         ("nothing", LibraryState.UNAVAILABLE),
         ("browser_broke", LibraryState.UNAVAILABLE),
     ],

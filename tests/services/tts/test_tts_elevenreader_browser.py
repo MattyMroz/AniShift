@@ -38,6 +38,7 @@ class _Process:
         self.stubborn: bool = stubborn
         self.unkillable: bool = unkillable
         self.terminate_error: OSError | None = terminate_error
+        self.exit_requested: bool = False
         self.calls: list[str] = []
 
     def poll(self) -> int | None:
@@ -52,6 +53,8 @@ class _Process:
 
     def wait(self, timeout: float) -> int:
         self.calls.append("wait")
+        if self.exit_requested:
+            self.returncode = 0
         if self.returncode is None:
             raise subprocess.TimeoutExpired("chrome", timeout)
         return self.returncode
@@ -86,14 +89,35 @@ class _Context:
         return FakePlaywrightPage()
 
 
+class _Cdp:
+    def __init__(self, browser: _Browser) -> None:
+        self.browser: _Browser = browser
+
+    async def send(self, method: str) -> dict[str, object]:
+        self.browser.sent.append(method)
+        self.browser.process.exit_requested = self.browser.exits
+        self.browser.connected = False
+        message: str = "Target page, context or browser has been closed"
+        raise PlaywrightError(message)
+
+
 class _Browser:
-    def __init__(self) -> None:
+    def __init__(self, process: _Process) -> None:
+        self.process: _Process = process
         self.contexts: list[_Context] = [_Context()]
         self.connected: bool = True
+        self.exits: bool = True
+        self.cdp_error: Exception | None = None
+        self.sent: list[str] = []
         self.close_error: Exception | None = None
 
     def is_connected(self) -> bool:
         return self.connected
+
+    async def new_browser_cdp_session(self) -> _Cdp:
+        if self.cdp_error is not None:
+            raise self.cdp_error
+        return _Cdp(self)
 
     async def close(self) -> None:
         self.connected = False
@@ -137,7 +161,7 @@ class _Chrome:
     def __init__(self, root: Path) -> None:
         self.root: Path = root
         self.process: _Process = _Process()
-        self.browser: _Browser = _Browser()
+        self.browser: _Browser = _Browser(self.process)
         self.playwright: _Playwright = _Playwright(self.browser, failures=1)
         self.argv: list[str] = []
         self.restricted: list[Path] = []
@@ -194,7 +218,7 @@ def test_chrome_session_visible_start_adds_no_speed_script(chrome: _Chrome) -> N
     assert "--headless=new" not in chrome.argv
 
 
-def test_chrome_session_close_detaches_stops_chrome_and_releases_lock(chrome: _Chrome) -> None:
+def test_chrome_session_close_asks_chrome_to_exit_and_releases_lock(chrome: _Chrome) -> None:
     session = ChromeSession(chrome.root, headless=True)
     asyncio.run(session.start())
 
@@ -202,8 +226,38 @@ def test_chrome_session_close_detaches_stops_chrome_and_releases_lock(chrome: _C
     asyncio.run(session.close())
 
     assert not session.alive
-    assert not chrome.browser.connected
+    assert chrome.browser.sent == ["Browser.close"]
     assert chrome.playwright.stopped
+    assert chrome.process.calls == ["wait"]
+    assert _lock_free(chrome.root)
+
+
+def test_chrome_session_close_chrome_ignoring_exit_request_terminates_it(chrome: _Chrome) -> None:
+    session = ChromeSession(chrome.root, headless=True)
+    asyncio.run(session.start())
+    chrome.browser.exits = False
+    captured: list[str] = []
+    handler_id: int = loguru_logger.add(lambda message: captured.append(str(message)), level="WARNING")
+
+    try:
+        asyncio.run(session.close())
+    finally:
+        loguru_logger.remove(handler_id)
+
+    assert any("ignored the exit request" in message for message in captured)
+    assert chrome.browser.sent == ["Browser.close"]
+    assert chrome.process.calls == ["wait", "terminate", "wait"]
+    assert _lock_free(chrome.root)
+
+
+def test_chrome_session_close_without_cdp_session_terminates_without_waiting(chrome: _Chrome) -> None:
+    session = ChromeSession(chrome.root, headless=True)
+    asyncio.run(session.start())
+    chrome.browser.cdp_error = PlaywrightError("Browser has been closed")
+
+    asyncio.run(session.close())
+
+    assert chrome.browser.sent == []
     assert chrome.process.calls == ["terminate", "wait"]
     assert _lock_free(chrome.root)
 
@@ -217,7 +271,7 @@ def test_chrome_session_close_browser_breaking_still_stops_chrome_and_releases_l
         asyncio.run(session.close())
 
     assert chrome.playwright.stopped
-    assert chrome.process.calls == ["terminate", "wait"]
+    assert chrome.process.calls == ["wait"]
     assert _lock_free(chrome.root)
 
 
@@ -228,7 +282,7 @@ def test_chrome_session_close_gone_browser_is_tolerated(chrome: _Chrome) -> None
 
     asyncio.run(session.close())
 
-    assert chrome.process.calls == ["terminate", "wait"]
+    assert chrome.process.calls == ["wait"]
     assert _lock_free(chrome.root)
 
 
@@ -329,7 +383,7 @@ def test_chrome_args_headless_flags_follow_mode(tmp_path: Path, headless: bool, 
     ],
 )
 def test_stop_process_state_stops_with_matching_calls(process: _Process, calls: list[str]) -> None:
-    _stop_process(cast("subprocess.Popen[bytes]", process))
+    _stop_process(cast("subprocess.Popen[bytes]", process), grace_s=0.0)
 
     assert process.calls == calls
     assert process.returncode is not None
@@ -341,7 +395,7 @@ def test_stop_process_unkillable_chrome_warns_without_raising() -> None:
     handler_id: int = loguru_logger.add(lambda message: captured.append(str(message)), level="WARNING")
 
     try:
-        _stop_process(cast("subprocess.Popen[bytes]", process))
+        _stop_process(cast("subprocess.Popen[bytes]", process), grace_s=0.0)
     finally:
         loguru_logger.remove(handler_id)
 

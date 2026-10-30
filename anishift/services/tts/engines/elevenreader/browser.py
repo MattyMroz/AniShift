@@ -23,7 +23,7 @@ from .constants import CONNECT_ATTEMPTS, CONNECT_INTERVAL_S, PAGE_SPEED, UNAVAIL
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from playwright.async_api import Browser, BrowserContext, Playwright
+    from playwright.async_api import Browser, BrowserContext, CDPSession, Playwright
 
 __all__ = ["ChromeBusyError", "ChromeMissingError", "ChromeSession"]
 
@@ -38,7 +38,7 @@ _LOOPBACK: Final[str] = "127.0.0.1"
 """Interface the remote debugging port listens on."""
 
 _EXIT_TIMEOUT_S: Final[float] = 10.0
-"""Wait for Chrome to exit after terminate before it is killed."""
+"""Wait for Chrome to exit after an exit request or terminate before the next, harder stop."""
 
 _BLANK_URLS: Final[frozenset[str]] = frozenset({"about:blank", "chrome://newtab/", "chrome://new-tab-page/"})
 """Empty tabs Chrome opens at start, closed so each attempt works in its own tab."""
@@ -109,17 +109,19 @@ class ChromeSession:
             raise unavailable_error(reason) from None
 
     async def close(self) -> None:
-        """Detach, stop Chrome and release the profile lock; safe to call more than once."""
+        """Ask Chrome to exit so the profile is saved, detach, stop it and release the lock; safe to repeat."""
         browser: Browser | None = self._browser
         playwright: Playwright | None = self._playwright
         process: subprocess.Popen[bytes] | None = self._process
         self._browser, self._playwright, self._process, self._context = None, None, None, None
+        exiting: bool = False
         try:
+            exiting = await _request_exit(browser)
             await _detach(browser, playwright)
         finally:
             try:
                 if process is not None:
-                    await asyncio.to_thread(_stop_process, process)
+                    await asyncio.to_thread(_stop_process, process, grace_s=_EXIT_TIMEOUT_S if exiting else 0.0)
             finally:
                 self._lock.release()
 
@@ -188,6 +190,20 @@ def _free_port() -> int:
     return port
 
 
+async def _request_exit(browser: Browser | None) -> bool:
+    if browser is None or not browser.is_connected():
+        return False
+    try:
+        cdp: CDPSession = await browser.new_browser_cdp_session()
+    except PlaywrightError:
+        return False
+    try:
+        await cdp.send("Browser.close")
+    except PlaywrightError:
+        logger.debug("ElevenReader browser closed its connection while exiting")
+    return True
+
+
 async def _detach(browser: Browser | None, playwright: Playwright | None) -> None:
     try:
         if browser is not None:
@@ -206,14 +222,25 @@ async def _stop_driver(playwright: Playwright) -> None:
         logger.debug("ElevenReader Playwright driver was already stopped")
 
 
-def _stop_process(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
+def _stop_process(process: subprocess.Popen[bytes], *, grace_s: float) -> None:
+    if process.poll() is not None or _exits_within(process, grace_s):
         return
     try:
         process.terminate()
         process.wait(timeout=_EXIT_TIMEOUT_S)
     except subprocess.TimeoutExpired, OSError:
         _kill(process)
+
+
+def _exits_within(process: subprocess.Popen[bytes], timeout_s: float) -> bool:
+    if timeout_s <= 0:
+        return False
+    try:
+        process.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        logger.warning("ElevenReader Chrome ignored the exit request and is stopped by force")
+        return False
+    return True
 
 
 def _kill(process: subprocess.Popen[bytes]) -> None:

@@ -118,11 +118,11 @@ _SERVER_ERROR: Final[int] = 500
 _MS_PER_S: Final[float] = 1000.0
 """Milliseconds in one second, for Playwright timeouts."""
 
-_SIGN_IN_NAME: Final[re.Pattern[str]] = re.compile(r"sign in|log in|continue with google", re.IGNORECASE)
+_SIGN_IN_NAME: Final[re.Pattern[str]] = re.compile(r"sign in|sign up|log in|continue with google", re.IGNORECASE)
 """Accessible names of the controls shown to a signed-out visitor."""
 
-_SIGN_IN_URL: Final[re.Pattern[str]] = re.compile(r"sign-?in|log-?in|auth", re.IGNORECASE)
-"""Address fragments of the sign-in pages a signed-out visitor is sent to."""
+_SIGN_IN_URL: Final[re.Pattern[str]] = re.compile(r"sign-?in|sign-?up|log-?in|auth", re.IGNORECASE)
+"""Address fragments of the sign-in and sign-up pages a signed-out visitor is sent to."""
 
 _SIGN_IN_POLL_S: Final[float] = 1.0
 """Interval between checks of the sign-in window."""

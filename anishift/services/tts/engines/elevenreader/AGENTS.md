@@ -20,6 +20,11 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
 - `ChromeSession` startuje Chrome z `--user-data-dir=config/elevenreader/chrome-profile` (Chrome 136+ ignoruje
   CDP dla domyślnego profilu) na wolnym porcie i dołącza `connect_over_cdp`. Proces jest zwykłym dzieckiem
   rezydenta (bez breakaway), więc Job Object kończy go razem z rezydentem.
+- `ChromeSession.close` najpierw prosi Chrome o wyjście przez CDP (`Browser.close`) i czeka do 10 s; `terminate`
+  i `kill` są tylko zapasem. Chrome zapisuje ciasteczka na dysk z opóźnieniem do ok. 30 s, więc twarde zabicie
+  zaraz po zalogowaniu gubi sesję (K2: `signed_in: true` w `session.json`, a profil wylogowany).
+- Nagrywanie, sprzątanie i sprawdzanie sesji przez silnik działają tylko z `headless=True` (`_headless_session`);
+  okno widać wyłącznie w `sign_in`. Skrypty diagnostyczne też nie otwierają okna.
 - `ProcessLock` na `chrome.lock` wyklucza drugą przeglądarkę na profilu: zajęty → `ChromeBusyError`
   (przejściowy); w `sign_in` → `SignInOutcome.BUSY`. `restrict_directory` przy każdym starcie.
 - `ReaderPage` jest jedynym miejscem z selektorami i wywołaniami Playwright. Każdy błąd Playwright idzie przez
@@ -57,8 +62,9 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
 - Błąd zapisu nagrania (`OSError`) zatrzymuje `StreamRecorder`; `_record` w następnym takcie rzuca
   `TtsClipValidationError` z `error_class` i `errno`, bez ścieżki.
 - Pierwsza ramka wysyłana z `listening_speed` ≠ 1 oznacza model v2 → błąd przejściowy.
-- Rozpoznanie wylogowania w `ReaderPage.open_library` (przyciski „Sign in/Log in/Continue with Google” albo
-  adres strony logowania), status 402 jako brak kredytów oraz lista `GET reads` w kształcie
+- Wylogowanego gościa biblioteka przekierowuje na `/reader/sign-up` (przyciski „Sign up with Google/Apple/email”,
+  „Sign in” nie jako przycisk; K2); `open_library` rozpoznaje to po adresie i przyciskach „Sign up”. Status 402 jako brak
+  kredytów oraz lista `GET reads` w kształcie
   `{"reads": [{"read_id", "title"}]}` są założeniami do potwierdzenia w K2. Inny kształt listy zostawia krok
   `delete_orphan` zaległym (widocznym w panelu), nigdy nie rozlicza go po cichu.
 - `char_count` z odpowiedzi uploadu jest obowiązkowy; bez niego próba kończy się błędem przejściowym.
