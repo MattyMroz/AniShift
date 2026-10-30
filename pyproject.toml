@@ -20,6 +20,7 @@ dependencies = [
     "natsort>=8.4.0",
     "openai>=2.45.0",
     "pillow>=12.3.0",
+    "playwright>=1.64.1",
     "prompt-toolkit>=3.0.53",
     "pyasstosrt>=1.5.0",
     "pydantic-settings>=2.14.2",
