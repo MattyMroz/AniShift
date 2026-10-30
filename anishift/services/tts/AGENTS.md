@@ -58,8 +58,9 @@ narratora ani finalnego sidecara.
   dokumentami (`document_chars` silnika ≤ limit) przez `DocumentTtsEngine.synthesize_document`;
   wymaga wstrzykniętego `ClipSplitter`, inaczej każda kwestia mowy dostaje
   `TtsUnsupportedError`.
-- Kwestia, która nie mieści się w jednej części, dostaje `TtsInputError`; reszta batcha
-  idzie dalej. Resume, tożsamość i commit są per kwestia jak w ścieżce zwykłej.
+- Kwestia, która nie mieści się w jednej części albo której nie przyjmuje
+  `DocumentTtsEngine.validate_part`, dostaje `TtsInputError` przed grupowaniem; reszta
+  batcha idzie dalej. Resume, tożsamość i commit są per kwestia jak w ścieżce zwykłej.
 - `accept_result` sprawdza własność nagrania i kolejność `PartTiming`, tnie nagranie
   (`open_end = not ends_sentence(text)`) i waliduje każdy klip; błąd splittera albo
   niezgodne czasy to `TtsClipValidationError`, więc dokument jest ponawiany w całości.

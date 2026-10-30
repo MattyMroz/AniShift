@@ -138,6 +138,10 @@ class DocumentTtsEngine(TtsEngine, Protocol):
         """Return the length of the document text the engine sends for *parts*."""
         ...
 
+    def validate_part(self, part: DocumentPart) -> None:
+        """Raise TtsInputError when the engine cannot read *part* within a document."""
+        ...
+
     async def synthesize_document(
         self,
         request: DocumentSynthesisRequest,

@@ -60,6 +60,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.unit
 
 TEXTS = ("Pierwsza kwestia.", "Druga [kwestia].")
+UNREADABLE_PARTS = ("", "   ", "…", " … ", 'Raz <break time="1s"/> dwa', "Raz <BREAK/>", "Raz <break dwa")
 
 
 @pytest.fixture(autouse=True)
@@ -429,16 +430,32 @@ class _FullDisk(io.BytesIO):
         raise OSError(errno.ENOSPC, "No space left on device")
 
 
-@pytest.mark.parametrize("text", ["", "   ", "…", " … ", 'Raz <break time="1s"/> dwa', "Raz <BREAK/>"])
+@pytest.mark.parametrize("text", UNREADABLE_PARTS)
 def test_synthesize_document_part_unreadable_as_paragraph_is_refused_without_browser(tmp_path: Path, text: str) -> None:
     site = FakeSite()
 
     with pytest.raises(TtsInputError) as error:
         _run(_record(fake_engine(tmp_path, site), _request(tmp_path, texts=("Dobrze.", text))))
 
-    assert error.value.context.details == {"line": 1}
+    assert error.value.context.details == {"request_id": "line-1"}
     assert site.sessions == []
     assert site.uploaded == []
+
+
+@pytest.mark.parametrize("text", UNREADABLE_PARTS)
+def test_validate_part_unreadable_as_paragraph_raises_input_error(tmp_path: Path, text: str) -> None:
+    site = FakeSite()
+
+    with pytest.raises(TtsInputError) as error:
+        fake_engine(tmp_path, site).validate_part(DocumentPart(request_id="line-7", text=text))
+
+    assert error.value.context.details == {"request_id": "line-7"}
+    assert site.sessions == []
+
+
+@pytest.mark.parametrize("text", ["Zobacz filmik…", "Raz [dwa].", "  Trzy\ncztery.  "])
+def test_validate_part_readable_paragraph_accepts_part(tmp_path: Path, text: str) -> None:
+    fake_engine(tmp_path, FakeSite()).validate_part(DocumentPart(request_id="line-0", text=text))
 
 
 def test_synthesize_document_cancelled_before_start_opens_no_browser(tmp_path: Path) -> None:

@@ -219,6 +219,7 @@ Protokoły w `protocols.py`:
 ```text
 class DocumentTtsEngine(TtsEngine, Protocol):
     def document_chars(self, parts: tuple[DocumentPart, ...]) -> int: ...   # długość wysyłanego dokumentu
+    def validate_part(self, part: DocumentPart) -> None: ...                # TtsInputError, gdy części nie da się przeczytać
     async def synthesize_document(self, request: DocumentSynthesisRequest, *,
                                   cancel: CancellationToken) -> EngineDocumentResult: ...
 
@@ -511,6 +512,8 @@ rodzaj kroku i status) i komunikat w panelu „ElevenReader: nie udało się pos
 ```text
 1. splitter is None albo silnik nie spełnia DocumentTtsEngine → każda kwestia mowy: TtsUnsupportedError
 2. każda kwestia: niemowa → SKIPPED; chunking (max_text_chars) ≠ 1 część → TtsInputError tej kwestii;
+   engine.validate_part(część) rzuca TtsInputError → ten błąd tej kwestii (ta sama funkcja, którą silnik sprawdza
+   części przed uploadem);
    tożsamość resume (SynthesisIdentity, profil silnika); trafienie → cached; reszta → pending
 3. dokumenty: zachłannie w kolejności batcha, póki engine.document_chars(części) ≤ max_document_chars; to ta sama
    funkcja, którą silnik liczy i sprawdza wysyłany dokument (tekst, separatory między kwestiami, znak końcowy),

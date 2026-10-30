@@ -1091,6 +1091,10 @@ class TtsService:
         part: DocumentPart = DocumentPart(request_id=request.request_id, text=request.text)
         if len(chunks) != 1 or engine.document_chars((part,)) > max_document_chars:
             return _failed_execution(request, _document_line_too_long_error(), 0, 0, 0.0)
+        try:
+            engine.validate_part(part)
+        except TtsInputError as error:
+            return _failed_execution(request, error, 0, 0, 0.0)
         identity: SynthesisIdentity = SynthesisIdentity(
             scope_id=batch.scope_id,
             request_id=request.request_id,

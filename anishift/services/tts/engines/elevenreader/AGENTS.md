@@ -51,7 +51,9 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
 - Token, `read_id`, adres WebSocketu i tekst dokumentu nie trafiają do logów, wyjątków ani plików;
   `session.json` ma tylko `signed_in`, `checked_at`, `restore` (głos i tempo konta) i `delete_document`. Adres
   strumienia jest sprawdzany w pamięci (F8).
-- Część pusta po neutralizacji, równa `LINE_SEPARATOR` albo z `<break` to `TtsInputError` przed przeglądarką.
+- Część pusta po neutralizacji, równa `LINE_SEPARATOR` albo z `<break` to `TtsInputError` z `validate_part`;
+  `TtsService` woła ją dla każdej kwestii przed grupowaniem, a `synthesize_document` dla każdej części przed
+  przeglądarką.
 - Błąd zapisu nagrania (`OSError`) zatrzymuje `StreamRecorder`; `_record` w następnym takcie rzuca
   `TtsClipValidationError` z `error_class` i `errno`, bez ścieżki.
 - Pierwsza ramka wysyłana z `listening_speed` ≠ 1 oznacza model v2 → błąd przejściowy.

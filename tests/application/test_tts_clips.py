@@ -136,6 +136,9 @@ class _RecordingEngine:
     def document_chars(self, parts: tuple[DocumentPart, ...]) -> int:
         return sum(len(part.text) for part in parts)
 
+    def validate_part(self, part: DocumentPart) -> None:
+        del part
+
     async def synthesize_document(
         self,
         request: DocumentSynthesisRequest,

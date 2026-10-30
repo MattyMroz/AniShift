@@ -201,6 +201,12 @@ class ElevenReaderTtsEngine:
         """Return the length of the uploaded document text for *parts*."""
         return len(document_text(parts))
 
+    def validate_part(self, part: DocumentPart) -> None:
+        """Raise TtsInputError when *part* cannot be read as its own paragraph."""
+        text: str = _neutralize(part.text)
+        if not text or text == LINE_SEPARATOR or _BREAK_TAG in text.casefold():
+            _raise_unreadable_part(part.request_id)
+
     async def synthesize(self, request: SynthesisRequest, *, cancel: CancellationToken) -> EngineClipResult:
         """Refuse a single request; ElevenReader reads documents only."""
         del request, cancel
@@ -259,10 +265,8 @@ class ElevenReaderTtsEngine:
             raise TtsUnsupportedError(message)
         if self.document_chars(request.parts) > MAX_DOCUMENT_CHARS:
             _raise_input(f"ElevenReader document exceeds {MAX_DOCUMENT_CHARS} characters")
-        for index, part in enumerate(request.parts):
-            text: str = _neutralize(part.text)
-            if not text or text == LINE_SEPARATOR or _BREAK_TAG in text.casefold():
-                _raise_unreadable_part(index)
+        for part in request.parts:
+            self.validate_part(part)
         return voice
 
     async def _open_browser(self) -> ChromeSession:
@@ -586,12 +590,12 @@ def _raise_input(message: str) -> Never:
     raise TtsInputError(context=context)
 
 
-def _raise_unreadable_part(index: int) -> Never:
+def _raise_unreadable_part(request_id: str) -> Never:
     context: ErrorContext = ErrorContext(
         code=ErrorCode.TTS_INPUT_INVALID,
         message="ElevenReader part cannot be read as its own paragraph",
         suggestion="Kwestia nie może być pusta, samym „…” ani zawierać znacznika <break>.",
-        details={"line": index},
+        details={"request_id": request_id},
     )
     raise TtsInputError(context=context)
 

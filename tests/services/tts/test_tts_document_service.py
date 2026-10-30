@@ -37,6 +37,7 @@ from anishift.services.tts import (
     SynthesisStatus,
     TtsConfig,
     TtsError,
+    TtsInputError,
     TtsQuotaError,
     TtsService,
     TtsUnsupportedError,
@@ -133,6 +134,10 @@ class _DocumentEngine:
     def document_chars(self, parts: tuple[DocumentPart, ...]) -> int:
         return len(self.separator.join(part.text for part in parts))
 
+    def validate_part(self, part: DocumentPart) -> None:
+        if "<break" in part.text:
+            raise TtsInputError(part.request_id)
+
     async def synthesize_document(
         self,
         request: DocumentSynthesisRequest,
@@ -140,6 +145,8 @@ class _DocumentEngine:
         cancel: CancellationToken,
     ) -> EngineDocumentResult:
         assert not cancel.is_cancelled
+        for part in request.parts:
+            self.validate_part(part)
         self.documents.append(tuple(part.request_id for part in request.parts))
         self.recordings.append(request.recording)
         self.stale_files.append(
@@ -373,6 +380,18 @@ def test_document_batch_line_over_document_limit_fails_only_that_line(tmp_path: 
     assert _statuses(result) == [SynthesisStatus.SYNTHESIZED, SynthesisStatus.FAILED]
     assert result.requests[1].error_code == "TTS_INPUT_INVALID"
     assert engine.documents == [("line-0",)]
+
+
+def test_document_batch_part_refused_by_engine_fails_only_that_line(tmp_path: Path) -> None:
+    engine = _DocumentEngine()
+
+    (result,) = _run(tmp_path, engine, _Splitter(), _batch("Raz dwa.", "Trzy <break cztery.", "Pięć."))
+
+    assert _statuses(result) == [SynthesisStatus.SYNTHESIZED, SynthesisStatus.FAILED, SynthesisStatus.SYNTHESIZED]
+    assert result.requests[1].error_code == "TTS_INPUT_INVALID"
+    assert engine.documents == [("line-0", "line-2")]
+    assert result.stats.provider_calls == 1
+    assert result.status is SpeechBatchStatus.PARTIAL
 
 
 def test_document_batch_splitter_failure_retries_document(tmp_path: Path) -> None:
