@@ -5,11 +5,11 @@ import json
 from typing import TYPE_CHECKING
 
 import pytest
+from conftest import alignment_chunks
 
 from anishift.paths import quality_dir
 from anishift.services.tts import DocumentPart
 from anishift.services.tts.engines.elevenreader.service import part_spans
-from anishift.services.tts.engines.elevenreader.types import AlignmentChunk
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -30,26 +30,6 @@ def _prototype_bounds() -> ModuleType:
     return module
 
 
-def _row_chunk(row: dict[str, list[object] | float]) -> AlignmentChunk:
-    chars = row["chars"]
-    starts = row["start_ms"]
-    durations = row["dur_ms"]
-    assert isinstance(chars, list)
-    assert isinstance(starts, list)
-    assert isinstance(durations, list)
-    return AlignmentChunk(
-        offset_ms=float(str(row["offset_ms"])),
-        chars=tuple(str(char) for char in chars),
-        starts_ms=tuple(float(str(value)) for value in starts),
-        durations_ms=tuple(float(str(value)) for value in durations),
-    )
-
-
-def _align_chunks(path: Path) -> tuple[AlignmentChunk, ...]:
-    lines: list[str] = [line for line in path.read_text(encoding="utf-8").splitlines() if line]
-    return tuple(_row_chunk(json.loads(line)) for line in lines)
-
-
 def _parts(lines: Path) -> tuple[DocumentPart, ...]:
     rows: list[dict[str, object]] = json.loads(lines.read_text(encoding="utf-8"))
     return tuple(DocumentPart(request_id=str(index), text=str(row["text"])) for index, row in enumerate(rows))
@@ -61,7 +41,7 @@ def test_part_spans_tantei_recording_matches_prototype_lines(voice: str) -> None
     if not alignment.is_file() or not (DATA / "bounds.py").is_file():
         pytest.skip("ElevenReader prototype data is not available")
 
-    timings = part_spans(_align_chunks(alignment), _parts(TANTEI / "lines.json"))
+    timings = part_spans(alignment_chunks(alignment), _parts(TANTEI / "lines.json"))
     lines = _prototype_bounds().load_lines(TANTEI, voice)
 
     assert len(timings) == len(lines)
@@ -76,6 +56,6 @@ def test_part_spans_separated_edgerunners_recording_returns_every_line(voice: st
         pytest.skip("ElevenReader prototype data is not available")
     parts = _parts(DATA / "edge02" / "lines.json")
 
-    timings = part_spans(_align_chunks(alignment), parts)
+    timings = part_spans(alignment_chunks(alignment), parts)
 
     assert [timing.request_id for timing in timings] == [part.request_id for part in parts]

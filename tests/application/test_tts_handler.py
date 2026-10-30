@@ -561,6 +561,7 @@ def _clips(runner: _ClipRunner, *, cancel: threading.Event | None = None) -> Ffm
         ffmpeg=Path("ffmpeg"),
         ffprobe=Path("ffprobe"),
         timeout_s=1,
+        recording_timeout_s=1,
     )
 
 
@@ -848,6 +849,50 @@ def test_the_production_speech_handler_refuses_a_voice_its_own_engine_never_offe
             NeverCancelledToken(),
             _Progress(),
         )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("profile", "joins"),
+    [(("elevenreader", "eleven_v4", "fronczewski"), True), (("elevenbytes", "run6", "dallin"), False)],
+)
+def test_production_tts_handler_document_engine_joins_open_lines(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    profile: tuple[str, str, str],
+    *,
+    joins: bool,
+) -> None:
+    if resolve_binary(Binary.FFMPEG) is None or resolve_binary(Binary.FFPROBE) is None:
+        pytest.skip("bundled FFmpeg is unavailable")
+    monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
+    engine, model, voice = profile
+    settings = RunSettingsSnapshot(
+        translation_profile_id="google",
+        translation_max_retries=2,
+        translation_concurrency=2,
+        llm_profile_id="gemini",
+        llm_max_concurrency=2,
+        tts_profile_id=engine,
+        tts_model_id=model,
+        tts_voice_id=voice,
+        tts_max_retries=2,
+        tts_group_jobs=1,
+        audio_profile_id="eac3",
+        composition_profile_id="balanced",
+        processing_order_policy=ProcessingOrderPolicy.READY_FIRST,
+    )
+
+    handler: TtsTaskHandler | None = ProductionHandlerFactory._tts_handler(
+        Settings(_env_file=None),
+        tmp_path / "run",
+        ExecutionPlan((), (), (), settings, ()),
+        frozenset({TaskKind.SYNTHESIZE_SPEECH}),
+        None,
+    )
+
+    assert handler is not None
+    assert handler._join_open_lines is joins
 
 
 def _ass_script(path: Path) -> Path:

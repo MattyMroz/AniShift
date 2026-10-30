@@ -39,6 +39,7 @@ def test_edge_polish_speech_commits_a_decodable_mp3(
         ffmpeg=ffmpeg,
         ffprobe=ffprobe,
         timeout_s=30.0,
+        recording_timeout_s=300.0,
     )
     config: TtsConfig = TtsConfig(
         engine_id="edge",

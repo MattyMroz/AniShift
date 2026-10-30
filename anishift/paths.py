@@ -21,6 +21,7 @@ __all__ = [
     "config_dir",
     "config_path",
     "default_workspace_dir",
+    "elevenreader_dir",
     "env_path",
     "external_bin_root",
     "external_dir",
@@ -119,6 +120,11 @@ def config_path() -> Path:
 def watch_dir() -> Path:
     """Return the state and local-control directory of the resident."""
     return config_dir() / WATCH_DIRECTORY
+
+
+def elevenreader_dir() -> Path:
+    """Return the ElevenReader browser profile and session-check root."""
+    return config_dir() / "elevenreader"
 
 
 def torrent_profile_dir() -> Path:

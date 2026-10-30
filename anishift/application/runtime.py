@@ -31,7 +31,7 @@ from anishift.config.user_settings import (
     load_user_settings,
 )
 from anishift.errors import AniShiftError, ConfigError, ErrorCode, ErrorContext, TransientError
-from anishift.paths import config_dir
+from anishift.paths import config_dir, elevenreader_dir
 from anishift.platform.binaries import Binary, require_binary
 from anishift.services.audio import (
     AudioConfig,
@@ -94,6 +94,7 @@ from anishift.services.translation.protocols import (
 from anishift.services.translation.types import BatchedLine, FileTranslation
 from anishift.services.tts import SpeechBatch, SpeechBatchResult, TtsConfig, TtsService
 from anishift.services.tts.config import DEFAULT_RETRY_BACKOFF_SECONDS
+from anishift.services.tts.engines import is_document_engine
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -124,13 +125,20 @@ _ENROLLMENT_URL_RE: Final[re.Pattern[str]] = re.compile(PALANTIR_ENROLLMENT_URL_
 _AUDIO_TIMEOUT_S: Final[float] = 30.0
 """Maximum time allowed for one audio validation or conversion process."""
 
-_TTS_REQUEST_TIMEOUT_S: Final[dict[str, float]] = {"elevenbytes": 45.0, "sapi": 10.0}
+_RECORDING_TIMEOUT_S: Final[float] = 300.0
+"""Maximum time allowed for one decode of a whole-document TTS recording."""
+
+_TTS_REQUEST_TIMEOUT_S: Final[dict[str, float]] = {"elevenbytes": 45.0, "elevenreader": 3600.0, "sapi": 10.0}
 """Provider request deadlines that differ from the neutral default."""
 
 _TTS_RETRY_BACKOFF_S: Final[dict[str, tuple[float, ...]]] = {
     "elevenbytes": (5.0, 10.0, 15.0, 30.0),
+    "elevenreader": (60.0, 120.0, 300.0, 600.0),
 }
-"""Provider retry delays retained from the validated legacy runtime."""
+"""Provider retry delays that differ from the neutral default."""
+
+_DOCUMENT_SHUTDOWN_DEADLINE_S: Final[float] = 15.0
+"""Time a document engine gets on shutdown to undo its account changes and close its browser."""
 
 _DIALOGUE_FONT_TASKS: Final[frozenset[TaskKind]] = frozenset(
     {TaskKind.TRANSLATE_SUBTITLES, TaskKind.NORMALIZE_SUBTITLES, TaskKind.COMPOSE_MKV, TaskKind.COMPOSE_MP4}
@@ -224,12 +232,14 @@ class ProductionHandlerFactory:
             ffmpeg=ffmpeg,
             ffprobe=ffprobe,
             timeout_s=_AUDIO_TIMEOUT_S,
+            recording_timeout_s=_RECORDING_TIMEOUT_S,
         )
         service = TtsService(
             _tts_config(settings, plan),
             resume_root=run_root / "tts",
             validator=clips,
             assembler=clips,
+            splitter=clips,
         )
         ranks: dict[str, int] = {group.group_id: rank for rank, group in enumerate(plan.groups)}
         return TtsTaskHandler(
@@ -239,7 +249,7 @@ class ProductionHandlerFactory:
             voice_id=plan.settings.tts_voice_id,
             allowed_voice_ids=frozenset(plan.settings.tts_allowed_voice_ids),
             audio=audio,
-            join_open_lines=False,
+            join_open_lines=is_document_engine(plan.settings.tts_profile_id),
         )
 
     @staticmethod
@@ -635,7 +645,7 @@ def _palantir_translation_config(settings: Settings, snapshot: RunSettingsSnapsh
 def _tts_config(settings: Settings, plan: ExecutionPlan) -> TtsConfig:
     snapshot = plan.settings
     concurrency: int = snapshot.tts_request_concurrency
-    return TtsConfig(
+    config: TtsConfig = TtsConfig(
         engine_id=snapshot.tts_profile_id,
         provider_model_id=snapshot.tts_model_id,
         voice_id=snapshot.tts_voice_id,
@@ -655,6 +665,16 @@ def _tts_config(settings: Settings, plan: ExecutionPlan) -> TtsConfig:
         elevenbytes_vpn_enabled=snapshot.tts_vpn_enabled,
         elevenlabs_api_key=settings.elevenlabs_api_key,
         metadata_cache_root=config_dir(),
+        elevenreader_profile_root=elevenreader_dir(),
+    )
+    if not is_document_engine(snapshot.tts_profile_id):
+        return config
+    return replace(
+        config,
+        max_concurrency=1,
+        queue_capacity=2,
+        scheduler_timeout_enabled=False,
+        shutdown_deadline_s=_DOCUMENT_SHUTDOWN_DEADLINE_S,
     )
 
 

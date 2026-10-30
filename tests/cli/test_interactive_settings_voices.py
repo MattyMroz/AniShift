@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import threading
+from datetime import UTC, datetime
 from typing import cast
 
 import pytest
 
-from anishift.application import AppService
+from anishift.application import AppService, SessionRecord, SignInOutcome
 from anishift.cli.interactive.settings import SettingsController
 from anishift.cli.interactive.settings_editors import format_voice_input, parse_voice_input
 from anishift.config.field_access import assign_setting_value
@@ -21,6 +23,8 @@ class FakeSettingsService:
     def __init__(self) -> None:
         self.settings = UserSettings()
         self.saves: list[tuple[str, SettingValue]] = []
+        self.session: SessionRecord | None = None
+        self.sign_in_outcome: SignInOutcome | OSError = SignInOutcome.SIGNED_IN
 
     def settings_snapshot(self) -> UserSettings:
         return self.settings
@@ -35,6 +39,18 @@ class FakeSettingsService:
         assign_setting_value(self.settings, specs[setting_id], value)
         self.settings.__post_init__()
         return self.settings
+
+    def elevenreader_session(self) -> SessionRecord | None:
+        return self.session
+
+    def elevenreader_sign_in(self) -> SignInOutcome:
+        if isinstance(self.sign_in_outcome, OSError):
+            raise self.sign_in_outcome
+        self.session = SessionRecord(
+            signed_in=self.sign_in_outcome is SignInOutcome.SIGNED_IN,
+            checked_at=datetime(2026, 10, 30, 13, 3, tzinfo=UTC),
+        )
+        return self.sign_in_outcome
 
 
 @pytest.fixture
@@ -216,3 +232,93 @@ def test_a_running_check_names_only_its_cancel_key(panel: SettingsController) ->
 
     assert "Esc anuluj" in shown
     assert "Enter otwórz" not in shown
+
+
+def _row(panel: SettingsController, key: str) -> str:
+    return next(item.current for item in panel._items if item.key == key)
+
+
+def _sign_in(panel: SettingsController) -> None:
+    _activate(panel, "elevenreader-sign-in")
+    for worker in threading.enumerate():
+        if worker.name == "anishift-elevenreader-sign-in":
+            worker.join(timeout=5.0)
+
+
+@pytest.mark.unit
+def test_tts_items_elevenbytes_engine_hides_session_section(panel: SettingsController) -> None:
+    _activate(panel, "category:tts")
+
+    assert "elevenreader-session" not in _keys(panel)
+    assert "elevenreader-sign-in" not in _keys(panel)
+
+
+@pytest.mark.unit
+def test_tts_items_elevenreader_unchecked_session_shows_status_and_action(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    service.settings = UserSettings(tts_engine="elevenreader")
+
+    _activate(panel, "category:tts")
+
+    assert _row(panel, "elevenreader-session") == "nie sprawdzono"
+    assert {item.section for item in panel._items if item.key.startswith("elevenreader-")} == {"SESJA"}
+    assert _row(panel, "setting:tts_voice_id") == "Piotr Fronczewski"
+    assert "setting:tts_profile.concurrency" not in _keys(panel)
+
+
+@pytest.mark.unit
+def test_tts_items_elevenreader_saved_check_shows_local_time(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    checked_at: datetime = datetime(2026, 10, 30, 13, 3, tzinfo=UTC)
+    service.settings = UserSettings(tts_engine="elevenreader")
+    service.session = SessionRecord(signed_in=False, checked_at=checked_at)
+
+    _activate(panel, "category:tts")
+
+    assert _row(panel, "elevenreader-session") == f"nie zalogowano · {checked_at.astimezone():%d.%m %H:%M}"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("outcome", "feedback"),
+    [
+        (SignInOutcome.SIGNED_IN, "✓ Zalogowano"),
+        (SignInOutcome.SIGNED_OUT, "✗ Nie zalogowano"),
+        (SignInOutcome.BUSY, "✗ Lektor właśnie nagrywa — spróbuj po zakończeniu"),
+        (SignInOutcome.NO_CHROME, "✗ Nie znaleziono Google Chrome"),
+        (SignInOutcome.FAILED, "✗ Nie udało się sprawdzić sesji"),
+        (OSError("chrome"), "✗ Nie udało się sprawdzić sesji"),
+    ],
+)
+def test_sign_in_action_outcome_shows_feedback(
+    panel: SettingsController,
+    service: FakeSettingsService,
+    outcome: SignInOutcome | OSError,
+    feedback: str,
+) -> None:
+    service.settings = UserSettings(tts_engine="elevenreader")
+    service.sign_in_outcome = outcome
+    _activate(panel, "category:tts")
+
+    _sign_in(panel)
+
+    assert not panel._busy
+    assert panel._feedback is not None
+    assert panel._feedback.text == feedback
+
+
+@pytest.mark.unit
+def test_sign_in_action_signed_in_refreshes_session_row(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    service.settings = UserSettings(tts_engine="elevenreader")
+    _activate(panel, "category:tts")
+
+    _sign_in(panel)
+
+    assert _row(panel, "elevenreader-session").startswith("zalogowano · ")

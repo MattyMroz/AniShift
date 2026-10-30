@@ -7,11 +7,15 @@ from typing import NoReturn
 import pytest
 
 from anishift.config.settings import Settings
+from anishift.config.user_settings import UserSettings
+from anishift.services.tts.engines.elevenreader.api_backend import write_session
+from anishift.services.tts.engines.elevenreader.config import profile_dir
 from anishift.setup import doctor
 from anishift.setup.doctor import (
     CheckStatus,
     check_api_keys,
     check_binaries,
+    check_elevenreader,
     check_python_version,
     check_torrent_client,
     check_workspace,
@@ -117,6 +121,7 @@ def test_torrent_client_is_skipped_off_windows(monkeypatch: pytest.MonkeyPatch) 
 
 def test_run_doctor_returns_all_checks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(doctor, "is_windows", lambda: False)
+    monkeypatch.setattr(doctor, "load_user_settings", UserSettings)
     names = [r.name for r in run_doctor(Settings(_env_file=None))]
     assert names == [
         "python_version",
@@ -126,6 +131,7 @@ def test_run_doctor_returns_all_checks(monkeypatch: pytest.MonkeyPatch) -> None:
         "workspace",
         "console_encoding",
         "torrent_client",
+        "elevenreader",
     ]
 
 
@@ -145,7 +151,64 @@ def test_run_doctor_reads_the_repository_env_file(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(doctor, "is_windows", lambda: True)
     monkeypatch.setattr(doctor, "installed_executable", lambda: None)
     monkeypatch.setattr(doctor, "create_connection", connect)
+    monkeypatch.setattr(doctor, "load_user_settings", UserSettings)
 
     run_doctor()
 
     assert probed == [("127.0.0.1", 9999)]
+
+
+@pytest.fixture
+def elevenreader_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    root: Path = tmp_path / "elevenreader"
+    monkeypatch.setattr(doctor, "elevenreader_dir", lambda: root)
+    monkeypatch.setattr(doctor, "find_chrome", lambda: tmp_path / "chrome.exe")
+    return root
+
+
+@pytest.mark.unit
+def test_check_elevenreader_other_engine_skips() -> None:
+    result = check_elevenreader("elevenbytes")
+
+    assert result.status is CheckStatus.SKIP
+
+
+@pytest.mark.unit
+def test_check_elevenreader_without_chrome_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor, "find_chrome", lambda: None)
+
+    result = check_elevenreader("elevenreader")
+
+    assert result.status is CheckStatus.FAIL
+    assert "ElevenBytes" in result.suggestion
+
+
+@pytest.mark.unit
+def test_check_elevenreader_without_profile_warns_with_sign_in_hint(elevenreader_root: Path) -> None:
+    write_session(elevenreader_root, signed_in=True)
+
+    result = check_elevenreader("elevenreader")
+
+    assert result.status is CheckStatus.WARN
+    assert result.suggestion == "Ustawienia → Lektor → Zaloguj / sprawdź sesję"
+
+
+@pytest.mark.unit
+def test_check_elevenreader_last_check_signed_out_warns(elevenreader_root: Path) -> None:
+    profile_dir(elevenreader_root).mkdir(parents=True)
+    write_session(elevenreader_root, signed_in=False)
+
+    result = check_elevenreader("elevenreader")
+
+    assert result.status is CheckStatus.WARN
+
+
+@pytest.mark.unit
+def test_check_elevenreader_signed_in_profile_is_ok(elevenreader_root: Path) -> None:
+    profile_dir(elevenreader_root).mkdir(parents=True)
+    write_session(elevenreader_root, signed_in=True)
+
+    result = check_elevenreader("elevenreader")
+
+    assert result.status is CheckStatus.OK
+    assert "signed in" in result.message

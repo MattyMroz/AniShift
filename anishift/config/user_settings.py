@@ -31,6 +31,7 @@ from anishift.services.tts.engines.elevenbytes.constants import (
     ENDPOINTS,
 )
 from anishift.services.tts.engines.elevenlabs.constants import DEFAULT_MODEL_ID
+from anishift.services.tts.engines.elevenreader.constants import DEFAULT_VOICE_ALIAS, PROVIDER_MODEL_ID, VOICES
 from anishift.services.tts.engines.sapi.constants import SAPI_PROFILES
 from anishift.utils.logger import get_logger
 
@@ -173,6 +174,12 @@ _EDGE_MAREK_PROFILE_KEY: Final[str] = f"edge:{MAREK_VOICE_ID}"
 _EDGE_ZOFIA_PROFILE_KEY: Final[str] = f"edge:{ZOFIA_VOICE_ID}"
 """Stable profile key for Edge Zofia."""
 
+_FRONCZEWSKI_PROFILE_KEY: Final[str] = f"elevenreader:{VOICES['fronczewski'].voice_id}"
+"""Stable profile key for the ElevenReader voice of Piotr Fronczewski."""
+
+_ADAM_PROFILE_KEY: Final[str] = f"elevenreader:{VOICES['adam'].voice_id}"
+"""Stable profile key for the ElevenReader voice Adam."""
+
 _MISSING: Final[object] = object()
 """Sentinel distinguishing an omitted nested profile field from JSON null."""
 
@@ -239,6 +246,8 @@ def default_tts_voice_profiles() -> dict[str, TtsVoiceProfileSettings]:
             native_rate=DEFAULT_RATE,
             native_volume=DEFAULT_VOLUME,
         ),
+        _FRONCZEWSKI_PROFILE_KEY: TtsVoiceProfileSettings(postprocess_tempo=1.45, concurrency=1),
+        _ADAM_PROFILE_KEY: TtsVoiceProfileSettings(postprocess_tempo=1.35, voice_mix_offset_db=2.0, concurrency=1),
     }
 
 
@@ -353,6 +362,8 @@ class UserSettings:
             }.get(voice_id, voice_id)
         if self.tts_engine == "sapi":
             return voice_id.title()
+        if self.tts_engine == "elevenreader" and voice_id.casefold() in VOICES:
+            return VOICES[voice_id.casefold()].label
         return voice_id
 
     @property
@@ -369,6 +380,8 @@ class UserSettings:
             return custom.voice_id if custom is not None else voice_id
         if self.tts_engine == "sapi" and voice_id.casefold() in SAPI_PROFILES:
             return SAPI_PROFILES[voice_id.casefold()].resolved_voice_id
+        if self.tts_engine == "elevenreader" and voice_id.casefold() in VOICES:
+            return VOICES[voice_id.casefold()].voice_id
         return voice_id
 
     def _active_tts_profile_key(self) -> str:
@@ -453,7 +466,14 @@ class UserSettings:
         if self.tts_engine == "elevenbytes":
             if self.tts_provider_model_id not in ENDPOINTS:
                 self.tts_provider_model_id = "run6"
-            if _is_sapi_voice(self.tts_voice_id) or self.tts_voice_id in {MAREK_VOICE_ID, ZOFIA_VOICE_ID}:
+            custom: bool = any(
+                item.alias.casefold() == self.tts_voice_id.casefold() for item in self.elevenbytes_custom_voices
+            )
+            if (
+                _is_sapi_voice(self.tts_voice_id)
+                or (_is_elevenreader_voice(self.tts_voice_id) and not custom)
+                or self.tts_voice_id in {MAREK_VOICE_ID, ZOFIA_VOICE_ID}
+            ):
                 self.tts_voice_id = DALLIN_ALIAS
             return
         if self.tts_engine == "edge":
@@ -466,6 +486,11 @@ class UserSettings:
             if not _is_sapi_voice(self.tts_voice_id):
                 self.tts_voice_id = "agnieszka"
             return
+        if self.tts_engine == "elevenreader":
+            self.tts_provider_model_id = PROVIDER_MODEL_ID
+            if self.tts_voice_id.casefold() not in VOICES:
+                self.tts_voice_id = DEFAULT_VOICE_ALIAS
+            return
         if (
             not self.tts_provider_model_id.strip()
             or self.tts_provider_model_id in ENDPOINTS
@@ -473,6 +498,7 @@ class UserSettings:
             in {
                 EDGE_PROVIDER_MODEL_ID,
                 _SAPI_PROVIDER_MODEL_ID,
+                PROVIDER_MODEL_ID,
             }
         ):
             self.tts_provider_model_id = DEFAULT_MODEL_ID
@@ -483,7 +509,7 @@ class UserSettings:
         )
         if profile is None:
             return
-        if self.tts_engine in {"edge", "sapi"} or (
+        if self.tts_engine in {"edge", "elevenreader", "sapi"} or (
             self.tts_engine == "elevenbytes" and self.tts_provider_model_id == "run6"
         ):
             profile.engine_options = {}
@@ -779,6 +805,11 @@ def _is_sapi_voice(value: str) -> bool:
         }
         for alias, profile in SAPI_PROFILES.items()
     )
+
+
+def _is_elevenreader_voice(value: str) -> bool:
+    candidate: str = value.casefold()
+    return any(candidate in {voice.alias, voice.voice_id.casefold()} for voice in VOICES.values())
 
 
 def _migrate_schema(raw: dict[str, Any]) -> bool:

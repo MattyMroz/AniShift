@@ -6,6 +6,7 @@ from array import array
 from typing import TYPE_CHECKING
 
 import pytest
+from conftest import alignment_chunks
 
 from anishift.paths import quality_dir
 from anishift.platform.binaries import Binary, resolve_binary
@@ -44,26 +45,12 @@ def _cut(levels: list[float], line: LineSpan = LINE, following: LineSpan = NEXT)
     return decision
 
 
-def _chunk(row: dict[str, object]) -> AlignmentChunk:
-    chars, starts, durations = row["chars"], row["start_ms"], row["dur_ms"]
-    assert isinstance(chars, list)
-    assert isinstance(starts, list)
-    assert isinstance(durations, list)
-    return AlignmentChunk(
-        offset_ms=float(str(row["offset_ms"])),
-        chars=tuple(str(char) for char in chars),
-        starts_ms=tuple(float(str(value)) for value in starts),
-        durations_ms=tuple(float(str(value)) for value in durations),
-    )
-
-
 def _spans(work: Path, voice: str) -> list[LineSpan]:
     rows: list[dict[str, object]] = json.loads((work / "lines.json").read_text(encoding="utf-8"))
     parts: tuple[DocumentPart, ...] = tuple(
         DocumentPart(request_id=str(index), text=str(row["text"])) for index, row in enumerate(rows)
     )
-    alignment: list[str] = (work / f"anishift-test-{voice}.align.jsonl").read_text(encoding="utf-8").splitlines()
-    chunks: tuple[AlignmentChunk, ...] = tuple(_chunk(json.loads(line)) for line in alignment if line)
+    chunks: tuple[AlignmentChunk, ...] = alignment_chunks(work / f"anishift-test-{voice}.align.jsonl")
     return [
         LineSpan(start_ms=timing.start_ms, end_ms=timing.end_ms, open_end=not ends_sentence(part.text))
         for timing, part in zip(part_spans(chunks, parts), parts, strict=True)

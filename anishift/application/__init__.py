@@ -71,6 +71,8 @@ if TYPE_CHECKING:
     from anishift.services.catalog import TitleCandidate, TitleCatalogError, TitleStatus
     from anishift.services.torrents.names import parse_release_name
     from anishift.services.torrents.query import EpisodeRange, SearchQuery, parse_query
+    from anishift.services.tts.engines.elevenreader import VOICES as ELEVENREADER_VOICES
+    from anishift.services.tts.engines.elevenreader import SessionRecord, SignInOutcome
     from anishift.setup.doctor import CheckResult
     from anishift.setup.installer import ResourceResult
 
@@ -196,6 +198,7 @@ from anishift.application.workflows import WorkflowTarget
 
 __all__ = [
     "AIRING_STATUSES",
+    "ELEVENREADER_VOICES",
     "PRIMARY_SOURCE_SUFFIXES",
     "SCAN_INTERVAL_S",
     "TRANSLATE_PRODUCTS",
@@ -312,7 +315,9 @@ __all__ = [
     "SearchQuery",
     "SeasonContext",
     "SeriesGroup",
+    "SessionRecord",
     "SettingsDraft",
+    "SignInOutcome",
     "SourceGroup",
     "SourceSelection",
     "StreamCandidate",
@@ -410,6 +415,9 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "TitleCandidate": ("anishift.services.catalog", "TitleCandidate"),
     "TitleCatalogError": ("anishift.services.catalog", "TitleCatalogError"),
     "TitleStatus": ("anishift.services.catalog", "TitleStatus"),
+    "ELEVENREADER_VOICES": ("anishift.services.tts.engines.elevenreader", "VOICES"),
+    "SessionRecord": ("anishift.services.tts.engines.elevenreader", "SessionRecord"),
+    "SignInOutcome": ("anishift.services.tts.engines.elevenreader", "SignInOutcome"),
     "AutoPresetDraft": ("anishift.application.service", "AutoPresetDraft"),
     "ClientStatus": ("anishift.application.acquisition", "ClientStatus"),
     "DownloadReceipt": ("anishift.application.acquisition", "DownloadReceipt"),

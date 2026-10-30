@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import threading
@@ -56,7 +57,7 @@ from anishift.errors import (
     PlanningError,
     RunConflictError,
 )
-from anishift.paths import ready_dir
+from anishift.paths import elevenreader_dir, ready_dir
 from anishift.services.llm.engines import (
     available_engine_ids as available_llm_engine_ids,
 )
@@ -70,6 +71,7 @@ from anishift.services.translation.engines import available_engine_ids as availa
 from anishift.services.tts.engines import available_engine_ids as available_tts_engine_ids
 from anishift.services.tts.engines.edge.constants import MAREK_VOICE_ID, ZOFIA_VOICE_ID
 from anishift.services.tts.engines.elevenbytes.constants import DALLIN_VOICE_ID
+from anishift.services.tts.engines.elevenreader import VOICES, read_session, sign_in
 from anishift.setup.doctor import CheckResult, run_doctor
 from anishift.setup.installer import ResourceResult, run_setup
 from anishift.utils.logger import get_logger
@@ -81,6 +83,7 @@ if TYPE_CHECKING:
     from anishift.application.recovery import RunJournal
     from anishift.services.llm import LlmConfig
     from anishift.services.media.probe import MediaProbe
+    from anishift.services.tts.engines.elevenreader import SessionRecord, SignInOutcome
 
 __all__ = [
     "AppService",
@@ -726,6 +729,14 @@ class AppService:
             checked_at=datetime.now(UTC),
         )
 
+    def elevenreader_session(self) -> SessionRecord | None:
+        """Return the last saved ElevenReader session check, or None when none was saved."""
+        return read_session(elevenreader_dir())
+
+    def elevenreader_sign_in(self) -> SignInOutcome:
+        """Open a visible Chrome on the ElevenReader library and wait until the owner signs in or closes it."""
+        return asyncio.run(sign_in(elevenreader_dir()))
+
     def settings_snapshot(self) -> SettingsDraft:
         """Return a detached mutable copy that cannot affect an active plan."""
         with self._run_lock:
@@ -1040,6 +1051,8 @@ def _tts_allowed_voice_ids(preferences: UserSettings) -> tuple[str, ...]:
     if preferences.tts_engine == "elevenbytes":
         custom: tuple[str, ...] = tuple(voice.voice_id for voice in preferences.elevenbytes_custom_voices)
         return (DALLIN_VOICE_ID, *dict.fromkeys(item for item in custom if item != DALLIN_VOICE_ID))
+    if preferences.tts_engine == "elevenreader":
+        return tuple(voice.voice_id for voice in VOICES.values())
     return ()
 
 
@@ -1076,7 +1089,7 @@ def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
         translation_is_paid=preferences.translation_engine != "google",
         llm_is_paid=True,
         tts_is_network=preferences.tts_engine != "sapi",
-        tts_is_paid=preferences.tts_engine in {"elevenbytes", "elevenlabs"},
+        tts_is_paid=preferences.tts_engine in {"elevenbytes", "elevenlabs", "elevenreader"},
         dialogue_font_file=preferences.dialogue_font_file,
         sign_narration=preferences.sign_narration,
         translation_chunk_chars=preferences.translation_chunk_chars,

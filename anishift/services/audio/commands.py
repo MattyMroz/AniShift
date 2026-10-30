@@ -28,6 +28,7 @@ __all__ = [
     "narrator_wav_command",
     "normalize_command",
     "probe_command",
+    "recording_pcm_command",
     "scan_duration_command",
     "transcode_command",
 ]
@@ -421,36 +422,18 @@ def normalize_command(
     tempo_filter: str | None,
 ) -> tuple[str, ...]:
     """Build source clip conversion to raw PCM S16LE."""
-    command: list[str] = [
-        str(ffmpeg),
-        "-v",
-        "error",
-        "-nostdin",
-        "-i",
-        str(source),
-        "-map",
-        "0:a:0",
-        "-vn",
-        "-sn",
-        "-dn",
-    ]
-    if tempo_filter is not None:
-        command.extend(("-af", tempo_filter))
-    command.extend(
-        (
-            "-ac",
-            str(target.channels),
-            "-ar",
-            str(target.sample_rate),
-            "-sample_fmt",
-            "s16",
-            "-f",
-            "s16le",
-            "-y",
-            str(destination),
-        ),
+    return _pcm_command(ffmpeg, ("-i", str(source)), destination, target=target, tempo_filter=tempo_filter)
+
+
+def recording_pcm_command(ffmpeg: Path, source: Path, destination: Path, *, sample_rate: int) -> tuple[str, ...]:
+    """Build a decode of an MP3 recording, read as MP3 whatever bytes lead it, to mono raw PCM S16LE."""
+    return _pcm_command(
+        ffmpeg,
+        ("-f", "mp3", "-i", str(source)),
+        destination,
+        target=PcmTarget(sample_rate=sample_rate, channels=1),
+        tempo_filter=None,
     )
-    return tuple(command)
 
 
 def narrator_wav_command(
@@ -539,6 +522,34 @@ def transcode_command(  # noqa: PLR0913 - explicit FFmpeg output contract
             "-nostats",
             str(destination),
         )
+    )
+    return tuple(command)
+
+
+def _pcm_command(
+    ffmpeg: Path,
+    input_args: tuple[str, ...],
+    destination: Path,
+    *,
+    target: PcmTarget,
+    tempo_filter: str | None,
+) -> tuple[str, ...]:
+    command: list[str] = [str(ffmpeg), "-v", "error", "-nostdin", *input_args, "-map", "0:a:0", "-vn", "-sn", "-dn"]
+    if tempo_filter is not None:
+        command.extend(("-af", tempo_filter))
+    command.extend(
+        (
+            "-ac",
+            str(target.channels),
+            "-ar",
+            str(target.sample_rate),
+            "-sample_fmt",
+            "s16",
+            "-f",
+            "s16le",
+            "-y",
+            str(destination),
+        ),
     )
     return tuple(command)
 

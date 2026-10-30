@@ -235,15 +235,23 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
 - Co robi: wybiera dostawcę syntezy polskiego lektora.
 - Wartości · domyślnie: `elevenbytes` (publiczne proxy ElevenLabs, bez klucza),
   `edge` (Microsoft Edge, bez klucza), `elevenlabs` (oficjalne API, klucz),
+  `elevenreader` (ElevenReader przez Google Chrome z zalogowaną sesją, model Eleven v4),
   `sapi` (głosy Windows zainstalowane w systemie) · `elevenbytes`.
-- Zależność: zmiana silnika przełącza model, głos i cały profil głosu.
+- Zależność: zmiana silnika przełącza model, głos i cały profil głosu. Głos innego
+  silnika nie przechodzi dalej: ElevenBytes dostaje `dallin`, Edge, SAPI i ElevenReader
+  swój głos domyślny; zapisane profile głosów zostają.
+- ElevenReader czyta cały odcinek jednym dokumentem i tnie nagranie na kwestie w
+  pauzach. Kwestia urwana w pół zdania, po której następna zaczyna się bez przerwy,
+  łączy się z nią w jedną kwestię lektora. Trwały błąd (wylogowanie, blokada konta,
+  brak kredytów, zły głos) kończy syntezę komunikatem z akcją naprawczą; powrót do
+  ElevenBytes to wybór tego silnika tutaj.
 
 ### Model / endpoint (`tts_provider_model_id`)
 
 - Co robi: model albo endpoint aktywnego silnika.
 - Wartości · domyślnie: ElevenBytes `run6`, `run7` · `run6`; ElevenLabs
   `eleven_multilingual_v2`, `eleven_flash_v2_5`, `eleven_v3` · `eleven_multilingual_v2`;
-  Edge tylko `edge-default`; SAPI tylko `sapi5`.
+  Edge tylko `edge-default`; ElevenReader tylko `eleven_v4`; SAPI tylko `sapi5`.
 - Zależność: `run7` odsłania opcje głosu (stabilność, podobieństwo, ekspresja,
   wzmocnienie mówcy).
 
@@ -253,7 +261,8 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
   natywne) jest zapisany osobno dla każdej pary silnik + głos.
 - Wartości · domyślnie: ElevenBytes alias `dallin` i aliasy z `Własne głosy` · `dallin`;
   Edge `pl-PL-MarekNeural`, `pl-PL-ZofiaNeural` · Marek; ElevenLabs wpisany
-  identyfikator głosu z konta; SAPI `agnieszka`, `zosia` · `agnieszka`.
+  identyfikator głosu z konta; ElevenReader `fronczewski` (Piotr Fronczewski), `adam`
+  (Adam) · `fronczewski`; SAPI `agnieszka`, `zosia` · `agnieszka`.
 - Przykład: ElevenLabs — wklej `voice_id` z panelu ElevenLabs.
 
 ### Własne głosy (`elevenbytes_custom_voices`)
@@ -272,7 +281,8 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
   trwać równolegle z syntezą następnego.
 - Zakres · domyślnie: 1–100 · `dallin` 85, głosy Edge 16, ElevenLabs i własne
   głosy ElevenBytes 1.
-- Silnik: `elevenbytes`, `edge`, `elevenlabs`; SAPI zawsze 1 i wiersz jest ukryty.
+- Silnik: `elevenbytes`, `edge`, `elevenlabs`; SAPI i ElevenReader zawsze 1 i wiersz
+  jest ukryty.
 - Zależność: wartość należy do profilu aktywnego głosu.
 - Przykład: proxy odrzuca zapytania — 20.
 
@@ -294,14 +304,14 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
 ### Tempo końcowe (`tts_profile.postprocess_tempo`)
 
 - Co robi: mnożnik tempa nałożony przez FFmpeg na gotowe klipy, po syntezie.
-- Zakres · domyślnie: 0,5–2,0 × · 1,0; `dallin` 1,25.
+- Zakres · domyślnie: 0,5–2,0 × · 1,0; `dallin` 1,25, `fronczewski` 1,45, `adam` 1,35.
 - Silnik: wszystkie; wartość należy do profilu głosu.
 - Przykład: lektor nie nadąża za szybkimi dialogami — 1,3.
 
 ### Korekta głośności głosu (`tts_profile.voice_mix_offset_db`)
 
-- Co robi: poprawka w dB dodawana do `Głośność lektora` dla tego głosu.
-- Domyślnie: 0 dB; `dallin` −2 dB, SAPI Agnieszka +2 dB.
+- Co robi: poprawka w LU dodawana do `Głośność lektora` dla tego głosu.
+- Domyślnie: 0 LU; `adam` +2 LU, SAPI Agnieszka +2 LU.
 - Silnik: wszystkie; wartość należy do profilu głosu.
 
 ### Tempo natywne (`tts_profile.native_rate`)
@@ -344,6 +354,20 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
 - Domyślnie: `mp3_44100_128`.
 - Silnik: tylko `elevenlabs`.
 
+### Sesja ElevenReader i „Zaloguj / sprawdź sesję”
+
+- Co robi: wiersz `Sesja ElevenReader` pokazuje wynik ostatniego sprawdzenia
+  (`zalogowano · 30.10 14:03`, `nie zalogowano · …` albo `nie sprawdzono`). Akcja
+  `Zaloguj / sprawdź sesję` otwiera okno Chrome na bibliotece ElevenReadera; zaloguj
+  się w nim albo zamknij okno. Wynik: `✓ Zalogowano`, `✗ Nie zalogowano`, `✗ Lektor
+  właśnie nagrywa — spróbuj po zakończeniu`, `✗ Nie znaleziono Google Chrome` albo
+  `✗ Nie udało się sprawdzić sesji`. `Esc` zwalnia panel; okno zostaje do zamknięcia.
+- Gdzie: sesja żyje w profilu Chrome w `config/elevenreader/chrome-profile/`, wynik
+  sprawdzenia w `config/elevenreader/session.json` (bez sekretów). AniShift nie
+  zapisuje e-maila ani hasła.
+- Silnik: tylko `elevenreader`. `anishift doctor` pokazuje brak Chrome jako błąd, a
+  brak profilu albo ostatnie „nie zalogowano” jako ostrzeżenie z tą akcją.
+
 ### Kodek lektora (`tts_output_profile`)
 
 - Co robi: kodek pliku lektora zapisywanego obok źródła i ścieżki lektora w MKV.
@@ -358,11 +382,13 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
 - Format: liczba z `k` albo `M`, np. `192k`.
 - Zależność: tylko `aac`, `eac3`, `mp3`, `opus`.
 
-### Głośność lektora (`narrator_mix_base_gain_db`)
+### Głośność lektora (`narrator_over_source_lu`)
 
-- Co robi: wzmocnienie lektora w dB podczas miksu z oryginałem; do niego dodawana
-  jest `Korekta głośności głosu`.
-- Domyślnie: 7 dB.
+- Co robi: o ile LU lektor jest głośniejszy od oryginału w miksie. AniShift mierzy
+  zintegrowaną głośność (EBU R128) lektora i oryginału, dobiera wzmocnienie lektora i
+  dodaje `Korekta głośności głosu`; na wyjściu miksu limiter trzyma szczyty poniżej
+  −1 dBFS. Plik z samym lektorem nie dostaje wzmocnienia ani limitera.
+- Domyślnie: 7,5 LU.
 
 ### Głośność oryginału (`original_gain_db`)
 
