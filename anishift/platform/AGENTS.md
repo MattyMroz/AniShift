@@ -1,6 +1,6 @@
 # platform
 
-Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokada jednej instancji procesu (`process_lock.py`), lokalny kanał sterowania rezydenta (`local_control.py`), zadanie Windows przy logowaniu (`autostart.py`), klucze Web UI w ustawieniach qBittorrenta (`qbittorrent_config.py`). `__init__.py` to re-eksport binarek.
+Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokada jednej instancji procesu (`process_lock.py`), lokalny kanał sterowania rezydenta (`local_control.py`), zadanie Windows przy logowaniu (`autostart.py`), klucze Web UI w ustawieniach qBittorrenta (`qbittorrent_config.py`), szukanie zainstalowanego programu (`installed.py`) i zawężanie prywatnego katalogu do bieżącego konta (`private_dir.py`). `__init__.py` to re-eksport binarek.
 
 ## Pułapki
 
@@ -119,3 +119,10 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
 - `settings_path()` odmawia poza Windows i bez `%APPDATA%`; `installed_executable()` sprawdza `%ProgramFiles%`,
   `%ProgramFiles(x86)%` i `%LOCALAPPDATA%\Programs`, a dopiero na końcu `PATH`. Instalacji nie wykonuje —
   doctor podpowiada `winget install qBittorrent.qBittorrent`. `qbittorrent_config.py`
+- `find_installed(locations, stem)` to jedyne szukanie zainstalowanego programu: pary (zmienna środowiska,
+  ścieżka względna) po kolei, potem `shutil.which(stem)`. Testy patchują `installed.which`, nie moduł wołającego.
+  `installed.py`
+- `restrict_directory(root)` to jedyne zawężenie prywatnego katalogu (profil qBittorrenta, profil przeglądarki):
+  `icacls /inheritance:r /grant:r <konto>:(OI)(CI)F`, poza Windows `chmod 0o700`. Katalog musi istnieć. Każda porażka
+  (brak `USERNAME`/`SYSTEMROOT`, niezerowy kod, brak `icacls`, timeout) to `PrivateDirectoryError`; wołający mapuje
+  go na własny błąd domeny z `from`. Plikowy wariant w `local_control.py` jest osobny (tylko ostrzega). `private_dir.py`

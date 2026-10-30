@@ -25,6 +25,7 @@ from anishift.paths import torrent_download_dir
 from anishift.platform.binaries import Binary, bundled_binary_path, external_bin_root, is_windows
 from anishift.platform.child_processes import independent_child_flags
 from anishift.platform.local_control import ensure_authkey
+from anishift.platform.private_dir import PrivateDirectoryError, restrict_directory
 from anishift.platform.process_lock import ProcessLock
 from anishift.platform.qbittorrent_config import write_managed_profile
 from anishift.services.torrents import QBittorrentClient, TorrentFile, TorrentInfo
@@ -631,26 +632,11 @@ def _file_identities(files: tuple[TorrentFile, ...]) -> tuple[tuple[int, str, in
 
 
 def _protect_profile(root: Path) -> None:
-    if not is_windows():
-        root.chmod(0o700)
-        return
-    username: str = os.environ.get("USERNAME", "")
-    domain: str = os.environ.get("USERDOMAIN", "")
-    if not username:
-        message: str = "The current Windows account cannot protect the private torrent profile"
-        raise _unavailable(message)
-    account: str = f"{domain}\\{username}" if domain else username
-    executable: Path = Path(os.environ["SYSTEMROOT"]) / "System32" / "icacls.exe"
-    result: subprocess.CompletedProcess[bytes] = subprocess.run(  # noqa: S603 - system ACL utility and private root
-        [str(executable), str(root), "/inheritance:r", "/grant:r", f"{account}:(OI)(CI)F"],
-        capture_output=True,
-        check=False,
-        timeout=_START_TIMEOUT_S,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    if result.returncode != 0:
-        message = "The private torrent profile could not be restricted to the current account"
-        raise _unavailable(message)
+    try:
+        restrict_directory(root)
+    except PrivateDirectoryError as error:
+        message: str = "The private torrent profile could not be restricted to the current account"
+        raise _unavailable(message) from error
 
 
 def _process_identity(pid: int) -> tuple[int, str] | None:

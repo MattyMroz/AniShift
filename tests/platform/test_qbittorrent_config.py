@@ -7,7 +7,7 @@ from typing import Final
 import pytest
 
 from anishift.errors import ErrorCode
-from anishift.platform import qbittorrent_config
+from anishift.platform import installed, qbittorrent_config
 from anishift.platform.qbittorrent_config import (
     QBittorrentConfigError,
     WebUiSetup,
@@ -206,7 +206,7 @@ def test_installed_executable_finds_a_standard_location(monkeypatch: pytest.Monk
 def test_installed_executable_falls_back_to_the_search_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     for variable in _INSTALL_VARIABLES:
         monkeypatch.delenv(variable, raising=False)
-    monkeypatch.setattr(qbittorrent_config, "which", lambda _name: str(tmp_path / "qbittorrent"))
+    monkeypatch.setattr(installed, "which", lambda _name: str(tmp_path / "qbittorrent"))
 
     assert installed_executable() == tmp_path / "qbittorrent"
 
@@ -214,6 +214,6 @@ def test_installed_executable_falls_back_to_the_search_path(monkeypatch: pytest.
 def test_installed_executable_is_none_when_nothing_holds_the_client(monkeypatch: pytest.MonkeyPatch) -> None:
     for variable in _INSTALL_VARIABLES:
         monkeypatch.delenv(variable, raising=False)
-    monkeypatch.setattr(qbittorrent_config, "which", lambda _name: None)
+    monkeypatch.setattr(installed, "which", lambda _name: None)
 
     assert installed_executable() is None
