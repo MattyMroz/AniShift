@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from anishift.services.tts.config import TtsConfig
-    from anishift.services.tts.protocols import CancellationToken, TtsEngine
+    from anishift.services.tts.protocols import CancellationToken
 
 __all__ = ["ScheduledSynthesis", "TtsScheduler"]
 
@@ -82,7 +82,7 @@ class TtsScheduler:
         "_clock",
         "_condition",
         "_delayed",
-        "_engine",
+        "_locality",
         "_max_retries",
         "_ready",
         "_sequence",
@@ -93,13 +93,13 @@ class TtsScheduler:
 
     def __init__(
         self,
-        engine: TtsEngine,
         *,
+        locality: EngineLocality,
         config: TtsConfig,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """Create a loop-owned scheduler without starting provider work."""
-        self._engine: TtsEngine = engine
+        self._locality: EngineLocality = locality
         self._max_retries: int = config.max_retries
         self._backoff_seconds: tuple[float, ...] = config.retry_backoff_seconds
         self._timeout_s: float | None = config.request_timeout_s if config.scheduler_timeout_enabled else None
@@ -374,7 +374,7 @@ class TtsScheduler:
         return max(0.0, self._delayed[0].ready_at - self._clock())
 
     def _retry_delay(self, attempts: int, error: TtsError) -> float:
-        if self._engine.capabilities.locality is EngineLocality.SYSTEM:
+        if self._locality is EngineLocality.SYSTEM:
             return 0.0
         index: int = min(attempts - 1, len(self._backoff_seconds) - 1)
         local_delay: float = self._backoff_seconds[index]

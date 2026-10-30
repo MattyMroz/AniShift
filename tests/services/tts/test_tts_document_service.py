@@ -15,6 +15,7 @@ from anishift.services.tts import (
     ClipExpectation,
     ClipSpan,
     ClipValidation,
+    DocumentPart,
     DocumentSynthesisRequest,
     DocumentTtsEngine,
     EngineAvailability,
@@ -96,11 +97,21 @@ class _DocumentEngine:
         adapter_version="document:v1",
     )
 
-    def __init__(self, *, failures: tuple[TtsError, ...] = (), drop_timing_once: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        failures: tuple[TtsError, ...] = (),
+        drop_timing_once: bool = False,
+        wrong_voice_once: bool = False,
+        separator: str = "",
+    ) -> None:
+        self.separator: str = separator
         self.documents: list[tuple[str, ...]] = []
         self.recordings: list[Path] = []
+        self.stale_files: list[list[str]] = []
         self.failures: list[TtsError] = list(failures)
         self.drop_timing_once: bool = drop_timing_once
+        self.wrong_voice_once: bool = wrong_voice_once
         self.closed: int = 0
 
     async def availability(self, *, live: bool = False) -> EngineAvailability:
@@ -119,6 +130,9 @@ class _DocumentEngine:
         del request, cancel
         raise TtsUnsupportedError("document engine")
 
+    def document_chars(self, parts: tuple[DocumentPart, ...]) -> int:
+        return len(self.separator.join(part.text for part in parts))
+
     async def synthesize_document(
         self,
         request: DocumentSynthesisRequest,
@@ -128,6 +142,9 @@ class _DocumentEngine:
         assert not cancel.is_cancelled
         self.documents.append(tuple(part.request_id for part in request.parts))
         self.recordings.append(request.recording)
+        self.stale_files.append(
+            sorted(path.name for path in request.recording.parent.glob("*.tmp") if path != request.recording)
+        )
         if self.failures:
             raise self.failures.pop(0)
         request.recording.write_bytes(b"recording")
@@ -142,13 +159,15 @@ class _DocumentEngine:
         if self.drop_timing_once:
             self.drop_timing_once = False
             timings = timings[:-1]
+        voice_id: str = "other-voice" if self.wrong_voice_once else "document-voice"
+        self.wrong_voice_once = False
         return EngineDocumentResult(
             request_id=request.request_id,
             recording=request.recording,
             format=AudioFormat.MP3,
             engine_id=self.engine_id,
             provider_model_id="document-model",
-            voice_id="document-voice",
+            voice_id=voice_id,
             request_time_ms=5.0,
             parts=timings,
         )
@@ -158,9 +177,19 @@ class _DocumentEngine:
 
 
 class _Splitter:
-    def __init__(self, *, failures: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        failures: int = 0,
+        invalid_clip_once: bool = False,
+        missing_clip_once: bool = False,
+        uncertain_boundaries: int = 0,
+    ) -> None:
         self.calls: list[tuple[ClipSpan, ...]] = []
         self.failures: int = failures
+        self.invalid_clip_once: bool = invalid_clip_once
+        self.missing_clip_once: bool = missing_clip_once
+        self.uncertain_boundaries: int = uncertain_boundaries
         self.service: TtsService | None = None
         self.cancel_after_split: bool = False
 
@@ -173,10 +202,15 @@ class _Splitter:
             message = "cut failed"
             raise RuntimeError(message)
         for span in spans:
-            span.destination.write_bytes(b"valid")
+            span.destination.write_bytes(b"invalid" if self.invalid_clip_once else b"valid")
+        self.invalid_clip_once = False
         if self.cancel_after_split and self.service is not None:
             self.service.cancel()
-        return SplitResult(written=tuple(span.request_id for span in spans), uncertain_boundaries=0)
+        written: tuple[str, ...] = tuple(span.request_id for span in spans)
+        if self.missing_clip_once:
+            self.missing_clip_once = False
+            written = written[:-1]
+        return SplitResult(written=written, uncertain_boundaries=self.uncertain_boundaries)
 
 
 def _config() -> TtsConfig:
@@ -233,11 +267,11 @@ def _statuses(result: SpeechBatchResult) -> list[SynthesisStatus]:
     return [item.status for item in result.requests]
 
 
-def test_document_engine_fake_satisfies_document_protocol() -> None:
+def test_document_tts_engine_fake_engine_satisfies_protocol() -> None:
     assert isinstance(_DocumentEngine(), DocumentTtsEngine)
 
 
-def test_document_batch_commits_one_clip_per_line_and_skips_non_speech(tmp_path: Path) -> None:
+def test_document_batch_mixed_lines_commits_speech_and_skips_non_speech(tmp_path: Path) -> None:
     engine = _DocumentEngine()
     splitter = _Splitter()
 
@@ -253,7 +287,7 @@ def test_document_batch_commits_one_clip_per_line_and_skips_non_speech(tmp_path:
     assert engine.closed == 1
 
 
-def test_document_batch_discards_recording_and_temporary_clips(tmp_path: Path) -> None:
+def test_document_batch_success_discards_recording_and_temporary_clips(tmp_path: Path) -> None:
     engine = _DocumentEngine()
 
     _run(tmp_path, engine, _Splitter(), _batch("Raz dwa.", "Trzy cztery."))
@@ -294,7 +328,7 @@ def test_document_batch_partial_resume_reads_only_missing_lines(tmp_path: Path) 
     ]
 
 
-def test_document_batch_splits_documents_at_character_limit(tmp_path: Path) -> None:
+def test_document_batch_lines_over_document_limit_start_next_document(tmp_path: Path) -> None:
     engine = _DocumentEngine()
     line: str = "Piętnaście zn."
 
@@ -304,7 +338,18 @@ def test_document_batch_splits_documents_at_character_limit(tmp_path: Path) -> N
     assert result.status is SpeechBatchStatus.COMPLETED
 
 
-def test_document_batch_line_over_limit_fails_only_that_line(tmp_path: Path) -> None:
+def test_document_batch_lines_within_limit_but_over_it_with_separators_start_next_document(tmp_path: Path) -> None:
+    engine = _DocumentEngine(separator="\n\n…\n\n")
+    line: str = "Dwadzieścia znaków."
+
+    (result,) = _run(tmp_path, engine, _Splitter(), _batch(line, line))
+
+    assert len(line) * 2 <= 40
+    assert engine.documents == [("line-0",), ("line-1",)]
+    assert result.status is SpeechBatchStatus.COMPLETED
+
+
+def test_document_batch_line_over_text_limit_fails_only_that_line(tmp_path: Path) -> None:
     engine = _DocumentEngine()
     too_long: str = " ".join(["słowo"] * 10) + "."
 
@@ -314,6 +359,20 @@ def test_document_batch_line_over_limit_fails_only_that_line(tmp_path: Path) -> 
     assert result.requests[1].error_code == "TTS_INPUT_INVALID"
     assert engine.documents == [("line-0",)]
     assert result.status is SpeechBatchStatus.PARTIAL
+
+
+def test_document_batch_line_over_document_limit_fails_only_that_line(tmp_path: Path) -> None:
+    class _WideTextEngine(_DocumentEngine):
+        capabilities = replace(_DocumentEngine.capabilities, max_text_chars=100)
+
+    engine = _WideTextEngine()
+    too_long: str = " ".join(["słowo"] * 8) + "."
+
+    (result,) = _run(tmp_path, engine, _Splitter(), _batch("Raz dwa.", too_long))
+
+    assert _statuses(result) == [SynthesisStatus.SYNTHESIZED, SynthesisStatus.FAILED]
+    assert result.requests[1].error_code == "TTS_INPUT_INVALID"
+    assert engine.documents == [("line-0",)]
 
 
 def test_document_batch_splitter_failure_retries_document(tmp_path: Path) -> None:
@@ -327,6 +386,51 @@ def test_document_batch_splitter_failure_retries_document(tmp_path: Path) -> Non
     assert [item.retries for item in result.requests] == [1, 0]
     assert result.stats.provider_calls == 2
     assert result.stats.retries == 1
+
+
+def test_document_batch_missing_written_clip_retries_without_previous_files(tmp_path: Path) -> None:
+    engine = _DocumentEngine()
+    splitter = _Splitter(missing_clip_once=True)
+
+    (result,) = _run(tmp_path, engine, splitter, _batch("Raz dwa.", "Trzy cztery."))
+
+    assert result.status is SpeechBatchStatus.COMPLETED
+    assert len(splitter.calls) == 2
+    assert engine.stale_files == [[], []]
+    assert not any(span.destination.exists() for span in splitter.calls[0])
+
+
+def test_document_batch_invalid_split_clip_retries_document(tmp_path: Path) -> None:
+    engine = _DocumentEngine()
+    splitter = _Splitter(invalid_clip_once=True)
+
+    (result,) = _run(tmp_path, engine, splitter, _batch("Raz dwa.", "Trzy cztery."))
+
+    assert result.status is SpeechBatchStatus.COMPLETED
+    assert len(engine.documents) == 2
+    assert len(splitter.calls) == 2
+    assert engine.stale_files == [[], []]
+
+
+def test_document_batch_uncertain_boundaries_commits_every_line(tmp_path: Path) -> None:
+    engine = _DocumentEngine()
+
+    (result,) = _run(tmp_path, engine, _Splitter(uncertain_boundaries=1), _batch("Raz dwa", "Trzy cztery."))
+
+    assert _statuses(result) == [SynthesisStatus.SYNTHESIZED, SynthesisStatus.SYNTHESIZED]
+    assert len(engine.documents) == 1
+
+
+def test_document_batch_unowned_result_retries_without_split(tmp_path: Path) -> None:
+    engine = _DocumentEngine(wrong_voice_once=True)
+    splitter = _Splitter()
+
+    (result,) = _run(tmp_path, engine, splitter, _batch("Raz dwa.", "Trzy cztery."))
+
+    assert result.status is SpeechBatchStatus.COMPLETED
+    assert len(engine.documents) == 2
+    assert len(splitter.calls) == 1
+    assert engine.stale_files == [[], []]
 
 
 def test_document_batch_timing_count_mismatch_retries_document(tmp_path: Path) -> None:
@@ -353,7 +457,7 @@ def test_document_batch_quota_error_opens_circuit_for_next_document(tmp_path: Pa
     assert result.failure.code.value == "TTS_QUOTA_EXHAUSTED"
 
 
-def test_document_batch_progress_grows_with_received_characters(tmp_path: Path) -> None:
+def test_document_batch_engine_progress_reports_received_lines(tmp_path: Path) -> None:
     engine = _DocumentEngine()
     progress = _Progress()
 
@@ -378,7 +482,7 @@ def test_document_batch_without_splitter_fails_speech_lines_as_unsupported(tmp_p
     assert engine.documents == []
 
 
-def test_document_batch_marks_open_end_from_sentence_ending(tmp_path: Path) -> None:
+def test_document_batch_line_endings_set_open_end(tmp_path: Path) -> None:
     splitter = _Splitter()
 
     _run(tmp_path, _DocumentEngine(), splitter, _batch("Kiedy wrócisz", "Jutro.", "Naprawdę?”"))
@@ -403,7 +507,7 @@ def test_document_batch_cancel_before_commit_keeps_no_clip(tmp_path: Path) -> No
     assert list((tmp_path / "episode").rglob("*.tmp")) == []
 
 
-def test_line_engine_ignores_splitter_and_document_path(tmp_path: Path) -> None:
+def test_document_batch_line_engine_with_splitter_uses_line_path(tmp_path: Path) -> None:
     class _LineEngine(_DocumentEngine):
         capabilities = replace(_DocumentEngine.capabilities, max_document_chars=None)
 

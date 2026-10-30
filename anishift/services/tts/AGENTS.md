@@ -55,7 +55,7 @@ narratora ani finalnego sidecara.
 ## Ścieżka dokumentu
 
 - Silnik z `capabilities.max_document_chars` czyta brakujące kwestie batcha zachłannymi
-  dokumentami (suma `len(text)` ≤ limit) przez `DocumentTtsEngine.synthesize_document`;
+  dokumentami (`document_chars` silnika ≤ limit) przez `DocumentTtsEngine.synthesize_document`;
   wymaga wstrzykniętego `ClipSplitter`, inaczej każda kwestia mowy dostaje
   `TtsUnsupportedError`.
 - Kwestia, która nie mieści się w jednej części, dostaje `TtsInputError`; reszta batcha
@@ -63,8 +63,11 @@ narratora ani finalnego sidecara.
 - `accept_result` sprawdza własność nagrania i kolejność `PartTiming`, tnie nagranie
   (`open_end = not ends_sentence(text)`) i waliduje każdy klip; błąd splittera albo
   niezgodne czasy to `TtsClipValidationError`, więc dokument jest ponawiany w całości.
-- Nagranie i niezatwierdzone klipy są usuwane po każdym dokumencie. `provider_calls` i
-  `retries` dokumentu liczą się na jego pierwszej kwestii.
+- Nagranie i niezatwierdzone klipy są usuwane przed każdą kolejną próbą i po każdym
+  dokumencie. `provider_calls` i `retries` dokumentu liczą się na jego pierwszej kwestii.
+- `TtsScheduler` dostaje od silnika tylko `locality` (silnik `SYSTEM` ponawia bez
+  opóźnienia); nie trzyma instancji silnika.
+
 ## Podkatalogi
 
 - `engines/` — leniwy rejestr i różnice kontraktów providerów.

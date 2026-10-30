@@ -214,6 +214,11 @@ class _DocumentLine:
     request: SpeechRequest
     identity: SynthesisIdentity
 
+    @property
+    def part(self) -> DocumentPart:
+        """Return the document part read for this line."""
+        return DocumentPart(request_id=self.request.request_id, text=self.request.text)
+
 
 class _DocumentProgress:
     """Report document-path progress in completion order for one batch."""
@@ -298,7 +303,7 @@ class _DocumentProgress:
 
 
 class _DocumentAttempt:
-    """Own the recordings and split clips of one document across retries."""
+    """Own the recording and split clips of one document, keeping only the current attempt's files."""
 
     __slots__ = (
         "_cancel",
@@ -355,7 +360,7 @@ class _DocumentAttempt:
 
     @property
     def paths(self) -> tuple[Path, ...]:
-        """Return every recording and clip path reserved across retries."""
+        """Return the recording and clip paths reserved by the current attempt."""
         return tuple(self._paths)
 
     def receipt_for(self, request_id: str) -> ValidatedClipReceipt | None:
@@ -363,15 +368,16 @@ class _DocumentAttempt:
         return self._receipts.get(request_id)
 
     async def call(self, attempt: int) -> EngineDocumentResult:
-        """Record the document once into a fresh owned recording path."""
+        """Discard the previous attempt's files, then record the document into a fresh owned path."""
         del attempt
+        _discard_paths(tuple(self._paths))
+        self._paths.clear()
+        self._receipts = {}
         recording: Path = self._reserve(self._recording_format)
         self._recording = recording
         request: DocumentSynthesisRequest = DocumentSynthesisRequest(
             request_id=self._document_id,
-            parts=tuple(
-                DocumentPart(request_id=line.request.request_id, text=line.request.text) for line in self._lines
-            ),
+            parts=tuple(line.part for line in self._lines),
             voice_id=self._config.voice_id,
             provider_model_id=self._config.provider_model_id,
             options=self._config.engine_options,
@@ -626,7 +632,7 @@ class TtsService:
         if self._engine is None:
             engine: TtsEngine = self._engine_factory(self._config)
             scheduler: TtsScheduler = TtsScheduler(
-                engine,
+                locality=engine.capabilities.locality,
                 config=self._config,
             )
             self._engine = engine
@@ -1024,8 +1030,12 @@ class TtsService:
         *,
         max_document_chars: int,
     ) -> SpeechBatchResult:
-        document_engine: DocumentTtsEngine | None = engine if isinstance(engine, DocumentTtsEngine) else None
         splitter: ClipSplitter | None = self._splitter
+        if not isinstance(engine, DocumentTtsEngine) or splitter is None:
+            for index, request in enumerate(batch.requests):
+                await progress.record(index, _unsupported_document_execution(request))
+            return _batch_result(batch, progress.executions, engine)
+        document_engine: DocumentTtsEngine = engine
         pending: list[_DocumentLine] = []
         for index, request in enumerate(batch.requests):
             prepared: _RequestExecution | _DocumentLine = await self._prepare_document_line(
@@ -1039,9 +1049,7 @@ class TtsService:
                 pending.append(prepared)
             else:
                 await progress.record(index, prepared)
-        if document_engine is None or splitter is None:
-            return _batch_result(batch, progress.executions, engine)
-        for number, lines in enumerate(_group_documents(pending, max_document_chars)):
+        for number, lines in enumerate(_group_documents(pending, document_engine, max_document_chars)):
             attempt: _DocumentAttempt = _DocumentAttempt(
                 document_id=f"{batch.scope_id}:document:{number}",
                 lines=lines,
@@ -1069,20 +1077,19 @@ class TtsService:
         batch: SpeechBatch,
         index: int,
         request: SpeechRequest,
-        engine: DocumentTtsEngine | None,
+        engine: DocumentTtsEngine,
         *,
         max_document_chars: int,
     ) -> _RequestExecution | _DocumentLine:
         if not is_speech_text(request.text):
             return _skipped_execution(request)
-        if engine is None or self._splitter is None:
-            return _failed_execution(request, _document_unsupported_error(), 0, 0, 0.0)
         chunks: tuple[str, ...] = chunk_speech_text(
             request.text,
             max_chars=engine.capabilities.max_text_chars,
             max_bytes=engine.capabilities.max_text_bytes,
         )
-        if len(chunks) != 1 or len(request.text) > max_document_chars:
+        part: DocumentPart = DocumentPart(request_id=request.request_id, text=request.text)
+        if len(chunks) != 1 or engine.document_chars((part,)) > max_document_chars:
             return _failed_execution(request, _document_line_too_long_error(), 0, 0, 0.0)
         identity: SynthesisIdentity = SynthesisIdentity(
             scope_id=batch.scope_id,
@@ -1289,19 +1296,17 @@ def _synthesized_execution(  # noqa: PLR0913 - counters differ between line and 
 
 def _group_documents(
     lines: list[_DocumentLine],
+    engine: DocumentTtsEngine,
     max_chars: int,
 ) -> tuple[tuple[_DocumentLine, ...], ...]:
     documents: list[tuple[_DocumentLine, ...]] = []
     current: list[_DocumentLine] = []
-    size: int = 0
     for line in lines:
-        length: int = len(line.request.text)
-        if current and size + length > max_chars:
+        grown: tuple[DocumentPart, ...] = (*(item.part for item in current), line.part)
+        if current and engine.document_chars(grown) > max_chars:
             documents.append(tuple(current))
             current = []
-            size = 0
         current.append(line)
-        size += length
     if current:
         documents.append(tuple(current))
     return tuple(documents)
@@ -1316,6 +1321,12 @@ def _skipped_execution(request: SpeechRequest) -> _RequestExecution:
         retries=0,
     )
     return _RequestExecution(result=result, provider_calls=0, request_time_ms=0.0)
+
+
+def _unsupported_document_execution(request: SpeechRequest) -> _RequestExecution:
+    if not is_speech_text(request.text):
+        return _skipped_execution(request)
+    return _failed_execution(request, _document_unsupported_error(), 0, 0, 0.0)
 
 
 async def _notify_execution(  # noqa: PLR0913 - immutable progress snapshot

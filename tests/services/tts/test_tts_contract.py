@@ -310,3 +310,21 @@ def test_part_timing_without_positive_length_is_rejected(end_ms: float) -> None:
 
 def test_engine_capabilities_default_to_line_engine() -> None:
     assert FakeEngine.capabilities.max_document_chars is None
+
+
+def test_playwright_module_level_import_only_in_elevenreader_browser() -> None:
+    package_root = Path(__file__).parents[3] / "anishift" / "services" / "tts"
+    importers: list[str] = []
+
+    for path in package_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in tree.body:
+            module_names: tuple[str, ...] = ()
+            if isinstance(node, ast.Import):
+                module_names = tuple(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module is not None:
+                module_names = (node.module,)
+            if any(name.split(".")[0] == "playwright" for name in module_names):
+                importers.append(path.relative_to(package_root).as_posix())
+
+    assert sorted(set(importers)) == ["engines/elevenreader/browser.py"]
