@@ -361,7 +361,7 @@ def test_setting_catalog_elevenreader_offers_engine_voices_without_concurrency_o
     assert catalog["tts_voice_id"].allowed_values == tuple(VOICES)
     assert catalog["tts_voice_id"].default == "fronczewski"
     assert catalog["tts_profile.postprocess_tempo"].default == 1.35
-    assert catalog["tts_profile.voice_mix_offset_db"].default == 2.0
+    assert catalog["tts_profile.voice_mix_offset_db"].default == 2.5
     assert "tts_profile.concurrency" not in catalog
     assert not setting_is_active(catalog["elevenbytes_vpn_enabled"], UserSettings(tts_engine="elevenreader"))
     assert not any(setting_id.startswith("tts_profile.engine_options.") for setting_id in catalog)

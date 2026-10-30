@@ -625,8 +625,8 @@ def test_default_tts_voice_profiles_elevenreader_voices_have_measured_tempo_and_
     fronczewski = profiles[f"elevenreader:{VOICES['fronczewski'].voice_id}"]
     adam = profiles[f"elevenreader:{VOICES['adam'].voice_id}"]
 
-    assert (fronczewski.postprocess_tempo, fronczewski.voice_mix_offset_db, fronczewski.concurrency) == (1.45, 0.0, 1)
-    assert (adam.postprocess_tempo, adam.voice_mix_offset_db, adam.concurrency) == (1.35, 2.0, 1)
+    assert (fronczewski.postprocess_tempo, fronczewski.voice_mix_offset_db, fronczewski.concurrency) == (1.45, 0.5, 1)
+    assert (adam.postprocess_tempo, adam.voice_mix_offset_db, adam.concurrency) == (1.35, 2.5, 1)
 
 
 @pytest.mark.unit

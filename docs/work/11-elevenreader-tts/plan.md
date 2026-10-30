@@ -413,8 +413,8 @@ hashowanych wejść, więc nie wchodzą do fingerprintu.
 | Klucz profilu | `postprocess_tempo` | `voice_mix_offset_db` |
 |---|---|---|
 | Dallin (`elevenbytes`, istniejący klucz) | 1,25 | 0,0 (było −2,0) |
-| `elevenreader:T5l58N8RNz5DKoClpKIJ` (Fronczewski) | 1,45 | 0,0 |
-| `elevenreader:hIssydxXZ1WuDorjx6Ic` (Adam) | 1,35 | +2,0 |
+| `elevenreader:T5l58N8RNz5DKoClpKIJ` (Fronczewski) | 1,45 | +0,5 |
+| `elevenreader:hIssydxXZ1WuDorjx6Ic` (Adam) | 1,35 | +2,5 |
 
 Panel: „Głośność lektora” to `narrator_over_source_lu` w LU; „Korekta głośności głosu” to `voice_mix_offset_db` w
 LU względem celu. Współbieżność głosów ElevenReadera nie jest edytowalna (zawsze 1).

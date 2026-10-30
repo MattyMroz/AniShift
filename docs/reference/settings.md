@@ -311,7 +311,7 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
 ### Korekta głośności głosu (`tts_profile.voice_mix_offset_db`)
 
 - Co robi: poprawka w LU dodawana do `Głośność lektora` dla tego głosu.
-- Domyślnie: 0 LU; `adam` +2 LU, SAPI Agnieszka +2 LU.
+- Domyślnie: 0 LU; `fronczewski` +0,5 LU, `adam` +2,5 LU, SAPI Agnieszka +2 LU.
 - Silnik: wszystkie; wartość należy do profilu głosu.
 
 ### Tempo natywne (`tts_profile.native_rate`)
