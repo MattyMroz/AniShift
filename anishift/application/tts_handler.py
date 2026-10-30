@@ -42,7 +42,6 @@ from anishift.services.tts import (
     SpeechBatch,
     SpeechBatchProgress,
     SpeechBatchResult,
-    SpeechBatchStatus,
     SpeechRequest,
     SpeechRequestProgress,
     SpeechRetryProgress,
@@ -320,6 +319,9 @@ class TtsTaskHandler:
             baseline: TimelinePlan | None = plan_timeline(lines)
             wanted = () if baseline is None else reachable_signs(wanted, free_intervals(baseline), baseline.sample_rate)
             recorded = self._record_signs(task, wanted, cancel, progress)
+        unrecorded: tuple[int, ...] = tuple(candidate.group for candidate in wanted if candidate.group not in recorded)
+        if unrecorded:
+            logger.warning("Signs left out without a recording", task_id=task.task_id, unrecorded=len(unrecorded))
         prepared: tuple[NormalizedClip, ...] = _prepare(signs.audio, tuple(recorded.values()), tmp_root, cancel)
         selection: SignSelection = select_signs(
             signs.candidates, {clip.timed_clip.source_order: clip for clip in prepared}, lines, signs.mode
@@ -340,6 +342,7 @@ class TtsTaskHandler:
             "sign_decisions": ",".join(f"{group}:{reason}" for group, reason in selection.decisions),
             "sign_chars_synthesized": sum(len(candidate.text) for candidate in wanted),
             "signs_read": len(readings),
+            "signs_unrecorded": ",".join(str(group) for group in unrecorded),
         }
         return replace(manifest, clips=(*manifest.clips, *readings)), metadata
 
@@ -350,7 +353,7 @@ class TtsTaskHandler:
         cancel: CancellationToken,
         progress: TaskProgressSink,
     ) -> dict[int, NarrationManifestClip]:
-        """Synthesize every wanted sign once; a sign the engine skips is simply missing."""
+        """Synthesize every wanted sign once; a sign skipped or failed by the engine is missing."""
         if not wanted:
             return {}
         requests, timings = _sign_batch(task.group_id, wanted, first_rank=0)
@@ -394,11 +397,9 @@ def build_narration_manifest(
     *,
     expected_scope_id: str,
     timeline: NarrationTimeline,
-    allow_skipped_requests: bool = False,
+    allow_missing_clips: bool = False,
 ) -> NarrationManifest:
-    """Validate one TTS result and restore caller-owned timing by request ID."""
-    if result.status is not SpeechBatchStatus.COMPLETED or result.failure is not None:
-        _raise_manifest("TTS batch did not complete")
+    """Restore caller timing by request ID; a request without a clip fails unless missing clips are allowed."""
     if result.scope_id != expected_scope_id:
         _raise_manifest("TTS result scope does not match the submitted batch")
     timing_by_id: dict[str, NarrationTiming] = {timing.request_id: timing for timing in timings}
@@ -413,11 +414,11 @@ def build_narration_manifest(
         clip = execution.speech_clip
         timing: NarrationTiming | None = timing_by_id.get(execution.request.request_id)
         if timing is None:
-            _raise_manifest("Completed TTS batch lacks a required clip")
+            _raise_manifest("TTS batch lacks a required clip")
         if clip is None:
-            if allow_skipped_requests:
+            if allow_missing_clips:
                 continue
-            _raise_manifest("Completed TTS batch lacks a required clip")
+            _raise_manifest("TTS batch lacks a required clip")
         if clip.request_id != execution.request.request_id:
             _raise_manifest("TTS clip ID does not match its request")
         clips.append(
@@ -486,7 +487,7 @@ def _manifest(
     scope_id: str,
     timeline: NarrationTimeline,
     *,
-    allow_skipped_requests: bool = False,
+    allow_missing_clips: bool = False,
 ) -> NarrationManifest:
     try:
         return build_narration_manifest(
@@ -494,7 +495,7 @@ def _manifest(
             timings,
             expected_scope_id=scope_id,
             timeline=timeline,
-            allow_skipped_requests=allow_skipped_requests,
+            allow_missing_clips=allow_missing_clips,
         )
     except ValueError as error:
         raise ExecutionError(str(error)) from error
@@ -503,9 +504,9 @@ def _manifest(
 def _sign_clips(
     result: SpeechBatchResult, timings: tuple[NarrationTiming, ...], scope_id: str
 ) -> dict[int, NarrationManifestClip]:
-    """Return the recorded sign clips by sign group; a sign the engine skips is simply missing."""
+    """Return the recorded sign clips by sign group; a sign skipped or failed by the engine is missing."""
     manifest: NarrationManifest = _manifest(
-        result, timings, scope_id, NarrationTimeline.SOURCE_TIMES, allow_skipped_requests=True
+        result, timings, scope_id, NarrationTimeline.SOURCE_TIMES, allow_missing_clips=True
     )
     return {clip.source_order: clip for clip in manifest.clips}
 

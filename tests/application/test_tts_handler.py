@@ -6,9 +6,10 @@ import wave
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
+from loguru import logger as loguru_logger
 
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState
 from anishift.application.cancellation import EventCancellationToken, NeverCancelledToken
@@ -49,6 +50,9 @@ from anishift.services.tts import (
     SynthesisStatus,
     SynthesizedRequest,
 )
+
+if TYPE_CHECKING:
+    from loguru import Message
 
 _SPOKEN_PARAMETERS: tuple[tuple[str, str | int | bool], ...] = (
     ("narration_timeline", "source_times"),
@@ -274,6 +278,7 @@ def test_signs_are_read_in_free_pauses_and_rejected_signs_stay_out_of_the_manife
         "sign_decisions": "3:read,7:weight",
         "sign_chars_synthesized": len("Brama szkoły") + len("Napis"),
         "signs_read": 1,
+        "signs_unrecorded": "",
         "clip_count": 2,
     }
     assert second.outputs[0].metadata == first.outputs[0].metadata
@@ -352,6 +357,7 @@ def test_tts_handler_line_by_line_engine_records_only_reachable_signs_in_second_
         "sign_decisions": "3:no_pause,7:read",
         "sign_chars_synthesized": len("Napis"),
         "signs_read": 1,
+        "signs_unrecorded": "",
         "clip_count": 2,
     }
 
@@ -373,8 +379,75 @@ def test_tts_handler_document_engine_reads_signs_in_script_batch_with_line_by_li
         "sign_decisions": "3:no_pause,7:read",
         "sign_chars_synthesized": len("Brama szkoły") + len("Napis"),
         "signs_read": 1,
+        "signs_unrecorded": "",
         "clip_count": 2,
     }
+
+
+class _FailingTts(_Tts):
+    def __init__(self, root: Path, failing: frozenset[str]) -> None:
+        super().__init__(root)
+        self.failing: frozenset[str] = failing
+
+    def synthesize(self, batch: SpeechBatch, *, callbacks: TtsProgressObserver) -> SpeechBatchResult:
+        result: SpeechBatchResult = super().synthesize(batch, callbacks=callbacks)
+        failure = ErrorContext(code=ErrorCode.TTS_INPUT_INVALID, message="rejected")
+        executions: tuple[SynthesizedRequest, ...] = tuple(
+            replace(item, status=SynthesisStatus.FAILED, speech_clip=None, error_code=failure.code.value)
+            if item.request.request_id in self.failing
+            else item
+            for item in result.requests
+        )
+        if executions == result.requests:
+            return result
+        return replace(result, status=SpeechBatchStatus.PARTIAL, requests=executions, failure=failure)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("reads_document", [False, True])
+def test_tts_handler_failed_sign_is_left_out_with_warning_and_metadata(tmp_path: Path, *, reads_document: bool) -> None:
+    task, snapshot = _signed_synthesis(tmp_path)
+    service = _FailingTts(tmp_path, frozenset({"group-1-sign-7"}))
+    handler = TtsTaskHandler(
+        service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=_Preparer(), reads_document=reads_document
+    )
+    captured: list[Message] = []
+    handler_id: int = loguru_logger.add(captured.append, format="{message} {extra}", level="WARNING")
+
+    try:
+        result: TaskResult = handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
+    finally:
+        loguru_logger.remove(handler_id)
+
+    assert [
+        (clip.request_id, clip.start_ms, clip.end_ms) for clip in load_narration_manifest(result.outputs[0].path).clips
+    ] == [
+        ("group-1-0", 5000, 5500),
+        ("group-1-sign-3", 1000, 1500),
+    ]
+    assert result.outputs[0].metadata == {
+        "sign_decisions": "3:read,7:missing",
+        "sign_chars_synthesized": len("Brama szkoły") + len("Napis"),
+        "signs_read": 1,
+        "signs_unrecorded": "7",
+        "clip_count": 2,
+    }
+    assert [message.record["extra"]["unrecorded"] for message in captured] == [1]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("reads_document", [False, True])
+def test_tts_handler_failed_line_fails_task(tmp_path: Path, *, reads_document: bool) -> None:
+    task, snapshot = _signed_synthesis(tmp_path)
+    service = _FailingTts(tmp_path, frozenset({"group-1-0"}))
+    handler = TtsTaskHandler(
+        service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=_Preparer(), reads_document=reads_document
+    )
+
+    with pytest.raises(ExecutionError, match="lacks a required clip"):
+        handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
+
+    assert len(service.batches) == 1
 
 
 def test_tts_handler_document_engine_without_audio_service_refuses_signs_before_synthesis(tmp_path: Path) -> None:

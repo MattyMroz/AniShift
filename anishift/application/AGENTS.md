@@ -196,6 +196,9 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   konta; dłuższy `shutdown_deadline_s`). `split_clip` dekoduje nagranie z jawnym `-f mp3`
   (obce bajty na początku zmylą rozpoznanie formatu), czasy ramek bierze z `utils.mp3_frames`, regułę cięcia z
   `services/audio/segmentation.py`; granice bez pauzy idą do logu jako ostrzeżenie z liczbą. `tts_clips.py`
+- `build_narration_manifest` ocenia każdą kwestię osobno, nie status batcha: kwestia bez klipu kończy zadanie
+  błędem, szyld bez klipu (pominięty albo nieudany) wypada z manifestu z ostrzeżeniem z liczbą i grupami w
+  metadanych `signs_unrecorded`, w obu ścieżkach. `tts_handler.py`
 - Sesję ElevenReadera panel czyta i odświeża przez fasadę (`elevenreader_session`, `elevenreader_sign_in`);
   logowanie blokuje wątek wołający do zamknięcia okna Chrome. `service.py`
 - `GraphCoordinator` przyjmuje wiele kontekstów (`RunRequest` → `RunHandle`); wspólne są tylko kolejki gotowych

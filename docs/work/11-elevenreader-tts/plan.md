@@ -350,7 +350,8 @@ Próg „przerwa ≤ 0 ms” pochodzi z pomiaru: wszystkie 11 kwestii urwanych T
 **Szyldy w tym samym dokumencie.** Przy `reads_document` i trybie `sign_narration` innym niż `off` handler dokłada
 do batcha kwestii żądania wszystkich kandydatów szyldów (`{group_id}-sign-{grupa}`, rangi po kwestiach, okno napisu
 szyldu). Jedna synteza daje jeden dokument i jedno nagranie (dopóki limit znaków nie podzieli batcha). Wynik dzieli
-się po `request_id`: kwestie przechodzą ścisły `build_narration_manifest`, szyldy wersję dopuszczającą pominięte.
+się po `request_id`: kwestie przechodzą ścisły `build_narration_manifest`, szyldy wersję dopuszczającą szyld bez
+klipu (pominięty albo nieudany), który wypada z ostrzeżeniem i grupą w `signs_unrecorded`.
 Dalej działa bez zmian ta sama ścieżka: normalizacja kwestii, `select_signs` na zmierzonych klipach, okna szyldów z
 wyboru. Silnik „kwestia po kwestii” (`reads_document = False`) robi to co dotąd: najpierw kwestie, potem
 `reachable_signs` na ułożonych kwestiach i drugi batch tylko z szyldami osiągalnymi. Różnica jest jedna i świadoma:
