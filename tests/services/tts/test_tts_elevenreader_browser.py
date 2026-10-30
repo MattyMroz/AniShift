@@ -370,6 +370,7 @@ def test_chrome_args_headless_flags_follow_mode(tmp_path: Path, headless: bool, 
     assert "--remote-debugging-port=9333" in args
     assert f"--user-data-dir={tmp_path / 'profile'}" in args
     assert ("--headless=new" in args) is flags
+    assert ("--mute-audio" in args) is flags
     assert args[-1] == "about:blank"
 
 

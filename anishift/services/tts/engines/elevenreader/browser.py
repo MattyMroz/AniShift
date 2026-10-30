@@ -47,8 +47,9 @@ _HEADLESS_ARGS: Final[tuple[str, ...]] = (
     "--headless=new",
     "--window-size=1600,1000",
     "--autoplay-policy=no-user-gesture-required",
+    "--mute-audio",
 )
-"""Flags for a recording run: no window, desktop layout, audio without a user gesture."""
+"""Flags for a recording run: no window, desktop layout, silent playback without a user gesture."""
 
 
 class ChromeMissingError(TtsConfigError):
