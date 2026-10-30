@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import errno
+import io
 import subprocess
 import sys
 import time
@@ -12,7 +14,9 @@ from elevenreader_fakes import (
     BREAK,
     FRONCZEWSKI_ID,
     READ_ID,
+    READS_URL,
     TOKEN,
+    FakePage,
     FakeSite,
     audio_frame,
     fake_engine,
@@ -41,8 +45,9 @@ from anishift.services.tts import (
 )
 from anishift.services.tts.engines.elevenreader import CLEANUP_WARNING, read_session, service
 from anishift.services.tts.engines.elevenreader.api_backend import write_session
+from anishift.services.tts.engines.elevenreader.recorder import StreamRecorder
 from anishift.services.tts.engines.elevenreader.service import document_text, part_spans
-from anishift.services.tts.engines.elevenreader.types import AlignmentChunk, LibraryState
+from anishift.services.tts.engines.elevenreader.types import AccountSettings, AlignmentChunk, LibraryState
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -265,7 +270,7 @@ def test_synthesize_document_cancel_while_waiting_stops_quickly_and_cleans(tmp_p
     async def scenario() -> float:
         started: float = time.monotonic()
         task = asyncio.create_task(engine.synthesize_document(_request(tmp_path), cancel=cancel))
-        await asyncio.sleep(0.05)
+        await site.hung.wait()
         cancel.cancel()
         with pytest.raises(TtsCancelledError):
             await task
@@ -284,7 +289,7 @@ def test_synthesize_document_task_cancelled_still_cleans_and_closes_browser(tmp_
 
     async def scenario() -> None:
         task = asyncio.create_task(_record(engine, _request(tmp_path)))
-        await asyncio.sleep(0.05)
+        await site.hung.wait()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -293,6 +298,147 @@ def test_synthesize_document_task_cancelled_still_cleans_and_closes_browser(tmp_
 
     _assert_cleaned(site)
     assert site.sessions[0].closed
+
+
+def test_synthesize_document_cancel_during_upload_deletes_document_found_by_title(tmp_path: Path) -> None:
+    site = FakeSite(texts=TEXTS, hang_on="upload")
+    engine = fake_engine(tmp_path, site)
+    cancel = TtsCancellation()
+
+    async def scenario() -> None:
+        task = asyncio.create_task(engine.synthesize_document(_request(tmp_path), cancel=cancel))
+        await site.hung.wait()
+        cancel.cancel()
+        with pytest.raises(TtsCancelledError):
+            await task
+
+    _run(scenario())
+
+    assert site.deleted == [f"{READS_URL}/{READ_ID}"]
+    assert site.reads == []
+    record = read_session(tmp_path)
+    assert record is not None
+    assert not record.cleanup_pending
+    assert site.sessions[0].closed
+
+
+def test_synthesize_document_task_cancelled_during_upload_deletes_document_found_by_title(tmp_path: Path) -> None:
+    site = FakeSite(texts=TEXTS, hang_on="upload")
+    engine = fake_engine(tmp_path, site)
+
+    async def scenario() -> None:
+        task = asyncio.create_task(_record(engine, _request(tmp_path)))
+        await site.hung.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    _run(scenario())
+
+    assert site.deleted == [f"{READS_URL}/{READ_ID}"]
+    assert site.sessions[0].closed
+
+
+def test_synthesize_document_cancel_during_upload_before_document_appears_keeps_saved_trace(tmp_path: Path) -> None:
+    site = FakeSite(texts=TEXTS, hang_on="upload")
+    engine = fake_engine(tmp_path, site)
+    cancel = TtsCancellation()
+
+    async def scenario() -> None:
+        task = asyncio.create_task(engine.synthesize_document(_request(tmp_path), cancel=cancel))
+        await site.hung.wait()
+        site.reads.clear()
+        cancel.cancel()
+        with pytest.raises(TtsCancelledError):
+            await task
+        await engine.close()
+
+    _run(scenario())
+
+    record = read_session(tmp_path)
+    assert record is not None
+    assert record.delete_document
+    assert READ_ID not in (tmp_path / "session.json").read_text(encoding="utf-8")
+
+
+def test_saved_document_trace_is_cleaned_by_next_engine_before_upload(tmp_path: Path) -> None:
+    first = FakeSite(texts=TEXTS, hang_on="upload", failing={"list_reads"})
+    engine = fake_engine(tmp_path, first)
+    cancel = TtsCancellation()
+
+    async def interrupted() -> None:
+        task = asyncio.create_task(engine.synthesize_document(_request(tmp_path), cancel=cancel))
+        await first.hung.wait()
+        cancel.cancel()
+        with pytest.raises(TtsCancelledError):
+            await task
+        await engine.close()
+
+    _run(interrupted())
+    saved = read_session(tmp_path)
+    assert saved is not None
+    assert saved.delete_document
+    second = FakeSite(texts=TEXTS, reads=[READ_ID])
+
+    _run(_record(fake_engine(tmp_path, second), _request(tmp_path)))
+
+    assert second.events.index("list_reads") < second.events.index("upload")
+    assert second.deleted == [f"{READS_URL}/{READ_ID}", f"{READS_URL}/{READ_ID}"]
+    record = read_session(tmp_path)
+    assert record is not None
+    assert not record.cleanup_pending
+
+
+def test_failed_restore_is_saved_and_run_by_next_engine(tmp_path: Path) -> None:
+    first = FakeSite(texts=TEXTS, failing={"restore_account"})
+    _run(_record(fake_engine(tmp_path, first), _request(tmp_path)))
+    saved = read_session(tmp_path)
+    assert saved is not None
+    assert saved.restore == AccountSettings(voice_id="previous-voice", speed=1.5)
+    assert not saved.delete_document
+    second = FakeSite(texts=TEXTS, account={"default_voice_id": FRONCZEWSKI_ID, "playback_speed_rate": 1.0})
+
+    _run(_record(fake_engine(tmp_path, second), _request(tmp_path)))
+
+    assert second.events.index("restore_account") < second.events.index("upload")
+    assert second.account["default_voice_id"] == "previous-voice"
+    record = read_session(tmp_path)
+    assert record is not None
+    assert not record.cleanup_pending
+
+
+def test_synthesize_document_unwritable_recording_raises_clip_error_without_waiting_for_stall(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(service, "STALL_S", 300.0)
+    monkeypatch.setattr(service, "StreamRecorder", lambda output: StreamRecorder(_FullDisk()))
+    site = FakeSite(texts=TEXTS)
+    started: float = time.monotonic()
+
+    with pytest.raises(TtsClipValidationError) as error:
+        _run(_record(fake_engine(tmp_path, site), _request(tmp_path)))
+
+    assert time.monotonic() - started < 2.0
+    assert error.value.context.details == {"error_class": "OSError", "errno": errno.ENOSPC}
+    _assert_cleaned(site)
+
+
+class _FullDisk(io.BytesIO):
+    def write(self, data: object) -> int:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+
+@pytest.mark.parametrize("text", ["", "   ", "…", " … ", 'Raz <break time="1s"/> dwa', "Raz <BREAK/>"])
+def test_synthesize_document_part_unreadable_as_paragraph_is_refused_without_browser(tmp_path: Path, text: str) -> None:
+    site = FakeSite()
+
+    with pytest.raises(TtsInputError) as error:
+        _run(_record(fake_engine(tmp_path, site), _request(tmp_path, texts=("Dobrze.", text))))
+
+    assert error.value.context.details == {"line": 1}
+    assert site.sessions == []
+    assert site.uploaded == []
 
 
 def test_synthesize_document_cancelled_before_start_opens_no_browser(tmp_path: Path) -> None:
@@ -356,6 +502,46 @@ def test_close_with_cleanup_failing_for_good_warns_owner(tmp_path: Path) -> None
     assert len(warnings) == 1
     assert "restore_settings" in warnings[0]
     assert "delete_read" in warnings[0]
+    assert site.sessions[0].closed
+    record = read_session(tmp_path)
+    assert record is not None
+    assert record.restore == AccountSettings(voice_id="previous-voice", speed=1.5)
+    assert record.delete_document
+
+
+class _BrokenTabPage(FakePage):
+    async def close(self) -> None:
+        await super().close()
+        message: str = "tab gone"
+        raise RuntimeError(message)
+
+
+def test_synthesize_document_tab_close_breaking_still_closes_browser(tmp_path: Path) -> None:
+    site = FakeSite(texts=TEXTS, listening_speed=3.0, page_type=_BrokenTabPage)
+
+    with pytest.raises(RuntimeError, match="tab gone"):
+        _run(_record(fake_engine(tmp_path, site), _request(tmp_path)))
+
+    _assert_cleaned(site)
+    assert site.events[-2:] == ["close_page", "close_browser"]
+    assert site.sessions[0].closed
+
+
+def test_synthesize_document_cleanup_breaking_unexpectedly_still_closes_tab_and_browser(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def broken(page: object, cleanup: object) -> None:
+        message: str = "cleanup bug"
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(service, "clean_account", broken)
+    site = FakeSite(texts=TEXTS, listening_speed=3.0)
+
+    with pytest.raises(RuntimeError, match="cleanup bug"):
+        _run(_record(fake_engine(tmp_path, site), _request(tmp_path)))
+
+    assert site.pages[0].closed
     assert site.sessions[0].closed
 
 

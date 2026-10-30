@@ -8,7 +8,10 @@ import math
 import re
 import time
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
+from functools import partial
+from pathlib import PurePath
 from typing import TYPE_CHECKING, Final
 
 from anishift.errors import ErrorCode, ErrorContext
@@ -30,6 +33,7 @@ from .constants import (
     ADD_ENDPOINT,
     API_HOST,
     CLEANUP_STEP_TIMEOUT_S,
+    DOCUMENT_NAME,
     LIBRARY_LOAD_S,
     LIBRARY_URL,
     PLAYER_STATE_JS,
@@ -44,7 +48,15 @@ from .constants import (
     UNAVAILABLE_RETRY_S,
     USER_CONFIG_URL,
 )
-from .types import AccountSettings, LibraryState, PlayerState, SessionRecord, SignInOutcome, UploadedRead
+from .types import (
+    AccountCleanup,
+    AccountSettings,
+    LibraryState,
+    PlayerState,
+    SessionRecord,
+    SignInOutcome,
+    UploadedRead,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -55,18 +67,19 @@ if TYPE_CHECKING:
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
     from .recorder import StreamRecorder
-    from .types import AccountCleanup
 
 __all__ = [
     "FALLBACK_HINT",
     "ReaderPage",
     "auth_error",
+    "clean_account",
+    "load_cleanup",
     "map_http_status",
     "map_playwright_error",
     "prepare_account",
     "read_session",
     "require_signed_in",
-    "run_cleanup",
+    "save_cleanup",
     "sign_in",
     "speed_script",
     "unavailable_error",
@@ -113,6 +126,12 @@ _SIGN_IN_URL: Final[re.Pattern[str]] = re.compile(r"sign-?in|log-?in|auth", re.I
 
 _SIGN_IN_POLL_S: Final[float] = 1.0
 """Interval between checks of the sign-in window."""
+
+_DOCUMENT_TITLES: Final[frozenset[str]] = frozenset({DOCUMENT_NAME, PurePath(DOCUMENT_NAME).stem})
+"""Library titles the uploaded document can carry, looked up when its read id is unknown."""
+
+_LISTED_AT_ONCE: Final[float] = 0.0
+"""Visibility time of a document left by an earlier run: already passed, so an empty lookup settles it."""
 
 
 # ── Error mapping ─────────────────────────────────────────────────────────────
@@ -276,35 +295,43 @@ class ReaderPage:
         except _playwright_error():
             return False
 
-    async def upload(self, document: Path) -> UploadedRead:
-        """Import *document* through the library dialog and return the new read."""
+    async def upload(self, document: Path, cleanup: AccountCleanup, save: Callable[[], None]) -> UploadedRead:
+        """Import *document*, registering the possible new read in *cleanup* (then *save*) before Upload is pressed."""
+        earlier: float | None = cleanup.orphan_visible_at
         with _browser_action("upload"):
             await self._button("Import").click()
             async with self._page.expect_response(_is_add_response) as reply:
                 await self._page.locator("input[type=file]").set_input_files(document)
+                cleanup.orphan_visible_at = _later(earlier, time.monotonic() + ACTION_TIMEOUT_S)
+                save()
                 await self._button("Upload").click()
-            response = await reply.value
+            response: Response = await reply.value
             if not response.ok:
+                cleanup.orphan_visible_at = earlier
                 raise map_http_status(response.status, action="upload", retry_after=response.headers.get("retry-after"))
-            body: object = await response.json()
+            cleanup.orphan_visible_at = _later(earlier, time.monotonic())
+            body: object = await _json_body(response, action="upload")
             headers: dict[str, str] = await response.request.all_headers()
-        read_id: object = body.get("read_id") if isinstance(body, dict) else None
+        read_id: str | None = _read_id(body)
+        if read_id is not None:
+            cleanup.read_ids.append(read_id)
+            cleanup.orphan_visible_at = earlier
         char_count: object = body.get("char_count") if isinstance(body, dict) else None
         token: str = headers.get("authorization", "")
         if not isinstance(char_count, int) or isinstance(char_count, bool) or char_count <= 0:
             reason: str = "ElevenReader upload reply lacked the document length"
             raise unavailable_error(reason)
-        if not isinstance(read_id, str | int) or not str(read_id) or not token:
+        if read_id is None or not token:
             reason = "ElevenReader upload reply lacked the read or the token"
             raise unavailable_error(reason)
-        return UploadedRead(read_id=str(read_id), char_count=char_count, token=token)
+        return UploadedRead(read_id=read_id, char_count=char_count, token=token)
 
     async def get_json(self, url: str, token: str, *, action: str) -> dict[str, object]:
         """Return the JSON object of an authorized GET."""
         with _browser_action(action):
             response: APIResponse = await self._page.request.get(url, headers={"authorization": token})
             _require_ok(response, action=action)
-            body: object = await response.json()
+            body: object = await _json_body(response, action=action)
         if not isinstance(body, dict):
             reason: str = f"ElevenReader returned no object during {action}"
             raise unavailable_error(reason)
@@ -414,6 +441,25 @@ def _is_add_response(response: Response) -> bool:
     return ADD_ENDPOINT in response.url and response.request.method == "POST"
 
 
+async def _json_body(response: Response | APIResponse, *, action: str) -> object:
+    try:
+        return await response.json()
+    except ValueError:
+        reason: str = f"ElevenReader returned unreadable JSON during {action}"
+        raise unavailable_error(reason, details={"action": action}) from None
+
+
+def _later(earlier: float | None, moment: float) -> float:
+    return moment if earlier is None else max(earlier, moment)
+
+
+def _read_id(body: object) -> str | None:
+    value: object = body.get("read_id") if isinstance(body, dict) else None
+    if isinstance(value, bool) or not isinstance(value, str | int) or not str(value):
+        return None
+    return str(value)
+
+
 def _require_ok(response: APIResponse, *, action: str) -> None:
     if response.ok:
         return
@@ -437,11 +483,18 @@ def _off_speed(state: dict[str, object], speed: float) -> bool:
 # ── Account ───────────────────────────────────────────────────────────────────
 
 
-async def prepare_account(page: ReaderPage, token: str, voice_id: str, cleanup: AccountCleanup) -> None:
-    """Set the account voice and reading speed 1x, registering the restore first; refuse a voice that did not take."""
+async def prepare_account(
+    page: ReaderPage,
+    token: str,
+    voice_id: str,
+    cleanup: AccountCleanup,
+    save: Callable[[], None],
+) -> None:
+    """Set the account voice and speed 1x after registering (then *save*) the restore; refuse a voice not taken."""
     current: dict[str, object] = await page.get_json(USER_CONFIG_URL, token, action="read_account")
     if cleanup.restore is None:
         cleanup.restore = _settings(current)
+        save()
     await page.post_json(USER_CONFIG_URL, token, _with_settings(current, voice_id, READING_SPEED), action="set_account")
     check: AccountSettings = _settings(await page.get_json(USER_CONFIG_URL, token, action="check_account"))
     if check.voice_id != voice_id or check.speed != READING_SPEED:
@@ -449,20 +502,28 @@ async def prepare_account(page: ReaderPage, token: str, voice_id: str, cleanup: 
         raise voice_error(message)
 
 
-async def run_cleanup(page: ReaderPage, token: str, cleanup: AccountCleanup) -> None:
-    """Run every pending step under its own deadline; a step that succeeds leaves *cleanup*, a failed one stays."""
+async def clean_account(page: ReaderPage, cleanup: AccountCleanup) -> None:
+    """Run every pending step under its own deadline with the tab's token; a failed step stays in *cleanup*."""
+    if not cleanup.pending:
+        return
+    token: str | None = page.token
+    if not token:
+        logger.warning("ElevenReader cleanup has no account token", steps=list(cleanup.pending))
+        return
     restore: AccountSettings | None = cleanup.restore
-    if restore is not None and await _cleanup_step("restore_settings", lambda: _restore(page, token, restore)):
+    if restore is not None and await _cleanup_step("restore_settings", partial(_restore, page, token, restore)):
         cleanup.restore = None
-    read_id: str | None = cleanup.read_id
-    if read_id is not None and await _cleanup_step(
-        "delete_read",
-        lambda: page.delete(f"{READS_URL}/{read_id}", token, action="delete_read"),
-    ):
-        cleanup.read_id = None
+    for read_id in tuple(cleanup.read_ids):
+        if await _cleanup_step("delete_read", partial(_delete_read, page, token, read_id)):
+            cleanup.read_ids.remove(read_id)
+    visible_at: float | None = cleanup.orphan_visible_at
+    if visible_at is None:
+        return
+    if await _cleanup_step("delete_orphan", partial(_delete_orphan, page, token, visible_at)):
+        cleanup.orphan_visible_at = None
 
 
-async def _restore(page: ReaderPage, token: str, settings: AccountSettings) -> None:
+async def _restore(page: ReaderPage, token: str, settings: AccountSettings) -> bool:
     current: dict[str, object] = await page.get_json(USER_CONFIG_URL, token, action="read_account")
     await page.post_json(
         USER_CONFIG_URL,
@@ -470,20 +531,51 @@ async def _restore(page: ReaderPage, token: str, settings: AccountSettings) -> N
         _with_settings(current, settings.voice_id, settings.speed),
         action="restore_account",
     )
+    return True
 
 
-async def _cleanup_step(kind: str, run: Callable[[], Awaitable[None]]) -> bool:
+async def _delete_read(page: ReaderPage, token: str, read_id: str) -> bool:
+    await page.delete(f"{READS_URL}/{read_id}", token, action="delete_read")
+    return True
+
+
+async def _delete_orphan(page: ReaderPage, token: str, visible_at: float) -> bool:
+    listing: dict[str, object] = await page.get_json(READS_URL, token, action="list_reads")
+    reads: object = listing.get("reads")
+    if not isinstance(reads, list):
+        reason: str = "ElevenReader library listing has no reads"
+        raise unavailable_error(reason, details={"action": "list_reads"})
+    found: list[str] = [read_id for read in reads if (read_id := _titled_read(read)) is not None]
+    for read_id in found:
+        await _delete_read(page, token, read_id)
+    if found or time.monotonic() >= visible_at:
+        return True
+    logger.info("ElevenReader upload may still appear in the library")
+    return False
+
+
+def _titled_read(read: object) -> str | None:
+    if not isinstance(read, dict) or read.get("title") not in _DOCUMENT_TITLES:
+        return None
+    return _read_id(read)
+
+
+async def _cleanup_step(kind: str, run: Callable[[], Awaitable[bool]]) -> bool:
     try:
         async with asyncio.timeout(CLEANUP_STEP_TIMEOUT_S):
-            await run()
+            done: bool = await run()
     except TimeoutError:
         logger.warning("ElevenReader cleanup step timed out", step=kind)
         return False
     except TtsError as error:
         logger.warning("ElevenReader cleanup step failed", step=kind, code=error.context.code.value)
         return False
-    logger.debug("ElevenReader cleanup step done", step=kind)
-    return True
+    except Exception as error:  # noqa: BLE001 - a failed step never blocks the next step or closing the browser
+        logger.warning("ElevenReader cleanup step broke", step=kind, error_class=type(error).__name__)
+        return False
+    if done:
+        logger.debug("ElevenReader cleanup step done", step=kind)
+    return done
 
 
 def _settings(config: dict[str, object]) -> AccountSettings:
@@ -517,21 +609,63 @@ def read_session(root: Path) -> SessionRecord | None:
         return None
     signed_in: object = data.get("signed_in")
     checked_at: object = data.get("checked_at")
-    if not isinstance(signed_in, bool) or not isinstance(checked_at, str):
+    restore: object = data.get("restore")
+    delete_document: object = data.get("delete_document")
+    if not isinstance(signed_in, bool) or not isinstance(checked_at, str) or not isinstance(delete_document, bool):
         return None
     try:
-        return SessionRecord(signed_in=signed_in, checked_at=datetime.fromisoformat(checked_at))
+        checked: datetime = datetime.fromisoformat(checked_at)
     except ValueError:
         return None
+    return SessionRecord(
+        signed_in=signed_in,
+        checked_at=checked,
+        restore=_settings(restore) if isinstance(restore, dict) else None,
+        delete_document=delete_document,
+    )
 
 
 def write_session(root: Path, *, signed_in: bool) -> None:
-    """Save the check result atomically; a write failure is logged, never raised."""
-    payload: dict[str, object] = {"signed_in": signed_in, "checked_at": datetime.now(UTC).isoformat()}
+    """Save the check result atomically, keeping the saved cleanup; a write failure is logged, never raised."""
+    previous: SessionRecord | None = read_session(root)
+    now: datetime = datetime.now(UTC)
+    record: SessionRecord = (
+        SessionRecord(signed_in=signed_in, checked_at=now)
+        if previous is None
+        else replace(previous, signed_in=signed_in, checked_at=now)
+    )
+    _write_record(root, record)
+
+
+def save_cleanup(root: Path, cleanup: AccountCleanup) -> bool:
+    """Save which cleanup is still owed, without read ids, keeping the sign-in state; report whether it was saved."""
+    previous: SessionRecord | None = read_session(root)
+    signed: SessionRecord = previous or SessionRecord(signed_in=True, checked_at=datetime.now(UTC))
+    return _write_record(root, replace(signed, restore=cleanup.restore, delete_document=cleanup.has_document))
+
+
+def load_cleanup(root: Path) -> AccountCleanup:
+    """Return the cleanup owed by an earlier run; its document of unknown id is looked up by title at once."""
+    record: SessionRecord | None = read_session(root)
+    if record is None:
+        return AccountCleanup()
+    return AccountCleanup(restore=record.restore, orphan_visible_at=_LISTED_AT_ONCE if record.delete_document else None)
+
+
+def _write_record(root: Path, record: SessionRecord) -> bool:
+    restore: AccountSettings | None = record.restore
+    payload: dict[str, object] = {
+        "signed_in": record.signed_in,
+        "checked_at": record.checked_at.isoformat(),
+        "restore": None if restore is None else _with_settings({}, restore.voice_id, restore.speed),
+        "delete_document": record.delete_document,
+    }
     try:
         atomic_json_snapshot(session_file(root), payload)
     except OSError:
         logger.warning("ElevenReader session state could not be saved")
+        return False
+    return True
 
 
 async def require_signed_in(page: ReaderPage, root: Path) -> None:
@@ -553,10 +687,13 @@ async def sign_in(root: Path, *, timeout_s: float = SIGN_IN_TIMEOUT_S) -> SignIn
     from .browser import ChromeBusyError, ChromeMissingError, ChromeSession  # noqa: PLC0415 - keeps Playwright lazy
 
     session: ChromeSession = ChromeSession(root, headless=False)
+    cleanup: AccountCleanup = load_cleanup(root)
     try:
         await session.start()
         page: ReaderPage = await session.new_page()
         signed_in: bool = await _wait_for_library(page, timeout_s)
+        if signed_in:
+            await clean_account(page, cleanup)
     except ChromeMissingError:
         return SignInOutcome.NO_CHROME
     except ChromeBusyError:
@@ -567,7 +704,8 @@ async def sign_in(root: Path, *, timeout_s: float = SIGN_IN_TIMEOUT_S) -> SignIn
     finally:
         await session.close()
     write_session(root, signed_in=signed_in)
-    logger.info("ElevenReader sign-in checked", signed_in=signed_in)
+    save_cleanup(root, cleanup)
+    logger.info("ElevenReader sign-in checked", signed_in=signed_in, cleanup=list(cleanup.pending))
     return SignInOutcome.SIGNED_IN if signed_in else SignInOutcome.SIGNED_OUT
 
 

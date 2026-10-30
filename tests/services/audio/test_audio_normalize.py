@@ -54,7 +54,7 @@ def _context(runner: RecordingRunner) -> NormalizationContext:
 
 
 @pytest.mark.unit
-def test_normalize_clip_neutral_wav_with_silent_edges_is_trimmed_to_speech_and_margins(tmp_path: Path) -> None:
+def test_normalize_clip_silent_edges_are_trimmed_to_speech_and_margins(tmp_path: Path) -> None:
     source = tmp_path / "clip.wav"
     write_wav(source, frames=48_000)
     silence = array("h", [0] * 14_400)
@@ -63,7 +63,7 @@ def test_normalize_clip_neutral_wav_with_silent_edges_is_trimmed_to_speech_and_m
     normalized = normalize_clip(_timed_clip(source), tmp_path / "clip.pcm", tempo=1.0, context=_context(runner))
 
     assert len(runner.calls) == 1
-    assert normalized.frame_count == pytest.approx(26_880, abs=480)
+    assert normalized.frame_count == pytest.approx(26_880, abs=1)
     assert normalized.path.stat().st_size == normalized.frame_count * 2
 
 

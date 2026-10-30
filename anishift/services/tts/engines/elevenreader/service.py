@@ -39,10 +39,12 @@ from anishift.services.tts.types import (
 from anishift.utils.logger import get_logger
 
 from .api_backend import (
+    clean_account,
+    load_cleanup,
     prepare_account,
     read_session,
     require_signed_in,
-    run_cleanup,
+    save_cleanup,
     unavailable_error,
     voice_error,
 )
@@ -64,7 +66,6 @@ from .constants import (
     VOICES,
 )
 from .recorder import StreamRecorder
-from .types import AccountCleanup
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -75,7 +76,15 @@ if TYPE_CHECKING:
 
     from .api_backend import ReaderPage
     from .browser import ChromeSession
-    from .types import AlignmentChunk, ElevenReaderVoice, PlayerState, SessionRecord, UploadedRead
+    from .types import (
+        AccountCleanup,
+        AccountSettings,
+        AlignmentChunk,
+        ElevenReaderVoice,
+        PlayerState,
+        SessionRecord,
+        UploadedRead,
+    )
 
 __all__ = ["CLEANUP_WARNING", "ElevenReaderTtsEngine", "document_text", "part_spans"]
 
@@ -94,6 +103,9 @@ _BRACKETS: Final[dict[int, str]] = str.maketrans({"[": "(", "]": ")"})
 
 _PART_GLUE: Final[str] = f"\n\n{LINE_SEPARATOR}\n\n"
 """Text between parts: a separator paragraph, so the server pauses and marks breaks around it."""
+
+_BREAK_TAG: Final[str] = "<break"
+"""Start of the SSML pause the server places between paragraphs; a part may not contain one."""
 
 _BREAK_RUN: Final[re.Pattern[str]] = re.compile(r"<break[^>]*(?:>|$)(?:\s*<break[^>]*(?:>|$))*")
 """Adjacent SSML pauses forming one boundary; the final tag may be cut off at the end of the text."""
@@ -139,7 +151,8 @@ class ElevenReaderTtsEngine:
         self._config: ElevenReaderConfig = ElevenReaderConfig.from_tts_config(config)
         self._browser_factory: Callable[[Path], ChromeSession] = browser_factory or _headless_session
         self._browser: ChromeSession | None = None
-        self._cleanup: AccountCleanup = AccountCleanup()
+        self._cleanup: AccountCleanup = load_cleanup(self._config.profile_root)
+        self._saved_cleanup: tuple[AccountSettings | None, bool] = self._cleanup_state()
         self._closed: bool = False
         self._synthesis_profile: SynthesisProfile = SynthesisProfile(
             engine_id=self.engine_id,
@@ -221,16 +234,19 @@ class ElevenReaderTtsEngine:
             await _finish_shielded(self._end_attempt(page, keep_browser=keep_browser))
 
     async def close(self) -> None:
-        """Run pending account cleanup while the browser lives, warn about what is left, then stop Chrome."""
+        """Run pending account cleanup while the browser lives, save and warn about what is left, then stop Chrome."""
         if self._closed:
             return
         self._closed = True
         browser: ChromeSession | None = self._browser
-        if self._cleanup.pending and browser is not None and browser.alive:
-            await _finish_shielded(self._clean_in_new_tab(browser))
-        if self._cleanup.pending:
-            logger.warning(CLEANUP_WARNING, steps=list(self._cleanup.pending))
-        await self._close_browser()
+        try:
+            if self._cleanup.pending and browser is not None and browser.alive:
+                await _finish_shielded(self._clean_in_new_tab(browser))
+        finally:
+            self._save_cleanup()
+            if self._cleanup.pending:
+                logger.warning(CLEANUP_WARNING, steps=list(self._cleanup.pending))
+            await self._close_browser()
 
     def _validate(self, request: DocumentSynthesisRequest) -> ElevenReaderVoice:
         voice: ElevenReaderVoice = resolve_voice(request.voice_id)
@@ -243,6 +259,10 @@ class ElevenReaderTtsEngine:
             raise TtsUnsupportedError(message)
         if self.document_chars(request.parts) > MAX_DOCUMENT_CHARS:
             _raise_input(f"ElevenReader document exceeds {MAX_DOCUMENT_CHARS} characters")
+        for index, part in enumerate(request.parts):
+            text: str = _neutralize(part.text)
+            if not text or text == LINE_SEPARATOR or _BREAK_TAG in text.casefold():
+                _raise_unreadable_part(index)
         return voice
 
     async def _open_browser(self) -> ChromeSession:
@@ -267,16 +287,22 @@ class ElevenReaderTtsEngine:
         started: float,
     ) -> EngineDocumentResult:
         await _unless_cancelled(require_signed_in(page, self._config.profile_root), cancel)
-        if self._cleanup.pending and page.token:
-            await _finish_shielded(run_cleanup(page, page.token, self._cleanup))
+        if self._cleanup.pending:
+            await _finish_shielded(clean_account(page, self._cleanup))
+            self._save_cleanup()
         text: str = document_text(request.parts)
         with tempfile.TemporaryDirectory(prefix="anishift-elevenreader-") as folder:
             document: Path = Path(folder) / DOCUMENT_NAME
             document.write_text(text, encoding="utf-8")
-            uploaded: UploadedRead = await _unless_cancelled(page.upload(document), cancel)
-        self._cleanup.read_id = uploaded.read_id
+            uploaded: UploadedRead = await _unless_cancelled(
+                page.upload(document, self._cleanup, self._save_cleanup),
+                cancel,
+            )
         logger.info("ElevenReader document uploaded", parts=len(request.parts), chars=uploaded.char_count)
-        await _unless_cancelled(prepare_account(page, uploaded.token, voice.voice_id, self._cleanup), cancel)
+        await _unless_cancelled(
+            prepare_account(page, uploaded.token, voice.voice_id, self._cleanup, self._save_cleanup),
+            cancel,
+        )
         request.recording.parent.mkdir(parents=True, exist_ok=True)
         stream_voices: list[bool] = []
         with request.recording.open("wb") as output:
@@ -312,6 +338,8 @@ class ElevenReaderTtsEngine:
         plays: int = 1
         while True:
             await _unless_cancelled(asyncio.sleep(POLL_S), cancel)
+            if recorder.write_error is not None:
+                raise _write_error(recorder.write_error)
             if recorder.listening_speed not in (None, READING_SPEED):
                 message: str = "ElevenReader streamed with Eleven v2 instead of v4"
                 raise unavailable_error(message)
@@ -372,27 +400,40 @@ class ElevenReaderTtsEngine:
         )
 
     async def _end_attempt(self, page: ReaderPage | None, *, keep_browser: bool) -> None:
-        if page is not None:
+        try:
+            if page is not None:
+                await self._end_page(page)
+        finally:
+            if not keep_browser:
+                await self._close_browser()
+
+    async def _end_page(self, page: ReaderPage) -> None:
+        try:
             page.unwatch_stream()
-            token: str | None = page.token
-            if self._cleanup.pending and token:
-                await run_cleanup(page, token, self._cleanup)
+            await clean_account(page, self._cleanup)
+        finally:
+            self._save_cleanup()
             await page.close()
-        if not keep_browser:
-            await self._close_browser()
 
     async def _clean_in_new_tab(self, browser: ChromeSession) -> None:
         try:
             page: ReaderPage = await browser.new_page()
-        except TtsError:
+        except TtsError as error:
+            logger.warning("ElevenReader cleanup tab could not open", code=error.context.code.value)
             return
         try:
             await page.open_library()
-            token: str | None = page.token
-            if token:
-                await run_cleanup(page, token, self._cleanup)
+            await clean_account(page, self._cleanup)
         finally:
             await page.close()
+
+    def _save_cleanup(self) -> None:
+        state: tuple[AccountSettings | None, bool] = self._cleanup_state()
+        if state != self._saved_cleanup and save_cleanup(self._config.profile_root, self._cleanup):
+            self._saved_cleanup = state
+
+    def _cleanup_state(self) -> tuple[AccountSettings | None, bool]:
+        return self._cleanup.restore, self._cleanup.has_document
 
     async def _close_browser(self) -> None:
         browser: ChromeSession | None = self._browser
@@ -521,6 +562,16 @@ def _cancelled_error() -> TtsCancelledError:
     return TtsCancelledError("ElevenReader synthesis cancelled")
 
 
+def _write_error(error: OSError) -> TtsClipValidationError:
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.TTS_CLIP_INVALID,
+        message="ElevenReader recording could not be written",
+        suggestion="Sprawdź wolne miejsce i uprawnienia dysku z workspace.",
+        details={"error_class": type(error).__name__, "errno": error.errno},
+    )
+    return TtsClipValidationError(context=context)
+
+
 def _timeout_error(message: str) -> TtsTimeoutError:
     context: ErrorContext = ErrorContext(code=ErrorCode.TTS_TIMEOUT, message=message)
     return TtsTimeoutError(context=context)
@@ -531,6 +582,16 @@ def _raise_input(message: str) -> Never:
         code=ErrorCode.TTS_INPUT_INVALID,
         message=message,
         suggestion="Use one configured ElevenReader voice and model for the service lifecycle.",
+    )
+    raise TtsInputError(context=context)
+
+
+def _raise_unreadable_part(index: int) -> Never:
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.TTS_INPUT_INVALID,
+        message="ElevenReader part cannot be read as its own paragraph",
+        suggestion="Kwestia nie może być pusta, samym „…” ani zawierać znacznika <break>.",
+        details={"line": index},
     )
     raise TtsInputError(context=context)
 

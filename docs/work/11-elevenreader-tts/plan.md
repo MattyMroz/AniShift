@@ -411,9 +411,10 @@ anishift/services/tts/engines/elevenreader/
 │                   map_http_status, map_playwright_error i fabryki błędów (auth, voice, unavailable);
 │                   ReaderPage: open_library → READY | SIGNED_OUT | UNAVAILABLE, upload, open_document, press_play,
 │                   player_state, set_page_speed, check_page_speed, watch_stream;
-│                   konto tokenem strony: prepare_account (default_voice_id + playback_speed_rate), run_cleanup
-│                   (przywrócenie, DELETE reads); sesja: read_session, write_session (atomowo), require_signed_in,
-│                   sign_in (okno widoczne) → SignInOutcome
+│                   konto tokenem strony: prepare_account (default_voice_id + playback_speed_rate), clean_account
+│                   (przywrócenie, DELETE reads, sierota po tytule); sesja: read_session, write_session,
+│                   save_cleanup, load_cleanup (atomowo), require_signed_in, sign_in (okno widoczne, kończy
+│                   sprzątanie) → SignInOutcome
 ├── browser.py      [specyficzny] ChromeSession: ProcessLock, restrict_directory, wolny port, Popen, CDP, close;
 │                   ChromeMissingError, ChromeBusyError (wzór: sapi/worker.py, elevenbytes/vpn.py)
 ├── recorder.py     [specyficzny] czyste: ramki WS → plik MP3 + AlignmentChunk w pamięci; duplikaty, powtórzenia po
@@ -535,7 +536,8 @@ rodzaj kroku i status) i komunikat w panelu „ElevenReader: nie udało się pos
 - Cookies żyją w `config/elevenreader/chrome-profile/`; AniShift ich nie czyta. `config/elevenreader/` jest w
   `.gitignore` i dostaje `restrict_directory` przy każdym starcie (idempotentne).
 - Token strony istnieje tylko w pamięci jednej próby; nie trafia do logów, wyjątków, `details` ani plików.
-- `session.json`: `{"signed_in": bool, "checked_at": ISO-8601}`, zapis atomowy.
+- `session.json`: `{"signed_in": bool, "checked_at": ISO-8601, "restore": {…} | null, "delete_document": bool}`,
+  zapis atomowy; zaległe sprzątanie konta bez `read_id` i tokenu.
 - Wygaśnięcie przed uploadem → `TtsAuthError` (trwały, circuit), sugestia „Ustawienia → Lektor → Zaloguj / sprawdź
   sesję”; po zalogowaniu ponowienie czyta tylko brakujące kwestie. Wygaśnięcie w trakcie → przestój → ponowienie →
   następna próba wykrywa SIGNED_OUT.

@@ -101,6 +101,12 @@ _SESSION_KEY: Final[str] = "elevenreader-session"
 _SIGN_IN_KEY: Final[str] = "elevenreader-sign-in"
 """Stable action key opening Chrome to sign in to ElevenReader or check the session."""
 
+_CLEANUP_KEY: Final[str] = "elevenreader-cleanup"
+"""Stable key of the row warning about account cleanup still owed; Enter runs the sign-in that finishes it."""
+
+_CLEANUP_REPAIR: Final[str] = "napraw: Zaloguj / sprawdź sesję"
+"""Value of the account cleanup row naming the action that finishes the cleanup."""
+
 
 _STATUS_ROWS: Final[int] = 1
 """Rows every screen spends on its status line, spent whether it says anything or not."""
@@ -113,6 +119,15 @@ _ZERO_MEANS_DEFAULT: Final[frozenset[str]] = frozenset({"translation_batch_size"
 
 _FONT_FILE_SETTING: Final[str] = "dialogue_font_file"
 """Field holding the dialogue font path, shown by file name and checked by the service on save."""
+
+_VALUE_SUFFIXES: Final[dict[str, str]] = {
+    "tts_profile.postprocess_tempo": "×",
+    "tts_profile.engine_options.speed": "×",
+    "tts_profile.voice_mix_offset_db": " LU",
+    "narrator_over_source_lu": " LU",
+    "original_gain_db": " dB",
+}
+"""Unit appended to a decimal setting value, keyed by setting id."""
 
 _BACK_KEY: Final[str] = "back"
 """Stable action key returning to the parent menu."""
@@ -987,6 +1002,7 @@ class SettingsController:
             "connection-remove": self._open_remove_confirmation,
             "connection-probe": self._start_probe,
             _SIGN_IN_KEY: self._start_sign_in,
+            _CLEANUP_KEY: self._start_sign_in,
         }
 
     def _prefixed_actions(self) -> tuple[tuple[str, Callable[[str], None]], ...]:
@@ -1156,8 +1172,10 @@ class SettingsController:
         snapshot: _CatalogSnapshot = self._catalog_snapshot()
         items: list[_MenuItem] = list(self._active_setting_items(snapshot, _TTS_FIELDS))
         if snapshot.settings.tts_engine == "elevenreader":
-            status: str = _session_status(self._service.elevenreader_session())
-            items.append(_MenuItem(_SESSION_KEY, "Sesja ElevenReader", status, _SESSION_SECTION))
+            record: SessionRecord | None = self._service.elevenreader_session()
+            items.append(_MenuItem(_SESSION_KEY, "Sesja ElevenReader", _session_status(record), _SESSION_SECTION))
+            if record is not None and record.cleanup_pending:
+                items.append(_MenuItem(_CLEANUP_KEY, _cleanup_label(record), _CLEANUP_REPAIR, _SESSION_SECTION))
             items.append(_MenuItem(_SIGN_IN_KEY, "Zaloguj / sprawdź sesję", "", _SESSION_SECTION))
         items.append(self._scoped_reset_item())
         items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
@@ -2045,14 +2063,7 @@ def _format_value(spec: SettingSpec, value: SettingValue) -> str:
     if isinstance(value, bool):
         return "tak" if value else "nie"
     if isinstance(value, float):
-        suffixes: dict[str, str] = {
-            "tts_profile.postprocess_tempo": "×",
-            "tts_profile.engine_options.speed": "×",
-            "tts_profile.voice_mix_offset_db": " LU",
-            "narrator_over_source_lu": " LU",
-            "original_gain_db": " dB",
-        }
-        suffix: str = suffixes.get(setting_id, "")
+        suffix: str = _VALUE_SUFFIXES.get(setting_id, "")
         return f"{value:g}{suffix}"
     if isinstance(value, str):
         return _format_text(spec, value)
@@ -2080,6 +2091,15 @@ def _session_status(record: SessionRecord | None) -> str:
         return "nie sprawdzono"
     state: str = "zalogowano" if record.signed_in else "nie zalogowano"
     return f"{state} · {record.checked_at.astimezone():%d.%m %H:%M}"
+
+
+def _cleanup_label(record: SessionRecord) -> str:
+    left: list[str] = []
+    if record.delete_document:
+        left.append("dokument „anishift”")
+    if record.restore is not None:
+        left.append("zmieniony głos")
+    return "Na koncie mógł zostać " + " i ".join(left)
 
 
 def _voice_alias(voice: object) -> str:

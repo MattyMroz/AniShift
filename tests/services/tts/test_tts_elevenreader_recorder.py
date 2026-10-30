@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import io
 import json
 
@@ -151,3 +152,35 @@ def test_stop_later_frames_are_ignored() -> None:
 
     assert output.getvalue() == b""
     assert recorder.listening_speed is None
+
+
+class _FullDisk(io.BytesIO):
+    def __init__(self) -> None:
+        super().__init__()
+        self.writes: int = 0
+
+    def write(self, data: object) -> int:
+        self.writes += 1
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+
+def test_on_frame_write_failure_sets_error_and_ignores_later_frames() -> None:
+    output = _FullDisk()
+    recorder = StreamRecorder(output)
+
+    recorder.on_frame(audio_frame("Ab", frames=1, fill=1))
+    recorder.on_frame(audio_frame("Cd", frames=1, fill=2))
+
+    assert isinstance(recorder.write_error, OSError)
+    assert recorder.write_error.errno == errno.ENOSPC
+    assert output.writes == 1
+    assert recorder.audio_bytes == 0
+    assert recorder.chars == 0
+
+
+def test_on_frame_working_output_has_no_write_error() -> None:
+    recorder, _ = _recorder()
+
+    recorder.on_frame(audio_frame("Ab", frames=1))
+
+    assert recorder.write_error is None

@@ -282,6 +282,13 @@ def check_elevenreader(engine_id: str) -> CheckResult:
         )
     root: Path = elevenreader_dir()
     record: SessionRecord | None = read_session(root)
+    if record is not None and record.cleanup_pending:
+        return CheckResult(
+            "elevenreader",
+            CheckStatus.WARN,
+            "ElevenReader account may still hold the anishift document or a changed voice",
+            suggestion=_ELEVENREADER_SIGN_IN_HINT,
+        )
     if not profile_dir(root).is_dir() or record is None or not record.signed_in:
         return CheckResult(
             "elevenreader",

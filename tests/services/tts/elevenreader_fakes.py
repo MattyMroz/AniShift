@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
+
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from anishift.services.tts import TtsConfig, TtsProviderUnavailableError
 from anishift.services.tts.engines.elevenreader import ElevenReaderTtsEngine
@@ -16,11 +19,16 @@ if TYPE_CHECKING:
 
     from anishift.services.tts.engines.elevenreader.browser import ChromeSession
     from anishift.services.tts.engines.elevenreader.recorder import StreamRecorder
+    from anishift.services.tts.engines.elevenreader.types import AccountCleanup
 
 FRONCZEWSKI_ID = "T5l58N8RNz5DKoClpKIJ"
 ADAM_ID = "hIssydxXZ1WuDorjx6Ic"
 TOKEN = "token-7f3c9e1d5b"  # noqa: S105
 READ_ID = "u:readsecret42"
+READS_URL = "https://api.elevenlabs.io/v1/reader/reads"
+LIBRARY_PAGE_URL = "https://elevenreader.io/reader/library"
+ADD_URL = "https://api.elevenlabs.io/v1/reader/reads/add/v2"
+SIGN_IN_BUTTON = "Sign in"
 BREAK = '<break time="0.6s"/>'
 FRAME_HEADER = bytes((0xFF, 0xFB, 0x90, 0x64))
 FRAME_BYTES = 417
@@ -89,6 +97,10 @@ class FakeSite:
     send_audio: bool = True
     player_done: bool = False
     hang_on: str = ""
+    hung: asyncio.Event = field(default_factory=asyncio.Event)
+    upload_window_s: float = 120.0
+    reads: list[str] = field(default_factory=list)
+    page_type: type[FakePage] = field(default_factory=lambda: FakePage)
     failing: set[str] = field(default_factory=set)
     events: list[str] = field(default_factory=list)
     uploaded: list[str] = field(default_factory=list)
@@ -132,14 +144,23 @@ class FakePage:
     async def library_ready(self) -> bool:
         return self.site.library is LibraryState.READY
 
-    async def upload(self, document: Path) -> UploadedRead:
-        await self._step("upload")
+    async def upload(self, document: Path, cleanup: AccountCleanup, save: Callable[[], None]) -> UploadedRead:
         self.site.uploaded.append(document.read_text(encoding="utf-8"))
+        earlier: float | None = cleanup.orphan_visible_at
+        cleanup.orphan_visible_at = max(earlier or 0.0, time.monotonic() + self.site.upload_window_s)
+        save()
+        self.site.reads.append(READ_ID)
+        await self._step("upload")
+        cleanup.read_ids.append(READ_ID)
+        cleanup.orphan_visible_at = earlier
         return UploadedRead(read_id=READ_ID, char_count=self.site.count(), token=TOKEN)
 
     async def get_json(self, url: str, token: str, *, action: str) -> dict[str, object]:
         assert token == TOKEN
         await self._step(action)
+        if action == "list_reads":
+            assert url == READS_URL
+            return {"reads": [{"read_id": read_id, "title": "anishift"} for read_id in self.site.reads]}
         return dict(self.site.account)
 
     async def post_json(self, url: str, token: str, data: dict[str, object], *, action: str) -> None:
@@ -154,6 +175,9 @@ class FakePage:
         assert token == TOKEN
         await self._step(action)
         self.site.deleted.append(url)
+        read_id: str = url.removeprefix(f"{READS_URL}/")
+        if read_id in self.site.reads:
+            self.site.reads.remove(read_id)
 
     async def open_document(self, read_id: str) -> None:
         assert read_id == READ_ID
@@ -197,6 +221,7 @@ class FakePage:
             message: str = f"fake {action} failed"
             raise TtsProviderUnavailableError(message)
         if action == self.site.hang_on:
+            self.site.hung.set()
             future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
             await future
 
@@ -216,7 +241,7 @@ class FakeSession:
         self.started = True
 
     async def new_page(self) -> FakePage:
-        page: FakePage = FakePage(self.site)
+        page: FakePage = self.site.page_type(self.site)
         self.site.pages.append(page)
         return page
 
@@ -233,3 +258,199 @@ def fake_engine(root: Path, site: FakeSite, *, voice_id: str = "fronczewski") ->
         return cast("ChromeSession", session)
 
     return ElevenReaderTtsEngine(tts_config(root, voice_id=voice_id), browser_factory=factory)
+
+
+class FakeRequest:
+    def __init__(self, url: str, method: str, headers: dict[str, str]) -> None:
+        self.url: str = url
+        self.method: str = method
+        self.headers: dict[str, str] = headers
+
+    async def all_headers(self) -> dict[str, str]:
+        return dict(self.headers)
+
+
+class FakeResponse:
+    def __init__(
+        self,
+        status: int = 200,
+        body: object = None,
+        *,
+        text: str | None = None,
+        headers: dict[str, str] | None = None,
+        authorization: str = TOKEN,
+    ) -> None:
+        self.status: int = status
+        self.ok: bool = 200 <= status < 300
+        self.headers: dict[str, str] = headers or {}
+        self.url: str = ADD_URL
+        self.request: FakeRequest = FakeRequest(
+            ADD_URL, "POST", {"authorization": authorization} if authorization else {}
+        )
+        self._body: object = body
+        self._text: str | None = text
+
+    async def json(self) -> object:
+        if self._text is not None:
+            return json.loads(self._text)
+        return self._body
+
+
+class FakeApi:
+    def __init__(self, page: FakePlaywrightPage) -> None:
+        self.page: FakePlaywrightPage = page
+
+    async def get(self, url: str, *, headers: dict[str, str]) -> FakeResponse:
+        return self.page.api_reply("GET", url, headers)
+
+    async def post(self, url: str, *, headers: dict[str, str], data: dict[str, object]) -> FakeResponse:
+        self.page.posted.append(data)
+        return self.page.api_reply("POST", url, headers)
+
+    async def delete(self, url: str, *, headers: dict[str, str]) -> FakeResponse:
+        return self.page.api_reply("DELETE", url, headers)
+
+
+class FakeLocator:
+    def __init__(self, page: FakePlaywrightPage, names: tuple[str, ...]) -> None:
+        self.page: FakePlaywrightPage = page
+        self.names: tuple[str, ...] = names
+
+    @property
+    def first(self) -> FakeLocator:
+        return self
+
+    def filter(self, *, visible: bool) -> FakeLocator:
+        assert visible
+        return self
+
+    def or_(self, other: FakeLocator) -> FakeLocator:
+        return FakeLocator(self.page, self.names + other.names)
+
+    async def click(self) -> None:
+        self.page.clicks.append(self.names[0])
+
+    async def count(self) -> int:
+        return sum(name in self.page.visible for name in self.names)
+
+    async def wait_for(self, *, state: str = "visible", timeout: float | None = None) -> None:
+        if self.page.wait_error is not None:
+            raise self.page.wait_error
+        if not any(name in self.page.visible for name in self.names):
+            message: str = f"Timeout {timeout}ms exceeded"
+            raise PlaywrightTimeoutError(message)
+
+    async def set_input_files(self, files: Path) -> None:
+        self.page.files.append(files)
+
+
+class FakeExpectation:
+    def __init__(self, page: FakePlaywrightPage, predicate: Callable[[FakeResponse], bool]) -> None:
+        self.page: FakePlaywrightPage = page
+        self.predicate: Callable[[FakeResponse], bool] = predicate
+
+    async def __aenter__(self) -> FakeExpectation:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    @property
+    def value(self) -> asyncio.Future[FakeResponse]:
+        future: asyncio.Future[FakeResponse] = asyncio.get_running_loop().create_future()
+        reply: FakeResponse | None = self.page.add_reply
+        if reply is not None:
+            assert self.predicate(reply)
+            future.set_result(reply)
+        return future
+
+
+class FakeFrame:
+    def __init__(self, state: object = None, *, error: Exception | None = None) -> None:
+        self.state: object = state
+        self.error: Exception | None = error
+        self.scripts: list[str] = []
+
+    async def evaluate(self, script: str) -> object:
+        if self.error is not None:
+            raise self.error
+        self.scripts.append(script)
+        return self.state if "__anishiftState()" in script else None
+
+
+class FakeSocket:
+    def __init__(self, url: str) -> None:
+        self.url: str = url
+        self.handlers: dict[str, Callable[[str | bytes], None]] = {}
+
+    def on(self, event: str, handler: Callable[[str | bytes], None]) -> None:
+        self.handlers[event] = handler
+
+
+class FakePlaywrightPage:
+    def __init__(self, *, visible: tuple[str, ...] = ("Import",), url: str = LIBRARY_PAGE_URL) -> None:
+        self.visible: set[str] = set(visible)
+        self.url: str = url
+        self.goto_reply: FakeResponse | None = FakeResponse()
+        self.goto_error: Exception | None = None
+        self.wait_error: Exception | None = None
+        self.close_error: Exception | None = None
+        self.add_reply: FakeResponse | None = None
+        self.replies: dict[tuple[str, str], FakeResponse] = {}
+        self.request: FakeApi = FakeApi(self)
+        self.frames: list[FakeFrame] = []
+        self.player: object = None
+        self.listeners: dict[str, list[Callable[..., None]]] = {}
+        self.clicks: list[str] = []
+        self.files: list[Path] = []
+        self.posted: list[dict[str, object]] = []
+        self.calls: list[tuple[str, str]] = []
+        self.timeout_ms: float = 0.0
+        self.closed: bool = False
+        self.close_calls: int = 0
+
+    def set_default_timeout(self, timeout_ms: float) -> None:
+        self.timeout_ms = timeout_ms
+
+    def on(self, event: str, handler: Callable[..., None]) -> None:
+        self.listeners.setdefault(event, []).append(handler)
+
+    def remove_listener(self, event: str, handler: Callable[..., None]) -> None:
+        self.listeners[event].remove(handler)
+
+    def emit(self, event: str, payload: object) -> None:
+        for handler in list(self.listeners.get(event, [])):
+            handler(payload)
+
+    def is_closed(self) -> bool:
+        return self.closed
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        if self.close_error is not None:
+            raise self.close_error
+        self.closed = True
+
+    async def goto(self, url: str) -> FakeResponse | None:
+        self.calls.append(("GOTO", url))
+        if self.goto_error is not None:
+            raise self.goto_error
+        return self.goto_reply
+
+    def get_by_role(self, role: str, *, name: object, exact: bool = False) -> FakeLocator:
+        assert role == "button"
+        return FakeLocator(self, (name if isinstance(name, str) else SIGN_IN_BUTTON,))
+
+    def locator(self, selector: str) -> FakeLocator:
+        return FakeLocator(self, (selector,))
+
+    def expect_response(self, predicate: Callable[[FakeResponse], bool]) -> FakeExpectation:
+        return FakeExpectation(self, predicate)
+
+    async def evaluate(self, script: str) -> object:
+        return self.player
+
+    def api_reply(self, method: str, url: str, headers: dict[str, str]) -> FakeResponse:
+        assert headers == {"authorization": TOKEN}
+        self.calls.append((method, url))
+        return self.replies.get((method, url), FakeResponse(200, {}))

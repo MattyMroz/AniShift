@@ -30,10 +30,17 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
 - Głos i tempo 1x ustawia `user_config` konta tokenem strony (`prepare_account`), przed otwarciem dokumentu:
   serwer wybiera model przy starcie strumienia. Wpis przywrócenia powstaje przed zapisem i nie jest
   nadpisywany, dopóki poprzedni nie wykona się, inaczej „poprzednim” głosem zostałby nasz.
-- `AccountCleanup` (przywrócenie ustawień, `DELETE reads/{id}`) biegnie w `finally` każdej próby pod
-  `_finish_shielded`, także po `asyncio.CancelledError`; każdy krok ma własny limit. Nieudany krok zostaje i
-  wykonuje się po `require_signed_in` następnej próby (przed uploadem) oraz w `close()`, jeśli przeglądarka
-  żyje. Trwała porażka: `logger.warning(CLEANUP_WARNING, steps=…)`.
+- `AccountCleanup` (przywrócenie ustawień, `DELETE reads/{id}`, sierota po tytule) biegnie przez `clean_account` w
+  `finally` każdej próby pod `_finish_shielded`, także po `asyncio.CancelledError`; każdy krok ma własny limit i
+  `_cleanup_step` łapie każdy wyjątek, a karta i Chrome zamykają się w `finally`. Nieudany krok zostaje i wykonuje
+  się po `require_signed_in` następnej próby (przed uploadem), w `close()`, jeśli przeglądarka żyje, oraz w
+  `sign_in` panelu. Trwała porażka: `logger.warning(CLEANUP_WARNING, steps=…)`, wiersz w SESJA i ostrzeżenie doctora.
+- `upload` rejestruje możliwy dokument (`orphan_visible_at`) i zapisuje go przed „Upload”, a `read_id` z odpowiedzi
+  przed walidacją `char_count`/tokenu. Dokument bez znanego id (anulowanie w trakcie uploadu, odpowiedź bez id,
+  poprzedni proces) szuka się w `GET reads` po tytule `anishift`/`anishift.txt`; pusty wynik rozlicza krok dopiero
+  po `ACTION_TIMEOUT_S` od kliknięcia.
+- Zaległe sprzątanie jest trwałe w `session.json` (`restore`, `delete_document`, bez `read_id`): `prepare_account` i
+  `upload` zapisują je przed zmianą konta, silnik po każdym sprzątaniu, `load_cleanup` wczytuje je przy starcie.
 - Przeglądarka zostaje otwarta po sukcesie i po błędach, które jej nie dotyczą (`_KEEP_BROWSER_ERRORS`); po
   anulowaniu, timeoucie i niedostępności zamyka się dopiero po sprzątaniu.
 
@@ -42,8 +49,14 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
 - Brak retry w transporcie (Z6). Ponowne „Play” (do 3) i pętla dołączania do CDP to czynności jednej próby.
 - Każde długie oczekiwanie idzie przez `_unless_cancelled`, więc anulowanie nie czeka na limit Playwright.
 - Token, `read_id`, adres WebSocketu i tekst dokumentu nie trafiają do logów, wyjątków ani plików;
-  `session.json` ma tylko `signed_in` i `checked_at`. Adres strumienia jest sprawdzany w pamięci (F8).
+  `session.json` ma tylko `signed_in`, `checked_at`, `restore` (głos i tempo konta) i `delete_document`. Adres
+  strumienia jest sprawdzany w pamięci (F8).
+- Część pusta po neutralizacji, równa `LINE_SEPARATOR` albo z `<break` to `TtsInputError` przed przeglądarką.
+- Błąd zapisu nagrania (`OSError`) zatrzymuje `StreamRecorder`; `_record` w następnym takcie rzuca
+  `TtsClipValidationError` z `error_class` i `errno`, bez ścieżki.
 - Pierwsza ramka wysyłana z `listening_speed` ≠ 1 oznacza model v2 → błąd przejściowy.
 - Rozpoznanie wylogowania w `ReaderPage.open_library` (przyciski „Sign in/Log in/Continue with Google” albo
-  adres strony logowania) i status 402 jako brak kredytów są założeniami do potwierdzenia w K2.
+  adres strony logowania), status 402 jako brak kredytów oraz lista `GET reads` w kształcie
+  `{"reads": [{"read_id", "title"}]}` są założeniami do potwierdzenia w K2. Inny kształt listy zostawia krok
+  `delete_orphan` zaległym (widocznym w panelu), nigdy nie rozlicza go po cichu.
 - `char_count` z odpowiedzi uploadu jest obowiązkowy; bez niego próba kończy się błędem przejściowym.

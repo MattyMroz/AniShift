@@ -114,19 +114,14 @@ class ChromeSession:
         playwright: Playwright | None = self._playwright
         process: subprocess.Popen[bytes] | None = self._process
         self._browser, self._playwright, self._process, self._context = None, None, None, None
-        if browser is not None:
+        try:
+            await _detach(browser, playwright)
+        finally:
             try:
-                await browser.close()
-            except PlaywrightError:
-                logger.debug("ElevenReader browser was already disconnected")
-        if playwright is not None:
-            try:
-                await playwright.stop()
-            except PlaywrightError:
-                logger.debug("ElevenReader Playwright driver was already stopped")
-        if process is not None:
-            await asyncio.to_thread(_stop_process, process)
-        self._lock.release()
+                if process is not None:
+                    await asyncio.to_thread(_stop_process, process)
+            finally:
+                self._lock.release()
 
     async def _launch(self, chrome: Path) -> None:
         user_data: Path = profile_dir(self._root)
@@ -193,15 +188,40 @@ def _free_port() -> int:
     return port
 
 
+async def _detach(browser: Browser | None, playwright: Playwright | None) -> None:
+    try:
+        if browser is not None:
+            await browser.close()
+    except PlaywrightError:
+        logger.debug("ElevenReader browser was already disconnected")
+    finally:
+        if playwright is not None:
+            await _stop_driver(playwright)
+
+
+async def _stop_driver(playwright: Playwright) -> None:
+    try:
+        await playwright.stop()
+    except PlaywrightError:
+        logger.debug("ElevenReader Playwright driver was already stopped")
+
+
 def _stop_process(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is not None:
         return
-    process.terminate()
     try:
+        process.terminate()
         process.wait(timeout=_EXIT_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired, OSError:
+        _kill(process)
+
+
+def _kill(process: subprocess.Popen[bytes]) -> None:
+    try:
         process.kill()
         process.wait(timeout=_EXIT_TIMEOUT_S)
+    except subprocess.TimeoutExpired, OSError:
+        logger.warning("ElevenReader Chrome could not be stopped")
 
 
 def _missing_chrome_context() -> ErrorContext:

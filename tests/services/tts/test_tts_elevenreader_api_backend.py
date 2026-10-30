@@ -1,12 +1,29 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import time
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 import pytest
-from elevenreader_fakes import FakePage, FakeSite
+from elevenreader_fakes import (
+    FRONCZEWSKI_ID,
+    LIBRARY_PAGE_URL,
+    READ_ID,
+    READS_URL,
+    SIGN_IN_BUTTON,
+    TOKEN,
+    FakeFrame,
+    FakePage,
+    FakePlaywrightPage,
+    FakeRequest,
+    FakeResponse,
+    FakeSite,
+    FakeSocket,
+)
+from loguru import logger as loguru_logger
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
@@ -21,11 +38,31 @@ from anishift.services.tts import (
 )
 from anishift.services.tts.engines.elevenreader import SignInOutcome, api_backend, read_session, sign_in
 from anishift.services.tts.engines.elevenreader import browser as browser_module
-from anishift.services.tts.engines.elevenreader.api_backend import map_http_status, map_playwright_error, write_session
+from anishift.services.tts.engines.elevenreader.api_backend import (
+    ReaderPage,
+    clean_account,
+    load_cleanup,
+    map_http_status,
+    map_playwright_error,
+    save_cleanup,
+    write_session,
+)
 from anishift.services.tts.engines.elevenreader.browser import ChromeBusyError, ChromeMissingError
-from anishift.services.tts.engines.elevenreader.types import LibraryState
+from anishift.services.tts.engines.elevenreader.recorder import StreamRecorder
+from anishift.services.tts.engines.elevenreader.types import (
+    AccountCleanup,
+    AccountSettings,
+    LibraryState,
+    PlayerState,
+    UploadedRead,
+)
+
+if TYPE_CHECKING:
+    from playwright.async_api import Page
 
 pytestmark = pytest.mark.unit
+
+PREVIOUS = AccountSettings(voice_id="previous-voice", speed=1.5)
 
 
 @pytest.mark.parametrize(
@@ -196,11 +233,463 @@ def test_session_record_round_trips_without_secrets(tmp_path: Path) -> None:
 
     saved: dict[str, object] = json.loads((tmp_path / "session.json").read_text(encoding="utf-8"))
 
-    assert set(saved) == {"checked_at", "signed_in"}
+    assert set(saved) == {"checked_at", "delete_document", "restore", "signed_in"}
     assert saved["signed_in"] is True
+    assert saved["delete_document"] is False
+    assert saved["restore"] is None
 
 
-def test_read_session_corrupt_file_returns_none(tmp_path: Path) -> None:
-    (tmp_path / "session.json").write_text("{broken", encoding="utf-8")
+@pytest.mark.parametrize(
+    "content", ["{broken", '{"signed_in": true, "checked_at": "2026-10-30T10:00:00+00:00"}', "[1]"]
+)
+def test_read_session_corrupt_file_returns_none(tmp_path: Path, content: str) -> None:
+    (tmp_path / "session.json").write_text(content, encoding="utf-8")
 
     assert read_session(tmp_path) is None
+
+
+def test_save_cleanup_owed_steps_are_saved_without_read_id(tmp_path: Path) -> None:
+    write_session(tmp_path, signed_in=False)
+    cleanup = AccountCleanup(restore=PREVIOUS, read_ids=[READ_ID])
+
+    assert save_cleanup(tmp_path, cleanup)
+
+    record = read_session(tmp_path)
+    assert record is not None
+    assert not record.signed_in
+    assert record.restore == PREVIOUS
+    assert record.delete_document
+    assert record.cleanup_pending
+    assert READ_ID not in (tmp_path / "session.json").read_text(encoding="utf-8")
+
+
+def test_write_session_saved_cleanup_is_kept(tmp_path: Path) -> None:
+    save_cleanup(tmp_path, AccountCleanup(orphan_visible_at=0.0))
+
+    write_session(tmp_path, signed_in=True)
+
+    record = read_session(tmp_path)
+    assert record is not None
+    assert record.signed_in
+    assert record.delete_document
+    assert record.restore is None
+
+
+def test_save_cleanup_unwritable_root_returns_false(tmp_path: Path) -> None:
+    blocker: Path = tmp_path / "file"
+    blocker.write_text("x", encoding="utf-8")
+
+    assert not save_cleanup(blocker, AccountCleanup(orphan_visible_at=0.0))
+
+
+def test_load_cleanup_saved_document_is_looked_up_by_title_at_once(tmp_path: Path) -> None:
+    save_cleanup(tmp_path, AccountCleanup(restore=PREVIOUS, read_ids=[READ_ID]))
+
+    cleanup = load_cleanup(tmp_path)
+
+    assert cleanup.restore == PREVIOUS
+    assert cleanup.read_ids == []
+    assert cleanup.orphan_visible_at is not None
+    assert cleanup.orphan_visible_at <= time.monotonic()
+    assert cleanup.pending == ("restore_settings", "delete_orphan")
+
+
+def test_load_cleanup_without_session_returns_nothing_pending(tmp_path: Path) -> None:
+    assert load_cleanup(tmp_path).pending == ()
+
+
+def _signed_in_page(site: FakeSite) -> FakePage:
+    page = FakePage(site)
+    asyncio.run(page.open_library())
+    return page
+
+
+def test_clean_account_without_token_keeps_steps_and_warns(tmp_path: Path) -> None:
+    cleanup = AccountCleanup(restore=PREVIOUS, read_ids=[READ_ID])
+    captured: list[str] = []
+    handler_id: int = loguru_logger.add(lambda message: captured.append(str(message)), level="WARNING")
+
+    try:
+        asyncio.run(clean_account(cast("ReaderPage", FakePage(FakeSite())), cleanup))
+    finally:
+        loguru_logger.remove(handler_id)
+
+    assert cleanup.pending == ("restore_settings", "delete_read")
+    assert any("no account token" in message for message in captured)
+
+
+def test_clean_account_orphan_found_by_title_is_deleted() -> None:
+    site = FakeSite(reads=[READ_ID])
+    cleanup = AccountCleanup(orphan_visible_at=time.monotonic() + 100.0)
+
+    asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(site)), cleanup))
+
+    assert cleanup.pending == ()
+    assert site.deleted == [f"{READS_URL}/{READ_ID}"]
+
+
+def test_clean_account_orphan_missing_before_visible_time_stays_pending() -> None:
+    site = FakeSite()
+    cleanup = AccountCleanup(orphan_visible_at=time.monotonic() + 100.0)
+
+    asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(site)), cleanup))
+
+    assert cleanup.pending == ("delete_orphan",)
+    assert site.deleted == []
+
+
+def test_clean_account_orphan_missing_after_visible_time_is_settled() -> None:
+    site = FakeSite()
+    cleanup = AccountCleanup(orphan_visible_at=0.0)
+
+    asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(site)), cleanup))
+
+    assert cleanup.pending == ()
+    assert "list_reads" in site.events
+
+
+class _BrokenAccountPage(FakePage):
+    async def get_json(self, url: str, token: str, *, action: str) -> dict[str, object]:
+        if action == "read_account":
+            message: str = "boom"
+            raise RuntimeError(message)
+        return await super().get_json(url, token, action=action)
+
+
+def test_clean_account_step_breaking_unexpectedly_keeps_it_and_runs_next_step() -> None:
+    site = FakeSite(reads=[READ_ID])
+    page = _BrokenAccountPage(site)
+    asyncio.run(page.open_library())
+    cleanup = AccountCleanup(restore=PREVIOUS, read_ids=[READ_ID])
+
+    asyncio.run(clean_account(cast("ReaderPage", page), cleanup))
+
+    assert cleanup.pending == ("restore_settings",)
+    assert site.deleted == [f"{READS_URL}/{READ_ID}"]
+
+
+def test_sign_in_signed_in_runs_saved_cleanup(tmp_path: Path, fake_chrome: type[_SignInSession]) -> None:
+    save_cleanup(tmp_path, AccountCleanup(restore=PREVIOUS, read_ids=[READ_ID]))
+    fake_chrome.site = FakeSite(reads=[READ_ID], account={"default_voice_id": FRONCZEWSKI_ID})
+
+    assert asyncio.run(sign_in(tmp_path)) is SignInOutcome.SIGNED_IN
+
+    record = read_session(tmp_path)
+    assert record is not None
+    assert not record.cleanup_pending
+    assert fake_chrome.site.deleted == [f"{READS_URL}/{READ_ID}"]
+    assert fake_chrome.site.account == {"default_voice_id": "previous-voice", "playback_speed_rate": 1.5}
+
+
+def test_sign_in_cleanup_failing_keeps_it_saved(tmp_path: Path, fake_chrome: type[_SignInSession]) -> None:
+    save_cleanup(tmp_path, AccountCleanup(read_ids=[READ_ID]))
+    fake_chrome.site = FakeSite(reads=[READ_ID], failing={"list_reads"})
+
+    assert asyncio.run(sign_in(tmp_path)) is SignInOutcome.SIGNED_IN
+
+    record = read_session(tmp_path)
+    assert record is not None
+    assert record.signed_in
+    assert record.delete_document
+
+
+def _reader(page: FakePlaywrightPage) -> ReaderPage:
+    return ReaderPage(cast("Page", page))
+
+
+def _upload(page: FakePlaywrightPage, tmp_path: Path, cleanup: AccountCleanup) -> tuple[UploadedRead, list[str]]:
+    clicks_at_save: list[str] = []
+    document: Path = tmp_path / "anishift.txt"
+    document.write_text("Tekst.\n", encoding="utf-8")
+    uploaded = asyncio.run(_reader(page).upload(document, cleanup, lambda: clicks_at_save.extend(page.clicks)))
+    return uploaded, clicks_at_save
+
+
+def test_reader_page_upload_reply_returns_read_and_registers_it_after_saving(tmp_path: Path) -> None:
+    page = FakePlaywrightPage()
+    page.add_reply = FakeResponse(200, {"read_id": READ_ID, "char_count": 42})
+    cleanup = AccountCleanup()
+
+    uploaded, clicks_at_save = _upload(page, tmp_path, cleanup)
+
+    assert (uploaded.read_id, uploaded.char_count, uploaded.token) == (READ_ID, 42, TOKEN)
+    assert cleanup.read_ids == [READ_ID]
+    assert cleanup.orphan_visible_at is None
+    assert clicks_at_save == ["Import"]
+    assert page.clicks == ["Import", "Upload"]
+    assert page.files == [tmp_path / "anishift.txt"]
+
+
+def test_reader_page_upload_reply_keeps_earlier_orphan_pending(tmp_path: Path) -> None:
+    page = FakePlaywrightPage()
+    page.add_reply = FakeResponse(200, {"read_id": READ_ID, "char_count": 42})
+    cleanup = AccountCleanup(orphan_visible_at=5.0)
+
+    _upload(page, tmp_path, cleanup)
+
+    assert cleanup.read_ids == [READ_ID]
+    assert cleanup.orphan_visible_at == 5.0
+
+
+@pytest.mark.parametrize(
+    ("body", "authorization"),
+    [
+        ({"read_id": READ_ID}, TOKEN),
+        ({"read_id": READ_ID, "char_count": 0}, TOKEN),
+        ({"read_id": READ_ID, "char_count": 5}, ""),
+    ],
+)
+def test_reader_page_upload_invalid_reply_raises_after_registering_read(
+    tmp_path: Path,
+    body: dict[str, object],
+    authorization: str,
+) -> None:
+    page = FakePlaywrightPage()
+    page.add_reply = FakeResponse(200, body, authorization=authorization)
+    cleanup = AccountCleanup()
+
+    with pytest.raises(TtsProviderUnavailableError):
+        _upload(page, tmp_path, cleanup)
+
+    assert cleanup.read_ids == [READ_ID]
+    assert cleanup.orphan_visible_at is None
+
+
+@pytest.mark.parametrize("reply", [FakeResponse(200, text="{oops"), FakeResponse(200, {"char_count": 5})])
+def test_reader_page_upload_reply_without_read_id_raises_and_keeps_orphan(tmp_path: Path, reply: FakeResponse) -> None:
+    page = FakePlaywrightPage()
+    page.add_reply = reply
+    cleanup = AccountCleanup()
+
+    with pytest.raises(TtsProviderUnavailableError) as error:
+        _upload(page, tmp_path, cleanup)
+
+    assert error.value.__cause__ is None
+    assert cleanup.read_ids == []
+    assert cleanup.orphan_visible_at is not None
+    assert cleanup.orphan_visible_at <= time.monotonic()
+
+
+def test_reader_page_upload_refused_reply_raises_typed_error_without_orphan(tmp_path: Path) -> None:
+    page = FakePlaywrightPage()
+    page.add_reply = FakeResponse(402, {})
+    cleanup = AccountCleanup()
+
+    with pytest.raises(TtsQuotaError):
+        _upload(page, tmp_path, cleanup)
+
+    assert cleanup.pending == ()
+
+
+@pytest.mark.parametrize(
+    ("reply", "error_type"),
+    [
+        (FakeResponse(200, text="not json"), TtsProviderUnavailableError),
+        (FakeResponse(200, [1, 2]), TtsProviderUnavailableError),
+        (FakeResponse(401, {}), TtsAuthError),
+    ],
+)
+def test_reader_page_get_json_bad_reply_raises_typed_error(reply: FakeResponse, error_type: type[TtsError]) -> None:
+    page = FakePlaywrightPage()
+    page.replies[("GET", READS_URL)] = reply
+
+    with pytest.raises(error_type) as error:
+        asyncio.run(_reader(page).get_json(READS_URL, TOKEN, action="list_reads"))
+
+    assert error.value.__cause__ is None
+
+
+def test_reader_page_get_json_object_returns_it() -> None:
+    page = FakePlaywrightPage()
+    page.replies[("GET", READS_URL)] = FakeResponse(200, {"reads": []})
+
+    assert asyncio.run(_reader(page).get_json(READS_URL, TOKEN, action="list_reads")) == {"reads": []}
+
+
+@pytest.mark.parametrize("status", [200, 404])
+def test_reader_page_delete_done_or_gone_succeeds(status: int) -> None:
+    page = FakePlaywrightPage()
+    page.replies[("DELETE", f"{READS_URL}/{READ_ID}")] = FakeResponse(status, {})
+
+    asyncio.run(_reader(page).delete(f"{READS_URL}/{READ_ID}", TOKEN, action="delete_read"))
+
+    assert page.calls == [("DELETE", f"{READS_URL}/{READ_ID}")]
+
+
+def test_reader_page_delete_server_error_raises_unavailable() -> None:
+    page = FakePlaywrightPage()
+    page.replies[("DELETE", f"{READS_URL}/{READ_ID}")] = FakeResponse(503, {})
+
+    with pytest.raises(TtsProviderUnavailableError):
+        asyncio.run(_reader(page).delete(f"{READS_URL}/{READ_ID}", TOKEN, action="delete_read"))
+
+
+def test_reader_page_post_json_sends_data_and_maps_refusal() -> None:
+    page = FakePlaywrightPage()
+    page.replies[("POST", "https://api.elevenlabs.io/v1/reader/user_config")] = FakeResponse(403, {})
+
+    with pytest.raises(TtsAuthError):
+        asyncio.run(
+            _reader(page).post_json(
+                "https://api.elevenlabs.io/v1/reader/user_config", TOKEN, {"theme": "dark"}, action="set_account"
+            )
+        )
+
+    assert page.posted == [{"theme": "dark"}]
+
+
+def test_clean_account_listing_without_reads_keeps_orphan() -> None:
+    page = FakePlaywrightPage()
+    page.replies[("GET", READS_URL)] = FakeResponse(200, {"items": []})
+    reader = _reader(page)
+    page.emit("request", FakeRequest(READS_URL, "GET", {"authorization": TOKEN}))
+    cleanup = AccountCleanup(orphan_visible_at=0.0)
+
+    asyncio.run(clean_account(reader, cleanup))
+
+    assert cleanup.pending == ("delete_orphan",)
+
+
+def test_clean_account_listing_with_titled_reads_deletes_only_them() -> None:
+    page = FakePlaywrightPage()
+    reads: list[object] = [
+        {"read_id": READ_ID, "title": "anishift"},
+        {"read_id": "other", "title": "Książka"},
+        {"read_id": "second", "title": "anishift.txt"},
+        "junk",
+    ]
+    page.replies[("GET", READS_URL)] = FakeResponse(200, {"reads": reads})
+    reader = _reader(page)
+    page.emit("request", FakeRequest(READS_URL, "GET", {"authorization": TOKEN}))
+    cleanup = AccountCleanup(orphan_visible_at=0.0)
+
+    asyncio.run(clean_account(reader, cleanup))
+
+    assert cleanup.pending == ()
+    assert [call for call in page.calls if call[0] == "DELETE"] == [
+        ("DELETE", f"{READS_URL}/{READ_ID}"),
+        ("DELETE", f"{READS_URL}/second"),
+    ]
+
+
+def test_reader_page_token_is_taken_only_from_api_requests() -> None:
+    page = FakePlaywrightPage()
+    reader = _reader(page)
+
+    page.emit("request", FakeRequest("https://elevenreader.io/app.js", "GET", {"authorization": "page"}))
+    assert reader.token is None
+    page.emit("request", FakeRequest(READS_URL, "GET", {"authorization": TOKEN}))
+
+    assert reader.token == TOKEN
+    assert page.timeout_ms == 120_000
+
+
+def _library_page(scenario: str) -> FakePlaywrightPage:
+    page = FakePlaywrightPage(visible=())
+    if scenario == "goto_fails":
+        page.goto_error = PlaywrightError("net::ERR")
+    elif scenario == "server_error":
+        page.goto_reply = FakeResponse(503)
+    elif scenario == "import":
+        page.visible = {"Import"}
+    elif scenario == "sign_in_button":
+        page.visible = {SIGN_IN_BUTTON}
+    elif scenario == "sign_in_address":
+        page.url = "https://elevenreader.io/sign-in"
+    elif scenario == "browser_broke":
+        page.wait_error = PlaywrightError("Target closed")
+    return page
+
+
+@pytest.mark.parametrize(
+    ("scenario", "state"),
+    [
+        ("goto_fails", LibraryState.UNAVAILABLE),
+        ("server_error", LibraryState.UNAVAILABLE),
+        ("import", LibraryState.READY),
+        ("sign_in_button", LibraryState.SIGNED_OUT),
+        ("sign_in_address", LibraryState.SIGNED_OUT),
+        ("nothing", LibraryState.UNAVAILABLE),
+        ("browser_broke", LibraryState.UNAVAILABLE),
+    ],
+)
+def test_reader_page_open_library_scenario_returns_state(scenario: str, state: LibraryState) -> None:
+    page = _library_page(scenario)
+
+    assert asyncio.run(_reader(page).open_library()) is state
+
+
+def test_reader_page_check_page_speed_injects_missing_and_retunes_off_speed_frames() -> None:
+    missing = FakeFrame(None)
+    slow = FakeFrame({"target": 64.0, "rates": [1.0]})
+    retargeted = FakeFrame({"target": 1.0, "rates": []})
+    steady = FakeFrame({"target": 64.0, "rates": [64.0]})
+    broken = FakeFrame(error=PlaywrightError("detached"))
+    page = FakePlaywrightPage()
+    page.frames = [missing, slow, retargeted, steady, broken]
+
+    asyncio.run(_reader(page).check_page_speed(64.0))
+
+    assert "window.__anishiftSpeed = 64.0" in missing.scripts[-1]
+    assert slow.scripts[-1] == "window.__anishiftSetSpeed(64.0)"
+    assert retargeted.scripts[-1] == "window.__anishiftSetSpeed(64.0)"
+    assert len(steady.scripts) == 1
+
+
+def test_reader_page_player_state_reads_slider_or_zero() -> None:
+    page = FakePlaywrightPage()
+    reader = _reader(page)
+
+    page.player = {"value": 10, "max": 20.5}
+    assert asyncio.run(reader.player_state()) == PlayerState(value=10.0, length=20.5)
+    page.player = None
+    assert asyncio.run(reader.player_state()) == PlayerState(value=0.0, length=0.0)
+
+
+def test_reader_page_watch_stream_feeds_only_read_stream_until_unwatched() -> None:
+    page = FakePlaywrightPage()
+    reader = _reader(page)
+    recorder = StreamRecorder(io.BytesIO())
+    urls: list[str] = []
+    stream = FakeSocket(f"wss://api.elevenlabs.io/v1/reader/reads/stream/v2/{READ_ID}?voice_id={FRONCZEWSKI_ID}")
+    other = FakeSocket("wss://api.elevenlabs.io/v1/other")
+
+    reader.watch_stream(recorder, urls.append)
+    page.emit("websocket", other)
+    page.emit("websocket", stream)
+    reader.unwatch_stream()
+
+    assert urls == [stream.url]
+    assert set(stream.handlers) == {"framesent", "framereceived"}
+    assert other.handlers == {}
+    assert page.listeners["websocket"] == []
+
+
+@pytest.mark.parametrize(("visible", "clicks"), [(("Play",), ["Play"]), ((), [])])
+def test_reader_page_press_play_clicks_only_shown_button(visible: tuple[str, ...], clicks: list[str]) -> None:
+    page = FakePlaywrightPage(visible=visible)
+
+    asyncio.run(_reader(page).press_play())
+
+    assert page.clicks == clicks
+
+
+def test_reader_page_open_document_without_play_times_out() -> None:
+    page = FakePlaywrightPage(visible=())
+
+    with pytest.raises(TtsTimeoutError):
+        asyncio.run(_reader(page).open_document(READ_ID))
+
+    assert page.calls == [("GOTO", f"{LIBRARY_PAGE_URL}/{READ_ID}")]
+
+
+def test_reader_page_close_tolerates_gone_browser_and_skips_closed_tab() -> None:
+    page = FakePlaywrightPage()
+    page.close_error = PlaywrightError("Target closed")
+    reader = _reader(page)
+
+    asyncio.run(reader.close())
+    page.closed = True
+    asyncio.run(reader.close())
+
+    assert page.close_calls == 1

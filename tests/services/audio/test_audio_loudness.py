@@ -31,6 +31,8 @@ pytestmark = [
 ]
 
 _TRUE_PEAK: re.Pattern[str] = re.compile(r"True peak:\s+Peak:\s+(\S+)\s+dBFS")
+_LIMITER_CEILING_DBTP: float = -1.0
+_TRUE_PEAK_TOLERANCE_DB: float = 0.1
 
 
 class _MeasuringRunner:
@@ -192,4 +194,4 @@ def test_audio_service_loud_narrator_mix_stays_below_limiter_ceiling(tmp_path: P
 
     assert result.output_path is not None
     assert len(runner.operations("measure_loudness")) == 2
-    assert _true_peak_dbtp(result.output_path) <= -0.9
+    assert _true_peak_dbtp(result.output_path) <= _LIMITER_CEILING_DBTP + _TRUE_PEAK_TOLERANCE_DB

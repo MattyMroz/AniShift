@@ -50,14 +50,6 @@ class SignInOutcome(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class SessionRecord:
-    """Last observed sign-in state, without any secret."""
-
-    signed_in: bool
-    checked_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
 class AccountSettings:
     """Default voice and playback speed of the account; None marks a field the account did not report."""
 
@@ -65,12 +57,33 @@ class AccountSettings:
     speed: float | None
 
 
+@dataclass(frozen=True, slots=True)
+class SessionRecord:
+    """Last observed sign-in state and the account cleanup still owed, without any secret or read id."""
+
+    signed_in: bool
+    checked_at: datetime
+    restore: AccountSettings | None = None
+    delete_document: bool = False
+
+    @property
+    def cleanup_pending(self) -> bool:
+        """Whether the account may still hold an uploaded document or changed settings."""
+        return self.restore is not None or self.delete_document
+
+
 @dataclass(slots=True)
 class AccountCleanup:
-    """Account changes still to undo: settings to restore and an uploaded read to delete."""
+    """Account changes to undo: settings, known reads and an upload of unknown id listed by ``orphan_visible_at``."""
 
     restore: AccountSettings | None = None
-    read_id: str | None = field(default=None, repr=False)
+    read_ids: list[str] = field(default_factory=list, repr=False)
+    orphan_visible_at: float | None = None
+
+    @property
+    def has_document(self) -> bool:
+        """Whether an uploaded document may still be in the library."""
+        return bool(self.read_ids) or self.orphan_visible_at is not None
 
     @property
     def pending(self) -> tuple[str, ...]:
@@ -78,8 +91,10 @@ class AccountCleanup:
         kinds: list[str] = []
         if self.restore is not None:
             kinds.append("restore_settings")
-        if self.read_id is not None:
+        if self.read_ids:
             kinds.append("delete_read")
+        if self.orphan_visible_at is not None:
+            kinds.append("delete_orphan")
         return tuple(kinds)
 
 

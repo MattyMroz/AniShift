@@ -17,6 +17,7 @@ from anishift.config.field_catalog import (
     setting_catalog,
 )
 from anishift.config.user_settings import CustomVoiceSetting, UserSettings
+from anishift.services.tts.engines.elevenreader.types import AccountSettings
 
 
 class FakeSettingsService:
@@ -322,3 +323,71 @@ def test_sign_in_action_signed_in_refreshes_session_row(
     _sign_in(panel)
 
     assert _row(panel, "elevenreader-session").startswith("zalogowano · ")
+
+
+def _owed_session(*, restore: bool, document: bool) -> SessionRecord:
+    return SessionRecord(
+        signed_in=True,
+        checked_at=datetime(2026, 10, 30, 13, 3, tzinfo=UTC),
+        restore=AccountSettings(voice_id="previous-voice", speed=1.5) if restore else None,
+        delete_document=document,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("restore", "document", "label"),
+    [
+        (True, True, "Na koncie mógł zostać dokument „anishift” i zmieniony głos"),
+        (False, True, "Na koncie mógł zostać dokument „anishift”"),
+        (True, False, "Na koncie mógł zostać zmieniony głos"),
+    ],
+)
+def test_tts_items_elevenreader_owed_cleanup_shows_row_with_repair_action(
+    panel: SettingsController,
+    service: FakeSettingsService,
+    restore: bool,
+    document: bool,
+    label: str,
+) -> None:
+    service.settings = UserSettings(tts_engine="elevenreader")
+    service.session = _owed_session(restore=restore, document=document)
+
+    _activate(panel, "category:tts")
+
+    keys: tuple[str, ...] = _keys(panel)
+    row = next(item for item in panel._items if item.key == "elevenreader-cleanup")
+    assert keys.index("elevenreader-session") < keys.index("elevenreader-cleanup") < keys.index("elevenreader-sign-in")
+    assert (row.label, row.current, row.section) == (label, "napraw: Zaloguj / sprawdź sesję", "SESJA")
+
+
+@pytest.mark.unit
+def test_tts_items_elevenreader_nothing_owed_hides_cleanup_row(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    service.settings = UserSettings(tts_engine="elevenreader")
+    service.session = _owed_session(restore=False, document=False)
+
+    _activate(panel, "category:tts")
+
+    assert "elevenreader-cleanup" not in _keys(panel)
+
+
+@pytest.mark.unit
+def test_cleanup_row_enter_runs_sign_in_and_hides_row_once_cleaned(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    service.settings = UserSettings(tts_engine="elevenreader")
+    service.session = _owed_session(restore=True, document=True)
+    _activate(panel, "category:tts")
+
+    _activate(panel, "elevenreader-cleanup")
+    for worker in threading.enumerate():
+        if worker.name == "anishift-elevenreader-sign-in":
+            worker.join(timeout=5.0)
+
+    assert panel._feedback is not None
+    assert panel._feedback.text == "✓ Zalogowano"
+    assert "elevenreader-cleanup" not in _keys(panel)

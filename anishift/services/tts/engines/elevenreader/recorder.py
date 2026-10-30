@@ -39,6 +39,7 @@ class StreamRecorder:
         self._expect_anchored: bool = False
         self._listening_speed: float | None = None
         self._stopped: bool = False
+        self._write_error: OSError | None = None
 
     @property
     def audio_bytes(self) -> int:
@@ -54,6 +55,11 @@ class StreamRecorder:
     def listening_speed(self) -> float | None:
         """Return the reading speed the page last streamed at, or None before the first frame sent."""
         return self._listening_speed
+
+    @property
+    def write_error(self) -> OSError | None:
+        """Return the error that stopped writing the recording, or None while writing works."""
+        return self._write_error
 
     @property
     def chunks(self) -> tuple[AlignmentChunk, ...]:
@@ -105,8 +111,13 @@ class StreamRecorder:
             if repeated:
                 chunk, alignment = _trim_chunk(chunk, alignment, repeated)
                 logger.debug("ElevenReader chunk trimmed after reconnect", chars=repeated)
-        self._output.write(chunk)
-        self._output.flush()
+        try:
+            self._output.write(chunk)
+            self._output.flush()
+        except OSError as error:
+            self._write_error, self._stopped = error, True
+            logger.warning("ElevenReader recording could not be written", error_class=type(error).__name__)
+            return
         self._audio_bytes += len(chunk)
         if alignment is not None:
             self._keep_alignment(alignment)
