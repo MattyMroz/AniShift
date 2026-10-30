@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -16,13 +16,18 @@ __all__ = [
     "AvailabilitySource",
     "AvailabilityStatus",
     "ClipExpectation",
+    "ClipSpan",
     "ClipValidation",
+    "DocumentPart",
+    "DocumentSynthesisRequest",
     "EngineAvailability",
     "EngineCapabilities",
     "EngineClipResult",
+    "EngineDocumentResult",
     "EngineLocality",
     "EngineOptionValue",
     "EngineOptions",
+    "PartTiming",
     "ProcessArchitecture",
     "SpeechBatch",
     "SpeechBatchProgress",
@@ -34,6 +39,7 @@ __all__ = [
     "SpeechRequest",
     "SpeechRequestProgress",
     "SpeechRetryProgress",
+    "SplitResult",
     "SynthesisRequest",
     "SynthesisStatus",
     "SynthesizedRequest",
@@ -231,6 +237,7 @@ class EngineCapabilities:
     max_text_chars: int | None
     max_text_bytes: int | None
     availability_probe: AvailabilityProbeKind
+    max_document_chars: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,6 +291,82 @@ class EngineClipResult:
     provider_model_id: str
     voice_id: str
     request_time_ms: float
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentPart:
+    """One speech request read as an ordered part of a provider document."""
+
+    request_id: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentSynthesisRequest:
+    """Validated document passed from the TTS scheduler to a document engine."""
+
+    request_id: str
+    parts: tuple[DocumentPart, ...]
+    voice_id: str
+    provider_model_id: str
+    options: EngineOptions
+    recording: Path
+    deadline_s: float
+    progress: Callable[[int, int], Awaitable[None]] | None = field(default=None, compare=False)
+
+    def __post_init__(self) -> None:
+        """Reject a document without parts."""
+        if not self.parts:
+            message: str = "Document synthesis request needs at least one part"
+            raise ValueError(message)
+
+
+@dataclass(frozen=True, slots=True)
+class PartTiming:
+    """Server-time span of one document part on the recording timeline."""
+
+    request_id: str
+    start_ms: float
+    end_ms: float
+
+    def __post_init__(self) -> None:
+        """Reject an empty or reversed span."""
+        if self.end_ms <= self.start_ms:
+            message: str = "Document part timing must end after it starts"
+            raise ValueError(message)
+
+
+@dataclass(frozen=True, slots=True)
+class EngineDocumentResult:
+    """Provider-native recording and part timings produced by one document attempt."""
+
+    request_id: str
+    recording: Path
+    format: AudioFormat
+    engine_id: str
+    provider_model_id: str
+    voice_id: str
+    request_time_ms: float
+    parts: tuple[PartTiming, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ClipSpan:
+    """One recording span that a clip splitter writes to its destination."""
+
+    request_id: str
+    start_ms: float
+    end_ms: float
+    open_end: bool
+    destination: Path
+
+
+@dataclass(frozen=True, slots=True)
+class SplitResult:
+    """Request ids written by a clip splitter and its uncertain boundary count."""
+
+    written: tuple[str, ...]
+    uncertain_boundaries: int
 
 
 @dataclass(frozen=True, slots=True)

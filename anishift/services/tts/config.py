@@ -41,6 +41,7 @@ class TtsConfig:
     elevenbytes_vpn_enabled: bool = True
     elevenlabs_api_key: str = field(default="", repr=False)
     metadata_cache_root: Path | None = None
+    elevenreader_profile_root: Path | None = None
 
     def __post_init__(self) -> None:
         """Validate shared constraints and freeze provider-specific options."""

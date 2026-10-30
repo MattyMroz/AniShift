@@ -19,9 +19,11 @@ from anishift.services.tts.errors import (
     TtsClipValidationError,
     TtsConfigError,
     TtsError,
+    TtsInputError,
     TtsUnsupportedError,
 )
 from anishift.services.tts.fingerprint import SynthesisIdentity
+from anishift.services.tts.protocols import DocumentTtsEngine
 from anishift.services.tts.resume import (
     CachedTtsClip,
     TtsResumeRepository,
@@ -30,6 +32,9 @@ from anishift.services.tts.resume import (
 from anishift.services.tts.scheduler import ScheduledSynthesis, TtsScheduler
 from anishift.services.tts.types import (
     ClipExpectation,
+    ClipSpan,
+    DocumentPart,
+    DocumentSynthesisRequest,
     SpeechBatch,
     SpeechBatchProgress,
     SpeechBatchResult,
@@ -44,6 +49,7 @@ from anishift.services.tts.types import (
     SynthesizedRequest,
 )
 from anishift.services.tts.validation import is_speech_text, validate_speech_batch
+from anishift.text.boundaries import ends_sentence
 from anishift.utils.logger import get_logger
 from anishift.utils.timer import Timer
 
@@ -51,13 +57,15 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from anishift.services.tts.config import TtsConfig
+    from anishift.services.tts.fingerprint import SynthesisProfile
     from anishift.services.tts.protocols import (
         ClipAssembler,
+        ClipSplitter,
         ClipValidator,
         TtsEngine,
         TtsProgressSink,
     )
-    from anishift.services.tts.types import EngineClipResult
+    from anishift.services.tts.types import AudioFormat, EngineClipResult, EngineDocumentResult, SplitResult
 
 logger = get_logger(__name__)
 
@@ -200,6 +208,241 @@ class _ProviderAttempt:
         return result
 
 
+@dataclass(frozen=True, slots=True)
+class _DocumentLine:
+    index: int
+    request: SpeechRequest
+    identity: SynthesisIdentity
+
+
+class _DocumentProgress:
+    """Report document-path progress in completion order for one batch."""
+
+    __slots__ = ("_batch", "_callbacks", "_cancel", "_finished", "_generation", "_required_total")
+
+    def __init__(
+        self,
+        batch: SpeechBatch,
+        callbacks: TtsProgressSink,
+        *,
+        cancel: TtsCancellation,
+        generation: int,
+    ) -> None:
+        """Store the observer and an empty completion log."""
+        self._batch: SpeechBatch = batch
+        self._callbacks: TtsProgressSink = callbacks
+        self._cancel: TtsCancellation = cancel
+        self._generation: int = generation
+        self._required_total: int = sum(is_speech_text(request.text) for request in batch.requests)
+        self._finished: list[tuple[int, _RequestExecution]] = []
+
+    @property
+    def callbacks(self) -> TtsProgressSink:
+        """Return the observer of this batch."""
+        return self._callbacks
+
+    @property
+    def executions(self) -> tuple[_RequestExecution, ...]:
+        """Return finished executions in batch order."""
+        return tuple(execution for _, execution in sorted(self._finished, key=lambda item: item[0]))
+
+    def document_observer(self, document_lines: int) -> Callable[[int, int], Awaitable[None]]:
+        """Return the engine progress callback of one document."""
+
+        async def observe(received: int, total: int) -> None:
+            await self.report_received(document_lines, received, total)
+
+        return observe
+
+    async def record(self, index: int, execution: _RequestExecution) -> None:
+        """Store one terminal execution and notify observers."""
+        self._finished.append((index, execution))
+        snapshot: tuple[_RequestExecution, ...] = tuple(item for _, item in self._finished)
+        await _notify_execution(
+            self._callbacks,
+            self._batch.scope_id,
+            execution,
+            len(snapshot),
+            len(self._batch.requests),
+            self._required_total,
+            snapshot,
+            received_required=self._committed(),
+            cancel=self._cancel,
+            generation=self._generation,
+        )
+
+    async def report_received(self, document_lines: int, received: int, total: int) -> None:
+        """Project received document characters onto the required request count."""
+        in_document: int = min(document_lines, received * document_lines // total) if total > 0 else 0
+        committed: int = self._committed()
+        await _notify_batch(
+            self._callbacks,
+            SpeechBatchProgress(
+                scope_id=self._batch.scope_id,
+                completed_requests=len(self._finished),
+                total_requests=len(self._batch.requests),
+                committed_required_requests=committed,
+                total_required_requests=self._required_total,
+                status=SpeechBatchStatus.PARTIAL,
+                received_required_requests=min(self._required_total, committed + in_document),
+            ),
+            cancel=self._cancel,
+            generation=self._generation,
+        )
+
+    def _committed(self) -> int:
+        return sum(
+            execution.result.status in {SynthesisStatus.SYNTHESIZED, SynthesisStatus.RESUME_HIT}
+            for _, execution in self._finished
+        )
+
+
+class _DocumentAttempt:
+    """Own the recordings and split clips of one document across retries."""
+
+    __slots__ = (
+        "_cancel",
+        "_config",
+        "_document_id",
+        "_engine",
+        "_expectation",
+        "_lines",
+        "_paths",
+        "_progress",
+        "_receipts",
+        "_recording",
+        "_recording_format",
+        "_repository",
+        "_splitter",
+    )
+
+    def __init__(  # noqa: PLR0913 - one attempt binds every collaborator of a document
+        self,
+        *,
+        document_id: str,
+        lines: tuple[_DocumentLine, ...],
+        engine: DocumentTtsEngine,
+        splitter: ClipSplitter,
+        repository: TtsResumeRepository,
+        config: TtsConfig,
+        cancel: TtsCancellation,
+        progress: Callable[[int, int], Awaitable[None]],
+    ) -> None:
+        """Store immutable document data and an attempt-local path registry."""
+        self._document_id: str = document_id
+        self._lines: tuple[_DocumentLine, ...] = lines
+        self._engine: DocumentTtsEngine = engine
+        self._splitter: ClipSplitter = splitter
+        self._repository: TtsResumeRepository = repository
+        self._config: TtsConfig = config
+        self._cancel: TtsCancellation = cancel
+        self._progress: Callable[[int, int], Awaitable[None]] = progress
+        self._expectation: ClipExpectation = ClipExpectation(format=engine.synthesis_profile.provider_source_format)
+        self._recording_format: AudioFormat = engine.capabilities.native_output_formats[0]
+        self._paths: set[Path] = set()
+        self._recording: Path | None = None
+        self._receipts: dict[str, ValidatedClipReceipt] = {}
+
+    @property
+    def lines(self) -> tuple[_DocumentLine, ...]:
+        """Return the document lines in reading order."""
+        return self._lines
+
+    @property
+    def expectation(self) -> ClipExpectation:
+        """Return the format expected of every split clip."""
+        return self._expectation
+
+    @property
+    def paths(self) -> tuple[Path, ...]:
+        """Return every recording and clip path reserved across retries."""
+        return tuple(self._paths)
+
+    def receipt_for(self, request_id: str) -> ValidatedClipReceipt | None:
+        """Return the accepted clip receipt of one document line."""
+        return self._receipts.get(request_id)
+
+    async def call(self, attempt: int) -> EngineDocumentResult:
+        """Record the document once into a fresh owned recording path."""
+        del attempt
+        recording: Path = self._reserve(self._recording_format)
+        self._recording = recording
+        request: DocumentSynthesisRequest = DocumentSynthesisRequest(
+            request_id=self._document_id,
+            parts=tuple(
+                DocumentPart(request_id=line.request.request_id, text=line.request.text) for line in self._lines
+            ),
+            voice_id=self._config.voice_id,
+            provider_model_id=self._config.provider_model_id,
+            options=self._config.engine_options,
+            recording=recording,
+            deadline_s=self._config.request_timeout_s,
+            progress=self._progress,
+        )
+        return await self._engine.synthesize_document(request, cancel=self._cancel)
+
+    async def accept_result(self, result: EngineDocumentResult) -> EngineDocumentResult:
+        """Split an owned recording and decode-check every clip before success."""
+        profile: SynthesisProfile = self._engine.synthesis_profile
+        if (
+            result.recording != self._recording
+            or result.request_id != self._document_id
+            or result.format is not self._recording_format
+            or result.engine_id != self._engine.engine_id
+            or result.provider_model_id != profile.provider_model_id
+            or result.voice_id != profile.resolved_voice_id
+        ):
+            raise _unowned_clip_error()
+        if tuple(timing.request_id for timing in result.parts) != tuple(
+            line.request.request_id for line in self._lines
+        ):
+            raise _document_timing_error()
+        spans: tuple[ClipSpan, ...] = tuple(
+            ClipSpan(
+                request_id=timing.request_id,
+                start_ms=timing.start_ms,
+                end_ms=timing.end_ms,
+                open_end=not ends_sentence(line.request.text),
+                destination=self._reserve(self._expectation.format),
+            )
+            for line, timing in zip(self._lines, result.parts, strict=True)
+        )
+        try:
+            split: SplitResult = await asyncio.to_thread(
+                self._splitter.split_clip,
+                result.recording,
+                spans,
+                self._expectation,
+            )
+        except (OSError, RuntimeError, ValueError) as splitter_error:
+            raise _split_error() from splitter_error
+        if split.written != tuple(span.request_id for span in spans):
+            raise _split_error()
+        if split.uncertain_boundaries:
+            logger.warning(
+                "TTS document split {count} boundaries without silence",
+                count=split.uncertain_boundaries,
+                lines=len(spans),
+            )
+        receipts: dict[str, ValidatedClipReceipt] = {}
+        for span in spans:
+            receipt: ValidatedClipReceipt | None = await asyncio.to_thread(
+                self._repository.validate_temporary_clip,
+                span.destination,
+                self._expectation,
+            )
+            if receipt is None:
+                raise _invalid_audio_error()
+            receipts[span.request_id] = receipt
+        self._receipts = receipts
+        return result
+
+    def _reserve(self, clip_format: AudioFormat) -> Path:
+        path: Path = self._repository.temporary_clip_path(clip_format=clip_format)
+        self._paths.add(path)
+        return path
+
+
 class TtsService:
     """Thread-safe sync API sharing one loop, scheduler, circuit, and engine."""
 
@@ -216,17 +459,19 @@ class TtsService:
         "_repositories",
         "_resume_root",
         "_scheduler",
+        "_splitter",
         "_thread",
         "_validator",
     )
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the facade receives every injected collaborator
         self,
         config: TtsConfig,
         *,
         resume_root: Path,
         validator: ClipValidator,
         assembler: ClipAssembler | None = None,
+        splitter: ClipSplitter | None = None,
         engine_factory: TtsEngineFactory = create_engine,
     ) -> None:
         """Store dependencies while keeping provider construction lazy."""
@@ -234,6 +479,7 @@ class TtsService:
         self._resume_root: Path = resume_root
         self._validator: ClipValidator = validator
         self._assembler: ClipAssembler | None = assembler
+        self._splitter: ClipSplitter | None = splitter
         self._engine_factory: TtsEngineFactory = engine_factory
         self._cancel: TtsCancellation = TtsCancellation()
         self._lifecycle_lock: threading.RLock = threading.RLock()
@@ -439,6 +685,15 @@ class TtsService:
             return _batch_result_without_engine(batch, executions, self._config)
 
         engine, scheduler = await self._ensure_runtime()
+        max_document_chars: int | None = engine.capabilities.max_document_chars
+        if max_document_chars is not None:
+            return await self._run_document_batch(
+                batch,
+                _DocumentProgress(batch, callbacks, cancel=self._cancel, generation=generation),
+                engine,
+                scheduler,
+                max_document_chars=max_document_chars,
+            )
         indexed_executions: list[tuple[int, _RequestExecution]] = []
         received_required_requests: set[str] = set()
         next_index: int = 0
@@ -587,7 +842,7 @@ class TtsService:
         engine: TtsEngine = context.engine
         scheduler: TtsScheduler = context.scheduler
         provider_attempts: list[_ProviderAttempt] = []
-        indexed_outcomes: list[tuple[int, ScheduledSynthesis]] = []
+        indexed_outcomes: list[tuple[int, ScheduledSynthesis[EngineClipResult]]] = []
         next_part: int = 0
         received_parts: set[int] = set()
         response_reported: bool = False
@@ -629,6 +884,12 @@ class TtsService:
                 )
                 provider_attempts.append(provider_attempt)
 
+                async def call(
+                    attempt: int,
+                    current_attempt: _ProviderAttempt = provider_attempt,
+                ) -> EngineClipResult:
+                    return await engine.synthesize(current_attempt.request_for_attempt(attempt), cancel=self._cancel)
+
                 async def on_result_received(
                     result: EngineClipResult,
                     received_part_index: int = part_index,
@@ -636,8 +897,8 @@ class TtsService:
                     del result
                     await on_part_response(received_part_index)
 
-                outcome: ScheduledSynthesis = await scheduler.submit(
-                    provider_attempt.request_for_attempt,
+                outcome: ScheduledSynthesis[EngineClipResult] = await scheduler.submit(
+                    call,
                     batch_rank=batch.batch_rank,
                     request_rank=request.request_rank,
                     cancel=self._cancel,
@@ -664,17 +925,21 @@ class TtsService:
             asyncio.create_task(part_worker()) for _ in range(part_worker_count)
         )
         await asyncio.gather(*part_workers)
-        outcomes: tuple[ScheduledSynthesis, ...] = tuple(
+        outcomes: tuple[ScheduledSynthesis[EngineClipResult], ...] = tuple(
             outcome for _, outcome in sorted(indexed_outcomes, key=lambda item: item[0])
         )
         attempts: int = sum(outcome.attempts for outcome in outcomes)
         retries: int = sum(max(0, outcome.attempts - 1) for outcome in outcomes)
-        request_time_ms: float = sum(outcome.clip.request_time_ms for outcome in outcomes if outcome.clip is not None)
+        request_time_ms: float = sum(
+            outcome.result.request_time_ms for outcome in outcomes if outcome.result is not None
+        )
         error: TtsError | None = next(
             (outcome.error for outcome in outcomes if outcome.error is not None),
             None,
         )
-        clips: tuple[EngineClipResult, ...] = tuple(outcome.clip for outcome in outcomes if outcome.clip is not None)
+        clips: tuple[EngineClipResult, ...] = tuple(
+            outcome.result for outcome in outcomes if outcome.result is not None
+        )
         all_paths: tuple[Path, ...] = tuple(
             path for provider_attempt in provider_attempts for path in provider_attempt.paths
         )
@@ -740,30 +1005,200 @@ class TtsService:
                 request_time_ms,
             )
         _discard_paths(all_paths)
-        speech_clip = SpeechClip(
-            request_id=request.request_id,
-            path=committed.path,
-            format=committed.format,
-            sample_rate=committed.sample_rate,
-            channels=committed.channels,
-            duration_ms=committed.duration_ms,
-            engine_id=engine.engine_id,
-            provider_model_id=engine.synthesis_profile.provider_model_id,
-            voice_id=engine.synthesis_profile.resolved_voice_id,
+        return _synthesized_execution(
+            request,
+            committed,
+            engine,
             attempts=attempts,
-            request_time_ms=request_time_ms,
-            from_resume=False,
-        )
-        result = SynthesizedRequest(
-            request=request,
-            status=SynthesisStatus.SYNTHESIZED,
-            speech_clip=speech_clip,
-            error_code="",
             retries=retries,
-        )
-        return _RequestExecution(
-            result=result,
             provider_calls=attempts,
+            request_time_ms=request_time_ms,
+        )
+
+    async def _run_document_batch(
+        self,
+        batch: SpeechBatch,
+        progress: _DocumentProgress,
+        engine: TtsEngine,
+        scheduler: TtsScheduler,
+        *,
+        max_document_chars: int,
+    ) -> SpeechBatchResult:
+        document_engine: DocumentTtsEngine | None = engine if isinstance(engine, DocumentTtsEngine) else None
+        splitter: ClipSplitter | None = self._splitter
+        pending: list[_DocumentLine] = []
+        for index, request in enumerate(batch.requests):
+            prepared: _RequestExecution | _DocumentLine = await self._prepare_document_line(
+                batch,
+                index,
+                request,
+                document_engine,
+                max_document_chars=max_document_chars,
+            )
+            if isinstance(prepared, _DocumentLine):
+                pending.append(prepared)
+            else:
+                await progress.record(index, prepared)
+        if document_engine is None or splitter is None:
+            return _batch_result(batch, progress.executions, engine)
+        for number, lines in enumerate(_group_documents(pending, max_document_chars)):
+            attempt: _DocumentAttempt = _DocumentAttempt(
+                document_id=f"{batch.scope_id}:document:{number}",
+                lines=lines,
+                engine=document_engine,
+                splitter=splitter,
+                repository=self._repository(batch.scope_id),
+                config=self._config,
+                cancel=self._cancel,
+                progress=progress.document_observer(len(lines)),
+            )
+            executions: tuple[_RequestExecution, ...] = await self._synthesize_document(
+                attempt,
+                batch,
+                document_engine,
+                scheduler,
+                progress,
+            )
+            for line, execution in zip(lines, executions, strict=True):
+                await progress.record(line.index, execution)
+        await asyncio.to_thread(self._repository(batch.scope_id).flush)
+        return _batch_result(batch, progress.executions, engine)
+
+    async def _prepare_document_line(
+        self,
+        batch: SpeechBatch,
+        index: int,
+        request: SpeechRequest,
+        engine: DocumentTtsEngine | None,
+        *,
+        max_document_chars: int,
+    ) -> _RequestExecution | _DocumentLine:
+        if not is_speech_text(request.text):
+            return _skipped_execution(request)
+        if engine is None or self._splitter is None:
+            return _failed_execution(request, _document_unsupported_error(), 0, 0, 0.0)
+        chunks: tuple[str, ...] = chunk_speech_text(
+            request.text,
+            max_chars=engine.capabilities.max_text_chars,
+            max_bytes=engine.capabilities.max_text_bytes,
+        )
+        if len(chunks) != 1 or len(request.text) > max_document_chars:
+            return _failed_execution(request, _document_line_too_long_error(), 0, 0, 0.0)
+        identity: SynthesisIdentity = SynthesisIdentity(
+            scope_id=batch.scope_id,
+            request_id=request.request_id,
+            text=request.text,
+            chunks=chunks,
+            profile=engine.synthesis_profile,
+        )
+        expectation: ClipExpectation = ClipExpectation(format=engine.synthesis_profile.provider_source_format)
+        cached: CachedTtsClip | None = await asyncio.to_thread(
+            self._repository(batch.scope_id).lookup,
+            identity,
+            expectation,
+        )
+        if cached is not None:
+            return _cached_execution(request, cached, engine)
+        return _DocumentLine(index=index, request=request, identity=identity)
+
+    async def _synthesize_document(
+        self,
+        attempt: _DocumentAttempt,
+        batch: SpeechBatch,
+        engine: DocumentTtsEngine,
+        scheduler: TtsScheduler,
+        progress: _DocumentProgress,
+    ) -> tuple[_RequestExecution, ...]:
+        generation: int = self._cancel.generation
+        lines: tuple[_DocumentLine, ...] = attempt.lines
+        first: SpeechRequest = lines[0].request
+        logger.debug(
+            "TTS document started",
+            scope_id=batch.scope_id,
+            lines=len(lines),
+            chars=sum(len(line.request.text) for line in lines),
+        )
+        try:
+            outcome: ScheduledSynthesis[EngineDocumentResult] = await scheduler.submit(
+                attempt.call,
+                batch_rank=batch.batch_rank,
+                request_rank=first.request_rank,
+                cancel=self._cancel,
+                accept_result=attempt.accept_result,
+                on_retry=lambda retry_number, max_retries, delay_s, error: _notify_retry(
+                    progress.callbacks,
+                    SpeechRetryProgress(
+                        scope_id=batch.scope_id,
+                        request_id=first.request_id,
+                        retry_number=retry_number,
+                        max_retries=max_retries,
+                        delay_s=delay_s,
+                        error_code=error.context.code.value,
+                    ),
+                    cancel=self._cancel,
+                    generation=generation,
+                ),
+            )
+            executions: list[_RequestExecution] = [
+                await self._finish_document_line(
+                    line,
+                    outcome,
+                    attempt,
+                    engine,
+                    generation=generation,
+                    counts_calls=position == 0,
+                )
+                for position, line in enumerate(lines)
+            ]
+        finally:
+            _discard_paths(attempt.paths)
+        logger.debug(
+            "TTS document finished",
+            scope_id=batch.scope_id,
+            lines=len(lines),
+            attempts=outcome.attempts,
+            error_code="" if outcome.error is None else outcome.error.context.code.value,
+        )
+        return tuple(executions)
+
+    async def _finish_document_line(  # noqa: PLR0913 - one line outcome needs the shared document attempt
+        self,
+        line: _DocumentLine,
+        outcome: ScheduledSynthesis[EngineDocumentResult],
+        attempt: _DocumentAttempt,
+        engine: DocumentTtsEngine,
+        *,
+        generation: int,
+        counts_calls: bool,
+    ) -> _RequestExecution:
+        result: EngineDocumentResult | None = outcome.result
+        calls: int = outcome.attempts if counts_calls else 0
+        retries: int = max(0, outcome.attempts - 1) if counts_calls else 0
+        request_time_ms: float = result.request_time_ms if counts_calls and result is not None else 0.0
+        if outcome.error is not None or result is None:
+            error: TtsError = outcome.error or _incomplete_error()
+            return _failed_execution(line.request, error, calls, retries, request_time_ms)
+        receipt: ValidatedClipReceipt | None = attempt.receipt_for(line.request.request_id)
+        if receipt is None:
+            return _failed_execution(line.request, _invalid_audio_error(), calls, retries, request_time_ms)
+        try:
+            committed: CachedTtsClip = await asyncio.to_thread(
+                self._repository(line.identity.scope_id).commit_clip,
+                line.identity,
+                receipt.path,
+                attempt.expectation,
+                can_commit=lambda: self._cancel.can_commit(generation),
+                validation_receipt=receipt,
+            )
+        except TtsError as commit_error:
+            return _failed_execution(line.request, commit_error, calls, retries, request_time_ms)
+        return _synthesized_execution(
+            line.request,
+            committed,
+            engine,
+            attempts=outcome.attempts,
+            retries=retries,
+            provider_calls=calls,
             request_time_ms=request_time_ms,
         )
 
@@ -812,6 +1247,64 @@ def _cached_execution(
         retries=0,
     )
     return _RequestExecution(result=result, provider_calls=0, request_time_ms=0.0)
+
+
+def _synthesized_execution(  # noqa: PLR0913 - counters differ between line and document paths
+    request: SpeechRequest,
+    committed: CachedTtsClip,
+    engine: TtsEngine,
+    *,
+    attempts: int,
+    retries: int,
+    provider_calls: int,
+    request_time_ms: float,
+) -> _RequestExecution:
+    speech_clip = SpeechClip(
+        request_id=request.request_id,
+        path=committed.path,
+        format=committed.format,
+        sample_rate=committed.sample_rate,
+        channels=committed.channels,
+        duration_ms=committed.duration_ms,
+        engine_id=engine.engine_id,
+        provider_model_id=engine.synthesis_profile.provider_model_id,
+        voice_id=engine.synthesis_profile.resolved_voice_id,
+        attempts=attempts,
+        request_time_ms=request_time_ms,
+        from_resume=False,
+    )
+    result = SynthesizedRequest(
+        request=request,
+        status=SynthesisStatus.SYNTHESIZED,
+        speech_clip=speech_clip,
+        error_code="",
+        retries=retries,
+    )
+    return _RequestExecution(
+        result=result,
+        provider_calls=provider_calls,
+        request_time_ms=request_time_ms,
+    )
+
+
+def _group_documents(
+    lines: list[_DocumentLine],
+    max_chars: int,
+) -> tuple[tuple[_DocumentLine, ...], ...]:
+    documents: list[tuple[_DocumentLine, ...]] = []
+    current: list[_DocumentLine] = []
+    size: int = 0
+    for line in lines:
+        length: int = len(line.request.text)
+        if current and size + length > max_chars:
+            documents.append(tuple(current))
+            current = []
+            size = 0
+        current.append(line)
+        size += length
+    if current:
+        documents.append(tuple(current))
+    return tuple(documents)
 
 
 def _skipped_execution(request: SpeechRequest) -> _RequestExecution:
@@ -1041,6 +1534,42 @@ def _invalid_audio_error() -> TtsClipValidationError:
         code=ErrorCode.TTS_CLIP_INVALID,
         message="TTS engine returned an invalid audio clip",
         suggestion="Retry the request; the invalid provider artifact was discarded.",
+    )
+    return TtsClipValidationError(context=context)
+
+
+def _document_unsupported_error() -> TtsUnsupportedError:
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.TTS_UNSUPPORTED,
+        message="Document TTS engine requires a document contract and a clip splitter",
+        suggestion="Provide the shared audio clip splitter dependency.",
+    )
+    return TtsUnsupportedError(context=context)
+
+
+def _document_line_too_long_error() -> TtsInputError:
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.TTS_INPUT_INVALID,
+        message="TTS line does not fit one document part",
+        suggestion="Shorten the line below the engine document limit.",
+    )
+    return TtsInputError(context=context)
+
+
+def _document_timing_error() -> TtsClipValidationError:
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.TTS_CLIP_INVALID,
+        message="TTS document timings do not match its lines",
+        suggestion="Retry the document; the recording was discarded.",
+    )
+    return TtsClipValidationError(context=context)
+
+
+def _split_error() -> TtsClipValidationError:
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.TTS_CLIP_INVALID,
+        message="TTS document recording could not be split into line clips",
+        suggestion="Retry the document or inspect the shared audio clip splitter.",
     )
     return TtsClipValidationError(context=context)
 

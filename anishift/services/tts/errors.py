@@ -15,6 +15,7 @@ __all__ = [
     "TtsInputError",
     "TtsNetworkError",
     "TtsProviderUnavailableError",
+    "TtsQuotaError",
     "TtsRateLimitError",
     "TtsResumeConflictError",
     "TtsResumeError",
@@ -66,6 +67,12 @@ class TtsInputError(TtsError, FatalError):
     """Invalid text or synthesis request contract."""
 
     error_code = ErrorCode.TTS_INPUT_INVALID
+
+
+class TtsQuotaError(TtsError, FatalError):
+    """Provider account has no synthesis credits left."""
+
+    error_code = ErrorCode.TTS_QUOTA_EXHAUSTED
 
 
 class TtsUnsupportedError(TtsError, FatalError):

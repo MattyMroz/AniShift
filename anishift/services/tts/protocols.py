@@ -12,13 +12,17 @@ if TYPE_CHECKING:
     from anishift.services.tts.fingerprint import SynthesisProfile
     from anishift.services.tts.types import (
         ClipExpectation,
+        ClipSpan,
         ClipValidation,
+        DocumentSynthesisRequest,
         EngineAvailability,
         EngineCapabilities,
         EngineClipResult,
+        EngineDocumentResult,
         SpeechBatchProgress,
         SpeechRequestProgress,
         SpeechRetryProgress,
+        SplitResult,
         SynthesisRequest,
         VoiceInfo,
     )
@@ -26,7 +30,9 @@ if TYPE_CHECKING:
 __all__ = [
     "CancellationToken",
     "ClipAssembler",
+    "ClipSplitter",
     "ClipValidator",
+    "DocumentTtsEngine",
     "TtsEngine",
     "TtsProgressSink",
 ]
@@ -120,6 +126,34 @@ class TtsEngine(EngineInfo, Protocol):
 
     async def close(self) -> None:
         """Release provider resources."""
+        ...
+
+
+@runtime_checkable
+class DocumentTtsEngine(TtsEngine, Protocol):
+    """Engine that reads many speech requests as one provider document."""
+
+    async def synthesize_document(
+        self,
+        request: DocumentSynthesisRequest,
+        *,
+        cancel: CancellationToken,
+    ) -> EngineDocumentResult:
+        """Record one validated document without applying shared retry."""
+        ...
+
+
+@runtime_checkable
+class ClipSplitter(Protocol):
+    """Cut one document recording into ordered per-request clips."""
+
+    def split_clip(
+        self,
+        source: Path,
+        spans: tuple[ClipSpan, ...],
+        expectation: ClipExpectation,
+    ) -> SplitResult:
+        """Write every span destination as one clip of the expected format."""
         ...
 
 

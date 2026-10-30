@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import FrozenInstanceError, fields
+from dataclasses import FrozenInstanceError, fields, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,15 +13,21 @@ from anishift.services.tts import (
     AvailabilitySource,
     AvailabilityStatus,
     CancellationToken,
+    ClipSpan,
+    DocumentPart,
+    DocumentSynthesisRequest,
     EngineAvailability,
     EngineCapabilities,
     EngineClipResult,
+    EngineDocumentResult,
     EngineLocality,
+    PartTiming,
     SpeechBatch,
     SpeechBatchResult,
     SpeechBatchStats,
     SpeechBatchStatus,
     SpeechRequest,
+    SplitResult,
     SynthesisProfile,
     SynthesisRequest,
     TtsEngine,
@@ -206,3 +212,101 @@ def test_tts_domain_does_not_import_pipeline_or_other_domains() -> None:
             )
 
     assert violations == []
+
+
+def test_document_contract_types_have_exact_fields() -> None:
+    assert tuple(item.name for item in fields(DocumentPart)) == ("request_id", "text")
+    assert tuple(item.name for item in fields(DocumentSynthesisRequest)) == (
+        "request_id",
+        "parts",
+        "voice_id",
+        "provider_model_id",
+        "options",
+        "recording",
+        "deadline_s",
+        "progress",
+    )
+    assert tuple(item.name for item in fields(PartTiming)) == ("request_id", "start_ms", "end_ms")
+    assert tuple(item.name for item in fields(EngineDocumentResult)) == (
+        "request_id",
+        "recording",
+        "format",
+        "engine_id",
+        "provider_model_id",
+        "voice_id",
+        "request_time_ms",
+        "parts",
+    )
+    assert tuple(item.name for item in fields(ClipSpan)) == (
+        "request_id",
+        "start_ms",
+        "end_ms",
+        "open_end",
+        "destination",
+    )
+    assert tuple(item.name for item in fields(SplitResult)) == ("written", "uncertain_boundaries")
+
+
+def test_document_contract_types_are_frozen_and_slotted(tmp_path: Path) -> None:
+    values: tuple[object, ...] = (
+        DocumentPart(request_id="line-1", text="Tekst."),
+        DocumentSynthesisRequest(
+            request_id="scope:document:0",
+            parts=(DocumentPart(request_id="line-1", text="Tekst."),),
+            voice_id="voice",
+            provider_model_id="model",
+            options={},
+            recording=tmp_path / "recording.mp3",
+            deadline_s=1.0,
+        ),
+        PartTiming(request_id="line-1", start_ms=0.0, end_ms=1.0),
+        ClipSpan(request_id="line-1", start_ms=0.0, end_ms=1.0, open_end=False, destination=tmp_path / "a.wav"),
+        SplitResult(written=("line-1",), uncertain_boundaries=0),
+    )
+    attribute_name = "request_id"
+
+    for value in values:
+        assert not hasattr(value, "__dict__")
+        if hasattr(value, attribute_name):
+            with pytest.raises(FrozenInstanceError):
+                setattr(value, attribute_name, "changed")
+
+
+def test_document_request_progress_is_ignored_by_equality(tmp_path: Path) -> None:
+    async def observe(received: int, total: int) -> None:
+        del received, total
+
+    plain = DocumentSynthesisRequest(
+        request_id="scope:document:0",
+        parts=(DocumentPart(request_id="line-1", text="Tekst."),),
+        voice_id="voice",
+        provider_model_id="model",
+        options={},
+        recording=tmp_path / "recording.mp3",
+        deadline_s=1.0,
+    )
+
+    assert plain == replace(plain, progress=observe)
+
+
+def test_document_request_without_parts_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="at least one part"):
+        DocumentSynthesisRequest(
+            request_id="scope:document:0",
+            parts=(),
+            voice_id="voice",
+            provider_model_id="model",
+            options={},
+            recording=tmp_path / "recording.mp3",
+            deadline_s=1.0,
+        )
+
+
+@pytest.mark.parametrize("end_ms", [10.0, 5.0])
+def test_part_timing_without_positive_length_is_rejected(end_ms: float) -> None:
+    with pytest.raises(ValueError, match="end after it starts"):
+        PartTiming(request_id="line-1", start_ms=10.0, end_ms=end_ms)
+
+
+def test_engine_capabilities_default_to_line_engine() -> None:
+    assert FakeEngine.capabilities.max_document_chars is None
