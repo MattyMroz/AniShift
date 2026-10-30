@@ -60,8 +60,10 @@ To katalog tymczasowy sesji; faza 0 planu kopiuje dane poza niego.
   kopiowana 1:1. Uzasadnienie: `plan.md` §4.
 - **U2. Jednostką syntezy silnika jest dokument odcinka.** Domena TTS dostaje kontrakt syntezy dokumentu, a
   scheduler wykonuje dowolną próbę providera, nie tylko pojedyncze żądanie.
-- **U3. Kwestie dokumentu są osobnymi akapitami.** Serwer wstawia między nie `<break time="0.6s"/>`, co daje ciszę
-  do cięcia i znacznik podziału w czasach znaków.
+- **U3. Kwestie dokumentu są osobnymi akapitami rozdzielonymi akapitem „…”.** Serwer stawia `<break time="0.6s"/>`
+  wokół każdego akapitu, co daje znacznik podziału w czasach znaków. `<break>` wpisany w tekst dokumentu serwer
+  ignoruje, a `[pause]` lektor czyta na głos; ciszę do cięcia wydłuża dopiero osobny akapit „…”, którego lektor nie
+  czyta (wynik K1, `snap-report.md` §11–§13).
 - **U4. Klip kwestii wycina heurystyka ciszy, bez modelu mowy.** Czasy znaków serwera wyznaczają okno każdej
   granicy; cięcie wypada w środku ciszy (`plan.md` §7.4). CrisperWhisper ani żaden inny model nie wchodzi do
   AniShift.
@@ -93,11 +95,14 @@ To katalog tymczasowy sesji; faza 0 planu kopiuje dane poza niego.
   `sapi`; import rejestru i pakietu silnika nie ładuje Playwright.
 - **F2.** Silnik czyta wszystkie brakujące kwestie jednego `SpeechBatch` w najmniejszej liczbie dokumentów
   mieszczących się w limicie znaków i daje jeden zwalidowany klip na kwestię.
-- **F3.** Liczba odcinków tekstu oddzielonych `<break>` w czasach serwera musi równać się liczbie kwestii
-  dokumentu; inaczej próba kończy się błędem i jest ponawiana.
+- **F3.** Odcinki tekstu serwera między ciągami tagów `<break>` (sąsiednie tagi to jedna granica), bez odcinków
+  pustych i równych „…”, muszą liczbą i treścią zgadzać się z kwestiami dokumentu; inaczej próba kończy się błędem i
+  jest ponawiana.
 - **F4.** Ponowne uruchomienie odcinka wykorzystuje zatwierdzone klipy i czyta wyłącznie brakujące kwestie.
 - **F5.** Tekst kwestii trafia do dokumentu bez zmiany słów; nawiasy kwadratowe zamieniane są na okrągłe, a białe
-  znaki wewnątrz kwestii na pojedyncze spacje.
+  znaki wewnątrz kwestii na pojedyncze spacje. Dokument ma postać `"\n\n…\n\n".join(kwestie) + "\n"`, bez `<break>`
+  i bez `[pause]`; wielokropek na końcu kwestii zostaje w jej tekście. Limit znaków dokumentu dotyczy całego tego
+  tekstu razem z separatorami.
 - **F6.** Czytane szyldy idą tą samą drogą, jako osobny dokument tej samej grupy.
 - **F7.** Silnik nagrywa przy prędkości czytania 1x i przerywa próbę, gdy strumień zgłosi inną prędkość (model v2).
 - **F8.** Silnik odmawia zatwierdzenia nagrania, gdy adres strumienia nie zawiera identyfikatora wybranego głosu.

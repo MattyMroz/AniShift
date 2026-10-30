@@ -41,7 +41,7 @@ Operacje: **DODAĆ**, **ZMIENIĆ**, **USUNĄĆ**, **BEZ ZMIAN** (czytać, nie ru
 
 | Ścieżka | Operacja | Zmiana | Etap |
 |---|---|---|---|
-| `anishift/utils/mp3_frames.py` | DODAĆ | nagłówki ramek, długość, cięcie przed czasem, miejsca sklejeń, `to_decoded` | E1 |
+| `anishift/utils/mp3_frames.py` | DODAĆ | nagłówki ramek z `FrameHeader.duration_ms`, długość, cięcie przed czasem, miejsca sklejeń zgodne z dekoderem FFmpeg, `to_decoded(server_ms, splices, frame_ms)` (długość ramki z pierwszej ramki nagrania, bez stałej) | E1 |
 | `anishift/utils/_portable.py`, `anishift/utils/AGENTS.md` | ZMIENIĆ | wpis `mp3_frames.py` | E1 |
 | `anishift/text/boundaries.py`, `anishift/text/AGENTS.md` | ZMIENIĆ | `ends_sentence` | E8 |
 
@@ -60,16 +60,17 @@ Operacje: **DODAĆ**, **ZMIENIĆ**, **USUNĄĆ**, **BEZ ZMIAN** (czytać, nie ru
 | `anishift/services/audio/config.py` | ZMIENIĆ | `narrator_mix_base_gain_db` → `narrator_over_source_lu = 7.5` | E3 |
 | `anishift/services/audio/segmentation.py` | DODAĆ | reguła cięcia (`cut_points`) | E4 |
 | `anishift/services/audio/AGENTS.md` | ZMIENIĆ | trim, pomiar głośności, limiter, cięcie | E2–E4 |
-| `anishift/services/audio/{timeline,channels,resume,transcode,types}.py` | BEZ ZMIAN | — | — |
+| `anishift/services/audio/{timeline,types}.py` | ZMIENIĆ | martwa ścieżka `PcmStorage.WAV` (`_copy_wav`) usunięta po zniknięciu `_neutral_wav` | E2 |
+| `anishift/services/audio/{channels,resume,transcode}.py` | BEZ ZMIAN | — | — |
 
 ### Domena TTS
 
 | Ścieżka | Operacja | Zmiana | Etap |
 |---|---|---|---|
 | `anishift/services/tts/types.py` | ZMIENIĆ | `max_document_chars`; `DocumentPart`, `DocumentSynthesisRequest`, `PartTiming`, `EngineDocumentResult`, `ClipSpan`, `SplitResult` | E5 |
-| `anishift/services/tts/protocols.py` | ZMIENIĆ | `DocumentTtsEngine`, `ClipSplitter` | E5 |
-| `anishift/services/tts/scheduler.py` | ZMIENIĆ | `submit(call=…)`, `ScheduledSynthesis.result`, `TtsQuotaError` w circuit | E5 |
-| `anishift/services/tts/service.py` | ZMIENIĆ | `_run_document_batch`, parametr `splitter` | E5 |
+| `anishift/services/tts/protocols.py` | ZMIENIĆ | `DocumentTtsEngine` (`document_chars`, `synthesize_document`), `ClipSplitter` | E5 |
+| `anishift/services/tts/scheduler.py` | ZMIENIĆ | `submit(call=…)`, `ScheduledSynthesis.result`, `TtsQuotaError` w circuit, konstruktor z `locality` zamiast silnika | E5 |
+| `anishift/services/tts/service.py` | ZMIENIĆ | `_run_document_batch` (grupowanie przez `engine.document_chars`, sprzątanie poprzedniej próby), parametr `splitter` | E5 |
 | `anishift/services/tts/errors.py`, `anishift/errors.py` | ZMIENIĆ | `TtsQuotaError`, `ErrorCode.TTS_QUOTA_EXHAUSTED` | E5 |
 | `anishift/services/tts/config.py` | ZMIENIĆ | `elevenreader_profile_root` | E5 |
 | `anishift/services/tts/__init__.py`, `AGENTS.md` | ZMIENIĆ | eksport, kontrakt dokumentu | E5 |
@@ -127,7 +128,7 @@ Operacje: **DODAĆ**, **ZMIENIĆ**, **USUNĄĆ**, **BEZ ZMIAN** (czytać, nie ru
 | `tests/services/tts/test_tts_scheduler.py`, `test_tts_service.py`, `test_tts_contract.py` | ZMIENIĆ | E5 |
 | `tests/services/tts/test_tts_document_service.py` | DODAĆ | E5 |
 | `tests/platform/test_installed.py`, `test_private_dir.py` | DODAĆ | E6 |
-| `tests/services/tts/test_tts_elevenreader_{config,document,recorder,lines,errors,engine,network}.py`, `elevenreader_fakes.py` | DODAĆ | E7 |
+| `tests/services/tts/test_tts_elevenreader_{config,api_backend,recorder,service,service_data,network}.py`, `elevenreader_fakes.py` | DODAĆ | E7 |
 | `tests/services/tts/test_tts_registry.py` | ZMIENIĆ | E7 |
 | `tests/text/test_boundaries.py`, `tests/application/test_tts_handler.py` | ZMIENIĆ | E8 |
 | `tests/application/test_tts_clips_split.py` | DODAĆ | E9 |
@@ -137,19 +138,18 @@ Operacje: **DODAĆ**, **ZMIENIĆ**, **USUNĄĆ**, **BEZ ZMIAN** (czytać, nie ru
 
 ```text
 anishift/services/tts/engines/elevenreader/
-├── AGENTS.md      # NEW
-├── __init__.py    # NEW  bez importu playwright
-├── constants.py   # NEW  URL-e, endpointy, stałe EDP, skrypty JS, VOICES
-├── config.py      # NEW  ElevenReaderConfig.from_tts_config, resolve_voice
-├── document.py    # NEW  neutralize, document_text, document_chars
-├── recorder.py    # NEW  ramki WS → MP3 + czasy znaków
-├── lines.py       # NEW  czasy znaków → PartTiming po tagach <break>
-├── browser.py     # NEW  Chrome + CDP, blokada i ACL profilu
-├── account.py     # NEW  user_config (głos, prędkość, przywrócenie), DELETE dokumentu, zaległe sprzątanie
-├── page.py        # NEW  biblioteka, upload, dokument, Play, stan odtwarzacza, prędkość strony
-├── session.py     # NEW  session.json, require_signed_in, sign_in
-├── errors.py      # NEW  mapowanie statusów HTTP i błędów Playwright
-└── service.py     # NEW  ElevenReaderTtsEngine
+├── AGENTS.md        # NEW
+├── __init__.py      # NEW  bez importu playwright
+├── constants.py     # NEW  URL-e, endpointy, stałe EDP, skrypty JS, VOICES
+├── config.py        # NEW  ElevenReaderConfig.from_tts_config, resolve_voice, find_chrome, ścieżki profilu
+├── types.py         # NEW  głos, stany biblioteki i logowania, SessionRecord, AccountCleanup, UploadedRead,
+│                    #      PlayerState, AlignmentChunk
+├── api_backend.py   # NEW  karta Playwright (leniwie): mapowanie statusów HTTP i błędów Playwright, ReaderPage
+│                    #      (biblioteka, upload, dokument, Play, odtwarzacz, prędkość strony), user_config i
+│                    #      DELETE dokumentu, session.json, require_signed_in, sign_in
+├── browser.py       # NEW  specyficzny: Chrome + CDP, blokada i ACL profilu, ChromeMissingError, ChromeBusyError
+├── recorder.py      # NEW  specyficzny: ramki WS → MP3 + czasy znaków
+└── service.py       # NEW  ElevenReaderTtsEngine, document_text, part_spans (czasy kwestii po tagach <break>)
 ```
 
 Runtime (gitignored):
@@ -157,7 +157,7 @@ Runtime (gitignored):
 ```text
 config/elevenreader/        # ACL: tylko bieżące konto
 ├── chrome-profile/         # profil Chrome z sesją
-├── profile.lock            # ProcessLock: jedna przeglądarka na profil
+├── chrome.lock             # ProcessLock: jedna przeglądarka na profil
 └── session.json            # {"signed_in": bool, "checked_at": ISO-8601}
 ```
 
