@@ -152,7 +152,7 @@ def iter_frames(data: bytes) -> Iterator[FrameHeader]:
 
 
 def frames_duration_ms(data: bytes) -> float:
-    """Return the server playing time: every valid frame plus one frame for every dropped byte run."""
+    """Return the server playing time: every decoded frame plus one frame per dropped run starting with a header."""
     return sum(duration_ms for _, duration_ms, _ in _server_frames(data))
 
 
@@ -167,7 +167,7 @@ def cut_before_ms(data: bytes, cut_ms: float) -> tuple[bytes, float]:
 
 
 def splice_times(data: bytes) -> tuple[float, ...]:
-    """Return decoded-timeline times of byte runs between valid frames, which a decoder drops as one frame each."""
+    """Return decoded-timeline times of byte runs starting with a header, each one frame the decoder drops."""
     decoded_ms: float = 0.0
     splices: list[float] = []
     for _, duration_ms, dropped in _server_frames(data):
@@ -201,7 +201,11 @@ def _valid_frame(data: bytes, offset: int) -> FrameHeader | None:
 def _server_frames(data: bytes) -> Iterator[tuple[int, float, bool]]:
     expected: int = audio_offset(data)
     for frame in iter_frames(data):
-        if frame.offset != expected:
-            yield expected, frame.duration_ms, True
+        dropped: FrameHeader | None = parse_frame_header(data, expected)
+        if frame.offset != expected and dropped is not None:
+            yield expected, dropped.duration_ms, True
         yield frame.offset, frame.duration_ms, False
         expected = frame.offset + frame.size
+    trailing: FrameHeader | None = parse_frame_header(data, expected)
+    if trailing is not None:
+        yield expected, trailing.duration_ms, False

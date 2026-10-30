@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import Final
 
 import pytest
-from conftest import MM_AVH_TEMP
 
+from anishift.paths import quality_dir
 from anishift.utils.mp3_frames import (
     FrameHeader,
     audio_offset,
@@ -20,7 +20,7 @@ from anishift.utils.mp3_frames import (
 _MPEG1_FRAME_MS: Final[float] = 1152 * 1000 / 44_100
 _MPEG1_FRAME_BYTES: Final[int] = 417
 _BROKEN_FRAME_BYTES: Final[int] = 462
-_TANTEI_RECORDING: Final[Path] = MM_AVH_TEMP / "elevenreader" / "tantei" / "anishift-test-adam.mp3"
+_TANTEI_RECORDING: Final[Path] = quality_dir() / "elevenreader" / "tantei" / "anishift-test-adam.mp3"
 
 
 _HEADER_FIELDS: Final[dict[str, int]] = {
@@ -121,8 +121,26 @@ def test_parse_frame_header_offset_outside_data_returns_none() -> None:
 
 
 @pytest.mark.unit
-def test_audio_offset_id3v2_tag_with_footer_skips_tag() -> None:
+@pytest.mark.parametrize(
+    ("version", "rate_index", "duration_ms"),
+    [(3, 0, 1152 * 1000 / 44_100), (3, 1, 24.0), (2, 1, 24.0), (2, 2, 36.0), (0, 2, 72.0)],
+)
+def test_frame_header_duration_ms_mpeg_versions_counts_samples(
+    version: int, rate_index: int, duration_ms: float
+) -> None:
+    header: FrameHeader | None = parse_frame_header(_header(version=version, rate_index=rate_index, bitrate_index=8), 0)
+
+    assert header is not None
+    assert header.duration_ms == pytest.approx(duration_ms)
+
+
+@pytest.mark.unit
+def test_audio_offset_id3v2_tag_with_footer_skips_tag_and_footer() -> None:
     assert audio_offset(_id3(b"title", footer=True) + _stream(1)) == 10 + 5 + 10
+
+
+@pytest.mark.unit
+def test_audio_offset_without_tag_returns_zero() -> None:
     assert audio_offset(_stream(1)) == 0
 
 
@@ -169,13 +187,14 @@ def test_frames_duration_ms_broken_frame_counts_one_frame() -> None:
 
 
 @pytest.mark.unit
-def test_cut_before_ms_frame_boundary_drops_earlier_frames() -> None:
+@pytest.mark.parametrize(("overshoot_ms", "dropped_frames"), [(-0.4, 3), (0.4, 3), (0.6, 4)])
+def test_cut_before_ms_near_frame_boundary_absorbs_half_millisecond(overshoot_ms: float, dropped_frames: int) -> None:
     data: bytes = _id3(b"tag") + _stream(10)
 
-    rest, dropped = cut_before_ms(data, 3 * _MPEG1_FRAME_MS + 0.4)
+    rest, dropped = cut_before_ms(data, 3 * _MPEG1_FRAME_MS + overshoot_ms)
 
-    assert rest == _stream(7)
-    assert dropped == pytest.approx(3 * _MPEG1_FRAME_MS, abs=0.5)
+    assert rest == _stream(10 - dropped_frames)
+    assert dropped == pytest.approx(dropped_frames * _MPEG1_FRAME_MS)
 
 
 @pytest.mark.unit
@@ -217,6 +236,32 @@ def test_splice_times_clean_stream_returns_empty() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("foreign", [b"junk" * 11, _id3(b"tag")], ids=["junk", "id3"])
+def test_frames_duration_ms_foreign_bytes_before_first_frame_counts_no_frame(foreign: bytes) -> None:
+    data: bytes = _id3(b"tag") + foreign + _stream(4)
+
+    assert frames_duration_ms(data) == pytest.approx(4 * _MPEG1_FRAME_MS)
+    assert splice_times(data) == ()
+
+
+@pytest.mark.unit
+def test_frames_duration_ms_frame_before_foreign_bytes_at_start_counts_dropped_frame() -> None:
+    data: bytes = _id3(b"tag") + _frame() + _id3(b"tag") + _stream(4)
+
+    assert frames_duration_ms(data) == pytest.approx(5 * _MPEG1_FRAME_MS)
+    assert splice_times(data) == (0.0,)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("foreign", [b"junk" * 11, _id3(b"tag")], ids=["junk", "id3"])
+def test_frames_duration_ms_foreign_bytes_after_last_frame_keeps_last_frame(foreign: bytes) -> None:
+    data: bytes = _id3(b"tag") + _stream(4) + foreign
+
+    assert frames_duration_ms(data) == pytest.approx(4 * _MPEG1_FRAME_MS)
+    assert splice_times(data) == ()
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("server_ms", "decoded_ms"),
     [
@@ -228,6 +273,11 @@ def test_splice_times_clean_stream_returns_empty() -> None:
 )
 def test_to_decoded_server_time_subtracts_earlier_splices(server_ms: float, decoded_ms: float) -> None:
     assert to_decoded(server_ms, (200.0, 300.0), _MPEG1_FRAME_MS) == pytest.approx(decoded_ms)
+
+
+@pytest.mark.unit
+def test_to_decoded_without_splices_returns_server_time() -> None:
+    assert to_decoded(1234.5, (), _MPEG1_FRAME_MS) == 1234.5
 
 
 @pytest.mark.integration
