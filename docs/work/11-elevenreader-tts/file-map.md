@@ -1,166 +1,166 @@
 ---
 kind: file-map
 status: draft
-baseline: AniShift main 4365a51; ElevenDownloaderPro stan roboczy z 2026-10-25 (bez zmian)
-updated: 2026-10-25
+baseline: AniShift main f5fff6b; ElevenDownloaderPro stan roboczy z 2026-10-30 (bez zmian); prototyp SCR z 2026-10-30
+updated: 2026-10-30
 ---
 
-# Mapa plików: silnik ElevenReader
+# Mapa plików: silnik ElevenReader, głośność i tempo
 
-Operacje: **DODAĆ**, **ZMIENIĆ**, **ZREFAKTORYZOWAĆ** (zmiana struktury bez zmiany zachowania),
-**USUNĄĆ**, **BEZ ZMIAN** (czytać, nie ruszać). Ścieżki względne wobec roota repozytorium.
+Operacje: **DODAĆ**, **ZMIENIĆ**, **USUNĄĆ**, **BEZ ZMIAN** (czytać, nie ruszać). Kolumna „Etap” odsyła do
+`plan.md` §9. Ścieżki względne wobec roota AniShift. `SCR` i `DATA` jak w `plan.md`.
 
-## 1. ElevenDownloaderPro — źródło logiki (cały katalog: BEZ ZMIAN)
+## 1. Źródła logiki (tylko do odczytu)
 
-Repozytorium jest tylko źródłem do przeczytania. Stan: ostatni commit `7e3fd94`, a `src/auto.py`, `src/clips.py`,
-`src/timestamps.py` i `docs/` nie są zacommitowane (`docs/report.md:87`). Wykonawca czyta pliki z dysku, nie z
-historii gita.
+### Prototyp `SCR`
 
-| Ścieżka | Rola | Co bierzemy do AniShift | Co odpada |
-|---|---|---|---|
-| `README.md` | opis użycia, pomiary, ostrzeżenia | fakty: szybkość, kolejność, cache, timeouty | instrukcje Tampermonkey |
-| `docs/report.md` | raport końcowy EDP (2026-10-18) | fakty o formacie, limitach, ryzykach | lista błędów autora |
-| `docs/research/capabilities.md` | pola HTTP/WS, kalkulator kosztu, ryzyka | pola ramek, `char_count`, koszty, ryzyka | pomysły audiobook/EPUB |
-| `docs/research/elevenreader-tags.md` | test znaczników tekstu | reguła: bez znaczników, nawiasy neutralizowane | cała reszta |
-| `pyproject.toml` | zależności `playwright>=1.64.0`, `miniaudio>=1.71` | wersja Playwright jako punkt odniesienia | `miniaudio` (AniShift dekoduje FFmpeg) |
-| `uv.lock` | lock EDP | nic | całość |
-| `script.js` | userscript Tampermonkey: przejęcie `AudioContext` i `WebSocket` w stronie | nic (wiedza: przyspieszenie przez `playbackRate`) | całość |
-| `src/downloader.py` | ręczne nagrywanie: Chrome + CDP, `Recorder`, `Monitor`, klawisze `msvcrt` | `launch_chrome`, `connect`, `fresh_page`, `SPEED_JS`, `Recorder.on_frame/write_chunk/repeated_prefix`, `trim_chunk`, `rfind_all`, kontrola prędkości z `Monitor.check_speed` | klawisze, dopisywanie do pliku, `print`, `SystemExit`, statusy MB |
-| `src/auto.py` | automatyczny upload i nagrywanie z katalogów | `upload`, `open_library` (krócej), `set_reading_speed`, `Job.start/press_play/step`, stałe czasowe | katalogi `input/done/failed`, `--parallel`, `free_output`, podpowiedź `downloader.py` |
-| `src/timestamps.py` | czasy znaków → SRT/JSON, ramki MP3 | `mp3_frames`, `mp3_duration_ms`, `mp3_cut_ms` (jako wiedza dla `utils/mp3_frames.py`), `load_timeline`, `BREAK_TAG` | SRT, JSON, zdania, słowa |
-| `src/clips.py` | cięcie nagrania na klipy według SRT | `normalize_timeline`, `find_line`, `find_anchored`, `locate_lines`, `silences`, `estimate_delay`, `find_boundaries`, `place_in_run`, `quietest_dip`, `pad_in_gaps`, `snap_lines`, `frame_table`, `cut_frames`, `stream_ranges` | parser SRT, `prepare`, `verify`, CLI, `miniaudio` |
-| `workspace/output/lektor_pl*.{mp3,align.jsonl,txt}` | prawdziwe nagrania lektora właściciela (2026-10-24) | materiał do eksperymentu dryfu i testu cięcia — tylko lokalnie, kopia do zbioru poza repo | nigdy do repo (głos `famous`) |
-| `.chrome-profile/`, `.browser-profile/` | profile Chrome z sesją konta | nic — nie otwierać | całość |
-| `.agents/`, `.claude/`, `__pycache__/`, `.venv/` | narzędzia | nic | całość |
+| Plik | Co bierzemy | Etap |
+|---|---|---|
+| `record.py` | kolejność: biblioteka → upload → konto (głos, prędkość 1x) → dokument → Play 64x → nagranie → sprzątanie (głos, tempo, DELETE); wzór, nie kod do skopiowania | E7 |
+| `snapcut.py` | reguła cięcia i parametry (`Params`) | E4 |
+| `bounds.py` | `load_lines` (podział czasów znaków po `<break>`), `splice_times`, `to_decoded`, `to_server` | E1, E7 |
+| `envelope.py` | poziom RMS ramek 10 ms przy 16 kHz, czas ramki na osi serwera | E2, E4 |
+| `rebuild_cuts.py` | wycinanie klipów z dekodu 48 kHz | E9 |
+| `measure_clips.py` | `speech_span` (−45 dBFS, ramki 10 ms) jako wzór trimu i pomiar „dłuższe niż okno” | E2 |
+| `snap-report.md`, `loudness-report.md` | liczby, kryteria i projekt wpięcia | wszystkie |
+| `tantei/`, `edge02/`, `edge03/` | nagrania, czasy znaków, wzorcowe cięcia — dane testów zgodności i K1; kopiowane do `DATA` w E0 | E0, E1, E4, K1 |
+
+### ElevenDownloaderPro (cały katalog BEZ ZMIAN; wiedza o trasie, kod piszemy od nowa w standardzie repo)
+
+| Plik | Co bierzemy | Co odpada |
+|---|---|---|
+| `src/downloader.py` | `launch_chrome`, `connect`, `fresh_page`, `SPEED_JS`, `speed_script`, `Recorder.on_sent/on_frame/write_chunk/repeated_prefix`, `trim_chunk`, `rfind_all`, `Monitor.check_speed`, stałe | klawisze `msvcrt`, dopisywanie do pliku, `print`, `SystemExit`, stały port 9222, `Monitor.report` |
+| `src/auto.py` | `button`, `open_library` (bez pętli 120 min), `upload`, `reset_reading_speed`, `Job.start/press_play/step`, `PLAYER_STATE_JS`, stałe czasowe | katalogi `input/done/failed`, `--parallel`, `run_all`, `free_output`, drukowanie komendy wznowienia |
+| `src/timestamps.py` | `mp3_duration_ms`, `mp3_cut_ms`, tabele ramek (wiedza dla `utils/mp3_frames.py`) | SRT, JSON, zdania, słowa |
+| `src/clips.py` | nic (stara heurystyka zastąpiona przez `SCR:snapcut.py`) | całość |
+| `.chrome-profile/`, `.browser-profile/`, `workspace/` | nic — nie otwierać | całość |
 
 ## 2. AniShift — pliki dotknięte zmianą
 
+### Utils i tekst
+
+| Ścieżka | Operacja | Zmiana | Etap |
+|---|---|---|---|
+| `anishift/utils/mp3_frames.py` | DODAĆ | nagłówki ramek, długość, cięcie przed czasem, miejsca sklejeń, `to_decoded` | E1 |
+| `anishift/utils/_portable.py`, `anishift/utils/AGENTS.md` | ZMIENIĆ | wpis `mp3_frames.py` | E1 |
+| `anishift/text/boundaries.py`, `anishift/text/AGENTS.md` | ZMIENIĆ | `ends_sentence` | E8 |
+
+### Domena audio
+
+| Ścieżka | Operacja | Zmiana | Etap |
+|---|---|---|---|
+| `anishift/services/audio/mp3.py` | ZMIENIĆ | parser ramek z `utils/mp3_frames.py`; własne tabele usunięte | E1 |
+| `anishift/services/audio/levels.py` | DODAĆ | `frame_levels`, `speech_bounds` | E2 |
+| `anishift/services/audio/normalize.py` | ZMIENIĆ | trim brzegów po FFmpeg; `_neutral_wav` usunięte | E2 |
+| `anishift/services/audio/fingerprint.py` | ZMIENIĆ | normalizacja wersja 2 (`edge_trim`); miks wersja 4 (`narrator_over_source_lu`, limiter) | E2, E3 |
+| `anishift/services/audio/commands.py` | ZMIENIĆ | `loudness_command`; komenda dekodu nagrania do mono s16le | E3, E4 |
+| `anishift/services/audio/probe.py` | ZMIENIĆ | `measure_integrated_loudness` | E3 |
+| `anishift/services/audio/service.py` | ZMIENIĆ | `_render_output`: pomiar i `narrator_gain_db` | E3 |
+| `anishift/services/audio/output.py` | ZMIENIĆ | `RenderInputs.narrator_gain_db`, `alimiter … level=0` | E3 |
+| `anishift/services/audio/config.py` | ZMIENIĆ | `narrator_mix_base_gain_db` → `narrator_over_source_lu = 7.5` | E3 |
+| `anishift/services/audio/segmentation.py` | DODAĆ | reguła cięcia (`cut_points`) | E4 |
+| `anishift/services/audio/AGENTS.md` | ZMIENIĆ | trim, pomiar głośności, limiter, cięcie | E2–E4 |
+| `anishift/services/audio/{timeline,channels,resume,transcode,types}.py` | BEZ ZMIAN | — | — |
+
 ### Domena TTS
 
-| Ścieżka | Rola dziś | Operacja | Co się zmienia |
+| Ścieżka | Operacja | Zmiana | Etap |
 |---|---|---|---|
-| `anishift/services/tts/types.py` | typy neutralne | ZMIENIĆ | `EngineCapabilities.max_document_chars: int \| None = None`; nowe `DocumentPart`, `DocumentSynthesisRequest`, `PartTiming`, `EngineDocumentResult`, `ClipSpan`, `SplitResult` |
-| `anishift/services/tts/protocols.py` | protokoły silnika, walidatora, assemblera | ZMIENIĆ | `DocumentTtsEngine`, `ClipSplitter` |
-| `anishift/services/tts/scheduler.py` | retry, circuit, timeout prób | ZREFAKTORYZOWAĆ | `submit` przyjmuje wywołanie próby (`call`) zamiast budować żądanie i samemu wołać `engine.synthesize`; generyczny wynik |
-| `anishift/services/tts/service.py` | fasada, ścieżka per kwestia | ZMIENIĆ | ścieżka dokumentu `_run_document_batch`; parametr `splitter`; dotychczasowa ścieżka używa nowego `submit` |
-| `anishift/services/tts/errors.py` | hierarchia błędów TTS | ZMIENIĆ | `TtsQuotaError(TtsError, FatalError)` |
-| `anishift/services/tts/scheduler.py` (`_opens_circuit`) | warunek circuit | ZMIENIĆ | `TtsQuotaError` otwiera circuit |
-| `anishift/services/tts/config.py` | `TtsConfig` | ZMIENIĆ | `elevenreader_profile_root: Path \| None = None`, `elevenreader_email`, `elevenreader_password` (`repr=False`, puste domyślnie) |
-| `anishift/services/tts/__init__.py` | eksport publiczny | ZMIENIĆ | eksport nowych typów, protokołów i `TtsQuotaError` |
-| `anishift/services/tts/engines/__init__.py` | rejestr | ZMIENIĆ | `TtsEngineId` i `_REGISTRY` z `elevenreader` |
-| `anishift/services/tts/AGENTS.md` | reguły domeny | ZMIENIĆ | kontrakt dokumentu, `ClipSplitter`, scheduler `call` |
-| `anishift/services/tts/engines/AGENTS.md` | reguły rejestru | ZMIENIĆ | kolejność i opis `elevenreader/` |
-| `anishift/services/tts/engines/elevenreader/` | — | DODAĆ | nowy pakiet silnika (drzewo w sekcji 3) |
-| `anishift/services/tts/chunking.py`, `validation.py`, `fingerprint.py`, `resume.py`, `artifacts.py`, `cancellation.py` | wspólne mechanizmy | BEZ ZMIAN | używane przez ścieżkę dokumentu |
-| `anishift/services/tts/engines/{edge,elevenbytes,elevenlabs,sapi}/` | istniejące silniki | BEZ ZMIAN | inwariant I1 |
+| `anishift/services/tts/types.py` | ZMIENIĆ | `max_document_chars`; `DocumentPart`, `DocumentSynthesisRequest`, `PartTiming`, `EngineDocumentResult`, `ClipSpan`, `SplitResult` | E5 |
+| `anishift/services/tts/protocols.py` | ZMIENIĆ | `DocumentTtsEngine`, `ClipSplitter` | E5 |
+| `anishift/services/tts/scheduler.py` | ZMIENIĆ | `submit(call=…)`, `ScheduledSynthesis.result`, `TtsQuotaError` w circuit | E5 |
+| `anishift/services/tts/service.py` | ZMIENIĆ | `_run_document_batch`, parametr `splitter` | E5 |
+| `anishift/services/tts/errors.py`, `anishift/errors.py` | ZMIENIĆ | `TtsQuotaError`, `ErrorCode.TTS_QUOTA_EXHAUSTED` | E5 |
+| `anishift/services/tts/config.py` | ZMIENIĆ | `elevenreader_profile_root` | E5 |
+| `anishift/services/tts/__init__.py`, `AGENTS.md` | ZMIENIĆ | eksport, kontrakt dokumentu | E5 |
+| `anishift/services/tts/engines/__init__.py`, `engines/AGENTS.md` | ZMIENIĆ | `elevenreader` w rejestrze, `is_document_engine` | E7 |
+| `anishift/services/tts/engines/elevenreader/` | DODAĆ | pakiet silnika (§3) | E7 |
+| `anishift/services/tts/{chunking,validation,fingerprint,resume,artifacts,cancellation}.py` | BEZ ZMIAN | używane przez ścieżkę dokumentu | — |
+| `anishift/services/tts/engines/{edge,elevenbytes,elevenlabs,sapi}/` | BEZ ZMIAN | I1 | — |
 
-### Domena audio i utils
+### Platforma
 
-| Ścieżka | Rola dziś | Operacja | Co się zmienia |
+| Ścieżka | Operacja | Zmiana | Etap |
 |---|---|---|---|
-| `anishift/utils/mp3_frames.py` | — | DODAĆ | jedno źródło parsowania nagłówka ramki MPEG: `parse_frame_header`, `iter_frames`, `frames_duration_ms`, `cut_before_ms` |
-| `anishift/utils/_portable.py` | manifest przenośności | ZMIENIĆ | wpis `mp3_frames.py` |
-| `anishift/utils/AGENTS.md` | mapa utils | ZMIENIĆ | wpis `mp3_frames.py` |
-| `anishift/services/audio/mp3.py` | inspekcja strumienia MP3 | ZREFAKTORYZOWAĆ | `_parse_frame_header` i tabele bitrate zastąpione `utils/mp3_frames.py`; dodane `frame_table` i `cut_frames` |
-| `anishift/services/audio/segmentation.py` | — | DODAĆ | czysty algorytm: obwiednia głośności, cisze, opóźnienie, granice, padding (port z `src/clips.py`) |
-| `anishift/services/audio/commands.py` | komendy FFmpeg | ZMIENIĆ | `envelope_wav_command` (mono 16 kHz PCM WAV) |
-| `anishift/services/audio/AGENTS.md` | reguły audio | ZMIENIĆ | segmentacja i cięcie ramkami |
-| `anishift/application/tts_clips.py` | `FfmpegClipService`: walidacja, sklejanie | ZMIENIĆ | `split_clip` — implementacja `ClipSplitter` |
+| `anishift/platform/installed.py` | DODAĆ | `find_installed(locations, stem)` | E6 |
+| `anishift/platform/private_dir.py` | DODAĆ | `restrict_directory(root)` z kodu `_protect_profile` | E6 |
+| `anishift/platform/qbittorrent_config.py` | ZMIENIĆ | `installed_executable` przez `find_installed` | E6 |
+| `anishift/platform/qbittorrent_process.py` | ZMIENIĆ | `_protect_profile` przez `restrict_directory` | E6 |
+| `anishift/platform/AGENTS.md` | ZMIENIĆ | dwa nowe moduły | E6 |
+| `anishift/platform/process_lock.py` | BEZ ZMIAN | blokada profilu Chrome | — |
 
-### Aplikacja, konfiguracja, platforma, CLI, setup
+### Aplikacja, konfiguracja, CLI, setup
 
-| Ścieżka | Rola dziś | Operacja | Co się zmienia |
+| Ścieżka | Operacja | Zmiana | Etap |
 |---|---|---|---|
-| `anishift/paths.py` | układ katalogów | ZMIENIĆ | `elevenreader_dir()` = `config_dir() / "elevenreader"` |
-| `.gitignore` | ignorowane pliki | ZMIENIĆ (faza 0, przed pierwszym plikiem profilu) | `config/elevenreader/` |
-| `config/README.md` | opis `config/` | ZMIENIĆ | akapit o `elevenreader/` |
-| `anishift/platform/installed.py` | — | DODAĆ | `find_installed(locations, stem)` — wspólne wyszukiwanie zainstalowanego programu |
-| `anishift/platform/qbittorrent_config.py` | `installed_executable` | ZREFAKTORYZOWAĆ | używa `find_installed` |
-| `anishift/platform/private_dir.py` | — | DODAĆ | `restrict_directory(root)` — ACL tylko dla bieżącego konta (przeniesione z `qbittorrent_process._protect_profile`) |
-| `anishift/platform/qbittorrent_process.py` | `_protect_profile` | ZREFAKTORYZOWAĆ | woła `restrict_directory`, mapuje błąd na dotychczasowy |
-| `anishift/platform/AGENTS.md` | reguły platformy | ZMIENIĆ | dwa nowe moduły |
-| `anishift/platform/process_lock.py` | `ProcessLock` | BEZ ZMIAN | blokada profilu Chrome |
-| `anishift/application/runtime.py` | budowa handlerów | ZMIENIĆ | `_tts_config` (timeout, backoff, profil, dane logowania), `_tts_handler` (wstrzyknięcie `splitter`) |
-| `anishift/application/service.py` | fasada `AppService` | ZMIENIĆ | `_tts_allowed_voice_ids`, `tts_is_paid`, `elevenreader_sign_in()`, `elevenreader_session()`, DTO `ElevenReaderSession`, `ElevenReaderSignIn` |
-| `anishift/application/__init__.py` | publiczna fasada aplikacji | ZMIENIĆ | eksport dwóch DTO (panel importuje tylko fasadę) |
-| `anishift/application/tts_handler.py` | adapter zadania TTS | BEZ ZMIAN | kontrakt wsadów bez zmian |
-| `anishift/application/planning.py`, `planner.py` | snapshot, zasoby | BEZ ZMIAN | `resource_key=tts:<profil>` już serializuje pliki |
-| `anishift/config/settings.py` | `Settings` z `.env` | ZMIENIĆ | `elevenreader_email`, `elevenreader_password` (`repr=False`) — tylko w gałęzi logowania danymi (D2) |
-| `anishift/config/user_settings.py` | preferencje panelu | ZMIENIĆ | gałąź `elevenreader` w normalizacji, etykiecie i rozwiązywaniu głosu; profile domyślne dwóch głosów; reset aliasów obcego silnika |
-| `anishift/config/field_catalog.py` | katalog pól | ZMIENIĆ | modele/głosy/profile `elevenreader`; ukryta współbieżność; specyfikacje sekretów (gałąź D2) |
-| `anishift/config/AGENTS.md` | reguły config | ZMIENIĆ | pułapka aliasów głosów między silnikami |
-| `anishift/cli/interactive/settings.py` | ekran Ustawień | ZMIENIĆ | etykieta silnika, wiersz akcji „Zaloguj / sprawdź sesję”, wiersz stanu sesji, połączenie ElevenReader (gałąź D2) |
-| `anishift/cli/AGENTS.md` | reguły CLI | ZMIENIĆ | akcja logowania ElevenReader |
-| `anishift/setup/doctor.py` | health-checki | ZMIENIĆ | `check_elevenreader()` |
-| `anishift/setup/AGENTS.md` | reguły setup | ZMIENIĆ | opis checku |
-| `pyproject.toml`, `uv.lock` | zależności | ZMIENIĆ (tylko przez `uv add playwright`) | `playwright` |
-| `docs/reference/settings.md` | opis ustawień | ZMIENIĆ | silnik i głosy ElevenReader |
-| `README.md`, `README.pl.md` | instrukcja | ZMIENIĆ | akapit o silniku, logowaniu i ryzyku |
-| `docs/ideas.md` | pomysły | ZMIENIĆ | wpis „Lektor przez ElevenReader” → status i link do workstreamu |
-| `docs/README.md` | mapa workstreamów | ZMIENIĆ | wiersz `11-elevenreader-tts` |
+| `anishift/application/tts_handler.py` | ZMIENIĆ | łączenie kwestii urwanych w `_narration_batch` za flagą `join_open_lines` | E8 |
+| `anishift/application/planning.py` | ZMIENIĆ | pole snapshotu `narrator_over_source_lu` | E3 |
+| `anishift/application/runtime.py` | ZMIENIĆ | `_audio_config` (E3); `join_open_lines=False` (E8); `_tts_config`, `splitter`, `join_open_lines=is_document_engine(...)` (E9) | E3, E8, E9 |
+| `anishift/application/service.py` | ZMIENIĆ | snapshot (E3); głosy, `tts_is_paid`, sesja i logowanie ElevenReader (E9) | E3, E9 |
+| `anishift/application/__init__.py` | ZMIENIĆ | eksport DTO sesji | E9 |
+| `anishift/application/tts_clips.py` | ZMIENIĆ | `split_clip`, `recording_timeout_s` | E9 |
+| `anishift/application/AGENTS.md` | ZMIENIĆ | łączenie kwestii, splitter | E8, E9 |
+| `anishift/paths.py` | ZMIENIĆ | `elevenreader_dir()` | E9 |
+| `anishift/config/user_settings.py` | ZMIENIĆ | pole `narrator_over_source_lu`, Dallin offset 0 (E3); gałąź `elevenreader`, profile, reset obcego aliasu (E9) | E3, E9 |
+| `anishift/config/field_catalog.py` | ZMIENIĆ | pole głośności (E3); modele, głosy, profile `elevenreader` (E9) | E3, E9 |
+| `anishift/config/AGENTS.md` | ZMIENIĆ | aliasy głosów między silnikami | E9 |
+| `anishift/cli/interactive/settings.py` | ZMIENIĆ | „Głośność lektora” w LU (E3); etykieta silnika, sekcja SESJA (E9) | E3, E9 |
+| `anishift/cli/AGENTS.md` | ZMIENIĆ | akcja logowania | E9 |
+| `anishift/setup/doctor.py`, `anishift/setup/AGENTS.md` | ZMIENIĆ | `check_elevenreader()` | E9 |
+| `.gitignore` | ZMIENIĆ | `config/elevenreader/` | E0 |
+| `pyproject.toml`, `uv.lock` | ZMIENIĆ (tylko `uv add playwright`) | `playwright` | E7 |
+| `config/README.md`, `docs/reference/settings.md` | ZMIENIĆ | katalog `elevenreader/`, silnik, głośność w LU | E9 |
+| `README.md`, `README.pl.md`, `docs/README.md`, `docs/ideas.md` | ZMIENIĆ | silnik, logowanie, ryzyko; status workstreamu | E10 |
+| `scripts/tmp/migrate_narrator_loudness.py` | DODAĆ i USUNĄĆ | jednorazowa migracja `config/settings.json` (nie commitowana) | E3 |
 
 ### Testy
 
-| Ścieżka | Operacja | Zakres |
+| Ścieżka | Operacja | Etap |
 |---|---|---|
-| `tests/utils/test_mp3_frames.py` | DODAĆ | nagłówki, ID3, przerwy, długość, cięcie |
-| `tests/services/audio/test_audio_mp3.py` | ZMIENIĆ | `frame_table`, `cut_frames`; dotychczasowe testy bez zmian |
-| `tests/services/audio/test_audio_segmentation.py` | DODAĆ | cisze, opóźnienie, granice bez ciszy, padding |
-| `tests/application/test_tts_clips_split.py` | DODAĆ | `split_clip` z prawdziwym FFmpeg na syntetycznym MP3 (`integration`) |
-| `tests/services/tts/test_tts_scheduler.py` | ZMIENIĆ | nowe `submit(call=...)`; te same scenariusze |
-| `tests/services/tts/test_tts_service.py` | ZMIENIĆ | dotychczasowe scenariusze na nowym `submit` |
-| `tests/services/tts/test_tts_document_service.py` | DODAĆ | ścieżka dokumentu: resume, brakujące kwestie, retry, circuit, postęp, limit dokumentu |
-| `tests/services/tts/test_tts_contract.py` | ZMIENIĆ | pola nowych typów, protokoły, brak zakazanych importów |
-| `tests/services/tts/test_tts_registry.py` | ZMIENIĆ | `EXPECTED_ENGINE_IDS` z `elevenreader` |
-| `tests/services/tts/elevenreader_fakes.py` | DODAĆ | fałszywe strony, ramki, przeglądarka (bez prozy) |
-| `tests/services/tts/test_tts_elevenreader_config.py` | DODAĆ | aliasy, model, współbieżność, profil |
-| `tests/services/tts/test_tts_elevenreader_document.py` | DODAĆ | budowa dokumentu, neutralizacja nawiasów |
-| `tests/services/tts/test_tts_elevenreader_recorder.py` | DODAĆ | ramki, duplikaty, ponowne połączenie, kompletność |
-| `tests/services/tts/test_tts_elevenreader_alignment.py` | DODAĆ | oś czasu, lokalizacja kwestii, kotwice |
-| `tests/services/tts/test_tts_elevenreader_errors.py` | DODAĆ | mapowanie statusów HTTP na błędy TTS |
-| `tests/services/tts/test_tts_elevenreader_engine.py` | DODAĆ | silnik na fałszywej przeglądarce: błędy, anulowanie, głos, sesja |
-| `tests/services/tts/test_tts_elevenreader_network.py` | DODAĆ | `network`, zgoda przez zmienną środowiska, krótki dokument |
-| `tests/data/elevenreader/frames-anon.jsonl` | DODAĆ | nagrane ramki z audio zastąpionym syntetycznym MP3 |
-| `tests/platform/test_installed.py`, `tests/platform/test_private_dir.py` | DODAĆ | wspólne helpery platformy |
-| `tests/platform/test_qbittorrent_config.py`, `test_qbittorrent_process.py` | BEZ ZMIAN (mają przejść) | regresja refaktoru |
-| `tests/config/test_user_settings.py`, `tests/config/test_field_catalog.py` | ZMIENIĆ | gałąź `elevenreader`, reset aliasów |
-| `tests/cli/test_interactive_settings_*.py` | ZMIENIĆ | wiersze akcji i etykiety |
-| `tests/setup/test_doctor.py` | ZMIENIĆ | `check_elevenreader` |
-| `tests/application/test_runtime_config.py` | ZMIENIĆ | `_tts_config` dla `elevenreader` |
-| `tests/test_paths.py` | ZMIENIĆ | `elevenreader_dir` |
+| `tests/utils/test_mp3_frames.py` (nowy katalog bez `__init__.py`) | DODAĆ | E1 |
+| `tests/services/audio/test_audio_mp3.py` | BEZ ZMIAN zachowania | E1 |
+| `tests/services/audio/test_audio_levels.py` | DODAĆ | E2 |
+| `tests/services/audio/test_audio_normalize.py`, `test_audio_fingerprint.py`, `test_audio_timeline.py` | ZMIENIĆ | E2, E3 |
+| `tests/services/audio/test_audio_channels_output.py`, testy `probe`, `commands`, `service` | ZMIENIĆ | E3 |
+| `tests/services/audio/test_audio_segmentation.py` (w tym test zgodności z `DATA`) | DODAĆ | E4 |
+| `tests/application/test_runtime_config.py`, `tests/config/test_user_settings.py`, `tests/config/test_field_catalog.py`, `tests/cli/test_interactive_settings_steps.py` | ZMIENIĆ | E3, E9 |
+| `tests/services/tts/test_tts_scheduler.py`, `test_tts_service.py`, `test_tts_contract.py` | ZMIENIĆ | E5 |
+| `tests/services/tts/test_tts_document_service.py` | DODAĆ | E5 |
+| `tests/platform/test_installed.py`, `test_private_dir.py` | DODAĆ | E6 |
+| `tests/services/tts/test_tts_elevenreader_{config,document,recorder,lines,errors,engine,network}.py`, `elevenreader_fakes.py` | DODAĆ | E7 |
+| `tests/services/tts/test_tts_registry.py` | ZMIENIĆ | E7 |
+| `tests/text/test_boundaries.py`, `tests/application/test_tts_handler.py` | ZMIENIĆ | E8 |
+| `tests/application/test_tts_clips_split.py` | DODAĆ | E9 |
+| `tests/setup/test_doctor.py`, `tests/cli/test_interactive_settings_*.py`, `tests/test_paths.py` | ZMIENIĆ | E9 |
 
-## 3. Docelowe drzewo nowego silnika
+## 3. Drzewo nowego silnika
 
 ```text
 anishift/services/tts/engines/elevenreader/
-├── AGENTS.md          # NEW  pułapki: CDP, profil, blokada, głos, sekrety, brak retry w transporcie
-├── __init__.py        # NEW  eksport ElevenReaderTtsEngine, ElevenReaderConfig, sign_in, read_session
-├── constants.py       # NEW  URL-e, fragmenty endpointów, stałe czasowe, aliasy i ID głosów, skrypty JS
-├── config.py          # NEW  ElevenReaderConfig.from_tts_config, resolve_voice
-├── document.py        # NEW  budowa tekstu dokumentu z kwestii, neutralizacja, podział na dokumenty
-├── recorder.py        # NEW  czyste parsowanie ramek WS: audio, alignment, duplikaty, ponowne połączenie
-├── alignment.py       # NEW  oś czasu znaków, lokalizacja kwestii → PartTiming
-├── browser.py         # NEW  Chrome + CDP: start, port, blokada profilu, ACL, zamknięcie
-├── page.py            # NEW  akcje strony: biblioteka, upload, otwarcie, prędkość, głos, Play, stan
-├── session.py         # NEW  wykrycie zalogowania, logowanie interaktywne, opcjonalne logowanie danymi, session.json
-├── errors.py          # NEW  mapowanie statusów HTTP i stanów strony na błędy TTS
-└── service.py         # NEW  ElevenReaderTtsEngine (DocumentTtsEngine)
+├── AGENTS.md      # NEW
+├── __init__.py    # NEW  bez importu playwright
+├── constants.py   # NEW  URL-e, endpointy, stałe EDP, skrypty JS, VOICES
+├── config.py      # NEW  ElevenReaderConfig.from_tts_config, resolve_voice
+├── document.py    # NEW  neutralize, document_text, document_chars
+├── recorder.py    # NEW  ramki WS → MP3 + czasy znaków
+├── lines.py       # NEW  czasy znaków → PartTiming po tagach <break>
+├── browser.py     # NEW  Chrome + CDP, blokada i ACL profilu
+├── account.py     # NEW  user_config (głos, prędkość, przywrócenie), DELETE dokumentu, zaległe sprzątanie
+├── page.py        # NEW  biblioteka, upload, dokument, Play, stan odtwarzacza, prędkość strony
+├── session.py     # NEW  session.json, require_signed_in, sign_in
+├── errors.py      # NEW  mapowanie statusów HTTP i błędów Playwright
+└── service.py     # NEW  ElevenReaderTtsEngine
 ```
 
-Runtime (gitignored, poza repozytorium kodu):
+Runtime (gitignored):
 
 ```text
-config/elevenreader/   # ACL: tylko bieżące konto
-├── chrome-profile/    # profil Chrome z sesją (cookies)
-├── profile.lock       # ProcessLock: jedna przeglądarka na profil
-└── session.json       # {"signed_in": bool, "checked_at": ISO-8601} — bez sekretów
+config/elevenreader/        # ACL: tylko bieżące konto
+├── chrome-profile/         # profil Chrome z sesją
+├── profile.lock            # ProcessLock: jedna przeglądarka na profil
+└── session.json            # {"signed_in": bool, "checked_at": ISO-8601}
 ```
 
-Staging przebiegu (istniejący mechanizm, bez zmian układu):
-
-```text
-workspace/temp/<run_id>/tts/<group_id>/tts/   # TtsResumeRepository (runtime.py: resume_root=run_root/"tts")
-├── clips/.clip-*.mp3.tmp                     # tymczasowe: nagranie dokumentu i wycięte klipy
-├── clips/clip-<key>.mp3                      # zatwierdzone klipy kwestii (artifacts.py:95)
-└── manifest.json                             # resume per kwestia (artifacts.py:48-50)
-```
+Staging przebiegu (istniejący układ `TtsResumeRepository` pod `workspace/tmp/`): nagranie dokumentu jako
+`clips/.clip-*.mp3.tmp`, wycięte klipy jako `clips/.clip-*.wav.tmp`, zatwierdzone `clips/clip-<key>.wav`,
+`manifest.json`. Pliki dekodu dla cięcia w `TemporaryDirectory(prefix="anishift-split-")`, usuwane przed powrotem.

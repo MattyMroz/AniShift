@@ -1,7 +1,7 @@
 ---
 kind: specification
 status: draft
-updated: 2026-10-25
+updated: 2026-10-30
 ---
 
 # Specyfikacja: silnik lektora ElevenReader
@@ -9,250 +9,244 @@ updated: 2026-10-25
 ## Cel
 
 AniShift czyta polskie kwestie odcinka głosem z ElevenReadera (model Eleven v4) przez automatyzację prawdziwej
-przeglądarki Chrome, na wzór repozytorium `ElevenDownloaderPro` (EDP). Silnik `elevenbytes` zostaje zapasem.
-Intencja i odrzucone drogi: `intent.md`.
+przeglądarki Chrome. Lektor ma właściwą głośność względem oryginału i tempo dobrane do głosu. Silnik `elevenbytes`
+zostaje zapasem. Intencja: `intent.md`. Plan wykonania: `plan.md`.
 
 ## Użytkownik i ocena
 
 Właściciel, jedyny użytkownik, na Windowsie, z rezydentem działającym w tle z checkoutu. Ogląda z lektorem, często
-na x2 (`docs/work/10-quality/specification.md:9`). Ocenia uchem na prawdziwym odcinku: jakość głosu, tempo
-względem okien napisów, głośność względem oryginału, brak uciętych słów.
+na x2. Ocenia uchem na prawdziwym odcinku: jakość głosu, tempo względem okien napisów, głośność względem oryginału,
+brak uciętych słów.
 
-## Stan wyjściowy
+## Stan wyjściowy (2026-10-30)
 
-### Trasa EDP (źródło logiki, tylko do odczytu)
+### Prototyp poza repozytorium
 
-- EDP uruchamia zainstalowany Google Chrome z własnym profilem i portem zdalnego debugowania, a Playwright
-  podłącza się przez CDP (`src/downloader.py:454-475`). Profil trzyma zalogowaną sesję
-  (`src/downloader.py:38-39`, `README.md:57`).
-- Upload dokumentu i odtwarzanie idą przez interfejs strony: przycisk Import, pole pliku, przycisk Upload,
-  odpowiedź `POST /v1/reader/reads/add/v2` z `read_id` i `char_count` (`src/auto.py:53-57`, `src/auto.py:137-145`).
-- Audio i czasy znaków przychodzą ramkami JSON przez WebSocket
-  `wss://api.elevenlabs.io/v1/reader/reads/stream/v2/{read_id}`: `audio` (MP3 w base64), `alignment.chars`,
-  `charStartTimesMs`, `charDurationsMs`, `isFinal` (`docs/research/capabilities.md:18-31`,
-  `src/downloader.py:181-255`).
-- MP3 128 kb/s, 44,1 kHz (`docs/report.md:17`). Czasy znaków są względne wobec paczki; czas bezwzględny to offset
-  paczki liczony z długości ramek MP3 plus czas znaku (`src/downloader.py:230`, `src/timestamps.py:99-117`).
-- Czasy znaków wyprzedzają mowę o około 0,3 s (`docs/report.md:39`); cięcie na kwestie wymaga dopasowania do ciszy
-  w audio (`src/clips.py:397-514`).
-- Model v4 daje prędkość czytania 1x w ustawieniach ElevenReadera; przy około 3x serwer przechodzi na v2
-  (`docs/report.md:36`, `src/auto.py:86-87`, `src/auto.py:148-157`).
-- Jeden dokument naraz: od 2026-10-19 nowy strumień zamyka starszy (`docs/report.md:33`, `README.md:143`).
-- Kredyt to 10 000 znaków, łącznie ze wstawianymi przez serwer tagami `<break .../>` (`docs/report.md:35`,
-  `docs/research/capabilities.md:28`, `docs/research/capabilities.md:35`).
-- Kod EDP nie wybiera głosu. Głos wynika z ustawień konta (`default_voice_id` w `user_config`, trafia do adresu
-  WebSocketu; `docs/research/capabilities.md:63`). Nazwa „Piotr Fronczewski” i kategoria `famous` są w
-  `docs/research/capabilities.md:10` i `:65`. Głos „Adam” nie występuje w kodzie ani dokumentach EDP.
+Katalog `SCR` = `C:\Users\MATTYM~1\AppData\Local\Temp\claude\c--Users-MattyMroz-Desktop-PROJECTS-AniShift\805265a0-dc59-4be6-b614-414304044433\scratchpad\er\`.
+To katalog tymczasowy sesji; faza 0 planu kopiuje dane poza niego.
 
-### AniShift dziś
+- `SCR/record.py` nagrywa cały odcinek jednym dokumentem przez trasę ElevenDownloaderPro (EDP): Chrome bez okna,
+  Playwright przez CDP, upload przyciskiem „Import”, głos i prędkość 1x ustawione w `user_config` konta tokenem
+  strony, odtwarzanie przyspieszone 64x, zapis ramek WebSocket, na koniec usunięcie dokumentu z biblioteki i
+  przywrócenie poprzedniego głosu konta. Wynik Tantei S2E03: 19 038 znaków, upload 10–12 s, nagrywanie 245 s na
+  głos, komplet znaków, głos potwierdzony w adresie strumienia (`SCR/tantei/record.json`).
+- `SCR/snap-report.md`: cięcie nagrania na kwestie bez modelu. Na 324 kwestiach i dwóch głosach 100% poprawnych
+  granic (640 cięć, 6 granic bez pewnej ciszy). CrisperWhisper służył tylko jako miernik.
+- `SCR/edge02/`, `SCR/edge03/`: nagrania Edgerunners 02 i 03 do walidacji cięcia na innym materiale; walidacja
+  trwa (punkt kontrolny K1 planu).
+- `SCR/loudness-report.md`: głośność i tempo trzech głosów, projekt normalizacji w `AudioService`, prototyp
+  odsłuchowy, który właściciel ocenił jako „w miarę OK”.
 
-- Rejestr TTS: `edge`, `elevenbytes`, `elevenlabs`, `sapi` (`anishift/services/tts/engines/__init__.py:18-38`).
-- Kontrakt silnika: jedno żądanie tekstu na jeden klip (`anishift/services/tts/protocols.py:86-123`); wspólny
-  scheduler posiada retry, circuit i limity (`anishift/services/tts/scheduler.py:224-344`).
-- `TtsTaskHandler` składa jeden `SpeechBatch` na odcinek z kwestii w kolejności czytania i drugi dla szyldów
-  (`anishift/application/tts_handler.py:541-562`, `:336-366`). Miks umieszcza klipy w oknach napisów, mierząc długość
-  dekodowanego klipu (`anishift/services/audio/timeline.py:31-89`).
-- Resume klipów jest per kwestia: tożsamość to tekst kwestii i profil silnika
-  (`anishift/services/tts/fingerprint.py`, `anishift/services/tts/resume.py:155-170`).
+### AniShift
+
+- Rejestr TTS: `edge`, `elevenbytes`, `elevenlabs`, `sapi` (`anishift/services/tts/engines/__init__.py`).
+- Kontrakt silnika: jedno żądanie tekstu na jeden klip (`TtsEngine.synthesize` w
+  `anishift/services/tts/protocols.py`). Wspólny `TtsScheduler` posiada retry, circuit i limity.
+- `TtsTaskHandler` (`anishift/application/tts_handler.py`) buduje jeden `SpeechBatch` na odcinek z kwestii w
+  kolejności czytania i drugi dla szyldów.
+- Miks: gain narratora to `narrator_mix_base_gain_db + voice_mix_offset_db` (stałe dB, bez pomiaru;
+  `anishift/services/audio/output.py`, `render_command`). Brak limitera.
+- Klipy nie mają przycinania ciszy na brzegach. Tempo końcowe i korekta głośności są już na głos
+  (`TtsVoiceProfileSettings.postprocess_tempo`, `.voice_mix_offset_db` w `anishift/config/user_settings.py`).
 - Prywatne profile z danymi uwierzytelnienia leżą w `config/` i są zawężane ACL do bieżącego konta
-  (`anishift/platform/qbittorrent_process.py:633-653`, `.gitignore:292-296`).
+  (`_protect_profile` w `anishift/platform/qbittorrent_process.py`).
 
 ## Ustalenia
 
-- **U1. Wariant integracji: kopia logiki EDP z refaktorem do konwencji AniShift.** Skutek: nowy pakiet
-  `anishift/services/tts/engines/elevenreader/`; AniShift nie importuje EDP, nie czyta jego katalogów i nie
-  uruchamia jego skryptów.
-- **U2. Jednostką syntezy silnika jest dokument.** Skutek: domena TTS dostaje kontrakt syntezy dokumentu, a wspólny
+- **U1. Kod nagrywania przenosimy do AniShift.** Nowy pakiet `anishift/services/tts/engines/elevenreader/`,
+  zależność `playwright` przez `uv add`, profil przeglądarki w `config/elevenreader/`. AniShift nie importuje EDP,
+  nie uruchamia jego skryptów i nie czyta jego katalogów. Logika EDP i prototypu jest adaptowana i
+  refaktoryzowana do standardu repo (typowane błędy, logger, async, jedno źródło prawdy, zero legacy), nie
+  kopiowana 1:1. Uzasadnienie: `plan.md` §4.
+- **U2. Jednostką syntezy silnika jest dokument odcinka.** Domena TTS dostaje kontrakt syntezy dokumentu, a
   scheduler wykonuje dowolną próbę providera, nie tylko pojedyncze żądanie.
-- **U3. Kwestie dokumentu są osobnymi akapitami.** Skutek: serwer wstawia między nimi pauzę (tag `<break>`), co daje
-  ciszę do cięcia, a koszt rośnie o około 21 znaków na kwestię (`docs/research/capabilities.md:105-119`). Założenie
-  zależne od decyzji D4.
-- **U4. Czasy znaków służą do cięcia nagrania na kwestie i do kontroli kompletności.** Skutek: dopasowanie tempa,
-  przycinanie ciszy i raport rozjazdu nadal pochodzą z dekodowanej długości klipu i planu osi czasu, jak dziś.
-- **U5. Cięcie i wykrywanie ciszy należą do domeny audio**, wstrzykiwane do TTS protokołem, tak jak walidacja i
-  sklejanie klipów (`anishift/application/tts_clips.py:17-100`). Skutek: TTS nadal nie importuje domeny audio.
-- **U6. Parsowanie nagłówków ramek MPEG ma jedno źródło** w `anishift/utils/mp3_frames.py`. Skutek: domena audio i
-  silnik używają tej samej funkcji; `anishift/services/audio/mp3.py` przestaje mieć własną kopię.
-- **U7. Brak automatycznego przełączania silników.** Skutek zgodny z regułą domeny „Caller jawnie wybiera silnik;
-  nie ma cichego fallbacku” (`anishift/services/tts/AGENTS.md:33`). Założenie zależne od decyzji D1.
-- **U8. Jedna przeglądarka i jeden dokument naraz.** Skutek: `max_concurrency` silnika wynosi dokładnie 1.
+- **U3. Kwestie dokumentu są osobnymi akapitami.** Serwer wstawia między nie `<break time="0.6s"/>`, co daje ciszę
+  do cięcia i znacznik podziału w czasach znaków.
+- **U4. Klip kwestii wycina heurystyka ciszy, bez modelu mowy.** Czasy znaków serwera wyznaczają okno każdej
+  granicy; cięcie wypada w środku ciszy (`plan.md` §7.4). CrisperWhisper ani żaden inny model nie wchodzi do
+  AniShift.
+- **U5. Kwestie urwane w pół zdania łączymy w tekście tylko dla silnika dokumentowego.** Granica bez pauzy w mowie
+  wtedy nie powstaje. Silniki „kwestia po kwestii” (`elevenbytes`, `elevenlabs`, `edge`, `sapi`) syntetyzują każdą
+  linijkę osobnym żądaniem, więc u nich takiej granicy nie ma i nic się nie zmienia. Reguła w `plan.md` §7.6.
+- **U6. Głośność lektora jest mierzona, nie stała.** Lektor ma zintegrowaną głośność równą głośności oryginału
+  plus `narrator_over_source_lu` (domyślnie 7,5 LU) plus korekta głosu; na wyjściu miksu limiter −1 dBFS.
+  `narrator_over_source_lu` zastępuje `narrator_mix_base_gain_db` bez aliasu.
+- **U7. Brzegi każdego klipu są przycinane z ciszy** przed ułożeniem na osi czasu. To obróbka audio, wspólna dla
+  wszystkich silników; zakres dla `elevenbytes` czeka na potwierdzenie (D1).
+- **U8. Tempo i korekta głośności są na głos** w istniejących profilach `tts_voice_profiles`.
+- **U9. Jedna przeglądarka i jeden dokument naraz.** `max_concurrency` silnika wynosi dokładnie 1.
+- **U10. Brak automatycznego przełączania silników.** Powrót do `elevenbytes` to jeden wybór w Ustawieniach,
+  podpowiadany w każdym trwałym błędzie silnika.
+- **U11. Logowanie tylko zapisaną sesją.** Właściciel loguje się raz w oknie Chrome otwartym akcją panelu; AniShift
+  nie przechowuje e-maila ani hasła.
+- **U12. Głos i prędkość ustawia konto, nie odtwarzacz.** Silnik zapisuje `default_voice_id` i
+  `playback_speed_rate = 1` w `user_config` konta tokenem strony.
+- **U14. Sprzątanie zawsze.** Po każdej próbie — udanej, nieudanej i przerwanej — silnik w `finally` usuwa wgrany
+  dokument z biblioteki ElevenReadera i przywraca poprzedni głos i tempo konta. Na koncie nie zostają śmieci.
+- **U13. Nagrywanie bez okna** (`--headless=new`); okno tylko przy akcji logowania.
 
 ## Wymagania funkcjonalne
 
 ### Silnik i rejestr
 
-- **F1.** Rejestr TTS zawiera `elevenreader` w stabilnej kolejności `edge`, `elevenbytes`, `elevenlabs`,
-  `elevenreader`, `sapi`; import rejestru nie ładuje Playwright.
+- **F1.** Rejestr TTS zawiera `elevenreader` w kolejności `edge`, `elevenbytes`, `elevenlabs`, `elevenreader`,
+  `sapi`; import rejestru i pakietu silnika nie ładuje Playwright.
 - **F2.** Silnik czyta wszystkie brakujące kwestie jednego `SpeechBatch` w najmniejszej liczbie dokumentów
-  mieszczących się w limicie znaków dokumentu i zwraca jeden zwalidowany klip MP3 na kwestię.
-- **F3.** Kwestia, której nie znaleziono w nagraniu, kończy się błędem tej kwestii; pozostałe kwestie są
-  zatwierdzane.
-- **F4.** Ponowne uruchomienie odcinka wykorzystuje zatwierdzone klipy jako trafienia resume i czyta wyłącznie
-  brakujące kwestie.
-- **F5.** Tekst kwestii trafia do dokumentu bez zmiany słów; nawiasy kwadratowe są zamieniane na okrągłe, a
-  białe znaki wewnątrz kwestii na pojedyncze spacje, aby ElevenReader nie interpretował znaczników i nie tworzył
-  dodatkowych akapitów.
-- **F6.** Czytane szyldy (`sign_narration`) idą tą samą drogą, jako osobny dokument tej samej grupy.
-- **F7.** Silnik ustawia w odtwarzaczu prędkość czytania 1x (model v4) przed każdym odtworzeniem.
-- **F8.** Silnik używa głosu wybranego w ustawieniach i odmawia nagrania, gdy nie może potwierdzić, że odtwarzacz
-  czyta tym głosem.
+  mieszczących się w limicie znaków i daje jeden zwalidowany klip na kwestię.
+- **F3.** Liczba odcinków tekstu oddzielonych `<break>` w czasach serwera musi równać się liczbie kwestii
+  dokumentu; inaczej próba kończy się błędem i jest ponawiana.
+- **F4.** Ponowne uruchomienie odcinka wykorzystuje zatwierdzone klipy i czyta wyłącznie brakujące kwestie.
+- **F5.** Tekst kwestii trafia do dokumentu bez zmiany słów; nawiasy kwadratowe zamieniane są na okrągłe, a białe
+  znaki wewnątrz kwestii na pojedyncze spacje.
+- **F6.** Czytane szyldy idą tą samą drogą, jako osobny dokument tej samej grupy.
+- **F7.** Silnik nagrywa przy prędkości czytania 1x i przerywa próbę, gdy strumień zgłosi inną prędkość (model v2).
+- **F8.** Silnik odmawia zatwierdzenia nagrania, gdy adres strumienia nie zawiera identyfikatora wybranego głosu.
+
+### Cięcie i klipy
+
+- **F9.** Granica między kwestią i a i+1 wypada w środku najlepszej ciszy w oknie wyznaczonym czasami serwera,
+  według reguły z `plan.md` §7.4, na osi czasu MP3 z przeliczeniem uszkodzonych ramek.
+- **F10.** Granica bez wymaganej ciszy dostaje cięcie w punkcie zakotwiczenia; liczba takich granic trafia do logu
+  jako ostrzeżenie z liczbą.
+- **F11.** Przy silniku dokumentowym dwie kolejne kwestie łączą się w jedno żądanie syntezy, gdy pierwsza nie kończy
+  zdania, a druga zaczyna się najpóźniej w chwili końca pierwszej (§7.6 planu). Okno połączonej kwestii obejmuje oba
+  napisy. Przy pozostałych silnikach kwestie nie są łączone.
+- **F12.** Każdy klip przed tempem i ułożeniem traci ciszę na brzegach (§7.7 planu); klip bez mowy powyżej progu
+  zostaje bez zmian.
+
+### Głośność i tempo
+
+- **F13.** Przy miksie z oryginałem AudioService mierzy zintegrowaną głośność narratora i oryginału (`ebur128`) i
+  ustawia wzmocnienie narratora tak, by był `narrator_over_source_lu + voice_mix_offset_db` LU ponad oryginałem.
+- **F14.** Miks kończy limiter szczytów −1 dBFS bez normalizacji (`alimiter … level=0`). Ścieżka tylko z
+  narratorem zostaje bez wzmocnienia i bez limitera.
+- **F15.** Profile głosów mają domyślnie: Fronczewski tempo 1,45 i korekta 0 dB; Adam 1,35 i +2 dB; Dallin
+  (`elevenbytes`) 1,25 i 0 dB.
+- **F16.** Panel pokazuje „Głośność lektora” w LU ponad oryginał.
 
 ### Głosy
 
-- **F9.** Ustawienia oferują dla `elevenreader` dokładnie dwa aliasy: `fronczewski` (etykieta „Piotr Fronczewski”)
-  i `adam` (etykieta „Adam”); identyfikatory głosów pochodzą ze stałych silnika ustalonych w fazie 0.
-- **F10.** Domyślnym głosem silnika jest `fronczewski` (decyzja D3).
-- **F11.** Przełączenie z `elevenreader` na inny silnik nie przenosi aliasu, ID głosu ani modelu `eleven_v4`:
-  `elevenbytes` dostaje Dallin, `edge` i `sapi` swoje głosy domyślne, `elevenlabs` model domyślny i pusty głos do
-  wyboru; przełączenie na `elevenreader` ustawia głos domyślny `fronczewski`. Własne głosy ElevenBytes i profile
-  głosów (tempo, korekta głośności) pozostają zapisane.
-- **F12.** Każdy głos ElevenReadera ma własny profil `tts_voice_profiles` z tempem końcowym i korektą głośności;
-  współbieżność nie jest edytowalna.
+- **F17.** Ustawienia oferują dla `elevenreader` dwa głosy: `fronczewski` („Piotr Fronczewski”,
+  `T5l58N8RNz5DKoClpKIJ`) i `adam` („Adam”, `hIssydxXZ1WuDorjx6Ic`). Lista żyje tylko w silniku.
+- **F18.** Głos domyślny silnika: `fronczewski`.
+- **F19.** Przełączenie z `elevenreader` na inny silnik nie przenosi aliasu ani ID głosu: `elevenbytes` dostaje
+  Dallin, pozostałe silniki swoje głosy domyślne. Profile głosów zostają zapisane.
 
-### Sesja i logowanie
+### Sesja
 
-- **F13.** Sesja konta (cookies) żyje w prywatnym profilu Chrome w `config/elevenreader/chrome-profile/`,
-  zawężonym ACL do bieżącego konta Windows. Katalog `config/elevenreader/` jest w `.gitignore`, zanim powstanie w
-  nim pierwszy plik (repozytorium jest publiczne).
-- **F14.** Ustawienia → Lektor przy silniku `elevenreader` mają akcję „Zaloguj / sprawdź sesję”, która otwiera
-  widoczne okno Chrome na stronie ElevenReadera i kończy się wynikiem: zalogowano, nie zalogowano, przeglądarka
-  zajęta albo brak Chrome.
-- **F15.** Przy ważnej sesji silnik pracuje bez działań człowieka (logowanie automatyczne przez zapisaną sesję).
-- **F16.** Gdy sesja wygasła, silnik zgłasza błąd uwierzytelnienia z sugestią akcji z F14; jeśli w `.env` są dane
-  logowania i faza 0 potwierdzi logowanie e-mailem i hasłem bez captchy, silnik najpierw próbuje jednego
-  automatycznego logowania (decyzja D2).
-- **F17.** Wynik ostatniego sprawdzenia sesji (zalogowano lub nie, czas) jest zapisany bez sekretów w
-  `config/elevenreader/session.json` i pokazywany w panelu.
-
-### Diagnostyka
-
-- **F18.** `anishift doctor` zgłasza dla wybranego silnika `elevenreader`: brak Chrome jako FAIL, brak profilu
-  albo ostatnie sprawdzenie „nie zalogowano” jako WARN z sugestią akcji z F14; dla innego silnika — SKIP.
-- **F19.** `doctor` nie uruchamia przeglądarki i nie łączy się z ElevenReaderem.
+- **F20.** Sesja konta żyje w profilu Chrome w `config/elevenreader/chrome-profile/`, zawężonym ACL do bieżącego
+  konta Windows. `config/elevenreader/` jest w `.gitignore`, zanim powstanie w nim pierwszy plik.
+- **F21.** Ustawienia → Lektor przy `elevenreader` mają akcję „Zaloguj / sprawdź sesję”: otwiera okno Chrome na
+  bibliotece ElevenReadera i kończy się wynikiem „zalogowano”, „nie zalogowano”, „przeglądarka zajęta” albo „brak
+  Chrome”.
+- **F22.** Przy ważnej sesji silnik pracuje bez działań człowieka.
+- **F23.** Wygasła sesja kończy syntezę błędem uwierzytelnienia z sugestią akcji z F21; wynik ostatniego sprawdzenia
+  (bez sekretów, z czasem) leży w `config/elevenreader/session.json` i jest widoczny w panelu.
+- **F24.** `anishift doctor` przy wybranym `elevenreader`: brak Chrome to FAIL, brak profilu albo ostatnie
+  „nie zalogowano” to WARN z sugestią F21; przy innym silniku SKIP. Doctor nie uruchamia przeglądarki.
 
 ### Błędy
 
-- **F20.** Odmowa uwierzytelnienia, blokada konta i wyczerpane kredyty kończą próbę błędem trwałym, który otwiera
-  circuit schedulera; AniShift ich nie ponawia.
-- **F21.** Niedostępność serwisu, zerwane połączenie, brak audio po starcie i przestój nagrywania są błędami
-  przejściowymi ponawianymi przez wspólny scheduler.
-- **F22.** Komunikat błędu w panelu mówi, co zrobić: zalogować się, poczekać na doładowanie kredytów albo przełączyć
-  silnik na `elevenbytes`.
+- **F25.** Odmowa uwierzytelnienia, blokada konta, wyczerpane kredyty i zły głos kończą próbę błędem trwałym, który
+  otwiera circuit schedulera; AniShift ich nie ponawia.
+- **F26.** Niedostępność serwisu, zerwane połączenie, brak audio po starcie, przestój, niekompletne nagranie i
+  niezgodna liczba kwestii są błędami przejściowymi ponawianymi przez wspólny scheduler.
+- **F27.** Komunikat trwałego błędu w panelu mówi, co zrobić: zalogować się, poczekać na kredyty albo przełączyć
+  silnik na `elevenbytes`. Żaden błąd nie kończy się cichym zatrzymaniem.
+- **F28.** Sprzątanie (U14) biegnie także po błędzie i anulowaniu. Nieudane sprzątanie silnik ponawia przy
+  następnej próbie i przy zamknięciu; jeśli i to zawiedzie, zostaje ostrzeżenie w logu i komunikat w panelu, że
+  dokument lub ustawienia konta trzeba poprawić ręcznie. Błąd sprzątania nie unieważnia gotowego nagrania.
 
 ## Wymagania jakościowe
 
-- **N1.** Żadna ścieżka logu, wyjątku, receipt, ledgera (`config/watch/`), `decisions.jsonl` ani dokumentu nie
-  zawiera: cookies, haseł, adresu e-mail, adresu WebSocketu, odpowiedzi HTTP, tekstu kwestii, ścieżek absolutnych.
-- **N2.** Słowo nie jest ucinane na granicy klipu w ocenie ucha właściciela; automatycznie: liczba granic bez ciszy
-  jest logowana jako liczba, a każda kwestia ma długość mowy większą od zera.
-- **N3.** Odcinek o około 300 kwestiach (około 12 000 znaków) kończy syntezę w czasie rzędu kilku minut
-  (EDP: około 4,6x czasu rzeczywistego, `docs/research/capabilities.md:116`); pomiar w fazie 6, bez progu
-  narzuconego z góry.
-- **N4.** Anulowanie przebiegu zatrzymuje nagrywanie w ciągu kilku sekund, zamyka kartę i przeglądarkę.
+- **N1.** Żaden log, wyjątek, receipt, ledger (`config/watch/`), `decisions.jsonl` ani dokument nie zawiera:
+  cookies, tokenu, adresu e-mail, adresu WebSocketu, `read_id`, odpowiedzi HTTP, tekstu kwestii, ścieżek
+  absolutnych.
+- **N2.** Na danych Tantei S2E03 cięcie daje te same granice co prototyp `SCR/snapcut.py` (±10 ms) dla obu głosów.
+- **N3.** Odcinek około 20 000 znaków kończy nagrywanie w czasie rzędu kilku minut (prototyp: 245 s).
+- **N4.** Anulowanie przebiegu zatrzymuje nagrywanie w ciągu kilku sekund i zamyka Chrome.
 - **N5.** Zamknięcie rezydenta kończy proces Chrome uruchomiony przez silnik.
 - **N6.** Bramki jakości przechodzą na `anishift/ tests/`, bez testów sieciowych w domyślnym `uv run pytest`.
-- **N7.** Postęp w Przetwarzaniu pochodzi z pomiaru: liczby odebranych znaków wobec `char_count` dokumentu.
+- **N7.** Postęp w Przetwarzaniu pochodzi z pomiaru: odebrane znaki wobec `char_count` dokumentu.
 
 ## Inwarianty
 
-- **I1.** `elevenbytes`, `edge`, `elevenlabs` i `sapi` działają jak przed zmianą; ich testy przechodzą bez zmian
-  zachowania.
+- **I1.** `elevenbytes`, `edge`, `elevenlabs` i `sapi` syntetyzują jak przed zmianą, także bez łączenia kwestii.
+  Zmiany wspólne dla wszystkich głosów są dwie i jawne: przycinanie brzegów (F12, zakres do potwierdzenia w D1) i
+  mierzona głośność (F13–F14).
 - **I2.** Domena TTS nie importuje `pysubs2`, `anishift.services.audio`, `anishift.services.subtitles` ani
-  `anishift.services.translation` (`tests/services/tts/test_tts_contract.py:190`).
+  `anishift.services.translation`.
 - **I3.** Retry, circuit i limity należą wyłącznie do wspólnego schedulera; transport silnika wykonuje jedną próbę.
-- **I4.** Tożsamość resume klipu kwestii obejmuje tekst kwestii i profil silnika z głosem; zmiana głosu unieważnia
-  resume.
-- **I5.** Domyślny silnik w `UserSettings` pozostaje `elevenbytes` (decyzja D8).
+- **I4.** Tożsamość resume klipu obejmuje tekst kwestii i profil silnika z głosem; zmiana głosu unieważnia resume.
+- **I5.** Domyślny silnik w `UserSettings` pozostaje `elevenbytes`; właściciel przełącza go sam po checkpoincie.
 
 ## Ograniczenia
 
 - **O1.** Tylko Windows i zainstalowany Google Chrome w standardowej lokalizacji albo na `PATH`.
 - **O2.** Chrome 136+ ignoruje `--remote-debugging-port` dla domyślnego katalogu danych; profil musi być osobnym
-  katalogiem (<https://developer.chrome.com/blog/remote-debugging-port>, odczyt 2026-10-25).
+  katalogiem.
 - **O3.** Jedno konto, jeden dokument naraz, jedna przeglądarka na profil.
-- **O4.** Wewnętrzne API ElevenReadera jest nieudokumentowane i może zmienić się bez ostrzeżenia
-  (`docs/research/capabilities.md:154`).
-- **O5.** Nowa zależność tylko `playwright` (przez `uv add`); bez pobierania przeglądarek Playwright.
-- **O6.** Głos Fronczewskiego ma kategorię `famous`; nagrania służą prywatnemu odsłuchowi
-  (`docs/research/capabilities.md:153`).
+- **O4.** Wewnętrzne API ElevenReadera jest nieudokumentowane i może zmienić się bez ostrzeżenia.
+- **O5.** Nowa zależność tylko `playwright` (przez `uv add`), bez pobierania przeglądarek Playwright.
+- **O6.** Głos Fronczewskiego ma kategorię `famous`; nagrania służą prywatnemu odsłuchowi i nie trafiają do
+  repozytorium.
+- **O7.** Próg ciszy −35 dBFS jest wąskim optimum zmierzonym na jednym odcinku (`SCR/snap-report.md` §6).
 
 ## Zakazane
 
-- **Z1.** Obchodzenie App Check, limitów urządzenia, sprawdzania IP, limitów kredytów; podrabianie ramek WebSocket;
-  bezpośrednie wywołania API poza tym, co robi strona w prawdziwym Chrome; wiele kont.
+- **Z1.** Obchodzenie App Check, limitów urządzenia, sprawdzania IP i limitów kredytów; podrabianie ramek
+  WebSocket; wiele kont. Żądania poza kliknięciami w interfejs wolno wysyłać tylko do tych endpointów, których
+  strona sama używa (`user_config`, `reads/{id}`), z kontekstu zalogowanej strony i jej własnym tokenem.
 - **Z2.** Automatyczne przełączanie silnika lub głosu w trakcie odcinka.
 - **Z3.** Edycja repozytorium EDP, import jego modułów, odczyt jego profili `.chrome-profile/` i `.browser-profile/`.
-- **Z4.** Commitowanie nagrań głosów ElevenReadera, prawdziwych ramek z audio głosu, cookies i plików profilu.
-- **Z5.** Ręczna edycja `pyproject.toml`; zależności tylko `uv add` / `uv remove`.
+- **Z4.** Commitowanie nagrań głosów ElevenReadera, ramek z prawdziwym audio, cookies i plików profilu.
+- **Z5.** Ręczna edycja `pyproject.toml`.
 - **Z6.** Retry wewnątrz transportu silnika.
-- **Z7.** Automatyczne ponawianie po 401, 403 i wyczerpaniu kredytów.
+- **Z7.** Automatyczne ponawianie po odmowie dostępu, blokadzie konta i wyczerpaniu kredytów.
+- **Z8.** Model mowy (CrisperWhisper, Whisper i podobne) w kodzie produktu.
+- **Z9.** Aliasy, stare nazwy pól i warstwy zgodności: `narrator_mix_base_gain_db` znika w całym repo w tym samym
+  diffie, a dane właściciela przenosi jednorazowy skrypt w `scripts/tmp/`.
 
 ## Zakres
 
 - Kontrakt syntezy dokumentu w domenie TTS i uogólnienie schedulera.
-- Wspólne parsowanie ramek MPEG, cięcie nagrania na klipy w ciszy w domenie audio.
-- Silnik `elevenreader`: przeglądarka, sesja, upload, odtwarzanie, nagrywanie, wyrównanie kwestii.
-- Ustawienia, panel, `doctor`, `paths.py`, `.gitignore`, kompozycja w `application/runtime.py`.
-- Testy jednostkowe i integracyjne bez sieci, test sieciowy pomijany domyślnie.
-- Aktualizacja `AGENTS.md` dotkniętych obszarów, `config/README.md`, `docs/reference/settings.md`, README.
+- Wspólne parsowanie ramek MPEG w `anishift/utils/`, cięcie nagrania na klipy, przycinanie brzegów i mierzona
+  głośność w domenie audio.
+- Łączenie kwestii urwanych w `TtsTaskHandler`, włączane tylko dla silnika dokumentowego.
+- Silnik `elevenreader`: przeglądarka, sesja, konto, upload, nagrywanie, czasy kwestii.
+- Ustawienia, profile głosów, panel, `doctor`, `paths.py`, `.gitignore`, kompozycja w `application/runtime.py`.
+- Testy jednostkowe i integracyjne bez sieci; test zgodności cięcia na danych spoza repo; test sieciowy pomijany
+  domyślnie.
+- Aktualizacja AGENTS.md dotkniętych obszarów, `config/README.md`, `docs/reference/settings.md`, README EN i PL.
 
 ## Poza zakresem
 
 - Audiobooki z rozdziałami, karaoke, eksport słownych czasów.
 - Monitor kredytów i estymacja kosztu przed nagraniem.
-- Usuwanie dokumentów z biblioteki ElevenReadera (decyzja D5).
-- Etap 6 jakości (głośność lektora) — wraca po akceptacji silnika.
+- Logowanie e-mailem i hasłem z `.env`.
+- Próg ciszy liczony względem głośności głosu (wraca, jeśli walidacja Edgerunners go wymusi).
 - Linux.
-
-## Odłożone
-
-- Ponowne użycie wgranego dokumentu między przebiegami (mapa skrót → `read_id` na dysku): w MVP ponowne użycie
-  dotyczy tylko prób w jednym przebiegu.
-- Słowne czasy do raportu jakości lektora.
-
-## Odrzucone
-
-- Zależność pakietowa od EDP i uruchamianie EDP jako procesu (powody w `intent.md`).
-- Osobny dokument na kwestię.
-- Model ASR do wyrównania.
-- Playwright `launch_persistent_context` zamiast prawdziwego Chrome z CDP: EDP celowo używa CDP, by logowanie
-  Google działało (`src/downloader.py:3`).
 
 ## Warunki sukcesu
 
 - **S1.** Bramki: `uv run ruff check anishift/ tests/`, `uv run ruff format --check anishift/ tests/`,
-  `uv run mypy anishift/ tests/`, `uv run pytest` — zielone na końcowym commicie.
-- **S2.** Test sieciowy silnika uruchomiony ręcznie przez właściciela (`-m network`, zmienna zgody) nagrywa krótki
-  dokument trzech kwestii i daje trzy zwalidowane klipy.
-- **S3.** Checkpoint ucha (plan, faza 6): właściciel akceptuje głos, tempo i głośność na jednym prawdziwym
-  odcinku, bez uciętych słów.
-- **S4.** Powrót na `elevenbytes` w Ustawieniach daje działający przebieg tego samego odcinka.
-- **S5.** Przegląd kodu krzyżowy (inny model niż autor) bez findingów krytycznych i poważnych.
-- **S6.** Skan sekretów: `git grep` na gałęzi nie znajduje adresu e-mail właściciela, nazw cookies ani plików
-  profilu.
+  `uv run mypy anishift/ tests/`, `uv run mypy --platform linux anishift/ tests/`, `uv run pytest` — zielone na
+  końcowym commicie.
+- **S2.** Test zgodności cięcia (N2) przechodzi na danych Tantei; walidacja Edgerunners 02 i 03 nie pokazuje
+  uciętych słów ani wycieków.
+- **S3.** Test sieciowy silnika uruchomiony przez właściciela nagrywa krótki dokument trzech kwestii i daje trzy
+  zwalidowane klipy.
+- **S4.** Checkpoint ucha: właściciel akceptuje głos, tempo i głośność na jednym prawdziwym odcinku każdym z dwóch
+  głosów.
+- **S5.** Powrót na `elevenbytes` w Ustawieniach daje działający przebieg tego samego odcinka.
+- **S6.** Przegląd kodu krzyżowy (inny model niż autor) bez findingów krytycznych i poważnych.
+- **S7.** Skan sekretów: `git grep` w `anishift/` i `tests/` nie znajduje adresu e-mail, tokenów, `read_id` ani
+  plików profilu; `config/elevenreader/` jest ignorowany przez git.
 
 ## Otwarte decyzje właściciela
 
-Plan realizuje rekomendację każdej decyzji jako założenie.
+Plan realizuje rekomendację jako założenie.
 
-- **D1. Zapas `elevenbytes`: ręczny czy automatyczny?** Rekomendacja: ręczny. Automat łamie regułę domeny, mieszałby
-  głosy w jednym odcinku i maskował ban.
-- **D2. Logowanie: tylko zapisana sesja czy też automatyczne wpisywanie e-maila i hasła?** Rekomendacja: zapisana
-  sesja plus akcja „Zaloguj” w panelu; wpisywanie danych tylko wtedy, gdy faza 0 pokaże konto e-mail bez captchy.
-  Konto Google wymaga ręcznego logowania (EDP: `src/downloader.py:3`).
-- **D3. Głos domyślny.** Rekomendacja: Piotr Fronczewski — polski, na nim zrobiono wszystkie pomiary EDP.
-- **D4. Kwestie jako osobne akapity czy jeden akapit?** Rekomendacja: osobne akapity — wyraźna cisza do cięcia,
-  koszt około +50% znaków (`docs/research/capabilities.md:105-108`).
-- **D5. Dokumenty w bibliotece ElevenReadera po nagraniu: zostawić czy usuwać?** Rekomendacja: zostawić — mniej
-  automatyzacji strony i mniej ryzyka; właściciel czyści bibliotekę ręcznie.
-- **D6. Skopiować zalogowany profil EDP czy zalogować się od nowa?** Rekomendacja: od nowa — EDP zostaje
-  nietknięty, a jednorazowe logowanie jest tańsze niż ryzyko z kopią profilu.
-- **D7. Kod automatyzacji w publicznym repozytorium AniShift.** Rekomendacja: zaakceptować świadomie — repozytorium
-  jest publiczne z wyboru właściciela, kod nie zawiera sekretów; alternatywą jest prywatny pakiet, kosztowny w
-  utrzymaniu.
-- **D8. Kiedy `elevenreader` staje się domyślny?** Rekomendacja: domyślny w kodzie zostaje `elevenbytes`;
-  właściciel przełącza silnik sam po checkpoincie.
-- **D9. Przeglądarka przy nagrywaniu: bez okna czy z oknem?** Rekomendacja: bez okna (`--headless=new`, wspierane w
-  EDP, `README.md:84`), jeśli faza 0 to potwierdzi; inaczej zminimalizowane okno.
-- **D10. Szyldy czytane tym samym silnikiem?** Rekomendacja: tak, jednym głosem w całym odcinku.
-- **D11. Pamiętać ostatni głos osobno dla każdego silnika?** Rekomendacja: nie; F11 wystarcza.
+- **D1. Przycinanie ciszy na brzegach klipów — także dla Dallina (`elevenbytes`) i pozostałych silników?**
+  Rekomendacja: tak, jedna obróbka audio dla wszystkich. Pomiar: u Dallina kwestii dłuższych niż okno napisu ubywa
+  z 30 do 10.
