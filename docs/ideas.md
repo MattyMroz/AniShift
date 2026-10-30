@@ -69,6 +69,7 @@ Oglądanie tylko lokalnie na PC. Cel: zobaczyć obrazek, poznać tytuł, wybrać
   - Motywacja: darmowy plan ma 10 h audio miesięcznie; płatny daje praktycznie nieograniczone użycie modeli ElevenLabs (Multilingual v2, v3, Eleven v4, Flow 4).
   - Wątpliwości: wydajność, bo każdy odcinek to osobny projekt w aplikacji.
   - **Ryzyko do sprawdzenia przed jakąkolwiek implementacją:** zgodność z regulaminem ElevenReader i ElevenLabs. Automatyzacja aplikacji konsumenckiej i użycie jej audio poza nią mogą naruszać warunki i grozić utratą konta.
+- **Gemini 3.8 Live jako lektor albo tłumacz** — `do zbadania`. Klucz Gemini właściciela ma ten model (Live API) bez limitu zapytań dziennie i na minutę, z limitem 65K tokenów na minutę. Live API to model rozmowy głosowej w czasie rzeczywistym; trzeba sprawdzić jakość polskiego głosu, kontrolę tempa i czy da się z niego zrobić silnik TTS albo tłumaczenia.
 - **Wiele głosów (głos per postać)** — `kiedyś`. Pole `Actor` lub styl ASS mapowany na głos TTS. Zależy od jakości klasyfikacji i pól `Actor` w fansubach; mnoży koszt płatnych silników.
 
 ## 5. Utrzymanie i technika
