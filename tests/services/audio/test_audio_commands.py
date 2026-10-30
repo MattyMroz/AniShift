@@ -292,7 +292,7 @@ def test_join_clips_command_rejects_single_source() -> None:
 
 
 @pytest.mark.unit
-def test_loudness_command_measures_first_audio_stream_with_quiet_ebur128() -> None:
+def test_loudness_command_multichannel_source_downmixes_to_stereo_before_ebur128() -> None:
     assert loudness_command(Path("ffmpeg"), Path("voice clip.wav")) == (
         "ffmpeg",
         "-hide_banner",
@@ -305,7 +305,7 @@ def test_loudness_command_measures_first_audio_stream_with_quiet_ebur128() -> No
         "-map",
         "0:a:0",
         "-af",
-        "ebur128=framelog=quiet",
+        "aformat=channel_layouts=stereo,ebur128=framelog=quiet",
         "-f",
         "null",
         "-",

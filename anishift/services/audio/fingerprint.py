@@ -24,8 +24,8 @@ __all__ = [
 _NARRATION_ALGORITHM_VERSION: Final[int] = 1
 """Version of normalization and serialized timeline semantics."""
 
-_MIX_ALGORITHM_VERSION: Final[int] = 4
-"""Version of source alignment, measured gain, channel mapping, amix, and limiter semantics."""
+_MIX_ALGORITHM_VERSION: Final[int] = 5
+"""Version of source alignment, stereo-downmix measured gain, channel mapping, amix, and limiter semantics."""
 
 _NORMALIZATION_ALGORITHM_VERSION: Final[int] = 2
 """Version of provider-clip conversion semantics."""

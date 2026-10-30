@@ -357,7 +357,7 @@ def scan_duration_command(ffmpeg: Path, path: Path) -> tuple[str, ...]:
 
 
 def loudness_command(ffmpeg: Path, path: Path) -> tuple[str, ...]:
-    """Build an EBU R128 measurement of the first audio stream that prints its summary to stderr."""
+    """Build an EBU R128 measurement of the first audio stream downmixed to stereo, printing its summary to stderr."""
     return (
         str(ffmpeg),
         "-hide_banner",
@@ -370,7 +370,7 @@ def loudness_command(ffmpeg: Path, path: Path) -> tuple[str, ...]:
         "-map",
         "0:a:0",
         "-af",
-        "ebur128=framelog=quiet",
+        "aformat=channel_layouts=stereo,ebur128=framelog=quiet",
         "-f",
         "null",
         "-",

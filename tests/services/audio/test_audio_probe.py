@@ -378,7 +378,7 @@ def test_measure_integrated_loudness_summary_returns_integrated_lufs(tmp_path: P
 
     assert loudness == -21.8
     assert runner.calls[0][1] == "measure_loudness"
-    assert runner.calls[0][0][-4:] == ("ebur128=framelog=quiet", "-f", "null", "-")
+    assert runner.calls[0][0][-4:] == ("aformat=channel_layouts=stereo,ebur128=framelog=quiet", "-f", "null", "-")
 
 
 @pytest.mark.unit

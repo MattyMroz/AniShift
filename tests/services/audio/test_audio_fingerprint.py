@@ -175,8 +175,8 @@ def test_normalization_fingerprint_edge_trim_change_changes_identity(
 
 
 @pytest.mark.unit
-def test_mix_fingerprint_algorithm_version_is_four() -> None:
-    assert fingerprint._MIX_ALGORITHM_VERSION == 4
+def test_mix_fingerprint_algorithm_version_is_five() -> None:
+    assert fingerprint._MIX_ALGORITHM_VERSION == 5
 
 
 @pytest.mark.unit

@@ -31,6 +31,14 @@ pytestmark = [
 ]
 
 _TRUE_PEAK: re.Pattern[str] = re.compile(r"True peak:\s+Peak:\s+(\S+)\s+dBFS")
+_NARRATOR_GAIN: re.Pattern[str] = re.compile(r"volume=(-?[\d.]+)dB\[narrator\]")
+_SURROUND_SOURCE: str = (
+    "anoisesrc=color=pink:r=48000:a=0.2:d=4:seed=7,asplit=3[front_left][front_right][center];"
+    "anoisesrc=color=pink:r=48000:a=0.1:d=4:seed=9[surround_left];"
+    "anoisesrc=color=pink:r=48000:a=0.1:d=4:seed=11[surround_right];"
+    "sine=frequency=60:sample_rate=48000:duration=4[lfe];"
+    "[front_left][front_right][center][lfe][surround_left][surround_right]join=inputs=6:channel_layout=5.1"
+)
 _LIMITER_CEILING_DBTP: float = -1.0
 _TRUE_PEAK_TOLERANCE_DB: float = 0.1
 
@@ -195,3 +203,35 @@ def test_audio_service_loud_narrator_mix_stays_below_limiter_ceiling(tmp_path: P
     assert result.output_path is not None
     assert len(runner.operations("measure_loudness")) == 2
     assert _true_peak_dbtp(result.output_path) <= _LIMITER_CEILING_DBTP + _TRUE_PEAK_TOLERANCE_DB
+
+
+def _ffmpeg(*arguments: str) -> None:
+    assert FFMPEG is not None
+    SubprocessRunner().run((str(FFMPEG), "-v", "error", "-y", *arguments), operation="fixture", timeout_s=30.0)
+
+
+def _narrator_gain_db(tmp_path: Path, source: Path, clip: Path) -> float:
+    runner: _MeasuringRunner = _MeasuringRunner()
+    result: AudioRenderResult = _service(runner, AudioConfig(codec_profile=AudioCodecProfile.WAV)).render(
+        _request(tmp_path, source, clip)
+    )
+    render: tuple[str, ...] = runner.operations("render_output")[0]
+    match: re.Match[str] | None = _NARRATOR_GAIN.search(render[render.index("-filter_complex") + 1])
+    assert result.status is AudioRenderStatus.COMPLETED
+    assert match is not None
+    return float(match.group(1))
+
+
+def test_audio_service_surround_source_and_its_stereo_downmix_give_the_same_narrator_gain(tmp_path: Path) -> None:
+    surround: Path = tmp_path / "surround.wav"
+    stereo: Path = tmp_path / "stereo.wav"
+    _ffmpeg("-f", "lavfi", "-i", _SURROUND_SOURCE, "-c:a", "pcm_s16le", str(surround))
+    _ffmpeg("-i", str(surround), "-ac", "2", "-c:a", "pcm_f32le", str(stereo))
+    clip: Path = _lavfi(tmp_path / "clip.wav", "sine=frequency=440:sample_rate=48000:duration=1.5")
+    (tmp_path / "surround").mkdir()
+    (tmp_path / "stereo").mkdir()
+
+    surround_gain: float = _narrator_gain_db(tmp_path / "surround", surround, clip)
+    stereo_gain: float = _narrator_gain_db(tmp_path / "stereo", stereo, clip)
+
+    assert surround_gain == pytest.approx(stereo_gain, abs=0.5)

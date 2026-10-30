@@ -52,6 +52,12 @@ sidecara audio przez FFmpeg.
   ustawia gain `source_I + narrator_over_source_lu + voice_mix_offset_db − narrator_I`.
   Trafienie resume nie mierzy; wynik pomiaru nie wchodzi do fingerprintu, bo zależy
   tylko od już hashowanych plików. `service.py`, `probe.py`
+- Pomiar słyszy wejście jak w stereo: `loudness_command` stawia przed `ebur128`
+  `aformat=channel_layouts=stereo` (standardowy downmix swresample, bez normalizacji
+  macierzy, bo `ebur128` liczy w `dbl`). Mono i stereo mierzą się tak samo jak bez niego,
+  surround po downmiksie. Samo `-ac 2` nie działa: jako opcja wyjścia przekształca
+  dźwięk dopiero za filtrem pomiaru. Zmiana pomiaru to podbicie `_MIX_ALGORITHM_VERSION`.
+  `commands.py`, `fingerprint.py`
 - Pomiar bez mierzalnej głośności (`-inf`, brak `Summary:` albo wartość na bramce
   bezwzględnej −70 LUFS, czyli cisza lub sygnał krótszy niż 400 ms) jest
   `AudioDecodeError`, nigdy cichym gainem z liczby −70. Fixture testu miksu z

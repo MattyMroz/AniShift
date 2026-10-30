@@ -309,7 +309,7 @@ def measure_integrated_loudness(
     timeout_s: float,
     cancel: threading.Event | None = None,
 ) -> float:
-    """Return the EBU R128 integrated loudness of the first audio stream in LUFS."""
+    """Return the EBU R128 integrated loudness in LUFS of the first audio stream as heard downmixed to stereo."""
     if not path.is_file() or path.stat().st_size == 0:
         _raise_loudness("Loudness input is missing or empty")
     result: CommandResult = runner.run(
