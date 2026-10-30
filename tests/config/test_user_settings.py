@@ -173,7 +173,7 @@ def test_defaults_include_all_panel_fields() -> None:
     assert s.tts_output_profile == "eac3"
     assert s.tts_output_bitrate is None
     assert s.tts_timeline_policy == "serialize"
-    assert s.narrator_mix_base_gain_db == 7.0
+    assert s.narrator_over_source_lu == 7.5
     assert s.original_gain_db == 0.0
     assert s.output_variant == "players"
     assert s.composition_quality_preset == "balanced"
@@ -205,7 +205,7 @@ def test_full_roundtrip_preserves_every_field() -> None:
         elevenbytes_vpn_enabled=False,
         tts_output_profile="opus",
         tts_output_bitrate="192k",
-        narrator_mix_base_gain_db=6.0,
+        narrator_over_source_lu=6.0,
         original_gain_db=-1.5,
         tts_voice_profiles=profiles,
         elevenbytes_custom_voices=[
@@ -307,10 +307,10 @@ def test_load_does_not_migrate_legacy_tempo(config_file: Path) -> None:
     assert profile.postprocess_tempo == 1.25
 
 
-def test_load_does_not_migrate_legacy_volume_to_mix_gain(config_file: Path) -> None:
+def test_load_does_not_migrate_legacy_volume_to_narrator_loudness(config_file: Path) -> None:
     config_file.write_text(json.dumps({"volume": 60}), encoding="utf-8")
     loaded = load_user_settings()
-    assert loaded.narrator_mix_base_gain_db == 7.0
+    assert loaded.narrator_over_source_lu == 7.5
     assert loaded.original_gain_db == 0.0
 
 
@@ -467,7 +467,7 @@ def test_default_voice_profiles_match_stage_six_decisions() -> None:
     marek = profiles["edge:pl-PL-MarekNeural"]
     zofia = profiles["edge:pl-PL-ZofiaNeural"]
 
-    assert (dallin.postprocess_tempo, dallin.voice_mix_offset_db, dallin.concurrency) == (1.25, -2.0, 85)
+    assert (dallin.postprocess_tempo, dallin.voice_mix_offset_db, dallin.concurrency) == (1.25, 0.0, 85)
     assert (agnieszka.native_rate, agnieszka.native_volume, agnieszka.voice_mix_offset_db) == (5, 65, 2.0)
     assert (zosia.native_rate, zosia.native_volume, zosia.voice_mix_offset_db) == (200, 0.7, 0.0)
     assert (marek.native_rate, marek.native_volume, marek.voice_mix_offset_db) == ("+40%", "+0%", 0.0)

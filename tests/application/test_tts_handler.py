@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from conftest import MM_AVH_TEMP
 
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState
 from anishift.application.cancellation import EventCancellationToken, NeverCancelledToken
@@ -31,10 +30,11 @@ from anishift.application.tts_handler import (
 )
 from anishift.config.settings import Settings
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError
+from anishift.paths import quality_dir
 from anishift.platform.binaries import Binary, resolve_binary
 from anishift.services.audio.commands import CommandResult
 from anishift.services.audio.errors import AudioProcessError
-from anishift.services.audio.types import NormalizedClip, PcmStorage, TimedClip
+from anishift.services.audio.types import NormalizedClip, TimedClip
 from anishift.services.subtitles import SignCandidate, SpokenLine
 from anishift.services.tts import (
     AudioFormat,
@@ -56,7 +56,7 @@ _SPOKEN_PARAMETERS: tuple[tuple[str, str | int | bool], ...] = (
 )
 
 _OPEN_PAIR: tuple[tuple[int, int, str], ...] = ((1_000, 2_000, "Kiedy wrócisz"), (2_000, 3_500, "do domu?"))
-_TANTEI_LINES: Path = MM_AVH_TEMP / "elevenreader" / "tantei" / "lines.json"
+_TANTEI_LINES: Path = quality_dir() / "elevenreader" / "tantei" / "lines.json"
 
 
 class _Progress:
@@ -218,7 +218,7 @@ class _Preparer:
     def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
         del cancel
         self.roots.add(tmp_root)
-        return NormalizedClip(clip, tmp_root / f"{clip.request_id}.pcm", 1000, 2, 1, 500, PcmStorage.RAW, False)
+        return NormalizedClip(clip, tmp_root / f"{clip.request_id}.pcm", 1000, 2, 1, 500)
 
 
 def _signed_synthesis(tmp_path: Path) -> tuple[PlanTask, ArtifactSnapshot]:
@@ -928,6 +928,21 @@ def test_narration_without_joining_open_pair_keeps_two_requests(tmp_path: Path) 
 
 def test_narration_joining_open_pair_without_gap_sends_one_request_over_both_windows(tmp_path: Path) -> None:
     batch, manifest = _joined_reading(tmp_path, _OPEN_PAIR, join_open_lines=True)
+
+    assert [(request.request_id, request.text) for request in batch.requests] == [
+        ("group-1-0", "Kiedy wrócisz do domu?"),
+    ]
+    assert [(clip.start_ms, clip.end_ms, clip.source_order) for clip in manifest.clips] == [(1_000, 3_500, 0)]
+
+
+def test_narration_joining_open_line_before_non_speech_line_joins_next_spoken_line(tmp_path: Path) -> None:
+    cues: tuple[tuple[int, int, str], ...] = (
+        (1_000, 2_000, "Kiedy wrócisz"),
+        (1_500, 1_900, "♪"),
+        (2_000, 3_500, "do domu?"),
+    )
+
+    batch, manifest = _joined_reading(tmp_path, cues, join_open_lines=True)
 
     assert [(request.request_id, request.text) for request in batch.requests] == [
         ("group-1-0", "Kiedy wrócisz do domu?"),

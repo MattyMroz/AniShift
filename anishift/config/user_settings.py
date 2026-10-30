@@ -216,7 +216,6 @@ def default_tts_voice_profiles() -> dict[str, TtsVoiceProfileSettings]:
     return {
         _DALLIN_PROFILE_KEY: TtsVoiceProfileSettings(
             postprocess_tempo=1.25,
-            voice_mix_offset_db=-2.0,
             concurrency=85,
         ),
         _SAPI_AGNIESZKA_PROFILE_KEY: TtsVoiceProfileSettings(
@@ -281,7 +280,7 @@ class UserSettings:
     tts_output_profile: str = AudioCodecProfile.EAC3.value
     tts_output_bitrate: str | None = None
     tts_timeline_policy: str = TimelinePolicy.SERIALIZE.value
-    narrator_mix_base_gain_db: float = 7.0
+    narrator_over_source_lu: float = 7.5
     original_gain_db: float = 0.0
     tts_voice_profiles: dict[str, TtsVoiceProfileSettings] = field(
         default_factory=default_tts_voice_profiles,
@@ -863,7 +862,7 @@ def load_user_settings() -> UserSettings:  # noqa: PLR0915 - explicit tolerant f
     _clean_string(filtered, "tts_output_profile", _TTS_OUTPUT_PROFILES)
     _clean_tts_bitrate(filtered)
     _clean_string(filtered, "tts_timeline_policy", _TTS_TIMELINE_POLICIES)
-    _clean_finite_number(filtered, "narrator_mix_base_gain_db")
+    _clean_finite_number(filtered, "narrator_over_source_lu")
     _clean_finite_number(filtered, "original_gain_db")
     filtered["tts_voice_profiles"] = _load_voice_profiles(filtered.get("tts_voice_profiles"))
     filtered["elevenbytes_custom_voices"] = _load_custom_voices(filtered.get("elevenbytes_custom_voices"))

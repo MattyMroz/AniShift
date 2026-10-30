@@ -195,7 +195,7 @@ def test_the_run_snapshot_becomes_the_audio_configuration() -> None:
     plan: ExecutionPlan = _plan(
         audio_output_profile="aac",
         audio_bitrate="192k",
-        narrator_mix_base_gain_db=7.0,
+        narrator_over_source_lu=6.5,
         voice_mix_offset_db=-2.0,
         original_gain_db=-1.5,
     )
@@ -204,7 +204,7 @@ def test_the_run_snapshot_becomes_the_audio_configuration() -> None:
 
     assert config.codec_profile is AudioCodecProfile.AAC
     assert config.bitrate == "192k"
-    assert config.narrator_mix_base_gain_db == 7.0
+    assert config.narrator_over_source_lu == 6.5
     assert config.voice_mix_offset_db == -2.0
     assert config.original_gain_db == -1.5
     assert config.timeline_policy is TimelinePolicy.SERIALIZE

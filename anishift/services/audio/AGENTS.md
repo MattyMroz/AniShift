@@ -24,6 +24,20 @@ sidecara audio przez FFmpeg.
   początku i na końcu. Żądanie z własnymi czasami nie dostaje ani milisekundy
   więcej. Flaga wchodzi do `narration_fingerprint`, więc gapless manifest nigdy nie
   jest trafieniem resume. `timeline.py`, `fingerprint.py`
+- Każdy klip każdego silnika przechodzi przez FFmpeg i po `atempo` traci ciszę na
+  brzegach: zostaje zakres od pierwszej do ostatniej ramki 10 ms powyżej
+  `EDGE_TRIM_DBFS` plus `EDGE_TRIM_MARGIN_MS` z obu stron; klip bez takiej ramki
+  zostaje cały. Nie ma ścieżki „neutralny WAV bez przetwarzania”: wynikiem
+  normalizacji jest zawsze surowy PCM. Zmiana progu albo marginesu wchodzi do
+  `normalization_fingerprint` (sekcja `edge_trim`). `normalize.py`, `levels.py`
+- `levels.py` jest jedynym źródłem poziomów RMS w ramkach `FRAME_MS` (trim i cięcie
+  nagrania); obliczenia przez stdlib (`array`, `math.sumprod`), bez numpy. `levels.py`
+- Cięcie nagrania dokumentu na kwestie to czyste funkcje bez plików i FFmpeg: czasy
+  ramek idą na oś serwera (`server_frame_times`, długość ramki MP3 z pierwszego
+  nagłówka), a `cut_points` daje jedną `CutDecision` na granicę. Granica bez
+  dość długiej ciszy nie scala klipów: tnie w kotwicy ograniczonej do okna i jest
+  `uncertain`. Stałe są 1:1 z prototypu i przechodzą test zgodności na nagraniach
+  z `quality_dir()`; zmiana progu lub okna wymaga ponownego testu. `segmentation.py`
 - Brak klipów spoken zwraca `skipped_no_spoken`; nie twórz pustego narratora ani
   kopii oryginalnego audio. `service.py`
 - `scope_id` jest jednym bezpiecznym segmentem ścieżki i nie może być nazwą
@@ -33,8 +47,18 @@ sidecara audio przez FFmpeg.
   `channels.py`
 - Narrator stereo trafia do obu kanałów z równą mocą; dla surround trafia tylko
   do kanału centralnego. `channels.py`
-- `narrator_mix_base_gain_db + voice_mix_offset_db` obowiązuje tylko podczas
-  miksowania z oryginalnym audio. Narrator-only pozostaje bez gainu. `output.py`
+- Gain narratora jest mierzony, nie stały: przy miksie z oryginałem `AudioService`
+  mierzy `ebur128` całego `narrator.wav` i oryginału (przed `original_gain_db`) i
+  ustawia gain `source_I + narrator_over_source_lu + voice_mix_offset_db − narrator_I`.
+  Trafienie resume nie mierzy; wynik pomiaru nie wchodzi do fingerprintu, bo zależy
+  tylko od już hashowanych plików. `service.py`, `probe.py`
+- Pomiar bez mierzalnej głośności (`-inf`, brak `Summary:` albo wartość na bramce
+  bezwzględnej −70 LUFS, czyli cisza lub sygnał krótszy niż 400 ms) jest
+  `AudioDecodeError`, nigdy cichym gainem z liczby −70. Fixture testu miksu z
+  oryginałem musi więc być słyszalnym sygnałem dłuższym niż 400 ms. `probe.py`
+- Miks z oryginałem kończy `MIX_LIMITER` (−1 dBFS, `level=0`, `latency=1`), jedyne
+  źródło tej wartości także dla `mix_fingerprint`. Narrator-only pozostaje bez gainu
+  i bez limitera. `output.py`, `fingerprint.py`
 - Finalny miks używa `duration=longest`; oczekiwana długość to maksimum narratora
   i źródła. Nie skracaj wyniku do długości wideo. `output.py`
 - Finalny path zastępuje rozszerzenie źródła rozszerzeniem codeca; AAC używa

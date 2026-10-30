@@ -6,7 +6,6 @@ from anishift.services.audio.timeline import plan_timeline, write_raw_timeline
 from anishift.services.audio.types import (
     AudioFormat,
     NormalizedClip,
-    PcmStorage,
     PlacementReason,
     TimedClip,
 )
@@ -85,8 +84,6 @@ def _clip(  # noqa: PLR0913
         sample_width=2,
         channels=1,
         frame_count=frames,
-        storage=PcmStorage.RAW,
-        from_fast_path=False,
     )
 
 

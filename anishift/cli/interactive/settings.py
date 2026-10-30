@@ -153,7 +153,7 @@ _FINE_FLOAT_STEP: Final[float] = 0.05
 """Step used by probabilities, temperatures and other narrow fractions."""
 
 _COARSE_FLOAT_STEP: Final[float] = 0.5
-"""Step used by tempo multipliers and decibel gains."""
+"""Step used by tempo multipliers and loudness levels."""
 
 _COARSE_INTEGER_STEP: Final[int] = 100
 """Step used by token limits and other wide whole-number ranges."""
@@ -240,7 +240,7 @@ _TTS_FIELDS: Final[tuple[_SettingField, ...]] = (
     ("tts_profile.engine_options.output_format", "Format natywny", "DŹWIĘK"),
     ("tts_output_profile", "Kodek lektora", "DŹWIĘK"),
     ("tts_output_bitrate", "Bitrate lektora", "DŹWIĘK"),
-    ("narrator_mix_base_gain_db", "Głośność lektora", "DŹWIĘK"),
+    ("narrator_over_source_lu", "Głośność lektora", "DŹWIĘK"),
     ("original_gain_db", "Głośność oryginału", "DŹWIĘK"),
 )
 """Persisted narration fields exposed by the product."""
@@ -1983,13 +1983,14 @@ def _format_value(spec: SettingSpec, value: SettingValue) -> str:
     if isinstance(value, bool):
         return "tak" if value else "nie"
     if isinstance(value, float):
-        multiplier_fields: frozenset[str] = frozenset(
-            {"tts_profile.postprocess_tempo", "tts_profile.engine_options.speed"},
-        )
-        gain_fields: frozenset[str] = frozenset(
-            {"tts_profile.voice_mix_offset_db", "narrator_mix_base_gain_db", "original_gain_db"},
-        )
-        suffix: str = "×" if setting_id in multiplier_fields else " dB" if setting_id in gain_fields else ""
+        suffixes: dict[str, str] = {
+            "tts_profile.postprocess_tempo": "×",
+            "tts_profile.engine_options.speed": "×",
+            "tts_profile.voice_mix_offset_db": " LU",
+            "narrator_over_source_lu": " LU",
+            "original_gain_db": " dB",
+        }
+        suffix: str = suffixes.get(setting_id, "")
         return f"{value:g}{suffix}"
     if isinstance(value, str):
         return _format_text(spec, value)

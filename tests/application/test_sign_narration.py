@@ -13,7 +13,7 @@ from anishift.application.sign_narration import (
     write_sign_candidates,
 )
 from anishift.services.audio.timeline import plan_timeline
-from anishift.services.audio.types import AudioFormat, NormalizedClip, PcmStorage, TimedClip, TimelinePlan
+from anishift.services.audio.types import AudioFormat, NormalizedClip, TimedClip, TimelinePlan
 from anishift.services.subtitles import SignCandidate
 from anishift.services.subtitles.signs import static_weights
 
@@ -37,7 +37,7 @@ def _clip(request_id: str, start_ms: int, frames: int, order: int, sample_rate: 
         1,
         duration_ms,
     )
-    return NormalizedClip(timed, Path(f"{request_id}.pcm"), sample_rate, 2, 1, frames, PcmStorage.RAW, False)
+    return NormalizedClip(timed, Path(f"{request_id}.pcm"), sample_rate, 2, 1, frames)
 
 
 def _sign(group: int, start: int, end: int, weights: tuple[float, float] = _SMALL, key: str = "gate") -> SignCandidate:

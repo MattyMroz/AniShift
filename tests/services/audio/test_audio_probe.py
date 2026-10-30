@@ -14,6 +14,7 @@ from anishift.services.audio.errors import AudioDecodeError, AudioProbeError, Au
 from anishift.services.audio.probe import (
     measure_audio_duration,
     measure_decoded_duration,
+    measure_integrated_loudness,
     parse_probe_json,
     probe_audio,
     probe_decoded_mp3,
@@ -343,3 +344,73 @@ def test_measure_audio_duration_does_not_retry_after_timeout(
 
     assert captured.value.context.code is ErrorCode.TIMEOUT
     assert len(runner.calls) == 1
+
+
+_EBUR128_STDERR = """Input #0, wav, from 'narrator.wav':
+  Duration: 00:00:03.00, bitrate: 768 kb/s
+  Stream #0:0: Audio: pcm_s16le ([1][0][0][0] / 0x0001), 48000 Hz, mono, s16, 768 kb/s
+[Parsed_ebur128_0 @ 000002169b0d0980] Summary:
+
+  Integrated loudness:
+    I:         {integrated} LUFS
+    Threshold: -31.8 LUFS
+
+  Loudness range:
+    LRA:        20.0 LU
+    Threshold: -41.8 LUFS
+    LRA low:   -41.8 LUFS
+    LRA high:  -21.8 LUFS
+[out#0/null @ 000002169b040d00] video:0KiB audio:281KiB subtitle:0KiB other streams:0KiB global headers:0KiB
+"""
+
+
+def _loudness_runner(stderr: str) -> RecordingRunner:
+    return RecordingRunner(lambda command, operation: command_result(command, stderr=stderr))
+
+
+@pytest.mark.unit
+def test_measure_integrated_loudness_summary_returns_integrated_lufs(tmp_path: Path) -> None:
+    path = tmp_path / "narrator.wav"
+    write_wav(path, frames=480)
+    runner = _loudness_runner(_EBUR128_STDERR.format(integrated="-21.8"))
+
+    loudness = measure_integrated_loudness(path, ffmpeg=Path("ffmpeg"), runner=runner, timeout_s=5)
+
+    assert loudness == -21.8
+    assert runner.calls[0][1] == "measure_loudness"
+    assert runner.calls[0][0][-4:] == ("ebur128=framelog=quiet", "-f", "null", "-")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        _EBUR128_STDERR.format(integrated="-inf"),
+        _EBUR128_STDERR.format(integrated="-70.0"),
+        _EBUR128_STDERR.format(integrated="nan"),
+        _EBUR128_STDERR.format(integrated="loud"),
+        "Input #0, wav, from 'narrator.wav':\n    I:         -21.8 LUFS\n",
+        "",
+    ],
+)
+def test_measure_integrated_loudness_unmeasurable_summary_raises_decode_error(tmp_path: Path, stderr: str) -> None:
+    path = tmp_path / "narrator.wav"
+    write_wav(path, frames=480)
+
+    with pytest.raises(AudioDecodeError) as captured:
+        measure_integrated_loudness(path, ffmpeg=Path("ffmpeg"), runner=_loudness_runner(stderr), timeout_s=5)
+
+    assert captured.value.context.details == {"operation": "measure_loudness"}
+    assert captured.value.context.suggestion
+
+
+@pytest.mark.unit
+def test_measure_integrated_loudness_empty_input_raises_before_process(tmp_path: Path) -> None:
+    path = tmp_path / "empty.wav"
+    path.touch()
+    runner = _loudness_runner("")
+
+    with pytest.raises(AudioDecodeError):
+        measure_integrated_loudness(path, ffmpeg=Path("ffmpeg"), runner=runner, timeout_s=5)
+
+    assert runner.calls == []

@@ -85,7 +85,7 @@ def test_catalog_contract_is_complete_and_self_consistent() -> None:
         "llm_translation_style",
         "mkv_tracks",
         "mp4_audio_source",
-        "narrator_mix_base_gain_db",
+        "narrator_over_source_lu",
         "openai_api_key",
         "openai_compatible_api_key",
         "openai_compatible_base_url",

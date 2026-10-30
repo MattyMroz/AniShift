@@ -663,7 +663,7 @@ def _audio_config(plan: ExecutionPlan) -> AudioConfig:
     return AudioConfig(
         codec_profile=AudioCodecProfile(snapshot.audio_output_profile),
         bitrate=snapshot.audio_bitrate,
-        narrator_mix_base_gain_db=snapshot.narrator_mix_base_gain_db,
+        narrator_over_source_lu=snapshot.narrator_over_source_lu,
         voice_mix_offset_db=snapshot.voice_mix_offset_db,
         original_gain_db=snapshot.original_gain_db,
         timeline_policy=TimelinePolicy(snapshot.tts_timeline_policy),

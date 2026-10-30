@@ -6,7 +6,7 @@ import math
 import os
 import tempfile
 import threading
-import wave
+from array import array
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Never
@@ -15,9 +15,16 @@ from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.commands import CommandRunner, PcmTarget, normalize_command
 from anishift.services.audio.config import AudioConfig
 from anishift.services.audio.errors import AudioCancelledError, AudioDecodeError
-from anishift.services.audio.types import AudioFormat, NormalizedClip, PcmStorage, TimedClip
+from anishift.services.audio.levels import FRAME_MS, frame_levels, speech_bounds
+from anishift.services.audio.types import NormalizedClip, TimedClip
 
-__all__ = ["NormalizationContext", "atempo_chain", "normalize_clip"]
+__all__ = [
+    "EDGE_TRIM_DBFS",
+    "EDGE_TRIM_MARGIN_MS",
+    "NormalizationContext",
+    "atempo_chain",
+    "normalize_clip",
+]
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -32,6 +39,15 @@ _TEMPO_EPSILON: Final[float] = 1e-9
 
 _PCM_S16LE_WIDTH: Final[int] = 2
 """Byte width of signed 16-bit PCM samples."""
+
+_MS_PER_SECOND: Final[int] = 1000
+"""Milliseconds in one second."""
+
+EDGE_TRIM_DBFS: Final[float] = -45.0
+"""Frame level above which a clip edge counts as speech."""
+
+EDGE_TRIM_MARGIN_MS: Final[float] = 30.0
+"""Audio kept outside the outermost speech frames to avoid clicks."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +89,7 @@ def normalize_clip(
     tempo: float,
     context: NormalizationContext,
 ) -> NormalizedClip:
-    """Normalize one source clip atomically or reuse neutral PCM WAV."""
+    """Convert one source clip to edge-trimmed raw PCM atomically, or reuse the cached artifact."""
     sample_rate: int = context.config.narrator_sample_rate
     sample_width: int = context.config.narrator_sample_width
     channels: int = context.config.narrator_channels
@@ -81,15 +97,6 @@ def normalize_clip(
     _validate_target(sample_rate=sample_rate, sample_width=sample_width, channels=channels)
     if cancel is not None and cancel.is_set():
         _raise_cancelled(clip.request_id)
-    fast_path: NormalizedClip | None = _neutral_wav(
-        clip,
-        tempo=tempo,
-        sample_rate=sample_rate,
-        sample_width=sample_width,
-        channels=channels,
-    )
-    if fast_path is not None:
-        return fast_path
     cached: NormalizedClip | None = _cached_raw_pcm(
         clip,
         destination,
@@ -129,6 +136,7 @@ def normalize_clip(
         size: int = temporary.stat().st_size
         if size <= 0 or size % frame_size:
             _raise_invalid_pcm(clip.request_id)
+        _trim_edges(temporary, sample_rate)
         temporary.replace(destination)
     except OSError as error:
         error_context: ErrorContext = ErrorContext(
@@ -149,49 +157,6 @@ def normalize_clip(
         sample_width=sample_width,
         channels=channels,
         frame_count=frame_count,
-        storage=PcmStorage.RAW,
-        from_fast_path=False,
-    )
-
-
-def _neutral_wav(
-    clip: TimedClip,
-    *,
-    tempo: float,
-    sample_rate: int,
-    sample_width: int,
-    channels: int,
-) -> NormalizedClip | None:
-    if clip.clip_format is not AudioFormat.WAV or not math.isclose(
-        tempo,
-        1.0,
-        abs_tol=_TEMPO_EPSILON,
-    ):
-        return None
-    try:
-        with wave.open(str(clip.clip_path), "rb") as stream:
-            is_neutral: bool = (
-                stream.getcomptype() == "NONE"
-                and stream.getframerate() == sample_rate
-                and stream.getsampwidth() == sample_width
-                and stream.getnchannels() == channels
-            )
-            if not is_neutral:
-                return None
-            frame_count: int = stream.getnframes()
-    except OSError, EOFError, wave.Error:
-        return None
-    if frame_count <= 0:
-        return None
-    return NormalizedClip(
-        timed_clip=clip,
-        path=clip.clip_path,
-        sample_rate=sample_rate,
-        sample_width=sample_width,
-        channels=channels,
-        frame_count=frame_count,
-        storage=PcmStorage.WAV,
-        from_fast_path=True,
     )
 
 
@@ -217,14 +182,27 @@ def _cached_raw_pcm(
         sample_width=sample_width,
         channels=channels,
         frame_count=size // frame_size,
-        storage=PcmStorage.RAW,
-        from_fast_path=True,
     )
 
 
+def _trim_edges(path: Path, sample_rate: int) -> None:
+    samples: array[int] = array("h")
+    samples.frombytes(path.read_bytes())
+    bounds: tuple[int, int] | None = speech_bounds(frame_levels(samples, sample_rate), EDGE_TRIM_DBFS)
+    if bounds is None:
+        return
+    first, last = bounds
+    start_ms: float = first * FRAME_MS - EDGE_TRIM_MARGIN_MS
+    end_ms: float = (last + 1) * FRAME_MS + EDGE_TRIM_MARGIN_MS
+    start: int = max(0, round(start_ms * sample_rate / _MS_PER_SECOND))
+    end: int = min(len(samples), round(end_ms * sample_rate / _MS_PER_SECOND))
+    path.write_bytes(samples[start:end].tobytes())
+
+
 def _validate_target(*, sample_rate: int, sample_width: int, channels: int) -> None:
-    if sample_rate <= 0 or sample_width != _PCM_S16LE_WIDTH or channels != 1:
-        message: str = "Narrator target must be mono PCM S16LE with a positive sample rate"
+    whole_frames: bool = sample_rate * FRAME_MS % _MS_PER_SECOND == 0
+    if sample_rate <= 0 or not whole_frames or sample_width != _PCM_S16LE_WIDTH or channels != 1:
+        message: str = "Narrator target must be mono PCM S16LE at a sample rate split into whole 10 ms frames"
         raise ValueError(message)
 
 

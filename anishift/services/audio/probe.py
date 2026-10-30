@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 import threading
 import wave
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -11,9 +13,11 @@ from typing import Any, Final, Never
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.commands import (
+    CommandResult,
     CommandRunner,
     decode_command,
     decode_duration_command,
+    loudness_command,
     probe_command,
     scan_duration_command,
 )
@@ -31,6 +35,7 @@ from anishift.services.audio.types import AudioProbe
 __all__ = [
     "measure_audio_duration",
     "measure_decoded_duration",
+    "measure_integrated_loudness",
     "parse_probe_json",
     "probe_audio",
     "probe_decoded_mp3",
@@ -53,6 +58,12 @@ _WAV_READ_FRAMES: Final[int] = 64 * 1024
 
 _MAX_FFMPEG_SAMPLE_RATE: Final[int] = 2_147_483_647
 """Largest WAV sample rate representable by FFmpeg's signed integer path."""
+
+_INTEGRATED_LOUDNESS: Final[re.Pattern[str]] = re.compile(r"^\s*I:\s+(\S+)\s+LUFS\s*$", re.MULTILINE)
+"""Integrated loudness line of the FFmpeg ``ebur128`` summary block."""
+
+_ABSOLUTE_GATE_LUFS: Final[float] = -70.0
+"""EBU R128 absolute gate; FFmpeg reports it when no block of the signal passes the gate."""
 
 
 def measure_audio_duration(
@@ -290,6 +301,40 @@ def measure_decoded_duration(
     return _duration_from_progress(result.stdout)
 
 
+def measure_integrated_loudness(
+    path: Path,
+    *,
+    ffmpeg: Path,
+    runner: CommandRunner,
+    timeout_s: float,
+    cancel: threading.Event | None = None,
+) -> float:
+    """Return the EBU R128 integrated loudness of the first audio stream in LUFS."""
+    if not path.is_file() or path.stat().st_size == 0:
+        _raise_loudness("Loudness input is missing or empty")
+    result: CommandResult = runner.run(
+        loudness_command(ffmpeg, path),
+        operation="measure_loudness",
+        timeout_s=timeout_s,
+        cancel=cancel,
+    )
+    return _parse_integrated_loudness(result.stderr)
+
+
+def _parse_integrated_loudness(stderr: str) -> float:
+    _, marker, summary = stderr.rpartition("Summary:")
+    match: re.Match[str] | None = _INTEGRATED_LOUDNESS.search(summary) if marker else None
+    if match is None:
+        _raise_loudness("Loudness measurement reported no integrated loudness")
+    try:
+        loudness: float = float(match.group(1))
+    except ValueError:
+        _raise_loudness("Loudness measurement reported an invalid integrated loudness")
+    if not math.isfinite(loudness) or loudness <= _ABSOLUTE_GATE_LUFS:
+        _raise_loudness("Audio has no measurable loudness")
+    return loudness
+
+
 def _duration_from_progress(progress: str) -> int:
     values: dict[str, str] = {}
     progress_is_complete: bool = False
@@ -373,5 +418,15 @@ def _raise_decode_duration(message: str) -> Never:
         message=message,
         suggestion="Regenerate the source audio and inspect FFmpeg diagnostics.",
         details={"operation": "measure_duration"},
+    )
+    raise AudioDecodeError(context=context)
+
+
+def _raise_loudness(message: str) -> Never:
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.AUDIO_FAILED,
+        message=message,
+        suggestion="Check that the narration and the original audio contain audible sound.",
+        details={"operation": "measure_loudness"},
     )
     raise AudioDecodeError(context=context)

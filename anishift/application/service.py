@@ -1097,7 +1097,7 @@ def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
         tts_vpn_enabled=preferences.elevenbytes_vpn_enabled,
         tts_postprocess_tempo=profile.postprocess_tempo,
         audio_bitrate=preferences.tts_output_bitrate,
-        narrator_mix_base_gain_db=preferences.narrator_mix_base_gain_db,
+        narrator_over_source_lu=preferences.narrator_over_source_lu,
         voice_mix_offset_db=profile.voice_mix_offset_db,
         original_gain_db=preferences.original_gain_db,
         tts_timeline_policy=preferences.tts_timeline_policy,

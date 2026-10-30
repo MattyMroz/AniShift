@@ -15,7 +15,6 @@ __all__ = [
     "AudioRenderStatus",
     "ChannelPlan",
     "NormalizedClip",
-    "PcmStorage",
     "PlacementReason",
     "TimedClip",
     "TimelinePlacement",
@@ -58,13 +57,6 @@ class PlacementReason(StrEnum):
 
     ON_TIME = "on_time"
     SERIALIZED_OVERLAP = "serialized_overlap"
-
-
-class PcmStorage(StrEnum):
-    """Storage representation used by a normalized PCM clip."""
-
-    RAW = "raw"
-    WAV = "wav"
 
 
 class AudioRenderStatus(StrEnum):
@@ -114,8 +106,6 @@ class NormalizedClip:
     sample_width: int
     channels: int
     frame_count: int
-    storage: PcmStorage
-    from_fast_path: bool
 
     @property
     def duration_ms(self) -> int:

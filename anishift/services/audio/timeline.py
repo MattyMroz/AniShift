@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-import wave
 from pathlib import Path
 from typing import BinaryIO, Final, Never
 
@@ -11,7 +10,6 @@ from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.audio.errors import AudioCancelledError, AudioDecodeError
 from anishift.services.audio.types import (
     NormalizedClip,
-    PcmStorage,
     PlacementReason,
     TimelinePlacement,
     TimelinePlan,
@@ -130,8 +128,6 @@ def _copy_clip(
     frame_size: int,
     cancel: threading.Event | None,
 ) -> int:
-    if clip.storage is PcmStorage.WAV:
-        return _copy_wav(output, clip, cancel)
     copied_bytes: int = 0
     with clip.path.open("rb") as source:
         while block := source.read(_COPY_BUFFER_BYTES):
@@ -141,20 +137,6 @@ def _copy_clip(
     if copied_bytes % frame_size:
         _raise_pcm("Raw normalized clip ends on a partial PCM frame")
     return copied_bytes // frame_size
-
-
-def _copy_wav(
-    output: BinaryIO,
-    clip: NormalizedClip,
-    cancel: threading.Event | None,
-) -> int:
-    copied_frames: int = 0
-    with wave.open(str(clip.path), "rb") as source:
-        while block := source.readframes(_COPY_BUFFER_BYTES):
-            _check_cancel(cancel)
-            output.write(block)
-            copied_frames += len(block) // (clip.sample_width * clip.channels)
-    return copied_frames
 
 
 def _write_silence(output: BinaryIO, frames: int, frame_size: int) -> None:

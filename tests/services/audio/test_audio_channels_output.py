@@ -55,13 +55,9 @@ def test_eac3_7_1_matrix_preserves_front_and_folds_back_into_side() -> None:
     assert "|FC=c0|" in plan.narrator_filter
 
 
-def test_mix_command_has_explicit_gain_longest_and_normalization() -> None:
-    config = AudioConfig(
-        codec_profile=AudioCodecProfile.EAC3,
-        narrator_mix_base_gain_db=7,
-        voice_mix_offset_db=-2,
-        original_gain_db=0,
-    )
+@pytest.mark.unit
+def test_render_command_mix_applies_measured_gain_then_limiter() -> None:
+    config = AudioConfig(codec_profile=AudioCodecProfile.EAC3, voice_mix_offset_db=-2, original_gain_db=0)
     plan = build_channel_plan(AudioCodecProfile.EAC3, "stereo")
 
     command = render_command(
@@ -72,20 +68,26 @@ def test_mix_command_has_explicit_gain_longest_and_normalization() -> None:
             original_audio=Path("anime.aac"),
             config=config,
             channel_plan=plan,
+            narrator_gain_db=11.25,
         ),
     )
 
     filter_complex = command[command.index("-filter_complex") + 1]
-    assert "volume=0dB" in filter_complex
-    assert "volume=5dB" in filter_complex
+    assert "volume=0dB[source]" in filter_complex
+    assert "volume=11.25dB[narrator]" in filter_complex
     assert "duration=longest" in filter_complex
     assert "dropout_transition=2" in filter_complex
     assert "normalize=true" in filter_complex
+    assert filter_complex.endswith(
+        "[mixed]alimiter=limit=0.891251:attack=5:release=50:level=0:latency=1[limited]",
+    )
+    assert command[command.index("-map") + 1] == "[limited]"
     assert "-shortest" not in command
 
 
-def test_narrator_only_command_has_no_mix_gain() -> None:
-    config = AudioConfig(codec_profile=AudioCodecProfile.FLAC)
+@pytest.mark.unit
+def test_render_command_narrator_only_has_no_gain_and_no_limiter() -> None:
+    config = AudioConfig(codec_profile=AudioCodecProfile.FLAC, voice_mix_offset_db=3)
     plan = build_channel_plan(AudioCodecProfile.FLAC, "mono")
 
     command = render_command(
@@ -96,12 +98,15 @@ def test_narrator_only_command_has_no_mix_gain() -> None:
             original_audio=None,
             config=config,
             channel_plan=plan,
+            narrator_gain_db=9.0,
         ),
     )
 
+    joined = " ".join(command)
     assert "-filter_complex" not in command
-    assert "volume=7dB" not in command
-    assert "amix=" not in " ".join(command)
+    assert "volume=" not in joined
+    assert "alimiter" not in joined
+    assert "amix=" not in joined
 
 
 @pytest.mark.unit
@@ -116,8 +121,9 @@ def test_mix_command_offsets_only_source(offset_samples: int, prefix: str) -> No
     baseline: tuple[str, ...] = render_command(Path("ffmpeg"), Path("out.eac3"), inputs=inputs)
     assert baseline[baseline.index("-filter_complex") + 1] == (
         "[0:a:0]aformat=channel_layouts=stereo,volume=0dB[source];"
-        "[1:a:0]pan=stereo|FL=0.70710678*c0|FR=0.70710678*c0,volume=7dB[narrator];"
-        "[source][narrator]amix=inputs=2:duration=longest:dropout_transition=2:normalize=true[mixed]"
+        "[1:a:0]pan=stereo|FL=0.70710678*c0|FR=0.70710678*c0,volume=0dB[narrator];"
+        "[source][narrator]amix=inputs=2:duration=longest:dropout_transition=2:normalize=true[mixed];"
+        "[mixed]alimiter=limit=0.891251:attack=5:release=50:level=0:latency=1[limited]"
     )
     actual: tuple[str, ...] = render_command(
         Path("ffmpeg"), Path("out.eac3"), inputs=replace(inputs, source_offset_samples=offset_samples)

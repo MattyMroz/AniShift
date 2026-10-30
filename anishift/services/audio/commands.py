@@ -24,6 +24,7 @@ __all__ = [
     "decode_duration_command",
     "ffmpeg_progress_reader",
     "join_clips_command",
+    "loudness_command",
     "narrator_wav_command",
     "normalize_command",
     "probe_command",
@@ -348,6 +349,27 @@ def scan_duration_command(ffmpeg: Path, path: Path) -> tuple[str, ...]:
         "-progress",
         "pipe:1",
         "-nostats",
+        "-f",
+        "null",
+        "-",
+    )
+
+
+def loudness_command(ffmpeg: Path, path: Path) -> tuple[str, ...]:
+    """Build an EBU R128 measurement of the first audio stream that prints its summary to stderr."""
+    return (
+        str(ffmpeg),
+        "-hide_banner",
+        "-nostdin",
+        "-nostats",
+        "-v",
+        "info",
+        "-i",
+        str(path),
+        "-map",
+        "0:a:0",
+        "-af",
+        "ebur128=framelog=quiet",
         "-f",
         "null",
         "-",

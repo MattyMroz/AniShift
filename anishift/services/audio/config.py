@@ -44,7 +44,8 @@ class AudioConfig:
     narrator_sample_rate: int = 48_000
     narrator_sample_width: int = 2
     narrator_channels: int = 1
-    narrator_mix_base_gain_db: float = 7.0
+    narrator_over_source_lu: float = 7.5
+    """Integrated loudness of the narrator above the original audio while mixing."""
     voice_mix_offset_db: float = 0.0
     original_gain_db: float = 0.0
     timeline_policy: TimelinePolicy = TimelinePolicy.SERIALIZE
@@ -80,12 +81,12 @@ class AudioConfig:
         if any(
             not math.isfinite(value)
             for value in (
-                self.narrator_mix_base_gain_db,
+                self.narrator_over_source_lu,
                 self.voice_mix_offset_db,
                 self.original_gain_db,
             )
         ):
-            _raise_config("audio gains must be finite")
+            _raise_config("audio levels must be finite")
         if self.bitrate is not None and self.codec_profile not in _LOSSY_PROFILES:
             _raise_config("bitrate is supported only for lossy output profiles")
         if self.bitrate is not None and _BITRATE_PATTERN.fullmatch(self.bitrate) is None:
