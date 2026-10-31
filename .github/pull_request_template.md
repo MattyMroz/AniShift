@@ -1,6 +1,6 @@
 <!--
 Title: type(scope): description — the squash commit is built from it and CI
-checks it. Types and scopes: scripts/hooks/check_commit_msg.py
+checks it. Types and scopes: conventional-pre-commit in .pre-commit-config.yaml
 -->
 
 ## What

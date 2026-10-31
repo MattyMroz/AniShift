@@ -1,6 +1,6 @@
 # Pre-commit hooks for AniShift.
-# Install once after `uv sync`:
-#   uv run pre-commit install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push
+# prek installs the hooks, all three stages from default_install_hook_types. Once after `uv sync`:
+#   prek install
 #
 # pre-commit stage: fast, blocks the commit if ruff fails.
 # commit-msg stage: enforces Conventional Commits message format and the commit body (summary + Validation).
@@ -81,7 +81,7 @@ repos:
           - revert
 
   - repo: https://github.com/MattyMroz/agents
-    rev: hooks-v1.2.0 # or newer: prek autoupdate
+    rev: hooks-v1.3.2 # or newer: prek autoupdate
     hooks:
       # U+FFFD is what a botched encoding leaves behind.
       - id: no-replacement-char
@@ -120,11 +120,6 @@ repos:
         language: system
         files: \.py$
         stages: [pre-commit]
-      - id: conventional-commit
-        name: conventional commit message
-        entry: python scripts/hooks/check_commit_msg.py
-        language: system
-        stages: [commit-msg]
       - id: mypy
         name: mypy (pre-push)
         entry: uv run mypy anishift/ tests/

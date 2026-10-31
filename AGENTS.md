@@ -21,7 +21,7 @@ Zawsze na `anishift/ tests/`, nigdy na podkatalogu — na podkatalogu ruff sypie
 - Kod, komentarze, nazwy i wszystko związane z gitem/GitHub (branch, commit, PR, issue, label) po angielsku. Rozmowa z userem po polsku. Kopiuj wzorce już zastane w repo (istniejące tytuły, opisy, nazwy branchy).
 - Dokumenty w `docs/work/` — plany, specyfikacje, intencje, manifesty, raporty, przeglądy i briefy dla subagentów — pisz po polsku. Nazwy plików, identyfikatory techniczne, kod, komendy i adresy URL zachowuj bez tłumaczenia. Ta reguła dotyczy także artefaktów tworzonych przez subagentów.
 - Zależności tylko przez `uv add` / `uv remove`. Nigdy nie edytuj `pyproject.toml` ręcznie.
-- Commity w formacie `typ(scope): opis` — scope OBOWIĄZKOWY, z listy w `scripts/hooks/check_commit_msg.py`, powtórzonej w `--scopes` w `.pre-commit-config.yaml` (oba hooki odrzucają commit bez scope lub ze scope spoza listy; nowy scope dopisz w obu miejscach). Treść commita: sekcja Git niżej. Zero śladów AI (`Co-Authored-By`, stopki generatora) — też w treści PR.
+- Commity w formacie `typ(scope): opis` — scope OBOWIĄZKOWY, z listy `--scopes` hooka `conventional-pre-commit` w `.pre-commit-config.yaml` (hook odrzuca commit bez scope lub ze scope spoza listy; nowy scope dopisz tam). Treść commita: sekcja Git niżej. Zero śladów AI (`Co-Authored-By`, stopki generatora) — też w treści PR.
 - Issue zakładaj wg szablonów z `.github/ISSUE_TEMPLATE/` (bug / feature / task). Tytuł z prefiksem Conventional Commits, jak w szablonie.
 - Rób tylko to, o co user prosi. Zero nieproszonych plików, refaktorów, issue.
 - AniShift jest teraz tylko na Windows; wsparcie Linuksa to osobna, przyszła ścieżka — nie rozwijaj go bez wyraźnego polecenia właściciela.
@@ -74,17 +74,17 @@ Każdy obszar poniżej ma własny AGENTS.md z pułapkami i konwencjami — wczyt
 - `docs/` — mapa i statusy workstreamów w `README.md`, pomysły w `ideas.md`, niezależne materiały w `reference/`, punkty wznowienia w `session-logs/`. Każdy workstream, również zakończony, pozostaje w `docs/work/<nn>-<nazwa>/` (numer = kolejność powstania; nowy workstream bierze kolejny numer) z artefaktami według skilla `workflow` (§11).
 - `external/` — pobrane binarki (gitignored) + docs HTML narzędzi; szczegóły w `external/README.md`
 - `config/` — runtime katalog na `settings.json` panelu (gitignored); opis w `config/README.md`
-- `scripts/hooks/` — hook `check_commit_msg.py` (Conventional Commits); `scripts/tmp/` — jednorazowe
+- `scripts/hooks/` — lokalne hooki z `.pre-commit-config.yaml`; `scripts/tmp/` — jednorazowe
 - `workspace/` — user wrzuca MKV do roota; gotowe odcinki zbiera `ready/`, staging leży w `tmp/` (patrz Dane runtime)
 
 ## Twarde strażniki
 
 Filozofia: regułę egzekwuje maszyna (hook / ruff / test), nie pamięć agenta. Gdy user ustala nową regułę, albo ten sam błąd wraca dwa razy — ZAPROPONUJ userowi zamianę na strażnika (hook w `scripts/hooks/`, reguła ruff, test) i zapytaj, czy zrobić. Nie dodawaj strażnika bez zgody usera. Każdy strażnik z `scripts/hooks/` ma test w `tests/scripts/`.
 
-Instalacja: `uv run pre-commit install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push`.
+Instalacja: `prek install`. Hooki instaluje prek, wszystkie trzy etapy z `default_install_hook_types` w `.pre-commit-config.yaml`.
 
 - **pre-commit:** ruff `--fix` + ruff-format; `check_test_comments.py` obejmuje także pomocnicze moduły Python w katalogach testów i każdy `conftest.py`: zero opisowych komentarzy i samodzielnych stringów, również docstringów stałych; dyrektywy `# noqa`/`# type:`/`# pragma` są dozwolone. `check_const_docstrings.py` wymaga opisu pod stałą `Final`/aliasem w kodzie aplikacji poza testami.
-- **commit-msg:** `check_commit_msg.py` i `conventional-pre-commit` — `typ(scope): opis`, scope obowiązkowy z listy; `commit-validation` — streszczenie i sekcja `Validation:` (sekcja Git niżej).
+- **commit-msg:** `conventional-pre-commit` — `typ(scope): opis`, scope obowiązkowy z listy `--scopes`; `commit-validation` — streszczenie i sekcja `Validation:` (sekcja Git niżej).
 - **pre-push:** mypy dla bieżącej platformy, mypy `--platform linux` i pytest (łapią błędy lokalnie zanim pójdą do CI).
 - **ruff select** wymusza m.in.: typy param/zwrot (`ANN`), `from __future__` (`FA`), `X | None` zamiast `Optional` (`UP`), docstringi modułów/klas/funkcji (`D`), zakaz `except Exception` (`BLE`).
 - **CI:** `.github/workflows/ci.yml` — ruff i hooki na Ubuntu; pip-audit eksportowanego locka na Ubuntu i Windowsie; mypy na Ubuntu w obu targetach (`--platform win32` obok domyślnego); pytest plus smoke `anishift --help` tylko na Windowsie, z narzędziami z `anishift setup`.

@@ -2,8 +2,9 @@ name: PR Title
 
 # A squash merge builds the commit message from the PR title, on GitHub's
 # servers, where the local commit-msg hook does not exist. This check covers
-# that path. It reuses scripts/hooks/check_commit_msg.py, so the allowed
-# types and scopes are defined once.
+# that path. It runs the conventional-pre-commit hook from
+# .pre-commit-config.yaml through prek, so the allowed types and scopes are
+# defined once.
 
 on:
   pull_request_target:
@@ -22,7 +23,7 @@ jobs:
     name: Conventional Commits (PR title)
     runs-on: ubuntu-latest
     steps:
-      - name: Check out the trusted validator
+      - name: Check out the trusted hook config
         uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.base.sha }}
@@ -32,10 +33,13 @@ jobs:
         with:
           python-version: "3.14"
 
+      - name: Install prek
+        run: pip install --quiet prek==0.5.4
+
       - name: Validate PR title
         env:
           # Via env, never inlined into run: — a PR title is untrusted input.
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/pr-title.txt"
-          python scripts/hooks/check_commit_msg.py "$RUNNER_TEMP/pr-title.txt"
+          prek run conventional-pre-commit --stage commit-msg --commit-msg-filename "$RUNNER_TEMP/pr-title.txt"
