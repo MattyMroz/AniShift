@@ -31,6 +31,7 @@ from test_service import _panel_owner
 from test_service import _service as _processing_service
 
 import anishift.application.automation as automation_module
+import anishift.application.episode_fonts as episode_fonts_module
 import anishift.application.library as library_module
 import anishift.application.recovery as recovery_module
 import anishift.application.watch as watch_module
@@ -4085,6 +4086,7 @@ def test_material_identity_survives_bundle_metadata_preparation_processing_and_r
 ) -> None:
     monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", "isolated-test-token")
     monkeypatch.setattr(automation_module, "TRANSFER_CHECK_INTERVAL_S", 0.05)
+    monkeypatch.setattr(episode_fonts_module, "extract_attachments", lambda *_args: ())
     network: _TorrentNetwork = _TorrentNetwork()
     network.tracked["9"] = TorrentInfo("Original bundle name", "9", 0.0, "metaDL", str(tmp_path))
     acquisition: AcquisitionService = AcquisitionService(
@@ -4158,7 +4160,7 @@ def test_material_identity_survives_bundle_metadata_preparation_processing_and_r
                 (GroupIntent(first, RunMode.MANUAL, ProductIntent(frozenset({ProductKind.SPOKEN_PL}))),)
             )
             run_id: str = session.start(preview)
-            assert entered.wait(1.0)
+            assert entered.wait(_TIMEOUT_S)
             running: dict[str, object] = next(item for item in _material_rows(session) if item["material_id"] == "9:7")
             assert running["stage"] == "processing"
             assert running["run_id"] == run_id
