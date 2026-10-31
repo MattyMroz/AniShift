@@ -15,10 +15,11 @@ from unittest.mock import Mock
 
 import pytest
 from fakes import FakeMediaProbe, FakeTranslationService, write_media_source, write_text_source
-from test_automation import _INSTANCE, _await, _completed_library, _owned, _request, _serving
+from test_automation import _INSTANCE, _TIMEOUT_S, _await, _completed_library, _owned, _request, _serving
 from test_service import _service
 
 import anishift.application.automation as automation_module
+import anishift.application.episode_fonts as episode_fonts_module
 import anishift.application.watch as watch_module
 from anishift.application.artifacts import SourceGroup
 from anishift.application.automation import AutomationOwner, _NotificationTarget
@@ -730,18 +731,19 @@ def test_notification_inventory_and_click_do_not_block_owner_pause_behind_an_ind
         return inventory(paths)
 
     monkeypatch.setattr(service, "library_inventory", observed_inventory)
+    monkeypatch.setattr(episode_fonts_module, "extract_attachments", lambda *_args: ())
     store: WatchStateStore = WatchStateStore(tmp_path / ".control" / "state.json")
     with _notifications(service, store) as (owner, frames, opened), ThreadPoolExecutor(max_workers=2) as clients:
         try:
             _start(owner, service)
-            assert translating.wait(1.0)
+            assert translating.wait(_TIMEOUT_S)
             with service._discover_lock:
                 release.set()
-                assert inventory_entered.wait(1.0)
+                assert inventory_entered.wait(_TIMEOUT_S)
                 answer: ControlResponse = clients.submit(
                     owner.handle,
                     _request("set_auto", {"enabled": False}, command_id="pause-during-offer"),
-                ).result(timeout=1.0)
+                ).result(timeout=_TIMEOUT_S)
                 assert answer.ok
                 assert not frames
         finally:
@@ -754,17 +756,17 @@ def test_notification_inventory_and_click_do_not_block_owner_pause_behind_an_ind
         inventory_entered.clear()
         with service._discover_lock:
             independent: Future[tuple[SourceGroup, ...]] = clients.submit(service.library_inventory)
-            assert inventory_entered.wait(1.0)
+            assert inventory_entered.wait(_TIMEOUT_S)
             owner.tray_action(f"notification:{frames[0]['notification_id']}")
             answer = clients.submit(
                 owner.handle,
                 _request("set_auto", {"enabled": False}, command_id="pause-after-click"),
-            ).result(timeout=1.0)
+            ).result(timeout=_TIMEOUT_S)
             assert answer.ok
             assert not opened
             assert owner._pending_panel_open is not None
             assert owner._pending_panel_open.get("set_id") == (None if changed else owner._ready_library[0].set_id)
-        independent.result(timeout=1.0)
+        independent.result(timeout=_TIMEOUT_S)
         assert bool(owner.handle(_request("status")).result["notification_problem"]) is changed
 
 

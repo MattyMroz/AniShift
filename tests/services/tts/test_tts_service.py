@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -461,6 +462,32 @@ def test_close_during_loop_start_does_not_leak_runtime(
         closing.result(timeout=1.0)
         with pytest.raises(TtsConfigError):
             synthesis.result(timeout=1.0)
+
+
+def test_service_announces_its_loop_only_once_the_loop_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    service = TtsService(
+        _config(),
+        resume_root=tmp_path,
+        validator=_Validator(),
+        engine_factory=lambda config: _Engine(),
+    )
+    running: list[bool] = []
+
+    class _ObservedReady(threading.Event):
+        def set(self) -> None:
+            loop: asyncio.AbstractEventLoop | None = service._loop
+            running.append(loop is not None and loop.is_running())
+            super().set()
+
+    monkeypatch.setattr(service, "_loop_ready", _ObservedReady())
+    with service:
+        result = service.synthesize(_batch(), callbacks=_Progress())
+
+    assert result.status is SpeechBatchStatus.COMPLETED
+    assert running == [True]
 
 
 def test_multichunk_local_failure_does_not_invent_retry(tmp_path: Path) -> None:
