@@ -220,6 +220,7 @@ nazwą wariantu na ekranie.
 
 | Plik | Wariant | Sprawdzony bez okna |
 |---|---|---|
+| `0-porownanie.cmd` | jedno okno z własną konfiguracją `EXP\cmp\` (`gpu-api=d3d11`, żeby VSR był dostępny), warianty przełączane na żywo: F1–F5 obraz (F1 = 6 shaderów OLD w `gpu-next`, czytane z OLD), F6–F10 interpolacja, `j` skok między 1:20 i 5:00; nieudany VSR wraca do poprzedniego wariantu | tak, każdy klawisz; F5 bez okna nie startuje (oczekiwane) |
 | `1-obecny.cmd` | `mpv.exe` z OLD, `--no-config` + 6 shaderów i skalery OLD; nic nie zapisuje w OLD | tak |
 | `2-bez-upscalera.cmd` | fork AJN, filtr w trybie obejścia | tak |
 | `3-ajn-balanced.cmd` | AJN Balanced | tak |
