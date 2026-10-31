@@ -152,7 +152,7 @@ class TargetNotice:
 
 @dataclass(frozen=True, slots=True)
 class EpisodeStatus:
-    """Latest real admission or scoped uncertainty of one episode."""
+    """Latest real admission or scoped uncertainty of one episode; ``retry_group`` names its failed run's source."""
 
     key: EpisodeKey
     state: str
@@ -166,6 +166,7 @@ class EpisodeStatus:
     polish_wait_until: str | None = None
     polish_skipped: bool = False
     notices: tuple[TargetNotice, ...] = ()
+    retry_group: str | None = None
 
     @property
     def active(self) -> bool:

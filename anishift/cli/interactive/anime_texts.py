@@ -14,6 +14,7 @@ __all__ = [
     "EPISODE_REASON_LABELS",
     "IN_PROGRESS_HINT",
     "REPEATABLE_REASONS",
+    "RETRY_HINT",
     "UNAVAILABLE",
     "episode_status_label",
     "error_code",
@@ -51,6 +52,9 @@ EPISODE_REASON_LABELS: Final[dict[str, str]] = {
 
 IN_PROGRESS_HINT: Final[str] = "W toku · X anuluj w Przetwarzaniu"
 """Notice naming where an active episode can be cancelled instead of ordered again."""
+
+RETRY_HINT: Final[str] = "Błąd przetwarzania · P ponów"
+"""Notice naming the retry of an episode whose processing failed while its source stays on disk."""
 
 _EPISODE_ADMITTED: Final[str] = "Odcinek już zlecony"
 """Notice shown when the owner refuses an already admitted episode."""

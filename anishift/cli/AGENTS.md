@@ -115,6 +115,11 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - D wysyła najwyżej 100 kluczy (nowe i powtórki razem) trwałą partią ownera; aktywne wiersze dostają wskazówkę
   anulowania zamiast duplikatu. Nieznany wynik zachowuje ID/payload do ponowienia Enterem; świeży kontroler czyta
   `episode_states`. Pauza globalna nie blokuje D/I/P; O poza zapytaniem przełącza automat i nie ponawia odmowy.
+- Odcinek z `EpisodeStatus.retry_group` (nieudane lub anulowane przetwarzanie, wideo na dysku) jest niewybieralny i nie wchodzi do
+  partii D. P, a bez zaznaczeń także D, oddaje grupę przez `take_retry`; `StateController` otwiera Przetwarzanie
+  jak `show_processing`, stawia kursor na tym wierszu i przygotowuje `retry_proposal` tą samą drogą co Historia
+  (H → P). Samo D/P niczego nie pobiera; gdy stan zdążył się zmienić, owner może zwrócić propozycję `reacquire`,
+  którą wykonuje dopiero jawny Enter.
 - Lista wydań to `episode_selection.visible(offer.candidates, offer.suggestion)` — nie filtruj jej w UI drugi raz.
   Kursor, zaznaczenia i sugestia śledzą wiersze po hashu lub równości, nigdy po indeksie oferty. Odmowa z
   `REPEATABLE_REASONS` zostawia listę z P (`_repeatable_offer`). `_Screen.FILES` to tylko wybór pliku paczki.
@@ -139,6 +144,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   nieterminalnej pracy (`RichRunProgress.group_active`); `accepted` może mieć wykonujące się taski, sam cache postępu
   nie wystarcza; żywe zlecenie bez taska to przygotowanie. Niepewne pobrania nie trafiają do wierszy. Hashe tylko
   ze snapshotów ownera. Nieznane fakty zostają nieznane; brak odczytu zachowuje ostatnie zweryfikowane wartości.
+  Nieudane albo anulowane zlecenie (`failed`/`partial`/`cancelled`), którego wideo źródłowe owner widzi na dysku
+  (`_local_primary`), przychodzi jako wiersz `waiting`
+  z `attention` i `reason=processing_failed` (`Błąd`, licznik „do sprawdzenia”); zostaje do ponowienia, bez X.
+  P na nim (`failed_group`) przygotowuje `retry_proposal` jak Historia; nic nie ponawia się samo.
 - P przygotowuje propozycję ponowienia ownera: lokalna praca idzie do Ręcznego z rewalidacją, zdalna dostaje jawne
   powtórzenie. Pauza nie blokuje P; `Wstrzymano` i zamrożone liczniki tylko dla wierszy z `automatic` (brak pola =
   automatyczny).
