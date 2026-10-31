@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from pysubs2 import SSAFile
+from pysubs2 import SSAEvent, SSAFile
 
 from anishift.services.subtitles import (
     SignCandidate,
@@ -11,6 +11,7 @@ from anishift.services.subtitles import (
     sign_candidates,
     split_subtitles,
 )
+from anishift.services.subtitles.classifier import sung
 from anishift.services.subtitles.signs import SIGN_MARGIN, place_weight_against, static_weights
 
 _HEADER = (
@@ -175,3 +176,54 @@ def test_sounds_written_as_repeated_words_weigh_against_reading_like_a_repeat() 
     assert school.weight_against < 0.8
     assert tup.weight_against >= 0.8
     assert pik.weight_against >= 0.8
+
+
+@pytest.mark.parametrize(
+    "style",
+    ["East Of Eden - Ghost Sequence [PL]", "MONSTER -  Eir Aoi [PL] 2", "The Akebosi Rockets - Meltdowner [en]"],
+)
+def test_style_named_artist_and_title_with_language_tag_is_a_song(style: str) -> None:
+    assert sung(SSAEvent(style=style, text="W t"))
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        "Toaru - Myśli",
+        "Main - Top + Italics",
+        "Re: Zero III - Retrospekcja - Myśli",
+        "Dr Stone - Zapowiedź",
+        "Znaki [PL]",
+    ],
+)
+def test_style_with_a_dash_but_no_language_tag_is_not_a_song(style: str) -> None:
+    assert not sung(SSAEvent(style=style, text="W trzewiach"))
+
+
+def test_fragments_of_a_song_styled_artist_and_title_are_never_sign_candidates() -> None:
+    events: str = (
+        "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Good morning, everyone.\n"
+        "Dialogue: 0,0:00:50.40,0:00:52.74,East Of Eden - Ghost Sequence [PL],,0,0,0,,{\\an5\\pos(557,340)}W t\n"
+        "Dialogue: 0,0:00:50.45,0:00:52.78,East Of Eden - Ghost Sequence [PL],,0,0,0,,{\\an5\\pos(652,340)}rze\n"
+        "Dialogue: 0,0:01:10.00,0:01:12.00,Sign,,0,0,0,,{\\pos(320,40)}SCHOOL GATE\n"
+    )
+
+    split: SubtitleSplit = split_subtitles(SSAFile.from_string(_HEADER + events), kind="ass")
+
+    assert split.sign_weights[1:3] == (None, None)
+    assert [candidate.text for candidate in sign_candidates(split)] == ["SCHOOL GATE"]
+
+
+def test_sign_fragments_generated_by_kara_effector_are_never_sign_candidates() -> None:
+    effect: str = "{Kara Effector 3.6 legacy: Clip Paint I [line origin: 1 - line fx: 1] \\an5\\pos(300,40)}"
+    events: str = (
+        "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Good morning, everyone.\n"
+        f"Dialogue: 0,0:00:10.00,0:00:12.00,Sign,,0,0,0,,{effect}Jeś\n"
+        f"Dialogue: 0,0:00:10.04,0:00:12.04,Sign,,0,0,0,,{effect}j g\n"
+        "Dialogue: 0,0:01:10.00,0:01:12.00,Sign,,0,0,0,,{\\pos(320,40)}SCHOOL GATE\n"
+    )
+
+    split: SubtitleSplit = split_subtitles(SSAFile.from_string(_HEADER + events), kind="ass")
+
+    assert split.sign_weights[1:3] == (None, None)
+    assert [candidate.text for candidate in sign_candidates(split)] == ["SCHOOL GATE"]
