@@ -50,7 +50,8 @@ narratora ani finalnego sidecara.
 - Callback postępu jest observerem. Jego błąd nie może przejąć syntezy.
 - `TtsScheduler.submit(call, …)` wykonuje dowolną próbę (`call(attempt)`); wynik leży w
   `ScheduledSynthesis.result`. Ścieżka per kwestia i ścieżka dokumentu dzielą ten sam
-  retry, circuit i timeout.
+  retry, circuit i timeout. Ostrzeżenie o ponowieniu i błąd końcowy logują kod, komunikat
+  i wyłącznie liczbowe wartości `details` (`_numeric_details`), bez tekstów i ścieżek.
 
 ## Ścieżka dokumentu
 
@@ -64,6 +65,8 @@ narratora ani finalnego sidecara.
 - `accept_result` sprawdza własność nagrania i kolejność `PartTiming`, tnie nagranie
   (`open_end = not ends_sentence(text)`) i waliduje każdy klip; błąd splittera albo
   niezgodne czasy to `TtsClipValidationError`, więc dokument jest ponawiany w całości.
+  Pusty `PartTiming` (`spoken is False`) to część, której silnik nie wypowiedział: tylko
+  ta kwestia dostaje `TtsInputError`, reszta nagrania jest cięta i zatwierdzana.
 - Identyfikator dokumentu `{scope_id}:document:{n}` bierze `n` z licznika `TtsService`, więc jest unikalny w
   całym przebiegu, także między batchami tego samego scope.
 - Nagranie i niezatwierdzone klipy są usuwane przed każdą kolejną próbą i po każdym

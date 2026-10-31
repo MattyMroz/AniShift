@@ -63,6 +63,9 @@ _RE_SONG_NAME: Final[re.Pattern[str]] = re.compile(
 )
 """Song style names written as release codes, such as ``EDup``, ``OP_EN_blue``, ``ED1 - ENG`` or ``IN01``."""
 
+_RE_SONG_CREDIT: Final[re.Pattern[str]] = re.compile(r"\S\s+-\s+\S.*\[[a-z]{2,3}\](?:\s*\d+)?\s*$", re.I)
+"""Song style names written as a credit with a language tag, such as ``East Of Eden - Ghost Sequence [PL]``."""
+
 _RE_NOTE: Final[re.Pattern[str]] = re.compile(r"disclaimer|\bnote\b|notka|przypis|tln|t/n|credit|copyright", re.I)
 """Style names suggesting a translator note or credit."""
 
@@ -90,6 +93,9 @@ _RE_SOUND_EFFECT: Final[re.Pattern[str]] = re.compile(r"\*.*\*", re.S)
 
 _MIN_LETTERS: Final[int] = 2
 """Fewest letters an on-screen line needs before the narrator may read it."""
+
+_RE_EFFECT_GENERATED: Final[re.Pattern[str]] = re.compile(r"\{[^}]*Kara Effector", re.I)
+"""Signature an effects template leaves in each generated piece, such as the letters of a ``Clip Paint`` caption."""
 
 _RE_PLACED: Final[re.Pattern[str]] = re.compile(
     _BACKSLASH + _BACKSLASH + r"(?:pos|move|org)\(|" + _BACKSLASH + _BACKSLASH + r"fr[xyz]?\s*-?(?:0*[1-9]|0*\.0*[1-9])"
@@ -242,7 +248,7 @@ def _classify_metrics(metrics: _StyleMetrics, style: str, total: int) -> tuple[C
     avg, frac = metrics.txt / n, metrics.n / total
     if draw > _DRAW_SIGN_RATIO or kara > _KARA_SONG_RATIO:
         return Category.SIGN, 0.95
-    if _RE_SONG.search(style) or _RE_SONG_NAME.search(style) or _RE_NOTE.search(style):
+    if _song_style(style) or _RE_NOTE.search(style):
         return Category.SIGN, 0.9
     if _RE_DLG.search(style) and pos < _DLG_MAX_POS_RATIO and draw == 0:
         return Category.DIALOG, 0.85
@@ -351,12 +357,16 @@ def word_count(text: str) -> int:
 
 def sung(event: SSAEvent) -> bool:
     """Tell whether a line belongs to a song by its style name or karaoke tags."""
-    return bool(_RE_SONG.search(event.style) or _RE_SONG_NAME.search(event.style) or _RE_KARA.search(event.text))
+    return _song_style(event.style) or bool(_RE_KARA.search(event.text))
+
+
+def _song_style(style: str) -> bool:
+    return bool(_RE_SONG.search(style) or _RE_SONG_NAME.search(style) or _RE_SONG_CREDIT.search(style))
 
 
 def never_narrated(event: SSAEvent) -> bool:
-    """Tell whether an on-screen line is a song, drawing, sound effect or near letterless text never read aloud."""
-    if sung(event) or is_drawing(event.text):
+    """Tell whether an on-screen line is a song, drawing, effect piece, sound effect or near letterless text."""
+    if sung(event) or is_drawing(event.text) or _RE_EFFECT_GENERATED.search(event.text):
         return True
     plain: str = visible_text(event.text)
     return sum(char.isalpha() for char in plain) < _MIN_LETTERS or bool(_RE_SOUND_EFFECT.fullmatch(plain))

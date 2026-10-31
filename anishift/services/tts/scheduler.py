@@ -294,6 +294,8 @@ class TtsScheduler:
                 batch_rank=work.batch_rank,
                 request_rank=work.request_rank,
                 error_code=error.context.code.value,
+                error_message=error.context.message,
+                error_details=_numeric_details(error),
                 retry_number=work.attempts,
                 max_retries=self._max_retries,
                 delay_s=delay,
@@ -326,6 +328,8 @@ class TtsScheduler:
             batch_rank=work.batch_rank,
             request_rank=work.request_rank,
             error_code=error.context.code.value,
+            error_message=error.context.message,
+            error_details=_numeric_details(error),
             attempts=work.attempts,
         ).error(
             "TTS request failed after {attempts} attempts",
@@ -417,6 +421,10 @@ class TtsScheduler:
             )
         )
         self._admission.release()
+
+
+def _numeric_details(error: TtsError) -> dict[str, int | float]:
+    return {key: value for key, value in error.context.details.items() if isinstance(value, int | float)}
 
 
 def _opens_circuit(error: TtsError) -> bool:

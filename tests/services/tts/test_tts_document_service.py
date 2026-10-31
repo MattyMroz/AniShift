@@ -105,8 +105,10 @@ class _DocumentEngine:
         drop_timing_once: bool = False,
         wrong_voice_once: bool = False,
         separator: str = "",
+        silent: tuple[str, ...] = (),
     ) -> None:
         self.separator: str = separator
+        self.silent: tuple[str, ...] = silent
         self.documents: list[tuple[str, ...]] = []
         self.document_ids: list[str] = []
         self.recordings: list[Path] = []
@@ -162,7 +164,11 @@ class _DocumentEngine:
             await request.progress(total // 2, total)
             await request.progress(total, total)
         timings: tuple[PartTiming, ...] = tuple(
-            PartTiming(request_id=part.request_id, start_ms=index * 1000.0, end_ms=index * 1000.0 + 500.0)
+            PartTiming(
+                request_id=part.request_id,
+                start_ms=index * 1000.0,
+                end_ms=index * 1000.0 + (0.0 if part.text in self.silent else 500.0),
+            )
             for index, part in enumerate(request.parts)
         )
         if self.drop_timing_once:
@@ -403,6 +409,32 @@ def test_document_batch_part_refused_by_engine_fails_only_that_line(tmp_path: Pa
     assert engine.documents == [("line-0", "line-2")]
     assert result.stats.provider_calls == 1
     assert result.status is SpeechBatchStatus.PARTIAL
+
+
+def test_document_batch_part_the_server_did_not_speak_fails_only_that_line(tmp_path: Path) -> None:
+    engine = _DocumentEngine(silent=("j g",))
+    splitter = _Splitter()
+
+    (result,) = _run(tmp_path, engine, splitter, _batch("Raz dwa.", "j g", "Pięć."))
+
+    assert _statuses(result) == [SynthesisStatus.SYNTHESIZED, SynthesisStatus.FAILED, SynthesisStatus.SYNTHESIZED]
+    assert result.requests[1].error_code == "TTS_INPUT_INVALID"
+    assert engine.documents == [("line-0", "line-1", "line-2")]
+    assert [[span.request_id for span in spans] for spans in splitter.calls] == [["line-0", "line-2"]]
+    assert result.stats.provider_calls == 1
+    assert result.status is SpeechBatchStatus.PARTIAL
+
+
+def test_document_batch_without_any_spoken_part_fails_its_lines_without_split(tmp_path: Path) -> None:
+    engine = _DocumentEngine(silent=("j g",))
+    splitter = _Splitter()
+
+    (result,) = _run(tmp_path, engine, splitter, _batch("j g"))
+
+    assert _statuses(result) == [SynthesisStatus.FAILED]
+    assert result.requests[0].error_code == "TTS_INPUT_INVALID"
+    assert engine.documents == [("line-0",)]
+    assert splitter.calls == []
 
 
 def test_document_batch_splitter_failure_retries_document(tmp_path: Path) -> None:

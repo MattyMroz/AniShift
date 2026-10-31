@@ -302,10 +302,14 @@ def test_document_request_without_parts_is_rejected(tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize("end_ms", [10.0, 5.0])
-def test_part_timing_without_positive_length_is_rejected(end_ms: float) -> None:
-    with pytest.raises(ValueError, match="end after it starts"):
-        PartTiming(request_id="line-1", start_ms=10.0, end_ms=end_ms)
+def test_part_timing_reversed_is_rejected() -> None:
+    with pytest.raises(ValueError, match="end before it starts"):
+        PartTiming(request_id="line-1", start_ms=10.0, end_ms=5.0)
+
+
+@pytest.mark.parametrize(("end_ms", "spoken"), [(10.0, False), (10.5, True)])
+def test_part_timing_spoken_only_with_positive_length(end_ms: float, *, spoken: bool) -> None:
+    assert PartTiming(request_id="line-1", start_ms=10.0, end_ms=end_ms).spoken is spoken
 
 
 def test_engine_capabilities_default_to_line_engine() -> None:
