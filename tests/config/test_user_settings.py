@@ -663,7 +663,9 @@ def test_user_settings_switch_from_elevenreader_to_elevenbytes_selects_dallin_an
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(("engine", "voice"), [("edge", "pl-PL-MarekNeural"), ("sapi", "agnieszka")])
+@pytest.mark.parametrize(
+    ("engine", "voice"), [("edge", "pl-PL-MarekNeural"), ("elevenlabs", "dallin"), ("sapi", "agnieszka")]
+)
 def test_user_settings_switch_from_elevenreader_selects_engine_default_voice(engine: str, voice: str) -> None:
     settings = UserSettings(tts_engine="elevenreader", tts_voice_id="fronczewski")
 

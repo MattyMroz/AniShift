@@ -25,7 +25,8 @@ Ustawienia i `Settings` (pydantic-settings, prefix `ANISHIFT_`, z `.env`), prefe
 - `ensure_workspace_dir` rzuca `NotADirectoryError` (spoza hierarchii AniShift), gdy root istnieje jako plik nie-katalog. `workspace.py:136`
 - Głosy ElevenReadera (alias, etykieta, ID) żyją tylko w `VOICES` silnika; `user_settings.py` i `field_catalog.py`
   je czytają. Zmiana silnika nie przenosi obcego głosu: `_normalize_tts_selection` daje ElevenBytes `dallin` (chyba
-  że alias jest własnym głosem ElevenBytes), a ElevenReaderowi `fronczewski`. Współbieżność ElevenReadera nie jest
+  że alias jest własnym głosem ElevenBytes), ElevenLabs zamiast aliasu ElevenReadera domyślne `dallin`, a
+  ElevenReaderowi `fronczewski`. Współbieżność ElevenReadera nie jest
   polem panelu (zawsze 1, jak SAPI).
 - Modele, możliwości i opcje Palantira należą do serwisu LLM; `model_catalog.py` tylko je projektuje. Nie dodawaj tu parsera ani drugiej listy modeli. Adres enrollmentu pozostaje preferencją (`UserSettings.palantir_enrollment_base_url`), nie polem katalogu.
 

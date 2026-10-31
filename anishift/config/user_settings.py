@@ -493,6 +493,8 @@ class UserSettings:
             if self.tts_voice_id.casefold() not in VOICES:
                 self.tts_voice_id = DEFAULT_VOICE_ALIAS
             return
+        if self.tts_voice_id.casefold() in VOICES:
+            self.tts_voice_id = DALLIN_ALIAS
         if (
             not self.tts_provider_model_id.strip()
             or self.tts_provider_model_id in ENDPOINTS
