@@ -628,17 +628,23 @@ class TtsService:
         loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         with self._lifecycle_lock:
-            self._loop = loop
-            self._loop_ready.set()
             should_run: bool = not self._closed
         if should_run:
+            loop.call_soon(self._publish_loop, loop)
             loop.run_forever()
+        else:
+            self._loop_ready.set()
         pending: set[asyncio.Task[object]] = asyncio.all_tasks(loop)
         for task in pending:
             task.cancel()
         if pending:
             loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         loop.close()
+
+    def _publish_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        with self._lifecycle_lock:
+            self._loop = loop
+            self._loop_ready.set()
 
     async def _ensure_runtime(self) -> tuple[TtsEngine, TtsScheduler]:
         if self._engine is None:
