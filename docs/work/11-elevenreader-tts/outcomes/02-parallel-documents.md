@@ -80,3 +80,54 @@ ostatniego silnika kończy wątek, postęp na wątku silnika. Mutacja (brak wcze
 - Zamknięty przez serwer strumień kończy próbę dopiero po `STALL_S` (300 s). Szybsze rozpoznanie zamknięcia
   z niepełnym tekstem nie było w zakresie.
 - K2 (właściciel) do zrobienia; patrz plan `plans/02-parallel-documents.md`, z wartością 2 zamiast 3.
+
+## Eksperyment K3: czym ElevenDownloaderPro różni się przy 3 kartach
+
+Pytanie: EDP nagrał 3 pliki naraz (MS3_006–008, 2026-10-29), a AniShift przy N = 3 przeszedł 1 z 4 przebiegów K1.
+Kod produktu bez zmian; skrypt w scratchpadzie podmieniał wybrane funkcje w procesie testu.
+
+### Różnice w kodzie (EDP `src/auto.py`, `src/downloader.py` ↔ AniShift)
+
+1. Konto: EDP `auto.py:146-159` (`reset_reading_speed`) wysyła POST `user_config` tylko, gdy tempo ≠ 1x, i nie
+   zmienia głosu. AniShift `api_backend.py:508-522` (`prepare_account`) przy każdym starcie robi GET, POST głosu i
+   tempa, potem GET.
+2. Wgrywanie: EDP wgrywa z jednej stałej karty głównej (`auto.py:134-143`, `:262-264`), a nowa karta od razu otwiera
+   dokument. AniShift: każda próba w nowej karcie ładuje bibliotekę (`hub.py:196`, `require_signed_in`), wgrywa i
+   otwiera dokument w tej samej karcie (`service.py:233-244`).
+3. Odstęp startów: EDP zaczyna następny `begin` zaraz po naciśnięciu Play (`auto.py:181-189`, `:281-284`).
+   AniShift zwalnia blokadę startu po pierwszym adresie strumienia (`service.py:246-247`). Zmierzone odstępy:
+   EDP 22–24 s (plan, sekcja EDP), AniShift 14–17 s.
+4. Prędkość odtwarzania: bez różnicy — obie strony 64x (`auto.py:322`, `constants.py:101`), ten sam mechanizm
+   `playbackRate` w skrypcie strony; `listening_speed` 1x (`downloader.py:151`, `READING_SPEED`).
+5. Chrome: AniShift dodaje `--mute-audio` (`browser.py:50`); EDP nie (`downloader.py:474-486`).
+6. Długość: MS3 to ok. 95–112 min audio na plik (ok. 20 min nagrywania); K1 ok. 15 min audio, K3 ok. 6 min.
+7. Token: żadna strona go nie odświeża ani nie podtrzymuje; bez różnicy.
+
+### Pomiar K3
+
+N = 3, losowy tekst ok. 5 000 znaków (serwer liczy ok. 7 800), 3 przebiegi na wariant, 60 s przerwy między
+przebiegami, `STALL_S` skrócony do 45 s. Rezydent sprawdzany przed każdym przebiegiem (wyłączony).
+
+| wariant | co zmienia | przebiegi bez zamknięcia strumienia | nagrane dokumenty |
+|---------|------------|-------------------------------------|-------------------|
+| base | jak dziś | 2 z 3 | 8 z 9 |
+| post | POST konta tylko, gdy głos lub tempo się różni (jak EDP, pkt 1) | 1 z 3 | 6 z 9 |
+| gap | następny start dopiero 10 s po pierwszym audio poprzedniego, odstęp ok. 25 s (pkt 3) | 0 z 3 | 6 z 9 |
+| post+gap | oba | 0 z 3 | 5 z 9 |
+| sound | bez `--mute-audio` (pkt 5) | 2 z 3 | 8 z 9 |
+
+Pierwszy, przerwany przebieg `base` (błąd ścieżki w skrypcie) też miał jedno zamknięcie.
+
+- Zamknięcie zawsze przychodzi w fazie startu innej próby: między wczytaniem biblioteki lub wgraniem a otwarciem jej
+  strumienia. Zdarza się także, gdy gra tylko jeden inny strumień (`gap`: zamknięcie 13–14 s po pierwszym
+  strumieniu, gdy druga karta ładowała bibliotekę).
+- Żaden wariant nie daje stabilnego N = 3; dłuższy odstęp i oszczędny POST nie pomagają, a raczej pogarszają.
+  Czas łączny przy N = 3: 171–201 s (dłuższy w wariantach z odstępem).
+- Po każdym przebiegu konto czyste: głos i tempo jak przed, zero nowych importów, `session.json` bez zaległych kroków.
+
+### Wniosek
+
+Limit zostaje 2. Udane 3 karty w EDP z 2026-10-29 najpewniej wynikały ze stanu serwera, nie z kodu; ten sam raport
+EDP odnotował 2026-10-19 zamknięcie strumienia już przy 2 kartach. Niezbadane różnice to pkt 2 (wgrywanie z jednej
+stałej karty, bez ładowania biblioteki w karcie nagrania) i pkt 6 (długie dokumenty). Sprawdzenie pkt 2 wymaga
+zmiany w hubie (stała karta biblioteki do startów); bez niej nie da się tego zmierzyć skryptem.
