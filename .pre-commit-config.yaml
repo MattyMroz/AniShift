@@ -120,11 +120,6 @@ repos:
         language: system
         files: \.py$
         stages: [pre-commit]
-      - id: conventional-commit
-        name: conventional commit message
-        entry: python scripts/hooks/check_commit_msg.py
-        language: system
-        stages: [commit-msg]
       - id: mypy
         name: mypy (pre-push)
         entry: uv run mypy anishift/ tests/

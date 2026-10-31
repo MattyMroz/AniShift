@@ -1,29 +1,24 @@
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pytest
 
-if TYPE_CHECKING:
-    from types import ModuleType
-
-_HOOK_PATH: Path = Path(__file__).resolve().parents[2] / "scripts" / "hooks" / "check_commit_msg.py"
+_CONFIG_PATH: Path = Path(__file__).resolve().parents[2] / ".pre-commit-config.yaml"
 _TEMPLATES_DIR: Path = Path(__file__).resolve().parents[2] / ".github" / "ISSUE_TEMPLATE"
+_SCOPES_ARG: str = "- --scopes="
 
 
-def _load_hook() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("check_commit_msg", _HOOK_PATH)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def _commit_scopes() -> list[str]:
+    for line in _CONFIG_PATH.read_text(encoding="utf-8").splitlines():
+        stripped: str = line.strip()
+        if stripped.startswith(_SCOPES_ARG):
+            return stripped.removeprefix(_SCOPES_ARG).split(",")
+    msg = f"No '--scopes=' argument in {_CONFIG_PATH.name}"
+    raise ValueError(msg)
 
 
-_hook: ModuleType = _load_hook()
-_SCOPES: tuple[str, ...] = _hook.SCOPES
+_SCOPES: list[str] = _commit_scopes()
 
 
 def _extract_area_options(template_path: Path) -> list[str]:
@@ -71,9 +66,9 @@ def test_issue_template_areas_match_scopes(template_name: str) -> None:
     areas: list[str] = _extract_area_options(template_path)
     scopes: list[str] = list(_SCOPES)
     assert areas == scopes, (
-        f"{template_name} area options differ from SCOPES.\n"
+        f"{template_name} area options differ from --scopes.\n"
         f"  Missing from template: {sorted(set(scopes) - set(areas))}\n"
         f"  Extra in template:     {sorted(set(areas) - set(scopes))}\n"
         f"  Template order: {areas}\n"
-        f"  SCOPES order:   {scopes}"
+        f"  --scopes order: {scopes}"
     )
