@@ -38,6 +38,9 @@ class FakeSettingsService:
         self.environment: Settings = Settings.model_construct()
         self.environment_saves: list[tuple[str, str]] = []
 
+    def elevenreader_session(self) -> None:
+        return None
+
     def settings_snapshot(self) -> UserSettings:
         return self.settings
 

@@ -270,8 +270,13 @@ def check_managed_torrent_client() -> CheckResult:
 
 
 def check_elevenreader(engine_id: str) -> CheckResult:
-    """Check Chrome and the last saved session of ElevenReader without starting a browser."""
+    """Check Chrome and the last saved ElevenReader session without a browser; owed cleanup warns for any engine."""
+    root: Path = elevenreader_dir()
+    record: SessionRecord | None = read_session(root)
+    owed: bool = record is not None and record.cleanup_pending
     if engine_id != _ELEVENREADER_ENGINE_ID:
+        if owed:
+            return _elevenreader_cleanup_owed()
         return CheckResult("elevenreader", CheckStatus.SKIP, "ElevenReader is not the selected TTS engine")
     if find_chrome() is None:
         return CheckResult(
@@ -280,15 +285,8 @@ def check_elevenreader(engine_id: str) -> CheckResult:
             "Google Chrome is not installed",
             suggestion="Install Google Chrome or switch the TTS engine to ElevenBytes",
         )
-    root: Path = elevenreader_dir()
-    record: SessionRecord | None = read_session(root)
-    if record is not None and record.cleanup_pending:
-        return CheckResult(
-            "elevenreader",
-            CheckStatus.WARN,
-            "ElevenReader account may still hold the anishift document or a changed voice",
-            suggestion=_ELEVENREADER_SIGN_IN_HINT,
-        )
+    if owed:
+        return _elevenreader_cleanup_owed()
     if not profile_dir(root).is_dir() or record is None or not record.signed_in:
         return CheckResult(
             "elevenreader",
@@ -300,6 +298,15 @@ def check_elevenreader(engine_id: str) -> CheckResult:
         "elevenreader",
         CheckStatus.OK,
         f"ElevenReader session signed in, checked {record.checked_at:%Y-%m-%d %H:%M} UTC",
+    )
+
+
+def _elevenreader_cleanup_owed() -> CheckResult:
+    return CheckResult(
+        "elevenreader",
+        CheckStatus.WARN,
+        "ElevenReader account may still hold the anishift document or a changed voice",
+        suggestion=_ELEVENREADER_SIGN_IN_HINT,
     )
 
 

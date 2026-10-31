@@ -168,10 +168,21 @@ def elevenreader_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
 
 @pytest.mark.unit
-def test_check_elevenreader_other_engine_skips() -> None:
+def test_check_elevenreader_other_engine_skips(elevenreader_root: Path) -> None:
     result = check_elevenreader("elevenbytes")
 
     assert result.status is CheckStatus.SKIP
+
+
+@pytest.mark.unit
+def test_check_elevenreader_other_engine_owed_account_cleanup_warns(elevenreader_root: Path) -> None:
+    save_cleanup(elevenreader_root, AccountCleanup(read_ids=["read"]))
+
+    result = check_elevenreader("elevenbytes")
+
+    assert result.status is CheckStatus.WARN
+    assert "anishift document" in result.message
+    assert result.suggestion == "Ustawienia → Lektor → Zaloguj / sprawdź sesję"
 
 
 @pytest.mark.unit

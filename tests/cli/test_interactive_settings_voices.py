@@ -362,6 +362,21 @@ def test_tts_items_elevenreader_owed_cleanup_shows_row_with_repair_action(
 
 
 @pytest.mark.unit
+def test_tts_items_other_engine_owed_cleanup_shows_only_cleanup_row(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    service.session = _owed_session(restore=True, document=True)
+
+    _activate(panel, "category:tts")
+
+    row = next(item for item in panel._items if item.key == "elevenreader-cleanup")
+    assert (row.current, row.section) == ("napraw: Zaloguj / sprawdź sesję", "SESJA")
+    assert "elevenreader-session" not in _keys(panel)
+    assert "elevenreader-sign-in" not in _keys(panel)
+
+
+@pytest.mark.unit
 def test_tts_items_elevenreader_nothing_owed_hides_cleanup_row(
     panel: SettingsController,
     service: FakeSettingsService,

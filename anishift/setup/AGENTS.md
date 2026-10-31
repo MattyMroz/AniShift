@@ -8,7 +8,7 @@ Pobieranie, weryfikacja SHA256 i instalacja zewnętrznych binarek z manifestu `e
 - `manifest.py` — wczytanie i walidacja manifestu `external/bin_hashes.json`
 - `doctor.py` — synchroniczne health-checki (lista `CheckResult`); `check_elevenreader` dostaje silnik z
   `load_user_settings()` i nie uruchamia przeglądarki: brak Chrome FAIL, brak profilu albo ostatnie „nie zalogowano”
-  WARN, inny silnik SKIP
+  WARN, inny silnik SKIP; zaległe sprzątanie konta w `session.json` daje WARN przy każdym silniku
 - `fonts.py` — `install_fonts`: klon (`gh repo clone`) albo aktualizacja (`git pull --ff-only`) prywatnego repo `MattyMroz/fonts` w `external/fonts/`; pusta czcionka dialogów dostaje `video/ITC Officina Sans Std PL - Bold.ttf`; bez dostępu do repo wynik `skipped`, nigdy błąd
 
 ## Pułapki

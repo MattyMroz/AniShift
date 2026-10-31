@@ -1171,11 +1171,13 @@ class SettingsController:
     def _tts_items(self) -> tuple[_MenuItem, ...]:
         snapshot: _CatalogSnapshot = self._catalog_snapshot()
         items: list[_MenuItem] = list(self._active_setting_items(snapshot, _TTS_FIELDS))
-        if snapshot.settings.tts_engine == "elevenreader":
-            record: SessionRecord | None = self._service.elevenreader_session()
+        reads: bool = snapshot.settings.tts_engine == "elevenreader"
+        record: SessionRecord | None = self._service.elevenreader_session()
+        if reads:
             items.append(_MenuItem(_SESSION_KEY, "Sesja ElevenReader", _session_status(record), _SESSION_SECTION))
-            if record is not None and record.cleanup_pending:
-                items.append(_MenuItem(_CLEANUP_KEY, _cleanup_label(record), _CLEANUP_REPAIR, _SESSION_SECTION))
+        if record is not None and record.cleanup_pending:
+            items.append(_MenuItem(_CLEANUP_KEY, _cleanup_label(record), _CLEANUP_REPAIR, _SESSION_SECTION))
+        if reads:
             items.append(_MenuItem(_SIGN_IN_KEY, "Zaloguj / sprawdź sesję", "", _SESSION_SECTION))
         items.append(self._scoped_reset_item())
         items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
