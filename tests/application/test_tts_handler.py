@@ -18,6 +18,7 @@ from anishift.application.intents import NarrationTimeline
 from anishift.application.planning import ExecutionPlan, PlanTask, ProcessingOrderPolicy, RunSettingsSnapshot, TaskKind
 from anishift.application.results import ArtifactSnapshot, TaskResult
 from anishift.application.runtime import ProductionHandlerFactory
+from anishift.application.scheduler_runtime import public_error
 from anishift.application.sign_narration import write_sign_candidates
 from anishift.application.tts_clips import FfmpegClipService
 from anishift.application.tts_handler import (
@@ -50,6 +51,7 @@ from anishift.services.tts import (
     SynthesisStatus,
     SynthesizedRequest,
 )
+from anishift.services.tts.engines.elevenreader.api_backend import SIGN_IN_HINT, auth_error
 
 if TYPE_CHECKING:
     from loguru import Message
@@ -61,6 +63,7 @@ _SPOKEN_PARAMETERS: tuple[tuple[str, str | int | bool], ...] = (
 
 _OPEN_PAIR: tuple[tuple[int, int, str], ...] = ((1_000, 2_000, "Kiedy wrócisz"), (2_000, 3_500, "do domu?"))
 _TANTEI_LINES: Path = quality_dir() / "elevenreader" / "tantei" / "lines.json"
+_REJECTED: ErrorContext = ErrorContext(code=ErrorCode.TTS_INPUT_INVALID, message="rejected")
 
 
 class _Progress:
@@ -385,13 +388,19 @@ def test_tts_handler_document_engine_reads_signs_in_script_batch_with_line_by_li
 
 
 class _FailingTts(_Tts):
-    def __init__(self, root: Path, failing: frozenset[str]) -> None:
+    def __init__(
+        self,
+        root: Path,
+        failing: frozenset[str],
+        failure: ErrorContext = _REJECTED,
+    ) -> None:
         super().__init__(root)
         self.failing: frozenset[str] = failing
+        self.failure: ErrorContext = failure
 
     def synthesize(self, batch: SpeechBatch, *, callbacks: TtsProgressObserver) -> SpeechBatchResult:
         result: SpeechBatchResult = super().synthesize(batch, callbacks=callbacks)
-        failure = ErrorContext(code=ErrorCode.TTS_INPUT_INVALID, message="rejected")
+        failure: ErrorContext = self.failure
         executions: tuple[SynthesizedRequest, ...] = tuple(
             replace(item, status=SynthesisStatus.FAILED, speech_clip=None, error_code=failure.code.value)
             if item.request.request_id in self.failing
@@ -437,16 +446,22 @@ def test_tts_handler_failed_sign_is_left_out_with_warning_and_metadata(tmp_path:
 
 @pytest.mark.unit
 @pytest.mark.parametrize("reads_document", [False, True])
-def test_tts_handler_failed_line_fails_task(tmp_path: Path, *, reads_document: bool) -> None:
+def test_tts_handler_failed_line_fails_task_with_engine_message_and_hint(
+    tmp_path: Path, *, reads_document: bool
+) -> None:
     task, snapshot = _signed_synthesis(tmp_path)
-    service = _FailingTts(tmp_path, frozenset({"group-1-0"}))
+    failure: ErrorContext = auth_error("ElevenReader session is signed out").context
+    service = _FailingTts(tmp_path, frozenset({"group-1-0"}), failure)
     handler = TtsTaskHandler(
         service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=_Preparer(), reads_document=reads_document
     )
 
-    with pytest.raises(ExecutionError, match="lacks a required clip"):
+    with pytest.raises(ExecutionError) as caught:
         handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
 
+    assert caught.value.context.code is ErrorCode.TTS_AUTH_FAILED
+    assert caught.value.context.suggestion == SIGN_IN_HINT
+    assert public_error(caught.value) == f"ElevenReader session is signed out. {SIGN_IN_HINT}"
     assert len(service.batches) == 1
 
 
@@ -682,7 +697,7 @@ def test_manifest_rejects_submitted_request_without_clip(tmp_path: Path) -> None
     result = _Tts(tmp_path).synthesize(SpeechBatch("group-1", 0, (request,)), callbacks=callbacks)
     missing_clip = replace(result.requests[0], speech_clip=None)
 
-    with pytest.raises(ValueError, match="lacks a required clip"):
+    with pytest.raises(ExecutionError, match="lacks a required clip"):
         build_narration_manifest(
             replace(result, requests=(missing_clip,)),
             (NarrationTiming("request-1", 1000, 2000, 0),),

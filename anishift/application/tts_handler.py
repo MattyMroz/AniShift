@@ -399,7 +399,7 @@ def build_narration_manifest(
     timeline: NarrationTimeline,
     allow_missing_clips: bool = False,
 ) -> NarrationManifest:
-    """Restore caller timing by request ID; a request without a clip fails unless missing clips are allowed."""
+    """Restore caller timing by request ID; a request without a clip fails with the batch failure unless allowed."""
     if result.scope_id != expected_scope_id:
         _raise_manifest("TTS result scope does not match the submitted batch")
     timing_by_id: dict[str, NarrationTiming] = {timing.request_id: timing for timing in timings}
@@ -418,7 +418,7 @@ def build_narration_manifest(
         if clip is None:
             if allow_missing_clips:
                 continue
-            _raise_manifest("TTS batch lacks a required clip")
+            _raise_missing_clip(result.failure)
         if clip.request_id != execution.request.request_id:
             _raise_manifest("TTS clip ID does not match its request")
         clips.append(
@@ -697,3 +697,12 @@ def _raise_execution(message: str) -> Never:
 
 def _raise_manifest(message: str) -> Never:
     raise ValueError(message)
+
+
+def _raise_missing_clip(failure: ErrorContext | None) -> Never:
+    """Fail the task with the engine's message and what to do, which the panel shows as the task error."""
+    if failure is None:
+        _raise_execution("TTS batch lacks a required clip")
+    message: str = f"{failure.message}. {failure.suggestion}" if failure.suggestion else failure.message
+    context: ErrorContext = ErrorContext(code=failure.code, message=message, suggestion=failure.suggestion)
+    raise ExecutionError(context=context)
