@@ -323,17 +323,22 @@ class DocumentSynthesisRequest:
 
 @dataclass(frozen=True, slots=True)
 class PartTiming:
-    """Server-time span of one document part on the recording timeline."""
+    """Server-time span of one document part on the recording timeline; an empty span marks an unspoken part."""
 
     request_id: str
     start_ms: float
     end_ms: float
 
     def __post_init__(self) -> None:
-        """Reject an empty or reversed span."""
-        if self.end_ms <= self.start_ms:
-            message: str = "Document part timing must end after it starts"
+        """Reject a reversed span."""
+        if self.end_ms < self.start_ms:
+            message: str = "Document part timing must not end before it starts"
             raise ValueError(message)
+
+    @property
+    def spoken(self) -> bool:
+        """Tell whether the server read the part aloud."""
+        return self.end_ms > self.start_ms
 
 
 @dataclass(frozen=True, slots=True)

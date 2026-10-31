@@ -503,8 +503,8 @@ def part_spans(chunks: tuple[AlignmentChunk, ...], parts: tuple[DocumentPart, ..
     for index, (part, (first, last)) in enumerate(zip(parts, bounds, strict=True)):
         if text[first : last + 1] != _neutralize(part.text):
             _raise_clip("ElevenReader line text mismatch", line=index)
-        if ends[last] <= starts[first]:
-            _raise_clip("ElevenReader part has no duration", line=index)
+        if ends[last] < starts[first]:
+            _raise_clip("ElevenReader part timing is reversed", line=index)
         timings.append(PartTiming(request_id=part.request_id, start_ms=starts[first], end_ms=ends[last]))
     return tuple(timings)
 

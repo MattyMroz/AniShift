@@ -91,3 +91,6 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
   (widocznym w panelu), nigdy nie rozlicza go po cichu. Rozpoznanie sprawdza test sieciowy
   `test_reads_listing_live_account_finds_and_deletes_document_without_known_id`.
 - `char_count` z odpowiedzi uploadu jest obowiązkowy; bez niego próba kończy się błędem przejściowym.
+- Serwer potrafi nie wypowiedzieć części (np. strzępu szyldu `j g`): jej znaki mają zerowy czas, a `part_spans` zwraca
+  dla niej pusty `PartTiming` zamiast błędu, więc odpada tylko ta kwestia. Inna liczba lub tekst części i odwrócony
+  czas pozostają `TtsClipValidationError` całego nagrania.

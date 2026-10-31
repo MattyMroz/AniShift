@@ -7,7 +7,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+from loguru import logger as loguru_logger
+
+from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.tts import (
     AudioFormat,
     AvailabilityProbeKind,
@@ -21,6 +25,7 @@ from anishift.services.tts import (
     SynthesisProfile,
     SynthesisRequest,
     TtsCancellation,
+    TtsClipValidationError,
     TtsConfig,
     TtsError,
     TtsQuotaError,
@@ -28,6 +33,9 @@ from anishift.services.tts import (
     VoiceInfo,
 )
 from anishift.services.tts.scheduler import TtsScheduler
+
+if TYPE_CHECKING:
+    from loguru import Message
 
 
 def test_cancellation_wakes_many_waiters_from_another_thread() -> None:
@@ -704,3 +712,41 @@ def test_scheduler_quota_error_opens_circuit_for_later_work(tmp_path: Path) -> N
         await scheduler.close()
 
     asyncio.run(scenario())
+
+
+def test_retry_warning_and_final_error_log_message_and_numeric_details_only(tmp_path: Path) -> None:
+    async def reject(result: EngineClipResult) -> EngineClipResult:
+        del result
+        context = ErrorContext(
+            code=ErrorCode.TTS_CLIP_INVALID,
+            message="ElevenReader line text mismatch",
+            details={"line": 336, "request_id": "Tajny tekst"},
+        )
+        raise TtsClipValidationError(context=context)
+
+    async def scenario() -> None:
+        engine = _Engine()
+        token = TtsCancellation()
+        scheduler = TtsScheduler(locality=EngineLocality.SYSTEM, config=_config(concurrency=1, retries=1))
+        result = await scheduler.submit(
+            _call(engine, tmp_path, "clip", token),
+            batch_rank=0,
+            request_rank=0,
+            cancel=token,
+            accept_result=reject,
+        )
+        assert isinstance(result.error, TtsClipValidationError)
+        await scheduler.close()
+
+    captured: list[Message] = []
+    handler_id: int = loguru_logger.add(captured.append, format="{level} {message} {extra}", level="DEBUG")
+    try:
+        asyncio.run(scenario())
+    finally:
+        loguru_logger.remove(handler_id)
+
+    records: list[str] = [str(message) for message in captured if "TTS_CLIP_INVALID" in str(message)]
+    assert [record.split()[0] for record in records] == ["WARNING", "ERROR"]
+    assert all("ElevenReader line text mismatch" in record for record in records)
+    assert all("'line': 336" in record for record in records)
+    assert not any("Tajny tekst" in record for record in records)
