@@ -195,13 +195,14 @@ class FakePage:
             self._recorder.on_frame(frame)
 
     async def player_state(self) -> PlayerState:
+        await self._step("player_state")
         return PlayerState(value=100.0, length=100.0) if self.site.player_done else PlayerState(value=0.0, length=0.0)
 
     async def set_page_speed(self, speed: float) -> None:
-        self.site.events.append("set_page_speed")
+        await self._step("set_page_speed")
 
     async def check_page_speed(self, speed: float) -> None:
-        self.site.events.append("check_page_speed")
+        await self._step("check_page_speed")
 
     def watch_stream(self, recorder: StreamRecorder, on_url: Callable[[str], None]) -> None:
         self.watching = True

@@ -43,7 +43,7 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
 - `upload` rejestruje możliwy dokument (`orphan_visible_at`) i zapisuje go przed „Upload”, a `read_id` z odpowiedzi
   przed walidacją `char_count`/tokenu. Dokument bez znanego id (anulowanie w trakcie uploadu, odpowiedź bez id,
   poprzedni proces) szuka się w `GET reads` po tytule `anishift`/`anishift.txt`; pusty wynik rozlicza krok dopiero
-  po `ACTION_TIMEOUT_S` od kliknięcia.
+  po `ACTION_TIMEOUT_S` od kliknięcia. Usuwany jest każdy dokument o tym tytule, także własny dokument właściciela.
 - Zaległe sprzątanie jest trwałe w `session.json` (`restore`, `delete_document`, bez `read_id`): `prepare_account` i
   `upload` zapisują je przed zmianą konta, silnik po każdym sprzątaniu, `load_cleanup` wczytuje je przy starcie.
 - Przeglądarka zostaje otwarta po sukcesie i po błędach, które jej nie dotyczą (`_KEEP_BROWSER_ERRORS`); po
@@ -52,7 +52,15 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
 ## Pułapki
 
 - Brak retry w transporcie (Z6). Ponowne „Play” (do 3) i pętla dołączania do CDP to czynności jednej próby.
-- Każde długie oczekiwanie idzie przez `_unless_cancelled`, więc anulowanie nie czeka na limit Playwright.
+- Błąd Playwright przy starcie sterownika, dołączaniu i przygotowaniu kontekstu (`ChromeSession._attach`) staje się
+  `unavailable_error`, więc `sign_in` kończy się `FAILED`, a panel nie zostaje w stanie „zajęty”.
+- Każde wywołanie strony w próbie (także `set_page_speed`, `press_play`, `check_page_speed`, `player_state`) idzie
+  przez `_unless_cancelled`, więc anulowanie nie czeka na limit Playwright; `evaluate` nie ma własnego limitu.
+- Kartę i nagrywanie próby ogranicza `request.deadline_s` (`_within_deadline`): po jego upływie próba kończy się
+  `TtsTimeoutError` (przejściowy), a sprzątanie konta i zamknięcie Chrome biegną w `finally` jak po każdym błędzie.
+  Scheduler ma wyłączony `asyncio.timeout` dla tego silnika, więc ten termin jest jedynym górnym limitem próby;
+  poza nim są start Chrome (`_open_browser`, ograniczony próbami `CONNECT_ATTEMPTS`) i końcowe sprzątanie (każdy
+  krok `CLEANUP_STEP_TIMEOUT_S`).
 - Token, `read_id`, adres WebSocketu i tekst dokumentu nie trafiają do logów, wyjątków ani plików;
   `session.json` ma tylko `signed_in`, `checked_at`, `restore` (głos i tempo konta) i `delete_document`. Adres
   strumienia jest sprawdzany w pamięci (F8).
@@ -65,6 +73,7 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
 - Wylogowanego gościa biblioteka przekierowuje na `/reader/sign-up` (przyciski „Sign up with Google/Apple/email”,
   „Sign in” nie jako przycisk; K2); `open_library` rozpoznaje to po adresie i przyciskach „Sign up”. Status 402 jako brak
   kredytów oraz lista `GET reads` w kształcie
-  `{"reads": [{"read_id", "title"}]}` są założeniami do potwierdzenia w K2. Inny kształt listy zostawia krok
+  `{"reads": [{"read_id", "title"}]}` są założeniami do potwierdzenia w K2 (listę sprawdza test sieciowy
+  `test_reads_listing_live_account_finds_and_deletes_document_without_known_id`). Inny kształt listy zostawia krok
   `delete_orphan` zaległym (widocznym w panelu), nigdy nie rozlicza go po cichu.
 - `char_count` z odpowiedzi uploadu jest obowiązkowy; bez niego próba kończy się błędem przejściowym.

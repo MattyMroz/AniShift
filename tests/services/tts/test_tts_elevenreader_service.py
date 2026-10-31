@@ -78,7 +78,7 @@ def _run[T](work: Coroutine[object, object, T]) -> T:
 
 
 def _request(
-    tmp_path: Path, *, texts: tuple[str, ...] = TEXTS, voice_id: str = "fronczewski"
+    tmp_path: Path, *, texts: tuple[str, ...] = TEXTS, voice_id: str = "fronczewski", deadline_s: float = 60.0
 ) -> DocumentSynthesisRequest:
     return DocumentSynthesisRequest(
         request_id="episode:document:0",
@@ -87,7 +87,7 @@ def _request(
         provider_model_id="eleven_v4",
         options={},
         recording=tmp_path / "rec" / "recording.mp3",
-        deadline_s=60.0,
+        deadline_s=deadline_s,
     )
 
 
@@ -302,6 +302,41 @@ def test_synthesize_document_cancel_while_waiting_stops_quickly_and_cleans(tmp_p
     elapsed: float = _run(scenario())
 
     assert elapsed < 2.0
+    _assert_cleaned(site)
+    assert site.sessions[0].closed
+
+
+@pytest.mark.parametrize("hung", ["set_page_speed", "press_play", "check_page_speed", "player_state"])
+def test_synthesize_document_cancel_while_page_hangs_stops_quickly_and_cleans(tmp_path: Path, hung: str) -> None:
+    site = FakeSite(texts=TEXTS, char_count=10_000, hang_on=hung)
+    engine = fake_engine(tmp_path, site)
+    cancel = TtsCancellation()
+
+    async def scenario() -> None:
+        async with asyncio.timeout(5.0):
+            task = asyncio.create_task(engine.synthesize_document(_request(tmp_path), cancel=cancel))
+            await site.hung.wait()
+            cancel.cancel()
+            with pytest.raises(TtsCancelledError):
+                await task
+
+    _run(scenario())
+
+    _assert_cleaned(site)
+    assert site.sessions[0].closed
+
+
+def test_synthesize_document_hung_page_times_out_at_deadline_and_cleans(tmp_path: Path) -> None:
+    site = FakeSite(texts=TEXTS, char_count=10_000, hang_on="player_state")
+    engine = fake_engine(tmp_path, site)
+
+    async def scenario() -> None:
+        async with asyncio.timeout(5.0):
+            await _record(engine, _request(tmp_path, deadline_s=0.2))
+
+    with pytest.raises(TtsTimeoutError, match="deadline"):
+        _run(scenario())
+
     _assert_cleaned(site)
     assert site.sessions[0].closed
 

@@ -79,8 +79,11 @@ class _Context:
         self.pages: list[_Tab] = [_Tab("about:blank"), _Tab("https://elevenreader.io/reader/library")]
         self.scripts: list[str] = []
         self.page_error: Exception | None = None
+        self.script_error: Exception | None = None
 
     async def add_init_script(self, script: str) -> None:
+        if self.script_error is not None:
+            raise self.script_error
         self.scripts.append(script)
 
     async def new_page(self) -> FakePlaywrightPage:
@@ -150,10 +153,13 @@ class _Playwright:
 
 
 class _Starter:
-    def __init__(self, playwright: _Playwright) -> None:
+    def __init__(self, playwright: _Playwright, error: Exception | None) -> None:
         self.playwright: _Playwright = playwright
+        self.error: Exception | None = error
 
     async def start(self) -> _Playwright:
+        if self.error is not None:
+            raise self.error
         return self.playwright
 
 
@@ -165,6 +171,10 @@ class _Chrome:
         self.playwright: _Playwright = _Playwright(self.browser, failures=1)
         self.argv: list[str] = []
         self.restricted: list[Path] = []
+        self.driver_error: Exception | None = None
+
+    def starter(self) -> _Starter:
+        return _Starter(self.playwright, self.driver_error)
 
     def popen(self, argv: list[str], **kwargs: object) -> _Process:
         self.argv = argv
@@ -177,7 +187,7 @@ def chrome(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Chrome:
     monkeypatch.setattr(browser_module, "find_chrome", lambda: tmp_path / "chrome.exe")
     monkeypatch.setattr(browser_module, "restrict_directory", fake.restricted.append)
     monkeypatch.setattr(subprocess, "Popen", fake.popen)
-    monkeypatch.setattr(browser_module, "async_playwright", lambda: _Starter(fake.playwright))
+    monkeypatch.setattr(browser_module, "async_playwright", fake.starter)
     monkeypatch.setattr(browser_module, "CONNECT_INTERVAL_S", 0.0)
     return fake
 
@@ -323,6 +333,26 @@ def test_chrome_session_start_chrome_exiting_raises_unavailable_and_cleans_up(ch
     assert not session.alive
     assert chrome.playwright.stopped
     assert chrome.process.calls == []
+    assert _lock_free(chrome.root)
+
+
+@pytest.mark.parametrize("failing", ["driver", "init_script"])
+def test_chrome_session_start_playwright_failing_raises_unavailable_and_cleans_up(
+    chrome: _Chrome, failing: str
+) -> None:
+    error: PlaywrightError = PlaywrightError("Target page, context or browser has been closed")
+    if failing == "driver":
+        chrome.driver_error = error
+    else:
+        chrome.browser.contexts[0].script_error = error
+    session = ChromeSession(chrome.root, headless=True)
+
+    with pytest.raises(TtsProviderUnavailableError) as raised:
+        asyncio.run(session.start())
+
+    assert raised.value.__cause__ is None
+    assert not session.alive
+    assert chrome.process.returncode is not None
     assert _lock_free(chrome.root)
 
 

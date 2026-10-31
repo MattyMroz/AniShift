@@ -6,6 +6,7 @@ import asyncio
 import re
 import tempfile
 import time
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Never
@@ -68,7 +69,7 @@ from .constants import (
 from .recorder import StreamRecorder
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from anishift.services.tts.config import TtsConfig
     from anishift.services.tts.protocols import CancellationToken
@@ -228,8 +229,9 @@ class ElevenReaderTtsEngine:
         page: ReaderPage | None = None
         keep_browser: bool = False
         try:
-            page = await _unless_cancelled(browser.new_page(), cancel)
-            result: EngineDocumentResult = await self._read(page, request, voice, cancel, started)
+            async with _within_deadline(request.deadline_s):
+                page = await _unless_cancelled(browser.new_page(), cancel)
+                result: EngineDocumentResult = await self._read(page, request, voice, cancel, started)
         except _KEEP_BROWSER_ERRORS:
             keep_browser = True
             raise
@@ -314,8 +316,8 @@ class ElevenReaderTtsEngine:
             page.watch_stream(recorder, lambda url: stream_voices.append(voice.voice_id in url))
             try:
                 await _unless_cancelled(page.open_document(uploaded.read_id), cancel)
-                await page.set_page_speed(PAGE_SPEED)
-                await page.press_play()
+                await _unless_cancelled(page.set_page_speed(PAGE_SPEED), cancel)
+                await _unless_cancelled(page.press_play(), cancel)
                 await self._record(page, recorder, request, uploaded.char_count, cancel)
             finally:
                 page.unwatch_stream()
@@ -350,30 +352,32 @@ class ElevenReaderTtsEngine:
             now = time.monotonic()
             if now - last_speed_check >= SPEED_CHECK_S:
                 last_speed_check = now
-                await page.check_page_speed(PAGE_SPEED)
+                await _unless_cancelled(page.check_page_speed(PAGE_SPEED), cancel)
             if not recorder.audio_bytes:
                 if now - played_at < START_TIMEOUT_S:
                     continue
                 if plays >= PLAY_ATTEMPTS:
                     reason: str = "ElevenReader sent no audio after Play"
                     raise _timeout_error(reason)
-                await page.press_play()
+                await _unless_cancelled(page.press_play(), cancel)
                 plays, played_at = plays + 1, now
                 continue
             if recorder.audio_bytes != last_bytes:
                 last_bytes, last_progress = recorder.audio_bytes, now
                 if request.progress is not None:
                     await request.progress(min(recorder.chars, char_count), char_count)
-            if await self._finished(page, recorder, char_count) and now - last_progress >= END_IDLE_S:
+            if await self._finished(page, recorder, char_count, cancel) and now - last_progress >= END_IDLE_S:
                 return
             if now - last_progress >= STALL_S:
                 reason = "ElevenReader recording stalled"
                 raise _timeout_error(reason)
 
-    async def _finished(self, page: ReaderPage, recorder: StreamRecorder, char_count: int) -> bool:
+    async def _finished(
+        self, page: ReaderPage, recorder: StreamRecorder, char_count: int, cancel: CancellationToken
+    ) -> bool:
         if recorder.chars >= char_count:
             return True
-        state: PlayerState = await page.player_state()
+        state: PlayerState = await _unless_cancelled(page.player_state(), cancel)
         return state.length > 0 and state.length - state.value <= END_SLACK_CHARS
 
     def _result(
@@ -547,6 +551,19 @@ async def _unless_cancelled[T](work: Awaitable[T], cancel: CancellationToken) ->
     task.cancel()
     await asyncio.wait((task,))
     raise _cancelled_error()
+
+
+@asynccontextmanager
+async def _within_deadline(deadline_s: float) -> AsyncIterator[None]:
+    limit: asyncio.Timeout = asyncio.timeout(deadline_s)
+    try:
+        async with limit:
+            yield
+    except TimeoutError:
+        if not limit.expired():
+            raise
+        reason: str = "ElevenReader document exceeded its deadline"
+        raise _timeout_error(reason) from None
 
 
 async def _finish_shielded(work: Awaitable[None]) -> None:

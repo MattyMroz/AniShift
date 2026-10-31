@@ -146,17 +146,25 @@ class ChromeSession:
             reason: str = "Google Chrome could not be started"
             raise unavailable_error(reason) from None
         self._process = process
+        try:
+            await self._attach(process, port)
+        except PlaywrightError:
+            reason = "ElevenReader could not drive Chrome"
+            raise unavailable_error(reason) from None
+        logger.info("ElevenReader browser started", headless=self._headless)
+
+    async def _attach(self, process: subprocess.Popen[bytes], port: int) -> None:
         playwright: Playwright = await async_playwright().start()
         self._playwright = playwright
         browser: Browser = await _connect(playwright, process, port)
         self._browser = browser
-        self._context = browser.contexts[0]
+        context: BrowserContext = browser.contexts[0]
+        self._context = context
         if self._headless:
-            await self._context.add_init_script(speed_script(PAGE_SPEED))
-        for page in self._context.pages:
+            await context.add_init_script(speed_script(PAGE_SPEED))
+        for page in context.pages:
             if page.url in _BLANK_URLS:
                 await page.close()
-        logger.info("ElevenReader browser started", headless=self._headless)
 
 
 async def _connect(playwright: Playwright, process: subprocess.Popen[bytes], port: int) -> Browser:
