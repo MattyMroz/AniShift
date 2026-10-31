@@ -30,7 +30,7 @@ Historyczne plany i wyniki opisują swoje baseline'y, nie gwarantują dzisiejsze
 | [08-acquisition/](work/08-acquisition/) | Katalog modeli, wybór odcinka, pobieranie, subskrypcje i algorytm E00–A1 | zrobione na stosie; E6/E4/E5 odłożone w ideas.md | [#57](https://github.com/MattyMroz/AniShift/pull/57), [#59](https://github.com/MattyMroz/AniShift/pull/59) |
 | [09-tui-unify/](work/09-tui-unify/) | Ujednolicenie czterech zakładek panelu | zrobione na stosie; dalsze pomysły w ideas.md | [#59](https://github.com/MattyMroz/AniShift/pull/59) |
 | [10-quality/](work/10-quality/masterplan.md) | Jakość wyniku: baza testowa, szyldy, podział dialog / szyld, granice stylów, podział wierszy, czasy, głośność lektora | aktywne: etap 0 | — |
-| [11-elevenreader-tts/](work/11-elevenreader-tts/) | Lektor przez ElevenReader na bazie ElevenDownloaderPro: głos, timestampy, sesja i logowanie | plan do przeglądu i decyzji właściciela | — |
+| [11-elevenreader-tts/](work/11-elevenreader-tts/) | Lektor przez ElevenReader na bazie ElevenDownloaderPro: głos, timestampy, sesja i logowanie | zrobione: silnik i poprawki; plan równoległych nagrań (`plans/02-parallel-documents.md`) do decyzji właściciela | [#78](https://github.com/MattyMroz/AniShift/pull/78), [#83](https://github.com/MattyMroz/AniShift/pull/83) |
 | [12-catalog-fallback/](work/12-catalog-fallback/) | Zapas katalogu przy awarii AniList | plan do przeglądu i decyzji właściciela | — |
 | [13-silent-stalls/](work/13-silent-stalls/) | Diagnoza cichych zawieszeń z 24.10 i niezależny przegląd PR #66 | plan do przeglądu i decyzji właściciela | — |
 | [14-stall-watchdog/](work/14-stall-watchdog/) | Strażnik materiału, który utknął w przepływie | plan do przeglądu i decyzji właściciela | — |
@@ -40,6 +40,7 @@ Historyczne plany i wyniki opisują swoje baseline'y, nie gwarantują dzisiejsze
 | [18-library-titles-covers/](work/18-library-titles-covers/) | Biblioteka jako widok tytułów i okładki w panelu | plan do przeglądu i decyzji właściciela | — |
 | [19-tvmaze-episode-titles/](work/19-tvmaze-episode-titles/) | Brakujące tytuły odcinków z TVmaze | plan do przeglądu i decyzji właściciela | — |
 | [20-style-boundaries/](work/20-style-boundaries/) | Granice stylów po tłumaczeniu | plan do przeglądu i decyzji właściciela | — |
+| [21-playshift/](work/21-playshift/) | PlayShift (nazwa robocza): przenośny odtwarzacz na mpv, research, specyfikacja, masterplan, pomiary etapu 01 | aktywne: etap 01 czeka na ocenę właściciela (K1) | — |
 
 ## Dalsza praca i wznowienie
 
