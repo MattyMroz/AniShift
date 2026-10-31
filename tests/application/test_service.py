@@ -228,7 +228,7 @@ def test_panel_executes_only_selected_episodes_through_the_resident(tmp_path: Pa
         for key in (*keys, *(("down",) * 3 if regenerate else ()), "enter"):
             assert controller.handle_key(key) is ManualResult.STAY
         assert rendered.wait(5.0)
-        assert "2 odcinków" in controller.render(120, 40).plain
+        assert "2 odcinki" in controller.render(120, 40).plain
         assert translation.calls == []
         assert len(store.load().reservations) == 2
         assert controller.handle_key("enter") is ManualResult.START_RUN
@@ -595,14 +595,14 @@ def test_history_retry_discloses_multigroup_scope_under_pause_and_releases_reser
             session.command("set_auto", {"enabled": False})
             controller.handle_key("text:p")
             assert _wait_for_resident(session, lambda _status: not controller._busy)
-            assert "Dokończ całe zapisane zlecenie · 2 materiałów" in controller.render(120, 40).plain
+            assert "Dokończ całe zapisane zlecenie · 2 materiały" in controller.render(120, 40).plain
             assert _wait_for_resident(session, lambda status: status["reservations"] == [])
             assert store.load().requests[0].attempts == 1
             session.command("set_auto", {"enabled": True})
             controller.handle_key("text:p")
             assert _wait_for_resident(session, lambda _status: not controller._busy)
             assert store.load().requests[0].attempts == 1
-            assert "Dokończ całe zapisane zlecenie · 2 materiałów" in controller.render(120, 40).plain
+            assert "Dokończ całe zapisane zlecenie · 2 materiały" in controller.render(120, 40).plain
             assert controller.handle_key("enter") is StateResult.MANUAL
             proposal: RetryProposal | None = controller.take_manual_retry()
             assert proposal is not None
@@ -668,7 +668,7 @@ def test_processing_cancel_targets_the_disclosed_whole_manual_run(
                 assert _wait_for_resident(session, lambda _status: controller._connected)
                 assert "X anuluj" in controller.render(120, 40).plain
                 controller.handle_key("text:c")
-                assert "Anulować całe zlecenie (2 materiałów)? Enter tak · Esc nie" in controller.render(120, 40).plain
+                assert "Anulować całe zlecenie (2 materiały)? Enter tak · Esc nie" in controller.render(120, 40).plain
                 controller.handle_key("enter")
                 assert _wait_for_resident(session, lambda _status: not controller._busy)
                 release.set()

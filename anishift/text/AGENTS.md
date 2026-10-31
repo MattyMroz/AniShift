@@ -35,6 +35,8 @@ subtitle line breaking.
   przymiotnik + przymiotnik i jest predykatem `gaps(words, modifies)` dla
   frazy przyimkowej; bez niego chronią ją tylko listy (zaimki dzierżawcze).
 - `gaps(words, modifies, verb)`: klityka zaimkowa (`_CLITICS`) obok wyrazu, który `morphology.verb` czyta jako czasownik, daje chronioną klasę `clitic`; przymiotnik przed wyrazem zgodnym według `modifies` daje `modifier` także bez końcówki z listy. Bez predykatów (wariant bez morfologii) te przerwy zostają zwykłymi.
+- `plural.py` jest jedyną regułą polskiej odmiany po liczbie (1 / 2–4 poza 12–14 / reszta); nie
+  kopiuj jej w modułach.
 - Apostrofy nie są separatorami fraz. Znaki otwierające z kategorii `Ps`/`Pi`
   także nie mogą zaczynać granicy.
 

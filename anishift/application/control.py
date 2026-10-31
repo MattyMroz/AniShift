@@ -1155,6 +1155,6 @@ def _latest_request_blocks(
     )
     if latest is None:
         return False
-    return latest.state in {RequestState.FAILED, RequestState.PARTIAL} and group_id not in (
+    return latest.state in {RequestState.FAILED, RequestState.PARTIAL, RequestState.CANCELLED} and group_id not in (
         () if succeeded_groups is None else succeeded_groups.get(latest.request_id, ())
     )

@@ -390,8 +390,9 @@ def test_an_unfinished_episode_with_its_video_on_disk_waits_in_processing_for_an
         assert decode_view(RetryProposal, retry.result).action in {"manual", "resume"}
 
 
+@pytest.mark.parametrize("state", [RequestState.FAILED, RequestState.CANCELLED])
 def test_auto_takes_the_published_episode_but_never_retries_its_failed_run(
-    setup: _Setup, monkeypatch: pytest.MonkeyPatch
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch, state: RequestState
 ) -> None:
     with _running(setup) as owner:
         group: InspectedSourceGroup = _published_group(setup, owner)
@@ -403,7 +404,7 @@ def test_auto_takes_the_published_episode_but_never_retries_its_failed_run(
             lambda workspace, preset, now, recipes=None: tuple(item.group_id for item in workspace.groups),
         )
         assert _auto_starts(owner, started, ()) == [group.group_id]
-        request: ProcessingRequest = _failed_request(group, RequestState.FAILED)
+        request: ProcessingRequest = _failed_request(group, state)
         assert _auto_starts(owner, started, (request,)) == []
         assert _material(owner, group.group_id, "status-failed")[0]["attention"] is True
         assert _auto_starts(owner, started, (request,)) == []

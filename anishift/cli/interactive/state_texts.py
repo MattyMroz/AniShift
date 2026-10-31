@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from types import MappingProxyType
 from typing import Final
 
@@ -10,7 +10,7 @@ from anishift.application import RefusalReason
 from anishift.application.events import sanitize_event_message
 from anishift.platform.local_control import ControlError, ControlErrorCode
 
-__all__ = ["LIBRARY_PROBLEMS", "refusal_text", "rows", "safe_text"]
+__all__ = ["LIBRARY_PROBLEMS", "deleted_sets", "deleting_sets", "refusal_text", "rows", "safe_text"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -125,6 +125,20 @@ LIBRARY_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
 """Polish explanations keyed by the owner's library reason codes."""
 
 
+def deleting_sets(snapshot: Mapping[str, object], hidden: Collection[str] = ()) -> set[str]:
+    """Return the sets hidden for deletion and those the owner is recycling now."""
+    return {*hidden, *(str(item["set_id"]) for item in _deletions(snapshot) if item.get("active"))}
+
+
+def deleted_sets(snapshot: Mapping[str, object], hidden: Collection[str] = ()) -> set[str]:
+    """Return the sets being deleted and those whose files the owner recycled and has not restored."""
+    return deleting_sets(snapshot, hidden) | {
+        str(item["set_id"])
+        for item in _deletions(snapshot)
+        if item.get("total") and item.get("recycled") == item.get("total")
+    }
+
+
 def refusal_text(problem: BaseException) -> str:
     """Translate ControlError reasons and codes, otherwise return sanitized exception text."""
     reason: str = problem.reason if isinstance(problem, ControlError) else ""
@@ -154,3 +168,7 @@ def safe_text(value: object) -> str:
 def rows(value: object) -> list[Mapping[str, object]]:
     """Return the mappings of an owner payload list, or none when the value is not a list."""
     return [item for item in value if isinstance(item, Mapping)] if isinstance(value, list) else []
+
+
+def _deletions(snapshot: Mapping[str, object]) -> list[Mapping[str, object]]:
+    return [item for item in rows(snapshot.get("deletions")) if not item.get("restored")]

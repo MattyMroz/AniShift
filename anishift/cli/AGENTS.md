@@ -109,6 +109,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   stronicowania; `AnimeFrame.first_row` i `_anime_top` służą trafieniom myszy; puste teksty list tylko z
   `StateController._empty_text`. Linia statusu (`_global_status`) liczy wyłącznie `material_counts` ownera.
 - Anulowanie w Przetwarzaniu uzbraja `_question`; anuluje tylko Enter, inny klawisz, klik w wiersz lub wyjście kasują.
+  X znaczy „zatrzymaj”: anulowane zlecenie blokuje Auto dla tej samej wersji źródła jak błąd
+  (`control._latest_request_blocks`); wraca tylko przez jawne P albo nową wersję źródła.
 - Anime czyta katalog, oferty, pobrania i `subscription_add` przez `ResidentSession`; nie ma katalogu grup, receipt
   i przyjęcia należą do ownera, kolejność premier daje fasada. Korelacja po `command_id` + kluczu odcinka. Esc/Tab
   odrzucają spóźnioną nawigację katalogu, nigdy przyjętej partii.
@@ -117,9 +119,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `episode_states`. Pauza globalna nie blokuje D/I/P; O poza zapytaniem przełącza automat i nie ponawia odmowy.
 - Odcinek z `EpisodeStatus.retry_group` (nieudane lub anulowane przetwarzanie, wideo na dysku) jest niewybieralny i nie wchodzi do
   partii D. P, a bez zaznaczeń także D, oddaje grupę przez `take_retry`; `StateController` otwiera Przetwarzanie
-  jak `show_processing`, stawia kursor na tym wierszu i przygotowuje `retry_proposal` tą samą drogą co Historia
-  (H → P). Samo D/P niczego nie pobiera; gdy stan zdążył się zmienić, owner może zwrócić propozycję `reacquire`,
-  którą wykonuje dopiero jawny Enter.
+  jak `show_processing`, stawia kursor na tym wierszu i od razu ponawia go przez `_retry_now`, jak P w
+  Przetwarzaniu. Samo D/P niczego nie pobiera, chyba że stan zdążył się zmienić i owner zwróci `reacquire`.
 - Lista wydań to `episode_selection.visible(offer.candidates, offer.suggestion)` — nie filtruj jej w UI drugi raz.
   Kursor, zaznaczenia i sugestia śledzą wiersze po hashu lub równości, nigdy po indeksie oferty. Odmowa z
   `REPEATABLE_REASONS` zostawia listę z P (`_repeatable_offer`). `_Screen.FILES` to tylko wybór pliku paczki.
@@ -147,9 +148,19 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   Nieudane albo anulowane zlecenie (`failed`/`partial`/`cancelled`), którego wideo źródłowe owner widzi na dysku
   (`_local_primary`), przychodzi jako wiersz `waiting`
   z `attention` i `reason=processing_failed` (`Błąd`, licznik „do sprawdzenia”); zostaje do ponowienia, bez X.
-  P na nim (`failed_group`) przygotowuje `retry_proposal` jak Historia; nic nie ponawia się samo.
-- P przygotowuje propozycję ponowienia ownera: lokalna praca idzie do Ręcznego z rewalidacją, zdalna dostaje jawne
-  powtórzenie. Pauza nie blokuje P; `Wstrzymano` i zamrożone liczniki tylko dla wierszy z `automatic` (brak pola =
+  P na nim (`failed_group`, `_retry_now`) ponawia od razu, bez ekranu propozycji i bez Enter: `retry_proposal`
+  ownera, potem `_execute_retry` (`resume` → `plan_resume`, `manual` z zapisanymi intencjami → `plan_manual`, obie
+  przez `reserve` i `start`; `reacquire` → `reacquire`; `manual` bez intencji kończy się odmową z drogą do
+  Ręcznego) i komunikat `Ponawiam · <nazwa>`. Auto nic nie ponawia samo. Del na nim
+  (`deletable_set`) idzie tą samą drogą co Del w Bibliotece (`_delete_now`, `deletion_preview/start`, Kosz). Owner
+  daje `set_id` = `unrecorded_set_id(group_id)` tylko grupie spoza `_ready_library`; ta przestrzeń nazw nigdy nie
+  trafia w zestaw Biblioteki, a nieudana grupa Biblioteki nie dostaje Del. Owner rzutuje taką grupę przez
+  `unrecorded_set`. Wiersz chowają tylko `_hidden` i aktywne usuwania (`deleting_sets`), nie historyczne
+  `pending_deletions`; Ctrl+Z (poza Historią) woła `deletion_undo` jak Biblioteka.
+  Na aktywnym wierszu Del pozostaje cichym aliasem X.
+- P w Historii (H → P) nadal tylko przygotowuje propozycję ponowienia ownera, bo pozycja Historii bywa też
+  ukończonym materiałem, dla którego `manual` oznacza wybór zakresu przebudowy: lokalna praca idzie Enterem do
+  Ręcznego z rewalidacją, zdalna dostaje jawne powtórzenie przez `_execute_retry`. Pauza nie blokuje P; `Wstrzymano` i zamrożone liczniki tylko dla wierszy z `automatic` (brak pola =
   automatyczny).
 - Historia (50 ostatnich materiałów): Enter waliduje przez `library_result`, F daje `playback=False`; błędy zostają.
 - Biblioteka wysyła dokładne `LibraryFileIdentity` do walidacji ownera. Del ukrywa wiersz w tej klatce i usuwa na

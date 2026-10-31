@@ -21,6 +21,7 @@ from anishift.application import (
     LibraryFile,
     LibraryFileIdentity,
     LibrarySet,
+    PlanPreview,
     RetryProposal,
     RunProgressSnapshot,
     decode_view,
@@ -82,6 +83,7 @@ from anishift.cli.interactive.state_processing import (
     NO_PROCESSING,
     cancel_command,
     cancel_target,
+    deletable_set,
     download_progress,
     failed_group,
     held,
@@ -378,7 +380,7 @@ class StateController:
                 return self._anime_key(key)
             if self._help:
                 return self._help_key(key)
-            if self._tab == _Tab.FILES and key == "undo":
+            if key == "undo" and (self._tab == _Tab.FILES or (self._tab == _Tab.PROGRESS and not self._history_open)):
                 self._work(lambda session: session.undo_deletion(), success="")
                 self._invalidate()
                 return StateResult.CONTINUE
@@ -471,7 +473,7 @@ class StateController:
         elif key == "delete" and self._tab == _Tab.FILES:
             self._file_action("delete")
         elif key == "delete" and self._tab == _Tab.PROGRESS and not self._history_open:
-            self._processing_action("x")
+            self._processing_action("delete")
         elif key.startswith("text:"):
             return self._action_key(key.removeprefix("text:").casefold())
         self._invalidate()
@@ -736,12 +738,11 @@ class StateController:
         retry: str | None = anime.take_retry()
         if retry is not None:
             self.show_processing()
-            self._selected = next(
-                (index for index, item in enumerate(self._processing_rows()) if failed_group(item) == retry),
-                self._selected,
-            )
+            materials: list[Mapping[str, object]] = self._processing_rows()
+            row: int | None = next((index for index, item in enumerate(materials) if failed_group(item) == retry), None)
+            self._selected = self._selected if row is None else row
             self._follow_cursor[_Tab.PROGRESS] = True
-            self._prepare_retry(lambda session: session.retry_proposal(retry))
+            self._retry_now(retry, "Materiał" if row is None else material_name(materials[row]))
         if result is AnimeResult.HOME:
             return StateResult.HOME
         if result is AnimeResult.SUBSCRIPTIONS:
@@ -784,12 +785,16 @@ class StateController:
         item: Mapping[str, object] | None = self._selected_material()
         if item is None:
             return
-        if key in {"c", "x"}:
+        set_id: str | None = deletable_set(item)
+        if key == "delete" and set_id is not None:
+            self._delete_now(set_id)
+            return
+        if key in {"c", "x", "delete"}:
             self._question = cancel_target(item)
             return
         group: str | None = failed_group(item)
         if key == "p" and group is not None:
-            self._prepare_retry(lambda session: session.retry_proposal(group))
+            self._retry_now(group, material_name(item))
             return
         toggle: tuple[str, str] | None = pause_toggle(item)
         if key == "w" and toggle is not None:
@@ -858,6 +863,13 @@ class StateController:
             self._history_input = None
         self._invalidate()
 
+    def _retry_now(self, group_id: str, name: str) -> None:
+        self._work(
+            lambda session: _execute_retry(session, session.retry_proposal(group_id)),
+            success=f"Ponawiam · {name}",
+            persistent=True,
+        )
+
     def _prepare_retry(self, prepare: Callable[[ResidentSession], RetryProposal]) -> None:
         generation: int = self._view_generation
 
@@ -882,7 +894,7 @@ class StateController:
             return StateResult.MANUAL
         elif key == "enter":
             self._retry = None
-            self._work(lambda session: _execute_repeat(session, proposal))
+            self._work(lambda session: _execute_retry(session, proposal))
         self._invalidate()
         return StateResult.CONTINUE
 
@@ -904,9 +916,14 @@ class StateController:
     def _library(self, snapshot: Mapping[str, object] | None = None) -> list[Mapping[str, object]]:
         return library_rows(self._snapshot if snapshot is None else snapshot, self._hidden)
 
+    def _deletable_ids(self) -> list[str]:
+        if self._tab == _Tab.PROGRESS:
+            return self._processing_row_ids()
+        return [library_row_id(item) for item in self._library()]
+
     def _delete_now(self, set_id: str) -> None:
         self._hidden[set_id] = ""
-        self._selected = min(self._selected, max(len(self._library()) - 1, 0))
+        self._selected = min(self._selected, max(len(self._deletable_ids()) - 1, 0))
         self._notify("")
         threading.Thread(
             target=self._delete_hidden, args=(set_id,), name="anishift-library-delete", daemon=True
@@ -925,15 +942,18 @@ class StateController:
             if session is not None:
                 session.close()
         with self._lock:
-            old: list[str] = [library_row_id(item) for item in self._library()]
+            listing: bool = (
+                self._tab in {_Tab.FILES, _Tab.PROGRESS} and self._details is None and not self._history_open
+            )
+            old: list[str] = self._deletable_ids()
             if operation:
                 self._hidden[set_id] = operation
             else:
                 self._hidden.pop(set_id, None)
             self._hidden = unsettled_deletions(self._snapshot, self._hidden)
-            if self._tab == _Tab.FILES and self._details is None:
-                self._selected = _kept(old, [library_row_id(item) for item in self._library()], self._selected)
-            if self._tab == _Tab.FILES and not self._stop.is_set():
+            if listing:
+                self._selected = _kept(old, self._deletable_ids(), self._selected)
+            if self._tab in {_Tab.FILES, _Tab.PROGRESS} and not self._stop.is_set():
                 self._notify(notice)
                 self._notice_persistent = True
         self._invalidate()
@@ -1586,7 +1606,7 @@ class StateController:
         self._download_timers = current
 
     def _processing_rows(self, snapshot: Mapping[str, object] | None = None) -> list[Mapping[str, object]]:
-        return processing_rows(self._snapshot if snapshot is None else snapshot, self._runs)
+        return processing_rows(self._snapshot if snapshot is None else snapshot, self._runs, self._hidden)
 
     def _processing_row_ids(self, snapshot: Mapping[str, object] | None = None) -> list[str]:
         return row_ids(self._processing_rows(snapshot))
@@ -1619,12 +1639,23 @@ def _kept(old: Sequence[object], new: Sequence[object], position: int) -> int:
     return new.index(identifier) if identifier in new else min(position, max(len(new) - 1, 0))
 
 
-def _execute_repeat(session: ResidentSession, proposal: RetryProposal) -> None:
+def _execute_retry(session: ResidentSession, proposal: RetryProposal) -> None:
     if proposal.action == "reacquire" and proposal.operation_id is not None:
         session.reacquire(proposal.operation_id)
-    else:
+        return
+    if proposal.action == "manual" and not proposal.intents:
+        msg = "Brak zapisanych ustawień tego materiału; przetwórz go w Ręcznym (M)"
+        raise ValueError(msg)
+    if proposal.action not in {"resume", "manual"}:
         msg = "Nieaktualne ponowienie; wybierz materiał jeszcze raz"
         raise ValueError(msg)
+    session.reserve(proposal.group_ids)
+    plan: PlanPreview = (
+        session.plan_resume(proposal.group_ids)
+        if proposal.action == "resume"
+        else session.plan_manual(proposal.intents)
+    )
+    session.start(plan)
 
 
 def _open_episode(session: ResidentSession, set_id: str, *, show_folder: bool = False) -> None:

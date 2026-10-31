@@ -13,7 +13,7 @@ from natsort import os_sort_keygen
 from anishift.application import LibraryFile, LibraryLabel, LibrarySet, library_label
 from anishift.cli.interactive.actions import PANEL_ACTIONS, Action, ScreenActions
 from anishift.cli.interactive.anime_state import AnimeRow
-from anishift.cli.interactive.state_texts import LIBRARY_PROBLEMS, rows, safe_text
+from anishift.cli.interactive.state_texts import LIBRARY_PROBLEMS, deleted_sets, deleting_sets, rows, safe_text
 
 __all__ = [
     "EMPTY_LIBRARY",
@@ -53,13 +53,8 @@ _FILE_ROLES: Final[Mapping[str, str]] = MappingProxyType(
 
 def library_rows(snapshot: Mapping[str, object], hidden: Collection[str] = ()) -> list[Mapping[str, object]]:
     """Return the sets and problem sets neither hidden nor being deleted, naturally sorted by title and episode."""
-    deletions: list[Mapping[str, object]] = [
-        item for item in rows(snapshot.get("deletions")) if not item.get("restored")
-    ]
-    deleting: set[str] = {*hidden, *(str(item["set_id"]) for item in deletions if item.get("active"))}
-    deleted: set[str] = deleting | {
-        str(item["set_id"]) for item in deletions if item.get("total") and item.get("recycled") == item.get("total")
-    }
+    deleting: set[str] = deleting_sets(snapshot, hidden)
+    deleted: set[str] = deleted_sets(snapshot, hidden)
     return sorted(
         [
             *(item for item in rows(snapshot.get("library")) if library_row_id(item) not in deleting),
@@ -71,13 +66,8 @@ def library_rows(snapshot: Mapping[str, object], hidden: Collection[str] = ()) -
 
 def unsettled_deletions(snapshot: Mapping[str, object], hidden: Mapping[str, str]) -> dict[str, str]:
     """Keep hidden sets awaiting the owner's answer or a snapshot reporting their accepted deletion."""
-    listed: set[str] = {library_row_id(item) for item in library_rows(snapshot)}
     reported: set[str] = {str(item.get("operation_id")) for item in rows(snapshot.get("deletions"))}
-    return {
-        set_id: operation
-        for set_id, operation in hidden.items()
-        if not operation or (set_id in listed and operation not in reported)
-    }
+    return {set_id: operation for set_id, operation in hidden.items() if not operation or operation not in reported}
 
 
 def library_row(item: Mapping[str, object]) -> AnimeRow:

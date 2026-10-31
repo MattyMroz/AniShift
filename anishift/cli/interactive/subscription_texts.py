@@ -19,6 +19,7 @@ from anishift.application import (
     notice_text,
 )
 from anishift.application.events import sanitize_event_message
+from anishift.text.plural import plural
 
 __all__ = [
     "CHECK_SHOWN_S",
@@ -179,9 +180,10 @@ def _issue(row: Mapping[str, object]) -> SubscriptionState | None:
     count: object = row.get("episode_count")
     beyond: object = row.get("beyond_count")
     if isinstance(count, int) and isinstance(beyond, int):
+        episodes: str = plural(count, "odcinek", "odcinki", "odcinków")
         return SubscriptionState(
             "Konflikt liczby odcinków",
-            f"AniList podaje {count} {_episodes(count)}, a subskrypcja czeka na E{beyond} · pobierz ręcznie albo usuń",
+            f"AniList podaje {count} {episodes}, a subskrypcja czeka na E{beyond} · pobierz ręcznie albo usuń",
         )
     return None
 
@@ -275,14 +277,6 @@ def _when(moment: datetime, now: datetime) -> str:
 
 def _span(first: int, last: int) -> str:
     return f"E{first}" if last <= first else f"E{first}–E{last}"
-
-
-def _episodes(count: int) -> str:
-    if count == 1:
-        return "odcinek"
-    if count % 10 in {2, 3, 4} and count % 100 not in {12, 13, 14}:
-        return "odcinki"
-    return "odcinków"
 
 
 def _count(value: object) -> int:
