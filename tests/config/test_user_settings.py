@@ -620,13 +620,13 @@ def test_load_keeps_the_dialogue_font_file_only_as_a_stripped_path(
 
 
 @pytest.mark.unit
-def test_default_tts_voice_profiles_elevenreader_voices_have_measured_tempo_and_offset() -> None:
+def test_default_tts_voice_profiles_elevenreader_voices_have_measured_tempo_offset_and_two_episodes() -> None:
     profiles = default_tts_voice_profiles()
     fronczewski = profiles[f"elevenreader:{VOICES['fronczewski'].voice_id}"]
     adam = profiles[f"elevenreader:{VOICES['adam'].voice_id}"]
 
-    assert (fronczewski.postprocess_tempo, fronczewski.voice_mix_offset_db, fronczewski.concurrency) == (1.45, 0.5, 1)
-    assert (adam.postprocess_tempo, adam.voice_mix_offset_db, adam.concurrency) == (1.35, 2.5, 1)
+    assert (fronczewski.postprocess_tempo, fronczewski.voice_mix_offset_db, fronczewski.concurrency) == (1.45, 0.5, 2)
+    assert (adam.postprocess_tempo, adam.voice_mix_offset_db, adam.concurrency) == (1.35, 2.5, 2)
 
 
 @pytest.mark.unit

@@ -6,24 +6,14 @@ import asyncio
 import re
 import tempfile
 import time
-from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Never
 
 from anishift.errors import ErrorCode, ErrorContext
-from anishift.services.tts.errors import (
-    TtsAuthError,
-    TtsCancelledError,
-    TtsClipValidationError,
-    TtsError,
-    TtsInputError,
-    TtsQuotaError,
-    TtsRateLimitError,
-    TtsTimeoutError,
-    TtsUnsupportedError,
-    TtsVoiceError,
-)
+from anishift.services.tts.errors import TtsClipValidationError, TtsInputError, TtsUnsupportedError
 from anishift.services.tts.fingerprint import SynthesisProfile
 from anishift.services.tts.types import (
     AudioFormat,
@@ -39,16 +29,7 @@ from anishift.services.tts.types import (
 )
 from anishift.utils.logger import get_logger
 
-from .api_backend import (
-    clean_account,
-    load_cleanup,
-    prepare_account,
-    read_session,
-    require_signed_in,
-    save_cleanup,
-    unavailable_error,
-    voice_error,
-)
+from .api_backend import prepare_account, read_session, unavailable_error, voice_error
 from .config import ElevenReaderConfig, find_chrome, resolve_voice
 from .constants import (
     DOCUMENT_NAME,
@@ -66,10 +47,11 @@ from .constants import (
     START_TIMEOUT_S,
     VOICES,
 )
+from .hub import ReaderHub, cancelled_error, headless_session, timeout_error, unless_cancelled
 from .recorder import StreamRecorder
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import Awaitable, Callable
 
     from anishift.services.tts.config import TtsConfig
     from anishift.services.tts.protocols import CancellationToken
@@ -77,28 +59,14 @@ if TYPE_CHECKING:
 
     from .api_backend import ReaderPage
     from .browser import ChromeSession
-    from .types import (
-        AccountCleanup,
-        AccountSettings,
-        AlignmentChunk,
-        DocumentTrace,
-        ElevenReaderVoice,
-        PlayerState,
-        SessionRecord,
-        UploadedRead,
-    )
+    from .hub import ReaderAttempt
+    from .types import AlignmentChunk, ElevenReaderVoice, PlayerState, SessionRecord, UploadedRead
 
-__all__ = ["CLEANUP_WARNING", "ElevenReaderTtsEngine", "document_text", "part_spans"]
+__all__ = ["ElevenReaderTtsEngine", "document_text", "part_spans"]
 
 logger = get_logger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-
-CLEANUP_WARNING: Final[str] = (
-    "ElevenReader: nie udało się posprzątać konta — usuń z biblioteki ostatni dokument wgrany przez AniShift "
-    "(jego tytuł to pierwsze zdanie odcinka) i sprawdź głos w aplikacji"
-)
-"""Owner-facing warning left when account cleanup failed for good."""
 
 _BRACKETS: Final[dict[int, str]] = str.maketrans({"[": "(", "]": ")"})
 """Square brackets, which ElevenReader reads as audio tags, mapped to round ones."""
@@ -112,25 +80,15 @@ _BREAK_TAG: Final[str] = "<break"
 _BREAK_RUN: Final[re.Pattern[str]] = re.compile(r"<break[^>]*(?:>|$)(?:\s*<break[^>]*(?:>|$))*")
 """Adjacent SSML pauses forming one boundary; the final tag may be cut off at the end of the text."""
 
-_KEEP_BROWSER_ERRORS: Final[tuple[type[TtsError], ...]] = (
-    TtsAuthError,
-    TtsClipValidationError,
-    TtsInputError,
-    TtsQuotaError,
-    TtsRateLimitError,
-    TtsVoiceError,
-)
-"""Failures that leave the browser healthy, so it stays open for cleanup and the next attempt."""
-
 
 class ElevenReaderTtsEngine:
-    """One-attempt adapter recording ElevenReader documents through the owner's signed-in Chrome profile."""
+    """One-attempt adapter recording ElevenReader documents in a tab of the profile's shared Chrome."""
 
     engine_id = "elevenreader"
     capabilities = EngineCapabilities(
         locality=EngineLocality.REMOTE,
         native_output_formats=(AudioFormat.MP3,),
-        supports_concurrency=False,
+        supports_concurrency=True,
         supports_native_rate=False,
         supports_native_volume=False,
         supports_pitch=False,
@@ -149,12 +107,9 @@ class ElevenReaderTtsEngine:
         *,
         browser_factory: Callable[[Path], ChromeSession] | None = None,
     ) -> None:
-        """Resolve the voice and profile without starting a browser."""
+        """Resolve the voice and profile and join the profile's host without starting a browser."""
         self._config: ElevenReaderConfig = ElevenReaderConfig.from_tts_config(config)
-        self._browser_factory: Callable[[Path], ChromeSession] = browser_factory or _headless_session
-        self._browser: ChromeSession | None = None
-        self._cleanup: AccountCleanup = load_cleanup(self._config.profile_root)
-        self._saved_cleanup: tuple[AccountSettings | None, tuple[DocumentTrace, ...]] = self._cleanup_state()
+        self._hub: ReaderHub = ReaderHub.acquire(self._config.profile_root, browser_factory or headless_session)
         self._closed: bool = False
         self._synthesis_profile: SynthesisProfile = SynthesisProfile(
             engine_id=self.engine_id,
@@ -221,41 +176,26 @@ class ElevenReaderTtsEngine:
         *,
         cancel: CancellationToken,
     ) -> EngineDocumentResult:
-        """Record one document once, always cleaning the account afterwards."""
+        """Record one document once in its own tab, always deleting it from the library afterwards."""
         voice: ElevenReaderVoice = self._validate(request)
         if cancel.is_cancelled:
-            raise _cancelled_error()
-        started: float = time.monotonic()
-        browser: ChromeSession = await _unless_cancelled(self._open_browser(), cancel)
-        page: ReaderPage | None = None
-        keep_browser: bool = False
-        try:
-            async with _within_deadline(request.deadline_s):
-                page = await _unless_cancelled(browser.new_page(), cancel)
-                result: EngineDocumentResult = await self._read(page, request, voice, cancel, started)
-        except _KEEP_BROWSER_ERRORS:
-            keep_browser = True
-            raise
-        else:
-            keep_browser = True
-            return result
-        finally:
-            await _finish_shielded(self._end_attempt(page, keep_browser=keep_browser))
+            raise cancelled_error()
+        if self._closed:
+            message: str = "ElevenReader engine is closed"
+            raise unavailable_error(message)
+        return await self._hub.record(
+            partial(self._read, _reported_here(request), voice),
+            voice_id=voice.voice_id,
+            deadline_s=request.deadline_s,
+            cancel=cancel,
+        )
 
     async def close(self) -> None:
-        """Run pending account cleanup while the browser lives, save and warn about what is left, then stop Chrome."""
+        """Leave the profile's host; the last engine to leave cleans the account and stops Chrome."""
         if self._closed:
             return
         self._closed = True
-        browser: ChromeSession | None = self._browser
-        try:
-            if self._cleanup.pending and browser is not None and browser.alive:
-                await _finish_shielded(self._clean_in_new_tab(browser))
-        finally:
-            self._save_cleanup()
-            if self._cleanup.pending:
-                logger.warning(CLEANUP_WARNING, steps=list(self._cleanup.pending))
-            await self._close_browser()
+        await self._hub.release()
 
     def _validate(self, request: DocumentSynthesisRequest) -> ElevenReaderVoice:
         voice: ElevenReaderVoice = resolve_voice(request.voice_id)
@@ -272,42 +212,25 @@ class ElevenReaderTtsEngine:
             self.validate_part(part)
         return voice
 
-    async def _open_browser(self) -> ChromeSession:
-        if self._closed:
-            message: str = "ElevenReader engine is closed"
-            raise unavailable_error(message)
-        browser: ChromeSession | None = self._browser
-        if browser is not None and browser.alive:
-            return browser
-        await self._close_browser()
-        browser = self._browser_factory(self._config.profile_root)
-        self._browser = browser
-        await browser.start()
-        return browser
-
     async def _read(
         self,
-        page: ReaderPage,
         request: DocumentSynthesisRequest,
         voice: ElevenReaderVoice,
-        cancel: CancellationToken,
-        started: float,
+        attempt: ReaderAttempt,
     ) -> EngineDocumentResult:
-        await _unless_cancelled(require_signed_in(page, self._config.profile_root), cancel)
-        if self._cleanup.pending:
-            await _finish_shielded(clean_account(page, self._cleanup))
-            self._save_cleanup()
+        page: ReaderPage = attempt.page
+        cancel: CancellationToken = attempt.cancel
         text: str = document_text(request.parts)
         with tempfile.TemporaryDirectory(prefix="anishift-elevenreader-") as folder:
             document: Path = Path(folder) / DOCUMENT_NAME
             document.write_text(text, encoding="utf-8")
-            uploaded: UploadedRead = await _unless_cancelled(
-                page.upload(document, self._cleanup, self._save_cleanup),
+            uploaded: UploadedRead = await unless_cancelled(
+                page.upload(document, attempt.uploads, attempt.save),
                 cancel,
             )
         logger.info("ElevenReader document uploaded", parts=len(request.parts), chars=uploaded.char_count)
-        await _unless_cancelled(
-            prepare_account(page, uploaded.token, voice.voice_id, self._cleanup, self._save_cleanup),
+        await unless_cancelled(
+            prepare_account(page, uploaded.token, voice.voice_id, attempt.account, attempt.save),
             cancel,
         )
         request.recording.parent.mkdir(parents=True, exist_ok=True)
@@ -316,35 +239,39 @@ class ElevenReaderTtsEngine:
             recorder: StreamRecorder = StreamRecorder(output)
             page.watch_stream(recorder, lambda url: stream_voices.append(voice.voice_id in url))
             try:
-                await _unless_cancelled(page.open_document(uploaded.read_id), cancel)
-                await _unless_cancelled(page.set_page_speed(PAGE_SPEED), cancel)
-                await _unless_cancelled(page.press_play(), cancel)
-                await self._record(page, recorder, request, uploaded.char_count, cancel)
+                await unless_cancelled(page.open_document(uploaded.read_id), cancel)
+                await unless_cancelled(page.set_page_speed(PAGE_SPEED), cancel)
+                await unless_cancelled(page.press_play(), cancel)
+                played_at: float = time.monotonic()
+                await _stream_opened(recorder, stream_voices, played_at, cancel)
+                attempt.started()
+                await self._record(page, recorder, request, uploaded.char_count, cancel, played_at=played_at)
             finally:
                 page.unwatch_stream()
                 recorder.stop()
         if not any(stream_voices):
             message: str = "ElevenReader stream address did not carry the selected voice"
             raise voice_error(message)
-        elapsed_ms: float = (time.monotonic() - started) * 1000
+        elapsed_ms: float = (time.monotonic() - attempt.entered_at) * 1000
         return self._result(request, voice, recorder, uploaded.char_count, elapsed_ms)
 
-    async def _record(
+    async def _record(  # noqa: PLR0913 - one recording loop needs its tab, stream, request and Play moment
         self,
         page: ReaderPage,
         recorder: StreamRecorder,
         request: DocumentSynthesisRequest,
         char_count: int,
         cancel: CancellationToken,
+        *,
+        played_at: float,
     ) -> None:
         now: float = time.monotonic()
-        played_at: float = now
         last_progress: float = now
         last_speed_check: float = now
         last_bytes: int = 0
         plays: int = 1
         while True:
-            await _unless_cancelled(asyncio.sleep(POLL_S), cancel)
+            await unless_cancelled(asyncio.sleep(POLL_S), cancel)
             if recorder.write_error is not None:
                 raise _write_error(recorder.write_error)
             if recorder.listening_speed not in (None, READING_SPEED):
@@ -353,14 +280,14 @@ class ElevenReaderTtsEngine:
             now = time.monotonic()
             if now - last_speed_check >= SPEED_CHECK_S:
                 last_speed_check = now
-                await _unless_cancelled(page.check_page_speed(PAGE_SPEED), cancel)
+                await unless_cancelled(page.check_page_speed(PAGE_SPEED), cancel)
             if not recorder.audio_bytes:
                 if now - played_at < START_TIMEOUT_S:
                     continue
                 if plays >= PLAY_ATTEMPTS:
                     reason: str = "ElevenReader sent no audio after Play"
-                    raise _timeout_error(reason)
-                await _unless_cancelled(page.press_play(), cancel)
+                    raise timeout_error(reason)
+                await unless_cancelled(page.press_play(), cancel)
                 plays, played_at = plays + 1, now
                 continue
             if recorder.audio_bytes != last_bytes:
@@ -371,14 +298,14 @@ class ElevenReaderTtsEngine:
                 return
             if now - last_progress >= STALL_S:
                 reason = "ElevenReader recording stalled"
-                raise _timeout_error(reason)
+                raise timeout_error(reason)
 
     async def _finished(
         self, page: ReaderPage, recorder: StreamRecorder, char_count: int, cancel: CancellationToken
     ) -> bool:
         if recorder.chars >= char_count:
             return True
-        state: PlayerState = await _unless_cancelled(page.player_state(), cancel)
+        state: PlayerState = await unless_cancelled(page.player_state(), cancel)
         return state.length > 0 and state.length - state.value <= END_SLACK_CHARS
 
     def _result(
@@ -407,48 +334,6 @@ class ElevenReaderTtsEngine:
             request_time_ms=elapsed_ms,
             parts=timings,
         )
-
-    async def _end_attempt(self, page: ReaderPage | None, *, keep_browser: bool) -> None:
-        try:
-            if page is not None:
-                await self._end_page(page)
-        finally:
-            if not keep_browser:
-                await self._close_browser()
-
-    async def _end_page(self, page: ReaderPage) -> None:
-        try:
-            page.unwatch_stream()
-            await clean_account(page, self._cleanup)
-        finally:
-            self._save_cleanup()
-            await page.close()
-
-    async def _clean_in_new_tab(self, browser: ChromeSession) -> None:
-        try:
-            page: ReaderPage = await browser.new_page()
-        except TtsError as error:
-            logger.warning("ElevenReader cleanup tab could not open", code=error.context.code.value)
-            return
-        try:
-            await page.open_library()
-            await clean_account(page, self._cleanup)
-        finally:
-            await page.close()
-
-    def _save_cleanup(self) -> None:
-        state: tuple[AccountSettings | None, tuple[DocumentTrace, ...]] = self._cleanup_state()
-        if state != self._saved_cleanup and save_cleanup(self._config.profile_root, self._cleanup):
-            self._saved_cleanup = state
-
-    def _cleanup_state(self) -> tuple[AccountSettings | None, tuple[DocumentTrace, ...]]:
-        return self._cleanup.restore, tuple(self._cleanup.documents)
-
-    async def _close_browser(self) -> None:
-        browser: ChromeSession | None = self._browser
-        self._browser = None
-        if browser is not None:
-            await browser.close()
 
     def _chrome_availability(self, source: AvailabilitySource) -> EngineAvailability:
         if find_chrome() is None:
@@ -524,12 +409,6 @@ def _segment(text: str, first: int, stop: int) -> tuple[int, int] | None:
     return first, last
 
 
-def _headless_session(root: Path) -> ChromeSession:
-    from .browser import ChromeSession  # noqa: PLC0415 - keeps Playwright out of the package import
-
-    return ChromeSession(root, headless=True)
-
-
 def _voices() -> tuple[VoiceInfo, ...]:
     return tuple(
         VoiceInfo(id=voice.voice_id, label=voice.label, engine_id="elevenreader", language="pl")
@@ -537,51 +416,26 @@ def _voices() -> tuple[VoiceInfo, ...]:
     )
 
 
-async def _unless_cancelled[T](work: Awaitable[T], cancel: CancellationToken) -> T:
-    task: asyncio.Future[T] = asyncio.ensure_future(work)
-    waiter: asyncio.Future[None] = asyncio.ensure_future(cancel.wait())
-    try:
-        done, _ = await asyncio.wait((task, waiter), return_when=asyncio.FIRST_COMPLETED)
-    except BaseException:
-        task.cancel()
-        waiter.cancel()
-        raise
-    waiter.cancel()
-    if task in done:
-        return task.result()
-    task.cancel()
-    await asyncio.wait((task,))
-    raise _cancelled_error()
+def _reported_here(request: DocumentSynthesisRequest) -> DocumentSynthesisRequest:
+    progress: Callable[[int, int], Awaitable[None]] | None = request.progress
+    if progress is None:
+        return request
+    loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+
+    async def notify(received: int, total: int) -> None:
+        await progress(received, total)
+
+    async def report(received: int, total: int) -> None:
+        await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(notify(received, total), loop))
+
+    return replace(request, progress=report)
 
 
-@asynccontextmanager
-async def _within_deadline(deadline_s: float) -> AsyncIterator[None]:
-    limit: asyncio.Timeout = asyncio.timeout(deadline_s)
-    try:
-        async with limit:
-            yield
-    except TimeoutError:
-        if not limit.expired():
-            raise
-        reason: str = "ElevenReader document exceeded its deadline"
-        raise _timeout_error(reason) from None
-
-
-async def _finish_shielded(work: Awaitable[None]) -> None:
-    task: asyncio.Future[None] = asyncio.ensure_future(work)
-    interrupted: bool = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            interrupted = True
-    if interrupted:
-        raise asyncio.CancelledError
-    task.result()
-
-
-def _cancelled_error() -> TtsCancelledError:
-    return TtsCancelledError("ElevenReader synthesis cancelled")
+async def _stream_opened(
+    recorder: StreamRecorder, addresses: list[bool], played_at: float, cancel: CancellationToken
+) -> None:
+    while not addresses and not recorder.audio_bytes and time.monotonic() - played_at < START_TIMEOUT_S:
+        await unless_cancelled(asyncio.sleep(POLL_S), cancel)
 
 
 def _write_error(error: OSError) -> TtsClipValidationError:
@@ -592,11 +446,6 @@ def _write_error(error: OSError) -> TtsClipValidationError:
         details={"error_class": type(error).__name__, "errno": error.errno},
     )
     return TtsClipValidationError(context=context)
-
-
-def _timeout_error(message: str) -> TtsTimeoutError:
-    context: ErrorContext = ErrorContext(code=ErrorCode.TTS_TIMEOUT, message=message)
-    return TtsTimeoutError(context=context)
 
 
 def _raise_input(message: str) -> Never:

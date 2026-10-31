@@ -24,6 +24,7 @@ __all__ = [
     "LIBRARY_URL",
     "LINE_SEPARATOR",
     "MAX_DOCUMENT_CHARS",
+    "MAX_PARALLEL_DOCUMENTS",
     "MIN_DEDUP_BYTES",
     "MIN_PROBE_CHARS",
     "PAGE_SPEED",
@@ -69,6 +70,9 @@ PROVIDER_MODEL_ID: Final[str] = "eleven_v4"
 
 MAX_DOCUMENT_CHARS: Final[int] = 50_000
 """Largest document text uploaded in one attempt."""
+
+MAX_PARALLEL_DOCUMENTS: Final[int] = 2
+"""Most documents recorded at once in tabs of the one Chrome; a third stream on the device closes an older one."""
 
 LINE_SEPARATOR: Final[str] = "…"
 """Paragraph placed between lines so ElevenReader pauses; never spoken and never a line itself."""

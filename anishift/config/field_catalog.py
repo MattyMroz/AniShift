@@ -62,7 +62,12 @@ from anishift.services.tts.engines.elevenlabs.constants import (
     OUTPUT_FORMATS,
     POLISH_TTS_MODEL_IDS,
 )
-from anishift.services.tts.engines.elevenreader.constants import DEFAULT_VOICE_ALIAS, PROVIDER_MODEL_ID, VOICES
+from anishift.services.tts.engines.elevenreader.constants import (
+    DEFAULT_VOICE_ALIAS,
+    MAX_PARALLEL_DOCUMENTS,
+    PROVIDER_MODEL_ID,
+    VOICES,
+)
 from anishift.services.tts.engines.sapi.constants import SAPI_PROFILES, SAPI_RATE_MAX, SAPI_RATE_MIN
 from anishift.services.tts.engines.sapi.types import SapiVoiceProfile
 
@@ -1014,12 +1019,12 @@ def _profile_specs(context: SettingCatalogContext) -> tuple[SettingSpec, ...]:
         ),
     )
     concurrency: tuple[SettingSpec, ...] = ()
-    if context.tts_engine not in {"elevenreader", "sapi"}:
+    if context.tts_engine != "sapi":
         concurrency = (
             SettingSpec(
                 setting_id="tts_profile.concurrency",
                 label="TTS concurrency",
-                description="Limit simultaneous synthesis requests within one file for the active engine and voice.",
+                description=_tts_concurrency_description(context),
                 value_type=SettingValueType.INTEGER,
                 default=profile.concurrency or 1,
                 scope=SettingScope.ENGINE_PROFILE,
@@ -1361,7 +1366,15 @@ def _tts_model_values(context: SettingCatalogContext) -> tuple[tuple[SettingValu
     raise ValueError(msg)
 
 
+def _tts_concurrency_description(context: SettingCatalogContext) -> str:
+    if context.tts_engine == "elevenreader":
+        return "Limit episodes recorded at once, each in its own tab of the one ElevenReader browser."
+    return "Limit simultaneous synthesis requests within one file for the active engine and voice."
+
+
 def _tts_concurrency_max(context: SettingCatalogContext) -> int:
+    if context.tts_engine == "elevenreader":
+        return MAX_PARALLEL_DOCUMENTS
     if context.tts_engine == "elevenbytes" and context.elevenbytes_vpn_enabled:
         return min(TTS_CONCURRENCY_RANGE[1], VPN_MAX_CONCURRENCY)
     return TTS_CONCURRENCY_RANGE[1]

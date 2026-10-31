@@ -314,7 +314,7 @@ def test_load_cleanup_upload_still_in_flight_stays_pending_after_restart(tmp_pat
     site = FakeSite()
     cleanup = load_cleanup(tmp_path)
 
-    asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(site)), cleanup))
+    asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(site)), cleanup, restore=True))
 
     assert cleanup.pending == ("delete_orphan",)
     assert "list_reads" in site.events
@@ -324,12 +324,12 @@ def test_load_cleanup_upload_still_in_flight_stays_pending_after_restart(tmp_pat
 def test_failed_delete_of_known_read_is_retried_by_id_after_restart(tmp_path: Path) -> None:
     first = FakeSite(reads=[READ_ID], failing={"delete_read"})
     cleanup = AccountCleanup(documents=[document_trace(read_id=READ_ID)])
-    asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(first)), cleanup))
+    asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(first)), cleanup, restore=True))
     save_cleanup(tmp_path, cleanup)
     second = FakeSite(reads=[READ_ID])
     restarted = load_cleanup(tmp_path)
 
-    asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(second)), restarted))
+    asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(second)), restarted, restore=True))
 
     assert restarted.pending == ()
     assert second.deleted == [f"{READS_URL}/{READ_ID}"]
@@ -352,7 +352,7 @@ def test_clean_account_without_token_keeps_steps_and_warns(tmp_path: Path) -> No
     handler_id: int = loguru_logger.add(lambda message: captured.append(str(message)), level="WARNING")
 
     try:
-        asyncio.run(clean_account(cast("ReaderPage", FakePage(FakeSite())), cleanup))
+        asyncio.run(clean_account(cast("ReaderPage", FakePage(FakeSite())), cleanup, restore=True))
     finally:
         loguru_logger.remove(handler_id)
 
@@ -360,11 +360,23 @@ def test_clean_account_without_token_keeps_steps_and_warns(tmp_path: Path) -> No
     assert any("no account token" in message for message in captured)
 
 
+def test_clean_account_without_restore_deletes_documents_and_keeps_owed_settings() -> None:
+    site = FakeSite(reads=[READ_ID], account={"default_voice_id": FRONCZEWSKI_ID, "playback_speed_rate": 1.0})
+    cleanup = AccountCleanup(restore=PREVIOUS, documents=[document_trace(read_id=READ_ID)])
+
+    asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(site)), cleanup, restore=False))
+
+    assert cleanup.pending == ("restore_settings",)
+    assert site.deleted == [f"{READS_URL}/{READ_ID}"]
+    assert site.account["default_voice_id"] == FRONCZEWSKI_ID
+    assert "restore_account" not in site.events
+
+
 def test_clean_account_orphan_found_by_window_and_title_is_deleted() -> None:
     site = FakeSite(reads=[READ_ID])
     cleanup = AccountCleanup(documents=[document_trace(listed_in_s=100.0)])
 
-    asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(site)), cleanup))
+    asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(site)), cleanup, restore=True))
 
     assert cleanup.pending == ()
     assert site.deleted == [f"{READS_URL}/{READ_ID}"]
@@ -374,7 +386,7 @@ def test_clean_account_orphan_missing_before_visible_time_stays_pending() -> Non
     site = FakeSite()
     cleanup = AccountCleanup(documents=[document_trace(listed_in_s=100.0)])
 
-    asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(site)), cleanup))
+    asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(site)), cleanup, restore=True))
 
     assert cleanup.pending == ("delete_orphan",)
     assert site.deleted == []
@@ -384,7 +396,7 @@ def test_clean_account_orphan_missing_after_visible_time_is_settled() -> None:
     site = FakeSite()
     cleanup = AccountCleanup(documents=[document_trace()])
 
-    asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(site)), cleanup))
+    asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(site)), cleanup, restore=True))
 
     assert cleanup.pending == ()
     assert "list_reads" in site.events
@@ -404,7 +416,7 @@ def test_clean_account_step_breaking_unexpectedly_keeps_it_and_runs_next_step() 
     asyncio.run(page.open_library())
     cleanup = AccountCleanup(restore=PREVIOUS, documents=[document_trace(read_id=READ_ID)])
 
-    asyncio.run(clean_account(cast("ReaderPage", page), cleanup))
+    asyncio.run(clean_account(cast("ReaderPage", page), cleanup, restore=True))
 
     assert cleanup.pending == ("restore_settings",)
     assert site.deleted == [f"{READS_URL}/{READ_ID}"]
@@ -592,7 +604,7 @@ def test_clean_account_listing_without_reads_keeps_orphan() -> None:
     page.emit("request", FakeRequest(READS_URL, "GET", {"authorization": TOKEN}))
     cleanup = AccountCleanup(documents=[document_trace()])
 
-    asyncio.run(clean_account(reader, cleanup))
+    asyncio.run(clean_account(reader, cleanup, restore=True))
 
     assert cleanup.pending == ("delete_orphan",)
 
@@ -608,7 +620,7 @@ def _listed_cleanup(reads: list[object], trace: DocumentTrace) -> tuple[AccountC
         lambda message: warnings.append(str(message)), format="{message} {extra}", level="WARNING"
     )
     try:
-        asyncio.run(clean_account(reader, cleanup))
+        asyncio.run(clean_account(reader, cleanup, restore=True))
     finally:
         loguru_logger.remove(handler_id)
     deleted: list[str] = [url for method, url in page.calls if method == "DELETE"]
@@ -771,9 +783,31 @@ def test_reader_page_watch_stream_feeds_only_read_stream_until_unwatched() -> No
     reader.unwatch_stream()
 
     assert urls == [stream.url]
-    assert set(stream.handlers) == {"framesent", "framereceived"}
+    assert set(stream.handlers) == {"framesent", "framereceived", "close"}
     assert other.handlers == {}
     assert page.listeners["websocket"] == []
+
+
+def test_reader_page_stream_open_and_close_are_logged_without_address() -> None:
+    page = FakePlaywrightPage()
+    reader = _reader(page)
+    stream = FakeSocket(f"wss://api.elevenlabs.io/v1/reader/reads/stream/v2/{READ_ID}?voice_id={FRONCZEWSKI_ID}")
+    captured: list[str] = []
+    handler_id: int = loguru_logger.add(
+        lambda message: captured.append(str(message)), format="{message} {extra}", level="INFO"
+    )
+
+    try:
+        reader.watch_stream(StreamRecorder(io.BytesIO()), lambda url: None)
+        page.emit("websocket", stream)
+        stream.handlers["close"](stream.url)
+    finally:
+        loguru_logger.remove(handler_id)
+
+    assert any("stream opened" in line for line in captured)
+    assert any("stream closed" in line for line in captured)
+    assert READ_ID not in "".join(captured)
+    assert "wss://" not in "".join(captured)
 
 
 @pytest.mark.parametrize(("visible", "clicks"), [(("Play",), ["Play"]), ((), [])])

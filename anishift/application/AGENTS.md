@@ -196,13 +196,14 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   notkę w `RunResult`.
 - Auto z audio i napisami z jednego MKV planuje jeden `EXTRACT_TRACKS` (jeden `mkvextract --gui-mode`, każdy
   `#GUI#progress` bez uśredniania). LLM równolegle dokładnie do `llm_max_concurrency` — scheduler nie przycina drugi
-  raz; TTS jeden plik naraz.
+  raz; TTS jeden plik naraz, poza silnikiem dokumentowym: dla niego `tts_group_jobs` (`_run_settings_snapshot`) to
+  `concurrency` profilu głosu, czyli tyle odcinków nagrywa się naraz w całym rezydencie.
 - TTS w `runtime.py`: jeden `FfmpegClipService` jest walidatorem, assemblerem i splitterem `TtsService`. Wiedza
   „silnik czyta dokumentem” pochodzi tylko z `is_document_engine` rejestru TTS: daje `reads_document` handlera
   (łączenie kwestii urwanych i wszystkie kandydaty szyldów w batchu kwestii, czyli jeden dokument na odcinek; silniki
   „kwestia po kwestii” dostają drugi batch tylko z szyldami osiągalnymi po ułożeniu kwestii) i przebieg dokumentu w
-  `_tts_config` (współbieżność 1, bez `asyncio.timeout` schedulera, bo silnik sam pilnuje terminu i sprzątania
-  konta; dłuższy `shutdown_deadline_s`). `split_clip` dekoduje nagranie z jawnym `-f mp3`
+  `_tts_config` (współbieżność z profilu jak dla innych silników, bez `asyncio.timeout` schedulera, bo silnik sam
+  pilnuje terminu i sprzątania konta; dłuższy `shutdown_deadline_s`). `split_clip` dekoduje nagranie z jawnym `-f mp3`
   (obce bajty na początku zmylą rozpoznanie formatu), czasy ramek bierze z `utils.mp3_frames`, regułę cięcia z
   `services/audio/segmentation.py`; granice bez pauzy idą do logu jako ostrzeżenie z liczbą. `tts_clips.py`
 - `build_narration_manifest` ocenia każdą kwestię osobno, nie status batcha: kwestia bez klipu kończy zadanie

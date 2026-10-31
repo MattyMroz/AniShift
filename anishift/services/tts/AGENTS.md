@@ -70,6 +70,9 @@ narratora ani finalnego sidecara.
   niezgodne czasy to `TtsClipValidationError`, więc dokument jest ponawiany w całości.
   Pusty `PartTiming` (`spoken is False`) to część, której silnik nie wypowiedział: tylko
   ta kwestia dostaje `TtsInputError`, reszta nagrania jest cięta i zatwierdzana.
+- Dokumenty jednego batcha idą po kolei; kilka dokumentów naraz to kilka batchy (`max_concurrency` workerów
+  schedulera, w aplikacji też kilka `TtsService` różnych runów). Zasób wspólny dla nich (jedna przeglądarka i konto
+  ElevenReadera) trzyma silnik, nie wspólna warstwa TTS.
 - Identyfikator dokumentu `{scope_id}:document:{n}` bierze `n` z licznika `TtsService`, więc jest unikalny w
   całym przebiegu, także między batchami tego samego scope.
 - Nagranie i niezatwierdzone klipy są usuwane przed każdą kolejną próbą i po każdym
