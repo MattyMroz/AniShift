@@ -172,7 +172,9 @@ niego.
 
 - **N1.** Żaden log, wyjątek, receipt, ledger (`config/watch/`), `decisions.jsonl` ani dokument nie zawiera:
   cookies, tokenu, adresu e-mail, adresu WebSocketu, `read_id`, odpowiedzi HTTP, tekstu kwestii, ścieżek
-  absolutnych.
+  absolutnych. Prywatny plik stanu silnika `config/elevenreader/session.json` (gitignored, z `restrict_directory`)
+  może trzymać `read_id` wgranego dokumentu wyłącznie do sprzątania konta oraz skróty SHA-256 prefiksów jego
+  tytułu (nie jawny tekst, ale słownikowo odwracalne); nie trzyma tokenu, cookies ani tekstu kwestii.
 - **N2.** Na danych Tantei S2E03 cięcie daje te same granice co prototyp `SCR/snapcut.py` (±10 ms) dla obu głosów.
 - **N3.** Odcinek około 20 000 znaków kończy nagrywanie w czasie rzędu kilku minut (prototyp: 245 s).
 - **N4.** Anulowanie przebiegu zatrzymuje nagrywanie w ciągu kilku sekund i zamyka Chrome.

@@ -576,8 +576,9 @@ async def _delete_orphan(page: ReaderPage, token: str, trace: DocumentTrace) -> 
     if time.time() < trace.listed_by:
         logger.info("ElevenReader upload may still appear in the library")
         return False
-    if uploads:
-        logger.warning("ElevenReader upload matched no document imported at that time", documents=len(uploads))
+    logger.warning(
+        "ElevenReader upload without a reply matched no library document and may remain there", imports=len(uploads)
+    )
     return True
 
 
@@ -678,11 +679,16 @@ def _trace(item: object) -> DocumentTrace | None:
     pressed_at: object = item.get("pressed_at")
     listed_by: object = item.get("listed_by")
     titles: object = item.get("titles")
+    read_id: object = item.get("read_id")
     if any(isinstance(moment, bool) or not isinstance(moment, int | float) for moment in (pressed_at, listed_by)):
         return None
     if not isinstance(titles, list) or not all(isinstance(title, str) for title in titles):
         return None
-    return DocumentTrace(pressed_at=_number(pressed_at), listed_by=_number(listed_by), titles=frozenset(titles))
+    if read_id is not None and (not isinstance(read_id, str) or not read_id):
+        return None
+    return DocumentTrace(
+        pressed_at=_number(pressed_at), listed_by=_number(listed_by), titles=frozenset(titles), read_id=read_id
+    )
 
 
 def write_session(root: Path, *, signed_in: bool) -> None:
@@ -698,15 +704,14 @@ def write_session(root: Path, *, signed_in: bool) -> None:
 
 
 def save_cleanup(root: Path, cleanup: AccountCleanup) -> bool:
-    """Save which cleanup is still owed, without read ids, keeping the sign-in state; report whether it was saved."""
+    """Save which cleanup is still owed, keeping the sign-in state; report whether it was saved."""
     previous: SessionRecord | None = read_session(root)
     signed: SessionRecord = previous or SessionRecord(signed_in=True, checked_at=datetime.now(UTC))
-    documents: tuple[DocumentTrace, ...] = tuple(replace(trace, read_id=None) for trace in cleanup.documents)
-    return _write_record(root, replace(signed, restore=cleanup.restore, documents=documents))
+    return _write_record(root, replace(signed, restore=cleanup.restore, documents=tuple(cleanup.documents)))
 
 
 def load_cleanup(root: Path) -> AccountCleanup:
-    """Return the cleanup owed by an earlier run; its documents are looked up by upload window and title."""
+    """Return the cleanup owed by an earlier run: documents by read id, uploads without a reply by window and title."""
     record: SessionRecord | None = read_session(root)
     if record is None:
         return AccountCleanup()
@@ -720,7 +725,12 @@ def _write_record(root: Path, record: SessionRecord) -> bool:
         "checked_at": record.checked_at.isoformat(),
         "restore": None if restore is None else _with_settings({}, restore.voice_id, restore.speed),
         "documents": [
-            {"pressed_at": trace.pressed_at, "listed_by": trace.listed_by, "titles": sorted(trace.titles)}
+            {
+                "pressed_at": trace.pressed_at,
+                "listed_by": trace.listed_by,
+                "titles": sorted(trace.titles),
+                "read_id": trace.read_id,
+            }
             for trace in record.documents
         ],
     }

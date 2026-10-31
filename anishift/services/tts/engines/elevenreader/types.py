@@ -70,7 +70,7 @@ class DocumentTrace:
 
 @dataclass(frozen=True, slots=True)
 class SessionRecord:
-    """Last observed sign-in state and the account cleanup still owed, without any secret, text or read id."""
+    """Last observed sign-in state and the account cleanup still owed, without any secret or plain document text."""
 
     signed_in: bool
     checked_at: datetime

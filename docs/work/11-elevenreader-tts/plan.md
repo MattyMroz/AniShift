@@ -528,18 +528,22 @@ opis dokumentu to pierwsze zdanie treści (pomiar 2026-10-31).
 
 **Sieroty.** Każde wgranie zostawia w `AccountCleanup` ślad `DocumentTrace`, zapisany przed kliknięciem „Upload”:
 `pressed_at` (czas zegarowy tuż przed kliknięciem), `listed_by` (`pressed_at + ACTION_TIMEOUT_S`, skracany do chwili
-odpowiedzi) i skróty SHA-256 każdego prefiksu dokumentu na granicy słów do 200 znaków (możliwe tytuły, bez tekstu
-w pliku). Dokument ze znanym `read_id` znika przez `DELETE reads/{id}`. Dokument bez `read_id` (anulowanie w
-trakcie uploadu, odpowiedź bez id, restart procesu) silnik szuka w pierwszej stronie `GET reads` (kolejność od
-najnowszych): kandydat ma `from_user_import: true`, `original_file_type: "text/plain"`, `added_at_unix` w oknie
-`[pressed_at − 300 s, listed_by + 300 s]` i skrót znormalizowanego `title` wśród skrótów śladu.
+odpowiedzi), skróty SHA-256 każdego prefiksu dokumentu na granicy słów do 200 znaków (możliwe tytuły; nie jawny
+tekst, ale słownikowo odwracalne) i `read_id`, gdy przyszedł w odpowiedzi. Ślad z `read_id` jest zapisany w
+prywatnym `session.json`, więc dokument ze znanym id znika przez `DELETE reads/{id}` także po restarcie procesu.
+Tylko upload bez odpowiedzi z `read_id` (anulowanie w trakcie uploadu, odpowiedź bez id) silnik szuka w pierwszej
+stronie `GET reads` (kolejność od najnowszych, bez paginacji): kandydat ma `from_user_import: true`,
+`original_file_type: "text/plain"`, `added_at_unix` w oknie `[pressed_at − 300 s, listed_by + 300 s]` i skrót
+znormalizowanego `title` wśród skrótów śladu.
 
 - jeden kandydat → `DELETE`, krok rozliczony;
 - kilku kandydatów → nic nie jest usuwane, ostrzeżenie w logu, krok zostaje zaległy (panel, doctor);
-- zero przed `listed_by` → krok zostaje zaległy; zero po `listed_by` → krok rozliczony, a jeśli w oknie były importy
-  o innym tytule, z ostrzeżeniem w logu.
+- zero przed `listed_by` → krok zostaje zaległy; zero po `listed_by` → krok rozliczony z ostrzeżeniem w logu, że
+  upload mógł zostać na koncie (z liczbą importów w oknie, bez tytułu i tekstu).
 
-Czas zegarowy (nie `time.monotonic()`) zachowuje znaczenie okna po restarcie procesu i komputera.
+Założenie: upload bez `read_id` szuka się zwykle w tym samym przebiegu, minuty po wgraniu, gdy dokument jest na
+pierwszej stronie listy. Czas zegarowy (nie `time.monotonic()`) zachowuje znaczenie okna po restarcie procesu i
+komputera.
 
 ### 7.11. Ścieżka dokumentu w `TtsService`
 
@@ -577,8 +581,9 @@ Czas zegarowy (nie `time.monotonic()`) zachowuje znaczenie okna po restarcie pro
   `.gitignore` i dostaje `restrict_directory` przy każdym starcie (idempotentne).
 - Token strony istnieje tylko w pamięci jednej próby; nie trafia do logów, wyjątków, `details` ani plików.
 - `session.json`: `{"signed_in": bool, "checked_at": ISO-8601, "restore": {…} | null, "documents": [{"pressed_at":
-  epoka, "listed_by": epoka, "titles": [sha256, …]}]}`, zapis atomowy; zaległe sprzątanie konta bez `read_id`,
-  tokenu i tekstu dokumentu.
+  epoka, "listed_by": epoka, "titles": [sha256, …], "read_id": str | null}]}`, zapis atomowy; plik prywatny
+  (gitignored, `restrict_directory`), `read_id` tylko do sprzątania konta; bez tokenu i jawnego tekstu dokumentu
+  (skróty prefiksów tytułu są słownikowo odwracalne).
 - Wygaśnięcie przed uploadem → `TtsAuthError` (trwały, circuit), sugestia „Ustawienia → Lektor → Zaloguj / sprawdź
   sesję”; po zalogowaniu ponowienie czyta tylko brakujące kwestie. Wygaśnięcie w trakcie → przestój → ponowienie →
   następna próba wykrywa SIGNED_OUT.

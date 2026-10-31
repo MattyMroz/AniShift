@@ -4,7 +4,6 @@ import asyncio
 import io
 import json
 import time
-from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
 
@@ -252,6 +251,8 @@ def test_session_record_round_trips_without_secrets(tmp_path: Path) -> None:
         '{"signed_in": true, "checked_at": "2026-10-30T10:00:00+00:00"}',
         '{"signed_in": true, "checked_at": "2026-10-30T10:00:00+00:00", "restore": null, "delete_document": false}',
         '{"signed_in": true, "checked_at": "2026-10-30T10:00:00+00:00", "documents": [{"pressed_at": 1.0}]}',
+        '{"signed_in": true, "checked_at": "2026-10-30T10:00:00+00:00", "documents": '
+        '[{"pressed_at": 1.0, "listed_by": 2.0, "titles": [], "read_id": 7}]}',
         "[1]",
     ],
 )
@@ -261,7 +262,7 @@ def test_read_session_corrupt_file_returns_none(tmp_path: Path, content: str) ->
     assert read_session(tmp_path) is None
 
 
-def test_save_cleanup_owed_steps_are_saved_without_read_id_or_text(tmp_path: Path) -> None:
+def test_save_cleanup_owed_steps_are_saved_with_read_id_without_plain_text(tmp_path: Path) -> None:
     write_session(tmp_path, signed_in=False)
     cleanup = AccountCleanup(restore=PREVIOUS, documents=[document_trace(read_id=READ_ID)])
 
@@ -273,9 +274,8 @@ def test_save_cleanup_owed_steps_are_saved_without_read_id_or_text(tmp_path: Pat
     assert record.restore == PREVIOUS
     assert record.delete_document
     assert record.cleanup_pending
-    saved: str = (tmp_path / "session.json").read_text(encoding="utf-8")
-    assert READ_ID not in saved
-    assert "Pierwsza" not in saved
+    assert record.documents == tuple(cleanup.documents)
+    assert "Pierwsza" not in (tmp_path / "session.json").read_text(encoding="utf-8")
 
 
 def test_write_session_saved_cleanup_is_kept(tmp_path: Path) -> None:
@@ -297,15 +297,16 @@ def test_save_cleanup_unwritable_root_returns_false(tmp_path: Path) -> None:
     assert not save_cleanup(blocker, AccountCleanup(documents=[document_trace()]))
 
 
-def test_load_cleanup_saved_document_keeps_its_trace_without_read_id(tmp_path: Path) -> None:
-    trace = document_trace(read_id=READ_ID)
-    save_cleanup(tmp_path, AccountCleanup(restore=PREVIOUS, documents=[trace]))
+def test_load_cleanup_saved_documents_keep_their_traces_and_read_ids(tmp_path: Path) -> None:
+    known = document_trace(read_id=READ_ID)
+    unanswered = document_trace(listed_in_s=100.0)
+    save_cleanup(tmp_path, AccountCleanup(restore=PREVIOUS, documents=[known, unanswered]))
 
     cleanup = load_cleanup(tmp_path)
 
     assert cleanup.restore == PREVIOUS
-    assert cleanup.documents == [replace(trace, read_id=None)]
-    assert cleanup.pending == ("restore_settings", "delete_orphan")
+    assert cleanup.documents == [known, unanswered]
+    assert cleanup.pending == ("restore_settings", "delete_read", "delete_orphan")
 
 
 def test_load_cleanup_upload_still_in_flight_stays_pending_after_restart(tmp_path: Path) -> None:
@@ -318,6 +319,21 @@ def test_load_cleanup_upload_still_in_flight_stays_pending_after_restart(tmp_pat
     assert cleanup.pending == ("delete_orphan",)
     assert "list_reads" in site.events
     assert site.deleted == []
+
+
+def test_failed_delete_of_known_read_is_retried_by_id_after_restart(tmp_path: Path) -> None:
+    first = FakeSite(reads=[READ_ID], failing={"delete_read"})
+    cleanup = AccountCleanup(documents=[document_trace(read_id=READ_ID)])
+    asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(first)), cleanup))
+    save_cleanup(tmp_path, cleanup)
+    second = FakeSite(reads=[READ_ID])
+    restarted = load_cleanup(tmp_path)
+
+    asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(second)), restarted))
+
+    assert restarted.pending == ()
+    assert second.deleted == [f"{READS_URL}/{READ_ID}"]
+    assert "list_reads" not in second.events
 
 
 def test_load_cleanup_without_session_returns_nothing_pending(tmp_path: Path) -> None:
@@ -409,7 +425,7 @@ def test_sign_in_signed_in_runs_saved_cleanup(tmp_path: Path, fake_chrome: type[
 
 def test_sign_in_cleanup_failing_keeps_it_saved(tmp_path: Path, fake_chrome: type[_SignInSession]) -> None:
     save_cleanup(tmp_path, AccountCleanup(documents=[document_trace(read_id=READ_ID)]))
-    fake_chrome.site = FakeSite(reads=[READ_ID], failing={"list_reads"})
+    fake_chrome.site = FakeSite(reads=[READ_ID], failing={"delete_read"})
 
     assert asyncio.run(sign_in(tmp_path)) is SignInOutcome.SIGNED_IN
 
@@ -588,7 +604,9 @@ def _listed_cleanup(reads: list[object], trace: DocumentTrace) -> tuple[AccountC
     page.emit("request", FakeRequest(READS_URL, "GET", {"authorization": TOKEN}))
     cleanup = AccountCleanup(documents=[trace])
     warnings: list[str] = []
-    handler_id: int = loguru_logger.add(lambda message: warnings.append(str(message)), level="WARNING")
+    handler_id: int = loguru_logger.add(
+        lambda message: warnings.append(str(message)), format="{message} {extra}", level="WARNING"
+    )
     try:
         asyncio.run(clean_account(reader, cleanup))
     finally:
@@ -630,7 +648,18 @@ def test_clean_account_window_import_of_other_title_is_kept_and_settles_with_war
 
     assert cleanup.pending == ()
     assert deleted == []
-    assert any("matched no document" in message for message in warnings)
+    assert any("may remain there" in message and "'imports': 1" in message for message in warnings)
+
+
+def test_clean_account_unanswered_upload_missing_after_visible_time_settles_with_warning() -> None:
+    old = library_read("u:old", added_at=time.time() - 86_400.0)
+
+    cleanup, deleted, warnings = _listed_cleanup([old], document_trace())
+
+    assert cleanup.pending == ()
+    assert deleted == []
+    assert any("may remain there" in message and "'imports': 0" in message for message in warnings)
+    assert all(FIRST_LINE not in message for message in warnings)
 
 
 @pytest.mark.parametrize(
