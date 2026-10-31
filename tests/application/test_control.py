@@ -203,14 +203,22 @@ def test_a_running_request_refuses_a_reservation_and_automatic_work() -> None:
     assert _admissible(state) is False
 
 
-@pytest.mark.parametrize("terminal", [RequestState.SUCCEEDED, RequestState.CANCELLED])
-def test_a_finished_request_without_failure_leaves_the_group_free_again(terminal: RequestState) -> None:
+def test_a_succeeded_request_leaves_the_group_free_again() -> None:
     accepted: WatchState = record_request(WatchState(policy=AutomationPolicy(auto_enabled=True)), _request())
 
-    finished: WatchState = record_request(accepted, _request(state=terminal))
+    finished: WatchState = record_request(accepted, _request(state=RequestState.SUCCEEDED))
 
     assert len(finished.requests) == 1
     assert _admissible(finished) is True
+
+
+def test_a_cancelled_request_keeps_auto_off_the_same_version_of_the_sources() -> None:
+    accepted: WatchState = record_request(WatchState(policy=AutomationPolicy(auto_enabled=True)), _request())
+
+    cancelled: WatchState = record_request(accepted, _request(state=RequestState.CANCELLED))
+
+    assert len(cancelled.requests) == 1
+    assert _admissible(cancelled) is False
 
 
 def test_a_manual_decision_blocks_products_it_did_not_cover_for_that_version() -> None:
@@ -323,7 +331,7 @@ def test_another_groups_success_does_not_supersede_a_failure() -> None:
     assert _admissible(state) is False
 
 
-@pytest.mark.parametrize("terminal", [RequestState.FAILED, RequestState.PARTIAL])
+@pytest.mark.parametrize("terminal", [RequestState.FAILED, RequestState.PARTIAL, RequestState.CANCELLED])
 def test_a_failed_request_of_another_version_does_not_block_the_new_one(terminal: RequestState) -> None:
     policy: AutomationPolicy = AutomationPolicy(auto_enabled=True)
     state: WatchState = record_request(

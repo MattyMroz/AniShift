@@ -109,6 +109,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   stronicowania; `AnimeFrame.first_row` i `_anime_top` służą trafieniom myszy; puste teksty list tylko z
   `StateController._empty_text`. Linia statusu (`_global_status`) liczy wyłącznie `material_counts` ownera.
 - Anulowanie w Przetwarzaniu uzbraja `_question`; anuluje tylko Enter, inny klawisz, klik w wiersz lub wyjście kasują.
+  X znaczy „zatrzymaj”: anulowane zlecenie blokuje Auto dla tej samej wersji źródła jak błąd
+  (`control._latest_request_blocks`); wraca tylko przez jawne P albo nową wersję źródła.
 - Anime czyta katalog, oferty, pobrania i `subscription_add` przez `ResidentSession`; nie ma katalogu grup, receipt
   i przyjęcia należą do ownera, kolejność premier daje fasada. Korelacja po `command_id` + kluczu odcinka. Esc/Tab
   odrzucają spóźnioną nawigację katalogu, nigdy przyjętej partii.
