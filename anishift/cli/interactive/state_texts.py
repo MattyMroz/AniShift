@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final
 
@@ -10,7 +11,19 @@ from anishift.application import RefusalReason
 from anishift.application.events import sanitize_event_message
 from anishift.platform.local_control import ControlError, ControlErrorCode
 
-__all__ = ["LIBRARY_PROBLEMS", "deleted_sets", "deleting_sets", "refusal_text", "rows", "safe_text"]
+__all__ = [
+    "LIBRARY_PROBLEMS",
+    "RESTORING",
+    "PendingRestore",
+    "deleted_sets",
+    "deleting_sets",
+    "refusal_text",
+    "restoring_rows",
+    "rows",
+    "safe_text",
+    "settled_restores",
+    "undo_target",
+]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -123,6 +136,67 @@ LIBRARY_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
     }
 )
 """Polish explanations keyed by the owner's library reason codes."""
+
+
+RESTORING: Final[str] = "Przywracam…"
+"""State of a deleted set's row from Ctrl+Z until the owner finishes bringing its files back."""
+
+
+@dataclass(frozen=True, slots=True)
+class PendingRestore:
+    """One undo the panel shows as restoring until the owner answers and settles it."""
+
+    operation_id: str
+    answered: bool = False
+
+
+def undo_target(snapshot: Mapping[str, object]) -> Mapping[str, object] | None:
+    """Return the deletion Ctrl+Z restores, chosen as the owner chooses it, or None when it would refuse."""
+    for item in reversed(rows(snapshot.get("deletions"))):
+        if item.get("recycled") or item.get("uncertain") or item.get("active"):
+            return None if item.get("restored") or item.get("active") else item
+    return None
+
+
+def restoring_rows(
+    snapshot: Mapping[str, object], restoring: Mapping[str, PendingRestore], *, unrecorded: bool
+) -> list[Mapping[str, object]]:
+    """Return one restoring row per pending undo of a Library set, or of a Processing set when ``unrecorded``."""
+    entries: dict[str, Mapping[str, object]] = {
+        str(item.get("operation_id")): item for item in rows(snapshot.get("deletions"))
+    }
+    return [
+        {
+            "set_id": set_id,
+            "material_id": f"restoring:{set_id}",
+            "name": entries[pending.operation_id].get("name", ""),
+            "stage": "waiting",
+            "restoring": True,
+        }
+        for set_id, pending in restoring.items()
+        if pending.operation_id in entries and bool(entries[pending.operation_id].get("unrecorded")) is unrecorded
+    ]
+
+
+def settled_restores(
+    snapshot: Mapping[str, object], restoring: Mapping[str, PendingRestore]
+) -> tuple[dict[str, PendingRestore], str]:
+    """Keep undos the owner has not settled, adopt its active ones and explain the first that failed."""
+    entries: dict[str, Mapping[str, object]] = {
+        str(item.get("operation_id")): item for item in rows(snapshot.get("deletions"))
+    }
+    kept: dict[str, PendingRestore] = {}
+    problem: str = ""
+    for set_id, pending in restoring.items():
+        item: Mapping[str, object] | None = entries.get(pending.operation_id)
+        if (item is not None and item.get("restoring")) or not pending.answered:
+            kept[set_id] = pending
+        elif item is not None and not item.get("restored") and not problem:
+            problem = str(item.get("restore_problem") or "restore_incomplete")
+    for operation_id, item in entries.items():
+        if item.get("restoring") and str(item.get("set_id")) not in kept:
+            kept[str(item.get("set_id"))] = PendingRestore(operation_id, answered=True)
+    return kept, LIBRARY_PROBLEMS.get(problem, LIBRARY_PROBLEMS["restore_incomplete"]) if problem else ""
 
 
 def deleting_sets(snapshot: Mapping[str, object], hidden: Collection[str] = ()) -> set[str]:

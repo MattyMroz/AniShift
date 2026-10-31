@@ -9,7 +9,7 @@ from anishift.application import EpisodeReason, HistoryEvent, RetryProposal
 from anishift.cli.interactive.actions import PANEL_ACTIONS, Action, ScreenActions
 from anishift.cli.interactive.anime import EPISODE_REASON_LABELS
 from anishift.cli.interactive.progress import RichRunProgress
-from anishift.cli.interactive.state_texts import deleting_sets, rows, safe_text
+from anishift.cli.interactive.state_texts import RESTORING, deleting_sets, rows, safe_text
 from anishift.text.plural import plural
 
 __all__ = [
@@ -114,9 +114,12 @@ _TRANSFER_LABELS: Final[dict[str, str]] = {
 
 
 def processing_rows(
-    payload: Mapping[str, object], runs: Mapping[str, tuple[str, RichRunProgress]], hidden: Collection[str] = ()
+    payload: Mapping[str, object],
+    runs: Mapping[str, tuple[str, RichRunProgress]],
+    hidden: Collection[str] = (),
+    restoring: Collection[Mapping[str, object]] = (),
 ) -> list[Mapping[str, object]]:
-    """Return downloads, admitted work awaiting a task, started work and files to check, minus rows being deleted."""
+    """Return downloads, admitted, started, restoring and to-check work, minus rows being deleted."""
     running: set[str] = {
         str(item["request_id"])
         for item in rows(payload.get("requests"))
@@ -156,7 +159,11 @@ def processing_rows(
     ]
     attention: list[Mapping[str, object]] = [item for item in rows(payload.get("materials")) if item.get("attention")]
     deleting: set[str] = deleting_sets(payload, hidden)
-    return [item for item in [*downloads, *preparing, *processing, *attention] if item.get("set_id") not in deleting]
+    listed: list[Mapping[str, object]] = [
+        item for item in [*downloads, *preparing, *processing, *attention] if item.get("set_id") not in deleting
+    ]
+    present: set[object] = {item.get("set_id") for item in listed}
+    return [*listed, *(item for item in restoring if item.get("set_id") not in present)]
 
 
 def row_ids(materials: list[Mapping[str, object]]) -> list[str]:
@@ -189,6 +196,8 @@ def download_progress(  # noqa: PLR0911
     """Return the label and measured fraction of a download row."""
     fraction: object = item.get("progress")
     measured: float | None = float(fraction) if isinstance(fraction, (int, float)) else None
+    if item.get("restoring"):
+        return RESTORING, None
     if item.get("reason") == EpisodeReason.FINALIZATION_FAILED:
         return "Błąd zapisu", None
     if item.get("attention"):

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
@@ -377,6 +377,55 @@ def test_set_delete_and_undo_each_use_one_native_session_with_per_file_steps(tmp
             ("ready/01.txt", True),
         ]
         assert [check for _path, check in steps] == [True, True, False, False]
+    finally:
+        owner.request_shutdown()
+        thread.join(5)
+        service.close()
+
+
+def test_restored_set_is_listed_in_the_snapshot_that_ends_restoring(tmp_path: Path) -> None:
+    service, store, _state = _completed_library(tmp_path)
+    recycled: list[str] = []
+    frames: list[Mapping[str, object]] = []
+    recycle: Callable[[Path, tuple[int, int, int, int]], RecycleResult] = _parking(tmp_path / ".bin", recycled)
+
+    def broadcast(frame: Mapping[str, object], terminal: bool) -> None:
+        del terminal
+        payload: object = frame.get("payload")
+        if frame.get("event") == "state_changed" and isinstance(payload, Mapping):
+            frames.append(payload)
+
+    owner: AutomationOwner = AutomationOwner(
+        service,
+        store,
+        instance_id="first",
+        recycler=lambda: nullcontext(recycle),
+        restorer=lambda: nullcontext(_restore_parked),
+        broadcast=broadcast,
+    )
+    thread: threading.Thread = _serving(owner)
+    try:
+        _delete(owner, "set-01", "delete-1")
+        assert _await(lambda: len(recycled) == 2 and not owner._deleting)
+        frames.clear()
+        assert owner.handle(_request("deletion_undo", command_id="undo-1")).ok
+        assert _await(lambda: not owner._deleting)
+        deletions: list[Mapping[str, object]] = [
+            cast("Mapping[str, object]", item) for frame in frames for item in cast("list[object]", frame["deletions"])
+        ]
+        assert any(item["restoring"] for item in deletions)
+        settled: Mapping[str, object] = next(
+            frame
+            for frame in frames
+            if any(cast("Mapping[str, object]", item)["restored"] for item in cast("list[object]", frame["deletions"]))
+        )
+        listed: list[object] = [
+            cast("Mapping[str, object]", item)["set_id"] for item in cast("list[object]", settled["library"])
+        ]
+        assert listed == ["set-01"]
+        assert not any(
+            cast("Mapping[str, object]", item)["restoring"] for item in cast("list[object]", settled["deletions"])
+        )
     finally:
         owner.request_shutdown()
         thread.join(5)

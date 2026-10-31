@@ -1913,7 +1913,8 @@ class AutomationOwner:
                     "operation_id": item.operation_id,
                     "set_id": item.set_id,
                     "name": next(
-                        (group.stem for group in self._state.ready_groups if group.set_id == item.set_id), item.set_id
+                        (group.stem for group in self._state.ready_groups if group.set_id == item.set_id),
+                        item.set_id if unrecorded_group(item.set_id) is None else Path(item.files[0][0]).stem,
                     ),
                     "remaining": len(item.files) - len(item.recycled),
                     "can_confirm": (item.restore is None or (not item.restore.completed and not item.restore.unsettled))
@@ -1933,6 +1934,7 @@ class AutomationOwner:
                     ),
                     "retryable": self._deletion_retry_current(item),
                     "restoring": item.operation_id in self._restoring,
+                    "unrecorded": unrecorded_group(item.set_id) is not None,
                     "restored": item.restore is not None and item.restore.completed,
                     "restore_problem": next(
                         (
@@ -2562,14 +2564,16 @@ class AutomationOwner:
         )
 
     def _restore_set(self, operation: PendingDeletion) -> None:
+        groups: tuple[SourceGroup, ...] | None = None
         try:
             if self._restorer is not None:
                 with self._restorer() as restore:
                     self._restore_files(operation, restore)
+            groups = self._service.library_inventory()
         except AniShiftError, OSError, ValueError:
             logger.warning("Set restoration interrupted; persisted intent retained")
         finally:
-            self._queue.put(partial(self._settle_restore, operation.operation_id))
+            self._queue.put(partial(self._settle_restore, operation.operation_id, groups))
 
     def _restore_files(self, operation: PendingDeletion, restore: RestoreStep) -> None:
         if operation.restore is None:
@@ -2626,8 +2630,10 @@ class AutomationOwner:
         )
         return self._save(self._replace_deletion(replace(operation, restore=restored)))
 
-    def _settle_restore(self, operation_id: str) -> None:
+    def _settle_restore(self, operation_id: str, groups: tuple[SourceGroup, ...] | None) -> None:
         operation: PendingDeletion | None = self._deletion_by_id(operation_id)
+        if groups is not None:
+            self._ready_library = project_library(self._state, self._service.workspace_root, groups)
         if operation is not None and operation.restore is not None:
             complete: bool = all(item.status == "restored" for item in operation.restore.outcomes)
             self._save(

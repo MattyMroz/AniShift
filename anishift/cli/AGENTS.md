@@ -164,7 +164,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   automatyczny).
 - Historia (50 ostatnich materiałów): Enter waliduje przez `library_result`, F daje `playback=False`; błędy zostają.
 - Biblioteka wysyła dokładne `LibraryFileIdentity` do walidacji ownera. Del ukrywa wiersz w tej klatce i usuwa na
-  własnym wątku; wiersz wraca z odmową, jeśli snapshot nie potwierdzi operacji. Ctrl+Z deleguje Undo do ownera.
+  własnym wątku; wiersz wraca z odmową, jeśli snapshot nie potwierdzi operacji. Ctrl+Z deleguje Undo do ownera,
+  a symetrycznie do Del od razu pokazuje wiersz „Przywracam…” (`_restoring`, `undo_target`, `settled_restores` w
+  `state_texts.py`; zestaw `unrecorded` w Przetwarzaniu); odmowa lub błąd przywracania usuwa go z komunikatem.
   Etykiety z `library_label` fasady i pól `series/season/episode` (`state_library._series_label`), inaczej z pliku.
   Brak akcji P i wiersza relokacji — owner sam ponawia relokacje. Odmowy przeżywają obce snapshoty, nie zmianę
   wyboru; spóźniony wynik nie nadpisze nowszego kontekstu. Testy: `test_library_actions.py`, `test_library_columns.py`.
