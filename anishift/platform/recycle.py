@@ -1,12 +1,15 @@
-"""Bound one Windows recycle operation in an owned, noninteractive helper process."""
+"""Bound the Windows recycle and restore steps of one set operation in one owned, noninteractive helper process."""
 
 from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import sys
 import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
@@ -34,16 +37,6 @@ class RecycleResult:
     receipt: str | None = None
 
 
-def recycle_file(path: Path, identity: tuple[int, int, int, int]) -> RecycleResult:
-    """Recycle exactly one identified file; timeout or malformed evidence never authorizes a retry."""
-    result: RecycleResult = _run_worker({"path": str(path), "identity": identity})
-    return (
-        result
-        if result.outcome in {"recycled", "refused", "uncertain"}
-        else RecycleResult("uncertain", "recycle_invalid_evidence")
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class RestoreRequest:
     """Exact durable paths and file identity supplied only by the deletion owner."""
@@ -56,70 +49,161 @@ class RestoreRequest:
     started: bool = False
 
 
-def restore_file(request: RestoreRequest, check_only: bool = False) -> RecycleResult:
-    """Inspect or restore an exact recorded item through the bounded native worker."""
-    return _run_worker(
-        {
-            "operation": "restore",
-            "workspace": str(request.workspace),
-            "path": request.path,
-            "staging": request.staging,
-            "identity": request.identity,
-            "receipt": request.receipt,
-            "started": request.started,
-            "check_only": check_only,
-        }
-    )
+type RecycleStep = Callable[[Path, tuple[int, int, int, int]], RecycleResult]
+"""Recycle exactly one identified file of the open set operation."""
+
+type RestoreStep = Callable[[RestoreRequest, bool], RecycleResult]
+"""Inspect (True) or restore (False) one exact recorded item of the open set operation."""
 
 
-def _run_worker(request: dict[str, object]) -> RecycleResult:
-    if not is_windows():
-        return RecycleResult("refused", "recycle_unsupported")
-    executable: object = getattr(sys, "_base_executable", None)
-    if not isinstance(executable, str):
-        return RecycleResult("refused", "recycle_unavailable")
-    payload: str = json.dumps({**request, "parent_pid": os.getpid()})
+@contextmanager
+def recycle_session() -> Iterator[RecycleStep]:
+    """Recycle the files of one set through one helper; timeout or malformed evidence never authorizes a retry."""
+    helper: _Helper = _Helper()
     try:
-        process: subprocess.Popen[str] = subprocess.Popen(  # noqa: S603
-            [executable, "-m", "anishift.platform.recycle_worker"],
-            env={**os.environ, "__PYVENV_LAUNCHER__": sys.executable},
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    except OSError:
-        return RecycleResult("refused", "recycle_unavailable")
+        yield lambda path, identity: _recycled(helper.call({"path": str(path), "identity": identity}))
+    finally:
+        helper.close()
+
+
+@contextmanager
+def restore_session() -> Iterator[RestoreStep]:
+    """Inspect and restore the recorded items of one set through one helper process."""
+    helper: _Helper = _Helper()
     try:
-        output, _ = process.communicate(payload, timeout=RECYCLE_TIMEOUT_S)
-    except (subprocess.TimeoutExpired, OSError, ValueError) as error:
-        return _interrupt_helper(
-            process, "recycle_timeout" if isinstance(error, subprocess.TimeoutExpired) else "recycle_interrupted"
+        yield lambda request, check_only: helper.call(
+            {
+                "operation": "restore",
+                "workspace": str(request.workspace),
+                "path": request.path,
+                "staging": request.staging,
+                "identity": request.identity,
+                "receipt": request.receipt,
+                "started": request.started,
+                "check_only": check_only,
+            }
         )
     finally:
+        helper.close()
+
+
+def _recycled(result: RecycleResult) -> RecycleResult:
+    if result.outcome in {"recycled", "refused", "uncertain"}:
+        return result
+    return RecycleResult("uncertain", "recycle_invalid_evidence")
+
+
+class _Helper:
+    """One helper started on the first request and answering one JSON line per request line, in order."""
+
+    def __init__(self) -> None:
+        self._process: subprocess.Popen[str] | None = None
+        self._answers: queue.Queue[str | None] = queue.Queue()
+        self._reader: threading.Thread | None = None
+        self._broken: bool = False
+
+    def call(self, request: dict[str, object]) -> RecycleResult:
+        """Send one request and wait for its answer; a lost, late or foreign answer ends the helper for good."""
+        if self._broken:
+            return RecycleResult("refused", "recycle_unavailable")
+        process: subprocess.Popen[str] | RecycleResult = self._process or self._start()
+        if isinstance(process, RecycleResult):
+            self._broken = True
+            return process
+        if not self._send(process, request):
+            return self._interrupt(process, "recycle_interrupted")
+        return self._receive(process, request.get("path"))
+
+    def _receive(self, process: subprocess.Popen[str], path: object) -> RecycleResult:
+        try:
+            answer: str | None = self._answers.get(timeout=RECYCLE_TIMEOUT_S)
+        except queue.Empty:
+            return self._interrupt(process, "recycle_timeout")
+        if answer is None:
+            return self._interrupt(process, "recycle_interrupted")
+        result: RecycleResult = _decode_result(answer, path)
+        if result.reason == "recycle_invalid_evidence":
+            self._interrupt(process, result.reason)
+        return result
+
+    def close(self) -> None:
+        """End the helper after its last answer, killing it only when it does not exit in time."""
+        process: subprocess.Popen[str] | None = self._process
+        if process is None or self._broken:
+            return
+        self._broken = True
+        try:
+            if process.stdin is not None:
+                process.stdin.close()
+            process.wait(timeout=RECYCLE_CLEANUP_TIMEOUT_S)
+        except subprocess.TimeoutExpired, OSError, ValueError:
+            self._interrupt(process, "recycle_cleanup_timeout")
+            return
         _close_pipes(process)
-    if process.returncode != 0:
-        return RecycleResult("uncertain", "recycle_interrupted")
-    return _decode_result(output)
 
+    def _start(self) -> subprocess.Popen[str] | RecycleResult:
+        if not is_windows():
+            return RecycleResult("refused", "recycle_unsupported")
+        executable: object = getattr(sys, "_base_executable", None)
+        if not isinstance(executable, str):
+            return RecycleResult("refused", "recycle_unavailable")
+        try:
+            process: subprocess.Popen[str] = subprocess.Popen(  # noqa: S603
+                [executable, "-m", "anishift.platform.recycle_worker"],
+                env={**os.environ, "__PYVENV_LAUNCHER__": sys.executable},
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except OSError:
+            return RecycleResult("refused", "recycle_unavailable")
+        self._process = process
+        self._reader = threading.Thread(target=self._read, args=(process,), daemon=True, name="recycle-answers")
+        self._reader.start()
+        return process
 
-def _interrupt_helper(process: subprocess.Popen[str], reason: str) -> RecycleResult:
-    try:
-        process.kill()
-    except OSError:
-        logger.warning("Recycle helper termination could not be confirmed")
-    try:
-        process.communicate(timeout=RECYCLE_CLEANUP_TIMEOUT_S)
-    except subprocess.TimeoutExpired, OSError, ValueError:
-        reason = "recycle_cleanup_timeout"
-    try:
-        process.wait(timeout=RECYCLE_CLEANUP_TIMEOUT_S)
-    except subprocess.TimeoutExpired, OSError:
-        reason = "recycle_cleanup_timeout"
-    logger.warning("Recycle helper interrupted; file effects remain uncertain", reason=reason)
-    return RecycleResult("uncertain", reason)
+    @staticmethod
+    def _send(process: subprocess.Popen[str], request: dict[str, object]) -> bool:
+        if process.stdin is None:
+            return False
+        try:
+            process.stdin.write(json.dumps({**request, "parent_pid": os.getpid()}) + "\n")
+            process.stdin.flush()
+        except OSError, ValueError:
+            return False
+        return True
+
+    def _read(self, process: subprocess.Popen[str]) -> None:
+        try:
+            if process.stdout is not None:
+                for line in process.stdout:
+                    self._answers.put(line)
+        except OSError, ValueError:
+            logger.warning("Recycle helper answers could not be read")
+        finally:
+            self._answers.put(None)
+
+    def _interrupt(self, process: subprocess.Popen[str], reason: str) -> RecycleResult:
+        self._broken = True
+        try:
+            if process.poll() is None:
+                process.kill()
+        except OSError:
+            logger.warning("Recycle helper termination could not be confirmed")
+        try:
+            process.wait(timeout=RECYCLE_CLEANUP_TIMEOUT_S)
+        except subprocess.TimeoutExpired, OSError:
+            reason = "recycle_cleanup_timeout"
+        if self._reader is not None:
+            self._reader.join(RECYCLE_CLEANUP_TIMEOUT_S)
+            if self._reader.is_alive():
+                reason = "recycle_cleanup_timeout"
+        _close_pipes(process)
+        logger.warning("Recycle helper interrupted; file effects remain uncertain", reason=reason)
+        return RecycleResult("uncertain", reason)
 
 
 def _close_pipes(process: subprocess.Popen[str]) -> None:
@@ -138,18 +222,23 @@ def _close_pipes(process: subprocess.Popen[str]) -> None:
         logger.warning("Recycle helper pipe close remains pending after its deadline")
 
 
-def _decode_result(output: str) -> RecycleResult:
+def _decode_result(output: str, path: object) -> RecycleResult:
     try:
         data: object = json.loads(output)
     except ValueError:
         return RecycleResult("uncertain", "recycle_invalid_evidence")
-    if not isinstance(data, dict) or data.get("outcome") not in {
-        "recycled",
-        "restored",
-        "ready",
-        "refused",
-        "uncertain",
-    }:
+    if (
+        not isinstance(data, dict)
+        or data.get("path") != path
+        or data.get("outcome")
+        not in {
+            "recycled",
+            "restored",
+            "ready",
+            "refused",
+            "uncertain",
+        }
+    ):
         return RecycleResult("uncertain", "recycle_invalid_evidence")
     if not isinstance(data.get("reason"), str) or not isinstance(data.get("receipt"), str | type(None)):
         return RecycleResult("uncertain", "recycle_invalid_evidence")

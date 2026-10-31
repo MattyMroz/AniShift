@@ -245,7 +245,7 @@ from anishift.paths import READY_DIRECTORY, RESTORE_STAGING_PREFIX, TMP_DIRECTOR
 from anishift.platform.binaries import BinaryNotFoundError
 from anishift.platform.directory_watch import DirectoryChange, source_is_available
 from anishift.platform.local_control import ControlErrorCode, ControlRequest, ControlResponse
-from anishift.platform.recycle import RecycleResult, RestoreRequest
+from anishift.platform.recycle import RecycleResult, RecycleStep, RestoreRequest, RestoreStep
 from anishift.services.catalog import TitleCandidate
 from anishift.services.torrents.query import EpisodeRange
 from anishift.utils.logger import get_logger
@@ -802,8 +802,8 @@ class AutomationOwner:
         open_result: Callable[[Path], None] | None = None,
         ready_store: ReadyStore | None = None,
         scan_interval_s: float = SCAN_INTERVAL_S,
-        recycler: Callable[[Path, tuple[int, int, int, int]], RecycleResult] | None = None,
-        restorer: Callable[[RestoreRequest, bool], RecycleResult] | None = None,
+        recycler: Callable[[], AbstractContextManager[RecycleStep]] | None = None,
+        restorer: Callable[[], AbstractContextManager[RestoreStep]] | None = None,
         subscription_shadow: bool = False,
         media_probe: MediaProbe | None = None,
     ) -> None:
@@ -835,8 +835,8 @@ class AutomationOwner:
         self._restart_requests: tuple[ProcessingRequest, ...] = self._state.requests
         self._run_groups: dict[str, tuple[InspectedSourceGroup, ...]] = {}
         self._ready_store: ReadyStore | None = ready_store
-        self._recycler: Callable[[Path, tuple[int, int, int, int]], RecycleResult] | None = recycler
-        self._restorer: Callable[[RestoreRequest, bool], RecycleResult] | None = restorer
+        self._recycler: Callable[[], AbstractContextManager[RecycleStep]] | None = recycler
+        self._restorer: Callable[[], AbstractContextManager[RestoreStep]] | None = restorer
         self._restoring: set[str] = set()
         self._deleting: dict[str, str] = {}
         self._deletion_retries: dict[str, int] = {}
@@ -2563,17 +2563,19 @@ class AutomationOwner:
 
     def _restore_set(self, operation: PendingDeletion) -> None:
         try:
-            self._restore_files(operation)
+            if self._restorer is not None:
+                with self._restorer() as restore:
+                    self._restore_files(operation, restore)
         except AniShiftError, OSError, ValueError:
             logger.warning("Set restoration interrupted; persisted intent retained")
         finally:
             self._queue.put(partial(self._settle_restore, operation.operation_id))
 
-    def _restore_files(self, operation: PendingDeletion) -> None:
-        if operation.restore is None or self._restorer is None:
+    def _restore_files(self, operation: PendingDeletion, restore: RestoreStep) -> None:
+        if operation.restore is None:
             return
         for outcome in operation.restore.outcomes:
-            result: RecycleResult = self._restorer(self._restore_request(operation, outcome), True)
+            result: RecycleResult = restore(self._restore_request(operation, outcome), True)
             if result.outcome == "restored" or result.reason == "restore_ready_bin":
                 reconciled: RestoreOutcome = replace(
                     outcome,
@@ -2590,7 +2592,7 @@ class AutomationOwner:
             admitted: bool = self._on_owner(partial(self._begin_restore_file, operation.operation_id, outcome))
             if not admitted:
                 return
-            result = self._restorer(self._restore_request(operation, outcome), False)
+            result = restore(self._restore_request(operation, outcome), False)
             saved: bool = self._on_owner(partial(self._finish_restore_file, operation.operation_id, outcome, result))
             if not saved or result.outcome != "restored":
                 return
@@ -2694,25 +2696,30 @@ class AutomationOwner:
 
     def _recycle_set(self, operation_id: str) -> None:
         try:
-            while self._recycler is not None:
-                groups: tuple[SourceGroup, ...] = self._service.library_inventory()
-                acquisitions: tuple[AcquisitionConfirmation, ...] = self._on_owner(lambda: self._state.acquisitions)
-                released: frozenset[str] = self._read_released(acquisitions)
-                item: LibraryFileIdentity | None = self._on_owner(
-                    partial(self._begin_deletion_file, operation_id, groups, acquisitions, released)
-                )
-                if item is None:
-                    break
-                result: RecycleResult = self._recycler(
-                    self._service.workspace_root / item.path, (item.size, item.modified_ns, item.device, item.inode)
-                )
-                saved: bool = self._on_owner(partial(self._finish_deletion_file, operation_id, item.path, result))
-                if not saved or result.outcome != "recycled":
-                    break
+            if self._recycler is not None:
+                with self._recycler() as recycle:
+                    self._recycle_files(operation_id, recycle)
         except AniShiftError, OSError, ValueError:
             logger.warning("Set recycling interrupted; durable in-flight evidence retained")
         finally:
             self._queue.put(lambda: self._settle_deletion(operation_id))
+
+    def _recycle_files(self, operation_id: str, recycle: RecycleStep) -> None:
+        while True:
+            groups: tuple[SourceGroup, ...] = self._service.library_inventory()
+            acquisitions: tuple[AcquisitionConfirmation, ...] = self._on_owner(lambda: self._state.acquisitions)
+            released: frozenset[str] = self._read_released(acquisitions)
+            item: LibraryFileIdentity | None = self._on_owner(
+                partial(self._begin_deletion_file, operation_id, groups, acquisitions, released)
+            )
+            if item is None:
+                return
+            result: RecycleResult = recycle(
+                self._service.workspace_root / item.path, (item.size, item.modified_ns, item.device, item.inode)
+            )
+            saved: bool = self._on_owner(partial(self._finish_deletion_file, operation_id, item.path, result))
+            if not saved or result.outcome != "recycled":
+                return
 
     def _deletion_scope_matches(
         self, operation: PendingDeletion, group: LibrarySet, *, verify_files: bool = True

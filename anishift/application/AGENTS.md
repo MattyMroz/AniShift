@@ -86,6 +86,7 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - Usuwanie z Biblioteki pomija pobranie tylko w `COMPLETE` z receipt managera dowodzącym zwolnienia (odczyt w puli
   I/O, ponowne sprawdzenie przed przyjęciem). Undo zapisuje przyjęcie `PendingDeletion.restore` i start każdego
   pliku przed skutkami natywnymi; `DeletionRestore.unsettled` chroni nierozstrzygnięte skutki po restarcie.
+  `recycler`/`restorer` to fabryki sesji: jeden proces pomocniczy na zestaw, zapis per plik bez zmian.
 
 ## Pobieranie odcinków
 

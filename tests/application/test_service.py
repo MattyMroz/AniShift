@@ -9,7 +9,7 @@ import threading
 import time
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -190,7 +190,7 @@ def _panel_owner(
         store,
         instance_id="panel-test",
         ready_store=ReadyStore(relocation_journal_dir(tmp_path / ".control"), tmp_path) if ready else None,
-        recycler=recycler,
+        recycler=None if recycler is None else lambda: nullcontext(recycler),
     )
     thread: threading.Thread = threading.Thread(target=owner.serve, daemon=True)
     thread.start()

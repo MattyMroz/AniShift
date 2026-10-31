@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -223,10 +224,10 @@ def test_fresh_exact_bin_proof_settles_previous_noop_before_other_preflight_refu
             else RecycleResult("refused", "restore_receipt_missing")
         )
 
-    owner: AutomationOwner = AutomationOwner(service, store, instance_id="test", restorer=restore)
+    owner: AutomationOwner = AutomationOwner(service, store, instance_id="test", restorer=lambda: nullcontext(restore))
     thread: threading.Thread = _serving(owner)
     try:
-        owner._restore_files(operation)
+        owner._restore_files(operation, restore)
         saved: DeletionRestore | None = store.load().pending_deletions[-1].restore
         assert saved is not None
         assert not saved.unsettled
@@ -277,7 +278,7 @@ def test_library_undo_survives_restart_and_never_falls_back(tmp_path: Path, coll
         Path(request.receipt).rename(path)
         return RecycleResult("restored", "restore_completed")
 
-    owner: AutomationOwner = AutomationOwner(service, store, instance_id="first", recycler=recycle)
+    owner: AutomationOwner = AutomationOwner(service, store, instance_id="first", recycler=lambda: nullcontext(recycle))
     thread: threading.Thread = _serving(owner)
     try:
         preview: DeletionPreview = decode_view(
@@ -300,7 +301,7 @@ def test_library_undo_survives_restart_and_never_falls_back(tmp_path: Path, coll
     foreign: Path = tmp_path / "ready/01.pl.txt"
     if collision:
         foreign.write_bytes(b"foreign")
-    owner = AutomationOwner(service, store, instance_id="second", restorer=restore)
+    owner = AutomationOwner(service, store, instance_id="second", restorer=lambda: nullcontext(restore))
     thread = _serving(owner)
     try:
         assert owner.handle(_request("deletion_undo", command_id="undo-1")).ok
@@ -311,7 +312,7 @@ def test_library_undo_survives_restart_and_never_falls_back(tmp_path: Path, coll
             assert owner.handle(_request("deletion_preview", {"set_id": "set-01"})).ok
             owner.request_shutdown()
             thread.join(5)
-            owner = AutomationOwner(service, store, instance_id="third", restorer=restore)
+            owner = AutomationOwner(service, store, instance_id="third", restorer=lambda: nullcontext(restore))
             thread = _serving(owner)
             foreign.rename(tmp_path / "foreign-preserved")
             assert owner.handle(_request("deletion_undo", command_id="undo-2")).ok
@@ -331,6 +332,51 @@ def test_library_undo_survives_restart_and_never_falls_back(tmp_path: Path, coll
         assert not owner.handle(
             _request("library_file_open", {"set_id": "set-01", "file": encode_view(replace(identity, inode=0))})
         ).ok
+    finally:
+        owner.request_shutdown()
+        thread.join(5)
+        service.close()
+
+
+def test_set_delete_and_undo_each_use_one_native_session_with_per_file_steps(tmp_path: Path) -> None:
+    service, store, _state = _completed_library(tmp_path)
+    recycled: list[str] = []
+    sessions: list[str] = []
+    steps: list[tuple[str, bool]] = []
+    recycle: Callable[[Path, tuple[int, int, int, int]], RecycleResult] = _parking(tmp_path / ".bin", recycled)
+
+    @contextmanager
+    def recycling() -> Iterator[Callable[[Path, tuple[int, int, int, int]], RecycleResult]]:
+        sessions.append("recycle")
+        yield recycle
+
+    def restore(request: RestoreRequest, check_only: bool) -> RecycleResult:
+        steps.append((request.path, check_only))
+        return _restore_parked(request, check_only)
+
+    @contextmanager
+    def restoring() -> Iterator[Callable[[RestoreRequest, bool], RecycleResult]]:
+        sessions.append("restore")
+        yield restore
+
+    owner: AutomationOwner = AutomationOwner(
+        service, store, instance_id="first", recycler=recycling, restorer=restoring
+    )
+    thread: threading.Thread = _serving(owner)
+    try:
+        _delete(owner, "set-01", "delete-1")
+        assert _await(lambda: len(recycled) == 2 and not owner._deleting)
+        assert sessions == ["recycle"]
+        assert owner.handle(_request("deletion_undo", command_id="undo-1")).ok
+        assert _await(lambda: not owner._deleting)
+        assert sessions == ["recycle", "restore"]
+        assert sorted(steps) == [
+            ("ready/01.pl.txt", False),
+            ("ready/01.pl.txt", True),
+            ("ready/01.txt", False),
+            ("ready/01.txt", True),
+        ]
+        assert [check for _path, check in steps] == [True, True, False, False]
     finally:
         owner.request_shutdown()
         thread.join(5)
@@ -409,7 +455,11 @@ def test_a_failed_workspace_episode_is_recycled_and_restored_like_a_library_set(
     recycled: list[str] = []
     recycle: Callable[[Path, tuple[int, int, int, int]], RecycleResult] = _parking(tmp_path / ".bin", recycled)
     owner: AutomationOwner = AutomationOwner(
-        service, store, instance_id="first", recycler=recycle, restorer=_restore_parked
+        service,
+        store,
+        instance_id="first",
+        recycler=lambda: nullcontext(recycle),
+        restorer=lambda: nullcontext(_restore_parked),
     )
     thread: threading.Thread = _serving(owner)
     try:
@@ -441,9 +491,8 @@ def test_del_on_a_failed_return_of_a_ready_episode_recycles_only_the_returned_fi
     again: Path = tmp_path / "01.txt"
     again.write_text("again", encoding="utf-8")
     recycled: list[str] = []
-    owner: AutomationOwner = AutomationOwner(
-        service, store, instance_id="first", recycler=_parking(tmp_path / ".bin", recycled)
-    )
+    recycle: Callable[[Path, tuple[int, int, int, int]], RecycleResult] = _parking(tmp_path / ".bin", recycled)
+    owner: AutomationOwner = AutomationOwner(service, store, instance_id="first", recycler=lambda: nullcontext(recycle))
     thread: threading.Thread = _serving(owner)
     try:
         _failed_group(owner, root_id, tmp_path / "ready/01.txt", again)

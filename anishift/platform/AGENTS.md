@@ -26,7 +26,9 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
   and the expected staging path/map, reads back all-zero then selected priorities, and never resumes.
   Validate a nonempty matching file map before attempting stop, so premature selection cannot halt metadata acquisition.
   The owner remains responsible for durable revisions and refusing stale workers before this boundary.
-- `recycle.py` runs bounded native workers. `restore_worker.py` resolves the exact saved receipt
+- `recycle.py` runs one bounded native helper per set operation (`recycle_session`/`restore_session`): one JSON line
+  per file, isolation (`_isolate`: parent watch + private desktop) once per process, every answer still bounded by
+  `RECYCLE_TIMEOUT_S` and must echo the requested `path`; a lost, late or foreign answer kills the helper and later steps refuse without a retry. `restore_worker.py` resolves the exact saved receipt
   inside the virtual Recycle Bin, moves it through Shell to recorded same-volume staging and
   publishes by checked file handle without replacement. Keep parent/path/identity guards;
   never use global Shell Undo or rename raw bin files. `FILE_RENAME_INFO.FileName` needs a

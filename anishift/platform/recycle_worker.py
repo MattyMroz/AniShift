@@ -1,4 +1,4 @@
-"""Single-file COM worker whose private desktop is never switched to the user's input desktop."""
+"""Set-operation COM worker whose private desktop is never switched to the user's input desktop."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict
+from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 from uuid import UUID, uuid4
@@ -369,8 +370,14 @@ def _read_request(payload: dict[str, object]) -> tuple[Path, tuple[int, int, int
     if any(type(value) is not int for value in identity):
         message = "Invalid file identity"
         raise ValueError(message)
-    _watch_parent(parent_pid)
+    _isolate(parent_pid)
     return Path(path), identity
+
+
+@cache
+def _isolate(parent_pid: int) -> None:
+    _watch_parent(parent_pid)
+    _private_desktop()
 
 
 def _watch_parent(pid: int) -> None:
@@ -394,28 +401,32 @@ def _watch_parent(pid: int) -> None:
 
 
 def main() -> None:
-    """Execute one request only after desktop isolation and supported-file validation succeed."""
-    result: RecycleResult = RecycleResult("refused", "recycle_unsupported")
+    """Answer each request line in order, echoing its path, until the owner closes the input."""
+    for line in sys.stdin:
+        try:
+            parsed: object = json.loads(line)
+        except ValueError:
+            parsed = None
+        payload: dict[str, object] = parsed if isinstance(parsed, dict) else {}
+        sys.stdout.write(json.dumps({**asdict(_answer(payload)), "path": payload.get("path")}) + "\n")
+        sys.stdout.flush()
+
+
+def _answer(payload: dict[str, object]) -> RecycleResult:
     started: bool = False
     try:
-        payload: dict[str, object] = json.loads(sys.stdin.read())
         if payload.get("operation") == "restore":
             from anishift.platform.restore_worker import restore_request  # noqa: PLC0415
 
-            result = restore_request(payload)
-            sys.stdout.write(json.dumps(asdict(result)))
-            sys.stdout.flush()
-            return
+            return restore_request(payload)
         path, identity = _read_request(payload)
-        if sys.platform == "win32" and _supported_path(path) and _identity(path) == identity:
-            _private_desktop()
-            with _locked_source(path, identity):
-                started = True
-                result = _native_recycle(path, identity)
+        if sys.platform != "win32" or not _supported_path(path) or _identity(path) != identity:
+            return RecycleResult("refused", "recycle_unsupported")
+        with _locked_source(path, identity):
+            started = True
+            return _native_recycle(path, identity)
     except OSError, ValueError, KeyError, TypeError:
-        result = RecycleResult("uncertain" if started else "refused", "recycle_unavailable")
-    sys.stdout.write(json.dumps(asdict(result)))
-    sys.stdout.flush()
+        return RecycleResult("uncertain" if started else "refused", "recycle_unavailable")
 
 
 if __name__ == "__main__":
