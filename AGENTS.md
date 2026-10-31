@@ -81,7 +81,7 @@ Każdy obszar poniżej ma własny AGENTS.md z pułapkami i konwencjami — wczyt
 
 Filozofia: regułę egzekwuje maszyna (hook / ruff / test), nie pamięć agenta. Gdy user ustala nową regułę, albo ten sam błąd wraca dwa razy — ZAPROPONUJ userowi zamianę na strażnika (hook w `scripts/hooks/`, reguła ruff, test) i zapytaj, czy zrobić. Nie dodawaj strażnika bez zgody usera. Każdy strażnik z `scripts/hooks/` ma test w `tests/scripts/`.
 
-Instalacja: `uv run pre-commit install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push`.
+Instalacja: `prek install`. Hooki instaluje prek, wszystkie trzy etapy z `default_install_hook_types` w `.pre-commit-config.yaml`.
 
 - **pre-commit:** ruff `--fix` + ruff-format; `check_test_comments.py` obejmuje także pomocnicze moduły Python w katalogach testów i każdy `conftest.py`: zero opisowych komentarzy i samodzielnych stringów, również docstringów stałych; dyrektywy `# noqa`/`# type:`/`# pragma` są dozwolone. `check_const_docstrings.py` wymaga opisu pod stałą `Final`/aliasem w kodzie aplikacji poza testami.
 - **commit-msg:** `conventional-pre-commit` — `typ(scope): opis`, scope obowiązkowy z listy `--scopes`; `commit-validation` — streszczenie i sekcja `Validation:` (sekcja Git niżej).

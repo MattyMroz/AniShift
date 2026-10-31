@@ -1,6 +1,6 @@
 # Pre-commit hooks for AniShift.
-# Install once after `uv sync`:
-#   uv run pre-commit install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push
+# prek installs the hooks, all three stages from default_install_hook_types. Once after `uv sync`:
+#   prek install
 #
 # pre-commit stage: fast, blocks the commit if ruff fails.
 # commit-msg stage: enforces Conventional Commits message format and the commit body (summary + Validation).
