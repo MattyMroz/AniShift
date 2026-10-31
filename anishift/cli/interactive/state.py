@@ -21,6 +21,7 @@ from anishift.application import (
     LibraryFile,
     LibraryFileIdentity,
     LibrarySet,
+    PlanPreview,
     RetryProposal,
     RunProgressSnapshot,
     decode_view,
@@ -737,12 +738,11 @@ class StateController:
         retry: str | None = anime.take_retry()
         if retry is not None:
             self.show_processing()
-            self._selected = next(
-                (index for index, item in enumerate(self._processing_rows()) if failed_group(item) == retry),
-                self._selected,
-            )
+            materials: list[Mapping[str, object]] = self._processing_rows()
+            row: int | None = next((index for index, item in enumerate(materials) if failed_group(item) == retry), None)
+            self._selected = self._selected if row is None else row
             self._follow_cursor[_Tab.PROGRESS] = True
-            self._prepare_retry(lambda session: session.retry_proposal(retry))
+            self._retry_now(retry, "Materiał" if row is None else material_name(materials[row]))
         if result is AnimeResult.HOME:
             return StateResult.HOME
         if result is AnimeResult.SUBSCRIPTIONS:
@@ -794,7 +794,7 @@ class StateController:
             return
         group: str | None = failed_group(item)
         if key == "p" and group is not None:
-            self._prepare_retry(lambda session: session.retry_proposal(group))
+            self._retry_now(group, material_name(item))
             return
         toggle: tuple[str, str] | None = pause_toggle(item)
         if key == "w" and toggle is not None:
@@ -863,6 +863,13 @@ class StateController:
             self._history_input = None
         self._invalidate()
 
+    def _retry_now(self, group_id: str, name: str) -> None:
+        self._work(
+            lambda session: _execute_retry(session, session.retry_proposal(group_id)),
+            success=f"Ponawiam · {name}",
+            persistent=True,
+        )
+
     def _prepare_retry(self, prepare: Callable[[ResidentSession], RetryProposal]) -> None:
         generation: int = self._view_generation
 
@@ -887,7 +894,7 @@ class StateController:
             return StateResult.MANUAL
         elif key == "enter":
             self._retry = None
-            self._work(lambda session: _execute_repeat(session, proposal))
+            self._work(lambda session: _execute_retry(session, proposal))
         self._invalidate()
         return StateResult.CONTINUE
 
@@ -1632,12 +1639,23 @@ def _kept(old: Sequence[object], new: Sequence[object], position: int) -> int:
     return new.index(identifier) if identifier in new else min(position, max(len(new) - 1, 0))
 
 
-def _execute_repeat(session: ResidentSession, proposal: RetryProposal) -> None:
+def _execute_retry(session: ResidentSession, proposal: RetryProposal) -> None:
     if proposal.action == "reacquire" and proposal.operation_id is not None:
         session.reacquire(proposal.operation_id)
-    else:
+        return
+    if proposal.action == "manual" and not proposal.intents:
+        msg = "Brak zapisanych ustawień tego materiału; przetwórz go w Ręcznym (M)"
+        raise ValueError(msg)
+    if proposal.action not in {"resume", "manual"}:
         msg = "Nieaktualne ponowienie; wybierz materiał jeszcze raz"
         raise ValueError(msg)
+    session.reserve(proposal.group_ids)
+    plan: PlanPreview = (
+        session.plan_resume(proposal.group_ids)
+        if proposal.action == "resume"
+        else session.plan_manual(proposal.intents)
+    )
+    session.start(plan)
 
 
 def _open_episode(session: ResidentSession, set_id: str, *, show_folder: bool = False) -> None:

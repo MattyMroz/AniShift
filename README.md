@@ -101,7 +101,7 @@ uv run anishift subs remove ID   # remove one subscription
 
 **Przetwarzanie** shows downloads and processing: **W** pauses or resumes a transfer,
 **X** cancels it after confirmation and **H** opens the history. On an episode whose processing
-failed, **P** prepares a retry and **Del** moves its files to the Recycle Bin as in Biblioteka;
+failed, **P** retries it at once and **Del** moves its files to the Recycle Bin as in Biblioteka;
 **Ctrl+Z** restores them.
 
 `workspace/` may hold one subfolder per series. Discovery reads the root and every subfolder

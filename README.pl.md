@@ -101,7 +101,7 @@ uv run anishift subs remove ID   # usuń jedną subskrypcję
 
 **Przetwarzanie** pokazuje pobrania i obróbkę: **W** wstrzymuje lub wznawia transfer,
 **X** anuluje go po potwierdzeniu, a **H** otwiera historię. Na odcinku, którego obróbka się
-nie udała, **P** przygotowuje ponowienie, a **Del** przenosi jego pliki do Kosza jak w Bibliotece;
+nie udała, **P** od razu ją ponawia, a **Del** przenosi jego pliki do Kosza jak w Bibliotece;
 **Ctrl+Z** je przywraca.
 
 W `workspace/` może być osobny podfolder na każdą serię. Wyszukiwanie plików czyta katalog

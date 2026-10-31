@@ -10,7 +10,13 @@ from typing import cast
 
 import pytest
 
-from anishift.application.control_views import DeletionPreview, LibraryFile, LibraryFileIdentity, LibrarySet
+from anishift.application.control_views import (
+    DeletionPreview,
+    LibraryFile,
+    LibraryFileIdentity,
+    LibrarySet,
+    RetryProposal,
+)
 from anishift.application.workflows import WorkflowTarget
 from anishift.cli.interactive import state as module
 from anishift.cli.interactive import state_library
@@ -368,6 +374,41 @@ def test_del_on_a_failed_processing_row_deletes_it_like_the_library_and_ctrl_z_b
         }
         panel._receive(session, {"event": "state_changed", "payload": restored})
         assert _processing_names(panel) == ["Alpha", "Beta"]
+    finally:
+        _stop(owner, panel)
+
+
+class _RetryingOwner(_DeletingOwner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started: list[str] = []
+
+    def retry_proposal(self, identifier: str) -> RetryProposal:
+        return RetryProposal(identifier, "resume", (identifier,))
+
+    def reserve(self, group_ids: tuple[str, ...]) -> None:
+        return
+
+    def plan_resume(self, group_ids: tuple[str, ...]) -> str:
+        return f"plan-{group_ids[0]}"
+
+    def start(self, preview: str) -> str:
+        self.started.append(preview)
+        return "run"
+
+
+def test_p_on_a_failed_processing_row_retries_at_once_and_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _RetryingOwner = _RetryingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    panel._tab = module._Tab.PROGRESS
+    panel._snapshot = {"materials": [_failed_material("Alpha"), _failed_material("Beta")]}
+    panel._selected = 1
+    try:
+        panel.handle_key("text:p")
+        _until(lambda: "Ponawiam · Beta.mkv" in panel.render(80, 24).plain)
+        assert owner.started == ["plan-Beta"]
+        assert panel._selected == 1
+        assert "Enter przygotuj" not in panel.render(80, 24).plain
     finally:
         _stop(owner, panel)
 

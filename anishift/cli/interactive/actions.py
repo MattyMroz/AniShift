@@ -62,7 +62,7 @@ _DESCRIPTIONS: Final[dict[Action, str]] = {
     ("U", "ustawienia"): "Otwiera Ustawienia",
     ("H", "historia"): "Pokazuje ukończone i przerwane prace z 30 dni",
     ("H", "zamknij"): "Wraca z Historii do bieżącej pracy",
-    ("P", "ponów"): "Przygotowuje ponowienie wybranej pracy",
+    ("P", "ponów"): "Ponawia wybraną pracę; w Historii najpierw pokazuje propozycję",
     ("P", "ponownie"): "Pobiera odcinek jeszcze raz",
     ("P", "pobierz ponownie"): "Otwiera wydania do ponownego pobrania odcinka",
     ("/", "szukaj"): "Otwiera wyszukiwarkę",
