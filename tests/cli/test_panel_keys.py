@@ -1142,11 +1142,24 @@ def test_the_question_names_a_pack_and_a_whole_run(build: Callable[[str], _Probe
     pack: _Probe = build("processing_download")
     pack.panel._snapshot = {**pack.panel._snapshot, "materials": [_download(), _download(material="two")]}
     pack.panel.handle_key("text:x")
-    assert "Anulować pobieranie (2 materiałów)? Enter tak · Esc nie" in pack.panel.render(80, 24).plain
+    assert "Anulować pobieranie (2 materiały)? Enter tak · Esc nie" in pack.panel.render(80, 24).plain
     run: _Probe = build("processing_run")
     run.panel.handle_key("text:x")
     assert run.panel._question == ("run_id", "run")
-    assert "Anulować całe zlecenie (1 materiałów)? Enter tak · Esc nie" in run.panel.render(80, 24).plain
+    assert "Anulować całe zlecenie (1 materiał)? Enter tak · Esc nie" in run.panel.render(80, 24).plain
+
+
+@pytest.mark.parametrize(
+    ("count", "form"),
+    [(1, "1 materiał"), (2, "2 materiały"), (5, "5 materiałów"), (12, "12 materiałów"), (22, "22 materiały")],
+)
+def test_processing_texts_count_materials_in_polish(count: int, form: str) -> None:
+    groups: list[str] = [f"group-{index}" for index in range(count)]
+    assert processing_module.question_text(("run_id", "run"), [{"group_ids": groups}]) == (
+        f"Anulować całe zlecenie ({form})?"
+    )
+    proposal: RetryProposal = RetryProposal("retry", "resume", tuple(groups))
+    assert processing_module.retry_entry(proposal) == f"Dokończ całe zapisane zlecenie · {form} · podgląd"
 
 
 @pytest.mark.parametrize(
@@ -1462,7 +1475,7 @@ def test_the_question_follows_its_target_and_ends_when_it_vanishes(
     ("name", "lines"),
     [
         ("processing_download", ("Anulować pobieranie? Enter tak · Esc nie",)),
-        ("processing_run", ("Anulować całe zlecenie (1 materiałów)?", "Enter tak · Esc nie")),
+        ("processing_run", ("Anulować całe zlecenie (1 materiał)?", "Enter tak · Esc nie")),
     ],
 )
 def test_the_question_breaks_only_between_its_sentence_and_keys_at_50_columns(

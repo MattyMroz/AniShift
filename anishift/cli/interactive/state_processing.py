@@ -10,6 +10,7 @@ from anishift.cli.interactive.actions import PANEL_ACTIONS, Action, ScreenAction
 from anishift.cli.interactive.anime import EPISODE_REASON_LABELS
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.state_texts import rows, safe_text
+from anishift.text.plural import plural
 
 __all__ = [
     "HISTORY_PROBLEMS",
@@ -246,9 +247,9 @@ def question_text(target: tuple[str, str], targeted: list[Mapping[str, object]])
     if not targeted:
         return ""
     if target[0] == "info_hash":
-        return "Anulować pobieranie?" if len(targeted) == 1 else f"Anulować pobieranie ({len(targeted)} materiałów)?"
+        return "Anulować pobieranie?" if len(targeted) == 1 else f"Anulować pobieranie ({_materials(len(targeted))})?"
     scope: object = targeted[0].get("group_ids", [])
-    return f"Anulować całe zlecenie ({len(scope) if isinstance(scope, list) else 1} materiałów)?"
+    return f"Anulować całe zlecenie ({_materials(len(scope) if isinstance(scope, list) else 1)})?"
 
 
 def history_actions(*, listed: bool) -> ScreenActions:
@@ -282,8 +283,12 @@ def history_entry(item: HistoryEvent) -> str:
 def retry_entry(proposal: RetryProposal) -> str:
     """Return the only row of a retry proposal."""
     if proposal.action == "resume":
-        return f"Dokończ całe zapisane zlecenie · {len(proposal.group_ids)} materiałów · podgląd"
+        return f"Dokończ całe zapisane zlecenie · {_materials(len(proposal.group_ids))} · podgląd"
     return _RETRY_LABELS.get(proposal.action, "Nieznana droga ponowienia")
+
+
+def _materials(count: int) -> str:
+    return f"{count} {plural(count, 'materiał', 'materiały', 'materiałów')}"
 
 
 def _download_toggle(item: Mapping[str, object]) -> tuple[str, str] | None:

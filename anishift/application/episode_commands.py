@@ -9,6 +9,7 @@ from typing import Final
 
 from anishift.application.episode_selection import EpisodeKey, EpisodeOffer
 from anishift.application.release_quality import ResolutionClass
+from anishift.text.plural import plural
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -215,8 +216,9 @@ def _detailed(reason: str, cause: str) -> str | None:
 
 def _counts(cause: str) -> str:
     total, fresh, tried = (_whole(part) for part in cause.split("/"))
-    counted: str = f"{total} {_plural(total, 'wydanie', 'wydania', 'wydań')}, {fresh} {_plural(fresh, 'zgodne')}"
-    return f"{counted}, {tried} już {_plural(tried, 'próbowane')}" if tried else counted
+    releases: str = plural(total, "wydanie", "wydania", "wydań")
+    counted: str = f"{total} {releases}, {fresh} {plural(fresh, 'zgodne', 'zgodne', 'zgodnych')}"
+    return f"{counted}, {tried} już {plural(tried, 'próbowane', 'próbowane', 'próbowanych')}" if tried else counted
 
 
 def _threshold(cause: str) -> str:
@@ -241,12 +243,3 @@ def _whole(text: str) -> int:
         msg: str = "A notice cause names a whole number"
         raise ValueError(msg)
     return int(text)
-
-
-def _plural(count: int, one: str, few: str | None = None, many: str | None = None) -> str:
-    """Return the Polish form for *count*; an adjective passes only its singular and gets ``-ych`` for many."""
-    if count == 1:
-        return one
-    if count % 10 in {2, 3, 4} and count % 100 not in {12, 13, 14}:
-        return few or one
-    return many or f"{one[:-1]}ych"
