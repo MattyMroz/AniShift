@@ -499,7 +499,7 @@ class AppService:
             coordinator.close()
 
     def drain(self) -> None:
-        """Finish active tasks and retain unfinished runs for recovery."""
+        """Interrupt active tasks and retain unfinished runs for recovery."""
         self._graph_coordinator().drain()
 
     def pause_runs(self) -> None:

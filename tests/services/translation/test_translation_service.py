@@ -3,11 +3,13 @@ from collections.abc import Callable
 
 import pytest
 
+from anishift.errors import ErrorCode
 from anishift.services.subtitles.types import DisplayedLine, SpokenLine
+from anishift.services.translation._retry import call_with_retry
 from anishift.services.translation.config import TranslationConfig
 from anishift.services.translation.engines.llm.config import LlmTranslateConfig
 from anishift.services.translation.engines.llm.service import LlmTranslateService
-from anishift.services.translation.errors import TranslationError, TranslationQuotaError
+from anishift.services.translation.errors import TranslationError, TranslationQuotaError, TranslationRateLimitError
 from anishift.services.translation.protocols import (
     LlmCompletionRequest,
     LlmCompletionResult,
@@ -47,7 +49,7 @@ class _FakeEngine:
     def is_available(self) -> bool:
         return True
 
-    def translate_batch(self, texts, *, source_lang, target_lang, observer=None):  # type: ignore[no-untyped-def]
+    def translate_batch(self, texts, *, source_lang, target_lang, observer=None, cancel=None):  # type: ignore[no-untyped-def]
         del observer
         self.calls.append(list(texts))
         self.target_langs.append(target_lang)
@@ -201,7 +203,7 @@ def test_displayed_animation_duplicates_use_one_provider_item() -> None:
 
 def test_displayed_partial_failure_counts_every_redistributed_occurrence() -> None:
     class _PartialFailureEngine(_FakeEngine):
-        def translate_batch(self, texts, *, source_lang, target_lang, observer=None):  # type: ignore[no-untyped-def]
+        def translate_batch(self, texts, *, source_lang, target_lang, observer=None, cancel=None):  # type: ignore[no-untyped-def]
             del observer
             del source_lang, target_lang
             self.calls.append(list(texts))
@@ -272,3 +274,47 @@ def test_cancel_raises_translation_error() -> None:
     service = TranslationService(_config(), engine_factory=_single_engine_factory(_FakeEngine()))
     with pytest.raises(TranslationError):
         service.translate_file(_spoken("x"), [], target_lang="pl", cancel=cancel)
+
+
+def test_a_cancel_between_llm_batches_stops_before_the_next_request() -> None:
+    cancel: threading.Event = threading.Event()
+    requests: list[LlmCompletionRequest] = []
+
+    class _CancelAfterFirst:
+        def complete(
+            self,
+            request: LlmCompletionRequest,
+            *,
+            on_text: Callable[[str], None] | None = None,
+            on_start: Callable[[], None] | None = None,
+        ) -> LlmCompletionResult:
+            del on_text, on_start
+            requests.append(request)
+            cancel.set()
+            return LlmCompletionResult(text="[0] jeden", finish_reason="stop")
+
+    engine: LlmTranslateService = LlmTranslateService(
+        LlmTranslateConfig(max_batch_lines=1), completer=_CancelAfterFirst()
+    )
+
+    with pytest.raises(TranslationError) as raised:
+        engine.translate_batch(["one", "two"], source_lang="auto", target_lang="pl", cancel=cancel)
+
+    assert raised.value.context.code is ErrorCode.CANCELLED
+    assert len(requests) == 1
+
+
+def test_a_cancelled_retry_loop_makes_no_further_provider_call() -> None:
+    cancel: threading.Event = threading.Event()
+    calls: list[int] = []
+
+    def once() -> str:
+        calls.append(1)
+        cancel.set()
+        raise TranslationRateLimitError("limited")
+
+    with pytest.raises(TranslationError) as raised:
+        call_with_retry(once, max_attempts=3, retry_on=TranslationRateLimitError, base_s=0.0, cancel=cancel)
+
+    assert raised.value.context.code is ErrorCode.CANCELLED
+    assert calls == [1]

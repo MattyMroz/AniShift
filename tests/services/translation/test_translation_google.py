@@ -1,6 +1,7 @@
 import httpx
 import pytest
 
+from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.translation.config import TranslationConfig
 from anishift.services.translation.engines.google._batching import translate_lines
 from anishift.services.translation.engines.google.api_backend import (
@@ -9,7 +10,7 @@ from anishift.services.translation.engines.google.api_backend import (
 )
 from anishift.services.translation.engines.google.constants import LINE_SEPARATOR, MAX_CHARS_PER_REQUEST, USER_AGENT
 from anishift.services.translation.engines.google.service import GoogleService
-from anishift.services.translation.errors import TranslationEngineError, TranslationRateLimitError
+from anishift.services.translation.errors import TranslationEngineError, TranslationError, TranslationRateLimitError
 from anishift.services.translation.protocols import TranslationObserver
 from anishift.services.translation.types import BatchedLine
 
@@ -81,6 +82,23 @@ def test_per_line_failure_pads_source() -> None:
     result = translate_lines(texts, batch_size=50, max_chars=15000, translate_joined=fake)
     assert [line.text for line in result] == ["x", "y"]
     assert all(not line.ok for line in result)
+
+
+@pytest.mark.parametrize("batched", [True, False])
+def test_cancellation_stops_the_ladder_instead_of_padding_lines(batched: bool) -> None:
+    calls: list[str] = []
+
+    def fake(joined: str) -> str:
+        calls.append(joined)
+        if batched or (LINE_SEPARATOR not in joined and "\n" not in joined):
+            raise TranslationError(context=ErrorContext(code=ErrorCode.CANCELLED, message="translation cancelled"))
+        return "merged"
+
+    with pytest.raises(TranslationError) as raised:
+        translate_lines(["x", "y"], batch_size=50, max_chars=15000, translate_joined=fake)
+
+    assert raised.value.context.code is ErrorCode.CANCELLED
+    assert len(calls) == (1 if batched else 3)
 
 
 def test_empty_per_line_response_is_not_successful() -> None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,6 +37,7 @@ from anishift.services.tts import (
     SynthesisProfile,
     SynthesisRequest,
     SynthesisStatus,
+    TtsClipValidationError,
     TtsConfig,
     TtsError,
     TtsInputError,
@@ -567,6 +570,36 @@ def test_document_batch_cancel_before_commit_keeps_no_clip(tmp_path: Path) -> No
     assert _statuses(result) == [SynthesisStatus.CANCELLED, SynthesisStatus.CANCELLED]
     assert list((tmp_path / "episode").rglob("clip-*")) == []
     assert list((tmp_path / "episode").rglob("*.tmp")) == []
+
+
+def test_document_batch_cancel_during_retry_delay_ends_at_once_without_another_attempt(tmp_path: Path) -> None:
+    engine = _DocumentEngine(failures=(TtsClipValidationError("cut"),))
+    progress = _Progress()
+    results: list[SpeechBatchResult] = []
+    with TtsService(
+        replace(_config(), retry_backoff_seconds=(600.0,)),
+        resume_root=tmp_path,
+        validator=_Validator(),
+        splitter=_Splitter(),
+        engine_factory=lambda config: engine,
+    ) as service:
+        worker = threading.Thread(
+            target=lambda: results.append(service.synthesize(_batch("Raz dwa."), callbacks=progress))
+        )
+        worker.start()
+        deadline: float = time.monotonic() + 5.0
+        while not progress.retries and time.monotonic() < deadline:
+            time.sleep(0.01)
+        cancelled_at: float = time.monotonic()
+        service.cancel()
+        worker.join(timeout=5.0)
+        ended_after: float = time.monotonic() - cancelled_at
+
+    assert progress.retries
+    assert not worker.is_alive()
+    assert ended_after < 2.0
+    assert results[0].status is SpeechBatchStatus.CANCELLED
+    assert engine.documents == [("line-0",)]
 
 
 def test_document_batch_line_engine_with_splitter_uses_line_path(tmp_path: Path) -> None:

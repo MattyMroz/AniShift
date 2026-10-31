@@ -52,8 +52,9 @@ class TranslationEngine(EngineInfo, Protocol):
         source_lang: str,
         target_lang: str,
         observer: TranslationObserver | None = None,
+        cancel: TranslationCancellation | None = None,
     ) -> list[BatchedLine]:
-        """Translate one batch; output length must equal input length."""
+        """Translate one batch, stopping between provider requests once cancelled; output length equals input."""
         ...
 
     def input_policy(self, stream: TranslationStream) -> TranslationInputPolicy:

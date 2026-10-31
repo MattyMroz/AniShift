@@ -3063,29 +3063,72 @@ def test_a_slow_preview_never_delays_switching_auto(tmp_path: Path) -> None:
     assert previews[0].ok
 
 
-def test_a_shutdown_waits_for_the_active_request_and_admits_no_new_one(tmp_path: Path) -> None:
-    service, store, group_id = _library(tmp_path)
+@pytest.mark.integration
+def test_a_shutdown_interrupts_the_active_request_and_the_next_start_resumes_it(tmp_path: Path) -> None:
+    write_text_source(_library_dir(tmp_path) / "Episode.txt", "Text")
+    store: WatchStateStore = WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME)
+    entered: threading.Event = threading.Event()
+    service: AppService = _processing_service(
+        tmp_path, FakeTranslationService(entered=entered, hold_until_cancelled=True)
+    )
     owner: AutomationOwner = _owner(service, store)
     thread: threading.Thread = _serving(owner)
     try:
-        run_id: str = _started(owner)
+        group_id: str = service.discover().groups[0].group_id
+        preview: ControlResponse = owner.handle(
+            _request(
+                "preview",
+                {
+                    "client_id": _CLIENT,
+                    "group_ids": [group_id],
+                    "source_selection": "manual",
+                    "intents": [
+                        encode_view(
+                            GroupIntent(group_id, RunMode.MANUAL, ProductIntent(frozenset({ProductKind.FULL_PL})))
+                        )
+                    ],
+                },
+                command_id="preview-1",
+            )
+        )
+        assert preview.ok, preview.message
+        started: ControlResponse = owner.handle(
+            _request("start", {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]}, command_id="start-1")
+        )
+        assert started.ok, started.message
+        run_id: str = str(started.result["run_id"])
+        assert entered.wait(_TIMEOUT_S)
         stopping: ControlResponse = owner.handle(_request("shutdown", command_id="shutdown-1"))
-        thread.join(timeout=0.5)
-        still_running: bool = thread.is_alive()
         refused: ControlResponse = owner.handle(
             _request("start", {"client_id": _CLIENT, "preview_id": "preview-nothing"}, command_id="start-2")
         )
-        service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
         thread.join(timeout=_TIMEOUT_S)
+        stopped: bool = not thread.is_alive()
     finally:
         owner.request_shutdown()
         thread.join(timeout=_TIMEOUT_S)
+        service.close()
 
     assert stopping.ok
-    assert still_running
     assert refused.code is ControlErrorCode.REFUSED
-    assert not thread.is_alive()
-    assert service.background_admission[-1] is False
+    assert stopped
+    assert [(item.request_id, item.state) for item in store.load().requests] == [(run_id, RequestState.PAUSED)]
+    assert not RunJournal.load(store.run_path(run_id)).uncertain_remote_work
+
+    translation: FakeTranslationService = FakeTranslationService()
+    restarted: AppService = _processing_service(tmp_path, translation)
+    resumed: AutomationOwner = _owner(restarted, store)
+    thread = _serving(resumed)
+    try:
+        resumed.files_changed(DirectoryChange(reconcile=True))
+        assert _await(lambda: resumed.state.requests[0].state is RequestState.SUCCEEDED)
+    finally:
+        resumed.request_shutdown()
+        thread.join(timeout=_TIMEOUT_S)
+        restarted.close()
+
+    assert [item.request_id for item in store.load().requests] == [run_id]
+    assert translation.calls == [("Text",)]
 
 
 @pytest.mark.parametrize("failure", [ExecutionError("coordinator"), RuntimeError("handler"), SystemExit(1)])
