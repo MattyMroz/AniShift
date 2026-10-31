@@ -69,6 +69,9 @@ DOUBLE_CLICK_SECONDS: Final[float] = 0.4
 SELECTION_STYLE: Final[str] = "reverse"
 """Style of selected text cells, which inverts each cell in its own color."""
 
+_BLOCK_ELEMENTS: Final[tuple[str, str]] = ("\u2580", "\u259f")
+"""First and last Unicode block element, glyphs whose color draws their shape, such as a progress bar."""
+
 SELECTION_GAP_STYLE: Final[str] = "#0a0d14 on #e2e7f5"
 """Flat style of a selected gap between columns, matching inverted plain text so every gap keeps one shade."""
 
@@ -527,9 +530,11 @@ def selected_cells(cells: Sequence[TextCell], selection: tuple[TextPoint, TextPo
 
 
 def paint_selection(text: Text, cells: Sequence[TextCell]) -> None:
-    """Invert selected text in its own colors; paint two or more blanks, or blanks between regions of a row, flat."""
+    """Invert selected text in its own colors, keeping block glyphs as painted; paint blanks between regions flat."""
     plain: str = text.plain
     for index, cell in enumerate(cells):
+        if _BLOCK_ELEMENTS[0] <= cell.text <= _BLOCK_ELEMENTS[1]:
+            continue
         previous: TextCell | None = cells[index - 1] if index else None
         following: TextCell | None = cells[index + 1] if index + 1 < len(cells) else None
         gap: bool = _blank_pair(previous, cell) or _blank_pair(cell, following)

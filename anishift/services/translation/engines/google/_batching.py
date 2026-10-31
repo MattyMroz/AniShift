@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from anishift.errors import ErrorCode
 from anishift.services.translation.chunking import ZERO_WIDTH
 from anishift.services.translation.engines.google.constants import LINE_SEPARATOR
+from anishift.services.translation.errors import TranslationError
 from anishift.services.translation.types import BatchedLine
 
 if TYPE_CHECKING:
@@ -46,7 +48,9 @@ def _per_line(
     for line in prepared:
         try:
             translated = translate_joined(line)
-        except Exception:  # noqa: BLE001 - provider boundary: the mobile page has no stable failure shape
+        except Exception as error:
+            if _cancelled(error):
+                raise
             out.append(BatchedLine(text=line, ok=False))
             continue
         out.extend(_map_parts([line], [translated]))
@@ -70,9 +74,14 @@ def _translate_chunk(
         parts_nl = result_nl.split("\n")
         if len(parts_nl) == len(prepared):
             return _map_parts(prepared, parts_nl)
-    except Exception:  # noqa: BLE001, S110 - ladder fallback: retry per-line on any batch failure
-        pass
+    except Exception as error:
+        if _cancelled(error):
+            raise
     return _per_line(prepared, translate_joined)
+
+
+def _cancelled(error: Exception) -> bool:
+    return isinstance(error, TranslationError) and error.context.code is ErrorCode.CANCELLED
 
 
 def _map_parts(prepared: list[str], parts: list[str]) -> list[BatchedLine]:

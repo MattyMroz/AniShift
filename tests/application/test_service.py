@@ -13,7 +13,7 @@ from contextlib import closing, contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Final, cast
 
 import pytest
 from fakes import (
@@ -28,6 +28,7 @@ from prompt_toolkit.application.current import create_app_session
 from prompt_toolkit.input import DummyInput
 from prompt_toolkit.output import DummyOutput
 
+import anishift.application.episode_fonts as episode_fonts_module
 import anishift.application.service as service_module
 import anishift.application.watch as watch_module
 from anishift.application.acquisition import AcquisitionService
@@ -97,6 +98,7 @@ from anishift.services.media._process import ProcessResult
 from anishift.services.media.types import MediaCatalog
 
 _PALANTIR_TOKEN = "palantir-token-sentinel-deadbeef"  # noqa: S105
+_TIMEOUT_S: Final[float] = 5.0
 
 
 class _UnusedExtraction:
@@ -228,7 +230,7 @@ def test_panel_executes_only_selected_episodes_through_the_resident(tmp_path: Pa
         for key in (*keys, *(("down",) * 3 if regenerate else ()), "enter"):
             assert controller.handle_key(key) is ManualResult.STAY
         assert rendered.wait(5.0)
-        assert "2 odcinków" in controller.render(120, 40).plain
+        assert "2 odcinki" in controller.render(120, 40).plain
         assert translation.calls == []
         assert len(store.load().reservations) == 2
         assert controller.handle_key("enter") is ManualResult.START_RUN
@@ -257,6 +259,7 @@ def test_global_pause_lets_a_started_user_graph_finish_without_repeating_its_tra
 ) -> None:
     monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("ANISHIFT_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setattr(episode_fonts_module, "extract_attachments", lambda *_args: ())
     write_media_source(tmp_path / "03.mkv")
     entered: threading.Event = threading.Event()
     release: threading.Event = threading.Event()
@@ -271,7 +274,7 @@ def test_global_pause_lets_a_started_user_graph_finish_without_repeating_its_tra
             session.reserve(group_ids)
             preview: PlanPreview = session.plan_auto(group_ids, preset)
             run_id: str = session.start(preview)
-            assert entered.wait(1.0)
+            assert entered.wait(_TIMEOUT_S)
             session.command("set_auto", {"enabled": False})
             release.set()
             assert _wait_for_resident(
@@ -595,14 +598,14 @@ def test_history_retry_discloses_multigroup_scope_under_pause_and_releases_reser
             session.command("set_auto", {"enabled": False})
             controller.handle_key("text:p")
             assert _wait_for_resident(session, lambda _status: not controller._busy)
-            assert "Dokończ całe zapisane zlecenie · 2 materiałów" in controller.render(120, 40).plain
+            assert "Dokończ całe zapisane zlecenie · 2 materiały" in controller.render(120, 40).plain
             assert _wait_for_resident(session, lambda status: status["reservations"] == [])
             assert store.load().requests[0].attempts == 1
             session.command("set_auto", {"enabled": True})
             controller.handle_key("text:p")
             assert _wait_for_resident(session, lambda _status: not controller._busy)
             assert store.load().requests[0].attempts == 1
-            assert "Dokończ całe zapisane zlecenie · 2 materiałów" in controller.render(120, 40).plain
+            assert "Dokończ całe zapisane zlecenie · 2 materiały" in controller.render(120, 40).plain
             assert controller.handle_key("enter") is StateResult.MANUAL
             proposal: RetryProposal | None = controller.take_manual_retry()
             assert proposal is not None
@@ -641,6 +644,7 @@ def test_processing_cancel_targets_the_disclosed_whole_manual_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _PALANTIR_TOKEN)
+    monkeypatch.setattr(episode_fonts_module, "extract_attachments", lambda *_args: ())
     for number in (1, 2):
         write_media_source(tmp_path / f"{number:02d}.mkv")
     entered: threading.Event = threading.Event()
@@ -661,14 +665,14 @@ def test_processing_cancel_targets_the_disclosed_whole_manual_run(
                 )
             )
             run_id: str = session.start(preview)
-            assert entered.wait(1.0)
+            assert entered.wait(_TIMEOUT_S)
             controller: StateController = StateController(session, lambda: None)
             controller.show_processing()
             try:
                 assert _wait_for_resident(session, lambda _status: controller._connected)
                 assert "X anuluj" in controller.render(120, 40).plain
                 controller.handle_key("text:c")
-                assert "Anulować całe zlecenie (2 materiałów)? Enter tak · Esc nie" in controller.render(120, 40).plain
+                assert "Anulować całe zlecenie (2 materiały)? Enter tak · Esc nie" in controller.render(120, 40).plain
                 controller.handle_key("enter")
                 assert _wait_for_resident(session, lambda _status: not controller._busy)
                 release.set()
@@ -744,6 +748,7 @@ def test_restarting_a_paused_owner_keeps_the_finished_user_graph_without_rerunni
 ) -> None:
     monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("ANISHIFT_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setattr(episode_fonts_module, "extract_attachments", lambda *_args: ())
     write_media_source(tmp_path / "03.mkv")
     entered: threading.Event = threading.Event()
     release: threading.Event = threading.Event()
@@ -757,7 +762,7 @@ def test_restarting_a_paused_owner_keeps_the_finished_user_graph_without_rerunni
             group_ids: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
             session.reserve(group_ids)
             run_id: str = session.start(session.plan_auto(group_ids, preset))
-            assert entered.wait(1.0)
+            assert entered.wait(_TIMEOUT_S)
             session.command("set_auto", {"enabled": False})
             release.set()
             assert _wait_for_resident(

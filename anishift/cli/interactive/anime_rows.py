@@ -19,7 +19,13 @@ from anishift.application import (
     TitleCandidate,
 )
 from anishift.cli.interactive.anime_state import AnimeRow
-from anishift.cli.interactive.anime_texts import EPISODE_REASON_LABELS, IN_PROGRESS_HINT, episode_status_label, safe
+from anishift.cli.interactive.anime_texts import (
+    EPISODE_REASON_LABELS,
+    IN_PROGRESS_HINT,
+    RETRY_HINT,
+    episode_status_label,
+    safe,
+)
 from anishift.cli.interactive.subscription_texts import SubscriptionDraft
 
 __all__ = ["draft_rows", "entry_rows", "episode_row", "file_rows", "special_rows", "text_rows", "title_rows"]
@@ -106,6 +112,7 @@ def episode_row(episode: ListedEpisode, status: EpisodeStatus | None, *, film: b
         detail = "Nie ustalono pliku w paczce · Enter wskaż plik"
     elif episode.airs_at_fallback:
         detail = f"E{episode.number}: termin emisji niepotwierdzony (ani.zip)"
+    refusal: str = RETRY_HINT if status is not None and status.retry_group else IN_PROGRESS_HINT
     return AnimeRow(
         str(episode.number),
         episode.title or ("Film" if film else f"Odcinek {episode.number}"),
@@ -114,7 +121,7 @@ def episode_row(episode: ListedEpisode, status: EpisodeStatus | None, *, film: b
         status=label,
         eligible=eligible,
         detail=detail,
-        refusal_text=f"E{episode.number} jeszcze nie wyemitowano" if not episode.aired else IN_PROGRESS_HINT,
+        refusal_text=f"E{episode.number} jeszcze nie wyemitowano" if not episode.aired else refusal,
     )
 
 

@@ -10,7 +10,13 @@ from typing import cast
 
 import pytest
 
-from anishift.application.control_views import DeletionPreview, LibraryFile, LibraryFileIdentity, LibrarySet
+from anishift.application.control_views import (
+    DeletionPreview,
+    LibraryFile,
+    LibraryFileIdentity,
+    LibrarySet,
+    RetryProposal,
+)
 from anishift.application.workflows import WorkflowTarget
 from anishift.cli.interactive import state as module
 from anishift.cli.interactive import state_library
@@ -309,6 +315,143 @@ def test_library_accepted_delete_stays_hidden_until_reported_and_undo_restores_i
         }
         panel._receive(session, {"event": "state_changed", "payload": restored})
         assert _shown(panel) == ["Alpha", "Beta", "Gamma"]
+    finally:
+        _stop(owner, panel)
+
+
+def _failed_material(name: str) -> dict[str, object]:
+    return {
+        "material_id": name,
+        "group_id": name,
+        "set_id": name,
+        "name": f"{name}.mkv",
+        "stage": "waiting",
+        "state": "failed",
+        "reason": "processing_failed",
+        "run_id": "run",
+        "active": False,
+        "attention": True,
+    }
+
+
+def _processing_names(panel: StateController) -> list[str]:
+    return [str(item["group_id"]) for item in panel._processing_rows()]
+
+
+def test_del_on_a_failed_processing_row_deletes_it_like_the_library_and_ctrl_z_brings_it_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    session: ResidentSession = cast("ResidentSession", owner)
+    failed: list[dict[str, object]] = [_failed_material("Alpha"), _failed_material("Beta")]
+    deletion: dict[str, object] = {"operation_id": "recycle-Alpha", "set_id": "Alpha", "total": 1}
+    panel._tab = module._Tab.PROGRESS
+    panel._snapshot = {"materials": failed}
+    try:
+        panel.handle_key("delete")
+        assert _processing_names(panel) == ["Beta"]
+        assert panel._selected == 0
+        assert panel._question is None
+        assert "Alpha.mkv" not in panel.render(80, 24).plain
+        owner.release.set()
+        _until(lambda: "Usunięto · Ctrl+Z cofnij" in panel.render(80, 24).plain)
+        assert owner.deleted == ["Alpha"]
+        panel._receive(session, {"event": "state_changed", "payload": {"materials": failed}})
+        assert _processing_names(panel) == ["Beta"]
+        active: dict[str, object] = {"materials": failed, "deletions": [{**deletion, "active": True}]}
+        panel._receive(session, {"event": "state_changed", "payload": active})
+        assert panel._hidden == {}
+        assert _processing_names(panel) == ["Beta"]
+        done: dict[str, object] = {"materials": failed[1:], "deletions": [{**deletion, "recycled": 1}]}
+        panel._receive(session, {"event": "state_changed", "payload": done})
+        assert _processing_names(panel) == ["Beta"]
+        panel.handle_key("undo")
+        _until(lambda: owner.undone == ["latest"])
+        restored: dict[str, object] = {
+            "materials": failed,
+            "deletions": [{**deletion, "recycled": 1, "restored": True}],
+        }
+        panel._receive(session, {"event": "state_changed", "payload": restored})
+        assert _processing_names(panel) == ["Alpha", "Beta"]
+    finally:
+        _stop(owner, panel)
+
+
+class _RetryingOwner(_DeletingOwner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started: list[str] = []
+
+    def retry_proposal(self, identifier: str) -> RetryProposal:
+        return RetryProposal(identifier, "resume", (identifier,))
+
+    def reserve(self, group_ids: tuple[str, ...]) -> None:
+        return
+
+    def plan_resume(self, group_ids: tuple[str, ...]) -> str:
+        return f"plan-{group_ids[0]}"
+
+    def start(self, preview: str) -> str:
+        self.started.append(preview)
+        return "run"
+
+
+def test_p_on_a_failed_processing_row_retries_at_once_and_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _RetryingOwner = _RetryingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    panel._tab = module._Tab.PROGRESS
+    panel._snapshot = {"materials": [_failed_material("Alpha"), _failed_material("Beta")]}
+    panel._selected = 1
+    try:
+        panel.handle_key("text:p")
+        _until(lambda: "Ponawiam · Beta.mkv" in panel.render(80, 24).plain)
+        assert owner.started == ["plan-Beta"]
+        assert panel._selected == 1
+        assert "Enter przygotuj" not in panel.render(80, 24).plain
+    finally:
+        _stop(owner, panel)
+
+
+def test_a_failed_row_shows_again_after_an_old_finished_deletion_of_its_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    finished: dict[str, object] = {"operation_id": "old", "set_id": "Alpha", "total": 1, "recycled": 1}
+    panel._tab = module._Tab.PROGRESS
+    panel._snapshot = {"materials": [_failed_material("Alpha")], "deletions": [finished]}
+    try:
+        assert _processing_names(panel) == ["Alpha"]
+        panel._snapshot = {**panel._snapshot, "deletions": [{**finished, "active": True}]}
+        assert _processing_names(panel) == []
+    finally:
+        _stop(owner, panel)
+
+
+def test_a_refused_processing_delete_returns_the_row_with_the_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner(refuse=True)
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    panel._tab = module._Tab.PROGRESS
+    panel._snapshot = {"materials": [_failed_material("Alpha")]}
+    try:
+        panel.handle_key("delete")
+        assert _processing_names(panel) == []
+        owner.release.set()
+        _until(lambda: "Źródło czeka na zwolnienie przez torrent" in panel.render(80, 24).plain)
+        assert _processing_names(panel) == ["Alpha"]
+        assert owner.deleted == []
+    finally:
+        _stop(owner, panel)
+
+
+def test_ctrl_z_in_history_restores_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    panel._tab = module._Tab.PROGRESS
+    panel._history_open = True
+    monkeypatch.setattr(panel, "_work", lambda action, **kwargs: action(cast("ResidentSession", owner)))
+    try:
+        panel.handle_key("undo")
+        assert owner.undone == []
     finally:
         _stop(owner, panel)
 

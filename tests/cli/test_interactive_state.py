@@ -372,7 +372,7 @@ def test_download_handoff_keeps_selection_until_real_task_start_and_removes_fini
         assert "Przygotowanie" in controller.render(80, 24).plain
         assert "X anuluj" in controller.render(80, 24).plain
         controller.handle_key("text:c")
-        assert "Anulować całe zlecenie (1 materiałów)? Enter tak · Esc nie" in controller.render(80, 24).plain
+        assert "Anulować całe zlecenie (1 materiał)? Enter tak · Esc nie" in controller.render(80, 24).plain
         controller.handle_key("enter")
         assert calls == [("cancel", {"run_id": "run"})]
         progress.emit(RunEvent("run", 1, RunEventKind.TASK_STARTED, group_id="a", task_id="tts-a"))

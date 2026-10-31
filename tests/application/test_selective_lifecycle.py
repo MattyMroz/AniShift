@@ -25,7 +25,10 @@ from anishift.application.control import (
     TorrentioReference,
     WatchState,
 )
+from anishift.application.control_views import RetryProposal, decode_view
+from anishift.application.episode_commands import EpisodeStatus
 from anishift.application.episode_identity import IdentityVerdict
+from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace
 from anishift.application.intents import RequestOrigin
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
 from anishift.errors import ConfigError, ErrorCode, ErrorContext
@@ -296,6 +299,143 @@ def test_completed_selective_episode_keeps_its_material_identity_until_processin
         processing: dict[str, object] = next(item for item in materials if item.get("group_id") == group_id)
         assert processing["material_id"] == row["material_id"]
         assert processing["stage"] == "processing"
+
+
+def _inspected(owner: AutomationOwner, group_id: str) -> InspectedSourceGroup | None:
+    library: InspectedWorkspace | None = owner._library
+    groups: tuple[InspectedSourceGroup, ...] = () if library is None else library.groups
+    return next((group for group in groups if group.group_id == group_id), None)
+
+
+def _failed_request(group: InspectedSourceGroup, state: RequestState) -> ProcessingRequest:
+    return ProcessingRequest(
+        "processing",
+        1,
+        (group.group_id,),
+        {group.group_id: automation_module._group_fingerprint(group)},
+        RequestOrigin.USER,
+        SourceSelection.AUTO,
+        None,
+        {},
+        state,
+        1,
+        "2026-09-30T00:00:00+00:00",
+    )
+
+
+def _auto_starts(owner: AutomationOwner, started: list[str], requests: tuple[ProcessingRequest, ...]) -> list[str]:
+    started.clear()
+    saved: WatchState = replace(owner.state, policy=AutomationPolicy(auto_enabled=True), requests=requests)
+    assert owner._on_owner(lambda: owner._save(saved))
+
+    def refresh() -> None:
+        assert not owner._recovering
+        assert not owner._inspecting
+        owner._refresh_automatic()
+
+    owner._on_owner(refresh)
+    return list(started)
+
+
+def _episode_status(owner: AutomationOwner, command_id: str) -> EpisodeStatus:
+    states: ControlResponse = owner.handle(
+        _request("episode_states", {"anilist_id": _ENTRY, "numbers": [3]}, command_id=command_id)
+    )
+    return decode_view(tuple[EpisodeStatus, ...], states.result["items"])[0]
+
+
+def _material(owner: AutomationOwner, group_id: str, command_id: str) -> tuple[dict[str, object], int]:
+    response: ControlResponse = owner.handle(_request("status", command_id=command_id))
+    materials: list[dict[str, object]] = cast("list[dict[str, object]]", response.result["materials"])
+    counts: dict[str, int] = cast("dict[str, int]", response.result["material_counts"])
+    return next(item for item in materials if item.get("group_id") == group_id), counts["attention"]
+
+
+def _published_group(setup: _Setup, owner: AutomationOwner) -> InspectedSourceGroup:
+    from test_selective_publication import _download, _settled  # noqa: PLC0415
+
+    _download(setup, owner)
+    _until(lambda: _settled(owner))
+    group_id: str | None = owner.state.acquisitions[0].assignments[0].group_id
+    assert group_id is not None
+    _until(lambda: owner._on_owner(lambda: _inspected(owner, group_id) is not None))
+    group: InspectedSourceGroup | None = owner._on_owner(lambda: _inspected(owner, group_id))
+    assert group is not None
+    return group
+
+
+@pytest.mark.parametrize("state", [RequestState.FAILED, RequestState.PARTIAL, RequestState.CANCELLED])
+def test_an_unfinished_episode_with_its_video_on_disk_waits_in_processing_for_an_explicit_retry(
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch, state: RequestState
+) -> None:
+    with _running(setup) as owner:
+        group: InspectedSourceGroup = _published_group(setup, owner)
+        monkeypatch.setattr(owner, "_start_automatic", lambda chosen, preset: None)
+        request: ProcessingRequest = _failed_request(group, state)
+        assert owner._on_owner(lambda: owner._save(replace(owner.state, requests=(request,))))
+        row, attention = _material(owner, group.group_id, "status-failed")
+        assert (row["stage"], row["reason"], row["attention"], row["active"]) == (
+            "waiting",
+            "processing_failed",
+            True,
+            False,
+        )
+        assert attention == 1
+        status: EpisodeStatus = _episode_status(owner, "states-failed")
+        assert (status.state, status.retry_group) == ("processing_failed", group.group_id)
+        retry: ControlResponse = owner.handle(
+            _request("retry_prepare", {"material_id": group.group_id}, command_id="retry-failed")
+        )
+        assert retry.ok
+        assert decode_view(RetryProposal, retry.result).action in {"manual", "resume"}
+
+
+@pytest.mark.parametrize("state", [RequestState.FAILED, RequestState.CANCELLED])
+def test_auto_takes_the_published_episode_but_never_retries_its_failed_run(
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch, state: RequestState
+) -> None:
+    with _running(setup) as owner:
+        group: InspectedSourceGroup = _published_group(setup, owner)
+        started: list[str] = []
+        monkeypatch.setattr(owner, "_start_automatic", lambda chosen, preset: started.append(chosen.group_id))
+        monkeypatch.setattr(
+            owner._ledger,
+            "candidates",
+            lambda workspace, preset, now, recipes=None: tuple(item.group_id for item in workspace.groups),
+        )
+        assert _auto_starts(owner, started, ()) == [group.group_id]
+        request: ProcessingRequest = _failed_request(group, state)
+        assert _auto_starts(owner, started, (request,)) == []
+        assert _material(owner, group.group_id, "status-failed")[0]["attention"] is True
+        assert _auto_starts(owner, started, (request,)) == []
+        assert owner.state.requests == (request,)
+
+
+def test_a_failed_episode_without_its_video_or_after_a_success_has_no_retry_group(setup: _Setup) -> None:
+    with _running(setup) as owner:
+        group: InspectedSourceGroup = _published_group(setup, owner)
+        group_id: str = group.group_id
+        failed: ProcessingRequest = _failed_request(group, RequestState.FAILED)
+        assert owner._on_owner(lambda: owner._save(replace(owner.state, requests=(failed,))))
+        assert _episode_status(owner, "states-on-disk").retry_group == group_id
+        video: Path = next(
+            artifact.path
+            for artifact in group.source.artifacts
+            if artifact.path is not None and artifact.path.suffix == ".mkv"
+        )
+        content: bytes = video.read_bytes()
+        video.unlink()
+        assert any(artifact.path is not None and artifact.path.is_file() for artifact in group.source.artifacts)
+        missing: EpisodeStatus = _episode_status(owner, "states-missing")
+        assert (missing.state, missing.retry_group) == ("processing_failed", None)
+        row, attention = _material(owner, group_id, "status-missing")
+        assert (row["stage"], row.get("attention"), attention) == ("processing", None, 0)
+        video.write_bytes(content)
+        assert _episode_status(owner, "states-restored").retry_group == group_id
+        succeeded: ProcessingRequest = replace(failed, request_id="succeeded", state=RequestState.SUCCEEDED)
+        assert owner._on_owner(lambda: owner._save(replace(owner.state, requests=(failed, succeeded))))
+        done: EpisodeStatus = _episode_status(owner, "states-succeeded")
+        assert (done.state, done.retry_group) == ("ready", None)
 
 
 def test_explicit_resume_preserves_confirmed_content_start_without_starting_twice(setup: _Setup) -> None:

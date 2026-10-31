@@ -83,6 +83,12 @@ class RunJournal:
         if task.is_network or task.is_paid:
             self._save(replace(self._checkpoint, inflight=self._checkpoint.inflight | {task.task_id}))
 
+    def interrupted(self, task: PlanTask) -> None:
+        """Clear the remote-work mark of a task a shutdown interrupted so the next start resumes it."""
+        self._require_writable()
+        if task.task_id in self._checkpoint.inflight:
+            self._save(replace(self._checkpoint, inflight=self._checkpoint.inflight - {task.task_id}))
+
     def products(self, group_id: str) -> tuple[ProducedArtifact, ...]:
         """Return published products retained from this run's completed tasks."""
         identifiers: frozenset[str | None] = frozenset(item.artifact_id for item in self._checkpoint.outputs)

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
+from typing import Final
 
 from PIL import Image
 
@@ -16,11 +18,20 @@ from anishift.services.subtitles import DisplayedLine, SpokenLine
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
 from anishift.services.translation.types import FileTranslation, TranslatedLine
 
+_HOLD_LIMIT_S: Final[float] = 10.0
+
 
 class FakeTranslationService:
-    def __init__(self, *, entered: threading.Event | None = None, release: threading.Event | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        entered: threading.Event | None = None,
+        release: threading.Event | None = None,
+        hold_until_cancelled: bool = False,
+    ) -> None:
         self.entered: threading.Event | None = entered
         self.release: threading.Event | None = release
+        self.hold_until_cancelled: bool = hold_until_cancelled
         self.calls: list[tuple[str, ...]] = []
 
     def translate_file(  # noqa: PLR0913
@@ -39,6 +50,10 @@ class FakeTranslationService:
             self.entered.set()
         if self.release is not None:
             assert self.release.wait(timeout=2.0)
+        deadline: float = time.monotonic() + _HOLD_LIMIT_S
+        while self.hold_until_cancelled and cancel is not None and not cancel.is_set():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
         if cancel is not None and cancel.is_set():
             return FileTranslation(engine_id="fake", error="cancelled")
         translated: tuple[TranslatedLine, ...] = tuple(

@@ -7,7 +7,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+from loguru import logger as loguru_logger
+
+from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.tts import (
     AudioFormat,
     AvailabilityProbeKind,
@@ -21,6 +25,7 @@ from anishift.services.tts import (
     SynthesisProfile,
     SynthesisRequest,
     TtsCancellation,
+    TtsClipValidationError,
     TtsConfig,
     TtsError,
     TtsQuotaError,
@@ -28,6 +33,9 @@ from anishift.services.tts import (
     VoiceInfo,
 )
 from anishift.services.tts.scheduler import TtsScheduler
+
+if TYPE_CHECKING:
+    from loguru import Message
 
 
 def test_cancellation_wakes_many_waiters_from_another_thread() -> None:
@@ -606,6 +614,86 @@ def test_cancel_resolves_delayed_retry_without_advancing_clock(tmp_path: Path) -
     asyncio.run(scenario())
 
 
+def test_cancel_while_a_retry_is_being_scheduled_ends_without_waiting_for_its_delay(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        clock = _Clock()
+        engine = _Engine()
+        engine.fail_once.add("closing")
+        token = TtsCancellation()
+        scheduler = TtsScheduler(locality=engine.capabilities.locality, config=_config(concurrency=1), clock=clock)
+
+        async def on_retry(attempt: int, maximum: int, delay: float, error: TtsError) -> None:
+            del attempt, maximum, delay, error
+            token.cancel()
+            await scheduler.cancel_pending()
+
+        result = await asyncio.wait_for(
+            scheduler.submit(
+                _call(engine, tmp_path, "closing", token),
+                batch_rank=0,
+                request_rank=0,
+                cancel=token,
+                accept_result=_accept,
+                on_retry=on_retry,
+            ),
+            timeout=1.0,
+        )
+
+        assert result.attempts == 1
+        assert result.error is not None
+        assert result.error.context.code is ErrorCode.CANCELLED
+        assert engine.calls["closing"] == 1
+        await scheduler.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_failure_after_cancellation_schedules_no_retry(tmp_path: Path) -> None:
+    token = TtsCancellation()
+
+    class _FailsAfterCancel(_Engine):
+        async def synthesize(
+            self,
+            request: SynthesisRequest,
+            *,
+            cancel: CancellationToken,
+        ) -> EngineClipResult:
+            del cancel
+            self.calls[request.text] += 1
+            token.cancel()
+            raise TtsRateLimitError("limited", retry_after_s=600.0)
+
+    async def scenario() -> None:
+        clock = _Clock()
+        engine = _FailsAfterCancel()
+        scheduler = TtsScheduler(locality=engine.capabilities.locality, config=_config(concurrency=1), clock=clock)
+        retries: list[int] = []
+
+        async def on_retry(attempt: int, maximum: int, delay: float, error: TtsError) -> None:
+            del maximum, delay, error
+            retries.append(attempt)
+
+        result = await asyncio.wait_for(
+            scheduler.submit(
+                _call(engine, tmp_path, "late", token),
+                batch_rank=0,
+                request_rank=0,
+                cancel=token,
+                accept_result=_accept,
+                on_retry=on_retry,
+            ),
+            timeout=1.0,
+        )
+
+        assert result.attempts == 1
+        assert result.error is not None
+        assert result.error.context.code is ErrorCode.CANCELLED
+        assert retries == []
+        await scheduler.close()
+
+    asyncio.run(scenario())
+
+
 def test_older_ready_retry_precedes_lower_rank_retry(tmp_path: Path) -> None:
     class _DifferentDelays(_Engine):
         async def synthesize(
@@ -704,3 +792,41 @@ def test_scheduler_quota_error_opens_circuit_for_later_work(tmp_path: Path) -> N
         await scheduler.close()
 
     asyncio.run(scenario())
+
+
+def test_retry_warning_and_final_error_log_message_and_numeric_details_only(tmp_path: Path) -> None:
+    async def reject(result: EngineClipResult) -> EngineClipResult:
+        del result
+        context = ErrorContext(
+            code=ErrorCode.TTS_CLIP_INVALID,
+            message="ElevenReader line text mismatch",
+            details={"line": 336, "request_id": "Tajny tekst"},
+        )
+        raise TtsClipValidationError(context=context)
+
+    async def scenario() -> None:
+        engine = _Engine()
+        token = TtsCancellation()
+        scheduler = TtsScheduler(locality=EngineLocality.SYSTEM, config=_config(concurrency=1, retries=1))
+        result = await scheduler.submit(
+            _call(engine, tmp_path, "clip", token),
+            batch_rank=0,
+            request_rank=0,
+            cancel=token,
+            accept_result=reject,
+        )
+        assert isinstance(result.error, TtsClipValidationError)
+        await scheduler.close()
+
+    captured: list[Message] = []
+    handler_id: int = loguru_logger.add(captured.append, format="{level} {message} {extra}", level="DEBUG")
+    try:
+        asyncio.run(scenario())
+    finally:
+        loguru_logger.remove(handler_id)
+
+    records: list[str] = [str(message) for message in captured if "TTS_CLIP_INVALID" in str(message)]
+    assert [record.split()[0] for record in records] == ["WARNING", "ERROR"]
+    assert all("ElevenReader line text mismatch" in record for record in records)
+    assert all("'line': 336" in record for record in records)
+    assert not any("Tajny tekst" in record for record in records)

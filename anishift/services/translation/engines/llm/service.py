@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Final
 
 from anishift.errors import ErrorCode, ErrorContext
+from anishift.services.translation._retry import raise_if_cancelled
 from anishift.services.translation.constants import TARGET_LANG
 from anishift.services.translation.engines.llm.config import LlmTranslateConfig
 from anishift.services.translation.engines.llm.constants import RETRY_ERROR_PLACEHOLDER
@@ -27,7 +28,7 @@ from anishift.services.translation.types import BatchedLine
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from anishift.services.translation.protocols import LlmCompleter
+    from anishift.services.translation.protocols import LlmCompleter, TranslationCancellation
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -148,6 +149,7 @@ class LlmTranslateService:
         source_lang: str,
         target_lang: str,
         observer: TranslationObserver | None = None,
+        cancel: TranslationCancellation | None = None,
     ) -> list[BatchedLine]:
         """Translate lines with bounded batches and deterministic recovery."""
         del source_lang
@@ -171,6 +173,7 @@ class LlmTranslateService:
         limit: int = self._config.max_batch_lines or len(texts)
         done: int = 0
         for start in range(0, len(texts), limit):
+            raise_if_cancelled(cancel)
             batch = texts[start : start + limit]
             reporter = _StreamProgress(observer, self.engine_id, done=done, total=len(texts))
             translated.extend(self._translate_batch(batch, reporter))

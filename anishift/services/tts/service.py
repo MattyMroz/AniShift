@@ -320,6 +320,7 @@ class _DocumentAttempt:
         "_recording_format",
         "_repository",
         "_splitter",
+        "_unspoken",
     )
 
     def __init__(  # noqa: PLR0913 - one attempt binds every collaborator of a document
@@ -348,6 +349,7 @@ class _DocumentAttempt:
         self._paths: set[Path] = set()
         self._recording: Path | None = None
         self._receipts: dict[str, ValidatedClipReceipt] = {}
+        self._unspoken: frozenset[str] = frozenset()
 
     @property
     def lines(self) -> tuple[_DocumentLine, ...]:
@@ -364,6 +366,11 @@ class _DocumentAttempt:
         """Return the recording and clip paths reserved by the current attempt."""
         return tuple(self._paths)
 
+    @property
+    def unspoken(self) -> frozenset[str]:
+        """Return the request ids of the accepted recording's lines the engine did not speak."""
+        return self._unspoken
+
     def receipt_for(self, request_id: str) -> ValidatedClipReceipt | None:
         """Return the accepted clip receipt of one document line."""
         return self._receipts.get(request_id)
@@ -374,6 +381,7 @@ class _DocumentAttempt:
         _discard_paths(tuple(self._paths))
         self._paths.clear()
         self._receipts = {}
+        self._unspoken = frozenset()
         recording: Path = self._reserve(self._recording_format)
         self._recording = recording
         request: DocumentSynthesisRequest = DocumentSynthesisRequest(
@@ -389,7 +397,7 @@ class _DocumentAttempt:
         return await self._engine.synthesize_document(request, cancel=self._cancel)
 
     async def accept_result(self, result: EngineDocumentResult) -> EngineDocumentResult:
-        """Split an owned recording and decode-check every clip before success."""
+        """Split an owned recording into the spoken lines and decode-check every clip before success."""
         profile: SynthesisProfile = self._engine.synthesis_profile
         if (
             result.recording != self._recording
@@ -413,24 +421,10 @@ class _DocumentAttempt:
                 destination=self._reserve(self._expectation.format),
             )
             for line, timing in zip(self._lines, result.parts, strict=True)
+            if timing.spoken
         )
-        try:
-            split: SplitResult = await asyncio.to_thread(
-                self._splitter.split_clip,
-                result.recording,
-                spans,
-                self._expectation,
-            )
-        except (OSError, RuntimeError, ValueError) as splitter_error:
-            raise _split_error() from splitter_error
-        if split.written != tuple(span.request_id for span in spans):
-            raise _split_error()
-        if split.uncertain_boundaries:
-            logger.warning(
-                "TTS document split {count} boundaries without silence",
-                count=split.uncertain_boundaries,
-                lines=len(spans),
-            )
+        if spans:
+            await self._split(result.recording, spans)
         receipts: dict[str, ValidatedClipReceipt] = {}
         for span in spans:
             receipt: ValidatedClipReceipt | None = await asyncio.to_thread(
@@ -442,7 +436,22 @@ class _DocumentAttempt:
                 raise _invalid_audio_error()
             receipts[span.request_id] = receipt
         self._receipts = receipts
+        self._unspoken = frozenset(timing.request_id for timing in result.parts if not timing.spoken)
         return result
+
+    async def _split(self, recording: Path, spans: tuple[ClipSpan, ...]) -> None:
+        try:
+            split: SplitResult = await asyncio.to_thread(self._splitter.split_clip, recording, spans, self._expectation)
+        except (OSError, RuntimeError, ValueError) as splitter_error:
+            raise _split_error() from splitter_error
+        if split.written != tuple(span.request_id for span in spans):
+            raise _split_error()
+        if split.uncertain_boundaries:
+            logger.warning(
+                "TTS document split {count} boundaries without silence",
+                count=split.uncertain_boundaries,
+                lines=len(spans),
+            )
 
     def _reserve(self, clip_format: AudioFormat) -> Path:
         path: Path = self._repository.temporary_clip_path(clip_format=clip_format)
@@ -619,17 +628,23 @@ class TtsService:
         loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         with self._lifecycle_lock:
-            self._loop = loop
-            self._loop_ready.set()
             should_run: bool = not self._closed
         if should_run:
+            loop.call_soon(self._publish_loop, loop)
             loop.run_forever()
+        else:
+            self._loop_ready.set()
         pending: set[asyncio.Task[object]] = asyncio.all_tasks(loop)
         for task in pending:
             task.cancel()
         if pending:
             loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         loop.close()
+
+    def _publish_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        with self._lifecycle_lock:
+            self._loop = loop
+            self._loop_ready.set()
 
     async def _ensure_runtime(self) -> tuple[TtsEngine, TtsScheduler]:
         if self._engine is None:
@@ -1192,6 +1207,8 @@ class TtsService:
         if outcome.error is not None or result is None:
             error: TtsError = outcome.error or _incomplete_error()
             return _failed_execution(line.request, error, calls, retries, request_time_ms)
+        if line.request.request_id in attempt.unspoken:
+            return _failed_execution(line.request, _unspoken_line_error(), calls, retries, request_time_ms)
         receipt: ValidatedClipReceipt | None = attempt.receipt_for(line.request.request_id)
         if receipt is None:
             return _failed_execution(line.request, _invalid_audio_error(), calls, retries, request_time_ms)
@@ -1570,6 +1587,15 @@ def _document_line_too_long_error() -> TtsInputError:
         code=ErrorCode.TTS_INPUT_INVALID,
         message="TTS line does not fit one document part",
         suggestion="Shorten the line below the engine document limit.",
+    )
+    return TtsInputError(context=context)
+
+
+def _unspoken_line_error() -> TtsInputError:
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.TTS_INPUT_INVALID,
+        message="TTS engine did not speak the line in its document",
+        suggestion="Rewrite the line as readable words; the rest of the document was kept.",
     )
     return TtsInputError(context=context)
 

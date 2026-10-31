@@ -406,6 +406,7 @@ class _LlmTranslationEngine:
         source_lang: str,
         target_lang: str,
         observer: TranslationObserver | None = None,
+        cancel: TranslationCancellation | None = None,
     ) -> list[BatchedLine]:
         service = LlmService(
             self._config,
@@ -417,7 +418,9 @@ class _LlmTranslationEngine:
         )
         self._service = service
         self._engine = engine
-        return engine.translate_batch(texts, source_lang=source_lang, target_lang=target_lang, observer=observer)
+        return engine.translate_batch(
+            texts, source_lang=source_lang, target_lang=target_lang, observer=observer, cancel=cancel
+        )
 
     def close(self) -> None:
         if self._service is not None:

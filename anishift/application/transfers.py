@@ -19,7 +19,7 @@ from anishift.application.events import failure_code, sanitize_event_message
 from anishift.application.products import PRODUCT_SUFFIXES
 from anishift.application.release_quality import release_traits
 from anishift.application.subscription_choice import is_taken
-from anishift.errors import AniShiftError
+from anishift.errors import AniShiftError, ErrorCode
 from anishift.platform.directory_watch import source_is_available
 from anishift.utils.logger import get_logger
 
@@ -210,7 +210,7 @@ class TransferInspector:
             except (AniShiftError, OSError) as problem:
                 natures.add((type(problem).__name__, failure_code(problem)))
                 reason = reason or sanitize_event_message(str(problem))
-                result = self._refused_inspection(acquisition, problem)
+                result = acquisition if _client_unreachable(problem) else self._refused_inspection(acquisition, problem)
             else:
                 self._refused.pop(acquisition.info_hash.casefold(), None)
             results.append(result)
@@ -553,6 +553,10 @@ def _ready_file(directory: Path, file: TorrentFile) -> bool:
         return path.stat().st_size == file.size
     except OSError:
         return False
+
+
+def _client_unreachable(problem: AniShiftError | OSError) -> bool:
+    return isinstance(problem, AniShiftError) and problem.context.code is ErrorCode.TORRENT_CLIENT_UNAVAILABLE
 
 
 def _updated(before: AcquisitionConfirmation, after: AcquisitionConfirmation) -> AcquisitionConfirmation:

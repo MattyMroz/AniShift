@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 import stat
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from functools import lru_cache
@@ -77,6 +77,8 @@ LABEL_CACHE_SIZE: Final[int] = 4096
 """Bound the labels kept for Library names read again on every panel frame."""
 SERIES_PART: Final[re.Pattern[str]] = re.compile(r"(?i)\s+(?:part|cour)\s*\d+$")
 """Find the trailing part or cour number of a catalogue title, which numbers a broadcast block, not a series."""
+_UNRECORDED: Final[str] = "unrecorded:"
+"""Prefix keeping set IDs of groups outside every ready record apart from Library set IDs."""
 
 SERIES_YEAR: Final[re.Pattern[str]] = re.compile(r"\s*\((?:19|20)\d{2}\)")
 """Find a parenthesised year of a catalogue title, which tells remakes apart, not seasons."""
@@ -279,6 +281,22 @@ def project_library(state: WatchState, root: Path, groups: Sequence[SourceGroup]
         and (item := _legacy_set(group, state, root)) is not None
     )
     return tuple(os_sorted(result, key=lambda item: (item.name, item.set_id)))
+
+
+def unrecorded_set_id(group_id: str) -> str:
+    """Return the set ID naming *group_id* outside every ready record, never equal to a Library set ID."""
+    return f"{_UNRECORDED}{group_id}"
+
+
+def unrecorded_group(set_id: str | None) -> str | None:
+    """Return the group an unrecorded set ID names, or None for any other ID."""
+    return set_id.removeprefix(_UNRECORDED) if set_id is not None and set_id.startswith(_UNRECORDED) else None
+
+
+def unrecorded_set(group_id: str, name: str, paths: Iterable[str], root: Path) -> LibrarySet:
+    """Project workspace files outside every ready record as one set that only deletion and its undo address."""
+    files: tuple[LibraryFile, ...] = tuple(_library_file(root, path, "source") for path in sorted(set(paths)))
+    return LibrarySet(unrecorded_set_id(group_id), group_id, name, None, None, files, False)
 
 
 def _recorded_set(record: ReadyGroup, state: WatchState, root: Path, group: SourceGroup | None) -> LibrarySet:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,6 +37,7 @@ from anishift.services.tts import (
     SynthesisProfile,
     SynthesisRequest,
     SynthesisStatus,
+    TtsClipValidationError,
     TtsConfig,
     TtsError,
     TtsInputError,
@@ -105,8 +108,10 @@ class _DocumentEngine:
         drop_timing_once: bool = False,
         wrong_voice_once: bool = False,
         separator: str = "",
+        silent: tuple[str, ...] = (),
     ) -> None:
         self.separator: str = separator
+        self.silent: tuple[str, ...] = silent
         self.documents: list[tuple[str, ...]] = []
         self.document_ids: list[str] = []
         self.recordings: list[Path] = []
@@ -162,7 +167,11 @@ class _DocumentEngine:
             await request.progress(total // 2, total)
             await request.progress(total, total)
         timings: tuple[PartTiming, ...] = tuple(
-            PartTiming(request_id=part.request_id, start_ms=index * 1000.0, end_ms=index * 1000.0 + 500.0)
+            PartTiming(
+                request_id=part.request_id,
+                start_ms=index * 1000.0,
+                end_ms=index * 1000.0 + (0.0 if part.text in self.silent else 500.0),
+            )
             for index, part in enumerate(request.parts)
         )
         if self.drop_timing_once:
@@ -405,6 +414,32 @@ def test_document_batch_part_refused_by_engine_fails_only_that_line(tmp_path: Pa
     assert result.status is SpeechBatchStatus.PARTIAL
 
 
+def test_document_batch_part_the_server_did_not_speak_fails_only_that_line(tmp_path: Path) -> None:
+    engine = _DocumentEngine(silent=("j g",))
+    splitter = _Splitter()
+
+    (result,) = _run(tmp_path, engine, splitter, _batch("Raz dwa.", "j g", "Pięć."))
+
+    assert _statuses(result) == [SynthesisStatus.SYNTHESIZED, SynthesisStatus.FAILED, SynthesisStatus.SYNTHESIZED]
+    assert result.requests[1].error_code == "TTS_INPUT_INVALID"
+    assert engine.documents == [("line-0", "line-1", "line-2")]
+    assert [[span.request_id for span in spans] for spans in splitter.calls] == [["line-0", "line-2"]]
+    assert result.stats.provider_calls == 1
+    assert result.status is SpeechBatchStatus.PARTIAL
+
+
+def test_document_batch_without_any_spoken_part_fails_its_lines_without_split(tmp_path: Path) -> None:
+    engine = _DocumentEngine(silent=("j g",))
+    splitter = _Splitter()
+
+    (result,) = _run(tmp_path, engine, splitter, _batch("j g"))
+
+    assert _statuses(result) == [SynthesisStatus.FAILED]
+    assert result.requests[0].error_code == "TTS_INPUT_INVALID"
+    assert engine.documents == [("line-0",)]
+    assert splitter.calls == []
+
+
 def test_document_batch_splitter_failure_retries_document(tmp_path: Path) -> None:
     engine = _DocumentEngine()
     splitter = _Splitter(failures=1)
@@ -535,6 +570,36 @@ def test_document_batch_cancel_before_commit_keeps_no_clip(tmp_path: Path) -> No
     assert _statuses(result) == [SynthesisStatus.CANCELLED, SynthesisStatus.CANCELLED]
     assert list((tmp_path / "episode").rglob("clip-*")) == []
     assert list((tmp_path / "episode").rglob("*.tmp")) == []
+
+
+def test_document_batch_cancel_during_retry_delay_ends_at_once_without_another_attempt(tmp_path: Path) -> None:
+    engine = _DocumentEngine(failures=(TtsClipValidationError("cut"),))
+    progress = _Progress()
+    results: list[SpeechBatchResult] = []
+    with TtsService(
+        replace(_config(), retry_backoff_seconds=(600.0,)),
+        resume_root=tmp_path,
+        validator=_Validator(),
+        splitter=_Splitter(),
+        engine_factory=lambda config: engine,
+    ) as service:
+        worker = threading.Thread(
+            target=lambda: results.append(service.synthesize(_batch("Raz dwa."), callbacks=progress))
+        )
+        worker.start()
+        deadline: float = time.monotonic() + 5.0
+        while not progress.retries and time.monotonic() < deadline:
+            time.sleep(0.01)
+        cancelled_at: float = time.monotonic()
+        service.cancel()
+        worker.join(timeout=5.0)
+        ended_after: float = time.monotonic() - cancelled_at
+
+    assert progress.retries
+    assert not worker.is_alive()
+    assert ended_after < 2.0
+    assert results[0].status is SpeechBatchStatus.CANCELLED
+    assert engine.documents == [("line-0",)]
 
 
 def test_document_batch_line_engine_with_splitter_uses_line_path(tmp_path: Path) -> None:

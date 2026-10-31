@@ -23,7 +23,12 @@ from anishift.text.markers import strip_span_markers
 
 if TYPE_CHECKING:
     from anishift.services.translation.config import TranslationConfig
-    from anishift.services.translation.protocols import TranslationInputPolicy, TranslationObserver, TranslationStream
+    from anishift.services.translation.protocols import (
+        TranslationCancellation,
+        TranslationInputPolicy,
+        TranslationObserver,
+        TranslationStream,
+    )
 
 
 def _map_sdk_error(exc: Exception) -> Exception:
@@ -115,6 +120,7 @@ class DeeplService:
         source_lang: str,
         target_lang: str,
         observer: TranslationObserver | None = None,
+        cancel: TranslationCancellation | None = None,
     ) -> list[BatchedLine]:
         """Translate one batch via the SDK; retry transient rate-limits."""
         if not texts:
@@ -137,6 +143,7 @@ class DeeplService:
                         if observer is None
                         else lambda attempt, maximum: observer.retry(self.engine_id, attempt, maximum)
                     ),
+                    cancel=cancel,
                 )
             )
         return out

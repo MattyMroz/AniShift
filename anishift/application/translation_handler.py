@@ -214,7 +214,6 @@ class TranslationTaskHandler:
         if written is None:
             msg = "Translated subtitle output is empty"
             raise ExecutionError(msg)
-        cancel.raise_if_cancelled()
         progress.emit(WorkerNotification(WorkerNotificationKind.PROGRESS, task.task_id, 100))
         metadata: dict[str, str | int | bool] = {
             "engine_id": result.engine_id,
@@ -246,7 +245,6 @@ class TranslationTaskHandler:
             observer=observer,
         )
         _require_complete_translation(result, spoken, ())
-        cancel.raise_if_cancelled()
         destination: Path = task_staging_path(self._run_root, task, output, ".txt")
         translated: tuple[str, ...] = tuple(strip_span_markers(line.text) for line in result.spoken)
         return result, write_text_document(document, translated, destination)
@@ -272,7 +270,6 @@ class TranslationTaskHandler:
             observer=observer,
         )
         _require_complete_translation(result, spoken, ())
-        cancel.raise_if_cancelled()
         destination: Path = task_staging_path(self._run_root, task, output, ".srt")
         plain: tuple[TranslatedLine, ...] = tuple(
             replace(line, text=strip_span_markers(line.text)) for line in result.spoken
@@ -302,7 +299,6 @@ class TranslationTaskHandler:
         if not result.is_success:
             return result, None
         _require_complete_translation(result, spoken_lines(split), displayed_lines(split))
-        cancel.raise_if_cancelled()
         destination: Path = task_staging_path(self._run_root, task, output, f".{output_kind}")
         written: Path | None = write_translated(
             replace(split, kind=output_kind),

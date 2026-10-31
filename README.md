@@ -100,7 +100,9 @@ uv run anishift subs remove ID   # remove one subscription
 ### Processing and the library
 
 **Przetwarzanie** shows downloads and processing: **W** pauses or resumes a transfer,
-**Del** cancels it after confirmation and **H** opens the history.
+**X** cancels it after confirmation and **H** opens the history. On an episode whose processing
+failed, **P** retries it at once and **Del** moves its files to the Recycle Bin as in Biblioteka;
+**Ctrl+Z** restores them.
 
 `workspace/` may hold one subfolder per series. Discovery reads the root and every subfolder
 except the managed `tmp/` directory and hidden directories. With the automation on,

@@ -815,6 +815,15 @@ def test_part_spans_adjacent_break_tags_form_one_boundary() -> None:
     assert _spans(chunks, "Ab.", "Cd.") == [(0.0, 30.0), (440.0, 470.0)]
 
 
+def test_part_spans_part_the_server_did_not_speak_returns_empty_span() -> None:
+    silent = AlignmentChunk(
+        offset_ms=250.0, chars=tuple("j g"), starts_ms=(0.0, 0.0, 0.0), durations_ms=(0.0, 0.0, 0.0)
+    )
+    chunks = (_chunk('Ab. <break time="0.6s"/> '), silent, _chunk(' <break time="0.6s"/> Cd.', offset_ms=300.0))
+
+    assert _spans(chunks, "Ab.", "j g", "Cd.") == [(0.0, 30.0), (250.0, 250.0), (520.0, 550.0)]
+
+
 def test_part_spans_ellipsis_ending_a_part_stays_in_its_text() -> None:
     chunks = (_chunk('Zobacz filmik… <break time="0.6s"/> … <break time="0.6s"/> Cd.'),)
 
@@ -839,6 +848,18 @@ def test_part_spans_unclosed_tag_at_end_is_dropped() -> None:
     chunks = (_chunk('Ab. <break time="2'),)
 
     assert _spans(chunks, "Ab.") == [(0.0, 30.0)]
+
+
+def test_part_spans_part_ending_before_it_starts_raises_clip_error() -> None:
+    reversed_chunk = AlignmentChunk(
+        offset_ms=0.0, chars=tuple("Ab."), starts_ms=(100.0, 50.0, 0.0), durations_ms=(10.0, 10.0, 10.0)
+    )
+
+    with pytest.raises(TtsClipValidationError, match="timing is reversed") as error:
+        part_spans((reversed_chunk,), _parts("Ab."))
+
+    assert error.value.context.code.value == "TTS_CLIP_INVALID"
+    assert error.value.context.details == {"line": 0}
 
 
 def test_part_spans_surrounding_whitespace_is_trimmed() -> None:

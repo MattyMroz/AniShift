@@ -289,43 +289,14 @@ class TtsScheduler:
 
     async def _handle_error(self, work: _WorkItem[Any], error: TtsError) -> None:
         if isinstance(error, TransientError) and work.attempts <= self._max_retries:
-            delay: float = self._retry_delay(work.attempts, error)
-            logger.bind(
-                batch_rank=work.batch_rank,
-                request_rank=work.request_rank,
-                error_code=error.context.code.value,
-                retry_number=work.attempts,
-                max_retries=self._max_retries,
-                delay_s=delay,
-            ).warning(
-                "TTS retry {retry}/{maximum} scheduled in {delay:.3f}s",
-                retry=work.attempts,
-                maximum=self._max_retries,
-                delay=delay,
-            )
-            if work.on_retry is not None:
-                await work.on_retry(
-                    work.attempts,
-                    self._max_retries,
-                    delay,
-                    error,
-                )
-            async with self._condition:
-                sequence: int = next(self._sequence)
-                heapq.heappush(
-                    self._delayed,
-                    _DelayedItem(
-                        ready_at=self._clock() + delay,
-                        sequence=sequence,
-                        work=work,
-                    ),
-                )
-                self._condition.notify_all()
+            await self._schedule_retry(work, error)
             return
         logger.bind(
             batch_rank=work.batch_rank,
             request_rank=work.request_rank,
             error_code=error.context.code.value,
+            error_message=error.context.message,
+            error_details=_numeric_details(error),
             attempts=work.attempts,
         ).error(
             "TTS request failed after {attempts} attempts",
@@ -338,6 +309,51 @@ class TtsScheduler:
                     self._fail_queued(error)
                 self._condition.notify_all()
         self._finish(work, error=error)
+
+    async def _schedule_retry(self, work: _WorkItem[Any], error: TtsError) -> None:
+        if not self._retry_allowed(work):
+            self._finish(work, error=_cancelled_error("TTS run was cancelled"))
+            return
+        delay: float = self._retry_delay(work.attempts, error)
+        logger.bind(
+            batch_rank=work.batch_rank,
+            request_rank=work.request_rank,
+            error_code=error.context.code.value,
+            error_message=error.context.message,
+            error_details=_numeric_details(error),
+            retry_number=work.attempts,
+            max_retries=self._max_retries,
+            delay_s=delay,
+        ).warning(
+            "TTS retry {retry}/{maximum} scheduled in {delay:.3f}s",
+            retry=work.attempts,
+            maximum=self._max_retries,
+            delay=delay,
+        )
+        if work.on_retry is not None:
+            await work.on_retry(
+                work.attempts,
+                self._max_retries,
+                delay,
+                error,
+            )
+        async with self._condition:
+            if not self._retry_allowed(work):
+                self._finish(work, error=_cancelled_error("TTS run was cancelled"))
+                return
+            sequence: int = next(self._sequence)
+            heapq.heappush(
+                self._delayed,
+                _DelayedItem(
+                    ready_at=self._clock() + delay,
+                    sequence=sequence,
+                    work=work,
+                ),
+            )
+            self._condition.notify_all()
+
+    def _retry_allowed(self, work: _WorkItem[Any]) -> bool:
+        return not self._stopping and work.cancel.can_commit(work.generation)
 
     def _push_ready(
         self,
@@ -417,6 +433,10 @@ class TtsScheduler:
             )
         )
         self._admission.release()
+
+
+def _numeric_details(error: TtsError) -> dict[str, int | float]:
+    return {key: value for key, value in error.context.details.items() if isinstance(value, int | float)}
 
 
 def _opens_circuit(error: TtsError) -> bool:

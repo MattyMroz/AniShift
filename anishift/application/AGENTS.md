@@ -25,8 +25,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - Polecenie mutujące zapisuje stan RAZEM z `CommandReceipt` PRZED pozytywną odpowiedzią; nieudany zapis to `INTERNAL`
   bez skutku, powtórzony `command_id` zwraca zapisany wynik. `start` zapisuje `ProcessingRequest` z receipt przed
   `submit_plan`; późniejsza awaria daje `FAILED`, a ponowienie ten sam `run_id`.
-- `RunJournal` zapisuje pozostały graf i potwierdzenia publikacji; niepewne operacje zdalne po przerwaniu wymagają
-  jawnego wznowienia, bez automatycznego powtarzania opłat.
+- `RunJournal` zapisuje pozostały graf i potwierdzenia publikacji; niepewne operacje zdalne po przerwaniu (awaria,
+  zabicie procesu) wymagają jawnego wznowienia, bez automatycznego powtarzania opłat. Wyjątek: task przerwany przez
+  zamknięcie rezydenta kończy się po anulowaniu, więc nie jest niepewny i wznawia się sam (przerwane wywołanie płatne
+  idzie od nowa). Gdy zapis `interrupted` zawiedzie, znak `inflight` zostaje i obowiązuje jawne wznowienie.
 - Rezerwacje należą do sesji klientów jednej instancji: owner porzuca je przy wczytaniu stanu (także gdy zapis
   sprzątania zawiedzie) i po rozłączeniu panelu, które unieważnia też podglądy.
 - Zdarzenia plików scalają się w jednym powiadomieniu; ponad 4096 ścieżek zastępuje pełne uzgodnienie. Inspekcja w
@@ -35,8 +37,13 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - Sygnał zakończenia omija zapis receipt i zawsze zaczyna drain, nawet gdy zapis stanu zawodzi. Pętla kończy się
   dopiero przy `_drained` (brak aktywnych runów, nierozliczonych zleceń, dopuszczeń pobrań i wyników z puli I/O);
   samo `active_run_ids()` nie wystarcza, bo run znika z rejestru fasady przed zapisem stanu końcowego.
-- `shutdown` zamyka dopuszczanie tasków; aktywne kończą się bez anulowania, reszta grafu dostaje `PAUSED`, staging
-  zatrzymanych runów jest chroniony przed cleanup. `scheduler.py`, `service.py`, `sessions.py`
+- `shutdown` zamyka dopuszczanie tasków i przerywa aktywne: `drain` anuluje osobny token każdego wysłanego taska
+  (rodzicem jest token runu), handler kończy się jak przy anulowaniu, task dostaje `CANCELLED` „Interrupted by
+  shutdown”, a cały run `paused` → `RequestState.PAUSED`, wznawiany sam przy następnym starcie. Przerwanie czyści znak
+  `inflight` w `RunJournal` (`interrupted`), więc recovery nie uznaje go za niepewną operację zdalną. Task, który mimo
+  przerwania zwrócił wynik, jest zatwierdzany normalnie; gotowy wynik nie przepada. Anulowanie
+  użytkownika (X) anuluje token runu i zostaje `CANCELLED` (blokuje Auto); `pause_runs` niczego nie przerywa. Staging
+  zatrzymanych runów jest chroniony przed cleanup. `scheduler.py`, `recovery.py`, `service.py`, `sessions.py`
 - `ProcessingRequest` zachowuje pełny `RunSettingsSnapshot`, `GroupIntent` i `RebuildRequest`; listy z JSON wracają do
   krotek, pola z segmentem sekretu są odrzucane, stare zlecenia bez `intents` się wczytują. `ACCEPTED` może obejmować
   wykonujące się taski; aktywność dowodzą publiczne zdarzenia postępu, `run_progress` ma też próby terminalne.

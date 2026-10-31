@@ -531,6 +531,20 @@ def test_a_transfer_that_keeps_failing_inspection_stops_with_a_problem_of_its_ow
     assert inspector.inspect((_confirmation(),))[0].problem is None
 
 
+def test_an_unreachable_client_never_gives_a_listed_transfer_a_problem_of_its_own(tmp_path: Path) -> None:
+    acquisition: _Acquisition = _Acquisition(tmp_path)
+    acquisition.raises = _unavailable()
+    inspector: TransferInspector = TransferInspector(acquisition, tmp_path)
+
+    problems: list[str | None] = [inspector.inspect((_confirmation(),))[0].problem for _ in range(5)]
+    acquisition.raises = None
+    recovered: AcquisitionConfirmation = inspector.inspect((_confirmation(),))[0]
+
+    assert problems == [None] * 5
+    assert recovered.problem is None
+    assert recovered.required_files == ("Episode.mkv",)
+
+
 def test_a_re_ordered_hash_starts_its_refusal_count_again(tmp_path: Path) -> None:
     acquisition: _Refusing = _Refusing(tmp_path)
     inspector: TransferInspector = TransferInspector(acquisition, tmp_path)

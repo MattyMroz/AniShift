@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import timeit
+import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from types import SimpleNamespace
+from types import FrameType, SimpleNamespace
 from typing import cast
 
 import pytest
@@ -44,7 +44,7 @@ from anishift.cli.interactive.pointer import (
     painted_cells,
     selected_text,
 )
-from anishift.cli.interactive.progress import RichRunProgress
+from anishift.cli.interactive.progress import RichRunProgress, render_material_progress
 from anishift.cli.interactive.settings import _PRODUCTS as _SETTINGS_PRODUCTS
 from anishift.cli.interactive.settings import SettingsController
 from anishift.cli.interactive.state import StateController
@@ -668,8 +668,21 @@ def test_auto_queue_drag_copies_a_row_and_the_wheel_drops_the_selection(monkeypa
     assert _reversed(application._render_frame(80, 30)) == ""
 
 
-def _best_render(application: interactive_app._InteractiveApplication) -> float:
-    return min(timeit.repeat(lambda: application._render_frame(120, 40), number=1, repeat=7))
+def _render_calls(application: interactive_app._InteractiveApplication) -> int:
+    application._render_frame(120, 40)
+    calls: int = 0
+
+    def count(_frame: FrameType, event: str, _arg: object) -> None:
+        nonlocal calls
+        if event in {"call", "c_call"}:
+            calls += 1
+
+    sys.setprofile(count)
+    try:
+        application._render_frame(120, 40)
+    finally:
+        sys.setprofile(None)
+    return calls
 
 
 def test_inert_interface_keeps_a_thousand_row_panel_render_within_a_fifth_of_its_cost(
@@ -683,11 +696,11 @@ def test_inert_interface_keeps_a_thousand_row_panel_render_within_a_fifth_of_its
     try:
         application._render_frame(120, 40)
         _drag(application, Point(0, 0), Point(119, 38))
-        marked: float = _best_render(application)
+        marked: int = _render_calls(application)
         selected: str = _reversed(application._render_frame(120, 40))
         for module in (state_module, anime_view_module, menu_module, interactive_app):
             monkeypatch.setattr(module, "mark_inert", lambda content: content)
-        unmarked: float = _best_render(application)
+        unmarked: int = _render_calls(application)
     finally:
         controller.close()
         controller._thread.join(5)
@@ -984,6 +997,22 @@ def test_a_selection_inverts_text_in_its_own_color_and_paints_gaps_between_colum
     assert all(_styles_at(painted, index)[-1] == SELECTION_GAP_STYLE for index in range(6, 9))
     assert all(SELECTION_STYLE not in _styles_at(painted, index) for index in range(6, 9))
     assert _styles_at(painted, 0) == []
+
+
+def test_a_selection_across_a_progress_row_keeps_the_bar_in_its_own_colors() -> None:
+    selection: FrameSelection = FrameSelection(lambda _value: True)
+    line: Text = render_material_progress("Alpha.mkv", "Pobieranie", 0.5, 80)
+    selection.paint(line.copy(), ())
+    for kind in (MouseEventType.MOUSE_DOWN, MouseEventType.MOUSE_MOVE, MouseEventType.MOUSE_UP):
+        selection.mouse(_event(kind, Point(0 if kind is MouseEventType.MOUSE_DOWN else line.cell_len, 0)))
+
+    painted: Text = selection.paint(line.copy(), ())
+
+    bar: list[int] = [index for index, char in enumerate(line.plain) if char in "█░"]
+    assert {line.plain[index] for index in bar} == {"█", "░"}
+    assert [_styles_at(painted, index) for index in bar] == [_styles_at(line, index) for index in bar]
+    assert SELECTION_STYLE in _styles_at(painted, 0)
+    assert SELECTION_STYLE in _styles_at(painted, line.plain.index("%"))
 
 
 def test_an_anime_table_selection_paints_the_gaps_between_its_columns_flat() -> None:
