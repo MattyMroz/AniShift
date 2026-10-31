@@ -850,6 +850,18 @@ def test_part_spans_unclosed_tag_at_end_is_dropped() -> None:
     assert _spans(chunks, "Ab.") == [(0.0, 30.0)]
 
 
+def test_part_spans_part_ending_before_it_starts_raises_clip_error() -> None:
+    reversed_chunk = AlignmentChunk(
+        offset_ms=0.0, chars=tuple("Ab."), starts_ms=(100.0, 50.0, 0.0), durations_ms=(10.0, 10.0, 10.0)
+    )
+
+    with pytest.raises(TtsClipValidationError, match="timing is reversed") as error:
+        part_spans((reversed_chunk,), _parts("Ab."))
+
+    assert error.value.context.code.value == "TTS_CLIP_INVALID"
+    assert error.value.context.details == {"line": 0}
+
+
 def test_part_spans_surrounding_whitespace_is_trimmed() -> None:
     chunks = (_chunk("  Ab  "),)
 
