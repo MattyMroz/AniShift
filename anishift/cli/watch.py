@@ -23,7 +23,7 @@ from anishift.paths import relocation_journal_dir, watch_dir
 from anishift.platform.child_processes import contain_children, independent_child_flags
 from anishift.platform.directory_watch import DirectoryChange, DirectoryWatch
 from anishift.platform.process_lock import ProcessLock
-from anishift.platform.recycle import recycle_file, restore_file
+from anishift.platform.recycle import recycle_session, restore_session
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -338,8 +338,8 @@ def run_resident(  # noqa: PLR0913 - every resident timing seam stays an explici
             open_result=lambda path: open_path(path, show_folder=True),
             ready_store=ReadyStore(relocation_journal_dir(state_dir), service.workspace_root),
             scan_interval_s=scan_interval_s,
-            recycler=recycle_file,
-            restorer=restore_file,
+            recycler=recycle_session,
+            restorer=restore_session,
             subscription_shadow=service.current_settings().subscription_shadow,
             media_probe=service.media_probe,
         )

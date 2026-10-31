@@ -1,25 +1,36 @@
 from __future__ import annotations
 
 import ctypes
+import io
 import json
 import os
 import subprocess
 import sys
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
-from typing import TextIO, cast
+from typing import cast
 
 import pytest
 
 import anishift.platform.recycle as recycle_module
 import anishift.platform.recycle_worker as worker_module
-from anishift.platform.recycle import RecycleResult, recycle_file
+from anishift.platform.recycle import RecycleResult, RestoreRequest, recycle_session, restore_session
 
 
-@pytest.mark.parametrize("output", ["{}", "broken", '{"outcome":"recycled","reason":"ok","receipt":null}'])
-def test_recycle_requires_complete_native_evidence(output: str) -> None:
-    assert recycle_module._decode_result(output).outcome == "uncertain"
+@pytest.mark.parametrize(
+    "output",
+    [
+        "{}",
+        "broken",
+        '{"outcome":"recycled","reason":"ok","receipt":null,"path":"01.mkv"}',
+        '{"outcome":"refused","reason":"ok","receipt":null,"path":"02.mkv"}',
+        '{"outcome":"refused","reason":"ok","receipt":null}',
+    ],
+)
+def test_recycle_requires_complete_native_evidence_for_the_requested_file(output: str) -> None:
+    assert recycle_module._decode_result(output, "01.mkv").outcome == "uncertain"
 
 
 def test_recycle_flags_never_auto_confirm_permanent_destruction() -> None:
@@ -29,52 +40,152 @@ def test_recycle_flags_never_auto_confirm_permanent_destruction() -> None:
     assert worker_module._RECYCLE_FLAGS & 0x100000
 
 
-@pytest.mark.parametrize("mode", ["success", "timeout", "crash"])
-def test_recycle_bounds_the_actual_interpreter_process_and_treats_timeout_as_uncertain(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
-) -> None:
-    calls: list[str] = []
-    captured: dict[str, object] = {}
+_FAKE_HELPER: str = (
+    "import json,pathlib,sys,time\n"
+    "mode,log=sys.argv[1],pathlib.Path(sys.argv[2])\n"
+    "for line in sys.stdin:\n"
+    "    with log.open('a',encoding='utf-8') as handle: handle.write(line)\n"
+    "    if mode=='crash': sys.exit(3)\n"
+    "    if mode=='silent': time.sleep(30)\n"
+    "    payload=json.loads(line)\n"
+    "    name=pathlib.Path(str(payload.get('path'))).name\n"
+    "    answer=({'outcome':'refused','reason':'recycle_refused','receipt':None} if 'refuse' in name else\n"
+    "        {'outcome':'ready','reason':'restore_ready_bin','receipt':None} if payload.get('check_only') else\n"
+    "        {'outcome':'restored','reason':'restore_completed','receipt':None} if 'operation' in payload else\n"
+    "        {'outcome':'recycled','reason':'recycle_completed','receipt':'item-'+name})\n"
+    "    echo=payload.get('path') if mode!='foreign' else 'foreign.mkv'\n"
+    "    print(json.dumps({**answer,'path':echo}),flush=True)\n"
+)
 
-    class Process:
-        returncode: int = 1 if mode == "crash" else 0
-        stdin: TextIO | None = None
-        stdout: TextIO | None = None
-        stderr: TextIO | None = None
 
-        def __enter__(self) -> Process:
-            return self
+def _fake_helper(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
+) -> tuple[list[list[str]], list[dict[str, object]], Path]:
+    commands: list[list[str]] = []
+    options: list[dict[str, object]] = []
+    log: Path = tmp_path / "requests.jsonl"
+    original_popen: type[subprocess.Popen[str]] = subprocess.Popen
 
-        def __exit__(self, *args: object) -> None:
-            return None
-
-        def communicate(self, value: str | None = None, *, timeout: float | None = None) -> tuple[str, None]:
-            calls.append("communicate")
-            if value is not None:
-                captured["payload"] = json.loads(value)
-            if mode == "timeout" and timeout is not None:
-                raise subprocess.TimeoutExpired("owned-helper", timeout)
-            return json.dumps({"outcome": "recycled", "reason": "recycle_completed", "receipt": "exact-item"}), None
-
-        def kill(self) -> None:
-            calls.append("kill")
-
-        def wait(self, *, timeout: float) -> int:
-            return self.returncode
-
-    def popen(command: list[str], **kwargs: object) -> Process:
-        captured.update(command=command, **kwargs)
-        return Process()
+    def popen(command: list[str], **kwargs: object) -> subprocess.Popen[str]:
+        commands.append(command)
+        options.append(kwargs)
+        return original_popen(
+            [str(getattr(sys, "_base_executable", sys.executable)), "-c", _FAKE_HELPER, mode, str(log)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+        )
 
     monkeypatch.setattr(recycle_module, "is_windows", lambda: True)
-    monkeypatch.setattr(sys, "_base_executable", "actual-python.exe", raising=False)
     monkeypatch.setattr(subprocess, "Popen", popen)
-    result: RecycleResult = recycle_file(tmp_path / "synthetic.txt", (1, 2, 3, 4))
-    assert captured["command"] == ["actual-python.exe", "-m", "anishift.platform.recycle_worker"]
-    assert cast("dict[str, object]", captured["payload"])["parent_pid"] == os.getpid()
-    assert cast("dict[str, str]", captured["env"])["__PYVENV_LAUNCHER__"] == sys.executable
-    assert result.outcome == ("recycled" if mode == "success" else "uncertain")
-    assert calls == (["communicate", "kill", "communicate"] if mode == "timeout" else ["communicate"])
+    return commands, options, log
+
+
+def _logged(log: Path) -> list[dict[str, object]]:
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+
+def test_recycle_session_reports_each_file_of_a_set_from_one_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands, options, log = _fake_helper(monkeypatch, tmp_path, "answer")
+    names: tuple[str, ...] = ("01.mkv", "02-refuse.mkv", "03.mkv")
+    with recycle_session() as recycle:
+        results: list[RecycleResult] = [recycle(tmp_path / name, (1, 2, 3, index)) for index, name in enumerate(names)]
+    assert results == [
+        RecycleResult("recycled", "recycle_completed", "item-01.mkv"),
+        RecycleResult("refused", "recycle_refused"),
+        RecycleResult("recycled", "recycle_completed", "item-03.mkv"),
+    ]
+    assert len(commands) == 1
+    assert commands[0][1:] == ["-m", "anishift.platform.recycle_worker"]
+    assert cast("dict[str, str]", options[0]["env"])["__PYVENV_LAUNCHER__"] == sys.executable
+    sent: list[dict[str, object]] = _logged(log)
+    assert [Path(str(item["path"])).name for item in sent] == list(names)
+    assert [item["identity"] for item in sent] == [[1, 2, 3, index] for index in range(3)]
+    assert {item["parent_pid"] for item in sent} == {os.getpid()}
+
+
+def test_restore_session_checks_and_restores_every_item_through_one_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands, _options, log = _fake_helper(monkeypatch, tmp_path, "answer")
+    requests: list[RestoreRequest] = [
+        RestoreRequest(tmp_path, f"ready/{index}.mkv", f"tmp/.restore-one/{index}", (1, 2, 3, index), f"bin-{index}")
+        for index in range(2)
+    ]
+    with restore_session() as restore:
+        checks: list[RecycleResult] = [restore(request, True) for request in requests]
+        results: list[RecycleResult] = [restore(request, False) for request in requests]
+    assert {item.outcome for item in checks} == {"ready"}
+    assert {item.outcome for item in results} == {"restored"}
+    assert len(commands) == 1
+    assert [(item["operation"], item["path"], item["check_only"]) for item in _logged(log)] == [
+        ("restore", "ready/0.mkv", True),
+        ("restore", "ready/1.mkv", True),
+        ("restore", "ready/0.mkv", False),
+        ("restore", "ready/1.mkv", False),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mode", "reason"),
+    [("silent", "recycle_timeout"), ("crash", "recycle_interrupted"), ("foreign", "recycle_invalid_evidence")],
+)
+def test_recycle_session_lost_or_foreign_answer_is_uncertain_and_never_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, reason: str
+) -> None:
+    commands, _options, log = _fake_helper(monkeypatch, tmp_path, mode)
+    monkeypatch.setattr(recycle_module, "RECYCLE_TIMEOUT_S", 0.5)
+    with recycle_session() as recycle:
+        first: RecycleResult = recycle(tmp_path / "01.mkv", (1, 2, 3, 4))
+        second: RecycleResult = recycle(tmp_path / "02.mkv", (1, 2, 3, 5))
+    assert first == RecycleResult("uncertain", reason)
+    assert second == RecycleResult("refused", "recycle_unavailable")
+    assert len(commands) == 1
+    assert [Path(str(item["path"])).name for item in _logged(log)] == ["01.mkv"]
+
+
+def test_recycle_session_without_a_request_starts_no_helper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    commands, _options, _log = _fake_helper(monkeypatch, tmp_path, "answer")
+    with recycle_session():
+        pass
+    assert commands == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows recycle worker")
+def test_worker_isolates_once_and_answers_every_request_line_in_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    isolations: list[str] = []
+    monkeypatch.setattr(worker_module, "_watch_parent", lambda pid: isolations.append(f"parent-{pid}"))
+    monkeypatch.setattr(worker_module, "_private_desktop", lambda: isolations.append("desktop"))
+    monkeypatch.setattr(worker_module, "_supported_path", lambda path: True)
+    monkeypatch.setattr(worker_module, "_identity", lambda path: (1, 2, 3, 4))
+    monkeypatch.setattr(worker_module, "_locked_source", lambda *args: nullcontext())
+    monkeypatch.setattr(
+        worker_module,
+        "_native_recycle",
+        lambda path, identity: RecycleResult("recycled", "recycle_completed", f"item-{path.name}"),
+    )
+    lines: str = "".join(
+        json.dumps({"path": str(tmp_path / name), "identity": [1, 2, 3, 4], "parent_pid": 7}) + "\n"
+        for name in ("01.mkv", "02.mkv", "03.mkv")
+    )
+    monkeypatch.setattr(sys, "stdin", io.StringIO(lines))
+    worker_module._isolate.cache_clear()
+    try:
+        worker_module.main()
+    finally:
+        worker_module._isolate.cache_clear()
+    answers: list[dict[str, object]] = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [item["receipt"] for item in answers] == ["item-01.mkv", "item-02.mkv", "item-03.mkv"]
+    assert [item["path"] for item in answers] == [str(tmp_path / name) for name in ("01.mkv", "02.mkv", "03.mkv")]
+    assert isolations == ["parent-7", "desktop"]
 
 
 def test_helper_cleanup_returns_with_an_inherited_pipe_open_without_killing_its_holder(
@@ -130,10 +241,12 @@ def test_helper_cleanup_returns_with_an_inherited_pipe_open_without_killing_its_
     monkeypatch.setattr(recycle_module, "RECYCLE_TIMEOUT_S", 0.1)
     monkeypatch.setattr(recycle_module, "RECYCLE_CLEANUP_TIMEOUT_S", 0.1)
     monkeypatch.setattr(subprocess, "Popen", popen)
-    call: threading.Thread = threading.Thread(
-        target=lambda: results.append(recycle_file(tmp_path / "synthetic.txt", (1, 2, 3, 4))),
-        daemon=True,
-    )
+
+    def call_once() -> None:
+        with recycle_session() as recycle:
+            results.append(recycle(tmp_path / "synthetic.txt", (1, 2, 3, 4)))
+
+    call: threading.Thread = threading.Thread(target=call_once, daemon=True)
     call.start()
     try:
         assert entered.wait(6)

@@ -13,7 +13,14 @@ from natsort import os_sort_keygen
 from anishift.application import LibraryFile, LibraryLabel, LibrarySet, library_label
 from anishift.cli.interactive.actions import PANEL_ACTIONS, Action, ScreenActions
 from anishift.cli.interactive.anime_state import AnimeRow
-from anishift.cli.interactive.state_texts import LIBRARY_PROBLEMS, deleted_sets, deleting_sets, rows, safe_text
+from anishift.cli.interactive.state_texts import (
+    LIBRARY_PROBLEMS,
+    RESTORING,
+    deleted_sets,
+    deleting_sets,
+    rows,
+    safe_text,
+)
 
 __all__ = [
     "EMPTY_LIBRARY",
@@ -51,17 +58,20 @@ _FILE_ROLES: Final[Mapping[str, str]] = MappingProxyType(
 """Roles shown beside files without implying ownership of an external manual reference."""
 
 
-def library_rows(snapshot: Mapping[str, object], hidden: Collection[str] = ()) -> list[Mapping[str, object]]:
-    """Return the sets and problem sets neither hidden nor being deleted, naturally sorted by title and episode."""
+def library_rows(
+    snapshot: Mapping[str, object],
+    hidden: Collection[str] = (),
+    restoring: Collection[Mapping[str, object]] = (),
+) -> list[Mapping[str, object]]:
+    """Return listed, problem and restoring sets neither hidden nor being deleted, sorted by title and episode."""
     deleting: set[str] = deleting_sets(snapshot, hidden)
     deleted: set[str] = deleted_sets(snapshot, hidden)
-    return sorted(
-        [
-            *(item for item in rows(snapshot.get("library")) if library_row_id(item) not in deleting),
-            *(item for item in rows(snapshot.get("library_problems")) if library_row_id(item) not in deleted),
-        ],
-        key=_order,
-    )
+    listed: list[Mapping[str, object]] = [
+        *(item for item in rows(snapshot.get("library")) if library_row_id(item) not in deleting),
+        *(item for item in rows(snapshot.get("library_problems")) if library_row_id(item) not in deleted),
+    ]
+    present: set[str] = {library_row_id(item) for item in listed}
+    return sorted([*listed, *(item for item in restoring if library_row_id(item) not in present)], key=_order)
 
 
 def unsettled_deletions(snapshot: Mapping[str, object], hidden: Mapping[str, str]) -> dict[str, str]:
@@ -73,12 +83,16 @@ def unsettled_deletions(snapshot: Mapping[str, object], hidden: Mapping[str, str
 def library_row(item: Mapping[str, object]) -> AnimeRow:
     """Return the `Nazwa · Odcinek` table row of one set."""
     label: LibraryLabel = _label(item)
-    return AnimeRow(library_row_id(item), safe_text(label.title), number=label.episode_text)
+    return AnimeRow(library_row_id(item), _restoring(item, safe_text(label.title)), number=label.episode_text)
 
 
 def library_title(item: Mapping[str, object]) -> str:
     """Return the full label of one set for the narrow list."""
-    return safe_text(_label(item).text)
+    return _restoring(item, safe_text(_label(item).text))
+
+
+def _restoring(item: Mapping[str, object], title: str) -> str:
+    return f"{title} · {RESTORING}" if item.get("restoring") else title
 
 
 def library_row_id(item: Mapping[str, object]) -> str:

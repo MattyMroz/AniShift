@@ -19,7 +19,7 @@ from anishift.application.control_views import (
 )
 from anishift.application.workflows import WorkflowTarget
 from anishift.cli.interactive import state as module
-from anishift.cli.interactive import state_library
+from anishift.cli.interactive import state_library, state_texts
 from anishift.cli.interactive.state import StateController
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
@@ -103,32 +103,27 @@ def test_library_refusal_survives_snapshot_but_not_target_navigation(monkeypatch
 
 
 @pytest.mark.parametrize("details", [False, True])
-def test_library_ctrl_z_uses_owner_latest_not_selected_set(monkeypatch: pytest.MonkeyPatch, details: bool) -> None:
-    monkeypatch.setattr(StateController, "_watch", lambda self: None)
-    calls: list[str] = []
-    client: ResidentSession = cast(
-        "ResidentSession", SimpleNamespace(undo_deletion=lambda: calls.append("latest"), close=lambda: None)
-    )
-    controller: StateController = StateController(
-        cast("ResidentSession", SimpleNamespace(new_session=lambda: client)), lambda: None
-    )
-    monkeypatch.setattr(controller, "_work", lambda action, **kwargs: controller._perform(action, ""))
-    controller._tab = module._Tab.FILES
-    controller._connected = True
+def test_library_ctrl_z_uses_owner_latest_not_selected_set_and_waits_for_its_answer(
+    monkeypatch: pytest.MonkeyPatch, details: bool
+) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    panel._snapshot = {
+        "library": list(_SETS[1:]),
+        "deletions": [{"operation_id": "recycle-Alpha", "set_id": "Alpha", "name": "Alpha", "recycled": 1}],
+    }
     if details:
-        controller._details = LibrarySet("unrelated", "group", "name", None, None, (), False)
+        panel._details = LibrarySet("unrelated", "group", "name", None, None, (), False)
+    owner.answer.clear()
     try:
-        controller.handle_key("undo")
-        assert calls == ["latest"]
-        assert controller._notice == ""
-        monkeypatch.setattr(controller, "_work", StateController._work.__get__(controller))
-        controller._busy = True
-        controller.handle_key("undo")
-        assert calls == ["latest"]
-        assert controller._notice == ""
+        panel.handle_key("undo")
+        panel.handle_key("undo")
+        owner.answer.set()
+        _until(lambda: owner.undone == ["latest"] and all(item.answered for item in panel._restoring.values()))
+        assert list(panel._restoring) == ["Alpha"]
+        assert panel._notice == ""
     finally:
-        controller.close()
-        controller._thread.join(5)
+        _stop(owner, panel)
 
 
 def test_action_context_capture_holds_lock_and_failure_releases_busy(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -162,13 +157,11 @@ def test_undo_refusal_is_visible_without_synthetic_operation_rows(
     controller: StateController = StateController(
         cast("ResidentSession", SimpleNamespace(new_session=lambda: client)), lambda: None
     )
-    monkeypatch.setattr(controller, "_work", lambda action, **kwargs: controller._perform(action, ""))
     controller._tab = module._Tab.FILES
     try:
         controller.handle_key("undo")
-        frame: str = controller.render(120, 35).plain
-        assert "Brak usuniętego zestawu do przywrócenia" in frame
-        assert state_library.library_rows(controller._snapshot) == []
+        _until(lambda: "Brak usuniętego zestawu do przywrócenia" in controller.render(120, 35).plain)
+        assert controller._library() == []
     finally:
         controller.close()
         controller._thread.join(5)
@@ -180,6 +173,8 @@ class _DeletingOwner:
         self.release: threading.Event = threading.Event()
         self.deleted: list[str] = []
         self.undone: list[str] = []
+        self.answer: threading.Event = threading.Event()
+        self.answer.set()
 
     def new_session(self) -> _DeletingOwner:
         return self
@@ -201,8 +196,11 @@ class _DeletingOwner:
         return f"recycle-{preview.set_id}"
 
     def undo_deletion(self) -> str:
+        assert self.answer.wait(5)
+        if self.refuse:
+            raise ControlError("missing", reason="restore_receipt_missing", answered=True)
         self.undone.append("latest")
-        return "restore"
+        return "recycle-Alpha"
 
 
 _SETS: tuple[dict[str, str], ...] = tuple({"set_id": name, "name": name} for name in ("Alpha", "Beta", "Gamma"))
@@ -230,10 +228,11 @@ def _until(condition: Callable[[], bool]) -> None:
 
 def _stop(owner: _DeletingOwner, panel: StateController) -> None:
     owner.release.set()
+    owner.answer.set()
     panel.close()
     panel._thread.join(5)
     for thread in threading.enumerate():
-        if thread.name == "anishift-library-delete":
+        if thread.name in {"anishift-library-delete", "anishift-library-undo"}:
             thread.join(5)
 
 
@@ -345,7 +344,7 @@ def test_del_on_a_failed_processing_row_deletes_it_like_the_library_and_ctrl_z_b
     panel: StateController = _deleting_panel(monkeypatch, owner)
     session: ResidentSession = cast("ResidentSession", owner)
     failed: list[dict[str, object]] = [_failed_material("Alpha"), _failed_material("Beta")]
-    deletion: dict[str, object] = {"operation_id": "recycle-Alpha", "set_id": "Alpha", "total": 1}
+    deletion: dict[str, object] = {"operation_id": "recycle-Alpha", "set_id": "Alpha", "total": 1, "unrecorded": True}
     panel._tab = module._Tab.PROGRESS
     panel._snapshot = {"materials": failed}
     try:
@@ -376,6 +375,146 @@ def test_del_on_a_failed_processing_row_deletes_it_like_the_library_and_ctrl_z_b
         assert _processing_names(panel) == ["Alpha", "Beta"]
     finally:
         _stop(owner, panel)
+
+
+_RECYCLED: dict[str, object] = {"operation_id": "recycle-Alpha", "set_id": "Alpha", "name": "Alpha", "total": 1}
+
+
+def _answered(panel: StateController) -> bool:
+    pending: state_texts.PendingRestore | None = panel._restoring.get("Alpha")
+    return pending is not None and pending.answered
+
+
+def _restore_frame(panel: StateController, owner: _DeletingOwner, payload: Mapping[str, object]) -> str:
+    panel._receive(cast("ResidentSession", owner), {"event": "state_changed", "payload": payload})
+    return panel.render(80, 24).plain
+
+
+def test_library_ctrl_z_shows_the_set_restoring_at_once_and_normal_when_the_owner_lists_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    panel._snapshot = {"library": list(_SETS[1:]), "deletions": [{**_RECYCLED, "recycled": 1}]}
+    owner.answer.clear()
+    try:
+        panel.handle_key("undo")
+        assert _shown(panel) == ["Alpha", "Beta", "Gamma"]
+        assert "Alpha · Przywracam…" in panel.render(80, 24).plain
+        owner.answer.set()
+        _until(lambda: owner.undone == ["latest"] and _answered(panel))
+        assert "Alpha · Przywracam…" in panel.render(80, 24).plain
+        working: dict[str, object] = {
+            "library": list(_SETS[1:]),
+            "deletions": [{**_RECYCLED, "recycled": 1, "active": True, "restoring": True}],
+        }
+        assert "Alpha · Przywracam…" in _restore_frame(panel, owner, working)
+        done: dict[str, object] = {
+            "library": list(_SETS),
+            "deletions": [{**_RECYCLED, "recycled": 1, "restored": True}],
+        }
+        frame: str = _restore_frame(panel, owner, done)
+        assert "Przywracam" not in frame
+        assert _shown(panel) == ["Alpha", "Beta", "Gamma"]
+        assert panel._restoring == {}
+    finally:
+        _stop(owner, panel)
+
+
+def test_failed_restore_drops_the_restoring_row_and_names_the_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    panel._snapshot = {"library": list(_SETS[1:]), "deletions": [{**_RECYCLED, "recycled": 1}]}
+    try:
+        panel.handle_key("undo")
+        _until(lambda: owner.undone == ["latest"] and _answered(panel))
+        working: dict[str, object] = {
+            "library": list(_SETS[1:]),
+            "deletions": [{**_RECYCLED, "recycled": 1, "active": True, "restoring": True}],
+        }
+        assert "Alpha · Przywracam…" in _restore_frame(panel, owner, working)
+        failed: dict[str, object] = {
+            "library": list(_SETS[1:]),
+            "deletions": [{**_RECYCLED, "recycled": 1, "restore_problem": "restore_receipt_missing"}],
+        }
+        frame: str = _restore_frame(panel, owner, failed)
+        assert "Brak dokładnego elementu w Koszu" in frame
+        assert "Przywracam" not in frame
+        assert _shown(panel) == ["Beta", "Gamma"]
+    finally:
+        _stop(owner, panel)
+
+
+def test_restore_ending_unrestored_without_a_reason_before_any_restoring_frame_is_still_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    panel._snapshot = {"library": list(_SETS[1:]), "deletions": [{**_RECYCLED, "recycled": 1}]}
+    try:
+        panel.handle_key("undo")
+        _until(lambda: owner.undone == ["latest"] and _answered(panel))
+        frame: str = _restore_frame(
+            panel, owner, {"library": list(_SETS[1:]), "deletions": [{**_RECYCLED, "recycled": 1}]}
+        )
+        assert "System nie potwierdził pełnego przywrócenia" in frame
+        assert "Przywracam" not in frame
+        assert _shown(panel) == ["Beta", "Gamma"]
+        assert panel._restoring == {}
+    finally:
+        _stop(owner, panel)
+
+
+def test_refused_ctrl_z_drops_the_restoring_row_with_the_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner(refuse=True)
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    panel._snapshot = {"library": list(_SETS[1:]), "deletions": [{**_RECYCLED, "recycled": 1}]}
+    owner.answer.clear()
+    try:
+        panel.handle_key("undo")
+        assert _shown(panel) == ["Alpha", "Beta", "Gamma"]
+        owner.answer.set()
+        _until(lambda: "Brak dokładnego elementu w Koszu" in panel.render(80, 24).plain)
+        assert _shown(panel) == ["Beta", "Gamma"]
+        assert panel._restoring == {}
+    finally:
+        _stop(owner, panel)
+
+
+def test_processing_ctrl_z_shows_a_failed_set_restoring_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    panel._tab = module._Tab.PROGRESS
+    deletion: dict[str, object] = {**_RECYCLED, "name": "Alpha", "unrecorded": True, "recycled": 1}
+    panel._snapshot = {"materials": [_failed_material("Beta")], "deletions": [deletion]}
+    owner.answer.clear()
+    try:
+        panel.handle_key("undo")
+        assert [item.get("set_id") for item in panel._processing_rows()] == ["Beta", "Alpha"]
+        assert "Przywracam…" in panel.render(80, 24).plain
+        assert "Alpha" not in _shown(panel)
+    finally:
+        _stop(owner, panel)
+
+
+@pytest.mark.parametrize(
+    ("deletions", "expected"),
+    [
+        ([{**_RECYCLED, "recycled": 1}, {**_RECYCLED, "operation_id": "refused", "set_id": "Beta"}], "Alpha"),
+        (
+            [{**_RECYCLED, "operation_id": "older", "recycled": 1}, {**_RECYCLED, "set_id": "Beta", "uncertain": True}],
+            "Beta",
+        ),
+        ([{**_RECYCLED, "recycled": 1, "restored": True}], None),
+        ([{**_RECYCLED, "recycled": 1, "active": True}], None),
+        ([], None),
+    ],
+)
+def test_undo_target_follows_the_owner_latest_restorable_deletion(
+    deletions: list[dict[str, object]], expected: str | None
+) -> None:
+    target: Mapping[str, object] | None = state_texts.undo_target({"deletions": deletions})
+    assert (None if target is None else target["set_id"]) == expected
 
 
 class _RetryingOwner(_DeletingOwner):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -1801,12 +1802,20 @@ def test_an_active_processing_row_offers_no_delete_and_del_only_asks_to_cancel(
 
 def test_ctrl_z_in_processing_asks_the_owner_to_restore_the_latest_deletion(build: Callable[[str], _Probe]) -> None:
     probe: _Probe = build("processing_failed")
-    probe.panel.handle_key("undo")
     undone: list[str] = []
-    session: ResidentSession = cast("ResidentSession", SimpleNamespace(undo_deletion=lambda: undone.append("latest")))
-    assert len(probe.work) == 1
-    cast("Callable[[ResidentSession], object]", probe.work[0])(session)
+
+    def undo() -> str:
+        undone.append("latest")
+        return ""
+
+    session: ResidentSession = cast("ResidentSession", SimpleNamespace(undo_deletion=undo, close=lambda: None))
+    probe.panel._parent = cast("ResidentSession", SimpleNamespace(new_session=lambda: session))
+    probe.panel.handle_key("undo")
+    for thread in threading.enumerate():
+        if thread.name == "anishift-library-undo":
+            thread.join(5)
     assert undone == ["latest"]
+    assert probe.work == []
 
 
 def _settle(probe: _Probe) -> None:

@@ -429,7 +429,7 @@ def _owner(
         instance_id=_INSTANCE,
         clock=lambda: _MOMENT,
         scan_interval_s=scan_interval_s,
-        recycler=recycler,
+        recycler=None if recycler is None else lambda: nullcontext(recycler),
     )
 
 

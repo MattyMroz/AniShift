@@ -105,7 +105,15 @@ from anishift.cli.interactive.state_subscriptions import (
     subscription_rows,
     subscription_warning,
 )
-from anishift.cli.interactive.state_texts import refusal_text, rows, safe_text
+from anishift.cli.interactive.state_texts import (
+    PendingRestore,
+    refusal_text,
+    restoring_rows,
+    rows,
+    safe_text,
+    settled_restores,
+    undo_target,
+)
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError
@@ -211,7 +219,7 @@ class StateResult(StrEnum):
 class StateController:
     """Present resident work through the shared selectable-list interface."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0915
         self,
         session: ResidentSession,
         invalidate: Callable[[], None],
@@ -229,6 +237,7 @@ class StateController:
         self._library_target: str | None = None
         self._library_notice: str = ""
         self._hidden: dict[str, str] = {}
+        self._restoring: dict[str, PendingRestore] = {}
         self._snapshot: Mapping[str, object] = {}
         self._subscriptions: list[Mapping[str, object]] = []
         self._subscriptions_problem: str = ""
@@ -381,7 +390,7 @@ class StateController:
             if self._help:
                 return self._help_key(key)
             if key == "undo" and (self._tab == _Tab.FILES or (self._tab == _Tab.PROGRESS and not self._history_open)):
-                self._work(lambda session: session.undo_deletion(), success="")
+                self._undo_now()
                 self._invalidate()
                 return StateResult.CONTINUE
             if self._details is not None:
@@ -914,7 +923,8 @@ class StateController:
         self._work(lambda session: _open_episode(session, set_id, show_folder=key == "f"))
 
     def _library(self, snapshot: Mapping[str, object] | None = None) -> list[Mapping[str, object]]:
-        return library_rows(self._snapshot if snapshot is None else snapshot, self._hidden)
+        current: Mapping[str, object] = self._snapshot if snapshot is None else snapshot
+        return library_rows(current, self._hidden, restoring_rows(current, self._restoring, unrecorded=False))
 
     def _deletable_ids(self) -> list[str]:
         if self._tab == _Tab.PROGRESS:
@@ -954,6 +964,42 @@ class StateController:
             if listing:
                 self._selected = _kept(old, self._deletable_ids(), self._selected)
             if self._tab in {_Tab.FILES, _Tab.PROGRESS} and not self._stop.is_set():
+                self._notify(notice)
+                self._notice_persistent = True
+        self._invalidate()
+
+    def _undo_now(self) -> None:
+        if any(not pending.answered for pending in self._restoring.values()):
+            return
+        target: Mapping[str, object] | None = undo_target(self._snapshot)
+        set_id: str | None = None if target is None else str(target["set_id"])
+        if target is not None and set_id is not None:
+            self._restoring[set_id] = PendingRestore(str(target["operation_id"]))
+        self._notify("")
+        threading.Thread(target=self._undo_shown, args=(set_id,), name="anishift-library-undo", daemon=True).start()
+
+    def _undo_shown(self, set_id: str | None) -> None:
+        session: ResidentSession | None = None
+        operation: str = ""
+        notice: str = ""
+        try:
+            session = self._parent.new_session()
+            operation = session.undo_deletion()
+        except (AniShiftError, ControlError, OSError, ValueError, TypeError) as error:
+            notice = refusal_text(error)
+        finally:
+            if session is not None:
+                session.close()
+        with self._lock:
+            if set_id is not None:
+                self._restoring.pop(set_id, None)
+            owned: Mapping[str, object] | None = next(
+                (item for item in rows(self._snapshot.get("deletions")) if item.get("operation_id") == operation),
+                None,
+            )
+            if operation and owned is not None and not owned.get("restored"):
+                self._restoring[str(owned["set_id"])] = PendingRestore(operation, answered=True)
+            if notice and self._tab in {_Tab.FILES, _Tab.PROGRESS} and not self._stop.is_set():
                 self._notify(notice)
                 self._notice_persistent = True
         self._invalidate()
@@ -1100,6 +1146,7 @@ class StateController:
                 self._preserve_processing_selection(previous_processing, self._processing_row_ids(payload))
                 self._preserve_library_selection(payload)
                 self._hidden = unsettled_deletions(payload, self._hidden)
+                self._restoring, restore_problem = settled_restores(payload, self._restoring)
                 self._snapshot = payload
                 self._select_library_target(payload)
                 if self._anime is not None and self._anime is anime:
@@ -1115,6 +1162,9 @@ class StateController:
                     self._notice = ""
                 if context != self._library_context() and self._notice_persistent and self._notice != LIBRARY_DELETED:
                     self._notify("")
+                if restore_problem and self._tab in {_Tab.FILES, _Tab.PROGRESS}:
+                    self._notify(restore_problem)
+                    self._notice_persistent = True
                 self._drop_vanished_question()
                 if payload.get("shutting_down"):
                     self._finished = True
@@ -1606,7 +1656,10 @@ class StateController:
         self._download_timers = current
 
     def _processing_rows(self, snapshot: Mapping[str, object] | None = None) -> list[Mapping[str, object]]:
-        return processing_rows(self._snapshot if snapshot is None else snapshot, self._runs, self._hidden)
+        current: Mapping[str, object] = self._snapshot if snapshot is None else snapshot
+        return processing_rows(
+            current, self._runs, self._hidden, restoring_rows(current, self._restoring, unrecorded=True)
+        )
 
     def _processing_row_ids(self, snapshot: Mapping[str, object] | None = None) -> list[str]:
         return row_ids(self._processing_rows(snapshot))

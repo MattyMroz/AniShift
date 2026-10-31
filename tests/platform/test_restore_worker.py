@@ -61,8 +61,7 @@ def test_rename_handle_buffer_has_terminating_wchar_outside_length(tmp_path: Pat
 def test_restore_reconciles_only_exact_recorded_locations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, place: str
 ) -> None:
-    monkeypatch.setattr(worker, "_watch_parent", lambda pid: None)
-    monkeypatch.setattr(worker, "_private_desktop", lambda: None)
+    monkeypatch.setattr(worker, "_isolate", lambda pid: None)
     monkeypatch.setattr(worker, "_supported_path", lambda path: True)
     monkeypatch.setattr(worker, "_locked_source", lambda *args: nullcontext())
     monkeypatch.setattr(worker, "_held_parents", lambda *args: nullcontext())

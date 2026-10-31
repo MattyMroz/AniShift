@@ -22,12 +22,11 @@ from anishift.platform.recycle_worker import (
     _dll,
     _Guid,
     _identity,
+    _isolate,
     _locked_source,
     _method,
-    _private_desktop,
     _ProgressSink,
     _supported_path,
-    _watch_parent,
 )
 
 if sys.platform == "win32":
@@ -343,8 +342,7 @@ def _restore(payload: dict[str, object]) -> RecycleResult:  # noqa: C901, PLR091
     parent: object = payload["parent_pid"]
     if type(parent) is not int:
         raise ValueError("restore_invalid_request")
-    _watch_parent(parent)
-    _private_desktop()
+    _isolate(parent)
     root: Path = Path(str(payload["workspace"]))
     relative: Path = Path(str(payload["path"]))
     staged: Path = Path(str(payload["staging"]))
