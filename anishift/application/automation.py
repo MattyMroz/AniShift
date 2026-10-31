@@ -1030,7 +1030,7 @@ class AutomationOwner:
         return answered if answered is not None else ControlResponse.refused(ControlErrorCode.INTERNAL, _NO_ANSWER)
 
     def request_shutdown(self) -> None:
-        """Ask the owner to stop admitting work and end once the active requests finish."""
+        """Ask the owner to stop admitting work and end once the interrupted requests are paused."""
         self._queue.put(None)
 
     def disconnect(self, session_id: str) -> None:

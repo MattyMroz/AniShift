@@ -19,7 +19,12 @@ from anishift.text.markers import strip_span_markers
 
 if TYPE_CHECKING:
     from anishift.services.translation.config import TranslationConfig
-    from anishift.services.translation.protocols import TranslationInputPolicy, TranslationObserver, TranslationStream
+    from anishift.services.translation.protocols import (
+        TranslationCancellation,
+        TranslationInputPolicy,
+        TranslationObserver,
+        TranslationStream,
+    )
     from anishift.services.translation.types import BatchedLine
 
 
@@ -68,6 +73,7 @@ class GoogleService:
         source_lang: str,
         target_lang: str,
         observer: TranslationObserver | None = None,
+        cancel: TranslationCancellation | None = None,
     ) -> list[BatchedLine]:
         """Translate one batch, preserving order and length."""
         if not texts:
@@ -76,7 +82,7 @@ class GoogleService:
         target = (target_lang or "pl").lower()
 
         def translate_joined(joined: str) -> str:
-            return self._translate_with_retry(joined, source=source, target=target, observer=observer)
+            return self._translate_with_retry(joined, source=source, target=target, observer=observer, cancel=cancel)
 
         return translate_lines(
             [strip_span_markers(text) for text in texts],
@@ -98,6 +104,7 @@ class GoogleService:
         source: str,
         target: str,
         observer: TranslationObserver | None,
+        cancel: TranslationCancellation | None,
     ) -> str:
         """Translate one string, retrying the failures a retry can fix."""
         client: MobileTranslateClient = self._ensure_client()
@@ -114,6 +121,7 @@ class GoogleService:
             on_retry=(
                 None if observer is None else lambda attempt, maximum: observer.retry(self.engine_id, attempt, maximum)
             ),
+            cancel=cancel,
         )
 
 

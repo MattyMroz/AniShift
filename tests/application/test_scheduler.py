@@ -27,6 +27,7 @@ from anishift.application.planning import (
     TaskState,
     stable_topological_order,
 )
+from anishift.application.recovery import RunJournal
 from anishift.application.results import ArtifactSnapshot, GroupStatus, ProducedArtifact, RunResult, TaskResult
 from anishift.application.scheduler import (
     GraphCoordinator,
@@ -1247,9 +1248,44 @@ def test_shared_limits_come_from_the_provider_and_not_from_the_plan_settings(tmp
 
 
 @pytest.mark.parametrize("origin", [RequestOrigin.USER, RequestOrigin.BACKGROUND])
-def test_draining_finishes_active_work_and_pauses_the_remaining_graph(tmp_path: Path, origin: RequestOrigin) -> None:
+def test_draining_interrupts_active_work_and_pauses_the_whole_graph(tmp_path: Path, origin: RequestOrigin) -> None:
     plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "active"), _TaskSpec("group-1", "waiting")))
-    hold: threading.Barrier = threading.Barrier(2)
+    coordinator: GraphCoordinator = GraphCoordinator(_single_slot_limits)
+    try:
+        with ExitStack() as stack:
+            handle, handler, sink = _submit(
+                coordinator,
+                stack,
+                tmp_path,
+                "run-draining",
+                plan,
+                lambda run_root: _FakeHandler(run_root, delays={"active": 60.0}),
+                origin=origin,
+            )
+            assert _wait_until(lambda: "active" in handler.started)
+            drained_at: float = time.monotonic()
+            coordinator.drain()
+
+            result: RunResult = handle.result(timeout=5)
+
+            assert time.monotonic() - drained_at < 5
+            assert result.paused
+            assert not result.succeeded
+            assert handler.calls == ["active"]
+            assert result.groups[0].task_results == ()
+            assert result.groups[0].status is GroupStatus.CANCELLED
+            assert [
+                (event.task_id, event.message)
+                for event in sink.events
+                if event.kind is RunEventKind.TASK_FINISHED and event.state is TaskState.CANCELLED
+            ] == [("active", "Interrupted by shutdown"), ("waiting", "Paused before admission")]
+            assert coordinator.active_run_ids() == ()
+    finally:
+        coordinator.close()
+
+
+def test_work_that_finishes_despite_the_drain_keeps_its_result(tmp_path: Path) -> None:
+    plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "active"), _TaskSpec("group-1", "waiting")))
     coordinator: GraphCoordinator = GraphCoordinator(_single_slot_limits)
     try:
         with ExitStack() as stack:
@@ -1257,25 +1293,117 @@ def test_draining_finishes_active_work_and_pauses_the_remaining_graph(tmp_path: 
                 coordinator,
                 stack,
                 tmp_path,
-                "run-draining",
+                "run-finished",
                 plan,
-                lambda run_root: _FakeHandler(run_root, barriers={"active": hold}),
-                origin=origin,
+                lambda run_root: _FakeHandler(run_root, delays={"active": 0.5}, ignore_cancel=frozenset({"active"})),
             )
             assert _wait_until(lambda: "active" in handler.started)
             coordinator.drain()
-            assert not handle.done()
-            hold.wait(timeout=5)
 
             result: RunResult = handle.result(timeout=5)
 
             assert result.paused
-            assert not result.succeeded
             assert handler.calls == ["active"]
-            assert result.groups[0].task_results
-            assert coordinator.active_run_ids() == ()
+            assert [item.task_id for item in result.groups[0].task_results] == ["active"]
     finally:
-        hold.abort()
+        coordinator.close()
+
+
+def test_a_user_cancel_after_the_drain_stays_a_cancellation_and_not_a_pause(tmp_path: Path) -> None:
+    plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "active"), _TaskSpec("group-1", "waiting")))
+    coordinator: GraphCoordinator = GraphCoordinator(_single_slot_limits)
+    try:
+        with ExitStack() as stack:
+            handle, handler, _ = _submit(
+                coordinator,
+                stack,
+                tmp_path,
+                "run-cancelled-late",
+                plan,
+                lambda run_root: _FakeHandler(run_root, delays={"active": 0.5}, ignore_cancel=frozenset({"active"})),
+            )
+            assert _wait_until(lambda: "active" in handler.started)
+            coordinator.drain()
+            handle.cancel()
+
+            result: RunResult = handle.result(timeout=5)
+
+            assert result.cancelled
+            assert not result.paused
+            assert result.groups[0].task_results == ()
+    finally:
+        coordinator.close()
+
+
+def test_an_unsaved_interruption_keeps_the_remote_work_uncertain_and_blocks_the_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    planned: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "active"), _TaskSpec("group-1", "waiting")))
+    plan: ExecutionPlan = replace(planned, tasks=tuple(replace(task, is_network=True) for task in planned.tasks))
+    journal_path: Path = tmp_path / "journal.json"
+    run_root: Path = tmp_path / "tmp" / "run-unsaved"
+    journal: RunJournal = RunJournal.create(journal_path, plan, run_root)
+
+    def unsaved(self: RunJournal, task: PlanTask) -> None:
+        del self, task
+        raise OSError("Injected checkpoint failure")
+
+    monkeypatch.setattr(RunJournal, "interrupted", unsaved)
+    coordinator: GraphCoordinator = GraphCoordinator(_single_slot_limits)
+    try:
+        with RunSession(run_root) as session:
+            handler: _FakeHandler = _FakeHandler(run_root, delays={"active": 60.0})
+            sink: _CollectingSink = _CollectingSink()
+            handle: RunHandle = coordinator.submit(
+                RunRequest(
+                    run_id="run-unsaved",
+                    plan=plan,
+                    session=session,
+                    handler=handler,
+                    cancel=NeverCancelledToken(),
+                    events=sink,
+                    origin=RequestOrigin.USER,
+                    journal=journal,
+                )
+            )
+            assert _wait_until(lambda: "active" in handler.started)
+            coordinator.drain()
+
+            result: RunResult = handle.result(timeout=5)
+
+            assert result.paused
+            assert {
+                event.task_id: event.state
+                for event in sink.events
+                if event.kind is RunEventKind.TASK_FINISHED and event.task_id is not None
+            } == {"active": TaskState.CANCELLED}
+            assert RunJournal.load(journal_path).uncertain_remote_work
+    finally:
+        coordinator.close()
+
+
+def test_a_user_cancel_before_the_drain_stays_a_cancellation_and_not_a_pause(tmp_path: Path) -> None:
+    plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "active"), _TaskSpec("group-1", "waiting")))
+    coordinator: GraphCoordinator = GraphCoordinator(_single_slot_limits)
+    try:
+        with ExitStack() as stack:
+            handle, handler, _ = _submit(
+                coordinator,
+                stack,
+                tmp_path,
+                "run-cancelled",
+                plan,
+                lambda run_root: _FakeHandler(run_root, delays={"active": 60.0}),
+            )
+            assert _wait_until(lambda: "active" in handler.started)
+            handle.cancel()
+            coordinator.drain()
+
+            result: RunResult = handle.result(timeout=5)
+
+            assert result.cancelled
+            assert not result.paused
+    finally:
         coordinator.close()
 
 

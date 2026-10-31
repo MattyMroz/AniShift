@@ -12,7 +12,7 @@ from dataclasses import replace
 from typing import Final
 
 from anishift.application.artifacts import ArtifactState
-from anishift.application.cancellation import CommitCancellationToken
+from anishift.application.cancellation import CommitCancellationToken, EventCancellationToken
 from anishift.application.events import RunEventKind, RunEventSink, WorkerNotification, WorkerNotificationKind
 from anishift.application.intents import RequestOrigin
 from anishift.application.planning import ExecutionPlan, PlanTask, TaskState
@@ -67,6 +67,9 @@ EXECUTOR_THREAD_CEILING: Final[int] = 100
 
 _COORDINATOR_THREAD_NAME: Final[str] = "anishift-coordinator"
 """Name of the single thread owning every graph transition."""
+
+_INTERRUPTED_MESSAGE: Final[str] = "Interrupted by shutdown"
+"""Task message of active work stopped by a drain so the next start resumes it."""
 
 _ADMISSIBLE_STATES: Final[frozenset[TaskState]] = frozenset({TaskState.READY, TaskState.QUEUED})
 """Task states that a cancellation must still turn into a terminal state."""
@@ -229,7 +232,7 @@ class GraphCoordinator:
             return (*self._contexts, *(context.run_id for context in self._inbox))
 
     def drain(self) -> None:
-        """Finish active tasks and pause their remaining graphs without cancelling workers."""
+        """Interrupt active tasks and pause the remaining graphs so the next start resumes them."""
         with self._condition:
             self._closing = True
             self._draining = True
@@ -377,7 +380,7 @@ class GraphCoordinator:
             self._submitted[submitted.resource_key] -= 1
             context: SchedulerRuntime | None = self._contexts.get(submitted.run_id)
             if context is not None:
-                self._finish_future(future, submitted.task, context)
+                self._finish_future(future, submitted, context)
 
     def _completion_order(self, future: Future[TaskResult]) -> tuple[str, str]:
         submitted: SubmittedTask | None = self._futures.get(future)
@@ -486,9 +489,10 @@ class GraphCoordinator:
             finish_failed(task, error, context)
             self._wake()
             return
+        interrupt: EventCancellationToken = EventCancellationToken(parent=context.cancel)
         executor: ThreadPoolExecutor = self._executor(resource_key)
-        future: Future[TaskResult] = executor.submit(self._execute_task, context, task, snapshot)
-        self._futures[future] = SubmittedTask(context.run_id, task, resource_key)
+        future: Future[TaskResult] = executor.submit(self._execute_task, context, task, snapshot, interrupt)
+        self._futures[future] = SubmittedTask(context.run_id, task, resource_key, interrupt)
         self._submitted[resource_key] += 1
         future.add_done_callback(self._on_completed)
 
@@ -511,11 +515,12 @@ class GraphCoordinator:
         context: SchedulerRuntime,
         task: PlanTask,
         snapshot: ArtifactSnapshot,
+        interrupt: EventCancellationToken,
     ) -> TaskResult:
         context.updates.put(context.run_id, TaskStarted(task.task_id))
-        context.cancel.raise_if_cancelled()
+        interrupt.raise_if_cancelled()
         progress: TaskProgressSink = QueuedProgressSink(task.task_id, context.run_id, context.updates)
-        return context.handler.execute(task, snapshot, context.cancel, progress)
+        return context.handler.execute(task, snapshot, interrupt, progress)
 
     def _extraction_group_count(self) -> int:
         return len(
@@ -529,9 +534,10 @@ class GraphCoordinator:
     def _finish_future(
         self,
         future: Future[TaskResult],
-        task: PlanTask,
+        submitted: SubmittedTask,
         context: SchedulerRuntime,
     ) -> None:
+        task: PlanTask = submitted.task
         if (
             future.cancelled()
             or context.cancel.is_cancelled()
@@ -541,12 +547,28 @@ class GraphCoordinator:
             return
         try:
             result: TaskResult = future.result()
+        except Exception as error:  # noqa: BLE001 - one boundary translating any worker fault
+            if submitted.interrupt.is_cancelled():
+                self._finish_interrupted(task, context)
+            else:
+                self._finish_error(task, error, context)
+            return
+        try:
             if context.gate is not None and not context.gate.can_release(task.group_id):
                 context.held[task.group_id].append((task, result))
                 return
             commit_success(task, result, context)
-        except Exception as error:  # noqa: BLE001 - one boundary translating any worker fault
+        except Exception as error:  # noqa: BLE001 - one boundary translating any commit fault
             self._finish_error(task, error, context)
+
+    def _finish_interrupted(self, task: PlanTask, context: SchedulerRuntime) -> None:
+        finish_cancelled(task, context, message=_INTERRUPTED_MESSAGE)
+        if context.journal is None:
+            return
+        try:
+            context.journal.interrupted(task)
+        except AniShiftError, OSError:
+            self._block_uncheckpointed(context)
 
     def _finish_error(self, task: PlanTask, error: BaseException, context: SchedulerRuntime) -> None:
         if context.cancel.is_cancelled() or not context.session.accepts_generation(context.generation):
@@ -645,8 +667,15 @@ class GraphCoordinator:
         with self._condition:
             if not self._draining:
                 return False
+            if self._closing:
+                self._interrupt_active(context)
             self._pause_pending(context)
             return True
+
+    def _interrupt_active(self, context: SchedulerRuntime) -> None:
+        for submitted in self._futures.values():
+            if submitted.run_id == context.run_id:
+                submitted.interrupt.cancel()
 
     def _pause_pending(self, context: SchedulerRuntime) -> None:
         active: frozenset[str] = frozenset(

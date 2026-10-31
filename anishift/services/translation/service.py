@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from anishift.errors import ErrorCode, ErrorContext
+from anishift.services.translation._retry import raise_if_cancelled
 from anishift.services.translation.config import TranslationConfig
 from anishift.services.translation.constants import TARGET_LANG
 from anishift.services.translation.errors import TranslationEngineError, TranslationError
@@ -102,9 +103,7 @@ class TranslationService:
         last_error: str | None = None
         last_context: ErrorContext | None = None
         for index, engine_id in enumerate(chain):
-            if cancel is not None and cancel.is_set():
-                context = ErrorContext(code=ErrorCode.CANCELLED, message="translation cancelled")
-                raise TranslationError(context=context)
+            raise_if_cancelled(cancel)
             engine: TranslationEngine | None = None
             try:
                 engine = self._engine_factory(engine_id, self.config)
@@ -122,6 +121,7 @@ class TranslationService:
                     source_lang=source_lang,
                     target_lang=target_lang,
                     observer=observer,
+                    cancel=cancel,
                 )
                 logger.info(
                     "File translation completed",
@@ -174,6 +174,7 @@ class TranslationService:
         source_lang: str,
         target_lang: str,
         observer: TranslationObserver | None,
+        cancel: TranslationCancellation | None,
     ) -> FileTranslation:
         """Translate one chronological whole-file stream and assemble outputs."""
         prepared = _prepare_file(engine, spoken, displayed)
@@ -183,6 +184,7 @@ class TranslationService:
                 source_lang=source_lang,
                 target_lang=target_lang,
                 observer=observer,
+                cancel=cancel,
             )
             if prepared.texts
             else []

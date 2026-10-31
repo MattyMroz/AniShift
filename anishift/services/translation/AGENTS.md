@@ -34,6 +34,9 @@ Serwis tłumaczenia: synchroniczna fasada `TranslationService` nad jednym silnik
 - Heurystyka „fałszywego końca zdania" jest współdzielona z TTS; adapter translation przekazuje jej całe fragmenty przed i po potencjalnej granicy. `chunking.py`
 - `_retry` świadomie bez tenacity — nie jest zależnością projektu. `_retry.py:1-7`
 - `api_calls` w `FileTranslation` liczy logiczne wywołania `translate_batch` (zwykle 1 na wspólny strumień pliku), nie surowe HTTP. `types.py`
+- Anulowanie dochodzi do silnika: `translate_batch(cancel=...)` sprawdza je przed każdą partią LLM i każdą próbą `call_with_retry`
+  (`_retry.raise_if_cancelled`), więc trwające żądanie HTTP może dobiec, ale następne już nie rusza. Ukończonych partii
+  nikt nie zapisuje; przerwane tłumaczenie po wznowieniu idzie od początku pliku.
 
 ## Decyzje
 

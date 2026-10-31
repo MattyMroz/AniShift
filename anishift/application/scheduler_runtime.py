@@ -79,6 +79,7 @@ class SubmittedTask:
     run_id: str
     task: PlanTask
     resource_key: str
+    interrupt: EventCancellationToken
 
 
 @dataclass(frozen=True, slots=True, order=True)
