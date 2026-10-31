@@ -4,7 +4,9 @@ name: PR Title
 # servers, where the local commit-msg hook does not exist. This check covers
 # that path. It runs the conventional-pre-commit hook from
 # .pre-commit-config.yaml through prek, so the allowed types and scopes are
-# defined once.
+# defined once. Only that hook's entry is handed to prek: prek clones every
+# hook repository of a config first, and MattyMroz/agents is private, so the
+# runner cannot fetch it.
 
 on:
   pull_request_target:
@@ -34,7 +36,7 @@ jobs:
           python-version: "3.14"
 
       - name: Install prek
-        run: pip install --quiet prek==0.5.4
+        run: pip install --quiet prek==0.5.4 pyyaml==6.0.3
 
       - name: Validate PR title
         env:
@@ -42,4 +44,15 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           printf '%s\n' "$PR_TITLE" > "$RUNNER_TEMP/pr-title.txt"
-          prek run conventional-pre-commit --stage commit-msg --commit-msg-filename "$RUNNER_TEMP/pr-title.txt"
+          python - "$RUNNER_TEMP/pr-title-hooks.yaml" <<'PY'
+          import sys
+          import yaml
+          with open(".pre-commit-config.yaml", encoding="utf-8") as source:
+              config = yaml.safe_load(source)
+          repos = [repo for repo in config["repos"] if any(hook["id"] == "conventional-pre-commit" for hook in repo["hooks"])]
+          for repo in repos:
+              repo["hooks"] = [hook for hook in repo["hooks"] if hook["id"] == "conventional-pre-commit"]
+          with open(sys.argv[1], "w", encoding="utf-8") as target:
+              yaml.safe_dump({"repos": repos}, target, sort_keys=False)
+          PY
+          prek run conventional-pre-commit -c "$RUNNER_TEMP/pr-title-hooks.yaml" --stage commit-msg --commit-msg-filename "$RUNNER_TEMP/pr-title.txt"
