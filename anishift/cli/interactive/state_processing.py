@@ -9,7 +9,7 @@ from anishift.application import EpisodeReason, HistoryEvent, RetryProposal
 from anishift.cli.interactive.actions import PANEL_ACTIONS, Action, ScreenActions
 from anishift.cli.interactive.anime import EPISODE_REASON_LABELS
 from anishift.cli.interactive.progress import RichRunProgress
-from anishift.cli.interactive.state_texts import deleted_sets, rows, safe_text
+from anishift.cli.interactive.state_texts import deleting_sets, rows, safe_text
 from anishift.text.plural import plural
 
 __all__ = [
@@ -116,7 +116,7 @@ _TRANSFER_LABELS: Final[dict[str, str]] = {
 def processing_rows(
     payload: Mapping[str, object], runs: Mapping[str, tuple[str, RichRunProgress]], hidden: Collection[str] = ()
 ) -> list[Mapping[str, object]]:
-    """Return downloads, admitted work awaiting a task, started processing and files to check, minus deletions."""
+    """Return downloads, admitted work awaiting a task, started work and files to check, minus rows being deleted."""
     running: set[str] = {
         str(item["request_id"])
         for item in rows(payload.get("requests"))
@@ -155,8 +155,8 @@ def processing_rows(
         )
     ]
     attention: list[Mapping[str, object]] = [item for item in rows(payload.get("materials")) if item.get("attention")]
-    deleted: set[str] = deleted_sets(payload, hidden)
-    return [item for item in [*downloads, *preparing, *processing, *attention] if item.get("set_id") not in deleted]
+    deleting: set[str] = deleting_sets(payload, hidden)
+    return [item for item in [*downloads, *preparing, *processing, *attention] if item.get("set_id") not in deleting]
 
 
 def row_ids(materials: list[Mapping[str, object]]) -> list[str]:

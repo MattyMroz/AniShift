@@ -161,7 +161,9 @@ from anishift.application.library import (
     file_identity,
     name_series,
     project_library,
+    unrecorded_group,
     unrecorded_set,
+    unrecorded_set_id,
     untitled_series,
 )
 from anishift.application.planner import auto_group_products
@@ -1985,12 +1987,9 @@ class AutomationOwner:
                 automatic=request.automatic,
             )
             if group_id in failed:
-                row.update(
-                    stage="waiting",
-                    reason="processing_failed",
-                    attention=True,
-                    set_id=self._history_material(group_id),
-                )
+                row.update(stage="waiting", reason="processing_failed", attention=True)
+                if self._outside_library(group_id):
+                    row["set_id"] = unrecorded_set_id(group_id)
             materials[group_id] = row
         for group in () if self._library is None else self._library.groups:
             if group.group_id in requests or group.group_id in materials or group.source.route.target is None:
@@ -2289,9 +2288,14 @@ class AutomationOwner:
         if request.kind == "deletion_retry":
             return self._retry_deletion(request, released)
         identifier: str | None = _text(request.payload, "set_id")
-        group: LibrarySet | None = next((item for item in self._ready_library if item.set_id == identifier), None)
-        if group is None and request.kind.startswith("deletion_"):
-            group = self._failed_set(identifier)
+        failed: str | None = unrecorded_group(identifier)
+        group: LibrarySet | None = (
+            next((item for item in self._ready_library if item.set_id == identifier), None)
+            if failed is None
+            else self._failed_set(failed)
+            if request.kind.startswith("deletion_")
+            else None
+        )
         if group is None:
             return self._library_refusal("library_set_missing")
         if request.kind == "library_open":
@@ -2391,20 +2395,21 @@ class AutomationOwner:
         record: ReadyGroup | None = next(
             (item for item in self._state.ready_groups if item.set_id == group.set_id), None
         )
-        if record is None and group in self._ready_library:
+        if record is None and unrecorded_group(group.set_id) is None:
             return "library_ownership_unknown"
         if (record is not None and record.pending_sources) or self._torrent_owns_set(group, released):
             return "library_source_held"
         return None
 
-    def _failed_set(self, set_id: str | None) -> LibrarySet | None:
+    def _outside_library(self, group_id: str) -> bool:
+        return not any(item.group_id == group_id for item in self._ready_library)
+
+    def _failed_set(self, group_id: str) -> LibrarySet | None:
         """Return the failed workspace group outside the Library that Del in Processing recycles."""
-        if self._library is None or set_id not in self._failed_sources():
-            return None
-        if any(item.group_id == set_id for item in self._ready_library):
+        if self._library is None or group_id not in self._failed_sources() or not self._outside_library(group_id):
             return None
         root: Path = self._service.workspace_root
-        group: SourceGroup = next(item.source for item in self._library.groups if item.group_id == set_id)
+        group: SourceGroup = next(item.source for item in self._library.groups if item.group_id == group_id)
         paths: tuple[str, ...] = tuple(
             artifact.path.relative_to(root).as_posix()
             for artifact in group.artifacts
@@ -2414,11 +2419,11 @@ class AutomationOwner:
 
     def _deletion_set(self, operation: PendingDeletion) -> LibrarySet | None:
         """Return the Library set a pending deletion names, or its failed workspace group projected from its files."""
-        group: LibrarySet | None = next((item for item in self._ready_library if item.set_id == operation.set_id), None)
-        if group is not None or any(item.set_id == operation.set_id for item in self._state.ready_groups):
-            return group
+        group_id: str | None = unrecorded_group(operation.set_id)
+        if group_id is None:
+            return next((item for item in self._ready_library if item.set_id == operation.set_id), None)
         return unrecorded_set(
-            operation.set_id,
+            group_id,
             Path(operation.files[0][0]).stem,
             (name for name, _size, _stamp in operation.files),
             self._service.workspace_root,
@@ -2661,12 +2666,15 @@ class AutomationOwner:
             operation.restore.unsettled or any(item.started for item in operation.restore.outcomes)
         ):
             return False
-        group: LibrarySet | None = self._deletion_set(operation)
-        if group is None or operation.instance_id != self._instance_id:
-            return False
         with self._previews_lock:
             version: int | None = self._deletion_retries.get(operation.operation_id)
-            if version is None or max(self._reconciled_version, self._group_versions.get(group.group_id, 0)) > version:
+        if version is None or operation.instance_id != self._instance_id:
+            return False
+        group: LibrarySet | None = self._deletion_set(operation)
+        if group is None:
+            return False
+        with self._previews_lock:
+            if max(self._reconciled_version, self._group_versions.get(group.group_id, 0)) > version:
                 return False
         return self._deletion_scope_matches(operation, group, verify_files=False)
 
@@ -8530,7 +8538,9 @@ class AutomationOwner:
             for item in self._state.pending_deletions
             if item.restore is not None and item.restore.unsettled and item.operation_id != restoring
         }
-        return protected | {item.group_id for item in self._state.ready_groups if item.set_id in protected}
+        groups: set[str] = {item.group_id for item in self._state.ready_groups if item.set_id in protected}
+        groups.update(group for set_id in protected if (group := unrecorded_group(set_id)) is not None)
+        return protected | groups
 
     def _previewed_fingerprint(self, group_id: str) -> SourceFingerprint:
         with self._previews_lock:

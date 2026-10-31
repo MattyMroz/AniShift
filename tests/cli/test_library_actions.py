@@ -372,6 +372,20 @@ def test_del_on_a_failed_processing_row_deletes_it_like_the_library_and_ctrl_z_b
         _stop(owner, panel)
 
 
+def test_a_failed_row_shows_again_after_an_old_finished_deletion_of_its_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    finished: dict[str, object] = {"operation_id": "old", "set_id": "Alpha", "total": 1, "recycled": 1}
+    panel._tab = module._Tab.PROGRESS
+    panel._snapshot = {"materials": [_failed_material("Alpha")], "deletions": [finished]}
+    try:
+        assert _processing_names(panel) == ["Alpha"]
+        panel._snapshot = {**panel._snapshot, "deletions": [{**finished, "active": True}]}
+        assert _processing_names(panel) == []
+    finally:
+        _stop(owner, panel)
+
+
 def test_a_refused_processing_delete_returns_the_row_with_the_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
     owner: _DeletingOwner = _DeletingOwner(refuse=True)
     panel: StateController = _deleting_panel(monkeypatch, owner)
