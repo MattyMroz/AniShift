@@ -110,7 +110,7 @@ def test_manual_previews_and_starts_only_episodes_three_and_eight(tmp_path: Path
     for key in ("down", "down", "space", *("down",) * 5, "space", "end", "enter"):
         assert controller.handle_key(key) is ManualResult.STAY
     assert controller.take_ready_run() is None
-    assert "2 odcinków" in controller.render(120, 40).plain
+    assert "2 odcinki" in controller.render(120, 40).plain
 
     assert controller.handle_key("enter") is ManualResult.START_RUN
     run: ManualRun | None = controller.take_ready_run()

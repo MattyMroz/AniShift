@@ -66,6 +66,7 @@ from anishift.cli.interactive.state import refusal_text
 from anishift.cli.interactive.text_input import TextInput
 from anishift.cli.resident import ResidentSession
 from anishift.errors import AniShiftError
+from anishift.text.plural import plural
 
 __all__ = ["ManualController", "ManualDraft", "ManualResult", "ManualRun", "default_draft", "materialize_intent"]
 
@@ -1206,7 +1207,8 @@ class ManualController:
         counts: Counter[ProductKind] = Counter(
             product for group in plan.groups for product in group.intent.products.requested_products
         )
-        lines: list[str] = [f"{len(plan.groups)} odcinków"]
+        episodes: int = len(plan.groups)
+        lines: list[str] = [f"{episodes} {plural(episodes, 'odcinek', 'odcinki', 'odcinków')}"]
         lines.extend(f"{label}: {counts[product]}" for product, label in _PRODUCT_LABELS if counts[product])
         view: PlanPreview = plan if isinstance(plan, PlanPreview) else preview_plan(plan, "", "")
         for label, attribute in (("Zachowane", "preserved_products"), ("Do wykonania", "planned_products")):

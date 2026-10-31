@@ -228,7 +228,7 @@ def test_panel_executes_only_selected_episodes_through_the_resident(tmp_path: Pa
         for key in (*keys, *(("down",) * 3 if regenerate else ()), "enter"):
             assert controller.handle_key(key) is ManualResult.STAY
         assert rendered.wait(5.0)
-        assert "2 odcinków" in controller.render(120, 40).plain
+        assert "2 odcinki" in controller.render(120, 40).plain
         assert translation.calls == []
         assert len(store.load().reservations) == 2
         assert controller.handle_key("enter") is ManualResult.START_RUN
