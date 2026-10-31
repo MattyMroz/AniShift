@@ -3,7 +3,7 @@ kind: plan
 status: draft
 baseline: AniShift main f5fff6b (merge PR #76), czyste drzewo; prototyp SCR z 2026-10-30
 created: 2026-10-25
-updated: 2026-10-30
+updated: 2026-10-31
 ---
 
 # Plan: silnik lektora ElevenReader, mierzona głośność i tempo na głos
@@ -13,9 +13,10 @@ zakazy (`Z*`) i decyzje (`D*`) są w `specification.md`; tu są odwołania. Mapa
 
 Skróty:
 
-- **EDP** = `C:\Users\MattyMroz\Desktop\PROJECTS\ElevenDownloaderPro` (tylko do odczytu; ścieżki `EDP:`).
-- **SCR** = `C:\Users\MATTYM~1\AppData\Local\Temp\claude\c--Users-MattyMroz-Desktop-PROJECTS-AniShift\805265a0-dc59-4be6-b614-414304044433\scratchpad\er\`
-  (prototyp; ścieżki `SCR:`). Po fazie 0 te same dane leżą w **DATA** =
+- **EDP** = repozytorium ElevenDownloaderPro obok AniShift, `../ElevenDownloaderPro` (tylko do odczytu; ścieżki
+  `EDP:`).
+- **SCR** = katalog `er/` w tymczasowym katalogu roboczym sesji, poza repozytorium (prototyp; ścieżki `SCR:`). Po
+  fazie 0 te same dane leżą w **DATA** =
   `workspace/.quality/elevenreader/` (gitignorowane; stała `QUALITY_DIR` w `tests/conftest.py`).
 - Symbole podaję z nazwą; numery linii tylko tam, gdzie zostały sprawdzone na `f5fff6b`.
 
@@ -371,9 +372,8 @@ speech_bounds(levels, threshold_dbfs) -> tuple[int, int] | None    # pierwsza i 
 
 Po zapisaniu surowego PCM (już po `atempo`) `normalize_clip` liczy `speech_bounds(levels, -45.0)` i zapisuje
 wycinek `[pierwsza − 30 ms, ostatnia + 10 ms + 30 ms]` przyciętego do pliku; brak ramek powyżej progu → klip bez
-zmian. Trim jest obróbką audio, nie cechą silnika, i obejmuje klipy każdego silnika. Zakres dla `elevenbytes`
-czeka na potwierdzenie właściciela (D1); gdyby odpowiedź brzmiała „tylko ElevenReader”, flaga trafia do
-`AudioRenderRequest` z tego samego `is_document_engine` (zmiana lokalna w E2 i E9). Stałe `EDGE_TRIM_DBFS = -45.0` (pomiar §6.3) i `EDGE_TRIM_MARGIN_MS = 30.0` (ochrona przed trzaskiem;
+zmian. Trim jest obróbką audio, nie cechą silnika, i obejmuje klipy każdego silnika, także `elevenbytes`
+(decyzja właściciela D1). Stałe `EDGE_TRIM_DBFS = -45.0` (pomiar §6.3) i `EDGE_TRIM_MARGIN_MS = 30.0` (ochrona przed trzaskiem;
 dozwolona lokalna zmiana 0–50 ms, z wpisem w outcome). Szybka ścieżka `_neutral_wav` znika (zwracała klip bez
 przetwarzania). `normalization_fingerprint`: wersja 1 → 2 i sekcja `edge_trim` z obiema stałymi.
 

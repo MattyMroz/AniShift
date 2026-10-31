@@ -1,7 +1,7 @@
 ---
 kind: specification
 status: draft
-updated: 2026-10-30
+updated: 2026-10-31
 ---
 
 # Specyfikacja: silnik lektora ElevenReader
@@ -22,8 +22,8 @@ brak uciętych słów.
 
 ### Prototyp poza repozytorium
 
-Katalog `SCR` = `C:\Users\MATTYM~1\AppData\Local\Temp\claude\c--Users-MattyMroz-Desktop-PROJECTS-AniShift\805265a0-dc59-4be6-b614-414304044433\scratchpad\er\`.
-To katalog tymczasowy sesji; faza 0 planu kopiuje dane poza niego.
+Katalog `SCR` to `er/` w tymczasowym katalogu roboczym sesji, poza repozytorium; faza 0 planu kopiuje dane poza
+niego.
 
 - `SCR/record.py` nagrywa cały odcinek jednym dokumentem przez trasę ElevenDownloaderPro (EDP): Chrome bez okna,
   Playwright przez CDP, upload przyciskiem „Import”, głos i prędkość 1x ustawione w `user_config` konta tokenem
@@ -74,7 +74,7 @@ To katalog tymczasowy sesji; faza 0 planu kopiuje dane poza niego.
   plus `narrator_over_source_lu` (domyślnie 7,5 LU) plus korekta głosu; na wyjściu miksu limiter −1 dBFS.
   `narrator_over_source_lu` zastępuje `narrator_mix_base_gain_db` bez aliasu.
 - **U7. Brzegi każdego klipu są przycinane z ciszy** przed ułożeniem na osi czasu. To obróbka audio, wspólna dla
-  wszystkich silników; zakres dla `elevenbytes` czeka na potwierdzenie (D1).
+  wszystkich silników, także `elevenbytes` (D1).
 - **U8. Tempo i korekta głośności są na głos** w istniejących profilach `tts_voice_profiles`.
 - **U9. Jedna przeglądarka i jeden dokument naraz.** `max_concurrency` silnika wynosi dokładnie 1.
 - **U10. Brak automatycznego przełączania silników.** Powrót do `elevenbytes` to jeden wybór w Ustawieniach,
@@ -129,7 +129,7 @@ To katalog tymczasowy sesji; faza 0 planu kopiuje dane poza niego.
   5.1.
 - **F14.** Miks kończy limiter szczytów −1 dBFS bez normalizacji (`alimiter … level=0`). Ścieżka tylko z
   narratorem zostaje bez wzmocnienia i bez limitera.
-- **F15.** Profile głosów mają domyślnie: Fronczewski tempo 1,45 i korekta 0 dB; Adam 1,35 i +2 dB; Dallin
+- **F15.** Profile głosów mają domyślnie: Fronczewski tempo 1,45 i korekta +0,5 dB; Adam 1,35 i +2,5 dB; Dallin
   (`elevenbytes`) 1,25 i 0 dB.
 - **F16.** Panel pokazuje „Głośność lektora” w LU ponad oryginał.
 
@@ -139,7 +139,8 @@ To katalog tymczasowy sesji; faza 0 planu kopiuje dane poza niego.
   `T5l58N8RNz5DKoClpKIJ`) i `adam` („Adam”, `hIssydxXZ1WuDorjx6Ic`). Lista żyje tylko w silniku.
 - **F18.** Głos domyślny silnika: `fronczewski`.
 - **F19.** Przełączenie z `elevenreader` na inny silnik nie przenosi aliasu ani ID głosu: `elevenbytes` dostaje
-  Dallin, pozostałe silniki swoje głosy domyślne. Profile głosów zostają zapisane.
+  Dallin, pozostałe silniki swoje głosy domyślne (`elevenlabs`, bez wbudowanej listy głosów, dostaje domyślne
+  `dallin` z `UserSettings`). Profile głosów zostają zapisane.
 
 ### Sesja
 
@@ -152,7 +153,8 @@ To katalog tymczasowy sesji; faza 0 planu kopiuje dane poza niego.
 - **F23.** Wygasła sesja kończy syntezę błędem uwierzytelnienia z sugestią akcji z F21; wynik ostatniego sprawdzenia
   (bez sekretów, z czasem) leży w `config/elevenreader/session.json` i jest widoczny w panelu.
 - **F24.** `anishift doctor` przy wybranym `elevenreader`: brak Chrome to FAIL, brak profilu albo ostatnie
-  „nie zalogowano” to WARN z sugestią F21; przy innym silniku SKIP. Doctor nie uruchamia przeglądarki.
+  „nie zalogowano” to WARN z sugestią F21; przy innym silniku SKIP, chyba że w `session.json` czeka zaległe
+  sprzątanie konta (F28) — wtedy WARN przy każdym silniku. Doctor nie uruchamia przeglądarki.
 
 ### Błędy
 
@@ -181,8 +183,8 @@ To katalog tymczasowy sesji; faza 0 planu kopiuje dane poza niego.
 ## Inwarianty
 
 - **I1.** `elevenbytes`, `edge`, `elevenlabs` i `sapi` syntetyzują jak przed zmianą, także bez łączenia kwestii.
-  Zmiany wspólne dla wszystkich głosów są dwie i jawne: przycinanie brzegów (F12, zakres do potwierdzenia w D1) i
-  mierzona głośność (F13–F14).
+  Zmiany wspólne dla wszystkich głosów są dwie i jawne: przycinanie brzegów (F12, D1) i mierzona głośność
+  (F13–F14).
 - **I2.** Domena TTS nie importuje `pysubs2`, `anishift.services.audio`, `anishift.services.subtitles` ani
   `anishift.services.translation`.
 - **I3.** Retry, circuit i limity należą wyłącznie do wspólnego schedulera; transport silnika wykonuje jedną próbę.
@@ -252,10 +254,8 @@ To katalog tymczasowy sesji; faza 0 planu kopiuje dane poza niego.
 - **S7.** Skan sekretów: `git grep` w `anishift/` i `tests/` nie znajduje adresu e-mail, tokenów, `read_id` ani
   plików profilu; `config/elevenreader/` jest ignorowany przez git.
 
-## Otwarte decyzje właściciela
-
-Plan realizuje rekomendację jako założenie.
+## Decyzje właściciela
 
 - **D1. Przycinanie ciszy na brzegach klipów — także dla Dallina (`elevenbytes`) i pozostałych silników?**
-  Rekomendacja: tak, jedna obróbka audio dla wszystkich. Pomiar: u Dallina kwestii dłuższych niż okno napisu ubywa
-  z 30 do 10.
+  Rozstrzygnięta: tak, jedna obróbka audio dla wszystkich silników (`normalize_clip`, stałe `EDGE_TRIM_*`). Pomiar:
+  u Dallina kwestii dłuższych niż okno napisu ubywa z 30 do 10.
