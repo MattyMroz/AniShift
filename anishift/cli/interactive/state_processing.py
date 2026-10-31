@@ -20,6 +20,7 @@ __all__ = [
     "cancel_command",
     "cancel_target",
     "download_progress",
+    "failed_group",
     "held",
     "history_actions",
     "history_entry",
@@ -58,6 +59,7 @@ _READINESS_LABELS: Final[dict[str, str]] = {
     "image_missing": "Brak okładki",
     "ambiguous_image": "Kilka okładek",
     "place_starts_no_work": "Folder bez Auto",
+    "processing_failed": "Błąd",
 }
 """Short Polish cause of a workspace material that waits for the user, not for a queue."""
 
@@ -211,6 +213,12 @@ def download_progress(  # noqa: PLR0911
     return _TRANSFER_LABELS.get(str(state), "Sprawdzanie"), measured
 
 
+def failed_group(item: Mapping[str, object]) -> str | None:
+    """Return the group whose failed processing P retries on this row, or None elsewhere."""
+    group: object = item.get("group_id")
+    return str(group) if item.get("reason") == "processing_failed" and group else None
+
+
 def cancel_target(item: Mapping[str, object]) -> tuple[str, str] | None:
     """Return the identity a cancellation of this row names, or None when it cannot be cancelled."""
     if item.get("stage") == "download" and item.get("info_hash"):
@@ -254,6 +262,7 @@ def processing_actions(item: Mapping[str, object] | None) -> ScreenActions:
     target: tuple[str, str] | None = None if item is None else cancel_target(item)
     toggle: tuple[str, str] | None = None if item is None else pause_toggle(item)
     footer: tuple[Action, ...] = (
+        *((("P", "ponów"),) if item is not None and failed_group(item) is not None else ()),
         *((("W", toggle[1]),) if toggle is not None else ()),
         *((("X", "anuluj"),) if target is not None else ()),
         ("H", "historia"),

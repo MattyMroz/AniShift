@@ -283,6 +283,12 @@ def _episodes_ordered(monkeypatch: pytest.MonkeyPatch) -> _Probe:
     return _episodes_at(monkeypatch, 0)
 
 
+def _episodes_failed(monkeypatch: pytest.MonkeyPatch) -> _Probe:
+    owner: episodes._ChoiceOwner = episodes._ChoiceOwner()
+    owner.statuses[3] = EpisodeStatus(EpisodeKey(1, 3), "processing_failed", admission_id="3", retry_group="group-3")
+    return _episodes_at(monkeypatch, 2, owner)
+
+
 def _episodes_airing(monkeypatch: pytest.MonkeyPatch) -> _Probe:
     owner: episodes._ChoiceOwner = episodes._ChoiceOwner()
     now: datetime = datetime.now(UTC)
@@ -444,6 +450,25 @@ def _processing_run(monkeypatch: pytest.MonkeyPatch) -> _Probe:
     )
 
 
+def _failed() -> dict[str, object]:
+    return {
+        "material_id": "group",
+        "group_id": "group",
+        "name": "Slime - 03.mkv",
+        "stage": "waiting",
+        "state": "failed",
+        "reason": "processing_failed",
+        "run_id": "run",
+        "group_ids": ["group"],
+        "active": False,
+        "attention": True,
+    }
+
+
+def _processing_failed(monkeypatch: pytest.MonkeyPatch) -> _Probe:
+    return _list_probe(monkeypatch, _Tab.PROGRESS, {"materials": [_failed()], "material_counts": {"attention": 1}})
+
+
 def _processing_empty(monkeypatch: pytest.MonkeyPatch) -> _Probe:
     return _list_probe(monkeypatch, _Tab.PROGRESS, {})
 
@@ -495,6 +520,7 @@ _FIXTURES: Final[dict[str, Callable[[pytest.MonkeyPatch], _Probe]]] = {
     "episodes_file": _episodes_file,
     "episodes_ordered": _episodes_ordered,
     "episodes_airing": _episodes_airing,
+    "episodes_failed": _episodes_failed,
     "candidates": _candidates,
     "files": _files,
     "draft": _draft,
@@ -509,6 +535,7 @@ _FIXTURES: Final[dict[str, Callable[[pytest.MonkeyPatch], _Probe]]] = {
     "subscriptions_empty": _subscriptions_empty,
     "processing_download": _processing_download,
     "processing_run": _processing_run,
+    "processing_failed": _processing_failed,
     "processing_empty": _processing_empty,
     "history": _history,
     "library": _library,
@@ -529,6 +556,7 @@ _ACTIONS: Final[dict[str, tuple[Action, ...]]] = {
         ("P", "ponownie"),
         *_LISTED,
     ),
+    "episodes_failed": (("P", "ponów"), ("S", "subskrybuj"), ("Z", "zakres"), ("A", "wszystkie"), *_LISTED),
     "candidates": (("Space", "zaznacz"), ("D", "pobierz"), *_LISTED),
     "files": (("Enter", "wybierz"), *_LISTED),
     "draft": (("Space", "zaznacz"), ("A", "wszystkie"), *_LISTED),
@@ -559,6 +587,7 @@ _ACTIONS: Final[dict[str, tuple[Action, ...]]] = {
     "subscriptions_empty": (("D", "dodaj pierwszą"), ("Ctrl+Z", "cofnij"), *_PANEL),
     "processing_download": (("W", "wstrzymaj"), ("X", "anuluj"), ("H", "historia"), *_PANEL),
     "processing_run": (("X", "anuluj"), ("H", "historia"), *_PANEL),
+    "processing_failed": (("P", "ponów"), ("H", "historia"), *_PANEL),
     "processing_empty": (("H", "historia"), *_PANEL),
     "history": (("Enter", "otwórz"), ("P", "ponów"), ("/", "szukaj"), ("H", "zamknij"), *_PANEL),
     "library": (("Enter", "otwórz"), ("F", "folder"), ("Del", "usuń"), ("Ctrl+Z", "cofnij"), *_PANEL),
@@ -574,6 +603,7 @@ _ALIASES: Final[dict[str, frozenset[str]]] = {
     "problem": frozenset({"enter"}),
     "episodes_file": frozenset({"text:i"}),
     "episodes": frozenset({"enter"}),
+    "episodes_failed": frozenset({"text:d", "text:i", "enter"}),
     "u08": frozenset({"text:f", "text:x", "enter"}),
     "u08_waiting": frozenset({"text:f", "text:x", "enter"}),
     "u08_ready": frozenset({"text:f", "text:x"}),
@@ -593,6 +623,7 @@ _ALIASES: Final[dict[str, frozenset[str]]] = {
 _APPLIES: Final[dict[tuple[str, str], str]] = {
     ("episodes", "text:p"): "episodes_ordered",
     ("episodes", "text:s"): "episodes_airing",
+    ("episodes_failed", "text:s"): "episodes_airing",
     ("episodes_file", "space"): "episodes",
     ("episodes_file", "text:d"): "episodes",
     ("episodes_file", "text:s"): "episodes_airing",
@@ -609,6 +640,7 @@ _FOOTERS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
     "titles": ("Enter wybierz · ? klawisze · Esc wróć", ()),
     "entries": ("Enter odcinki · ? klawisze · Esc wróć", ()),
     "episodes": ("Space zaznacz · D pobierz · S subskrybuj · ? klawisze · Esc wróć", ()),
+    "episodes_failed": ("P ponów · S subskrybuj · ? klawisze · Esc wróć", ()),
     "candidates": ("Space zaznacz · D pobierz · ? klawisze · Esc wróć", ()),
     "files": ("Enter wybierz · ? klawisze · Esc wróć", ()),
     "draft": ("Space zaznacz · ? klawisze · Esc wróć", ()),
@@ -618,6 +650,7 @@ _FOOTERS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
     "subscriptions_empty": ("D dodaj pierwszą · ? klawisze · Esc wróć", ()),
     "processing_download": ("W wstrzymaj · X anuluj · H historia · ? klawisze · Esc wróć", ()),
     "processing_run": ("X anuluj · H historia · ? klawisze · Esc wróć", ()),
+    "processing_failed": ("P ponów · H historia · ? klawisze · Esc wróć", ()),
     "history": ("Enter otwórz · P ponów · / szukaj · ? klawisze · Esc wróć", ()),
     "library": ("Enter otwórz · F folder · Del usuń · ? klawisze · Esc wróć", ()),
     "library_details": ("Enter otwórz plik · F folder · Del usuń · Esc wróć", ()),
@@ -632,6 +665,7 @@ _HELP_SCREENS: Final[tuple[str, ...]] = (
     "subscriptions_empty",
     "processing_download",
     "processing_run",
+    "processing_failed",
     "processing_empty",
     "history",
     "library_empty",
@@ -1598,6 +1632,88 @@ def test_escape_or_backspace_closes_the_retry_proposal(build: Callable[[str], _P
     assert probe.panel.handle_key(key) is StateResult.CONTINUE
     assert probe.panel._retry is None
     assert probe.panel._history_open
+
+
+def _prepared_retry(probe: _Probe) -> list[str]:
+    asked: list[str] = []
+    proposal: RetryProposal = RetryProposal("group-3", "manual", ("group-3",))
+
+    def retry_proposal(identifier: str) -> RetryProposal:
+        asked.append(identifier)
+        return proposal
+
+    load: Callable[[ResidentSession], object] = cast("Callable[[ResidentSession], object]", probe.work[-1])
+    load(cast("ResidentSession", SimpleNamespace(retry_proposal=retry_proposal)))
+    assert probe.panel._retry == proposal
+    assert "Enter przygotuj · Esc wróć" in probe.panel.render(80, 24).plain
+    return asked
+
+
+@pytest.mark.parametrize("key", ["text:d", "text:p"])
+def test_d_or_p_on_a_failed_episode_with_its_source_prepares_its_processing_retry_instead_of_a_download(
+    build: Callable[[str], _Probe], key: str
+) -> None:
+    probe: _Probe = build("episodes_failed")
+    owner: episodes._ChoiceOwner = cast("episodes._ChoiceOwner", probe.owner)
+    calls: int = len(owner.calls)
+    probe.panel.handle_key(key)
+    _settle(probe)
+    assert probe.panel._tab == _Tab.PROGRESS
+    assert owner.batches == []
+    assert not [call for call in owner.calls[calls:] if call[0] in {"offer", "repeat"}]
+    assert _prepared_retry(probe) == ["group-3"]
+
+
+def test_a_failed_episode_is_left_out_of_a_marked_download(build: Callable[[str], _Probe]) -> None:
+    probe: _Probe = build("episodes_failed")
+    owner: episodes._ChoiceOwner = cast("episodes._ChoiceOwner", probe.owner)
+    probe.panel.handle_key("text:a")
+    assert 3 not in probe.anime._episode_marks
+    probe.panel.handle_key("text:d")
+    _settle(probe)
+    assert owner.batches
+    assert all(EpisodeKey(1, 3) not in keys for keys, _command in owner.batches)
+    assert probe.panel._tab == _Tab.ANIME
+    assert probe.work == []
+
+
+def test_d_on_a_failed_episode_lands_on_its_processing_row_with_history_closed(build: Callable[[str], _Probe]) -> None:
+    probe: _Probe = build("episodes_failed")
+    probe.panel._snapshot = {**probe.panel._snapshot, "materials": [_download(), {**_failed(), "group_id": "group-3"}]}
+    probe.panel._history_open = True
+    probe.panel.handle_key("text:d")
+    assert probe.panel._tab == _Tab.PROGRESS
+    assert not probe.panel._history_open
+    assert probe.panel._selected == 1
+    assert _prepared_retry(probe) == ["group-3"]
+
+
+def test_d_downloads_a_failed_episode_again_once_its_retry_group_is_gone(build: Callable[[str], _Probe]) -> None:
+    probe: _Probe = build("episodes_failed")
+    owner: episodes._ChoiceOwner = cast("episodes._ChoiceOwner", probe.owner)
+    probe.anime._episode_states[EpisodeKey(1, 3)] = EpisodeStatus(EpisodeKey(1, 3), "processing_failed")
+    probe.panel.handle_key("text:d")
+    _settle(probe)
+    assert probe.panel._tab == _Tab.ANIME
+    assert probe.work == []
+    assert [keys for keys, _command in owner.batches] == [(EpisodeKey(1, 3),)]
+
+
+def test_space_on_a_failed_episode_names_its_retry(build: Callable[[str], _Probe]) -> None:
+    probe: _Probe = build("episodes_failed")
+    probe.panel.handle_key("space")
+    assert probe.anime._episode_marks == set()
+    assert probe.anime._notice == "Błąd przetwarzania · P ponów"
+
+
+def test_a_failed_material_stays_in_processing_and_p_prepares_its_retry(build: Callable[[str], _Probe]) -> None:
+    probe: _Probe = build("processing_failed")
+    frame: str = probe.panel.render(80, 24).plain
+    assert "Slime - 03.mkv" in frame
+    assert "Błąd" in frame
+    assert "do sprawdzenia 1" in frame
+    probe.panel.handle_key("text:p")
+    assert _prepared_retry(probe) == ["group"]
 
 
 def _settle(probe: _Probe) -> None:

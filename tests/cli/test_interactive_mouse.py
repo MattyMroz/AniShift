@@ -44,7 +44,7 @@ from anishift.cli.interactive.pointer import (
     painted_cells,
     selected_text,
 )
-from anishift.cli.interactive.progress import RichRunProgress
+from anishift.cli.interactive.progress import RichRunProgress, render_material_progress
 from anishift.cli.interactive.settings import _PRODUCTS as _SETTINGS_PRODUCTS
 from anishift.cli.interactive.settings import SettingsController
 from anishift.cli.interactive.state import StateController
@@ -984,6 +984,22 @@ def test_a_selection_inverts_text_in_its_own_color_and_paints_gaps_between_colum
     assert all(_styles_at(painted, index)[-1] == SELECTION_GAP_STYLE for index in range(6, 9))
     assert all(SELECTION_STYLE not in _styles_at(painted, index) for index in range(6, 9))
     assert _styles_at(painted, 0) == []
+
+
+def test_a_selection_across_a_progress_row_keeps_the_bar_in_its_own_colors() -> None:
+    selection: FrameSelection = FrameSelection(lambda _value: True)
+    line: Text = render_material_progress("Alpha.mkv", "Pobieranie", 0.5, 80)
+    selection.paint(line.copy(), ())
+    for kind in (MouseEventType.MOUSE_DOWN, MouseEventType.MOUSE_MOVE, MouseEventType.MOUSE_UP):
+        selection.mouse(_event(kind, Point(0 if kind is MouseEventType.MOUSE_DOWN else line.cell_len, 0)))
+
+    painted: Text = selection.paint(line.copy(), ())
+
+    bar: list[int] = [index for index, char in enumerate(line.plain) if char in "█░"]
+    assert {line.plain[index] for index in bar} == {"█", "░"}
+    assert [_styles_at(painted, index) for index in bar] == [_styles_at(line, index) for index in bar]
+    assert SELECTION_STYLE in _styles_at(painted, 0)
+    assert SELECTION_STYLE in _styles_at(painted, line.plain.index("%"))
 
 
 def test_an_anime_table_selection_paints_the_gaps_between_its_columns_flat() -> None:

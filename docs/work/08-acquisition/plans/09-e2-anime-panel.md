@@ -402,7 +402,11 @@ startu nie jest naprawiany przez komunikat CLI.
 - **D11 (01.10): pauza zatrzymuje tylko automat.** Ręczne D w Anime działa
   zawsze. Akcji właściciela się nie blokuje. Jedyny wyjątek: odcinek aktywnie
   w toku (`W toku · C anuluj w Przetwarzaniu`).
-- **D12 (01.10): D na Gotowe/Pobrano/Błąd pobiera ponownie**, bez ekranu zgody.
+- **D12 (01.10, zmienione 31.10): D na Gotowe/Pobrano/Błąd pobiera ponownie**, bez ekranu zgody.
+  Wyjątek: odcinek z błędem przetwarzania (także po anulowaniu), którego wideo nadal leży na dysku. D i P wznawiają wtedy
+  przetwarzanie tą samą propozycją ponowienia co Historia (H → P), z zachowanymi wynikami wcześniejszych
+  kroków, zamiast pobierać od nowa. Taki odcinek nie wchodzi do zaznaczenia ani do partii D i czeka
+  w Przetwarzaniu jako `Błąd` z P.
 - **D13 (01.10): status wpisu we franczyzie:** zakończone / w emisji / zapowiedź.
 - **D14 (01.10): kursor podświetla na niebiesko każdy wiersz**, także Gotowe;
   kolor stanu (zielone Gotowe) zostaje.

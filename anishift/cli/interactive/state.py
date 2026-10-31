@@ -83,6 +83,7 @@ from anishift.cli.interactive.state_processing import (
     cancel_command,
     cancel_target,
     download_progress,
+    failed_group,
     held,
     history_actions,
     history_entry,
@@ -732,6 +733,15 @@ class StateController:
         result: AnimeResult = anime.handle_key(key)
         command: tuple[str, Mapping[str, object], int | None] | None = anime.take_subscription_command()
         playback: str | None = anime.take_playback()
+        retry: str | None = anime.take_retry()
+        if retry is not None:
+            self.show_processing()
+            self._selected = next(
+                (index for index, item in enumerate(self._processing_rows()) if failed_group(item) == retry),
+                self._selected,
+            )
+            self._follow_cursor[_Tab.PROGRESS] = True
+            self._prepare_retry(lambda session: session.retry_proposal(retry))
         if result is AnimeResult.HOME:
             return StateResult.HOME
         if result is AnimeResult.SUBSCRIPTIONS:
@@ -776,6 +786,10 @@ class StateController:
             return
         if key in {"c", "x"}:
             self._question = cancel_target(item)
+            return
+        group: str | None = failed_group(item)
+        if key == "p" and group is not None:
+            self._prepare_retry(lambda session: session.retry_proposal(group))
             return
         toggle: tuple[str, str] | None = pause_toggle(item)
         if key == "w" and toggle is not None:

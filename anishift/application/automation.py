@@ -1965,6 +1965,7 @@ class AutomationOwner:
             )
         }
         completed: dict[str, frozenset[str]] = {}
+        failed: frozenset[str] = self._failed_sources()
         for group_id, request in requests.items():
             if request.request_id not in completed:
                 completed[request.request_id] = self._succeeded_groups(request)
@@ -1982,6 +1983,8 @@ class AutomationOwner:
                 problem=request.problem,
                 automatic=request.automatic,
             )
+            if group_id in failed:
+                row.update(stage="waiting", reason="processing_failed", attention=True)
             materials[group_id] = row
         for group in () if self._library is None else self._library.groups:
             if group.group_id in requests or group.group_id in materials or group.source.route.target is None:
@@ -2002,6 +2005,22 @@ class AutomationOwner:
                 "attention": True,
             }
         return list(materials.values())
+
+    def _failed_sources(self) -> frozenset[str]:
+        """Return the groups whose latest run failed or was cancelled while their video still waits on disk."""
+        if self._library is None:
+            return frozenset()
+        latest: dict[str, ProcessingRequest] = {
+            group_id: request for request in self._state.requests for group_id in request.group_ids
+        }
+        return frozenset(
+            group.group_id
+            for group in self._library.groups
+            if (request := latest.get(group.group_id)) is not None
+            and request.state in {RequestState.FAILED, RequestState.PARTIAL, RequestState.CANCELLED}
+            and group.group_id not in self._succeeded_groups(request)
+            and self._local_primary(group.source)
+        )
 
     def _group_succeeded(self, request: ProcessingRequest, group_id: str) -> bool:
         return group_id in self._succeeded_groups(request)
@@ -5252,7 +5271,20 @@ class AutomationOwner:
             reason = EpisodeReason.PUBLICATION_MISSING
         if reason is None and state != "ready" and assignment.verification == VERIFICATION_SKIPPED:
             reason = EpisodeReason.SUBSCRIPTION_CHECK_SKIPPED
-        return EpisodeStatus(key, state, reason, assignment.admission_id, transfer.operation_id, uncertain, set_id)
+        return EpisodeStatus(
+            key,
+            state,
+            reason,
+            assignment.admission_id,
+            transfer.operation_id,
+            uncertain,
+            set_id,
+            retry_group=self._retry_group(state, group_id),
+        )
+
+    def _retry_group(self, state: str, group_id: str | None) -> str | None:
+        """Return the group a retry of this failed episode resumes, when its source is still on disk."""
+        return group_id if state == "processing_failed" and group_id in self._failed_sources() else None
 
     def _lifecycle_status(
         self,
@@ -5301,8 +5333,16 @@ class AutomationOwner:
             state: str
             reason: str | None
             set_id: str | None
-            state, reason, set_id = self._lifecycle_status(transfer, groups[0] if len(groups) == 1 else None)
-            return EpisodeStatus(key, state, reason, operation_id=transfer.operation_id, set_id=set_id)
+            group_id: str | None = groups[0] if len(groups) == 1 else None
+            state, reason, set_id = self._lifecycle_status(transfer, group_id)
+            return EpisodeStatus(
+                key,
+                state,
+                reason,
+                operation_id=transfer.operation_id,
+                set_id=set_id,
+                retry_group=self._retry_group(state, group_id),
+            )
         conflict: AdmissionConflict | None = episode_conflict(self._state, key.anilist_id, key.number)
         if conflict is not None:
             return EpisodeStatus(key, "possibly_admitted", conflict.value)

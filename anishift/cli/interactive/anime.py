@@ -204,6 +204,7 @@ class AnimeController:
         self._list_hold: bool = False
         self._subscription_command: tuple[str, Mapping[str, object], int | None] | None = None
         self._playback: str | None = None
+        self._retry_group: str | None = None
         self._subscribed: dict[int, Mapping[str, object]] = {}
         self._paused: bool = False
         self._from_subscriptions: bool = False
@@ -304,7 +305,12 @@ class AnimeController:
             elif self._screen is _Screen.BUSY:
                 result = self._handle_busy(key)
             elif self._screen in {_Screen.ENTRIES, _Screen.EPISODES, _Screen.FILES, _Screen.CANDIDATES, _Screen.DRAFT}:
-                result = self._draft_mark_key(key) or self._subscription_key(key) or self._panel_key(key)
+                result = (
+                    self._draft_mark_key(key)
+                    or self._subscription_key(key)
+                    or self._retry_key(key)
+                    or self._panel_key(key)
+                )
             else:
                 result = self._handle_problem(key)
         return result
@@ -365,6 +371,13 @@ class AnimeController:
             set_id: str | None = self._playback
             self._playback = None
             return set_id
+
+    def take_retry(self) -> str | None:
+        """Hand the group whose failed processing D or P asked to retry to the panel."""
+        with self._lock:
+            group: str | None = self._retry_group
+            self._retry_group = None
+            return group
 
     def start_search(self) -> None:
         """Open the title search of the Anime tab with its field focused, outside any subscription."""
@@ -561,6 +574,18 @@ class AnimeController:
         if self._screen is not _Screen.DRAFT or key.casefold() not in {"space", "text:a"}:
             return None
         self._toggle_draft(every=key.casefold() == "text:a")
+        return AnimeResult.CONTINUE
+
+    def _retry_key(self, key: str) -> AnimeResult | None:
+        folded: str = key.casefold()
+        if self._screen is not _Screen.EPISODES or folded not in {"text:d", "text:p"}:
+            return None
+        if folded == "text:d" and self._episode_marks:
+            return None
+        group: str | None = self._failed_group()
+        if group is None:
+            return None
+        self._retry_group = group
         return AnimeResult.CONTINUE
 
     def _toggle_draft(self, *, every: bool) -> None:
@@ -1013,17 +1038,19 @@ class AnimeController:
         current: AnimeRow | None = self._cursor_row()
         free: bool = not self._view.searching
         eligible: bool = free and current is not None and current.eligible
+        retry: bool = self._failed_group() is not None
         footer: list[Action] = [
             *((("Enter", enter),) if enter else ()),
             *((("Space", "zaznacz"),) if eligible else ()),
             *((("D", "pobierz"),) if eligible or (free and self._episode_marks and self._on_episode()) else ()),
+            *((("P", "ponów"),) if retry else ()),
         ]
         film: bool = self._entry is not None and self._entry.format == "MOVIE"
         more: list[Action] = [
             *((("I", "wydania"),) if eligible else ()),
             *((("Z", "zakres"),) if free and not film else ()),
             *((("A", "wszystkie"),) if free else ()),
-            *((("P", "ponownie"),) if free and self._repeatable_episode() else ()),
+            *((("P", "ponownie"),) if free and not retry and self._repeatable_episode() else ()),
         ]
         row: Mapping[str, object] | None = self._subscription
         if row is None:
@@ -1039,13 +1066,12 @@ class AnimeController:
         return self._positions.get(_Screen.EPISODES, 0) < len(self._shown_episodes())
 
     def _repeatable_episode(self) -> bool:
-        listing: EpisodeListing | None = self._listing
-        shown: tuple[ListedEpisode, ...] = self._shown_episodes()
-        position: int = self._positions.get(_Screen.EPISODES, 0)
-        if listing is None or position >= len(shown):
-            return False
-        status: EpisodeStatus | None = self._episode_states.get(EpisodeKey(listing.anilist_id, shown[position].number))
+        status: EpisodeStatus | None = self._cursor_status()
         return status is not None and (status.state != "not_ordered" or status.admission_id is not None)
+
+    def _failed_group(self) -> str | None:
+        status: EpisodeStatus | None = self._cursor_status()
+        return None if status is None else status.retry_group
 
     def _episode_enter(self) -> str:
         listing: EpisodeListing | None = self._listing
@@ -1543,6 +1569,8 @@ class AnimeController:
             return False
         key: EpisodeKey = EpisodeKey(self._listing.anilist_id, episode.number)
         status: EpisodeStatus | None = self._episode_states.get(key)
+        if status is not None and status.retry_group is not None:
+            return False
         return key not in self._sending and (status is None or not status.active or status.attempt)
 
     def _send_episodes(
