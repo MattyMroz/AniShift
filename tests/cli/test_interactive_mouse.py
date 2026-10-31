@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import timeit
+import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from types import SimpleNamespace
+from types import FrameType, SimpleNamespace
 from typing import cast
 
 import pytest
@@ -668,8 +668,21 @@ def test_auto_queue_drag_copies_a_row_and_the_wheel_drops_the_selection(monkeypa
     assert _reversed(application._render_frame(80, 30)) == ""
 
 
-def _best_render(application: interactive_app._InteractiveApplication) -> float:
-    return min(timeit.repeat(lambda: application._render_frame(120, 40), number=1, repeat=7))
+def _render_calls(application: interactive_app._InteractiveApplication) -> int:
+    application._render_frame(120, 40)
+    calls: int = 0
+
+    def count(_frame: FrameType, event: str, _arg: object) -> None:
+        nonlocal calls
+        if event in {"call", "c_call"}:
+            calls += 1
+
+    sys.setprofile(count)
+    try:
+        application._render_frame(120, 40)
+    finally:
+        sys.setprofile(None)
+    return calls
 
 
 def test_inert_interface_keeps_a_thousand_row_panel_render_within_a_fifth_of_its_cost(
@@ -683,11 +696,11 @@ def test_inert_interface_keeps_a_thousand_row_panel_render_within_a_fifth_of_its
     try:
         application._render_frame(120, 40)
         _drag(application, Point(0, 0), Point(119, 38))
-        marked: float = _best_render(application)
+        marked: int = _render_calls(application)
         selected: str = _reversed(application._render_frame(120, 40))
         for module in (state_module, anime_view_module, menu_module, interactive_app):
             monkeypatch.setattr(module, "mark_inert", lambda content: content)
-        unmarked: float = _best_render(application)
+        unmarked: int = _render_calls(application)
     finally:
         controller.close()
         controller._thread.join(5)
