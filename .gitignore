@@ -1,4 +1,4 @@
-# ── Sections ─────────────────────────────────────────────────────────────────
+# ── Sections ──────────────────────────────────────────────────────────────────
 #   1. AI agents      5. Editors & OS    9. Project-specific
 #   2. Secrets        6. Scratch & logs  10. Re-includes
 #   3. Python (uv)    7. Binaries        11. Final invariants — keep last
@@ -7,14 +7,15 @@
 #   Order is load-bearing: last match wins, so each section overrides the ones
 #   above it. Paste foreign templates into section 8, never at the end.
 #   Mixed folder: `dir/*` + `!dir/keeper`, never `dir/` + `!dir/keeper`
-# ─────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 
-# ── AI agents ────────────────────────────────────────────────────────────────
+# ── AI agents ─────────────────────────────────────────────────────────────────
 .claude/*
-.codex/
+.codex/*
 .agents/
+.worktrees/*
 
-# ── AI agents: other tools — uncomment what you use ──────────────────────────
+# ── AI agents: other tools — uncomment what you use ───────────────────────────
 # .cursor/*
 # !.cursor/rules/
 # .windsurf/
@@ -26,7 +27,7 @@
 # .aider*
 # .continue/
 
-# ── Secrets ──────────────────────────────────────────────────────────────────
+# ── Secrets ───────────────────────────────────────────────────────────────────
 .env
 .env.*
 .envrc
@@ -42,8 +43,10 @@
 credentials.json
 secrets.json
 secrets.enc
+*-token.txt
+*.token
 
-# ── Python (uv) ──────────────────────────────────────────────────────────────
+# ── Python (uv) ───────────────────────────────────────────────────────────────
 __pycache__/
 *.py[codz]
 *$py.class
@@ -79,7 +82,7 @@ cython_debug/
 .pypirc
 .ipynb_checkpoints/
 
-# ── Node / Bun / Vite ────────────────────────────────────────────────────────
+# ── Node / Bun / Vite ─────────────────────────────────────────────────────────
 node_modules/
 dist/
 out/
@@ -108,7 +111,7 @@ coverage/
 **/.vitepress/dist
 **/.vitepress/cache
 
-# ── Rust / Tauri ─────────────────────────────────────────────────────────────
+# ── Rust / Tauri ──────────────────────────────────────────────────────────────
 # `target/` alone already matches at any depth (frontend/src-tauri/target/).
 # `**/` is only needed when the pattern itself contains a slash, like the next one.
 target/
@@ -117,7 +120,7 @@ target/
 *.pdb
 rustc-ice-*.txt
 
-# ── Editors ──────────────────────────────────────────────────────────────────
+# ── Editors ───────────────────────────────────────────────────────────────────
 .vscode/*
 .idea/*
 *.vsix
@@ -126,7 +129,7 @@ rustc-ice-*.txt
 *.swo
 *~
 
-# ── OS ───────────────────────────────────────────────────────────────────────
+# ── OS ────────────────────────────────────────────────────────────────────────
 Thumbs.db
 ehthumbs.db
 [Dd]esktop.ini
@@ -146,7 +149,7 @@ $RECYCLE.BIN/
 .nfs*
 nohup.out
 
-# ── Scratch & logs ───────────────────────────────────────────────────────────
+# ── Scratch & logs ────────────────────────────────────────────────────────────
 temp/
 tmp/
 logs/
@@ -163,7 +166,7 @@ logs/
 *.pid.lock
 *.seed
 
-# ── Binaries: images ─────────────────────────────────────────────────────────
+# ── Binaries: images ──────────────────────────────────────────────────────────
 *.png
 *.jpg
 *.jpeg
@@ -181,7 +184,7 @@ logs/
 *.xcf
 *.dng
 
-# ── Binaries: video & audio ──────────────────────────────────────────────────
+# ── Binaries: video & audio ───────────────────────────────────────────────────
 # No *.ts here — that is TypeScript, not MPEG transport stream.
 *.mp4
 *.mkv
@@ -205,7 +208,7 @@ logs/
 *.eac3
 *.dts
 
-# ── Binaries: ML models & weights ────────────────────────────────────────────
+# ── Binaries: ML models & weights ─────────────────────────────────────────────
 *.onnx
 *.safetensors
 *.ckpt
@@ -225,7 +228,7 @@ logs/
 *.joblib
 *.bin
 
-# ── Binaries: datasets & serialized data ─────────────────────────────────────
+# ── Binaries: datasets & serialized data ──────────────────────────────────────
 *.csv
 *.tsv
 *.parquet
@@ -238,7 +241,7 @@ logs/
 *.pkl
 *.dat
 
-# ── Binaries: databases ──────────────────────────────────────────────────────
+# ── Binaries: databases ───────────────────────────────────────────────────────
 *.db
 *.db-*
 *.sqlite
@@ -246,7 +249,7 @@ logs/
 *.sqlite3
 *.sqlite3-*
 
-# ── Binaries: archives & installers ──────────────────────────────────────────
+# ── Binaries: archives & installers ───────────────────────────────────────────
 *.zip
 *.tar
 *.tar.*
@@ -262,7 +265,7 @@ logs/
 *.msi
 *.AppImage
 
-# ── Binaries: compiled objects ───────────────────────────────────────────────
+# ── Binaries: compiled objects ────────────────────────────────────────────────
 *.exe
 *.dll
 *.dylib
@@ -272,7 +275,7 @@ logs/
 *.o
 *.obj
 
-# ── Python extras ────────────────────────────────────────────────────────────
+# ── Python extras ─────────────────────────────────────────────────────────────
 # .ipynb_checkpoints/          Jupyter
 # local_settings.py            Django
 # instance/                    Flask
@@ -285,7 +288,7 @@ logs/
 # github.com/github/gitignore — paste below this line.
 # Everything after this section overrides templates, which is the point.
 
-# ── Project-specific — fill in, delete the rest ──────────────────────────────
+# ── Project-specific — fill in, delete the rest ───────────────────────────────
 workspace/**
 external/bin/*
 external/fonts/
@@ -296,7 +299,7 @@ config/qbittorrent/
 config/elevenreader/
 config/subscriptions.json
 
-# ── Re-includes ──────────────────────────────────────────────────────────────
+# ── Re-includes ───────────────────────────────────────────────────────────────
 # Every keeper lives HERE, not next to the rule it escapes — a template pasted
 # into section 8 would otherwise bury negations written above it.
 # Order inside: `!dir/` and `!dir/**/` first, so git can descend; then files.
@@ -306,6 +309,8 @@ config/subscriptions.json
 !.claude/
 !.claude/settings.json
 !.claude/commands/
+!.worktrees/
+!.worktrees/.gitkeep
 !.vscode/
 !.vscode/settings.json
 !.vscode/tasks.json
@@ -345,16 +350,35 @@ config/subscriptions.json
 # Test fixtures — small by definition, and the tests need them in git
 !**/fixtures/
 !**/fixtures/**/
-!**/fixtures/**
+!**/fixtures/**/*.csv
+!**/fixtures/**/*.tsv
+!**/fixtures/**/*.parquet
+!**/fixtures/**/*.png
+!**/fixtures/**/*.jpg
+!**/fixtures/**/*.jpeg
+!**/fixtures/**/*.webp
+!**/fixtures/**/*.gif
+!**/fixtures/**/*.ico
+!**/fixtures/**/*.zip
+!**/fixtures/**/*.bin
 
 !workspace/**/
 !workspace/**/.gitkeep
 !workspace/README.md
 !external/bin/.gitkeep
 
-# ── Project overrides — ignores that must beat the re-includes above ─────────
-docs/session-logs/
+# Tracked content stays tracked (decision 2026-10-30).
+!anishift/cli/interactive/assets/**/*.gif
+!docs/work/04-reliability-audit/outcomes/proof/*.mp3
+!docs/work/04-reliability-audit/outcomes/proof/*.mkv
+!tests/fixtures/**/*.gz
+
+# ── Project overrides — ignores that must beat the re-includes above ──────────
+docs/session-logs/*
 docs/work/**/.workflow/
+
+# Tracked content stays tracked (decision 2026-10-30).
+!docs/session-logs/2026-08-04-elevenbytes-vpn-latency.md
 
 # ── Final invariants — MUST STAY LAST ─────────────────────────────────────────
 # Enforced, not documented: last match wins, so nothing above can bury these.

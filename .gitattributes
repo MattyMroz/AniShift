@@ -1,4 +1,4 @@
-# ── Line endings ─────────────────────────────────────────────────────────────
+# ── Line endings ──────────────────────────────────────────────────────────────
 # Force LF everywhere regardless of core.autocrlf on the machine. Without this a
 # .sh checked out on Windows gets CRLF and dies on Linux: "bad interpreter: ^M".
 # After adding this file to an existing repo, run once: git add --renormalize .
@@ -10,7 +10,7 @@
 *.cmd text eol=crlf
 # *.ps1 text eol=crlf
 
-# ── Binary — never normalize, never diff, never text-merge ───────────────────
+# ── Binary — never normalize, never diff, never text-merge ────────────────────
 # `binary` is shorthand for `-text -diff -merge`.
 # Mirrors the BINARY formats from universal.gitignore, so behaviour stays correct
 # when a project deliberately re-includes one of them. Text-based datasets are
