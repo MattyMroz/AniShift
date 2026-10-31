@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 import stat
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from functools import lru_cache
@@ -279,6 +279,12 @@ def project_library(state: WatchState, root: Path, groups: Sequence[SourceGroup]
         and (item := _legacy_set(group, state, root)) is not None
     )
     return tuple(os_sorted(result, key=lambda item: (item.name, item.set_id)))
+
+
+def unrecorded_set(set_id: str, name: str, paths: Iterable[str], root: Path) -> LibrarySet:
+    """Project workspace files outside every ready record as one set that only deletion and its undo address."""
+    files: tuple[LibraryFile, ...] = tuple(_library_file(root, path, "source") for path in sorted(set(paths)))
+    return LibrarySet(set_id, set_id, name, None, None, files, False)
 
 
 def _recorded_set(record: ReadyGroup, state: WatchState, root: Path, group: SourceGroup | None) -> LibrarySet:

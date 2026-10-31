@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import Final
 
 from anishift.application import EpisodeReason, HistoryEvent, RetryProposal
 from anishift.cli.interactive.actions import PANEL_ACTIONS, Action, ScreenActions
 from anishift.cli.interactive.anime import EPISODE_REASON_LABELS
 from anishift.cli.interactive.progress import RichRunProgress
-from anishift.cli.interactive.state_texts import rows, safe_text
+from anishift.cli.interactive.state_texts import deleted_sets, rows, safe_text
 from anishift.text.plural import plural
 
 __all__ = [
@@ -20,6 +20,7 @@ __all__ = [
     "NO_PROCESSING",
     "cancel_command",
     "cancel_target",
+    "deletable_set",
     "download_progress",
     "failed_group",
     "held",
@@ -113,9 +114,9 @@ _TRANSFER_LABELS: Final[dict[str, str]] = {
 
 
 def processing_rows(
-    payload: Mapping[str, object], runs: Mapping[str, tuple[str, RichRunProgress]]
+    payload: Mapping[str, object], runs: Mapping[str, tuple[str, RichRunProgress]], hidden: Collection[str] = ()
 ) -> list[Mapping[str, object]]:
-    """Return recorded downloads, admitted work awaiting its first task, started processing and files to check."""
+    """Return downloads, admitted work awaiting a task, started processing and files to check, minus deletions."""
     running: set[str] = {
         str(item["request_id"])
         for item in rows(payload.get("requests"))
@@ -154,7 +155,8 @@ def processing_rows(
         )
     ]
     attention: list[Mapping[str, object]] = [item for item in rows(payload.get("materials")) if item.get("attention")]
-    return [*downloads, *preparing, *processing, *attention]
+    deleted: set[str] = deleted_sets(payload, hidden)
+    return [item for item in [*downloads, *preparing, *processing, *attention] if item.get("set_id") not in deleted]
 
 
 def row_ids(materials: list[Mapping[str, object]]) -> list[str]:
@@ -220,6 +222,12 @@ def failed_group(item: Mapping[str, object]) -> str | None:
     return str(group) if item.get("reason") == "processing_failed" and group else None
 
 
+def deletable_set(item: Mapping[str, object]) -> str | None:
+    """Return the set Del deletes on a failed row, as in the Library, or None elsewhere."""
+    set_id: object = item.get("set_id")
+    return str(set_id) if failed_group(item) is not None and set_id else None
+
+
 def cancel_target(item: Mapping[str, object]) -> tuple[str, str] | None:
     """Return the identity a cancellation of this row names, or None when it cannot be cancelled."""
     if item.get("stage") == "download" and item.get("info_hash"):
@@ -264,11 +272,12 @@ def processing_actions(item: Mapping[str, object] | None) -> ScreenActions:
     toggle: tuple[str, str] | None = None if item is None else pause_toggle(item)
     footer: tuple[Action, ...] = (
         *((("P", "ponów"),) if item is not None and failed_group(item) is not None else ()),
+        *((("Del", "usuń"),) if item is not None and deletable_set(item) is not None else ()),
         *((("W", toggle[1]),) if toggle is not None else ()),
         *((("X", "anuluj"),) if target is not None else ()),
         ("H", "historia"),
     )
-    return ScreenActions(footer, PANEL_ACTIONS)
+    return ScreenActions(footer, (("Ctrl+Z", "cofnij"), *PANEL_ACTIONS))
 
 
 def history_entry(item: HistoryEvent) -> str:

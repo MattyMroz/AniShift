@@ -458,6 +458,7 @@ def _failed() -> dict[str, object]:
         "stage": "waiting",
         "state": "failed",
         "reason": "processing_failed",
+        "set_id": "group",
         "run_id": "run",
         "group_ids": ["group"],
         "active": False,
@@ -585,10 +586,10 @@ _ACTIONS: Final[dict[str, tuple[Action, ...]]] = {
         *_PANEL,
     ),
     "subscriptions_empty": (("D", "dodaj pierwszą"), ("Ctrl+Z", "cofnij"), *_PANEL),
-    "processing_download": (("W", "wstrzymaj"), ("X", "anuluj"), ("H", "historia"), *_PANEL),
-    "processing_run": (("X", "anuluj"), ("H", "historia"), *_PANEL),
-    "processing_failed": (("P", "ponów"), ("H", "historia"), *_PANEL),
-    "processing_empty": (("H", "historia"), *_PANEL),
+    "processing_download": (("W", "wstrzymaj"), ("X", "anuluj"), ("H", "historia"), ("Ctrl+Z", "cofnij"), *_PANEL),
+    "processing_run": (("X", "anuluj"), ("H", "historia"), ("Ctrl+Z", "cofnij"), *_PANEL),
+    "processing_failed": (("P", "ponów"), ("Del", "usuń"), ("H", "historia"), ("Ctrl+Z", "cofnij"), *_PANEL),
+    "processing_empty": (("H", "historia"), ("Ctrl+Z", "cofnij"), *_PANEL),
     "history": (("Enter", "otwórz"), ("P", "ponów"), ("/", "szukaj"), ("H", "zamknij"), *_PANEL),
     "library": (("Enter", "otwórz"), ("F", "folder"), ("Del", "usuń"), ("Ctrl+Z", "cofnij"), *_PANEL),
     "library_relocation": (("Enter", "otwórz"), ("F", "folder"), ("Del", "usuń"), ("Ctrl+Z", "cofnij"), *_PANEL),
@@ -650,7 +651,7 @@ _FOOTERS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
     "subscriptions_empty": ("D dodaj pierwszą · ? klawisze · Esc wróć", ()),
     "processing_download": ("W wstrzymaj · X anuluj · H historia · ? klawisze · Esc wróć", ()),
     "processing_run": ("X anuluj · H historia · ? klawisze · Esc wróć", ()),
-    "processing_failed": ("P ponów · H historia · ? klawisze · Esc wróć", ()),
+    "processing_failed": ("P ponów · Del usuń · H historia · ? klawisze · Esc wróć", ()),
     "history": ("Enter otwórz · P ponów · / szukaj · ? klawisze · Esc wróć", ()),
     "library": ("Enter otwórz · F folder · Del usuń · ? klawisze · Esc wróć", ()),
     "library_details": ("Enter otwórz plik · F folder · Del usuń · Esc wróć", ()),
@@ -1727,6 +1728,27 @@ def test_a_failed_material_stays_in_processing_and_p_prepares_its_retry(build: C
     assert "do sprawdzenia 1" in frame
     probe.panel.handle_key("text:p")
     assert _prepared_retry(probe) == ["group"]
+
+
+@pytest.mark.parametrize("name", ["processing_download", "processing_run"])
+def test_an_active_processing_row_offers_no_delete_and_del_only_asks_to_cancel(
+    build: Callable[[str], _Probe], name: str
+) -> None:
+    probe: _Probe = build(name)
+    assert ("Del", "usuń") not in probe.panel._actions().listed
+    probe.panel.handle_key("delete")
+    assert probe.panel._hidden == {}
+    assert probe.panel._question is not None
+
+
+def test_ctrl_z_in_processing_asks_the_owner_to_restore_the_latest_deletion(build: Callable[[str], _Probe]) -> None:
+    probe: _Probe = build("processing_failed")
+    probe.panel.handle_key("undo")
+    undone: list[str] = []
+    session: ResidentSession = cast("ResidentSession", SimpleNamespace(undo_deletion=lambda: undone.append("latest")))
+    assert len(probe.work) == 1
+    cast("Callable[[ResidentSession], object]", probe.work[0])(session)
+    assert undone == ["latest"]
 
 
 def _settle(probe: _Probe) -> None:

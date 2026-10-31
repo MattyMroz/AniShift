@@ -7,6 +7,7 @@ from typing import cast
 
 import pytest
 from test_automation import _await, _completed_library, _owner, _real_service, _request, _serving, _TorrentNetwork
+from test_selective_lifecycle import _failed_request
 
 from anishift.application.acquisition import AcquisitionService, TorrentClient, TorrentManagement
 from anishift.application.automation import AutomationOwner
@@ -17,15 +18,19 @@ from anishift.application.control import (
     DeletionRestore,
     DeletionStatus,
     PendingDeletion,
+    ProcessingRequest,
     ReadyGroup,
+    RequestState,
     RestoreOutcome,
     WatchState,
 )
 from anishift.application.control_views import DeletionPreview, LibraryFileIdentity, decode_view, encode_view
+from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace
 from anishift.application.intents import RequestOrigin
 from anishift.application.library import file_identity
 from anishift.application.watch_state import WatchStateStore
 from anishift.errors import ConfigError
+from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import ControlResponse
 from anishift.platform.recycle import RecycleResult, RestoreRequest
 from anishift.services.torrents import parse_release_name
@@ -328,3 +333,105 @@ def test_library_undo_survives_restart_and_never_falls_back(tmp_path: Path, coll
         owner.request_shutdown()
         thread.join(5)
         service.close()
+
+
+def _failed_row(owner: AutomationOwner, group_id: str, command_id: str) -> dict[str, object] | None:
+    response: ControlResponse = owner.handle(_request("status", command_id=command_id))
+    materials: list[dict[str, object]] = cast("list[dict[str, object]]", response.result["materials"])
+    return next(
+        (item for item in materials if item.get("group_id") == group_id and item.get("reason") == "processing_failed"),
+        None,
+    )
+
+
+def test_a_failed_workspace_episode_is_recycled_and_restored_like_a_library_set(tmp_path: Path) -> None:
+    service, store, _state = _completed_library(tmp_path)
+    source: Path = tmp_path / "02.txt"
+    source.write_text("source", encoding="utf-8")
+    parked: Path = tmp_path / ".synthetic-bin"
+    parked.mkdir()
+
+    def recycle(path: Path, identity: tuple[int, int, int, int]) -> RecycleResult:
+        del identity
+        target: Path = parked / path.name
+        path.rename(target)
+        return RecycleResult("recycled", "recycle_completed", str(target))
+
+    def restore(request: RestoreRequest, check_only: bool) -> RecycleResult:
+        path: Path = request.workspace / request.path
+        if path.exists():
+            return RecycleResult("restored", "restore_completed")
+        if check_only:
+            return RecycleResult("ready", "restore_ready")
+        assert request.receipt is not None
+        Path(request.receipt).rename(path)
+        return RecycleResult("restored", "restore_completed")
+
+    owner: AutomationOwner = AutomationOwner(service, store, instance_id="first", recycler=recycle, restorer=restore)
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(paths=(source,)))
+        assert _await(lambda: owner._on_owner(lambda: _inspected(owner, "02") is not None))
+        group: InspectedSourceGroup | None = owner._on_owner(lambda: _inspected(owner, "02"))
+        assert group is not None
+        failed: ProcessingRequest = _failed_request(group, RequestState.FAILED)
+        assert owner._on_owner(lambda: owner._save(replace(owner.state, requests=(failed,))))
+        row: dict[str, object] | None = _failed_row(owner, group.group_id, "status-1")
+        assert row is not None
+        assert row["set_id"] == group.group_id
+        preview: DeletionPreview = decode_view(
+            DeletionPreview, owner.handle(_request("deletion_preview", {"set_id": group.group_id})).result
+        )
+        assert [item.path for item in preview.files] == ["02.txt"]
+        assert owner.handle(
+            _request(
+                "deletion_start",
+                {"set_id": group.group_id, "preview_id": preview.preview_id},
+                command_id="delete-1",
+                instance_id="first",
+            )
+        ).ok
+        assert _await(lambda: not source.exists() and not owner._deleting)
+        assert store.load().pending_deletions[-1].recycled == ("02.txt",)
+        assert _await(lambda: _failed_row(owner, group.group_id, "status-2") is None)
+        assert owner.handle(_request("deletion_undo", command_id="undo-1")).ok
+        assert _await(lambda: source.is_file() and not owner._deleting)
+        assert source.read_text(encoding="utf-8") == "source"
+        assert _await(lambda: _failed_row(owner, group.group_id, "status-3") is not None)
+        assert owner.handle(_request("deletion_undo", command_id="undo-2")).reason == "restore_already_completed"
+    finally:
+        owner.request_shutdown()
+        thread.join(5)
+        service.close()
+
+
+def test_a_failed_episode_inside_the_library_keeps_refusing_an_unrecorded_scope(tmp_path: Path) -> None:
+    service, store, state = _completed_library(tmp_path)
+    record: ReadyGroup = state.ready_groups[0]
+    other: Path = tmp_path / "02.txt"
+    other.write_text("source", encoding="utf-8")
+    owner: AutomationOwner = AutomationOwner(service, store, instance_id="first")
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.files_changed(DirectoryChange(paths=(tmp_path / "ready/01.txt", other)))
+        assert _await(lambda: owner._on_owner(lambda: _inspected(owner, "01") is not None))
+        group: InspectedSourceGroup | None = owner._on_owner(lambda: _inspected(owner, "01"))
+        assert group is not None
+        failed: ProcessingRequest = _failed_request(group, RequestState.FAILED)
+        assert owner._on_owner(lambda: owner._save(replace(owner.state, requests=(failed,))))
+        row: dict[str, object] | None = _failed_row(owner, record.group_id, "status-1")
+        assert row is not None
+        assert row["set_id"] == record.set_id
+        refused: ControlResponse = owner.handle(_request("deletion_preview", {"set_id": record.group_id}))
+        assert refused.reason == "library_set_missing"
+        assert owner.handle(_request("deletion_preview", {"set_id": record.set_id})).ok
+    finally:
+        owner.request_shutdown()
+        thread.join(5)
+        service.close()
+
+
+def _inspected(owner: AutomationOwner, stem: str) -> InspectedSourceGroup | None:
+    library: InspectedWorkspace | None = owner._library
+    groups: tuple[InspectedSourceGroup, ...] = () if library is None else library.groups
+    return next((group for group in groups if group.source.stem == stem), None)

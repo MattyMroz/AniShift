@@ -100,7 +100,9 @@ uv run anishift subs remove ID   # usuń jedną subskrypcję
 ### Przetwarzanie i Biblioteka
 
 **Przetwarzanie** pokazuje pobrania i obróbkę: **W** wstrzymuje lub wznawia transfer,
-**Del** anuluje go po potwierdzeniu, a **H** otwiera historię.
+**X** anuluje go po potwierdzeniu, a **H** otwiera historię. Na odcinku, którego obróbka się
+nie udała, **P** przygotowuje ponowienie, a **Del** przenosi jego pliki do Kosza jak w Bibliotece;
+**Ctrl+Z** je przywraca.
 
 W `workspace/` może być osobny podfolder na każdą serię. Wyszukiwanie plików czyta katalog
 główny i wszystkie podfoldery poza zarządzanym `tmp/` i katalogami ukrytymi. Przy włączonym

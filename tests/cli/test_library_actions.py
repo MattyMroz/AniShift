@@ -313,6 +313,94 @@ def test_library_accepted_delete_stays_hidden_until_reported_and_undo_restores_i
         _stop(owner, panel)
 
 
+def _failed_material(name: str) -> dict[str, object]:
+    return {
+        "material_id": name,
+        "group_id": name,
+        "set_id": name,
+        "name": f"{name}.mkv",
+        "stage": "waiting",
+        "state": "failed",
+        "reason": "processing_failed",
+        "run_id": "run",
+        "active": False,
+        "attention": True,
+    }
+
+
+def _processing_names(panel: StateController) -> list[str]:
+    return [str(item["group_id"]) for item in panel._processing_rows()]
+
+
+def test_del_on_a_failed_processing_row_deletes_it_like_the_library_and_ctrl_z_brings_it_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    session: ResidentSession = cast("ResidentSession", owner)
+    failed: list[dict[str, object]] = [_failed_material("Alpha"), _failed_material("Beta")]
+    deletion: dict[str, object] = {"operation_id": "recycle-Alpha", "set_id": "Alpha", "total": 1}
+    panel._tab = module._Tab.PROGRESS
+    panel._snapshot = {"materials": failed}
+    try:
+        panel.handle_key("delete")
+        assert _processing_names(panel) == ["Beta"]
+        assert panel._selected == 0
+        assert panel._question is None
+        assert "Alpha.mkv" not in panel.render(80, 24).plain
+        owner.release.set()
+        _until(lambda: "Usunięto · Ctrl+Z cofnij" in panel.render(80, 24).plain)
+        assert owner.deleted == ["Alpha"]
+        panel._receive(session, {"event": "state_changed", "payload": {"materials": failed}})
+        assert _processing_names(panel) == ["Beta"]
+        active: dict[str, object] = {"materials": failed, "deletions": [{**deletion, "active": True}]}
+        panel._receive(session, {"event": "state_changed", "payload": active})
+        assert panel._hidden == {}
+        assert _processing_names(panel) == ["Beta"]
+        done: dict[str, object] = {"materials": failed[1:], "deletions": [{**deletion, "recycled": 1}]}
+        panel._receive(session, {"event": "state_changed", "payload": done})
+        assert _processing_names(panel) == ["Beta"]
+        panel.handle_key("undo")
+        _until(lambda: owner.undone == ["latest"])
+        restored: dict[str, object] = {
+            "materials": failed,
+            "deletions": [{**deletion, "recycled": 1, "restored": True}],
+        }
+        panel._receive(session, {"event": "state_changed", "payload": restored})
+        assert _processing_names(panel) == ["Alpha", "Beta"]
+    finally:
+        _stop(owner, panel)
+
+
+def test_a_refused_processing_delete_returns_the_row_with_the_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner(refuse=True)
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    panel._tab = module._Tab.PROGRESS
+    panel._snapshot = {"materials": [_failed_material("Alpha")]}
+    try:
+        panel.handle_key("delete")
+        assert _processing_names(panel) == []
+        owner.release.set()
+        _until(lambda: "Źródło czeka na zwolnienie przez torrent" in panel.render(80, 24).plain)
+        assert _processing_names(panel) == ["Alpha"]
+        assert owner.deleted == []
+    finally:
+        _stop(owner, panel)
+
+
+def test_ctrl_z_in_history_restores_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    panel._tab = module._Tab.PROGRESS
+    panel._history_open = True
+    monkeypatch.setattr(panel, "_work", lambda action, **kwargs: action(cast("ResidentSession", owner)))
+    try:
+        panel.handle_key("undo")
+        assert owner.undone == []
+    finally:
+        _stop(owner, panel)
+
+
 def test_delete_in_a_panel_text_field_removes_a_character_not_a_set(monkeypatch: pytest.MonkeyPatch) -> None:
     owner: _DeletingOwner = _DeletingOwner()
     panel: StateController = _deleting_panel(monkeypatch, owner)

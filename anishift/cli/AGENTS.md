@@ -147,7 +147,11 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   Nieudane albo anulowane zlecenie (`failed`/`partial`/`cancelled`), którego wideo źródłowe owner widzi na dysku
   (`_local_primary`), przychodzi jako wiersz `waiting`
   z `attention` i `reason=processing_failed` (`Błąd`, licznik „do sprawdzenia”); zostaje do ponowienia, bez X.
-  P na nim (`failed_group`) przygotowuje `retry_proposal` jak Historia; nic nie ponawia się samo.
+  P na nim (`failed_group`) przygotowuje `retry_proposal` jak Historia; nic nie ponawia się samo. Del na nim
+  (`deletable_set`, `set_id` ownera: zestaw Biblioteki albo `group_id` grupy spoza `ready/`) idzie tą samą drogą co
+  Del w Bibliotece (`_delete_now`, `deletion_preview/start`, Kosz); owner rzutuje taką grupę przez `unrecorded_set`.
+  Wiersz chowają `_hidden` i `deleted_sets` snapshotu; Ctrl+Z (poza Historią) woła `deletion_undo` jak Biblioteka.
+  Na aktywnym wierszu Del pozostaje cichym aliasem X.
 - P przygotowuje propozycję ponowienia ownera: lokalna praca idzie do Ręcznego z rewalidacją, zdalna dostaje jawne
   powtórzenie. Pauza nie blokuje P; `Wstrzymano` i zamrożone liczniki tylko dla wierszy z `automatic` (brak pola =
   automatyczny).
