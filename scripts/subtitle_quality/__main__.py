@@ -10,7 +10,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-from anishift.paths import default_workspace_dir
+from anishift.paths import quality_dir
 from anishift.utils.logger import LoggerMode, setup_mode
 from anishift.utils.logger.config import FileConfig
 from scripts.subtitle_quality import calibrate, compare, replay, report
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-QUALITY_ROOT: Final[Path] = default_workspace_dir() / ".quality"
+QUALITY_ROOT: Final[Path] = quality_dir()
 """Root of the quality corpus, reports, gallery and cache."""
 
 DEFAULT_ROOTS: Final[tuple[Path, ...]] = (QUALITY_ROOT / "library", QUALITY_ROOT / "corpus")

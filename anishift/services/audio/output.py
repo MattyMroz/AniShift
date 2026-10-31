@@ -12,6 +12,7 @@ from anishift.services.audio.errors import AudioDecodeError
 from anishift.services.audio.types import AudioCodecProfile, AudioProbe, ChannelPlan
 
 __all__ = [
+    "MIX_LIMITER",
     "CodecSpec",
     "RenderInputs",
     "codec_spec",
@@ -42,6 +43,9 @@ _DEFAULT_BITRATE: Final[dict[AudioCodecProfile, dict[int, str]]] = {
 _EAC3_DURATION_TOLERANCE_MS: Final[int] = 64
 """Two E-AC-3 frames: the encoder pads to a whole 1536-sample frame, 32 ms at 48 kHz."""
 
+MIX_LIMITER: Final[str] = "alimiter=limit=0.891251:attack=5:release=50:level=0:latency=1"
+"""Peak limiter at -1 dBFS closing every mix; ``level=0`` keeps it from normalizing the result."""
+
 
 @dataclass(frozen=True, slots=True)
 class CodecSpec:
@@ -62,6 +66,7 @@ class RenderInputs:
     config: AudioConfig
     channel_plan: ChannelPlan
     source_offset_samples: int = 0
+    narrator_gain_db: float = 0.0
 
 
 def codec_spec(
@@ -113,15 +118,15 @@ def render_command(
         )
         if inputs.source_offset_samples > 0:
             source_chain = f"asetpts=PTS-STARTPTS,adelay={inputs.source_offset_samples}S:all=1,{source_chain}"
-        narrator_gain_db: float = config.narrator_mix_base_gain_db + config.voice_mix_offset_db
         filter_complex: str = (
             f"[0:a:0]{source_chain}[source];"
             f"[1:a:0]{channel_plan.narrator_filter},"
-            f"volume={_db(narrator_gain_db)}[narrator];"
+            f"volume={_db(inputs.narrator_gain_db)}[narrator];"
             "[source][narrator]"
-            "amix=inputs=2:duration=longest:dropout_transition=2:normalize=true[mixed]"
+            "amix=inputs=2:duration=longest:dropout_transition=2:normalize=true[mixed];"
+            f"[mixed]{MIX_LIMITER}[limited]"
         )
-        command.extend(("-filter_complex", filter_complex, "-map", "[mixed]"))
+        command.extend(("-filter_complex", filter_complex, "-map", "[limited]"))
     command.extend(
         (
             "-c:a",

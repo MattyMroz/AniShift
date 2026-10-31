@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Final
 
 from anishift.services.audio.config import AudioConfig
+from anishift.services.audio.normalize import EDGE_TRIM_DBFS, EDGE_TRIM_MARGIN_MS
+from anishift.services.audio.output import MIX_LIMITER
 from anishift.services.audio.types import ChannelPlan, TimedClip
 
 __all__ = [
@@ -22,10 +24,10 @@ __all__ = [
 _NARRATION_ALGORITHM_VERSION: Final[int] = 1
 """Version of normalization and serialized timeline semantics."""
 
-_MIX_ALGORITHM_VERSION: Final[int] = 3
-"""Version of source alignment, gain, channel mapping, and amix semantics."""
+_MIX_ALGORITHM_VERSION: Final[int] = 5
+"""Version of source alignment, stereo-downmix measured gain, channel mapping, amix, and limiter semantics."""
 
-_NORMALIZATION_ALGORITHM_VERSION: Final[int] = 1
+_NORMALIZATION_ALGORITHM_VERSION: Final[int] = 2
 """Version of provider-clip conversion semantics."""
 
 _COPY_BUFFER_BYTES: Final[int] = 1024 * 1024
@@ -96,7 +98,7 @@ def mix_fingerprint(  # noqa: PLR0913 - source alignment is independent of conte
         "original_audio": original_identity,
         "source_offset_us": source_offset_us,
         "gain": {
-            "narrator_base_db": _canonical_float(config.narrator_mix_base_gain_db),
+            "narrator_over_source_lu": _canonical_float(config.narrator_over_source_lu),
             "voice_offset_db": _canonical_float(config.voice_mix_offset_db),
             "original_db": _canonical_float(config.original_gain_db),
         },
@@ -105,6 +107,7 @@ def mix_fingerprint(  # noqa: PLR0913 - source alignment is independent of conte
             "dropout_transition": 2,
             "normalize": True,
         },
+        "limiter": MIX_LIMITER,
         "channel_plan": {
             "output_layout": channel_plan.output_layout,
             "output_channels": channel_plan.output_channels,
@@ -140,6 +143,10 @@ def normalization_fingerprint(
             "sample_rate": config.narrator_sample_rate,
             "sample_width": config.narrator_sample_width,
             "channels": config.narrator_channels,
+        },
+        "edge_trim": {
+            "threshold_dbfs": _canonical_float(EDGE_TRIM_DBFS),
+            "margin_ms": _canonical_float(EDGE_TRIM_MARGIN_MS),
         },
     }
     return _digest(payload)

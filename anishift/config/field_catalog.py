@@ -62,6 +62,7 @@ from anishift.services.tts.engines.elevenlabs.constants import (
     OUTPUT_FORMATS,
     POLISH_TTS_MODEL_IDS,
 )
+from anishift.services.tts.engines.elevenreader.constants import DEFAULT_VOICE_ALIAS, PROVIDER_MODEL_ID, VOICES
 from anishift.services.tts.engines.sapi.constants import SAPI_PROFILES, SAPI_RATE_MAX, SAPI_RATE_MIN
 from anishift.services.tts.engines.sapi.types import SapiVoiceProfile
 
@@ -343,7 +344,7 @@ USER_SETTING_DISPOSITIONS: Final[MappingProxyType[str, SettingDisposition]] = Ma
         "tts_output_profile": SettingDisposition.VISIBLE,
         "tts_output_bitrate": SettingDisposition.CONDITIONAL,
         "tts_timeline_policy": SettingDisposition.INTERNAL,
-        "narrator_mix_base_gain_db": SettingDisposition.VISIBLE,
+        "narrator_over_source_lu": SettingDisposition.VISIBLE,
         "original_gain_db": SettingDisposition.VISIBLE,
         "tts_voice_profiles": SettingDisposition.CONDITIONAL,
         "elevenbytes_custom_voices": SettingDisposition.CONDITIONAL,
@@ -1004,7 +1005,7 @@ def _profile_specs(context: SettingCatalogContext) -> tuple[SettingSpec, ...]:
         SettingSpec(
             setting_id="tts_profile.voice_mix_offset_db",
             label="Voice mix offset",
-            description="Adjust this voice relative to the global narrator mix gain.",
+            description="Adjust this voice in LU relative to the narrator loudness target.",
             value_type=SettingValueType.FLOAT,
             default=profile.voice_mix_offset_db,
             scope=SettingScope.ENGINE_PROFILE,
@@ -1013,7 +1014,7 @@ def _profile_specs(context: SettingCatalogContext) -> tuple[SettingSpec, ...]:
         ),
     )
     concurrency: tuple[SettingSpec, ...] = ()
-    if context.tts_engine != "sapi":
+    if context.tts_engine not in {"elevenreader", "sapi"}:
         concurrency = (
             SettingSpec(
                 setting_id="tts_profile.concurrency",
@@ -1250,11 +1251,11 @@ def _audio_and_composition_specs(defaults: UserSettings) -> tuple[SettingSpec, .
             invalidates=_AUDIO_INVALIDATES,
         ),
         SettingSpec(
-            setting_id="narrator_mix_base_gain_db",
-            label="Narrator base gain",
-            description="Set the global narrator gain used while mixing narration audio.",
+            setting_id="narrator_over_source_lu",
+            label="Narrator loudness",
+            description="Set the narrator loudness in LU above the measured original audio while mixing.",
             value_type=SettingValueType.FLOAT,
-            default=defaults.narrator_mix_base_gain_db,
+            default=defaults.narrator_over_source_lu,
             scope=SettingScope.GLOBAL,
             invalidates=_AUDIO_INVALIDATES,
         ),
@@ -1352,6 +1353,8 @@ def _tts_model_values(context: SettingCatalogContext) -> tuple[tuple[SettingValu
         return tuple(ENDPOINTS), "run6"
     if context.tts_engine == "elevenlabs":
         return tuple(POLISH_TTS_MODEL_IDS), DEFAULT_MODEL_ID
+    if context.tts_engine == "elevenreader":
+        return (PROVIDER_MODEL_ID,), PROVIDER_MODEL_ID
     if context.tts_engine == "sapi":
         return ("sapi5",), "sapi5"
     msg = f"Unknown TTS engine in catalog context: {context.tts_engine!r}"
@@ -1372,6 +1375,8 @@ def _tts_voice_values(context: SettingCatalogContext) -> tuple[tuple[SettingValu
         return aliases, DALLIN_ALIAS
     if context.tts_engine == "elevenlabs":
         return (), ""
+    if context.tts_engine == "elevenreader":
+        return tuple(VOICES), DEFAULT_VOICE_ALIAS
     if context.tts_engine == "sapi":
         return tuple(SAPI_PROFILES), "agnieszka"
     msg = f"Unknown TTS engine in catalog context: {context.tts_engine!r}"
@@ -1384,6 +1389,8 @@ def _profile_defaults(context: SettingCatalogContext) -> TtsVoiceProfileSettings
         resolved_voice_id = DALLIN_VOICE_ID
     elif context.tts_engine == "sapi":
         resolved_voice_id = _sapi_profile(resolved_voice_id).resolved_voice_id
+    elif context.tts_engine == "elevenreader" and resolved_voice_id.casefold() in VOICES:
+        resolved_voice_id = VOICES[resolved_voice_id.casefold()].voice_id
     profiles: dict[str, TtsVoiceProfileSettings] = default_tts_voice_profiles()
     key: str = tts_profile_key(context.tts_engine, resolved_voice_id)
     return profiles.get(key, TtsVoiceProfileSettings(concurrency=1 if context.tts_engine == "sapi" else None))

@@ -1,22 +1,23 @@
 # 11-elevenreader-tts
 
 Nowy silnik lektora AniShift: ElevenReader (Eleven v4, głosy Piotr Fronczewski i Adam) przez prawdziwy Chrome z
-zalogowaną sesją, na wzór repozytorium `ElevenDownloaderPro`. Jeden dokument na odcinek, cięty na klipy kwestii
-według czasów znaków i ciszy. `elevenbytes` zostaje zapasem.
+zalogowaną sesją. Cały odcinek jest nagrywany jednym dokumentem i cięty na klipy kwestii w ciszy. W tym samym
+workstreamie: głośność lektora mierzona względem oryginału z limiterem, przycinanie ciszy na brzegach klipów i
+tempo na głos. `elevenbytes` zostaje zapasem.
 
 ## Status
 
-Plan gotowy do akceptacji właściciela (2026-10-25). Trzy rundy review planu: runda 3 bez findingów krytycznych i
-poważnych. Kod nie powstał. Następny krok: decyzje D1–D11 (`specification.md`) i faza 0 planu (spike na koncie
-właściciela).
+Plan zaktualizowany 2026-10-30 po prototypie (nagranie, cięcie, głośność, tempo na Tantei S2E03). Kod nie powstał;
+review tej wersji planu jeszcze się nie odbyło. Następny krok: potwierdzenie D1 (`specification.md`) i faza E0
+planu (w tym pilne skopiowanie danych prototypu poza katalog tymczasowy). Edgerunners 02 i 03 są nagrane, a walidacja cięcia na
+nich trwa; jej wynik zamyka punkt kontrolny K1.
 
 ## Kolejność czytania
 
 1. [intent.md](intent.md) — problem, kierunek, ryzyko regulaminu, odrzucone drogi.
-2. [specification.md](specification.md) — wymagania, zakazy, kryteria sukcesu, otwarte decyzje z rekomendacjami.
-3. [file-map.md](file-map.md) — pliki obu repozytoriów i drzewo nowego silnika.
-4. [plan.md](plan.md) — stan obu systemów z dowodami, design, fazy F0–F7, testy, git, ryzyka, wycofanie.
-5. [reviews/](reviews/) — rundy 1–3 z findingami i poprawkami.
+2. [specification.md](specification.md) — ustalenia, wymagania, zakazy, kryteria sukcesu, otwarta decyzja D1.
+3. [plan.md](plan.md) — stan z dowodami, decyzja „port czy EDP”, design, etapy E0–E10 z zależnościami i pasami
+   zapisu, punkty kontrolne K1–K3.
+4. [file-map.md](file-map.md) — pliki źródłowe i dotknięte, z przypisaniem do etapów.
 
-Artefakty powstające w trakcie wykonania: `research/spike-results.md` (faza 0), `research/e1-envelope-drift.md`
-(faza 1), `outcomes/01-elevenreader-engine.md` (faza 7).
+Artefakty powstające w trakcie wykonania: `outcomes/01-elevenreader-engine.md` (E10).

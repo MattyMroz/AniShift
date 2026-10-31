@@ -10,12 +10,13 @@ import secrets
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from shutil import copyfile, which
+from shutil import copyfile
 from typing import TYPE_CHECKING, Final
 
 from anishift.errors import ErrorCode, ErrorContext, FatalError
 from anishift.paths import torrent_data_dir, torrent_download_dir
 from anishift.platform.binaries import is_windows
+from anishift.platform.installed import find_installed
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -235,15 +236,7 @@ def settings_path() -> Path:
 
 def installed_executable() -> Path | None:
     """Return the installed client, looked up in the standard locations and then on ``PATH``."""
-    for variable, relative in _INSTALL_LOCATIONS:
-        root: str = os.environ.get(variable, "")
-        if not root:
-            continue
-        candidate: Path = Path(root) / relative
-        if candidate.is_file():
-            return candidate
-    found: str | None = which(_EXECUTABLE_STEM)
-    return Path(found) if found else None
+    return find_installed(_INSTALL_LOCATIONS, _EXECUTABLE_STEM)
 
 
 def is_running(*, run: Runner = _default_run) -> bool:

@@ -42,12 +42,13 @@ from anishift.services.tts import (
     SpeechBatch,
     SpeechBatchProgress,
     SpeechBatchResult,
-    SpeechBatchStatus,
     SpeechRequest,
     SpeechRequestProgress,
     SpeechRetryProgress,
+    SynthesizedRequest,
 )
 from anishift.services.tts.validation import is_speech_text
+from anishift.text.boundaries import ends_sentence
 from anishift.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -161,6 +162,15 @@ class NarrationTiming:
     source_order: int
 
 
+@dataclass(frozen=True, slots=True)
+class _SignReading:
+    """Validated sign candidates of one task, the mode weighing them and the audio service measuring them."""
+
+    mode: str
+    candidates: tuple[SignCandidate, ...]
+    audio: ClipPreparer
+
+
 class _ProgressObserver:
     __slots__ = ("_progress", "_task_id", "_visible_required")
 
@@ -195,7 +205,15 @@ class _ProgressObserver:
 class TtsTaskHandler:
     """Read one planned script aloud through a run-scoped facade, whatever document carries it."""
 
-    __slots__ = ("_allowed_voice_ids", "_audio", "_group_ranks", "_run_root", "_service", "_voice_id")
+    __slots__ = (
+        "_allowed_voice_ids",
+        "_audio",
+        "_group_ranks",
+        "_reads_document",
+        "_run_root",
+        "_service",
+        "_voice_id",
+    )
 
     def __init__(  # noqa: PLR0913 - keyword-only run dependencies
         self,
@@ -206,8 +224,10 @@ class TtsTaskHandler:
         voice_id: str = "",
         allowed_voice_ids: frozenset[str] = frozenset(),
         audio: ClipPreparer | None = None,
+        reads_document: bool = False,
     ) -> None:
         self._service: TtsExecutor = service
+        self._reads_document: bool = reads_document
         self._audio: ClipPreparer | None = audio
         self._run_root: Path = run_root
         self._voice_id: str = voice_id
@@ -243,25 +263,23 @@ class TtsTaskHandler:
         if timeline is NarrationTimeline.SOURCE_TIMES and source.kind in _UNTIMED_SCRIPT_KINDS:
             _raise_execution("A plain text script carries no times a recording could keep")
         lines: tuple[SpokenLine, ...] = _script_lines(source.kind, source.path)
-        requests, timings = _narration_batch(task.group_id, lines, timeline)
+        requests, timings = _narration_batch(task.group_id, lines, timeline, join_open_lines=self._reads_document)
         batch_rank: int | None = self._group_ranks.get(task.group_id)
         if batch_rank is None:
             _raise_execution("TTS task group is missing its natural-order rank")
-        batch = SpeechBatch(task.group_id, batch_rank, requests)
+        signs: _SignReading | None = _sign_reading(task, artifacts, self._audio)
+        in_document: tuple[SignCandidate, ...] = signs.candidates if signs is not None and self._reads_document else ()
+        sign_requests, sign_timings = _sign_batch(task.group_id, in_document, first_rank=len(requests))
+        batch = SpeechBatch(task.group_id, batch_rank, (*requests, *sign_requests))
         result: SpeechBatchResult = self._synthesize(batch, task, cancel, progress)
-        try:
-            manifest: NarrationManifest = build_narration_manifest(
-                result,
-                timings,
-                expected_scope_id=task.group_id,
-                timeline=timeline,
-            )
-        except ValueError as error:
-            raise ExecutionError(str(error)) from error
+        spoken, read_signs = _split_signs(result, frozenset(timing.request_id for timing in sign_timings))
+        manifest: NarrationManifest = _manifest(spoken, timings, task.group_id, timeline)
         metadata: dict[str, str | int | bool] = {}
-        if len(task.requires) == _MAX_INPUTS:
-            signs: Artifact = artifacts.require_ready(task.requires[1])
-            manifest, metadata = self._with_signs(task, signs, manifest, cancel, progress)
+        if signs is not None:
+            recorded: dict[int, NarrationManifestClip] | None = (
+                _sign_clips(read_signs, sign_timings, task.group_id) if self._reads_document else None
+            )
+            manifest, metadata = self._with_signs(task, signs, manifest, recorded, cancel, progress)
         destination: Path = task_staging_path(self._run_root, task, output, ".json")
         destination.write_text(json.dumps(_manifest_json(manifest), ensure_ascii=False), encoding="utf-8")
         metadata["clip_count"] = len(manifest.clips)
@@ -284,35 +302,29 @@ class TtsTaskHandler:
         cancel.raise_if_cancelled()
         return result
 
-    def _with_signs(
+    def _with_signs(  # noqa: PLR0913 - signs read with the script arrive already recorded
         self,
         task: PlanTask,
-        signs: Artifact,
+        signs: _SignReading,
         manifest: NarrationManifest,
+        recorded: dict[int, NarrationManifestClip] | None,
         cancel: CancellationToken,
         progress: TaskProgressSink,
     ) -> tuple[NarrationManifest, dict[str, str | int | bool]]:
-        """Add the sign readings that fit the pauses of the spoken lines, without moving any of them."""
-        mode: str | int | bool | None = dict(task.parameters).get("sign_narration")
-        if signs.kind is not ArtifactKind.SIGN_CANDIDATES or signs.path is None or not isinstance(mode, str):
-            _raise_execution("TTS sign narration requires planned sign candidates and a reading mode")
-        if mode not in _SIGN_MODES or self._audio is None:
-            _raise_execution("TTS sign narration requires a reading mode and the run audio service")
-        try:
-            candidates: tuple[SignCandidate, ...] = load_sign_candidates(signs.path)
-        except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
-            msg: str = "Sign candidates are invalid"
-            raise ExecutionError(msg) from error
+        """Add the sign readings that fit the pauses of the spoken lines, recording the reachable ones if unread."""
         tmp_root: Path = self._run_root / task.group_id / "audio"
-        lines: tuple[NormalizedClip, ...] = _prepare(self._audio, manifest.clips, tmp_root, cancel)
-        baseline: TimelinePlan | None = plan_timeline(lines)
-        wanted: tuple[SignCandidate, ...] = (
-            () if baseline is None else reachable_signs(candidates, free_intervals(baseline), baseline.sample_rate)
-        )
-        recorded: dict[int, NarrationManifestClip] = self._record_signs(task, wanted, cancel, progress)
-        prepared: tuple[NormalizedClip, ...] = _prepare(self._audio, tuple(recorded.values()), tmp_root, cancel)
+        lines: tuple[NormalizedClip, ...] = _prepare(signs.audio, manifest.clips, tmp_root, cancel)
+        wanted: tuple[SignCandidate, ...] = signs.candidates
+        if recorded is None:
+            baseline: TimelinePlan | None = plan_timeline(lines)
+            wanted = () if baseline is None else reachable_signs(wanted, free_intervals(baseline), baseline.sample_rate)
+            recorded = self._record_signs(task, wanted, cancel, progress)
+        unrecorded: tuple[int, ...] = tuple(candidate.group for candidate in wanted if candidate.group not in recorded)
+        if unrecorded:
+            logger.warning("Signs left out without a recording", task_id=task.task_id, unrecorded=len(unrecorded))
+        prepared: tuple[NormalizedClip, ...] = _prepare(signs.audio, tuple(recorded.values()), tmp_root, cancel)
         selection: SignSelection = select_signs(
-            candidates, {clip.timed_clip.source_order: clip for clip in prepared}, lines, mode
+            signs.candidates, {clip.timed_clip.source_order: clip for clip in prepared}, lines, signs.mode
         )
         readings: tuple[NarrationManifestClip, ...] = tuple(
             replace(recorded[placement.group], start_ms=placement.start_ms, end_ms=placement.end_ms)
@@ -321,8 +333,8 @@ class TtsTaskHandler:
         logger.info(
             "Signs chosen for narration",
             task_id=task.task_id,
-            mode=mode,
-            candidates=len(candidates),
+            mode=signs.mode,
+            candidates=len(signs.candidates),
             synthesized=len(recorded),
             read=len(readings),
         )
@@ -330,6 +342,7 @@ class TtsTaskHandler:
             "sign_decisions": ",".join(f"{group}:{reason}" for group, reason in selection.decisions),
             "sign_chars_synthesized": sum(len(candidate.text) for candidate in wanted),
             "signs_read": len(readings),
+            "signs_unrecorded": ",".join(str(group) for group in unrecorded),
         }
         return replace(manifest, clips=(*manifest.clips, *readings)), metadata
 
@@ -340,30 +353,12 @@ class TtsTaskHandler:
         cancel: CancellationToken,
         progress: TaskProgressSink,
     ) -> dict[int, NarrationManifestClip]:
-        """Synthesize every wanted sign once; a sign the engine skips is simply missing."""
+        """Synthesize every wanted sign once; a sign skipped or failed by the engine is missing."""
         if not wanted:
             return {}
-        requests: tuple[SpeechRequest, ...] = tuple(
-            SpeechRequest(f"{task.group_id}-sign-{candidate.group}", candidate.text, index)
-            for index, candidate in enumerate(wanted)
-        )
-        timings: tuple[NarrationTiming, ...] = tuple(
-            NarrationTiming(request.request_id, *_placement_window(candidate.start, candidate.end), candidate.group)
-            for request, candidate in zip(requests, wanted, strict=True)
-        )
+        requests, timings = _sign_batch(task.group_id, wanted, first_rank=0)
         batch = SpeechBatch(task.group_id, self._group_ranks[task.group_id], requests)
-        result: SpeechBatchResult = self._synthesize(batch, task, cancel, progress)
-        try:
-            manifest: NarrationManifest = build_narration_manifest(
-                result,
-                timings,
-                expected_scope_id=task.group_id,
-                timeline=NarrationTimeline.SOURCE_TIMES,
-                allow_skipped_requests=True,
-            )
-        except ValueError as error:
-            raise ExecutionError(str(error)) from error
-        return {clip.source_order: clip for clip in manifest.clips}
+        return _sign_clips(self._synthesize(batch, task, cancel, progress), timings, task.group_id)
 
     def _require_offered_voice(self) -> None:
         """Refuse a voice the chosen engine does not offer before a single request is paid for."""
@@ -402,11 +397,9 @@ def build_narration_manifest(
     *,
     expected_scope_id: str,
     timeline: NarrationTimeline,
-    allow_skipped_requests: bool = False,
+    allow_missing_clips: bool = False,
 ) -> NarrationManifest:
-    """Validate one TTS result and restore caller-owned timing by request ID."""
-    if result.status is not SpeechBatchStatus.COMPLETED or result.failure is not None:
-        _raise_manifest("TTS batch did not complete")
+    """Restore caller timing by request ID; a request without a clip fails with the batch failure unless allowed."""
     if result.scope_id != expected_scope_id:
         _raise_manifest("TTS result scope does not match the submitted batch")
     timing_by_id: dict[str, NarrationTiming] = {timing.request_id: timing for timing in timings}
@@ -421,11 +414,11 @@ def build_narration_manifest(
         clip = execution.speech_clip
         timing: NarrationTiming | None = timing_by_id.get(execution.request.request_id)
         if timing is None:
-            _raise_manifest("Completed TTS batch lacks a required clip")
+            _raise_manifest("TTS batch lacks a required clip")
         if clip is None:
-            if allow_skipped_requests:
+            if allow_missing_clips:
                 continue
-            _raise_manifest("Completed TTS batch lacks a required clip")
+            _raise_missing_clip(result.failure)
         if clip.request_id != execution.request.request_id:
             _raise_manifest("TTS clip ID does not match its request")
         clips.append(
@@ -442,6 +435,80 @@ def build_narration_manifest(
             )
         )
     return NarrationManifest(result.scope_id, tuple(clips), timeline)
+
+
+def _sign_reading(task: PlanTask, artifacts: ArtifactSnapshot, audio: ClipPreparer | None) -> _SignReading | None:
+    """Return the validated signs a task plans to read, before a single request is paid for."""
+    if len(task.requires) < _MAX_INPUTS:
+        return None
+    signs: Artifact = artifacts.require_ready(task.requires[1])
+    mode: str | int | bool | None = dict(task.parameters).get("sign_narration")
+    if signs.kind is not ArtifactKind.SIGN_CANDIDATES or signs.path is None or not isinstance(mode, str):
+        _raise_execution("TTS sign narration requires planned sign candidates and a reading mode")
+    if mode not in _SIGN_MODES or audio is None:
+        _raise_execution("TTS sign narration requires a reading mode and the run audio service")
+    try:
+        candidates: tuple[SignCandidate, ...] = load_sign_candidates(signs.path)
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        msg: str = "Sign candidates are invalid"
+        raise ExecutionError(msg) from error
+    return _SignReading(mode, candidates, audio)
+
+
+def _sign_batch(
+    group_id: str, candidates: tuple[SignCandidate, ...], *, first_rank: int
+) -> tuple[tuple[SpeechRequest, ...], tuple[NarrationTiming, ...]]:
+    """Pair every sign with a request ranked from *first_rank* and the window its text is on screen."""
+    requests: tuple[SpeechRequest, ...] = tuple(
+        SpeechRequest(f"{group_id}-sign-{candidate.group}", candidate.text, first_rank + index)
+        for index, candidate in enumerate(candidates)
+    )
+    timings: tuple[NarrationTiming, ...] = tuple(
+        NarrationTiming(request.request_id, *_placement_window(candidate.start, candidate.end), candidate.group)
+        for request, candidate in zip(requests, candidates, strict=True)
+    )
+    return requests, timings
+
+
+def _split_signs(result: SpeechBatchResult, sign_ids: frozenset[str]) -> tuple[SpeechBatchResult, SpeechBatchResult]:
+    """Split one batch result into its spoken lines and the signs read in the same batch."""
+    spoken: tuple[SynthesizedRequest, ...] = tuple(
+        item for item in result.requests if item.request.request_id not in sign_ids
+    )
+    signs: tuple[SynthesizedRequest, ...] = tuple(
+        item for item in result.requests if item.request.request_id in sign_ids
+    )
+    return replace(result, requests=spoken), replace(result, requests=signs)
+
+
+def _manifest(
+    result: SpeechBatchResult,
+    timings: tuple[NarrationTiming, ...],
+    scope_id: str,
+    timeline: NarrationTimeline,
+    *,
+    allow_missing_clips: bool = False,
+) -> NarrationManifest:
+    try:
+        return build_narration_manifest(
+            result,
+            timings,
+            expected_scope_id=scope_id,
+            timeline=timeline,
+            allow_missing_clips=allow_missing_clips,
+        )
+    except ValueError as error:
+        raise ExecutionError(str(error)) from error
+
+
+def _sign_clips(
+    result: SpeechBatchResult, timings: tuple[NarrationTiming, ...], scope_id: str
+) -> dict[int, NarrationManifestClip]:
+    """Return the recorded sign clips by sign group; a sign skipped or failed by the engine is missing."""
+    manifest: NarrationManifest = _manifest(
+        result, timings, scope_id, NarrationTimeline.SOURCE_TIMES, allow_missing_clips=True
+    )
+    return {clip.source_order: clip for clip in manifest.clips}
 
 
 def _prepare(
@@ -542,24 +609,46 @@ def _narration_batch(
     group_id: str,
     lines: tuple[SpokenLine, ...],
     timeline: NarrationTimeline,
+    *,
+    join_open_lines: bool,
 ) -> tuple[tuple[SpeechRequest, ...], tuple[NarrationTiming, ...]]:
     """Pair every pronounceable line with the window *timeline* reads it in, refusing an unreadable script."""
-    requests: list[SpeechRequest] = []
-    timings: list[NarrationTiming] = []
+    spoken: list[SpokenLine] = []
     previous_order: int | None = None
     for line in lines:
         if previous_order is not None and line.order <= previous_order:
             _raise_execution("TTS script lines must arrive in strictly increasing reading order")
         previous_order = line.order
-        if not is_speech_text(line.text):
-            continue
+        if is_speech_text(line.text):
+            spoken.append(line)
+    if not spoken:
+        _raise_execution("TTS script carries no pronounceable text")
+    if join_open_lines and timeline is NarrationTimeline.SOURCE_TIMES:
+        spoken = _join_open_lines(spoken)
+    requests: list[SpeechRequest] = []
+    timings: list[NarrationTiming] = []
+    for line in spoken:
         request_id: str = f"{group_id}-{line.order}"
         requests.append(SpeechRequest(request_id, line.text, len(requests)))
         start, end = _timing_window(line, timeline)
         timings.append(NarrationTiming(request_id, start, end, line.order))
-    if not requests:
-        _raise_execution("TTS script carries no pronounceable text")
     return tuple(requests), tuple(timings)
+
+
+def _join_open_lines(lines: list[SpokenLine]) -> list[SpokenLine]:
+    """Join each line left open into the next one starting before it ends, pairs only."""
+    joined: list[SpokenLine] = []
+    index: int = 0
+    while index < len(lines):
+        line: SpokenLine = lines[index]
+        following: SpokenLine | None = lines[index + 1] if index + 1 < len(lines) else None
+        index += 1
+        if following is None or ends_sentence(line.text) or following.start > line.end:
+            joined.append(line)
+            continue
+        joined.append(replace(line, text=f"{line.text} {following.text}", end=max(line.end, following.end)))
+        index += 1
+    return joined
 
 
 def _timing_window(line: SpokenLine, timeline: NarrationTimeline) -> tuple[int, int]:
@@ -608,3 +697,12 @@ def _raise_execution(message: str) -> Never:
 
 def _raise_manifest(message: str) -> Never:
     raise ValueError(message)
+
+
+def _raise_missing_clip(failure: ErrorContext | None) -> Never:
+    """Fail the task with the engine's message and what to do, which the panel shows as the task error."""
+    if failure is None:
+        _raise_execution("TTS batch lacks a required clip")
+    message: str = f"{failure.message}. {failure.suggestion}" if failure.suggestion else failure.message
+    context: ErrorContext = ErrorContext(code=failure.code, message=message, suggestion=failure.suggestion)
+    raise ExecutionError(context=context)

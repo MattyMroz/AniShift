@@ -12,7 +12,11 @@ the code:
 - `subscriptions.json` is a frozen file from an earlier version, read only
   once to migrate its subscriptions into `watch/state.json`;
 - `qbittorrent/` stores the resident's private client profile, process
-  receipt and credentials. The executable is in `external/bin/qbittorrent/`.
+  receipt and credentials. The executable is in `external/bin/qbittorrent/`;
+- `elevenreader/` stores the ElevenReader browser profile in `chrome-profile/`
+  (the signed-in session, restricted to the current account) and the last
+  session check in `session.json` (`signed_in`, `checked_at` and the account cleanup still owed:
+  `restore` with the previous voice and speed, `delete_document`; never a read id or token).
 
 `ANISHIFT_CONFIG_DIR` replaces this directory entirely, so a test or a second
 account can keep its own preferences, watch state and subscriptions elsewhere.

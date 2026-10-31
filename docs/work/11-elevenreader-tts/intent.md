@@ -1,108 +1,116 @@
 ---
 kind: intent
-status: przyjęty kierunek właściciela, szczegóły do akceptacji
-updated: 2026-10-25
+status: przyjęty kierunek właściciela; D1 w specyfikacji czeka na potwierdzenie
+updated: 2026-10-30
 ---
 
 # Intencja: lektor AniShift przez ElevenReader
 
 ## Problem
 
-AniShift czyta dziś polskie dialogi głosem silnika `elevenbytes` (publiczne proxy, głos Dallin, endpoint `run6`;
-`anishift/config/user_settings.py:271-273`). Właściciel chce lepszego, bardziej ludzkiego lektora. Znalazł trasę
-przez aplikację konsumencką ElevenReader z modelem Eleven v4 i zbudował ją w osobnym repozytorium
-`ElevenDownloaderPro` (dalej: EDP). EDP nagrywa audio z prawdziwej sesji Chrome i zapisuje razem z nim czas każdego
-znaku (`ElevenDownloaderPro/README.md:91-106`). W EDP powstały już próby polskiego lektora: `lektor_pl`, `v2`, `v3` i
-montaż (`ElevenDownloaderPro/workspace/output/lektor_pl*.mp3`, 2026-10-24).
+AniShift czyta dziś polskie dialogi głosem silnika `elevenbytes` (publiczne proxy, głos Dallin). Właściciel chce
+lepszego, bardziej ludzkiego lektora. Znalazł trasę przez aplikację konsumencką ElevenReader z modelem Eleven v4 i
+zbudował ją w osobnym repozytorium `ElevenDownloaderPro` (EDP). EDP nagrywa audio z prawdziwej sesji Chrome i
+zapisuje razem z nim czas każdego znaku.
 
-Potrzeba: odcinek przetwarzany w AniShift ma dostać polską ścieżkę lektora czytaną głosem z ElevenReadera, bez
-ręcznego nagrywania i bez przenoszenia plików między dwoma programami.
+2026-10-30 prototyp nagrał cały odcinek Tantei S2E03 obydwoma głosami, pociął nagrania na kwestie heurystyką ciszy i
+zmiksował je z wyrównaną głośnością i tempem. Właściciel ocenił odsłuch jako „w miarę OK”. Wyniki:
+`SCR/snap-report.md` i `SCR/loudness-report.md` (ścieżka `SCR` w `specification.md`).
+
+Potrzeba: odcinek przetwarzany w AniShift dostaje polską ścieżkę lektora czytaną głosem z ElevenReadera, z
+głośnością i tempem dobranymi do głosu, bez ręcznej pracy i bez przenoszenia plików między programami.
 
 ## Efekt, który ma znaczenie
 
-- Właściciel wybiera w Ustawieniach → Lektor silnik ElevenReader i jeden z dwóch głosów: Piotr Fronczewski albo
-  Adam.
-- Auto, Ręczny i subskrypcje działają jak dotąd. Zmienia się tylko głos ścieżki lektora.
-- Sesja konta trzyma się sama. Właściciel loguje się raz, a gdy sesja wygaśnie, AniShift mówi to wprost i daje jedną
-  akcję naprawczą.
+- Właściciel wybiera w Ustawieniach → Lektor silnik ElevenReader i głos: Piotr Fronczewski albo Adam.
+- Auto, Ręczny i subskrypcje działają jak dotąd. Zmienia się głos ścieżki lektora.
+- Lektor brzmi tak głośno względem oryginału jak dzisiejszy Dallin, niezależnie od głosu i materiału.
+- Tempo każdego głosu jest dobrane tak, żeby mowa mieściła się w oknach napisów podobnie jak dziś.
+- Sesja konta trzyma się sama. Właściciel loguje się raz, a po wygaśnięciu sesji AniShift mówi to wprost i daje
+  jedną akcję naprawczą.
 - Gdy ElevenReader przestanie działać albo konto zostanie zablokowane, właściciel w jednym kroku wraca do
-  `elevenbytes` i nic innego się nie psuje.
+  `elevenbytes`. Każdy błąd jest widoczny; nic nie staje po cichu.
 
-Ocenia właściciel uchem, na prawdziwym odcinku: jakość głosu, tempo względem okien napisów i głośność względem
-oryginału.
+Ocenia właściciel uchem, na prawdziwym odcinku.
 
-## Znane fakty od właściciela
+## Znane fakty
 
-- Nowym silnikiem ma zostać ElevenReader przez trasę zbudowaną w EDP.
 - Trasa łamie warunki korzystania z usługi i może skończyć się banem konta. Prohibited Use Policy ElevenLabs
-  (wersja „Last Updated: 09 October 2026”, odczyt 2026-10-25, <https://elevenlabs.io/use-policy>) zakazuje w §12
-  „Using bots, scraping, or automated tools to extract data from our Services” oraz „Accessing our Services other
-  than through the interfaces and APIs we make available to you”. ElevenReader Terms (wersja „Last Updated: October
-  13, 2025”, odczyt 2026-10-25, <https://elevenreader.io/elevenreader-terms>) pozwalają na użytek prywatny i
-  niekomercyjny, a §5(a) zapowiada monitorowanie użycia i ograniczanie dostępu. **Konsekwencja:** silnik
-  `elevenbytes` zostaje w kodzie jako zapas, działający i testowany. Nowy silnik nie dostaje żadnej funkcji do
-  obchodzenia limitów, wielu kont ani zabezpieczeń.
-- Lokalny TTS jest odrzucony (`docs/ideas.md:65`).
-- Etap 6 jakości, głośność lektora, czeka na zmianę silnika (`docs/work/10-quality/masterplan.md:15`). Po
-  przejściu na ElevenReader ten etap wraca na nowym głosie.
+  (<https://elevenlabs.io/use-policy>, §12, odczyt 2026-10-25) zakazuje automatycznej ekstrakcji i dostępu innego niż
+  przez udostępnione interfejsy. ElevenReader Terms (<https://elevenreader.io/elevenreader-terms>, §5(a), odczyt
+  2026-10-25) zapowiadają monitorowanie użycia. **Konsekwencja:** `elevenbytes` zostaje w kodzie jako zapas,
+  działający i testowany; nowy silnik nie dostaje żadnej funkcji do obchodzenia limitów, wielu kont ani zabezpieczeń.
+- Lokalny TTS jest odrzucony (`docs/ideas.md`).
+- Etap 6 jakości, głośność lektora (`docs/work/10-quality/masterplan.md`), realizuje ten workstream: mierzona
+  głośność względem oryginału z limiterem.
+- Między głosami ElevenReadera jest 11 dB różnicy surowego poziomu, a Adam w paśmie mowy brzmi o 2,4 dB ciszej niż
+  Fronczewski przy równym LUFS. Stały gain nie wystarcza.
+- Przy wspólnym tempie 1,25 Fronczewski mówi o 16% wolniej niż Dallin, Adam o 9%.
+- Czasy znaków serwera są zgrubne (start następnej kwestii średnio 350 ms za wcześnie), ale nie dryfują. Same nie
+  wystarczą do cięcia; razem z ciszą w nagraniu dają 100% poprawnych granic na zmierzonym odcinku.
 
 ## Kierunek
 
-Przenieść potrzebną logikę EDP do AniShift jako nowy silnik TTS `elevenreader`, w konwencjach AniShift: typowane
-błędy, wspólny scheduler, retry i resume klipów, testy i bramki. EDP zostaje osobnym narzędziem właściciela do
-audiobooków. AniShift nie zależy od jego kodu ani katalogów.
+Przenieść potrzebną logikę EDP i prototypu do AniShift jako nowy silnik TTS `elevenreader`, zaadaptowaną i
+napisaną od nowa w konwencjach AniShift, bez kopiowania 1:1:
+typowane błędy, wspólny scheduler, retry i resume klipów, testy i bramki. EDP zostaje osobnym narzędziem
+właściciela do audiobooków.
 
-Silnik różni się od pozostałych jednym faktem: ElevenReader czyta **cały dokument**, a nie pojedynczą kwestię.
-Wgranie i otwarcie dokumentu trwa około minuty (`ElevenDownloaderPro/docs/research/capabilities.md:123`), więc
-osobny dokument na każdą z około 300 kwestii odcinka trwałby godzinami. Dlatego silnik czyta wszystkie kwestie
-odcinka w jednym dokumencie, a nagranie jest cięte na klipy kwestii według czasów znaków i ciszy. Czasy znaków są
-w tej trasie konieczne: bez nich nie da się przypisać fragmentu nagrania do kwestii.
+Silnik czyta cały odcinek jednym dokumentem, bo wgranie i otwarcie dokumentu trwa kilkanaście sekund, a osobny
+dokument na każdą z około 300 kwestii trwałby godzinami. Nagranie jest cięte na klipy kwestii w ciszy między nimi.
+Kwestie urwane w pół zdania łączą się jeszcze w tekście, więc nie powstaje granica, której nie da się bezpiecznie
+przeciąć. Łączenie dotyczy tylko silnika dokumentowego; silniki czytające każdą linijkę osobno działają jak dziś.
+Po każdym nagraniu silnik sprząta konto: usuwa wgrany dokument i przywraca poprzedni głos i tempo, także po błędzie
+i przerwaniu.
+
+Normalizacja głośności, przycinanie ciszy na brzegach klipów i tempo na głos należą do istniejącej domeny audio i
+profili głosów. Działają dla każdego silnika; zakres przycinania dla Dallina czeka na potwierdzenie (D1).
 
 ## Cele
 
 - Silnik `elevenreader` w rejestrze TTS, wybieralny w Ustawieniach, z głosami Fronczewski i Adam.
-- Jeden dokument na odcinek (i osobny na czytane szyldy), cięty na klipy kwestii z dokładnością pozwalającą nie
-  ucinać słów.
+- Jeden dokument na odcinek (i osobny na czytane szyldy), cięty na klipy kwestii bez uciętych słów.
+- Lektor na stałym poziomie ponad oryginał, z limiterem szczytów.
+- Tempo i korekta głośności dobrane na głos.
 - Sesja w prywatnym profilu Chrome w `config/elevenreader/`, z akcją logowania w panelu i kontrolą w `doctor`.
-- Wznowienie po przerwaniu: gotowe klipy kwestii są trafieniami resume; ponownie czytane są tylko brakujące.
+- Wznowienie po przerwaniu: gotowe klipy są trafieniami resume; ponownie czytane są tylko brakujące kwestie.
 - Jasne komunikaty dla wygasłej sesji, wyczerpanych kredytów i blokady konta.
 
 ## Nie-cele
 
-- Audiobooki z rozdziałami, napisy karaoke i eksport słownych czasów (to zostaje w EDP).
+- Audiobooki z rozdziałami, napisy karaoke i eksport słownych czasów (zostaje w EDP).
 - Automatyczne przełączanie na `elevenbytes` w trakcie odcinka.
-- Wybór modelu innego niż Eleven v4 i znaczniki emocji w tekście.
-- Wsparcie Linuksa.
-- Zmiana EDP. Repozytorium EDP pozostaje nietknięte.
+- Model inny niż Eleven v4 i znaczniki emocji w tekście.
+- Logowanie e-mailem i hasłem zapisanym w AniShift.
+- Wsparcie Linuksa. Zmiana EDP.
 
 ## Anty-cele
 
 - Obchodzenie limitów, App Check, ograniczeń urządzenia lub blokad IP, podrabianie protokołu WebSocket, wiele kont.
 - Ciche przełączenie silnika albo głosu w połowie odcinka.
-- Sekrety, cookies, adresy WebSocket i teksty napisów w logach, ledgerze, receipt i dokumentach.
-- Publikowanie nagrań głosu Fronczewskiego w repozytorium (kategoria `famous`;
-  `ElevenDownloaderPro/docs/research/capabilities.md:153`). Repozytorium AniShift jest publiczne.
+- Sekrety, tokeny, cookies, adresy WebSocket i teksty napisów w logach, ledgerze, receipt i dokumentach.
+- Nagrania głosu Fronczewskiego w repozytorium (kategoria `famous`; repozytorium jest publiczne).
+- Model mowy w produkcie (CrisperWhisper służył wyłącznie jako miernik prototypu).
 
 ## Odrzucone drogi
 
-- **Zależność pakietowa od EDP (`uv add` ze ścieżki lub gita):** EDP nie jest pakietem (`pyproject.toml` bez
-  `build-system`, moduły importują się płasko `from timestamps import ...`, `src/downloader.py:31`), ma niezacommitowane
-  pliki (`docs/report.md:87`), synchroniczne API Playwright, `print` zamiast loggera, `SystemExit` zamiast typowanych
-  błędów i `msvcrt` (`src/downloader.py:18`). Ścieżka lokalna psuje CI i `pip-audit`. Adaptacja wymagałaby
-  przebudowy EDP, czyli zmiany repozytorium, które ma zostać nietknięte.
-- **Uruchamianie EDP jako procesu zewnętrznego:** `auto.py` pracuje na katalogach `workspace/input`, `done`, `failed`
-  i raportuje stan tekstem na stdout (`src/auto.py:225-246`). Brak typowanego kontraktu, wyboru głosu, anulowania i
-  retry; wynik trzeba by parsować z logów.
-- **Osobny dokument na każdą kwestię:** godziny na odcinek i setki wpisów w bibliotece konta.
-- **Model wyrównania mowy (ASR):** zbędny, bo serwer sam przysyła czas każdego znaku
-  (`ElevenDownloaderPro/docs/research/capabilities.md:28-30`).
-
-## Nierozstrzygnięte
-
-Decyzje właściciela z rekomendacjami są w `specification.md`, sekcja „Otwarte decyzje właściciela”. Fakty,
-których kod EDP nie ustala (identyfikatory głosów, sposób wyboru głosu, metody logowania), ustala faza 0 planu.
+- **Wywoływanie EDP jako zewnętrznego narzędzia:** wymaga nowego punktu wejścia w EDP, którego kluczowe pliki
+  (`src/auto.py`, `src/timestamps.py`, `src/clips.py`) nie są zacommitowane; błędy trzeba by czytać z tekstu na
+  stdout; EDP ma własne pętle czekania do 120 minut, stały port 9222 i własny profil. Pełne porównanie: `plan.md` §4.
+- **Zależność pakietowa od EDP:** EDP nie jest pakietem (brak `build-system`, płaskie importy), ścieżka lokalna psuje
+  CI i `pip-audit`.
+- **Osobny dokument na każdą kwestię:** godziny na odcinek.
+- **Cięcie na samych czasach znaków:** błąd do 0,5 s; ucina słowa.
+- **Cięcie w najgłębszym dołku energii bez ciszy:** na dźwięcznym łączeniu słów („faktem, że”) dołek wypada w
+  środku słowa.
+- **Model wyrównania mowy w produkcie:** zbędny przy heurystyce ciszy i łączeniu kwestii urwanych.
+- **Normalizacja głośności w `normalize_clip`:** cel jest względny wobec oryginału, którego normalizacja klipu nie
+  zna; pomiar przed tempem chybiał o 0,25–0,5 LU.
 
 ## Stan uzgodnienia
 
-Kierunek „ElevenReader przez trasę EDP, `elevenbytes` jako zapas” przyjął właściciel. Wariant integracji (kopia z
-refaktorem), rekomendacje decyzji i plan są propozycją do akceptacji.
+Kierunek „ElevenReader przez trasę EDP, `elevenbytes` jako zapas” przyjął właściciel. Ustalenia z 2026-10-30
+(nagrywanie jednym dokumentem, głosy, heurystyka cięcia, normalizacja, tempo, przycinanie, powrót do `elevenbytes`)
+są wiążące, podobnie jak odpowiedzi właściciela: kod nagrywania przenosimy i refaktoryzujemy do standardu repo,
+łączenie kwestii tylko dla silnika dokumentowego, sprzątanie konta zawsze. Decyzja D1 (przycinanie brzegów u
+Dallina) w `specification.md` czeka na potwierdzenie.

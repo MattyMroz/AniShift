@@ -182,7 +182,7 @@ class RunSettingsSnapshot:
     tts_vpn_enabled: bool = True
     tts_postprocess_tempo: float = 1.0
     audio_bitrate: str | None = None
-    narrator_mix_base_gain_db: float = 7.0
+    narrator_over_source_lu: float = 7.5
     voice_mix_offset_db: float = 0.0
     original_gain_db: float = 0.0
     tts_timeline_policy: str = "serialize"
@@ -285,7 +285,7 @@ def _validate_runtime_settings(settings: RunSettingsSnapshot) -> None:
         msg = "TTS post-process tempo must be finite and positive"
         raise ValueError(msg)
     gains: tuple[float, ...] = (
-        settings.narrator_mix_base_gain_db,
+        settings.narrator_over_source_lu,
         settings.voice_mix_offset_db,
         settings.original_gain_db,
     )

@@ -23,6 +23,11 @@ Ustawienia i `Settings` (pydantic-settings, prefix `ANISHIFT_`, z `.env`), prefe
 - `_clean_number` celowo odrzuca `bool` przed sprawdzeniem `int|float` (bo `bool` jest podklasą `int`) — `true` w JSON nie przejdzie jako liczba. `user_settings.py:523`
 - `resolve_workspace_root` zwraca ścieżkę, ale NIE tworzy jej na dysku — katalog powstaje dopiero przez `ensure_workspace_dir`. `workspace.py:102,128`
 - `ensure_workspace_dir` rzuca `NotADirectoryError` (spoza hierarchii AniShift), gdy root istnieje jako plik nie-katalog. `workspace.py:136`
+- Głosy ElevenReadera (alias, etykieta, ID) żyją tylko w `VOICES` silnika; `user_settings.py` i `field_catalog.py`
+  je czytają. Zmiana silnika nie przenosi obcego głosu: `_normalize_tts_selection` daje ElevenBytes `dallin` (chyba
+  że alias jest własnym głosem ElevenBytes), ElevenLabs zamiast aliasu ElevenReadera domyślne `dallin`, a
+  ElevenReaderowi `fronczewski`. Współbieżność ElevenReadera nie jest
+  polem panelu (zawsze 1, jak SAPI).
 - Modele, możliwości i opcje Palantira należą do serwisu LLM; `model_catalog.py` tylko je projektuje. Nie dodawaj tu parsera ani drugiej listy modeli. Adres enrollmentu pozostaje preferencją (`UserSettings.palantir_enrollment_base_url`), nie polem katalogu.
 
 ## Konwencje

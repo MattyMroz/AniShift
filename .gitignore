@@ -296,6 +296,7 @@ config/settings.json
 config/presets.json
 config/watch/
 config/qbittorrent/
+config/elevenreader/
 config/subscriptions.json
 
 # ── Re-includes ───────────────────────────────────────────────────────────────

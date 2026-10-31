@@ -5,6 +5,7 @@ import pytest
 from anishift.text.boundaries import (
     CLOSING_MARKS,
     PHRASE_CUT_CHARS,
+    ends_sentence,
     is_false_sentence_break,
     period_ends_sentence,
 )
@@ -44,3 +45,15 @@ def test_decimal_dot_is_not_a_sentence_end() -> None:
         previous_character="1",
         next_character="5",
     )
+
+
+@pytest.mark.parametrize(
+    "text", ["Tak.", "Stój!", "Kto?", "No i…", 'Powiedział "dość"', "Mówi „dość”", "To «on»", "Tak.  "]
+)
+def test_ends_sentence_closed_line_returns_true(text: str) -> None:
+    assert ends_sentence(text)
+
+
+@pytest.mark.parametrize("text", ["Ale wtedy,", "I wtedy", "", "   "])
+def test_ends_sentence_open_line_returns_false(text: str) -> None:
+    assert not ends_sentence(text)

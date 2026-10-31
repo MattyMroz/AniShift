@@ -6,9 +6,10 @@ import wave
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
+from loguru import logger as loguru_logger
 
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState
 from anishift.application.cancellation import EventCancellationToken, NeverCancelledToken
@@ -17,22 +18,26 @@ from anishift.application.intents import NarrationTimeline
 from anishift.application.planning import ExecutionPlan, PlanTask, ProcessingOrderPolicy, RunSettingsSnapshot, TaskKind
 from anishift.application.results import ArtifactSnapshot, TaskResult
 from anishift.application.runtime import ProductionHandlerFactory
+from anishift.application.scheduler_runtime import public_error
 from anishift.application.sign_narration import write_sign_candidates
 from anishift.application.tts_clips import FfmpegClipService
 from anishift.application.tts_handler import (
+    NarrationManifest,
     NarrationTiming,
     TtsProgressObserver,
     TtsTaskHandler,
+    _narration_batch,
     build_narration_manifest,
     load_narration_manifest,
 )
 from anishift.config.settings import Settings
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError
+from anishift.paths import quality_dir
 from anishift.platform.binaries import Binary, resolve_binary
 from anishift.services.audio.commands import CommandResult
 from anishift.services.audio.errors import AudioProcessError
-from anishift.services.audio.types import NormalizedClip, PcmStorage, TimedClip
-from anishift.services.subtitles import SignCandidate
+from anishift.services.audio.types import NormalizedClip, TimedClip
+from anishift.services.subtitles import SignCandidate, SpokenLine
 from anishift.services.tts import (
     AudioFormat,
     ClipExpectation,
@@ -46,11 +51,19 @@ from anishift.services.tts import (
     SynthesisStatus,
     SynthesizedRequest,
 )
+from anishift.services.tts.engines.elevenreader.api_backend import SIGN_IN_HINT, auth_error
+
+if TYPE_CHECKING:
+    from loguru import Message
 
 _SPOKEN_PARAMETERS: tuple[tuple[str, str | int | bool], ...] = (
     ("narration_timeline", "source_times"),
     ("script_kind", "spoken_pl"),
 )
+
+_OPEN_PAIR: tuple[tuple[int, int, str], ...] = ((1_000, 2_000, "Kiedy wrócisz"), (2_000, 3_500, "do domu?"))
+_TANTEI_LINES: Path = quality_dir() / "elevenreader" / "tantei" / "lines.json"
+_REJECTED: ErrorContext = ErrorContext(code=ErrorCode.TTS_INPUT_INVALID, message="rejected")
 
 
 class _Progress:
@@ -212,7 +225,7 @@ class _Preparer:
     def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
         del cancel
         self.roots.add(tmp_root)
-        return NormalizedClip(clip, tmp_root / f"{clip.request_id}.pcm", 1000, 2, 1, 500, PcmStorage.RAW, False)
+        return NormalizedClip(clip, tmp_root / f"{clip.request_id}.pcm", 1000, 2, 1, 500)
 
 
 def _signed_synthesis(tmp_path: Path) -> tuple[PlanTask, ArtifactSnapshot]:
@@ -261,16 +274,206 @@ def test_signs_are_read_in_free_pauses_and_rejected_signs_stay_out_of_the_manife
         ("group-1-0", 5000, 5500),
         ("group-1-sign-3", 1000, 1500),
     ]
+    assert [request.request_id for request in service.batches[0].requests] == ["group-1-0"]
     assert [request.request_id for request in service.batches[1].requests] == ["group-1-sign-3", "group-1-sign-7"]
+    assert len(service.batches) == 4
     assert first.outputs[0].metadata == {
         "sign_decisions": "3:read,7:weight",
         "sign_chars_synthesized": len("Brama szkoły") + len("Napis"),
         "signs_read": 1,
+        "signs_unrecorded": "",
         "clip_count": 2,
     }
     assert second.outputs[0].metadata == first.outputs[0].metadata
     assert load_narration_manifest(second.outputs[0].path) == manifest
     assert preparer.roots == {tmp_path / "run" / "group-1" / "audio"}
+
+
+class _WindowPreparer:
+    def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
+        del cancel
+        return NormalizedClip(clip, tmp_root / f"{clip.request_id}.pcm", 1000, 2, 1, clip.end_ms - clip.start_ms)
+
+
+def _hidden_sign_synthesis(tmp_path: Path) -> tuple[PlanTask, ArtifactSnapshot]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    script_path = tmp_path / "episode.spoken.pl.srt"
+    script_path.write_text("1\n00:00:01,000 --> 00:00:09,000\nCześć\n", encoding="utf-8")
+    signs_path: Path = write_sign_candidates(
+        (
+            SignCandidate(3, 2000, 3000, "Brama szkoły", "brama szkoły", 0.9, 0.0),
+            SignCandidate(7, 10_000, 10_500, "Napis", "napis", 0.9, 0.0),
+        ),
+        tmp_path / "signs.json",
+    )
+    spoken = Artifact(
+        "spoken", "group-1", ArtifactKind.SPOKEN_PL, script_path, ArtifactState.READY, ArtifactLifetime.INTERMEDIATE
+    )
+    signs = Artifact(
+        "signs", "group-1", ArtifactKind.SIGN_CANDIDATES, signs_path, ArtifactState.READY, ArtifactLifetime.INTERMEDIATE
+    )
+    output = Artifact(
+        "manifest", "group-1", ArtifactKind.TTS_MANIFEST, None, ArtifactState.MISSING, ArtifactLifetime.INTERMEDIATE
+    )
+    task = PlanTask(
+        "tts",
+        "group-1",
+        TaskKind.SYNTHESIZE_SPEECH,
+        ("spoken", "signs"),
+        ("manifest",),
+        (),
+        "tts:edge",
+        (*_SPOKEN_PARAMETERS, ("sign_narration", "always")),
+    )
+    return task, ArtifactSnapshot({"spoken": spoken, "signs": signs}, {"manifest": output})
+
+
+def _signed_reading(tmp_path: Path, *, reads_document: bool) -> tuple[_Tts, TaskResult]:
+    task, snapshot = _hidden_sign_synthesis(tmp_path)
+    service = _Tts(tmp_path)
+    handler = TtsTaskHandler(
+        service,
+        run_root=tmp_path / "run",
+        group_ranks={"group-1": 0},
+        audio=_WindowPreparer(),
+        reads_document=reads_document,
+    )
+    return service, handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
+
+
+def _placements(result: TaskResult) -> list[tuple[str, int, int, int]]:
+    return [
+        (clip.request_id, clip.start_ms, clip.end_ms, clip.source_order)
+        for clip in load_narration_manifest(result.outputs[0].path).clips
+    ]
+
+
+def test_tts_handler_line_by_line_engine_records_only_reachable_signs_in_second_batch(tmp_path: Path) -> None:
+    service, result = _signed_reading(tmp_path, reads_document=False)
+
+    assert [[request.request_id for request in batch.requests] for batch in service.batches] == [
+        ["group-1-0"],
+        ["group-1-sign-7"],
+    ]
+    assert _placements(result) == [("group-1-0", 1000, 9000, 0), ("group-1-sign-7", 10_000, 10_500, 7)]
+    assert result.outputs[0].metadata == {
+        "sign_decisions": "3:no_pause,7:read",
+        "sign_chars_synthesized": len("Napis"),
+        "signs_read": 1,
+        "signs_unrecorded": "",
+        "clip_count": 2,
+    }
+
+
+def test_tts_handler_document_engine_reads_signs_in_script_batch_with_line_by_line_placements(
+    tmp_path: Path,
+) -> None:
+    _, line_by_line = _signed_reading(tmp_path / "line_by_line", reads_document=False)
+    service, document = _signed_reading(tmp_path / "document", reads_document=True)
+
+    assert len(service.batches) == 1
+    assert [(request.request_id, request.request_rank) for request in service.batches[0].requests] == [
+        ("group-1-0", 0),
+        ("group-1-sign-3", 1),
+        ("group-1-sign-7", 2),
+    ]
+    assert _placements(document) == _placements(line_by_line)
+    assert document.outputs[0].metadata == {
+        "sign_decisions": "3:no_pause,7:read",
+        "sign_chars_synthesized": len("Brama szkoły") + len("Napis"),
+        "signs_read": 1,
+        "signs_unrecorded": "",
+        "clip_count": 2,
+    }
+
+
+class _FailingTts(_Tts):
+    def __init__(
+        self,
+        root: Path,
+        failing: frozenset[str],
+        failure: ErrorContext = _REJECTED,
+    ) -> None:
+        super().__init__(root)
+        self.failing: frozenset[str] = failing
+        self.failure: ErrorContext = failure
+
+    def synthesize(self, batch: SpeechBatch, *, callbacks: TtsProgressObserver) -> SpeechBatchResult:
+        result: SpeechBatchResult = super().synthesize(batch, callbacks=callbacks)
+        failure: ErrorContext = self.failure
+        executions: tuple[SynthesizedRequest, ...] = tuple(
+            replace(item, status=SynthesisStatus.FAILED, speech_clip=None, error_code=failure.code.value)
+            if item.request.request_id in self.failing
+            else item
+            for item in result.requests
+        )
+        if executions == result.requests:
+            return result
+        return replace(result, status=SpeechBatchStatus.PARTIAL, requests=executions, failure=failure)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("reads_document", [False, True])
+def test_tts_handler_failed_sign_is_left_out_with_warning_and_metadata(tmp_path: Path, *, reads_document: bool) -> None:
+    task, snapshot = _signed_synthesis(tmp_path)
+    service = _FailingTts(tmp_path, frozenset({"group-1-sign-7"}))
+    handler = TtsTaskHandler(
+        service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=_Preparer(), reads_document=reads_document
+    )
+    captured: list[Message] = []
+    handler_id: int = loguru_logger.add(captured.append, format="{message} {extra}", level="WARNING")
+
+    try:
+        result: TaskResult = handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
+    finally:
+        loguru_logger.remove(handler_id)
+
+    assert [
+        (clip.request_id, clip.start_ms, clip.end_ms) for clip in load_narration_manifest(result.outputs[0].path).clips
+    ] == [
+        ("group-1-0", 5000, 5500),
+        ("group-1-sign-3", 1000, 1500),
+    ]
+    assert result.outputs[0].metadata == {
+        "sign_decisions": "3:read,7:missing",
+        "sign_chars_synthesized": len("Brama szkoły") + len("Napis"),
+        "signs_read": 1,
+        "signs_unrecorded": "7",
+        "clip_count": 2,
+    }
+    assert [message.record["extra"]["unrecorded"] for message in captured] == [1]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("reads_document", [False, True])
+def test_tts_handler_failed_line_fails_task_with_engine_message_and_hint(
+    tmp_path: Path, *, reads_document: bool
+) -> None:
+    task, snapshot = _signed_synthesis(tmp_path)
+    failure: ErrorContext = auth_error("ElevenReader session is signed out").context
+    service = _FailingTts(tmp_path, frozenset({"group-1-0"}), failure)
+    handler = TtsTaskHandler(
+        service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=_Preparer(), reads_document=reads_document
+    )
+
+    with pytest.raises(ExecutionError) as caught:
+        handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
+
+    assert caught.value.context.code is ErrorCode.TTS_AUTH_FAILED
+    assert caught.value.context.suggestion == SIGN_IN_HINT
+    assert public_error(caught.value) == f"ElevenReader session is signed out. {SIGN_IN_HINT}"
+    assert len(service.batches) == 1
+
+
+def test_tts_handler_document_engine_without_audio_service_refuses_signs_before_synthesis(tmp_path: Path) -> None:
+    task, snapshot = _signed_synthesis(tmp_path)
+    service = _Tts(tmp_path)
+    handler = TtsTaskHandler(service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, reads_document=True)
+
+    with pytest.raises(ExecutionError):
+        handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
+
+    assert service.batches == []
 
 
 class _CancellingPreparer(_Preparer):
@@ -494,7 +697,7 @@ def test_manifest_rejects_submitted_request_without_clip(tmp_path: Path) -> None
     result = _Tts(tmp_path).synthesize(SpeechBatch("group-1", 0, (request,)), callbacks=callbacks)
     missing_clip = replace(result.requests[0], speech_clip=None)
 
-    with pytest.raises(ValueError, match="lacks a required clip"):
+    with pytest.raises(ExecutionError, match="lacks a required clip"):
         build_narration_manifest(
             replace(result, requests=(missing_clip,)),
             (NarrationTiming("request-1", 1000, 2000, 0),),
@@ -555,6 +758,7 @@ def _clips(runner: _ClipRunner, *, cancel: threading.Event | None = None) -> Ffm
         ffmpeg=Path("ffmpeg"),
         ffprobe=Path("ffprobe"),
         timeout_s=1,
+        recording_timeout_s=1,
     )
 
 
@@ -844,6 +1048,50 @@ def test_the_production_speech_handler_refuses_a_voice_its_own_engine_never_offe
         )
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("profile", "joins"),
+    [(("elevenreader", "eleven_v4", "fronczewski"), True), (("elevenbytes", "run6", "dallin"), False)],
+)
+def test_production_tts_handler_document_engine_reads_document(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    profile: tuple[str, str, str],
+    *,
+    joins: bool,
+) -> None:
+    if resolve_binary(Binary.FFMPEG) is None or resolve_binary(Binary.FFPROBE) is None:
+        pytest.skip("bundled FFmpeg is unavailable")
+    monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
+    engine, model, voice = profile
+    settings = RunSettingsSnapshot(
+        translation_profile_id="google",
+        translation_max_retries=2,
+        translation_concurrency=2,
+        llm_profile_id="gemini",
+        llm_max_concurrency=2,
+        tts_profile_id=engine,
+        tts_model_id=model,
+        tts_voice_id=voice,
+        tts_max_retries=2,
+        tts_group_jobs=1,
+        audio_profile_id="eac3",
+        composition_profile_id="balanced",
+        processing_order_policy=ProcessingOrderPolicy.READY_FIRST,
+    )
+
+    handler: TtsTaskHandler | None = ProductionHandlerFactory._tts_handler(
+        Settings(_env_file=None),
+        tmp_path / "run",
+        ExecutionPlan((), (), (), settings, ()),
+        frozenset({TaskKind.SYNTHESIZE_SPEECH}),
+        None,
+    )
+
+    assert handler is not None
+    assert handler._reads_document is joins
+
+
 def _ass_script(path: Path) -> Path:
     path.write_text(
         "[Script Info]\nScriptType: v4.00+\nPlayResX: 1280\nPlayResY: 720\n\n"
@@ -872,3 +1120,127 @@ def test_a_spoken_only_script_is_read_whole_while_a_full_script_is_classified(
     _read_aloud(tmp_path, _ass_script(tmp_path / "episode.ass"), kind, "source_times", service)
 
     assert [request.text for request in service.batches[0].requests] == texts
+
+
+def _cues_srt(tmp_path: Path, cues: tuple[tuple[int, int, str], ...]) -> Path:
+    path: Path = tmp_path / "cues.pl.srt"
+    blocks: list[str] = [
+        f"{number}\n{_srt_time(start)} --> {_srt_time(end)}\n{text}\n"
+        for number, (start, end, text) in enumerate(cues, start=1)
+    ]
+    path.write_text("\n".join(blocks), encoding="utf-8")
+    return path
+
+
+def _srt_time(milliseconds: int) -> str:
+    seconds, millis = divmod(milliseconds, 1_000)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02}:{minutes:02}:{seconds:02},{millis:03}"
+
+
+def _joined_reading(
+    tmp_path: Path, cues: tuple[tuple[int, int, str], ...], *, join_open_lines: bool, timeline: str = "source_times"
+) -> tuple[SpeechBatch, NarrationManifest]:
+    service = _Tts(tmp_path)
+    path: Path = _cues_srt(tmp_path, cues)
+    result: TaskResult = TtsTaskHandler(
+        service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, reads_document=join_open_lines
+    ).execute(
+        _speech_task(timeline, ArtifactKind.FULL_PL),
+        ArtifactSnapshot({"script": _script(path, ArtifactKind.FULL_PL)}, {"manifest": _manifest_slot()}),
+        NeverCancelledToken(),
+        _Progress(),
+    )
+    return service.batches[0], load_narration_manifest(result.outputs[0].path)
+
+
+def test_narration_without_joining_open_pair_keeps_two_requests(tmp_path: Path) -> None:
+    batch, manifest = _joined_reading(tmp_path, _OPEN_PAIR, join_open_lines=False)
+
+    assert [(request.request_id, request.text) for request in batch.requests] == [
+        ("group-1-0", "Kiedy wrócisz"),
+        ("group-1-1", "do domu?"),
+    ]
+    assert [(clip.start_ms, clip.end_ms, clip.source_order) for clip in manifest.clips] == [
+        (1_000, 2_000, 0),
+        (2_000, 3_500, 1),
+    ]
+
+
+def test_narration_joining_open_pair_without_gap_sends_one_request_over_both_windows(tmp_path: Path) -> None:
+    batch, manifest = _joined_reading(tmp_path, _OPEN_PAIR, join_open_lines=True)
+
+    assert [(request.request_id, request.text) for request in batch.requests] == [
+        ("group-1-0", "Kiedy wrócisz do domu?"),
+    ]
+    assert [(clip.start_ms, clip.end_ms, clip.source_order) for clip in manifest.clips] == [(1_000, 3_500, 0)]
+
+
+def test_narration_joining_open_line_before_non_speech_line_joins_next_spoken_line(tmp_path: Path) -> None:
+    cues: tuple[tuple[int, int, str], ...] = (
+        (1_000, 2_000, "Kiedy wrócisz"),
+        (1_500, 1_900, "♪"),
+        (2_000, 3_500, "do domu?"),
+    )
+
+    batch, manifest = _joined_reading(tmp_path, cues, join_open_lines=True)
+
+    assert [(request.request_id, request.text) for request in batch.requests] == [
+        ("group-1-0", "Kiedy wrócisz do domu?"),
+    ]
+    assert [(clip.start_ms, clip.end_ms, clip.source_order) for clip in manifest.clips] == [(1_000, 3_500, 0)]
+
+
+def test_narration_joining_open_pair_with_one_ms_gap_keeps_two_requests(tmp_path: Path) -> None:
+    cues: tuple[tuple[int, int, str], ...] = ((1_000, 2_000, "Kiedy wrócisz"), (2_001, 3_500, "do domu?"))
+
+    batch, _ = _joined_reading(tmp_path, cues, join_open_lines=True)
+
+    assert [request.request_id for request in batch.requests] == ["group-1-0", "group-1-1"]
+
+
+def test_narration_joining_closed_line_keeps_two_requests(tmp_path: Path) -> None:
+    cues: tuple[tuple[int, int, str], ...] = ((1_000, 2_000, "Wróciłem."), (2_000, 3_500, "Jestem w domu."))
+
+    batch, _ = _joined_reading(tmp_path, cues, join_open_lines=True)
+
+    assert [request.request_id for request in batch.requests] == ["group-1-0", "group-1-1"]
+
+
+def test_narration_joining_three_open_lines_joins_only_the_first_pair(tmp_path: Path) -> None:
+    cues: tuple[tuple[int, int, str], ...] = (
+        (1_000, 2_000, "Kiedy"),
+        (2_000, 3_000, "wrócisz"),
+        (3_000, 4_000, "do domu"),
+    )
+
+    batch, manifest = _joined_reading(tmp_path, cues, join_open_lines=True)
+
+    assert [(request.request_id, request.text, request.request_rank) for request in batch.requests] == [
+        ("group-1-0", "Kiedy wrócisz", 0),
+        ("group-1-2", "do domu", 1),
+    ]
+    assert [(clip.start_ms, clip.end_ms, clip.source_order) for clip in manifest.clips] == [
+        (1_000, 3_000, 0),
+        (3_000, 4_000, 2),
+    ]
+
+
+def test_narration_joining_continuous_timeline_keeps_every_line(tmp_path: Path) -> None:
+    batch, manifest = _joined_reading(tmp_path, _OPEN_PAIR, join_open_lines=True, timeline="continuous")
+
+    assert [request.request_id for request in batch.requests] == ["group-1-0", "group-1-1"]
+    assert [(clip.start_ms, clip.end_ms) for clip in manifest.clips] == [(0, 1), (0, 1)]
+
+
+@pytest.mark.skipif(not _TANTEI_LINES.is_file(), reason="Tantei lines.json is not available")
+def test_narration_joining_tantei_lines_makes_eleven_joins() -> None:
+    raw: list[dict[str, str | int]] = json.loads(_TANTEI_LINES.read_text(encoding="utf-8"))
+    lines: tuple[SpokenLine, ...] = tuple(
+        SpokenLine(int(line["start"]), int(line["end"]), str(line["text"]), "", int(line["order"])) for line in raw
+    )
+
+    requests, _ = _narration_batch("tantei", lines, NarrationTimeline.SOURCE_TIMES, join_open_lines=True)
+
+    assert len(lines) - len(requests) == 11

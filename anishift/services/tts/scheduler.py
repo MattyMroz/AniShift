@@ -7,7 +7,7 @@ import heapq
 import itertools
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from anishift.errors import ErrorCode, ErrorContext, TransientError
 from anishift.services.tts.errors import (
@@ -16,6 +16,7 @@ from anishift.services.tts.errors import (
     TtsConfigError,
     TtsError,
     TtsProviderUnavailableError,
+    TtsQuotaError,
     TtsRateLimitError,
     TtsTimeoutError,
     TtsVoiceError,
@@ -27,8 +28,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from anishift.services.tts.config import TtsConfig
-    from anishift.services.tts.protocols import CancellationToken, TtsEngine
-    from anishift.services.tts.types import EngineClipResult, SynthesisRequest
+    from anishift.services.tts.protocols import CancellationToken
 
 __all__ = ["ScheduledSynthesis", "TtsScheduler"]
 
@@ -36,10 +36,10 @@ logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
-class ScheduledSynthesis:
+class ScheduledSynthesis[R]:
     """Terminal provider-attempt outcome returned to the TTS facade."""
 
-    clip: EngineClipResult | None
+    result: R | None
     error: TtsError | None
     attempts: int
 
@@ -47,27 +47,27 @@ class ScheduledSynthesis:
 @dataclass(order=True, slots=True)
 class _ReadyItem:
     key: tuple[int, float, int, int, int]
-    work: _WorkItem = field(compare=False)
+    work: _WorkItem[Any] = field(compare=False)
 
 
 @dataclass(order=True, slots=True)
 class _DelayedItem:
     ready_at: float
     sequence: int
-    work: _WorkItem = field(compare=False)
+    work: _WorkItem[Any] = field(compare=False)
 
 
 @dataclass(slots=True)
-class _WorkItem:
-    request_factory: Callable[[int], SynthesisRequest]
-    accept_result: Callable[[EngineClipResult], Awaitable[EngineClipResult]]
-    on_result: Callable[[EngineClipResult], Awaitable[None]] | None
+class _WorkItem[R]:
+    call: Callable[[int], Awaitable[R]]
+    accept_result: Callable[[R], Awaitable[R]]
+    on_result: Callable[[R], Awaitable[None]] | None
     batch_rank: int
     request_rank: int
     cancel: CancellationToken
     on_retry: Callable[[int, int, float, TtsError], Awaitable[None]] | None
     generation: int
-    future: asyncio.Future[ScheduledSynthesis]
+    future: asyncio.Future[ScheduledSynthesis[R]]
     attempts: int = 0
 
 
@@ -82,7 +82,7 @@ class TtsScheduler:
         "_clock",
         "_condition",
         "_delayed",
-        "_engine",
+        "_locality",
         "_max_retries",
         "_ready",
         "_sequence",
@@ -93,13 +93,13 @@ class TtsScheduler:
 
     def __init__(
         self,
-        engine: TtsEngine,
         *,
+        locality: EngineLocality,
         config: TtsConfig,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """Create a loop-owned scheduler without starting provider work."""
-        self._engine: TtsEngine = engine
+        self._locality: EngineLocality = locality
         self._max_retries: int = config.max_retries
         self._backoff_seconds: tuple[float, ...] = config.retry_backoff_seconds
         self._timeout_s: float | None = config.request_timeout_s if config.scheduler_timeout_enabled else None
@@ -116,23 +116,23 @@ class TtsScheduler:
             asyncio.create_task(self._worker(), name=f"tts-provider-{index}") for index in range(config.max_concurrency)
         )
 
-    async def submit(  # noqa: PLR0913 - admission requires explicit ownership callbacks
+    async def submit[R](  # noqa: PLR0913 - admission requires explicit ownership callbacks
         self,
-        request_factory: Callable[[int], SynthesisRequest],
+        call: Callable[[int], Awaitable[R]],
         *,
         batch_rank: int,
         request_rank: int,
         cancel: CancellationToken,
-        accept_result: Callable[[EngineClipResult], Awaitable[EngineClipResult]],
-        on_result: Callable[[EngineClipResult], Awaitable[None]] | None = None,
+        accept_result: Callable[[R], Awaitable[R]],
+        on_result: Callable[[R], Awaitable[None]] | None = None,
         on_retry: Callable[[int, int, float, TtsError], Awaitable[None]] | None = None,
-    ) -> ScheduledSynthesis:
-        """Admit one request and await its terminal provider outcome."""
+    ) -> ScheduledSynthesis[R]:
+        """Admit one provider call and await its terminal outcome."""
         await self._admission.acquire()
         loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
-        future: asyncio.Future[ScheduledSynthesis] = loop.create_future()
-        work: _WorkItem = _WorkItem(
-            request_factory=request_factory,
+        future: asyncio.Future[ScheduledSynthesis[R]] = loop.create_future()
+        work: _WorkItem[R] = _WorkItem(
+            call=call,
             accept_result=accept_result,
             on_result=on_result,
             batch_rank=batch_rank,
@@ -194,19 +194,19 @@ class TtsScheduler:
 
     async def _worker(self) -> None:
         while True:
-            work: _WorkItem | None = await self._next_work()
+            work: _WorkItem[Any] | None = await self._next_work()
             if work is None:
                 return
             await self._attempt(work)
 
-    async def _next_work(self) -> _WorkItem | None:
+    async def _next_work(self) -> _WorkItem[Any] | None:
         async with self._condition:
             while True:
                 self._promote_due_retries()
                 if self._stopping:
                     return None
                 if self._ready:
-                    work: _WorkItem = heapq.heappop(self._ready).work
+                    work: _WorkItem[Any] = heapq.heappop(self._ready).work
                     blocked_error: TtsError | None = self._admission_error(work.cancel)
                     if blocked_error is not None:
                         self._finish(work, error=blocked_error)
@@ -221,18 +221,14 @@ class TtsScheduler:
                 except TimeoutError:
                     continue
 
-    async def _attempt(self, work: _WorkItem) -> None:
+    async def _attempt(self, work: _WorkItem[Any]) -> None:
         if not work.cancel.can_commit(work.generation):
             self._finish(work, error=_cancelled_error("TTS request cancelled before start"))
             return
         work.attempts += 1
         try:
-            request: SynthesisRequest = work.request_factory(work.attempts)
             async with asyncio.timeout(self._timeout_s):
-                clip: EngineClipResult = await self._engine.synthesize(
-                    request,
-                    cancel=work.cancel,
-                )
+                result: object = await work.call(work.attempts)
         except asyncio.CancelledError:
             self._finish(work, error=_cancelled_error("TTS provider task cancelled"))
             return
@@ -253,24 +249,24 @@ class TtsScheduler:
             )
             return
         task: asyncio.Task[None] = asyncio.create_task(
-            self._accept(work, clip),
+            self._accept(work, result),
             name=f"tts-accept-{work.batch_rank}-{work.request_rank}-{work.attempts}",
         )
         self._accepting.add(task)
         task.add_done_callback(self._accepting.discard)
 
-    async def _accept(self, work: _WorkItem, clip: EngineClipResult) -> None:
-        await self._notify_result(work, clip)
+    async def _accept(self, work: _WorkItem[Any], result: object) -> None:
+        await self._notify_result(work, result)
         try:
-            accepted: EngineClipResult = await work.accept_result(clip)
+            accepted: object = await work.accept_result(result)
         except asyncio.CancelledError:
-            self._finish(work, error=_cancelled_error("TTS clip acceptance cancelled"))
+            self._finish(work, error=_cancelled_error("TTS result acceptance cancelled"))
             return
         except TtsError as error:
             await self._handle_error(work, error)
             return
         except Exception as error:  # noqa: BLE001 - isolate injected validation failures
-            mapped_error = TtsProviderUnavailableError("TTS clip acceptance failed outside its typed contract")
+            mapped_error = TtsProviderUnavailableError("TTS result acceptance failed outside its typed contract")
             mapped_error.__cause__ = error
             await self._handle_error(
                 work,
@@ -280,18 +276,18 @@ class TtsScheduler:
         if not work.cancel.can_commit(work.generation):
             self._finish(work, error=_cancelled_error("TTS result arrived after cancellation"))
             return
-        self._finish(work, clip=accepted)
+        self._finish(work, result=accepted)
 
     @staticmethod
-    async def _notify_result(work: _WorkItem, clip: EngineClipResult) -> None:
+    async def _notify_result(work: _WorkItem[Any], result: object) -> None:
         if work.on_result is None:
             return
         try:
-            await work.on_result(clip)
+            await work.on_result(result)
         except Exception:  # noqa: BLE001 - progress observers cannot own provider execution
             return
 
-    async def _handle_error(self, work: _WorkItem, error: TtsError) -> None:
+    async def _handle_error(self, work: _WorkItem[Any], error: TtsError) -> None:
         if isinstance(error, TransientError) and work.attempts <= self._max_retries:
             delay: float = self._retry_delay(work.attempts, error)
             logger.bind(
@@ -345,7 +341,7 @@ class TtsScheduler:
 
     def _push_ready(
         self,
-        work: _WorkItem,
+        work: _WorkItem[Any],
         *,
         retry: bool,
         retry_ready_at: float = 0.0,
@@ -378,7 +374,7 @@ class TtsScheduler:
         return max(0.0, self._delayed[0].ready_at - self._clock())
 
     def _retry_delay(self, attempts: int, error: TtsError) -> float:
-        if self._engine.capabilities.locality is EngineLocality.SYSTEM:
+        if self._locality is EngineLocality.SYSTEM:
             return 0.0
         index: int = min(attempts - 1, len(self._backoff_seconds) - 1)
         local_delay: float = self._backoff_seconds[index]
@@ -397,7 +393,7 @@ class TtsScheduler:
         return self._circuit_error
 
     def _fail_queued(self, error: TtsError) -> None:
-        pending: list[_WorkItem] = [item.work for item in self._ready]
+        pending: list[_WorkItem[Any]] = [item.work for item in self._ready]
         pending.extend(item.work for item in self._delayed)
         self._ready.clear()
         self._delayed.clear()
@@ -406,16 +402,16 @@ class TtsScheduler:
 
     def _finish(
         self,
-        work: _WorkItem,
+        work: _WorkItem[Any],
         *,
-        clip: EngineClipResult | None = None,
+        result: object = None,
         error: TtsError | None = None,
     ) -> None:
         if work.future.done():
             return
         work.future.set_result(
             ScheduledSynthesis(
-                clip=clip,
+                result=result,
                 error=error,
                 attempts=work.attempts,
             )
@@ -424,7 +420,7 @@ class TtsScheduler:
 
 
 def _opens_circuit(error: TtsError) -> bool:
-    if isinstance(error, (TtsAuthError, TtsConfigError, TtsVoiceError)):
+    if isinstance(error, (TtsAuthError, TtsConfigError, TtsQuotaError, TtsVoiceError)):
         return True
     return isinstance(error, TransientError)
 

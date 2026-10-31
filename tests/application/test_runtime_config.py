@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -184,6 +185,44 @@ def test_another_profile_keeps_the_scheduler_deadline_whatever_the_vpn_preferenc
     assert config.scheduler_timeout_enabled
 
 
+@pytest.mark.unit
+def test_tts_config_elevenreader_runs_one_document_without_scheduler_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path))
+    plan: ExecutionPlan = _plan(
+        tts_profile_id="elevenreader",
+        tts_model_id="eleven_v4",
+        tts_voice_id="fronczewski",
+        tts_request_concurrency=4,
+    )
+
+    config = _tts_config(Settings(_env_file=None), plan)
+
+    assert config.scheduler_timeout_enabled is False
+    assert config.request_timeout_s == 3600.0
+    assert config.retry_backoff_seconds == (60.0, 120.0, 300.0, 600.0)
+    assert (config.max_concurrency, config.queue_capacity) == (1, 2)
+    assert config.shutdown_deadline_s == 15.0
+    assert config.elevenreader_profile_root == tmp_path / "elevenreader"
+
+
+@pytest.mark.unit
+def test_tts_config_elevenbytes_without_vpn_keeps_scheduler_deadline() -> None:
+    config = _tts_config(Settings(_env_file=None), _plan(tts_vpn_enabled=False))
+
+    assert config.scheduler_timeout_enabled is True
+
+
+@pytest.mark.unit
+def test_run_snapshot_elevenreader_is_paid_network_engine() -> None:
+    snapshot: RunSettingsSnapshot = _run_settings_snapshot(UserSettings(tts_engine="elevenreader"))
+
+    assert snapshot.tts_is_paid
+    assert snapshot.tts_is_network
+
+
 def test_a_single_worker_still_receives_a_usable_queue_capacity() -> None:
     config = _tts_config(Settings(_env_file=None), _plan(tts_request_concurrency=1))
 
@@ -195,7 +234,7 @@ def test_the_run_snapshot_becomes_the_audio_configuration() -> None:
     plan: ExecutionPlan = _plan(
         audio_output_profile="aac",
         audio_bitrate="192k",
-        narrator_mix_base_gain_db=7.0,
+        narrator_over_source_lu=6.5,
         voice_mix_offset_db=-2.0,
         original_gain_db=-1.5,
     )
@@ -204,7 +243,7 @@ def test_the_run_snapshot_becomes_the_audio_configuration() -> None:
 
     assert config.codec_profile is AudioCodecProfile.AAC
     assert config.bitrate == "192k"
-    assert config.narrator_mix_base_gain_db == 7.0
+    assert config.narrator_over_source_lu == 6.5
     assert config.voice_mix_offset_db == -2.0
     assert config.original_gain_db == -1.5
     assert config.timeline_policy is TimelinePolicy.SERIALIZE
@@ -258,6 +297,7 @@ def test_the_translation_failure_keeps_the_structured_provider_context() -> None
         ("edge", ("pl-PL-MarekNeural", "pl-PL-ZofiaNeural")),
         ("elevenbytes", ("alFofuDn3cOwyoz1i44T",)),
         ("elevenlabs", ()),
+        ("elevenreader", ("T5l58N8RNz5DKoClpKIJ", "hIssydxXZ1WuDorjx6Ic")),
         ("sapi", ()),
     ],
 )

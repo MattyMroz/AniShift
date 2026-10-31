@@ -46,6 +46,9 @@ PHRASE_CUT_CHARS: Final[str] = _punctuation_chars(
 CLOSING_MARKS: Final[str] = _punctuation_chars(frozenset({"Pe", "Pf"}), exclude="")
 """Closing brackets and final quotes kept with the text they close."""
 
+_SENTENCE_TAIL_MARKS: Final[frozenset[str]] = frozenset(SENTENCE_ENDINGS + CLOSING_MARKS + '"')
+"""Last characters that close a spoken line."""
+
 _ABBREVIATIONS_EN: Final[frozenset[str]] = frozenset(
     {
         "adm",
@@ -290,6 +293,12 @@ def period_ends_sentence(
     if len(token) == 1 and token.isalpha():
         return False
     return token.casefold() not in _ABBREVIATIONS
+
+
+def ends_sentence(text: str) -> bool:
+    """Return whether ``text`` ends with a sentence mark, a closing mark or a straight quote."""
+    stripped: str = text.rstrip()
+    return bool(stripped) and stripped[-1] in _SENTENCE_TAIL_MARKS
 
 
 def is_false_sentence_break(previous: str, following: str) -> bool:

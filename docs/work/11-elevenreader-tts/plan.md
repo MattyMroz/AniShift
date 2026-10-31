@@ -1,2324 +1,990 @@
 ---
 kind: plan
 status: draft
-baseline: AniShift main 4365a51 (merge PR #66), czyste drzewo; ElevenDownloaderPro stan roboczy 2026-10-25
+baseline: AniShift main f5fff6b (merge PR #76), czyste drzewo; prototyp SCR z 2026-10-30
 created: 2026-10-25
+updated: 2026-10-31
 ---
 
-# Plan: silnik lektora ElevenReader w AniShift
+# Plan: silnik lektora ElevenReader, mierzona głośność i tempo na głos
 
-Plan jest samowystarczalnym kontraktem dla świeżego wykonawcy. Wymagania (`F*`, `N*`), inwarianty (`I*`),
-ograniczenia (`O*`), zakazy (`Z*`) i decyzje (`D*`) pochodzą z `specification.md`; tu są tylko odwołania. Mapa
-plików: `file-map.md`. Intencja: `intent.md`.
+Plan jest kontraktem dla świeżych wykonawców. Wymagania (`F*`, `N*`), inwarianty (`I*`), ograniczenia (`O*`),
+zakazy (`Z*`) i decyzje (`D*`) są w `specification.md`; tu są odwołania. Mapa plików: `file-map.md`.
 
-Skróty: **EDP** = repozytorium `C:\Users\MattyMroz\Desktop\PROJECTS\ElevenDownloaderPro` (tylko do odczytu). Ścieżki
-EDP zaczynają się od `EDP:`; ścieżki bez prefiksu są w AniShift. Numery linii odnoszą się do stanu z 2026-10-25
-(AniShift `4365a51`; EDP stan roboczy na dysku, bo trzy pliki `src/` nie są zacommitowane).
+Skróty:
+
+- **EDP** = repozytorium ElevenDownloaderPro obok AniShift, `../ElevenDownloaderPro` (tylko do odczytu; ścieżki
+  `EDP:`).
+- **SCR** = katalog `er/` w tymczasowym katalogu roboczym sesji, poza repozytorium (prototyp; ścieżki `SCR:`). Po
+  fazie 0 te same dane leżą w **DATA** =
+  `workspace/.quality/elevenreader/` (gitignorowane; stała `QUALITY_DIR` w `tests/conftest.py`).
+- Symbole podaję z nazwą; numery linii tylko tam, gdzie zostały sprawdzone na `f5fff6b`.
 
 ## 1. Cel
 
-Dodać do AniShift silnik TTS `elevenreader`, który czyta polskie kwestie odcinka głosem Piotra Fronczewskiego albo
-Adama z ElevenReadera (Eleven v4), przez prawdziwy Chrome z zalogowaną sesją, z cięciem nagrania na klipy kwestii.
-Silnik działa w Auto, Ręcznym i subskrypcjach bez zmian w ich przepływie. `elevenbytes` zostaje zapasem.
+1. Dodać silnik TTS `elevenreader`, który czyta odcinek głosem Piotra Fronczewskiego albo Adama (Eleven v4) przez
+   prawdziwy Chrome z zalogowaną sesją i tnie nagranie na klipy kwestii heurystyką ciszy.
+2. Ustawić głośność lektora pomiarem względem oryginału, z limiterem na wyjściu.
+3. Przycinać ciszę na brzegach klipów i dać każdemu głosowi własne tempo i korektę.
+
+`elevenbytes` zostaje zapasem dostępnym jednym wyborem w Ustawieniach.
 
 ## 2. Rezultat użytkownika
 
-- Ustawienia → Lektor → Silnik: „ElevenReader”. Głos: „Piotr Fronczewski” albo „Adam”.
-- Ustawienia → Lektor → „Zaloguj / sprawdź sesję”: otwiera okno Chrome, po zalogowaniu pokazuje „✓ Zalogowano”.
-- Przetwarzanie odcinka pokazuje postęp syntezy rosnący z odbieranym tekstem.
+- Ustawienia → Lektor → Silnik „ElevenReader”, Głos „Piotr Fronczewski” albo „Adam”.
+- Ustawienia → Lektor → „Zaloguj / sprawdź sesję” otwiera okno Chrome i kończy się wynikiem.
+- Przetwarzanie pokazuje postęp syntezy rosnący z odbieranym tekstem.
+- Lektor każdego głosu, także Dallina, leży 7,5 LU nad oryginałem; szczyty nie przesterowują.
+- Po każdym nagraniu biblioteka ElevenReadera i ustawienia konta są takie jak przed nim.
 - Wygasła sesja, brak kredytów albo blokada konta kończą syntezę komunikatem po polsku z jedną akcją naprawczą.
 - `anishift doctor` mówi, czy Chrome jest dostępny i czy sesja była ostatnio ważna.
-- Przełączenie silnika na „ElevenBytes” przywraca dotychczasowy lektor.
 
 ## 3. Warunki końcowe
 
-- [ ] Rejestr zawiera `elevenreader`; testy rejestru i kontraktu przechodzą (F1, I2).
-- [ ] Ścieżka dokumentu w `TtsService` przechodzi testy resume, brakujących kwestii, retry, circuit i postępu (F2–F4, N7).
-- [ ] `FfmpegClipService.split_clip` tnie syntetyczne nagranie w ciszy (U5, N2).
-- [ ] Silnik przechodzi testy na fałszywej przeglądarce: błędy, anulowanie, głos, sesja (F7, F8, F15, F16, F20–F22, N4).
-- [ ] Panel i `doctor` obsługują silnik (F9–F14, F17–F19).
-- [ ] Bramki S1 zielone; test sieciowy S2 uruchomiony przez właściciela; checkpoint ucha S3 zaakceptowany.
-- [ ] Powrót na `elevenbytes` sprawdzony (S4); review krzyżowe bez findingów krytycznych i poważnych (S5); skan
-      sekretów czysty (S6).
+- [ ] Etapy 1–9 zakończone z dowodami z §9; bramki S1 zielone.
+- [ ] Test zgodności cięcia na Tantei (N2) zielony; punkt kontrolny K1 (Edgerunners) zamknięty.
+- [ ] Migracja `config/settings.json` właściciela wykonana skryptem z `scripts/tmp/`, sprawdzona i skrypt usunięty.
+- [ ] K2 (test sieciowy) i K3 (ucho właściciela, oba głosy) zaakceptowane; powrót na `elevenbytes` sprawdzony (S5).
+- [ ] Review krzyżowe bez findingów krytycznych i poważnych (S6); skan sekretów czysty (S7).
 
-## 4. Nie-cel
+## 4. Decyzja: kod nagrywania w AniShift czy EDP jako narzędzie zewnętrzne
 
-Najbliższa podobna rzecz poza planem: etap 6 jakości (głośność lektora). Plan dostarcza tylko korektę głośności per
-głos, istniejącą dziś dla każdego profilu (`anishift/config/field_catalog.py:1004-1013`). Pomiar i automatyczne
-dopasowanie głośności zostają w `docs/work/10-quality/masterplan.md` etap 6.
+| Kryterium | A. Port do AniShift (`uv add playwright`, profil w `config/elevenreader/`) | B. Wywołanie EDP jako procesu |
+|---|---|---|
+| Stabilność źródła | kod w repo, pod bramkami i CI | `EDP:src/auto.py`, `timestamps.py`, `clips.py` niezacommitowane (`git status` EDP: `??`); każda zmiana w EDP po cichu zmienia AniShift |
+| Punkt wejścia | własny kontrakt dokumentu | EDP nie ma trybu „jeden dokument, głos, wynik JSON”; trzeba go dopisać w EDP (zakaz Z3) |
+| Błędy i retry | typowane błędy → wspólny scheduler (circuit, backoff) | `SystemExit` i `print`; własna pętla czekania do 120 min (`EDP:src/auto.py`, `open_library`); klasyfikacja przez parsowanie stdout |
+| Anulowanie | `CancellationToken` w każdej pętli i oczekiwaniu | tylko `terminate` procesu |
+| Profil i sesja | jeden profil AniShift, akcja logowania w panelu, `doctor` | profil EDP i stały port 9222 (`EDP:src/downloader.py`, `CDP_PORT`); konflikt, gdy właściciel nagrywa audiobook w EDP |
+| Cykl życia Chrome | dziecko rezydenta, Job Object kończy je z rezydentem | wnuk przez `uv run` w innym projekcie |
+| Koszt | ok. 700–900 linii kodu i testy; duplikat logiki między repo | mniej kodu w AniShift, ale zmiany w EDP i parser logów |
+
+**Decyzja właściciela: A.** Jedno źródło prawdy o błędach, retry, resume i anulowaniu jest warunkiem reguły właściciela
+„każdy błąd obsłużony i widoczny”. B tej reguły nie spełni bez przebudowy EDP, a EDP ma pozostać nietknięte.
+Duplikat między repo jest świadomy: EDP służy audiobookom i ma inny cykl życia. Wewnątrz AniShift duplikatu nie ma
+(§7.13).
+
+Port oznacza adaptację, nie kopię 1:1. Z EDP i prototypu bierzemy wiedzę o trasie (kolejność kroków, endpointy,
+pola ramek, stałe czasowe zmierzone przez autora), a kod piszemy od nowa w standardzie repo: `coding` i `simple`,
+async Playwright zamiast sync, typowane błędy zamiast `SystemExit`, `get_logger` zamiast `print`, stan w jednym
+właścicielu, guard clauses, zero legacy. Odpada wszystko, czego AniShift nie potrzebuje: tryb ręczny i klawisze,
+katalogi `input/done/failed`, dopisywanie do pliku, `--parallel`, stały port, własne pętle czekania, statusy MB.
 
 ## 5. Authority i baseline
 
 | Źródło | Rola |
 |---|---|
-| `specification.md` | wymagania, zakazy, decyzje |
-| `intent.md` | potrzeba i odrzucone drogi |
-| `AGENTS.md` (root), `anishift/AGENTS.md`, `tests/AGENTS.md` | reguły repo |
-| `anishift/services/tts/AGENTS.md`, `anishift/services/tts/engines/AGENTS.md` i AGENTS.md silników | granice domeny TTS |
-| `anishift/services/audio/AGENTS.md` | granice domeny audio |
-| `anishift/config/AGENTS.md`, `anishift/cli/AGENTS.md`, `anishift/setup/AGENTS.md`, `anishift/platform/AGENTS.md`, `anishift/application/AGENTS.md` | reguły dotkniętych obszarów |
-| `.agents/skills/coding/references/python.md`, `comments-docstrings` w `coding/SKILL.md`, sekcja „Testy i dowody” | standard kodu |
-| kod AniShift na `4365a51` | stan aktualny |
-| kod i dokumenty EDP | źródło logiki trasy, stan aktualny EDP |
-| faza 0 tego planu | brakujące fakty o ElevenReaderze |
+| `specification.md`, `intent.md` | wymagania, zakazy, decyzje |
+| `AGENTS.md`, `anishift/AGENTS.md`, `tests/AGENTS.md` | reguły repo |
+| AGENTS.md w `anishift/services/tts/`, `services/tts/engines/`, `services/audio/`, `application/`, `config/`, `cli/`, `setup/`, `platform/`, `utils/`, `text/` | reguły obszarów |
+| `.agents/skills/{simple,coding,subagent}/SKILL.md`, `coding/references/python.md` | standard pracy |
+| `SCR:record.py`, `SCR:snapcut.py`, `SCR:bounds.py`, `SCR:envelope.py`, `SCR:snap-report.md`, `SCR:loudness-report.md` | działający prototyp i pomiary |
+| `EDP:src/downloader.py`, `EDP:src/auto.py` | logika trasy do portu |
 
-**Baseline:** `main` na `4365a51`, czyste drzewo; rezydent AniShift działa z tego checkoutu.
+**Baseline:** `main` na `f5fff6b`, czyste drzewo; rezydent właściciela działa z tego checkoutu.
 
-**Znane wcześniejsze failures:** nieznane. Faza 0 uruchamia bramki na baseline i zapisuje wynik przed pierwszą
-zmianą. Każdy failing test z baseline jest wymieniony z nazwą w raporcie fazy 0 i nie jest „naprawiany” w tym
-planie bez decyzji orkiestratora.
+**Znane wcześniejsze failures:** nieznane; faza 0 je zapisuje.
 
-## 6. Stan aktualny: jak naprawdę działa ElevenDownloaderPro
+## 6. Stan aktualny i luka
 
-### 6.1. Co jest w repozytorium
+### 6.1. Trasa ElevenReader (prototyp `SCR:record.py`, zweryfikowany 2026-10-30)
 
-- Dwa niezależne narzędzia: stary userscript `EDP:script.js` (Tampermonkey) i narzędzia Pythona w `EDP:src/`
-  (`EDP:README.md:1-12`, `:34-38`).
-- `EDP:pyproject.toml`: `requires-python = ">=3.14"`, zależności `miniaudio>=1.71`, `playwright>=1.64.0`; brak
-  `build-system`, więc to nie jest instalowalny pakiet.
-- Moduły importują się płasko, przez katalog skryptu na `sys.path`: `from timestamps import ...`
-  (`EDP:src/downloader.py:31`), `from downloader import ...` (`EDP:src/auto.py:23-37`).
-- Trzy z czterech plików `src/` nie są w historii gita (`EDP:docs/report.md:87`: „Nic nie jest zacommitowane”;
-  status roboczy pokazuje `?? src/auto.py`, `?? src/clips.py`, `?? src/timestamps.py`).
+1. Chrome z własnym profilem, `--headless=new`, `--remote-debugging-port`; Playwright `connect_over_cdp`
+   (`EDP:src/downloader.py`, `launch_chrome`, `connect`). Init script przyspiesza bufory audio strony 64x
+   (`SPEED_JS`).
+2. Biblioteka `https://elevenreader.io/reader/library`; przycisk „Import”, `input[type=file]`, „Upload”; odpowiedź
+   `POST …/v1/reader/reads/add/v2` niesie `read_id`, `char_count` i nagłówek `authorization` (`EDP:src/auto.py`,
+   `upload`).
+3. Konto: `GET/POST https://api.elevenlabs.io/v1/reader/user_config` z tokenem strony; prototyp ustawia
+   `default_voice_id` i `playback_speed_rate = 1.0`, a na końcu przywraca poprzedni głos (`SCR:record.py`,
+   `set_voice`; `EDP:src/auto.py`, `reset_reading_speed`). Odpowiedź ma flagi `device_rate_limit_enabled`,
+   `ip_ban_check_enabled` (`SCR:user_config.json`).
+4. Dokument `…/reader/library/{read_id}`; „Play”; ramki WebSocket `…/v1/reader/reads/stream/v2/{read_id}?voice_id=…`
+   z polami `audio` (MP3 base64), `alignment.chars`, `charStartTimesMs`, `charDurationsMs`, `isFinal`; ramki
+   wysyłane niosą `listening_speed` (`EDP:src/downloader.py`, `Recorder`).
+5. Koniec: suwak odtwarzacza w 30 znakach od końca albo odebrano `char_count` znaków, i 10 s bez nowego audio;
+   brak audio 60 s po „Play” → ponowne „Play” do 3 razy; przestój 5 min → porażka (`EDP:src/auto.py`, `Job.step`).
+6. Po nagraniu `DELETE https://api.elevenlabs.io/v1/reader/reads/{read_id}` (HTTP 200 w prototypie).
+7. Wynik Tantei: 19 038 znaków, upload 10–12 s, nagrywanie 245 s na głos, `chars_received == char_count`,
+   `voice_in_stream_url: true` (`SCR:tantei/record.json`). Ten sam tekst tym samym głosem drugi raz przychodzi z cache
+   serwera bez kredytów (`EDP:README.md`).
+8. Tekst wraca z tagami `<break time="0.6s"/>` wokół każdego akapitu i `<break time="2s"/>` na końcu
+   (`SCR:edge02/record.log`). `<break>` wpisany w tekst dokumentu serwer ignoruje, a `[pause]` lektor czyta na
+   głos. Pauzę między kwestiami daje dopiero osobny akapit „…”: lektor go nie czyta, przerwy rosną o 30–50 ms, a złych
+   granic na Edgerunners 02 zostaje 0 (Fronczewski) i 1 (Adam) zamiast 4 i 7 (`DATA:snap-report.md` §11–§13).
 
-### 6.2. Endpointy i protokół
+### 6.2. Cięcie (`SCR:snap-report.md`)
 
-| Element | Wartość | Źródło |
-|---|---|---|
-| strona biblioteki | `https://elevenreader.io/reader/library` | `EDP:src/auto.py:53` |
-| dokument | `https://elevenreader.io/reader/library/{read_id}` | `EDP:src/auto.py:169` |
-| upload | `POST .../v1/reader/reads/add/v2`, odpowiedź JSON z `read_id`, `char_count` | `EDP:src/auto.py:56`, `:141-145` |
-| strumień | `wss://api.elevenlabs.io/v1/reader/reads/stream/v2/{read_id}` | `EDP:docs/research/capabilities.md:18` |
-| ramki klienta | `listening_speed`, `position`, `listening_position`, `stream_id` | `EDP:docs/research/capabilities.md:22-25` |
-| ramki serwera | `type: "config"` (`maxReadingSpeed`), `audio`, `alignment.chars`, `alignment.charStartTimesMs`, `alignment.charDurationsMs`, `isFinal` | `EDP:docs/research/capabilities.md:26-31` |
-| dodatkowe odczyty strony | `GET reads/{id}`, `GET customer` (`current_credits`), `GET user_config` (`playback_speed_rate`, `voice_expressiveness`, `default_voice_id`, `feature_flags`), `GET voices` | `EDP:docs/research/capabilities.md:42-66` |
+- Każde nagranie ma 22 uszkodzone ramki (sklejenia paczek). Dekoder je pomija, więc PCM jest krótsze o 26,1 ms na
+  sklejenie. Oś czasu MP3 (pts) zgadza się z czasami serwera co do ms; czas z indeksu próbki trzeba przeliczać
+  (`SCR:bounds.py`, `splice_times`, `to_decoded`).
+- Reguła `SCR:snapcut.py` daje 100% poprawnych granic na 2 × 323 granicach. 6 granic bez pewnej ciszy to kwestie
+  urwane w pół zdania z przerwą 0 ms w napisach.
 
-Protokół jest wewnętrzny i nieudokumentowany; `stream/v2` stoi za flagą `stream_read_v2_enabled`
-(`EDP:docs/research/capabilities.md:154`). EDP **nie wysyła żadnych własnych żądań**: upload robi kliknięciem w
-interfejs, a dane czyta z ruchu, który strona i tak wykonuje (`EDP:docs/research/capabilities.md:152`).
+### 6.3. Głośność i tempo (`SCR:loudness-report.md`)
 
-Przebieg jednego dokumentu w `EDP:src/auto.py`:
+- Obecny Dallin leży +7,6 LU nad oryginałem; głosy ElevenReadera surowo o 4 LU ciszej i różnią się między sobą o
+  11 dB. Współczynnik szczytu 21–22 dB wymaga limitera.
+- Tempo: Fronczewski 1,45, Adam 1,35, Dallin 1,25 wyrównują mowę do 6,8–7,0 sylab/s.
+- Przycięcie ciszy na brzegach przy tempie 1,25: kwestie dłuższe niż okno `elevenbytes` 30 → 10, Fronczewski
+  46 → 24, Adam 28 → 17 (próg −45 dBFS, ramki 10 ms; `SCR:measure_clips.py`, `speech_span`).
 
-1. `open_library` otwiera bibliotekę i czeka na widoczny przycisk „Import” do 45 s; przy awarii serwisu ponawia
-   co minutę do 120 minut (`EDP:src/auto.py:121-134`, stałe `:65-69`).
-2. `upload`: klik „Import”, `set_input_files` na `input[type=file]`, klik „Upload”, przechwycenie odpowiedzi
-   `add/v2` (`EDP:src/auto.py:137-145`).
-3. `Job.start`: podpięcie nasłuchu WebSocket, `goto` do dokumentu, czekanie na „Play” do 10 minut, ustawienie
-   prędkości czytania, ustawienie przyspieszenia strony, klik „Play” (`EDP:src/auto.py:179-195`).
-4. `set_reading_speed`: przycisk z tekstem jak `2.65x` otwiera popover, pole `input[aria-label="Playback rate"]`
-   dostaje `1`, Enter, Escape (`EDP:src/auto.py:86-90`, `:148-157`).
-5. `Job.step` co sekundę: brak audio 60 s po „Play” → ponowny klik, najwyżej 3 razy; koniec, gdy suwak odtwarzacza
-   jest w 30 znakach od końca albo odebrano `char_count` znaków i od 10 s nie przyszło nic nowego; przestój 5 minut
-   przed końcem = porażka (`EDP:src/auto.py:71-84`, `:197-216`, `PLAYER_STATE_JS` `:92-100`).
-6. `finish`: porównanie odebranych znaków z `char_count`, ostrzeżenie o nadmiarze (`EDP:src/auto.py:225-246`).
+### 6.4. AniShift (`f5fff6b`)
 
-### 6.3. Format audio
+- `TtsEngine.synthesize` przyjmuje jedno `SynthesisRequest` (`anishift/services/tts/protocols.py`). `TtsScheduler.submit`
+  przyjmuje `request_factory` i sam woła `engine.synthesize` (`anishift/services/tts/scheduler.py:119-153`, `_WorkItem`
+  `:61-72`); wynik `ScheduledSynthesis.clip` (`:39-44`). `_opens_circuit` (`:426-429`) obejmuje `TtsAuthError`,
+  `TtsConfigError`, `TtsVoiceError` i wyczerpane błędy przejściowe.
+- `TtsService.__init__(config, *, resume_root, validator, assembler=None, engine_factory=create_engine)`
+  (`anishift/services/tts/service.py:223-246`).
+- `EngineCapabilities` bez pojęcia dokumentu (`anishift/services/tts/types.py:219-233`); `AudioFormat` ma `WAV`.
+- `TtsTaskHandler._narration_batch` buduje żądania i okna (`anishift/application/tts_handler.py:541-562`);
+  `_placement_window` (`:572-576`).
+- `FfmpegClipService` waliduje MP3 i WAV oraz skleja części (`anishift/application/tts_clips.py`).
+- Gain narratora: `config.narrator_mix_base_gain_db + config.voice_mix_offset_db` w `render_command`
+  (`anishift/services/audio/output.py:116`); `amix … normalize=true`, brak limitera. `_render_output`
+  (`anishift/services/audio/service.py:500-552`). `mix_fingerprint` z `_MIX_ALGORITHM_VERSION = 3`
+  (`anishift/services/audio/fingerprint.py:25`, sekcja `gain` `:98-102`).
+- `narrator_mix_base_gain_db` występuje w: `services/audio/{config,output,fingerprint}.py`,
+  `application/planning.py:185,288`, `application/runtime.py:665`, `application/service.py:1100`,
+  `config/user_settings.py:284,866`, `config/field_catalog.py:346,1253-1257`, `cli/interactive/settings.py:243,1990`
+  i 9 testach (`grep -rn narrator_mix_base_gain_db`). `ProcessingRequest.settings` zapisuje snapshot jako słownik
+  bez ścisłego schematu (`application/watch_state.py`, `_decode_settings`), więc zmiana nazwy pola nie psuje
+  odczytu `state.json`.
+- `normalize_clip` ma szybką ścieżkę `_neutral_wav`, która zwraca WAV bez przetwarzania
+  (`anishift/services/audio/normalize.py`), oraz cache `_cached_raw_pcm`. `plan_timeline` liczy długość z
+  `NormalizedClip.frame_count` (`anishift/services/audio/timeline.py`).
+- Profile głosów: `default_tts_voice_profiles()` — Dallin `postprocess_tempo=1.25`, `voice_mix_offset_db=-2.0`
+  (`anishift/config/user_settings.py:214-221`); u właściciela −1,5 w `config/settings.json`.
+- `anishift/text/boundaries.py` ma `SENTENCE_ENDINGS` i `CLOSING_MARKS`.
+- `numpy` nie jest zależnością runtime (`uv tree --no-dev`); obliczenia energii idą przez stdlib (`array`,
+  `math.sumprod`).
 
-- MP3 128 kb/s, 44,1 kHz, w paczkach base64 od około 2 KB do około 230 KB (`EDP:docs/report.md:17`,
-  `EDP:docs/research/capabilities.md:27`).
-- Paczki są dopisywane do pliku w kolejności przyjścia (`EDP:src/downloader.py:221-223`). Paczki ≥ 8 KiB o
-  identycznym skrócie SHA-1 (audio + znaki) są pomijane jako duplikaty (`EDP:src/downloader.py:72-73`, `:206-211`).
-- Plik może zawierać kilka osobno zakodowanych strumieni rozdzielonych tagami ID3 lub obcymi bajtami;
-  `EDP:src/clips.py:332-346` dekoduje je osobno, bo jednorazowe dekodowanie całego pliku rozjechało zegar o 0,34 s
-  (`EDP:docs/report.md:75`). Nie wiadomo, czy dryf dotyczy FFmpeg, czy tylko dekodera `miniaudio` (patrz faza 1, E1).
-- Długość liczona z ramek: 1152 próbki na ramkę MPEG-1 Layer III (`EDP:src/timestamps.py:21-31`, `:65-86`).
-
-### 6.4. Format timestampów
-
-- Na znak, nie na słowo: `chars[]`, `charStartTimesMs[]` (start od początku paczki), `charDurationsMs[]`
-  (`EDP:docs/research/capabilities.md:28-30`).
-- `EDP:src/downloader.py:244-253` zapisuje linię `align.jsonl` na paczkę: `offset_ms` (pozycja paczki w nagraniu =
-  suma długości wcześniejszych ramek), `chars`, `start_ms`, `dur_ms`, opcjonalnie `resume`.
-- Czas bezwzględny znaku = `offset_ms + start_ms` (`EDP:src/timestamps.py:99-117`).
-- Tekst wraca dosłownie, razem z tagami `<break time="0.6s"/>` między akapitami i `<break time="2s"/>` na końcu
-  (`EDP:docs/research/capabilities.md:28`, `:36`). `EDP:src/timestamps.py:33-34` rozpoznaje tag wyrażeniem
-  `<break[^>]*(?:/>|$)`.
-- Słowne czasy i zdania EDP wylicza samo (`EDP:src/timestamps.py:132-167`); serwer ich nie przysyła.
-- Czasy znaków wyprzedzają faktyczną mowę o około 0,3 s (`EDP:docs/report.md:39`, `EDP:src/clips.py:13-14`).
-- Pole `normalizedAlignment` jest akceptowane jako zamiennik `alignment` (`EDP:src/downloader.py:204`).
-
-### 6.5. Limity, chunking, retry, rate limity
-
-- Dokument jest jednostką: EDP nie dzieli tekstu; dokumenty do około 97 000 znaków przeszły
-  (`EDP:docs/research/capabilities.md:101`). Twardego limitu długości kod nie ustala.
-- Koszt: 1 kredyt na 10 000 znaków, łącznie z tagami `<break>` (`EDP:docs/report.md:35`); około 21 znaków na tag
-  między akapitami (`EDP:docs/research/capabilities.md:118`).
-- Przepustowość: jedna sesja około 4,5–5,5x czasu rzeczywistego niezależnie od przyspieszenia strony powyżej 16x
-  (`EDP:README.md:143`, `EDP:docs/report.md:32-34`).
-- Równoległość: od 2026-10-19 nowy strumień zamyka starszy, więc jeden dokument naraz (`EDP:docs/report.md:33`).
-- Cache: ten sam tekst tym samym głosem drugi raz przychodzi około 58x szybciej i bez kredytów
-  (`EDP:README.md:144`). Nie wiadomo, czy cache działa przy ponownym uploadzie identycznego tekstu jako nowego
-  dokumentu.
-- Ochrona: flagi `device_rate_limit_enabled`, `ip_ban_check_enabled`, aktywny App Check
-  (`EDP:docs/research/capabilities.md:64`, `:152`).
-- Retry w EDP: czekanie na serwis 1 minuta × 120 (`EDP:src/auto.py:121-134`), 3 kliknięcia „Play”
-  (`EDP:src/auto.py:80-81`), brak automatycznego ponowienia całego dokumentu; porażka przenosi plik do `failed/`
-  i drukuje komendę ręcznego wznowienia (`EDP:src/auto.py:240-246`).
-- Ponowne połączenie strumienia: ramka `config` po odebraniu tekstu oznacza nowy strumień; pierwsze zdanie może
-  przyjść drugi raz, więc `repeated_prefix` szuka początku nowej paczki w ostatnich 20 000 znakach i przycina
-  powtórzenie razem z audio (`EDP:src/downloader.py:195-196`, `:257-312`). Kontrola kompletności wymaga
-  tolerancji (`EDP:docs/research/capabilities.md:101`, `:160`).
-- Model zależy od ustawionej prędkości czytania: 1x → v4, około 3x → v2 (`EDP:docs/report.md:36`).
-
-### 6.6. Uwierzytelnienie
-
-- Brak tokenów, kluczy i plików cookies w kodzie. Sesja to zalogowany profil Chrome w `EDP:.chrome-profile/`
-  (`EDP:src/downloader.py:38-39`). Pierwsze logowanie robi człowiek w otwartym oknie (`EDP:README.md:57`).
-- Chrome jest uruchamiany jako zwykły proces z `--remote-debugging-port=9222`, `--user-data-dir`, `--no-first-run`,
-  `--no-default-browser-check`, a Playwright podłącza się `connect_over_cdp` (`EDP:src/downloader.py:44-45`,
-  `:454-475`). Komentarz modułu: tak, aby działało logowanie Google (`EDP:src/downloader.py:3`).
-- Brak automatycznego logowania, odświeżania i wykrywania wygaśnięcia sesji. Po wylogowaniu `open_library` czeka
-  na przycisk „Import”, którego nie ma, i traktuje to jak awarię serwisu.
-- Pliki profilu istnieją: `EDP:.chrome-profile/` i starszy `EDP:.browser-profile/`; oba w `EDP:.gitignore:294-295`.
-  Ten plan ich nie otwiera.
-
-### 6.7. Zależności
-
-- Python 3.14, `playwright>=1.64.0` (API synchroniczne), `miniaudio>=1.71` (tylko `clips.py`), zainstalowany Google
-  Chrome w `Program Files`, `Program Files (x86)` lub `%LOCALAPPDATA%` (`EDP:src/downloader.py:47-55`).
-- Windows: `msvcrt.getwch` do klawiszy (`EDP:src/downloader.py:18`, `:337-339`).
-- Playwright nie pobiera własnych przeglądarek — EDP używa zainstalowanego Chrome przez CDP.
-
-### 6.8. Co jest w JS, a co w Pythonie
-
-- `EDP:script.js` jest niezależnym userscriptem: podmienia `AudioContext.prototype.createBufferSource`, by
-  odtwarzać 16x, i owija `window.WebSocket`, by zbierać pole `audio` (`EDP:script.js:25-69`). Narzędzia Pythona go
-  nie używają.
-- W Pythonie są dwa skrypty JS wstrzykiwane do strony: `SPEED_JS` (ustawia `playbackRate` buforów audio na
-  `window.__edpSpeed`, `EDP:src/downloader.py:99-140`) i `PLAYER_STATE_JS` (odczyt suwaka odtwarzacza,
-  `EDP:src/auto.py:92-100`). Reszta logiki — nasłuch ramek, zapis, czasy, cięcie — jest w Pythonie.
-
-### 6.9. Co da się użyć bez przeglądarki
-
-- Bez przeglądarki: parsowanie ramek, kontrola duplikatów i powtórzeń, oś czasu znaków, lokalizacja kwestii,
-  wykrywanie ciszy, cięcie ramek MP3 (`EDP:src/downloader.py:156-312`, `EDP:src/timestamps.py`,
-  `EDP:src/clips.py:155-611`). To są czyste funkcje i dają się testować offline.
-- Z przeglądarką: logowanie, upload, otwarcie dokumentu, prędkość, odtwarzanie, odbiór ramek. Zastąpienie
-  przeglądarki własnym klientem WebSocket oznaczałoby podrabianie protokołu za App Check — zakazane (Z1).
-
-## 7. Stan aktualny: jak działa TTS w AniShift
-
-### 7.1. Rejestr i kontrakty
-
-- `TtsEngineId = Literal["edge", "elevenbytes", "elevenlabs", "sapi"]` i leniwy `_REGISTRY` modułów jako stringów
-  (`anishift/services/tts/engines/__init__.py:18-38`); nieznane ID → `TtsConfigError`
-  (`anishift/services/tts/engines/__init__.py:56-67`).
-- `TtsEngine`: `engine_id`, `is_available`, `capabilities`, `synthesis_profile`, `availability(live=...)`,
-  `list_voices()`, `synthesize(request, cancel=...)`, `close()` (`anishift/services/tts/protocols.py:86-123`).
-- `SynthesisRequest` niesie jeden tekst i prywatne `destination` (`anishift/services/tts/types.py:260-273`);
-  `EngineClipResult` opisuje jeden klip (`anishift/services/tts/types.py:276-286`).
-- `EngineCapabilities` (`anishift/services/tts/types.py:218-233`) bez pojęcia dokumentu.
-- `ClipValidator` i `ClipAssembler` są protokołami domeny implementowanymi w aplikacji przez FFmpeg
-  (`anishift/services/tts/protocols.py:36-60`, `anishift/application/tts_clips.py:17-100`).
-
-### 7.2. Silnik `elevenbytes` (wzorzec adaptera)
-
-- Konfiguracja z `TtsConfig` w `ElevenBytesConfig.from_tts_config`, bez sieci w konstruktorze
-  (`anishift/services/tts/engines/elevenbytes/config.py:22-56`, `service.py:75-98`).
-- `availability(live=False)` zwraca stan z pamięci; `live=True` robi probe (`service.py:110-133`).
-- `synthesize` waliduje żądanie, sprawdza anulowanie przed i po żądaniu, zapisuje bajty do `destination`
-  (`service.py:147-176`). Transport ma `retries=0` (`engines/elevenbytes/AGENTS.md:9-10`).
-- Profil syntezy (`SynthesisProfile`) wchodzi do fingerprintu resume (`service.py:84-93`).
-
-### 7.3. Scheduler
-
-- Jeden `TtsScheduler` na cykl życia silnika: kolejka priorytetowa (retry przed nowymi, potem `batch_rank`,
-  `request_rank`), `max_concurrency` workerów, semafor `queue_capacity` (`anishift/services/tts/scheduler.py:74-117`).
-- `_attempt` buduje żądanie przez `request_factory(attempts)` i woła `engine.synthesize` pod
-  `asyncio.timeout(request_timeout_s)` albo bez limitu, gdy `scheduler_timeout_enabled=False`
-  (`scheduler.py:105`, `:224-260`).
-- Retry tylko dla `TransientError`, do `max_retries`, z opóźnieniem z `retry_backoff_seconds` albo `retry_after_s`
-  błędu (`scheduler.py:294-328`, `:380-390`); dla silników lokalnych bez opóźnienia (`:381-382`).
-- Circuit: błąd trwały auth/config/voice albo wyczerpany błąd przejściowy kończy całą kolejkę i blokuje nowe
-  żądania (`scheduler.py:338-344`, `:426-429`).
-- Domyślne wartości: `max_retries=3`, backoff `(15, 30, 60, 120)`, timeout 30 s (`anishift/services/tts/config.py:19-35`);
-  wyjątki: `elevenbytes` 45 s i backoff `(5, 10, 15, 30)`, `sapi` 10 s (`anishift/application/runtime.py:127-133`);
-  `elevenbytes` z VPN wyłącza timeout schedulera (`runtime.py:651`).
-- Współbieżność to `tts_request_concurrency` z profilu głosu (`anishift/application/service.py:1057-1069`),
-  `queue_capacity = max(2, 2 × concurrency)` (`runtime.py:644`).
-
-### 7.4. Przepływ od napisów do klipów
-
-1. Planner tworzy zadanie `SYNTHESIZE_SPEECH` z zasobem `tts:<silnik>`, więc pliki idą po jednym
-   (`anishift/application/planner.py:832-835`, `anishift/application/AGENTS.md:184-186`).
-2. `TtsTaskHandler.execute` czyta skrypt (spoken PL, pełne PL, napisy źródłowe albo TXT), dzieli na `SpokenLine`
-   i buduje `SpeechBatch(group_id, rank, requests)` z kwestii mających litery lub cyfry
-   (`anishift/application/tts_handler.py:221-268`, `:541-562`).
-3. `TtsService.synthesize` uruchamia batch na własnej pętli asyncio w wątku `anishift-tts`
-   (`anishift/services/tts/service.py:248-288`, `:341-377`).
-4. `_run_batch` dla każdej kwestii: dzielenie według limitów silnika, tożsamość resume, odczyt resume, a przy braku —
-   próba przez scheduler, walidacja dekodowaniem, opcjonalne sklejenie części, zatwierdzenie
-   (`service.py:402-768`).
-5. `build_narration_manifest` wymaga statusu `COMPLETED`; brak klipu kwestii przerywa zadanie
-   (`anishift/application/tts_handler.py:399-444`).
-6. Szyldy: drugi batch tej samej grupy, klipy umieszczane w wolnych przerwach (`tts_handler.py:287-366`).
-
-### 7.5. `narration_timeline` i miks
-
-- `NarrationTimeline.SOURCE_TIMES` umieszcza klip w oknie napisu; `CONTINUOUS` układa klipy jeden po drugim
-  (`anishift/application/tts_handler.py:565-575`).
-- `plan_timeline` ustawia klip na czasie okna albo za poprzednim, bez obcinania; długość klipu pochodzi z dekodowania
-  (`anishift/services/audio/timeline.py:31-89`).
-- Normalizacja klipów i tempo końcowe (`tts_postprocess_tempo`) w `AudioService.prepare_clip`
-  (`anishift/application/runtime.py:293-315`).
-- Gain narratora `narrator_mix_base_gain_db + voice_mix_offset_db` tylko przy miksie z oryginałem
-  (`anishift/services/audio/AGENTS.md:36-37`).
-
-### 7.6. Ustawienia
-
-- `.env` i środowisko: `Settings` (pydantic-settings, prefiks `ANISHIFT_`, `extra="ignore"`), m.in.
-  `elevenlabs_api_key` (`anishift/config/settings.py:55-117`).
-- Preferencje panelu: `UserSettings` w `config/settings.json`: `tts_engine="elevenbytes"`,
-  `tts_provider_model_id="run6"`, `tts_voice_id="dallin"`, `tts_voice_profiles` (`user_settings.py:242-284`).
-- Logika per silnik w łańcuchach `if`: `tts_voice_label` (`user_settings.py:334-352`),
-  `resolved_tts_voice_id` (`:355-371`), `_normalize_tts_selection` (`:445-474`),
-  `_drop_incompatible_tts_options` (`:476-484`), `_tts_model_values` i `_tts_voice_values`
-  (`field_catalog.py:1348-1378`), `_profile_defaults` (`field_catalog.py:1381-1389`), `_tts_allowed_voice_ids`
-  (`anishift/application/service.py:1036-1045`).
-- Pułapka: dla `elevenbytes` każdy niepusty identyfikator spoza aliasów jest traktowany jako własny głos
-  (`engines/elevenbytes/AGENTS.md:15-16`), a `_normalize_tts_selection` resetuje tylko głosy SAPI i Edge
-  (`user_settings.py:449-452`). Alias nowego silnika po przełączeniu na `elevenbytes` zostałby więc wysłany do proxy
-  jako ID głosu. Plan to naprawia (F11).
-
-### 7.7. Panel Ustawień
-
-- Kategoria „Lektor” wyświetla pola z `_TTS_FIELDS` (`anishift/cli/interactive/settings.py:222-242`); etykiety
-  silników w `_ENGINE_LABELS` (`settings.py:343-358`).
-- „Połączenia” edytują sekrety `.env` przez `_CONNECTIONS` (`settings.py:488-510`) i `AppService`.
-- Test pilnuje, by każde edytowalne pole było osiągalne (`_KNOWN_LAYOUT_GAPS` puste, `settings.py:294`).
-- Wzorzec akcji w tle: `_start_probe` z wątkiem, generacją i `_Feedback` (`settings.py:1627-1660`).
-
-### 7.8. `setup` i `doctor`
-
-- `doctor` to płaska lista synchronicznych checków bez sieci poza Web UI qBittorrent
-  (`anishift/setup/doctor.py:256-283`); brak kluczy to WARN (`anishift/setup/AGENTS.md:19`).
-- `setup` pobiera binarki z manifestu; nie instaluje programów systemowych (`anishift/setup/AGENTS.md:3`).
-
-### 7.9. Błędy i logowanie
-
-- `AniShiftError` → `TtsError` → konkretne, z miksami `TransientError` / `FatalError`
-  (`anishift/services/tts/errors.py:28-150`); kody w `ErrorCode` (`anishift/errors.py:80-94`); brak kodu dla
-  wyczerpanych kredytów.
-- Logowanie przez `get_logger(__name__)`; bez sekretów, payloadów, tekstów TTS, nagłówków, podpisanych URL-i i
-  ścieżek absolutnych (`AGENTS.md`, sekcja „Dane runtime”).
-
-### 7.10. Platforma
-
-- `ProcessLock` — blokada pliku na proces (`anishift/platform/process_lock.py:32-60`).
-- `_protect_profile` zawęża katalog do bieżącego konta przez `icacls ... /inheritance:r /grant:r konto:(OI)(CI)F`
-  (`anishift/platform/qbittorrent_process.py:633-653`); drugi, plikowy wariant z ostrzeżeniem zamiast błędu jest w
-  `anishift/platform/local_control.py:943-975`.
-- `installed_executable()` szuka programu w `%ProgramFiles%`, `%ProgramFiles(x86)%`, `%LOCALAPPDATA%\Programs` i na
-  `PATH` (`anishift/platform/qbittorrent_config.py:236-246`).
-- Rezydent przypisuje procesy potomne do Job Object, więc kończą się z nim (`anishift/platform/AGENTS.md:51-53`).
-
-## 8. Luka
+### 6.5. Luka
 
 ```text
-CURRENT: silnik = jedno żądanie tekstu → jeden klip; brak przeglądarki, sesji, dokumentu, cięcia.
-   ↓
-GAP: ElevenReader czyta dokument, nie kwestię; wymaga zalogowanego Chrome; audio przychodzi strumieniem
-     z czasami znaków; klipy kwestii trzeba wyciąć z nagrania; brak kodu błędu kredytów; brak akcji logowania.
-   ↓
-TARGET: kontrakt dokumentu w domenie TTS + scheduler wykonujący dowolną próbę + cięcie w domenie audio
-        + silnik `elevenreader` + sesja w config/elevenreader/ + panel i doctor.
+CURRENT: silnik = jedno żądanie → jeden klip; stały gain narratora bez limitera; klipy z ciszą na brzegach;
+         brak przeglądarki, sesji, dokumentu, cięcia.
+GAP:     ElevenReader czyta dokument; wymaga zalogowanego Chrome; klipy trzeba wyciąć z nagrania; głosy różnią
+         się poziomem o 11 dB; kwestie urwane w pół zdania nie mają ciszy do cięcia.
+TARGET:  kontrakt dokumentu w TTS + scheduler wykonujący dowolną próbę + cięcie i trim w audio + pomiar
+         głośności w miksie + łączenie kwestii urwanych + silnik `elevenreader` + sesja w config/elevenreader/.
 ```
 
-Przyczyna, dla której nie wystarczy nowy adapter za istniejącym `TtsEngine.synthesize`: scheduler przekazuje silnikowi
-po jednym żądaniu (`scheduler.py:224-235`), a `_run_batch` rozdziela kwestie na niezależne próby
-(`service.py:478-516`). Silnik nie widzi całego batcha, więc nie może zebrać kwestii w dokument bez sprzęgania prób
-w ukrytym stanie. Jedno źródło prawdy o retry i resume zostaje we wspólnej warstwie tylko wtedy, gdy dokument staje
-się jawną próbą schedulera.
+Nowy adapter za `TtsEngine.synthesize` nie wystarczy: scheduler podaje silnikowi po jednym żądaniu, a
+`_run_batch` rozdziela kwestie na niezależne próby, więc silnik nie widzi całego odcinka.
 
-## 9. Istniejące rozwiązania do reuse
+## 7. Target design
 
-| Element | Ścieżka / symbol | Co wykorzystać | Ograniczenie |
+### 7.1. Odpowiedzialności
+
+| Element | Odpowiada za | Owner stanu | Nie odpowiada za |
 |---|---|---|---|
-| retry, circuit, timeout | `TtsScheduler` | całe zachowanie | wymaga uogólnienia `submit` (sekcja 13.5) |
-| resume klipów | `TtsResumeRepository.lookup/commit_clip/validate_temporary_clip/temporary_clip_path` | bez zmian, per kwestia | nagranie dokumentu to zwykły plik tymczasowy, nie wpis manifestu |
-| fingerprint | `SynthesisIdentity`, `SynthesisProfile` | tożsamość kwestii | kontekst sąsiednich kwestii nie wchodzi do tożsamości (świadomie) |
-| walidacja klipu | `FfmpegClipService.validate_clip` | walidacja wyciętych klipów (nagranie waliduje dekodowanie obwiedni) | — |
-| wzorzec protokołu FFmpeg | `ClipAssembler` → `FfmpegClipService.join_clips` | wzór dla `ClipSplitter.split_clip` | — |
-| komendy FFmpeg | `anishift/services/audio/commands.py`, `SubprocessRunner` | nowa komenda obwiedni WAV | stdout jest tekstem, więc PCM idzie przez plik WAV |
-| odczyt WAV | `wave` (stdlib), wzór `probe_pcm_wav` (`anishift/services/audio/probe.py`) | odczyt próbek obwiedni | — |
-| nagłówki MP3 | `anishift/services/audio/mp3.py:_parse_frame_header` | wydzielić do `anishift/utils/mp3_frames.py` | utils bez zależności od AniShift |
-| blokada | `ProcessLock` | blokada profilu Chrome | blokada per proces |
-| ACL katalogu | `qbittorrent_process._protect_profile` | wydzielić `restrict_directory` | błąd mapowany przez wołającego |
-| wyszukanie programu | `qbittorrent_config.installed_executable` | wydzielić `find_installed` | — |
-| ścieżki | `anishift/paths.py` | `elevenreader_dir()` | funkcje nie tworzą katalogów |
-| redagowanie sekretów | `anishift/utils/secrets.py` (`cookie`, `password`, `token`) | logger już redaguje klucze | nie zastępuje zakazu logowania URL-i |
-| akcja w tle w panelu | `SettingsController._start_probe` | wzór wątku, generacji, feedbacku | — |
-| sekrety `.env` | `_CONNECTIONS`, `AppService.update_environment_setting`, `env_file.py` | gałąź D2 | — |
-| logika EDP | sekcja 6, `file-map.md` §1 | port, nie import | — |
-
-## 10. Dowody
-
-| Twierdzenie | Dowód | Status |
-|---|---|---|
-| EDP nagrywa z prawdziwego Chrome przez CDP | `EDP:src/downloader.py:454-475` | verified |
-| ramki zawierają audio i czasy znaków | `EDP:src/downloader.py:181-255`, `capabilities.md:26-31` | verified (kod + dokument autora) |
-| czasy wyprzedzają mowę o ~0,3 s | `EDP:docs/report.md:39` | reported (pomiar autora EDP) |
-| jeden strumień naraz | `EDP:docs/report.md:33` | reported |
-| v4 przy prędkości 1x | `EDP:docs/report.md:36` | reported |
-| identyfikatory głosów Adam / Fronczewski | brak w kodzie i dokumentach EDP | unknown → faza 0 |
-| sposób wyboru głosu w odtwarzaczu | brak w kodzie EDP | unknown → faza 0 |
-| metody logowania na elevenreader.io | brak w EDP; publiczne źródła nie rozstrzygają (wyszukiwanie 2026-10-25) | unknown → faza 0 |
-| czy `--headless=new` działa dla uploadu i odtwarzania | `EDP:README.md:84` (opcja istnieje) | reported, do potwierdzenia w fazie 0 |
-| dryf zegara przy dekodowaniu całego pliku FFmpeg | `EDP:docs/report.md:75` dotyczy innego dekodera | unknown → faza 1, E1 |
-| Chrome 136+ ignoruje port debugowania dla domyślnego profilu | <https://developer.chrome.com/blog/remote-debugging-port>, odczyt 2026-10-25 | verified (źródło producenta) |
-| zakaz automatycznej ekstrakcji w polityce ElevenLabs | <https://elevenlabs.io/use-policy> §12, „Last Updated: 09 October 2026”, odczyt 2026-10-25 | verified |
-| Fronczewski jako głos „Iconic Voices” w ElevenReader | <https://elevenlabs.io/pl/blog/piotr-fronczewski>, wynik wyszukiwania 2026-10-25 | supported |
-| TTS nie widzi całego batcha | `scheduler.py:224-235`, `service.py:478-516` | verified |
-| alias obcego silnika przeszedłby do `elevenbytes` jako ID | `user_settings.py:449-452`, `engines/elevenbytes/AGENTS.md:15-16` | verified |
-
-## 11. Wykorzystanie timestampów
-
-### 11.1. Co dziś zastępuje czasy znaków
-
-AniShift nie zna czasu mowy wewnątrz klipu. Długość klipu mierzy pełne dekodowanie FFmpeg
-(`anishift/application/tts_clips.py:37-77`, `:102-118`), a oś czasu umieszcza klip na początku okna napisu albo
-za poprzednim klipem i zapisuje rozjazd (`drift_ms`) w planie (`anishift/services/audio/timeline.py:54-81`). Tempo
-końcowe zmienia cały klip (`tts_postprocess_tempo`). Nie ma przycinania ciszy na brzegach klipu.
-
-### 11.2. Do czego ten plan używa czasów znaków
-
-| Zastosowanie | W MVP? | Uzasadnienie |
-|---|---|---|
-| Lokalizacja kwestii w nagraniu dokumentu (pierwsza i ostatnia litera kwestii) | **tak, konieczne** | bez tego nie wiadomo, który fragment nagrania należy do której kwestii |
-| Punkt wyjścia do cięcia w ciszy (granica = środek przerwy między kwestiami, korygowany o opóźnienie mowy) | **tak, konieczne** | `EDP:src/clips.py:382-514`; same czasy bez ciszy ucinają słowa (`EDP:docs/report.md:39`) |
-| Kontrola kompletności: odebrane znaki wobec `char_count` | **tak** | wykrywa urwane nagranie przed cięciem (`EDP:src/auto.py:231-246`) |
-| Przycinanie powtórzeń po ponownym połączeniu strumienia | **tak** | inaczej kwestia dostałaby powtórzone zdanie (`EDP:src/downloader.py:257-312`) |
-| Postęp syntezy (odebrane znaki / `char_count`) | **tak** | pomiar backendu zamiast zgadywania (N7) |
-| Dopasowanie mowy do okna napisu | nie | robi to dziś oś czasu na dekodowanej długości; czasy znaków nie dają nic więcej |
-| Przycinanie ciszy na brzegach klipu | nie (pośrednio tak) | cięcie w ciszy z marginesem 100 ms przed i 150 ms po (`EDP:src/clips.py:47-51`) daje już krótkie brzegi |
-| Kontrola tempa | nie | tempo końcowe per głos istnieje; zmiana tempa ElevenReadera powyżej 1x przełącza model na v2 |
-| Raport jakości (np. kwestie dłuższe niż okno) | nie | `TimelinePlacement.drift_ms` istnieje; słowne czasy odłożone |
-
-### 11.3. Wniosek
-
-Czasy znaków są w MVP potrzebne wyłącznie po to, aby z jednego nagrania dokumentu otrzymać klip każdej kwestii
-(plus kompletność, powtórzenia i postęp). Po wycięciu klipy wchodzą do istniejącej drogi AniShift bez żadnych
-metadanych czasowych — domena TTS nadal nie przekazuje dalej timestampów (`anishift/services/tts/AGENTS.md:25-26`).
-
-## 12. Integracja: warianty i wybór
-
-### 12.1. Trzy warianty
-
-| Kryterium | A. Kopia z refaktorem | B. Zależność `uv add` (ścieżka lub git) | C. Proces zewnętrzny |
-|---|---|---|---|
-| Jedno źródło prawdy o retry, resume, błędach | tak — wspólny scheduler i resume AniShift | nie — EDP ma własną pętlę czekania i ponowień (`EDP:src/auto.py:121-134`) | nie — dwa procesy, dwa stany |
-| Typowane błędy i anulowanie | tak | wymaga przebudowy EDP | tylko `terminate` i parsowanie stdout |
-| Async w pętli TTS | Playwright async API | EDP używa sync API (`EDP:src/downloader.py:29`) | n/d |
-| Wybór głosu | do zbudowania | do zbudowania w EDP | do zbudowania w EDP |
-| Zmiana EDP | brak | konieczna (pakiet, API, błędy) — sprzeczne z Z3 | konieczna (tryb jednego dokumentu) |
-| CI (Windows/Ubuntu), `pip-audit` | działa | ścieżka lokalna nie istnieje w CI; prywatny git wymaga tokenu | EDP poza CI |
-| Kod widoczny publicznie | tak (D7) | tylko przy prywatnym repo | tylko przy prywatnym repo |
-| Duplikat logiki między repo | tak — EDP zostaje osobnym narzędziem | nie | nie |
-
-### 12.2. Wybór: A
-
-Wariant A daje jeden model błędów, retry i resume w AniShift, działa w CI i nie wymaga zmian w EDP. Duplikat
-logiki między repozytoriami jest świadomy: EDP to narzędzie właściciela do audiobooków z innym cyklem życia, a
-AniShift potrzebuje tylko części tej logiki w innej formie (async, typowane błędy, brak katalogów `input/`).
-Wewnątrz AniShift nie powstaje żaden duplikat: wspólne parsowanie ramek MPEG i ochrona katalogów są wydzielane do
-jednego źródła (sekcja 12.4).
-
-### 12.3. Co z EDP odpada
-
-- `EDP:script.js` w całości.
-- Ręczny tryb `EDP:src/downloader.py`: klawisze `msvcrt`, `handle_key`, `read_keys`, `next_free_output`, dopisywanie do
-  istniejącego pliku z offsetem, `RESUME_MARK`, `Monitor.report` i statusy MB.
-- `EDP:src/auto.py`: katalogi `input/`, `done/`, `failed/`, `pending_inputs`, `free_output`, `--parallel`, `run_all`,
-  `replace_page`, drukowanie komendy ręcznego wznowienia, czekanie 120 minut wewnątrz próby.
-- `EDP:src/timestamps.py`: SRT, JSON, zdania, słowa, `split_words`, `split_sentences`, CLI.
-- `EDP:src/clips.py`: parser SRT, `prepare`, `verify`, `edge_levels`, CLI, dekodowanie przez `miniaudio`.
-- Stała `CDP_PORT = 9222`: zastąpiona wolnym portem wybranym w czasie uruchomienia.
-- Zależność `miniaudio`: dekodowanie robi FFmpeg (już wymagany, `anishift/application/runtime.py:216-217`).
-
-### 12.4. Co w AniShift zrefaktoryzować, żeby nie było duplikatu
-
-| Duplikat, który by powstał | Refaktor |
-|---|---|
-| drugi parser nagłówka ramki MPEG w silniku (obok `anishift/services/audio/mp3.py:146-176`) | `anishift/utils/mp3_frames.py` jako jedyne źródło; `mp3.py` go używa |
-| trzecia funkcja ACL katalogu obok `qbittorrent_process._protect_profile` i `local_control._restrict_to_current_user` | `anishift/platform/private_dir.restrict_directory` z kodu `_protect_profile`; qBittorrent woła nową funkcję. Plikowy wariant w `local_control` ma inną semantykę (ostrzeżenie zamiast błędu, plik zamiast drzewa) i zostaje; plan to zgłasza, nie łączy |
-| druga funkcja szukania zainstalowanego programu obok `qbittorrent_config.installed_executable` | `anishift/platform/installed.find_installed(locations, stem)`; qBittorrent i Chrome z niej korzystają |
-| druga pętla retry w silniku (wzór EDP: 120 × 1 minuta) | brak — awaria serwisu to `TtsProviderUnavailableError(retry_after_s=60)` dla wspólnego schedulera |
-| drugi mechanizm resume (EDP: dopisywanie do pliku) | brak — resume per kwestia w `TtsResumeRepository` |
-| druga walidacja MP3 | brak — `FfmpegClipService.validate_clip` |
-
-Wiedza nie jest kopiowana do dwóch miejsc w AniShift: algorytm ciszy żyje tylko w `services/audio/segmentation.py`,
-lokalizacja kwestii tylko w `engines/elevenreader/alignment.py`, protokół strony tylko w
-`engines/elevenreader/page.py`.
-
-## 13. Target design
-
-### 13.1. Odpowiedzialności i ownership
-
-| Element | Odpowiada za | Owner danych/stanu | Nie odpowiada za |
-|---|---|---|---|
-| `TtsTaskHandler` (bez zmian) | skrypt → `SpeechBatch`, manifest narracji | czasy napisów | silnik, dokument |
-| `TtsService` | wybór ścieżki per kwestia albo dokument, resume, zatwierdzanie klipów, postęp | manifest resume | strona, Chrome, cięcie |
+| `TtsTaskHandler` | skrypt → `SpeechBatch`, łączenie kwestii urwanych i szyldy w batchu kwestii (tylko z flagą `reads_document`), manifest narracji | czasy napisów | silnik, dokument |
+| rejestr TTS (`engines/__init__.py`) | `is_document_engine(engine_id)`: jedyne źródło wiedzy, który silnik czyta dokumentem | — | budowa silnika |
+| `TtsService` | ścieżka per kwestia albo dokument, resume, commit klipów, postęp, `open_end` granic | manifest resume | strona, Chrome, cięcie |
 | `TtsScheduler` | kolejka, retry, circuit, timeout prób | stan circuit | budowa żądania |
-| `ClipSplitter` (`FfmpegClipService.split_clip`) | obwiednia, cisze, granice, cięcie ramek | pliki wyciętych klipów (tymczasowe) | lokalizacja kwestii |
-| `ElevenReaderTtsEngine` | jedna próba dokumentu: przeglądarka, upload, odtwarzanie, nagranie, lokalizacja kwestii | nagranie dokumentu (tymczasowe), proces Chrome | retry, resume |
-| `session.py` | stan sesji, logowanie interaktywne, opcjonalne logowanie danymi | `config/elevenreader/session.json` | sekrety w plikach |
-| `browser.py` | proces Chrome, port, blokada profilu, ACL | `config/elevenreader/chrome-profile/`, `profile.lock` | protokół strony |
-| `UserSettings` / `field_catalog` | wybór silnika, głosu, profile głosów | `config/settings.json` | sesja |
-| `Settings` | e-mail i hasło z `.env` (tylko gałąź D2) | `.env` | — |
-| `doctor` | pasywna diagnoza | — | uruchamianie przeglądarki |
+| `FfmpegClipService.split_clip` | dekodowanie nagrania, wywołanie cięcia, zapis klipów WAV | pliki tymczasowe klipów | czasy kwestii |
+| `services/audio/segmentation.py` | czysta reguła cięcia na poziomach energii | — | FFmpeg, pliki |
+| `services/audio/levels.py` | poziomy RMS w ramkach 10 ms, zakres mowy | — | progi decyzji |
+| `utils/mp3_frames.py` | nagłówki ramek MPEG, długość, cięcie przed czasem, miejsca sklejeń | — | dekodowanie |
+| `AudioService` | trim brzegów (normalizacja), pomiar głośności, gain, limiter | resume audio | providerzy |
+| `ElevenReaderTtsEngine` | jedna próba dokumentu: Chrome, sesja, konto, upload, nagranie, czasy kwestii | nagranie (tymczasowe), proces Chrome | retry, resume, cięcie |
+| `UserSettings`, `field_catalog` | silnik, głos, profile głosów, `narrator_over_source_lu` | `config/settings.json` | sesja |
 
-### 13.2. Source of truth
+### 7.2. Kontrakty domeny TTS
 
-- Wybór silnika i głosu: `UserSettings.tts_engine`, `tts_voice_id` w `config/settings.json`.
-- Identyfikatory głosów: `engines/elevenreader/constants.py` (`VOICES`), jedyne miejsce w kodzie.
-- Sesja: cookies w `config/elevenreader/chrome-profile/` (zarządza Chrome). `session.json` jest stanem pochodnym
-  (ostatnia obserwacja), nigdy podstawą decyzji o syntezie — silnik zawsze sprawdza sesję na stronie.
-- Gotowe klipy kwestii: `manifest.json` repozytorium resume grupy.
-- Nagranie dokumentu: plik tymczasowy jednej próby; usuwany po cięciu albo po porażce.
-
-### 13.3. Przepływ sterowania
-
-```text
-TtsTaskHandler.execute
-  -> TtsService.synthesize(batch)
-       -> _run_batch: engine = create_engine(config)
-          capabilities.max_document_chars is None ? ścieżka per kwestia (bez zmian zachowania)
-                                                  : _run_document_batch
-  _run_document_batch:
-       for request: skip niemowy | resume hit | pending
-       documents = _plan_documents(pending, max_document_chars)
-       for document:
-          scheduler.submit(call=attempt -> engine.synthesize_document(DocumentSynthesisRequest),
-                           accept_result=splitter.split_clip -> validate każdego klipu)
-          commit_clip dla każdej znalezionej kwestii; brakująca -> błąd kwestii
-       flush manifestu, _batch_result
-  ElevenReaderTtsEngine.synthesize_document:
-       browser.ensure() (lock, Chrome, CDP) -> session.require_signed_in()
-       page.upload(document.txt) -> read_id, char_count
-       page.open(read_id) -> set_reading_speed(1) -> ensure_voice(voice_id) -> set_page_speed(16) -> play
-       recorder: ramki WS -> plik nagrania + oś czasu znaków; postęp
-       koniec / przestój / anulowanie
-       alignment.locate(parts, timeline) -> PartTiming[]
-       -> EngineDocumentResult
-```
-
-### 13.4. Kontrakty domeny TTS (nowe i zmienione)
-
-Wszystkie typy: `@dataclass(frozen=True, slots=True)`, w `anishift/services/tts/types.py`, eksportowane w
-`anishift/services/tts/__init__.py`.
+Typy `@dataclass(frozen=True, slots=True)` w `anishift/services/tts/types.py`, eksport w `__init__.py`:
 
 ```text
 EngineCapabilities (zmiana)
-  + max_document_chars: int | None = None
-    None  -> silnik per kwestia (wszystkie dzisiejsze silniki, bez zmiany konstruktorów)
-    int>0 -> silnik dokumentowy; TtsService nigdy nie woła jego synthesize()
+  + max_document_chars: int | None = None     # None: silnik per kwestia (bez zmian konstruktorów)
 
-DocumentPart
-  request_id: str           # id kwestii z SpeechRequest
-  text: str                 # tekst kwestii po walidacji domeny (bez neutralizacji — robi ją silnik)
-
-DocumentSynthesisRequest
-  request_id: str           # "<scope_id>:document:<n>:attempt:<a>"
-  parts: tuple[DocumentPart, ...]      # co najmniej jedna, kolejność czytania
-  voice_id: str
-  provider_model_id: str
-  options: EngineOptions
-  recording: Path           # prywatna ścieżka tymczasowa z TtsResumeRepository.temporary_clip_path(MP3)
-  deadline_s: float
-  progress: Callable[[int, int], Awaitable[None]] | None = field(default=None, compare=False)
-                            # (odebrane_znaki, znaki_dokumentu); wyjątek observera nie przerywa syntezy
-
-PartTiming
-  request_id: str
-  start_ms: float           # pierwsza litera kwestii w nagraniu, zegar ramek MP3
-  end_ms: float             # koniec ostatniej litery; end_ms > start_ms
-
-EngineDocumentResult
-  request_id: str
-  recording: Path           # == request.recording
-  format: AudioFormat       # MP3
-  engine_id: str
-  provider_model_id: str
-  voice_id: str
-  request_time_ms: float
-  parts: tuple[PartTiming, ...]        # tylko znalezione kwestie, rosnąco po start_ms, bez duplikatów id
-
-ClipSpan
-  request_id: str
-  start_ms: float
-  end_ms: float
-  destination: Path         # prywatna ścieżka tymczasowa klipu
-
-SplitResult
-  written: tuple[str, ...]  # request_id zapisanych klipów, w kolejności spans
-  boundaries_without_silence: int     # liczba granic postawionych w „dołku” albo na samych czasach
+DocumentPart:             request_id: str; text: str
+DocumentSynthesisRequest: request_id: str                     # "<scope_id>:document:<n>"
+                          parts: tuple[DocumentPart, ...]      # ≥ 1, kolejność czytania
+                          voice_id: str; provider_model_id: str; options: EngineOptions
+                          recording: Path                      # temporary_clip_path(MP3) z TtsResumeRepository
+                          deadline_s: float
+                          progress: Callable[[int, int], Awaitable[None]] | None = field(default=None, compare=False)
+PartTiming:               request_id: str; start_ms: float; end_ms: float   # czas serwera = oś MP3; end > start
+EngineDocumentResult:     request_id: str; recording: Path; format: AudioFormat (MP3); engine_id: str
+                          provider_model_id: str; voice_id: str; request_time_ms: float
+                          parts: tuple[PartTiming, ...]        # dokładnie jedna na część, w kolejności
+ClipSpan:                 request_id: str; start_ms: float; end_ms: float; open_end: bool; destination: Path
+SplitResult:              written: tuple[str, ...]; uncertain_boundaries: int
 ```
 
-Protokoły w `anishift/services/tts/protocols.py`:
+Protokoły w `protocols.py`:
 
 ```text
-@runtime_checkable
 class DocumentTtsEngine(TtsEngine, Protocol):
+    def document_chars(self, parts: tuple[DocumentPart, ...]) -> int: ...   # długość wysyłanego dokumentu
+    def validate_part(self, part: DocumentPart) -> None: ...                # TtsInputError, gdy części nie da się przeczytać
     async def synthesize_document(self, request: DocumentSynthesisRequest, *,
                                   cancel: CancellationToken) -> EngineDocumentResult: ...
 
-@runtime_checkable
 class ClipSplitter(Protocol):
     def split_clip(self, source: Path, spans: tuple[ClipSpan, ...],
                    expectation: ClipExpectation) -> SplitResult: ...
 ```
 
-Kontrakt `split_clip`:
+`split_clip`: `spans` niepuste, w kolejności czytania; każdy `destination` dostaje klip WAV mono 48 kHz PCM S16LE;
+błędy `RuntimeError`/`OSError`/`ValueError` (jak `join_clips`), które `TtsService` mapuje na
+`TtsClipValidationError`.
 
-- wejście: `source` to nagranie MP3 (bez osobnej walidacji — dekodowanie obwiedni jest walidacją; błąd dekodowania
-  albo brak ramek → `ValueError`); `spans` niepuste, rosnące po `start_ms`, rozłączne;
-- wyjście: każdy `destination` z `written` zawiera kompletne ramki MP3 pokrywające mowę kwestii z marginesami;
-- błędy: `RuntimeError` / `OSError` / `ValueError` przy awarii FFmpeg lub danych (jak `join_clips`,
-  `anishift/application/tts_clips.py:98-100`); `TtsService` mapuje je na `TtsClipValidationError`;
-- efekty uboczne: pliki `destination` i jeden tymczasowy WAV obwiedni w katalogu tymczasowym systemu, usuwany przed
-  powrotem.
+`anishift/errors.py`: `ErrorCode.TTS_QUOTA_EXHAUSTED`. `anishift/services/tts/errors.py`:
+`class TtsQuotaError(TtsError, FatalError)`. `_opens_circuit` dodaje `TtsQuotaError`.
 
-Nowy błąd w `anishift/services/tts/errors.py`:
+`TtsConfig` (`anishift/services/tts/config.py`): `+ elevenreader_profile_root: Path | None = None`.
 
-```text
-class TtsQuotaError(TtsError, FatalError):
-    """Provider account has no credits left for synthesis."""
-    error_code = ErrorCode.TTS_QUOTA_EXHAUSTED
-```
-
-`ErrorCode.TTS_QUOTA_EXHAUSTED = "TTS_QUOTA_EXHAUSTED"` w `anishift/errors.py` obok kodów TTS (`:80-94`).
-`_opens_circuit` dodaje `TtsQuotaError` do błędów trwałych otwierających circuit (`scheduler.py:426-429`).
-
-`TtsConfig` (`anishift/services/tts/config.py`) dostaje pola specyficzne dla silnika, na wzór `elevenlabs_api_key`
-(`config.py:42`):
+### 7.3. Scheduler wykonuje dowolną próbę
 
 ```text
-elevenreader_profile_root: Path | None = None
-elevenreader_email: str = field(default="", repr=False)
-elevenreader_password: str = field(default="", repr=False)
+ScheduledSynthesis[R]: result: R | None; error: TtsError | None; attempts: int      # pole clip → result
+TtsScheduler.submit[R](call: Callable[[int], Awaitable[R]], *, batch_rank, request_rank, cancel,
+                       accept_result: Callable[[R], Awaitable[R]],
+                       on_result: Callable[[R], Awaitable[None]] | None = None,
+                       on_retry: … = None) -> ScheduledSynthesis[R]
 ```
 
-### 13.5. Uogólnienie schedulera
+`_WorkItem` trzyma `call` zamiast `request_factory`; `_attempt` robi `await work.call(work.attempts)` pod tym samym
+`asyncio.timeout`. Retry, circuit, `_retry_delay`, `_handle_error` bez zmian. Ścieżka per kwestia przekazuje
+`call=lambda a: engine.synthesize(attempt.request_for_attempt(a), cancel=self._cancel)`. Wszystkie użycia `.clip`
+przechodzą na `.result` w tym samym commicie.
 
-Zmiana w `anishift/services/tts/scheduler.py` bez zmiany zachowania dotychczasowych silników:
+Konstruktor: `TtsScheduler(*, locality: EngineLocality, config, clock)`. Scheduler potrzebuje od silnika wyłącznie
+lokalności (`SYSTEM` ponawia bez opóźnienia), więc nie trzyma jego instancji.
+
+### 7.4. Algorytm cięcia (port `SCR:snapcut.py`, `SCR:bounds.py`, `SCR:envelope.py`)
+
+Stałe w `anishift/services/audio/segmentation.py` pod `# ── Constants ──`:
+`NOISE_DBFS = -35.0`, `MIN_SILENCE_MS = 80.0`, `OPEN_MIN_SILENCE_MS = 150.0`, `BEFORE_MS = 600.0`,
+`AFTER_MS = 900.0`, `BIAS_MS = 200.0`, `DISTANCE_WEIGHT = 0.25`, `FRAME_MS = 10.0`, `ENVELOPE_RATE = 16_000`.
 
 ```text
-@dataclass(frozen=True, slots=True)
-class ScheduledSynthesis[R]:
-    result: R | None
-    error: TtsError | None
-    attempts: int
-
-TtsScheduler.submit[R](
-    call: Callable[[int], Awaitable[R]],          # numer próby -> wynik providera; jedno wywołanie providera
-    *, batch_rank, request_rank, cancel,
-    accept_result: Callable[[R], Awaitable[R]],
-    on_result: Callable[[R], Awaitable[None]] | None = None,
-    on_retry: Callable[[int, int, float, TtsError], Awaitable[None]] | None = None,
-) -> ScheduledSynthesis[R]
+wejście: levels (dBFS ramek 10 ms nagrania zdekodowanego do mono 16 kHz), splices (utils/mp3_frames),
+         spans: kolejne (start_ms, end_ms, open_end) w czasie serwera
+1. czas ramki k na osi serwera = k·10 + frame_ms · (liczba sklejeń ≤ k·10)              # envelope.py
+   frame_ms = FrameHeader.duration_ms pierwszej ramki nagrania (utils/mp3_frames); bez stałej długości ramki
+2. dla granicy (i, i+1):
+     min_len = OPEN_MIN_SILENCE_MS jeśli open_end_i, inaczej MIN_SILENCE_MS
+     anchor  = (end_i + start_{i+1}) / 2 + BIAS_MS
+     lo = max(end_i − BEFORE_MS, (start_i + end_i)/2);  hi = min(start_{i+1} + AFTER_MS, (start_{i+1} + end_{i+1})/2)
+     cisze = ciągłe ramki z lo ≤ t < hi i poziomem < NOISE_DBFS; cisza = [t_pierwszej, t_ostatniej + 10]
+     kandydaci: długość ≥ min_len; wynik = długość − DISTANCE_WEIGHT · |środek − anchor|; max
+     jest kandydat → cięcie = środek ciszy
+     brak         → cięcie = anchor ograniczony do [lo, hi]; uncertain += 1
+3. klip i = [cięcie_{i−1}, cięcie_i]; pierwszy od 0, ostatni do końca nagrania (czas ostatniej ramki + 10)
+4. granice klipów → oś zdekodowanego PCM: to_decoded(ms, splices, frame_ms) → indeks próbki w dekodzie 48 kHz
 ```
 
-- `_WorkItem` przechowuje `call` zamiast `request_factory`; kolejki trzymają `_WorkItem[Any]` (dozwolony jawny
-  `Any`, `pyproject.toml:105`).
-- `_attempt` wykonuje `await work.call(work.attempts)` pod tym samym `asyncio.timeout`; mapowanie wyjątków,
-  `_accept`, `_handle_error`, `_retry_delay`, circuit — bez zmian.
-- Konstruktor nadal dostaje `engine` (potrzebny do `capabilities.locality` w `_retry_delay`).
-- `_ProviderAttempt` w `service.py` daje `call=lambda attempt: engine.synthesize(attempt_ctx.request_for_attempt(attempt), cancel=self._cancel)`;
-  pole `ScheduledSynthesis.clip` zmienia nazwę na `result` — wszystkie użycia w `service.py:667-690` i testach
-  aktualizowane w tym samym commicie.
+Różnica wobec prototypu jest jedna: granica bez ciszy nie scala klipów (kontrakt TTS wymaga klipu na kwestię),
+tylko dostaje cięcie w `anchor` i ostrzeżenie. Na Tantei wszystkie 6 takich granic to kwestie urwane z przerwą
+0 ms (40, 58, 152, 169), które łączenie kwestii (§7.6) usuwa jeszcze przed nagraniem.
 
-### 13.6. Algorytm ścieżki dokumentu w `TtsService`
-
-`TtsService.__init__` dostaje parametr `splitter: ClipSplitter | None = None` obok `assembler`
-(`service.py:223-246`). `_run_batch` po `_ensure_runtime` sprawdza `engine.capabilities.max_document_chars`.
+`FfmpegClipService.split_clip`:
 
 ```text
-_run_document_batch(batch, engine, scheduler, callbacks):
-  1. jeżeli splitter is None albo not isinstance(engine, DocumentTtsEngine):
-        wszystkie kwestie mowy -> _failed_execution(TtsUnsupportedError("Document synthesis requires a clip splitter"))
-  2. dla każdej kwestii w kolejności batcha:
-        niemowa -> _skipped_execution
-        chunks = chunk_speech_text(text, max_chars=capabilities.max_text_chars, max_bytes=None)   # jak service.py:536-540
-        len(chunks) != 1 -> _failed_execution(TtsInputError)    # kwestia dłuższa niż limit dokumentu
-        identity = SynthesisIdentity(scope, request_id, text, chunks=chunks, profile=engine.synthesis_profile)
-        lookup -> trafienie -> _cached_execution
-        inaczej -> pending
-     powiadom postęp po każdej kwestii rozstrzygniętej bez providera
-  3. documents = _plan_documents(pending, max_document_chars):
-        zachłannie w kolejności batcha; dokument zamyka się, gdy suma len(text) następnej kwestii przekroczyłaby limit
-  4. dla każdego dokumentu po kolei (nigdy równolegle; max_concurrency=1):
-        outcome = await scheduler.submit(call, accept_result, on_result, on_retry, batch_rank, request_rank=pierwszej kwestii)
-          call(a):   recording = repository.temporary_clip_path(MP3); zapamiętaj ścieżkę
-                     -> engine.synthesize_document(DocumentSynthesisRequest(..., recording, deadline_s=config.request_timeout_s, progress=...))
-          accept(r): własność wyniku (ścieżka, engine_id, provider_model_id, voice_id) jak _ProviderAttempt.accept_result
-                     spans = ClipSpan dla każdego r.parts z nową ścieżką tymczasową
-                     split = await to_thread(splitter.split_clip, recording, spans, expectation)
-                       (RuntimeError, OSError, ValueError) -> TtsClipValidationError (przejściowy => ponowienie dokumentu)
-                     dla każdego zapisanego klipu: receipt = repository.validate_temporary_clip(...)
-                       None -> TtsClipValidationError
-                     zapamiętaj receipts; return r
-        outcome.error -> każda kwestia dokumentu = _failed_execution(outcome.error); usuń ścieżki
-        inaczej, dla każdej kwestii dokumentu:
-             receipt jest -> commit_clip(identity, path, expectation, can_commit, validation_receipt=receipt)
-                             -> SpeechClip(attempts=outcome.attempts, from_resume=False)
-             receipt brak -> _failed_execution(TtsClipValidationError("Line was not found in the recording"))
-        usuń nagranie i niezatwierdzone ścieżki
-  5. repository.flush(); _batch_result(batch, ordered, engine)
+1. data = source.read_bytes(); frame_ms = next(iter_frames(data)).duration_ms; splices = splice_times(data)
+   (utils); brak ramek → ValueError
+2. dwa dekodowania przez CommandRunner do plików tymczasowych w TemporaryDirectory(prefix="anishift-split-"):
+     mono 16 kHz s16le (poziomy) i mono 48 kHz s16le (klipy); wejście z jawnym `-f mp3` (bez niego FFmpeg
+     rozpoznaje plik z obcymi bajtami na początku jako inny format); timeout `recording_timeout_s` (300 s)
+3. levels = frame_levels(pcm16k, 16_000); cuts = cut_points(levels, splices, spans) (segmentation)
+4. dla każdego span: wycinek PCM 48 kHz → WAV (`wave`) w span.destination
+5. log: spans, uncertain_boundaries, duration_ms (bez ścieżek i tekstu); SplitResult
 ```
 
-Księgowanie: `provider_calls` i `retries` dokumentu trafiają do pierwszej kwestii dokumentu, pozostałe kwestie mają
-`provider_calls=0`, `retries=0`, aby `SpeechBatchStats` liczył wywołania providera, nie kwestie
-(`service.py:926-960`).
+Dekodowanie 48 kHz i zapis WAV odtwarzają `SCR:rebuild_cuts.py`, z którego powstał odsłuch właściciela.
 
-Postęp: `progress(received, total)` → `SpeechBatchProgress.received_required_requests = rozstrzygnięte +
-floor(received / total × liczba_kwestii_dokumentu)`, ograniczone do liczby kwestii dokumentu; observer przez
-`_safe_callback` (`service.py:894-900`). Po zatwierdzeniu — zwykłe `_notify_execution` per kwestia.
-
-Anulowanie: `self._cancel` trafia do `synthesize_document`; `can_commit(generation)` chroni commit jak dziś.
-
-### 13.7. Domena audio: segmentacja i cięcie
-
-`anishift/utils/mp3_frames.py` (bez importów AniShift):
+### 7.5. Wspólne ramki MPEG (`anishift/utils/mp3_frames.py`, bez importów AniShift)
 
 ```text
-@dataclass(frozen=True, slots=True)
-class FrameHeader: offset: int; size: int; sample_rate: int; channels: int; samples: int; version: int
-
-parse_frame_header(data: bytes, offset: int) -> FrameHeader | None   # MPEG-1/2/2.5 Layer III; z mp3.py:146-176
-iter_frames(data: bytes) -> Iterator[FrameHeader]                     # pomija ID3v2 i obce bajty (EDP:timestamps.py:65-81)
-frames_duration_ms(data: bytes) -> float                              # suma samples*1000/sample_rate
-cut_before_ms(data: bytes, cut_ms: float) -> tuple[bytes, float]      # EDP:timestamps.py:89-96, tolerancja 0,5 ms
+FrameHeader(offset, size, sample_rate, channels, samples, version)
+parse_frame_header(data, offset) -> FrameHeader | None     # z services/audio/mp3.py (_parse_frame_header)
+iter_frames(data) -> Iterator[FrameHeader]                 # pomija ID3v2; ramka ważna, gdy następna też jest ważna
+frames_duration_ms(data) -> float                          # EDP:src/timestamps.py, mp3_duration_ms
+cut_before_ms(data, cut_ms) -> tuple[bytes, float]         # EDP:src/timestamps.py, mp3_cut_ms
+splice_times(data) -> tuple[float, ...]                    # SCR:bounds.py, splice_times (oś zdekodowana)
+to_decoded(server_ms, splices, frame_ms) -> float          # SCR:bounds.py; frame_ms = FrameHeader.duration_ms
 ```
 
-`anishift/services/audio/mp3.py` zachowuje `read_mp3_stream_properties` z tym samym zachowaniem i błędami
-(`tests/services/audio/test_audio_mp3.py` bez zmian zachowania) i dodaje:
+Model zgodny z dekoderem FFmpeg (sprawdzone na syntetycznym MP3 i nagraniach Tantei, Edgerunners 02 i 03):
+
+- ciąg bajtów między ramkami, który zaczyna się nagłówkiem (ramka, po której nie stoi poprawny nagłówek, plus obce
+  bajty, np. ID3 nowego strumienia), dekoder gubi w całości: czas serwera liczy go jako jedną ramkę, a
+  `splice_times` zwraca jego miejsce; dotyczy też takiego ciągu tuż po ID3 na początku pliku;
+- obce bajty bez nagłówka przed pierwszą ramką (śmieci, drugi tag ID3) dekoder pomija bez straty: nie są ani
+  czasem serwera, ani sklejeniem;
+- ostatnią ramkę, po której stoją obce bajty do końca pliku, dekoder odtwarza: liczy się jak zwykła ramka.
+
+`services/audio/mp3.py` używa `parse_frame_header` i traci własną kopię tabel; `read_mp3_stream_properties`
+zachowuje zachowanie i błędy.
+
+### 7.6. Łączenie kwestii urwanych (tylko silnik dokumentowy)
+
+Łączenie jest potrzebne wyłącznie silnikowi, który czyta cały odcinek jednym dokumentem: tylko tam powstaje
+granica bez pauzy, której nie da się bezpiecznie przeciąć. Silniki „kwestia po kwestii” (`elevenbytes`,
+`elevenlabs`, `edge`, `sapi`) wysyłają każdą linijkę osobnym żądaniem i nie dostają łączenia.
+
+Miejsce: `TtsTaskHandler._narration_batch`, bo tylko tam są czasy napisów potrzebne do reguły i do okna
+połączonej kwestii; domena TTS czasów nie zna (I2), a kontrakt „klip na żądanie” zostaje nietknięty. Handler
+dostaje keyword-only `reads_document: bool` w konstruktorze; `runtime._tts_handler` ustawia go z
+`is_document_engine(snapshot.tts_profile_id)` z rejestru TTS (`frozenset({"elevenreader"})` obok `_REGISTRY`,
+bez importu silnika). Dla `elevenbytes` i `elevenlabs` flaga jest `False`, więc `_narration_batch` działa jak dziś.
+
+`anishift/text/boundaries.py` dostaje `ends_sentence(text) -> bool`: ostatni znak po `rstrip()` należy do
+`SENTENCE_ENDINGS`, `CLOSING_MARKS` albo `"` (zbiór prototypu `. ! ? … " ”` jest w nim zawarty).
 
 ```text
-Mp3Frame: start: int; end: int; start_ms: float; end_ms: float
-frame_table(data: bytes) -> tuple[Mp3Frame, ...]              # EDP:clips.py:302-312
-cut_frames(data, frames, start_ms, end_ms) -> tuple[bytes, float, float]   # EDP:clips.py:315-321, 2 ramki rezerwy
-stream_ranges(frames) -> tuple[tuple[int, int], ...]          # EDP:clips.py:332-335
+tylko gdy reads_document i timeline is SOURCE_TIMES, po odfiltrowaniu kwestii bez mowy:
+  kwestia i łączy się z i+1, gdy not ends_sentence(text_i) i start_{i+1} ≤ end_i
+  łączymy wyłącznie pary: wynik połączenia nie łączy się dalej
+  połączona: request_id = f"{group_id}-{order_i}", text = text_i + " " + text_{i+1},
+             okno = _placement_window(start_i, end_{i+1}), order = order_i
 ```
 
-`anishift/services/audio/segmentation.py` (czysty port `EDP:src/clips.py:349-514`, te same stałe i nazwy znaczeń):
+Próg „przerwa ≤ 0 ms” pochodzi z pomiaru: wszystkie 11 kwestii urwanych Tantei miało przerwę 0 ms
+(`SCR:snap-report.md` §4). Szyldy się nie łączą.
+
+**Szyldy w tym samym dokumencie.** Przy `reads_document` i trybie `sign_narration` innym niż `off` handler dokłada
+do batcha kwestii żądania wszystkich kandydatów szyldów (`{group_id}-sign-{grupa}`, rangi po kwestiach, okno napisu
+szyldu). Jedna synteza daje jeden dokument i jedno nagranie (dopóki limit znaków nie podzieli batcha). Wynik dzieli
+się po `request_id`: kwestie przechodzą ścisły `build_narration_manifest`, szyldy wersję dopuszczającą szyld bez
+klipu (pominięty albo nieudany), który wypada z ostrzeżeniem i grupą w `signs_unrecorded`.
+Dalej działa bez zmian ta sama ścieżka: normalizacja kwestii, `select_signs` na zmierzonych klipach, okna szyldów z
+wyboru. Silnik „kwestia po kwestii” (`reads_document = False`) robi to co dotąd: najpierw kwestie, potem
+`reachable_signs` na ułożonych kwestiach i drugi batch tylko z szyldami osiągalnymi. Różnica jest jedna i świadoma:
+silnik dokumentowy czyta też szyldy, których nie da się umieścić (długości kwestii nie są znane przed nagraniem), a
+`sign_chars_synthesized` to pokazuje. Walidacja wejścia szyldów (rodzaj, tryb, serwis audio, plik) biega przed
+syntezą w obu ścieżkach. Identyfikator dokumentu bierze numer z licznika `TtsService`, więc jest unikalny w
+przebiegu.
+
+### 7.7. Przycinanie ciszy na brzegach (`normalize_clip`)
+
+`anishift/services/audio/levels.py`:
 
 ```text
-WINDOW_MS=10, ENVELOPE_RATE=16000, LOUD_FLOOR_DBFS=-60, SILENCE_BELOW_SPEECH_DB=15, MIN_GAP_MS=120,
-DELAY_SEARCH_MS=(-500, 1000, 10), SNAP_TOLERANCE_MS=400, DIP_MS=50, DIP_SEARCH_MS=200,
-PAD_BEFORE_MS=100, PAD_AFTER_MS=150, MIN_DBFS=-120, FULL_SCALE=32768
-
-envelope(samples: Sequence[int], sample_rate: int) -> list[float]
-silences(levels) -> list[Span]
-estimate_delay(points, gaps) -> float
-snap_spans(spans: Sequence[Span], levels: Sequence[float]) -> tuple[Placement, ...]
-    Placement: clip: Span, speech: Span, start_kind: BoundaryKind, end_kind: BoundaryKind
-    BoundaryKind: SILENCE | DIP | TIMING   (StrEnum)
-    brak mowy w całym nagraniu -> padding na samych czasach (EDP:clips.py:517-520)
+frame_levels(pcm: array[int], sample_rate: int) -> list[float]     # RMS dBFS ramek 10 ms, math.sumprod, 1e-12
+speech_bounds(levels, threshold_dbfs) -> tuple[int, int] | None    # pierwsza i ostatnia ramka powyżej progu
 ```
 
-`anishift/services/audio/commands.py`: `envelope_wav_command(ffmpeg, source, destination)` →
-`ffmpeg -nostdin -hide_banner -loglevel error -i <source> -ac 1 -ar 16000 -c:a pcm_s16le -f wav -y <destination>`.
+Po zapisaniu surowego PCM (już po `atempo`) `normalize_clip` liczy `speech_bounds(levels, -45.0)` i zapisuje
+wycinek `[pierwsza − 30 ms, ostatnia + 10 ms + 30 ms]` przyciętego do pliku; brak ramek powyżej progu → klip bez
+zmian. Trim jest obróbką audio, nie cechą silnika, i obejmuje klipy każdego silnika, także `elevenbytes`
+(decyzja właściciela D1). Stałe `EDGE_TRIM_DBFS = -45.0` (pomiar §6.3) i `EDGE_TRIM_MARGIN_MS = 30.0` (ochrona przed trzaskiem;
+dozwolona lokalna zmiana 0–50 ms, z wpisem w outcome). Szybka ścieżka `_neutral_wav` znika (zwracała klip bez
+przetwarzania). `normalization_fingerprint`: wersja 1 → 2 i sekcja `edge_trim` z obiema stałymi.
 
-`FfmpegClipService.split_clip` (`anishift/application/tts_clips.py`):
+### 7.8. Mierzona głośność w miksie
 
 ```text
-1. data = source.read_bytes(); frames = frame_table(data); brak ramek -> ValueError
-2. pcm = obwiednia według wyniku E1 (faza 1):
-     E1 zdane -> jedno envelope_wav_command dla całego pliku, odczyt przez wave + array('h')
-     E1 niezdane -> stream_ranges; dla każdego strumienia osobny plik tymczasowy MP3 i osobne dekodowanie;
-                    próbki dopasowane do oczekiwanej długości strumienia (obcięcie albo dopełnienie zerami,
-                    EDP:clips.py:338-346)
-3. levels = envelope(pcm, 16000); placements = snap_spans([Span(s.start_ms, s.end_ms) for s in spans], levels)
-4. dla każdej pary (span, placement): clip, _, _ = cut_frames(data, frames, placement.clip.start_ms, placement.clip.end_ms)
-     span.destination.write_bytes(clip)
-5. usuń katalog z WAV; zwróć SplitResult(written, boundaries_without_silence = liczba krawędzi != SILENCE)
+commands.loudness_command(ffmpeg, path):
+  ffmpeg -hide_banner -nostdin -nostats -v info -i <path> -map 0:a:0
+         -af aformat=channel_layouts=stereo,ebur128=framelog=quiet -f null -
+probe.measure_integrated_loudness(path, *, ffmpeg, runner, timeout_s, cancel) -> float
+  parsuje ze stderr wartość I z bloku "Summary:"; "-inf" albo brak → AudioDecodeError (typowany, z sugestią)
+AudioService._render_output, tylko gdy request.source_audio_path is not None:
+  narrator_I = measure(narrator.wav); source_I = measure(source_audio_path)      # timeout render_timeout_s, cancel
+  narrator_gain_db = source_I + config.narrator_over_source_lu + config.voice_mix_offset_db − narrator_I
+RenderInputs + narrator_gain_db: float
+render_command: volume narratora = narrator_gain_db; po amix:
+  [mixed]alimiter=limit=0.891251:attack=5:release=50:level=0:latency=1[limited]   # −1 dBFS; level=0 obowiązkowe
+AudioConfig: narrator_mix_base_gain_db → narrator_over_source_lu: float = 7.5 (bez aliasu)
+mix_fingerprint: wersja 3 → 4 → 5; gain: narrator_over_source_lu, voice_offset_db, original_db; limiter: parametry;
+                 wersja 5 = pomiar oryginału po downmiksie do stereo
 ```
 
-WAV obwiedni powstaje w `tempfile.TemporaryDirectory(prefix="anishift-envelope-")`, nie w katalogu `clips/`
-repozytorium resume (tam wolno leżeć tylko plikom w układzie `TtsArtifactLayout`, `anishift/services/tts/artifacts.py:95-110`).
+Pomiar źródła dotyczy oryginału przed `original_gain_db` (wzór z `SCR:loudness-report.md` §4), słyszanego jak w
+stereo: przed `ebur128` stoi standardowy downmix swresample (`aformat=channel_layouts=stereo`). Cel +7,5 LU
+kalibrowano na stereo, więc przy źródle 5.1 lektor w kanale centralnym ma ten sam odstęp od oryginału, który słychać
+po downmiksie. Mono i stereo mierzą się identycznie jak wcześniej (sprawdzone: −28,6 i −25,6 LUFS bez zmian). Samo
+`-ac 2` jako opcja wyjścia nie wystarcza: FFmpeg przekształca dźwięk dopiero za filtrem pomiaru (5.1 testowe:
+−22,9 LUFS z `-ac 2` i bez). Pomiar na Edgerunners 2 E02 (E-AC-3 5.1(side)): całość −24,5 LUFS, po downmiksie
+−25,2 LUFS, studyjna ścieżka AAC stereo tego samego pliku −21,7 LUFS. Trafienie resume
+(`_output_hit`) nie mierzy. Narrator-only bez zmian (bez gainu, bez limitera). Zmierzone wartości są funkcją już
+hashowanych wejść, więc nie wchodzą do fingerprintu.
 
-Limit czasu dekodowania obwiedni: `FfmpegClipService` ma dziś jeden `timeout_s=30` (`runtime.py:216-226`), dobry
-dla klipów kwestii. Dekodowanie nagrania dokumentu (do około 54 minut audio) dostaje osobny parametr konstruktora
-`recording_timeout_s` (wartość w `runtime.py`: 300 s); walidacja klipów zostaje przy 30 s.
+### 7.9. Tempo i korekta na głos
 
-Logowanie w `split_clip` (bez ścieżek i tekstu): `spans`, `boundaries_without_silence`, `delay_ms`, `duration_ms`.
+`default_tts_voice_profiles()`:
 
-### 13.8. Silnik `elevenreader` — moduły
-
-#### `constants.py`
-
-```text
-ENGINE_ID = "elevenreader"
-PROVIDER_MODEL_ID = "eleven_v4"
-ENDPOINT_ID = "elevenreader-web-stream-v2"
-ADAPTER_VERSION = "elevenreader-v1"
-LIBRARY_URL = "https://elevenreader.io/reader/library"                 # EDP:auto.py:53
-DOCUMENT_URL_TEMPLATE = LIBRARY_URL + "/{read_id}"                    # EDP:auto.py:169
-ADD_ENDPOINT = "/v1/reader/reads/add/v2"                              # EDP:auto.py:56
-STREAM_PATH = "/v1/reader/reads/stream/v2/"                           # capabilities.md:18
-SUPPORTED_UPLOAD_SUFFIX = ".txt"
-MAX_DOCUMENT_CHARS = 50_000        # połowa największego zmierzonego dokumentu (~97 000; capabilities.md:101)
-READING_SPEED = "1"                # EDP:auto.py:86
-PAGE_SPEED = 16.0                  # >16x nic nie daje (README.md:143); 64x potrafi zawisnąć przed końcem
-LIBRARY_LOAD_S = 45; READY_TIMEOUT_S = 600; ACTION_TIMEOUT_S = 120     # EDP:auto.py:59-66
-START_TIMEOUT_S = 60; PLAY_ATTEMPTS = 3; STALL_S = 300                # EDP:auto.py:77-84
-END_IDLE_S = 10; END_SLACK_CHARS = 30                                 # EDP:auto.py:71-75
-POLL_S = 1.0; SPEED_CHECK_S = 3.0; SPEED_TOLERANCE = 0.01             # EDP:auto.py:282, downloader.py:145-149
-MIN_DEDUP_BYTES = 8 * 1024; TAIL_CHARS = 20_000; MIN_PROBE_CHARS = 10 # EDP:downloader.py:72-79
-CONNECT_ATTEMPTS = 30; CONNECT_RETRY_S = 0.5                          # EDP:downloader.py:57-61
-CHROME_LOCATIONS = (("PROGRAMFILES", r"Google\Chrome\Application\chrome.exe"),
-                    ("PROGRAMFILES(X86)", r"Google\Chrome\Application\chrome.exe"),
-                    ("LOCALAPPDATA", r"Google\Chrome\Application\chrome.exe"))  # EDP:downloader.py:47-55
-CHROME_STEM = "chrome"
-CHROME_FLAGS = ("--no-first-run", "--no-default-browser-check")      # EDP:downloader.py:458-460, bez force-dark
-HEADLESS_FLAGS = ("--headless=new", "--window-size=1600,1000", "--autoplay-policy=no-user-gesture-required")
-SPEED_SCRIPT, SPEED_STATE_SCRIPT, PLAYER_STATE_SCRIPT     # dosłowny port EDP:downloader.py:99-143, auto.py:92-100;
-                                                          # zmienne window.__anishiftSpeed* zamiast __edp*
-VOICES: Final[dict[str, ElevenReaderVoice]] = {
-    "fronczewski": ElevenReaderVoice(alias="fronczewski", label="Piotr Fronczewski", voice_id=<z fazy 0>, language="pl"),
-    "adam":        ElevenReaderVoice(alias="adam",        label="Adam",              voice_id=<z fazy 0>, language=<z fazy 0>),
-}
-DEFAULT_VOICE_ALIAS = "fronczewski"
-SESSION_FILE = "session.json"; PROFILE_DIR = "chrome-profile"; LOCK_FILE = "profile.lock"
-SIGN_IN_TIMEOUT_S = 600
-```
-
-Selektory strony (`IMPORT_BUTTON = "Import"`, `UPLOAD_BUTTON = "Upload"`, `PLAY_BUTTON = "Play"`, pole
-`input[type=file]`, `input[aria-label="Playback rate"]`, wzorzec przycisku prędkości `^\d+([.,]\d+)?x$`) pochodzą z
-`EDP:src/auto.py:89-90`, `:116-118`, `:140-155`. Selektory wyboru głosu i logowania uzupełnia faza 0.
-
-#### `config.py`
-
-```text
-@dataclass(frozen=True, slots=True)
-class ElevenReaderConfig:
-    voice: ElevenReaderVoice
-    profile_root: Path
-    headless: bool              # stała decyzji D9 z fazy 0; nie pole ustawień
-    email: str = field(default="", repr=False)
-    password: str = field(default="", repr=False)
-
-    @classmethod from_tts_config(config: TtsConfig) -> ElevenReaderConfig
-       provider_model_id.casefold() != "eleven_v4" -> TtsConfigError(field provider_model_id)
-       max_concurrency != 1 -> TtsConfigError(field max_concurrency)       # U8
-       engine_options niepuste -> TtsUnsupportedError
-       native_rate/volume/pitch nie None -> TtsUnsupportedError
-       elevenreader_profile_root is None -> TtsConfigError(field elevenreader_profile_root)
-       voice = resolve_voice(config.voice_id)
-
-resolve_voice(alias_or_id: str) -> ElevenReaderVoice
-    alias (casefold) albo dokładne voice_id z VOICES; inaczej TtsVoiceError("Unknown ElevenReader voice")
-```
-
-#### `document.py`
-
-```text
-neutralize(text: str) -> str
-    "[" -> "(", "]" -> ")"; każdy ciąg białych znaków -> " "; strip()
-document_text(parts: Sequence[DocumentPart]) -> str
-    "\n\n".join(neutralize(p.text) for p in parts) + "\n"        # EDP:clips.py:203-208 (wariant A, D4)
-document_chars(parts: Sequence[DocumentPart]) -> int
-    sum(len(neutralize(p.text)) for p in parts)                  # separatory akapitów nie wchodzą do limitu
-```
-
-Podział batcha na dokumenty należy do `TtsService` (zna resume i kolejność) i istnieje raz, jako prywatne
-`_plan_documents` w `anishift/services/tts/service.py`. Limit `max_document_chars` liczy **sumę długości tekstów
-kwestii** bez separatorów; `neutralize` nigdy nie wydłuża tekstu, więc silnik, sprawdzając `document_chars(parts)
-<= MAX_DOCUMENT_CHARS`, nie odrzuci dokumentu złożonego przez `TtsService`.
-
-#### `recorder.py` (czyste, bez Playwright)
-
-```text
-@dataclass(frozen=True, slots=True)
-class AlignmentChunk: offset_ms: float; chars: tuple[str, ...]; start_ms: tuple[float, ...]; dur_ms: tuple[float, ...]
-
-class DocumentRecorder:
-    __init__(out: BinaryIO)
-    on_frame(payload: str | bytes) -> None          # port Recorder.on_frame (EDP:downloader.py:181-201)
-    chunks: tuple[AlignmentChunk, ...]               # w pamięci, nie na dysku
-    received_chars: int
-    total_bytes: int
-    last_audio_at: float | None                      # zegar wstrzykiwany (monotonic)
-    duplicates_skipped: int; reconnect_trims: int; frames_without_text: int; non_json_frames: int
-```
-
-Zachowanie identyczne z EDP: ramka `config` po odebranym tekście uzbraja dopasowanie powtórzenia
-(`downloader.py:195-196`); `audio` dekodowane z base64; skrót SHA-1 audio + JSON znaków dla paczek ≥ 8 KiB
-(`:203-211`); `repeated_prefix` z `rfind_all` (`:257-296`); przycięcie przez `cut_before_ms` z `utils/mp3_frames.py`
-(`:298-312`); offset następnej paczki += `frames_duration_ms(chunk)` (`:230`). Różnice: brak `print`; liczniki
-zamiast logów per ramka; `isFinal` ustawia flagę `final`; ramki binarne i nie-JSON tylko liczone.
-
-#### `alignment.py` (czyste)
-
-```text
-load_timeline(chunks) -> tuple[str, list[float], list[float]]        # EDP:timestamps.py:99-117 bez RESUME_MARK
-normalize_timeline(text) -> tuple[str, list[int]]                    # EDP:clips.py:218-231 (tagi break pomijane)
-locate_parts(parts: Sequence[DocumentPart], chunks) -> tuple[PartTiming, ...]
-    # EDP:clips.py:250-278: kursor do przodu, MAX_SKIP_CHARS=300, kotwice ANCHOR_CHARS=12 na brzegach
-    # klucz kwestii = normalize(neutralize(part.text)); kwestia bez liter i cyfr nie trafia do dokumentu (niemowa)
-    # nieznaleziona kwestia -> pominięta w wyniku (F3)
-completeness(received_chars, char_count) -> Completeness: COMPLETE | MISSING | EXCESS
-    MISSING gdy received < char_count; EXCESS gdy received > char_count (log ostrzeżenia, nie błąd)
-```
-
-#### `browser.py`
-
-```text
-class ChromeSession (async context manager, jeden na silnik)
-    __init__(profile_root: Path, *, headless: bool, chrome: Path | None = None)
-    async start() -> BrowserContext
-        profile_root.mkdir(parents=True, exist_ok=True); restrict_directory(profile_root)   # najpierw katalog
-        lock = ProcessLock(profile_root / LOCK_FILE); not lock.acquire() -> TtsProviderUnavailableError(retry_after_s=60,
-              "ElevenReader browser profile is busy")
-        profile = profile_root / PROFILE_DIR; profile.mkdir(exist_ok=True)
-        chrome = find_installed(CHROME_LOCATIONS, CHROME_STEM) albo TtsConfigError("Google Chrome was not found")
-        port = wolny port: socket bind ("127.0.0.1", 0), odczyt, zamknięcie
-        Popen([chrome, f"--remote-debugging-port={port}", f"--user-data-dir={profile}", *CHROME_FLAGS,
-               *(HEADLESS_FLAGS if headless else ()), "about:blank"],
-              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-              # wzorzec z anishift/platform/qbittorrent_process.py:649; bez getattr `mypy --platform linux` odrzuci
-              # atrybut dostępny tylko na Windows
-        playwright = await async_playwright().start()   # import leniwy wewnątrz funkcji
-        browser = connect_over_cdp(f"http://127.0.0.1:{port}") z CONNECT_ATTEMPTS × CONNECT_RETRY_S
-             porażka -> TtsProviderUnavailableError(retry_after_s=60, "Chrome did not accept the automation connection")
-        context = browser.contexts[0]; add_init_script(SPEED_SCRIPT z prędkością 1)
-    async new_page() -> Page            # zamyka puste karty startowe (EDP:downloader.py:491-497)
-    async close()                       # page/browser close, playwright.stop, terminate → wait 2 s → kill, lock.release;
-                                        # każdy krok w try/finally, lock zwalniany zawsze; idempotentne
-```
-
-Proces Chrome jest dzieckiem rezydenta, więc Job Object zamyka go razem z rezydentem
-(`anishift/platform/AGENTS.md:51-53`); `close()` jest drogą normalną.
-
-#### `page.py`
-
-```text
-async open_library(page) -> LibraryState: READY | SIGNED_OUT | UNAVAILABLE
-    goto(LIBRARY_URL); czekaj na widoczny "Import" do LIBRARY_LOAD_S
-    SIGNED_OUT: adres strony albo widoczny element logowania (selektory z fazy 0)
-async upload(page, document_file: Path) -> UploadedRead(read_id: str, char_count: int)
-    EDP:auto.py:137-145; status odpowiedzi add/v2 != 2xx -> errors.map_http_status(status, retry_after)
-async open_document(page, read_id) -> None          # goto, czekaj "Play" do READY_TIMEOUT_S
-async set_reading_speed(page) -> None               # EDP:auto.py:148-157
-async ensure_voice(page, voice: ElevenReaderVoice) -> None    # mechanizm z fazy 0 (sekcja 13.11)
-async set_page_speed(page, speed: float) -> None    # window.__anishiftSetSpeed w każdej ramce (EDP:downloader.py:347-353)
-async check_page_speed(page, speed) -> SpeedCheck   # EDP:downloader.py:389-404
-async press_play(page) -> None                      # EDP:auto.py:190-195
-async player_state(page) -> PlayerState(value: float, max: float)   # EDP:auto.py:92-100
-```
-
-#### `session.py`
-
-```text
-@dataclass(frozen=True, slots=True)
-class SessionState: signed_in: bool; checked_at: datetime
-
-read_session(profile_root: Path) -> SessionState | None          # brak/uszkodzony plik -> None
-write_session(profile_root: Path, state: SessionState) -> None   # atomowo: .tmp + replace
-async require_signed_in(page, config) -> None
-    stan = open_library(page)
-    READY -> write_session(True); return
-    SIGNED_OUT i email+hasło i gałąź D2 włączona -> jedno logowanie formularzem (selektory z fazy 0) -> ponownie open_library
-    SIGNED_OUT (dalej) -> write_session(False); TtsAuthError(suggestion="Ustawienia → Lektor → Zaloguj / sprawdź sesję")
-    UNAVAILABLE -> TtsProviderUnavailableError(retry_after_s=60)
-async sign_in(profile_root: Path, *, timeout_s: float = SIGN_IN_TIMEOUT_S) -> SignInOutcome
-    ChromeSession(headless=False); open_library; READY -> SIGNED_IN
-    inaczej co POLL_S sprawdzaj widoczność "Import" na bieżącej stronie do timeout_s albo zamknięcia okna
-    wynik zapisany przez write_session; BUSY gdy lock zajęty; NO_CHROME gdy brak Chrome
-SignInOutcome: StrEnum SIGNED_IN | SIGNED_OUT | BUSY | NO_CHROME | FAILED
-```
-
-#### `errors.py`
-
-Tabela mapowania w sekcji 13.12. Jedna funkcja `map_http_status(status: int, retry_after: float | None) -> TtsError`
-i `map_playwright_error(error) -> TtsError`. Komunikaty po angielsku (jak w całej domenie), bez URL-i i treści
-odpowiedzi.
-
-#### `service.py`
-
-```text
-class ElevenReaderTtsEngine:                         # spełnia DocumentTtsEngine
-    engine_id = "elevenreader"
-    capabilities = EngineCapabilities(locality=REMOTE, native_output_formats=(MP3,), supports_concurrency=False,
-        supports_native_rate=False, supports_native_volume=False, supports_pitch=False, supports_voice_settings=False,
-        requires_api_key=False, min_text_chars=1, max_text_chars=MAX_DOCUMENT_CHARS, max_text_bytes=None,
-        availability_probe=AvailabilityProbeKind.REMOTE, max_document_chars=MAX_DOCUMENT_CHARS)
-    __init__(config: TtsConfig, *, browser_factory=ChromeSession)     # bez I/O
-    synthesis_profile = SynthesisProfile(engine_id, ENDPOINT_ID, PROVIDER_MODEL_ID, resolved_voice_id=voice.voice_id,
-        provider_output_id="mp3_44100_128", provider_source_format=MP3, adapter_version=ADAPTER_VERSION,
-        voice_settings={"reading_speed": "1", "document_layout": "paragraph_per_line"})
-    is_available / availability(live=False) -> CONFIG: READY gdy Chrome znaleziony, inaczej MISSING_BINARY
-    availability(live=True) -> bez przeglądarki: stan CONFIG + read_session; MISSING_KEY, gdy ostatnie sprawdzenie
-                               mówi „nie zalogowano” (przeglądarkę uruchamia tylko synteza i akcja logowania)
-    list_voices() -> VoiceInfo dla obu głosów
-    synthesize(...) -> TtsUnsupportedError("ElevenReader synthesizes whole documents")
-    synthesize_document(request, cancel) -> EngineDocumentResult         # algorytm 13.9
-    close() -> zamknięcie przeglądarki, stan CACHED SERVICE_UNAVAILABLE
-```
-
-### 13.9. Algorytm jednej próby dokumentu
-
-```text
-synthesize_document(request, cancel):
-  0. walidacja: parts niepuste; voice_id == config.voice.voice_id albo alias; model == eleven_v4; options puste
-     cancel.is_cancelled -> TtsCancelledError
-  1. browser = await self._browser()          # leniwe, jedno na silnik; ponowne użycie między dokumentami
-     page = await browser.new_page(); page.set_default_timeout(ACTION_TIMEOUT_S * 1000)
-  2. await require_signed_in(page, config)
-  3. document_chars(parts) > MAX_DOCUMENT_CHARS -> TtsInputError; text = document_text(parts)
-     plik = TemporaryDirectory(prefix="anishift-elevenreader-") / "anishift.txt" (utf-8); usunięty w finally
-     read = await upload(page, plik)          # każda próba wgrywa nowy dokument: nowy dokument zawsze startuje od
-                                              # początku (EDP:README.md:79), a ponownie otwarty wraca do
-                                              # last_listened_char_offset (capabilities.md:49)
-  4. with request.recording.open("wb") as out: recorder = DocumentRecorder(out)
-     page.on("websocket", ws -> STREAM_PATH in ws.url ? ws.on("framereceived", recorder.on_frame) : pomiń)
-        # adres WS tylko porównywany w pamięci; nigdy logowany
-  5. await open_document(page, read.read_id); await set_reading_speed(page); await ensure_voice(page, config.voice)
-     await set_page_speed(page, PAGE_SPEED); await press_play(page); attempts_play = 1; played_at = now
-  6. pętla co POLL_S:
-       cancel.is_cancelled -> TtsCancelledError
-       co SPEED_CHECK_S: check_page_speed -> brak skryptu: wstrzyknij; zła prędkość: ustaw ponownie
-       postęp: recorder.received_chars zmienił się -> await request.progress(received, read.char_count)
-       brak audio: now - played_at >= START_TIMEOUT_S -> attempts_play < PLAY_ATTEMPTS ? press_play : TtsTimeoutError
-       stan = player_state; player_done = max > 0 and max - value <= END_SLACK_CHARS
-       text_done = read.char_count > 0 and received >= read.char_count
-       (player_done or text_done) and now - last_progress >= END_IDLE_S -> koniec
-       now - last_progress >= STALL_S -> TtsTimeoutError("ElevenReader recording stalled")
-  7. completeness MISSING -> TtsClipValidationError("ElevenReader recording is incomplete")
-     EXCESS -> log ostrzeżenia z liczbami
-  8. timings = locate_parts(parts, recorder.chunks); brak żadnej -> TtsClipValidationError
-  9. page.close(); return EngineDocumentResult(..., parts=timings, request_time_ms)
-  finally: odpięcie nasłuchu, zamknięcie karty; przeglądarka zostaje do close(), CHYBA ŻE próba skończyła się
-           anulowaniem (`TtsCancelledError`, `asyncio.CancelledError`) albo błędem przeglądarki — wtedy silnik od razu
-           wywołuje `ChromeSession.close()` (zamknięcie Chrome i zwolnienie blokady), bo `TtsService.close()` może
-           przerwać pętlę po `shutdown_deadline_s` przed `engine.close()` (`service.py:299-326`, `scheduler.py:154-167`)
-  wyjątki Playwright -> map_playwright_error
-```
-
-Każde długie oczekiwanie Playwright (biblioteka do 45 s, upload, „Play” do 600 s, akcje do 120 s) jest
-wykonywane przez helper `_unless_cancelled(awaitable, cancel)`: `asyncio.wait({task, cancel.wait()},
-return_when=FIRST_COMPLETED)`; gdy pierwsze skończy się anulowanie, zadanie Playwright jest anulowane, karta
-zamykana, a silnik zgłasza `TtsCancelledError`. Bez tego anulowanie w trakcie czekania na „Play” trwałoby do 10
-minut, bo scheduler nie przerywa aktywnej próby (`scheduler.py:169-188` obsługuje tylko kolejkę), a
-`CancellationToken.wait()` istnieje właśnie do tego (`protocols.py:76-78`).
-
-Ponowne kliknięcie „Play” to czynność odtwarzacza w ramach jednej próby, nie nowy upload ani nowe żądanie
-syntezy; dlatego nie łamie zakazu Z6. Każde inne ponowienie należy do schedulera.
-
-### 13.10. Uwierzytelnienie i sekrety
-
-- **Gdzie leżą cookies:** w `config/elevenreader/chrome-profile/` (profil Chrome). AniShift nie czyta ani nie
-  eksportuje cookies; zarządza nimi Chrome. Katalog `config/elevenreader/` jest w `.gitignore` i dostaje ACL
-  `restrict_directory` przy utworzeniu katalogu (i przy każdym starcie, gdy katalog powstał bez ACL — wywołanie jest
-  idempotentne i tanie, bo dotyczy jednego katalogu, nie rekursji `/T`) (wzór `anishift/platform/qbittorrent_process.py:633-653`).
-- **Token:** brak tokenów po stronie AniShift; strona sama uwierzytelnia swoje żądania.
-- **Logowanie automatyczne:** ważna sesja w profilu = brak działań człowieka (F15). Wariant z e-mailem i hasłem
-  tylko w gałęzi D2 (faza 4b): `ANISHIFT_ELEVENREADER_EMAIL`, `ANISHIFT_ELEVENREADER_PASSWORD` w `.env`, pola
-  `Settings.elevenreader_email` i `elevenreader_password` (`repr=False`), przekazywane przez `TtsConfig` jak
-  `elevenlabs_api_key` (`anishift/application/runtime.py:657`). Edycja w Ustawienia → Połączenia → ElevenReader.
-- **Odświeżanie:** robi strona ElevenReadera w Chrome; AniShift niczego nie odświeża.
-- **Wygaśnięcie w środku odcinka:**
-  - przed uploadem: `require_signed_in` zgłasza `TtsAuthError` (trwały, otwiera circuit); kwestie odcinka kończą
-    się błędem, przebieg pokazuje sugestię; po zalogowaniu ponowienie (P w Przetwarzaniu) czyta tylko brakujące
-    kwestie (F4);
-  - w trakcie nagrywania: strona przestaje przysyłać audio albo przekierowuje → przestój (`TtsTimeoutError`,
-    przejściowy) → ponowienie dokumentu przez scheduler → `require_signed_in` w następnej próbie wykrywa wylogowanie
-    i zgłasza `TtsAuthError`. Brak częściowego zatwierdzania kwestii z urwanego nagrania: próba albo kończy się
-    kompletnym nagraniem, albo jest odrzucona (krok 7).
-- **Panel:** w kategorii Lektor przy `elevenreader`: wiersz „Sesja ElevenReader” z wartością z `session.json`
-  („zalogowano · 25.10 14:03”, „nie zalogowano · …”, „nie sprawdzono”) i akcja „Zaloguj / sprawdź sesję”.
-- **Doctor:** F18, F19; czyta `session.json` i sprawdza Chrome przez `find_installed`; nie uruchamia przeglądarki.
-- **Zero sekretów:** e-mail i hasło nigdy w `TtsConfig.__repr__` (`repr=False`), nigdy w `RunSettingsSnapshot`
-  (snapshot odrzuca pola sekretów, `anishift/application/AGENTS.md:40-42`), nigdy w logach (logger redaguje klucze
-  z `password`; dodatkowo kod nie przekazuje tych wartości do `bind`). Adres WebSocketu, `read_id`, odpowiedzi HTTP i
-  tekst dokumentu nie są logowane.
-
-### 13.11. Głosy
-
-- Aliasy i etykiety: `fronczewski` → „Piotr Fronczewski”, `adam` → „Adam” (F9). Uwaga: właściciel napisał
-  „Franczewski”; poprawna nazwa w EDP i w źródłach to „Fronczewski” (`EDP:docs/research/capabilities.md:10`).
-- Identyfikatory `voice_id`: ustala faza 0 z odpowiedzi `GET voices`, którą strona sama pobiera
-  (`EDP:docs/research/capabilities.md:65`), i wpisuje do `VOICES`. Język „Adama” również z tej odpowiedzi.
-- Domyślny: `fronczewski` (D3).
-- Wybór w panelu: pole „Głos” z dwoma wartościami (`field_catalog._tts_voice_values`), etykiety przez
-  `UserSettings.tts_voice_label`.
-- Wybór w odtwarzaczu (`page.ensure_voice`): mechanizm ustala faza 0 i wpisuje do planu fazy 4 jako jedną z dróg:
-  - **G1 (preferowana):** wybór głosu w odtwarzaczu dokumentu przed „Play” (selektory z fazy 0);
-  - **G2:** zmiana domyślnego głosu w ustawieniach konta przez interfejs, gdy odtwarzacz nie ma wyboru.
-  Weryfikacja (F8): po starcie strumienia silnik porównuje identyfikator głosu z adresu WebSocketu (nazwa parametru
-  z fazy 0; wartość tylko w pamięci) albo z elementu odtwarzacza; niezgodność → zamknięcie karty i `TtsVoiceError`.
-- Istniejący wybór `elevenbytes`: F11 — `_normalize_tts_selection` w gałęzi `elevenbytes` traktuje alias albo ID
-  głosu ElevenReadera jak głos obcego silnika i ustawia Dallin; gałąź `elevenreader` ustawia `fronczewski` dla
-  każdego głosu spoza `VOICES`. Własne głosy i profile pozostają w `config/settings.json`.
-
-### 13.12. Odporność: klasyfikacja błędów
-
-| Sytuacja | Wykrycie | Błąd | Klasa | Reakcja schedulera |
-|---|---|---|---|---|
-| brak Chrome | `find_installed` → None | `TtsConfigError` | trwały | circuit, sugestia instalacji Chrome |
-| profil zajęty (logowanie w panelu, inny Chrome) | `ProcessLock.acquire()` False, CDP nie odpowiada | `TtsProviderUnavailableError(retry_after_s=60)` | przejściowy | ponowienie po ≥ 60 s |
-| serwis niedostępny (502 itp.) | brak „Import” 45 s bez przekierowania, status 5xx | `TtsProviderUnavailableError(retry_after_s=60)` | przejściowy | ponowienie |
-| wylogowano | `open_library` → SIGNED_OUT, status 401 | `TtsAuthError` | trwały | circuit; sugestia logowania |
-| odmowa dostępu / blokada konta | status 403 przy uploadzie | `TtsAuthError` (`details={"status": 403}`) | trwały | circuit; sugestia sprawdzenia konta i powrotu na `elevenbytes` |
-| brak kredytów | status 402 przy uploadzie (do potwierdzenia, sekcja 22) | `TtsQuotaError` | trwały | circuit; sugestia doładowania lub `elevenbytes` |
-| limit żądań | status 429 | `TtsRateLimitError(retry_after_s=Retry-After)` | przejściowy | ponowienie z `max(backoff, retry_after)` |
-| brak audio po 3 × „Play” | pętla 13.9 krok 6 | `TtsTimeoutError` | przejściowy | ponowienie |
-| przestój 5 minut | pętla 13.9 krok 6 | `TtsTimeoutError` | przejściowy | ponowienie |
-| niekompletne nagranie | krok 7 | `TtsClipValidationError` | przejściowy | ponowienie (nowy upload tego samego tekstu) |
-| żadna kwestia nie znaleziona | krok 8 | `TtsClipValidationError` | przejściowy | ponowienie |
-| zły głos | `ensure_voice` / weryfikacja | `TtsVoiceError` | trwały | circuit |
-| awaria przeglądarki (Playwright `Error`) | wyjątek | `TtsProviderUnavailableError(retry_after_s=60)` | przejściowy | ponowienie z nową przeglądarką |
-| timeout akcji Playwright | `TimeoutError` Playwright | `TtsTimeoutError` | przejściowy | ponowienie |
-| anulowanie | `cancel.is_cancelled` | `TtsCancelledError` | trwały | koniec bez ponowienia |
-| cięcie nie powiodło się | wyjątek splittera | `TtsClipValidationError` (w `accept_result`) | przejściowy | ponowienie dokumentu |
-| jedna kwestia nie znaleziona | brak w `parts` | `TtsClipValidationError` tej kwestii | — | kwestia `FAILED`, reszta zatwierdzona |
-
-Po awarii przeglądarki silnik zamyka `ChromeSession` i tworzy nową w następnej próbie.
-
-Konfiguracja przebiegu dla `elevenreader` w `anishift/application/runtime.py`:
-
-```text
-_TTS_REQUEST_TIMEOUT_S["elevenreader"] = 3600.0     # dokument 50 000 znaków ≈ 54 min audio / 4,6 ≈ 12 min + narzut
-_TTS_RETRY_BACKOFF_S["elevenreader"] = (60.0, 120.0, 300.0, 600.0)
-scheduler_timeout_enabled = True                    # limit całej próby; przestój łapie silnik
-shutdown_deadline_s = 15.0                          # czas na zamknięcie Chrome przy końcu przebiegu (domyślnie 5 s)
-max_concurrency = 1, queue_capacity = 2
-elevenreader_profile_root = elevenreader_dir()
-```
-
-### 13.13. Limity, ban, zapas, wznawianie, idempotencja, rezydent
-
-- **Limity:** jeden dokument naraz (U8); żadnych równoległych kart; brak dodatkowych żądań poza tymi, które
-  wykonuje strona; prędkość strony 16x.
-- **Ban:** `TtsAuthError` z 403 i `TtsQuotaError` otwierają circuit, więc w jednym przebiegu nie ma dalszych prób;
-  automat rezydenta nie ponawia przebiegu sam (ponowienie jest decyzją użytkownika:
-  `anishift/application/AGENTS.md:55-57`).
-- **Zapas `elevenbytes` (D1, ręczny):** komunikat błędu kończy się zdaniem „Możesz przełączyć silnik lektora na
-  ElevenBytes w Ustawieniach → Lektor”. Zmiana silnika unieważnia artefakty TTS (`field_catalog._TTS_INVALIDATES`),
-  więc ponowienie czyta cały odcinek jednym głosem.
-- **Wznawianie po przerwaniu:** zamknięcie rezydenta → `shutdown` kończy aktywne taski bez anulowania, reszta
-  `PAUSED` (`anishift/application/AGENTS.md:38-39`); jeśli proces zginie, Job Object kończy Chrome; zatwierdzone
-  kwestie są w manifeście resume; „Dokończ poprzednią pracę” czyta tylko brakujące kwestie (F4).
-- **Idempotencja kwestii:** klucz resume = `request_id` + fingerprint (tekst kwestii, profil z głosem i
-  `document_layout`); ponowny commit tej samej kwestii zastępuje plik atomowo (`resume.py:205-279`). Każda próba
-  dokumentu wgrywa nowy dokument, bo ponownie otwarty dokument wznawia od zapisanej pozycji
-  (`last_listened_char_offset`, `EDP:docs/research/capabilities.md:49`), a nowy zawsze startuje od początku
-  (`EDP:README.md:79`). Koszt: najwyżej `max_retries + 1` wpisów w bibliotece na dokument (D5).
-- **Skutki uboczne na koncie:** `set_reading_speed` zapisuje prędkość 1x w ustawieniach konta ElevenReadera
-  (`playback_speed_rate` w `user_config`, `EDP:docs/research/capabilities.md:62`), więc aplikacja właściciela na
-  telefonie też zacznie od 1x; droga G2 wyboru głosu zmienia domyślny głos konta. Oba skutki trafiają do README i
-  outcome; plan ich nie cofa (każde cofnięcie to kolejna automatyzacja strony).
-- **Rezydent i scheduler zadań:** zasób `tts:elevenreader` serializuje pliki (`planner.py:832`); długa synteza
-  (minuty) nie blokuje tłumaczenia kolejnych plików; ledger `config/watch/` dostaje tylko nie-sekretne ustawienia
-  przebiegu (silnik, ID głosu); `decisions.jsonl` bez zmian.
-
-### 13.14. Zachowanie UI w Ustawieniach
-
-- Stan początkowy (Lektor, silnik `elevenreader`): Silnik, Model / endpoint (`eleven_v4`), Głos, Ponowień, Tempo
-  końcowe, Korekta głośności głosu, Kodek, Bitrate, sekcja „SESJA”: wiersz „Sesja ElevenReader” (tylko odczyt) i
-  akcja „Zaloguj / sprawdź sesję”. Brak „Syntez jednocześnie” i „VPN ElevenBytes”.
-- Interakcja: Enter na akcji → `_Feedback("Otwieram Chrome… zaloguj się w oknie przeglądarki", "info")`, praca w
-  wątku jak `_start_probe`; wynik: `✓ Zalogowano`, `✗ Nie zalogowano`, `✗ Lektor właśnie nagrywa — spróbuj po
-  zakończeniu`, `✗ Nie znaleziono Google Chrome`, `✗ Nie udało się sprawdzić sesji`.
-- Loading: wiersz akcji wyłączony, gdy `_busy`.
-- Błąd: feedback w stylu `error`; nic nie zapisuje się do `.env`.
-- Klawiatura i mysz: istniejące mechanizmy menu; brak nowych klawiszy.
-- Wygląd: bez zmian stylu panelu (pamięć właściciela: wygląd panelu zostaje).
-
-### 13.15. Edge cases
-
-| Przypadek | Oczekiwane zachowanie | Dowód |
+| Klucz profilu | `postprocess_tempo` | `voice_mix_offset_db` |
 |---|---|---|
-| batch bez kwestii mowy | jak dziś: same `SKIPPED`, bez przeglądarki | unit (service) |
-| wszystkie kwestie z resume | brak przeglądarki i uploadu | unit (service, fałszywy silnik liczy wywołania) |
-| część z resume | dokument tylko z brakujących | unit |
-| kwestia z `[Muzyka]` | w dokumencie `(Muzyka)`, lokalizacja działa | unit (document, alignment) |
-| kwestia z wielokropkiem i myślnikiem | bez zmian tekstu | unit |
-| dwie identyczne kwestie obok siebie | lokalizacja kursorem do przodu daje dwa różne zakresy | unit (alignment) |
-| powtórzenie po ponownym połączeniu | audio i znaki przycięte, liczba `reconnect_trims` | unit (recorder) |
-| duplikat paczki ≥ 8 KiB | pominięty | unit |
-| duplikat paczki < 8 KiB (krótka pauza) | zachowany | unit |
-| ramka bez `alignment` | audio zapisane, czas zachowany | unit |
-| `normalizedAlignment` zamiast `alignment` | obsłużone | unit |
-| `char_count` mniejsze niż odebrane | ostrzeżenie, nie błąd | unit |
-| `char_count` większe niż odebrane | `TtsClipValidationError` | unit (engine, fałszywa strona) |
-| kwestia nieznaleziona | ta kwestia `FAILED`, reszta zatwierdzona, batch `PARTIAL` | unit (service) |
-| szyld nieznaleziony | jak dziś dla każdego silnika: batch szyldów `PARTIAL`, `build_narration_manifest` odrzuca wynik (`tts_handler.py:408-409`), zadanie TTS kończy się błędem, ponowienie czyta tylko brakujący szyld | unit (service) + istniejące testy handlera |
-| dokument > 50 000 znaków | podział na kilka dokumentów | unit (service) |
-| pojedyncza kwestia > 50 000 znaków | `TtsInputError` tej kwestii | unit (service) |
-| anulowanie w trakcie nagrywania | `TtsCancelledError` w ≤ 2 × `POLL_S`, karta zamknięta | unit (engine) |
-| przeglądarka padła | `TtsProviderUnavailableError`, nowa sesja w kolejnej próbie | unit (engine) |
-| profil zajęty | `TtsProviderUnavailableError(retry_after_s=60)` | unit (browser, fałszywy lock) |
-| zmiana głosu w ustawieniach | nowy fingerprint, brak trafień resume | unit (fingerprint) |
-| `elevenreader` → `elevenbytes` | głos Dallin | unit (user_settings) |
-| `elevenbytes` z aliasem `fronczewski` w pliku | głos Dallin | unit (user_settings) |
-| nagranie bez ciszy między dwiema kwestiami | granica w „dołku”, licznik `boundaries_without_silence` | unit (segmentation) |
-| nagranie z kilkoma strumieniami ID3 | `stream_ranges` > 1, cięcie poprawne | integration (split_clip) |
-| CDP port zajęty w wyścigu | ponowienie połączenia, potem `TtsProviderUnavailableError` | unit (browser) |
-| doctor bez Chrome przy innym silniku | SKIP | unit (doctor) |
+| Dallin (`elevenbytes`, istniejący klucz) | 1,25 | 0,0 (było −2,0) |
+| `elevenreader:T5l58N8RNz5DKoClpKIJ` (Fronczewski) | 1,45 | +0,5 |
+| `elevenreader:hIssydxXZ1WuDorjx6Ic` (Adam) | 1,35 | +2,5 |
 
-## 14. Zakres wykonania
+Panel: „Głośność lektora” to `narrator_over_source_lu` w LU; „Korekta głośności głosu” to `voice_mix_offset_db` w
+LU względem celu. Współbieżność głosów ElevenReadera nie jest edytowalna (zawsze 1).
 
-### 14.1. In scope
+### 7.10. Silnik `elevenreader`
 
-- Faza 0: spike na koncie właściciela (fakty z sekcji 22), baseline bramek.
-- `anishift/utils/mp3_frames.py` i refaktor `anishift/services/audio/mp3.py`.
-- `anishift/services/audio/segmentation.py`, `envelope_wav_command`, `FfmpegClipService.split_clip`.
-- Kontrakt dokumentu w domenie TTS, `TtsQuotaError`, uogólniony scheduler, ścieżka dokumentu w `TtsService`.
-- Pakiet `anishift/services/tts/engines/elevenreader/` z testami.
-- `anishift/platform/installed.py`, `anishift/platform/private_dir.py` i refaktor qBittorrent.
-- `paths.py`, `.gitignore`, `config/README.md`, `runtime.py`, `application/service.py`, `user_settings.py`,
-  `field_catalog.py`, `cli/interactive/settings.py`, `setup/doctor.py`.
-- Gałąź D2 (logowanie danymi) — tylko gdy faza 0 da wynik „konto e-mail, formularz bez captchy”.
-- Dokumentacja: AGENTS.md dotkniętych obszarów, `docs/reference/settings.md`, README EN i PL, `docs/ideas.md`,
-  `docs/README.md`, `outcomes/` tego workstreamu.
+```text
+anishift/services/tts/engines/elevenreader/
+├── AGENTS.md       pułapki: CDP, profil, blokada, konto, sekrety, brak retry w transporcie
+├── __init__.py     eksport ElevenReaderTtsEngine, sign_in, read_session (bez importu playwright)
+├── constants.py    URL-e, endpointy, stałe czasowe z EDP, skrypty JS (SPEED, PLAYER_STATE), VOICES
+├── config.py       ElevenReaderConfig.from_tts_config, resolve_voice, find_chrome, ścieżki profilu i session.json
+├── types.py        ElevenReaderVoice, LibraryState, SignInOutcome, SessionRecord, AccountSettings, AccountCleanup,
+│                   UploadedRead, PlayerState, AlignmentChunk
+├── api_backend.py  jedna karta Playwright (Playwright ładowany leniwie, jak SDK w elevenlabs):
+│                   map_http_status, map_playwright_error i fabryki błędów (auth, voice, unavailable);
+│                   ReaderPage: open_library → READY | SIGNED_OUT | UNAVAILABLE, upload, open_document, press_play,
+│                   player_state, set_page_speed, check_page_speed, watch_stream;
+│                   konto tokenem strony: prepare_account (default_voice_id + playback_speed_rate), clean_account
+│                   (przywrócenie, DELETE reads, sierota po oknie i tytule); sesja: read_session, write_session,
+│                   save_cleanup, load_cleanup (atomowo), require_signed_in, sign_in (okno widoczne, kończy
+│                   sprzątanie) → SignInOutcome
+├── browser.py      [specyficzny] ChromeSession: ProcessLock, restrict_directory, wolny port, Popen, CDP, close;
+│                   ChromeMissingError, ChromeBusyError (wzór: sapi/worker.py, elevenbytes/vpn.py)
+├── recorder.py     [specyficzny] czyste: ramki WS → plik MP3 + AlignmentChunk w pamięci; duplikaty, powtórzenia po
+│                   reconnect, listening_speed z ramek wysyłanych (wzór: EDP:src/downloader.py, Recorder, trim_chunk)
+└── service.py      ElevenReaderTtsEngine (DocumentTtsEngine; document_chars = len(document_text)); document_text;
+                    part_spans: czasy znaków + części → PartTiming na kwestię (SCR:bounds.py, load_lines)
+```
 
-### 14.2. Out of scope
+**Tekst dokumentu (`document_text`, wynik K1, `DATA:snap-report.md` §13.5).** Każda kwestia to jeden akapit po
+zamianie nawiasów kwadratowych na okrągłe i białych znaków na pojedyncze spacje. Między kwestiami stoi osobny akapit
+`LINE_SEPARATOR = "…"` (`constants.py`): `"\n\n{LINE_SEPARATOR}\n\n".join(teksty) + "\n"`. Bez `<break>` (serwer go
+ignoruje i sam stawia `<break time="0.6s"/>` wokół każdego akapitu) i bez `[pause]` (czytane na głos). Kwestie
+przechodzą wcześniej filtr `is_speech_text`, więc żadna nie składa się z samego separatora, a wielokropek na końcu
+kwestii („filmik…”) zostaje w jej tekście. `document_chars` to długość tego tekstu, więc separator zmienia się w
+jednym miejscu.
 
-- Audiobooki z rozdziałami, karaoke, eksport słownych czasów, monitor kredytów.
-- Usuwanie dokumentów z biblioteki ElevenReadera (D5).
-- Zmiana `TtsTaskHandler`, plannera, ownera rezydenta, osi czasu i miksu.
-- Etap 6 jakości (głośność lektora).
-- Plikowy wariant ACL w `local_control.py`.
-- Linux.
+**Czasy kwestii (`part_spans(chunks, parts)`).**
 
-### 14.3. Forbidden
+1. Tekst serwera dzieli się na ciągach tagów `<break …>` rozdzielonych białymi znakami; taki ciąg to jedna granica
+   (ostatni tag może być ucięty na końcu tekstu).
+2. Segment przycięty z białych znaków, który jest pusty albo równy `LINE_SEPARATOR` w całości, jest pomijany.
+3. Liczba pozostałych segmentów musi równać się liczbie części, a tekst każdego segmentu tekstowi części po tej samej
+   neutralizacji co w dokumencie; niezgodność → `TtsClipValidationError` (bez tekstu w `details`), nigdy
+   dopasowanie na siłę.
+4. `PartTiming` kwestii to start jej pierwszego i koniec ostatniego znaku na osi serwera.
 
-- Z1–Z7 ze specyfikacji.
-- Zmiana zachowania istniejących silników i ich testów (I1).
-- Nowe zależności poza `playwright`; `miniaudio` jest zakazane (FFmpeg już jest).
-- `playwright install` i pobieranie przeglądarek Playwright.
-- Logowanie `ws.url`, `read_id`, odpowiedzi HTTP, tekstu dokumentu, e-maila, ścieżek absolutnych.
-- Uruchamianie testów sieciowych silnika bez jawnej zgody właściciela w tej sesji (koszt kredytów, ryzyko konta).
-- Zmiana plików, które czyta działający rezydent (`config/settings.json`, `.env`, `config/watch/`), bez prośby do
-  właściciela o zamknięcie rezydenta (pamięć właściciela: zmiany plików runtime przy działającym rezydencie zepsuły
-  wcześniej pięć tłumaczeń).
-- Worktrees i `uv --active` (pamięć właściciela); praca w głównym checkoucie na gałęzi roboczej.
-- Commit na `main`; stopki AI w commitach i PR.
+`constants.VOICES`:
 
-### 14.4. Deferred
+```text
+"fronczewski": ElevenReaderVoice(alias="fronczewski", label="Piotr Fronczewski", voice_id="T5l58N8RNz5DKoClpKIJ")
+"adam":        ElevenReaderVoice(alias="adam",        label="Adam",              voice_id="hIssydxXZ1WuDorjx6Ic")
+DEFAULT_VOICE_ALIAS = "fronczewski"; PROVIDER_MODEL_ID = "eleven_v4"; MAX_DOCUMENT_CHARS = 50_000; LINE_SEPARATOR = "…"
+PAGE_SPEED = 64.0; READING_SPEED = 1.0; wartości stałych czasowych z EDP:src/auto.py (READY 600 s, ACTION 120 s,
+LIBRARY_LOAD 45 s, END_IDLE 10 s, END_SLACK 30 znaków, START 60 s, PLAY_ATTEMPTS 3, STALL 300 s)
+i EDP:src/downloader.py (MIN_DEDUP_BYTES 8 KiB, TAIL_CHARS 20 000, MIN_PROBE_CHARS 10, CONNECT 30 × 0,5 s)
+```
 
-- Ponowne użycie wgranego dokumentu (wymaga przewinięcia odtwarzacza na początek; mechanizm nieznany).
-- Słowne czasy w raporcie jakości.
-- Usuwanie dokumentów z biblioteki po sukcesie.
-- Odczyt `current_credits` przed i po odcinku.
+`synthesis_profile`: `engine_id="elevenreader"`, `endpoint_id="elevenreader-web-stream-v2"`,
+`provider_model_id="eleven_v4"`, `resolved_voice_id=voice.voice_id`, `provider_output_id="pcm_s16le_48000_cut"`,
+`adapter_version="elevenreader-v1"`, `voice_settings={"reading_speed": "1", "document_layout": "line_separator_paragraph"}`.
 
-### 14.5. Dozwolone decyzje lokalne
+`capabilities`: `locality=REMOTE`, `native_output_formats=(MP3,)`, `supports_concurrency=False`,
+`max_text_chars=MAX_DOCUMENT_CHARS`, `max_document_chars=MAX_DOCUMENT_CHARS`, reszta `False`/`None` jak w
+`elevenbytes`. `synthesize()` → `TtsUnsupportedError`. `availability(live=False)`: Chrome znaleziony → READY,
+inaczej MISSING_BINARY; `live=True` dodatkowo czyta `session.json` (bez przeglądarki).
 
-- Nazwy prywatnych helperów, kolejność funkcji w modułach, podział `page.py`/`session.py`, jeśli granice z sekcji
-  13.8 zostają.
-- Dokładne brzmienie angielskich komunikatów błędów i polskich komunikatów panelu w granicach sekcji 13.14.
-- Dokładne selektory strony z fazy 0, o ile żaden nie wymaga obchodzenia zabezpieczeń.
-- Wartości stałych czasowych z EDP ±50%, jeśli test fazy 6 pokaże potrzebę, z wpisem w outcome.
-- Struktura fałszywych obiektów testowych.
+**Algorytm jednej próby `synthesize_document(request, cancel)`:**
 
-### 14.6. Zatrzymaj się i wróć po decyzję, gdy
+```text
+0. walidacja: parts niepuste; voice zgodny z config; model eleven_v4; options puste; cancel → TtsCancelledError
+1. browser = leniwe ChromeSession(headless=True) na silnik; page = new_page()
+2. require_signed_in(page): READY → session.json(signed_in) | SIGNED_OUT → session.json(not) + TtsAuthError
+   | UNAVAILABLE → TtsProviderUnavailableError(retry_after_s=60)
+3. document_chars(parts) > MAX → TtsInputError (ta sama metoda, którą TtsService grupuje dokumenty); plik .txt w TemporaryDirectory(prefix="anishift-elevenreader-")
+   upload → (read_id, char_count, token)                       # token i read_id tylko w pamięci
+   od tej chwili wpis „usuń dokument” jest zarejestrowany do sprzątania
+4. prepare_account(token, voice_id): zapamiętaj poprzednie default_voice_id i playback_speed_rate (wpis „przywróć
+   konto” rejestrowany przed zapisem); zapisz voice_id i 1.0; odczytaj ponownie i sprawdź; niezgodność → TtsVoiceError
+5. recorder na request.recording; page.on("websocket") tylko dla STREAM_PATH; ws.url porównywany w pamięci
+6. open_document → set_page_speed(64) → press_play; pętla co 1 s (EDP Job.step):
+     cancel → TtsCancelledError
+     recorder.listening_speed ∉ {None, 1.0} → TtsProviderUnavailableError("streamed with Eleven v2")
+     co 3 s check_page_speed; postęp → request.progress(received, char_count)
+     brak audio 60 s → ponowne Play (≤ 3) → TtsTimeoutError; przestój 300 s → TtsTimeoutError
+     (player_done albo received ≥ char_count) i 10 s ciszy → koniec
+7. żaden adres strumienia nie zawierał voice_id → TtsVoiceError (F8)
+8. received < char_count → TtsClipValidationError("incomplete"); received > char_count → ostrzeżenie z liczbami
+9. timings = part_spans(recorder.chunks, parts); niezgodna liczba albo treść kwestii → TtsClipValidationError
+10. EngineDocumentResult(parts = PartTiming w kolejności parts)
+finally (sukces, błąd, anulowanie, asyncio.CancelledError):
+         odpięcie nasłuchu; sprzątanie konta — przywrócenie głosu i tempa, DELETE reads/{read_id} — każdy krok
+         osobno, z własnym krótkim limitem czasu, odporne na anulowanie (asyncio.shield); udany krok znika z
+         AccountCleanup, nieudany zostaje; potem zamknięcie karty; przy anulowaniu albo błędzie przeglądarki
+         ChromeSession.close() dopiero po sprzątaniu
+wyjątki Playwright → map_playwright_error (api_backend.py)
+```
 
-- faza 0 pokaże, że wybór głosu wymaga czegokolwiek poza klikaniem w interfejs strony;
-- faza 0 pokaże, że upload lub odtwarzanie nie działa w Chrome sterowanym przez CDP;
-- konto zostanie zablokowane albo strona pokaże ostrzeżenie o naruszeniu zasad;
-- E1 i wariant per strumień oba nie spełnią kryterium dryfu;
-- `split_clip` na prawdziwym nagraniu daje więcej niż 10% granic bez ciszy przy wariancie akapitów (EDP: 19 na
-  304, `EDP:docs/report.md:64`);
-- refaktor schedulera zmienia zachowanie choćby jednego istniejącego testu schedulera lub serwisu;
-- potrzebna byłaby zmiana `TtsTaskHandler`, `plan_timeline` albo `SpeechBatch`;
-- `playwright` nie instaluje się albo nie działa na Python 3.14 w CI.
+Każde długie oczekiwanie Playwright idzie przez helper `_unless_cancelled(awaitable, cancel)`
+(`asyncio.wait({task, cancel.wait()}, FIRST_COMPLETED)`), więc anulowanie nie czeka do 10 minut na „Play”.
+Ponowne „Play” to czynność odtwarzacza w jednej próbie, nie retry (Z6).
 
-## 15. Kontekst do przeczytania
+**Sprzątanie (U14, F28).** Śmieci na koncie nie zostają w żadnej ścieżce. Zaległe kroki z `AccountCleanup`
+silnik wykonuje na początku następnej próby (po `require_signed_in`, przed uploadem) i w `close()`, gdy przeglądarka
+jeszcze działa. Krok, który zawiedzie także w `close()`, daje ostrzeżenie w logu (bez `read_id` i tokenu: tylko
+rodzaj kroku i status) i komunikat w panelu „ElevenReader: nie udało się posprzątać konta — usuń z biblioteki
+ostatni dokument wgrany przez AniShift (jego tytuł to pierwsze zdanie odcinka) i sprawdź głos w aplikacji”. Wynik
+nagrania pozostaje ważny. Plik wgrywany nazywa się `anishift.txt`, ale biblioteka nie pokazuje nazwy pliku: tytuł i
+opis dokumentu to pierwsze zdanie treści (pomiar 2026-10-31).
 
-| Kolejność | Źródło | Po co | Zakres |
+**Sieroty.** Każde wgranie zostawia w `AccountCleanup` ślad `DocumentTrace`, zapisany przed kliknięciem „Upload”:
+`pressed_at` (czas zegarowy tuż przed kliknięciem), `listed_by` (`pressed_at + ACTION_TIMEOUT_S`, skracany do chwili
+odpowiedzi), skróty SHA-256 każdego prefiksu dokumentu na granicy słów do 200 znaków (możliwe tytuły; nie jawny
+tekst, ale słownikowo odwracalne) i `read_id`, gdy przyszedł w odpowiedzi. Ślad z `read_id` jest zapisany w
+prywatnym `session.json`, więc dokument ze znanym id znika przez `DELETE reads/{id}` także po restarcie procesu.
+Tylko upload bez odpowiedzi z `read_id` (anulowanie w trakcie uploadu, odpowiedź bez id) silnik szuka w pierwszej
+stronie `GET reads` (kolejność od najnowszych, bez paginacji): kandydat ma `from_user_import: true`,
+`original_file_type: "text/plain"`, `added_at_unix` w oknie `[pressed_at − 300 s, listed_by + 300 s]` i skrót
+znormalizowanego `title` wśród skrótów śladu.
+
+- jeden kandydat → `DELETE`, krok rozliczony;
+- kilku kandydatów → nic nie jest usuwane, ostrzeżenie w logu, krok zostaje zaległy (panel, doctor);
+- zero przed `listed_by` → krok zostaje zaległy; zero po `listed_by` → krok rozliczony z ostrzeżeniem w logu, że
+  upload mógł zostać na koncie (z liczbą importów w oknie, bez tytułu i tekstu).
+
+Założenie: upload bez `read_id` szuka się zwykle w tym samym przebiegu, minuty po wgraniu, gdy dokument jest na
+pierwszej stronie listy. Czas zegarowy (nie `time.monotonic()`) zachowuje znaczenie okna po restarcie procesu i
+komputera.
+
+### 7.11. Ścieżka dokumentu w `TtsService`
+
+`TtsService.__init__` dostaje `splitter: ClipSplitter | None = None`. `_run_batch` po `_ensure_runtime` wybiera
+`_run_document_batch`, gdy `engine.capabilities.max_document_chars is not None`.
+
+```text
+1. splitter is None albo silnik nie spełnia DocumentTtsEngine → każda kwestia mowy: TtsUnsupportedError
+2. każda kwestia: niemowa → SKIPPED; chunking (max_text_chars) ≠ 1 część → TtsInputError tej kwestii;
+   engine.validate_part(część) rzuca TtsInputError → ten błąd tej kwestii (ta sama funkcja, którą silnik sprawdza
+   części przed uploadem);
+   tożsamość resume (SynthesisIdentity, profil silnika); trafienie → cached; reszta → pending
+3. dokumenty: zachłannie w kolejności batcha, póki engine.document_chars(części) ≤ max_document_chars; to ta sama
+   funkcja, którą silnik liczy i sprawdza wysyłany dokument (tekst, separatory między kwestiami, znak końcowy),
+   więc separator zmienia się w jednym miejscu; kwestia z document_chars((część,)) > limit → TtsInputError
+4. dokumenty po kolei; scheduler.submit(call, accept_result, …):
+     call(a): usuń nagranie i klipy poprzedniej próby; recording = repository.temporary_clip_path(MP3)
+              → engine.synthesize_document(...)
+     accept(r): własność wyniku jak _ProviderAttempt.accept_result;
+                spans = ClipSpan(part, timing, open_end = not ends_sentence(text), nowa ścieżka WAV)
+                split = await to_thread(splitter.split_clip, recording, spans, expectation(WAV))
+                (RuntimeError, OSError, ValueError) → TtsClipValidationError (przejściowy)
+                każdy klip → repository.validate_temporary_clip; None → TtsClipValidationError
+     błąd → każda kwestia dokumentu FAILED z tym błędem; sukces → commit_clip każdej kwestii
+     zawsze: usuń nagranie i niezatwierdzone pliki
+5. flush; _batch_result
+```
+
+`provider_calls` i `retries` dokumentu liczone na pierwszej kwestii dokumentu. Postęp:
+`rozstrzygnięte + floor(received / total × liczba kwestii dokumentu)` przez `_safe_callback`.
+
+### 7.12. Sesja, konto, sekrety
+
+- Cookies żyją w `config/elevenreader/chrome-profile/`; AniShift ich nie czyta. `config/elevenreader/` jest w
+  `.gitignore` i dostaje `restrict_directory` przy każdym starcie (idempotentne).
+- Token strony istnieje tylko w pamięci jednej próby; nie trafia do logów, wyjątków, `details` ani plików.
+- `session.json`: `{"signed_in": bool, "checked_at": ISO-8601, "restore": {…} | null, "documents": [{"pressed_at":
+  epoka, "listed_by": epoka, "titles": [sha256, …], "read_id": str | null}]}`, zapis atomowy; plik prywatny
+  (gitignored, `restrict_directory`), `read_id` tylko do sprzątania konta; bez tokenu i jawnego tekstu dokumentu
+  (skróty prefiksów tytułu są słownikowo odwracalne).
+- Wygaśnięcie przed uploadem → `TtsAuthError` (trwały, circuit), sugestia „Ustawienia → Lektor → Zaloguj / sprawdź
+  sesję”; po zalogowaniu ponowienie czyta tylko brakujące kwestie. Wygaśnięcie w trakcie → przestój → ponowienie →
+  następna próba wykrywa SIGNED_OUT.
+- `sign_in`: `ChromeSession(headless=False)`, biblioteka; READY → SIGNED_IN; inaczej co 1 s sprawdza „Import” do
+  600 s albo zamknięcia okna. BUSY, gdy blokada profilu zajęta (trwa nagrywanie); NO_CHROME; FAILED.
+
+### 7.13. Reuse zamiast drugiej wersji
+
+| Duplikat, który by powstał | Rozwiązanie |
+|---|---|
+| drugi parser ramek MPEG (silnik i audio) | `utils/mp3_frames.py`; `services/audio/mp3.py` z niego korzysta |
+| zestaw znaków końca zdania w handlerze i w TTS | `text.boundaries.ends_sentence` |
+| poziomy RMS w trim i w cięciu | `services/audio/levels.py` |
+| trzecia funkcja ACL katalogu | `platform/private_dir.restrict_directory` z kodu `_protect_profile`; qBittorrent ją woła |
+| druga funkcja szukania programu | `platform/installed.find_installed(locations, stem)`; qBittorrent i Chrome |
+| druga pętla retry (EDP: 120 × 1 min) | brak; awaria serwisu to `TtsProviderUnavailableError(retry_after_s=60)` |
+| drugi mechanizm resume | brak; `TtsResumeRepository` per kwestia |
+
+### 7.14. Odporność: klasyfikacja błędów
+
+| Sytuacja | Błąd | Klasa | Reakcja |
 |---|---|---|---|
-| 1 | `.agents/skills/simple/SKILL.md`, `.agents/skills/coding/SKILL.md`, `.agents/skills/coding/references/python.md` | standard pracy | full |
-| 2 | `AGENTS.md`, `anishift/AGENTS.md`, `tests/AGENTS.md` | reguły repo | full |
-| 3 | `docs/work/11-elevenreader-tts/{intent,specification,file-map,plan}.md` | kontrakt | full |
-| 4 | `anishift/services/tts/AGENTS.md`, `engines/AGENTS.md`, `engines/elevenbytes/AGENTS.md` | granice TTS | full |
-| 5 | `anishift/services/tts/{types,protocols,config,errors,scheduler,service}.py` | kontrakt i ścieżka per kwestia | full |
-| 6 | `anishift/services/tts/{resume,fingerprint,artifacts}.py` | resume | symbole `lookup`, `commit_clip`, `temporary_clip_path`, `SynthesisProfile` |
-| 7 | `anishift/services/tts/engines/elevenbytes/{service,config}.py` | wzorzec adaptera | full |
-| 8 | `anishift/application/{tts_handler,tts_clips,runtime}.py` | kompozycja | full `tts_clips.py`; `runtime.py:208-290`, `:636-660`; `tts_handler.py:195-445` |
-| 9 | `anishift/services/audio/{AGENTS.md,mp3.py,commands.py,probe.py}` | audio | full `mp3.py`; komendy i `probe_pcm_wav` |
-| 10 | `EDP:src/downloader.py`, `EDP:src/auto.py`, `EDP:src/timestamps.py`, `EDP:src/clips.py` | logika do portu | full |
-| 11 | `EDP:docs/research/capabilities.md`, `EDP:docs/report.md`, `EDP:README.md` | fakty trasy | full |
-| 12 | `anishift/config/{AGENTS.md,user_settings.py,field_catalog.py}` | ustawienia | `user_settings.py:150-490`; `field_catalog.py:220-260`, `:899-1110`, `:1340-1401` |
-| 13 | `anishift/cli/interactive/settings.py` | panel | `:60-130`, `:150-300`, `:340-520`, `:940-1240`, `:1620-1700` |
-| 14 | `anishift/setup/{AGENTS.md,doctor.py}` | doctor | full |
-| 15 | `anishift/platform/{AGENTS.md,process_lock.py,qbittorrent_config.py,qbittorrent_process.py}` | platforma | `process_lock.py` full; `qbittorrent_config.py:200-250`; `qbittorrent_process.py:620-660` |
-| 16 | `tests/services/tts/{test_tts_scheduler,test_tts_service,test_tts_contract,test_tts_registry,test_tts_elevenbytes}.py` | wzorce testów | full |
+| brak Chrome | `TtsConfigError` | trwały | circuit; sugestia instalacji Chrome |
+| profil zajęty (logowanie w panelu) | `TtsProviderUnavailableError(retry_after_s=60)` | przejściowy | ponowienie |
+| serwis niedostępny, 5xx, awaria przeglądarki | `TtsProviderUnavailableError(retry_after_s=60)` | przejściowy | ponowienie z nową przeglądarką |
+| wylogowano, 401 | `TtsAuthError` | trwały | circuit; sugestia logowania |
+| 403 (blokada konta) | `TtsAuthError(details={"status": 403})` | trwały | circuit; sugestia powrotu na `elevenbytes` |
+| brak kredytów (402, do potwierdzenia w K2) | `TtsQuotaError` | trwały | circuit; sugestia `elevenbytes` |
+| 429 | `TtsRateLimitError(retry_after_s=Retry-After)` | przejściowy | ponowienie |
+| głos nie ustawił się / brak w adresie strumienia | `TtsVoiceError` | trwały | circuit |
+| strumień v2 zamiast v4 | `TtsProviderUnavailableError` | przejściowy | ponowienie (prędkość ustawiana od nowa) |
+| brak audio, przestój, timeout akcji | `TtsTimeoutError` | przejściowy | ponowienie |
+| nagranie niekompletne, niezgodna liczba kwestii, błąd cięcia | `TtsClipValidationError` | przejściowy | ponowienie (cache serwera: bez kredytów) |
+| anulowanie | `TtsCancelledError` | trwały | koniec bez ponowienia |
+| sprzątanie konta nieudane (przywrócenie głosu i tempa, DELETE) | — | ponowienie przy następnej próbie i `close()`, potem ostrzeżenie w logu i komunikat w panelu | nagranie ważne |
 
-### Warunkowo
+Każdy komunikat trwałego błędu kończy się zdaniem o przełączeniu silnika na ElevenBytes w Ustawieniach → Lektor.
 
-| Warunek | Źródło | Po co |
-|---|---|---|
-| gałąź D2 | `anishift/config/{settings.py,env_file.py}`, `anishift/application/service.py:600-830`, `tests/application/test_environment_secrets.py` | sekrety `.env` |
-| E1 niezdane | `EDP:src/clips.py:327-346` | dekodowanie per strumień |
-| zmiana panelu | `tests/cli/test_interactive_settings_*.py`, `tests/cli/test_panel_keys.py` | testy układu |
-| zmiana `paths.py` | `tests/test_paths.py` | konwencja testów ścieżek |
+Konfiguracja przebiegu w `anishift/application/runtime.py`: `_TTS_REQUEST_TIMEOUT_S["elevenreader"] = 3600.0`,
+`_TTS_RETRY_BACKOFF_S["elevenreader"] = (60.0, 120.0, 300.0, 600.0)`, `shutdown_deadline_s = 15.0`,
+`max_concurrency = 1`, `queue_capacity = 2`, `elevenreader_profile_root = paths.elevenreader_dir()`,
+`scheduler_timeout_enabled = False` dla silnika dokumentowego (`is_document_engine`), tak jak dziś dla
+`elevenbytes` przez VPN: silnik sam pilnuje `deadline_s` dokumentu i sprzątania konta, więc zewnętrzny
+`asyncio.timeout` schedulera nie może przerwać próby w połowie sprzątania.
 
-## 16. Impact scan
+### 7.15. Panel Ustawień (bez zmiany wyglądu)
 
-| Kontrakt / subsystem | Ryzyko wpływu | Obowiązek regresyjny |
-|---|---|---|
-| `TtsScheduler.submit` (zmiana sygnatury) | każdy silnik i test schedulera/serwisu | wszystkie testy `tests/services/tts/` bez zmian asercji zachowania |
-| `ScheduledSynthesis.clip` → `result` | `service.py` i testy | wyszukanie `\.clip\b` w `anishift/services/tts` i `tests/services/tts` = 0 starych użyć |
-| `EngineCapabilities` (nowe pole z domyślną) | fałszywe silniki w testach, konstruktory silników | konstruktory bez zmian; test kontraktu pól |
-| `anishift/services/audio/mp3.py` | walidacja MP3 klipów wszystkich silników | `tests/services/audio/test_audio_mp3.py`, `test_audio_probe.py` bez zmian |
-| `qbittorrent_process._protect_profile` | prywatny profil qBittorrent rezydenta | `tests/platform/test_qbittorrent_process.py`, `test_selective_qbittorrent.py` |
-| `qbittorrent_config.installed_executable` | doctor, setup qBittorrent | `tests/platform/test_qbittorrent_config.py`, `tests/setup/test_doctor.py` |
-| `UserSettings._normalize_tts_selection` | ładowanie `config/settings.json` właściciela | `tests/config/test_user_settings.py`; nowy test aliasu obcego silnika |
-| `field_catalog` | panel, reset, walidacja | `tests/config/test_field_catalog.py`, `tests/cli/test_interactive_settings_*` |
-| rejestr TTS (`TtsEngineId`) | `UserSettings` waliduje silnik przez rejestr (`user_settings.py:446`) | `tests/services/tts/test_tts_registry.py` |
-| `AppService._run_settings_snapshot` | `RunSettingsSnapshot` w ledgerze | `tests/application/test_service.py`, `test_runtime_config.py` |
-| `_tts_allowed_voice_ids` | odmowa głosu w `TtsTaskHandler` | `tests/application/test_tts_handler.py` |
-| `.gitignore` | wyciek profilu do gita | `git check-ignore -v config/elevenreader/chrome-profile/x` |
-| zależność `playwright` | lock, `pip-audit`, CI Ubuntu mypy | `uv run pip-audit` (jak w CI), mypy `--platform linux` |
-| rezydent (Job Object, wątki) | proces Chrome po zamknięciu rezydenta | scenariusz ręczny fazy 6 |
-| testy równoległe (xdist) | `ProcessLock` i pliki w `tmp_path` | testy bez współdzielonych ścieżek |
-| `check_test_comments.py` | proza w nowych testach i `elevenreader_fakes.py` | hook pre-commit |
+Kategoria Lektor przy `elevenreader`: Silnik, Model (`eleven_v4`, tylko odczyt), Głos (2 wartości), Ponowień, Tempo
+końcowe, Korekta głośności głosu, Kodek, Bitrate; sekcja „SESJA”: „Sesja ElevenReader” (z `session.json`:
+„zalogowano · 30.10 14:03”, „nie zalogowano · …”, „nie sprawdzono”) i akcja „Zaloguj / sprawdź sesję” (wątek jak
+`SettingsController._start_probe`; wyniki: „✓ Zalogowano”, „✗ Nie zalogowano”, „✗ Lektor właśnie nagrywa —
+spróbuj po zakończeniu”, „✗ Nie znaleziono Google Chrome”, „✗ Nie udało się sprawdzić sesji”). Brak „Syntez
+jednocześnie” i „VPN ElevenBytes”. Kategoria Dźwięk: „Głośność lektora” w LU ponad oryginał.
 
-## 17. Testy
+## 8. Zakres
 
-### 17.1. Zasady
+**In scope:** etapy 0–10 z §9.
 
-- Każdy nowy plik testowy ma dokładnie jeden marker poziomu przez `pytestmark` (`unit`, `integration` albo `e2e`);
-  `network` jest markerem zdolności dodawanym obok (`pyproject.toml:146-153`).
-- Testy `network` są pomijane domyślnie (`tests/conftest.py:30-36`); test silnika dodatkowo wymaga zmiennej
-  `ANISHIFT_ELEVENREADER_LIVE=1` i `pytest.skip` bez niej, bo kosztuje kredyty.
-- Zero prozy: brak docstringów, komentarzy opisowych i samodzielnych stringów w testach, `conftest.py` i
-  `elevenreader_fakes.py`; scenariusz w nazwie `test_<jednostka>_<scenariusz>_<oczekiwanie>` (hook
-  `check_test_comments.py`).
-- Bez `__init__.py` w nowych katalogach testów (`tests/AGENTS.md:7-8`); nowy katalog `tests/utils/` też bez niego.
-- Izolacja przez `monkeypatch` i `tmp_path`; testy niezależne od kolejności (xdist).
-- Fixture z nagranymi odpowiedziami: `tests/data/elevenreader/frames-anon.jsonl` — prawdziwe ramki z fazy 0 dla
-  tekstu testowego, z polem `audio` zastąpionym syntetycznymi ramkami MP3 o tej samej liczbie ramek (głos `famous`
-  nie trafia do repo, Z4), bez adresów, nagłówków i identyfikatorów. Skrypt anonimizacji jest jednorazowy w
-  `scripts/tmp/` (gitignorowany) i nie jest commitowany.
-- Materiał prawdziwego głosu do eksperymentów (E1, kalibracja cięcia) leży poza repo:
-  `../mm_avh_working_space/temp/elevenreader/` (wzorzec `MM_AVH_TEMP`, `tests/conftest.py:17`); testy na nim są
-  `integration` z `skipif(not path.is_file())`.
+**Out of scope:** audiobooki, karaoke, monitor kredytów, logowanie e-mailem, próg ciszy względny wobec głosu,
+plikowy wariant ACL w `local_control.py`, zmiana osi czasu (`plan_timeline`) i ownera rezydenta, Linux.
 
-### 17.2. Testy kontraktu silnika
+**Forbidden:** Z1–Z9; zmiana zachowania syntezy istniejących silników poza I1; zależności poza `playwright`
+(`numpy`, `miniaudio` zakazane); `playwright install`; logowanie `ws.url`, `read_id`, tokenu, odpowiedzi HTTP,
+tekstu dokumentu, ścieżek absolutnych; testy sieciowe bez zgody właściciela w tej sesji; zmiana plików czytanych
+przez rezydenta (`config/settings.json`, `.env`, `config/watch/`) bez prośby do właściciela o jego zamknięcie;
+worktrees i `uv --active`; commit na `main`; stopki AI.
 
-`tests/services/tts/test_tts_contract.py` (rozszerzenie):
+**Deferred:** ponowne użycie wgranego dokumentu między przebiegami; słowne czasy w raporcie jakości; odczyt
+`current_credits` przed i po odcinku.
 
-- `test_document_types_have_exact_fields` — pola `DocumentPart`, `DocumentSynthesisRequest`, `PartTiming`,
-  `EngineDocumentResult`, `ClipSpan`, `SplitResult` w kolejności z sekcji 13.4.
-- `test_document_types_are_frozen_and_slotted`.
-- `test_engine_capabilities_default_to_request_synthesis` — `max_document_chars is None` dla fałszywego silnika z
-  dotychczasowym konstruktorem.
-- `test_document_engine_protocol_extends_engine_contract` — fałszywy silnik dokumentowy spełnia `TtsEngine` i
-  `DocumentTtsEngine`.
-- istniejący `test_tts_domain_does_not_import_pipeline_or_other_domains` musi przejść z nowym pakietem.
-- `test_elevenreader_package_does_not_import_playwright_at_import_time` — import `anishift.services.tts.engines.elevenreader`
-  w procesie potomnym nie dodaje `playwright` do `sys.modules` (wzór: `tests/services/tts/test_tts_registry.py`).
+**Dozwolone decyzje lokalne:** nazwy prywatnych helperów; podział `api_backend.py` przy
+zachowaniu granic §7.10; brzmienie komunikatów w granicach §7.15; margines trimu 0–50 ms; stałe czasowe EDP ±50%
+po pomiarze w K2 (wpis w outcome); struktura fałszywych obiektów testowych.
 
-### 17.3. Bramki
+**Zatrzymaj się i wróć po decyzję, gdy:**
 
-```bash
-uv run ruff check anishift/ tests/
-uv run ruff format --check anishift/ tests/
-uv run mypy anishift/ tests/
-uv run mypy --platform linux anishift/ tests/
-uv run pytest
-```
+- K1 pokaże, że próg −35 dBFS nie działa na innym materiale bez zmiany reguły (np. potrzeba progu względnego);
+- na nagraniu z K3 log pokaże granice `uncertain`, a właściciel usłyszy w nich ucięte słowo;
+- test zgodności cięcia (N2) nie przejdzie po wiernym porcie;
+- refaktor schedulera zmieni zachowanie choć jednego istniejącego testu schedulera lub serwisu;
+- potrzebna byłaby zmiana `plan_timeline` albo `SpeechBatch`;
+- strona pokaże ostrzeżenie o naruszeniu zasad albo konto zostanie zablokowane;
+- `playwright` nie zainstaluje się albo nie działa na Python 3.14 lub w `mypy --platform linux`.
 
-Ostatnie dwie odpowiadają hookowi pre-push i CI (`AGENTS.md`, „Twarde strażniki”). Zawsze na `anishift/ tests/`,
-nigdy na podkatalogu.
+## 9. Etapy
 
-## 18. Plan wykonania
-
-Kolejność i zależności:
+### 9.0. Mapa zależności
 
 ```text
-F0 preflight + spike (właściciel przy koncie)
- ├─> F1 audio: wspólne ramki MP3, segmentacja, split_clip, eksperyment E1
- ├─> F2 TTS: kontrakt dokumentu, scheduler, ścieżka dokumentu        (niezależna od F1, potrzebuje tylko protokołu)
- └─> F3 silnik: części czyste (config, document, recorder, alignment, errors)   (potrzebuje F0 dla fixture)
-F1 + F2 + F3 ─> F4 silnik: przeglądarka, strona, sesja, platforma, rejestr
-F4 ─> F4b gałąź D2 (tylko gdy F0 da „e-mail bez captchy”)
-F4 ─> F5 kompozycja, ustawienia, panel, doctor
-F5 ─> F6 checkpoint ucha właściciela
-F6 ─> F7 dokumentacja, review, PR
+E0 preflight (orkiestrator)
+ ├─> E1 utils/mp3_frames ─┬─> E2 trim brzegów ─> E3 głośność ─> E4 cięcie (+ K1)
+ │                        └─────────────────────────────────────> E7 silnik (recorder, lines)
+ ├─> E8 łączenie kwestii urwanych za flagą (+ ends_sentence) ─> E5 kontrakt dokumentu TTS ─> E7 silnik (service)
+ └─> E6 platforma (installed, private_dir) ─────────────────────────────────────────> E7 silnik (browser)
+E3 + E4 + E5 + E7 + E8 ─> E9 integracja aplikacji ─> E10 K2, K3, dokumentacja, review, PR
 ```
 
-F1, F2 i F3 mogą iść równolegle u różnych wykonawców (sekcja 20), bo dotykają rozłącznych plików; integruje F4.
+Pasy zapisu (rozłączne):
+
+| Pas | Etapy | Zakres zapisu |
+|---|---|---|
+| audio | E1 → E2 → E3 → E4 | `anishift/utils/mp3_frames.py`, `anishift/services/audio/`, w E3 także zmiana nazwy pola w `application/{planning,runtime,service}.py`, `config/{user_settings,field_catalog}.py`, `cli/interactive/settings.py`, `scripts/tmp/` |
+| tts | E5 | `anishift/services/tts/{types,protocols,scheduler,service,errors,config,__init__}.py`, `anishift/errors.py` |
+| silnik | E6 → E7 | `anishift/platform/`, `anishift/services/tts/engines/`, `pyproject.toml`/`uv.lock` przez `uv add` |
+| aplikacja | E8 | `anishift/application/tts_handler.py`, `anishift/text/boundaries.py`, jedna linia w `application/runtime.py` (`_tts_handler`; E3 zmienia tam tylko `_audio_config`) |
+| integracja | E9 | `application/{tts_clips,runtime,service,__init__}.py`, `config/`, `cli/interactive/settings.py`, `setup/doctor.py`, `paths.py`, `config/README.md`, docs |
+
+Każdy etap ma własne testy w `tests/<obszar>/` swojego pasa. Pasy są niezależne semantycznie; równolegle mogą
+pracować tylko wtedy, gdy orkiestrator dopuści kilku piszących w jednym checkoucie: wtedy każdy uruchamia testy
+swojego obszaru, a pełne bramki i commit idą po kolei (jeden commit naraz). Bez tej zgody kolejność dowolna w
+obrębie fali: fala 1 = E8 (najpierw, mały), E1, E5, E6; fala 2 = E2–E4, E7; fala 3 = E9; fala 4 = E10.
+
+Każdy wykonawca dostaje w briefie wprost: zero legacy (stara nazwa, ścieżka i format znikają w tym samym diffie,
+bez aliasów i warstw zgodności), reuse przed nowym kodem, brak prozy w testach, bramki na `anishift/ tests/`.
 
 ---
 
-### Faza 0 — Preflight i spike
+### E0. Preflight (orkiestrator)
 
-**Cel:** potwierdzić baseline i zdobyć fakty, których kod EDP nie ustala, bez pisania kodu produkcyjnego.
+1. `git status` czyste, `git log -1` = `f5fff6b`. Gałąź `work/tts/01-elevenreader` z `main`, bez worktree.
+2. **Pilne:** skopiuj dane prototypu z SCR (katalog tymczasowy sesji) do DATA:
+   `SCR/tantei/{anishift-test-*.mp3, anishift-test-*.align.jsonl, cuts-*.json, lines.json, episode.txt, record.json}`,
+   `SCR/edge02/`, `SCR/edge03/`, `SCR/*.py`, `SCR/*.md`. DATA leży poza repo (głos `famous`, Z4).
+3. Dopisz `config/elevenreader/` do `.gitignore` (blok `config/`), sprawdź
+   `git check-ignore -v config/elevenreader/chrome-profile/Default`, commit
+   `chore(repo): ignore the ElevenReader browser profile`.
+4. Bramki S1 na baseline; zapisz liczby i failing testy.
 
-**Wejście:** zgoda właściciela na sesję przy koncie (kilkaset znaków, około 0,03 kredytu); właściciel zamyka
-rezydenta AniShift na czas F0 (zmiana plików runtime i porównanie bramek na spokojnym checkoucie).
+**Gate:** DATA kompletne; `.gitignore` zacommitowany; baseline zapisany.
 
-**Działania:**
+### E1. Wspólne ramki MPEG (pas audio)
 
-1. `git status` (czyste drzewo), `git log -1` (`4365a51`).
-2. Utwórz gałąź `work/tts/01-elevenreader` z `main` (sekcja 19). Bez worktree.
-2a. **Zanim powstanie jakikolwiek plik profilu:** dopisz `config/elevenreader/` do `.gitignore` (sekcja projektu,
-   `.gitignore:289-296`), sprawdź `git check-ignore -v config/elevenreader/chrome-profile/Default` i zacommituj
-   osobno jako `chore(repo): ignore the ElevenReader browser profile`. Repozytorium jest publiczne; profil zawiera
-   cookies sesji.
-3. Uruchom bramki z sekcji 17.3 na baseline; zapisz liczby testów i każdy failing test.
-4. Napisz jednorazowy skrypt w `scripts/tmp/elevenreader_spike.py` (gitignorowany katalog `tmp/`,
-   `.gitignore:151`), który:
-   - tworzy `config/elevenreader/` i zawęża go tym samym poleceniem `icacls` co
-     `anishift/platform/qbittorrent_process.py:643-649` (sprawdza, że Chrome działa z profilem bez dostępu SYSTEM i
-     Administratorów — Chrome 127+ szyfruje cookies przez uprzywilejowaną usługę (App-Bound Encryption,
-     <https://security.googleblog.com/2024/07/improving-security-of-chrome-cookies-on.html>, odczyt 2026-10-25); wynik do `spike-results.md`
-     jako S0.10);
-   - uruchamia Chrome z nowym katalogiem `config/elevenreader/chrome-profile/` (nie z profilem EDP — D6), z
-     `--remote-debugging-port=<wolny>`, okno widoczne;
-   - podłącza Playwright async `connect_over_cdp`;
-   - otwiera bibliotekę; właściciel loguje się ręcznie;
-   - zapisuje do pliku **tylko** rzeczy z listy niżej, przefiltrowane w kodzie skryptu — nigdy cookies, nagłówki,
-     wartości tokenów, adres e-mail.
-5. Zbierz i zapisz w `docs/work/11-elevenreader-tts/research/spike-results.md` (po polsku, bez sekretów):
-   - **S0.1 metody logowania:** jakie przyciski widzi strona logowania (Google / Apple / e-mail), adres strony
-     logowania bez parametrów zapytania, czy formularz e-mail ma captchę; którą metodą loguje się właściciel;
-   - **S0.2 sygnał wylogowania:** co widać w bibliotece bez sesji (przekierowanie, element) — selektor;
-   - **S0.3 głosy:** z odpowiedzi `GET .../v1/reader/voices` (odczyt odpowiedzi strony w `page.on("response")`):
-     `voice_id`, `name`, `language`, `category` dla wpisów, których `name` zawiera „Fronczewski” lub „Adam”;
-   - **S0.4 wybór głosu:** czy odtwarzacz dokumentu ma wybór głosu (selektor przycisku i listy, nazwa w liście), czy
-     tylko ustawienia konta (droga G1 albo G2, sekcja 13.11);
-   - **S0.5 weryfikacja głosu:** nazwy parametrów zapytania adresu WebSocket (bez wartości poza porównaniem
-     `voice_id` z S0.3: zapisz tylko „zgodny/niezgodny”) — czy niesie głos;
-   - **S0.6 tryb bez okna:** krótki dokument (tekst testowy z sekcji 18.0.1) nagrany w `--headless=new` — sukces lub
-     opis porażki (D9);
-   - **S0.7 ramki:** zapis ramek WS dla tekstu testowego do `../mm_avh_working_space/temp/elevenreader/frames-raw.jsonl`
-     (poza repo; zawiera głos), liczba paczek, liczba tagów ID3 w złożonym MP3, czy występuje `normalizedAlignment`;
-   - **S0.8 odpowiedzi:** kształt JSON odpowiedzi `add/v2` (nazwy pól, bez wartości), statusy HTTP widziane w sesji;
-   - **S0.9 model:** czy jakakolwiek odpowiedź lub ramka nazywa model (np. `eleven_v4`); jeśli nie — zapisz „brak”;
-   - **S0.10 ACL profilu:** czy po zawężeniu ACL sesja przetrwała zamknięcie i ponowne uruchomienie Chrome.
-6. Utwórz anonimizowaną fixture `tests/data/elevenreader/frames-anon.jsonl` z S0.7 (audio zastąpione syntetycznymi
-   ramkami o tej samej liczbie ramek; skrypt w `scripts/tmp/`); nie commituj jej przed F3.
-7. Przedstaw właścicielowi wyniki S0.1–S0.6 i poproś o decyzje D2, D3, D9 (oraz pozostałe, jeśli jeszcze otwarte).
+**Cel:** jedno źródło parsowania ramek dla audio i silnika.
+**Pliki:** NEW `anishift/utils/mp3_frames.py`; MODIFY `anishift/services/audio/mp3.py`, `anishift/utils/AGENTS.md`,
+`anishift/utils/_portable.py` (wpis manifestu przenośności); NEW `tests/utils/test_mp3_frames.py` (bez
+`__init__.py`).
+**Kontrakt:** §7.5.
+**Testy:** nagłówki MPEG-1/2/2.5 i `FrameHeader.duration_ms`, ID3v2, obce bajty na początku i na końcu;
+`frames_duration_ms`; `cut_before_ms` (granica tolerancji 0,5 ms); `splice_times` na syntetycznym MP3 z wstawioną
+uszkodzoną ramką 462 B; `to_decoded` ze sklejeniami i bez nich; test integracyjny
+`skipif(not DATA)`: `splice_times` nagrania Tantei daje 22 miejsca, a `frames_duration_ms` = 814 210 ms ± 1.
+**Dowody:** `uv run pytest tests/utils tests/services/audio/test_audio_mp3.py` bez zmian istniejących asercji;
+bramki S1.
+**Zależy od:** E0. **Odblokowuje:** E2 (pośrednio), E4, E7.
 
-#### 18.0.1. Tekst testowy
+### E2. Przycinanie ciszy na brzegach (pas audio)
 
-```text
-Pierwsza kwestia testowa.
+**Cel:** F12.
+**Pliki:** NEW `anishift/services/audio/levels.py`; MODIFY `normalize.py` (trim po FFmpeg; usunięcie
+`_neutral_wav`), `fingerprint.py` (`_NORMALIZATION_ALGORITHM_VERSION` 1 → 2, sekcja `edge_trim`),
+`services/audio/AGENTS.md`; testy `tests/services/audio/test_audio_levels.py` (NEW), `test_audio_normalize.py`,
+`test_audio_fingerprint.py`.
+**Kontrakt:** §7.7.
+**Testy:** `frame_levels` na sinusie o znanej amplitudzie (dBFS ± 0,1); `speech_bounds` dla ciszy wokół tonu, dla
+samej ciszy (None); normalizacja klipu z 300 ms ciszy po obu stronach daje długość tonu + 2 × 30 ms ± 10 ms;
+klip bez mowy zostaje cały; fingerprint zmienia się przy zmianie progu; test fast-path przepisany na nowe
+zachowanie (WAV neutralny też przechodzi trim).
+**Dowody:** bramki S1; pomiar na DATA (skrypt jednorazowy w `scripts/tmp/`, potem usunięty): liczba kwestii
+dłuższych niż okno na Tantei przy tempie 1,25 po trimie z marginesem 30 ms: Dallin 12, Fronczewski 27, Adam 20
+(bez marginesu 10/24/17 jak w §6.3). Margines 30 ms zostaje, bo chroni ciche końcówki słów; koszt to 2–3 kwestie
+na odcinek nieznacznie dłuższe niż okno.
+**Zależy od:** E0.
 
-[Muzyka] Druga kwestia, z nawiasem.
+### E3. Mierzona głośność i limiter (pas audio)
 
-Trzecia kwestia... z wielokropkiem — i myślnikiem.
-```
+**Cel:** F13–F16, Z9.
+**Pliki:** MODIFY `services/audio/{commands,probe,service,output,config,fingerprint}.py`, `services/audio/AGENTS.md`;
+zmiana nazwy pola w `application/{planning,runtime,service}.py`, `config/{user_settings,field_catalog}.py`,
+`cli/interactive/settings.py` (etykieta „Głośność lektora”, jednostka LU), testy z `grep -rn
+narrator_mix_base_gain_db tests`; `default_tts_voice_profiles` Dallin `voice_mix_offset_db = 0.0`; NEW
+`scripts/tmp/migrate_narrator_loudness.py` (jednorazowy).
+**Kontrakt:** §7.8. Po zmianie `grep -rn narrator_mix_base_gain_db anishift tests` = 0.
+**Skrypt migracji:** czyta `config/settings.json`, usuwa `narrator_mix_base_gain_db`, wpisuje
+`narrator_over_source_lu = 7.5`, ustawia `voice_mix_offset_db = 0` w profilu Dallina, zapis atomowy z kopią `.bak`.
+Uruchamia orkiestrator po prośbie do właściciela o zamknięcie rezydenta; potem właściciel otwiera panel i widzi
+„Głośność lektora 7,5 LU”; skrypt jest usuwany (nie trafia do commita).
+**Testy:** `loudness_command` (dokładne argumenty); parser `Summary:` na zapisanym stderr FFmpeg (w tym `-inf` →
+`AudioDecodeError`); `render_command` z `narrator_gain_db` i limiterem `level=0`; narrator-only bez `volume` i bez
+`alimiter`; `_render_output` liczy gain z dwóch pomiarów (fałszywy runner); trafienie resume nie mierzy;
+fingerprint wersja 4 i zmiana przy innym `narrator_over_source_lu`; test integracyjny z prawdziwym FFmpeg:
+`measure_integrated_loudness` na dwóch wygenerowanych sygnałach (szum różowy, ton) różniących się o znaną liczbę dB
+zwraca różnicę ± 0,2 LU, a pełny render z głośnym narratorem ma true peak wyjścia ≤ −0,9 dBTP.
+**Dowody:** bramki S1; `grep` = 0; render Tantei z DATA każdym z trzech głosów: lektor 7,5 ± 0,3 LU nad
+oryginałem (Adam 9,5 ± 0,3), true peak ≤ −0,9 dBTP.
+**Zależy od:** E2 (wspólne pliki `fingerprint.py`, `commands.py`). E9 zaczyna się po E3 (wspólne pliki `config/`).
 
-Około 110 znaków plus tagi `<break>`; koszt pomijalny.
+### E4. Cięcie nagrania na kwestie (pas audio)
 
-**Pliki:** `scripts/tmp/elevenreader_spike.py` (nie commitowany), `docs/work/11-elevenreader-tts/research/spike-results.md`
-(commitowany z dokumentacją workstreamu), `tests/data/elevenreader/frames-anon.jsonl` (do F3).
+**Cel:** F9, F10, N2.
+**Pliki:** NEW `anishift/services/audio/segmentation.py`, testy `tests/services/audio/test_audio_segmentation.py`;
+MODIFY `services/audio/AGENTS.md`, `commands.py` (komenda dekodowania nagrania do mono s16le w zadanej
+częstotliwości, jeśli istniejąca `decode_command` się nie nadaje).
+**Kontrakt:** §7.4, kroki 1–3 jako czyste funkcje (`server_frame_times`, `cut_points` → `CutDecision(at_ms,
+uncertain)`), bez plików i FFmpeg. Adapter `split_clip` powstaje w E9.
+**Testy:** syntetyczne poziomy: wybór dłuższej ciszy bliżej kotwicy; cisza 100 ms wystarcza dla kwestii zamkniętej
+i nie wystarcza dla otwartej; brak ciszy → `anchor` i `uncertain`; okno ograniczone połową kwestii; przeliczenie
+czasu ramek przy sklejeniach. **Test zgodności** (`integration`, `skipif(not DATA)`): dla obu głosów Tantei, po
+wczytaniu czasów znaków z `align.jsonl` (helper testowy) i poziomów z dekodu 16 kHz, `cut_points` równa się
+`cuts-<głos>.json` (±10 ms) na wszystkich granicach, które prototyp ciął; na 3 scalonych granicach daje `uncertain`.
+**Dowody:** bramki S1; wynik testu zgodności z liczbami.
+**Punkt kontrolny K1 (walidacja Edgerunners 02 i 03):** nagrania obu odcinków już są (`SCR:edge02`,
+`SCR:edge03`), walidacja prototypem trwa. Gdy E4 jest gotowy, orkiestrator uruchamia `cut_points` na nagraniach z
+`DATA/edge02`, `DATA/edge03` i ocenia granice tym samym instrumentem co prototyp (`SCR:verify_clips.py`,
+`SCR:edges.py`; CrisperWhisper tylko przez MangaShift, poza AniShift). PASS: zero wycieków i ucięć poza znanym
+szumem pisowni. FAIL z tymi samymi parametrami → poprawka stałych w E4 i ponowny test zgodności; FAIL wymagający
+innej reguły → stop i decyzja (§8).
+**Zależy od:** E1, E2 (`levels.py`).
 
-**Kontrakty:** brak w kodzie produkcyjnym.
+### E5. Kontrakt dokumentu w domenie TTS (pas tts)
 
-**Testy:** brak nowych; bramki baseline.
+**Cel:** F2–F4, F6, N7, I2, I3.
+**Pliki:** MODIFY `anishift/services/tts/{types,protocols,scheduler,service,errors,config,__init__}.py`,
+`anishift/errors.py`, `anishift/services/tts/AGENTS.md`; testy `tests/services/tts/test_tts_scheduler.py`,
+`test_tts_service.py`, `test_tts_contract.py`; NEW `test_tts_document_service.py`.
+**Kontrakt:** §7.2, §7.3, §7.11. `ends_sentence` pochodzi z E8; E5 go nie definiuje.
+**Testy:** wszystkie istniejące testy schedulera i serwisu przechodzą po zmianie `submit(call=…)` i `.result` bez
+zmiany asercji zachowania; nowe: pola i zamrożenie typów; `max_document_chars` domyślnie `None`; fałszywy silnik
+dokumentowy i fałszywy splitter: wszystkie kwestie z resume → zero wywołań silnika; część z resume → dokument tylko
+z brakujących; podział na dokumenty przy limicie; kwestia ponad limit → `TtsInputError` tej kwestii; błąd splittera
+→ ponowienie; `TtsQuotaError` otwiera circuit; postęp rośnie z `progress`; brak splittera → `TtsUnsupportedError`;
+`open_end` w `ClipSpan` zgodny z `ends_sentence`; anulowanie przed commitem.
+**Dowody:** bramki S1; `grep -rn "\.clip\b" anishift/services/tts tests/services/tts` bez starych użyć pola
+`ScheduledSynthesis.clip`.
+**Zależy od:** E0; przed użyciem `ends_sentence` w `_run_document_batch` — E8 (mały, robiony pierwszy w fali 1).
 
-**Komendy dowodu:**
+### E6. Platforma: wspólne helpery (pas silnik)
 
-```bash
-git status --short
-uv run ruff check anishift/ tests/
-uv run ruff format --check anishift/ tests/
-uv run mypy anishift/ tests/
-uv run pytest
-git check-ignore -v scripts/tmp/elevenreader_spike.py
-```
+**Cel:** reuse §7.13.
+**Pliki:** NEW `anishift/platform/installed.py` (`find_installed(locations, stem) -> Path | None`), NEW
+`anishift/platform/private_dir.py` (`restrict_directory(root)`, błąd `PlatformError` z polskim komunikatem w
+wołającym); MODIFY `qbittorrent_config.py` (`installed_executable` używa `find_installed`),
+`qbittorrent_process.py` (`_protect_profile` woła `restrict_directory` i mapuje błąd jak dziś),
+`platform/AGENTS.md`; NEW `tests/platform/test_installed.py`, `test_private_dir.py`.
+**Testy:** nowe helpery (monkeypatch środowiska, fałszywe `subprocess.run`); istniejące
+`tests/platform/test_qbittorrent_config.py`, `test_qbittorrent_process.py`, `tests/setup/test_doctor.py` bez zmian.
+**Dowody:** bramki S1.
+**Zależy od:** E0.
 
-**Kryterium wyjścia:** `spike-results.md` ma odpowiedź na S0.1–S0.9 (albo jawne „nie da się ustalić” z
-powodem); `VOICES` ma oba `voice_id`; wiadomo, czy droga G1 czy G2; właściciel podjął D2, D3, D9.
+### E7. Silnik `elevenreader` (pas silnik)
 
-**Checkpoint właściciela (konto):**
+**Cel:** F1, F5, F7, F8, F17, F18, F20–F23, F25–F28, N1, N4, N5.
+**Pliki:** NEW pakiet §7.10 z AGENTS.md; MODIFY `anishift/services/tts/engines/__init__.py` (`TtsEngineId`,
+`_REGISTRY`, `is_document_engine` z `frozenset({"elevenreader"})`; test: silnik ma `max_document_chars` wtedy i
+tylko wtedy, gdy `is_document_engine` zwraca `True`), `anishift/services/tts/engines/AGENTS.md`; `uv add playwright` (bez `playwright install`); NEW testy
+`tests/services/tts/test_tts_elevenreader_{config,api_backend,recorder,service,service_data}.py`,
+`tests/services/tts/elevenreader_fakes.py`, `test_tts_elevenreader_network.py` (`network`, plus zmienna
+`ANISHIFT_ELEVENREADER_LIVE=1`); MODIFY `test_tts_registry.py`, `test_tts_contract.py`.
+**Kolejność wewnątrz:** części czyste (`constants`, `config`, `types`, mapowanie błędów w `api_backend`) mogą powstać przed E1 i
+E5; `recorder` po E1; `browser` po E6; `service` po E5.
+**Kontrakt:** §7.10, §7.12, §7.14.
+**Testy:** `resolve_voice` (alias, ID, nieznany → `TtsVoiceError`); `from_tts_config` odrzuca inny model,
+`max_concurrency ≠ 1`, brak `elevenreader_profile_root`; `document_text` (nawiasy, białe znaki, akapit „…” między kwestiami); recorder: duplikat
+≥ 8 KiB pominięty, < 8 KiB zachowany, powtórzenie po ramce `config` przycięte razem z audio, ramka bez
+`alignment`, `normalizedAlignment`, `listening_speed` z ramek wysyłanych; `part_spans`: podział po
+`<break …/>` (także tag rozcięty między paczkami), dwa sąsiednie tagi to jedna granica, akapit „…” nie jest
+kwestią, „filmik…” na końcu kwestii zostaje w jej tekście, białe znaki na brzegach, końcowy `<break time="2s"/>` bez
+pustej kwestii, niezgodna liczba albo treść → błąd, zgodność z `SCR:bounds.py` na DATA (Tantei i `edge02c`, `skipif`); `map_http_status` (401, 402, 403, 429 z `Retry-After`, 5xx);
+silnik na fałszywej stronie i przeglądarce: SIGNED_OUT → `TtsAuthError` i `session.json`, głos niezgodny po
+zapisie → `TtsVoiceError`, brak `voice_id` w adresie strumienia → `TtsVoiceError`, v2 → błąd przejściowy,
+niekompletne nagranie, niezgodna liczba kwestii, anulowanie w trakcie (≤ 2 s, Chrome zamknięty, blokada
+zwolniona), przywrócenie głosu i tempa oraz `DELETE` wołane po sukcesie, błędzie, anulowaniu i
+`asyncio.CancelledError`; nieudany krok zostaje w `AccountCleanup`, wykonuje się na początku następnej próby i w
+`close()`, a trwała porażka daje ostrzeżenie i komunikat; import pakietu w procesie
+potomnym nie ładuje `playwright`; test logów: żaden rekord nie zawiera tokenu, `read_id` ani adresu WS.
+**Dowody:** bramki S1 (w tym `mypy --platform linux`); `uv run pip-audit` na eksportowanym locku jak w CI.
+**Zależy od:** E1, E5, E6.
 
-```text
-Uruchom: uv run python scripts/tmp/elevenreader_spike.py
-Zrób: zaloguj się w otwartym oknie Chrome tak jak zwykle; odpowiedz, jakiej metody użyłeś.
-Oczekiwany rezultat: skrypt kończy się komunikatem „spike done” i plikiem wyników bez sekretów.
-Zwróć uwagę na: ostrzeżenia strony o nietypowej aktywności, prośby o weryfikację — zatrzymaj wtedy pracę.
-Przekaż wynik jako: metoda logowania (Google/e-mail/inna), decyzje D2, D3, D9, ewentualne ostrzeżenia.
-```
+### E8. Łączenie kwestii urwanych za flagą (pas aplikacja)
 
-**Gate:** bez S0.3 i S0.4 nie startuje F4 (F1–F3 mogą trwać).
+**Cel:** F11, U5, I1.
+**Pliki:** MODIFY `anishift/text/boundaries.py` (`ends_sentence`), `anishift/text/AGENTS.md`,
+`anishift/application/tts_handler.py` (`TtsTaskHandler(…, reads_document: bool)`, `_narration_batch`),
+`anishift/application/runtime.py` (`_tts_handler` przekazuje na razie `reads_document=False`; E9 podmienia na
+`is_document_engine(...)`); testy `tests/text/` i `tests/application/test_tts_handler.py`.
+**Kontrakt:** §7.6.
+**Testy:** `ends_sentence` dla `. ! ? … " ” »` i przecinka; `reads_document=False` → żądania identyczne jak przed
+zmianą (ten sam skrypt, te same `request_id`, teksty i okna); `reads_document=True`: para urwana z przerwą 0 ms →
+jedno żądanie z oknem obu; przerwa 1 ms → dwa żądania; kwestia zakończona kropką → dwa; trzy kolejne urwane → para + pojedyncza;
+`CONTINUOUS` (TXT) → bez łączenia; kolejność `order` rosnąca; manifest narracji z połączoną kwestią przechodzi
+`build_narration_manifest`. Na DATA (`skipif`): `lines.json` Tantei daje 11 połączeń.
+**Dowody:** bramki S1.
+**Zależy od:** E0.
 
----
+### E9. Integracja aplikacji (pas integracja)
 
-### Faza 1 — Audio: wspólne ramki MP3, segmentacja, cięcie
-
-**Cel:** jedno źródło parsowania ramek MPEG i protokół cięcia nagrania w ciszy, z dowodem na dryf zegara.
-
-**Wejście:** F0 krok 3 (baseline); dla E1 — nagranie z S0.7 albo `EDP:workspace/output/lektor_pl.mp3` skopiowane
-przez właściciela do `../mm_avh_working_space/temp/elevenreader/`.
-
-**Działania:**
-
-1. `anishift/utils/mp3_frames.py`: przenieś logikę `_parse_frame_header` i tabele z
-   `anishift/services/audio/mp3.py:37-176` (MPEG-1, MPEG-2, MPEG-2.5, Layer III, kanały), dodaj `iter_frames`
-   (pomijanie ID3v2 jak `EDP:src/timestamps.py:77-80` i obcych bajtów), `frames_duration_ms`, `cut_before_ms`.
-   Stałe z `Final` i docstringiem pod przypisaniem, nagłówek `# ── Constants ──`.
-2. `anishift/services/audio/mp3.py`: `read_mp3_stream_properties` korzysta z `parse_frame_header`; zachowanie,
-   komunikaty i kody `AudioProbeError` bez zmian; usuń zduplikowane tabele i `_parse_frame_header`; dodaj
-   `Mp3Frame`, `frame_table`, `cut_frames`, `stream_ranges`.
-3. `anishift/utils/_portable.py` i `anishift/utils/AGENTS.md`: wpis `mp3_frames.py`.
-4. `anishift/services/audio/segmentation.py`: port funkcji z `EDP:src/clips.py:349-514` i `:517-520` z typami z
-   sekcji 13.7; `Span`, `Placement`, `BoundaryKind`; bez I/O.
-5. `anishift/services/audio/commands.py`: `envelope_wav_command`.
-6. Eksperyment **E1** (sekcja 18.1.1); wynik zapisz w `research/e1-envelope-drift.md`.
-7. `anishift/application/tts_clips.py`: `FfmpegClipService.split_clip` według wyniku E1 (sekcja 13.7); stała
-   rezerwy ramek `RESERVOIR_FRAMES = 2` w `mp3.py`.
-8. `anishift/services/audio/AGENTS.md`: segmentacja jako czysty moduł, cięcie ramkami bez transkodowania,
-   wynik E1.
-
-#### 18.1.1. Eksperyment E1: dryf zegara przy dekodowaniu całego pliku przez FFmpeg
-
-```text
-pytanie:     czy jedno dekodowanie całego nagrania FFmpeg do 16 kHz mono zachowuje zegar ramek MP3?
-hipoteza:    tak, poza stałym przesunięciem startowym < 60 ms (opóźnienie enkodera), które estimate_delay wchłania
-setup:       nagranie z kilkoma strumieniami (S0.7 albo lektor_pl.mp3), frame_table, stream_ranges
-pomiar:      dla każdej granicy strumienia k: t_frames(k) z frame_table; t_pcm(k) = pozycja początku ciszy/mowy
-             po granicy w PCM z jednego dekodowania vs w PCM z dekodowania samego strumienia k;
-             dryf(k) = t_pcm_whole(k) - t_frames(k) - dryf(0)
-kryterium:   max |dryf(k)| ≤ 20 ms dla wszystkich k -> jedno dekodowanie; inaczej dekodowanie per strumień
-usuń potem:  skrypt pomiaru z scripts/tmp/
-```
-
-Wynik E1 jest decyzją techniczną planu, nie właściciela.
-
+**Cel:** F1–F28 działają w produkcie.
 **Pliki:**
 
-- `anishift/utils/mp3_frames.py` — DODAĆ
-- `anishift/utils/_portable.py`, `anishift/utils/AGENTS.md` — ZMIENIĆ
-- `anishift/services/audio/mp3.py` — ZREFAKTORYZOWAĆ + DODAĆ funkcje
-- `anishift/services/audio/segmentation.py` — DODAĆ
-- `anishift/services/audio/commands.py` — ZMIENIĆ
-- `anishift/services/audio/AGENTS.md` — ZMIENIĆ
-- `anishift/application/tts_clips.py` — ZMIENIĆ (wymaga typów `ClipSpan`, `SplitResult` z F2; do czasu scalenia F2
-  `split_clip` może przyjmować lokalne typy z tą samą strukturą — wybór jednej drogi przy integracji w F4)
-- `tests/utils/test_mp3_frames.py`, `tests/services/audio/test_audio_segmentation.py`,
-  `tests/application/test_tts_clips_split.py` — DODAĆ
-- `tests/services/audio/test_audio_mp3.py` — ZMIENIĆ (nowe testy; stare bez zmian)
-
-Aby uniknąć zależności F1 od F2, wykonawca F1 commituje `split_clip` dopiero po scaleniu F2 albo implementuje F1 po
-F2 na tej samej gałęzi. Domyślna kolejność commitów: commit 2 (wspólne ramki MPEG z F1) → commit 3 (scheduler z F2)
-→ commit 4 (kontrakt dokumentu z F2 razem z `segmentation.py`, `envelope_wav_command` i `split_clip` z F1).
-
-**Kontrakty:** sekcja 13.7.
-
-**Testy:**
-
-`tests/utils/test_mp3_frames.py` (`unit`):
-
-- `test_parse_frame_header_reads_mpeg1_layer3_mono`
-- `test_parse_frame_header_reads_mpeg2_layer3_stereo`
-- `test_parse_frame_header_rejects_reserved_sample_rate`
-- `test_parse_frame_header_rejects_non_layer3`
-- `test_iter_frames_skips_id3_between_streams`
-- `test_iter_frames_skips_stray_bytes`
-- `test_frames_duration_ms_sums_1152_samples_per_mpeg1_frame`
-- `test_cut_before_ms_drops_frames_starting_before_cut`
-- `test_cut_before_ms_returns_empty_when_cut_is_after_end`
-
-`tests/services/audio/test_audio_mp3.py` (`unit`, nowe):
-
-- `test_frame_table_reports_byte_ranges_and_times`
-- `test_cut_frames_keeps_two_reservoir_frames_before_span`
-- `test_cut_frames_at_recording_start_has_no_reservoir`
-- `test_stream_ranges_splits_on_id3_gap`
-
-`tests/services/audio/test_audio_segmentation.py` (`unit`, sygnał syntetyczny: listy poziomów dBFS):
-
-- `test_envelope_reports_one_level_per_10ms_window`
-- `test_silences_find_gaps_of_at_least_120ms`
-- `test_silences_ignore_gaps_shorter_than_120ms`
-- `test_estimate_delay_recovers_300ms_audio_lag`
-- `test_snap_spans_places_boundaries_in_silence`
-- `test_snap_spans_uses_quietest_dip_without_silence`
-- `test_snap_spans_falls_back_to_timings_without_speech`
-- `test_snap_spans_pads_100ms_before_and_150ms_after_within_gaps`
-- `test_snap_spans_keeps_boundaries_in_order`
-
-`tests/application/test_tts_clips_split.py` (`integration`; wymaga FFmpeg z `anishift setup`, wzór istniejących
-testów integracyjnych audio; `skipif` gdy `resolve_binary(Binary.FFMPEG)` zwraca `None`):
-
-- `test_split_clip_cuts_synthetic_recording_into_line_clips` — nagranie z trzech tonów 440 Hz po 1 s rozdzielonych
-  0,4 s ciszy, zakodowane FFmpeg do MP3 128 kb/s 44,1 kHz w `tmp_path`; spany przesunięte o −300 ms względem tonów;
-  oczekiwane: trzy klipy, każdy dekoduje się (`validate_clip`) i trwa 1,0–1,6 s.
-- `test_split_clip_reports_boundaries_without_silence` — dwa tony bez przerwy; `boundaries_without_silence >= 1`.
-- `test_split_clip_removes_its_envelope_file` — po wywołaniu w katalogu `source` nie ma pliku WAV.
-- `test_split_clip_raises_value_error_for_file_without_frames`.
-- `test_split_clip_on_real_recording_cuts_every_line` — `skipif` bez materiału w
-  `../mm_avh_working_space/temp/elevenreader/`; spany z `align.jsonl` EDP przez port `locate` (po F3) albo z pliku
-  pomocniczego zbioru; oczekiwane: liczba klipów = liczba kwestii, każdy klip > 0 ms.
-
-**Komendy dowodu:**
-
-```bash
-uv run pytest tests/utils tests/services/audio tests/application/test_tts_clips_split.py -q
-uv run pytest tests/services/audio/test_audio_mp3.py tests/services/audio/test_audio_probe.py -q
-uv run ruff check anishift/ tests/
-uv run mypy anishift/ tests/
-```
-
-**Kryterium wyjścia:** stare testy audio bez zmian i zielone; nowe zielone; `research/e1-envelope-drift.md` z
-liczbami i wyborem drogi; `grep -n "_MPEG1_BITRATES_KBPS" anishift/services/audio/mp3.py` nic nie zwraca (jedno
-źródło tabel).
-
-**Checkpoint właściciela:** brak (zmiana bez wpływu na słyszalny wynik).
-
----
-
-### Faza 2 — Domena TTS: kontrakt dokumentu, scheduler, ścieżka dokumentu
-
-**Cel:** `TtsService` umie zsyntetyzować batch silnikiem dokumentowym z resume per kwestia, a dotychczasowe silniki
-działają identycznie.
-
-**Wejście:** baseline zielony.
-
-**Działania:**
-
-1. `anishift/errors.py`: `ErrorCode.TTS_QUOTA_EXHAUSTED`.
-2. `anishift/services/tts/errors.py`: `TtsQuotaError(TtsError, FatalError)`; eksport.
-3. `anishift/services/tts/types.py`: pole `max_document_chars` (ostatnie, z domyślną `None`) i typy z sekcji 13.4.
-4. `anishift/services/tts/protocols.py`: `DocumentTtsEngine`, `ClipSplitter`.
-5. `anishift/services/tts/scheduler.py`: uogólnienie z sekcji 13.5; `_opens_circuit` z `TtsQuotaError`.
-6. `anishift/services/tts/service.py`:
-   - per kwestia: `_ProviderAttempt` daje `call`; `ScheduledSynthesis.result`;
-   - parametr `splitter`; `_run_document_batch`, `_synthesize_document`, prywatne `_plan_documents`;
-   - postęp dokumentu (sekcja 13.6).
-7. `anishift/services/tts/config.py`: pola `elevenreader_*` (sekcja 13.4).
-8. `anishift/services/tts/__init__.py`: eksport nowych typów, protokołów i błędu.
-9. `anishift/services/tts/AGENTS.md`: sekcja „Silniki dokumentowe” — kontrakt, `ClipSplitter`, zasada „TtsService
-   nigdy nie woła `synthesize` silnika dokumentowego”, scheduler przyjmuje `call`; doprecyzowanie zdania „TTS nie
-   [...] przyjmuje timestampów” (`AGENTS.md:25-26`): domena nie przyjmuje czasów napisów; czasy znaków providera
-   istnieją tylko wewnątrz próby dokumentu i nie wychodzą poza domenę.
-
-**Pliki:** jak wyżej + `tests/services/tts/test_tts_scheduler.py`, `test_tts_service.py`, `test_tts_contract.py`,
-`test_tts_config.py` (ZMIENIĆ), `tests/services/tts/test_tts_document_service.py` (DODAĆ).
-
-**Kontrakty:** sekcje 13.4–13.6.
-
-**Testy:**
-
-Istniejące (`test_tts_scheduler.py`, `test_tts_service.py`): zmiana wyłącznie wywołań `submit` i nazwy pola
-`result`; asercje zachowania identyczne. Diff tych plików ogranicza się do tych miejsc (sprawdzenie w review).
-
-`tests/services/tts/test_tts_document_service.py` (`unit`; fałszywy silnik dokumentowy, fałszywy splitter piszący
-syntetyczne ramki MP3, fałszywy walidator zwracający `ClipValidation` jak w istniejących testach serwisu):
-
-- `test_document_engine_receives_all_missing_lines_in_one_document`
-- `test_document_engine_is_not_started_when_every_line_resumes`
-- `test_document_contains_only_lines_missing_from_resume`
-- `test_non_speech_lines_are_skipped_without_document`
-- `test_line_not_found_in_recording_fails_only_that_line`
-- `test_batch_with_missing_line_is_partial`
-- `test_document_over_limit_is_split_in_batch_order`
-- `test_single_line_over_document_limit_fails_with_input_error`
-- `test_transient_document_error_retries_whole_document`
-- `test_split_failure_retries_whole_document`
-- `test_auth_error_opens_circuit_for_following_documents`
-- `test_quota_error_opens_circuit`
-- `test_document_progress_reports_received_lines_from_characters`
-- `test_progress_observer_failure_does_not_stop_synthesis`
-- `test_cancel_during_document_commits_nothing`
-- `test_document_without_splitter_fails_as_unsupported`
-- `test_document_engine_synthesize_is_never_called`
-- `test_provider_calls_are_counted_once_per_document`
-- `test_committed_lines_resume_after_failed_document_retry`
-- `test_recording_and_uncommitted_clips_are_removed_after_document`
-
-`test_tts_contract.py`: testy z sekcji 17.2.
-
-`test_tts_scheduler.py` (nowe): `test_submit_runs_any_provider_call_with_retry`,
-`test_quota_error_opens_circuit`.
-
-**Komendy dowodu:**
-
-```bash
-uv run pytest tests/services/tts -q
-uv run pytest tests/application/test_tts_handler.py tests/application/test_runtime_config.py -q
-git diff --stat main -- tests/services/tts/test_tts_scheduler.py tests/services/tts/test_tts_service.py
-uv run mypy anishift/ tests/
-uv run ruff check anishift/ tests/
-```
-
-**Kryterium wyjścia:** wszystkie testy TTS i handlera zielone; żaden istniejący test nie stracił asercji; nowy
-plik testów zielony; `grep -rn "request_factory" anishift/services/tts` zwraca 0 wyników.
-
-**Checkpoint właściciela:** brak.
-
----
-
-### Faza 3 — Silnik: części czyste
-
-**Cel:** przetestowana offline logika silnika: konfiguracja, dokument, ramki, wyrównanie, mapowanie błędów.
-
-**Wejście:** F0 (fixture `frames-anon.jsonl`, `voice_id` z S0.3), F1 krok 1 (`utils/mp3_frames.py`), F2 krok 3–4
-(typy i protokoły).
-
-**Działania:**
-
-1. `engines/elevenreader/constants.py` — sekcja 13.8; `VOICES` z S0.3; skrypty JS jako stałe `Final[str]`.
-2. `engines/elevenreader/config.py` — sekcja 13.8.
-3. `engines/elevenreader/document.py` — `neutralize`, `document_text`.
-4. `engines/elevenreader/recorder.py` — `DocumentRecorder`, `AlignmentChunk`.
-5. `engines/elevenreader/alignment.py` — `load_timeline`, `normalize_timeline`, `locate_parts`, `completeness`.
-6. `engines/elevenreader/errors.py` — `map_http_status`, `map_playwright_error` (Playwright importowany tylko pod
-   `TYPE_CHECKING`; dopasowanie po klasie z leniwie importowanego modułu wewnątrz funkcji).
-7. `engines/elevenreader/__init__.py` — eksport bez importu Playwright.
-8. `engines/elevenreader/AGENTS.md` — pułapki: brak retry w transporcie, brak logowania URL-i, `read_id` i tekstu,
-   jedna przeglądarka, blokada profilu, głos z `VOICES`, 16x, prędkość czytania 1x, nawiasy.
-9. Commit fixture `tests/data/elevenreader/frames-anon.jsonl` (po kontroli: brak `wss://`, `https://`, `Cookie`,
-   `token`, adresu e-mail).
-
-**Pliki:** sekcja 13.8 (bez `browser.py`, `page.py`, `session.py`, `service.py`), testy niżej,
-`tests/services/tts/elevenreader_fakes.py` (pomocnicze budowanie ramek, bez prozy).
-
-**Kontrakty:** sekcja 13.8.
-
-**Testy** (`unit`):
-
-`tests/services/tts/test_tts_elevenreader_config.py`:
-
-- `test_config_resolves_alias_to_voice`
-- `test_config_accepts_exact_voice_id`
-- `test_config_rejects_unknown_voice_with_voice_error`
-- `test_config_rejects_model_other_than_eleven_v4`
-- `test_config_rejects_concurrency_above_one`
-- `test_config_rejects_engine_options`
-- `test_config_rejects_native_rate_volume_pitch`
-- `test_config_requires_profile_root`
-- `test_config_repr_hides_email_and_password`
-
-`tests/services/tts/test_tts_elevenreader_document.py`:
-
-- `test_neutralize_replaces_square_brackets_with_parentheses`
-- `test_neutralize_collapses_whitespace_and_newlines`
-- `test_neutralize_keeps_polish_letters_ellipsis_and_dashes`
-- `test_document_text_separates_lines_with_blank_line`
-- `test_document_text_ends_with_newline`
-
-`tests/services/tts/test_tts_elevenreader_recorder.py` (ramki z `elevenreader_fakes.py` i `frames-anon.jsonl`):
-
-- `test_recorder_writes_audio_in_arrival_order`
-- `test_recorder_offsets_chunks_by_mp3_frame_duration`
-- `test_recorder_accepts_normalized_alignment`
-- `test_recorder_skips_identical_large_chunk`
-- `test_recorder_keeps_identical_small_chunk`
-- `test_recorder_trims_text_repeated_after_reconnect`
-- `test_recorder_skips_chunk_entirely_repeated_after_reconnect`
-- `test_recorder_counts_binary_and_non_json_frames_without_failing`
-- `test_recorder_marks_final_frame`
-- `test_recorder_keeps_audio_of_chunk_without_text`
-- `test_recorder_replays_anonymized_fixture_to_expected_char_count`
-
-`tests/services/tts/test_tts_elevenreader_alignment.py`:
-
-- `test_load_timeline_makes_char_times_absolute`
-- `test_locate_parts_finds_each_line_between_break_tags`
-- `test_locate_parts_matches_neutralized_brackets`
-- `test_locate_parts_uses_anchors_when_middle_differs`
-- `test_locate_parts_skips_line_missing_from_recording`
-- `test_locate_parts_assigns_identical_neighbour_lines_in_order`
-- `test_locate_parts_returns_start_before_end`
-- `test_completeness_reports_missing_and_excess`
-- `test_locate_parts_on_anonymized_fixture_finds_three_lines`
-
-`tests/services/tts/test_tts_elevenreader_errors.py`:
-
-- `test_status_401_maps_to_auth_error`
-- `test_status_403_maps_to_auth_error_with_status_detail`
-- `test_status_402_maps_to_quota_error`
-- `test_status_429_maps_to_rate_limit_with_retry_after`
-- `test_status_5xx_maps_to_provider_unavailable_with_60s_retry`
-- `test_error_messages_never_contain_urls`
-
-**Komendy dowodu:**
-
-```bash
-uv run pytest tests/services/tts -q -k elevenreader
-uv run python -I -c "import sys, anishift.services.tts.engines.elevenreader as m; assert 'playwright' not in sys.modules"
-uv run ruff check anishift/ tests/
-uv run mypy anishift/ tests/
-git grep -n -i -E "wss://|cookie|bearer|@gmail" -- tests/data/elevenreader
-```
-
-**Kryterium wyjścia:** testy zielone; ostatnie polecenie nie zwraca nic; import pakietu nie ładuje Playwright.
-
-**Checkpoint właściciela:** brak.
-
----
-
-### Faza 4 — Silnik: przeglądarka, strona, sesja, platforma, rejestr
-
-**Cel:** działający silnik dokumentowy zarejestrowany jako `elevenreader`.
-
-**Wejście:** F1, F2, F3 scalone na gałęzi; S0.1–S0.6 z F0.
-
-**Działania:**
-
-1. `uv add playwright` (bez `playwright install`). Sprawdź, że `uv.lock` i `pyproject.toml` zmieniły się tylko o
-   tę zależność i jej przechodnie.
-2. `anishift/platform/installed.py`: `find_installed(locations: tuple[tuple[str, str], ...], stem: str) -> Path | None`
-   (logika `qbittorrent_config.py:236-246`); `qbittorrent_config.installed_executable` woła ją z dotychczasowymi
-   lokalizacjami.
-3. `anishift/platform/private_dir.py`: `restrict_directory(root: Path) -> None` z kodu
-   `qbittorrent_process._protect_profile` (`:633-653`), z błędem `PrivateDirectoryError(FatalError)` (z kontekstem
-   `ErrorCode` istniejącym dla platformy albo nowym `PLATFORM_ACL_FAILED` — wybór lokalny, zapis w outcome);
-   `_protect_profile` woła ją i mapuje błąd na dotychczasowy `_unavailable(...)` z tym samym komunikatem.
-4. `anishift/platform/AGENTS.md`: dwa moduły.
-5. `engines/elevenreader/browser.py`, `page.py`, `session.py`, `service.py` — sekcje 13.8–13.10, z drogą G1 albo
-   G2 z S0.4 i selektorami z S0.1, S0.2, S0.4.
-6. `anishift/services/tts/engines/__init__.py`: `TtsEngineId` i `_REGISTRY` z `elevenreader` po `elevenlabs`.
-7. `anishift/services/tts/engines/AGENTS.md`: kolejność i opis adaptera.
-8. Testy niżej.
-
-**Pliki:** jak wyżej + `tests/platform/test_installed.py`, `tests/platform/test_private_dir.py`,
-`tests/services/tts/test_tts_elevenreader_engine.py`, `tests/services/tts/test_tts_elevenreader_network.py`,
-`tests/services/tts/test_tts_registry.py` (ZMIENIĆ).
-
-**Kontrakty:** sekcje 13.8–13.12.
-
-**Testy:**
-
-`tests/platform/test_installed.py` (`unit`): `test_find_installed_prefers_first_existing_location`,
-`test_find_installed_skips_unset_variables`, `test_find_installed_falls_back_to_path`,
-`test_find_installed_returns_none_when_missing`.
-
-`tests/platform/test_private_dir.py` (`unit`, `monkeypatch` na `subprocess.run` i `is_windows`):
-`test_restrict_directory_calls_icacls_with_inheritance_removed`, `test_restrict_directory_raises_on_icacls_failure`,
-`test_restrict_directory_uses_chmod_off_windows`, `test_restrict_directory_requires_account_name`.
-
-Regresja: `tests/platform/test_qbittorrent_config.py`, `test_qbittorrent_process.py`,
-`test_selective_qbittorrent.py`, `tests/setup/test_doctor.py` — bez zmian i zielone.
-
-`tests/services/tts/test_tts_elevenreader_engine.py` (`unit`; `FakeBrowser`, `FakePage`, `FakeWebSocket` w
-`elevenreader_fakes.py` z metodami używanymi przez `page.py`; zegar wstrzykiwany; `POLL_S` patchowany na 0;
-fałszywe obiekty przekazywane przez `cast("Page", fake)` — bez produkcyjnych `Protocol` tylko dla testów):
-
-- `test_engine_records_document_and_returns_part_timings`
-- `test_engine_sets_reading_speed_before_play`
-- `test_engine_selects_configured_voice_before_play`
-- `test_engine_refuses_stream_with_other_voice`
-- `test_engine_uploads_a_new_document_on_every_attempt`
-- `test_engine_presses_play_again_after_start_timeout`
-- `test_engine_times_out_after_three_play_attempts`
-- `test_engine_times_out_after_stall`
-- `test_engine_reports_incomplete_recording`
-- `test_engine_reports_progress_from_received_characters`
-- `test_engine_cancels_within_two_polls_and_closes_page`
-- `test_engine_cancel_interrupts_long_wait_for_play`
-- `test_engine_closes_browser_and_releases_lock_after_cancellation`
-- `test_engine_maps_signed_out_library_to_auth_error`
-- `test_engine_maps_unavailable_library_to_provider_unavailable`
-- `test_engine_maps_upload_status_codes`
-- `test_engine_restarts_browser_after_crash`
-- `test_engine_synthesize_single_request_is_unsupported`
-- `test_engine_never_logs_stream_url_or_document_text` (`caplog`/sink loguru jak w istniejących testach logowania)
-- `test_engine_availability_never_starts_browser`
-- `test_engine_profile_changes_with_voice`
-- `test_browser_reports_busy_profile_as_provider_unavailable`
-- `test_browser_reports_missing_chrome_as_config_error`
-- `test_browser_releases_lock_and_terminates_chrome_on_close`
-- `test_session_write_is_atomic_and_contains_no_secrets`
-- `test_session_read_ignores_corrupt_file`
-
-`tests/services/tts/test_tts_elevenreader_network.py` (`e2e` + `network`):
-
-- `test_live_document_of_three_lines_yields_three_clips` — pomijany bez `ANISHIFT_ELEVENREADER_LIVE=1`; używa
-  prawdziwego profilu `config/elevenreader/`, tekstu z 18.0.1, `TtsService` z prawdziwym `FfmpegClipService`.
-
-`test_tts_registry.py`: `EXPECTED_ENGINE_IDS = ("edge", "elevenbytes", "elevenlabs", "elevenreader", "sapi")`.
-
-**Komendy dowodu:**
-
-```bash
-uv run pytest tests/services/tts tests/platform tests/setup -q
-uv run ruff check anishift/ tests/
-uv run ruff format --check anishift/ tests/
-uv run mypy anishift/ tests/
-uv run mypy --platform linux anishift/ tests/
-uv export --frozen --all-groups --no-emit-project --format requirements.txt --output-file $env:TEMP\audit-requirements.txt
-uvx pip-audit --requirement $env:TEMP\audit-requirements.txt --disable-pip --strict
-```
-
-Po zgodzie właściciela (koszt kredytów):
-
-```bash
-$env:ANISHIFT_ELEVENREADER_LIVE = "1"; uv run pytest -m network tests/services/tts/test_tts_elevenreader_network.py -q
-```
-
-**Kryterium wyjścia:** bramki zielone; test sieciowy uruchomiony przez właściciela daje trzy klipy (S2); rezydent nie
-był modyfikowany w trakcie (zamknięty przez właściciela na czas testu sieciowego, bo test używa profilu).
-
-**Checkpoint właściciela (konto):**
-
-```text
-Uruchom: zamknij rezydenta AniShift, potem polecenie testu sieciowego wyżej.
-Zrób: nic — test działa bez okna (albo z oknem przy D9 = okno).
-Oczekiwany rezultat: 1 passed; w bibliotece ElevenReadera pojawia się jeden nowy dokument zaczynający się od „Pierwsza kwestia testowa.”
-Zwróć uwagę na: ostrzeżenia na koncie, liczbę nowych dokumentów (ma być jeden).
-Przekaż wynik jako: wynik pytest i liczba nowych dokumentów.
-```
-
----
-
-### Faza 4b — Gałąź D2: logowanie e-mailem i hasłem (warunkowa)
-
-**Warunek wejścia:** F0 S0.1 = „konto e-mail, formularz bez captchy” i decyzja D2 = „tak”. Inaczej faza jest
-pomijana, a outcome zapisuje powód.
-
-**Działania:**
-
-1. `anishift/config/settings.py`: `elevenreader_email: str = Field(default="", repr=False)`,
-   `elevenreader_password: str = Field(default="", repr=False)` w sekcji `# TTS`.
-2. `anishift/config/field_catalog.py`: specyfikacje sekretów tych pól jak dla istniejących kluczy (wzór pól
-   `is_secret` czytanych przez `AppService.environment_statuses`, `anishift/application/service.py:610-620`).
-3. `anishift/application/runtime.py`: przekazanie do `TtsConfig.elevenreader_email/password`.
-4. `engines/elevenreader/session.py`: `_sign_in_with_password(page, email, password)` — wypełnienie formularza
-   selektorami z S0.1, jedna próba, czekanie na „Import” do 60 s; porażka → dalej `TtsAuthError`.
-5. `anishift/cli/interactive/settings.py`: `_Connection("elevenreader", "ElevenReader", "elevenreader_password",
-   "elevenreader_email")`; sprawdź, że edytor adresu nie wymusza formatu URL dla `elevenreader_email` (jeśli
-   wymusza — osobny edytor tekstu w tym samym wzorcu, decyzja lokalna).
-6. `anishift/setup/doctor.py`: `_API_KEYS` bez zmian (to nie klucz API); `check_elevenreader` raportuje
-   „logowanie automatyczne skonfigurowane: tak/nie” bez wartości.
-
-**Testy** (`unit`): `test_settings_repr_hides_elevenreader_credentials`,
-`test_engine_signs_in_with_password_once_when_session_expired`,
-`test_engine_raises_auth_error_when_password_sign_in_fails`,
-`test_password_never_reaches_logs_or_run_snapshot` (rozszerzenie `tests/application/test_environment_secrets.py`),
-`test_settings_connections_list_elevenreader` (CLI).
-
-**Kryterium wyjścia:** testy zielone; ręczny scenariusz: właściciel wylogowuje się w oknie Chrome, uruchamia test
-sieciowy; test przechodzi po automatycznym zalogowaniu.
-
----
-
-### Faza 5 — Kompozycja, ustawienia, panel, doctor
-
-**Cel:** silnik wybieralny i używany przez Auto, Ręczny i subskrypcje; sesja widoczna w panelu i w `doctor`.
-
-**Wejście:** F4.
-
-**Działania:**
-
-1. `anishift/paths.py`: `elevenreader_dir() -> Path` = `config_dir() / "elevenreader"`, eksport w `__all__`.
-2. `.gitignore`: linia `config/elevenreader/` jest już od F0 (krok 2a); tylko sprawdź `git check-ignore`.
-3. `config/README.md`: akapit o `elevenreader/` (profil Chrome z sesją, blokada, `session.json`; ACL; nie kopiować
-   między kontami).
-4. `anishift/application/runtime.py`:
-   - `_TTS_REQUEST_TIMEOUT_S["elevenreader"] = 3600.0`, `_TTS_RETRY_BACKOFF_S["elevenreader"] = (60.0, 120.0, 300.0, 600.0)`;
-   - `_tts_config`: `elevenreader_profile_root=elevenreader_dir()` i `shutdown_deadline_s=15.0` dla
-     `elevenreader`, dla innych silników bez zmian;
-   - `_tts_handler`: `TtsService(..., splitter=clips)`.
-5. `anishift/application/service.py`:
-   - `_tts_allowed_voice_ids`: gałąź `elevenreader` → `tuple(voice.voice_id for voice in VOICES.values())`;
-   - `tts_is_paid`: `{"elevenbytes", "elevenlabs", "elevenreader"}`;
-   - DTO warstwy aplikacji obok `ModelProbeResult` (`anishift/application/service.py:137-190`):
-     `ElevenReaderSession(signed_in: bool | None, checked_at: datetime | None)` i
-     `ElevenReaderSignIn(StrEnum)`: `SIGNED_IN`, `SIGNED_OUT`, `BUSY`, `NO_CHROME`, `FAILED`; eksport w
-     `anishift/application/__init__.py` — panel importuje tylko publiczną fasadę aplikacji
-     (`tests/application/test_architecture.py:126-143`), więc typy silnika nie wychodzą do CLI;
-   - `elevenreader_session() -> ElevenReaderSession` (mapowanie `read_session(elevenreader_dir())`);
-   - `elevenreader_sign_in() -> ElevenReaderSignIn` (synchronicznie: `asyncio.run(sign_in(elevenreader_dir()))`,
-     import leniwy z `# noqa: PLC0415`, mapowanie `SignInOutcome` → DTO, `logger.info` granicy z wynikiem, bez danych
-     konta).
-6. `anishift/config/user_settings.py`:
-   - stałe profili dwóch głosów (`_ELEVENREADER_*_PROFILE_KEY`), `default_tts_voice_profiles` z
-     `TtsVoiceProfileSettings(concurrency=1)` dla obu;
-   - `tts_voice_label`: gałąź `elevenreader` → etykieta z `VOICES`;
-   - `resolved_tts_voice_id`: gałąź `elevenreader` → `resolve_voice(...).voice_id`, a dla nieznanego aliasu sam alias
-     (walidację robi silnik);
-   - `ensure_active_tts_profile`: `concurrency=1` dla `elevenreader` (jak `sapi`);
-   - `_normalize_tts_selection`: gałąź `elevenreader` (model `eleven_v4`, głos spoza aliasów i ID → `fronczewski`);
-     gałąź `elevenbytes` traktuje alias i ID głosu ElevenReadera jak głos obcego silnika (→ Dallin);
-     gałąź `elevenlabs` (ostatnia, `user_settings.py:465-474`) dostaje `eleven_v4` w zbiorze modeli obcych silników
-     (→ `DEFAULT_MODEL_ID`) i zamienia alias albo ID głosu ElevenReadera na pusty głos — domyślny głos `elevenlabs`
-     w katalogu to `""` (`field_catalog.py:1373-1374`), więc panel wymusi wybór; gałęzie `edge` i `sapi` już
-     resetują każdy obcy głos (`:455-464`);
-     profil `elevenreader:*` zawsze ma `concurrency=1` (ręczna edycja pliku nie może dać innej wartości);
-   - `_drop_incompatible_tts_options`: `elevenreader` czyści `engine_options`.
-7. `anishift/config/field_catalog.py`: `_tts_model_values` (`("eleven_v4",)`), `_tts_voice_values`
-   (`("fronczewski", "adam")`, domyślny `fronczewski`), `_profile_defaults` (rozwiązanie aliasu), ukrycie
-   `tts_profile.concurrency` dla `elevenreader` (`field_catalog.py:1016`), `_engine_profile_specs` → `()`.
-8. `anishift/config/AGENTS.md`: pułapka „alias głosu obcego silnika musi być resetowany w gałęzi każdego silnika”.
-9. `anishift/cli/interactive/settings.py`:
-   - `_ENGINE_LABELS["elevenreader"] = "ElevenReader"`;
-   - `_CHOICE_LABELS` dla `("tts_voice_id", "fronczewski")` i `("tts_voice_id", "adam")`, jeśli wybór głosu korzysta z
-     `_CHOICE_LABELS` (sprawdzić; inaczej etykieta z `tts_voice_label`);
-   - w gałęzi `_Category.TTS` przy `tts_engine == "elevenreader"`: `_MenuItem("elevenreader-session", "Sesja
-     ElevenReader", <stan>, "SESJA")` (bez akcji) i `_MenuItem("elevenreader-sign-in", "Zaloguj / sprawdź sesję",
-     "", "SESJA")`;
-   - akcja `elevenreader-sign-in` → `_start_sign_in` w wzorcu `_start_probe` (`settings.py:1627-1660`): `_busy`,
-     generacja, wątek demona `anishift-elevenreader-sign-in`, `_Feedback` z sekcji 13.14, `_refresh_menu` po wyniku;
-   - `_KNOWN_LAYOUT_GAPS` zostaje puste.
-10. `anishift/setup/doctor.py`: `check_elevenreader(preferences: UserSettings | None = None, *, finder=find_installed,
-    session_reader=read_session) -> CheckResult`; `run_doctor` dodaje go po `check_api_keys`. Statusy F18.
-11. `anishift/setup/AGENTS.md`, `anishift/cli/AGENTS.md`: wpisy.
-
-**Testy:**
-
-- `tests/test_paths.py`: `test_elevenreader_dir_lives_in_config_dir`, `test_elevenreader_dir_follows_config_override`.
-- `tests/application/test_runtime_config.py`: `test_elevenreader_config_uses_profile_dir_and_long_timeout`,
-  `test_elevenreader_handler_injects_clip_splitter`, `test_other_engines_get_no_elevenreader_profile`.
-- `tests/application/test_service.py` (albo właściwy plik snapshotu): `test_elevenreader_offers_both_voices`,
-  `test_elevenreader_counts_as_paid_network_tts`.
-- `tests/config/test_user_settings.py`: `test_elevenreader_defaults_to_fronczewski`,
-  `test_elevenreader_unknown_voice_falls_back_to_fronczewski`, `test_elevenbytes_drops_elevenreader_alias_to_dallin`, `test_elevenlabs_drops_elevenreader_model_and_voice`,
-  `test_edge_and_sapi_drop_elevenreader_voice`, `test_elevenreader_profile_concurrency_is_forced_to_one`,
-  `test_elevenreader_profile_has_concurrency_one`, `test_switching_engines_keeps_custom_voices_and_profiles`,
-  `test_elevenreader_label_is_piotr_fronczewski`.
-- `tests/config/test_field_catalog.py`: `test_elevenreader_model_and_voice_values`,
-  `test_elevenreader_hides_concurrency`, `test_elevenreader_has_no_engine_option_specs`.
-- `tests/cli/test_interactive_settings_*.py`: `test_tts_category_shows_elevenreader_session_rows`,
-  `test_sign_in_action_reports_signed_in`, `test_sign_in_action_reports_busy_browser`,
-  `test_sign_in_rows_hidden_for_other_engines`, układ bez luk (`_KNOWN_LAYOUT_GAPS`).
-- `tests/setup/test_doctor.py`: `test_check_elevenreader_skips_other_engines`,
-  `test_check_elevenreader_fails_without_chrome`, `test_check_elevenreader_warns_without_profile`,
-  `test_check_elevenreader_warns_after_signed_out_check`, `test_check_elevenreader_ok_after_signed_in_check`,
-  `test_check_elevenreader_never_starts_browser`.
-
-**Komendy dowodu:**
-
-```bash
-uv run pytest
-uv run ruff check anishift/ tests/
-uv run ruff format --check anishift/ tests/
-uv run mypy anishift/ tests/
-uv run mypy --platform linux anishift/ tests/
-git check-ignore -v config/elevenreader/chrome-profile/Default
-uv run anishift doctor
-```
-
-**Kryterium wyjścia:** pełne bramki zielone; `git check-ignore` potwierdza ignorowanie; `doctor` pokazuje wiersz
-ElevenReader zgodny z F18 dla bieżących ustawień (SKIP, jeśli silnik inny).
-
-**Checkpoint właściciela (panel, bez ucha):**
-
-```text
-Uruchom: zamknij rezydenta; uv run anishift
-Zrób: Ustawienia → Lektor → Silnik: ElevenReader; Głos: Piotr Fronczewski; „Zaloguj / sprawdź sesję”.
-Oczekiwany rezultat: okno Chrome otwiera bibliotekę bez logowania (profil z F0), panel pokazuje „✓ Zalogowano”.
-Zwróć uwagę na: czy wiersze są czytelne, czy brak zbędnych pól (współbieżność, VPN).
-Przekaż wynik jako: OK albo lista zauważonych problemów.
-```
-
----
-
-### Faza 6 — Checkpoint ucha właściciela
-
-**Cel:** decyzja właściciela, czy głos, tempo i głośność ElevenReadera są lepsze niż `elevenbytes` na prawdziwym
-odcinku, oraz pomiar czasu syntezy (N3).
-
-**Wejście:** F5; zalogowana sesja; jeden odcinek z polskimi napisami w `workspace/` (wybór właściciela, najlepiej
-z bazy 3 odcinków etapu 0 jakości — `docs/work/10-quality/masterplan.md`).
-
-**Działania wykonawcy przed checkpointem:**
-
-1. Pełne bramki zielone na końcowym commicie fazy 5.
-2. Właściciel uruchamia rezydenta ponownie dopiero teraz (nowy kod).
-3. Po przebiegu wykonawca zbiera z logu (`logs/anishift.log.jsonl`) liczby: czas zadania TTS, liczba kwestii,
-   `boundaries_without_silence`, ponowienia, `received_chars`/`char_count` — bez tekstu i ścieżek.
-
-**Scenariusz 6A — głos i cięcie:**
-
-```text
-Uruchom: rezydent z gałęzi; Ustawienia → Lektor: ElevenReader, Piotr Fronczewski; Ręczny → wybrany odcinek → Start.
-Zrób: obejrzyj 5 minut odcinka z lektorem (mpv), w tym fragment z szybką wymianą kwestii.
-Oczekiwany rezultat: każda kwestia brzmi w całości; brak urwanych pierwszych i ostatnich sylab; brak powtórzonych zdań.
-Zwróć uwagę na: ucięte słowa na początku/końcu kwestii, zlewające się kwestie, angielskie wtrącenia, głośne oddechy.
-Przekaż wynik jako: OK / lista znaczników czasu z problemem (mm:ss) i rodzaj problemu.
-```
-
-**Scenariusz 6B — tempo:**
-
-```text
-Uruchom: ten sam wynik.
-Zrób: oglądaj jak zwykle (także na x2, jeśli tak oglądasz).
-Oczekiwany rezultat: lektor nie zostaje w tyle za scenami dłużej niż kilka sekund.
-Zwróć uwagę na: narastające opóźnienie w scenach z dużą ilością dialogu.
-Przekaż wynik jako: OK albo propozycja tempa końcowego (np. 1,1) do Ustawienia → Lektor → Tempo końcowe.
-```
-
-Po zmianie tempa: drugi przebieg tego samego odcinka używa resume TTS (klipy bez zmian), zmienia się tylko miks.
-
-**Scenariusz 6C — głośność:**
-
-```text
-Uruchom: ten sam wynik.
-Zrób: porównaj głośność lektora z oryginałem w scenie cichej i głośnej.
-Oczekiwany rezultat: lektor słyszalny, nie dominuje.
-Zwróć uwagę na: za cicho w scenach akcji, za głośno w cichych.
-Przekaż wynik jako: korekta głośności głosu w dB (Ustawienia → Lektor → Korekta głośności głosu).
-```
-
-Uwaga: dopasowanie głośności do materiału to etap 6 jakości; tutaj tylko stała korekta per głos.
-
-**Scenariusz 6D — Adam:**
-
-```text
-Uruchom: Ustawienia → Lektor → Głos: Adam; Ręczny → ten sam odcinek → Start.
-Zrób: posłuchaj 2 minut.
-Oczekiwany rezultat: głos Adam czyta po polsku zrozumiale.
-Zwróć uwagę na: akcent, błędy wymowy polskich słów.
-Przekaż wynik jako: OK / nie nadaje się; preferowany głos domyślny.
-```
-
-**Scenariusz 6E — zapas:**
-
-```text
-Uruchom: Ustawienia → Lektor → Silnik: ElevenBytes; Ręczny → ten sam odcinek → Start.
-Oczekiwany rezultat: przebieg kończy się jak przed zmianą, głosem Dallin.
-Przekaż wynik jako: OK / błąd.
-```
-
-**Scenariusz 6F — wygasła sesja (opcjonalny, bez kosztu):**
-
-```text
-Uruchom: Ustawienia → Lektor → Zaloguj / sprawdź sesję; w oknie Chrome wyloguj się; zamknij okno.
-Zrób: Ręczny → krótki plik → Start.
-Oczekiwany rezultat: przebieg kończy się błędem z sugestią „Ustawienia → Lektor → Zaloguj / sprawdź sesję”; po zalogowaniu ponowienie działa.
-Przekaż wynik jako: OK / treść komunikatu.
-```
-
-**Kryterium wyjścia:** właściciel akceptuje 6A–6E (S3, S4); wartości tempa i korekty zapisane w profilu głosu;
-wnioski i liczby w `outcomes/01-elevenreader-engine.md`. Feedback „ucięte słowa” wraca do F1/F3 (parametry
-segmentacji, wariant D4) jako lokalna poprawka; feedback „zły głos/model” wraca do właściciela jako decyzja
-kierunku.
-
----
-
-### Faza 7 — Dokumentacja, review, PR
-
-**Cel:** scalalny PR z kompletną dokumentacją i niezależnym review.
-
-**Działania:**
-
-1. Aktualizacja: `README.md` i `README.pl.md` (akapit: silnik ElevenReader, wymagany Chrome, logowanie w
-   Ustawieniach, ryzyko ToS i bana jednym zdaniem, zapas `elevenbytes`, skutki uboczne na koncie z §13.13); `docs/reference/settings.md` (pola);
-   `docs/ideas.md` (wpis §4 „Lektor przez ElevenReader” → „zrobione, workstream 11”, bez usuwania historii
-   motywacji); `docs/README.md` (wiersz workstreamu 11).
-2. Outcome `docs/work/11-elevenreader-tts/outcomes/01-elevenreader-engine.md` według szablonu OUTCOME ze skilla
-   `coding`.
-3. Review krzyżowe (sekcja 20): inny model niż autor; findingi krytyczne i poważne naprawione w commitach
-   właściwych tematów (pamięć właściciela: poprawki z review wracają do commita swojego tematu — przez `git commit
-   --fixup` i `git rebase --autosquash` bez trybu interaktywnego, albo nowym commitem tematu, jeśli przepisywanie
-   historii wypchniętej gałęzi jest niepożądane).
-4. Skan sekretów (S6):
-
-   ```bash
-   git diff main...HEAD | Select-String -Pattern "mateuszmroz|@gmail\.com|set-cookie|reads/stream/v2/[A-Za-z0-9]"
-   git diff --name-only main...HEAD | Select-String -Pattern "chrome-profile|session\.json|frames-raw|\.mp3$"
+- `anishift/application/tts_clips.py`: `FfmpegClipService.split_clip` (§7.4, adapter) i parametr
+  `recording_timeout_s`; `anishift/application/runtime.py`: `_tts_config` (§7.14), `_tts_handler` wstrzykuje
+  `splitter` i `reads_document=is_document_engine(snapshot.tts_profile_id)`.
+- `anishift/paths.py`: `elevenreader_dir() = config_dir() / "elevenreader"`; `config/README.md`.
+- `anishift/config/user_settings.py`: gałąź `elevenreader` w `tts_voice_label`, `resolved_tts_voice_id`,
+  `_normalize_tts_selection` (F19: obcy alias → głos domyślny silnika docelowego), profile §7.9.
+- `anishift/config/field_catalog.py`: modele, głosy i profile `elevenreader` z listy silnika (`VOICES`), ukryta
+  współbieżność.
+- `anishift/application/service.py`: `_tts_allowed_voice_ids`, `tts_is_paid` (ElevenReader: tak),
+  `elevenreader_session()`, `elevenreader_sign_in()` i DTO; eksport w `application/__init__.py` (panel importuje
+  fasadę).
+- `anishift/cli/interactive/settings.py`: `_ENGINE_LABELS["elevenreader"] = "ElevenReader"`, sekcja SESJA (§7.15).
+- `anishift/setup/doctor.py`: `check_elevenreader()` (F24) w `run_doctor`.
+- AGENTS.md: `application/`, `config/`, `cli/`, `setup/`; `docs/reference/settings.md`.
+
+**Testy:** `split_clip` z prawdziwym FFmpeg na syntetycznym MP3 trzech tonów z ciszą i jednym sklejeniem
+(`integration`): trzy WAV 48 kHz o oczekiwanych długościach ± 20 ms; ścieżka dokumentu end-to-end z fałszywym
+silnikiem i prawdziwym splitterem; `user_settings`: przełączenia `elevenreader` ↔ `elevenbytes` i obcy alias w
+pliku → Dallin; `field_catalog` pola widoczne/ukryte; panel: wiersze SESJA i akcja, stany wyniku; `doctor`
+FAIL/WARN/SKIP; `runtime` daje `TtsConfig` §7.14, w tym `scheduler_timeout_enabled is False` dla `elevenreader` i
+`True` dla `elevenbytes` bez VPN (`tests/application/test_runtime_config.py`); `paths`.
+**Dowody:** bramki S1; `uv run anishift doctor` przy silniku `elevenreader` bez sesji → WARN z sugestią.
+**Zależy od:** E3, E4, E5, E7, E8.
+
+### E10. Odbiór (orkiestrator i właściciel)
+
+1. **K2 — konto i test sieciowy** (zgoda właściciela; rezydent zamknięty): akcja „Zaloguj / sprawdź sesję”;
+   `ANISHIFT_ELEVENREADER_LIVE=1 uv run pytest -m network tests/services/tts/test_tts_elevenreader_network.py`
+   (trzy kwestie, oba głosy); sprawdzenie, że głos konta wrócił i dokument zniknął z biblioteki. Jeśli strona da
+   okazję zobaczyć odpowiedź na brak kredytów — zapis statusu w outcome (§7.14, 402).
+2. **K3 — ucho właściciela:** jeden prawdziwy odcinek w Ręcznym, osobno Fronczewski i Adam; potem ten sam odcinek
+   na `elevenbytes` (S5).
+
+   ```text
+   Uruchom: anishift → Ustawienia → Lektor → ElevenReader, głos; Ręczny → odcinek → Start
+   Zrób: obejrzyj 5 minut z lektorem; powtórz z drugim głosem i z ElevenBytes
+   Oczekiwany rezultat: lektor słyszalny ponad muzyką i dialogiem jak dziś Dallin; bez uciętych słów;
+                        tempo zbliżone do Dallina; brak przesterów
+   Zwróć uwagę na: końcówki kwestii, kwestie przechodzące w następny napis, głośne sceny
+   Przekaż wynik jako: OK albo minuta odcinka + co słychać
    ```
 
-   Oba bez wyników (pierwszy wzorzec dopuszcza stałą `STREAM_PATH` bez identyfikatora).
-5. Push gałęzi i PR (sekcja 19).
+3. README EN i PL (silnik, logowanie, ryzyko regulaminu), `docs/README.md`, `docs/ideas.md`, outcome
+   `outcomes/01-elevenreader-engine.md`.
+4. Review krzyżowe całej gałęzi innym modelem niż autor (S6); skan sekretów (S7):
+   `git grep -n -i -E "@gmail|authorization: |u:[A-Za-z0-9]{20}|chrome-profile/Default" -- anishift tests` = 0,
+   a `git status --ignored config/elevenreader` pokazuje katalog jako ignorowany.
+5. PR do `main`.
 
-**Kryterium wyjścia:** PR otwarty, CI zielone, review bez findingów krytycznych i poważnych, właściciel zna
-otwarte decyzje i wynik checkpointu.
+## 10. Zasady testów i bramki
 
-## 19. Git
-
-### 19.1. Gałąź
-
-`work/tts/01-elevenreader` z `main` (`4365a51`), w głównym checkoucie (bez worktree). Wzorzec nazw:
-`work/subtitles/02-single-word-break-crash` (`4365a51`), `work/tui/02...` (pamięć właściciela).
-
-### 19.2. Commity
-
-Format `typ(scope): opis` ze scope z `scripts/hooks/check_commit_msg.py:37-61`; jeden commit na spójny temat;
-poprawki review wracają do commita tematu; bez `Co-Authored-By` i stopek generatora (reguła repo wygrywa z
-domyślną atrybucją narzędzia). Treść commita: po pustej linii co i dlaczego, po kolejnej „Verification:” z
-faktycznie uruchomionymi komendami i wynikiem (skill `coding` §18).
-
-| # | Commit | Faza | Zawartość |
-|---|---|---|---|
-| 1 | `docs(tts): plan the ElevenReader narrator engine` | przed F0 | `docs/work/11-elevenreader-tts/` (ten zestaw) i `research/spike-results.md` po F0 |
-| 1a | `chore(repo): ignore the ElevenReader browser profile` | F0 krok 2a | `.gitignore` |
-| 2 | `refactor(audio): share MPEG frame parsing through utils` | F1 | `utils/mp3_frames.py`, `audio/mp3.py`, `_portable.py`, AGENTS.md, testy |
-| 3 | `refactor(tts): let the scheduler run any provider attempt` | F2 | `scheduler.py`, `service.py` (per kwestia), testy schedulera i serwisu |
-| 4 | `feat(tts): synthesize whole documents and split them into line clips` | F2 + F1 | typy, protokoły, `TtsQuotaError`, ścieżka dokumentu, `segmentation.py`, `envelope_wav_command`, `split_clip`, testy |
-| 5 | `refactor(platform): share installed-program lookup and private directory protection` | F4 | `installed.py`, `private_dir.py`, qBittorrent, testy |
-| 6 | `build(deps): add playwright for the ElevenReader engine` | F4 | `pyproject.toml`, `uv.lock` (tylko przez `uv add`) |
-| 7 | `feat(tts): add the ElevenReader engine` | F3 + F4 | pakiet `elevenreader/`, rejestr, fixture, testy, AGENTS.md |
-| 8 | `feat(config): offer ElevenReader voices in settings` | F5 | `paths.py`, `config/README.md`, `user_settings.py`, `field_catalog.py`, `runtime.py`, `application/{service,__init__}.py`, testy |
-| 9 | `feat(cli): sign in to ElevenReader from settings` | F5 | `cli/interactive/settings.py`, testy CLI, `cli/AGENTS.md` |
-| 10 | `feat(setup): check ElevenReader readiness in doctor` | F5 | `doctor.py`, testy, `setup/AGENTS.md` |
-| 11 | `feat(config): sign in to ElevenReader with saved credentials` | F4b (warunkowo) | `settings.py`, `session.py`, połączenie w panelu, testy |
-| 12 | `docs(repo): document the ElevenReader narrator` | F7 | README EN/PL, `docs/reference/settings.md`, `docs/ideas.md`, `docs/README.md`, outcome |
-
-Kolejność 2 → 3 → 4 jest wymuszona przez zależność typów; 5 i 6 przed 7.
-
-### 19.3. Zależności
-
-Tylko `uv add playwright`. Bez ręcznej edycji `pyproject.toml`. Bez `playwright install`. Sprawdzenie:
+- Każdy plik testowy ma dokładnie jeden marker poziomu (`unit`, `integration`, `e2e`) przez `pytestmark`;
+  `network` jako marker zdolności.
+- Zero prozy w testach, `conftest.py` i `elevenreader_fakes.py`; scenariusz w nazwie
+  `test_<jednostka>_<scenariusz>_<oczekiwanie>`.
+- Bez `__init__.py` w nowych katalogach testów; izolacja `tmp_path`/`monkeypatch` (xdist).
+- Dane prawdziwego głosu tylko w DATA; testy na nich `integration` z `skipif(not path.is_file())`.
+- Fixture ramek do repo tylko z audio zastąpionym syntetycznymi ramkami MP3 (skrypt jednorazowy w `scripts/tmp/`).
 
 ```bash
-git diff main -- pyproject.toml
-uv export --frozen --all-groups --no-emit-project --format requirements.txt --output-file $env:TEMP\audit-requirements.txt
-uvx pip-audit --requirement $env:TEMP\audit-requirements.txt --disable-pip --strict
+uv run ruff check anishift/ tests/
+uv run ruff format --check anishift/ tests/
+uv run mypy anishift/ tests/
+uv run mypy --platform linux anishift/ tests/
+uv run pytest
 ```
 
-(komendy audytu jak w `.github/workflows/ci.yml:58-60`, plik wyjściowy poza repozytorium).
+## 11. Git
 
-### 19.4. PR
+- Gałąź `work/tts/01-elevenreader`; commity `typ(scope): opis` ze scope z `scripts/hooks/check_commit_msg.py`; jeden
+  commit na temat (np. ramki MPEG, trim, głośność, cięcie, kontrakt dokumentu, platforma, silnik, łączenie kwestii,
+  integracja, dokumentacja); poprawki z review wchodzą do commita swojego tematu.
+- Zależność wyłącznie `uv add playwright`; commit razem z silnikiem.
+- PR po E10, bez stopek AI.
 
-Tytuł: `feat(tts): add the ElevenReader narrator engine`. Opis po angielsku, bez stopek AI, w układzie:
+## 12. Ryzyka i reakcje
 
-```text
-## Summary
-- New `elevenreader` TTS engine: reads every missing line of an episode in one ElevenReader document through the
-  owner's signed-in Chrome profile and cuts the recording into line clips at silences.
-- TTS domain: document synthesis contract, `ClipSplitter`, scheduler runs any provider attempt, `TtsQuotaError`.
-- Audio: shared MPEG frame parsing (`anishift/utils/mp3_frames.py`), silence segmentation, frame-accurate cuts.
-- Settings: engine, Piotr Fronczewski / Adam voices, sign-in action, doctor check.
-
-## Risk
-Automating ElevenReader breaks its terms and may get the account banned. `elevenbytes` stays available; switching
-back is one setting.
-
-## Verification
-<commands and observed results from F4–F6>
-
-## Owner checks
-<6A–6E results>
-```
-
-## 20. Dodatkowi wykonawcy
-
-Zgodnie z `AGENTS.md` (orkiestrator koordynuje; `astra` i `opus55` kodują; review robi inny model). Briefy według
-`.agents/skills/subagent/assets/SUBAGENT-BRIEF.template.md`, każdy zaczyna od polecenia przeczytania w całości
-`simple`, `coding/SKILL.md` i `coding/references/python.md` (pamięć właściciela).
-
-| Jednostka | Cel | Kontekst | Write scope | Wynik | Owner integracji |
-|---|---|---|---|---|---|
-| W-F1 | faza 1 bez `split_clip` | plan §13.7, §18 F1; `EDP:src/timestamps.py`, `EDP:src/clips.py` | `anishift/utils/mp3_frames.py`, `_portable.py`, `utils/AGENTS.md`, `audio/{mp3,segmentation,commands}.py`, `audio/AGENTS.md`, testy F1 | diff + wyniki komend F1 | orkiestrator |
-| W-F2 | faza 2 | plan §13.4–13.6, §18 F2 | `anishift/errors.py`, `services/tts/{types,protocols,scheduler,service,config,errors,__init__}.py`, `services/tts/AGENTS.md`, testy F2 | diff + wyniki | orkiestrator |
-| W-F3 | faza 3 | plan §13.8, §18 F3, `spike-results.md` | `services/tts/engines/elevenreader/{constants,config,document,recorder,alignment,errors,__init__}.py`, `AGENTS.md`, testy F3, fixture | diff + wyniki | orkiestrator |
-| W-F4 | faza 4 (+4b) | całość planu | pliki F4 | diff + wyniki + checkpoint | orkiestrator |
-| W-F5 | faza 5 | plan §13.10–13.14, §18 F5 | pliki F5 | diff + wyniki | orkiestrator |
-| R-n | review krzyżowe każdej fazy | plan, spec, diff fazy | read-only | raport `review` | orkiestrator |
-
-W-F1, W-F2, W-F3 są niezależne semantycznie i mogą biec równolegle (najwyżej dwie instancje jednego modelu).
-W-F3 potrzebuje `utils/mp3_frames.py` i typów z F2: albo startuje po commitach 2 i 4, albo używa ich szkiców z
-tego planu i dostosowuje się przy integracji (zadanie orkiestratora). Pilot fan-outu: brak — jednostki nie są
-powtarzalne.
-
-Zasada krzyżowa: autor fazy nie robi jej review; review robi świeża instancja innego modelu.
-
-## 21. Strategia dowodu
-
-| Twierdzenie | Kontrola | Dlaczego wystarcza |
+| Ryzyko | Jak rozpoznać | Reakcja |
 |---|---|---|
-| dotychczasowe silniki bez zmian | istniejące testy TTS/audio/platform/config bez zmian asercji, diff testów ograniczony do API | testy kodują kontrakt; diff pokazuje brak osłabienia |
-| scheduler wykonuje dowolną próbę z retry i circuit | unit schedulera | fałszywe wywołania i zegar |
-| resume per kwestia w trybie dokumentu | unit `test_tts_document_service.py` | fałszywy silnik liczy wywołania i kwestie |
-| cięcie nie ucina mowy | integration na syntetycznym nagraniu + materiał właściciela (skipif) + ucho 6A | syntetyk sprawdza mechanikę, ucho jakość |
-| zegar obwiedni zgodny z zegarem ramek | E1 z liczbami | pomiar wprost |
-| protokół strony (upload, odtwarzanie, głos) | unit na fałszywej stronie + test sieciowy S2 | fałszywa strona sprawdza logikę, test sieciowy realną granicę |
-| brak sekretów | testy logowania silnika, testy `repr`, skan S6 | trzy niezależne instrumenty |
-| panel i doctor | testy CLI i doctor + checkpoint F5 | układ + oko |
-| jakość głosu, tempo, głośność | checkpoint F6 | tylko człowiek |
-| CI | bramki lokalne + CI na PR | te same komendy |
+| ban konta, zmiana warunków | 403, ostrzeżenie strony | stop; `elevenbytes`; decyzja właściciela |
+| zmiana wewnętrznego API lub interfejsu strony | błędy selektorów, brak ramek | błąd przejściowy → po wyczerpaniu circuit z sugestią `elevenbytes`; poprawka `api_backend.py`/`constants.py` |
+| próg −35 dBFS nie przenosi się na inny materiał | K1, `uncertain` > 0 w logu | korekta stałych; przy zmianie reguły stop (§8) |
+| dane prototypu znikną z katalogu tymczasowego | brak plików SCR | E0 krok 2 jako pierwszy ruch |
+| `atempo` 1,45 słyszalnie szarpie | K3 | niższe tempo w profilu; trim już skraca kwestie |
+| brak kredytów nierozpoznany | inny status niż 402 | mapowanie z K2; do tego czasu błąd przejściowy → circuit po retry |
+| migracja przy działającym rezydencie | rezydent nadpisuje `settings.json` | prośba o zamknięcie przed skryptem |
+| `playwright` a Python 3.14, CI, `mypy --platform linux` | błędy instalacji lub typów | stop (§8) |
+| trim brzegów zmienia odbiór Dallina | K3 na `elevenbytes` | D1 |
+| sprzątanie konta nie dojdzie do skutku (np. zerwana sesja) | ostrzeżenie i komunikat z §7.10 | ponowienie przy następnej próbie; ręczne usunięcie według komunikatu |
 
-### Regression obligations
+## 13. Wycofanie
 
-- `tests/services/tts/**`, `tests/services/audio/**`, `tests/application/test_tts_handler.py`,
-  `tests/application/test_runtime_config.py`, `tests/platform/test_qbittorrent_*.py`,
-  `tests/config/test_user_settings.py`, `tests/config/test_field_catalog.py`, `tests/cli/test_interactive_settings_*.py`,
-  `tests/setup/test_doctor.py` — zielone na każdym commicie od 2 do 12.
+- Silnik: przełączenie na `elevenbytes` w Ustawieniach (bez kodu). Usunięcie silnika: revert commitów silnika i
+  integracji (łączenie kwestii znika razem z `is_document_engine`); trim i głośność są niezależne od silnika.
+- Głośność: revert commita E3 wymaga odwrotnego skryptu migracji `settings.json`.
+- Profil Chrome: usunięcie `config/elevenreader/`.
 
-### Human acceptance
+## 14. Definition of Done
 
-- Co testy nie potwierdzają: brzmienie głosu, naturalność granic klipów, tempo wobec scen, głośność, zachowanie
-  konta.
-- Scenariusze: F0 (konto), F4 (test sieciowy), F5 (panel), F6 (6A–6F).
-- PASS: akceptacja właściciela 6A–6E bez otwartych problemów „ucięte słowo” i „zły głos”.
+- [ ] Wymagany rezultat działa na prawdziwym odcinku obydwoma głosami i na `elevenbytes`.
+- [ ] Bramki S1 zielone na końcowym commicie; test zgodności cięcia zielony; K1, K2, K3 zamknięte.
+- [ ] Zero legacy: `narrator_mix_base_gain_db`, `_neutral_wav`, `ScheduledSynthesis.clip` nie istnieją.
+- [ ] Skrypty z `scripts/tmp/` uruchomione, sprawdzone i usunięte.
+- [ ] Review krzyżowe bez findingów krytycznych i poważnych; skan sekretów czysty.
+- [ ] Outcome z dowodami, odchyleniami i stanem gałęzi.
 
-## 22. Niewiadome i jak je zamknąć
-
-| Niewiadoma | Dlaczego istotna | Jak zamknąć | Kiedy |
-|---|---|---|---|
-| `voice_id` Fronczewskiego i Adama, język Adama | F9, I4 | S0.3 | F0 |
-| wybór głosu: odtwarzacz czy ustawienia konta | F8, droga G1/G2 | S0.4 | F0 |
-| czy adres WS niesie głos | weryfikacja F8 | S0.5 | F0 |
-| metody logowania, captcha | D2, F16 | S0.1 | F0 |
-| sygnał wylogowania | F16, `open_library` | S0.2 | F0 |
-| tryb bez okna | D9 | S0.6 | F0 |
-| status HTTP przy braku kredytów | mapowanie `TtsQuotaError` | nie da się wywołać bez wyczerpania konta; przyjęte 402 i komunikat; przy pierwszym wystąpieniu w praktyce log statusu (bez treści) i korekta mapowania | po wdrożeniu |
-| status przy blokadzie konta | F20 | jak wyżej; przyjęte 403 | po wdrożeniu |
-| czy cache serwera działa dla nowego dokumentu o tym samym tekście | koszt ponowień między przebiegami | odłożone (sekcja 14.4) | — |
-| dryf FFmpeg | droga dekodowania obwiedni | E1 | F1 |
-| twardy limit długości dokumentu | `MAX_DOCUMENT_CHARS` | nie badamy; 50 000 to połowa zmierzonego maksimum | — |
-| czy Chrome pod Job Object rezydenta działa poprawnie | N5 | test sieciowy uruchomiony z rezydentem w F6 | F6 |
-| czy Playwright async działa w pętli wątku `anishift-tts` na Windows | przeglądarka w silniku | test sieciowy F4 przez `TtsService` | F4 |
-| czy sterownik Playwright otwiera okno konsoli pod `pythonw` | wygoda, N5 | obserwacja w F6 z rezydentem | F6 |
-| czy Chrome działa z profilem zawężonym ACL (bez SYSTEM) | F13, sesja | S0.10 | F0 |
-| plan konta („darmowa trasa” vs `plan: ultra`, `capabilities.md:55`) | koszt, limit 24 h/dobę | nie wpływa na kod; właściciel zna swoje konto | — |
-
-## 23. Ryzyka i reakcje
-
-| Ryzyko | Jak rozpoznać | Reakcja | Kiedy eskalować |
-|---|---|---|---|
-| ban albo ograniczenie konta | 403, ostrzeżenie na stronie, e-mail od ElevenLabs | circuit; właściciel przełącza na `elevenbytes` | natychmiast; bez prób obejścia |
-| zmiana interfejsu strony (selektory) | `TtsTimeoutError` na akcjach, test sieciowy czerwony | poprawka selektorów w `page.py`/`constants.py` | gdy zmiana wymaga czegoś poza klikaniem |
-| zmiana protokołu WS | brak `alignment`, `TtsClipValidationError` | analiza ramek nową sesją spike | gdy dane do cięcia znikną |
-| przeniesienie na model v2 | zmiana barwy, inne tempo | kontrola prędkości 1x | gdy 1x przestanie dawać v4 |
-| ucięte słowa | checkpoint 6A, wysoki `boundaries_without_silence` | strojenie stałych segmentacji ±50%, potem decyzja D4 | gdy > 10% granic bez ciszy |
-| za wolne tempo głosu | 6B, rosnący `drift_ms` | tempo końcowe profilu głosu | gdy tempo > 1,25 psuje głos |
-| CDP na porcie localhost dostępny dla innych procesów lokalnych | — | port losowy, przeglądarka tylko na czas nagrania; ryzyko przyjęte dla jednoosobowego PC | gdy na PC pracują inni użytkownicy |
-| profil z sesją skopiowany lub wyciekł | — | ACL, `.gitignore`, skan S6 | przy każdym wycieku: wylogowanie wszystkich sesji na koncie |
-| głos `famous` w publicznym repo | skan plików MP3 w diffie | zakaz Z4, fixture z syntetycznym audio | natychmiast |
-| Playwright nie wspiera Python 3.14 na CI | `uv add` lub CI czerwone | wersja zgodna z EDP (`>=1.64.0`, działa na 3.14 u właściciela) | gdy brak wheela |
-| rezydent zawieszony na nagrywaniu | przestój bez postępu | `STALL_S`, timeout schedulera 3600 s, anulowanie | gdy przestój mimo audio |
-| refaktor schedulera psuje inne silniki | czerwone istniejące testy | cofnięcie commita 3 i poprawka | zawsze przed commitem 4 |
-| okno konsoli sterownika Playwright (Node) pod `pythonw` rezydenta | migające okno w tle podczas syntezy | sprawdzenie w F6; jeśli występuje — start sterownika z `CREATE_NO_WINDOW` przez dostępną opcję Playwright albo zgłoszenie do decyzji | gdy nie da się ukryć bez łatki biblioteki |
-
-## 24. Plan wycofania
-
-1. **Natychmiastowy, bez kodu:** Ustawienia → Lektor → Silnik: ElevenBytes. Silnik `elevenbytes` jest nietknięty
-   (I1), więc to pełny powrót.
-2. **Usunięcie sesji:** zamknąć rezydenta, usunąć `config/elevenreader/` (profil, blokada, `session.json`); opcjonalnie
-   wylogować sesje na koncie ElevenReadera.
-3. **Wycofanie kodu przed merge:** zamknąć PR, usunąć gałąź; `main` bez zmian.
-4. **Wycofanie kodu po merge:** `git revert` commitów 7–12 w odwrotnej kolejności (silnik, ustawienia, panel,
-   doctor, dokumentacja) — commity 2–5 (wspólne ramki, scheduler, kontrakt dokumentu, platforma) mogą zostać, bo
-   nie zmieniają zachowania innych silników; `uv remove playwright` przy wycofaniu commita 6.
-5. `config/settings.json` z `tts_engine="elevenreader"` po wycofaniu kodu: `_normalize_tts_selection` ustawi
-   `elevenbytes`, bo silnika nie ma w rejestrze (`anishift/config/user_settings.py:446-448`).
-
-## 25. Lokalna adaptacja
-
-Wykonawca może bez przeplanowania: dopasować nazwy prywatnych funkcji i podział helperów w granicach modułów z
-sekcji 13.8; dobrać dokładne selektory z fazy 0; zmienić komunikaty w granicach sensu; przesunąć test między
-plikami tego samego obszaru; zmienić stałe czasowe w granicach sekcji 14.5 z wpisem w outcome; wybrać kod błędu
-platformy dla `restrict_directory`.
-
-## 26. Materialna zmiana
-
-Wymaga zatrzymania i przeplanowania: warunki z sekcji 14.6; potrzeba zmiany `SpeechBatch`, `TtsTaskHandler`,
-`plan_timeline` lub manifestu resume; nowa zależność poza `playwright`; potrzeba drugiej przeglądarki lub
-równoległych dokumentów; potrzeba zapisu sekretu poza `.env`; zmiana domyślnego silnika.
-
-## 27. Definition of Done
-
-- [ ] F1, F2, F3, F4, F5 zakończone z kryteriami wyjścia; F4b zakończona albo pominięta z zapisanym powodem.
-- [ ] Bramki S1 zielone na końcowym commicie; CI zielone na PR.
-- [ ] Test sieciowy S2 uruchomiony przez właściciela.
-- [ ] Checkpoint F6 (6A–6E) zaakceptowany; tempo i korekta głośności zapisane.
-- [ ] Review krzyżowe bez findingów krytycznych i poważnych (S5).
-- [ ] Skan S6 czysty.
-- [ ] Zakres i zakazy zachowane; brak zmian w EDP.
-- [ ] Outcome z dowodami, odchyleniami, otwartymi niewiadomymi.
-
-## 28. Kontrakt wyniku
+## 15. Kontrakt wyniku etapu
 
 ```text
 status: ACCEPTED | PENDING HUMAN | PARTIAL | BLOCKED | REPLAN REQUIRED
-finalny rezultat: co działa, na jakim odcinku sprawdzono
-zmienione elementy: lista commitów z hashami
-konkretne dowody: komendy i wyniki (liczby testów, exit code), E1, test sieciowy, logi liczbowe z F6
-human feedback: wyniki 6A–6F, decyzje D1–D11
-lokalne odchylenia: wartości stałych, selektory, kod błędu platformy
-materialne odkrycia: wyniki S0.1–S0.9, zachowanie konta
-znane ograniczenia: niewiadome z sekcji 22, które zostały
-stan repo: gałąź, ostatni commit, PR
-rekomendowany następny krok: etap 6 jakości na nowym głosie albo poprawki z 6A
+zmienione pliki i commit
+komendy dowodu z wynikiem (liczby testów, exit code)
+czego nie uruchomiono i dlaczego
+odchylenia lokalne i materialne odkrycia
+następny etap, który odblokowano
 ```

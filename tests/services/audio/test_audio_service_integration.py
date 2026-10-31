@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from audio_test_helpers import write_wav
+from audio_test_helpers import write_tone_wav, write_wav
 
 from anishift.application.artifacts import ArtifactKind
 from anishift.application.products import product_suffix
@@ -22,6 +22,7 @@ from anishift.services.audio.transcode import AudioTranscodeService
 from anishift.services.audio.types import (
     AudioCodecProfile,
     AudioFormat,
+    AudioProbe,
     AudioRenderRequest,
     AudioRenderResult,
     AudioRenderStatus,
@@ -103,14 +104,15 @@ def test_source_offset_moves_decoded_signal_and_reuses_narrator(
 ) -> None:
     source: Path = tmp_path / "source.wav"
     clip: Path = tmp_path / "clip.wav"
-    write_wav(source, frames=24_000, sample=b"\x00\x20")
-    write_wav(clip, frames=9_600, sample=b"\x00\x00")
+    write_tone_wav(source, frames=24_000)
+    write_tone_wav(clip, frames=24_000)
     runner: _RecordingRunner = _RecordingRunner()
     service: AudioService = AudioService(
         AudioConfig(codec_profile=AudioCodecProfile.WAV), runner=runner, ffmpeg=FFMPEG, ffprobe=FFPROBE
     )
+    late_clip: TimedClip = replace(_timed_clip(clip), start_ms=7_000, end_ms=7_500)
     request: AudioRenderRequest = AudioRenderRequest(
-        "offset", tmp_path / "Episode.mkv", source, (_timed_clip(clip),), tmp_path / "tmp", tmp_path / "mix.wav"
+        "offset", tmp_path / "Episode.mkv", source, (late_clip,), tmp_path / "tmp", tmp_path / "mix.wav"
     )
     baseline: AudioRenderResult = service.render(request)
     result: AudioRenderResult = service.render(replace(request, source_offset_us=offset_us))
@@ -120,7 +122,10 @@ def test_source_offset_moves_decoded_signal_and_reuses_narrator(
     assert result.mix_fingerprint != baseline.mix_fingerprint
     assert runner.operations.count("wrap_narrator") == 1
     assert result.output_probe is not None
-    assert result.output_probe.duration_ms == max(300, 500 + offset_ms)
+    assert result.narrator_path is not None
+    narrator: AudioProbe | None = probe_pcm_wav(result.narrator_path)
+    assert narrator is not None
+    assert result.output_probe.duration_ms == max(narrator.duration_ms, 500 + offset_ms)
     with wave.open(str(request.destination), "rb") as decoded:
         frames: bytes = decoded.readframes(decoded.getnframes())
     samples: list[int] = [
@@ -465,7 +470,7 @@ def test_audio_service_real_codec_and_channel_matrix(
     assert FFMPEG is not None
     assert FFPROBE is not None
     clip_path = tmp_path / "clip.wav"
-    write_wav(clip_path, frames=4_800)
+    write_tone_wav(clip_path, frames=24_000)
     original_path = tmp_path / "original.wav"
     runner = SubprocessRunner()
     command = (
@@ -475,9 +480,9 @@ def test_audio_service_real_codec_and_channel_matrix(
         "-f",
         "lavfi",
         "-i",
-        f"anullsrc=channel_layout={source_layout}:sample_rate=48000",
+        f"aevalsrc=exprs=0.25*sin(2*PI*440*t):channel_layout={source_layout}:sample_rate=48000",
         "-t",
-        "0.15",
+        "0.6",
         "-c:a",
         "pcm_s16le",
         "-f",
@@ -558,7 +563,7 @@ def test_audio_service_uses_decoded_duration_for_vbr_adts_aac(
         timeout_s=10,
     )
     clip_path = tmp_path / "clip.wav"
-    write_wav(clip_path, frames=4_800)
+    write_tone_wav(clip_path, frames=24_000)
     request = AudioRenderRequest(
         scope_id="scope-vbr-aac",
         destination=tmp_path / f"Episode{product_suffix(ArtifactKind.NARRATION_AUDIO, audio_profile='aac')}",

@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
+from anishift.services.audio import fingerprint
 from anishift.services.audio.channels import build_channel_plan
 from anishift.services.audio.config import AudioConfig
 from anishift.services.audio.fingerprint import (
@@ -35,7 +38,7 @@ def test_narration_fingerprint_ignores_mix_settings_but_tracks_tempo_and_timing(
         paragraph_pauses=False,
         config=replace(
             config,
-            narrator_mix_base_gain_db=9,
+            narrator_over_source_lu=9,
             codec_profile=AudioCodecProfile.FLAC,
         ),
     )
@@ -151,6 +154,76 @@ def test_normalization_fingerprint_reuses_timing_changes_but_tracks_audio_inputs
     assert baseline != tempo_changed
     assert baseline != target_changed
     assert baseline != content_changed
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("name", "value"), [("EDGE_TRIM_DBFS", -40.0), ("EDGE_TRIM_MARGIN_MS", 20.0)])
+def test_normalization_fingerprint_edge_trim_change_changes_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: float,
+) -> None:
+    clip_path = tmp_path / "clip.wav"
+    clip_path.write_bytes(b"clip")
+    clip = _clip(clip_path)
+    baseline = normalization_fingerprint(clip, post_process_tempo=1.0, config=AudioConfig())
+
+    monkeypatch.setattr(fingerprint, name, value)
+
+    assert normalization_fingerprint(clip, post_process_tempo=1.0, config=AudioConfig()) != baseline
+
+
+@pytest.mark.unit
+def test_mix_fingerprint_algorithm_version_is_five() -> None:
+    assert fingerprint._MIX_ALGORITHM_VERSION == 5
+
+
+@pytest.mark.unit
+def test_mix_fingerprint_narrator_loudness_target_change_changes_identity(tmp_path: Path) -> None:
+    narrator = tmp_path / "narrator.wav"
+    narrator.write_bytes(b"narrator")
+    original = tmp_path / "original.aac"
+    original.write_bytes(b"original")
+    plan = build_channel_plan(AudioCodecProfile.EAC3, "stereo")
+
+    def identity(config: AudioConfig) -> str:
+        return mix_fingerprint(
+            narration_fingerprint_value="sha256:narration",
+            narrator_path=narrator,
+            original_audio_path=original,
+            channel_plan=plan,
+            config=config,
+        )
+
+    assert identity(AudioConfig(narrator_over_source_lu=7.5)) != identity(AudioConfig(narrator_over_source_lu=8.0))
+
+
+@pytest.mark.unit
+def test_mix_fingerprint_limiter_change_changes_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    narrator = tmp_path / "narrator.wav"
+    narrator.write_bytes(b"narrator")
+    plan = build_channel_plan(AudioCodecProfile.EAC3, "mono")
+    baseline = mix_fingerprint(
+        narration_fingerprint_value="sha256:narration",
+        narrator_path=narrator,
+        original_audio_path=None,
+        channel_plan=plan,
+        config=AudioConfig(),
+    )
+
+    monkeypatch.setattr(fingerprint, "MIX_LIMITER", "alimiter=limit=0.5:level=0")
+
+    assert (
+        mix_fingerprint(
+            narration_fingerprint_value="sha256:narration",
+            narrator_path=narrator,
+            original_audio_path=None,
+            channel_plan=plan,
+            config=AudioConfig(),
+        )
+        != baseline
+    )
 
 
 def _clip(path: Path) -> TimedClip:

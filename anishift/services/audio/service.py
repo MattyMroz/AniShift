@@ -44,6 +44,7 @@ from anishift.services.audio.output import (
 )
 from anishift.services.audio.probe import (
     measure_audio_duration,
+    measure_integrated_loudness,
     probe_audio,
     validate_decode,
 )
@@ -497,6 +498,39 @@ class AudioService:
             return None
         return probe
 
+    def _narrator_gain_db(
+        self,
+        request: AudioRenderRequest,
+        narrator_path: Path,
+        *,
+        cancel: threading.Event | None,
+    ) -> float:
+        """Return the gain placing the narrator at its configured loudness above the original audio."""
+        if request.source_audio_path is None:
+            return 0.0
+        narrator_lufs: float = self._loudness(narrator_path, cancel=cancel)
+        source_lufs: float = self._loudness(request.source_audio_path, cancel=cancel)
+        gain_db: float = (
+            source_lufs + self._config.narrator_over_source_lu + self._config.voice_mix_offset_db - narrator_lufs
+        )
+        logger.info(
+            "Narrator loudness matched to the original",
+            scope_id=request.scope_id,
+            narrator_lufs=narrator_lufs,
+            source_lufs=source_lufs,
+            gain_db=round(gain_db, 2),
+        )
+        return gain_db
+
+    def _loudness(self, path: Path, *, cancel: threading.Event | None) -> float:
+        return measure_integrated_loudness(
+            path,
+            ffmpeg=self._ffmpeg,
+            runner=self._runner,
+            timeout_s=self._config.render_timeout_s,
+            cancel=cancel,
+        )
+
     def _render_output(  # noqa: PLR0913
         self,
         request: AudioRenderRequest,
@@ -511,6 +545,7 @@ class AudioService:
         on_percent: Callable[[int], None] | None,
         cancel: threading.Event | None,
     ) -> AudioProbe:
+        narrator_gain_db: float = self._narrator_gain_db(request, narrator_path, cancel=cancel)
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary: Path = _temporary_sibling(destination)
         try:
@@ -522,6 +557,7 @@ class AudioService:
                         narrator=narrator_path,
                         original_audio=request.source_audio_path,
                         source_offset_samples=source_offset_samples,
+                        narrator_gain_db=narrator_gain_db,
                         config=self._config,
                         channel_plan=channel_plan,
                     ),

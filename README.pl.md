@@ -178,6 +178,8 @@ i wypala nimi napisy w MP4; szyldy zostają w czcionkach wydania.
 - MKVToolNix i FFmpeg w `external/bin/`, pobierane na żądanie albo przez `anishift setup`
 - qBittorrent przygotowywany prywatnie na żądanie; własna instalacja nie jest potrzebna
 - Klucze API dla wybranych silników tłumaczenia i TTS
+- Google Chrome dla lektora ElevenReader i konto ElevenReader zalogowane raz przez
+  Ustawienia › Lektor › Zaloguj / sprawdź sesję
 - Opcjonalne głosy Windows SAPI trzeba zainstalować osobno, z ważną licencją i w architekturze
   zgodnej z procesem Pythona. AniShift nie instaluje ani nie aktywuje głosów komercyjnych;
   wygasły głos może pokazać własne okno producenta.

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import math
 import threading
+from array import array
 from pathlib import Path
 
 import pytest
@@ -14,7 +16,7 @@ from anishift.services.audio.normalize import (
     atempo_chain,
     normalize_clip,
 )
-from anishift.services.audio.types import AudioFormat, PcmStorage, TimedClip
+from anishift.services.audio.types import AudioFormat, TimedClip
 
 
 @pytest.mark.parametrize(
@@ -35,28 +37,48 @@ def test_atempo_chain_is_deterministic(
     assert atempo_chain(tempo) == expected
 
 
-def test_normalize_clip_reuses_neutral_pcm_wav(tmp_path: Path) -> None:
+def _tone(amplitude: int, count: int, sample_rate: int) -> array[int]:
+    return array("h", (round(amplitude * math.sin(2 * math.pi * 1000 * n / sample_rate)) for n in range(count)))
+
+
+def _ffmpeg_writing(pcm: bytes) -> RecordingRunner:
+    def handler(command: tuple[str, ...], operation: str) -> CommandResult:
+        Path(command[-1]).write_bytes(pcm)
+        return command_result(command)
+
+    return RecordingRunner(handler)
+
+
+def _context(runner: RecordingRunner) -> NormalizationContext:
+    return NormalizationContext(config=AudioConfig(), ffmpeg=Path("ffmpeg"), runner=runner)
+
+
+@pytest.mark.unit
+def test_normalize_clip_silent_edges_are_trimmed_to_speech_and_margins(tmp_path: Path) -> None:
     source = tmp_path / "clip.wav"
-    write_wav(source, frames=480)
-    clip = _timed_clip(source)
-    runner = RecordingRunner(lambda command, operation: command_result(command))
+    write_wav(source, frames=48_000)
+    silence = array("h", [0] * 14_400)
+    runner = _ffmpeg_writing((silence + _tone(8_000, 24_000, 48_000) + silence).tobytes())
+
+    normalized = normalize_clip(_timed_clip(source), tmp_path / "clip.pcm", tempo=1.0, context=_context(runner))
+
+    assert len(runner.calls) == 1
+    assert normalized.frame_count == pytest.approx(26_880, abs=1)
+    assert normalized.path.stat().st_size == normalized.frame_count * 2
+
+
+@pytest.mark.unit
+def test_normalize_clip_without_speech_keeps_whole_clip(tmp_path: Path) -> None:
+    source = tmp_path / "clip.wav"
+    write_wav(source, frames=48_000)
+    pcm = array("h", [2] * 28_800).tobytes()
 
     normalized = normalize_clip(
-        clip,
-        tmp_path / "unused.pcm",
-        tempo=1.0,
-        context=NormalizationContext(
-            config=AudioConfig(),
-            ffmpeg=Path("ffmpeg"),
-            runner=runner,
-        ),
+        _timed_clip(source), tmp_path / "clip.pcm", tempo=1.0, context=_context(_ffmpeg_writing(pcm))
     )
 
-    assert normalized.path == source
-    assert normalized.storage is PcmStorage.WAV
-    assert normalized.frame_count == 480
-    assert normalized.from_fast_path
-    assert runner.calls == []
+    assert normalized.frame_count == 28_800
+    assert normalized.path.read_bytes() == pcm
 
 
 def test_normalize_clip_writes_raw_pcm_atomically(tmp_path: Path) -> None:
@@ -83,7 +105,6 @@ def test_normalize_clip_writes_raw_pcm_atomically(tmp_path: Path) -> None:
     )
 
     assert normalized.path == destination
-    assert normalized.storage is PcmStorage.RAW
     assert normalized.frame_count == 240
     assert destination.read_bytes() == b"\x01\x00" * 240
     command = runner.calls[0][0]

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +23,7 @@ from anishift.services.tts import (
     TtsCancellation,
     TtsConfig,
     TtsError,
+    TtsQuotaError,
     TtsRateLimitError,
     VoiceInfo,
 )
@@ -148,9 +149,14 @@ def _config(*, concurrency: int = 2, retries: int = 3) -> TtsConfig:
     )
 
 
-def _factory(tmp_path: Path, text: str) -> Callable[[int], SynthesisRequest]:
-    def build(attempt: int) -> SynthesisRequest:
-        return SynthesisRequest(
+def _call(
+    engine: _Engine,
+    tmp_path: Path,
+    text: str,
+    cancel: CancellationToken,
+) -> Callable[[int], Awaitable[EngineClipResult]]:
+    async def call(attempt: int) -> EngineClipResult:
+        request = SynthesisRequest(
             request_id=f"{text}-{attempt}",
             text=text,
             voice_id="fake-voice",
@@ -162,8 +168,9 @@ def _factory(tmp_path: Path, text: str) -> Callable[[int], SynthesisRequest]:
             destination=tmp_path / f"{text}-{attempt}.mp3",
             deadline_s=30.0,
         )
+        return await engine.synthesize(request, cancel=cancel)
 
-    return build
+    return call
 
 
 async def _accept(result: EngineClipResult) -> EngineClipResult:
@@ -176,11 +183,11 @@ def test_scheduler_enforces_one_global_concurrency_limit(tmp_path: Path) -> None
         token = TtsCancellation()
         for text in ("one", "two", "three"):
             engine.release[text] = asyncio.Event()
-        scheduler = TtsScheduler(engine, config=_config(concurrency=2))
+        scheduler = TtsScheduler(locality=engine.capabilities.locality, config=_config(concurrency=2))
         tasks = [
             asyncio.create_task(
                 scheduler.submit(
-                    _factory(tmp_path, text),
+                    _call(engine, tmp_path, text, token),
                     batch_rank=index,
                     request_rank=0,
                     cancel=token,
@@ -219,10 +226,10 @@ def test_scheduler_reuses_provider_slot_while_previous_result_is_accepted(
             await release_acceptance.wait()
             return result
 
-        scheduler = TtsScheduler(engine, config=_config(concurrency=1))
+        scheduler = TtsScheduler(locality=engine.capabilities.locality, config=_config(concurrency=1))
         first = asyncio.create_task(
             scheduler.submit(
-                _factory(tmp_path, "first"),
+                _call(engine, tmp_path, "first", token),
                 batch_rank=0,
                 request_rank=0,
                 cancel=token,
@@ -233,7 +240,7 @@ def test_scheduler_reuses_provider_slot_while_previous_result_is_accepted(
         await acceptance_started.wait()
         second = asyncio.create_task(
             scheduler.submit(
-                _factory(tmp_path, "second"),
+                _call(engine, tmp_path, "second", token),
                 batch_rank=1,
                 request_rank=0,
                 cancel=token,
@@ -260,13 +267,14 @@ def test_scheduler_can_delegate_timeout_to_engine(tmp_path: Path) -> None:
             request_timeout_s=0.01,
             scheduler_timeout_enabled=False,
         )
-        scheduler = TtsScheduler(engine, config=config)
+        token = TtsCancellation()
+        scheduler = TtsScheduler(locality=engine.capabilities.locality, config=config)
         task = asyncio.create_task(
             scheduler.submit(
-                _factory(tmp_path, "vpn"),
+                _call(engine, tmp_path, "vpn", token),
                 batch_rank=0,
                 request_rank=0,
-                cancel=TtsCancellation(),
+                cancel=token,
                 accept_result=_accept,
             )
         )
@@ -292,13 +300,14 @@ def test_scheduler_enforces_composed_timeout_by_default(tmp_path: Path) -> None:
             _config(concurrency=1, retries=0),
             request_timeout_s=0.01,
         )
-        scheduler = TtsScheduler(engine, config=config)
+        token = TtsCancellation()
+        scheduler = TtsScheduler(locality=engine.capabilities.locality, config=config)
 
         result = await scheduler.submit(
-            _factory(tmp_path, "timeout"),
+            _call(engine, tmp_path, "timeout", token),
             batch_rank=0,
             request_rank=0,
-            cancel=TtsCancellation(),
+            cancel=token,
             accept_result=_accept,
         )
 
@@ -327,13 +336,13 @@ def test_acceptance_failure_retries_through_scheduler(tmp_path: Path) -> None:
             return result
 
         scheduler = TtsScheduler(
-            engine,
+            locality=engine.capabilities.locality,
             config=_config(concurrency=1),
             clock=clock,
         )
         task = asyncio.create_task(
             scheduler.submit(
-                _factory(tmp_path, "retry-accept"),
+                _call(engine, tmp_path, "retry-accept", token),
                 batch_rank=0,
                 request_rank=0,
                 cancel=token,
@@ -368,10 +377,10 @@ def test_cancelled_result_cannot_finish_after_acceptance(tmp_path: Path) -> None
             await release_acceptance.wait()
             return result
 
-        scheduler = TtsScheduler(engine, config=_config(concurrency=1))
+        scheduler = TtsScheduler(locality=engine.capabilities.locality, config=_config(concurrency=1))
         task = asyncio.create_task(
             scheduler.submit(
-                _factory(tmp_path, "cancel-accept"),
+                _call(engine, tmp_path, "cancel-accept", token),
                 batch_rank=0,
                 request_rank=0,
                 cancel=token,
@@ -385,7 +394,7 @@ def test_cancelled_result_cannot_finish_after_acceptance(tmp_path: Path) -> None
 
         result = await task
 
-        assert result.clip is None
+        assert result.result is None
         assert result.error is not None
         assert result.error.context.code.value == "CANCELLED"
         await scheduler.close()
@@ -400,13 +409,13 @@ def test_retry_backoff_releases_slot_and_ready_retry_has_priority(tmp_path: Path
         engine.fail_once.add("retry")
         token = TtsCancellation()
         scheduler = TtsScheduler(
-            engine,
+            locality=engine.capabilities.locality,
             config=_config(concurrency=1),
             clock=clock,
         )
         retry_task = asyncio.create_task(
             scheduler.submit(
-                _factory(tmp_path, "retry"),
+                _call(engine, tmp_path, "retry", token),
                 batch_rank=0,
                 request_rank=0,
                 cancel=token,
@@ -416,7 +425,7 @@ def test_retry_backoff_releases_slot_and_ready_retry_has_priority(tmp_path: Path
         assert await engine.started.get() == "retry"
         new_task = asyncio.create_task(
             scheduler.submit(
-                _factory(tmp_path, "new"),
+                _call(engine, tmp_path, "new", token),
                 batch_rank=1,
                 request_rank=0,
                 cancel=token,
@@ -441,8 +450,9 @@ def test_scheduler_uses_composed_retry_backoff(tmp_path: Path) -> None:
         clock = _Clock()
         engine = _Engine()
         engine.fail_once.add("retry")
+        token = TtsCancellation()
         scheduler = TtsScheduler(
-            engine,
+            locality=engine.capabilities.locality,
             config=replace(
                 _config(concurrency=1),
                 retry_backoff_seconds=(5.0, 10.0, 15.0),
@@ -451,10 +461,10 @@ def test_scheduler_uses_composed_retry_backoff(tmp_path: Path) -> None:
         )
         task = asyncio.create_task(
             scheduler.submit(
-                _factory(tmp_path, "retry"),
+                _call(engine, tmp_path, "retry", token),
                 batch_rank=0,
                 request_rank=0,
-                cancel=TtsCancellation(),
+                cancel=token,
                 accept_result=_accept,
             )
         )
@@ -499,17 +509,18 @@ def test_system_engine_retries_immediately_and_reports_retry(tmp_path: Path) -> 
                 ),
             )
 
+        token = TtsCancellation()
         scheduler = TtsScheduler(
-            engine,
+            locality=engine.capabilities.locality,
             config=_config(concurrency=1),
             clock=clock,
         )
         task = asyncio.create_task(
             scheduler.submit(
-                _factory(tmp_path, "retry"),
+                _call(engine, tmp_path, "retry", token),
                 batch_rank=0,
                 request_rank=0,
-                cancel=TtsCancellation(),
+                cancel=token,
                 accept_result=_accept,
                 on_retry=on_retry,
             ),
@@ -543,13 +554,14 @@ def test_max_retries_means_initial_attempt_plus_retries(tmp_path: Path) -> None:
     async def scenario() -> None:
         clock = _Clock()
         engine = _AlwaysLimited()
-        scheduler = TtsScheduler(engine, config=_config(concurrency=1), clock=clock)
+        token = TtsCancellation()
+        scheduler = TtsScheduler(locality=engine.capabilities.locality, config=_config(concurrency=1), clock=clock)
         task = asyncio.create_task(
             scheduler.submit(
-                _factory(tmp_path, "limited"),
+                _call(engine, tmp_path, "limited", token),
                 batch_rank=0,
                 request_rank=0,
-                cancel=TtsCancellation(),
+                cancel=token,
                 accept_result=_accept,
             )
         )
@@ -572,10 +584,10 @@ def test_cancel_resolves_delayed_retry_without_advancing_clock(tmp_path: Path) -
         engine = _Engine()
         engine.fail_once.add("cancelled")
         token = TtsCancellation()
-        scheduler = TtsScheduler(engine, config=_config(concurrency=1), clock=clock)
+        scheduler = TtsScheduler(locality=engine.capabilities.locality, config=_config(concurrency=1), clock=clock)
         task = asyncio.create_task(
             scheduler.submit(
-                _factory(tmp_path, "cancelled"),
+                _call(engine, tmp_path, "cancelled", token),
                 batch_rank=0,
                 request_rank=0,
                 cancel=token,
@@ -622,11 +634,11 @@ def test_older_ready_retry_precedes_lower_rank_retry(tmp_path: Path) -> None:
     async def scenario() -> None:
         clock = _Clock()
         engine = _DifferentDelays()
-        scheduler = TtsScheduler(engine, config=_config(concurrency=1), clock=clock)
+        scheduler = TtsScheduler(locality=engine.capabilities.locality, config=_config(concurrency=1), clock=clock)
         token = TtsCancellation()
         older = asyncio.create_task(
             scheduler.submit(
-                _factory(tmp_path, "older"),
+                _call(engine, tmp_path, "older", token),
                 batch_rank=9,
                 request_rank=0,
                 cancel=token,
@@ -636,7 +648,7 @@ def test_older_ready_retry_precedes_lower_rank_retry(tmp_path: Path) -> None:
         assert await engine.started.get() == "older"
         newer = asyncio.create_task(
             scheduler.submit(
-                _factory(tmp_path, "newer"),
+                _call(engine, tmp_path, "newer", token),
                 batch_rank=0,
                 request_rank=0,
                 cancel=token,
@@ -649,6 +661,46 @@ def test_older_ready_retry_precedes_lower_rank_retry(tmp_path: Path) -> None:
         assert await engine.started.get() == "older"
         assert await engine.started.get() == "newer"
         await asyncio.gather(older, newer)
+        await scheduler.close()
+
+    asyncio.run(scenario())
+
+
+def test_scheduler_quota_error_opens_circuit_for_later_work(tmp_path: Path) -> None:
+    class _NoCredits(_Engine):
+        async def synthesize(
+            self,
+            request: SynthesisRequest,
+            *,
+            cancel: CancellationToken,
+        ) -> EngineClipResult:
+            del cancel
+            self.calls[request.text] += 1
+            raise TtsQuotaError("no credits")
+
+    async def scenario() -> None:
+        engine = _NoCredits()
+        token = TtsCancellation()
+        scheduler = TtsScheduler(locality=engine.capabilities.locality, config=_config(concurrency=1))
+        first = await scheduler.submit(
+            _call(engine, tmp_path, "quota", token),
+            batch_rank=0,
+            request_rank=0,
+            cancel=token,
+            accept_result=_accept,
+        )
+        later = await scheduler.submit(
+            _call(engine, tmp_path, "later", token),
+            batch_rank=0,
+            request_rank=1,
+            cancel=token,
+            accept_result=_accept,
+        )
+
+        assert isinstance(first.error, TtsQuotaError)
+        assert first.attempts == 1
+        assert later.error is first.error
+        assert engine.calls["later"] == 0
         await scheduler.close()
 
     asyncio.run(scenario())

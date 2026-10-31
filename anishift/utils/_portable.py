@@ -30,6 +30,7 @@ Portable modules:
     safe_path.py     — path traversal protection
     safe_fs.py       — retry-on-lock filesystem ops (safe_rmtree, safe_move)
     _retry.py        — configurable asynchronous retry helper and network preset
+    mp3_frames.py    — MPEG Layer III frame headers, durations, cuts and broken-frame splices
 
 Smoke test (after copying this directory as ``portable_utils`` into a clean project):
     python -c "from portable_utils.logger import get_logger; assert get_logger('smoke') is not None"
@@ -76,6 +77,7 @@ PORTABLE_MODULES: Final[list[str]] = [
     "safe_path",
     "safe_fs",
     "_retry",
+    "mp3_frames",
 ]
 """Names of all portable modules/packages in utils/."""
 

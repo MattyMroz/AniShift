@@ -13,7 +13,7 @@ import numpy as np
 from scipy.optimize import linprog  # type: ignore[import-untyped]
 from scipy.sparse import coo_matrix  # type: ignore[import-untyped]
 
-from anishift.paths import default_workspace_dir
+from anishift.paths import quality_dir
 from anishift.services.subtitles.layout import (
     HARMS,
     WEIGHTS,
@@ -562,7 +562,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
         prog="python -m scripts.subtitle_quality.layout_calibrate"
     )
-    parser.add_argument("--quality-root", type=Path, default=default_workspace_dir() / ".quality")
+    parser.add_argument("--quality-root", type=Path, default=quality_dir())
     parser.add_argument("--out", type=Path, required=True, help="JSON file with the results of both variants")
     parser.add_argument("--blind", type=Path, help="folder for the blind sample sheet and its key")
     parser.add_argument("--no-loo", action="store_true", help="skip the leave-one-out check")

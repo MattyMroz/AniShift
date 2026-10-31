@@ -6,7 +6,9 @@ Pobieranie, weryfikacja SHA256 i instalacja zewnętrznych binarek z manifestu `e
 
 - `installer.py` — download, weryfikacja SHA256, atomowa instalacja
 - `manifest.py` — wczytanie i walidacja manifestu `external/bin_hashes.json`
-- `doctor.py` — synchroniczne health-checki (lista `CheckResult`)
+- `doctor.py` — synchroniczne health-checki (lista `CheckResult`); `check_elevenreader` dostaje silnik z
+  `load_user_settings()` i nie uruchamia przeglądarki: brak Chrome FAIL, brak profilu albo ostatnie „nie zalogowano”
+  WARN, inny silnik SKIP; zaległe sprzątanie konta w `session.json` daje WARN przy każdym silniku
 - `fonts.py` — `install_fonts`: klon (`gh repo clone`) albo aktualizacja (`git pull --ff-only`) prywatnego repo `MattyMroz/fonts` w `external/fonts/`; pusta czcionka dialogów dostaje `video/ITC Officina Sans Std PL - Bold.ttf`; bez dostępu do repo wynik `skipped`, nigdy błąd
 
 ## Pułapki
@@ -32,7 +34,7 @@ Pobieranie, weryfikacja SHA256 i instalacja zewnętrznych binarek z manifestu `e
 
 ## Decyzje
 
-- Doctor to jeden płaski, synchroniczny moduł (bez `doctor_checks/`, bez async) — checków jest ~6. `doctor.py:1`
+- Doctor to jeden płaski, synchroniczny moduł (bez `doctor_checks/`, bez async) — checków jest ~8. `doctor.py:1`
 - `source` w manifeście to tagged union po `source.type`; dziś tylko `url`, nowe źródło dodaje literal + fetcher, nie nową strukturę. `manifest.py:5,35`
 - Dwa wejścia instalacyjne: `ensure_binary`/`ensure_resource` (leniwe, jedna binarka, rzuca) vs `run_setup` (bulk, równolegle, błędy jako wpisy raportu, nigdy nie crashuje). `installer.py:8`
 - `ensure_binary` jest wspólnym leniwym wejściem przygotowania narzędzi. Produkcyjne

@@ -18,6 +18,7 @@ from anishift.config.user_settings import (
 )
 from anishift.services.translation.errors import TranslationConfigError
 from anishift.services.tts.engines.elevenbytes.constants import DALLIN_VOICE_ID
+from anishift.services.tts.engines.elevenreader.constants import VOICES
 from anishift.services.tts.engines.sapi.constants import SAPI_PROFILES
 
 
@@ -173,7 +174,7 @@ def test_defaults_include_all_panel_fields() -> None:
     assert s.tts_output_profile == "eac3"
     assert s.tts_output_bitrate is None
     assert s.tts_timeline_policy == "serialize"
-    assert s.narrator_mix_base_gain_db == 7.0
+    assert s.narrator_over_source_lu == 7.5
     assert s.original_gain_db == 0.0
     assert s.output_variant == "players"
     assert s.composition_quality_preset == "balanced"
@@ -205,7 +206,7 @@ def test_full_roundtrip_preserves_every_field() -> None:
         elevenbytes_vpn_enabled=False,
         tts_output_profile="opus",
         tts_output_bitrate="192k",
-        narrator_mix_base_gain_db=6.0,
+        narrator_over_source_lu=6.0,
         original_gain_db=-1.5,
         tts_voice_profiles=profiles,
         elevenbytes_custom_voices=[
@@ -307,10 +308,10 @@ def test_load_does_not_migrate_legacy_tempo(config_file: Path) -> None:
     assert profile.postprocess_tempo == 1.25
 
 
-def test_load_does_not_migrate_legacy_volume_to_mix_gain(config_file: Path) -> None:
+def test_load_does_not_migrate_legacy_volume_to_narrator_loudness(config_file: Path) -> None:
     config_file.write_text(json.dumps({"volume": 60}), encoding="utf-8")
     loaded = load_user_settings()
-    assert loaded.narrator_mix_base_gain_db == 7.0
+    assert loaded.narrator_over_source_lu == 7.5
     assert loaded.original_gain_db == 0.0
 
 
@@ -467,7 +468,7 @@ def test_default_voice_profiles_match_stage_six_decisions() -> None:
     marek = profiles["edge:pl-PL-MarekNeural"]
     zofia = profiles["edge:pl-PL-ZofiaNeural"]
 
-    assert (dallin.postprocess_tempo, dallin.voice_mix_offset_db, dallin.concurrency) == (1.25, -2.0, 85)
+    assert (dallin.postprocess_tempo, dallin.voice_mix_offset_db, dallin.concurrency) == (1.25, 0.0, 85)
     assert (agnieszka.native_rate, agnieszka.native_volume, agnieszka.voice_mix_offset_db) == (5, 65, 2.0)
     assert (zosia.native_rate, zosia.native_volume, zosia.voice_mix_offset_db) == (200, 0.7, 0.0)
     assert (marek.native_rate, marek.native_volume, marek.voice_mix_offset_db) == ("+40%", "+0%", 0.0)
@@ -616,3 +617,87 @@ def test_load_keeps_the_dialogue_font_file_only_as_a_stripped_path(
     config_file.write_text(json.dumps({"dialogue_font_file": stored}), encoding="utf-8")
 
     assert load_user_settings().dialogue_font_file == loaded_value
+
+
+@pytest.mark.unit
+def test_default_tts_voice_profiles_elevenreader_voices_have_measured_tempo_and_offset() -> None:
+    profiles = default_tts_voice_profiles()
+    fronczewski = profiles[f"elevenreader:{VOICES['fronczewski'].voice_id}"]
+    adam = profiles[f"elevenreader:{VOICES['adam'].voice_id}"]
+
+    assert (fronczewski.postprocess_tempo, fronczewski.voice_mix_offset_db, fronczewski.concurrency) == (1.45, 0.5, 1)
+    assert (adam.postprocess_tempo, adam.voice_mix_offset_db, adam.concurrency) == (1.35, 2.5, 1)
+
+
+@pytest.mark.unit
+def test_user_settings_elevenreader_alias_resolves_voice_label_and_profile() -> None:
+    settings = UserSettings(tts_engine="elevenreader", tts_voice_id="adam")
+
+    assert settings.tts_provider_model_id == "eleven_v4"
+    assert settings.resolved_tts_voice_id == VOICES["adam"].voice_id
+    assert settings.tts_voice_label == "Adam"
+    assert settings.active_tts_profile.postprocess_tempo == 1.35
+
+
+@pytest.mark.unit
+def test_user_settings_switch_to_elevenreader_selects_default_voice() -> None:
+    settings = UserSettings()
+
+    settings.tts_engine = "elevenreader"
+    settings.__post_init__()
+
+    assert (settings.tts_provider_model_id, settings.tts_voice_id) == ("eleven_v4", "fronczewski")
+    assert settings.tts_voice_label == "Piotr Fronczewski"
+
+
+@pytest.mark.unit
+def test_user_settings_switch_from_elevenreader_to_elevenbytes_selects_dallin_and_keeps_profiles() -> None:
+    settings = UserSettings(tts_engine="elevenreader", tts_voice_id="adam")
+    settings.active_tts_profile.postprocess_tempo = 1.3
+
+    settings.tts_engine = "elevenbytes"
+    settings.__post_init__()
+
+    assert (settings.tts_provider_model_id, settings.tts_voice_id) == ("run6", "dallin")
+    assert settings.tts_voice_profiles[f"elevenreader:{VOICES['adam'].voice_id}"].postprocess_tempo == 1.3
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("engine", "voice"), [("edge", "pl-PL-MarekNeural"), ("elevenlabs", "dallin"), ("sapi", "agnieszka")]
+)
+def test_user_settings_switch_from_elevenreader_selects_engine_default_voice(engine: str, voice: str) -> None:
+    settings = UserSettings(tts_engine="elevenreader", tts_voice_id="fronczewski")
+
+    settings.tts_engine = engine
+    settings.__post_init__()
+
+    assert settings.tts_voice_id == voice
+
+
+@pytest.mark.unit
+def test_user_settings_custom_elevenbytes_alias_named_like_elevenreader_voice_is_kept() -> None:
+    settings = UserSettings(
+        tts_engine="elevenbytes",
+        tts_voice_id="adam",
+        elevenbytes_custom_voices=[CustomVoiceSetting(alias="adam", label="Adam", voice_id="own-adam-id")],
+    )
+
+    assert settings.tts_voice_id == "adam"
+    assert settings.resolved_tts_voice_id == "own-adam-id"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("engine", "stored_voice", "loaded_voice"),
+    [("elevenbytes", "fronczewski", "dallin"), ("elevenreader", "dallin", "fronczewski")],
+)
+def test_load_user_settings_foreign_voice_alias_selects_engine_default(
+    config_file: Path,
+    engine: str,
+    stored_voice: str,
+    loaded_voice: str,
+) -> None:
+    config_file.write_text(json.dumps({"tts_engine": engine, "tts_voice_id": stored_voice}), encoding="utf-8")
+
+    assert load_user_settings().tts_voice_id == loaded_voice

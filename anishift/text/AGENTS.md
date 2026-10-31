@@ -17,6 +17,10 @@ subtitle line breaking.
   bez pomiaru kosztu importu.
 - `period_ends_sentence()` chroni zapis dziesiętny tylko wtedy, gdy caller poda
   `previous_character` i `next_character`.
+- `ends_sentence()` patrzy tylko na ostatni znak po `rstrip()`: znak końca zdania,
+  domknięcie z `CLOSING_MARKS` albo prosty `"`. Nie rozpoznaje skrótów ani zapisu
+  dziesiętnego; to jedyne źródło zbioru „kwestia domknięta” dla handlera TTS i
+  silnika dokumentowego.
 - `hard_split_graphemes()` mierzy limit w punktach kodowych. Zachowuje grafem,
   gdy mieści się w limicie; jeśli pojedynczy grafem jest większy, rozcina go,
   żeby zachować twardy limit callera.

@@ -10,6 +10,7 @@ __all__ = [
     "AUDIOBOOK_DIRECTORY",
     "COVER_DIRECTORY",
     "ENV_CONFIG_DIR",
+    "QUALITY_DIRECTORY",
     "READY_DIRECTORY",
     "RESTORE_STAGING_PREFIX",
     "SUBS_DIRECTORY",
@@ -21,11 +22,13 @@ __all__ = [
     "config_dir",
     "config_path",
     "default_workspace_dir",
+    "elevenreader_dir",
     "env_path",
     "external_bin_root",
     "external_dir",
     "log_path",
     "logs_dir",
+    "quality_dir",
     "ready_dir",
     "relocation_journal_dir",
     "repo_root",
@@ -57,6 +60,9 @@ WORKSPACE_DIRECTORY: Final[str] = "workspace"
 
 TMP_DIRECTORY: Final[str] = "tmp"
 """Private run staging directory inside a workspace."""
+
+QUALITY_DIRECTORY: Final[str] = ".quality"
+"""Default-workspace subdirectory holding untracked quality corpora and test recordings."""
 
 RESTORE_STAGING_PREFIX: Final[str] = f"{TMP_DIRECTORY}/.restore-"
 """Workspace-relative beginning of every private staging path a restore reserves."""
@@ -103,6 +109,11 @@ def default_workspace_dir() -> Path:
     return repo_root() / WORKSPACE_DIRECTORY
 
 
+def quality_dir() -> Path:
+    """Return the untracked quality corpus and test recording root inside the default workspace."""
+    return default_workspace_dir() / QUALITY_DIRECTORY
+
+
 def config_path() -> Path:
     """Return the absolute path to ``settings.json`` inside :func:`config_dir`."""
     return config_dir() / _CONFIG_FILE_NAME
@@ -111,6 +122,11 @@ def config_path() -> Path:
 def watch_dir() -> Path:
     """Return the state and local-control directory of the resident."""
     return config_dir() / WATCH_DIRECTORY
+
+
+def elevenreader_dir() -> Path:
+    """Return the ElevenReader browser profile and session-check root."""
+    return config_dir() / "elevenreader"
 
 
 def torrent_profile_dir() -> Path:

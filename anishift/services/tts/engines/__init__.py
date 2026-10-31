@@ -13,9 +13,9 @@ if TYPE_CHECKING:
     from anishift.services.tts.config import TtsConfig
     from anishift.services.tts.protocols import TtsEngine
 
-__all__ = ["TtsEngineId", "available_engine_ids", "create_engine"]
+__all__ = ["TtsEngineId", "available_engine_ids", "create_engine", "is_document_engine"]
 
-TtsEngineId = Literal["edge", "elevenbytes", "elevenlabs", "sapi"]
+TtsEngineId = Literal["edge", "elevenbytes", "elevenlabs", "elevenreader", "sapi"]
 """Stable registry identifiers for supported TTS engines."""
 
 type _EngineFactory = Callable[[TtsConfig], TtsEngine]
@@ -34,14 +34,26 @@ _REGISTRY: Final[dict[TtsEngineId, _RegistryEntry]] = {
         "anishift.services.tts.engines.elevenlabs",
         "ElevenLabsTtsEngine",
     ),
+    "elevenreader": (
+        "anishift.services.tts.engines.elevenreader",
+        "ElevenReaderTtsEngine",
+    ),
     "sapi": ("anishift.services.tts.engines.sapi", "SapiTtsEngine"),
 }
 """Engine module and class by stable engine id."""
+
+_DOCUMENT_ENGINES: Final[frozenset[str]] = frozenset({"elevenreader"})
+"""Engines that read a whole batch as one provider document."""
 
 
 def available_engine_ids() -> tuple[TtsEngineId, ...]:
     """Return all registered TTS engine ids in stable order."""
     return tuple(_REGISTRY)
+
+
+def is_document_engine(engine_id: str) -> bool:
+    """Return whether the engine reads a whole batch as one document, without importing it."""
+    return engine_id in _DOCUMENT_ENGINES
 
 
 def create_engine(config: TtsConfig) -> TtsEngine:

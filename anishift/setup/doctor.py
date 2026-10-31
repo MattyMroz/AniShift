@@ -7,20 +7,30 @@ import sys
 from dataclasses import dataclass, field
 from enum import StrEnum
 from socket import create_connection
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import SplitResult, urlsplit
 
 from anishift.config.env_file import env_path
 from anishift.config.settings import Settings
+from anishift.config.user_settings import load_user_settings
 from anishift.config.workspace import ensure_workspace_dir, resolve_workspace_root
 from anishift.errors import AniShiftError
+from anishift.paths import elevenreader_dir
 from anishift.platform.binaries import Binary, external_bin_root, is_windows, resolve_binary
 from anishift.platform.qbittorrent_config import installed_executable
+from anishift.services.tts.engines.elevenreader import find_chrome, read_session
+from anishift.services.tts.engines.elevenreader.config import profile_dir
 from anishift.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from anishift.services.tts.engines.elevenreader import SessionRecord
 
 __all__ = [
     "CheckResult",
     "CheckStatus",
+    "check_elevenreader",
     "run_doctor",
 ]
 
@@ -60,6 +70,12 @@ _TORRENT_INSTALL_HINT: Final[str] = "winget install qBittorrent.qBittorrent, the
 
 _TORRENT_SETUP_HINT: Final[str] = "Run `anishift qbit setup` (close qBittorrent first) and start qBittorrent"
 """Advice offered when qBittorrent is installed but its Web UI stays silent."""
+
+_ELEVENREADER_ENGINE_ID: Final[str] = "elevenreader"
+"""TTS engine whose browser and saved session the doctor checks."""
+
+_ELEVENREADER_SIGN_IN_HINT: Final[str] = "Ustawienia → Lektor → Zaloguj / sprawdź sesję"
+"""Panel action that signs in to ElevenReader and records the session."""
 
 logger = get_logger(__name__)
 
@@ -253,6 +269,47 @@ def check_managed_torrent_client() -> CheckResult:
     return CheckResult("torrent_client", CheckStatus.OK, message)
 
 
+def check_elevenreader(engine_id: str) -> CheckResult:
+    """Check Chrome and the last saved ElevenReader session without a browser; owed cleanup warns for any engine."""
+    root: Path = elevenreader_dir()
+    record: SessionRecord | None = read_session(root)
+    owed: bool = record is not None and record.cleanup_pending
+    if engine_id != _ELEVENREADER_ENGINE_ID:
+        if owed:
+            return _elevenreader_cleanup_owed()
+        return CheckResult("elevenreader", CheckStatus.SKIP, "ElevenReader is not the selected TTS engine")
+    if find_chrome() is None:
+        return CheckResult(
+            "elevenreader",
+            CheckStatus.FAIL,
+            "Google Chrome is not installed",
+            suggestion="Install Google Chrome or switch the TTS engine to ElevenBytes",
+        )
+    if owed:
+        return _elevenreader_cleanup_owed()
+    if not profile_dir(root).is_dir() or record is None or not record.signed_in:
+        return CheckResult(
+            "elevenreader",
+            CheckStatus.WARN,
+            "ElevenReader session is not signed in",
+            suggestion=_ELEVENREADER_SIGN_IN_HINT,
+        )
+    return CheckResult(
+        "elevenreader",
+        CheckStatus.OK,
+        f"ElevenReader session signed in, checked {record.checked_at:%Y-%m-%d %H:%M} UTC",
+    )
+
+
+def _elevenreader_cleanup_owed() -> CheckResult:
+    return CheckResult(
+        "elevenreader",
+        CheckStatus.WARN,
+        "ElevenReader account may still hold a document AniShift uploaded or a changed voice",
+        suggestion=_ELEVENREADER_SIGN_IN_HINT,
+    )
+
+
 def run_doctor(settings: Settings | None = None, *, managed_torrents: bool = False) -> list[CheckResult]:
     """Run every diagnostic check in order and return the collected list."""
     from anishift.cli.console import console_encoding_check  # noqa: PLC0415 - avoid circular import
@@ -269,6 +326,7 @@ def run_doctor(settings: Settings | None = None, *, managed_torrents: bool = Fal
         check_workspace(),
         console_encoding_check(),
         check_managed_torrent_client() if managed_torrents else check_torrent_client(resolved),
+        check_elevenreader(load_user_settings().tts_engine),
     ]
     logger.info(
         "Environment diagnostics completed",

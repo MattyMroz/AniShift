@@ -48,6 +48,29 @@ narratora ani finalnego sidecara.
 - Fingerprint obejmuje profil silnika oraz tekst requestu. Zmiana parametru
   wpływającego na dźwięk musi unieważniać resume.
 - Callback postępu jest observerem. Jego błąd nie może przejąć syntezy.
+- `TtsScheduler.submit(call, …)` wykonuje dowolną próbę (`call(attempt)`); wynik leży w
+  `ScheduledSynthesis.result`. Ścieżka per kwestia i ścieżka dokumentu dzielą ten sam
+  retry, circuit i timeout.
+
+## Ścieżka dokumentu
+
+- Silnik z `capabilities.max_document_chars` czyta brakujące kwestie batcha zachłannymi
+  dokumentami (`document_chars` silnika ≤ limit) przez `DocumentTtsEngine.synthesize_document`;
+  wymaga wstrzykniętego `ClipSplitter`, inaczej każda kwestia mowy dostaje
+  `TtsUnsupportedError`.
+- Kwestia, która nie mieści się w jednej części albo której nie przyjmuje
+  `DocumentTtsEngine.validate_part`, dostaje `TtsInputError` przed grupowaniem; reszta
+  batcha idzie dalej. Resume, tożsamość i commit są per kwestia jak w ścieżce zwykłej.
+- `accept_result` sprawdza własność nagrania i kolejność `PartTiming`, tnie nagranie
+  (`open_end = not ends_sentence(text)`) i waliduje każdy klip; błąd splittera albo
+  niezgodne czasy to `TtsClipValidationError`, więc dokument jest ponawiany w całości.
+- Identyfikator dokumentu `{scope_id}:document:{n}` bierze `n` z licznika `TtsService`, więc jest unikalny w
+  całym przebiegu, także między batchami tego samego scope.
+- Nagranie i niezatwierdzone klipy są usuwane przed każdą kolejną próbą i po każdym
+  dokumencie. `provider_calls` i `retries` dokumentu liczą się na jego pierwszej kwestii.
+- `TtsScheduler` dostaje od silnika tylko `locality` (silnik `SYSTEM` ponawia bez
+  opóźnienia); nie trzyma instancji silnika.
+
 ## Podkatalogi
 
 - `engines/` — leniwy rejestr i różnice kontraktów providerów.

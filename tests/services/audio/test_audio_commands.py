@@ -16,6 +16,7 @@ from anishift.services.audio.commands import (
     decode_duration_command,
     ffmpeg_progress_reader,
     join_clips_command,
+    loudness_command,
     scan_duration_command,
 )
 from anishift.services.audio.config import AudioConfig
@@ -288,3 +289,24 @@ def test_join_clips_command_rejects_single_source() -> None:
             Path("joined.mp3.tmp"),
             clip_format=AudioFormat.MP3,
         )
+
+
+@pytest.mark.unit
+def test_loudness_command_multichannel_source_downmixes_to_stereo_before_ebur128() -> None:
+    assert loudness_command(Path("ffmpeg"), Path("voice clip.wav")) == (
+        "ffmpeg",
+        "-hide_banner",
+        "-nostdin",
+        "-nostats",
+        "-v",
+        "info",
+        "-i",
+        "voice clip.wav",
+        "-map",
+        "0:a:0",
+        "-af",
+        "aformat=channel_layouts=stereo,ebur128=framelog=quiet",
+        "-f",
+        "null",
+        "-",
+    )

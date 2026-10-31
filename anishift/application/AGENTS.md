@@ -188,6 +188,20 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - Auto z audio i napisami z jednego MKV planuje jeden `EXTRACT_TRACKS` (jeden `mkvextract --gui-mode`, każdy
   `#GUI#progress` bez uśredniania). LLM równolegle dokładnie do `llm_max_concurrency` — scheduler nie przycina drugi
   raz; TTS jeden plik naraz.
+- TTS w `runtime.py`: jeden `FfmpegClipService` jest walidatorem, assemblerem i splitterem `TtsService`. Wiedza
+  „silnik czyta dokumentem” pochodzi tylko z `is_document_engine` rejestru TTS: daje `reads_document` handlera
+  (łączenie kwestii urwanych i wszystkie kandydaty szyldów w batchu kwestii, czyli jeden dokument na odcinek; silniki
+  „kwestia po kwestii” dostają drugi batch tylko z szyldami osiągalnymi po ułożeniu kwestii) i przebieg dokumentu w
+  `_tts_config` (współbieżność 1, bez `asyncio.timeout` schedulera, bo silnik sam pilnuje terminu i sprzątania
+  konta; dłuższy `shutdown_deadline_s`). `split_clip` dekoduje nagranie z jawnym `-f mp3`
+  (obce bajty na początku zmylą rozpoznanie formatu), czasy ramek bierze z `utils.mp3_frames`, regułę cięcia z
+  `services/audio/segmentation.py`; granice bez pauzy idą do logu jako ostrzeżenie z liczbą. `tts_clips.py`
+- `build_narration_manifest` ocenia każdą kwestię osobno, nie status batcha: kwestia bez klipu kończy zadanie
+  `ExecutionError` z kodem, treścią i sugestią `SpeechBatchResult.failure` (panel pokazuje tylko
+  `context.message`, więc sugestia jest też w treści), szyld bez klipu (pominięty albo nieudany) wypada z manifestu z ostrzeżeniem z liczbą i grupami w
+  metadanych `signs_unrecorded`, w obu ścieżkach. `tts_handler.py`
+- Sesję ElevenReadera panel czyta i odświeża przez fasadę (`elevenreader_session`, `elevenreader_sign_in`);
+  logowanie blokuje wątek wołający do zamknięcia okna Chrome. `service.py`
 - `GraphCoordinator` przyjmuje wiele kontekstów (`RunRequest` → `RunHandle`); wspólne są tylko kolejki gotowych
   tasków per zasób, executory i `limits_provider()`. Błąd pętli anuluje wszystkie konteksty przed joinem. Kolejka
   `(rank, sequence, task_index, run_id, task_id)`, USER przed BACKGROUND, wysłanych per zasób najwyżej `worker_limit`.

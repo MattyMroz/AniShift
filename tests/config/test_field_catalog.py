@@ -16,7 +16,7 @@ from anishift.application.intents import (
     SubtitleSourcePolicy,
     TranslationAction,
 )
-from anishift.config.field_access import setting_is_persisted
+from anishift.config.field_access import setting_is_active, setting_is_persisted
 from anishift.config.field_catalog import (
     USER_SETTING_DISPOSITIONS,
     SettingCatalogContext,
@@ -40,6 +40,7 @@ from anishift.services.tts.engines.edge.constants import (
 from anishift.services.tts.engines.elevenbytes.constants import DALLIN_ALIAS, ENDPOINTS
 from anishift.services.tts.engines.elevenbytes.vpn import VPN_MAX_CONCURRENCY
 from anishift.services.tts.engines.elevenlabs.constants import OUTPUT_FORMATS, POLISH_TTS_MODEL_IDS
+from anishift.services.tts.engines.elevenreader.constants import VOICES
 from anishift.services.tts.engines.sapi.constants import SAPI_PROFILES
 
 
@@ -85,7 +86,7 @@ def test_catalog_contract_is_complete_and_self_consistent() -> None:
         "llm_translation_style",
         "mkv_tracks",
         "mp4_audio_source",
-        "narrator_mix_base_gain_db",
+        "narrator_over_source_lu",
         "openai_api_key",
         "openai_compatible_api_key",
         "openai_compatible_base_url",
@@ -348,3 +349,19 @@ def test_context_copies_only_catalog_selections_from_mutable_settings() -> None:
 def test_unknown_tts_engine_cannot_build_a_partial_catalog() -> None:
     with pytest.raises(ValueError, match="Unknown TTS engine"):
         setting_catalog(SettingCatalogContext(tts_engine="missing"))
+
+
+@pytest.mark.unit
+def test_setting_catalog_elevenreader_offers_engine_voices_without_concurrency_or_options() -> None:
+    catalog = _catalog(
+        SettingCatalogContext(tts_engine="elevenreader", tts_provider_model_id="eleven_v4", tts_voice_id="adam")
+    )
+
+    assert catalog["tts_provider_model_id"].allowed_values == ("eleven_v4",)
+    assert catalog["tts_voice_id"].allowed_values == tuple(VOICES)
+    assert catalog["tts_voice_id"].default == "fronczewski"
+    assert catalog["tts_profile.postprocess_tempo"].default == 1.35
+    assert catalog["tts_profile.voice_mix_offset_db"].default == 2.5
+    assert "tts_profile.concurrency" not in catalog
+    assert not setting_is_active(catalog["elevenbytes_vpn_enabled"], UserSettings(tts_engine="elevenreader"))
+    assert not any(setting_id.startswith("tts_profile.engine_options.") for setting_id in catalog)

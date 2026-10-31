@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import math
 import wave
+from array import array
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -81,3 +83,22 @@ def write_wav(  # noqa: PLR0913
         stream.setsampwidth(sample_width)
         stream.setframerate(sample_rate)
         stream.writeframes(sample * frames * channels)
+
+
+def write_tone_wav(
+    path: Path,
+    *,
+    frames: int,
+    amplitude: int = 8_000,
+    frequency: float = 440.0,
+    sample_rate: int = 48_000,
+) -> None:
+    samples: array[int] = array(
+        "h",
+        (round(amplitude * math.cos(2 * math.pi * frequency * n / sample_rate)) for n in range(frames)),
+    )
+    with wave.open(str(path), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(sample_rate)
+        stream.writeframes(samples.tobytes())

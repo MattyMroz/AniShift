@@ -17,8 +17,9 @@ from anishift.services.tts import (
     available_engine_ids,
     create_engine,
 )
+from anishift.services.tts.engines import is_document_engine
 
-EXPECTED_ENGINE_IDS = ("edge", "elevenbytes", "elevenlabs", "sapi")
+EXPECTED_ENGINE_IDS = ("edge", "elevenbytes", "elevenlabs", "elevenreader", "sapi")
 
 
 class FakeEngine:
@@ -81,7 +82,9 @@ def test_domain_import_does_not_load_provider_implementations() -> None:
         "anishift.services.tts.engines.edge",
         "anishift.services.tts.engines.elevenbytes",
         "anishift.services.tts.engines.elevenlabs",
+        "anishift.services.tts.engines.elevenreader",
         "anishift.services.tts.engines.sapi",
+        "playwright",
     )
     module_names = repr(forbidden_modules)
     script = (
@@ -101,3 +104,16 @@ def test_domain_import_does_not_load_provider_implementations() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize("engine_id", EXPECTED_ENGINE_IDS)
+def test_is_document_engine_matches_document_capability(engine_id: str) -> None:
+    registry: dict[str, tuple[str, str]] = importlib.import_module("anishift.services.tts.engines")._REGISTRY
+    module_path, class_name = registry[engine_id]
+    engine_class = getattr(importlib.import_module(module_path), class_name)
+
+    assert is_document_engine(engine_id) is (engine_class.capabilities.max_document_chars is not None)
+
+
+def test_is_document_engine_unknown_engine_returns_false() -> None:
+    assert not is_document_engine("unknown")

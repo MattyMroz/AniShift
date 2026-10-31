@@ -191,6 +191,12 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Własne głosy to osobny poziom (`_voices_open`); `parse_setting_input` NADAL odrzuca `OBJECT_LIST` — kolekcję składa
   panel i zapisuje jednym `update_setting`. `_KNOWN_LAYOUT_GAPS` jest puste (test): nowe pole musi być osiągalne z
   panelu albo mieć powód w `_FIELDS_COVERED_ELSEWHERE`. Katalog modeli tylko do odczytu, probe po jawnej akcji.
+- Lektor przy `elevenreader` ma sekcję SESJA (`_tts_items`): wiersz stanu z `elevenreader_session()` i akcję
+  logowania w wątku jak `_start_probe`; `Esc` zwalnia panel, a spóźniony wynik ginie po `_generation`. Zaległe
+  sprzątanie konta (`SessionRecord.cleanup_pending`) dodaje wiersz `elevenreader-cleanup` przy każdym silniku (sam
+  wiersz w SESJA, gdy wybrany jest inny silnik), którego Enter uruchamia
+  to samo logowanie, bo `sign_in` kończy sprzątanie. Etykiety
+  głosów pochodzą z `ELEVENREADER_VOICES` fasady, nie z listy w panelu.
 - Picker naprawia nieaktualny alias Palantira bez oznaczania gotowości; `engine_availability()` sprawdza wybrany model.
 
 ## Testy

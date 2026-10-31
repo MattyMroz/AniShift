@@ -27,6 +27,7 @@ def test_application_locations_share_one_repository_anchor_and_config_override(
     monkeypatch.delenv("ANISHIFT_WORKSPACE_ROOT", raising=False)
     assert paths.repo_root() == repository
     assert resolve_workspace_root() == repository / "workspace"
+    assert paths.quality_dir() == repository / "workspace/.quality"
     assert external_bin_root() == repository / "external/bin"
     assert manifest_path() == repository / "external/bin_hashes.json"
     assert env_path() == repository / ".env"
@@ -36,6 +37,7 @@ def test_application_locations_share_one_repository_anchor_and_config_override(
     assert watch_state_path() == watch_state_dir() / "state.json"
     assert paths.relocation_journal_dir(watch_state_dir()) == configuration / "watch/relocations"
     assert paths.torrent_profile_dir() == configuration / "qbittorrent"
+    assert paths.elevenreader_dir() == configuration / "elevenreader"
     assert paths.log_path() == configuration.parent / "logs/anishift.log.jsonl"
     assert not configuration.exists()
     assert not (repository / "workspace").exists()

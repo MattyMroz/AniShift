@@ -14,6 +14,7 @@ from typing import Final
 from rich.text import Text
 
 from anishift.application import (
+    ELEVENREADER_VOICES,
     AppService,
     AutoPreset,
     AutoPresetDraft,
@@ -22,6 +23,8 @@ from anishift.application import (
     ModelProbeResult,
     ProductKind,
     RecipePreferences,
+    SessionRecord,
+    SignInOutcome,
     TranslationModelOption,
 )
 from anishift.cli.interactive.menu import with_footer
@@ -89,6 +92,21 @@ _ADD_VOICE_KEY: Final[str] = "voice-add"
 _ADD_VOICE_LABEL: Final[str] = "Dodaj głos"
 """Label of the row that creates one custom voice."""
 
+_SESSION_SECTION: Final[str] = "SESJA"
+"""Section holding the ElevenReader session status and its sign-in action."""
+
+_SESSION_KEY: Final[str] = "elevenreader-session"
+"""Stable key of the read-only row showing the last ElevenReader session check."""
+
+_SIGN_IN_KEY: Final[str] = "elevenreader-sign-in"
+"""Stable action key opening Chrome to sign in to ElevenReader or check the session."""
+
+_CLEANUP_KEY: Final[str] = "elevenreader-cleanup"
+"""Stable key of the row warning about account cleanup still owed; Enter runs the sign-in that finishes it."""
+
+_CLEANUP_REPAIR: Final[str] = "napraw: Zaloguj / sprawdź sesję"
+"""Value of the account cleanup row naming the action that finishes the cleanup."""
+
 
 _STATUS_ROWS: Final[int] = 1
 """Rows every screen spends on its status line, spent whether it says anything or not."""
@@ -101,6 +119,15 @@ _ZERO_MEANS_DEFAULT: Final[frozenset[str]] = frozenset({"translation_batch_size"
 
 _FONT_FILE_SETTING: Final[str] = "dialogue_font_file"
 """Field holding the dialogue font path, shown by file name and checked by the service on save."""
+
+_VALUE_SUFFIXES: Final[dict[str, str]] = {
+    "tts_profile.postprocess_tempo": "×",
+    "tts_profile.engine_options.speed": "×",
+    "tts_profile.voice_mix_offset_db": " LU",
+    "narrator_over_source_lu": " LU",
+    "original_gain_db": " dB",
+}
+"""Unit appended to a decimal setting value, keyed by setting id."""
 
 _BACK_KEY: Final[str] = "back"
 """Stable action key returning to the parent menu."""
@@ -153,7 +180,7 @@ _FINE_FLOAT_STEP: Final[float] = 0.05
 """Step used by probabilities, temperatures and other narrow fractions."""
 
 _COARSE_FLOAT_STEP: Final[float] = 0.5
-"""Step used by tempo multipliers and decibel gains."""
+"""Step used by tempo multipliers and loudness levels."""
 
 _COARSE_INTEGER_STEP: Final[int] = 100
 """Step used by token limits and other wide whole-number ranges."""
@@ -240,7 +267,7 @@ _TTS_FIELDS: Final[tuple[_SettingField, ...]] = (
     ("tts_profile.engine_options.output_format", "Format natywny", "DŹWIĘK"),
     ("tts_output_profile", "Kodek lektora", "DŹWIĘK"),
     ("tts_output_bitrate", "Bitrate lektora", "DŹWIĘK"),
-    ("narrator_mix_base_gain_db", "Głośność lektora", "DŹWIĘK"),
+    ("narrator_over_source_lu", "Głośność lektora", "DŹWIĘK"),
     ("original_gain_db", "Głośność oryginału", "DŹWIĘK"),
 )
 """Persisted narration fields exposed by the product."""
@@ -337,6 +364,7 @@ _CHOICE_LABELS: Final[dict[tuple[str, str], str]] = {
     ("mp4_audio_source", "auto"): "Automatycznie",
     ("mp4_audio_source", "original"): "Oryginalne audio",
     ("mp4_audio_source", "narration"): "Polski lektor",
+    **{("tts_voice_id", alias): voice.label for alias, voice in ELEVENREADER_VOICES.items()},
 }
 """Polish labels of choice values whose catalog identifiers would read poorly."""
 
@@ -347,6 +375,7 @@ _ENGINE_LABELS: Final[dict[str, str]] = {
     "edge": "Microsoft Edge",
     "elevenbytes": "ElevenBytes",
     "elevenlabs": "ElevenLabs",
+    "elevenreader": "ElevenReader",
     "gemini": "Gemini",
     "google": "Google",
     "llm": "LLM",
@@ -508,6 +537,15 @@ _CONNECTIONS: Final[tuple[_Connection, ...]] = (
     _Connection("elevenlabs", "ElevenLabs", "elevenlabs_api_key"),
 )
 """Environment-backed connections that already exist in the backend."""
+
+_SIGN_IN_FEEDBACK: Final[dict[SignInOutcome, _Feedback]] = {
+    SignInOutcome.SIGNED_IN: _Feedback("✓ Zalogowano", "success"),
+    SignInOutcome.SIGNED_OUT: _Feedback("✗ Nie zalogowano", "error"),
+    SignInOutcome.BUSY: _Feedback("✗ Lektor właśnie nagrywa — spróbuj po zakończeniu", "error"),
+    SignInOutcome.NO_CHROME: _Feedback("✗ Nie znaleziono Google Chrome", "error"),
+    SignInOutcome.FAILED: _Feedback("✗ Nie udało się sprawdzić sesji", "error"),
+}
+"""Status shown after the ElevenReader sign-in window closes, for every outcome."""
 
 
 class SettingsController:
@@ -963,6 +1001,8 @@ class SettingsController:
             "connection-address": self._open_address_editor,
             "connection-remove": self._open_remove_confirmation,
             "connection-probe": self._start_probe,
+            _SIGN_IN_KEY: self._start_sign_in,
+            _CLEANUP_KEY: self._start_sign_in,
         }
 
     def _prefixed_actions(self) -> tuple[tuple[str, Callable[[str], None]], ...]:
@@ -1094,7 +1134,7 @@ class SettingsController:
         elif self._category is _Category.TRANSLATION:
             items = self._translation_items()
         elif self._category is _Category.TTS:
-            items = self._setting_items(_TTS_FIELDS)
+            items = self._tts_items()
         elif self._category is _Category.AUTO:
             items = (
                 self._setting_items(_RECIPE_FIELDS[self._recipe])
@@ -1124,6 +1164,21 @@ class SettingsController:
                 ),
             )
         items.extend(self._active_setting_items(snapshot, _TRANSLATION_FIELDS[1:]))
+        items.append(self._scoped_reset_item())
+        items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
+        return tuple(items)
+
+    def _tts_items(self) -> tuple[_MenuItem, ...]:
+        snapshot: _CatalogSnapshot = self._catalog_snapshot()
+        items: list[_MenuItem] = list(self._active_setting_items(snapshot, _TTS_FIELDS))
+        reads: bool = snapshot.settings.tts_engine == "elevenreader"
+        record: SessionRecord | None = self._service.elevenreader_session()
+        if reads:
+            items.append(_MenuItem(_SESSION_KEY, "Sesja ElevenReader", _session_status(record), _SESSION_SECTION))
+        if record is not None and record.cleanup_pending:
+            items.append(_MenuItem(_CLEANUP_KEY, _cleanup_label(record), _CLEANUP_REPAIR, _SESSION_SECTION))
+        if reads:
+            items.append(_MenuItem(_SIGN_IN_KEY, "Zaloguj / sprawdź sesję", "", _SESSION_SECTION))
         items.append(self._scoped_reset_item())
         items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
         return tuple(items)
@@ -1663,6 +1718,33 @@ class SettingsController:
             )
         self._invalidate()
 
+    def _start_sign_in(self) -> None:
+        with self._lock:
+            self._generation += 1
+            generation: int = self._generation
+            self._busy = True
+            self._feedback = _Feedback("Zaloguj się w oknie Chrome albo je zamknij…", "info")
+        worker: threading.Thread = threading.Thread(
+            target=self._run_sign_in,
+            args=(generation,),
+            name="anishift-elevenreader-sign-in",
+            daemon=True,
+        )
+        worker.start()
+
+    def _run_sign_in(self, generation: int) -> None:
+        try:
+            outcome: SignInOutcome = self._service.elevenreader_sign_in()
+        except AniShiftError, OSError:
+            outcome = SignInOutcome.FAILED
+        with self._lock:
+            if generation != self._generation:
+                return
+            self._busy = False
+            self._feedback = _SIGN_IN_FEEDBACK[outcome]
+            self._refresh_menu()
+        self._invalidate()
+
     def _render_menu(self, columns: int, rows: int) -> Text:  # noqa: PLR0915
         title: str = _VOICES_TITLE if self._voices_open else _menu_title(self._category, self._connection)
         if self._recipe is not None:
@@ -1983,13 +2065,7 @@ def _format_value(spec: SettingSpec, value: SettingValue) -> str:
     if isinstance(value, bool):
         return "tak" if value else "nie"
     if isinstance(value, float):
-        multiplier_fields: frozenset[str] = frozenset(
-            {"tts_profile.postprocess_tempo", "tts_profile.engine_options.speed"},
-        )
-        gain_fields: frozenset[str] = frozenset(
-            {"tts_profile.voice_mix_offset_db", "narrator_mix_base_gain_db", "original_gain_db"},
-        )
-        suffix: str = "×" if setting_id in multiplier_fields else " dB" if setting_id in gain_fields else ""
+        suffix: str = _VALUE_SUFFIXES.get(setting_id, "")
         return f"{value:g}{suffix}"
     if isinstance(value, str):
         return _format_text(spec, value)
@@ -2010,6 +2086,22 @@ def _format_collection(setting_id: str, value: Iterable[object]) -> str:
     if setting_id == _VOICES_SETTING_ID:
         return ", ".join(_voice_alias(item) for item in value) or "brak"
     return ", ".join(_CHOICE_LABELS.get((setting_id, str(item)), str(item)) for item in value) or "brak"
+
+
+def _session_status(record: SessionRecord | None) -> str:
+    if record is None:
+        return "nie sprawdzono"
+    state: str = "zalogowano" if record.signed_in else "nie zalogowano"
+    return f"{state} · {record.checked_at.astimezone():%d.%m %H:%M}"
+
+
+def _cleanup_label(record: SessionRecord) -> str:
+    left: list[str] = []
+    if record.delete_document:
+        left.append("dokument wgrany przez AniShift")
+    if record.restore is not None:
+        left.append("zmieniony głos")
+    return "Na koncie mógł zostać " + " i ".join(left)
 
 
 def _voice_alias(voice: object) -> str:

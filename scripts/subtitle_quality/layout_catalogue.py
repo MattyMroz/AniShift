@@ -11,7 +11,7 @@ from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
-from anishift.paths import default_workspace_dir
+from anishift.paths import quality_dir
 from anishift.services.fonts import FontIndex
 from anishift.services.subtitles.fitting import sign_input
 from anishift.services.subtitles.geometry import RenderProfile, measure_text
@@ -358,7 +358,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         prog="python -m scripts.subtitle_quality.layout_catalogue"
     )
     parser.add_argument("--dialogue-font", type=Path, required=True, help="font file drawing dialogue and signs")
-    parser.add_argument("--quality-root", type=Path, default=default_workspace_dir() / ".quality")
+    parser.add_argument("--quality-root", type=Path, default=quality_dir())
     parser.add_argument("--catalogue", type=Path, default=CATALOGUE)
     arguments: argparse.Namespace = parser.parse_args(argv)
     font: DialogueFont = DialogueFont.from_file(arguments.dialogue_font)

@@ -21,6 +21,9 @@ class FakeSettingsService:
         self.settings = UserSettings()
         self.saves: list[tuple[str, SettingValue]] = []
 
+    def elevenreader_session(self) -> None:
+        return None
+
     def settings_snapshot(self) -> UserSettings:
         return self.settings
 
@@ -189,10 +192,16 @@ def test_a_zero_batch_size_is_shown_as_the_engine_default(panel: SettingsControl
     assert _value_shown(panel, "translation_batch_size") == "domyślnie"
 
 
-def test_an_unbounded_gain_steps_by_halves(panel: SettingsController, service: FakeSettingsService) -> None:
+def test_narrator_loudness_is_shown_in_lu_above_the_original(panel: SettingsController) -> None:
     _enter(panel, "tts")
-    _focus(panel, "narrator_mix_base_gain_db")
-    start = _current(service, "narrator_mix_base_gain_db")
+
+    assert _value_shown(panel, "narrator_over_source_lu") == "7.5 LU"
+
+
+def test_an_unbounded_loudness_steps_by_halves(panel: SettingsController, service: FakeSettingsService) -> None:
+    _enter(panel, "tts")
+    _focus(panel, "narrator_over_source_lu")
+    start = _current(service, "narrator_over_source_lu")
     panel.handle_key("right")
     _flush(panel)
     assert service.saves[0][1] == pytest.approx(start + 0.5)

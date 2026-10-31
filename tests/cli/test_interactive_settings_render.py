@@ -21,6 +21,9 @@ class FakeSettingsService:
         self.settings = UserSettings()
         self.saves: list[tuple[str, SettingValue]] = []
 
+    def elevenreader_session(self) -> None:
+        return None
+
     def settings_snapshot(self) -> UserSettings:
         return self.settings
 

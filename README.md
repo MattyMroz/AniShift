@@ -181,6 +181,8 @@ whenever they fit. Spoken lines keep their exact places either way.
 - MKVToolNix and FFmpeg in `external/bin/`, installed on demand or by `anishift setup`
 - qBittorrent is prepared privately on demand; a personal installation is not required
 - API credentials required by the selected translation or TTS engines
+- Google Chrome for the ElevenReader narrator, with the ElevenReader account signed in once through
+  Ustawienia › Lektor › Zaloguj / sprawdź sesję
 - Optional Windows SAPI voices must be installed separately with a valid license
   and be available to the Python process architecture. AniShift does not install
   or activate commercial voices; an expired voice can display its own vendor dialog.

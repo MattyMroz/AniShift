@@ -31,6 +31,7 @@ from anishift.services.tts.engines.elevenbytes.constants import (
     ENDPOINTS,
 )
 from anishift.services.tts.engines.elevenlabs.constants import DEFAULT_MODEL_ID
+from anishift.services.tts.engines.elevenreader.constants import DEFAULT_VOICE_ALIAS, PROVIDER_MODEL_ID, VOICES
 from anishift.services.tts.engines.sapi.constants import SAPI_PROFILES
 from anishift.utils.logger import get_logger
 
@@ -173,6 +174,12 @@ _EDGE_MAREK_PROFILE_KEY: Final[str] = f"edge:{MAREK_VOICE_ID}"
 _EDGE_ZOFIA_PROFILE_KEY: Final[str] = f"edge:{ZOFIA_VOICE_ID}"
 """Stable profile key for Edge Zofia."""
 
+_FRONCZEWSKI_PROFILE_KEY: Final[str] = f"elevenreader:{VOICES['fronczewski'].voice_id}"
+"""Stable profile key for the ElevenReader voice of Piotr Fronczewski."""
+
+_ADAM_PROFILE_KEY: Final[str] = f"elevenreader:{VOICES['adam'].voice_id}"
+"""Stable profile key for the ElevenReader voice Adam."""
+
 _MISSING: Final[object] = object()
 """Sentinel distinguishing an omitted nested profile field from JSON null."""
 
@@ -216,7 +223,6 @@ def default_tts_voice_profiles() -> dict[str, TtsVoiceProfileSettings]:
     return {
         _DALLIN_PROFILE_KEY: TtsVoiceProfileSettings(
             postprocess_tempo=1.25,
-            voice_mix_offset_db=-2.0,
             concurrency=85,
         ),
         _SAPI_AGNIESZKA_PROFILE_KEY: TtsVoiceProfileSettings(
@@ -240,6 +246,10 @@ def default_tts_voice_profiles() -> dict[str, TtsVoiceProfileSettings]:
             native_rate=DEFAULT_RATE,
             native_volume=DEFAULT_VOLUME,
         ),
+        _FRONCZEWSKI_PROFILE_KEY: TtsVoiceProfileSettings(
+            postprocess_tempo=1.45, voice_mix_offset_db=0.5, concurrency=1
+        ),
+        _ADAM_PROFILE_KEY: TtsVoiceProfileSettings(postprocess_tempo=1.35, voice_mix_offset_db=2.5, concurrency=1),
     }
 
 
@@ -281,7 +291,7 @@ class UserSettings:
     tts_output_profile: str = AudioCodecProfile.EAC3.value
     tts_output_bitrate: str | None = None
     tts_timeline_policy: str = TimelinePolicy.SERIALIZE.value
-    narrator_mix_base_gain_db: float = 7.0
+    narrator_over_source_lu: float = 7.5
     original_gain_db: float = 0.0
     tts_voice_profiles: dict[str, TtsVoiceProfileSettings] = field(
         default_factory=default_tts_voice_profiles,
@@ -354,6 +364,8 @@ class UserSettings:
             }.get(voice_id, voice_id)
         if self.tts_engine == "sapi":
             return voice_id.title()
+        if self.tts_engine == "elevenreader" and voice_id.casefold() in VOICES:
+            return VOICES[voice_id.casefold()].label
         return voice_id
 
     @property
@@ -370,6 +382,8 @@ class UserSettings:
             return custom.voice_id if custom is not None else voice_id
         if self.tts_engine == "sapi" and voice_id.casefold() in SAPI_PROFILES:
             return SAPI_PROFILES[voice_id.casefold()].resolved_voice_id
+        if self.tts_engine == "elevenreader" and voice_id.casefold() in VOICES:
+            return VOICES[voice_id.casefold()].voice_id
         return voice_id
 
     def _active_tts_profile_key(self) -> str:
@@ -454,7 +468,14 @@ class UserSettings:
         if self.tts_engine == "elevenbytes":
             if self.tts_provider_model_id not in ENDPOINTS:
                 self.tts_provider_model_id = "run6"
-            if _is_sapi_voice(self.tts_voice_id) or self.tts_voice_id in {MAREK_VOICE_ID, ZOFIA_VOICE_ID}:
+            custom: bool = any(
+                item.alias.casefold() == self.tts_voice_id.casefold() for item in self.elevenbytes_custom_voices
+            )
+            if (
+                _is_sapi_voice(self.tts_voice_id)
+                or (_is_elevenreader_voice(self.tts_voice_id) and not custom)
+                or self.tts_voice_id in {MAREK_VOICE_ID, ZOFIA_VOICE_ID}
+            ):
                 self.tts_voice_id = DALLIN_ALIAS
             return
         if self.tts_engine == "edge":
@@ -467,6 +488,13 @@ class UserSettings:
             if not _is_sapi_voice(self.tts_voice_id):
                 self.tts_voice_id = "agnieszka"
             return
+        if self.tts_engine == "elevenreader":
+            self.tts_provider_model_id = PROVIDER_MODEL_ID
+            if self.tts_voice_id.casefold() not in VOICES:
+                self.tts_voice_id = DEFAULT_VOICE_ALIAS
+            return
+        if self.tts_voice_id.casefold() in VOICES:
+            self.tts_voice_id = DALLIN_ALIAS
         if (
             not self.tts_provider_model_id.strip()
             or self.tts_provider_model_id in ENDPOINTS
@@ -474,6 +502,7 @@ class UserSettings:
             in {
                 EDGE_PROVIDER_MODEL_ID,
                 _SAPI_PROVIDER_MODEL_ID,
+                PROVIDER_MODEL_ID,
             }
         ):
             self.tts_provider_model_id = DEFAULT_MODEL_ID
@@ -484,7 +513,7 @@ class UserSettings:
         )
         if profile is None:
             return
-        if self.tts_engine in {"edge", "sapi"} or (
+        if self.tts_engine in {"edge", "elevenreader", "sapi"} or (
             self.tts_engine == "elevenbytes" and self.tts_provider_model_id == "run6"
         ):
             profile.engine_options = {}
@@ -782,6 +811,11 @@ def _is_sapi_voice(value: str) -> bool:
     )
 
 
+def _is_elevenreader_voice(value: str) -> bool:
+    candidate: str = value.casefold()
+    return any(candidate in {voice.alias, voice.voice_id.casefold()} for voice in VOICES.values())
+
+
 def _migrate_schema(raw: dict[str, Any]) -> bool:
     version: object = raw.get("schema_version", 1)
     if type(version) is not int or version not in {1, 2, SETTINGS_SCHEMA_VERSION}:
@@ -863,7 +897,7 @@ def load_user_settings() -> UserSettings:  # noqa: PLR0915 - explicit tolerant f
     _clean_string(filtered, "tts_output_profile", _TTS_OUTPUT_PROFILES)
     _clean_tts_bitrate(filtered)
     _clean_string(filtered, "tts_timeline_policy", _TTS_TIMELINE_POLICIES)
-    _clean_finite_number(filtered, "narrator_mix_base_gain_db")
+    _clean_finite_number(filtered, "narrator_over_source_lu")
     _clean_finite_number(filtered, "original_gain_db")
     filtered["tts_voice_profiles"] = _load_voice_profiles(filtered.get("tts_voice_profiles"))
     filtered["elevenbytes_custom_voices"] = _load_custom_voices(filtered.get("elevenbytes_custom_voices"))

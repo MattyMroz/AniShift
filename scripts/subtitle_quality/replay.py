@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Final
 from anishift.application.planning import SIGN_NARRATION_MODES
 from anishift.application.sign_narration import SignSelection, select_signs
 from anishift.application.translation_handler import displayed_lines
-from anishift.services.audio.types import AudioFormat, NormalizedClip, PcmStorage, TimedClip
+from anishift.services.audio.types import AudioFormat, NormalizedClip, TimedClip
 from anishift.services.subtitles import (
     SignCandidate,
     inherit_split,
@@ -220,7 +220,7 @@ def _estimated(request_id: str, start_ms: int, text: str, order: int) -> Normali
         1,
         duration_ms,
     )
-    return NormalizedClip(timed, Path(f"{request_id}.pcm"), 1000, 2, 1, duration_ms, PcmStorage.RAW, False)
+    return NormalizedClip(timed, Path(f"{request_id}.pcm"), 1000, 2, 1, duration_ms)
 
 
 def replay(
