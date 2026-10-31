@@ -17,7 +17,7 @@ from anishift.config.field_catalog import (
     setting_catalog,
 )
 from anishift.config.user_settings import CustomVoiceSetting, UserSettings
-from anishift.services.tts.engines.elevenreader.types import AccountSettings
+from anishift.services.tts.engines.elevenreader.types import AccountSettings, DocumentTrace
 
 
 class FakeSettingsService:
@@ -330,7 +330,7 @@ def _owed_session(*, restore: bool, document: bool) -> SessionRecord:
         signed_in=True,
         checked_at=datetime(2026, 10, 30, 13, 3, tzinfo=UTC),
         restore=AccountSettings(voice_id="previous-voice", speed=1.5) if restore else None,
-        delete_document=document,
+        documents=(DocumentTrace(pressed_at=0.0, listed_by=0.0, titles=frozenset()),) if document else (),
     )
 
 
@@ -338,8 +338,8 @@ def _owed_session(*, restore: bool, document: bool) -> SessionRecord:
 @pytest.mark.parametrize(
     ("restore", "document", "label"),
     [
-        (True, True, "Na koncie mógł zostać dokument „anishift” i zmieniony głos"),
-        (False, True, "Na koncie mógł zostać dokument „anishift”"),
+        (True, True, "Na koncie mógł zostać dokument wgrany przez AniShift i zmieniony głos"),
+        (False, True, "Na koncie mógł zostać dokument wgrany przez AniShift"),
         (True, False, "Na koncie mógł zostać zmieniony głos"),
     ],
 )

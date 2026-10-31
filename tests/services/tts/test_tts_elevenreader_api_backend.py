@@ -4,11 +4,13 @@ import asyncio
 import io
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
 
 import pytest
 from elevenreader_fakes import (
+    FIRST_LINE,
     FRONCZEWSKI_ID,
     LIBRARY_PAGE_URL,
     READ_ID,
@@ -22,6 +24,8 @@ from elevenreader_fakes import (
     FakeResponse,
     FakeSite,
     FakeSocket,
+    document_trace,
+    library_read,
 )
 from loguru import logger as loguru_logger
 from playwright.async_api import Error as PlaywrightError
@@ -41,6 +45,7 @@ from anishift.services.tts.engines.elevenreader import browser as browser_module
 from anishift.services.tts.engines.elevenreader.api_backend import (
     ReaderPage,
     clean_account,
+    document_titles,
     load_cleanup,
     map_http_status,
     map_playwright_error,
@@ -52,6 +57,7 @@ from anishift.services.tts.engines.elevenreader.recorder import StreamRecorder
 from anishift.services.tts.engines.elevenreader.types import (
     AccountCleanup,
     AccountSettings,
+    DocumentTrace,
     LibraryState,
     PlayerState,
     UploadedRead,
@@ -233,14 +239,21 @@ def test_session_record_round_trips_without_secrets(tmp_path: Path) -> None:
 
     saved: dict[str, object] = json.loads((tmp_path / "session.json").read_text(encoding="utf-8"))
 
-    assert set(saved) == {"checked_at", "delete_document", "restore", "signed_in"}
+    assert set(saved) == {"checked_at", "documents", "restore", "signed_in"}
     assert saved["signed_in"] is True
-    assert saved["delete_document"] is False
+    assert saved["documents"] == []
     assert saved["restore"] is None
 
 
 @pytest.mark.parametrize(
-    "content", ["{broken", '{"signed_in": true, "checked_at": "2026-10-30T10:00:00+00:00"}', "[1]"]
+    "content",
+    [
+        "{broken",
+        '{"signed_in": true, "checked_at": "2026-10-30T10:00:00+00:00"}',
+        '{"signed_in": true, "checked_at": "2026-10-30T10:00:00+00:00", "restore": null, "delete_document": false}',
+        '{"signed_in": true, "checked_at": "2026-10-30T10:00:00+00:00", "documents": [{"pressed_at": 1.0}]}',
+        "[1]",
+    ],
 )
 def test_read_session_corrupt_file_returns_none(tmp_path: Path, content: str) -> None:
     (tmp_path / "session.json").write_text(content, encoding="utf-8")
@@ -248,9 +261,9 @@ def test_read_session_corrupt_file_returns_none(tmp_path: Path, content: str) ->
     assert read_session(tmp_path) is None
 
 
-def test_save_cleanup_owed_steps_are_saved_without_read_id(tmp_path: Path) -> None:
+def test_save_cleanup_owed_steps_are_saved_without_read_id_or_text(tmp_path: Path) -> None:
     write_session(tmp_path, signed_in=False)
-    cleanup = AccountCleanup(restore=PREVIOUS, read_ids=[READ_ID])
+    cleanup = AccountCleanup(restore=PREVIOUS, documents=[document_trace(read_id=READ_ID)])
 
     assert save_cleanup(tmp_path, cleanup)
 
@@ -260,11 +273,13 @@ def test_save_cleanup_owed_steps_are_saved_without_read_id(tmp_path: Path) -> No
     assert record.restore == PREVIOUS
     assert record.delete_document
     assert record.cleanup_pending
-    assert READ_ID not in (tmp_path / "session.json").read_text(encoding="utf-8")
+    saved: str = (tmp_path / "session.json").read_text(encoding="utf-8")
+    assert READ_ID not in saved
+    assert "Pierwsza" not in saved
 
 
 def test_write_session_saved_cleanup_is_kept(tmp_path: Path) -> None:
-    save_cleanup(tmp_path, AccountCleanup(orphan_visible_at=0.0))
+    save_cleanup(tmp_path, AccountCleanup(documents=[document_trace()]))
 
     write_session(tmp_path, signed_in=True)
 
@@ -279,19 +294,30 @@ def test_save_cleanup_unwritable_root_returns_false(tmp_path: Path) -> None:
     blocker: Path = tmp_path / "file"
     blocker.write_text("x", encoding="utf-8")
 
-    assert not save_cleanup(blocker, AccountCleanup(orphan_visible_at=0.0))
+    assert not save_cleanup(blocker, AccountCleanup(documents=[document_trace()]))
 
 
-def test_load_cleanup_saved_document_is_looked_up_by_title_at_once(tmp_path: Path) -> None:
-    save_cleanup(tmp_path, AccountCleanup(restore=PREVIOUS, read_ids=[READ_ID]))
+def test_load_cleanup_saved_document_keeps_its_trace_without_read_id(tmp_path: Path) -> None:
+    trace = document_trace(read_id=READ_ID)
+    save_cleanup(tmp_path, AccountCleanup(restore=PREVIOUS, documents=[trace]))
 
     cleanup = load_cleanup(tmp_path)
 
     assert cleanup.restore == PREVIOUS
-    assert cleanup.read_ids == []
-    assert cleanup.orphan_visible_at is not None
-    assert cleanup.orphan_visible_at <= time.monotonic()
+    assert cleanup.documents == [replace(trace, read_id=None)]
     assert cleanup.pending == ("restore_settings", "delete_orphan")
+
+
+def test_load_cleanup_upload_still_in_flight_stays_pending_after_restart(tmp_path: Path) -> None:
+    save_cleanup(tmp_path, AccountCleanup(documents=[document_trace(listed_in_s=100.0)]))
+    site = FakeSite()
+    cleanup = load_cleanup(tmp_path)
+
+    asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(site)), cleanup))
+
+    assert cleanup.pending == ("delete_orphan",)
+    assert "list_reads" in site.events
+    assert site.deleted == []
 
 
 def test_load_cleanup_without_session_returns_nothing_pending(tmp_path: Path) -> None:
@@ -305,7 +331,7 @@ def _signed_in_page(site: FakeSite) -> FakePage:
 
 
 def test_clean_account_without_token_keeps_steps_and_warns(tmp_path: Path) -> None:
-    cleanup = AccountCleanup(restore=PREVIOUS, read_ids=[READ_ID])
+    cleanup = AccountCleanup(restore=PREVIOUS, documents=[document_trace(read_id=READ_ID)])
     captured: list[str] = []
     handler_id: int = loguru_logger.add(lambda message: captured.append(str(message)), level="WARNING")
 
@@ -318,9 +344,9 @@ def test_clean_account_without_token_keeps_steps_and_warns(tmp_path: Path) -> No
     assert any("no account token" in message for message in captured)
 
 
-def test_clean_account_orphan_found_by_title_is_deleted() -> None:
+def test_clean_account_orphan_found_by_window_and_title_is_deleted() -> None:
     site = FakeSite(reads=[READ_ID])
-    cleanup = AccountCleanup(orphan_visible_at=time.monotonic() + 100.0)
+    cleanup = AccountCleanup(documents=[document_trace(listed_in_s=100.0)])
 
     asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(site)), cleanup))
 
@@ -330,7 +356,7 @@ def test_clean_account_orphan_found_by_title_is_deleted() -> None:
 
 def test_clean_account_orphan_missing_before_visible_time_stays_pending() -> None:
     site = FakeSite()
-    cleanup = AccountCleanup(orphan_visible_at=time.monotonic() + 100.0)
+    cleanup = AccountCleanup(documents=[document_trace(listed_in_s=100.0)])
 
     asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(site)), cleanup))
 
@@ -340,7 +366,7 @@ def test_clean_account_orphan_missing_before_visible_time_stays_pending() -> Non
 
 def test_clean_account_orphan_missing_after_visible_time_is_settled() -> None:
     site = FakeSite()
-    cleanup = AccountCleanup(orphan_visible_at=0.0)
+    cleanup = AccountCleanup(documents=[document_trace()])
 
     asyncio.run(clean_account(cast("ReaderPage", _signed_in_page(site)), cleanup))
 
@@ -360,7 +386,7 @@ def test_clean_account_step_breaking_unexpectedly_keeps_it_and_runs_next_step() 
     site = FakeSite(reads=[READ_ID])
     page = _BrokenAccountPage(site)
     asyncio.run(page.open_library())
-    cleanup = AccountCleanup(restore=PREVIOUS, read_ids=[READ_ID])
+    cleanup = AccountCleanup(restore=PREVIOUS, documents=[document_trace(read_id=READ_ID)])
 
     asyncio.run(clean_account(cast("ReaderPage", page), cleanup))
 
@@ -369,7 +395,7 @@ def test_clean_account_step_breaking_unexpectedly_keeps_it_and_runs_next_step() 
 
 
 def test_sign_in_signed_in_runs_saved_cleanup(tmp_path: Path, fake_chrome: type[_SignInSession]) -> None:
-    save_cleanup(tmp_path, AccountCleanup(restore=PREVIOUS, read_ids=[READ_ID]))
+    save_cleanup(tmp_path, AccountCleanup(restore=PREVIOUS, documents=[document_trace(read_id=READ_ID)]))
     fake_chrome.site = FakeSite(reads=[READ_ID], account={"default_voice_id": FRONCZEWSKI_ID})
 
     assert asyncio.run(sign_in(tmp_path)) is SignInOutcome.SIGNED_IN
@@ -382,7 +408,7 @@ def test_sign_in_signed_in_runs_saved_cleanup(tmp_path: Path, fake_chrome: type[
 
 
 def test_sign_in_cleanup_failing_keeps_it_saved(tmp_path: Path, fake_chrome: type[_SignInSession]) -> None:
-    save_cleanup(tmp_path, AccountCleanup(read_ids=[READ_ID]))
+    save_cleanup(tmp_path, AccountCleanup(documents=[document_trace(read_id=READ_ID)]))
     fake_chrome.site = FakeSite(reads=[READ_ID], failing={"list_reads"})
 
     assert asyncio.run(sign_in(tmp_path)) is SignInOutcome.SIGNED_IN
@@ -409,12 +435,15 @@ def test_reader_page_upload_reply_returns_read_and_registers_it_after_saving(tmp
     page = FakePlaywrightPage()
     page.add_reply = FakeResponse(200, {"read_id": READ_ID, "char_count": 42})
     cleanup = AccountCleanup()
+    started: float = time.time()
 
     uploaded, clicks_at_save = _upload(page, tmp_path, cleanup)
 
     assert (uploaded.read_id, uploaded.char_count, uploaded.token) == (READ_ID, 42, TOKEN)
-    assert cleanup.read_ids == [READ_ID]
-    assert cleanup.orphan_visible_at is None
+    [trace] = cleanup.documents
+    assert trace.read_id == READ_ID
+    assert trace.titles == document_titles("Tekst.\n")
+    assert started <= trace.pressed_at <= trace.listed_by <= time.time()
     assert clicks_at_save == ["Import"]
     assert page.clicks == ["Import", "Upload"]
     assert page.files == [tmp_path / "anishift.txt"]
@@ -423,12 +452,14 @@ def test_reader_page_upload_reply_returns_read_and_registers_it_after_saving(tmp
 def test_reader_page_upload_reply_keeps_earlier_orphan_pending(tmp_path: Path) -> None:
     page = FakePlaywrightPage()
     page.add_reply = FakeResponse(200, {"read_id": READ_ID, "char_count": 42})
-    cleanup = AccountCleanup(orphan_visible_at=5.0)
+    earlier = document_trace(listed_in_s=100.0)
+    cleanup = AccountCleanup(documents=[earlier])
 
     _upload(page, tmp_path, cleanup)
 
-    assert cleanup.read_ids == [READ_ID]
-    assert cleanup.orphan_visible_at == 5.0
+    assert cleanup.documents[0] == earlier
+    assert [trace.read_id for trace in cleanup.documents] == [None, READ_ID]
+    assert cleanup.pending == ("delete_read", "delete_orphan")
 
 
 @pytest.mark.parametrize(
@@ -451,8 +482,7 @@ def test_reader_page_upload_invalid_reply_raises_after_registering_read(
     with pytest.raises(TtsProviderUnavailableError):
         _upload(page, tmp_path, cleanup)
 
-    assert cleanup.read_ids == [READ_ID]
-    assert cleanup.orphan_visible_at is None
+    assert [trace.read_id for trace in cleanup.documents] == [READ_ID]
 
 
 @pytest.mark.parametrize("reply", [FakeResponse(200, text="{oops"), FakeResponse(200, {"char_count": 5})])
@@ -465,9 +495,10 @@ def test_reader_page_upload_reply_without_read_id_raises_and_keeps_orphan(tmp_pa
         _upload(page, tmp_path, cleanup)
 
     assert error.value.__cause__ is None
-    assert cleanup.read_ids == []
-    assert cleanup.orphan_visible_at is not None
-    assert cleanup.orphan_visible_at <= time.monotonic()
+    [trace] = cleanup.documents
+    assert trace.read_id is None
+    assert trace.listed_by <= time.time()
+    assert cleanup.pending == ("delete_orphan",)
 
 
 def test_reader_page_upload_refused_reply_raises_typed_error_without_orphan(tmp_path: Path) -> None:
@@ -543,33 +574,81 @@ def test_clean_account_listing_without_reads_keeps_orphan() -> None:
     page.replies[("GET", READS_URL)] = FakeResponse(200, {"items": []})
     reader = _reader(page)
     page.emit("request", FakeRequest(READS_URL, "GET", {"authorization": TOKEN}))
-    cleanup = AccountCleanup(orphan_visible_at=0.0)
+    cleanup = AccountCleanup(documents=[document_trace()])
 
     asyncio.run(clean_account(reader, cleanup))
 
     assert cleanup.pending == ("delete_orphan",)
 
 
-def test_clean_account_listing_with_titled_reads_deletes_only_them() -> None:
+def _listed_cleanup(reads: list[object], trace: DocumentTrace) -> tuple[AccountCleanup, list[str], list[str]]:
     page = FakePlaywrightPage()
-    reads: list[object] = [
-        {"read_id": READ_ID, "title": "anishift"},
-        {"read_id": "other", "title": "Książka"},
-        {"read_id": "second", "title": "anishift.txt"},
-        "junk",
-    ]
-    page.replies[("GET", READS_URL)] = FakeResponse(200, {"reads": reads})
+    page.replies[("GET", READS_URL)] = FakeResponse(200, {"reads": reads, "has_more": True, "next_cursor": "c"})
     reader = _reader(page)
     page.emit("request", FakeRequest(READS_URL, "GET", {"authorization": TOKEN}))
-    cleanup = AccountCleanup(orphan_visible_at=0.0)
+    cleanup = AccountCleanup(documents=[trace])
+    warnings: list[str] = []
+    handler_id: int = loguru_logger.add(lambda message: warnings.append(str(message)), level="WARNING")
+    try:
+        asyncio.run(clean_account(reader, cleanup))
+    finally:
+        loguru_logger.remove(handler_id)
+    deleted: list[str] = [url for method, url in page.calls if method == "DELETE"]
+    return cleanup, deleted, warnings
 
-    asyncio.run(clean_account(reader, cleanup))
+
+def test_clean_account_real_listing_deletes_only_upload_in_window_with_its_title() -> None:
+    now: float = time.time()
+    reads: list[object] = [
+        library_read("u:book", "Książka", added_at=now),
+        library_read(READ_ID, added_at=now),
+        library_read("u:old", added_at=now - 3600.0),
+        library_read("u:web", added_at=now, imported=False),
+        library_read("u:pdf", added_at=now, file_type="application/pdf"),
+        "junk",
+    ]
+
+    cleanup, deleted, warnings = _listed_cleanup(reads, document_trace(f"{FIRST_LINE}\n\n…\n\nDruga kwestia.\n"))
 
     assert cleanup.pending == ()
-    assert [call for call in page.calls if call[0] == "DELETE"] == [
-        ("DELETE", f"{READS_URL}/{READ_ID}"),
-        ("DELETE", f"{READS_URL}/second"),
-    ]
+    assert deleted == [f"{READS_URL}/{READ_ID}"]
+    assert warnings == []
+
+
+def test_clean_account_several_matching_uploads_delete_nothing_and_warn() -> None:
+    reads: list[object] = [library_read(READ_ID), library_read("u:twin")]
+
+    cleanup, deleted, warnings = _listed_cleanup(reads, document_trace())
+
+    assert cleanup.pending == ("delete_orphan",)
+    assert deleted == []
+    assert any("cannot tell its upload" in message for message in warnings)
+
+
+def test_clean_account_window_import_of_other_title_is_kept_and_settles_with_warning() -> None:
+    cleanup, deleted, warnings = _listed_cleanup([library_read("u:book", "Książka")], document_trace())
+
+    assert cleanup.pending == ()
+    assert deleted == []
+    assert any("matched no document" in message for message in warnings)
+
+
+@pytest.mark.parametrize(
+    ("title", "deleted"),
+    [
+        ("Hej!", True),
+        ("Hej! Co tam?", True),
+        ("Hej!  Co\ntam? …", True),
+        ("Co tam?", False),
+        ("Hej! Co tam? … Dalej. Więcej", False),
+    ],
+)
+def test_clean_account_title_matches_leading_words_of_document(title: str, *, deleted: bool) -> None:
+    trace = document_trace("Hej! Co tam?\n\n…\n\nDalej.\n")
+
+    _, calls, _ = _listed_cleanup([library_read(READ_ID, title)], trace)
+
+    assert (calls == [f"{READS_URL}/{READ_ID}"]) is deleted
 
 
 def test_reader_page_token_is_taken_only_from_api_requests() -> None:

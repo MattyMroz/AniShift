@@ -4,6 +4,7 @@ import asyncio
 import os
 import threading
 import wave
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -25,8 +26,9 @@ from anishift.services.tts import (
 )
 from anishift.services.tts.engines.elevenreader import VOICES
 from anishift.services.tts.engines.elevenreader.api_backend import (
-    _DOCUMENT_TITLES,
     ReaderPage,
+    _in_window,
+    _titled,
     clean_account,
     load_cleanup,
     require_signed_in,
@@ -34,7 +36,7 @@ from anishift.services.tts.engines.elevenreader.api_backend import (
 )
 from anishift.services.tts.engines.elevenreader.browser import ChromeSession
 from anishift.services.tts.engines.elevenreader.constants import DOCUMENT_NAME, READS_URL
-from anishift.services.tts.engines.elevenreader.types import AccountCleanup, UploadedRead
+from anishift.services.tts.engines.elevenreader.types import AccountCleanup, DocumentTrace, UploadedRead
 
 pytestmark = [
     pytest.mark.integration,
@@ -118,13 +120,16 @@ def _listed(listing: dict[str, object], read_id: str) -> object:
 async def _leave_clean(page: ReaderPage | None, cleanup: AccountCleanup, uploaded: UploadedRead | None) -> None:
     if page is None:
         return
-    if uploaded is not None and uploaded.read_id not in cleanup.read_ids:
-        cleanup.read_ids.append(uploaded.read_id)
+    known: list[str | None] = [trace.read_id for trace in cleanup.documents]
+    if uploaded is not None and uploaded.read_id not in known:
+        cleanup.documents.append(
+            DocumentTrace(pressed_at=0.0, listed_by=0.0, titles=frozenset(), read_id=uploaded.read_id)
+        )
     await clean_account(page, cleanup)
     await page.close()
 
 
-async def _orphan_lookup(root: Path, document: Path) -> tuple[object, object, bool]:
+async def _orphan_lookup(root: Path, document: Path) -> tuple[object, bool, object, bool]:
     cleanup: AccountCleanup = load_cleanup(root)
 
     def save() -> None:
@@ -139,12 +144,13 @@ async def _orphan_lookup(root: Path, document: Path) -> tuple[object, object, bo
         await require_signed_in(page, root)
         uploaded = await page.upload(document, cleanup, save)
         listed: object = _listed(await page.get_json(READS_URL, uploaded.token, action="list_reads"), uploaded.read_id)
-        cleanup.read_ids.remove(uploaded.read_id)
-        cleanup.orphan_visible_at = 0.0
+        trace: DocumentTrace = cleanup.documents[-1]
+        recognised: bool = isinstance(listed, dict) and _in_window(listed, trace) and _titled(listed, trace)
+        cleanup.swap(trace, replace(trace, read_id=None))
         await clean_account(page, cleanup)
         settled: bool = not cleanup.pending
         left: object = _listed(await page.get_json(READS_URL, uploaded.token, action="list_reads"), uploaded.read_id)
-        return listed, left, settled
+        return listed, recognised, left, settled
     finally:
         await _leave_clean(page, cleanup, uploaded)
         save()
@@ -154,12 +160,12 @@ async def _orphan_lookup(root: Path, document: Path) -> tuple[object, object, bo
 def test_reads_listing_live_account_finds_and_deletes_document_without_known_id(tmp_path: Path) -> None:
     root: Path = elevenreader_dir()
     document: Path = tmp_path / DOCUMENT_NAME
-    document.write_text("Test listy dokumentów.\n", encoding="utf-8")
+    document.write_text("Test listy dokumentów! Drugie zdanie.\n\n…\n\nDruga kwestia.\n", encoding="utf-8")
 
-    listed, left, settled = asyncio.run(_orphan_lookup(root, document))
+    listed, recognised, left, settled = asyncio.run(_orphan_lookup(root, document))
 
     assert isinstance(listed, dict)
-    assert listed.get("title") in _DOCUMENT_TITLES
+    assert recognised, {key: listed.get(key) for key in ("title", "added_at_unix", "original_file_type")}
     assert settled
     assert left is None
     assert not load_cleanup(root).pending

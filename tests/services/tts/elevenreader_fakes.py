@@ -4,7 +4,7 @@ import asyncio
 import base64
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -12,7 +12,8 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from anishift.services.tts import TtsConfig, TtsProviderUnavailableError
 from anishift.services.tts.engines.elevenreader import ElevenReaderTtsEngine
-from anishift.services.tts.engines.elevenreader.types import LibraryState, PlayerState, UploadedRead
+from anishift.services.tts.engines.elevenreader.api_backend import document_titles
+from anishift.services.tts.engines.elevenreader.types import DocumentTrace, LibraryState, PlayerState, UploadedRead
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -25,6 +26,7 @@ FRONCZEWSKI_ID = "T5l58N8RNz5DKoClpKIJ"
 ADAM_ID = "hIssydxXZ1WuDorjx6Ic"
 TOKEN = "token-7f3c9e1d5b"  # noqa: S105
 READ_ID = "u:readsecret42"
+FIRST_LINE = "Pierwsza kwestia."
 READS_URL = "https://api.elevenlabs.io/v1/reader/reads"
 LIBRARY_PAGE_URL = "https://elevenreader.io/reader/library"
 ADD_URL = "https://api.elevenlabs.io/v1/reader/reads/add/v2"
@@ -71,6 +73,37 @@ def streamed_chars(texts: tuple[str, ...]) -> int:
     return sum(len(json.loads(frame)["alignment"]["chars"]) for frame in stream_frames(texts))
 
 
+def document_trace(text: str = FIRST_LINE, *, listed_in_s: float = 0.0, read_id: str | None = None) -> DocumentTrace:
+    pressed_at: float = time.time()
+    return DocumentTrace(
+        pressed_at=pressed_at, listed_by=pressed_at + listed_in_s, titles=document_titles(text), read_id=read_id
+    )
+
+
+def library_read(
+    read_id: str,
+    title: str = FIRST_LINE,
+    *,
+    added_at: float | None = None,
+    imported: bool = True,
+    file_type: str = "text/plain",
+) -> dict[str, object]:
+    return {
+        "read_id": read_id,
+        "canonical_read_id": read_id,
+        "title": title,
+        "description": title,
+        "added_at_unix": int(time.time()) if added_at is None else int(added_at),
+        "from_user_import": imported,
+        "in_user_library": True,
+        "original_file_type": file_type,
+        "creation_status": "finished",
+        "can_delete": True,
+        "source": None,
+        "url": None,
+    }
+
+
 def tts_config(root: Path, *, voice_id: str = "fronczewski", model: str = "eleven_v4") -> TtsConfig:
     return TtsConfig(
         engine_id="elevenreader",
@@ -84,7 +117,7 @@ def tts_config(root: Path, *, voice_id: str = "fronczewski", model: str = "eleve
 
 @dataclass
 class FakeSite:
-    texts: tuple[str, ...] = ("Pierwsza kwestia.", "Druga kwestia.")
+    texts: tuple[str, ...] = (FIRST_LINE, "Druga kwestia.")
     library: LibraryState = LibraryState.READY
     account: dict[str, object] = field(
         default_factory=lambda: {"default_voice_id": "previous-voice", "playback_speed_rate": 1.5, "theme": "dark"},
@@ -145,14 +178,14 @@ class FakePage:
         return self.site.library is LibraryState.READY
 
     async def upload(self, document: Path, cleanup: AccountCleanup, save: Callable[[], None]) -> UploadedRead:
-        self.site.uploaded.append(document.read_text(encoding="utf-8"))
-        earlier: float | None = cleanup.orphan_visible_at
-        cleanup.orphan_visible_at = max(earlier or 0.0, time.monotonic() + self.site.upload_window_s)
+        text: str = document.read_text(encoding="utf-8")
+        self.site.uploaded.append(text)
+        trace: DocumentTrace = document_trace(text, listed_in_s=self.site.upload_window_s)
+        cleanup.documents.append(trace)
         save()
         self.site.reads.append(READ_ID)
         await self._step("upload")
-        cleanup.read_ids.append(READ_ID)
-        cleanup.orphan_visible_at = earlier
+        cleanup.swap(trace, replace(trace, read_id=READ_ID))
         return UploadedRead(read_id=READ_ID, char_count=self.site.count(), token=TOKEN)
 
     async def get_json(self, url: str, token: str, *, action: str) -> dict[str, object]:
@@ -160,7 +193,7 @@ class FakePage:
         await self._step(action)
         if action == "list_reads":
             assert url == READS_URL
-            return {"reads": [{"read_id": read_id, "title": "anishift"} for read_id in self.site.reads]}
+            return {"reads": [library_read(read_id, self.site.texts[0]) for read_id in self.site.reads]}
         return dict(self.site.account)
 
     async def post_json(self, url: str, token: str, data: dict[str, object], *, action: str) -> None:

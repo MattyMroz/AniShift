@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import re
@@ -11,7 +12,6 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
-from pathlib import PurePath
 from typing import TYPE_CHECKING, Final
 
 from anishift.errors import ErrorCode, ErrorContext
@@ -33,7 +33,6 @@ from .constants import (
     ADD_ENDPOINT,
     API_HOST,
     CLEANUP_STEP_TIMEOUT_S,
-    DOCUMENT_NAME,
     LIBRARY_LOAD_S,
     LIBRARY_URL,
     PLAYER_STATE_JS,
@@ -51,6 +50,7 @@ from .constants import (
 from .types import (
     AccountCleanup,
     AccountSettings,
+    DocumentTrace,
     LibraryState,
     PlayerState,
     SessionRecord,
@@ -73,6 +73,7 @@ __all__ = [
     "ReaderPage",
     "auth_error",
     "clean_account",
+    "document_titles",
     "load_cleanup",
     "map_http_status",
     "map_playwright_error",
@@ -127,11 +128,14 @@ _SIGN_IN_URL: Final[re.Pattern[str]] = re.compile(r"sign-?in|sign-?up|log-?in|au
 _SIGN_IN_POLL_S: Final[float] = 1.0
 """Interval between checks of the sign-in window."""
 
-_DOCUMENT_TITLES: Final[frozenset[str]] = frozenset({DOCUMENT_NAME, PurePath(DOCUMENT_NAME).stem})
-"""Library titles the uploaded document can carry, looked up when its read id is unknown."""
+_UPLOAD_TYPE: Final[str] = "text/plain"
+"""Library ``original_file_type`` of an imported text file."""
 
-_LISTED_AT_ONCE: Final[float] = 0.0
-"""Visibility time of a document left by an earlier run: already passed, so an empty lookup settles it."""
+_CLOCK_SKEW_S: Final[float] = 300.0
+"""Allowed difference between the local clock and the server's ``added_at_unix``."""
+
+_TITLE_CHARS: Final[int] = 200
+"""Leading document characters whose word-boundary prefixes may become the library title."""
 
 
 # ── Error mapping ─────────────────────────────────────────────────────────────
@@ -296,26 +300,30 @@ class ReaderPage:
             return False
 
     async def upload(self, document: Path, cleanup: AccountCleanup, save: Callable[[], None]) -> UploadedRead:
-        """Import *document*, registering the possible new read in *cleanup* (then *save*) before Upload is pressed."""
-        earlier: float | None = cleanup.orphan_visible_at
+        """Import *document*, registering its trace in *cleanup* (then *save*) before Upload is pressed."""
+        titles: frozenset[str] = document_titles(document.read_text(encoding="utf-8"))
         with _browser_action("upload"):
             await self._button("Import").click()
             async with self._page.expect_response(_is_add_response) as reply:
                 await self._page.locator("input[type=file]").set_input_files(document)
-                cleanup.orphan_visible_at = _later(earlier, time.monotonic() + ACTION_TIMEOUT_S)
+                pressed_at: float = time.time()
+                trace: DocumentTrace = DocumentTrace(
+                    pressed_at=pressed_at, listed_by=pressed_at + ACTION_TIMEOUT_S, titles=titles
+                )
+                cleanup.documents.append(trace)
                 save()
                 await self._button("Upload").click()
             response: Response = await reply.value
             if not response.ok:
-                cleanup.orphan_visible_at = earlier
+                cleanup.documents.remove(trace)
                 raise map_http_status(response.status, action="upload", retry_after=response.headers.get("retry-after"))
-            cleanup.orphan_visible_at = _later(earlier, time.monotonic())
+            replied: DocumentTrace = replace(trace, listed_by=time.time())
+            cleanup.swap(trace, replied)
             body: object = await _json_body(response, action="upload")
             headers: dict[str, str] = await response.request.all_headers()
         read_id: str | None = _read_id(body)
         if read_id is not None:
-            cleanup.read_ids.append(read_id)
-            cleanup.orphan_visible_at = earlier
+            cleanup.swap(replied, replace(replied, read_id=read_id))
         char_count: object = body.get("char_count") if isinstance(body, dict) else None
         token: str = headers.get("authorization", "")
         if not isinstance(char_count, int) or isinstance(char_count, bool) or char_count <= 0:
@@ -449,8 +457,20 @@ async def _json_body(response: Response | APIResponse, *, action: str) -> object
         raise unavailable_error(reason, details={"action": action}) from None
 
 
-def _later(earlier: float | None, moment: float) -> float:
-    return moment if earlier is None else max(earlier, moment)
+def document_titles(text: str) -> frozenset[str]:
+    """Return digests of every library title *text* can get: its word-boundary prefixes up to ``_TITLE_CHARS``."""
+    titles: set[str] = set()
+    head: str = ""
+    for word in text.split():
+        head = f"{head} {word}" if head else word
+        if len(head) > _TITLE_CHARS:
+            break
+        titles.add(_title_digest(head))
+    return frozenset(titles)
+
+
+def _title_digest(title: str) -> str:
+    return hashlib.sha256(" ".join(title.split()).encode()).hexdigest()
 
 
 def _read_id(body: object) -> str | None:
@@ -513,14 +533,14 @@ async def clean_account(page: ReaderPage, cleanup: AccountCleanup) -> None:
     restore: AccountSettings | None = cleanup.restore
     if restore is not None and await _cleanup_step("restore_settings", partial(_restore, page, token, restore)):
         cleanup.restore = None
-    for read_id in tuple(cleanup.read_ids):
-        if await _cleanup_step("delete_read", partial(_delete_read, page, token, read_id)):
-            cleanup.read_ids.remove(read_id)
-    visible_at: float | None = cleanup.orphan_visible_at
-    if visible_at is None:
-        return
-    if await _cleanup_step("delete_orphan", partial(_delete_orphan, page, token, visible_at)):
-        cleanup.orphan_visible_at = None
+    for trace in tuple(cleanup.documents):
+        if trace.read_id is not None and await _cleanup_step(
+            "delete_read", partial(_delete_read, page, token, trace.read_id)
+        ):
+            cleanup.documents.remove(trace)
+    for trace in tuple(cleanup.documents):
+        if trace.read_id is None and await _cleanup_step("delete_orphan", partial(_delete_orphan, page, token, trace)):
+            cleanup.documents.remove(trace)
 
 
 async def _restore(page: ReaderPage, token: str, settings: AccountSettings) -> bool:
@@ -539,25 +559,40 @@ async def _delete_read(page: ReaderPage, token: str, read_id: str) -> bool:
     return True
 
 
-async def _delete_orphan(page: ReaderPage, token: str, visible_at: float) -> bool:
+async def _delete_orphan(page: ReaderPage, token: str, trace: DocumentTrace) -> bool:
     listing: dict[str, object] = await page.get_json(READS_URL, token, action="list_reads")
     reads: object = listing.get("reads")
     if not isinstance(reads, list):
         reason: str = "ElevenReader library listing has no reads"
         raise unavailable_error(reason, details={"action": "list_reads"})
-    found: list[str] = [read_id for read in reads if (read_id := _titled_read(read)) is not None]
-    for read_id in found:
-        await _delete_read(page, token, read_id)
-    if found or time.monotonic() >= visible_at:
+    uploads: list[dict[str, object]] = [read for read in reads if isinstance(read, dict) and _in_window(read, trace)]
+    found: list[str] = [read_id for read in uploads if _titled(read, trace) and (read_id := _read_id(read)) is not None]
+    if len(found) > 1:
+        logger.warning("ElevenReader cannot tell its upload among matching documents", documents=len(found))
+        return False
+    if found:
+        await _delete_read(page, token, found[0])
         return True
-    logger.info("ElevenReader upload may still appear in the library")
-    return False
+    if time.time() < trace.listed_by:
+        logger.info("ElevenReader upload may still appear in the library")
+        return False
+    if uploads:
+        logger.warning("ElevenReader upload matched no document imported at that time", documents=len(uploads))
+    return True
 
 
-def _titled_read(read: object) -> str | None:
-    if not isinstance(read, dict) or read.get("title") not in _DOCUMENT_TITLES:
-        return None
-    return _read_id(read)
+def _in_window(read: dict[str, object], trace: DocumentTrace) -> bool:
+    added: object = read.get("added_at_unix")
+    if read.get("from_user_import") is not True or read.get("original_file_type") != _UPLOAD_TYPE:
+        return False
+    if isinstance(added, bool) or not isinstance(added, int | float):
+        return False
+    return trace.pressed_at - _CLOCK_SKEW_S <= added <= trace.listed_by + _CLOCK_SKEW_S
+
+
+def _titled(read: dict[str, object], trace: DocumentTrace) -> bool:
+    title: object = read.get("title")
+    return isinstance(title, str) and _title_digest(title) in trace.titles
 
 
 async def _cleanup_step(kind: str, run: Callable[[], Awaitable[bool]]) -> bool:
@@ -610,8 +645,8 @@ def read_session(root: Path) -> SessionRecord | None:
     signed_in: object = data.get("signed_in")
     checked_at: object = data.get("checked_at")
     restore: object = data.get("restore")
-    delete_document: object = data.get("delete_document")
-    if not isinstance(signed_in, bool) or not isinstance(checked_at, str) or not isinstance(delete_document, bool):
+    documents: tuple[DocumentTrace, ...] | None = _traces(data.get("documents"))
+    if not isinstance(signed_in, bool) or not isinstance(checked_at, str) or documents is None:
         return None
     try:
         checked: datetime = datetime.fromisoformat(checked_at)
@@ -621,8 +656,33 @@ def read_session(root: Path) -> SessionRecord | None:
         signed_in=signed_in,
         checked_at=checked,
         restore=_settings(restore) if isinstance(restore, dict) else None,
-        delete_document=delete_document,
+        documents=documents,
     )
+
+
+def _traces(value: object) -> tuple[DocumentTrace, ...] | None:
+    if not isinstance(value, list):
+        return None
+    traces: list[DocumentTrace] = []
+    for item in value:
+        trace: DocumentTrace | None = _trace(item)
+        if trace is None:
+            return None
+        traces.append(trace)
+    return tuple(traces)
+
+
+def _trace(item: object) -> DocumentTrace | None:
+    if not isinstance(item, dict):
+        return None
+    pressed_at: object = item.get("pressed_at")
+    listed_by: object = item.get("listed_by")
+    titles: object = item.get("titles")
+    if any(isinstance(moment, bool) or not isinstance(moment, int | float) for moment in (pressed_at, listed_by)):
+        return None
+    if not isinstance(titles, list) or not all(isinstance(title, str) for title in titles):
+        return None
+    return DocumentTrace(pressed_at=_number(pressed_at), listed_by=_number(listed_by), titles=frozenset(titles))
 
 
 def write_session(root: Path, *, signed_in: bool) -> None:
@@ -641,15 +701,16 @@ def save_cleanup(root: Path, cleanup: AccountCleanup) -> bool:
     """Save which cleanup is still owed, without read ids, keeping the sign-in state; report whether it was saved."""
     previous: SessionRecord | None = read_session(root)
     signed: SessionRecord = previous or SessionRecord(signed_in=True, checked_at=datetime.now(UTC))
-    return _write_record(root, replace(signed, restore=cleanup.restore, delete_document=cleanup.has_document))
+    documents: tuple[DocumentTrace, ...] = tuple(replace(trace, read_id=None) for trace in cleanup.documents)
+    return _write_record(root, replace(signed, restore=cleanup.restore, documents=documents))
 
 
 def load_cleanup(root: Path) -> AccountCleanup:
-    """Return the cleanup owed by an earlier run; its document of unknown id is looked up by title at once."""
+    """Return the cleanup owed by an earlier run; its documents are looked up by upload window and title."""
     record: SessionRecord | None = read_session(root)
     if record is None:
         return AccountCleanup()
-    return AccountCleanup(restore=record.restore, orphan_visible_at=_LISTED_AT_ONCE if record.delete_document else None)
+    return AccountCleanup(restore=record.restore, documents=list(record.documents))
 
 
 def _write_record(root: Path, record: SessionRecord) -> bool:
@@ -658,7 +719,10 @@ def _write_record(root: Path, record: SessionRecord) -> bool:
         "signed_in": record.signed_in,
         "checked_at": record.checked_at.isoformat(),
         "restore": None if restore is None else _with_settings({}, restore.voice_id, restore.speed),
-        "delete_document": record.delete_document,
+        "documents": [
+            {"pressed_at": trace.pressed_at, "listed_by": trace.listed_by, "titles": sorted(trace.titles)}
+            for trace in record.documents
+        ],
     }
     try:
         atomic_json_snapshot(session_file(root), payload)

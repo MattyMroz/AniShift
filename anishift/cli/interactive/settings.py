@@ -2098,7 +2098,7 @@ def _session_status(record: SessionRecord | None) -> str:
 def _cleanup_label(record: SessionRecord) -> str:
     left: list[str] = []
     if record.delete_document:
-        left.append("dokument „anishift”")
+        left.append("dokument wgrany przez AniShift")
     if record.restore is not None:
         left.append("zmieniony głos")
     return "Na koncie mógł zostać " + " i ".join(left)

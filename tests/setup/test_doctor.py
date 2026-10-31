@@ -10,7 +10,7 @@ from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.services.tts.engines.elevenreader.api_backend import save_cleanup, write_session
 from anishift.services.tts.engines.elevenreader.config import profile_dir
-from anishift.services.tts.engines.elevenreader.types import AccountCleanup
+from anishift.services.tts.engines.elevenreader.types import AccountCleanup, DocumentTrace
 from anishift.setup import doctor
 from anishift.setup.doctor import (
     CheckStatus,
@@ -176,12 +176,14 @@ def test_check_elevenreader_other_engine_skips(elevenreader_root: Path) -> None:
 
 @pytest.mark.unit
 def test_check_elevenreader_other_engine_owed_account_cleanup_warns(elevenreader_root: Path) -> None:
-    save_cleanup(elevenreader_root, AccountCleanup(read_ids=["read"]))
+    save_cleanup(
+        elevenreader_root, AccountCleanup(documents=[DocumentTrace(pressed_at=0.0, listed_by=0.0, titles=frozenset())])
+    )
 
     result = check_elevenreader("elevenbytes")
 
     assert result.status is CheckStatus.WARN
-    assert "anishift document" in result.message
+    assert "document AniShift uploaded" in result.message
     assert result.suggestion == "Ustawienia → Lektor → Zaloguj / sprawdź sesję"
 
 
@@ -230,10 +232,12 @@ def test_check_elevenreader_signed_in_profile_is_ok(elevenreader_root: Path) -> 
 def test_check_elevenreader_owed_account_cleanup_warns_with_repair_hint(elevenreader_root: Path) -> None:
     profile_dir(elevenreader_root).mkdir(parents=True)
     write_session(elevenreader_root, signed_in=True)
-    save_cleanup(elevenreader_root, AccountCleanup(read_ids=["read"]))
+    save_cleanup(
+        elevenreader_root, AccountCleanup(documents=[DocumentTrace(pressed_at=0.0, listed_by=0.0, titles=frozenset())])
+    )
 
     result = check_elevenreader("elevenreader")
 
     assert result.status is CheckStatus.WARN
-    assert "anishift document" in result.message
+    assert "document AniShift uploaded" in result.message
     assert result.suggestion == "Ustawienia → Lektor → Zaloguj / sprawdź sesję"

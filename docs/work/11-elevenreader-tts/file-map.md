@@ -158,7 +158,7 @@ Runtime (gitignored):
 config/elevenreader/        # ACL: tylko bieżące konto
 ├── chrome-profile/         # profil Chrome z sesją
 ├── chrome.lock             # ProcessLock: jedna przeglądarka na profil
-└── session.json            # {"signed_in", "checked_at", "restore", "delete_document"}
+└── session.json            # {"signed_in", "checked_at", "restore", "documents"}
 ```
 
 Staging przebiegu (istniejący układ `TtsResumeRepository` pod `workspace/tmp/`): nagranie dokumentu jako

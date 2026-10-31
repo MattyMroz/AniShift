@@ -74,7 +74,7 @@ LINE_SEPARATOR: Final[str] = "…"
 """Paragraph placed between lines so ElevenReader pauses; never spoken and never a line itself."""
 
 DOCUMENT_NAME: Final[str] = "anishift.txt"
-"""File name the owner recognises in the ElevenReader library."""
+"""Name of the uploaded file; the library titles the document by its first sentence instead."""
 
 LIBRARY_URL: Final[str] = "https://elevenreader.io/reader/library"
 """Library page with the Import button; a document opens under it by read id."""

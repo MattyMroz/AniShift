@@ -81,6 +81,7 @@ if TYPE_CHECKING:
         AccountCleanup,
         AccountSettings,
         AlignmentChunk,
+        DocumentTrace,
         ElevenReaderVoice,
         PlayerState,
         SessionRecord,
@@ -94,8 +95,8 @@ logger = get_logger(__name__)
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 CLEANUP_WARNING: Final[str] = (
-    "ElevenReader: nie udało się posprzątać konta — usuń ostatni dokument „anishift” z biblioteki "
-    "i sprawdź głos w aplikacji"
+    "ElevenReader: nie udało się posprzątać konta — usuń z biblioteki ostatni dokument wgrany przez AniShift "
+    "(jego tytuł to pierwsze zdanie odcinka) i sprawdź głos w aplikacji"
 )
 """Owner-facing warning left when account cleanup failed for good."""
 
@@ -153,7 +154,7 @@ class ElevenReaderTtsEngine:
         self._browser_factory: Callable[[Path], ChromeSession] = browser_factory or _headless_session
         self._browser: ChromeSession | None = None
         self._cleanup: AccountCleanup = load_cleanup(self._config.profile_root)
-        self._saved_cleanup: tuple[AccountSettings | None, bool] = self._cleanup_state()
+        self._saved_cleanup: tuple[AccountSettings | None, tuple[DocumentTrace, ...]] = self._cleanup_state()
         self._closed: bool = False
         self._synthesis_profile: SynthesisProfile = SynthesisProfile(
             engine_id=self.engine_id,
@@ -436,12 +437,12 @@ class ElevenReaderTtsEngine:
             await page.close()
 
     def _save_cleanup(self) -> None:
-        state: tuple[AccountSettings | None, bool] = self._cleanup_state()
+        state: tuple[AccountSettings | None, tuple[DocumentTrace, ...]] = self._cleanup_state()
         if state != self._saved_cleanup and save_cleanup(self._config.profile_root, self._cleanup):
             self._saved_cleanup = state
 
-    def _cleanup_state(self) -> tuple[AccountSettings | None, bool]:
-        return self._cleanup.restore, self._cleanup.has_document
+    def _cleanup_state(self) -> tuple[AccountSettings | None, tuple[DocumentTrace, ...]]:
+        return self._cleanup.restore, tuple(self._cleanup.documents)
 
     async def _close_browser(self) -> None:
         browser: ChromeSession | None = self._browser

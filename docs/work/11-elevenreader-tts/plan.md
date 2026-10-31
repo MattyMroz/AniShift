@@ -434,7 +434,7 @@ anishift/services/tts/engines/elevenreader/
 │                   ReaderPage: open_library → READY | SIGNED_OUT | UNAVAILABLE, upload, open_document, press_play,
 │                   player_state, set_page_speed, check_page_speed, watch_stream;
 │                   konto tokenem strony: prepare_account (default_voice_id + playback_speed_rate), clean_account
-│                   (przywrócenie, DELETE reads, sierota po tytule); sesja: read_session, write_session,
+│                   (przywrócenie, DELETE reads, sierota po oknie i tytule); sesja: read_session, write_session,
 │                   save_cleanup, load_cleanup (atomowo), require_signed_in, sign_in (okno widoczne, kończy
 │                   sprzątanie) → SignInOutcome
 ├── browser.py      [specyficzny] ChromeSession: ProcessLock, restrict_directory, wolny port, Popen, CDP, close;
@@ -521,9 +521,25 @@ Ponowne „Play” to czynność odtwarzacza w jednej próbie, nie retry (Z6).
 **Sprzątanie (U14, F28).** Śmieci na koncie nie zostają w żadnej ścieżce. Zaległe kroki z `AccountCleanup`
 silnik wykonuje na początku następnej próby (po `require_signed_in`, przed uploadem) i w `close()`, gdy przeglądarka
 jeszcze działa. Krok, który zawiedzie także w `close()`, daje ostrzeżenie w logu (bez `read_id` i tokenu: tylko
-rodzaj kroku i status) i komunikat w panelu „ElevenReader: nie udało się posprzątać konta — usuń ostatni dokument
-„anishift” z biblioteki i sprawdź głos w aplikacji”. Wynik nagrania pozostaje ważny. Plik wgrywany ma stałą nazwę
-`anishift.txt`, więc właściciel rozpozna go w bibliotece.
+rodzaj kroku i status) i komunikat w panelu „ElevenReader: nie udało się posprzątać konta — usuń z biblioteki
+ostatni dokument wgrany przez AniShift (jego tytuł to pierwsze zdanie odcinka) i sprawdź głos w aplikacji”. Wynik
+nagrania pozostaje ważny. Plik wgrywany nazywa się `anishift.txt`, ale biblioteka nie pokazuje nazwy pliku: tytuł i
+opis dokumentu to pierwsze zdanie treści (pomiar 2026-10-31).
+
+**Sieroty.** Każde wgranie zostawia w `AccountCleanup` ślad `DocumentTrace`, zapisany przed kliknięciem „Upload”:
+`pressed_at` (czas zegarowy tuż przed kliknięciem), `listed_by` (`pressed_at + ACTION_TIMEOUT_S`, skracany do chwili
+odpowiedzi) i skróty SHA-256 każdego prefiksu dokumentu na granicy słów do 200 znaków (możliwe tytuły, bez tekstu
+w pliku). Dokument ze znanym `read_id` znika przez `DELETE reads/{id}`. Dokument bez `read_id` (anulowanie w
+trakcie uploadu, odpowiedź bez id, restart procesu) silnik szuka w pierwszej stronie `GET reads` (kolejność od
+najnowszych): kandydat ma `from_user_import: true`, `original_file_type: "text/plain"`, `added_at_unix` w oknie
+`[pressed_at − 300 s, listed_by + 300 s]` i skrót znormalizowanego `title` wśród skrótów śladu.
+
+- jeden kandydat → `DELETE`, krok rozliczony;
+- kilku kandydatów → nic nie jest usuwane, ostrzeżenie w logu, krok zostaje zaległy (panel, doctor);
+- zero przed `listed_by` → krok zostaje zaległy; zero po `listed_by` → krok rozliczony, a jeśli w oknie były importy
+  o innym tytule, z ostrzeżeniem w logu.
+
+Czas zegarowy (nie `time.monotonic()`) zachowuje znaczenie okna po restarcie procesu i komputera.
 
 ### 7.11. Ścieżka dokumentu w `TtsService`
 
@@ -560,8 +576,9 @@ rodzaj kroku i status) i komunikat w panelu „ElevenReader: nie udało się pos
 - Cookies żyją w `config/elevenreader/chrome-profile/`; AniShift ich nie czyta. `config/elevenreader/` jest w
   `.gitignore` i dostaje `restrict_directory` przy każdym starcie (idempotentne).
 - Token strony istnieje tylko w pamięci jednej próby; nie trafia do logów, wyjątków, `details` ani plików.
-- `session.json`: `{"signed_in": bool, "checked_at": ISO-8601, "restore": {…} | null, "delete_document": bool}`,
-  zapis atomowy; zaległe sprzątanie konta bez `read_id` i tokenu.
+- `session.json`: `{"signed_in": bool, "checked_at": ISO-8601, "restore": {…} | null, "documents": [{"pressed_at":
+  epoka, "listed_by": epoka, "titles": [sha256, …]}]}`, zapis atomowy; zaległe sprzątanie konta bez `read_id`,
+  tokenu i tekstu dokumentu.
 - Wygaśnięcie przed uploadem → `TtsAuthError` (trwały, circuit), sugestia „Ustawienia → Lektor → Zaloguj / sprawdź
   sesję”; po zalogowaniu ponowienie czyta tylko brakujące kwestie. Wygaśnięcie w trakcie → przestój → ponowienie →
   następna próba wykrywa SIGNED_OUT.

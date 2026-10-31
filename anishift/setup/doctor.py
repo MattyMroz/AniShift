@@ -305,7 +305,7 @@ def _elevenreader_cleanup_owed() -> CheckResult:
     return CheckResult(
         "elevenreader",
         CheckStatus.WARN,
-        "ElevenReader account may still hold the anishift document or a changed voice",
+        "ElevenReader account may still hold a document AniShift uploaded or a changed voice",
         suggestion=_ELEVENREADER_SIGN_IN_HINT,
     )
 

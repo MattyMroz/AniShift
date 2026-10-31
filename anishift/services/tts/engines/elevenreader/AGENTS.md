@@ -35,17 +35,23 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
 - Głos i tempo 1x ustawia `user_config` konta tokenem strony (`prepare_account`), przed otwarciem dokumentu:
   serwer wybiera model przy starcie strumienia. Wpis przywrócenia powstaje przed zapisem i nie jest
   nadpisywany, dopóki poprzedni nie wykona się, inaczej „poprzednim” głosem zostałby nasz.
-- `AccountCleanup` (przywrócenie ustawień, `DELETE reads/{id}`, sierota po tytule) biegnie przez `clean_account` w
-  `finally` każdej próby pod `_finish_shielded`, także po `asyncio.CancelledError`; każdy krok ma własny limit i
-  `_cleanup_step` łapie każdy wyjątek, a karta i Chrome zamykają się w `finally`. Nieudany krok zostaje i wykonuje
-  się po `require_signed_in` następnej próby (przed uploadem), w `close()`, jeśli przeglądarka żyje, oraz w
+- `AccountCleanup` (przywrócenie ustawień, `DELETE reads/{id}`, sierota po oknie wgrania i tytule) biegnie przez
+  `clean_account` w `finally` każdej próby pod `_finish_shielded`, także po `asyncio.CancelledError`; każdy krok ma
+  własny limit i `_cleanup_step` łapie każdy wyjątek, a karta i Chrome zamykają się w `finally`. Nieudany krok zostaje
+  i wykonuje się po `require_signed_in` następnej próby (przed uploadem), w `close()`, jeśli przeglądarka żyje, oraz w
   `sign_in` panelu. Trwała porażka: `logger.warning(CLEANUP_WARNING, steps=…)`, wiersz w SESJA i ostrzeżenie doctora.
-- `upload` rejestruje możliwy dokument (`orphan_visible_at`) i zapisuje go przed „Upload”, a `read_id` z odpowiedzi
+- `upload` dopisuje `DocumentTrace` każdego wgrania (`pressed_at` i `listed_by` jako czas zegarowy `time.time()`,
+  skróty SHA-256 możliwych tytułów z `document_titles`) i zapisuje go przed „Upload”, a `read_id` z odpowiedzi
   przed walidacją `char_count`/tokenu. Dokument bez znanego id (anulowanie w trakcie uploadu, odpowiedź bez id,
-  poprzedni proces) szuka się w `GET reads` po tytule `anishift`/`anishift.txt`; pusty wynik rozlicza krok dopiero
-  po `ACTION_TIMEOUT_S` od kliknięcia. Usuwany jest każdy dokument o tym tytule, także własny dokument właściciela.
-- Zaległe sprzątanie jest trwałe w `session.json` (`restore`, `delete_document`, bez `read_id`): `prepare_account` i
-  `upload` zapisują je przed zmianą konta, silnik po każdym sprzątaniu, `load_cleanup` wczytuje je przy starcie.
+  poprzedni proces) szuka się w pierwszej stronie `GET reads`: `from_user_import is True`, `original_file_type ==
+  "text/plain"`, `added_at_unix` w `[pressed_at − 300 s, listed_by + 300 s]` i skrót znormalizowanego `title`
+  wśród skrótów śladu. Serwer bierze tytuł z pierwszego zdania treści, nie z nazwy pliku, więc ślad trzyma skróty
+  każdego prefiksu dokumentu na granicy słów do 200 znaków. Jeden kandydat → `DELETE`; kilku → nic nie usuwa,
+  ostrzeżenie, krok zostaje zaległy; zero przed `listed_by` → krok zostaje; zero po `listed_by` → rozliczony, a gdy w
+  oknie były cudze importy, z ostrzeżeniem.
+- Zaległe sprzątanie jest trwałe w `session.json` (`restore`, `documents`: `pressed_at`, `listed_by`, `titles`; bez
+  `read_id` i tekstu): `prepare_account` i `upload` zapisują je przed zmianą konta, silnik po każdym sprzątaniu,
+  `load_cleanup` wczytuje je przy starcie. Czas zegarowy zachowuje okno wgrania po restarcie procesu i komputera.
 - Przeglądarka zostaje otwarta po sukcesie i po błędach, które jej nie dotyczą (`_KEEP_BROWSER_ERRORS`); po
   anulowaniu, timeoucie i niedostępności zamyka się dopiero po sprzątaniu.
 
@@ -62,8 +68,8 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
   poza nim są start Chrome (`_open_browser`, ograniczony próbami `CONNECT_ATTEMPTS`) i końcowe sprzątanie (każdy
   krok `CLEANUP_STEP_TIMEOUT_S`).
 - Token, `read_id`, adres WebSocketu i tekst dokumentu nie trafiają do logów, wyjątków ani plików;
-  `session.json` ma tylko `signed_in`, `checked_at`, `restore` (głos i tempo konta) i `delete_document`. Adres
-  strumienia jest sprawdzany w pamięci (F8).
+  `session.json` ma tylko `signed_in`, `checked_at`, `restore` (głos i tempo konta) i `documents` (czasy i skróty
+  tytułów). Adres strumienia jest sprawdzany w pamięci (F8).
 - Część pusta po neutralizacji, równa `LINE_SEPARATOR` albo z `<break` to `TtsInputError` z `validate_part`;
   `TtsService` woła ją dla każdej kwestii przed grupowaniem, a `synthesize_document` dla każdej części przed
   przeglądarką.
@@ -72,8 +78,10 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
 - Pierwsza ramka wysyłana z `listening_speed` ≠ 1 oznacza model v2 → błąd przejściowy.
 - Wylogowanego gościa biblioteka przekierowuje na `/reader/sign-up` (przyciski „Sign up with Google/Apple/email”,
   „Sign in” nie jako przycisk; K2); `open_library` rozpoznaje to po adresie i przyciskach „Sign up”. Status 402 jako brak
-  kredytów oraz lista `GET reads` w kształcie
-  `{"reads": [{"read_id", "title"}]}` są założeniami do potwierdzenia w K2 (listę sprawdza test sieciowy
-  `test_reads_listing_live_account_finds_and_deletes_document_without_known_id`). Inny kształt listy zostawia krok
-  `delete_orphan` zaległym (widocznym w panelu), nigdy nie rozlicza go po cichu.
+  kredytów jest założeniem do potwierdzenia w K2.
+- `GET reads` (zmierzone 2026-10-31) zwraca `{"reads": [...], "has_more", "next_cursor", "last_sort_id"}`; nowy
+  upload był na pierwszej stronie. Kod czyta tylko ją, zakładając kolejność od najnowszych; paginacja nie jest
+  potrzebna, dopóki okno wgrania obejmuje minuty. Brak listy `reads` zostawia krok `delete_orphan` zaległym
+  (widocznym w panelu), nigdy nie rozlicza go po cichu. Rozpoznanie sprawdza test sieciowy
+  `test_reads_listing_live_account_finds_and_deletes_document_without_known_id`.
 - `char_count` z odpowiedzi uploadu jest obowiązkowy; bez niego próba kończy się błędem przejściowym.

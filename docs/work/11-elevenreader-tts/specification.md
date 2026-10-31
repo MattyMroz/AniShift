@@ -207,7 +207,8 @@ niego.
 
 - **Z1.** Obchodzenie App Check, limitów urządzenia, sprawdzania IP i limitów kredytów; podrabianie ramek
   WebSocket; wiele kont. Żądania poza kliknięciami w interfejs wolno wysyłać tylko do tych endpointów, których
-  strona sama używa (`user_config`, `reads/{id}`), z kontekstu zalogowanej strony i jej własnym tokenem.
+  strona sama używa (`user_config`, `reads/{id}` oraz lista `reads` — ta wyłącznie do odszukania własnego uploadu o
+  nieznanym `read_id`), z kontekstu zalogowanej strony i jej własnym tokenem.
 - **Z2.** Automatyczne przełączanie silnika lub głosu w trakcie odcinka.
 - **Z3.** Edycja repozytorium EDP, import jego modułów, odczyt jego profili `.chrome-profile/` i `.browser-profile/`.
 - **Z4.** Commitowanie nagrań głosów ElevenReadera, ramek z prawdziwym audio, cookies i plików profilu.
