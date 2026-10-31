@@ -3,7 +3,7 @@
 #   uv run pre-commit install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push
 #
 # pre-commit stage: fast, blocks the commit if ruff fails.
-# commit-msg stage: enforces Conventional Commits message format.
+# commit-msg stage: enforces Conventional Commits message format and the commit body (summary + Validation).
 # pre-push stage: mypy + pytest, so type/test failures surface locally, not in CI.
 
 minimum_pre_commit_version: "4.0.0"
@@ -12,12 +12,25 @@ default_install_hook_types:
   - commit-msg
   - pre-push
 
+# The code uses Python 3.14 syntax (PEP 758); prek defaults to 3.13 and cannot parse it.
+default_language_version:
+  python: python3.14
+
 repos:
+  - repo: meta
+    hooks:
+      - id: check-hooks-apply
+        stages: [manual]
+      - id: check-useless-excludes
+        stages: [manual]
+
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
       - id: trailing-whitespace
         stages: [pre-commit]
+        # Two trailing spaces are a hard line break in Markdown.
+        args: [--markdown-linebreak-ext=md]
         exclude: ^external/
       - id: end-of-file-fixer
         stages: [pre-commit]
@@ -44,6 +57,37 @@ repos:
         stages: [pre-commit]
       - id: no-commit-to-branch
         stages: [pre-commit]
+
+  # It rejects `Revert "..."`, which git writes itself. After git revert,
+  # rewrite the subject as revert(scope): ... — `revert` is on the type list.
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args:
+          - --force-scope
+          - --scopes=cli,config,pipeline,platform,setup,services,application,text,tui,extraction,subtitles,translation,tts,llm,audio,composition,utils,logger,agents,deps,infra,release,repo
+          - feat
+          - fix
+          - chore
+          - docs
+          - refactor
+          - test
+          - perf
+          - style
+          - ci
+          - build
+          - revert
+
+  - repo: https://github.com/MattyMroz/agents
+    rev: hooks-v1.2.0 # or newer: prek autoupdate
+    hooks:
+      # U+FFFD is what a botched encoding leaves behind.
+      - id: no-replacement-char
+      # Commit body: summary + Validation block bound to recorded runs.
+      # Format and the mm-validate workflow: presets/hooks/references/commit-message.md
+      - id: commit-validation
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.21
@@ -75,7 +119,6 @@ repos:
         entry: python scripts/hooks/check_mutating_assign.py
         language: system
         files: \.py$
-        exclude: ^external/
         stages: [pre-commit]
       - id: conventional-commit
         name: conventional commit message
