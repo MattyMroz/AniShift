@@ -69,6 +69,7 @@ from anishift.services.subtitles import SubtitleError
 from anishift.services.subtitles.restyle import DialogueFont
 from anishift.services.translation.engines import available_engine_ids as available_translation_engine_ids
 from anishift.services.tts.engines import available_engine_ids as available_tts_engine_ids
+from anishift.services.tts.engines import is_document_engine
 from anishift.services.tts.engines.edge.constants import MAREK_VOICE_ID, ZOFIA_VOICE_ID
 from anishift.services.tts.engines.elevenbytes.constants import DALLIN_VOICE_ID
 from anishift.services.tts.engines.elevenreader import VOICES, read_session, sign_in
@@ -119,7 +120,7 @@ _DISCOVERY_LOCK_POLL_S: Final[float] = 0.1
 """Maximum cancellation delay while another discovery prepares media tools."""
 
 _TTS_GROUP_JOBS: Final[int] = 1
-"""Legacy file-level limit keeping one episode in synthesis at a time."""
+"""File-level limit keeping one episode in synthesis at a time for engines reading line by line."""
 
 _UNRESOLVED_RUN: Final[str] = "The coordinator produced neither a result nor a failure"
 """Failure a run is settled with when its context ended without either outcome."""
@@ -1078,7 +1079,7 @@ def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
         llm_max_concurrency=preferences.llm_max_concurrency,
         tts_profile_id=preferences.tts_engine,
         tts_max_retries=preferences.tts_max_retries,
-        tts_group_jobs=_TTS_GROUP_JOBS,
+        tts_group_jobs=request_concurrency if is_document_engine(preferences.tts_engine) else _TTS_GROUP_JOBS,
         tts_request_concurrency=request_concurrency,
         audio_profile_id=preferences.tts_output_profile,
         composition_profile_id=preferences.composition_quality_preset,

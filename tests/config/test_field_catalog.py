@@ -40,7 +40,7 @@ from anishift.services.tts.engines.edge.constants import (
 from anishift.services.tts.engines.elevenbytes.constants import DALLIN_ALIAS, ENDPOINTS
 from anishift.services.tts.engines.elevenbytes.vpn import VPN_MAX_CONCURRENCY
 from anishift.services.tts.engines.elevenlabs.constants import OUTPUT_FORMATS, POLISH_TTS_MODEL_IDS
-from anishift.services.tts.engines.elevenreader.constants import VOICES
+from anishift.services.tts.engines.elevenreader.constants import MAX_PARALLEL_DOCUMENTS, VOICES
 from anishift.services.tts.engines.sapi.constants import SAPI_PROFILES
 
 
@@ -352,7 +352,7 @@ def test_unknown_tts_engine_cannot_build_a_partial_catalog() -> None:
 
 
 @pytest.mark.unit
-def test_setting_catalog_elevenreader_offers_engine_voices_without_concurrency_or_options() -> None:
+def test_setting_catalog_elevenreader_offers_engine_voices_and_parallel_episodes_without_options() -> None:
     catalog = _catalog(
         SettingCatalogContext(tts_engine="elevenreader", tts_provider_model_id="eleven_v4", tts_voice_id="adam")
     )
@@ -362,6 +362,7 @@ def test_setting_catalog_elevenreader_offers_engine_voices_without_concurrency_o
     assert catalog["tts_voice_id"].default == "fronczewski"
     assert catalog["tts_profile.postprocess_tempo"].default == 1.35
     assert catalog["tts_profile.voice_mix_offset_db"].default == 2.5
-    assert "tts_profile.concurrency" not in catalog
+    assert catalog["tts_profile.concurrency"].default == 2
+    assert catalog["tts_profile.concurrency"].maximum == MAX_PARALLEL_DOCUMENTS
     assert not setting_is_active(catalog["elevenbytes_vpn_enabled"], UserSettings(tts_engine="elevenreader"))
     assert not any(setting_id.startswith("tts_profile.engine_options.") for setting_id in catalog)

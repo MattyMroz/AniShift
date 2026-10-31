@@ -5,7 +5,9 @@ import errno
 import io
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 import pytest
@@ -20,7 +22,10 @@ from elevenreader_fakes import (
     FakeSession,
     FakeSite,
     audio_frame,
+    document_trace,
     fake_engine,
+    read_id_of,
+    read_url,
     stream_frames,
     tts_config,
 )
@@ -45,15 +50,26 @@ from anishift.services.tts import (
     TtsUnsupportedError,
     TtsVoiceError,
 )
-from anishift.services.tts.engines.elevenreader import CLEANUP_WARNING, ElevenReaderTtsEngine, read_session, service
+from anishift.services.tts.engines.elevenreader import (
+    CLEANUP_WARNING,
+    ElevenReaderTtsEngine,
+    hub,
+    read_session,
+    service,
+)
 from anishift.services.tts.engines.elevenreader import browser as browser_module
-from anishift.services.tts.engines.elevenreader.api_backend import write_session
+from anishift.services.tts.engines.elevenreader.api_backend import save_cleanup, write_session
 from anishift.services.tts.engines.elevenreader.recorder import StreamRecorder
 from anishift.services.tts.engines.elevenreader.service import document_text, part_spans
-from anishift.services.tts.engines.elevenreader.types import AccountSettings, AlignmentChunk, LibraryState
+from anishift.services.tts.engines.elevenreader.types import (
+    AccountCleanup,
+    AccountSettings,
+    AlignmentChunk,
+    LibraryState,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine
+    from collections.abc import Callable, Coroutine, Iterator
     from pathlib import Path
 
     from loguru import Message
@@ -62,6 +78,9 @@ pytestmark = pytest.mark.unit
 
 TEXTS = ("Pierwsza kwestia.", "Druga [kwestia].")
 UNREADABLE_PARTS = ("", "   ", "…", " … ", 'Raz <break time="1s"/> dwa', "Raz <BREAK/>", "Raz <break dwa")
+HUB_THREAD = "anishift-elevenreader"
+
+type EngineFor = Callable[..., ElevenReaderTtsEngine]
 
 
 @pytest.fixture(autouse=True)
@@ -73,12 +92,31 @@ def _fast_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(service, "SPEED_CHECK_S", 0.0)
 
 
+@pytest.fixture
+def engine_for(tmp_path: Path) -> Iterator[EngineFor]:
+    created: list[ElevenReaderTtsEngine] = []
+
+    def make(site: FakeSite, *, voice_id: str = "fronczewski") -> ElevenReaderTtsEngine:
+        engine: ElevenReaderTtsEngine = fake_engine(tmp_path, site, voice_id=voice_id)
+        created.append(engine)
+        return engine
+
+    yield make
+    for engine in created:
+        asyncio.run(engine.close())
+
+
 def _run[T](work: Coroutine[object, object, T]) -> T:
     return asyncio.run(work)
 
 
 def _request(
-    tmp_path: Path, *, texts: tuple[str, ...] = TEXTS, voice_id: str = "fronczewski", deadline_s: float = 60.0
+    tmp_path: Path,
+    *,
+    texts: tuple[str, ...] = TEXTS,
+    voice_id: str = "fronczewski",
+    deadline_s: float = 60.0,
+    name: str = "recording",
 ) -> DocumentSynthesisRequest:
     return DocumentSynthesisRequest(
         request_id="episode:document:0",
@@ -86,7 +124,7 @@ def _request(
         voice_id=voice_id,
         provider_model_id="eleven_v4",
         options={},
-        recording=tmp_path / "rec" / "recording.mp3",
+        recording=tmp_path / "rec" / f"{name}.mp3",
         deadline_s=deadline_s,
     )
 
@@ -102,22 +140,45 @@ def _assert_cleaned(site: FakeSite) -> None:
     assert site.deleted == [f"https://api.elevenlabs.io/v1/reader/reads/{READ_ID}"]
 
 
-def test_engine_satisfies_document_protocol_with_document_limit(tmp_path: Path) -> None:
-    engine = fake_engine(tmp_path, FakeSite())
+def _in_thread(
+    pool: ThreadPoolExecutor,
+    engine: ElevenReaderTtsEngine,
+    request: DocumentSynthesisRequest,
+    cancel: TtsCancellation | None = None,
+) -> Future[EngineDocumentResult]:
+    token: TtsCancellation = cancel or TtsCancellation()
+    return pool.submit(asyncio.run, engine.synthesize_document(request, cancel=token))
+
+
+def _wait_until(condition: Callable[[], bool]) -> None:
+    deadline: float = time.monotonic() + 5.0
+    while not condition():
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+
+
+def _hub_threads() -> int:
+    return sum(thread.name == HUB_THREAD for thread in threading.enumerate())
+
+
+def test_engine_satisfies_document_protocol_with_document_limit(engine_for: EngineFor) -> None:
+    engine = engine_for(FakeSite())
 
     assert isinstance(engine, DocumentTtsEngine)
     assert engine.capabilities.max_document_chars == 50_000
+    assert engine.capabilities.supports_concurrency
     assert engine.capabilities.native_output_formats == (AudioFormat.MP3,)
     assert engine.synthesis_profile.provider_source_format is AudioFormat.WAV
     assert engine.synthesis_profile.resolved_voice_id == FRONCZEWSKI_ID
 
 
-def test_synthesize_document_success_returns_ordered_timings_and_cleans_account(tmp_path: Path) -> None:
+def test_synthesize_document_success_returns_ordered_timings_and_cleans_account(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
     site = FakeSite(texts=TEXTS)
-    engine = fake_engine(tmp_path, site)
     request = _request(tmp_path)
 
-    result = _run(_record(engine, request))
+    result = _run(_record(engine_for(site), request))
 
     assert [timing.request_id for timing in result.parts] == ["line-0", "line-1"]
     assert result.parts[0].end_ms <= result.parts[1].start_ms
@@ -134,29 +195,32 @@ def test_synthesize_document_success_returns_ordered_timings_and_cleans_account(
     assert site.sessions[0].alive
 
 
-def test_synthesize_document_sets_voice_and_speed_before_opening_document(tmp_path: Path) -> None:
+def test_synthesize_document_sets_voice_and_speed_before_opening_document(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
     site = FakeSite(texts=TEXTS)
-    engine = fake_engine(tmp_path, site, voice_id="adam")
 
-    _run(_record(engine, _request(tmp_path, voice_id="adam")))
+    _run(_record(engine_for(site, voice_id="adam"), _request(tmp_path, voice_id="adam")))
 
     assert site.events.index("set_account") < site.events.index("open_document")
     assert site.events.index("upload") < site.events.index("set_account")
 
 
-def test_synthesize_document_signed_in_records_session(tmp_path: Path) -> None:
-    _run(_record(fake_engine(tmp_path, FakeSite(texts=TEXTS)), _request(tmp_path)))
+def test_synthesize_document_signed_in_records_session(tmp_path: Path, engine_for: EngineFor) -> None:
+    _run(_record(engine_for(FakeSite(texts=TEXTS)), _request(tmp_path)))
 
     record = read_session(tmp_path)
     assert record is not None
     assert record.signed_in
 
 
-def test_synthesize_document_signed_out_raises_auth_error_and_records_session(tmp_path: Path) -> None:
+def test_synthesize_document_signed_out_raises_auth_error_and_records_session(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
     site = FakeSite(library=LibraryState.SIGNED_OUT)
 
     with pytest.raises(TtsAuthError) as error:
-        _run(_record(fake_engine(tmp_path, site), _request(tmp_path)))
+        _run(_record(engine_for(site), _request(tmp_path)))
 
     assert "Zaloguj / sprawdź sesję" in error.value.context.suggestion
     assert "upload" not in site.events
@@ -179,121 +243,147 @@ def test_synthesize_document_default_browser_starts_chrome_headless(
         return created
 
     monkeypatch.setattr(browser_module, "ChromeSession", session)
+    engine = ElevenReaderTtsEngine(tts_config(tmp_path))
 
-    with pytest.raises(TtsAuthError):
-        _run(_record(ElevenReaderTtsEngine(tts_config(tmp_path)), _request(tmp_path)))
+    try:
+        with pytest.raises(TtsAuthError):
+            _run(_record(engine, _request(tmp_path)))
+    finally:
+        _run(engine.close())
 
     assert modes == [True]
 
 
-def test_synthesize_document_unavailable_library_raises_transient_error_and_closes_browser(tmp_path: Path) -> None:
-    site = FakeSite(library=LibraryState.UNAVAILABLE)
+def test_synthesize_document_unavailable_library_closes_tab_and_next_attempt_restarts_browser(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
+    site = FakeSite(texts=TEXTS, library=LibraryState.UNAVAILABLE)
+    engine = engine_for(site)
 
     with pytest.raises(TtsProviderUnavailableError) as error:
-        _run(_record(fake_engine(tmp_path, site), _request(tmp_path)))
+        _run(_record(engine, _request(tmp_path)))
 
     assert error.value.retry_after_s == 60.0
+    assert site.pages[0].closed
+    assert site.sessions[0].alive
+    site.library = LibraryState.READY
+
+    _run(_record(engine, _request(tmp_path)))
+
     assert site.sessions[0].closed
+    assert site.sessions[1].alive
 
 
-def test_synthesize_document_account_ignoring_voice_raises_voice_error_and_cleans(tmp_path: Path) -> None:
+def test_synthesize_document_account_ignoring_voice_raises_voice_error_and_cleans(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
     site = FakeSite(texts=TEXTS, ignore_voice=True)
 
     with pytest.raises(TtsVoiceError):
-        _run(_record(fake_engine(tmp_path, site), _request(tmp_path)))
+        _run(_record(engine_for(site), _request(tmp_path)))
 
     _assert_cleaned(site)
     assert "open_document" not in site.events
 
 
-def test_synthesize_document_stream_without_voice_raises_voice_error(tmp_path: Path) -> None:
+def test_synthesize_document_stream_without_voice_raises_voice_error(tmp_path: Path, engine_for: EngineFor) -> None:
     site = FakeSite(texts=TEXTS, voice_in_url=False)
 
     with pytest.raises(TtsVoiceError):
-        _run(_record(fake_engine(tmp_path, site), _request(tmp_path)))
+        _run(_record(engine_for(site), _request(tmp_path)))
 
     _assert_cleaned(site)
 
 
-def test_synthesize_document_v2_stream_raises_transient_error_and_closes_browser(tmp_path: Path) -> None:
+def test_synthesize_document_v2_stream_raises_transient_error_and_closes_only_its_tab(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
     site = FakeSite(texts=TEXTS, listening_speed=3.0)
 
     with pytest.raises(TtsProviderUnavailableError, match="Eleven v2"):
-        _run(_record(fake_engine(tmp_path, site), _request(tmp_path)))
+        _run(_record(engine_for(site), _request(tmp_path)))
 
     _assert_cleaned(site)
-    assert site.sessions[0].closed
+    assert site.pages[0].closed
+    assert site.sessions[0].alive
 
 
-def test_synthesize_document_incomplete_recording_raises_clip_error(tmp_path: Path) -> None:
+def test_synthesize_document_incomplete_recording_raises_clip_error(tmp_path: Path, engine_for: EngineFor) -> None:
     site = FakeSite(texts=TEXTS, char_count=10_000, player_done=True)
 
     with pytest.raises(TtsClipValidationError, match="incomplete"):
-        _run(_record(fake_engine(tmp_path, site), _request(tmp_path)))
+        _run(_record(engine_for(site), _request(tmp_path)))
 
     _assert_cleaned(site)
 
 
-def test_synthesize_document_line_count_mismatch_raises_clip_error(tmp_path: Path) -> None:
+def test_synthesize_document_line_count_mismatch_raises_clip_error(tmp_path: Path, engine_for: EngineFor) -> None:
     site = FakeSite(texts=TEXTS, frames=stream_frames(("Pierwsza kwestia. Druga (kwestia).",)))
 
     with pytest.raises(TtsClipValidationError, match="line count mismatch"):
-        _run(_record(fake_engine(tmp_path, site), _request(tmp_path)))
+        _run(_record(engine_for(site), _request(tmp_path)))
 
 
-def test_synthesize_document_without_audio_presses_play_three_times_then_times_out(tmp_path: Path) -> None:
+def test_synthesize_document_without_audio_presses_play_three_times_then_times_out(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
     site = FakeSite(texts=TEXTS, send_audio=False)
 
     with pytest.raises(TtsTimeoutError, match="no audio"):
-        _run(_record(fake_engine(tmp_path, site), _request(tmp_path)))
+        _run(_record(engine_for(site), _request(tmp_path)))
 
     assert site.plays == 3
     _assert_cleaned(site)
-    assert site.sessions[0].closed
+    assert site.pages[0].closed
 
 
-def test_synthesize_document_stalled_stream_times_out(tmp_path: Path) -> None:
+def test_synthesize_document_stalled_stream_times_out(tmp_path: Path, engine_for: EngineFor) -> None:
     frames: list[str] = [audio_frame("Pierwsza kwestia. " + BREAK, frames=3)]
     site = FakeSite(texts=TEXTS, frames=frames, char_count=10_000)
 
     with pytest.raises(TtsTimeoutError, match="stalled"):
-        _run(_record(fake_engine(tmp_path, site), _request(tmp_path)))
+        _run(_record(engine_for(site), _request(tmp_path)))
 
 
-def test_synthesize_document_progress_reports_received_characters(tmp_path: Path) -> None:
+def test_synthesize_document_progress_reports_received_characters_on_engine_thread(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
     site = FakeSite(texts=TEXTS)
-    seen: list[tuple[int, int]] = []
+    seen: list[tuple[int, int, int]] = []
 
     async def observe(received: int, total: int) -> None:
-        seen.append((received, total))
+        seen.append((received, total, threading.get_ident()))
 
-    request = _request(tmp_path)
+    base = _request(tmp_path)
     request = DocumentSynthesisRequest(
-        request_id=request.request_id,
-        parts=request.parts,
-        voice_id=request.voice_id,
-        provider_model_id=request.provider_model_id,
-        options=request.options,
-        recording=request.recording,
-        deadline_s=request.deadline_s,
+        request_id=base.request_id,
+        parts=base.parts,
+        voice_id=base.voice_id,
+        provider_model_id=base.provider_model_id,
+        options=base.options,
+        recording=base.recording,
+        deadline_s=base.deadline_s,
         progress=observe,
     )
 
-    _run(_record(fake_engine(tmp_path, site), request))
+    _run(_record(engine_for(site), request))
 
     assert seen
-    assert seen[-1] == (site.count(), site.count())
+    assert seen[-1][:2] == (site.count(), site.count())
+    assert {thread for _, _, thread in seen} == {threading.get_ident()}
 
 
-def test_synthesize_document_cancel_while_waiting_stops_quickly_and_cleans(tmp_path: Path) -> None:
+def test_synthesize_document_cancel_while_waiting_stops_quickly_and_cleans(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
     site = FakeSite(texts=TEXTS, hang_on="open_document")
-    engine = fake_engine(tmp_path, site)
+    engine = engine_for(site)
     cancel = TtsCancellation()
 
     async def scenario() -> float:
         started: float = time.monotonic()
         task = asyncio.create_task(engine.synthesize_document(_request(tmp_path), cancel=cancel))
-        await site.hung.wait()
+        await asyncio.to_thread(site.hung.wait)
         cancel.cancel()
         with pytest.raises(TtsCancelledError):
             await task
@@ -303,19 +393,21 @@ def test_synthesize_document_cancel_while_waiting_stops_quickly_and_cleans(tmp_p
 
     assert elapsed < 2.0
     _assert_cleaned(site)
-    assert site.sessions[0].closed
+    assert site.pages[0].closed
 
 
 @pytest.mark.parametrize("hung", ["set_page_speed", "press_play", "check_page_speed", "player_state"])
-def test_synthesize_document_cancel_while_page_hangs_stops_quickly_and_cleans(tmp_path: Path, hung: str) -> None:
+def test_synthesize_document_cancel_while_page_hangs_stops_quickly_and_cleans(
+    tmp_path: Path, engine_for: EngineFor, hung: str
+) -> None:
     site = FakeSite(texts=TEXTS, char_count=10_000, hang_on=hung)
-    engine = fake_engine(tmp_path, site)
+    engine = engine_for(site)
     cancel = TtsCancellation()
 
     async def scenario() -> None:
         async with asyncio.timeout(5.0):
             task = asyncio.create_task(engine.synthesize_document(_request(tmp_path), cancel=cancel))
-            await site.hung.wait()
+            await asyncio.to_thread(site.hung.wait)
             cancel.cancel()
             with pytest.raises(TtsCancelledError):
                 await task
@@ -323,12 +415,12 @@ def test_synthesize_document_cancel_while_page_hangs_stops_quickly_and_cleans(tm
     _run(scenario())
 
     _assert_cleaned(site)
-    assert site.sessions[0].closed
+    assert site.pages[0].closed
 
 
-def test_synthesize_document_hung_page_times_out_at_deadline_and_cleans(tmp_path: Path) -> None:
+def test_synthesize_document_hung_page_times_out_at_deadline_and_cleans(tmp_path: Path, engine_for: EngineFor) -> None:
     site = FakeSite(texts=TEXTS, char_count=10_000, hang_on="player_state")
-    engine = fake_engine(tmp_path, site)
+    engine = engine_for(site)
 
     async def scenario() -> None:
         async with asyncio.timeout(5.0):
@@ -338,16 +430,16 @@ def test_synthesize_document_hung_page_times_out_at_deadline_and_cleans(tmp_path
         _run(scenario())
 
     _assert_cleaned(site)
-    assert site.sessions[0].closed
+    assert site.pages[0].closed
 
 
-def test_synthesize_document_task_cancelled_still_cleans_and_closes_browser(tmp_path: Path) -> None:
+def test_synthesize_document_task_cancelled_still_cleans_and_closes_tab(tmp_path: Path, engine_for: EngineFor) -> None:
     site = FakeSite(texts=TEXTS, hang_on="open_document")
-    engine = fake_engine(tmp_path, site)
+    engine = engine_for(site)
 
     async def scenario() -> None:
         task = asyncio.create_task(_record(engine, _request(tmp_path)))
-        await site.hung.wait()
+        await asyncio.to_thread(site.hung.wait)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -355,17 +447,19 @@ def test_synthesize_document_task_cancelled_still_cleans_and_closes_browser(tmp_
     _run(scenario())
 
     _assert_cleaned(site)
-    assert site.sessions[0].closed
+    assert site.pages[0].closed
 
 
-def test_synthesize_document_cancel_during_upload_deletes_document_found_by_title(tmp_path: Path) -> None:
+def test_synthesize_document_cancel_during_upload_deletes_document_found_by_title(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
     site = FakeSite(texts=TEXTS, hang_on="upload")
-    engine = fake_engine(tmp_path, site)
+    engine = engine_for(site)
     cancel = TtsCancellation()
 
     async def scenario() -> None:
         task = asyncio.create_task(engine.synthesize_document(_request(tmp_path), cancel=cancel))
-        await site.hung.wait()
+        await asyncio.to_thread(site.hung.wait)
         cancel.cancel()
         with pytest.raises(TtsCancelledError):
             await task
@@ -377,16 +471,18 @@ def test_synthesize_document_cancel_during_upload_deletes_document_found_by_titl
     record = read_session(tmp_path)
     assert record is not None
     assert not record.cleanup_pending
-    assert site.sessions[0].closed
+    assert site.pages[0].closed
 
 
-def test_synthesize_document_task_cancelled_during_upload_deletes_document_found_by_title(tmp_path: Path) -> None:
+def test_synthesize_document_task_cancelled_during_upload_deletes_document_found_by_title(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
     site = FakeSite(texts=TEXTS, hang_on="upload")
-    engine = fake_engine(tmp_path, site)
+    engine = engine_for(site)
 
     async def scenario() -> None:
         task = asyncio.create_task(_record(engine, _request(tmp_path)))
-        await site.hung.wait()
+        await asyncio.to_thread(site.hung.wait)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -394,17 +490,19 @@ def test_synthesize_document_task_cancelled_during_upload_deletes_document_found
     _run(scenario())
 
     assert site.deleted == [f"{READS_URL}/{READ_ID}"]
-    assert site.sessions[0].closed
+    assert site.pages[0].closed
 
 
-def test_synthesize_document_cancel_during_upload_before_document_appears_keeps_saved_trace(tmp_path: Path) -> None:
+def test_synthesize_document_cancel_during_upload_before_document_appears_keeps_saved_trace(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
     site = FakeSite(texts=TEXTS, hang_on="upload")
-    engine = fake_engine(tmp_path, site)
+    engine = engine_for(site)
     cancel = TtsCancellation()
 
     async def scenario() -> None:
         task = asyncio.create_task(engine.synthesize_document(_request(tmp_path), cancel=cancel))
-        await site.hung.wait()
+        await asyncio.to_thread(site.hung.wait)
         site.reads.clear()
         cancel.cancel()
         with pytest.raises(TtsCancelledError):
@@ -419,14 +517,14 @@ def test_synthesize_document_cancel_during_upload_before_document_appears_keeps_
     assert READ_ID not in (tmp_path / "session.json").read_text(encoding="utf-8")
 
 
-def test_saved_document_trace_is_cleaned_by_next_engine_before_upload(tmp_path: Path) -> None:
+def test_saved_document_trace_is_cleaned_by_next_engine_before_upload(tmp_path: Path, engine_for: EngineFor) -> None:
     first = FakeSite(texts=TEXTS, hang_on="upload", failing={"list_reads"})
-    engine = fake_engine(tmp_path, first)
+    engine = engine_for(first)
     cancel = TtsCancellation()
 
     async def interrupted() -> None:
         task = asyncio.create_task(engine.synthesize_document(_request(tmp_path), cancel=cancel))
-        await first.hung.wait()
+        await asyncio.to_thread(first.hung.wait)
         cancel.cancel()
         with pytest.raises(TtsCancelledError):
             await task
@@ -438,7 +536,7 @@ def test_saved_document_trace_is_cleaned_by_next_engine_before_upload(tmp_path: 
     assert saved.delete_document
     second = FakeSite(texts=TEXTS, reads=[READ_ID])
 
-    _run(_record(fake_engine(tmp_path, second), _request(tmp_path)))
+    _run(_record(engine_for(second), _request(tmp_path)))
 
     assert second.events.index("list_reads") < second.events.index("upload")
     assert second.deleted == [f"{READS_URL}/{READ_ID}", f"{READS_URL}/{READ_ID}"]
@@ -447,19 +545,24 @@ def test_saved_document_trace_is_cleaned_by_next_engine_before_upload(tmp_path: 
     assert not record.cleanup_pending
 
 
-def test_failed_restore_is_saved_and_run_by_next_engine(tmp_path: Path) -> None:
+def test_failed_restore_is_saved_and_run_by_next_engine_after_its_recording(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
     first = FakeSite(texts=TEXTS, failing={"restore_account"})
-    _run(_record(fake_engine(tmp_path, first), _request(tmp_path)))
+    engine = engine_for(first)
+    _run(_record(engine, _request(tmp_path)))
+    _run(engine.close())
     saved = read_session(tmp_path)
     assert saved is not None
     assert saved.restore == AccountSettings(voice_id="previous-voice", speed=1.5)
     assert not saved.delete_document
     second = FakeSite(texts=TEXTS, account={"default_voice_id": FRONCZEWSKI_ID, "playback_speed_rate": 1.0})
 
-    _run(_record(fake_engine(tmp_path, second), _request(tmp_path)))
+    _run(_record(engine_for(second), _request(tmp_path)))
 
-    assert second.events.index("restore_account") < second.events.index("upload")
+    assert second.events.index("upload") < second.events.index("restore_account")
     assert second.account["default_voice_id"] == "previous-voice"
+    assert second.account["playback_speed_rate"] == 1.5
     record = read_session(tmp_path)
     assert record is not None
     assert not record.cleanup_pending
@@ -468,6 +571,7 @@ def test_failed_restore_is_saved_and_run_by_next_engine(tmp_path: Path) -> None:
 def test_synthesize_document_unwritable_recording_raises_clip_error_without_waiting_for_stall(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    engine_for: EngineFor,
 ) -> None:
     monkeypatch.setattr(service, "STALL_S", 300.0)
     monkeypatch.setattr(service, "StreamRecorder", lambda output: StreamRecorder(_FullDisk()))
@@ -475,7 +579,7 @@ def test_synthesize_document_unwritable_recording_raises_clip_error_without_wait
     started: float = time.monotonic()
 
     with pytest.raises(TtsClipValidationError) as error:
-        _run(_record(fake_engine(tmp_path, site), _request(tmp_path)))
+        _run(_record(engine_for(site), _request(tmp_path)))
 
     assert time.monotonic() - started < 2.0
     assert error.value.context.details == {"error_class": "OSError", "errno": errno.ENOSPC}
@@ -488,11 +592,13 @@ class _FullDisk(io.BytesIO):
 
 
 @pytest.mark.parametrize("text", UNREADABLE_PARTS)
-def test_synthesize_document_part_unreadable_as_paragraph_is_refused_without_browser(tmp_path: Path, text: str) -> None:
+def test_synthesize_document_part_unreadable_as_paragraph_is_refused_without_browser(
+    tmp_path: Path, engine_for: EngineFor, text: str
+) -> None:
     site = FakeSite()
 
     with pytest.raises(TtsInputError) as error:
-        _run(_record(fake_engine(tmp_path, site), _request(tmp_path, texts=("Dobrze.", text))))
+        _run(_record(engine_for(site), _request(tmp_path, texts=("Dobrze.", text))))
 
     assert error.value.context.details == {"request_id": "line-1"}
     assert site.sessions == []
@@ -500,35 +606,46 @@ def test_synthesize_document_part_unreadable_as_paragraph_is_refused_without_bro
 
 
 @pytest.mark.parametrize("text", UNREADABLE_PARTS)
-def test_validate_part_unreadable_as_paragraph_raises_input_error(tmp_path: Path, text: str) -> None:
+def test_validate_part_unreadable_as_paragraph_raises_input_error(engine_for: EngineFor, text: str) -> None:
     site = FakeSite()
 
     with pytest.raises(TtsInputError) as error:
-        fake_engine(tmp_path, site).validate_part(DocumentPart(request_id="line-7", text=text))
+        engine_for(site).validate_part(DocumentPart(request_id="line-7", text=text))
 
     assert error.value.context.details == {"request_id": "line-7"}
     assert site.sessions == []
 
 
 @pytest.mark.parametrize("text", ["Zobacz filmik…", "Raz [dwa].", "  Trzy\ncztery.  "])
-def test_validate_part_readable_paragraph_accepts_part(tmp_path: Path, text: str) -> None:
-    fake_engine(tmp_path, FakeSite()).validate_part(DocumentPart(request_id="line-0", text=text))
+def test_validate_part_readable_paragraph_accepts_part(engine_for: EngineFor, text: str) -> None:
+    engine_for(FakeSite()).validate_part(DocumentPart(request_id="line-0", text=text))
 
 
-def test_synthesize_document_cancelled_before_start_opens_no_browser(tmp_path: Path) -> None:
+def test_synthesize_document_cancelled_before_start_opens_no_browser(tmp_path: Path, engine_for: EngineFor) -> None:
     site = FakeSite()
     cancel = TtsCancellation()
     cancel.cancel()
 
     with pytest.raises(TtsCancelledError):
-        _run(fake_engine(tmp_path, site).synthesize_document(_request(tmp_path), cancel=cancel))
+        _run(engine_for(site).synthesize_document(_request(tmp_path), cancel=cancel))
 
     assert site.sessions == []
 
 
-def test_failed_delete_stays_pending_and_runs_before_next_upload(tmp_path: Path) -> None:
+def test_synthesize_document_after_close_is_refused_without_browser(tmp_path: Path, engine_for: EngineFor) -> None:
+    site = FakeSite()
+    engine = engine_for(site)
+    _run(engine.close())
+
+    with pytest.raises(TtsProviderUnavailableError, match="closed"):
+        _run(_record(engine, _request(tmp_path)))
+
+    assert site.sessions == []
+
+
+def test_failed_delete_stays_pending_and_runs_before_next_upload(tmp_path: Path, engine_for: EngineFor) -> None:
     site = FakeSite(texts=TEXTS, failing={"delete_read"})
-    engine = fake_engine(tmp_path, site)
+    engine = engine_for(site)
 
     async def scenario() -> None:
         await _record(engine, _request(tmp_path))
@@ -539,12 +656,12 @@ def test_failed_delete_stays_pending_and_runs_before_next_upload(tmp_path: Path)
     _run(scenario())
 
     assert site.events.index("delete_read") < site.events.index("upload")
-    assert len(site.deleted) == 2
+    assert site.deleted == [read_url(0), read_url(1)]
 
 
-def test_close_runs_pending_cleanup_while_browser_lives(tmp_path: Path) -> None:
+def test_close_runs_pending_cleanup_while_browser_lives(tmp_path: Path, engine_for: EngineFor) -> None:
     site = FakeSite(texts=TEXTS, failing={"delete_read"})
-    engine = fake_engine(tmp_path, site)
+    engine = engine_for(site)
 
     async def scenario() -> None:
         await _record(engine, _request(tmp_path))
@@ -557,9 +674,9 @@ def test_close_runs_pending_cleanup_while_browser_lives(tmp_path: Path) -> None:
     assert site.sessions[0].closed
 
 
-def test_close_with_cleanup_failing_for_good_warns_owner(tmp_path: Path) -> None:
+def test_close_with_cleanup_failing_for_good_warns_owner(tmp_path: Path, engine_for: EngineFor) -> None:
     site = FakeSite(texts=TEXTS, failing={"delete_read", "restore_account"})
-    engine = fake_engine(tmp_path, site)
+    engine = engine_for(site)
     captured: list[Message] = []
     handler_id: int = loguru_logger.add(captured.append, format="{message} {extra}", level="DEBUG")
 
@@ -590,33 +707,46 @@ class _BrokenTabPage(FakePage):
         raise RuntimeError(message)
 
 
-def test_synthesize_document_tab_close_breaking_still_closes_browser(tmp_path: Path) -> None:
+def test_synthesize_document_tab_close_breaking_still_frees_the_recording_slot(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
     site = FakeSite(texts=TEXTS, listening_speed=3.0, page_type=_BrokenTabPage)
+    engine = engine_for(site)
 
     with pytest.raises(RuntimeError, match="tab gone"):
-        _run(_record(fake_engine(tmp_path, site), _request(tmp_path)))
+        _run(_record(engine, _request(tmp_path)))
 
     _assert_cleaned(site)
-    assert site.events[-2:] == ["close_page", "close_browser"]
-    assert site.sessions[0].closed
+    assert site.sessions[0].alive
+    site.page_type = FakePage
+    site.listening_speed = 1.0
+
+    async def other_voice() -> EngineDocumentResult:
+        async with asyncio.timeout(5.0):
+            return await _record(engine_for(site, voice_id="adam"), _request(tmp_path, voice_id="adam"))
+
+    assert _run(other_voice()).voice_id == ADAM_ID
 
 
-def test_synthesize_document_cleanup_breaking_unexpectedly_still_closes_tab_and_browser(
+def test_synthesize_document_cleanup_breaking_unexpectedly_still_closes_tab(
     tmp_path: Path,
+    engine_for: EngineFor,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def broken(page: object, cleanup: object) -> None:
+    async def broken(page: object, cleanup: object, *, restore: bool) -> None:
         message: str = "cleanup bug"
         raise RuntimeError(message)
 
-    monkeypatch.setattr(service, "clean_account", broken)
     site = FakeSite(texts=TEXTS, listening_speed=3.0)
+    engine = engine_for(site)
 
-    with pytest.raises(RuntimeError, match="cleanup bug"):
-        _run(_record(fake_engine(tmp_path, site), _request(tmp_path)))
+    with monkeypatch.context() as patch:
+        patch.setattr(hub, "clean_account", broken)
+        with pytest.raises(RuntimeError, match="cleanup bug"):
+            _run(_record(engine, _request(tmp_path)))
 
     assert site.pages[0].closed
-    assert site.sessions[0].closed
+    assert site.sessions[0].alive
 
 
 def test_logs_never_contain_token_read_id_or_stream_address(tmp_path: Path) -> None:
@@ -626,6 +756,7 @@ def test_logs_never_contain_token_read_id_or_stream_address(tmp_path: Path) -> N
     async def scenario() -> None:
         engine = fake_engine(tmp_path, FakeSite(texts=TEXTS))
         await _record(engine, _request(tmp_path))
+        await engine.close()
         failing = fake_engine(tmp_path, FakeSite(texts=TEXTS, failing={"delete_read", "restore_account"}))
         await _record(failing, _request(tmp_path))
         await failing.close()
@@ -643,7 +774,222 @@ def test_logs_never_contain_token_read_id_or_stream_address(tmp_path: Path) -> N
     assert str(tmp_path) not in text
 
 
-def test_synthesize_single_request_is_unsupported(tmp_path: Path) -> None:
+def test_two_engines_on_two_threads_record_together_in_tabs_of_one_browser(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
+    site = FakeSite(texts=TEXTS, held={0, 1})
+    first, second = engine_for(site), engine_for(site)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        recordings = [
+            _in_thread(pool, engine, _request(tmp_path, name=name))
+            for engine, name in ((first, "first"), (second, "second"))
+        ]
+        _wait_until(lambda: site.streams == 2)
+        site.held.clear()
+        results = [recording.result(timeout=5.0) for recording in recordings]
+
+    assert len(site.sessions) == 1
+    assert len(site.pages) == 2
+    assert all([timing.request_id for timing in result.parts] == ["line-0", "line-1"] for result in results)
+    uploads: list[int] = [index for index, event in enumerate(site.events) if event == "upload"]
+    streams: list[int] = [index for index, event in enumerate(site.events) if event.startswith("stream_")]
+    assert streams[0] < uploads[1]
+    assert sorted(site.deleted) == sorted([read_url(0), read_url(1)])
+    assert site.events.count("restore_account") == 1
+
+
+def test_first_recording_ending_deletes_only_its_document_and_last_one_restores_account(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
+    stale: str = "u:stale"
+    save_cleanup(tmp_path, AccountCleanup(documents=[document_trace(read_id=stale)]))
+    site = FakeSite(texts=TEXTS, held={0, 1})
+    first, second = engine_for(site), engine_for(site)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        earlier = _in_thread(pool, first, _request(tmp_path, name="first"))
+        _wait_until(lambda: site.streams == 1)
+        later = _in_thread(pool, second, _request(tmp_path, name="second"))
+        _wait_until(lambda: site.streams == 2)
+        assert site.deleted == [f"{READS_URL}/{stale}"]
+        site.held.discard(0)
+        earlier.result(timeout=5.0)
+        assert site.deleted == [f"{READS_URL}/{stale}", read_url(0)]
+        assert site.account["default_voice_id"] == FRONCZEWSKI_ID
+        midway = read_session(tmp_path)
+        assert midway is not None
+        assert midway.restore == AccountSettings(voice_id="previous-voice", speed=1.5)
+        assert [trace.read_id for trace in midway.documents] == [read_id_of(1)]
+        site.held.clear()
+        later.result(timeout=5.0)
+
+    assert site.deleted == [f"{READS_URL}/{stale}", read_url(0), read_url(1)]
+    assert site.account["default_voice_id"] == "previous-voice"
+    record = read_session(tmp_path)
+    assert record is not None
+    assert not record.cleanup_pending
+
+
+class _YieldingPage(FakePage):
+    async def delete(self, url: str, token: str, *, action: str) -> None:
+        await asyncio.sleep(0.05)
+        await super().delete(url, token, action=action)
+
+    async def close(self) -> None:
+        await asyncio.sleep(0.05)
+        await super().close()
+
+
+def _end_together(site: FakeSite, tokens: list[TtsCancellation], ending: str) -> None:
+    if ending == "finish":
+        site.held.clear()
+        return
+    for token in tokens:
+        token.cancel()
+
+
+@pytest.mark.parametrize("ending", ["finish", "cancel"])
+def test_recordings_ending_together_restore_account_once_both_left(
+    tmp_path: Path, engine_for: EngineFor, ending: str
+) -> None:
+    site = FakeSite(texts=TEXTS, held={0, 1}, page_type=_YieldingPage)
+    tokens: list[TtsCancellation] = [TtsCancellation(), TtsCancellation()]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        recordings = [
+            _in_thread(pool, engine_for(site), _request(tmp_path, name=name), token)
+            for name, token in zip(("first", "second"), tokens, strict=True)
+        ]
+        _wait_until(lambda: site.streams == 2)
+        _end_together(site, tokens, ending)
+        for recording in recordings:
+            recording.exception(timeout=5.0)
+
+    assert site.account["default_voice_id"] == "previous-voice"
+    assert site.account["playback_speed_rate"] == 1.5
+    record = read_session(tmp_path)
+    assert record is not None
+    assert not record.cleanup_pending
+
+
+class _SlowRestorePage(FakePage):
+    async def post_json(self, url: str, token: str, data: dict[str, object], *, action: str) -> None:
+        if action == "restore_account":
+            self.site.events.append("restore_begin")
+            self.site.hung.set()
+            await asyncio.sleep(0.2)
+        await super().post_json(url, token, data, action=action)
+
+
+def test_recording_starting_while_last_one_restores_account_waits_for_the_restore(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
+    site = FakeSite(texts=TEXTS, page_type=_SlowRestorePage)
+    first, second = engine_for(site), engine_for(site)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        earlier = _in_thread(pool, first, _request(tmp_path, name="first"))
+        assert site.hung.wait(timeout=5.0)
+        later = _in_thread(pool, second, _request(tmp_path, name="second"))
+        earlier.result(timeout=5.0)
+        later.result(timeout=5.0)
+
+    restored: int = site.events.index("restore_account")
+    uploads: list[int] = [index for index, event in enumerate(site.events) if event == "upload"]
+    assert site.events.index("restore_begin") < restored < uploads[1]
+    assert site.events.count("restore_account") == 2
+    assert site.account["default_voice_id"] == "previous-voice"
+
+
+def test_recording_in_another_voice_waits_until_active_recordings_finish(tmp_path: Path, engine_for: EngineFor) -> None:
+    site = FakeSite(texts=TEXTS, held={0})
+    fronczewski, adam = engine_for(site), engine_for(site, voice_id="adam")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        earlier = _in_thread(pool, fronczewski, _request(tmp_path, name="first"))
+        _wait_until(lambda: site.streams == 1)
+        later = _in_thread(pool, adam, _request(tmp_path, voice_id="adam", name="second"))
+        time.sleep(0.2)
+        assert len(site.uploaded) == 1
+        site.held.clear()
+        results = [earlier.result(timeout=5.0), later.result(timeout=5.0)]
+
+    assert [result.voice_id for result in results] == [FRONCZEWSKI_ID, ADAM_ID]
+    sets: list[int] = [index for index, event in enumerate(site.events) if event == "set_account"]
+    assert site.events.index("restore_account") < sets[1]
+    assert site.account["default_voice_id"] == "previous-voice"
+
+
+def test_cancelling_one_recording_closes_only_its_tab_and_keeps_the_other(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
+    site = FakeSite(texts=TEXTS, held={0, 1})
+    first, second = engine_for(site), engine_for(site)
+    cancel = TtsCancellation()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        cancelled = _in_thread(pool, first, _request(tmp_path, name="first"), cancel)
+        _wait_until(lambda: site.streams == 1)
+        kept = _in_thread(pool, second, _request(tmp_path, name="second"))
+        _wait_until(lambda: site.streams == 2)
+        cancel.cancel()
+        with pytest.raises(TtsCancelledError):
+            cancelled.result(timeout=5.0)
+        assert site.deleted == [read_url(0)]
+        assert [page.closed for page in site.pages] == [True, False]
+        assert site.sessions[0].alive
+        assert site.account["default_voice_id"] == FRONCZEWSKI_ID
+        site.held.clear()
+        kept.result(timeout=5.0)
+
+    assert len(site.sessions) == 1
+    assert site.deleted == [read_url(0), read_url(1)]
+    assert site.account["default_voice_id"] == "previous-voice"
+
+
+def test_timed_out_recording_keeps_shared_browser_until_the_others_finish(
+    tmp_path: Path, engine_for: EngineFor
+) -> None:
+    site = FakeSite(texts=TEXTS, held={0, 1})
+    first, second = engine_for(site), engine_for(site)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        expiring = _in_thread(pool, first, _request(tmp_path, deadline_s=1.0, name="first"))
+        _wait_until(lambda: site.streams == 1)
+        kept = _in_thread(pool, second, _request(tmp_path, name="second"))
+        _wait_until(lambda: site.streams == 2)
+        with pytest.raises(TtsTimeoutError, match="deadline"):
+            expiring.result(timeout=5.0)
+        assert site.sessions[0].alive
+        site.held.clear()
+        kept.result(timeout=5.0)
+
+    _run(_record(first, _request(tmp_path, name="third")))
+
+    assert len(site.sessions) == 2
+    assert site.sessions[0].closed
+    assert site.sessions[1].alive
+
+
+def test_last_engine_closing_stops_browser_and_host_thread(tmp_path: Path) -> None:
+    threads: int = _hub_threads()
+    site = FakeSite(texts=TEXTS)
+    first, second = fake_engine(tmp_path, site), fake_engine(tmp_path, site)
+    _run(_record(first, _request(tmp_path)))
+
+    _run(first.close())
+
+    assert site.sessions[0].alive
+    assert _hub_threads() == threads + 1
+
+    _run(second.close())
+
+    assert site.sessions[0].closed
+    assert _hub_threads() == threads
+
+
+def test_synthesize_single_request_is_unsupported(tmp_path: Path, engine_for: EngineFor) -> None:
     request = SynthesisRequest(
         request_id="line-0",
         text="Tekst.",
@@ -658,7 +1004,7 @@ def test_synthesize_single_request_is_unsupported(tmp_path: Path) -> None:
     )
 
     with pytest.raises(TtsUnsupportedError):
-        _run(fake_engine(tmp_path, FakeSite()).synthesize(request, cancel=TtsCancellation()))
+        _run(engine_for(FakeSite()).synthesize(request, cancel=TtsCancellation()))
 
 
 @pytest.mark.parametrize(
@@ -673,6 +1019,7 @@ def test_synthesize_single_request_is_unsupported(tmp_path: Path) -> None:
 )
 def test_synthesize_document_invalid_request_is_refused_without_browser(
     tmp_path: Path,
+    engine_for: EngineFor,
     change: dict[str, object],
     error_type: type[TtsError],
 ) -> None:
@@ -691,15 +1038,17 @@ def test_synthesize_document_invalid_request_is_refused_without_browser(
     request = DocumentSynthesisRequest(**values)  # type: ignore[arg-type]
 
     with pytest.raises(error_type):
-        _run(_record(fake_engine(tmp_path, site), request))
+        _run(_record(engine_for(site), request))
 
     assert site.sessions == []
 
 
-def test_availability_without_chrome_reports_missing_binary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_availability_without_chrome_reports_missing_binary(
+    monkeypatch: pytest.MonkeyPatch, engine_for: EngineFor
+) -> None:
     monkeypatch.setattr(service, "find_chrome", lambda: None)
 
-    availability = _run(fake_engine(tmp_path, FakeSite()).availability())
+    availability = _run(engine_for(FakeSite()).availability())
 
     assert availability.status is AvailabilityStatus.MISSING_BINARY
 
@@ -710,13 +1059,14 @@ def test_availability_without_chrome_reports_missing_binary(tmp_path: Path, monk
 def test_availability_live_reads_saved_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    engine_for: EngineFor,
     signed_in: bool,
     status: AvailabilityStatus,
 ) -> None:
     monkeypatch.setattr(service, "find_chrome", lambda: tmp_path / "chrome.exe")
     write_session(tmp_path, signed_in=signed_in)
 
-    availability = _run(fake_engine(tmp_path, FakeSite()).availability(live=True))
+    availability = _run(engine_for(FakeSite()).availability(live=True))
 
     assert availability.status is status
     assert [voice.id for voice in availability.voices] == [FRONCZEWSKI_ID, ADAM_ID]
@@ -725,10 +1075,11 @@ def test_availability_live_reads_saved_session(
 def test_availability_live_without_saved_session_reports_missing_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    engine_for: EngineFor,
 ) -> None:
     monkeypatch.setattr(service, "find_chrome", lambda: tmp_path / "chrome.exe")
 
-    availability = _run(fake_engine(tmp_path, FakeSite()).availability(live=True))
+    availability = _run(engine_for(FakeSite()).availability(live=True))
 
     assert availability.status is AvailabilityStatus.MISSING_KEY
 
@@ -770,10 +1121,10 @@ def test_document_text_parts_returns_separator_paragraph_between_parts() -> None
     assert document_text(parts) == "Raz (dwa).\n\n…\n\nTrzy cztery.\n"
 
 
-def test_document_chars_parts_returns_uploaded_text_length(tmp_path: Path) -> None:
+def test_document_chars_parts_returns_uploaded_text_length(engine_for: EngineFor) -> None:
     parts = (DocumentPart(request_id="a", text="Raz."), DocumentPart(request_id="b", text="Dwa."))
 
-    assert fake_engine(tmp_path, FakeSite()).document_chars(parts) == len("Raz.\n\n…\n\nDwa.\n")
+    assert engine_for(FakeSite()).document_chars(parts) == len("Raz.\n\n…\n\nDwa.\n")
 
 
 def test_document_text_single_part_returns_one_paragraph() -> None:

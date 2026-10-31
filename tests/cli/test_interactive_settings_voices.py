@@ -266,7 +266,7 @@ def test_tts_items_elevenreader_unchecked_session_shows_status_and_action(
     assert _row(panel, "elevenreader-session") == "nie sprawdzono"
     assert {item.section for item in panel._items if item.key.startswith("elevenreader-")} == {"SESJA"}
     assert _row(panel, "setting:tts_voice_id") == "Piotr Fronczewski"
-    assert "setting:tts_profile.concurrency" not in _keys(panel)
+    assert _row(panel, "setting:tts_profile.concurrency") == "2"
 
 
 @pytest.mark.unit

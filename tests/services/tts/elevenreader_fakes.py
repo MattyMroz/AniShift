@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import threading
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -130,7 +131,9 @@ class FakeSite:
     send_audio: bool = True
     player_done: bool = False
     hang_on: str = ""
-    hung: asyncio.Event = field(default_factory=asyncio.Event)
+    hung: threading.Event = field(default_factory=threading.Event)
+    held: set[int] = field(default_factory=set)
+    streams: int = 0
     upload_window_s: float = 120.0
     reads: list[str] = field(default_factory=list)
     page_type: type[FakePage] = field(default_factory=lambda: FakePage)
@@ -151,11 +154,20 @@ class FakeSite:
         return sum(len(json.loads(frame).get("alignment", {}).get("chars", [])) for frame in self.stream())
 
 
+def read_id_of(upload: int) -> str:
+    return READ_ID if upload == 0 else f"{READ_ID}-{upload}"
+
+
+def read_url(upload: int) -> str:
+    return f"{READS_URL}/{read_id_of(upload)}"
+
+
 class FakePage:
     def __init__(self, site: FakeSite) -> None:
         self.site: FakeSite = site
         self.closed: bool = False
         self.watching: bool = False
+        self.upload_index: int | None = None
         self._token: str | None = None
         self._recorder: StreamRecorder | None = None
         self._on_url: Callable[[str], None] | None = None
@@ -179,14 +191,16 @@ class FakePage:
 
     async def upload(self, document: Path, cleanup: AccountCleanup, save: Callable[[], None]) -> UploadedRead:
         text: str = document.read_text(encoding="utf-8")
+        self.upload_index = len(self.site.uploaded)
+        read_id: str = read_id_of(self.upload_index)
         self.site.uploaded.append(text)
         trace: DocumentTrace = document_trace(text, listed_in_s=self.site.upload_window_s)
         cleanup.documents.append(trace)
         save()
-        self.site.reads.append(READ_ID)
+        self.site.reads.append(read_id)
         await self._step("upload")
-        cleanup.swap(trace, replace(trace, read_id=READ_ID))
-        return UploadedRead(read_id=READ_ID, char_count=self.site.count(), token=TOKEN)
+        cleanup.swap(trace, replace(trace, read_id=read_id))
+        return UploadedRead(read_id=read_id, char_count=self.site.count(), token=TOKEN)
 
     async def get_json(self, url: str, token: str, *, action: str) -> dict[str, object]:
         assert token == TOKEN
@@ -213,7 +227,8 @@ class FakePage:
             self.site.reads.remove(read_id)
 
     async def open_document(self, read_id: str) -> None:
-        assert read_id == READ_ID
+        assert self.upload_index is not None
+        assert read_id == read_id_of(self.upload_index)
         await self._step("open_document")
 
     async def press_play(self) -> None:
@@ -222,6 +237,8 @@ class FakePage:
         if self._recorder is None or self._on_url is None or not self.site.send_audio:
             return
         voice: str = str(self.site.account.get("default_voice_id")) if self.site.voice_in_url else "other"
+        self.site.events.append(f"stream_{self.upload_index}")
+        self.site.streams += 1
         self._on_url(f"wss://api.elevenlabs.io/v1/reader/reads/stream/v2/{READ_ID}?voice_id={voice}")
         self._recorder.on_sent(json.dumps({"listening_speed": self.site.listening_speed}))
         for frame in self.site.stream():
@@ -236,6 +253,8 @@ class FakePage:
 
     async def check_page_speed(self, speed: float) -> None:
         await self._step("check_page_speed")
+        while self.upload_index in self.site.held:
+            await asyncio.sleep(0.001)
 
     def watch_stream(self, recorder: StreamRecorder, on_url: Callable[[str], None]) -> None:
         self.watching = True

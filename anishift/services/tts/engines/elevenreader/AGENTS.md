@@ -8,14 +8,32 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
 - Standard sióstr: `config.py`, `constants.py`, `types.py`, `service.py` (silnik, `document_text`, `part_spans`)
   i `api_backend.py` (karta Playwright: `ReaderPage`, konto, sesja, mapowanie błędów dostawcy).
 - Specyficzne: `browser.py` (proces Chrome i CDP, jak `sapi/worker.py`; tu też `ChromeMissingError` i
-  `ChromeBusyError`, jak `VpnError` w `elevenbytes/vpn.py`) oraz `recorder.py` (czyste ramki WebSocket → MP3 i
-  czasy znaków, testowane bez przeglądarki).
+  `ChromeBusyError`, jak `VpnError` w `elevenbytes/vpn.py`), `hub.py` (`ReaderHub`: jedna przeglądarka profilu w
+  procesie, karta na nagranie, wspólne sprzątanie konta) oraz `recorder.py` (czyste ramki WebSocket → MP3 i czasy
+  znaków, testowane bez przeglądarki).
+
+## Gospodarz (`hub.py`)
+
+- `ReaderHub.acquire(profile_root, …)` w konstruktorze silnika, `release()` w `close()`; rejestr procesu pod
+  `threading.Lock`, licznik referencji = żywe silniki. Gospodarz ma własny wątek `anishift-elevenreader` (daemon) i
+  pętlę asyncio; na niej żyją `ChromeSession`, karty, `AccountCleanup` i każdy zapis `session.json`. Silniki z różnych
+  `TtsService` (różne pętle) zlecają całą próbę przez `record` i nie dotykają Playwright.
+- Nowy gospodarz profilu, którego poprzedni jeszcze się zamyka, czeka w swoim wątku na koniec poprzedniego i dopiero
+  wtedy wczytuje `load_cleanup`; ostatni `release` sprząta konto w nowej karcie, zapisuje, ostrzega
+  (`CLEANUP_WARNING`), zamyka Chrome i kończy wątek.
+- Próba: bramka głosu (poza terminem, pod anulowaniem; inny głos czeka na koniec aktywnych, kolejka po bilecie bez
+  głodzenia) → termin `request.deadline_s` → blokada startu: Chrome (start albo restart podejrzanego, gdy nikt inny
+  nie nagrywa), karta, `require_signed_in`, zaległe dokumenty, upload, `prepare_account`, Play; blokadę zwalnia
+  `attempt.started()` po pierwszym adresie strumienia albo po `START_TIMEOUT_S` → nagrywanie równolegle → `_leave`.
+- Anulowanie: token runu i anulowanie zadania silnika przechodzą przez osobny `TtsCancellation` próby
+  (`_until_done`); silnik wraca dopiero po końcu `_leave` tej próby. Postęp dokumentu wraca na pętlę silnika
+  (`_reported_here`, `run_coroutine_threadsafe`).
 
 ## Granice
 
 - Na poziomie modułu Playwright importuje tylko `browser.py`. `api_backend.py` ładuje go leniwie
-  (`_playwright_error`, `_playwright_timeout`, import `browser` w `sign_in`), a `service.py` ładuje `browser.py`
-  w `_headless_session`. Pilnuje tego test w `test_tts_contract.py` i test importu pakietu w procesie potomnym.
+  (`_playwright_error`, `_playwright_timeout`, import `browser` w `sign_in`), a `hub.py` ładuje `browser.py`
+  w `headless_session`. Pilnuje tego test w `test_tts_contract.py` i test importu pakietu w procesie potomnym.
 - `find_chrome`, `profile_dir` i `session_file` leżą w `config.py`, żeby doctor i panel nie ładowały Playwright.
 - `ChromeSession` startuje Chrome z `--user-data-dir=config/elevenreader/chrome-profile` (Chrome 136+ ignoruje
   CDP dla domyślnego profilu) na wolnym porcie i dołącza `connect_over_cdp`. Proces jest zwykłym dzieckiem
@@ -23,23 +41,29 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
 - `ChromeSession.close` najpierw prosi Chrome o wyjście przez CDP (`Browser.close`) i czeka do 10 s; `terminate`
   i `kill` są tylko zapasem. Chrome zapisuje ciasteczka na dysk z opóźnieniem do ok. 30 s, więc twarde zabicie
   zaraz po zalogowaniu gubi sesję (K2: `signed_in: true` w `session.json`, a profil wylogowany).
-- Nagrywanie, sprzątanie i sprawdzanie sesji przez silnik działają tylko z `headless=True` (`_headless_session`);
+- Nagrywanie, sprzątanie i sprawdzanie sesji przez silnik działają tylko z `headless=True` (`headless_session`);
   okno widać wyłącznie w `sign_in`. Skrypty diagnostyczne też nie otwierają okna.
-- `ProcessLock` na `chrome.lock` wyklucza drugą przeglądarkę na profilu: zajęty → `ChromeBusyError`
-  (przejściowy); w `sign_in` → `SignInOutcome.BUSY`. `restrict_directory` przy każdym starcie.
+- `ProcessLock` na `chrome.lock` wyklucza drugą przeglądarkę na profilu (drugi proces, okno logowania): zajęty →
+  `ChromeBusyError` (przejściowy); w `sign_in` → `SignInOutcome.BUSY`. W procesie Chrome profilu ma tylko gospodarz.
+  `restrict_directory` przy każdym starcie.
 - `ReaderPage` jest jedynym miejscem z selektorami i wywołaniami Playwright. Każdy błąd Playwright idzie przez
   `map_playwright_error` z `from None`, bo komunikat Playwright potrafi zawierać adres z `read_id`.
 
 ## Konto i sprzątanie
 
 - Głos i tempo 1x ustawia `user_config` konta tokenem strony (`prepare_account`), przed otwarciem dokumentu:
-  serwer wybiera model przy starcie strumienia. Wpis przywrócenia powstaje przed zapisem i nie jest
-  nadpisywany, dopóki poprzedni nie wykona się, inaczej „poprzednim” głosem zostałby nasz.
-- `AccountCleanup` (przywrócenie ustawień, `DELETE reads/{id}`, sierota po oknie wgrania i tytule) biegnie przez
-  `clean_account` w `finally` każdej próby pod `_finish_shielded`, także po `asyncio.CancelledError`; każdy krok ma
-  własny limit i `_cleanup_step` łapie każdy wyjątek, a karta i Chrome zamykają się w `finally`. Nieudany krok zostaje
-  i wykonuje się po `require_signed_in` następnej próby (przed uploadem), w `close()`, jeśli przeglądarka żyje, oraz w
-  `sign_in` panelu. Trwała porażka: `logger.warning(CLEANUP_WARNING, steps=…)`, wiersz w SESJA i ostrzeżenie doctora.
+  serwer wybiera model przy starcie strumienia. Wpis przywrócenia (we wspólnym `AccountCleanup` gospodarza) powstaje
+  przed zapisem i nie jest nadpisywany, dopóki poprzedni nie wykona się, inaczej „poprzednim” głosem zostałby nasz.
+- Każda próba ma własny `AccountCleanup` wgrań (`ReaderAttempt.uploads`); gospodarz ma wspólny (`restore` i dokumenty
+  zakończonych prób). `session.json` zapisuje sumę obu (`_save`). `clean_account(…, restore=…)`: w `_leave` (pod
+  `finish_shielded`, także po anulowaniu) próba usuwa tylko swoje dokumenty; resztki przechodzą do wspólnego, a
+  próba, po której nie zostaje żadna otwarta karta, pod blokadą startu przywraca ustawienia (`restore=True`).
+  Licznik kart `_tabs` spada na samym początku `_leave`, nie w `_exit`, więc dwie próby kończące się naraz nie
+  pomijają przywrócenia nawzajem. Start próby usuwa zaległe
+  dokumenty bez przywracania ustawień. Każdy krok ma własny limit i `_cleanup_step` łapie każdy wyjątek; karta
+  zamyka się w `finally`, a slot bramki głosu zwalnia zawsze. Zaległe kroki biegną też przy ostatnim `release` (jeśli
+  przeglądarka żyje) i w `sign_in` panelu. Trwała porażka: `logger.warning(CLEANUP_WARNING, steps=…)`, wiersz w SESJA
+  i ostrzeżenie doctora.
 - `upload` dopisuje `DocumentTrace` każdego wgrania (`pressed_at` i `listed_by` jako czas zegarowy `time.time()`,
   skróty SHA-256 możliwych tytułów z `document_titles`) i zapisuje go przed „Upload”, a `read_id` z odpowiedzi
   wpisuje do śladu przed walidacją `char_count`/tokenu. Dokument ze znanym `read_id` znika przez `DELETE reads/{id}`,
@@ -52,23 +76,29 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
   `listed_by` → krok zostaje; zero po `listed_by` → krok rozliczony z `logger.warning`, że upload mógł zostać na
   koncie (z liczbą importów w oknie, bez tytułu i tekstu).
 - Zaległe sprzątanie jest trwałe w prywatnym `session.json` (`restore`, `documents`: `pressed_at`, `listed_by`,
-  `titles`, `read_id`): `prepare_account` i `upload` zapisują je przed zmianą konta, silnik po każdym sprzątaniu,
-  `load_cleanup` wczytuje je przy starcie. Czas zegarowy zachowuje okno wgrania po restarcie procesu i komputera.
-- Przeglądarka zostaje otwarta po sukcesie i po błędach, które jej nie dotyczą (`_KEEP_BROWSER_ERRORS`); po
-  anulowaniu, timeoucie i niedostępności zamyka się dopiero po sprzątaniu.
+  `titles`, `read_id`): `prepare_account` i `upload` zapisują je przed zmianą konta, gospodarz po każdym sprzątaniu,
+  `load_cleanup` wczytuje je raz na gospodarza. Czas zegarowy zachowuje okno wgrania po restarcie procesu i komputera.
+- Błąd próby zamyka tylko jej kartę. Anulowanie, timeout i niedostępność (`_SUSPECT_ERRORS`) oznaczają przeglądarkę
+  jako podejrzaną; restart następuje przy otwieraniu karty, gdy żadne inne nagranie nie trwa. Martwy Chrome
+  (`alive == False`) startuje od nowa przy następnej próbie.
 
 ## Pułapki
+
+- Konto trzyma na urządzeniu najwyżej 2 strumienie naraz (K1 2026-10-31, `outcomes/02-parallel-documents.md`):
+  przy 3 i 5 nowy strumień zamyka starszy, a ta karta stoi do `STALL_S`. Dlatego `MAX_PARALLEL_DOCUMENTS` = 2;
+  podniesienie tylko po nowym pomiarze testem sieciowym `test_tts_services_on_own_threads_live_record_documents_together`.
+  Otwarcie i zamknięcie strumienia logują `ElevenReader stream opened/closed` z liczbą odebranych znaków.
 
 - Brak retry w transporcie (Z6). Ponowne „Play” (do 3) i pętla dołączania do CDP to czynności jednej próby.
 - Błąd Playwright przy starcie sterownika, dołączaniu i przygotowaniu kontekstu (`ChromeSession._attach`) staje się
   `unavailable_error`, więc `sign_in` kończy się `FAILED`, a panel nie zostaje w stanie „zajęty”.
 - Każde wywołanie strony w próbie (także `set_page_speed`, `press_play`, `check_page_speed`, `player_state`) idzie
-  przez `_unless_cancelled`, więc anulowanie nie czeka na limit Playwright; `evaluate` nie ma własnego limitu.
-- Kartę i nagrywanie próby ogranicza `request.deadline_s` (`_within_deadline`): po jego upływie próba kończy się
-  `TtsTimeoutError` (przejściowy), a sprzątanie konta i zamknięcie Chrome biegną w `finally` jak po każdym błędzie.
-  Scheduler ma wyłączony `asyncio.timeout` dla tego silnika, więc ten termin jest jedynym górnym limitem próby;
-  poza nim są start Chrome (`_open_browser`, ograniczony próbami `CONNECT_ATTEMPTS`) i końcowe sprzątanie (każdy
-  krok `CLEANUP_STEP_TIMEOUT_S`).
+  przez `unless_cancelled`, więc anulowanie nie czeka na limit Playwright; `evaluate` nie ma własnego limitu.
+- Blokadę startu, Chrome, kartę i nagrywanie próby ogranicza `request.deadline_s` (`within_deadline`): po jego
+  upływie próba kończy się `TtsTimeoutError` (przejściowy), a sprzątanie i zamknięcie karty biegną w `finally` jak po
+  każdym błędzie. Scheduler ma wyłączony `asyncio.timeout` dla tego silnika, więc ten termin jest jedynym górnym
+  limitem próby; poza nim są czekanie w bramce głosu (ogranicza je tylko anulowanie) i końcowe sprzątanie (każdy krok
+  `CLEANUP_STEP_TIMEOUT_S`).
 - Token, `read_id`, adres WebSocketu i tekst dokumentu nie trafiają do logów ani wyjątków. Token i adres
   WebSocketu nie trafiają też do plików. Prywatny `session.json` (katalog z `restrict_directory`, gitignored) ma tylko
   `signed_in`, `checked_at`, `restore` (głos i tempo konta) i `documents` (czasy, `read_id` wyłącznie do sprzątania

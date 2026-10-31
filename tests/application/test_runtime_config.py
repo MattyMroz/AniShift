@@ -9,6 +9,7 @@ import pytest
 
 from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot
 from anishift.application.runtime import _audio_config, _LlmCompleter, _raise_translation_error, _tts_config
+from anishift.application.scheduler_contracts import ResourceLimits
 from anishift.application.service import _run_settings_snapshot
 from anishift.config.settings import Settings
 from anishift.config.user_settings import CustomVoiceSetting, UserSettings
@@ -186,7 +187,7 @@ def test_another_profile_keeps_the_scheduler_deadline_whatever_the_vpn_preferenc
 
 
 @pytest.mark.unit
-def test_tts_config_elevenreader_runs_one_document_without_scheduler_deadline(
+def test_tts_config_elevenreader_records_profile_documents_at_once_without_scheduler_deadline(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -195,7 +196,7 @@ def test_tts_config_elevenreader_runs_one_document_without_scheduler_deadline(
         tts_profile_id="elevenreader",
         tts_model_id="eleven_v4",
         tts_voice_id="fronczewski",
-        tts_request_concurrency=4,
+        tts_request_concurrency=2,
     )
 
     config = _tts_config(Settings(_env_file=None), plan)
@@ -203,9 +204,18 @@ def test_tts_config_elevenreader_runs_one_document_without_scheduler_deadline(
     assert config.scheduler_timeout_enabled is False
     assert config.request_timeout_s == 3600.0
     assert config.retry_backoff_seconds == (60.0, 120.0, 300.0, 600.0)
-    assert (config.max_concurrency, config.queue_capacity) == (1, 2)
+    assert (config.max_concurrency, config.queue_capacity) == (2, 4)
     assert config.shutdown_deadline_s == 15.0
     assert config.elevenreader_profile_root == tmp_path / "elevenreader"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("engine", "group_jobs"), [("elevenreader", 2), ("elevenbytes", 1)])
+def test_run_snapshot_document_engine_takes_episode_limit_from_voice_profile(engine: str, group_jobs: int) -> None:
+    snapshot: RunSettingsSnapshot = _run_settings_snapshot(UserSettings(tts_engine=engine))
+
+    assert snapshot.tts_group_jobs == group_jobs
+    assert ResourceLimits.from_settings(snapshot).worker_limit(f"tts:{engine}", snapshot) == group_jobs
 
 
 @pytest.mark.unit

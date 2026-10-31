@@ -410,9 +410,11 @@ class ReaderPage:
         def on_websocket(socket: WebSocket) -> None:
             if STREAM_PATH not in socket.url:
                 return
+            logger.info("ElevenReader stream opened", received_chars=recorder.chars)
             on_url(socket.url)
             socket.on("framesent", recorder.on_sent)
             socket.on("framereceived", recorder.on_frame)
+            socket.on("close", lambda _: logger.info("ElevenReader stream closed", received_chars=recorder.chars))
 
         self._stream_listener = on_websocket
         self._page.on("websocket", on_websocket)
@@ -522,16 +524,16 @@ async def prepare_account(
         raise voice_error(message)
 
 
-async def clean_account(page: ReaderPage, cleanup: AccountCleanup) -> None:
-    """Run every pending step under its own deadline with the tab's token; a failed step stays in *cleanup*."""
+async def clean_account(page: ReaderPage, cleanup: AccountCleanup, *, restore: bool) -> None:
+    """Run each owed step under its own deadline, settings only with *restore*; a failed step stays in *cleanup*."""
     if not cleanup.pending:
         return
     token: str | None = page.token
     if not token:
         logger.warning("ElevenReader cleanup has no account token", steps=list(cleanup.pending))
         return
-    restore: AccountSettings | None = cleanup.restore
-    if restore is not None and await _cleanup_step("restore_settings", partial(_restore, page, token, restore)):
+    settings: AccountSettings | None = cleanup.restore if restore else None
+    if settings is not None and await _cleanup_step("restore_settings", partial(_restore, page, token, settings)):
         cleanup.restore = None
     for trace in tuple(cleanup.documents):
         if trace.read_id is not None and await _cleanup_step(
@@ -767,7 +769,7 @@ async def sign_in(root: Path, *, timeout_s: float = SIGN_IN_TIMEOUT_S) -> SignIn
         page: ReaderPage = await session.new_page()
         signed_in: bool = await _wait_for_library(page, timeout_s)
         if signed_in:
-            await clean_account(page, cleanup)
+            await clean_account(page, cleanup, restore=True)
     except ChromeMissingError:
         return SignInOutcome.NO_CHROME
     except ChromeBusyError:

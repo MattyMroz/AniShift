@@ -76,15 +76,19 @@ niego.
 - **U7. Brzegi każdego klipu są przycinane z ciszy** przed ułożeniem na osi czasu. To obróbka audio, wspólna dla
   wszystkich silników, także `elevenbytes` (D1).
 - **U8. Tempo i korekta głośności są na głos** w istniejących profilach `tts_voice_profiles`.
-- **U9. Jedna przeglądarka i jeden dokument naraz.** `max_concurrency` silnika wynosi dokładnie 1.
+- **U9. Jedna przeglądarka, do N dokumentów naraz w osobnych kartach.** N to „Syntez jednocześnie” profilu głosu
+  (`tts_profile.concurrency`, 1–`MAX_PARALLEL_DOCUMENTS` = 2, domyślnie 2; pomiar K1 z 2026-10-31: trzeci strumień
+  na urządzeniu zamyka starszy); tyle odcinków nagrywa się naraz w całym procesie. Starty (wgranie, ustawienie konta, Play) idą po kolei, nagrywanie równolegle; inny głos czeka, aż
+  skończą się bieżące nagrania.
 - **U10. Brak automatycznego przełączania silników.** Powrót do `elevenbytes` to jeden wybór w Ustawieniach,
   podpowiadany w każdym trwałym błędzie silnika.
 - **U11. Logowanie tylko zapisaną sesją.** Właściciel loguje się raz w oknie Chrome otwartym akcją panelu; AniShift
   nie przechowuje e-maila ani hasła.
 - **U12. Głos i prędkość ustawia konto, nie odtwarzacz.** Silnik zapisuje `default_voice_id` i
   `playback_speed_rate = 1` w `user_config` konta tokenem strony.
-- **U14. Sprzątanie zawsze.** Po każdej próbie — udanej, nieudanej i przerwanej — silnik w `finally` usuwa wgrany
-  dokument z biblioteki ElevenReadera i przywraca poprzedni głos i tempo konta. Na koncie nie zostają śmieci.
+- **U14. Sprzątanie zawsze.** Po każdej próbie — udanej, nieudanej i przerwanej — silnik w `finally` usuwa swój
+  wgrany dokument z biblioteki ElevenReadera, nigdy dokumentu innej trwającej próby. Poprzedni głos i tempo konta
+  wracają po ostatnim aktywnym nagraniu. Na koncie nie zostają śmieci.
 - **U13. Nagrywanie bez okna** (`--headless=new`); okno tylko przy akcji logowania.
 
 ## Wymagania funkcjonalne
@@ -164,8 +168,9 @@ niego.
   niezgodna liczba kwestii są błędami przejściowymi ponawianymi przez wspólny scheduler.
 - **F27.** Komunikat trwałego błędu w panelu mówi, co zrobić: zalogować się, poczekać na kredyty albo przełączyć
   silnik na `elevenbytes`. Żaden błąd nie kończy się cichym zatrzymaniem.
-- **F28.** Sprzątanie (U14) biegnie także po błędzie i anulowaniu. Nieudane sprzątanie silnik ponawia przy
-  następnej próbie i przy zamknięciu; jeśli i to zawiedzie, zostaje ostrzeżenie w logu i komunikat w panelu, że
+- **F28.** Sprzątanie (U14) biegnie także po błędzie i anulowaniu. Błąd, anulowanie lub termin jednej próby zamyka
+  tylko jej kartę. Nieudane usunięcie dokumentu silnik ponawia na starcie następnej próby, a ustawienia konta po
+  ostatnim aktywnym nagraniu; oba także przy zamknięciu ostatniego silnika; jeśli i to zawiedzie, zostaje ostrzeżenie w logu i komunikat w panelu, że
   dokument lub ustawienia konta trzeba poprawić ręcznie. Błąd sprzątania nie unieważnia gotowego nagrania.
 
 ## Wymagania jakościowe
@@ -198,7 +203,8 @@ niego.
 - **O1.** Tylko Windows i zainstalowany Google Chrome w standardowej lokalizacji albo na `PATH`.
 - **O2.** Chrome 136+ ignoruje `--remote-debugging-port` dla domyślnego katalogu danych; profil musi być osobnym
   katalogiem.
-- **O3.** Jedno konto, jeden dokument naraz, jedna przeglądarka na profil.
+- **O3.** Jedno konto i jedna przeglądarka na profil w procesie; głos i tempo są ustawieniem konta, więc naraz
+  nagrywa tylko jeden głos.
 - **O4.** Wewnętrzne API ElevenReadera jest nieudokumentowane i może zmienić się bez ostrzeżenia.
 - **O5.** Nowa zależność tylko `playwright` (przez `uv add`), bez pobierania przeglądarek Playwright.
 - **O6.** Głos Fronczewskiego ma kategorię `famous`; nagrania służą prywatnemu odsłuchowi i nie trafiają do

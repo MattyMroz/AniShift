@@ -10,6 +10,7 @@ from anishift.errors import ErrorCode
 from anishift.services.tts import TtsConfigError, TtsVoiceError
 from anishift.services.tts.engines.elevenreader import (
     DEFAULT_VOICE_ALIAS,
+    MAX_PARALLEL_DOCUMENTS,
     VOICES,
     ElevenReaderConfig,
     resolve_voice,
@@ -42,6 +43,13 @@ def test_voices_offer_two_voices_with_fronczewski_default() -> None:
     assert VOICES["fronczewski"].label == "Piotr Fronczewski"
 
 
+@pytest.mark.parametrize("documents", [1, MAX_PARALLEL_DOCUMENTS])
+def test_from_tts_config_parallel_documents_within_limit_are_accepted(tmp_path: Path, documents: int) -> None:
+    config = replace(tts_config(tmp_path), max_concurrency=documents)
+
+    assert ElevenReaderConfig.from_tts_config(config).profile_root == tmp_path
+
+
 def test_from_tts_config_resolves_voice_and_profile(tmp_path: Path) -> None:
     config: ElevenReaderConfig = ElevenReaderConfig.from_tts_config(tts_config(tmp_path, voice_id="adam"))
 
@@ -53,7 +61,7 @@ def test_from_tts_config_resolves_voice_and_profile(tmp_path: Path) -> None:
     ("field_name", "value"),
     [
         ("provider_model_id", "eleven_v2"),
-        ("max_concurrency", 2),
+        ("max_concurrency", MAX_PARALLEL_DOCUMENTS + 1),
         ("engine_options", {"stability": 0.5}),
         ("elevenreader_profile_root", None),
     ],

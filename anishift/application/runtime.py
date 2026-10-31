@@ -674,8 +674,6 @@ def _tts_config(settings: Settings, plan: ExecutionPlan) -> TtsConfig:
         return config
     return replace(
         config,
-        max_concurrency=1,
-        queue_capacity=2,
         scheduler_timeout_enabled=False,
         shutdown_deadline_s=_DOCUMENT_SHUTDOWN_DEADLINE_S,
     )

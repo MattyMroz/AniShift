@@ -10,7 +10,7 @@ from anishift.errors import ErrorCode, ErrorContext
 from anishift.platform.installed import find_installed
 from anishift.services.tts.errors import TtsConfigError, TtsVoiceError
 
-from .constants import CHROME_LOCATIONS, CHROME_STEM, PROVIDER_MODEL_ID, VOICES
+from .constants import CHROME_LOCATIONS, CHROME_STEM, MAX_PARALLEL_DOCUMENTS, PROVIDER_MODEL_ID, VOICES
 from .types import ElevenReaderVoice
 
 if TYPE_CHECKING:
@@ -39,8 +39,10 @@ class ElevenReaderConfig:
         """Resolve the voice and profile, refusing any model, concurrency or option ElevenReader cannot honour."""
         if config.provider_model_id.strip().casefold() != PROVIDER_MODEL_ID:
             _raise_config_error(f"ElevenReader reads only with {PROVIDER_MODEL_ID}", field_name="provider_model_id")
-        if config.max_concurrency != 1:
-            _raise_config_error("ElevenReader records one document at a time", field_name="max_concurrency")
+        if not 1 <= config.max_concurrency <= MAX_PARALLEL_DOCUMENTS:
+            _raise_config_error(
+                f"ElevenReader records 1 to {MAX_PARALLEL_DOCUMENTS} documents at a time", field_name="max_concurrency"
+            )
         if config.engine_options:
             _raise_config_error("ElevenReader accepts no engine options", field_name="engine_options")
         if config.elevenreader_profile_root is None:
@@ -88,7 +90,10 @@ def _raise_config_error(message: str, *, field_name: str) -> Never:
     context: ErrorContext = ErrorContext(
         code=ErrorCode.TTS_CONFIG_INVALID,
         message=message,
-        suggestion="Select ElevenReader with model eleven_v4, one synthesis at a time and the application profile.",
+        suggestion=(
+            f"Select ElevenReader with model eleven_v4, 1 to {MAX_PARALLEL_DOCUMENTS} syntheses at a time "
+            "and the application profile."
+        ),
         details={"field": field_name},
     )
     raise TtsConfigError(context=context)
