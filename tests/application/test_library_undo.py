@@ -790,15 +790,16 @@ def test_changes_of_a_set_being_recycled_wait_for_its_settlement_before_an_inven
         owner._inspect_changes()
         assert not owner._inspecting
         assert owner._changed_paths == {tmp_path / "ready/01.txt"}
+        while not owner._queue.empty():
+            owner._queue.get_nowait()
+        owner._active_io += 1
+        owner._settle_deletion(operation.operation_id, None)
+        assert owner._changed_paths == {tmp_path / "ready/01.txt"}
+        assert not owner._queue.empty()
         owner.files_changed(DirectoryChange(paths=(tmp_path / "ready/01.pl.txt",)))
         owner._inspect_changes()
         assert owner._inspecting
         assert not owner._changed_paths
-        owner._active_io += 1
-        owner.files_changed(DirectoryChange(paths=(tmp_path / "ready/01.txt",)))
-        owner._settle_deletion(operation.operation_id, None)
-        assert tmp_path / "ready/01.txt" in owner._changed_paths
-        assert not owner._queue.empty()
     finally:
         owner._pool.shutdown(wait=True)
         service.close()
