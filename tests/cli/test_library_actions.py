@@ -497,6 +497,14 @@ def test_processing_ctrl_z_shows_a_failed_set_restoring_at_once(monkeypatch: pyt
         _stop(owner, panel)
 
 
+def test_deleted_sets_leave_a_set_gone_from_the_bin_to_the_owner_library() -> None:
+    deletions: list[dict[str, object]] = [
+        {**_RECYCLED, "recycled": 1},
+        {**_RECYCLED, "set_id": "Beta", "recycled": 1, "gone": True},
+    ]
+    assert state_texts.deleted_sets({"deletions": deletions}) == {"Alpha"}
+
+
 @pytest.mark.parametrize(
     ("deletions", "expected"),
     [
@@ -509,6 +517,17 @@ def test_processing_ctrl_z_shows_a_failed_set_restoring_at_once(monkeypatch: pyt
         (
             [{**_RECYCLED, "recycled": 1}, {**_RECYCLED, "set_id": "Beta", "recycled": 1, "restored": True}],
             "Alpha",
+        ),
+        (
+            [{**_RECYCLED, "recycled": 1}, {**_RECYCLED, "set_id": "Beta", "recycled": 1, "gone": True}],
+            "Alpha",
+        ),
+        (
+            [
+                {**_RECYCLED, "recycled": 1},
+                {**_RECYCLED, "set_id": "Beta", "recycled": 1, "gone": True, "active": True},
+            ],
+            None,
         ),
         ([{**_RECYCLED, "recycled": 1, "active": True}], None),
         ([], None),

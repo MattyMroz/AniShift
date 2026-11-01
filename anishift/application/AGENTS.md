@@ -89,13 +89,15 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   pliku przed skutkami natywnymi; `DeletionRestore.unsettled` chroni nierozstrzygnięte skutki po restarcie.
   `recycler`/`restorer` to fabryki sesji: jeden proces pomocniczy na zestaw, zapis per plik bez zmian. Koniec
   przywracania rzutuje Bibliotekę z `library_inventory()` przed publikacją, więc wiersz wraca w tej samej klatce.
-- Ctrl+Z jest wielopoziomowe: `latest_deletion` pomija usunięcia już przywrócone (`restore.completed`), więc
-  kolejne `deletion_undo` cofają kolejne usunięcia. Każdy `_save` ownera przycina `control.retain_deletions`: znika
-  usunięcie starsze niż `UNDO_DEPTH` ostatnich usunięć, które wysłały plik do Kosza, liczonych tylko spośród usunięć,
-  nad którymi owner już nie pracuje (`INFLIGHT` może jeszcze przejść w `REFUSED`), jeśli samo nie jest wykonywane,
-  przywracane ani ponawialne w tej instancji, nie ma skutku `inflight`/`uncertain` i nie ma nierozstrzygniętego
-  przywracania. Innych sekcji nie przycinaj: zlecenia wskazują
-  potwierdzenia produktów i blokady Auto, pobrania chronią deduplikację, receipt niosą fakty partii i idempotencję.
+- Ctrl+Z jest wielopoziomowe: `latest_deletion` pomija usunięcia już przywrócone (`restore.completed`) i te, których
+  plik zniknął z Kosza (`restore_gone`: odmowa `restore_receipt_missing`, `RestoreOutcome.gone`; taki plik nie trzyma
+  `unsettled`, bo worker odmawia przed jakimkolwiek skutkiem), więc kolejne `deletion_undo` cofają kolejne usunięcia.
+  Historia obejmuje jedno uruchomienie rezydenta: start ownera i każdy `_save` przycinają `control.retain_deletions`
+  do usunięć tej instancji (`instance_id`), przejętych (`_adopted_deletions`: to, które Ctrl+Z cofnąłby tuż przed
+  startem, i każde, którego przywracanie ta instancja zaczęła) oraz nierozliczonych: wykonywanych, przywracanych lub
+  ponawialnych, ze skutkiem `inflight`/`uncertain` albo z nierozstrzygniętym przywracaniem. Innych sekcji nie
+  przycinaj: zlecenia wskazują potwierdzenia produktów i blokady Auto, pobrania chronią deduplikację, receipt niosą
+  fakty partii i idempotencję.
 
 ## Pobieranie odcinków
 

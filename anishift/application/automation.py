@@ -94,6 +94,7 @@ from anishift.application.control import (
     record_request,
     release,
     reserve,
+    restore_gone,
     retain_deletions,
 )
 from anishift.application.control_payloads import decode_intent
@@ -833,7 +834,10 @@ class AutomationOwner:
         self._pending_notification_target: _NotificationTarget | None = None
         self._panels: set[str] = set()
         self._panel_opening_at: float = 0.0
-        self._state: WatchState = store.load()
+        loaded: WatchState = store.load()
+        carried: PendingDeletion | None = latest_deletion(loaded)
+        self._adopted_deletions: set[str] = set() if carried is None else {carried.operation_id}
+        self._state: WatchState = retain_deletions(loaded, instance_id, frozenset(self._adopted_deletions))
         self._restart_requests: tuple[ProcessingRequest, ...] = self._state.requests
         self._run_groups: dict[str, tuple[InspectedSourceGroup, ...]] = {}
         self._ready_store: ReadyStore | None = ready_store
@@ -1938,6 +1942,7 @@ class AutomationOwner:
                     "restoring": item.operation_id in self._restoring,
                     "unrecorded": unrecorded_group(item.set_id) is not None,
                     "restored": item.restore is not None and item.restore.completed,
+                    "gone": restore_gone(item),
                     "restore_problem": next(
                         (
                             result.reason
@@ -2508,6 +2513,7 @@ class AutomationOwner:
         )
         updated: PendingDeletion = replace(operation, restore=restore)
         outcome: CommandOutcome = {"operation_id": operation.operation_id}
+        self._adopted_deletions.add(operation.operation_id)
         refusal = self._commit(request, self._replace_deletion(updated), outcome)
         if refusal is not None:
             return refusal
@@ -7912,8 +7918,10 @@ class AutomationOwner:
 
     def _save(self, candidate: WatchState) -> bool:
         with self._previews_lock:
-            active: frozenset[str] = frozenset({*self._deletion_retries, *self._deleting, *self._restoring})
-        candidate = retain_deletions(candidate, active)
+            kept: frozenset[str] = frozenset(
+                {*self._deletion_retries, *self._deleting, *self._restoring, *self._adopted_deletions}
+            )
+        candidate = retain_deletions(candidate, self._instance_id, kept)
         requested: tuple[AcquisitionConfirmation, ...] = candidate.acquisitions
         finished: tuple[SubscriptionRecord, ...]
         candidate, finished = self._settled_targets(candidate)

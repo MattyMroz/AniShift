@@ -152,8 +152,10 @@ class PendingRestore:
 def undo_target(snapshot: Mapping[str, object]) -> Mapping[str, object] | None:
     """Return the deletion Ctrl+Z restores, chosen as the owner chooses it, or None when it would refuse."""
     for item in reversed(_deletions(snapshot)):
-        if item.get("recycled") or item.get("uncertain") or item.get("active"):
-            return None if item.get("active") else item
+        if item.get("active"):
+            return None
+        if (item.get("recycled") or item.get("uncertain")) and not item.get("gone"):
+            return item
     return None
 
 
@@ -208,7 +210,7 @@ def deleted_sets(snapshot: Mapping[str, object], hidden: Collection[str] = ()) -
     return deleting_sets(snapshot, hidden) | {
         str(item["set_id"])
         for item in _deletions(snapshot)
-        if item.get("total") and item.get("recycled") == item.get("total")
+        if item.get("total") and item.get("recycled") == item.get("total") and not item.get("gone")
     }
 
 
