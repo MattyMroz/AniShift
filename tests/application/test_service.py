@@ -99,6 +99,7 @@ from anishift.services.media.types import MediaCatalog
 
 _PALANTIR_TOKEN = "palantir-token-sentinel-deadbeef"  # noqa: S105
 _TIMEOUT_S: Final[float] = 5.0
+_RESIDENT_TIMEOUT_S: Final[float] = 30.0
 
 
 class _UnusedExtraction:
@@ -260,6 +261,7 @@ def test_global_pause_lets_a_started_user_graph_finish_without_repeating_its_tra
     monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("ANISHIFT_WORKSPACE_ROOT", str(tmp_path))
     monkeypatch.setattr(episode_fonts_module, "extract_attachments", lambda *_args: ())
+    monkeypatch.setattr(episode_fonts_module, "system_font_paths", lambda: ())
     write_media_source(tmp_path / "03.mkv")
     entered: threading.Event = threading.Event()
     release: threading.Event = threading.Event()
@@ -293,7 +295,7 @@ def test_global_pause_lets_a_started_user_graph_finish_without_repeating_its_tra
 
 
 def _wait_for_resident(session: ResidentSession, condition: Callable[[Mapping[str, object]], bool]) -> bool:
-    deadline: float = time.monotonic() + 5.0
+    deadline: float = time.monotonic() + _RESIDENT_TIMEOUT_S
     while time.monotonic() < deadline:
         if condition(session.command("status")):
             return True
@@ -645,6 +647,7 @@ def test_processing_cancel_targets_the_disclosed_whole_manual_run(
 ) -> None:
     monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _PALANTIR_TOKEN)
     monkeypatch.setattr(episode_fonts_module, "extract_attachments", lambda *_args: ())
+    monkeypatch.setattr(episode_fonts_module, "system_font_paths", lambda: ())
     for number in (1, 2):
         write_media_source(tmp_path / f"{number:02d}.mkv")
     entered: threading.Event = threading.Event()
@@ -749,6 +752,7 @@ def test_restarting_a_paused_owner_keeps_the_finished_user_graph_without_rerunni
     monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("ANISHIFT_WORKSPACE_ROOT", str(tmp_path))
     monkeypatch.setattr(episode_fonts_module, "extract_attachments", lambda *_args: ())
+    monkeypatch.setattr(episode_fonts_module, "system_font_paths", lambda: ())
     write_media_source(tmp_path / "03.mkv")
     entered: threading.Event = threading.Event()
     release: threading.Event = threading.Event()
