@@ -1,6 +1,6 @@
 # platform
 
-Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokada jednej instancji procesu (`process_lock.py`), lokalny kanał sterowania rezydenta (`local_control.py`), zadanie Windows przy logowaniu (`autostart.py`), klucze Web UI w ustawieniach qBittorrenta (`qbittorrent_config.py`), szukanie zainstalowanego programu (`installed.py`) i zawężanie prywatnego katalogu do bieżącego konta (`private_dir.py`). `__init__.py` to re-eksport binarek.
+Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokada jednej instancji procesu (`process_lock.py`), lokalny kanał sterowania rezydenta (`local_control.py`), zadanie Windows przy logowaniu (`autostart.py`), klucze Web UI w ustawieniach qBittorrenta (`qbittorrent_config.py`), szukanie zainstalowanego programu (`installed.py`) i zawężanie prywatnego katalogu do bieżącego konta (`private_dir.py`). `__init__.py` niczego nie importuje, a `RecycleResult` żyje w `recycle_worker.py`: proces pomocniczy Kosza startuje bez loggera i Rich (~85 ms zamiast ~260 ms); nie dokładaj tam importów z `anishift.utils`.
 
 ## Pułapki
 

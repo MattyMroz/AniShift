@@ -248,7 +248,8 @@ from anishift.paths import READY_DIRECTORY, RESTORE_STAGING_PREFIX, TMP_DIRECTOR
 from anishift.platform.binaries import BinaryNotFoundError
 from anishift.platform.directory_watch import DirectoryChange, source_is_available
 from anishift.platform.local_control import ControlErrorCode, ControlRequest, ControlResponse
-from anishift.platform.recycle import RecycleResult, RecycleStep, RestoreRequest, RestoreStep
+from anishift.platform.recycle import RecycleStep, RestoreRequest, RestoreStep
+from anishift.platform.recycle_worker import RecycleResult
 from anishift.services.catalog import TitleCandidate
 from anishift.services.torrents.query import EpisodeRange
 from anishift.utils.logger import get_logger
@@ -966,6 +967,10 @@ class AutomationOwner:
             self._reconcile |= change.reconcile or len(self._changed_paths) > _MAX_CHANGED_PATHS
             if self._reconcile:
                 self._changed_paths.clear()
+        self._queue_inspection()
+
+    def _queue_inspection(self) -> None:
+        with self._files_lock:
             if self._files_queued or (not self._changed_paths and not self._reconcile):
                 return
             self._files_queued = True
@@ -1290,9 +1295,12 @@ class AutomationOwner:
         if self._inspection_at is not None and time.monotonic() < self._inspection_at:
             return
         self._inspection_at = None
+        held: frozenset[Path] = self._operation_files()
         with self._files_lock:
             self._files_queued = False
             if not self._changed_paths and not self._reconcile:
+                return
+            if not self._reconcile and self._changed_paths <= held:
                 return
             paths: tuple[Path, ...] | None = None if self._reconcile else tuple(self._changed_paths)
             self._changed_paths.clear()
@@ -1300,6 +1308,15 @@ class AutomationOwner:
         self._inspecting = True
         previous: dict[str, tuple[ProcessingRequest, RunJournal]] = dict(self._inspected_journals)
         self._pool.submit(self._inspect_library, paths, self._state.requests, previous)
+
+    def _operation_files(self) -> frozenset[Path]:
+        """Return the files of every set being recycled or restored, whose changes its settlement reports again."""
+        return frozenset(
+            self._service.workspace_root / name
+            for item in self._state.pending_deletions
+            if item.operation_id in self._deleting
+            for name, _size, _stamp in item.files
+        )
 
     def _inspect_library(
         self,
@@ -2287,6 +2304,13 @@ class AutomationOwner:
     ) -> ControlResponse:
         if acquisitions != self._state.acquisitions and request.kind.startswith("deletion_"):
             return self._library_refusal("library_scope_changed")
+        identifier: str | None = _text(request.payload, "set_id")
+        failed: str | None = unrecorded_group(identifier)
+        if request.kind in {"deletion_preview", "deletion_validate", "deletion_start"} and failed is None:
+            scoped: LibrarySet | None = None if identifier is None else self._projected_set(identifier, groups)
+            if scoped is None:
+                return self._library_refusal("library_set_missing")
+            return self._deletion_preview(request, scoped, released)
         self._ready_library = project_library(self._state, self._service.workspace_root, groups)
         self._publish_state()
         if request.kind == "deletion_undo":
@@ -2296,8 +2320,6 @@ class AutomationOwner:
             return ControlResponse.succeeded({"sets": [encode_view(item) for item in named]})
         if request.kind == "deletion_retry":
             return self._retry_deletion(request, released)
-        identifier: str | None = _text(request.payload, "set_id")
-        failed: str | None = unrecorded_group(identifier)
         group: LibrarySet | None = (
             next((item for item in self._ready_library if item.set_id == identifier), None)
             if failed is None
@@ -2437,6 +2459,17 @@ class AutomationOwner:
             (name for name, _size, _stamp in operation.files),
             self._service.workspace_root,
         )
+
+    def _projected_set(self, set_id: str, groups: tuple[SourceGroup, ...]) -> LibrarySet | None:
+        """Project from *groups* only the Library set *set_id*, exactly as the whole Library would show it."""
+        group_id: str = next((item.group_id for item in self._state.ready_groups if item.set_id == set_id), set_id)
+        state: WatchState = replace(
+            self._state, ready_groups=tuple(item for item in self._state.ready_groups if item.group_id == group_id)
+        )
+        projected: tuple[LibrarySet, ...] = project_library(
+            state, self._service.workspace_root, tuple(group for group in groups if group.group_id == group_id)
+        )
+        return next((item for item in projected if item.set_id == set_id), None)
 
     def _read_released(self, acquisitions: tuple[AcquisitionConfirmation, ...]) -> frozenset[str]:
         service: AcquisitionService | None = self._service.acquisition
@@ -2586,36 +2619,59 @@ class AutomationOwner:
                     reason=result.reason,
                     started=result.outcome == "restored",
                 )
-                if not self._on_owner(partial(self._save_restore_outcome, operation.operation_id, reconciled)):
+                if reconciled != replace(outcome, reason=result.reason) and not self._on_owner(
+                    partial(self._save_restore_outcome, operation.operation_id, reconciled)
+                ):
                     return
             if result.outcome not in {"ready", "restored"}:
                 self._on_owner(partial(self._finish_restore_file, operation.operation_id, outcome, result))
                 return
-        for outcome in operation.restore.outcomes:
-            admitted: bool = self._on_owner(partial(self._begin_restore_file, operation.operation_id, outcome))
-            if not admitted:
-                return
-            result = restore(self._restore_request(operation, outcome), False)
-            saved: bool = self._on_owner(partial(self._finish_restore_file, operation.operation_id, outcome, result))
-            if not saved or result.outcome != "restored":
-                return
+        restored: tuple[RestoreOutcome, RecycleResult] | None = None
+        try:
+            for outcome in operation.restore.outcomes:
+                admitted: bool = self._on_owner(
+                    partial(self._begin_restore_file, operation.operation_id, outcome, restored)
+                )
+                restored = None
+                if not admitted:
+                    return
+                result = restore(self._restore_request(operation, outcome), False)
+                if result.outcome != "restored":
+                    self._on_owner(partial(self._finish_restore_file, operation.operation_id, outcome, result))
+                    return
+                restored = (outcome, result)
+        finally:
+            if restored is not None:
+                self._on_owner(partial(self._finish_restore_file, operation.operation_id, *restored))
 
-    def _begin_restore_file(self, operation_id: str, outcome: RestoreOutcome) -> bool:
-        if self._shutting_down:
+    def _begin_restore_file(
+        self, operation_id: str, outcome: RestoreOutcome, restored: tuple[RestoreOutcome, RecycleResult] | None
+    ) -> bool:
+        """Save the last restored result together with the next file in flight, before the next native effect."""
+        if restored is None and self._shutting_down:
             return False
-        return self._save_restore_outcome(
-            operation_id, replace(outcome, status="inflight", reason="restore_inflight", started=True)
-        )
+        operation: PendingDeletion | None = self._deletion_by_id(operation_id)
+        if operation is None or operation.restore is None:
+            return False
+        if restored is not None:
+            operation = _with_restore_result(operation, *restored)
+        admitted: bool = not self._shutting_down
+        if admitted:
+            operation = _with_restore_outcome(
+                operation, replace(outcome, status="inflight", reason="restore_inflight", started=True)
+            )
+        saved: bool = self._save(self._replace_deletion(operation))
+        if restored is not None:
+            self._publish_state()
+        return saved and admitted
 
     def _finish_restore_file(self, operation_id: str, outcome: RestoreOutcome, result: RecycleResult) -> bool:
-        status: str = result.outcome if result.outcome in {"restored", "refused"} else "uncertain"
         operation: PendingDeletion | None = self._deletion_by_id(operation_id)
-        current: RestoreOutcome = (
-            next((item for item in operation.restore.outcomes if item.path == outcome.path), outcome)
-            if operation is not None and operation.restore is not None
-            else outcome
+        saved: bool = (
+            operation is not None
+            and operation.restore is not None
+            and self._save(self._replace_deletion(_with_restore_result(operation, outcome, result)))
         )
-        saved: bool = self._save_restore_outcome(operation_id, replace(current, status=status, reason=result.reason))
         self._publish_state()
         return saved
 
@@ -2623,11 +2679,7 @@ class AutomationOwner:
         operation: PendingDeletion | None = self._deletion_by_id(operation_id)
         if operation is None or operation.restore is None:
             return False
-        restored: DeletionRestore = replace(
-            operation.restore,
-            outcomes=tuple(outcome if item.path == outcome.path else item for item in operation.restore.outcomes),
-        )
-        return self._save(self._replace_deletion(replace(operation, restore=restored)))
+        return self._save(self._replace_deletion(_with_restore_outcome(operation, outcome)))
 
     def _settle_restore(self, operation_id: str, groups: tuple[SourceGroup, ...] | None) -> None:
         operation: PendingDeletion | None = self._deletion_by_id(operation_id)
@@ -2646,6 +2698,7 @@ class AutomationOwner:
             )
         self._restoring.discard(operation_id)
         self._deleting.pop(operation_id, None)
+        self._queue_inspection()
         self._active_io -= 1
         self._publish_state()
 
@@ -2700,31 +2753,41 @@ class AutomationOwner:
         self._publish_state()
 
     def _recycle_set(self, operation_id: str) -> None:
+        groups: tuple[SourceGroup, ...] | None = None
         try:
             if self._recycler is not None:
                 with self._recycler() as recycle:
                     self._recycle_files(operation_id, recycle)
+            groups = self._service.library_inventory()
         except AniShiftError, OSError, ValueError:
             logger.warning("Set recycling interrupted; durable in-flight evidence retained")
         finally:
-            self._queue.put(lambda: self._settle_deletion(operation_id))
+            self._queue.put(partial(self._settle_deletion, operation_id, groups))
 
     def _recycle_files(self, operation_id: str, recycle: RecycleStep) -> None:
-        while True:
-            groups: tuple[SourceGroup, ...] = self._service.library_inventory()
-            acquisitions: tuple[AcquisitionConfirmation, ...] = self._on_owner(lambda: self._state.acquisitions)
-            released: frozenset[str] = self._read_released(acquisitions)
-            item: LibraryFileIdentity | None = self._on_owner(
-                partial(self._begin_deletion_file, operation_id, groups, acquisitions, released)
-            )
-            if item is None:
-                return
-            result: RecycleResult = recycle(
-                self._service.workspace_root / item.path, (item.size, item.modified_ns, item.device, item.inode)
-            )
-            saved: bool = self._on_owner(partial(self._finish_deletion_file, operation_id, item.path, result))
-            if not saved or result.outcome != "recycled":
-                return
+        recycled: tuple[str, RecycleResult] | None = None
+        try:
+            while True:
+                groups: tuple[SourceGroup, ...] = self._service.library_inventory()
+                acquisitions: tuple[AcquisitionConfirmation, ...] = self._on_owner(lambda: self._state.acquisitions)
+                released: frozenset[str] = self._read_released(acquisitions)
+                admitted: tuple[LibraryFileIdentity, bool] | None = self._on_owner(
+                    partial(self._begin_deletion_file, operation_id, groups, acquisitions, released, recycled)
+                )
+                recycled = None
+                if admitted is None:
+                    return
+                item, last = admitted
+                result: RecycleResult = recycle(
+                    self._service.workspace_root / item.path, (item.size, item.modified_ns, item.device, item.inode)
+                )
+                if result.outcome != "recycled" or last:
+                    self._on_owner(partial(self._finish_deletion_file, operation_id, item.path, result))
+                    return
+                recycled = (item.path, result)
+        finally:
+            if recycled is not None:
+                self._on_owner(partial(self._finish_deletion_file, operation_id, *recycled))
 
     def _deletion_scope_matches(
         self, operation: PendingDeletion, group: LibrarySet, *, verify_files: bool = True
@@ -2755,18 +2818,47 @@ class AutomationOwner:
         self,
         operation_id: str,
         groups: tuple[SourceGroup, ...],
-        acquisitions: tuple[AcquisitionConfirmation, ...] = (),
-        released: frozenset[str] = frozenset(),
-    ) -> LibraryFileIdentity | None:
-        if acquisitions != self._state.acquisitions:
-            return None
+        acquisitions: tuple[AcquisitionConfirmation, ...],
+        released: frozenset[str],
+        recycled: tuple[str, RecycleResult] | None,
+    ) -> tuple[LibraryFileIdentity, bool] | None:
+        """Save the last recycled result with the next file in flight, telling whether that file is the last one."""
         operation: PendingDeletion | None = self._deletion_by_id(operation_id)
-        self._ready_library = project_library(self._state, self._service.workspace_root, groups)
-        group: LibrarySet | None = None if operation is None else self._deletion_set(operation)
+        if operation is None:
+            return None
+        if recycled is not None:
+            operation = self._recorded_deletion(operation, *recycled)
+        admitted: tuple[LibraryFileIdentity, bool] | None = self._next_deletion_file(
+            operation, groups, acquisitions, released
+        )
+        if admitted is None and recycled is None:
+            return None
+        if admitted is not None:
+            operation = _with_deletion_outcome(
+                operation, DeletionOutcome(admitted[0].path, DeletionStatus.INFLIGHT, "recycle_inflight")
+            )
+        saved: bool = self._save(self._replace_deletion(operation))
+        if recycled is not None:
+            logger.info("Native recycle file result recorded", outcome=recycled[1].outcome, saved=saved)
+            self._publish_state()
+        return admitted if saved else None
+
+    def _next_deletion_file(
+        self,
+        operation: PendingDeletion,
+        groups: tuple[SourceGroup, ...],
+        acquisitions: tuple[AcquisitionConfirmation, ...],
+        released: frozenset[str],
+    ) -> tuple[LibraryFileIdentity, bool] | None:
+        if acquisitions != self._state.acquisitions or self._shutting_down:
+            return None
+        group: LibrarySet | None = (
+            self._deletion_set(operation)
+            if unrecorded_group(operation.set_id) is not None
+            else self._projected_set(operation.set_id, groups)
+        )
         if (
-            operation is None
-            or group is None
-            or self._shutting_down
+            group is None
             or not self._deletion_scope_matches(operation, group)
             or self._ownership_problem(group, released) is not None
         ):
@@ -2776,47 +2868,30 @@ class AutomationOwner:
         )
         if not files or any(not source_is_available(self._service.workspace_root / item.path) for item in files):
             return None
-        item: LibraryFileIdentity = files[0]
-        started: DeletionOutcome = DeletionOutcome(item.path, DeletionStatus.INFLIGHT, "recycle_inflight")
-        if not self._save_deletion_outcome(operation, started):
-            return None
-        return item
+        return files[0], len(files) == 1
 
-    def _save_deletion_outcome(self, operation: PendingDeletion, outcome: DeletionOutcome) -> bool:
-        updated: PendingDeletion = replace(
-            operation,
-            outcomes=(*(item for item in operation.outcomes if item.path != outcome.path), outcome),
-            recycled=(*operation.recycled, outcome.path)
-            if outcome.status is DeletionStatus.RECYCLED
-            else operation.recycled,
-        )
-        return self._save(
-            replace(
-                self._state,
-                pending_deletions=tuple(
-                    updated if item.operation_id == operation.operation_id else item
-                    for item in self._state.pending_deletions
-                ),
-            )
+    def _recorded_deletion(self, operation: PendingDeletion, path: str, result: RecycleResult) -> PendingDeletion:
+        with self._previews_lock:
+            if result.outcome == "refused" and self._service.workspace_root / path in self._deletion_dirty.get(
+                operation.operation_id, set()
+            ):
+                result = RecycleResult("uncertain", "library_scope_changed", result.receipt)
+        return _with_deletion_outcome(
+            operation, DeletionOutcome(path, DeletionStatus(result.outcome), result.reason, result.receipt)
         )
 
     def _finish_deletion_file(self, operation_id: str, path: str, result: RecycleResult) -> bool:
         operation: PendingDeletion | None = self._deletion_by_id(operation_id)
         if operation is None:
             return False
-        with self._previews_lock:
-            if result.outcome == "refused" and self._service.workspace_root / path in self._deletion_dirty.get(
-                operation_id, set()
-            ):
-                result = RecycleResult("uncertain", "library_scope_changed", result.receipt)
-        saved: bool = self._save_deletion_outcome(
-            operation, DeletionOutcome(path, DeletionStatus(result.outcome), result.reason, result.receipt)
-        )
+        saved: bool = self._save(self._replace_deletion(self._recorded_deletion(operation, path, result)))
         logger.info("Native recycle file result recorded", outcome=result.outcome, saved=saved)
         self._publish_state()
         return saved
 
-    def _settle_deletion(self, operation_id: str) -> None:
+    def _settle_deletion(self, operation_id: str, groups: tuple[SourceGroup, ...] | None) -> None:
+        if groups is not None:
+            self._ready_library = project_library(self._state, self._service.workspace_root, groups)
         self._deleting.pop(operation_id, None)
         self._active_io -= 1
         operation: PendingDeletion | None = self._deletion_by_id(operation_id)
@@ -2829,6 +2904,7 @@ class AutomationOwner:
         )
         if paths:
             self.files_changed(DirectoryChange(paths=paths, reason="recycle_completed"))
+        self._queue_inspection()
         if (
             operation is not None
             and len(operation.recycled) != len(operation.files)
@@ -9183,6 +9259,38 @@ def _latest_last(
 def _admits(receipt: CommandReceipt, key: EpisodeKey) -> bool:
     """Whether a receipt under an episode command identifier records the admission of that episode."""
     return (receipt.outcome.get("anilist_id"), receipt.outcome.get("number")) == (key.anilist_id, key.number)
+
+
+def _with_deletion_outcome(operation: PendingDeletion, outcome: DeletionOutcome) -> PendingDeletion:
+    """Return *operation* with *outcome* replacing the outcome of its file."""
+    return replace(
+        operation,
+        outcomes=(*(item for item in operation.outcomes if item.path != outcome.path), outcome),
+        recycled=(*(path for path in operation.recycled if path != outcome.path), outcome.path)
+        if outcome.status is DeletionStatus.RECYCLED
+        else operation.recycled,
+    )
+
+
+def _with_restore_outcome(operation: PendingDeletion, outcome: RestoreOutcome) -> PendingDeletion:
+    """Return *operation* with *outcome* replacing the restore outcome of its file."""
+    if operation.restore is None:
+        return operation
+    return replace(
+        operation,
+        restore=replace(
+            operation.restore,
+            outcomes=tuple(outcome if item.path == outcome.path else item for item in operation.restore.outcomes),
+        ),
+    )
+
+
+def _with_restore_result(operation: PendingDeletion, outcome: RestoreOutcome, result: RecycleResult) -> PendingDeletion:
+    """Return *operation* with the native restore *result* recorded on the current outcome of its file."""
+    status: str = result.outcome if result.outcome in {"restored", "refused"} else "uncertain"
+    outcomes: tuple[RestoreOutcome, ...] = () if operation.restore is None else operation.restore.outcomes
+    current: RestoreOutcome = next((item for item in outcomes if item.path == outcome.path), outcome)
+    return _with_restore_outcome(operation, replace(current, status=status, reason=result.reason))
 
 
 def _file_identity(path: Path) -> tuple[int, int]:

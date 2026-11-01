@@ -91,7 +91,7 @@ from anishift.platform.local_control import (
     connect,
     control_endpoint,
 )
-from anishift.platform.recycle import RecycleResult
+from anishift.platform.recycle_worker import RecycleResult
 from anishift.services.extraction import ExtractionRequest, ExtractionResult
 from anishift.services.media import DefaultMediaProbe
 from anishift.services.media._process import ProcessResult
@@ -1152,9 +1152,9 @@ if phase == "after_cleanup":
 if phase == "before_ready":
     ReadyStore.prepare = lambda *args: os._exit(73)
 original_link = os.link
-def link(*args, **kwargs):
-    original_link(*args, **kwargs)
-    if phase == "after_link":
+def link(source, destination, *args, **kwargs):
+    original_link(source, destination, *args, **kwargs)
+    if phase == "after_link" and Path(destination).parent == root / "ready":
         os._exit(73)
 os.link = link
 with _panel_owner(service, root, ready=True) as (session, store):

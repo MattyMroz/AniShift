@@ -8,7 +8,17 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from test_automation import _await, _completed_library, _owner, _real_service, _request, _serving, _TorrentNetwork
+from test_automation import (
+    _INSTANCE,
+    _await,
+    _completed_library,
+    _owner,
+    _real_service,
+    _request,
+    _serving,
+    _TorrentNetwork,
+)
+from test_discovery import _junction
 from test_selective_lifecycle import _failed_request
 
 from anishift.application.acquisition import AcquisitionService, TorrentClient, TorrentManagement
@@ -36,7 +46,8 @@ from anishift.application.watch_state import WatchStateStore
 from anishift.errors import ConfigError
 from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import ControlResponse
-from anishift.platform.recycle import RecycleResult, RestoreRequest
+from anishift.platform.recycle import RestoreRequest
+from anishift.platform.recycle_worker import RecycleResult
 from anishift.services.torrents import parse_release_name
 
 
@@ -685,6 +696,169 @@ def test_set_delete_and_undo_each_use_one_native_session_with_per_file_steps(tmp
         owner.request_shutdown()
         thread.join(5)
         service.close()
+
+
+def test_set_delete_and_undo_save_once_per_file_with_each_file_in_flight_before_its_effect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, store, _state = _completed_library(tmp_path)
+    parked: Path = tmp_path / ".bin"
+    parked.mkdir()
+    seen: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
+    saves: list[WatchState] = []
+    saving: Callable[[WatchState], None] = store.save
+
+    def save(state: WatchState) -> None:
+        saves.append(state)
+        saving(state)
+
+    def recycle(path: Path, identity: tuple[int, int, int, int]) -> RecycleResult:
+        del identity
+        operation: PendingDeletion = store.load().pending_deletions[-1]
+        inflight: tuple[str, ...] = tuple(
+            item.path for item in operation.outcomes if item.status is DeletionStatus.INFLIGHT
+        )
+        seen.append((path.name, inflight, operation.recycled))
+        target: Path = parked / path.name
+        path.rename(target)
+        return RecycleResult("recycled", "recycle_completed", str(target))
+
+    def restore(request: RestoreRequest, check_only: bool) -> RecycleResult:
+        restoring: DeletionRestore | None = store.load().pending_deletions[-1].restore
+        assert restoring is not None
+        if not check_only:
+            seen.append(
+                (
+                    Path(request.path).name,
+                    tuple(item.path for item in restoring.outcomes if item.status == "inflight" and item.started),
+                    tuple(item.path for item in restoring.outcomes if item.status == "restored"),
+                )
+            )
+        return _restore_parked(request, check_only)
+
+    monkeypatch.setattr(store, "save", save)
+    owner: AutomationOwner = AutomationOwner(
+        service,
+        store,
+        instance_id="first",
+        recycler=lambda: nullcontext(recycle),
+        restorer=lambda: nullcontext(restore),
+    )
+    thread: threading.Thread = _serving(owner)
+    try:
+        _delete(owner, "set-01", "delete-1")
+        assert _await(lambda: len(seen) == 2 and not owner._deleting)
+        assert seen == [
+            ("01.pl.txt", ("ready/01.pl.txt",), ()),
+            ("01.txt", ("ready/01.txt",), ("ready/01.pl.txt",)),
+        ]
+        assert len(saves) == 4
+        assert set(store.load().pending_deletions[-1].recycled) == {"ready/01.pl.txt", "ready/01.txt"}
+        seen.clear()
+        saves.clear()
+        assert owner.handle(_request("deletion_undo", command_id="undo-1")).ok
+        assert _await(lambda: (tmp_path / "ready/01.txt").is_file() and not owner._deleting)
+        assert seen == [
+            ("01.pl.txt", ("ready/01.pl.txt",), ()),
+            ("01.txt", ("ready/01.txt",), ("ready/01.pl.txt",)),
+        ]
+        assert len(saves) == 5
+        restored: DeletionRestore | None = store.load().pending_deletions[-1].restore
+        assert restored is not None
+        assert restored.completed
+    finally:
+        owner.request_shutdown()
+        thread.join(5)
+        service.close()
+
+
+def test_changes_of_a_set_being_recycled_wait_for_its_settlement_before_an_inventory(tmp_path: Path) -> None:
+    service, store, state = _completed_library(tmp_path)
+    operation: PendingDeletion = PendingDeletion(
+        "delete",
+        "set-01",
+        "now",
+        (("ready/01.txt", 1, 2),),
+        identities=(("ready/01.txt", 3, 4),),
+        instance_id=_INSTANCE,
+    )
+    store.save(replace(state, pending_deletions=(operation,)))
+    owner: AutomationOwner = _owner(service, store)
+    try:
+        owner._deleting[operation.operation_id] = operation.set_id
+        owner.files_changed(DirectoryChange(paths=(tmp_path / "ready/01.txt",)))
+        owner._inspect_changes()
+        assert not owner._inspecting
+        assert owner._changed_paths == {tmp_path / "ready/01.txt"}
+        owner.files_changed(DirectoryChange(paths=(tmp_path / "ready/01.pl.txt",)))
+        owner._inspect_changes()
+        assert owner._inspecting
+        assert not owner._changed_paths
+        owner._active_io += 1
+        owner.files_changed(DirectoryChange(paths=(tmp_path / "ready/01.txt",)))
+        owner._settle_deletion(operation.operation_id, None)
+        assert tmp_path / "ready/01.txt" in owner._changed_paths
+        assert not owner._queue.empty()
+    finally:
+        owner._pool.shutdown(wait=True)
+        service.close()
+
+
+def test_a_failure_after_a_saved_result_never_counts_a_recycled_file_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, store, _state = _completed_library(tmp_path)
+    parked: Path = tmp_path / ".bin"
+    parked.mkdir()
+    failed: list[bool] = []
+
+    def recycle(path: Path, _identity: tuple[int, int, int, int]) -> RecycleResult:
+        target: Path = parked / path.name
+        path.rename(target)
+        return RecycleResult("recycled", "recycle_completed", str(target))
+
+    owner: AutomationOwner = AutomationOwner(service, store, instance_id="first", recycler=lambda: nullcontext(recycle))
+    begin: Callable[..., tuple[LibraryFileIdentity, bool] | None] = owner._begin_deletion_file
+
+    def failing_begin(*args: object) -> tuple[LibraryFileIdentity, bool] | None:
+        admitted: tuple[LibraryFileIdentity, bool] | None = begin(*args)
+        if args[-1] is not None and not failed:
+            failed.append(True)
+            raise ValueError
+        return admitted
+
+    monkeypatch.setattr(owner, "_begin_deletion_file", failing_begin)
+    thread: threading.Thread = _serving(owner)
+    try:
+        _delete(owner, "set-01", "delete-1")
+        assert _await(lambda: not owner._deleting)
+        operation: PendingDeletion = store.load().pending_deletions[-1]
+        assert failed
+        assert len(operation.recycled) == len(set(operation.recycled))
+    finally:
+        owner.request_shutdown()
+        thread.join(5)
+        service.close()
+
+
+def test_a_library_file_reached_through_a_junction_has_no_identity(tmp_path: Path) -> None:
+    root: Path = tmp_path / "workspace"
+    outside: Path = tmp_path / "outside"
+    outside.mkdir()
+    root.mkdir()
+    (outside / "01.txt").write_text("source", encoding="utf-8")
+    _junction(root / "ready", outside)
+    assert file_identity(outside.parent, "outside/01.txt") is not None
+    assert file_identity(root, "ready/01.txt") is None
+
+
+def test_a_library_name_with_a_drive_colon_has_no_identity(tmp_path: Path) -> None:
+    root: Path = tmp_path / "workspace"
+    (root / "ready").mkdir(parents=True)
+    (root / "ready" / "01.txt").write_text("source", encoding="utf-8")
+    assert file_identity(root, "ready/01.txt") is not None
+    assert file_identity(root, f"ready/{tmp_path.drive}01.txt") is None
+    assert file_identity(root, f"ready/{tmp_path.drive}{root / 'ready' / '01.txt'}") is None
 
 
 def test_restored_set_is_listed_in_the_snapshot_that_ends_restoring(tmp_path: Path) -> None:

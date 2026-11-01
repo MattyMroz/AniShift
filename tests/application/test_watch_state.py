@@ -382,6 +382,18 @@ def test_saving_an_unknown_corrupt_file_preserves_the_existing_backup(tmp_path: 
     assert _store(tmp_path).load() == _state()
 
 
+def test_backup_keeps_the_previous_state_when_the_saved_file_is_later_rewritten_in_place(tmp_path: Path) -> None:
+    store: WatchStateStore = _store(tmp_path)
+    path: Path = tmp_path / WATCH_STATE_FILE_NAME
+    store.save(_state())
+    previous: bytes = path.read_bytes()
+    store.save(replace(_state(), policy=AutomationPolicy(auto_enabled=False)))
+    with path.open("r+b") as handle:
+        handle.write(b"{broken")
+    assert (tmp_path / f"{WATCH_STATE_FILE_NAME}.bak").read_bytes() == previous
+    assert not (tmp_path / f"{WATCH_STATE_FILE_NAME}.bak.tmp").exists()
+
+
 def test_saving_overwrites_a_temporary_file_left_by_a_crash(tmp_path: Path) -> None:
     store: WatchStateStore = _store(tmp_path)
     (tmp_path / f"{WATCH_STATE_FILE_NAME}.tmp").write_text("{ not json", encoding="utf-8")

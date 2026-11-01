@@ -589,17 +589,26 @@ class WatchStateStore:
             _keep_backup(backup, content)
 
     def _back_up(self) -> None:
-        try:
-            content: bytes = self._path.read_bytes()
-        except OSError:
-            return
         if not self._readable:
+            try:
+                content: bytes = self._path.read_bytes()
+            except OSError:
+                return
             try:
                 _parse(content.decode("utf-8"))
             except ConfigError, UnicodeDecodeError:
                 logger.warning("Kept an unreadable automation state out of the backup")
                 return
-        self._path.with_name(f"{self._path.name}{_BACKUP_SUFFIX}").write_bytes(content)
+        backup: Path = self._path.with_name(f"{self._path.name}{_BACKUP_SUFFIX}")
+        staged: Path = backup.with_name(f"{backup.name}{_TEMPORARY_SUFFIX}")
+        staged.unlink(missing_ok=True)
+        try:
+            staged.hardlink_to(self._path)
+        except FileNotFoundError:
+            return
+        except OSError:
+            staged.write_bytes(self._path.read_bytes())
+        staged.replace(backup)
 
 
 def _parse(text: str) -> WatchState:

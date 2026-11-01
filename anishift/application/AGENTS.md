@@ -62,7 +62,8 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - Klasyfikacja ponowienia należy do ownera: wznowienie zachowuje cały zakres, lokalna przebudowa idzie do Ręcznego,
   ponowne pobranie zapisuje skorelowany zamiar przed wysłaniem. `AcquisitionConfirmation` zachowuje tylko
   zweryfikowane liczbowe ID Nyaa i oryginalny tytuł; URL odtwarza `services/torrents/nyaa.py`.
-- `WatchStateStore` zapisuje atomowo (`state.json.tmp` + `fsync`, kopia czytelnego `state.json` do `.bak`, `replace`).
+- `WatchStateStore` zapisuje atomowo (`state.json.tmp` + `fsync`, czytelny `state.json` zostaje dowiązaniem twardym
+  `.bak`, kopią bajtów tylko bez dowiązań, potem `replace`); hooki testów na `os.link` reagują tylko na dowiązania publikacji, nie na `state.json*`.
   Pola pydantic kodują `encode_view`/`decode_view` z buforowanym adapterem; `TypeAdapter` na wywołanie kosztuje ~1 ms.
   Uszkodzony JSON, nieznany klucz i nieobsługiwana wersja dają `ConfigError`, nigdy pusty stan; brak pliku to stan
   domyślny. Migracja starszej wersji idzie raz z kopią `state.json.v<wersja>.bak`; przed pierwszym zapisem schematów
@@ -87,8 +88,14 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - Usuwanie z Biblioteki pomija pobranie tylko w `COMPLETE` z receipt managera dowodzącym zwolnienia (odczyt w puli
   I/O, ponowne sprawdzenie przed przyjęciem). Undo zapisuje przyjęcie `PendingDeletion.restore` i start każdego
   pliku przed skutkami natywnymi; `DeletionRestore.unsettled` chroni nierozstrzygnięte skutki po restarcie.
-  `recycler`/`restorer` to fabryki sesji: jeden proces pomocniczy na zestaw, zapis per plik bez zmian. Koniec
-  przywracania rzutuje Bibliotekę z `library_inventory()` przed publikacją, więc wiersz wraca w tej samej klatce.
+  `recycler`/`restorer` to fabryki sesji: jeden proces pomocniczy na zestaw. Jeden zapis na plik: wynik poprzedniego
+  pliku idzie razem ze znakiem `inflight` następnego, przed jego skutkiem; wynik ostatniego ma osobny zapis, a
+  przerwanie pętli zapisuje wynik, który już zapadł. Awaria między skutkiem a tym zapisem zostawia plik `inflight`,
+  czyli niepewny po restarcie. Polecenia usuwania i każdy krok rzutują tylko swój zestaw
+  (`_projected_set`), nie całą Bibliotekę. Zdarzenia plików zestawu w toku czekają na jego rozliczenie
+  (`_operation_files`), które zgłasza je ponownie. Koniec usuwania i przywracania rzutuje Bibliotekę z
+  `library_inventory()` przed publikacją, więc wiersz znika i wraca w tej samej klatce. Test liczby zapisów:
+  `test_library_undo.py`.
 - Ctrl+Z jest wielopoziomowe: `latest_deletion` pomija usunięcia już przywrócone (`restore.completed`) i te, których
   plik zniknął z Kosza (`restore_gone`: odmowa `restore_receipt_missing`, `RestoreOutcome.gone`; taki plik nie trzyma
   `unsettled`, bo worker odmawia przed jakimkolwiek skutkiem), więc kolejne `deletion_undo` cofają kolejne usunięcia.

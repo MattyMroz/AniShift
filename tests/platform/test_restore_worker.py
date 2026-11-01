@@ -12,8 +12,7 @@ import pytest
 
 from anishift.platform import restore_worker as worker
 from anishift.platform.qbittorrent_process import ManagedQBittorrent
-from anishift.platform.recycle import RecycleResult
-from anishift.platform.recycle_worker import _identity
+from anishift.platform.recycle_worker import RecycleResult, _identity
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows handle rename")

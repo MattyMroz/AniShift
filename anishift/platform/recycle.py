@@ -12,9 +12,10 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final
 
 from anishift.platform.binaries import is_windows
+from anishift.platform.recycle_worker import RecycleResult
 from anishift.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -26,15 +27,6 @@ RECYCLE_TIMEOUT_S: Final[float] = 15.0
 
 RECYCLE_CLEANUP_TIMEOUT_S: Final[float] = 1.0
 """Bound each post-kill pipe drain, process reap and best-effort stream close."""
-
-
-@dataclass(frozen=True, slots=True)
-class RecycleResult:
-    """Report recycle/restore completion, read-only readiness, refusal or uncertain native effects."""
-
-    outcome: Literal["recycled", "restored", "ready", "refused", "uncertain"]
-    reason: str
-    receipt: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

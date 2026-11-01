@@ -16,7 +16,8 @@ import pytest
 
 import anishift.platform.recycle as recycle_module
 import anishift.platform.recycle_worker as worker_module
-from anishift.platform.recycle import RecycleResult, RestoreRequest, recycle_session, restore_session
+from anishift.platform.recycle import RestoreRequest, recycle_session, restore_session
+from anishift.platform.recycle_worker import RecycleResult
 
 
 @pytest.mark.parametrize(

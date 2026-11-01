@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Final
 
 from anishift.paths import RESTORE_STAGING_PREFIX, tmp_dir
-from anishift.platform.recycle import RecycleResult
 from anishift.platform.recycle_worker import (
     _FAIL,
     _FILE_OPERATION,
     _OPERATION_CLASS,
     _SHELL_ITEM,
+    RecycleResult,
     _callback_type,
     _check,
     _dll,

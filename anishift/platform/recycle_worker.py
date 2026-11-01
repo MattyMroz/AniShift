@@ -10,13 +10,11 @@ import sys
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Literal
 from uuid import UUID, uuid4
-
-from anishift.platform.recycle import RecycleResult
 
 if TYPE_CHECKING:
     from _ctypes import CFuncPtr, _CData
@@ -48,6 +46,15 @@ _SINK_INTERFACES: Final[frozenset[bytes]] = frozenset(
     UUID(value).bytes_le for value in ("00000000-0000-0000-c000-000000000046", "04b0f1a7-9490-44bc-96e1-4296a31252e2")
 )
 """IUnknown and IFileOperationProgressSink interfaces implemented by the retained callback table."""
+
+
+@dataclass(frozen=True, slots=True)
+class RecycleResult:
+    """Report recycle/restore completion, read-only readiness, refusal or uncertain native effects."""
+
+    outcome: Literal["recycled", "restored", "ready", "refused", "uncertain"]
+    reason: str
+    receipt: str | None = None
 
 
 class _Guid(ctypes.Structure):

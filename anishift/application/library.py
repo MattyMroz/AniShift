@@ -252,13 +252,14 @@ def _series_season(title: str, record: SubscriptionRecord | None, number: int) -
 def file_identity(root: Path, name: str) -> LibraryFileIdentity | None:
     """Read a regular workspace file without accepting a symlink, junction or escaped path."""
     require_relative_paths((name,), "A library file")
-    path: Path = root / name
+    if ":" in name:
+        return None
+    parts: tuple[str, ...] = Path(name).parts
+    chain: tuple[Path, ...] = tuple(root.joinpath(*parts[:index]) for index in range(len(parts) + 1))
     try:
-        if any(part.is_symlink() or part.is_junction() for part in (path, *path.parents) if part.is_relative_to(root)):
+        if any(part.is_symlink() or part.is_junction() for part in chain):
             return None
-        if not path.resolve().is_relative_to(root.resolve()):
-            return None
-        status: os.stat_result = path.lstat()
+        status: os.stat_result = chain[-1].lstat()
     except OSError:
         return None
     if not stat.S_ISREG(status.st_mode):
