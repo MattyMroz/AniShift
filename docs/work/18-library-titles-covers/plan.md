@@ -66,7 +66,7 @@ faza 0 zapisuje wynik `uv run pytest` przed zmianami.
 | `LibrarySet` i jego `encode_view/decode_view` (`control_views.py:93`) | nowe pola z domyślnymi wartościami; rezydent starej wersji nie zna pól | pola opcjonalne na końcu; test dekodowania starego słownika; restart rezydenta po zmianie (reguła repo) |
 | Snapshot `library` (`automation.py:1817`) | rozszerzenie klucza | test kontraktowy snapshotu |
 | IPC: lista komend (`automation.py:559`, `:588`) | nowa komenda tylko-do-odczytu (faza 4, 7) | dopisać do właściwej listy, test odmowy bez sesji |
-| `_latest_deletion` (`automation.py:2344`) | zmiana semantyki Ctrl+Z (O-6) | testy `restore_nothing`, `restore_already_completed`, kolejność wielu cofnięć, restart w trakcie |
+| `latest_deletion` (`control.py:1034`) | zmiana semantyki Ctrl+Z (O-6) | testy `restore_nothing`, `restore_already_completed`, kolejność wielu cofnięć, restart w trakcie |
 | `test_panel_keys.py` | `ScreenActions` i `_DESCRIPTIONS` muszą pokrywać nowe klawisze | zaktualizować `_DESCRIPTIONS` i testy w tym samym commicie |
 | `_hidden` i `unsettled_deletions` (`state_library.py:67-76`) | wiersz tytułu składa się z wielu zestawów; ukrywanie per zestaw | grupowanie liczy się po odfiltrowaniu `_hidden` |
 | `_library_context` i `_view_generation` (`state.py:346`) | spóźnione wyniki z poziomu odcinków | kontekst obejmuje klucz tytułu |
@@ -134,7 +134,7 @@ Del -> zbiór set_id (zaznaczone | kursor | wszystkie zestawy tytułu)
   -> komunikat "Usunięto N · Ctrl+Z cofa po jednym" (O-6)
 ```
 
-Owner (O-6): `_latest_deletion` pomija wpisy z `restore.completed`, więc kolejne `deletion_undo` cofają kolejne usunięcia w
+Owner (O-6): `latest_deletion` pomija wpisy z `restore.completed`, więc kolejne `deletion_undo` cofają kolejne usunięcia w
 odwrotnej kolejności. Bez zmiany schematu trwałego stanu.
 
 ### Dane odcinka (część I)
@@ -176,7 +176,7 @@ render: slot z gotowym ładunkiem, inaczej pusto; po zmianie ładunku w tym samy
 |---|---|---|---|
 | `anishift/application/control_views.py` | MODIFY | `LibrarySet`: `anilist_id`, `title_source` | pola opcjonalne |
 | `anishift/application/library.py` | MODIFY | `name_series` ustawia nowe pola | |
-| `anishift/application/automation.py` | MODIFY | snapshot `library`, `_latest_deletion`, komendy `library_episode_info`, (II) ścieżka okładek | blisko `:1817`, `:2344`, `:8105` |
+| `anishift/application/automation.py` | MODIFY | snapshot `library`, `latest_deletion` (`control.py`), komendy `library_episode_info`, (II) ścieżka okładek | blisko `:1817`, `:2344`, `:8105` |
 | `anishift/cli/resident.py` | MODIFY | `library_episode_info()` w sesji | |
 | `anishift/cli/interactive/state_library.py` | MODIFY | `LibraryTitle`, `library_titles`, wiersze tytułów i odcinków, akcje | czysty moduł |
 | `anishift/cli/interactive/state_texts.py` | MODIFY | teksty: „Nie rozpoznano”, `z nazwy`, pytanie usunięcia | jedyne miejsce polskich tekstów list |
@@ -194,7 +194,7 @@ render: slot z gotowym ładunkiem, inaczej pusto; po zmianie ładunku w tym samy
 | `anishift/cli/AGENTS.md`, `anishift/application/AGENTS.md`, `anishift/services/catalog/AGENTS.md` | MODIFY | opis Biblioteki tytułów, usuwania wielu, okładek | w commicie danej funkcji |
 | `tests/cli/test_library_titles.py` | CREATE | grupowanie i widok tytułów | |
 | `tests/cli/test_library_actions.py`, `test_library_columns.py` | MODIFY | nowe wiersze i akcje | |
-| `tests/application/test_library_titles.py` | CREATE | tożsamość tytułu i `_latest_deletion` |
+| `tests/application/test_library_titles.py` | CREATE | tożsamość tytułu i `latest_deletion` |
 | `tests/services/catalog/test_posters.py` | CREATE (II) | pobranie, walidacja, atomowość | |
 | `tests/cli/test_library_covers.py` | CREATE (II) | slot, degradacja, brak I/O w renderze | |
 | `docs/README.md`, `docs/ideas.md` | MODIFY | wiersz workstreamu 18; przeniesienie pozycji do „Zrealizowane” po scaleniu | `docs(repo)` |
@@ -277,7 +277,7 @@ Przekaż wynik jako: lista uwag co do słów i układu (styl panelu bez zmian)
 
 **Cel:** F-10…F-15.
 
-**Działania:** `Space`/`A`; zbiór celów; pytanie > 1; jeden wątek roboczy sekwencyjnie; `_latest_deletion` pomija przywrócone; komunikaty.
+**Działania:** `Space`/`A`; zbiór celów; pytanie > 1; jeden wątek roboczy sekwencyjnie; `latest_deletion` pomija przywrócone; komunikaty.
 
 **Inwarianty:** odmowa jednego zestawu nie cofa reszty; wiersz wraca z odmową; Kosz bez zmian.
 

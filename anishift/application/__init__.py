@@ -19,7 +19,6 @@ if TYPE_CHECKING:
         read_episode,
     )
     from anishift.application.automation import AutomationOwner
-    from anishift.application.control_payloads import encode_intent
     from anishift.application.control_views import (
         DeletionPreview,
         LibraryFile,
@@ -347,7 +346,6 @@ __all__ = [
     "conflict_label",
     "cut_point",
     "decode_view",
-    "encode_intent",
     "encode_view",
     "episode_read_timeout_s",
     "group_is_ready",
@@ -384,7 +382,6 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "PlanPreview": ("anishift.application.control_views", "PlanPreview"),
     "RunProgressSnapshot": ("anishift.application.control_views", "RunProgressSnapshot"),
     "decode_view": ("anishift.application.control_views", "decode_view"),
-    "encode_intent": ("anishift.application.control_payloads", "encode_intent"),
     "encode_view": ("anishift.application.control_views", "encode_view"),
     "preview_plan": ("anishift.application.control_views", "preview_plan"),
     "PRIMARY_SOURCE_SUFFIXES": ("anishift.application.discovery", "PRIMARY_SOURCE_SUFFIXES"),

@@ -12,8 +12,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Final
 
-from pydantic import TypeAdapter
-
+from anishift.application.control_views import cached_adapter
 from anishift.application.events import sanitize_event_message
 from anishift.utils.logger import get_logger
 
@@ -119,7 +118,7 @@ class HistoryJournal:
                 return False
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._path.open("ab") as stream:
-                stream.write(TypeAdapter(HistoryEvent).dump_json(event) + b"\n")
+                stream.write(cached_adapter(HistoryEvent).dump_json(event) + b"\n")
                 stream.flush()
                 os.fsync(stream.fileno())
             self._events[event.event_id] = event
@@ -200,7 +199,7 @@ class HistoryJournal:
         self._torn = bool(data and not data.endswith(b"\n"))
         for index, line in enumerate(lines):
             try:
-                event: HistoryEvent = TypeAdapter(HistoryEvent).validate_json(line, strict=True)
+                event: HistoryEvent = cached_adapter(HistoryEvent).validate_json(line, strict=True)
             except ValueError:
                 if index != len(lines) - 1:
                     self._set_problem("history_corrupt")
@@ -216,7 +215,7 @@ class HistoryJournal:
         temporary: Path = self._path.with_suffix(".jsonl.tmp")
         with temporary.open("wb") as stream:
             for item in events.values():
-                stream.write(TypeAdapter(HistoryEvent).dump_json(item) + b"\n")
+                stream.write(cached_adapter(HistoryEvent).dump_json(item) + b"\n")
             stream.flush()
             os.fsync(stream.fileno())
         temporary.replace(self._path)

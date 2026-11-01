@@ -33,7 +33,6 @@ from anishift.application import (
     StreamCandidate,
     TitleCandidate,
     decode_view,
-    encode_intent,
     encode_view,
     episode_read_timeout_s,
 )
@@ -400,7 +399,7 @@ class ResidentSession:
             {
                 "source_selection": "manual",
                 "group_ids": [intent.group_id for intent in intents],
-                "intents": [encode_intent(intent) for intent in intents],
+                "intents": [encode_view(intent) for intent in intents],
                 "external_sources": [
                     entry
                     for entry in self._external.values()

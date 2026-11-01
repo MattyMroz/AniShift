@@ -10,10 +10,9 @@ from functools import partial
 from pathlib import Path
 from typing import Final
 
-from pydantic import TypeAdapter
-
 from anishift.application.artifacts import SourceGroup, create_group_id
 from anishift.application.control import AcquisitionConfirmation, RecipePreferences, RequestState, WatchState
+from anishift.application.control_views import cached_adapter
 from anishift.application.discovery import ArtifactName, classify_artifact
 from anishift.application.results import RunResult
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget
@@ -173,7 +172,7 @@ class ReadyStore:
     def pending(self) -> tuple[ReadyMove, ...]:
         """Load unfinished moves before automatic admission sees partially moved files."""
         return tuple(
-            TypeAdapter(ReadyMove).validate_json(path.read_bytes(), strict=True)
+            cached_adapter(ReadyMove).validate_json(path.read_bytes(), strict=True)
             for path in sorted(self._directory.glob("*.json"))
         )
 
@@ -186,7 +185,7 @@ class ReadyStore:
         """Record a collision-free destination and the accepted recipe before moving the first source or product."""
         pending: Path = self._path(group.group_id)
         if pending.exists():
-            return TypeAdapter(ReadyMove).validate_json(pending.read_bytes(), strict=True)
+            return cached_adapter(ReadyMove).validate_json(pending.read_bytes(), strict=True)
         if in_ready(group.directory, self._workspace):
             return None
         ready: Path = ready_dir(self._workspace)
@@ -308,7 +307,7 @@ class ReadyStore:
         path: Path = self._path(move.group_id)
         temporary: Path = path.with_suffix(".tmp")
         with temporary.open("wb") as stream:
-            stream.write(TypeAdapter(ReadyMove).dump_json(move))
+            stream.write(cached_adapter(ReadyMove).dump_json(move))
             stream.flush()
             os.fsync(stream.fileno())
         temporary.replace(path)

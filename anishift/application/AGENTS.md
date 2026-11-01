@@ -63,6 +63,7 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   ponowne pobranie zapisuje skorelowany zamiar przed wysłaniem. `AcquisitionConfirmation` zachowuje tylko
   zweryfikowane liczbowe ID Nyaa i oryginalny tytuł; URL odtwarza `services/torrents/nyaa.py`.
 - `WatchStateStore` zapisuje atomowo (`state.json.tmp` + `fsync`, kopia czytelnego `state.json` do `.bak`, `replace`).
+  Pola pydantic kodują `encode_view`/`decode_view` z buforowanym adapterem; `TypeAdapter` na wywołanie kosztuje ~1 ms.
   Uszkodzony JSON, nieznany klucz i nieobsługiwana wersja dają `ConfigError`, nigdy pusty stan; brak pliku to stan
   domyślny. Migracja starszej wersji idzie raz z kopią `state.json.v<wersja>.bak`; przed pierwszym zapisem schematów
   3/4/5 kopiuje `state.json` i `subscriptions.json` do `*.e2-/e3-/a1-migration.bak` (bez nadpisywania; błąd kopii to
@@ -88,6 +89,11 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   pliku przed skutkami natywnymi; `DeletionRestore.unsettled` chroni nierozstrzygnięte skutki po restarcie.
   `recycler`/`restorer` to fabryki sesji: jeden proces pomocniczy na zestaw, zapis per plik bez zmian. Koniec
   przywracania rzutuje Bibliotekę z `library_inventory()` przed publikacją, więc wiersz wraca w tej samej klatce.
+- Każdy `_save` ownera przycina `control.retain_deletions`: znika usunięcie starsze niż cel Ctrl+Z
+  (`latest_deletion`) liczony tylko spośród usunięć, nad którymi owner już nie pracuje (`INFLIGHT` może jeszcze
+  przejść w `REFUSED`), jeśli samo nie jest wykonywane, przywracane ani ponawialne w tej instancji, nie ma skutku
+  `inflight`/`uncertain` i nie ma nierozstrzygniętego przywracania. Innych sekcji nie przycinaj: zlecenia wskazują
+  potwierdzenia produktów i blokady Auto, pobrania chronią deduplikację, receipt niosą fakty partii i idempotencję.
 
 ## Pobieranie odcinków
 
