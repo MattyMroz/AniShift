@@ -247,7 +247,7 @@ def default_tts_voice_profiles() -> dict[str, TtsVoiceProfileSettings]:
             native_volume=DEFAULT_VOLUME,
         ),
         _FRONCZEWSKI_PROFILE_KEY: TtsVoiceProfileSettings(
-            postprocess_tempo=1.45, voice_mix_offset_db=0.5, concurrency=2
+            postprocess_tempo=1.35, voice_mix_offset_db=0.5, concurrency=2
         ),
         _ADAM_PROFILE_KEY: TtsVoiceProfileSettings(postprocess_tempo=1.35, voice_mix_offset_db=2.5, concurrency=2),
     }
