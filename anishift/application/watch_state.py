@@ -47,7 +47,8 @@ from anishift.application.control import (
     WatchState,
     preflight,
 )
-from anishift.application.control_payloads import decode_intent, encode_intent
+from anishift.application.control_payloads import decode_intent
+from anishift.application.control_views import encode_view
 from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.episode_selection import AniZipMapping, ListedEpisode, ListedSpecial
 from anishift.application.intents import (
@@ -804,7 +805,7 @@ def _encode_request(request: ProcessingRequest) -> dict[str, object]:
         "state": request.state.value,
         "attempts": request.attempts,
         "accepted_at": request.accepted_at,
-        "intents": [encode_intent(intent) for intent in request.intents],
+        "intents": [encode_view(intent) for intent in request.intents],
         "automatic": request.automatic,
         "problem": request.problem,
         "recipe": _encode_recipes(request.recipe),

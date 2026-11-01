@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from dataclasses import asdict, fields
-from typing import cast
 
-from pydantic import TypeAdapter
-
+from anishift.application.control_views import decode_view
 from anishift.application.intents import AutoPreset, GroupIntent, ProductIntent, RebuildRequest
 from anishift.application.planning import RunSettingsSnapshot
 
@@ -25,12 +22,7 @@ def decode_intent[T: (AutoPreset, GroupIntent, RebuildRequest, RunSettingsSnapsh
     if isinstance(products, Mapping) and products.keys() - {item.name for item in fields(ProductIntent)}:
         msg = "Unknown product selection fields"
         raise ValueError(msg)
-    return TypeAdapter(model).validate_json(json.dumps(dict(payload)), strict=True)
-
-
-def encode_intent(intent: GroupIntent) -> dict[str, object]:
-    """Represent one group selection with JSON values and no execution graph."""
-    return cast("dict[str, object]", TypeAdapter(GroupIntent).dump_python(intent, mode="json"))
+    return decode_view(model, dict(payload))
 
 
 def decode_overrides(settings: RunSettingsSnapshot, payload: object) -> RunSettingsSnapshot:

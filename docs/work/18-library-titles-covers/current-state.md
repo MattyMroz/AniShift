@@ -63,8 +63,8 @@ Wszystko poniżej pochodzi z odczytu kodu na `main` @ `4365a51`. Panelu ani rezy
   Odmowa przywraca wiersz (`test_library_refused_delete_returns_the_row_with_the_refusal`).
 - Dwa szybkie usunięcia różnych zestawów są obsłużone (`test_library_quick_deletes_remove_two_different_sets`).
 - Kosz to kosz Windows (`anishift/platform/recycle.py`, `recycle_worker.py`, `restore_worker.py`).
-- Ctrl+Z → `session.undo_deletion()` (`state.py:381`) → owner `_start_restore` na `_latest_deletion()`
-  (`automation.py:2344-2370`). **Cofnięcie jest jednopoziomowe**: `_latest_deletion` bierze ostatni wpis
+- Ctrl+Z → `session.undo_deletion()` (`state.py:381`) → owner `_start_restore` na `latest_deletion()`
+  (`control.py:1034`). **Cofnięcie jest jednopoziomowe**: `latest_deletion` bierze ostatni wpis
   `pending_deletions` bez pomijania już przywróconych, więc po cofnięciu pierwszego zestawu kolejny Ctrl+Z trafia
   w gałąź `restore_already_completed` (z odczytu `automation.py:2362`; nie sprawdzono w runtime).
   Test `test_library_ctrl_z_uses_owner_latest_not_selected_set` potwierdza, że cel to „ostatnie usunięcie ownera”,

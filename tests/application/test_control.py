@@ -12,6 +12,9 @@ from anishift.application.control import (
     AudiobookRecipe,
     AutomationPolicy,
     CommandReceipt,
+    DeletionOutcome,
+    DeletionRestore,
+    DeletionStatus,
     ManualHandledMarker,
     NarrationTimeline,
     PendingDeletion,
@@ -21,18 +24,21 @@ from anishift.application.control import (
     RecipePreferences,
     RequestState,
     Reservation,
+    RestoreOutcome,
     SourceFingerprint,
     SourceSelection,
     TextResultFormat,
     TranslateRecipe,
     WatchState,
     auto_admissible,
+    latest_deletion,
     mark_manual_handled,
     preflight,
     record_command,
     record_request,
     release,
     reserve,
+    retain_deletions,
 )
 from anishift.application.intents import (
     GroupIntent,
@@ -512,6 +518,69 @@ def test_a_pending_deletion_refuses_a_file_outside_the_library(escape: str) -> N
         replace(_deletion(), files=((escape, 1024, 111),), recycled=())
     with pytest.raises(ValueError, match="relative path inside the library"):
         replace(_deletion(), recycled=(escape,))
+
+
+def _sent(operation_id: str, status: DeletionStatus = DeletionStatus.RECYCLED) -> PendingDeletion:
+    return PendingDeletion(
+        operation_id,
+        f"set-{operation_id}",
+        "now",
+        (("ready/a.mkv", 1, 2),),
+        recycled=("ready/a.mkv",) if status is DeletionStatus.RECYCLED else (),
+        identities=(("ready/a.mkv", 3, 4),),
+        outcomes=(DeletionOutcome("ready/a.mkv", status, "reason", "receipt"),),
+    )
+
+
+def test_retain_deletions_drops_settled_deletions_older_than_the_undoable_one() -> None:
+    refused: PendingDeletion = _sent("refused", DeletionStatus.REFUSED)
+    state: WatchState = WatchState(pending_deletions=(_sent("old"), refused, _sent("latest"), refused))
+
+    retained: WatchState = retain_deletions(state, frozenset())
+
+    assert [item.operation_id for item in retained.pending_deletions] == ["latest", "refused"]
+    assert latest_deletion(retained) == latest_deletion(state) == _sent("latest")
+
+
+@pytest.mark.parametrize("status", [DeletionStatus.INFLIGHT, DeletionStatus.UNCERTAIN])
+def test_retain_deletions_keeps_an_older_deletion_with_an_unproven_native_effect(status: DeletionStatus) -> None:
+    state: WatchState = WatchState(pending_deletions=(_sent("unsure", status), _sent("latest")))
+
+    assert retain_deletions(state, frozenset()) == state
+
+
+@pytest.mark.parametrize(("restored", "kept"), [("uncertain", True), ("restored", False)])
+def test_retain_deletions_keeps_an_older_deletion_only_while_its_restore_is_unsettled(
+    restored: str, kept: bool
+) -> None:
+    older: PendingDeletion = replace(
+        _sent("older"),
+        restore=DeletionRestore("restore", (RestoreOutcome("ready/a.mkv", "tmp/.restore-a/0", restored, "why", True),)),
+    )
+    state: WatchState = WatchState(pending_deletions=(older, _sent("latest")))
+
+    assert (retain_deletions(state, frozenset()) == state) is kept
+
+
+def test_retain_deletions_keeps_an_older_deletion_the_owner_is_still_working_on() -> None:
+    state: WatchState = WatchState(pending_deletions=(_sent("retrying", DeletionStatus.REFUSED), _sent("latest")))
+
+    assert retain_deletions(state, frozenset({"retrying"})) == state
+    assert retain_deletions(state, frozenset()).pending_deletions == (_sent("latest"),)
+
+
+def test_retain_deletions_never_anchors_on_a_deletion_the_owner_is_still_working_on() -> None:
+    state: WatchState = WatchState(pending_deletions=(_sent("older"), _sent("running", DeletionStatus.INFLIGHT)))
+
+    assert retain_deletions(state, frozenset({"running"})) is state
+
+
+def test_retain_deletions_keeps_every_deletion_while_none_sent_a_file_out() -> None:
+    state: WatchState = WatchState(
+        pending_deletions=(_sent("first", DeletionStatus.REFUSED), _sent("second", DeletionStatus.REFUSED))
+    )
+
+    assert retain_deletions(state, frozenset()) is state
 
 
 def test_a_transfer_only_reports_complete_files_it_actually_required() -> None:

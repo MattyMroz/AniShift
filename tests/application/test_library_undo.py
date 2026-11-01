@@ -26,6 +26,7 @@ from anishift.application.control import (
     RequestState,
     RestoreOutcome,
     WatchState,
+    latest_deletion,
 )
 from anishift.application.control_views import DeletionPreview, LibraryFileIdentity, decode_view, encode_view
 from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace
@@ -97,7 +98,7 @@ def test_latest_undo_uses_append_order_and_keeps_uncertain_barrier(tmp_path: Pat
     )
     store.save(replace(original, pending_deletions=(recycled, uncertain, refused)))
     owner: AutomationOwner = _owner(service, store)
-    assert owner._latest_deletion() == uncertain
+    assert latest_deletion(owner.state) == uncertain
     service.close()
 
 
@@ -332,6 +333,130 @@ def test_library_undo_survives_restart_and_never_falls_back(tmp_path: Path, coll
         assert not owner.handle(
             _request("library_file_open", {"set_id": "set-01", "file": encode_view(replace(identity, inode=0))})
         ).ok
+    finally:
+        owner.request_shutdown()
+        thread.join(5)
+        service.close()
+
+
+def test_saved_state_forgets_settled_older_deletions_while_undo_and_retry_keep_working(tmp_path: Path) -> None:
+    service, store, original = _completed_library(tmp_path, ("01", "02"))
+    gone: PendingDeletion = PendingDeletion(
+        "gone",
+        "set-gone",
+        "then",
+        (("ready/gone.txt", 1, 2),),
+        recycled=("ready/gone.txt",),
+        identities=(("ready/gone.txt", 3, 4),),
+        outcomes=(DeletionOutcome("ready/gone.txt", DeletionStatus.RECYCLED, "recycle_completed", "receipt"),),
+    )
+    unsure: PendingDeletion = replace(
+        gone,
+        operation_id="unsure",
+        set_id="set-unsure",
+        files=(("ready/unsure.txt", 1, 2),),
+        recycled=(),
+        identities=(("ready/unsure.txt", 3, 4),),
+        outcomes=(DeletionOutcome("ready/unsure.txt", DeletionStatus.UNCERTAIN, "unknown"),),
+    )
+    store.save(replace(original, pending_deletions=(gone, unsure)))
+    parked: Path = tmp_path / ".bin"
+    parked.mkdir()
+    calls: list[str] = []
+
+    def recycle(path: Path, identity: tuple[int, int, int, int]) -> RecycleResult:
+        del identity
+        calls.append(path.name)
+        if path.name.startswith("01"):
+            return RecycleResult("refused", "recycle_refused")
+        target: Path = parked / path.name
+        path.rename(target)
+        return RecycleResult("recycled", "recycle_completed", str(target))
+
+    owner: AutomationOwner = AutomationOwner(
+        service,
+        store,
+        instance_id="first",
+        recycler=lambda: nullcontext(recycle),
+        restorer=lambda: nullcontext(_restore_parked),
+    )
+    thread: threading.Thread = _serving(owner)
+    try:
+        _delete(owner, "set-01", "delete-1")
+        assert _await(lambda: len(calls) == 1 and not owner._deleting)
+        refused: PendingDeletion = owner.state.pending_deletions[-1]
+        _delete(owner, "set-02", "delete-2")
+        assert _await(lambda: len(calls) == 3 and not owner._deleting)
+        assert [item.operation_id for item in store.load().pending_deletions] == [
+            "unsure",
+            refused.operation_id,
+            owner.state.pending_deletions[-1].operation_id,
+        ]
+        assert owner.handle(
+            _request(
+                "deletion_retry", {"operation_id": refused.operation_id}, command_id="retry-1", instance_id="first"
+            )
+        ).ok
+        assert _await(lambda: len(calls) == 4 and not owner._deleting)
+    finally:
+        owner.request_shutdown()
+        thread.join(5)
+    owner = AutomationOwner(service, store, instance_id="second", restorer=lambda: nullcontext(_restore_parked))
+    thread = _serving(owner)
+    try:
+        assert owner.handle(_request("deletion_undo", command_id="undo-1")).ok
+        assert _await(lambda: (tmp_path / "ready/02.txt").is_file() and not owner._deleting)
+        saved: WatchState = store.load()
+        assert [item.operation_id for item in saved.pending_deletions] == [
+            "unsure",
+            owner.state.pending_deletions[-1].operation_id,
+        ]
+        assert saved.pending_deletions[-1].set_id == "set-02"
+        restored: DeletionRestore | None = saved.pending_deletions[-1].restore
+        assert restored is not None
+        assert restored.completed
+        assert (tmp_path / "ready/01.txt").is_file()
+        assert owner.handle(_request("deletion_undo", command_id="undo-2")).reason == "restore_already_completed"
+    finally:
+        owner.request_shutdown()
+        thread.join(5)
+        service.close()
+
+
+def test_a_newer_deletion_the_bin_refuses_leaves_ctrl_z_restoring_the_previous_one(tmp_path: Path) -> None:
+    service, store, _original = _completed_library(tmp_path, ("01", "02"))
+    parked: Path = tmp_path / ".bin"
+    parked.mkdir()
+    calls: list[str] = []
+
+    def recycle(path: Path, identity: tuple[int, int, int, int]) -> RecycleResult:
+        del identity
+        calls.append(path.name)
+        if path.name.startswith("01"):
+            return RecycleResult("refused", "recycle_refused")
+        target: Path = parked / path.name
+        path.rename(target)
+        return RecycleResult("recycled", "recycle_completed", str(target))
+
+    owner: AutomationOwner = AutomationOwner(
+        service,
+        store,
+        instance_id="first",
+        recycler=lambda: nullcontext(recycle),
+        restorer=lambda: nullcontext(_restore_parked),
+    )
+    thread: threading.Thread = _serving(owner)
+    try:
+        _delete(owner, "set-02", "delete-2")
+        assert _await(lambda: not owner._deleting and not (tmp_path / "ready/02.txt").exists())
+        _delete(owner, "set-01", "delete-1")
+        assert _await(lambda: any(name.startswith("01") for name in calls) and not owner._deleting)
+        assert [item.set_id for item in store.load().pending_deletions] == ["set-02", "set-01"]
+        latest: PendingDeletion | None = latest_deletion(owner.state)
+        assert latest is not None
+        assert latest.set_id == "set-02"
+        assert owner.handle(_request("deletion_undo", command_id="undo-1")).ok
+        assert _await(lambda: (tmp_path / "ready/02.txt").is_file() and not owner._deleting)
     finally:
         owner.request_shutdown()
         thread.join(5)

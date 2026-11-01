@@ -85,6 +85,7 @@ from anishift.application.control import (
     choice_traits,
     compact_acquisition,
     episode_conflict,
+    latest_deletion,
     legacy_conflict,
     legacy_number,
     mark_manual_handled,
@@ -93,6 +94,7 @@ from anishift.application.control import (
     record_request,
     release,
     reserve,
+    retain_deletions,
 )
 from anishift.application.control_payloads import decode_intent
 from anishift.application.control_views import (
@@ -2480,21 +2482,11 @@ class AutomationOwner:
     def _deletion_by_id(self, operation_id: str | None) -> PendingDeletion | None:
         return next((item for item in self._state.pending_deletions if item.operation_id == operation_id), None)
 
-    def _latest_deletion(self) -> PendingDeletion | None:
-        return next(
-            (
-                item
-                for item in reversed(self._state.pending_deletions)
-                if item.recycled or any(outcome.status is not DeletionStatus.REFUSED for outcome in item.outcomes)
-            ),
-            None,
-        )
-
     def _start_restore(self, request: ControlRequest, released: frozenset[str]) -> ControlResponse:  # noqa: PLR0911
         receipt: CommandReceipt | None = self._receipt(request)
         if receipt is not None:
             return ControlResponse.succeeded(dict(receipt.outcome))
-        operation: PendingDeletion | None = self._latest_deletion()
+        operation: PendingDeletion | None = latest_deletion(self._state)
         if operation is None:
             return self._library_refusal("restore_nothing")
         if operation.restore is not None and operation.restore.completed:
@@ -7918,6 +7910,9 @@ class AutomationOwner:
         return None
 
     def _save(self, candidate: WatchState) -> bool:
+        with self._previews_lock:
+            active: frozenset[str] = frozenset({*self._deletion_retries, *self._deleting, *self._restoring})
+        candidate = retain_deletions(candidate, active)
         requested: tuple[AcquisitionConfirmation, ...] = candidate.acquisitions
         finished: tuple[SubscriptionRecord, ...]
         candidate, finished = self._settled_targets(candidate)

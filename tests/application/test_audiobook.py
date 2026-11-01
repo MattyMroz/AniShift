@@ -7,7 +7,8 @@ import pytest
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState, SourceGroup
 from anishift.application.cancellation import CancellationToken, NeverCancelledToken
 from anishift.application.control import AudiobookRecipe, RecipePreferences
-from anishift.application.control_payloads import decode_intent, encode_intent
+from anishift.application.control_payloads import decode_intent
+from anishift.application.control_views import encode_view
 from anishift.application.discovery import discover_groups
 from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace, WorkspaceInspector
 from anishift.application.intents import (
@@ -263,7 +264,7 @@ def test_the_reading_a_run_was_accepted_with_survives_being_stored(tmp_path: Pat
     plan: ExecutionPlan = _plan(tmp_path, _recipes(NarrationTimeline.SOURCE_TIMES))
     stored: GroupIntent = plan.groups[0].intent
 
-    restored: GroupIntent = decode_intent(GroupIntent, encode_intent(stored))
+    restored: GroupIntent = decode_intent(GroupIntent, encode_view(stored))
 
     assert restored.narration_timeline is NarrationTimeline.SOURCE_TIMES
     assert restored == stored
@@ -343,7 +344,7 @@ def test_the_place_a_run_was_accepted_for_survives_being_stored(tmp_path: Path) 
     plan: ExecutionPlan = _plan(tmp_path, _recipes())
     stored: GroupIntent = plan.groups[0].intent
 
-    restored: GroupIntent = decode_intent(GroupIntent, encode_intent(stored))
+    restored: GroupIntent = decode_intent(GroupIntent, encode_view(stored))
 
     assert restored.target is WorkflowTarget.AUDIOBOOK
     assert restored == stored

@@ -1031,6 +1031,30 @@ def record_command(state: WatchState, receipt: CommandReceipt) -> WatchState:
     return replace(state, command_receipts=(*state.command_receipts, receipt))
 
 
+def latest_deletion(state: WatchState) -> PendingDeletion | None:
+    """Return the deletion Ctrl+Z restores: the newest one that sent at least one file out."""
+    return next((item for item in reversed(state.pending_deletions) if _sent_out(item)), None)
+
+
+def retain_deletions(state: WatchState, active: frozenset[str]) -> WatchState:
+    """Return *state* without deletions older than the last finished undoable one that nothing still reaches."""
+    sent: list[int] = [
+        index
+        for index, item in enumerate(state.pending_deletions)
+        if _sent_out(item) and item.operation_id not in active
+    ]
+    if not sent:
+        return state
+    kept: tuple[PendingDeletion, ...] = tuple(
+        item
+        for index, item in enumerate(state.pending_deletions)
+        if index >= sent[-1] or not _deletion_settled(item, active)
+    )
+    if len(kept) == len(state.pending_deletions):
+        return state
+    return replace(state, pending_deletions=kept)
+
+
 def preflight(
     state: WatchState,
     *,
@@ -1105,6 +1129,18 @@ def legacy_conflict(state: WatchState, scope: LegacyScope) -> bool:
         scope.covers(item.choice.anilist_id, item.choice.number)
         for acquisition in state.acquisitions
         for item in acquisition.protected_assignments
+    )
+
+
+def _sent_out(deletion: PendingDeletion) -> bool:
+    return bool(deletion.recycled) or any(item.status is not DeletionStatus.REFUSED for item in deletion.outcomes)
+
+
+def _deletion_settled(deletion: PendingDeletion, active: frozenset[str]) -> bool:
+    return (
+        deletion.operation_id not in active
+        and not any(item.status in {DeletionStatus.INFLIGHT, DeletionStatus.UNCERTAIN} for item in deletion.outcomes)
+        and (deletion.restore is None or not deletion.restore.unsettled)
     )
 
 
