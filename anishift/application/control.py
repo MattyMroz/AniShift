@@ -147,6 +147,9 @@ _DEFAULT_RETRY_DELAYS_S: Final[tuple[int, ...]] = (60, 300)
 _UNUSABLE_TRAITS: Final[tuple[str, ...]] = ("dub_only", "hardsub", "raw")
 """Release name and tag facts that exclude a release, in their persisted order."""
 
+UNDO_DEPTH: Final[int] = 10
+"""Most recent deletions that sent files out, restored ones included, that the saved state keeps for Ctrl+Z."""
+
 ASSIGNMENT_STOPS: Final[frozenset[str]] = frozenset({"pack", "ambiguous", "no_match", "taken", "recheck"})
 """Reasons a subscription attempt stopped after reading its torrent metadata."""
 
@@ -1032,12 +1035,19 @@ def record_command(state: WatchState, receipt: CommandReceipt) -> WatchState:
 
 
 def latest_deletion(state: WatchState) -> PendingDeletion | None:
-    """Return the deletion Ctrl+Z restores: the newest one that sent at least one file out."""
-    return next((item for item in reversed(state.pending_deletions) if _sent_out(item)), None)
+    """Return the deletion Ctrl+Z restores: the newest one that sent a file out and is not restored yet."""
+    return next(
+        (
+            item
+            for item in reversed(state.pending_deletions)
+            if _sent_out(item) and (item.restore is None or not item.restore.completed)
+        ),
+        None,
+    )
 
 
 def retain_deletions(state: WatchState, active: frozenset[str]) -> WatchState:
-    """Return *state* without deletions older than the last finished undoable one that nothing still reaches."""
+    """Return *state* without deletions older than the last finished undoable ones that nothing still reaches."""
     sent: list[int] = [
         index
         for index, item in enumerate(state.pending_deletions)
@@ -1045,10 +1055,11 @@ def retain_deletions(state: WatchState, active: frozenset[str]) -> WatchState:
     ]
     if not sent:
         return state
+    anchor: int = sent[-UNDO_DEPTH:][0]
     kept: tuple[PendingDeletion, ...] = tuple(
         item
         for index, item in enumerate(state.pending_deletions)
-        if index >= sent[-1] or not _deletion_settled(item, active)
+        if index >= anchor or not _deletion_settled(item, active)
     )
     if len(kept) == len(state.pending_deletions):
         return state

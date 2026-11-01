@@ -15,6 +15,7 @@ from anishift.application.acquisition import AcquisitionService, TorrentClient, 
 from anishift.application.artifacts import create_group_id
 from anishift.application.automation import AutomationOwner
 from anishift.application.control import (
+    UNDO_DEPTH,
     AcquisitionConfirmation,
     AcquisitionState,
     DeletionOutcome,
@@ -325,7 +326,7 @@ def test_library_undo_survives_restart_and_never_falls_back(tmp_path: Path, coll
         assert saved.products == original.products
         assert saved.ready_groups == original.ready_groups
         assert len(calls) == (1 if partial else 2)
-        assert owner.handle(_request("deletion_undo", command_id="undo-3")).reason == "restore_already_completed"
+        assert owner.handle(_request("deletion_undo", command_id="undo-3")).reason == "restore_nothing"
         assert owner.handle(_request("library_open", {"set_id": "set-01"})).ok
         identity: LibraryFileIdentity | None = file_identity(tmp_path, "ready/01.txt")
         assert identity is not None
@@ -359,7 +360,21 @@ def test_saved_state_forgets_settled_older_deletions_while_undo_and_retry_keep_w
         identities=(("ready/unsure.txt", 3, 4),),
         outcomes=(DeletionOutcome("ready/unsure.txt", DeletionStatus.UNCERTAIN, "unknown"),),
     )
-    store.save(replace(original, pending_deletions=(gone, unsure)))
+    fillers: tuple[PendingDeletion, ...] = tuple(
+        replace(
+            gone,
+            operation_id=f"filler-{index}",
+            set_id=f"set-filler-{index}",
+            files=((f"ready/filler-{index}.txt", 1, 2),),
+            recycled=(f"ready/filler-{index}.txt",),
+            identities=((f"ready/filler-{index}.txt", 3, 4),),
+            outcomes=(
+                DeletionOutcome(f"ready/filler-{index}.txt", DeletionStatus.RECYCLED, "recycle_completed", "receipt"),
+            ),
+        )
+        for index in range(UNDO_DEPTH - 1)
+    )
+    store.save(replace(original, pending_deletions=(gone, *fillers, unsure)))
     parked: Path = tmp_path / ".bin"
     parked.mkdir()
     calls: list[str] = []
@@ -388,6 +403,7 @@ def test_saved_state_forgets_settled_older_deletions_while_undo_and_retry_keep_w
         _delete(owner, "set-02", "delete-2")
         assert _await(lambda: len(calls) == 3 and not owner._deleting)
         assert [item.operation_id for item in store.load().pending_deletions] == [
+            *(item.operation_id for item in fillers),
             "unsure",
             refused.operation_id,
             owner.state.pending_deletions[-1].operation_id,
@@ -408,7 +424,9 @@ def test_saved_state_forgets_settled_older_deletions_while_undo_and_retry_keep_w
         assert _await(lambda: (tmp_path / "ready/02.txt").is_file() and not owner._deleting)
         saved: WatchState = store.load()
         assert [item.operation_id for item in saved.pending_deletions] == [
+            *(item.operation_id for item in fillers[1:]),
             "unsure",
+            refused.operation_id,
             owner.state.pending_deletions[-1].operation_id,
         ]
         assert saved.pending_deletions[-1].set_id == "set-02"
@@ -416,7 +434,8 @@ def test_saved_state_forgets_settled_older_deletions_while_undo_and_retry_keep_w
         assert restored is not None
         assert restored.completed
         assert (tmp_path / "ready/01.txt").is_file()
-        assert owner.handle(_request("deletion_undo", command_id="undo-2")).reason == "restore_already_completed"
+        assert latest_deletion(saved) == unsure
+        assert owner.handle(_request("deletion_undo", command_id="undo-2")).reason == "library_ownership_unknown"
     finally:
         owner.request_shutdown()
         thread.join(5)
@@ -458,6 +477,69 @@ def test_a_newer_deletion_the_bin_refuses_leaves_ctrl_z_restoring_the_previous_o
         assert owner.handle(_request("deletion_undo", command_id="undo-1")).ok
         assert _await(lambda: (tmp_path / "ready/02.txt").is_file() and not owner._deleting)
     finally:
+        owner.request_shutdown()
+        thread.join(5)
+        service.close()
+
+
+def test_each_ctrl_z_restores_the_next_older_deletion_until_none_is_left(tmp_path: Path) -> None:
+    service, store, _original = _completed_library(tmp_path, ("01", "02"))
+    recycled: list[str] = []
+    recycle: Callable[[Path, tuple[int, int, int, int]], RecycleResult] = _parking(tmp_path / ".bin", recycled)
+    owner: AutomationOwner = AutomationOwner(
+        service,
+        store,
+        instance_id="first",
+        recycler=lambda: nullcontext(recycle),
+        restorer=lambda: nullcontext(_restore_parked),
+    )
+    thread: threading.Thread = _serving(owner)
+    try:
+        _delete(owner, "set-01", "delete-1")
+        assert _await(lambda: not owner._deleting and not (tmp_path / "ready/01.txt").exists())
+        _delete(owner, "set-02", "delete-2")
+        assert _await(lambda: not owner._deleting and not (tmp_path / "ready/02.txt").exists())
+        assert owner.handle(_request("deletion_undo", command_id="undo-1")).ok
+        assert _await(lambda: (tmp_path / "ready/02.txt").is_file() and not owner._deleting)
+        assert not (tmp_path / "ready/01.txt").exists()
+        assert owner.handle(_request("deletion_undo", command_id="undo-2")).ok
+        assert _await(lambda: (tmp_path / "ready/01.txt").is_file() and not owner._deleting)
+        assert owner.handle(_request("deletion_undo", command_id="undo-3")).reason == "restore_nothing"
+    finally:
+        owner.request_shutdown()
+        thread.join(5)
+        service.close()
+
+
+def test_ctrl_z_waits_while_a_newer_deletion_has_not_sent_anything_yet(tmp_path: Path) -> None:
+    service, store, _original = _completed_library(tmp_path, ("01", "02"))
+    recycled: list[str] = []
+    recycle: Callable[[Path, tuple[int, int, int, int]], RecycleResult] = _parking(tmp_path / ".bin", recycled)
+    gate: threading.Event = threading.Event()
+    gated: list[bool] = []
+
+    @contextmanager
+    def recycling() -> Iterator[Callable[[Path, tuple[int, int, int, int]], RecycleResult]]:
+        if gated:
+            gate.wait(5)
+        yield recycle
+
+    owner: AutomationOwner = AutomationOwner(
+        service, store, instance_id="first", recycler=recycling, restorer=lambda: nullcontext(_restore_parked)
+    )
+    thread: threading.Thread = _serving(owner)
+    try:
+        _delete(owner, "set-01", "delete-1")
+        assert _await(lambda: not owner._deleting and not (tmp_path / "ready/01.txt").exists())
+        gated.append(True)
+        _delete(owner, "set-02", "delete-2")
+        assert _await(lambda: bool(owner._deleting))
+        assert owner.handle(_request("deletion_undo", command_id="undo-1")).reason == "library_deleting"
+        gate.set()
+        assert _await(lambda: not owner._deleting and not (tmp_path / "ready/02.txt").exists())
+        assert not (tmp_path / "ready/01.txt").exists()
+    finally:
+        gate.set()
         owner.request_shutdown()
         thread.join(5)
         service.close()
@@ -650,7 +732,7 @@ def test_a_failed_workspace_episode_is_recycled_and_restored_like_a_library_set(
         assert _await(lambda: source.is_file() and not owner._deleting)
         assert source.read_text(encoding="utf-8") == "source"
         assert _await(lambda: _failed_row(owner, group_id, "status-3") is not None)
-        assert owner.handle(_request("deletion_undo", command_id="undo-2")).reason == "restore_already_completed"
+        assert owner.handle(_request("deletion_undo", command_id="undo-2")).reason == "restore_nothing"
     finally:
         owner.request_shutdown()
         thread.join(5)

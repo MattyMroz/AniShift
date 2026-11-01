@@ -2489,8 +2489,6 @@ class AutomationOwner:
         operation: PendingDeletion | None = latest_deletion(self._state)
         if operation is None:
             return self._library_refusal("restore_nothing")
-        if operation.restore is not None and operation.restore.completed:
-            return self._library_refusal("restore_already_completed")
         if self._restorer is None:
             return self._library_refusal("recycle_unsupported")
         group: LibrarySet | None = self._deletion_set(operation)
@@ -2524,7 +2522,10 @@ class AutomationOwner:
     def _restore_conflict(
         self, group: LibrarySet, operation: PendingDeletion, released: frozenset[str]
     ) -> ControlResponse | None:
-        if operation.operation_id in self._deleting:
+        newer: tuple[PendingDeletion, ...] = self._state.pending_deletions[
+            self._state.pending_deletions.index(operation) :
+        ]
+        if any(item.operation_id in self._deleting for item in newer):
             return self._library_refusal("library_deleting")
         if self._shutting_down:
             return self._library_refusal("library_ownership_unknown")

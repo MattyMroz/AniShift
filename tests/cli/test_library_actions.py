@@ -506,6 +506,10 @@ def test_processing_ctrl_z_shows_a_failed_set_restoring_at_once(monkeypatch: pyt
             "Beta",
         ),
         ([{**_RECYCLED, "recycled": 1, "restored": True}], None),
+        (
+            [{**_RECYCLED, "recycled": 1}, {**_RECYCLED, "set_id": "Beta", "recycled": 1, "restored": True}],
+            "Alpha",
+        ),
         ([{**_RECYCLED, "recycled": 1, "active": True}], None),
         ([], None),
     ],

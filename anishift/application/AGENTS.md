@@ -89,10 +89,12 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   pliku przed skutkami natywnymi; `DeletionRestore.unsettled` chroni nierozstrzygnięte skutki po restarcie.
   `recycler`/`restorer` to fabryki sesji: jeden proces pomocniczy na zestaw, zapis per plik bez zmian. Koniec
   przywracania rzutuje Bibliotekę z `library_inventory()` przed publikacją, więc wiersz wraca w tej samej klatce.
-- Każdy `_save` ownera przycina `control.retain_deletions`: znika usunięcie starsze niż cel Ctrl+Z
-  (`latest_deletion`) liczony tylko spośród usunięć, nad którymi owner już nie pracuje (`INFLIGHT` może jeszcze
-  przejść w `REFUSED`), jeśli samo nie jest wykonywane, przywracane ani ponawialne w tej instancji, nie ma skutku
-  `inflight`/`uncertain` i nie ma nierozstrzygniętego przywracania. Innych sekcji nie przycinaj: zlecenia wskazują
+- Ctrl+Z jest wielopoziomowe: `latest_deletion` pomija usunięcia już przywrócone (`restore.completed`), więc
+  kolejne `deletion_undo` cofają kolejne usunięcia. Każdy `_save` ownera przycina `control.retain_deletions`: znika
+  usunięcie starsze niż `UNDO_DEPTH` ostatnich usunięć, które wysłały plik do Kosza, liczonych tylko spośród usunięć,
+  nad którymi owner już nie pracuje (`INFLIGHT` może jeszcze przejść w `REFUSED`), jeśli samo nie jest wykonywane,
+  przywracane ani ponawialne w tej instancji, nie ma skutku `inflight`/`uncertain` i nie ma nierozstrzygniętego
+  przywracania. Innych sekcji nie przycinaj: zlecenia wskazują
   potwierdzenia produktów i blokady Auto, pobrania chronią deduplikację, receipt niosą fakty partii i idempotencję.
 
 ## Pobieranie odcinków

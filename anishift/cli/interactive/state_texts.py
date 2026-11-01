@@ -124,7 +124,6 @@ LIBRARY_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
         "recycle_incomplete": "System nie potwierdził pełnego wyniku operacji",
         "library_release_unavailable": "Nie można odczytać potwierdzenia zwolnienia torrenta",
         "restore_nothing": "Brak usuniętego zestawu do przywrócenia",
-        "restore_already_completed": "Ostatnie usunięcie zostało już cofnięte",
         "restore_destination_occupied": "Miejsce przywracania jest zajęte · istniejący plik pozostawiono bez zmian",
         "restore_receipt_missing": "Brak dokładnego elementu w Koszu · mógł zostać opróżniony",
         "restore_unsupported_destination": "Przywracanie wymaga dostępnego miejsca na tym samym woluminie NTFS",
@@ -152,9 +151,9 @@ class PendingRestore:
 
 def undo_target(snapshot: Mapping[str, object]) -> Mapping[str, object] | None:
     """Return the deletion Ctrl+Z restores, chosen as the owner chooses it, or None when it would refuse."""
-    for item in reversed(rows(snapshot.get("deletions"))):
+    for item in reversed(_deletions(snapshot)):
         if item.get("recycled") or item.get("uncertain") or item.get("active"):
-            return None if item.get("restored") or item.get("active") else item
+            return None if item.get("active") else item
     return None
 
 
