@@ -129,7 +129,7 @@ from anishift.platform.local_control import (
     ControlServer,
     control_endpoint,
 )
-from anishift.platform.recycle import RecycleResult
+from anishift.platform.recycle_worker import RecycleResult
 from anishift.services.catalog import AniListCatalog, AniZipCatalog
 from anishift.services.http_requests import RequestControl
 from anishift.services.media import DefaultMediaProbe
@@ -4380,6 +4380,9 @@ def test_library_retry_after_refused_deletion_only_relocates(  # noqa: PLR0915
     recycled: list[str] = []
 
     def link(source: Path, destination: Path) -> None:
+        if Path(destination).name.startswith(WATCH_STATE_FILE_NAME):
+            original_link(source, destination)
+            return
         links.append(source.name)
         if fail:
             raise PermissionError("Synthetic filesystem refusal")

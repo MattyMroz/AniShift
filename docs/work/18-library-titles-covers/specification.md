@@ -28,7 +28,7 @@ Właściciel, lokalnie na PC (Windows). Chce zobaczyć obrazek, poznać tytuł, 
 - U-3. Pliki pobrane przez Anime biorą tytuł i numer z zapisanego klucza AniList, bez zgadywania z nazwy
   (masterplan E6). Skutek: klucz `anilist_id` jest źródłem prawdy tożsamości tytułu dla tych plików.
 - U-4. Pliki ręczne biorą tytuł z nazwy; przy braku pewności widać „Nie rozpoznano”, nigdy ciche przypisanie (masterplan E6).
-- U-5. Kosz Windows i Ctrl+Z działają „jak dziś” (`docs/ideas.md`, sekcja 2). Skutek: patrz O-6, bo „jak dziś” jest jednopoziomowe.
+- U-5. Kosz Windows i Ctrl+Z działają „jak dziś” (`docs/ideas.md`, sekcja 2); Ctrl+Z jest wielopoziomowe (O-6).
 - U-6. Owner (rezydent) jest właścicielem danych; panel czyta projekcje przez `ResidentSession`. Render nie robi I/O ani sieci
   (`anishift/cli/AGENTS.md`).
 - U-7. Windows only; zero zmian pod Linuksa. Brak nowej zależności bez potrzeby (`uv add` tylko przez narzędzie).
@@ -148,7 +148,7 @@ Każda pozycja ma rekomendację. Brak odpowiedzi blokuje tylko wskazaną fazę p
 | O-3 | Gdzie pokazać okładkę? | **Lista tytułów Biblioteki i lista Subskrypcji** (oba ok. 30 tytułów, oba z `anilist_id`). Anime (wyszukiwanie) później. | etap okładek |
 | O-4 | Wiersz listy to seria (bez sezonu) czy wpis AniList (sezon)? | **Seria** (`series_title` już zdejmuje sezon, część i rok); w widoku odcinków `Nr` niesie sezon jako `SxxEyy`. Zgodne z `LibraryLabel`. | faza 1 |
 | O-5 | Rozpoznawanie plików ręcznych przez AniList: teraz czy później? Kryterium pewności? | **Faza 3, warunkowa po pomiarze.** Wersja 1 grupuje po znormalizowanej nazwie z oznaczeniem `z nazwy`. Pewność: dokładnie jeden kandydat z `search`, którego `aliases()` (casefold) zawiera tytuł z nazwy, i zgodny sezon; inaczej `z nazwy`. Wynik w pamięci ownera (jak `_series_titles`), nie w `WatchState`. | faza 3 |
-| O-6 | Ctrl+Z po usunięciu wielu zestawów | **Wielopoziomowe cofanie:** owner pomija już przywrócone wpisy w `latest_deletion`, więc kolejne Ctrl+Z cofają kolejne usunięcia; komunikat „Usunięto N · Ctrl+Z cofa po jednym”. Alternatywa: paczka z `batch_id` w `PendingDeletion` (zmiana schematu trwałego stanu, droższa). Opcja zerowa: zostawić jednopoziomowe (cofa tylko ostatni zestaw) i pokazać to w komunikacie. Dziś retencja stanu (`control.retain_deletions`) zachowuje tylko cel jednopoziomowego Ctrl+Z, więc cofanie wielopoziomowe wymaga też zmiany retencji. | faza 2 |
+| O-6 | Ctrl+Z po usunięciu wielu zestawów | **Rozstrzygnięte przez właściciela 2026-11-01 i wdrożone: wielopoziomowe cofanie.** Owner pomija już przywrócone wpisy w `latest_deletion`, więc kolejne Ctrl+Z cofają kolejne usunięcia; bez limitu liczby; historia obejmuje jedno uruchomienie rezydenta plus usunięcie, które Ctrl+Z cofnąłby tuż przed jego startem, a usunięcie, którego plików nie ma już w Koszu, jest pomijane. Zostaje komunikat „Usunięto N · Ctrl+Z cofa po jednym” przy usuwaniu wielu (faza 3). | faza 3 (tylko komunikat) |
 | O-7 | Potwierdzenie przy usuwaniu | **Pytanie Enter/Esc tylko, gdy usuwa się więcej niż jeden zestaw** (wzorzec `_question` z Przetwarzania); pojedynczy odcinek bez pytania, jak dziś. | faza 2 |
 | O-8 | Przewijanie przy wielu tytułach | **Wyszukiwarka `/` filtrująca listę** (wzorzec pola Historii: `_history_input`, `TextInput`) plus istniejące klawisze stron. | faza 1 |
 | O-9 | Nazwa dla tytułu bez rozpoznania | **„Nie rozpoznano”** jako jeden wiersz na końcu listy. | faza 1 |

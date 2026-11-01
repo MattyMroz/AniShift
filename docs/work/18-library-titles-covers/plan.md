@@ -66,7 +66,6 @@ faza 0 zapisuje wynik `uv run pytest` przed zmianami.
 | `LibrarySet` i jego `encode_view/decode_view` (`control_views.py:93`) | nowe pola z domyślnymi wartościami; rezydent starej wersji nie zna pól | pola opcjonalne na końcu; test dekodowania starego słownika; restart rezydenta po zmianie (reguła repo) |
 | Snapshot `library` (`automation.py:1817`) | rozszerzenie klucza | test kontraktowy snapshotu |
 | IPC: lista komend (`automation.py:559`, `:588`) | nowa komenda tylko-do-odczytu (faza 4, 7) | dopisać do właściwej listy, test odmowy bez sesji |
-| `latest_deletion` (`control.py:1034`) | zmiana semantyki Ctrl+Z (O-6) | testy `restore_nothing`, `restore_already_completed`, kolejność wielu cofnięć, restart w trakcie |
 | `test_panel_keys.py` | `ScreenActions` i `_DESCRIPTIONS` muszą pokrywać nowe klawisze | zaktualizować `_DESCRIPTIONS` i testy w tym samym commicie |
 | `_hidden` i `unsettled_deletions` (`state_library.py:67-76`) | wiersz tytułu składa się z wielu zestawów; ukrywanie per zestaw | grupowanie liczy się po odfiltrowaniu `_hidden` |
 | `_library_context` i `_view_generation` (`state.py:346`) | spóźnione wyniki z poziomu odcinków | kontekst obejmuje klucz tytułu |
@@ -134,8 +133,7 @@ Del -> zbiór set_id (zaznaczone | kursor | wszystkie zestawy tytułu)
   -> komunikat "Usunięto N · Ctrl+Z cofa po jednym" (O-6)
 ```
 
-Owner (O-6): `latest_deletion` pomija wpisy z `restore.completed`, więc kolejne `deletion_undo` cofają kolejne usunięcia w
-odwrotnej kolejności. Bez zmiany schematu trwałego stanu.
+Owner (O-6, już wdrożone): kolejne `deletion_undo` cofają kolejne usunięcia w odwrotnej kolejności.
 
 ### Dane odcinka (część I)
 
@@ -176,7 +174,7 @@ render: slot z gotowym ładunkiem, inaczej pusto; po zmianie ładunku w tym samy
 |---|---|---|---|
 | `anishift/application/control_views.py` | MODIFY | `LibrarySet`: `anilist_id`, `title_source` | pola opcjonalne |
 | `anishift/application/library.py` | MODIFY | `name_series` ustawia nowe pola | |
-| `anishift/application/automation.py` | MODIFY | snapshot `library`, `latest_deletion` (`control.py`), komendy `library_episode_info`, (II) ścieżka okładek | blisko `:1817`, `:2344`, `:8105` |
+| `anishift/application/automation.py` | MODIFY | snapshot `library`, komendy `library_episode_info`, (II) ścieżka okładek | blisko `:1817`, `:2344`, `:8105` |
 | `anishift/cli/resident.py` | MODIFY | `library_episode_info()` w sesji | |
 | `anishift/cli/interactive/state_library.py` | MODIFY | `LibraryTitle`, `library_titles`, wiersze tytułów i odcinków, akcje | czysty moduł |
 | `anishift/cli/interactive/state_texts.py` | MODIFY | teksty: „Nie rozpoznano”, `z nazwy`, pytanie usunięcia | jedyne miejsce polskich tekstów list |
@@ -194,7 +192,7 @@ render: slot z gotowym ładunkiem, inaczej pusto; po zmianie ładunku w tym samy
 | `anishift/cli/AGENTS.md`, `anishift/application/AGENTS.md`, `anishift/services/catalog/AGENTS.md` | MODIFY | opis Biblioteki tytułów, usuwania wielu, okładek | w commicie danej funkcji |
 | `tests/cli/test_library_titles.py` | CREATE | grupowanie i widok tytułów | |
 | `tests/cli/test_library_actions.py`, `test_library_columns.py` | MODIFY | nowe wiersze i akcje | |
-| `tests/application/test_library_titles.py` | CREATE | tożsamość tytułu i `latest_deletion` |
+| `tests/application/test_library_titles.py` | CREATE | tożsamość tytułu |
 | `tests/services/catalog/test_posters.py` | CREATE (II) | pobranie, walidacja, atomowość | |
 | `tests/cli/test_library_covers.py` | CREATE (II) | slot, degradacja, brak I/O w renderze | |
 | `docs/README.md`, `docs/ideas.md` | MODIFY | wiersz workstreamu 18; przeniesienie pozycji do „Zrealizowane” po scaleniu | `docs(repo)` |
@@ -208,7 +206,7 @@ render: slot z gotowym ładunkiem, inaczej pusto; po zmianie ładunku w tym samy
   hooka, bez śladów AI w treści; stopka zgodna z regułami sesji wykonawcy:
   1. `feat(application): name every Library set after its catalogue series and title source`
   2. `feat(tui): show the Library as a list of titles with an episode view`
-  3. `feat(application): undo deletions one after another` oraz `feat(tui): mark and delete several Library episodes at once`
+  3. `feat(tui): mark and delete several Library episodes at once`
   4. `feat(application): serve episode titles and air dates for a Library title`
   5. (II) `feat(services): read cover URLs from AniList and store posters`
   6. (II) `feat(application): fetch title covers in the background`
@@ -238,7 +236,6 @@ uv run pytest
 3. Pomiar (część II): pobrać 5 okładek z AniList (`coverImage.large` i `extraLarge`), zapisać wymiary, bajty, host,
    nagłówki `X-RateLimit-*` przed i po; zmierzyć `encode_sixel` slotu 12 wierszy. Skrypt i pliki usunąć po pomiarze.
 4. Zapisać wyniki w `docs/work/18-library-titles-covers/research/measurements.md` (po polsku, liczby i komendy).
-5. Zweryfikować w teście ownera, że drugi `deletion_undo` dziś zwraca `restore_already_completed` (potwierdzenie z odczytu).
 
 **Gate:** komplet liczb; brak rozbieżności z założeniami O-5/O-6. Rozbieżność = zatrzymaj i wróć do właściciela.
 
@@ -277,7 +274,7 @@ Przekaż wynik jako: lista uwag co do słów i układu (styl panelu bez zmian)
 
 **Cel:** F-10…F-15.
 
-**Działania:** `Space`/`A`; zbiór celów; pytanie > 1; jeden wątek roboczy sekwencyjnie; `latest_deletion` pomija przywrócone; komunikaty.
+**Działania:** `Space`/`A`; zbiór celów; pytanie > 1; jeden wątek roboczy sekwencyjnie; komunikaty (wielopoziomowe Ctrl+Z już działa).
 
 **Inwarianty:** odmowa jednego zestawu nie cofa reszty; wiersz wraca z odmową; Kosz bez zmian.
 
@@ -285,7 +282,7 @@ Przekaż wynik jako: lista uwag co do słów i układu (styl panelu bez zmian)
 
 ```text
 Uruchom: Panel → Biblioteka na kopii kilku plików testowych (nie na jedynych kopiach)
-Zrób: zaznacz 3 odcinki, Del, potwierdź; potem Ctrl+Z trzykrotnie
+Zrób: zaznacz 3 odcinki, Del, potwierdź; potem Ctrl+Z trzykrotnie, za każdym razem po powrocie poprzedniego
 Oczekiwany rezultat: odcinki znikają, trafiają do Kosza Windows, wracają po jednym w odwrotnej kolejności
 Zwróć uwagę na: czy komunikat o cofaniu po jednym jest zrozumiały, czy kursor nie skacze
 Przekaż wynik jako: lista uwag
@@ -362,7 +359,7 @@ komentarzy i docstringów w testach (hook `check_test_comments.py`); opis scenar
 | `tests/cli/test_library_columns.py` | `unit` | `test_title_list_fits_at_50_80_120_columns`, `test_episode_view_keeps_number_title_air_and_state_columns`, `test_missing_episode_data_shows_a_dash` |
 | `tests/cli/test_library_actions.py` | `unit` | `test_space_marks_and_a_marks_all_episodes`, `test_delete_acts_on_marks_else_on_cursor`, `test_delete_of_several_asks_a_question`, `test_delete_of_one_asks_nothing`, `test_refused_set_returns_while_others_go_on`, `test_several_deletes_use_one_worker_session_at_a_time`, `test_title_delete_covers_every_set_of_the_row` |
 | `tests/cli/test_panel_keys.py` | `unit` | rozszerzenie istniejących testów o nowe klawisze (`Space`, `A`, `/`) i `_DESCRIPTIONS` |
-| `tests/application/test_library_titles.py` | `unit` | `test_downloaded_set_carries_the_catalogue_id_and_key_source`, `test_manual_set_carries_name_source`, `test_old_snapshot_without_new_fields_decodes`, `test_second_undo_restores_the_previous_deletion`, `test_undo_with_nothing_left_refuses`, `test_episode_info_refuses_without_a_session`, `test_episode_info_returns_dashes_when_the_catalogue_fails` |
+| `tests/application/test_library_titles.py` | `unit` | `test_downloaded_set_carries_the_catalogue_id_and_key_source`, `test_manual_set_carries_name_source`, `test_old_snapshot_without_new_fields_decodes`, `test_episode_info_refuses_without_a_session`, `test_episode_info_returns_dashes_when_the_catalogue_fails` |
 | `tests/application/test_library_titles.py` | `unit` | (faza 5) `test_single_exact_alias_with_matching_season_is_recognized`, `test_ambiguous_candidates_stay_by_name`, `test_wrong_season_stays_by_name`, `test_rate_limited_search_stays_by_name`, `test_each_title_is_searched_once` |
 | `tests/services/catalog/test_posters.py` | `unit` | `test_cover_query_reads_large_url`, `test_missing_cover_is_skipped`, `test_foreign_host_is_refused`, `test_plain_http_is_refused`, `test_oversized_file_is_refused`, `test_broken_image_is_refused`, `test_write_is_atomic`, `test_file_name_comes_only_from_the_id` |
 | `tests/cli/test_library_covers.py` | `unit` | `test_slot_hidden_without_sixel`, `test_slot_hidden_when_terminal_too_small`, `test_screen_equals_the_plain_layout_when_slot_is_hidden`, `test_missing_poster_leaves_slot_empty`, `test_render_does_no_io`, `test_same_position_redraw_skips_screen_clear`, `test_mascot_frames_unchanged` |

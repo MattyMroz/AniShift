@@ -117,7 +117,8 @@ def _crash_at(boundary: str, owners: list[AutomationOwner], monkeypatch: pytest.
 
     def link(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
         _REAL_LINK(source, destination)
-        crash("linked")
+        if not Path(destination).name.startswith(WATCH_STATE_FILE_NAME):
+            crash("linked")
 
     def settle(self: AutomationOwner, *args: object) -> None:
         _REAL_SETTLE(self, *args)
@@ -381,6 +382,8 @@ def test_a_name_taken_after_the_first_link_moves_the_whole_set_without_replacing
 
     def link(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
         _REAL_LINK(source, destination)
+        if Path(destination).name.startswith(WATCH_STATE_FILE_NAME):
+            return
         links.append(Path(destination))
         if len(links) == 1:
             (setup.root / _NAMES[1]).write_bytes(b"foreign")

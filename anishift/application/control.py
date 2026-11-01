@@ -810,6 +810,11 @@ class RestoreOutcome:
     reason: str = "restore_prepared"
     started: bool = False
 
+    @property
+    def gone(self) -> bool:
+        """Whether the Recycle Bin no longer held this file, which leaves no native effect to protect."""
+        return self.status == "refused" and self.reason == "restore_receipt_missing"
+
     def __post_init__(self) -> None:
         require_relative_paths((self.path, self.staging), "A restored file")
         if self.status not in {"prepared", "inflight", "restored", "refused", "uncertain"}:
@@ -833,8 +838,8 @@ class DeletionRestore:
 
     @property
     def unsettled(self) -> bool:
-        """Protect only started native effects that have not been proven restored."""
-        return any(item.started and item.status != "restored" for item in self.outcomes)
+        """Protect only started native effects that are neither proven restored nor gone from the bin."""
+        return any(item.started and item.status != "restored" and not item.gone for item in self.outcomes)
 
     def __post_init__(self) -> None:
         names: tuple[str, ...] = tuple(item.path for item in self.outcomes)
@@ -1032,27 +1037,30 @@ def record_command(state: WatchState, receipt: CommandReceipt) -> WatchState:
 
 
 def latest_deletion(state: WatchState) -> PendingDeletion | None:
-    """Return the deletion Ctrl+Z restores: the newest one that sent at least one file out."""
-    return next((item for item in reversed(state.pending_deletions) if _sent_out(item)), None)
-
-
-def retain_deletions(state: WatchState, active: frozenset[str]) -> WatchState:
-    """Return *state* without deletions older than the last finished undoable one that nothing still reaches."""
-    sent: list[int] = [
-        index
-        for index, item in enumerate(state.pending_deletions)
-        if _sent_out(item) and item.operation_id not in active
-    ]
-    if not sent:
-        return state
-    kept: tuple[PendingDeletion, ...] = tuple(
-        item
-        for index, item in enumerate(state.pending_deletions)
-        if index >= sent[-1] or not _deletion_settled(item, active)
+    """Return the deletion Ctrl+Z restores: the newest sent-out one that is neither restored nor gone from the bin."""
+    return next(
+        (
+            item
+            for item in reversed(state.pending_deletions)
+            if _sent_out(item) and (item.restore is None or not item.restore.completed) and not restore_gone(item)
+        ),
+        None,
     )
-    if len(kept) == len(state.pending_deletions):
+
+
+def restore_gone(deletion: PendingDeletion) -> bool:
+    """Whether restoring *deletion* found one of its files missing from the Recycle Bin, so Ctrl+Z skips it."""
+    return deletion.restore is not None and any(item.gone for item in deletion.restore.outcomes)
+
+
+def retain_deletions(state: WatchState, instance_id: str, kept: frozenset[str]) -> WatchState:
+    """Return *state* without settled deletions of earlier resident runs, except the operations in *kept*."""
+    retained: tuple[PendingDeletion, ...] = tuple(
+        item for item in state.pending_deletions if item.instance_id == instance_id or not _deletion_settled(item, kept)
+    )
+    if len(retained) == len(state.pending_deletions):
         return state
-    return replace(state, pending_deletions=kept)
+    return replace(state, pending_deletions=retained)
 
 
 def preflight(
@@ -1136,9 +1144,9 @@ def _sent_out(deletion: PendingDeletion) -> bool:
     return bool(deletion.recycled) or any(item.status is not DeletionStatus.REFUSED for item in deletion.outcomes)
 
 
-def _deletion_settled(deletion: PendingDeletion, active: frozenset[str]) -> bool:
+def _deletion_settled(deletion: PendingDeletion, kept: frozenset[str]) -> bool:
     return (
-        deletion.operation_id not in active
+        deletion.operation_id not in kept
         and not any(item.status in {DeletionStatus.INFLIGHT, DeletionStatus.UNCERTAIN} for item in deletion.outcomes)
         and (deletion.restore is None or not deletion.restore.unsettled)
     )

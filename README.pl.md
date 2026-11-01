@@ -113,8 +113,9 @@ zostają oba odcinki.
 
 W **Bibliotece** Enter otwiera wynik, **F** pokazuje go w Eksploratorze, a **Del** przenosi
 cały zestaw do Kosza bez pytania. **Ctrl+Z** przywraca ostatnio usunięty zestaw, także po
-restarcie rezydenta. Nigdy nie nadpisuje zajętego miejsca i cofa tylko jedno, ostatnie
-usunięcie.
+restarcie rezydenta; każde kolejne Ctrl+Z przywraca wcześniejsze usunięcie z czasu działania
+rezydenta. Usunięcie, którego plików nie ma już w Koszu, jest pomijane. Nigdy nie nadpisuje
+zajętego miejsca.
 
 Stan rezydenta w `config/watch/state.json` ma wersję (schemat 5). Nowsza wersja AniShift
 czyta i migruje starsze schematy, ale starsza odrzuci stan zapisany przez nowszą, więc nie

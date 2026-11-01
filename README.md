@@ -112,8 +112,9 @@ contents on the same volume. Name collisions keep both episodes.
 
 In **Biblioteka**, Enter opens the result, **F** shows it in Explorer and **Del** moves the
 whole set to the Recycle Bin without confirmation. **Ctrl+Z** restores the last deleted set,
-also after a resident restart; it never overwrites an occupied destination and is a single
-undo, not a stack.
+also after a resident restart; each further Ctrl+Z restores the previous deletion made while
+the resident runs. A deletion whose files are no longer in the Recycle Bin is skipped. It never
+overwrites an occupied destination.
 
 The resident state in `config/watch/state.json` is versioned (schema 5). A build reads
 older schemas and migrates them, but an older build refuses a newer state, so do not run
