@@ -157,15 +157,18 @@ def preview_plan(plan: ExecutionPlan, preview_id: str, instance_id: str) -> Plan
 
 def encode_view[T](value: T) -> dict[str, object]:
     """Encode a read-only dataclass view as JSON-compatible fields."""
-    return cast("dict[str, object]", json.loads(_adapter(type(value)).dump_json(value, fallback=dict, warnings=False)))
+    return cast(
+        "dict[str, object]", json.loads(cached_adapter(type(value)).dump_json(value, fallback=dict, warnings=False))
+    )
 
 
 def decode_view[T](model: type[T], payload: object) -> T:
     """Validate one JSON view received over the authenticated local connection."""
-    return _adapter(model).validate_json(json.dumps(payload), strict=True)
+    return cached_adapter(model).validate_json(json.dumps(payload), strict=True)
 
 
-def _adapter[T](model: type[T]) -> TypeAdapter[T]:
+def cached_adapter[T](model: type[T]) -> TypeAdapter[T]:
+    """Return the one validator and serializer this process builds for *model*."""
     return cast("TypeAdapter[T]", _built_adapter(cast("Hashable", model)))
 
 

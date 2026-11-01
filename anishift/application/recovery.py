@@ -7,9 +7,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-from pydantic import TypeAdapter
-
 from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
+from anishift.application.control_views import cached_adapter
 from anishift.application.planning import ExecutionPlan
 from anishift.application.results import ProducedArtifact, TaskResult
 from anishift.errors import AniShiftError, ExecutionError
@@ -121,7 +120,7 @@ class RunJournal:
     def load(cls, path: Path) -> RunJournal:
         """Reconcile an interrupted rename and reject changed or missing saved inputs."""
         revision: tuple[int, int, int, int] = _revision(path)
-        checkpoint: _Checkpoint = TypeAdapter(_Checkpoint).validate_json(path.read_bytes(), strict=True)
+        checkpoint: _Checkpoint = cached_adapter(_Checkpoint).validate_json(path.read_bytes(), strict=True)
         if checkpoint.version != CHECKPOINT_VERSION:
             msg = "The saved run checkpoint has an unsupported version"
             raise ExecutionError(msg)
@@ -166,7 +165,7 @@ class RunJournal:
     @classmethod
     def relocate(cls, path: Path, move: ReadyMove, workspace: Path) -> bool:
         """Rebind a completed group's checkpoint only after every renamed proof retains its file identity."""
-        checkpoint: _Checkpoint = TypeAdapter(_Checkpoint).validate_json(path.read_bytes(), strict=True)
+        checkpoint: _Checkpoint = cached_adapter(_Checkpoint).validate_json(path.read_bytes(), strict=True)
         if checkpoint.version != CHECKPOINT_VERSION:
             msg: str = "The saved run checkpoint has an unsupported version"
             raise ExecutionError(msg)
@@ -273,7 +272,7 @@ class RunJournal:
         self._checkpoint = _completed(self._checkpoint, TaskResult(pending.task_id, (published,)))
 
     def _save(self, checkpoint: _Checkpoint) -> None:
-        data: bytes = TypeAdapter(_Checkpoint).dump_json(checkpoint, fallback=dict, warnings=False)
+        data: bytes = cached_adapter(_Checkpoint).dump_json(checkpoint, fallback=dict, warnings=False)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         temporary: Path = self._path.with_suffix(".tmp")
         try:
