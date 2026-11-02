@@ -312,6 +312,13 @@ def _reaches(owner: AutomationOwner, state: TargetState, number: int = 3, identi
     _until(reached)
 
 
+def _is_due_after_attempts(owner: AutomationOwner, started: int, number: int = 3, identifier: str = "a") -> bool:
+    record: SubscriptionRecord | None = _record_of(owner, identifier)
+    return record is not None and any(
+        item.number == number and item.state is TargetState.DUE and item.started == started for item in record.targets
+    )
+
+
 def _idle(owner: AutomationOwner) -> None:
     _until(lambda: owner._on_owner(lambda: not owner._subscription_checks))
 
@@ -650,8 +657,7 @@ def test_next_release_chosen_content_waits_for_previous_settlement(world: _World
         _until(lambda: world.network.tracked[_FIRST].state == "downloading")
         world.network.stop_ignored = True
         _command(owner, "set_auto", "resume", enabled=True)
-        _reaches(owner, TargetState.ATTEMPTING)
-        _reaches(owner, TargetState.DUE)
+        _until(lambda: _is_due_after_attempts(owner, 1))
         stopped: SubscriptionTarget = _target(owner)
         _check(owner, "second")
         _reaches(owner, TargetState.ATTEMPTING)
