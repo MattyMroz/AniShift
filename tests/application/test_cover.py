@@ -182,7 +182,7 @@ def _write_audio(path: Path) -> None:
 
 def _groups(root: Path) -> tuple[InspectedSourceGroup, ...]:
     return (
-        WorkspaceInspector(_FakeProbe(), runner=_FakeRunner())
+        WorkspaceInspector(_FakeProbe(), runner=_FakeRunner(), ffmpeg=Path("ffmpeg"))
         .inspect(discover_groups(root), cancel=NeverCancelledToken())
         .groups
     )

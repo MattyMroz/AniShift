@@ -13,11 +13,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
+from conftest import requires_binaries
 from loguru import logger as loguru_logger
 
 from anishift.application.tts_clips import FfmpegClipService
 from anishift.paths import elevenreader_dir
-from anishift.platform.binaries import Binary, resolve_binary
+from anishift.platform.binaries import Binary, require_binary
 from anishift.services.audio.commands import SubprocessRunner
 from anishift.services.tts import (
     AudioFormat,
@@ -72,10 +73,8 @@ class _Progress:
 
 
 def _clips() -> FfmpegClipService:
-    ffmpeg: Path | None = resolve_binary(Binary.FFMPEG)
-    ffprobe: Path | None = resolve_binary(Binary.FFPROBE)
-    if ffmpeg is None or ffprobe is None:
-        pytest.skip("FFmpeg is not available")
+    ffmpeg: Path = require_binary(Binary.FFMPEG)
+    ffprobe: Path = require_binary(Binary.FFPROBE)
     return FfmpegClipService(
         cancel=threading.Event(),
         runner=SubprocessRunner(),
@@ -92,6 +91,7 @@ def _wav(path: Path) -> tuple[int, int, int]:
 
 
 @pytest.mark.parametrize("voice", list(VOICES))
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 def test_tts_service_live_document_commits_three_validated_clips(tmp_path: Path, voice: str) -> None:
     clips: FfmpegClipService = _clips()
     config = TtsConfig(
@@ -212,6 +212,7 @@ async def _account(root: Path) -> tuple[object, object, frozenset[str]]:
 
 
 @pytest.mark.parametrize("documents", [1, MAX_PARALLEL_DOCUMENTS])
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 def test_tts_services_on_own_threads_live_record_documents_together(tmp_path: Path, documents: int) -> None:
     clips: list[FfmpegClipService] = [_clips() for _ in range(documents)]
     root: Path = elevenreader_dir()

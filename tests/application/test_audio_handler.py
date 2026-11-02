@@ -7,6 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from conftest import requires_binaries
 
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState
 from anishift.application.audio_handler import AudioProgressObserver, AudioTaskHandler
@@ -230,7 +231,7 @@ def test_audio_handler_rejects_cancelled_task_before_service_call(tmp_path: Path
     assert raised.value.context.code is ErrorCode.CANCELLED
 
 
-@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 def test_real_audio_handler_reports_measured_progress_before_success(tmp_path: Path) -> None:
     source_path: Path = tmp_path / "narration.wav"
     with wave.open(str(source_path), "wb") as source_wav:

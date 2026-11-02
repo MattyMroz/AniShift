@@ -82,7 +82,7 @@ def _readiness(root: Path) -> dict[str, GroupReadiness]:
         for artifact in group.artifacts
         if artifact.path is not None and artifact.path.suffix.casefold() in {".mkv", ".mp4"}
     }
-    workspace = WorkspaceInspector(_FakeProbe(videos), runner=_FakeRunner()).inspect(
+    workspace = WorkspaceInspector(_FakeProbe(videos), runner=_FakeRunner(), ffmpeg=Path("ffmpeg")).inspect(
         discovery,
         cancel=NeverCancelledToken(),
     )
@@ -272,7 +272,7 @@ def test_an_inspected_group_is_either_ready_or_names_one_reason(tmp_path: Path) 
 
 def _group_of(root: Path, stem: str) -> InspectedSourceGroup:
     discovery = discover_groups(root)
-    workspace = WorkspaceInspector(_FakeProbe({}), runner=_FakeRunner()).inspect(
+    workspace = WorkspaceInspector(_FakeProbe({}), runner=_FakeRunner(), ffmpeg=Path("ffmpeg")).inspect(
         discovery,
         cancel=NeverCancelledToken(),
     )

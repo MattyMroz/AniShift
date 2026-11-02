@@ -4,10 +4,11 @@ import json
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from conftest import requires_binaries
 from PIL import Image
 from pysubs2 import SSAFile
 
-from anishift.platform.binaries import Binary, resolve_binary
+from anishift.platform.binaries import Binary
 from scripts.subtitle_quality import __main__ as quality_main
 from scripts.subtitle_quality import compare, metrics
 from scripts.subtitle_quality.episode import FONTS_NAME, SOURCE_NAME
@@ -107,11 +108,6 @@ def _run(
 
 def _kinds(selection: compare.Selection) -> list[str]:
     return sorted(case.kind for case in selection.cases)
-
-
-def _requires_ffmpeg() -> None:
-    if resolve_binary(Binary.FFMPEG) is None:
-        pytest.skip("ffmpeg is not installed")
 
 
 @pytest.mark.unit
@@ -258,8 +254,8 @@ def test_events_with_other_wording_or_timing_are_reported_apart_and_never_as_lay
 
 
 @pytest.mark.integration
+@requires_binaries(Binary.FFMPEG)
 def test_sign_width_and_new_collision_are_found_and_reversed_into_a_removed_collision(tmp_path: Path) -> None:
-    _requires_ffmpeg()
     pairs: Path = _pairs(tmp_path / "pairs")
     base: Path = _run(tmp_path, "base", _BEFORE)
     other: Path = _run(tmp_path, "other", _AFTER)
@@ -283,10 +279,10 @@ def test_sign_width_and_new_collision_are_found_and_reversed_into_a_removed_coll
 
 
 @pytest.mark.integration
+@requires_binaries(Binary.FFMPEG)
 def test_hard_case_frames_the_compared_events_visible_at_its_moment_and_leaves_excluded_ones_out(
     tmp_path: Path,
 ) -> None:
-    _requires_ffmpeg()
     pairs: Path = _pairs(tmp_path / "pairs")
     base: Path = _run(tmp_path, "base", _BEFORE)
     other: Path = _run(tmp_path, "other", _AFTER)
@@ -300,8 +296,8 @@ def test_hard_case_frames_the_compared_events_visible_at_its_moment_and_leaves_e
 
 
 @pytest.mark.integration
+@requires_binaries(Binary.FFMPEG)
 def test_placed_boxes_find_events_where_the_rendered_frame_draws_them_among_concurrent_lines(tmp_path: Path) -> None:
-    _requires_ffmpeg()
     script: Path = tmp_path / "stack.ass"
     lines: list[str] = [
         r"Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,Pierwsza kwestia",
@@ -334,10 +330,10 @@ def test_placed_boxes_find_events_where_the_rendered_frame_draws_them_among_conc
 
 @pytest.mark.integration
 @pytest.mark.parametrize("episode_fonts", [(), ("episode.ttf",)])
+@requires_binaries(Binary.FFMPEG)
 def test_render_case_adds_the_given_font_files_to_the_pair_fonts_before_rendering(
     tmp_path: Path, episode_fonts: tuple[str, ...]
 ) -> None:
-    _requires_ffmpeg()
     pair: Path = tmp_path / "pair"
     for name in episode_fonts:
         (pair / FONTS_NAME).mkdir(parents=True, exist_ok=True)
@@ -356,8 +352,8 @@ def test_render_case_adds_the_given_font_files_to_the_pair_fonts_before_renderin
 
 
 @pytest.mark.integration
+@requires_binaries(Binary.FFMPEG)
 def test_compare_command_renders_a_gallery_with_an_index_and_reports_changes(tmp_path: Path) -> None:
-    _requires_ffmpeg()
     pairs: Path = _pairs(tmp_path / "pairs")
     base: str = str(_run(tmp_path, "base", _BEFORE))
     other: str = str(_run(tmp_path, "other", _AFTER))

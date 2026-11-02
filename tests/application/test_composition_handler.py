@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from conftest import requires_binaries
 from PIL import Image
 
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState
@@ -315,7 +316,7 @@ def test_cover_handler_refuses_a_task_that_carries_no_recording_to_play(tmp_path
     assert service.cover_requests == []
 
 
-@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 @pytest.mark.parametrize(
     ("image_name", "size"),
     [
@@ -377,7 +378,7 @@ def test_a_real_cover_keeps_the_whole_recording_and_plays_as_an_mp4(
     assert video_duration - audio_duration <= 0.04
 
 
-@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 def test_an_interrupted_cover_encode_leaves_no_product_and_no_half_written_file(tmp_path: Path) -> None:
     image: Path = tmp_path / "Book.png"
     Image.new("RGB", (1280, 720), (10, 20, 30)).save(image)
@@ -408,7 +409,7 @@ def test_an_interrupted_cover_encode_leaves_no_product_and_no_half_written_file(
     assert sorted(path.name for path in tmp_path.iterdir()) == ["Book.m4a", "Book.png"]
 
 
-@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 def test_real_composition_emits_progress_and_keeps_destination_private(tmp_path: Path) -> None:
     task, snapshot, destination = _snapshot(tmp_path)
     source: Path | None = snapshot.require_ready("video").path

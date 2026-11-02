@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from audio_test_helpers import command_result, write_tone_wav
+from conftest import requires_binaries
 
 from anishift.platform.binaries import Binary, resolve_binary
 from anishift.services.audio.commands import CommandResult, SubprocessRunner
@@ -27,7 +28,7 @@ FFPROBE: Path | None = resolve_binary(Binary.FFPROBE)
 
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable"),
+    requires_binaries(Binary.FFMPEG, Binary.FFPROBE),
 ]
 
 _TRUE_PEAK: re.Pattern[str] = re.compile(r"True peak:\s+Peak:\s+(\S+)\s+dBFS")

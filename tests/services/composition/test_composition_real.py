@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import requires_binaries
 
 from anishift.platform.binaries import Binary, resolve_binary
 from anishift.services.composition.commands import StreamingRunner
@@ -69,7 +70,7 @@ def _sample_video(path: Path, *, duration_s: int = 2) -> None:
     )
 
 
-@pytest.mark.skipif(FFMPEG is None or MKVMERGE is None, reason="bundled tools are unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.MKVMERGE)
 def test_merge_keeps_source_tracks_first_and_adds_ours_last(tmp_path: Path) -> None:
     source = tmp_path / "Episode.mkv"
     _sample_video(source)
@@ -95,7 +96,7 @@ def test_merge_keeps_source_tracks_first_and_adds_ours_last(tmp_path: Path) -> N
     assert merged.tracks[-1].language == "pol"
 
 
-@pytest.mark.skipif(FFMPEG is None or MKVMERGE is None, reason="bundled tools are unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.MKVMERGE)
 def test_merge_appends_the_lector_after_the_original_audio(tmp_path: Path) -> None:
     source = tmp_path / "Episode.mkv"
     _sample_video(source)
@@ -124,7 +125,7 @@ def test_merge_appends_the_lector_after_the_original_audio(tmp_path: Path) -> No
     assert audio[-1].default is False
 
 
-@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled tools are unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 @pytest.mark.parametrize("container_request", [False, True])
 def test_burn_handles_difficult_path_characters(tmp_path: Path, container_request: bool) -> None:
     media_dir = tmp_path / "Heroine's dir with spaces [1080p]"
@@ -162,7 +163,7 @@ def test_burn_handles_difficult_path_characters(tmp_path: Path, container_reques
     assert result.output_path.stat().st_size > 0
 
 
-@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled tools are unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 @pytest.mark.parametrize("container_request", [False, True])
 def test_mp4_preserves_narration_beyond_video_duration(tmp_path: Path, container_request: bool) -> None:
     source: Path = tmp_path / "Episode.mp4"
@@ -201,7 +202,7 @@ def test_mp4_preserves_narration_beyond_video_duration(tmp_path: Path, container
     assert source_duration_us(result.output_path, ffprobe=service.ffprobe) == pytest.approx(4_000_000, abs=100_000)
 
 
-@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled tools are unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 def test_mp4_duration_excludes_original_audio_when_dropped(tmp_path: Path) -> None:
     source: Path = tmp_path / "Episode.mp4"
     subprocess.run(  # noqa: S603
@@ -244,7 +245,7 @@ def test_mp4_duration_excludes_original_audio_when_dropped(tmp_path: Path) -> No
     assert source_duration_us(result.output_path, ffprobe=service.ffprobe) == pytest.approx(1_000_000, abs=100_000)
 
 
-@pytest.mark.skipif(FFMPEG is None or MKVMERGE is None, reason="bundled tools are unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.MKVMERGE)
 def test_real_font_attachment_survives_merge_without_false_missing_warning(tmp_path: Path) -> None:
     font: Path = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "segoeui.ttf"
     if not font.is_file():
@@ -316,7 +317,7 @@ def test_real_font_attachment_survives_merge_without_false_missing_warning(tmp_p
     assert result.warnings == ()
 
 
-@pytest.mark.skipif(FFMPEG is None or MKVMERGE is None, reason="bundled tools are unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.MKVMERGE)
 def test_real_font_files_join_the_source_attachments_without_duplicates(tmp_path: Path) -> None:
     fonts: Path = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
     if not (fonts / "segoeui.ttf").is_file() or not (fonts / "arial.ttf").is_file():

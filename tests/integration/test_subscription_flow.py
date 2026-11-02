@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
+from conftest import requires_binaries
 from episode_download_support import Catalog, make_pack, private_client, resident, wait_for
 
 from anishift.application import automation as automation_module
@@ -20,6 +21,7 @@ from anishift.application.episode_selection import AniZipMapping, StreamCandidat
 from anishift.application.history import HistoryJournal, HistoryKind
 from anishift.application.subscription_targets import SubscriptionRecord, SubscriptionTarget, TargetState
 from anishift.application.watch_state import WatchStateStore
+from anishift.platform.binaries import Binary
 from anishift.platform.qbittorrent_process import ManagedQBittorrent
 from anishift.services.catalog import EpisodeAiring, SeasonAiring, TitleStatus
 from anishift.services.media import DefaultMediaProbe
@@ -190,6 +192,7 @@ def _started(state: WatchState) -> bool:
 
 @pytest.mark.integration
 @pytest.mark.usefixtures("quick")
+@requires_binaries(Binary.FFMPEG, Binary.QBITTORRENT)
 def test_a_due_target_downloads_its_single_episode_release_across_an_owner_restart_and_finishes_the_season(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -233,6 +236,7 @@ def test_a_due_target_downloads_its_single_episode_release_across_an_owner_resta
 
 @pytest.mark.integration
 @pytest.mark.usefixtures("quick")
+@requires_binaries(Binary.FFMPEG, Binary.QBITTORRENT)
 def test_a_release_without_video_is_rejected_cancelled_and_replaced_by_the_next_attempt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -281,6 +285,7 @@ def test_a_release_without_video_is_rejected_cancelled_and_replaced_by_the_next_
 
 @pytest.mark.integration
 @pytest.mark.usefixtures("quick")
+@requires_binaries(Binary.FFMPEG, Binary.QBITTORRENT)
 def test_a_pack_revealed_by_metadata_is_cancelled_before_content_without_spending_the_attempt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

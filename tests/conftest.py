@@ -8,12 +8,18 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
+from anishift.platform.binaries import Binary, resolve_binary
 from anishift.services.tts.engines.elevenreader.types import AlignmentChunk
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
 DATA_DIR: Final[Path] = Path(__file__).resolve().parent / "data"
+
+
+def requires_binaries(*binaries: Binary) -> pytest.MarkDecorator:
+    missing: list[str] = [binary.value for binary in binaries if resolve_binary(binary) is None]
+    return pytest.mark.skipif(bool(missing), reason=f"external binaries unavailable: {', '.join(missing)}")
 
 
 def hidden_window_options() -> dict[str, object]:

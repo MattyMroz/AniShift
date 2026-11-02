@@ -3,9 +3,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Final
 
 import pytest
+from conftest import requires_binaries
 from pysubs2 import Alignment, Color, SSAEvent, SSAFile, SSAStyle
 
-from anishift.platform.binaries import Binary, resolve_binary
+from anishift.platform.binaries import Binary
 from anishift.services.fonts import FontIndex, system_font_paths
 from anishift.services.subtitles.geometry import RenderProfile, screen_rects, wrap_text
 from scripts.subtitle_quality import render
@@ -13,15 +14,13 @@ from scripts.subtitle_quality import render
 if TYPE_CHECKING:
     from pathlib import Path
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, requires_binaries(Binary.FFMPEG)]
 
 _TOLERANCE_PX: Final[float] = 2.0
 _THRESHOLD_TEXT: Final[str] = "Regarding the other day's incident."
 
 
 def _needs(*names: str) -> FontIndex:
-    if resolve_binary(Binary.FFMPEG) is None:
-        pytest.skip("ffmpeg is not installed")
     paths = system_font_paths()
     present = {path.name.casefold() for path in paths}
     if not all(name in present for name in names):
