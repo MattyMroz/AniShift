@@ -2986,7 +2986,7 @@ class AutomationOwner:
         enabled: bool | None = _flag(request.payload, "enabled")
         if enabled is None:
             return _invalid("A switch command needs an `enabled` flag")
-        if enabled and self._shutting_down:
+        if self._shutting_down:
             return _refuse(RefusalReason.SHUTTING_DOWN)
         changed: bool = enabled != self._state.policy.auto_enabled
         policy = replace(self._state.policy, auto_enabled=enabled)
