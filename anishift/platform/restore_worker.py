@@ -40,6 +40,9 @@ _MOVE_FLAGS: Final[int] = 0x00100404
 _IDENTITY_FIELDS: Final[int] = 4
 """Size, modification time, device and inode form a complete file identity."""
 
+_STAGING_DIRECTORY_PREFIX: Final[str] = Path(RESTORE_STAGING_PREFIX).name
+"""Name prefix of a restore staging directory, the only kind the worker removes."""
+
 _BIN_ITEM_PREFIX: Final[str] = "$R"
 """Name prefix of a Recycle Bin data file."""
 
@@ -64,8 +67,16 @@ def _discard_bin_record(receipt: Path | None) -> None:
         receipt.with_name(f"{_BIN_RECORD_PREFIX}{receipt.name.removeprefix(_BIN_ITEM_PREFIX)}").unlink(missing_ok=True)
 
 
-def _settle(receipt: Path | None) -> RecycleResult:
+def _discard_staging_directory(staging: Path) -> None:
+    if not staging.parent.name.startswith(_STAGING_DIRECTORY_PREFIX):
+        return
+    with suppress(OSError):
+        staging.parent.rmdir()
+
+
+def _settle(receipt: Path | None, staging: Path) -> RecycleResult:
     _discard_bin_record(receipt)
+    _discard_staging_directory(staging)
     return RecycleResult("restored", "restore_completed")
 
 
@@ -389,7 +400,7 @@ def _restore(payload: dict[str, object]) -> RecycleResult:  # noqa: C901, PLR091
     receipt: Path | None = Path(str(payload["receipt"])) if payload.get("receipt") else None
     if _occupied(path):
         if not _occupied(staging) and _identity(path) == identity and (receipt is None or not _occupied(receipt)):
-            return _settle(receipt)
+            return _settle(receipt, staging)
         return RecycleResult("refused", "restore_destination_occupied")
     if not path.parent.is_dir() or path.parent.stat().st_dev != identity[2]:
         return RecycleResult("refused", "restore_unsupported_destination")
@@ -413,7 +424,9 @@ def _restore(payload: dict[str, object]) -> RecycleResult:  # noqa: C901, PLR091
         _publish_file(staging, path, identity)
     except FileExistsError:
         return RecycleResult("refused", "restore_destination_occupied")
-    return _settle(receipt) if _identity(path) == identity else RecycleResult("uncertain", "restore_incomplete")
+    return (
+        _settle(receipt, staging) if _identity(path) == identity else RecycleResult("uncertain", "restore_incomplete")
+    )
 
 
 def _stage_item(root: Path, receipt: Path, staging: Path, identity: tuple[int, int, int, int]) -> bool:

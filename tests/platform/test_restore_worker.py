@@ -181,6 +181,23 @@ def test_restore_removes_the_bin_record_of_the_receipt_it_restored(
     assert foreign.read_bytes() == b"foreign record"
 
 
+@pytest.mark.parametrize("sibling", [False, True])
+def test_restore_removes_its_own_staging_directory_only_when_it_is_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sibling: bool
+) -> None:
+    kept: Path = tmp_path / "tmp" / ".restore-one" / "other"
+    if sibling:
+        kept.parent.mkdir(parents=True)
+        kept.write_bytes(b"other file of the same set")
+
+    result: RecycleResult = _restore_from_bin(tmp_path, monkeypatch, tmp_path / "synthetic-receipt")
+
+    assert result.outcome == "restored"
+    assert (tmp_path / "tmp").is_dir()
+    assert (tmp_path / "tmp" / ".restore-one").exists() is sibling
+    assert kept.exists() is sibling
+
+
 def test_release_proof_reader_never_initializes_profile(tmp_path: Path) -> None:
     profile: Path = tmp_path / "absent"
     with httpx.Client() as client:
