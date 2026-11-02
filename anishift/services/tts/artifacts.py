@@ -162,14 +162,13 @@ class TtsArtifactLayout:
         clip_format: AudioFormat,
     ) -> Path:
         """Prove a path matches this repository's reserved temp contract."""
-        lexical: Path = path.absolute()
-        expected_parent: Path = self.clips_dir.absolute()
         expected_suffix: str = f".{clip_format.value}.tmp"
         if (
-            lexical.parent != expected_parent
-            or not lexical.name.startswith(".clip-")
-            or not lexical.name.endswith(expected_suffix)
+            path.absolute().parent.resolve() != self.clips_dir.resolve()
+            or not path.name.startswith(".clip-")
+            or not path.name.endswith(expected_suffix)
             or _is_redirect(path)
+            or _is_redirect(path.absolute().parent)
         ):
             _raise_resume(
                 "TTS commit input is not a reserved temporary clip",

@@ -124,6 +124,80 @@ def test_restore_reconciles_only_exact_recorded_locations(
     assert len(moves) == int(place == "bin")
 
 
+def _restore_from_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, receipt: Path) -> RecycleResult:
+    monkeypatch.setattr(worker, "_isolate", lambda pid: None)
+    monkeypatch.setattr(worker, "_supported_path", lambda path: True)
+    monkeypatch.setattr(worker, "_locked_source", lambda *args: nullcontext())
+    monkeypatch.setattr(worker, "_held_parents", lambda *args: nullcontext())
+    monkeypatch.setattr(worker, "_publish_file", lambda source, destination, identity: source.rename(destination))
+    (tmp_path / "ready").mkdir()
+    receipt.write_bytes(b"synthetic")
+    identity = _identity(receipt)
+    assert identity is not None
+
+    class Bin:
+        def __init__(self, value: Path) -> None:
+            assert value == receipt
+
+        def close(self) -> None:
+            pass
+
+    def move(item: Any, old: Path, new: Path, expected: tuple[int, int, int, int]) -> bool:
+        del item, expected
+        old.rename(new)
+        return True
+
+    monkeypatch.setattr(worker, "_BinItem", Bin)
+    monkeypatch.setattr(worker, "_move", move)
+    return worker.restore_request(
+        {
+            "parent_pid": os.getpid(),
+            "workspace": str(tmp_path),
+            "path": "ready/01.txt",
+            "staging": "tmp/.restore-one/file",
+            "identity": list(identity),
+            "receipt": str(receipt),
+            "started": False,
+            "check_only": False,
+        }
+    )
+
+
+def test_restore_removes_the_bin_record_of_the_receipt_it_restored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bin_dir: Path = tmp_path / "bin"
+    bin_dir.mkdir()
+    foreign: Path = bin_dir / "$I9ZZZ.txt"
+    foreign.write_bytes(b"foreign record")
+    record: Path = bin_dir / "$I1ABC.txt"
+    record.write_bytes(b"record")
+
+    result: RecycleResult = _restore_from_bin(tmp_path, monkeypatch, bin_dir / "$R1ABC.txt")
+
+    assert result.outcome == "restored"
+    assert (tmp_path / "ready" / "01.txt").read_bytes() == b"synthetic"
+    assert not record.exists()
+    assert foreign.read_bytes() == b"foreign record"
+
+
+@pytest.mark.parametrize("sibling", [False, True])
+def test_restore_removes_its_own_staging_directory_only_when_it_is_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sibling: bool
+) -> None:
+    kept: Path = tmp_path / "tmp" / ".restore-one" / "other"
+    if sibling:
+        kept.parent.mkdir(parents=True)
+        kept.write_bytes(b"other file of the same set")
+
+    result: RecycleResult = _restore_from_bin(tmp_path, monkeypatch, tmp_path / "synthetic-receipt")
+
+    assert result.outcome == "restored"
+    assert (tmp_path / "tmp").is_dir()
+    assert (tmp_path / "tmp" / ".restore-one").exists() is sibling
+    assert kept.exists() is sibling
+
+
 def test_release_proof_reader_never_initializes_profile(tmp_path: Path) -> None:
     profile: Path = tmp_path / "absent"
     with httpx.Client() as client:

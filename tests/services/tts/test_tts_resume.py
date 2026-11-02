@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ctypes
 import json
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -114,6 +116,28 @@ def test_commit_reopen_and_lookup_trusts_exact_hash_without_redecoding(tmp_path:
     assert hit.request_id == identity.request_id
     assert len(validator.calls) == 1
     assert json.loads((tmp_path / "tts" / "manifest.json").read_text())["schema_version"] == 1
+
+
+def _short_form(path: Path) -> Path:
+    if sys.platform != "win32":
+        pytest.skip("8.3 names exist only on Windows")
+    buffer = ctypes.create_unicode_buffer(32768)
+    length: int = ctypes.WinDLL("kernel32").GetShortPathNameW(str(path), buffer, len(buffer))
+    if not length or Path(buffer.value) == path:
+        pytest.skip("8.3 short names are unavailable on this volume")
+    return Path(buffer.value)
+
+
+def test_a_temp_clip_reached_through_the_short_form_of_its_directory_is_accepted(tmp_path: Path) -> None:
+    layout = TtsArtifactLayout(tmp_path / "long-directory-name" / "tts")
+    layout.initialize()
+    clip = layout.clips_dir / ".clip-one.mp3.tmp"
+    clip.write_bytes(b"valid-audio")
+    short = _short_form(layout.clips_dir) / clip.name
+
+    owned = layout.validate_temporary_clip(short, clip_format=AudioFormat.MP3)
+
+    assert owned == clip.resolve()
 
 
 def test_commit_revalidates_a_temp_clip_changed_after_receipt(tmp_path: Path) -> None:

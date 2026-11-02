@@ -718,7 +718,7 @@ class AnimeController:
     def _subscription_facts(self) -> tuple[str, ...]:
         if self._screen is not _Screen.EPISODES or self._subscription is None:
             return ()
-        state: SubscriptionState = row_state(self._subscription, self._moment())
+        state: SubscriptionState = row_state(self._subscription, self._moment(), idle=self._paused)
         return (
             safe(str(self._subscription.get("title", ""))),
             f"{state.text} · {row_summary(self._subscription)}",

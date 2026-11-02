@@ -6518,6 +6518,28 @@ def test_a_shutdown_refuses_a_global_resume_and_keeps_the_stored_pause(tmp_path:
     assert service.background_admission[-1] is False
 
 
+def test_a_shutdown_refuses_a_tray_pause_and_keeps_automation_enabled(tmp_path: Path) -> None:
+    service, store, group_id = _library(tmp_path)
+    _stopped_transfer(tmp_path, service, ())
+    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True)))
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        run_id: str = _started(owner)
+        stopping: ControlResponse = owner.handle(_request("shutdown", command_id="end-1"))
+        owner.tray_action("pause")
+        status: ControlResponse = owner.handle(_request("status"))
+        service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
+        thread.join(_TIMEOUT_S)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+    assert stopping.ok
+    assert status.result["auto_enabled"] is True
+    assert store.load().policy.auto_enabled is True
+
+
 def test_a_shutdown_refuses_a_transfer_action_it_would_leave_for_the_next_start(tmp_path: Path) -> None:
     service, store, group_id = _library(tmp_path)
     network: _TorrentNetwork = _stopped_transfer(tmp_path, service, (TorrentFile(0, "09.mkv", 4, 0.5, 1),))
