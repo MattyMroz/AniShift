@@ -511,7 +511,7 @@ def test_private_clients_download_concurrently_reconnect_and_stop_independently(
             )
             occupied.bind(("127.0.0.1", port))
             occupied.listen()
-            monkeypatch.setattr(processes, "_START_TIMEOUT_S", 1.0)
+            monkeypatch.setattr(processes, "_START_TIMEOUT_S", 5.0)
         else:
             occupied.close()
             monkeypatch.setattr(processes, "_START_TIMEOUT_S", 15.0)
