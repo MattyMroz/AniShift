@@ -211,9 +211,6 @@ C:\Users\MattyMroz\Desktop\PROJECTS\AniShift\workspace\tmp\playshift\   EXP: ca�
 └── k1\        pliki .cmd, które uruchamia właściciel
 ```
 
-Jeśli `C:\Users\MattyMroz\tmp\` nie istnieje (2026-10-31 nie istniał), wykonawca go tworzy i usuwa razem z EXP,
-gdy jest pusty.
-
 ### 11.2 Wymagane klatki na sekundę
 
 Źródło 23,976 fps (24000/1001). Przy prędkości 2× filtr dostaje 47,95 kl./s (O3). Mnożnik = cel / (23,976 ×
@@ -577,7 +574,7 @@ Przekaż wynik jako: krótka lista w czacie, punkt po punkcie (OK / nie / uwaga)
    właściciel rozstrzyga D3–D8 i zatwierdza drzewo.
 3. Po K2: decyzje przenieść w specyfikacji do „Ustaleń” (usunąć z otwartych), zaktualizować masterplan (01
    accepted, 02 current, wpis w historii zmian kierunku), zaktualizować `DOC\README.md`.
-4. Usunąć EXP (i pusty `C:\Users\MattyMroz\tmp\`), chyba że właściciel jawnie zostawi go do etapu 04; snapshot
+4. Usunąć EXP, chyba że właściciel jawnie zostawi go do etapu 04; snapshot
    T3 i porównanie z T0; porównanie OLD z `old-baseline.txt` (przed usunięciem EXP skopiować je do outcome).
 
 **Kontrola:** T3 bez śladów spoza D8; OLD identyczny z baseline.

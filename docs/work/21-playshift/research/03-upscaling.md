@@ -166,7 +166,7 @@ Odczyt:
 
 Pobranie wymaga zgody, bo to ok. 0,6–1 GB (paczka plus komponenty TRT runtime i sm120), plus RIFE 441 MB [F4].
 
-1. Rozpakować portable 3.9.0 do osobnego katalogu, np. `C:\Users\MattyMroz\tmp\ajn\`, nie do `Videos\mpv`.
+1. Rozpakować portable 3.9.0 do osobnego katalogu, np. `workspace\tmp\playshift\ajn\`, nie do `Videos\mpv`.
 2. **Sam upscale (bez okna):** `powershell -File animejanai\benchmarks\benchmark.ps1 -OnlyRes 1920x1080`. Skrypt sam uruchamia `mpvnet.com --vo=null --untimed --load-scripts=no --cache=no`. Wynik: fps Balanced i Performance [F15].
 3. **Prawdziwy plik:** `mpv.exe --vo=null --untimed --load-scripts=no --cache=no --hwdec=nvdec --start=300 --frames=2000 --vf=@aji:animejanai:lib=…/aji.dll:conf=…:model-dir=…/onnx:rife-model-dir=…/rife:trtexec=…:slot=1002 "<Edgerunners.mkv>"`. Policzyć fps z logu, tak jak w BENCHMARKS.md [F2]. Potem powtórzyć dla `slot=1003` (Performance) i `1012`/`1013` (RIFE 2× w obu kolejnościach).
 4. **Koszt RIFE w łańcuchu:** `aji_harness --rife-chain --slot 1013 --frames 240` (komenda w [F2]), dla różnych mnożników.
