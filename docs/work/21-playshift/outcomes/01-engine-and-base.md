@@ -9,7 +9,7 @@ plan: ../plans/01-engine-and-base.md
 
 Stan: fazy 0–6 planu wykonane, K1 przygotowany, ocena właściciela jeszcze nie zapisana. Werdykty G5 i G6 oraz
 propozycja D3–D8 czekają na odpowiedzi z K1. Wszystkie pliki eksperymentu leżą w
-`C:\Users\MattyMroz\tmp\playshift\` (dalej EXP); logi w `EXP\logs\`.
+`C:\Users\MattyMroz\Desktop\PROJECTS\AniShift\workspace\tmp\playshift\` (dalej EXP); logi w `EXP\logs\`.
 
 ## 1. Co sprawdzono i na czym
 
