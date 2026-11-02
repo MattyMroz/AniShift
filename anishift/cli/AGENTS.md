@@ -4,7 +4,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 
 ## Pliki
 
-- `main.py` — Typer app, `main()`, `doctor`/`setup`/`run --preset`, grupy `watch`, `autostart` i `subs`; bare = Interactive CLI
+- `main.py` — Typer app, `main()`, `doctor`/`setup`/`run --preset`, grupy `watch`, `autostart`, `qbit` i `subs`; bare = Interactive CLI
 - `console.py` — jedyny właściciel rekonfiguracji stdout/stderr na UTF-8 + check dla doctora
 - `run.py` — wspólny, UI-neutralny preflight Auto (także dla podzbioru grup) i wykonanie zaakceptowanego planu
 - `exit_codes.py` — kody wyjścia i `run_exit_code()` wspólne dla `run --preset` i okna partii

@@ -13,21 +13,21 @@ Przenośny (współdzielony z mm_avh): preskonfigurowana `console`, motyw `RICH_
 
 ## Pułapki
 
-- Import `console.py` MONKEYPATCHUJE `console.print` na poziomie modułu — sam import zmienia zachowanie `print` (normalizacja liczb + highlight spanami), nie tylko udostępnia obiekt. `console.py:315`
-- `FORCE_COLOR` czytany raz przy budowie konsoli w czasie importu — ustawienie zmiennej PO imporcie nie zadziała; wymusza sztywne `width=400`, `force_terminal=True`. `console.py:155-167`
-- `console.print(..., highlight=False)` nadal opakowuje czyste stringi w `Text`, by nawiasy nie były parsowane jako markup — to nie zwykłe „wyłącz highlight" Richa. `console.py:306-308`
-- Highlight to spany na surowym stringu; treść NIE jest re-parsowana jako markup, więc `[` i `\` w ścieżkach przetrwają dosłownie. `console.py:116-118,284-287`
-- Kolejność wzorców w `_HIGHLIGHT_STYLES` jest znacząca — wcześniejszy dopasowany zakres blokuje nakładające się (URL > ścieżka > bool > liczba). `console.py:87-88,128-131`
-- `get_status_icon` domyślnie zwraca STRING z tagami Rich markup (`[success]✅[/success]`) — trzeba go wypisać przez konsolę parsującą markup, inaczej pokażą się dosłowne nawiasy. `utilities.py:39,71`
-- Ikony `warning`/`info`/`running`/`stopped` mają celowo doklejoną spację w emoji (`"⚠️ "` itd.) — string ikony nie jest „goły". `utilities.py:59-64`
-- `format_bytes(binary=False)` używa bazy 1000 z jednostkami dziesiętnymi `KB/MB`; baza 1024 przełącza na `KiB/MiB`. `utilities.py:108-109`
+- Import `console.py` MONKEYPATCHUJE `console.print` na poziomie modułu — sam import zmienia zachowanie `print` (normalizacja liczb + highlight spanami), nie tylko udostępnia obiekt. `console.py`
+- `FORCE_COLOR` czytany raz przy budowie konsoli w czasie importu — ustawienie zmiennej PO imporcie nie zadziała; wymusza sztywne `width=400`, `force_terminal=True`. `console.py`
+- `console.print(..., highlight=False)` nadal opakowuje czyste stringi w `Text`, by nawiasy nie były parsowane jako markup — to nie zwykłe „wyłącz highlight" Richa. `console.py`
+- Highlight to spany na surowym stringu; treść NIE jest re-parsowana jako markup, więc `[` i `\` w ścieżkach przetrwają dosłownie. `console.py`
+- Kolejność wzorców w `_HIGHLIGHT_STYLES` jest znacząca — wcześniejszy dopasowany zakres blokuje nakładające się (URL > ścieżka > bool > liczba). `console.py`
+- `get_status_icon` domyślnie zwraca STRING z tagami Rich markup (`[success]✅[/success]`) — trzeba go wypisać przez konsolę parsującą markup, inaczej pokażą się dosłowne nawiasy. `utilities.py`
+- Ikony `warning`/`info`/`running`/`stopped` mają celowo doklejoną spację w emoji (`"⚠️ "` itd.) — string ikony nie jest „goły". `utilities.py`
+- `format_bytes(binary=False)` używa bazy 1000 z jednostkami dziesiętnymi `KB/MB`; baza 1024 przełącza na `KiB/MiB`. `utilities.py`
 
 ## Konwencje
 
-- Styl motywu `black` = „czarny na białym" (`rgb(0,0,0) on white`), nie sam czarny tekst. `theme.py:107-109`
-- `logging.level/time/message` zakodowane na sztywno jako `"red"`, nie z palety `Colors`. `theme.py:128-130`
-- `Colors.NORMAL` = `"default"` (kolor domyślny terminala), nie konkretny kolor. `theme.py:59`
-- `format_bytes/duration/percentage`, `get_progress_color` rzucają `ValueError` na wartościach ujemnych / spoza 0–100, nie zwracają wyniku granicznego. `utilities.py:101-103` i in.
+- Styl motywu `black` = „czarny na białym" (`rgb(0,0,0) on white`), nie sam czarny tekst. `theme.py`
+- `logging.level/time/message` zakodowane na sztywno jako `"red"`, nie z palety `Colors`. `theme.py`
+- `Colors.NORMAL` = `"default"` (kolor domyślny terminala), nie konkretny kolor. `theme.py`
+- `format_bytes/duration/percentage`, `get_progress_color` rzucają `ValueError` na wartościach ujemnych / spoza 0–100, nie zwracają wyniku granicznego. `utilities.py` i in.
 
 ## Uwaga
 

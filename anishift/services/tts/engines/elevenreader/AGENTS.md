@@ -40,7 +40,7 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
   rezydenta (bez breakaway), więc Job Object kończy go razem z rezydentem.
 - `ChromeSession.close` najpierw prosi Chrome o wyjście przez CDP (`Browser.close`) i czeka do 10 s; `terminate`
   i `kill` są tylko zapasem. Chrome zapisuje ciasteczka na dysk z opóźnieniem do ok. 30 s, więc twarde zabicie
-  zaraz po zalogowaniu gubi sesję (K2: `signed_in: true` w `session.json`, a profil wylogowany).
+  zaraz po zalogowaniu gubi sesję (`signed_in: true` w `session.json`, a profil wylogowany).
 - Nagrywanie, sprzątanie i sprawdzanie sesji przez silnik działają tylko z `headless=True` (`headless_session`);
   okno widać wyłącznie w `sign_in`. Skrypty diagnostyczne też nie otwierają okna.
 - `ProcessLock` na `chrome.lock` wyklucza drugą przeglądarkę na profilu (drugi proces, okno logowania): zajęty →
@@ -84,12 +84,12 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
 
 ## Pułapki
 
-- Konto trzyma na urządzeniu najwyżej 2 strumienie naraz (K1 2026-10-31, `outcomes/02-parallel-documents.md`):
+- Konto trzyma na urządzeniu najwyżej 2 strumienie naraz (pomiar: `docs/work/11-elevenreader-tts/outcomes/02-parallel-documents.md`):
   przy 3 i 5 nowy strumień zamyka starszy, a ta karta stoi do `STALL_S`. Dlatego `MAX_PARALLEL_DOCUMENTS` = 2;
   podniesienie tylko po nowym pomiarze testem sieciowym `test_tts_services_on_own_threads_live_record_documents_together`.
   Otwarcie i zamknięcie strumienia logują `ElevenReader stream opened/closed` z liczbą odebranych znaków.
 
-- Brak retry w transporcie (Z6). Ponowne „Play” (do 3) i pętla dołączania do CDP to czynności jednej próby.
+- Brak retry w transporcie. Ponowne „Play” (do 3) i pętla dołączania do CDP to czynności jednej próby.
 - Błąd Playwright przy starcie sterownika, dołączaniu i przygotowaniu kontekstu (`ChromeSession._attach`) staje się
   `unavailable_error`, więc `sign_in` kończy się `FAILED`, a panel nie zostaje w stanie „zajęty”.
 - Każde wywołanie strony w próbie (także `set_page_speed`, `press_play`, `check_page_speed`, `player_state`) idzie
@@ -103,7 +103,7 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
   WebSocketu nie trafiają też do plików. Prywatny `session.json` (katalog z `restrict_directory`, gitignored) ma tylko
   `signed_in`, `checked_at`, `restore` (głos i tempo konta) i `documents` (czasy, `read_id` wyłącznie do sprzątania
   oraz skróty SHA-256 prefiksów tytułu). Skróty nie są jawnym tekstem, ale słownikiem da się je odwrócić słowo po
-  słowie. Adres strumienia jest sprawdzany w pamięci (F8).
+  słowie. Adres strumienia jest sprawdzany w pamięci.
 - Część pusta po neutralizacji, równa `LINE_SEPARATOR` albo z `<break` to `TtsInputError` z `validate_part`;
   `TtsService` woła ją dla każdej kwestii przed grupowaniem, a `synthesize_document` dla każdej części przed
   przeglądarką.
@@ -111,9 +111,9 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
   `TtsClipValidationError` z `error_class` i `errno`, bez ścieżki.
 - Pierwsza ramka wysyłana z `listening_speed` ≠ 1 oznacza model v2 → błąd przejściowy.
 - Wylogowanego gościa biblioteka przekierowuje na `/reader/sign-up` (przyciski „Sign up with Google/Apple/email”,
-  „Sign in” nie jako przycisk; K2); `open_library` rozpoznaje to po adresie i przyciskach „Sign up”. Status 402 jako brak
-  kredytów jest założeniem do potwierdzenia w K2.
-- `GET reads` (zmierzone 2026-10-31) zwraca `{"reads": [...], "has_more", "next_cursor", "last_sort_id"}`; nowy
+  „Sign in” nie jako przycisk); `open_library` rozpoznaje to po adresie i przyciskach „Sign up”. Status 402 jako brak
+  kredytów jest niepotwierdzonym założeniem.
+- `GET reads` (zmierzone) zwraca `{"reads": [...], "has_more", "next_cursor", "last_sort_id"}`; nowy
   upload był na pierwszej stronie. Kod czyta tylko ją, bez paginacji. Założenie: kolejność od najnowszych, a upload
   bez `read_id` szuka się zwykle w tym samym przebiegu, minuty po wgraniu (sprzątanie po anulowaniu, następna próba,
   `close()`). Po dłuższej przerwie dokument może być poza pierwszą stroną; wtedy krok rozlicza się z ostrzeżeniem,
@@ -125,7 +125,7 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
   dla niej pusty `PartTiming` zamiast błędu, więc odpada tylko ta kwestia. Inna liczba lub tekst części i odwrócony
   czas pozostają `TtsClipValidationError` całego nagrania.
 - Serwer potrafi też oddać porcję z pełnym tekstem i alignmentem, ale prawie bez dźwięku (ok. 1 ms na znak, bez
-  `notice`; raport `ElevenDownloaderPro/docs/research/silent-chunks.md`). `StreamRecorder` oznacza porcję jako
+  `notice`). `StreamRecorder` oznacza porcję jako
   `silent`, gdy ma co najmniej `SILENT_CHUNK_MIN_LETTERS` liter (`\w` po usunięciu tagów `<...>`) i mniej niż
   `SILENT_CHUNK_MS_PER_LETTER` ms ramek MP3 na literę, i loguje ostrzeżenie z indeksem porcji, liczbą liter i ms
   dźwięku, bez tekstu. Każda część nachodząca na taką porcję dostaje w `part_spans` pusty `PartTiming`; ponowny odczyt

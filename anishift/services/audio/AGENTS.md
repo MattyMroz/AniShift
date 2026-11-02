@@ -5,7 +5,7 @@ sidecara audio przez FFmpeg.
 
 ## Granica
 
-- Audio przyjmuje neutralne `AudioRenderRequest`/`TimedAudioClip`; nie zna ASS/SRT,
+- Audio przyjmuje neutralne `AudioRenderRequest`/`TimedClip`; nie zna ASS/SRT,
   klasyfikacji napisów ani providerów TTS.
 - `AudioService` posiada normalizację klipów, timeline, mapowanie kanałów, miks,
   codec produktu, resume i własność finalnego sidecara.
@@ -72,7 +72,7 @@ sidecara audio przez FFmpeg.
 
 ## Resume i zapis
 
-- `write_timeline` zapisuje bezpośrednio do wskazanego pliku. Atomiczność należy
+- `write_raw_timeline` zapisuje bezpośrednio do wskazanego pliku. Atomiczność należy
   do `AudioService`, który przekazuje ścieżkę tymczasową. `timeline.py`,
   `service.py`
 - Nowy sidecar jest walidowany pod nazwą tymczasową, a następnie atomowo zastępuje

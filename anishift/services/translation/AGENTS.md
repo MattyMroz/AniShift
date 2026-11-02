@@ -17,22 +17,22 @@ Serwis tłumaczenia: synchroniczna fasada `TranslationService` nad jednym silnik
 
 ## Pułapki
 
-- `TranslationConfig` NIE waliduje typów ani nieznanych kluczy błędem — nieznane klucze tylko logują warning i są ignorowane; brak/pusty `engine` to jedyny warunek rzucający `TranslationConfigError`. `config.py:53-66`
-- `TranslationConfig` używa `init=False` + ręcznego `__init__` przepisującego pola; `MISSING` default staje się `None` — pominięte pole bez defaultu wyląduje jako `None`, nie rzuci. `config.py:68-70`
+- `TranslationConfig` NIE waliduje typów ani nieznanych kluczy błędem — nieznane klucze tylko logują warning i są ignorowane; brak/pusty `engine` to jedyny warunek rzucający `TranslationConfigError`. `config.py`
+- `TranslationConfig` używa `init=False` + ręcznego `__init__` przepisującego pola; `MISSING` default staje się `None` — pominięte pole bez defaultu wyląduje jako `None`, nie rzuci. `config.py`
 - Composition wstrzykuje `engine_factory=`, nie gotowy engine. Factory dostaje każdy wpis fallback chain i bazowy `TranslationConfig`; to jedyne wspierane spięcie silnika LLM. `service.py`
-- Silnik jest zawsze zamykany w `finally` po każdej próbie, także po sukcesie — `close()` wykona się przed zwrotem. `service.py:83-94`
+- Silnik jest zawsze zamykany w `finally` po każdej próbie, także po sukcesie — `close()` wykona się przed zwrotem. `service.py`
 - `translate_file` łapie bazowy `TranslationError`, zachowuje `ErrorContext` w wyniku i natychmiast przepuszcza `CANCELLED`; błędy programistyczne nadal przebijają. `service.py`
-- Anulowanie sprawdzane tylko na starcie każdej iteracji łańcucha, nie w trakcie tłumaczenia pliku; rzuca `TranslationError` z `ErrorCode.CANCELLED`. `service.py:76-78`
-- `_prepare_file` pomija puste/whitespace linie (mapa `-1`); pominięte pozycje przechodzą bez tłumaczenia jako sukces. `service.py:208-241`
-- `chunk_text` gwarantuje, że konkatenacja kawałków odtwarza wejście DOKŁADNIE (separatory po lewej stronie) — nie wolno trymować kawałków. `chunking.py:334-346`
+- Anulowanie sprawdzane tylko na starcie każdej iteracji łańcucha, nie w trakcie tłumaczenia pliku; rzuca `TranslationError` z `ErrorCode.CANCELLED`. `service.py`
+- `_prepare_file` pomija puste/whitespace linie (mapa `-1`); pominięte pozycje przechodzą bez tłumaczenia jako sukces. `service.py`
+- `chunk_text` gwarantuje, że konkatenacja kawałków odtwarza wejście DOKŁADNIE (separatory po lewej stronie) — nie wolno trymować kawałków. `chunking.py`
 - Tekst dla silnika może zawierać znaczniki stylu `<sN>…</sN>`. LLM ma je zachować (`prompts/system.md`), a Google i DeepL usuwają je przed wysłaniem, więc ich wynik wraca do proporcjonalnego mapowania tagów. `anishift/text/markers.py`
-- Efektywny limit cięcia to `min(chunk_limit, char_limit)` — sam duży `char_limit` bez zmiany `chunk_limit` nie da większych kawałków. `chunking.py:474`
+- Efektywny limit cięcia to `min(chunk_limit, char_limit)` — sam duży `char_limit` bez zmiany `chunk_limit` nie da większych kawałków. `chunking.py`
 
 ## Konwencje
 
 - Separatory fraz, domknięcia, skróty EN+PL i grafemy pochodzą z bezdomenowego `anishift/text/`; tutaj zostaje hierarchia i pakowanie requestów translation. `chunking.py`
 - Heurystyka „fałszywego końca zdania" jest współdzielona z TTS; adapter translation przekazuje jej całe fragmenty przed i po potencjalnej granicy. `chunking.py`
-- `_retry` świadomie bez tenacity — nie jest zależnością projektu. `_retry.py:1-7`
+- `_retry` świadomie bez tenacity — nie jest zależnością projektu. `_retry.py`
 - `api_calls` w `FileTranslation` liczy logiczne wywołania `translate_batch` (zwykle 1 na wspólny strumień pliku), nie surowe HTTP. `types.py`
 - Anulowanie dochodzi do silnika: `translate_batch(cancel=...)` sprawdza je przed każdą partią LLM i każdą próbą `call_with_retry`
   (`_retry.raise_if_cancelled`), więc trwające żądanie HTTP może dobiec, ale następne już nie rusza. Ukończonych partii
@@ -40,7 +40,7 @@ Serwis tłumaczenia: synchroniczna fasada `TranslationService` nad jednym silnik
 
 ## Decyzje
 
-- `translation` NIGDY nie importuje `anishift.services.llm` — silnik LLM dostaje protokół `LlmCompleter` przez DI (etap 5). `protocols.py:2-7,43-53`
-- Per-request limit znaków NIE jest w `TranslationConfig` — to twardy limit silnika (Google 15000, DeepL 128 KiB), by fasada nie mogła go zaniżyć. `config.py:35-38`
-- `TARGET_LANG = "pl"` zawsze — config nie niesie języka docelowego. `constants.py:11`
+- `translation` NIGDY nie importuje `anishift.services.llm` — silnik LLM dostaje protokół `LlmCompleter` przez DI. `protocols.py`
+- Per-request limit znaków NIE jest w `TranslationConfig` — to twardy limit silnika (Google 15000, DeepL 128 KiB), by fasada nie mogła go zaniżyć. `config.py`
+- `TARGET_LANG = "pl"` zawsze — config nie niesie języka docelowego. `constants.py`
 - `_run` scala `spoken` i tekstowe `displayed` chronologicznie do jednego wywołania. LLM zachowuje każde `spoken` i deduplikuje `displayed`; Google/DeepL deduplikują oba. `service.py`

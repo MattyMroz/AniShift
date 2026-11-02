@@ -1,6 +1,6 @@
 # torrents
 
-Granica wydań torrent: wyszukanie w indeksie nyaa, rozpoznanie nazwy wydania i klient qBittorrent.
+Granica wydań torrent: źródła wydań (Nyaa, Torrentio, Knaben, nekoBT, TsukiHime), rozpoznanie nazwy wydania i klient qBittorrent.
 Domena bez rejestru silników — zwykłe moduły. Nie filtruje, nie grupuje i nie wybiera folderu;
 te decyzje należą do warstwy aplikacyjnej.
 
@@ -14,6 +14,7 @@ te decyzje należą do warstwy aplikacyjnej.
 - `query.py` — `parse_query` i `EpisodeRange`; `EpisodeRange.text` jest neutralne językowo
 - `nyaa.py` — `parse_feed` (RSS) i `search_releases` (po jednym GET na kategorię)
 - `torrentio.py` — `TorrentioSource.streams/movie_streams` and `parse_streams`, without ranking
+- `knaben.py`, `nekobt.py`, `tsukihime.py` — pozostałe źródła; wspólne żądania i dekodowanie metadanych w `_source.py`
 - `qbittorrent.py` — `QBittorrentClient`: wersja, preferencje, dodanie torrenta, lista
 
 ## Inwarianty

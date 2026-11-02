@@ -27,7 +27,7 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
   Validate a nonempty matching file map before attempting stop, so premature selection cannot halt metadata acquisition.
   The owner remains responsible for durable revisions and refusing stale workers before this boundary.
 - `recycle.py` runs one bounded native helper per set operation (`recycle_session`/`restore_session`): one JSON line
-  per file, isolation (`_isolate`: parent watch + private desktop) once per process, every answer still bounded by
+  per file, isolation (`recycle_worker._isolate`: parent watch + private desktop) once per process, every answer still bounded by
   `RECYCLE_TIMEOUT_S` and must echo the requested `path`; a lost, late or foreign answer kills the helper and later steps refuse without a retry. `restore_worker.py` resolves the exact saved receipt
   inside the virtual Recycle Bin, moves it through Shell to recorded same-volume staging and
   publishes by checked file handle without replacement. Keep parent/path/identity guards;
@@ -107,17 +107,17 @@ Kod zależny od systemu: wykrycie OS i ścieżki binarek (`binaries.py`), blokad
   uruchamia zadanie. `autostart.py`
 
 - `FFMPEG`/`FFPROBE` dzielą podkatalog `"ffmpeg"`, `MKVEXTRACT`/`MKVMERGE` dzielą `"mkvtoolnix"` — jeden podfolder trzyma po dwie binarki. `binaries.py`
-- Niepusty plik w `external/bin/` ma pierwszeństwo; fallback `shutil.which` działa
-  także na Windows. Plik 0 B nie jest gotową binarką w żadnym źródle. `binaries.py`
+- Niepusty plik w `external/bin/` ma pierwszeństwo; fallback `shutil.which` działa tylko poza
+  Windows. Plik 0 B nie jest gotową binarką w żadnym źródle. `binaries.py`
 - `external_bin_root` pochodzi z `anishift/paths.py`. `bundled_binary_path` dokłada katalog narzędzia z `TOOL_DIR` i nazwę właściwą dla systemu; instalator i zarządca procesu korzystają z tego samego układu. `binaries.py`
 
 ## Konwencje
 
 - `is_windows()` istnieje, by wołający NIE rozgałęziali sami po OS przy doborze rozszerzenia i fallbacku PATH. `binaries.py`
-- Rozszerzenie `.exe` doklejane tylko na Windows przez `_exe_name`; gdzie indziej goły stem. `binaries.py:89-91`
-- `BinaryNotFoundError` dziedziczy po `FatalError` i podnosi się z pełnym `ErrorContext` (`ErrorCode.BINARY_NOT_FOUND`). `binaries.py:52-53,141-148`
-- Komunikat naprawczy `require_binary` różni się per OS: poza Windows dokleja podpowiedź o ręcznym dorzuceniu binarki do `external/bin/<tool>`. `binaries.py:138-140`
-- `external/bin/<tool>/` jest gitignored, pobierane przez `anishift setup`. `binaries.py:3,138`
+- Rozszerzenie `.exe` doklejane tylko na Windows przez `_exe_name`; gdzie indziej goły stem. `binaries.py`
+- `BinaryNotFoundError` dziedziczy po `FatalError` i podnosi się z pełnym `ErrorContext` (`ErrorCode.BINARY_NOT_FOUND`). `binaries.py`
+- Komunikat naprawczy `require_binary` różni się per OS: poza Windows dokleja podpowiedź o ręcznym dorzuceniu binarki do `external/bin/<tool>`. `binaries.py`
+- `external/bin/<tool>/` jest gitignored, pobierane przez `anishift setup`. `binaries.py`
 - `settings_path()` odmawia poza Windows i bez `%APPDATA%`; `installed_executable()` sprawdza `%ProgramFiles%`,
   `%ProgramFiles(x86)%` i `%LOCALAPPDATA%\Programs`, a dopiero na końcu `PATH`. Instalacji nie wykonuje —
   doctor podpowiada `winget install qBittorrent.qBittorrent`. `qbittorrent_config.py`
