@@ -20,8 +20,8 @@ Leniwy rejestr adapterów providerów TTS.
 - Każdy adapter ma `AGENTS.md`, `__init__.py`, `config.py`, `constants.py` i `service.py` (klasa silnika),
   a `types.py` tylko dla typów danych. Zdalny adapter ma `api_backend.py`: jedna próba u dostawcy razem z
   mapowaniem jego błędów; lokalny `sapi` ma w tej roli `worker.py` i `protocol.py`. Żaden nie ma `errors.py`.
-- Moduł spoza standardu tylko z uzasadnieniem, najwyżej dwa: `edge/patch.py`, `elevenbytes/vpn.py`,
-  `elevenlabs/options.py`, `elevenreader/{browser,recorder}.py`.
+- Moduł spoza standardu tylko z uzasadnieniem: `edge/patch.py`, `elevenbytes/vpn.py`,
+  `elevenlabs/options.py`, `elevenreader/{browser,hub,recorder}.py`.
 - Testy: `tests/services/tts/test_tts_<silnik>[_<moduł>].py`; test `network` w osobnym pliku `_network`.
 
 ## Adaptery

@@ -5,7 +5,7 @@ Neutralna granica identyfikacji kontenerów MKV i MP4. Zwraca wspólny `MediaCat
 ## Pliki
 
 - `probe.py` — publiczny protokół i dispatcher po rozszerzeniu
-- `mkv.py` — adapter `mkvmerge -J` oraz mapowanie legacy `MediaInfo`
+- `mkv.py` — adapter `mkvmerge -J` oraz mapowanie `MediaInfo` z `extraction`
 - `mp4.py` — adapter `ffprobe` i mapowanie streamów JSON
 - `types.py` — neutralny katalog, rodzaje i ścieżki
 - `_process.py` — kontrolowany subprocess z timeoutem i anulowaniem

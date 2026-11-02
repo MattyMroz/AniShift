@@ -27,8 +27,7 @@ narratora ani finalnego sidecara.
 
 ## Silniki
 
-- Registry jest jedynym źródłem prawdy o ID: `edge`, `elevenbytes`, `elevenlabs`,
-  `sapi`.
+- Registry (`engines/__init__.py`) jest jedynym źródłem prawdy o ID silników.
 - Import domeny i registry nie może importować SDK ani implementacji providerów.
 - Caller jawnie wybiera silnik; nie ma cichego fallbacku.
 - `is_available` jest wyłącznie tanim, cache'owanym skrótem. Szczegółowy wynik

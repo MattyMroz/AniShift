@@ -73,9 +73,9 @@ Każdy obszar poniżej ma własny AGENTS.md z pułapkami i konwencjami — wczyt
 - `tests/` — testy pytest; konwencje i markery w jego AGENTS.md
 - `docs/` — mapa i statusy workstreamów w `README.md`, pomysły w `ideas.md`, niezależne materiały w `reference/`, punkty wznowienia w `session-logs/`. Każdy workstream, również zakończony, pozostaje w `docs/work/<nn>-<nazwa>/` (numer = kolejność powstania; nowy workstream bierze kolejny numer) z artefaktami według skilla `workflow` (§11).
 - `external/` — pobrane binarki (gitignored) + docs HTML narzędzi; szczegóły w `external/README.md`
-- `config/` — runtime katalog na `settings.json` panelu (gitignored); opis w `config/README.md`
-- `scripts/hooks/` — lokalne hooki z `.pre-commit-config.yaml`; `scripts/tmp/` — jednorazowe
-- `workspace/` — user wrzuca MKV do roota; gotowe odcinki zbiera `ready/`, staging leży w `tmp/` (patrz Dane runtime)
+- `config/` — runtime katalog konfiguracji i stanu rezydenta (gitignored); opis w `config/README.md`
+- `scripts/` — `hooks/` lokalne hooki z `.pre-commit-config.yaml`, `subtitle_quality/` narzędzie jakości napisów, `smoke/` ręczny smoke e2e; `scripts/tmp/` — jednorazowe, powstaje na żądanie
+- `workspace/` — user wrzuca MKV do roota; gotowe odcinki zbiera `ready/`, staging leży w `tmp/`, są też foldery zadaniowe `subs/`, `translate/`, `audiobook/`, `cover/` (patrz Dane runtime)
 
 ## Twarde strażniki
 
@@ -83,7 +83,7 @@ Filozofia: regułę egzekwuje maszyna (hook / ruff / test), nie pamięć agenta.
 
 Instalacja: `prek install`. Hooki instaluje prek, wszystkie trzy etapy z `default_install_hook_types` w `.pre-commit-config.yaml`.
 
-- **pre-commit:** ruff `--fix` + ruff-format; `check_test_comments.py` obejmuje także pomocnicze moduły Python w katalogach testów i każdy `conftest.py`: zero opisowych komentarzy i samodzielnych stringów, również docstringów stałych; dyrektywy `# noqa`/`# type:`/`# pragma` są dozwolone. `check_const_docstrings.py` wymaga opisu pod stałą `Final`/aliasem w kodzie aplikacji poza testami.
+- **pre-commit:** ruff `--fix` + ruff-format; `check_test_comments.py` obejmuje także pomocnicze moduły Python w katalogach testów i każdy `conftest.py`: zero opisowych komentarzy i samodzielnych stringów, również docstringów stałych; dyrektywy `# noqa`/`# type:`/`# pragma` są dozwolone. `check_const_docstrings.py` wymaga opisu pod stałą `Final`/aliasem w kodzie aplikacji poza testami; `check_mutating_assign.py` odrzuca przypisanie, którego wartość mutuje kontener indeksowany przez cel (wszystkie `.py`).
 - **commit-msg:** `conventional-pre-commit` — `typ(scope): opis`, scope obowiązkowy z listy `--scopes`; `commit-validation` — streszczenie i sekcja `Validation:` (sekcja Git niżej).
 - **pre-push:** mypy dla bieżącej platformy, mypy `--platform linux` i pytest (łapią błędy lokalnie zanim pójdą do CI).
 - **ruff select** wymusza m.in.: typy param/zwrot (`ANN`), `from __future__` (`FA`), `X | None` zamiast `Optional` (`UP`), docstringi modułów/klas/funkcji (`D`), zakaz `except Exception` (`BLE`).
@@ -93,7 +93,7 @@ Instalacja: `prek install`. Hooki instaluje prek, wszystkie trzy etapy z `defaul
 ## Dane runtime
 
 - `workspace/` — wejście w root i podfolderach serii, skanowane rekurencyjnie z pominięciem `tmp/` i katalogów od kropki. Po sukcesie źródło i produkty trafiają do płaskiego `ready/`; regeneracja działa tam na miejscu. `tmp/` trzyma staging. Zero wymaganego `input/`, `output/`, `cache/`, `logs/`, `settings.json`. Override przez `ANISHIFT_WORKSPACE_ROOT`; wspólny układ katalogów wylicza `anishift/paths.py`.
-- Preferencje panelu: `config/settings.json` (gitignored, poza workspace). Stan rezydenta: `config/watch/` (ledger, blokada, endpoint, chroniony klucz IPC, `runs/` i `relocations/`); subskrypcje są w stanie ownera `config/watch/state.json`, a `config/subscriptions.json` to zamrożony plik poprzedniej wersji, czytany tylko przy migracji. `config/watch/decisions.jsonl` to rejestr decyzji automatu (tylko dopisywanie), `config/watch/cases.jsonl` — lokalna baza zweryfikowanych przypadków; oba bez sekretów, mediów i ścieżek absolutnych. Prywatny profil klienta: `config/qbittorrent/` (gitignored, chronione dane uwierzytelnienia). Ledger nie zawiera kluczy usług ani mediów.
+- Preferencje panelu: `config/settings.json` i `config/presets.json` (gitignored, poza workspace); układ całego `config/` w `config/README.md`. Stan rezydenta: `config/watch/` (`state.json` z subskrypcjami ownera, blokady, `instance.json`, chroniony klucz IPC, `runs/` i `relocations/`); `config/subscriptions.json` to zamrożony plik poprzedniej wersji, czytany tylko przy migracji. `config/watch/decisions.jsonl` to rejestr decyzji automatu (tylko dopisywanie), bez sekretów, mediów i ścieżek absolutnych. Prywatny profil klienta: `config/qbittorrent/` (gitignored, chronione dane uwierzytelnienia). Stan rezydenta nie zawiera kluczy usług ani mediów.
 - Settings API/env: pydantic-settings, prefix `ANISHIFT_`, z `.env`, wszystkie opcjonalne. Klient torrent: `ANISHIFT_QBITTORRENT_URL` (domyślnie `http://127.0.0.1:8080`), `ANISHIFT_QBITTORRENT_USERNAME`, `ANISHIFT_QBITTORRENT_PASSWORD`.
 - Diagnostyka runtime używa wyłącznie `from anishift.utils.logger import get_logger`
   oraz modułowego `logger = get_logger(__name__)`. Sinki konfiguruje tylko granica

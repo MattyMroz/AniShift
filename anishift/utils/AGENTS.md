@@ -21,19 +21,19 @@ Portable utilities with no host application dependencies. The package facade exp
 
 ## Pułapki
 
-- `device.py` NIGDY nie importuje torcha sam — torch w `sys.modules` sprawia, że `onnxruntime.InferenceSession` używa cuDNN torcha i zwalnia ładowanie modeli ONNX o dynamicznym kształcie. `device.py:1-13,44-46`
-- `DeviceInfo` ma pola `mps`/`has_mps`, ale żadna ścieżka nie zwraca `device="mps"` — `has_mps` zawsze `False`. `device.py:36,104-116`
-- `build_retry` przekazuje `sleep=asyncio.sleep` przez referencję (late-binding), by `monkeypatch.setattr(asyncio,"sleep",...)` działał — przeniesienie do domyślnego argumentu ominęłoby patcha. `_retry.py:143-152`
-- W `build_retry` `max_attempts` to CAŁKOWITA liczba wywołań (`stop_after_attempt`), nie liczba dodatkowych ponowień. `_retry.py:142,153`
-- `_is_retryable_network_error` rozpoznaje `DownloadError` po nazwach w `__mro__` (lazy) i celowo NIE ponawia gdy w MRO jest też `OfflineError`. `_retry.py:77-81`
-- `safe_rmtree`/`safe_move` pętlą `range(retries + 1)` — przy `retries=3` to 4 próby, backoff 0.5→1.0→2.0 s. `safe_fs.py:46,53,80`
-- `safe_resolve` używa `is_relative_to` na już rozwiązanych ścieżkach (po `.resolve()` obu stron) — symlinki są śledzone przed sprawdzeniem. `safe_path.py:33-36`
+- `device.py` NIGDY nie importuje torcha sam — torch w `sys.modules` sprawia, że `onnxruntime.InferenceSession` używa cuDNN torcha i zwalnia ładowanie modeli ONNX o dynamicznym kształcie. `device.py`
+- `DeviceInfo` ma pola `mps`/`has_mps`, ale żadna ścieżka nie zwraca `device="mps"` — `has_mps` zawsze `False`. `device.py`
+- `build_retry` przekazuje `sleep=asyncio.sleep` przez referencję (late-binding), by `monkeypatch.setattr(asyncio,"sleep",...)` działał — przeniesienie do domyślnego argumentu ominęłoby patcha. `_retry.py`
+- W `build_retry` `max_attempts` to CAŁKOWITA liczba wywołań (`stop_after_attempt`), nie liczba dodatkowych ponowień. `_retry.py`
+- `_is_retryable_network_error` rozpoznaje `DownloadError` po nazwach w `__mro__` (lazy) i celowo NIE ponawia gdy w MRO jest też `OfflineError`. `_retry.py`
+- `safe_rmtree`/`safe_move` pętlą `range(retries + 1)` — przy `retries=3` to 4 próby, backoff 0.5→1.0→2.0 s. `safe_fs.py`
+- `safe_resolve` używa `is_relative_to` na już rozwiązanych ścieżkach (po `.resolve()` obu stron) — symlinki są śledzone przed sprawdzeniem. `safe_path.py`
 - `mp3_frames`: ramka jest ważna tylko wtedy, gdy po niej stoi poprawny nagłówek albo kończą się dane. Zgubioną ramką (sklejeniem) jest wyłącznie ciąg bajtów między ważnymi ramkami, który zaczyna się poprawnym nagłówkiem: dekoder pomija go w całości, a czas serwera (`frames_duration_ms`, `cut_before_ms`) liczy go jako jedną ramkę. Obce bajty bez nagłówka nie są ani czasem, ani sklejeniem. Ostatnia ramka, po której do końca pliku stoją obce bajty, jest odtwarzana i liczy się jak zwykła ramka. `splice_times` zwraca czasy na osi zdekodowanej; `to_decoded` wymaga długości ramki strumienia (`FrameHeader.duration_ms`). `mp3_frames.py`
-- Dwa różne `timing.py`: `utils/timing.py` (`elapsed_ms`) i `utils/logger/timing.py` — nie mylić przy imporcie.
+- Trzy różne `timing.py`: `utils/timing.py` (`elapsed_ms_since`), `utils/logger/timing.py` i `utils/timer/timing.py` — nie mylić przy imporcie.
 
 ## Konwencje
 
 - Do not add the utilities directory itself to `sys.path`: `secrets.py` would shadow the standard-library module.
-- `_retry.py` i `device.py` używają `except Exception` (device.py przy sondowaniu torch/ort) mimo reguły „nigdy except Exception". `device.py:53,93`
-- `NETWORK_RETRY` ma budżet CZASOWY 60 s (`stop_after_delay`), `build_retry` limit LICZBY prób — dwa modele stopu. `_retry.py:61,104-110`
+- `device.py` (sondowanie torch/ort) i `rich_console/progress/manager.py` używają `except Exception` mimo reguły „nigdy except Exception".
+- `NETWORK_RETRY` ma budżet CZASOWY 60 s (`stop_after_delay`), `build_retry` limit LICZBY prób — dwa modele stopu. `_retry.py`
 - Import retry helpers from `<pkg>._retry`, not the package facade. `TransientError` and `DownloadError` are recognized through MRO names without importing host exceptions.
