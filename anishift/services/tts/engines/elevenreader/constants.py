@@ -36,6 +36,8 @@ __all__ = [
     "READS_URL",
     "READY_TIMEOUT_S",
     "SIGN_IN_TIMEOUT_S",
+    "SILENT_CHUNK_MIN_LETTERS",
+    "SILENT_CHUNK_MS_PER_LETTER",
     "SPEED_CHECK_S",
     "SPEED_JS",
     "SPEED_STATE_JS",
@@ -148,6 +150,12 @@ TAIL_CHARS: Final[int] = 20_000
 
 MIN_PROBE_CHARS: Final[int] = 10
 """Leading characters of the first chunk after a reconnect searched for in the recent text."""
+
+SILENT_CHUNK_MIN_LETTERS: Final[int] = 20
+"""Fewest letters in a chunk judged for missing speech; shorter chunks can be naturally brief."""
+
+SILENT_CHUNK_MS_PER_LETTER: Final[float] = 10.0
+"""Audio per letter below which a chunk carries text without speech; silent chunks measured 1.5, healthy 20+."""
 
 CONNECT_ATTEMPTS: Final[int] = 30
 """Attempts to attach to a freshly started Chrome."""

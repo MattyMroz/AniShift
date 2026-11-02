@@ -323,7 +323,13 @@ class ElevenReaderTtsEngine:
                 "ElevenReader received more text than uploaded", received=recorder.chars, expected=char_count
             )
         timings: tuple[PartTiming, ...] = part_spans(recorder.chunks, request.parts)
-        logger.info("ElevenReader document recorded", parts=len(timings), chars=recorder.chars, elapsed_ms=elapsed_ms)
+        logger.info(
+            "ElevenReader document recorded",
+            parts=len(timings),
+            unspoken=sum(not timing.spoken for timing in timings),
+            chars=recorder.chars,
+            elapsed_ms=elapsed_ms,
+        )
         return EngineDocumentResult(
             request_id=request.request_id,
             recording=request.recording,
@@ -366,8 +372,9 @@ def document_text(parts: tuple[DocumentPart, ...]) -> str:
 
 
 def part_spans(chunks: tuple[AlignmentChunk, ...], parts: tuple[DocumentPart, ...]) -> tuple[PartTiming, ...]:
-    """Return the server timing of every part from the text runs between break tags, skipping separators."""
+    """Return the server timing of every part between break tags; a part touching a silent chunk gets an empty span."""
     text: str = "".join(char for chunk in chunks for char in chunk.chars)
+    silent: list[bool] = [chunk.silent for chunk in chunks for _ in chunk.chars]
     starts: list[float] = [chunk.offset_ms + start for chunk in chunks for start in chunk.starts_ms]
     ends: list[float] = [
         chunk.offset_ms + start + duration
@@ -390,7 +397,8 @@ def part_spans(chunks: tuple[AlignmentChunk, ...], parts: tuple[DocumentPart, ..
             _raise_clip("ElevenReader line text mismatch", line=index)
         if ends[last] < starts[first]:
             _raise_clip("ElevenReader part timing is reversed", line=index)
-        timings.append(PartTiming(request_id=part.request_id, start_ms=starts[first], end_ms=ends[last]))
+        end_ms: float = starts[first] if any(silent[first : last + 1]) else ends[last]
+        timings.append(PartTiming(request_id=part.request_id, start_ms=starts[first], end_ms=end_ms))
     return tuple(timings)
 
 

@@ -317,6 +317,21 @@ def test_synthesize_document_incomplete_recording_raises_clip_error(tmp_path: Pa
     _assert_cleaned(site)
 
 
+def test_synthesize_document_silent_chunk_leaves_only_its_lines_unspoken(tmp_path: Path, engine_for: EngineFor) -> None:
+    texts = ("Pierwsza kwestia.", "Druga kwestia, która ma sporo liter.", "Trzecia kwestia.")
+    frames: list[str] = [
+        audio_frame(f"{texts[0]} {BREAK} … {BREAK} ", frames=22, fill=1),
+        audio_frame(f"{texts[1]} {BREAK} … {BREAK} ", frames=1, fill=2, step_ms=1.0),
+        audio_frame(f'{texts[2]} <break time="2s"/>', frames=22, fill=3),
+    ]
+    site = FakeSite(texts=texts, frames=frames)
+
+    result = _run(_record(engine_for(site), _request(tmp_path, texts=texts)))
+
+    assert [timing.spoken for timing in result.parts] == [True, False, True]
+    _assert_cleaned(site)
+
+
 def test_synthesize_document_line_count_mismatch_raises_clip_error(tmp_path: Path, engine_for: EngineFor) -> None:
     site = FakeSite(texts=TEXTS, frames=stream_frames(("Pierwsza kwestia. Druga (kwestia).",)))
 
@@ -1131,12 +1146,13 @@ def test_document_text_single_part_returns_one_paragraph() -> None:
     assert document_text((DocumentPart(request_id="a", text="Tylko."),)) == "Tylko.\n"
 
 
-def _chunk(text: str, *, offset_ms: float = 0.0, step_ms: float = 10.0) -> AlignmentChunk:
+def _chunk(text: str, *, offset_ms: float = 0.0, step_ms: float = 10.0, silent: bool = False) -> AlignmentChunk:
     return AlignmentChunk(
         offset_ms=offset_ms,
         chars=tuple(text),
         starts_ms=tuple(index * step_ms for index in range(len(text))),
         durations_ms=(step_ms,) * len(text),
+        silent=silent,
     )
 
 
@@ -1173,6 +1189,19 @@ def test_part_spans_part_the_server_did_not_speak_returns_empty_span() -> None:
     chunks = (_chunk('Ab. <break time="0.6s"/> '), silent, _chunk(' <break time="0.6s"/> Cd.', offset_ms=300.0))
 
     assert _spans(chunks, "Ab.", "j g", "Cd.") == [(0.0, 30.0), (250.0, 250.0), (520.0, 550.0)]
+
+
+def test_part_spans_parts_touching_a_silent_chunk_return_empty_spans() -> None:
+    chunks = (
+        _chunk('Ab. <break time="0.6s"/> C'),
+        _chunk('d. <break time="0.6s"/> Ef.', offset_ms=300.0, step_ms=1.0, silent=True),
+        _chunk(' <break time="0.6s"/> Gh.', offset_ms=330.0),
+    )
+
+    timings = part_spans(chunks, _parts("Ab.", "Cd.", "Ef.", "Gh."))
+
+    assert [timing.spoken for timing in timings] == [True, False, False, True]
+    assert _spans(chunks, "Ab.", "Cd.", "Ef.", "Gh.")[3] == (550.0, 580.0)
 
 
 def test_part_spans_ellipsis_ending_a_part_stays_in_its_text() -> None:

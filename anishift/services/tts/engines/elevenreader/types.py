@@ -131,9 +131,10 @@ class PlayerState:
 
 @dataclass(frozen=True, slots=True)
 class AlignmentChunk:
-    """Characters of one audio chunk with times relative to the chunk start, placed at its recording offset."""
+    """Characters of one audio chunk with times relative to the chunk start; *silent* marks text sent without speech."""
 
     offset_ms: float
     chars: tuple[str, ...]
     starts_ms: tuple[float, ...]
     durations_ms: tuple[float, ...]
+    silent: bool = False

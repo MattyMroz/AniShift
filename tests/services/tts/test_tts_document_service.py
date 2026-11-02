@@ -108,10 +108,10 @@ class _DocumentEngine:
         drop_timing_once: bool = False,
         wrong_voice_once: bool = False,
         separator: str = "",
-        silent: tuple[str, ...] = (),
+        speaks_up_to: dict[str, int] | None = None,
     ) -> None:
         self.separator: str = separator
-        self.silent: tuple[str, ...] = silent
+        self.speaks_up_to: dict[str, int] = speaks_up_to or {}
         self.documents: list[tuple[str, ...]] = []
         self.document_ids: list[str] = []
         self.recordings: list[Path] = []
@@ -170,7 +170,8 @@ class _DocumentEngine:
             PartTiming(
                 request_id=part.request_id,
                 start_ms=index * 1000.0,
-                end_ms=index * 1000.0 + (0.0 if part.text in self.silent else 500.0),
+                end_ms=index * 1000.0
+                + (500.0 if len(request.parts) <= self.speaks_up_to.get(part.text, len(request.parts)) else 0.0),
             )
             for index, part in enumerate(request.parts)
         )
@@ -415,21 +416,93 @@ def test_document_batch_part_refused_by_engine_fails_only_that_line(tmp_path: Pa
 
 
 def test_document_batch_part_the_server_did_not_speak_fails_only_that_line(tmp_path: Path) -> None:
-    engine = _DocumentEngine(silent=("j g",))
+    engine = _DocumentEngine(speaks_up_to={"j g": 0})
     splitter = _Splitter()
 
     (result,) = _run(tmp_path, engine, splitter, _batch("Raz dwa.", "j g", "Pięć."))
 
     assert _statuses(result) == [SynthesisStatus.SYNTHESIZED, SynthesisStatus.FAILED, SynthesisStatus.SYNTHESIZED]
     assert result.requests[1].error_code == "TTS_INPUT_INVALID"
-    assert engine.documents == [("line-0", "line-1", "line-2")]
+    assert engine.documents == [("line-0", "line-1", "line-2"), ("line-1",)]
     assert [[span.request_id for span in spans] for spans in splitter.calls] == [["line-0", "line-2"]]
-    assert result.stats.provider_calls == 1
+    assert result.stats.provider_calls == 2
     assert result.status is SpeechBatchStatus.PARTIAL
 
 
+def test_document_batch_lines_silent_in_large_document_are_spoken_after_reading_them_together(
+    tmp_path: Path,
+) -> None:
+    engine = _DocumentEngine(speaks_up_to={"Dwa.": 2, "Pięć.": 2})
+    splitter = _Splitter()
+
+    (result,) = _run(tmp_path, engine, splitter, _batch("Raz.", "Dwa.", "Trzy.", "Pięć."))
+
+    assert result.status is SpeechBatchStatus.COMPLETED
+    assert _statuses(result) == [SynthesisStatus.SYNTHESIZED] * 4
+    assert engine.documents == [("line-0", "line-1", "line-2", "line-3"), ("line-1", "line-3")]
+    assert [[span.request_id for span in spans] for spans in splitter.calls] == [
+        ["line-0", "line-2"],
+        ["line-1", "line-3"],
+    ]
+    assert result.stats.provider_calls == 2
+
+
+def test_document_batch_lines_silent_with_other_lines_are_spoken_when_read_alone(tmp_path: Path) -> None:
+    engine = _DocumentEngine(speaks_up_to={"Dwa.": 1, "Pięć.": 1})
+
+    (result,) = _run(tmp_path, engine, _Splitter(), _batch("Raz.", "Dwa.", "Trzy.", "Pięć."))
+
+    assert result.status is SpeechBatchStatus.COMPLETED
+    assert _statuses(result) == [SynthesisStatus.SYNTHESIZED] * 4
+    assert engine.documents == [
+        ("line-0", "line-1", "line-2", "line-3"),
+        ("line-1", "line-3"),
+        ("line-1",),
+        ("line-3",),
+    ]
+    assert result.stats.provider_calls == 4
+
+
+def test_document_batch_line_silent_even_alone_fails_alone_after_bounded_rereads(tmp_path: Path) -> None:
+    engine = _DocumentEngine(speaks_up_to={"Dwa.": 0, "Pięć.": 1})
+    progress = _Progress()
+
+    with _service(tmp_path, engine, _Splitter()) as service:
+        result = service.synthesize(_batch("Raz.", "Dwa.", "Trzy.", "Pięć."), callbacks=progress)
+
+    assert _statuses(result) == [
+        SynthesisStatus.SYNTHESIZED,
+        SynthesisStatus.FAILED,
+        SynthesisStatus.SYNTHESIZED,
+        SynthesisStatus.SYNTHESIZED,
+    ]
+    assert result.requests[1].error_code == "TTS_INPUT_INVALID"
+    assert result.failure is not None
+    assert "own document" in result.failure.message
+    assert result.status is SpeechBatchStatus.PARTIAL
+    assert engine.documents == [
+        ("line-0", "line-1", "line-2", "line-3"),
+        ("line-1", "line-3"),
+        ("line-1",),
+        ("line-3",),
+    ]
+    assert result.stats.provider_calls == 4
+    assert sorted(update.request_id for update in progress.requests) == ["line-0", "line-1", "line-2", "line-3"]
+
+
+def test_document_batch_every_line_silent_reads_each_alone_once(tmp_path: Path) -> None:
+    engine = _DocumentEngine(speaks_up_to={"Raz.": 0, "Dwa.": 0})
+
+    (result,) = _run(tmp_path, engine, _Splitter(), _batch("Raz.", "Dwa."))
+
+    assert _statuses(result) == [SynthesisStatus.FAILED, SynthesisStatus.FAILED]
+    assert engine.documents == [("line-0", "line-1"), ("line-0",), ("line-1",)]
+    assert result.stats.provider_calls == 3
+    assert result.status is SpeechBatchStatus.FAILED
+
+
 def test_document_batch_without_any_spoken_part_fails_its_lines_without_split(tmp_path: Path) -> None:
-    engine = _DocumentEngine(silent=("j g",))
+    engine = _DocumentEngine(speaks_up_to={"j g": 0})
     splitter = _Splitter()
 
     (result,) = _run(tmp_path, engine, splitter, _batch("j g"))

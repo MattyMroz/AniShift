@@ -6,12 +6,19 @@ import base64
 import binascii
 import hashlib
 import json
-from typing import TYPE_CHECKING
+import re
+from typing import TYPE_CHECKING, Final
 
 from anishift.utils.logger import get_logger
 from anishift.utils.mp3_frames import cut_before_ms, frames_duration_ms
 
-from .constants import MIN_DEDUP_BYTES, MIN_PROBE_CHARS, TAIL_CHARS
+from .constants import (
+    MIN_DEDUP_BYTES,
+    MIN_PROBE_CHARS,
+    SILENT_CHUNK_MIN_LETTERS,
+    SILENT_CHUNK_MS_PER_LETTER,
+    TAIL_CHARS,
+)
 from .types import AlignmentChunk
 
 if TYPE_CHECKING:
@@ -21,6 +28,14 @@ if TYPE_CHECKING:
 __all__ = ["StreamRecorder"]
 
 logger = get_logger(__name__)
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+_TAG: Final[re.Pattern[str]] = re.compile(r"<[^>]*>")
+"""Markup the server sends with the text, such as SSML pauses; it holds no spoken letters."""
+
+_LETTER: Final[re.Pattern[str]] = re.compile(r"\w")
+"""One letter or digit of the chunk text counted against its audio."""
 
 
 class StreamRecorder:
@@ -119,18 +134,29 @@ class StreamRecorder:
             logger.warning("ElevenReader recording could not be written", error_class=type(error).__name__)
             return
         self._audio_bytes += len(chunk)
+        audio_ms: float = frames_duration_ms(chunk)
         if alignment is not None:
-            self._keep_alignment(alignment)
-        self._offset_ms += frames_duration_ms(chunk)
+            self._keep_alignment(alignment, audio_ms)
+        self._offset_ms += audio_ms
 
-    def _keep_alignment(self, alignment: AlignmentChunk) -> None:
+    def _keep_alignment(self, alignment: AlignmentChunk, audio_ms: float) -> None:
         text: str = "".join(alignment.chars)
+        letters: int = len(_LETTER.findall(_TAG.sub("", text)))
+        silent: bool = letters >= SILENT_CHUNK_MIN_LETTERS and audio_ms < SILENT_CHUNK_MS_PER_LETTER * letters
+        if silent:
+            logger.warning(
+                "ElevenReader chunk carried text without speech",
+                chunk=len(self._chunks),
+                letters=letters,
+                audio_ms=round(audio_ms, 1),
+            )
         self._chunks.append(
             AlignmentChunk(
                 offset_ms=self._offset_ms,
                 chars=alignment.chars,
                 starts_ms=alignment.starts_ms,
                 durations_ms=alignment.durations_ms,
+                silent=silent,
             ),
         )
         self._chars += len(text)

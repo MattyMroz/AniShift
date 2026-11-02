@@ -124,3 +124,9 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
 - Serwer potrafi nie wypowiedzieć części (np. strzępu szyldu `j g`): jej znaki mają zerowy czas, a `part_spans` zwraca
   dla niej pusty `PartTiming` zamiast błędu, więc odpada tylko ta kwestia. Inna liczba lub tekst części i odwrócony
   czas pozostają `TtsClipValidationError` całego nagrania.
+- Serwer potrafi też oddać porcję z pełnym tekstem i alignmentem, ale prawie bez dźwięku (ok. 1 ms na znak, bez
+  `notice`; raport `ElevenDownloaderPro/docs/research/silent-chunks.md`). `StreamRecorder` oznacza porcję jako
+  `silent`, gdy ma co najmniej `SILENT_CHUNK_MIN_LETTERS` liter (`\w` po usunięciu tagów `<...>`) i mniej niż
+  `SILENT_CHUNK_MS_PER_LETTER` ms ramek MP3 na literę, i loguje ostrzeżenie z indeksem porcji, liczbą liter i ms
+  dźwięku, bez tekstu. Każda część nachodząca na taką porcję dostaje w `part_spans` pusty `PartTiming`; ponowny odczyt
+  w mniejszych dokumentach robi wspólna ścieżka dokumentu TTS. Krótszej porcji reguła nie ocenia.
