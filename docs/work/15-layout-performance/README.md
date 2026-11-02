@@ -2,7 +2,9 @@
 
 Wydajność układu linii dialogu: `layout_dialogue` rośnie ponadkwadratowo z liczbą słów (320 słów: 5,5 s / 42 s; 1000 słów: ponad 1000 s i 2,2 GB), więc uszkodzony plik napisów może zawiesić rezydenta. Realne linie dialogu mają najwyżej 19 słów i liczą się w 0,04 s.
 
-Status: diagnoza i plan gotowe (2026-10-25), bez zmian w kodzie. Czeka na akceptację właściciela i wykonanie.
+Status: zrobione, [PR #71](https://github.com/MattyMroz/AniShift/pull/71): `MAX_DIALOGUE_WORDS = 50`
+w `anishift/services/subtitles/linebreak.py`, linia ponad limitem zostaje nierozbita, licznik `dialogue_too_long`
+w raporcie. Gałąź powstała pod nazwą `work/subtitles/04-dialogue-word-limit`.
 
 | Plik | Treść |
 |---|---|

@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: draft
+status: done
 baseline: 4365a51 (main, czyste drzewo)
 created: 2026-10-25
 ---

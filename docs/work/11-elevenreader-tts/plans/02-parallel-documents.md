@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: draft
+status: pending-human
 baseline: AniShift 9c5a418 (work/cli/05-processing-delete; silnik ElevenReader jest w main od ec90f18); ElevenDownloaderPro 7e3fd94 + niezacommitowane src/auto.py (mtime 2026-10-26)
 created: 2026-10-31
 parent: ../plan.md

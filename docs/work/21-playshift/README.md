@@ -7,9 +7,11 @@ tymczasowo w AniShift; po założeniu repo PlayShift (etap 02) przechodzą tam i
 
 ## Status
 
-2026-10-31: research zakończony (6 raportów), specyfikacja, masterplan i plan etapu 01 w wersji roboczej do
-akceptacji właściciela. Kod nie powstał. Następny krok: odpowiedzi na D1 i D2 (`specification.md`), potem etap 01
-— pomiar silnika AI na RTX 5090 i decyzja bazy.
+2026-11-02: research (raporty R1–R6), specyfikacja, masterplan i plan etapu 01 są scalone do `main`
+([PR #85](https://github.com/MattyMroz/AniShift/pull/85)). Fazy 0–6 planu etapu 01 są wykonane, a pomiary opisuje
+roboczy `outcomes/01-engine-and-base.md`. Czeka ocena właściciela (K1), potem werdykty G5 i G6 oraz decyzje D3–D8.
+Kodu PlayShift w AniShift nie ma. Zmiana ścieżek eksperymentu na `workspace/tmp`:
+[PR #98](https://github.com/MattyMroz/AniShift/pull/98).
 
 ## Kolejność czytania
 
@@ -20,4 +22,4 @@ akceptacji właściciela. Kod nie powstał. Następny krok: odpowiedzi na D1 i D
 4. `research/` — raporty R1–R6: obecny odtwarzacz, buildy i aktualizacje, upscaling, interpolacja i kolor,
    skrypty i UI, architektura i integracja z AniShift.
 
-Artefakty powstające w trakcie etapu 01: `outcomes/01-engine-and-base.md`.
+Wynik etapu 01 (roboczy, przed K1): `outcomes/01-engine-and-base.md`.

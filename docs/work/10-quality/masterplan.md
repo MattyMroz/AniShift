@@ -1,6 +1,11 @@
 # Jakość wyniku: masterplan
 
 Status: zaakceptowany kierunek właściciela (2026-10-17). Kontrakt: [specification.md](specification.md).
+Stan na `origin/main` (2026-11-02): etapy 0–2 i 4 oraz wariant 1–4 v2 (układ dialogu i szyldów, polski podział wierszy,
+czcionka dialogu, narracja szyldów) scalono w [PR #61](https://github.com/MattyMroz/AniShift/pull/61), [#65](https://github.com/MattyMroz/AniShift/pull/65),
+[#66](https://github.com/MattyMroz/AniShift/pull/66), [#71](https://github.com/MattyMroz/AniShift/pull/71) i [#76](https://github.com/MattyMroz/AniShift/pull/76).
+Etap 3 (granice stylów) przejmuje [20-style-boundaries](../20-style-boundaries/README.md), niezaczęty. Etap 6 (głośność lektora)
+zrobiono w [11-elevenreader-tts](../11-elevenreader-tts/README.md). Dla etapu 5 (czasy wyświetlania) brak dowodu.
 
 Szczegółowo planowany jest tylko bieżący etap. Każdy kolejny dostaje własny plan w `plans/` dopiero po wyniku poprzedniego.
 
