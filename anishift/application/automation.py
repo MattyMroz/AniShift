@@ -5274,7 +5274,7 @@ class AutomationOwner:
         )
 
     def _target_status(self, status: EpisodeStatus) -> EpisodeStatus:
-        """Show an unordered episode as awaiting its airing or release when an unpaused subscription targets it."""
+        """Show an unordered episode as awaiting its airing or release while automation runs."""
         found: tuple[SubscriptionRecord, SubscriptionTarget] | None = next(
             (
                 (record, item)
@@ -5288,6 +5288,8 @@ class AutomationOwner:
         if found is None or (reason := _TARGET_REASONS.get(found[1].state)) is None:
             return status
         record, target = found
+        if not self._state.policy.auto_enabled and target.state is not TargetState.EXHAUSTED:
+            return status
         now: datetime = self._clock()
         notices: tuple[TargetNotice, ...] = self._target_notices(record, target, now)
         if target.state is not TargetState.DUE:

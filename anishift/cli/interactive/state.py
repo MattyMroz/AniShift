@@ -1462,7 +1462,9 @@ class StateController:
             columns,
             rows,
             AnimeScreen.SUBSCRIPTIONS,
-            subscription_rows(self._subscriptions, self._subscription_checks, self._clock()),
+            subscription_rows(
+                self._subscriptions, self._subscription_checks, self._clock(), idle=self._automation_paused()
+            ),
             self._notice.rstrip("."),
             subscription_warning(problem=bool(self._subscriptions_problem), shadow=self._subscriptions_shadow),
         )

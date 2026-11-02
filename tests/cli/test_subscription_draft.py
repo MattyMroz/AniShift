@@ -441,7 +441,19 @@ def _plain(text: str) -> SubscriptionState:
     ],
 )
 def test_a_row_shows_its_strongest_state(changes: Mapping[str, object], state: SubscriptionState) -> None:
-    assert row_state(_row("a", "Alpha", **changes), _NOW) == state
+    assert row_state(_row("a", "Alpha", **changes), _NOW, idle=False) == state
+
+
+@pytest.mark.parametrize("due_state", ["searching", "pending", None])
+def test_an_idle_automation_never_claims_a_search_in_a_row(due_state: str | None) -> None:
+    due: dict[str, object] = {
+        "due_at": (_NOW - timedelta(hours=1)).isoformat(),
+        "due_number": 3,
+        "due_state": due_state,
+    }
+
+    assert row_state(_row("a", "Alpha", **due), _NOW, idle=True) == _plain("E3")
+    assert row_state(_row("a", "Alpha", **due), _NOW, idle=False).text == "E3 · szukam"
 
 
 @pytest.mark.parametrize(

@@ -50,7 +50,7 @@ from anishift.application.control import (
     compact_acquisition,
 )
 from anishift.application.control_views import decode_view
-from anishift.application.episode_commands import EpisodeStatus, TargetNotice
+from anishift.application.episode_commands import EpisodeReason, EpisodeStatus, TargetNotice
 from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.episode_search import EpisodeRequest, EpisodeSearch, SourceSwitches
 from anishift.application.episode_selection import (
@@ -1056,6 +1056,25 @@ def test_the_owner_schedules_the_next_check_and_runs_it_once_the_clocks_reach_it
     assert world.titles.scheduled == [_S4]
     assert paused.ok
     assert idle is None
+
+
+@pytest.mark.parametrize(("auto", "reason"), [(True, EpisodeReason.SUBSCRIPTION_AWAITING_AIRING), (False, None)])
+def test_an_episode_awaits_its_airing_only_while_automation_is_on(
+    tmp_path: Path, auto: bool, reason: str | None
+) -> None:
+    world: _World = _World()
+    target: SubscriptionTarget = SubscriptionTarget(
+        24, (_NOW + timedelta(hours=2)).isoformat(), TargetState.AWAITING_AIRING
+    )
+    state: WatchState = WatchState(
+        policy=AutomationPolicy(auto_enabled=auto), subscriptions=(_followed(targets=(target,)),)
+    )
+    with _following(tmp_path, state, world) as (owner, _):
+        status: EpisodeStatus = owner._on_owner(
+            lambda: owner._target_status(EpisodeStatus(EpisodeKey(_S4, 24), "not_ordered"))
+        )
+
+    assert status.reason == reason
 
 
 def test_a_globally_paused_owner_checks_nothing_on_its_own(tmp_path: Path) -> None:

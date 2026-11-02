@@ -79,6 +79,9 @@ _DUE_STATES: Final[Mapping[str, str]] = MappingProxyType(
 )
 """Short Polish words of what the earliest unfinished episode of a subscription is waiting for."""
 
+_SEARCHING: Final[frozenset[str]] = frozenset({"searching", "pending"})
+"""Due states in which the automation is looking for a release."""
+
 _FAILED_CHECKS: Final[frozenset[str]] = frozenset({"source_failed", "rate_limited"})
 """Check outcomes in which a source did not answer."""
 
@@ -149,8 +152,8 @@ def row_summary(row: Mapping[str, object]) -> str:
     return f"odcinki {episodes} · gotowe {ready}"
 
 
-def row_state(row: Mapping[str, object], now: datetime) -> SubscriptionState:
-    """Return the one state a subscription row shows at *now*."""
+def row_state(row: Mapping[str, object], now: datetime, *, idle: bool) -> SubscriptionState:
+    """Return the one state a subscription row shows at *now*; an *idle* automation searches for nothing."""
     issue: SubscriptionState | None = _issue(row)
     if issue is not None:
         return issue
@@ -165,7 +168,9 @@ def row_state(row: Mapping[str, object], now: datetime) -> SubscriptionState:
     if not isinstance(due, str):
         return _plain("Przerwa w emisji" if row.get("catalog_status") == "HIATUS" else "Termin nieznany")
     number: object = row.get("due_number")
-    return _due_state(f"E{number}" if isinstance(number, int) else "Odcinek", datetime.fromisoformat(due), row, now)
+    return _due_state(
+        f"E{number}" if isinstance(number, int) else "Odcinek", datetime.fromisoformat(due), row, now, idle=idle
+    )
 
 
 def _plain(text: str) -> SubscriptionState:
@@ -188,12 +193,14 @@ def _issue(row: Mapping[str, object]) -> SubscriptionState | None:
     return None
 
 
-def _due_state(label: str, due: datetime, row: Mapping[str, object], now: datetime) -> SubscriptionState:
+def _due_state(label: str, due: datetime, row: Mapping[str, object], now: datetime, *, idle: bool) -> SubscriptionState:
     state: str = str(row.get("due_state"))
     if state not in _DUE_STATES:
         if due > now:
             return _plain(f"{label} · {_when(due, now)}")
         state = "searching"
+    if idle and state in _SEARCHING:
+        return _plain(label)
     text: str = f"{label} · {_DUE_STATES[state]}"
     if state == "exhausted":
         return SubscriptionState(text, f"{label} · nie udało się pobrać · pobierz ręcznie w szczegółach")
