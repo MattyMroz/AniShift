@@ -576,6 +576,7 @@ def test_follower_longer_survives_leader_admission_deadline(
     joined: threading.Event = threading.Event()
     release: threading.Event = threading.Event()
     leader_waiting: threading.Event = threading.Event()
+    expiry: dict[str, float] = {}
     paths: list[str] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
@@ -599,6 +600,7 @@ def test_follower_longer_survives_leader_admission_deadline(
 
     def get(client: httpx.Client, reason: str, limit: int, deadline: float) -> httpx.Response:
         with control.scope(reason, {"nyaa": limit}, deadline_s=deadline):
+            expiry[reason] = time.monotonic() + deadline
             return client.get("https://nyaa.si/target")
 
     with httpx.Client(transport=control) as client, ThreadPoolExecutor(2) as pool:
@@ -612,6 +614,8 @@ def test_follower_longer_survives_leader_admission_deadline(
             if leader_limit:
                 with pytest.raises(DeadlineExceeded):
                     leader.result(2)
+                while time.monotonic() < expiry["leader"]:
+                    time.sleep(0.005)
             release.set()
             if not leader_limit:
                 with pytest.raises(BudgetExhausted):
