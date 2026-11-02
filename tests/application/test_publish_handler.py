@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from test_automation import _TIMEOUT_S
 
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState, SourceGroup
 from anishift.application.cancellation import EventCancellationToken, NeverCancelledToken
@@ -31,7 +32,7 @@ class _BlockingStager:
     def stage(self, request: PublishRequest, destination: Path, *, cancel: threading.Event) -> Path:
         del request, destination
         self.entered.set()
-        cancel.wait(2.0)
+        cancel.wait(2 * _TIMEOUT_S)
         context = ErrorContext(code=ErrorCode.CANCELLED, message="staging cancelled")
         raise ExecutionError(context=context)
 
@@ -146,9 +147,9 @@ def test_publish_handler_cancels_blocking_stager_during_execution(tmp_path: Path
 
     worker = threading.Thread(target=execute)
     worker.start()
-    assert stager.entered.wait(1.0)
+    assert stager.entered.wait(_TIMEOUT_S)
     token.cancel()
-    worker.join(1.0)
+    worker.join(_TIMEOUT_S)
 
     assert worker.is_alive() is False
     assert failures[0].context.code is ErrorCode.CANCELLED

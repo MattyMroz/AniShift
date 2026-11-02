@@ -148,7 +148,7 @@ from anishift.services.torrents.nyaa import search_releases
 from anishift.services.torrents.qbittorrent import QBittorrentClient
 from anishift.services.tts import SpeechBatch, SpeechBatchResult
 
-_TIMEOUT_S: Final[float] = 5.0
+_TIMEOUT_S: Final[float] = 30.0
 
 _SHARING_VIOLATION: Final[int] = 32
 

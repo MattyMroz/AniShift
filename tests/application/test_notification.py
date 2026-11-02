@@ -99,7 +99,7 @@ def _notifications(
         yield owner, frames, opened
     finally:
         owner.request_shutdown()
-        thread.join(5.0)
+        thread.join(_TIMEOUT_S)
         service.close()
         assert not thread.is_alive()
 
@@ -445,7 +445,7 @@ def test_partial_manual_notifies_the_success_and_reports_the_failed_attempt(
     def selected(*args: object, **kwargs: object) -> FileTranslation:
         if "Second text" in str(args[0]):
             entered.set()
-            assert release.wait(5.0)
+            assert release.wait(_TIMEOUT_S)
             raise ExecutionError("Synthetic translation failure")
         return translate(*args, **kwargs)
 
@@ -455,7 +455,7 @@ def test_partial_manual_notifies_the_success_and_reports_the_failed_attempt(
     with _notifications(service, store) as (owner, frames, opened):
         try:
             _start(owner, service)
-            assert entered.wait(5.0)
+            assert entered.wait(_TIMEOUT_S)
             assert _await((tmp_path / "translate" / "One.pl.srt").is_file)
             assert owner.handle(_request("status")).ok
             assert not frames
@@ -575,7 +575,7 @@ def test_notification_refuses_changed_missing_or_unidentified_results_with_a_vis
         assert not opened
     finally:
         owner.request_shutdown()
-        thread.join(5.0)
+        thread.join(_TIMEOUT_S)
         service.close()
         assert not thread.is_alive()
 
@@ -836,14 +836,14 @@ def test_legacy_success_receipt_still_suppresses_an_offer_after_relocation(
 
     def held(ready: ReadyStore, move: ReadyMove) -> None:
         entered.set()
-        assert release.wait(5.0)
+        assert release.wait(_TIMEOUT_S)
         execute(ready, move)
 
     monkeypatch.setattr(ReadyStore, "execute", held)
     with _notifications(service, store) as (owner, frames, _opened):
         try:
             run_id: str = _start(owner, service)
-            assert entered.wait(5.0)
+            assert entered.wait(_TIMEOUT_S)
             assert owner.handle(_request("status")).ok
             assert not frames
             request: ProcessingRequest = owner.state.requests[0]
@@ -989,7 +989,7 @@ def test_notification_routes_through_owner_session_and_app_to_library(  # noqa: 
         finally:
             if controller is not None:
                 controller.close()
-                controller._thread.join(5.0)
+                controller._thread.join(_TIMEOUT_S)
             application._mascot.close()
             session.close()
             server.close()
