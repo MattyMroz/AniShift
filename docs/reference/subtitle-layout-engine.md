@@ -803,7 +803,7 @@ językowych, platformowych i estetycznych.
 ## 16. Stan obecnego algorytmu
 
 Audyt z 27 lipca 2026 r. pokazuje, że obecny
-[`linebreak.py`](../../anishift/services/translation/linebreak.py) ma już
+[`linebreak.py`](../../anishift/services/subtitles/linebreak.py) ma już
 wartościowe podstawy:
 
 - limit preferowany 42 znaków i najwyżej dwa wersy w zwykłym reflow;

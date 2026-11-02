@@ -21,4 +21,4 @@ Po pobraniu odcinka AniShift sprawdza napisy w pliku: polskie dialogi → bez t�
 
 ## Kolejny krok
 
-Przegląd krzyżowy innym modelem → decyzje D1–D8 → F0 (porównanie pola `mkvmerge -J` z pomiarem `ffprobe`).
+Zostaje F3: zamiana wydania przy pobraniu ręcznym (dziś plik bez napisów jest logowany z podpowiedzią i nie jest zamieniany).

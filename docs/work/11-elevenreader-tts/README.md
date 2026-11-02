@@ -7,10 +7,17 @@ tempo na głos. `elevenbytes` zostaje zapasem.
 
 ## Status
 
-Plan zaktualizowany 2026-10-30 po prototypie (nagranie, cięcie, głośność, tempo na Tantei S2E03). Kod nie powstał;
-review tej wersji planu jeszcze się nie odbyło. Następny krok: potwierdzenie D1 (`specification.md`) i faza E0
-planu (w tym pilne skopiowanie danych prototypu poza katalog tymczasowy). Edgerunners 02 i 03 są nagrane, a walidacja cięcia na
-nich trwa; jej wynik zamyka punkt kontrolny K1.
+Zrobione i scalone do `main` (stan z 2026-11-02): silnik ElevenReader, mierzona głośność lektora z limiterem,
+przycinanie ciszy i tempo na głos ([PR #78](https://github.com/MattyMroz/AniShift/pull/78)); poprawki nagrań z
+brakującą kwestią i napisy piosenek ([#83](https://github.com/MattyMroz/AniShift/pull/83)); dwa odcinki naraz, limit 2
+([#89](https://github.com/MattyMroz/AniShift/pull/89), [#90](https://github.com/MattyMroz/AniShift/pull/90));
+domyślne tempo Fronczewskiego 1,35 ([#93](https://github.com/MattyMroz/AniShift/pull/93)); wykrywanie kawałków
+zwracających tekst bez mowy ([#96](https://github.com/MattyMroz/AniShift/pull/96)).
+
+Czeka na właściciela: odbiór na prawdziwych odcinkach (K2 z `outcomes/02-parallel-documents.md` ma status
+`pending-human`; K3, ucho właściciela, nie ma zapisu w repo). Otwarte zgłoszenie
+[#95](https://github.com/MattyMroz/AniShift/issues/95): wymuszenie wypowiedzenia linii, którą ElevenReader zwraca
+bez mowy. `outcomes/01-elevenreader-engine.md` (E10) nie powstał.
 
 ## Kolejność czytania
 
@@ -19,5 +26,7 @@ nich trwa; jej wynik zamyka punkt kontrolny K1.
 3. [plan.md](plan.md) — stan z dowodami, decyzja „port czy EDP”, design, etapy E0–E10 z zależnościami i pasami
    zapisu, punkty kontrolne K1–K3.
 4. [file-map.md](file-map.md) — pliki źródłowe i dotknięte, z przypisaniem do etapów.
+5. [plans/02-parallel-documents.md](plans/02-parallel-documents.md) i
+   [outcomes/02-parallel-documents.md](outcomes/02-parallel-documents.md) — kilka odcinków naraz.
 
-Artefakty powstające w trakcie wykonania: `outcomes/01-elevenreader-engine.md` (E10).
+Artefakt nieutworzony: `outcomes/01-elevenreader-engine.md` (E10).

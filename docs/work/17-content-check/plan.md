@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: draft
+status: partial
 baseline: main @ 4365a51
 created: 2026-10-25
 ---

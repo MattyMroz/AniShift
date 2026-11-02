@@ -394,7 +394,7 @@ jak testować: pełne bramki jakości + `run_anishift.bat doctor` uruchomiony sp
 DoD: brak zależności runtime od starego `mm_avh`, zielone testy i zgodne statusy planów.
 
 ### etap 9 — model produktu, workflow i ustawień
-**status:** wymagania domknięte, plan wykonawczy gotowy do akceptacji.
+**status:** warstwa aplikacji ukończona w PR #39 i #41; warstwa TUI etapu 9 odrzucona i przepisana w etapie 10.
 **cel:** przekształcić analizę w [`stage-09-interface/specification.md`](stage-09-interface/specification.md)
 w decyzje o artefaktach, trybach pracy, stanach, konfiguracji, planowaniu oraz
 pełnoekranowym TUI.

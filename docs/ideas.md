@@ -23,7 +23,7 @@ Odłożone 2026-10-17: glosariusz postaci (wymaga nowej struktury; jeśli wróci
 - **Dokładność podziału dialog / szyld** — `teraz`. Bank tropów do 100% (pozycja `\pos` jako sygnał, kategoria piosenki, przypadki nierozstrzygalne na poziomie stylu): [stage-3-requirements.md](work/00-rebuild/stage-03-extraction/specification.md) §9 i issue [#16](https://github.com/MattyMroz/AniShift/issues/16).
 - **Granice stylów po tłumaczeniu** — `teraz`. Issue [#34](https://github.com/MattyMroz/AniShift/issues/34).
 - **Polski podział wierszy i layout ASS** — `teraz`. Issue [#22](https://github.com/MattyMroz/AniShift/issues/22).
-- **Pusty `displayed` wykryty przed kosztowną pracą** — `potem`. Issue [#47](https://github.com/MattyMroz/AniShift/issues/47).
+- **Pusty `displayed` wykryty przed kosztowną pracą** — `zrobione`. Issue [#47](https://github.com/MattyMroz/AniShift/issues/47) zamknięte; zmiana weszła w [PR #61](https://github.com/MattyMroz/AniShift/pull/61).
 
 ### 1.3 Typesetting, koloryzowanie, presety stylów
 
@@ -31,7 +31,7 @@ Odłożone 2026-10-17: glosariusz postaci (wymaga nowej struktury; jeśli wróci
 - **Silnik layoutu napisów** — `potem`. Deterministyczny layout i kontrola jakości: [reference/subtitle-layout-engine.md](reference/subtitle-layout-engine.md), wcześniejszy plan [03-subtitle-layout.md](work/05-automation/plans/03-subtitle-layout.md).
 - **Jak pracują profesjonalni tłumacze napisów** — `do zbadania`. Czas wyświetlania, tempo czytania, podział napisów i długość wypowiedzi TTS to osobne zagadnienia. Style i pozycje ASS świadczą o obecności typesettingu, nie o jego jakości. Punkty wyjścia: [Netflix Polish Timed Text Style Guide](https://partnerhelp.netflixstudios.com/hc/en-us/articles/216787928-Polish-Timed-Text-Style-Guide), [Subtitle Timing Guidelines](https://partnerhelp.netflixstudios.com/hc/en-us/articles/360051554394-Timed-Text-Style-Guide-Subtitle-Timing-Guidelines), [Subtitle Templates](https://partnerhelp.netflixstudios.com/hc/en-us/articles/219375728-Timed-Text-Style-Guide-Subtitle-Templates). Pary EN/PL z Netflixa nie zostały zweryfikowane.
 
-- **Font napisów zależny od gatunku lub tytułu** — `kiedyś`. Font i rozmiar dialogów to dziś ustawienie odtwarzacza, nie AniShift; wraca razem z własnym odtwarzaczem albo globalnymi stylami.
+- **Font napisów zależny od gatunku lub tytułu** — `kiedyś`. Jeden font dialogów właściciela podstawia dziś AniShift (`dialogue_font_file`, [PR #61](https://github.com/MattyMroz/AniShift/pull/61)); font zależny od gatunku lub tytułu wraca razem z własnym odtwarzaczem albo globalnymi stylami.
 
 ### 1.4 Piosenki OP/ED
 
@@ -47,7 +47,7 @@ Oglądanie tylko lokalnie na PC. Cel: zobaczyć obrazek, poznać tytuł, wybrać
 
 - **Okładki w panelu** — `potem`. Przy około 30 tytułach w trzech językach trudno pamiętać, który jest który. Panel pokazuje dziś tylko tekst; okładki z AniList nie są pobierane.
 - **Biblioteka jako widok tytułów** — `potem`. Lista tytułów → Enter → `BIBLIOTEKA › <tytuł>` z odcinkami (numer, tytuł odcinka, Emisja, Stan); zaznaczanie i usuwanie wielu; Kosz i Ctrl+Z jak dziś. Pliki z Anime biorą tytuł z klucza AniList, pliki ręczne z nazwy, a przy braku pewności „nie rozpoznano” zamiast cichego przypisania. Dysk zostaje płaski (`workspace/ready/`). Otwarte: jeden widok tytułów czy obecny podział zakładek; przewijanie przy wielu tytułach. Pełny opis: [masterplan acquisition](work/08-acquisition/masterplan.md), sekcja E6.
-- **Kontrola zawartości po pobraniu** — `potem`. Polskie napisy → bez tłumaczenia; obce → tłumaczenie; brak napisów → jedna zamiana wydania; lektor zawsze. Ryzyko: rozpoznanie ścieżek „signs-only”. Sekcja E4 w [masterplanie](work/08-acquisition/masterplan.md).
+- **Kontrola zawartości po pobraniu** — `częściowo`. Polskie napisy → bez tłumaczenia; obce → tłumaczenie; brak napisów → jedna zamiana wydania; lektor zawsze. Reguła roli ścieżki i odrzucanie wydania bez napisów dialogowych w subskrypcji weszły w [PR #74](https://github.com/MattyMroz/AniShift/pull/74); zamiana przy pobraniu ręcznym zostaje. Sekcja E4 w [masterplanie](work/08-acquisition/masterplan.md), plan: [17-content-check](work/17-content-check/README.md).
 - **Próg pewności dla automatu** — `kiedyś`. Rozszerzenie reguły `zgodny` progiem pewności dopiero po teście na świeżym zbiorze: [algorithm-spec.md](work/08-acquisition/a1-algorithm/specification.md) §7.
 - **Filmy, dodatki i osobne audio PL w subskrypcji** — `kiedyś`. Warunki powrotu: [spec.md](work/08-acquisition/specification.md) §11.
 - **Brakujące tytuły odcinków z TVmaze** — `potem`. Issue [#58](https://github.com/MattyMroz/AniShift/issues/58).
@@ -63,7 +63,7 @@ Oglądanie tylko lokalnie na PC. Cel: zobaczyć obrazek, poznać tytuł, wybrać
 ## 4. Lektor
 
 - **Lokalny TTS (Chatterbox, OmniVoice, Fish, Supertonic, własny model)** — `odrzucone na teraz`. Modele są ogromne (np. 40 GB) i wolne: generowanie odcinka trwa około godziny. Dopóki działa obecny dostawca (elevenbytes), nie szukamy lokalnego TTS. Wcześniejsza ocena Supertonic: [stage-6-requirements.md](work/00-rebuild/stage-06-tts-audio/specification.md) §4.7.
-- **Lektor przez ElevenReader** — `do zbadania` (bada właściciel).
+- **Lektor przez ElevenReader** — `zrobione` w [PR #78](https://github.com/MattyMroz/AniShift/pull/78), dalej [11-elevenreader-tts](work/11-elevenreader-tts/README.md); odbiór właściciela czeka. Opis pierwotnego pomysłu:
   - Opis: automat w przeglądarce loguje się na konto ElevenReader, tworzy wpis z tekstem odcinka, odtwarza go przyspieszony (16×, 32× albo 64×, jeśli się da) i przechwytuje gotowe audio (MP3 trafia do pamięci jako plik).
   - Lokalny model wyrównania tekstu do audio (ASR / forced alignment) z dokładnością co do milisekundy tnie nagranie na kwestie, a z nich składa się ścieżkę lektora. W tym zastosowaniu model musi obsługiwać polski.
   - Motywacja: darmowy plan ma 10 h audio miesięcznie; płatny daje praktycznie nieograniczone użycie modeli ElevenLabs (Multilingual v2, v3, Eleven v4, Flow 4).
@@ -113,7 +113,7 @@ Krótka lista, żeby te pomysły nie wracały.
 
 **Odrzucone:**
 
-- **Textual i GUI** — terminal Prompt Toolkit został frontendem; Textual porzucony (gałąź `archive/textual-tui`, issue [#38](https://github.com/MattyMroz/AniShift/issues/38) do zamknięcia).
+- **Textual i GUI** — terminal Prompt Toolkit został frontendem; Textual porzucony (gałąź `archive/textual-tui`, issue [#38](https://github.com/MattyMroz/AniShift/issues/38) zamknięte).
 - **Sonarr jako silnik** — dublowałby właściciela stanu.
 - **Wybór grupy wydającej przez użytkownika** — właściciel nie chce wybierać grupy.
 - **Model do tożsamości wydania (Laya)** — brak przewagi nad heurystyką.

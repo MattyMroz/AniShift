@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: w realizacji
+status: done
 baseline: work/quality/21-text-layout @ bffcb3c6 (z work/quality/08-fuzzy-quality)
 created: 2026-10-19
 ---

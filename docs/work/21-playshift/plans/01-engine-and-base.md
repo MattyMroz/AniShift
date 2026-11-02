@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: draft
+status: pending-human
 baseline: raporty R1–R6 z 2026-10-31; stan `Videos\mpv` według R1; AniShift f3e6980 (tylko dokumenty)
 created: 2026-10-31
 ---

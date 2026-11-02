@@ -1,6 +1,6 @@
 ---
 kind: plan
-status: draft
+status: pending-human
 baseline: AniShift main f5fff6b (merge PR #76), czyste drzewo; prototyp SCR z 2026-10-30
 created: 2026-10-25
 updated: 2026-10-31
