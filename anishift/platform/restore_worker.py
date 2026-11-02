@@ -6,7 +6,7 @@ import ctypes
 import os
 import sys
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Final
 
@@ -40,6 +40,12 @@ _MOVE_FLAGS: Final[int] = 0x00100404
 _IDENTITY_FIELDS: Final[int] = 4
 """Size, modification time, device and inode form a complete file identity."""
 
+_BIN_ITEM_PREFIX: Final[str] = "$R"
+"""Name prefix of a Recycle Bin data file."""
+
+_BIN_RECORD_PREFIX: Final[str] = "$I"
+"""Name prefix of the Recycle Bin record that describes the data file with the same suffix."""
+
 
 def _safe_parents(path: Path) -> bool:
     return path.is_absolute() and all(
@@ -49,6 +55,18 @@ def _safe_parents(path: Path) -> bool:
 
 def _occupied(path: Path) -> bool:
     return os.path.lexists(path)
+
+
+def _discard_bin_record(receipt: Path | None) -> None:
+    if receipt is None or not receipt.name.startswith(_BIN_ITEM_PREFIX) or _occupied(receipt):
+        return
+    with suppress(OSError):
+        receipt.with_name(f"{_BIN_RECORD_PREFIX}{receipt.name.removeprefix(_BIN_ITEM_PREFIX)}").unlink(missing_ok=True)
+
+
+def _settle(receipt: Path | None) -> RecycleResult:
+    _discard_bin_record(receipt)
+    return RecycleResult("restored", "restore_completed")
 
 
 @contextmanager
@@ -371,7 +389,7 @@ def _restore(payload: dict[str, object]) -> RecycleResult:  # noqa: C901, PLR091
     receipt: Path | None = Path(str(payload["receipt"])) if payload.get("receipt") else None
     if _occupied(path):
         if not _occupied(staging) and _identity(path) == identity and (receipt is None or not _occupied(receipt)):
-            return RecycleResult("restored", "restore_completed")
+            return _settle(receipt)
         return RecycleResult("refused", "restore_destination_occupied")
     if not path.parent.is_dir() or path.parent.stat().st_dev != identity[2]:
         return RecycleResult("refused", "restore_unsupported_destination")
@@ -395,11 +413,7 @@ def _restore(payload: dict[str, object]) -> RecycleResult:  # noqa: C901, PLR091
         _publish_file(staging, path, identity)
     except FileExistsError:
         return RecycleResult("refused", "restore_destination_occupied")
-    return (
-        RecycleResult("restored", "restore_completed")
-        if _identity(path) == identity
-        else RecycleResult("uncertain", "restore_incomplete")
-    )
+    return _settle(receipt) if _identity(path) == identity else RecycleResult("uncertain", "restore_incomplete")
 
 
 def _stage_item(root: Path, receipt: Path, staging: Path, identity: tuple[int, int, int, int]) -> bool:
