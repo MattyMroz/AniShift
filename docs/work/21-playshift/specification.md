@@ -291,7 +291,7 @@ etap, który blokuje.
 ### Blokują wejście do etapu 01
 
 - **D1. Zgoda na pobranie do pomiarów — rozstrzygnięte 2026-10-31: tak.** Agent pobiera do
-  `C:\Users\MattyMroz\tmp\playshift\` najnowsze wydanie mpv-AnimeJaNai (w researchu 3.9.0: paczka z `mpv.exe` i
+  `C:\Users\MattyMroz\Desktop\PROJECTS\AniShift\workspace\tmp\playshift\` najnowsze wydanie mpv-AnimeJaNai (w researchu 3.9.0: paczka z `mpv.exe` i
   silnikiem, `trt-runtime` 187 MB, `trt-sm120` 229 MB, `rife` 462 MB, R2 §6) oraz paczki z wydań
   `hooke007/mpv_PlayKit` z algorytmami interpolacji, i uruchamia je bez okna. Instalatorów nie uruchamia. Silniki
   TensorRT budują się raz na model i rozdzielczość, około 10 s na TRT 11 (R3 §6). Ścieżka vs-mlrt (około 2,7 GB)

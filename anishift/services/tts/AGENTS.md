@@ -68,8 +68,13 @@ narratora ani finalnego sidecara.
 - `accept_result` sprawdza własność nagrania i kolejność `PartTiming`, tnie nagranie
   (`open_end = not ends_sentence(text)`) i waliduje każdy klip; błąd splittera albo
   niezgodne czasy to `TtsClipValidationError`, więc dokument jest ponawiany w całości.
-  Pusty `PartTiming` (`spoken is False`) to część, której silnik nie wypowiedział: tylko
-  ta kwestia dostaje `TtsInputError`, reszta nagrania jest cięta i zatwierdzana.
+  Pusty `PartTiming` (`spoken is False`) to część, której silnik nie wypowiedział: reszta
+  nagrania jest cięta i zatwierdzana od razu.
+- Niewypowiedziane kwestie dokumentu `_read_lines` czyta od razu jeszcze raz: najpierw razem jako mniejszy dokument
+  (tylko gdy jest ich więcej niż jedna i mniej niż w dokumencie), potem każdą wciąż cichą osobno (tylko gdy ostatni
+  dokument miał więcej niż jedną kwestię). Dokument identyczny z już przeczytanym się nie powtarza, więc kwestia ma
+  najwyżej dwa ponowne odczyty. Dopiero kwestia cicha także sama dostaje `TtsInputError`. `provider_calls`, `retries`
+  i czas wcześniejszych odczytów doliczają się do jej końcowego wyniku (`_with_earlier_reads`).
 - Dokumenty jednego batcha idą po kolei; kilka dokumentów naraz to kilka batchy (`max_concurrency` workerów
   schedulera, w aplikacji też kilka `TtsService` różnych runów). Zasób wspólny dla nich (jedna przeglądarka i konto
   ElevenReadera) trzyma silnik, nie wspólna warstwa TTS.

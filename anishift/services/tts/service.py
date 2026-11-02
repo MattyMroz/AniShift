@@ -6,7 +6,7 @@ import asyncio
 import concurrent.futures
 import itertools
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Never, Self
@@ -110,6 +110,15 @@ class _MissingContext:
 class _ProgressContext:
     callbacks: TtsProgressSink
     on_provider_response: Callable[[str], Awaitable[None]]
+
+
+@dataclass(frozen=True, slots=True)
+class _DocumentContext:
+    batch: SpeechBatch
+    engine: DocumentTtsEngine
+    splitter: ClipSplitter
+    scheduler: TtsScheduler
+    progress: _DocumentProgress
 
 
 class _ProviderAttempt:
@@ -1053,42 +1062,84 @@ class TtsService:
             for index, request in enumerate(batch.requests):
                 await progress.record(index, _unsupported_document_execution(request))
             return _batch_result(batch, progress.executions, engine)
-        document_engine: DocumentTtsEngine = engine
+        context: _DocumentContext = _DocumentContext(batch, engine, splitter, scheduler, progress)
         pending: list[_DocumentLine] = []
         for index, request in enumerate(batch.requests):
             prepared: _RequestExecution | _DocumentLine = await self._prepare_document_line(
                 batch,
                 index,
                 request,
-                document_engine,
+                engine,
                 max_document_chars=max_document_chars,
             )
             if isinstance(prepared, _DocumentLine):
                 pending.append(prepared)
             else:
                 await progress.record(index, prepared)
-        for lines in _group_documents(pending, document_engine, max_document_chars):
-            attempt: _DocumentAttempt = _DocumentAttempt(
-                document_id=f"{batch.scope_id}:document:{next(self._documents)}",
-                lines=lines,
-                engine=document_engine,
-                splitter=splitter,
-                repository=self._repository(batch.scope_id),
-                config=self._config,
-                cancel=self._cancel,
-                progress=progress.document_observer(len(lines)),
-            )
-            executions: tuple[_RequestExecution, ...] = await self._synthesize_document(
-                attempt,
-                batch,
-                document_engine,
-                scheduler,
-                progress,
-            )
-            for line, execution in zip(lines, executions, strict=True):
-                await progress.record(line.index, execution)
+        for lines in _group_documents(pending, engine, max_document_chars):
+            await self._read_lines(lines, context)
         await asyncio.to_thread(self._repository(batch.scope_id).flush)
         return _batch_result(batch, progress.executions, engine)
+
+    async def _read_lines(self, lines: tuple[_DocumentLine, ...], context: _DocumentContext) -> None:
+        """Read *lines* as one document, then its unspoken lines again: together first, then each still silent alone."""
+        failures: dict[int, _RequestExecution] = {}
+        read: tuple[_DocumentLine, ...] = lines
+        silent: tuple[_DocumentLine, ...] = await self._read_document(read, failures, context)
+        if 1 < len(silent) < len(read):
+            logger.info(
+                "TTS document reads its unspoken lines again", scope_id=context.batch.scope_id, lines=len(silent)
+            )
+            read = silent
+            silent = await self._read_document(read, failures, context)
+        if len(read) > 1 and silent:
+            logger.info(
+                "TTS document reads each unspoken line alone", scope_id=context.batch.scope_id, lines=len(silent)
+            )
+            alone: list[_DocumentLine] = []
+            for line in silent:
+                alone.extend(await self._read_document((line,), failures, context))
+            silent = tuple(alone)
+        if silent:
+            logger.warning(
+                "TTS lines stayed unspoken when read alone", scope_id=context.batch.scope_id, lines=len(silent)
+            )
+        for line in silent:
+            await context.progress.record(line.index, failures[line.index])
+
+    async def _read_document(
+        self,
+        lines: tuple[_DocumentLine, ...],
+        failures: dict[int, _RequestExecution],
+        context: _DocumentContext,
+    ) -> tuple[_DocumentLine, ...]:
+        """Record *lines* as one document, report every line but the unspoken ones and return those."""
+        attempt: _DocumentAttempt = _DocumentAttempt(
+            document_id=f"{context.batch.scope_id}:document:{next(self._documents)}",
+            lines=lines,
+            engine=context.engine,
+            splitter=context.splitter,
+            repository=self._repository(context.batch.scope_id),
+            config=self._config,
+            cancel=self._cancel,
+            progress=context.progress.document_observer(len(lines)),
+        )
+        executions: tuple[_RequestExecution, ...]
+        silent: tuple[_DocumentLine, ...]
+        executions, silent = await self._synthesize_document(
+            attempt,
+            context.batch,
+            context.engine,
+            context.scheduler,
+            context.progress,
+        )
+        for line, execution in zip(lines, executions, strict=True):
+            counted: _RequestExecution = _with_earlier_reads(execution, failures.pop(line.index, None))
+            if line in silent:
+                failures[line.index] = counted
+            else:
+                await context.progress.record(line.index, counted)
+        return silent
 
     async def _prepare_document_line(
         self,
@@ -1137,7 +1188,7 @@ class TtsService:
         engine: DocumentTtsEngine,
         scheduler: TtsScheduler,
         progress: _DocumentProgress,
-    ) -> tuple[_RequestExecution, ...]:
+    ) -> tuple[tuple[_RequestExecution, ...], tuple[_DocumentLine, ...]]:
         generation: int = self._cancel.generation
         lines: tuple[_DocumentLine, ...] = attempt.lines
         first: SpeechRequest = lines[0].request
@@ -1188,7 +1239,12 @@ class TtsService:
             attempts=outcome.attempts,
             error_code="" if outcome.error is None else outcome.error.context.code.value,
         )
-        return tuple(executions)
+        silent: tuple[_DocumentLine, ...] = (
+            tuple(line for line in lines if line.request.request_id in attempt.unspoken)
+            if outcome.error is None and outcome.result is not None
+            else ()
+        )
+        return tuple(executions), silent
 
     async def _finish_document_line(  # noqa: PLR0913 - one line outcome needs the shared document attempt
         self,
@@ -1315,6 +1371,18 @@ def _synthesized_execution(  # noqa: PLR0913 - counters differ between line and 
         result=result,
         provider_calls=provider_calls,
         request_time_ms=request_time_ms,
+    )
+
+
+def _with_earlier_reads(execution: _RequestExecution, earlier: _RequestExecution | None) -> _RequestExecution:
+    if earlier is None:
+        return execution
+    result: SynthesizedRequest = replace(execution.result, retries=execution.result.retries + earlier.result.retries)
+    return replace(
+        execution,
+        result=result,
+        provider_calls=execution.provider_calls + earlier.provider_calls,
+        request_time_ms=execution.request_time_ms + earlier.request_time_ms,
     )
 
 
@@ -1594,8 +1662,8 @@ def _document_line_too_long_error() -> TtsInputError:
 def _unspoken_line_error() -> TtsInputError:
     context: ErrorContext = ErrorContext(
         code=ErrorCode.TTS_INPUT_INVALID,
-        message="TTS engine did not speak the line in its document",
-        suggestion="Rewrite the line as readable words; the rest of the document was kept.",
+        message="TTS engine did not speak the line, even read as its own document",
+        suggestion="Retry the task or rewrite the line as readable words; the other lines were kept.",
     )
     return TtsInputError(context=context)
 

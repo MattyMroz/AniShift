@@ -3,11 +3,16 @@ from __future__ import annotations
 import errno
 import io
 import json
+from typing import TYPE_CHECKING
 
 import pytest
-from elevenreader_fakes import FRAME_BYTES, FRAME_MS, audio_frame, mp3_frames
+from elevenreader_fakes import BREAK, FRAME_BYTES, FRAME_MS, audio_frame, mp3_frames
+from loguru import logger as loguru_logger
 
 from anishift.services.tts.engines.elevenreader.recorder import StreamRecorder
+
+if TYPE_CHECKING:
+    from loguru import Message
 
 pytestmark = pytest.mark.unit
 
@@ -184,3 +189,45 @@ def test_on_frame_working_output_has_no_write_error() -> None:
     recorder.on_frame(audio_frame("Ab", frames=1))
 
     assert recorder.write_error is None
+
+
+@pytest.mark.parametrize(
+    ("chars", "frames", "silent"),
+    [
+        ("x" * 20, 1, True),
+        ("x" * 20, 7, True),
+        ("x" * 20, 8, False),
+        ("x" * 20, 16, False),
+        ("x" * 19, 1, False),
+        ("x" * 19 + BREAK, 1, False),
+        ("x y " * 10 + BREAK, 1, True),
+    ],
+)
+def test_on_frame_chunk_is_silent_only_with_enough_letters_and_too_little_audio(
+    chars: str, frames: int, silent: bool
+) -> None:
+    recorder, _ = _recorder()
+
+    recorder.on_frame(audio_frame(chars, frames=frames, step_ms=1.0))
+
+    assert recorder.chunks[0].silent is silent
+    assert recorder.chars == len(chars)
+    assert recorder.audio_bytes == frames * FRAME_BYTES
+
+
+def test_on_frame_silent_chunk_logs_its_index_and_numbers_without_text() -> None:
+    recorder, _ = _recorder()
+    captured: list[Message] = []
+    handler_id: int = loguru_logger.add(captured.append, format="{message} {extra}", level="DEBUG")
+    try:
+        recorder.on_frame(audio_frame("Ab", frames=8, fill=1))
+        recorder.on_frame(audio_frame("Zdanie bez mowy w środku", frames=1, fill=2, step_ms=1.0))
+    finally:
+        loguru_logger.remove(handler_id)
+
+    warnings: list[Message] = [message for message in captured if "without speech" in message]
+    assert len(warnings) == 1
+    extra: dict[str, object] = warnings[0].record["extra"]
+    assert (extra["chunk"], extra["letters"], extra["audio_ms"]) == (1, 20, pytest.approx(26.1))
+    assert "Zdanie" not in str(warnings[0])
+    assert [chunk.silent for chunk in recorder.chunks] == [False, True]

@@ -14,7 +14,7 @@ Plan jest kontraktem dla świeżego wykonawcy. Ustalenia (`U*`), wymagania (`F*`
 Skróty:
 
 - **OLD** = `C:\Users\MattyMroz\Videos\mpv` — obecny odtwarzacz. Tylko odczyt (I1, Z5); agenci go nie uruchamiają.
-- **EXP** = `C:\Users\MattyMroz\tmp\playshift\` — katalog eksperymentu (zgoda w D1). Poza repozytoriami, poza OLD.
+- **EXP** = `C:\Users\MattyMroz\Desktop\PROJECTS\AniShift\workspace\tmp\playshift\` — katalog eksperymentu (zgoda w D1) w ignorowanym przez git `workspace\tmp`, poza OLD.
 - **DOC** = `C:\Users\MattyMroz\Desktop\PROJECTS\AniShift\docs\work\21-playshift\`.
 - **AJN** = mpv-AnimeJaNai (`the-database/mpv-AnimeJaNai`) razem z forkiem mpv z filtrem `vf_animejanai`.
 - **R1–R6** = raporty w `DOC\research\`, z numerem sekcji.
@@ -201,7 +201,7 @@ Czytaj w tej kolejności:
 ### 11.1 Układ EXP
 
 ```text
-C:\Users\MattyMroz\tmp\playshift\   EXP: cały eksperyment; usuwany po K2
+C:\Users\MattyMroz\Desktop\PROJECTS\AniShift\workspace\tmp\playshift\   EXP: cały eksperyment; usuwany po K2
 ├── dl\        pobrane archiwa AJN z sumami (tylko odczyt po weryfikacji)
 ├── ajn\       rozpakowana paczka AJN w oryginalnym układzie (tylko odczyt)
 ├── layout\    próba docelowego układu: mpv.exe w korzeniu, biblioteki w lib\ (P8); tu też portable_config\ do K1
