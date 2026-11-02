@@ -7,11 +7,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
+from conftest import requires_binaries
 from loguru import logger as loguru_logger
 
 from anishift.application.tts_clips import FfmpegClipService
 from anishift.errors import ErrorCode, ErrorContext
-from anishift.platform.binaries import Binary, resolve_binary
+from anishift.platform.binaries import Binary, require_binary, resolve_binary
 from anishift.services.audio.commands import CommandResult, SubprocessRunner
 from anishift.services.audio.errors import AudioProcessError
 from anishift.services.tts import (
@@ -166,10 +167,8 @@ class _RecordingEngine:
 
 
 def _recording(directory: Path) -> Path:
-    if FFMPEG is None:
-        pytest.skip("FFmpeg is not available")
     tones: Path = directory / "tones.mp3"
-    command: tuple[str, ...] = (str(FFMPEG), "-v", "error", "-nostdin", "-f", "lavfi", "-i")
+    command: tuple[str, ...] = (str(require_binary(Binary.FFMPEG)), "-v", "error", "-nostdin", "-f", "lavfi", "-i")
     command += (f"aevalsrc='{TONES}':s=48000:d=4.5", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "64k")
     command += ("-write_xing", "0", "-y", str(tones))
     SubprocessRunner().run(command, operation="test_tone_recording", timeout_s=60.0)
@@ -210,6 +209,7 @@ def _wav_ms(path: Path) -> tuple[int, int, float]:
 
 
 @pytest.mark.integration
+@requires_binaries(Binary.FFMPEG)
 def test_split_clip_spliced_tone_recording_writes_one_wav_per_line(tmp_path: Path) -> None:
     recording: Path = _recording(tmp_path)
     spans: tuple[ClipSpan, ...] = _spans(tmp_path)
@@ -224,6 +224,7 @@ def test_split_clip_spliced_tone_recording_writes_one_wav_per_line(tmp_path: Pat
 
 
 @pytest.mark.integration
+@requires_binaries(Binary.FFMPEG)
 def test_split_clip_boundaries_inside_one_tone_warn_with_uncertain_count(tmp_path: Path) -> None:
     recording: Path = _recording(tmp_path)
     spans: tuple[ClipSpan, ...] = tuple(
@@ -279,6 +280,7 @@ def test_split_clip_decode_failure_raises_runtime_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+@requires_binaries(Binary.FFMPEG)
 def test_tts_service_document_batch_real_splitter_commits_line_clips(tmp_path: Path) -> None:
     recording: Path = _recording(tmp_path)
     clips: FfmpegClipService = _clips()

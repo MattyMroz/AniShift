@@ -4,6 +4,7 @@ import subprocess
 from typing import TYPE_CHECKING
 
 import pytest
+from conftest import requires_binaries
 
 from anishift.platform.binaries import Binary, resolve_binary
 from scripts.subtitle_quality import frames
@@ -53,10 +54,9 @@ def test_frame_filter_selects_the_first_frame_at_each_moment() -> None:
 
 
 @pytest.mark.integration
+@requires_binaries(Binary.FFMPEG, Binary.MKVMERGE)
 def test_extract_writes_frames_named_by_their_time_at_subtitle_moments(tmp_path: Path) -> None:
     ffmpeg = resolve_binary(Binary.FFMPEG)
-    if ffmpeg is None or resolve_binary(Binary.MKVMERGE) is None:
-        pytest.skip("ffmpeg or mkvmerge is not installed")
     video = tmp_path / "video.mkv"
     subprocess.run(  # noqa: S603
         [str(ffmpeg), "-v", "error", "-f", "lavfi", "-i", "testsrc=s=320x180:r=24:d=8", str(video)],

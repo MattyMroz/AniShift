@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from audio_test_helpers import write_tone_wav, write_wav
+from conftest import requires_binaries
 
 from anishift.application.artifacts import ArtifactKind
 from anishift.application.products import product_suffix
@@ -95,7 +96,7 @@ def test_audio_progress_observer_cannot_fail_audio_execution() -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 @pytest.mark.parametrize(
     ("offset_us", "offset_ms", "offset_samples"), [(5_005_000, 5005, 240_240), (4_983_667, 4984, 239_216)]
 )
@@ -184,7 +185,7 @@ def test_audio_service_renders_and_resumes_real_eac3(tmp_path: Path) -> None:
     assert all(0 <= percent < 100 for percent in progress)
 
 
-@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 def test_real_transcode_reports_progress_before_publishing_output(tmp_path: Path) -> None:
     source: Path = tmp_path / "Narration.wav"
     write_wav(source, frames=96_000)
@@ -210,7 +211,7 @@ def test_real_transcode_reports_progress_before_publishing_output(tmp_path: Path
     assert not any(destination_existed)
 
 
-@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 def test_small_real_rf64_clip_normalizes_and_renders_rf64_narrator_and_sidecar(tmp_path: Path) -> None:
     assert FFMPEG is not None
     assert FFPROBE is not None
@@ -276,7 +277,7 @@ def test_small_real_rf64_clip_normalizes_and_renders_rf64_narrator_and_sidecar(t
     )
 
 
-@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 def test_a_recovered_render_still_reports_the_times_its_audio_really_has(tmp_path: Path) -> None:
     clip_path: Path = tmp_path / "clip.wav"
     write_wav(clip_path, frames=9_600)

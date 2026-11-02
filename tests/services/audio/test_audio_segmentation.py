@@ -6,10 +6,10 @@ from array import array
 from typing import TYPE_CHECKING
 
 import pytest
-from conftest import alignment_chunks
+from conftest import alignment_chunks, requires_binaries
 
 from anishift.paths import quality_dir
-from anishift.platform.binaries import Binary, resolve_binary
+from anishift.platform.binaries import Binary, require_binary
 from anishift.services.audio.levels import frame_levels
 from anishift.services.audio.segmentation import (
     ENVELOPE_RATE,
@@ -29,7 +29,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 DATA: Path = quality_dir() / "elevenreader"
-FFMPEG: Path | None = resolve_binary(Binary.FFMPEG)
 QUIET: float = -60.0
 SPEECH: float = -20.0
 LINE: LineSpan = LineSpan(start_ms=0.0, end_ms=1000.0, open_end=False)
@@ -59,9 +58,9 @@ def _spans(work: Path, voice: str) -> list[LineSpan]:
 
 def _recording_cuts(work: Path, voice: str) -> list[CutDecision]:
     recording: Path = work / f"anishift-test-{voice}.mp3"
-    if FFMPEG is None or not recording.is_file() or not (work / f"cuts-{voice}.json").is_file():
-        pytest.skip("ElevenReader prototype data or FFmpeg is not available")
-    command: list[str] = [str(FFMPEG), "-v", "error", "-f", "mp3", "-i", str(recording)]
+    if not recording.is_file() or not (work / f"cuts-{voice}.json").is_file():
+        pytest.skip("ElevenReader prototype data is not available")
+    command: list[str] = [str(require_binary(Binary.FFMPEG)), "-v", "error", "-f", "mp3", "-i", str(recording)]
     command += ["-ac", "1", "-ar", str(ENVELOPE_RATE), "-f", "s16le", "-"]
     pcm: array[int] = array("h", subprocess.run(command, capture_output=True, check=True).stdout)  # noqa: S603
     levels: list[float] = frame_levels(pcm, ENVELOPE_RATE)
@@ -145,6 +144,7 @@ def test_clip_ranges_no_frames_raises() -> None:
 
 @pytest.mark.integration
 @pytest.mark.parametrize("voice", ["fronczewski", "adam"])
+@requires_binaries(Binary.FFMPEG)
 def test_cut_points_tantei_recording_matches_prototype_cuts(voice: str) -> None:
     decisions: list[CutDecision] = _recording_cuts(DATA / "tantei", voice)
     prototype: list[dict[str, object]] = _prototype_cuts(DATA / "tantei", voice)
@@ -160,6 +160,7 @@ def test_cut_points_tantei_recording_matches_prototype_cuts(voice: str) -> None:
 
 @pytest.mark.integration
 @pytest.mark.parametrize("voice", ["fronczewski", "adam"])
+@requires_binaries(Binary.FFMPEG)
 def test_cut_points_separated_edgerunners_recording_matches_prototype_cuts(voice: str) -> None:
     decisions: list[CutDecision] = _recording_cuts(DATA / "edge02c", voice)
     prototype: list[dict[str, object]] = _prototype_cuts(DATA / "edge02c", voice)

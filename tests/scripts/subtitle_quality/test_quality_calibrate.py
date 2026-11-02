@@ -5,9 +5,10 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from conftest import requires_binaries
 from pysubs2 import SSAEvent, SSAFile
 
-from anishift.platform.binaries import Binary, resolve_binary
+from anishift.platform.binaries import Binary
 from anishift.services.fonts import system_font_paths
 from scripts.subtitle_quality import calibrate
 from scripts.subtitle_quality.episode import OUTPUT_NAME, SOURCE_NAME
@@ -160,9 +161,8 @@ def test_known_wraps_must_be_sampled_wrapped_by_libass_and_agree_when_their_pair
 
 
 @pytest.mark.integration
+@requires_binaries(Binary.FFMPEG)
 def test_calibrate_renders_static_samples_and_wrap_controls_and_writes_the_report(tmp_path: Path) -> None:
-    if resolve_binary(Binary.FFMPEG) is None:
-        pytest.skip("ffmpeg is not installed")
     if not any(path.name.casefold() == "arial.ttf" for path in system_font_paths()):
         pytest.skip("system Arial is not available")
     pair = tmp_path / "pairs" / "episode"

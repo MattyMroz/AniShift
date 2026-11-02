@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from conftest import requires_binaries
 
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState
 from anishift.application.audio_handler import AudioTaskHandler
@@ -249,7 +250,7 @@ def _measured(path: Path) -> tuple[str, int]:
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 @pytest.mark.parametrize(("profile", "tempo"), [("wav", 1.0), ("eac3", 1.0), ("mp3", 1.25), ("opus", 0.75)])
 def test_a_continuous_reading_lasts_the_words_it_read_in_every_format_and_at_every_speed(
     tmp_path: Path,
@@ -268,7 +269,7 @@ def test_a_continuous_reading_lasts_the_words_it_read_in_every_format_and_at_eve
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 @pytest.mark.parametrize(("profile", "tempo"), [("wav", 1.0), ("eac3", 1.25)])
 def test_a_reading_that_keeps_the_book_times_holds_the_long_silence_and_serializes_the_overlap(
     tmp_path: Path,
@@ -286,7 +287,7 @@ def test_a_reading_that_keeps_the_book_times_holds_the_long_silence_and_serializ
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 def test_a_complete_reading_leaves_every_byte_of_the_book_where_it_was(tmp_path: Path) -> None:
     book: Path = _book(tmp_path, newline="\r\n", prefix=b"\xef\xbb\xbf")
     before: bytes = book.read_bytes()

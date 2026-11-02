@@ -6,9 +6,10 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from conftest import requires_binaries
 
 from anishift.application.tts_clips import FfmpegClipService
-from anishift.platform.binaries import Binary, resolve_binary
+from anishift.platform.binaries import Binary, require_binary
 from anishift.services.audio.commands import SubprocessRunner
 from anishift.services.tts import (
     AudioFormat,
@@ -25,14 +26,13 @@ from anishift.services.tts import (
 
 
 @pytest.mark.network
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 def test_edge_polish_speech_commits_a_decodable_mp3(
     tmp_path: Path,
     record_property: Callable[[str, object], None],
 ) -> None:
-    ffmpeg: Path | None = resolve_binary(Binary.FFMPEG)
-    ffprobe: Path | None = resolve_binary(Binary.FFPROBE)
-    if ffmpeg is None or ffprobe is None:
-        pytest.skip("FFmpeg and ffprobe are required for the live Edge acceptance test")
+    ffmpeg: Path = require_binary(Binary.FFMPEG)
+    ffprobe: Path = require_binary(Binary.FFPROBE)
     clips: FfmpegClipService = FfmpegClipService(
         cancel=threading.Event(),
         runner=SubprocessRunner(),

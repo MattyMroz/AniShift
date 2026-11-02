@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from conftest import requires_binaries
 from loguru import logger as loguru_logger
 
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState
@@ -33,7 +34,7 @@ from anishift.application.tts_handler import (
 from anishift.config.settings import Settings
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError
 from anishift.paths import quality_dir
-from anishift.platform.binaries import Binary, resolve_binary
+from anishift.platform.binaries import Binary
 from anishift.services.audio.commands import CommandResult
 from anishift.services.audio.errors import AudioProcessError
 from anishift.services.audio.types import NormalizedClip, TimedClip
@@ -1011,9 +1012,8 @@ def test_a_voice_only_the_provider_can_name_is_never_refused_locally(tmp_path: P
     assert len(service.batches) == 1
 
 
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 def test_the_production_speech_handler_refuses_a_voice_its_own_engine_never_offered(tmp_path: Path) -> None:
-    if resolve_binary(Binary.FFMPEG) is None or resolve_binary(Binary.FFPROBE) is None:
-        pytest.skip("bundled FFmpeg is unavailable")
     settings = RunSettingsSnapshot(
         translation_profile_id="google",
         translation_max_retries=2,
@@ -1053,6 +1053,7 @@ def test_the_production_speech_handler_refuses_a_voice_its_own_engine_never_offe
     ("profile", "joins"),
     [(("elevenreader", "eleven_v4", "fronczewski"), True), (("elevenbytes", "run6", "dallin"), False)],
 )
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 def test_production_tts_handler_document_engine_reads_document(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1060,8 +1061,6 @@ def test_production_tts_handler_document_engine_reads_document(
     *,
     joins: bool,
 ) -> None:
-    if resolve_binary(Binary.FFMPEG) is None or resolve_binary(Binary.FFPROBE) is None:
-        pytest.skip("bundled FFmpeg is unavailable")
     monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path / "config"))
     engine, model, voice = profile
     settings = RunSettingsSnapshot(

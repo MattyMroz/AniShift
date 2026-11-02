@@ -3,8 +3,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from conftest import requires_binaries
 
-from anishift.platform.binaries import Binary, resolve_binary
+from anishift.platform.binaries import Binary
 from anishift.services.fonts import system_font_paths
 from scripts.subtitle_quality.episode import FONTS_NAME, OUTPUT_NAME, SOURCE_NAME, analyse, pair_fonts
 
@@ -53,9 +54,8 @@ def test_pair_fonts_takes_the_files_of_the_fonts_folder_and_the_system_fonts(tmp
 
 
 @pytest.mark.integration
+@requires_binaries(Binary.FFMPEG)
 def test_analyse_flags_signs_whose_glyphs_a_substitute_face_draws(tmp_path: Path) -> None:
-    if resolve_binary(Binary.FFMPEG) is None:
-        pytest.skip("ffmpeg is not installed")
     if not any(path.name.casefold() == "arial.ttf" for path in system_font_paths()):
         pytest.skip("system Arial is not available")
     directory = tmp_path / "episode"

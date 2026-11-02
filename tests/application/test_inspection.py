@@ -242,7 +242,7 @@ def test_external_subtitles_in_an_unknown_format_are_refused(tmp_path: Path) -> 
 def test_standalone_audio_is_validated_without_any_video_to_compare_with(tmp_path: Path) -> None:
     write_image_source(tmp_path / "cover" / "Book.png")
     _write_text_file(tmp_path / "cover" / "Book.mp3", "audio")
-    workspace = WorkspaceInspector(_FakeProbe({}), runner=_FakeRunner(7_000_000)).inspect(
+    workspace = WorkspaceInspector(_FakeProbe({}), runner=_FakeRunner(7_000_000), ffmpeg=Path("ffmpeg")).inspect(
         discover_groups(tmp_path),
         cancel=NeverCancelledToken(),
     )

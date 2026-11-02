@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Final
 
 import pytest
+from conftest import requires_binaries
 
 from anishift.errors import ErrorCode
 from anishift.platform.binaries import Binary, resolve_binary
@@ -64,10 +65,11 @@ def test_extract_attachments_fails_when_mkvextract_fails(monkeypatch: pytest.Mon
 
 
 @pytest.mark.integration
+@requires_binaries(Binary.MKVMERGE, Binary.MKVEXTRACT)
 def test_extract_attachments_writes_only_font_attachments_and_repeats_idempotently(tmp_path: Path) -> None:
     mkvmerge: Path | None = resolve_binary(Binary.MKVMERGE)
-    if mkvmerge is None or resolve_binary(Binary.MKVEXTRACT) is None or not _SYSTEM_FONT.is_file():
-        pytest.skip("MKVToolNix or the system Arial font is not available")
+    if not _SYSTEM_FONT.is_file():
+        pytest.skip("the system Arial font is not available")
     subtitles: Path = tmp_path / "episode.srt"
     subtitles.write_text("1\n00:00:01,000 --> 00:00:02,000\nHello\n", encoding="utf-8")
     notes: Path = tmp_path / "notes.txt"

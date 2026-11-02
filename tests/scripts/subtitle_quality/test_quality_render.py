@@ -3,10 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from conftest import requires_binaries
 from PIL import Image
 from pysubs2 import SSAFile
 
-from anishift.platform.binaries import Binary, resolve_binary
+from anishift.platform.binaries import Binary
 from scripts.subtitle_quality import metrics, render
 
 _SCRIPT = """[Script Info]
@@ -65,9 +66,8 @@ def test_parse_font_log_reports_fallbacks_and_missing_glyphs() -> None:
 
 
 @pytest.mark.integration
+@requires_binaries(Binary.FFMPEG)
 def test_measure_boxes_finds_text_extent_beyond_the_screen(tmp_path: Path) -> None:
-    if resolve_binary(Binary.FFMPEG) is None:
-        pytest.skip("ffmpeg is not installed")
     subs = _subs()
     boxes, _ = render.measure_boxes(subs, subs.events[:2], _SIZE, tmp_path, "measure")
     centred, overflowing = boxes
@@ -82,9 +82,8 @@ def test_measure_boxes_finds_text_extent_beyond_the_screen(tmp_path: Path) -> No
 
 
 @pytest.mark.integration
+@requires_binaries(Binary.FFMPEG)
 def test_measure_boxes_measures_events_beyond_the_ass_time_limit(tmp_path: Path) -> None:
-    if resolve_binary(Binary.FFMPEG) is None:
-        pytest.skip("ffmpeg is not installed")
     subs = _subs()
     long_sign = subs.events[0].copy()
     long_sign.end = long_sign.start + 3_598_000
@@ -104,9 +103,8 @@ def test_nearest_frame_picks_the_closest_saved_moment(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+@requires_binaries(Binary.FFMPEG)
 def test_render_shot_uses_the_nearest_relative_saved_frame(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    if resolve_binary(Binary.FFMPEG) is None:
-        pytest.skip("ffmpeg is not installed")
     work = tmp_path / "work"
     work.mkdir()
     script = tmp_path / "script.ass"
@@ -142,9 +140,8 @@ def test_logged_breaks_assign_the_automatic_breaks_to_the_frame_of_their_slot() 
 
 
 @pytest.mark.integration
+@requires_binaries(Binary.FFMPEG)
 def test_wrap_breaks_count_the_automatic_breaks_libass_makes_for_each_event(tmp_path: Path) -> None:
-    if resolve_binary(Binary.FFMPEG) is None:
-        pytest.skip("ffmpeg is not installed")
     subs = _subs()
     long_line = "This translated sign is far too long to fit between the margins of the small screen"
     texts = ("Short", long_line, r"Hard\Nbreak", r"{\q2}" + long_line, r"{\alpha&HFF&}" + long_line)

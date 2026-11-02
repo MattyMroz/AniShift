@@ -8,12 +8,14 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
+from conftest import requires_binaries
 from episode_download_support import Catalog, make_pack, private_client, resident, seed_ready, wait_for
 
 from anishift.application import automation as automation_module
 from anishift.application import watch as watch_module
 from anishift.application.control import AcquisitionConfirmation, RequestState, WatchState
 from anishift.application.watch_state import WatchStateStore
+from anishift.platform.binaries import Binary
 from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import ControlClient
 from anishift.services.torrents import TorrentFile
@@ -49,6 +51,7 @@ def _record(state: WatchState, times: dict[str, float], start: float) -> None:
 
 
 @pytest.mark.integration
+@requires_binaries(Binary.FFMPEG, Binary.QBITTORRENT)
 def test_selected_pack_survives_owner_and_qb_restart_to_two_library_results_without_unordered_episode(  # noqa: PLR0915
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

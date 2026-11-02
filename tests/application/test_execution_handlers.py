@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
+from conftest import requires_binaries
 from fakes import FakeMediaProbe
 from loguru import logger as loguru_logger
 from pysubs2 import SSAEvent, SSAFile
@@ -75,6 +76,7 @@ from anishift.config.presets import AutoPresetFile
 from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.errors import AniShiftError, ErrorCode, ErrorContext, ExecutionError
+from anishift.platform.binaries import Binary
 from anishift.platform.local_control import ControlResponse
 from anishift.services.audio import AudioRenderRequest, AudioRenderResult, AudioRenderStatus
 from anishift.services.composition import CompositionConfig, CompositionService
@@ -1263,7 +1265,14 @@ def test_planner_to_scheduler_executes_standalone_text_plan(tmp_path: Path) -> N
     assert "PL Hello from a standalone file." in published.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("streams", ["spoken", "displayed", "both"])
+@pytest.mark.parametrize(
+    "streams",
+    [
+        pytest.param("spoken", marks=requires_binaries(Binary.FFMPEG, Binary.FFPROBE)),
+        "displayed",
+        pytest.param("both", marks=requires_binaries(Binary.FFMPEG, Binary.FFPROBE)),
+    ],
+)
 def test_planner_scheduler_completes_independent_subtitle_branches(tmp_path: Path, streams: str) -> None:
     inspected: InspectedSourceGroup = _subtitle_branch_group(tmp_path, streams)
     source_group: SourceGroup = inspected.source
@@ -1421,7 +1430,7 @@ def _subtitle_branch_group(tmp_path: Path, streams: str) -> InspectedSourceGroup
     )
 
 
-@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 @pytest.mark.parametrize("target", [ProductKind.MKV, ProductKind.MP4])
 def test_confirmed_absence_restarts_before_real_composition_without_retranslation(
     tmp_path: Path, target: ProductKind
@@ -1517,7 +1526,7 @@ def _write_pcm_clip(path: Path) -> None:
         recording.writeframes(b"\x01\x00" * 12_000)
 
 
-@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="bundled FFmpeg is unavailable")
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 @pytest.mark.parametrize("boundary", ["no_store", "ready", "held", "halted", "deleted"])
 def test_signless_narration_and_video_reach_library_and_do_not_restart(  # noqa: PLR0915
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str

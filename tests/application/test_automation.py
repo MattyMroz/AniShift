@@ -18,6 +18,7 @@ from urllib.parse import parse_qs
 
 import httpx
 import pytest
+from conftest import requires_binaries
 from fakes import (
     CollectingRunSink,
     FakeMediaProbe,
@@ -119,6 +120,7 @@ from anishift.config.user_settings import UserSettings
 from anishift.config.workspace import RUN_OWNER_MARKER_NAME, run_tmp_dir
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError, PlanningError
 from anishift.paths import COVER_DIRECTORY, READY_DIRECTORY, TRANSLATE_DIRECTORY, relocation_journal_dir
+from anishift.platform.binaries import Binary
 from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import (
     ControlClient,
@@ -4355,6 +4357,7 @@ def test_processing_projection_retries_an_unavailable_terminal_checkpoint(
 
 
 @pytest.mark.integration
+@requires_binaries(Binary.FFMPEG, Binary.FFPROBE)
 def test_library_retry_after_refused_deletion_only_relocates(  # noqa: PLR0915
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

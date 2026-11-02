@@ -6,6 +6,7 @@ from pathlib import Path
 from time import perf_counter
 
 import pytest
+from conftest import requires_binaries
 
 from anishift.application import (
     AppService,
@@ -28,7 +29,7 @@ from anishift.application.cancellation import NeverCancelledToken
 from anishift.bootstrap import AppContext, create_app_service
 from anishift.config.settings import Settings
 from anishift.config.user_settings import TtsVoiceProfileSettings, UserSettings
-from anishift.platform.binaries import Binary, resolve_binary
+from anishift.platform.binaries import Binary, require_binary
 from anishift.services.audio.commands import CommandResult, SubprocessRunner
 from anishift.services.media import DefaultMediaProbe, MediaCatalog, MediaTrackKind
 from anishift.services.subtitles import SubtitleSplit, load_subtitles, split_subtitles
@@ -132,13 +133,9 @@ def _assert_products(result: RunResult, plan: ExecutionPlan, workspace: Path, ff
 
 
 @pytest.mark.network
+@requires_binaries(*Binary)
 def test_production_mkv_google_edge_publishes_complete_polish_products(tmp_path: Path) -> None:
-    binaries: dict[Binary, Path] = {}
-    for binary in Binary:
-        path: Path | None = resolve_binary(binary)
-        if path is None:
-            pytest.skip(f"installed {binary.value} is required")
-        binaries[binary] = path
+    binaries: dict[Binary, Path] = {binary: require_binary(binary) for binary in Binary}
     workspace: Path = tmp_path / "workspace"
     workspace.mkdir()
     source: Path = workspace / "acceptance.mkv"
