@@ -67,6 +67,7 @@ exclude = [
     "dist",
     ".claude",
     ".github",
+    ".hooks",
     "scripts/tmp",
 ]
 

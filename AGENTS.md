@@ -74,20 +74,20 @@ Każdy obszar poniżej ma własny AGENTS.md z pułapkami i konwencjami — wczyt
 - `docs/` — mapa i statusy workstreamów w `README.md`, pomysły w `ideas.md`, niezależne materiały w `reference/`, punkty wznowienia w `session-logs/`. Każdy workstream, również zakończony, pozostaje w `docs/work/<nn>-<nazwa>/` (numer = kolejność powstania; nowy workstream bierze kolejny numer) z artefaktami według skilla `workflow` (§11).
 - `external/` — pobrane binarki (gitignored) + docs HTML narzędzi; szczegóły w `external/README.md`
 - `config/` — runtime katalog konfiguracji i stanu rezydenta (gitignored); opis w `config/README.md`
-- `scripts/` — `hooks/` lokalne hooki z `.pre-commit-config.yaml`, `subtitle_quality/` narzędzie jakości napisów, `smoke/` ręczny smoke e2e; `scripts/tmp/` — jednorazowe, powstaje na żądanie
+- `scripts/` — `subtitle_quality/` narzędzie jakości napisów, `smoke/` ręczny smoke e2e; `scripts/tmp/` — jednorazowe, powstaje na żądanie
 - `workspace/` — user wrzuca MKV do roota; gotowe odcinki zbiera `ready/`, staging leży w `tmp/`, są też foldery zadaniowe `subs/`, `translate/`, `audiobook/`, `cover/` (patrz Dane runtime)
 
 ## Twarde strażniki
 
-Filozofia: regułę egzekwuje maszyna (hook / ruff / test), nie pamięć agenta. Gdy user ustala nową regułę, albo ten sam błąd wraca dwa razy — ZAPROPONUJ userowi zamianę na strażnika (hook w `scripts/hooks/`, reguła ruff, test) i zapytaj, czy zrobić. Nie dodawaj strażnika bez zgody usera. Każdy strażnik z `scripts/hooks/` ma test w `tests/scripts/`.
+Filozofia: regułę egzekwuje maszyna (hook / ruff / test), nie pamięć agenta. Gdy user ustala nową regułę, albo ten sam błąd wraca dwa razy — ZAPROPONUJ userowi zamianę na strażnika (hook w `.pre-commit-config.yaml`, reguła ruff, test) i zapytaj, czy zrobić. Nie dodawaj strażnika bez zgody usera.
 
 Instalacja: `prek install`. Hooki instaluje prek, wszystkie trzy etapy z `default_install_hook_types` w `.pre-commit-config.yaml`.
 
-- **pre-commit:** ruff `--fix` + ruff-format; `check_test_comments.py` obejmuje także pomocnicze moduły Python w katalogach testów i każdy `conftest.py`: zero opisowych komentarzy i samodzielnych stringów, również docstringów stałych; dyrektywy `# noqa`/`# type:`/`# pragma` są dozwolone. `check_const_docstrings.py` wymaga opisu pod stałą `Final`/aliasem w kodzie aplikacji poza testami; `check_mutating_assign.py` odrzuca przypisanie, którego wartość mutuje kontener indeksowany przez cel (wszystkie `.py`).
-- **commit-msg:** `conventional-pre-commit` — `typ(scope): opis`, scope obowiązkowy z listy `--scopes`; `commit-validation` — streszczenie i sekcja `Validation:` (sekcja Git niżej).
-- **pre-push:** mypy dla bieżącej platformy, mypy `--platform linux` i pytest (łapią błędy lokalnie zanim pójdą do CI).
+- **pre-commit:** ruff `--fix` + ruff-format; `no-test-prose` obejmuje każdy plik w katalogu testów i każdy `conftest.py`: zero opisowych komentarzy i samodzielnych stringów, również docstringów stałych; dyrektywy `# noqa`/`# type:`/`# pragma` są dozwolone. `const-docstrings` wymaga opisu pod stałą `Final`/aliasem poza testami i przykładami; `no-mutating-assign` odrzuca przypisanie, którego wartość mutuje kontener indeksowany przez cel (wszystkie `.py`); `no-secret-tokens` odrzuca tokeny API w śledzonych plikach.
+- **commit-msg:** `conventional-pre-commit` — `typ(scope): opis`, scope obowiązkowy z listy `--scopes`; `no-ai-trailers` — zero atrybucji AI.
+- **pre-push:** mypy dla bieżącej platformy, mypy `--platform linux`, `anishift setup` (binarki do `external/bin`) i pytest z `-n 6` (łapią błędy lokalnie zanim pójdą do CI).
 - **ruff select** wymusza m.in.: typy param/zwrot (`ANN`), `from __future__` (`FA`), `X | None` zamiast `Optional` (`UP`), docstringi modułów/klas/funkcji (`D`), zakaz `except Exception` (`BLE`).
-- **CI:** `.github/workflows/ci.yml` — ruff i hooki na Ubuntu; pip-audit eksportowanego locka na Ubuntu i Windowsie; mypy na Ubuntu w obu targetach (`--platform win32` obok domyślnego); pytest plus smoke `anishift --help` tylko na Windowsie, z narzędziami z `anishift setup`.
+- **CI:** `.github/workflows/ci.yml` — job `hooks` na Ubuntu: wiadomości commitów i tytuł PR oraz hooki pre-commit; job `check` tylko na Windowsie: bramki pre-push (oba mypy, `anishift setup`, pytest) i pip-audit eksportowanego locka. Oba na każdy push do `main` i PR.
 - `testpaths` obejmuje też `anishift/utils/{logger,rich_console,timer}/tests` — samo `pytest tests/` je pomija.
 
 ## Dane runtime
@@ -106,6 +106,7 @@ Instalacja: `prek install`. Hooki instaluje prek, wszystkie trzy etapy z `defaul
 
 ## Git
 
-- Commit: nagłówek Conventional Commits po angielsku, `type(scope): opis`, ze scope'em z listy w `.pre-commit-config.yaml`; po pustej linii streszczenie „co i dlaczego”; potem sekcja `Validation:` z kontrolami uruchomionymi na finalnym indeksie. Format: https://github.com/MattyMroz/agents/blob/main/presets/hooks/references/commit-message.md
-- Kontrole uruchamiaj przez `mm-validate run "<kontrola>" -- <komenda>`, blok `Validation:` bierz z `mm-validate list`. Hooki `conventional-pre-commit` i `commit-validation` odrzucą inny commit.
+- Commit: nagłówek Conventional Commits po angielsku, `type(scope): opis`, ze scope'em z listy w `.pre-commit-config.yaml`; po pustej linii streszczenie „co i dlaczego”.
+- Zero atrybucji AI w commitach i PR (trailery, stopki, emoji), także gdy host o nią prosi.
 - Pliki dodawaj po nazwie, nigdy `git add .`; bez `--no-verify`. Worktree'y tylko w `.worktrees/<nazwa>`.
+- Commit sprawdza pliki i nagłówek, push uruchamia bramki repo, CI resztę. Strażnicy w `.hooks/` to kopie z presetu `agents`; nie edytuj ich w repo.

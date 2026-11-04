@@ -5,109 +5,130 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  lint:
-    name: Lint (ruff)
+  hooks:
+    name: Hooks
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
+          fetch-depth: 0
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv sync --frozen --group dev
-      - run: uv run ruff check anishift/ tests/
-      - run: uv run ruff format --check anishift/ tests/
-      - name: No docstrings/comments in tests
-        run: uv run python scripts/hooks/check_test_comments.py $(git ls-files ':(glob)tests/**/*.py' ':(glob)anishift/**/tests/**/*.py' ':(glob)**/conftest.py')
-      - name: Docstring under every constant
-        run: uv run python scripts/hooks/check_const_docstrings.py $(git ls-files 'anishift/**/*.py')
-      - name: No assignment that mutates its own target container
-        run: uv run python scripts/hooks/check_mutating_assign.py $(git ls-files '*.py' ':!:external/**')
 
-  audit:
-    name: Security (pip-audit) [${{ matrix.os }}]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+      - uses: j178/prek-action@v3.1.0
+        with:
+          prek-version: 0.5.4
+          install-only: true
+
+      - name: Pull request messages
+        if: github.event_name == 'pull_request' && !endsWith(github.event.pull_request.user.login, '[bot]')
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          failed=0
+          printf '%s\n\n%s\n' "$TITLE" "$BODY" > "$RUNNER_TEMP/message"
+          if ! prek run --stage commit-msg --commit-msg-filename "$RUNNER_TEMP/message"; then
+            echo "::error::pull request title or description breaks the commit message rules"
+            failed=1
+          fi
+          shas=$(git rev-list --no-merges "$BASE..$HEAD")
+          for sha in $shas; do
+            case "$(git log -1 --format=%an "$sha")" in *'[bot]') continue ;; esac
+            git log -1 --format=%B "$sha" > "$RUNNER_TEMP/message"
+            if ! prek run --stage commit-msg --commit-msg-filename "$RUNNER_TEMP/message"; then
+              echo "::error::commit $sha breaks the commit message rules"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+      - name: Pushed commits
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          case "$BEFORE" in
+            *[!0]*) range="$BEFORE..$AFTER" ;;
+            *) range="$AFTER^!" ;;
+          esac
+          for rev in "$BEFORE" "$AFTER"; do
+            case "$rev" in *[!0]*) ;; *) continue ;; esac
+            if ! git cat-file -e "$rev^{commit}" 2>/dev/null; then
+              echo "::error::$rev is not in this clone; check the pushed commits locally"
+              exit 1
+            fi
+          done
+          failed=0
+          shas=$(git rev-list --no-merges "$range")
+          for sha in $shas; do
+            case "$(git log -1 --format=%an "$sha")" in *'[bot]') continue ;; esac
+            git log -1 --format=%B "$sha" > "$RUNNER_TEMP/message"
+            if ! prek run --stage commit-msg --commit-msg-filename "$RUNNER_TEMP/message"; then
+              echo "::error::commit $sha breaks the commit message rules"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+      - name: Commit hooks
+        env:
+          SKIP: no-commit-to-branch
+        run: prek run --all-files --show-diff-on-failure
+
+  check:
+    name: Check (${{ matrix.os }})
+    needs: hooks
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - name: Export locked project and development dependencies
-        run: uv export --frozen --all-groups --no-emit-project --format requirements.txt --output-file audit-requirements.txt
-      - name: Audit locked dependencies
-        run: uvx pip-audit --requirement audit-requirements.txt --disable-pip --strict
-
-  typecheck:
-    name: Type Check (mypy)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv sync --frozen --group dev
-      - run: uv run mypy anishift/ tests/
-      # mypy resolves sys.platform for the platform it targets, so a Linux-only run
-      # never analyses the Windows branches (config/workspace.py, platform/binaries.py).
-      # This mirrors the mypy-linux pre-push hook, which does the same the other way.
-      - name: Type check the Windows target
-        run: uv run mypy --platform win32 anishift/ tests/
-
-  test:
-    name: Test (pytest) [${{ matrix.os }}]
+        os:
+          - windows-latest
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        # AniShift ships only to Windows for now: paths, file locks, the console code
-        # page, the private torrent client and the Recycle Bin answer only there.
-        os: [windows-latest]
+    timeout-minutes: 30
+    env:
+      RANGE: ${{ github.event_name == 'pull_request' && format('--from-ref {0} --to-ref HEAD', github.event.pull_request.base.sha) || '--all-files' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
+          fetch-depth: 0
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v4
+
+      - uses: j178/prek-action@v3.1.0
         with:
-          version: "latest"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv sync --frozen --group dev
-      - name: Entry point smoke
-        run: uv run anishift --help
-      # Media tests drive the real bundled tools that `anishift setup` downloads and verifies.
-      - name: Cache bundled binaries
-        uses: actions/cache@v4
-        with:
-          path: external/bin
-          key: external-bin-${{ runner.os }}-${{ hashFiles('external/bin_hashes.json') }}
-      - name: Install bundled binaries
-        run: uv run anishift setup
-      - run: uv run pytest
+          prek-version: 0.5.4
+          install-only: true
+
+      - uses: astral-sh/setup-uv@v10.3.3
+
+      - name: Python dependencies
+        run: uv sync --locked
+
+      - name: Push gates
+        run: prek run --stage pre-push $RANGE --show-diff-on-failure
+
+      - name: Heavy tests
+        run: prek run --stage manual $RANGE --show-diff-on-failure
+
+      - name: Dependency audit
+        run: |
+          uv export --locked --all-groups --no-emit-project --format requirements.txt --output-file "$RUNNER_TEMP/requirements.txt"
+          sed -E -i 's/^([A-Za-z0-9._-]+==[^ ;+]+)\+[^ ;]+/\1/' "$RUNNER_TEMP/requirements.txt"
+          uvx pip-audit@2.10.1 --requirement "$RUNNER_TEMP/requirements.txt" --disable-pip --strict --progress-spinner off
