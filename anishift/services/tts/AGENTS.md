@@ -57,12 +57,12 @@ narratora ani finalnego sidecara.
 
 ## Ścieżka dokumentu
 
-- Silnik z `capabilities.max_document_chars` czyta brakujące kwestie batcha zachłannymi
-  dokumentami (`document_chars` silnika ≤ limit) przez `DocumentTtsEngine.synthesize_document`;
+- Silnik z `capabilities.reads_documents` czyta wszystkie brakujące kwestie batcha jednym
+  dokumentem przez `DocumentTtsEngine.synthesize_document`, bez limitu długości;
   wymaga wstrzykniętego `ClipSplitter`, inaczej każda kwestia mowy dostaje
   `TtsUnsupportedError`.
 - Kwestia, która nie mieści się w jednej części albo której nie przyjmuje
-  `DocumentTtsEngine.validate_part`, dostaje `TtsInputError` przed grupowaniem; reszta
+  `DocumentTtsEngine.validate_part`, dostaje `TtsInputError` przed odczytem; reszta
   batcha idzie dalej. Resume, tożsamość i commit są per kwestia jak w ścieżce zwykłej.
 - `accept_result` sprawdza własność nagrania i kolejność `PartTiming`, tnie nagranie
   (`open_end = not ends_sentence(text)`) i waliduje każdy klip; błąd splittera albo
@@ -74,7 +74,7 @@ narratora ani finalnego sidecara.
   dokument miał więcej niż jedną kwestię). Dokument identyczny z już przeczytanym się nie powtarza, więc kwestia ma
   najwyżej dwa ponowne odczyty. Dopiero kwestia cicha także sama dostaje `TtsInputError`. `provider_calls`, `retries`
   i czas wcześniejszych odczytów doliczają się do jej końcowego wyniku (`_with_earlier_reads`).
-- Dokumenty jednego batcha idą po kolei; kilka dokumentów naraz to kilka batchy (`max_concurrency` workerów
+- Ponowne odczyty jednego batcha idą po kolei; kilka dokumentów naraz to kilka batchy (`max_concurrency` workerów
   schedulera, w aplikacji też kilka `TtsService` różnych runów). Zasób wspólny dla nich (jedna przeglądarka i konto
   ElevenReadera) trzyma silnik, nie wspólna warstwa TTS.
 - Identyfikator dokumentu `{scope_id}:document:{n}` bierze `n` z licznika `TtsService`, więc jest unikalny w
