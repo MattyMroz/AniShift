@@ -313,7 +313,7 @@ def test_part_timing_spoken_only_with_positive_length(end_ms: float, *, spoken: 
 
 
 def test_engine_capabilities_default_to_line_engine() -> None:
-    assert FakeEngine.capabilities.max_document_chars is None
+    assert not FakeEngine.capabilities.reads_documents
 
 
 def test_playwright_module_level_import_only_in_elevenreader_browser() -> None:

@@ -36,7 +36,6 @@ from .constants import (
     END_IDLE_S,
     END_SLACK_CHARS,
     LINE_SEPARATOR,
-    MAX_DOCUMENT_CHARS,
     PAGE_SPEED,
     PLAY_ATTEMPTS,
     POLL_S,
@@ -95,10 +94,10 @@ class ElevenReaderTtsEngine:
         supports_voice_settings=False,
         requires_api_key=False,
         min_text_chars=1,
-        max_text_chars=MAX_DOCUMENT_CHARS,
+        max_text_chars=None,
         max_text_bytes=None,
         availability_probe=AvailabilityProbeKind.LOCAL,
-        max_document_chars=MAX_DOCUMENT_CHARS,
+        reads_documents=True,
     )
 
     def __init__(
@@ -154,10 +153,6 @@ class ElevenReaderTtsEngine:
         """Return the offered ElevenReader voices."""
         return _voices()
 
-    def document_chars(self, parts: tuple[DocumentPart, ...]) -> int:
-        """Return the length of the uploaded document text for *parts*."""
-        return len(document_text(parts))
-
     def validate_part(self, part: DocumentPart) -> None:
         """Raise TtsInputError when *part* cannot be read as its own paragraph."""
         text: str = _neutralize(part.text)
@@ -206,8 +201,6 @@ class ElevenReaderTtsEngine:
         if request.options:
             message: str = "ElevenReader accepts no engine options"
             raise TtsUnsupportedError(message)
-        if self.document_chars(request.parts) > MAX_DOCUMENT_CHARS:
-            _raise_input(f"ElevenReader document exceeds {MAX_DOCUMENT_CHARS} characters")
         for part in request.parts:
             self.validate_part(part)
         return voice

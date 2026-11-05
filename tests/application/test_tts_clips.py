@@ -103,7 +103,7 @@ class _RecordingEngine:
         max_text_chars=200,
         max_text_bytes=None,
         availability_probe=AvailabilityProbeKind.CONFIG,
-        max_document_chars=200,
+        reads_documents=True,
     )
     synthesis_profile = SynthesisProfile(
         engine_id="document",
@@ -133,9 +133,6 @@ class _RecordingEngine:
     async def synthesize(self, request: SynthesisRequest, *, cancel: CancellationToken) -> EngineClipResult:
         del request, cancel
         raise TtsUnsupportedError("document engine")
-
-    def document_chars(self, parts: tuple[DocumentPart, ...]) -> int:
-        return sum(len(part.text) for part in parts)
 
     def validate_part(self, part: DocumentPart) -> None:
         del part

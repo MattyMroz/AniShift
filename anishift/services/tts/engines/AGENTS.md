@@ -10,7 +10,7 @@ Leniwy rejestr adapterów providerów TTS.
   `sapi`. Panel ustawień i testy korzystają z tej kolejności.
 - `is_document_engine(engine_id)` to jedyne źródło wiedzy, który silnik czyta cały batch
   dokumentem (`_DOCUMENT_ENGINES`), bez importu silnika. Test pilnuje, że zbiór zgadza się
-  z `capabilities.max_document_chars`.
+  z `capabilities.reads_documents`.
 - Nieznany `engine_id` jest mapowany na `TtsConfigError`. `ImportError` wybranego
   modułu i `AttributeError` błędnej nazwy klasy pozostają surowymi błędami
   composition; nie ukrywaj ich jako „engine unavailable”. `__init__.py`

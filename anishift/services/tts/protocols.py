@@ -134,10 +134,6 @@ class TtsEngine(EngineInfo, Protocol):
 class DocumentTtsEngine(TtsEngine, Protocol):
     """Engine that reads many speech requests as one provider document."""
 
-    def document_chars(self, parts: tuple[DocumentPart, ...]) -> int:
-        """Return the length of the document text the engine sends for *parts*."""
-        ...
-
     def validate_part(self, part: DocumentPart) -> None:
         """Raise TtsInputError when the engine cannot read *part* within a document."""
         ...
