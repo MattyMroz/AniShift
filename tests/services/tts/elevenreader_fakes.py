@@ -13,7 +13,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from anishift.services.tts import TtsConfig, TtsProviderUnavailableError
 from anishift.services.tts.engines.elevenreader import ElevenReaderTtsEngine
-from anishift.services.tts.engines.elevenreader.api_backend import document_titles
+from anishift.services.tts.engines.elevenreader.api_backend import document_titles, refused_error
 from anishift.services.tts.engines.elevenreader.types import DocumentTrace, LibraryState, PlayerState, UploadedRead
 
 if TYPE_CHECKING:
@@ -129,6 +129,7 @@ class FakeSite:
     frames: list[str] | None = None
     char_count: int | None = None
     send_audio: bool = True
+    refusal: str | None = None
     player_done: bool = False
     hang_on: str = ""
     hung: threading.Event = field(default_factory=threading.Event)
@@ -226,10 +227,15 @@ class FakePage:
         if read_id in self.site.reads:
             self.site.reads.remove(read_id)
 
+    def raise_if_refused(self) -> None:
+        if self.site.refusal is not None:
+            raise refused_error(self.site.refusal)
+
     async def open_document(self, read_id: str) -> None:
         assert self.upload_index is not None
         assert read_id == read_id_of(self.upload_index)
         await self._step("open_document")
+        self.raise_if_refused()
 
     async def press_play(self) -> None:
         await self._step("press_play")
