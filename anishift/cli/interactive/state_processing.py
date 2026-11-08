@@ -48,6 +48,9 @@ _DOWNLOAD_PROBLEMS: Final[dict[str, str]] = {
 }
 """Short Polish cause of each download problem the owner reports, by its owner sentence."""
 
+_STOPPED_STATES: Final[frozenset[str]] = frozenset({"pausedDL", "stoppedDL", "pausedUP", "stoppedUP"})
+"""Client states of a stopped transfer."""
+
 _READINESS_LABELS: Final[dict[str, str]] = {
     "subtitle_source_missing": "Brak napisów",
     "sidecar_missing": "Brak napisów obok",
@@ -211,8 +214,8 @@ def download_progress(  # noqa: PLR0911
     if not connected or snapshot.get("transfers_problem"):
         return "Brak odczytu", None
     state: object = item.get("state")
-    if _download_toggle(item) == ("resume", "wznów"):
-        return "Wstrzymano", measured
+    if state in _STOPPED_STATES and item.get("acquisition_state") != "pending_send":
+        return ("Wybieram" if _unstarted(item) and not held(snapshot, item) else "Wstrzymano"), measured
     if state in {"metaDL", "forcedMetaDL"} or item.get("acquisition_state") == "pending_send":
         return "Łączę", measured
     if state is None:
@@ -317,6 +320,10 @@ def _download_toggle(item: Mapping[str, object]) -> tuple[str, str] | None:
         "missingFiles",
     }:
         return None
-    if item.get("state") in {"pausedDL", "stoppedDL", "pausedUP", "stoppedUP"}:
-        return "resume", "wznów"
+    if item.get("state") in _STOPPED_STATES:
+        return None if _unstarted(item) else ("resume", "wznów")
     return "stop", "wstrzymaj"
+
+
+def _unstarted(item: Mapping[str, object]) -> bool:
+    return item.get("content_started") is False and item.get("action") != "stop"
