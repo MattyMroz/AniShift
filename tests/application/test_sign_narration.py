@@ -8,7 +8,9 @@ import pytest
 
 from anishift.application.sign_narration import (
     SignSelection,
+    free_intervals,
     load_sign_candidates,
+    reachable_signs,
     select_signs,
     write_sign_candidates,
 )
@@ -22,6 +24,14 @@ _SMALL: tuple[float, float] = (0.5408, 0.3)
 _TITLE: tuple[float, float] = (0.84208, 0.0)
 
 _STRONGEST: tuple[float, float] = (0.8824, 0.0)
+
+_PLATES: tuple[SignCandidate, ...] = (
+    SignCandidate(47, 221_740, 223_950, "Destra, Dar: Bliźniaczy Szermierz (S)", "destra", 0.6762, 0.1111),
+    SignCandidate(49, 223_990, 226_450, "Sinistra, Dar: Bliźniaczy Szermierz (S)", "sinistra", 0.6868, 0.1111),
+    SignCandidate(51, 226_490, 228_830, "Rory, Dar: Zwiadowca Superwysokiego Poziomu (A)", "rory", 0.6655, 0.1111),
+    SignCandidate(53, 228_870, 231_460, "Celica, Dar: Uzdrowicielka Wysokiego Poziomu (B)", "celica", 0.6767, 0.1111),
+    SignCandidate(55, 231_500, 233_960, "Shannon, Dar: Mag Superwysokiego Poziomu (A)", "shannon", 0.6709, 0.1111),
+)
 
 
 def _clip(request_id: str, start_ms: int, frames: int, order: int, sample_rate: int = 1000) -> NormalizedClip:
@@ -195,6 +205,57 @@ def test_a_sound_written_as_a_repeated_word_is_read_only_in_always(mode: str, de
     selection: SignSelection = select_signs((_sign(3, 1000, 3000, weights, "tup tup"),), _recordings(3), lines, mode)
 
     assert _decision(selection, 3) == decision
+
+
+@pytest.mark.parametrize("mode", ["smart", "always"])
+def test_a_run_of_plates_longer_to_read_than_to_show_is_read_plate_after_plate(mode: str) -> None:
+    lines: tuple[NormalizedClip, ...] = (_clip("line-1", 217_560, 3880, 0), _clip("line-2", 238_000, 2000, 60))
+
+    selection: SignSelection = select_signs(_PLATES, _recordings(47, 49, 51, 53, 55, frames=2600), lines, mode)
+
+    assert selection.decisions == ((47, "read"), (49, "read"), (51, "read"), (53, "read"), (55, "read"))
+    assert [(item.start_ms, item.end_ms) for item in selection.placements] == [
+        (221_740, 224_340),
+        (224_540, 227_140),
+        (227_340, 229_940),
+        (230_140, 232_740),
+        (232_940, 235_540),
+    ]
+
+
+@pytest.mark.parametrize("mode", ["smart", "always"])
+def test_a_run_of_plates_cut_short_by_a_line_is_read_from_its_first_plate_without_gaps(mode: str) -> None:
+    lines: tuple[NormalizedClip, ...] = (
+        _clip("line-1", 217_560, 3880, 0),
+        _clip("line-2", 234_170, 2780, 60),
+        _clip("line-3", 236_950, 3890, 61),
+    )
+
+    selection: SignSelection = select_signs(_PLATES, _recordings(47, 49, 51, 53, 55, frames=3000), lines, mode)
+
+    assert selection.decisions == ((47, "read"), (49, "read"), (51, "read"), (53, "no_pause"), (55, "run"))
+    assert [(item.start_ms, item.end_ms) for item in selection.placements] == [
+        (221_740, 224_740),
+        (224_940, 227_940),
+        (228_140, 231_140),
+    ]
+
+
+def test_a_plate_without_a_recording_leaves_the_rest_of_its_run_to_be_read() -> None:
+    lines: tuple[NormalizedClip, ...] = (_clip("line-1", 217_560, 3880, 0), _clip("line-2", 238_000, 2000, 60))
+
+    selection: SignSelection = select_signs(_PLATES, _recordings(47, 51, 53, 55, frames=2600), lines, "smart")
+
+    assert selection.decisions == ((47, "read"), (49, "missing"), (51, "read"), (53, "read"), (55, "read"))
+
+
+def test_a_plate_hidden_by_a_line_is_reachable_while_its_run_lasts() -> None:
+    lines: tuple[NormalizedClip, ...] = (_clip("line-1", 0, 5200, 0),)
+    candidates: tuple[SignCandidate, ...] = (_sign(3, 1000, 2000, key="a"), _sign(4, 2040, 3000, key="b"))
+    baseline: TimelinePlan | None = plan_timeline(lines)
+
+    assert baseline is not None
+    assert reachable_signs(candidates, free_intervals(baseline), baseline.sample_rate) == candidates
 
 
 def test_a_sign_without_a_recording_is_missing() -> None:

@@ -33,8 +33,14 @@ __all__ = [
 SIGN_BREATH_MS: Final[int] = 200
 """Silence kept between a sign reading and any other reading on either side."""
 
+_RUN_GAP_MS: Final[int] = 500
+"""Longest gap between a sign leaving the screen and the next appearing for both to form one run of plates."""
+
 _SMART: Final[str] = "smart"
 """Sign narration mode that weighs every sign against the pause it would be read in."""
+
+_RUN_GOES_ON: Final[frozenset[str]] = frozenset({"read", "missing"})
+"""Decisions after which a run that has begun to be read goes on to its next plate."""
 
 type Interval = tuple[int, int | None]
 """Free narrator frames from a start up to an end, open when the reading may run on to the end of the file."""
@@ -117,8 +123,9 @@ def reachable_signs(
     """Return the candidates with free frames inside the span their reading may take."""
     return tuple(
         candidate
-        for candidate in candidates
-        if any(_overlap(interval, _area(candidate, sample_rate)) for interval in intervals)
+        for run in _runs(candidates)
+        for candidate in run
+        if any(_overlap(interval, _area(candidate, run[-1].end, sample_rate)) for interval in intervals)
     )
 
 
@@ -128,13 +135,13 @@ def select_signs(
     lines: tuple[NormalizedClip, ...],
     mode: str,
 ) -> SignSelection:
-    """Place sign readings greedily in sign order without moving a single spoken line."""
+    """Place sign readings in sign order without moving a spoken line, each run of plates read without gaps."""
     baseline: TimelinePlan | None = plan_timeline(lines)
     if baseline is None:
         return SignSelection((), tuple((candidate.group, "no_pause") for candidate in candidates), ())
     selector = _Selector(baseline, lines, mode)
-    for candidate in candidates:
-        selector.consider(candidate, clips.get(candidate.group))
+    for run in _runs(candidates):
+        selector.consider_run(run, clips)
     return SignSelection(tuple(selector.placements), tuple(selector.decisions), tuple(selector.margins))
 
 
@@ -164,25 +171,39 @@ class _Selector:
         self.decisions: list[tuple[int, str]] = []
         self.margins: list[tuple[int, float]] = []
 
-    def consider(self, candidate: SignCandidate, clip: NormalizedClip | None) -> None:
-        area: tuple[int, int] = _area(candidate, self._sample_rate)
+    def consider_run(self, run: Sequence[SignCandidate], clips: Mapping[int, NormalizedClip]) -> None:
+        """Read one run of plates in order; once begun, it goes on without lateness until a plate is left unread."""
+        run_end_ms: int = run[-1].end
+        begun: bool = False
+        stopped: bool = False
+        for candidate in run:
+            late_ms: float = math.inf if begun else run_end_ms
+            decision: str = (
+                "run" if stopped else self._consider(candidate, clips.get(candidate.group), run_end_ms, late_ms)
+            )
+            self.decisions.append((candidate.group, decision))
+            begun = begun or decision == "read"
+            stopped = begun and decision not in _RUN_GOES_ON
+
+    def _consider(self, candidate: SignCandidate, clip: NormalizedClip | None, run_end_ms: int, late_ms: float) -> str:
+        area: tuple[int, int] = _area(candidate, run_end_ms, self._sample_rate)
         if not any(_overlap(interval, area) for interval in self._intervals):
-            self.decisions.append((candidate.group, "no_pause"))
-            return
+            return "no_pause"
         if clip is None:
-            self.decisions.append((candidate.group, "missing"))
-            return
-        choice: tuple[int, int] | None = self._place(candidate, clip.frame_count, area)
-        if choice is None:
-            return
+            return "missing"
+        choice: tuple[int, int] | str = self._place(candidate, clip.frame_count, area, late_ms)
+        if isinstance(choice, str):
+            return choice
         index, start_ms = choice
         placed: NormalizedClip = self._timed(clip, start_ms)
         if not self._keeps_lines(placed):
-            self.decisions.append((candidate.group, "late"))
-            return
+            return "late"
         self._accept(candidate, placed, index)
+        return "read"
 
-    def _place(self, candidate: SignCandidate, frames: int, area: tuple[int, int]) -> tuple[int, int] | None:
+    def _place(
+        self, candidate: SignCandidate, frames: int, area: tuple[int, int], late_ms: float
+    ) -> tuple[int, int] | str:
         area_start, area_end = area
         fitted: bool = False
         best_margin: float | None = None
@@ -195,20 +216,19 @@ class _Selector:
             fitted = True
             if self._mode != _SMART:
                 return index, start_ms
-            margin: float = candidate.weight_for - self._against(candidate, frames, reading, end)
+            margin: float = candidate.weight_for - self._against(candidate, frames, reading, end, late_ms)
             best_margin = margin if best_margin is None else max(best_margin, margin)
             if margin >= SIGN_MARGIN:
                 self.margins.append((candidate.group, margin))
                 return index, start_ms
         if best_margin is not None:
             self.margins.append((candidate.group, best_margin))
-        self.decisions.append((candidate.group, "weight" if fitted else "no_pause"))
-        return None
+        return "weight" if fitted else "no_pause"
 
-    def _against(self, candidate: SignCandidate, frames: int, reading: int, end: int | None) -> float:
+    def _against(self, candidate: SignCandidate, frames: int, reading: int, end: int | None, late_ms: float) -> float:
         slack: float = math.inf if end is None else (end - reading - frames) / frames
         reading_ms: float = reading * 1000 / self._sample_rate
-        overrun_ms: float = (reading + frames) * 1000 / self._sample_rate - candidate.end
+        overrun_ms: float = (reading + frames) * 1000 / self._sample_rate - late_ms
         previous: float | None = self._last_read_ms.get(candidate.key)
         return place_weight_against(
             candidate.weight_against,
@@ -246,11 +266,20 @@ class _Selector:
         self._last_read_ms[candidate.key] = start * 1000 / self._sample_rate
         timed = placed.timed_clip
         self.placements.append(SignPlacement(candidate.group, timed.start_ms, timed.end_ms))
-        self.decisions.append((candidate.group, "read"))
 
 
-def _area(candidate: SignCandidate, sample_rate: int) -> tuple[int, int]:
-    return _frames(max(candidate.start, 0), sample_rate), _frames(max(candidate.end, 0) + SIGN_AFTER_MS, sample_rate)
+def _runs(candidates: Sequence[SignCandidate]) -> list[list[SignCandidate]]:
+    runs: list[list[SignCandidate]] = []
+    for candidate in candidates:
+        if runs and 0 <= candidate.start - runs[-1][-1].end <= _RUN_GAP_MS:
+            runs[-1].append(candidate)
+            continue
+        runs.append([candidate])
+    return runs
+
+
+def _area(candidate: SignCandidate, run_end_ms: int, sample_rate: int) -> tuple[int, int]:
+    return _frames(max(candidate.start, 0), sample_rate), _frames(max(run_end_ms, 0) + SIGN_AFTER_MS, sample_rate)
 
 
 def _overlap(interval: Interval, area: tuple[int, int]) -> bool:
