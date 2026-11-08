@@ -64,6 +64,20 @@ def test_mapping_missing_dates_never_use_local_date_fields() -> None:
     assert "1.5" in result.raw_episodes
 
 
+def test_mapping_bracketed_placeholder_titles_are_not_episode_titles() -> None:
+    raw: dict[str, Any] = {
+        "6": {"title": {"ja": "【呪縛】", "en": None, "x-jat": "[Jubaku]"}},
+        "7": {"title": {"en": "Curse", "x-jat": "[Jubaku]"}},
+        "8": {"title": {"en": "[Jubaku]", "x-jat": "Jubaku"}},
+        "9": {"title": {"en": "[Oshi no Ko] Part 2"}},
+        "S1": {"title": {"x-jat": "[Tokuten]"}},
+    }
+    result: AniZipMapping = parse_mapping({"mappings": {}, "episodes": raw})
+    assert [episode.title for episode in result.episodes] == [None, "Curse", "Jubaku", "[Oshi no Ko] Part 2"]
+    assert result.specials[0].title is None
+    assert result.raw_episodes == raw
+
+
 @pytest.mark.parametrize(
     "response",
     [httpx.Response(429), httpx.Response(500), httpx.Response(200, text="not json"), httpx.Response(200, json={})],

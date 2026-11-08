@@ -28,6 +28,9 @@ ANIZIP_URL: Final[str] = "https://api.ani.zip/mappings"
 _TIMEOUT_S: Final[float] = 20.0
 """Timeout for one mapping request."""
 
+_PLACEHOLDER_TITLE: Final[re.Pattern[str]] = re.compile(r"\[[^\[\]]*\]")
+"""Whole bracketed title a source shows before the episode gets its own."""
+
 
 class AniZipCatalog:
     """Fetch mappings through a caller-owned HTTP client."""
@@ -123,9 +126,10 @@ def _number(value: object) -> int | None:
 
 def _title(value: Mapping[str, Any]) -> str | None:
     title: object = value.get("title")
-    if isinstance(title, Mapping):
-        title = title.get("en") or title.get("x-jat")
-    return title if isinstance(title, str) and title else None
+    names: tuple[object, ...] = (title.get("en"), title.get("x-jat")) if isinstance(title, Mapping) else (title,)
+    return next(
+        (name for name in names if isinstance(name, str) and name and not _PLACEHOLDER_TITLE.fullmatch(name)), None
+    )
 
 
 def _air_date(value: object) -> datetime | None:
