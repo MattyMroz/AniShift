@@ -4025,6 +4025,68 @@ def test_a_downloaded_episode_row_carries_the_origin_of_its_order(
     assert [(row["stage"], row["reason"], row["automatic"]) for row in rows] == [("waiting", "preparing", automatic)]
 
 
+@pytest.mark.parametrize(("started", "action"), [(False, None), (False, "stop"), (True, "stop"), (True, "resume")])
+def test_a_download_row_carries_whether_its_content_started_and_the_requested_action(
+    tmp_path: Path, *, started: bool, action: str | None
+) -> None:
+    service, store, _ = _library(tmp_path)
+    item: AcquisitionConfirmation = AcquisitionConfirmation(
+        "operation-9",
+        "9",
+        "",
+        ("09.mkv",),
+        AcquisitionState.ACCEPTED,
+        RequestOrigin.USER,
+        None,
+        "9",
+        _MOMENT.isoformat(),
+        requested_action=action,
+        file_layout=((0, "09.mkv", 4),),
+        content_started=started,
+    )
+    store.save(WatchState(acquisitions=(item,)))
+    owner: AutomationOwner = _owner(service, store)
+
+    rows: list[dict[str, object]] = list(owner._download_materials(item).values())
+
+    assert [(row["stage"], row["content_started"], row["action"]) for row in rows] == [("download", started, action)]
+
+
+@pytest.mark.parametrize(("selected", "applied", "started"), [(2, 1, False), (2, 2, True)])
+def test_a_selective_download_row_is_unstarted_until_its_newest_selection_is_confirmed(
+    tmp_path: Path, selected: int, applied: int, *, started: bool
+) -> None:
+    service, store, _ = _library(tmp_path)
+    choice: EpisodeChoice = EpisodeChoice(
+        anilist_id=1,
+        number=9,
+        reference=TorrentioReference("c" * 40, None, "Neko - 09.mkv", "[Group] Neko"),
+        target={"local_episode": 9},
+        verdict=IdentityVerdict.MATCH,
+        reason="Specific work title and local episode match",
+    )
+    assignment: EpisodeAssignment = EpisodeAssignment(
+        "admission",
+        _MOMENT.isoformat(),
+        AdmissionSource.MANUAL,
+        choice,
+        file_map="map",
+        files=((0, "Neko - 09.mkv", 4),),
+    )
+    confirmation: AcquisitionConfirmation = replace(
+        _accepted_transfer("c" * 40, started=True, origin=RequestOrigin.USER),
+        assignments=(assignment,),
+        selection_revision=selected,
+        applied_revision=applied,
+    )
+    store.save(WatchState(acquisitions=(confirmation,)))
+    owner: AutomationOwner = _owner(service, store)
+
+    rows: list[dict[str, object]] = list(owner._download_materials(confirmation).values())
+
+    assert [(row["stage"], row["content_started"], row["action"]) for row in rows] == [("download", started, None)]
+
+
 def test_a_transfer_whose_names_are_not_reserved_yet_defers_the_resume_a_client_asked_for(tmp_path: Path) -> None:
     service, store, _ = _library(tmp_path)
     network: _TorrentNetwork = _TorrentNetwork()

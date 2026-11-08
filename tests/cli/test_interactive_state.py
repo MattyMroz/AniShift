@@ -245,6 +245,61 @@ def test_processing_toggles_one_download_with_w(
 
 
 @pytest.mark.parametrize(
+    ("started", "action", "paused", "label", "hint", "command"),
+    [
+        (False, None, False, "Wybieram", None, None),
+        (False, "resume", False, "Wybieram", None, None),
+        (False, None, True, "Wstrzymano", None, None),
+        (False, "stop", False, "Wstrzymano", "W wznów", "resume"),
+        (True, "stop", False, "Wstrzymano", "W wznów", "resume"),
+        (True, None, False, "Wstrzymano", "W wznów", "resume"),
+    ],
+)
+def test_processing_tells_a_download_the_owner_has_not_started_from_a_stopped_one(  # noqa: PLR0913
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    started: bool,
+    action: str | None,
+    paused: bool,
+    label: str,
+    hint: str | None,
+    command: str | None,
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
+    controller.show_processing()
+    controller._connected = True
+    controller._snapshot = {
+        "paused": paused,
+        "materials": [
+            {
+                "material_id": "download",
+                "info_hash": "hash",
+                "stage": "download",
+                "acquisition_state": "accepted",
+                "state": "stoppedDL",
+                "content_started": started,
+                "action": action,
+                "name": "Episode.mkv",
+            }
+        ],
+    }
+    calls: list[object] = []
+    monkeypatch.setattr(controller, "_command", lambda *args: calls.append(args))
+    try:
+        frame: str = controller.render(120, 40).plain
+        assert label in frame
+        assert ("Wstrzymano" in frame) is (label == "Wstrzymano")
+        assert ("W wznów" in frame) is (hint is not None)
+        assert "W wstrzymaj" not in frame
+        controller.handle_key("text:w")
+        assert calls == ([] if command is None else [("transfer", {"info_hash": "hash", "action": command})])
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+
+@pytest.mark.parametrize(
     ("state", "acquisition_state"),
     [
         ("metaDL", "accepted"),

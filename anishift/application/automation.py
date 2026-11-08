@@ -2151,7 +2151,8 @@ class AutomationOwner:
             "info_hash": acquisition.info_hash,
             "acquisition_id": acquisition.operation_id,
             "acquisition_state": acquisition.state.value,
-            "content_started": acquisition.content_started,
+            "content_started": _content_started(acquisition),
+            "action": acquisition.requested_action,
             "stage": "download",
             "state": None if transfer is None else transfer.state,
             "active": active and acquisition.state is AcquisitionState.ACCEPTED and not acquisition.problem,
@@ -5446,8 +5447,7 @@ class AutomationOwner:
             return "processing_failed", reason or EpisodeReason.TRANSFER_FAILED, None
         if downloaded or transfer.state is AcquisitionState.COMPLETE:
             return "downloaded", reason, None
-        started: bool = transfer.content_started and (not transfer.selective or _selection_confirmed(transfer))
-        return "downloading" if started else "ordered", reason, None
+        return "downloading" if _content_started(transfer) else "ordered", reason, None
 
     def _legacy_episode_status(self, key: EpisodeKey, batches: Mapping[EpisodeKey, str] | None) -> EpisodeStatus:
         records: tuple[AcquisitionConfirmation, ...] = self._legacy_episode_records(key)
@@ -8939,6 +8939,11 @@ def _selection_confirmed(item: AcquisitionConfirmation) -> bool:
         and item.applied_revision == item.selection_revision
         and all(assignment.mapped for assignment in item.active_assignments)
     )
+
+
+def _content_started(item: AcquisitionConfirmation) -> bool:
+    """Answer whether the owner started this transfer's content for its current file selection."""
+    return item.content_started and (not item.selective or _selection_confirmed(item))
 
 
 def _restorable(item: AcquisitionConfirmation) -> bool:
