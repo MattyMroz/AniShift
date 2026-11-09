@@ -200,7 +200,14 @@ def release_rows(
             note=f"z paczki: {item.stream.release}" if item.pack and _pack_file(item) else "",
         )
         for item in candidates
-    ) or (AnimeRow("empty", "Szukam…" if searching else "Brak wydania", eligible=False),)
+    ) or (
+        AnimeRow(
+            "empty",
+            "Szukam…" if searching else "Brak wydania",
+            eligible=False,
+            refusal_text="Trwa wyszukiwanie wydań" if searching else "Brak wydania do pobrania",
+        ),
+    )
 
 
 def suggested_position(offer: EpisodeOffer | None, candidates: tuple[RankedCandidate, ...]) -> int:
