@@ -1609,7 +1609,7 @@ class StateController:
         for item in items:
             if item.get("stage") == "processing":
                 status: str | None = (
-                    "Brak odczytu" if not self._connected else ("Wstrzymano" if held(self._snapshot, item) else None)
+                    "Brak połączenia" if not self._connected else ("Wstrzymane" if held(self._snapshot, item) else None)
                 )
                 line: Text = self._runs[str(item["run_id"])][1].render_group(
                     str(item["group_id"]), columns, status=status, names=names

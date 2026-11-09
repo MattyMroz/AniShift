@@ -40,7 +40,7 @@ _COMPLETE: Final[int] = 100
 _MIN_DESCRIPTION_COLUMNS: Final[int] = 5
 """Minimum description space retained beside the full progress fields."""
 
-_PHASE_COLUMNS: Final[int] = 14
+_PHASE_COLUMNS: Final[int] = 15
 """Aligned stage column separating the operation from the source filename."""
 
 _DESCRIPTION_RESERVE_COLUMNS: Final[int] = 35
@@ -82,32 +82,26 @@ _DETERMINATE_STAGE: Final[dict[TaskKind, str]] = {
 """Task kinds owning measurable public stages."""
 
 _ACTIVE_LABEL: Final[dict[str, str]] = {
-    "extracting": "Ekstrakcja",
-    "translating": "Tłumaczenie",
-    "tts": "Synteza mowy",
-    "audio": "Dźwięk",
-    "composing": "Kompozycja",
+    "extracting": "Wyodrębniam",
+    "translating": "Tłumaczę",
+    "tts": "Nagrywam",
+    "audio": "Miksuję",
+    "composing": "Składam",
     "cover": "Okładka",
-    "publishing": "Zapis",
+    "publishing": "Zapisuję",
 }
 """Labels shown while measurable stages are active."""
 
-_FALLBACK_LABEL: Final[str] = "Przetwarzanie"
+_FALLBACK_LABEL: Final[str] = "Przetwarzam"
 """Label of an active stage without its own entry."""
 
-_COMPLETE_LABEL: Final[dict[str, str]] = {
-    "extracting": "Wyodrębniono",
-    "translating": "Przetłumaczono",
-}
-"""Labels shown after extraction and translation complete."""
-
 _AUDIO_LABEL: Final[dict[str, str]] = {
-    "normalizing": "Normalizacja",
-    "timeline": "Oś czasu",
-    "mixing": "Miksowanie",
-    "narration_resume": "Wznowienie",
-    "skipped_no_spoken": "Brak mowy",
-    "wrapping": "Lektor",
+    "normalizing": "Miksuję",
+    "timeline": "Miksuję",
+    "mixing": "Miksuję",
+    "narration_resume": "Miksuję",
+    "skipped_no_spoken": "Bez mowy",
+    "wrapping": "Miksuję",
 }
 """Labels for coarse audio callbacks."""
 
@@ -412,7 +406,7 @@ class RichRunProgress:
         """Keep background publication from hiding active media work."""
         candidates: list[str] = [task_id for task_id in state.active_tasks if _stage_for(self._task_kinds.get(task_id))]
         if not candidates:
-            state.description = _description(state.label, "Przygotowanie")
+            state.description = _description(state.label, "Czekam")
             state.determinate = False
             return True
         primary: list[str] = [
@@ -458,10 +452,7 @@ class RichRunProgress:
             state.completed = max(state.completed, event.progress_percent)
         else:
             state.completed = event.progress_percent
-        phase: str = _active_label(stage)
-        if stage in _COMPLETE_LABEL and _stage_complete(group_id, stage, state, self._stage_tasks):
-            phase = _COMPLETE_LABEL[stage]
-        state.description = _description(state.label, phase)
+        state.description = _description(state.label, _active_label(stage))
         state.style = None
         state.determinate = True
         return True
@@ -502,10 +493,7 @@ class RichRunProgress:
         if stage is None or _STAGE_RANK[stage] != state.stage_rank:
             return False
         state.completed = _COMPLETE
-        phase: str = _active_label(stage)
-        if _stage_complete(group_id, stage, state, self._stage_tasks):
-            phase = _COMPLETE_LABEL.get(stage, phase)
-        state.description = _description(state.label, phase)
+        state.description = _description(state.label, _active_label(stage))
         state.style = None
         state.determinate = True
         return True
@@ -709,17 +697,6 @@ def _index_stage_tasks(plan: ExecutionPlan | PlanPreview) -> dict[tuple[str, str
         if stage is not None:
             grouped.setdefault((task.group_id, stage), []).append(task.task_id)
     return {key: tuple(task_ids) for key, task_ids in grouped.items()}
-
-
-def _stage_complete(
-    group_id: str,
-    stage: str,
-    state: _FileState,
-    stage_tasks: dict[tuple[str, str], tuple[str, ...]],
-) -> bool:
-    """Return whether every task behind one public stage completed."""
-    task_ids: tuple[str, ...] = stage_tasks.get((group_id, stage), ())
-    return bool(task_ids) and all(state.progress_by_task.get(task_id, 0) >= _COMPLETE for task_id in task_ids)
 
 
 def _source_label(group: InspectedSourceGroup) -> str:
