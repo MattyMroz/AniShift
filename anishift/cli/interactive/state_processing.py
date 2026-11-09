@@ -105,12 +105,12 @@ _RETRY_LABELS: Final[dict[str, str]] = {
 """Only row of a local or remote retry proposal, by the owner's retry route."""
 
 _TRANSFER_LABELS: Final[dict[str, str]] = {
-    "queuedDL": "Czekam",
+    "queuedDL": "W kolejce",
     "uploading": "Pobrane",
     "stalledUP": "Pobrane",
     "forcedUP": "Pobrane",
     "queuedUP": "Pobrane",
-    "moving": "Przenoszę",
+    "moving": "Przenoszenie",
 }
 """Labels of the remaining torrent client states of a recorded download."""
 
@@ -205,25 +205,25 @@ def download_progress(  # noqa: PLR0911
     if item.get("attention"):
         return _READINESS_LABELS.get(str(item.get("reason")), "Do sprawdzenia"), None
     if item.get("stage") == "waiting":
-        return ("Wstrzymane" if held(snapshot, item) else "Czekam"), None
+        return ("Wstrzymane" if held(snapshot, item) else "Przygotowanie"), None
     if item.get("problem"):
         return _DOWNLOAD_PROBLEMS.get(str(item.get("problem")), "Wymaga uwagi"), None
     if item.get("reason") == EpisodeReason.WAITING_PREVIOUS_TRANSFER:
-        return "Czekam", None
+        return "W kolejce", None
     if not connected or snapshot.get("transfers_problem"):
         return "Brak połączenia", None
     state: object = item.get("state")
     if state in _STOPPED_STATES and item.get("acquisition_state") != "pending_send":
         return _stopped_label(item, snapshot), measured
     if state in {"metaDL", "forcedMetaDL"} or item.get("acquisition_state") == "pending_send":
-        return "Łączę", measured
+        return "Łączenie", measured
     if state is None:
-        return "Łączę", None
+        return "Łączenie", None
     if state in {"error", "missingFiles"}:
         return "Błąd torrenta", None
     if state in {"downloading", "forcedDL", "stalledDL"}:
-        return ("Łączę" if state == "stalledDL" else "Pobieram"), measured
-    return _TRANSFER_LABELS.get(str(state), "Sprawdzam"), measured
+        return "Pobieranie", measured
+    return _TRANSFER_LABELS.get(str(state), "Sprawdzanie"), measured
 
 
 def failed_group(item: Mapping[str, object]) -> str | None:
@@ -330,7 +330,7 @@ def _stopped_label(item: Mapping[str, object], snapshot: Mapping[str, object]) -
         return "Wstrzymane"
     if item.get("state") in {"pausedUP", "stoppedUP"}:
         return "Pobrane"
-    return "Wybieram" if _unstarted(item) else "Łączę"
+    return "Wybór pliku" if _unstarted(item) else "Pobieranie"
 
 
 def _unstarted(item: Mapping[str, object]) -> bool:

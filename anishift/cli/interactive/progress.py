@@ -82,26 +82,26 @@ _DETERMINATE_STAGE: Final[dict[TaskKind, str]] = {
 """Task kinds owning measurable public stages."""
 
 _ACTIVE_LABEL: Final[dict[str, str]] = {
-    "extracting": "Wyodrębniam",
-    "translating": "Tłumaczę",
-    "tts": "Nagrywam",
-    "audio": "Miksuję",
-    "composing": "Składam",
+    "extracting": "Wyodrębnianie",
+    "translating": "Tłumaczenie",
+    "tts": "Nagrywanie",
+    "audio": "Miksowanie",
+    "composing": "Składanie",
     "cover": "Okładka",
-    "publishing": "Zapisuję",
+    "publishing": "Zapisywanie",
 }
 """Labels shown while measurable stages are active."""
 
-_FALLBACK_LABEL: Final[str] = "Przetwarzam"
+_FALLBACK_LABEL: Final[str] = "Przetwarzanie"
 """Label of an active stage without its own entry."""
 
 _AUDIO_LABEL: Final[dict[str, str]] = {
-    "normalizing": "Miksuję",
-    "timeline": "Miksuję",
-    "mixing": "Miksuję",
-    "narration_resume": "Miksuję",
-    "skipped_no_spoken": "Bez mowy",
-    "wrapping": "Miksuję",
+    "normalizing": "Miksowanie",
+    "timeline": "Miksowanie",
+    "mixing": "Miksowanie",
+    "narration_resume": "Miksowanie",
+    "skipped_no_spoken": "Brak mowy",
+    "wrapping": "Miksowanie",
 }
 """Labels for coarse audio callbacks."""
 
@@ -406,7 +406,7 @@ class RichRunProgress:
         """Keep background publication from hiding active media work."""
         candidates: list[str] = [task_id for task_id in state.active_tasks if _stage_for(self._task_kinds.get(task_id))]
         if not candidates:
-            state.description = _description(state.label, "Czekam")
+            state.description = _description(state.label, "Przygotowanie")
             state.determinate = False
             return True
         primary: list[str] = [
