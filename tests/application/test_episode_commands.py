@@ -826,6 +826,9 @@ def test_a_historical_batch_receipt_drops_the_source_failure_and_keeps_the_owner
         (("source_failed", "no_suggestion"), ("not_ordered", None)),
         (("episode_not_aired",), ("not_ordered", None)),
         (("acquisition_unavailable",), ("not_ordered", None)),
+        (("admitted",), ("not_ordered", None)),
+        (("episode_admitted",), ("not_ordered", None)),
+        (("pack_in_progress", "admitted"), ("not_ordered", None)),
     ],
 )
 def test_the_latest_recorded_batch_result_decides_an_unassigned_episode(
@@ -1680,8 +1683,21 @@ def test_missing_or_cancelled_episode_releases_only_confirmed_managed_orders(
     streams: _Streams = _Streams()
     streams.answers = {(41024, 4): (_stream(4),)}
     service._stream_source = streams
+    key: EpisodeKey = EpisodeKey(_S1, 4)
+    ordered: EpisodeBatch = EpisodeBatch(
+        "ordered",
+        "old",
+        (key,),
+        "completed",
+        (EpisodeResult(key, EpisodeReason.ADMITTED, "old-admission", current.operation_id),),
+    )
+    receipt: CommandReceipt = CommandReceipt(
+        "ordered", current.updated_at, {"kind": "episode_download", "batch": json.dumps(encode_view(ordered))}
+    )
     store: WatchStateStore = WatchStateStore(tmp_path / "state.json")
-    store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(current,)))
+    store.save(
+        WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(current,), command_receipts=(receipt,))
+    )
     with _running(service, store) as owner:
         if outcome == "cancel":
             assert owner.handle(_request("transfer", {"info_hash": current.info_hash, "action": "cancel"})).ok
@@ -1695,7 +1711,8 @@ def test_missing_or_cancelled_episode_releases_only_confirmed_managed_orders(
         if outcome != "cancel":
             assert owner.state.acquisitions[0].problem == "removed_from_client"
         response: ControlResponse = owner.handle(_request("episode_states", {"anilist_id": _S1, "numbers": [4]}))
-        assert decode_view(EpisodeStatus, cast("list[object]", response.result["items"])[0]).state == "not_ordered"
+        status: EpisodeStatus = decode_view(EpisodeStatus, cast("list[object]", response.result["items"])[0])
+        assert (status.state, status.reason) == ("not_ordered", None)
         assert _download(owner, (4,)).ok
         _until(lambda: len(owner.state.acquisitions) == 2)
         assert owner.state.acquisitions[-1].operation_id != current.operation_id

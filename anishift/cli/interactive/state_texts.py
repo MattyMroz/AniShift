@@ -137,7 +137,7 @@ LIBRARY_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
 """Polish explanations keyed by the owner's library reason codes."""
 
 
-RESTORING: Final[str] = "Przywracam…"
+RESTORING: Final[str] = "Przywracam"
 """State of a deleted set's row from Ctrl+Z until the owner finishes bringing its files back."""
 
 
