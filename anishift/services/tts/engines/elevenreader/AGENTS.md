@@ -122,8 +122,10 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
   `test_reads_listing_live_account_finds_and_deletes_document_without_known_id`.
 - `char_count` z odpowiedzi uploadu jest obowiązkowy; bez niego próba kończy się błędem przejściowym.
 - Serwer potrafi nie wypowiedzieć części (np. strzępu szyldu `j g`): jej znaki mają zerowy czas, a `part_spans` zwraca
-  dla niej pusty `PartTiming` zamiast błędu, więc odpada tylko ta kwestia. Inna liczba lub tekst części i odwrócony
-  czas pozostają `TtsClipValidationError` całego nagrania.
+  dla niej pusty `PartTiming` zamiast błędu, więc odpada tylko ta kwestia. Inna liczba części i odwrócony czas
+  pozostają `TtsClipValidationError` całego nagrania. Tekst części porównuje się tylko po słowach (`\w+`, bez
+  wielkości liter): różnica w interpunkcji, myślnikach i odstępach przechodzi. Inne słowa to trwały
+  `TtsUnsupportedError` z numerem części w `details`, bez ponowień, bo ten sam tekst da ten sam wynik.
 - Serwer potrafi też oddać porcję z pełnym tekstem i alignmentem, ale prawie bez dźwięku (ok. 1 ms na znak, bez
   `notice`). `StreamRecorder` oznacza porcję jako
   `silent`, gdy ma co najmniej `SILENT_CHUNK_MIN_LETTERS` liter (`\w` po usunięciu tagów `<...>`) i mniej niż
