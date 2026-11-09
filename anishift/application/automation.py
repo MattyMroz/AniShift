@@ -551,6 +551,9 @@ _LOOKUP_REFUSALS: Final[frozenset[str]] = frozenset(
 )
 """Batch refusals that describe only one past release lookup, so episode states never show them."""
 
+_ADMISSION_RESULTS: Final[frozenset[str]] = frozenset({EpisodeReason.ADMITTED, AdmissionConflict.ADMITTED})
+"""Batch results naming an admission, which only the episode's own retained admission record may still state."""
+
 _SUBSCRIPTION_PROVIDERS: Final[tuple[str, ...]] = ("anilist", "anizip", "torrentio")
 """Providers whose cooldown postpones a subscription check instead of counting as a source failure."""
 
@@ -5117,7 +5120,9 @@ class AutomationOwner:
         except ValueError, TypeError:
             return _invalid("Episode states require 1-100 unique positive numbers of one entry")
         batches: Mapping[EpisodeKey, str] = {
-            key: reason for key, reason in self._batch_reasons().items() if reason not in _LOOKUP_REFUSALS
+            key: reason
+            for key, reason in self._batch_reasons().items()
+            if reason not in _LOOKUP_REFUSALS and reason not in _ADMISSION_RESULTS
         }
         return ControlResponse.succeeded(
             {"items": [encode_view(self._episode_status(key, batches=batches)) for key in keys]}
