@@ -252,7 +252,8 @@ _GROUP_ENCODE_RE: Final[re.Pattern[str]] = re.compile(r"(?i)(?<![a-z0-9])x26[45]
 """Encoder markers of a group's own compression, which a source-file marker cannot outweigh."""
 
 _TRANSCODE_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?i)(?<![a-z0-9])(?:WEB[ ._-]?Rip|BD[ ._-]?Rip|x26[45]|HEVC|H[ ._]?265|AV1|10[ ._-]?bits?|Hi10P?)(?![a-z0-9])"
+    r"(?i)(?<![a-z0-9])(?:WEB[ ._-]?Rip|BD[ ._-]?Rip|x26[45]|HEVC|H[ ._]?265|AV1|10[ ._-]?bits?|Hi(?:10|444)P?"
+    r"|Ma10p|Opus|Encode)(?![a-z0-9])"
 )
 """Compression markers of a transcode, read only where no source-file marker applies."""
 
@@ -318,17 +319,13 @@ def class_key(traits: ReleaseTraits) -> tuple[int, ...]:
 
 
 def order_tail(traits: ReleaseTraits, quality: float) -> tuple[int, ...]:
-    """Order a small file last, then rounded quality, bitrate, group and seeds."""
+    """Order a small file last, quality then bitrate (reversed for a preferred Blu-ray), group, then seeds."""
     seeders: int = -1 if traits.seeders is None else traits.seeders
     group: int = GROUP_ORDER.index(traits.group) if traits.group in GROUP_ORDER else len(GROUP_ORDER)
-    return (
-        traits.small,
-        -round(quality),
-        traits.size_rank is None,
-        traits.size_rank or 0,
-        group,
-        -seeders,
-    )
+    points: tuple[int, ...] = (-round(quality),)
+    bitrate: tuple[int, ...] = (traits.size_rank is None, traits.size_rank or 0)
+    measures: tuple[int, ...] = (*bitrate, *points) if traits.bluray_preferred else (*points, *bitrate)
+    return (traits.small, *measures, group, -seeders)
 
 
 def untouched_bluray(traits: ReleaseTraits) -> bool:

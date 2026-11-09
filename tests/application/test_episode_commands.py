@@ -2425,7 +2425,7 @@ def test_repeat_keeps_an_alternative_file_of_the_same_pack_and_excludes_index_on
         alternative: StreamCandidate = replace(original, file_name="different-video.mkv", file_index=7)
         streams.answers[(41024, 4)] = (replace(original, file_index=99), alternative)
         view: EpisodeOfferView = _offer(owner, repeat=True)
-        assert tuple(item.stream for item in view.offer.candidates) == (alternative,)
+        assert tuple(replace(item.stream, file_size=None) for item in view.offer.candidates) == (alternative,)
         assert view.unknown_previous
         assert _choose(owner, view, confirm=True).ok
         assert len(owner.state.acquisitions) == 1

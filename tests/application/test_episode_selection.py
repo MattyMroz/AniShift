@@ -18,6 +18,7 @@ from anishift.application.episode_releases import (
     ReleaseFile,
     TsukiHimeFiles,
     merge_releases,
+    size_bytes,
 )
 from anishift.application.episode_selection import (
     _ABSOLUTE_ONLY,
@@ -51,7 +52,6 @@ from anishift.application.episode_selection import (
     rank_offer,
     representative,
     season_dates,
-    size_bytes,
     streams_releases,
     suggestion,
     visible,
@@ -751,7 +751,7 @@ def test_rank_torrentio_equivalent_to_conf_model() -> None:
         if row.stream.file_name == "[Trix] Tensei Shitara Slime Datta Ken - 04.mkv"
         and row.stream.path == streams[renamed].path
     )
-    assert renamed_row.traits == _rank(target, [original])[0].traits
+    assert replace(renamed_row.traits, size_rank=None) == replace(_rank(target, [original])[0].traits, size_rank=None)
     assert renamed_row.traits.resolution == 1080
 
 
@@ -1550,9 +1550,12 @@ def test_a_small_unmarked_file_follows_the_full_files_of_its_class_and_never_lea
     )
     small: StreamCandidate = _stream("[Gremlin] Star Garden - 05 [1080p].mkv", size_text="398 MiB", seeders=90)
     ranked: tuple[RankedCandidate, ...] = _rank(_target(), [small, full])
-    assert [(row.stream, row.traits.small) for row in ranked] == [(full, False), (small, True)]
+    assert [(row.stream.info_hash, row.traits.small) for row in ranked] == [
+        (full.info_hash, False),
+        (small.info_hash, True),
+    ]
     assert suggestion(ranked, numbering=True) == (0, False)
-    assert [row.stream for row in visible(ranked)] == [full, small]
+    assert [row.stream.info_hash for row in visible(ranked)] == [full.info_hash, small.info_hash]
     assert suggestion(ranked[1:], numbering=True) == (0, False)
 
 
@@ -1567,7 +1570,7 @@ def test_only_an_unmarked_file_below_half_the_median_seeded_matching_web_origina
     unmarked: StreamCandidate = _stream("[Raw] Star Garden - 05 [1080p].mkv", size_text="700 MiB", seeders=50)
     tiny: StreamCandidate = _stream("[Tiny] Star Garden - 05 [1080p].mkv", size_text="400 MiB", seeders=50)
     ranked: tuple[RankedCandidate, ...] = _rank(_target(), [*web, weak, remux, encode, small_web, unmarked, tiny])
-    assert {row.stream for row in ranked if row.traits.small} == {tiny}
+    assert {row.stream.info_hash for row in ranked if row.traits.small} == {tiny.info_hash}
 
 
 def test_a_season_batch_sets_no_size_reference_for_single_episodes() -> None:
@@ -1780,6 +1783,15 @@ def test_the_bluray_preference_suggests_a_seeded_remux_but_keeps_resolution_and_
         "Star Garden S01E05 1080p BluRay REMUX AVC FLAC-Weak",
         "Star Garden S01E05 2160p BluRay REMUX HEVC-Uhd",
     ]
+
+
+def test_the_bluray_preference_puts_the_higher_bitrate_disc_first_even_against_higher_quality() -> None:
+    small: StreamCandidate = _listed("[Salieri] Star Garden - 05 (BD 1080p)", "1.5 GiB", 60)
+    large: StreamCandidate = _listed("Star Garden S01E05 1080p BluRay REMUX AVC FLAC-Disc", "7 GiB", 25, english=False)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [small, large])
+    offer: EpisodeOffer = EpisodeOffer(EpisodeKey(1, 5), ranked, 0, datetime(2026, 1, 1, tzinfo=UTC), {})
+    assert ranked[0].stream.release == small.release
+    assert [row.stream.release for row in rank_offer(offer, bluray=True).candidates] == [large.release, small.release]
 
 
 @pytest.mark.parametrize(

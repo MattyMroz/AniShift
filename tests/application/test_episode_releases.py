@@ -199,6 +199,14 @@ def test_merge_releases_torrentio_file_is_not_listing() -> None:
 
 
 @pytest.mark.unit
+def test_merge_releases_torrentio_file_takes_the_size_torrentio_shows_and_a_listing_keeps_its_own() -> None:
+    stream: StreamCandidate = replace(_STREAM, file_name="01.mkv", size_text="1.5 GiB")
+    assert _merge((stream,))[0].files[0].size == 1_610_612_736
+    listing: TsukiHimeFiles = TsukiHimeFiles((ListedFile("Folder/01.mkv", 100),))
+    assert _merge((stream,), {_HASH: listing})[0].files[0].size == 100
+
+
+@pytest.mark.unit
 def test_merge_releases_does_not_invent_file_from_release_or_index() -> None:
     release: EpisodeRelease = _merge((replace(_STREAM, release="Example - 01.mkv", file_index=0),))[0]
     assert release.files == ()

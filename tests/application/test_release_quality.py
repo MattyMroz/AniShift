@@ -612,6 +612,11 @@ def test_bluray_minus_ten(marker: str) -> None:
         ("Example S01E01 1080p BluRay x264-Group", False),
         ("[Group] Example - 01 [BD 1080p HEVC 10bit]", False),
         ("Example S01E01 1080p BluRay REMUX x265-Group", False),
+        ("[RedDeadProject] Spy x Family - Season 1 Part 1 - [JPN Blu-ray] [Encode] [Dual Audio] [V2]", False),
+        ("[Cifer] Sousou no Frieren S1 [BD 1080p Opus]", False),
+        ("[Cifer] Sousou no Frieren S1 - 01 [BD 1080P Ma10p]", False),
+        ("[SCP-2223] your name. [UHD Blu-ray 1080p Hi444 AAC 5.1]", False),
+        ("[PMR] Frieren (BD Remux 1080p AVC FLAC AAC) [Dual Audio]", True),
         ("[Group] Example - 01 [1080p WEB-DL]", False),
     ],
 )

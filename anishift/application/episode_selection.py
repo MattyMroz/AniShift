@@ -22,7 +22,13 @@ from anishift.application.episode_identity import (
     identity_evidence,
     is_conflict,
 )
-from anishift.application.episode_releases import NAME_PRIORITY, EpisodeRelease, ReleaseFile, merge_releases
+from anishift.application.episode_releases import (
+    NAME_PRIORITY,
+    EpisodeRelease,
+    ReleaseFile,
+    merge_releases,
+    size_bytes,
+)
 from anishift.application.release_quality import (
     Origin,
     ReleaseTraits,
@@ -72,7 +78,6 @@ __all__ = [
     "rank_offer",
     "representative",
     "season_dates",
-    "size_bytes",
     "streams_releases",
     "suggestion",
     "visible",
@@ -136,12 +141,6 @@ SMALL_SHARE: Final[float] = 0.5
 
 SIZE_GROUP_SHARE: Final[float] = 0.95
 """Share of the largest file of a size group down to which another file of its resolution ties on bitrate."""
-
-_SIZE: Final[re.Pattern[str]] = re.compile(r"(?i)(\d+(?:[.,]\d+)?)\s*([KMGT])(i?)B\b")
-"""Read a human size such as ``1.4 GiB`` or ``395.9 MB``."""
-
-_SIZE_POWERS: Final[Mapping[str, int]] = {"K": 1, "M": 2, "G": 3, "T": 4}
-"""Power of the unit base each size prefix stands for."""
 
 _CONTAINER: Final[re.Pattern[str]] = re.compile(r"[^/\\]\.([^\s./\\()\[\]{}]+)$")
 """Final suffix of the selected file name; a dot followed by spaces or brackets, as in ``(TrueHD 5.1)``, is not one."""
@@ -650,15 +649,6 @@ def _suggestible(candidate: RankedCandidate) -> bool:
         and candidate.supported is not False
         and not low_transcode(candidate.traits)
     )
-
-
-def size_bytes(text: str) -> int | None:
-    """Return the bytes a human size names, ``GiB`` on base 1024 and ``GB`` on base 1000, or None without one."""
-    found: re.Match[str] | None = _SIZE.search(text)
-    if found is None:
-        return None
-    base: int = 1024 if found.group(3) else 1000
-    return int(float(found.group(1).replace(",", ".")) * base ** _SIZE_POWERS[found.group(2).upper()])
 
 
 def visible(candidates: Sequence[RankedCandidate], keep: int | None = None) -> tuple[RankedCandidate, ...]:

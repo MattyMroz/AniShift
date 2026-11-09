@@ -31,6 +31,7 @@ __all__ = [
     "info_hash_hex",
     "is_pack",
     "merge_releases",
+    "size_bytes",
 ]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -43,6 +44,12 @@ NAME_PRIORITY: Final[tuple[SourceName, ...]] = ("tsukihime", "nyaa", "nekobt", "
 
 _INFLATED_SEEDS: Final[SourceName] = "knaben"
 """Source whose cached seed counts run high, used only when no other source reports seeders."""
+
+_SIZE: Final[re.Pattern[str]] = re.compile(r"(?i)(\d+(?:[.,]\d+)?)\s*([KMGT])(i?)B\b")
+"""Read a human size such as ``1.4 GiB`` or ``395.9 MB``."""
+
+_SIZE_POWERS: Final[Mapping[str, int]] = {"K": 1, "M": 2, "G": 3, "T": 4}
+"""Power of the unit base each size prefix stands for."""
 
 _POLISH_FLAG: Final[str] = "\U0001f1f5\U0001f1f1"
 """Torrentio Polish language flag scoped to its known file."""
@@ -129,6 +136,15 @@ def info_hash_hex(value: str) -> str | None:
     if _BASE32_HASH.fullmatch(value) is None:
         return None
     return base64.b32decode(value.upper()).hex()
+
+
+def size_bytes(text: str) -> int | None:
+    """Return the bytes a human size names, ``GiB`` on base 1024 and ``GB`` on base 1000, or None without one."""
+    found: re.Match[str] | None = _SIZE.search(text)
+    if found is None:
+        return None
+    base: int = 1024 if found.group(3) else 1000
+    return int(float(found.group(1).replace(",", ".")) * base ** _SIZE_POWERS[found.group(2).upper()])
 
 
 def is_pack(release: EpisodeRelease, *, pack_name: Callable[[str], bool]) -> bool:
@@ -240,7 +256,11 @@ def _attach_torrentio_file(files: list[ReleaseFile], stream: StreamCandidate) ->
         )
         return files[index]
     selected: ReleaseFile = ReleaseFile(
-        stream.path, stream.file_name, None, from_listing=False, file_index=stream.file_index
+        stream.path,
+        stream.file_name,
+        size_bytes(stream.size_text or ""),
+        from_listing=False,
+        file_index=stream.file_index,
     )
     if selected not in files:
         files.append(selected)

@@ -26,6 +26,9 @@ TORRENTIO_URL: Final[str] = "https://torrentio.strem.fun"
 _TIMEOUT_S: Final[float] = 20.0
 """Timeout for one stream request."""
 
+_DECIMAL_UNIT: Final[re.Pattern[str]] = re.compile(r"\b([KMGT])B\b")
+"""Unit Torrentio writes as ``GB`` while it counts in powers of 1024."""
+
 
 class TorrentioSource:
     """Fetch stream candidates through a caller-owned client."""
@@ -110,7 +113,7 @@ def _stream(raw: object) -> StreamCandidate:
         release=lines[0],
         path=lines[1] if len(lines) > 1 and not lines[1].startswith("👤") else None,
         seeders=int(seeders.group(1)) if seeders else None,
-        size_text=size.group(1).strip() if size else None,
+        size_text=_DECIMAL_UNIT.sub(r"\1iB", size.group(1).strip()) if size else None,
         provider=provider.group(1).strip() if provider else None,
         tags=tuple(lines[stats_index + 1].split(" / "))
         if stats_index is not None and stats_index + 1 < len(lines)
