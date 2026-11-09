@@ -25,7 +25,7 @@ Testy pytest. Konwencje testowe całego drzewa; komenda bramki jakości i marker
 
 ## Komendy i konfiguracja (`pyproject.toml`)
 
-- Testy biegną równolegle (xdist `-n auto --dist=worksteal`) — muszą być bezstanowe/niezależne od kolejności. `pyproject.toml`
+- Testy biegną równolegle z jawnym `-n` (xdist, `--dist=worksteal` w `pyproject.toml`; nigdy `-n auto`) — muszą być bezstanowe/niezależne od kolejności. `pyproject.toml`
 - `--strict-markers` + `--strict-config`: niezadeklarowany marker = błąd; wszystkie markery muszą być w `[tool.pytest.ini_options].markers`. `pyproject.toml`
 - Zadeklarowanych 6 markerów: `unit`/`integration`/`e2e`/`network`/`slow`/`smoke`. `integration` obejmuje m.in. recovery w świeżym interpreterze; nie wyłącza testu domyślnie. `pyproject.toml`
 

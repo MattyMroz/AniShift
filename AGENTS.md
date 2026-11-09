@@ -11,7 +11,7 @@ Wzorzec do recyklingu struktury i nazewnictwa: `../MangaShift/mangashift/` — b
 uv run ruff check anishift/ tests/
 uv run ruff format --check anishift/ tests/
 uv run mypy anishift/ tests/
-uv run pytest
+uv run pytest -n 6
 ```
 
 Zawsze na `anishift/ tests/`, nigdy na podkatalogu — na podkatalogu ruff sypie setkami fałszywych błędów.
