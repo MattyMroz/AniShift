@@ -1,7 +1,7 @@
 ---
 kind: specification
 status: zaakceptowana przez recenzentów (rundy 22–23: astra, opus55, sol61 bez uwag); czeka na akceptację właściciela; §3.1 i §3.5 zmienione decyzjami D1–D3 (2026-10-06) i poprawkami review v16, do review; §4–§6 zmienione decyzjami właściciela 2026-11-08 (wybór wydania v2), czekają na akceptację właściciela
-updated: 2026-11-08
+updated: 2026-11-09
 baseline: 9d828708
 ---
 
@@ -65,7 +65,7 @@ Kontrakt tego, jak AniShift znajduje wydania odcinka, ocenia je i wybiera jedno.
 
 - Ten sam hash z kilku źródeł to jeden wiersz.
 - **Nazwa wydania:** pierwsza dostępna w kolejności TsukiHime → Nyaa → nekoBT → Knaben → Torrentio (`release` Torrentio bywa ucięty).
-- **Seedy:** największa wartość spośród źródeł, które je podają; brak u wszystkich → „?”.
+- **Seedy:** największa wartość spośród źródeł innych niż Knaben, które je podają; liczba z Knaben tylko wtedy, gdy żadne inne źródło jej nie podaje (O-6); brak u wszystkich → „?”. Ta sama liczba działa w wyborze i na liście.
 - **Data publikacji:** najwcześniejsza z Nyaa (`pubDate`), Knaben (`date`) i nekoBT (`pubDate`); TsukiHime i Torrentio jej nie podają, nieczytelna data = brak. Używają jej tylko reguły ofertowe (§6.1).
 - **Języki:** §5.2.
 - **`RAW` i `HardSub`** rozpoznawane są z nazw i tagów wszystkich źródeł wydania przed wyborem nazwy wiersza; dodatni dowód z dowolnego źródła obowiązuje i nie kasuje go nazwa z innego źródła. Tag `HS` w bloku `{Tags:…}` nekoBT = `HardSub`. Przypadek wzorcowy (§9): ten sam hash z nazwą Nyaa/TsukiHime bez `HardSub` i nekoBT z `HS` → niedopuszczalny do automatu z powodem „hardsub”.
@@ -336,6 +336,6 @@ Wszystkie rozstrzygnięte 2026-10-06 (właściciel; O-3 i O-4 według reguł obo
 - **O-4:** koreańskie audio z PL napisami a japońskie bez PL — PL napisy wygrywają (klasa PL przed klasą audio).
 - **O-5:** sugestia i `D` bez podglądu — **pierwszy wiersz rankingu** (§6.1); gdy nie jest `zgodny`, oznaczenie „niepewne”.
 
-Otwarte po decyzjach 2026-11-08:
+Rozstrzygnięte 2026-11-09 (decyzja przekazana przez właściciela wykonawcy):
 
-- **O-6:** liczba seedów do bramki (§5.1) to dziś największa wartość ze źródeł (§3.3). Pomiar 2026-11-08 pokazał, że Knaben zawyża ją z pamięci podręcznej (SubsPlease 1021 wobec 472 w Nyaa, Erai-raws 361 wobec 143), a połączonych seedów było najwyżej 36. Do rozstrzygnięcia, czy bramka ma używać wartości z Nyaa albo z trackera zamiast maksimum.
+- **O-6:** Knaben zawyża liczbę seedów z pamięci podręcznej (pomiar 2026-11-08: SubsPlease 1021 wobec 472 w Nyaa, Erai-raws 361 wobec 143, a połączonych seedów było najwyżej 36). **Gdy to samo wydanie (hash) podaje też inne źródło, liczy się największa liczba spośród pozostałych źródeł, a liczba z Knaben jest pomijana; gdy podaje je tylko Knaben, zostaje jego liczba, bez współczynnika korekty** (§3.3). Dotyczy bramki i klasy zasiania (§5.1, §5.3), znanych 0 seedów w automacie (§6.2) i kolumny Seedy. W zestawie wzorcowym (§9) zmienia trójkę 154587-1 i 154587-28: Erai-raws 01 (18 seedów z Nyaa zamiast 29), Erai-raws 28 (13 zamiast 23) i CR WEB-DL S01E28 (17 zamiast 33) stają się słabo zasiane; automat bez zmian.

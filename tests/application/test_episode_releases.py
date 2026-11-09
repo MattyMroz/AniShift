@@ -141,6 +141,26 @@ def test_merge_releases_seeders_max_or_unknown(seeders: tuple[int | None, ...], 
     assert release.seeders == expected
 
 
+@pytest.mark.parametrize(
+    ("reported", "expected"),
+    [
+        ((("knaben", 1021), ("nyaa", 472)), 472),
+        ((("knaben", 361), ("nyaa", 143), ("torrentio", 150)), 150),
+        ((("knaben", 361), ("nyaa", None)), 361),
+        ((("knaben", 36),), 36),
+        ((("knaben", 361), ("nyaa", 0)), 0),
+    ],
+    ids=["nyaa", "highest-other", "other-unknown", "knaben-only", "other-zero"],
+)
+def test_merge_releases_seeders_ignore_knaben_when_another_source_reports_them(
+    reported: tuple[tuple[str, int | None], ...], expected: int
+) -> None:
+    streams: tuple[StreamCandidate, ...] = tuple(
+        replace(_STREAM, source=source, seeders=value) for source, value in reported
+    )
+    assert _merge(streams)[0].seeders == expected
+
+
 @pytest.mark.unit
 def test_merge_releases_publication_is_the_earliest_source_date_or_unknown() -> None:
     first: datetime = datetime(2026, 10, 1, 22, 32, tzinfo=UTC)
