@@ -673,11 +673,9 @@ def test_processing_cancel_targets_the_disclosed_whole_manual_run(
             controller.show_processing()
             try:
                 assert _wait_for_resident(session, lambda _status: controller._connected)
-                assert "X anuluj" in controller.render(120, 40).plain
-                controller.handle_key("text:c")
-                assert "Anulować całe zlecenie (2 materiały)? Enter tak · Esc nie" in controller.render(120, 40).plain
-                controller.handle_key("enter")
-                assert _wait_for_resident(session, lambda _status: not controller._busy)
+                assert "Del usuń" in controller.render(120, 40).plain
+                controller.handle_key("delete")
+                assert controller._processing_rows() == []
                 release.set()
                 assert _wait_for_resident(
                     session, lambda _status: session.command("run_result", {"run_id": run_id})["state"] == "cancelled"

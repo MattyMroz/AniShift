@@ -108,8 +108,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `test_anime_view.py`, `test_library_columns.py`. `anime_view.shown_rows` to jedyna liczba wierszy renderu i
   stronicowania; `AnimeFrame.first_row` i `_anime_top` służą trafieniom myszy; puste teksty list tylko z
   `StateController._empty_text`. Linia statusu (`_global_status`) liczy wyłącznie `material_counts` ownera.
-- Anulowanie w Przetwarzaniu uzbraja `_question`; anuluje tylko Enter, inny klawisz, klik w wiersz lub wyjście kasują.
-  X znaczy „zatrzymaj”: anulowane zlecenie blokuje Auto dla tej samej wersji źródła jak błąd
+- Del na trwającym wierszu Przetwarzania (`cancel_target`) od razu, bez pytania, wysyła `cancel_command` na własnym
+  wątku (`_cancel_now`); `_cancelled` chowa wiersze tego celu do snapshotu bez nich, odmowa je przywraca z komunikatem.
+  Anulowanie nie ma Ctrl+Z. Wejście na zakładkę Anime odświeża stany odcinków w tle (`_switch_tab` → `reread_episode_states`).
+  Anulowanie znaczy „zatrzymaj”: anulowane zlecenie blokuje Auto dla tej samej wersji źródła jak błąd
   (`control._latest_request_blocks`); wraca tylko przez jawne P albo nową wersję źródła.
 - Anime czyta katalog, oferty, pobrania i `subscription_add` przez `ResidentSession`; nie ma katalogu grup, receipt
   i przyjęcia należą do ownera, kolejność premier daje fasada. Korelacja po `command_id` + kluczu odcinka. Esc/Tab
@@ -147,7 +149,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   ze snapshotów ownera. Nieznane fakty zostają nieznane; brak odczytu zachowuje ostatnie zweryfikowane wartości.
   Nieudane albo anulowane zlecenie (`failed`/`partial`/`cancelled`), którego wideo źródłowe owner widzi na dysku
   (`_local_primary`), przychodzi jako wiersz `waiting`
-  z `attention` i `reason=processing_failed` (`Błąd`, licznik „do sprawdzenia”); zostaje do ponowienia, bez X.
+  z `attention` i `reason=processing_failed` (`Błąd`, licznik „do sprawdzenia”); zostaje do ponowienia.
   P na nim (`failed_group`, `_retry_now`) ponawia od razu, bez ekranu propozycji i bez Enter: `retry_proposal`
   ownera, potem `_execute_retry` (`resume` → `plan_resume`, `manual` z zapisanymi intencjami → `plan_manual`, obie
   przez `reserve` i `start`; `reacquire` → `reacquire`; `manual` bez intencji kończy się odmową z drogą do
@@ -157,7 +159,6 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   trafia w zestaw Biblioteki, a nieudana grupa Biblioteki nie dostaje Del. Owner rzutuje taką grupę przez
   `unrecorded_set`. Wiersz chowają tylko `_hidden` i aktywne usuwania (`deleting_sets`), nie historyczne
   `pending_deletions`; Ctrl+Z (poza Historią) woła `deletion_undo` jak Biblioteka.
-  Na aktywnym wierszu Del pozostaje cichym aliasem X.
 - P w Historii (H → P) nadal tylko przygotowuje propozycję ponowienia ownera, bo pozycja Historii bywa też
   ukończonym materiałem, dla którego `manual` oznacza wybór zakresu przebudowy: lokalna praca idzie Enterem do
   Ręcznego z rewalidacją, zdalna dostaje jawne powtórzenie przez `_execute_retry`. Pauza nie blokuje P; `Wstrzymano` i zamrożone liczniki tylko dla wierszy z `automatic` (brak pola =

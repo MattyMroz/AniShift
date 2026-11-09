@@ -2422,7 +2422,7 @@ def test_every_refused_stan_label_fits_its_column(reason: str) -> None:
 def test_an_episode_in_progress_keeps_a_short_stan_and_names_cancellation_in_the_notice() -> None:
     assert anime_texts.refused_result(EpisodeReason.EPISODE_IN_PROGRESS) == (
         "W toku",
-        "W toku · X anuluj w Przetwarzaniu",
+        "W toku · Del usuń w Przetwarzaniu",
     )
 
 
@@ -2499,7 +2499,7 @@ def test_active_episode_does_not_submit_and_explains_where_to_cancel(state: str,
     owner.statuses[1] = EpisodeStatus(EpisodeKey(1, 1), state)
     controller: AnimeController = _owner_controller(owner)
     _key(controller, key)
-    assert controller._notice == "W toku · X anuluj w Przetwarzaniu"
+    assert controller._notice == "W toku · Del usuń w Przetwarzaniu"
     assert not owner.batches
 
 

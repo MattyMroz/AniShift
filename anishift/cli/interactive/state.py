@@ -93,7 +93,6 @@ from anishift.cli.interactive.state_processing import (
     pause_toggle,
     processing_actions,
     processing_rows,
-    question_text,
     retry_entry,
     row_ids,
 )
@@ -173,9 +172,6 @@ _HISTORY_CRUMB: Final[tuple[str, ...]] = ("Przetwarzanie", "Historia")
 
 _TOP: Final[Click] = Click(ClickKind.CRUMB, 0)
 """Click target of the shown tab below its list level, which leaves for the tab's list like its first crumb."""
-
-_ANSWERS: Final[str] = "Enter tak · Esc nie"
-"""Keys answering the cancellation question."""
 
 _CLICKED_TAB: Final[str] = "tab:"
 """Prefix of the key a click on a tab name sends, followed by the tab index."""
@@ -271,7 +267,7 @@ class StateController:
         self._active_position: int = 0
         self._retry: RetryProposal | None = None
         self._manual_retry: RetryProposal | None = None
-        self._question: tuple[str, str] | None = None
+        self._cancelled: set[tuple[str, str]] = set()
         self._help: bool = False
         self._help_offset: int = 0
         self._page: int = 1
@@ -378,8 +374,6 @@ class StateController:
             }:
                 self._view_generation += 1
                 self._notify("")
-            if self._question is not None:
-                return self._question_key(key)
             if self._history_input is not None:
                 self._history_input_key(key)
                 return StateResult.CONTINUE
@@ -398,28 +392,6 @@ class StateController:
             if self._history_navigation(key):
                 return StateResult.CONTINUE
             return self._list_key(key)
-
-    def _question_key(self, key: str) -> StateResult:
-        target: tuple[str, str] | None = self._question
-        self._question = None
-        if key == "enter" and target is not None and self._question_rows(target):
-            if self._busy:
-                self._question = target
-            else:
-                self._command(*cancel_command(target))
-        self._invalidate()
-        return StateResult.CONTINUE
-
-    def _question_rows(self, target: tuple[str, str]) -> list[Mapping[str, object]]:
-        return [item for item in self._processing_rows() if cancel_target(item) == target]
-
-    def _drop_vanished_question(self) -> None:
-        if self._question is not None and not self._question_rows(self._question):
-            self._question = None
-
-    def _question_text(self) -> str:
-        target: tuple[str, str] | None = self._question
-        return "" if target is None else question_text(target, self._question_rows(target))
 
     def _help_key(self, key: str) -> StateResult:
         if key in {"text:?", "escape", "backspace", "interrupt"}:
@@ -640,13 +612,11 @@ class StateController:
         """Invalidate child completion navigation when the enclosing panel is hidden."""
         with self._lock:
             self._library_target = None
-            self._question = None
             if self._anime is not None:
                 self._anime.cancel()
 
     def _switch_tab(self, tab: int) -> None:
         self._library_target = None
-        self._question = None
         self._help = False
         self._view_generation += 1
         if self._tab == _Tab.ANIME and self._anime is not None:
@@ -656,6 +626,8 @@ class StateController:
         self._positions[self._tab] = self._selected
         self._tab = tab
         self._selected = self._positions.get(tab, 0)
+        if tab == _Tab.ANIME and self._anime is not None:
+            self._anime.reread_episode_states()
 
     def _viewport(self) -> int:
         if self._details is not None:
@@ -699,10 +671,6 @@ class StateController:
         with self._lock:
             if self._tab == _Tab.ANIME:
                 return self._anime is not None and self._anime.points_at(index)
-            if self._question is not None:
-                self._question = None
-                self._invalidate()
-                return False
             if self._retry is not None or self._help or not 0 <= index < len(self._entries(120)):
                 return False
             if index != self._selected and self._tab in {_Tab.FILES, _Tab.SUBSCRIPTIONS}:
@@ -798,8 +766,9 @@ class StateController:
         if key == "delete" and set_id is not None:
             self._delete_now(set_id)
             return
-        if key in {"c", "x", "delete"}:
-            self._question = cancel_target(item)
+        target: tuple[str, str] | None = cancel_target(item)
+        if key == "delete" and target is not None:
+            self._cancel_now(target)
             return
         group: str | None = failed_group(item)
         if key == "p" and group is not None:
@@ -967,6 +936,45 @@ class StateController:
                 self._notify(notice)
                 self._notice_persistent = True
         self._invalidate()
+
+    def _cancel_now(self, target: tuple[str, str]) -> None:
+        self._cancelled.add(target)
+        self._selected = min(self._selected, max(len(self._processing_rows()) - 1, 0))
+        self._notify("")
+        threading.Thread(
+            target=self._cancel_hidden, args=(target,), name="anishift-processing-cancel", daemon=True
+        ).start()
+
+    def _cancel_hidden(self, target: tuple[str, str]) -> None:
+        session: ResidentSession | None = None
+        notice: str = ""
+        try:
+            session = self._parent.new_session()
+            session.command(*cancel_command(target))
+        except (AniShiftError, ControlError, OSError, ValueError, TypeError) as error:
+            notice = refusal_text(error)
+        finally:
+            if session is not None:
+                session.close()
+        with self._lock:
+            if notice:
+                old: list[str] = self._processing_row_ids()
+                self._cancelled.discard(target)
+                if self._tab == _Tab.PROGRESS and not self._history_open:
+                    self._selected = _kept(old, self._processing_row_ids(), self._selected)
+            if notice and self._tab == _Tab.PROGRESS and not self._stop.is_set():
+                self._notify(notice)
+                self._notice_persistent = True
+        self._invalidate()
+
+    def _unsettled_cancels(self, snapshot: Mapping[str, object]) -> set[tuple[str, str]]:
+        listed: set[tuple[str, str] | None] = {
+            cancel_target(item)
+            for item in processing_rows(
+                snapshot, self._runs, self._hidden, restoring_rows(snapshot, self._restoring, unrecorded=True)
+            )
+        }
+        return {target for target in self._cancelled if target in listed}
 
     def _undo_now(self) -> None:
         if any(not pending.answered for pending in self._restoring.values()):
@@ -1165,7 +1173,7 @@ class StateController:
                 if restore_problem and self._tab in {_Tab.FILES, _Tab.PROGRESS}:
                     self._notify(restore_problem)
                     self._notice_persistent = True
-                self._drop_vanished_question()
+                self._cancelled = self._unsettled_cancels(payload)
                 if payload.get("shutting_down"):
                     self._finished = True
                     self._stop.set()
@@ -1216,7 +1224,6 @@ class StateController:
             progress[1].emit(event)
             self._preserve_processing_selection(previous, self._processing_row_ids())
             self._observe_downloads()
-            self._drop_vanished_question()
 
     def _preserve_subscription_selection(self, new: list[Mapping[str, object]]) -> None:
         old: list[Mapping[str, object]] = self._subscriptions
@@ -1402,10 +1409,6 @@ class StateController:
         return compact
 
     def _view_footer(self, width: int) -> list[str | Text]:
-        question: str = self._question_text()
-        if question:
-            asked: str = f"{question} {_ANSWERS}"
-            return [*_keys([asked] if Text(asked).cell_len <= width else [question, _ANSWERS])]
         if self._retry is not None:
             return [*_keys(["Enter przygotuj · Esc wróć"]), self._notice]
         if self._tab == _Tab.PROGRESS and self._history_open:
@@ -1660,7 +1663,11 @@ class StateController:
     def _processing_rows(self, snapshot: Mapping[str, object] | None = None) -> list[Mapping[str, object]]:
         current: Mapping[str, object] = self._snapshot if snapshot is None else snapshot
         return processing_rows(
-            current, self._runs, self._hidden, restoring_rows(current, self._restoring, unrecorded=True)
+            current,
+            self._runs,
+            self._hidden,
+            restoring_rows(current, self._restoring, unrecorded=True),
+            self._cancelled,
         )
 
     def _processing_row_ids(self, snapshot: Mapping[str, object] | None = None) -> list[str]:

@@ -351,7 +351,7 @@ def test_del_on_a_failed_processing_row_deletes_it_like_the_library_and_ctrl_z_b
         panel.handle_key("delete")
         assert _processing_names(panel) == ["Beta"]
         assert panel._selected == 0
-        assert panel._question is None
+        assert panel._cancelled == set()
         assert "Alpha.mkv" not in panel.render(80, 24).plain
         owner.release.set()
         _until(lambda: "Usunięto · Ctrl+Z cofnij" in panel.render(80, 24).plain)

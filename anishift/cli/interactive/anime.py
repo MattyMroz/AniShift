@@ -1992,6 +1992,10 @@ class AnimeController:
             self._notice = notice
         self.refresh_episode_states()
 
+    def reread_episode_states(self) -> None:
+        """Refresh the visible episode states on a worker, for a tab that was not watching owner changes."""
+        threading.Thread(target=self.refresh_episode_states, name=_WORKER_NAME, daemon=True).start()
+
     def refresh_episode_states(self) -> None:
         """Refresh at most one owner page around the visible episode window."""
         with self._lock:

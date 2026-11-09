@@ -16,7 +16,6 @@ from prompt_toolkit.data_structures import Point
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from rich.text import Text
 from test_interactive_mouse import _application, _click, _drag, _reversed, _row_at, _row_of
-from test_interactive_state import _live_material, _live_snapshot
 
 from anishift.application import (
     AppService,
@@ -28,9 +27,6 @@ from anishift.application import (
     HistoryEvent,
     HistoryKind,
     ListedEpisode,
-    RunEvent,
-    RunEventKind,
-    TaskState,
     TitleCandidate,
     TitleStatus,
 )
@@ -40,7 +36,6 @@ from anishift.application.control_views import (
     LibraryFileIdentity,
     LibrarySet,
     RetryProposal,
-    RunProgressSnapshot,
     encode_view,
 )
 from anishift.application.intents import GroupIntent, ProductIntent, ProductKind, RunMode
@@ -71,7 +66,6 @@ from anishift.cli.interactive.pointer import (
     click_at,
     mark_keys,
 )
-from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.state import StateController, StateResult, _Tab
 from anishift.cli.interactive.state_library import detail_actions
 from anishift.cli.interactive.state_processing import download_progress, history_actions
@@ -215,6 +209,7 @@ def _probe(
     copied: list[str] = []
     monkeypatch.setattr(panel, "_work", lambda action, **options: work.append(action))
     monkeypatch.setattr(panel, "_delete_hidden", lambda set_id: None)
+    monkeypatch.setattr(panel, "_cancel_hidden", lambda target: None)
 
     def copy(text: str) -> bool:
         copied.append(text)
@@ -588,8 +583,8 @@ _ACTIONS: Final[dict[str, tuple[Action, ...]]] = {
         *_PANEL,
     ),
     "subscriptions_empty": (("D", "dodaj pierwszą"), ("Ctrl+Z", "cofnij"), *_PANEL),
-    "processing_download": (("W", "wstrzymaj"), ("X", "anuluj"), ("H", "historia"), ("Ctrl+Z", "cofnij"), *_PANEL),
-    "processing_run": (("X", "anuluj"), ("H", "historia"), ("Ctrl+Z", "cofnij"), *_PANEL),
+    "processing_download": (("Del", "usuń"), ("W", "wstrzymaj"), ("H", "historia"), ("Ctrl+Z", "cofnij"), *_PANEL),
+    "processing_run": (("Del", "usuń"), ("H", "historia"), ("Ctrl+Z", "cofnij"), *_PANEL),
     "processing_failed": (("P", "ponów"), ("Del", "usuń"), ("H", "historia"), ("Ctrl+Z", "cofnij"), *_PANEL),
     "processing_empty": (("H", "historia"), ("Ctrl+Z", "cofnij"), *_PANEL),
     "history": (("Enter", "otwórz"), ("P", "ponów"), ("/", "szukaj"), ("H", "zamknij"), *_PANEL),
@@ -613,9 +608,6 @@ _ALIASES: Final[dict[str, frozenset[str]]] = {
     "u08_extra": frozenset({"text:f", "text:x"}),
     "subscriptions": frozenset({"text:f", "space", "text:x", "text:/"}),
     "subscriptions_empty": frozenset({"enter", "text:/"}),
-    "processing_download": frozenset({"text:c", "delete"}),
-    "processing_run": frozenset({"text:c", "delete"}),
-    "processing_empty": frozenset({"text:c", "delete"}),
     "history": frozenset({"text:s"}),
     "library": frozenset({"text:d", "text:x"}),
     "library_relocation": frozenset({"text:d", "text:x"}),
@@ -651,8 +643,8 @@ _FOOTERS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
     "u08_waiting": ("Space zaznacz · D pobierz · T pobierz teraz · ? klawisze · Esc wróć", ()),
     "subscriptions": ("Enter szczegóły · D dodaj · W wstrzymaj · ? klawisze · Esc wróć", ()),
     "subscriptions_empty": ("D dodaj pierwszą · ? klawisze · Esc wróć", ()),
-    "processing_download": ("W wstrzymaj · X anuluj · H historia · ? klawisze · Esc wróć", ()),
-    "processing_run": ("X anuluj · H historia · ? klawisze · Esc wróć", ()),
+    "processing_download": ("Del usuń · W wstrzymaj · H historia · ? klawisze · Esc wróć", ()),
+    "processing_run": ("Del usuń · H historia · ? klawisze · Esc wróć", ()),
     "processing_failed": ("P ponów · Del usuń · H historia · ? klawisze · Esc wróć", ()),
     "history": ("Enter otwórz · P ponów · / szukaj · ? klawisze · Esc wróć", ()),
     "library": ("Enter otwórz · F folder · Del usuń · ? klawisze · Esc wróć", ()),
@@ -748,7 +740,7 @@ def _state(probe: _Probe) -> tuple[object, ...]:
         panel._help,
         panel._history_open,
         panel._history_input is not None,
-        panel._question,
+        frozenset(panel._cancelled),
         panel._retry is not None,
         tuple(panel._hidden),
         len(probe.work),
@@ -892,7 +884,7 @@ def test_help_block_ignores_actions_and_clicks(build: Callable[[str], _Probe], n
     probe.panel.select(1 - selected)
     assert probe.work == []
     assert probe.panel._selected == selected
-    assert probe.panel._question is None
+    assert probe.panel._cancelled == set()
     assert all(_row_at(frame, row) is None for row in range(24))
     assert probe.panel.view_key()[-1] is True
 
@@ -1125,31 +1117,98 @@ def test_page_keys_move_the_list_cursor_by_the_painted_page(build: Callable[[str
     assert probe.panel._selected == 0
 
 
-@pytest.mark.parametrize("key", ["text:x", "delete", "text:c"])
-def test_cancel_keys_arm_the_question_only_on_a_row_with_a_target(build: Callable[[str], _Probe], key: str) -> None:
+@pytest.mark.parametrize(
+    ("name", "target"),
+    [("processing_download", ("info_hash", "hash")), ("processing_run", ("run_id", "run"))],
+)
+def test_delete_cancels_a_running_row_at_once_and_hides_it(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch, name: str, target: tuple[str, str]
+) -> None:
+    probe: _Probe = build(name)
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(probe.panel, "_cancel_hidden", sent.append)
+    probe.panel.handle_key("delete")
+    assert sent == [target]
+    assert probe.panel._cancelled == {target}
+    assert probe.panel._processing_rows() == []
+    assert "Enter tak" not in probe.panel.render(80, 24).plain
+
+
+@pytest.mark.parametrize("key", ["text:x", "text:c", "enter"])
+def test_x_and_c_no_longer_cancel_a_running_row(build: Callable[[str], _Probe], key: str) -> None:
     probe: _Probe = build("processing_download")
     probe.panel.handle_key(key)
-    assert probe.panel._question == ("info_hash", "hash")
-    frame: str = probe.panel.render(80, 24).plain
-    assert "Anulować pobieranie? Enter tak · Esc nie" in frame
-    assert "? klawisze" not in frame
-    empty: _Probe = build("processing_empty")
-    empty.panel.handle_key(key)
-    assert empty.panel._question is None
-    history: _Probe = build("history")
-    history.panel.handle_key(key)
-    assert history.panel._question is None
+    assert probe.panel._cancelled == set()
+    assert len(probe.panel._processing_rows()) == 1
 
 
-def test_the_question_names_a_pack_and_a_whole_run(build: Callable[[str], _Probe]) -> None:
-    pack: _Probe = build("processing_download")
-    pack.panel._snapshot = {**pack.panel._snapshot, "materials": [_download(), _download(material="two")]}
-    pack.panel.handle_key("text:x")
-    assert "Anulować pobieranie (2 materiały)? Enter tak · Esc nie" in pack.panel.render(80, 24).plain
-    run: _Probe = build("processing_run")
-    run.panel.handle_key("text:x")
-    assert run.panel._question == ("run_id", "run")
-    assert "Anulować całe zlecenie (1 materiał)? Enter tak · Esc nie" in run.panel.render(80, 24).plain
+def test_delete_on_a_pack_hides_every_row_of_its_transfer(build: Callable[[str], _Probe]) -> None:
+    probe: _Probe = build("processing_download")
+    probe.panel._snapshot = {
+        **probe.panel._snapshot,
+        "materials": [_download(), _download(material="two"), _download("other", "three")],
+    }
+    probe.panel.handle_key("delete")
+    assert [item["material_id"] for item in probe.panel._processing_rows()] == ["three"]
+
+
+@pytest.mark.parametrize(
+    ("name", "target", "command"),
+    [
+        ("processing_download", ("info_hash", "hash"), ("transfer", {"info_hash": "hash", "action": "cancel"})),
+        ("processing_run", ("run_id", "run"), ("cancel", {"run_id": "run"})),
+    ],
+)
+def test_the_hidden_cancel_sends_the_owner_command(
+    build: Callable[[str], _Probe], name: str, target: tuple[str, str], command: tuple[str, Mapping[str, object]]
+) -> None:
+    probe: _Probe = build(name)
+    session: _Library = _Library()
+    probe.panel._parent = cast("ResidentSession", session)
+    probe.panel._cancelled.add(target)
+    StateController._cancel_hidden(probe.panel, target)
+    assert session.calls == [command]
+    assert probe.panel._cancelled == {target}
+
+
+class _RefusingOwner(_Library):
+    def command(self, kind: str, payload: Mapping[str, object] | None = None) -> Mapping[str, object]:
+        self.calls.append((kind, payload))
+        raise ControlError("refused", code=ControlErrorCode.REFUSED, reason="transfer_not_started", answered=True)
+
+
+def test_a_refused_cancel_brings_the_row_back_with_the_refusal(build: Callable[[str], _Probe]) -> None:
+    probe: _Probe = build("processing_download")
+    probe.panel._parent = cast("ResidentSession", _RefusingOwner())
+    probe.panel._cancelled.add(("info_hash", "hash"))
+    StateController._cancel_hidden(probe.panel, ("info_hash", "hash"))
+    assert probe.panel._cancelled == set()
+    assert len(probe.panel._processing_rows()) == 1
+    assert probe.panel._notice
+    assert probe.panel._notice_persistent
+
+
+def test_a_cancelled_row_stays_hidden_until_the_owner_drops_it(build: Callable[[str], _Probe]) -> None:
+    probe: _Probe = build("processing_download")
+    session: ResidentSession = cast("ResidentSession", _Library())
+    probe.panel.handle_key("delete")
+    probe.panel._receive(session, {"event": "state_changed", "payload": {"materials": [_download()]}})
+    assert probe.panel._cancelled == {("info_hash", "hash")}
+    assert probe.panel._processing_rows() == []
+    probe.panel._receive(session, {"event": "state_changed", "payload": {"materials": []}})
+    assert probe.panel._cancelled == set()
+
+
+def test_entering_the_anime_tab_rereads_the_episode_states(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    probe: _Probe = build("processing_download")
+    reads: list[bool] = []
+    monkeypatch.setattr(probe.anime, "reread_episode_states", lambda: reads.append(True))
+    probe.panel._switch_tab(_Tab.FILES)
+    assert reads == []
+    probe.panel._switch_tab(_Tab.ANIME)
+    assert reads == [True]
 
 
 @pytest.mark.parametrize(
@@ -1158,66 +1217,8 @@ def test_the_question_names_a_pack_and_a_whole_run(build: Callable[[str], _Probe
 )
 def test_processing_texts_count_materials_in_polish(count: int, form: str) -> None:
     groups: list[str] = [f"group-{index}" for index in range(count)]
-    assert processing_module.question_text(("run_id", "run"), [{"group_ids": groups}]) == (
-        f"Anulować całe zlecenie ({form})?"
-    )
     proposal: RetryProposal = RetryProposal("retry", "resume", tuple(groups))
     assert processing_module.retry_entry(proposal) == f"Dokończ całe zapisane zlecenie · {form} · podgląd"
-
-
-@pytest.mark.parametrize(
-    ("name", "command"),
-    [
-        ("processing_download", ("transfer", {"info_hash": "hash", "action": "cancel"})),
-        ("processing_run", ("cancel", {"run_id": "run"})),
-    ],
-)
-def test_enter_cancels_the_target_unless_work_is_still_running(
-    build: Callable[[str], _Probe],
-    monkeypatch: pytest.MonkeyPatch,
-    name: str,
-    command: tuple[str, Mapping[str, object]],
-) -> None:
-    probe: _Probe = build(name)
-    sent: list[tuple[str, Mapping[str, object] | None]] = []
-    monkeypatch.setattr(probe.panel, "_command", lambda kind, payload=None: sent.append((kind, payload)))
-    probe.panel.handle_key("text:x")
-    probe.panel._busy = True
-    probe.panel.handle_key("enter")
-    assert sent == []
-    assert probe.panel._question is not None
-    probe.panel._busy = False
-    probe.panel.handle_key("enter")
-    assert sent == [command]
-    assert probe.panel._question is None
-
-
-@pytest.mark.parametrize("key", ["escape", "interrupt", "tab", "left", "text:h", "down", "text:m", "text:?"])
-def test_any_other_key_clears_the_question_and_is_swallowed(build: Callable[[str], _Probe], key: str) -> None:
-    probe: _Probe = build("processing_download")
-    probe.panel.handle_key("text:x")
-    assert probe.panel.handle_key(key) is StateResult.CONTINUE
-    assert probe.panel._question is None
-    assert probe.panel._tab == _Tab.PROGRESS
-    assert probe.panel._selected == 0
-    assert not probe.panel._history_open
-    assert not probe.panel._help
-    assert probe.work == []
-
-
-def test_a_click_on_a_row_clears_the_question_without_selecting(build: Callable[[str], _Probe]) -> None:
-    probe: _Probe = build("processing_download")
-    probe.panel._snapshot = {**probe.panel._snapshot, "materials": [_download(), _download("other", "two")]}
-    probe.panel.handle_key("text:x")
-    pressed: Click | None = probe.panel.mouse(
-        MouseEvent(Point(10, 5), MouseEventType.MOUSE_DOWN, MouseButton.LEFT, frozenset())
-    )
-
-    assert pressed is None
-    assert probe.panel._question is not None
-    assert not probe.panel.select(1)
-    assert probe.panel._question is None
-    assert probe.panel._selected == 0
 
 
 def test_every_footer_and_status_hint_is_a_click_on_its_key_and_plain_words_are_not() -> None:
@@ -1426,97 +1427,11 @@ def test_a_deletion_notice_offers_its_undo_as_a_click_and_keeps_its_title_plain(
     assert click_at(notice, TextPoint(0, notice.plain.index("Ctrl+Z"))) == Click(ClickKind.KEY, key="undo")
 
 
-def test_the_question_answers_are_keys_a_click_presses(build: Callable[[str], _Probe]) -> None:
-    probe: _Probe = build("processing_download")
-    probe.panel.handle_key("text:x")
-    frame: Text = probe.panel.render(80, 24)
-    lines: list[str] = frame.plain.split("\n")
-    row: int = next(index for index, line in enumerate(lines) if "Enter tak" in line)
-
-    assert click_at(frame, TextPoint(row, lines[row].index("Enter tak") + 7)) == Click(ClickKind.KEY, key="enter")
-    assert click_at(frame, TextPoint(row, lines[row].index("Esc nie"))) == Click(ClickKind.KEY, key="escape")
-
-
-@pytest.mark.parametrize("leave", ["library", "subscriptions", "suspend", "tab"])
-def test_leaving_processing_clears_the_question(build: Callable[[str], _Probe], leave: str) -> None:
-    probe: _Probe = build("processing_download")
-    probe.panel.handle_key("text:x")
-    if leave == "library":
-        probe.panel.show_library({})
-    elif leave == "subscriptions":
-        probe.panel._show_subscription_list(None, "")
-    elif leave == "suspend":
-        probe.panel.suspend()
-    else:
-        probe.panel._switch_tab(_Tab.ANIME)
-    assert probe.panel._question is None
-
-
-def test_the_question_follows_its_target_and_ends_when_it_vanishes(
-    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    probe: _Probe = build("processing_download")
-    sent: list[tuple[str, Mapping[str, object] | None]] = []
-    monkeypatch.setattr(probe.panel, "_command", lambda kind, payload=None: sent.append((kind, payload)))
-    session: ResidentSession = cast("ResidentSession", _Library())
-    first: dict[str, object] = _download("first", "one")
-    second: dict[str, object] = _download("second", "two")
-    probe.panel._snapshot = {"auto_enabled": True, "materials": [first, second]}
-    probe.panel.handle_key("text:x")
-    probe.panel._receive(session, {"event": "state_changed", "payload": {"materials": [second, first]}})
-    assert probe.panel._question == ("info_hash", "first")
-    probe.panel._perform(lambda work: None, "Polecenie przyjęte")
-    assert "Anulować pobieranie? Enter tak · Esc nie" in probe.panel.render(80, 24).plain
-    probe.panel.handle_key("enter")
-    assert sent == [("transfer", {"info_hash": "first", "action": "cancel"})]
-    probe.panel.handle_key("text:x")
-    probe.panel._receive(session, {"event": "state_changed", "payload": {"materials": [second]}})
-    assert probe.panel._question is None
-
-
-@pytest.mark.parametrize(
-    ("name", "lines"),
-    [
-        ("processing_download", ("Anulować pobieranie? Enter tak · Esc nie",)),
-        ("processing_run", ("Anulować całe zlecenie (1 materiał)?", "Enter tak · Esc nie")),
-    ],
-)
-def test_the_question_breaks_only_between_its_sentence_and_keys_at_50_columns(
-    build: Callable[[str], _Probe], name: str, lines: tuple[str, ...]
-) -> None:
-    probe: _Probe = build(name)
-    probe.panel.handle_key("text:x")
-    shown: list[str] = [line.strip() for line in probe.panel.render(50, 24).plain.splitlines()]
-    start: int = shown.index(lines[0])
-    assert tuple(shown[start : start + len(lines)]) == lines
-
-
-def test_a_finished_run_ends_its_question_and_frees_the_keys(build: Callable[[str], _Probe]) -> None:
-    probe: _Probe = build("processing_empty")
-    for group in "abc":
-        run_id: str = f"run-{group}"
-        started: RunEvent = RunEvent(run_id, 1, RunEventKind.TASK_STARTED, group_id=group, task_id=f"tts-{group}")
-        view: RunProgressSnapshot = _live_snapshot(run_id, {group: f"{group}.mkv"}, (started,))
-        probe.panel._runs[run_id] = (view.preview.preview_id, RichRunProgress.from_snapshot(view, lambda: None))
-    probe.panel._snapshot = {
-        "auto_enabled": True,
-        "materials": [_live_material(group, f"run-{group}") for group in "abc"],
-        "requests": [{"request_id": f"run-{group}", "state": "running"} for group in "abc"],
-    }
-    probe.panel.handle_key("text:x")
-    assert probe.panel._question == ("run_id", "run-a")
-    finished: RunEvent = RunEvent("run-a", 2, RunEventKind.GROUP_FINISHED, group_id="a", state=TaskState.SUCCEEDED)
-    probe.panel._receive_progress(cast("ResidentSession", _Library()), finished)
-    assert probe.panel._question is None
-    probe.panel.handle_key("down")
-    assert probe.panel._selected == 1
-
-
 def test_a_narrow_footer_drops_actions_from_the_end_and_keeps_help_and_back(build: Callable[[str], _Probe]) -> None:
-    actions: ScreenActions = ScreenActions((("W", "wstrzymaj"), ("X", "anuluj"), ("H", "historia")))
-    assert pack_footer(footer_segments(actions), 21) == ("W wstrzymaj", "? klawisze · Esc wróć")
+    actions: ScreenActions = ScreenActions((("Del", "usuń"), ("W", "wstrzymaj"), ("H", "historia")))
+    assert pack_footer(footer_segments(actions), 21) == ("Del usuń", "? klawisze · Esc wróć")
     lines: list[str] = [line.strip() for line in build("processing_download").panel.render(30, 24).plain.splitlines()]
-    assert "W wstrzymaj · X anuluj" in lines
+    assert "Del usuń · W wstrzymaj" in lines
     assert "? klawisze · Esc wróć" in lines
     assert not any("H historia" in line for line in lines)
 
@@ -1790,14 +1705,14 @@ def test_p_on_a_failed_material_without_saved_choices_names_the_manual_route(bui
 
 
 @pytest.mark.parametrize("name", ["processing_download", "processing_run"])
-def test_an_active_processing_row_offers_no_delete_and_del_only_asks_to_cancel(
+def test_del_on_an_active_processing_row_cancels_instead_of_recycling(
     build: Callable[[str], _Probe], name: str
 ) -> None:
     probe: _Probe = build(name)
-    assert ("Del", "usuń") not in probe.panel._actions().listed
+    assert ("Del", "usuń") in probe.panel._actions().listed
     probe.panel.handle_key("delete")
     assert probe.panel._hidden == {}
-    assert probe.panel._question is not None
+    assert probe.panel._cancelled != set()
 
 
 def test_ctrl_z_in_processing_asks_the_owner_to_restore_the_latest_deletion(build: Callable[[str], _Probe]) -> None:

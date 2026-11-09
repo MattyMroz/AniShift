@@ -30,7 +30,6 @@ __all__ = [
     "pause_toggle",
     "processing_actions",
     "processing_rows",
-    "question_text",
     "retry_entry",
     "row_ids",
 ]
@@ -121,8 +120,9 @@ def processing_rows(
     runs: Mapping[str, tuple[str, RichRunProgress]],
     hidden: Collection[str] = (),
     restoring: Collection[Mapping[str, object]] = (),
+    cancelled: Collection[tuple[str, str]] = (),
 ) -> list[Mapping[str, object]]:
-    """Return downloads, admitted, started, restoring and to-check work, minus rows being deleted."""
+    """Return downloads, admitted, started, restoring and to-check work, minus rows being deleted or cancelled."""
     running: set[str] = {
         str(item["request_id"])
         for item in rows(payload.get("requests"))
@@ -163,7 +163,9 @@ def processing_rows(
     attention: list[Mapping[str, object]] = [item for item in rows(payload.get("materials")) if item.get("attention")]
     deleting: set[str] = deleting_sets(payload, hidden)
     listed: list[Mapping[str, object]] = [
-        item for item in [*downloads, *preparing, *processing, *attention] if item.get("set_id") not in deleting
+        item
+        for item in [*downloads, *preparing, *processing, *attention]
+        if item.get("set_id") not in deleting and cancel_target(item) not in cancelled
     ]
     present: set[object] = {item.get("set_id") for item in listed}
     return [*listed, *(item for item in restoring if item.get("set_id") not in present)]
@@ -241,7 +243,7 @@ def deletable_set(item: Mapping[str, object]) -> str | None:
 
 
 def cancel_target(item: Mapping[str, object]) -> tuple[str, str] | None:
-    """Return the identity a cancellation of this row names, or None when it cannot be cancelled."""
+    """Return the identity Del cancels on a running row, or None when it cannot be cancelled."""
     if item.get("stage") == "download" and item.get("info_hash"):
         return "info_hash", str(item["info_hash"])
     if (item.get("stage") == "processing" or item.get("admitted_processing")) and item.get("run_id"):
@@ -262,16 +264,6 @@ def cancel_command(target: tuple[str, str]) -> tuple[str, Mapping[str, object]]:
     return "cancel", {"run_id": target[1]}
 
 
-def question_text(target: tuple[str, str], targeted: list[Mapping[str, object]]) -> str:
-    """Return the cancellation question for the rows ``target`` names, or nothing when none remains."""
-    if not targeted:
-        return ""
-    if target[0] == "info_hash":
-        return "Anulować pobieranie?" if len(targeted) == 1 else f"Anulować pobieranie ({_materials(len(targeted))})?"
-    scope: object = targeted[0].get("group_ids", [])
-    return f"Anulować całe zlecenie ({_materials(len(scope) if isinstance(scope, list) else 1)})?"
-
-
 def history_actions(*, listed: bool) -> ScreenActions:
     """Return the actions of the History list, opening and retrying only on a listed material."""
     material: tuple[Action, ...] = (("Enter", "otwórz"), ("P", "ponów")) if listed else ()
@@ -284,9 +276,8 @@ def processing_actions(item: Mapping[str, object] | None) -> ScreenActions:
     toggle: tuple[str, str] | None = None if item is None else pause_toggle(item)
     footer: tuple[Action, ...] = (
         *((("P", "ponów"),) if item is not None and failed_group(item) is not None else ()),
-        *((("Del", "usuń"),) if item is not None and deletable_set(item) is not None else ()),
+        *((("Del", "usuń"),) if item is not None and (deletable_set(item) is not None or target is not None) else ()),
         *((("W", toggle[1]),) if toggle is not None else ()),
-        *((("X", "anuluj"),) if target is not None else ()),
         ("H", "historia"),
     )
     return ScreenActions(footer, (("Ctrl+Z", "cofnij"), *PANEL_ACTIONS))

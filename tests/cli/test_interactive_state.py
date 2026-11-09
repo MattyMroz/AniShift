@@ -48,6 +48,7 @@ from anishift.cli.interactive.mascot import MascotController
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.settings import SettingsController
 from anishift.cli.interactive.state import StateController, StateResult, refusal_text
+from anishift.cli.interactive.state_processing import cancel_command
 from anishift.cli.resident import ResidentSession
 from anishift.platform.local_control import (
     ControlClient,
@@ -95,6 +96,15 @@ def test_catalog_session_closed_expires_offer(tmp_path: Path) -> None:
         while controller._screen is not _Screen.PROBLEM and monotonic() < deadline:
             time.sleep(0.01)
         assert "Oferta wygasła — otwórz ponownie" in controller.render(80, 24).plain
+
+
+def _cancel_row(controller: StateController) -> None:
+    known: set[threading.Thread] = set(threading.enumerate())
+    controller.handle_key("delete")
+    for thread in threading.enumerate():
+        if thread.name == "anishift-processing-cancel" and thread not in known:
+            thread.join(5)
+    controller._cancelled.clear()
 
 
 def _live_snapshot(run_id: str, labels: dict[str, str], events: tuple[RunEvent, ...]) -> RunProgressSnapshot:
@@ -183,6 +193,7 @@ def test_processing_renders_named_owner_download_states_without_invented_measure
     }
     calls: list[object] = []
     monkeypatch.setattr(controller, "_command", lambda *args: calls.append(args))
+    monkeypatch.setattr(controller, "_cancel_hidden", lambda target: calls.append(cancel_command(target)))
     try:
         frame: str = controller.render(columns, rows).plain
         assert "Episode 01.mkv" in frame
@@ -193,11 +204,10 @@ def test_processing_renders_named_owner_download_states_without_invented_measure
         assert "hash" not in frame
         assert "░" in frame
         assert ("█" in frame) is percentage
-        assert "X anuluj" in frame
+        assert "Del usuń" in frame
         assert len(frame.splitlines()) <= rows
         assert all(len(line) <= columns for line in frame.splitlines())
-        controller.handle_key("text:c")
-        controller.handle_key("enter")
+        _cancel_row(controller)
         assert calls == [("transfer", {"info_hash": "hash", "action": "cancel"})]
     finally:
         controller.close()
@@ -235,6 +245,7 @@ def test_processing_toggles_one_download_with_w(
     }
     calls: list[object] = []
     monkeypatch.setattr(controller, "_command", lambda *args: calls.append(args))
+    monkeypatch.setattr(controller, "_cancel_hidden", lambda target: calls.append(cancel_command(target)))
     try:
         assert hint in controller.render(120, 40).plain
         controller.handle_key("text:w")
@@ -286,6 +297,7 @@ def test_processing_tells_a_download_the_owner_has_not_started_from_a_stopped_on
     }
     calls: list[object] = []
     monkeypatch.setattr(controller, "_command", lambda *args: calls.append(args))
+    monkeypatch.setattr(controller, "_cancel_hidden", lambda target: calls.append(cancel_command(target)))
     try:
         frame: str = controller.render(120, 40).plain
         assert label in frame
@@ -331,15 +343,15 @@ def test_processing_only_allows_cancel_for_metadata_and_client_errors(
     }
     calls: list[object] = []
     monkeypatch.setattr(controller, "_command", lambda *args: calls.append(args))
+    monkeypatch.setattr(controller, "_cancel_hidden", lambda target: calls.append(cancel_command(target)))
     try:
         frame: str = controller.render(120, 40).plain
         assert "W wstrzymaj" not in frame
         assert "W wznów" not in frame
-        assert "X anuluj" in frame
+        assert "Del usuń" in frame
         controller.handle_key("text:w")
         assert calls == []
-        controller.handle_key("text:c")
-        controller.handle_key("enter")
+        _cancel_row(controller)
         assert calls == [("transfer", {"info_hash": "hash", "action": "cancel"})]
     finally:
         controller.close()
@@ -384,7 +396,7 @@ def test_processing_labels_predecessor_wait_without_attention_warning(monkeypatc
         controller._thread.join(5)
 
 
-def test_download_handoff_keeps_selection_until_real_task_start_and_removes_finished_material(  # noqa: PLR0915
+def test_download_handoff_keeps_selection_until_real_task_start_and_removes_finished_material(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
@@ -403,6 +415,7 @@ def test_download_handoff_keeps_selection_until_real_task_start_and_removes_fini
     controller._snapshot = {"materials": [item], "requests": [{"request_id": "run", "state": "accepted"}]}
     calls: list[object] = []
     monkeypatch.setattr(controller, "_command", lambda *args: calls.append(args))
+    monkeypatch.setattr(controller, "_cancel_hidden", lambda target: calls.append(cancel_command(target)))
     try:
         identity: list[str] = controller._processing_row_ids()
         item.update(material_id="hash:0", group_id="a", state="downloading", progress=0.37)
@@ -411,24 +424,21 @@ def test_download_handoff_keeps_selection_until_real_task_start_and_removes_fini
         item.update(stage="waiting", reason="preparing", downloaded=True)
         assert "Przygotowanie" in controller.render(80, 24).plain
         assert " |   0% | " in controller.render(80, 24).plain
-        assert "X anuluj" not in controller.render(80, 24).plain
+        assert "Del usuń" not in controller.render(80, 24).plain
         item.update(reason="finalization_failed", problem="finalization_failed", acquisition_state="complete")
         assert "Błąd zapisu" in controller.render(80, 24).plain
         assert "Episode 01.mkv" in controller.render(80, 24).plain
         assert "Błąd pobierania" not in controller.render(80, 24).plain
         item.update(reason="preparing", problem=None)
-        controller.handle_key("text:c")
-        controller.handle_key("enter")
+        _cancel_row(controller)
         assert calls == []
         item.update(stage="processing", state="accepted", run_id="run", group_ids=["a"])
         view: RunProgressSnapshot = _live_snapshot("run", {"a": "Episode 01.mkv"}, ())
         progress: RichRunProgress = RichRunProgress.from_snapshot(view, lambda: None)
         controller._runs = {"run": (view.preview.preview_id, progress)}
         assert "Przygotowanie" in controller.render(80, 24).plain
-        assert "X anuluj" in controller.render(80, 24).plain
-        controller.handle_key("text:c")
-        assert "Anulować całe zlecenie (1 materiał)? Enter tak · Esc nie" in controller.render(80, 24).plain
-        controller.handle_key("enter")
+        assert "Del usuń" in controller.render(80, 24).plain
+        _cancel_row(controller)
         assert calls == [("cancel", {"run_id": "run"})]
         progress.emit(RunEvent("run", 1, RunEventKind.TASK_STARTED, group_id="a", task_id="tts-a"))
         progress.emit(
@@ -437,14 +447,12 @@ def test_download_handoff_keeps_selection_until_real_task_start_and_removes_fini
         assert controller._processing_row_ids() == identity
         assert len(controller._processing_rows()) == 1
         assert "42%" in controller.render(80, 24).plain
-        controller.handle_key("text:c")
-        controller.handle_key("enter")
+        _cancel_row(controller)
         assert calls == [("cancel", {"run_id": "run"}), ("cancel", {"run_id": "run"})]
         progress.emit(RunEvent("run", 3, RunEventKind.GROUP_FINISHED, group_id="a", state=TaskState.SUCCEEDED))
         assert controller._processing_rows() == []
         assert "Episode 01.mkv" not in controller.render(80, 24).plain
-        controller.handle_key("text:c")
-        controller.handle_key("enter")
+        _cancel_row(controller)
         assert len(calls) == 2
     finally:
         controller.close()
@@ -472,15 +480,15 @@ def test_local_admitted_material_is_preparing_before_progress_restore_and_first_
     controller._notice = ""
     calls: list[object] = []
     monkeypatch.setattr(controller, "_command", lambda *args: calls.append(args))
+    monkeypatch.setattr(controller, "_cancel_hidden", lambda target: calls.append(cancel_command(target)))
     try:
         initial: str = controller.render(80, 24).plain
         assert "Local.mkv" in initial
         assert "Przygotowanie" in initial
         assert len(controller._processing_rows()) == 1
         assert " |   0% | 00:00:00.000" in initial
-        assert "X anuluj" in initial
-        controller.handle_key("text:c")
-        controller.handle_key("enter")
+        assert "Del usuń" in initial
+        _cancel_row(controller)
         assert calls == [("cancel", {"run_id": "run"})]
         identity: list[str] = controller._processing_row_ids()
         view: RunProgressSnapshot = _live_snapshot("run", {"local": "Local.mkv"}, ())
@@ -493,8 +501,7 @@ def test_local_admitted_material_is_preparing_before_progress_restore_and_first_
         )
         assert "25%" in controller.render(80, 24).plain
         assert controller._processing_row_ids() == identity
-        controller.handle_key("text:c")
-        controller.handle_key("enter")
+        _cancel_row(controller)
         assert calls == [("cancel", {"run_id": "run"}), ("cancel", {"run_id": "run"})]
         progress.emit(RunEvent("run", 3, RunEventKind.GROUP_FINISHED, group_id="local", state=TaskState.SUCCEEDED))
         assert controller._processing_rows() == []
@@ -774,6 +781,7 @@ def test_processing_hides_uncertain_downloads_and_handoffs_without_changing_live
     controller.show_processing()
     calls: list[object] = []
     monkeypatch.setattr(controller, "_command", lambda *args: calls.append(args))
+    monkeypatch.setattr(controller, "_cancel_hidden", lambda target: calls.append(cancel_command(target)))
     hidden: list[dict[str, object]] = [
         {
             "material_id": f"ghost-{stage}-{state}",
@@ -819,15 +827,13 @@ def test_processing_hides_uncertain_downloads_and_handoffs_without_changing_live
         assert "Automat: praca · pobiera 20 · przetwarza 1 · O wyłącz" in frame
         assert not any(text in frame for text in ("Ghost", "Materiał", "Niepewne", "99%"))
         assert controller._processing_row_ids() == ["download", "local"]
-        assert "X anuluj" not in frame
-        controller.handle_key("text:c")
-        controller.handle_key("enter")
+        assert "Del usuń" not in frame
+        _cancel_row(controller)
         assert calls == []
         controller.handle_key("end")
         assert controller._selected == 1
-        assert "X anuluj" in controller.render(columns, rows).plain
-        controller.handle_key("text:c")
-        controller.handle_key("enter")
+        assert "Del usuń" in controller.render(columns, rows).plain
+        _cancel_row(controller)
         assert calls == [("cancel", {"run_id": "run"})]
         controller.handle_key("home")
         assert controller._selected == 0
@@ -858,6 +864,7 @@ def test_processing_footer_names_the_explicit_owner_action_and_current_pause_sta
     controller._notice = ""
     calls: list[tuple[str, Mapping[str, object]]] = []
     monkeypatch.setattr(controller, "_command", lambda kind, payload: calls.append((kind, payload)))
+    monkeypatch.setattr(controller, "_cancel_hidden", lambda target: calls.append(cancel_command(target)))
     try:
         frame: str = controller.render(80, 24).plain
         assert frame.splitlines()[-1].strip() == status
@@ -883,6 +890,7 @@ def test_processing_only_shows_live_material_bars_from_a_mixed_legacy_snapshot( 
     controller: StateController = StateController(session, lambda: None)
     controller.show_processing()
     monkeypatch.setattr(controller, "_command", lambda kind, payload: calls.append((kind, payload)))
+    monkeypatch.setattr(controller, "_cancel_hidden", lambda target: calls.append(cancel_command(target)))
     labels: dict[str, str] = {"a": "Episode 01.mkv", "b": "Episode 02.mkv", "queued": "Queued.mkv"}
     view: RunProgressSnapshot = _live_snapshot(
         "run",
@@ -956,8 +964,7 @@ def test_processing_only_shows_live_material_bars_from_a_mixed_legacy_snapshot( 
         assert "Episode 02.mkv" in frame
         assert len(controller._processing_rows()) == 2
         assert controller._selected == 1
-        controller.handle_key("text:c")
-        controller.handle_key("enter")
+        _cancel_row(controller)
         assert calls == [("cancel", {"run_id": "run"})]
         controller._receive(
             session,
@@ -968,10 +975,9 @@ def test_processing_only_shows_live_material_bars_from_a_mixed_legacy_snapshot( 
         )
         frame = controller.render(columns, rows).plain
         assert "Brak aktywnego przetwarzania" in frame
-        assert "X anuluj" not in frame
+        assert "Del usuń" not in frame
         assert "%" not in frame
-        controller.handle_key("text:c")
-        controller.handle_key("enter")
+        _cancel_row(controller)
         assert len(calls) == 1
     finally:
         controller.close()
@@ -1000,10 +1006,10 @@ def test_processing_requires_live_request_and_distinguishes_preparing_from_start
         if state in {"accepted", "running"}:
             assert "Przygotowanie" in frame
             assert len(controller._processing_rows()) == 1
-            assert "X anuluj" in frame
+            assert "Del usuń" in frame
         else:
             assert "Brak aktywnego przetwarzania" in frame
-            assert "X anuluj" not in frame
+            assert "Del usuń" not in frame
         assert "Episode.mkv" not in frame
         assert ("%" in frame) is (state in {"accepted", "running"})
     finally:
@@ -1389,6 +1395,7 @@ def test_deletion_operations_are_not_selectable_materials(monkeypatch: pytest.Mo
     calls: list[tuple[str, Mapping[str, object]]] = []
     controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
     monkeypatch.setattr(controller, "_command", lambda kind, payload: calls.append((kind, payload)))
+    monkeypatch.setattr(controller, "_cancel_hidden", lambda target: calls.append(cancel_command(target)))
     operations: list[dict[str, object]] = [
         {
             "operation_id": f"delete-{name}",
@@ -2045,6 +2052,7 @@ def test_processing_preserves_selected_identity_when_material_counts_change(
     controller.show_processing()
     calls: list[tuple[str, Mapping[str, object]]] = []
     monkeypatch.setattr(controller, "_command", lambda kind, payload: calls.append((kind, payload)))
+    monkeypatch.setattr(controller, "_cancel_hidden", lambda target: calls.append(cancel_command(target)))
     materials: list[dict[str, object]] = [_live_material(f"material-{index}", f"run-{index}") for index in range(3)]
     deletions: list[dict[str, object]] = [
         {"operation_id": "delete", "set_id": "set", "name": "Deleted", "total": 2, "recycled": 1}
@@ -2085,8 +2093,7 @@ def test_processing_preserves_selected_identity_when_material_counts_change(
             {"event": "state_changed", "payload": {**controller._snapshot, "materials": list(reversed(materials))}},
         )
         assert controller._selected == 1
-        controller.handle_key("text:c")
-        controller.handle_key("enter")
+        _cancel_row(controller)
         assert calls == [("cancel", {"run_id": "run-1"})]
     finally:
         controller.close()
