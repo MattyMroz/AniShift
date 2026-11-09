@@ -19,6 +19,7 @@ from rich.text import Text
 
 from anishift.application import (
     AcquisitionService,
+    AdmissionConflict,
     AppService,
     EpisodeBatch,
     EpisodeFile,
@@ -111,6 +112,15 @@ _LOADING_ENTRIES: Final[str] = "Wczytuję wpisy…"
 
 _SENDING: Final[str] = "Wysyłam…"
 """Sentence shown while the torrent client takes the chosen releases."""
+
+_OFFER_CLOSED: Final[str] = "Lista wydań wygasła · I otwórz ją ponownie"
+"""Notice for a release list whose owner offer ended when the panel left it."""
+
+_RELEASE_ENTER: Final[str] = "Wydanie pobierasz klawiszem D"
+"""Notice for Enter on the release list, which orders nothing."""
+
+_MAYBE_ORDERED: Final[str] = "E{number} może być już zlecony · naciśnij P, żeby pobrać jeszcze raz"
+"""Question shown when the owner refuses a release of an episode that may already be ordered."""
 
 _ADDING: Final[str] = "Dodaję subskrypcję…"
 """Sentence shown while the owner reads the season and saves a new subscription."""
@@ -250,7 +260,7 @@ class AnimeController:
         self._offer_id: str | None = None
         self._offer_refreshing: bool = False
         self._offer_refresh_pending: bool = False
-        self._choice_sending: bool = False
+        self._choice_generation: int | None = None
         self._confirm_view: EpisodeOfferView | None = None
         self._files: EpisodeFiles | None = None
         self._confirm_choice: RankedCandidate | None = None
@@ -941,7 +951,7 @@ class AnimeController:
             if screen is AnimeScreen.EPISODES
             else set()
         )
-        if self._choice_sending or (
+        if self._choice_generation == self._generation or (
             self._pending_batch is not None and screen in {AnimeScreen.EPISODES, AnimeScreen.RELEASES}
         ):
             self._view.searching.add("pending")
@@ -1188,6 +1198,9 @@ class AnimeController:
             self._offer_view = None
             self._offer_id = None
             self._confirm_view = None
+            if self._screen is _Screen.CANDIDATES:
+                self._screen = _Screen.EPISODES
+                self._notice = _OFFER_CLOSED
             if self._resident is not None:
                 self._resident.interrupt_reads()
             if self._screen is _Screen.BUSY:
@@ -1324,6 +1337,9 @@ class AnimeController:
             episode: ListedEpisode | None = self._repeatable_offer()
             if episode is not None:
                 self._start_owner_offer(episode, repeat=True)
+            return
+        if self._screen is _Screen.CANDIDATES and key == "enter":
+            self._notice = _RELEASE_ENTER
             return
         count: int = self._episode_screen_count()
         if not count:
@@ -1753,7 +1769,6 @@ class AnimeController:
         self._offer_id = None
         self._offer_refreshing = False
         self._offer_refresh_pending = False
-        self._choice_sending = False
         self._resident.interrupt_reads()
         generation: int = self._start_work("Szukam…", _Screen.EPISODES)
         self._open_candidates()
@@ -1802,7 +1817,11 @@ class AnimeController:
                         return
                     self._offer_refreshing = False
                     self._worker = None
-                    if self._choice_sending and isinstance(problem, ControlError) and problem.reason == "offer_expired":
+                    if (
+                        self._choice_generation == generation
+                        and isinstance(problem, ControlError)
+                        and problem.reason == "offer_expired"
+                    ):
                         return
                     if isinstance(problem, ControlError) and problem.reason == "response_too_large":
                         self.receive("control_problem", {})
@@ -1862,13 +1881,21 @@ class AnimeController:
     def _choose_release(
         self, choice: RankedCandidate, *, confirmed: bool = False, shown: EpisodeOfferView | None = None
     ) -> None:
-        if self._choice_sending:
+        if self._choice_generation == self._generation:
+            self._notice = _SENDING
             return
         if self._pending_batch is not None:
             self._notice = "Trwa partia · po jej zakończeniu otwórz wydania ponownie"
             return
         view: EpisodeOfferView | None = shown or self._offer_view
-        if self._resident is None or view is None or choice.supported is False:
+        if self._resident is None:
+            self._notice = UNAVAILABLE
+            return
+        if view is None:
+            self._notice = _OFFER_CLOSED
+            return
+        if choice.supported is False:
+            self._notice = "Tego wydania nie da się pobrać"
             return
         if choice.identity.verdict is not IdentityVerdict.MATCH and not confirmed:
             self._confirm_choice = choice
@@ -1881,7 +1908,7 @@ class AnimeController:
             self._screen = _Screen.PROBLEM
             return
         generation: int = self._generation
-        self._choice_sending = True
+        self._choice_generation = generation
         self._notice = _SENDING
         self._spawn(self._send_choice, (view, choice, generation, uuid4().hex))
 
@@ -1901,10 +1928,14 @@ class AnimeController:
             repeatable: bool = reason in REPEATABLE_REASONS
             with self._lock:
                 if generation == self._generation:
-                    self._choice_sending = False
+                    self._choice_generation = None
                     if repeatable:
                         self._worker = None
-                        self._notice = " · ".join(part for part in stated(problem) if part)
+                        self._notice = (
+                            _MAYBE_ORDERED.format(number=view.offer.key.number)
+                            if reason == AdmissionConflict.POSSIBLY_ADMITTED
+                            else " · ".join(part for part in stated(problem) if part)
+                        )
                         known: EpisodeStatus | None = self._episode_states.get(view.offer.key)
                         if known is None or (known.state == "not_ordered" and known.admission_id is None):
                             self._episode_states[view.offer.key] = EpisodeStatus(
@@ -1979,7 +2010,7 @@ class AnimeController:
             self._notice_kind = NoticeKind.SUCCESS
             self._offer_view = None
             self._offer_id = None
-            self._choice_sending = False
+            self._choice_generation = None
             self._offers_running = False
             self._files = None
             self._screen = _Screen.EPISODES
@@ -1991,6 +2022,10 @@ class AnimeController:
         with self._lock:
             self._notice = notice
         self.refresh_episode_states()
+
+    def reread_episode_states(self) -> None:
+        """Refresh the visible episode states on a worker, for a tab that was not watching owner changes."""
+        threading.Thread(target=self.refresh_episode_states, name=_WORKER_NAME, daemon=True).start()
 
     def refresh_episode_states(self) -> None:
         """Refresh at most one owner page around the visible episode window."""

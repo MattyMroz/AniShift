@@ -44,7 +44,7 @@ def test_first_auto_execution_frame_contains_real_extraction_rows() -> None:
 
     frame = interactive_app._auto_content((120, 40), progress, MascotState.EXTRACT, interactive_app._QueueView())
 
-    assert "Ekstrakcja" in frame.plain
+    assert "Wyodrębnianie" in frame.plain
     assert "episode-01" in frame.plain
 
 

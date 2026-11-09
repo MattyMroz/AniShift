@@ -50,7 +50,7 @@ EPISODE_REASON_LABELS: Final[dict[str, str]] = {
 }
 """Shared column labels for owner batch and episode status reasons."""
 
-IN_PROGRESS_HINT: Final[str] = "W toku · X anuluj w Przetwarzaniu"
+IN_PROGRESS_HINT: Final[str] = "W toku · Del usuń w Przetwarzaniu"
 """Notice naming where an active episode can be cancelled instead of ordered again."""
 
 RETRY_HINT: Final[str] = "Błąd przetwarzania · P ponów"
