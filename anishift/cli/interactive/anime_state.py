@@ -67,7 +67,7 @@ class AnimeRow:
     status: str = ""
     image: str = ""
     size: str = ""
-    language: str = ""
+    subtitles: str = ""
     seeds: str = ""
     progress: str = ""
     ready: str = ""
@@ -94,12 +94,12 @@ class AnimeRow:
                 self.kind,
                 self.status,
                 self.image,
+                f"Audio: {self.audio}" if self.audio else "",
+                f"Napisy: {self.subtitles}" if self.subtitles else "",
                 f"Rozmiar: {self.size}" if self.size else "",
-                self.language,
                 self.seeds,
                 self.progress,
                 self.ready,
-                f"Audio: {self.audio}" if self.audio else "",
                 f"Jakość: {self.quality}" if self.quality else "",
                 f"Pewność: {self.confidence}" if self.confidence else "",
             )

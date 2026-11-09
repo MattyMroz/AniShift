@@ -15,6 +15,7 @@ from anishift.application.release_quality import (
     ReleaseTraits,
     ResolutionClass,
     SeedClass,
+    audio_text,
     class_key,
     language_code,
     low_transcode,
@@ -24,6 +25,7 @@ from anishift.application.release_quality import (
     resolution_class,
     seed_class,
     seed_points,
+    subtitles_text,
 )
 
 
@@ -813,6 +815,8 @@ def test_low_transcode_is_a_transcode_below_1080_lines(name: str, low: bool) -> 
         (_traits(("Example [Dual-Audio]",)), ("ja", "?")),
         (_traits(("Example [Multi Audio] [English Dub]",)), ("ja", "?")),
         (_traits(("Example [Multi-Audio]",), donghua=True), ("zh", "?")),
+        (_traits(declarations=(_declaration(audio=frozenset({"en", "ja", "zh"})),), donghua=True), ("zh", "ja", "en")),
+        (_traits(declarations=(_declaration(audio=frozenset({"en", "ar", "ko"})),)), ("ko", "ar", "en")),
         (_traits(("Example - 03 (1080p)",)), ()),
     ],
 )
@@ -820,3 +824,79 @@ def test_audio_languages_list_the_original_first_mark_unlisted_dual_audio_and_st
     traits: ReleaseTraits, languages: tuple[str, ...]
 ) -> None:
     assert traits.audio_languages == languages
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("traits", "languages"),
+    [
+        (_traits(declarations=(_declaration(subtitles=frozenset({"pl-PL", "en", "de"})),)), ("de", "en", "pl")),
+        (_traits(tags=("{Tags:A=ja;F=pl;S=en,fr}",)), ("en", "fr", "pl")),
+        (_traits(("Example [Napisy PL] [MultiSub]",)), ()),
+        (_traits(("Example - 03 (1080p)",)), ()),
+    ],
+)
+def test_subtitle_languages_list_only_a_complete_declaration(traits: ReleaseTraits, languages: tuple[str, ...]) -> None:
+    assert traits.subtitle_languages == languages
+    assert traits.subtitles_listed is bool(languages)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("languages", "text"),
+    [
+        (("ja",), "JA"),
+        (("ja", "en"), "JA+EN"),
+        (("ja", "ar", "de", "en", "es", "fil", "fr", "hi", "it", "pl", "pt", "ta", "te", "th"), "JA+EN+PL+11"),
+        (("ja", "?"), "JA+?"),
+        (("en",), "EN"),
+        (("ja", "ko", "ar", "de", "en", "es", "fil", "fr", "hi", "it", "pl", "pt"), "JA+KO+EN+PL+8"),
+        (("ja", "zh", "ko", "en", "pl", *(f"x{index}" for index in range(12))), "JA+ZH+KO+EN+PL+12"),
+        (("zh", "ja", "en"), "ZH+JA+EN"),
+        (("ko", "ar", "en"), "KO+EN+1"),
+        (("ar", "fr"), "+2"),
+        ((), "?"),
+    ],
+)
+def test_audio_text_names_the_original_ja_zh_ko_en_and_pl_and_counts_the_rest(
+    languages: tuple[str, ...], text: str
+) -> None:
+    assert audio_text(replace(_traits(), audio_languages=languages)) == text
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("polish", "english", "languages", "text"),
+    [
+        (PolishClass.POLISH, True, (), "PL+EN"),
+        (
+            PolishClass.POLISH,
+            True,
+            ("ar", "de", "en", "es", "fi", "fr", "hi", "id", "it", "ms", "pl", "pt", "ru", "th", "tr", "vi", "zh"),
+            "PL+EN+15",
+        ),
+        (PolishClass.NONE, False, (), "—"),
+        (PolishClass.NONE, False, ("de", "es", "fr", "it", "pt"), "+5"),
+        (PolishClass.NONE, True, (), "EN"),
+        (PolishClass.BARE, False, (), "PL"),
+        (PolishClass.NONE, True, ("en",), "EN"),
+    ],
+)
+def test_subtitles_text_names_pl_and_en_and_counts_the_rest_of_a_complete_list(
+    polish: PolishClass, english: bool, languages: tuple[str, ...], text: str
+) -> None:
+    traits: ReleaseTraits = replace(_traits(), polish=polish, english_subtitles=english, subtitle_languages=languages)
+    assert subtitles_text(traits) == text
+
+
+@pytest.mark.unit
+def test_release_list_language_texts_follow_the_declarations() -> None:
+    sublangs: frozenset[str] = frozenset(
+        {"ar", "de", "en", "es", "fi", "fr", "hi", "id", "it", "ms", "pl", "pt", "ru", "th", "tr", "vi", "zh"}
+    )
+    listed: ReleaseTraits = _traits(
+        declarations=(_declaration(subtitles=sublangs, audio=frozenset({"ja", "en", "pl", "de"})),)
+    )
+    named: ReleaseTraits = _traits(("Example [Napisy PL] [Dual-Audio]",))
+    assert (audio_text(listed), subtitles_text(listed)) == ("JA+EN+PL+1", "PL+EN+15")
+    assert (audio_text(named), subtitles_text(named)) == ("JA+?", "PL")

@@ -79,6 +79,9 @@ _SUBSCRIPTION_STATUS_WIDTH: Final[int] = len("Konflikt liczby odcinków")
 _TITLE_FLOOR: Final[int] = 12
 """Fewest title cells kept before optional table columns are dropped."""
 
+_RELEASE_TITLE_FLOOR: Final[int] = 40
+"""Fewest release name cells kept before optional release columns are dropped."""
+
 _COLORS: Final[dict[NoticeKind, str]] = {
     NoticeKind.INFO: "gray",
     NoticeKind.SUCCESS: "success",
@@ -129,6 +132,7 @@ class _Table:
     status_width: int = 0
     optional: tuple[int, ...] = ()
     right: tuple[int, ...] = ()
+    floor: int = _TITLE_FLOOR
 
 
 class _Canvas:
@@ -341,22 +345,23 @@ def _spec(screen: AnimeScreen) -> _Table:
         )
     if screen is AnimeScreen.RELEASES:
         return _Table(
-            ("Wydanie", "Obraz", "Rozmiar", "Język", "Seedy", "Audio", "Jakość", "Pewność"),
+            ("Wydanie", "Obraz", "Audio", "Napisy", "Rozmiar", "Seedy", "Jakość", "Pewność"),
             lambda item: (
                 item.title,
                 item.image,
-                item.size,
-                item.language,
-                item.seeds.rjust(5),
                 item.audio,
+                item.subtitles,
+                item.size,
+                item.seeds.rjust(5),
                 item.quality.rjust(6),
                 item.confidence,
             ),
             8,
             0,
-            (0, 5, 0, Text("PL · MultiSub").cell_len, 5, 0, 6, 7),
-            optional=(2, 3, 5, 1, 4),
-            right=(2,),
+            (0, 5, 0, 0, 0, 5, 6, 7),
+            optional=(4, 3, 2, 1, 5),
+            right=(4,),
+            floor=_RELEASE_TITLE_FLOOR,
         )
     if screen is AnimeScreen.SUBSCRIPTIONS:
         return _Table(
@@ -389,16 +394,20 @@ def _widths(snapshot: AnimeSnapshot, spec: _Table, limit: int, now: float, visib
     widths: list[int] = [
         max(Text(label).cell_len, minimum) for label, minimum in zip(spec.labels, spec.minimums, strict=True)
     ]
-    for item in snapshot.items[snapshot.offset : snapshot.offset + visible]:
+    releases: bool = snapshot.screen is AnimeScreen.RELEASES
+    measured: tuple[AnimeRow, ...] = (
+        snapshot.items if releases else snapshot.items[snapshot.offset : snapshot.offset + visible]
+    )
+    for item in measured:
         for position, value in enumerate(_values(snapshot, item, now)):
             widths[position] = max(widths[position], Text(value).cell_len)
     if spec.status_width:
         widths[-1] = spec.status_width
-    if snapshot.screen is AnimeScreen.RELEASES:
+    if releases:
         widths[-1] = min(widths[-1], limit - spec.prefix - len("Wydanie") - len("Jakość") - 4)
     shown: list[int] = list(range(len(widths)))
     floor: list[int] = list(widths)
-    floor[spec.title] = min(widths[spec.title], _TITLE_FLOOR)
+    floor[spec.title] = min(widths[spec.title], spec.floor)
     for position in spec.optional:
         if _table_width(spec, floor, shown) <= limit:
             break
@@ -534,20 +543,22 @@ def _unshown(snapshot: AnimeSnapshot, item: AnimeRow, limit: int, now: float, vi
     spec: _Table = _spec(snapshot.screen)
     widths, shown = _widths(snapshot, spec, limit, now, visible)
     values: list[str] = _values(snapshot, item, now)
-    parts: list[str] = []
+    releases: bool = snapshot.screen is AnimeScreen.RELEASES
+    truncated: bool = Text(item.title).cell_len > widths[spec.title]
+    parts: list[str] = [item.title] if releases and truncated else []
     if snapshot.screen is AnimeScreen.SUBSCRIPTIONS and (item.detail or Text(values[-1]).cell_len > widths[-1]):
         parts.append(item.detail or values[-1])
     hidden: list[int] = sorted(position for position in spec.optional if position not in shown)
     parts.extend(f"{spec.labels[position].lower()} {values[position].strip()}" for position in hidden)
-    if item.note and snapshot.screen is not AnimeScreen.RELEASES:
+    if item.note and not releases:
         parts.append(item.note)
-    if snapshot.screen is AnimeScreen.RELEASES and Text(values[-1]).cell_len > widths[-1]:
+    if releases and Text(values[-1]).cell_len > widths[-1]:
         parts.append(f"pewność {values[-1]}")
-    if Text(item.title).cell_len > widths[spec.title]:
+    if truncated and not releases:
         parts.append(item.title)
-    if snapshot.screen is AnimeScreen.RELEASES and item.note:
+    if releases and item.note:
         parts.append(item.note)
-    if snapshot.screen is AnimeScreen.RELEASES and not parts:
+    if releases and not parts:
         parts.append(item.detail)
     return " · ".join(parts)
 

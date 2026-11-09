@@ -174,7 +174,7 @@ from anishift.application.planning import (
     TaskKind,
     TaskState,
 )
-from anishift.application.release_quality import PolishClass, ReleaseTraits
+from anishift.application.release_quality import PolishClass, ReleaseTraits, audio_text, subtitles_text
 from anishift.application.results import (
     ArtifactSnapshot,
     GroupResult,
@@ -342,6 +342,7 @@ __all__ = [
     "WorkflowTarget",
     "WorkspaceInspector",
     "anilist_date",
+    "audio_text",
     "confidence_text",
     "conflict_label",
     "cut_point",
@@ -366,6 +367,7 @@ __all__ = [
     "ready_group_ids",
     "resolve_readiness",
     "size_bytes",
+    "subtitles_text",
     "visible",
 ]
 

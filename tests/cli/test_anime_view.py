@@ -201,9 +201,7 @@ def test_confirmed_status_has_no_temporary_background_style() -> None:
 
 @pytest.mark.parametrize("width", [50, 80])
 def test_release_columns_keep_seeds_and_no_repeat_shortcut(width: int) -> None:
-    items: tuple[AnimeRow, ...] = tuple(
-        replace(item, image="1080p", language="MultiSub", seeds="312") for item in rows()
-    )
+    items: tuple[AnimeRow, ...] = tuple(replace(item, image="1080p", subtitles="EN", seeds="312") for item in rows())
     frame: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", items), width, 24, 0)
     header: str = frame.text.plain.splitlines()[frame.first_row - 1]
     assert "Seedy" in header
@@ -223,7 +221,7 @@ def test_offer_columns_quality_confidence_last(width: int, confidence: str) -> N
         "one",
         "[Group] 日本e\u0301 - 04",
         image="1080p",
-        language="PL · EN",
+        subtitles="PL+EN",
         seeds="312",
         quality="69",
         confidence=confidence,
@@ -247,20 +245,21 @@ def test_offer_columns_quality_confidence_last(width: int, confidence: str) -> N
     assert item.copy_text.endswith(f"Jakość: 69 · Pewność: {confidence}")
     displayed: str = " ".join(frame.text.plain.split())
     assert "1080p" in displayed
-    assert "PL · EN" in displayed
+    assert "PL+EN" in displayed
     assert "312" in displayed
     assert confidence in displayed
     if width == 120:
         assert item.title in row
 
 
-def test_release_size_column_follows_image_and_aligns_sizes_right_at_120_columns() -> None:
+def test_release_size_column_follows_subtitles_and_aligns_sizes_right_at_120_columns() -> None:
     first: AnimeRow = AnimeRow(
         "one",
         "[Group] Slime - 04",
         image="1080p",
         size="1.40 GB",
-        language="PL",
+        audio="JA",
+        subtitles="PL",
         seeds="312",
         quality="69",
         confidence="95%",
@@ -271,7 +270,7 @@ def test_release_size_column_follows_image_and_aligns_sizes_right_at_120_columns
     frame: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", items), 120, 40, 0)
     lines: list[str] = frame.text.plain.splitlines()
     header: str = lines[frame.first_row - 1]
-    labels: tuple[str, ...] = ("Wydanie", "Obraz", "Rozmiar", "Język", "Seedy", "Audio", "Jakość", "Pewność")
+    labels: tuple[str, ...] = ("Wydanie", "Obraz", "Audio", "Napisy", "Rozmiar", "Seedy", "Jakość", "Pewność")
     starts: list[int] = [header.index(label) for label in labels]
     end: int = header.index("Rozmiar") + len("Rozmiar")
     rows_shown: list[str] = lines[frame.first_row : frame.first_row + len(sizes)]
@@ -280,23 +279,100 @@ def test_release_size_column_follows_image_and_aligns_sizes_right_at_120_columns
     assert "rozmiar" not in " ".join(lines[frame.first_row + len(sizes) :])
 
 
-def test_release_size_column_hides_first_and_moves_to_the_notice_at_80_columns() -> None:
+def test_release_size_column_hides_first_and_moves_to_the_notice_at_100_columns() -> None:
     item: AnimeRow = AnimeRow(
         "one",
         "[SubsPlease] Tensei shitara Slime Datta Ken S4 - 04 (1080p)",
         image="1080p",
         size="350.2 MiB",
-        language="PL · MultiSub",
+        audio="JA",
+        subtitles="PL+EN",
         seeds="312",
         quality="69",
         confidence="95%",
     )
-    frame: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", (item,)), 80, 24, 0)
+    frame: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", (item,)), 100, 24, 0)
     lines: list[str] = frame.text.plain.splitlines()
     header: str = lines[frame.first_row - 1]
     assert "Rozmiar" not in header
-    assert all(label in header for label in ("Wydanie", "Obraz", "Język", "Seedy", "Jakość", "Pewność"))
+    assert all(label in header for label in ("Wydanie", "Obraz", "Audio", "Napisy", "Seedy", "Jakość", "Pewność"))
     assert "rozmiar 350.2 MiB" in " ".join(lines[frame.first_row + 1 :])
+
+
+def release_rows() -> tuple[AnimeRow, ...]:
+    base: AnimeRow = AnimeRow(
+        "toonshub",
+        "[ToonsHub] A Certain Dark Item S01E03 1080p CR WEB-DL AAC2.0 H.264 (Multi-Subs)",
+        image="1080p",
+        audio="JA+EN+PL+11",
+        subtitles="PL+EN+15",
+        size="1.4 GB",
+        seeds="312",
+        quality="70",
+        confidence="97%",
+    )
+    return (
+        base,
+        replace(
+            base,
+            key="subsplease",
+            title="[SubsPlease] A Certain Dark Item - 03 (1080p) [ABCDEF12].mkv",
+            audio="JA",
+            subtitles="EN",
+            size="349.7 MB",
+            seeds="1203",
+            quality="40",
+        ),
+        replace(base, key="erai", audio="JA+?", subtitles="+5", seeds="?", confidence="68% · niepewne"),
+        replace(base, key="varyg", audio="JA+ZH+KO+EN+PL+12", subtitles="—", size="1.5 GB", seeds="45"),
+        replace(base, key="dub", audio="EN", subtitles="PL", size="700.0 MB", seeds="9", quality="12"),
+    )
+
+
+@pytest.mark.parametrize("width", [80, 100, 120])
+def test_release_columns_start_in_the_same_cell_on_every_row(width: int) -> None:
+    items: tuple[AnimeRow, ...] = release_rows()
+    frame: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", items), width, 24, 0)
+    lines: list[str] = frame.text.plain.splitlines()
+    header: str = lines[frame.first_row - 1]
+    shown: list[str] = lines[frame.first_row : frame.first_row + len(items)]
+    left: dict[str, list[str]] = {
+        "Wydanie": [item.title[:10] for item in items],
+        "Obraz": [item.image for item in items],
+        "Audio": [item.audio for item in items],
+        "Napisy": [item.subtitles for item in items],
+        "Pewność": [item.confidence for item in items],
+    }
+    right: dict[str, list[str]] = {
+        "Rozmiar": [item.size for item in items],
+        "Seedy": [item.seeds for item in items],
+        "Jakość": [item.quality for item in items],
+    }
+    starts: dict[str, int] = {label: header.index(label) for label in left if label in header}
+    ends: dict[str, int] = {label: header.index(label) + len(label) for label in right if label in header}
+    assert {"Wydanie", "Pewność"} <= starts.keys()
+    assert "Jakość" in ends
+    for index, row in enumerate(shown):
+        assert all(
+            row[start - 1] == " " and row[start:].startswith(left[label][index]) for label, start in starts.items()
+        )
+        assert all(row[:end].endswith(f" {right[label][index]}") and row[end] == " " for label, end in ends.items())
+    assert all(Text(line).cell_len == width for line in lines)
+
+
+def test_release_columns_keep_their_cells_while_the_list_scrolls() -> None:
+    items: tuple[AnimeRow, ...] = (
+        *(replace(item, key=f"{item.key}-{copy}") for copy in range(6) for item in release_rows()[:3]),
+        release_rows()[3],
+    )
+    snapshot: AnimeSnapshot = AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", items)
+    top: AnimeFrame = render_anime(snapshot, 120, 16, 0)
+    bottom: AnimeFrame = render_anime(
+        replace(snapshot, cursor=len(items) - 1, offset=len(items) - top.visible), 120, 16, 0
+    )
+    assert "JA+ZH+KO+EN+PL+12" not in top.text.plain
+    assert "JA+ZH+KO+EN+PL+12" in bottom.text.plain
+    assert top.text.plain.splitlines()[top.first_row - 1] == bottom.text.plain.splitlines()[bottom.first_row - 1]
 
 
 @pytest.mark.parametrize("rows_count", [12, 24])
@@ -318,13 +394,14 @@ def test_hidden_release_columns_follow_cursor_and_remain_copyable_at_fifty_colum
         "[Group] Slime - 04 [1080p]",
         image="1080p",
         size="1.40 GB",
-        language="PL · EN",
+        audio="JA",
+        subtitles="PL+EN",
         seeds="321",
         quality="69",
         confidence="95% · niepewne",
         detail="Details " * 40,
     )
-    second: AnimeRow = replace(first, key="two", image="2160p", size="?", language="EN", seeds="?")
+    second: AnimeRow = replace(first, key="two", image="2160p", audio="?", size="?", subtitles="EN", seeds="?")
     snapshot: AnimeSnapshot = AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", (first, second))
     frame: AnimeFrame = render_anime(snapshot, 50, height, 0)
     next_frame: AnimeFrame = render_anime(replace(snapshot, cursor=1), 50, height, 0)
@@ -332,13 +409,15 @@ def test_hidden_release_columns_follow_cursor_and_remain_copyable_at_fifty_colum
     next_lines: list[str] = next_frame.text.plain.splitlines()
     footer: str = " ".join(" ".join(lines[-5:]).split())
     next_footer: str = " ".join(" ".join(next_lines[-5:]).split())
-    assert "obraz 1080p · rozmiar 1.40 GB · język PL · EN" in footer
+    assert footer.startswith(f"{first.title} · obraz 1080p")
+    assert "audio JA · napisy PL+EN · rozmiar 1.40 GB" in footer
     assert "seedy 321" in footer
-    assert "obraz 2160p · rozmiar ? · język EN · seedy ?" in next_footer
+    assert "obraz 2160p" in next_footer
+    assert "audio ? · napisy EN · rozmiar ? · seedy ?" in next_footer
     assert "Details" not in footer
     assert frame.first_row == next_frame.first_row
     assert lines[frame.first_row - 1] == next_lines[next_frame.first_row - 1]
-    assert frame.selected_text((TextPoint(height - 5, 0), TextPoint(height - 3, 49))).startswith("obraz 1080p")
+    assert frame.selected_text((TextPoint(height - 5, 0), TextPoint(height - 3, 49))).startswith(first.title)
     assert all(Text(line).cell_len == 50 for line in lines)
 
 
@@ -346,7 +425,7 @@ def test_hidden_release_columns_follow_cursor_and_remain_copyable_at_fifty_colum
 def test_truncated_release_name_is_shown_in_full_without_moving_the_table(width: int) -> None:
     name: str = "[SubsPlease] Tensei shitara Slime Datta Ken - 01 (1080p) [ABCDEF12].mkv"
     short: AnimeRow = AnimeRow(
-        "one", "Short", image="1080p", size="1 GB", language="PL", seeds="312", audio="JA", detail="Szczegóły"
+        "one", "Short", image="1080p", size="1 GB", subtitles="PL", seeds="312", audio="JA", detail="Szczegóły"
     )
     long: AnimeRow = replace(short, title=name)
     plain: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", (short,)), width, 24, 0)

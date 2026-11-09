@@ -91,6 +91,7 @@ _FIELDS: Final[frozenset[str]] = frozenset(
         "size_rank",
         "origin",
         "audio_languages",
+        "subtitle_languages",
         "group",
         "dub_only",
         "supported",
