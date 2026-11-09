@@ -541,7 +541,7 @@ def _prepare(value: str) -> str:
     )
     if not semantic:
         text = re.sub(
-            r"(?i)(\b(?:x26[45]|h[ .]?26[45]|av1|hevc|aac|flac|msubs|(?<!-)(?:dual|multi)))"
+            r"(?i)(\b(?:x26[45]|h[ .]?26[45]|avc|av1|hevc|aac|flac|[1257]\.\d|msubs|(?<!-)(?:dual|multi)))"
             r"-(?:[a-z][a-z0-9]*|[a-z]+(?:-[a-z]+)+)(?=\[[^\]]*\]$|$)",
             r"\1",
             text,
@@ -554,6 +554,7 @@ def _prepare(value: str) -> str:
             )
     text = re.sub(r"(?i)\b(ddp|aac|flac|opus)(\d) (\d)\b", r"\1\2.\3", text)
     text = re.sub(r"(?i)\b(h|x)[ ._-]+(26[45])\b", r"\1\2", text)
+    text = re.sub(r"(?i)\b(s\d{1,2})(v\d)\b", r"\1 \2", text)
     text = re.sub(r"(?i)\b(?:u-next|adn|at x|at-x|dsny|dsnp|abema|baha)\b", "web", text)
     text = re.sub(r"(?i)\b(?:dovi|dv hdr|hdr10\+|dolbyvision)\b", "hdr", text)
     return re.sub(r"(?i)\b(?:10bits|10-bit|hi10)\b", "10bit", text)
@@ -568,6 +569,11 @@ def _technical(text: str) -> bool:
             return False
         remainder = remainder[token.end() :].strip()
     return True
+
+
+def _without_release_group(stem: str, release: str) -> str:
+    group: re.Match[str] | None = FIRST_BRACKET.match(release)
+    return stem if group is None else re.sub(r"\s*\[" + re.escape(group.group(1)) + r"\]\s*$", "", stem)
 
 
 def _strip_group(text: str) -> str:
@@ -1364,7 +1370,7 @@ def identity_evidence(target: Mapping[str, object], candidate: Mapping[str, obje
     release: str = str(candidate.get("release") or "")
     text: str = selected or release
     stem: str = text.rpartition(".")[0] if text.rpartition(".")[2].casefold() in VIDEO_EXTENSIONS else text
-    stem = _prepare(stem)
+    stem = _prepare(_without_release_group(stem, release))
     parsed: _Parsed = _absolute_echo(stem, _parse(stem, identity), identity)
     residual: str
     year_ok: bool
@@ -1499,7 +1505,7 @@ def _special_number(stem: str, parsed: _Parsed, target: _Target) -> bool:
 def _assess(identity: _Target, candidate: Metadata, path: str, stem: str) -> IdentityAssessment:  # noqa: PLR0911
     if PLEX_SUFFIX.search(stem):
         return IdentityAssessment(IdentityVerdict.MISMATCH, "Selected filename has an explicit Plex extra suffix.")
-    stem = _prepare(stem)
+    stem = _prepare(_without_release_group(stem, str(candidate.get("release") or "")))
     parsed: _Parsed = _absolute_echo(stem, _parse(stem, identity), identity)
     rest: str = _without_episode_title(parsed.remainder, identity)[0]
     if EXTRAS.search(rest) or PREVIEW.search(rest):

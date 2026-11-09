@@ -1223,5 +1223,159 @@
     },
     "expected_verdict": "insufficient_evidence",
     "cause": "A nearest work directory naming another show blocks a titleless file with the target episode title."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "[PMR] Frieren Beyond Journey's End (BD Remux 1080p AVC FLAC AAC) [Dual Audio]",
+      "filename": "Frieren Beyond Journey's End - S01E01 (BD Remux 1080p AVC FLAC AAC) [Dual Audio] [PMR].mkv",
+      "path": "Frieren Beyond Journey's End - S01E01 (BD Remux 1080p AVC FLAC AAC) [Dual Audio] [PMR].mkv"
+    },
+    "expected_verdict": "match",
+    "cause": "The release group repeated in a trailing bracket of the file is not title text."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "[PMR] Frieren Beyond Journey's End (BD Remux 1080p AVC FLAC AAC) [Dual Audio]",
+      "filename": "Frieren Beyond Journey's End - S01E02 (BD Remux 1080p AVC FLAC AAC) [Dual Audio] [PMR].mkv",
+      "path": "Frieren Beyond Journey's End - S01E02 (BD Remux 1080p AVC FLAC AAC) [Dual Audio] [PMR].mkv"
+    },
+    "expected_verdict": "mismatch",
+    "cause": "Dropping the trailing release group keeps another episode number a conflict."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "[PMR] Frieren Beyond Journey's End (BD Remux 1080p AVC FLAC AAC) [Dual Audio]",
+      "filename": "Frieren Beyond Journey's End - S01E01 (BD Remux 1080p AVC FLAC AAC) [Dual Audio] [Other].mkv",
+      "path": "Frieren Beyond Journey's End - S01E01 (BD Remux 1080p AVC FLAC AAC) [Dual Audio] [Other].mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A trailing bracket that is not the release group stays unconsumed text."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "[AUTISM] Sousou no Frieren - S01v2 (BD Remux 1080p AVC FLAC/True…",
+      "filename": "Sousou.no.Frieren.S01E01.REPACK.1080p.BluRay.Remux.MULTi.FLAC.2.0.AVC-AUTISM.mkv",
+      "path": "Sousou.no.Frieren.S01E01.REPACK.1080p.BluRay.Remux.MULTi.FLAC.2.0.AVC-AUTISM.mkv"
+    },
+    "expected_verdict": "match",
+    "cause": "A scene group after AVC and a version glued to the season marker are technical."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "Other.Show.S01.1080p.BluRay.Remux.AVC-AUTISM",
+      "filename": "Other.Show.S01E01.1080p.BluRay.Remux.AVC-AUTISM.mkv",
+      "path": "Other.Show.S01E01.1080p.BluRay.Remux.AVC-AUTISM.mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "Dropping a scene group after AVC never names the target work."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "[TACHiKEN] Frieren Beyond Journey`s End (2023) (Season 1) [1080p BD REMUX AVC FLAC]",
+      "filename": "Frieren.Beyond.Journey`s.End.S01E01.The.Journey`s.End.1080p.BluRay.REMUX.AVC.FLAC.2.0-TACHiKEN.mkv",
+      "path": "Frieren.Beyond.Journey`s.End.S01E01.The.Journey`s.End.1080p.BluRay.REMUX.AVC.FLAC.2.0-TACHiKEN.mkv"
+    },
+    "expected_verdict": "match",
+    "cause": "A scene group after a channel layout is technical."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "[TACHiKEN] Frieren Beyond Journey`s End (2023) (Season 2) [1080p BD REMUX AVC FLAC]",
+      "filename": "Frieren.Beyond.Journey`s.End.S02E01.The.Journey`s.End.1080p.BluRay.REMUX.AVC.FLAC.2.0-TACHiKEN.mkv",
+      "path": "Frieren.Beyond.Journey`s.End.S02E01.The.Journey`s.End.1080p.BluRay.REMUX.AVC.FLAC.2.0-TACHiKEN.mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "Dropping a scene group after a channel layout keeps another season uncertain."
   }
 ]
