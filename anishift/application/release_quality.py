@@ -22,6 +22,7 @@ __all__ = [
     "ReleaseTraits",
     "ResolutionClass",
     "SeedClass",
+    "audio_text",
     "class_key",
     "language_code",
     "low_transcode",
@@ -33,6 +34,7 @@ __all__ = [
     "resolution_class",
     "seed_class",
     "seed_points",
+    "subtitles_text",
     "tag_declaration",
 ]
 
@@ -117,6 +119,7 @@ class ReleaseTraits:
     subtitles_listed: bool
     origin: Origin = Origin.UNMARKED
     audio_languages: tuple[str, ...] = ()
+    subtitle_languages: tuple[str, ...] = ()
     group: str | None = None
     small: bool = False
     size_rank: int | None = None
@@ -233,6 +236,12 @@ _DUAL_AUDIO: Final[re.Pattern[str]] = re.compile(r"(?i)\b(?:dual|multi)[ ._-]?au
 
 _UNLISTED_AUDIO: Final[str] = "?"
 """Audio language entry for the tracks a dual- or multi-audio name leaves unlisted beside the original."""
+
+_NAMED_AUDIO: Final[tuple[str, ...]] = ("ja", "zh", "ko", "en", "pl")
+"""Audio languages the release list names in this order after the original; it only counts the others."""
+
+_NAMED_SUBTITLES: Final[tuple[str, ...]] = ("pl", "en")
+"""Subtitle languages the release list names in this order; it only counts the others."""
 
 _SOURCE_RE: Final[re.Pattern[str]] = re.compile(r"(?i)(?<![a-z0-9])WEB[ ._-]?DL(?![a-z0-9])|remux(?![a-z0-9])")
 """Source-file markers: a streaming download or a disc remux."""
@@ -355,6 +364,30 @@ def quality_score(traits: ReleaseTraits) -> float:
     )
 
 
+def audio_text(traits: ReleaseTraits) -> str:
+    """Return the audio languages as the release list shows them, such as ``JA+EN+PL+11``, ``JA+?`` or ``?``."""
+    languages: tuple[str, ...] = traits.audio_languages
+    if not languages:
+        return "?"
+    first: tuple[str, ...] = languages[:1] if languages[0] in _NAMED_AUDIO else ()
+    named: tuple[str, ...] = (*first, *(code for code in _NAMED_AUDIO if code in languages and code not in first))
+    return _languages_text(named, tuple(code for code in languages if code not in named))
+
+
+def subtitles_text(traits: ReleaseTraits) -> str:
+    """Return the subtitle languages as the release list shows them, such as ``PL+EN+15``, ``+5`` or ``—``."""
+    present: dict[str, bool] = {"pl": traits.polish is not PolishClass.NONE, "en": traits.english_subtitles}
+    named: tuple[str, ...] = tuple(code for code in _NAMED_SUBTITLES if present[code])
+    return _languages_text(named, tuple(code for code in traits.subtitle_languages if code not in named)) or "—"
+
+
+def _languages_text(named: tuple[str, ...], others: tuple[str, ...]) -> str:
+    shown: str = "+".join(code.upper() for code in named)
+    if not others:
+        return shown
+    return f"{shown}+{_UNLISTED_AUDIO if _UNLISTED_AUDIO in others else len(others)}"
+
+
 def name_declaration(text: str, source: LanguageSource, file: str | None) -> LanguageDeclaration:
     """Read positive language tokens without treating absent subtitle tokens as an explicit exclusion."""
     text = text.replace("_", " ")
@@ -417,7 +450,8 @@ def _declared(
 ) -> frozenset[str]:
     for declaration in declarations:
         languages: frozenset[str] | None = declaration.audio if audio else declaration.subtitles
-        if languages and (not complete or declaration.complete_audio):
+        listed: bool = declaration.complete_audio if audio else not declaration.partial_subtitles
+        if languages and (not complete or listed):
             return frozenset(language_code(code) for code in languages)
     return frozenset()
 
@@ -465,6 +499,7 @@ def release_traits(  # noqa: PLR0913 - explicit pure boundary mirrors the acquis
         names, tags, (*declarations, *file_declarations), file=file, pack=pack
     )
     subtitles: frozenset[str] = _declared(scoped)
+    listed_subtitles: frozenset[str] = _declared(scoped, complete=True)
     audio: frozenset[str] = _declared(scoped, audio=True)
     complete_audio: frozenset[str] = _declared(scoped, audio=True, complete=True)
     original_audio: frozenset[str] = frozenset({"ja", "zh"}) if donghua else frozenset({"ja"})
@@ -497,9 +532,10 @@ def release_traits(  # noqa: PLR0913 - explicit pure boundary mirrors the acquis
         resolution=resolution((*names, *file_names, *((file,) if file is not None else ()))),
         bluray=any(_BLURAY_RE.search(name) for name in all_names),
         seeders=seeders,
-        subtitles_listed=any(declaration.subtitles and not declaration.partial_subtitles for declaration in scoped),
+        subtitles_listed=bool(listed_subtitles),
         origin=_origin(all_names),
-        audio_languages=tuple(sorted(heard, key=lambda code: (code not in original_audio, code))),
+        audio_languages=tuple(sorted(heard, key=lambda code: (code != spoken, code not in acceptable_audio, code))),
+        subtitle_languages=tuple(sorted(listed_subtitles)),
         group=found.group(1).strip().casefold() if found else None,
     )
 

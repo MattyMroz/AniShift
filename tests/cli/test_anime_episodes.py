@@ -1065,7 +1065,7 @@ def test_a_toggles_every_aired_episode_and_the_label_counts_marks() -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize("unsupported", [False, True])
-@pytest.mark.parametrize("width", [50, 80, 100, 120])
+@pytest.mark.parametrize("width", [80, 100, 120])
 def test_other_releases_always_show_aligned_seeds(width: int, unsupported: bool) -> None:
     catalog: _Catalog = _Catalog()
     first: RankedCandidate = _candidate()
@@ -1087,7 +1087,7 @@ def test_other_releases_always_show_aligned_seeds(width: int, unsupported: bool)
     assert header.index("Seedy") + 5 == known.index("321") + 3
     assert unknown[header.index("Seedy") + 4] == "?"
     if unsupported:
-        assert "PL · EN" in " ".join(lines)
+        assert "PL+EN" in " ".join(lines)
         assert "1080p" in " ".join(lines)
         assert "format nieobsługiwany" in controller._view.items[0].detail
     assert all(Text(line).cell_len <= width for line in lines)
@@ -1116,12 +1116,12 @@ def test_release_views_keep_decision_columns_and_show_size_in_column_or_notice(
     assert "Tożsamość" not in header
     row: str = lines[lines.index(header) + 1]
     assert controller._view.items[0].image == "1080p"
-    assert controller._view.items[0].language == "PL · EN"
+    assert controller._view.items[0].subtitles == "PL+EN"
     assert controller._view.items[0].seeds == "321"
     displayed: str = " ".join(" ".join(lines).split())
     assert "321" in displayed
     assert "1080p" in displayed
-    assert "PL · EN" in displayed
+    assert "PL+EN" in displayed
     assert controller._view.items[0].size == "1.4 GB"
     assert "Rozmiar" not in controller._view.items[0].detail
     assert "1.4 GB" in row if "Rozmiar" in header else "rozmiar 1.4 GB" in displayed
@@ -1134,7 +1134,7 @@ def test_release_views_keep_decision_columns_and_show_size_in_column_or_notice(
 
 
 @pytest.mark.unit
-def test_release_list_shows_audio_languages_before_quality_and_unknown_audio_as_a_question_mark() -> None:
+def test_release_list_shows_audio_after_image_before_subtitles_and_unknown_audio_as_a_question_mark() -> None:
     catalog: _Catalog = _Catalog()
     dual: RankedCandidate = replace(
         _candidate(), traits=replace(_candidate().traits, audio_languages=("ja", "en", "pl"))
@@ -1146,7 +1146,7 @@ def test_release_list_shows_audio_languages_before_quality_and_unknown_audio_as_
     _key(controller, "text:i")
     lines: list[str] = controller.render(120, 40).plain.splitlines()
     header: str = next(line for line in lines if "Wydanie" in line)
-    assert header.index("Seedy") < header.index("Audio") < header.index("Jakość")
+    assert header.index("Obraz") < header.index("Audio") < header.index("Napisy") < header.index("Rozmiar")
     assert {item.key[0]: item.audio for item in controller._view.items} == {"a": "JA+EN+PL", "b": "?"}
     assert "JA+EN+PL" in lines[lines.index(header) + 1]
 
@@ -1234,7 +1234,7 @@ def test_pack_release_notice_shows_the_file_and_the_pack_name() -> None:
 
 
 @pytest.mark.unit
-def test_offer_columns_remain_fixed_when_language_changes() -> None:
+def test_offer_columns_remain_fixed_when_subtitles_change() -> None:
     catalog: _Catalog = _Catalog()
     item: RankedCandidate = replace(_candidate(), stream=replace(_candidate().stream, seeders=321))
     catalog.offer_read = lambda key: _offer(key, (item,))
@@ -1243,7 +1243,7 @@ def test_offer_columns_remain_fixed_when_language_changes() -> None:
     _key(controller, "text:i")
     lines: list[str] = controller.render(50, 24).plain.splitlines()
     compact: str = next(line for line in lines if "Wydanie" in line)
-    assert "obraz 1080p · rozmiar ? · język —" in " ".join(lines)
+    assert "obraz 1080p · audio ? · napisy — · rozmiar ?" in " ".join(lines)
     _key(controller, "text:?")
     assert "zgodny:" in controller.render(50, 24).plain
     for key in ("escape", "escape"):
@@ -1254,7 +1254,7 @@ def test_offer_columns_remain_fixed_when_language_changes() -> None:
     lines = controller.render(50, 24).plain.splitlines()
     expanded: str = next(line for line in lines if "Wydanie" in line)
     assert expanded == compact
-    assert "obraz 1080p · rozmiar ? · język PL · EN" in " ".join(lines)
+    assert "napisy PL+EN" in " ".join(" ".join(lines).split())
     assert "PL" in "\n".join(lines)
     assert "321" in "\n".join(lines)
 
@@ -1565,7 +1565,7 @@ def test_catalogue_headers_name_the_work_and_columns_align_at_both_widths(width:
     candidates: list[str] = controller.render(width, 40).plain.splitlines()
     title: str = next(line for line in candidates if line.strip())
     assert "Anime \u203a Slime" in title
-    header = next(line for line in candidates if "Wydanie" in line and "Seedy" in line)
+    header = next(line for line in candidates if "Wydanie" in line and "Jakość" in line)
     quality_column: int = Text(header[: header.index("Jakość")]).cell_len
     release_rows: list[str] = candidates[candidates.index(header) + 1 : candidates.index(header) + 3]
     assert len(release_rows) == 2

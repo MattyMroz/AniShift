@@ -10,12 +10,13 @@ from anishift.application import (
     EpisodeOffer,
     EpisodeOfferView,
     IdentityVerdict,
-    PolishClass,
     RankedCandidate,
+    audio_text,
     confidence_text,
     conflict_label,
     quality_text,
     size_bytes,
+    subtitles_text,
 )
 from anishift.cli.interactive.anime_state import AnimeRow
 from anishift.cli.interactive.anime_texts import safe
@@ -187,9 +188,9 @@ def release_rows(
             _release_title(item, episode),
             image=f"{item.traits.resolution}p" if item.traits.resolution else "?",
             size=_candidate_size(item),
-            language=_language(item),
+            subtitles=subtitles_text(item.traits),
             seeds=str(item.stream.seeders) if item.stream.seeders is not None else "?",
-            audio="+".join(code.upper() for code in item.traits.audio_languages) or "?",
+            audio=audio_text(item.traits),
             quality=quality_text(item),
             confidence=_candidate_confidence(item, suggested=item == suggested),
             detail=candidate_reason(item) + " · " + _candidate_details(item, film=film),
@@ -238,20 +239,6 @@ def _release_title(item: RankedCandidate, episode: str) -> str:
 def _pack_file(item: RankedCandidate) -> str | None:
     path: str | None = item.stream.path or item.stream.file_name
     return PureWindowsPath(path).name if path else None
-
-
-def _language(item: RankedCandidate) -> str:
-    return (
-        " · ".join(
-            label
-            for label, present in (
-                ("PL", item.traits.polish is not PolishClass.NONE),
-                ("EN", item.traits.english_subtitles),
-            )
-            if present
-        )
-        or "—"
-    )
 
 
 def _candidate_details(item: RankedCandidate, *, film: bool) -> str:
