@@ -1794,6 +1794,28 @@ def test_the_bluray_preference_puts_the_higher_bitrate_disc_first_even_against_h
     assert [row.stream.release for row in rank_offer(offer, bluray=True).candidates] == [large.release, small.release]
 
 
+def _bluray_order(name: str, audio: tuple[str, ...]) -> list[str]:
+    clean: StreamCandidate = _listed("Star Garden S01E05 1080p BluRay REMUX AVC FLAC-Disc", "7 GiB", 40)
+    other: StreamCandidate = replace(_listed(name, "9 GiB", 40), audio_languages=audio)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [other, clean])
+    offer: EpisodeOffer = EpisodeOffer(EpisodeKey(1, 5), ranked, 0, datetime(2026, 1, 1, tzinfo=UTC), {})
+    return [row.stream.release for row in rank_offer(offer, bluray=True).candidates]
+
+
+@pytest.mark.parametrize(
+    ("name", "audio"),
+    [
+        ("Star Garden - 05 (English Dubbed Dual Audio) [BD Remux 1080p]", ()),
+        ("Star Garden - 05 [BD Remux 1080p] [Dub - Japanese, English]", ("ja", "en")),
+    ],
+    ids=["dual-audio", "japanese-listed"],
+)
+def test_the_bluray_preference_keeps_a_dubbed_disc_with_original_audio_first_by_bitrate(
+    name: str, audio: tuple[str, ...]
+) -> None:
+    assert _bluray_order(name, audio)[0] == name
+
+
 @pytest.mark.parametrize(
     "later",
     [
@@ -1804,11 +1826,12 @@ def test_the_bluray_preference_puts_the_higher_bitrate_disc_first_even_against_h
     ids=["voice-over", "mvo", "dub"],
 )
 def test_the_bluray_preference_puts_a_dubbed_or_packed_disc_after_a_clean_one_of_lower_bitrate(later: str) -> None:
+    assert _bluray_order(later, ())[-1] == later
     clean: StreamCandidate = _listed("Star Garden S01E05 1080p BluRay REMUX AVC FLAC-Disc", "7 GiB", 40)
     pack: StreamCandidate = _stream(
         "Star Garden - 05 [BD Remux 1080p].mkv", release="[Box] Star Garden (01-12) [BD Remux 1080p]", seeders=40
     )
-    dubbed: StreamCandidate = _listed(later, "9 GiB", 40)
+    dubbed: StreamCandidate = replace(_listed(later, "9 GiB", 40), audio_languages=())
     ranked: tuple[RankedCandidate, ...] = _rank(_target(), [replace(pack, size_text="12 GiB"), dubbed, clean])
     offer: EpisodeOffer = EpisodeOffer(EpisodeKey(1, 5), ranked, 0, datetime(2026, 1, 1, tzinfo=UTC), {})
     preferred: EpisodeOffer = rank_offer(offer, bluray=True)

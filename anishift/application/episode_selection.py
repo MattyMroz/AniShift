@@ -144,7 +144,7 @@ SIZE_GROUP_SHARE: Final[float] = 0.95
 """Share of the largest file of a size group down to which another file of its resolution ties on bitrate."""
 
 _DUB_DECLARED: Final[re.Pattern[str]] = re.compile(r"(?i)(?<![a-z])(?:voice[ ._-]?over|MVO|dub(?:bed|bing)?)(?![a-z])")
-"""Voice-over or dub a release name declares, which puts a preferred Blu-ray after the clean ones."""
+"""Voice-over or dub a release name declares; without declared original audio it puts a preferred Blu-ray later."""
 
 _CONTAINER: Final[re.Pattern[str]] = re.compile(r"[^/\\]\.([^\s./\\()\[\]{}]+)$")
 """Final suffix of the selected file name; a dot followed by spaces or brackets, as in ``(TrueHD 5.1)``, is not one."""
@@ -652,7 +652,9 @@ def _bluray_preference(candidate: RankedCandidate, *, preferred: bool) -> Bluray
     if not preferred or not untouched_bluray(candidate.traits):
         return BlurayPreference.NONE
     names: str = " ".join((candidate.stream.release, candidate.stream.file_name or "", candidate.stream.path or ""))
-    return BlurayPreference.LATER if candidate.pack or _DUB_DECLARED.search(names) else BlurayPreference.FIRST
+    original: bool = bool(candidate.traits.audio_languages) and not candidate.traits.dub_only
+    dubbed: bool = _DUB_DECLARED.search(names) is not None and not original
+    return BlurayPreference.LATER if candidate.pack or dubbed else BlurayPreference.FIRST
 
 
 def _suggestible(candidate: RankedCandidate) -> bool:
