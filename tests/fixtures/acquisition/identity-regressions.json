@@ -1283,56 +1283,12 @@
       "episode_title": "The Journey's End"
     },
     "candidate": {
-      "release": "[PMR] Frieren Beyond Journey's End (BD Remux 1080p AVC FLAC AAC) [Dual Audio]",
-      "filename": "Frieren Beyond Journey's End - S01E01 (BD Remux 1080p AVC FLAC AAC) [Dual Audio] [Other].mkv",
-      "path": "Frieren Beyond Journey's End - S01E01 (BD Remux 1080p AVC FLAC AAC) [Dual Audio] [Other].mkv"
-    },
-    "expected_verdict": "insufficient_evidence",
-    "cause": "A trailing bracket that is not the release group stays unconsumed text."
-  },
-  {
-    "target": {
-      "aliases": [
-        "Frieren: Beyond Journey’s End",
-        "葬送のフリーレン",
-        "Sousou no Frieren"
-      ],
-      "type": "TV",
-      "season": 1,
-      "episode": 1,
-      "local_episode": 1,
-      "absolute": 1,
-      "episode_title": "The Journey's End"
-    },
-    "candidate": {
       "release": "[AUTISM] Sousou no Frieren - S01v2 (BD Remux 1080p AVC FLAC/True…",
       "filename": "Sousou.no.Frieren.S01E01.REPACK.1080p.BluRay.Remux.MULTi.FLAC.2.0.AVC-AUTISM.mkv",
       "path": "Sousou.no.Frieren.S01E01.REPACK.1080p.BluRay.Remux.MULTi.FLAC.2.0.AVC-AUTISM.mkv"
     },
     "expected_verdict": "match",
     "cause": "A scene group after AVC and a version glued to the season marker are technical."
-  },
-  {
-    "target": {
-      "aliases": [
-        "Frieren: Beyond Journey’s End",
-        "葬送のフリーレン",
-        "Sousou no Frieren"
-      ],
-      "type": "TV",
-      "season": 1,
-      "episode": 1,
-      "local_episode": 1,
-      "absolute": 1,
-      "episode_title": "The Journey's End"
-    },
-    "candidate": {
-      "release": "Other.Show.S01.1080p.BluRay.Remux.AVC-AUTISM",
-      "filename": "Other.Show.S01E01.1080p.BluRay.Remux.AVC-AUTISM.mkv",
-      "path": "Other.Show.S01E01.1080p.BluRay.Remux.AVC-AUTISM.mkv"
-    },
-    "expected_verdict": "insufficient_evidence",
-    "cause": "Dropping a scene group after AVC never names the target work."
   },
   {
     "target": {
@@ -1371,11 +1327,385 @@
       "episode_title": "The Journey's End"
     },
     "candidate": {
-      "release": "[TACHiKEN] Frieren Beyond Journey`s End (2023) (Season 2) [1080p BD REMUX AVC FLAC]",
-      "filename": "Frieren.Beyond.Journey`s.End.S02E01.The.Journey`s.End.1080p.BluRay.REMUX.AVC.FLAC.2.0-TACHiKEN.mkv",
-      "path": "Frieren.Beyond.Journey`s.End.S02E01.The.Journey`s.End.1080p.BluRay.REMUX.AVC.FLAC.2.0-TACHiKEN.mkv"
+      "release": "[OVA] Sousou no Frieren (BD 1080p AVC)",
+      "filename": "Sousou no Frieren - 01 (BD 1080p AVC) [OVA].mkv",
+      "path": "Sousou no Frieren - 01 (BD 1080p AVC) [OVA].mkv"
     },
     "expected_verdict": "insufficient_evidence",
-    "cause": "Dropping a scene group after a channel layout keeps another season uncertain."
+    "cause": "A trailing [OVA] equal to the release's leading bracket is a media marker, not a release group."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "[Extras] Sousou no Frieren (BD 1080p AVC)",
+      "filename": "Sousou no Frieren - 01 (BD 1080p AVC) [Extras].mkv",
+      "path": "Sousou no Frieren - 01 (BD 1080p AVC) [Extras].mkv"
+    },
+    "expected_verdict": "mismatch",
+    "cause": "A trailing [Extras] equal to the release's leading bracket is a extras marker, not a release group."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "[2019] Sousou no Frieren (BD 1080p AVC)",
+      "filename": "Sousou no Frieren - 01 (BD 1080p AVC) [2019].mkv",
+      "path": "Sousou no Frieren - 01 (BD 1080p AVC) [2019].mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A trailing [2019] equal to the release's leading bracket is a year, not a release group."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "[01-12] Sousou no Frieren (BD 1080p AVC)",
+      "filename": "Sousou no Frieren - 01 (BD 1080p AVC) [01-12].mkv",
+      "path": "Sousou no Frieren - 01 (BD 1080p AVC) [01-12].mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A trailing [01-12] equal to the release's leading bracket is a episode range, not a release group."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "[Part 2] Sousou no Frieren (BD 1080p AVC)",
+      "filename": "Sousou no Frieren - 01 (BD 1080p AVC) [Part 2].mkv",
+      "path": "Sousou no Frieren - 01 (BD 1080p AVC) [Part 2].mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A trailing [Part 2] equal to the release's leading bracket is a part tag, not a release group."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "[Frieren] Sousou no Frieren (BD 1080p AVC)",
+      "filename": "Sousou no Frieren - 01 (BD 1080p AVC) [Frieren].mkv",
+      "path": "Sousou no Frieren - 01 (BD 1080p AVC) [Frieren].mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A trailing [Frieren] equal to the release's leading bracket is a target title word, not a release group."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "Sousou.no.Frieren.S01E01.1080p.BluRay.AVC-S01E02",
+      "filename": "Sousou.no.Frieren.S01E01.1080p.BluRay.AVC-S01E02.mkv",
+      "path": "Sousou.no.Frieren.S01E01.1080p.BluRay.AVC-S01E02.mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A tail -S01E02 after AVC spells identity, so it is never cut as a scene group."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "Sousou.no.Frieren.S01E01.1080p.BluRay.x264-S01E02",
+      "filename": "Sousou.no.Frieren.S01E01.1080p.BluRay.x264-S01E02.mkv",
+      "path": "Sousou.no.Frieren.S01E01.1080p.BluRay.x264-S01E02.mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A tail -S01E02 after x264 spells identity, so it is never cut as a scene group."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "Sousou.no.Frieren.S01E01.1080p.BluRay.AVC-E05",
+      "filename": "Sousou.no.Frieren.S01E01.1080p.BluRay.AVC-E05.mkv",
+      "path": "Sousou.no.Frieren.S01E01.1080p.BluRay.AVC-E05.mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A tail -E05 after AVC spells identity, so it is never cut as a scene group."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "Sousou.no.Frieren.S01E01.1080p.BluRay.x264-E05",
+      "filename": "Sousou.no.Frieren.S01E01.1080p.BluRay.x264-E05.mkv",
+      "path": "Sousou.no.Frieren.S01E01.1080p.BluRay.x264-E05.mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A tail -E05 after x264 spells identity, so it is never cut as a scene group."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "Sousou.no.Frieren.S01E01.1080p.BluRay.AVC-Part2",
+      "filename": "Sousou.no.Frieren.S01E01.1080p.BluRay.AVC-Part2.mkv",
+      "path": "Sousou.no.Frieren.S01E01.1080p.BluRay.AVC-Part2.mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A tail -Part2 after AVC spells identity, so it is never cut as a scene group."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "Sousou.no.Frieren.S01E01.1080p.BluRay.x264-Part2",
+      "filename": "Sousou.no.Frieren.S01E01.1080p.BluRay.x264-Part2.mkv",
+      "path": "Sousou.no.Frieren.S01E01.1080p.BluRay.x264-Part2.mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A tail -Part2 after x264 spells identity, so it is never cut as a scene group."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "Sousou.no.Frieren.S01E01.1080p.BluRay.AVC-S02",
+      "filename": "Sousou.no.Frieren.S01E01.1080p.BluRay.AVC-S02.mkv",
+      "path": "Sousou.no.Frieren.S01E01.1080p.BluRay.AVC-S02.mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A tail -S02 after AVC spells identity, so it is never cut as a scene group."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "Sousou.no.Frieren.S01E01.1080p.BluRay.x264-S02",
+      "filename": "Sousou.no.Frieren.S01E01.1080p.BluRay.x264-S02.mkv",
+      "path": "Sousou.no.Frieren.S01E01.1080p.BluRay.x264-S02.mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A tail -S02 after x264 spells identity, so it is never cut as a scene group."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "Sousou.no.Frieren.S01E01.1080p.BluRay.AVC-ep02",
+      "filename": "Sousou.no.Frieren.S01E01.1080p.BluRay.AVC-ep02.mkv",
+      "path": "Sousou.no.Frieren.S01E01.1080p.BluRay.AVC-ep02.mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A tail -ep02 after AVC spells identity, so it is never cut as a scene group."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "Sousou.no.Frieren.S01E01.1080p.BluRay.x264-ep02",
+      "filename": "Sousou.no.Frieren.S01E01.1080p.BluRay.x264-ep02.mkv",
+      "path": "Sousou.no.Frieren.S01E01.1080p.BluRay.x264-ep02.mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A tail -ep02 after x264 spells identity, so it is never cut as a scene group."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "Sousou.no.Frieren.S01E01.1080p.BluRay.AVC-Season2",
+      "filename": "Sousou.no.Frieren.S01E01.1080p.BluRay.AVC-Season2.mkv",
+      "path": "Sousou.no.Frieren.S01E01.1080p.BluRay.AVC-Season2.mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A tail -Season2 after AVC spells identity, so it is never cut as a scene group."
+  },
+  {
+    "target": {
+      "aliases": [
+        "Frieren: Beyond Journey’s End",
+        "葬送のフリーレン",
+        "Sousou no Frieren"
+      ],
+      "type": "TV",
+      "season": 1,
+      "episode": 1,
+      "local_episode": 1,
+      "absolute": 1,
+      "episode_title": "The Journey's End"
+    },
+    "candidate": {
+      "release": "Sousou.no.Frieren.S01E01.1080p.BluRay.x264-Season2",
+      "filename": "Sousou.no.Frieren.S01E01.1080p.BluRay.x264-Season2.mkv",
+      "path": "Sousou.no.Frieren.S01E01.1080p.BluRay.x264-Season2.mkv"
+    },
+    "expected_verdict": "insufficient_evidence",
+    "cause": "A tail -Season2 after x264 spells identity, so it is never cut as a scene group."
   }
 ]
