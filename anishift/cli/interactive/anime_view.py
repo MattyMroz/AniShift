@@ -341,20 +341,21 @@ def _spec(screen: AnimeScreen) -> _Table:
         )
     if screen is AnimeScreen.RELEASES:
         return _Table(
-            ("Wydanie", "Obraz", "Rozmiar", "Język", "Seedy", "Jakość", "Pewność"),
+            ("Wydanie", "Obraz", "Rozmiar", "Język", "Seedy", "Audio", "Jakość", "Pewność"),
             lambda item: (
                 item.title,
                 item.image,
                 item.size,
                 item.language,
                 item.seeds.rjust(5),
+                item.audio,
                 item.quality.rjust(6),
                 item.confidence,
             ),
             8,
             0,
-            (0, 5, 0, Text("PL · MultiSub").cell_len, 5, 6, 7),
-            optional=(2, 3, 1, 4),
+            (0, 5, 0, Text("PL · MultiSub").cell_len, 5, 0, 6, 7),
+            optional=(2, 3, 5, 1, 4),
             right=(2,),
         )
     if screen is AnimeScreen.SUBSCRIPTIONS:

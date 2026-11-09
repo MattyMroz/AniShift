@@ -6,25 +6,32 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
-from math import log1p
 from types import MappingProxyType
 from typing import Final
 
+from anishift.application.episode_identity import FIRST_BRACKET
+
 __all__ = [
     "DUBBED_RE",
+    "GROUP_ORDER",
     "AudioClass",
     "LanguageDeclaration",
     "LanguageSource",
+    "Origin",
     "PolishClass",
     "ReleaseTraits",
     "ResolutionClass",
+    "SeedClass",
     "class_key",
     "language_code",
+    "low_transcode",
     "name_declaration",
+    "order_tail",
     "quality_score",
     "release_traits",
     "resolution",
     "resolution_class",
+    "seed_class",
     "seed_points",
     "tag_declaration",
 ]
@@ -78,9 +85,24 @@ class ResolutionClass(IntEnum):
     UNKNOWN = 4
 
 
+class SeedClass(IntEnum):
+    """Seeding gate: seeded releases, unknown ones included, before weakly seeded ones."""
+
+    SEEDED = 0
+    WEAK = 1
+
+
+class Origin(StrEnum):
+    """Provenance a release name declares: a source file, no marker (also an original), or a transcode."""
+
+    SOURCE = "source"
+    UNMARKED = "unmarked"
+    TRANSCODE = "transcode"
+
+
 @dataclass(frozen=True, slots=True)
 class ReleaseTraits:
-    """Resolved quality and usability facts of the selected release file."""
+    """Resolved quality and usability facts of the selected release file, with its size standing in the offer."""
 
     polish: PolishClass
     polish_audio_beside_original: bool
@@ -90,11 +112,14 @@ class ReleaseTraits:
     raw: bool
     hardsub: bool
     resolution: int | None
-    platform: bool
     bluray: bool
     seeders: int | None
     subtitles_listed: bool
+    origin: Origin = Origin.UNMARKED
+    audio_languages: tuple[str, ...] = ()
+    group: str | None = None
     small: bool = False
+    size_rank: int | None = None
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -131,20 +156,29 @@ FULL_HD_POINTS: Final[float] = 20.0
 UHD_POINTS: Final[float] = 5.0
 """Points for a declared 2160-line image."""
 
-PLATFORM_POINTS: Final[float] = 5.0
-"""Points for a WEB release naming a supported streaming platform."""
-
 BLURAY_POINTS: Final[float] = -10.0
 """Penalty for Blu-ray or remux releases, applied once."""
 
 MAX_SEED_POINTS: Final[float] = 10.0
-"""Maximum logarithmic availability bonus."""
+"""Availability points of a release with thirty seeders or more."""
 
 UNKNOWN_SEED_POINTS: Final[float] = 5.0
-"""Availability bonus when no source reports seeders."""
+"""Availability points when no source reports seeders."""
 
-SEED_SATURATION: Final[int] = 50
-"""Seeder count at which availability points stop growing."""
+SEEDED_FROM: Final[int] = 20
+"""Fewest seeders of a seeded release; fewer make it weakly seeded."""
+
+_SEEDED_POINTS: Final[float] = 5.0
+"""Availability points of a release with exactly the seeded threshold."""
+
+_SEEDED_POINTS_PER_SEED: Final[float] = 0.5
+"""Availability points each seeder above the seeded threshold adds, up to the maximum."""
+
+_WEAK_POINTS_PER_SEED: Final[float] = 0.25
+"""Availability points each seeder of a weakly seeded release earns."""
+
+GROUP_ORDER: Final[tuple[str, ...]] = ("toonshub", "subsplus+", "varyg", "anozu", "subsplease", "erai-raws")
+"""Casefolded release groups preferred in this order once bitrate ties; every other group follows equally."""
 
 _REFERENCE_HEIGHT: Final[int] = 1080
 """Height closest to which other known resolutions are preferred."""
@@ -197,14 +231,22 @@ _EN_SUB_RE: Final[re.Pattern[str]] = re.compile(
 _DUAL_AUDIO: Final[re.Pattern[str]] = re.compile(r"(?i)\b(?:dual|multi)[ ._-]?audio\b")
 """Declaration that original audio accompanies a dub when no complete audio list exists."""
 
-PLATFORMS: Final[tuple[str, ...]] = ("NF", "CR", "ADN", "AMZN", "HIDIVE", "BILI", "DSNP")
-"""Streaming platform markers eligible for the WEB bonus."""
+_UNLISTED_AUDIO: Final[str] = "?"
+"""Audio language entry for the tracks a dual- or multi-audio name leaves unlisted beside the original."""
 
-_PLATFORM_RE: Final[re.Pattern[str]] = re.compile(r"(?i)\b(?:" + "|".join(PLATFORMS) + r"|Netflix|Crunchyroll)\b")
-"""Whole platform tokens and the existing long Netflix and Crunchyroll names."""
+_SOURCE_RE: Final[re.Pattern[str]] = re.compile(r"(?i)(?<![a-z0-9])WEB[ ._-]?DL(?![a-z0-9])|remux(?![a-z0-9])")
+"""Source-file markers: a streaming download or a disc remux."""
 
-_WEB_RE: Final[re.Pattern[str]] = re.compile(r"(?i)\bWEB(?:[ ._-]?(?:DL|Rip))?\b")
-"""WEB provenance required alongside a platform declaration."""
+_GROUP_ENCODE_RE: Final[re.Pattern[str]] = re.compile(r"(?i)(?<![a-z0-9])x26[45](?![a-z0-9])")
+"""Encoder markers of a group's own compression, which a source-file marker cannot outweigh."""
+
+_TRANSCODE_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?i)(?<![a-z0-9])(?:WEB[ ._-]?Rip|BD[ ._-]?Rip|x26[45]|HEVC|H[ ._]?265|AV1|10[ ._-]?bits?|Hi10P?)(?![a-z0-9])"
+)
+"""Compression markers of a transcode, read only where no source-file marker applies."""
+
+_SCENE_GROUP_RE: Final[re.Pattern[str]] = re.compile(r"-([A-Za-z0-9][A-Za-z0-9+]*)(?:\.(?:mkv|mp4))?\s*$")
+"""Group a scene release name ends with, as in ``H.264-VARYG``."""
 
 _BLURAY_RE: Final[re.Pattern[str]] = re.compile(r"(?i)\b(?:Blu[ ._-]?ray|BD(?:Rip)?|BDRemux|Remux)\b")
 """Blu-ray and remux source tokens receiving one penalty."""
@@ -247,16 +289,49 @@ def resolution_class(resolution: int | None) -> tuple[ResolutionClass, int]:
     return ResolutionClass.OTHER, abs(resolution - _REFERENCE_HEIGHT)
 
 
+def seed_class(seeders: int | None) -> SeedClass:
+    """Return weakly seeded below the seeded threshold; unknown seeders count as seeded."""
+    return SeedClass.WEAK if seeders is not None and seeders < SEEDED_FROM else SeedClass.SEEDED
+
+
 def class_key(traits: ReleaseTraits) -> tuple[int, ...]:
-    """Order resolution before Polish subtitles before original audio."""
-    return (*resolution_class(traits.resolution), traits.polish, traits.audio)
+    """Order resolution, an original before a transcode, seeding, Polish subtitles, then original audio."""
+    return (
+        *resolution_class(traits.resolution),
+        traits.origin is Origin.TRANSCODE,
+        seed_class(traits.seeders),
+        traits.polish,
+        traits.audio,
+    )
+
+
+def order_tail(traits: ReleaseTraits, quality: float) -> tuple[int, ...]:
+    """Order a small file last, then rounded quality, bitrate, group and seeds."""
+    seeders: int = -1 if traits.seeders is None else traits.seeders
+    group: int = GROUP_ORDER.index(traits.group) if traits.group in GROUP_ORDER else len(GROUP_ORDER)
+    return (
+        traits.small,
+        -round(quality),
+        traits.size_rank is None,
+        traits.size_rank or 0,
+        group,
+        -seeders,
+    )
+
+
+def low_transcode(traits: ReleaseTraits) -> bool:
+    """Whether the release is a transcode below 1080 lines, which is never shown, suggested or admitted."""
+    return traits.origin is Origin.TRANSCODE and traits.resolution is not None and traits.resolution < _REFERENCE_HEIGHT
 
 
 def seed_points(seeders: int | None) -> float:
-    """Award logarithmic availability points, saturating at fifty seeders."""
+    """Award availability points: a quarter per seeder below twenty, then five rising to ten at thirty."""
     if seeders is None:
         return UNKNOWN_SEED_POINTS
-    return MAX_SEED_POINTS * min(1.0, log1p(max(0, seeders)) / log1p(SEED_SATURATION))
+    count: int = max(0, seeders)
+    if count < SEEDED_FROM:
+        return count * _WEAK_POINTS_PER_SEED
+    return min(MAX_SEED_POINTS, _SEEDED_POINTS + _SEEDED_POINTS_PER_SEED * (count - SEEDED_FROM))
 
 
 def quality_score(traits: ReleaseTraits) -> float:
@@ -276,7 +351,6 @@ def quality_score(traits: ReleaseTraits) -> float:
         + seed_points(traits.seeders)
         + POLISH_AUDIO_POINTS * traits.polish_audio_beside_original
         + ENGLISH_POINTS * (traits.english_subtitles and traits.polish is not PolishClass.POLISH)
-        + PLATFORM_POINTS * traits.platform
         + BLURAY_POINTS * traits.bluray,
     )
 
@@ -403,6 +477,13 @@ def release_traits(  # noqa: PLR0913 - explicit pure boundary mirrors the acquis
     dub_only: bool = not bool(complete_audio & acceptable_audio) if complete_audio else dubbed and not dual
     beside_original: bool = bool(complete_audio & acceptable_audio) if complete_audio else dual
     effective_audio: frozenset[str] = complete_audio or audio
+    spoken: str = "zh" if donghua else "ja"
+    heard: frozenset[str] = complete_audio
+    if not heard and audio:
+        heard = audio if dub_only else audio | {spoken}
+    elif not heard and dual:
+        heard = frozenset({spoken, _UNLISTED_AUDIO})
+    found: re.Match[str] | None = (FIRST_BRACKET.match(names[0]) or _SCENE_GROUP_RE.search(names[0])) if names else None
     return ReleaseTraits(
         polish=_polish_class(scoped),
         polish_audio_beside_original="pl" in audio and beside_original,
@@ -414,8 +495,17 @@ def release_traits(  # noqa: PLR0913 - explicit pure boundary mirrors the acquis
         raw=any(_RAW_RE.search(text) for text in texts),
         hardsub=any(_HARDSUB_RE.search(text) for text in texts) or any(_HS_TAG_RE.search(tag) for tag in tags),
         resolution=resolution((*names, *file_names, *((file,) if file is not None else ()))),
-        platform=any(_WEB_RE.search(name) and _PLATFORM_RE.search(name) for name in all_names),
         bluray=any(_BLURAY_RE.search(name) for name in all_names),
         seeders=seeders,
         subtitles_listed=any(declaration.subtitles and not declaration.partial_subtitles for declaration in scoped),
+        origin=_origin(all_names),
+        audio_languages=tuple(sorted(heard, key=lambda code: (code not in original_audio, code))),
+        group=found.group(1).strip().casefold() if found else None,
     )
+
+
+def _origin(names: Sequence[str]) -> Origin:
+    source: bool = any(_SOURCE_RE.search(name) for name in names)
+    if source and not any(_GROUP_ENCODE_RE.search(name) for name in names):
+        return Origin.SOURCE
+    return Origin.TRANSCODE if any(_TRANSCODE_RE.search(name) for name in names) else Origin.UNMARKED

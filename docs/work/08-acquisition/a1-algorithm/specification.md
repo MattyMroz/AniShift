@@ -1,7 +1,7 @@
 ---
 kind: specification
-status: zaakceptowana przez recenzentów (rundy 22–23: astra, opus55, sol61 bez uwag); czeka na akceptację właściciela; §3.1 i §3.5 zmienione decyzjami D1–D3 (2026-10-06) i poprawkami review v16, do review
-updated: 2026-10-11
+status: zaakceptowana przez recenzentów (rundy 22–23: astra, opus55, sol61 bez uwag); czeka na akceptację właściciela; §3.1 i §3.5 zmienione decyzjami D1–D3 (2026-10-06) i poprawkami review v16, do review; §4–§6 zmienione decyzjami właściciela 2026-11-08 (wybór wydania v2), czekają na akceptację właściciela
+updated: 2026-11-08
 baseline: 9d828708
 ---
 
@@ -107,7 +107,7 @@ Kontrakt tego, jak AniShift znajduje wydania odcinka, ocenia je i wybiera jedno.
 - Cechy liczy publiczna projekcja dowodów H1 (jedna funkcja w `episode_identity.py`, bez drugiego parsera), o dokładnie tej semantyce co `conf_model.py` z badania (w tym skalowanie i wybór tekstu bez pliku). Test: identyczne wektory cech i predykcje jak w badaniu na zapisanych przypadkach. Zmiana H1 przechodzi istniejącą procedurę (`../plans/07-episode-identity-integration.md` §10.6).
 - Kandydat z konfliktem pokazuje zamiast % krótki powód H1, np. „inny sezon (S01)”; szczegóły pokazują porównane numery i ich numeracje.
 - Kalibracja potwierdzona jest tylko dla populacji korpusu E1; dla nowych źródeł i ocen bez nazwy pliku wartość jest estymatą bez potwierdzonej kalibracji (§7).
-- Procent wpływa tylko na kolejność listy i sugestię (§6.1). Automat go nie używa (§6.2). To wyjątek od zakazu ML do tożsamości (spec.md §9): model nie rozstrzyga tożsamości w automacie.
+- Procent jest tylko do wglądu: nie wpływa na kolejność listy, sugestię ani automat (decyzja właściciela 2026-11-08). Pomiar 2026-11-08 na 374 ofertach (6765 widocznych wierszy): 98% wierszy `zgodnych` ma 98–100%, a wiersze `niepewne` też mają 99–100%, więc procent nie rozróżnia poprawności; rozróżnia ją werdykt H1 (§6.1). To wyjątek od zakazu ML do tożsamości (spec.md §9): model nie rozstrzyga tożsamości.
 
 ## 5. Ocena jakości
 
@@ -121,14 +121,14 @@ Kontrakt tego, jak AniShift znajduje wydania odcinka, ocenia je i wybiera jedno.
 | Angielskie napisy, gdy brak polskich napisów za +40 (także przy PL bez roli) | +10 |
 | Rozdzielczość 1080p (także 1440×1080) | +20 |
 | Rozdzielczość 2160p | +5 |
-| Wydanie z platformy (WEB z NF, CR, ADN, AMZN, HIDIVE, BILI, DSNP) | +5 |
 | Blu-ray lub remux | −10 |
 | Seedy | 0–10 |
 
 - Najwyżej jedna z dwóch pozycji PL napisów.
-- **Jakość = max(0, suma)**; zakres 0–90. Sortowanie na wartości niezaokrąglonej; kolumna pokazuje liczbę całkowitą.
-- **Seedy:** `10 × min(1, ln(1 + s) / ln(1 + 50))`; 5 seedów ≈ 4,6 pkt, 50 i więcej = 10 pkt. Brak danych = 5 pkt i „?”.
-- Angielski dubbing, inne języki napisów, liczba języków, grupa, kodek, rozmiar: 0 pkt.
+- **Jakość = max(0, suma)**; zakres 0–85. Kolumna i kolejność (§6.1) używają liczby zaokrąglonej do całości.
+- **Seedy (bramka, decyzja właściciela 2026-11-08):** 30 i więcej = 10 pkt; od 20 do 29 = `5 + 0,5 × (s − 20)` pkt; poniżej 20 = `s / 4` pkt i klasa „słabo zasiane” (§5.3). Brak danych = 5 pkt i „?”, klasa „zasiane”. Powyżej progu seedy nie zmieniają oceny. Pomiar 2026-11-08 (13 wydań jednego odcinka, pobierane po kolei na łączu właściciela, sufit ok. 50 MB/s): od 20–30 seedów prędkość nie rośnie (pliki 170–620 MB w 10–40 s, a ten sam torrent zmierzony drugi raz był 1,5× wolniejszy, tyle co różnica między 30 a 1000 seedów); przy 16 seedach pierwszy bajt po 128 s i 2 MB/s.
+- **Blu-ray lub remux −10:** domyślnie wygrywa WEB-DL, bo remux waży ok. 4,7× więcej (Frieren S01E01: 6,99 GiB wobec 1,48 GiB) i dłużej się przetwarza. Obraz jest lepszy (VMAF WEB-DL wobec remuxu: średnio 97,6, poniżej 90 w 10 z 773 próbek), a remux 1080p odtwarza się płynnie z interpolacją 2× (pomiar i ocena właściciela 2026-11-08), więc kara nie dotyczy odtwarzania. Blu-ray wybiera się ręcznie z listy; preferencja przy kolejkowaniu to issue #113.
+- Angielski dubbing, inne języki napisów, liczba języków, nazwa serwisu: 0 pkt. Kodek i rozmiar działają przez pochodzenie i bitrate, grupa przez kolejność grup (§5.3, §6.1).
 
 ### 5.2 Rozpoznanie cech
 
@@ -147,25 +147,34 @@ Kontrakt tego, jak AniShift znajduje wydania odcinka, ocenia je i wybiera jedno.
 - **PL bez roli:** flaga PL Torrentio albo sam token `PL`/`POL`/`Polish`, bez deklaracji języków wyższego rzędu. Daje +20, nie kończy czekania na PL (§6.3).
 - **EN napisy:** `en` w `sublangs` albo w napisach nekoBT (`F=` ∪ `S=`), tokeny `ENG sub`, `English sub`, `MultiSub`, `Multi-Subs`. Samo „MultiSub” nie oznacza PL.
 - **Oryginalne audio:** `ja`; `zh` tylko przy donghua (AniList `countryOfOrigin = CN`); `ko` jako akceptowalne. Bez deklaracji audio zakładane oryginalne, chyba że wychodzi sam dubbing według §3.3.
-- **Rozdzielczość, platforma, Blu-ray:** z nazwy. **`RAW`, `HardSub`:** z nazw i tagów wszystkich źródeł (§3.3).
+- **Rozdzielczość, Blu-ray:** z nazwy. **`RAW`, `HardSub`:** z nazw i tagów wszystkich źródeł (§3.3).
+- **Pochodzenie** (z nazwy wydania i nazwy pliku, bez wielkości liter):
+  - **oryginał:** `Remux` albo `WEB-DL`, w obu przypadkach bez `x264`/`x265` (plik z płyty albo z serwisu bez ponownej kompresji, także HEVC lub AV1 podane przez serwis); nazwa bez żadnego znacznika kompresji (np. `[SubsPlease] … (1080p)`) też jest oryginałem;
+  - **przekodowanie:** poza powyższym którykolwiek ze znaczników `WEBRip`, `BDRip`, `x264`, `x265`, `HEVC`, `H.265`, `AV1`, `10bit`/`10-bit`, `Hi10`/`Hi10P` (np. `[Erai-raws] … [1080p CR WEBRip HEVC AAC]`, `[ASW] … [1080p HEVC x265 10Bit]`, `… BDRip 10 bits DD+ x265-EMBER`). Scenowe `H.264` oznacza strumień serwisu, `x264` kompresję grupy.
+- **Rozmiar odcinka:** rozmiar pliku odcinka ze spisu (TsukiHime, Torrentio, qBittorrent), a bez spisu rozmiar wydania, gdy wydanie nie jest paczką. Paczka bez rozmiaru pliku = rozmiar nieznany.
+- **Grupa w kolejności grup (§6.1):** pierwszy nawias nazwy (`[Grupa]`), a bez niego końcówka `-GRUPA` nazwy scenowej (np. `…H.264-VARYG`), bez wielkości liter. Reguły ofertowe (§6.1) nadal rozpoznają grupę tylko po pierwszym nawiasie.
 
 ### 5.3 Klasy
 
 - **Klasa rozdzielczości (U-05 bez zmian):** 1080 (także 1440×1080) → 2160 → 720 → pozostałe znane, bliższe 1080 wyżej → nieznana.
+- **Klasa zasiania (2026-11-08):** zasiane (20 seedów i więcej albo „?”) → słabo zasiane (poniżej 20). Stoi zaraz po pochodzeniu, przed klasą PL napisów: wydanie z mniej niż 20 seedami nie wyprzedza zasianego tego samego pochodzenia, także gdy ma polskie napisy (np. FrixySubs, zwykle ok. 2 seedów).
 - **Klasa PL napisów:** PL → PL bez roli → brak.
 - **Klasa audio:** oryginalne (`ja`; `zh` przy donghua) → `ko`.
+- **Pochodzenie (2026-11-08):** oryginał → przekodowanie (§5.2). Stoi zaraz po klasie rozdzielczości, przed klasą zasiania i klasą PL napisów: oryginał wygrywa z przekodowaniem także wtedy, gdy jest słabo zasiany albo gdy przekodowanie ma polskie napisy. Powtórka 374 ofert (2026-11-09) z zasianiem przed pochodzeniem wybierała zasiane przekodowanie zamiast słabo zasianego oryginału, np. Attack on Titan: paczka x265 z odcinkiem 112–173 MB (290 seedów) zamiast WEB 1,5 GB (9 seedów); słabo zasiany oryginał nadal się pobiera (pomiar §5.1), a przekodowanie zostaje gorsze na zawsze.
+- **Przekodowania ukryte (decyzja właściciela 2026-11-08):** lista nie pokazuje przekodowania, gdy w tej samej klasie rozdzielczości jest oryginał z seedami (także słabo zasiany albo „?”), który może być sugestią (bez konfliktu, nie sam dubbing, obsługiwany format, a gdy oferta ma wiersz `zgodny` — też `zgodny`). Gdy takiego oryginału nie ma, przekodowania są widoczne i mogą być sugestią. Automat liczy tylko oryginały, które sam może wziąć (§6.2): gdy jedynym oryginałem jest paczka, wybiera przekodowanie, choć lista je ukrywa obok tej paczki (pomiar 2026-11-09: 2 z 374 ofert, Hunter x Hunter 2011 ep. 1 i 5). Przekodowanie w rozdzielczości poniżej 1080 jest wykluczone zawsze: niewidoczne, nigdy nie jest sugestią, niedopuszczalne do automatu.
+- **Znacznik „mały”:** wiersz bez żadnego znacznika pochodzenia (§5.2) ze znanym rozmiarem odcinka mniejszym niż 50% mediany znanych rozmiarów zasianych, `zgodnych` oryginałów WEB (bez Blu-ray i remuxu) w tej samej klasie rozdzielczości jest „mały”: idzie za pozostałymi wierszami tej samej klasy i pochodzenia i nie jest sugestią, gdy w tej klasie jest inny kandydat (np. `[Gremlin] … [1080p]` 398 MB obok WEB-DL 1,46 GB). Przekodowania i remuxy nie wchodzą do mediany, więc jej nie zaniżają ani nie zawyżają; wiersze ze znacznikiem `WEB-DL` nigdy nie są „małe”, bo różnica rozmiaru między serwisami to różnica bitrate (§6.1).
 - 720p i niższe są ukryte na liście, gdy istnieje zgodny kandydat 1080p lub 2160p, który może być sugestią: bez konfliktu, nie sam dubbing, w obsługiwanym formacie (U-24; od 2026-10-10 ukrycie nigdy nie chowa sugestii z powodu wydania, którego nie da się zasugerować). Sama sugestia `*` jest zawsze widoczna, także gdy ma 720p lub mniej (2026-10-10).
 - Sam dubbing bez oryginalnej ścieżki — na końcu listy (U-23). Nieobsługiwany kontener — wykluczony z powodem (U-06).
 
 ### 5.4 Kontrola wag
 
-Wagi i klasy muszą odtworzyć kolejność właściciela (wszystkie 1080p, właściwy odcinek, oryginalne audio JA): F (PL + audio JA+PL, 60 seedów) = 85 > A (PL, JA, 80) = 70 > C (PL, JA+EN, 30) = 68,7 > E (PL, Multi Audio bez PL, 5) = 64,6 > B (bez PL, EN, JA+EN, 400) = 40 ≈ D (tylko EN, 900) = 40. Ta kolejność jest testem jednostkowym (dla automatu i dla listy przy równej pewności); zmiana wag lub klas, która ją łamie, jest błędem.
+Wagi i klasy muszą odtworzyć kolejność właściciela (wszystkie 1080p, właściwy odcinek, oryginalne audio JA, wszystkie oryginały WEB-DL tego samego rozmiaru i grupy spoza listy): F (PL + audio JA+PL, 60 seedów) = 85 > A (PL, JA, 80) = 70 = C (PL, JA+EN, 30) = 70 > B (bez PL, EN, JA+EN, 400) = 40 = D (tylko EN, 900) = 40 > E (PL, Multi Audio bez PL, 5; słabo zasiane) = 61,25. E stoi na końcu mimo wyższej jakości, bo klasa zasiania poprzedza klasę PL (§5.3); wszystkie wydania kontroli to oryginały, więc pochodzenie jej nie zmienia; remisy A = C i B = D rozstrzyga dalsza kolejność §6.1. Ta kolejność jest testem jednostkowym (dla automatu i dla listy); zmiana wag lub klas, która ją łamie, jest błędem.
 
 ## 6. Wybór
 
 ### 6.1 Kolejność listy i sugestia
 
-1. Kandydaci bez konfliktu: klasa rozdzielczości → klasa PL napisów → klasa audio → **jakość × pewność** malejąco → wyższa pewność → więcej seedów → hash.
+1. Kandydaci bez konfliktu: klasa rozdzielczości → pochodzenie (oryginał przed przekodowaniem) → klasa zasiania → klasa PL napisów → klasa audio → werdykt H1 (`zgodny` przed `niepewnym`) → wiersz „mały” (§5.3) za pozostałymi → **jakość** zaokrąglona do całości, malejąco → **bitrate** → **kolejność grup** → więcej seedów (brak danych = −1) → hash. Pewność nie wpływa na kolejność (§4).
 2. Sam dubbing (§5.3).
 3. Kandydaci z konfliktem, w tej samej kolejności wewnętrznej, z powodem.
 
@@ -185,9 +194,11 @@ Grupa to pierwszy nawias nazwy wydania (`[Grupa]`, wzorzec H1 `FIRST_BRACKET`), 
 
 Pomiar 2026-10-11 (H1 v10.10, 21 ofert referencji i 4 oferty nagrane na żywo przez badacza B): widoczne `!` 1925 → 947 i 913 → 766; automat bez zmian 21/21. Top3: 204389-1 staje się oczekiwaniem właściciela; 152677-1 (przed emisją) daje pustą listę, a 172192-1 (przed emisją) jeden wiersz `[FrixySubs] … S01E02 [1080p BD …]`, opublikowany 1,8 dnia przed emisją według AniList. Oba czekają na decyzję właściciela. Po usunięciu DM, oknie A i wyłączeniu `MATCH` z reguły z automatu: referencja bez zmian (947, top3, automat 21/21), oferty nagrane na żywo 766 → 771 (A traci 7 wierszy: 6 bez daty publikacji i 1 opublikowany 17 dni po emisji celu; 4 wiersze `zgodne` `[Erai-raws] Mushoku Tensei - Isekai Ittara Honki Dasu - 01` z 2021 roku przy celu 146065 E1 ukrywa DM z marginesem 30 dni).
 
-**Remisy ekranowe (reguła „B-tie”, decyzja właściciela 2026-10-07):** po ułożeniu pełnej listy powyższym kluczem każdy maksymalny blok **kolejnych** wierszy o identycznym podpisie — grupa (1–3), nieobsługiwany kontener, klasy, Jakość i Pewność **w postaci pokazanej na liście** (Jakość zaokrąglona do całości, Pewność do pełnego procentu, brak pewności jako osobna wartość) — jest układany wewnątrz: więcej seedów (brak danych = −1) → dokładne jakość × pewność (bez pewności: jakość) malejąco → hash. Od 2026-10-10 (decyzja właściciela) przed seedami w bloku decyduje werdykt H1: wiersz `zgodny` (`MATCH`) idzie przed niepewnym. Kolejność bloków się nie zmienia, a blok przerwany wierszem o innym podpisie się nie łączy, więc wiersz z widocznie gorszą Jakością lub Pewnością nigdy nie awansuje. Bloki liczone są na pełnej liście, przed ukryciem (U-24); ukrycie i sugestia używają tego porządku. Wzór jakości i sufit seedów (§5.1) bez zmian.
+**Bitrate (decyzja właściciela 2026-11-08):** wiersze ze znanym rozmiarem odcinka (§5.2) w tej samej klasie rozdzielczości dzielą się na grupy rozmiaru: posortowane malejąco, kolejny wiersz zostaje w grupie, dopóki jego rozmiar to co najmniej 95% największego w grupie; wyżej stoi grupa większych plików, a różnica poniżej 5% to remis. Rozmiar nieznany idzie za znanymi. Podstawa (pomiar 2026-11-08): przy tym samym kodeku większy plik to wyższy bitrate (Dark Summoner S01E05: Amazon 590 MB, 6,29 Mb/s, wobec HIDIVE 492 MB, 5,31 Mb/s; właściciel wybrał Amazon), ten sam strumień różni się o mniej niż 1% (np. 1457, 1458 i 1460 MB), a różne serwisy o 15% i więcej.
 
-- Kolumny na końcu wiersza: **Jakość** i **Pewność**. Pełna nazwa wydania w wierszu.
+**Kolejność grup (decyzja właściciela 2026-11-08):** ToonsHub → SubsPlus+ → VARYG → AnoZu → SubsPlease → Erai-raws → pozostałe grupy na równi. Działa tylko po remisie bitrate, więc nie wyciąga słabszego pliku nad lepszy. Podstawa (pomiar 2026-11-08, Dark Summoner S01E01 od pięciu grup): przy tym samym źródle obraz jest identyczny (HIDIVE 5,30 Mb/s u wszystkich), a tekst napisów ten sam; ToonsHub jako jedyny daje rozdziały, przerobione style piosenek i dołączone czcionki, SubsPlus+ te same style bez rozdziałów, SubsPlease i Erai-raws surowy eksport serwisu, VARYG wziął Amazon (7,31 Mb/s, rozdziały z serwisu); AnoZu nie było na tym odcinku.
+
+- Kolumny na końcu wiersza: **Audio**, **Jakość** i **Pewność**. **Audio** pokazuje języki ścieżek dźwięku wydania w kolejności oryginał, potem pozostałe (np. `JA`, `JA+EN`, `JA+EN+PL`; nieznane = „?”), żeby było widać dual-audio i dubbing (decyzja właściciela 2026-11-08). Wydanie z `Dual-Audio` albo `Multi-Audio` w nazwie, bez listy języków audio, pokazuje oryginał i „?” (np. `JA+?`): oryginał jest, bo to nie sam dubbing, a pozostałe ścieżki są nieznane. Pełna nazwa wydania w wierszu.
 - **Sugestia** (`*`) = pierwszy wiersz z punktu 1 (najwyżej w rankingu); gdy nie jest `zgodny` w H1 — z oznaczeniem „niepewne” (U-03, R-06; tak też w Bibliotece po pobraniu). `D` bez podglądu pobiera sugestię (O-5, decyzja właściciela 2026-10-06).
 - Ręczny wybór kandydata innego niż `zgodny` wymaga potwierdzenia, a konfliktu — potwierdzenia z powodem H1 (R-04 bez zmian).
 
@@ -202,11 +213,11 @@ Subskrypcja bierze tylko kandydata, który jednocześnie:
 - jego klasa rozdzielczości nie jest gorsza niż **próg celu** (niżej);
 - nie blokuje go **wydanie oczekujące** (niżej).
 
-**Wydanie oczekujące:** wydanie z kolejki uzupełnień subskrypcji (§3.4: bez spisu, bez konfliktu na nazwie, użyteczne według nazwy, niewykluczone), bez znanej nazwy pliku, dla którego w tym celu odczyt w TsukiHime (wyszukanie po hashu albo spis) **nie zakończył się jeszcze ostatecznie**. Blokuje wybór kandydata z gorszej klasy rozdzielczości, a w tej samej klasie — z gorszej klasy PL napisów, także gdy nie zmieściło się w budżecie tego sprawdzenia. Przestaje blokować, gdy dostanie spis, po niepowodzeniu rozstrzygającym (brak hasha w TsukiHime, pusta lista) albo po 3 niepowodzeniach przejściowych (`202`, `429`, błąd, limit czasu) w 3 różnych sprawdzeniach. Licznik rośnie o najwyżej 1 na sprawdzenie i tylko dla wydań, których odczyt w tym sprawdzeniu się nie udał; gdy TsukiHime jest w całości niedostępny (§3.5: awaria listy, limit czasu albo `429`/błąd, także w trakcie uzupełnień), niepowodzenie przejściowe dostaje w tym sprawdzeniu każde wydanie oczekujące, również spoza budżetu. Pominięcie TsukiHime w cooldownie dostawcy (§3.1) i zwykłe wyczerpanie budżetu nie są niedostępnością i nie zwiększają licznika. Blokada wygasa już w sprawdzeniu, w którym licznik osiąga 3, więc czekanie trwa najwyżej 3 sprawdzenia z niepowodzeniem. Stan niepowodzeń (rozstrzygające i licznik przejściowych) dla pary cel–hash owner zapisuje trwale razem ze stanem celu (jak wykluczenia), więc restart nie odtwarza wygasłych blokad ani nie zeruje licznika; przy odbudowie kolejki wydania nadal blokujące idą przed ponowieniami tych, które już blokować przestały. Przy wyłączonym TsukiHime nie ma wydań oczekujących. Kolejka idzie od najlepszej klasy, a budżet 10 obejmuje wyszukania po hashu i odczyty spisów, więc każda blokada trwa najwyżej tyle sprawdzeń, ile trzeba, by kolejka do niego doszła; powód „czekam na sprawdzenie wydań 1080p” jest widoczny.
+**Wydanie oczekujące:** wydanie z kolejki uzupełnień subskrypcji (§3.4: bez spisu, bez konfliktu na nazwie, użyteczne według nazwy, niewykluczone), bez znanej nazwy pliku, dla którego w tym celu odczyt w TsukiHime (wyszukanie po hashu albo spis) **nie zakończył się jeszcze ostatecznie**. Blokuje wybór kandydata, przed którym mogłoby stanąć w kolejności wyboru (niżej): kandydata z gorszej klasy rozdzielczości, a w tej samej klasie rozdzielczości — gdy ma pochodzenie i klasę zasiania nie gorsze niż kandydat i lepszą klasę PL napisów (według tego, co o wydaniu już wiadomo), także gdy nie zmieściło się w budżecie tego sprawdzenia. Słabo zasiane albo przekodowane wydanie oczekujące nie blokuje więc zasianego oryginału (decyzja 2026-11-09). Przestaje blokować, gdy dostanie spis, po niepowodzeniu rozstrzygającym (brak hasha w TsukiHime, pusta lista) albo po 3 niepowodzeniach przejściowych (`202`, `429`, błąd, limit czasu) w 3 różnych sprawdzeniach. Licznik rośnie o najwyżej 1 na sprawdzenie i tylko dla wydań, których odczyt w tym sprawdzeniu się nie udał; gdy TsukiHime jest w całości niedostępny (§3.5: awaria listy, limit czasu albo `429`/błąd, także w trakcie uzupełnień), niepowodzenie przejściowe dostaje w tym sprawdzeniu każde wydanie oczekujące, również spoza budżetu. Pominięcie TsukiHime w cooldownie dostawcy (§3.1) i zwykłe wyczerpanie budżetu nie są niedostępnością i nie zwiększają licznika. Blokada wygasa już w sprawdzeniu, w którym licznik osiąga 3, więc czekanie trwa najwyżej 3 sprawdzenia z niepowodzeniem. Stan niepowodzeń (rozstrzygające i licznik przejściowych) dla pary cel–hash owner zapisuje trwale razem ze stanem celu (jak wykluczenia), więc restart nie odtwarza wygasłych blokad ani nie zeruje licznika; przy odbudowie kolejki wydania nadal blokujące idą przed ponowieniami tych, które już blokować przestały. Przy wyłączonym TsukiHime nie ma wydań oczekujących. Kolejka idzie od najlepszej klasy, a budżet 10 obejmuje wyszukania po hashu i odczyty spisów, więc każda blokada trwa najwyżej tyle sprawdzeń, ile trzeba, by kolejka do niego doszła; powód „czekam na sprawdzenie wydań 1080p” jest widoczny.
 
 **Próg celu:** najlepsza klasa rozdzielczości spośród prób celu uznanych za martwe (§6.5), z metadanymi lub bez. Zapisany trwale u ownera; działa niezależnie od tego, co zwracają źródła, i po restarcie. Progu nie ustawia próba zatrzymana po metadanych (paczka, niejednoznaczny plik) ani odrzucona przez kontrolę (H2, U-07/U-08). Tak „wydanie stoi” nigdy nie prowadzi do zejścia niżej, a wydanie złe treściowo nie blokuje innych klas. Martwe wydanie bez metadanych, które okazałoby się paczką, może więc zablokować niższą klasę — zgodnie z zasadą „lepiej nie pobrać”, z powodem widocznym (§8).
 
-**Wybór:** wśród dopuszczalnych pierwszy według: klasa rozdzielczości → klasa PL napisów → klasa audio → znana nazwa pliku przed „do weryfikacji po metadanych” → **jakość** → więcej seedów → hash, z uwzględnieniem §6.3. Pewność nie wpływa na wybór automatu. Automat nie bierze `niepewnego` (usuwa dopuszczenie po `T_niepewny`).
+**Wybór:** wśród dopuszczalnych pierwszy według: klasa rozdzielczości → pochodzenie → klasa zasiania → klasa PL napisów → klasa audio → znana nazwa pliku przed „do weryfikacji po metadanych” → wiersz „mały” (§5.3) za pozostałymi → **jakość** zaokrąglona do całości → **bitrate** → **kolejność grup** (§6.1) → więcej seedów → hash, z uwzględnieniem §6.3. Przekodowanie w rozdzielczości poniżej 1080 nie jest dopuszczalne (§5.3). Pewność nie wpływa na wybór automatu. Automat nie bierze `niepewnego` (usuwa dopuszczenie po `T_niepewny`).
 
 **Wykluczenie i tożsamość próby:** próba wyklucza dla swojego celu całe wydanie (hash) — także gdy skończyła się przed poznaniem ścieżki pliku. Stare klucze `hash:fileIdx` działają tak samo. Ochrona „plik przyjęty dla innego celu” używa hasha i ścieżki ze spisu qBittorrenta. Każda próba ma własny trwały identyfikator, osobny od licznika zużytego limitu (identyfikator polecenia przyjęcia nie może się powtórzyć).
 
@@ -284,16 +295,16 @@ Pobranie bez PL po buforze nie jest niepowodzeniem: powód w szczegółach, bez 
 | spec §9 „ML do tożsamości” | Wyjątek dla estymaty pewności (§4); tożsamość w automacie rozstrzyga H1. |
 | spec U-03, R-06 | Lista pokazuje % zamiast szufladek; automat bierze tylko `zgodny`; „niepewne” = sugestia nie-`zgodna`. |
 | spec U-04, R-02 | Klasy §5.3 i punkty §5; U-05 bez zmian jako pierwszy klucz. |
-| spec R-07 | Te same klasy i punkty w liście i automacie; pewność tylko w liście i sugestii (§6.1, §6.2). Zamiana po nieudanej kontroli U-08 w ścieżce ręcznej = pierwszy dopuszczalny według §6.2 (bez czekania na PL) z wykluczeniem całego wypróbowanego hasha; brak takiego → problem do ręcznego wyboru, bez pobierania `niepewnego`. |
+| spec R-07 | Te same klasy i punkty w liście i automacie; pewność tylko do wglądu w liście, bez wpływu na kolejność, sugestię i automat (§4). Zamiana po nieudanej kontroli U-08 w ścieżce ręcznej = pierwszy dopuszczalny według §6.2 (bez czekania na PL) z wykluczeniem całego wypróbowanego hasha; brak takiego → problem do ręcznego wyboru, bez pobierania `niepewnego`. |
 | spec §14 „Parametry przepływu” | Bez raportu P-2/P-5 (P-2 usunięte, P-5 zastąpione §6.2); odbiór według §1 i §9. |
 | spec U-22 | Mapowanie numeracji zapisywane niezależnie od Kitsu ID (§3.5). |
-| spec U-25 | Blu-ray −10 pkt; kodek bez wpływu. |
+| spec U-25 | Blu-ray −10 pkt z powodu rozmiaru i czasu przetwarzania (§5.1); kodek bez punktów, ale przekodowanie przegrywa z oryginałem i bywa ukryte (§5.2, §5.3). |
 | spec U-21 | Film według przypadku zestawu wzorcowego (§9). |
 | spec U-14, S-14 | Dochodzą powiadomienia §8. |
 | spec Q-03 | Wyjątki: ostatni udany wynik szybkiego źródła pominiętego przez P-10, w pamięci, najwyżej 30 min (§3.1); dla Knaben i nekoBT wyłącznie reguła §3.2. |
 | spec R-01, Q-02, Q-04 | Zapytania §3.1, limity §3.2, `RequestControl` per dostawca. |
 | spec R-03, R-04 | Dochodzą kolumny Jakość i Pewność; potwierdzenia R-04 bez zmian. |
-| spec R-05 | Brak seedów = „?” i 5 pkt; mało seedów obniża jakość; znane 0 seedów w automacie §6.2. |
+| spec R-05 | Brak seedów = „?” i 5 pkt; seedy jako bramka 20–30 i klasa zasiania (§5.1, §5.3); znane 0 seedów w automacie §6.2. |
 | spec P-02 | `D` bez podglądu decyduje po wszystkich źródłach (§3.2). |
 | plan §3.3, przejście 6, P-2 | Usunięte dopuszczenie `niepewnego`. |
 | plan §3.3 wybór | Ograniczenia klasy i próg celu (§6.2). |
@@ -324,3 +335,7 @@ Wszystkie rozstrzygnięte 2026-10-06 (właściciel; O-3 i O-4 według reguł obo
 - **O-3:** poprzedni sezon nie jest używany dla odcinka 1 (pomiar: szczątkowa i sprzeczna historia starszych sezonów w TsukiHime, 6 z 15 bez danych). Odcinek 1 ma stan „nieznane” i czeka 2 h.
 - **O-4:** koreańskie audio z PL napisami a japońskie bez PL — PL napisy wygrywają (klasa PL przed klasą audio).
 - **O-5:** sugestia i `D` bez podglądu — **pierwszy wiersz rankingu** (§6.1); gdy nie jest `zgodny`, oznaczenie „niepewne”.
+
+Otwarte po decyzjach 2026-11-08:
+
+- **O-6:** liczba seedów do bramki (§5.1) to dziś największa wartość ze źródeł (§3.3). Pomiar 2026-11-08 pokazał, że Knaben zawyża ją z pamięci podręcznej (SubsPlease 1021 wobec 472 w Nyaa, Erai-raws 361 wobec 143), a połączonych seedów było najwyżej 36. Do rozstrzygnięcia, czy bramka ma używać wartości z Nyaa albo z trackera zamiast maksimum.

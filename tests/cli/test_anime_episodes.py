@@ -155,7 +155,6 @@ def _candidate(
             False,
             resolution,
             False,
-            False,
             None,
             False,
         ),
@@ -1135,6 +1134,23 @@ def test_release_views_keep_decision_columns_and_show_size_in_column_or_notice(
 
 
 @pytest.mark.unit
+def test_release_list_shows_audio_languages_before_quality_and_unknown_audio_as_a_question_mark() -> None:
+    catalog: _Catalog = _Catalog()
+    dual: RankedCandidate = replace(
+        _candidate(), traits=replace(_candidate().traits, audio_languages=("ja", "en", "pl"))
+    )
+    unknown: RankedCandidate = replace(_candidate(), stream=replace(_candidate().stream, info_hash="b" * 40))
+    catalog.offer_read = lambda key: _offer(key, (dual, unknown))
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+    _key(controller, "text:i")
+    lines: list[str] = controller.render(120, 40).plain.splitlines()
+    header: str = next(line for line in lines if "Wydanie" in line)
+    assert header.index("Seedy") < header.index("Audio") < header.index("Jakość")
+    assert {item.key[0]: item.audio for item in controller._view.items} == {"a": "JA+EN+PL", "b": "?"}
+    assert "JA+EN+PL" in lines[lines.index(header) + 1]
+
+
 def test_release_size_shows_the_episode_file_size_and_unknown_for_a_pack_without_it() -> None:
     catalog: _Catalog = _Catalog()
     single: RankedCandidate = replace(_candidate(), stream=replace(_candidate().stream, size_text="1.40 GB"))

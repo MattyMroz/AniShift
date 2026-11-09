@@ -189,6 +189,7 @@ def release_rows(
             size=_candidate_size(item),
             language=_language(item),
             seeds=str(item.stream.seeders) if item.stream.seeders is not None else "?",
+            audio="+".join(code.upper() for code in item.traits.audio_languages) or "?",
             quality=quality_text(item),
             confidence=_candidate_confidence(item, suggested=item == suggested),
             detail=candidate_reason(item) + " · " + _candidate_details(item, film=film),
@@ -259,8 +260,6 @@ def _candidate_details(item: RankedCandidate, *, film: bool) -> str:
         details.append(f"Plik: {safe(item.stream.path or item.stream.file_name or '')}")
     if item.release_name_only:
         details.append("bez nazwy pliku")
-    if item.traits.platform:
-        details.append("wydanie z platformy")
     if item.supported is False:
         details.append("format nieobsługiwany")
     if item.ambiguous:

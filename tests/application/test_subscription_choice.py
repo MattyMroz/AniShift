@@ -18,7 +18,7 @@ from anishift.application.control import (
 )
 from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.intents import RequestOrigin
-from anishift.application.release_quality import AudioClass, PolishClass, ReleaseTraits, ResolutionClass
+from anishift.application.release_quality import AudioClass, Origin, PolishClass, ReleaseTraits, ResolutionClass
 from anishift.application.subscription_choice import (
     NO_POLISH_AFTER_WAIT,
     Blocker,
@@ -59,7 +59,7 @@ _C: Final[str] = "c" * 40
 
 def _traits(**changes: object) -> ReleaseTraits:
     traits: ReleaseTraits = ReleaseTraits(
-        PolishClass.POLISH, False, False, AudioClass.ORIGINAL, False, False, False, 1080, False, False, 10, False
+        PolishClass.POLISH, False, False, AudioClass.ORIGINAL, False, False, False, 1080, False, 10, False
     )
     return replace(traits, **changes)  # type: ignore[arg-type]
 
@@ -104,8 +104,9 @@ def test_usable_plain_release() -> None:
         {"hardsub": True},
         {"supported": False},
         {"taken": True},
+        {"origin": Origin.TRANSCODE, "resolution": 720},
     ],
-    ids=["pack", "ambiguous", "dub-only", "raw", "hardsub", "unsupported", "taken"],
+    ids=["pack", "ambiguous", "dub-only", "raw", "hardsub", "unsupported", "taken", "low-transcode"],
 )
 def test_usable_rejects_each_condition(changes: dict[str, object]) -> None:
     assert not usable(_item(_A, **changes))
@@ -138,6 +139,40 @@ def test_admissible_respects_threshold(
     assert admissible(_item(resolution=resolution), excluded=(), threshold=threshold) is expected
 
 
+def test_admissible_rejects_a_transcode_below_1080_lines() -> None:
+    assert not admissible(_item(origin=Origin.TRANSCODE, resolution=720), excluded=(), threshold=None)
+    assert admissible(_item(origin=Origin.TRANSCODE, resolution=1080), excluded=(), threshold=None)
+    assert admissible(_item(origin=Origin.SOURCE, resolution=720), excluded=(), threshold=None)
+
+
+def test_choose_puts_a_seeded_release_before_a_weakly_seeded_polish_one() -> None:
+    weak_polish: ChoiceCandidate = _item(_A, seeders=19, quality=99.0)
+    seeded: ChoiceCandidate = _item(_B, polish=PolishClass.NONE, seeders=20, quality=10.0)
+    unknown: ChoiceCandidate = _item(_C, polish=PolishClass.NONE, seeders=None, quality=10.0)
+
+    assert _choose(weak_polish, seeded) == seeded
+    assert _choose(weak_polish, unknown) == unknown
+
+
+def test_choose_prefers_an_original_then_a_full_file_before_quality() -> None:
+    transcode: ChoiceCandidate = _item(_A, origin=Origin.TRANSCODE, quality=90.0)
+    small: ChoiceCandidate = _item(_B, small=True, quality=80.0)
+    full: ChoiceCandidate = _item(_C, origin=Origin.SOURCE, quality=50.0)
+
+    assert _choose(transcode, small, full) == full
+    assert _choose(transcode, small) == small
+
+
+def test_choose_breaks_rounded_quality_ties_by_bitrate_then_group_then_seeds() -> None:
+    bigger: ChoiceCandidate = _item(_A, quality=50.4, size_rank=0, group="erai-raws", seeders=40)
+    smaller: ChoiceCandidate = _item(_B, quality=49.6, size_rank=1, group="toonshub", seeders=900)
+    preferred: ChoiceCandidate = _item(_C, quality=49.6, size_rank=0, group="toonshub", seeders=30)
+
+    assert _choose(smaller, bigger) == bigger
+    assert _choose(bigger, preferred) == preferred
+    assert _choose(replace(bigger, quality=51.0), preferred) == replace(bigger, quality=51.0)
+
+
 def test_choose_ignores_list_confidence_and_follows_owner_classes() -> None:
     bare: ChoiceCandidate = _item(_A, polish=PolishClass.BARE, quality=99.0)
     polish: ChoiceCandidate = _item(_B, polish=PolishClass.POLISH, quality=10.0)
@@ -166,6 +201,53 @@ def test_choose_pending_better_release_blocks_worse() -> None:
 
     assert _choose(pending, worse) is None
     assert _choose(pending, worse, tsukihime=False) == worse
+
+
+def test_choose_weakly_seeded_pending_polish_release_never_blocks_a_seeded_original() -> None:
+    pending: ChoiceCandidate = _item(_A, after_metadata=True, verdict=IdentityVerdict.INSUFFICIENT, seeders=5)
+    seeded: ChoiceCandidate = _item(_B, polish=PolishClass.NONE, seeders=135)
+
+    assert _choose(pending, seeded) == seeded
+
+
+def test_choose_pending_polish_transcode_never_blocks_an_original() -> None:
+    pending: ChoiceCandidate = _item(
+        _A, after_metadata=True, verdict=IdentityVerdict.INSUFFICIENT, origin=Origin.TRANSCODE, seeders=200
+    )
+    original: ChoiceCandidate = _item(_B, polish=PolishClass.NONE, seeders=119)
+
+    assert _choose(pending, original) == original
+
+
+def test_choose_seeded_original_pending_with_polish_blocks_a_seeded_original_without_polish() -> None:
+    pending: ChoiceCandidate = _item(_A, after_metadata=True, verdict=IdentityVerdict.INSUFFICIENT, seeders=698)
+    without: ChoiceCandidate = _item(_B, polish=PolishClass.NONE, seeders=135)
+
+    assert _choose(pending, without) is None
+
+
+def test_choose_seeded_original_pending_without_polish_never_blocks_a_seeded_original_without_polish() -> None:
+    pending: ChoiceCandidate = _item(
+        _A, after_metadata=True, verdict=IdentityVerdict.INSUFFICIENT, polish=PolishClass.NONE, seeders=698
+    )
+    without: ChoiceCandidate = _item(_B, polish=PolishClass.NONE, seeders=135)
+
+    assert _choose(pending, without) == without
+
+
+def test_choose_pending_release_of_a_better_resolution_blocks_a_worse_one() -> None:
+    pending: ChoiceCandidate = _item(
+        _A,
+        after_metadata=True,
+        verdict=IdentityVerdict.INSUFFICIENT,
+        origin=Origin.TRANSCODE,
+        polish=PolishClass.NONE,
+        seeders=2,
+        subtitles_listed=True,
+    )
+    worse: ChoiceCandidate = _item(_B, resolution=720, seeders=500)
+
+    assert _choose(pending, worse) is None
 
 
 def test_choose_ended_pending_release_no_longer_blocks() -> None:
@@ -208,6 +290,15 @@ def test_record_failures_counts_unread_pending_while_tsukihime_down() -> None:
     )
 
     assert set(result) == {ReleaseFailure(_A, transient=MAX_TRANSIENT_FAILURES), ReleaseFailure(_B, transient=1)}
+
+
+def test_a_transcode_below_1080_lines_is_never_pending_queued_or_blocking() -> None:
+    low: ChoiceCandidate = _item(_A, after_metadata=True, origin=Origin.TRANSCODE, resolution=720)
+    worse: ChoiceCandidate = _item(_B, resolution=480)
+
+    assert pending_releases((low, worse), failures=(), excluded=(), tsukihime=True) == ()
+    assert completion_order((low, worse), failures=(), excluded=()) == ((_B,), ())
+    assert _choose(low, worse) == worse
 
 
 def test_completion_order_visits_blocking_before_ended() -> None:
