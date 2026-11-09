@@ -34,7 +34,7 @@ def test_streams_fixture_preserves_files_and_parses_presentation() -> None:
     assert first.path == "01. Season 1 + Special/S01E04-In the Kingdom of the Dwarves [D1DC0293].mkv"
     assert first.file_name == "S01E04-In the Kingdom of the Dwarves [D1DC0293].mkv"
     assert first.seeders == 320
-    assert first.size_text == "592.94 MB"
+    assert first.size_text == "592.94 MiB"
     assert first.provider == "NyaaSi"
     assert first.tags == ("Dubbed", "Dual Audio")
     assert first.trackers[0] == "http://tracker.opentrackr.org:1337/announce"

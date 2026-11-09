@@ -34,6 +34,9 @@ _DESCRIPTION_MIN: Final[int] = 24
 ACTION_NOTICES: Final[frozenset[str]] = frozenset({"Ctrl+Z cofnij", "P pobierz ponownie"})
 """Key hints a notice may end with, clickable like the footer."""
 
+BLURAY: Final[Action] = ("B", "Blu-ray")
+"""Anime action switching the Blu-ray preference of the release list and of D; its hint is highlighted while on."""
+
 PANEL_ACTIONS: Final[tuple[Action, ...]] = (("M", "ręczny"), ("U", "ustawienia"))
 """Mode switches listed under ? on every list outside Anime."""
 
@@ -50,6 +53,7 @@ _DESCRIPTIONS: Final[dict[Action, str]] = {
     ("Enter", "sprawdź wynik"): "Sprawdza wynik ostatniej partii pobrań",
     ("Space", "zaznacz"): "Zaznacza wiersz, żeby D pobrało kilka naraz",
     ("D", "pobierz"): "Pobiera zaznaczone odcinki albo wybrane wydanie",
+    ("B", "Blu-ray"): "Włącza albo wyłącza pierwszeństwo Blu-ray i remux",
     ("D", "dodaj"): "Przechodzi do wyszukiwarki, żeby dodać subskrypcję",
     ("D", "dodaj pierwszą"): "Przechodzi do wyszukiwarki, żeby dodać subskrypcję",
     ("W", "wstrzymaj"): "Wstrzymuje automatyczne pobieranie tej pozycji",

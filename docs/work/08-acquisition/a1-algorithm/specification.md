@@ -1,7 +1,7 @@
 ---
 kind: specification
 status: zaakceptowana przez recenzentów (rundy 22–23: astra, opus55, sol61 bez uwag); czeka na akceptację właściciela; §3.1 i §3.5 zmienione decyzjami D1–D3 (2026-10-06) i poprawkami review v16, do review; §4–§6 zmienione decyzjami właściciela 2026-11-08 (wybór wydania v2), czekają na akceptację właściciela
-updated: 2026-11-08
+updated: 2026-11-09
 baseline: 9d828708
 ---
 
@@ -65,7 +65,7 @@ Kontrakt tego, jak AniShift znajduje wydania odcinka, ocenia je i wybiera jedno.
 
 - Ten sam hash z kilku źródeł to jeden wiersz.
 - **Nazwa wydania:** pierwsza dostępna w kolejności TsukiHime → Nyaa → nekoBT → Knaben → Torrentio (`release` Torrentio bywa ucięty).
-- **Seedy:** największa wartość spośród źródeł, które je podają; brak u wszystkich → „?”.
+- **Seedy:** największa wartość spośród źródeł innych niż Knaben, które je podają; liczba z Knaben tylko wtedy, gdy żadne inne źródło jej nie podaje (O-6); brak u wszystkich → „?”. Ta sama liczba działa w wyborze i na liście.
 - **Data publikacji:** najwcześniejsza z Nyaa (`pubDate`), Knaben (`date`) i nekoBT (`pubDate`); TsukiHime i Torrentio jej nie podają, nieczytelna data = brak. Używają jej tylko reguły ofertowe (§6.1).
 - **Języki:** §5.2.
 - **`RAW` i `HardSub`** rozpoznawane są z nazw i tagów wszystkich źródeł wydania przed wyborem nazwy wiersza; dodatni dowód z dowolnego źródła obowiązuje i nie kasuje go nazwa z innego źródła. Tag `HS` w bloku `{Tags:…}` nekoBT = `HardSub`. Przypadek wzorcowy (§9): ten sam hash z nazwą Nyaa/TsukiHime bez `HardSub` i nekoBT z `HS` → niedopuszczalny do automatu z powodem „hardsub”.
@@ -127,7 +127,8 @@ Kontrakt tego, jak AniShift znajduje wydania odcinka, ocenia je i wybiera jedno.
 - Najwyżej jedna z dwóch pozycji PL napisów.
 - **Jakość = max(0, suma)**; zakres 0–85. Kolumna i kolejność (§6.1) używają liczby zaokrąglonej do całości.
 - **Seedy (bramka, decyzja właściciela 2026-11-08):** 30 i więcej = 10 pkt; od 20 do 29 = `5 + 0,5 × (s − 20)` pkt; poniżej 20 = `s / 4` pkt i klasa „słabo zasiane” (§5.3). Brak danych = 5 pkt i „?”, klasa „zasiane”. Powyżej progu seedy nie zmieniają oceny. Pomiar 2026-11-08 (13 wydań jednego odcinka, pobierane po kolei na łączu właściciela, sufit ok. 50 MB/s): od 20–30 seedów prędkość nie rośnie (pliki 170–620 MB w 10–40 s, a ten sam torrent zmierzony drugi raz był 1,5× wolniejszy, tyle co różnica między 30 a 1000 seedów); przy 16 seedach pierwszy bajt po 128 s i 2 MB/s.
-- **Blu-ray lub remux −10:** domyślnie wygrywa WEB-DL, bo remux waży ok. 4,7× więcej (Frieren S01E01: 6,99 GiB wobec 1,48 GiB) i dłużej się przetwarza. Obraz jest lepszy (VMAF WEB-DL wobec remuxu: średnio 97,6, poniżej 90 w 10 z 773 próbek), a remux 1080p odtwarza się płynnie z interpolacją 2× (pomiar i ocena właściciela 2026-11-08), więc kara nie dotyczy odtwarzania. Blu-ray wybiera się ręcznie z listy; preferencja przy kolejkowaniu to issue #113.
+- **Blu-ray lub remux −10:** domyślnie wygrywa WEB-DL, bo remux waży ok. 4,7× więcej (Frieren S01E01: 6,99 GiB wobec 1,48 GiB) i dłużej się przetwarza. Obraz jest lepszy (VMAF WEB-DL wobec remuxu: średnio 97,6, poniżej 90 w 10 z 773 próbek), a remux 1080p odtwarza się płynnie z interpolacją 2× (pomiar i ocena właściciela 2026-11-08), więc kara nie dotyczy odtwarzania.
+- **Pierwszeństwo Blu-ray (2026-11-09, issue #113):** klawisz `B` w zakładce Anime ([ux.md](../ux.md) U03) włącza je dla listy wydań i dla `D`, także dla partii kilku odcinków. Dotyczy tylko nieprzekodowanego Blu-ray: wydania ze znacznikiem Blu-ray lub remux (§5.2), którego pochodzenie nie jest przekodowaniem (np. `… 1080p BluRay REMUX AVC …`, `[MTBB] … (BD 1080p)`; nie `… BDRip … x265`, `… BluRay x264-…`, `[…] … [BD 1080p HEVC 10bit]`). Takie wydanie nie dostaje −10 i stoi przed innymi w swojej klasie zasiania (§5.3, §6.1), a między takimi wydaniami wyższy bitrate (§6.1) idzie przed jakością („lepszy bitrate zawsze”, decyzja właściciela 2026-11-09); paczka i wydanie, którego nazwa deklaruje lektora albo dubbing (`Voiceover`, `MVO`, `Dub`, `Dubbed`, `Dubbing`, np. `[RUS Voiceover]`, `MVO + Original`, `ENG-DUB`), stoją za nieprzekodowanymi Blu-ray pojedynczych odcinków bez takiej deklaracji (decyzja właściciela 2026-11-09); wydanie z takim znacznikiem, które deklaruje też oryginalne audio (pełna lista języków audio z japońskim albo `Dual-Audio`/`Multi-Audio`, §5.2), zostaje wśród pierwszych, bo dodatkowe języki obok oryginału to zaleta (np. `[TekkenQ8] … [Dub - Japanese , English , Arabic]`, `… (English Dubbed Dual Audio)`), więc rozdzielczość, pochodzenie i bramka seedów nadal idą pierwsze: słabo zasiany Blu-ray nie wyprzedza zasianego WEB-DL, a Blu-ray 2160p nie wyprzedza 1080p. Bez trybu kolejność jest dokładnie taka jak bez tej reguły. Subskrypcje i automat nigdy go nie używają.
 - Angielski dubbing, inne języki napisów, liczba języków, nazwa serwisu: 0 pkt. Kodek i rozmiar działają przez pochodzenie i bitrate, grupa przez kolejność grup (§5.3, §6.1).
 
 ### 5.2 Rozpoznanie cech
@@ -150,8 +151,8 @@ Kontrakt tego, jak AniShift znajduje wydania odcinka, ocenia je i wybiera jedno.
 - **Rozdzielczość, Blu-ray:** z nazwy. **`RAW`, `HardSub`:** z nazw i tagów wszystkich źródeł (§3.3).
 - **Pochodzenie** (z nazwy wydania i nazwy pliku, bez wielkości liter):
   - **oryginał:** `Remux` albo `WEB-DL`, w obu przypadkach bez `x264`/`x265` (plik z płyty albo z serwisu bez ponownej kompresji, także HEVC lub AV1 podane przez serwis); nazwa bez żadnego znacznika kompresji (np. `[SubsPlease] … (1080p)`) też jest oryginałem;
-  - **przekodowanie:** poza powyższym którykolwiek ze znaczników `WEBRip`, `BDRip`, `x264`, `x265`, `HEVC`, `H.265`, `AV1`, `10bit`/`10-bit`, `Hi10`/`Hi10P` (np. `[Erai-raws] … [1080p CR WEBRip HEVC AAC]`, `[ASW] … [1080p HEVC x265 10Bit]`, `… BDRip 10 bits DD+ x265-EMBER`). Scenowe `H.264` oznacza strumień serwisu, `x264` kompresję grupy.
-- **Rozmiar odcinka:** rozmiar pliku odcinka ze spisu (TsukiHime, Torrentio, qBittorrent), a bez spisu rozmiar wydania, gdy wydanie nie jest paczką. Paczka bez rozmiaru pliku = rozmiar nieznany.
+  - **przekodowanie:** poza powyższym którykolwiek ze znaczników `WEBRip`, `BDRip`, `x264`, `x265`, `HEVC`, `H.265`, `AV1`, `10bit`/`10-bit`, `Hi10`/`Hi10P`, `Hi444`, `Ma10p`, `Opus`, `Encode` (np. `[Erai-raws] … [1080p CR WEBRip HEVC AAC]`, `[ASW] … [1080p HEVC x265 10Bit]`, `… BDRip 10 bits DD+ x265-EMBER`). Scenowe `H.264` oznacza strumień serwisu, `x264` kompresję grupy.
+- **Rozmiar odcinka:** rozmiar pliku odcinka ze spisu (TsukiHime, Torrentio, qBittorrent; Torrentio pisze `GB`, a liczy w potęgach 1024, więc jego rozmiar to GiB: ten sam plik ma 1448606898 B w TsukiHime i „1.35 GB” w Torrentio), a bez spisu rozmiar wydania, gdy wydanie nie jest paczką. Paczka bez rozmiaru pliku = rozmiar nieznany.
 - **Grupa w kolejności grup (§6.1):** pierwszy nawias nazwy (`[Grupa]`), a bez niego końcówka `-GRUPA` nazwy scenowej (np. `…H.264-VARYG`), bez wielkości liter. Reguły ofertowe (§6.1) nadal rozpoznają grupę tylko po pierwszym nawiasie.
 
 ### 5.3 Klasy
@@ -174,7 +175,7 @@ Wagi i klasy muszą odtworzyć kolejność właściciela (wszystkie 1080p, wła�
 
 ### 6.1 Kolejność listy i sugestia
 
-1. Kandydaci bez konfliktu: klasa rozdzielczości → pochodzenie (oryginał przed przekodowaniem) → klasa zasiania → klasa PL napisów → klasa audio → werdykt H1 (`zgodny` przed `niepewnym`) → wiersz „mały” (§5.3) za pozostałymi → **jakość** zaokrąglona do całości, malejąco → **bitrate** → **kolejność grup** → więcej seedów (brak danych = −1) → hash. Pewność nie wpływa na kolejność (§4).
+1. Kandydaci bez konfliktu: klasa rozdzielczości → pochodzenie (oryginał przed przekodowaniem) → klasa zasiania → przy pierwszeństwie Blu-ray (§5.1) nieprzekodowany Blu-ray przed resztą → klasa PL napisów → klasa audio → werdykt H1 (`zgodny` przed `niepewnym`) → wiersz „mały” (§5.3) za pozostałymi → **jakość** zaokrąglona do całości, malejąco → **bitrate** → **kolejność grup** → więcej seedów (brak danych = −1) → hash. Pewność nie wpływa na kolejność (§4).
 2. Sam dubbing (§5.3).
 3. Kandydaci z konfliktem, w tej samej kolejności wewnętrznej, z powodem.
 
@@ -194,7 +195,7 @@ Grupa to pierwszy nawias nazwy wydania (`[Grupa]`, wzorzec H1 `FIRST_BRACKET`), 
 
 Pomiar 2026-10-11 (H1 v10.10, 21 ofert referencji i 4 oferty nagrane na żywo przez badacza B): widoczne `!` 1925 → 947 i 913 → 766; automat bez zmian 21/21. Top3: 204389-1 staje się oczekiwaniem właściciela; 152677-1 (przed emisją) daje pustą listę, a 172192-1 (przed emisją) jeden wiersz `[FrixySubs] … S01E02 [1080p BD …]`, opublikowany 1,8 dnia przed emisją według AniList. Oba czekają na decyzję właściciela. Po usunięciu DM, oknie A i wyłączeniu `MATCH` z reguły z automatu: referencja bez zmian (947, top3, automat 21/21), oferty nagrane na żywo 766 → 771 (A traci 7 wierszy: 6 bez daty publikacji i 1 opublikowany 17 dni po emisji celu; 4 wiersze `zgodne` `[Erai-raws] Mushoku Tensei - Isekai Ittara Honki Dasu - 01` z 2021 roku przy celu 146065 E1 ukrywa DM z marginesem 30 dni).
 
-**Bitrate (decyzja właściciela 2026-11-08):** wiersze ze znanym rozmiarem odcinka (§5.2) w tej samej klasie rozdzielczości dzielą się na grupy rozmiaru: posortowane malejąco, kolejny wiersz zostaje w grupie, dopóki jego rozmiar to co najmniej 95% największego w grupie; wyżej stoi grupa większych plików, a różnica poniżej 5% to remis. Rozmiar nieznany idzie za znanymi. Podstawa (pomiar 2026-11-08): przy tym samym kodeku większy plik to wyższy bitrate (Dark Summoner S01E05: Amazon 590 MB, 6,29 Mb/s, wobec HIDIVE 492 MB, 5,31 Mb/s; właściciel wybrał Amazon), ten sam strumień różni się o mniej niż 1% (np. 1457, 1458 i 1460 MB), a różne serwisy o 15% i więcej.
+**Bitrate (decyzja właściciela 2026-11-08):** wiersze ze znanym rozmiarem odcinka (§5.2) w tej samej klasie rozdzielczości dzielą się na grupy rozmiaru: posortowane malejąco, kolejny wiersz zostaje w grupie, dopóki jego rozmiar to co najmniej 95% największego w grupie; wyżej stoi grupa większych plików, a różnica poniżej 5% to remis. Wiersze ukryte na liście (np. przekodowanie obok oryginału, §5.3) tworzą grupy tylko między sobą, więc nie przesuwają granic grup wierszy widocznych (2026-11-09: ukryte przekodowanie postawiło Erai-raws przed SubsPlease przy różnicy rozmiaru 0,06%). Rozmiar nieznany idzie za znanymi. Podstawa (pomiar 2026-11-08): przy tym samym kodeku większy plik to wyższy bitrate (Dark Summoner S01E05: Amazon 590 MB, 6,29 Mb/s, wobec HIDIVE 492 MB, 5,31 Mb/s; właściciel wybrał Amazon), ten sam strumień różni się o mniej niż 1% (np. 1457, 1458 i 1460 MB), a różne serwisy o 15% i więcej.
 
 **Kolejność grup (decyzja właściciela 2026-11-08):** ToonsHub → SubsPlus+ → VARYG → AnoZu → SubsPlease → Erai-raws → pozostałe grupy na równi. Działa tylko po remisie bitrate, więc nie wyciąga słabszego pliku nad lepszy. Podstawa (pomiar 2026-11-08, Dark Summoner S01E01 od pięciu grup): przy tym samym źródle obraz jest identyczny (HIDIVE 5,30 Mb/s u wszystkich), a tekst napisów ten sam; ToonsHub jako jedyny daje rozdziały, przerobione style piosenek i dołączone czcionki, SubsPlus+ te same style bez rozdziałów, SubsPlease i Erai-raws surowy eksport serwisu, VARYG wziął Amazon (7,31 Mb/s, rozdziały z serwisu); AnoZu nie było na tym odcinku.
 
@@ -336,6 +337,6 @@ Wszystkie rozstrzygnięte 2026-10-06 (właściciel; O-3 i O-4 według reguł obo
 - **O-4:** koreańskie audio z PL napisami a japońskie bez PL — PL napisy wygrywają (klasa PL przed klasą audio).
 - **O-5:** sugestia i `D` bez podglądu — **pierwszy wiersz rankingu** (§6.1); gdy nie jest `zgodny`, oznaczenie „niepewne”.
 
-Otwarte po decyzjach 2026-11-08:
+Rozstrzygnięte 2026-11-09 (decyzja przekazana przez właściciela wykonawcy):
 
-- **O-6:** liczba seedów do bramki (§5.1) to dziś największa wartość ze źródeł (§3.3). Pomiar 2026-11-08 pokazał, że Knaben zawyża ją z pamięci podręcznej (SubsPlease 1021 wobec 472 w Nyaa, Erai-raws 361 wobec 143), a połączonych seedów było najwyżej 36. Do rozstrzygnięcia, czy bramka ma używać wartości z Nyaa albo z trackera zamiast maksimum.
+- **O-6:** Knaben zawyża liczbę seedów z pamięci podręcznej (pomiar 2026-11-08: SubsPlease 1021 wobec 472 w Nyaa, Erai-raws 361 wobec 143, a połączonych seedów było najwyżej 36). **Gdy to samo wydanie (hash) podaje też inne źródło, liczy się największa liczba spośród pozostałych źródeł, a liczba z Knaben jest pomijana; gdy podaje je tylko Knaben, zostaje jego liczba, bez współczynnika korekty** (§3.3). Dotyczy bramki i klasy zasiania (§5.1, §5.3), znanych 0 seedów w automacie (§6.2) i kolumny Seedy. W zestawie wzorcowym (§9) zmienia trójkę 154587-1 i 154587-28: Erai-raws 01 (18 seedów z Nyaa zamiast 29), Erai-raws 28 (13 zamiast 23) i CR WEB-DL S01E28 (17 zamiast 33) stają się słabo zasiane; automat bez zmian.

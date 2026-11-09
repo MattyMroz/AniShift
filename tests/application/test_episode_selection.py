@@ -18,6 +18,7 @@ from anishift.application.episode_releases import (
     ReleaseFile,
     TsukiHimeFiles,
     merge_releases,
+    size_bytes,
 )
 from anishift.application.episode_selection import (
     _ABSOLUTE_ONLY,
@@ -29,7 +30,9 @@ from anishift.application.episode_selection import (
     _WEEKLY_ECHO,
     AniZipMapping,
     EntryGroup,
+    EpisodeKey,
     EpisodeListing,
+    EpisodeOffer,
     FranchiseEntry,
     FranchiseGraph,
     ListedEpisode,
@@ -46,9 +49,9 @@ from anishift.application.episode_selection import (
     premiere_order,
     quality_text,
     rank_candidates,
+    rank_offer,
     representative,
     season_dates,
-    size_bytes,
     streams_releases,
     suggestion,
     visible,
@@ -748,7 +751,7 @@ def test_rank_torrentio_equivalent_to_conf_model() -> None:
         if row.stream.file_name == "[Trix] Tensei Shitara Slime Datta Ken - 04.mkv"
         and row.stream.path == streams[renamed].path
     )
-    assert renamed_row.traits == _rank(target, [original])[0].traits
+    assert replace(renamed_row.traits, size_rank=None) == replace(_rank(target, [original])[0].traits, size_rank=None)
     assert renamed_row.traits.resolution == 1080
 
 
@@ -1547,9 +1550,12 @@ def test_a_small_unmarked_file_follows_the_full_files_of_its_class_and_never_lea
     )
     small: StreamCandidate = _stream("[Gremlin] Star Garden - 05 [1080p].mkv", size_text="398 MiB", seeders=90)
     ranked: tuple[RankedCandidate, ...] = _rank(_target(), [small, full])
-    assert [(row.stream, row.traits.small) for row in ranked] == [(full, False), (small, True)]
+    assert [(row.stream.info_hash, row.traits.small) for row in ranked] == [
+        (full.info_hash, False),
+        (small.info_hash, True),
+    ]
     assert suggestion(ranked, numbering=True) == (0, False)
-    assert [row.stream for row in visible(ranked)] == [full, small]
+    assert [row.stream.info_hash for row in visible(ranked)] == [full.info_hash, small.info_hash]
     assert suggestion(ranked[1:], numbering=True) == (0, False)
 
 
@@ -1564,7 +1570,7 @@ def test_only_an_unmarked_file_below_half_the_median_seeded_matching_web_origina
     unmarked: StreamCandidate = _stream("[Raw] Star Garden - 05 [1080p].mkv", size_text="700 MiB", seeders=50)
     tiny: StreamCandidate = _stream("[Tiny] Star Garden - 05 [1080p].mkv", size_text="400 MiB", seeders=50)
     ranked: tuple[RankedCandidate, ...] = _rank(_target(), [*web, weak, remux, encode, small_web, unmarked, tiny])
-    assert {row.stream for row in ranked if row.traits.small} == {tiny}
+    assert {row.stream.info_hash for row in ranked if row.traits.small} == {tiny.info_hash}
 
 
 def test_a_season_batch_sets_no_size_reference_for_single_episodes() -> None:
@@ -1730,6 +1736,108 @@ def test_a_bitrate_group_keeps_a_file_of_exactly_95_percent_of_its_largest_and_d
         edge.release: 0,
         below.release: 1,
     }
+
+
+def test_a_hidden_transcode_never_moves_the_bitrate_groups_of_the_shown_rows() -> None:
+    erai: StreamCandidate = _listed("[Erai-raws] Star Garden - 05 [1080p][Multiple Subtitle]", "1461 MB", 900)
+    subsplease: StreamCandidate = _listed("[SubsPlease] Star Garden - 05 (1080p)", "1460 MB", 900)
+    transcode: StreamCandidate = _listed("[ASW] Star Garden - 05 [1080p HEVC x265]", "1537.5 MB", 900)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [erai, transcode, subsplease])
+    assert [(row.stream.release, row.traits.size_rank) for row in visible(ranked)] == [
+        (subsplease.release, 0),
+        (erai.release, 0),
+    ]
+    assert _automatic(ranked) == choice_candidate(ranked[0])
+
+
+def _bluray_offer() -> EpisodeOffer:
+    streams: list[StreamCandidate] = [
+        replace(_listed("[SubsPlease] Star Garden - 05 (1080p)", "1.4 GiB", 50), subtitle_languages=("pl",)),
+        _listed("Star Garden S01E05 1080p BluRay REMUX AVC FLAC-Disc", "7 GiB", 40),
+        _listed("Star Garden S01E05 1080p BluRay REMUX AVC FLAC-Weak", "7 GiB", 5),
+        _listed("Star Garden S01E05 2160p BluRay REMUX HEVC-Uhd", "20 GiB", 60),
+        _listed("[Enc] Star Garden - 05 [BDRip 1080p x265 10bit]", "500 MiB", 300),
+    ]
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), streams)
+    index: int | None = suggestion(ranked, numbering=True)[0]
+    return EpisodeOffer(EpisodeKey(1, 5), ranked, index, datetime(2026, 1, 1, tzinfo=UTC), {})
+
+
+def test_an_offer_ranked_without_the_bluray_preference_stays_exactly_as_it_was() -> None:
+    offer: EpisodeOffer = _bluray_offer()
+    assert rank_offer(offer, bluray=False) == offer
+    assert rank_offer(rank_offer(offer, bluray=True), bluray=False) == offer
+    assert offer.suggestion is not None
+    assert offer.candidates[offer.suggestion].stream.release == "[SubsPlease] Star Garden - 05 (1080p)"
+
+
+def test_the_bluray_preference_suggests_a_seeded_remux_but_keeps_resolution_and_the_seed_gate_first() -> None:
+    offer: EpisodeOffer = rank_offer(_bluray_offer(), bluray=True)
+    assert offer.suggestion is not None
+    suggested: RankedCandidate = offer.candidates[offer.suggestion]
+    assert suggested.stream.release == "Star Garden S01E05 1080p BluRay REMUX AVC FLAC-Disc"
+    assert suggested.quality == 40.0
+    assert [row.stream.release for row in visible(offer.candidates, offer.suggestion)] == [
+        "Star Garden S01E05 1080p BluRay REMUX AVC FLAC-Disc",
+        "[SubsPlease] Star Garden - 05 (1080p)",
+        "Star Garden S01E05 1080p BluRay REMUX AVC FLAC-Weak",
+        "Star Garden S01E05 2160p BluRay REMUX HEVC-Uhd",
+    ]
+
+
+def test_the_bluray_preference_puts_the_higher_bitrate_disc_first_even_against_higher_quality() -> None:
+    small: StreamCandidate = _listed("[Salieri] Star Garden - 05 (BD 1080p)", "1.5 GiB", 60)
+    large: StreamCandidate = _listed("Star Garden S01E05 1080p BluRay REMUX AVC FLAC-Disc", "7 GiB", 25, english=False)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [small, large])
+    offer: EpisodeOffer = EpisodeOffer(EpisodeKey(1, 5), ranked, 0, datetime(2026, 1, 1, tzinfo=UTC), {})
+    assert ranked[0].stream.release == small.release
+    assert [row.stream.release for row in rank_offer(offer, bluray=True).candidates] == [large.release, small.release]
+
+
+def _bluray_order(name: str, audio: tuple[str, ...]) -> list[str]:
+    clean: StreamCandidate = _listed("Star Garden S01E05 1080p BluRay REMUX AVC FLAC-Disc", "7 GiB", 40)
+    other: StreamCandidate = replace(_listed(name, "9 GiB", 40), audio_languages=audio)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [other, clean])
+    offer: EpisodeOffer = EpisodeOffer(EpisodeKey(1, 5), ranked, 0, datetime(2026, 1, 1, tzinfo=UTC), {})
+    return [row.stream.release for row in rank_offer(offer, bluray=True).candidates]
+
+
+@pytest.mark.parametrize(
+    ("name", "audio"),
+    [
+        ("Star Garden - 05 (English Dubbed Dual Audio) [BD Remux 1080p]", ()),
+        ("Star Garden - 05 [BD Remux 1080p] [Dub - Japanese, English]", ("ja", "en")),
+    ],
+    ids=["dual-audio", "japanese-listed"],
+)
+def test_the_bluray_preference_keeps_a_dubbed_disc_with_original_audio_first_by_bitrate(
+    name: str, audio: tuple[str, ...]
+) -> None:
+    assert _bluray_order(name, audio)[0] == name
+
+
+@pytest.mark.parametrize(
+    "later",
+    [
+        "[Timecraft] Star Garden - 05 [BDRemux 1080p] [RUS Voiceover]",
+        "Star Garden - 05 [2018, BDRemux 1080p] MVO + Original",
+        "Star.Garden.S01E05.ENG-DUB.1080p.BluRay.Remux",
+    ],
+    ids=["voice-over", "mvo", "dub"],
+)
+def test_the_bluray_preference_puts_a_dubbed_or_packed_disc_after_a_clean_one_of_lower_bitrate(later: str) -> None:
+    assert _bluray_order(later, ())[-1] == later
+    clean: StreamCandidate = _listed("Star Garden S01E05 1080p BluRay REMUX AVC FLAC-Disc", "7 GiB", 40)
+    pack: StreamCandidate = _stream(
+        "Star Garden - 05 [BD Remux 1080p].mkv", release="[Box] Star Garden (01-12) [BD Remux 1080p]", seeders=40
+    )
+    dubbed: StreamCandidate = replace(_listed(later, "9 GiB", 40), audio_languages=())
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [replace(pack, size_text="12 GiB"), dubbed, clean])
+    offer: EpisodeOffer = EpisodeOffer(EpisodeKey(1, 5), ranked, 0, datetime(2026, 1, 1, tzinfo=UTC), {})
+    preferred: EpisodeOffer = rank_offer(offer, bluray=True)
+    assert [row.stream.release for row in preferred.candidates] == [clean.release, pack.release, dubbed.release]
+    assert preferred.suggestion == 0
+    assert rank_offer(preferred, bluray=False) == rank_offer(offer, bluray=False)
 
 
 @pytest.mark.parametrize(

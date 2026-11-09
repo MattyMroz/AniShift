@@ -110,6 +110,7 @@ class EpisodeBatch:
     keys: tuple[EpisodeKey, ...]
     state: str
     results: tuple[EpisodeResult, ...] = ()
+    bluray: bool = False
 
 
 @dataclass(frozen=True, slots=True)

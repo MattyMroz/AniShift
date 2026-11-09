@@ -74,7 +74,7 @@ from anishift.application.episode_selection import (
     streams_releases,
 )
 from anishift.application.planning import ExecutionPlan
-from anishift.application.release_quality import AudioClass
+from anishift.application.release_quality import AudioClass, Origin
 from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.watch_state import WatchStateStore
 from anishift.cli.interactive import anime as anime_module
@@ -1639,7 +1639,7 @@ class _Owner(_Catalog):
     def interrupt_reads(self) -> None:
         self.calls.append(("interrupt", 0))
 
-    def episode_download(self, keys: Sequence[EpisodeKey], *, command_id: str) -> EpisodeBatch:
+    def episode_download(self, keys: Sequence[EpisodeKey], *, command_id: str, bluray: bool = False) -> EpisodeBatch:
         self.batches.append((tuple(keys), command_id))
         if len(self.batches) == 1:
             assert self.release.wait(10)
@@ -2094,6 +2094,65 @@ def test_reopening_the_release_list_returns_the_cursor_to_the_suggestion() -> No
     assert _revise(owner, controller, (third, first, second)) == third.stream.info_hash
 
 
+def _bluray_rows() -> tuple[RankedCandidate, RankedCandidate]:
+    web: RankedCandidate = _candidate()
+    remux: RankedCandidate = replace(
+        web,
+        stream=replace(web.stream, info_hash="b" * 40, release="[Disc] Slime - 04 [1080p BD Remux]"),
+        traits=replace(web.traits, bluray=True, origin=Origin.SOURCE),
+    )
+    return web, remux
+
+
+def _lit(frame: Text) -> bool:
+    start: int = frame.plain.index("B Blu-ray")
+    return any(span.start <= start < span.end and "brand_accent" in str(span.style) for span in frame.spans)
+
+
+@pytest.mark.unit
+def test_b_highlights_the_bluray_hint_and_puts_bluray_releases_first_until_pressed_again() -> None:
+    owner: _ChoiceOwner = _ChoiceOwner()
+    web, remux = _bluray_rows()
+    owner.offer_read = lambda key: _offer(key, (web, remux))
+    controller: AnimeController = _owner_controller(owner)
+    assert not _lit(controller.render(120, 40))
+    _key(controller, "text:b")
+    assert _lit(controller.render(120, 40))
+    _key(controller, "text:i")
+    frame: str = _frame(controller)
+    assert [row.stream.info_hash for row in controller._release_candidates] == ["b" * 40, "a" * 40]
+    assert controller._positions[_Screen.CANDIDATES] == 0
+    assert re.search(r"\[Disc\] Slime - 04 \[1080p BD Remux\]\s+1080p BD\s", frame)
+    _key(controller, "text:b")
+    assert not _lit(controller.render(120, 40))
+    assert [row.stream.info_hash for row in controller._release_candidates] == ["a" * 40, "b" * 40]
+    assert controller._positions[_Screen.CANDIDATES] == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bluray", [False, True])
+def test_d_orders_the_marked_episodes_with_the_bluray_preference_shown_in_the_footer(
+    monkeypatch: pytest.MonkeyPatch, bluray: bool
+) -> None:
+    owner: _Owner = _Owner()
+    sent: list[bool] = []
+
+    def download(keys: Sequence[EpisodeKey], *, command_id: str, bluray: bool = False) -> EpisodeBatch:
+        sent.append(bluray)
+        return EpisodeBatch(command_id, "fixture", tuple(keys), "completed", bluray=bluray)
+
+    monkeypatch.setattr(owner, "episode_download", download)
+    controller: AnimeController = _owner_controller(owner)
+    for key in ("text:b",) * bluray:
+        _key(controller, key)
+    for key in ("space", "down", "down", "space", "text:d"):
+        _key(controller, key)
+    deadline: float = time.monotonic() + 10
+    while controller._batch_running and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert sent == [bluray]
+
+
 @pytest.mark.unit
 def test_partial_offer_moves_an_unmoved_cursor_with_the_suggestion() -> None:
     owner: _PartialOwner = _PartialOwner()
@@ -2437,7 +2496,7 @@ class _LostBatchOwner(_Owner):
         super().__init__()
         self.problem: ControlError = problem
 
-    def episode_download(self, keys: Sequence[EpisodeKey], *, command_id: str) -> EpisodeBatch:
+    def episode_download(self, keys: Sequence[EpisodeKey], *, command_id: str, bluray: bool = False) -> EpisodeBatch:
         self.batches.append((tuple(keys), command_id))
         if len(self.batches) == 1:
             raise self.problem
@@ -2601,7 +2660,7 @@ def test_choosing_an_already_ordered_episode_keeps_the_releases_and_p_opens_them
     frame: str = controller.render(80, 24).plain
     assert _at(controller) is _Screen.CANDIDATES
     assert notice in frame
-    assert "D pobierz · P pobierz ponownie" in frame
+    assert "D pobierz · B Blu-ray · P pobierz ponownie" in frame
     assert "AniShift w tle nie wykonał polecenia" not in frame
 
     controller.handle_key("text:p")
@@ -2866,7 +2925,7 @@ def test_owner_refresh_removes_newly_admitted_marks_and_retains_uncertain_file_p
     assert "Enter wskaż plik" in frame
     assert "Space zaznacz" not in frame
     _key(controller, "text:?")
-    assert "P ponownie" in " ".join(controller.render(50, 24).plain.split())
+    assert "P ponownie" in " ".join(controller.render(50, 30).plain.split())
     _key(controller, "escape")
     _key(controller, "text:d")
     assert not owner.batches
@@ -2880,7 +2939,7 @@ def test_cursor_download_interrupted_batch_preserves_only_unaccepted_marks(monke
     finished: threading.Event = threading.Event()
     controller._invalidate = finished.set
 
-    def download(keys: Sequence[EpisodeKey], *, command_id: str) -> EpisodeBatch:
+    def download(keys: Sequence[EpisodeKey], *, command_id: str, bluray: bool = False) -> EpisodeBatch:
         owner.batches.append((tuple(keys), command_id))
         owner.statuses[keys[0].number] = EpisodeStatus(keys[0], "ordered")
         return EpisodeBatch(command_id, "fixture", tuple(keys), "interrupted", (EpisodeResult(keys[0], "admitted"),))

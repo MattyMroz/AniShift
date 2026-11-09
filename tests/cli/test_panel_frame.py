@@ -497,13 +497,14 @@ def test_an_overflowing_anime_list_fills_every_row_between_the_tabs_and_the_keys
 
     tabs: int = _index(lines, "Biblioteka")
     header: int = next(index for index, line in enumerate(lines) if line.strip().startswith(_LABELS[kind]))
-    keys: int = _index(lines, "Esc wróć")
+    keys: int = _index(lines, "klawisze")
+    last: int = _index(lines, "Esc wróć")
     data: list[str] = lines[header + 1 : keys - _BELOW[kind]]
     assert tuple(line.strip() for line in lines[tabs + 1 : header]) == _ABOVE[kind]
     assert all(_MARKS[kind] in line for line in data)
     assert not any(_MARKS[kind] in line for line in lines[keys - _BELOW[kind] : keys])
-    assert len(data) == probe.anime._visible_count == rows - 7 - len(_ABOVE[kind]) - _BELOW[kind]
-    assert keys == len(lines) - 2 == rows - 3
+    assert len(data) == probe.anime._visible_count == rows - 6 - (last - keys + 1) - len(_ABOVE[kind]) - _BELOW[kind]
+    assert last == len(lines) - 2 == rows - 3
     assert lines[-1].strip() == "Automat: bezczynny · O wyłącz"
 
 

@@ -22,8 +22,15 @@ from anishift.application.episode_identity import (
     identity_evidence,
     is_conflict,
 )
-from anishift.application.episode_releases import NAME_PRIORITY, EpisodeRelease, ReleaseFile, merge_releases
+from anishift.application.episode_releases import (
+    NAME_PRIORITY,
+    EpisodeRelease,
+    ReleaseFile,
+    merge_releases,
+    size_bytes,
+)
 from anishift.application.release_quality import (
+    BlurayPreference,
     Origin,
     ReleaseTraits,
     ResolutionClass,
@@ -35,6 +42,7 @@ from anishift.application.release_quality import (
     release_traits,
     resolution_class,
     seed_class,
+    untouched_bluray,
 )
 
 __all__ = [
@@ -68,9 +76,9 @@ __all__ = [
     "premiere_order",
     "quality_text",
     "rank_candidates",
+    "rank_offer",
     "representative",
     "season_dates",
-    "size_bytes",
     "streams_releases",
     "suggestion",
     "visible",
@@ -135,11 +143,8 @@ SMALL_SHARE: Final[float] = 0.5
 SIZE_GROUP_SHARE: Final[float] = 0.95
 """Share of the largest file of a size group down to which another file of its resolution ties on bitrate."""
 
-_SIZE: Final[re.Pattern[str]] = re.compile(r"(?i)(\d+(?:[.,]\d+)?)\s*([KMGT])(i?)B\b")
-"""Read a human size such as ``1.4 GiB`` or ``395.9 MB``."""
-
-_SIZE_POWERS: Final[Mapping[str, int]] = {"K": 1, "M": 2, "G": 3, "T": 4}
-"""Power of the unit base each size prefix stands for."""
+_DUB_DECLARED: Final[re.Pattern[str]] = re.compile(r"(?i)(?<![a-z])(?:voice[ ._-]?over|MVO|dub(?:bed|bing)?)(?![a-z])")
+"""Voice-over or dub a release name declares; without declared original audio it puts a preferred Blu-ray later."""
 
 _CONTAINER: Final[re.Pattern[str]] = re.compile(r"[^/\\]\.([^\s./\\()\[\]{}]+)$")
 """Final suffix of the selected file name; a dot followed by spaces or brackets, as in ``(TrueHD 5.1)``, is not one."""
@@ -612,6 +617,15 @@ def rank_candidates(
     return list_order(_sized(_same_checksum(ruled), single))
 
 
+def rank_offer(offer: EpisodeOffer, *, bluray: bool) -> EpisodeOffer:
+    """Re-rank an offer with or without the owner's Blu-ray preference and suggest its new first row."""
+    candidates: tuple[RankedCandidate, ...] = list_order(
+        tuple(_bluray_row(candidate, preferred=bluray) for candidate in offer.candidates)
+    )
+    index: int | None = suggestion(candidates, numbering=offer.numbering, match_only=offer.derived_numbering)[0]
+    return replace(offer, candidates=candidates, suggestion=index)
+
+
 def list_order(candidates: Sequence[RankedCandidate]) -> tuple[RankedCandidate, ...]:
     """Order rows by group, classes, match, a small file last, rounded quality, bitrate, release group, seeds, hash."""
     return tuple(sorted(candidates, key=_list_key))
@@ -627,6 +641,22 @@ def confidence_text(candidate: RankedCandidate) -> str | None:
     return None if candidate.confidence is None else f"{candidate.confidence:.0%}"
 
 
+def _bluray_row(candidate: RankedCandidate, *, preferred: bool) -> RankedCandidate:
+    traits: ReleaseTraits = replace(
+        candidate.traits, bluray_preference=_bluray_preference(candidate, preferred=preferred)
+    )
+    return replace(candidate, traits=traits, quality=quality_score(traits))
+
+
+def _bluray_preference(candidate: RankedCandidate, *, preferred: bool) -> BlurayPreference:
+    if not preferred or not untouched_bluray(candidate.traits):
+        return BlurayPreference.NONE
+    names: str = " ".join((candidate.stream.release, candidate.stream.file_name or "", candidate.stream.path or ""))
+    original: bool = bool(candidate.traits.audio_languages) and not candidate.traits.dub_only
+    dubbed: bool = _DUB_DECLARED.search(names) is not None and not original
+    return BlurayPreference.LATER if candidate.pack or dubbed else BlurayPreference.FIRST
+
+
 def _suggestible(candidate: RankedCandidate) -> bool:
     return (
         not candidate.conflict
@@ -636,33 +666,10 @@ def _suggestible(candidate: RankedCandidate) -> bool:
     )
 
 
-def size_bytes(text: str) -> int | None:
-    """Return the bytes a human size names, ``GiB`` on base 1024 and ``GB`` on base 1000, or None without one."""
-    found: re.Match[str] | None = _SIZE.search(text)
-    if found is None:
-        return None
-    base: int = 1024 if found.group(3) else 1000
-    return int(float(found.group(1).replace(",", ".")) * base ** _SIZE_POWERS[found.group(2).upper()])
-
-
 def visible(candidates: Sequence[RankedCandidate], keep: int | None = None) -> tuple[RankedCandidate, ...]:
     """Hide mismatches, low or shadowed transcodes, unseeded rows, others beside a live match and low beside high."""
-    matched: bool = _live_match(candidates)
-    high: bool = any(
-        candidate.identity.verdict is IdentityVerdict.MATCH
-        and candidate.traits.resolution in _HIGH_RESOLUTIONS
-        and candidate.traits.seeders != 0
-        and _suggestible(candidate)
-        for candidate in candidates
-    )
-    shadowed: frozenset[int] = _shadowed(candidates)
-    return tuple(
-        candidate
-        for index, candidate in enumerate(candidates)
-        if candidate.identity.verdict is not IdentityVerdict.MISMATCH
-        and not low_transcode(candidate.traits)
-        and (index == keep or _shown(candidate, matched=matched, high=high, shadowed=index in shadowed))
-    )
+    shown: frozenset[int] = _shown_positions(candidates, keep)
+    return tuple(candidate for index, candidate in enumerate(candidates) if index in shown)
 
 
 def suggestion(
@@ -1113,6 +1120,25 @@ def _live_match(candidates: Sequence[RankedCandidate]) -> bool:
     )
 
 
+def _shown_positions(candidates: Sequence[RankedCandidate], keep: int | None = None) -> frozenset[int]:
+    matched: bool = _live_match(candidates)
+    high: bool = any(
+        candidate.identity.verdict is IdentityVerdict.MATCH
+        and candidate.traits.resolution in _HIGH_RESOLUTIONS
+        and candidate.traits.seeders != 0
+        and _suggestible(candidate)
+        for candidate in candidates
+    )
+    shadowed: frozenset[int] = _shadowed(candidates)
+    return frozenset(
+        index
+        for index, candidate in enumerate(candidates)
+        if candidate.identity.verdict is not IdentityVerdict.MISMATCH
+        and not low_transcode(candidate.traits)
+        and (index == keep or _shown(candidate, matched=matched, high=high, shadowed=index in shadowed))
+    )
+
+
 def _shown(candidate: RankedCandidate, *, matched: bool, high: bool, shadowed: bool) -> bool:
     return (
         candidate.traits.seeders != 0
@@ -1156,15 +1182,17 @@ def _full_first(candidates: Sequence[RankedCandidate], pool: Sequence[int]) -> i
 def _sized(rows: Sequence[RankedCandidate], single: Callable[[str], bool] | None) -> tuple[RankedCandidate, ...]:
     sizes: list[int | None] = [_episode_bytes(row, single) for row in rows]
     levels: list[_Level] = [resolution_class(row.traits.resolution) for row in rows]
-    known: dict[_Level, list[int]] = {}
+    shown: frozenset[int] = _shown_positions(rows)
+    groups: list[tuple[_Level, bool]] = [(level, index in shown) for index, level in enumerate(levels)]
+    known: dict[tuple[_Level, bool], list[int]] = {}
     originals: dict[_Level, list[int]] = {}
-    for row, size, level in zip(rows, sizes, levels, strict=True):
+    for row, size, level, group in zip(rows, sizes, levels, groups, strict=True):
         if size is None:
             continue
-        known.setdefault(level, []).append(size)
+        known.setdefault(group, []).append(size)
         if _web_original(row):
             originals.setdefault(level, []).append(size)
-    anchors: dict[_Level, list[int]] = {level: _size_anchors(values) for level, values in known.items()}
+    anchors: dict[tuple[_Level, bool], list[int]] = {group: _size_anchors(values) for group, values in known.items()}
     floors: dict[_Level, float] = {level: SMALL_SHARE * median(values) for level, values in originals.items()}
     return tuple(
         row
@@ -1174,10 +1202,10 @@ def _sized(rows: Sequence[RankedCandidate], single: Callable[[str], bool] | None
             traits=replace(
                 row.traits,
                 small=row.traits.origin is Origin.UNMARKED and size < floors.get(level, 0.0),
-                size_rank=sum(anchor >= size for anchor in anchors[level]) - 1,
+                size_rank=sum(anchor >= size for anchor in anchors[group]) - 1,
             ),
         )
-        for row, size, level in zip(rows, sizes, levels, strict=True)
+        for row, size, level, group in zip(rows, sizes, levels, groups, strict=True)
     )
 
 

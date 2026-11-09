@@ -31,6 +31,8 @@ MAPPED_SEASON: Final[re.Pattern[str]] = re.compile(r"(?i)\bs\d{1,2}\s*(e\d{1,4})
 """Match the season half of an SxxEyy token so it can be dropped when the target has no numbering."""
 MEDIA_MARKER: Final[re.Pattern[str]] = re.compile(r"\b(?:ova|oad|specials?|movies?)\b")
 """Detect explicit media format qualifiers."""
+_IDENTITY_TAG: Final[str] = r"(?:s\d+(?:e\d+)?|e\d+|ep\d+|part ?\d+|season ?\d+)"
+"""Season, episode or part a group-looking tag spells, so it is never taken for a release group."""
 FIRST_BRACKET: Final[re.Pattern[str]] = re.compile(r"^\s*\[([^\]]+)\]\s*")
 """Capture a potential release group without assuming its content is disposable."""
 TEXT_CACHE_SIZE: Final[int] = 8192
@@ -541,8 +543,8 @@ def _prepare(value: str) -> str:
     )
     if not semantic:
         text = re.sub(
-            r"(?i)(\b(?:x26[45]|h[ .]?26[45]|av1|hevc|aac|flac|msubs|(?<!-)(?:dual|multi)))"
-            r"-(?:[a-z][a-z0-9]*|[a-z]+(?:-[a-z]+)+)(?=\[[^\]]*\]$|$)",
+            r"(?i)(\b(?:x26[45]|h[ .]?26[45]|avc|av1|hevc|aac|flac|[1257]\.\d|msubs|(?<!-)(?:dual|multi)))"
+            rf"-(?!{_IDENTITY_TAG}(?=\[[^\]]*\]$|$))(?:[a-z][a-z0-9]*|[a-z]+(?:-[a-z]+)+)(?=\[[^\]]*\]$|$)",
             r"\1",
             text,
         )
@@ -554,6 +556,7 @@ def _prepare(value: str) -> str:
             )
     text = re.sub(r"(?i)\b(ddp|aac|flac|opus)(\d) (\d)\b", r"\1\2.\3", text)
     text = re.sub(r"(?i)\b(h|x)[ ._-]+(26[45])\b", r"\1\2", text)
+    text = re.sub(r"(?i)\b(s\d{1,2})(v\d)\b", r"\1 \2", text)
     text = re.sub(r"(?i)\b(?:u-next|adn|at x|at-x|dsny|dsnp|abema|baha)\b", "web", text)
     text = re.sub(r"(?i)\b(?:dovi|dv hdr|hdr10\+|dolbyvision)\b", "hdr", text)
     return re.sub(r"(?i)\b(?:10bits|10-bit|hi10)\b", "10bit", text)
@@ -568,6 +571,25 @@ def _technical(text: str) -> bool:
             return False
         remainder = remainder[token.end() :].strip()
     return True
+
+
+def _without_release_group(stem: str, release: str, target: _Target) -> str:
+    group: re.Match[str] | None = FIRST_BRACKET.match(release)
+    if group is None or not _group_tag(group.group(1), target):
+        return stem
+    return re.sub(r"\s*\[" + re.escape(group.group(1)) + r"\]\s*$", "", stem)
+
+
+def _group_tag(tag: str, target: _Target) -> bool:
+    text: str = _normalize(tag)
+    titles: tuple[str, ...] = (*target.titles, *target.broad, *target.neighbors)
+    return not (
+        not re.search(r"[^\W\d_]", text)
+        or EXTRAS.search(text)
+        or MEDIA_MARKER.search(text)
+        or re.search(rf"\b{_IDENTITY_TAG}\b", text)
+        or any(re.search(rf"\b{re.escape(text)}\b", title) for title in titles)
+    )
 
 
 def _strip_group(text: str) -> str:
@@ -1364,7 +1386,7 @@ def identity_evidence(target: Mapping[str, object], candidate: Mapping[str, obje
     release: str = str(candidate.get("release") or "")
     text: str = selected or release
     stem: str = text.rpartition(".")[0] if text.rpartition(".")[2].casefold() in VIDEO_EXTENSIONS else text
-    stem = _prepare(stem)
+    stem = _prepare(_without_release_group(stem, release, identity))
     parsed: _Parsed = _absolute_echo(stem, _parse(stem, identity), identity)
     residual: str
     year_ok: bool
@@ -1499,7 +1521,7 @@ def _special_number(stem: str, parsed: _Parsed, target: _Target) -> bool:
 def _assess(identity: _Target, candidate: Metadata, path: str, stem: str) -> IdentityAssessment:  # noqa: PLR0911
     if PLEX_SUFFIX.search(stem):
         return IdentityAssessment(IdentityVerdict.MISMATCH, "Selected filename has an explicit Plex extra suffix.")
-    stem = _prepare(stem)
+    stem = _prepare(_without_release_group(stem, str(candidate.get("release") or ""), identity))
     parsed: _Parsed = _absolute_echo(stem, _parse(stem, identity), identity)
     rest: str = _without_episode_title(parsed.remainder, identity)[0]
     if EXTRAS.search(rest) or PREVIEW.search(rest):

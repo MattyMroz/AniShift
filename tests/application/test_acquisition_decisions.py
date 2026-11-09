@@ -95,7 +95,7 @@ def test_owner_records_live_checks_cache_hits_selection_and_replay(
     assert [(item.quality, item.confidence, item.conflict, item.supported) for item in ranked] == [
         (row["quality"], row["confidence"], row["conflict"], row["supported"]) for row in candidates
     ]
-    assert [item.stream for item in ranked] == [
+    assert [replace(item.stream, file_size=None) for item in ranked] == [
         decode_view(StreamCandidate, {**cast("dict[str, object]", row["stream"]), "trackers": []}) for row in candidates
     ]
     assert suggestion(ranked, numbering=True)[0] == check["suggestion"]

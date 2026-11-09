@@ -292,12 +292,15 @@ def _running(
     assert not thread.is_alive()
 
 
-def _download(owner: AutomationOwner, numbers: tuple[int, ...], command: str = "batch") -> ControlResponse:
+def _download(
+    owner: AutomationOwner, numbers: tuple[int, ...], command: str = "batch", *, bluray: bool = False
+) -> ControlResponse:
     return owner.handle(
         _request(
             "episode_download",
             {
                 "keys": [encode_view(EpisodeKey(_S1, number)) for number in numbers],
+                "bluray": bluray,
             },
             command_id=command,
             session_id="panel",
@@ -305,8 +308,10 @@ def _download(owner: AutomationOwner, numbers: tuple[int, ...], command: str = "
     )
 
 
-def _batch(owner: AutomationOwner, numbers: tuple[int, ...], command: str = "batch") -> EpisodeBatch:
-    response: ControlResponse = _download(owner, numbers, command)
+def _batch(
+    owner: AutomationOwner, numbers: tuple[int, ...], command: str = "batch", *, bluray: bool = False
+) -> EpisodeBatch:
+    response: ControlResponse = _download(owner, numbers, command, bluray=bluray)
     assert response.ok, response
     return decode_view(EpisodeBatch, response.result)
 
@@ -912,6 +917,30 @@ def test_batch_returns_before_source_and_survives_panel_disconnect(tmp_path: Pat
         assert len(streams.asked) == 2
         assert not owner.state.acquisitions[1].assignments[0].choice.deviation_confirmed
         assert len([event for event in events if event.get("event") == "episode_result"]) == 2
+
+
+def _named(number: int, info_hash: str, source: str) -> StreamCandidate:
+    name: str = f"[Group] Tensei shitara Slime Datta Ken - {number:02d} [1080p {source}].mkv"
+    return StreamCandidate(info_hash * 20, None, number, name, name, None, 50, "1 GB", None, (), ())
+
+
+@pytest.mark.parametrize(("bluray", "chosen"), [(False, "e"), (True, "d")], ids=["web", "bluray"])
+def test_a_batch_with_the_bluray_preference_admits_the_remux_of_every_episode(
+    tmp_path: Path, bluray: bool, chosen: str
+) -> None:
+    streams: _Streams = _Streams()
+    streams.answers = {
+        (41024, number): (_named(number, f"e{number}", "WEB-DL"), _named(number, f"d{number}", "BD Remux"))
+        for number in (4, 5)
+    }
+    with _running(_episode_service(tmp_path, streams=streams), WatchStateStore(tmp_path / "state.json")) as owner:
+        assert _batch(owner, (4, 5), bluray=bluray).bluray is bluray
+        _until(lambda: _batch(owner, (4, 5), bluray=bluray).state == "completed")
+        assert [item.assignments[0].choice.reference.info_hash for item in owner.state.acquisitions] == [
+            f"{chosen}4" * 20,
+            f"{chosen}5" * 20,
+        ]
+        assert _download(owner, (4, 5), bluray=not bluray).reason == "command_reused"
 
 
 @pytest.mark.parametrize("numbers", [(), (4, 4), tuple(range(1, 102)), (-1,)])
@@ -2396,7 +2425,7 @@ def test_repeat_keeps_an_alternative_file_of_the_same_pack_and_excludes_index_on
         alternative: StreamCandidate = replace(original, file_name="different-video.mkv", file_index=7)
         streams.answers[(41024, 4)] = (replace(original, file_index=99), alternative)
         view: EpisodeOfferView = _offer(owner, repeat=True)
-        assert tuple(item.stream for item in view.offer.candidates) == (alternative,)
+        assert tuple(replace(item.stream, file_size=None) for item in view.offer.candidates) == (alternative,)
         assert view.unknown_previous
         assert _choose(owner, view, confirm=True).ok
         assert len(owner.state.acquisitions) == 1

@@ -20,6 +20,7 @@ from reference_support import (
     research_cases,
 )
 
+from anishift.application.episode_selection import EpisodeOffer, rank_offer
 from anishift.application.release_quality import PolishClass
 from anishift.application.subscription_choice import NO_POLISH_AFTER_WAIT, Blocker, ChoiceCandidate, ChoiceDecision
 from anishift.application.subscription_targets import PolishState
@@ -89,6 +90,12 @@ def _actual(result: Automatic) -> Outcome:
 @pytest.mark.parametrize("case", _TOP3_CASES)
 def test_reference_manual_top3(case: str) -> None:
     assert manual(case).top3() == expectations()[case]["top3"]
+
+
+@pytest.mark.parametrize("case", CASES)
+def test_reference_offer_ranked_without_the_bluray_preference_is_unchanged(case: str) -> None:
+    offer: EpisodeOffer = manual(case).offer
+    assert rank_offer(offer, bluray=False) == offer
 
 
 @pytest.mark.parametrize("case", CASES)

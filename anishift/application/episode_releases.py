@@ -31,6 +31,7 @@ __all__ = [
     "info_hash_hex",
     "is_pack",
     "merge_releases",
+    "size_bytes",
 ]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -40,6 +41,15 @@ type SourceName = Literal["tsukihime", "nyaa", "nekobt", "knaben", "torrentio"]
 
 NAME_PRIORITY: Final[tuple[SourceName, ...]] = ("tsukihime", "nyaa", "nekobt", "knaben", "torrentio")
 """Source order for the first available release name."""
+
+_INFLATED_SEEDS: Final[SourceName] = "knaben"
+"""Source whose cached seed counts run high, used only when no other source reports seeders."""
+
+_SIZE: Final[re.Pattern[str]] = re.compile(r"(?i)(\d+(?:[.,]\d+)?)\s*([KMGT])(i?)B\b")
+"""Read a human size such as ``1.4 GiB`` or ``395.9 MB``."""
+
+_SIZE_POWERS: Final[Mapping[str, int]] = {"K": 1, "M": 2, "G": 3, "T": 4}
+"""Power of the unit base each size prefix stands for."""
 
 _POLISH_FLAG: Final[str] = "\U0001f1f5\U0001f1f1"
 """Torrentio Polish language flag scoped to its known file."""
@@ -128,6 +138,15 @@ def info_hash_hex(value: str) -> str | None:
     return base64.b32decode(value.upper()).hex()
 
 
+def size_bytes(text: str) -> int | None:
+    """Return the bytes a human size names, ``GiB`` on base 1024 and ``GB`` on base 1000, or None without one."""
+    found: re.Match[str] | None = _SIZE.search(text)
+    if found is None:
+        return None
+    base: int = 1024 if found.group(3) else 1000
+    return int(float(found.group(1).replace(",", ".")) * base ** _SIZE_POWERS[found.group(2).upper()])
+
+
 def is_pack(release: EpisodeRelease, *, pack_name: Callable[[str], bool]) -> bool:
     """Prefer the complete inventory's episode video count to pack markers from any source name."""
     if release.listing:
@@ -184,7 +203,7 @@ def _merge_release(key: str, streams: Sequence[StreamCandidate], listing: TsukiH
         names=names,
         tags=tuple(dict.fromkeys(tag for stream in ordered for tag in (*stream.tags, *stream.language_tags))),
         sources=frozenset(_source_name(stream.source) for stream in ordered),
-        seeders=max((stream.seeders for stream in ordered if stream.seeders is not None), default=None),
+        seeders=_seeders(ordered),
         size_text=next((stream.size_text for stream in ordered if stream.size_text), None),
         files=tuple(files),
         listing=bool(listing and listing.files),
@@ -201,6 +220,12 @@ def _merge_release(key: str, streams: Sequence[StreamCandidate], listing: TsukiH
         pack=False,
         published=min((stream.published for stream in ordered if stream.published is not None), default=None),
     )
+
+
+def _seeders(streams: Sequence[StreamCandidate]) -> int | None:
+    reported: list[StreamCandidate] = [stream for stream in streams if stream.seeders is not None]
+    trusted: list[StreamCandidate] = [stream for stream in reported if stream.source != _INFLATED_SEEDS] or reported
+    return max((stream.seeders for stream in trusted if stream.seeders is not None), default=None)
 
 
 def _listed_declaration(file: ListedFile) -> LanguageDeclaration:
@@ -231,7 +256,11 @@ def _attach_torrentio_file(files: list[ReleaseFile], stream: StreamCandidate) ->
         )
         return files[index]
     selected: ReleaseFile = ReleaseFile(
-        stream.path, stream.file_name, None, from_listing=False, file_index=stream.file_index
+        stream.path,
+        stream.file_name,
+        size_bytes(stream.size_text or ""),
+        from_listing=False,
+        file_index=stream.file_index,
     )
     if selected not in files:
         files.append(selected)

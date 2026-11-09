@@ -115,6 +115,7 @@ from anishift.application.episode_commands import (
     notice_text,
 )
 from anishift.application.episode_identity import conflict_label
+from anishift.application.episode_releases import size_bytes
 from anishift.application.episode_selection import (
     CandidateNumbering,
     EntryGroup,
@@ -133,7 +134,7 @@ from anishift.application.episode_selection import (
     confidence_text,
     premiere_order,
     quality_text,
-    size_bytes,
+    rank_offer,
     visible,
 )
 from anishift.application.events import (
@@ -363,6 +364,7 @@ __all__ = [
     "premiere_order",
     "preview_plan",
     "quality_text",
+    "rank_offer",
     "read_episode",
     "ready_group_ids",
     "resolve_readiness",

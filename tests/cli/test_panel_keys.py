@@ -98,6 +98,7 @@ _LISTED: Final[tuple[Action, ...]] = (("/", "szukaj"), ("C", "kopiuj"))
 _U08: Final[tuple[Action, ...]] = (
     ("Space", "zaznacz"),
     ("D", "pobierz"),
+    ("B", "Blu-ray"),
     ("W", "wstrzymaj"),
     ("R", "sprawdź teraz"),
     ("Del", "usuń"),
@@ -545,26 +546,35 @@ _FIXTURES: Final[dict[str, Callable[[pytest.MonkeyPatch], _Probe]]] = {
 _ACTIONS: Final[dict[str, tuple[Action, ...]]] = {
     "titles": (("Enter", "wybierz"), *_LISTED),
     "entries": (("Enter", "odcinki"), *_LISTED),
-    "episodes": (("Space", "zaznacz"), ("D", "pobierz"), ("S", "subskrybuj"), *_FRESH_MORE, *_LISTED),
+    "episodes": (("Space", "zaznacz"), ("D", "pobierz"), ("B", "Blu-ray"), ("S", "subskrybuj"), *_FRESH_MORE, *_LISTED),
     "episodes_file": (
         ("Enter", "wskaż plik"),
+        ("B", "Blu-ray"),
         ("S", "subskrybuj"),
         ("Z", "zakres"),
         ("A", "wszystkie"),
         ("P", "ponownie"),
         *_LISTED,
     ),
-    "episodes_failed": (("P", "ponów"), ("S", "subskrybuj"), ("Z", "zakres"), ("A", "wszystkie"), *_LISTED),
-    "candidates": (("Space", "zaznacz"), ("D", "pobierz"), *_LISTED),
+    "episodes_failed": (
+        ("P", "ponów"),
+        ("B", "Blu-ray"),
+        ("S", "subskrybuj"),
+        ("Z", "zakres"),
+        ("A", "wszystkie"),
+        *_LISTED,
+    ),
+    "candidates": (("Space", "zaznacz"), ("D", "pobierz"), ("B", "Blu-ray"), *_LISTED),
     "files": (("Enter", "wybierz"), *_LISTED),
     "draft": (("Space", "zaznacz"), ("A", "wszystkie"), *_LISTED),
     "busy": (("C", "kopiuj"),),
     "problem": (("C", "kopiuj"),),
     "u08": _U08_FRESH,
-    "u08_waiting": (_U08_FRESH[0], _U08_FRESH[1], ("T", "pobierz teraz"), *_U08_FRESH[2:]),
+    "u08_waiting": (*_U08_FRESH[:3], ("T", "pobierz teraz"), *_U08_FRESH[3:]),
     "u08_ready": (("Enter", "obejrzyj"), *_U08),
     "u08_extra": (
         ("Enter", "otwórz"),
+        ("B", "Blu-ray"),
         ("W", "wstrzymaj"),
         ("R", "sprawdź teraz"),
         ("Del", "usuń"),
@@ -634,13 +644,13 @@ _FOOTERS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
     "query": ("Enter szukaj · Esc wróć", ()),
     "titles": ("Enter wybierz · ? klawisze · Esc wróć", ()),
     "entries": ("Enter odcinki · ? klawisze · Esc wróć", ()),
-    "episodes": ("Space zaznacz · D pobierz · S subskrybuj · ? klawisze · Esc wróć", ()),
-    "episodes_failed": ("P ponów · S subskrybuj · ? klawisze · Esc wróć", ()),
-    "candidates": ("Space zaznacz · D pobierz · ? klawisze · Esc wróć", ()),
+    "episodes": ("Space zaznacz · D pobierz · B Blu-ray · S subskrybuj · ? klawisze · Esc wróć", ()),
+    "episodes_failed": ("P ponów · B Blu-ray · S subskrybuj · ? klawisze · Esc wróć", ()),
+    "candidates": ("Space zaznacz · D pobierz · B Blu-ray · ? klawisze · Esc wróć", ()),
     "files": ("Enter wybierz · ? klawisze · Esc wróć", ()),
     "draft": ("Space zaznacz · ? klawisze · Esc wróć", ()),
-    "u08": ("Space zaznacz · D pobierz · W wstrzymaj · ? klawisze · Esc wróć", ()),
-    "u08_waiting": ("Space zaznacz · D pobierz · T pobierz teraz · ? klawisze · Esc wróć", ()),
+    "u08": ("Space zaznacz · D pobierz · B Blu-ray · W wstrzymaj · ? klawisze · Esc wróć", ()),
+    "u08_waiting": ("Space zaznacz · D pobierz · B Blu-ray · T pobierz teraz · ? klawisze · Esc wróć", ()),
     "subscriptions": ("Enter szczegóły · D dodaj · W wstrzymaj · ? klawisze · Esc wróć", ()),
     "subscriptions_empty": ("D dodaj pierwszą · ? klawisze · Esc wróć", ()),
     "processing_download": ("Del usuń · W wstrzymaj · H historia · ? klawisze · Esc wróć", ()),
@@ -731,6 +741,7 @@ def _state(probe: _Probe) -> tuple[object, ...]:
             anime._subscription is not None,
             anime._pending_batch is not None,
             frozenset(anime._sending),
+            anime._bluray,
         )
     )
     return (
@@ -778,8 +789,7 @@ def test_footers_match_the_golden_strings_at_80_columns(build: Callable[[str], _
     probe: _Probe = build(name)
     for key in keys:
         probe.panel.handle_key(key)
-    lines: list[str] = [line.strip() for line in probe.panel.render(80, 24).plain.splitlines()]
-    assert golden in lines
+    assert " · ".join(_footer(probe.panel.render(80, 24).plain, golden)) == golden
 
 
 @pytest.mark.parametrize("name", sorted(_FOOTERS))
@@ -1096,7 +1106,7 @@ def test_i_opens_the_release_list_at_once_and_escape_returns_to_its_episodes(
     opened: _Screen = probe.anime._screen
     assert opened is _Screen.CANDIDATES
     assert probe.anime._view.items[probe.anime._view.cursor].suggested
-    assert "Space zaznacz · D pobierz · ? klawisze · Esc wróć" in probe.panel.render(80, 24).plain
+    assert "Space zaznacz · D pobierz · B Blu-ray · ? klawisze · Esc wróć" in probe.panel.render(80, 24).plain
     probe.panel.handle_key("escape")
     assert probe.anime._screen is _Screen.EPISODES
     assert probe.anime.in_subscriptions is subscribed
@@ -2380,7 +2390,7 @@ def test_a_ready_episode_offers_enter_to_watch_in_the_footer_and_help(build: Cal
     probe.panel.handle_key("text:?")
     help_frame: str = probe.panel.render(100, 30).plain
 
-    assert "Enter obejrzyj · Space zaznacz · D pobierz · W wstrzymaj · ? klawisze · Esc wróć" in footer
+    assert "Enter obejrzyj · Space zaznacz · D pobierz · B Blu-ray · W wstrzymaj · ? klawisze · Esc wróć" in footer
     assert "Enter obejrzyj" in " ".join(help_frame.split())
 
 

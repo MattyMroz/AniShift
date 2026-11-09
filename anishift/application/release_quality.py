@@ -15,6 +15,7 @@ __all__ = [
     "DUBBED_RE",
     "GROUP_ORDER",
     "AudioClass",
+    "BlurayPreference",
     "LanguageDeclaration",
     "LanguageSource",
     "Origin",
@@ -36,6 +37,7 @@ __all__ = [
     "seed_points",
     "subtitles_text",
     "tag_declaration",
+    "untouched_bluray",
 ]
 
 
@@ -87,6 +89,14 @@ class ResolutionClass(IntEnum):
     UNKNOWN = 4
 
 
+class BlurayPreference(IntEnum):
+    """Owner's Blu-ray preference: a clean disc first, a pack or dubbed disc next, everything else as usual."""
+
+    FIRST = 0
+    LATER = 1
+    NONE = 2
+
+
 class SeedClass(IntEnum):
     """Seeding gate: seeded releases, unknown ones included, before weakly seeded ones."""
 
@@ -123,6 +133,7 @@ class ReleaseTraits:
     group: str | None = None
     small: bool = False
     size_rank: int | None = None
+    bluray_preference: BlurayPreference = BlurayPreference.NONE
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -160,7 +171,7 @@ UHD_POINTS: Final[float] = 5.0
 """Points for a declared 2160-line image."""
 
 BLURAY_POINTS: Final[float] = -10.0
-"""Penalty for Blu-ray or remux releases, applied once."""
+"""Penalty for Blu-ray or remux releases, applied once unless the owner prefers them."""
 
 MAX_SEED_POINTS: Final[float] = 10.0
 """Availability points of a release with thirty seeders or more."""
@@ -250,7 +261,8 @@ _GROUP_ENCODE_RE: Final[re.Pattern[str]] = re.compile(r"(?i)(?<![a-z0-9])x26[45]
 """Encoder markers of a group's own compression, which a source-file marker cannot outweigh."""
 
 _TRANSCODE_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?i)(?<![a-z0-9])(?:WEB[ ._-]?Rip|BD[ ._-]?Rip|x26[45]|HEVC|H[ ._]?265|AV1|10[ ._-]?bits?|Hi10P?)(?![a-z0-9])"
+    r"(?i)(?<![a-z0-9])(?:WEB[ ._-]?Rip|BD[ ._-]?Rip|x26[45]|HEVC|H[ ._]?265|AV1|10[ ._-]?bits?|Hi(?:10|444)P?"
+    r"|Ma10p|Opus|Encode)(?![a-z0-9])"
 )
 """Compression markers of a transcode, read only where no source-file marker applies."""
 
@@ -304,28 +316,31 @@ def seed_class(seeders: int | None) -> SeedClass:
 
 
 def class_key(traits: ReleaseTraits) -> tuple[int, ...]:
-    """Order resolution, an original before a transcode, seeding, Polish subtitles, then original audio."""
+    """Order resolution, an original before a transcode, seeding, a preferred Blu-ray, Polish subtitles, then audio."""
     return (
         *resolution_class(traits.resolution),
         traits.origin is Origin.TRANSCODE,
         seed_class(traits.seeders),
+        traits.bluray_preference,
         traits.polish,
         traits.audio,
     )
 
 
 def order_tail(traits: ReleaseTraits, quality: float) -> tuple[int, ...]:
-    """Order a small file last, then rounded quality, bitrate, group and seeds."""
+    """Order a small file last, quality then bitrate (reversed for a preferred Blu-ray), group, then seeds."""
     seeders: int = -1 if traits.seeders is None else traits.seeders
     group: int = GROUP_ORDER.index(traits.group) if traits.group in GROUP_ORDER else len(GROUP_ORDER)
-    return (
-        traits.small,
-        -round(quality),
-        traits.size_rank is None,
-        traits.size_rank or 0,
-        group,
-        -seeders,
-    )
+    points: tuple[int, ...] = (-round(quality),)
+    bitrate: tuple[int, ...] = (traits.size_rank is None, traits.size_rank or 0)
+    preferred: bool = traits.bluray_preference is not BlurayPreference.NONE
+    measures: tuple[int, ...] = (*bitrate, *points) if preferred else (*points, *bitrate)
+    return (traits.small, *measures, group, -seeders)
+
+
+def untouched_bluray(traits: ReleaseTraits) -> bool:
+    """Whether the release is a Blu-ray or remux that its name does not mark as a transcode."""
+    return traits.bluray and traits.origin is not Origin.TRANSCODE
 
 
 def low_transcode(traits: ReleaseTraits) -> bool:
@@ -360,7 +375,7 @@ def quality_score(traits: ReleaseTraits) -> float:
         + seed_points(traits.seeders)
         + POLISH_AUDIO_POINTS * traits.polish_audio_beside_original
         + ENGLISH_POINTS * (traits.english_subtitles and traits.polish is not PolishClass.POLISH)
-        + BLURAY_POINTS * traits.bluray,
+        + BLURAY_POINTS * (traits.bluray and traits.bluray_preference is BlurayPreference.NONE),
     )
 
 

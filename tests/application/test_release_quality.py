@@ -8,6 +8,7 @@ import pytest
 
 from anishift.application.release_quality import (
     AudioClass,
+    BlurayPreference,
     LanguageDeclaration,
     LanguageSource,
     Origin,
@@ -26,6 +27,7 @@ from anishift.application.release_quality import (
     seed_class,
     seed_points,
     subtitles_text,
+    untouched_bluray,
 )
 
 
@@ -598,6 +600,42 @@ def test_bluray_minus_ten(marker: str) -> None:
     traits: ReleaseTraits = _traits((f"Example [1080p] [{marker}]",))
     assert traits.bluray
     assert quality_score(traits) == 10.0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("name", "untouched"),
+    [
+        ("Example S01E01 1080p BluRay REMUX AVC FLAC-Group", True),
+        ("[Group] Example - 01 (BD 1080p)", True),
+        ("[Group] Example - 01 [BD 1080p FLAC]", True),
+        ("[Group] Example - 01 [BDRip 1080p]", False),
+        ("Example S01E01 1080p BluRay x264-Group", False),
+        ("[Group] Example - 01 [BD 1080p HEVC 10bit]", False),
+        ("Example S01E01 1080p BluRay REMUX x265-Group", False),
+        ("[RedDeadProject] Spy x Family - Season 1 Part 1 - [JPN Blu-ray] [Encode] [Dual Audio] [V2]", False),
+        ("[Cifer] Sousou no Frieren S1 [BD 1080p Opus]", False),
+        ("[Cifer] Sousou no Frieren S1 - 01 [BD 1080P Ma10p]", False),
+        ("[SCP-2223] your name. [UHD Blu-ray 1080p Hi444 AAC 5.1]", False),
+        ("[PMR] Frieren (BD Remux 1080p AVC FLAC AAC) [Dual Audio]", True),
+        ("[Group] Example - 01 [1080p WEB-DL]", False),
+    ],
+)
+def test_untouched_bluray_counts_only_a_disc_release_its_name_does_not_mark_as_transcoded(
+    name: str, untouched: bool
+) -> None:
+    assert untouched_bluray(_traits((name,))) is untouched
+
+
+@pytest.mark.unit
+def test_a_preferred_bluray_drops_its_penalty_and_leads_its_seeding_class() -> None:
+    web: ReleaseTraits = _traits(("[Group] Example - 01 [1080p WEB-DL]",), seeders=50)
+    polish: ReleaseTraits = replace(web, polish=PolishClass.POLISH)
+    disc: ReleaseTraits = _traits(("Example S01E01 1080p BluRay REMUX AVC",), seeders=50)
+    remux: ReleaseTraits = replace(disc, bluray_preference=BlurayPreference.FIRST)
+    weak: ReleaseTraits = replace(remux, seeders=5)
+    assert quality_score(remux) == quality_score(replace(remux, bluray_preference=BlurayPreference.NONE)) + 10.0
+    assert class_key(remux) < class_key(polish) < class_key(weak)
 
 
 @pytest.mark.unit

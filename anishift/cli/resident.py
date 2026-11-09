@@ -237,12 +237,10 @@ class ResidentSession:
             payload["episode_offset"] = episode_offset
         return decode_view(DownloadReceipt, self._call("download", payload))
 
-    def episode_download(self, keys: Sequence[EpisodeKey], *, command_id: str) -> EpisodeBatch:
-        """Admit one owner batch, or recover its receipt using the original command identifier."""
-        return decode_view(
-            EpisodeBatch,
-            self._call("episode_download", {"keys": [encode_view(key) for key in keys]}, command_id=command_id),
-        )
+    def episode_download(self, keys: Sequence[EpisodeKey], *, command_id: str, bluray: bool = False) -> EpisodeBatch:
+        """Admit one owner batch, Blu-ray first when asked, or recover its receipt by the original command id."""
+        payload: dict[str, object] = {"keys": [encode_view(key) for key in keys], "bluray": bluray}
+        return decode_view(EpisodeBatch, self._call("episode_download", payload, command_id=command_id))
 
     def episode_offer_start(
         self,
