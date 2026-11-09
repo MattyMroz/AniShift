@@ -235,7 +235,7 @@ def _signed_synthesis(tmp_path: Path) -> tuple[PlanTask, ArtifactSnapshot]:
     signs_path: Path = write_sign_candidates(
         (
             SignCandidate(3, 1000, 4000, "Brama szkoły", "brama szkoły", 0.9, 0.0),
-            SignCandidate(7, 5000, 5400, "Napis", "napis", 0.3, 0.0),
+            SignCandidate(7, 5000, 5400, "Napis", "napis", 0.3, 0.8),
         ),
         tmp_path / "signs.json",
     )

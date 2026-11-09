@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Final
 from anishift.services.audio.timeline import plan_timeline
 from anishift.services.audio.types import PlacementReason
 from anishift.services.subtitles import SignCandidate
-from anishift.services.subtitles.signs import SIGN_AFTER_MS, SIGN_MARGIN, place_weight_against
+from anishift.services.subtitles.signs import SIGN_AFTER_MS, SIGN_MARGIN, place_margin
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -195,7 +195,7 @@ class _Selector:
             fitted = True
             if self._mode != _SMART:
                 return index, start_ms
-            margin: float = candidate.weight_for - self._against(candidate, frames, reading, end)
+            margin: float = self._margin(candidate, frames, reading)
             best_margin = margin if best_margin is None else max(best_margin, margin)
             if margin >= SIGN_MARGIN:
                 self.margins.append((candidate.group, margin))
@@ -205,16 +205,16 @@ class _Selector:
         self.decisions.append((candidate.group, "weight" if fitted else "no_pause"))
         return None
 
-    def _against(self, candidate: SignCandidate, frames: int, reading: int, end: int | None) -> float:
-        slack: float = math.inf if end is None else (end - reading - frames) / frames
-        reading_ms: float = reading * 1000 / self._sample_rate
-        overrun_ms: float = (reading + frames) * 1000 / self._sample_rate - candidate.end
+    def _margin(self, candidate: SignCandidate, frames: int, reading: int) -> float:
+        start_ms: float = reading * 1000 / self._sample_rate
+        end_ms: float = (reading + frames) * 1000 / self._sample_rate
         previous: float | None = self._last_read_ms.get(candidate.key)
-        return place_weight_against(
+        return place_margin(
+            candidate.weight_for,
             candidate.weight_against,
-            slack=slack,
-            overrun_ms=overrun_ms,
-            repeat_gap_ms=None if previous is None else reading_ms - previous,
+            reading_ms=frames * 1000 / self._sample_rate,
+            overrun_ms=end_ms - candidate.end,
+            repeat_gap_ms=None if previous is None else start_ms - previous,
         )
 
     def _timed(self, clip: NormalizedClip, start_ms: int) -> NormalizedClip:

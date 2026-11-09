@@ -17,11 +17,19 @@ from anishift.services.audio.types import AudioFormat, NormalizedClip, TimedClip
 from anishift.services.subtitles import SignCandidate
 from anishift.services.subtitles.signs import static_weights
 
-_SMALL: tuple[float, float] = (0.5408, 0.3)
+_SMALL: tuple[float, float] = (0.344, 0.3)
 
-_TITLE: tuple[float, float] = (0.84208, 0.0)
+_TITLE: tuple[float, float] = (0.7744, 0.0)
 
-_STRONGEST: tuple[float, float] = (0.8824, 0.0)
+_STRONGEST: tuple[float, float] = (0.832, 0.0)
+
+_PLATES: tuple[SignCandidate, ...] = (
+    SignCandidate(47, 221_740, 223_950, "Destra, Dar: Bliźniaczy Szermierz (S)", "destra", 0.57, 0.11),
+    SignCandidate(49, 223_990, 226_450, "Sinistra, Dar: Bliźniaczy Szermierz (S)", "sinistra", 0.57, 0.11),
+    SignCandidate(51, 226_490, 228_830, "Rory, Dar: Zwiadowca Superwysokiego Poziomu (A)", "rory", 0.57, 0.11),
+    SignCandidate(53, 228_870, 231_460, "Celica, Dar: Uzdrowicielka Wysokiego Poziomu (B)", "celica", 0.57, 0.11),
+    SignCandidate(55, 231_500, 233_960, "Shannon, Dar: Mag Superwysokiego Poziomu (A)", "shannon", 0.57, 0.11),
+)
 
 
 def _clip(request_id: str, start_ms: int, frames: int, order: int, sample_rate: int = 1000) -> NormalizedClip:
@@ -89,16 +97,16 @@ def test_example_a_reads_a_small_sign_in_a_long_pause() -> None:
     selection: SignSelection = select_signs((_sign(3, 1000, 4000),), _recordings(3), lines, "smart")
 
     assert _decision(selection, 3) == "read"
-    assert _margin(selection, 3) == pytest.approx(0.2408)
+    assert _margin(selection, 3) == pytest.approx(0.372)
 
 
-def test_example_b_skips_a_small_sign_in_a_tight_pause() -> None:
+def test_example_b_reads_a_short_small_sign_in_a_tight_pause() -> None:
     lines: tuple[NormalizedClip, ...] = (_clip("line-1", 0, 800, 0), _clip("line-2", 2300, 10_000, 10))
 
     selection: SignSelection = select_signs((_sign(3, 1000, 4000),), _recordings(3), lines, "smart")
 
-    assert _decision(selection, 3) == "weight"
-    assert _margin(selection, 3) == pytest.approx(0.5408 - 0.636)
+    assert _decision(selection, 3) == "read"
+    assert _margin(selection, 3) == pytest.approx(0.372)
 
 
 def test_example_c_reads_a_large_title_in_the_same_tight_pause() -> None:
@@ -107,21 +115,22 @@ def test_example_c_reads_a_large_title_in_the_same_tight_pause() -> None:
     selection: SignSelection = select_signs((_sign(3, 1000, 4000, _TITLE),), _recordings(3), lines, "smart")
 
     assert _decision(selection, 3) == "read"
-    assert _margin(selection, 3) == pytest.approx(0.84208 - 0.48)
+    assert _margin(selection, 3) == pytest.approx(0.8872)
 
 
 def test_a_later_pause_that_passes_the_margin_wins_over_an_earlier_one_that_only_fits() -> None:
-    lines: tuple[NormalizedClip, ...] = (_clip("line-1", 0, 800, 0), _clip("line-2", 2300, 800, 10))
+    lines: tuple[NormalizedClip, ...] = (_clip("line-1", 10_500, 24_500, 10),)
+    candidates: tuple[SignCandidate, ...] = (_sign(3, 1000, 4000, _TITLE), _sign(7, 9000, 40_000, _TITLE))
 
-    selection: SignSelection = select_signs((_sign(3, 1000, 4000),), _recordings(3), lines, "smart")
+    selection: SignSelection = select_signs(candidates, _recordings(3, 7), lines, "smart")
 
-    assert _decision(selection, 3) == "read"
-    assert selection.placements[0].start_ms == 3300
+    assert _decision(selection, 7) == "read"
+    assert selection.placements[1].start_ms == 35_200
 
 
 @pytest.mark.parametrize(
     ("weights", "margin"),
-    [(_SMALL, 0.5408 - 0.86), (_TITLE, 0.84208 - 0.8), (_STRONGEST, 0.0824)],
+    [(_SMALL, 0.672 - 0.86), (_TITLE, 0.8872 - 0.8), (_STRONGEST, 0.116)],
 )
 def test_a_sign_read_five_seconds_earlier_is_not_read_again(weights: tuple[float, float], margin: float) -> None:
     lines: tuple[NormalizedClip, ...] = (_clip("line-1", 100_000, 800, 50),)
@@ -141,31 +150,27 @@ def test_the_strongest_sign_is_read_again_fifteen_seconds_later() -> None:
     selection: SignSelection = select_signs(candidates, _recordings(3, 7), lines, "smart")
 
     assert _decision(selection, 7) == "read"
-    assert _margin(selection, 7) == pytest.approx(0.1624, abs=1e-4)
+    assert _margin(selection, 7) == pytest.approx(0.196, abs=1e-4)
 
 
 def test_a_rejected_sign_does_not_count_as_a_repeat() -> None:
-    lines: tuple[NormalizedClip, ...] = (
-        _clip("line-1", 0, 800, 0),
-        _clip("line-2", 2300, 10_000, 10),
-        _clip("line-3", 30_000, 800, 20),
-    )
-    candidates: tuple[SignCandidate, ...] = (_sign(3, 1000, 4000), _sign(15, 13_000, 16_000))
+    lines: tuple[NormalizedClip, ...] = (_clip("line-1", 0, 2700, 0), _clip("line-2", 30_000, 800, 20))
+    candidates: tuple[SignCandidate, ...] = (_sign(3, 0, 1000), _sign(15, 13_000, 16_000))
 
     selection: SignSelection = select_signs(candidates, _recordings(3, 15), lines, "smart")
 
     assert _decision(selection, 3) == "weight"
     assert _decision(selection, 15) == "read"
-    assert _margin(selection, 15) == pytest.approx(0.2408)
+    assert _margin(selection, 15) == pytest.approx(0.372)
 
 
 def test_always_reads_a_sign_smart_rejects_for_its_weight() -> None:
-    lines: tuple[NormalizedClip, ...] = (_clip("line-1", 0, 800, 0), _clip("line-2", 2300, 10_000, 10))
+    lines: tuple[NormalizedClip, ...] = (_clip("line-1", 0, 2700, 0),)
 
-    selection: SignSelection = select_signs((_sign(3, 1000, 4000),), _recordings(3), lines, "always")
+    selection: SignSelection = select_signs((_sign(3, 0, 1000),), _recordings(3), lines, "always")
 
     assert _decision(selection, 3) == "read"
-    assert selection.placements[0].start_ms == 1000
+    assert selection.placements[0].start_ms == 2900
 
 
 def test_always_reads_in_the_same_span_after_the_sign_window_as_smart() -> None:
@@ -189,12 +194,55 @@ def test_always_never_reads_past_three_seconds_after_the_sign_window() -> None:
 def test_a_sound_written_as_a_repeated_word_is_read_only_in_always(mode: str, decision: str) -> None:
     lines: tuple[NormalizedClip, ...] = (_clip("line-1", 100_000, 800, 50),)
     weights: tuple[float, float] = static_weights(
-        height=0.12, centre=1.0, on_screen_ms=2000, words=2, alone=True, edge=0.0, echo=False, sound=True
+        height=0.12, centre=1.0, on_screen_ms=2000, alone=True, edge=0.0, echo=False, sound=True
     )
 
     selection: SignSelection = select_signs((_sign(3, 1000, 3000, weights, "tup tup"),), _recordings(3), lines, mode)
 
     assert _decision(selection, 3) == decision
+
+
+@pytest.mark.parametrize("mode", ["smart", "always"])
+def test_a_run_of_plates_longer_to_read_than_to_show_is_read_plate_after_plate(mode: str) -> None:
+    lines: tuple[NormalizedClip, ...] = (_clip("line-1", 217_560, 3880, 0), _clip("line-2", 240_000, 2000, 60))
+
+    selection: SignSelection = select_signs(_PLATES, _recordings(47, 49, 51, 53, 55, frames=2600), lines, mode)
+
+    assert selection.decisions == ((47, "read"), (49, "read"), (51, "read"), (53, "read"), (55, "read"))
+    assert [(item.start_ms, item.end_ms) for item in selection.placements] == [
+        (221_740, 224_340),
+        (224_540, 227_140),
+        (227_340, 229_940),
+        (230_140, 232_740),
+        (232_940, 235_540),
+    ]
+
+
+@pytest.mark.parametrize("mode", ["smart", "always"])
+def test_a_run_of_plates_is_read_in_order_until_the_next_line_leaves_no_room(mode: str) -> None:
+    lines: tuple[NormalizedClip, ...] = (_clip("line-1", 217_560, 3880, 0), _clip("line-2", 234_170, 2780, 60))
+
+    selection: SignSelection = select_signs(_PLATES, _recordings(47, 49, 51, 53, 55, frames=2600), lines, mode)
+
+    assert selection.decisions == ((47, "read"), (49, "read"), (51, "read"), (53, "read"), (55, "no_pause"))
+
+
+def test_a_plate_on_screen_during_a_line_is_not_read() -> None:
+    lines: tuple[NormalizedClip, ...] = (_clip("line-1", 221_000, 6000, 0), _clip("line-2", 227_400, 3000, 10))
+
+    selection: SignSelection = select_signs(_PLATES[:1], _recordings(47, frames=2600), lines, "smart")
+
+    assert selection.decisions == ((47, "no_pause"),)
+
+
+def test_a_wall_of_text_is_not_read_even_in_a_long_pause() -> None:
+    lines: tuple[NormalizedClip, ...] = (_clip("line-1", 100_000, 800, 50),)
+
+    selection: SignSelection = select_signs(
+        (_sign(3, 1000, 12_000, _STRONGEST),), _recordings(3, frames=8000), lines, "smart"
+    )
+
+    assert _decision(selection, 3) == "weight"
 
 
 def test_a_sign_without_a_recording_is_missing() -> None:
