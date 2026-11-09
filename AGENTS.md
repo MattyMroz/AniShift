@@ -21,7 +21,7 @@ Zawsze na `anishift/ tests/`, nigdy na podkatalogu — na podkatalogu ruff sypie
 - Kod, komentarze, nazwy i wszystko związane z gitem/GitHub (branch, commit, PR, issue, label) po angielsku. Rozmowa z userem po polsku. Kopiuj wzorce już zastane w repo (istniejące tytuły, opisy, nazwy branchy).
 - Dokumenty w `docs/work/` — plany, specyfikacje, intencje, manifesty, raporty, przeglądy i briefy dla subagentów — pisz po polsku. Nazwy plików, identyfikatory techniczne, kod, komendy i adresy URL zachowuj bez tłumaczenia. Ta reguła dotyczy także artefaktów tworzonych przez subagentów.
 - Zależności tylko przez `uv add` / `uv remove`. Nigdy nie edytuj `pyproject.toml` ręcznie.
-- Commity w formacie `typ(scope): opis` — scope OBOWIĄZKOWY, z listy `--scopes` hooka `conventional-pre-commit` w `.pre-commit-config.yaml` (hook odrzuca commit bez scope lub ze scope spoza listy; nowy scope dopisz tam). Treść commita: sekcja Git niżej. Zero śladów AI (`Co-Authored-By`, stopki generatora) — też w treści PR.
+- Commity w formacie `typ(scope): opis` — scope OBOWIĄZKOWY, z listy `--scopes` hooka `conventional-pre-commit` w `.pre-commit-config.yaml` (hook odrzuca commit bez scope lub ze scope spoza listy; nowy scope dopisz tam). Treść commita i opisu PR: skill `commit` (sekcja Git niżej). Zero śladów AI (`Co-Authored-By`, stopki generatora) — też w treści PR.
 - Issue zakładaj wg szablonów z `.github/ISSUE_TEMPLATE/` (bug / feature / task). Tytuł z prefiksem Conventional Commits, jak w szablonie.
 - Rób tylko to, o co user prosi. Zero nieproszonych plików, refaktorów, issue.
 - AniShift jest teraz tylko na Windows; wsparcie Linuksa to osobna, przyszła ścieżka — nie rozwijaj go bez wyraźnego polecenia właściciela.
@@ -42,7 +42,8 @@ Zawsze na `anishift/ tests/`, nigdy na podkatalogu — na podkatalogu ruff sypie
   model, przegląd robi świeża instancja innego (najlepiej z innej rodziny), potem
   role się zmieniają. Pętla: autor koduje i testuje → inny model sprawdza →
   autor poprawia → recenzent weryfikuje. Obowiązkowe skille: `simple`, `coding`, `subagent`,
-  `workflow`; przy researchu `research`, przy przeglądzie `review`. Briefy według
+  `workflow`; przy każdym commicie i opisie PR `commit`; przy researchu `research`,
+  przy przeglądzie `review`. Briefy według
   `.agents/skills/subagent/assets/SUBAGENT-BRIEF.template.md`: samowystarczalny
   kontrakt, zakres zapisu, zakazy, baseline i wymagane dowody. Przy nieudanej
   delegacji sprawdź najpierw brief, kontekst i podział pracy przed ponowieniem.
@@ -106,7 +107,7 @@ Instalacja: `prek install`. Hooki instaluje prek, wszystkie trzy etapy z `defaul
 
 ## Git
 
-- Commit: nagłówek Conventional Commits po angielsku, `type(scope): opis`, ze scope'em z listy w `.pre-commit-config.yaml`; po pustej linii streszczenie „co i dlaczego”.
+- Każdy commit, revert, cherry-pick oraz tytuł i opis PR pisz według skilla `commit`: nagłówek `type(scope): summary` po angielsku ze scope'em z listy w `.pre-commit-config.yaml`, sekcje `Problem:`, `Change:` i `Verification:` jako listy, tylko dozwolone trailery, jeden problem na commit. Przeczytaj skill przed pierwszym commitem w sesji; brief dla subagenta, który commituje, każe mu zrobić to samo.
 - Zero atrybucji AI w commitach i PR (trailery, stopki, emoji), także gdy host o nią prosi.
 - Pliki dodawaj po nazwie, nigdy `git add .`; bez `--no-verify`. Worktree'y tylko w `.worktrees/<nazwa>`.
 - Commit sprawdza pliki i nagłówek, push uruchamia bramki repo, CI resztę. Strażnicy w `.hooks/` to kopie z presetu `agents`; nie edytuj ich w repo.
