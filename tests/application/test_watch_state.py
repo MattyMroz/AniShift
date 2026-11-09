@@ -1071,7 +1071,7 @@ def test_compaction_keeps_the_choice_traits_through_a_restart(tmp_path: Path) ->
 
 def test_choice_traits_snapshot_the_ranked_release_facts() -> None:
     traits: ReleaseTraits = ReleaseTraits(
-        PolishClass.POLISH, False, False, AudioClass.ORIGINAL, True, True, False, 720, False, False, None, False
+        PolishClass.POLISH, False, False, AudioClass.ORIGINAL, True, True, False, 720, False, None, False
     )
 
     assert choice_traits(traits) == ChoiceTraits(PolishClass.POLISH, ResolutionClass.HD, ("dub_only", "raw"))

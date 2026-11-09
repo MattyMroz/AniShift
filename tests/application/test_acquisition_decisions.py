@@ -40,7 +40,7 @@ from anishift.application.intents import RequestOrigin
 from anishift.application.service import AppService
 from anishift.application.subscription_targets import SubscriptionRecord
 from anishift.application.watch_state import WatchStateStore
-from anishift.services.torrents.names import parse_release_name
+from anishift.services.torrents.names import parse_release_name, single_episode
 from anishift.services.torrents.torrentio import TorrentioSource
 
 
@@ -83,9 +83,13 @@ def test_owner_records_live_checks_cache_hits_selection_and_replay(
         cast("dict[str, object]", check["target"]),
         streams_releases(restored, pack_name=lambda name: parse_release_name(name).is_pack),
         donghua=check["donghua"] is True,
+        single=single_episode,
     )
     assert len(restored) == 3
-    assert ranked[0].files == ("mystery.mkv", second_file.file_name)
+    assert next(item for item in ranked if item.stream.info_hash == "a" * 40).files == (
+        "mystery.mkv",
+        second_file.file_name,
+    )
     assert [encode_view(item.identity) for item in ranked] == [row["identity"] for row in candidates]
     assert [encode_view(item.traits) for item in ranked] == [row["traits"] for row in candidates]
     assert [(item.quality, item.confidence, item.conflict, item.supported) for item in ranked] == [

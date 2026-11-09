@@ -11,11 +11,15 @@ from anishift.application.episode_identity import IdentityAssessment, IdentityVe
 from anishift.application.episode_releases import info_hash_hex
 from anishift.application.episode_selection import OFFER_REASONS
 from anishift.application.release_quality import (
+    Origin,
     PolishClass,
     ReleaseTraits,
     ResolutionClass,
     class_key,
+    low_transcode,
+    order_tail,
     resolution_class,
+    seed_class,
 )
 from anishift.application.subscription_targets import (
     MAX_TRANSIENT_FAILURES,
@@ -159,7 +163,7 @@ def choice_candidate(candidate: RankedCandidate, protected: Collection[Protected
 
 
 def usable(candidate: ChoiceCandidate) -> bool:
-    """Whether the release could serve any target: one file, original audio, no burned subtitles, known container."""
+    """Whether any target could use the release: one supported file, original audio, no hardsub, no low transcode."""
     traits: ReleaseTraits = candidate.traits
     return not (
         candidate.pack
@@ -167,13 +171,14 @@ def usable(candidate: ChoiceCandidate) -> bool:
         or traits.dub_only
         or traits.raw
         or traits.hardsub
+        or low_transcode(traits)
         or not candidate.supported
         or candidate.taken
     )
 
 
 def admissible(candidate: ChoiceCandidate, *, excluded: Collection[str], threshold: ResolutionClass | None) -> bool:
-    """Whether automation may try *candidate*: a usable untried match no worse than the target threshold."""
+    """Whether automation may try *candidate*: a usable untried match within the target threshold."""
     return (
         candidate.verdict is IdentityVerdict.MATCH
         and usable(candidate)
@@ -183,9 +188,13 @@ def admissible(candidate: ChoiceCandidate, *, excluded: Collection[str], thresho
 
 
 def choice_key(candidate: ChoiceCandidate) -> tuple[object, ...]:
-    """Order by classes, a known file before one verified after metadata, quality, seeds and hash."""
-    seeders: int = -1 if candidate.traits.seeders is None else candidate.traits.seeders
-    return (*class_key(candidate.traits), candidate.after_metadata, -candidate.quality, -seeders, candidate.info_hash)
+    """Order by classes, a known file before one verified after metadata, then ``order_tail`` and hash."""
+    return (
+        *class_key(candidate.traits),
+        candidate.after_metadata,
+        *order_tail(candidate.traits, candidate.quality),
+        candidate.info_hash,
+    )
 
 
 def pending_releases(
@@ -211,7 +220,7 @@ def pending_releases(
 
 
 def pending_blocks(pending: Collection[ChoiceCandidate], candidate: ChoiceCandidate) -> bool:
-    """Whether a pending release of a better resolution, or better Polish at equal resolution, blocks *candidate*."""
+    """Whether a pending release may precede *candidate*: by resolution, or by Polish at no worse origin and seeds."""
     return any(_worse(candidate, item) for item in pending)
 
 
@@ -425,7 +434,17 @@ def _class(candidate: ChoiceCandidate) -> tuple[ResolutionClass, PolishClass]:
 def _worse(candidate: ChoiceCandidate, pending: ChoiceCandidate) -> bool:
     mine: ResolutionClass = _resolution(candidate)
     theirs: ResolutionClass = _resolution(pending)
-    return mine > theirs or (mine == theirs and candidate.traits.polish > pending.traits.polish)
+    if mine != theirs:
+        return mine > theirs
+    return (
+        _transcode(pending) <= _transcode(candidate)
+        and seed_class(pending.traits.seeders) <= seed_class(candidate.traits.seeders)
+        and pending.traits.polish < candidate.traits.polish
+    )
+
+
+def _transcode(candidate: ChoiceCandidate) -> bool:
+    return candidate.traits.origin is Origin.TRANSCODE
 
 
 def _verdict(identity: IdentityAssessment) -> IdentityVerdict:

@@ -37,7 +37,6 @@ from anishift.application.episode_selection import (
     RankedCandidate,
     SeasonDates,
     StreamCandidate,
-    confidence_text,
     episode_listing,
     franchise_traversal,
     franchise_view,
@@ -54,7 +53,7 @@ from anishift.application.episode_selection import (
     suggestion,
     visible,
 )
-from anishift.application.release_quality import ReleaseTraits
+from anishift.application.release_quality import Origin, ReleaseTraits
 from anishift.application.subscription_choice import ChoiceCandidate, choice_candidate, choose
 from anishift.services.catalog.anilist import parse_franchise_page
 from anishift.services.catalog.anizip import parse_mapping
@@ -686,7 +685,7 @@ def test_rank_traits_read_both_the_file_name_and_the_path() -> None:
     traits: ReleaseTraits = _rank(_target(), [stream])[0].traits
     assert traits.resolution == 1080
     assert traits.dub_only
-    assert traits.platform
+    assert traits.origin is Origin.SOURCE
     assert traits.bluray
     assert traits.hardsub
     assert suggestion(_rank(_target(), [stream]), numbering=True) == (None, False)
@@ -806,7 +805,7 @@ def test_rank_candidates_resolution_classes_follow_owner_order() -> None:
     ]
 
 
-def test_list_order_class_precedes_weighted_quality() -> None:
+def test_list_order_class_precedes_quality() -> None:
     base: StreamCandidate = _stream("Star Garden - 05 [1080p].mkv")
     polish_720: StreamCandidate = _stream("Star Garden - 05 [720p].mkv", tags=("\U0001f1f5\U0001f1f1",))
     polish: StreamCandidate = _stream("Star Garden - 05 [1080p].mkv", tags=("\U0001f1f5\U0001f1f1",))
@@ -826,7 +825,7 @@ def test_list_order_seed_points_then_hash_break_ties() -> None:
     assert _ranked(_target(), [second, first]) == [first, second]
 
 
-def _shown(
+def _row(
     digit: str,
     *,
     quality: float,
@@ -845,68 +844,42 @@ def _shown(
     )
 
 
-def test_list_order_rows_showing_equal_quality_and_confidence_go_by_seeds() -> None:
-    hidden_edge: RankedCandidate = _shown("1", quality=75.0, certainty=0.9999, seeders=60)
-    seeded: RankedCandidate = _shown("2", quality=75.0, certainty=0.9996, seeders=192)
-    assert (quality_text(hidden_edge), confidence_text(hidden_edge)) == (quality_text(seeded), confidence_text(seeded))
-    ranked: tuple[RankedCandidate, ...] = list_order((hidden_edge, seeded))
-    assert ranked == (seeded, hidden_edge)
-    assert suggestion(ranked, numbering=True) == (0, False)
+def test_list_order_ignores_confidence() -> None:
+    surer: RankedCandidate = _row("1", quality=75.0, certainty=0.99, seeders=40)
+    seeded: RankedCandidate = _row("2", quality=75.0, certainty=0.60, seeders=500)
+    assert list_order((surer, seeded)) == (seeded, surer)
+    assert suggestion(list_order((surer, seeded)), numbering=True) == (0, False)
 
 
-def test_list_order_shown_tie_puts_a_match_before_a_more_seeded_uncertain_row_and_suggests_it() -> None:
-    uncertain: RankedCandidate = _shown(
-        "1", quality=35.0, certainty=1.0, seeders=200, verdict=IdentityVerdict.INSUFFICIENT
+def test_list_order_puts_a_match_before_an_uncertain_row_of_higher_quality() -> None:
+    uncertain: RankedCandidate = _row(
+        "1", quality=46.0, certainty=1.0, seeders=500, verdict=IdentityVerdict.INSUFFICIENT
     )
-    match: RankedCandidate = _shown("2", quality=35.0, certainty=1.0, seeders=120)
+    match: RankedCandidate = _row("2", quality=35.0, certainty=0.5, seeders=40)
     ranked: tuple[RankedCandidate, ...] = list_order((uncertain, match))
     assert ranked == (match, uncertain)
     assert suggestion(ranked, numbering=True) == (0, False)
 
 
-def test_list_order_visibly_higher_quality_keeps_an_uncertain_row_before_a_match() -> None:
-    uncertain: RankedCandidate = _shown(
-        "1", quality=36.0, certainty=1.0, seeders=0, verdict=IdentityVerdict.INSUFFICIENT
-    )
-    match: RankedCandidate = _shown("2", quality=35.0, certainty=1.0, seeders=500)
-    ranked: tuple[RankedCandidate, ...] = list_order((match, uncertain))
-    assert ranked == (uncertain, match)
-    assert suggestion(ranked, numbering=True) == (1, False)
+def test_list_order_compares_quality_rounded_as_shown() -> None:
+    lower: RankedCandidate = _row("1", quality=39.6, certainty=None, seeders=60)
+    higher: RankedCandidate = _row("2", quality=40.4, certainty=None, seeders=50)
+    better: RankedCandidate = _row("3", quality=40.6, certainty=None, seeders=40)
+    assert quality_text(lower) == quality_text(higher)
+    assert list_order((lower, higher, better)) == (better, lower, higher)
 
 
-def test_list_order_visibly_higher_confidence_keeps_an_uncertain_row_before_a_match() -> None:
-    uncertain: RankedCandidate = _shown(
-        "1", quality=35.0, certainty=0.99, seeders=0, verdict=IdentityVerdict.INSUFFICIENT
-    )
-    match: RankedCandidate = _shown("2", quality=35.0, certainty=0.98, seeders=500)
-    assert list_order((match, uncertain)) == (uncertain, match)
+def test_list_order_unknown_seeds_count_as_seeded_and_few_seeds_as_weak() -> None:
+    unknown: RankedCandidate = _row("1", quality=20.0, certainty=0.99, seeders=None)
+    weak: RankedCandidate = _row("2", quality=40.0, certainty=0.99, seeders=19)
+    seeded: RankedCandidate = _row("3", quality=20.0, certainty=0.99, seeders=20)
+    assert list_order((weak, unknown, seeded)) == (seeded, unknown, weak)
 
 
-def test_list_order_known_zero_seeds_precede_unknown_seeds_in_a_shown_tie() -> None:
-    unknown: RankedCandidate = _shown("1", quality=75.0, certainty=0.99, seeders=None)
-    zero: RankedCandidate = _shown("2", quality=75.0, certainty=0.99, seeders=0)
-    assert list_order((unknown, zero)) == (zero, unknown)
-
-
-def test_list_order_seeds_never_beat_a_visibly_higher_confidence() -> None:
-    surer: RankedCandidate = _shown("1", quality=75.0, certainty=0.95, seeders=1)
-    seeded: RankedCandidate = _shown("2", quality=75.0, certainty=0.80, seeders=500)
-    assert list_order((seeded, surer)) == (surer, seeded)
-
-
-def test_list_order_equal_shown_rows_split_by_another_row_stay_apart() -> None:
-    first: RankedCandidate = _shown("1", quality=76.4, certainty=1.0, seeders=1)
-    between: RankedCandidate = _shown("2", quality=76.9, certainty=0.99, seeders=0)
-    last: RankedCandidate = _shown("3", quality=75.6, certainty=1.0, seeders=999)
-    assert (quality_text(first), confidence_text(first)) == (quality_text(last), confidence_text(last))
-    assert list_order((last, between, first)) == (first, between, last)
-
-
-def test_list_order_equal_shown_rows_without_confidence_go_by_seeds_then_quality() -> None:
-    lower: RankedCandidate = _shown("1", quality=40.2, certainty=None, seeders=5)
-    higher: RankedCandidate = _shown("2", quality=40.4, certainty=None, seeders=5)
-    seeded: RankedCandidate = _shown("3", quality=39.6, certainty=None, seeders=6)
-    assert list_order((lower, higher, seeded)) == (seeded, higher, lower)
+def test_list_order_unknown_seeds_follow_known_seeds_of_a_full_tie() -> None:
+    unknown: RankedCandidate = _row("1", quality=40.0, certainty=0.99, seeders=None)
+    known: RankedCandidate = _row("2", quality=40.0, certainty=0.99, seeders=20)
+    assert list_order((unknown, known)) == (known, unknown)
 
 
 def test_representative_prefers_match_then_uncertain_then_conflict_then_path() -> None:
@@ -952,7 +925,7 @@ def test_rank_candidates_release_without_files_is_assessed_on_its_name() -> None
     assert (ranked[1].conflict, ranked[1].confidence) == (True, None)
 
 
-def test_rank_candidates_blue_box_s2e1_suggests_the_polish_match_over_more_seeded_multisub_matches() -> None:
+def test_rank_candidates_blue_box_s2e1_suggests_the_seeded_web_original_over_a_weakly_seeded_polish_match() -> None:
     target: dict[str, object] = next(
         case["target"] for case in _regression_cases() if "Blue Box" in case["target"]["aliases"]
     )
@@ -968,10 +941,11 @@ def test_rank_candidates_blue_box_s2e1_suggests_the_polish_match_over_more_seede
     tsundere: StreamCandidate = _stream(
         "Blue Box S02E01 MULTi 1080p NF WEB-DL DDP5.1 AV1-Tsundere-Raws.mkv", seeders=157
     )
-    ranked: tuple[RankedCandidate, ...] = _rank(target, [tsundere, dkb, trix])
-    assert [candidate.stream for candidate in ranked] == [trix, dkb, tsundere]
+    ranked: tuple[RankedCandidate, ...] = _rank(target, [trix, dkb, tsundere])
+    assert [candidate.stream for candidate in ranked] == [tsundere, trix, dkb]
     assert {candidate.identity.verdict for candidate in ranked} == {IdentityVerdict.MATCH}
     assert suggestion(ranked, numbering=True) == (0, False)
+    assert [candidate.stream for candidate in visible(ranked, 0)] == [tsundere, trix]
 
 
 def test_list_order_unsupported_container_follows_supported_rows_of_its_group() -> None:
@@ -1010,8 +984,8 @@ def test_suggestion_prefers_a_match_to_an_earlier_uncertain_row() -> None:
 
 
 def test_suggestion_never_picks_a_release_without_seeders() -> None:
-    empty: RankedCandidate = _shown("1", quality=36.0, certainty=1.0, seeders=0)
-    seeded: RankedCandidate = _shown("2", quality=35.0, certainty=1.0, seeders=3)
+    empty: RankedCandidate = _row("1", quality=36.0, certainty=1.0, seeders=0)
+    seeded: RankedCandidate = _row("2", quality=35.0, certainty=1.0, seeders=3)
     assert suggestion((empty, seeded), numbering=True) == (1, False)
     assert suggestion((empty,), numbering=True) == (None, False)
 
@@ -1210,7 +1184,9 @@ def test_rank_candidates_solo_leveling_s2e1_matches_absolute_releases_and_hides_
     index, uncertain = suggestion(ranked, numbering=True)
     assert index is not None
     assert not uncertain
-    assert {row.stream for row in visible(ranked, index)} == {*matches, *absolute}
+    assert {row.stream for row in visible(ranked, index)} == {
+        stream for stream in [*matches, *absolute] if "HEVC" not in stream.release
+    }
 
 
 def test_rank_candidates_without_dates_leaves_solo_leveling_numbers_to_h1() -> None:
@@ -1565,15 +1541,30 @@ def test_visible_hides_unseeded_rows_so_a_dead_high_match_never_hides_live_lower
     assert {row.stream.info_hash for row in visible(ranked)} == {live.info_hash, other.info_hash}
 
 
-def test_a_small_re_encode_follows_the_full_files_of_its_class_and_never_leads_the_suggestion() -> None:
-    full: StreamCandidate = _stream("Star Garden - 05 [1080p].mkv", size_text="1.4 GiB", seeders=10)
-    small: StreamCandidate = _stream("Star Garden - 05 [1080p HEVC].mkv", size_text="350 MiB", seeders=90)
-    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [full, small])
-    index, _uncertain = suggestion(ranked, numbering=True)
-    assert [row.traits.small for row in ranked if row.stream.info_hash == small.info_hash] == [True]
-    assert [row.stream.info_hash for row in visible(ranked)] == [full.info_hash, small.info_hash]
-    assert index is not None
-    assert ranked[index].stream.info_hash == full.info_hash
+def test_a_small_unmarked_file_follows_the_full_files_of_its_class_and_never_leads_the_suggestion() -> None:
+    full: StreamCandidate = _stream(
+        "[ToonsHub] Star Garden - 05 [1080p CR WEB-DL].mkv", size_text="1.4 GiB", seeders=40
+    )
+    small: StreamCandidate = _stream("[Gremlin] Star Garden - 05 [1080p].mkv", size_text="398 MiB", seeders=90)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [small, full])
+    assert [(row.stream, row.traits.small) for row in ranked] == [(full, False), (small, True)]
+    assert suggestion(ranked, numbering=True) == (0, False)
+    assert [row.stream for row in visible(ranked)] == [full, small]
+    assert suggestion(ranked[1:], numbering=True) == (0, False)
+
+
+def test_only_an_unmarked_file_below_half_the_median_seeded_matching_web_original_is_small() -> None:
+    web: list[StreamCandidate] = [
+        _stream(f"[G{digit}] Star Garden - 05 [1080p WEB-DL].mkv", size_text="1.4 GiB", seeders=30) for digit in "123"
+    ]
+    weak: StreamCandidate = _stream("[Weak] Star Garden - 05 [1080p WEB-DL].mkv", size_text="9 GiB", seeders=5)
+    remux: StreamCandidate = _stream("[Disc] Star Garden - 05 [1080p BD Remux].mkv", size_text="9 GiB", seeders=50)
+    encode: StreamCandidate = _stream("[Enc] Star Garden - 05 [1080p HEVC].mkv", size_text="300 MiB", seeders=50)
+    small_web: StreamCandidate = _stream("[Web] Star Garden - 05 [1080p WEB-DL].mkv", size_text="500 MiB", seeders=50)
+    unmarked: StreamCandidate = _stream("[Raw] Star Garden - 05 [1080p].mkv", size_text="700 MiB", seeders=50)
+    tiny: StreamCandidate = _stream("[Tiny] Star Garden - 05 [1080p].mkv", size_text="400 MiB", seeders=50)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [*web, weak, remux, encode, small_web, unmarked, tiny])
+    assert {row.stream for row in ranked if row.traits.small} == {tiny}
 
 
 def test_a_season_batch_sets_no_size_reference_for_single_episodes() -> None:
@@ -1600,3 +1591,236 @@ def test_suggestion_with_match_only_and_no_usable_match_is_none() -> None:
 )
 def test_size_bytes_reads_binary_and_decimal_units(text: str, expected: int | None) -> None:
     assert size_bytes(text) == expected
+
+
+def _listed(name: str, size: str, seeders: int | None, *, english: bool = True) -> StreamCandidate:
+    return _stream(
+        None,
+        release=name,
+        size_text=size,
+        seeders=seeders,
+        source="tsukihime",
+        subtitle_languages=("en",) if english else (),
+        audio_languages=("ja",),
+    )
+
+
+def _automatic(ranked: tuple[RankedCandidate, ...]) -> ChoiceCandidate | None:
+    return choose(
+        tuple(choice_candidate(row) for row in ranked),
+        excluded=frozenset(),
+        threshold=None,
+        failures=(),
+        tsukihime=False,
+    )
+
+
+def test_a_transcode_is_hidden_and_never_suggested_beside_a_seeded_original_of_its_resolution() -> None:
+    original: StreamCandidate = _listed("[A] Star Garden - 05 (1080p)", "1.4 GiB", 20)
+    transcode: StreamCandidate = _listed("[B] Star Garden - 05 [1080p HEVC x265]", "400 MiB", 900)
+    lower: StreamCandidate = _listed("[C] Star Garden - 05 (720p)", "700 MiB", 900)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [transcode, original])
+    assert [row.stream.release for row in ranked] == [original.release, transcode.release]
+    assert [row.stream.release for row in visible(ranked)] == [original.release]
+    assert suggestion(ranked, numbering=True) == (0, False)
+    beside_lower: tuple[RankedCandidate, ...] = _rank(_target(), [lower, transcode])
+    assert [row.stream.release for row in visible(beside_lower)] == [transcode.release]
+    assert suggestion(beside_lower, numbering=True) == (0, False)
+
+
+def test_a_polish_transcode_is_hidden_beside_an_original_without_polish_that_is_suggested_and_chosen() -> None:
+    original: StreamCandidate = _listed("[A] Star Garden - 05 (1080p)", "1.4 GiB", 900)
+    polish: StreamCandidate = replace(
+        _listed("[B] Star Garden - 05 [1080p HEVC x265]", "400 MiB", 900), subtitle_languages=("pl",)
+    )
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [polish, original])
+    assert [row.stream.release for row in ranked] == [original.release, polish.release]
+    assert [row.stream.release for row in visible(ranked)] == [original.release]
+    assert suggestion(ranked, numbering=True) == (0, False)
+    assert _automatic(ranked) == choice_candidate(ranked[0])
+
+
+def test_a_weakly_seeded_original_leads_the_list_suggestion_and_automation_over_a_seeded_transcode() -> None:
+    original: StreamCandidate = _listed("[SubsPlease] Star Garden - 05 (1080p)", "1.5 GiB", 9)
+    transcode: StreamCandidate = _listed("[ASW] Star Garden - 05 [1080p HEVC x265 10Bit][AAC]", "150 MiB", 290)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [transcode, original])
+    assert [row.stream.release for row in ranked] == [original.release, transcode.release]
+    assert [row.stream.release for row in visible(ranked)] == [original.release]
+    assert suggestion(ranked, numbering=True) == (0, False)
+    assert _automatic(ranked) == choice_candidate(ranked[0])
+
+
+@pytest.mark.parametrize("seeders", [1, 19, None], ids=["one", "weak", "unknown"])
+def test_an_original_with_any_seeds_hides_a_transcode_of_its_resolution(seeders: int | None) -> None:
+    original: StreamCandidate = _listed("[A] Star Garden - 05 (1080p)", "1.4 GiB", seeders)
+    transcode: StreamCandidate = _listed("[B] Star Garden - 05 [1080p HEVC x265]", "400 MiB", 900)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [transcode, original])
+    assert [row.stream.release for row in visible(ranked)] == [original.release]
+    index, uncertain = suggestion(ranked, numbering=True)
+    assert index is not None
+    assert (ranked[index].stream.release, uncertain) == (original.release, False)
+
+
+def test_a_seeded_original_leads_a_weakly_seeded_polish_original_on_the_list_and_in_automation() -> None:
+    frixy: StreamCandidate = replace(
+        _listed("[FrixySubs] Star Garden - 05 [1080p]", "1.4 GiB", 2), subtitle_languages=("pl",)
+    )
+    english: StreamCandidate = _listed("[SubsPlease] Star Garden - 05 (1080p)", "1.4 GiB", 128)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [frixy, english])
+    assert [row.stream.release for row in ranked] == [english.release, frixy.release]
+    assert [row.stream.release for row in visible(ranked)] == [english.release, frixy.release]
+    assert suggestion(ranked, numbering=True) == (0, False)
+    assert _automatic(ranked) == choice_candidate(ranked[0])
+
+
+def test_a_transcode_is_shown_and_suggested_when_no_original_with_seeds_can_be_suggested() -> None:
+    dead: StreamCandidate = _listed("[A] Star Garden - 05 (1080p)", "1.4 GiB", 0)
+    dubbed: StreamCandidate = replace(
+        _listed("[D] Star Garden - 05 (1080p) [English Dub]", "1.4 GiB", 900), audio_languages=("en",)
+    )
+    transcode: StreamCandidate = _listed("[B] Star Garden - 05 [1080p WEBRip]", "400 MiB", 20)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [dead, dubbed, transcode])
+    assert [row.stream.release for row in ranked] == [dead.release, transcode.release, dubbed.release]
+    assert [row.stream.release for row in visible(ranked)] == [transcode.release, dubbed.release]
+    assert suggestion(ranked, numbering=True) == (1, False)
+    assert _automatic(ranked) == choice_candidate(ranked[1])
+
+
+def test_an_uncertain_original_never_hides_a_transcode_beside_a_live_match() -> None:
+    transcode: StreamCandidate = _listed("[B] Star Garden - 05 [1080p HEVC x265]", "400 MiB", 900)
+    uncertain: StreamCandidate = _listed("[M] Moon Garden - 05 (1080p WEB-DL)", "1.4 GiB", 900)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [uncertain, transcode])
+    assert [(row.stream.release, row.identity.verdict) for row in ranked] == [
+        (uncertain.release, IdentityVerdict.INSUFFICIENT),
+        (transcode.release, IdentityVerdict.MATCH),
+    ]
+    assert [row.stream.release for row in visible(ranked)] == [transcode.release]
+    assert suggestion(ranked, numbering=True) == (1, False)
+
+
+def test_a_transcode_below_1080_lines_is_never_shown_suggested_or_admitted() -> None:
+    low: StreamCandidate = _listed("[B] Star Garden - 05 [720p HEVC]", "200 MiB", 900)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [low])
+    assert visible(ranked, 0) == ()
+    assert suggestion(ranked, numbering=True) == (None, False)
+    assert _automatic(ranked) is None
+    original: StreamCandidate = _listed("[A] Star Garden - 05 (480p)", "300 MiB", 2)
+    with_original: tuple[RankedCandidate, ...] = _rank(_target(), [low, original])
+    assert [row.stream.release for row in visible(with_original)] == [original.release]
+    assert suggestion(with_original, numbering=True) == (1, False)
+
+
+def test_bitrate_groups_within_five_percent_tie_and_leave_the_order_to_the_group() -> None:
+    erai: StreamCandidate = _listed("[Erai-raws] Star Garden - 05 [1080p WEB-DL]", "615.1 MB", 900)
+    toons: StreamCandidate = _listed("[ToonsHub] Star Garden S01E05 1080p WEB-DL", "590.1 MB", 30)
+    smaller: StreamCandidate = _listed("[SubsPlease] Star Garden - 05 (1080p)", "560 MB", 30)
+    unknown: StreamCandidate = _listed("[VARYG] Star Garden S01E05 1080p WEB-DL", "rozmiar nieznany", 30)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [unknown, smaller, erai, toons])
+    assert [row.stream.release for row in ranked] == [toons.release, erai.release, smaller.release, unknown.release]
+    assert [row.traits.size_rank for row in ranked] == [0, 0, 1, None]
+
+
+def test_a_bitrate_group_keeps_a_file_of_exactly_95_percent_of_its_largest_and_drops_a_smaller_one() -> None:
+    largest: StreamCandidate = _listed("[A] Star Garden - 05 (1080p)", "1000 MB", 30)
+    edge: StreamCandidate = _listed("[B] Star Garden - 05 (1080p)", "950 MB", 30)
+    below: StreamCandidate = _listed("[C] Star Garden - 05 (1080p)", "949 MB", 30)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [below, edge, largest])
+    assert {row.stream.release: row.traits.size_rank for row in ranked} == {
+        largest.release: 0,
+        edge.release: 0,
+        below.release: 1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("name", "seeders", "verdict", "conflict"),
+    [
+        ("[X] Star Garden S01E06 (1080p WEB-DL)", 900, IdentityVerdict.MISMATCH, True),
+        ("[C] Star Garden S02E05 (1080p WEB-DL)", 900, IdentityVerdict.INSUFFICIENT, True),
+        ("[M] Moon Garden - 05 (1080p WEB-DL)", 900, IdentityVerdict.INSUFFICIENT, False),
+        ("[W] Star Garden - 05 (1080p WEB-DL)", 19, IdentityVerdict.MATCH, False),
+    ],
+    ids=["mismatch", "conflict", "uncertain", "weak"],
+)
+def test_the_small_median_skips_a_web_file_that_is_not_a_seeded_match(
+    name: str, seeders: int, verdict: IdentityVerdict, conflict: bool
+) -> None:
+    originals: list[StreamCandidate] = [
+        _listed(f"[N{digit}] Star Garden - 05 (1080p WEB-DL)", "1.4 GiB", 30) for digit in "12"
+    ]
+    tiny: StreamCandidate = _listed("[T] Star Garden - 05 (1080p)", "600 MiB", 30)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [*originals, _listed(name, "300 MiB", seeders), tiny])
+    assert {row.stream.release: (row.identity.verdict, row.conflict) for row in ranked}[name] == (verdict, conflict)
+    assert [row.stream.release for row in ranked if row.traits.small] == [tiny.release]
+
+
+_DARK_SUMMONER_E05: Final[tuple[tuple[str, str, int, bool], ...]] = (
+    ("[Erai-raws] Star Garden - 05 [1080p HIDIVE WEB-DL AVC AAC][MultiSub][5D2C1B0A]", "492.2 MB", 361, True),
+    ("[SubsPlus+] Star Garden - S01E05 (AMZN WEB-DL 1080p AVC EAC3)", "590.1 MB", 182, True),
+    ("Star.Garden.S01E05.1080p.AMZN.WEB-DL.DDP2.0.H.264-VARYG", "590.1 MB", 20, True),
+    ("[SubsPlease] Star Garden - 05 (1080p) [9F3A2B1C]", "492.1 MB", 1021, True),
+    ("Star Garden S01E05 1080p AMZN WEB-DL DDP2.0 H 264-WF", "615.1 MB", 40, False),
+    ("[ASW] Star Garden - 05 [1080p HEVC x265 10Bit][AAC]", "178.4 MB", 177, True),
+    ("[Ironclad] Star Garden - 05 [1080p AV1]", "180.2 MB", 56, True),
+    ("[DKB] Star Garden - S01E05 [1080p][HEVC x265 10bit][Multi-Subs]", "172.8 MB", 31, True),
+    ("[Onalrie] Star Garden - S01E05 [1080p WEBRip AV1]", "113.5 MB", 20, True),
+)
+
+
+def test_dark_summoner_e05_suggests_and_admits_the_subsplus_amazon_file() -> None:
+    streams: list[StreamCandidate] = [
+        _listed(name, size, seeders, english=english) for name, size, seeders, english in _DARK_SUMMONER_E05
+    ]
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), streams)
+    assert {row.identity.verdict for row in ranked} == {IdentityVerdict.MATCH}
+    index, uncertain = suggestion(ranked, numbering=True)
+    assert index is not None
+    assert not uncertain
+    assert ranked[index].stream.release == streams[1].release
+    assert [row.stream.release for row in visible(ranked, index)] == [
+        streams[1].release,
+        streams[3].release,
+        streams[0].release,
+        streams[2].release,
+        streams[4].release,
+    ]
+    assert _automatic(ranked) == choice_candidate(ranked[index])
+
+
+_TOARU_E03: Final[tuple[tuple[str, str, int], ...]] = (
+    ("[Erai-raws] Star Garden - 05 [1080p CR WEBRip HEVC AAC][MultiSub][A03B54D3]", "748 MB", 203),
+    ("[Erai-raws] Star Garden - 05 [1080p CR WEB-DL AVC AAC][MultiSub][C4B83B60]", "1457 MB", 192),
+    ("[ToonsHub] Star Garden S01E05 1080p CR WEB-DL AAC2.0 H.264 (Multi-Subs)", "1458 MB", 45),
+    ("[VARYG] Star Garden S01E05 1080p CR WEB-DL AAC2.0 H.264 (Multi-Subs)", "1460 MB", 34),
+    ("[SubsPlease] Star Garden - 05 (1080p) [60F29250]", "1448 MB", 335),
+    ("[ASW] Star Garden - 05 [1080p HEVC x265 10Bit][AAC]", "393 MB", 199),
+    ("[Gremlin] Star Garden - 05 [1080p]", "398 MB", 35),
+)
+
+
+def test_toaru_anbu_no_item_e03_suggests_a_web_dl_original_of_the_first_group_not_the_crunchyroll_webrip() -> None:
+    streams: list[StreamCandidate] = [_listed(name, size, seeders) for name, size, seeders in _TOARU_E03]
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), streams)
+    index, _uncertain = suggestion(ranked, numbering=True)
+    assert index is not None
+    assert ranked[index].stream.release == streams[2].release
+    assert [row.stream.release for row in visible(ranked, index)] == [
+        streams[2].release,
+        streams[3].release,
+        streams[4].release,
+        streams[1].release,
+        streams[6].release,
+    ]
+    assert [row.traits.small for row in visible(ranked, index)] == [False, False, False, False, True]
+    assert _automatic(ranked) == choice_candidate(ranked[index])
+
+
+def test_horimiya_e05_suggests_the_weakly_seeded_original_and_hides_a_better_seeded_webrip() -> None:
+    gsk: StreamCandidate = _listed("[GSK_kun] Star Garden - 05 [WEBRip 1080p x264 10-bit AAC]", "755 MB", 6)
+    subsplease: StreamCandidate = _listed("[SubsPlease] Star Garden - 05 (1080p) [CE289A36]", "1379 MB", 4)
+    erai: StreamCandidate = _listed("[Erai-raws] Star Garden - 05 [1080p][Multiple Subtitle]", "1380 MB", 3)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [gsk, erai, subsplease])
+    assert [row.stream.release for row in ranked] == [subsplease.release, erai.release, gsk.release]
+    assert suggestion(ranked, numbering=True) == (0, False)
+    assert [row.stream.release for row in visible(ranked)] == [subsplease.release, erai.release]
+    assert _automatic(ranked) == choice_candidate(ranked[0])

@@ -1173,7 +1173,7 @@ def test_diaries_offer_matches_only_its_own_releases_and_never_a_main_series_rel
     assert offer.suggestion is None or offer.candidates[offer.suggestion].stream in own
     assert not offer.numbering
     assert offer.status == "brak numeracji"
-    assert offer.candidates[0].identity.verdict is IdentityVerdict.INSUFFICIENT
+    assert [item.stream for item in offer.candidates[: len(own)]] == own
 
 
 _OVERGEARED: Final[int] = 212888

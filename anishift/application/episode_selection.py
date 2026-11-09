@@ -8,7 +8,6 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
-from itertools import groupby
 from statistics import median
 from typing import Any, Final
 
@@ -24,7 +23,19 @@ from anishift.application.episode_identity import (
     is_conflict,
 )
 from anishift.application.episode_releases import NAME_PRIORITY, EpisodeRelease, ReleaseFile, merge_releases
-from anishift.application.release_quality import ReleaseTraits, class_key, quality_score, release_traits
+from anishift.application.release_quality import (
+    Origin,
+    ReleaseTraits,
+    ResolutionClass,
+    SeedClass,
+    class_key,
+    low_transcode,
+    order_tail,
+    quality_score,
+    release_traits,
+    resolution_class,
+    seed_class,
+)
 
 __all__ = [
     "OFFER_REASONS",
@@ -69,6 +80,9 @@ __all__ = [
 
 type JsonObject = Mapping[str, Any]
 """Raw JSON object of a catalogue response, kept exactly as the provider returned it."""
+
+type _Level = tuple[ResolutionClass, int]
+"""Resolution class of a row with the distance of another known height from 1080 lines."""
 
 _CHAIN_RELATIONS: Final[frozenset[str]] = frozenset({"PREQUEL", "SEQUEL"})
 """AniList relations that extend the identity chain of the selected entry."""
@@ -116,10 +130,10 @@ _HIDDEN_MAX_HEIGHT: Final[int] = 720
 """Tallest known height hidden while a matching high-resolution candidate exists."""
 
 SMALL_SHARE: Final[float] = 0.5
-"""Share of the reference episode file of one resolution below which a release counts as a small re-encode."""
+"""Share of the median seeded matching WEB original of one resolution below which an unmarked release is small."""
 
-SIZE_OUTLIER: Final[float] = 4.0
-"""Multiple of the median file size above which a release, such as a batch or collection, sets no reference."""
+SIZE_GROUP_SHARE: Final[float] = 0.95
+"""Share of the largest file of a size group down to which another file of its resolution ties on bitrate."""
 
 _SIZE: Final[re.Pattern[str]] = re.compile(r"(?i)(\d+(?:[.,]\d+)?)\s*([KMGT])(i?)B\b")
 """Read a human size such as ``1.4 GiB`` or ``395.9 MB``."""
@@ -582,7 +596,7 @@ def rank_candidates(
     dates: SeasonDates | None = None,
     single: Callable[[str], bool] | None = None,
 ) -> tuple[RankedCandidate, ...]:
-    """Assess every release, apply the offer rules, mark small re-encodes when *single* names one episode, order."""
+    """Assess every release, apply the offer rules, size each episode file, order; *single* admits release sizes."""
     assessed: tuple[tuple[RankedCandidate, IdentityEvidence], ...] = tuple(
         _ranked(target, release, donghua=donghua) for release in releases
     )
@@ -595,14 +609,12 @@ def rank_candidates(
     ruled: tuple[RankedCandidate, ...] = tuple(
         _offer_rule(row, evidence, dates, marking=marking, local=local) for row, evidence in assessed
     )
-    checked: tuple[RankedCandidate, ...] = _same_checksum(ruled)
-    return list_order(checked if single is None else _mark_small(checked, single))
+    return list_order(_sized(_same_checksum(ruled), single))
 
 
 def list_order(candidates: Sequence[RankedCandidate]) -> tuple[RankedCandidate, ...]:
-    """Order rows by group, class and weighted quality; adjacent rows showing equal values go by match, then seeds."""
-    ordered: list[RankedCandidate] = sorted(candidates, key=_list_key)
-    return tuple(row for _, run in groupby(ordered, key=_shown_signature) for row in sorted(run, key=_tie_key))
+    """Order rows by group, classes, match, a small file last, rounded quality, bitrate, release group, seeds, hash."""
+    return tuple(sorted(candidates, key=_list_key))
 
 
 def quality_text(candidate: RankedCandidate) -> str:
@@ -616,7 +628,12 @@ def confidence_text(candidate: RankedCandidate) -> str | None:
 
 
 def _suggestible(candidate: RankedCandidate) -> bool:
-    return not candidate.conflict and not candidate.traits.dub_only and candidate.supported is not False
+    return (
+        not candidate.conflict
+        and not candidate.traits.dub_only
+        and candidate.supported is not False
+        and not low_transcode(candidate.traits)
+    )
 
 
 def size_bytes(text: str) -> int | None:
@@ -629,39 +646,34 @@ def size_bytes(text: str) -> int | None:
 
 
 def visible(candidates: Sequence[RankedCandidate], keep: int | None = None) -> tuple[RankedCandidate, ...]:
-    """Hide mismatches, unseeded rows, others beside a live match, low beside high (U-24); small re-encodes go last."""
-    live: list[RankedCandidate] = [candidate for candidate in candidates if candidate.traits.seeders != 0]
-    matched: bool = any(candidate.identity.verdict is IdentityVerdict.MATCH for candidate in live)
+    """Hide mismatches, low or shadowed transcodes, unseeded rows, others beside a live match and low beside high."""
+    matched: bool = _live_match(candidates)
     high: bool = any(
         candidate.identity.verdict is IdentityVerdict.MATCH
         and candidate.traits.resolution in _HIGH_RESOLUTIONS
+        and candidate.traits.seeders != 0
         and _suggestible(candidate)
-        for candidate in live
+        for candidate in candidates
     )
-    shown: list[RankedCandidate] = [
+    shadowed: frozenset[int] = _shadowed(candidates)
+    return tuple(
         candidate
         for index, candidate in enumerate(candidates)
         if candidate.identity.verdict is not IdentityVerdict.MISMATCH
-        and (index == keep or candidate.traits.seeders != 0)
-        and (not matched or index == keep or candidate.identity.verdict is IdentityVerdict.MATCH)
-        and (
-            not high
-            or index == keep
-            or candidate.traits.resolution is None
-            or candidate.traits.resolution > _HIDDEN_MAX_HEIGHT
-        )
-    ]
-    return _small_last(shown)
+        and not low_transcode(candidate.traits)
+        and (index == keep or _shown(candidate, matched=matched, high=high, shadowed=index in shadowed))
+    )
 
 
 def suggestion(
     candidates: Sequence[RankedCandidate], *, numbering: bool, match_only: bool = False
 ) -> tuple[int | None, bool]:
-    """Return the first seeded usable row, a match when usable and no small re-encode first, and whether uncertain."""
+    """Return the first seeded usable shown row, a match when usable and not small first, and whether uncertain."""
+    shadowed: frozenset[int] = _shadowed(candidates)
     usable: list[tuple[int, RankedCandidate]] = [
         (position, candidate)
         for position, candidate in enumerate(candidates)
-        if _suggestible(candidate) and candidate.traits.seeders != 0
+        if _suggestible(candidate) and candidate.traits.seeders != 0 and position not in shadowed
     ]
     matches: list[int] = [position for position, item in usable if item.identity.verdict is IdentityVerdict.MATCH]
     pool: list[int] = matches if match_only or matches else [position for position, _item in usable]
@@ -1078,13 +1090,11 @@ def _row_stream(release: EpisodeRelease, file: ReleaseFile | None) -> StreamCand
     )
 
 
-def _list_key(candidate: RankedCandidate) -> tuple[float | str, ...]:
-    certainty: float = 0.0 if candidate.confidence is None else candidate.confidence
+def _list_key(candidate: RankedCandidate) -> tuple[int | str, ...]:
     return (
         *_class_prefix(candidate),
-        -_weighted(candidate),
-        -certainty,
-        -_seeders(candidate),
+        _identity_rank(candidate.identity),
+        *order_tail(candidate.traits, candidate.quality),
         candidate.stream.info_hash,
     )
 
@@ -1094,24 +1104,38 @@ def _class_prefix(candidate: RankedCandidate) -> tuple[int, ...]:
     return group, int(candidate.supported is False), *class_key(candidate.traits)
 
 
-def _shown_signature(candidate: RankedCandidate) -> tuple[object, ...]:
-    return *_class_prefix(candidate), quality_text(candidate), confidence_text(candidate)
-
-
-def _tie_key(candidate: RankedCandidate) -> tuple[float | str, ...]:
-    return (
-        candidate.identity.verdict is not IdentityVerdict.MATCH,
-        -_seeders(candidate),
-        -_weighted(candidate),
-        candidate.stream.info_hash,
+def _live_match(candidates: Sequence[RankedCandidate]) -> bool:
+    return any(
+        candidate.identity.verdict is IdentityVerdict.MATCH
+        and candidate.traits.seeders != 0
+        and not low_transcode(candidate.traits)
+        for candidate in candidates
     )
 
 
-def _small_last(rows: Sequence[RankedCandidate]) -> tuple[RankedCandidate, ...]:
-    return tuple(
-        row
-        for _prefix, run in groupby(rows, key=_class_prefix)
-        for row in sorted(run, key=lambda item: item.traits.small)
+def _shown(candidate: RankedCandidate, *, matched: bool, high: bool, shadowed: bool) -> bool:
+    return (
+        candidate.traits.seeders != 0
+        and not shadowed
+        and (not matched or candidate.identity.verdict is IdentityVerdict.MATCH)
+        and (not high or candidate.traits.resolution is None or candidate.traits.resolution > _HIDDEN_MAX_HEIGHT)
+    )
+
+
+def _shadowed(candidates: Sequence[RankedCandidate]) -> frozenset[int]:
+    matched: bool = _live_match(candidates)
+    covered: frozenset[_Level] = frozenset(
+        resolution_class(candidate.traits.resolution)
+        for candidate in candidates
+        if candidate.traits.origin is not Origin.TRANSCODE
+        and candidate.traits.seeders != 0
+        and _suggestible(candidate)
+        and (not matched or candidate.identity.verdict is IdentityVerdict.MATCH)
+    )
+    return frozenset(
+        index
+        for index, candidate in enumerate(candidates)
+        if candidate.traits.origin is Origin.TRANSCODE and resolution_class(candidate.traits.resolution) in covered
     )
 
 
@@ -1129,36 +1153,54 @@ def _full_first(candidates: Sequence[RankedCandidate], pool: Sequence[int]) -> i
     )
 
 
-def _mark_small(rows: Sequence[RankedCandidate], single: Callable[[str], bool]) -> tuple[RankedCandidate, ...]:
-    sizes: dict[int | None, list[int]] = {}
-    for row in rows:
-        size: int | None = _episode_bytes(row, single)
-        if size is not None and row.identity.verdict is not IdentityVerdict.MISMATCH:
-            sizes.setdefault(row.traits.resolution, []).append(size)
-    typical: dict[int | None, float] = {
-        resolution: max(size for size in known if size <= SIZE_OUTLIER * median(known))
-        for resolution, known in sizes.items()
-    }
+def _sized(rows: Sequence[RankedCandidate], single: Callable[[str], bool] | None) -> tuple[RankedCandidate, ...]:
+    sizes: list[int | None] = [_episode_bytes(row, single) for row in rows]
+    levels: list[_Level] = [resolution_class(row.traits.resolution) for row in rows]
+    known: dict[_Level, list[int]] = {}
+    originals: dict[_Level, list[int]] = {}
+    for row, size, level in zip(rows, sizes, levels, strict=True):
+        if size is None:
+            continue
+        known.setdefault(level, []).append(size)
+        if _web_original(row):
+            originals.setdefault(level, []).append(size)
+    anchors: dict[_Level, list[int]] = {level: _size_anchors(values) for level, values in known.items()}
+    floors: dict[_Level, float] = {level: SMALL_SHARE * median(values) for level, values in originals.items()}
     return tuple(
-        replace(row, traits=replace(row.traits, small=True))
-        if (size := _episode_bytes(row, single)) is not None
-        and size < SMALL_SHARE * typical.get(row.traits.resolution, 0)
-        else row
-        for row in rows
+        row
+        if size is None
+        else replace(
+            row,
+            traits=replace(
+                row.traits,
+                small=row.traits.origin is Origin.UNMARKED and size < floors.get(level, 0.0),
+                size_rank=sum(anchor >= size for anchor in anchors[level]) - 1,
+            ),
+        )
+        for row, size, level in zip(rows, sizes, levels, strict=True)
     )
 
 
-def _episode_bytes(row: RankedCandidate, single: Callable[[str], bool]) -> int | None:
+def _web_original(row: RankedCandidate) -> bool:
+    return (
+        row.identity.verdict is IdentityVerdict.MATCH
+        and row.traits.origin is not Origin.TRANSCODE
+        and not row.traits.bluray
+        and seed_class(row.traits.seeders) is SeedClass.SEEDED
+    )
+
+
+def _size_anchors(sizes: Sequence[int]) -> list[int]:
+    anchors: list[int] = []
+    for size in sorted(sizes, reverse=True):
+        if not anchors or size < SIZE_GROUP_SHARE * anchors[-1]:
+            anchors.append(size)
+    return anchors
+
+
+def _episode_bytes(row: RankedCandidate, single: Callable[[str], bool] | None) -> int | None:
     if row.stream.file_size is not None:
         return row.stream.file_size
-    if row.pack or not single(row.stream.release or row.stream.file_name or ""):
+    if single is None or row.pack or not single(row.stream.release or row.stream.file_name or ""):
         return None
     return size_bytes(row.stream.size_text or "")
-
-
-def _weighted(candidate: RankedCandidate) -> float:
-    return candidate.quality if candidate.confidence is None else candidate.quality * candidate.confidence
-
-
-def _seeders(candidate: RankedCandidate) -> int:
-    return -1 if candidate.traits.seeders is None else candidate.traits.seeders

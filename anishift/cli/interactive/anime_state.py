@@ -80,6 +80,7 @@ class AnimeRow:
     quality: str = ""
     confidence: str = ""
     note: str = ""
+    audio: str = ""
 
     @property
     def copy_text(self) -> str:
@@ -98,6 +99,7 @@ class AnimeRow:
                 self.seeds,
                 self.progress,
                 self.ready,
+                f"Audio: {self.audio}" if self.audio else "",
                 f"Jakość: {self.quality}" if self.quality else "",
                 f"Pewność: {self.confidence}" if self.confidence else "",
             )

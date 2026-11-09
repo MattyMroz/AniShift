@@ -271,7 +271,7 @@ def test_release_size_column_follows_image_and_aligns_sizes_right_at_120_columns
     frame: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", items), 120, 40, 0)
     lines: list[str] = frame.text.plain.splitlines()
     header: str = lines[frame.first_row - 1]
-    labels: tuple[str, ...] = ("Wydanie", "Obraz", "Rozmiar", "Język", "Seedy", "Jakość", "Pewność")
+    labels: tuple[str, ...] = ("Wydanie", "Obraz", "Rozmiar", "Język", "Seedy", "Audio", "Jakość", "Pewność")
     starts: list[int] = [header.index(label) for label in labels]
     end: int = header.index("Rozmiar") + len("Rozmiar")
     rows_shown: list[str] = lines[frame.first_row : frame.first_row + len(sizes)]
@@ -345,15 +345,17 @@ def test_hidden_release_columns_follow_cursor_and_remain_copyable_at_fifty_colum
 @pytest.mark.parametrize("width", [50, 80])
 def test_truncated_release_name_is_shown_in_full_without_moving_the_table(width: int) -> None:
     name: str = "[SubsPlease] Tensei shitara Slime Datta Ken - 01 (1080p) [ABCDEF12].mkv"
-    short: AnimeRow = AnimeRow("one", "Short", image="1080p", language="PL", seeds="312", detail="Rozmiar: 1 GB")
+    short: AnimeRow = AnimeRow(
+        "one", "Short", image="1080p", size="1 GB", language="PL", seeds="312", audio="JA", detail="Szczegóły"
+    )
     long: AnimeRow = replace(short, title=name)
     plain: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", (short,)), width, 24, 0)
     frame: AnimeFrame = render_anime(AnimeSnapshot(AnimeScreen.RELEASES, "Wydania", (long,)), width, 24, 0)
     lines: list[str] = frame.text.plain.splitlines()
     assert name not in lines[frame.first_row]
     assert name in " ".join(" ".join(lines[frame.first_row + 1 :]).split())
-    assert "Rozmiar: 1 GB" not in frame.text.plain
-    assert "Rozmiar: 1 GB" in plain.text.plain or "język PL" in plain.text.plain
+    assert "Szczegóły" not in frame.text.plain
+    assert "Szczegóły" in plain.text.plain or "rozmiar 1 GB" in plain.text.plain
     assert frame.first_row == plain.first_row
     assert all(Text(line).cell_len == width for line in lines)
 
