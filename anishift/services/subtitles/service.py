@@ -25,7 +25,6 @@ from anishift.services.subtitles.classifier import (
     screen_edge,
     sung,
     title_like,
-    word_count,
     written_in_capitals,
 )
 from anishift.services.subtitles.errors import SubtitleError
@@ -456,7 +455,6 @@ def _sign_weight(
         height=_line_height(first, profile),
         centre=max(1.0 - edge, float(title_like(text))),
         on_screen_ms=end - start,
-        words=word_count(text),
         alone=not any(
             other != index and other_start < end and start < other_end
             for other, (other_start, other_end) in enumerate(windows)

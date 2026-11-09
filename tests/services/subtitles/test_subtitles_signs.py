@@ -12,7 +12,7 @@ from anishift.services.subtitles import (
     split_subtitles,
 )
 from anishift.services.subtitles.classifier import sung
-from anishift.services.subtitles.signs import SIGN_MARGIN, place_weight_against, static_weights
+from anishift.services.subtitles.signs import SIGN_MARGIN, place_margin, static_weights
 
 _HEADER = (
     "[Script Info]\nScriptType: v4.00+\nPlayResX: 640\nPlayResY: 360\n\n"
@@ -43,48 +43,49 @@ def _split() -> SubtitleSplit:
 
 def test_small_edge_sign_and_large_title_have_the_specified_static_weights() -> None:
     small: tuple[float, float] = static_weights(
-        height=0.035, centre=0.0, on_screen_ms=3000, words=2, alone=True, edge=1.0, echo=False, sound=False
+        height=0.035, centre=0.0, on_screen_ms=3000, alone=True, edge=1.0, echo=False, sound=False
     )
     title: tuple[float, float] = static_weights(
-        height=0.12, centre=1.0, on_screen_ms=2000, words=3, alone=True, edge=0.0, echo=False, sound=False
+        height=0.12, centre=1.0, on_screen_ms=2000, alone=True, edge=0.0, echo=False, sound=False
     )
     strongest: tuple[float, float] = static_weights(
-        height=0.2, centre=1.0, on_screen_ms=5000, words=1, alone=True, edge=0.0, echo=False, sound=False
+        height=0.2, centre=1.0, on_screen_ms=5000, alone=True, edge=0.0, echo=False, sound=False
     )
 
-    assert small == pytest.approx((0.5408, 0.3))
-    assert title == pytest.approx((0.84208, 0.0))
-    assert strongest == pytest.approx((0.8824, 0.0))
+    assert small == pytest.approx((0.344, 0.3))
+    assert title == pytest.approx((0.7744, 0.0))
+    assert strongest == pytest.approx((0.832, 0.0))
 
 
-def test_a_sound_written_as_a_repeated_word_keeps_even_the_strongest_sign_below_the_margin() -> None:
+def test_a_sound_written_as_a_repeated_word_keeps_even_the_strongest_short_sign_below_the_margin() -> None:
     weight_for, weight_against = static_weights(
-        height=0.2, centre=1.0, on_screen_ms=5000, words=1, alone=True, edge=0.0, echo=False, sound=True
+        height=0.2, centre=1.0, on_screen_ms=5000, alone=True, edge=0.0, echo=False, sound=True
     )
+
+    margin: float = place_margin(weight_for, weight_against, reading_ms=0.0, overrun_ms=-2000.0, repeat_gap_ms=None)
 
     assert weight_against == pytest.approx(0.8)
-    assert weight_for - weight_against < SIGN_MARGIN
+    assert margin < SIGN_MARGIN
 
 
 @pytest.mark.parametrize(
-    ("static_against", "slack", "overrun_ms", "repeat_gap_ms", "expected"),
+    ("weights", "reading_ms", "overrun_ms", "repeat_gap_ms", "expected"),
     [
-        (0.3, 3.0, -2000.0, None, 0.3),
-        (0.3, 0.1, -2000.0, None, 0.636),
-        (0.0, 0.1, -2000.0, None, 0.48),
-        (0.0, 0.0, -2000.0, None, 0.6),
-        (0.3, 3.0, 500.0, None, 0.44),
-        (0.0, 3.0, 500.0, None, 0.2),
-        (0.3, 3.0, -2000.0, 5000.0, 0.86),
-        (0.0, 3.0, -2000.0, 5000.0, 0.8),
-        (0.0, 3.0, -2000.0, 15_000.0, 0.72),
+        ((0.344, 0.3), 1000.0, -2000.0, None, 0.372),
+        ((0.344, 0.3), 1000.0, 1000.0, None, 0.372),
+        ((0.344, 0.3), 1000.0, 2000.0, None, 0.162),
+        ((0.344, 0.3), 1000.0, 3000.0, None, -0.048),
+        ((0.832, 0.0), 4500.0, -2000.0, None, 0.874),
+        ((0.832, 0.0), 8000.0, -2000.0, None, 0.032),
+        ((0.832, 0.0), 1000.0, -2000.0, 5000.0, 0.116),
+        ((0.832, 0.0), 1000.0, -2000.0, 15_000.0, 0.196),
     ],
 )
-def test_place_weight_against_matches_the_specified_examples(
-    static_against: float, slack: float, overrun_ms: float, repeat_gap_ms: float | None, expected: float
+def test_place_margin_matches_the_specified_examples(
+    weights: tuple[float, float], reading_ms: float, overrun_ms: float, repeat_gap_ms: float | None, expected: float
 ) -> None:
-    assert place_weight_against(
-        static_against, slack=slack, overrun_ms=overrun_ms, repeat_gap_ms=repeat_gap_ms
+    assert place_margin(
+        *weights, reading_ms=reading_ms, overrun_ms=overrun_ms, repeat_gap_ms=repeat_gap_ms
     ) == pytest.approx(expected)
 
 

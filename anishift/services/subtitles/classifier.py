@@ -28,7 +28,6 @@ __all__ = [
     "screen_edge",
     "sung",
     "title_like",
-    "word_count",
     "written_in_capitals",
 ]
 
@@ -348,11 +347,6 @@ def screen_edge(event: SSAEvent, style: SSAStyle | None, play_res_y: int) -> flo
 def title_like(text: str) -> bool:
     """Tell whether a visible text is written in capitals or in title case."""
     return written_in_capitals(text) or _title_case(_RE_WORD.findall(text))
-
-
-def word_count(text: str) -> int:
-    """Count the words of letters in a visible text."""
-    return len(_RE_WORD.findall(text))
 
 
 def sung(event: SSAEvent) -> bool:
