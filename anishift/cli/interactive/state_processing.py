@@ -223,7 +223,9 @@ def download_progress(  # noqa: PLR0911
     if state in {"error", "missingFiles"}:
         return "Błąd transferu", None
     if state in {"downloading", "forcedDL", "stalledDL"}:
-        label: str = "Brak odczytu" if measured is None else ("Brak źródeł" if state == "stalledDL" else "Pobieranie")
+        label: str = (
+            "Brak odczytu" if measured is None else ("Łączę ze źródłami" if state == "stalledDL" else "Pobieranie")
+        )
         return label, measured
     return _TRANSFER_LABELS.get(str(state), "Sprawdzanie"), measured
 
