@@ -94,7 +94,7 @@ class _Owner:
         del identifier, numbers
         return self.states
 
-    def episode_download(self, keys: tuple[EpisodeKey, ...], *, command_id: str) -> EpisodeBatch:
+    def episode_download(self, keys: tuple[EpisodeKey, ...], *, command_id: str, bluray: bool = False) -> EpisodeBatch:
         self.calls.append((keys, command_id))
         if self.failure:
             raise self.failure
@@ -517,7 +517,7 @@ def test_correlated_results_clear_each_mark_once_and_survive_navigation(monkeypa
     _open(controller)
     controller.handle_key("text:a")
 
-    def download(keys: tuple[EpisodeKey, ...], *, command_id: str) -> EpisodeBatch:
+    def download(keys: tuple[EpisodeKey, ...], *, command_id: str, bluray: bool = False) -> EpisodeBatch:
         entered.set()
         assert released.wait(5)
         return EpisodeBatch(

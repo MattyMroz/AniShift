@@ -35,6 +35,7 @@ from anishift.application.release_quality import (
     release_traits,
     resolution_class,
     seed_class,
+    untouched_bluray,
 )
 
 __all__ = [
@@ -68,6 +69,7 @@ __all__ = [
     "premiere_order",
     "quality_text",
     "rank_candidates",
+    "rank_offer",
     "representative",
     "season_dates",
     "size_bytes",
@@ -612,6 +614,15 @@ def rank_candidates(
     return list_order(_sized(_same_checksum(ruled), single))
 
 
+def rank_offer(offer: EpisodeOffer, *, bluray: bool) -> EpisodeOffer:
+    """Re-rank an offer with or without the owner's Blu-ray preference and suggest its new first row."""
+    candidates: tuple[RankedCandidate, ...] = list_order(
+        tuple(_bluray_row(candidate, preferred=bluray) for candidate in offer.candidates)
+    )
+    index: int | None = suggestion(candidates, numbering=offer.numbering, match_only=offer.derived_numbering)[0]
+    return replace(offer, candidates=candidates, suggestion=index)
+
+
 def list_order(candidates: Sequence[RankedCandidate]) -> tuple[RankedCandidate, ...]:
     """Order rows by group, classes, match, a small file last, rounded quality, bitrate, release group, seeds, hash."""
     return tuple(sorted(candidates, key=_list_key))
@@ -625,6 +636,11 @@ def quality_text(candidate: RankedCandidate) -> str:
 def confidence_text(candidate: RankedCandidate) -> str | None:
     """Return the confidence exactly as the release list shows it, or None when it is unknown."""
     return None if candidate.confidence is None else f"{candidate.confidence:.0%}"
+
+
+def _bluray_row(candidate: RankedCandidate, *, preferred: bool) -> RankedCandidate:
+    traits: ReleaseTraits = replace(candidate.traits, bluray_preferred=preferred and untouched_bluray(candidate.traits))
+    return replace(candidate, traits=traits, quality=quality_score(traits))
 
 
 def _suggestible(candidate: RankedCandidate) -> bool:

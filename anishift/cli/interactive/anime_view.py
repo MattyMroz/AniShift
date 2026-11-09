@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.spinner import Spinner
 from rich.text import Text
 
-from anishift.cli.interactive.actions import ACTION_NOTICES, pack_footer
+from anishift.cli.interactive.actions import ACTION_NOTICES, BLURAY, pack_footer
 from anishift.cli.interactive.anime_state import (
     AnimeRow,
     AnimeScreen,
@@ -536,7 +536,10 @@ def _footer(  # noqa: PLR0913
             bottom - len(lines) + index, mark_keys(Text(line, style=color), only=ACTION_NOTICES), selectable=True
         )
     for index, line in enumerate(keys):
-        canvas.center(bottom + index, mark_keys(Text(line, style="gray")))
+        hints: Text = mark_keys(Text(line, style="gray"))
+        if snapshot.bluray:
+            hints.highlight_words((" ".join(BLURAY),), "brand_accent")
+        canvas.center(bottom + index, hints)
 
 
 def _unshown(snapshot: AnimeSnapshot, item: AnimeRow, limit: int, now: float, visible: int) -> str:

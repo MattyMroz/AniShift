@@ -62,9 +62,13 @@ Na liście odcinków:
 - **I** (lub Enter) otwiera listę wydań odcinka, gdzie **D** pobiera wybrane wydanie;
 - **P** pobiera odcinek ponownie;
 - **S** subskrybuje serię;
+- **B** włącza i wyłącza pierwszeństwo Blu-ray, na liście odcinków i na liście wydań: dopóki
+  jego podpowiedź w stopce jest podświetlona, wydania Blu-ray i remux stoją na liście wydań
+  pierwsze i to je pobiera **D**; subskrypcji to nie zmienia;
 - Enter na gotowym odcinku go odtwarza.
 
-Wydania z polskimi napisami są na liście wyżej. Subskrypcje czekają na polskie napisy
+Wydania z polskimi napisami są na liście wyżej. Wydania Blu-ray mają w kolumnie **Obraz**
+dopisek `BD` obok rozdzielczości. Subskrypcje czekają na polskie napisy
 (domyślnie 2 godziny, do zmiany w Ustawienia › Pobieranie), a potem biorą najlepsze inne
 wydanie; ręczne **D** pobiera od razu. W tym samym miejscu wyłączysz każde źródło osobno.
 

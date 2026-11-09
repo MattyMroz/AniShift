@@ -133,6 +133,7 @@ from anishift.application.episode_selection import (
     confidence_text,
     premiere_order,
     quality_text,
+    rank_offer,
     size_bytes,
     visible,
 )
@@ -363,6 +364,7 @@ __all__ = [
     "premiere_order",
     "preview_plan",
     "quality_text",
+    "rank_offer",
     "read_episode",
     "ready_group_ids",
     "resolve_readiness",

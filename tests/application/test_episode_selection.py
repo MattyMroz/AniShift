@@ -29,7 +29,9 @@ from anishift.application.episode_selection import (
     _WEEKLY_ECHO,
     AniZipMapping,
     EntryGroup,
+    EpisodeKey,
     EpisodeListing,
+    EpisodeOffer,
     FranchiseEntry,
     FranchiseGraph,
     ListedEpisode,
@@ -46,6 +48,7 @@ from anishift.application.episode_selection import (
     premiere_order,
     quality_text,
     rank_candidates,
+    rank_offer,
     representative,
     season_dates,
     size_bytes,
@@ -1742,6 +1745,41 @@ def test_a_hidden_transcode_never_moves_the_bitrate_groups_of_the_shown_rows() -
         (erai.release, 0),
     ]
     assert _automatic(ranked) == choice_candidate(ranked[0])
+
+
+def _bluray_offer() -> EpisodeOffer:
+    streams: list[StreamCandidate] = [
+        replace(_listed("[SubsPlease] Star Garden - 05 (1080p)", "1.4 GiB", 50), subtitle_languages=("pl",)),
+        _listed("Star Garden S01E05 1080p BluRay REMUX AVC FLAC-Disc", "7 GiB", 40),
+        _listed("Star Garden S01E05 1080p BluRay REMUX AVC FLAC-Weak", "7 GiB", 5),
+        _listed("Star Garden S01E05 2160p BluRay REMUX HEVC-Uhd", "20 GiB", 60),
+        _listed("[Enc] Star Garden - 05 [BDRip 1080p x265 10bit]", "500 MiB", 300),
+    ]
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), streams)
+    index: int | None = suggestion(ranked, numbering=True)[0]
+    return EpisodeOffer(EpisodeKey(1, 5), ranked, index, datetime(2026, 1, 1, tzinfo=UTC), {})
+
+
+def test_an_offer_ranked_without_the_bluray_preference_stays_exactly_as_it_was() -> None:
+    offer: EpisodeOffer = _bluray_offer()
+    assert rank_offer(offer, bluray=False) == offer
+    assert rank_offer(rank_offer(offer, bluray=True), bluray=False) == offer
+    assert offer.suggestion is not None
+    assert offer.candidates[offer.suggestion].stream.release == "[SubsPlease] Star Garden - 05 (1080p)"
+
+
+def test_the_bluray_preference_suggests_a_seeded_remux_but_keeps_resolution_and_the_seed_gate_first() -> None:
+    offer: EpisodeOffer = rank_offer(_bluray_offer(), bluray=True)
+    assert offer.suggestion is not None
+    suggested: RankedCandidate = offer.candidates[offer.suggestion]
+    assert suggested.stream.release == "Star Garden S01E05 1080p BluRay REMUX AVC FLAC-Disc"
+    assert suggested.quality == 40.0
+    assert [row.stream.release for row in visible(offer.candidates, offer.suggestion)] == [
+        "Star Garden S01E05 1080p BluRay REMUX AVC FLAC-Disc",
+        "[SubsPlease] Star Garden - 05 (1080p)",
+        "Star Garden S01E05 1080p BluRay REMUX AVC FLAC-Weak",
+        "Star Garden S01E05 2160p BluRay REMUX HEVC-Uhd",
+    ]
 
 
 @pytest.mark.parametrize(

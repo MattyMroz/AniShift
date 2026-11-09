@@ -11,6 +11,7 @@ from anishift.application import (
     EpisodeOfferView,
     IdentityVerdict,
     RankedCandidate,
+    ReleaseTraits,
     audio_text,
     confidence_text,
     conflict_label,
@@ -186,7 +187,7 @@ def release_rows(
         AnimeRow(
             item.stream.info_hash,
             _release_title(item, episode),
-            image=f"{item.traits.resolution}p" if item.traits.resolution else "?",
+            image=_image(item.traits),
             size=_candidate_size(item),
             subtitles=subtitles_text(item.traits),
             seeds=str(item.stream.seeders) if item.stream.seeders is not None else "?",
@@ -208,6 +209,11 @@ def release_rows(
             refusal_text="Trwa wyszukiwanie wydań" if searching else "Brak wydania do pobrania",
         ),
     )
+
+
+def _image(traits: ReleaseTraits) -> str:
+    shown: str = f"{traits.resolution}p" if traits.resolution else "?"
+    return f"{shown} BD" if traits.bluray else shown
 
 
 def suggested_position(offer: EpisodeOffer | None, candidates: tuple[RankedCandidate, ...]) -> int:

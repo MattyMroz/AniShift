@@ -145,6 +145,7 @@ from anishift.application.episode_selection import (
     RankedCandidate,
     StreamCandidate,
     numbering_gap,
+    rank_offer,
     suggestion,
 )
 from anishift.application.events import RunEventKind, failure_code, sanitize_event_message
@@ -5809,6 +5810,7 @@ class AutomationOwner:
         try:
             keys: tuple[EpisodeKey, ...] = decode_view(tuple[EpisodeKey, ...], request.payload.get("keys"))
             validate_episode_keys(keys)
+            bluray: bool = decode_view(bool, request.payload.get("bluray", False))
         except ValueError, TypeError:
             return _invalid("A batch requires 1-100 unique positive episode keys of one entry")
         receipt: CommandReceipt | None = next(
@@ -5818,7 +5820,7 @@ class AutomationOwner:
             if receipt.outcome.get("kind") != "episode_download":
                 return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, EpisodeReason.COMMAND_REUSED)
             batch = decode_view(EpisodeBatch, json.loads(str(receipt.outcome["batch"])))
-            if batch.keys != keys:
+            if (batch.keys, batch.bluray) != (keys, bluray):
                 return ControlResponse.refused(ControlErrorCode.REFUSED, _COMMAND_REUSED, EpisodeReason.COMMAND_REUSED)
             if batch.state == "accepted" and batch.instance_id != self._instance_id:
                 batch = replace(batch, state="interrupted")
@@ -5828,12 +5830,12 @@ class AutomationOwner:
             return _refuse(RefusalReason.SHUTTING_DOWN)
         if self._service.acquisition is None:
             return _invalid("No acquisition service is configured")
-        batch = EpisodeBatch(request.command_id, self._instance_id, keys, "accepted")
+        batch = EpisodeBatch(request.command_id, self._instance_id, keys, "accepted", bluray=bluray)
         if not self._save_batch(batch):
             return ControlResponse.refused(ControlErrorCode.INTERNAL, _STATE_NOT_SAVED)
         self._active_io += 1
         self._pool.submit(self._run_episode_batch, batch)
-        logger.info("Episode batch accepted", command_id=request.command_id, episodes=len(keys))
+        logger.info("Episode batch accepted", command_id=request.command_id, episodes=len(keys), bluray=bluray)
         return ControlResponse.succeeded(encode_view(batch))
 
     def _save_batch(self, batch: EpisodeBatch) -> bool:
@@ -5883,7 +5885,7 @@ class AutomationOwner:
                 {"event": "episode_searching", "payload": {"command_id": batch.command_id, "key": encode_view(key)}},
                 terminal=False,
             )
-            result: EpisodeResult = self._download_episode(batch.command_id, key)
+            result: EpisodeResult = self._download_episode(batch.command_id, key, bluray=batch.bluray)
             batch = replace(batch, results=(*batch.results, result))
             if not self._on_owner(partial(self._save_batch, batch)):
                 break
@@ -5908,7 +5910,7 @@ class AutomationOwner:
         )
         return self._recover_episode_results(saved)
 
-    def _download_episode(self, command_id: str, key: EpisodeKey) -> EpisodeResult:
+    def _download_episode(self, command_id: str, key: EpisodeKey, *, bluray: bool) -> EpisodeResult:
         acquisition: AcquisitionService | None = self._service.acquisition
         if acquisition is None:
             return EpisodeResult(key, EpisodeReason.ACQUISITION_UNAVAILABLE)
@@ -5933,7 +5935,8 @@ class AutomationOwner:
             logger.warning("Episode batch lookup failed", error_class=type(problem).__name__)
             return EpisodeResult(key, failure_code(problem) or EpisodeReason.SOURCE_FAILED)
         try:
-            return self._on_owner(partial(self._admit_download_offer, command_id, offer, target))
+            ranked: EpisodeOffer = rank_offer(offer, bluray=True) if bluray else offer
+            return self._on_owner(partial(self._admit_download_offer, command_id, ranked, target))
         except (AniShiftError, OSError) as problem:
             logger.warning("Episode batch admission failed", error_class=type(problem).__name__)
             return EpisodeResult(key, failure_code(problem) or EpisodeReason.SOURCE_FAILED)

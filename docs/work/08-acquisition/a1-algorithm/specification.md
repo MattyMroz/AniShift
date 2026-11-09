@@ -127,7 +127,8 @@ Kontrakt tego, jak AniShift znajduje wydania odcinka, ocenia je i wybiera jedno.
 - Najwyżej jedna z dwóch pozycji PL napisów.
 - **Jakość = max(0, suma)**; zakres 0–85. Kolumna i kolejność (§6.1) używają liczby zaokrąglonej do całości.
 - **Seedy (bramka, decyzja właściciela 2026-11-08):** 30 i więcej = 10 pkt; od 20 do 29 = `5 + 0,5 × (s − 20)` pkt; poniżej 20 = `s / 4` pkt i klasa „słabo zasiane” (§5.3). Brak danych = 5 pkt i „?”, klasa „zasiane”. Powyżej progu seedy nie zmieniają oceny. Pomiar 2026-11-08 (13 wydań jednego odcinka, pobierane po kolei na łączu właściciela, sufit ok. 50 MB/s): od 20–30 seedów prędkość nie rośnie (pliki 170–620 MB w 10–40 s, a ten sam torrent zmierzony drugi raz był 1,5× wolniejszy, tyle co różnica między 30 a 1000 seedów); przy 16 seedach pierwszy bajt po 128 s i 2 MB/s.
-- **Blu-ray lub remux −10:** domyślnie wygrywa WEB-DL, bo remux waży ok. 4,7× więcej (Frieren S01E01: 6,99 GiB wobec 1,48 GiB) i dłużej się przetwarza. Obraz jest lepszy (VMAF WEB-DL wobec remuxu: średnio 97,6, poniżej 90 w 10 z 773 próbek), a remux 1080p odtwarza się płynnie z interpolacją 2× (pomiar i ocena właściciela 2026-11-08), więc kara nie dotyczy odtwarzania. Blu-ray wybiera się ręcznie z listy; preferencja przy kolejkowaniu to issue #113.
+- **Blu-ray lub remux −10:** domyślnie wygrywa WEB-DL, bo remux waży ok. 4,7× więcej (Frieren S01E01: 6,99 GiB wobec 1,48 GiB) i dłużej się przetwarza. Obraz jest lepszy (VMAF WEB-DL wobec remuxu: średnio 97,6, poniżej 90 w 10 z 773 próbek), a remux 1080p odtwarza się płynnie z interpolacją 2× (pomiar i ocena właściciela 2026-11-08), więc kara nie dotyczy odtwarzania.
+- **Pierwszeństwo Blu-ray (2026-11-09, issue #113):** klawisz `B` w zakładce Anime ([ux.md](../ux.md) U03) włącza je dla listy wydań i dla `D`, także dla partii kilku odcinków. Dotyczy tylko nieprzekodowanego Blu-ray: wydania ze znacznikiem Blu-ray lub remux (§5.2), którego pochodzenie nie jest przekodowaniem (np. `… 1080p BluRay REMUX AVC …`, `[MTBB] … (BD 1080p)`; nie `… BDRip … x265`, `… BluRay x264-…`, `[…] … [BD 1080p HEVC 10bit]`). Takie wydanie nie dostaje −10 i stoi przed innymi w swojej klasie zasiania (§5.3, §6.1), więc rozdzielczość, pochodzenie i bramka seedów nadal idą pierwsze: słabo zasiany Blu-ray nie wyprzedza zasianego WEB-DL, a Blu-ray 2160p nie wyprzedza 1080p. Bez trybu kolejność jest dokładnie taka jak bez tej reguły. Subskrypcje i automat nigdy go nie używają.
 - Angielski dubbing, inne języki napisów, liczba języków, nazwa serwisu: 0 pkt. Kodek i rozmiar działają przez pochodzenie i bitrate, grupa przez kolejność grup (§5.3, §6.1).
 
 ### 5.2 Rozpoznanie cech
@@ -174,7 +175,7 @@ Wagi i klasy muszą odtworzyć kolejność właściciela (wszystkie 1080p, wła�
 
 ### 6.1 Kolejność listy i sugestia
 
-1. Kandydaci bez konfliktu: klasa rozdzielczości → pochodzenie (oryginał przed przekodowaniem) → klasa zasiania → klasa PL napisów → klasa audio → werdykt H1 (`zgodny` przed `niepewnym`) → wiersz „mały” (§5.3) za pozostałymi → **jakość** zaokrąglona do całości, malejąco → **bitrate** → **kolejność grup** → więcej seedów (brak danych = −1) → hash. Pewność nie wpływa na kolejność (§4).
+1. Kandydaci bez konfliktu: klasa rozdzielczości → pochodzenie (oryginał przed przekodowaniem) → klasa zasiania → przy pierwszeństwie Blu-ray (§5.1) nieprzekodowany Blu-ray przed resztą → klasa PL napisów → klasa audio → werdykt H1 (`zgodny` przed `niepewnym`) → wiersz „mały” (§5.3) za pozostałymi → **jakość** zaokrąglona do całości, malejąco → **bitrate** → **kolejność grup** → więcej seedów (brak danych = −1) → hash. Pewność nie wpływa na kolejność (§4).
 2. Sam dubbing (§5.3).
 3. Kandydaci z konfliktem, w tej samej kolejności wewnętrznej, z powodem.
 

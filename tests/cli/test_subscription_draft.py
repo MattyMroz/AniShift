@@ -157,7 +157,7 @@ class _Owner:
             raise ControlError("refused", code=ControlErrorCode.REFUSED, reason=self.refusal, answered=True)
         return {"subscription_id": "new"}
 
-    def episode_download(self, keys: tuple[EpisodeKey, ...], *, command_id: str) -> EpisodeBatch:
+    def episode_download(self, keys: tuple[EpisodeKey, ...], *, command_id: str, bluray: bool = False) -> EpisodeBatch:
         self.calls.append(("episode_download", tuple(key.number for key in keys)))
         self.commands.append(command_id)
         if self.order_error is not None:
@@ -947,7 +947,7 @@ def test_enter_opens_the_subscription_details_with_header_targets_and_specials(
     specials: list[str] = [line for line in frame.splitlines() if "Dodatki tego sezonu" in line or "OVA" in line]
     assert len(specials) == 2
     assert all("[ ]" not in line for line in specials)
-    assert "Space zaznacz · D pobierz · W wstrzymaj · ? klawisze · Esc wróć" in frame
+    assert "Space zaznacz · D pobierz · B Blu-ray · W wstrzymaj · ? klawisze · Esc wróć" in frame
     assert owner.numbers[-1] == (1, 2, 3, 4, 5, 6)
 
 

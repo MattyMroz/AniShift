@@ -36,6 +36,7 @@ __all__ = [
     "seed_points",
     "subtitles_text",
     "tag_declaration",
+    "untouched_bluray",
 ]
 
 
@@ -123,6 +124,7 @@ class ReleaseTraits:
     group: str | None = None
     small: bool = False
     size_rank: int | None = None
+    bluray_preferred: bool = False
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -160,7 +162,7 @@ UHD_POINTS: Final[float] = 5.0
 """Points for a declared 2160-line image."""
 
 BLURAY_POINTS: Final[float] = -10.0
-"""Penalty for Blu-ray or remux releases, applied once."""
+"""Penalty for Blu-ray or remux releases, applied once unless the owner prefers them."""
 
 MAX_SEED_POINTS: Final[float] = 10.0
 """Availability points of a release with thirty seeders or more."""
@@ -304,11 +306,12 @@ def seed_class(seeders: int | None) -> SeedClass:
 
 
 def class_key(traits: ReleaseTraits) -> tuple[int, ...]:
-    """Order resolution, an original before a transcode, seeding, Polish subtitles, then original audio."""
+    """Order resolution, an original before a transcode, seeding, a preferred Blu-ray, Polish subtitles, then audio."""
     return (
         *resolution_class(traits.resolution),
         traits.origin is Origin.TRANSCODE,
         seed_class(traits.seeders),
+        not traits.bluray_preferred,
         traits.polish,
         traits.audio,
     )
@@ -326,6 +329,11 @@ def order_tail(traits: ReleaseTraits, quality: float) -> tuple[int, ...]:
         group,
         -seeders,
     )
+
+
+def untouched_bluray(traits: ReleaseTraits) -> bool:
+    """Whether the release is a Blu-ray or remux that its name does not mark as a transcode."""
+    return traits.bluray and traits.origin is not Origin.TRANSCODE
 
 
 def low_transcode(traits: ReleaseTraits) -> bool:
@@ -360,7 +368,7 @@ def quality_score(traits: ReleaseTraits) -> float:
         + seed_points(traits.seeders)
         + POLISH_AUDIO_POINTS * traits.polish_audio_beside_original
         + ENGLISH_POINTS * (traits.english_subtitles and traits.polish is not PolishClass.POLISH)
-        + BLURAY_POINTS * traits.bluray,
+        + BLURAY_POINTS * (traits.bluray and not traits.bluray_preferred),
     )
 
 

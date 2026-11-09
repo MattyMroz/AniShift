@@ -60,9 +60,13 @@ In the episode list:
 - **I** (or Enter) opens the release list for the episode, where **D** downloads a chosen release;
 - **P** downloads an episode again;
 - **S** subscribes to the series;
+- **B** switches the Blu-ray preference, in the episode list and in the release list: while its
+  footer hint is highlighted, Blu-ray and remux releases lead the release list and are what **D**
+  downloads; subscriptions are not affected;
 - Enter on a ready episode plays it.
 
-Release rows are ranked so that releases with Polish subtitles come first. Subscriptions
+Release rows are ranked so that releases with Polish subtitles come first. Blu-ray rows show
+`BD` beside the resolution in the **Obraz** column. Subscriptions
 wait for Polish subtitles (2 hours by default, configurable in Ustawienia › Pobieranie)
 before taking the best other release; a manual **D** downloads at once. Each source can be
 switched off in the same place.
