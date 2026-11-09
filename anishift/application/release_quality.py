@@ -15,6 +15,7 @@ __all__ = [
     "DUBBED_RE",
     "GROUP_ORDER",
     "AudioClass",
+    "BlurayPreference",
     "LanguageDeclaration",
     "LanguageSource",
     "Origin",
@@ -88,6 +89,14 @@ class ResolutionClass(IntEnum):
     UNKNOWN = 4
 
 
+class BlurayPreference(IntEnum):
+    """Owner's Blu-ray preference: a clean disc first, a pack or dubbed disc next, everything else as usual."""
+
+    FIRST = 0
+    LATER = 1
+    NONE = 2
+
+
 class SeedClass(IntEnum):
     """Seeding gate: seeded releases, unknown ones included, before weakly seeded ones."""
 
@@ -124,7 +133,7 @@ class ReleaseTraits:
     group: str | None = None
     small: bool = False
     size_rank: int | None = None
-    bluray_preferred: bool = False
+    bluray_preference: BlurayPreference = BlurayPreference.NONE
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -312,7 +321,7 @@ def class_key(traits: ReleaseTraits) -> tuple[int, ...]:
         *resolution_class(traits.resolution),
         traits.origin is Origin.TRANSCODE,
         seed_class(traits.seeders),
-        not traits.bluray_preferred,
+        traits.bluray_preference,
         traits.polish,
         traits.audio,
     )
@@ -324,7 +333,8 @@ def order_tail(traits: ReleaseTraits, quality: float) -> tuple[int, ...]:
     group: int = GROUP_ORDER.index(traits.group) if traits.group in GROUP_ORDER else len(GROUP_ORDER)
     points: tuple[int, ...] = (-round(quality),)
     bitrate: tuple[int, ...] = (traits.size_rank is None, traits.size_rank or 0)
-    measures: tuple[int, ...] = (*bitrate, *points) if traits.bluray_preferred else (*points, *bitrate)
+    preferred: bool = traits.bluray_preference is not BlurayPreference.NONE
+    measures: tuple[int, ...] = (*bitrate, *points) if preferred else (*points, *bitrate)
     return (traits.small, *measures, group, -seeders)
 
 
@@ -365,7 +375,7 @@ def quality_score(traits: ReleaseTraits) -> float:
         + seed_points(traits.seeders)
         + POLISH_AUDIO_POINTS * traits.polish_audio_beside_original
         + ENGLISH_POINTS * (traits.english_subtitles and traits.polish is not PolishClass.POLISH)
-        + BLURAY_POINTS * (traits.bluray and not traits.bluray_preferred),
+        + BLURAY_POINTS * (traits.bluray and traits.bluray_preference is BlurayPreference.NONE),
     )
 
 

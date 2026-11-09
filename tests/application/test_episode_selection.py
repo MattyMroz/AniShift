@@ -1795,6 +1795,29 @@ def test_the_bluray_preference_puts_the_higher_bitrate_disc_first_even_against_h
 
 
 @pytest.mark.parametrize(
+    "later",
+    [
+        "[Timecraft] Star Garden - 05 [BDRemux 1080p] [RUS Voiceover]",
+        "Star Garden - 05 [2018, BDRemux 1080p] MVO + Original",
+        "Star.Garden.S01E05.ENG-DUB.1080p.BluRay.Remux",
+    ],
+    ids=["voice-over", "mvo", "dub"],
+)
+def test_the_bluray_preference_puts_a_dubbed_or_packed_disc_after_a_clean_one_of_lower_bitrate(later: str) -> None:
+    clean: StreamCandidate = _listed("Star Garden S01E05 1080p BluRay REMUX AVC FLAC-Disc", "7 GiB", 40)
+    pack: StreamCandidate = _stream(
+        "Star Garden - 05 [BD Remux 1080p].mkv", release="[Box] Star Garden (01-12) [BD Remux 1080p]", seeders=40
+    )
+    dubbed: StreamCandidate = _listed(later, "9 GiB", 40)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [replace(pack, size_text="12 GiB"), dubbed, clean])
+    offer: EpisodeOffer = EpisodeOffer(EpisodeKey(1, 5), ranked, 0, datetime(2026, 1, 1, tzinfo=UTC), {})
+    preferred: EpisodeOffer = rank_offer(offer, bluray=True)
+    assert [row.stream.release for row in preferred.candidates] == [clean.release, pack.release, dubbed.release]
+    assert preferred.suggestion == 0
+    assert rank_offer(preferred, bluray=False) == rank_offer(offer, bluray=False)
+
+
+@pytest.mark.parametrize(
     ("name", "seeders", "verdict", "conflict"),
     [
         ("[X] Star Garden S01E06 (1080p WEB-DL)", 900, IdentityVerdict.MISMATCH, True),

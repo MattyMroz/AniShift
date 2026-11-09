@@ -8,6 +8,7 @@ import pytest
 
 from anishift.application.release_quality import (
     AudioClass,
+    BlurayPreference,
     LanguageDeclaration,
     LanguageSource,
     Origin,
@@ -631,9 +632,9 @@ def test_a_preferred_bluray_drops_its_penalty_and_leads_its_seeding_class() -> N
     web: ReleaseTraits = _traits(("[Group] Example - 01 [1080p WEB-DL]",), seeders=50)
     polish: ReleaseTraits = replace(web, polish=PolishClass.POLISH)
     disc: ReleaseTraits = _traits(("Example S01E01 1080p BluRay REMUX AVC",), seeders=50)
-    remux: ReleaseTraits = replace(disc, bluray_preferred=True)
+    remux: ReleaseTraits = replace(disc, bluray_preference=BlurayPreference.FIRST)
     weak: ReleaseTraits = replace(remux, seeders=5)
-    assert quality_score(remux) == quality_score(replace(remux, bluray_preferred=False)) + 10.0
+    assert quality_score(remux) == quality_score(replace(remux, bluray_preference=BlurayPreference.NONE)) + 10.0
     assert class_key(remux) < class_key(polish) < class_key(weak)
 
 

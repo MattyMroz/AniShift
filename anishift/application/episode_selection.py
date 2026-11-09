@@ -30,6 +30,7 @@ from anishift.application.episode_releases import (
     size_bytes,
 )
 from anishift.application.release_quality import (
+    BlurayPreference,
     Origin,
     ReleaseTraits,
     ResolutionClass,
@@ -141,6 +142,9 @@ SMALL_SHARE: Final[float] = 0.5
 
 SIZE_GROUP_SHARE: Final[float] = 0.95
 """Share of the largest file of a size group down to which another file of its resolution ties on bitrate."""
+
+_DUB_DECLARED: Final[re.Pattern[str]] = re.compile(r"(?i)(?<![a-z])(?:voice[ ._-]?over|MVO|dub(?:bed|bing)?)(?![a-z])")
+"""Voice-over or dub a release name declares, which puts a preferred Blu-ray after the clean ones."""
 
 _CONTAINER: Final[re.Pattern[str]] = re.compile(r"[^/\\]\.([^\s./\\()\[\]{}]+)$")
 """Final suffix of the selected file name; a dot followed by spaces or brackets, as in ``(TrueHD 5.1)``, is not one."""
@@ -638,8 +642,17 @@ def confidence_text(candidate: RankedCandidate) -> str | None:
 
 
 def _bluray_row(candidate: RankedCandidate, *, preferred: bool) -> RankedCandidate:
-    traits: ReleaseTraits = replace(candidate.traits, bluray_preferred=preferred and untouched_bluray(candidate.traits))
+    traits: ReleaseTraits = replace(
+        candidate.traits, bluray_preference=_bluray_preference(candidate, preferred=preferred)
+    )
     return replace(candidate, traits=traits, quality=quality_score(traits))
+
+
+def _bluray_preference(candidate: RankedCandidate, *, preferred: bool) -> BlurayPreference:
+    if not preferred or not untouched_bluray(candidate.traits):
+        return BlurayPreference.NONE
+    names: str = " ".join((candidate.stream.release, candidate.stream.file_name or "", candidate.stream.path or ""))
+    return BlurayPreference.LATER if candidate.pack or _DUB_DECLARED.search(names) else BlurayPreference.FIRST
 
 
 def _suggestible(candidate: RankedCandidate) -> bool:
