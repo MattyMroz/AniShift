@@ -5,15 +5,20 @@ cyklu życia klienta i jedynego retry.
 
 ## Twarde reguły
 
-- Retry dotyczy wyłącznie `TransientError` i pozostaje w `_retry.py`; retry SDK
-  musi być wyłączony.
+- Retry pozostaje w `_retry.py`; retry SDK musi być wyłączony. Każda próba idzie
+  na kolejny klucz z `LlmConfig.api_keys` (kolejność z `api_key_mode`, licznik
+  `rotate` wspólny procesowo); po rundzie wszystkich kluczy czeka według
+  `retry_waits_s`. Ponawiane są `TransientError` oraz auth/quota/payment, które
+  wyłączają tylko swój klucz do końca zapytania. Pozostałe błędy kończą od razu.
+- Silnik dostaje konfigurację z jednym kluczem i czyta go przez `LlmConfig.api_key`
+  (pierwszy klucz); `LlmService` trzyma osobny silnik na każdy klucz.
 - Zachowuj rozróżnienie przejściowego rate limit od trwałego
   quota/payment/auth/model/config.
 - Providerów i ich SDK ładuj leniwie. Publiczne `__init__.py` oraz registry nie
   mogą eager-importować implementacji providerów.
 - Providery zgodne z Chat Completions buduj na wspólnym
   `OpenAiCompatibleTransport`, bez kopiowania transportu.
-- Nigdy nie ujawniaj `LlmConfig.api_key`, `fallback_api_key` ani `fallback_origin`
+- Nigdy nie ujawniaj `LlmConfig.api_keys`, `fallback_api_key` ani `fallback_origin`
   w repr, błędach, logach ani rekordach.
 - `FilePart` waliduje MIME i dane; `LlmMessage` wymaga tekstu i dopuszcza pliki
   tylko w roli `USER`. Adapter sprawdza możliwości providera/modelu przed wysłaniem.
@@ -47,7 +52,8 @@ cyklu życia klienta i jedynego retry.
 - `PalantirService._generation_options` pomija `temperature` i `top_p` przy
   aktywnym myśleniu OpenAI/xAI lub Claude. Wariant zastępuje kompletne poddrzewo opcji.
 - Failover Palantira działa tylko po HTTP 429/≥500, przed odczytem body; błędy sieci,
-  body i generowania nie przełączają kont. Retry całej próby pozostaje w `_retry.py`.
+  body i generowania nie przełączają kont. Retry całej próby pozostaje w `_retry.py`;
+  Palantir ma tam jeden klucz (token konta 1).
 - Cooldown Palantira trwa 60 s, jest wspólny procesowo i kluczowany originem.
   Snapshot kont powstaje raz na próbę; lock nigdy nie obejmuje HTTP.
 - Anthropic wymaga `max_tokens` i ma lokalny bezpieczny default.

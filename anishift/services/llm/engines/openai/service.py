@@ -17,7 +17,7 @@ _PROVIDER: Final[OpenAiCompatibleProvider] = OpenAiCompatibleProvider(
     engine_id="openai",
     default_base_url=None,
     requires_api_key=True,
-    api_key_env_var="ANISHIFT_OPENAI_API_KEY",
+    api_key_env_var="ANISHIFT_OPENAI_API_KEYS",
     max_tokens_parameter="max_completion_tokens",
     file_modalities=frozenset({"image", "pdf"}),
 )

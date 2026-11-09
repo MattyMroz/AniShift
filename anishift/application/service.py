@@ -45,7 +45,7 @@ from anishift.config.field_access import assign_setting_value, setting_is_active
 from anishift.config.field_catalog import SettingCatalogContext, SettingSpec, SettingValue, setting_catalog
 from anishift.config.model_catalog import ModelCatalog, ProviderEntry, load_model_catalog
 from anishift.config.presets import AutoPresetFile, load_presets, save_presets
-from anishift.config.settings import Settings
+from anishift.config.settings import API_KEY_LIST_SEPARATOR, Settings
 from anishift.config.user_settings import UserSettings, load_user_settings, save_user_settings
 from anishift.config.workspace import cleanup_orphaned_tmp, run_tmp_dir
 from anishift.errors import (
@@ -640,11 +640,11 @@ class AppService:
         secret_by_engine: tuple[tuple[str, str, str], ...] = (
             ("translation", "deepl", "deepl_api_key"),
             ("tts", "elevenlabs", "elevenlabs_api_key"),
-            ("llm", "anthropic", "anthropic_api_key"),
-            ("llm", "deepseek", "deepseek_api_key"),
-            ("llm", "gemini", "gemini_api_key"),
-            ("llm", "openai", "openai_api_key"),
-            ("llm", "openrouter", "openrouter_api_key"),
+            ("llm", "anthropic", "anthropic_api_keys"),
+            ("llm", "deepseek", "deepseek_api_keys"),
+            ("llm", "gemini", "gemini_api_keys"),
+            ("llm", "openai", "openai_api_keys"),
+            ("llm", "openrouter", "openrouter_api_keys"),
             ("llm", "palantir", "palantir_token"),
         )
         configured: dict[tuple[str, str], str] = {
@@ -807,11 +807,13 @@ class AppService:
         if re.match(r"[A-Za-z]:", model_id) or any(part in {".", ".."} for part in model_id.split("/")):
             return False
         settings: Settings = self.current_settings()
-        return not any(
-            model_id == getattr(settings, name)
-            for name in Settings.model_fields
-            if name.endswith("_api_key") or (name.startswith("palantir_") and "token" in name)
-        )
+        secrets: set[str] = set()
+        for name in Settings.model_fields:
+            if name.endswith("_api_keys"):
+                secrets.update(getattr(settings, name))
+            elif name.endswith("_api_key") or (name.startswith("palantir_") and "token" in name):
+                secrets.add(getattr(settings, name))
+        return model_id not in secrets
 
     def reset_settings(self) -> UserSettings:
         """Restore persisted panel preferences without touching secrets or presets."""
@@ -828,6 +830,37 @@ class AppService:
         spec: SettingSpec = self._secret_spec(setting_id)
         update_env_value(_env_variable(spec.setting_id), value, path=self._env_file)
         self._reload_settings()
+
+    def api_key_count(self, setting_id: str) -> int:
+        """Return how many keys one LLM provider has, without exposing them."""
+        return len(self._api_keys(setting_id))
+
+    def add_api_key(self, setting_id: str, key: str) -> None:
+        """Append one key to the end of an LLM provider's ordered key list in ``.env``."""
+        keys: tuple[str, ...] = self._api_keys(setting_id)
+        candidate: str = key.strip()
+        if not candidate or API_KEY_LIST_SEPARATOR in candidate:
+            context = ErrorContext(
+                code=ErrorCode.CONFIG_INVALID,
+                message=f"API key for {setting_id} is empty or contains a comma",
+                suggestion="Paste exactly one key",
+            )
+            raise ConfigError(context=context)
+        if candidate in keys:
+            return
+        self._write_api_keys(setting_id, (*keys, candidate))
+
+    def remove_api_key(self, setting_id: str, index: int) -> None:
+        """Remove the key at *index* from an LLM provider's ordered key list in ``.env``."""
+        keys: tuple[str, ...] = self._api_keys(setting_id)
+        if not 0 <= index < len(keys):
+            context = ErrorContext(
+                code=ErrorCode.CONFIG_INVALID,
+                message=f"API key {index + 1} of {setting_id} does not exist",
+                suggestion="Pick one of the listed keys",
+            )
+            raise ConfigError(context=context)
+        self._write_api_keys(setting_id, (*keys[:index], *keys[index + 1 :]))
 
     def update_environment_setting(self, setting_id: str, value: str | None) -> None:
         """Persist one non-secret environment-backed setting atomically."""
@@ -892,6 +925,23 @@ class AppService:
             )
             raise ConfigError(context=unknown)
         return spec
+
+    def _api_keys(self, setting_id: str) -> tuple[str, ...]:
+        self._secret_spec(setting_id)
+        keys: object = getattr(self._settings, setting_id)
+        if not isinstance(keys, tuple):
+            context = ErrorContext(
+                code=ErrorCode.CONFIG_INVALID,
+                message=f"Environment secret holds a single key: {setting_id}",
+                suggestion="Use the key editor of this connection",
+            )
+            raise ConfigError(context=context)
+        return tuple(str(key) for key in keys)
+
+    def _write_api_keys(self, setting_id: str, keys: tuple[str, ...]) -> None:
+        value: str | None = API_KEY_LIST_SEPARATOR.join(keys) if keys else None
+        update_env_value(_env_variable(setting_id), value, path=self._env_file)
+        self._reload_settings()
 
     def _environment_setting_spec(self, setting_id: str) -> SettingSpec:
         spec: SettingSpec | None = next(
@@ -1093,6 +1143,7 @@ def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
         tts_is_paid=preferences.tts_engine in {"elevenbytes", "elevenlabs", "elevenreader"},
         dialogue_font_file=preferences.dialogue_font_file,
         sign_narration=preferences.sign_narration,
+        llm_credential_mode=preferences.api_key_mode,
         translation_chunk_chars=preferences.translation_chunk_chars,
         translation_batch_size=preferences.translation_batch_size,
         llm_model_id=preferences.llm_provider_model_id,

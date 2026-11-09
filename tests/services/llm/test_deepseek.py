@@ -65,7 +65,7 @@ def test_deepseek_uses_compatible_max_tokens_and_default_url() -> None:
     config = LlmConfig(
         engine_id="deepseek",
         provider_model_id="custom-deepseek",
-        api_key="secret",
+        api_keys=("secret",),
         max_output_tokens=150,
     )
     service = DeepseekService(config, _client_factory=factory)
@@ -83,7 +83,7 @@ def test_deepseek_insufficient_system_resource_is_transient() -> None:
     config = LlmConfig(
         engine_id="deepseek",
         provider_model_id="deepseek-chat",
-        api_key="secret",
+        api_keys=("secret",),
     )
     service = DeepseekService(config, _client_factory=FakeFactory(client))
 

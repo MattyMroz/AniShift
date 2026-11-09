@@ -30,6 +30,7 @@ class FakeSettingsService:
         self.settings = UserSettings(translation_batch_size=42, translation_concurrency=2)
         self.saves: list[tuple[str, SettingValue]] = []
         self.secrets: list[tuple[str, str | None]] = []
+        self.keys: dict[str, list[str]] = {}
         self.resets = 0
         self.products: frozenset[ProductKind] = frozenset(
             {ProductKind.FULL_PL, ProductKind.NARRATION_AUDIO},
@@ -58,7 +59,7 @@ class FakeSettingsService:
     def environment_setting_statuses(self) -> tuple[EnvironmentSettingStatus, ...]:
         return (
             EnvironmentSettingStatus(
-                setting_id="gemini_api_key",
+                setting_id="gemini_api_keys",
                 is_configured=False,
                 is_system_override=False,
             ),
@@ -66,6 +67,16 @@ class FakeSettingsService:
 
     def update_secret(self, setting_id: str, value: str | None) -> None:
         self.secrets.append((setting_id, value))
+
+    def api_key_count(self, setting_id: str) -> int:
+        return len(self.keys.get(setting_id, []))
+
+    def add_api_key(self, setting_id: str, key: str) -> None:
+        self.secrets.append((setting_id, key))
+        self.keys.setdefault(setting_id, []).append(key)
+
+    def remove_api_key(self, setting_id: str, index: int) -> None:
+        self.keys[setting_id].pop(index)
 
     def current_settings(self) -> Settings:
         return self.environment
@@ -492,7 +503,7 @@ def test_a_secret_is_stored_once_it_is_confirmed(panel: SettingsController, serv
         panel.handle_key(f"text:{character}")
     panel.handle_key("enter")
 
-    assert service.secrets == [("gemini_api_key", "abc")]
+    assert service.secrets == [("gemini_api_keys", "abc")]
 
 
 def test_the_output_screen_dropped_its_save_action(panel: SettingsController) -> None:
@@ -849,7 +860,7 @@ def test_saved_explicit_editor_retries_reload_without_repeating_its_write(
     assert not panel._owner_reload_pending
     assert panel._feedback is None
     if secret:
-        assert service.secrets == [("gemini_api_key", "synthetic-secret")]
+        assert service.secrets == [("gemini_api_keys", "synthetic-secret")]
         assert service.saves == []
     else:
         assert _stored(service, "processing_order_policy") != before
@@ -954,7 +965,7 @@ def test_secret_paste_waits_for_enter_and_is_masked(
     assert service.secrets == []
     assert secret not in panel.render(100, 30).plain
     panel.handle_key("enter")
-    assert service.secrets == [("gemini_api_key", secret)]
+    assert service.secrets == [("gemini_api_keys", secret)]
 
 
 def test_multiline_secret_paste_is_rejected_without_echoing(panel: SettingsController) -> None:
@@ -1167,3 +1178,68 @@ def test_an_unusable_dialogue_font_keeps_the_editor_open_with_a_polish_reason(
     assert panel._feedback == _Feedback(
         "✗ Nie można użyć tej czcionki · potrzebny istniejący plik z polskimi literami", "error"
     )
+
+
+def test_a_provider_with_keys_lists_them_by_number_without_their_values(
+    panel: SettingsController, service: FakeSettingsService
+) -> None:
+    service.keys["gemini_api_keys"] = ["synthetic-private", "synthetic-business"]
+    _activate(panel, "category:connections")
+    _activate(panel, "connection:gemini")
+
+    assert [(item.key, item.label, item.current) for item in panel._items] == [
+        ("connection-key:1", "Klucz 1", "Usuń"),
+        ("connection-key:2", "Klucz 2", "Usuń"),
+        ("connection-secret", "Dodaj klucz", ""),
+        ("back", panel._items[-1].label, ""),
+    ]
+    frame: str = panel.render(100, 30).plain
+    assert "synthetic-private" not in frame
+    assert "synthetic-business" not in frame
+
+
+def test_adding_a_key_appends_it_and_lists_one_more_row(
+    panel: SettingsController, service: FakeSettingsService
+) -> None:
+    service.keys["gemini_api_keys"] = ["synthetic-private"]
+    _activate(panel, "category:connections")
+    _activate(panel, "connection:gemini")
+    _activate(panel, "connection-secret")
+    panel.handle_key("paste:synthetic-business")
+    panel.handle_key("enter")
+
+    assert service.keys["gemini_api_keys"] == ["synthetic-private", "synthetic-business"]
+    assert [item.label for item in panel._items[:3]] == ["Klucz 1", "Klucz 2", "Dodaj klucz"]
+
+
+@pytest.mark.parametrize(("answer", "remaining"), [("no", ["a", "b"]), ("yes", ["a"])])
+def test_removing_a_key_asks_first_and_removes_only_that_key(
+    panel: SettingsController, service: FakeSettingsService, answer: str, remaining: list[str]
+) -> None:
+    service.keys["openai_api_keys"] = ["a", "b"]
+    _activate(panel, "category:connections")
+    _activate(panel, "connection:openai")
+    _activate(panel, "connection-key:2")
+
+    assert panel._editor is not None
+    assert panel._editor.title == "USUNĄĆ KLUCZ 2 · OPENAI?"
+    panel._editor.selected = next(index for index, option in enumerate(panel._editor.options) if option.value == answer)
+    panel.handle_key("enter")
+
+    assert service.keys["openai_api_keys"] == remaining
+
+
+def test_connections_offer_the_key_mode_with_polish_choices(
+    panel: SettingsController, service: FakeSettingsService
+) -> None:
+    _activate(panel, "category:connections")
+    row = next(item for item in panel._items if item.key == "setting:api_key_mode")
+
+    assert (row.label, row.current) == ("Kilka kluczy jednego dostawcy", "Pierwszy, następny po błędzie")
+    _activate(panel, "setting:api_key_mode")
+    assert panel._editor is not None
+    assert [option.label for option in panel._editor.options] == ["Pierwszy, następny po błędzie", "Na zmianę"]
+    panel.handle_key("down")
+    panel.handle_key("enter")
+
+    assert service.settings.api_key_mode == "rotate"

@@ -10,6 +10,7 @@ import pytest
 from loguru import logger as loguru_logger
 
 from anishift.application import runtime
+from anishift.application import service as service_module
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
 from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot
 from anishift.application.scheduler_contracts import TaskHandler
@@ -34,6 +35,7 @@ from anishift.services.llm import (
     LlmUsage,
     TextPart,
 )
+from anishift.services.llm.config import DEFAULT_RETRY_WAITS_S
 from anishift.services.llm.engines.palantir import accounts
 from anishift.services.llm.engines.palantir import service as palantir_service
 from anishift.services.llm.wire_protocol import ModelProtocol
@@ -275,7 +277,6 @@ def test_probing_a_model_sends_exactly_one_request_and_stores_nothing(tmp_path: 
     assert result.error_class == ""
     assert result.checked_at.tzinfo is not None
     assert len(prober.calls) == 1
-    assert prober.calls[0].max_retries == 0
     assert saved == []
     assert list(tmp_path.iterdir()) == []
     assert service.model_catalog().models[_ALIAS].model_id == "gpt-provider-id"
@@ -395,7 +396,6 @@ def test_resolving_an_alias_builds_the_complete_palantir_configuration() -> None
         _ALIAS,
         enrollment_base_url=_ENROLLMENT,
         token=_TOKEN,
-        max_retries=2,
     )
 
     assert config.engine_id == "palantir"
@@ -404,8 +404,8 @@ def test_resolving_an_alias_builds_the_complete_palantir_configuration() -> None
     assert config.protocol is ModelProtocol.OPENAI_RESPONSES
     assert config.base_url == f"{_ENROLLMENT}/api/v2/llm/proxy/openai/v1"
     assert config.provider_model_id == "gpt-provider-id"
-    assert config.api_key == _TOKEN
-    assert config.max_retries == 2
+    assert config.api_keys == (_TOKEN,)
+    assert config.retry_waits_s == DEFAULT_RETRY_WAITS_S
     assert _TOKEN not in repr(config)
 
 
@@ -457,7 +457,7 @@ def test_the_translation_run_path_resolves_the_alias_the_same_way(monkeypatch: p
     assert config.api_key == _TOKEN
     assert config.temperature == 0.5
     assert config.max_output_tokens == 2048
-    assert config.max_retries == 3
+    assert config.retry_waits_s == DEFAULT_RETRY_WAITS_S
 
 
 def test_the_production_probe_sends_one_minimal_request_and_closes_the_service(
@@ -490,7 +490,6 @@ def test_the_production_probe_sends_one_minimal_request_and_closes_the_service(
         _ALIAS,
         enrollment_base_url=_ENROLLMENT,
         token=_TOKEN,
-        max_retries=5,
     )
 
     runtime.probe_palantir_model(config)
@@ -498,7 +497,7 @@ def test_the_production_probe_sends_one_minimal_request_and_closes_the_service(
     sent, request = seen[0]
 
     assert len(seen) == 1
-    assert sent.max_retries == 0
+    assert sent.retry_waits_s == ()
     assert sent.max_output_tokens is not None
     assert sent.max_output_tokens <= 64
     assert sent.base_url == config.base_url
@@ -719,3 +718,23 @@ def test_settings_to_service_failover_preserves_route_and_hides_private_values(
     surfaces: str = repr(settings) + repr(preferences) + repr(config) + "".join(captured)
     assert _FALLBACK not in surfaces
     assert _FALLBACK_TOKEN not in surfaces
+
+
+@pytest.mark.parametrize("mode", ["failover", "rotate"])
+def test_the_translation_run_path_hands_every_provider_key_and_the_chosen_mode(mode: str) -> None:
+    settings = Settings(_env_file=None, gemini_api_keys="synthetic-private, synthetic-business")
+
+    config: LlmConfig = runtime._llm_config(
+        settings, _plan(llm_profile_id="gemini", llm_model_id="gemini-3.8-flash", llm_credential_mode=mode)
+    )
+
+    assert config.api_keys == ("synthetic-private", "synthetic-business")
+    assert config.api_key_mode == mode
+    assert config.retry_waits_s == DEFAULT_RETRY_WAITS_S
+    assert "synthetic-private" not in repr(config)
+
+
+def test_the_run_snapshot_carries_the_key_mode_chosen_in_settings(tmp_path: Path) -> None:
+    service: AppService = _service(tmp_path, user_settings=UserSettings(api_key_mode="rotate"))
+
+    assert service_module._run_settings_snapshot(service.settings_snapshot()).llm_credential_mode == "rotate"

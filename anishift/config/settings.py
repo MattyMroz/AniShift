@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Self
+from typing import Annotated, Final, Self
 
 from dotenv import dotenv_values
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     DotEnvSettingsSource,
+    NoDecode,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
 )
@@ -22,7 +23,15 @@ from anishift.services.llm.palantir_token import (
     resolve_palantir_token,
 )
 
-__all__ = ["Settings"]
+__all__ = ["API_KEY_LIST_SEPARATOR", "Settings"]
+
+# ── Constants ────────────────────────────────────────────────────────────────
+
+API_KEY_LIST_SEPARATOR: Final[str] = ","
+"""Separator between the keys of one LLM provider in a single environment value."""
+
+type ApiKeyList = Annotated[tuple[str, ...], NoDecode]
+"""Ordered LLM provider keys read verbatim from one comma-separated environment value."""
 
 
 class _LiteralDotEnvSettingsSource(DotEnvSettingsSource):
@@ -73,15 +82,15 @@ class Settings(BaseSettings):
         repr=False,
     )
 
-    # LLM providers
-    anthropic_api_key: str = Field(default="", description="Anthropic API key", repr=False)
-    gemini_api_key: str = Field(default="", description="Google Gemini API key", repr=False)
-    openai_api_key: str = Field(default="", description="OpenAI API key", repr=False)
-    deepseek_api_key: str = Field(default="", description="DeepSeek API key", repr=False)
-    openrouter_api_key: str = Field(default="", description="OpenRouter API key", repr=False)
-    openai_compatible_api_key: str = Field(
-        default="",
-        description="OpenAI-compatible endpoint key",
+    # LLM providers: each takes any number of keys, in the order they are tried
+    anthropic_api_keys: ApiKeyList = Field(default=(), description="Anthropic API keys", repr=False)
+    gemini_api_keys: ApiKeyList = Field(default=(), description="Google Gemini API keys", repr=False)
+    openai_api_keys: ApiKeyList = Field(default=(), description="OpenAI API keys", repr=False)
+    deepseek_api_keys: ApiKeyList = Field(default=(), description="DeepSeek API keys", repr=False)
+    openrouter_api_keys: ApiKeyList = Field(default=(), description="OpenRouter API keys", repr=False)
+    openai_compatible_api_keys: ApiKeyList = Field(
+        default=(),
+        description="OpenAI-compatible endpoint keys",
         repr=False,
     )
     openai_compatible_base_url: str = Field(
@@ -115,6 +124,23 @@ class Settings(BaseSettings):
 
     # Workspace
     workspace_root: str = Field(default="", description="Workspace root override", repr=False)
+
+    @field_validator(
+        "anthropic_api_keys",
+        "gemini_api_keys",
+        "openai_api_keys",
+        "deepseek_api_keys",
+        "openrouter_api_keys",
+        "openai_compatible_api_keys",
+        mode="before",
+    )
+    @classmethod
+    def _split_api_keys(cls, value: object) -> object:
+        """Split one comma-separated value into unique non-empty keys in their written order."""
+        if not isinstance(value, str):
+            return value
+        keys: list[str] = [key.strip() for key in value.split(API_KEY_LIST_SEPARATOR)]
+        return tuple(dict.fromkeys(key for key in keys if key))
 
     @model_validator(mode="after")
     def _resolve_palantir_token(self) -> Self:

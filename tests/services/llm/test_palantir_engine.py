@@ -28,7 +28,7 @@ from anishift.services.llm import (
     TextPart,
     create_engine,
 )
-from anishift.services.llm._retry import retry_transient
+from anishift.services.llm._retry import retry_across_keys
 from anishift.services.llm.engines.palantir.auth import resolve_palantir_token
 from anishift.services.llm.engines.palantir.errors import PalantirResponseDefect
 from anishift.services.llm.engines.palantir.normalize import normalize_palantir_response
@@ -70,7 +70,7 @@ def _config(
     return LlmConfig(
         engine_id="palantir",
         provider_model_id=provider_model_id,
-        api_key=api_key,
+        api_keys=(api_key,),
         alias={
             ModelProtocol.OPENAI_RESPONSES: "foundry/gpt-5.6-sol",
             ModelProtocol.XAI_RESPONSES: "foundry-xai/grok-4.6",
@@ -757,7 +757,9 @@ def test_cancellation_before_an_attempt_rejects_the_operation() -> None:
     cancel.set()
 
     with pytest.raises(LlmCancelledError):
-        retry_transient(lambda: engine.complete(_request()), max_retries=0, cancel=cancel)
+        retry_across_keys(
+            lambda _key: engine.complete(_request()), provider="palantir", key_count=1, waits_s=(), cancel=cancel
+        )
 
 
 @pytest.mark.integration
@@ -777,7 +779,9 @@ def test_a_provider_success_completed_after_cancel_is_rejected() -> None:
     engine = _engine(httpx.MockTransport(handler))
 
     with pytest.raises(LlmCancelledError):
-        retry_transient(lambda: engine.complete(_request()), max_retries=0, cancel=cancel)
+        retry_across_keys(
+            lambda _key: engine.complete(_request()), provider="palantir", key_count=1, waits_s=(), cancel=cancel
+        )
 
 
 def test_cancellation_between_attempts_stops_before_a_second_attempt() -> None:
@@ -792,7 +796,13 @@ def test_cancellation_between_attempts_stops_before_a_second_attempt() -> None:
     engine = _engine(httpx.MockTransport(handler))
 
     with pytest.raises(LlmCancelledError):
-        retry_transient(lambda: engine.complete(_request()), max_retries=3, cancel=cancel)
+        retry_across_keys(
+            lambda _key: engine.complete(_request()),
+            provider="palantir",
+            key_count=1,
+            waits_s=(0.0, 0.0, 0.0),
+            cancel=cancel,
+        )
     assert len(calls) == 1
 
 

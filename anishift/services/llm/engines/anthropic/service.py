@@ -167,7 +167,7 @@ class AnthropicService:
             context: ErrorContext = ErrorContext(
                 code=ErrorCode.LLM_AUTH_FAILED,
                 message="Anthropic API key is not configured",
-                suggestion="Set ANISHIFT_ANTHROPIC_API_KEY in the environment or .env file.",
+                suggestion="Set ANISHIFT_ANTHROPIC_API_KEYS in the environment or .env file.",
                 details={"engine_id": self.engine_id},
             )
             raise LlmAuthError(context=context)

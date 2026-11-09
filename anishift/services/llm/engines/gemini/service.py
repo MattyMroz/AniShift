@@ -194,7 +194,7 @@ class GeminiService:
             context: ErrorContext = ErrorContext(
                 code=ErrorCode.LLM_AUTH_FAILED,
                 message="Gemini API key is not configured",
-                suggestion="Set ANISHIFT_GEMINI_API_KEY in the environment or .env file.",
+                suggestion="Set ANISHIFT_GEMINI_API_KEYS in the environment or .env file.",
                 details={"engine_id": self.engine_id},
             )
             raise LlmAuthError(context=context)

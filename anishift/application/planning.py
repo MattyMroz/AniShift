@@ -171,6 +171,7 @@ class RunSettingsSnapshot:
     llm_top_p: float | None = None
     llm_max_output_tokens: int | None = None
     llm_translation_style: str = "neutral"
+    llm_credential_mode: str = "failover"
     tts_model_id: str = "default"
     tts_voice_id: str = "default"
     tts_voice_label: str = "default"

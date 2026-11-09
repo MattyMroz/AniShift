@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Never
 
 import pytest
 
-from anishift.errors import AniShiftError, ErrorCode, TransientError
+from anishift.errors import AniShiftError, ErrorCode
 from anishift.services.llm import (
     LlmAuthError,
     LlmConfig,
     LlmConfigError,
     LlmContentPart,
     LlmMessage,
+    LlmProviderUnavailableError,
+    LlmQuotaError,
     LlmRequest,
     LlmResponse,
     LlmRole,
@@ -66,7 +69,7 @@ class RecordingObserver:
     def before_attempt(self) -> None:
         self.events.append("before")
 
-    def on_transient_failure(self, error: TransientError) -> None:
+    def on_retry(self, error: AniShiftError, *, attempt: int, max_attempts: int) -> None:
         self.events.append("transient")
 
     def on_success(self) -> None:
@@ -228,12 +231,115 @@ def test_service_prefers_streaming_when_the_engine_supports_it(monkeypatch: pyte
     assert engine.complete_calls == 0
 
 
+class KeyEngine:
+    engine_id = "fake"
+    is_available = True
+
+    def __init__(self, key: str, outcomes: dict[str, list[Exception]], used: list[str]) -> None:
+        self.key: str = key
+        self.outcomes: dict[str, list[Exception]] = outcomes
+        self.used: list[str] = used
+        self.closed: bool = False
+
+    def complete(self, request: LlmRequest) -> LlmResponse:
+        self.used.append(self.key)
+        pending: list[Exception] = self.outcomes.get(self.key, [])
+        if pending:
+            raise pending.pop(0)
+        return _response(self.key)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _key_service(
+    monkeypatch: pytest.MonkeyPatch,
+    keys: tuple[str, ...],
+    *,
+    mode: str = "failover",
+    outcomes: dict[str, list[Exception]] | None = None,
+) -> tuple[LlmService, list[str], list[KeyEngine]]:
+    used: list[str] = []
+    engines: list[KeyEngine] = []
+
+    def fake_create_engine(config: LlmConfig) -> KeyEngine:
+        engine = KeyEngine(config.api_key, outcomes if outcomes is not None else {}, used)
+        engines.append(engine)
+        return engine
+
+    monkeypatch.setattr("anishift.services.llm.service.create_engine", fake_create_engine)
+    monkeypatch.setattr("anishift.services.llm.service._ROTATION", {})
+    config: LlmConfig = replace(_config(), api_keys=keys, api_key_mode=mode)  # type: ignore[arg-type]
+    return LlmService(config), used, engines
+
+
+@pytest.mark.unit
+def test_failover_starts_every_request_on_the_first_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    service, used, _engines = _key_service(monkeypatch, ("private", "business"))
+
+    texts: list[str] = [service.complete(_request("text")).text for _ in range(3)]
+
+    assert texts == ["private", "private", "private"]
+    assert used == ["private", "private", "private"]
+
+
+@pytest.mark.unit
+def test_failover_moves_to_the_next_key_after_any_provider_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    outcomes: dict[str, list[Exception]] = {"private": [LlmQuotaError("daily"), LlmProviderUnavailableError("busy")]}
+    service, used, _engines = _key_service(monkeypatch, ("private", "business"), outcomes=outcomes)
+
+    first: str = service.complete(_request("text")).text
+    second: str = service.complete(_request("text")).text
+
+    assert (first, second) == ("business", "business")
+    assert used == ["private", "business", "private", "business"]
+
+
+@pytest.mark.unit
+def test_rotate_starts_each_request_on_the_next_key_across_services(monkeypatch: pytest.MonkeyPatch) -> None:
+    service, used, _engines = _key_service(monkeypatch, ("a", "b", "c"), mode="rotate")
+    other = LlmService(service.config)
+
+    texts: list[str] = [service.complete(_request("text")).text, other.complete(_request("text")).text]
+    texts += [service.complete(_request("text")).text, other.complete(_request("text")).text]
+
+    assert texts == ["a", "b", "c", "a"]
+    assert used == texts
+
+
+@pytest.mark.unit
+def test_each_key_gets_its_own_engine_and_close_releases_them_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    outcomes: dict[str, list[Exception]] = {"first": [LlmProviderUnavailableError("busy")]}
+    service, _used, engines = _key_service(monkeypatch, ("first", "second"), outcomes=outcomes)
+
+    service.complete(_request("text"))
+    service.complete(_request("text"))
+    service.close()
+
+    assert [engine.key for engine in engines] == ["first", "second"]
+    assert all(engine.closed for engine in engines)
+
+
+@pytest.mark.unit
+def test_engine_config_never_carries_the_other_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[str, ...]] = []
+
+    def fake_create_engine(config: LlmConfig) -> FakeEngine:
+        seen.append(config.api_keys)
+        return FakeEngine()
+
+    monkeypatch.setattr("anishift.services.llm.service.create_engine", fake_create_engine)
+    LlmService(replace(_config(), api_keys=("one", "two"))).complete(_request("text"))
+
+    assert seen == [("one",)]
+
+
 def _config() -> LlmConfig:
     return LlmConfig(
         engine_id="gemini",
         provider_model_id="gemini-3.5-flash-lite",
-        api_key="test-key",
-        max_retries=0,
+        api_keys=("test-key",),
+        retry_waits_s=(),
     )
 
 

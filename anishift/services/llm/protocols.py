@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from anishift.errors import AniShiftError, TransientError
+from anishift.errors import AniShiftError
 from anishift.services._base import EngineInfo
 
 if TYPE_CHECKING:
@@ -50,8 +50,8 @@ class LlmAttemptObserver(Protocol):
         """Allow or reject the next provider attempt."""
         ...
 
-    def on_transient_failure(self, error: TransientError) -> None:
-        """Observe a retryable failure."""
+    def on_retry(self, error: AniShiftError, *, attempt: int, max_attempts: int) -> None:
+        """Observe a failed attempt that another attempt, on this or the next key, will follow."""
         ...
 
     def on_success(self) -> None:

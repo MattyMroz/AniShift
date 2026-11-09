@@ -159,7 +159,7 @@ def test_configured_secret_cannot_be_saved_as_a_model_identifier(tmp_path: Path)
     service = _service(
         tmp_path,
         saved,
-        settings=Settings.model_construct(openai_api_key=secret),
+        settings=Settings.model_construct(openai_api_keys=(secret,)),
     )
 
     with pytest.raises(ConfigError) as caught:
@@ -171,7 +171,7 @@ def test_configured_secret_cannot_be_saved_as_a_model_identifier(tmp_path: Path)
 
 def test_custom_model_for_a_provider_with_suggestions_remains_in_the_picker(tmp_path: Path) -> None:
     saved: list[UserSettings] = []
-    service = _service(tmp_path, saved, settings=Settings.model_construct(openai_api_key="synthetic-token"))
+    service = _service(tmp_path, saved, settings=Settings.model_construct(openai_api_keys=("synthetic-token",)))
 
     service.select_translation_model("openai", "my-custom-model")
     service.select_translation_model("openai", "my-custom-model")

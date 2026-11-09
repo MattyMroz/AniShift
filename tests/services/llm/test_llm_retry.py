@@ -1,21 +1,31 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
 
 import pytest
 
-from anishift.errors import AniShiftError, TransientError
+from anishift.errors import AniShiftError, ErrorCode
 from anishift.services.llm import (
     LlmAuthError,
     LlmCancelledError,
+    LlmContextLengthError,
+    LlmError,
+    LlmModelError,
+    LlmOutputBlockedError,
+    LlmPaymentError,
     LlmProviderUnavailableError,
+    LlmQuotaError,
     LlmRateLimitError,
+    LlmRequestError,
     LlmResponse,
     LlmTimeoutError,
     LlmUsage,
 )
-from anishift.services.llm._retry import retry_transient
+from anishift.services.llm._retry import retry_across_keys
+from anishift.services.llm.config import DEFAULT_RETRY_WAITS_S
+
+type _Outcome = LlmResponse | LlmError
+type _Script = dict[int, list[_Outcome]]
 
 
 class RecordingObserver:
@@ -25,8 +35,8 @@ class RecordingObserver:
     def before_attempt(self) -> None:
         self.events.append("before")
 
-    def on_transient_failure(self, error: TransientError) -> None:
-        self.events.append(f"transient:{type(error).__name__}")
+    def on_retry(self, error: AniShiftError, *, attempt: int, max_attempts: int) -> None:
+        self.events.append(f"retry:{type(error).__name__}:{attempt}/{max_attempts}")
 
     def on_success(self) -> None:
         self.events.append("success")
@@ -35,233 +45,205 @@ class RecordingObserver:
         self.events.append(f"fatal:{type(error).__name__}")
 
 
-def test_retry_transient_succeeds_after_exact_retries() -> None:
-    response: LlmResponse = _response("translated")
-    outcomes: list[LlmResponse | TransientError] = [
-        LlmTimeoutError("first"),
-        LlmProviderUnavailableError("second"),
-        response,
-    ]
-    calls: int = 0
-    delays: list[float] = []
-    observer = RecordingObserver()
+class ScriptedKeys:
+    def __init__(self, script: _Script) -> None:
+        self.script: _Script = script
+        self.calls: list[int] = []
 
-    def operation() -> LlmResponse:
-        nonlocal calls
-        calls += 1
-        outcome: LlmResponse | TransientError = outcomes.pop(0)
-        if isinstance(outcome, TransientError):
+    def __call__(self, key_index: int) -> LlmResponse:
+        self.calls.append(key_index)
+        outcome: _Outcome = self.script[key_index].pop(0)
+        if isinstance(outcome, LlmError):
             raise outcome
         return outcome
 
-    result: LlmResponse = retry_transient(
+
+def _run(
+    script: _Script,
+    *,
+    waits_s: tuple[float, ...] = DEFAULT_RETRY_WAITS_S,
+    observer: RecordingObserver | None = None,
+) -> tuple[LlmResponse, ScriptedKeys, list[float]]:
+    operation = ScriptedKeys(script)
+    delays: list[float] = []
+    response: LlmResponse = retry_across_keys(
         operation,
-        max_retries=2,
+        provider="gemini",
+        key_count=len(script),
+        waits_s=waits_s,
         observer=observer,
         sleep=delays.append,
     )
+    return response, operation, delays
+
+
+@pytest.mark.unit
+def test_one_key_gets_five_attempts_with_the_default_waits_then_one_final_error() -> None:
+    operation = ScriptedKeys({0: [LlmProviderUnavailableError(f"busy {index}") for index in range(5)]})
+    delays: list[float] = []
+    observer = RecordingObserver()
+
+    with pytest.raises(LlmProviderUnavailableError) as failure:
+        retry_across_keys(
+            operation,
+            provider="gemini",
+            key_count=1,
+            waits_s=DEFAULT_RETRY_WAITS_S,
+            observer=observer,
+            sleep=delays.append,
+        )
+
+    assert operation.calls == [0, 0, 0, 0, 0]
+    assert delays == [10.0, 30.0, 60.0, 60.0]
+    assert failure.value.context.message == "All 1 gemini API key failed after 5 attempts; last error: busy 4"
+    assert failure.value.context.code is ErrorCode.LLM_PROVIDER_UNAVAILABLE
+    assert isinstance(failure.value.__cause__, LlmProviderUnavailableError)
+    assert observer.events.count("before") == 5
+    assert observer.events[-1] == "fatal:LlmProviderUnavailableError"
+    assert [event for event in observer.events if event.startswith("retry")] == [
+        "retry:LlmProviderUnavailableError:2/5",
+        "retry:LlmProviderUnavailableError:3/5",
+        "retry:LlmProviderUnavailableError:4/5",
+        "retry:LlmProviderUnavailableError:5/5",
+    ]
+
+
+@pytest.mark.unit
+def test_a_failing_key_hands_the_request_to_the_next_key_without_waiting() -> None:
+    response: LlmResponse = _response("translated")
+
+    result, operation, delays = _run({0: [LlmRateLimitError("limited")], 1: [response]})
 
     assert result is response
-    assert calls == 3
-    assert delays == [1.0, 2.0]
-    assert observer.events == [
-        "before",
-        "transient:LlmTimeoutError",
-        "before",
-        "transient:LlmProviderUnavailableError",
-        "before",
-        "success",
-    ]
-
-
-def test_retry_transient_raises_exhausted_error_without_extra_sleep() -> None:
-    calls: int = 0
-    delays: list[float] = []
-    observer = RecordingObserver()
-
-    def operation() -> LlmResponse:
-        nonlocal calls
-        calls += 1
-        raise LlmTimeoutError(f"attempt {calls}")
-
-    with pytest.raises(LlmTimeoutError, match="attempt 4"):
-        retry_transient(
-            operation,
-            max_retries=3,
-            observer=observer,
-            sleep=delays.append,
-        )
-
-    assert calls == 4
-    assert delays == [1.0, 2.0, 4.0]
-    assert observer.events.count("before") == 4
-    assert observer.events.count("transient:LlmTimeoutError") == 4
-    assert "success" not in observer.events
-
-
-def test_retry_transient_does_not_retry_fatal_error() -> None:
-    calls: int = 0
-    delays: list[float] = []
-    observer = RecordingObserver()
-
-    def operation() -> LlmResponse:
-        nonlocal calls
-        calls += 1
-        raise ValueError("fatal")
-
-    with pytest.raises(ValueError, match="fatal"):
-        retry_transient(
-            operation,
-            max_retries=5,
-            observer=observer,
-            sleep=delays.append,
-        )
-
-    assert calls == 1
+    assert operation.calls == [0, 1]
     assert delays == []
-    assert observer.events == ["before"]
 
 
-def test_retry_observer_sees_typed_fatal_failure() -> None:
+@pytest.mark.unit
+def test_three_keys_failing_every_round_wait_only_between_rounds() -> None:
+    errors: _Script = {key: [LlmTimeoutError(f"key {key} round {index}") for index in range(5)] for key in range(3)}
+
+    with pytest.raises(LlmTimeoutError) as failure:
+        _run(errors)
+
+    assert failure.value.context.message == "All 3 gemini API keys failed after 15 attempts; last error: key 2 round 4"
+
+
+@pytest.mark.unit
+def test_rounds_try_keys_in_order_and_wait_once_per_failed_round() -> None:
+    response: LlmResponse = _response("done")
+    script: _Script = {
+        0: [LlmProviderUnavailableError("busy"), LlmProviderUnavailableError("busy"), response],
+        1: [LlmTimeoutError("slow"), LlmTimeoutError("slow")],
+        2: [LlmRateLimitError("limited"), LlmRateLimitError("limited")],
+    }
+
+    result, operation, delays = _run(script)
+
+    assert result is response
+    assert operation.calls == [0, 1, 2, 0, 1, 2, 0]
+    assert delays == [10.0, 30.0]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rejection", [LlmAuthError, LlmQuotaError, LlmPaymentError])
+def test_a_rejected_key_is_skipped_for_the_rest_of_the_request(rejection: type[LlmError]) -> None:
+    response: LlmResponse = _response("done")
+    script: _Script = {0: [rejection("rejected")], 1: [LlmProviderUnavailableError("busy"), response]}
+
+    result, operation, delays = _run(script)
+
+    assert result is response
+    assert operation.calls == [0, 1, 1]
+    assert delays == [10.0]
+
+
+@pytest.mark.unit
+def test_every_key_rejected_fails_at_once_naming_the_provider_and_key_count() -> None:
     observer = RecordingObserver()
 
-    def operation() -> LlmResponse:
-        raise LlmAuthError("auth")
+    with pytest.raises(LlmAuthError) as failure:
+        _run({0: [LlmQuotaError("daily")], 1: [LlmAuthError("invalid")]}, observer=observer)
 
-    with pytest.raises(LlmAuthError):
-        retry_transient(
-            operation,
-            max_retries=5,
-            observer=observer,
-        )
-
-    assert observer.events == ["before", "fatal:LlmAuthError"]
+    assert failure.value.context.message == "All 2 gemini API keys failed after 2 attempts; last error: invalid"
+    assert observer.events[-1] == "fatal:LlmAuthError"
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
-    "build_error",
+    "error",
     [
-        pytest.param(
-            lambda: LlmRateLimitError("limited", retry_after_s=7.5),
-            id="rate-limit",
-        ),
-        pytest.param(
-            lambda: LlmProviderUnavailableError("offline", retry_after_s=3.25),
-            id="unavailable",
-        ),
+        LlmContextLengthError("too long"),
+        LlmModelError("no model"),
+        LlmOutputBlockedError("blocked"),
+        LlmRequestError("bad request"),
+        LlmCancelledError("cancelled"),
     ],
 )
-def test_retry_transient_respects_retry_after(
-    build_error: Callable[[], LlmRateLimitError | LlmProviderUnavailableError],
-) -> None:
+def test_a_request_error_ends_at_once_without_trying_another_key(error: LlmError) -> None:
+    observer = RecordingObserver()
+    operation = ScriptedKeys({0: [error], 1: [_response("unused")]})
+
+    with pytest.raises(type(error)) as failure:
+        retry_across_keys(operation, provider="gemini", key_count=2, waits_s=(10.0,), observer=observer)
+
+    assert failure.value is error
+    assert operation.calls == [0]
+    assert observer.events == ["before", f"fatal:{type(error).__name__}"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("retry_after_s", "expected"),
+    [(3.25, 3.25), (10.0, 10.0), (45.0, 10.0), (-1.0, 10.0), (float("nan"), 10.0), (float("inf"), 10.0)],
+)
+def test_retry_after_shortens_a_wait_but_never_lengthens_it(retry_after_s: float, expected: float) -> None:
     response: LlmResponse = _response("done")
-    error: LlmRateLimitError | LlmProviderUnavailableError = build_error()
-    outcomes: list[LlmResponse | TransientError] = [error, response]
-    delays: list[float] = []
 
-    def operation() -> LlmResponse:
-        outcome: LlmResponse | TransientError = outcomes.pop(0)
-        if isinstance(outcome, TransientError):
-            raise outcome
-        return outcome
+    _result, _operation, delays = _run({0: [LlmRateLimitError("limited", retry_after_s=retry_after_s), response]})
 
-    assert retry_transient(operation, max_retries=1, sleep=delays.append) is response
-    assert delays == [error.retry_after_s]
+    assert delays == [expected]
 
 
-@pytest.mark.parametrize("retry_after_s", [-1.0, float("nan"), float("inf")])
-def test_retry_transient_ignores_invalid_retry_after(retry_after_s: float) -> None:
-    response: LlmResponse = _response("done")
-    outcomes: list[LlmResponse | TransientError] = [
-        LlmRateLimitError("limited", retry_after_s=retry_after_s),
-        response,
-    ]
-    delays: list[float] = []
-
-    def operation() -> LlmResponse:
-        outcome: LlmResponse | TransientError = outcomes.pop(0)
-        if isinstance(outcome, TransientError):
-            raise outcome
-        return outcome
-
-    assert retry_transient(operation, max_retries=1, sleep=delays.append) is response
-    assert delays == [1.0]
-
-
-def test_retry_transient_caps_backoff() -> None:
-    response: LlmResponse = _response("done")
-    outcomes: list[LlmResponse | TransientError] = [LlmTimeoutError(str(index)) for index in range(5)]
-    outcomes.append(response)
-    delays: list[float] = []
-
-    def operation() -> LlmResponse:
-        outcome: LlmResponse | TransientError = outcomes.pop(0)
-        if isinstance(outcome, TransientError):
-            raise outcome
-        return outcome
-
-    assert retry_transient(operation, max_retries=5, sleep=delays.append) is response
-    assert delays == [1.0, 2.0, 4.0, 4.0, 4.0]
-
-
-def test_retry_transient_cancels_before_first_attempt() -> None:
+@pytest.mark.unit
+def test_cancel_before_the_first_attempt_sends_nothing() -> None:
     cancel = threading.Event()
     cancel.set()
-    calls: int = 0
-
-    def operation() -> LlmResponse:
-        nonlocal calls
-        calls += 1
-        return _response("unused")
+    operation = ScriptedKeys({0: [_response("unused")]})
 
     with pytest.raises(LlmCancelledError):
-        retry_transient(operation, max_retries=2, cancel=cancel)
+        retry_across_keys(operation, provider="gemini", key_count=1, waits_s=(), cancel=cancel)
 
-    assert calls == 0
+    assert operation.calls == []
 
 
-def test_retry_transient_cancels_during_backoff() -> None:
+@pytest.mark.unit
+def test_cancel_during_a_wait_stops_before_the_next_round() -> None:
     cancel = threading.Event()
-    calls: int = 0
+    operation = ScriptedKeys({0: [LlmTimeoutError("slow"), _response("unused")]})
 
-    class CancellingObserver:
-        def before_attempt(self) -> None:
-            return None
-
-        def on_transient_failure(self, error: TransientError) -> None:
+    class CancellingObserver(RecordingObserver):
+        def on_retry(self, error: AniShiftError, *, attempt: int, max_attempts: int) -> None:
             cancel.set()
 
-        def on_success(self) -> None:
-            return None
-
-        def on_fatal_failure(self, error: AniShiftError) -> None:
-            del error
-
-    def operation() -> LlmResponse:
-        nonlocal calls
-        calls += 1
-        raise LlmTimeoutError("timeout")
-
     with pytest.raises(LlmCancelledError):
-        retry_transient(
-            operation,
-            max_retries=2,
-            observer=CancellingObserver(),
-            cancel=cancel,
+        retry_across_keys(
+            operation, provider="gemini", key_count=1, waits_s=(10.0,), observer=CancellingObserver(), cancel=cancel
         )
 
-    assert calls == 1
+    assert operation.calls == [0]
 
 
-def test_retry_transient_discards_success_completed_after_cancellation() -> None:
+@pytest.mark.unit
+def test_a_success_finished_after_cancel_is_discarded() -> None:
     cancel = threading.Event()
 
-    def operation() -> LlmResponse:
+    def operation(key_index: int) -> LlmResponse:
         cancel.set()
-        return _response("discarded")
+        return _response(f"discarded {key_index}")
 
     with pytest.raises(LlmCancelledError):
-        retry_transient(operation, max_retries=0, cancel=cancel)
+        retry_across_keys(operation, provider="gemini", key_count=1, waits_s=(), cancel=cancel)
 
 
 def _response(text: str) -> LlmResponse:
