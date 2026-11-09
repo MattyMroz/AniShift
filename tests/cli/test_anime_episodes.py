@@ -80,7 +80,13 @@ from anishift.application.watch_state import WatchStateStore
 from anishift.cli.interactive import anime as anime_module
 from anishift.cli.interactive import anime_texts, anime_view
 from anishift.cli.interactive.anime import EPISODE_REASON_LABELS, AnimeController, _Screen
-from anishift.cli.interactive.anime_releases import _REASON_TEXTS, UNKNOWN_PREVIOUS_WARNING, _candidate_numbering
+from anishift.cli.interactive.anime_releases import (
+    _REASON_TEXTS,
+    UNKNOWN_PREVIOUS_WARNING,
+    _candidate_numbering,
+    release_rows,
+)
+from anishift.cli.interactive.anime_state import AnimeRow
 from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
 from anishift.config.presets import default_preset_file
@@ -1705,7 +1711,7 @@ def test_download_orders_marked_episodes_through_the_owner_and_stays_on_the_list
         _key(controller, key)
     pending: str = _frame(controller)
     assert _at(controller) is _Screen.EPISODES
-    assert "szukam" in pending
+    assert "Szukam" in pending
     assert re.search(r"\[x\]\s+1\s+Episode 1", pending)
     assert re.search(r"\[x\]\s+3\s+Episode 3", pending)
     assert controller._episode_marks == {1, 3}
@@ -2422,7 +2428,7 @@ def test_every_refused_stan_label_fits_its_column(reason: str) -> None:
 def test_an_episode_in_progress_keeps_a_short_stan_and_names_cancellation_in_the_notice() -> None:
     assert anime_texts.refused_result(EpisodeReason.EPISODE_IN_PROGRESS) == (
         "W toku",
-        "W toku · X anuluj w Przetwarzaniu",
+        "W toku · Del usuń w Przetwarzaniu",
     )
 
 
@@ -2499,7 +2505,7 @@ def test_active_episode_does_not_submit_and_explains_where_to_cancel(state: str,
     owner.statuses[1] = EpisodeStatus(EpisodeKey(1, 1), state)
     controller: AnimeController = _owner_controller(owner)
     _key(controller, key)
-    assert controller._notice == "W toku · X anuluj w Przetwarzaniu"
+    assert controller._notice == "W toku · Del usuń w Przetwarzaniu"
     assert not owner.batches
 
 
@@ -2577,14 +2583,14 @@ def test_changed_repeat_conflict_is_refused_in_existing_problem_view() -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("reason", "sentence"),
+    ("reason", "notice"),
     [
-        ("episode_admitted", "Odcinek już zlecony"),
-        ("episode_possibly_admitted", "Już zlecone?"),
+        ("episode_admitted", "Odcinek już zlecony · P pobierz ponownie"),
+        ("episode_possibly_admitted", "E1 może być już zlecony · naciśnij P, żeby pobrać jeszcze raz"),
     ],
 )
 def test_choosing_an_already_ordered_episode_keeps_the_releases_and_p_opens_them_for_a_repeat(
-    reason: str, sentence: str
+    reason: str, notice: str
 ) -> None:
     owner: _ChoiceOwner = _ChoiceOwner()
     owner.statuses.pop(1)
@@ -2594,7 +2600,7 @@ def test_choosing_an_already_ordered_episode_keeps_the_releases_and_p_opens_them
     _key(controller, "text:d")
     frame: str = controller.render(80, 24).plain
     assert _at(controller) is _Screen.CANDIDATES
-    assert f"{sentence} · P pobierz ponownie" in frame
+    assert notice in frame
     assert "D pobierz · P pobierz ponownie" in frame
     assert "AniShift w tle nie wykonał polecenia" not in frame
 
@@ -2630,6 +2636,74 @@ def test_the_release_list_names_no_choice_while_a_choice_is_being_sent() -> None
 
     assert "Space" not in keys
     assert "D" not in keys
+
+
+@pytest.mark.unit
+def test_leaving_the_panel_closes_the_release_list_and_names_why() -> None:
+    owner: _ChoiceOwner = _ChoiceOwner()
+    controller: AnimeController = _owner_controller(owner)
+    _key(controller, "text:i")
+    assert _at(controller) is _Screen.CANDIDATES
+
+    controller.cancel()
+
+    assert _at(controller) is _Screen.EPISODES
+    assert "Lista wydań wygasła · I otwórz ją ponownie" in _frame(controller)
+    assert not owner.choices
+
+
+@pytest.mark.unit
+def test_a_release_choice_answered_after_leaving_does_not_block_d_on_episodes() -> None:
+    owner: _ChoiceOwner = _ChoiceOwner()
+    owner.release.set()
+    entered: threading.Event = threading.Event()
+    answer: threading.Event = threading.Event()
+    choose: Callable[..., Mapping[str, object]] = owner.episode_choose
+
+    def blocked(*args: Any, **kwargs: Any) -> Mapping[str, object]:
+        entered.set()
+        assert answer.wait(10)
+        return choose(*args, **kwargs)
+
+    owner.episode_choose = blocked  # type: ignore[method-assign]
+    controller: AnimeController = _owner_controller(owner)
+    _key(controller, "text:i")
+    controller.handle_key("text:d")
+    assert entered.wait(10)
+    worker: threading.Thread | None = controller._worker
+    controller.cancel()
+    answer.set()
+    assert worker is not None
+    worker.join(10)
+
+    for key in ("down", "down", "text:d"):
+        controller.handle_key(key)
+    deadline: float = time.monotonic() + 10
+    while not owner.batches and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert [keys for keys, _ in owner.batches] == [(EpisodeKey(1, 3),)]
+
+
+@pytest.mark.unit
+def test_enter_on_the_release_list_names_d_and_sends_nothing() -> None:
+    owner: _ChoiceOwner = _ChoiceOwner()
+    controller: AnimeController = _owner_controller(owner)
+    _key(controller, "text:i")
+
+    _key(controller, "enter")
+
+    assert _at(controller) is _Screen.CANDIDATES
+    assert "Wydanie pobierasz klawiszem D" in _frame(controller)
+    assert not owner.choices
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("searching", [False, True])
+def test_d_on_the_empty_release_row_names_why(searching: bool) -> None:
+    row: AnimeRow = release_rows((), None, searching=searching)[0]
+
+    assert row.refusal == ("Trwa wyszukiwanie wydań" if searching else "Brak wydania do pobrania")
 
 
 @pytest.mark.unit

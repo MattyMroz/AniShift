@@ -280,9 +280,9 @@ def render_anime(snapshot: AnimeSnapshot, columns: int, rows: int, now: float) -
         start = _filled(snapshot, width, rows)[0]
     canvas.top = start + heading
     if not query:
-        canvas.center(start + 1, Text(snapshot.global_status, _COLORS[snapshot.status_kind]))
+        canvas.center(start + 1, Text(snapshot.global_status, _COLORS[snapshot.status_kind]), selectable=True)
     if not query and start >= 0:
-        canvas.center(start, Text(_context(snapshot), "white_bold"))
+        canvas.center(start, Text(_context(snapshot), "white_bold"), selectable=True)
         mark_crumbs(canvas.lines[start], snapshot.crumbs)
     title_width: int = 0
     if query:
@@ -386,7 +386,7 @@ def _spec(screen: AnimeScreen) -> _Table:
 def _values(snapshot: AnimeSnapshot, item: AnimeRow, now: float) -> list[str]:
     values: list[str] = list(_spec(snapshot.screen).values(item))
     if snapshot.screen is AnimeScreen.EPISODES and item.key in snapshot.searching:
-        values[-1] = f"{spinner_frame(now)} szukam"
+        values[-1] = f"{spinner_frame(now)} Szukam"
     return values
 
 
