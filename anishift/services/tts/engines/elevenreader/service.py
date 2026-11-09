@@ -80,6 +80,9 @@ _BREAK_TAG: Final[str] = "<break"
 _BREAK_RUN: Final[re.Pattern[str]] = re.compile(r"<break[^>]*(?:>|$)(?:\s*<break[^>]*(?:>|$))*")
 """Adjacent SSML pauses forming one boundary; the final tag may be cut off at the end of the text."""
 
+_WORD: Final[re.Pattern[str]] = re.compile(r"\w+")
+"""One word of a part; punctuation, dashes and spacing between words are not compared."""
+
 
 class ElevenReaderTtsEngine:
     """One-attempt adapter recording ElevenReader documents in a tab of the profile's shared Chrome."""
@@ -393,8 +396,8 @@ def part_spans(chunks: tuple[AlignmentChunk, ...], parts: tuple[DocumentPart, ..
         _raise_clip("ElevenReader line count mismatch", received=len(bounds), expected=len(parts))
     timings: list[PartTiming] = []
     for index, (part, (first, last)) in enumerate(zip(parts, bounds, strict=True)):
-        if text[first : last + 1] != _neutralize(part.text):
-            _raise_clip("ElevenReader line text mismatch", line=index)
+        if _words(text[first : last + 1]) != _words(part.text):
+            _raise_text_mismatch(index)
         if ends[last] < starts[first]:
             _raise_clip("ElevenReader part timing is reversed", line=index)
         end_ms: float = starts[first] if any(silent[first : last + 1]) else ends[last]
@@ -404,6 +407,10 @@ def part_spans(chunks: tuple[AlignmentChunk, ...], parts: tuple[DocumentPart, ..
 
 def _neutralize(text: str) -> str:
     return " ".join(text.translate(_BRACKETS).split())
+
+
+def _words(text: str) -> list[str]:
+    return _WORD.findall(text.casefold())
 
 
 def _segment(text: str, first: int, stop: int) -> tuple[int, int] | None:
@@ -473,6 +480,17 @@ def _raise_unreadable_part(request_id: str) -> Never:
         details={"request_id": request_id},
     )
     raise TtsInputError(context=context)
+
+
+def _raise_text_mismatch(line: int) -> Never:
+    context: ErrorContext = ErrorContext(
+        code=ErrorCode.TTS_UNSUPPORTED,
+        message="ElevenReader line text mismatch",
+        suggestion="ElevenReader przeczytał kwestię innymi słowami, ponowienie da to samo; popraw jej tekst "
+        "albo wybierz inny silnik TTS.",
+        details={"line": line},
+    )
+    raise TtsUnsupportedError(context=context)
 
 
 def _raise_clip(message: str, **details: int) -> Never:

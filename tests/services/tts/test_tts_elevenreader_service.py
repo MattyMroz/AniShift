@@ -1261,11 +1261,37 @@ def test_part_spans_count_mismatch_raises_clip_error() -> None:
         part_spans(chunks, _parts("Ab. Cd."))
 
 
-def test_part_spans_text_mismatch_raises_clip_error() -> None:
+def test_part_spans_part_ending_with_em_dash_matches_server_text_without_it() -> None:
+    chunks = (_chunk('Szybki Kr <break time="0.6s"/> Kula ognia!'),)
+
+    assert _spans(chunks, "Szybki Kr—", "Kula ognia!") == [(0.0, 90.0), (310.0, 420.0)]
+
+
+@pytest.mark.parametrize(
+    ("received", "sent"),
+    [
+        ("Szybki Kr-", "Szybki Kr—"),
+        ("Szybki Kr–", "Szybki Kr—"),
+        ("Czekaj...", "Czekaj…"),
+        ('"Tak" - powiedział.', "„Tak” — powiedział."),
+        ("Nie wiem", "Nie, wiem?!"),
+    ],
+)
+def test_part_spans_punctuation_only_difference_is_accepted(received: str, sent: str) -> None:
+    timings = part_spans((_chunk(received),), _parts(sent))
+
+    assert [timing.request_id for timing in timings] == ["line-0"]
+
+
+def test_part_spans_different_words_raise_one_permanent_unsupported_error() -> None:
     chunks = (_chunk('Ab. <break time="0.6s"/> Cd.'),)
 
-    with pytest.raises(TtsClipValidationError, match="line text mismatch"):
+    with pytest.raises(TtsUnsupportedError, match="line text mismatch") as error:
         part_spans(chunks, _parts("Ab.", "Ef."))
+
+    assert error.value.context.code.value == "TTS_UNSUPPORTED"
+    assert error.value.context.details == {"line": 1}
+    assert error.value.context.suggestion
 
 
 def test_part_spans_no_chunks_and_no_parts_returns_nothing() -> None:
