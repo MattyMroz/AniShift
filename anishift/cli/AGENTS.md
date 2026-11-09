@@ -124,6 +124,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Lista wydań to `episode_selection.visible(offer.candidates, offer.suggestion)` — nie filtruj jej w UI drugi raz.
   Kursor, zaznaczenia i sugestia śledzą wiersze po hashu lub równości, nigdy po indeksie oferty. Odmowa z
   `REPEATABLE_REASONS` zostawia listę z P (`_repeatable_offer`). `_Screen.FILES` to tylko wybór pliku paczki.
+  `cancel()` (zmiana zakładki, ukrycie panelu) zamyka ofertę razem z kanałem katalogu, więc wraca z listy wydań do
+  odcinków z komunikatem; „wysyłam” wiąże `_choice_generation`, nie flaga. D i Enter na liście wydań zawsze coś mówią.
   `_REASON_TEXTS` pokrywa dokładnie `episode_identity.REASONS`; błąd programistyczny oceny tożsamości przerywa
   podgląd, loguje tylko `error_class` i nie tworzy niepewnej sugestii.
 - Film ma jeden wiersz i `EpisodeKey(id, 1)`. Zakres zastępuje zaznaczenia; nawigacja zachowuje zaznaczenia i kursor.
