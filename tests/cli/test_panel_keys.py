@@ -1429,7 +1429,7 @@ def test_a_deletion_notice_offers_its_undo_as_a_click_and_keeps_its_title_plain(
 
 def test_a_narrow_footer_drops_actions_from_the_end_and_keeps_help_and_back(build: Callable[[str], _Probe]) -> None:
     actions: ScreenActions = ScreenActions((("Del", "usuń"), ("W", "wstrzymaj"), ("H", "historia")))
-    assert pack_footer(footer_segments(actions), 21) == ("Del usuń", "? klawisze · Esc wróć")
+    assert pack_footer(footer_segments(actions), 21) == ("Del usuń · ? klawisze", "Esc wróć")
     lines: list[str] = [line.strip() for line in build("processing_download").panel.render(30, 24).plain.splitlines()]
     assert "Del usuń · W wstrzymaj" in lines
     assert "? klawisze · Esc wróć" in lines
@@ -2266,31 +2266,48 @@ _INTERFACE: Final[tuple[str, ...]] = ("PANEL", *state_module._TABS, "Esc wróć"
 
 
 @pytest.mark.parametrize(
-    ("name", "content", "interface"),
+    ("name", "title", "content", "interface"),
     [
-        ("subscriptions", "Alpha  1/4      0       Termin nieznany", ("Tytuł", "Odcinki", "W wstrzymaj", _POINTER)),
-        ("library", "Slime  —", ("Nazwa", "F folder", _POINTER)),
-        ("processing_download", "Pobieranie     one.mkv", ("H historia", _POINTER)),
+        ("subscriptions", "", "Alpha  1/4      0       Termin nieznany", ("Tytuł", "Odcinki", "W wstrzymaj", _POINTER)),
+        ("library", "", "Slime  —", ("Nazwa", "F folder", _POINTER)),
+        ("processing_download", "", "Pobieranie      one.mkv", ("H historia", _POINTER)),
         (
             "episodes",
+            f"Anime{CRUMB_SEPARATOR}Slime (2018)",
             "1   Episode 1  —       Już zlecone?\n2   Episode 2",
             ("Nr", "Emisja", "[ ]", "D pobierz", _POINTER),
         ),
-        ("candidates", "[Group] Slime - 04", ("Wydanie", "Pewność", "*", "[ ]", _POINTER)),
-        ("draft", "E3  Episode 3", ("[x]", "Już wyemitowane", "Dodaj subskrypcję", "Anuluj", _POINTER)),
-        ("history", "2026-10-09 20:15:00 · Slime · ukończono", ("Historia", "P ponów", _POINTER)),
-        ("library_details", "ready/Slime.pl.mkv · MKV", ("F folder", _POINTER)),
-        ("u08", "Sprawdzono E3: brak wydań w źródle", ("Tytuł", "[ ]", "W wstrzymaj", _POINTER)),
-        ("problem", "Źródło wydań nie odpowiada", ()),
-        ("subscriptions_empty", "", ("Brak subskrypcji",)),
-        ("busy", "", ("Wczytuję",)),
-        ("query", "", ("ANIME", ">")),
+        (
+            "candidates",
+            f"Anime{CRUMB_SEPARATOR}Slime (2018)",
+            "[Group] Slime - 04",
+            ("Wydanie", "Pewność", "*", "[ ]", _POINTER),
+        ),
+        (
+            "draft",
+            f"Nowa subskrypcja{CRUMB_SEPARATOR}Slime",
+            "E3  Episode 3",
+            ("[x]", "Już wyemitowane", "Dodaj subskrypcję", "Anuluj", _POINTER),
+        ),
+        ("history", "", "2026-10-09 20:15:00 · Slime · ukończono", ("Historia", "P ponów", _POINTER)),
+        ("library_details", "", "ready/Slime.pl.mkv · MKV", ("F folder", _POINTER)),
+        (
+            "u08",
+            f"Subskrypcje{CRUMB_SEPARATOR}Alpha",
+            "Sprawdzono E3: brak wydań w źródle",
+            ("Tytuł", "[ ]", "W wstrzymaj", _POINTER),
+        ),
+        ("problem", f"Anime{CRUMB_SEPARATOR}Slime (2018)", "Źródło wydań nie odpowiada", ()),
+        ("subscriptions_empty", "", "", ("Brak subskrypcji",)),
+        ("busy", f"Anime{CRUMB_SEPARATOR}Slime (2018)", "", ("Wczytuję",)),
+        ("query", "", "", ("ANIME", ">")),
     ],
 )
-def test_a_drag_over_the_whole_panel_copies_its_content_but_none_of_the_interface(
+def test_a_drag_over_the_whole_panel_copies_its_title_and_content_but_none_of_the_interface(  # noqa: PLR0913
     build: Callable[[str], _Probe],
     monkeypatch: pytest.MonkeyPatch,
     name: str,
+    title: str,
     content: str,
     interface: tuple[str, ...],
 ) -> None:
@@ -2305,9 +2322,14 @@ def test_a_drag_over_the_whole_panel_copies_its_content_but_none_of_the_interfac
     selected: str = _reversed(painted)
 
     assert all(label in frame.plain for label in (*_INTERFACE, *interface))
-    assert copied == ([copied[0]] if content else [])
+    assert copied == ([copied[0]] if title or content else [])
+    assert "".join(copied).startswith(title)
     assert content in "".join(copied)
-    assert not [label for label in (*_INTERFACE, *interface) if label in "".join(copied) or label in selected]
+    assert not [
+        label
+        for label in (*_INTERFACE, *interface)
+        if label not in title and (label in "".join(copied) or label in selected)
+    ]
 
 
 def test_a_click_on_an_inert_tab_or_crumb_still_runs_it(

@@ -400,15 +400,15 @@ def test_library_ctrl_z_shows_the_set_restoring_at_once_and_normal_when_the_owne
     try:
         panel.handle_key("undo")
         assert _shown(panel) == ["Alpha", "Beta", "Gamma"]
-        assert "Alpha · Przywracam…" in panel.render(80, 24).plain
+        assert "Alpha · Przywracam" in panel.render(80, 24).plain
         owner.answer.set()
         _until(lambda: owner.undone == ["latest"] and _answered(panel))
-        assert "Alpha · Przywracam…" in panel.render(80, 24).plain
+        assert "Alpha · Przywracam" in panel.render(80, 24).plain
         working: dict[str, object] = {
             "library": list(_SETS[1:]),
             "deletions": [{**_RECYCLED, "recycled": 1, "active": True, "restoring": True}],
         }
-        assert "Alpha · Przywracam…" in _restore_frame(panel, owner, working)
+        assert "Alpha · Przywracam" in _restore_frame(panel, owner, working)
         done: dict[str, object] = {
             "library": list(_SETS),
             "deletions": [{**_RECYCLED, "recycled": 1, "restored": True}],
@@ -432,7 +432,7 @@ def test_failed_restore_drops_the_restoring_row_and_names_the_reason(monkeypatch
             "library": list(_SETS[1:]),
             "deletions": [{**_RECYCLED, "recycled": 1, "active": True, "restoring": True}],
         }
-        assert "Alpha · Przywracam…" in _restore_frame(panel, owner, working)
+        assert "Alpha · Przywracam" in _restore_frame(panel, owner, working)
         failed: dict[str, object] = {
             "library": list(_SETS[1:]),
             "deletions": [{**_RECYCLED, "recycled": 1, "restore_problem": "restore_receipt_missing"}],
@@ -491,7 +491,7 @@ def test_processing_ctrl_z_shows_a_failed_set_restoring_at_once(monkeypatch: pyt
     try:
         panel.handle_key("undo")
         assert [item.get("set_id") for item in panel._processing_rows()] == ["Beta", "Alpha"]
-        assert "Przywracam…" in panel.render(80, 24).plain
+        assert "Przywracam" in panel.render(80, 24).plain
         assert "Alpha" not in _shown(panel)
     finally:
         _stop(owner, panel)

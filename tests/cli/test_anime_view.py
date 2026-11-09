@@ -67,7 +67,7 @@ def test_selection_and_results_preserve_row_positions_and_footer(width: int) -> 
     assert "Zaż" in selected[top]
     view.searching(("one", "three"))
     busy: str = view.frame(width, 24).plain
-    assert "⠋ szukam" in busy
+    assert "⠋ Szukam" in busy
     assert "Zlecam" not in busy
     view.result("one", admitted=True)
     assert view.state.selected == {"three"}

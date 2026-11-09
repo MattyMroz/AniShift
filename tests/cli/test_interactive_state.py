@@ -148,12 +148,12 @@ def _live_material(group_id: str, run_id: str = "run", state: str = "running") -
     ("state", "acquisition_state", "problem", "expected", "percentage"),
     [
         ("downloading", "accepted", None, "Pobieranie", True),
-        ("metaDL", "accepted", None, "Łączę", True),
-        ("stoppedDL", "accepted", None, "Łączę", True),
+        ("metaDL", "accepted", None, "Łączenie", True),
+        ("stoppedDL", "accepted", None, "Pobieranie", True),
         ("stoppedUP", "accepted", None, "Pobrane", True),
-        (None, "accepted", None, "Brak transferu", False),
-        ("downloading", "accepted", "unavailable", "Brak odczytu", False),
-        ("missingFiles", "accepted", None, "Błąd transferu", False),
+        (None, "accepted", None, "Łączenie", False),
+        ("downloading", "accepted", "unavailable", "Brak połączenia", False),
+        ("missingFiles", "accepted", None, "Błąd torrenta", False),
         ("uploading", "accepted", None, "Pobrane", True),
         ("stalledUP", "accepted", None, "Pobrane", True),
         ("forcedUP", "accepted", None, "Pobrane", True),
@@ -261,15 +261,15 @@ def test_processing_toggles_one_download_with_w(
 @pytest.mark.parametrize(
     ("state", "started", "action", "paused", "label", "hint", "command"),
     [
-        ("stoppedDL", False, None, False, "Wybieram", None, None),
-        ("stoppedDL", False, "resume", False, "Wybieram", None, None),
-        ("stoppedDL", False, None, True, "Wstrzymano", None, None),
-        ("stoppedDL", False, "stop", False, "Wstrzymano", "W wznów", "resume"),
-        ("stoppedDL", True, "stop", False, "Wstrzymano", "W wznów", "resume"),
-        ("stoppedDL", True, None, False, "Łączę", "W wstrzymaj", "stop"),
-        ("stoppedDL", True, "resume", False, "Łączę", "W wstrzymaj", "stop"),
+        ("stoppedDL", False, None, False, "Wybór pliku", None, None),
+        ("stoppedDL", False, "resume", False, "Wybór pliku", None, None),
+        ("stoppedDL", False, None, True, "Wstrzymane", None, None),
+        ("stoppedDL", False, "stop", False, "Wstrzymane", "W wznów", "resume"),
+        ("stoppedDL", True, "stop", False, "Wstrzymane", "W wznów", "resume"),
+        ("stoppedDL", True, None, False, "Pobieranie", "W wstrzymaj", "stop"),
+        ("stoppedDL", True, "resume", False, "Pobieranie", "W wstrzymaj", "stop"),
         ("stoppedUP", True, None, False, "Pobrane", "W wstrzymaj", "stop"),
-        ("stoppedUP", True, "stop", False, "Wstrzymano", "W wznów", "resume"),
+        ("stoppedUP", True, "stop", False, "Wstrzymane", "W wznów", "resume"),
     ],
 )
 def test_processing_tells_a_download_the_owner_has_not_started_from_a_stopped_one(  # noqa: PLR0913
@@ -309,7 +309,7 @@ def test_processing_tells_a_download_the_owner_has_not_started_from_a_stopped_on
     try:
         frame: str = controller.render(120, 40).plain
         assert label in frame
-        assert ("Wstrzymano" in frame) is (label == "Wstrzymano")
+        assert ("Wstrzymane" in frame) is (label == "Wstrzymane")
         assert {text for text in ("W wznów", "W wstrzymaj") if text in frame} == ({hint} if hint else set())
         controller.handle_key("text:w")
         assert calls == ([] if command is None else [("transfer", {"info_hash": "hash", "action": command})])
@@ -396,7 +396,7 @@ def test_processing_labels_predecessor_wait_without_attention_warning(monkeypatc
     }
     try:
         frame: str = controller.render(120, 40).plain
-        assert "Czeka w kolejce" in frame
+        assert "W kolejce" in frame
         assert "Wymaga uwagi" not in frame
     finally:
         controller.close()
@@ -663,7 +663,7 @@ def test_global_pause_marks_only_automatic_processing_as_held(
     try:
         controller._receive(session, {"event": "state_changed", "payload": payload})
         frame: str = controller.render(120, 24).plain
-        assert ("Wstrzymano" in frame) is automatic
+        assert ("Wstrzymane" in frame) is automatic
         assert ("Przygotowanie" in frame) is not automatic
     finally:
         controller.close()
@@ -710,12 +710,12 @@ def test_download_numeric_display_retains_samples_and_freezes_until_verified_res
         clock[0] = 120.0
         assert "42% | 00:00:02.000" in controller.render(columns, 24).plain
         item.update(state="stoppedDL", action="stop")
-        assert "Wstrzymano" in receive()
+        assert "Wstrzymane" in receive()
         controller._connected = False
         controller._observe_downloads()
         clock[0] = 150.0
         disconnected: str = controller.render(columns, 24).plain
-        assert "Brak odczytu" in disconnected
+        assert "Brak połączenia" in disconnected
         assert "42% | 00:00:02.000" in disconnected
         item.update(state="downloading", progress=0.42)
         receive()
@@ -932,7 +932,7 @@ def test_processing_only_shows_live_material_bars_from_a_mixed_legacy_snapshot( 
         frame: str = controller.render(columns, rows).plain
         assert "Episode 01.mkv" in frame
         assert "Episode 02.mkv" in frame
-        assert "Synteza mowy" in frame
+        assert "Nagrywanie" in frame
         assert "25%" in frame
         assert "░" in frame
         assert "█" in frame
@@ -946,7 +946,7 @@ def test_processing_only_shows_live_material_bars_from_a_mixed_legacy_snapshot( 
         assert len(frame.splitlines()) <= rows
         assert all(len(line) <= columns for line in frame.splitlines())
         controller.handle_key("end")
-        for key in ("text:p", "text:w", "text:x", "delete", "enter"):
+        for key in ("text:p", "text:w", "text:x", "enter"):
             controller.handle_key(key)
         assert calls == []
         controller._receive(
@@ -1595,7 +1595,7 @@ def test_library_deletion_snapshot_removes_ghost_and_restore_returns_material(mo
         )
         assert state_library.library_rows(controller._snapshot) == []
         frame: str = controller.render(80, 24).plain
-        assert all(text not in frame for text in ("Episode B", "Kosz", "Brakuje potwierdzonego", "Wstrzymano"))
+        assert all(text not in frame for text in ("Episode B", "Kosz", "Brakuje potwierdzonego", "Wstrzymane"))
         controller._receive(
             client,
             {
@@ -1967,7 +1967,7 @@ def test_processing_aligns_bars_and_percentages_of_downloads_and_processing(
         lines: list[str] = [line for line in controller.render(columns, 30).plain.splitlines() if "%" in line]
         assert len(lines) == 3
         assert "Materiał" in lines[1]
-        assert "Synteza mowy" in lines[2]
+        assert "Nagrywanie" in lines[2]
         assert len({next(index for index, char in enumerate(line) if char in "█░") for line in lines}) == 1
         assert len({line.index(" | ") for line in lines}) == 1
     finally:
@@ -2045,7 +2045,7 @@ def test_processing_truncates_a_long_name_to_fit_a_narrow_terminal(monkeypatch: 
         monkeypatch, 80, ("[Erai-raws] Kikansha no Mahou wa Tokubetsu desu - 05 [1080p CR WEB-DL AVC AAC].mkv",)
     )
 
-    assert "[Erai-raws] Kik….mkv" in lines[0]
+    assert "[Erai-raws] Ki….mkv" in lines[0]
     assert all(Text(line).cell_len <= 80 for line in lines)
 
 

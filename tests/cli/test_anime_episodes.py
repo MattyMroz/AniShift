@@ -1711,7 +1711,7 @@ def test_download_orders_marked_episodes_through_the_owner_and_stays_on_the_list
         _key(controller, key)
     pending: str = _frame(controller)
     assert _at(controller) is _Screen.EPISODES
-    assert "szukam" in pending
+    assert "Szukam" in pending
     assert re.search(r"\[x\]\s+1\s+Episode 1", pending)
     assert re.search(r"\[x\]\s+3\s+Episode 3", pending)
     assert controller._episode_marks == {1, 3}
