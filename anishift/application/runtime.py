@@ -7,7 +7,7 @@ import threading
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Protocol
+from typing import TYPE_CHECKING, Final, Protocol, cast
 
 from anishift.application.handlers import (
     AudioTaskHandler,
@@ -30,7 +30,7 @@ from anishift.config.user_settings import (
     UserSettings,
     load_user_settings,
 )
-from anishift.errors import AniShiftError, ConfigError, ErrorCode, ErrorContext, TransientError
+from anishift.errors import AniShiftError, ConfigError, ErrorCode, ErrorContext
 from anishift.paths import config_dir, elevenreader_dir
 from anishift.platform.binaries import Binary, require_binary
 from anishift.services.audio import (
@@ -66,6 +66,7 @@ from anishift.services.llm import (
     LlmTimeoutError,
     TextPart,
 )
+from anishift.services.llm.config import ApiKeyMode
 from anishift.services.llm.engines.palantir import PALANTIR_ENGINE_ID, PalantirModelConfig, palantir_model_config
 from anishift.services.subtitles.errors import SubtitleError
 from anishift.services.subtitles.restyle import DialogueFont
@@ -410,7 +411,7 @@ class _LlmTranslationEngine:
     ) -> list[BatchedLine]:
         service = LlmService(
             self._config,
-            observer=_LlmRetryObserver(observer, max_retries=self._config.max_retries),
+            observer=_LlmRetryObserver(observer),
         )
         engine = LlmTranslateService(
             self._llm_config,
@@ -460,24 +461,16 @@ class _LlmCompleter:
 
 
 class _LlmRetryObserver:
-    __slots__ = ("_attempt", "_delegate", "_max_retries")
+    __slots__ = ("_delegate",)
 
-    def __init__(self, delegate: TranslationObserver | None, *, max_retries: int) -> None:
+    def __init__(self, delegate: TranslationObserver | None) -> None:
         self._delegate: TranslationObserver | None = delegate
-        self._max_retries: int = max_retries
-        self._attempt: int = 0
 
-    def before_attempt(self) -> None:
-        self._attempt += 1
+    def before_attempt(self) -> None: ...
 
-    def on_transient_failure(self, error: TransientError) -> None:
+    def on_retry(self, error: AniShiftError, *, attempt: int, max_attempts: int) -> None:
         if self._delegate is not None:
-            self._delegate.retry(
-                "llm",
-                min(self._attempt + 1, self._max_retries + 1),
-                self._max_retries + 1,
-                error.context.code.value,
-            )
+            self._delegate.retry("llm", attempt, max_attempts, error.context.code.value)
 
     def on_success(self) -> None: ...
 
@@ -529,7 +522,6 @@ def palantir_llm_config(  # noqa: PLR0913
     *,
     enrollment_base_url: str,
     token: str,
-    max_retries: int = 0,
     fallback_enrollment_base_url: str = "",
     fallback_token: str = "",
 ) -> LlmConfig:
@@ -550,9 +542,8 @@ def palantir_llm_config(  # noqa: PLR0913
     return LlmConfig(
         engine_id=PALANTIR_ENGINE_ID,
         provider_model_id=model.provider_model_id,
-        api_key=model.token,
+        api_keys=(model.token,),
         base_url=model.base_url,
-        max_retries=max_retries,
         alias=model.alias,
         provider_id=model.provider_id,
         protocol=model.protocol,
@@ -563,7 +554,7 @@ def palantir_llm_config(  # noqa: PLR0913
 
 def probe_palantir_model(config: LlmConfig) -> None:
     """Send exactly one minimal completion to prove *config* can really run."""
-    service: LlmService = LlmService(replace(config, max_retries=0, max_output_tokens=_PROBE_MAX_OUTPUT_TOKENS))
+    service: LlmService = LlmService(replace(config, retry_waits_s=(), max_output_tokens=_PROBE_MAX_OUTPUT_TOKENS))
     try:
         service.complete(
             LlmRequest(messages=(LlmMessage(role=LlmRole.USER, parts=(TextPart(_PROBE_PROMPT),)),)),
@@ -602,13 +593,13 @@ def _llm_config(settings: Settings, plan: ExecutionPlan) -> LlmConfig:
     snapshot = plan.settings
     if snapshot.llm_profile_id == PALANTIR_ENGINE_ID:
         return _palantir_translation_config(settings, snapshot)
-    keys: dict[str, str] = {
-        "anthropic": settings.anthropic_api_key,
-        "gemini": settings.gemini_api_key,
-        "openai": settings.openai_api_key,
-        "deepseek": settings.deepseek_api_key,
-        "openrouter": settings.openrouter_api_key,
-        "openai_compatible": settings.openai_compatible_api_key,
+    keys: dict[str, tuple[str, ...]] = {
+        "anthropic": settings.anthropic_api_keys,
+        "gemini": settings.gemini_api_keys,
+        "openai": settings.openai_api_keys,
+        "deepseek": settings.deepseek_api_keys,
+        "openrouter": settings.openrouter_api_keys,
+        "openai_compatible": settings.openai_compatible_api_keys,
     }
     # Only the OpenAI-compatible provider is addressed by that base URL; every
     # other engine, Palantir included, resolves its own endpoint.
@@ -616,12 +607,12 @@ def _llm_config(settings: Settings, plan: ExecutionPlan) -> LlmConfig:
     return LlmConfig(
         engine_id=snapshot.llm_profile_id,
         provider_model_id=snapshot.llm_model_id,
-        api_key=keys.get(snapshot.llm_profile_id, ""),
+        api_keys=keys.get(snapshot.llm_profile_id, ()),
+        api_key_mode=cast("ApiKeyMode", snapshot.llm_credential_mode),
         base_url=(settings.openai_compatible_base_url or None) if compatible else None,
         temperature=snapshot.llm_temperature,
         top_p=snapshot.llm_top_p,
         max_output_tokens=snapshot.llm_max_output_tokens,
-        max_retries=snapshot.translation_max_retries,
     )
 
 
@@ -633,7 +624,6 @@ def _palantir_translation_config(settings: Settings, snapshot: RunSettingsSnapsh
         snapshot.llm_model_id,
         enrollment_base_url=preferences.palantir_enrollment_base_url,
         token=settings.palantir_token,
-        max_retries=snapshot.translation_max_retries,
         fallback_enrollment_base_url=preferences.palantir_fallback_enrollment_base_url,
         fallback_token=settings.palantir_secondary_token,
     )

@@ -125,7 +125,7 @@ def test_anthropic_sends_explicit_generation_parameters() -> None:
     config = LlmConfig(
         engine_id="anthropic",
         provider_model_id="custom-claude",
-        api_key="anthropic-key",
+        api_keys=("anthropic-key",),
         temperature=0.4,
         top_p=0.8,
         max_output_tokens=1234,
@@ -332,7 +332,7 @@ def _anthropic_config() -> LlmConfig:
     return LlmConfig(
         engine_id="anthropic",
         provider_model_id="custom-claude",
-        api_key="anthropic-key",
+        api_keys=("anthropic-key",),
         timeout_s=12.5,
     )
 

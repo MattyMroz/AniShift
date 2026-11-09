@@ -156,7 +156,7 @@ def test_gemini_sends_only_explicit_generation_parameters() -> None:
     config = LlmConfig(
         engine_id="gemini",
         provider_model_id="custom-gemini",
-        api_key="gemini-key",
+        api_keys=("gemini-key",),
         temperature=0.3,
         top_p=0.7,
         max_output_tokens=2345,
@@ -390,7 +390,7 @@ def _gemini_config() -> LlmConfig:
     return LlmConfig(
         engine_id="gemini",
         provider_model_id="custom-gemini",
-        api_key="gemini-key",
+        api_keys=("gemini-key",),
         timeout_s=12.5,
     )
 

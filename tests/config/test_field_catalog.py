@@ -66,17 +66,18 @@ def test_catalog_contract_is_complete_and_self_consistent() -> None:
     specs = setting_catalog()
     catalog = _catalog()
     expected_ids: set[str] = {
-        "anthropic_api_key",
+        "anthropic_api_keys",
+        "api_key_mode",
         "audio_language_priority",
         "burn_subtitle_product",
         "composition_quality_preset",
         "deepl_api_key",
-        "deepseek_api_key",
+        "deepseek_api_keys",
         "elevenbytes_custom_voices",
         "elevenbytes_vpn_enabled",
         "elevenlabs_api_key",
         "external_audio_role",
-        "gemini_api_key",
+        "gemini_api_keys",
         "llm_max_concurrency",
         "llm_max_output_tokens",
         "llm_provider",
@@ -87,10 +88,10 @@ def test_catalog_contract_is_complete_and_self_consistent() -> None:
         "mkv_tracks",
         "mp4_audio_source",
         "narrator_over_source_lu",
-        "openai_api_key",
-        "openai_compatible_api_key",
+        "openai_api_keys",
+        "openai_compatible_api_keys",
         "openai_compatible_base_url",
-        "openrouter_api_key",
+        "openrouter_api_keys",
         "original_gain_db",
         "palantir_enrollment_base_url",
         "palantir_fallback_enrollment_base_url",
@@ -318,7 +319,9 @@ def test_sapi_catalog_uses_voice_specific_scales_without_false_concurrency(
 def test_secret_catalog_covers_environment_keys_without_exposing_workspace() -> None:
     catalog = _catalog()
     secret_ids = {setting_id for setting_id, spec in catalog.items() if spec.is_secret}
-    expected_secret_ids = {field_name for field_name in Settings.model_fields if field_name.endswith("_api_key")} | {
+    expected_secret_ids = {
+        field_name for field_name in Settings.model_fields if field_name.endswith(("_api_key", "_api_keys"))
+    } | {
         "palantir_token",
         "palantir_secondary_token",
     }

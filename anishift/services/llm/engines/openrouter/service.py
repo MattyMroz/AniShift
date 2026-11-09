@@ -20,7 +20,7 @@ _PROVIDER: Final[OpenAiCompatibleProvider] = OpenAiCompatibleProvider(
     engine_id="openrouter",
     default_base_url=_OPENROUTER_BASE_URL,
     requires_api_key=True,
-    api_key_env_var="ANISHIFT_OPENROUTER_API_KEY",
+    api_key_env_var="ANISHIFT_OPENROUTER_API_KEYS",
     max_tokens_parameter="max_tokens",
     file_modalities=frozenset({"image", "pdf"}),
 )

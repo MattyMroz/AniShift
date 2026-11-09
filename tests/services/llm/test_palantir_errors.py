@@ -45,7 +45,7 @@ def _config(*, api_key: str = _TOKEN) -> LlmConfig:
     return LlmConfig(
         engine_id="palantir",
         provider_model_id="gpt-main-5",
-        api_key=api_key,
+        api_keys=(api_key,),
         alias="foundry/gpt-5.6-sol",
         provider_id="foundry-openai",
         protocol=ModelProtocol.OPENAI_RESPONSES,
@@ -191,7 +191,7 @@ def test_generation_failure_retry_through_llm_service(
 
     client: httpx.Client = httpx.Client(transport=httpx.MockTransport(handler))
     monkeypatch.setattr(palantir_service, "build_palantir_client", lambda timeout_s: client)
-    config: LlmConfig = replace(_config(), max_retries=1)
+    config: LlmConfig = replace(_config(), retry_waits_s=(0.0,))
     if shape == "json":
         config = replace(
             config,
@@ -223,7 +223,7 @@ def test_empty_stream_retries_through_llm_service(
 
     client: httpx.Client = httpx.Client(transport=httpx.MockTransport(handler))
     monkeypatch.setattr(palantir_service, "build_palantir_client", lambda timeout_s: client)
-    config: LlmConfig = replace(_config(), max_retries=1)
+    config: LlmConfig = replace(_config(), retry_waits_s=(0.0,))
     if protocol is ModelProtocol.GOOGLE_GENERATE:
         config = replace(
             config,
@@ -251,7 +251,7 @@ def test_malformed_responses_stream_is_fatal_through_llm_service(monkeypatch: py
 
     client: httpx.Client = httpx.Client(transport=httpx.MockTransport(handler))
     monkeypatch.setattr(palantir_service, "build_palantir_client", lambda timeout_s: client)
-    with LlmService(replace(_config(), max_retries=1)) as service, pytest.raises(LlmRequestError) as failure:
+    with LlmService(replace(_config(), retry_waits_s=(0.0,))) as service, pytest.raises(LlmRequestError) as failure:
         service.complete(_request())
 
     assert isinstance(failure.value, FatalError)

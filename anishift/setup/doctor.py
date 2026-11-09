@@ -47,12 +47,12 @@ _REQUIRED_BINARIES: Final[tuple[Binary, ...]] = (
 _API_KEYS: Final[dict[str, str]] = {
     "deepl_api_key": "DeepL",
     "elevenlabs_api_key": "ElevenLabs",
-    "anthropic_api_key": "Anthropic",
-    "gemini_api_key": "Gemini",
-    "openai_api_key": "OpenAI",
-    "deepseek_api_key": "DeepSeek",
-    "openrouter_api_key": "OpenRouter",
-    "openai_compatible_api_key": "OpenAI-compatible",
+    "anthropic_api_keys": "Anthropic",
+    "gemini_api_keys": "Gemini",
+    "openai_api_keys": "OpenAI",
+    "deepseek_api_keys": "DeepSeek",
+    "openrouter_api_keys": "OpenRouter",
+    "openai_compatible_api_keys": "OpenAI-compatible",
 }
 """API keys surfaced by the doctor: Settings attribute name -> display label."""
 

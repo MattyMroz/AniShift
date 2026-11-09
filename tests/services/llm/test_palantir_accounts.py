@@ -62,10 +62,10 @@ def _config(family: int = 0) -> LlmConfig:
         provider_id=provider,
         protocol=protocol,
         base_url=f"{_ORIGINS[0]}/api/v2/llm/proxy/{route}/v1",
-        api_key=_TOKENS[0],
+        api_keys=(_TOKENS[0],),
         fallback_origin=_ORIGINS[1],
         fallback_api_key=_TOKENS[1],
-        max_retries=0,
+        retry_waits_s=(),
     )
 
 
@@ -176,7 +176,7 @@ def test_non_failover_failure_stays_on_account(
 
     _transport(monkeypatch, handler)
     with pytest.raises(expected):
-        _complete(replace(_config(family), max_retries=1))
+        _complete(replace(_config(family), retry_waits_s=(0.0,)))
     assert [request.url.host for request in sent] == ["primary.example.invalid"] * attempts
     if failure == "body_timeout":
         assert closed == [True] * attempts
@@ -217,7 +217,7 @@ def test_retry_uses_accounts_when_both_are_cooling_down(monkeypatch: pytest.Monk
 
     _transport(monkeypatch, handler)
     with pytest.raises(LlmRateLimitError):
-        _complete(replace(_config(family), max_retries=1))
+        _complete(replace(_config(family), retry_waits_s=(0.0,)))
     assert [request.url.host for request in sent] == ["primary.example.invalid", "fallback.example.invalid"] * 2
 
 
@@ -235,7 +235,7 @@ def test_single_account_preserves_retry_behavior(monkeypatch: pytest.MonkeyPatch
         _config(family),
         fallback_origin="" if missing in {"both", "origin"} else _ORIGINS[1],
         fallback_api_key="" if missing in {"both", "token"} else _TOKENS[1],
-        max_retries=1,
+        retry_waits_s=(0.0,),
     )
     _complete(config)
     assert [request.url.host for request in sent] == ["primary.example.invalid"] * 2

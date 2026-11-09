@@ -42,6 +42,7 @@ from anishift.config.user_settings import (
     tts_profile_key,
 )
 from anishift.services.audio.types import AudioCodecProfile
+from anishift.services.llm.config import API_KEY_MODES
 from anishift.services.llm.engines import available_engine_ids as available_llm_engine_ids
 from anishift.services.translation.engines import available_engine_ids as available_translation_engine_ids
 from anishift.services.translation.engines.llm.prompts import available_style_names
@@ -338,6 +339,7 @@ USER_SETTING_DISPOSITIONS: Final[MappingProxyType[str, SettingDisposition]] = Ma
         "llm_max_output_tokens": SettingDisposition.VISIBLE,
         "llm_translation_style": SettingDisposition.VISIBLE,
         "llm_max_concurrency": SettingDisposition.VISIBLE,
+        "api_key_mode": SettingDisposition.VISIBLE,
         "primary_model_alias": SettingDisposition.VISIBLE,
         "palantir_enrollment_base_url": SettingDisposition.VISIBLE,
         "palantir_fallback_enrollment_base_url": SettingDisposition.VISIBLE,
@@ -779,7 +781,7 @@ def _translation_specs(
         SettingSpec(
             setting_id="translation_max_retries",
             label="Translation retries",
-            description="Retry transient translation failures up to this count.",
+            description="Retry failed Google and DeepL requests and rejected LLM answers up to this count.",
             value_type=SettingValueType.INTEGER,
             default=defaults.translation_max_retries,
             scope=SettingScope.GLOBAL,
@@ -864,6 +866,15 @@ def _translation_specs(
             minimum=LLM_MAX_CONCURRENCY_RANGE[0],
             maximum=LLM_MAX_CONCURRENCY_RANGE[1],
             depends_on=llm_condition,
+        ),
+        SettingSpec(
+            setting_id="api_key_mode",
+            label="Several keys of one provider",
+            description="Send LLM requests to the first key and move on after an error, or take the keys in turn.",
+            value_type=SettingValueType.STRING,
+            default=defaults.api_key_mode,
+            scope=SettingScope.GLOBAL,
+            allowed_values=API_KEY_MODES,
         ),
     )
 
@@ -1311,15 +1322,15 @@ def _environment_specs() -> tuple[SettingSpec, ...]:
                 "Configure the key used only by the official ElevenLabs engine.",
                 (SettingCondition("tts_engine", ("elevenlabs",)),),
             ),
-            ("anthropic_api_key", "Anthropic API key", "Configure the Anthropic provider key.", ()),
-            ("gemini_api_key", "Gemini API key", "Configure the Google Gemini provider key.", ()),
-            ("openai_api_key", "OpenAI API key", "Configure the OpenAI provider key.", ()),
-            ("deepseek_api_key", "DeepSeek API key", "Configure the DeepSeek provider key.", ()),
-            ("openrouter_api_key", "OpenRouter API key", "Configure the OpenRouter provider key.", ()),
+            ("anthropic_api_keys", "Anthropic API keys", "Configure the Anthropic provider keys.", ()),
+            ("gemini_api_keys", "Gemini API keys", "Configure the Google Gemini provider keys.", ()),
+            ("openai_api_keys", "OpenAI API keys", "Configure the OpenAI provider keys.", ()),
+            ("deepseek_api_keys", "DeepSeek API keys", "Configure the DeepSeek provider keys.", ()),
+            ("openrouter_api_keys", "OpenRouter API keys", "Configure the OpenRouter provider keys.", ()),
             (
-                "openai_compatible_api_key",
-                "OpenAI-compatible API key",
-                "Configure the optional key for an OpenAI-compatible endpoint.",
+                "openai_compatible_api_keys",
+                "OpenAI-compatible API keys",
+                "Configure the optional keys for an OpenAI-compatible endpoint.",
                 (),
             ),
             (

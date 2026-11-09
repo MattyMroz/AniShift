@@ -72,9 +72,9 @@ def test_update_secret_writes_prefixed_environment_key(tmp_path: Path) -> None:
     env_file: Path = tmp_path / ".env"
     service: AppService = _service(tmp_path, env_file)
 
-    service.update_secret("gemini_api_key", "gemini-value")
+    service.update_secret("gemini_api_keys", "gemini-value")
 
-    assert env_file.read_text(encoding="utf-8") == 'ANISHIFT_GEMINI_API_KEY="gemini-value"\n'
+    assert env_file.read_text(encoding="utf-8") == 'ANISHIFT_GEMINI_API_KEYS="gemini-value"\n'
 
 
 def test_update_secret_refuses_non_secret_unknown_and_preference_ids(tmp_path: Path) -> None:
@@ -99,7 +99,7 @@ def test_update_secret_never_exposes_the_value_in_errors_logs_or_results(tmp_pat
     captured: list[str] = []
     handler_id: int = loguru_logger.add(captured.append, format="{message} {extra}", level="DEBUG")
     try:
-        service.update_secret("gemini_api_key", protected)
+        service.update_secret("gemini_api_keys", protected)
         with pytest.raises(ConfigError) as rejected:
             service.update_secret("nonexistent_api_key", protected)
     finally:
@@ -113,7 +113,7 @@ def test_update_secret_never_exposes_the_value_in_errors_logs_or_results(tmp_pat
     assert protected not in repr(rejected.value)
     assert protected not in repr(rejected.value.context)
     assert protected not in repr(statuses)
-    assert statuses["gemini_api_key"] is True
+    assert statuses["gemini_api_keys"] is True
 
 
 def test_update_secret_preserves_comments_unrelated_keys_and_newline_style(tmp_path: Path) -> None:
@@ -121,10 +121,10 @@ def test_update_secret_preserves_comments_unrelated_keys_and_newline_style(tmp_p
     env_file.write_bytes(b"# secrets\r\nANISHIFT_DEEPL_API_KEY=deepl\r\n")
     service: AppService = _service(tmp_path, env_file)
 
-    service.update_secret("gemini_api_key", "gemini")
+    service.update_secret("gemini_api_keys", "gemini")
 
     assert env_file.read_bytes() == (
-        b'# secrets\r\nANISHIFT_DEEPL_API_KEY=deepl\r\nANISHIFT_GEMINI_API_KEY="gemini"\r\n'
+        b'# secrets\r\nANISHIFT_DEEPL_API_KEY=deepl\r\nANISHIFT_GEMINI_API_KEYS="gemini"\r\n'
     )
     assert service.reload_environment()["deepl_api_key"] is True
 
@@ -134,18 +134,18 @@ def test_update_secret_clears_with_empty_value_and_removes_with_none(tmp_path: P
     env_file.write_text("ANISHIFT_DEEPL_API_KEY=deepl\n", encoding="utf-8")
     service: AppService = _service(tmp_path, env_file)
 
-    service.update_secret("gemini_api_key", "gemini")
-    service.update_secret("gemini_api_key", "")
+    service.update_secret("gemini_api_keys", "gemini")
+    service.update_secret("gemini_api_keys", "")
 
-    assert "ANISHIFT_GEMINI_API_KEY=\n" in env_file.read_text(encoding="utf-8")
-    assert service.reload_environment()["gemini_api_key"] is False
+    assert "ANISHIFT_GEMINI_API_KEYS=\n" in env_file.read_text(encoding="utf-8")
+    assert service.reload_environment()["gemini_api_keys"] is False
 
-    service.update_secret("gemini_api_key", None)
+    service.update_secret("gemini_api_keys", None)
     remaining: str = env_file.read_text(encoding="utf-8")
 
-    assert "ANISHIFT_GEMINI_API_KEY" not in remaining
+    assert "ANISHIFT_GEMINI_API_KEYS" not in remaining
     assert "ANISHIFT_DEEPL_API_KEY=deepl" in remaining
-    assert service.reload_environment()["gemini_api_key"] is False
+    assert service.reload_environment()["gemini_api_keys"] is False
 
 
 def test_reload_environment_flips_missing_to_configured(tmp_path: Path) -> None:
@@ -158,7 +158,7 @@ def test_reload_environment_flips_missing_to_configured(tmp_path: Path) -> None:
 
     assert before["deepl_api_key"] is False
     assert after["deepl_api_key"] is True
-    assert after["gemini_api_key"] is False
+    assert after["gemini_api_keys"] is False
     assert service.environment_statuses()["deepl_api_key"] is True
 
 
@@ -207,3 +207,55 @@ def test_reload_environment_defaults_to_the_repository_env_file(tmp_path: Path) 
 
     assert "deepl_api_key" in statuses
     assert "openai_compatible_base_url" in statuses
+
+
+def test_api_keys_are_added_in_order_and_listed_only_by_count(tmp_path: Path) -> None:
+    env_file: Path = tmp_path / ".env"
+    service: AppService = _service(tmp_path, env_file)
+
+    service.add_api_key("gemini_api_keys", " private ")
+    service.add_api_key("gemini_api_keys", "business")
+    service.add_api_key("gemini_api_keys", "private")
+
+    assert env_file.read_text(encoding="utf-8") == 'ANISHIFT_GEMINI_API_KEYS="private,business"\n'
+    assert service.api_key_count("gemini_api_keys") == 2
+    assert service.current_settings().gemini_api_keys == ("private", "business")
+
+
+def test_removing_api_keys_keeps_the_order_and_drops_the_variable_when_empty(tmp_path: Path) -> None:
+    env_file: Path = tmp_path / ".env"
+    env_file.write_text("ANISHIFT_DEEPL_API_KEY=deepl\nANISHIFT_OPENAI_API_KEYS=a,b,c\n", encoding="utf-8")
+    service: AppService = _service(tmp_path, env_file)
+    service.reload_environment()
+
+    service.remove_api_key("openai_api_keys", 1)
+    assert service.current_settings().openai_api_keys == ("a", "c")
+
+    service.remove_api_key("openai_api_keys", 0)
+    service.remove_api_key("openai_api_keys", 0)
+
+    assert env_file.read_text(encoding="utf-8") == "ANISHIFT_DEEPL_API_KEY=deepl\n"
+    assert service.api_key_count("openai_api_keys") == 0
+
+
+@pytest.mark.parametrize("key", ["", "   ", "one,two"])
+def test_an_empty_or_comma_joined_api_key_is_refused(tmp_path: Path, key: str) -> None:
+    env_file: Path = tmp_path / ".env"
+    service: AppService = _service(tmp_path, env_file)
+
+    with pytest.raises(ConfigError) as refused:
+        service.add_api_key("gemini_api_keys", key)
+
+    assert refused.value.context.code is ErrorCode.CONFIG_INVALID
+    assert not env_file.exists()
+
+
+def test_key_lists_refuse_single_key_secrets_and_missing_positions(tmp_path: Path) -> None:
+    env_file: Path = tmp_path / ".env"
+    service: AppService = _service(tmp_path, env_file)
+
+    with pytest.raises(ConfigError):
+        service.add_api_key("deepl_api_key", "deepl")
+    with pytest.raises(ConfigError):
+        service.remove_api_key("gemini_api_keys", 0)
+    assert not env_file.exists()

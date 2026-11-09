@@ -132,7 +132,6 @@ def _service(
         provider_model_id="custom-model",
         base_url="http://localhost:11434/v1",
         timeout_s=12.5,
-        max_retries=9,
     )
     service: OpenaiCompatibleService | OpenaiService | OpenrouterService | DeepseekService = service_type(
         resolved_config, _client_factory=factory
@@ -170,13 +169,12 @@ def test_openai_compatible_maps_ordered_messages_and_optional_parameters(
     config: LlmConfig = LlmConfig(
         engine_id=engine_id,
         provider_model_id="custom-model",
-        api_key="test-key",
+        api_keys=("test-key",),
         base_url="http://localhost:11434/v1",
         temperature=0.4,
         top_p=0.8,
         max_output_tokens=321,
         timeout_s=12.5,
-        max_retries=9,
     )
     service, factory, _, completions = _service(config=config, service_type=service_type)
 
@@ -266,7 +264,7 @@ def test_chat_provider_maps_mixed_file_content(
     config: LlmConfig = LlmConfig(
         engine_id=engine_id,
         provider_model_id="custom-model",
-        api_key="test-key",
+        api_keys=("test-key",),
         base_url="https://provider.invalid/v1",
     )
     service, _, _, completions = _service(config=config, service_type=service_type)
@@ -323,7 +321,7 @@ def test_chat_provider_rejects_unsupported_file_before_sdk_call(
     config: LlmConfig = LlmConfig(
         engine_id=engine_id,
         provider_model_id="custom-model",
-        api_key="test-key",
+        api_keys=("test-key",),
         base_url="https://provider.invalid/v1",
     )
     service, factory, _, completions = _service(config=config, service_type=service_type)

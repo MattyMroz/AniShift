@@ -272,6 +272,11 @@ _TTS_FIELDS: Final[tuple[_SettingField, ...]] = (
 )
 """Persisted narration fields exposed by the product."""
 
+_CONNECTION_FIELDS: Final[tuple[_SettingField, ...]] = (
+    ("api_key_mode", "Kilka kluczy jednego dostawcy", "KLUCZE API"),
+)
+"""Persisted connection preferences shown below the provider list."""
+
 _AUTO_FIELDS: Final[tuple[_SettingField, ...]] = (
     ("requested_products", "Produkty wideo", "WYNIK"),
     ("subtitle_source_policy", "Źródło napisów", "ŹRÓDŁO NAPISÓW"),
@@ -340,6 +345,8 @@ _CHOICE_LABELS: Final[dict[tuple[str, str], str]] = {
     ("sign_narration", "off"): "Nie czyta",
     ("sign_narration", "smart"): "Czyta inteligentnie",
     ("sign_narration", "always"): "Czyta zawsze",
+    ("api_key_mode", "failover"): "Pierwszy, następny po błędzie",
+    ("api_key_mode", "rotate"): "Na zmianę",
     ("composition_quality_preset", "high"): "Wysoka",
     ("composition_quality_preset", "balanced"): "Zrównoważona",
     ("composition_quality_preset", "compact"): "Kompaktowa",
@@ -438,6 +445,8 @@ class _EditorAction(StrEnum):
     UPDATE_SECRET = "update_secret"  # noqa: S105 - operation name, never a credential
     UPDATE_ENVIRONMENT = "update_environment"
     REMOVE_SECRET = "remove_secret"  # noqa: S105 - operation name, never a credential
+    ADD_KEY = "add_key"
+    REMOVE_KEY = "remove_key"
     RESET_SCOPE = "reset_scope"
 
 
@@ -468,6 +477,7 @@ class _Connection:
     secret_id: str
     address_id: str = ""
     can_probe: bool = False
+    key_list: bool = False
 
 
 @dataclass(slots=True)
@@ -484,6 +494,7 @@ class _Editor:
     input: TextInput = field(default_factory=lambda: TextInput(pristine=True))
     provider_id: str = ""
     selected_values: set[str] = field(default_factory=set)
+    key_index: int = 0
 
     @property
     def buffer(self) -> str:
@@ -522,16 +533,17 @@ _CONNECTIONS: Final[tuple[_Connection, ...]] = (
         "palantir_secondary_token",
         "palantir_fallback_enrollment_base_url",
     ),
-    _Connection("gemini", "Gemini", "gemini_api_key"),
-    _Connection("openai", "OpenAI", "openai_api_key"),
-    _Connection("anthropic", "Anthropic", "anthropic_api_key"),
-    _Connection("deepseek", "DeepSeek", "deepseek_api_key"),
-    _Connection("openrouter", "OpenRouter", "openrouter_api_key"),
+    _Connection("gemini", "Gemini", "gemini_api_keys", key_list=True),
+    _Connection("openai", "OpenAI", "openai_api_keys", key_list=True),
+    _Connection("anthropic", "Anthropic", "anthropic_api_keys", key_list=True),
+    _Connection("deepseek", "DeepSeek", "deepseek_api_keys", key_list=True),
+    _Connection("openrouter", "OpenRouter", "openrouter_api_keys", key_list=True),
     _Connection(
         "openai-compatible",
         "OpenAI-compatible",
-        "openai_compatible_api_key",
+        "openai_compatible_api_keys",
         "openai_compatible_base_url",
+        key_list=True,
     ),
     _Connection("deepl", "DeepL", "deepl_api_key"),
     _Connection("elevenlabs", "ElevenLabs", "elevenlabs_api_key"),
@@ -1013,6 +1025,7 @@ class SettingsController:
             ("voice:", self._open_voice_editor),
             ("setting:", self._open_setting_editor),
             ("connection:", self._enter_connection),
+            ("connection-key:", self._open_key_remove_confirmation),
         )
 
     def _enter_connection(self, key: str) -> None:
@@ -1256,16 +1269,30 @@ class SettingsController:
             status: EnvironmentSettingStatus | None = statuses.get(connection.secret_id)
             current: str = _connection_status(status)
             items.append(_MenuItem(f"connection:{connection.key}", connection.label, current))
+        items.extend(self._active_setting_items(self._catalog_snapshot(), _CONNECTION_FIELDS))
         items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
         return tuple(items)
 
     def _connection_menu_items(self, connection: _Connection) -> tuple[_MenuItem, ...]:
+        if connection.key_list:
+            return self._key_list_menu_items(connection)
         items: list[_MenuItem] = [_MenuItem("connection-secret", "Ustaw / zmień klucz")]
         if connection.address_id:
             items.append(_MenuItem("connection-address", "Adres", self._connection_address(connection)))
         items.append(_MenuItem("connection-remove", "Usuń klucz"))
         if connection.can_probe:
             items.append(_MenuItem("connection-probe", "Testuj połączenie"))
+        items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
+        return tuple(items)
+
+    def _key_list_menu_items(self, connection: _Connection) -> tuple[_MenuItem, ...]:
+        count: int = self._service.api_key_count(connection.secret_id)
+        items: list[_MenuItem] = [
+            _MenuItem(f"connection-key:{number}", f"Klucz {number}", "Usuń") for number in range(1, count + 1)
+        ]
+        items.append(_MenuItem("connection-secret", "Dodaj klucz"))
+        if connection.address_id:
+            items.append(_MenuItem("connection-address", "Adres", self._connection_address(connection)))
         items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
         return tuple(items)
 
@@ -1501,11 +1528,23 @@ class SettingsController:
 
     def _open_password_editor(self) -> None:
         connection: _Connection = _required_connection(self._connection)
+        suffix: str = "NOWY KLUCZ" if connection.key_list else "KLUCZ"
         self._editor = _Editor(
-            title=f"{connection.label.upper()} · KLUCZ",
+            title=f"{connection.label.upper()} · {suffix}",
             kind=_EditorKind.PASSWORD,
-            action=_EditorAction.UPDATE_SECRET,
+            action=_EditorAction.ADD_KEY if connection.key_list else _EditorAction.UPDATE_SECRET,
             setting_id=connection.secret_id,
+        )
+
+    def _open_key_remove_confirmation(self, number: str) -> None:
+        connection: _Connection = _required_connection(self._connection)
+        self._editor = _Editor(
+            title=f"USUNĄĆ KLUCZ {number} · {connection.label.upper()}?",
+            kind=_EditorKind.CONFIRM,
+            action=_EditorAction.REMOVE_KEY,
+            setting_id=connection.secret_id,
+            options=(_Option("no", "Nie"), _Option("yes", "Tak")),
+            key_index=int(number) - 1,
         )
 
     def _open_address_editor(self) -> None:
@@ -1545,7 +1584,8 @@ class SettingsController:
             self._open_custom_model_editor(raw_value)
             return
         if (editor.kind is _EditorKind.PASSWORD and not raw_value.strip()) or (
-            editor.action in {_EditorAction.REMOVE_SECRET, _EditorAction.RESET_SCOPE} and raw_value == "no"
+            editor.action in {_EditorAction.REMOVE_SECRET, _EditorAction.REMOVE_KEY, _EditorAction.RESET_SCOPE}
+            and raw_value == "no"
         ):
             self._editor = None
             self._feedback = None
@@ -1593,14 +1633,20 @@ class SettingsController:
                 provider_id, model_id = option.provider_id, option.value
             self._service.select_translation_model(provider_id, model_id)
             return
-        if editor.action is _EditorAction.UPDATE_SECRET:
-            self._service.update_secret(editor.setting_id, raw_value)
-            return
-        if editor.action is _EditorAction.REMOVE_SECRET and raw_value == "yes":
-            self._service.update_secret(editor.setting_id, None)
-            return
         if editor.action is _EditorAction.RESET_SCOPE:
             self._reset_scope(editor.setting_id)
+            return
+        self._apply_secret_editor(editor, raw_value)
+
+    def _apply_secret_editor(self, editor: _Editor, raw_value: str) -> None:
+        if editor.action is _EditorAction.UPDATE_SECRET:
+            self._service.update_secret(editor.setting_id, raw_value)
+        elif editor.action is _EditorAction.REMOVE_SECRET and raw_value == "yes":
+            self._service.update_secret(editor.setting_id, None)
+        elif editor.action is _EditorAction.ADD_KEY:
+            self._service.add_api_key(editor.setting_id, raw_value)
+        elif editor.action is _EditorAction.REMOVE_KEY and raw_value == "yes":
+            self._service.remove_api_key(editor.setting_id, editor.key_index)
 
     def _save_setting_editor(self, editor: _Editor, raw_value: str) -> None:
         snapshot: _CatalogSnapshot = self._catalog_snapshot()
@@ -2029,6 +2075,7 @@ def _field_title(setting_id: str) -> str:
             *_DOWNLOAD_FIELDS,
             *_TRANSLATION_FIELDS,
             *_TTS_FIELDS,
+            *_CONNECTION_FIELDS,
             *(item for recipe in _RECIPE_FIELDS.values() for item in recipe),
         )
     }

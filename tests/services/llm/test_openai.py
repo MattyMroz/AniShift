@@ -72,7 +72,7 @@ def test_openai_uses_direct_max_completion_tokens_and_default_url() -> None:
     config = LlmConfig(
         engine_id="openai",
         provider_model_id="gpt-custom",
-        api_key="secret",
+        api_keys=("secret",),
         max_output_tokens=200,
     )
     service = OpenaiService(config, _client_factory=factory)
@@ -96,7 +96,7 @@ def test_openai_missing_key_is_unavailable_and_fatal() -> None:
     assert service.is_available is False
     with pytest.raises(LlmAuthError) as error_info:
         service.complete(_request())
-    assert "ANISHIFT_OPENAI_API_KEY" in error_info.value.context.suggestion
+    assert "ANISHIFT_OPENAI_API_KEYS" in error_info.value.context.suggestion
     assert not client.calls
 
 

@@ -12,6 +12,7 @@ from typing import Any, Final, Literal
 from anishift.application.planning import SIGN_NARRATION_MODES
 from anishift.paths import config_path
 from anishift.services.audio.types import AudioCodecProfile, TimelinePolicy
+from anishift.services.llm.config import API_KEY_MODES, ApiKeyMode
 from anishift.services.llm.engines import available_engine_ids as available_llm_engine_ids
 from anishift.services.translation.chunking import DEFAULT_CHAR_LIMIT
 from anishift.services.translation.engines import available_engine_ids
@@ -280,6 +281,7 @@ class UserSettings:
     llm_max_output_tokens: int | None = 32000
     llm_translation_style: str = DEFAULT_STYLE_NAME
     llm_max_concurrency: int = 4
+    api_key_mode: ApiKeyMode = "failover"
     primary_model_alias: str = ""
     palantir_enrollment_base_url: str = ""
     palantir_fallback_enrollment_base_url: str = field(default="", repr=False)
@@ -875,6 +877,7 @@ def load_user_settings() -> UserSettings:  # noqa: PLR0915 - explicit tolerant f
     _clean_integer(filtered, "translation_concurrency", *CONCURRENCY_RANGE)
     _clean_integer(filtered, "translation_max_retries", *MAX_RETRIES_RANGE)
     _clean_string(filtered, "llm_provider", llm_engine_ids)
+    _clean_string(filtered, "api_key_mode", frozenset(API_KEY_MODES))
     _clean_free_string(filtered, "llm_provider_model_id")
     _clean_optional_number(filtered, "llm_temperature", *LLM_TEMPERATURE_RANGE)
     _clean_optional_number(filtered, "llm_top_p", *LLM_TOP_P_RANGE)

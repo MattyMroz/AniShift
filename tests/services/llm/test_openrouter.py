@@ -76,7 +76,7 @@ def test_openrouter_uses_default_url_custom_slug_and_cost() -> None:
     config = LlmConfig(
         engine_id="openrouter",
         provider_model_id="vendor/custom",
-        api_key="secret",
+        api_keys=("secret",),
         max_output_tokens=90,
     )
     service = OpenrouterService(config, _client_factory=factory)
@@ -95,7 +95,7 @@ def test_openrouter_payment_required_is_fatal() -> None:
     config = LlmConfig(
         engine_id="openrouter",
         provider_model_id="vendor/model",
-        api_key="secret",
+        api_keys=("secret",),
     )
     service = OpenrouterService(config, _client_factory=FakeFactory(client))
 
@@ -108,7 +108,7 @@ def test_openrouter_server_error_is_transient() -> None:
     config = LlmConfig(
         engine_id="openrouter",
         provider_model_id="vendor/model",
-        api_key="secret",
+        api_keys=("secret",),
     )
     service = OpenrouterService(config, _client_factory=FakeFactory(client))
 

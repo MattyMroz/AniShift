@@ -68,7 +68,7 @@ class FakeObserver:
     def before_attempt(self) -> None:
         return None
 
-    def on_transient_failure(self, error: TransientError) -> None:
+    def on_retry(self, error: AniShiftError, *, attempt: int, max_attempts: int) -> None:
         return None
 
     def on_success(self) -> None:
@@ -178,9 +178,14 @@ def test_domain_import_does_not_load_provider_sdks() -> None:
             id="infinite-timeout",
         ),
         pytest.param(
-            lambda: LlmConfig(engine_id="gemini", provider_model_id="custom-model", max_retries=-1),
-            "max_retries",
-            id="negative-retries",
+            lambda: LlmConfig(engine_id="gemini", provider_model_id="custom-model", retry_waits_s=(-1.0,)),
+            "retry_waits_s",
+            id="negative-retry-wait",
+        ),
+        pytest.param(
+            lambda: LlmConfig(engine_id="gemini", provider_model_id="custom-model", api_key_mode="random"),  # type: ignore[arg-type]
+            "api_key_mode",
+            id="unknown-key-mode",
         ),
         pytest.param(
             lambda: LlmConfig(engine_id="gemini", provider_model_id="custom-model", max_output_tokens=0),
@@ -220,7 +225,7 @@ def test_config_accepts_custom_model_empty_key_and_empty_compatible_url() -> Non
     config = LlmConfig(
         engine_id="openai_compatible",
         provider_model_id="my-private-model",
-        api_key="",
+        api_keys=("",),
         base_url="",
         temperature=None,
         top_p=None,
@@ -234,7 +239,7 @@ def test_config_is_frozen_and_hides_api_key_from_repr() -> None:
     config = LlmConfig(
         engine_id="palantir",
         provider_model_id="custom-model",
-        api_key="top-secret-key",
+        api_keys=("top-secret-key",),
         fallback_origin="https://private.example.invalid",
         fallback_api_key="fallback-secret-key",
     )

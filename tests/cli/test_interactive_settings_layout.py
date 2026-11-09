@@ -8,6 +8,7 @@ from test_interactive_settings_autosave import FakeSettingsService, _activate
 from anishift.application import AppService
 from anishift.cli.interactive.settings import (
     _AUTO_FIELDS,
+    _CONNECTION_FIELDS,
     _DOWNLOAD_FIELDS,
     _FIELDS_COVERED_ELSEWHERE,
     _GENERAL_FIELDS,
@@ -42,6 +43,7 @@ def _layout_fields() -> tuple[_SettingField, ...]:
         *_SUBTITLE_FIELDS,
         *_TRANSLATION_FIELDS,
         *_TTS_FIELDS,
+        *_CONNECTION_FIELDS,
         *(item for fields in _RECIPE_FIELDS.values() for item in fields),
     )
 

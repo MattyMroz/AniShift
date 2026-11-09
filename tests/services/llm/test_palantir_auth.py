@@ -201,18 +201,18 @@ def test_settings_clears_the_compatibility_field_after_folding_it_into_the_token
 def test_settings_defaults_to_an_empty_token_and_keeps_other_secrets_readable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("ANISHIFT_GEMINI_API_KEY", "gemini-value")
+    monkeypatch.setenv("ANISHIFT_GEMINI_API_KEYS", "gemini-value")
     settings = Settings(_env_file=None)
 
     assert settings.palantir_token == ""
-    assert settings.gemini_api_key == "gemini-value"
+    assert settings.gemini_api_keys == ("gemini-value",)
 
 
 def test_settings_still_accepts_every_field_by_its_name() -> None:
-    settings = Settings(_env_file=None, palantir_token=_CANARY, gemini_api_key="gemini-value")
+    settings = Settings(_env_file=None, palantir_token=_CANARY, gemini_api_keys="gemini-value")
 
     assert settings.palantir_token == _CANARY
-    assert settings.gemini_api_key == "gemini-value"
+    assert settings.gemini_api_keys == ("gemini-value",)
 
 
 def test_settings_keeps_the_palantir_token_out_of_its_repr(monkeypatch: pytest.MonkeyPatch) -> None:

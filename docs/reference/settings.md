@@ -173,9 +173,10 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
 
 ### Ponowień po błędzie tłumaczenia (`translation_max_retries`)
 
-- Co robi: ile razy ponowić zapytanie po błędzie przejściowym (sieć, limit
-  zapytań). Dla LLM ta sama liczba ogranicza też naprawy odpowiedzi łamiącej
-  kontrakt numerowanych linii.
+- Co robi: ile razy Google albo DeepL ponawia zapytanie po błędzie przejściowym
+  (sieć, limit zapytań). Dla LLM ta liczba ogranicza tylko naprawy odpowiedzi
+  łamiącej kontrakt numerowanych linii; błędy dostawcy LLM ponawia stały
+  harmonogram opisany w sekcji Połączenia.
 - Zakres · domyślnie: 0–10 · 3.
 - Silnik: wszystkie.
 - Przykład: darmowy Google często odrzuca zapytania — 6.
@@ -482,16 +483,37 @@ samej nazwie ma pierwszeństwo (wiersz pokazuje `skonfigurowane · system`).
 Panel maskuje wartości kluczy. `Usuń klucz` kasuje wpis z `.env`;
 reset panelu kluczy nie rusza.
 
+Dostawcy LLM (Gemini, OpenAI, Anthropic, DeepSeek, OpenRouter, OpenAI-compatible)
+przyjmują dowolnie wiele kluczy w jednej zmiennej, rozdzielonych przecinkami, np.
+`ANISHIFT_GEMINI_API_KEYS=klucz-prywatny,klucz-firmowy`. Panel pokazuje je jako
+`Klucz 1`, `Klucz 2`… (bez wartości), `Dodaj klucz` dopisuje nowy na końcu, a
+wybór klucza i `Tak` usuwa go. Kolejność to kolejność prób.
+
+`Kilka kluczy jednego dostawcy` (`api_key_mode`, zapisany w `settings.json`):
+
+- `Pierwszy, następny po błędzie` (`failover`, domyślnie) — każde zapytanie zaczyna
+  od klucza 1;
+- `Na zmianę` (`rotate`) — kolejne zapytania zaczynają od kolejnego klucza.
+
+Każdy błąd dostawcy (limit, wyczerpana pula, odrzucony klucz, przeciążenie 503,
+przekroczony czas, sieć) od razu przenosi zapytanie na następny klucz. Gdy w jednej
+rundzie zawiodą wszystkie klucze, AniShift czeka i zaczyna kolejną rundę: najwyżej
+5 rund, przerwy 10, 30, 60 i 60 s (krótszy `retry-after` dostawcy ma pierwszeństwo).
+Klucz odrzucony jako nieważny, bez środków albo z wyczerpaną pulą nie wraca w tym
+samym zapytaniu. Błędy samego zapytania (zły model, za długi kontekst, blokada
+treści, anulowanie) kończą je od razu. Po ostatniej rundzie odcinek dostaje jeden
+błąd z nazwą dostawcy i liczbą kluczy, które zawiodły.
+
 | Połączenie | Identyfikator | Zmienna w `.env` | Używa |
 | --- | --- | --- | --- |
 | Palantir Foundry | `palantir_token` | `ANISHIFT_PALANTIR_TOKEN` (zapasowo `FOUNDRY_API_TOKEN`) | modele Palantira z katalogu; `Testuj połączenie` sprawdza wybrany model |
 | Palantir Foundry · Adres | `palantir_enrollment_base_url` | zapisany w `settings.json`, nie w `.env` | adres `https://` enrollmentu z trasami proxy Foundry; puste pole blokuje modele Palantira |
-| Gemini | `gemini_api_key` | `ANISHIFT_GEMINI_API_KEY` | silnik `llm`, dostawca `gemini` |
-| OpenAI | `openai_api_key` | `ANISHIFT_OPENAI_API_KEY` | silnik `llm`, dostawca `openai` |
-| Anthropic | `anthropic_api_key` | `ANISHIFT_ANTHROPIC_API_KEY` | silnik `llm`, dostawca `anthropic` |
-| DeepSeek | `deepseek_api_key` | `ANISHIFT_DEEPSEEK_API_KEY` | silnik `llm`, dostawca `deepseek` |
-| OpenRouter | `openrouter_api_key` | `ANISHIFT_OPENROUTER_API_KEY` | silnik `llm`, dostawca `openrouter` |
-| OpenAI-compatible | `openai_compatible_api_key` (opcjonalny) | `ANISHIFT_OPENAI_COMPATIBLE_API_KEY` | silnik `llm`, dostawca `openai_compatible` (własny serwer albo brama) |
+| Gemini | `gemini_api_keys` | `ANISHIFT_GEMINI_API_KEYS` (lista po przecinku) | silnik `llm`, dostawca `gemini` |
+| OpenAI | `openai_api_keys` | `ANISHIFT_OPENAI_API_KEYS` (lista po przecinku) | silnik `llm`, dostawca `openai` |
+| Anthropic | `anthropic_api_keys` | `ANISHIFT_ANTHROPIC_API_KEYS` (lista po przecinku) | silnik `llm`, dostawca `anthropic` |
+| DeepSeek | `deepseek_api_keys` | `ANISHIFT_DEEPSEEK_API_KEYS` (lista po przecinku) | silnik `llm`, dostawca `deepseek` |
+| OpenRouter | `openrouter_api_keys` | `ANISHIFT_OPENROUTER_API_KEYS` (lista po przecinku) | silnik `llm`, dostawca `openrouter` |
+| OpenAI-compatible | `openai_compatible_api_keys` (opcjonalny) | `ANISHIFT_OPENAI_COMPATIBLE_API_KEYS` (lista po przecinku) | silnik `llm`, dostawca `openai_compatible` (własny serwer albo brama) |
 | OpenAI-compatible · Adres | `openai_compatible_base_url` | `ANISHIFT_OPENAI_COMPATIBLE_BASE_URL` | bazowy URL tego serwera |
 | DeepL | `deepl_api_key` | `ANISHIFT_DEEPL_API_KEY` | silnik tłumaczenia `deepl` |
 | ElevenLabs | `elevenlabs_api_key` | `ANISHIFT_ELEVENLABS_API_KEY` | silnik lektora `elevenlabs`; ElevenBytes go nie używa |
