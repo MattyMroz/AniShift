@@ -1732,6 +1732,18 @@ def test_a_bitrate_group_keeps_a_file_of_exactly_95_percent_of_its_largest_and_d
     }
 
 
+def test_a_hidden_transcode_never_moves_the_bitrate_groups_of_the_shown_rows() -> None:
+    erai: StreamCandidate = _listed("[Erai-raws] Star Garden - 05 [1080p][Multiple Subtitle]", "1461 MB", 900)
+    subsplease: StreamCandidate = _listed("[SubsPlease] Star Garden - 05 (1080p)", "1460 MB", 900)
+    transcode: StreamCandidate = _listed("[ASW] Star Garden - 05 [1080p HEVC x265]", "1537.5 MB", 900)
+    ranked: tuple[RankedCandidate, ...] = _rank(_target(), [erai, transcode, subsplease])
+    assert [(row.stream.release, row.traits.size_rank) for row in visible(ranked)] == [
+        (subsplease.release, 0),
+        (erai.release, 0),
+    ]
+    assert _automatic(ranked) == choice_candidate(ranked[0])
+
+
 @pytest.mark.parametrize(
     ("name", "seeders", "verdict", "conflict"),
     [

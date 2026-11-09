@@ -647,22 +647,8 @@ def size_bytes(text: str) -> int | None:
 
 def visible(candidates: Sequence[RankedCandidate], keep: int | None = None) -> tuple[RankedCandidate, ...]:
     """Hide mismatches, low or shadowed transcodes, unseeded rows, others beside a live match and low beside high."""
-    matched: bool = _live_match(candidates)
-    high: bool = any(
-        candidate.identity.verdict is IdentityVerdict.MATCH
-        and candidate.traits.resolution in _HIGH_RESOLUTIONS
-        and candidate.traits.seeders != 0
-        and _suggestible(candidate)
-        for candidate in candidates
-    )
-    shadowed: frozenset[int] = _shadowed(candidates)
-    return tuple(
-        candidate
-        for index, candidate in enumerate(candidates)
-        if candidate.identity.verdict is not IdentityVerdict.MISMATCH
-        and not low_transcode(candidate.traits)
-        and (index == keep or _shown(candidate, matched=matched, high=high, shadowed=index in shadowed))
-    )
+    shown: frozenset[int] = _shown_positions(candidates, keep)
+    return tuple(candidate for index, candidate in enumerate(candidates) if index in shown)
 
 
 def suggestion(
@@ -1113,6 +1099,25 @@ def _live_match(candidates: Sequence[RankedCandidate]) -> bool:
     )
 
 
+def _shown_positions(candidates: Sequence[RankedCandidate], keep: int | None = None) -> frozenset[int]:
+    matched: bool = _live_match(candidates)
+    high: bool = any(
+        candidate.identity.verdict is IdentityVerdict.MATCH
+        and candidate.traits.resolution in _HIGH_RESOLUTIONS
+        and candidate.traits.seeders != 0
+        and _suggestible(candidate)
+        for candidate in candidates
+    )
+    shadowed: frozenset[int] = _shadowed(candidates)
+    return frozenset(
+        index
+        for index, candidate in enumerate(candidates)
+        if candidate.identity.verdict is not IdentityVerdict.MISMATCH
+        and not low_transcode(candidate.traits)
+        and (index == keep or _shown(candidate, matched=matched, high=high, shadowed=index in shadowed))
+    )
+
+
 def _shown(candidate: RankedCandidate, *, matched: bool, high: bool, shadowed: bool) -> bool:
     return (
         candidate.traits.seeders != 0
@@ -1156,15 +1161,17 @@ def _full_first(candidates: Sequence[RankedCandidate], pool: Sequence[int]) -> i
 def _sized(rows: Sequence[RankedCandidate], single: Callable[[str], bool] | None) -> tuple[RankedCandidate, ...]:
     sizes: list[int | None] = [_episode_bytes(row, single) for row in rows]
     levels: list[_Level] = [resolution_class(row.traits.resolution) for row in rows]
-    known: dict[_Level, list[int]] = {}
+    shown: frozenset[int] = _shown_positions(rows)
+    groups: list[tuple[_Level, bool]] = [(level, index in shown) for index, level in enumerate(levels)]
+    known: dict[tuple[_Level, bool], list[int]] = {}
     originals: dict[_Level, list[int]] = {}
-    for row, size, level in zip(rows, sizes, levels, strict=True):
+    for row, size, level, group in zip(rows, sizes, levels, groups, strict=True):
         if size is None:
             continue
-        known.setdefault(level, []).append(size)
+        known.setdefault(group, []).append(size)
         if _web_original(row):
             originals.setdefault(level, []).append(size)
-    anchors: dict[_Level, list[int]] = {level: _size_anchors(values) for level, values in known.items()}
+    anchors: dict[tuple[_Level, bool], list[int]] = {group: _size_anchors(values) for group, values in known.items()}
     floors: dict[_Level, float] = {level: SMALL_SHARE * median(values) for level, values in originals.items()}
     return tuple(
         row
@@ -1174,10 +1181,10 @@ def _sized(rows: Sequence[RankedCandidate], single: Callable[[str], bool] | None
             traits=replace(
                 row.traits,
                 small=row.traits.origin is Origin.UNMARKED and size < floors.get(level, 0.0),
-                size_rank=sum(anchor >= size for anchor in anchors[level]) - 1,
+                size_rank=sum(anchor >= size for anchor in anchors[group]) - 1,
             ),
         )
-        for row, size, level in zip(rows, sizes, levels, strict=True)
+        for row, size, level, group in zip(rows, sizes, levels, groups, strict=True)
     )
 
 
