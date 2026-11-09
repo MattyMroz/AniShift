@@ -7,7 +7,6 @@ from typing import Final
 
 from anishift.application import EpisodeReason, HistoryEvent, RetryProposal
 from anishift.cli.interactive.actions import PANEL_ACTIONS, Action, ScreenActions
-from anishift.cli.interactive.anime import EPISODE_REASON_LABELS
 from anishift.cli.interactive.progress import RichRunProgress
 from anishift.cli.interactive.state_texts import RESTORING, deleting_sets, rows, safe_text
 from anishift.text.plural import plural
@@ -208,25 +207,24 @@ def download_progress(  # noqa: PLR0911
     if item.get("attention"):
         return _READINESS_LABELS.get(str(item.get("reason")), "Do sprawdzenia"), None
     if item.get("stage") == "waiting":
-        return ("Wstrzymano" if held(snapshot, item) else "Przygotowanie"), None
+        return ("Wstrzymane" if held(snapshot, item) else "Przygotowanie"), None
     if item.get("problem"):
         return _DOWNLOAD_PROBLEMS.get(str(item.get("problem")), "Wymaga uwagi"), None
     if item.get("reason") == EpisodeReason.WAITING_PREVIOUS_TRANSFER:
-        return EPISODE_REASON_LABELS[EpisodeReason.WAITING_PREVIOUS_TRANSFER], None
+        return "W kolejce", None
     if not connected or snapshot.get("transfers_problem"):
-        return "Brak odczytu", None
+        return "Brak połączenia", None
     state: object = item.get("state")
     if state in _STOPPED_STATES and item.get("acquisition_state") != "pending_send":
-        return ("Wybieram" if _unstarted(item) and not held(snapshot, item) else "Wstrzymano"), measured
+        return _stopped_label(item, snapshot), measured
     if state in {"metaDL", "forcedMetaDL"} or item.get("acquisition_state") == "pending_send":
-        return "Łączę", measured
+        return "Łączenie", measured
     if state is None:
-        return "Brak transferu", None
+        return "Łączenie", None
     if state in {"error", "missingFiles"}:
-        return "Błąd transferu", None
+        return "Błąd torrenta", None
     if state in {"downloading", "forcedDL", "stalledDL"}:
-        label: str = "Brak odczytu" if measured is None else ("Brak źródeł" if state == "stalledDL" else "Pobieranie")
-        return label, measured
+        return "Pobieranie", measured
     return _TRANSFER_LABELS.get(str(state), "Sprawdzanie"), measured
 
 
@@ -311,9 +309,19 @@ def _download_toggle(item: Mapping[str, object]) -> tuple[str, str] | None:
         "missingFiles",
     }:
         return None
-    if item.get("state") in _STOPPED_STATES:
-        return None if _unstarted(item) else ("resume", "wznów")
-    return "stop", "wstrzymaj"
+    if item.get("state") not in _STOPPED_STATES:
+        return "stop", "wstrzymaj"
+    if _unstarted(item):
+        return None
+    return ("resume", "wznów") if item.get("action") == "stop" else ("stop", "wstrzymaj")
+
+
+def _stopped_label(item: Mapping[str, object], snapshot: Mapping[str, object]) -> str:
+    if item.get("action") == "stop" or held(snapshot, item):
+        return "Wstrzymane"
+    if item.get("state") in {"pausedUP", "stoppedUP"}:
+        return "Pobrane"
+    return "Wybór pliku" if _unstarted(item) else "Pobieranie"
 
 
 def _unstarted(item: Mapping[str, object]) -> bool:
