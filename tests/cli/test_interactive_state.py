@@ -139,7 +139,8 @@ def _live_material(group_id: str, run_id: str = "run", state: str = "running") -
     [
         ("downloading", "accepted", None, "Pobieranie", True),
         ("metaDL", "accepted", None, "Łączę", True),
-        ("stoppedDL", "accepted", None, "Wstrzymano", True),
+        ("stoppedDL", "accepted", None, "Łączę", True),
+        ("stoppedUP", "accepted", None, "Pobrane", True),
         (None, "accepted", None, "Brak transferu", False),
         ("downloading", "accepted", "unavailable", "Brak odczytu", False),
         ("missingFiles", "accepted", None, "Błąd transferu", False),
@@ -205,17 +206,18 @@ def test_processing_renders_named_owner_download_states_without_invented_measure
 
 
 @pytest.mark.parametrize(
-    ("state", "action", "hint"),
+    ("state", "requested", "action", "hint"),
     [
-        ("stoppedDL", "resume", "W wznów"),
-        ("pausedDL", "resume", "W wznów"),
-        ("downloading", "stop", "W wstrzymaj"),
-        ("stalledDL", "stop", "W wstrzymaj"),
-        ("queuedDL", "stop", "W wstrzymaj"),
+        ("stoppedDL", "stop", "resume", "W wznów"),
+        ("pausedDL", "stop", "resume", "W wznów"),
+        ("stoppedDL", None, "stop", "W wstrzymaj"),
+        ("downloading", None, "stop", "W wstrzymaj"),
+        ("stalledDL", None, "stop", "W wstrzymaj"),
+        ("queuedDL", None, "stop", "W wstrzymaj"),
     ],
 )
 def test_processing_toggles_one_download_with_w(
-    monkeypatch: pytest.MonkeyPatch, state: str, action: str, hint: str
+    monkeypatch: pytest.MonkeyPatch, state: str, requested: str | None, action: str, hint: str
 ) -> None:
     monkeypatch.setattr(StateController, "_watch", lambda self: None)
     controller: StateController = StateController(cast("ResidentSession", SimpleNamespace()), lambda: None)
@@ -229,6 +231,7 @@ def test_processing_toggles_one_download_with_w(
                 "stage": "download",
                 "acquisition_state": "accepted",
                 "state": state,
+                "action": requested,
                 "name": "Episode.mkv",
             }
         ]
@@ -245,19 +248,23 @@ def test_processing_toggles_one_download_with_w(
 
 
 @pytest.mark.parametrize(
-    ("started", "action", "paused", "label", "hint", "command"),
+    ("state", "started", "action", "paused", "label", "hint", "command"),
     [
-        (False, None, False, "Wybieram", None, None),
-        (False, "resume", False, "Wybieram", None, None),
-        (False, None, True, "Wstrzymano", None, None),
-        (False, "stop", False, "Wstrzymano", "W wznów", "resume"),
-        (True, "stop", False, "Wstrzymano", "W wznów", "resume"),
-        (True, None, False, "Wstrzymano", "W wznów", "resume"),
+        ("stoppedDL", False, None, False, "Wybieram", None, None),
+        ("stoppedDL", False, "resume", False, "Wybieram", None, None),
+        ("stoppedDL", False, None, True, "Wstrzymano", None, None),
+        ("stoppedDL", False, "stop", False, "Wstrzymano", "W wznów", "resume"),
+        ("stoppedDL", True, "stop", False, "Wstrzymano", "W wznów", "resume"),
+        ("stoppedDL", True, None, False, "Łączę", "W wstrzymaj", "stop"),
+        ("stoppedDL", True, "resume", False, "Łączę", "W wstrzymaj", "stop"),
+        ("stoppedUP", True, None, False, "Pobrane", "W wstrzymaj", "stop"),
+        ("stoppedUP", True, "stop", False, "Wstrzymano", "W wznów", "resume"),
     ],
 )
 def test_processing_tells_a_download_the_owner_has_not_started_from_a_stopped_one(  # noqa: PLR0913
     monkeypatch: pytest.MonkeyPatch,
     *,
+    state: str,
     started: bool,
     action: str | None,
     paused: bool,
@@ -277,8 +284,9 @@ def test_processing_tells_a_download_the_owner_has_not_started_from_a_stopped_on
                 "info_hash": "hash",
                 "stage": "download",
                 "acquisition_state": "accepted",
-                "state": "stoppedDL",
+                "state": state,
                 "content_started": started,
+                "automatic": True,
                 "action": action,
                 "name": "Episode.mkv",
             }
@@ -290,8 +298,7 @@ def test_processing_tells_a_download_the_owner_has_not_started_from_a_stopped_on
         frame: str = controller.render(120, 40).plain
         assert label in frame
         assert ("Wstrzymano" in frame) is (label == "Wstrzymano")
-        assert ("W wznów" in frame) is (hint is not None)
-        assert "W wstrzymaj" not in frame
+        assert {text for text in ("W wznów", "W wstrzymaj") if text in frame} == ({hint} if hint else set())
         controller.handle_key("text:w")
         assert calls == ([] if command is None else [("transfer", {"info_hash": "hash", "action": command})])
     finally:
@@ -695,7 +702,7 @@ def test_download_numeric_display_retains_samples_and_freezes_until_verified_res
         receive()
         clock[0] = 120.0
         assert "42% | 00:00:02.000" in controller.render(columns, 24).plain
-        item["state"] = "stoppedDL"
+        item.update(state="stoppedDL", action="stop")
         assert "Wstrzymano" in receive()
         controller._connected = False
         controller._observe_downloads()

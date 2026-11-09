@@ -215,7 +215,7 @@ def download_progress(  # noqa: PLR0911
         return "Brak odczytu", None
     state: object = item.get("state")
     if state in _STOPPED_STATES and item.get("acquisition_state") != "pending_send":
-        return ("Wybieram" if _unstarted(item) and not held(snapshot, item) else "Wstrzymano"), measured
+        return _stopped_label(item, snapshot), measured
     if state in {"metaDL", "forcedMetaDL"} or item.get("acquisition_state") == "pending_send":
         return "Łączę", measured
     if state is None:
@@ -320,9 +320,19 @@ def _download_toggle(item: Mapping[str, object]) -> tuple[str, str] | None:
         "missingFiles",
     }:
         return None
-    if item.get("state") in _STOPPED_STATES:
-        return None if _unstarted(item) else ("resume", "wznów")
-    return "stop", "wstrzymaj"
+    if item.get("state") not in _STOPPED_STATES:
+        return "stop", "wstrzymaj"
+    if _unstarted(item):
+        return None
+    return ("resume", "wznów") if item.get("action") == "stop" else ("stop", "wstrzymaj")
+
+
+def _stopped_label(item: Mapping[str, object], snapshot: Mapping[str, object]) -> str:
+    if item.get("action") == "stop" or held(snapshot, item):
+        return "Wstrzymano"
+    if item.get("state") in {"pausedUP", "stoppedUP"}:
+        return "Pobrane"
+    return "Wybieram" if _unstarted(item) else "Łączę"
 
 
 def _unstarted(item: Mapping[str, object]) -> bool:
