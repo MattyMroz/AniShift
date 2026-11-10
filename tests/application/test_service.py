@@ -201,9 +201,7 @@ def _panel_owner(
     key: bytes = os.urandom(32)
     server: ControlServer = ControlServer(endpoint, key, owner.handle, on_disconnect=owner.disconnect)
     owner.attach_broadcast(server.broadcast)
-    session: ResidentSession = ResidentSession(
-        service.workspace_root, lambda: ControlClient(endpoint, key, timeout_s=5.0)
-    )
+    session: ResidentSession = ResidentSession(service.workspace_root, lambda: ControlClient(endpoint, key))
     try:
         yield session, owner
     finally:
