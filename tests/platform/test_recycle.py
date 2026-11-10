@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from contextlib import nullcontext
 from pathlib import Path
 from typing import cast
@@ -47,7 +48,7 @@ _FAKE_HELPER: str = (
     "for line in sys.stdin:\n"
     "    with log.open('a',encoding='utf-8') as handle: handle.write(line)\n"
     "    if mode=='crash': sys.exit(3)\n"
-    "    if mode=='silent': time.sleep(30)\n"
+    "    if mode=='silent': sys.stderr.write('received\\n'); sys.stderr.flush(); time.sleep(30)\n"
     "    payload=json.loads(line)\n"
     "    name=pathlib.Path(str(payload.get('path'))).name\n"
     "    answer=({'outcome':'refused','reason':'recycle_refused','receipt':None} if 'refuse' in name else\n"
@@ -74,7 +75,7 @@ def _fake_helper(
             [str(getattr(sys, "_base_executable", sys.executable)), "-c", _FAKE_HELPER, mode, str(log)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
         )
@@ -141,7 +142,16 @@ def test_recycle_session_lost_or_foreign_answer_is_uncertain_and_never_retried(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, reason: str
 ) -> None:
     commands, _options, log = _fake_helper(monkeypatch, tmp_path, mode)
-    monkeypatch.setattr(recycle_module, "RECYCLE_TIMEOUT_S", 0.5)
+    if mode == "silent":
+        receive: Callable[..., RecycleResult] = recycle_module._Helper._receive
+
+        def heard(helper: object, process: subprocess.Popen[str], path: object) -> RecycleResult:
+            assert process.stderr is not None
+            assert process.stderr.readline() == "received\n"
+            return receive(helper, process, path)
+
+        monkeypatch.setattr(recycle_module._Helper, "_receive", heard)
+        monkeypatch.setattr(recycle_module, "RECYCLE_TIMEOUT_S", 0.5)
     with recycle_session() as recycle:
         first: RecycleResult = recycle(tmp_path / "01.mkv", (1, 2, 3, 4))
         second: RecycleResult = recycle(tmp_path / "02.mkv", (1, 2, 3, 5))
