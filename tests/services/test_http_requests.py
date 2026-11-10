@@ -467,7 +467,11 @@ def test_deadline_expires_while_waiting_for_admission_without_sending() -> None:
 
 
 @pytest.mark.unit
-def test_deadline_expired_in_worker_queue_is_not_sent(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("clock_rate", [1.0, 0.5])
+def test_deadline_expired_in_worker_queue_is_not_sent(monkeypatch: pytest.MonkeyPatch, clock_rate: float) -> None:
+    started: float = time.monotonic()
+    real_clock: Callable[[], float] = time.monotonic
+    monkeypatch.setattr(time, "monotonic", lambda: started + (real_clock() - started) * clock_rate)
     monkeypatch.setattr(http_requests, "_REQUEST_WORKERS", 1)
     entered: threading.Event = threading.Event()
     release: threading.Event = threading.Event()
