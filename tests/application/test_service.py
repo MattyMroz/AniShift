@@ -892,7 +892,7 @@ def test_closed_panel_cannot_register_a_late_external_source(tmp_path: Path) -> 
         FakeMediaProbe(), runner=_AudioDecode(entered, release), ffmpeg=Path("ffmpeg")
     )
     service: AppService = _service(tmp_path, FakeTranslationService(), inspector=inspector)
-    with _panel_owner(service, tmp_path) as (session, _):
+    with _panel_owner(service, tmp_path) as (session, owner):
         group_id: str = session.discover().groups[0].group_id
         session.reserve((group_id,))
         errors: list[ControlError | OSError] = []
@@ -909,16 +909,8 @@ def test_closed_panel_cannot_register_a_late_external_source(tmp_path: Path) -> 
         try:
             assert entered.wait(5.0)
             session.close()
-            deadline: float = time.monotonic() + 5.0
-            while True:
-                try:
-                    second.reserve((group_id,))
-                    break
-                except ControlError as error:
-                    if error.code is not ControlErrorCode.CONFLICT:
-                        raise
-                    assert time.monotonic() < deadline
-                    time.sleep(0.01)
+            assert _wait_for_resident(second, lambda _status: not owner.state.reservations)
+            second.reserve((group_id,))
         finally:
             release.set()
             worker.join(timeout=5.0)
@@ -1232,9 +1224,7 @@ def test_resident_moves_sources_and_products_then_regenerates_in_ready(tmp_path:
         result: RunResult = session.execute(session.plan_auto(groups, preset), CollectingRunSink())
         assert result.succeeded
         assert all(product.path.parent == tmp_path / "ready" for group in result.groups for product in group.products)
-        deadline: float = time.monotonic() + 5.0
-        while not (tmp_path / "ready/03.txt").exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
+        assert _wait_for_resident(session, lambda status: bool(owner.state.ready_groups) and not status["relocations"])
         moved: Path = tmp_path / "ready/03.txt"
         assert moved.stat().st_ino == identity
         assert (tmp_path / "ready/03.pl.srt").is_file()
@@ -1319,9 +1309,9 @@ def test_two_sets_named_alike_from_different_places_share_one_ready_without_mixi
         assert len(groups) == 2
         session.reserve(groups)
         assert session.execute(session.plan_auto(groups, preset), CollectingRunSink()).succeeded
-        deadline: float = time.monotonic() + 5.0
-        while len(list((tmp_path / "ready").glob("*"))) < 4 and time.monotonic() < deadline:
-            time.sleep(0.01)
+        assert _wait_for_resident(
+            session, lambda status: len(owner.state.ready_groups) == 2 and not status["relocations"]
+        )
         names: list[str] = sorted(path.name for path in (tmp_path / "ready").iterdir())
 
     recorded: tuple[ReadyGroup, ...] = owner.state.ready_groups
@@ -1940,7 +1930,7 @@ def test_the_resident_processes_a_new_file_once_and_returns_to_idle(
     try:
         client.call("set_auto", {"enabled": True})
         write_text_source(workspace / TRANSLATE_DIRECTORY / "Episode.txt", "One episode")
-        deadline: float = time.monotonic() + 5.0
+        deadline: float = time.monotonic() + _RESIDENT_TIMEOUT_S
         while time.monotonic() < deadline:
             status: Mapping[str, object] = client.call("status")
             if (workspace / "ready/Episode.pl.txt").is_file() and not status["requests"] and not status["relocations"]:
