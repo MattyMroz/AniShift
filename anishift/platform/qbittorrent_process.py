@@ -10,10 +10,11 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from ctypes import wintypes
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import Final
 
@@ -73,6 +74,12 @@ _MANAGED_PREFERENCES: Final[dict[str, object]] = {
 
 _QUERY_PROCESS: Final[int] = 0x1000
 """Windows access needed to verify process creation time and executable identity."""
+
+_TERMINATE_ACCESS: Final[int] = 0x0001 | 0x00100000
+"""Windows access needed to end a verified process and wait on its handle."""
+
+_TERMINATE_WAIT_MS: Final[int] = 5000
+"""Wait for an ended private process to leave the system before shutdown is reported failed."""
 
 _MAX_IMAGE_PATH: Final[int] = 32768
 """Buffer accommodating a Windows executable path during ownership verification."""
@@ -562,9 +569,11 @@ class ManagedQBittorrent:
         if state.pid <= 0:
             return False
         identity: tuple[int, str] | None = _process_identity(state.pid)
+        return identity is not None and self._owned_identity(state, identity)
+
+    def _owned_identity(self, state: _ProcessState, identity: tuple[int, str]) -> bool:
         return (
-            identity is not None
-            and identity[0] == state.created
+            identity[0] == state.created
             and Path(identity[1]).resolve() == Path(state.executable).resolve()
             and Path(state.executable).resolve() == bundled_binary_path(Binary.QBITTORRENT, root=self._bin_root)
         )
@@ -589,6 +598,9 @@ class ManagedQBittorrent:
         deadline: float = time.monotonic() + _EXIT_TIMEOUT_S
         while self._matches_process(state) and time.monotonic() < deadline:
             time.sleep(_POLL_S)
+        if self._matches_process(state):
+            logger.warning("Private torrent client ignored its shutdown and is terminated", timeout_s=_EXIT_TIMEOUT_S)
+            _terminate_process(state.pid, partial(self._owned_identity, state))
         if self._matches_process(state):
             message: str = "The private torrent client did not finish shutting down"
             raise _unavailable(message)
@@ -639,10 +651,11 @@ def _protect_profile(root: Path) -> None:
         raise _unavailable(message) from error
 
 
-def _process_identity(pid: int) -> tuple[int, str] | None:
+def _kernel() -> ctypes.CDLL:
     if sys.platform != "win32":
-        return None
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        message: str = "Windows process control is unavailable"
+        raise OSError(message)
+    kernel: ctypes.CDLL = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel.OpenProcess.restype = wintypes.HANDLE
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -653,22 +666,54 @@ def _process_identity(pid: int) -> tuple[int, str] | None:
         wintypes.LPWSTR,
         ctypes.POINTER(wintypes.DWORD),
     ]
+    kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
+    return kernel
+
+
+def _handle_identity(kernel: ctypes.CDLL, handle: int) -> tuple[int, str] | None:
+    created, exited, system, user = (wintypes.FILETIME() for _ in range(4))
+    image = ctypes.create_unicode_buffer(_MAX_IMAGE_PATH)
+    length = wintypes.DWORD(_MAX_IMAGE_PATH)
+    if not kernel.GetProcessTimes(
+        handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(system), ctypes.byref(user)
+    ):
+        return None
+    if exited.dwHighDateTime or exited.dwLowDateTime:
+        return None
+    if not kernel.QueryFullProcessImageNameW(handle, 0, image, ctypes.byref(length)):
+        return None
+    return ((created.dwHighDateTime << 32) | created.dwLowDateTime, image.value)
+
+
+def _process_identity(pid: int) -> tuple[int, str] | None:
+    if sys.platform != "win32":
+        return None
+    kernel: ctypes.CDLL = _kernel()
     handle = kernel.OpenProcess(_QUERY_PROCESS, False, pid)
     if not handle:
         return None
     try:
-        created, exited, system, user = (wintypes.FILETIME() for _ in range(4))
-        image = ctypes.create_unicode_buffer(_MAX_IMAGE_PATH)
-        length = wintypes.DWORD(_MAX_IMAGE_PATH)
-        if not kernel.GetProcessTimes(
-            handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(system), ctypes.byref(user)
-        ):
-            return None
-        if exited.dwHighDateTime or exited.dwLowDateTime:
-            return None
-        if not kernel.QueryFullProcessImageNameW(handle, 0, image, ctypes.byref(length)):
-            return None
-        return ((created.dwHighDateTime << 32) | created.dwLowDateTime, image.value)
+        return _handle_identity(kernel, handle)
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def _terminate_process(pid: int, owned: Callable[[tuple[int, str]], bool]) -> None:
+    """End *pid* through one handle only while that handle still shows an *owned* identity, then await its exit."""
+    if sys.platform != "win32":
+        return
+    kernel: ctypes.CDLL = _kernel()
+    handle = kernel.OpenProcess(_QUERY_PROCESS | _TERMINATE_ACCESS, False, pid)
+    if not handle:
+        return
+    try:
+        identity: tuple[int, str] | None = _handle_identity(kernel, handle)
+        if identity is None or not owned(identity):
+            return
+        if kernel.TerminateProcess(handle, 1):
+            kernel.WaitForSingleObject(handle, _TERMINATE_WAIT_MS)
     finally:
         kernel.CloseHandle(handle)
 
