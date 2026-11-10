@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -21,6 +22,9 @@ if TYPE_CHECKING:
 
 CHECKPOINT_VERSION: Final[int] = 1
 """Schema of the remaining graph stored beside the owner's request ledger."""
+
+_CHECKPOINT_FILES: Final[threading.Lock] = threading.Lock()
+"""Keep checkpoint reads apart from replacements, which Windows refuses while another handle reads the file."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +124,7 @@ class RunJournal:
     def load(cls, path: Path) -> RunJournal:
         """Reconcile an interrupted rename and reject changed or missing saved inputs."""
         revision: tuple[int, int, int, int] = _revision(path)
-        checkpoint: _Checkpoint = cached_adapter(_Checkpoint).validate_json(path.read_bytes(), strict=True)
+        checkpoint: _Checkpoint = cached_adapter(_Checkpoint).validate_json(read_checkpoint(path), strict=True)
         if checkpoint.version != CHECKPOINT_VERSION:
             msg = "The saved run checkpoint has an unsupported version"
             raise ExecutionError(msg)
@@ -165,7 +169,7 @@ class RunJournal:
     @classmethod
     def relocate(cls, path: Path, move: ReadyMove, workspace: Path) -> bool:
         """Rebind a completed group's checkpoint only after every renamed proof retains its file identity."""
-        checkpoint: _Checkpoint = cached_adapter(_Checkpoint).validate_json(path.read_bytes(), strict=True)
+        checkpoint: _Checkpoint = cached_adapter(_Checkpoint).validate_json(read_checkpoint(path), strict=True)
         if checkpoint.version != CHECKPOINT_VERSION:
             msg: str = "The saved run checkpoint has an unsupported version"
             raise ExecutionError(msg)
@@ -280,7 +284,8 @@ class RunJournal:
                 stream.write(data)
                 stream.flush()
                 os.fsync(stream.fileno())
-            temporary.replace(self._path)
+            with _CHECKPOINT_FILES:
+                temporary.replace(self._path)
         except OSError:
             self._failed = True
             raise
@@ -301,6 +306,12 @@ def _proof(path: Path, artifact_id: str | None = None) -> _FileProof:
         msg = "A run checkpoint requires a regular file"
         raise ExecutionError(msg)
     return _FileProof(path, stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino, artifact_id)
+
+
+def read_checkpoint(path: Path) -> bytes:
+    """Read one saved checkpoint while no save replaces it."""
+    with _CHECKPOINT_FILES:
+        return path.read_bytes()
 
 
 def _revision(path: Path) -> tuple[int, int, int, int]:
