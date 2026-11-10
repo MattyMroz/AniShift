@@ -193,7 +193,7 @@ def _started(state: WatchState) -> bool:
 @pytest.mark.integration
 @pytest.mark.usefixtures("quick")
 @requires_binaries(Binary.FFMPEG, Binary.QBITTORRENT)
-def test_a_due_target_downloads_its_single_episode_release_across_an_owner_restart_and_finishes_the_season(
+def test_a_due_target_downloads_its_release_across_a_lost_start_and_an_owner_restart_and_finishes_the_season(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -212,6 +212,9 @@ def test_a_due_target_downloads_its_single_episode_release_across_an_owner_resta
         links: tuple[tuple[httpx.Client, httpx.Client], tuple[int, int]] = ((api, seed_api), (peer, receiver_peer))
         with resident(tmp_path, receiver, catalog, DefaultMediaProbe()) as (owner, _service, _client):
             _follow(owner, receiver, *links, _started, priorities)
+            api.post("torrents/stop", data={"hashes": info_hash}).raise_for_status()
+            wait_for(lambda: receiver.torrents("AniShift")[0].state == "stoppedDL", "lost start")
+            wait_for(lambda: receiver.torrents("AniShift")[0].state != "stoppedDL", "repeated start")
             assert not owner.state.ready_groups
         seed.set_preferences({"up_limit": 0})
         with resident(tmp_path, receiver, catalog, DefaultMediaProbe()) as (owner, _service, client):
@@ -220,6 +223,7 @@ def test_a_due_target_downloads_its_single_episode_release_across_an_owner_resta
             listed: Mapping[str, object] = client.call("subscriptions_list")
 
     assert _adds(receiver_requests) == [info_hash]
+    assert sum(item.url.path.endswith("/torrents/start") for item in receiver_requests) >= 2
     assert catalog.asked == [3]
     assert priorities[-1] == _SELECTED
     assert {tuple(item) for item in priorities} == {tuple(_SELECTED)}
