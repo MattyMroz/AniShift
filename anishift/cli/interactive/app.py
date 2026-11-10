@@ -403,8 +403,6 @@ class _InteractiveApplication:
             self._handle_key(tab_key(click.value))
         elif click.kind is ClickKind.CRUMB:
             self._leave_crumb(click.value)
-        elif click.kind is ClickKind.BACK:
-            self._handle_key("escape")
         elif click.kind is ClickKind.FIELD:
             self._place_cursor(click.value, click.anchor)
         elif click.kind is ClickKind.TOGGLE and self._select_row(click.value):
