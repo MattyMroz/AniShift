@@ -20,7 +20,6 @@ from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import ControlClient
 from anishift.services.torrents import TorrentFile
 from anishift.services.torrents.errors import TorrentClientError
-from anishift.services.torrents.qbittorrent import DEFAULT_TRACKERS
 
 
 def _download(client: ControlClient, number: int) -> None:
@@ -235,7 +234,7 @@ def test_selected_pack_survives_owner_and_qb_restart_to_two_library_results_with
         assert len(adds) == 1
         magnet: str = parse_qs(adds[0].content.decode())["urls"][0]
         assert urlsplit(magnet).scheme == "magnet"
-        assert parse_qs(urlsplit(magnet).query) == {"xt": [f"urn:btih:{info_hash}"], "tr": list(DEFAULT_TRACKERS)}
+        assert parse_qs(urlsplit(magnet).query) == {"xt": [f"urn:btih:{info_hash}"]}
         assert catalog.asked == [1, 3]
         assert [1, 1, 0, 0, 1, 1] in priorities
         assert all(
