@@ -175,6 +175,49 @@ def test_click_clears_mouse_selection_and_unselected_interrupt_returns() -> None
     action.assert_called_once_with("back", ())
 
 
+def dragged() -> tuple[AnimePanel, Mock, Mock]:
+    view, action, clipboard = panel()
+    view.frame(80, 24)
+    top: int = first_row(view)
+    mouse(view, MouseEventType.MOUSE_DOWN, 0, top)
+    mouse(view, MouseEventType.MOUSE_MOVE, 79, top + 1)
+    mouse(view, MouseEventType.MOUSE_UP, 79, top + 1)
+    view.frame(80, 24)
+    return view, action, clipboard
+
+
+def right_press(view: AnimePanel) -> None:
+    view.mouse(MouseEvent(Point(0, 0), MouseEventType.MOUSE_DOWN, MouseButton.RIGHT, frozenset()))
+
+
+def test_a_right_press_copies_the_dragged_text_like_the_copy_key_and_drops_the_selection() -> None:
+    keyed, _keyed_action, keyed_clipboard = dragged()
+    view, action, clipboard = dragged()
+
+    keyed.handle("copy")
+    right_press(view)
+
+    assert clipboard.call_args_list == keyed_clipboard.call_args_list
+    assert "A Promise" in clipboard.call_args.args[0]
+    assert view.state.selection is None
+    assert view.state.notice == "Skopiowano zaznaczenie"
+    assert not any(span.style == SELECTION_STYLE for span in view.frame(80, 24).spans)
+    action.assert_not_called()
+
+
+def test_a_right_press_without_a_selection_copies_nothing_and_never_goes_back() -> None:
+    view, action, clipboard = panel()
+    view.frame(80, 24)
+    view.handle("down")
+
+    right_press(view)
+
+    assert view.state.cursor == 1
+    assert view.state.selection is None
+    clipboard.assert_not_called()
+    action.assert_not_called()
+
+
 def test_cjk_hit_testing_preserves_whole_graphemes_and_columns() -> None:
     snapshot: AnimeSnapshot = AnimeSnapshot(AnimeScreen.EPISODES, "Slime", rows())
     frame: AnimeFrame = render_anime(snapshot, 80, 24, 0)

@@ -67,6 +67,8 @@ class _SelectiveNetwork(_TorrentNetwork):
         self.during_check: Callable[[], None] | None = None
         self.file_reads: int = 0
         self.started_priorities: list[tuple[int, ...]] = []
+        self.stops_after_start: int = 0
+        self.priority_after_stop: int | None = None
 
     def files(self, info_hash: str) -> tuple[TorrentFile, ...]:
         self.file_reads += 1
@@ -132,6 +134,13 @@ class _SelectiveNetwork(_TorrentNetwork):
             self.unapproved_starts.append(info_hash)
         self.started_priorities.append(tuple(item.priority for item in self.per_hash.get(info_hash, ())))
         super().resume(info_hash)
+        if self.stops_after_start and info_hash in self.tracked:
+            self.stops_after_start -= 1
+            self.tracked[info_hash] = replace(self.tracked[info_hash], state="stoppedDL")
+            if self.priority_after_stop is not None:
+                self.per_hash[info_hash] = tuple(
+                    replace(item, priority=self.priority_after_stop) for item in self.per_hash[info_hash]
+                )
 
     def transfer_action(self, info_hash: str, action: str) -> None:
         super().transfer_action(info_hash, action)
@@ -1213,3 +1222,117 @@ def test_fresh_manual_resume_survives_automation_pause_but_respects_cancel(
     assert answers[0].ok
     assert setup.network.started == ([_HASH, _HASH] if kind == "set_auto" else [_HASH])
     assert ((_HASH, "resume") in setup.network.actions) is (kind == "set_auto")
+
+
+def _polls(setup: _Setup, count: int = 5) -> None:
+    polled: int = setup.network.info_calls
+    _until(lambda: setup.network.info_calls > polled + count)
+
+
+@pytest.fixture
+def settled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(automation_module, "START_SETTLE_S", 0.0)
+
+
+@pytest.mark.usefixtures("settled")
+def test_a_start_the_client_loses_right_away_is_repeated_once(setup: _Setup) -> None:
+    setup.network.stops_after_start = 1
+    with _running(setup) as owner:
+        _start_content(setup, owner)
+        _until(_starts(setup, 2))
+        _polls(setup)
+
+    assert setup.network.started == [_HASH, _HASH]
+    assert setup.network.tracked[_HASH].state == "downloading"
+    assert setup.network.selections == [(_HASH, frozenset({0, 1}))]
+    assert setup.network.unapproved_starts == []
+    assert _stored(setup).problem is None
+
+
+@pytest.mark.usefixtures("settled")
+def test_a_start_the_client_keeps_losing_is_repeated_only_once_and_then_left_stopped(setup: _Setup) -> None:
+    setup.network.stops_after_start = 100
+    with _running(setup) as owner:
+        _start_content(setup, owner)
+        _until(_starts(setup, 2))
+        _polls(setup, 20)
+
+    assert setup.network.started == [_HASH, _HASH]
+    assert setup.network.tracked[_HASH].state == "stoppedDL"
+    assert _stored(setup).problem is None
+
+
+@pytest.mark.usefixtures("settled")
+def test_a_stop_after_the_start_window_is_never_undone(setup: _Setup, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(automation_module, "START_RACE_WINDOW_S", 0.05)
+    with _running(setup) as owner:
+        _start_content(setup, owner)
+        time.sleep(0.1)
+        _polls(setup)
+        setup.network.tracked[_HASH] = replace(setup.network.tracked[_HASH], state="stoppedDL")
+        _polls(setup)
+
+    assert setup.network.started == [_HASH]
+    assert setup.network.tracked[_HASH].state == "stoppedDL"
+
+
+@pytest.mark.usefixtures("settled")
+def test_a_transfer_stopped_while_the_owner_was_down_stays_stopped_after_its_restart(setup: _Setup) -> None:
+    with _running(setup) as owner:
+        _start_content(setup, owner)
+    setup.network.tracked[_HASH] = replace(setup.network.tracked[_HASH], state="stoppedDL")
+    with _running(setup) as owner:
+        _until(lambda: _checked(owner))
+        _polls(setup)
+
+    assert setup.network.started == [_HASH]
+    assert setup.network.tracked[_HASH].state == "stoppedDL"
+
+
+@pytest.mark.usefixtures("settled")
+def test_an_owner_stop_right_after_the_start_is_never_undone(setup: _Setup) -> None:
+    with _running(setup) as owner:
+        _start_content(setup, owner)
+        assert owner.handle(_request("transfer", {"info_hash": _HASH, "action": "stop"}, command_id="stop")).ok
+        _until(lambda: not owner.state.acquisitions[0].action_pending)
+        _polls(setup)
+
+    assert setup.network.started == [_HASH]
+    assert setup.network.tracked[_HASH].state == "stoppedDL"
+    assert _stored(setup).problem is None
+
+
+@pytest.mark.usefixtures("settled")
+def test_the_global_pause_right_after_the_start_keeps_an_automatic_transfer_stopped(setup: _Setup) -> None:
+    with _running(setup) as owner:
+        _start_content(setup, owner)
+        owner._on_owner(
+            lambda: owner._replace_acquisition(replace(owner.state.acquisitions[0], origin=RequestOrigin.BACKGROUND))
+        )
+        assert owner.handle(_request("set_auto", {"enabled": False}, command_id="pause-1")).ok
+        _until(lambda: owner.state.acquisitions[0].action_sent and not owner.state.acquisitions[0].action_pending)
+        time.sleep(0.2)
+        during_pause: tuple[list[str], str] = (list(setup.network.started), setup.network.tracked[_HASH].state)
+        assert owner.handle(_request("set_auto", {"enabled": True}, command_id="resume-1")).ok
+        _until(_starts(setup, 2))
+
+    assert during_pause == ([_HASH], "stoppedDL")
+    assert _stored(setup).problem is None
+
+
+@pytest.mark.usefixtures("settled")
+def test_a_lost_start_whose_priorities_the_client_dropped_gets_them_back_before_it_is_repeated(
+    setup: _Setup,
+) -> None:
+    setup.network.stops_after_start = 1
+    setup.network.priority_after_stop = 1
+    with _running(setup) as owner:
+        _start_content(setup, owner)
+        _until(_starts(setup, 2))
+        _polls(setup)
+
+    assert setup.network.selections == [(_HASH, frozenset({0, 1}))] * 2
+    assert setup.network.started_priorities == [(1, 1, 0, 0, 0)] * 2
+    assert setup.network.unapproved_starts == []
+    assert setup.network.tracked[_HASH].state == "downloading"
+    assert _stored(setup).problem is None

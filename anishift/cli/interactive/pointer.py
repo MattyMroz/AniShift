@@ -124,7 +124,6 @@ class ClickKind(StrEnum):
     OPEN = "open"
     TAB = "tab"
     CRUMB = "crumb"
-    BACK = "back"
     FIELD = "field"
     TOGGLE = "toggle"
     KEY = "key"
@@ -142,15 +141,14 @@ class Click:
 
 @dataclass(frozen=True, slots=True)
 class Gesture:
-    """Report the selection after one event, the point a plain click released and a right-button press."""
+    """Report the selection after one event and the point a plain click released."""
 
     selection: tuple[TextPoint, TextPoint] | None
     click: TextPoint | None = None
-    back: bool = False
 
 
 class PointerGesture:
-    """Tell a drag that selects painted text from a click, a double click on one row and a right press."""
+    """Tell a drag that selects painted text from a click and a double click on one row."""
 
     def __init__(self, clock: Callable[[], float] = monotonic) -> None:
         self._clock: Callable[[], float] = clock
@@ -168,9 +166,6 @@ class PointerGesture:
     def track(self, event: MouseEvent) -> Gesture | None:
         """Follow one event; ``None`` leaves the current selection unchanged."""
         point: TextPoint = TextPoint(event.position.y, event.position.x)
-        if event.event_type is MouseEventType.MOUSE_DOWN and event.button is MouseButton.RIGHT:
-            self.reset()
-            return Gesture(None, back=True)
         if event.event_type is MouseEventType.MOUSE_DOWN and event.button is MouseButton.LEFT:
             self._anchor = point
             self._dragged = False
@@ -198,8 +193,6 @@ class PointerGesture:
 
     def resolve(self, frame: Text, gesture: Gesture) -> Click:
         """Name what ``gesture`` asks of the view painted as ``frame``; a quick second click on one screen row opens."""
-        if gesture.back:
-            return Click(ClickKind.BACK)
         if gesture.click is None and gesture.selection is None:
             pressed: Click = Click() if self._anchor is None else click_at(frame, self._anchor)
             self._field = (
@@ -252,7 +245,11 @@ class FrameSelection:
         return hovered(self._frame, point) != before
 
     def mouse(self, event: MouseEvent) -> Click:
-        """Follow a button event, hiding the hover while dragging, and name what a click or a right press asks."""
+        """Follow a button event, hiding the hover while dragging; a right press copies and drops the selection."""
+        if is_copy_press(event):
+            if self._selection is not None and self.copy("copy"):
+                self._selection = None
+            return Click()
         if event.event_type is MouseEventType.MOUSE_MOVE:
             self._hover = None
         if event.event_type is MouseEventType.MOUSE_UP:
@@ -284,6 +281,11 @@ class FrameSelection:
         self._selection = None
         self._hover = None
         self._gesture.reset()
+
+
+def is_copy_press(event: MouseEvent) -> bool:
+    """Report whether ``event`` is a right-button press, which copies the selection as a terminal does."""
+    return event.event_type is MouseEventType.MOUSE_DOWN and event.button is MouseButton.RIGHT
 
 
 def mark_row(content: Text, index: int, *, opens: bool = True) -> None:

@@ -18,7 +18,7 @@ from anishift.cli.interactive.anime_state import (
     NoticeKind,
 )
 from anishift.cli.interactive.anime_view import AnimeFrame, render_anime
-from anishift.cli.interactive.pointer import COPY_KEYS, Click, ClickKind, Gesture, PointerGesture
+from anishift.cli.interactive.pointer import COPY_KEYS, Click, ClickKind, Gesture, PointerGesture, is_copy_press
 from anishift.cli.interactive.text_input import TextInput
 
 
@@ -256,6 +256,11 @@ class AnimePanel:
 
     def mouse(self, event: MouseEvent) -> Click:
         """Select only painted text on drag; a click clears the selection, points at its row and names the request."""
+        if is_copy_press(event):
+            if self._frame is not None and self._frame.selected_text(self.state.selection):
+                self.copy("copy")
+                self.state.selection = None
+            return Click()
         gesture: Gesture | None = self._gesture.track(event)
         if gesture is None:
             return Click()

@@ -461,6 +461,15 @@ _STOPPED_TRANSFER_STATES: Final[frozenset[str]] = frozenset(
 _SELECTABLE_STATES: Final[frozenset[str]] = frozenset({"stoppedDL", "pausedDL", "stoppedUP", "pausedUP"})
 """Client states in which file priorities of a selective transfer may be changed and verified."""
 
+_RACED_START_STATES: Final[frozenset[str]] = frozenset({"stoppedDL", "pausedDL"})
+"""Client states in which a transfer the owner has just started came back from a start the client lost."""
+
+START_SETTLE_S: Final[float] = 2.0
+"""Time a client gets to report an owner start before a stopped reading counts as a lost start."""
+
+START_RACE_WINDOW_S: Final[float] = 120.0
+"""Time after an owner start in which a stopped reading is that start lost, not a stop by a person."""
+
 _SETTLING_SELECTION_STATES: Final[frozenset[str]] = frozenset(
     {"metaDL", "forcedMetaDL", "checkingResumeData", "checkingDL", "checkingUP", "queuedForChecking", "allocating"}
 )
@@ -913,6 +922,7 @@ class AutomationOwner:
         )
         self._transfers_at: float | None = None
         self._send_misses: dict[str, int] = {}
+        self._own_starts: dict[str, float] = {}
         self._unverified: frozenset[str] = frozenset()
         self._transfers_inspecting: bool = False
         self._transfer_release_lock: threading.Lock = threading.Lock()
@@ -6390,12 +6400,19 @@ class AutomationOwner:
     ) -> tuple[AcquisitionConfirmation, ...]:
         taken: set[str] | None = None if reserved is None else set(reserved)
         settled: list[AcquisitionConfirmation] = []
-        present: frozenset[str] = frozenset(
-            entry.info_hash.casefold() for entry in (() if self._transfers is None else self._transfers.snapshot())
-        )
+        observed: dict[str, TorrentInfo] = {
+            entry.info_hash.casefold(): entry
+            for entry in (() if self._transfers is None else self._transfers.snapshot())
+        }
+        now: float = time.monotonic()
+        self._own_starts = {key: at for key, at in self._own_starts.items() if now - at < START_RACE_WINDOW_S}
         for item in results:
-            if item.info_hash not in present or item.operation_id in checking:
+            transfer: TorrentInfo | None = observed.get(item.info_hash)
+            if transfer is None or item.operation_id in checking:
                 settled.append(item)
+                continue
+            if self._lost_start(item, transfer, now):
+                settled.append(self._restart_lost_start(service, item, transfer.state))
                 continue
             if item.selective:
                 settled.append(self._settle_selection(service, item))
@@ -6463,8 +6480,55 @@ class AutomationOwner:
             service.start_transfer(item.info_hash)
         except (AniShiftError, OSError, ValueError) as problem:
             return replace(item, problem=sanitize_event_message(str(problem)))
+        self._own_starts[item.operation_id] = time.monotonic()
         logger.info("Transfer content started after its names were reserved")
         return replace(item, content_started=True, problem=None)
+
+    def _lost_start(self, item: AcquisitionConfirmation, transfer: TorrentInfo, now: float) -> bool:
+        """Answer whether the client stopped a transfer this owner session started moments ago."""
+        started_at: float | None = self._own_starts.get(item.operation_id)
+        return (
+            started_at is not None
+            and now - started_at >= START_SETTLE_S
+            and transfer.state in _RACED_START_STATES
+            and item.state is AcquisitionState.ACCEPTED
+            and item.problem is None
+            and not item.action_pending
+            and _content_started(item)
+        )
+
+    def _restart_lost_start(
+        self, service: AcquisitionService, item: AcquisitionConfirmation, state: str
+    ) -> AcquisitionConfirmation:
+        """Start once more a transfer whose fresh start the client lost, unless the user stopped it since."""
+        self._own_starts.pop(item.operation_id, None)
+        if not self._owned(partial(self._may_start_selection, item)):
+            return item
+        try:
+            restored: bool | None = self._restart_stopped(service, item, state)
+        except (AniShiftError, OSError, ValueError) as problem:
+            logger.warning("A lost transfer start could not be repeated", error_class=type(problem).__name__)
+            return replace(item, problem=sanitize_event_message(str(problem)))
+        self._own_starts.pop(item.operation_id, None)
+        if restored is not None:
+            logger.info("A transfer start the client lost was repeated", state=state, selection_restored=restored)
+        return item
+
+    def _restart_stopped(self, service: AcquisitionService, item: AcquisitionConfirmation, state: str) -> bool | None:
+        """Start a stopped transfer after a fresh proof of its selection, answering whether it was applied again."""
+        if not item.selective or not self._mismatched(service, item):
+            if not self._owned(partial(self._may_start_selection, item)):
+                return None
+            service.start_transfer(item.info_hash)
+            return False
+        restored: AcquisitionConfirmation | None = self._apply_selection(
+            service, item, service.transfer_files(item.info_hash), state, restoring=True
+        )
+        if restored is None:
+            return None
+        if self._start_selection(service, restored):
+            raise ValueError(_SELECTION_MISMATCH)
+        return True
 
     def _owned[T](self, action: Callable[[], T]) -> T:
         return self._on_owner(action) if self._serving else action()
@@ -6787,6 +6851,7 @@ class AutomationOwner:
         if not self._owned(partial(self._may_start_selection, item)):
             return False
         service.start_transfer(item.info_hash)
+        self._own_starts[item.operation_id] = time.monotonic()
         self._owned(partial(self._started_selection, item.operation_id, item.applied_revision))
         return False
 
