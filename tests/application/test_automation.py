@@ -4176,7 +4176,7 @@ def test_material_identity_survives_bundle_metadata_preparation_processing_and_r
         )
     )
     try:
-        with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, store):
+        with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, owner):
             assert _await(lambda: _material_rows(session)[0].get("name") == "Original bundle name")
             assert len(_material_rows(session)) == 1
             subtitle_size: int = len("1\n00:00:00,000 --> 00:00:01,000\nHello\n".replace("\n", os.linesep).encode())
@@ -4235,22 +4235,22 @@ def test_material_identity_survives_bundle_metadata_preparation_processing_and_r
             assert _await(lambda: bool(session.library()))
             assert [item["material_id"] for item in _material_rows(session)] == (["9:8"] if bundle else [])
             assert (tmp_path / "09.mkv").is_file() is bundle
-            assert bool(store.load().ready_groups[0].pending_sources) is bundle
-            assert _await(lambda: len(store.load().notified) == 1)
+            assert bool(owner.state.ready_groups[0].pending_sources) is bundle
+            assert _await(lambda: len(owner.state.notified) == 1)
             assert network.added == []
     finally:
         release.set()
-    for product in store.load().products:
+    for product in owner.state.products:
         (tmp_path / product.path).unlink()
     restarted: AppService = _processing_service(
         tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(FakeMediaProbe())
     )
-    with closing(restarted), _panel_owner(restarted, tmp_path, ready=True) as (session, store):
+    with closing(restarted), _panel_owner(restarted, tmp_path, ready=True) as (session, owner):
         session.discover()
         assert [item["material_id"] for item in _material_rows(session)] == (["9:8"] if bundle else [])
-        assert len(store.load().requests) == 1
+        assert len(owner.state.requests) == 1
         assert network.added == []
-        assert len(store.load().notified) == 1
+        assert len(owner.state.notified) == 1
 
 
 def _material_rows(session: ResidentSession) -> list[dict[str, object]]:
@@ -4461,7 +4461,7 @@ def test_library_retry_after_refused_deletion_only_relocates(  # noqa: PLR0915
     monkeypatch.setattr(os, "link", link)
     with (
         closing(service),
-        _panel_owner(service, tmp_path, ready=True, watch=True, recycler=recycle) as (session, _store),
+        _panel_owner(service, tmp_path, ready=True, watch=True, recycler=recycle) as (session, _),
     ):
         preview: DeletionPreview = session.preview_deletion("set-01")
         session.delete_set(preview)
@@ -4498,7 +4498,7 @@ def test_standalone_subtitle_progress_uses_the_actual_source_filename(tmp_path: 
     source: Path = directory / "Episode.srt"
     source.write_text("1\n00:00:01,000 --> 00:00:02,000\nHello world\n", encoding="utf-8")
     service: AppService = _processing_service(tmp_path, FakeTranslationService())
-    with closing(service), _panel_owner(service, tmp_path) as (session, _store):
+    with closing(service), _panel_owner(service, tmp_path) as (session, _):
         groups: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
         session.reserve(groups)
         preview: PlanPreview = session.plan_manual(
@@ -4672,13 +4672,13 @@ def _translated_pair(tmp_path: Path, *, ready: bool) -> str:
     for number in (1, 2):
         write_text_source(_library_dir(tmp_path) / f"{number:02d}.txt", f"Episode {number}")
     service: AppService = _processing_service(tmp_path, FakeTranslationService())
-    with closing(service), _panel_owner(service, tmp_path, ready=ready) as (session, store):
+    with closing(service), _panel_owner(service, tmp_path, ready=ready) as (session, owner):
         groups: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
         session.reserve(groups)
         preview: PlanPreview = session.plan_manual(tuple(_translation_intent(group_id) for group_id in groups))
         result: RunResult = session.execute(preview, CollectingRunSink())
         assert result.succeeded
-        assert _await(lambda: len(store.load().ready_groups) == (2 if ready else 0))
+        assert _await(lambda: len(owner.state.ready_groups) == (2 if ready else 0))
     return result.run_id
 
 

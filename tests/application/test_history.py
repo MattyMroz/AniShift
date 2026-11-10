@@ -202,7 +202,7 @@ def test_recovered_terminal_time_is_admission_time_with_stable_identity_and_rete
     store: WatchStateStore = WatchStateStore(tmp_path / ".control" / "state.json")
     store.save(WatchState(requests=(request,)))
     service: AppService = _real_service(tmp_path)
-    with closing(service), _panel_owner(service, tmp_path) as (session, _store):
+    with closing(service), _panel_owner(service, tmp_path) as (session, _):
         event: HistoryEvent = session.history()[0]
         assert event.occurred_at == admitted.isoformat()
         assert event.recovered_from_admission
@@ -248,7 +248,7 @@ def test_download_without_processing_is_searchable_but_never_opens_its_source(
     opened: list[Path] = []
     monkeypatch.setattr(state_module, "_open_path", lambda path, **_kwargs: opened.append(path))
     service: AppService = _real_service(tmp_path)
-    with closing(service), _panel_owner(service, tmp_path) as (session, store):
+    with closing(service), _panel_owner(service, tmp_path) as (session, owner):
         assert session.history() == ()
         controller: StateController = StateController(session, lambda: None)
         controller.show_processing()
@@ -269,7 +269,7 @@ def test_download_without_processing_is_searchable_but_never_opens_its_source(
             controller.handle_key("escape")
             assert not controller._history_open
             assert controller._tab == state_module._Tab.PROGRESS
-            assert store.load().requests == ()
+            assert owner.state.requests == ()
         finally:
             controller.close()
             controller._thread.join(5)
@@ -590,7 +590,7 @@ def test_failed_history_append_does_not_fail_execution_or_repeat_confirmed_work(
     else:
         unavailable.write_bytes(b"{}\n{}\n")
 
-    with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, store):
+    with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, owner):
         with pytest.raises(ControlError) as refused:
             session.history()
         assert refused.value.reason == f"history_{failure}"
@@ -624,14 +624,14 @@ def test_failed_history_append_does_not_fail_execution_or_repeat_confirmed_work(
         )
         assert result.succeeded
         assert len(translation.calls) == 1
-        assert len(store.load().ready_groups) == 1
+        assert len(owner.state.ready_groups) == 1
     if failure == "unavailable":
         unavailable.rmdir()
     else:
         assert unavailable.read_bytes() == b"{}\n{}\n"
         unavailable.unlink()
     restarted: AppService = _service(tmp_path, translation)
-    with closing(restarted), _panel_owner(restarted, tmp_path, ready=True) as (session, _store):
+    with closing(restarted), _panel_owner(restarted, tmp_path, ready=True) as (session, _):
         assert len(session.history()) == 1
         assert session.history()[0].kind is HistoryKind.SUCCESS
         assert len(translation.calls) == 1
@@ -655,7 +655,7 @@ def test_history_retry_render_and_back_preserve_selected_material_and_tab_contex
             ),
             now,
         )
-    with closing(service), _panel_owner(service, tmp_path) as (session, store):
+    with closing(service), _panel_owner(service, tmp_path) as (session, owner):
         controller: StateController = StateController(session, lambda: None)
         controller.show_processing()
         try:
@@ -676,7 +676,7 @@ def test_history_retry_render_and_back_preserve_selected_material_and_tab_contex
             controller.handle_key("left")
             assert controller._history_open
             assert controller._history_items[controller._selected].material_id == selected
-            assert store.load().requests == ()
+            assert owner.state.requests == ()
         finally:
             controller.close()
             controller._thread.join(5)
@@ -719,7 +719,7 @@ def test_single_highlight_retry_of_an_old_subscription_material_opens_actual_sel
     translation: FakeTranslationService = FakeTranslationService()
     preset: AutoPreset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL})))
     service: AppService = _service(tmp_path, translation, acquisition=acquisition)
-    with closing(service), _panel_owner(service, tmp_path, ready=ready) as (session, store):
+    with closing(service), _panel_owner(service, tmp_path, ready=ready) as (session, owner):
         groups: tuple[str, ...] = tuple(
             group.group_id for group in session.discover().groups if group.source.stem == "Book"
         )
@@ -739,7 +739,7 @@ def test_single_highlight_retry_of_an_old_subscription_material_opens_actual_sel
             proposal: RetryProposal | None = controller.take_manual_retry()
             assert proposal is not None
             assert proposal.action == "manual"
-            expected: str = store.load().ready_groups[0].group_id if ready else groups[0]
+            expected: str = owner.state.ready_groups[0].group_id if ready else groups[0]
             assert proposal.group_ids == (expected,)
             manual: ManualController = ManualController(session, session.discover(), preset, lambda: None)
             manual.prepare_retry(proposal)
@@ -776,7 +776,7 @@ def test_history_view_search_hotkeys_and_validated_open_remain_read_only_under_p
         )
     opened: list[Path] = []
     monkeypatch.setattr(state_module, "_open_path", lambda path, **_kwargs: opened.append(path))
-    with closing(service), _panel_owner(service, tmp_path) as (session, store):
+    with closing(service), _panel_owner(service, tmp_path) as (session, owner):
         controller: StateController = StateController(session, lambda: None)
         controller.show_processing()
         try:
@@ -815,8 +815,8 @@ def test_history_view_search_hotkeys_and_validated_open_remain_read_only_under_p
         finally:
             controller.close()
             controller._thread.join(5)
-        assert store.load().requests == ()
-        assert store.load().policy == state.policy
+        assert owner.state.requests == ()
+        assert owner.state.policy == state.policy
         assert fixture_store.load() == state
 
 
@@ -825,7 +825,7 @@ def test_actual_success_history_survives_relocation_restart_and_manual_routing_w
     translation: FakeTranslationService = FakeTranslationService()
     preset: AutoPreset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL})))
     service: AppService = _service(tmp_path, translation)
-    with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, store):
+    with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, owner):
         groups: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
         session.reserve(groups)
         assert session.execute(session.plan_auto(groups, preset), CollectingRunSink()).succeeded
@@ -837,17 +837,17 @@ def test_actual_success_history_survives_relocation_restart_and_manual_routing_w
         stamp: os.stat_result = result.stat()
         proposal: RetryProposal = session.retry_proposal(identifier)
         assert proposal.action == "manual"
-        assert proposal.group_ids == (store.load().ready_groups[0].group_id,)
+        assert proposal.group_ids == (owner.state.ready_groups[0].group_id,)
         controller: ManualController = ManualController(session, session.discover(), preset, lambda: None)
         controller.prepare_retry(proposal)
         assert controller._selected_groups == set(proposal.group_ids)
         assert len(translation.calls) == 1
         session.release()
     restarted: AppService = _service(tmp_path, translation)
-    with closing(restarted), _panel_owner(restarted, tmp_path, ready=True) as (session, store):
+    with closing(restarted), _panel_owner(restarted, tmp_path, ready=True) as (session, owner):
         assert session.history() == history
         assert session.library_result(identifier).stat().st_ino == stamp.st_ino
-        for name in store.load().ready_groups[0].sources:
+        for name in owner.state.ready_groups[0].sources:
             (tmp_path / name).unlink()
         with pytest.raises(ControlError, match="retry_source_missing"):
             session.retry_proposal(identifier)
@@ -890,7 +890,7 @@ def test_history_opens_ready_product_while_held_source_keeps_local_retry_scope_l
     opened: list[Path] = []
     monkeypatch.setattr(state_module, "_open_path", lambda path, **_kwargs: opened.append(path))
     service: AppService = _real_service(tmp_path)
-    with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, store):
+    with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, owner):
         assert _await(lambda: any(item.set_id == move.group_id and item.available for item in session.library()))
         record: LibrarySet = session.library_details(move.group_id)
         assert tuple(item.path for item in record.files if item.role == "pending_source") == ("audiobook/Book.txt",)
@@ -914,4 +914,4 @@ def test_history_opens_ready_product_while_held_source_keeps_local_retry_scope_l
         finally:
             controller.close()
             controller._thread.join(5)
-    assert store.load().requests == ()
+    assert owner.state.requests == ()

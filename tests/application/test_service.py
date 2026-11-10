@@ -184,7 +184,7 @@ def _panel_owner(
     ready: bool = False,
     watch: bool = False,
     recycler: Callable[[Path, tuple[int, int, int, int]], RecycleResult] | None = None,
-) -> Iterator[tuple[ResidentSession, WatchStateStore]]:
+) -> Iterator[tuple[ResidentSession, AutomationOwner]]:
     store: WatchStateStore = WatchStateStore(tmp_path / ".control" / WATCH_STATE_FILE_NAME)
     owner: AutomationOwner = AutomationOwner(
         service,
@@ -205,7 +205,7 @@ def _panel_owner(
         service.workspace_root, lambda: ControlClient(endpoint, key, timeout_s=5.0)
     )
     try:
-        yield session, store
+        yield session, owner
     finally:
         session.close()
         server.close()
@@ -225,7 +225,7 @@ def test_panel_executes_only_selected_episodes_through_the_resident(tmp_path: Pa
     service: AppService = _service(tmp_path, translation)
     preset: AutoPreset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL})))
     rendered: threading.Event = threading.Event()
-    with _panel_owner(service, tmp_path) as (session, store):
+    with _panel_owner(service, tmp_path) as (session, owner):
         controller: ManualController = ManualController(session, session.discover(), preset, rendered.set)
         keys: tuple[str, ...] = ("down", "space", "down", "space", "end")
         for key in (*keys, *(("down",) * 3 if regenerate else ()), "enter"):
@@ -233,7 +233,7 @@ def test_panel_executes_only_selected_episodes_through_the_resident(tmp_path: Pa
         assert rendered.wait(5.0)
         assert "2 odcinki" in controller.render(120, 40).plain
         assert translation.calls == []
-        assert len(store.load().reservations) == 2
+        assert len(owner.state.reservations) == 2
         assert controller.handle_key("enter") is ManualResult.START_RUN
         prepared: ManualRun | None = controller.take_ready_run()
         assert prepared is not None
@@ -243,9 +243,9 @@ def test_panel_executes_only_selected_episodes_through_the_resident(tmp_path: Pa
         assert result.succeeded
         assert sink.events
         assert {group.group_id for group in result.groups} == {group.group_id for group in prepared.plan.groups}
-        assert store.load().requests[0].state is RequestState.SUCCEEDED
-        assert len(store.load().markers) == 2
-        assert store.load().reservations == ()
+        assert owner.state.requests[0].state is RequestState.SUCCEEDED
+        assert len(owner.state.markers) == 2
+        assert not owner.state.reservations
         assert not (tmp_path / "01.pl.srt").exists()
         assert "PL Episode 8" in (tmp_path / "08.pl.srt").read_text(encoding="utf-8")
         assert ("PL Episode 3" if regenerate else "Previous translation") in (tmp_path / "03.pl.srt").read_text(
@@ -271,7 +271,7 @@ def test_global_pause_lets_a_started_user_graph_finish_without_repeating_its_tra
         "once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL, ProductKind.SPOKEN_PL}))
     )
     try:
-        with _panel_owner(service, tmp_path) as (session, store):
+        with _panel_owner(service, tmp_path) as (session, owner):
             group_ids: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
             session.reserve(group_ids)
             preview: PlanPreview = session.plan_auto(group_ids, preset)
@@ -284,11 +284,11 @@ def test_global_pause_lets_a_started_user_graph_finish_without_repeating_its_tra
                 lambda _state: session.command("run_result", {"run_id": run_id})["state"] == "succeeded",
             )
             assert session.command("status")["paused"] is True
-            assert store.load().requests[0].state is RequestState.SUCCEEDED
+            assert owner.state.requests[0].state is RequestState.SUCCEEDED
             assert len(translation.calls) == 1
-            assert len(store.load().requests) == 1
-            assert store.load().requests[0].attempts == 1
-            assert len(store.load().products) == 2
+            assert len(owner.state.requests) == 1
+            assert owner.state.requests[0].attempts == 1
+            assert len(owner.state.products) == 2
     finally:
         release.set()
         service.close()
@@ -347,7 +347,7 @@ def test_mixed_manual_run_relocates_success_and_retries_failure_without_rewritin
     if collision:
         (tmp_path / "ready").mkdir()
         (tmp_path / "ready" / "01.mkv").write_bytes(b"Unrelated video")
-    with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, store):
+    with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, owner):
         session.discover()
         session.reserve(tuple(groups.values()))
         preview: PlanPreview = session.plan_manual(
@@ -369,18 +369,18 @@ def test_mixed_manual_run_relocates_success_and_retries_failure_without_rewritin
         assert (tmp_path / "ready" / ("01 [2].mkv" if collision else "01.mkv")).is_file()
         assert not (tmp_path / "01.mkv").exists()
         assert (tmp_path / "02.mkv").is_file()
-        assert len(store.load().ready_groups) == 1
-        assert len(store.load().requests) == 1
+        assert len(owner.state.ready_groups) == 1
+        assert len(owner.state.requests) == 1
         stamp: os.stat_result = product.stat()
         content: bytes = product.read_bytes()
     translation: FakeTranslationService = FakeTranslationService()
     restarted: AppService = _service(tmp_path, translation, inspector=WorkspaceInspector(FakeMediaProbe()))
-    with closing(restarted), _panel_owner(restarted, tmp_path, ready=True) as (session, store):
+    with closing(restarted), _panel_owner(restarted, tmp_path, ready=True) as (session, owner):
         session.discover()
         assert session.library_result(entry.set_id) == video
         materials: list[dict[str, object]] = cast("list[dict[str, object]]", session.command("status")["materials"])
         assert [(item["group_id"], item["state"]) for item in materials] == [(groups["02"], "failed")]
-        request: ProcessingRequest = store.load().requests[0]
+        request: ProcessingRequest = owner.state.requests[0]
         assert len(request.group_ids) == 2
         session.reserve(request.group_ids)
         sink: CollectingRunSink = CollectingRunSink()
@@ -388,8 +388,8 @@ def test_mixed_manual_run_relocates_success_and_retries_failure_without_rewritin
         assert resumed.succeeded
         assert translation.calls == []
         assert {event.group_id for event in sink.events if event.task_id is not None} == {groups["02"]}
-        assert len(store.load().requests) == 1
-        assert store.load().requests[0].request_id == result.run_id
+        assert len(owner.state.requests) == 1
+        assert owner.state.requests[0].request_id == result.run_id
         assert len(session.library()) == 2
         after: os.stat_result = product.stat()
         assert (after.st_ino, after.st_size, after.st_mtime_ns) == (stamp.st_ino, stamp.st_size, stamp.st_mtime_ns)
@@ -405,18 +405,18 @@ def test_mixed_material_completion_survives_restart_and_deleted_products(
 ) -> None:
     monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _PALANTIR_TOKEN)
     service, groups = _mixed_material_service(tmp_path)
-    with closing(service), _panel_owner(service, tmp_path) as (session, _store):
+    with closing(service), _panel_owner(service, tmp_path) as (session, _):
         _execute_mixed_materials(session, groups)
     if deleted:
         (tmp_path / "01.spoken.pl.srt").unlink()
     restarted: AppService = _service(tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(FakeMediaProbe()))
-    with closing(restarted), _panel_owner(restarted, tmp_path) as (session, store):
+    with closing(restarted), _panel_owner(restarted, tmp_path) as (session, owner):
         session.discover()
         materials: list[dict[str, object]] = cast("list[dict[str, object]]", session.command("status")["materials"])
         assert [item["group_id"] for item in materials] == [groups["02"]]
         assert materials[0]["name"] == "02.mkv"
         assert materials[0]["state"] == "failed"
-        assert len(store.load().requests) == 1
+        assert len(owner.state.requests) == 1
 
 
 @pytest.mark.integration
@@ -449,11 +449,11 @@ def test_mixed_manual_ready_recovery_keeps_the_success_and_the_remaining_graph( 
             failure.setattr(ReadyStore, "prepare", interrupted_prepare)
         else:
             failure.setattr(Path, "replace", interrupted_replace)
-        with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, _store):
+        with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, owner):
             _execute_mixed_materials(session, groups)
             assert entered.wait(5)
-            assert store.load().requests[0].state is RequestState.FAILED
-            assert store.load().ready_groups == ()
+            assert owner.state.requests[0].state is RequestState.FAILED
+            assert owner.state.ready_groups == ()
     restored: threading.Event = threading.Event()
     restored_statuses: dict[str, GroupStatus] = {}
     restore_ready: Callable[[AutomationOwner, ProcessingRequest], None] = AutomationOwner._restore_ready
@@ -478,10 +478,10 @@ def test_mixed_manual_ready_recovery_keeps_the_success_and_the_remaining_graph( 
         monkeypatch.setattr(AutomationOwner, "_restore_ready", observed_restore)
         monkeypatch.setattr(AutomationOwner, "_move_ready", move_after_restore)
     restarted: AppService = _service(tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(FakeMediaProbe()))
-    with closing(restarted), _panel_owner(restarted, tmp_path, ready=True, watch=True) as (session, _store):
+    with closing(restarted), _panel_owner(restarted, tmp_path, ready=True, watch=True) as (session, owner):
         session.discover()
         assert _wait_for_resident(
-            session, lambda status: len(store.load().ready_groups) == 1 and not status["relocations"]
+            session, lambda status: len(owner.state.ready_groups) == 1 and not status["relocations"]
         ), session.command("status")["relocations"]
         assert restored.is_set() or not restore_first
         if restore_first and failure_at == "before_state":
@@ -491,7 +491,7 @@ def test_mixed_manual_ready_recovery_keeps_the_success_and_the_remaining_graph( 
         assert entry.main_result == "ready/01.spoken.pl.srt"
         materials: list[dict[str, object]] = cast("list[dict[str, object]]", session.command("status")["materials"])
         assert [(item["group_id"], item["state"]) for item in materials] == [(groups["02"], "failed")]
-        request: ProcessingRequest = store.load().requests[0]
+        request: ProcessingRequest = owner.state.requests[0]
         answer: Mapping[str, object] = session.command("run_result", {"run_id": request.request_id})
         recovered: RunResult = decode_view(RunResult, answer["result"])
         assert answer["state"] == "failed"
@@ -506,7 +506,7 @@ def test_mixed_manual_ready_recovery_keeps_the_success_and_the_remaining_graph( 
         sink: CollectingRunSink = CollectingRunSink()
         assert session.execute(session.plan_resume(request.group_ids), sink).succeeded
         assert {event.group_id for event in sink.events if event.task_id is not None} == {groups["02"]}
-        assert len(store.load().requests) == 1
+        assert len(owner.state.requests) == 1
         assert len(session.library()) == 2
 
 
@@ -516,7 +516,7 @@ def test_mixed_material_completion_survives_finished_progress_pruning(
 ) -> None:
     monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _PALANTIR_TOKEN)
     service, groups = _mixed_material_service(tmp_path)
-    with closing(service), _panel_owner(service, tmp_path) as (session, _store):
+    with closing(service), _panel_owner(service, tmp_path) as (session, _):
         mixed_run: str = _execute_mixed_materials(session, groups)
         for number in range(3, 16):
             write_text_source(tmp_path / f"{number:02d}.txt", "A source")
@@ -541,7 +541,7 @@ def test_failed_regeneration_stays_in_processing_beside_the_old_confirmed_librar
     write_media_source(tmp_path / "01.mkv")
     preset: AutoPreset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.SPOKEN_PL})))
     service: AppService = _service(tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(FakeMediaProbe()))
-    with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, _store):
+    with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, _):
         groups: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
         session.reserve(groups)
         assert session.execute(session.plan_auto(groups, preset), CollectingRunSink()).succeeded
@@ -554,7 +554,7 @@ def test_failed_regeneration_stays_in_processing_beside_the_old_confirmed_librar
     failing: AppService = _service(
         tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(FakeMediaProbe()), fail_group_id=entry.group_id
     )
-    with closing(failing), _panel_owner(failing, tmp_path, ready=True) as (session, store):
+    with closing(failing), _panel_owner(failing, tmp_path, ready=True) as (session, owner):
         session.discover()
         session.reserve((entry.group_id,))
         result: RunResult = session.execute(
@@ -562,13 +562,13 @@ def test_failed_regeneration_stays_in_processing_beside_the_old_confirmed_librar
             CollectingRunSink(),
         )
         assert not result.succeeded
-        assert all(item.request_id != result.run_id for item in store.load().products)
+        assert all(item.request_id != result.run_id for item in owner.state.products)
         history = session.history()
         assert len(history) == 1
         assert history[0].material_id == entry.set_id
         assert history[0].kind is HistoryKind.ERROR
     restarted: AppService = _service(tmp_path, FakeTranslationService(), inspector=WorkspaceInspector(FakeMediaProbe()))
-    with closing(restarted), _panel_owner(restarted, tmp_path, ready=True) as (session, _store):
+    with closing(restarted), _panel_owner(restarted, tmp_path, ready=True) as (session, _):
         session.discover()
         materials: list[dict[str, object]] = cast("list[dict[str, object]]", session.command("status")["materials"])
         assert len(materials) == 1
@@ -586,7 +586,7 @@ def test_history_retry_discloses_multigroup_scope_under_pause_and_releases_reser
 ) -> None:
     monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _PALANTIR_TOKEN)
     service, groups = _mixed_material_service(tmp_path)
-    with closing(service), _panel_owner(service, tmp_path) as (session, store):
+    with closing(service), _panel_owner(service, tmp_path) as (session, owner):
         run_id: str = _execute_mixed_materials(session, groups)
         completed_stamp: os.stat_result = (tmp_path / "01.spoken.pl.srt").stat()
         controller: StateController = StateController(session, lambda: None)
@@ -602,11 +602,11 @@ def test_history_retry_discloses_multigroup_scope_under_pause_and_releases_reser
             assert _wait_for_resident(session, lambda _status: not controller._busy)
             assert "Dokończ całe zapisane zlecenie · 2 materiały" in controller.render(120, 40).plain
             assert _wait_for_resident(session, lambda status: status["reservations"] == [])
-            assert store.load().requests[0].attempts == 1
+            assert owner.state.requests[0].attempts == 1
             session.command("set_auto", {"enabled": True})
             controller.handle_key("text:p")
             assert _wait_for_resident(session, lambda _status: not controller._busy)
-            assert store.load().requests[0].attempts == 1
+            assert owner.state.requests[0].attempts == 1
             assert "Dokończ całe zapisane zlecenie · 2 materiały" in controller.render(120, 40).plain
             assert controller.handle_key("enter") is StateResult.MANUAL
             proposal: RetryProposal | None = controller.take_manual_retry()
@@ -626,10 +626,10 @@ def test_history_retry_discloses_multigroup_scope_under_pause_and_releases_reser
             assert _wait_for_resident(
                 session, lambda _status: session.command("run_result", {"run_id": run_id})["state"] == "failed"
             )
-            assert store.load().requests[0].attempts == 2
-            assert store.load().requests[0].request_id == run_id
-            assert len(store.load().requests) == 1
-            assert store.load().reservations == ()
+            assert owner.state.requests[0].attempts == 2
+            assert owner.state.requests[0].request_id == run_id
+            assert len(owner.state.requests) == 1
+            assert owner.state.reservations == ()
             after: os.stat_result = (tmp_path / "01.spoken.pl.srt").stat()
             assert (after.st_ino, after.st_size, after.st_mtime_ns) == (
                 completed_stamp.st_ino,
@@ -658,7 +658,7 @@ def test_processing_cancel_targets_the_disclosed_whole_manual_run(
         inspector=WorkspaceInspector(FakeMediaProbe()),
     )
     try:
-        with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, store):
+        with closing(service), _panel_owner(service, tmp_path, ready=True) as (session, owner):
             groups: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
             session.reserve(groups)
             preview: PlanPreview = session.plan_manual(
@@ -680,9 +680,9 @@ def test_processing_cancel_targets_the_disclosed_whole_manual_run(
                 assert _wait_for_resident(
                     session, lambda _status: session.command("run_result", {"run_id": run_id})["state"] == "cancelled"
                 )
-                assert store.load().requests[0].group_ids == groups
-                assert store.load().requests[0].request_id == run_id
-                assert store.load().ready_groups == ()
+                assert owner.state.requests[0].group_ids == groups
+                assert owner.state.requests[0].request_id == run_id
+                assert owner.state.ready_groups == ()
                 assert session.library() == ()
             finally:
                 release.set()
@@ -706,7 +706,7 @@ def test_panel_settings_and_manual_return_preserve_the_processing_list_of_files_
     service: AppService = _service(tmp_path, FakeTranslationService())
     with (
         closing(service),
-        _panel_owner(service, tmp_path, watch=True) as (session, _store),
+        _panel_owner(service, tmp_path, watch=True) as (session, _),
         create_app_session(input=DummyInput(), output=DummyOutput()),
     ):
         session.discover()
@@ -760,7 +760,7 @@ def test_restarting_a_paused_owner_keeps_the_finished_user_graph_without_rerunni
         "once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL, ProductKind.SPOKEN_PL}))
     )
     try:
-        with _panel_owner(service, tmp_path) as (session, store):
+        with _panel_owner(service, tmp_path) as (session, owner):
             group_ids: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
             session.reserve(group_ids)
             run_id: str = session.start(session.plan_auto(group_ids, preset))
@@ -776,14 +776,14 @@ def test_restarting_a_paused_owner_keeps_the_finished_user_graph_without_rerunni
         service.close()
     restarted: AppService = _service(tmp_path, translation, inspector=WorkspaceInspector(FakeMediaProbe()))
     try:
-        with _panel_owner(restarted, tmp_path) as (session, store):
+        with _panel_owner(restarted, tmp_path) as (session, owner):
             assert session.command("status")["paused"] is True
             assert restarted.active_run_ids() == ()
             assert session.command("run_result", {"run_id": run_id})["state"] == "succeeded"
             assert len(translation.calls) == 1
-            assert len(store.load().requests) == 1
-            assert store.load().requests[0].attempts == 1
-            assert len(store.load().products) == 2
+            assert len(owner.state.requests) == 1
+            assert owner.state.requests[0].attempts == 1
+            assert len(owner.state.products) == 2
     finally:
         restarted.close()
 
@@ -794,7 +794,7 @@ def test_panel_escape_releases_the_scope_for_another_session(tmp_path: Path) -> 
     service: AppService = _service(tmp_path, FakeTranslationService())
     preset: AutoPreset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL})))
     rendered: threading.Event = threading.Event()
-    with _panel_owner(service, tmp_path) as (session, store):
+    with _panel_owner(service, tmp_path) as (session, owner):
         workspace: InspectedWorkspace = session.discover()
         controller: ManualController = ManualController(session, workspace, preset, rendered.set)
         for key in ("space", "end", "enter"):
@@ -806,7 +806,7 @@ def test_panel_escape_releases_the_scope_for_another_session(tmp_path: Path) -> 
                 second.reserve((workspace.groups[0].group_id,))
             assert held.value.code is ControlErrorCode.CONFLICT
             assert controller.handle_key("escape") is ManualResult.STAY
-            assert store.load().reservations == ()
+            assert owner.state.reservations == ()
             second.reserve((workspace.groups[0].group_id,))
         finally:
             second.close()
@@ -819,7 +819,7 @@ def test_panel_start_rejects_a_source_changed_after_preview(tmp_path: Path) -> N
     translation: FakeTranslationService = FakeTranslationService()
     service: AppService = _service(tmp_path, translation)
     preset: AutoPreset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL})))
-    with _panel_owner(service, tmp_path) as (session, store):
+    with _panel_owner(service, tmp_path) as (session, owner):
         group_id: str = session.discover().groups[0].group_id
         session.reserve((group_id,))
         preview: PlanPreview = session.plan_auto((group_id,), preset)
@@ -828,7 +828,7 @@ def test_panel_start_rejects_a_source_changed_after_preview(tmp_path: Path) -> N
             session.execute(preview, CollectingRunSink())
         assert changed.value.code is ControlErrorCode.STALE_PREVIEW
         assert translation.calls == []
-        assert store.load().requests == ()
+        assert owner.state.requests == ()
 
 
 class _AudioDecode:
@@ -944,7 +944,7 @@ def test_resident_preserves_user_edits_made_during_translation(tmp_path: Path, c
     service: AppService = _service(tmp_path, translation)
     preset: AutoPreset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL})))
     edited: str = "1\n00:00:00,000 --> 00:00:01,000\nUser correction during translation\n"
-    with _panel_owner(service, tmp_path) as (session, store), ThreadPoolExecutor(max_workers=1) as pool:
+    with _panel_owner(service, tmp_path) as (session, owner), ThreadPoolExecutor(max_workers=1) as pool:
         group_ids: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
         session.reserve(group_ids)
         preview: PlanPreview = session.plan_auto(
@@ -961,7 +961,7 @@ def test_resident_preserves_user_edits_made_during_translation(tmp_path: Path, c
         assert result.groups[0].products == ()
         assert result.groups[1].status is GroupStatus.SUCCEEDED
         assert "PL Unaffected episode" in (tmp_path / "08.pl.srt").read_text(encoding="utf-8")
-        assert len(store.load().products) == 1
+        assert len(owner.state.products) == 1
         assert product.read_text(encoding="utf-8") == (edited if changed_file == product.name else previous)
         assert len(translation.calls) == 2
         session.reserve(group_ids)
@@ -1005,7 +1005,7 @@ def test_resident_resumes_partial_publication_without_translating_again(
             published.append(destination)
         return original_replace(source, destination)
 
-    with _panel_owner(service, tmp_path) as (session, store):
+    with _panel_owner(service, tmp_path) as (session, owner):
         group_ids: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
         session.reserve(group_ids)
         preview: PlanPreview = session.plan_auto(
@@ -1021,7 +1021,7 @@ def test_resident_resumes_partial_publication_without_translating_again(
         assert len(translation.calls) == len(group_ids)
         if len(group_ids) == 2:
             assert result.groups[1].status is GroupStatus.SUCCEEDED
-        assert store.load().requests[0].state is RequestState.PARTIAL
+        assert owner.state.requests[0].state is RequestState.PARTIAL
         preserved: bytes = published[0].read_bytes()
         identity: tuple[int, int] = (published[0].stat().st_ino, published[0].stat().st_mtime_ns)
         untouched: Path = next(
@@ -1042,7 +1042,7 @@ from anishift.application.planning import TaskKind
 root = Path(sys.argv[1])
 translation = FakeTranslationService()
 service = _service(root, translation, inspector=WorkspaceInspector(FakeMediaProbe()))
-with _panel_owner(service, root) as (session, store):
+with _panel_owner(service, root) as (session, owner):
     group_ids = tuple(group.group_id for group in session.discover().groups)
     session.reserve(group_ids)
     remaining = session.plan_resume(group_ids)
@@ -1053,7 +1053,7 @@ with _panel_owner(service, root) as (session, store):
         "products": sum(len(group.products) for group in result.groups),
         "run_id": result.run_id,
         "translations": len(translation.calls),
-        "generation": store.load().requests[0].generation,
+        "generation": owner.state.requests[0].generation,
     }))
 """
     completed: subprocess.CompletedProcess[str] = subprocess.run(  # noqa: S603
@@ -1155,7 +1155,7 @@ def link(source, destination, *args, **kwargs):
     if phase == "after_link" and Path(destination).parent == root / "ready":
         os._exit(73)
 os.link = link
-with _panel_owner(service, root, ready=True) as (session, store):
+with _panel_owner(service, root, ready=True) as (session, owner):
     groups = tuple(group.group_id for group in session.discover().groups)
     session.reserve(groups)
     preset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL})))
@@ -1228,7 +1228,7 @@ def test_resident_moves_sources_and_products_then_regenerates_in_ready(tmp_path:
     translation: FakeTranslationService = FakeTranslationService()
     service: AppService = _service(tmp_path, translation)
     preset: AutoPreset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL})))
-    with _panel_owner(service, tmp_path, ready=True) as (session, store):
+    with _panel_owner(service, tmp_path, ready=True) as (session, owner):
         groups: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
         session.reserve(groups)
         result: RunResult = session.execute(session.plan_auto(groups, preset), CollectingRunSink())
@@ -1251,8 +1251,8 @@ def test_resident_moves_sources_and_products_then_regenerates_in_ready(tmp_path:
         assert len(translation.calls) == 2
         assert moved.stat().st_ino == identity
         assert len(session.discover().groups) == 1
-        assert all(product.path.startswith("ready/") for product in store.load().products)
-        recorded: tuple[ReadyGroup, ...] = store.load().ready_groups
+        assert all(product.path.startswith("ready/") for product in owner.state.products)
+        recorded: tuple[ReadyGroup, ...] = owner.state.ready_groups
         assert len(recorded) == 1
         assert recorded[0].stem == "03"
         assert recorded[0].target is WorkflowTarget.VIDEO
@@ -1280,7 +1280,7 @@ def test_library_primary_follows_requested_format_including_reuse_after_regenera
     (source_directory / "03.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nOriginal text\n", encoding="utf-8")
     translation: FakeTranslationService = FakeTranslationService()
     service: AppService = _service(tmp_path, translation)
-    with _panel_owner(service, tmp_path, ready=True) as (session, store):
+    with _panel_owner(service, tmp_path, ready=True) as (session, owner):
         for format_ in (SubtitleOutputFormat.ASS, SubtitleOutputFormat.SRT, SubtitleOutputFormat.ASS):
             groups: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
             session.reserve(groups)
@@ -1303,7 +1303,7 @@ def test_library_primary_follows_requested_format_including_reuse_after_regenera
             assert library[0].available
             assert library[0].main_result == expected
             assert session.library_result(library[0].set_id) == tmp_path / expected
-            assert store.load().ready_groups[0].main_result == expected
+            assert owner.state.ready_groups[0].main_result == expected
         assert (tmp_path / "ready/03.pl.ass").is_file()
         assert (tmp_path / "ready/03.pl.srt").is_file()
 
@@ -1316,7 +1316,7 @@ def test_two_sets_named_alike_from_different_places_share_one_ready_without_mixi
         write_text_source(directory / "Book.txt", f"Text of {folder}")
     service: AppService = _service(tmp_path, FakeTranslationService())
     preset: AutoPreset = AutoPreset("once", "Once", ProductIntent(frozenset({ProductKind.FULL_PL})))
-    with _panel_owner(service, tmp_path, ready=True) as (session, store):
+    with _panel_owner(service, tmp_path, ready=True) as (session, owner):
         groups: tuple[str, ...] = tuple(group.group_id for group in session.discover().groups)
         assert len(groups) == 2
         session.reserve(groups)
@@ -1326,7 +1326,7 @@ def test_two_sets_named_alike_from_different_places_share_one_ready_without_mixi
             time.sleep(0.01)
         names: list[str] = sorted(path.name for path in (tmp_path / "ready").iterdir())
 
-    recorded: tuple[ReadyGroup, ...] = store.load().ready_groups
+    recorded: tuple[ReadyGroup, ...] = owner.state.ready_groups
     assert names == ["Book [2].pl.txt", "Book [2].txt", "Book.pl.txt", "Book.txt"]
     assert len(recorded) == 2
     assert {item.source_directory for item in recorded} == {"translate/A", "translate/B"}
