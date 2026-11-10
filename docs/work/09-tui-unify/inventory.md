@@ -15,7 +15,7 @@ Zakres słowa „ekran”: osobny stan z własnymi regułami wejścia/stopką, a
 ### K — klawiatura i mysz
 
 - **K-panel:** `↑/↓` przesuwa kursor z zawijaniem, `Home/End` skraj listy, `PgUp/PgDn` o ostatnio wyrenderowaną stronę bez zawijania (`ui/state.py:443-445,1579-1584`). `←/→`, `Tab/Shift+Tab` przełączają zakładki; `Esc`, `Backspace`, niezaznaczony `Ctrl+C` wracają z listy do Home (`ui/state.py:432-455`). Wyjątki dla pól, pomocy, pytań i propozycji są opisane osobno. Litery działań są normalizowane przez `casefold` (`ui/state.py:454-455`). `O` wysyła `set_auto` z negacją `auto_enabled`; `M/U` otwierają Ręczny/Ustawienia (`ui/state.py:727-741`).
-- **K-mysz:** klik w otagowany wiersz ustawia kursor. Drugi klik w ten sam *wiersz ekranu* w ciągu 0,4 s generuje Enter na kursorze ustawionym pierwszym klikiem; nie wybiera ponownie elementu, który mógł się w międzyczasie przesunąć (`ui/pointer.py:50,169-184`). Wiersz typu `LINE` nie uruchamia Enter (`ui/pointer.py:250-253`). PPM na wciśnięciu to Esc (`ui/pointer.py:145-150`). Przeciągnięcie zaznacza malowany tekst, kółko rozłącza podwójny klik. Kółko w listach State przewija widok o 3 wiersze bez zmiany wybranego elementu; klawiatura znów dociąga widok do kursora (`ui/state.py:669-700`). Klik innej zakładki działa jak jej wybór klawiaturą, klik wcześniejszego okruszka jak powroty; wyjątek bieżącej zakładki opisano w F (`ui/state.py:1292-1307`; `ui/pointer.py:267-272`).
+- **K-mysz:** klik w otagowany wiersz ustawia kursor. Drugi klik w ten sam *wiersz ekranu* w ciągu 0,4 s generuje Enter na kursorze ustawionym pierwszym klikiem; nie wybiera ponownie elementu, który mógł się w międzyczasie przesunąć (`ui/pointer.py:50,169-184`). Wiersz typu `LINE` nie uruchamia Enter (`ui/pointer.py:250-253`). PPM na wciśnięciu kopiuje zaznaczenie do schowka i je zdejmuje, jak w Windows Terminal; bez zaznaczenia nic nie robi, a wstecz prowadzi tylko Esc (`ui/pointer.py`, `is_copy_press`). Przeciągnięcie zaznacza malowany tekst, kółko rozłącza podwójny klik. Kółko w listach State przewija widok o 3 wiersze bez zmiany wybranego elementu; klawiatura znów dociąga widok do kursora (`ui/state.py:669-700`). Klik innej zakładki działa jak jej wybór klawiaturą, klik wcześniejszego okruszka jak powroty; wyjątek bieżącej zakładki opisano w F (`ui/state.py:1292-1307`; `ui/pointer.py:267-272`).
 - **K-kopiowanie:** `Ctrl+C`/`Ctrl+Insert` najpierw kopiują zaznaczenie ramki; bez zaznaczenia Ctrl+C trafia do danego ekranu jako przerwanie/powrót. Wynik: `Skopiowano zaznaczenie` albo `Nie udało się skopiować` (`FrameSelection.copy`, `ui/pointer.py:229-241`). Anime ma też własne `C` opisane przy jego ekranach.
 - **K-pole:** każdy `TextInput`: pisanie/wklejanie drukowalnych znaków, Space, ←/→, Home/End, Ctrl+←/→ skoki słów, Ctrl+Home/End, warianty z Shift zaznaczające, Backspace/Delete, Ctrl+W i Alt+Backspace kasują wstecz słowo; Ctrl+Delete/Alt+D kasują naprzód, Ctrl+A zaznacza wszystko, Ctrl+X/Shift+Delete wycina, Ctrl+C przy zaznaczeniu i Ctrl+Insert kopiuje, Ctrl+V/Shift+Insert wkleja, Ctrl+Z/Y undo/redo (`ui/prompts.py:97-138`; `ui/text_input.py:20-49,98-119,155-229`). `Ctrl+Backspace` to nazwa znormalizowanej operacji, nie dodatkowy osobny binding w `_NORMALISED_KEYS`. Klik dowolnego miejsca linii pola ustawia kursor, poza tekstem na jego skraju (`ui/pointer.py:275-294`; `ui/text_input.py:149-153`).
 
@@ -23,7 +23,7 @@ Zakres słowa „ekran”: osobny stan z własnymi regułami wejścia/stopką, a
 
 Panel składa akcje `ScreenActions.footer`, następnie `? więcej` i `Esc wróć`; początkowe `Enter wróć` scala do `Enter/Esc wróć` (`ui/actions.py:25,45-51`). Pakowanie mieści najwyżej dwie linie, odrzucając akcje od końca, zachowując `?` i Esc tak długo, jak pozwala szerokość; pojedynczy zbyt długi segment może zostać skrócony wielokropkiem (`ui/actions.py:54-59`; `ui/menu.py:116-138`). Podane niżej pełne stopki dotyczą szerokości, przy której wszystkie segmenty mieszczą się. Nie każdy ekran używa tego samego pakowania.
 
-**Żadna podpowiedź klawisza w stopce nie jest przyciskiem myszy.** Dla State `_keys` tworzy tylko `mark_inert(Text(...))` bez `mark_target` (`ui/state.py:1569-1570`), a `click_at` bez celu zwraca pusty `Click` (`ui/pointer.py:275-294`). To brak tagu celu, a nie samo `inert`, dowodzi nieklikalności: `mark_inert` celowo zachowuje istniejące cele (`ui/pointer.py:256-259`), czego przykładem są zakładki. Wspólne stopki Manual tworzy analogicznie `with_footer` (`ui/menu.py:141-161`). Pola edycyjne umieszczone na dole ekranu są klikalne jako **pola**, nie jako podpowiedzi; PPM na stopce nadal uruchamia globalne Esc. Szczegółowe miejsca renderowania Anime/Ustawień/Home/Auto podano w ich sekcjach.
+**Żadna podpowiedź klawisza w stopce nie jest przyciskiem myszy.** Dla State `_keys` tworzy tylko `mark_inert(Text(...))` bez `mark_target` (`ui/state.py:1569-1570`), a `click_at` bez celu zwraca pusty `Click` (`ui/pointer.py:275-294`). To brak tagu celu, a nie samo `inert`, dowodzi nieklikalności: `mark_inert` celowo zachowuje istniejące cele (`ui/pointer.py:256-259`), czego przykładem są zakładki. Wspólne stopki Manual tworzy analogicznie `with_footer` (`ui/menu.py:141-161`). Pola edycyjne umieszczone na dole ekranu są klikalne jako **pola**, nie jako podpowiedzi; PPM na stopce kopiuje zaznaczenie jak wszędzie indziej. Szczegółowe miejsca renderowania Anime/Ustawień/Home/Auto podano w ich sekcjach.
 
 Pomoc generuje nagłówki `Ten ekran` i `Wszędzie`; druga część to dokładnie `↑↓ wybierz · ←→ zakładki · Tab zakładki · O automat · Esc wróć` (`ui/actions.py:16-22,62-70`). Są to opisy skrótów, nie cele myszy.
 
@@ -59,7 +59,7 @@ Dokładne znaczenie liczników pochodzi z `AutomationOwner._status`, `app/automa
 
 ### Klawisze i mysz
 
-K-panel i K-mysz. `Enter` otwiera U08 wybranej subskrypcji; jeżeli `replay_list_batch()` wymaga odzyskania wyniku nieznanej partii szkicu, ten Enter **tylko odtwarza wynik** i kończy obsługę — szczegóły wymagają kolejnego Enter po rozliczeniu. `D` lub `/` otwiera wyszukiwarkę dodawania. `W` wstrzymuje/wznawia **subskrypcję**, `R` sprawdza teraz, `X/Delete` usuwa, `Ctrl+Z` przywraca ostatnio usuniętą; ciche aliasy `Space=W`, `F=R`. `?` pomoc. `Enter` na starym wpisie bez liczbowego AniList ID daje odmowę zamiast U08 (`ui/state.py:459-501`; `ui/state_subscriptions.py:45-50,98-100`). Klik wybiera, dwuklik wykonuje Enter, kółko przesuwa listę, PPM wraca. Usunięcie nie ma pytania.
+K-panel i K-mysz. `Enter` otwiera U08 wybranej subskrypcji; jeżeli `replay_list_batch()` wymaga odzyskania wyniku nieznanej partii szkicu, ten Enter **tylko odtwarza wynik** i kończy obsługę — szczegóły wymagają kolejnego Enter po rozliczeniu. `D` lub `/` otwiera wyszukiwarkę dodawania. `W` wstrzymuje/wznawia **subskrypcję**, `R` sprawdza teraz, `X/Delete` usuwa, `Ctrl+Z` przywraca ostatnio usuniętą; ciche aliasy `Space=W`, `F=R`. `?` pomoc. `Enter` na starym wpisie bez liczbowego AniList ID daje odmowę zamiast U08 (`ui/state.py:459-501`; `ui/state_subscriptions.py:45-50,98-100`). Klik wybiera, dwuklik wykonuje Enter, kółko przesuwa listę, PPM kopiuje zaznaczenie. Usunięcie nie ma pytania.
 
 ### Stopka
 
@@ -88,7 +88,7 @@ R2-S: `D lub /` jawnie dubluje skrót dodawania. R1-BUSY: W/R/usuwanie opisane w
 
 ### Klawisze i mysz
 
-K-panel; D i `/` otwierają dodawanie, a `Enter` jest cichym aliasem na pustej liście. `Ctrl+Z` może przywrócić usuniętą; W/R/X/Space bez wiersza nic nie robią (`ui/state.py:459-474`). Klik pustego komunikatu nie wybiera; nie ma wiersza do dwukliku. PPM wraca, kółko bez elementów nie zmienia wyboru.
+K-panel; D i `/` otwierają dodawanie, a `Enter` jest cichym aliasem na pustej liście. `Ctrl+Z` może przywrócić usuniętą; W/R/X/Space bez wiersza nic nie robią (`ui/state.py:459-474`). Klik pustego komunikatu nie wybiera; nie ma wiersza do dwukliku. PPM kopiuje zaznaczenie, kółko bez elementów nie zmienia wyboru.
 
 ### Stopka
 
@@ -200,7 +200,7 @@ R1-H-EMPTY: Enter/P widoczne bez żadnego materiału. R1-BUSY dla akcji wymagaj�
 
 ### Klawisze i mysz
 
-K-pole. Enter zapisuje query i ładuje wyniki, chyba że `_busy`; Esc lub niezaznaczony Ctrl+C zamyka pole. Backspace kasuje, nie wraca. Wszystkie aplikacyjne skróty literowe wpisują tekst. Tab nie zmienia zakładki, bo `_history_input_key` przechwytuje wejście wcześniej (`ui/state.py:351-353,816-833`). Klik ustawia kursor; PPM to Esc; lista w tle pozostaje dostępna dla przewijania.
+K-pole. Enter zapisuje query i ładuje wyniki, chyba że `_busy`; Esc lub niezaznaczony Ctrl+C zamyka pole. Backspace kasuje, nie wraca. Wszystkie aplikacyjne skróty literowe wpisują tekst. Tab nie zmienia zakładki, bo `_history_input_key` przechwytuje wejście wcześniej (`ui/state.py:351-353,816-833`). Klik ustawia kursor; PPM kopiuje zaznaczenie; lista w tle pozostaje dostępna dla przewijania.
 
 ### Stopka
 
@@ -222,7 +222,7 @@ R1-H-SEARCH: Enter szukaj przy `_busy` nie wykonuje wyszukiwania. R1-O-MODAL: O 
 
 ### Klawisze i mysz
 
-Enter na `manual/resume` przekazuje propozycję do Ręcznego, na innej trasie zleca jawne ponowne pobranie. Esc/Backspace/niezaznaczony Ctrl+C kasują propozycję. Inne klawisze, w tym Tab/O, ignorowane (`ui/state.py:847-861`). `select()` odmawia wyboru przy `_retry`; nie ma nawigacji po opcjach. PPM zamyka. Renderowany jeden wiersz pochodzi ze wspólnej listy; akcją potwierdzającą jest Enter.
+Enter na `manual/resume` przekazuje propozycję do Ręcznego, na innej trasie zleca jawne ponowne pobranie. Esc/Backspace/niezaznaczony Ctrl+C kasują propozycję. Inne klawisze, w tym Tab/O, ignorowane (`ui/state.py:847-861`). `select()` odmawia wyboru przy `_retry`; nie ma nawigacji po opcjach. PPM kopiuje zaznaczenie. Renderowany jeden wiersz pochodzi ze wspólnej listy; akcją potwierdzającą jest Enter.
 
 ### Stopka
 
@@ -273,7 +273,7 @@ R1-BUSY: Enter/F pozostają widoczne, gdy `_work` milcząco pomija akcję. R3-MO
 
 ### Klawisze i mysz
 
-↑↓/Home/End/PgUp/PgDn po **wszystkich** wierszach szczegółów, także informacyjnych; Enter otwiera wybrany plik, F jego folder, tylko jeśli istnieje `LibraryFileIdentity`. Del/X usuwa **cały zestaw**, niezależnie od wskazanego pliku. Ctrl+Z cofa ostatnie usunięcie; O/M/U pozostają dostępne. Esc/Backspace/Ctrl+C/`?` zamykają, Tab/←→ zamykają i zmieniają zakładkę (`ui/state.py:553-597`). Klik wybiera, dwuklik Enter; kółko przewija pliki, PPM wraca.
+↑↓/Home/End/PgUp/PgDn po **wszystkich** wierszach szczegółów, także informacyjnych; Enter otwiera wybrany plik, F jego folder, tylko jeśli istnieje `LibraryFileIdentity`. Del/X usuwa **cały zestaw**, niezależnie od wskazanego pliku. Ctrl+Z cofa ostatnie usunięcie; O/M/U pozostają dostępne. Esc/Backspace/Ctrl+C/`?` zamykają, Tab/←→ zamykają i zmieniają zakładkę (`ui/state.py:553-597`). Klik wybiera, dwuklik Enter; kółko przewija pliki, PPM kopiuje zaznaczenie.
 
 ### Stopka
 
@@ -323,7 +323,7 @@ R1-BUSY dla Enter/F i reklamowanego w notice Ctrl+Z, które też przechodzi prze
 
 ### Klawisze i mysz
 
-↑↓, PgUp/PgDn, Home/End oraz kółko przewijają blok. Esc/Backspace/`?`/niezaznaczony Ctrl+C zamykają; Tab/←→ zamykają i przełączają zakładkę; O działa. Pozostałe klawisze, **także M/U i akcje wypisane w „Ten ekran”**, są ignorowane (`ui/state.py:392-412`). Klik nic nie wybiera, brak wierszy do dwukliku (`ui/state.py:669-675,1332-1351`); PPM zamyka, tekst można zaznaczyć i skopiować.
+↑↓, PgUp/PgDn, Home/End oraz kółko przewijają blok. Esc/Backspace/`?`/niezaznaczony Ctrl+C zamykają; Tab/←→ zamykają i przełączają zakładkę; O działa. Pozostałe klawisze, **także M/U i akcje wypisane w „Ten ekran”**, są ignorowane (`ui/state.py:392-412`). Klik nic nie wybiera, brak wierszy do dwukliku (`ui/state.py:669-675,1332-1351`); tekst można zaznaczyć, a PPM go kopiuje.
 
 ### Stopka
 
@@ -538,7 +538,7 @@ Liczenie: jeden wiersz = jeden odrębny mechanizm/komunikat, także gdy występu
 
 - Klik w oznaczony wiersz ustawia kursor, nie uruchamia akcji.
 - Drugi szybki klik w ten sam wiersz ekranu, ponownie rozpoznany jako wiersz listy, wysyła Enter. Nie wykonuje ponownego wyboru wiersza.
-- Prawy przycisk na `MOUSE_DOWN` wysyła Esc.
+- Prawy przycisk na `MOUSE_DOWN` kopiuje zaznaczenie i je zdejmuje; bez zaznaczenia nic nie robi. Trafia do właściciela zaznaczenia (ramka albo Anime), gdziekolwiek padnie.
 - Przeciągnięcie zaznacza dostępny tekst ramki.
 - Ctrl+C lub Ctrl+Insert przy zaznaczeniu tekstu ramki kopiuje je przed obsługą klawisza przez ekran.
 - Klik pola tekstowego ustawia pozycję kursora. Nie zatwierdza wartości.
@@ -1698,7 +1698,7 @@ N12/R2. Nie stwierdzono osobnego R1.
 
 ### Klawisze i mysz
 
-Tylko Esc lub niezaznaczony Ctrl+C kończy oczekiwanie. Pozostałe klawisze są ignorowane; Backspace nie jest tu aliasem Esc — `ui/settings.py:552–553,789–796`. Klik nie zmienia kursora, bo `select` odmawia przy `_busy` — `ui/settings.py:584–588`. Prawy przycisk działa jako Esc. Kółko może przewijać menu, bo `scroll` nie sprawdza `_busy` — `ui/settings.py:564–576`.
+Tylko Esc lub niezaznaczony Ctrl+C kończy oczekiwanie. Pozostałe klawisze są ignorowane; Backspace nie jest tu aliasem Esc — `ui/settings.py:552–553,789–796`. Klik nie zmienia kursora, bo `select` odmawia przy `_busy` — `ui/settings.py:584–588`. Prawy przycisk kopiuje zaznaczenie. Kółko może przewijać menu, bo `scroll` nie sprawdza `_busy` — `ui/settings.py:564–576`.
 
 ### Stopka
 
@@ -2061,7 +2061,7 @@ N26/R3.
 
 ### Klawisze i mysz
 
-Esc/Backspace przerywa oczekiwanie. Dla `ResidentSession` wychodzi z Ręcznego, dla lokalnego AppService wraca do CUSTOM i anuluje token — `ui/manual.py:472–474,564–577`. Ctrl+C obsługuje aplikacja według wspólnych zasad Ręcznego. Pozostałe klawisze ignorowane; brak wybieralnych wierszy; prawy przycisk = Esc; kółko nie działa.
+Esc/Backspace przerywa oczekiwanie. Dla `ResidentSession` wychodzi z Ręcznego, dla lokalnego AppService wraca do CUSTOM i anuluje token — `ui/manual.py:472–474,564–577`. Ctrl+C obsługuje aplikacja według wspólnych zasad Ręcznego. Pozostałe klawisze ignorowane; brak wybieralnych wierszy; prawy przycisk kopiuje zaznaczenie; kółko nie działa.
 
 ### Stopka
 
@@ -2151,7 +2151,7 @@ Poniżej rozdzielono ekrany istniejące w kodzie od ekranów normalnej ścieżki
 
 ### Klawisze i mysz
 
-↑↓ wybiera z zawijaniem; Enter wykonuje akcję. Ctrl+C bez zaznaczenia kończy panel. Esc, Backspace, Tab, Home/End nie mają akcji menu. Klik wybiera, podwójny klik aktywuje. Prawy przycisk daje Esc, więc nie wychodzi. Kółko nie działa — `ui/app.py:476–498,529–535,431–465`.
+↑↓ wybiera z zawijaniem; Enter wykonuje akcję. Ctrl+C bez zaznaczenia kończy panel. Esc, Backspace, Tab, Home/End nie mają akcji menu. Klik wybiera, podwójny klik aktywuje. Prawy przycisk kopiuje zaznaczenie. Kółko nie działa — `ui/app.py:476–498,529–535,431–465`.
 
 ### Stopka
 
@@ -2306,7 +2306,7 @@ N31/R1: `dowolny klawisz zamyka` jest nieprawdziwe dla ↑↓, PgUp/PgDn, Home/E
 
 ### Klawisze i mysz
 
-↑↓, PgUp/PgDn, Home/End przewijają tekst. Pozostałe zwykłe klawisze wracają; w partii zamykają. Ctrl+C i kopiowanie — wyjątki jak A05. Kółko przewija po trzy wiersze. Prawy przycisk wysyła Esc, więc wraca/zamyka — `ui/app.py:320–326,455–457`.
+↑↓, PgUp/PgDn, Home/End przewijają tekst. Pozostałe zwykłe klawisze wracają; w partii zamykają. Ctrl+C i kopiowanie — wyjątki jak A05. Kółko przewija po trzy wiersze. Prawy przycisk kopiuje zaznaczenie, nie wraca i nie zamyka — `ui/app.py:320–326,455–457`.
 
 ### Stopka
 
@@ -2457,7 +2457,7 @@ Numeracja: B01 wyszukiwarka, B02 tytuły, B03 wpisy, B04 odcinki, B05 U08, B06 w
 - `↑↓`, `Home/End`, `PgUp/PgDn` przesuwają po nawigowalnych wierszach; ↑↓ zawijają, strony są ograniczane do krańców, rozmiar strony pochodzi z ostatniej klatki (`ui/anime_panel.py:145-169`). Kółko przesuwa widok o trzy wiersze bez zmiany kursora i kasuje notice; następna nawigacja klawiaturą dociąga do kursora (`ui/anime.py:778-804`).
 - `Tab/Shift+Tab` przełączają zakładkę zawsze; ←→ tylko bez fokusu pola. Przy kontekście Subskrypcji przejście usuwa ten kontekst, zakres i zaznaczenia; przy zwykłym Anime `cancel()` rozmywa fokus i unieważnia odczyty, lecz nie kasuje wszystkich zachowanych danych (`ui/state.py:615-626,702-709`; `ui/anime.py:450-459,1090-1108`). `O` steruje automatem tylko gdy `accepts_text=False`; `M/U` nie otwierają Ręcznego/Ustawień w Anime (`ui/state.py:702-725`; `ui/anime.py:1116-1120`).
 - `C` i `Ctrl+Insert` kopiują zaznaczony tekst albo pełny bieżący wiersz, nawet ucięty w tabeli; Ctrl+C bez zaznaczenia zachowuje powrót. W QUERY i zakresie C jest literą; Ctrl+Insert bez zaznaczenia pola/tekstu nic nie kopiuje. Pierwszeństwo ma zaznaczenie ramki, potem lokalne zaznaczenie Anime/pola (`inventory-2.md`, K-kopiowanie; `ui/anime.py:271-280`; `ui/anime_panel.py:120-143`). Kopiowanie wiersza to `AnimeRow.copy_text`, nie sam tytuł (`ui/anime_state.py:84-105`).
-- Klik i dwuklik według K-mysz; dodatkowo klik `[ ]/[x]` ustawia wiersz i wykonuje Space. Drugie kliknięcie w checkbox to następne przełączenie, nie Enter. W zakresie checkbox staje się zwykłym kliknięciem wiersza (`ui/anime_view.py:174-188`; `ui/anime.py:806-818`; `ui/app.py:395-397`). PPM = Esc. Przeciąganie zaznacza tylko malowany tekst; pomija znaczniki, checkboxy, padding i stopkę. W B09/B11/B12 wiersze mają `opens=False`, więc dwuklik nie potwierdza (`ui/anime_view.py:88-94,270,302-331`).
+- Klik i dwuklik według K-mysz; dodatkowo klik `[ ]/[x]` ustawia wiersz i wykonuje Space. Drugie kliknięcie w checkbox to następne przełączenie, nie Enter. W zakresie checkbox staje się zwykłym kliknięciem wiersza (`ui/anime_view.py:174-188`; `ui/anime.py:806-818`; `ui/app.py:395-397`). PPM kopiuje zaznaczenie. Przeciąganie zaznacza tylko malowany tekst; pomija znaczniki, checkboxy, padding i stopkę. W B09/B11/B12 wiersze mają `opens=False`, więc dwuklik nie potwierdza (`ui/anime_view.py:88-94,270,302-331`).
 - Esc/Backspace/Ctrl+C bez zaznaczenia oznaczają powrót, z wyjątkami pola B01/B08. Litery działań są niewrażliwe na wielkość; poza wyszukiwarką brak skrótów Ctrl+Z do cofania subskrypcji (`ui/anime.py:271-307`; `ui/anime_panel.py:78-92,171-186`).
 
 ### F-Anime — stopka i wspólny dół
@@ -2491,7 +2491,7 @@ G obowiązuje dla statusu automatu i ramki katalog/wersja. **Nie należy automat
 
 ### Klawisze i mysz
 
-K-pole i K-Anime. Początkowo w zwykłym Anime pole bez fokusu; znak, Space, wklejenie lub Backspace aktywuje i edytuje, `/` albo Enter tylko aktywuje. Z fokusem Enter wyszukuje niepusty tekst, Esc/Ctrl+C bez zaznaczenia rozmywa pole, kolejny Esc/Ctrl+C wraca do Home albo listy Subskrypcji. Backspace nigdy nie wychodzi. D lub `/` z listy Subskrypcji otwiera QUERY już z fokusem; Enter pustej listy jest cichym aliasem tego wejścia. Tekst zapytania pozostaje. `O`, `?`, `S`, `D`, `C`, `M`, `U` są wpisywanymi znakami, nie akcjami aplikacji (`ui/anime.py:366-374,1122-1161`; `ui/state.py:468-471,702-711`). Klik linii pola ustawia fokus/kursor; dwuklik pola nie wyszukuje; PPM rozmywa lub wraca, kółko nie ma listy do przewinięcia.
+K-pole i K-Anime. Początkowo w zwykłym Anime pole bez fokusu; znak, Space, wklejenie lub Backspace aktywuje i edytuje, `/` albo Enter tylko aktywuje. Z fokusem Enter wyszukuje niepusty tekst, Esc/Ctrl+C bez zaznaczenia rozmywa pole, kolejny Esc/Ctrl+C wraca do Home albo listy Subskrypcji. Backspace nigdy nie wychodzi. D lub `/` z listy Subskrypcji otwiera QUERY już z fokusem; Enter pustej listy jest cichym aliasem tego wejścia. Tekst zapytania pozostaje. `O`, `?`, `S`, `D`, `C`, `M`, `U` są wpisywanymi znakami, nie akcjami aplikacji (`ui/anime.py:366-374,1122-1161`; `ui/state.py:468-471,702-711`). Klik linii pola ustawia fokus/kursor; dwuklik pola nie wyszukuje; PPM kopiuje zaznaczenie, kółko nie ma listy do przewinięcia.
 
 ### Stopka
 
@@ -2513,7 +2513,7 @@ R1-QUERY: Enter szukaj przy braku fokusu tylko aktywuje, a pustego query nie wys
 
 ### Klawisze i mysz
 
-K-Anime. Enter wczytuje franczyzę/otwiera wpisy; na zapowiedzi tylko notice. S przygotowuje B13, `/` otwiera QUERY z fokusem, `?` B09, C kopiuje. Esc/Backspace/Ctrl+C wraca do QUERY. D/I/P/A/Z nie wykonują tutaj zamówienia ani wyboru. Klik wybiera, dwuklik = Enter, PPM wraca, kółko przewija (`ui/anime.py:489-512,1176-1183,1512-1526`; `ui/anime_panel.py:171-204`). Lista jest pomijana, jeżeli wszystkie trafienia należą do pobranych wpisów franczyzy (`ui/anime.py:2003-2049`).
+K-Anime. Enter wczytuje franczyzę/otwiera wpisy; na zapowiedzi tylko notice. S przygotowuje B13, `/` otwiera QUERY z fokusem, `?` B09, C kopiuje. Esc/Backspace/Ctrl+C wraca do QUERY. D/I/P/A/Z nie wykonują tutaj zamówienia ani wyboru. Klik wybiera, dwuklik = Enter, PPM kopiuje zaznaczenie, kółko przewija (`ui/anime.py:489-512,1176-1183,1512-1526`; `ui/anime_panel.py:171-204`). Lista jest pomijana, jeżeli wszystkie trafienia należą do pobranych wpisów franczyzy (`ui/anime.py:2003-2049`).
 
 ### Stopka
 
@@ -2535,7 +2535,7 @@ R1-ANNOUNCED i R1-S-FINISHED; R3-MORE/R3-WAIT. R2 nie stwierdzono.
 
 ### Klawisze i mysz
 
-K-Anime. Enter otwiera odcinki wybranego wpisu, na zapowiedzi tylko notice; S przygotowuje B13, `/` QUERY, `?` B09, C kopiuje. Esc/Backspace/Ctrl+C wraca do TITLES, jeśli lista tytułów była pokazana, inaczej QUERY. Klik wybiera, dwuklik Enter, PPM wraca, kółko przewija (`ui/anime.py:1230-1279,1563-1579`). Pojedynczy kompletny wpis może ominąć ENTRIES; przy pierwszym wyszukiwaniu tylko wydany (`ui/anime.py:1543-1549,2014-2019`).
+K-Anime. Enter otwiera odcinki wybranego wpisu, na zapowiedzi tylko notice; S przygotowuje B13, `/` QUERY, `?` B09, C kopiuje. Esc/Backspace/Ctrl+C wraca do TITLES, jeśli lista tytułów była pokazana, inaczej QUERY. Klik wybiera, dwuklik Enter, PPM kopiuje zaznaczenie, kółko przewija (`ui/anime.py:1230-1279,1563-1579`). Pojedynczy kompletny wpis może ominąć ENTRIES; przy pierwszym wyszukiwaniu tylko wydany (`ui/anime.py:1543-1549,2014-2019`).
 
 ### Stopka
 
@@ -2559,7 +2559,7 @@ R1-ANNOUNCED, R1-S-FINISHED; R3-MORE/R3-WAIT. R2 nie stwierdzono.
 
 K-Anime. Space zaznacza/odznacza kwalifikujący się wiersz; A przełącza wszystkie kwalifikujące się; Z otwiera B08, jeśli nie ma `view.searching`. D zamawia zaznaczone, a bez zaznaczeń odcinek pod kursorem (maks. 100), pozostając na liście. Gotowe/pobrane/nieudane, lecz nieaktywne odcinki też mogą być zamówione ponownie. Nieemitowane i aktywne bez `attempt` są wykluczone (`ui/anime_state.py:206-226`; `ui/anime_panel.py:171-204`; `ui/anime.py:1319-1337,1464-1469`).
 
-I otwiera B06 dla kursora. P otwiera B06 z `repeat=True` tylko jeśli status istnieje i jest inny niż `not_ordered` albo ma admission ID, odcinek jest wyemitowany i jest resident; przy `searching` tylko notice. Enter odtwarza gotowy wynik z `set_id`, wybiera plik nierozstrzygniętej paczki z admission ID, a na pozostałych odcinkach działa jako **cichy alias I**. S przygotowuje B13, `/` QUERY, `?` B09. Esc/Backspace/Ctrl+C wraca do ENTRIES albo do pominiętego poziomu TITLES/QUERY. Mysz: checkbox=Space, klik wybiera, dwuklik=Enter, kółko przewija, PPM wraca (`ui/anime.py:1262-1317,1643-1645`; `ui/state.py:713-724`). Nie ma akcji usuwania/anulowania odcinka tutaj.
+I otwiera B06 dla kursora. P otwiera B06 z `repeat=True` tylko jeśli status istnieje i jest inny niż `not_ordered` albo ma admission ID, odcinek jest wyemitowany i jest resident; przy `searching` tylko notice. Enter odtwarza gotowy wynik z `set_id`, wybiera plik nierozstrzygniętej paczki z admission ID, a na pozostałych odcinkach działa jako **cichy alias I**. S przygotowuje B13, `/` QUERY, `?` B09. Esc/Backspace/Ctrl+C wraca do ENTRIES albo do pominiętego poziomu TITLES/QUERY. Mysz: checkbox=Space, klik wybiera, dwuklik=Enter, kółko przewija, PPM kopiuje zaznaczenie (`ui/anime.py:1262-1317,1643-1645`; `ui/state.py:713-724`). Nie ma akcji usuwania/anulowania odcinka tutaj.
 
 ### Stopka
 
@@ -2617,7 +2617,7 @@ Jak B04 poza R1-S-FINISHED (S może pokazać istniejącą subskrypcję), dodatko
 
 ### Klawisze i mysz
 
-K-Anime. Space przełącza jedno kwalifikujące się wydanie; nowy wybór usuwa poprzedni. D wybiera zaznaczone, inaczej pod kursorem; `supported=False` nie pobierze. Niezgodność/niepewność wymaga B12. **Enter i dwuklik niczego nie wybierają ani nie pobierają**, poza odzyskaniem partii F-Anime. `?` B09, `/` QUERY, C kopiuje; Esc/Backspace/Ctrl+C wraca do odcinków/U08 i unieważnia ofertę. Klik checkbox=Space, klik tekstu ustawia kursor, kółko przewija, PPM wraca (`ui/anime_state.py:206-219`; `ui/anime.py:1230-1271,1757-1781`). A/Z/I/P/S nie mają normalnej akcji wydań; P podczas blokady `searching` daje tylko notice.
+K-Anime. Space przełącza jedno kwalifikujące się wydanie; nowy wybór usuwa poprzedni. D wybiera zaznaczone, inaczej pod kursorem; `supported=False` nie pobierze. Niezgodność/niepewność wymaga B12. **Enter i dwuklik niczego nie wybierają ani nie pobierają**, poza odzyskaniem partii F-Anime. `?` B09, `/` QUERY, C kopiuje; Esc/Backspace/Ctrl+C wraca do odcinków/U08 i unieważnia ofertę. Klik checkbox=Space, klik tekstu ustawia kursor, kółko przewija, PPM kopiuje zaznaczenie (`ui/anime_state.py:206-219`; `ui/anime.py:1230-1271,1757-1781`). A/Z/I/P/S nie mają normalnej akcji wydań; P podczas blokady `searching` daje tylko notice.
 
 Kursor początkowo śledzi `*` sugerowanego wydania, po ruchu jest zachowywany według hasha. Lista filtruje niezgodne, z zerowymi seedami i część niższych jakości; przy dostępnym MATCH zostają MATCH, zatem brak wiersza nie oznacza braku wyniku surowego (`ui/anime.py:1720-1755`; `app/episode_selection.py:637-649`). Nie ma osobnego ekranu „oferta”.
 
@@ -2647,7 +2647,7 @@ R1-RELEASE-EMPTY, R1-RELEASE-UNSUPPORTED, R1-PENDING, R1-STALE; R3-MORE/R3-WAIT,
 
 ### Klawisze i mysz
 
-K-Anime. Enter wybiera dokładny plik z zachowanej mapy/revizji, uruchamia wysyłkę i po sukcesie wraca na odcinki. `?` B09, `/` QUERY, C kopiuje; Esc/Backspace/Ctrl+C wraca do odcinków/U08. Klik wybiera, dwuklik=Enter, kółko przewija, PPM wraca. Brak zaznaczeń wielokrotnych, D/Space/A/P/I/Z/S bez akcji plikowej (`ui/anime.py:1230-1271,1803-1867`). Ciche powroty i Ctrl+Insert według K-Anime.
+K-Anime. Enter wybiera dokładny plik z zachowanej mapy/revizji, uruchamia wysyłkę i po sukcesie wraca na odcinki. `?` B09, `/` QUERY, C kopiuje; Esc/Backspace/Ctrl+C wraca do odcinków/U08. Klik wybiera, dwuklik=Enter, kółko przewija, PPM kopiuje zaznaczenie. Brak zaznaczeń wielokrotnych, D/Space/A/P/I/Z/S bez akcji plikowej (`ui/anime.py:1230-1271,1803-1867`). Ciche powroty i Ctrl+Insert według K-Anime.
 
 ### Stopka
 
@@ -2669,7 +2669,7 @@ R1-FILES-EMPTY, R1-STALE; R3-MORE/R3-WAIT. R2 nie stwierdzono.
 
 ### Klawisze i mysz
 
-K-pole. Z otwiera puste pole tylko przy braku `searching`. Enter stosuje zakres zastępując zaznaczenia; Esc/Ctrl+C bez zaznaczenia zamyka bez zastosowania; Backspace edytuje. Litery działań wpisują tekst. Tab przełącza zakładkę; w zwykłym Anime zachowuje obiekt zakresu, lecz gasi fokus, przy U08 usuwa cały kontekst i zakres. ←→ z fokusem edytuje, bez fokusu przełącza zakładkę. Po powrocie zwykłego Anime Enter może najpierw tylko przywrócić fokus (`ui/anime.py:1090-1095,1122-1147`; `ui/state.py:615-626,706-711`). Klik pola ustawia kursor. Klik checkboxa jest zwykłym wyborem wiersza; dwuklik wiersza generuje Enter, czyli może zastosować zakres, nie otworzyć wydania. PPM anuluje, kółko przewija tabelę (`ui/anime.py:813-814`; `ui/anime_panel.py:94-103`).
+K-pole. Z otwiera puste pole tylko przy braku `searching`. Enter stosuje zakres zastępując zaznaczenia; Esc/Ctrl+C bez zaznaczenia zamyka bez zastosowania; Backspace edytuje. Litery działań wpisują tekst. Tab przełącza zakładkę; w zwykłym Anime zachowuje obiekt zakresu, lecz gasi fokus, przy U08 usuwa cały kontekst i zakres. ←→ z fokusem edytuje, bez fokusu przełącza zakładkę. Po powrocie zwykłego Anime Enter może najpierw tylko przywrócić fokus (`ui/anime.py:1090-1095,1122-1147`; `ui/state.py:615-626,706-711`). Klik pola ustawia kursor. Klik checkboxa jest zwykłym wyborem wiersza; dwuklik wiersza generuje Enter, czyli może zastosować zakres, nie otworzyć wydania. PPM kopiuje zaznaczenie, kółko przewija tabelę (`ui/anime.py:813-814`; `ui/anime_panel.py:94-103`).
 
 Parser przyjmuje `1,3,7.5`, `1-4`, `5-`, białe znaki przy członach; końce muszą istnieć w kolumnie numerów, kolejność nie może być odwrotna, wybór pomija niekwalifikujące się wiersze. Dopuszcza Decimal, ale produkcyjne zwykłe odcinki mają int; Film ma w kolumnie `Film`, więc nie jest numerycznym celem zakresu (`ui/anime_state.py:228-258`; `ui/anime_rows.py:112`).
 
@@ -2693,7 +2693,7 @@ R1-O-FIELD, R1-RANGE-ENTER i R1-RANGE-FILM; R3-RANGE-FRACTION, R3-WAIT. R2 nie s
 
 ### Klawisze i mysz
 
-Otwierane z B02–B07 i B13. ↑↓/PgUp/PgDn/Home/End nawigują po zawiniętych wierszach tekstu, nie po źródłowej liście. Kółko przewija bez zmiany wskazanego wiersza. C/Ctrl+Insert kopiuje wskazany wiersz tekstu lub zaznaczenie, Ctrl+C bez zaznaczenia zamyka; Esc/Backspace/`?` zamyka. Klik ustawia tekstowy wiersz, dwuklik tylko wskazuje (bez Enter), PPM zamyka (`ui/anime.py:282-288,934-947`; `ui/anime_panel.py:120-169`; `ui/anime_view.py:93-94,270`). Tab/←→ przełączają zakładkę zgodnie K-Anime; zwykły `cancel()` nie zeruje `_details_open`, więc po powrocie zwykłego Anime szczegóły mogą pozostać.
+Otwierane z B02–B07 i B13. ↑↓/PgUp/PgDn/Home/End nawigują po zawiniętych wierszach tekstu, nie po źródłowej liście. Kółko przewija bez zmiany wskazanego wiersza. C/Ctrl+Insert kopiuje wskazany wiersz tekstu lub zaznaczenie, Ctrl+C bez zaznaczenia zamyka; Esc/Backspace/`?` zamyka. Klik ustawia tekstowy wiersz, dwuklik tylko wskazuje (bez Enter), PPM kopiuje zaznaczenie (`ui/anime.py:282-288,934-947`; `ui/anime_panel.py:120-169`; `ui/anime_view.py:93-94,270`). Tab/←→ przełączają zakładkę zgodnie K-Anime; zwykły `cancel()` nie zeruje `_details_open`, więc po powrocie zwykłego Anime szczegóły mogą pozostać.
 
 Obsługa szczegółów nie jest tym samym co blok pomocy State: Enter/I/P/S i `/` idą do `_panel_action`, używając zapamiętanego źródłowego kursora (`_adopt_view_input` wraca od razu przy details). `/` zmienia źródłowy screen na QUERY, S rozpoczyna szkic, Enter wykonuje źródłową główną akcję, I/P działają na źródłowym odcinku z warunkami B04. Flaga szczegółów nie jest tu automatycznie zamykana. D/Space/A/Z są odfiltrowane przez `AnimeScreen.DETAILS`; **W/R/F/X/Delete/T U08 nie trafiają do `_subscription_key`**, bo wcześniejsza gałąź szczegółów wraca z `handle_key` (`ui/anime.py:282-288,748-750,850-869`; `ui/anime_panel.py:171-204`). O przechwytuje State poza polem. To różnica między opisem pomocy a faktyczną dostępnością.
 
@@ -2717,7 +2717,7 @@ R1-DETAIL-ACTIONS (podpowiedzi w treści pomocy, nie dolnej stopce), R3-TECH-REL
 
 ### Klawisze i mysz
 
-Esc/Backspace/Ctrl+C bez zaznaczenia wraca do `_busy_return`, unieważnia wynik odczytu; dla `sending=True` nie anuluje wysłanej mutacji. Pozostałe lokalne działania ignorowane, poza kopiowaniem przez wcześniejszą obsługę. Gdy widok jest BUSY-listą, C/Ctrl+Insert może skopiować wiersz komunikatu; w wariancie QUERY nie ma kopiowania wiersza. O i zmiana zakładki z K-Anime nadal działają (`ui/anime.py:271-280,1185-1199,1947-1957`). BUSY jest nienawigowalnym wierszem: klik/dwuklik nie otwierają, kółko nie ma kolejnych danych, PPM wraca (`ui/anime.py:1022-1023`; `ui/anime_view.py:311-330`).
+Esc/Backspace/Ctrl+C bez zaznaczenia wraca do `_busy_return`, unieważnia wynik odczytu; dla `sending=True` nie anuluje wysłanej mutacji. Pozostałe lokalne działania ignorowane, poza kopiowaniem przez wcześniejszą obsługę. Gdy widok jest BUSY-listą, C/Ctrl+Insert może skopiować wiersz komunikatu; w wariancie QUERY nie ma kopiowania wiersza. O i zmiana zakładki z K-Anime nadal działają (`ui/anime.py:271-280,1185-1199,1947-1957`). BUSY jest nienawigowalnym wierszem: klik/dwuklik nie otwierają, kółko nie ma kolejnych danych, PPM kopiuje zaznaczenie (`ui/anime.py:1022-1023`; `ui/anime_view.py:311-330`).
 
 ### Stopka
 
@@ -2749,7 +2749,7 @@ R3-WAIT; R1-STATE-BUSY może objąć O w statusie, jeśli osobny worker State za
 
 ### Klawisze i mysz
 
-Enter wraca do `_problem_return`, czyści problem/sugestię; **nie ponawia operacji**. Esc/Backspace/Ctrl+C wraca do listowego `_problem_return`, ale przy QUERY wraca do Home lub listy Subskrypcji, więc nie jest zawsze równoważne Enter. C/Ctrl+Insert kopiuje tekstowy wiersz albo zaznaczenie. ↑↓/Pg/Home/End nie nawigują, ponieważ `_handle_problem` obsługuje tylko powrót; kółko może przewijać tekst, klik ustawia wiersz do C. Dwuklik nie potwierdza, PPM jak Esc. O/Tab/←→ przez K-Anime. `?`, D/I/P/S i `/` ignorowane (poza stale lub odzyskaniem partii we wcześniejszej obsłudze; `ui/anime.py:271-306,1201-1228,778-786`).
+Enter wraca do `_problem_return`, czyści problem/sugestię; **nie ponawia operacji**. Esc/Backspace/Ctrl+C wraca do listowego `_problem_return`, ale przy QUERY wraca do Home lub listy Subskrypcji, więc nie jest zawsze równoważne Enter. C/Ctrl+Insert kopiuje tekstowy wiersz albo zaznaczenie. ↑↓/Pg/Home/End nie nawigują, ponieważ `_handle_problem` obsługuje tylko powrót; kółko może przewijać tekst, klik ustawia wiersz do C. Dwuklik nie potwierdza, PPM kopiuje zaznaczenie. O/Tab/←→ przez K-Anime. `?`, D/I/P/S i `/` ignorowane (poza stale lub odzyskaniem partii we wcześniejszej obsłudze; `ui/anime.py:271-306,1201-1228,778-786`).
 
 ### Stopka
 
@@ -2771,7 +2771,7 @@ R1-STALE (zwykłe Enter wróć też blokowane), R3-RESIDENT/R3-WAIT. Scalona pod
 
 ### Klawisze i mysz
 
-Enter zatwierdza zapamiętanego kandydata i rewizję, wraca do CANDIDATES oraz wykonuje `_choose_release(..., confirmed=True)`. Esc/Backspace/Ctrl+C bez zaznaczenia odrzuca potwierdzenie i wraca do wydań. O/zakładki przez K-Anime; C/Ctrl+Insert kopiuje. Inne lokalne klawisze ignorowane. Klik wskazuje tekst; dwuklik **nigdy nie potwierdza**; PPM odrzuca; kółko przewija treść (`ui/anime.py:1201-1210,1757-1777`; `tests/cli/test_panel_keys.py:1616-1629`). Zmiana oferty może unieważnić wybór u ownera; potwierdzenie nie oznacza bezwarunkowego przyjęcia.
+Enter zatwierdza zapamiętanego kandydata i rewizję, wraca do CANDIDATES oraz wykonuje `_choose_release(..., confirmed=True)`. Esc/Backspace/Ctrl+C bez zaznaczenia odrzuca potwierdzenie i wraca do wydań. O/zakładki przez K-Anime; C/Ctrl+Insert kopiuje. Inne lokalne klawisze ignorowane. Klik wskazuje tekst; dwuklik **nigdy nie potwierdza**; PPM kopiuje zaznaczenie; kółko przewija treść (`ui/anime.py:1201-1210,1757-1777`; `tests/cli/test_panel_keys.py:1616-1629`). Zmiana oferty może unieważnić wybór u ownera; potwierdzenie nie oznacza bezwarunkowego przyjęcia.
 
 ### Stopka
 
@@ -2793,7 +2793,7 @@ R1-STALE jeśli `control_problem` przyszedł podczas pytania; R3-IDENTITY/R3-TEC
 
 ### Klawisze i mysz
 
-K-Anime, ale lista zawiera też nawigowalne tekstowe objaśnienia. Enter na `ep:` przełącza zaznaczenie, na `Dodaj subskrypcję` wysyła zapis (resident wymagany), na `Anuluj` wraca, na już subskrybowanym `show` otwiera U08. Enter na objaśnieniu nic nie robi. Space przełącza tylko odcinek; A przełącza wszystkie kwalifikujące się odcinki szkicu. Z nie otwiera zakresu. `/` QUERY, `?` B09, C kopiuje. Esc/Backspace/Ctrl+C wraca do źródła. Klik wybiera, checkbox=Space, dwuklik=Enter, PPM wraca, kółko przewija (`ui/anime.py:531-605`; `ui/anime_rows.py:155-191`).
+K-Anime, ale lista zawiera też nawigowalne tekstowe objaśnienia. Enter na `ep:` przełącza zaznaczenie, na `Dodaj subskrypcję` wysyła zapis (resident wymagany), na `Anuluj` wraca, na już subskrybowanym `show` otwiera U08. Enter na objaśnieniu nic nie robi. Space przełącza tylko odcinek; A przełącza wszystkie kwalifikujące się odcinki szkicu. Z nie otwiera zakresu. `/` QUERY, `?` B09, C kopiuje. Esc/Backspace/Ctrl+C wraca do źródła. Klik wybiera, checkbox=Space, dwuklik=Enter, PPM kopiuje zaznaczenie, kółko przewija (`ui/anime.py:531-605`; `ui/anime_rows.py:155-191`).
 
 Początkowo zaznaczone wszystkie wyemitowane, niezlecone odcinki sprzed granicy subskrypcji; kursor na pierwszym z nich, a gdy ich nie ma — na add/cancel/show. Nowe zaznaczenia nie są zapisem. Przyjęcie subskrypcji następnie zamawia zaznaczone zwykłą partią D; odmowa partii nie usuwa subskrypcji. Udany zapis przełącza panel na listę Subskrypcji, wyróżnia nowy wpis (`ui/anime.py:545-559,626-668,670-685`). S w tym ekranie nie dodaje niczego ponownie.
 

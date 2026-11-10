@@ -862,13 +862,14 @@ class AnimeController:
         with self._lock:
             self._sync_view()
             click: Click = self._panel.mouse(event)
+            self._notice = self._view.notice
+            self._notice_kind = self._view.notice_kind
             if self._details_open:
                 return click
             if click.kind is ClickKind.TOGGLE and self._range_input is not None:
                 click = Click(ClickKind.ROW, click.value)
             if click.kind in {ClickKind.ROW, ClickKind.LINE, ClickKind.TOGGLE}:
                 self._adopt_cursor()
-            self._notice = self._view.notice
             return click
 
     def place(self, index: int, anchor: int | None = None) -> None:

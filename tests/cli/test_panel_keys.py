@@ -1917,6 +1917,20 @@ def test_a_click_on_the_shown_tab_below_its_list_goes_back_like_its_first_crumb(
     assert _state(probe) != before
 
 
+def _copying_app(
+    monkeypatch: pytest.MonkeyPatch, probe: _Probe
+) -> tuple[interactive_app._InteractiveApplication, list[str]]:
+    application, copied = _application(monkeypatch, interactive_app._ViewMode.STATE)
+    application._state = probe.panel
+
+    def clipboard(value: str) -> bool:
+        copied.append(value)
+        return True
+
+    probe.anime._panel._clipboard = clipboard
+    return application, copied
+
+
 @pytest.mark.parametrize(
     ("name", "keys"),
     [
@@ -1932,36 +1946,62 @@ def test_a_click_on_the_shown_tab_below_its_list_goes_back_like_its_first_crumb(
         ("library_details", ()),
     ],
 )
-def test_a_right_click_does_what_escape_does_also_in_a_focused_field(
+def test_a_right_click_without_a_selection_changes_nothing_also_in_a_focused_field(
     build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch, name: str, keys: tuple[str, ...]
 ) -> None:
-    escaped: _Probe = build(name)
     clicked: _Probe = build(name)
     for key in keys:
-        escaped.panel.handle_key(key)
         clicked.panel.handle_key(key)
-    before: tuple[object, ...] = _state(escaped)
-    escaped.panel.handle_key("escape")
-    _settle(escaped)
-    application: interactive_app._InteractiveApplication = _app(monkeypatch, clicked)
+    before: tuple[object, ...] = _state(clicked)
+    application, copied = _copying_app(monkeypatch, clicked)
     application._render_frame(80, 24)
 
     _right_click(application, Point(10, 12))
     _settle(clicked)
 
-    assert _state(clicked) == _state(escaped)
-    assert _state(clicked) != before
+    assert _state(clicked) == before
+    assert copied == []
 
 
-def test_a_right_click_on_a_tab_list_leaves_the_panel_like_escape(
+def test_a_right_click_on_a_tab_list_keeps_the_panel_open(
     build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    application: interactive_app._InteractiveApplication = _app(monkeypatch, build("subscriptions"))
+    application, copied = _copying_app(monkeypatch, build("subscriptions"))
     application._render_frame(80, 24)
 
     _right_click(application, Point(0, 0))
 
-    assert application._mode is interactive_app._ViewMode.HOME
+    assert application._mode is interactive_app._ViewMode.STATE
+    assert copied == []
+
+
+def _drag_cursor_row(application: interactive_app._InteractiveApplication, probe: _Probe) -> None:
+    start: Point = _cursor_point(application._render_frame(80, 24), probe)
+    _drag(application, start, Point(79, start.y))
+    application._render_frame(80, 24)
+
+
+@pytest.mark.parametrize("name", ["episodes", "draft", "subscriptions", "history", "library"])
+def test_a_right_click_anywhere_copies_the_dragged_text_like_the_copy_key_and_drops_the_selection(
+    build: Callable[[str], _Probe], monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    keyed: _Probe = build(name)
+    keyed_application, keyed_copied = _copying_app(monkeypatch, keyed)
+    _drag_cursor_row(keyed_application, keyed)
+    keyed_application._handle_key("copy")
+    clicked: _Probe = build(name)
+    application, copied = _copying_app(monkeypatch, clicked)
+    _drag_cursor_row(application, clicked)
+
+    _right_click(application, Point(0, 0))
+    painted: Text = application._render_frame(80, 24)
+
+    assert keyed_copied
+    assert copied == keyed_copied
+    assert _reversed(painted) == ""
+    assert not any(span.style == "reverse" for span in painted.spans)
+    assert "Skopiowano zaznaczenie" in painted.plain
+    assert application._mode is interactive_app._ViewMode.STATE
 
 
 def _field(probe: _Probe) -> TextInput:

@@ -1140,17 +1140,15 @@ def test_a_drag_is_never_a_click_and_breaks_a_double_click() -> None:
     assert after == Click(ClickKind.ROW, 1)
 
 
-def test_a_right_press_asks_to_go_back_and_its_release_is_ignored() -> None:
+def test_a_right_press_is_no_gesture_and_keeps_a_pending_click() -> None:
     gesture: PointerGesture = PointerGesture(_Clock())
     frame: Text = _rows_frame()
     _gesture(gesture, frame, (MouseEventType.MOUSE_DOWN, Point(1, 2)))
 
     pressed = gesture.track(MouseEvent(Point(1, 2), MouseEventType.MOUSE_DOWN, MouseButton.RIGHT, frozenset()))
-    released = gesture.track(MouseEvent(Point(1, 2), MouseEventType.MOUSE_UP, MouseButton.RIGHT, frozenset()))
 
-    assert pressed is not None
-    assert gesture.resolve(frame, pressed) == Click(ClickKind.BACK)
-    assert released is None
+    assert pressed is None
+    assert _gesture(gesture, frame, (MouseEventType.MOUSE_UP, Point(1, 2))) == Click(ClickKind.ROW, 1)
 
 
 def test_click_at_names_tagged_tabs_and_earlier_crumbs_but_not_the_current_level() -> None:
@@ -1295,16 +1293,45 @@ def test_a_drag_over_a_row_then_a_click_runs_nothing(monkeypatch: pytest.MonkeyP
     assert cast("_Renderer", application._renderer).exits == 0
 
 
-def test_a_right_click_in_settings_goes_back_like_escape(monkeypatch: pytest.MonkeyPatch) -> None:
-    application, _copied = _application(monkeypatch, _Mode.SETTINGS)
+def _right_press(application: interactive_app._InteractiveApplication, point: Point) -> None:
+    application._handle_mouse(MouseEvent(point, MouseEventType.MOUSE_DOWN, MouseButton.RIGHT, frozenset()))
+
+
+def test_a_right_click_in_settings_without_a_selection_keeps_the_screen(monkeypatch: pytest.MonkeyPatch) -> None:
+    application, copied = _application(monkeypatch, _Mode.SETTINGS)
     controller: SettingsController = _settings(FakeSettingsService(), "subtitles")
     application._settings = controller
-    application._render_frame(100, 30)
+    category: object = controller._category
+    before: str = application._render_frame(100, 30).plain
 
-    application._handle_mouse(MouseEvent(Point(4, 4), MouseEventType.MOUSE_DOWN, MouseButton.RIGHT, frozenset()))
+    _right_press(application, Point(4, 4))
 
-    assert controller._category is None
+    assert category is not None
+    assert controller._category == category
     assert application._mode is _Mode.SETTINGS
+    assert application._render_frame(100, 30).plain == before
+    assert copied == []
+
+
+def test_message_right_click_copies_the_dragged_text_like_ctrl_c_and_drops_the_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application, copied = _application(monkeypatch, _Mode.MESSAGE)
+    renderer: _Renderer = cast("_Renderer", application._renderer)
+    application._message = Text("Raport końcowy")
+    start: Point = _point(application._render_frame(80, 24), "Raport")
+    _drag(application, start, Point(start.x + len("Raport") - 1, start.y))
+    application._render_frame(80, 24)
+
+    _right_press(application, Point(0, 0))
+    painted: Text = application._render_frame(80, 24)
+    _right_press(application, start)
+
+    assert copied == ["Raport"]
+    assert _reversed(painted) == ""
+    assert "Skopiowano zaznaczenie" in painted.plain
+    assert renderer.exits == 0
+    assert application._mode is _Mode.MESSAGE
 
 
 def _field_point(frame: Text, before: str, value: str, index: int) -> Point:

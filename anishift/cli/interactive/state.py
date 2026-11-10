@@ -55,6 +55,7 @@ from anishift.cli.interactive.pointer import (
     CRUMB_SEPARATOR,
     Click,
     ClickKind,
+    is_copy_press,
     mark_crumbs,
     mark_inert,
     mark_keys,
@@ -635,9 +636,9 @@ class StateController:
         return self._tab
 
     def mouse(self, event: MouseEvent) -> Click | None:
-        """Forward Anime body cells; ``None`` leaves the event to the frame."""
+        """Forward Anime body cells and a right press after an Anime press; ``None`` leaves the event to the frame."""
         with self._lock:
-            if event.event_type is MouseEventType.MOUSE_DOWN:
+            if event.event_type is MouseEventType.MOUSE_DOWN and not is_copy_press(event):
                 self._frame_press = self._anime is None or not self._anime.covers(event.position.y - self._anime_top)
             if self._tab != _Tab.ANIME or self._anime is None or self._frame_press:
                 return None
