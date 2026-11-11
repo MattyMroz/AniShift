@@ -31,6 +31,9 @@ _MIX_INPUT_COUNTS: Final[Mapping[str, int]] = MappingProxyType({"video": 2, "sta
 _IN_PROGRESS_PERCENT: Final[int] = 99
 """Highest measured percentage before the output passes handler validation."""
 
+_FINISHED_PHASE: Final[str] = "done"
+"""Audio phase the renderer reports once its whole render is finished."""
+
 
 class AudioMixer(Protocol):
     """Configured narration renderer used for one run."""
@@ -81,7 +84,8 @@ class _ProgressObserver:
     def on_audio_phase(self, scope_id: str, phase: str) -> None:
         del scope_id
         self._phase = phase
-        self._progress.emit(WorkerNotification(WorkerNotificationKind.PROGRESS, self._task_id, None, phase))
+        percent: int = _IN_PROGRESS_PERCENT if phase == _FINISHED_PHASE else 0
+        self._progress.emit(WorkerNotification(WorkerNotificationKind.PROGRESS, self._task_id, percent, phase))
 
     def on_percent(self, percent: int) -> None:
         self._progress.emit(
