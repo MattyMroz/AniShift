@@ -765,7 +765,7 @@ def _checked(owner: AutomationOwner) -> bool:
     return owner._on_owner(lambda: not owner._unverified and not owner._transfers_inspecting)
 
 
-@pytest.mark.parametrize(("priority", "state"), [(1, "downloading"), (0, "stoppedUP")])
+@pytest.mark.parametrize(("priority", "state"), [(1, "downloading"), (1, "checkingResumeData"), (0, "stoppedUP")])
 @pytest.mark.parametrize("restart", ["owner", "client"])
 def test_a_restarted_client_gets_its_lost_selection_back_before_the_transfer_starts_again(
     setup: _Setup, priority: int, state: str, restart: str
@@ -786,7 +786,7 @@ def test_a_restarted_client_gets_its_lost_selection_back_before_the_transfer_sta
             _until(_starts(setup, 2))
 
     stored: AcquisitionConfirmation = _stored(setup)
-    assert ((_HASH, "stop") in setup.network.actions) is (state == "downloading")
+    assert ((_HASH, "stop") in setup.network.actions) is (state != "stoppedUP")
     assert setup.network.selections == [(_HASH, frozenset({0, 1}))] * 2
     assert setup.network.started_priorities == [(1, 1, 0, 0, 0)] * 2
     assert setup.network.unapproved_starts == []

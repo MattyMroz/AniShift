@@ -473,7 +473,7 @@ START_RACE_WINDOW_S: Final[float] = 120.0
 _SETTLING_SELECTION_STATES: Final[frozenset[str]] = frozenset(
     {"metaDL", "forcedMetaDL", "checkingResumeData", "checkingDL", "checkingUP", "queuedForChecking", "allocating"}
 )
-"""Transient client states a selective transfer is waited out in, never read as a missing stop."""
+"""Transient client states a selection change waits out, never read as a missing stop; a lost selection stops."""
 
 METADATA_TIMEOUT_S: Final[float] = 600.0
 """Working time a selective transfer may spend without its file list before it is reported (D-02)."""
@@ -6802,7 +6802,7 @@ class AutomationOwner:
         restoring: bool = False,
     ) -> AcquisitionConfirmation | None:
         if observed not in _SELECTABLE_STATES:
-            if observed is None or observed in _SETTLING_SELECTION_STATES:
+            if observed is None or (observed in _SETTLING_SELECTION_STATES and not restoring):
                 return None
             if item.applied_revision > 0:
                 service.control_transfer(item.info_hash, "stop")
