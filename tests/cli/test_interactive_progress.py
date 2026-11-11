@@ -160,7 +160,6 @@ def test_an_unmeasured_row_displays_numeric_fallback_without_changing_measuremen
         progress.emit(_event(1, RunEventKind.TASK_STARTED, task_id="extract"))
         progress.emit(_event(2, RunEventKind.TASK_PROGRESS, task_id="extract", message="working"))
         line: str = _lines(progress)[0]
-        assert not progress._files["group-1"].determinate
 
     assert re.fullmatch(
         r"Wyodrębnianie {3}Odcinek 01\.mkv +[\u2591]+ \|   0% \| \d\d:\d\d:\d\d\.\d\d\d",
@@ -192,7 +191,9 @@ def test_new_work_starts_zero_and_unknown_activity_retains_last_value_across_bac
         assert _rows(progress) == [("Nagrywanie Episode.mkv", 40)]
 
 
-def test_task_numeric_display_freezes_for_unknown_and_disconnect_then_resumes(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_task_clock_runs_through_unknown_activity_and_retries_and_freezes_only_while_unobserved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     clock: list[float] = [100.0]
     monkeypatch.setattr("anishift.cli.interactive.progress.time.monotonic", lambda: clock[0])
     prepared: PreparedAutoRun = _prepared((("group-1", "Episode"),), (("tts", "group-1", TaskKind.SYNTHESIZE_SPEECH),))
@@ -201,18 +202,18 @@ def test_task_numeric_display_freezes_for_unknown_and_disconnect_then_resumes(mo
         progress.emit(_event(2, RunEventKind.TASK_PROGRESS, task_id="tts", progress_percent=17))
         clock[0] = 102.0
         progress.emit(_event(3, RunEventKind.TASK_PROGRESS, task_id="tts", message="waiting"))
+        clock[0] = 110.0
+        progress.emit(_event(4, RunEventKind.TASK_RETRY, task_id="tts", message="TTS retry 1/3"))
         clock[0] = 120.0
-        progress.emit(_event(4, RunEventKind.TASK_PROGRESS, task_id="tts", message="waiting"))
-        assert "17% | 00:00:02.000" in progress.render(120).plain
-        assert not progress._files["group-1"].determinate
+        assert "17% | 00:00:20.000" in progress.render(120).plain
         progress.emit(_event(5, RunEventKind.TASK_PROGRESS, task_id="tts", progress_percent=42))
         clock[0] = 123.0
         progress.observe_activity(active=False)
         clock[0] = 130.0
-        assert "42% | 00:00:05.000" in progress.render(120).plain
+        assert "42% | 00:00:23.000" in progress.render(120).plain
         progress.observe_activity(active=True)
         clock[0] = 132.0
-        assert "42% | 00:00:07.000" in progress.render(120).plain
+        assert "42% | 00:00:25.000" in progress.render(120).plain
 
 
 def test_cover_composition_names_its_stage_and_uses_only_reported_progress() -> None:

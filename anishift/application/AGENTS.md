@@ -151,7 +151,12 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `_SELECTION_MISMATCH`. Tuż przed startem znów `_may_start_selection`; resume chroni `_mark_sent`.
 - qBittorrent gubi priorytety przy wyłączeniu: start ownera i pierwsza udana runda po nieudanej
   (`_recheck_selections`) oznaczają potwierdzone `ACCEPTED` jako `_unverified` i naprawiają przez
-  `_apply_selection(restoring=True)` + zwykły start (pauza nadal blokuje nieręczne).
+  `_apply_selection(restoring=True)` + zwykły start (pauza nadal blokuje nieręczne). Zgubioną selekcję owner
+  zatrzymuje od razu, także w stanie przejściowym (`checkingResumeData`), bo po sprawdzeniu klient pobiera z
+  zapisanymi priorytetami, czasem całą paczkę. Klient potrafi też po starcie skończyć transfer bez żadnego chcianego
+  pliku (`amount_left == 0`, `progress < 1`), choć jego API pokazuje selekcję: `_wants_nothing` łapie to po
+  `START_SETTLE_S`, `_restore_wanted` nakłada selekcję i startuje ponownie, a po `_WANTED_RESTORES` próbach tej samej
+  rewizji zgłasza `_SELECTION_MISMATCH`.
 - Rekord selektywny nie przechodzi w `COMPLETE`, dopóki selekcja nie jest zastosowana i każde przypisanie nie ma
   `handed_off`. Timeout metadanych liczy się w pamięci na próbę; jawne resume zaczyna nową (`restart_idle`). Resume
   bez potwierdzonej selekcji nie wysyła `resume`. `PENDING_SEND` uzgadnia się bez ponownego add (`_SEND_CHECKS`, potem

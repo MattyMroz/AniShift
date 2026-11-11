@@ -7,7 +7,9 @@ from typing import Any
 import httpx
 import openai
 import pytest
+from chat_stream_helpers import chat_stream
 
+from anishift.services.llm import LlmService
 from anishift.services.llm.config import LlmConfig
 from anishift.services.llm.engines.openrouter import OpenrouterService
 from anishift.services.llm.engines.openrouter.constants import SUGGESTED_MODEL_IDS
@@ -18,6 +20,7 @@ from anishift.services.llm.types import LlmMessage, LlmRequest, LlmRole, TextPar
 @dataclass(slots=True)
 class FakeClient:
     error: BaseException | None = None
+    text: str = "ok"
     calls: list[dict[str, object]] = field(default_factory=list, init=False)
     chat: object = field(init=False)
 
@@ -28,10 +31,8 @@ class FakeClient:
         self.calls.append(kwargs)
         if self.error is not None:
             raise self.error
-        message = SimpleNamespace(content="ok")
-        choice = SimpleNamespace(message=message, finish_reason="stop")
         usage = SimpleNamespace(prompt_tokens=3, completion_tokens=2, total_tokens=5, cost=0.001)
-        return SimpleNamespace(choices=[choice], model="vendor/custom", usage=usage)
+        return chat_stream(text=self.text, model="vendor/custom", usage=usage)
 
     def close(self) -> None:
         return None
@@ -121,3 +122,19 @@ def test_openrouter_suggestions_are_small_unique_slugs() -> None:
     assert 2 <= len(SUGGESTED_MODEL_IDS) <= 6
     assert len(set(SUGGESTED_MODEL_IDS)) == len(SUGGESTED_MODEL_IDS)
     assert all("/" in model_id for model_id in SUGGESTED_MODEL_IDS)
+
+
+def test_llm_service_hands_openrouter_answer_lines_to_the_observer_as_they_arrive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeClient()
+    client.text = "[0] raz\n[1] dwa\n"
+    monkeypatch.setattr("anishift.services.llm.engines._openai_compatible._default_client_factory", FakeFactory(client))
+    config = LlmConfig(engine_id="openrouter", provider_model_id="google/gemini-3.8-flash", api_keys=("secret",))
+    seen: list[str] = []
+
+    with LlmService(config) as service:
+        result = service.complete(_request(), on_text=seen.append)
+
+    assert seen == ["[0] raz\n", "[1] dwa\n"]
+    assert result.text == "[0] raz\n[1] dwa\n"
