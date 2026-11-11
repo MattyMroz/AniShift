@@ -158,7 +158,5 @@ addopts = [
     "-ra",
     "--strict-markers",
     "--strict-config",
-    "-n",
-    "auto",
     "--dist=worksteal",
 ]
