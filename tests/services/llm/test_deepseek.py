@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from chat_stream_helpers import chat_stream
 
 from anishift.services.llm.config import LlmConfig
 from anishift.services.llm.engines.deepseek import DeepseekService
@@ -24,9 +25,7 @@ class FakeClient:
 
     def create(self, **kwargs: Any) -> object:
         self.calls.append(kwargs)
-        message = SimpleNamespace(content="ok")
-        choice = SimpleNamespace(message=message, finish_reason=self.finish_reason)
-        return SimpleNamespace(choices=[choice], model="deepseek-chat", usage=None)
+        return chat_stream(text="ok", finish_reason=self.finish_reason, model="deepseek-chat")
 
     def close(self) -> None:
         return None
