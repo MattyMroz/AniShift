@@ -165,7 +165,7 @@ def test_engine_satisfies_document_protocol_with_document_limit(engine_for: Engi
     engine = engine_for(FakeSite())
 
     assert isinstance(engine, DocumentTtsEngine)
-    assert engine.capabilities.max_document_chars == 50_000
+    assert engine.capabilities.reads_documents
     assert engine.capabilities.supports_concurrency
     assert engine.capabilities.native_output_formats == (AudioFormat.MP3,)
     assert engine.synthesis_profile.provider_source_format is AudioFormat.WAV
@@ -1029,7 +1029,6 @@ def test_synthesize_single_request_is_unsupported(tmp_path: Path, engine_for: En
         ({"voice_id": "dallin"}, TtsVoiceError),
         ({"provider_model_id": "eleven_v2"}, TtsInputError),
         ({"options": {"stability": 0.5}}, TtsUnsupportedError),
-        ({"parts": (DocumentPart(request_id="line-0", text="x" * 50_001),)}, TtsInputError),
     ],
 )
 def test_synthesize_document_invalid_request_is_refused_without_browser(
@@ -1134,12 +1133,6 @@ def test_document_text_parts_returns_separator_paragraph_between_parts() -> None
     parts = (DocumentPart(request_id="a", text="Raz [dwa]."), DocumentPart(request_id="b", text="Trzy\ncztery."))
 
     assert document_text(parts) == "Raz (dwa).\n\n…\n\nTrzy cztery.\n"
-
-
-def test_document_chars_parts_returns_uploaded_text_length(engine_for: EngineFor) -> None:
-    parts = (DocumentPart(request_id="a", text="Raz."), DocumentPart(request_id="b", text="Dwa."))
-
-    assert engine_for(FakeSite()).document_chars(parts) == len("Raz.\n\n…\n\nDwa.\n")
 
 
 def test_document_text_single_part_returns_one_paragraph() -> None:

@@ -112,7 +112,7 @@ def test_is_document_engine_matches_document_capability(engine_id: str) -> None:
     module_path, class_name = registry[engine_id]
     engine_class = getattr(importlib.import_module(module_path), class_name)
 
-    assert is_document_engine(engine_id) is (engine_class.capabilities.max_document_chars is not None)
+    assert is_document_engine(engine_id) is (engine_class.capabilities.reads_documents)
 
 
 def test_is_document_engine_unknown_engine_returns_false() -> None:
