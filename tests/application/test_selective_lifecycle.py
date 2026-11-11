@@ -333,17 +333,18 @@ def _failed_request(group: InspectedSourceGroup, state: RequestState) -> Process
 
 
 def _auto_starts(owner: AutomationOwner, started: list[str], requests: tuple[ProcessingRequest, ...]) -> list[str]:
-    started.clear()
-    saved: WatchState = replace(owner.state, policy=AutomationPolicy(auto_enabled=True), requests=requests)
-    assert owner._on_owner(lambda: owner._save(saved))
+    results: list[list[str]] = []
 
     def refresh() -> None:
-        assert not owner._recovering
-        assert not owner._inspecting
+        if owner._recovering or owner._inspecting:
+            return
+        started.clear()
+        assert owner._save(replace(owner.state, policy=AutomationPolicy(auto_enabled=True), requests=requests))
         owner._refresh_automatic()
+        results.append(list(started))
 
-    owner._on_owner(refresh)
-    return list(started)
+    _until(lambda: owner._on_owner(refresh) is None and bool(results))
+    return results[0]
 
 
 def _episode_status(owner: AutomationOwner, command_id: str) -> EpisodeStatus:

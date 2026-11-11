@@ -15,10 +15,8 @@ from anishift.services.audio.types import AudioFormat, AudioRenderRequest, Timed
 
 class ConcurrentNormalizationRunner:
     def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._barrier: threading.Barrier = threading.Barrier(4, timeout=5.0)
-        self.active = 0
-        self.peak = 0
+        self.barrier: threading.Barrier = threading.Barrier(4, timeout=5.0)
+        self.met: list[str] = []
 
     def run(
         self,
@@ -30,15 +28,9 @@ class ConcurrentNormalizationRunner:
         on_stdout_line: Callable[[str], None] | None = None,
     ) -> CommandResult:
         del operation, timeout_s, cancel, on_stdout_line
-        with self._lock:
-            self.active += 1
-            self.peak = max(self.peak, self.active)
-        try:
-            self._barrier.wait()
-            Path(command[-1]).write_bytes(b"\x00" * 480)
-        finally:
-            with self._lock:
-                self.active -= 1
+        self.barrier.wait()
+        self.met.append(command[-1])
+        Path(command[-1]).write_bytes(b"\x00" * 480)
         return CommandResult(command=command, stdout="", stderr="", returncode=0)
 
 
@@ -81,7 +73,8 @@ def test_audio_service_normalizes_clips_concurrently_in_source_order(tmp_path: P
         cancel=None,
     )
 
-    assert runner.peak == 4
+    assert not runner.barrier.broken
+    assert len(runner.met) == 4
     assert [clip.timed_clip.request_id for clip in normalized] == [
         "speech-0",
         "speech-1",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from itertools import pairwise
@@ -10,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from anishift.application import recovery as recovery_module
 from anishift.application import scheduler as scheduler_module
 from anishift.application import scheduler_runtime
 from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifetime, ArtifactState
@@ -27,7 +29,7 @@ from anishift.application.planning import (
     TaskState,
     stable_topological_order,
 )
-from anishift.application.recovery import RunJournal
+from anishift.application.recovery import RunJournal, read_checkpoint
 from anishift.application.results import ArtifactSnapshot, GroupStatus, ProducedArtifact, RunResult, TaskResult
 from anishift.application.scheduler import (
     GraphCoordinator,
@@ -1380,6 +1382,47 @@ def test_an_unsaved_interruption_keeps_the_remote_work_uncertain_and_blocks_the_
             assert RunJournal.load(journal_path).uncertain_remote_work
     finally:
         coordinator.close()
+
+
+def test_a_checkpoint_save_waits_for_a_concurrent_read_instead_of_failing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal_path: Path = tmp_path / "journal.json"
+    journal: RunJournal = RunJournal.create(
+        journal_path, _plan(tmp_path, (_TaskSpec("group-1", "active"),)), tmp_path / "tmp" / "run-read"
+    )
+    saved: bytes = journal_path.read_bytes()
+    reading: threading.Event = threading.Event()
+    contended: threading.Event = threading.Event()
+    read_bytes: Callable[[Path], bytes] = Path.read_bytes
+    lock: threading.Lock = threading.Lock()
+
+    class _ObservedLock:
+        def __enter__(self) -> None:
+            if not lock.acquire(blocking=False):
+                contended.set()
+                lock.acquire()
+
+        def __exit__(self, *_: object) -> None:
+            lock.release()
+
+    def held_read(path: Path) -> bytes:
+        with path.open("rb"):
+            reading.set()
+            assert contended.wait(5)
+        return read_bytes(path)
+
+    monkeypatch.setattr(recovery_module, "_CHECKPOINT_FILES", _ObservedLock())
+    monkeypatch.setattr(Path, "read_bytes", held_read)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        read: Future[bytes] = pool.submit(read_checkpoint, journal_path)
+        assert reading.wait(5)
+        save: Future[None] = pool.submit(journal.persist)
+        save.add_done_callback(lambda _: contended.set())
+        save.result()
+        assert read.result() == saved
+    assert not journal.failed
+    assert RunJournal.load(journal_path).plan == journal.plan
 
 
 def test_a_user_cancel_before_the_drain_stays_a_cancellation_and_not_a_pause(tmp_path: Path) -> None:

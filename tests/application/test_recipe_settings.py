@@ -86,7 +86,7 @@ def test_recipe_editors_use_owner_persistence_and_confirm_only_the_selected_scop
     preset: AutoPreset = service.get_preset(service.default_preset_id())
     original: WatchState = WatchState(policy=AutomationPolicy(auto_enabled=False))
     WatchStateStore(tmp_path / ".control" / "state.json").save(original)
-    with _panel_owner(service, tmp_path) as (session, store):
+    with _panel_owner(service, tmp_path) as (session, owner):
         panel: SettingsController = SettingsController(service, lambda: None, resident=session)
         _activate(panel, "category:auto")
         assert [item.label for item in panel._items[:3]] == ["Wideo", "Tłumaczenie", "Audiobook"]
@@ -108,7 +108,7 @@ def test_recipe_editors_use_owner_persistence_and_confirm_only_the_selected_scop
         panel.handle_key("enter")
         assert session.recipes().audiobook == RecipePreferences().audiobook
         assert session.recipes().translate.text_result.value == "subtitles"
-        assert store.load().policy == original.policy
+        assert owner.state.policy == original.policy
         assert (tmp_path / ".settings.json").read_bytes() == preferences
         assert service.get_preset(service.default_preset_id()) == preset
         panel._selected = 0
@@ -120,10 +120,10 @@ def test_recipe_editors_use_owner_persistence_and_confirm_only_the_selected_scop
         _activate(fresh, "category:auto")
         _activate(fresh, "recipe:audiobook")
         assert "Zawsze tłumacz" in fresh.render(80, 24).plain
-        before: WatchState = store.load()
+        before: WatchState = owner.state
         with pytest.raises(ControlError):
             session.update_recipe("tts_voice_id", "anything")
-        assert store.load() == before
+        assert owner.state == before
     service.close()
 
 
@@ -141,7 +141,7 @@ def test_accepted_video_and_audio_keep_their_settings_while_new_orders_receive_s
         (directory / f"{name}.srt").write_text("1\n00:01:00,000 --> 00:01:01,000\nHello\n", encoding="utf-8")
         if target == "cover":
             write_image_source(directory / f"{name}.png")
-    with _panel_owner(service, tmp_path) as (session, store):
+    with _panel_owner(service, tmp_path) as (session, owner):
         try:
             groups: dict[str, str] = {group.source.stem: group.group_id for group in session.discover().groups}
             preset: AutoPreset = service.get_preset(service.default_preset_id())
@@ -165,7 +165,7 @@ def test_accepted_video_and_audio_keep_their_settings_while_new_orders_receive_s
             after: PlanPreview = session.plan_auto((groups["After"],), preset)
             assert after.can_execute
             session.command("start", {"preview_id": after.preview_id})
-            requests: dict[str, ProcessingRequest] = {item.group_ids[0]: item for item in store.load().requests}
+            requests: dict[str, ProcessingRequest] = {item.group_ids[0]: item for item in owner.state.requests}
             assert len(requests) == 3
             assert requests[groups["Video"]].settings["tts_voice_id"] == "pl-PL-MarekNeural"
             assert requests[groups["Before"]].settings["tts_voice_id"] == "pl-PL-MarekNeural"
@@ -175,7 +175,9 @@ def test_accepted_video_and_audio_keep_their_settings_while_new_orders_receive_s
             expected: ProductKind = ProductKind.COVER_MP4 if target == "cover" else ProductKind.NARRATION_AUDIO
             assert requests[groups["After"]].intents[0].products.requested_products == frozenset({expected})
             for request in requests.values():
-                plan: ExecutionPlan = RunJournal.load(store.run_path(request.request_id)).plan
+                plan: ExecutionPlan = RunJournal.load(
+                    WatchStateStore(tmp_path / ".control" / "state.json").run_path(request.request_id)
+                ).plan
                 assert plan.settings.tts_voice_id == request.settings["tts_voice_id"]
             assert not release.is_set()
         finally:
@@ -192,7 +194,7 @@ def test_recipe_inheritance_and_manual_overrides_do_not_copy_video_policy_into_o
         directory.mkdir()
         (directory / f"{target}.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
     write_media_source(tmp_path / "subs" / "subs.mkv")
-    with _panel_owner(service, tmp_path) as (session, _store):
+    with _panel_owner(service, tmp_path) as (session, _):
         groups: dict[str, str] = {group.source.stem: group.group_id for group in session.discover().groups}
         preset: AutoPreset = replace(
             service.get_preset(service.default_preset_id()),
@@ -234,17 +236,17 @@ def test_recipe_changed_after_preview_does_not_relabel_the_accepted_plan(
     directory: Path = tmp_path / "translate"
     directory.mkdir()
     (directory / "Text.txt").write_text("Hello", encoding="utf-8")
-    with _panel_owner(service, tmp_path) as (session, store):
+    with _panel_owner(service, tmp_path) as (session, owner):
         try:
             group_id: str = session.discover().groups[0].group_id
             preset: AutoPreset = service.get_preset(service.default_preset_id())
             preview: PlanPreview = session.plan_auto((group_id,), preset)
             session.update_recipe("translate.text_result", "subtitles")
             session.command("start", {"preview_id": preview.preview_id})
-            accepted: ProcessingRequest = store.load().requests[0]
+            accepted: ProcessingRequest = owner.state.requests[0]
             assert accepted.recipe == RecipePreferences()
             assert accepted.intents[0].products.requested_products == frozenset({ProductKind.TRANSLATED_TEXT})
-            assert store.load().recipes != accepted.recipe
+            assert owner.state.recipes != accepted.recipe
         finally:
             release.set()
     service.close()

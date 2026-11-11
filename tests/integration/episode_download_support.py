@@ -48,6 +48,7 @@ from anishift.services.media import DefaultMediaProbe
 from anishift.services.media.probe import MediaProbe
 from anishift.services.subtitles import DisplayedLine, SpokenLine
 from anishift.services.torrents import Release, TorrentInfo, parse_release_name
+from anishift.services.torrents import qbittorrent as qbittorrent_module
 from anishift.services.torrents.errors import TorrentClientError
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
 from anishift.services.translation.types import FileTranslation, TranslatedLine
@@ -198,6 +199,7 @@ def private_client(
         monkeypatch.context() as patch,
     ):
         patch.setattr(subprocess, "Popen", hidden)
+        patch.setattr(qbittorrent_module, "DEFAULT_TRACKERS", ())
         manager: ManagedQBittorrent = ManagedQBittorrent(root, http=http)
         try:
             manager.prepare()

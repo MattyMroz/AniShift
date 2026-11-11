@@ -17,6 +17,7 @@ from typing import Final, cast
 import httpx
 import pytest
 from conftest import hidden_window_options
+from loguru import logger as loguru_logger
 
 from anishift.platform import qbittorrent_process as processes
 from anishift.platform.binaries import Binary, bundled_binary_path, external_bin_root
@@ -295,6 +296,90 @@ def test_process_exit_can_outlast_startup_deadline(tmp_path: Path, monkeypatch: 
         manager._wait_for_exit(processes._ProcessState())
     assert elapsed[0] == 30.0
     assert processes._START_TIMEOUT_S == 15.0
+
+
+def _exit_scenario(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, exits_at: float | None, dies: bool
+) -> tuple[list[float], list[tuple[int, Callable[[tuple[int, str]], bool], float]], list[str]]:
+    executable: Path = tmp_path / "bin/qbittorrent/qbittorrent.exe"
+    elapsed: list[float] = [0.0]
+    alive: list[bool] = [True]
+    terminated: list[tuple[int, Callable[[tuple[int, str]], bool], float]] = []
+    warnings: list[str] = []
+
+    def terminate(pid: int, owned: Callable[[tuple[int, str]], bool]) -> None:
+        terminated.append((pid, owned, elapsed[0]))
+        alive[0] = not dies
+
+    def matches(self: ManagedQBittorrent, state: processes._ProcessState) -> bool:
+        del self, state
+        return alive[0] and (exits_at is None or elapsed[0] < exits_at)
+
+    monkeypatch.setattr(time, "monotonic", lambda: elapsed[0])
+    monkeypatch.setattr(time, "sleep", lambda delay: elapsed.__setitem__(0, elapsed[0] + delay))
+    monkeypatch.setattr(ManagedQBittorrent, "_matches_process", matches)
+    monkeypatch.setattr(processes, "_terminate_process", terminate)
+    handler_id: int = loguru_logger.add(
+        lambda message: warnings.append(str(message)), format="{message}", level="WARNING"
+    )
+    state: processes._ProcessState = processes._ProcessState(pid=123, created=456, executable=str(executable))
+    try:
+        with httpx.Client() as http:
+            manager: ManagedQBittorrent = ManagedQBittorrent(tmp_path / "profile", http=http, bin_root=tmp_path / "bin")
+            manager._wait_for_exit(state)
+    finally:
+        loguru_logger.remove(handler_id)
+    return elapsed, terminated, warnings
+
+
+def test_a_client_that_ignores_its_shutdown_is_terminated_after_the_graceful_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    elapsed, terminated, warnings = _exit_scenario(tmp_path, monkeypatch, exits_at=None, dies=True)
+    executable: str = str(tmp_path / "bin/qbittorrent/qbittorrent.exe")
+    assert [(pid, at) for pid, _owned, at in terminated] == [(123, processes._EXIT_TIMEOUT_S)]
+    owned: Callable[[tuple[int, str]], bool] = terminated[0][1]
+    assert owned((456, executable))
+    assert not owned((789, executable))
+    assert not owned((456, str(tmp_path / "elsewhere/qbittorrent.exe")))
+    assert elapsed[0] == processes._EXIT_TIMEOUT_S
+    assert warnings == ["Private torrent client ignored its shutdown and is terminated\n"]
+
+
+def test_a_client_that_exits_within_the_graceful_window_is_never_terminated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    elapsed, terminated, warnings = _exit_scenario(tmp_path, monkeypatch, exits_at=30.0, dies=True)
+    assert terminated == []
+    assert warnings == []
+    assert elapsed[0] == 30.0
+
+
+def test_a_client_that_survives_termination_still_reports_the_failed_shutdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(TorrentClientError, match="did not finish shutting down"):
+        _exit_scenario(tmp_path, monkeypatch, exits_at=None, dies=False)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows process termination")
+def test_termination_ends_only_a_process_whose_identity_is_still_owned() -> None:
+    process: subprocess.Popen[bytes] = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    try:
+        identity: tuple[int, str] | None = processes._process_identity(process.pid)
+        assert identity is not None
+        processes._terminate_process(process.pid, lambda seen: False)
+        assert process.poll() is None
+        processes._terminate_process(process.pid, lambda seen: seen == identity)
+        assert process.wait(timeout=_TIMEOUT_S) == 1
+        assert processes._process_identity(process.pid) is None
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=_TIMEOUT_S)
 
 
 def test_an_open_own_window_keeps_ownership_and_blocks_only_the_automatic_close(

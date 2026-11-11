@@ -29,30 +29,29 @@ worker = (
     'exec("while not stop.exists() and time.monotonic()<deadline: time.sleep(0.05)")'
 )
 command = [sys.executable, '-c', worker, str(root / 'stop')]
-tool = subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW)
-client = subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW | independent_child_flags())
-(root / 'pids.tmp').write_text(json.dumps([tool.pid, client.pid]), encoding='utf-8')
-(root / 'pids.tmp').replace(root / 'pids.json')
+tool = subprocess.Popen(command, stdout=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+client = subprocess.Popen(
+    command, stdout=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW | independent_child_flags()
+)
+print(json.dumps([tool.pid, client.pid]), flush=True)
 time.sleep(30)
 """
     parent: subprocess.Popen[bytes] = subprocess.Popen(  # noqa: S603
         [sys.executable, "-c", script, str(tmp_path)],
-        stdout=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     children: list[int] = []
     try:
-        deadline: float = time.monotonic() + 10.0
-        receipt: Path = tmp_path / "pids.json"
-        while not receipt.exists() and parent.poll() is None and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert receipt.exists(), parent.communicate(timeout=2)[1]
-        children = json.loads(receipt.read_text(encoding="utf-8"))
+        assert parent.stdout is not None
+        receipt: bytes = parent.stdout.readline()
+        assert receipt, parent.communicate(timeout=2)[1]
+        children = json.loads(receipt)
         assert all(_process_identity(pid) is not None for pid in children)
         parent.terminate()
         parent.wait(timeout=5)
-        deadline = time.monotonic() + 5.0
+        deadline: float = time.monotonic() + 5.0
         while _process_identity(children[0]) is not None and time.monotonic() < deadline:
             time.sleep(0.02)
         assert _process_identity(children[0]) is None

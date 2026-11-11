@@ -299,15 +299,19 @@ def _remaining(request: httpx.Request) -> float | None:
 
 def _wait_response(future: Future[httpx.Response], request: httpx.Request) -> httpx.Response:
     try:
-        try:
-            return _copy_response(future.result(timeout=_remaining(request)))
-        except TimeoutError as problem:
-            if future.done():
-                return _copy_response(future.result())
-            message: str = "Operation deadline exceeded"
-            raise DeadlineExceeded(message, request=request) from problem
+        while True:
+            try:
+                remaining: float | None = _remaining(request)
+            except DeadlineExceeded:
+                if future.done():
+                    return _copy_response(future.result())
+                raise
+            try:
+                return _copy_response(future.result(timeout=remaining))
+            except TimeoutError:
+                continue
     except CancelledError as problem:
-        message = "Request control closed before sending the request"
+        message: str = "Request control closed before sending the request"
         raise httpx.TransportError(message, request=request) from problem
 
 

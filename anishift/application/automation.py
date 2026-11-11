@@ -174,7 +174,7 @@ from anishift.application.planner import auto_group_products
 from anishift.application.planning import ExecutionPlan, TaskState
 from anishift.application.products import AUDIO_PRODUCT_PROFILES, main_product, product_suffix
 from anishift.application.ready import ReadyMove, ReadyStore, in_ready
-from anishift.application.recovery import CHECKPOINT_VERSION, RunJournal
+from anishift.application.recovery import CHECKPOINT_VERSION, RunJournal, read_checkpoint
 from anishift.application.release_quality import ResolutionClass, resolution, resolution_class
 from anishift.application.results import DISPLAYED_ABSENCE_NOTE, GroupResult, GroupStatus, ProducedArtifact, RunResult
 from anishift.application.scheduler_runtime import TERMINAL_TASK_STATES
@@ -9401,7 +9401,7 @@ def _accepted_sources(group: InspectedSourceGroup, request: ProcessingRequest) -
 
 def _journal_plan(path: Path) -> ExecutionPlan:
     """Read the saved graph of one run without validating the files it names."""
-    document: object = json.loads(path.read_bytes())
+    document: object = json.loads(read_checkpoint(path))
     if not isinstance(document, dict) or document.get("version") != CHECKPOINT_VERSION:
         msg: str = "The saved run checkpoint has an unsupported version"
         raise ExecutionError(msg)
