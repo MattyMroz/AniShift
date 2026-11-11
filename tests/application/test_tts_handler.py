@@ -290,6 +290,33 @@ def test_signs_are_read_in_free_pauses_and_rejected_signs_stay_out_of_the_manife
     assert preparer.roots == {tmp_path / "run" / "group-1" / "audio"}
 
 
+class _WatchedPreparer(_Preparer):
+    def __init__(self, progress: _Progress) -> None:
+        super().__init__()
+        self.progress: _Progress = progress
+        self.percents_seen: list[int | None] = []
+
+    def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
+        self.percents_seen.extend(notification.progress_percent for notification in self.progress.notifications)
+        return super().prepare_clip(clip, tmp_root=tmp_root, cancel=cancel)
+
+
+def test_recording_reaches_100_only_after_clips_are_prepared_and_signs_recorded(tmp_path: Path) -> None:
+    task, snapshot = _signed_synthesis(tmp_path)
+    service = _ProgressTts(tmp_path)
+    progress = _Progress()
+    preparer = _WatchedPreparer(progress)
+    handler = TtsTaskHandler(service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=preparer)
+
+    handler.execute(task, snapshot, NeverCancelledToken(), progress)
+
+    percents: list[int | None] = [notification.progress_percent for notification in progress.notifications]
+    assert len(service.batches) == 2
+    assert preparer.percents_seen
+    assert 100 not in preparer.percents_seen
+    assert percents == [25, 75, 75, 99, 25, 75, 75, 99, 100]
+
+
 class _WindowPreparer:
     def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
         del cancel
@@ -611,7 +638,7 @@ def test_tts_handler_forwards_legacy_visible_required_percentages(tmp_path: Path
         progress,
     )
 
-    assert [notification.progress_percent for notification in progress.notifications] == [25, 75, 75, 100]
+    assert [notification.progress_percent for notification in progress.notifications] == [25, 75, 75, 99, 100]
 
 
 def test_tts_handler_reuses_service_and_closes_only_at_run_boundary(tmp_path: Path) -> None:

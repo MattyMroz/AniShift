@@ -91,6 +91,9 @@ _SIGN_MODES: Final[frozenset[str]] = frozenset({"smart", "always"})
 _PREPARE_WORKERS: Final[int] = 4
 """Clips normalized at once to measure their true length."""
 
+_IN_PROGRESS_PERCENT: Final[int] = 99
+"""Highest recording percentage before the task has written its narration manifest."""
+
 logger = get_logger(__name__)
 
 
@@ -188,9 +191,9 @@ class _ProgressObserver:
             committed,
         )
         percent: int = (
-            100
-            if required == 0 or committed >= required
-            else min(99, (self._visible_required * 100 + required - 1) // required)
+            _IN_PROGRESS_PERCENT
+            if required == 0
+            else min(_IN_PROGRESS_PERCENT, (self._visible_required * 100 + required - 1) // required)
         )
         self._progress.emit(WorkerNotification(WorkerNotificationKind.PROGRESS, self._task_id, percent))
 
@@ -283,6 +286,7 @@ class TtsTaskHandler:
         destination: Path = task_staging_path(self._run_root, task, output, ".json")
         destination.write_text(json.dumps(_manifest_json(manifest), ensure_ascii=False), encoding="utf-8")
         metadata["clip_count"] = len(manifest.clips)
+        progress.emit(WorkerNotification(WorkerNotificationKind.PROGRESS, task.task_id, 100))
         return TaskResult(task.task_id, (ProducedArtifact(output.artifact_id, destination, metadata),))
 
     def _synthesize(
