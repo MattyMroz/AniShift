@@ -99,7 +99,7 @@ from anishift.application.inspection import (
     WorkspaceInspector,
 )
 from anishift.application.intents import GroupIntent, ProductIntent, ProductKind, RebuildRequest, RequestOrigin, RunMode
-from anishift.application.planning import ExecutionPlan
+from anishift.application.planning import ExecutionPlan, RunSettingsSnapshot, TaskKind
 from anishift.application.products import classify_product
 from anishift.application.ready import ReadyMove, ReadyStore, in_ready
 from anishift.application.recovery import RunJournal
@@ -330,6 +330,8 @@ class _Service:
         self.discover_release: threading.Event | None = None
         self.paused: list[bool] = []
         self.user_settings: UserSettings = UserSettings(subscription_polish_wait_h=0)
+        self.current: RunSettingsSnapshot = plan.settings
+        self.plans: list[ExecutionPlan] = []
 
     def discover(self, *, changed_paths: Sequence[Path] | None = None) -> object:
         del changed_paths
@@ -344,6 +346,9 @@ class _Service:
 
     def settings_snapshot(self) -> UserSettings:
         return self.user_settings
+
+    def run_settings(self) -> RunSettingsSnapshot:
+        return self.current
 
     def get_preset(self, preset_id: str) -> object:
         del preset_id
@@ -377,9 +382,10 @@ class _Service:
         journal: RunJournal | None = None,
         resume: bool = False,
     ) -> RunHandle:
-        del plan, sink, origin, automatic, journal, resume
+        del sink, origin, automatic, journal, resume
         if self.submit_failure is not None:
             raise self.submit_failure
+        self.plans.append(plan)
         identity: str = run_id or "run-1"
         self.submitted.append(identity)
         self.active.append(identity)
@@ -2589,6 +2595,49 @@ def test_resuming_a_run_that_became_active_again_says_it_cannot_be_resumed(tmp_p
     assert answer.reason == RefusalReason.NOT_RESUMABLE.value
     assert watcher is not None
     assert not watcher.is_alive()
+
+
+def test_a_resumed_run_translates_with_the_engine_chosen_after_it_failed(tmp_path: Path) -> None:
+    write_text_source(_library_dir(tmp_path) / "Episode.txt", "Text")
+    real: AppService = _real_service(tmp_path)
+    real.save_settings(UserSettings(translation_engine="llm", llm_provider="gemini"))
+    workspace: InspectedWorkspace = real.discover()
+    group_id: str = workspace.groups[0].group_id
+    service = _Service(tmp_path, discovered=workspace, plan=real.plan_auto((group_id,), _PRESET))
+    store: WatchStateStore = WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    run_id: str = ""
+    try:
+        run_id = _started(owner)
+        service.finish(run_id, GroupStatus.FAILED, group_id, ("LLM_QUOTA_EXHAUSTED",))
+        assert _await(lambda: [item.state for item in store.load().requests] == [RequestState.FAILED])
+        real.save_settings(
+            UserSettings(translation_engine="llm", llm_provider="openrouter", llm_provider_model_id="vendor/model")
+        )
+        service.current = real.run_settings()
+        preview: ControlResponse = owner.handle(
+            _request("resume_preview", {"client_id": _CLIENT, "group_ids": [group_id]}, command_id="resume-1")
+        )
+        assert preview.ok, preview.message
+        started: ControlResponse = owner.handle(
+            _request("start", {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]}, command_id="start-2")
+        )
+        assert started.ok, started.message
+    finally:
+        if run_id in service.active:
+            service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
+        owner.request_shutdown()
+        thread.join(timeout=_TIMEOUT_S)
+
+    first, retried = service.plans
+    assert (first.settings.llm_profile_id, retried.settings.llm_profile_id) == ("gemini", "openrouter")
+    assert retried.settings.llm_model_id == "vendor/model"
+    assert {task.resource_key for task in retried.tasks if task.kind is TaskKind.TRANSLATE_SUBTITLES} == {
+        "llm:openrouter"
+    }
+    assert RunJournal.load(store.run_path(run_id)).plan == retried
+    assert store.load().requests[0].settings["llm_profile_id"] == "openrouter"
 
 
 def _stopped_run(run_id: str, group_id: str) -> RunResult:

@@ -3380,6 +3380,7 @@ class AutomationOwner:
                 if self._on_owner(lambda: resume_id in self._service.active_run_ids()):
                     return None
                 journal: RunJournal = RunJournal.load(self._store.run_path(resume_id))
+                journal.rebind(self._service.run_settings())
                 selected: dict[str, InspectedSourceGroup] = {group.group_id: group for group in workspace.groups}
                 if set(_identifiers(payload, "group_ids") or ()) != {group.group_id for group in journal.plan.groups}:
                     return None
@@ -3554,6 +3555,8 @@ class AutomationOwner:
                 self._store.run_path(run_id), preview.plan, run_tmp_dir(self._service.workspace_root, run_id)
             )
         )
+        if previous is not None:
+            journal.rebind(preview.plan.settings)
         if journal.plan != preview.plan:
             return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _STALE_PREVIEW)
         if previous is not None:
@@ -7529,6 +7532,7 @@ class AutomationOwner:
     def _resume_restored(self, request: ProcessingRequest, journal: RunJournal) -> None:
         if self._shutting_down or self._library is None or not self._can_restore(request):
             return
+        journal.rebind(self._service.run_settings())
         if journal.uncertain_remote_work:
             self._failed_recovery(
                 request,

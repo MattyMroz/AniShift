@@ -394,7 +394,7 @@ class AppService:
     ) -> ExecutionPlan:
         """Plan selected groups from a stored or one-shot automatic preset and the persisted target recipes."""
         resolved: AutoPreset = preset.to_preset() if isinstance(preset, AutoPresetDraft) else preset
-        settings: RunSettingsSnapshot = self._settings_snapshot()
+        settings: RunSettingsSnapshot = self.run_settings()
         if overrides:
             settings = decode_overrides(settings, overrides)
         return build_auto_plan(
@@ -421,7 +421,7 @@ class AppService:
             msg = "Manual intent group IDs must be unique"
             raise PlanningError(msg)
         groups: tuple[InspectedSourceGroup, ...] = self._selected_groups(tuple(intent_by_group))
-        settings: RunSettingsSnapshot = self._settings_snapshot()
+        settings: RunSettingsSnapshot = self.run_settings()
         if overrides:
             settings = decode_overrides(settings, overrides)
         return build_manual_plan(
@@ -603,7 +603,7 @@ class AppService:
             return self._coordinator
 
     def _resource_limits(self) -> ResourceLimits:
-        return ResourceLimits.from_settings(self._settings_snapshot())
+        return ResourceLimits.from_settings(self.run_settings())
 
     def settings_catalog(self, draft: SettingsDraft | None = None) -> tuple[SettingSpec, ...]:
         """Return fields active for saved or explicitly supplied draft selections."""
@@ -742,6 +742,12 @@ class AppService:
         """Return a detached mutable copy that cannot affect an active plan."""
         with self._run_lock:
             return deepcopy(self._user_settings)
+
+    def run_settings(self) -> RunSettingsSnapshot:
+        """Return the validated settings snapshot that the next plan and every resumed run use."""
+        with self._run_lock:
+            preferences: UserSettings = deepcopy(self._user_settings)
+        return _run_settings_snapshot(preferences)
 
     def save_settings(self, draft: SettingsDraft) -> UserSettings:
         """Validate and persist an explicit detached settings draft."""
@@ -1013,11 +1019,6 @@ class AppService:
             ):
                 return None
             return self._workspace
-
-    def _settings_snapshot(self) -> RunSettingsSnapshot:
-        with self._run_lock:
-            preferences: UserSettings = deepcopy(self._user_settings)
-        return _run_settings_snapshot(preferences)
 
     def _palantir_readiness(self, *, require_selected_model: bool = True) -> tuple[bool, str]:
         preferences: UserSettings = self.settings_snapshot()

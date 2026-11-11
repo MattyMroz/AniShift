@@ -97,6 +97,14 @@ _COVER_DOCUMENT_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
 )
 """Documents a cover reads aloud, whose voice this program records itself."""
 
+_TRANSLATION_SETTINGS: Final[tuple[str, ...]] = (
+    "translation_profile_id", "translation_max_retries", "translation_concurrency", "translation_is_network",
+    "translation_is_paid", "translation_chunk_chars", "translation_batch_size", "llm_profile_id",
+    "llm_max_concurrency", "llm_is_network", "llm_is_paid", "llm_model_id", "llm_temperature", "llm_top_p",
+    "llm_max_output_tokens", "llm_translation_style", "llm_credential_mode",
+)  # fmt: skip
+"""Run settings that choose how translation tasks run without shaping the planned graph."""
+
 
 class _TrackKindView(Protocol):
     @property
@@ -269,6 +277,28 @@ def plan_manual(
         msg = "Manual planning accepts only manual group intents"
         raise PlanningError(msg)
     return _plan(ordered_groups, intents, settings, published=published, dialogue_font_unusable=dialogue_font_unusable)
+
+
+def rebind_translation(plan: ExecutionPlan, settings: RunSettingsSnapshot) -> ExecutionPlan:
+    """Return the plan whose translation settings and translation tasks follow *settings*."""
+    rebound: RunSettingsSnapshot = plan.settings.with_overrides(
+        {name: getattr(settings, name) for name in _TRANSLATION_SETTINGS}
+    )
+    return replace(
+        plan,
+        settings=rebound,
+        tasks=tuple(
+            replace(
+                task,
+                resource_key=_translation_resource_key(rebound),
+                is_network=rebound.translation_is_network,
+                is_paid=rebound.translation_is_paid,
+            )
+            if task.kind is TaskKind.TRANSLATE_SUBTITLES
+            else task
+            for task in plan.tasks
+        ),
+    )
 
 
 def _ordered_unique_groups(groups: Sequence[InspectedSourceGroup]) -> tuple[InspectedSourceGroup, ...]:

@@ -29,6 +29,9 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   zabicie procesu) wymagają jawnego wznowienia, bez automatycznego powtarzania opłat. Wyjątek: task przerwany przez
   zamknięcie rezydenta kończy się po anulowaniu, więc nie jest niepewny i wznawia się sam (przerwane wywołanie płatne
   idzie od nowa). Gdy zapis `interrupted` zawiedzie, znak `inflight` zostaje i obowiązuje jawne wznowienie.
+- Wznowienie zapisanego runu (P, recovery po restarcie) bierze bieżące ustawienia tłumaczenia: `RunJournal.rebind`
+  podmienia pola `_TRANSLATION_SETTINGS` z `planner.py` i zasób tasków `TRANSLATE_SUBTITLES`, `_admit` zapisuje je w
+  checkpoincie. Reszta snapshotu zostaje z przyjęcia; run w toku kończy na ustawieniach, z którymi wystartował.
 - Rezerwacje należą do sesji klientów jednej instancji: owner porzuca je przy wczytaniu stanu (także gdy zapis
   sprzątania zawiedzie) i po rozłączeniu panelu, które unieważnia też podglądy.
 - Zdarzenia plików scalają się w jednym powiadomieniu; ponad 4096 ścieżek zastępuje pełne uzgodnienie. Inspekcja w
