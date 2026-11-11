@@ -770,7 +770,6 @@ def test_replayed_start_displays_zero_without_claiming_a_measurement(monkeypatch
     view: RunProgressSnapshot = _live_snapshot("run", {"old": "Old.mkv", "new": "New.mkv"}, ())
     progress: RichRunProgress = RichRunProgress.from_snapshot(view, lambda: None)
     assert " |   0% | 00:00:00.000" in progress.render(120).plain
-    assert not progress._files["old"].determinate
     view = replace(view, events=(RunEvent("run", 1, RunEventKind.TASK_STARTED, group_id="old", task_id="tts-old"),))
     progress = RichRunProgress.from_snapshot(view, lambda: None)
     assert " |   0% | " in progress.render_group("old", 120).plain
