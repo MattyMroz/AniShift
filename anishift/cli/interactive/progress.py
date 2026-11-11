@@ -114,14 +114,12 @@ class _FileState:
     description: str
     stage_rank: int = 0
     progress_by_task: dict[str, int] = field(default_factory=dict)
-    unmeasured_tasks: set[str] = field(default_factory=set)
     active_tasks: list[str] = field(default_factory=list)
     completed: int = 0
     terminal: bool = False
     style: str | None = None
     started_at: float | None = None
     stopped_at: float | None = None
-    determinate: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,8 +227,6 @@ class RichRunProgress:
         progress: RichRunProgress = cls.__new__(cls)
         labels: dict[str, str] = {group_id: label for group_id, label in snapshot.labels.items() if label != group_id}
         progress._initialize(labels, snapshot.preview, invalidate, None, None)
-        for state in progress._files.values():
-            state.determinate = False
         progress._open = True
         progress._replaying = True
         for event in snapshot.events:
@@ -342,14 +338,14 @@ class RichRunProgress:
             return "" if state is None else state.label
 
     def observe_activity(self, *, active: bool) -> None:
-        """Freeze unavailable observations and resume only measured active rows."""
+        """Freeze every started row while the run is not observed and resume it once it is."""
         with self._lock:
             for state in self._files.values():
                 if state.terminal or state.started_at is None:
                     continue
-                if active and state.determinate:
+                if active:
                     _start_timer(state)
-                elif not active:
+                else:
                     _stop_timer(state)
 
     def group_active(self, group_id: str) -> bool:
@@ -407,7 +403,6 @@ class RichRunProgress:
         candidates: list[str] = [task_id for task_id in state.active_tasks if _stage_for(self._task_kinds.get(task_id))]
         if not candidates:
             state.description = _description(state.label, "Przygotowanie")
-            state.determinate = False
             return True
         primary: list[str] = [
             task_id for task_id in candidates if self._task_kinds[task_id] is not TaskKind.PUBLISH_ARTIFACT
@@ -423,9 +418,6 @@ class RichRunProgress:
         state.completed = state.progress_by_task.get(selected, 0)
         state.description = _description(state.label, _active_label(stage))
         state.style = None
-        state.determinate = selected in state.progress_by_task and selected not in state.unmeasured_tasks
-        if selected in state.unmeasured_tasks:
-            _stop_timer(state)
         return True
 
     def _update_task(self, group_id: str, state: _FileState, event: RunEvent) -> bool:
@@ -433,9 +425,7 @@ class RichRunProgress:
             return False
         kind: TaskKind | None = self._task_kinds.get(event.task_id)
         if event.progress_percent is None:
-            state.unmeasured_tasks.add(event.task_id)
             return self._show_activity(state, kind, event.message)
-        state.unmeasured_tasks.discard(event.task_id)
         if kind in {TaskKind.TRANSCODE_AUDIO, TaskKind.MIX_NARRATION} and event.message in _AUDIO_LABEL:
             state.progress_by_task[event.task_id] = event.progress_percent
             return self._show_audio_phase(state, event.message, event.progress_percent)
@@ -454,7 +444,6 @@ class RichRunProgress:
             state.completed = event.progress_percent
         state.description = _description(state.label, _active_label(stage))
         state.style = None
-        state.determinate = True
         return True
 
     def _show_activity(self, state: _FileState, kind: TaskKind | None, message: str | None) -> bool:
@@ -462,9 +451,7 @@ class RichRunProgress:
         stage: str | None = _stage_for(kind)
         if stage is None or _STAGE_RANK[stage] != state.stage_rank:
             return False
-        state.determinate = False
         state.description = _description(state.label, _AUDIO_LABEL.get(message or "", _active_label(stage)))
-        _stop_timer(state)
         return True
 
     def _retry_task(self, state: _FileState, event: RunEvent) -> bool:
@@ -474,10 +461,7 @@ class RichRunProgress:
         }:
             return False
         state.description = _description(state.label, "Ponawianie")
-        state.unmeasured_tasks.add(event.task_id)
         state.style = "warning"
-        state.determinate = False
-        _stop_timer(state)
         return True
 
     def _finish_task(self, group_id: str, state: _FileState, event: RunEvent) -> bool:
@@ -486,7 +470,6 @@ class RichRunProgress:
         if event.task_id is None or event.state is not TaskState.SUCCEEDED:
             return False
         state.progress_by_task[event.task_id] = _COMPLETE
-        state.unmeasured_tasks.discard(event.task_id)
         if state.active_tasks:
             return self._show_active_task(state)
         stage: str | None = _stage_for(self._task_kinds.get(event.task_id))
@@ -495,7 +478,6 @@ class RichRunProgress:
         state.completed = _COMPLETE
         state.description = _description(state.label, _active_label(stage))
         state.style = None
-        state.determinate = True
         return True
 
     def _show_audio_phase(self, state: _FileState, phase: str, percent: int) -> bool:
@@ -503,14 +485,12 @@ class RichRunProgress:
             return False
         state.stage_rank = _STAGE_RANK["audio"]
         state.completed = percent
-        state.determinate = True
         state.description = _description(state.label, _AUDIO_LABEL[phase])
         state.style = None
         return True
 
     def _finish_group(self, state: _FileState, task_state: TaskState | None) -> None:
         state.terminal = True
-        state.determinate = True
         state.stage_rank = _STAGE_RANK["terminal"]
         _stop_timer(state)
         if task_state is TaskState.SUCCEEDED:
@@ -532,7 +512,6 @@ class RichRunProgress:
             if state.terminal:
                 continue
             state.terminal = True
-            state.determinate = True
             state.stage_rank = _STAGE_RANK["terminal"]
             state.completed = 0
             _stop_timer(state)
@@ -565,7 +544,7 @@ class RichRunProgress:
 
 def _new_file_state(label: str) -> _FileState:
     """Create the initial extracting row for one source label."""
-    return _FileState(label=label, description=_description(label, _active_label("extracting")), determinate=True)
+    return _FileState(label=label, description=_description(label, _active_label("extracting")))
 
 
 def render_material_progress(  # noqa: PLR0913
@@ -671,9 +650,9 @@ def _stop_timer(state: _FileState) -> None:
 
 
 def _elapsed(state: _FileState, now: float) -> float | None:
-    """Return the non-negative elapsed time of one row."""
+    """Return the non-negative elapsed time of one row, or no measurement before it starts."""
     if state.started_at is None:
-        return 0 if state.determinate else None
+        return None
     return max((state.stopped_at or now) - state.started_at, 0)
 
 

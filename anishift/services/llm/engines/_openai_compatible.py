@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import importlib
 import time
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from types import ModuleType, TracebackType
 from typing import Any, Final, Literal, Protocol, Self, cast
+
+import httpx
 
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.llm.config import LlmConfig
@@ -112,6 +114,9 @@ _CONTEXT_CODES: Final[frozenset[str]] = frozenset(
 )
 """Structured provider codes representing an exceeded context window."""
 
+_STREAM_OPTIONS: Final[Mapping[str, bool]] = {"include_usage": True}
+"""Chat Completions stream options asking for the usage chunk that closes the stream."""
+
 
 class _ChatCompletions(Protocol):
     def create(self, **kwargs: Any) -> Any:
@@ -157,6 +162,44 @@ class OpenAiCompatibleProvider:
     max_tokens_parameter: MaxTokensParameter
     file_modalities: frozenset[Modality]
     unavailable_finish_reasons: frozenset[str] = frozenset()
+
+
+@dataclass(slots=True)
+class _StreamedAnswer:
+    """Accumulate the chunks of one streamed chat completion."""
+
+    text: list[str] = field(default_factory=list)
+    refusal: list[str] = field(default_factory=list)
+    finish_reason: object = None
+    model: object = None
+    usage: object = None
+    has_choice: bool = False
+
+    def add(self, chunk: Any) -> str:
+        """Fold one chunk into the answer and return the answer text it adds."""
+        model: object = getattr(chunk, "model", None)
+        if model is not None:
+            self.model = model
+        usage: object = getattr(chunk, "usage", None)
+        if usage is not None:
+            self.usage = usage
+        choices: object = getattr(chunk, "choices", None)
+        if not isinstance(choices, (list, tuple)) or not choices:
+            return ""
+        self.has_choice = True
+        choice: Any = choices[0]
+        finish_reason: object = getattr(choice, "finish_reason", None)
+        if finish_reason is not None:
+            self.finish_reason = finish_reason
+        delta: object = getattr(choice, "delta", None)
+        refusal: object = getattr(delta, "refusal", None)
+        if isinstance(refusal, str):
+            self.refusal.append(refusal)
+        content: object = getattr(delta, "content", None)
+        if not isinstance(content, str) or not content:
+            return ""
+        self.text.append(content)
+        return content
 
 
 class OpenAiCompatibleTransport:
@@ -215,7 +258,16 @@ class OpenAiCompatibleTransport:
         self.close()
 
     def complete(self, request: LlmRequest) -> LlmResponse:
-        """Run one synchronous completion and normalize its response."""
+        """Run one completion without observing its arriving text."""
+        return self.complete_stream(request)
+
+    def complete_stream(
+        self,
+        request: LlmRequest,
+        *,
+        on_text: Callable[[str], None] | None = None,
+    ) -> LlmResponse:
+        """Stream one completion, handing every arriving answer delta to *on_text*."""
         if self._closed:
             _raise_request_error(
                 "LLM provider is already closed",
@@ -223,13 +275,20 @@ class OpenAiCompatibleTransport:
             )
         kwargs: dict[str, object] = self._build_completion_kwargs(request)
         client: _OpenAiClient = self._ensure_client()
+        answer: _StreamedAnswer = _StreamedAnswer()
         started_at: float = time.perf_counter()
         try:
-            response: Any = client.chat.completions.create(**kwargs)
+            with client.chat.completions.create(**kwargs, stream=True, stream_options=_STREAM_OPTIONS) as stream:
+                for chunk in stream:
+                    delta: str = answer.add(chunk)
+                    if delta and on_text is not None:
+                        on_text(delta)
         except self._sdk_api_error_type() as error:
             raise _map_sdk_error(error, engine_id=self.engine_id) from error
+        except httpx.TransportError as error:
+            raise _map_transport_error(error, engine_id=self.engine_id) from error
         latency_ms: float = (time.perf_counter() - started_at) * 1000
-        return self._normalize_response(response, latency_ms=latency_ms)
+        return self._normalize_response(answer, latency_ms=latency_ms)
 
     def close(self) -> None:
         """Close an existing SDK client exactly once."""
@@ -310,15 +369,13 @@ class OpenAiCompatibleTransport:
             return {"type": "image_url", "image_url": {"url": part.data_url}}
         return {"type": "file", "file": {"filename": part.name or DEFAULT_PDF_NAME, "file_data": part.data_url}}
 
-    def _normalize_response(self, response: Any, *, latency_ms: float) -> LlmResponse:
-        choices: object = getattr(response, "choices", ())
-        if not isinstance(choices, (list, tuple)) or not choices:
+    def _normalize_response(self, answer: _StreamedAnswer, *, latency_ms: float) -> LlmResponse:
+        if not answer.has_choice:
             _raise_request_error(
                 "OpenAI-compatible provider returned no completion choice",
                 suggestion="Retry with a supported model or inspect the provider status.",
             )
-        choice: Any = choices[0]
-        finish_reason: str = _normalize_finish_reason(getattr(choice, "finish_reason", None))
+        finish_reason: str = _normalize_finish_reason(answer.finish_reason)
         if finish_reason in self._provider.unavailable_finish_reasons:
             context: ErrorContext = ErrorContext(
                 code=ErrorCode.LLM_PROVIDER_UNAVAILABLE,
@@ -328,12 +385,9 @@ class OpenAiCompatibleTransport:
             )
             raise LlmProviderUnavailableError(context=context)
 
-        message: object = getattr(choice, "message", None)
-        text: object = getattr(message, "content", None)
-        refusal: object = getattr(message, "refusal", None)
-        if finish_reason in {"blocked", "content_filter", "refusal", "safety"} or (
-            isinstance(refusal, str) and refusal.strip()
-        ):
+        text: str = "".join(answer.text)
+        refusal: str = "".join(answer.refusal)
+        if finish_reason in {"blocked", "content_filter", "refusal", "safety"} or refusal.strip():
             context = ErrorContext(
                 code=ErrorCode.LLM_OUTPUT_BLOCKED,
                 message=f"{self.engine_id} blocked the completion",
@@ -341,12 +395,12 @@ class OpenAiCompatibleTransport:
                 details={"engine_id": self.engine_id, "finish_reason": finish_reason},
             )
             raise LlmOutputBlockedError(context=context)
-        if not isinstance(text, str) or not text.strip():
+        if not text.strip():
             _raise_request_error(
                 f"{self.engine_id} returned an empty text completion",
                 suggestion=f"Check finish reason {finish_reason!r} and the selected model.",
             )
-        provider_model: object = getattr(response, "model", None)
+        provider_model: object = answer.model
         provider_model_id: str = self._config.provider_model_id
         if isinstance(provider_model, str) and provider_model.strip():
             provider_model_id = provider_model.strip()
@@ -356,7 +410,7 @@ class OpenAiCompatibleTransport:
             provider_model_id=provider_model_id,
             finish_reason=finish_reason,
             latency_ms=max(0.0, latency_ms),
-            usage=_normalize_usage(getattr(response, "usage", None)),
+            usage=_normalize_usage(answer.usage),
         )
 
     @staticmethod
@@ -490,6 +544,23 @@ def _map_sdk_error(error: BaseException, *, engine_id: str) -> Exception:
             suggestion="Check the provider model, endpoint, and generation settings.",
         )
     return mapped_error
+
+
+def _map_transport_error(error: httpx.TransportError, *, engine_id: str) -> Exception:
+    if isinstance(error, httpx.TimeoutException):
+        return _error_with_context(
+            LlmTimeoutError,
+            engine_id=engine_id,
+            message=f"{engine_id} request timed out",
+            suggestion="Retry after checking the network connection.",
+        )
+    return _transient_error_with_context(
+        LlmProviderUnavailableError,
+        engine_id=engine_id,
+        message=f"{engine_id} could not be reached",
+        suggestion="Check the network connection and provider status.",
+        retry_after_s=None,
+    )
 
 
 def _normalize_usage(usage: object) -> LlmUsage:

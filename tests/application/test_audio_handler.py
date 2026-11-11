@@ -162,7 +162,7 @@ def test_audio_handler_mixes_manifest_and_source_audio(tmp_path: Path, offset: i
     assert result.outputs[0].path.read_bytes() == b"mixed"
     assert result.outputs[0].metadata["validated"] is True
     assert mixer.requests[0].source_offset_us == (offset or 0)
-    assert [event.progress_percent for event in progress.notifications] == [None, 40, 99, 100]
+    assert [event.progress_percent for event in progress.notifications] == [0, 40, 99, 100]
 
 
 @pytest.mark.parametrize("invalid_output", [False, True])
@@ -192,7 +192,7 @@ def test_audio_handler_transcodes_ready_narration(tmp_path: Path, invalid_output
     if invalid_output:
         with pytest.raises(ExecutionError, match="invalid output"):
             handler.execute(task, snapshot, NeverCancelledToken(), progress)
-        assert [event.progress_percent for event in progress.notifications] == [None, 50, 99]
+        assert [event.progress_percent for event in progress.notifications] == [0, 50, 99]
         return
     result: TaskResult = handler.execute(
         task,
@@ -203,7 +203,7 @@ def test_audio_handler_transcodes_ready_narration(tmp_path: Path, invalid_output
 
     assert result.outputs[0].path.suffix == ".eac3"
     assert result.outputs[0].path.read_bytes() == b"audio"
-    assert [event.progress_percent for event in progress.notifications] == [None, 50, 99, 100]
+    assert [event.progress_percent for event in progress.notifications] == [0, 50, 99, 100]
 
 
 def test_audio_handler_rejects_cancelled_task_before_service_call(tmp_path: Path) -> None:
@@ -264,7 +264,7 @@ def test_real_audio_handler_reports_measured_progress_before_success(tmp_path: P
 
     assert result.outputs[0].metadata["validated"] is True
     assert result.outputs[0].path.stat().st_size > 0
-    assert progress.notifications[0].progress_percent is None
+    assert progress.notifications[0].progress_percent == 0
     assert any(event.progress_percent == 99 for event in progress.notifications[:-1])
     assert all(event.progress_percent != 100 for event in progress.notifications[:-1])
     assert progress.notifications[-1].progress_percent == 100
@@ -393,3 +393,51 @@ def test_the_mixer_pauses_between_paragraphs_only_for_the_reading_the_manifest_r
     )
 
     assert mixer.requests[0].paragraph_pauses is pauses
+
+
+class _PhasedMixer(_Mixer):
+    def render(
+        self,
+        request: AudioRenderRequest,
+        *,
+        callbacks: AudioProgressObserver | None = None,
+        on_percent: Callable[[int], None] | None = None,
+        cancel: threading.Event | None = None,
+    ) -> AudioRenderResult:
+        assert callbacks is not None
+        assert on_percent is not None
+        callbacks.on_audio_phase(request.scope_id, "normalizing")
+        callbacks.on_audio_phase(request.scope_id, "wrapping")
+        on_percent(60)
+        on_percent(99)
+        callbacks.on_audio_phase(request.scope_id, "mixing")
+        on_percent(30)
+        on_percent(99)
+        callbacks.on_audio_phase(request.scope_id, "done")
+        output = request.source_path.with_suffix(".eac3")
+        output.write_bytes(b"mixed")
+        return AudioRenderResult(request.scope_id, AudioRenderStatus.COMPLETED, None, output, None, (), (), "n", "m")
+
+
+def test_each_audio_phase_starts_from_its_own_zero_instead_of_the_previous_phase_percent(tmp_path: Path) -> None:
+    manifest: Artifact = _ready("manifest", ArtifactKind.TTS_MANIFEST, _manifest_file(tmp_path))
+    progress: _Progress = _Progress()
+
+    AudioTaskHandler(_PhasedMixer(), _Transcoder(), run_root=tmp_path / "run").execute(
+        _mix_task("standalone", ("manifest",)),
+        ArtifactSnapshot({"manifest": manifest}, {"narration": _output("narration")}),
+        NeverCancelledToken(),
+        progress,
+    )
+
+    assert [(event.message, event.progress_percent) for event in progress.notifications] == [
+        ("normalizing", 0),
+        ("wrapping", 0),
+        ("wrapping", 60),
+        ("wrapping", 99),
+        ("mixing", 0),
+        ("mixing", 30),
+        ("mixing", 99),
+        ("done", 99),
+        (None, 100),
+    ]

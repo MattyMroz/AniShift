@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 import openai
 import pytest
+from chat_stream_helpers import FakeChatStream, chat_chunk, chat_stream
 
 from anishift.errors import ErrorCode
 from anishift.services.llm.config import LlmConfig
@@ -17,6 +18,7 @@ from anishift.services.llm.engines.openai_compatible import OpenaiCompatibleServ
 from anishift.services.llm.engines.openrouter import OpenrouterService
 from anishift.services.llm.errors import (
     LlmAuthError,
+    LlmCancelledError,
     LlmConfigError,
     LlmContextLengthError,
     LlmModelError,
@@ -28,6 +30,7 @@ from anishift.services.llm.errors import (
     LlmRequestError,
     LlmTimeoutError,
 )
+from anishift.services.llm.protocols import StreamingLlmEngine
 from anishift.services.llm.types import FilePart, LlmMessage, LlmRequest, LlmRole, TextPart
 
 
@@ -90,9 +93,7 @@ def _response(
     refusal: str | None = None,
 ) -> object:
     usage = SimpleNamespace(prompt_tokens=11, completion_tokens=7, total_tokens=18, cost=cost)
-    message = SimpleNamespace(content=text, refusal=refusal)
-    choice = SimpleNamespace(message=message, finish_reason=finish_reason)
-    return SimpleNamespace(choices=[choice], model=model, usage=usage)
+    return chat_stream(text=text, finish_reason=finish_reason, model=model, usage=usage, refusal=refusal)
 
 
 def _request() -> LlmRequest:
@@ -190,6 +191,8 @@ def test_openai_compatible_maps_ordered_messages_and_optional_parameters(
             "temperature": 0.4,
             "top_p": 0.8,
             max_tokens_parameter: 321,
+            "stream": True,
+            "stream_options": {"include_usage": True},
         }
     ]
     assert factory.calls[0]["base_url"] == "http://localhost:11434/v1"
@@ -342,7 +345,7 @@ def test_openai_compatible_omits_unset_generation_parameters() -> None:
 
     service.complete(_request())
 
-    assert set(completions.calls[0]) == {"messages", "model"}
+    assert set(completions.calls[0]) == {"messages", "model", "stream", "stream_options"}
 
 
 def test_openai_compatible_maps_content_filter_to_file_local_block() -> None:
@@ -540,3 +543,69 @@ def test_openai_compatible_reports_usage_cost_when_present() -> None:
     result = service.complete(_request())
 
     assert result.usage.reported_cost == 0.0125
+
+
+@pytest.mark.parametrize("service_type", [OpenaiCompatibleService, OpenaiService, OpenrouterService, DeepseekService])
+def test_chat_provider_streams_answer_deltas_in_arrival_order(
+    service_type: type[OpenaiCompatibleService | OpenaiService | OpenrouterService | DeepseekService],
+) -> None:
+    engine_id: str = {
+        OpenaiCompatibleService: "openai_compatible",
+        OpenaiService: "openai",
+        OpenrouterService: "openrouter",
+        DeepseekService: "deepseek",
+    }[service_type]
+    config = LlmConfig(
+        engine_id=engine_id,
+        provider_model_id="custom-model",
+        api_keys=("test-key",),
+        base_url="http://localhost:11434/v1",
+    )
+    service, _, _, completions = _service(
+        config=config, service_type=service_type, response=_response(text="[0] raz\n[1] dwa\n")
+    )
+    seen: list[str] = []
+
+    result = service.complete_stream(_request(), on_text=seen.append)
+
+    assert isinstance(service, StreamingLlmEngine)
+    assert seen == ["[0] raz\n", "[1] dwa\n"]
+    assert result.text == "[0] raz\n[1] dwa\n"
+    assert result.usage.output_tokens == 7
+    assert completions.calls[0]["stream"] is True
+
+
+def test_openai_compatible_answer_without_content_reports_no_text() -> None:
+    stream = FakeChatStream((chat_chunk(content=None), chat_chunk(content="", finish_reason="stop")))
+    service, _, _, _ = _service(response=stream)
+    seen: list[str] = []
+
+    with pytest.raises(LlmRequestError):
+        service.complete_stream(_request(), on_text=seen.append)
+
+    assert seen == []
+    assert stream.closed
+
+
+def test_openai_compatible_maps_an_interrupted_stream_to_transient_errors() -> None:
+    request = httpx.Request("POST", "https://provider.invalid")
+    dropped, _, _, _ = _service(response=chat_stream(error=httpx.RemoteProtocolError("closed", request=request)))
+    stalled, _, _, _ = _service(response=chat_stream(error=httpx.ReadTimeout("stalled", request=request)))
+
+    with pytest.raises(LlmProviderUnavailableError):
+        dropped.complete(_request())
+    with pytest.raises(LlmTimeoutError):
+        stalled.complete(_request())
+
+
+def test_openai_compatible_closes_the_stream_when_the_observer_stops_it() -> None:
+    stream = chat_stream(text="[0] raz\n[1] dwa\n")
+    service, _, _, _ = _service(response=stream)
+
+    def stop(delta: str) -> None:
+        raise LlmCancelledError(f"stopped after {delta!r}")
+
+    with pytest.raises(LlmCancelledError):
+        service.complete_stream(_request(), on_text=stop)
+
+    assert stream.closed

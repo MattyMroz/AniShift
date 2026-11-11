@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from chat_stream_helpers import chat_stream
 
 from anishift.services.llm.config import LlmConfig
 from anishift.services.llm.engines.openai import OpenaiService
@@ -24,12 +25,7 @@ class FakeClient:
 
     def create(self, **kwargs: Any) -> object:
         self.calls.append(kwargs)
-        message = SimpleNamespace(content="ok")
-        return SimpleNamespace(
-            choices=[SimpleNamespace(message=message, finish_reason="stop")],
-            model="gpt-custom",
-            usage=None,
-        )
+        return chat_stream(text="ok", model="gpt-custom")
 
     def close(self) -> None:
         self.closed = True

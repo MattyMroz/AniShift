@@ -47,6 +47,9 @@ cyklu życia klienta i jedynego retry.
 
 - Natywny OpenAI używa `max_completion_tokens`; pozostałe endpointy kompatybilne
   `max_tokens`.
+- `OpenAiCompatibleTransport` zawsze streamuje (`stream_options.include_usage`);
+  do `on_text` trafia tylko `delta.content`, więc myślenie modelu nie przesuwa postępu.
+  Błąd sieci w trakcie streamu SDK przepuszcza jako surowy `httpx.TransportError`.
 - Palantir OpenAI i xAI współdzielą Responses, nie Chat Completions. Wynik streamu Responses
   pochodzi ze zdarzenia terminalnego; delty służą tylko raportowaniu postępu.
 - `PalantirService._generation_options` pomija `temperature` i `top_p` przy
