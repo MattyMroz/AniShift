@@ -470,6 +470,9 @@ START_SETTLE_S: Final[float] = 2.0
 START_RACE_WINDOW_S: Final[float] = 120.0
 """Time after an owner start in which a stopped reading is that start lost, not a stop by a person."""
 
+_WANTED_RESTORES: Final[int] = 3
+"""Times a selection the client keeps finishing with nothing wanted is applied again before it is reported."""
+
 _SETTLING_SELECTION_STATES: Final[frozenset[str]] = frozenset(
     {"metaDL", "forcedMetaDL", "checkingResumeData", "checkingDL", "checkingUP", "queuedForChecking", "allocating"}
 )
@@ -923,6 +926,7 @@ class AutomationOwner:
         self._transfers_at: float | None = None
         self._send_misses: dict[str, int] = {}
         self._own_starts: dict[str, float] = {}
+        self._wanted_restores: dict[str, tuple[int, int]] = {}
         self._unverified: frozenset[str] = frozenset()
         self._transfers_inspecting: bool = False
         self._transfer_release_lock: threading.Lock = threading.Lock()
@@ -6414,6 +6418,9 @@ class AutomationOwner:
             if self._lost_start(item, transfer, now):
                 settled.append(self._restart_lost_start(service, item, transfer.state))
                 continue
+            if self._wants_nothing(item, transfer, now):
+                settled.append(self._restore_wanted(service, item, transfer.state))
+                continue
             if item.selective:
                 settled.append(self._settle_selection(service, item))
                 continue
@@ -6529,6 +6536,50 @@ class AutomationOwner:
         if self._start_selection(service, restored):
             raise ValueError(_SELECTION_MISMATCH)
         return True
+
+    def _wants_nothing(self, item: AcquisitionConfirmation, transfer: TorrentInfo, now: float) -> bool:
+        """Answer whether the client finished a started selection while it still has wanted files to download."""
+        if transfer.amount_left != 0 or transfer.progress >= 1:
+            self._wanted_restores.pop(item.operation_id, None)
+            return False
+        started_at: float | None = self._own_starts.get(item.operation_id)
+        return (
+            item.selective
+            and item.state is AcquisitionState.ACCEPTED
+            and item.problem is None
+            and not item.action_pending
+            and bool(item.wanted_files)
+            and _content_started(item)
+            and transfer.state not in _SETTLING_SELECTION_STATES
+            and (started_at is None or now - started_at >= START_SETTLE_S)
+        )
+
+    def _restore_wanted(
+        self, service: AcquisitionService, item: AcquisitionConfirmation, state: str
+    ) -> AcquisitionConfirmation:
+        """Apply again and restart a selection the client finished with nothing wanted, then report a repeated one."""
+        revision, restores = self._wanted_restores.get(item.operation_id, (item.applied_revision, 0))
+        if revision == item.applied_revision and restores >= _WANTED_RESTORES:
+            logger.warning("The client keeps finishing a selection with nothing wanted", restores=restores)
+            return self._owned(partial(self._lost_selection, item)) or item
+        if revision != item.applied_revision:
+            restores = 0
+        try:
+            restored: AcquisitionConfirmation | None = self._apply_selection(
+                service, item, service.transfer_files(item.info_hash), state, restoring=True
+            )
+            if restored is None:
+                return item
+            self._wanted_restores[item.operation_id] = (item.applied_revision, restores + 1)
+            if self._start_selection(service, restored):
+                return replace(item, problem=_SELECTION_MISMATCH)
+        except (AniShiftError, OSError, ValueError) as problem:
+            logger.warning(
+                "A selection the client finished early could not be applied again", error_class=type(problem).__name__
+            )
+            return replace(item, problem=sanitize_event_message(str(problem)))
+        logger.info("A selection the client finished with nothing wanted was applied again", restores=restores + 1)
+        return item
 
     def _owned[T](self, action: Callable[[], T]) -> T:
         return self._on_owner(action) if self._serving else action()
