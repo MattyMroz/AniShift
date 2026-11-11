@@ -69,6 +69,7 @@ class _SelectiveNetwork(_TorrentNetwork):
         self.started_priorities: list[tuple[int, ...]] = []
         self.stops_after_start: int = 0
         self.priority_after_stop: int | None = None
+        self.empty_after_start: int = 0
 
     def files(self, info_hash: str) -> tuple[TorrentFile, ...]:
         self.file_reads += 1
@@ -141,6 +142,12 @@ class _SelectiveNetwork(_TorrentNetwork):
                 self.per_hash[info_hash] = tuple(
                     replace(item, priority=self.priority_after_stop) for item in self.per_hash[info_hash]
                 )
+        current: TorrentInfo | None = self.tracked.get(info_hash)
+        if current is not None and current.amount_left == 0 and current.progress < 1:
+            self.tracked[info_hash] = replace(current, amount_left=None)
+        if self.empty_after_start and info_hash in self.tracked:
+            self.empty_after_start -= 1
+            self.tracked[info_hash] = replace(self.tracked[info_hash], progress=0.0, state="stoppedUP", amount_left=0)
 
     def transfer_action(self, info_hash: str, action: str) -> None:
         super().transfer_action(info_hash, action)
@@ -765,7 +772,7 @@ def _checked(owner: AutomationOwner) -> bool:
     return owner._on_owner(lambda: not owner._unverified and not owner._transfers_inspecting)
 
 
-@pytest.mark.parametrize(("priority", "state"), [(1, "downloading"), (0, "stoppedUP")])
+@pytest.mark.parametrize(("priority", "state"), [(1, "downloading"), (1, "checkingResumeData"), (0, "stoppedUP")])
 @pytest.mark.parametrize("restart", ["owner", "client"])
 def test_a_restarted_client_gets_its_lost_selection_back_before_the_transfer_starts_again(
     setup: _Setup, priority: int, state: str, restart: str
@@ -786,7 +793,7 @@ def test_a_restarted_client_gets_its_lost_selection_back_before_the_transfer_sta
             _until(_starts(setup, 2))
 
     stored: AcquisitionConfirmation = _stored(setup)
-    assert ((_HASH, "stop") in setup.network.actions) is (state == "downloading")
+    assert ((_HASH, "stop") in setup.network.actions) is (state != "stoppedUP")
     assert setup.network.selections == [(_HASH, frozenset({0, 1}))] * 2
     assert setup.network.started_priorities == [(1, 1, 0, 0, 0)] * 2
     assert setup.network.unapproved_starts == []
@@ -1336,3 +1343,34 @@ def test_a_lost_start_whose_priorities_the_client_dropped_gets_them_back_before_
     assert setup.network.unapproved_starts == []
     assert setup.network.tracked[_HASH].state == "downloading"
     assert _stored(setup).problem is None
+
+
+@pytest.mark.usefixtures("settled")
+def test_a_selection_the_client_finishes_with_nothing_wanted_is_applied_again_and_restarted(setup: _Setup) -> None:
+    setup.network.empty_after_start = 1
+    with _running(setup) as owner:
+        _start_content(setup, owner)
+        _until(_starts(setup, 2))
+        _polls(setup)
+
+    assert setup.network.selections == [(_HASH, frozenset({0, 1}))] * 2
+    assert setup.network.started_priorities == [(1, 1, 0, 0, 0)] * 2
+    assert setup.network.tracked[_HASH].state == "downloading"
+    assert _stored(setup).problem is None
+    assert _stored(setup).content_started
+
+
+@pytest.mark.usefixtures("settled")
+def test_a_selection_the_client_keeps_finishing_with_nothing_wanted_is_reported_after_three_restores(
+    setup: _Setup,
+) -> None:
+    setup.network.empty_after_start = 10
+    with _running(setup) as owner:
+        _start_content(setup, owner)
+        _until(lambda: _stored(setup).problem is not None)
+        _polls(setup)
+
+    assert _stored(setup).problem == automation_module._SELECTION_MISMATCH
+    assert setup.network.selections == [(_HASH, frozenset({0, 1}))] * 4
+    assert setup.network.started == [_HASH] * 4
+    assert setup.network.tracked[_HASH].state == "stoppedUP"
