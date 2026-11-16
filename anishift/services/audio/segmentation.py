@@ -100,11 +100,7 @@ def _cut(levels: Sequence[float], times: Sequence[float], line: LineSpan, follow
 
 
 def _silent_cut(levels: Sequence[float], times: Sequence[float], start: float, end: float) -> float:
-    """Return the middle of the pause, or of its longest silent run when the middle is still heard.
-
-    A pause below ``NOISE_DBFS`` can hold the fading end of a word or a stop release above ``EDGE_TRIM_DBFS``;
-    a cut there would start the next clip with the end of the previous word.
-    """
+    """Return the middle of the pause, or of its longest silent run when the middle is still heard."""
     middle: float = (start + end) / 2
     window: range = range(bisect_left(times, start), bisect_left(times, end))
     if levels[max(bisect_right(times, middle) - 1, window.start)] <= EDGE_TRIM_DBFS:

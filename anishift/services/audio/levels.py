@@ -41,11 +41,7 @@ def frame_levels(pcm: array[int], sample_rate: int) -> list[float]:
 def speech_bounds(
     levels: list[float], threshold_dbfs: float, *, click_ms: float, pause_ms: float
 ) -> tuple[int, int] | None:
-    """Return the first and last frame index above the threshold, or None when no frame is.
-
-    A sound of at most *click_ms* before a pause of at least *pause_ms* at the start is a click or breath, so the
-    bounds start past it; a short sound after a pause at the end stays, as the release of a final stop consonant.
-    """
+    """Return the first and last frame index above the threshold past a leading click, or None when no frame is."""
     loud: list[int] = [index for index, level in enumerate(levels) if level > threshold_dbfs]
     if not loud:
         return None
