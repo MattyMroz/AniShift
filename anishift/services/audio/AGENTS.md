@@ -27,9 +27,12 @@ sidecara audio przez FFmpeg.
 - Każdy klip każdego silnika przechodzi przez FFmpeg i po `atempo` traci ciszę na
   brzegach: zostaje zakres od pierwszej do ostatniej ramki 10 ms powyżej
   `EDGE_TRIM_DBFS` plus `EDGE_TRIM_MARGIN_MS` z obu stron; klip bez takiej ramki
-  zostaje cały. Nie ma ścieżki „neutralny WAV bez przetwarzania”: wynikiem
-  normalizacji jest zawsze surowy PCM. Zmiana progu albo marginesu wchodzi do
-  `normalization_fingerprint` (sekcja `edge_trim`). `normalize.py`, `levels.py`
+  zostaje cały. Dźwięk do `EDGE_TRIM_CLICK_MS` przed ciszą co najmniej
+  `EDGE_TRIM_PAUSE_MS` na początku klipu to trzask albo wdech i odpada; krótki
+  dźwięk po ciszy na końcu zostaje, bo to wybuch końcowej spółgłoski zwartej. Nie
+  ma ścieżki „neutralny WAV bez przetwarzania”: wynikiem normalizacji jest zawsze
+  surowy PCM. Zmiana każdej z tych stałych wchodzi do `normalization_fingerprint`
+  (sekcja `edge_trim`). `normalize.py`, `levels.py`
 - `levels.py` jest jedynym źródłem poziomów RMS w ramkach `FRAME_MS` (trim i cięcie
   nagrania); obliczenia przez stdlib (`array`, `math.sumprod`), bez numpy. `levels.py`
 - Cięcie nagrania dokumentu na kwestie to czyste funkcje bez plików i FFmpeg: czasy
@@ -37,7 +40,11 @@ sidecara audio przez FFmpeg.
   nagłówka), a `cut_points` daje jedną `CutDecision` na granicę. Granica bez
   dość długiej ciszy nie scala klipów: tnie w kotwicy ograniczonej do okna i jest
   `uncertain`. Stałe są 1:1 z prototypu i przechodzą test zgodności na nagraniach
-  z `quality_dir()`; zmiana progu lub okna wymaga ponownego testu. `segmentation.py`
+  z `quality_dir()`; zmiana progu lub okna wymaga ponownego testu. Jedyne odejście
+  od prototypu: gdy środek wybranej pauzy (poniżej `NOISE_DBFS`) jest jeszcze
+  słyszalny (powyżej `EDGE_TRIM_DBFS`, wybrzmienie słowa albo wybuch spółgłoski),
+  cięcie pada w środku najdłuższej ciszy tej pauzy, bo inaczej koniec słowa
+  zaczynałby następny klip. `segmentation.py`
 - Brak klipów spoken zwraca `skipped_no_spoken`; nie twórz pustego narratora ani
   kopii oryginalnego audio. `service.py`
 - `scope_id` jest jednym bezpiecznym segmentem ścieżki i nie może być nazwą

@@ -8,6 +8,7 @@ from itertools import groupby, pairwise
 from typing import TYPE_CHECKING, Final
 
 from anishift.services.audio.levels import FRAME_MS
+from anishift.services.audio.normalize import EDGE_TRIM_DBFS
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -95,7 +96,22 @@ def _cut(levels: Sequence[float], times: Sequence[float], line: LineSpan, follow
     if not pauses:
         return CutDecision(at_ms=min(max(anchor, low), high), uncertain=True)
     start, end = max(pauses, key=lambda pause: _score(pause, anchor))
-    return CutDecision(at_ms=(start + end) / 2, uncertain=False)
+    return CutDecision(at_ms=_silent_cut(levels, times, start, end), uncertain=False)
+
+
+def _silent_cut(levels: Sequence[float], times: Sequence[float], start: float, end: float) -> float:
+    """Return the middle of the pause, or of its longest silent run when the middle is still heard."""
+    middle: float = (start + end) / 2
+    window: range = range(bisect_left(times, start), bisect_left(times, end))
+    if levels[max(bisect_right(times, middle) - 1, window.start)] <= EDGE_TRIM_DBFS:
+        return middle
+    silent: list[list[int]] = [
+        list(group) for heard, group in groupby(window, key=lambda index: levels[index] > EDGE_TRIM_DBFS) if not heard
+    ]
+    if not silent:
+        return middle
+    longest: list[int] = max(silent, key=len)
+    return (times[longest[0]] + times[longest[-1]] + FRAME_MS) / 2
 
 
 def _quiet_runs(levels: Sequence[float], times: Sequence[float], low: float, high: float) -> list[tuple[float, float]]:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 from array import array
+from bisect import bisect_right
 from typing import TYPE_CHECKING
 
 import pytest
@@ -11,6 +12,7 @@ from conftest import alignment_chunks, requires_binaries
 from anishift.paths import quality_dir
 from anishift.platform.binaries import Binary, require_binary
 from anishift.services.audio.levels import frame_levels
+from anishift.services.audio.normalize import EDGE_TRIM_DBFS
 from anishift.services.audio.segmentation import (
     ENVELOPE_RATE,
     CutDecision,
@@ -56,7 +58,7 @@ def _spans(work: Path, voice: str) -> list[LineSpan]:
     ]
 
 
-def _recording_cuts(work: Path, voice: str) -> list[CutDecision]:
+def _recording_cuts(work: Path, voice: str) -> tuple[list[CutDecision], list[float], list[float]]:
     recording: Path = work / f"anishift-test-{voice}.mp3"
     if not recording.is_file() or not (work / f"cuts-{voice}.json").is_file():
         pytest.skip("ElevenReader prototype data is not available")
@@ -66,7 +68,24 @@ def _recording_cuts(work: Path, voice: str) -> list[CutDecision]:
     levels: list[float] = frame_levels(pcm, ENVELOPE_RATE)
     data: bytes = recording.read_bytes()
     times: list[float] = server_frame_times(len(levels), splice_times(data), next(iter_frames(data)).duration_ms)
-    return cut_points(levels, times, _spans(work, voice))
+    return cut_points(levels, times, _spans(work, voice)), levels, times
+
+
+def _heard_at(levels: list[float], times: list[float], at_ms: float) -> bool:
+    return levels[max(bisect_right(times, at_ms) - 1, 0)] > EDGE_TRIM_DBFS
+
+
+def _assert_prototype_cuts_or_silent(
+    decisions: list[CutDecision], prototype: list[object], levels: list[float], times: list[float]
+) -> None:
+    pairs: list[tuple[float, float]] = [
+        (decision.at_ms, float(str(at))) for decision, at in zip(decisions, prototype, strict=True) if at is not None
+    ]
+    kept: list[tuple[float, float]] = [(new, old) for new, old in pairs if not _heard_at(levels, times, old)]
+    moved: list[float] = [new for new, old in pairs if _heard_at(levels, times, old)]
+
+    assert [new for new, _ in kept] == pytest.approx([old for _, old in kept], abs=10.0)
+    assert not any(_heard_at(levels, times, new) for new in moved)
 
 
 def _prototype_cuts(work: Path, voice: str) -> list[dict[str, object]]:
@@ -124,6 +143,14 @@ def test_cut_points_pauses_beyond_line_halves_are_ignored() -> None:
 
 
 @pytest.mark.unit
+def test_cut_points_pause_with_a_heard_word_tail_cuts_in_its_silence() -> None:
+    levels: list[float] = _levels(4000, (1300, 1500))
+    levels[130:142] = [-40.0] * 12
+
+    assert _cut(levels) == CutDecision(at_ms=1460.0, uncertain=False)
+
+
+@pytest.mark.unit
 def test_cut_points_level_count_mismatch_raises() -> None:
     with pytest.raises(ValueError, match="server time"):
         cut_points([QUIET, QUIET], [0.0], (LINE, NEXT))
@@ -146,25 +173,22 @@ def test_clip_ranges_no_frames_raises() -> None:
 @pytest.mark.parametrize("voice", ["fronczewski", "adam"])
 @requires_binaries(Binary.FFMPEG)
 def test_cut_points_tantei_recording_matches_prototype_cuts(voice: str) -> None:
-    decisions: list[CutDecision] = _recording_cuts(DATA / "tantei", voice)
+    decisions, levels, times = _recording_cuts(DATA / "tantei", voice)
     prototype: list[dict[str, object]] = _prototype_cuts(DATA / "tantei", voice)
-    cut: list[tuple[CutDecision, object]] = [
-        (decision, row["at"]) for decision, row in zip(decisions, prototype, strict=True) if row["at"] is not None
-    ]
 
     assert [index for index, decision in enumerate(decisions) if decision.uncertain] == [
         row["line"] for row in prototype if row["at"] is None
     ]
-    assert [decision.at_ms for decision, _ in cut] == pytest.approx([at for _, at in cut], abs=10.0)
+    _assert_prototype_cuts_or_silent(decisions, [row["at"] for row in prototype], levels, times)
 
 
 @pytest.mark.integration
 @pytest.mark.parametrize("voice", ["fronczewski", "adam"])
 @requires_binaries(Binary.FFMPEG)
 def test_cut_points_separated_edgerunners_recording_matches_prototype_cuts(voice: str) -> None:
-    decisions: list[CutDecision] = _recording_cuts(DATA / "edge02c", voice)
+    decisions, levels, times = _recording_cuts(DATA / "edge02c", voice)
     prototype: list[dict[str, object]] = _prototype_cuts(DATA / "edge02c", voice)
 
     assert len(decisions) == 388
     assert not any(decision.uncertain for decision in decisions)
-    assert [decision.at_ms for decision in decisions] == pytest.approx([row["at"] for row in prototype], abs=10.0)
+    _assert_prototype_cuts_or_silent(decisions, [row["at"] for row in prototype], levels, times)
