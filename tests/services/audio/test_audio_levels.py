@@ -36,13 +36,38 @@ def test_frame_levels_rate_without_whole_frames_raises() -> None:
         frame_levels(array("h", [0] * 441), 22_050)
 
 
+def _bounds(levels: list[float]) -> tuple[int, int] | None:
+    return speech_bounds(levels, -45.0, click_ms=50.0, pause_ms=80.0)
+
+
+def _frames(*sounds: tuple[int, int]) -> list[float]:
+    return [-10.0 if any(start <= index < end for start, end in sounds) else -90.0 for index in range(100)]
+
+
 @pytest.mark.unit
 def test_speech_bounds_tone_between_silence_returns_tone_frames() -> None:
     pcm = array("h", [0] * 480) + _tone(8_000, 800, 16_000) + array("h", [0] * 320)
 
-    assert speech_bounds(frame_levels(pcm, 16_000), -45.0) == (3, 7)
+    assert _bounds(frame_levels(pcm, 16_000)) == (3, 7)
 
 
 @pytest.mark.unit
 def test_speech_bounds_silence_returns_none() -> None:
-    assert speech_bounds(frame_levels(array("h", [3] * 1_600), 16_000), -45.0) is None
+    assert _bounds(frame_levels(array("h", [3] * 1_600), 16_000)) is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("sounds", "expected"),
+    [
+        (((10, 13), (30, 90)), (30, 89)),
+        (((10, 20), (30, 90)), (10, 89)),
+        (((10, 13), (17, 90)), (10, 89)),
+        (((30, 80), (90, 93)), (30, 92)),
+    ],
+    ids=["click-before-pause-dropped", "word-before-pause-kept", "click-before-short-gap-kept", "stop-release-kept"],
+)
+def test_speech_bounds_start_past_a_click_before_a_pause(
+    sounds: tuple[tuple[int, int], ...], expected: tuple[int, int]
+) -> None:
+    assert _bounds(_frames(*sounds)) == expected

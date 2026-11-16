@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from array import array
+from itertools import pairwise
 from typing import Final
 
 __all__ = ["FRAME_MS", "frame_levels", "speech_bounds"]
@@ -37,9 +38,22 @@ def frame_levels(pcm: array[int], sample_rate: int) -> list[float]:
     return levels
 
 
-def speech_bounds(levels: list[float], threshold_dbfs: float) -> tuple[int, int] | None:
-    """Return the first and last frame index above the threshold, or None when no frame is."""
+def speech_bounds(
+    levels: list[float], threshold_dbfs: float, *, click_ms: float, pause_ms: float
+) -> tuple[int, int] | None:
+    """Return the first and last frame index above the threshold, or None when no frame is.
+
+    A sound of at most *click_ms* before a pause of at least *pause_ms* at the start is a click or breath, so the
+    bounds start past it; a short sound after a pause at the end stays, as the release of a final stop consonant.
+    """
     loud: list[int] = [index for index, level in enumerate(levels) if level > threshold_dbfs]
     if not loud:
         return None
-    return loud[0], loud[-1]
+    first: int = 0
+    for position, (frame, following) in enumerate(pairwise(loud)):
+        if (following - frame - 1) * FRAME_MS < pause_ms:
+            continue
+        if (frame - loud[first] + 1) * FRAME_MS > click_ms:
+            break
+        first = position + 1
+    return loud[first], loud[-1]

@@ -19,8 +19,10 @@ from anishift.services.audio.levels import FRAME_MS, frame_levels, speech_bounds
 from anishift.services.audio.types import NormalizedClip, TimedClip
 
 __all__ = [
+    "EDGE_TRIM_CLICK_MS",
     "EDGE_TRIM_DBFS",
     "EDGE_TRIM_MARGIN_MS",
+    "EDGE_TRIM_PAUSE_MS",
     "NormalizationContext",
     "atempo_chain",
     "normalize_clip",
@@ -48,6 +50,12 @@ EDGE_TRIM_DBFS: Final[float] = -45.0
 
 EDGE_TRIM_MARGIN_MS: Final[float] = 30.0
 """Audio kept outside the outermost speech frames to avoid clicks."""
+
+EDGE_TRIM_CLICK_MS: Final[float] = 50.0
+"""Longest sound before a pause at the start of a clip that is a click or breath, not a word."""
+
+EDGE_TRIM_PAUSE_MS: Final[float] = 80.0
+"""Shortest silence after a sound at the start of a clip that makes the sound a click."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,7 +196,9 @@ def _cached_raw_pcm(
 def _trim_edges(path: Path, sample_rate: int) -> None:
     samples: array[int] = array("h")
     samples.frombytes(path.read_bytes())
-    bounds: tuple[int, int] | None = speech_bounds(frame_levels(samples, sample_rate), EDGE_TRIM_DBFS)
+    bounds: tuple[int, int] | None = speech_bounds(
+        frame_levels(samples, sample_rate), EDGE_TRIM_DBFS, click_ms=EDGE_TRIM_CLICK_MS, pause_ms=EDGE_TRIM_PAUSE_MS
+    )
     if bounds is None:
         return
     first, last = bounds
