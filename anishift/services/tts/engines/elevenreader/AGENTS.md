@@ -89,7 +89,11 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
   podniesienie tylko po nowym pomiarze testem sieciowym `test_tts_services_on_own_threads_live_record_documents_together`.
   Otwarcie i zamknięcie strumienia logują `ElevenReader stream opened/closed` z liczbą odebranych znaków.
 
-- Brak retry w transporcie. Ponowne „Play” (do 3) i pętla dołączania do CDP to czynności jednej próby.
+- Brak retry w transporcie. Ponowne otwarcie dokumentu z Play (do 3, gdy przez `START_TIMEOUT_S` nie przyszedł
+  dźwięk) i pętla dołączania do CDP to czynności jednej próby.
+- Gdy Firebase App Check odrzuci przeglądarkę, strona pisze w konsoli `AppCheck: 403` / `appCheck/…` i nie otwiera
+  strumienia, a odmowę zapamiętuje w profilu na dobę. `ReaderPage` łapie to z konsoli (`APP_CHECK_REFUSAL`) i
+  `raise_if_refused` od razu kończy próbę trwałym `TtsAuthError` (`refused_error`), bez czekania na Play.
 - Błąd Playwright przy starcie sterownika, dołączaniu i przygotowaniu kontekstu (`ChromeSession._attach`) staje się
   `unavailable_error`, więc `sign_in` kończy się `FAILED`, a panel nie zostaje w stanie „zajęty”.
 - Każde wywołanie strony w próbie (także `set_page_speed`, `press_play`, `check_page_speed`, `player_state`) idzie
