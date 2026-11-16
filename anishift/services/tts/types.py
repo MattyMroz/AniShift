@@ -237,7 +237,7 @@ class EngineCapabilities:
     max_text_chars: int | None
     max_text_bytes: int | None
     availability_probe: AvailabilityProbeKind
-    max_document_chars: int | None = None
+    reads_documents: bool = False
 
 
 @dataclass(frozen=True, slots=True)

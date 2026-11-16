@@ -718,14 +718,12 @@ class TtsService:
             return _batch_result_without_engine(batch, executions, self._config)
 
         engine, scheduler = await self._ensure_runtime()
-        max_document_chars: int | None = engine.capabilities.max_document_chars
-        if max_document_chars is not None:
+        if engine.capabilities.reads_documents:
             return await self._run_document_batch(
                 batch,
                 _DocumentProgress(batch, callbacks, cancel=self._cancel, generation=generation),
                 engine,
                 scheduler,
-                max_document_chars=max_document_chars,
             )
         indexed_executions: list[tuple[int, _RequestExecution]] = []
         received_required_requests: set[str] = set()
@@ -1054,8 +1052,6 @@ class TtsService:
         progress: _DocumentProgress,
         engine: TtsEngine,
         scheduler: TtsScheduler,
-        *,
-        max_document_chars: int,
     ) -> SpeechBatchResult:
         splitter: ClipSplitter | None = self._splitter
         if not isinstance(engine, DocumentTtsEngine) or splitter is None:
@@ -1070,14 +1066,13 @@ class TtsService:
                 index,
                 request,
                 engine,
-                max_document_chars=max_document_chars,
             )
             if isinstance(prepared, _DocumentLine):
                 pending.append(prepared)
             else:
                 await progress.record(index, prepared)
-        for lines in _group_documents(pending, engine, max_document_chars):
-            await self._read_lines(lines, context)
+        if pending:
+            await self._read_lines(tuple(pending), context)
         await asyncio.to_thread(self._repository(batch.scope_id).flush)
         return _batch_result(batch, progress.executions, engine)
 
@@ -1147,8 +1142,6 @@ class TtsService:
         index: int,
         request: SpeechRequest,
         engine: DocumentTtsEngine,
-        *,
-        max_document_chars: int,
     ) -> _RequestExecution | _DocumentLine:
         if not is_speech_text(request.text):
             return _skipped_execution(request)
@@ -1158,7 +1151,7 @@ class TtsService:
             max_bytes=engine.capabilities.max_text_bytes,
         )
         part: DocumentPart = DocumentPart(request_id=request.request_id, text=request.text)
-        if len(chunks) != 1 or engine.document_chars((part,)) > max_document_chars:
+        if len(chunks) != 1:
             return _failed_execution(request, _document_line_too_long_error(), 0, 0, 0.0)
         try:
             engine.validate_part(part)
@@ -1384,24 +1377,6 @@ def _with_earlier_reads(execution: _RequestExecution, earlier: _RequestExecution
         provider_calls=execution.provider_calls + earlier.provider_calls,
         request_time_ms=execution.request_time_ms + earlier.request_time_ms,
     )
-
-
-def _group_documents(
-    lines: list[_DocumentLine],
-    engine: DocumentTtsEngine,
-    max_chars: int,
-) -> tuple[tuple[_DocumentLine, ...], ...]:
-    documents: list[tuple[_DocumentLine, ...]] = []
-    current: list[_DocumentLine] = []
-    for line in lines:
-        grown: tuple[DocumentPart, ...] = (*(item.part for item in current), line.part)
-        if current and engine.document_chars(grown) > max_chars:
-            documents.append(tuple(current))
-            current = []
-        current.append(line)
-    if current:
-        documents.append(tuple(current))
-    return tuple(documents)
 
 
 def _skipped_execution(request: SpeechRequest) -> _RequestExecution:
@@ -1654,7 +1629,7 @@ def _document_line_too_long_error() -> TtsInputError:
     context: ErrorContext = ErrorContext(
         code=ErrorCode.TTS_INPUT_INVALID,
         message="TTS line does not fit one document part",
-        suggestion="Shorten the line below the engine document limit.",
+        suggestion="Shorten the line below the engine text limit.",
     )
     return TtsInputError(context=context)
 

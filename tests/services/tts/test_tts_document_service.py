@@ -89,7 +89,7 @@ class _DocumentEngine:
         max_text_chars=40,
         max_text_bytes=None,
         availability_probe=AvailabilityProbeKind.CONFIG,
-        max_document_chars=40,
+        reads_documents=True,
     )
     synthesis_profile = SynthesisProfile(
         engine_id="document",
@@ -107,10 +107,8 @@ class _DocumentEngine:
         failures: tuple[TtsError, ...] = (),
         drop_timing_once: bool = False,
         wrong_voice_once: bool = False,
-        separator: str = "",
         speaks_up_to: dict[str, int] | None = None,
     ) -> None:
-        self.separator: str = separator
         self.speaks_up_to: dict[str, int] = speaks_up_to or {}
         self.documents: list[tuple[str, ...]] = []
         self.document_ids: list[str] = []
@@ -136,9 +134,6 @@ class _DocumentEngine:
     async def synthesize(self, request: SynthesisRequest, *, cancel: CancellationToken) -> EngineClipResult:
         del request, cancel
         raise TtsUnsupportedError("document engine")
-
-    def document_chars(self, parts: tuple[DocumentPart, ...]) -> int:
-        return len(self.separator.join(part.text for part in parts))
 
     def validate_part(self, part: DocumentPart) -> None:
         if "<break" in part.text:
@@ -347,34 +342,23 @@ def test_document_batch_partial_resume_reads_only_missing_lines(tmp_path: Path) 
     ]
 
 
-def test_document_batch_lines_over_document_limit_start_next_document(tmp_path: Path) -> None:
+def test_document_batch_lines_far_over_the_old_document_limit_are_one_document(tmp_path: Path) -> None:
     engine = _DocumentEngine()
-    line: str = "Piętnaście zn."
+    lines: list[str] = [f"Kwestia {number} ma dość znaków." for number in range(2_000)]
 
-    (result,) = _run(tmp_path, engine, _Splitter(), _batch(line, line, line))
+    (result,) = _run(tmp_path, engine, _Splitter(), _batch(*lines))
 
-    assert engine.documents == [("line-0", "line-1"), ("line-2",)]
-    assert result.status is SpeechBatchStatus.COMPLETED
-
-
-def test_document_batch_lines_within_limit_but_over_it_with_separators_start_next_document(tmp_path: Path) -> None:
-    engine = _DocumentEngine(separator="\n\n…\n\n")
-    line: str = "Dwadzieścia znaków."
-
-    (result,) = _run(tmp_path, engine, _Splitter(), _batch(line, line))
-
-    assert len(line) * 2 <= 40
-    assert engine.documents == [("line-0",), ("line-1",)]
+    assert sum(len(line) for line in lines) > 50_000
+    assert engine.documents == [tuple(f"line-{number}" for number in range(2_000))]
     assert result.status is SpeechBatchStatus.COMPLETED
 
 
 def test_document_batch_same_scope_documents_in_one_run_get_distinct_ids(tmp_path: Path) -> None:
     engine = _DocumentEngine()
-    line: str = "Piętnaście zn."
 
-    _run(tmp_path, engine, _Splitter(), _batch(line, line, line), _batch("Raz dwa."))
+    _run(tmp_path, engine, _Splitter(), _batch("Raz dwa.", "Trzy."), _batch("Cztery pięć."))
 
-    assert engine.document_ids == ["episode:document:0", "episode:document:1", "episode:document:2"]
+    assert engine.document_ids == ["episode:document:0", "episode:document:1"]
 
 
 def test_document_batch_line_over_text_limit_fails_only_that_line(tmp_path: Path) -> None:
@@ -387,20 +371,6 @@ def test_document_batch_line_over_text_limit_fails_only_that_line(tmp_path: Path
     assert result.requests[1].error_code == "TTS_INPUT_INVALID"
     assert engine.documents == [("line-0",)]
     assert result.status is SpeechBatchStatus.PARTIAL
-
-
-def test_document_batch_line_over_document_limit_fails_only_that_line(tmp_path: Path) -> None:
-    class _WideTextEngine(_DocumentEngine):
-        capabilities = replace(_DocumentEngine.capabilities, max_text_chars=100)
-
-    engine = _WideTextEngine()
-    too_long: str = " ".join(["słowo"] * 8) + "."
-
-    (result,) = _run(tmp_path, engine, _Splitter(), _batch("Raz dwa.", too_long))
-
-    assert _statuses(result) == [SynthesisStatus.SYNTHESIZED, SynthesisStatus.FAILED]
-    assert result.requests[1].error_code == "TTS_INPUT_INVALID"
-    assert engine.documents == [("line-0",)]
 
 
 def test_document_batch_part_refused_by_engine_fails_only_that_line(tmp_path: Path) -> None:
@@ -586,11 +556,11 @@ def test_document_batch_quota_error_opens_circuit_for_next_document(tmp_path: Pa
     engine = _DocumentEngine(failures=(TtsQuotaError("no credits"),))
     line: str = "Piętnaście zn."
 
-    (result,) = _run(tmp_path, engine, _Splitter(), _batch(line, line, line))
+    result, _ = _run(tmp_path, engine, _Splitter(), _batch(line, line, line), _batch("Cztery pięć."))
 
     assert result.status is SpeechBatchStatus.FAILED
     assert [item.error_code for item in result.requests] == ["TTS_QUOTA_EXHAUSTED"] * 3
-    assert engine.documents == [("line-0", "line-1")]
+    assert engine.documents == [("line-0", "line-1", "line-2")]
     assert result.failure is not None
     assert result.failure.code.value == "TTS_QUOTA_EXHAUSTED"
 
@@ -677,7 +647,7 @@ def test_document_batch_cancel_during_retry_delay_ends_at_once_without_another_a
 
 def test_document_batch_line_engine_with_splitter_uses_line_path(tmp_path: Path) -> None:
     class _LineEngine(_DocumentEngine):
-        capabilities = replace(_DocumentEngine.capabilities, max_document_chars=None)
+        capabilities = replace(_DocumentEngine.capabilities, reads_documents=False)
 
     engine = _LineEngine()
 
