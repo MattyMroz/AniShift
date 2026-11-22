@@ -458,7 +458,9 @@ def subscription_row(record: SubscriptionRecord) -> SubscriptionRow:
         review_pending=record.review_pending,
         due_number=None if nearest is None else nearest.number,
         catalog_status=record.catalog_status,
-        episode_count=record.episode_count,
+        episode_count=None
+        if record.episode_count is None
+        else max(record.episode_count, *(item.number for item in record.targets)),
         aired=(record.cut or 0) + sum(item.state is not TargetState.AWAITING_AIRING for item in record.targets),
         due_state=None if nearest is None else _due_state(nearest),
     )

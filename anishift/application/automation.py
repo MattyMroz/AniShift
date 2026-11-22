@@ -4248,6 +4248,9 @@ class AutomationOwner:
         mapping_check: dict[str, object] | None = None
         if result is not None and result.read is not None:
             updated = merge_listing(current, result.read, now, (item.scope for item in self._state.legacy_orders))
+            kept: frozenset[int] = frozenset(item.number for item in updated.targets)
+            for number in sorted({item.number for item in current.targets} - kept):
+                logger.info("Subscription target withdrawn", subscription_id=identifier, number=number)
             mapping_check = _mapping_check(current, result.read)
             evidence.append(("check", mapping_check))
             updated = _searched(updated, result.offers, now, errored=result.errored)
@@ -9481,7 +9484,7 @@ def _subscription_details(record: SubscriptionRecord, row: SubscriptionRow) -> d
         "subscribed_at": record.subscribed_at,
         "migrated_at": record.migrated_at,
         "catalog_status": record.catalog_status,
-        "episode_count": record.episode_count,
+        "episode_count": row.episode_count,
         "counts": {state.value: sum(item.state is state for item in record.targets) for state in TargetState},
         "first_target": min(numbers, default=None),
         "last_target": max(numbers, default=None),

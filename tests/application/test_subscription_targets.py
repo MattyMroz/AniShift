@@ -180,6 +180,15 @@ def test_a_split_cour_schedule_keeps_targets_beyond_the_catalogue_episode_count(
     assert set(range(7, 25)) <= {item.number for item in merged.targets}
 
 
+@pytest.mark.parametrize(("count", "last", "shown"), [(12, 24, 24), (12, 8, 12), (None, 24, None)])
+def test_a_row_counts_the_season_up_to_its_last_target(count: int | None, last: int, shown: int | None) -> None:
+    record: SubscriptionRecord = _record(
+        episode_count=count, targets=tuple(_target(number) for number in range(7, last + 1))
+    )
+
+    assert subscription_row(record).episode_count == shown
+
+
 @pytest.mark.parametrize("state", [TargetState.AWAITING_AIRING, TargetState.DUE])
 def test_a_live_read_withdraws_an_untouched_target_the_catalogue_no_longer_lists(state: TargetState) -> None:
     record: SubscriptionRecord = _record(targets=(_target(11, state), _target(12, state)))
@@ -200,6 +209,9 @@ def test_a_live_read_withdraws_an_untouched_target_the_catalogue_no_longer_lists
         _target(12, TargetState.ATTEMPTING),
         _target(12, TargetState.SATISFIED),
         SubscriptionTarget(12, _NOW.isoformat(), TargetState.EXHAUSTED, MAX_ATTEMPTS, started=MAX_ATTEMPTS),
+        replace(_target(12), polish_skip=PolishSkip(_NOW.isoformat(), _NOW.isoformat())),
+        replace(_target(12), failures=(ReleaseFailure("a" * 40),)),
+        SubscriptionTarget(12, _NOW.isoformat(), TargetState.MANUAL, reason=LEGACY_ORDERED),
     ],
 )
 def test_a_live_read_keeps_an_unlisted_target_with_history(target: SubscriptionTarget) -> None:
