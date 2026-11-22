@@ -9,7 +9,7 @@ from PIL import Image
 
 from anishift.application.cancellation import CancellationToken
 from anishift.application.events import RunEvent
-from anishift.application.planning import PlanTask, TaskKind
+from anishift.application.planning import PlanTask, RunSettingsSnapshot, TaskKind
 from anishift.application.results import ArtifactSnapshot, TaskResult
 from anishift.application.scheduler_contracts import TaskHandler, TaskProgressSink
 from anishift.errors import ExecutionError
@@ -85,12 +85,13 @@ class FailingGroupHandler:
         self,
         task: PlanTask,
         artifacts: ArtifactSnapshot,
+        settings: RunSettingsSnapshot,
         cancel: CancellationToken,
         progress: TaskProgressSink,
     ) -> TaskResult:
         if task.group_id == self.group_id and task.kind is TaskKind.SPLIT_SUBTITLES:
             raise ExecutionError("fake subtitle split failure")
-        return self.delegate.execute(task, artifacts, cancel, progress)
+        return self.delegate.execute(task, artifacts, settings, cancel, progress)
 
     def close(self) -> None:
         close: object = getattr(self.delegate, "close", None)

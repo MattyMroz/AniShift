@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections.abc import Callable
@@ -39,9 +40,16 @@ from anishift.application.scheduler import (
     RunHandle,
     TaskProgressSink,
 )
-from anishift.application.scheduler_contracts import RunRequest
+from anishift.application.scheduler_contracts import RunRequest, is_remote, resource_key
 from anishift.application.sessions import RunSession
 from anishift.errors import ExecutionError, FatalError
+
+_PARAMETERS: dict[TaskKind, tuple[tuple[str, str | int | bool], ...]] = {
+    TaskKind.TRANSLATE_SUBTITLES: (("output_format", "ass"),),
+    TaskKind.SYNTHESIZE_SPEECH: (("narration_timeline", "source_times"), ("script_kind", "full_pl")),
+    TaskKind.TRANSCODE_AUDIO: (("output_profile", "eac3"),),
+    TaskKind.PUBLISH_ARTIFACT: (),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +57,7 @@ class _TaskSpec:
     group_id: str
     task_id: str
     depends_on: tuple[str, ...] = ()
-    resource_key: str = "translation:google"
+    kind: TaskKind = TaskKind.TRANSLATE_SUBTITLES
     durable: bool = False
 
 
@@ -83,6 +91,7 @@ class _FakeHandler:
         self.ignore_cancel: frozenset[str] = ignore_cancel
         self.barriers: dict[str, threading.Barrier] = barriers or {}
         self.calls: list[str] = []
+        self.settings: dict[str, RunSettingsSnapshot] = {}
         self.started: dict[str, float] = {}
         self.finished: dict[str, float] = {}
         self.max_active: dict[str, int] = {}
@@ -94,12 +103,14 @@ class _FakeHandler:
         self,
         task: PlanTask,
         artifacts: ArtifactSnapshot,
+        settings: RunSettingsSnapshot,
         cancel: CancellationToken,
         progress: TaskProgressSink,
     ) -> TaskResult:
-        resource_bucket: str = task.resource_key.casefold()
+        resource_bucket: str = resource_key(task, settings)
         with self._lock:
             self.calls.append(task.task_id)
+            self.settings[task.task_id] = settings
             self.started[task.task_id] = time.monotonic()
             active: int = self._active.get(resource_bucket, 0) + 1
             self._active[resource_bucket] = active
@@ -178,7 +189,6 @@ def _settings(policy: ProcessingOrderPolicy = ProcessingOrderPolicy.READY_FIRST)
         tts_profile_id="edge",
         tts_max_retries=3,
         tts_group_jobs=3,
-        audio_profile_id="eac3",
         composition_profile_id="default",
         processing_order_policy=policy,
     )
@@ -192,14 +202,16 @@ def _intent(group_id: str) -> GroupIntent:
     )
 
 
-def _plan(  # noqa: PLR0913 - one builder covering every plan shape the tests need
+def _single_slot() -> RunSettingsSnapshot:
+    return replace(_settings(), translation_concurrency=1, tts_group_jobs=1, llm_max_concurrency=1)
+
+
+def _plan(
     tmp_path: Path,
     specs: tuple[_TaskSpec, ...],
     *,
-    policy: ProcessingOrderPolicy = ProcessingOrderPolicy.READY_FIRST,
     extra_groups: tuple[str, ...] = (),
     problem: PlanProblem | None = None,
-    settings: RunSettingsSnapshot | None = None,
 ) -> ExecutionPlan:
     group_ids: list[str] = list(dict.fromkeys((*extra_groups, *(spec.group_id for spec in specs))))
     artifacts: list[Artifact] = []
@@ -244,11 +256,11 @@ def _plan(  # noqa: PLR0913 - one builder covering every plan shape the tests ne
             PlanTask(
                 task_id=spec.task_id,
                 group_id=spec.group_id,
-                kind=TaskKind.PUBLISH_ARTIFACT,
+                kind=spec.kind,
                 requires=required,
                 produces=(output_id,),
                 depends_on=spec.depends_on,
-                resource_key=spec.resource_key,
+                parameters=_PARAMETERS[spec.kind],
             )
         )
     problems: tuple[PlanProblem, ...] = (problem,) if problem is not None else ()
@@ -263,29 +275,7 @@ def _plan(  # noqa: PLR0913 - one builder covering every plan shape the tests ne
         for group_id in group_ids
     )
     ordered_tasks: tuple[PlanTask, ...] = stable_topological_order(tasks)
-    return ExecutionPlan(groups, tuple(artifacts), ordered_tasks, settings or _settings(policy), problems)
-
-
-def _limits(settings: RunSettingsSnapshot, *, pending: int = 1) -> ResourceLimits:
-    return ResourceLimits.from_settings(
-        settings,
-        extraction=2,
-        audio=2,
-        composition=1,
-        max_pending_per_resource=pending,
-    )
-
-
-def _single_slot_limits() -> ResourceLimits:
-    return ResourceLimits(
-        extraction=2,
-        translation={"google": 1},
-        tts_group_jobs=1,
-        audio=2,
-        composition=1,
-        max_pending_per_resource=0,
-        llm=1,
-    )
+    return ExecutionPlan(groups, tuple(artifacts), ordered_tasks, problems)
 
 
 def _wait_until(condition: Callable[[], bool], timeout: float = 5.0) -> bool:
@@ -341,6 +331,7 @@ def _run(
     handler_factory: Callable[[Path], _FakeHandler],
     *,
     cancel: EventCancellationToken | NeverCancelledToken | None = None,
+    settings: RunSettingsSnapshot | None = None,
 ) -> tuple[RunResult, _FakeHandler, _CollectingSink]:
     run_root: Path = tmp_path / "tmp" / "run-1"
     sink: _CollectingSink = _CollectingSink()
@@ -349,7 +340,7 @@ def _run(
         handler: _FakeHandler = handler_factory(run_root)
         scheduler: GraphScheduler = GraphScheduler(
             handler,
-            limits=_limits(plan.settings),
+            settings=settings or _settings(),
             run_id="run-1",
             session=session,
         )
@@ -366,17 +357,42 @@ def test_natural_order_gate_skips_resolved_later_group_without_deadlock() -> Non
     assert gate.can_release("group-3") is True
 
 
-def test_resource_limits_cap_sapi_and_llm_and_copy_provider_mapping() -> None:
-    settings: RunSettingsSnapshot = _settings()
-    providers: dict[str, int] = {"Google": 3}
-    limits = ResourceLimits(2, providers, 5, 2, 1, 0)
-    providers["Google"] = 9
+def test_resource_limits_give_every_pool_its_own_limit_and_sapi_one_worker() -> None:
+    limits = ResourceLimits(extraction=2, translation=3, llm=4, tts=5)
 
-    assert limits.worker_limit("translation:google", settings) == 3
-    assert limits.worker_limit("tts:sapi", settings) == 1
-    assert limits.worker_limit("llm:gemini", settings) == 4
-    with pytest.raises(ValueError, match="non-negative"):
-        ResourceLimits(1, {}, 1, 1, 1, -1)
+    assert limits.worker_limit("translation:google") == 3
+    assert limits.worker_limit("llm:gemini") == 4
+    assert limits.worker_limit("tts:edge") == 5
+    assert limits.worker_limit("tts:sapi") == 1
+    assert limits.worker_limit("audio") == 2
+    assert limits.worker_limit("composition") == 1
+    assert limits.worker_limit("filesystem") == 1
+    assert limits.worker_limit("subtitles") == 2
+    with pytest.raises(ValueError, match="positive"):
+        ResourceLimits(extraction=1, translation=0, llm=1, tts=1)
+
+
+def test_the_resource_key_of_a_task_follows_the_settings_it_starts_with(tmp_path: Path) -> None:
+    plan: ExecutionPlan = _plan(
+        tmp_path,
+        (
+            _TaskSpec("group-1", "translate"),
+            _TaskSpec("group-1", "speak", kind=TaskKind.SYNTHESIZE_SPEECH),
+            _TaskSpec("group-1", "mix", kind=TaskKind.TRANSCODE_AUDIO),
+        ),
+    )
+    translate, speak, mix = (
+        next(task for task in plan.tasks if task.task_id == name) for name in ("translate", "speak", "mix")
+    )
+    llm: RunSettingsSnapshot = replace(_settings(), translation_profile_id="llm", tts_profile_id="sapi")
+
+    assert (resource_key(translate, _settings()), resource_key(translate, llm)) == ("translation:google", "llm:gemini")
+    assert (resource_key(speak, _settings()), resource_key(speak, llm)) == ("tts:edge", "tts:sapi")
+    assert resource_key(mix, llm) == "audio"
+    assert is_remote(translate, _settings())
+    assert is_remote(speak, _settings())
+    assert not is_remote(speak, replace(llm, tts_is_network=False))
+    assert not is_remote(mix, _settings())
 
 
 def test_dependent_task_streams_before_another_group_finishes(tmp_path: Path) -> None:
@@ -404,9 +420,9 @@ def test_dependent_task_streams_before_another_group_finishes(tmp_path: Path) ->
 
 def test_audio_for_one_group_overlaps_tts_for_the_next_group(tmp_path: Path) -> None:
     specs: tuple[_TaskSpec, ...] = (
-        _TaskSpec("group-1", "tts-1", resource_key="tts:sapi"),
-        _TaskSpec("group-1", "audio-1", ("tts-1",), resource_key="audio"),
-        _TaskSpec("group-2", "tts-2", resource_key="tts:sapi"),
+        _TaskSpec("group-1", "tts-1", kind=TaskKind.SYNTHESIZE_SPEECH),
+        _TaskSpec("group-1", "audio-1", ("tts-1",), kind=TaskKind.TRANSCODE_AUDIO),
+        _TaskSpec("group-2", "tts-2", kind=TaskKind.SYNTHESIZE_SPEECH),
     )
     plan: ExecutionPlan = _plan(tmp_path, specs)
 
@@ -417,6 +433,7 @@ def test_audio_for_one_group_overlaps_tts_for_the_next_group(tmp_path: Path) -> 
             run_root,
             delays={"tts-1": 0.01, "audio-1": 0.08, "tts-2": 0.08},
         ),
+        settings=replace(_settings(), tts_profile_id="sapi"),
     )
 
     assert result.succeeded is True
@@ -424,43 +441,25 @@ def test_audio_for_one_group_overlaps_tts_for_the_next_group(tmp_path: Path) -> 
     assert handler.started["tts-2"] < handler.finished["audio-1"]
 
 
-def test_scheduler_respects_provider_and_sapi_worker_limits(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("engine", "key", "limit"), [("google", "translation:google", 2), ("llm", "llm:gemini", 4)])
+def test_scheduler_respects_provider_and_sapi_worker_limits(tmp_path: Path, engine: str, key: str, limit: int) -> None:
     specs: tuple[_TaskSpec, ...] = (
         *(_TaskSpec("group-1", f"translate-{index}") for index in range(6)),
-        *(_TaskSpec("group-1", f"llm-{index}", resource_key="llm:gemini") for index in range(6)),
-        *(
-            _TaskSpec(
-                "group-1",
-                f"sapi-{index}",
-                resource_key="tts:sapi" if index % 2 == 0 else "tts:SAPI",
-            )
-            for index in range(3)
-        ),
+        *(_TaskSpec("group-1", f"sapi-{index}", kind=TaskKind.SYNTHESIZE_SPEECH) for index in range(3)),
     )
     plan: ExecutionPlan = _plan(tmp_path, specs)
-    translation_barrier: threading.Barrier = threading.Barrier(2)
-    llm_barrier: threading.Barrier = threading.Barrier(4)
-    barriers: dict[str, threading.Barrier] = {
-        "translate-0": translation_barrier,
-        "translate-1": translation_barrier,
-        "llm-0": llm_barrier,
-        "llm-1": llm_barrier,
-        "llm-2": llm_barrier,
-        "llm-3": llm_barrier,
-    }
+    barrier: threading.Barrier = threading.Barrier(limit)
+    barriers: dict[str, threading.Barrier] = {f"translate-{index}": barrier for index in range(limit)}
 
     result, handler, _ = _run(
         tmp_path,
         plan,
-        lambda run_root: _FakeHandler(
-            run_root,
-            barriers=barriers,
-        ),
+        lambda run_root: _FakeHandler(run_root, barriers=barriers),
+        settings=replace(_settings(), translation_profile_id=engine, tts_profile_id="sapi"),
     )
 
     assert result.succeeded is True
-    assert handler.max_active["translation:google"] == 2
-    assert handler.max_active["llm:gemini"] == 4
+    assert handler.max_active[key] == limit
     assert handler.max_active["tts:sapi"] == 1
 
 
@@ -502,7 +501,6 @@ def test_overwrite_reports_preserved_product_only_when_publication_fails(tmp_pat
         plan.groups,
         tuple(target if artifact.artifact_id == target.artifact_id else artifact for artifact in plan.artifacts),
         plan.tasks,
-        plan.settings,
         plan.problems,
     )
 
@@ -528,12 +526,13 @@ def test_strict_natural_holds_later_result_and_group_event(tmp_path: Path) -> No
         _TaskSpec("group-2", "fast"),
         _TaskSpec("group-2", "fast-next", ("fast",)),
     )
-    plan: ExecutionPlan = _plan(tmp_path, specs, policy=ProcessingOrderPolicy.STRICT_NATURAL)
+    plan: ExecutionPlan = _plan(tmp_path, specs)
 
     result, handler, sink = _run(
         tmp_path,
         plan,
         lambda run_root: _FakeHandler(run_root, delays={"slow": 0.08, "fast": 0.01}),
+        settings=_settings(ProcessingOrderPolicy.STRICT_NATURAL),
     )
 
     group_events: tuple[str | None, ...] = tuple(
@@ -550,14 +549,16 @@ def test_strict_natural_keeps_later_durable_staging_private(tmp_path: Path) -> N
         _TaskSpec("group-1", "slow"),
         _TaskSpec("group-2", "fast-durable", durable=True),
     )
-    plan: ExecutionPlan = _plan(tmp_path, specs, policy=ProcessingOrderPolicy.STRICT_NATURAL)
+    plan: ExecutionPlan = _plan(tmp_path, specs)
     run_root: Path = tmp_path / "tmp" / "run-1"
     destination: Path = tmp_path / "fast-durable.pl.ass"
     sink: _CollectingSink = _CollectingSink()
     hold: threading.Barrier = threading.Barrier(2)
     with RunSession(run_root) as session:
         handler = _FakeHandler(run_root, delays={"fast-durable": 0.01}, barriers={"slow": hold})
-        scheduler = GraphScheduler(handler, limits=_limits(plan.settings), run_id="run-1", session=session)
+        scheduler = GraphScheduler(
+            handler, settings=_settings(ProcessingOrderPolicy.STRICT_NATURAL), run_id="run-1", session=session
+        )
         captured: list[RunResult] = []
         thread = threading.Thread(
             target=lambda: captured.append(scheduler.run(plan, cancel=NeverCancelledToken(), events=sink))
@@ -598,7 +599,7 @@ def test_cancel_rejects_noncooperative_late_durable_result(tmp_path: Path) -> No
             delays={"late": 0.05},
             ignore_cancel=frozenset({"late"}),
         )
-        scheduler = GraphScheduler(handler, limits=_limits(plan.settings), run_id="run-1", session=session)
+        scheduler = GraphScheduler(handler, settings=_settings(), run_id="run-1", session=session)
         captured: list[RunResult] = []
 
         def execute() -> None:
@@ -666,7 +667,7 @@ def test_blocking_plan_is_rejected_before_run_event(tmp_path: Path) -> None:
     with RunSession(run_root) as session:
         scheduler = GraphScheduler(
             _FakeHandler(run_root),
-            limits=_limits(plan.settings),
+            settings=_settings(),
             run_id="run-1",
             session=session,
         )
@@ -766,9 +767,7 @@ def test_locked_publication_allows_other_group_to_finish(
     run_root: Path = tmp_path / "tmp" / "run-1"
     with RunSession(run_root) as session:
         handler: _FakeHandler = _FakeHandler(run_root)
-        scheduler: GraphScheduler = GraphScheduler(
-            handler, limits=_limits(plan.settings), run_id="run-1", session=session
-        )
+        scheduler: GraphScheduler = GraphScheduler(handler, settings=_settings(), run_id="run-1", session=session)
         result: RunResult = scheduler.run(plan, cancel=NeverCancelledToken(), events=sink)
 
     assert result.succeeded
@@ -851,7 +850,6 @@ def test_publication_retry_releases_dependants_once(
     plan: ExecutionPlan = _plan(
         tmp_path,
         (_TaskSpec("group-1", "locked", durable=True), _TaskSpec("group-1", "next", ("locked",))),
-        policy=policy,
     )
     attempts: list[Path] = []
     original_replace: Callable[[Path, Path], Path] = Path.replace
@@ -866,7 +864,7 @@ def test_publication_retry_releases_dependants_once(
     monkeypatch.setattr(Path, "replace", replace)
     monkeypatch.setattr(scheduler_runtime, "_PUBLICATION_LOCK_RETRY_DELAY_S", 0.0)
 
-    result, handler, _ = _run(tmp_path, plan, _FakeHandler)
+    result, handler, _ = _run(tmp_path, plan, _FakeHandler, settings=_settings(policy))
 
     assert result.succeeded
     assert handler.calls == ["locked", "next"]
@@ -907,15 +905,15 @@ def test_publication_retry_rechecks_session_generation(
     assert destination.read_bytes() == b"existing"
 
 
-@pytest.mark.parametrize("resource_key", ["translation:google", "tts:edge", "filesystem"])
-def test_manual_request_takes_the_next_free_slot_before_buffered_background(tmp_path: Path, resource_key: str) -> None:
+@pytest.mark.parametrize("kind", [TaskKind.TRANSLATE_SUBTITLES, TaskKind.SYNTHESIZE_SPEECH, TaskKind.PUBLISH_ARTIFACT])
+def test_manual_request_takes_the_next_free_slot_before_buffered_background(tmp_path: Path, kind: TaskKind) -> None:
     background: ExecutionPlan = _plan(
         tmp_path,
-        tuple(_TaskSpec("background", f"background-{index}", resource_key=resource_key) for index in range(3)),
+        tuple(_TaskSpec("background", f"background-{index}", kind=kind) for index in range(3)),
     )
-    manual: ExecutionPlan = _plan(tmp_path, (_TaskSpec("manual", "manual-task", resource_key=resource_key),))
+    manual: ExecutionPlan = _plan(tmp_path, (_TaskSpec("manual", "manual-task", kind=kind),))
     hold: threading.Barrier = threading.Barrier(2)
-    coordinator = GraphCoordinator(_single_slot_limits)
+    coordinator = GraphCoordinator(_single_slot)
     try:
         with ExitStack() as stack:
             background_handle, background_handler, _ = _submit(
@@ -948,15 +946,12 @@ def test_manual_request_takes_the_next_free_slot_before_buffered_background(tmp_
         coordinator.close()
 
 
-def test_manual_context_keeps_its_own_settings_and_only_its_own_tasks(tmp_path: Path) -> None:
+def test_every_context_starts_its_tasks_with_the_current_settings_and_only_its_own_tasks(tmp_path: Path) -> None:
     background: ExecutionPlan = _plan(tmp_path, (_TaskSpec("background", "background-task"),))
-    manual: ExecutionPlan = _plan(
-        tmp_path,
-        (_TaskSpec("manual", "manual-task"),),
-        settings=replace(_settings(), tts_voice_id="manual-voice"),
-    )
+    manual: ExecutionPlan = _plan(tmp_path, (_TaskSpec("manual", "manual-task"),))
     overlap: threading.Barrier = threading.Barrier(2)
-    coordinator = GraphCoordinator(lambda: _limits(background.settings))
+    current: RunSettingsSnapshot = replace(_settings(), tts_voice_id="current-voice")
+    coordinator = GraphCoordinator(lambda: current)
     try:
         with ExitStack() as stack:
             background_handle, background_handler, _ = _submit(
@@ -981,7 +976,8 @@ def test_manual_context_keeps_its_own_settings_and_only_its_own_tasks(tmp_path: 
             assert background_handle.result(timeout=5.0).succeeded is True
             assert manual_handler.calls == ["manual-task"]
             assert background_handler.calls == ["background-task"]
-            assert manual.settings.tts_voice_id != background.settings.tts_voice_id
+            assert manual_handler.settings["manual-task"] == current
+            assert background_handler.settings["background-task"] == current
     finally:
         coordinator.close()
 
@@ -989,7 +985,7 @@ def test_manual_context_keeps_its_own_settings_and_only_its_own_tasks(tmp_path: 
 def test_shared_resource_limit_does_not_grow_with_the_number_of_plans(tmp_path: Path) -> None:
     first: ExecutionPlan = _plan(tmp_path, tuple(_TaskSpec("first", f"first-{index}") for index in range(3)))
     second: ExecutionPlan = _plan(tmp_path, tuple(_TaskSpec("second", f"second-{index}") for index in range(3)))
-    coordinator = GraphCoordinator(_single_slot_limits)
+    coordinator = GraphCoordinator(_single_slot)
     try:
         with ExitStack() as stack:
             first_handle, first_handler, _ = _submit(coordinator, stack, tmp_path, "run-first", first, _FakeHandler)
@@ -1017,11 +1013,10 @@ def test_strict_natural_background_does_not_hold_an_independent_manual_result(tm
     background: ExecutionPlan = _plan(
         tmp_path,
         (_TaskSpec("background-1", "background-slow"), _TaskSpec("background-2", "background-fast")),
-        policy=ProcessingOrderPolicy.STRICT_NATURAL,
     )
-    manual: ExecutionPlan = _plan(tmp_path, (_TaskSpec("manual", "manual-task", resource_key="audio"),))
+    manual: ExecutionPlan = _plan(tmp_path, (_TaskSpec("manual", "manual-task", kind=TaskKind.TRANSCODE_AUDIO),))
     hold: threading.Barrier = threading.Barrier(2)
-    coordinator = GraphCoordinator(lambda: _limits(manual.settings))
+    coordinator = GraphCoordinator(lambda: _settings(ProcessingOrderPolicy.STRICT_NATURAL))
     try:
         with ExitStack() as stack:
             background_handle, background_handler, background_sink = _submit(
@@ -1057,7 +1052,7 @@ def test_paused_automatic_admission_finishes_started_work_and_lets_manual_run(
     )
     manual: ExecutionPlan = _plan(tmp_path, (_TaskSpec("manual", "manual-task"),))
     hold: threading.Barrier = threading.Barrier(2)
-    coordinator = GraphCoordinator(_single_slot_limits)
+    coordinator = GraphCoordinator(_single_slot)
     try:
         with ExitStack() as stack:
             background_handle, background_handler, background_sink = _submit(
@@ -1094,8 +1089,8 @@ def test_paused_automatic_admission_finishes_started_work_and_lets_manual_run(
 
 def test_cancelling_one_context_leaves_the_independent_context_succeeding(tmp_path: Path) -> None:
     cancelled_plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("cancelled", "cancelled-task"),))
-    kept_plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("kept", "kept-task", resource_key="audio"),))
-    coordinator = GraphCoordinator(lambda: _limits(kept_plan.settings))
+    kept_plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("kept", "kept-task", kind=TaskKind.TRANSCODE_AUDIO),))
+    coordinator = GraphCoordinator(_settings)
     try:
         with ExitStack() as stack:
             cancelled_handle, cancelled_handler, _ = _submit(
@@ -1123,7 +1118,7 @@ def test_locked_publication_in_one_context_does_not_block_another_context(
     locked_plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("locked", "locked-task", durable=True),))
     free_plan: ExecutionPlan = _plan(
         tmp_path,
-        (_TaskSpec("free", "free-task", durable=True, resource_key="audio"),),
+        (_TaskSpec("free", "free-task", durable=True, kind=TaskKind.TRANSCODE_AUDIO),),
     )
     attempted: threading.Event = threading.Event()
     released: threading.Event = threading.Event()
@@ -1137,7 +1132,7 @@ def test_locked_publication_in_one_context_does_not_block_another_context(
 
     monkeypatch.setattr(Path, "replace", replace_path)
     monkeypatch.setattr(scheduler_runtime, "_PUBLICATION_LOCK_RETRY_DELAY_S", 0.01)
-    coordinator = GraphCoordinator(lambda: _limits(free_plan.settings))
+    coordinator = GraphCoordinator(_settings)
     try:
         with ExitStack() as stack:
             locked_handle, locked_handler, _ = _submit(
@@ -1164,7 +1159,7 @@ def test_locked_publication_in_one_context_does_not_block_another_context(
 def test_idle_coordinator_holds_no_thread_and_does_not_poll(tmp_path: Path) -> None:
     plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "held"),))
     hold: threading.Barrier = threading.Barrier(2)
-    coordinator = GraphCoordinator(_single_slot_limits)
+    coordinator = GraphCoordinator(_single_slot)
     try:
         assert coordinator.active_run_ids() == ()
         assert _named_worker_threads() == ()
@@ -1191,7 +1186,7 @@ def test_idle_coordinator_holds_no_thread_and_does_not_poll(tmp_path: Path) -> N
 
 def test_finished_contexts_leave_no_named_worker_threads(tmp_path: Path) -> None:
     plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "work"),))
-    coordinator = GraphCoordinator(_single_slot_limits)
+    coordinator = GraphCoordinator(_single_slot)
     try:
         with ExitStack() as stack:
             handle, _, _ = _submit(coordinator, stack, tmp_path, "run-1", plan, _FakeHandler)
@@ -1219,7 +1214,7 @@ def test_a_snapshot_failure_during_admission_finishes_the_run_instead_of_sleepin
         return original(store, task)
 
     monkeypatch.setattr(scheduler_runtime.ArtifactStore, "snapshot", broken_snapshot)
-    coordinator = GraphCoordinator(_single_slot_limits)
+    coordinator = GraphCoordinator(_single_slot)
     try:
         with ExitStack() as stack:
             handle, handler, _ = _submit(coordinator, stack, tmp_path, "run-broken", plan, _FakeHandler)
@@ -1232,13 +1227,10 @@ def test_a_snapshot_failure_during_admission_finishes_the_run_instead_of_sleepin
         coordinator.close()
 
 
-def test_shared_limits_come_from_the_provider_and_not_from_the_plan_settings(tmp_path: Path) -> None:
-    plan: ExecutionPlan = _plan(
-        tmp_path,
-        tuple(_TaskSpec("group-1", f"llm-{index}", resource_key="llm:gemini") for index in range(3)),
-    )
-    assert plan.settings.llm_max_concurrency > 1
-    coordinator = GraphCoordinator(_single_slot_limits)
+def test_shared_limits_come_from_the_settings_read_at_admission(tmp_path: Path) -> None:
+    plan: ExecutionPlan = _plan(tmp_path, tuple(_TaskSpec("group-1", f"llm-{index}") for index in range(3)))
+    assert _settings().llm_max_concurrency > 1
+    coordinator = GraphCoordinator(lambda: replace(_single_slot(), translation_profile_id="llm"))
     try:
         with ExitStack() as stack:
             handle, handler, _ = _submit(coordinator, stack, tmp_path, "run-llm", plan, _FakeHandler)
@@ -1252,7 +1244,7 @@ def test_shared_limits_come_from_the_provider_and_not_from_the_plan_settings(tmp
 @pytest.mark.parametrize("origin", [RequestOrigin.USER, RequestOrigin.BACKGROUND])
 def test_draining_interrupts_active_work_and_pauses_the_whole_graph(tmp_path: Path, origin: RequestOrigin) -> None:
     plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "active"), _TaskSpec("group-1", "waiting")))
-    coordinator: GraphCoordinator = GraphCoordinator(_single_slot_limits)
+    coordinator: GraphCoordinator = GraphCoordinator(_single_slot)
     try:
         with ExitStack() as stack:
             handle, handler, sink = _submit(
@@ -1288,7 +1280,7 @@ def test_draining_interrupts_active_work_and_pauses_the_whole_graph(tmp_path: Pa
 
 def test_work_that_finishes_despite_the_drain_keeps_its_result(tmp_path: Path) -> None:
     plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "active"), _TaskSpec("group-1", "waiting")))
-    coordinator: GraphCoordinator = GraphCoordinator(_single_slot_limits)
+    coordinator: GraphCoordinator = GraphCoordinator(_single_slot)
     try:
         with ExitStack() as stack:
             handle, handler, _ = _submit(
@@ -1313,7 +1305,7 @@ def test_work_that_finishes_despite_the_drain_keeps_its_result(tmp_path: Path) -
 
 def test_a_user_cancel_after_the_drain_stays_a_cancellation_and_not_a_pause(tmp_path: Path) -> None:
     plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "active"), _TaskSpec("group-1", "waiting")))
-    coordinator: GraphCoordinator = GraphCoordinator(_single_slot_limits)
+    coordinator: GraphCoordinator = GraphCoordinator(_single_slot)
     try:
         with ExitStack() as stack:
             handle, handler, _ = _submit(
@@ -1340,8 +1332,7 @@ def test_a_user_cancel_after_the_drain_stays_a_cancellation_and_not_a_pause(tmp_
 def test_an_unsaved_interruption_keeps_the_remote_work_uncertain_and_blocks_the_rest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    planned: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "active"), _TaskSpec("group-1", "waiting")))
-    plan: ExecutionPlan = replace(planned, tasks=tuple(replace(task, is_network=True) for task in planned.tasks))
+    plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "active"), _TaskSpec("group-1", "waiting")))
     journal_path: Path = tmp_path / "journal.json"
     run_root: Path = tmp_path / "tmp" / "run-unsaved"
     journal: RunJournal = RunJournal.create(journal_path, plan, run_root)
@@ -1351,7 +1342,7 @@ def test_an_unsaved_interruption_keeps_the_remote_work_uncertain_and_blocks_the_
         raise OSError("Injected checkpoint failure")
 
     monkeypatch.setattr(RunJournal, "interrupted", unsaved)
-    coordinator: GraphCoordinator = GraphCoordinator(_single_slot_limits)
+    coordinator: GraphCoordinator = GraphCoordinator(_single_slot)
     try:
         with RunSession(run_root) as session:
             handler: _FakeHandler = _FakeHandler(run_root, delays={"active": 60.0})
@@ -1427,7 +1418,7 @@ def test_a_checkpoint_save_waits_for_a_concurrent_read_instead_of_failing(
 
 def test_a_user_cancel_before_the_drain_stays_a_cancellation_and_not_a_pause(tmp_path: Path) -> None:
     plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "active"), _TaskSpec("group-1", "waiting")))
-    coordinator: GraphCoordinator = GraphCoordinator(_single_slot_limits)
+    coordinator: GraphCoordinator = GraphCoordinator(_single_slot)
     try:
         with ExitStack() as stack:
             handle, handler, _ = _submit(
@@ -1457,7 +1448,7 @@ def test_pausing_holds_the_remaining_graph_and_a_resume_admits_the_next_run(
     paused_plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "active"), _TaskSpec("group-1", "waiting")))
     resumed_plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-2", "later"),))
     hold: threading.Barrier = threading.Barrier(2)
-    coordinator: GraphCoordinator = GraphCoordinator(_single_slot_limits)
+    coordinator: GraphCoordinator = GraphCoordinator(_single_slot)
     try:
         with ExitStack() as stack:
             handle, handler, _ = _submit(
@@ -1498,10 +1489,125 @@ def test_pausing_holds_the_remaining_graph_and_a_resume_admits_the_next_run(
 
 def test_a_pause_after_closing_stays_closed_to_new_work(tmp_path: Path) -> None:
     plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("group-1", "only"),))
-    coordinator: GraphCoordinator = GraphCoordinator(_single_slot_limits)
+    coordinator: GraphCoordinator = GraphCoordinator(_single_slot)
     coordinator.close()
 
     coordinator.resume()
 
     with ExitStack() as stack, pytest.raises(ExecutionError):
         _submit(coordinator, stack, tmp_path, "run-closed", plan, _FakeHandler)
+
+
+@pytest.mark.parametrize(
+    ("kind", "changes"),
+    [
+        (TaskKind.TRANSLATE_SUBTITLES, {"llm_model_id": "new-model"}),
+        (TaskKind.SYNTHESIZE_SPEECH, {"tts_profile_id": "elevenreader", "tts_voice_id": "new-voice"}),
+    ],
+)
+def test_a_task_in_flight_keeps_its_settings_while_the_next_group_starts_with_the_changed_ones(
+    tmp_path: Path, kind: TaskKind, changes: dict[str, str]
+) -> None:
+    plan: ExecutionPlan = _plan(
+        tmp_path, (_TaskSpec("group-1", "first", kind=kind), _TaskSpec("group-2", "second", kind=kind))
+    )
+    initial: RunSettingsSnapshot = replace(_single_slot(), translation_profile_id="llm", llm_model_id="old-model")
+    current: list[RunSettingsSnapshot] = [initial]
+    hold: threading.Barrier = threading.Barrier(2)
+    coordinator: GraphCoordinator = GraphCoordinator(lambda: current[0])
+    try:
+        with ExitStack() as stack:
+            handle, handler, _ = _submit(
+                coordinator,
+                stack,
+                tmp_path,
+                "run-1",
+                plan,
+                lambda run_root: _FakeHandler(run_root, barriers={"first": hold}),
+            )
+            assert _wait_until(lambda: "first" in handler.started)
+            current[0] = replace(initial, **changes)  # type: ignore[arg-type]
+            coordinator.refresh()
+            hold.wait(timeout=5)
+
+            assert handle.result(timeout=5.0).succeeded
+    finally:
+        coordinator.close()
+
+    assert handler.settings["first"] == initial
+    assert handler.settings["second"] == current[0]
+
+
+def test_a_queued_task_takes_the_pool_and_limit_of_the_engine_chosen_while_it_waited(tmp_path: Path) -> None:
+    plan: ExecutionPlan = _plan(
+        tmp_path,
+        (
+            _TaskSpec("group-1", "first", kind=TaskKind.SYNTHESIZE_SPEECH),
+            _TaskSpec("group-2", "second", kind=TaskKind.SYNTHESIZE_SPEECH),
+        ),
+    )
+    current: list[RunSettingsSnapshot] = [replace(_settings(), tts_profile_id="sapi")]
+    hold: threading.Barrier = threading.Barrier(2)
+    coordinator: GraphCoordinator = GraphCoordinator(lambda: current[0])
+    try:
+        with ExitStack() as stack:
+            handle, handler, _ = _submit(
+                coordinator,
+                stack,
+                tmp_path,
+                "run-1",
+                plan,
+                lambda run_root: _FakeHandler(run_root, barriers={"first": hold}),
+            )
+            assert _wait_until(lambda: "first" in handler.started)
+            time.sleep(0.05)
+            assert "second" not in handler.started
+            current[0] = replace(current[0], tts_profile_id="edge")
+            coordinator.refresh()
+
+            assert _wait_until(lambda: "second" in handler.started)
+            assert "first" not in handler.finished
+            hold.wait(timeout=5)
+            assert handle.result(timeout=5.0).succeeded
+    finally:
+        coordinator.close()
+
+    tasks: dict[str, PlanTask] = {task.task_id: task for task in plan.tasks}
+    assert resource_key(tasks["first"], handler.settings["first"]) == "tts:sapi"
+    assert resource_key(tasks["second"], handler.settings["second"]) == "tts:edge"
+    assert handler.max_active == {"tts:sapi": 1, "tts:edge": 1}
+
+
+def test_the_remote_mark_follows_the_engine_a_task_was_sent_with(tmp_path: Path) -> None:
+    plan: ExecutionPlan = _plan(
+        tmp_path,
+        (
+            _TaskSpec("group-1", "local", kind=TaskKind.SYNTHESIZE_SPEECH),
+            _TaskSpec("group-2", "remote", kind=TaskKind.SYNTHESIZE_SPEECH),
+        ),
+    )
+    run_root: Path = tmp_path / "tmp" / "run-mark"
+    journal_path: Path = tmp_path / "journal.json"
+    journal: RunJournal = RunJournal.create(journal_path, plan, run_root)
+    current: list[RunSettingsSnapshot] = [replace(_settings(), tts_profile_id="sapi", tts_is_network=False)]
+    hold: threading.Barrier = threading.Barrier(3)
+    coordinator: GraphCoordinator = GraphCoordinator(lambda: current[0])
+    try:
+        with RunSession(run_root) as session:
+            handler: _FakeHandler = _FakeHandler(run_root, barriers={"local": hold, "remote": hold})
+            handle: RunHandle = coordinator.submit(
+                RunRequest(
+                    "run-mark", plan, session, handler, NeverCancelledToken(), _CollectingSink(), journal=journal
+                )
+            )
+            assert _wait_until(lambda: "local" in handler.started)
+            assert json.loads(read_checkpoint(journal_path))["inflight"] == []
+            current[0] = replace(_settings(), tts_profile_id="edge")
+            coordinator.refresh()
+            assert _wait_until(lambda: "remote" in handler.started)
+            assert json.loads(read_checkpoint(journal_path))["inflight"] == ["remote"]
+            hold.wait(timeout=5)
+
+            assert handle.result(timeout=5.0).succeeded
+    finally:
+        coordinator.close()

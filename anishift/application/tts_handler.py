@@ -98,18 +98,14 @@ logger = get_logger(__name__)
 
 
 class TtsExecutor(Protocol):
-    """One run-scoped synchronous TTS facade sharing its provider runtime."""
+    """One run-scoped synchronous TTS facade shared by the tasks of one voice configuration."""
 
     def synthesize(self, batch: SpeechBatch, *, callbacks: TtsProgressObserver) -> SpeechBatchResult:
         """Synthesize one group batch on the shared event-loop thread."""
         ...
 
     def cancel(self) -> None:
-        """Cancel all provider work belonging to the current run."""
-        ...
-
-    def close(self) -> None:
-        """Close the shared provider runtime exactly once after the run."""
+        """Cancel all provider work of this facade."""
         ...
 
 
@@ -369,14 +365,6 @@ class TtsTaskHandler:
         if not self._allowed_voice_ids or self._voice_id in self._allowed_voice_ids:
             return
         _raise_execution("The selected voice is not one the chosen TTS engine offers")
-
-    def cancel(self) -> None:
-        """Forward run cancellation to the shared TTS facade."""
-        self._service.cancel()
-
-    def close(self) -> None:
-        """Close the shared TTS facade once at the run boundary."""
-        self._service.close()
 
     def _watch_cancel(self, cancel: CancellationToken, stop: threading.Event) -> None:
         while not stop.wait(0.05):

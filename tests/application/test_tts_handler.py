@@ -16,9 +16,9 @@ from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifet
 from anishift.application.cancellation import EventCancellationToken, NeverCancelledToken
 from anishift.application.events import WorkerNotification
 from anishift.application.intents import NarrationTimeline
-from anishift.application.planning import ExecutionPlan, PlanTask, ProcessingOrderPolicy, RunSettingsSnapshot, TaskKind
+from anishift.application.planning import PlanTask, ProcessingOrderPolicy, RunSettingsSnapshot, TaskKind
 from anishift.application.results import ArtifactSnapshot, TaskResult
-from anishift.application.runtime import ProductionHandlerFactory
+from anishift.application.runtime import RunServices
 from anishift.application.scheduler_runtime import public_error
 from anishift.application.sign_narration import write_sign_candidates
 from anishift.application.tts_clips import FfmpegClipService
@@ -149,7 +149,6 @@ def test_tts_handler_writes_timed_clip_manifest(tmp_path: Path) -> None:
         ("spoken",),
         ("manifest",),
         (),
-        "tts:edge",
         _SPOKEN_PARAMETERS,
     )
 
@@ -199,7 +198,6 @@ def test_a_subtitle_without_duration_still_gets_a_placement_window(tmp_path: Pat
         ("spoken",),
         ("manifest",),
         (),
-        "tts:edge",
         _SPOKEN_PARAMETERS,
     )
 
@@ -255,7 +253,6 @@ def _signed_synthesis(tmp_path: Path) -> tuple[PlanTask, ArtifactSnapshot]:
         ("spoken", "signs"),
         ("manifest",),
         (),
-        "tts:edge",
         (*_SPOKEN_PARAMETERS, ("sign_narration", "smart")),
     )
     return task, ArtifactSnapshot({"spoken": spoken, "signs": signs}, {"manifest": output})
@@ -350,7 +347,6 @@ def _hidden_sign_synthesis(tmp_path: Path) -> tuple[PlanTask, ArtifactSnapshot]:
         ("spoken", "signs"),
         ("manifest",),
         (),
-        "tts:edge",
         (*_SPOKEN_PARAMETERS, ("sign_narration", "always")),
     )
     return task, ArtifactSnapshot({"spoken": spoken, "signs": signs}, {"manifest": output})
@@ -540,9 +536,7 @@ def test_without_sign_narration_the_manifest_holds_only_the_spoken_lines_in_thei
     output = Artifact(
         "manifest", "group-1", ArtifactKind.TTS_MANIFEST, None, ArtifactState.MISSING, ArtifactLifetime.INTERMEDIATE
     )
-    task = PlanTask(
-        "tts", "group-1", TaskKind.SYNTHESIZE_SPEECH, ("spoken",), ("manifest",), (), "tts:edge", _SPOKEN_PARAMETERS
-    )
+    task = PlanTask("tts", "group-1", TaskKind.SYNTHESIZE_SPEECH, ("spoken",), ("manifest",), (), _SPOKEN_PARAMETERS)
     service = _Tts(tmp_path)
     preparer = _Preparer()
     handler = TtsTaskHandler(service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=preparer)
@@ -622,7 +616,6 @@ def test_tts_handler_forwards_legacy_visible_required_percentages(tmp_path: Path
         ("spoken",),
         ("manifest",),
         (),
-        "tts:edge",
         _SPOKEN_PARAMETERS,
     )
     progress = _Progress()
@@ -641,7 +634,7 @@ def test_tts_handler_forwards_legacy_visible_required_percentages(tmp_path: Path
     assert [notification.progress_percent for notification in progress.notifications] == [25, 75, 75, 99, 100]
 
 
-def test_tts_handler_reuses_service_and_closes_only_at_run_boundary(tmp_path: Path) -> None:
+def test_tts_handler_reuses_its_service_and_never_closes_it(tmp_path: Path) -> None:
     source_path = tmp_path / "episode.spoken.pl.srt"
     source_path.write_text("1\n00:00:01,000 --> 00:00:02,000\nCześć\n", encoding="utf-8")
     service = _Tts(tmp_path)
@@ -675,7 +668,6 @@ def test_tts_handler_reuses_service_and_closes_only_at_run_boundary(tmp_path: Pa
             (source.artifact_id,),
             (output.artifact_id,),
             (),
-            "tts:edge",
             _SPOKEN_PARAMETERS,
         )
         handler.execute(
@@ -688,8 +680,6 @@ def test_tts_handler_reuses_service_and_closes_only_at_run_boundary(tmp_path: Pa
     assert len(service.batches) == 2
     assert [batch.batch_rank for batch in service.batches] == [0, 1]
     assert service.close_calls == 0
-    handler.close()
-    assert service.close_calls == 1
 
 
 def test_tts_handler_rejects_cancelled_task_before_synthesis(tmp_path: Path) -> None:
@@ -703,7 +693,6 @@ def test_tts_handler_rejects_cancelled_task_before_synthesis(tmp_path: Path) -> 
         ("spoken",),
         ("manifest",),
         (),
-        "tts:edge",
         _SPOKEN_PARAMETERS,
     )
 
@@ -861,7 +850,6 @@ def _speech_task(timeline: str, script_kind: ArtifactKind) -> PlanTask:
         ("script",),
         ("manifest",),
         (),
-        "tts:edge",
         (("narration_timeline", timeline), ("script_kind", script_kind.value)),
     )
 
@@ -1050,22 +1038,16 @@ def test_the_production_speech_handler_refuses_a_voice_its_own_engine_never_offe
         tts_profile_id="edge",
         tts_max_retries=2,
         tts_group_jobs=2,
-        audio_profile_id="eac3",
         composition_profile_id="balanced",
         processing_order_policy=ProcessingOrderPolicy.READY_FIRST,
         tts_voice_id="pl-PL-SomeoneElseNeural",
         tts_allowed_voice_ids=("pl-PL-MarekNeural", "pl-PL-ZofiaNeural"),
     )
-    handler: TtsTaskHandler | None = ProductionHandlerFactory._tts_handler(
-        Settings(_env_file=None),
-        tmp_path / "run",
-        ExecutionPlan((), (), (), settings, ()),
-        frozenset({TaskKind.SYNTHESIZE_SPEECH}),
-        None,
+    handler: TtsTaskHandler = RunServices(lambda: Settings(_env_file=None), tmp_path / "run", {"group-1": 0}).tts(
+        settings
     )
     path: Path = _book_srt(tmp_path)
 
-    assert handler is not None
     with pytest.raises(ExecutionError, match="not one the chosen TTS engine offers"):
         handler.execute(
             _speech_task("continuous", ArtifactKind.FULL_PL),
@@ -1101,20 +1083,12 @@ def test_production_tts_handler_document_engine_reads_document(
         tts_voice_id=voice,
         tts_max_retries=2,
         tts_group_jobs=1,
-        audio_profile_id="eac3",
         composition_profile_id="balanced",
         processing_order_policy=ProcessingOrderPolicy.READY_FIRST,
     )
 
-    handler: TtsTaskHandler | None = ProductionHandlerFactory._tts_handler(
-        Settings(_env_file=None),
-        tmp_path / "run",
-        ExecutionPlan((), (), (), settings, ()),
-        frozenset({TaskKind.SYNTHESIZE_SPEECH}),
-        None,
-    )
+    handler: TtsTaskHandler = RunServices(lambda: Settings(_env_file=None), tmp_path / "run", {}).tts(settings)
 
-    assert handler is not None
     assert handler._reads_document is joins
 
 

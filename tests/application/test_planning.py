@@ -30,7 +30,6 @@ def _settings() -> RunSettingsSnapshot:
         tts_profile_id="edge",
         tts_max_retries=3,
         tts_group_jobs=2,
-        audio_profile_id="eac3",
         composition_profile_id="default",
         processing_order_policy=ProcessingOrderPolicy.READY_FIRST,
     )
@@ -87,9 +86,7 @@ def _task(
         requires=requires,
         produces=produces,
         depends_on=depends_on,
-        resource_key="translation:google",
         parameters=(("output_format", "srt"),),
-        is_network=True,
     )
 
 
@@ -124,7 +121,7 @@ def test_execution_plan_exposes_blocking_problems_without_exception() -> None:
     task = _task("translate")
     problem = PlanProblem("language_unknown", "Source language is required", "episode")
     group = GroupPlan("episode", _intent(), ("source", "result"), (task.task_id,), (problem,))
-    plan = ExecutionPlan((group,), _artifacts("source", "result"), (task,), _settings(), (problem,))
+    plan = ExecutionPlan((group,), _artifacts("source", "result"), (task,), (problem,))
     assert plan.can_execute is False
     assert plan.problems == (problem,)
 
@@ -143,7 +140,6 @@ def test_execution_plan_requires_stable_task_order() -> None:
             (group,),
             _artifacts("video", "source", "result", ready_ids=frozenset({"video"})),
             (translate, extract),
-            _settings(),
             (),
         )
 
@@ -162,7 +158,6 @@ def test_execution_plan_requires_artifact_producer_dependency() -> None:
             (group,),
             _artifacts("video", "source", "result", ready_ids=frozenset({"video"})),
             (extract, translate),
-            _settings(),
             (),
         )
 
@@ -172,7 +167,7 @@ def test_execution_plan_requires_group_problems_in_plan_summary() -> None:
     problem = PlanProblem("language_unknown", "Source language is required", "episode")
     group = GroupPlan("episode", _intent(), ("source", "result"), (task.task_id,), (problem,))
     with pytest.raises(PlanningError, match="Group problems"):
-        ExecutionPlan((group,), _artifacts("source", "result"), (task,), _settings(), ())
+        ExecutionPlan((group,), _artifacts("source", "result"), (task,), ())
 
 
 def test_plan_models_are_frozen() -> None:
@@ -205,7 +200,7 @@ def test_execution_plan_rejects_ready_task_output() -> None:
     group = GroupPlan("episode", _intent(), ("source", "result"), (task.task_id,))
     artifacts = (_artifact("source", ready=True), _artifact("result", ready=True))
     with pytest.raises(PlanningError, match="output must be missing"):
-        ExecutionPlan((group,), artifacts, (task,), _settings(), ())
+        ExecutionPlan((group,), artifacts, (task,), ())
 
 
 def test_execution_plan_rejects_source_task_output() -> None:
@@ -223,14 +218,14 @@ def test_execution_plan_rejects_source_task_output() -> None:
         path,
     )
     with pytest.raises(PlanningError, match="cannot produce a source"):
-        ExecutionPlan((group,), (source, output), (task,), _settings(), ())
+        ExecutionPlan((group,), (source, output), (task,), ())
 
 
 def test_execution_plan_rejects_missing_artifact_without_producer() -> None:
     artifact = _artifact("orphan", ready=False)
     group = GroupPlan("episode", _intent(), (artifact.artifact_id,), ())
     with pytest.raises(PlanningError, match="without producers"):
-        ExecutionPlan((group,), (artifact,), (), _settings(), ())
+        ExecutionPlan((group,), (artifact,), (), ())
 
 
 def test_execution_plan_rejects_problem_with_unknown_artifact() -> None:
@@ -238,4 +233,4 @@ def test_execution_plan_rejects_problem_with_unknown_artifact() -> None:
     problem = PlanProblem("invalid", "Invalid selection", "episode", ("unknown",))
     group = GroupPlan("episode", _intent(), (source.artifact_id,), (), (problem,))
     with pytest.raises(PlanningError, match="references an invalid artifact"):
-        ExecutionPlan((group,), (source,), (), _settings(), (problem,))
+        ExecutionPlan((group,), (source,), (), (problem,))

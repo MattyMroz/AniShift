@@ -58,9 +58,9 @@ from anishift.application.planning import (
     TaskState,
 )
 from anishift.application.ready import ReadyStore
-from anishift.application.recovery import RunJournal
+from anishift.application.recovery import CHECKPOINT_VERSION, RunJournal
 from anishift.application.results import DISPLAYED_ABSENCE_NOTE, ArtifactSnapshot, GroupStatus, RunResult, TaskResult
-from anishift.application.scheduler import GraphCoordinator, GraphScheduler, ResourceLimits, RunRequest
+from anishift.application.scheduler import GraphCoordinator, GraphScheduler, RunRequest
 from anishift.application.scheduler_runtime import ArtifactStore
 from anishift.application.service import AppService
 from anishift.application.sessions import RunSession
@@ -262,7 +262,6 @@ def _task(
         requires=requires,
         produces=produces,
         depends_on=(),
-        resource_key="test",
         parameters=parameters,
     )
 
@@ -301,7 +300,6 @@ def _settings() -> RunSettingsSnapshot:
         tts_profile_id="edge",
         tts_max_retries=3,
         tts_group_jobs=2,
-        audio_profile_id="eac3",
         composition_profile_id="default",
         processing_order_policy=ProcessingOrderPolicy.READY_FIRST,
     )
@@ -752,7 +750,6 @@ def test_saved_joint_split_executes_with_confirmed_absence_without_rewriting_bef
         (GroupPlan("group-1", intent, ("full", "spoken", "displayed"), (split.task_id,)),),
         (source, spoken, displayed),
         (split,),
-        _settings(),
         (),
     )
     run_root: Path = tmp_path / "tmp" / "legacy-run"
@@ -1136,8 +1133,8 @@ def test_execution_handlers_rejects_family_not_available_in_increment_10a(tmp_pa
     extraction = ExtractionTaskHandler(_ExtractionService(), run_root=tmp_path / "run", timeout_s=30.0)
     handlers = ExecutionHandlers(
         extraction,
-        SubtitleTaskHandler(run_root=tmp_path / "run"),
-        TranslationTaskHandler(_TranslationService(), run_root=tmp_path / "run"),
+        lambda _: SubtitleTaskHandler(run_root=tmp_path / "run"),
+        lambda _: TranslationTaskHandler(_TranslationService(), run_root=tmp_path / "run"),
     )
     task = _task(
         TaskKind.SYNTHESIZE_SPEECH,
@@ -1147,7 +1144,7 @@ def test_execution_handlers_rejects_family_not_available_in_increment_10a(tmp_pa
     )
 
     with pytest.raises(ExecutionError, match="unavailable"):
-        handlers.execute(task, ArtifactSnapshot({}), NeverCancelledToken(), _ProgressSink())
+        handlers.execute(task, ArtifactSnapshot({}), _settings(), NeverCancelledToken(), _ProgressSink())
 
 
 @pytest.mark.parametrize("unsafe_id", ["..", "nested/group", r"nested\group", "C:escape"])
@@ -1174,7 +1171,6 @@ def test_scheduler_executes_real_increment_10a_handlers(tmp_path: Path) -> None:
         (video.artifact_id,),
         (source.artifact_id,),
         (),
-        "extraction",
         (("track_id", 2), ("target_format", "srt")),
     )
     translate = PlanTask(
@@ -1184,7 +1180,6 @@ def test_scheduler_executes_real_increment_10a_handlers(tmp_path: Path) -> None:
         (source.artifact_id,),
         (full.artifact_id,),
         (extract.task_id,),
-        "translation:google",
         (("output_format", "srt"),),
     )
     split = PlanTask(
@@ -1194,7 +1189,6 @@ def test_scheduler_executes_real_increment_10a_handlers(tmp_path: Path) -> None:
         (full.artifact_id,),
         (spoken.artifact_id,),
         (translate.task_id,),
-        "llm:gemini",
     )
     intent = GroupIntent(
         "group-1",
@@ -1208,19 +1202,19 @@ def test_scheduler_executes_real_increment_10a_handlers(tmp_path: Path) -> None:
         (extract.task_id, translate.task_id, split.task_id),
     )
     settings: RunSettingsSnapshot = _settings()
-    plan = ExecutionPlan((group,), (video, source, full, spoken), (extract, translate, split), settings, ())
+    plan = ExecutionPlan((group,), (video, source, full, spoken), (extract, translate, split), ())
     run_root = tmp_path / "tmp" / "run-1"
     sink = _RunEventSink()
 
     with RunSession(run_root) as session:
         handlers = ExecutionHandlers(
             ExtractionTaskHandler(_ExtractionService(), run_root=run_root, timeout_s=30.0),
-            SubtitleTaskHandler(run_root=run_root),
-            TranslationTaskHandler(_TranslationService(), run_root=run_root),
+            lambda _: SubtitleTaskHandler(run_root=run_root),
+            lambda _: TranslationTaskHandler(_TranslationService(), run_root=run_root),
         )
         scheduler = GraphScheduler(
             handlers,
-            limits=ResourceLimits.from_settings(settings),
+            settings=settings,
             run_id="run-1",
             session=session,
         )
@@ -1250,13 +1244,13 @@ def test_planner_to_scheduler_executes_standalone_text_plan(tmp_path: Path) -> N
     with RunSession(run_root) as session:
         handlers = ExecutionHandlers(
             ExtractionTaskHandler(_ExtractionService(), run_root=run_root, timeout_s=30.0),
-            SubtitleTaskHandler(run_root=run_root),
-            TranslationTaskHandler(_TranslationService(), run_root=run_root),
+            lambda _: SubtitleTaskHandler(run_root=run_root),
+            lambda _: TranslationTaskHandler(_TranslationService(), run_root=run_root),
             publish=PublishTaskHandler(run_root=run_root, source_groups={source_group.group_id: source_group}),
         )
         result = GraphScheduler(
             handlers,
-            limits=ResourceLimits.from_settings(plan.settings),
+            settings=_settings(),
             run_id="run-txt",
             session=session,
         ).run(plan, cancel=NeverCancelledToken(), events=_RunEventSink())
@@ -1308,16 +1302,16 @@ def test_planner_scheduler_completes_independent_subtitle_branches(tmp_path: Pat
     with RunSession(run_root) as session:
         handlers: ExecutionHandlers = ExecutionHandlers(
             ExtractionTaskHandler(_ExtractionService(), run_root=run_root, timeout_s=30.0),
-            SubtitleTaskHandler(run_root=run_root),
-            TranslationTaskHandler(translation, run_root=run_root),
-            tts=TtsTaskHandler(tts, run_root=run_root, group_ranks={"group-1": 0}),
-            audio=AudioTaskHandler(mixer, Mock(), run_root=run_root),
-            composition=CompositionTaskHandler(composer, run_root=run_root),
+            lambda _: SubtitleTaskHandler(run_root=run_root),
+            lambda _: TranslationTaskHandler(translation, run_root=run_root),
+            tts=lambda _: TtsTaskHandler(tts, run_root=run_root, group_ranks={"group-1": 0}),
+            audio=lambda _: AudioTaskHandler(mixer, Mock(), run_root=run_root),
+            composition=lambda _: CompositionTaskHandler(composer, run_root=run_root),
             publish=PublishTaskHandler(run_root=run_root, source_groups={"group-1": source_group}),
         )
-        result: RunResult = GraphScheduler(
-            handlers, limits=ResourceLimits.from_settings(plan.settings), run_id="run-branches", session=session
-        ).run(plan, cancel=NeverCancelledToken(), events=sink)
+        result: RunResult = GraphScheduler(handlers, settings=_settings(), run_id="run-branches", session=session).run(
+            plan, cancel=NeverCancelledToken(), events=sink
+        )
 
     translation.translate_file.assert_called_once()
     assert result.groups[0].status is (GroupStatus.PARTIAL if streams == "displayed" else GroupStatus.SUCCEEDED)
@@ -1388,14 +1382,14 @@ def test_plain_srt_containers_report_the_omitted_displayed_layer_without_transla
     with RunSession(run_root) as session:
         handlers: ExecutionHandlers = ExecutionHandlers(
             ExtractionTaskHandler(_ExtractionService(), run_root=run_root, timeout_s=30.0),
-            SubtitleTaskHandler(run_root=run_root),
-            TranslationTaskHandler(translation, run_root=run_root),
-            composition=CompositionTaskHandler(composer, run_root=run_root),
+            lambda _: SubtitleTaskHandler(run_root=run_root),
+            lambda _: TranslationTaskHandler(translation, run_root=run_root),
+            composition=lambda _: CompositionTaskHandler(composer, run_root=run_root),
             publish=PublishTaskHandler(run_root=run_root, source_groups={"group-1": source_group}),
         )
-        result: RunResult = GraphScheduler(
-            handlers, limits=ResourceLimits.from_settings(plan.settings), run_id="run-srt", session=session
-        ).run(plan, cancel=NeverCancelledToken(), events=_RunEventSink())
+        result: RunResult = GraphScheduler(handlers, settings=_settings(), run_id="run-srt", session=session).run(
+            plan, cancel=NeverCancelledToken(), events=_RunEventSink()
+        )
 
     translation.translate_file.assert_not_called()
     assert result.succeeded
@@ -1454,9 +1448,9 @@ def test_confirmed_absence_restarts_before_real_composition_without_retranslatio
     translation: Mock = Mock(wraps=_TranslationService())
     handlers: ExecutionHandlers = ExecutionHandlers(
         ExtractionTaskHandler(_ExtractionService(), run_root=run_root, timeout_s=30.0),
-        SubtitleTaskHandler(run_root=run_root),
-        TranslationTaskHandler(translation, run_root=run_root),
-        composition=CompositionTaskHandler(
+        lambda _: SubtitleTaskHandler(run_root=run_root),
+        lambda _: TranslationTaskHandler(translation, run_root=run_root),
+        composition=lambda _: CompositionTaskHandler(
             CompositionService(CompositionConfig(), ffmpeg=FFMPEG, ffprobe=FFPROBE), run_root=run_root
         ),
         publish=PublishTaskHandler(run_root=run_root, source_groups={"group-1": inspected.source}),
@@ -1470,11 +1464,13 @@ def test_confirmed_absence_restarts_before_real_composition_without_retranslatio
     for task in plan.tasks:
         if task.kind in {TaskKind.COMPOSE_MKV, TaskKind.COMPOSE_MP4}:
             continue
-        output: TaskResult = handlers.execute(task, store.snapshot(task), NeverCancelledToken(), _ProgressSink())
+        output: TaskResult = handlers.execute(
+            task, store.snapshot(task), _settings(), NeverCancelledToken(), _ProgressSink()
+        )
         journal.prepare(task, output)
         journal.committed(store.register(task, output, commit))
     document: dict[str, object] = json.loads(journal_path.read_bytes())
-    assert document["version"] == 1
+    assert document["version"] == CHECKPOINT_VERSION
     assert document["outputs"]
     restored: RunJournal = RunJournal.load(journal_path)
     assert len(restored.plan.tasks) == 1
@@ -1487,7 +1483,7 @@ def test_confirmed_absence_restarts_before_real_composition_without_retranslatio
         for item in json.loads(journal_path.read_bytes())["outputs"]
     )
     with RunSession(run_root, resume=True) as session:
-        coordinator: GraphCoordinator = GraphCoordinator(lambda: ResourceLimits.from_settings(plan.settings))
+        coordinator: GraphCoordinator = GraphCoordinator(_settings)
         try:
             result: RunResult = coordinator.submit(
                 RunRequest(
@@ -1571,9 +1567,9 @@ def test_signless_narration_and_video_reach_library_and_do_not_restart(  # noqa:
         del plan
         return ExecutionHandlers(
             ExtractionTaskHandler(_ExtractionService(), run_root=run_root, timeout_s=30.0),
-            SubtitleTaskHandler(run_root=run_root),
-            TranslationTaskHandler(translation, run_root=run_root),
-            composition=CompositionTaskHandler(composer, run_root=run_root),
+            lambda _: SubtitleTaskHandler(run_root=run_root),
+            lambda _: TranslationTaskHandler(translation, run_root=run_root),
+            composition=lambda _: CompositionTaskHandler(composer, run_root=run_root),
             publish=PublishTaskHandler(
                 run_root=run_root, source_groups={key: value.source for key, value in source_groups.items()}
             ),

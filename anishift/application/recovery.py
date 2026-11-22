@@ -10,18 +10,17 @@ from typing import TYPE_CHECKING, Final
 
 from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
 from anishift.application.control_views import cached_adapter
-from anishift.application.planner import rebind_settings
 from anishift.application.planning import ExecutionPlan
 from anishift.application.results import ProducedArtifact, TaskResult
 from anishift.errors import AniShiftError, ExecutionError
 
 if TYPE_CHECKING:
-    from anishift.application.planning import PlanTask, RunSettingsSnapshot
+    from anishift.application.planning import PlanTask
     from anishift.application.ready import ReadyMove
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-CHECKPOINT_VERSION: Final[int] = 1
+CHECKPOINT_VERSION: Final[int] = 2
 """Schema of the remaining graph stored beside the owner's request ledger."""
 
 _CHECKPOINT_FILES: Final[threading.Lock] = threading.Lock()
@@ -81,10 +80,10 @@ class RunJournal:
         """Whether a remote operation started without a durable completion proof."""
         return bool(self._checkpoint.inflight)
 
-    def started(self, task: PlanTask) -> None:
-        """Record potentially charged work before dispatching its external operation."""
+    def started(self, task: PlanTask, *, remote: bool) -> None:
+        """Record a task before dispatch, marking it uncertain when it calls a remote provider that may charge."""
         self._require_writable()
-        if task.is_network or task.is_paid:
+        if remote:
             self._save(replace(self._checkpoint, inflight=self._checkpoint.inflight | {task.task_id}))
 
     def interrupted(self, task: PlanTask) -> None:
@@ -257,12 +256,8 @@ class RunJournal:
             self._failed = True
             raise
 
-    def rebind(self, settings: RunSettingsSnapshot) -> None:
-        """Take the translation and voice settings of *settings* for the remaining graph until `persist` saves them."""
-        self._checkpoint = replace(self._checkpoint, plan=rebind_settings(self.plan, settings))
-
     def persist(self) -> None:
-        """Persist reconciled publication proof and rebound settings before accepting a resumed run."""
+        """Persist reconciled publication proof before accepting a resumed run."""
         self._require_writable()
         self._save(self._checkpoint)
 

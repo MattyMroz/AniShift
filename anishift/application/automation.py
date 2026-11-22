@@ -3380,7 +3380,6 @@ class AutomationOwner:
                 if self._on_owner(lambda: resume_id in self._service.active_run_ids()):
                     return None
                 journal: RunJournal = RunJournal.load(self._store.run_path(resume_id))
-                journal.rebind(self._service.run_settings())
                 selected: dict[str, InspectedSourceGroup] = {group.group_id: group for group in workspace.groups}
                 if set(_identifiers(payload, "group_ids") or ()) != {group.group_id for group in journal.plan.groups}:
                     return None
@@ -3413,10 +3412,6 @@ class AutomationOwner:
         rebuild: RebuildRequest | None,
         recipes: RecipePreferences,
     ) -> ExecutionPlan:
-        overrides: object = payload.get("overrides", {})
-        if not isinstance(overrides, Mapping):
-            msg = "Run setting overrides must be an object"
-            raise TypeError(msg)
         if selection is SourceSelection.MANUAL:
             entries: object = payload.get("intents")
             if not isinstance(entries, list) or rebuild is not None:
@@ -3430,7 +3425,6 @@ class AutomationOwner:
                 raise ValueError(msg)
             return self._service.plan_manual(
                 self._recovered_intents(intents),
-                overrides=overrides,
                 published=self._published_products(),
             )
         if "intents" in payload:
@@ -3446,7 +3440,6 @@ class AutomationOwner:
             tuple(group.group_id for group in groups),
             preset,
             rebuild=rebuild,
-            overrides=overrides,
             recipes=recipes,
             targets=self._recorded_targets(),
             published=self._published_products(),
@@ -3555,8 +3548,6 @@ class AutomationOwner:
                 self._store.run_path(run_id), preview.plan, run_tmp_dir(self._service.workspace_root, run_id)
             )
         )
-        if previous is not None:
-            journal.rebind(preview.plan.settings)
         if journal.plan != preview.plan:
             return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _STALE_PREVIEW)
         if previous is not None:
@@ -3569,7 +3560,7 @@ class AutomationOwner:
             origin=preview.origin,
             source_selection=preview.source_selection,
             rebuild=preview.rebuild,
-            settings=_settings_snapshot(preview.plan.settings),
+            settings=_settings_snapshot(self._service.run_settings()),
             state=RequestState.ACCEPTED,
             attempts=previous.attempts + (1 if preview.retry else 0) if previous is not None else 1,
             accepted_at=self._now(),
@@ -7532,7 +7523,6 @@ class AutomationOwner:
     def _resume_restored(self, request: ProcessingRequest, journal: RunJournal) -> None:
         if self._shutting_down or self._library is None or not self._can_restore(request):
             return
-        journal.rebind(self._service.run_settings())
         if journal.uncertain_remote_work:
             self._failed_recovery(
                 request,

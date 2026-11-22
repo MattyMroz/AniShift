@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, Protocol
 
 from anishift.application.cancellation import CancellationToken, CommitCancellationToken
 from anishift.application.events import RunEventSink, WorkerNotification
 from anishift.application.intents import RequestOrigin
-from anishift.application.planning import ExecutionPlan, PlanTask, RunSettingsSnapshot
+from anishift.application.planning import ExecutionPlan, PlanTask, RunSettingsSnapshot, resource_family
 from anishift.application.results import ArtifactSnapshot, TaskResult
 
 if TYPE_CHECKING:
@@ -25,12 +23,20 @@ __all__ = [
     "TaskHandler",
     "TaskProgressSink",
     "extraction_worker_count",
+    "is_remote",
+    "resource_key",
 ]
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
 _EXTRACTION_IO_HEADROOM: Final[int] = 2
 """Extra extraction workers kept above the core-derived pool size."""
+
+_AUDIO_WORKERS: Final[int] = 2
+"""Narration mixes and transcodes running at once across every graph."""
+
+_COMPOSITION_WORKERS: Final[int] = 1
+"""Containers composed at once across every graph."""
 
 
 class TaskProgressSink(Protocol):
@@ -48,10 +54,11 @@ class TaskHandler(Protocol):
         self,
         task: PlanTask,
         artifacts: ArtifactSnapshot,
+        settings: RunSettingsSnapshot,
         cancel: CancellationToken,
         progress: TaskProgressSink,
     ) -> TaskResult:
-        """Execute one task without mutating shared scheduler state."""
+        """Execute one task with the settings read when it started, without mutating shared scheduler state."""
         ...
 
 
@@ -77,97 +84,81 @@ class RunRequest:
 
 @dataclass(frozen=True, slots=True)
 class ResourceLimits:
-    """Bounded worker limits shared by every active graph; the pending-future field stays for API compatibility only."""
+    """Worker limits shared by every active graph, read from the settings of one admission round."""
 
     extraction: int
-    translation: Mapping[str, int]
-    tts_group_jobs: int
-    audio: int
-    composition: int
-    max_pending_per_resource: int
-    llm: int | None = None
+    translation: int
+    llm: int
+    tts: int
+    audio: int = _AUDIO_WORKERS
+    composition: int = _COMPOSITION_WORKERS
 
     def __post_init__(self) -> None:
-        copied_translation: dict[str, int] = {
-            provider.strip().casefold(): limit for provider, limit in self.translation.items()
-        }
-        if any(not provider for provider in copied_translation):
-            msg = "Translation resource IDs cannot be blank"
-            raise ValueError(msg)
         limits: tuple[int, ...] = (
             self.extraction,
-            self.tts_group_jobs,
+            self.translation,
+            self.llm,
+            self.tts,
             self.audio,
             self.composition,
-            *copied_translation.values(),
         )
         if any(type(limit) is not int or limit < 1 for limit in limits):
             msg = "Resource worker limits must be positive integers"
             raise ValueError(msg)
-        if type(self.max_pending_per_resource) is not int or self.max_pending_per_resource < 0:
-            msg = "Pending resource limit must be a non-negative integer"
-            raise ValueError(msg)
-        if self.llm is not None and (type(self.llm) is not int or self.llm < 1):
-            msg = "Resource worker limits must be positive integers"
-            raise ValueError(msg)
-        object.__setattr__(self, "translation", MappingProxyType(copied_translation))
 
     @classmethod
-    def from_settings(  # noqa: PLR0913 - one keyword per independently tuned resource pool
-        cls,
-        settings: RunSettingsSnapshot,
-        *,
-        extraction: int = 2,
-        audio: int = 2,
-        composition: int = 1,
-        max_pending_per_resource: int = 1,
-        llm: int | None = None,
-    ) -> ResourceLimits:
-        """Build default scheduler limits from one immutable settings snapshot."""
-        translation: dict[str, int] = {settings.translation_profile_id: settings.translation_concurrency}
+    def from_settings(cls, settings: RunSettingsSnapshot, *, extraction: int) -> ResourceLimits:
+        """Build the limits that *settings* give every pool beside the extraction pool sized by its caller."""
         return cls(
             extraction=extraction,
-            translation=translation,
-            tts_group_jobs=settings.tts_group_jobs,
-            audio=audio,
-            composition=composition,
-            max_pending_per_resource=max_pending_per_resource,
-            llm=settings.llm_max_concurrency if llm is None else llm,
+            translation=settings.translation_concurrency,
+            llm=settings.llm_max_concurrency,
+            tts=settings.tts_group_jobs,
         )
 
-    def worker_limit(self, resource_key: str, settings: RunSettingsSnapshot) -> int:
-        """Resolve one planned resource key without creating a global executor."""
-        family, _, provider = normalize_resource_key(resource_key).partition(":")
-        limit: int = self.extraction
-        if family == "translation":
-            limit = self.translation.get(provider, settings.translation_concurrency)
-        elif family == "llm":
-            limit = settings.llm_max_concurrency if self.llm is None else self.llm
-        elif family == "tts":
-            limit = 1 if provider.startswith("sapi") else self.tts_group_jobs
-        elif family == "audio":
-            limit = self.audio
-        elif family == "composition":
-            limit = self.composition
-        elif family == "filesystem":
-            limit = 1
-        return limit
+    def worker_limit(self, key: str) -> int:  # noqa: PLR0911 - one return per pool keeps the closed mapping visible
+        """Return how many tasks of one resource key may run at once."""
+        family, _, provider = key.partition(":")
+        match family:
+            case "translation":
+                return self.translation
+            case "llm":
+                return self.llm
+            case "tts":
+                return 1 if provider == "sapi" else self.tts
+            case "audio":
+                return self.audio
+            case "composition":
+                return self.composition
+            case "filesystem":
+                return 1
+            case _:
+                return self.extraction
+
+
+def resource_key(task: PlanTask, settings: RunSettingsSnapshot) -> str:
+    """Return the pool and provider a task competes for under the settings it starts with."""
+    family: str = resource_family(task.kind)
+    if family == "translation" and settings.translation_profile_id == "llm":
+        return f"llm:{settings.llm_profile_id}"
+    if family == "translation":
+        return f"translation:{settings.translation_profile_id}"
+    if family == "tts":
+        return f"tts:{settings.tts_profile_id}"
+    return family
+
+
+def is_remote(task: PlanTask, settings: RunSettingsSnapshot) -> bool:
+    """Return whether a task starting with *settings* calls a remote provider that may charge for the call."""
+    family: str = resource_family(task.kind)
+    return family == "translation" or (family == "tts" and settings.tts_is_network)
 
 
 def extraction_worker_count(group_count: int) -> int:
-    """Return the legacy I/O pool size for the given number of extracting groups."""
+    """Return the extraction pool size for the given number of extracting groups."""
     cores: int = os.cpu_count() or 1
     scaled_workers: int = round(cores**0.5) + _EXTRACTION_IO_HEADROOM
     return max(1, min(group_count, scaled_workers))
-
-
-def normalize_resource_key(resource_key: str) -> str:
-    """Return one canonical queue and executor identity for a planned resource."""
-    family, separator, provider = resource_key.strip().casefold().partition(":")
-    if not family or (separator and not provider):
-        msg = "Resource key must contain a non-empty family and optional provider"
-        raise ValueError(msg)
-    return f"{family}:{provider}" if separator else family
 
 
 class NaturalOrderGate:

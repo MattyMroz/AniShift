@@ -97,21 +97,8 @@ _COVER_DOCUMENT_KINDS: Final[frozenset[ArtifactKind]] = frozenset(
 )
 """Documents a cover reads aloud, whose voice this program records itself."""
 
-_TRANSLATION_SETTINGS: Final[tuple[str, ...]] = (
-    "translation_profile_id", "translation_max_retries", "translation_concurrency", "translation_is_network",
-    "translation_is_paid", "translation_chunk_chars", "translation_batch_size", "llm_profile_id",
-    "llm_max_concurrency", "llm_is_network", "llm_is_paid", "llm_model_id", "llm_temperature", "llm_top_p",
-    "llm_max_output_tokens", "llm_translation_style", "llm_credential_mode",
-)  # fmt: skip
-"""Run settings that choose how translation tasks run without shaping the planned graph."""
-
-_VOICE_SETTINGS: Final[tuple[str, ...]] = (
-    "tts_profile_id", "tts_max_retries", "tts_group_jobs", "tts_request_concurrency", "tts_is_network",
-    "tts_is_paid", "tts_model_id", "tts_voice_id", "tts_voice_label", "tts_allowed_voice_ids", "tts_native_rate",
-    "tts_native_volume", "tts_native_pitch", "tts_engine_options", "tts_vpn_enabled", "tts_postprocess_tempo",
-    "voice_mix_offset_db",
-)  # fmt: skip
-"""Run settings that choose the narrator voice and how its clips are recorded and mixed."""
+_AUDIO_DURATION_TOLERANCE_US: Final[int] = 1_000_000
+"""Accepted duration difference between supplied audio and the selected video."""
 
 
 class _TrackKindView(Protocol):
@@ -164,7 +151,6 @@ def plan_auto(  # noqa: PLR0913 - every automatic planning input stays an explic
     settings: RunSettingsSnapshot,
     *,
     rebuild: RebuildRequest | None = None,
-    overrides: Mapping[str, object] | None = None,
     recipes: RecipePreferences | None = None,
     targets: Mapping[str, WorkflowTarget] | None = None,
     published: frozenset[Path] | None = None,
@@ -181,11 +167,10 @@ def plan_auto(  # noqa: PLR0913 - every automatic planning input stays an explic
         group.group_id: _auto_intent(group, preset, products, recipes, recorded_target(group, targets))
         for group in ordered_groups
     }
-    snapshot: RunSettingsSnapshot = settings if overrides is None else settings.with_overrides(overrides)
     return _plan(
         ordered_groups,
         intents,
-        snapshot,
+        settings,
         rebuild=rebuild,
         published=published,
         dialogue_font_unusable=dialogue_font_unusable,
@@ -287,33 +272,6 @@ def plan_manual(
     return _plan(ordered_groups, intents, settings, published=published, dialogue_font_unusable=dialogue_font_unusable)
 
 
-def rebind_settings(plan: ExecutionPlan, settings: RunSettingsSnapshot) -> ExecutionPlan:
-    """Return the remaining plan with the translation and, before any speech is recorded, voice of *settings*."""
-    names: tuple[str, ...] = _TRANSLATION_SETTINGS
-    if any(task.kind is TaskKind.SYNTHESIZE_SPEECH for task in plan.tasks):
-        names = (*names, *_VOICE_SETTINGS)
-    rebound: RunSettingsSnapshot = plan.settings.with_overrides({name: getattr(settings, name) for name in names})
-    return replace(plan, settings=rebound, tasks=tuple(_rebound_task(task, rebound) for task in plan.tasks))
-
-
-def _rebound_task(task: PlanTask, settings: RunSettingsSnapshot) -> PlanTask:
-    if task.kind is TaskKind.TRANSLATE_SUBTITLES:
-        return replace(
-            task,
-            resource_key=_translation_resource_key(settings),
-            is_network=settings.translation_is_network,
-            is_paid=settings.translation_is_paid,
-        )
-    if task.kind is TaskKind.SYNTHESIZE_SPEECH:
-        return replace(
-            task,
-            resource_key=_tts_resource_key(settings),
-            is_network=settings.tts_is_network,
-            is_paid=settings.tts_is_paid,
-        )
-    return task
-
-
 def _ordered_unique_groups(groups: Sequence[InspectedSourceGroup]) -> tuple[InspectedSourceGroup, ...]:
     group_ids: tuple[str, ...] = tuple(group.group_id for group in groups)
     if len(group_ids) != len(set(group_ids)):
@@ -392,7 +350,6 @@ def _plan(  # noqa: PLR0913 - every planning input stays an explicit call-site c
         groups=tuple(group_plans),
         artifacts=tuple(artifacts),
         tasks=ordered_tasks,
-        settings=settings,
         problems=tuple(problems),
     )
 
@@ -550,7 +507,7 @@ class _GroupPlanner:
         if selected.duration_us is None or video.duration_us is None:
             self._problem("audio_duration_unknown", "Selected audio and video require validated durations")
             return
-        if abs(selected.duration_us - video.duration_us) > self.settings.audio_duration_tolerance_us:
+        if abs(selected.duration_us - video.duration_us) > _AUDIO_DURATION_TOLERANCE_US:
             self._problem("audio_duration_mismatch", "Selected audio duration differs from the selected video")
 
     def _build_text_plan(self) -> None:
@@ -581,10 +538,7 @@ class _GroupPlanner:
             requires=(source,),
             produces=(translated,),
             variant="txt",
-            resource_key=_translation_resource_key(self.settings),
             parameters=(("source_kind", "txt"), ("output_format", "srt")),
-            is_network=self.settings.translation_is_network,
-            is_paid=self.settings.translation_is_paid,
         )
         self._draft_timings(translated)
         self._publish_subtitle(translated, ArtifactKind.FULL_PL)
@@ -812,7 +766,6 @@ class _GroupPlanner:
             requires=(image, audio),
             produces=(target,),
             variant="cover",
-            resource_key=f"composition:{self.settings.composition_profile_id}",
         )
 
     def _narration_script(self, source: Artifact) -> Artifact | None:
@@ -833,10 +786,7 @@ class _GroupPlanner:
             requires=(source,),
             produces=(script,),
             variant="narration-script",
-            resource_key=_translation_resource_key(self.settings),
             parameters=(("source_kind", "txt"), ("output_format", "srt")),
-            is_network=self.settings.translation_is_network,
-            is_paid=self.settings.translation_is_paid,
         )
         self._draft_timings(script)
         return script
@@ -856,7 +806,6 @@ class _GroupPlanner:
             requires=(manifest,),
             produces=(narration,),
             variant=f"narration-{timeline.value}",
-            resource_key=f"audio:{self.settings.audio_profile_id}",
             parameters=(("mix_source", "standalone"), ("output_profile", profile)),
         )
         self._narration = narration
@@ -876,10 +825,7 @@ class _GroupPlanner:
             requires=(script,) if signs is None else (script, signs),
             produces=(manifest,),
             variant=f"narration-{timeline.value}",
-            resource_key=_tts_resource_key(self.settings),
             parameters=parameters,
-            is_network=self.settings.tts_is_network,
-            is_paid=self.settings.tts_is_paid,
         )
         return manifest
 
@@ -958,10 +904,7 @@ class _GroupPlanner:
             requires=(source,),
             produces=(translated,),
             variant="txt-text",
-            resource_key=_translation_resource_key(self.settings),
             parameters=(("source_kind", "txt"), ("output_format", "txt")),
-            is_network=self.settings.translation_is_network,
-            is_paid=self.settings.translation_is_paid,
         )
         self._publish_text(translated)
 
@@ -979,10 +922,7 @@ class _GroupPlanner:
             requires=(source,),
             produces=(translated,),
             variant="txt",
-            resource_key=_translation_resource_key(self.settings),
             parameters=(("source_kind", "txt"), ("output_format", "srt")),
-            is_network=self.settings.translation_is_network,
-            is_paid=self.settings.translation_is_paid,
         )
         self._draft_timings(translated)
         self._publish_subtitle(translated, ArtifactKind.FULL_PL)
@@ -1307,7 +1247,6 @@ class _GroupPlanner:
             requires=(selected.video,),
             produces=(extracted,),
             variant=f"track-{selected.track_id}",
-            resource_key="extraction",
             parameters=(("track_id", selected.track_id), ("target_format", selected.subtitle_format)),
         )
         self._source_subtitles = extracted
@@ -1343,7 +1282,6 @@ class _GroupPlanner:
             requires=(selected.video,),
             produces=(source_audio, subtitles),
             variant=f"tracks-{audio.track_id}-{selected.track_id}",
-            resource_key="extraction",
             parameters=(
                 ("audio_codec", audio.codec_id),
                 ("audio_track_id", audio.track_id),
@@ -1384,7 +1322,6 @@ class _GroupPlanner:
                 requires=self._with_font_container(selected),
                 produces=(converted,),
                 variant="manual-format-conversion",
-                resource_key="subtitles",
                 parameters=(("output_format", self._subtitle_format(converted)),),
             )
             self._full_pl = converted
@@ -1424,10 +1361,7 @@ class _GroupPlanner:
                 requires=self._with_font_container(source),
                 produces=(full,),
                 variant="polish",
-                resource_key=_translation_resource_key(self.settings),
                 parameters=(("output_format", output_format),),
-                is_network=self.settings.translation_is_network,
-                is_paid=self.settings.translation_is_paid,
             )
         else:
             self._add_task(
@@ -1435,7 +1369,6 @@ class _GroupPlanner:
                 requires=self._with_font_container(source),
                 produces=(full,),
                 variant="polish-bypass",
-                resource_key="subtitles",
                 parameters=(("output_format", output_format),),
             )
         self._full_pl = full
@@ -1499,7 +1432,6 @@ class _GroupPlanner:
                 requires=self._split_inputs(full),
                 produces=(output,),
                 variant=output.kind.value,
-                resource_key="subtitles",
             )
 
     def _split_inputs(self, full: Artifact) -> tuple[Artifact, ...]:
@@ -1547,7 +1479,6 @@ class _GroupPlanner:
             requires=self._with_font_container(source),
             produces=(converted,),
             variant=f"manual-{source.kind.value}-format-conversion",
-            resource_key="subtitles",
             parameters=(("output_format", self._subtitle_format(converted)),),
         )
         return converted
@@ -1590,7 +1521,6 @@ class _GroupPlanner:
             requires=(source_audio, manifest),
             produces=(narration,),
             variant=f"narration-{timeline.value}",
-            resource_key=f"audio:{self.settings.audio_profile_id}",
             parameters=(
                 ("mix_source", "video"),
                 ("output_profile", profile),
@@ -1636,7 +1566,6 @@ class _GroupPlanner:
             requires=(embedded.video,),
             produces=(source_audio,),
             variant=f"track-{embedded.track_id}",
-            resource_key="extraction",
             parameters=(
                 ("source_codec", embedded.codec_id),
                 ("track_id", embedded.track_id),
@@ -1715,7 +1644,6 @@ class _GroupPlanner:
                 requires=(source,),
                 produces=(publish_source,),
                 variant="narration-product",
-                resource_key=f"audio:{self.settings.audio_profile_id}",
                 parameters=(("output_profile", profile),),
             )
         destination: Path = self._narration_product_path()
@@ -1760,7 +1688,6 @@ class _GroupPlanner:
             requires=tuple(_unique_artifacts(requires)),
             produces=(target,),
             variant="mkv",
-            resource_key=f"composition:{self.settings.composition_profile_id}",
             parameters=(("mkv_tracks", ",".join(tracks)),),
         )
 
@@ -1792,7 +1719,6 @@ class _GroupPlanner:
             requires=tuple(_unique_artifacts(requires)),
             produces=(target,),
             variant="mp4",
-            resource_key=f"composition:{self.settings.composition_profile_id}",
             parameters=(
                 ("audio_source", "narration" if use_narration else "original"),
                 ("burn_subtitles", self.intent.products.burn_subtitle_product.value),
@@ -1904,20 +1830,16 @@ class _GroupPlanner:
             requires=(source,),
             produces=(target,),
             variant=target.kind.value,
-            resource_key="filesystem",
         )
 
-    def _add_task(  # noqa: PLR0913 - task contract keeps execution flags explicit at call sites
+    def _add_task(
         self,
         kind: TaskKind,
         *,
         requires: tuple[Artifact, ...],
         produces: tuple[Artifact, ...],
         variant: str,
-        resource_key: str,
         parameters: tuple[tuple[str, str | int | bool], ...] = (),
-        is_network: bool = False,
-        is_paid: bool = False,
     ) -> None:
         if not produces:
             return
@@ -1938,10 +1860,7 @@ class _GroupPlanner:
             requires=tuple(artifact.artifact_id for artifact in requires),
             produces=tuple(artifact.artifact_id for artifact in produces),
             depends_on=dependencies,
-            resource_key=resource_key,
             parameters=tuple(sorted(parameters)),
-            is_network=is_network,
-            is_paid=is_paid,
         )
         if any(existing.task_id == task_id for existing in self.tasks):
             msg = f"Planner generated duplicate task ID: {task_id}"
@@ -2093,16 +2012,6 @@ def _invalidated_products(intent: GroupIntent, rebuild: frozenset[ProductKind]) 
 def _task_id(group_id: str, kind: TaskKind, variant: str) -> str:
     digest: str = sha256(f"{group_id}:{kind.value}:{variant.casefold()}".encode()).hexdigest()
     return f"task-{kind.value}-{digest[:12]}"
-
-
-def _translation_resource_key(settings: RunSettingsSnapshot) -> str:
-    if settings.translation_profile_id == "llm":
-        return f"llm:{settings.llm_profile_id}"
-    return f"translation:{settings.translation_profile_id}"
-
-
-def _tts_resource_key(settings: RunSettingsSnapshot) -> str:
-    return f"tts:{settings.tts_profile_id}"
 
 
 def _artifact_path_key(artifact: Artifact) -> tuple[str, str, str]:

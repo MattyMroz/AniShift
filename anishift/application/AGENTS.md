@@ -29,10 +29,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   zabicie procesu) wymagają jawnego wznowienia, bez automatycznego powtarzania opłat. Wyjątek: task przerwany przez
   zamknięcie rezydenta kończy się po anulowaniu, więc nie jest niepewny i wznawia się sam (przerwane wywołanie płatne
   idzie od nowa). Gdy zapis `interrupted` zawiedzie, znak `inflight` zostaje i obowiązuje jawne wznowienie.
-- Wznowienie zapisanego runu (P, recovery po restarcie) bierze bieżące ustawienia tłumaczenia i lektora:
-  `RunJournal.rebind` → `planner.rebind_settings` podmienia pola `_TRANSLATION_SETTINGS`, a gdy `SYNTHESIZE_SPEECH`
-  jest jeszcze w pozostałym grafie, także `_VOICE_SETTINGS` (silnik, głos, tempo, przesunięcie miksu), oraz zasoby
-  tych tasków; `_admit` zapisuje je w checkpoincie. Po nagraniu klipów głos zostaje ten, który je nagrał.
+- Plan nie niesie ustawień. Każdy task czyta je w chwili startu: koordynator przy wysłaniu bierze jeden snapshot
+  `run_settings()`, liczy z niego klucz zasobu (`scheduler_contracts.resource_key`), limit i znak `inflight`
+  (`is_remote`), a handler dostaje ten snapshot; task w toku kończy na swoim, każdy nierozpoczęty bierze bieżące,
+  także w trwającym runie. Zmiana preferencji w `AppService` budzi koordynatora (`refresh`).
 - Rezerwacje należą do sesji klientów jednej instancji: owner porzuca je przy wczytaniu stanu (także gdy zapis
   sprzątania zawiedzie) i po rozłączeniu panelu, które unieważnia też podglądy.
 - Zdarzenia plików scalają się w jednym powiadomieniu; ponad 4096 ścieżek zastępuje pełne uzgodnienie. Inspekcja w
@@ -224,6 +224,9 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `#GUI#progress` bez uśredniania). LLM równolegle dokładnie do `llm_max_concurrency` — scheduler nie przycina drugi
   raz; TTS jeden plik naraz, poza silnikiem dokumentowym: dla niego `tts_group_jobs` (`_run_settings_snapshot`) to
   `concurrency` profilu głosu, czyli tyle odcinków nagrywa się naraz w całym rezydencie.
+- `RunServices` (`runtime.py`) buduje usługi runu leniwie, przy starcie taska, i dzieli je między taski o równej
+  konfiguracji (z sekretami czytanymi przy starcie): `TtsConfig → TtsService`, tak samo tłumaczenie, audio i
+  kompozycja; zamyka je koniec runu. Dzięki temu limit kart ElevenReadera i `tts_request_concurrency` się nie mnożą.
 - TTS w `runtime.py`: jeden `FfmpegClipService` jest walidatorem, assemblerem i splitterem `TtsService`. Wiedza
   „silnik czyta dokumentem” pochodzi tylko z `is_document_engine` rejestru TTS: daje `reads_document` handlera
   (łączenie kwestii urwanych i wszystkie kandydaty szyldów w batchu kwestii, czyli jeden dokument na odcinek; silniki
@@ -239,16 +242,17 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - Sesję ElevenReadera panel czyta i odświeża przez fasadę (`elevenreader_session`, `elevenreader_sign_in`);
   logowanie blokuje wątek wołający do zamknięcia okna Chrome. `service.py`
 - `GraphCoordinator` przyjmuje wiele kontekstów (`RunRequest` → `RunHandle`); wspólne są tylko kolejki gotowych
-  tasków per zasób, executory i `limits_provider()`. Błąd pętli anuluje wszystkie konteksty przed joinem. Kolejka
-  `(rank, sequence, task_index, run_id, task_id)`, USER przed BACKGROUND, wysłanych per zasób najwyżej `worker_limit`.
+  tasków per rodzina zasobu (`planning.resource_family`), executory per klucz zasobu i `settings_provider()`. Błąd
+  pętli anuluje wszystkie konteksty przed joinem. Kolejka `(rank, sequence, task_index, run_id, task_id)`, USER przed
+  BACKGROUND, wysłanych per klucz zasobu najwyżej `worker_limit`. Porządek przekazywania wyników
+  (`processing_order_policy`) czyta przy przyjęciu runu.
   `RunRequest.automatic` podporządkowuje plik wyjątkowi Auto katalogu; `BACKGROUND` zawsze. Wątek
   `anishift-coordinator` żyje tylko przy zleceniach, bez pollingu (licznik `wakeups`). Blokada docelowego produktu
   odkłada ponowienie `replace` bez usypiania całej koordynacji.
 - `AppService`: `submit_plan` nie blokuje, `execute` = `submit_plan(...).result()`, druga praca nad grupą to
   `RunConflictError`; sesję zamyka wątek bez prefiksu `anishift-` (zarezerwowanego dla pul). `execute()` po
   przerwaniu anuluje i CZEKA na domknięcie kontekstu; `_finish_run` zawsze zamyka handler i sesję i rozwiązuje
-  `RunHandle` (nierozwiązany wiesza `execute`). `reload_preferences()` pod `_run_lock`; trwające zlecenia zachowują
-  snapshot ustawień. `service.py`
+  `RunHandle` (nierozwiązany wiesza `execute`). `reload_preferences()` pod `_run_lock`. `service.py`
 
 ## Testy
 

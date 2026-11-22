@@ -17,7 +17,6 @@ from secrets import token_hex
 from typing import TYPE_CHECKING, Final, Protocol
 
 from anishift.application.cancellation import CancellationToken, EventCancellationToken, NeverCancelledToken
-from anishift.application.control_payloads import decode_overrides
 from anishift.application.discovery import DiscoveryIndex, DiscoveryResult
 from anishift.application.events import RunEventSink
 from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace, WorkspaceInspector, path_stamp
@@ -36,7 +35,7 @@ from anishift.application.planner import plan_auto as build_auto_plan
 from anishift.application.planner import plan_manual as build_manual_plan
 from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot
 from anishift.application.results import RunResult
-from anishift.application.scheduler import GraphCoordinator, ResourceLimits, RunHandle
+from anishift.application.scheduler import GraphCoordinator, RunHandle
 from anishift.application.scheduler_contracts import RunRequest, TaskHandler
 from anishift.application.sessions import RunSession
 from anishift.application.workflows import WorkflowTarget
@@ -387,7 +386,6 @@ class AppService:
         preset: AutoPreset | AutoPresetDraft,
         *,
         rebuild: RebuildRequest | None = None,
-        overrides: Mapping[str, object] | None = None,
         recipes: RecipePreferences | None = None,
         targets: Mapping[str, WorkflowTarget] | None = None,
         published: frozenset[Path] | None = None,
@@ -395,8 +393,6 @@ class AppService:
         """Plan selected groups from a stored or one-shot automatic preset and the persisted target recipes."""
         resolved: AutoPreset = preset.to_preset() if isinstance(preset, AutoPresetDraft) else preset
         settings: RunSettingsSnapshot = self.run_settings()
-        if overrides:
-            settings = decode_overrides(settings, overrides)
         return build_auto_plan(
             self._selected_groups(group_ids),
             resolved,
@@ -412,7 +408,6 @@ class AppService:
         self,
         intents: Sequence[GroupIntent],
         *,
-        overrides: Mapping[str, object] | None = None,
         published: frozenset[Path] | None = None,
     ) -> ExecutionPlan:
         """Plan one independent explicit intent for every selected group."""
@@ -422,8 +417,6 @@ class AppService:
             raise PlanningError(msg)
         groups: tuple[InspectedSourceGroup, ...] = self._selected_groups(tuple(intent_by_group))
         settings: RunSettingsSnapshot = self.run_settings()
-        if overrides:
-            settings = decode_overrides(settings, overrides)
         return build_manual_plan(
             groups,
             intent_by_group,
@@ -599,11 +592,8 @@ class AppService:
     def _graph_coordinator(self) -> GraphCoordinator:
         with self._run_lock:
             if self._coordinator is None:
-                self._coordinator = GraphCoordinator(self._resource_limits)
+                self._coordinator = GraphCoordinator(self.run_settings)
             return self._coordinator
-
-    def _resource_limits(self) -> ResourceLimits:
-        return ResourceLimits.from_settings(self.run_settings())
 
     def settings_catalog(self, draft: SettingsDraft | None = None) -> tuple[SettingSpec, ...]:
         """Return fields active for saved or explicitly supplied draft selections."""
@@ -744,7 +734,7 @@ class AppService:
             return deepcopy(self._user_settings)
 
     def run_settings(self) -> RunSettingsSnapshot:
-        """Return the validated settings snapshot that the next plan and every resumed run use."""
+        """Return the validated settings that the next plan and every task starting now use."""
         with self._run_lock:
             preferences: UserSettings = deepcopy(self._user_settings)
         return _run_settings_snapshot(preferences)
@@ -754,8 +744,7 @@ class AppService:
         validated: UserSettings = deepcopy(draft)
         validated.__post_init__()
         self._settings_saver(validated)
-        with self._run_lock:
-            self._user_settings = deepcopy(validated)
+        self._use_preferences(validated)
         return deepcopy(validated)
 
     def update_setting(self, setting_id: str, value: SettingValue) -> UserSettings:
@@ -772,8 +761,7 @@ class AppService:
         assign_setting_value(candidate, spec, value)
         candidate.__post_init__()
         self._settings_saver(candidate)
-        with self._run_lock:
-            self._user_settings = deepcopy(candidate)
+        self._use_preferences(candidate)
         return deepcopy(candidate)
 
     def select_translation_model(self, provider_id: str, model_id: str) -> UserSettings:
@@ -803,8 +791,7 @@ class AppService:
         candidate.llm_provider_model_id = model_id
         candidate.__post_init__()
         self._settings_saver(candidate)
-        with self._run_lock:
-            self._user_settings = deepcopy(candidate)
+        self._use_preferences(candidate)
         return deepcopy(candidate)
 
     def _valid_custom_model_id(self, model_id: str) -> bool:
@@ -827,8 +814,7 @@ class AppService:
         defaults.palantir_enrollment_base_url = self.settings_snapshot().palantir_enrollment_base_url
         defaults.palantir_fallback_enrollment_base_url = self.settings_snapshot().palantir_fallback_enrollment_base_url
         self._settings_saver(defaults)
-        with self._run_lock:
-            self._user_settings = deepcopy(defaults)
+        self._use_preferences(defaults)
         return deepcopy(defaults)
 
     def update_secret(self, setting_id: str, value: str | None) -> None:
@@ -881,8 +867,15 @@ class AppService:
         preferences: UserSettings = load_user_settings()
         reloaded: Settings = Settings(_env_file=self._env_file)
         with self._run_lock:
-            self._user_settings = deepcopy(preferences)
             self._settings = reloaded
+        self._use_preferences(preferences)
+
+    def _use_preferences(self, preferences: UserSettings) -> None:
+        with self._run_lock:
+            self._user_settings = deepcopy(preferences)
+            coordinator: GraphCoordinator | None = self._coordinator
+        if coordinator is not None:
+            coordinator.refresh()
 
     def reload_environment(self) -> Mapping[str, bool]:
         """Re-read the environment file and report which env settings are configured."""
@@ -1132,19 +1125,17 @@ def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
         tts_max_retries=preferences.tts_max_retries,
         tts_group_jobs=request_concurrency if is_document_engine(preferences.tts_engine) else _TTS_GROUP_JOBS,
         tts_request_concurrency=request_concurrency,
-        audio_profile_id=preferences.tts_output_profile,
         composition_profile_id=preferences.composition_quality_preset,
         processing_order_policy=ProcessingOrderPolicy(preferences.processing_order_policy),
         audio_output_profile=preferences.tts_output_profile,
         subtitle_language_priority=preferences.subtitle_language_priority,
         audio_language_priority=preferences.audio_language_priority,
-        translation_is_paid=preferences.translation_engine != "google",
-        llm_is_paid=True,
         tts_is_network=preferences.tts_engine != "sapi",
-        tts_is_paid=preferences.tts_engine in {"elevenbytes", "elevenlabs", "elevenreader"},
         dialogue_font_file=preferences.dialogue_font_file,
         sign_narration=preferences.sign_narration,
         llm_credential_mode=preferences.api_key_mode,
+        palantir_enrollment_base_url=preferences.palantir_enrollment_base_url,
+        palantir_fallback_enrollment_base_url=preferences.palantir_fallback_enrollment_base_url,
         translation_chunk_chars=preferences.translation_chunk_chars,
         translation_batch_size=preferences.translation_batch_size,
         llm_model_id=preferences.llm_provider_model_id,
@@ -1154,7 +1145,6 @@ def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
         llm_translation_style=preferences.llm_translation_style,
         tts_model_id=preferences.tts_provider_model_id,
         tts_voice_id=preferences.resolved_tts_voice_id,
-        tts_voice_label=preferences.tts_voice_label,
         tts_allowed_voice_ids=_tts_allowed_voice_ids(preferences),
         tts_native_rate=profile.native_rate,
         tts_native_volume=profile.native_volume,
@@ -1166,7 +1156,6 @@ def _run_settings_snapshot(preferences: UserSettings) -> RunSettingsSnapshot:
         narrator_over_source_lu=preferences.narrator_over_source_lu,
         voice_mix_offset_db=profile.voice_mix_offset_db,
         original_gain_db=preferences.original_gain_db,
-        tts_timeline_policy=preferences.tts_timeline_policy,
     )
 
 

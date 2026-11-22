@@ -376,7 +376,6 @@ class ResidentSession:
         preset: AutoPreset,
         *,
         rebuild: RebuildRequest | None = None,
-        overrides: Mapping[str, object] | None = None,
     ) -> PlanPreview:
         """Ask the owner to preview an explicit Auto or regeneration request."""
         answer: Mapping[str, object] = self._call(
@@ -385,7 +384,6 @@ class ResidentSession:
                 "group_ids": list(group_ids),
                 "preset": encode_view(preset),
                 "rebuild": encode_view(rebuild) if rebuild is not None else None,
-                "overrides": dict(overrides or {}),
             },
         )
         return decode_view(PlanPreview, answer["preview"])

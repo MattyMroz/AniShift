@@ -180,9 +180,9 @@ def test_production_mkv_google_edge_publishes_complete_polish_products(tmp_path:
             TaskKind.COMPOSE_MKV,
             TaskKind.PUBLISH_ARTIFACT,
         } <= {task.kind for task in plan.tasks}
-        assert plan.settings.translation_max_retries == 0
-        assert plan.settings.tts_max_retries == 0
-        assert plan.settings.tts_voice_id == "pl-PL-ZofiaNeural"
+        assert service.run_settings().translation_max_retries == 0
+        assert service.run_settings().tts_max_retries == 0
+        assert service.run_settings().tts_voice_id == "pl-PL-ZofiaNeural"
         events: _RecordedEvents = _RecordedEvents()
         result: RunResult = service.execute(plan, events)
         assert result.succeeded, tuple(message for group in result.groups for message in group.error_messages)

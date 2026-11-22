@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Final
 
 import pytest
-from fakes import write_text_source
 
 from anishift.application import service as service_module
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
@@ -233,18 +232,14 @@ def test_removing_the_active_custom_voice_leaves_no_dangling_selection(tmp_path:
     assert saved[-1].tts_voice_id == DALLIN_ALIAS
 
 
-def test_active_run_snapshot_ignores_a_later_preference_update(tmp_path: Path) -> None:
-    write_text_source(tmp_path / "Episode.txt", "Text")
+def test_a_preference_update_reaches_the_settings_every_later_task_starts_with(tmp_path: Path) -> None:
     service: AppService = _service(tmp_path, UserSettings(), lambda value: None)
-    group_id: str = service.discover().groups[0].group_id
-    plan: ExecutionPlan = service.plan_auto(
-        (group_id,),
-        AutoPresetDraft("preview", "Preview", ProductIntent(frozenset({ProductKind.FULL_PL}))),
-    )
+    before: int = service.run_settings().translation_concurrency
 
     service.update_setting("translation_concurrency", 4)
 
-    assert plan.settings.translation_concurrency == 1
+    assert before == 1
+    assert service.run_settings().translation_concurrency == 4
     assert service.settings_snapshot().translation_concurrency == 4
 
 
@@ -289,5 +284,4 @@ def test_planning_warns_when_the_configured_dialogue_font_file_is_unusable(
     )
 
     assert plan.can_execute
-    assert plan.settings.dialogue_font_file == configured
     assert [problem.code for problem in plan.problems] == (["dialogue_font_unusable"] if warned else [])

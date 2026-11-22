@@ -123,7 +123,6 @@ def _snapshot(tmp_path: Path) -> tuple[PlanTask, ArtifactSnapshot, Path]:
         (source.artifact_id,),
         (output.artifact_id,),
         (),
-        "composition:balanced",
         (("audio_source", "original"), ("burn_subtitles", "none")),
     )
     return task, ArtifactSnapshot({source.artifact_id: source}, {output.artifact_id: output}), destination
@@ -239,7 +238,6 @@ def _cover_snapshot(
         (image.artifact_id, audio.artifact_id),
         (output.artifact_id,),
         (),
-        "composition:balanced",
     )
     snapshot = ArtifactSnapshot({image.artifact_id: image, audio.artifact_id: audio}, {output.artifact_id: output})
     return task, snapshot, destination

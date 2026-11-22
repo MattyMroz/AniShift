@@ -59,7 +59,7 @@ from anishift.application.automation import (
     TRANSFER_CHECK_INTERVAL_S,
     AutomationOwner,
 )
-from anishift.application.cancellation import EventCancellationToken
+from anishift.application.cancellation import CancellationToken, EventCancellationToken
 from anishift.application.control import (
     AcquisitionConfirmation,
     AcquisitionState,
@@ -99,14 +99,19 @@ from anishift.application.inspection import (
     WorkspaceInspector,
 )
 from anishift.application.intents import GroupIntent, ProductIntent, ProductKind, RebuildRequest, RequestOrigin, RunMode
-from anishift.application.planning import ExecutionPlan, RunSettingsSnapshot, TaskKind
+from anishift.application.planning import ExecutionPlan, PlanTask, RunSettingsSnapshot, TaskKind
 from anishift.application.products import classify_product
 from anishift.application.ready import ReadyMove, ReadyStore, in_ready
 from anishift.application.recovery import RunJournal
-from anishift.application.results import GroupResult, GroupStatus, RunResult
+from anishift.application.results import ArtifactSnapshot, GroupResult, GroupStatus, RunResult, TaskResult
 from anishift.application.scheduler import RunHandle
-from anishift.application.scheduler_contracts import TaskHandler
-from anishift.application.service import AppService, AutoPresetDraft
+from anishift.application.scheduler_contracts import TaskHandler, TaskProgressSink
+from anishift.application.service import (
+    AppService,
+    AutoPresetDraft,
+    ExecutionHandlerFactory,
+    _run_settings_snapshot,
+)
 from anishift.application.subscription_targets import PauseReason, SubscriptionRecord
 from anishift.application.tts_handler import TtsProgressObserver
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
@@ -330,7 +335,7 @@ class _Service:
         self.discover_release: threading.Event | None = None
         self.paused: list[bool] = []
         self.user_settings: UserSettings = UserSettings(subscription_polish_wait_h=0)
-        self.current: RunSettingsSnapshot = plan.settings
+        self.current: RunSettingsSnapshot = _run_settings_snapshot(self.user_settings)
         self.plans: list[ExecutionPlan] = []
 
     def discover(self, *, changed_paths: Sequence[Path] | None = None) -> object:
@@ -360,12 +365,11 @@ class _Service:
         preset: object,
         *,
         rebuild: RebuildRequest | None = None,
-        overrides: Mapping[str, object] | None = None,
         recipes: RecipePreferences | None = None,
         targets: Mapping[str, WorkflowTarget] | None = None,
         published: frozenset[Path] | None = None,
     ) -> ExecutionPlan:
-        del group_ids, preset, rebuild, overrides
+        del group_ids, preset, rebuild
         self.recipes.append(recipes)
         self.targets.append(dict(targets or {}))
         self.published.append(frozenset(published or frozenset()))
@@ -1094,7 +1098,7 @@ def test_transfer_action_survives_restart_and_receipt_replay_does_not_repeat_it(
 
 
 @pytest.mark.parametrize("manual", [False, True])
-def test_the_resident_accepts_scoped_intents_and_keeps_their_complete_settings(
+def test_the_resident_accepts_scoped_intents_and_records_them(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     manual: bool,
@@ -1132,17 +1136,7 @@ def test_the_resident_accepts_scoped_intents_and_keeps_their_complete_settings(
     server: ControlServer = ControlServer(control_endpoint(tmp_path), key, owner.handle, on_disconnect=owner.disconnect)
     client: ControlClient = ControlClient(control_endpoint(tmp_path), key, timeout_s=_TIMEOUT_S)
     products: dict[str, object] = {"requested_products": ["full_pl"]}
-    payload: dict[str, object] = {
-        "client_id": _CLIENT,
-        "group_ids": selected,
-        "overrides": {
-            "tts_voice_id": "chosen-voice",
-            "tts_postprocess_tempo": 1.2,
-            "subtitle_language_priority": ["eng", "pol"],
-            "tts_engine_options": [["normalize", True]],
-            "llm_max_output_tokens": 1234,
-        },
-    }
+    payload: dict[str, object] = {"client_id": _CLIENT, "group_ids": selected}
     if manual:
         payload.update(
             source_selection="manual",
@@ -1161,14 +1155,8 @@ def test_the_resident_accepts_scoped_intents_and_keeps_their_complete_settings(
         request = store.load().requests[0]
         assert request.request_id == started["run_id"]
         assert request.group_ids == tuple(selected)
-        assert request.settings["tts_voice_id"] == "chosen-voice"
-        assert request.settings["tts_postprocess_tempo"] == 1.2
-        assert request.settings["llm_max_output_tokens"] == 1234
-        assert request.settings["subtitle_language_priority"] == ("eng", "pol")
-        assert request.settings["tts_engine_options"] == (("normalize", True),)
         assert request.intents == tuple(group.intent for group in submitted[0].groups)
         assert (request.rebuild is None) is manual
-        assert service.plan_auto(selected, _PRESET).settings.tts_voice_id != "chosen-voice"
     finally:
         client.close()
         server.close()
@@ -1183,8 +1171,6 @@ def test_the_resident_accepts_scoped_intents_and_keeps_their_complete_settings(
     [
         {"group_ids": []},
         {"group_ids": "all"},
-        {"overrides": {"tts_group_jobs": True}},
-        {"overrides": {"typo": 3}},
         {"rebuild": {"products": ["unknown"]}},
         {"source_selection": "manual", "intents": []},
         {"preset": {"preset_id": "x", "name": "X", "products": {"requested_products": ["full_pl"], "typo": True}}},
@@ -1454,6 +1440,7 @@ def _real_service(
     *,
     acquisition: AcquisitionService | None = None,
     polish_wait_h: int = 0,
+    handler_factory: ExecutionHandlerFactory | None = None,
 ) -> AppService:
     def unused(
         run_root: Path,
@@ -1468,7 +1455,7 @@ def _real_service(
         settings=Settings(_env_file=None),
         user_settings=UserSettings(subscription_polish_wait_h=polish_wait_h),
         inspector=WorkspaceInspector(DefaultMediaProbe()),
-        handler_factory=unused,
+        handler_factory=unused if handler_factory is None else handler_factory,
         preset_loader=default_preset_file,
         preset_saver=lambda value: None,
         settings_saver=lambda value: None,
@@ -2597,47 +2584,68 @@ def test_resuming_a_run_that_became_active_again_says_it_cannot_be_resumed(tmp_p
     assert not watcher.is_alive()
 
 
+class _FailingTranslation:
+    def __init__(self) -> None:
+        self.models: list[tuple[str, str]] = []
+
+    def __call__(
+        self, run_root: Path, plan: ExecutionPlan, source_groups: Mapping[str, InspectedSourceGroup]
+    ) -> TaskHandler:
+        del run_root, plan, source_groups
+        return self
+
+    def execute(
+        self,
+        task: PlanTask,
+        artifacts: ArtifactSnapshot,
+        settings: RunSettingsSnapshot,
+        cancel: CancellationToken,
+        progress: TaskProgressSink,
+    ) -> TaskResult:
+        del artifacts, cancel, progress
+        if task.kind is TaskKind.TRANSLATE_SUBTITLES:
+            self.models.append((settings.llm_profile_id, settings.llm_model_id))
+        raise ExecutionError("LLM_QUOTA_EXHAUSTED")
+
+
 def test_a_resumed_run_translates_with_the_engine_chosen_after_it_failed(tmp_path: Path) -> None:
     write_text_source(_library_dir(tmp_path) / "Episode.txt", "Text")
-    real: AppService = _real_service(tmp_path)
-    real.save_settings(UserSettings(translation_engine="llm", llm_provider="gemini"))
-    workspace: InspectedWorkspace = real.discover()
-    group_id: str = workspace.groups[0].group_id
-    service = _Service(tmp_path, discovered=workspace, plan=real.plan_auto((group_id,), _PRESET))
+    translation: _FailingTranslation = _FailingTranslation()
+    service: AppService = _real_service(tmp_path, handler_factory=translation)
+    service.save_settings(UserSettings(translation_engine="llm", llm_provider="gemini", llm_provider_model_id="flash"))
     store: WatchStateStore = WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME)
     owner: AutomationOwner = _owner(service, store)
     thread: threading.Thread = _serving(owner)
-    run_id: str = ""
+    group_id: str = service.discover().groups[0].group_id
     try:
-        run_id = _started(owner)
-        service.finish(run_id, GroupStatus.FAILED, group_id, ("LLM_QUOTA_EXHAUSTED",))
-        assert _await(lambda: [item.state for item in store.load().requests] == [RequestState.FAILED])
-        real.save_settings(
-            UserSettings(translation_engine="llm", llm_provider="openrouter", llm_provider_model_id="vendor/model")
-        )
-        service.current = real.run_settings()
         preview: ControlResponse = owner.handle(
-            _request("resume_preview", {"client_id": _CLIENT, "group_ids": [group_id]}, command_id="resume-1")
+            _request("preview", {"client_id": _CLIENT, "preset_id": service.default_preset_id()})
         )
         assert preview.ok, preview.message
         started: ControlResponse = owner.handle(
-            _request("start", {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]}, command_id="start-2")
+            _request("start", {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]}, command_id="s-1")
         )
         assert started.ok, started.message
+        assert _await(lambda: [item.state for item in owner.state.requests] == [RequestState.FAILED])
+        service.save_settings(
+            UserSettings(translation_engine="llm", llm_provider="openrouter", llm_provider_model_id="vendor/model")
+        )
+        resumed: ControlResponse = owner.handle(
+            _request("resume_preview", {"client_id": _CLIENT, "group_ids": [group_id]}, command_id="resume-1")
+        )
+        assert resumed.ok, resumed.message
+        restarted: ControlResponse = owner.handle(
+            _request("start", {"client_id": _CLIENT, "preview_id": resumed.result["preview_id"]}, command_id="s-2")
+        )
+        assert restarted.ok, restarted.message
+        assert _await(lambda: len(translation.models) == 2)
     finally:
-        if run_id in service.active:
-            service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
         owner.request_shutdown()
         thread.join(timeout=_TIMEOUT_S)
+        service.close()
 
-    first, retried = service.plans
-    assert (first.settings.llm_profile_id, retried.settings.llm_profile_id) == ("gemini", "openrouter")
-    assert retried.settings.llm_model_id == "vendor/model"
-    assert {task.resource_key for task in retried.tasks if task.kind is TaskKind.TRANSLATE_SUBTITLES} == {
-        "llm:openrouter"
-    }
-    assert RunJournal.load(store.run_path(run_id)).plan == retried
-    assert store.load().requests[0].settings["llm_profile_id"] == "openrouter"
+    assert translation.models == [("gemini", "flash"), ("openrouter", "vendor/model")]
+    assert store.load().requests[0].request_id == started.result["run_id"]
 
 
 def _stopped_run(run_id: str, group_id: str) -> RunResult:

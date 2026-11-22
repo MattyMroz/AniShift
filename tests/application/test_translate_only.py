@@ -41,7 +41,7 @@ from anishift.application.planning import (
     TaskKind,
 )
 from anishift.application.results import ArtifactSnapshot, GroupStatus, RunResult, TaskResult
-from anishift.application.scheduler import GraphScheduler, ResourceLimits
+from anishift.application.scheduler import GraphScheduler
 from anishift.application.selection import ready_group_ids
 from anishift.application.sessions import RunSession
 from anishift.application.translation_handler import (
@@ -114,7 +114,6 @@ def _settings() -> RunSettingsSnapshot:
         tts_profile_id="edge",
         tts_max_retries=2,
         tts_group_jobs=4,
-        audio_profile_id="default",
         composition_profile_id="balanced",
         processing_order_policy=ProcessingOrderPolicy.READY_FIRST,
         audio_output_profile="eac3",
@@ -262,7 +261,6 @@ def test_the_voice_boundary_counts_a_synthesis_the_same_handlers_dispatch(tmp_pa
         ("spoken",),
         ("manifest",),
         (),
-        "tts:edge",
         (("narration_timeline", "source_times"), ("script_kind", "spoken_pl")),
     )
     voice: _CountingTts = _CountingTts(tmp_path / "clips")
@@ -273,6 +271,7 @@ def test_the_voice_boundary_counts_a_synthesis_the_same_handlers_dispatch(tmp_pa
     handlers.execute(
         task,
         ArtifactSnapshot({"spoken": spoken}, {"manifest": manifest}),
+        _settings(),
         NeverCancelledToken(),
         _ProgressSink(),
     )
@@ -620,9 +619,6 @@ class _CountingTts:
     def cancel(self) -> None:
         raise AssertionError
 
-    def close(self) -> None:
-        pass
-
 
 def _handlers(
     run_root: Path,
@@ -633,9 +629,9 @@ def _handlers(
 ) -> ExecutionHandlers:
     return ExecutionHandlers(
         ExtractionTaskHandler(_RefusingExtraction(), run_root=run_root, timeout_s=30.0),
-        SubtitleTaskHandler(run_root=run_root),
-        TranslationTaskHandler(words, run_root=run_root),
-        tts=TtsTaskHandler(voice, run_root=run_root, group_ranks=group_ranks),
+        lambda _: SubtitleTaskHandler(run_root=run_root),
+        lambda _: TranslationTaskHandler(words, run_root=run_root),
+        tts=lambda _: TtsTaskHandler(voice, run_root=run_root, group_ranks=group_ranks),
         publish=PublishTaskHandler(run_root=run_root, source_groups=source_groups),
     )
 
@@ -653,7 +649,7 @@ def _run(
         handlers: ExecutionHandlers = _handlers(run_root, words, voice, source_groups, ranks)
         return GraphScheduler(
             handlers,
-            limits=ResourceLimits.from_settings(plan.settings),
+            settings=_settings(),
             run_id=run_root.name,
             session=session,
         ).run(plan, cancel=NeverCancelledToken(), events=_RunEventSink())

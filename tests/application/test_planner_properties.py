@@ -43,7 +43,6 @@ def _settings() -> RunSettingsSnapshot:
         tts_profile_id="tts",
         tts_max_retries=1,
         tts_group_jobs=2,
-        audio_profile_id="audio",
         composition_profile_id="composition",
         processing_order_policy=ProcessingOrderPolicy.READY_FIRST,
     )

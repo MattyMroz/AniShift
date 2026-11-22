@@ -5,9 +5,9 @@ from __future__ import annotations
 import re
 import threading
 from collections.abc import Callable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Protocol, cast
+from typing import TYPE_CHECKING, Final, cast
 
 from anishift.application.handlers import (
     AudioTaskHandler,
@@ -25,11 +25,7 @@ from anishift.application.planning import ExecutionPlan, RunSettingsSnapshot, Ta
 from anishift.application.tts_clips import FfmpegClipService
 from anishift.application.tts_handler import TtsProgressObserver
 from anishift.config.model_catalog import ModelCatalog, ModelEntry, ProviderEntry, load_model_catalog
-from anishift.config.user_settings import (
-    PALANTIR_ENROLLMENT_URL_PATTERN,
-    UserSettings,
-    load_user_settings,
-)
+from anishift.config.user_settings import PALANTIR_ENROLLMENT_URL_PATTERN
 from anishift.errors import AniShiftError, ConfigError, ErrorCode, ErrorContext
 from anishift.paths import config_dir, elevenreader_dir
 from anishift.platform.binaries import Binary, require_binary
@@ -42,7 +38,7 @@ from anishift.services.audio import (
 )
 from anishift.services.audio.commands import SubprocessRunner
 from anishift.services.audio.service import AudioProgressSink
-from anishift.services.audio.types import AudioCodecProfile, NormalizedClip, TimedClip, TimelinePolicy
+from anishift.services.audio.types import AudioCodecProfile, NormalizedClip, TimedClip
 from anishift.services.composition import CompositionConfig, CompositionService, QualityPreset
 from anishift.services.extraction import ExtractionService, extract_tracks, identify
 from anishift.services.llm import (
@@ -141,27 +137,9 @@ _TTS_RETRY_BACKOFF_S: Final[dict[str, tuple[float, ...]]] = {
 _DOCUMENT_SHUTDOWN_DEADLINE_S: Final[float] = 15.0
 """Time a document engine gets on shutdown to undo its account changes and close its browser."""
 
-_DIALOGUE_FONT_TASKS: Final[frozenset[TaskKind]] = frozenset(
-    {TaskKind.TRANSLATE_SUBTITLES, TaskKind.NORMALIZE_SUBTITLES, TaskKind.COMPOSE_MKV, TaskKind.COMPOSE_MP4}
-)
-"""Tasks drawing dialogue with the owner's font or carrying its files into a container."""
-
-
-class _TranslationExecutor(Protocol):
-    def translate_file(  # noqa: PLR0913
-        self,
-        spoken: list[SpokenLine],
-        displayed: list[DisplayedLine],
-        *,
-        source_lang: str = "auto",
-        target_lang: str = "pl",
-        cancel: TranslationCancellation | None = None,
-        observer: TranslationObserver | None = None,
-    ) -> FileTranslation: ...
-
 
 class ProductionHandlerFactory:
-    """Build only the concrete services required by one accepted plan."""
+    """Build the run-owned dispatcher whose provider services are made when a task first needs them."""
 
     __slots__ = ("_settings_provider",)
 
@@ -174,21 +152,11 @@ class ProductionHandlerFactory:
         plan: ExecutionPlan,
         source_groups: Mapping[str, InspectedSourceGroup],
     ) -> ExecutionHandlers:
-        """Construct a run-owned dispatcher from immutable execution choices."""
-        settings: Settings = self._settings_provider()
-        kinds: frozenset[TaskKind] = frozenset(task.kind for task in plan.tasks)
-        dialogue_font: DialogueFont | None = _dialogue_font(plan, kinds)
-        audio: _ConfiguredAudioService | None = _audio_service(plan, kinds)
-        tts_handler: TtsTaskHandler | None = self._tts_handler(settings, run_root, plan, kinds, audio)
-        audio_handler: AudioTaskHandler | None = self._audio_handler(run_root, plan, kinds, audio)
-        composition_handler: CompositionTaskHandler | None = self._composition_handler(
-            run_root,
-            plan,
-            kinds,
-            dialogue_font,
-        )
+        """Construct a run-owned dispatcher; each task builds its handler from the settings it starts with."""
+        ranks: dict[str, int] = {group.group_id: rank for rank, group in enumerate(plan.groups)}
+        services: RunServices = RunServices(self._settings_provider, run_root, ranks)
         publish_handler: PublishTaskHandler | None = None
-        if TaskKind.PUBLISH_ARTIFACT in kinds:
+        if any(task.kind is TaskKind.PUBLISH_ARTIFACT for task in plan.tasks):
             publish_handler = PublishTaskHandler(
                 run_root=run_root,
                 source_groups={group_id: group.source for group_id, group in source_groups.items()},
@@ -200,87 +168,116 @@ class ProductionHandlerFactory:
                 timeout_s=_EXTRACTION_TIMEOUT_S,
                 legacy=LegacyExtractionAdapter(identify, extract_tracks),
             ),
-            SubtitleTaskHandler(run_root=run_root, dialogue_font=dialogue_font),
-            TranslationTaskHandler(
-                _translation_service(settings, plan),
-                run_root=run_root,
-                chunk_config=_chunk_config(plan),
-                dialogue_font=dialogue_font,
-            ),
-            tts=tts_handler,
-            audio=audio_handler,
-            composition=composition_handler,
+            services.subtitles,
+            services.translation,
+            tts=services.tts,
+            audio=services.audio,
+            composition=services.composition,
             publish=publish_handler,
+            close_services=services.close,
         )
 
-    @staticmethod
-    def _tts_handler(
-        settings: Settings,
-        run_root: Path,
-        plan: ExecutionPlan,
-        kinds: frozenset[TaskKind],
-        audio: _ConfiguredAudioService | None,
-    ) -> TtsTaskHandler | None:
-        if TaskKind.SYNTHESIZE_SPEECH not in kinds:
-            return None
-        ffmpeg: Path = require_binary(Binary.FFMPEG)
-        ffprobe: Path = require_binary(Binary.FFPROBE)
-        runner = SubprocessRunner()
-        clip_cancel = threading.Event()
-        clips = FfmpegClipService(
+
+class RunServices:
+    """Provider services of one run, built on first use for each configuration and shared by equal ones."""
+
+    __slots__ = ("_audio", "_composition", "_group_ranks", "_lock", "_run_root", "_secrets", "_translation", "_tts")
+
+    def __init__(self, secrets: Callable[[], Settings], run_root: Path, group_ranks: Mapping[str, int]) -> None:
+        self._secrets: Callable[[], Settings] = secrets
+        self._run_root: Path = run_root
+        self._group_ranks: dict[str, int] = dict(group_ranks)
+        self._lock: threading.Lock = threading.Lock()
+        self._translation: list[tuple[_TranslationSetup, _TranslationRuntime]] = []
+        self._tts: list[tuple[TtsConfig, _RunTtsService]] = []
+        self._audio: list[tuple[AudioConfig, AudioService]] = []
+        self._composition: list[tuple[CompositionConfig, CompositionService]] = []
+
+    def subtitles(self, settings: RunSettingsSnapshot) -> SubtitleTaskHandler:
+        """Return the subtitle handler laying dialogue out with the font of *settings*."""
+        return SubtitleTaskHandler(run_root=self._run_root, dialogue_font=_dialogue_font(settings))
+
+    def translation(self, settings: RunSettingsSnapshot) -> TranslationTaskHandler:
+        """Return the translation handler of *settings*, sharing the service of an equal configuration."""
+        setup: _TranslationSetup = _translation_setup(self._secrets(), settings)
+        return TranslationTaskHandler(
+            _shared(self._lock, self._translation, setup, _translation_service),
+            run_root=self._run_root,
+            chunk_config=ChunkConfig(chunk_chars=settings.translation_chunk_chars),
+            dialogue_font=_dialogue_font(settings),
+        )
+
+    def tts(self, settings: RunSettingsSnapshot) -> TtsTaskHandler:
+        """Return the narrator of *settings*, sharing the TTS service, its tabs and its limits with an equal voice."""
+        config: TtsConfig = _tts_config(self._secrets(), settings)
+        return TtsTaskHandler(
+            _shared(self._lock, self._tts, config, self._tts_service),
+            run_root=self._run_root,
+            group_ranks=self._group_ranks,
+            voice_id=settings.tts_voice_id,
+            allowed_voice_ids=frozenset(settings.tts_allowed_voice_ids),
+            audio=_ConfiguredAudioService(self._audio_service(settings), settings.tts_postprocess_tempo),
+            reads_document=is_document_engine(settings.tts_profile_id),
+        )
+
+    def audio(self, settings: RunSettingsSnapshot) -> AudioTaskHandler:
+        """Return the mixer and transcoder of *settings*."""
+        config: AudioConfig = _audio_config(settings)
+        return AudioTaskHandler(
+            _ConfiguredAudioService(self._audio_service(settings), settings.tts_postprocess_tempo),
+            AudioTranscodeService(config),
+            run_root=self._run_root,
+        )
+
+    def composition(self, settings: RunSettingsSnapshot) -> CompositionTaskHandler:
+        """Return the composer of *settings*, carrying the dialogue font it names."""
+        config: CompositionConfig = CompositionConfig(quality_preset=QualityPreset(settings.composition_profile_id))
+        font: DialogueFont | None = _dialogue_font(settings)
+        return CompositionTaskHandler(
+            _shared(self._lock, self._composition, config, CompositionService),
+            run_root=self._run_root,
+            font_files=font.files if font is not None else (),
+        )
+
+    def close(self) -> None:
+        """Close every TTS service this run built, once, after its last task."""
+        with self._lock:
+            services: tuple[_RunTtsService, ...] = tuple(service for _, service in self._tts)
+            self._tts.clear()
+        for service in services:
+            service.close()
+
+    def _audio_service(self, settings: RunSettingsSnapshot) -> AudioService:
+        return _shared(self._lock, self._audio, _audio_config(settings), AudioService)
+
+    def _tts_service(self, config: TtsConfig) -> _RunTtsService:
+        clip_cancel: threading.Event = threading.Event()
+        clips: FfmpegClipService = FfmpegClipService(
             cancel=clip_cancel,
-            runner=runner,
-            ffmpeg=ffmpeg,
-            ffprobe=ffprobe,
+            runner=SubprocessRunner(),
+            ffmpeg=require_binary(Binary.FFMPEG),
+            ffprobe=require_binary(Binary.FFPROBE),
             timeout_s=_AUDIO_TIMEOUT_S,
             recording_timeout_s=_RECORDING_TIMEOUT_S,
         )
-        service = TtsService(
-            _tts_config(settings, plan),
-            resume_root=run_root / "tts",
+        service: TtsService = TtsService(
+            config,
+            resume_root=self._run_root / "tts",
             validator=clips,
             assembler=clips,
             splitter=clips,
         )
-        ranks: dict[str, int] = {group.group_id: rank for rank, group in enumerate(plan.groups)}
-        return TtsTaskHandler(
-            _RunTtsService(service, clip_cancel),
-            run_root=run_root,
-            group_ranks=ranks,
-            voice_id=plan.settings.tts_voice_id,
-            allowed_voice_ids=frozenset(plan.settings.tts_allowed_voice_ids),
-            audio=audio,
-            reads_document=is_document_engine(plan.settings.tts_profile_id),
-        )
+        return _RunTtsService(service, clip_cancel)
 
-    @staticmethod
-    def _audio_handler(
-        run_root: Path,
-        plan: ExecutionPlan,
-        kinds: frozenset[TaskKind],
-        audio: _ConfiguredAudioService | None,
-    ) -> AudioTaskHandler | None:
-        if audio is None or not kinds.intersection({TaskKind.MIX_NARRATION, TaskKind.TRANSCODE_AUDIO}):
-            return None
-        return AudioTaskHandler(audio, AudioTranscodeService(_audio_config(plan)), run_root=run_root)
 
-    @staticmethod
-    def _composition_handler(
-        run_root: Path,
-        plan: ExecutionPlan,
-        kinds: frozenset[TaskKind],
-        dialogue_font: DialogueFont | None = None,
-    ) -> CompositionTaskHandler | None:
-        if not kinds.intersection({TaskKind.COMPOSE_MKV, TaskKind.COMPOSE_MP4, TaskKind.COMPOSE_COVER}):
-            return None
-        service = CompositionService(
-            CompositionConfig(quality_preset=QualityPreset(plan.settings.composition_profile_id)),
-        )
-        return CompositionTaskHandler(
-            service,
-            run_root=run_root,
-            font_files=dialogue_font.files if dialogue_font is not None else (),
-        )
+def _shared[K, S](lock: threading.Lock, entries: list[tuple[K, S]], key: K, build: Callable[[K], S]) -> S:
+    with lock:
+        for existing, service in entries:
+            if existing == key:
+                return service
+        built: S = build(key)
+        entries.append((key, built))
+        return built
 
 
 class _RunTtsService:
@@ -322,16 +319,6 @@ class _ConfiguredAudioService:
 
     def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
         return self._service.prepare_clip(clip, tmp_root=tmp_root, tempo=self._post_process_tempo, cancel=cancel)
-
-
-def _audio_service(plan: ExecutionPlan, kinds: frozenset[TaskKind]) -> _ConfiguredAudioService | None:
-    """Build the one audio service a run shares between measuring clips in synthesis and mixing them."""
-    audio_kinds: frozenset[TaskKind] = frozenset(
-        {TaskKind.SYNTHESIZE_SPEECH, TaskKind.MIX_NARRATION, TaskKind.TRANSCODE_AUDIO}
-    )
-    if not kinds & audio_kinds:
-        return None
-    return _ConfiguredAudioService(AudioService(_audio_config(plan)), plan.settings.tts_postprocess_tempo)
 
 
 class _TranslationRuntime:
@@ -478,19 +465,41 @@ class _LlmRetryObserver:
         del error
 
 
-def _translation_service(settings: Settings, plan: ExecutionPlan) -> _TranslationExecutor:
-    snapshot = plan.settings
-    llm_cancel = threading.Event()
-    config = TranslationConfig(
-        engine=snapshot.translation_profile_id,
-        source_lang="auto",
-        batch_size=snapshot.translation_batch_size or DEFAULT_BATCH_SIZE,
-        max_retries=snapshot.translation_max_retries,
-        api_key=settings.deepl_api_key,
+@dataclass(frozen=True, slots=True)
+class _TranslationSetup:
+    """Complete configuration of one translation service, its model and its secrets included."""
+
+    config: TranslationConfig
+    llm: LlmConfig | None
+    llm_translation: LlmTranslateConfig
+
+
+def _translation_setup(secrets: Settings, snapshot: RunSettingsSnapshot) -> _TranslationSetup:
+    return _TranslationSetup(
+        TranslationConfig(
+            engine=snapshot.translation_profile_id,
+            source_lang="auto",
+            batch_size=snapshot.translation_batch_size or DEFAULT_BATCH_SIZE,
+            max_retries=snapshot.translation_max_retries,
+            api_key=secrets.deepl_api_key,
+        ),
+        _llm_config(secrets, snapshot) if snapshot.translation_profile_id == "llm" else None,
+        LlmTranslateConfig(
+            # An LLM reads the whole file at once, which keeps the prompts out
+            # of every extra request. Progress comes from the streamed answer,
+            # not from cutting the file up. Zero means no limit at all.
+            max_batch_lines=snapshot.translation_batch_size or None,
+            style_name=snapshot.llm_translation_style,
+            max_contract_retries=snapshot.translation_max_retries,
+        ),
     )
 
+
+def _translation_service(setup: _TranslationSetup) -> _TranslationRuntime:
+    llm_cancel = threading.Event()
+
     def engine_factory(engine_id: str, engine_config: TranslationConfig) -> TranslationEngine:
-        if engine_id != "llm":
+        if engine_id != "llm" or setup.llm is None:
             translated = TranslationConfig(
                 engine=engine_id,
                 source_lang=engine_config.source_lang,
@@ -499,20 +508,9 @@ def _translation_service(settings: Settings, plan: ExecutionPlan) -> _Translatio
                 api_key=engine_config.api_key,
             )
             return create_engine(translated)
-        return _LlmTranslationEngine(
-            _llm_config(settings, plan),
-            LlmTranslateConfig(
-                # An LLM reads the whole file at once, which keeps the prompts out
-                # of every extra request. Progress comes from the streamed answer,
-                # not from cutting the file up. Zero means no limit at all.
-                max_batch_lines=snapshot.translation_batch_size or None,
-                style_name=snapshot.llm_translation_style,
-                max_contract_retries=snapshot.translation_max_retries,
-            ),
-            cancel=llm_cancel,
-        )
+        return _LlmTranslationEngine(setup.llm, setup.llm_translation, cancel=llm_cancel)
 
-    service = TranslationService(config, engine_factory=engine_factory)
+    service = TranslationService(setup.config, engine_factory=engine_factory)
     return _TranslationRuntime(service, llm_cancel)
 
 
@@ -589,8 +587,7 @@ def _required_enrollment_url(enrollment_base_url: str) -> str:
     )
 
 
-def _llm_config(settings: Settings, plan: ExecutionPlan) -> LlmConfig:
-    snapshot = plan.settings
+def _llm_config(settings: Settings, snapshot: RunSettingsSnapshot) -> LlmConfig:
     if snapshot.llm_profile_id == PALANTIR_ENGINE_ID:
         return _palantir_translation_config(settings, snapshot)
     keys: dict[str, tuple[str, ...]] = {
@@ -617,14 +614,13 @@ def _llm_config(settings: Settings, plan: ExecutionPlan) -> LlmConfig:
 
 
 def _palantir_translation_config(settings: Settings, snapshot: RunSettingsSnapshot) -> LlmConfig:
-    """Resolve the translation alias, reading the enrollment address it needs."""
-    preferences: UserSettings = load_user_settings()
+    """Resolve the translation alias with the enrollment addresses of the task settings."""
     config: LlmConfig = palantir_llm_config(
         load_model_catalog(),
         snapshot.llm_model_id,
-        enrollment_base_url=preferences.palantir_enrollment_base_url,
+        enrollment_base_url=snapshot.palantir_enrollment_base_url,
         token=settings.palantir_token,
-        fallback_enrollment_base_url=preferences.palantir_fallback_enrollment_base_url,
+        fallback_enrollment_base_url=snapshot.palantir_fallback_enrollment_base_url,
         fallback_token=settings.palantir_secondary_token,
     )
     return replace(
@@ -635,8 +631,7 @@ def _palantir_translation_config(settings: Settings, snapshot: RunSettingsSnapsh
     )
 
 
-def _tts_config(settings: Settings, plan: ExecutionPlan) -> TtsConfig:
-    snapshot = plan.settings
+def _tts_config(settings: Settings, snapshot: RunSettingsSnapshot) -> TtsConfig:
     concurrency: int = snapshot.tts_request_concurrency
     config: TtsConfig = TtsConfig(
         engine_id=snapshot.tts_profile_id,
@@ -669,31 +664,24 @@ def _tts_config(settings: Settings, plan: ExecutionPlan) -> TtsConfig:
     )
 
 
-def _audio_config(plan: ExecutionPlan) -> AudioConfig:
-    snapshot = plan.settings
+def _audio_config(snapshot: RunSettingsSnapshot) -> AudioConfig:
     return AudioConfig(
         codec_profile=AudioCodecProfile(snapshot.audio_output_profile),
         bitrate=snapshot.audio_bitrate,
         narrator_over_source_lu=snapshot.narrator_over_source_lu,
         voice_mix_offset_db=snapshot.voice_mix_offset_db,
         original_gain_db=snapshot.original_gain_db,
-        timeline_policy=TimelinePolicy(snapshot.tts_timeline_policy),
     )
 
 
-def _dialogue_font(plan: ExecutionPlan, kinds: frozenset[TaskKind]) -> DialogueFont | None:
-    font_file: str = plan.settings.dialogue_font_file
-    if not font_file or not kinds & _DIALOGUE_FONT_TASKS:
+def _dialogue_font(snapshot: RunSettingsSnapshot) -> DialogueFont | None:
+    if not snapshot.dialogue_font_file:
         return None
     try:
-        return DialogueFont.from_file(Path(font_file))
+        return DialogueFont.from_file(Path(snapshot.dialogue_font_file))
     except SubtitleError as error:
         logger.warning("Dialogue font unusable, dialogue keeps the episode fonts", error_code=error.context.code.value)
         return None
-
-
-def _chunk_config(plan: ExecutionPlan) -> ChunkConfig:
-    return ChunkConfig(chunk_chars=plan.settings.translation_chunk_chars)
 
 
 def _mirror_translation_cancel(
