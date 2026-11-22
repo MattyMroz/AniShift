@@ -84,9 +84,15 @@ class _Context:
         self.page_error: Exception | None = None
         self.script_error: Exception | None = None
         self.cleared_domains: list[re.Pattern[str]] = []
+        self.tabs: list[FakePlaywrightPage] = []
+        self.page_sends: list[tuple[FakePlaywrightPage, str, dict[str, object]]] = []
+        self.page_cdp_error: Exception | None = None
 
     async def clear_cookies(self, *, domain: re.Pattern[str]) -> None:
         self.cleared_domains.append(domain)
+
+    async def new_cdp_session(self, page: FakePlaywrightPage) -> _PageCdp:
+        return _PageCdp(self, page)
 
     async def add_init_script(self, script: str) -> None:
         if self.script_error is not None:
@@ -96,7 +102,21 @@ class _Context:
     async def new_page(self) -> FakePlaywrightPage:
         if self.page_error is not None:
             raise self.page_error
-        return FakePlaywrightPage()
+        tab: FakePlaywrightPage = FakePlaywrightPage()
+        self.tabs.append(tab)
+        return tab
+
+
+class _PageCdp:
+    def __init__(self, context: _Context, page: FakePlaywrightPage) -> None:
+        self.context: _Context = context
+        self.page: FakePlaywrightPage = page
+
+    async def send(self, method: str, params: dict[str, object] | None = None) -> dict[str, object]:
+        if self.context.page_cdp_error is not None:
+            raise self.context.page_cdp_error
+        self.context.page_sends.append((self.page, method, params or {}))
+        return {}
 
 
 class _Cdp:
@@ -106,8 +126,8 @@ class _Cdp:
     async def send(self, method: str, params: dict[str, object] | None = None) -> dict[str, object]:
         self.browser.sent.append(method)
         if method != "Browser.close":
-            self.browser.params.append(params or {})
-            return {}
+            refusal: str = f"Protocol error ({method}): Internal error"
+            raise PlaywrightError(refusal)
         self.browser.process.exit_requested = self.browser.exits
         self.browser.connected = False
         message: str = "Target page, context or browser has been closed"
@@ -122,7 +142,6 @@ class _Browser:
         self.exits: bool = True
         self.cdp_error: Exception | None = None
         self.sent: list[str] = []
-        self.params: list[dict[str, object]] = []
         self.close_error: Exception | None = None
 
     def is_connected(self) -> bool:
@@ -291,8 +310,26 @@ def test_chrome_session_forget_site_clears_only_elevenreader_cookies_and_origin_
         False,
         False,
     ]
-    assert chrome.browser.sent == ["Storage.clearDataForOrigin", "Browser.close"]
-    assert chrome.browser.params == [{"origin": "https://elevenreader.io", "storageTypes": "all"}]
+    context: _Context = chrome.browser.contexts[0]
+    assert chrome.browser.sent == ["Browser.close"]
+    assert context.page_sends == [
+        (context.tabs[0], "Storage.clearDataForOrigin", {"origin": "https://elevenreader.io", "storageTypes": "all"})
+    ]
+    assert context.tabs[0].closed
+
+
+def test_chrome_session_forget_site_cdp_failing_raises_unavailable_and_closes_its_tab(chrome: _Chrome) -> None:
+    session = ChromeSession(chrome.root)
+    asyncio.run(session.start())
+    context: _Context = chrome.browser.contexts[0]
+    context.page_cdp_error = PlaywrightError("Protocol error (Storage.clearDataForOrigin): Internal error")
+
+    with pytest.raises(TtsProviderUnavailableError, match="site data") as raised:
+        asyncio.run(session.forget_site())
+    asyncio.run(session.close())
+
+    assert raised.value.__cause__ is None
+    assert context.tabs[0].closed
 
 
 def test_chrome_session_forget_site_before_start_raises_unavailable(chrome: _Chrome) -> None:

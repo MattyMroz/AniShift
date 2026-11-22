@@ -49,11 +49,15 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
   Playwright i CDP, bez czekania na zamknięcie i bez sprawdzania sesji. Blokadę AniShift zwalnia od razu; dalej
   profil chroni `lockfile` samego Chrome. Właściciel loguje się sam; `session.json` aktualizuje następne nagranie
   (`require_signed_in`), a zaległe sprzątanie konta robi gospodarz przy nagraniu i ostatnim `release`.
-  Wyścig: między zwolnieniem blokady a utworzeniem `lockfile` przez nowe Chrome nagranie może wystartować drugie
-  Chrome na profilu; to przekazuje adres pierwszemu i kończy się, więc próba dostaje błąd przejściowy i ponawia.
+  Wyścig między zwolnieniem blokady a utworzeniem `lockfile` działa w obie strony, bo drugie Chrome na profilu
+  przekazuje adres pierwszemu i kończy się: gdy okno wystartuje pierwsze, Chrome nagrania kończy się i próba
+  dostaje błąd przejściowy z ponowieniem; gdy pierwsze wystartuje headless Chrome nagrania, okno oddaje mu adres i
+  znika, panel mówi „Otwarto okno”, choć okna nie widać, a ponowne Zaloguj daje „profil w użyciu” do końca nagrania.
 - `sign_out` (panel „Wyloguj (usuń ciasteczka ElevenReadera)”) startuje `ChromeSession` (zajęty profil →
   `SignOutOutcome.BUSY`), `forget_site` usuwa ciasteczka domen `SITE_COOKIE_DOMAIN` (elevenreader.io i subdomeny,
-  `BrowserContext.clear_cookies`) i dane originu `SITE_ORIGIN` (CDP `Storage.clearDataForOrigin`, `all`), bo
+  `BrowserContext.clear_cookies`) i dane originu `SITE_ORIGIN` (CDP `Storage.clearDataForOrigin`, `all`, przez
+  sesję CDP świeżej karty: z sesji przeglądarki Chromium odpowiada „Internal error” i nic nie czyści, próba
+  2026-11-22 na lokalnym originie z localStorage, IndexedDB i ciasteczkiem), bo
   Firebase trzyma logowanie i stan App Check w IndexedDB strony, nie tylko w ciasteczkach. Reszta profilu (konto
   Google, inne strony) zostaje. Potem łagodne `close` (zapis profilu) i `signed_in: false` przez `write_session`,
   które zachowuje zaległe `restore` i `documents`. Tylko na polecenie właściciela: kod nigdy nie czyści danych sam,

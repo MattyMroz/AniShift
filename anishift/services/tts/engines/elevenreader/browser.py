@@ -32,7 +32,7 @@ from .constants import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from playwright.async_api import Browser, BrowserContext, CDPSession, Playwright
+    from playwright.async_api import Browser, BrowserContext, CDPSession, Page, Playwright
 
 __all__ = ["ChromeBusyError", "ChromeMissingError", "ChromeSession", "open_window"]
 
@@ -117,13 +117,17 @@ class ChromeSession:
 
     async def forget_site(self) -> None:
         """Delete the ElevenReader cookies and site data from the profile, leaving every other site alone."""
-        if self._browser is None or self._context is None:
+        if self._context is None:
             message: str = "ElevenReader browser is not started"
             raise unavailable_error(message)
         try:
             await self._context.clear_cookies(domain=SITE_COOKIE_DOMAIN)
-            cdp: CDPSession = await self._browser.new_browser_cdp_session()
-            await cdp.send("Storage.clearDataForOrigin", {"origin": SITE_ORIGIN, "storageTypes": "all"})
+            tab: Page = await self._context.new_page()
+            try:
+                cdp: CDPSession = await self._context.new_cdp_session(tab)
+                await cdp.send("Storage.clearDataForOrigin", {"origin": SITE_ORIGIN, "storageTypes": "all"})
+            finally:
+                await tab.close()
         except PlaywrightError:
             reason: str = "ElevenReader site data could not be deleted"
             raise unavailable_error(reason) from None
