@@ -59,7 +59,7 @@ from anishift.application.intents import (
     SubtitleOutputFormat,
     SubtitleSourcePolicy,
 )
-from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, TaskKind
+from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot, TaskKind
 from anishift.application.ready import ReadyMove, ReadyStore
 from anishift.application.results import GroupStatus, RunResult
 from anishift.application.scheduler import RunHandle
@@ -137,15 +137,15 @@ def _service(  # noqa: PLR0913 - one builder for every service variant the tests
     ) -> TaskHandler:
         del plan
         discovered_groups = {group_id: group.source for group_id, group in source_groups.items()}
+        ranks: dict[str, int] = {group_id: index for index, group_id in enumerate(source_groups)}
+        voice: TtsTaskHandler | None = (
+            None if tts is None else TtsTaskHandler(tts, run_root=run_root, group_ranks=ranks)
+        )
         delegate = ExecutionHandlers(
             ExtractionTaskHandler(_UnusedExtraction(), run_root=run_root, timeout_s=30.0),
-            SubtitleTaskHandler(run_root=run_root),
-            TranslationTaskHandler(translation, run_root=run_root),
-            tts=TtsTaskHandler(
-                tts, run_root=run_root, group_ranks={group_id: index for index, group_id in enumerate(source_groups)}
-            )
-            if tts is not None
-            else None,
+            lambda _: SubtitleTaskHandler(run_root=run_root),
+            lambda _: TranslationTaskHandler(translation, run_root=run_root),
+            tts=None if voice is None else lambda _: voice,
             publish=PublishTaskHandler(run_root=run_root, source_groups=discovered_groups),
         )
         return FailingGroupHandler(delegate, group_id=fail_group_id)
@@ -1543,33 +1543,29 @@ def test_two_submitted_plans_stay_independent_and_share_one_cleanup(
         service.close()
 
 
-def test_settings_draft_and_plan_snapshot_are_detached(tmp_path: Path) -> None:
-    write_text_source(tmp_path / "Episode.txt", "Text")
+def test_a_settings_draft_reaches_the_run_settings_only_when_saved(tmp_path: Path) -> None:
     service: AppService = _service(tmp_path, FakeTranslationService())
-    group_id: str = service.discover().groups[0].group_id
     draft = service.settings_snapshot()
     draft.translation_concurrency = 3
     draft.tts_voice_profiles = {
         key: replace(profile, postprocess_tempo=1.5) for key, profile in draft.tts_voice_profiles.items()
     }
-    plan: ExecutionPlan = service.plan_auto(
-        (group_id,),
-        AutoPresetDraft("preview", "Preview", ProductIntent(frozenset({ProductKind.FULL_PL}))),
-    )
+    before: RunSettingsSnapshot = service.run_settings()
 
     service.save_settings(draft)
 
-    assert plan.settings.translation_concurrency == 1
-    assert plan.settings.llm_max_concurrency == 4
-    assert plan.settings.tts_postprocess_tempo == 1.25
-    assert plan.settings.tts_voice_label == "Dallin"
-    assert plan.settings.tts_group_jobs == 1
-    assert plan.settings.tts_request_concurrency == 85
-    assert plan.settings.processing_order_policy is ProcessingOrderPolicy.READY_FIRST
+    assert before.translation_concurrency == 1
+    assert before.llm_max_concurrency == 4
+    assert before.tts_postprocess_tempo == 1.25
+    assert before.tts_group_jobs == 1
+    assert before.tts_request_concurrency == 85
+    assert before.processing_order_policy is ProcessingOrderPolicy.READY_FIRST
+    assert service.run_settings().translation_concurrency == 3
+    assert service.run_settings().tts_postprocess_tempo == 1.5
     assert service.settings_snapshot().translation_concurrency == 3
 
 
-def test_service_rebuild_preview_preserves_files_and_run_only_settings(tmp_path: Path) -> None:
+def test_service_rebuild_preview_preserves_files_and_settings(tmp_path: Path) -> None:
     write_text_source(tmp_path / "Episode.txt", "Text")
     target: Path = tmp_path / "Episode.pl.srt"
     previous: bytes = b"1\n00:00:00,000 --> 00:00:01,000\nPrevious Polish text\n"
@@ -1586,19 +1582,15 @@ def test_service_rebuild_preview_preserves_files_and_run_only_settings(tmp_path:
         (group_id,),
         preset,
         rebuild=RebuildRequest(frozenset({ProductKind.FULL_PL})),
-        overrides={"tts_voice_id": "one-run-voice", "tts_postprocess_tempo": 1.5},
     )
 
     assert ordinary.tasks == ()
     assert forced.can_execute
     assert TaskKind.TRANSLATE_SUBTITLES in {task.kind for task in forced.tasks}
-    assert forced.settings.tts_voice_id == "one-run-voice"
-    assert forced.settings.tts_postprocess_tempo == 1.5
     assert target.read_bytes() == previous
     assert translation.calls == []
     assert service.settings_snapshot() == preferences
     assert service.list_presets() == stored_presets
-    assert service.plan_auto((group_id,), preset).settings == ordinary.settings
 
     try:
         result: RunResult = service.execute(forced, CollectingRunSink())
@@ -1634,38 +1626,27 @@ def test_failed_rebuild_preserves_previous_product(tmp_path: Path) -> None:
         service.close()
 
 
-def test_auto_plan_preserves_ready_first_four_file_llm_queue(tmp_path: Path) -> None:
-    write_text_source(tmp_path / "Episode.txt", "Text")
+def test_the_run_settings_keep_the_ready_first_four_file_llm_queue(tmp_path: Path) -> None:
     preferences = UserSettings(
         translation_engine="llm",
         llm_max_concurrency=4,
         processing_order_policy="ready_first",
     )
     service: AppService = _service(tmp_path, FakeTranslationService(), user_settings=preferences)
-    group_id: str = service.discover().groups[0].group_id
-    plan: ExecutionPlan = service.plan_auto(
-        (group_id,),
-        AutoPresetDraft("preview", "Preview", ProductIntent(frozenset({ProductKind.FULL_PL}))),
-    )
-    limits: ResourceLimits = ResourceLimits.from_settings(plan.settings)
+    settings: RunSettingsSnapshot = service.run_settings()
+    limits: ResourceLimits = ResourceLimits.from_settings(settings, extraction=1)
 
-    assert plan.settings.processing_order_policy is ProcessingOrderPolicy.READY_FIRST
-    assert limits.worker_limit("llm:gemini", plan.settings) == 4
+    assert settings.processing_order_policy is ProcessingOrderPolicy.READY_FIRST
+    assert limits.worker_limit("llm:gemini") == 4
 
 
-def test_auto_keeps_legacy_single_episode_tts_with_provider_request_concurrency(tmp_path: Path) -> None:
-    write_text_source(tmp_path / "Episode.txt", "Text")
+def test_auto_keeps_single_episode_tts_with_provider_request_concurrency(tmp_path: Path) -> None:
     service: AppService = _service(tmp_path, FakeTranslationService())
-    group_id: str = service.discover().groups[0].group_id
+    settings: RunSettingsSnapshot = service.run_settings()
+    limits: ResourceLimits = ResourceLimits.from_settings(settings, extraction=1)
 
-    plan: ExecutionPlan = service.plan_auto(
-        (group_id,),
-        AutoPresetDraft("preview", "Preview", ProductIntent(frozenset({ProductKind.FULL_PL}))),
-    )
-    limits: ResourceLimits = ResourceLimits.from_settings(plan.settings)
-
-    assert limits.worker_limit(f"tts:{plan.settings.tts_profile_id}", plan.settings) == 1
-    assert plan.settings.tts_request_concurrency == 85
+    assert limits.worker_limit(f"tts:{settings.tts_profile_id}") == 1
+    assert settings.tts_request_concurrency == 85
 
 
 def test_auto_uses_the_legacy_extraction_pool_size(

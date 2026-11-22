@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -86,7 +87,7 @@ _MAX_INPUTS: Final[int] = 2
 """Inputs of a synthesis: the script, then optionally the on-screen signs the narrator may read."""
 
 _SIGN_MODES: Final[frozenset[str]] = frozenset({"smart", "always"})
-"""Sign narration modes that plan sign candidates for synthesis."""
+"""Sign narration modes in which synthesis reads the planned sign candidates."""
 
 _PREPARE_WORKERS: Final[int] = 4
 """Clips normalized at once to measure their true length."""
@@ -98,26 +99,24 @@ logger = get_logger(__name__)
 
 
 class TtsExecutor(Protocol):
-    """One run-scoped synchronous TTS facade sharing its provider runtime."""
+    """One run-scoped synchronous TTS facade shared by the tasks of one voice configuration."""
 
     def synthesize(self, batch: SpeechBatch, *, callbacks: TtsProgressObserver) -> SpeechBatchResult:
         """Synthesize one group batch on the shared event-loop thread."""
         ...
 
     def cancel(self) -> None:
-        """Cancel all provider work belonging to the current run."""
-        ...
-
-    def close(self) -> None:
-        """Close the shared provider runtime exactly once after the run."""
+        """Cancel all provider work of this facade."""
         ...
 
 
 class ClipPreparer(Protocol):
     """Run audio service normalizing one clip exactly as the narration mix will."""
 
-    def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
-        """Normalize one clip into its reusable PCM artifact."""
+    def prepare_clip(
+        self, clip: TimedClip, *, tmp_root: Path, tempo: float, cancel: threading.Event | None
+    ) -> NormalizedClip:
+        """Normalize one clip at *tempo* into its reusable PCM artifact."""
         ...
 
 
@@ -148,11 +147,12 @@ class NarrationManifestClip:
 
 @dataclass(frozen=True, slots=True)
 class NarrationManifest:
-    """Private handoff from synthesis to audio mixing, carrying the reading its clips were recorded for."""
+    """Private handoff from synthesis to audio mixing, carrying the reading and tempo its clips were placed for."""
 
     scope_id: str
     clips: tuple[NarrationManifestClip, ...]
     timeline: NarrationTimeline
+    tempo: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +215,8 @@ class TtsTaskHandler:
         "_reads_document",
         "_run_root",
         "_service",
+        "_sign_narration",
+        "_tempo",
         "_voice_id",
     )
 
@@ -228,10 +230,14 @@ class TtsTaskHandler:
         allowed_voice_ids: frozenset[str] = frozenset(),
         audio: ClipPreparer | None = None,
         reads_document: bool = False,
+        tempo: float = 1.0,
+        sign_narration: str = "off",
     ) -> None:
         self._service: TtsExecutor = service
         self._reads_document: bool = reads_document
         self._audio: ClipPreparer | None = audio
+        self._tempo: float = tempo
+        self._sign_narration: str = sign_narration
         self._run_root: Path = run_root
         self._voice_id: str = voice_id
         self._allowed_voice_ids: frozenset[str] = allowed_voice_ids
@@ -270,17 +276,17 @@ class TtsTaskHandler:
         batch_rank: int | None = self._group_ranks.get(task.group_id)
         if batch_rank is None:
             _raise_execution("TTS task group is missing its natural-order rank")
-        signs: _SignReading | None = _sign_reading(task, artifacts, self._audio)
+        signs: _SignReading | None = _sign_reading(task, artifacts, self._audio, self._sign_narration)
         in_document: tuple[SignCandidate, ...] = signs.candidates if signs is not None and self._reads_document else ()
         sign_requests, sign_timings = _sign_batch(task.group_id, in_document, first_rank=len(requests))
         batch = SpeechBatch(task.group_id, batch_rank, (*requests, *sign_requests))
         result: SpeechBatchResult = self._synthesize(batch, task, cancel, progress)
         spoken, read_signs = _split_signs(result, frozenset(timing.request_id for timing in sign_timings))
-        manifest: NarrationManifest = _manifest(spoken, timings, task.group_id, timeline)
+        manifest: NarrationManifest = _manifest(spoken, timings, task.group_id, timeline, tempo=self._tempo)
         metadata: dict[str, str | int | bool] = {}
         if signs is not None:
             recorded: dict[int, NarrationManifestClip] | None = (
-                _sign_clips(read_signs, sign_timings, task.group_id) if self._reads_document else None
+                _sign_clips(read_signs, sign_timings, task.group_id, self._tempo) if self._reads_document else None
             )
             manifest, metadata = self._with_signs(task, signs, manifest, recorded, cancel, progress)
         destination: Path = task_staging_path(self._run_root, task, output, ".json")
@@ -317,7 +323,7 @@ class TtsTaskHandler:
     ) -> tuple[NarrationManifest, dict[str, str | int | bool]]:
         """Add the sign readings that fit the pauses of the spoken lines, recording the reachable ones if unread."""
         tmp_root: Path = self._run_root / task.group_id / "audio"
-        lines: tuple[NormalizedClip, ...] = _prepare(signs.audio, manifest.clips, tmp_root, cancel)
+        lines: tuple[NormalizedClip, ...] = _prepare(signs.audio, manifest.clips, tmp_root, self._tempo, cancel)
         wanted: tuple[SignCandidate, ...] = signs.candidates
         if recorded is None:
             baseline: TimelinePlan | None = plan_timeline(lines)
@@ -326,7 +332,9 @@ class TtsTaskHandler:
         unrecorded: tuple[int, ...] = tuple(candidate.group for candidate in wanted if candidate.group not in recorded)
         if unrecorded:
             logger.warning("Signs left out without a recording", task_id=task.task_id, unrecorded=len(unrecorded))
-        prepared: tuple[NormalizedClip, ...] = _prepare(signs.audio, tuple(recorded.values()), tmp_root, cancel)
+        prepared: tuple[NormalizedClip, ...] = _prepare(
+            signs.audio, tuple(recorded.values()), tmp_root, self._tempo, cancel
+        )
         selection: SignSelection = select_signs(
             signs.candidates, {clip.timed_clip.source_order: clip for clip in prepared}, lines, signs.mode
         )
@@ -362,21 +370,13 @@ class TtsTaskHandler:
             return {}
         requests, timings = _sign_batch(task.group_id, wanted, first_rank=0)
         batch = SpeechBatch(task.group_id, self._group_ranks[task.group_id], requests)
-        return _sign_clips(self._synthesize(batch, task, cancel, progress), timings, task.group_id)
+        return _sign_clips(self._synthesize(batch, task, cancel, progress), timings, task.group_id, self._tempo)
 
     def _require_offered_voice(self) -> None:
         """Refuse a voice the chosen engine does not offer before a single request is paid for."""
         if not self._allowed_voice_ids or self._voice_id in self._allowed_voice_ids:
             return
         _raise_execution("The selected voice is not one the chosen TTS engine offers")
-
-    def cancel(self) -> None:
-        """Forward run cancellation to the shared TTS facade."""
-        self._service.cancel()
-
-    def close(self) -> None:
-        """Close the shared TTS facade once at the run boundary."""
-        self._service.close()
 
     def _watch_cancel(self, cancel: CancellationToken, stop: threading.Event) -> None:
         while not stop.wait(0.05):
@@ -395,12 +395,13 @@ def load_narration_manifest(path: Path) -> NarrationManifest:
         raise ExecutionError(context=context) from error
 
 
-def build_narration_manifest(
+def build_narration_manifest(  # noqa: PLR0913 - every manifest fact stays an explicit keyword
     result: SpeechBatchResult,
     timings: tuple[NarrationTiming, ...],
     *,
     expected_scope_id: str,
     timeline: NarrationTimeline,
+    tempo: float,
     allow_missing_clips: bool = False,
 ) -> NarrationManifest:
     """Restore caller timing by request ID; a request without a clip fails with the batch failure unless allowed."""
@@ -438,19 +439,20 @@ def build_narration_manifest(
                 clip.duration_ms,
             )
         )
-    return NarrationManifest(result.scope_id, tuple(clips), timeline)
+    return NarrationManifest(result.scope_id, tuple(clips), timeline, tempo)
 
 
-def _sign_reading(task: PlanTask, artifacts: ArtifactSnapshot, audio: ClipPreparer | None) -> _SignReading | None:
-    """Return the validated signs a task plans to read, before a single request is paid for."""
-    if len(task.requires) < _MAX_INPUTS:
+def _sign_reading(
+    task: PlanTask, artifacts: ArtifactSnapshot, audio: ClipPreparer | None, mode: str
+) -> _SignReading | None:
+    """Return the validated signs the task reads in *mode*, before a single request is paid for."""
+    if len(task.requires) < _MAX_INPUTS or mode not in _SIGN_MODES:
         return None
     signs: Artifact = artifacts.require_ready(task.requires[1])
-    mode: str | int | bool | None = dict(task.parameters).get("sign_narration")
-    if signs.kind is not ArtifactKind.SIGN_CANDIDATES or signs.path is None or not isinstance(mode, str):
-        _raise_execution("TTS sign narration requires planned sign candidates and a reading mode")
-    if mode not in _SIGN_MODES or audio is None:
-        _raise_execution("TTS sign narration requires a reading mode and the run audio service")
+    if signs.kind is not ArtifactKind.SIGN_CANDIDATES or signs.path is None:
+        _raise_execution("TTS sign narration requires planned sign candidates")
+    if audio is None:
+        _raise_execution("TTS sign narration requires the run audio service")
     try:
         candidates: tuple[SignCandidate, ...] = load_sign_candidates(signs.path)
     except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
@@ -485,12 +487,13 @@ def _split_signs(result: SpeechBatchResult, sign_ids: frozenset[str]) -> tuple[S
     return replace(result, requests=spoken), replace(result, requests=signs)
 
 
-def _manifest(
+def _manifest(  # noqa: PLR0913 - mirrors build_narration_manifest
     result: SpeechBatchResult,
     timings: tuple[NarrationTiming, ...],
     scope_id: str,
     timeline: NarrationTimeline,
     *,
+    tempo: float,
     allow_missing_clips: bool = False,
 ) -> NarrationManifest:
     try:
@@ -499,6 +502,7 @@ def _manifest(
             timings,
             expected_scope_id=scope_id,
             timeline=timeline,
+            tempo=tempo,
             allow_missing_clips=allow_missing_clips,
         )
     except ValueError as error:
@@ -506,11 +510,11 @@ def _manifest(
 
 
 def _sign_clips(
-    result: SpeechBatchResult, timings: tuple[NarrationTiming, ...], scope_id: str
+    result: SpeechBatchResult, timings: tuple[NarrationTiming, ...], scope_id: str, tempo: float
 ) -> dict[int, NarrationManifestClip]:
     """Return the recorded sign clips by sign group; a sign skipped or failed by the engine is missing."""
     manifest: NarrationManifest = _manifest(
-        result, timings, scope_id, NarrationTimeline.SOURCE_TIMES, allow_missing_clips=True
+        result, timings, scope_id, NarrationTimeline.SOURCE_TIMES, tempo=tempo, allow_missing_clips=True
     )
     return {clip.source_order: clip for clip in manifest.clips}
 
@@ -519,6 +523,7 @@ def _prepare(
     audio: ClipPreparer,
     clips: tuple[NarrationManifestClip, ...],
     tmp_root: Path,
+    tempo: float,
     cancel: CancellationToken,
 ) -> tuple[NormalizedClip, ...]:
     event: threading.Event = threading.Event()
@@ -526,7 +531,7 @@ def _prepare(
 
     def prepare(clip: NarrationManifestClip) -> NormalizedClip:
         cancel.raise_if_cancelled()
-        return audio.prepare_clip(timed_clip(clip), tmp_root=tmp_root, cancel=event)
+        return audio.prepare_clip(timed_clip(clip), tmp_root=tmp_root, tempo=tempo, cancel=event)
 
     watcher: threading.Thread = threading.Thread(target=mirror_cancel, args=(cancel, event, stop), daemon=True)
     watcher.start()
@@ -559,6 +564,7 @@ def _manifest_json(manifest: NarrationManifest) -> dict[str, object]:
     return {
         "scope_id": manifest.scope_id,
         "timeline": manifest.timeline.value,
+        "tempo": manifest.tempo,
         "clips": [
             {
                 "request_id": clip.request_id,
@@ -692,7 +698,10 @@ def _decode_manifest(payload: object) -> NarrationManifest:
     if not isinstance(raw_clips, list):
         raise TypeError
     clips: tuple[NarrationManifestClip, ...] = tuple(_manifest_clip(item) for item in raw_clips)
-    return NarrationManifest(payload["scope_id"], clips, NarrationTimeline(payload["timeline"]))
+    tempo: object = payload["tempo"]
+    if not isinstance(tempo, int | float) or isinstance(tempo, bool) or not math.isfinite(tempo) or tempo <= 0:
+        raise ValueError
+    return NarrationManifest(payload["scope_id"], clips, NarrationTimeline(payload["timeline"]), float(tempo))
 
 
 def _raise_execution(message: str) -> Never:

@@ -50,7 +50,6 @@ def _task(
         requires=requires,
         produces=(produces,),
         depends_on=(),
-        resource_key="composition:balanced",
         parameters=parameters,
     )
 

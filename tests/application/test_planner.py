@@ -37,9 +37,10 @@ from anishift.application.planning import (
     ProcessingOrderPolicy,
     RunSettingsSnapshot,
     TaskKind,
+    resource_family,
 )
 from anishift.application.products import product_path
-from anishift.application.scheduler import ResourceLimits
+from anishift.application.scheduler_contracts import ResourceLimits, is_remote, resource_key
 from anishift.errors import PlanningError
 from anishift.services.media.types import ContainerKind, MediaCatalog, MediaTrack, MediaTrackKind
 
@@ -54,7 +55,6 @@ def _settings() -> RunSettingsSnapshot:
         tts_profile_id="edge",
         tts_max_retries=2,
         tts_group_jobs=4,
-        audio_profile_id="default",
         composition_profile_id="balanced",
         processing_order_policy=ProcessingOrderPolicy.READY_FIRST,
         audio_output_profile="eac3",
@@ -346,14 +346,12 @@ def test_narration_rebuild_reuses_full_translation_without_original_subtitles() 
     narration: Artifact = _artifact(ArtifactKind.NARRATION_AUDIO, "1.eac3", audio_codec="eac3")
     group: InspectedSourceGroup = _group(video, full, narration)
     products: ProductIntent = ProductIntent(frozenset({ProductKind.NARRATION_AUDIO}))
-    settings: RunSettingsSnapshot = _settings()
 
     plan: ExecutionPlan = plan_auto(
         (group,),
         _preset(products),
-        settings,
+        _settings(),
         rebuild=RebuildRequest(frozenset({ProductKind.NARRATION_AUDIO})),
-        overrides={"tts_voice_id": "replacement-voice", "voice_mix_offset_db": 2.0},
     )
 
     assert plan.can_execute
@@ -362,9 +360,6 @@ def test_narration_rebuild_reuses_full_translation_without_original_subtitles() 
     assert _task(plan, TaskKind.SPLIT_SUBTITLES).requires == (full.artifact_id,)
     assert TaskKind.SYNTHESIZE_SPEECH in _task_kinds(plan)
     assert narration.artifact_id not in {artifact_id for task in plan.tasks for artifact_id in task.requires}
-    assert plan.settings.tts_voice_id == "replacement-voice"
-    assert plan.settings.voice_mix_offset_db == 2.0
-    assert settings == _settings()
 
 
 def test_export_rebuild_does_not_need_deleted_translation_or_tts_inputs() -> None:
@@ -404,26 +399,17 @@ def test_rebuild_includes_explicit_product_missing_from_preset() -> None:
 
 
 @pytest.mark.parametrize(
-    "overrides",
+    "changes",
     [
-        {"unknown_setting": "value"},
-        {"tts_voice_id": 1},
         {"tts_voice_id": ""},
         {"tts_postprocess_tempo": 0.0},
         {"tts_postprocess_tempo": float("nan")},
-        {"tts_request_concurrency": True},
         {"tts_request_concurrency": 0},
-        {"tts_engine_options": (("rate", object()),)},
-        {"audio_language_priority": ("jpn", 1)},
     ],
 )
-def test_run_only_overrides_reject_unknown_fields_invalid_types_and_invalid_values(
-    overrides: dict[str, object],
-) -> None:
-    products: ProductIntent = ProductIntent(frozenset({ProductKind.MKV}))
-
-    with pytest.raises(ValueError, match=r"[Uu]nknown run|[Ii]nvalid value|[Rr]untime IDs|tempo|concurrency"):
-        plan_auto((), _preset(products), _settings(), overrides=overrides)
+def test_the_settings_snapshot_rejects_invalid_values(changes: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match=r"[Rr]untime IDs|tempo|concurrency"):
+        replace(_settings(), **changes)  # type: ignore[arg-type]
 
 
 def test_source_rebuild_cannot_overwrite_an_original_sidecar() -> None:
@@ -722,28 +708,15 @@ def test_auto_sidecar_translation_narration_and_mkv_share_only_needed_tasks() ->
     assert kinds.count(TaskKind.TRANSLATE_SUBTITLES) == 1
     assert kinds.count(TaskKind.SPLIT_SUBTITLES) == 1
     split = next(task for task in plan.tasks if task.kind is TaskKind.SPLIT_SUBTITLES)
-    assert split.resource_key == "subtitles"
-    assert split.is_network is False
-    assert split.is_paid is False
+    assert resource_family(split.kind) == "subtitles"
+    assert is_remote(split, _settings()) is False
     assert kinds.count(TaskKind.SYNTHESIZE_SPEECH) == 1
     assert kinds.count(TaskKind.MIX_NARRATION) == 1
     assert kinds.count(TaskKind.COMPOSE_MKV) == 1
 
 
-def test_sign_narration_off_plans_exactly_what_was_planned_before() -> None:
-    video: Artifact = _artifact(ArtifactKind.VIDEO_MP4, "1.mp4")
-    sidecar: Artifact = _artifact(ArtifactKind.SOURCE_SUBTITLES, "1.ass", subtitle_format="ass")
-    products: ProductIntent = ProductIntent(frozenset({ProductKind.NARRATION_AUDIO}))
-
-    plan: ExecutionPlan = plan_auto((_group(video, sidecar),), _preset(products), _settings())
-
-    assert ArtifactKind.SIGN_CANDIDATES not in {artifact.kind for artifact in plan.artifacts}
-    assert all(name != "sign_narration" for task in plan.tasks for name, _ in task.parameters)
-    assert _task(plan, TaskKind.SYNTHESIZE_SPEECH).requires == _task(plan, TaskKind.SPLIT_SUBTITLES).produces
-
-
-@pytest.mark.parametrize("mode", ["smart", "always"])
-def test_sign_narration_adds_sign_candidates_from_the_spoken_split_to_synthesis(mode: str) -> None:
+@pytest.mark.parametrize("mode", ["off", "smart", "always"])
+def test_the_spoken_ass_split_always_writes_sign_candidates_for_synthesis_whatever_the_sign_mode(mode: str) -> None:
     video: Artifact = _artifact(ArtifactKind.VIDEO_MP4, "1.mp4")
     sidecar: Artifact = _artifact(ArtifactKind.SOURCE_SUBTITLES, "1.ass", subtitle_format="ass")
     products: ProductIntent = ProductIntent(frozenset({ProductKind.NARRATION_AUDIO}))
@@ -757,8 +730,8 @@ def test_sign_narration_adds_sign_candidates_from_the_spoken_split_to_synthesis(
 
     assert [artifacts[item].kind for item in split.produces] == [ArtifactKind.SPOKEN_PL, ArtifactKind.SIGN_CANDIDATES]
     assert synthesis.requires == split.produces
-    assert ("sign_narration", mode) in split.parameters
-    assert ("sign_narration", mode) in synthesis.parameters
+    assert all(name != "sign_narration" for task in plan.tasks for name, _ in task.parameters)
+    assert plan == plan_auto((_group(video, sidecar),), _preset(products), _settings())
     assert plan.can_execute
 
 
@@ -787,7 +760,7 @@ def test_subtitle_branches_share_translation_but_not_failure_dependencies() -> N
 
     assert plan.can_execute
     assert len(splits) == 2
-    assert all(len(task.produces) == 1 for task in splits)
+    assert all(artifacts[item].kind is ArtifactKind.SIGN_CANDIDATES for task in splits for item in task.produces[1:])
     assert {artifacts[task.produces[0]].kind for task in splits} == {
         ArtifactKind.SPOKEN_PL,
         ArtifactKind.DISPLAYED_PL,
@@ -824,8 +797,10 @@ def test_manual_regeneration_keeps_requested_branches_and_reuses_full_polish() -
     assert plan.groups[0].intent.products == products
     assert TaskKind.TRANSLATE_SUBTITLES not in _task_kinds(plan)
     splits: tuple[PlanTask, ...] = tuple(task for task in plan.tasks if task.kind is TaskKind.SPLIT_SUBTITLES)
+    artifacts: dict[str, Artifact] = {artifact.artifact_id: artifact for artifact in plan.artifacts}
     assert len(splits) == 2
-    assert all(task.requires == (full.artifact_id,) and len(task.produces) == 1 for task in splits)
+    assert all(task.requires == (full.artifact_id,) for task in splits)
+    assert all(artifacts[item].kind is ArtifactKind.SIGN_CANDIDATES for task in splits for item in task.produces[1:])
     assert TaskKind.SYNTHESIZE_SPEECH in _task_kinds(plan)
 
 
@@ -841,9 +816,9 @@ def test_llm_translation_uses_the_llm_worker_limit() -> None:
     )
     plan = plan_auto((_group(video),), _preset(products), settings)
     task = _task(plan, TaskKind.TRANSLATE_SUBTITLES)
-    limits = ResourceLimits.from_settings(settings)
-    assert task.resource_key == "llm:gemini"
-    assert limits.worker_limit(task.resource_key, settings) == 1
+    limits = ResourceLimits.from_settings(settings, extraction=1)
+    assert resource_key(task, settings) == "llm:gemini"
+    assert limits.worker_limit(resource_key(task, settings)) == 1
 
 
 def test_manual_ready_polish_builds_narration_without_translation() -> None:
@@ -1067,29 +1042,14 @@ def test_manual_audio_is_revalidated_against_preferred_video_duration() -> None:
     assert {problem.code for problem in plan.problems} == {"audio_duration_mismatch"}
 
 
-def test_audio_duration_tolerance_comes_from_run_snapshot() -> None:
+def test_audio_within_one_second_of_the_video_is_accepted() -> None:
     video = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv", duration_us=10_000_000)
-    narration = _artifact(ArtifactKind.NARRATION_AUDIO, "1.eac3", audio_codec="eac3", duration_us=12_000_000)
+    narration = _artifact(ArtifactKind.NARRATION_AUDIO, "1.eac3", audio_codec="eac3", duration_us=11_000_000)
     group = _group(video, narration)
     products = ProductIntent(frozenset({ProductKind.MP4}), mp4_audio_source=Mp4AudioSource.NARRATION)
     intent = _manual(group, products, selected_audio_artifact_id=narration.artifact_id)
-    settings = replace(_settings(), audio_duration_tolerance_us=2_000_000)
-    plan = plan_manual((group,), {group.group_id: intent}, settings)
+    plan = plan_manual((group,), {group.group_id: intent}, _settings())
     assert plan.can_execute is True
-
-
-def test_task_cost_flags_come_from_run_snapshot() -> None:
-    video = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
-    sidecar = _artifact(ArtifactKind.SOURCE_SUBTITLES, "1.ass", subtitle_format="ass")
-    settings = replace(_settings(), translation_is_network=False, translation_is_paid=False)
-    plan = plan_auto(
-        (_group(video, sidecar),),
-        _preset(ProductIntent(frozenset({ProductKind.FULL_PL}))),
-        settings,
-    )
-    translation = _task(plan, TaskKind.TRANSLATE_SUBTITLES)
-    assert translation.is_network is False
-    assert translation.is_paid is False
 
 
 def test_manual_external_subtitle_products_keep_video_stem() -> None:
@@ -1408,7 +1368,7 @@ def test_containers_from_plain_srt_omit_the_displayed_layer_without_splitting_it
     }
     assert plan.can_execute
     assert displayed.state is ArtifactState.ABSENT
-    assert split_outputs == {ArtifactKind.SPOKEN_PL}
+    assert split_outputs - {ArtifactKind.SIGN_CANDIDATES} == {ArtifactKind.SPOKEN_PL}
     assert all(displayed.artifact_id not in task.produces for task in plan.tasks)
     assert displayed.artifact_id in _task(plan, TaskKind.COMPOSE_MKV).requires
     assert displayed.artifact_id in _task(plan, TaskKind.COMPOSE_MP4).requires

@@ -74,7 +74,6 @@ def _contract(
         (source.artifact_id,),
         (output.artifact_id,),
         (),
-        "filesystem",
     )
     snapshot = ArtifactSnapshot({source.artifact_id: source}, {output.artifact_id: output})
     source_group = SourceGroup("group-1", "Episode", tmp_path, (source,))

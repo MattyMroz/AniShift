@@ -350,7 +350,6 @@ USER_SETTING_DISPOSITIONS: Final[MappingProxyType[str, SettingDisposition]] = Ma
         "elevenbytes_vpn_enabled": SettingDisposition.CONDITIONAL,
         "tts_output_profile": SettingDisposition.VISIBLE,
         "tts_output_bitrate": SettingDisposition.CONDITIONAL,
-        "tts_timeline_policy": SettingDisposition.INTERNAL,
         "narrator_over_source_lu": SettingDisposition.VISIBLE,
         "original_gain_db": SettingDisposition.VISIBLE,
         "tts_voice_profiles": SettingDisposition.CONDITIONAL,

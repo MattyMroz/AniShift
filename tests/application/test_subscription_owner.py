@@ -6,7 +6,6 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -43,7 +42,6 @@ from anishift.application.control import (
     ChoiceTraits,
     EpisodeAssignment,
     EpisodeChoice,
-    LegacyOrder,
     NotificationKey,
     TorrentioReference,
     WatchState,
@@ -79,7 +77,6 @@ from anishift.application.subscription_targets import (
     next_check_at,
     next_search_at,
 )
-from anishift.application.subscriptions import Subscription, SubscriptionStore
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
 from anishift.config.user_settings import UserSettings
 from anishift.errors import ErrorCode, ErrorContext
@@ -106,9 +103,7 @@ _PAUSED: SubscriptionRecord = replace(
 @contextmanager
 def _running(tmp_path: Path, state: WatchState) -> Iterator[tuple[AutomationOwner, WatchStateStore]]:
     service, _, _ = _library(tmp_path)
-    store: WatchStateStore = WatchStateStore(
-        tmp_path / WATCH_STATE_FILE_NAME, subscriptions_path=tmp_path / "subscriptions.json"
-    )
+    store: WatchStateStore = WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME)
     store.save(state)
     owner: AutomationOwner = _owner(service, store)
     thread: threading.Thread = _serving(owner)
@@ -262,44 +257,6 @@ def test_a_change_that_cannot_be_saved_is_refused_and_keeps_the_state(tmp_path: 
     assert not saved.subscriptions[0].paused
 
 
-def test_the_owner_never_writes_the_frozen_subscription_file(tmp_path: Path) -> None:
-    listing: Path = tmp_path / "subscriptions.json"
-    SubscriptionStore(listing).save(
-        (
-            Subscription(
-                subscription_id="a",
-                query="alpha",
-                series="Alpha",
-                group="SubsPlease",
-                next_episode=Decimal(2),
-                min_resolution=1080,
-                taken=frozenset(),
-                added_at=_MOMENT.isoformat(),
-                checked_at=None,
-                anilist_id=1,
-                taken_episodes=("1",),
-            ),
-        )
-    )
-    frozen: bytes = listing.read_bytes()
-    service, _, _ = _library(tmp_path)
-    store: WatchStateStore = WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME, subscriptions_path=listing)
-    owner: AutomationOwner = _owner(service, store)
-    thread: threading.Thread = _serving(owner)
-    try:
-        _ask(owner, "subscription_pause", {"subscription_id": "a"}, "pause")
-        _ask(owner, "subscription_remove", {"subscription_id": "a"}, "remove")
-        _ask(owner, "subscription_restore", command_id="restore")
-    finally:
-        owner.request_shutdown()
-        thread.join(timeout=_TIMEOUT_S)
-
-    saved: WatchState = store.load()
-    assert listing.read_bytes() == frozen
-    assert [item.subscription_id for item in saved.subscriptions] == ["a"]
-    assert saved.legacy_orders == (LegacyOrder(1, 1, "subscription:a:1", None, complete=False),)
-
-
 _NOW: datetime = datetime(2026, 10, 3, 12, tzinfo=UTC)
 
 _KITSU: int = 49235
@@ -373,9 +330,7 @@ def _following(
         service.acquisition._kitsu_catalog = world.bridges
     if world.search is not None:
         service.acquisition._episode_search = world.search
-    store: WatchStateStore = WatchStateStore(
-        tmp_path / WATCH_STATE_FILE_NAME, subscriptions_path=tmp_path / "subscriptions.json"
-    )
+    store: WatchStateStore = WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME)
     if not (tmp_path / WATCH_STATE_FILE_NAME).exists():
         store.save(state)
     owner: AutomationOwner = AutomationOwner(

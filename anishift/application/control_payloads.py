@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import asdict, fields
+from dataclasses import fields
 
 from anishift.application.control_views import decode_view
 from anishift.application.intents import AutoPreset, GroupIntent, ProductIntent, RebuildRequest
-from anishift.application.planning import RunSettingsSnapshot
 
 
-def decode_intent[T: (AutoPreset, GroupIntent, RebuildRequest, RunSettingsSnapshot)](
+def decode_intent[T: (AutoPreset, GroupIntent, RebuildRequest)](
     model: type[T],
     payload: object,
 ) -> T:
@@ -23,11 +22,3 @@ def decode_intent[T: (AutoPreset, GroupIntent, RebuildRequest, RunSettingsSnapsh
         msg = "Unknown product selection fields"
         raise ValueError(msg)
     return decode_view(model, dict(payload))
-
-
-def decode_overrides(settings: RunSettingsSnapshot, payload: object) -> RunSettingsSnapshot:
-    """Apply validated JSON overrides to an independent run settings snapshot."""
-    if not isinstance(payload, Mapping):
-        msg = "Run setting overrides must be an object"
-        raise TypeError(msg)
-    return decode_intent(RunSettingsSnapshot, {**asdict(settings), **payload})

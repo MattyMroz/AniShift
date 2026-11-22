@@ -9,8 +9,6 @@ the code:
 - `presets.json` stores reusable run presets and the default preset;
 - `watch/` stores resident control state, including subscriptions in
   `watch/state.json`, and its local endpoint credentials;
-- `subscriptions.json` is a frozen file from an earlier version, read only
-  once to migrate its subscriptions into `watch/state.json`;
 - `qbittorrent/` stores the resident's private client profile, process
   receipt and credentials. The executable is in `external/bin/qbittorrent/`;
 - `elevenreader/` stores the ElevenReader browser profile in `chrome-profile/`
@@ -19,7 +17,7 @@ the code:
   `restore` with the previous voice and speed, `delete_document`; never a read id or token).
 
 `ANISHIFT_CONFIG_DIR` replaces this directory entirely, so a test or a second
-account can keep its own preferences, watch state and subscriptions elsewhere.
+account can keep its own preferences and watch state elsewhere.
 
 `watch/runs/` holds processing checkpoints and `watch/relocations/` holds unfinished
 moves into `workspace/ready/`. These contain state, never media.

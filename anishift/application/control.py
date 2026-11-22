@@ -93,7 +93,7 @@ VERIFICATION_REJECT: Final[str] = "reject:"
 VERIFICATION_SKIPPED: Final[str] = "skipped"
 """Download check result of a check that could not be performed."""
 
-WATCH_STATE_SCHEMA_VERSION: Final[int] = 5
+WATCH_STATE_SCHEMA_VERSION: Final[int] = 6
 """Current schema of the persisted automation state."""
 
 type SourceFingerprint = tuple[tuple[str, int, int], ...]
@@ -104,12 +104,6 @@ type FileObjectIdentities = tuple[tuple[str, int, int], ...]
 
 type NotificationKey = tuple[str, str, str]
 """Group or episode, generation and kind, deduplicating one announcement."""
-
-type SettingValue = str | int | float | bool | None | tuple[SettingValue, ...]
-"""Scalar or ordered non-secret configuration values retained by a request."""
-
-type SettingsSnapshot = Mapping[str, SettingValue]
-"""Immutable settings a request was accepted under, holding no secret."""
 
 type CommandOutcome = Mapping[str, str | int | bool | None]
 """Result an accepted command produced, replayed instead of running that command twice."""
@@ -122,9 +116,6 @@ type FileStamp = tuple[int, int, int, int]
 
 _NO_EXCEPTIONS: Final[Mapping[str, bool]] = MappingProxyType({})
 """Directory table of a policy carrying nothing but the global switch."""
-
-_SECRET_MARKERS: Final[frozenset[str]] = frozenset({"token", "key", "password", "secret"})
-"""Name segments marking a settings key whose value must never reach the ledger."""
 
 _DEFAULT_RELEASE_DELAY_S: Final[int] = 3 * 3600
 """Wait after airing before the first release search of an episode without history."""
@@ -307,7 +298,7 @@ class ManualHandledMarker:
 
 @dataclass(frozen=True, slots=True)
 class ProcessingRequest:
-    """One accepted intent to process groups, with the settings it was accepted under."""
+    """One accepted intent to process groups; every task of it reads the settings current when it starts."""
 
     request_id: str
     generation: int
@@ -316,7 +307,6 @@ class ProcessingRequest:
     origin: RequestOrigin
     source_selection: SourceSelection
     rebuild: RebuildRequest | None
-    settings: SettingsSnapshot
     state: RequestState
     attempts: int
     accepted_at: str
@@ -324,12 +314,6 @@ class ProcessingRequest:
     automatic: bool = False
     problem: str | None = None
     recipe: RecipePreferences = field(default_factory=RecipePreferences)
-
-    def __post_init__(self) -> None:
-        for key in self.settings:
-            if _SECRET_MARKERS.intersection(key.casefold().split("_")):
-                msg = "A request settings snapshot cannot carry a secret"
-                raise ValueError(msg)
 
 
 @dataclass(frozen=True, slots=True)

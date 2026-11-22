@@ -101,6 +101,8 @@ class Artifact:
     audio_codec: str | None = None
     duration_us: int | None = None
     preserved_path: Path | None = None
+    font_files: tuple[Path, ...] = ()
+    """Dialogue font files the step that laid these subtitles out drew them with."""
 
     def __post_init__(self) -> None:
         if not self.artifact_id.strip() or not self.group_id.strip():

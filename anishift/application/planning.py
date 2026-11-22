@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, fields, replace
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from enum import StrEnum
-from types import UnionType
-from typing import Final, get_args, get_origin, get_type_hints
+from typing import Final
 
 from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
 from anishift.application.intents import GroupIntent
@@ -18,9 +17,6 @@ from anishift.errors import PlanningError
 
 _MAX_LLM_TEMPERATURE: Final[float] = 2.0
 """Maximum provider-neutral LLM sampling temperature."""
-
-DEFAULT_AUDIO_TOLERANCE_US: Final[int] = 1_000_000
-"""Accepted duration difference between supplied audio and the selected video."""
 
 SIGN_NARRATION_MODES: Final[tuple[str, ...]] = ("off", "smart", "always")
 """Whether the narrator skips on-screen signs, reads those that fit and matter, or reads every one that fits."""
@@ -42,6 +38,25 @@ class TaskKind(StrEnum):
     COMPOSE_MP4 = "compose_mp4"
     COMPOSE_COVER = "compose_cover"
     PUBLISH_ARTIFACT = "publish_artifact"
+
+
+def resource_family(kind: TaskKind) -> str:  # noqa: PLR0911 - one return per family keeps the closed mapping visible
+    """Return the worker pool every task of *kind* competes for, whichever provider runs it."""
+    match kind:
+        case TaskKind.EXTRACT_AUDIO | TaskKind.EXTRACT_SUBTITLES | TaskKind.EXTRACT_TRACKS:
+            return "extraction"
+        case TaskKind.NORMALIZE_SUBTITLES | TaskKind.SPLIT_SUBTITLES:
+            return "subtitles"
+        case TaskKind.TRANSLATE_SUBTITLES:
+            return "translation"
+        case TaskKind.SYNTHESIZE_SPEECH:
+            return "tts"
+        case TaskKind.TRANSCODE_AUDIO | TaskKind.MIX_NARRATION:
+            return "audio"
+        case TaskKind.COMPOSE_MKV | TaskKind.COMPOSE_MP4 | TaskKind.COMPOSE_COVER:
+            return "composition"
+        case TaskKind.PUBLISH_ARTIFACT:
+            return "filesystem"
 
 
 class TaskState(StrEnum):
@@ -73,14 +88,11 @@ class PlanTask:
     requires: tuple[str, ...]
     produces: tuple[str, ...]
     depends_on: tuple[str, ...]
-    resource_key: str
     parameters: tuple[tuple[str, str | int | bool], ...] = ()
-    is_network: bool = False
-    is_paid: bool = False
 
     def __post_init__(self) -> None:
-        if not self.task_id.strip() or not self.group_id.strip() or not self.resource_key.strip():
-            msg = "Task ID, group ID, and resource key cannot be empty"
+        if not self.task_id.strip() or not self.group_id.strip():
+            msg = "Task ID and group ID cannot be empty"
             raise ValueError(msg)
         _require_unique(self.requires, "required artifact IDs")
         _require_unique(self.produces, "produced artifact IDs")
@@ -139,7 +151,7 @@ class GroupPlan:
 
 @dataclass(frozen=True, slots=True)
 class RunSettingsSnapshot:
-    """Validated non-secret settings consumed by planning and scheduling."""
+    """Validated non-secret settings, read by planning and again by every task when it starts."""
 
     translation_profile_id: str
     translation_max_retries: int
@@ -149,20 +161,13 @@ class RunSettingsSnapshot:
     tts_profile_id: str
     tts_max_retries: int
     tts_group_jobs: int
-    audio_profile_id: str
     composition_profile_id: str
     processing_order_policy: ProcessingOrderPolicy
     tts_request_concurrency: int = 1
     audio_output_profile: str = "eac3"
-    audio_duration_tolerance_us: int = DEFAULT_AUDIO_TOLERANCE_US
     subtitle_language_priority: tuple[str, ...] = ("eng",)
     audio_language_priority: tuple[str, ...] = ("jpn",)
-    translation_is_network: bool = True
-    translation_is_paid: bool = True
-    llm_is_network: bool = True
-    llm_is_paid: bool = True
     tts_is_network: bool = True
-    tts_is_paid: bool = True
     dialogue_font_file: str = ""
     translation_chunk_chars: int = 750
     translation_batch_size: int = 0
@@ -172,9 +177,10 @@ class RunSettingsSnapshot:
     llm_max_output_tokens: int | None = None
     llm_translation_style: str = "neutral"
     llm_credential_mode: str = "failover"
+    palantir_enrollment_base_url: str = ""
+    palantir_fallback_enrollment_base_url: str = field(default="", repr=False)
     tts_model_id: str = "default"
     tts_voice_id: str = "default"
-    tts_voice_label: str = "default"
     tts_allowed_voice_ids: tuple[str, ...] = ()
     tts_native_rate: str | float | None = None
     tts_native_volume: str | float | None = None
@@ -186,7 +192,6 @@ class RunSettingsSnapshot:
     narrator_over_source_lu: float = 7.5
     voice_mix_offset_db: float = 0.0
     original_gain_db: float = 0.0
-    tts_timeline_policy: str = "serialize"
     sign_narration: str = "off"
 
     def __post_init__(self) -> None:
@@ -195,44 +200,12 @@ class RunSettingsSnapshot:
         _require_unique(self.subtitle_language_priority, "subtitle language priorities")
         _require_unique(self.audio_language_priority, "audio language priorities")
 
-    def with_overrides(self, overrides: Mapping[str, object]) -> RunSettingsSnapshot:
-        """Validate run-only overrides and return an independent settings snapshot."""
-        values: dict[str, object] = dict(overrides)
-        names: set[str] = {field.name for field in fields(self)}
-        if values.keys() - names:
-            msg: str = "Unknown run setting override"
-            raise ValueError(msg)
-        annotations: dict[str, object] = get_type_hints(type(self))
-        for name, value in values.items():
-            if not _matches_setting_type(value, annotations[name]):
-                msg = f"Invalid value type for run setting {name}"
-                raise ValueError(msg)
-        return replace(self, **values)  # type: ignore[arg-type]  # Values match the dataclass annotations above.
-
-
-def _matches_setting_type(value: object, annotation: object) -> bool:
-    arguments: tuple[object, ...] = get_args(annotation)
-    if get_origin(annotation) is UnionType:
-        return any(_matches_setting_type(value, member) for member in arguments)
-    if get_origin(annotation) is tuple:
-        if not isinstance(value, tuple):
-            return False
-        if arguments and arguments[-1] is Ellipsis:
-            return all(_matches_setting_type(item, arguments[0]) for item in value)
-        return len(value) == len(arguments) and all(
-            _matches_setting_type(item, member) for item, member in zip(value, arguments, strict=True)
-        )
-    if annotation in {float, int, bool, str}:
-        return type(value) is annotation or (annotation is float and type(value) is int)
-    return isinstance(annotation, type) and isinstance(value, annotation)
-
 
 def _validate_profile_settings(settings: RunSettingsSnapshot) -> None:
     profile_ids: tuple[str, ...] = (
         settings.translation_profile_id,
         settings.llm_profile_id,
         settings.tts_profile_id,
-        settings.audio_profile_id,
         settings.composition_profile_id,
     )
     if any(not profile_id.strip() for profile_id in profile_ids):
@@ -247,9 +220,6 @@ def _validate_profile_settings(settings: RunSettingsSnapshot) -> None:
     if settings.audio_output_profile.casefold() not in AUDIO_PRODUCT_PROFILES:
         msg = "Audio output profile is unsupported"
         raise ValueError(msg)
-    if settings.audio_duration_tolerance_us < 0:
-        msg = "Audio duration tolerance cannot be negative"
-        raise ValueError(msg)
     _require_range(settings.translation_chunk_chars, 200, 4000, "translation chunk size")
     if settings.translation_batch_size < 0:
         msg = "Translation batch size cannot be negative"
@@ -262,7 +232,6 @@ def _validate_runtime_settings(settings: RunSettingsSnapshot) -> None:
         settings.llm_translation_style,
         settings.tts_model_id,
         settings.tts_voice_id,
-        settings.tts_voice_label,
     )
     if any(not value.strip() for value in runtime_ids):
         msg = "Run setting runtime IDs cannot be empty"
@@ -296,9 +265,6 @@ def _validate_runtime_settings(settings: RunSettingsSnapshot) -> None:
     if settings.audio_bitrate is not None and not settings.audio_bitrate.strip():
         msg = "Audio bitrate cannot be blank"
         raise ValueError(msg)
-    if settings.tts_timeline_policy != "serialize":
-        msg = "TTS timeline policy is unsupported"
-        raise ValueError(msg)
     if settings.sign_narration not in SIGN_NARRATION_MODES:
         msg = "Sign narration mode is unsupported"
         raise ValueError(msg)
@@ -311,7 +277,6 @@ class ExecutionPlan:
     groups: tuple[GroupPlan, ...]
     artifacts: tuple[Artifact, ...]
     tasks: tuple[PlanTask, ...]
-    settings: RunSettingsSnapshot
     problems: tuple[PlanProblem, ...]
 
     def __post_init__(self) -> None:
@@ -518,10 +483,9 @@ def _validate_task_parameter_names(kind: TaskKind, names: frozenset[str]) -> Non
             frozenset({"output_format"}),
             frozenset({"output_format", "source_kind"}),
         ),
-        TaskKind.SPLIT_SUBTITLES: (frozenset(), frozenset({"sign_narration"})),
         TaskKind.SYNTHESIZE_SPEECH: (
             frozenset({"narration_timeline", "script_kind"}),
-            frozenset({"narration_timeline", "script_kind", "sign_narration"}),
+            frozenset({"narration_timeline", "script_kind"}),
         ),
         TaskKind.TRANSCODE_AUDIO: (frozenset({"output_profile"}), frozenset({"output_profile"})),
         TaskKind.MIX_NARRATION: (

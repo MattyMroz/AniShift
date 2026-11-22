@@ -7,7 +7,6 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
-from decimal import Decimal
 from pathlib import Path
 from typing import Any, Final, cast
 
@@ -16,7 +15,7 @@ import pytest
 from pydantic import TypeAdapter
 from test_acquisition import _S1, _episode_service, _slime_titles, _StreamSource, _TitleCatalog
 from test_automation import _TIMEOUT_S, _real_service, _request, _serving
-from test_episode_admission import _ENTRY, _Library, _subscribe
+from test_episode_admission import _ENTRY, _Library, _ordered
 from test_episode_admission import _choice as _legacy_choice
 from test_episode_admission import _library as _legacy_library
 from test_episode_search import controlled, empty_response, search_service
@@ -27,7 +26,7 @@ from anishift.application import automation as automation_module
 from anishift.application import control_views as control_views_module
 from anishift.application.acquisition import AcquisitionService, ListingRead, TorrentClient, TorrentManagement
 from anishift.application.artifacts import SourceGroup, create_group_id
-from anishift.application.automation import AutomationOwner
+from anishift.application.automation import AutomationOwner, _legacy_reference
 from anishift.application.control import (
     AcquisitionConfirmation,
     AcquisitionState,
@@ -35,6 +34,7 @@ from anishift.application.control import (
     AutomationPolicy,
     CommandReceipt,
     EpisodeAssignment,
+    LegacyOrder,
     LegacyScope,
     ProductConfirmation,
     ReadyGroup,
@@ -61,14 +61,12 @@ from anishift.application.episode_selection import (
 )
 from anishift.application.intents import RequestOrigin
 from anishift.application.service import AppService
-from anishift.application.subscription_migration import legacy_reference, migrate
 from anishift.application.subscription_targets import (
     PauseReason,
     SubscriptionRecord,
     SubscriptionTarget,
     TargetState,
 )
-from anishift.application.subscriptions import EpisodeOrder, EpisodeState, Subscription, SubscriptionStore
 from anishift.application.transfers import TransferInspector, file_map_revision
 from anishift.application.watch_state import WatchStateStore
 from anishift.application.workflows import WorkflowTarget
@@ -865,10 +863,7 @@ def test_the_latest_recorded_batch_result_decides_an_unassigned_episode(
 
 def test_legacy_order_without_transfer_remains_possibly_admitted(tmp_path: Path) -> None:
     library: _Library = _legacy_library(tmp_path)
-    subscription: Subscription = _subscribe(library, anilist_id=_ENTRY)
-    SubscriptionStore(library.listing).save(
-        (replace(subscription, enabled=False, episodes=(EpisodeOrder(Decimal(3), state=EpisodeState.ORDERED),)),)
-    )
+    _ordered(library, LegacyOrder(_ENTRY, 3, "subscription:neko:3", None, False))
     with _running(_episode_service(tmp_path), library.store) as owner:
         response: ControlResponse = owner.handle(_request("episode_states", {"anilist_id": _ENTRY, "numbers": [3]}))
         states: tuple[EpisodeStatus, ...] = decode_view(tuple[EpisodeStatus, ...], response.result["items"])
@@ -1438,10 +1433,7 @@ def test_changed_legacy_conflict_invalidates_the_inspected_consent(tmp_path: Pat
 
 def test_changed_legacy_order_invalidates_repeat_consent_for_the_same_number(tmp_path: Path) -> None:
     library: _Library = _legacy_library(tmp_path)
-    subscription: Subscription = _subscribe(library, anilist_id=_S1)
-    order: EpisodeOrder = EpisodeOrder(Decimal(4), state=EpisodeState.ORDERED, info_hash="old")
-    subscription = replace(subscription, taken_episodes=("4",), episodes=(order,), enabled=False)
-    SubscriptionStore(library.listing).save((subscription,))
+    _ordered(library, LegacyOrder(_S1, 4, "subscription:neko:4:old:None:None", None, False))
     streams: _Streams = _Streams()
     streams.answers = {(41024, 4): (_stream(4),)}
     with _running(_episode_service(tmp_path, streams=streams), library.store) as owner:
@@ -1457,8 +1449,7 @@ def test_changed_legacy_order_invalidates_repeat_consent_for_the_same_number(tmp
 
 def test_a_taken_only_legacy_order_keeps_its_conflict_references_across_an_owner_restart(tmp_path: Path) -> None:
     library: _Library = _legacy_library(tmp_path)
-    subscription: Subscription = replace(_subscribe(library, anilist_id=_S1), taken_episodes=("4",), enabled=False)
-    SubscriptionStore(library.listing).save((subscription,))
+    _ordered(library, LegacyOrder(_S1, 4, "subscription:neko:4", None, False))
     streams: _Streams = _Streams()
     streams.answers = {(41024, 4): (_stream(4),)}
     with _running(_episode_service(tmp_path, streams=streams), library.store) as owner:
@@ -1468,7 +1459,7 @@ def test_a_taken_only_legacy_order_keeps_its_conflict_references_across_an_owner
         assert _choose(restarted, second, confirm=True).ok
         admitted: EpisodeAssignment = restarted.state.acquisitions[0].assignments[0]
 
-    assert first.conflict == second.conflict == (f"subscription:{subscription.subscription_id}:4",)
+    assert first.conflict == second.conflict == ("subscription:neko:4",)
     assert admitted.conflict == second.conflict
 
 
@@ -1476,15 +1467,8 @@ def test_an_unscoped_legacy_order_names_only_its_current_confirmation_after_meta
     tmp_path: Path,
 ) -> None:
     library: _Library = _legacy_library(tmp_path)
-    subscription: Subscription = _subscribe(library, anilist_id=_S1)
-    old: AcquisitionConfirmation = replace(_legacy(), subscription_id=subscription.subscription_id, legacy_scope=None)
-    library.store.save(
-        migrate(
-            WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(old,)),
-            (subscription,),
-            datetime.now(UTC),
-        )
-    )
+    old: AcquisitionConfirmation = replace(_legacy(), subscription_id="neko", legacy_scope=None)
+    _ordered(library, LegacyOrder(_S1, 4, _legacy_reference(old), old.operation_id, False), acquisitions=(old,))
     streams: _Streams = _Streams()
     streams.answers = {(41024, 4): (_stream(4),)}
     changed: AcquisitionConfirmation = replace(old, required_files=("Show - 04.mkv",))
@@ -1495,8 +1479,8 @@ def test_an_unscoped_legacy_order_names_only_its_current_confirmation_after_meta
     with _running(_episode_service(tmp_path, streams=streams), library.store, instance="restarted") as restarted:
         second: EpisodeOfferView = _offer(restarted, repeat=True)
 
-    assert first.conflict == (legacy_reference(old),)
-    assert updated.conflict == second.conflict == (legacy_reference(changed),)
+    assert first.conflict == (_legacy_reference(old),)
+    assert updated.conflict == second.conflict == (_legacy_reference(changed),)
 
 
 def test_offer_is_session_bound_and_a_late_read_cannot_restore_a_disconnected_offer(tmp_path: Path) -> None:
@@ -2275,39 +2259,6 @@ def test_malformed_episode_payload_is_invalid_instead_of_internal(tmp_path: Path
         assert answer.code is ControlErrorCode.INVALID_PAYLOAD
 
 
-@pytest.mark.parametrize("kind", ["episode_offer_start", "episode_choose"])
-def test_a_migrated_owner_never_reads_the_frozen_subscription_file_for_episode_conflicts(
-    tmp_path: Path,
-    kind: str,
-) -> None:
-    streams: _Streams = _Streams()
-    streams.answers = {(41024, 4): (_stream(4),)}
-    library: _Library = _legacy_library(tmp_path)
-    _subscribe(library, anilist_id=_ENTRY)
-    with _running(_episode_service(tmp_path, streams=streams), library.store) as owner:
-        owner._on_owner(lambda: owner._save(replace(owner.state, acquisitions=(_legacy(),))))
-        view: EpisodeOfferView = _offer(owner, repeat=True)
-        library.listing.write_text("{broken", encoding="utf-8")
-        answer: ControlResponse = owner.handle(
-            _request(
-                kind,
-                {
-                    "key": encode_view(EpisodeKey(_S1, 4)),
-                    "repeat": True,
-                    "offer_id": view.offer_id,
-                    "revision": view.revision,
-                    "info_hash": view.offer.candidates[0].stream.info_hash,
-                    "path": view.offer.candidates[0].stream.path,
-                    "conflict_confirmed": True,
-                },
-                session_id="panel",
-                instance_id=view.instance_id,
-            )
-        )
-        assert answer.ok, answer
-        assert answer.reason != EpisodeReason.LEGACY_UNREADABLE
-
-
 def test_file_choice_accepts_a_timestamp_only_change_during_the_file_read(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2379,11 +2330,13 @@ def test_offer_finishing_after_disconnect_cannot_be_accepted(tmp_path: Path) -> 
         assert not owner.state.acquisitions
 
 
-def test_taken_conflict_repeat_preserves_subscription_bytes_and_only_overrides_one_number(tmp_path: Path) -> None:
+def test_taken_conflict_repeat_only_overrides_one_number(tmp_path: Path) -> None:
     library: _Library = _legacy_library(tmp_path)
-    subscription: Subscription = _subscribe(library, anilist_id=_ENTRY)
-    SubscriptionStore(library.listing).save((replace(subscription, taken_episodes=("3", "4"), enabled=False),))
-    before: bytes = library.listing.read_bytes()
+    _ordered(
+        library,
+        LegacyOrder(_ENTRY, 3, "subscription:neko:3", None, False),
+        LegacyOrder(_ENTRY, 4, "subscription:neko:4", None, False),
+    )
     service: AcquisitionService = _episode_service(tmp_path)
     store: WatchStateStore = library.store
     app: AppService = _real_service(tmp_path, acquisition=service)
@@ -2399,7 +2352,7 @@ def test_taken_conflict_repeat_preserves_subscription_bytes_and_only_overrides_o
             "not_ordered",
         ]
         conflict: tuple[str, ...] = owner._on_owner(lambda: owner._episode_conflicts(EpisodeKey(_ENTRY, 3)))
-        assert conflict == (f"subscription:{subscription.subscription_id}:3",)
+        assert conflict == ("subscription:neko:3",)
         response: ControlResponse = owner._on_owner(
             lambda: owner._admit_episode("override", _legacy_choice(3), conflict=conflict)
         )
@@ -2408,7 +2361,6 @@ def test_taken_conflict_repeat_preserves_subscription_bytes_and_only_overrides_o
         rows = state.result["items"]
         assert isinstance(rows, list)
         assert [decode_view(EpisodeStatus, item).state for item in rows] == ["ordered", "possibly_admitted"]
-        assert library.listing.read_bytes() == before
     finally:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)

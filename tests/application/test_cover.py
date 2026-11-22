@@ -25,7 +25,6 @@ from anishift.application.planning import ExecutionPlan, PlanTask, ProcessingOrd
 from anishift.application.results import RunResult
 from anishift.application.runtime import ProductionHandlerFactory
 from anishift.application.scheduler import GraphScheduler
-from anishift.application.scheduler_contracts import ResourceLimits
 from anishift.application.selection import GroupReadiness, ReadinessReason, legal_products, resolve_readiness
 from anishift.application.sessions import RunSession
 from anishift.application.tts_handler import TtsProgressObserver, TtsTaskHandler
@@ -72,9 +71,6 @@ class _CountingVoice:
 
     def cancel(self) -> None:
         raise AssertionError
-
-    def close(self) -> None:
-        pass
 
 
 class _CountingTranslator:
@@ -154,7 +150,6 @@ def _settings(profile: str = "eac3") -> RunSettingsSnapshot:
         tts_profile_id="edge",
         tts_max_retries=2,
         tts_group_jobs=4,
-        audio_profile_id="default",
         composition_profile_id="balanced",
         processing_order_policy=ProcessingOrderPolicy.READY_FIRST,
         audio_output_profile=profile,
@@ -239,16 +234,16 @@ def _execute(plan: ExecutionPlan, groups: tuple[InspectedSourceGroup, ...], run_
         result: RunResult = GraphScheduler(
             ExecutionHandlers(
                 ExtractionTaskHandler(_RefusingExtraction(), run_root=run_root, timeout_s=30.0),
-                SubtitleTaskHandler(run_root=run_root),
-                TranslationTaskHandler(words, run_root=run_root),
-                tts=TtsTaskHandler(voice, run_root=run_root, group_ranks={groups[0].group_id: 0}),
-                composition=CompositionTaskHandler(composer, run_root=run_root),
+                lambda _: SubtitleTaskHandler(run_root=run_root),
+                lambda _: TranslationTaskHandler(words, run_root=run_root),
+                tts=lambda _: TtsTaskHandler(voice, run_root=run_root, group_ranks={groups[0].group_id: 0}),
+                composition=lambda _: CompositionTaskHandler(composer, run_root=run_root),
                 publish=PublishTaskHandler(
                     run_root=run_root,
                     source_groups={group.group_id: group.source for group in groups},
                 ),
             ),
-            limits=ResourceLimits.from_settings(plan.settings),
+            settings=_settings(),
             run_id=run_root.name,
             session=session,
         ).run(plan, cancel=NeverCancelledToken(), events=_CollectingEvents())
@@ -291,6 +286,7 @@ def test_the_production_factory_really_builds_a_handler_for_a_cover_only_plan(tm
 
     assert _kinds(plan) == (TaskKind.COMPOSE_COVER,)
     assert handlers.composition is not None
+    assert isinstance(handlers.composition(_settings()), CompositionTaskHandler)
 
 
 def test_every_public_product_names_the_artifact_that_proves_it_exists() -> None:
