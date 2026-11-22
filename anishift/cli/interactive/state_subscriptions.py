@@ -38,6 +38,9 @@ _CHECKING: Final[str] = "Sprawdzam…"
 _SHADOW_WARNING: Final[str] = "Tryb próbny · subskrypcje niczego nie pobierają"
 """Status row above the list while the owner records proposals instead of attempts."""
 
+_SEPARATOR: Final[str] = " · "
+"""Separator between an episode label and the rest of a subscription state."""
+
 _ADD_KEYS: Final[str] = "D"
 """Keys the subscription footer names for adding a subscription."""
 
@@ -58,25 +61,38 @@ def subscription_rows(
     idle: bool,
 ) -> tuple[AnimeRow, ...]:
     """Return one table row per subscription, showing a recent check in place of its state."""
-    rows: list[AnimeRow] = []
+    states: list[SubscriptionState] = []
     for item in subscriptions:
         state: SubscriptionState = row_state(item, now, idle=idle)
         shown: tuple[str, str, datetime] | None = checks.get(str(item.get("subscription_id")))
         if shown is not None and now < shown[2]:
             state = SubscriptionState(shown[0], shown[1])
+        states.append(state)
+    width: int = max((len(label) for state in states if (label := _episode_label(state.text))), default=0)
+    rows: list[AnimeRow] = []
+    for item, state in zip(subscriptions, states, strict=True):
         episodes, ready = row_columns(item)
-        title: str = safe_text(item.get("title", ""))
         rows.append(
             AnimeRow(
                 str(item.get("subscription_id")),
-                title,
+                safe_text(item.get("title", "")),
                 number=episodes,
                 ready=ready,
-                status=state.text,
+                status=_aligned(state.text, width),
                 detail="" if state.detail == state.text else state.detail,
             )
         )
     return tuple(rows)
+
+
+def _episode_label(text: str) -> str:
+    head, _, _ = text.partition(_SEPARATOR)
+    return head if head.startswith("E") and head[1:].isdigit() else ""
+
+
+def _aligned(text: str, width: int) -> str:
+    label: str = _episode_label(text)
+    return label.ljust(width) + text[len(label) :] if label else text
 
 
 def subscription_actions(row: Mapping[str, object] | None, *, loaded: bool) -> ScreenActions:
