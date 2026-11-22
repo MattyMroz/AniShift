@@ -735,12 +735,12 @@ class AppService:
         return read_session(elevenreader_dir())
 
     def elevenreader_sign_in(self) -> SignInOutcome:
-        """Show the ElevenReader library in a visible Chrome until the owner closes it, then check the session."""
-        return asyncio.run(sign_in(elevenreader_dir()))
+        """Open a plain Chrome window on the ElevenReader library for the owner to sign in, without waiting for it."""
+        return sign_in(elevenreader_dir())
 
     def elevenreader_sign_out(self) -> SignOutOutcome:
-        """Delete the ElevenReader browser profile unless a browser uses it, keeping the owed account cleanup."""
-        return sign_out(elevenreader_dir())
+        """Delete only the ElevenReader cookies and site data unless a browser uses the profile."""
+        return asyncio.run(sign_out(elevenreader_dir()))
 
     def settings_snapshot(self) -> SettingsDraft:
         """Return a detached mutable copy that cannot affect an active plan."""

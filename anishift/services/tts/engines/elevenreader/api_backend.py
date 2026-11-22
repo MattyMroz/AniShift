@@ -8,7 +8,7 @@ import json
 import math
 import re
 import time
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
@@ -27,7 +27,6 @@ from anishift.services.tts.errors import (
     TtsVoiceError,
 )
 from anishift.utils.logger import get_logger
-from anishift.utils.safe_fs import safe_rmtree
 
 from .config import lock_file, profile_dir, session_file
 from .constants import (
@@ -102,7 +101,7 @@ logger = get_logger(__name__)
 FALLBACK_HINT: Final[str] = "Albo przełącz silnik na ElevenBytes w Ustawienia → Lektor."
 """Closing sentence of the permanent-failure suggestions, except the browser refusal."""
 
-SIGN_IN_HINT: Final[str] = f"Zaloguj się w Ustawienia → Lektor → Zaloguj / sprawdź sesję. {FALLBACK_HINT}"
+SIGN_IN_HINT: Final[str] = f"Zaloguj się w oknie z Ustawienia → Lektor → Zaloguj (otwórz okno Chrome). {FALLBACK_HINT}"
 """Suggestion for a signed-out or rejected session."""
 
 _UNAUTHORIZED: Final[int] = 401
@@ -131,9 +130,6 @@ _SIGN_IN_NAME: Final[re.Pattern[str]] = re.compile(r"sign in|sign up|log in|cont
 
 _SIGN_IN_URL: Final[re.Pattern[str]] = re.compile(r"sign-?in|sign-?up|log-?in|auth", re.IGNORECASE)
 """Address fragments of the sign-in and sign-up pages a signed-out visitor is sent to."""
-
-_SIGN_IN_POLL_S: Final[float] = 1.0
-"""Interval between checks whether the owner closed the sign-in window."""
 
 _CHROME_LOCK_FILE_NAME: Final[str] = "lockfile"
 """File Chrome on Windows keeps open in its profile while it runs, so deleting it fails then."""
@@ -212,9 +208,9 @@ def refused_error(console: str) -> TtsAuthError:
         code=ErrorCode.TTS_AUTH_FAILED,
         message="ElevenReader odrzucił przeglądarkę AniShift",
         suggestion=(
-            "Blokada trwa dobę. Wyloguj się w Ustawienia → Lektor → Wyloguj (wyczyść profil przeglądarki), potem "
-            "zaloguj przez Zaloguj / sprawdź sesję albo spróbuj ponownie po dobie. Możesz też wybrać inny silnik "
-            "lektora w Ustawienia → Lektor."
+            "Blokada trwa dobę. W Ustawienia → Lektor użyj Wyloguj (usuń ciasteczka ElevenReadera), potem "
+            "Zaloguj (otwórz okno Chrome) i zaloguj się w otwartym oknie; albo spróbuj ponownie po dobie, albo "
+            "wybierz inny silnik lektora."
         ),
         details={"console": console},
     )
@@ -800,51 +796,23 @@ async def require_signed_in(page: ReaderPage, root: Path) -> None:
     raise unavailable_error(reason)
 
 
-async def sign_in(root: Path) -> SignInOutcome:
-    """Show the library in a visible Chrome until the owner closes it, then check the session and clean the account."""
-    from .browser import ChromeBusyError, ChromeMissingError, ChromeSession  # noqa: PLC0415 - keeps Playwright lazy
+def sign_in(root: Path) -> SignInOutcome:
+    """Open a plain Chrome window on the library for the owner to sign in himself, without driving or awaiting it."""
+    from .browser import ChromeMissingError, open_window  # noqa: PLC0415 - keeps Playwright lazy
 
-    cleanup: AccountCleanup = load_cleanup(root)
+    lock: ProcessLock = ProcessLock(lock_file(root))
     try:
-        await _show_library(ChromeSession(root, headless=False))
-        signed_in: bool = await _check_session(ChromeSession(root, headless=True), cleanup)
+        if not claim_profile(lock, root):
+            return SignInOutcome.BUSY
+        open_window(root)
     except ChromeMissingError:
         return SignInOutcome.NO_CHROME
-    except ChromeBusyError:
-        return SignInOutcome.BUSY
-    except TtsError as error:
-        logger.warning("ElevenReader sign-in failed", code=error.context.code.value)
+    except (TtsError, OSError) as error:
+        logger.warning("ElevenReader sign-in window failed", error_class=type(error).__name__)
         return SignInOutcome.FAILED
-    write_session(root, signed_in=signed_in)
-    save_cleanup(root, cleanup)
-    logger.info("ElevenReader sign-in checked", signed_in=signed_in, cleanup=list(cleanup.pending))
-    return SignInOutcome.SIGNED_IN if signed_in else SignInOutcome.SIGNED_OUT
-
-
-async def _show_library(session: ChromeSession) -> None:
-    try:
-        await session.start()
-        page: ReaderPage = await session.new_page()
-        await page.open_library()
-        while session.has_window:
-            await asyncio.sleep(_SIGN_IN_POLL_S)
     finally:
-        await session.close()
-
-
-async def _check_session(session: ChromeSession, cleanup: AccountCleanup) -> bool:
-    try:
-        await session.start()
-        page: ReaderPage = await session.new_page()
-        state: LibraryState = await page.open_library()
-        if state is LibraryState.READY:
-            await clean_account(page, cleanup, restore=True)
-    finally:
-        await session.close()
-    if state is LibraryState.UNAVAILABLE:
-        reason: str = "ElevenReader library is unavailable"
-        raise unavailable_error(reason)
-    return state is LibraryState.READY
+        lock.release()
+    return SignInOutcome.OPENED
 
 
 def claim_profile(lock: ProcessLock, root: Path) -> bool:
@@ -862,19 +830,23 @@ def claim_profile(lock: ProcessLock, root: Path) -> bool:
     return True
 
 
-def sign_out(root: Path) -> SignOutOutcome:
-    """Delete the Chrome profile under *root* while no browser uses it, keeping the owed account cleanup."""
-    lock: ProcessLock = ProcessLock(lock_file(root))
+async def sign_out(root: Path) -> SignOutOutcome:
+    """Delete only the ElevenReader cookies and site data while no browser uses the profile, keeping owed cleanup."""
+    from .browser import ChromeBusyError, ChromeMissingError, ChromeSession  # noqa: PLC0415 - keeps Playwright lazy
+
+    session: ChromeSession = ChromeSession(root)
     try:
-        if not claim_profile(lock, root):
-            return SignOutOutcome.BUSY
-        with suppress(FileNotFoundError):
-            safe_rmtree(profile_dir(root))
-        write_session(root, signed_in=False)
-    except OSError as error:
-        logger.warning("ElevenReader browser profile could not be deleted", error_class=type(error).__name__)
+        await session.start()
+        await session.forget_site()
+    except ChromeMissingError:
+        return SignOutOutcome.NO_CHROME
+    except ChromeBusyError:
+        return SignOutOutcome.BUSY
+    except (TtsError, OSError) as error:
+        logger.warning("ElevenReader sign-out failed", error_class=type(error).__name__)
         return SignOutOutcome.FAILED
     finally:
-        lock.release()
-    logger.info("ElevenReader browser profile deleted")
+        await session.close()
+    write_session(root, signed_in=False)
+    logger.info("ElevenReader cookies and site data deleted")
     return SignOutOutcome.SIGNED_OUT

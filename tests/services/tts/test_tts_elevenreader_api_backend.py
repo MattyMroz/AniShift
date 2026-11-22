@@ -45,7 +45,6 @@ from anishift.services.tts import (
 from anishift.services.tts.engines.elevenreader import (
     SignInOutcome,
     SignOutOutcome,
-    api_backend,
     read_session,
     sign_in,
     sign_out,
@@ -73,8 +72,6 @@ from anishift.services.tts.engines.elevenreader.types import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from playwright.async_api import Page
 
 pytestmark = pytest.mark.unit
@@ -150,150 +147,6 @@ def test_map_playwright_error_browser_failure_returns_unavailable_without_origin
     assert error.retry_after_s == 60.0
 
 
-def _stays(site: FakeSite) -> None:
-    del site
-
-
-def _signs_in(site: FakeSite) -> None:
-    site.library = LibraryState.READY
-
-
-def _signs_out(site: FakeSite) -> None:
-    site.library = LibraryState.SIGNED_OUT
-
-
-class _SignInSession:
-    instances: ClassVar[list[_SignInSession]] = []
-    failure: ClassVar[TtsError | None] = None
-    site: ClassVar[FakeSite] = FakeSite()
-    owner: ClassVar[list[Callable[[FakeSite], None]]] = []
-    events: ClassVar[list[str]] = []
-
-    def __init__(self, root: Path, *, headless: bool) -> None:
-        self.root: Path = root
-        self.headless: bool = headless
-        self.mode: str = "headless" if headless else "visible"
-        self.closed: bool = False
-        _SignInSession.instances.append(self)
-
-    @property
-    def has_window(self) -> bool:
-        if not _SignInSession.owner:
-            return False
-        _SignInSession.owner.pop(0)(_SignInSession.site)
-        _SignInSession.events.append("window open")
-        return True
-
-    async def start(self) -> None:
-        _SignInSession.events.append(f"start {self.mode}")
-        if _SignInSession.failure is not None:
-            raise _SignInSession.failure
-
-    async def new_page(self) -> FakePage:
-        return FakePage(_SignInSession.site)
-
-    async def close(self) -> None:
-        self.closed = True
-        _SignInSession.events.append(f"close {self.mode}")
-
-
-@pytest.fixture
-def fake_chrome(monkeypatch: pytest.MonkeyPatch) -> type[_SignInSession]:
-    monkeypatch.setattr(browser_module, "ChromeSession", _SignInSession)
-    monkeypatch.setattr(api_backend, "_SIGN_IN_POLL_S", 0.001)
-    monkeypatch.setattr(_SignInSession, "instances", [])
-    monkeypatch.setattr(_SignInSession, "failure", None)
-    monkeypatch.setattr(_SignInSession, "site", FakeSite())
-    monkeypatch.setattr(_SignInSession, "owner", [])
-    monkeypatch.setattr(_SignInSession, "events", [])
-    return _SignInSession
-
-
-def test_sign_in_valid_session_keeps_window_until_owner_closes_it_then_checks_headless(
-    tmp_path: Path,
-    fake_chrome: type[_SignInSession],
-) -> None:
-    fake_chrome.owner = [_stays, _stays, _stays]
-
-    outcome: SignInOutcome = asyncio.run(sign_in(tmp_path))
-
-    assert outcome is SignInOutcome.SIGNED_IN
-    assert fake_chrome.events == [
-        "start visible",
-        "window open",
-        "window open",
-        "window open",
-        "close visible",
-        "start headless",
-        "close headless",
-    ]
-    record = read_session(tmp_path)
-    assert record is not None
-    assert record.signed_in
-
-
-def test_sign_in_owner_signing_in_while_window_is_open_returns_signed_in(
-    tmp_path: Path,
-    fake_chrome: type[_SignInSession],
-) -> None:
-    fake_chrome.site = FakeSite(library=LibraryState.SIGNED_OUT)
-    fake_chrome.owner = [_stays, _signs_in, _stays]
-
-    assert asyncio.run(sign_in(tmp_path)) is SignInOutcome.SIGNED_IN
-
-
-def test_sign_in_owner_signing_out_in_window_returns_signed_out_and_records_it(
-    tmp_path: Path,
-    fake_chrome: type[_SignInSession],
-) -> None:
-    write_session(tmp_path, signed_in=True)
-    fake_chrome.owner = [_signs_out]
-
-    outcome: SignInOutcome = asyncio.run(sign_in(tmp_path))
-
-    assert outcome is SignInOutcome.SIGNED_OUT
-    record = read_session(tmp_path)
-    assert record is not None
-    assert not record.signed_in
-    assert all(session.closed for session in fake_chrome.instances)
-
-
-def test_sign_in_library_unavailable_after_window_returns_failed_and_keeps_record(
-    tmp_path: Path,
-    fake_chrome: type[_SignInSession],
-) -> None:
-    write_session(tmp_path, signed_in=True)
-    fake_chrome.site = FakeSite(library=LibraryState.UNAVAILABLE)
-
-    outcome: SignInOutcome = asyncio.run(sign_in(tmp_path))
-
-    assert outcome is SignInOutcome.FAILED
-    record = read_session(tmp_path)
-    assert record is not None
-    assert record.signed_in
-    assert fake_chrome.events[-1] == "close headless"
-
-
-@pytest.mark.parametrize(
-    ("failure", "expected"),
-    [
-        (ChromeBusyError("busy"), SignInOutcome.BUSY),
-        (ChromeMissingError("missing"), SignInOutcome.NO_CHROME),
-        (TtsProviderUnavailableError("down"), SignInOutcome.FAILED),
-    ],
-)
-def test_sign_in_browser_failure_returns_matching_outcome(
-    tmp_path: Path,
-    fake_chrome: type[_SignInSession],
-    failure: TtsError,
-    expected: SignInOutcome,
-) -> None:
-    fake_chrome.failure = failure
-
-    assert asyncio.run(sign_in(tmp_path)) is expected
-    assert read_session(tmp_path) is None
-
-
 def _profile(root: Path) -> Path:
     profile: Path = root / "chrome-profile"
     (profile / "Default").mkdir(parents=True)
@@ -309,83 +162,158 @@ def _lock_free(root: Path) -> bool:
     return acquired
 
 
-def test_sign_out_deletes_profile_records_signed_out_and_keeps_owed_cleanup(tmp_path: Path) -> None:
+class _Window:
+    def __init__(self) -> None:
+        self.opened: list[Path] = []
+        self.failure: TtsError | None = None
+        self.lock_free_while_opening: bool | None = None
+
+    def open(self, root: Path) -> None:
+        self.lock_free_while_opening = _lock_free(root)
+        if self.failure is not None:
+            raise self.failure
+        self.opened.append(root)
+
+
+@pytest.fixture
+def window(monkeypatch: pytest.MonkeyPatch) -> _Window:
+    fake: _Window = _Window()
+    monkeypatch.setattr(browser_module, "open_window", fake.open)
+    return fake
+
+
+def test_sign_in_free_profile_opens_window_without_touching_session_and_keeps_no_lock(
+    tmp_path: Path, window: _Window
+) -> None:
+    write_session(tmp_path, signed_in=False)
+
+    assert sign_in(tmp_path) is SignInOutcome.OPENED
+
+    assert window.opened == [tmp_path]
+    assert window.lock_free_while_opening is False
+    assert _lock_free(tmp_path)
+    record = read_session(tmp_path)
+    assert record is not None
+    assert not record.signed_in
+
+
+def test_sign_in_profile_held_by_anishift_returns_busy_and_opens_nothing(tmp_path: Path, window: _Window) -> None:
+    holder: ProcessLock = ProcessLock(tmp_path / "chrome.lock")
+    assert holder.acquire()
+
+    try:
+        outcome: SignInOutcome = sign_in(tmp_path)
+    finally:
+        holder.release()
+
+    assert outcome is SignInOutcome.BUSY
+    assert window.opened == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Chrome holds its profile lockfile only on Windows")
+def test_sign_in_profile_open_in_chrome_returns_busy_and_opens_nothing(tmp_path: Path, window: _Window) -> None:
     profile: Path = _profile(tmp_path)
+
+    with (profile / "lockfile").open("rb"):
+        outcome: SignInOutcome = sign_in(tmp_path)
+
+    assert outcome is SignInOutcome.BUSY
+    assert window.opened == []
+    assert _lock_free(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (ChromeMissingError("missing"), SignInOutcome.NO_CHROME),
+        (TtsProviderUnavailableError("down"), SignInOutcome.FAILED),
+    ],
+)
+def test_sign_in_window_failure_returns_matching_outcome_and_frees_lock(
+    tmp_path: Path, window: _Window, failure: TtsError, expected: SignInOutcome
+) -> None:
+    window.failure = failure
+
+    assert sign_in(tmp_path) is expected
+    assert _lock_free(tmp_path)
+    assert read_session(tmp_path) is None
+
+
+class _SignOutSession:
+    instances: ClassVar[list[_SignOutSession]] = []
+    start_failure: ClassVar[TtsError | None] = None
+    forget_failure: ClassVar[TtsError | None] = None
+
+    def __init__(self, root: Path) -> None:
+        self.root: Path = root
+        self.events: list[str] = []
+        _SignOutSession.instances.append(self)
+
+    async def start(self) -> None:
+        self.events.append("start")
+        if _SignOutSession.start_failure is not None:
+            raise _SignOutSession.start_failure
+
+    async def forget_site(self) -> None:
+        self.events.append("forget_site")
+        if _SignOutSession.forget_failure is not None:
+            raise _SignOutSession.forget_failure
+
+    async def close(self) -> None:
+        self.events.append("close")
+
+
+@pytest.fixture
+def sign_out_chrome(monkeypatch: pytest.MonkeyPatch) -> type[_SignOutSession]:
+    monkeypatch.setattr(browser_module, "ChromeSession", _SignOutSession)
+    monkeypatch.setattr(_SignOutSession, "instances", [])
+    monkeypatch.setattr(_SignOutSession, "start_failure", None)
+    monkeypatch.setattr(_SignOutSession, "forget_failure", None)
+    return _SignOutSession
+
+
+def test_sign_out_forgets_site_closes_chrome_and_records_signed_out_keeping_owed_cleanup(
+    tmp_path: Path, sign_out_chrome: type[_SignOutSession]
+) -> None:
     trace: DocumentTrace = document_trace(read_id=READ_ID)
     save_cleanup(tmp_path, AccountCleanup(restore=PREVIOUS, documents=[trace]))
 
-    assert sign_out(tmp_path) is SignOutOutcome.SIGNED_OUT
+    assert asyncio.run(sign_out(tmp_path)) is SignOutOutcome.SIGNED_OUT
 
-    assert not profile.exists()
+    assert sign_out_chrome.instances[0].events == ["start", "forget_site", "close"]
     record = read_session(tmp_path)
     assert record is not None
     assert not record.signed_in
     assert record.restore == PREVIOUS
     assert record.documents == (trace,)
-    assert _lock_free(tmp_path)
 
 
-def test_sign_out_without_profile_records_signed_out(tmp_path: Path) -> None:
-    assert sign_out(tmp_path) is SignOutOutcome.SIGNED_OUT
-
-    record = read_session(tmp_path)
-    assert record is not None
-    assert not record.signed_in
-
-
-def test_sign_out_profile_held_by_a_browser_returns_busy_and_changes_nothing(tmp_path: Path) -> None:
-    profile: Path = _profile(tmp_path)
-    write_session(tmp_path, signed_in=True)
-    holder: ProcessLock = ProcessLock(tmp_path / "chrome.lock")
-    assert holder.acquire()
-
-    try:
-        outcome: SignOutOutcome = sign_out(tmp_path)
-    finally:
-        holder.release()
-
-    assert outcome is SignOutOutcome.BUSY
-    assert (profile / "Default" / "Cookies").is_file()
-    record = read_session(tmp_path)
-    assert record is not None
-    assert record.signed_in
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="Chrome holds its profile lockfile only on Windows")
-def test_sign_out_profile_open_in_chrome_without_anishift_lock_returns_busy_and_keeps_profile(tmp_path: Path) -> None:
-    profile: Path = _profile(tmp_path)
-    write_session(tmp_path, signed_in=True)
-
-    with (profile / "lockfile").open("rb"):
-        outcome: SignOutOutcome = sign_out(tmp_path)
-
-    assert outcome is SignOutOutcome.BUSY
-    assert (profile / "Default" / "Cookies").is_file()
-    record = read_session(tmp_path)
-    assert record is not None
-    assert record.signed_in
-    assert _lock_free(tmp_path)
-
-
-def test_sign_out_profile_deletion_failing_returns_failed_and_keeps_session(
+@pytest.mark.parametrize(
+    ("start_failure", "forget_failure", "expected"),
+    [
+        (ChromeBusyError("busy"), None, SignOutOutcome.BUSY),
+        (ChromeMissingError("missing"), None, SignOutOutcome.NO_CHROME),
+        (TtsProviderUnavailableError("down"), None, SignOutOutcome.FAILED),
+        (None, TtsProviderUnavailableError("cdp"), SignOutOutcome.FAILED),
+    ],
+)
+def test_sign_out_failure_returns_matching_outcome_and_keeps_session(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    sign_out_chrome: type[_SignOutSession],
+    start_failure: TtsError | None,
+    forget_failure: TtsError | None,
+    expected: SignOutOutcome,
 ) -> None:
-    _profile(tmp_path)
     write_session(tmp_path, signed_in=True)
+    sign_out_chrome.start_failure = start_failure
+    sign_out_chrome.forget_failure = forget_failure
 
-    def refuse(path: Path) -> None:
-        message: str = "file in use"
-        raise PermissionError(message)
+    assert asyncio.run(sign_out(tmp_path)) is expected
 
-    monkeypatch.setattr(api_backend, "safe_rmtree", refuse)
-
-    assert sign_out(tmp_path) is SignOutOutcome.FAILED
-
+    assert sign_out_chrome.instances[0].events[-1] == "close"
     record = read_session(tmp_path)
     assert record is not None
     assert record.signed_in
-    assert _lock_free(tmp_path)
 
 
 def test_session_record_round_trips_without_secrets(tmp_path: Path) -> None:
@@ -575,31 +503,6 @@ def test_clean_account_step_breaking_unexpectedly_keeps_it_and_runs_next_step() 
 
     assert cleanup.pending == ("restore_settings",)
     assert site.deleted == [f"{READS_URL}/{READ_ID}"]
-
-
-def test_sign_in_signed_in_runs_saved_cleanup(tmp_path: Path, fake_chrome: type[_SignInSession]) -> None:
-    save_cleanup(tmp_path, AccountCleanup(restore=PREVIOUS, documents=[document_trace(read_id=READ_ID)]))
-    fake_chrome.site = FakeSite(reads=[READ_ID], account={"default_voice_id": FRONCZEWSKI_ID})
-
-    assert asyncio.run(sign_in(tmp_path)) is SignInOutcome.SIGNED_IN
-
-    record = read_session(tmp_path)
-    assert record is not None
-    assert not record.cleanup_pending
-    assert fake_chrome.site.deleted == [f"{READS_URL}/{READ_ID}"]
-    assert fake_chrome.site.account == {"default_voice_id": "previous-voice", "playback_speed_rate": 1.5}
-
-
-def test_sign_in_cleanup_failing_keeps_it_saved(tmp_path: Path, fake_chrome: type[_SignInSession]) -> None:
-    save_cleanup(tmp_path, AccountCleanup(documents=[document_trace(read_id=READ_ID)]))
-    fake_chrome.site = FakeSite(reads=[READ_ID], failing={"delete_read"})
-
-    assert asyncio.run(sign_in(tmp_path)) is SignInOutcome.SIGNED_IN
-
-    record = read_session(tmp_path)
-    assert record is not None
-    assert record.signed_in
-    assert record.delete_document
 
 
 def _reader(page: FakePlaywrightPage) -> ReaderPage:

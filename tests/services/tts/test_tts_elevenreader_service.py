@@ -222,22 +222,22 @@ def test_synthesize_document_signed_out_raises_auth_error_and_records_session(
     with pytest.raises(TtsAuthError) as error:
         _run(_record(engine_for(site), _request(tmp_path)))
 
-    assert "Zaloguj / sprawdź sesję" in error.value.context.suggestion
+    assert "Zaloguj (otwórz okno Chrome)" in error.value.context.suggestion
     assert "upload" not in site.events
     record = read_session(tmp_path)
     assert record is not None
     assert not record.signed_in
 
 
-def test_synthesize_document_default_browser_starts_chrome_headless(
+def test_synthesize_document_default_browser_starts_one_chrome_session_on_the_profile_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     site = FakeSite(library=LibraryState.SIGNED_OUT)
-    modes: list[bool] = []
+    roots: list[Path] = []
 
-    def session(root: Path, *, headless: bool) -> FakeSession:
-        modes.append(headless)
+    def session(root: Path) -> FakeSession:
+        roots.append(root)
         created: FakeSession = FakeSession(site)
         site.sessions.append(created)
         return created
@@ -251,7 +251,7 @@ def test_synthesize_document_default_browser_starts_chrome_headless(
     finally:
         _run(engine.close())
 
-    assert modes == [True]
+    assert roots == [tts_config(tmp_path).elevenreader_profile_root]
 
 
 def test_synthesize_document_unavailable_library_closes_tab_and_next_attempt_restarts_browser(

@@ -509,8 +509,8 @@ def test_tts_handler_app_check_refusal_tells_owner_in_polish_to_sign_out_and_in_
     shown: str = public_error(caught.value)
     assert caught.value.context.code is ErrorCode.TTS_AUTH_FAILED
     assert shown.startswith("ElevenReader odrzucił przeglądarkę AniShift. Blokada trwa dobę.")
-    assert "Ustawienia → Lektor → Wyloguj (wyczyść profil przeglądarki)" in shown
-    assert "Zaloguj / sprawdź sesję" in shown
+    assert "Wyloguj (usuń ciasteczka ElevenReadera)" in shown
+    assert "Zaloguj (otwórz okno Chrome) i zaloguj się w otwartym oknie" in shown
     assert "spróbuj ponownie po dobie" in shown
     assert "inny silnik lektora" in shown
     assert shown.count("odrzucił") == 1

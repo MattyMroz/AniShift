@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -19,8 +20,9 @@ from anishift.services.tts.engines.elevenreader.browser import (
     ChromeBusyError,
     ChromeMissingError,
     ChromeSession,
-    _chrome_args,
+    _headless_args,
     _stop_process,
+    open_window,
 )
 
 pytestmark = pytest.mark.unit
@@ -81,6 +83,10 @@ class _Context:
         self.scripts: list[str] = []
         self.page_error: Exception | None = None
         self.script_error: Exception | None = None
+        self.cleared_domains: list[re.Pattern[str]] = []
+
+    async def clear_cookies(self, *, domain: re.Pattern[str]) -> None:
+        self.cleared_domains.append(domain)
 
     async def add_init_script(self, script: str) -> None:
         if self.script_error is not None:
@@ -97,8 +103,11 @@ class _Cdp:
     def __init__(self, browser: _Browser) -> None:
         self.browser: _Browser = browser
 
-    async def send(self, method: str) -> dict[str, object]:
+    async def send(self, method: str, params: dict[str, object] | None = None) -> dict[str, object]:
         self.browser.sent.append(method)
+        if method != "Browser.close":
+            self.browser.params.append(params or {})
+            return {}
         self.browser.process.exit_requested = self.browser.exits
         self.browser.connected = False
         message: str = "Target page, context or browser has been closed"
@@ -113,6 +122,7 @@ class _Browser:
         self.exits: bool = True
         self.cdp_error: Exception | None = None
         self.sent: list[str] = []
+        self.params: list[dict[str, object]] = []
         self.close_error: Exception | None = None
 
     def is_connected(self) -> bool:
@@ -201,7 +211,7 @@ def _lock_free(root: Path) -> bool:
 
 
 def test_chrome_session_start_launches_attaches_and_closes_blank_tabs(chrome: _Chrome, tmp_path: Path) -> None:
-    session = ChromeSession(chrome.root, headless=True)
+    session = ChromeSession(chrome.root)
 
     asyncio.run(session.start())
 
@@ -219,18 +229,8 @@ def test_chrome_session_start_launches_attaches_and_closes_blank_tabs(chrome: _C
     asyncio.run(session.close())
 
 
-def test_chrome_session_visible_start_adds_no_speed_script(chrome: _Chrome) -> None:
-    session = ChromeSession(chrome.root, headless=False)
-
-    asyncio.run(session.start())
-    asyncio.run(session.close())
-
-    assert chrome.browser.contexts[0].scripts == []
-    assert "--headless=new" not in chrome.argv
-
-
 def test_chrome_session_close_asks_chrome_to_exit_and_releases_lock(chrome: _Chrome) -> None:
-    session = ChromeSession(chrome.root, headless=True)
+    session = ChromeSession(chrome.root)
     asyncio.run(session.start())
 
     asyncio.run(session.close())
@@ -244,7 +244,7 @@ def test_chrome_session_close_asks_chrome_to_exit_and_releases_lock(chrome: _Chr
 
 
 def test_chrome_session_close_chrome_ignoring_exit_request_terminates_it(chrome: _Chrome) -> None:
-    session = ChromeSession(chrome.root, headless=True)
+    session = ChromeSession(chrome.root)
     asyncio.run(session.start())
     chrome.browser.exits = False
     captured: list[str] = []
@@ -262,7 +262,7 @@ def test_chrome_session_close_chrome_ignoring_exit_request_terminates_it(chrome:
 
 
 def test_chrome_session_close_without_cdp_session_terminates_without_waiting(chrome: _Chrome) -> None:
-    session = ChromeSession(chrome.root, headless=True)
+    session = ChromeSession(chrome.root)
     asyncio.run(session.start())
     chrome.browser.cdp_error = PlaywrightError("Browser has been closed")
 
@@ -273,52 +273,71 @@ def test_chrome_session_close_without_cdp_session_terminates_without_waiting(chr
     assert _lock_free(chrome.root)
 
 
-def test_chrome_session_close_after_owner_closed_chrome_waits_for_its_exit_instead_of_stopping_it(
-    chrome: _Chrome,
+def test_chrome_session_forget_site_clears_only_elevenreader_cookies_and_origin_data(chrome: _Chrome) -> None:
+    session = ChromeSession(chrome.root)
+    asyncio.run(session.start())
+
+    asyncio.run(session.forget_site())
+    asyncio.run(session.close())
+
+    domain: re.Pattern[str] = chrome.browser.contexts[0].cleared_domains[0]
+    assert [bool(domain.search(name)) for name in ("elevenreader.io", ".elevenreader.io", "app.elevenreader.io")] == [
+        True,
+        True,
+        True,
+    ]
+    assert [bool(domain.search(name)) for name in ("google.com", ".accounts.google.com", "notelevenreader.io")] == [
+        False,
+        False,
+        False,
+    ]
+    assert chrome.browser.sent == ["Storage.clearDataForOrigin", "Browser.close"]
+    assert chrome.browser.params == [{"origin": "https://elevenreader.io", "storageTypes": "all"}]
+
+
+def test_chrome_session_forget_site_before_start_raises_unavailable(chrome: _Chrome) -> None:
+    with pytest.raises(TtsProviderUnavailableError, match="not started"):
+        asyncio.run(ChromeSession(chrome.root).forget_site())
+
+
+def test_open_window_starts_plain_detached_chrome_on_library_without_debugging(
+    chrome: _Chrome, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    session = ChromeSession(chrome.root, headless=False)
-    asyncio.run(session.start())
-    chrome.browser.connected = False
-    chrome.process.exit_requested = True
+    flags: list[object] = []
 
-    asyncio.run(session.close())
+    def popen(argv: list[str], **kwargs: object) -> _Process:
+        chrome.argv = argv
+        flags.append(kwargs.get("creationflags"))
+        return chrome.process
 
-    assert chrome.browser.sent == []
-    assert chrome.process.calls == ["wait"]
+    monkeypatch.setattr(subprocess, "Popen", popen)
+
+    open_window(chrome.root)
+
+    assert chrome.argv == [
+        str(tmp_path / "chrome.exe"),
+        f"--user-data-dir={chrome.root / 'chrome-profile'}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "https://elevenreader.io/reader/library",
+    ]
+    assert flags == [getattr(subprocess, "DETACHED_PROCESS", 0)]
+    assert chrome.restricted == [chrome.root]
+    assert chrome.playwright.chromium.urls == []
     assert _lock_free(chrome.root)
 
 
-def test_chrome_session_visible_close_without_cdp_session_waits_for_chrome_to_exit(chrome: _Chrome) -> None:
-    session = ChromeSession(chrome.root, headless=False)
-    asyncio.run(session.start())
-    chrome.browser.cdp_error = PlaywrightError("Browser has been closed")
-    chrome.process.exit_requested = True
+def test_open_window_without_chrome_raises_missing(chrome: _Chrome, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(browser_module, "find_chrome", lambda: None)
 
-    asyncio.run(session.close())
+    with pytest.raises(ChromeMissingError):
+        open_window(chrome.root)
 
-    assert chrome.browser.sent == []
-    assert chrome.process.calls == ["wait"]
-    assert _lock_free(chrome.root)
-
-
-def test_chrome_session_has_window_while_chrome_runs_with_a_tab_or_without_its_driver(chrome: _Chrome) -> None:
-    session = ChromeSession(chrome.root, headless=False)
-    assert not session.has_window
-    asyncio.run(session.start())
-    context: _Context = chrome.browser.contexts[0]
-
-    assert session.has_window
-    context.pages = []
-    assert not session.has_window
-    chrome.browser.connected = False
-    assert session.has_window
-    chrome.process.returncode = 0
-    assert not session.has_window
-    asyncio.run(session.close())
+    assert chrome.argv == []
 
 
 def test_chrome_session_close_browser_breaking_still_stops_chrome_and_releases_lock(chrome: _Chrome) -> None:
-    session = ChromeSession(chrome.root, headless=True)
+    session = ChromeSession(chrome.root)
     asyncio.run(session.start())
     chrome.browser.close_error = RuntimeError("driver crashed")
 
@@ -331,7 +350,7 @@ def test_chrome_session_close_browser_breaking_still_stops_chrome_and_releases_l
 
 
 def test_chrome_session_close_gone_browser_is_tolerated(chrome: _Chrome) -> None:
-    session = ChromeSession(chrome.root, headless=True)
+    session = ChromeSession(chrome.root)
     asyncio.run(session.start())
     chrome.browser.close_error = PlaywrightError("Browser has been closed")
 
@@ -348,7 +367,7 @@ def test_chrome_session_start_without_chrome_raises_missing_and_keeps_lock_free(
     monkeypatch.setattr(browser_module, "find_chrome", lambda: None)
 
     with pytest.raises(ChromeMissingError):
-        asyncio.run(ChromeSession(chrome.root, headless=True).start())
+        asyncio.run(ChromeSession(chrome.root).start())
 
     assert chrome.argv == []
 
@@ -360,7 +379,7 @@ def test_chrome_session_start_with_profile_locked_raises_busy(chrome: _Chrome) -
 
     try:
         with pytest.raises(ChromeBusyError) as error:
-            asyncio.run(ChromeSession(chrome.root, headless=True).start())
+            asyncio.run(ChromeSession(chrome.root).start())
     finally:
         holder.release()
 
@@ -375,7 +394,7 @@ def test_chrome_session_start_with_chrome_left_on_profile_raises_busy_and_starts
     (profile / "lockfile").write_bytes(b"")
 
     with (profile / "lockfile").open("rb"), pytest.raises(ChromeBusyError):
-        asyncio.run(ChromeSession(chrome.root, headless=True).start())
+        asyncio.run(ChromeSession(chrome.root).start())
 
     assert chrome.argv == []
     assert _lock_free(chrome.root)
@@ -385,7 +404,7 @@ def test_chrome_session_start_removes_stale_chrome_lockfile_and_starts(chrome: _
     profile: Path = chrome.root / "chrome-profile"
     profile.mkdir(parents=True)
     (profile / "lockfile").write_bytes(b"")
-    session = ChromeSession(chrome.root, headless=True)
+    session = ChromeSession(chrome.root)
 
     asyncio.run(session.start())
 
@@ -396,7 +415,7 @@ def test_chrome_session_start_removes_stale_chrome_lockfile_and_starts(chrome: _
 
 def test_chrome_session_start_chrome_exiting_raises_unavailable_and_cleans_up(chrome: _Chrome) -> None:
     chrome.process.returncode = 1
-    session = ChromeSession(chrome.root, headless=True)
+    session = ChromeSession(chrome.root)
 
     with pytest.raises(TtsProviderUnavailableError, match="attach"):
         asyncio.run(session.start())
@@ -416,7 +435,7 @@ def test_chrome_session_start_playwright_failing_raises_unavailable_and_cleans_u
         chrome.driver_error = error
     else:
         chrome.browser.contexts[0].script_error = error
-    session = ChromeSession(chrome.root, headless=True)
+    session = ChromeSession(chrome.root)
 
     with pytest.raises(TtsProviderUnavailableError) as raised:
         asyncio.run(session.start())
@@ -438,14 +457,14 @@ def test_chrome_session_start_popen_failing_raises_unavailable(
     monkeypatch.setattr(subprocess, "Popen", refuse)
 
     with pytest.raises(TtsProviderUnavailableError) as error:
-        asyncio.run(ChromeSession(chrome.root, headless=True).start())
+        asyncio.run(ChromeSession(chrome.root).start())
 
     assert error.value.__cause__ is None
     assert _lock_free(chrome.root)
 
 
 def test_chrome_session_new_page_wraps_tab_or_raises_unavailable(chrome: _Chrome) -> None:
-    session = ChromeSession(chrome.root, headless=True)
+    session = ChromeSession(chrome.root)
     with pytest.raises(TtsProviderUnavailableError, match="not started"):
         asyncio.run(session.new_page())
 
@@ -463,15 +482,14 @@ def test_chrome_session_new_page_wraps_tab_or_raises_unavailable(chrome: _Chrome
     assert isinstance(asyncio.run(scenario()), ReaderPage)
 
 
-@pytest.mark.parametrize(("headless", "flags"), [(True, True), (False, False)])
-def test_chrome_args_headless_flags_follow_mode(tmp_path: Path, headless: bool, flags: bool) -> None:
-    args: list[str] = _chrome_args(tmp_path / "chrome.exe", tmp_path / "profile", 9333, headless=headless)
+def test_headless_args_carry_debugging_port_profile_and_silent_headless_flags(tmp_path: Path) -> None:
+    args: list[str] = _headless_args(tmp_path / "chrome.exe", tmp_path / "profile", 9333)
 
     assert args[0] == str(tmp_path / "chrome.exe")
     assert "--remote-debugging-port=9333" in args
     assert f"--user-data-dir={tmp_path / 'profile'}" in args
-    assert ("--headless=new" in args) is flags
-    assert ("--mute-audio" in args) is flags
+    assert "--headless=new" in args
+    assert "--mute-audio" in args
     assert args[-1] == "about:blank"
 
 

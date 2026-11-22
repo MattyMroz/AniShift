@@ -42,20 +42,20 @@ class LibraryState(StrEnum):
 
 
 class SignInOutcome(StrEnum):
-    """Result of the visible sign-in action."""
+    """Result of opening the plain Chrome window the owner signs in with."""
 
-    SIGNED_IN = "signed_in"
-    SIGNED_OUT = "signed_out"
+    OPENED = "opened"
     BUSY = "busy"
     NO_CHROME = "no_chrome"
     FAILED = "failed"
 
 
 class SignOutOutcome(StrEnum):
-    """Result of the sign-out action that deletes the browser profile."""
+    """Result of the sign-out action that deletes the ElevenReader cookies and site data."""
 
     SIGNED_OUT = "signed_out"
     BUSY = "busy"
+    NO_CHROME = "no_chrome"
     FAILED = "failed"
 
 

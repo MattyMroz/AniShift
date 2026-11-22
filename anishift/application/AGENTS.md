@@ -237,7 +237,8 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   metadanych `signs_unrecorded`, w obu ścieżkach. `tts_handler.py`
 - Sesję ElevenReadera panel czyta, odświeża i czyści przez fasadę (`elevenreader_session`, `elevenreader_sign_in`,
   `elevenreader_sign_out`);
-  logowanie blokuje wątek wołający, aż właściciel zamknie okno Chrome, i jeszcze na sprawdzenie sesji. `service.py`
+  logowanie tylko otwiera zwykłe okno Chrome i od razu wraca, a wylogowanie blokuje wątek wołający na start
+  niewidocznego Chrome, usunięcie danych ElevenReadera i jego zamknięcie. `service.py`
 - `GraphCoordinator` przyjmuje wiele kontekstów (`RunRequest` → `RunHandle`); wspólne są tylko kolejki gotowych
   tasków per zasób, executory i `limits_provider()`. Błąd pętli anuluje wszystkie konteksty przed joinem. Kolejka
   `(rank, sequence, task_index, run_id, task_id)`, USER przed BACKGROUND, wysłanych per zasób najwyżej `worker_limit`.
