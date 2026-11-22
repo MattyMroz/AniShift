@@ -52,7 +52,7 @@ from anishift.services.tts import (
     SynthesisStatus,
     SynthesizedRequest,
 )
-from anishift.services.tts.engines.elevenreader.api_backend import SIGN_IN_HINT, auth_error
+from anishift.services.tts.engines.elevenreader.api_backend import SIGN_IN_HINT, auth_error, refused_error
 
 if TYPE_CHECKING:
     from loguru import Message
@@ -491,6 +491,27 @@ def test_tts_handler_failed_line_fails_task_with_engine_message_and_hint(
     assert caught.value.context.suggestion == SIGN_IN_HINT
     assert public_error(caught.value) == f"ElevenReader session is signed out. {SIGN_IN_HINT}"
     assert len(service.batches) == 1
+
+
+@pytest.mark.unit
+def test_tts_handler_app_check_refusal_tells_owner_in_polish_to_sign_out_and_in_again(tmp_path: Path) -> None:
+    task, snapshot = _signed_synthesis(tmp_path)
+    failure: ErrorContext = refused_error("AppCheck: 403").context
+    service = _FailingTts(tmp_path, frozenset({"group-1-0"}), failure)
+    handler = TtsTaskHandler(
+        service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=_Preparer(), reads_document=True
+    )
+
+    with pytest.raises(ExecutionError) as caught:
+        handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
+
+    shown: str = public_error(caught.value)
+    assert caught.value.context.code is ErrorCode.TTS_AUTH_FAILED
+    assert "ElevenReader odrzucił przeglądarkę AniShift i blokuje ją przez dobę." in shown
+    assert "Ustawienia → Lektor → Wyloguj (wyczyść profil przeglądarki)" in shown
+    assert "Zaloguj / sprawdź sesję" in shown
+    assert "spróbuj ponownie po dobie" in shown
+    assert not any(technical in shown for technical in ("App Check", "AppCheck", "403", "<path>"))
 
 
 def test_tts_handler_document_engine_without_audio_service_refuses_signs_before_synthesis(tmp_path: Path) -> None:

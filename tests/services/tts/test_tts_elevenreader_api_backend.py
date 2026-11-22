@@ -971,7 +971,7 @@ def test_reader_page_open_document_app_check_refusal_raises_auth_error_at_once()
     page.emit("console", SimpleNamespace(text="Failed to initialize AppCheck: FirebaseError: AppCheck: 403 error."))
 
     started: float = time.monotonic()
-    with pytest.raises(TtsAuthError, match="App Check"):
+    with pytest.raises(TtsAuthError, match="refused the AniShift browser"):
         asyncio.run(reader.open_document(READ_ID))
 
     assert time.monotonic() - started < 1.0

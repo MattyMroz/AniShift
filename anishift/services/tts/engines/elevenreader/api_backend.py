@@ -206,10 +206,11 @@ def refused_error(console: str) -> TtsAuthError:
     """Return the permanent error for a browser the site's App Check refused; the page then blocks it for a day."""
     context: ErrorContext = ErrorContext(
         code=ErrorCode.TTS_AUTH_FAILED,
-        message="ElevenReader App Check refused this browser profile, so the page opens no audio stream",
+        message="ElevenReader refused the AniShift browser",
         suggestion=(
-            "Google's bot check refused this Chrome profile and the page blocks it for a day. Sign in to "
-            "ElevenReader on a new profile or choose another TTS engine."
+            "ElevenReader odrzucił przeglądarkę AniShift i blokuje ją przez dobę. Wyloguj się w Ustawienia → Lektor → "
+            "Wyloguj (wyczyść profil przeglądarki), potem zaloguj przez Zaloguj / sprawdź sesję albo spróbuj ponownie "
+            f"po dobie. {FALLBACK_HINT}"
         ),
         details={"console": console},
     )

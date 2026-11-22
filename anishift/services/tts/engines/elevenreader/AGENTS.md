@@ -104,7 +104,9 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
   dźwięk) i pętla dołączania do CDP to czynności jednej próby.
 - Gdy Firebase App Check odrzuci przeglądarkę, strona pisze w konsoli `AppCheck: 403` / `appCheck/…` i nie otwiera
   strumienia, a odmowę zapamiętuje w profilu na dobę. `ReaderPage` łapie to z konsoli (`APP_CHECK_REFUSAL`) i
-  `raise_if_refused` od razu kończy próbę trwałym `TtsAuthError` (`refused_error`), bez czekania na Play.
+  `raise_if_refused` od razu kończy próbę trwałym `TtsAuthError` (`refused_error`), bez czekania na Play. Panel
+  pokazuje treść z sugestią: po polsku, bez „App Check” i kodu, z drogą Ustawienia → Lektor → Wyloguj, potem Zaloguj,
+  albo próbą po dobie. Profilu po odmowie nic nie czyści samo (Z1 specyfikacji): robi to tylko `sign_out`.
 - Błąd Playwright przy starcie sterownika, dołączaniu i przygotowaniu kontekstu (`ChromeSession._attach`) staje się
   `unavailable_error`, więc `sign_in` kończy się `FAILED`, a panel nie zostaje w stanie „zajęty”.
 - Każde wywołanie strony w próbie (także `set_page_speed`, `press_play`, `check_page_speed`, `player_state`) idzie
