@@ -82,6 +82,9 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `_fit_frame` obcina KAŻDY wiersz do szerokości terminala; szerszy zawinąłby się i przesunął raster maskotki.
 - Klawisze mają jedną tabelę `_NORMALISED_KEYS`. Na Windowsie klawisz specjalny ma puste `data`, więc `Keys.Any`
   zlepia je w `"any"` — nowy klawisz MUSI dostać własny binding. Paste: `Keys.BracketedPaste` → `paste:`.
+  Backspace i Ctrl+Backspace to ten sam `Keys.Backspace` (`Keys.ControlH`); różni je tylko `data`, a czytnik VT
+  i konsolowy Windowsa wysyłają `\x7f`/`\x08` odwrotnie. Który bajt znaczy Ctrl, ustala raz `_ctrl_backspace_data`
+  przy tworzeniu aplikacji; nie dopisuj `Keys.Backspace` ani `Keys.ControlH` do tabeli.
 - Kółko wymaga `_WheelControl` (domyślny scroller gubi zdarzenie przy klatce równej oknu); nie zastępuj go
   `ScrollablePane` ani drugim oknem. Przelicza pozycje znaków na komórki przed callbackiem — CJK i znaki łączące
   muszą zgadzać się z mapą trafień.

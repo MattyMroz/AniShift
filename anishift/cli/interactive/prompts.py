@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from typing import Final
 from prompt_toolkit import Application
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.formatted_text import ANSI, AnyFormattedText, fragment_list_to_text, to_formatted_text
+from prompt_toolkit.input import Input
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import FormattedTextControl, Layout, Window
@@ -28,6 +30,9 @@ from anishift.cli.interactive.mascot_native import (
 )
 from anishift.cli.interactive.palette import BRAND_THEME
 from anishift.utils.rich_console.theme import RICH_THEME
+
+if sys.platform == "win32":
+    from prompt_toolkit.input.win32 import ConsoleInputReader, Win32Input
 
 __all__ = [
     "BRAND_GAP_COLUMNS",
@@ -105,7 +110,6 @@ _NORMALISED_KEYS: Final[tuple[tuple[Keys | str | tuple[Keys | str, ...], str], .
     (Keys.End, "end"),
     (Keys.Enter, "enter"),
     (" ", "space"),
-    (Keys.Backspace, "backspace"),
     (Keys.Delete, "delete"),
     (Keys.Tab, "tab"),
     (Keys.BackTab, "backtab"),
@@ -137,6 +141,12 @@ _NORMALISED_KEYS: Final[tuple[tuple[Keys | str | tuple[Keys | str, ...], str], .
     ((Keys.Escape, Keys.Backspace), "ctrl-backspace"),
 )
 """Terminal keys the session forwards under a stable name."""
+
+_VT_CTRL_BACKSPACE: Final[str] = "\x08"
+"""Ctrl+Backspace data from a VT input reader, where plain Backspace sends DEL."""
+
+_CONSOLE_CTRL_BACKSPACE: Final[str] = "\x7f"
+"""Ctrl+Backspace data from the Windows console event reader, where plain Backspace sends BS."""
 
 _SAVE_CURSOR: Final[str] = "\x1b7"
 """VT sequence preserving Prompt Toolkit's current cursor position."""
@@ -283,6 +293,7 @@ class TerminalRenderer:
         )
         self._application.timeoutlen = _KEY_SEQUENCE_TIMEOUT_S
         self._application.ttimeoutlen = _KEY_SEQUENCE_TIMEOUT_S
+        self._ctrl_backspace: str = _ctrl_backspace_data(self._application.input)
 
     @property
     def native_mascot_size(self) -> tuple[int, int] | None:
@@ -416,6 +427,10 @@ class TerminalRenderer:
             sequence: tuple[Keys | str, ...] = key if isinstance(key, tuple) else (key,)
             bindings.add(*sequence)(self._forward(name))
 
+        @bindings.add(Keys.Backspace)
+        def backspace(event: KeyPressEvent) -> None:
+            self._key_handler("ctrl-backspace" if event.data == self._ctrl_backspace else "backspace")
+
         @bindings.add(Keys.BracketedPaste)
         def paste(event: KeyPressEvent) -> None:
             self._key_handler(f"paste:{event.data}")
@@ -436,6 +451,14 @@ class TerminalRenderer:
             self._key_handler(name)
 
         return handler
+
+
+def _ctrl_backspace_data(terminal_input: Input) -> str:
+    """Return the Backspace data that means Ctrl was held, as sent by the reader behind *terminal_input*."""
+    if sys.platform == "win32" and isinstance(terminal_input, Win32Input):
+        if isinstance(terminal_input.console_input_reader, ConsoleInputReader):
+            return _CONSOLE_CTRL_BACKSPACE
+    return _VT_CTRL_BACKSPACE
 
 
 def _native_anchor(frame: str) -> tuple[int, int] | None:
