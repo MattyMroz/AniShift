@@ -12,7 +12,9 @@ from rich.text import Text
 from anishift.application.control_views import encode_view
 from anishift.application.subscription_targets import SubscriptionRow
 from anishift.cli.interactive import anime_view
+from anishift.cli.interactive.anime_state import AnimeRow
 from anishift.cli.interactive.state import StateController
+from anishift.cli.interactive.state_subscriptions import subscription_rows
 from anishift.cli.interactive.subscription_texts import check_state
 from anishift.cli.resident import ResidentSession
 from anishift.platform.local_control import ControlError, ControlErrorCode
@@ -269,6 +271,26 @@ def test_the_longest_typical_states_stay_whole_in_their_rows(panel: StateControl
         .endswith(f"  Odcinek · {(now + week).astimezone():%d.%m %H:%M}")
     )
     assert lines[_line(lines, " The Apothecary")].rstrip().endswith("  E12 · czekam na PL")
+
+
+def test_episode_labels_of_different_widths_keep_the_separator_in_one_column() -> None:
+    now: datetime = datetime(2026, 11, 22, 12, tzinfo=UTC)
+    due: str = (now + timedelta(days=3)).isoformat()
+    rows: tuple[AnimeRow, ...] = subscription_rows(
+        [
+            _row("a", "Alpha", due_at=due, due_number=8),
+            _row("b", "Beta", due_at=due, due_number=22),
+            _row("c", "Gamma", due_at=due, due_number=105),
+            _row("d", "Delta", paused=True, pause_reason="user"),
+        ],
+        {},
+        now,
+        idle=False,
+    )
+
+    assert {row.status.index("·") for row in rows[:3]} == {5}
+    assert rows[0].status.startswith("E8   · ")
+    assert rows[3].status == "Wstrzymana"
 
 
 def test_the_status_column_fits_the_longest_check_text() -> None:
