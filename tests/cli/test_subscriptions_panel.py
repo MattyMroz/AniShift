@@ -6,11 +6,14 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import pytest
+from rich.cells import cell_len
 from rich.text import Text
 
 from anishift.application.control_views import encode_view
 from anishift.application.subscription_targets import SubscriptionRow
+from anishift.cli.interactive import anime_view
 from anishift.cli.interactive.state import StateController
+from anishift.cli.interactive.subscription_texts import check_state
 from anishift.cli.resident import ResidentSession
 from anishift.platform.local_control import ControlError, ControlErrorCode
 
@@ -268,14 +271,17 @@ def test_the_longest_typical_states_stay_whole_in_their_rows(panel: StateControl
     assert lines[_line(lines, " The Apothecary")].rstrip().endswith("  E12 · czekam na PL")
 
 
-def test_problem_and_conflict_states_share_the_style_of_every_other_state(panel: StateController) -> None:
+def test_the_status_column_fits_the_longest_check_text() -> None:
+    assert cell_len(check_state({"number": None, "outcome": "refreshed"})) <= anime_view._SUBSCRIPTION_STATUS_WIDTH
+
+
+def test_problem_states_share_the_style_of_every_other_state(panel: StateController) -> None:
     panel._subscriptions = [
         _row("u", "Undated"),
         _row("p", "Problem", problem="season_unrecognized"),
-        _row("c", "Conflict", episode_count=2, beyond_count=6),
         _row("s", "Selected", paused=True, pause_reason="user"),
     ]
-    panel._selected = 3
+    panel._selected = 2
 
     rendered: Text = panel.render(120, 30)
 
@@ -283,7 +289,7 @@ def test_problem_and_conflict_states_share_the_style_of_every_other_state(panel:
         index: int = rendered.plain.index(needle)
         return {str(span.style) for span in rendered.spans if span.start <= index < span.end}
 
-    assert styles("Nie rozpoznano sezonu ") == styles("Konflikt liczby odcinków ") == styles("Termin nieznany ")
+    assert styles("Nie rozpoznano sezonu ") == styles("Termin nieznany ")
 
 
 def test_the_episodes_column_uses_the_success_style_only_once_an_episode_counts(panel: StateController) -> None:
