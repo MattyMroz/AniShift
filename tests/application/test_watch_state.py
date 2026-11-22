@@ -64,11 +64,17 @@ _TIMESTAMP: str = "2026-09-08T12:00:00+00:00"
 
 _FINGERPRINT: SourceFingerprint = (("episode-01.mkv", 1024, 111),)
 
-_SCHEMA_FOUR_SECTIONS: tuple[str, ...] = ("subscriptions", "removed_subscription", "legacy_orders")
+_SECTIONS: tuple[str, ...] = (
+    "recipes",
+    "ready_groups",
+    "pause_owned_transfers",
+    "pending_deletions",
+    "subscriptions",
+    "removed_subscription",
+    "legacy_orders",
+)
 
-_SCHEMA_TWO_SECTIONS: tuple[str, ...] = ("recipes", "ready_groups", "pause_owned_transfers", "pending_deletions")
-
-_SCHEMA_THREE_FIELDS: tuple[str, ...] = (
+_EPISODE_IDENTITY_FIELDS: tuple[str, ...] = (
     "assignments",
     "legacy_scope",
     "selection_revision",
@@ -195,34 +201,6 @@ def _write(tmp_path: Path, document: object) -> None:
     (tmp_path / WATCH_STATE_FILE_NAME).write_text(json.dumps(document), encoding="utf-8")
 
 
-def _schema_two_document(tmp_path: Path, state: WatchState) -> dict[str, object]:
-    _store(tmp_path).save(state)
-    document: dict[str, object] = json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
-    document["schema_version"] = 2
-    for key in _SCHEMA_FOUR_SECTIONS:
-        document.pop(key)
-    for acquisition in document["acquisitions"]:  # type: ignore[attr-defined]
-        for key in _SCHEMA_THREE_FIELDS:
-            acquisition.pop(key)
-    return document
-
-
-def _schema_one_document(tmp_path: Path, state: WatchState) -> dict[str, object]:
-    document: dict[str, object] = _schema_two_document(tmp_path, state)
-    document["schema_version"] = 1
-    for key in _SCHEMA_TWO_SECTIONS:
-        document.pop(key)
-    for acquisition in document["acquisitions"]:  # type: ignore[attr-defined]
-        acquisition.pop("complete_files")
-    return document
-
-
-def _write_schema_one(tmp_path: Path, state: WatchState) -> str:
-    text: str = json.dumps(_schema_one_document(tmp_path, state))
-    (tmp_path / WATCH_STATE_FILE_NAME).write_text(text, encoding="utf-8")
-    return text
-
-
 def test_store_round_trips_every_recorded_fact(tmp_path: Path) -> None:
     store: WatchStateStore = _store(tmp_path)
     state: WatchState = _state()
@@ -232,14 +210,11 @@ def test_store_round_trips_every_recorded_fact(tmp_path: Path) -> None:
     assert store.load() == state
 
 
-@pytest.mark.parametrize("schema", [1, 2])
-def test_legacy_transfer_actions_do_not_invent_a_durable_send_record(tmp_path: Path, schema: int) -> None:
+def test_legacy_transfer_actions_do_not_invent_a_durable_send_record(tmp_path: Path) -> None:
     state: WatchState = _state()
     store: WatchStateStore = _store(tmp_path)
     store.save(state)
-    document: dict[str, object] = (
-        _schema_one_document(tmp_path, state) if schema == 1 else _schema_two_document(tmp_path, state)
-    )
+    document: dict[str, object] = json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
     for acquisition in document["acquisitions"]:  # type: ignore[attr-defined]
         acquisition.pop("action_sent")
     _write(tmp_path, document)
@@ -315,15 +290,22 @@ def test_store_rejects_an_unknown_field(tmp_path: Path) -> None:
         store.load()
 
 
-def test_store_rejects_another_schema_version(tmp_path: Path) -> None:
+@pytest.mark.parametrize("version", [1, 4, WATCH_STATE_SCHEMA_VERSION - 1, WATCH_STATE_SCHEMA_VERSION + 1, "6"])
+def test_store_rejects_another_schema_version_and_names_the_migration(tmp_path: Path, version: object) -> None:
     store: WatchStateStore = _store(tmp_path)
-    store.save(WatchState())
-    document: dict[str, object] = json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
-    document["schema_version"] = WATCH_STATE_SCHEMA_VERSION + 1
+    store.save(_state())
+    path: Path = tmp_path / WATCH_STATE_FILE_NAME
+    document: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+    document["schema_version"] = version
     _write(tmp_path, document)
+    original: bytes = path.read_bytes()
 
-    with pytest.raises(ConfigError):
+    with pytest.raises(ConfigError) as failure:
         store.load()
+
+    assert failure.value.context.suggestion is not None
+    assert "migrate_live_settings.py" in failure.value.context.suggestion
+    assert path.read_bytes() == original
 
 
 def test_saving_keeps_the_previous_version_and_leaves_no_temporary_file(tmp_path: Path) -> None:
@@ -426,44 +408,8 @@ def test_saving_always_writes_the_current_schema_version(tmp_path: Path) -> None
     assert store.load().schema_version == WATCH_STATE_SCHEMA_VERSION
 
 
-def test_a_schema_one_state_is_migrated_once_and_keeps_every_recorded_fact(tmp_path: Path) -> None:
-    store: WatchStateStore = _store(tmp_path)
-    original: str = _write_schema_one(tmp_path, _state())
-
-    migrated: WatchState = store.load()
-
-    assert migrated == _state()
-    assert migrated.schema_version == WATCH_STATE_SCHEMA_VERSION
-    assert (tmp_path / f"{WATCH_STATE_FILE_NAME}.v1.bak").read_text(encoding="utf-8") == original
-    after: str = (tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8")
-    assert store.load() == migrated
-    assert (tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8") == after
-
-
-def test_migrating_a_schema_one_state_fills_the_new_facts_with_their_defaults(tmp_path: Path) -> None:
-    _write_schema_one(tmp_path, _state())
-
-    migrated: WatchState = _store(tmp_path).load()
-
-    assert migrated.recipes == RecipePreferences()
-    assert migrated.recipes.translate.text_result is TextResultFormat.TEXT
-    assert migrated.recipes.audiobook.timeline is NarrationTimeline.CONTINUOUS
-    assert (migrated.ready_groups, migrated.pause_owned_transfers, migrated.pending_deletions) == ((), (), ())
-    assert migrated.acquisitions[0].complete_files == ()
-
-
-def test_migration_never_overwrites_a_backup_left_by_an_earlier_attempt(tmp_path: Path) -> None:
-    _write_schema_one(tmp_path, _state())
-    backup: Path = tmp_path / f"{WATCH_STATE_FILE_NAME}.v1.bak"
-    backup.write_text("kept", encoding="utf-8")
-
-    _store(tmp_path).load()
-
-    assert backup.read_text(encoding="utf-8") == "kept"
-
-
-@pytest.mark.parametrize("section", _SCHEMA_TWO_SECTIONS)
-def test_a_schema_two_state_missing_a_section_it_must_carry_is_refused(tmp_path: Path, section: str) -> None:
+@pytest.mark.parametrize("section", _SECTIONS)
+def test_a_state_missing_a_section_it_must_carry_is_refused(tmp_path: Path, section: str) -> None:
     store: WatchStateStore = _store(tmp_path)
     store.save(_state())
     document: dict[str, object] = json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
@@ -474,8 +420,8 @@ def test_a_schema_two_state_missing_a_section_it_must_carry_is_refused(tmp_path:
         store.load()
 
 
-@pytest.mark.parametrize("section", _SCHEMA_TWO_SECTIONS)
-def test_a_schema_two_state_with_a_malformed_section_is_refused(tmp_path: Path, section: str) -> None:
+@pytest.mark.parametrize("section", _SECTIONS)
+def test_a_state_with_a_malformed_section_is_refused(tmp_path: Path, section: str) -> None:
     store: WatchStateStore = _store(tmp_path)
     store.save(_state())
     document: dict[str, object] = json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
@@ -486,34 +432,12 @@ def test_a_schema_two_state_with_a_malformed_section_is_refused(tmp_path: Path, 
         store.load()
 
 
-def test_a_schema_two_acquisition_without_its_completeness_is_refused(tmp_path: Path) -> None:
+def test_an_acquisition_without_its_completeness_is_refused(tmp_path: Path) -> None:
     store: WatchStateStore = _store(tmp_path)
     store.save(_state())
     document: dict[str, object] = json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
     for acquisition in document["acquisitions"]:  # type: ignore[attr-defined]
         acquisition.pop("complete_files")
-    _write(tmp_path, document)
-
-    with pytest.raises(ConfigError, match="Automation state file is invalid"):
-        store.load()
-
-
-@pytest.mark.parametrize("section", _SCHEMA_TWO_SECTIONS)
-def test_a_schema_one_state_carrying_a_schema_two_section_is_refused(tmp_path: Path, section: str) -> None:
-    store: WatchStateStore = _store(tmp_path)
-    document: dict[str, object] = _schema_one_document(tmp_path, _state())
-    document[section] = []
-    _write(tmp_path, document)
-
-    with pytest.raises(ConfigError, match="Automation state file is invalid"):
-        store.load()
-
-
-def test_a_schema_one_acquisition_claiming_completeness_is_refused(tmp_path: Path) -> None:
-    store: WatchStateStore = _store(tmp_path)
-    document: dict[str, object] = _schema_one_document(tmp_path, _state())
-    for acquisition in document["acquisitions"]:  # type: ignore[attr-defined]
-        acquisition["complete_files"] = []
     _write(tmp_path, document)
 
     with pytest.raises(ConfigError, match="Automation state file is invalid"):
@@ -530,48 +454,7 @@ def test_a_truncated_state_still_raises_instead_of_answering_with_defaults(tmp_p
         store.load()
 
 
-def test_migrating_a_completed_download_keeps_every_required_file_complete(tmp_path: Path) -> None:
-    complete: AcquisitionConfirmation = AcquisitionConfirmation(
-        operation_id="operation-2",
-        info_hash="ddeeff",
-        directory="Solo Leveling",
-        required_files=("one.mkv", "two.mkv"),
-        state=AcquisitionState.COMPLETE,
-        origin=RequestOrigin.BACKGROUND,
-        subscription_id=None,
-        episode="1",
-        updated_at=_TIMESTAMP,
-        complete_files=("one.mkv", "two.mkv"),
-    )
-    _write_schema_one(tmp_path, replace(_state(), acquisitions=(complete,)))
-
-    migrated: WatchState = _store(tmp_path).load()
-
-    assert migrated.acquisitions[0].complete_files == ("one.mkv", "two.mkv")
-
-
-@pytest.mark.parametrize(
-    "state",
-    [AcquisitionState.PENDING_SEND, AcquisitionState.UNCERTAIN, AcquisitionState.ACCEPTED, AcquisitionState.FAILED],
-)
-def test_migrating_an_unfinished_download_invents_no_completeness(tmp_path: Path, state: AcquisitionState) -> None:
-    unfinished: AcquisitionConfirmation = replace(
-        _state().acquisitions[0], state=state, required_files=("one.mkv", "two.mkv")
-    )
-    _write_schema_one(tmp_path, replace(_state(), acquisitions=(unfinished,)))
-
-    migrated: WatchState = _store(tmp_path).load()
-
-    assert (migrated.acquisitions[0].state, migrated.acquisitions[0].complete_files) == (state, ())
-
-
-def test_a_migrated_state_keeps_automatic_work_switched_off(tmp_path: Path) -> None:
-    _write_schema_one(tmp_path, replace(_state(), policy=AutomationPolicy(auto_enabled=False)))
-
-    assert _store(tmp_path).load().policy.auto_enabled is False
-
-
-def test_the_store_round_trips_the_facts_added_by_schema_two(tmp_path: Path) -> None:
+def test_the_store_round_trips_recipes_ready_sets_and_pending_deletions(tmp_path: Path) -> None:
     store: WatchStateStore = _store(tmp_path)
     state: WatchState = replace(
         _state(),
@@ -636,17 +519,7 @@ def _selective() -> AcquisitionConfirmation:
     )
 
 
-def _owner_files(tmp_path: Path) -> tuple[WatchStateStore, Path]:
-    subscriptions: Path = tmp_path / "subscriptions.json"
-    subscriptions.write_bytes(b'{"schema_version": 4, "subscriptions": []}\r\n')
-    return WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME, subscriptions_path=subscriptions), subscriptions
-
-
-def _migration_backup(path: Path) -> Path:
-    return path.with_name(f"{path.name}.e2-migration.bak")
-
-
-def test_schema_three_round_trips_episode_assignments_and_legacy_scopes(tmp_path: Path) -> None:
+def test_the_store_round_trips_episode_assignments_and_legacy_scopes(tmp_path: Path) -> None:
     store: WatchStateStore = _store(tmp_path)
     legacy: AcquisitionConfirmation = replace(_state().acquisitions[0], legacy_scope=LegacyScope(500, None))
     numbered: AcquisitionConfirmation = replace(legacy, operation_id="operation-4", legacy_scope=LegacyScope(500, 4))
@@ -658,131 +531,8 @@ def test_schema_three_round_trips_episode_assignments_and_legacy_scopes(tmp_path
     assert [item.selective for item in store.load().acquisitions] == [False, False, True]
 
 
-def test_schema_three_before_publication_loads_without_rewriting_or_losing_admissions(tmp_path: Path) -> None:
-    store: WatchStateStore = _store(tmp_path)
-    state: WatchState = replace(_state(), acquisitions=(_state().acquisitions[0], _selective()))
-    store.save(state)
-    path: Path = tmp_path / WATCH_STATE_FILE_NAME
-    document: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
-    for acquisition in cast("list[dict[str, object]]", document["acquisitions"]):
-        acquisition.pop("manifest")
-        acquisition.pop("cleaned")
-        for assignment in cast("list[dict[str, object]]", acquisition["assignments"]):
-            assignment.pop("publication")
-    _write(tmp_path, document)
-    original: bytes = path.read_bytes()
-
-    assert store.load() == state
-    assert path.read_bytes() == original
-
-
-@pytest.mark.parametrize("schema", [1, 2])
-def test_an_older_state_migrates_once_to_schema_three_after_preserving_both_owner_files(
-    tmp_path: Path, schema: int
-) -> None:
-    store, subscriptions = _owner_files(tmp_path)
-    state_path: Path = tmp_path / WATCH_STATE_FILE_NAME
-    document: dict[str, object] = (
-        _schema_one_document(tmp_path, _state()) if schema == 1 else _schema_two_document(tmp_path, _state())
-    )
-    state_path.write_bytes(json.dumps(document).encode() + b"\r\n")
-    original: bytes = state_path.read_bytes()
-    listing: bytes = subscriptions.read_bytes()
-
-    migrated: WatchState = store.load()
-    written: bytes = state_path.read_bytes()
-    again: WatchState = store.load()
-
-    assert migrated == again == _state()
-    assert json.loads(written)["schema_version"] == WATCH_STATE_SCHEMA_VERSION
-    assert state_path.read_bytes() == written
-    assert _migration_backup(state_path).read_bytes() == original
-    assert _migration_backup(subscriptions).read_bytes() == listing
-    assert subscriptions.read_bytes() == listing
-    assert len(migrated.acquisitions) == 1
-    assert not migrated.acquisitions[0].selective
-    assert migrated.acquisitions[0].legacy_scope is None
-
-
-def test_a_schema_three_state_loads_without_any_migration_copy(tmp_path: Path) -> None:
-    store, subscriptions = _owner_files(tmp_path)
-    store.save(_state())
-    _migration_backup(subscriptions).unlink()
-
-    assert store.load() == _state()
-    assert not _migration_backup(tmp_path / WATCH_STATE_FILE_NAME).exists()
-    assert not _migration_backup(subscriptions).exists()
-
-
-def test_migration_without_subscriptions_preserves_the_state_and_invents_no_listing(tmp_path: Path) -> None:
-    store, subscriptions = _owner_files(tmp_path)
-    subscriptions.unlink()
-    original: str = _write_schema_one(tmp_path, _state())
-
-    assert store.load() == _state()
-    assert _migration_backup(tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8") == original
-    assert not subscriptions.exists()
-    assert not _migration_backup(subscriptions).exists()
-
-
-def test_migration_keeps_an_earlier_migration_copy(tmp_path: Path) -> None:
-    store, subscriptions = _owner_files(tmp_path)
-    _write_schema_one(tmp_path, _state())
-    _migration_backup(subscriptions).write_bytes(b"kept")
-
-    store.load()
-
-    assert _migration_backup(subscriptions).read_bytes() == b"kept"
-
-
-def test_a_copy_that_cannot_be_made_blocks_the_first_schema_three_write(tmp_path: Path) -> None:
-    store, subscriptions = _owner_files(tmp_path)
-    (tmp_path / f"{subscriptions.name}.e2-migration.bak.tmp").mkdir()
-    original: str = _write_schema_one(tmp_path, _state())
-
-    with pytest.raises(ConfigError) as failure:
-        store.load()
-
-    assert failure.value.context.code is ErrorCode.IO_ERROR
-    assert (tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8") == original
-
-
-def test_the_first_write_without_a_state_preserves_existing_subscriptions_once(tmp_path: Path) -> None:
-    store, subscriptions = _owner_files(tmp_path)
-    original: bytes = subscriptions.read_bytes()
-
-    store.save(_state())
-    subscriptions.write_bytes(b"changed")
-    store.save(_state())
-
-    assert _migration_backup(subscriptions).read_bytes() == original
-    assert not _migration_backup(tmp_path / WATCH_STATE_FILE_NAME).exists()
-
-
-def test_a_copy_that_cannot_be_made_blocks_the_first_write_without_a_state(tmp_path: Path) -> None:
-    store, subscriptions = _owner_files(tmp_path)
-    (tmp_path / f"{subscriptions.name}.e2-migration.bak.tmp").mkdir()
-
-    with pytest.raises(ConfigError) as failure:
-        store.save(_state())
-
-    assert failure.value.context.code is ErrorCode.IO_ERROR
-    assert not (tmp_path / WATCH_STATE_FILE_NAME).exists()
-
-
-@pytest.mark.parametrize("field", _SCHEMA_THREE_FIELDS)
-def test_a_schema_two_acquisition_carrying_episode_identity_is_refused(tmp_path: Path, field: str) -> None:
-    store: WatchStateStore = _store(tmp_path)
-    document: dict[str, object] = _schema_two_document(tmp_path, _state())
-    cast("list[dict[str, object]]", document["acquisitions"])[0][field] = [] if field == "assignments" else None
-    _write(tmp_path, document)
-
-    with pytest.raises(ConfigError, match="Automation state file is invalid"):
-        store.load()
-
-
-@pytest.mark.parametrize("field", _SCHEMA_THREE_FIELDS)
-def test_a_schema_three_acquisition_without_its_episode_identity_is_refused(tmp_path: Path, field: str) -> None:
+@pytest.mark.parametrize("field", _EPISODE_IDENTITY_FIELDS)
+def test_an_acquisition_without_its_episode_identity_is_refused(tmp_path: Path, field: str) -> None:
     store: WatchStateStore = _store(tmp_path)
     store.save(_state())
     document: dict[str, object] = json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
@@ -829,20 +579,14 @@ def test_a_saved_episode_mapping_loads_equal_and_builds_the_same_identity_target
     ]
 
 
-_FIVE_KEYS: dict[str, tuple[str, ...]] = {
+_CHOICE_KEYS: dict[str, tuple[str, ...]] = {
     "subscription": ("tsukihime_id", "mapping_tvdb_season"),
     "target": ("started", "threshold", "failures", "polish", "sources_down_since", "polish_skip"),
     "assignment": ("traits", "stopped"),
 }
 
-_OPTIONAL_FIVE_KEYS: dict[str, tuple[str, ...]] = {
-    "subscription": (),
-    "target": ("blocker", "polish_buffer_min"),
-    "assignment": (),
-}
 
-
-def _schema_five_state() -> WatchState:
+def _choice_state() -> WatchState:
     target: SubscriptionTarget = SubscriptionTarget(
         1,
         _TIMESTAMP,
@@ -879,7 +623,7 @@ def _schema_five_state() -> WatchState:
     )
 
 
-def _five_objects(document: dict[str, object]) -> dict[str, list[dict[str, object]]]:
+def _saved_objects(document: dict[str, object]) -> dict[str, list[dict[str, object]]]:
     records: list[dict[str, object]] = [
         *cast("list[dict[str, object]]", document["subscriptions"]),
         cast("dict[str, object]", document["removed_subscription"]),
@@ -895,15 +639,6 @@ def _five_objects(document: dict[str, object]) -> dict[str, list[dict[str, objec
     }
 
 
-def _schema_four(document: dict[str, object]) -> dict[str, object]:
-    document["schema_version"] = 4
-    for place, items in _five_objects(document).items():
-        for item in items:
-            for key in (*_FIVE_KEYS[place], *_OPTIONAL_FIVE_KEYS[place]):
-                item.pop(key)
-    return document
-
-
 def _saved_document(tmp_path: Path, state: WatchState) -> dict[str, object]:
     _store(tmp_path).save(state)
     return cast("dict[str, object]", json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8")))
@@ -911,7 +646,7 @@ def _saved_document(tmp_path: Path, state: WatchState) -> dict[str, object]:
 
 def test_the_current_schema_roundtrip(tmp_path: Path) -> None:
     store: WatchStateStore = _store(tmp_path)
-    state: WatchState = _schema_five_state()
+    state: WatchState = _choice_state()
 
     store.save(state)
 
@@ -924,7 +659,7 @@ def test_the_current_schema_roundtrip(tmp_path: Path) -> None:
 @pytest.mark.parametrize("tsukihime_id", [None, 77])
 def test_tsukihime_id_roundtrip(tmp_path: Path, tsukihime_id: int | None) -> None:
     store: WatchStateStore = _store(tmp_path)
-    state: WatchState = _schema_five_state()
+    state: WatchState = _choice_state()
     record: SubscriptionRecord = replace(state.subscriptions[0], tsukihime_id=tsukihime_id)
 
     store.save(replace(state, subscriptions=(record,)))
@@ -934,12 +669,12 @@ def test_tsukihime_id_roundtrip(tmp_path: Path, tsukihime_id: int | None) -> Non
 
 @pytest.mark.parametrize("tried", [False, True])
 def test_polish_skip_roundtrip_and_reads_a_skip_saved_without_tried(tmp_path: Path, tried: bool) -> None:
-    state: WatchState = _schema_five_state()
+    state: WatchState = _choice_state()
     target: SubscriptionTarget = state.subscriptions[0].targets[0]
     skip: PolishSkip = PolishSkip(_TIMESTAMP, _TIMESTAMP, tried=tried)
     record: SubscriptionRecord = replace(state.subscriptions[0], targets=(replace(target, polish_skip=skip),))
     document: dict[str, object] = _saved_document(tmp_path, replace(state, subscriptions=(record,)))
-    saved: dict[str, object] = cast("dict[str, object]", _five_objects(document)["target"][0]["polish_skip"])
+    saved: dict[str, object] = cast("dict[str, object]", _saved_objects(document)["target"][0]["polish_skip"])
 
     assert saved == {"due": _TIMESTAMP, "at": _TIMESTAMP, "settled": False, "tried": tried}
     assert _store(tmp_path).load().subscriptions[0].targets[0].polish_skip == skip
@@ -960,11 +695,11 @@ def test_polish_skip_roundtrip_and_reads_a_skip_saved_without_tried(tmp_path: Pa
 def test_optional_target_fact_roundtrip_and_reads_a_target_saved_without_it(
     tmp_path: Path, field: str, value: object, saved_value: object
 ) -> None:
-    state: WatchState = _schema_five_state()
+    state: WatchState = _choice_state()
     target: SubscriptionTarget = replace(state.subscriptions[0].targets[0], **{field: value})  # type: ignore[arg-type]
     record: SubscriptionRecord = replace(state.subscriptions[0], targets=(target,))
     document: dict[str, object] = _saved_document(tmp_path, replace(state, subscriptions=(record,)))
-    saved: dict[str, object] = _five_objects(document)["target"][0]
+    saved: dict[str, object] = _saved_objects(document)["target"][0]
 
     assert saved[field] == saved_value
     assert getattr(_store(tmp_path).load().subscriptions[0].targets[0], field) == value
@@ -974,8 +709,8 @@ def test_optional_target_fact_roundtrip_and_reads_a_target_saved_without_it(
 
 
 def test_failures_roundtrip(tmp_path: Path) -> None:
-    document: dict[str, object] = _saved_document(tmp_path, _schema_five_state())
-    target: dict[str, object] = _five_objects(document)["target"][0]
+    document: dict[str, object] = _saved_document(tmp_path, _choice_state())
+    target: dict[str, object] = _saved_objects(document)["target"][0]
 
     assert target["failures"] == [
         {"hash": "b" * 40, "decisive": True, "transient": 0},
@@ -983,13 +718,13 @@ def test_failures_roundtrip(tmp_path: Path) -> None:
     ]
     assert (
         _store(tmp_path).load().subscriptions[0].targets[0].failures
-        == _schema_five_state().subscriptions[0].targets[0].failures
+        == _choice_state().subscriptions[0].targets[0].failures
     )
 
 
 def test_choice_traits_are_saved_under_the_assignment(tmp_path: Path) -> None:
-    document: dict[str, object] = _saved_document(tmp_path, _schema_five_state())
-    assignment: dict[str, object] = _five_objects(document)["assignment"][0]
+    document: dict[str, object] = _saved_document(tmp_path, _choice_state())
+    assignment: dict[str, object] = _saved_objects(document)["assignment"][0]
 
     assert (assignment["traits"], assignment["stopped"]) == (
         {"polish": "bare", "resolution": 0, "unusable": ["hardsub", "raw"]},
@@ -997,23 +732,10 @@ def test_choice_traits_are_saved_under_the_assignment(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("place", "key"),
-    [(place, key) for keys in (_FIVE_KEYS, _OPTIONAL_FIVE_KEYS) for place, names in keys.items() for key in names],
-)
-def test_schema_four_rejects_five_keys(tmp_path: Path, place: str, key: str) -> None:
-    document: dict[str, object] = _schema_four(_saved_document(tmp_path, _schema_five_state()))
-    _five_objects(document)[place][0][key] = None
-    _write(tmp_path, document)
-
-    with pytest.raises(ConfigError, match="Automation state file is invalid"):
-        _store(tmp_path).load()
-
-
-@pytest.mark.parametrize(("place", "key"), [(place, key) for place, keys in _FIVE_KEYS.items() for key in keys])
-def test_schema_five_requires_keys(tmp_path: Path, place: str, key: str) -> None:
-    document: dict[str, object] = _saved_document(tmp_path, _schema_five_state())
-    _five_objects(document)[place][0].pop(key)
+@pytest.mark.parametrize(("place", "key"), [(place, key) for place, keys in _CHOICE_KEYS.items() for key in keys])
+def test_a_saved_choice_fact_is_required(tmp_path: Path, place: str, key: str) -> None:
+    document: dict[str, object] = _saved_document(tmp_path, _choice_state())
+    _saved_objects(document)[place][0].pop(key)
     _write(tmp_path, document)
 
     with pytest.raises(ConfigError, match="Automation state file is invalid"):
@@ -1033,30 +755,17 @@ def test_schema_five_requires_keys(tmp_path: Path, place: str, key: str) -> None
         ("assignment", "stopped", "later"),
     ],
 )
-def test_schema_five_rejects_an_invalid_choice_fact(tmp_path: Path, place: str, key: str, value: object) -> None:
-    document: dict[str, object] = _saved_document(tmp_path, _schema_five_state())
-    _five_objects(document)[place][0][key] = value
+def test_an_invalid_choice_fact_is_refused(tmp_path: Path, place: str, key: str, value: object) -> None:
+    document: dict[str, object] = _saved_document(tmp_path, _choice_state())
+    _saved_objects(document)[place][0][key] = value
     _write(tmp_path, document)
 
     with pytest.raises(ConfigError, match="Automation state file is invalid"):
         _store(tmp_path).load()
 
 
-def test_a_schema_four_document_loads_without_choice_facts_and_counts_its_attempts_as_started(tmp_path: Path) -> None:
-    document: dict[str, object] = _schema_four(_saved_document(tmp_path, _schema_five_state()))
-    _write(tmp_path, document)
-
-    loaded: WatchState = _store(tmp_path).load()
-
-    target: SubscriptionTarget = loaded.subscriptions[0].targets[0]
-    assert (target.attempts, target.started, target.failures, target.threshold) == (1, 1, (), None)
-    assert (loaded.subscriptions[0].tsukihime_id, loaded.subscriptions[0].mapping_tvdb_season) == (None, None)
-    assert loaded.acquisitions[0].assignments[0].choice.traits is None
-    assert loaded.acquisitions[0].assignments[0].stopped is None
-
-
 def test_compaction_keeps_the_choice_traits_through_a_restart(tmp_path: Path) -> None:
-    state: WatchState = _schema_five_state()
+    state: WatchState = _choice_state()
     finished: AcquisitionConfirmation = compact_acquisition(
         replace(state.acquisitions[0], state=AcquisitionState.COMPLETE, cleaned=True)
     )

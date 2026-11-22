@@ -79,14 +79,11 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `.bak`, kopią bajtów tylko bez dowiązań, potem `replace`); hooki testów na `os.link` reagują tylko na dowiązania publikacji, nie na `state.json*`.
   Pola pydantic kodują `encode_view`/`decode_view` z buforowanym adapterem; `TypeAdapter` na wywołanie kosztuje ~1 ms.
   Uszkodzony JSON, nieznany klucz i nieobsługiwana wersja dają `ConfigError`, nigdy pusty stan; brak pliku to stan
-  domyślny. Schematu 5 produkt nie czyta (zlecenia niosły w nim `settings`). Migracja schematów 1–4 idzie raz z kopią
-  `state.json.v<wersja>.bak`; przed pierwszym zapisem schematów
-  3/4/5 kopiuje `state.json` i `subscriptions.json` do `*.e2-/e3-/a1-migration.bak` (bez nadpisywania; błąd kopii to
-  `ConfigError` `IO_ERROR` bez zapisu). Walidacja jest wersjonowana — pola wymagane w nowej wersji są zakazane w
-  starszej, więc nowe pole to podbicie `WATCH_STATE_SCHEMA_VERSION`, walidator i migracja. Trwałe ścieżki przechodzą
-  `require_relative_paths`. Nie usuwaj dowodów recovery (downgrade). Testy: `test_watch_state.py`, `test_subscription_migration.py`.
-- `config/subscriptions.json` jest zamrożony: owner go nie zapisuje, `subscriptions.py` tylko dekoduje, migracja do
-  schematu 4 (`subscription_migration.migrate`) waliduje wynik przed kopiami; uszkodzony plik to `CONFIG_INVALID`.
+  domyślny. Produkt czyta tylko `WATCH_STATE_SCHEMA_VERSION`; inna wersja to `ConfigError` z poleceniem
+  jednorazowego skryptu migracji. Kod produktu nie migruje starych schematów: nowe pole to podbicie
+  `WATCH_STATE_SCHEMA_VERSION`, walidator i jednorazowy skrypt w `scripts/tmp/`, który przenosi dane właściciela.
+  Trwałe ścieżki przechodzą `require_relative_paths`. Nie usuwaj dowodów recovery (downgrade). Testy:
+  `test_watch_state.py`.
 
 ## Biblioteka, gotowe wyniki i historia
 

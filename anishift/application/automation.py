@@ -197,7 +197,6 @@ from anishift.application.subscription_choice import (
     release_hash,
     wait_until,
 )
-from anishift.application.subscription_migration import legacy_reference
 from anishift.application.subscription_targets import (
     AIRING_STATUSES,
     ATTEMPT_ACTIVE,
@@ -5565,7 +5564,7 @@ class AutomationOwner:
     def _episode_conflicts(self, key: EpisodeKey) -> tuple[str, ...]:
         records: tuple[AcquisitionConfirmation, ...] = self._legacy_episode_records(key)
         current: frozenset[str] = frozenset(item.operation_id for item in records)
-        references: set[str] = {legacy_reference(item) for item in records}
+        references: set[str] = {_legacy_reference(item) for item in records}
         references.update(item.reference for item in self._legacy_orders(key) if item.operation_id not in current)
         return tuple(sorted(references))
 
@@ -9337,6 +9336,14 @@ def _product_projection(plan: ExecutionPlan) -> list[dict[str, object]]:
 
 def _graph_shape(settings: RunSettingsSnapshot) -> tuple[object, ...]:
     return settings.audio_output_profile, settings.subtitle_language_priority, settings.audio_language_priority
+
+
+def _legacy_reference(item: AcquisitionConfirmation) -> str:
+    identity: str = json.dumps(
+        [item.info_hash, item.episode, item.release_title, item.required_files, encode_view(item.legacy_scope)],
+        sort_keys=True,
+    )
+    return f"acquisition:{item.operation_id}:{sha256(identity.encode('utf-8')).hexdigest()}"
 
 
 def _requested_product_paths(artifacts: tuple[Artifact, ...], intent: GroupIntent) -> frozenset[Path]:

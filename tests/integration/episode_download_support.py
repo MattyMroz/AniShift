@@ -417,7 +417,7 @@ def resident(
         acquisition=acquisition,
         env_file=root / "absent.env",
     )
-    store: WatchStateStore = WatchStateStore(root / "watch/state.json", subscriptions_path=root / "subscriptions.json")
+    store: WatchStateStore = WatchStateStore(root / "watch/state.json")
     owner: AutomationOwner = AutomationOwner(
         service,
         store,
