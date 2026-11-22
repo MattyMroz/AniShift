@@ -342,6 +342,9 @@ _STALE_INSTANCE: Final[str] = "The resident restarted; refresh the state and try
 _STALE_PREVIEW: Final[str] = "The sources changed since the preview; ask for a new one"
 """Reason returned when a preview no longer describes the current sources."""
 
+_RESHAPED_PREVIEW: Final[str] = "The settings that shape the plan changed since the preview; ask for a new one"
+"""Reason returned when the audio profile or a language priority changed after the preview."""
+
 _UNKNOWN_PREVIEW: Final[str] = "The resident holds no such preview"
 """Reason returned for a preview identifier this instance never issued."""
 
@@ -705,6 +708,8 @@ class _Preview:
     source_selection: SourceSelection
     session_id: str | None
     rebuild: RebuildRequest | None
+    shape: tuple[object, ...]
+    """Settings that shaped the graph, read before it was planned."""
     automatic: bool = False
     file_version: int = 0
     resume_run_id: str | None = None
@@ -1528,6 +1533,7 @@ class AutomationOwner:
         origin: RequestOrigin | None = self._file_origin(group)
         if origin is None:
             return
+        shape: tuple[object, ...] = _graph_shape(self._service.run_settings())
         plan: ExecutionPlan = self._service.plan_auto((group.group_id,), preset, recipes=self._state.recipes)
         if not plan.can_execute or not plan.tasks:
             return
@@ -1542,6 +1548,7 @@ class AutomationOwner:
             source_selection=SourceSelection.AUTO,
             session_id=None,
             rebuild=None,
+            shape=shape,
             automatic=self._file_origin(group, downloaded=True) is not RequestOrigin.USER,
             recipe=self._state.recipes,
         )
@@ -3329,6 +3336,7 @@ class AutomationOwner:
         if client_id is None or origin is None or selection is None:
             return _invalid("A preview needs a `client_id`, a known `origin` and `source_selection`")
         recipes: RecipePreferences = self._state.recipes
+        shape: tuple[object, ...] = _graph_shape(self._service.run_settings())
         planned: _Planned | None = self._plan(request, selection, recipes)
         if planned is None:
             return ControlResponse.refused(ControlErrorCode.INVALID_PAYLOAD, _NOT_PLANNABLE)
@@ -3346,6 +3354,7 @@ class AutomationOwner:
             source_selection=selection,
             session_id=request.session_id,
             rebuild=rebuild,
+            shape=shape,
             file_version=version,
             resume_run_id=_text(request.payload, "resume_run_id"),
             recipe=recipes,
@@ -3542,6 +3551,8 @@ class AutomationOwner:
         group_ids: tuple[str, ...],
         client_id: str,
     ) -> ControlResponse:
+        if _graph_shape(self._service.run_settings()) != preview.shape:
+            return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _RESHAPED_PREVIEW)
         run_id: str = preview.resume_run_id or f"run-{token_hex(_ID_BYTES)}"
         previous: ProcessingRequest | None = next(
             (item for item in self._state.requests if item.request_id == run_id), None
@@ -7557,6 +7568,7 @@ class AutomationOwner:
         if len(groups) != len(request.group_ids) or not all(_accepted_sources(group, request) for group in groups):
             self._failed_recovery(request, "The sources changed or are missing; inspect the files before resuming")
             return
+        shape: tuple[object, ...] = _graph_shape(self._service.run_settings())
         try:
             fresh: ExecutionPlan = self._service.replan(
                 groups, journal.plan, rebuild=request.rebuild, published=self._published_products()
@@ -7578,6 +7590,7 @@ class AutomationOwner:
             source_selection=request.source_selection,
             session_id=None,
             rebuild=request.rebuild,
+            shape=shape,
             automatic=request.automatic,
             resume_run_id=request.request_id,
             recovering=True,

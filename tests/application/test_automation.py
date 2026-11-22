@@ -2793,6 +2793,34 @@ def test_a_changed_audio_profile_pauses_every_active_run_for_a_new_plan(tmp_path
         thread.join(timeout=_TIMEOUT_S)
 
 
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"audio_output_profile": "aac"},
+        {"subtitle_language_priority": ("fra", "eng")},
+        {"audio_language_priority": ("fra",)},
+    ],
+)
+def test_a_graph_setting_changed_after_the_preview_refuses_the_start(
+    tmp_path: Path, changed: dict[str, object]
+) -> None:
+    service, store, _ = _library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        preview: ControlResponse = owner.handle(_request("preview", {"client_id": _CLIENT}))
+        assert preview.ok, preview.message
+        service.current = replace(service.current, **changed)  # type: ignore[arg-type]
+        started: ControlResponse = owner.handle(
+            _request("start", {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]}, command_id="start")
+        )
+        assert started.code is ControlErrorCode.STALE_PREVIEW
+        assert not service.submitted
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+
+
 def _stopped_run(run_id: str, group_id: str) -> RunResult:
     return RunResult(run_id, (GroupResult(group_id, GroupStatus.FAILED, error_messages=("stopped",)),))
 
