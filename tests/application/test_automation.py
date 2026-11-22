@@ -2793,6 +2793,80 @@ def test_a_changed_audio_profile_pauses_every_active_run_for_a_new_plan(tmp_path
         thread.join(timeout=_TIMEOUT_S)
 
 
+class _HeldVoice:
+    def __init__(self) -> None:
+        self.calls: list[tuple[TaskKind, str]] = []
+        self.speaking: threading.Event = threading.Event()
+        self.release: threading.Event = threading.Event()
+
+    def __call__(
+        self, run_root: Path, plan: ExecutionPlan, source_groups: Mapping[str, InspectedSourceGroup]
+    ) -> TaskHandler:
+        del plan, source_groups
+        return _HeldStep(run_root, self)
+
+
+class _HeldStep:
+    def __init__(self, run_root: Path, voice: _HeldVoice) -> None:
+        self.run_root: Path = run_root
+        self.voice: _HeldVoice = voice
+
+    def execute(
+        self,
+        task: PlanTask,
+        artifacts: ArtifactSnapshot,
+        settings: RunSettingsSnapshot,
+        cancel: CancellationToken,
+        progress: TaskProgressSink,
+    ) -> TaskResult:
+        self.voice.calls.append((task.kind, settings.audio_output_profile))
+        if task.kind is TaskKind.SYNTHESIZE_SPEECH:
+            self.voice.speaking.set()
+            self.voice.release.wait(_TIMEOUT_S)
+        return _MadeStep(self.run_root, []).execute(task, artifacts, settings, cancel, progress)
+
+
+def test_a_profile_changed_while_speaking_mixes_with_the_new_profile_and_speaks_once(tmp_path: Path) -> None:
+    book: Path = tmp_path / AUDIOBOOK_DIRECTORY
+    book.mkdir()
+    write_text_source(book / "Book.txt", "Zdanie do przeczytania.")
+    voice: _HeldVoice = _HeldVoice()
+    service: AppService = _real_service(tmp_path, handler_factory=voice)
+    service.save_settings(UserSettings(tts_engine="edge"))
+
+    def reload() -> None:
+        service.save_settings(UserSettings(tts_engine="edge", tts_output_profile="aac"))
+
+    service.reload_preferences = reload  # type: ignore[method-assign]
+    owner: AutomationOwner = _owner(service, WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME))
+    thread: threading.Thread = _serving(owner)
+    try:
+        preview: ControlResponse = owner.handle(
+            _request("preview", {"client_id": _CLIENT, "preset_id": service.default_preset_id()})
+        )
+        assert preview.ok, preview.message
+        started: ControlResponse = owner.handle(
+            _request("start", {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]}, command_id="s-1")
+        )
+        assert started.ok, started.message
+        assert voice.speaking.wait(_TIMEOUT_S)
+        owner.files_changed(DirectoryChange(paths=(book / "Book.txt",)))
+        assert _await(lambda: owner._library is not None)
+        reloaded: ControlResponse = owner.handle(_request("reload_settings", command_id="reload-1"))
+        assert reloaded.ok, reloaded.message
+        voice.release.set()
+        assert _await(lambda: [item.state for item in owner.state.requests] == [RequestState.SUCCEEDED])
+    finally:
+        voice.release.set()
+        owner.request_shutdown()
+        thread.join(timeout=_TIMEOUT_S)
+        service.close()
+
+    assert [kind for kind, _ in voice.calls].count(TaskKind.SYNTHESIZE_SPEECH) == 1
+    assert [profile for kind, profile in voice.calls if kind is TaskKind.MIX_NARRATION] == ["aac"]
+    assert sorted(path.suffix for path in book.glob("Book.*")) == [".m4a", ".txt"]
+
+
 @pytest.mark.parametrize(
     "changed",
     [
