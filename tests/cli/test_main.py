@@ -595,8 +595,8 @@ def test_subs_states_a_broken_store_without_a_traceback(
         raise ConfigError(
             context=ErrorContext(
                 code=ErrorCode.CONFIG_INVALID,
-                message="Subscriptions file is invalid",
-                suggestion="Fix or delete config/subscriptions.json",
+                message="Automation state file is invalid",
+                suggestion="Stop the resident and restore the state.json this AniShift version wrote",
             ),
         )
 
@@ -605,6 +605,6 @@ def test_subs_states_a_broken_store_without_a_traceback(
     result: Result = CliRunner().invoke(cli_main.app, command)
 
     assert result.exit_code == cli_main.EXIT_REFUSED
-    assert "Subscriptions file is invalid" in result.output
-    assert "Fix or delete config/subscriptions.json" in result.output
+    assert "Automation state file is invalid" in result.output
+    assert "restore the state.json" in result.output
     assert "Traceback" not in result.output

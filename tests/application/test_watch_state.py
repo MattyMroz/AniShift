@@ -291,7 +291,7 @@ def test_store_rejects_an_unknown_field(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("version", [1, 4, WATCH_STATE_SCHEMA_VERSION - 1, WATCH_STATE_SCHEMA_VERSION + 1, "6"])
-def test_store_rejects_another_schema_version_and_names_the_migration(tmp_path: Path, version: object) -> None:
+def test_store_rejects_another_schema_version_and_leaves_the_file(tmp_path: Path, version: object) -> None:
     store: WatchStateStore = _store(tmp_path)
     store.save(_state())
     path: Path = tmp_path / WATCH_STATE_FILE_NAME
@@ -303,8 +303,9 @@ def test_store_rejects_another_schema_version_and_names_the_migration(tmp_path: 
     with pytest.raises(ConfigError) as failure:
         store.load()
 
+    assert failure.value.context.code is ErrorCode.CONFIG_INVALID
     assert failure.value.context.suggestion is not None
-    assert "migrate_live_settings.py" in failure.value.context.suggestion
+    assert "state.json" in failure.value.context.suggestion
     assert path.read_bytes() == original
 
 

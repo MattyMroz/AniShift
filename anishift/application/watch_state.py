@@ -388,7 +388,7 @@ _INVALID_SUGGESTION: Final[str] = "Restore config/watch/state.json.bak or delete
 _UNSUPPORTED_SCHEMA_MESSAGE: Final[str] = "Automation state file was written by another version of AniShift"
 """Sentence shown when the stored automation state has a schema this build does not read."""
 
-_UNSUPPORTED_SCHEMA_SUGGESTION: Final[str] = "Stop the resident and run scripts/tmp/migrate_live_settings.py once"
+_UNSUPPORTED_SCHEMA_SUGGESTION: Final[str] = "Stop the resident and restore the state.json this AniShift version wrote"
 """Only recovery a user can perform on an automation state of another schema."""
 
 
