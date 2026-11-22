@@ -41,12 +41,14 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
   rezydenta (bez breakaway), więc Job Object kończy go razem z rezydentem.
 - `ChromeSession.close` najpierw prosi Chrome o wyjście przez CDP (`Browser.close`) i czeka do 10 s; `terminate`
   i `kill` są tylko zapasem. Chrome zapisuje ciasteczka na dysk z opóźnieniem do ok. 30 s, więc twarde zabicie
-  zaraz po zalogowaniu gubi sesję (`signed_in: true` w `session.json`, a profil wylogowany). Chrome, który sam
-  zerwał połączenie (właściciel zamknął ostatnie okno), też dostaje te 10 s na wyjście, zanim padnie `terminate`.
+  zaraz po zalogowaniu gubi sesję (`signed_in: true` w `session.json`, a profil wylogowany). Sesja widoczna
+  (`headless=False`) zawsze dostaje te 10 s na samodzielne wyjście, także gdy CDP już nie działa, bo właściciel
+  mógł właśnie zamknąć okno, a Chrome zapisuje profil.
 - Nagrywanie, sprzątanie i sprawdzanie sesji przez silnik działają tylko z `headless=True` (`headless_session`);
   okno widać wyłącznie w `sign_in`. Skrypty diagnostyczne też nie otwierają okna.
 - `sign_in` otwiera widoczne okno na bibliotece i nie zamyka go sam, także przy ważnej sesji: czeka bez limitu
-  czasu, aż `ChromeSession.has_window` zgaśnie (ostatnia karta zamknięta albo Chrome rozłączony), bo właściciel
+  czasu, aż `ChromeSession.has_window` zgaśnie (proces Chrome się skończył albo przy działającym CDP nie ma kart;
+  zerwane CDP przy żywym procesie nie zamyka okna), bo właściciel
   może się w nim wylogować i zalogować ponownie. Dopiero potem sprawdza sesję w osobnej przeglądarce
   `headless=True` na tym samym profilu (`open_library`), tam sprząta konto i zapisuje `session.json`; to
   sprawdzenie widzi tylko ciasteczka, które Chrome naprawdę zapisał. Biblioteka niedostępna → `FAILED` bez zapisu.

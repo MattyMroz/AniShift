@@ -82,8 +82,12 @@ class ChromeSession:
 
     @property
     def has_window(self) -> bool:
-        """Whether the browser still runs with at least one open tab."""
-        return self.alive and self._context is not None and bool(self._context.pages)
+        """Whether Chrome still runs with an open tab, or runs on after the driver connection dropped."""
+        if self._process is None or self._process.poll() is not None:
+            return False
+        if self._browser is None or not self._browser.is_connected():
+            return True
+        return self._context is not None and bool(self._context.pages)
 
     async def start(self) -> None:
         """Lock the profile, restrict it to the current account, start Chrome and attach to it."""
@@ -117,9 +121,9 @@ class ChromeSession:
         playwright: Playwright | None = self._playwright
         process: subprocess.Popen[bytes] | None = self._process
         self._browser, self._playwright, self._process, self._context = None, None, None, None
-        exiting: bool = False
+        exiting: bool = not self._headless
         try:
-            exiting = await _request_exit(browser)
+            exiting = await _request_exit(browser) or exiting
             await _detach(browser, playwright)
         finally:
             try:
@@ -202,10 +206,8 @@ def _free_port() -> int:
 
 
 async def _request_exit(browser: Browser | None) -> bool:
-    if browser is None:
+    if browser is None or not browser.is_connected():
         return False
-    if not browser.is_connected():
-        return True
     try:
         cdp: CDPSession = await browser.new_browser_cdp_session()
     except PlaywrightError:

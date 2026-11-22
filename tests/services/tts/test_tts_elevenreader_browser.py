@@ -287,7 +287,20 @@ def test_chrome_session_close_after_owner_closed_chrome_waits_for_its_exit_inste
     assert _lock_free(chrome.root)
 
 
-def test_chrome_session_has_window_until_last_tab_closes_or_chrome_disconnects(chrome: _Chrome) -> None:
+def test_chrome_session_visible_close_without_cdp_session_waits_for_chrome_to_exit(chrome: _Chrome) -> None:
+    session = ChromeSession(chrome.root, headless=False)
+    asyncio.run(session.start())
+    chrome.browser.cdp_error = PlaywrightError("Browser has been closed")
+    chrome.process.exit_requested = True
+
+    asyncio.run(session.close())
+
+    assert chrome.browser.sent == []
+    assert chrome.process.calls == ["wait"]
+    assert _lock_free(chrome.root)
+
+
+def test_chrome_session_has_window_while_chrome_runs_with_a_tab_or_without_its_driver(chrome: _Chrome) -> None:
     session = ChromeSession(chrome.root, headless=False)
     assert not session.has_window
     asyncio.run(session.start())
@@ -296,8 +309,9 @@ def test_chrome_session_has_window_until_last_tab_closes_or_chrome_disconnects(c
     assert session.has_window
     context.pages = []
     assert not session.has_window
-    context.pages = [_Tab("https://elevenreader.io/reader/library")]
     chrome.browser.connected = False
+    assert session.has_window
+    chrome.process.returncode = 0
     assert not session.has_window
     asyncio.run(session.close())
 
