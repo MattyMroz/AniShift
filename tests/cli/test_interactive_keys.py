@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, cast
@@ -12,7 +13,10 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput
 from rich.text import Text
 
-from anishift.cli.interactive.prompts import TerminalRenderer
+from anishift.cli.interactive.prompts import TerminalRenderer, _ctrl_backspace_data
+
+if sys.platform == "win32":
+    from prompt_toolkit.input.win32 import ConsoleInputReader, Vt100ConsoleInputReader, Win32Input
 
 if TYPE_CHECKING:
     from prompt_toolkit.key_binding.key_processor import KeyPressEvent
@@ -31,7 +35,6 @@ _EXPECTED_KEYS = [
     (Keys.Home, "home"),
     (Keys.End, "end"),
     (Keys.Enter, "enter"),
-    (Keys.Backspace, "backspace"),
     (Keys.Delete, "delete"),
     (Keys.Tab, "tab"),
     (Keys.BackTab, "backtab"),
@@ -104,6 +107,62 @@ def test_terminal_word_deletion_sequences_use_the_shared_editor_action(
     assert matches
     matches[-1].handler(cast("KeyPressEvent", object()))
     assert seen == [expected]
+
+
+@pytest.mark.parametrize(
+    ("ctrl_backspace", "data", "expected"),
+    [
+        ("\x08", "\x7f", "backspace"),
+        ("\x08", "\x08", "ctrl-backspace"),
+        ("\x7f", "\x08", "backspace"),
+        ("\x7f", "\x7f", "ctrl-backspace"),
+    ],
+)
+def test_backspace_data_tells_ctrl_backspace_apart_for_the_active_reader(
+    renderer: TerminalRenderer, seen: list[str], ctrl_backspace: str, data: str, expected: str
+) -> None:
+    renderer._ctrl_backspace = ctrl_backspace
+    bindings = renderer._application.key_bindings
+    assert bindings is not None
+    bindings.get_bindings_for_keys((Keys.Backspace,))[-1].handler(cast("KeyPressEvent", SimpleNamespace(data=data)))
+
+    assert seen == [expected]
+
+
+def test_vt_input_sends_ctrl_backspace_as_backspace_control_character(renderer: TerminalRenderer) -> None:
+    assert renderer._ctrl_backspace == "\x08"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows console readers")
+def test_windows_console_reader_decides_which_backspace_data_means_ctrl() -> None:
+    if sys.platform == "win32":
+        console_input: Win32Input = object.__new__(Win32Input)
+        console_input.console_input_reader = object.__new__(ConsoleInputReader)
+        vt_input: Win32Input = object.__new__(Win32Input)
+        vt_input.console_input_reader = object.__new__(Vt100ConsoleInputReader)
+
+        assert _ctrl_backspace_data(console_input) == "\x7f"
+        assert _ctrl_backspace_data(vt_input) == "\x08"
+
+
+def test_vt_parser_delivers_backspace_and_ctrl_backspace_separately() -> None:
+    seen: list[str] = []
+
+    async def run() -> None:
+        with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+
+            def key_received(key: str) -> None:
+                seen.append(key)
+                if len(seen) == 2:
+                    vt_renderer.exit()
+
+            vt_renderer: TerminalRenderer = TerminalRenderer(lambda _columns, _rows: Text(), key_received)
+            await asyncio.wait_for(
+                vt_renderer._application.run_async(pre_run=lambda: pipe.send_text("\x7f\x08")), _HANG_GUARD_S
+            )
+
+    asyncio.run(run())
+    assert seen == ["backspace", "ctrl-backspace"]
 
 
 def test_bracketed_paste_arrives_as_one_literal_edit(renderer: TerminalRenderer, seen: list[str]) -> None:
