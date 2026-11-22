@@ -524,4 +524,4 @@ błąd z nazwą dostawcy i liczbą kluczy, które zawiodły.
 
 - `primary_model_alias` — alias modelu głównego z katalogu, celowo ukryty; żaden
   ekran go nie zmienia i nie ma wpływu na tłumaczenie.
-- `schema_version` i `tts_timeline_policy` — wewnętrzne; nie służą do ręcznej konfiguracji.
+- `schema_version` — wewnętrzne; nie służy do ręcznej konfiguracji.
