@@ -111,7 +111,7 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
 - Gdy Firebase App Check odrzuci przeglądarkę, strona pisze w konsoli `AppCheck: 403` / `appCheck/…` i nie otwiera
   strumienia, a odmowę zapamiętuje w profilu na dobę. `ReaderPage` łapie to z konsoli (`APP_CHECK_REFUSAL`) i
   `raise_if_refused` od razu kończy próbę trwałym `TtsAuthError` (`refused_error`), bez czekania na Play. Panel
-  pokazuje treść z sugestią w całości po polsku (wyjątek: `message` tego błędu jest po polsku), bez „App Check” i
+  pokazuje treść z sugestią w całości po polsku (wyjątkowo także `message` tego błędu jest po polsku), bez „App Check” i
   kodu, z drogą Ustawienia → Lektor → Wyloguj, potem Zaloguj, albo próbą po dobie, albo innym silnikiem; bez
   `FALLBACK_HINT`, bo ElevenBytes bywa wyłączany. Profilu po odmowie nic nie czyści samo (Z1 specyfikacji): robi to
   tylko `sign_out`.
