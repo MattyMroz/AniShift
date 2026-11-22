@@ -29,9 +29,19 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   zabicie procesu) wymagają jawnego wznowienia, bez automatycznego powtarzania opłat. Wyjątek: task przerwany przez
   zamknięcie rezydenta kończy się po anulowaniu, więc nie jest niepewny i wznawia się sam (przerwane wywołanie płatne
   idzie od nowa). Gdy zapis `interrupted` zawiedzie, znak `inflight` zostaje i obowiązuje jawne wznowienie.
-- Wznowienie zapisanego runu (P, recovery po restarcie) bierze bieżące ustawienia tłumaczenia: `RunJournal.rebind`
-  podmienia pola `_TRANSLATION_SETTINGS` z `planner.py` i zasób tasków `TRANSLATE_SUBTITLES`, `_admit` zapisuje je w
-  checkpoincie. Reszta snapshotu zostaje z przyjęcia; run w toku kończy na ustawieniach, z którymi wystartował.
+- Plan nie niesie ustawień. Każdy task czyta je w chwili startu: koordynator przy wysłaniu bierze jeden snapshot
+  `run_settings()`, liczy z niego klucz zasobu (`scheduler_contracts.resource_key`), limit i znak `inflight`
+  (`is_remote`), a handler dostaje ten snapshot; task w toku kończy na swoim, każdy nierozpoczęty bierze bieżące,
+  także w trwającym runie. Zmiana preferencji w `AppService` budzi koordynatora (`refresh`).
+- Ponowienie (P) i wznowienie po restarcie to jedna droga: `AppService.replan` planuje zapisane intencje
+  niedokończonych grup na bieżących ustawieniach (tylko z plików przyjętych w checkpoincie; grupa skończona zostaje z
+  checkpointu), a `RunJournal.rebase` (`recovery.rebase_plan`) zostawia z listy `done` checkpointu tylko krok, który
+  świeży plan ma identyczny (bez `depends_on`) i którego wejścia są źródłami albo wynikami zostawionych kroków. Bez
+  zmiany ustawień wynik równa się dziennikowi; zmiana profilu audio robi od nowa MIX i dalej, zmiana języka extract i
+  dalej, zmiana modelu czy silnika niczego gotowego nie unieważnia. `_admit` rebazuje dziennik ponownie z
+  `_Preview.fresh`, a `STALE_PREVIEW` porównuje tylko taski. Zmiana ustawienia kształtującego graf
+  (`audio_output_profile`, priorytety języków) przy `reload_settings` pauzuje aktywne runy (`pause_run`): taski w toku
+  kończą, run kończy się `PAUSED` i wraca przez tę samą drogę.
 - Rezerwacje należą do sesji klientów jednej instancji: owner porzuca je przy wczytaniu stanu (także gdy zapis
   sprzątania zawiedzie) i po rozłączeniu panelu, które unieważnia też podglądy.
 - Zdarzenia plików scalają się w jednym powiadomieniu; ponad 4096 ścieżek zastępuje pełne uzgodnienie. Inspekcja w
@@ -47,8 +57,8 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   przerwania zwrócił wynik, jest zatwierdzany normalnie; gotowy wynik nie przepada. Anulowanie
   użytkownika (X) anuluje token runu i zostaje `CANCELLED` (blokuje Auto); `pause_runs` niczego nie przerywa. Staging
   zatrzymanych runów jest chroniony przed cleanup. `scheduler.py`, `recovery.py`, `service.py`, `sessions.py`
-- `ProcessingRequest` zachowuje pełny `RunSettingsSnapshot`, `GroupIntent` i `RebuildRequest`; listy z JSON wracają do
-  krotek, pola z segmentem sekretu są odrzucane, stare zlecenia bez `intents` się wczytują. `ACCEPTED` może obejmować
+- `ProcessingRequest` zachowuje `GroupIntent` i `RebuildRequest`, nie ustawienia; stare zlecenia bez `intents` się
+  wczytują. Ścieżkę produktu lektora daje plan z dziennika (profil zmiksowanej narracji). `ACCEPTED` może obejmować
   wykonujące się taski; aktywność dowodzą publiczne zdarzenia postępu, `run_progress` ma też próby terminalne.
 - `recipe_update` zmienia tylko zwalidowaną różnicę i zapisuje receipt z `WatchState.recipes`. Video to `AutoPreset`,
   subs dziedziczy po video, cover po audiobook. Podgląd utrwala preferencje receptury z planem; dopuszczenie i
@@ -69,13 +79,11 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `.bak`, kopią bajtów tylko bez dowiązań, potem `replace`); hooki testów na `os.link` reagują tylko na dowiązania publikacji, nie na `state.json*`.
   Pola pydantic kodują `encode_view`/`decode_view` z buforowanym adapterem; `TypeAdapter` na wywołanie kosztuje ~1 ms.
   Uszkodzony JSON, nieznany klucz i nieobsługiwana wersja dają `ConfigError`, nigdy pusty stan; brak pliku to stan
-  domyślny. Migracja starszej wersji idzie raz z kopią `state.json.v<wersja>.bak`; przed pierwszym zapisem schematów
-  3/4/5 kopiuje `state.json` i `subscriptions.json` do `*.e2-/e3-/a1-migration.bak` (bez nadpisywania; błąd kopii to
-  `ConfigError` `IO_ERROR` bez zapisu). Walidacja jest wersjonowana — pola wymagane w nowej wersji są zakazane w
-  starszej, więc nowe pole to podbicie `WATCH_STATE_SCHEMA_VERSION`, walidator i migracja. Trwałe ścieżki przechodzą
-  `require_relative_paths`. Nie usuwaj dowodów recovery (downgrade). Testy: `test_watch_state.py`, `test_subscription_migration.py`.
-- `config/subscriptions.json` jest zamrożony: owner go nie zapisuje, `subscriptions.py` tylko dekoduje, migracja do
-  schematu 4 (`subscription_migration.migrate`) waliduje wynik przed kopiami; uszkodzony plik to `CONFIG_INVALID`.
+  domyślny. Produkt czyta tylko `WATCH_STATE_SCHEMA_VERSION`; inna wersja to `ConfigError` z poleceniem
+  jednorazowego skryptu migracji. Kod produktu nie migruje starych schematów: nowe pole to podbicie
+  `WATCH_STATE_SCHEMA_VERSION`, walidator i jednorazowy skrypt w `scripts/tmp/`, który przenosi dane właściciela.
+  Trwałe ścieżki przechodzą `require_relative_paths`. Nie usuwaj dowodów recovery (downgrade). Testy:
+  `test_watch_state.py`.
 
 ## Biblioteka, gotowe wyniki i historia
 
@@ -223,6 +231,13 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `#GUI#progress` bez uśredniania). LLM równolegle dokładnie do `llm_max_concurrency` — scheduler nie przycina drugi
   raz; TTS jeden plik naraz, poza silnikiem dokumentowym: dla niego `tts_group_jobs` (`_run_settings_snapshot`) to
   `concurrency` profilu głosu, czyli tyle odcinków nagrywa się naraz w całym rezydencie.
+- `RunServices` (`runtime.py`) buduje usługi runu leniwie, przy starcie taska, i dzieli je między taski o równej
+  konfiguracji (z sekretami czytanymi przy starcie): `TtsConfig → TtsService`, tak samo tłumaczenie, audio i
+  kompozycja; zamyka je koniec runu. Dzięki temu limit kart ElevenReadera i `tts_request_concurrency` się nie mnożą.
+- Ślad ustawień w produkcie pośrednim pochodzi z kroku, który go zrobił: manifest TTS zapisuje tempo i MIX czyta je
+  z manifestu; ASS niesie `font_files` czcionki dialogów, którą go ułożono (split i publikacja przekazują je dalej),
+  a kompozycja dołącza je obok czcionki z ustawień (serwis zostawia tylko użyte). Split ASS przy lektorze zawsze
+  pisze kandydatów szyldów; TTS czyta `sign_narration` przy starcie, więc tryb szyldów nie zmienia grafu.
 - TTS w `runtime.py`: jeden `FfmpegClipService` jest walidatorem, assemblerem i splitterem `TtsService`. Wiedza
   „silnik czyta dokumentem” pochodzi tylko z `is_document_engine` rejestru TTS: daje `reads_document` handlera
   (łączenie kwestii urwanych i wszystkie kandydaty szyldów w batchu kwestii, czyli jeden dokument na odcinek; silniki
@@ -235,19 +250,22 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `ExecutionError` z kodem, treścią i sugestią `SpeechBatchResult.failure` (panel pokazuje tylko
   `context.message`, więc sugestia jest też w treści), szyld bez klipu (pominięty albo nieudany) wypada z manifestu z ostrzeżeniem z liczbą i grupami w
   metadanych `signs_unrecorded`, w obu ścieżkach. `tts_handler.py`
-- Sesję ElevenReadera panel czyta i odświeża przez fasadę (`elevenreader_session`, `elevenreader_sign_in`);
-  logowanie blokuje wątek wołający do zamknięcia okna Chrome. `service.py`
+- Sesję ElevenReadera panel czyta, odświeża i czyści przez fasadę (`elevenreader_session`, `elevenreader_sign_in`,
+  `elevenreader_sign_out`);
+  logowanie tylko otwiera zwykłe okno Chrome i od razu wraca, a wylogowanie blokuje wątek wołający na start
+  niewidocznego Chrome, usunięcie danych ElevenReadera i jego zamknięcie. `service.py`
 - `GraphCoordinator` przyjmuje wiele kontekstów (`RunRequest` → `RunHandle`); wspólne są tylko kolejki gotowych
-  tasków per zasób, executory i `limits_provider()`. Błąd pętli anuluje wszystkie konteksty przed joinem. Kolejka
-  `(rank, sequence, task_index, run_id, task_id)`, USER przed BACKGROUND, wysłanych per zasób najwyżej `worker_limit`.
+  tasków per rodzina zasobu (`planning.resource_family`), executory per klucz zasobu i `settings_provider()`. Błąd
+  pętli anuluje wszystkie konteksty przed joinem. Kolejka `(rank, sequence, task_index, run_id, task_id)`, USER przed
+  BACKGROUND, wysłanych per klucz zasobu najwyżej `worker_limit`. Porządek przekazywania wyników
+  (`processing_order_policy`) czyta przy przyjęciu runu.
   `RunRequest.automatic` podporządkowuje plik wyjątkowi Auto katalogu; `BACKGROUND` zawsze. Wątek
   `anishift-coordinator` żyje tylko przy zleceniach, bez pollingu (licznik `wakeups`). Blokada docelowego produktu
   odkłada ponowienie `replace` bez usypiania całej koordynacji.
 - `AppService`: `submit_plan` nie blokuje, `execute` = `submit_plan(...).result()`, druga praca nad grupą to
   `RunConflictError`; sesję zamyka wątek bez prefiksu `anishift-` (zarezerwowanego dla pul). `execute()` po
   przerwaniu anuluje i CZEKA na domknięcie kontekstu; `_finish_run` zawsze zamyka handler i sesję i rozwiązuje
-  `RunHandle` (nierozwiązany wiesza `execute`). `reload_preferences()` pod `_run_lock`; trwające zlecenia zachowują
-  snapshot ustawień. `service.py`
+  `RunHandle` (nierozwiązany wiesza `execute`). `reload_preferences()` pod `_run_lock`. `service.py`
 
 ## Testy
 

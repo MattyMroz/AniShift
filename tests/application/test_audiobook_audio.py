@@ -192,7 +192,6 @@ def _read_and_render(tmp_path: Path, timeline: str, profile: str, tempo: float, 
         ("script",),
         ("manifest",),
         (),
-        "tts:edge",
         (("narration_timeline", timeline), ("script_kind", "full_pl")),
     )
     spoken: TaskResult = TtsTaskHandler(
@@ -223,7 +222,6 @@ def _read_and_render(tmp_path: Path, timeline: str, profile: str, tempo: float, 
         ("manifest",),
         ("narration",),
         (),
-        "audio:default",
         (("mix_source", "standalone"), ("output_profile", profile)),
     )
     config: AudioConfig = AudioConfig(codec_profile=AudioCodecProfile(profile))

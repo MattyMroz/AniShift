@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Final
 
 from anishift.application.artifacts import Artifact, ArtifactKind
 from anishift.application.cancellation import CancellationToken
-from anishift.application.episode_fonts import MAX_LAYOUT_INPUTS, episode_fonts
+from anishift.application.episode_fonts import MAX_LAYOUT_INPUTS, episode_fonts, laid_out_font_files
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
 from anishift.application.planning import PlanTask, TaskKind
 from anishift.application.results import ArtifactSnapshot, ProducedArtifact, TaskResult
@@ -104,7 +104,10 @@ class SubtitleTaskHandler:
             fonts=episode_fonts(self._run_root, task, artifacts, output) if lay_out else None,
             dialogue_font=self._dialogue_font,
         )
-        return TaskResult(task.task_id, (ProducedArtifact(output.artifact_id, destination, {}),))
+        drawn: tuple[Path, ...] = (
+            laid_out_font_files(self._dialogue_font, destination) if lay_out else source.font_files
+        )
+        return TaskResult(task.task_id, (ProducedArtifact(output.artifact_id, destination, {}, drawn),))
 
     def _split(self, task: PlanTask, artifacts: ArtifactSnapshot) -> TaskResult:
         if not 1 <= len(task.requires) <= _MAX_SPLIT_INPUTS or not 1 <= len(task.produces) <= _MAX_SPLIT_OUTPUTS:
@@ -148,7 +151,7 @@ class SubtitleTaskHandler:
             if written is None:
                 msg = f"Requested subtitle stream is empty: {output.kind.value}"
                 raise ExecutionError(msg)
-            produced.append(ProducedArtifact(output.artifact_id, written, {}))
+            produced.append(ProducedArtifact(output.artifact_id, written, {}, polish.font_files))
         return TaskResult(task.task_id, tuple(produced), tuple(absent))
 
 

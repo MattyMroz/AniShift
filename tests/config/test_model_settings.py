@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -130,17 +131,12 @@ def _snapshot(**overrides: object) -> RunSettingsSnapshot:
         "tts_profile_id": "edge",
         "tts_max_retries": 3,
         "tts_group_jobs": 2,
-        "audio_profile_id": "eac3",
         "composition_profile_id": "default",
         "processing_order_policy": ProcessingOrderPolicy.READY_FIRST,
         "llm_model_id": _ALIAS,
     }
     base.update(overrides)
     return RunSettingsSnapshot(**base)  # type: ignore[arg-type]
-
-
-def _plan(**overrides: object) -> ExecutionPlan:
-    return ExecutionPlan((), (), (), _snapshot(**overrides), ())
 
 
 def test_the_main_model_and_the_translation_model_are_settable_independently(tmp_path: Path) -> None:
@@ -442,14 +438,12 @@ def test_resolving_without_an_enrollment_address_names_the_preference_but_not_it
 
 def test_the_translation_run_path_resolves_the_alias_the_same_way(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runtime, "load_model_catalog", _catalog)
-    monkeypatch.setattr(
-        runtime,
-        "load_user_settings",
-        lambda: UserSettings(palantir_enrollment_base_url=_ENROLLMENT),
-    )
     settings = Settings(_env_file=None, palantir_token=_TOKEN, openai_compatible_base_url="https://compat.invalid")
+    snapshot: RunSettingsSnapshot = _snapshot(
+        palantir_enrollment_base_url=_ENROLLMENT, llm_temperature=0.5, llm_max_output_tokens=2048
+    )
 
-    config: LlmConfig = runtime._llm_config(settings, _plan(llm_temperature=0.5, llm_max_output_tokens=2048))
+    config: LlmConfig = runtime._llm_config(settings, snapshot)
 
     assert config.engine_id == "palantir"
     assert config.base_url == f"{_ENROLLMENT}/api/v2/llm/proxy/openai/v1"
@@ -508,8 +502,8 @@ def test_the_production_probe_sends_one_minimal_request_and_closes_the_service(
 def test_only_the_openai_compatible_engine_inherits_its_own_base_url() -> None:
     settings = Settings(_env_file=None, openai_compatible_base_url="https://compat.invalid")
 
-    compatible: LlmConfig = runtime._llm_config(settings, _plan(llm_profile_id="openai_compatible"))
-    anthropic: LlmConfig = runtime._llm_config(settings, _plan(llm_profile_id="anthropic"))
+    compatible: LlmConfig = runtime._llm_config(settings, _snapshot(llm_profile_id="openai_compatible"))
+    anthropic: LlmConfig = runtime._llm_config(settings, _snapshot(llm_profile_id="anthropic"))
 
     assert compatible.base_url == "https://compat.invalid"
     assert anthropic.base_url is None
@@ -535,9 +529,11 @@ def test_second_account_panel_round_trip_and_both_production_call_sites(
     monkeypatch.setenv("ANISHIFT_PALANTIR_TOKEN", _TOKEN)
     service.reload_environment()
     assert service.probe_model(_ALIAS).availability is ModelAvailability.VERIFIED
-    monkeypatch.setattr(runtime, "load_user_settings", lambda: loaded)
     monkeypatch.setattr(runtime, "load_model_catalog", _catalog)
-    translated: LlmConfig = runtime._llm_config(service.current_settings(), _plan())
+    snapshot: RunSettingsSnapshot = replace(
+        service_module._run_settings_snapshot(loaded), llm_profile_id="palantir", llm_model_id=_ALIAS
+    )
+    translated: LlmConfig = runtime._llm_config(service.current_settings(), snapshot)
     for config in (prober.calls[0], translated):
         assert config.fallback_origin == _FALLBACK
         assert config.fallback_api_key == _FALLBACK_TOKEN
@@ -725,7 +721,7 @@ def test_the_translation_run_path_hands_every_provider_key_and_the_chosen_mode(m
     settings = Settings(_env_file=None, gemini_api_keys="synthetic-private, synthetic-business")
 
     config: LlmConfig = runtime._llm_config(
-        settings, _plan(llm_profile_id="gemini", llm_model_id="gemini-3.8-flash", llm_credential_mode=mode)
+        settings, _snapshot(llm_profile_id="gemini", llm_model_id="gemini-3.8-flash", llm_credential_mode=mode)
     )
 
     assert config.api_keys == ("synthetic-private", "synthetic-business")

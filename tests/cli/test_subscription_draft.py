@@ -328,7 +328,6 @@ def test_episode_numbers_are_named_as_a_range_or_a_list(numbers: tuple[int, ...]
     [
         ({}, ("1/4", "0")),
         ({"episode_count": 12, "ready": 1}, ("1/12", "1")),
-        ({"episode_count": 4, "beyond_count": 6}, ("1/4", "0")),
         ({"episode_count": None, "aired": 0}, ("0/?", "0")),
         ({"episode_count": 12, "aired": 3}, ("3/12", "0")),
     ],
@@ -422,14 +421,7 @@ def _plain(text: str) -> SubscriptionState:
             SubscriptionState("Nie rozpoznano sezonu", "Nie rozpoznano sezonu — usuń i dodaj ponownie"),
         ),
         ({"problem": "unknown_problem"}, _plain("Wymaga uwagi")),
-        (
-            {"episode_count": 4, "beyond_count": 6, "paused": True, "pause_reason": "user"},
-            SubscriptionState(
-                "Konflikt liczby odcinków",
-                "AniList podaje 4 odcinki, a subskrypcja czeka na E6 · pobierz ręcznie albo usuń",
-            ),
-        ),
-        ({"episode_count": 4, "beyond_count": None}, _plain("Termin nieznany")),
+        ({"episode_count": 4}, _plain("Termin nieznany")),
         (
             {"due_at": (_NOW - timedelta(hours=1)).isoformat(), "due_number": 3, "checking_number": 3},
             _plain("E3 · sprawdzam plik"),
@@ -951,7 +943,7 @@ def test_enter_opens_the_subscription_details_with_header_targets_and_specials(
     assert owner.numbers[-1] == (1, 2, 3, 4, 5, 6)
 
 
-@pytest.mark.parametrize("changes", [{}, {"problem": "season_unrecognized"}, {"episode_count": 2, "beyond_count": 6}])
+@pytest.mark.parametrize("changes", [{}, {"problem": "season_unrecognized"}, {"episode_count": 2}])
 def test_the_details_status_row_stays_gray_for_every_state(
     panel: StateController, owner: _Owner, changes: Mapping[str, object]
 ) -> None:
@@ -1135,19 +1127,18 @@ def test_the_list_the_draft_and_the_details_fit_every_terminal_size_and_recover_
     assert "Powiększ terminal do 50 x 12" in frames[7]
 
 
-def test_targets_beyond_the_catalogue_stay_listed_with_the_count_conflict_in_the_list_and_details(
+def test_targets_beyond_the_catalogue_count_stay_listed_without_a_conflict_in_the_list_and_details(
     panel: StateController, owner: _Owner
 ) -> None:
     _details(owner)
-    conflict: str = "AniList podaje 4 odcinki, a subskrypcja czeka na E6"
-    panel._subscriptions = [_row("a", "Alpha", episode_count=4, beyond_count=6)]
-    assert conflict in _frame(panel)
+    panel._subscriptions = [_row("a", "Alpha", episode_count=4)]
+    assert "Konflikt" not in _frame(panel)
 
     panel._selected = 0
     _keys(panel, "enter")
     frame: str = _frame(panel)
 
-    assert conflict in frame
+    assert "Konflikt" not in frame
     assert "Odcinek 5" in frame
     assert "Odcinek 6" in frame
 

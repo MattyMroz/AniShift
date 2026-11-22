@@ -9,6 +9,7 @@ import time
 import wave
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -20,19 +21,11 @@ from anishift.application.acquisition import AcquisitionService
 from anishift.application.automation import AutomationOwner
 from anishift.application.cancellation import CancellationToken
 from anishift.application.episode_selection import AniZipMapping, FranchiseGraph, ListedEpisode, StreamCandidate
-from anishift.application.handlers import (
-    ExecutionHandlers,
-    ExtractionTaskHandler,
-    LegacyExtractionAdapter,
-    PublishTaskHandler,
-    SubtitleTaskHandler,
-    TranslationTaskHandler,
-    TtsTaskHandler,
-)
+from anishift.application.handlers import ExecutionHandlers, TranslationTaskHandler, TtsTaskHandler
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
-from anishift.application.planning import ExecutionPlan, TaskKind
+from anishift.application.planning import ExecutionPlan, RunSettingsSnapshot
 from anishift.application.ready import ReadyStore
-from anishift.application.runtime import ProductionHandlerFactory, _audio_service
+from anishift.application.runtime import ProductionHandlerFactory, _audio_config
 from anishift.application.service import AppService
 from anishift.application.tts_handler import ClipPreparer, TtsProgressObserver
 from anishift.application.watch_state import WatchStateStore
@@ -42,8 +35,8 @@ from anishift.config.user_settings import UserSettings
 from anishift.platform.binaries import Binary, require_binary
 from anishift.platform.local_control import ControlClient, ControlServer, control_endpoint
 from anishift.platform.qbittorrent_process import ManagedQBittorrent
+from anishift.services.audio import AudioService
 from anishift.services.catalog.types import PrequelEntry, SeasonAiring, TitleCandidate, TitleStatus
-from anishift.services.extraction import ExtractionService, extract_tracks, identify
 from anishift.services.media import DefaultMediaProbe
 from anishift.services.media.probe import MediaProbe
 from anishift.services.subtitles import DisplayedLine, SpokenLine
@@ -364,49 +357,31 @@ class Tone:
     def cancel(self) -> None:
         pass
 
-    def close(self) -> None:
-        pass
-
 
 class Handlers(ProductionHandlerFactory):
-    @staticmethod
-    def _tts_handler(
-        settings: Settings,
-        run_root: Path,
-        plan: ExecutionPlan,
-        kinds: frozenset[TaskKind],
-        audio: ClipPreparer | None,
-    ) -> TtsTaskHandler:
-        return TtsTaskHandler(
-            Tone(run_root / "tones"),
-            run_root=run_root,
-            group_ranks={group.group_id: rank for rank, group in enumerate(plan.groups)},
-            audio=audio,
-        )
-
     def __call__(
         self,
         run_root: Path,
         plan: ExecutionPlan,
         source_groups: Mapping[str, InspectedSourceGroup],
     ) -> ExecutionHandlers:
-        kinds: frozenset[TaskKind] = frozenset(task.kind for task in plan.tasks)
-        audio = _audio_service(plan, kinds)
-        return ExecutionHandlers(
-            ExtractionTaskHandler(
-                ExtractionService(),
+        ranks: dict[str, int] = {group.group_id: rank for rank, group in enumerate(plan.groups)}
+
+        def tts(settings: RunSettingsSnapshot) -> TtsTaskHandler:
+            audio: ClipPreparer = AudioService(_audio_config(settings))
+            return TtsTaskHandler(
+                Tone(run_root / "tones"),
                 run_root=run_root,
-                timeout_s=30,
-                legacy=LegacyExtractionAdapter(identify, extract_tracks),
-            ),
-            SubtitleTaskHandler(run_root=run_root),
-            TranslationTaskHandler(Translation(), run_root=run_root),
-            tts=self._tts_handler(self._settings_provider(), run_root, plan, kinds, audio),
-            audio=self._audio_handler(run_root, plan, kinds, audio),
-            composition=self._composition_handler(run_root, plan, kinds),
-            publish=PublishTaskHandler(
-                run_root=run_root, source_groups={key: group.source for key, group in source_groups.items()}
-            ),
+                group_ranks=ranks,
+                audio=audio,
+                tempo=settings.tts_postprocess_tempo,
+                sign_narration=settings.sign_narration,
+            )
+
+        return replace(
+            super().__call__(run_root, plan, source_groups),
+            translation=lambda _: TranslationTaskHandler(Translation(), run_root=run_root),
+            tts=tts,
         )
 
 
@@ -442,7 +417,7 @@ def resident(
         acquisition=acquisition,
         env_file=root / "absent.env",
     )
-    store: WatchStateStore = WatchStateStore(root / "watch/state.json", subscriptions_path=root / "subscriptions.json")
+    store: WatchStateStore = WatchStateStore(root / "watch/state.json")
     owner: AutomationOwner = AutomationOwner(
         service,
         store,

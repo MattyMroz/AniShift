@@ -7,10 +7,17 @@ from typing import Any, cast
 
 import pytest
 
-from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot
-from anishift.application.runtime import _audio_config, _LlmCompleter, _raise_translation_error, _tts_config
+from anishift.application.planning import ProcessingOrderPolicy, RunSettingsSnapshot
+from anishift.application.runtime import (
+    RunServices,
+    _audio_config,
+    _LlmCompleter,
+    _raise_translation_error,
+    _tts_config,
+)
 from anishift.application.scheduler_contracts import ResourceLimits
 from anishift.application.service import _run_settings_snapshot
+from anishift.application.tts_handler import TtsTaskHandler
 from anishift.config.settings import Settings
 from anishift.config.user_settings import CustomVoiceSetting, UserSettings
 from anishift.errors import ErrorCode, ErrorContext
@@ -45,6 +52,7 @@ from anishift.services.translation.errors import (
     TranslationRateLimitError,
 )
 from anishift.services.translation.protocols import LlmCompletionRequest
+from anishift.services.tts import TtsConfig
 from anishift.services.tts.config import DEFAULT_RETRY_BACKOFF_SECONDS
 
 
@@ -58,16 +66,11 @@ def _snapshot(**overrides: Any) -> RunSettingsSnapshot:
         "tts_profile_id": "elevenbytes",
         "tts_max_retries": 3,
         "tts_group_jobs": 2,
-        "audio_profile_id": "eac3",
         "composition_profile_id": "default",
         "processing_order_policy": ProcessingOrderPolicy.READY_FIRST,
     }
     fields.update(overrides)
     return RunSettingsSnapshot(**fields)
-
-
-def _plan(**overrides: Any) -> ExecutionPlan:
-    return ExecutionPlan((), (), (), _snapshot(**overrides), ())
 
 
 class _RecordingLlmService:
@@ -95,7 +98,7 @@ class _RecordingLlmService:
 
 
 def test_the_run_snapshot_becomes_the_speech_configuration() -> None:
-    plan: ExecutionPlan = _plan(
+    snapshot: RunSettingsSnapshot = _snapshot(
         tts_model_id="run7",
         tts_voice_id="dallin",
         tts_request_concurrency=100,
@@ -105,7 +108,7 @@ def test_the_run_snapshot_becomes_the_speech_configuration() -> None:
         tts_engine_options=(("endpoint", "primary"),),
     )
 
-    config = _tts_config(Settings(_env_file=None, elevenlabs_api_key="unused-by-elevenbytes"), plan)
+    config = _tts_config(Settings(_env_file=None, elevenlabs_api_key="unused-by-elevenbytes"), snapshot)
 
     assert config.engine_id == "elevenbytes"
     assert config.provider_model_id == "run7"
@@ -151,21 +154,21 @@ def test_llm_completer_preserves_system_and_separate_user_parts() -> None:
 
 
 def test_the_elevenbytes_profile_keeps_its_own_deadline_and_retry_delays() -> None:
-    config = _tts_config(Settings(_env_file=None), _plan())
+    config = _tts_config(Settings(_env_file=None), _snapshot())
 
     assert config.request_timeout_s == 45.0
     assert config.retry_backoff_seconds == (5.0, 10.0, 15.0, 30.0)
 
 
 def test_the_sapi_profile_uses_its_own_short_request_deadline() -> None:
-    config = _tts_config(Settings(_env_file=None), _plan(tts_profile_id="sapi", tts_model_id="sapi5"))
+    config = _tts_config(Settings(_env_file=None), _snapshot(tts_profile_id="sapi", tts_model_id="sapi5"))
 
     assert config.request_timeout_s == 10.0
     assert config.retry_backoff_seconds == DEFAULT_RETRY_BACKOFF_SECONDS
 
 
 def test_a_neutral_profile_falls_back_to_the_shared_deadline_and_delays() -> None:
-    config = _tts_config(Settings(_env_file=None), _plan(tts_profile_id="edge"))
+    config = _tts_config(Settings(_env_file=None), _snapshot(tts_profile_id="edge"))
 
     assert config.request_timeout_s == 30.0
     assert config.retry_backoff_seconds == DEFAULT_RETRY_BACKOFF_SECONDS
@@ -173,7 +176,7 @@ def test_a_neutral_profile_falls_back_to_the_shared_deadline_and_delays() -> Non
 
 @pytest.mark.parametrize("vpn_enabled", [True, False])
 def test_only_the_elevenbytes_vpn_disables_the_speech_scheduler_deadline(*, vpn_enabled: bool) -> None:
-    config = _tts_config(Settings(_env_file=None), _plan(tts_vpn_enabled=vpn_enabled))
+    config = _tts_config(Settings(_env_file=None), _snapshot(tts_vpn_enabled=vpn_enabled))
 
     assert config.elevenbytes_vpn_enabled is vpn_enabled
     assert config.scheduler_timeout_enabled is not vpn_enabled
@@ -181,7 +184,7 @@ def test_only_the_elevenbytes_vpn_disables_the_speech_scheduler_deadline(*, vpn_
 
 @pytest.mark.parametrize("profile_id", ["sapi", "edge"])
 def test_another_profile_keeps_the_scheduler_deadline_whatever_the_vpn_preference(profile_id: str) -> None:
-    config = _tts_config(Settings(_env_file=None), _plan(tts_profile_id=profile_id, tts_vpn_enabled=True))
+    config = _tts_config(Settings(_env_file=None), _snapshot(tts_profile_id=profile_id, tts_vpn_enabled=True))
 
     assert config.scheduler_timeout_enabled
 
@@ -192,14 +195,14 @@ def test_tts_config_elevenreader_records_profile_documents_at_once_without_sched
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("ANISHIFT_CONFIG_DIR", str(tmp_path))
-    plan: ExecutionPlan = _plan(
+    snapshot: RunSettingsSnapshot = _snapshot(
         tts_profile_id="elevenreader",
         tts_model_id="eleven_v4",
         tts_voice_id="fronczewski",
         tts_request_concurrency=2,
     )
 
-    config = _tts_config(Settings(_env_file=None), plan)
+    config = _tts_config(Settings(_env_file=None), snapshot)
 
     assert config.scheduler_timeout_enabled is False
     assert config.request_timeout_s == 3600.0
@@ -215,33 +218,32 @@ def test_run_snapshot_document_engine_takes_episode_limit_from_voice_profile(eng
     snapshot: RunSettingsSnapshot = _run_settings_snapshot(UserSettings(tts_engine=engine))
 
     assert snapshot.tts_group_jobs == group_jobs
-    assert ResourceLimits.from_settings(snapshot).worker_limit(f"tts:{engine}", snapshot) == group_jobs
+    assert ResourceLimits.from_settings(snapshot, extraction=1).worker_limit(f"tts:{engine}") == group_jobs
 
 
 @pytest.mark.unit
 def test_tts_config_elevenbytes_without_vpn_keeps_scheduler_deadline() -> None:
-    config = _tts_config(Settings(_env_file=None), _plan(tts_vpn_enabled=False))
+    config = _tts_config(Settings(_env_file=None), _snapshot(tts_vpn_enabled=False))
 
     assert config.scheduler_timeout_enabled is True
 
 
 @pytest.mark.unit
-def test_run_snapshot_elevenreader_is_paid_network_engine() -> None:
+def test_run_snapshot_elevenreader_is_a_network_engine() -> None:
     snapshot: RunSettingsSnapshot = _run_settings_snapshot(UserSettings(tts_engine="elevenreader"))
 
-    assert snapshot.tts_is_paid
     assert snapshot.tts_is_network
 
 
 def test_a_single_worker_still_receives_a_usable_queue_capacity() -> None:
-    config = _tts_config(Settings(_env_file=None), _plan(tts_request_concurrency=1))
+    config = _tts_config(Settings(_env_file=None), _snapshot(tts_request_concurrency=1))
 
     assert config.max_concurrency == 1
     assert config.queue_capacity == 2
 
 
 def test_the_run_snapshot_becomes_the_audio_configuration() -> None:
-    plan: ExecutionPlan = _plan(
+    snapshot: RunSettingsSnapshot = _snapshot(
         audio_output_profile="aac",
         audio_bitrate="192k",
         narrator_over_source_lu=6.5,
@@ -249,7 +251,7 @@ def test_the_run_snapshot_becomes_the_audio_configuration() -> None:
         original_gain_db=-1.5,
     )
 
-    config = _audio_config(plan)
+    config = _audio_config(snapshot)
 
     assert config.codec_profile is AudioCodecProfile.AAC
     assert config.bitrate == "192k"
@@ -331,3 +333,38 @@ def test_a_custom_elevenbytes_voice_is_one_of_the_voices_its_engine_offers() -> 
     snapshot: RunSettingsSnapshot = _run_settings_snapshot(preferences)
 
     assert snapshot.tts_allowed_voice_ids == ("alFofuDn3cOwyoz1i44T", "own-voice-id")
+
+
+class _ClosingTts:
+    def __init__(self) -> None:
+        self.closed: int = 0
+
+    def cancel(self) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+def test_two_tts_tasks_with_one_configuration_share_one_service_closed_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built: list[_ClosingTts] = []
+
+    def build(services: RunServices, config: TtsConfig) -> _ClosingTts:
+        del services, config
+        built.append(_ClosingTts())
+        return built[-1]
+
+    monkeypatch.setattr(RunServices, "_tts_service", build)
+    monkeypatch.setattr(RunServices, "_audio_service", lambda services, settings: object())
+    services: RunServices = RunServices(lambda: Settings(_env_file=None), tmp_path, {"group-1": 0, "group-2": 1})
+
+    first: TtsTaskHandler = services.tts(_snapshot(tts_profile_id="edge"))
+    second: TtsTaskHandler = services.tts(_snapshot(tts_profile_id="edge"))
+    other: TtsTaskHandler = services.tts(_snapshot(tts_profile_id="edge", tts_voice_id="pl-PL-ZofiaNeural"))
+    services.close()
+
+    assert first._service is second._service
+    assert other._service is not first._service
+    assert [service.closed for service in built] == [1, 1]

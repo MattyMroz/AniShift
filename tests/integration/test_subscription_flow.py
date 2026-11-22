@@ -83,7 +83,7 @@ def _subscribed(root: Path) -> WatchStateStore:
         episode_count=3,
         targets=(SubscriptionTarget(3, (_NOW - timedelta(hours=1)).isoformat(), TargetState.DUE, 0),),
     )
-    store: WatchStateStore = WatchStateStore(root / "watch/state.json", subscriptions_path=root / "absent.json")
+    store: WatchStateStore = WatchStateStore(root / "watch/state.json")
     store.save(WatchState(policy=AutomationPolicy(auto_enabled=True), subscriptions=(record,)))
     return store
 

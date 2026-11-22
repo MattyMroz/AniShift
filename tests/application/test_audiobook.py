@@ -58,7 +58,6 @@ def _settings() -> RunSettingsSnapshot:
         tts_profile_id="edge",
         tts_max_retries=2,
         tts_group_jobs=4,
-        audio_profile_id="default",
         composition_profile_id="balanced",
         processing_order_policy=ProcessingOrderPolicy.READY_FIRST,
         audio_output_profile="eac3",

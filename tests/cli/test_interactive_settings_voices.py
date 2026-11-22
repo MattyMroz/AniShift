@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import cast
 
 import pytest
 
-from anishift.application import AppService, SessionRecord, SignInOutcome
+from anishift.application import AppService, SessionRecord, SignInOutcome, SignOutOutcome
 from anishift.cli.interactive.settings import SettingsController
 from anishift.cli.interactive.settings_editors import format_voice_input, parse_voice_input
 from anishift.config.field_access import assign_setting_value
@@ -25,7 +26,10 @@ class FakeSettingsService:
         self.settings = UserSettings()
         self.saves: list[tuple[str, SettingValue]] = []
         self.session: SessionRecord | None = None
-        self.sign_in_outcome: SignInOutcome | OSError = SignInOutcome.SIGNED_IN
+        self.sign_in_outcome: SignInOutcome | OSError = SignInOutcome.OPENED
+        self.sign_ins: int = 0
+        self.sign_out_outcome: SignOutOutcome | OSError = SignOutOutcome.SIGNED_OUT
+        self.sign_outs: int = 0
 
     def settings_snapshot(self) -> UserSettings:
         return self.settings
@@ -45,13 +49,23 @@ class FakeSettingsService:
         return self.session
 
     def elevenreader_sign_in(self) -> SignInOutcome:
+        self.sign_ins += 1
         if isinstance(self.sign_in_outcome, OSError):
             raise self.sign_in_outcome
-        self.session = SessionRecord(
-            signed_in=self.sign_in_outcome is SignInOutcome.SIGNED_IN,
-            checked_at=datetime(2026, 10, 30, 13, 3, tzinfo=UTC),
-        )
         return self.sign_in_outcome
+
+    def elevenreader_sign_out(self) -> SignOutOutcome:
+        self.sign_outs += 1
+        if isinstance(self.sign_out_outcome, OSError):
+            raise self.sign_out_outcome
+        if self.sign_out_outcome is SignOutOutcome.SIGNED_OUT:
+            checked_at: datetime = datetime(2026, 11, 22, 9, 0, tzinfo=UTC)
+            self.session = (
+                SessionRecord(signed_in=False, checked_at=checked_at)
+                if self.session is None
+                else replace(self.session, signed_in=False, checked_at=checked_at)
+            )
+        return self.sign_out_outcome
 
 
 @pytest.fixture
@@ -252,6 +266,7 @@ def test_tts_items_elevenbytes_engine_hides_session_section(panel: SettingsContr
 
     assert "elevenreader-session" not in _keys(panel)
     assert "elevenreader-sign-in" not in _keys(panel)
+    assert "elevenreader-sign-out" not in _keys(panel)
 
 
 @pytest.mark.unit
@@ -287,12 +302,14 @@ def test_tts_items_elevenreader_saved_check_shows_local_time(
 @pytest.mark.parametrize(
     ("outcome", "feedback"),
     [
-        (SignInOutcome.SIGNED_IN, "✓ Zalogowano"),
-        (SignInOutcome.SIGNED_OUT, "✗ Nie zalogowano"),
-        (SignInOutcome.BUSY, "✗ Lektor właśnie nagrywa — spróbuj po zakończeniu"),
+        (SignInOutcome.OPENED, "Otwarto okno ElevenReadera · zaloguj się i zamknij okno"),
+        (
+            SignInOutcome.BUSY,
+            "✗ Profil przeglądarki jest w użyciu — zamknij okno ElevenReadera albo poczekaj na koniec nagrywania",
+        ),
         (SignInOutcome.NO_CHROME, "✗ Nie znaleziono Google Chrome"),
-        (SignInOutcome.FAILED, "✗ Nie udało się sprawdzić sesji"),
-        (OSError("chrome"), "✗ Nie udało się sprawdzić sesji"),
+        (SignInOutcome.FAILED, "✗ Nie udało się otworzyć okna Chrome"),
+        (OSError("chrome"), "✗ Nie udało się otworzyć okna Chrome"),
     ],
 )
 def test_sign_in_action_outcome_shows_feedback(
@@ -313,7 +330,7 @@ def test_sign_in_action_outcome_shows_feedback(
 
 
 @pytest.mark.unit
-def test_sign_in_action_signed_in_refreshes_session_row(
+def test_sign_in_action_opened_window_leaves_session_row_to_the_next_recording(
     panel: SettingsController,
     service: FakeSettingsService,
 ) -> None:
@@ -322,7 +339,102 @@ def test_sign_in_action_signed_in_refreshes_session_row(
 
     _sign_in(panel)
 
-    assert _row(panel, "elevenreader-session").startswith("zalogowano · ")
+    assert service.sign_ins == 1
+    assert _row(panel, "elevenreader-session") == "nie sprawdzono"
+    assert next(item.label for item in panel._items if item.key == "elevenreader-sign-in") == (
+        "Zaloguj (otwórz okno Chrome)"
+    )
+
+
+def _sign_out(panel: SettingsController) -> None:
+    _activate(panel, "elevenreader-sign-out")
+    panel.handle_key("down")
+    panel.handle_key("enter")
+    for worker in threading.enumerate():
+        if worker.name == "anishift-elevenreader-sign-out":
+            worker.join(timeout=5.0)
+
+
+@pytest.mark.unit
+def test_tts_items_elevenreader_sign_out_row_follows_sign_in_in_session_section(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    service.settings = UserSettings(tts_engine="elevenreader")
+
+    _activate(panel, "category:tts")
+
+    keys: tuple[str, ...] = _keys(panel)
+    row = next(item for item in panel._items if item.key == "elevenreader-sign-out")
+    assert keys.index("elevenreader-sign-in") + 1 == keys.index("elevenreader-sign-out")
+    assert (row.label, row.section) == ("Wyloguj (usuń ciasteczka ElevenReadera)", "SESJA")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("key", ["enter", "escape"])
+def test_sign_out_action_refused_in_confirmation_signs_nothing_out(
+    panel: SettingsController,
+    service: FakeSettingsService,
+    key: str,
+) -> None:
+    service.settings = UserSettings(tts_engine="elevenreader")
+    _activate(panel, "category:tts")
+
+    _activate(panel, "elevenreader-sign-out")
+    assert panel._editor is not None
+    assert panel._editor.title == "WYLOGOWAĆ Z ELEVENREADERA I USUNĄĆ JEGO CIASTECZKA?"
+    panel.handle_key(key)
+
+    assert panel._editor is None
+    assert not panel._busy
+    assert service.sign_outs == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("outcome", "feedback"),
+    [
+        (SignOutOutcome.SIGNED_OUT, "✓ Wylogowano · teraz Zaloguj (otwórz okno Chrome)"),
+        (
+            SignOutOutcome.BUSY,
+            "✗ Profil przeglądarki jest w użyciu — zamknij okno ElevenReadera albo poczekaj na koniec nagrywania",
+        ),
+        (SignOutOutcome.NO_CHROME, "✗ Nie znaleziono Google Chrome"),
+        (SignOutOutcome.FAILED, "✗ Nie udało się usunąć ciasteczek ElevenReadera"),
+        (OSError("profile"), "✗ Nie udało się usunąć ciasteczek ElevenReadera"),
+    ],
+)
+def test_sign_out_action_confirmed_shows_feedback(
+    panel: SettingsController,
+    service: FakeSettingsService,
+    outcome: SignOutOutcome | OSError,
+    feedback: str,
+) -> None:
+    service.settings = UserSettings(tts_engine="elevenreader")
+    service.sign_out_outcome = outcome
+    _activate(panel, "category:tts")
+
+    _sign_out(panel)
+
+    assert service.sign_outs == 1
+    assert not panel._busy
+    assert panel._feedback is not None
+    assert panel._feedback.text == feedback
+
+
+@pytest.mark.unit
+def test_sign_out_action_signed_out_refreshes_session_row_and_keeps_cleanup_row(
+    panel: SettingsController,
+    service: FakeSettingsService,
+) -> None:
+    service.settings = UserSettings(tts_engine="elevenreader")
+    service.session = _owed_session(restore=True, document=True)
+    _activate(panel, "category:tts")
+
+    _sign_out(panel)
+
+    assert _row(panel, "elevenreader-session").startswith("nie zalogowano · ")
+    assert "elevenreader-cleanup" in _keys(panel)
 
 
 def _owed_session(*, restore: bool, document: bool) -> SessionRecord:
@@ -343,7 +455,7 @@ def _owed_session(*, restore: bool, document: bool) -> SessionRecord:
         (True, False, "Na koncie mógł zostać zmieniony głos"),
     ],
 )
-def test_tts_items_elevenreader_owed_cleanup_shows_row_with_repair_action(
+def test_tts_items_elevenreader_owed_cleanup_shows_row_naming_the_next_recording(
     panel: SettingsController,
     service: FakeSettingsService,
     restore: bool,
@@ -358,7 +470,7 @@ def test_tts_items_elevenreader_owed_cleanup_shows_row_with_repair_action(
     keys: tuple[str, ...] = _keys(panel)
     row = next(item for item in panel._items if item.key == "elevenreader-cleanup")
     assert keys.index("elevenreader-session") < keys.index("elevenreader-cleanup") < keys.index("elevenreader-sign-in")
-    assert (row.label, row.current, row.section) == (label, "napraw: Zaloguj / sprawdź sesję", "SESJA")
+    assert (row.label, row.current, row.section) == (label, "posprząta następne nagranie", "SESJA")
 
 
 @pytest.mark.unit
@@ -371,7 +483,7 @@ def test_tts_items_other_engine_owed_cleanup_shows_only_cleanup_row(
     _activate(panel, "category:tts")
 
     row = next(item for item in panel._items if item.key == "elevenreader-cleanup")
-    assert (row.current, row.section) == ("napraw: Zaloguj / sprawdź sesję", "SESJA")
+    assert (row.current, row.section) == ("posprząta następne nagranie", "SESJA")
     assert "elevenreader-session" not in _keys(panel)
     assert "elevenreader-sign-in" not in _keys(panel)
 
@@ -390,7 +502,7 @@ def test_tts_items_elevenreader_nothing_owed_hides_cleanup_row(
 
 
 @pytest.mark.unit
-def test_cleanup_row_enter_runs_sign_in_and_hides_row_once_cleaned(
+def test_cleanup_row_enter_starts_nothing(
     panel: SettingsController,
     service: FakeSettingsService,
 ) -> None:
@@ -399,10 +511,8 @@ def test_cleanup_row_enter_runs_sign_in_and_hides_row_once_cleaned(
     _activate(panel, "category:tts")
 
     _activate(panel, "elevenreader-cleanup")
-    for worker in threading.enumerate():
-        if worker.name == "anishift-elevenreader-sign-in":
-            worker.join(timeout=5.0)
 
-    assert panel._feedback is not None
-    assert panel._feedback.text == "✓ Zalogowano"
-    assert "elevenreader-cleanup" not in _keys(panel)
+    assert service.sign_ins == 0
+    assert service.sign_outs == 0
+    assert not panel._busy
+    assert panel._editor is None

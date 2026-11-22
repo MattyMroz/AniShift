@@ -71,7 +71,7 @@ if TYPE_CHECKING:
     from anishift.services.torrents.names import parse_release_name
     from anishift.services.torrents.query import EpisodeRange, SearchQuery, parse_query
     from anishift.services.tts.engines.elevenreader import VOICES as ELEVENREADER_VOICES
-    from anishift.services.tts.engines.elevenreader import SessionRecord, SignInOutcome
+    from anishift.services.tts.engines.elevenreader import SessionRecord, SignInOutcome, SignOutOutcome
     from anishift.setup.doctor import CheckResult
     from anishift.setup.installer import ResourceResult
 
@@ -318,6 +318,7 @@ __all__ = [
     "SessionRecord",
     "SettingsDraft",
     "SignInOutcome",
+    "SignOutOutcome",
     "SourceGroup",
     "SourceSelection",
     "StreamCandidate",
@@ -419,6 +420,7 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "ELEVENREADER_VOICES": ("anishift.services.tts.engines.elevenreader", "VOICES"),
     "SessionRecord": ("anishift.services.tts.engines.elevenreader", "SessionRecord"),
     "SignInOutcome": ("anishift.services.tts.engines.elevenreader", "SignInOutcome"),
+    "SignOutOutcome": ("anishift.services.tts.engines.elevenreader", "SignOutOutcome"),
     "AutoPresetDraft": ("anishift.application.service", "AutoPresetDraft"),
     "ClientStatus": ("anishift.application.acquisition", "ClientStatus"),
     "DownloadReceipt": ("anishift.application.acquisition", "DownloadReceipt"),

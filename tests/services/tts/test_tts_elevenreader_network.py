@@ -187,7 +187,7 @@ def _record_episode(
 
 
 async def _account(root: Path) -> tuple[object, object, frozenset[str]]:
-    session = ChromeSession(root, headless=True)
+    session = ChromeSession(root)
     await session.start()
     try:
         page: ReaderPage = await session.new_page()
@@ -290,7 +290,7 @@ async def _orphan_lookup(root: Path, document: Path) -> tuple[object, bool, obje
     def save() -> None:
         save_cleanup(root, cleanup)
 
-    session = ChromeSession(root, headless=True)
+    session = ChromeSession(root)
     page: ReaderPage | None = None
     uploaded: UploadedRead | None = None
     await session.start()

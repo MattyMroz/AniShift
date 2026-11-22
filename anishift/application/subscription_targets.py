@@ -374,7 +374,6 @@ class SubscriptionRow:
     due_number: int | None = None
     catalog_status: str | None = None
     episode_count: int | None = None
-    beyond_count: int | None = None
     ready: int = 0
     checking_number: int | None = None
     aired: int = 0
@@ -447,7 +446,6 @@ def after_close(target: SubscriptionTarget, now: datetime, n_max: int = MAX_ATTE
 
 def subscription_row(record: SubscriptionRecord) -> SubscriptionRow:
     """Project *record* into the compact row the subscription list shows, before the owner counts its files."""
-    numbers: tuple[int, ...] = tuple(item.number for item in record.targets)
     nearest: SubscriptionTarget | None = _lagging(record) or _nearest(record)
     return SubscriptionRow(
         subscription_id=record.subscription_id,
@@ -460,11 +458,9 @@ def subscription_row(record: SubscriptionRecord) -> SubscriptionRow:
         review_pending=record.review_pending,
         due_number=None if nearest is None else nearest.number,
         catalog_status=record.catalog_status,
-        episode_count=record.episode_count,
-        beyond_count=max(
-            (number for number in numbers if record.episode_count is not None and number > record.episode_count),
-            default=None,
-        ),
+        episode_count=None
+        if record.episode_count is None
+        else max(record.episode_count, max((item.number for item in record.targets), default=0)),
         aired=(record.cut or 0) + sum(item.state is not TargetState.AWAITING_AIRING for item in record.targets),
         due_state=None if nearest is None else _due_state(nearest),
     )
@@ -503,7 +499,7 @@ def is_target(episode: ListedEpisode, subscribed_at: datetime, cut: int | None) 
 def merge_listing(
     record: SubscriptionRecord, read: ListingRead, now: datetime, legacy: Iterable[LegacyScope] = ()
 ) -> SubscriptionRecord:
-    """Return *record* after one list read: new targets, moved deadlines, catalogue conflict and migration review."""
+    """Return *record* after one list read: new, moved and withdrawn targets, catalogue conflict and review."""
     mapping: AniZipMapping = read.mapping
     if read.live and _catalog_changed(record, read):
         return replace(record, problem=SubscriptionProblem.CATALOG_CONFLICT)
@@ -512,7 +508,11 @@ def merge_listing(
         return record
     scopes: tuple[LegacyScope, ...] = tuple(legacy) if reviewing else ()
     known: dict[int, SubscriptionTarget] = {item.number: item for item in record.targets}
-    targets: dict[int, SubscriptionTarget] = dict(known)
+    listed: frozenset[int] = frozenset(episode.number for episode in read.listing.episodes)
+    trusted: bool = read.live and read.listing.schedule_warning is None and bool(listed)
+    targets: dict[int, SubscriptionTarget] = {
+        number: item for number, item in known.items() if not (trusted and number not in listed and _untouched(item))
+    }
     subscribed: datetime = _required(record.subscribed_at)
     for episode in read.listing.episodes:
         current: SubscriptionTarget | None = known.get(episode.number)
@@ -658,6 +658,18 @@ def _new_target(
     ):
         return SubscriptionTarget(episode.number, due, TargetState.MANUAL, reason=LEGACY_ORDERED)
     return SubscriptionTarget(episode.number, due, _open_state(moment, now))
+
+
+def _untouched(target: SubscriptionTarget) -> bool:
+    return (
+        target.state in {TargetState.AWAITING_AIRING, TargetState.DUE}
+        and target.attempts == 0
+        and target.started == 0
+        and not target.tried
+        and not target.failures
+        and target.admission_id is None
+        and target.polish_skip is None
+    )
 
 
 def _moved(target: SubscriptionTarget, episode: ListedEpisode, now: datetime) -> SubscriptionTarget:

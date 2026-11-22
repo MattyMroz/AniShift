@@ -9,6 +9,7 @@ from loguru import logger as loguru_logger
 
 from anishift.application import runtime
 from anishift.application import service as service_module
+from anishift.application.handlers import ExecutionHandlers
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
 from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot
 from anishift.application.scheduler_contracts import TaskHandler
@@ -51,8 +52,8 @@ def _service(tmp_path: Path, env_file: Path | None) -> AppService:
     )
 
 
-def _empty_plan() -> ExecutionPlan:
-    snapshot = RunSettingsSnapshot(
+def _snapshot() -> RunSettingsSnapshot:
+    return RunSettingsSnapshot(
         translation_profile_id="deepl",
         translation_max_retries=3,
         translation_concurrency=2,
@@ -61,11 +62,9 @@ def _empty_plan() -> ExecutionPlan:
         tts_profile_id="edge",
         tts_max_retries=3,
         tts_group_jobs=2,
-        audio_profile_id="eac3",
         composition_profile_id="default",
         processing_order_policy=ProcessingOrderPolicy.READY_FIRST,
     )
-    return ExecutionPlan((), (), (), snapshot, ())
 
 
 def test_update_secret_writes_prefixed_environment_key(tmp_path: Path) -> None:
@@ -173,7 +172,7 @@ def test_reload_environment_adopts_external_file_edits(tmp_path: Path) -> None:
     assert service.reload_environment()["openai_compatible_base_url"] is True
 
 
-def test_production_handler_for_a_subsequent_run_reads_the_reloaded_secret(
+def test_a_task_starting_after_a_secret_change_reads_the_reloaded_secret(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -186,15 +185,17 @@ def test_production_handler_for_a_subsequent_run_reads_the_reloaded_secret(
     )
     service: AppService = create_app_service(context)
     observed: list[str] = []
-    original: Callable[[Settings, ExecutionPlan], object] = runtime._translation_service
+    original: Callable[[Settings, RunSettingsSnapshot], object] = runtime._translation_setup
 
-    def spy(settings: Settings, plan: ExecutionPlan) -> object:
+    def spy(settings: Settings, snapshot: RunSettingsSnapshot) -> object:
         observed.append(settings.deepl_api_key)
-        return original(settings, plan)
+        return original(settings, snapshot)
 
-    monkeypatch.setattr(runtime, "_translation_service", spy)
+    monkeypatch.setattr(runtime, "_translation_setup", spy)
+    handlers: object = service._handler_factory(tmp_path / "run-1", ExecutionPlan((), (), (), ()), {})
+    assert isinstance(handlers, ExecutionHandlers)
     service.update_secret("deepl_api_key", "fresh-deepl-key")
-    service._handler_factory(tmp_path / "run-1", _empty_plan(), {})
+    handlers.translation(_snapshot())
 
     assert observed == ["fresh-deepl-key"]
     assert context.settings.deepl_api_key == ""

@@ -8,14 +8,13 @@ import time
 from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import replace
 from typing import Final
 
 from anishift.application.artifacts import ArtifactState
 from anishift.application.cancellation import CommitCancellationToken, EventCancellationToken
 from anishift.application.events import RunEventKind, RunEventSink, WorkerNotification, WorkerNotificationKind
 from anishift.application.intents import RequestOrigin
-from anishift.application.planning import ExecutionPlan, PlanTask, TaskState
+from anishift.application.planning import ExecutionPlan, PlanTask, RunSettingsSnapshot, TaskState
 from anishift.application.results import DISPLAYED_ABSENCE_NOTE, ArtifactSnapshot, GroupResult, RunResult, TaskResult
 from anishift.application.scheduler_contracts import (
     NaturalOrderGate,
@@ -24,6 +23,8 @@ from anishift.application.scheduler_contracts import (
     TaskHandler,
     TaskProgressSink,
     extraction_worker_count,
+    is_remote,
+    resource_key,
 )
 from anishift.application.scheduler_runtime import (
     PendingPublication,
@@ -155,10 +156,10 @@ class GraphCoordinator:
         "_futures",
         "_handles",
         "_inbox",
-        "_limits_provider",
         "_ready",
         "_running",
         "_sequence",
+        "_settings_provider",
         "_signal",
         "_submitted",
         "_thread",
@@ -166,9 +167,9 @@ class GraphCoordinator:
         "_wakeups",
     )
 
-    def __init__(self, limits_provider: Callable[[], ResourceLimits]) -> None:
+    def __init__(self, settings_provider: Callable[[], RunSettingsSnapshot]) -> None:
         """Prepare shared queues; the coordination thread lives only while work does."""
-        self._limits_provider: Callable[[], ResourceLimits] = limits_provider
+        self._settings_provider: Callable[[], RunSettingsSnapshot] = settings_provider
         self._condition: threading.Condition = threading.Condition()
         self._updates: UpdateChannel = UpdateChannel(self._wake)
         self._completions: queue.SimpleQueue[Future[TaskResult]] = queue.SimpleQueue()
@@ -197,6 +198,7 @@ class GraphCoordinator:
     def submit(self, request: RunRequest) -> RunHandle:
         """Accept one admissible graph and return the handle of its future result."""
         _validate_plan(request.plan)
+        settings: RunSettingsSnapshot = self._settings_provider()
         with self._condition:
             if self._closing:
                 msg = "Graph coordinator no longer accepts work"
@@ -208,6 +210,7 @@ class GraphCoordinator:
             context: SchedulerRuntime = create_runtime(
                 request,
                 sequence=self._sequence,
+                order=settings.processing_order_policy,
                 ready=self._ready,
                 updates=self._updates,
             )
@@ -218,6 +221,10 @@ class GraphCoordinator:
             self._start_locked()
             self._condition.notify_all()
         return handle
+
+    def refresh(self) -> None:
+        """Admit again after a settings change, because a waiting task takes the pool and limit of its new provider."""
+        self._wake()
 
     def set_background_admission(self, enabled: bool) -> None:
         """Allow or hold back admission of tasks belonging to background requests."""
@@ -243,6 +250,15 @@ class GraphCoordinator:
         """Hold admission of remaining tasks while active ones finish, keeping the coordinator usable."""
         with self._condition:
             self._draining = True
+            self._signal += 1
+            self._condition.notify_all()
+
+    def pause_run(self, run_id: str) -> None:
+        """Hold the remaining tasks of one run while its active ones finish, then end it paused."""
+        with self._condition:
+            for context in (*self._contexts.values(), *self._inbox):
+                if context.run_id == run_id:
+                    context.pausing = True
             self._signal += 1
             self._condition.notify_all()
 
@@ -433,40 +449,43 @@ class GraphCoordinator:
             return self._handles.pop(run_id, None)
 
     def _drop_ready(self, run_id: str) -> None:
-        for resource_key, entries in self._ready.items():
-            self._ready[resource_key] = [entry for entry in entries if entry.run_id != run_id]
+        for family, entries in self._ready.items():
+            self._ready[family] = [entry for entry in entries if entry.run_id != run_id]
 
     def _admit(self) -> None:
         if not any(self._ready.values()):
             return
-        limits: ResourceLimits = replace(
-            self._limits_provider(),
+        settings: RunSettingsSnapshot = self._settings_provider()
+        limits: ResourceLimits = ResourceLimits.from_settings(
+            settings,
             extraction=extraction_worker_count(self._extraction_group_count()),
         )
         with self._condition:
             if self._draining:
                 return
             background_admitted: bool = self._background_admission
-            for resource_key in tuple(self._ready):
-                self._admit_resource(resource_key, limits, background_admitted=background_admitted)
+            for family in tuple(self._ready):
+                self._admit_family(family, settings, limits, background_admitted=background_admitted)
 
-    def _admit_resource(
+    def _admit_family(
         self,
-        resource_key: str,
+        family: str,
+        settings: RunSettingsSnapshot,
         limits: ResourceLimits,
         *,
         background_admitted: bool,
     ) -> None:
-        entries: list[ReadyTask] = self._ready[resource_key]
+        entries: list[ReadyTask] = self._ready[family]
         while entries:
             candidate: ReadyTask | None = self._best_entry(entries, background_admitted=background_admitted)
             if candidate is None:
                 return
             context: SchedulerRuntime = self._contexts[candidate.run_id]
-            if self._submitted[resource_key] >= limits.worker_limit(resource_key, context.plan.settings):
+            key: str = resource_key(context.task_by_id[candidate.task_id], settings)
+            if self._submitted[key] >= limits.worker_limit(key):
                 return
             entries.remove(candidate)
-            self._submit_task(context, candidate.task_id, resource_key)
+            self._submit_task(context, candidate.task_id, key, settings)
 
     def _best_entry(self, entries: list[ReadyTask], *, background_admitted: bool) -> ReadyTask | None:
         admissible: list[ReadyTask] = []
@@ -475,35 +494,37 @@ class GraphCoordinator:
             if context is None:
                 entries.remove(entry)
                 continue
+            if context.pausing:
+                continue
             if background_admitted or not context.automatic:
                 admissible.append(entry)
         return min(admissible) if admissible else None
 
-    def _submit_task(self, context: SchedulerRuntime, task_id: str, resource_key: str) -> None:
+    def _submit_task(self, context: SchedulerRuntime, task_id: str, key: str, settings: RunSettingsSnapshot) -> None:
         task: PlanTask = context.task_by_id[task_id]
         try:
             snapshot: ArtifactSnapshot = context.store.snapshot(task)
             if context.journal is not None:
-                context.journal.started(task)
+                context.journal.started(task, remote=is_remote(task, settings))
         except (AniShiftError, OSError) as error:
             finish_failed(task, error, context)
             self._wake()
             return
         interrupt: EventCancellationToken = EventCancellationToken(parent=context.cancel)
-        executor: ThreadPoolExecutor = self._executor(resource_key)
-        future: Future[TaskResult] = executor.submit(self._execute_task, context, task, snapshot, interrupt)
-        self._futures[future] = SubmittedTask(context.run_id, task, resource_key, interrupt)
-        self._submitted[resource_key] += 1
+        executor: ThreadPoolExecutor = self._executor(key)
+        future: Future[TaskResult] = executor.submit(self._execute_task, context, task, snapshot, settings, interrupt)
+        self._futures[future] = SubmittedTask(context.run_id, task, key, interrupt)
+        self._submitted[key] += 1
         future.add_done_callback(self._on_completed)
 
-    def _executor(self, resource_key: str) -> ThreadPoolExecutor:
-        executor: ThreadPoolExecutor | None = self._executors.get(resource_key)
+    def _executor(self, key: str) -> ThreadPoolExecutor:
+        executor: ThreadPoolExecutor | None = self._executors.get(key)
         if executor is None:
             executor = ThreadPoolExecutor(
                 max_workers=EXECUTOR_THREAD_CEILING,
-                thread_name_prefix=thread_prefix(resource_key),
+                thread_name_prefix=thread_prefix(key),
             )
-            self._executors[resource_key] = executor
+            self._executors[key] = executor
         return executor
 
     def _on_completed(self, future: Future[TaskResult]) -> None:
@@ -515,12 +536,13 @@ class GraphCoordinator:
         context: SchedulerRuntime,
         task: PlanTask,
         snapshot: ArtifactSnapshot,
+        settings: RunSettingsSnapshot,
         interrupt: EventCancellationToken,
     ) -> TaskResult:
         context.updates.put(context.run_id, TaskStarted(task.task_id))
         interrupt.raise_if_cancelled()
         progress: TaskProgressSink = QueuedProgressSink(task.task_id, context.run_id, context.updates)
-        return context.handler.execute(task, snapshot, interrupt, progress)
+        return context.handler.execute(task, snapshot, settings, interrupt, progress)
 
     def _extraction_group_count(self) -> int:
         return len(
@@ -665,7 +687,7 @@ class GraphCoordinator:
 
     def _pause_context(self, context: SchedulerRuntime) -> bool:
         with self._condition:
-            if not self._draining:
+            if not self._draining and not context.pausing:
                 return False
             if self._closing:
                 self._interrupt_active(context)
@@ -713,22 +735,22 @@ class GraphCoordinator:
 class GraphScheduler:
     """Execute one immutable graph through a private short-lived coordinator."""
 
-    __slots__ = ("_handler", "_limits", "_run_id", "_session")
+    __slots__ = ("_handler", "_run_id", "_session", "_settings")
 
     def __init__(
         self,
         handler: TaskHandler,
         *,
-        limits: ResourceLimits,
+        settings: RunSettingsSnapshot,
         run_id: str,
         session: RunSession,
     ) -> None:
-        """Bind a task dispatcher, explicit limits, and one active run scope."""
+        """Bind a task dispatcher, the settings every task starts with, and one active run scope."""
         if not run_id.strip():
             msg = "Graph scheduler requires a run ID"
             raise ValueError(msg)
         self._handler: TaskHandler = handler
-        self._limits: ResourceLimits = limits
+        self._settings: RunSettingsSnapshot = settings
         self._run_id: str = run_id
         self._session: RunSession = session
 
@@ -740,7 +762,7 @@ class GraphScheduler:
         events: RunEventSink,
     ) -> RunResult:
         """Execute an admissible graph and preserve independent group outcomes."""
-        coordinator = GraphCoordinator(lambda: self._limits)
+        coordinator = GraphCoordinator(lambda: self._settings)
         try:
             handle: RunHandle = coordinator.submit(
                 RunRequest(

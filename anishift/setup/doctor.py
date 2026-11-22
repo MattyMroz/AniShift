@@ -74,8 +74,11 @@ _TORRENT_SETUP_HINT: Final[str] = "Run `anishift qbit setup` (close qBittorrent 
 _ELEVENREADER_ENGINE_ID: Final[str] = "elevenreader"
 """TTS engine whose browser and saved session the doctor checks."""
 
-_ELEVENREADER_SIGN_IN_HINT: Final[str] = "Ustawienia → Lektor → Zaloguj / sprawdź sesję"
-"""Panel action that signs in to ElevenReader and records the session."""
+_ELEVENREADER_SIGN_IN_HINT: Final[str] = "Ustawienia → Lektor → Zaloguj (otwórz okno Chrome)"
+"""Panel action that opens the Chrome window the owner signs in to ElevenReader with."""
+
+_ELEVENREADER_CLEANUP_HINT: Final[str] = "The next ElevenReader recording finishes the cleanup"
+"""Advice for owed account cleanup, which only a recording runs."""
 
 logger = get_logger(__name__)
 
@@ -306,7 +309,7 @@ def _elevenreader_cleanup_owed() -> CheckResult:
         "elevenreader",
         CheckStatus.WARN,
         "ElevenReader account may still hold a document AniShift uploaded or a changed voice",
-        suggestion=_ELEVENREADER_SIGN_IN_HINT,
+        suggestion=_ELEVENREADER_CLEANUP_HINT,
     )
 
 

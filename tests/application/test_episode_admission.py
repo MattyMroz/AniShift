@@ -7,7 +7,6 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 from pathlib import Path
 from typing import cast
 
@@ -32,22 +31,22 @@ from anishift.application.acquisition import (
     catalog_releases,
     read_episode,
 )
-from anishift.application.automation import AutomationOwner
+from anishift.application.automation import AutomationOwner, _legacy_reference
 from anishift.application.control import (
     AcquisitionConfirmation,
     AcquisitionState,
     AutomationPolicy,
     EpisodeChoice,
+    LegacyOrder,
     LegacyScope,
     TorrentioReference,
     WatchState,
+    legacy_number,
 )
 from anishift.application.control_views import encode_view
 from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.intents import RequestOrigin
 from anishift.application.service import AppService
-from anishift.application.subscription_migration import migrate
-from anishift.application.subscriptions import Subscription, SubscriptionStore
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
 from anishift.cli.resident import ResidentSession
 from anishift.platform.local_control import (
@@ -73,7 +72,6 @@ class _Library:
     service: AppService
     store: WatchStateStore
     network: _TorrentNetwork
-    listing: Path
 
 
 def _release(number: int, info_hash: str | None = None) -> Release:
@@ -106,12 +104,8 @@ def _library(tmp_path: Path, *releases: Release, managed: bool = False) -> _Libr
         title_catalog=_TitleCatalog(schedules={_ENTRY: _aired()}),
         torrent_management=cast("TorrentManagement", network) if managed else None,
     )
-    listing: Path = tmp_path / "subscriptions.json"
     return _Library(
-        _real_service(tmp_path, acquisition=acquisition),
-        WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME, subscriptions_path=listing),
-        network,
-        listing,
+        _real_service(tmp_path, acquisition=acquisition), WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME), network
     )
 
 
@@ -159,24 +153,10 @@ def _download(
     return owner.handle(_request("download", payload, command_id=command_id))
 
 
-def _subscribe(library: _Library, *, anilist_id: int | None, first: int = 3) -> Subscription:
-    subscription: Subscription = Subscription(
-        subscription_id="neko-subsplease",
-        query="neko",
-        series="Neko to Ryuu",
-        group="SubsPlease",
-        next_episode=Decimal(first),
-        min_resolution=1080,
-        taken=frozenset(),
-        added_at="2026-09-01T12:00:00+00:00",
-        checked_at=None,
-        season_index=_SEASON.index,
-        episode_offset=_SEASON.offset,
-        season_episodes=_SEASON.episodes,
-        anilist_id=anilist_id,
+def _ordered(library: _Library, *orders: LegacyOrder, acquisitions: tuple[AcquisitionConfirmation, ...] = ()) -> None:
+    library.store.save(
+        WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=acquisitions, legacy_orders=orders)
     )
-    SubscriptionStore(library.listing).save([subscription])
-    return subscription
 
 
 def _admitted(store: WatchStateStore) -> list[tuple[int, int]]:
@@ -403,9 +383,10 @@ def test_taken_episodes_of_a_linked_subscription_are_read_without_becoming_trans
     tmp_path: Path, taken: tuple[str, ...], blocked: int, passing: int | None
 ) -> None:
     library: _Library = _library(tmp_path)
-    subscription: Subscription = _subscribe(library, anilist_id=_ENTRY)
-    SubscriptionStore(library.listing).save([replace(subscription, taken_episodes=taken)])
-    listing: bytes = library.listing.read_bytes()
+    _ordered(
+        library,
+        *(LegacyOrder(_ENTRY, legacy_number(number), f"subscription:neko:{number}", None, False) for number in taken),
+    )
     with _running(library) as owner:
         refused: ControlResponse = owner.admit_episode("admit-1", _choice(blocked))
         other_entry: ControlResponse = owner.admit_episode("admit-2", _choice(blocked, anilist_id=_OTHER_ENTRY))
@@ -416,25 +397,13 @@ def test_taken_episodes_of_a_linked_subscription_are_read_without_becoming_trans
     assert (refused.ok, refused.reason) == (False, "episode_possibly_admitted")
     assert other_entry.ok
     assert neighbour is None or neighbour.ok
-    assert library.listing.read_bytes() == listing
     assert all(item.selective for item in library.store.load().acquisitions)
     assert library.network.added == []
     assert library.network.info_calls == 0
 
 
-def test_taken_episodes_of_an_unlinked_subscription_block_no_entry(tmp_path: Path) -> None:
-    library: _Library = _library(tmp_path)
-    subscription: Subscription = _subscribe(library, anilist_id=None)
-    SubscriptionStore(library.listing).save([replace(subscription, taken_episodes=("3",))])
-    with _running(library) as owner:
-        answer: ControlResponse = owner.admit_episode("admit-1", _choice(3))
-
-    assert answer.ok
-
-
 def test_an_older_subscription_order_is_scoped_through_its_subscription_at_the_gate(tmp_path: Path) -> None:
     library: _Library = _library(tmp_path)
-    subscription: Subscription = _subscribe(library, anilist_id=_ENTRY)
     older: AcquisitionConfirmation = AcquisitionConfirmation(
         operation_id="older",
         info_hash="older-hash",
@@ -442,17 +411,11 @@ def test_an_older_subscription_order_is_scoped_through_its_subscription_at_the_g
         required_files=(),
         state=AcquisitionState.ACCEPTED,
         origin=RequestOrigin.USER,
-        subscription_id=subscription.subscription_id,
+        subscription_id="neko",
         episode="5",
         updated_at="2026-09-08T12:00:00+00:00",
     )
-    library.store.save(
-        migrate(
-            WatchState(policy=AutomationPolicy(auto_enabled=True), acquisitions=(older,)),
-            (subscription,),
-            datetime(2026, 9, 9, tzinfo=UTC),
-        )
-    )
+    _ordered(library, LegacyOrder(_ENTRY, 5, _legacy_reference(older), "older", False), acquisitions=(older,))
     with _running(library) as owner:
         answer: ControlResponse = owner.admit_episode("admit-1", _choice(5))
 

@@ -19,7 +19,6 @@ from anishift.application import (
     notice_text,
 )
 from anishift.application.events import sanitize_event_message
-from anishift.text.plural import plural
 
 __all__ = [
     "CHECK_SHOWN_S",
@@ -182,14 +181,6 @@ def _issue(row: Mapping[str, object]) -> SubscriptionState | None:
     if problem is not None:
         text, detail = _ISSUES.get(str(problem), ("Wymaga uwagi", "Wymaga uwagi"))
         return SubscriptionState(text, detail)
-    count: object = row.get("episode_count")
-    beyond: object = row.get("beyond_count")
-    if isinstance(count, int) and isinstance(beyond, int):
-        episodes: str = plural(count, "odcinek", "odcinki", "odcinków")
-        return SubscriptionState(
-            "Konflikt liczby odcinków",
-            f"AniList podaje {count} {episodes}, a subskrypcja czeka na E{beyond} · pobierz ręcznie albo usuń",
-        )
     return None
 
 

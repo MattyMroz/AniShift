@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import wave
 from collections.abc import Callable
@@ -16,9 +17,9 @@ from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifet
 from anishift.application.cancellation import EventCancellationToken, NeverCancelledToken
 from anishift.application.events import WorkerNotification
 from anishift.application.intents import NarrationTimeline
-from anishift.application.planning import ExecutionPlan, PlanTask, ProcessingOrderPolicy, RunSettingsSnapshot, TaskKind
+from anishift.application.planning import PlanTask, ProcessingOrderPolicy, RunSettingsSnapshot, TaskKind
 from anishift.application.results import ArtifactSnapshot, TaskResult
-from anishift.application.runtime import ProductionHandlerFactory
+from anishift.application.runtime import RunServices
 from anishift.application.scheduler_runtime import public_error
 from anishift.application.sign_narration import write_sign_candidates
 from anishift.application.tts_clips import FfmpegClipService
@@ -52,7 +53,7 @@ from anishift.services.tts import (
     SynthesisStatus,
     SynthesizedRequest,
 )
-from anishift.services.tts.engines.elevenreader.api_backend import SIGN_IN_HINT, auth_error
+from anishift.services.tts.engines.elevenreader.api_backend import SIGN_IN_HINT, auth_error, refused_error
 
 if TYPE_CHECKING:
     from loguru import Message
@@ -149,7 +150,6 @@ def test_tts_handler_writes_timed_clip_manifest(tmp_path: Path) -> None:
         ("spoken",),
         ("manifest",),
         (),
-        "tts:edge",
         _SPOKEN_PARAMETERS,
     )
 
@@ -199,7 +199,6 @@ def test_a_subtitle_without_duration_still_gets_a_placement_window(tmp_path: Pat
         ("spoken",),
         ("manifest",),
         (),
-        "tts:edge",
         _SPOKEN_PARAMETERS,
     )
 
@@ -222,10 +221,14 @@ def test_a_subtitle_without_duration_still_gets_a_placement_window(tmp_path: Pat
 class _Preparer:
     def __init__(self) -> None:
         self.roots: set[Path] = set()
+        self.tempos: set[float] = set()
 
-    def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
+    def prepare_clip(
+        self, clip: TimedClip, *, tmp_root: Path, tempo: float, cancel: threading.Event | None
+    ) -> NormalizedClip:
         del cancel
         self.roots.add(tmp_root)
+        self.tempos.add(tempo)
         return NormalizedClip(clip, tmp_root / f"{clip.request_id}.pcm", 1000, 2, 1, 500)
 
 
@@ -255,8 +258,7 @@ def _signed_synthesis(tmp_path: Path) -> tuple[PlanTask, ArtifactSnapshot]:
         ("spoken", "signs"),
         ("manifest",),
         (),
-        "tts:edge",
-        (*_SPOKEN_PARAMETERS, ("sign_narration", "smart")),
+        _SPOKEN_PARAMETERS,
     )
     return task, ArtifactSnapshot({"spoken": spoken, "signs": signs}, {"manifest": output})
 
@@ -265,7 +267,14 @@ def test_signs_are_read_in_free_pauses_and_rejected_signs_stay_out_of_the_manife
     task, snapshot = _signed_synthesis(tmp_path)
     service = _Tts(tmp_path)
     preparer = _Preparer()
-    handler = TtsTaskHandler(service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=preparer)
+    handler = TtsTaskHandler(
+        service,
+        run_root=tmp_path / "run",
+        group_ranks={"group-1": 0},
+        audio=preparer,
+        tempo=1.25,
+        sign_narration="smart",
+    )
 
     first: TaskResult = handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
     second: TaskResult = handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
@@ -288,6 +297,8 @@ def test_signs_are_read_in_free_pauses_and_rejected_signs_stay_out_of_the_manife
     assert second.outputs[0].metadata == first.outputs[0].metadata
     assert load_narration_manifest(second.outputs[0].path) == manifest
     assert preparer.roots == {tmp_path / "run" / "group-1" / "audio"}
+    assert preparer.tempos == {1.25}
+    assert manifest.tempo == 1.25
 
 
 class _WatchedPreparer(_Preparer):
@@ -296,9 +307,11 @@ class _WatchedPreparer(_Preparer):
         self.progress: _Progress = progress
         self.percents_seen: list[int | None] = []
 
-    def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
+    def prepare_clip(
+        self, clip: TimedClip, *, tmp_root: Path, tempo: float, cancel: threading.Event | None
+    ) -> NormalizedClip:
         self.percents_seen.extend(notification.progress_percent for notification in self.progress.notifications)
-        return super().prepare_clip(clip, tmp_root=tmp_root, cancel=cancel)
+        return super().prepare_clip(clip, tmp_root=tmp_root, tempo=tempo, cancel=cancel)
 
 
 def test_recording_reaches_100_only_after_clips_are_prepared_and_signs_recorded(tmp_path: Path) -> None:
@@ -306,7 +319,9 @@ def test_recording_reaches_100_only_after_clips_are_prepared_and_signs_recorded(
     service = _ProgressTts(tmp_path)
     progress = _Progress()
     preparer = _WatchedPreparer(progress)
-    handler = TtsTaskHandler(service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=preparer)
+    handler = TtsTaskHandler(
+        service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=preparer, sign_narration="smart"
+    )
 
     handler.execute(task, snapshot, NeverCancelledToken(), progress)
 
@@ -318,8 +333,10 @@ def test_recording_reaches_100_only_after_clips_are_prepared_and_signs_recorded(
 
 
 class _WindowPreparer:
-    def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
-        del cancel
+    def prepare_clip(
+        self, clip: TimedClip, *, tmp_root: Path, tempo: float, cancel: threading.Event | None
+    ) -> NormalizedClip:
+        del tempo, cancel
         return NormalizedClip(clip, tmp_root / f"{clip.request_id}.pcm", 1000, 2, 1, clip.end_ms - clip.start_ms)
 
 
@@ -350,8 +367,7 @@ def _hidden_sign_synthesis(tmp_path: Path) -> tuple[PlanTask, ArtifactSnapshot]:
         ("spoken", "signs"),
         ("manifest",),
         (),
-        "tts:edge",
-        (*_SPOKEN_PARAMETERS, ("sign_narration", "always")),
+        _SPOKEN_PARAMETERS,
     )
     return task, ArtifactSnapshot({"spoken": spoken, "signs": signs}, {"manifest": output})
 
@@ -365,6 +381,7 @@ def _signed_reading(tmp_path: Path, *, reads_document: bool) -> tuple[_Tts, Task
         group_ranks={"group-1": 0},
         audio=_WindowPreparer(),
         reads_document=reads_document,
+        sign_narration="always",
     )
     return service, handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
 
@@ -446,7 +463,12 @@ def test_tts_handler_failed_sign_is_left_out_with_warning_and_metadata(tmp_path:
     task, snapshot = _signed_synthesis(tmp_path)
     service = _FailingTts(tmp_path, frozenset({"group-1-sign-7"}))
     handler = TtsTaskHandler(
-        service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=_Preparer(), reads_document=reads_document
+        service,
+        run_root=tmp_path / "run",
+        group_ranks={"group-1": 0},
+        audio=_Preparer(),
+        reads_document=reads_document,
+        sign_narration="smart",
     )
     captured: list[Message] = []
     handler_id: int = loguru_logger.add(captured.append, format="{message} {extra}", level="WARNING")
@@ -481,7 +503,12 @@ def test_tts_handler_failed_line_fails_task_with_engine_message_and_hint(
     failure: ErrorContext = auth_error("ElevenReader session is signed out").context
     service = _FailingTts(tmp_path, frozenset({"group-1-0"}), failure)
     handler = TtsTaskHandler(
-        service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=_Preparer(), reads_document=reads_document
+        service,
+        run_root=tmp_path / "run",
+        group_ranks={"group-1": 0},
+        audio=_Preparer(),
+        reads_document=reads_document,
+        sign_narration="smart",
     )
 
     with pytest.raises(ExecutionError) as caught:
@@ -493,10 +520,36 @@ def test_tts_handler_failed_line_fails_task_with_engine_message_and_hint(
     assert len(service.batches) == 1
 
 
+@pytest.mark.unit
+def test_tts_handler_app_check_refusal_tells_owner_in_polish_to_sign_out_and_in_again(tmp_path: Path) -> None:
+    task, snapshot = _signed_synthesis(tmp_path)
+    failure: ErrorContext = refused_error("AppCheck: 403").context
+    service = _FailingTts(tmp_path, frozenset({"group-1-0"}), failure)
+    handler = TtsTaskHandler(
+        service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=_Preparer(), reads_document=True
+    )
+
+    with pytest.raises(ExecutionError) as caught:
+        handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
+
+    shown: str = public_error(caught.value)
+    assert caught.value.context.code is ErrorCode.TTS_AUTH_FAILED
+    assert shown.startswith("ElevenReader odrzucił przeglądarkę AniShift. Blokada trwa dobę.")
+    assert "Wyloguj (usuń ciasteczka ElevenReadera)" in shown
+    assert "Zaloguj (otwórz okno Chrome) i zaloguj się w otwartym oknie" in shown
+    assert "spróbuj ponownie po dobie" in shown
+    assert "inny silnik lektora" in shown
+    assert shown.count("odrzucił") == 1
+    assert not re.search(r"(?i)\b(the|and|or|to|of|is|refused|browser|session|sign|engine|ElevenBytes)\b", shown)
+    assert not any(technical in shown for technical in ("App Check", "AppCheck", "403", "<path>"))
+
+
 def test_tts_handler_document_engine_without_audio_service_refuses_signs_before_synthesis(tmp_path: Path) -> None:
     task, snapshot = _signed_synthesis(tmp_path)
     service = _Tts(tmp_path)
-    handler = TtsTaskHandler(service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, reads_document=True)
+    handler = TtsTaskHandler(
+        service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, reads_document=True, sign_narration="smart"
+    )
 
     with pytest.raises(ExecutionError):
         handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
@@ -510,17 +563,21 @@ class _CancellingPreparer(_Preparer):
         self.token: EventCancellationToken = token
         self.signalled: list[bool] = []
 
-    def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
+    def prepare_clip(
+        self, clip: TimedClip, *, tmp_root: Path, tempo: float, cancel: threading.Event | None
+    ) -> NormalizedClip:
         self.token.cancel()
         self.signalled.append(cancel is not None and cancel.wait(5))
-        return super().prepare_clip(clip, tmp_root=tmp_root, cancel=cancel)
+        return super().prepare_clip(clip, tmp_root=tmp_root, tempo=tempo, cancel=cancel)
 
 
 def test_cancelling_the_task_stops_the_normalization_of_its_clips(tmp_path: Path) -> None:
     task, snapshot = _signed_synthesis(tmp_path)
     token = EventCancellationToken()
     preparer = _CancellingPreparer(token)
-    handler = TtsTaskHandler(_Tts(tmp_path), run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=preparer)
+    handler = TtsTaskHandler(
+        _Tts(tmp_path), run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=preparer, sign_narration="smart"
+    )
 
     with pytest.raises(ExecutionError) as caught:
         handler.execute(task, snapshot, token, _Progress())
@@ -540,9 +597,7 @@ def test_without_sign_narration_the_manifest_holds_only_the_spoken_lines_in_thei
     output = Artifact(
         "manifest", "group-1", ArtifactKind.TTS_MANIFEST, None, ArtifactState.MISSING, ArtifactLifetime.INTERMEDIATE
     )
-    task = PlanTask(
-        "tts", "group-1", TaskKind.SYNTHESIZE_SPEECH, ("spoken",), ("manifest",), (), "tts:edge", _SPOKEN_PARAMETERS
-    )
+    task = PlanTask("tts", "group-1", TaskKind.SYNTHESIZE_SPEECH, ("spoken",), ("manifest",), (), _SPOKEN_PARAMETERS)
     service = _Tts(tmp_path)
     preparer = _Preparer()
     handler = TtsTaskHandler(service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=preparer)
@@ -563,10 +618,30 @@ def test_without_sign_narration_the_manifest_holds_only_the_spoken_lines_in_thei
 
 def test_sign_narration_without_the_run_audio_service_is_refused(tmp_path: Path) -> None:
     task, snapshot = _signed_synthesis(tmp_path)
-    handler = TtsTaskHandler(_Tts(tmp_path), run_root=tmp_path / "run", group_ranks={"group-1": 0})
+    handler = TtsTaskHandler(
+        _Tts(tmp_path), run_root=tmp_path / "run", group_ranks={"group-1": 0}, sign_narration="smart"
+    )
 
     with pytest.raises(ExecutionError):
         handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
+
+
+def test_signs_planned_while_sign_narration_was_off_are_read_once_it_is_on_when_the_task_starts(
+    tmp_path: Path,
+) -> None:
+    task, snapshot = _signed_synthesis(tmp_path)
+    quiet = _Tts(tmp_path)
+    reading = _Tts(tmp_path)
+
+    TtsTaskHandler(quiet, run_root=tmp_path / "off", group_ranks={"group-1": 0}, audio=_Preparer()).execute(
+        task, snapshot, NeverCancelledToken(), _Progress()
+    )
+    TtsTaskHandler(
+        reading, run_root=tmp_path / "smart", group_ranks={"group-1": 0}, audio=_Preparer(), sign_narration="smart"
+    ).execute(task, snapshot, NeverCancelledToken(), _Progress())
+
+    assert [len(batch.requests) for batch in quiet.batches] == [1]
+    assert [request.request_id for request in reading.batches[1].requests] == ["group-1-sign-3", "group-1-sign-7"]
 
 
 def test_a_stored_manifest_window_without_duration_is_repaired_on_load(tmp_path: Path) -> None:
@@ -576,6 +651,7 @@ def test_a_stored_manifest_window_without_duration_is_repaired_on_load(tmp_path:
             {
                 "scope_id": "group-1",
                 "timeline": "source_times",
+                "tempo": 1.0,
                 "clips": [
                     {
                         "request_id": "group-1-214",
@@ -622,7 +698,6 @@ def test_tts_handler_forwards_legacy_visible_required_percentages(tmp_path: Path
         ("spoken",),
         ("manifest",),
         (),
-        "tts:edge",
         _SPOKEN_PARAMETERS,
     )
     progress = _Progress()
@@ -641,7 +716,7 @@ def test_tts_handler_forwards_legacy_visible_required_percentages(tmp_path: Path
     assert [notification.progress_percent for notification in progress.notifications] == [25, 75, 75, 99, 100]
 
 
-def test_tts_handler_reuses_service_and_closes_only_at_run_boundary(tmp_path: Path) -> None:
+def test_tts_handler_reuses_its_service_and_never_closes_it(tmp_path: Path) -> None:
     source_path = tmp_path / "episode.spoken.pl.srt"
     source_path.write_text("1\n00:00:01,000 --> 00:00:02,000\nCześć\n", encoding="utf-8")
     service = _Tts(tmp_path)
@@ -675,7 +750,6 @@ def test_tts_handler_reuses_service_and_closes_only_at_run_boundary(tmp_path: Pa
             (source.artifact_id,),
             (output.artifact_id,),
             (),
-            "tts:edge",
             _SPOKEN_PARAMETERS,
         )
         handler.execute(
@@ -688,8 +762,6 @@ def test_tts_handler_reuses_service_and_closes_only_at_run_boundary(tmp_path: Pa
     assert len(service.batches) == 2
     assert [batch.batch_rank for batch in service.batches] == [0, 1]
     assert service.close_calls == 0
-    handler.close()
-    assert service.close_calls == 1
 
 
 def test_tts_handler_rejects_cancelled_task_before_synthesis(tmp_path: Path) -> None:
@@ -703,7 +775,6 @@ def test_tts_handler_rejects_cancelled_task_before_synthesis(tmp_path: Path) -> 
         ("spoken",),
         ("manifest",),
         (),
-        "tts:edge",
         _SPOKEN_PARAMETERS,
     )
 
@@ -731,6 +802,7 @@ def test_manifest_rejects_submitted_request_without_clip(tmp_path: Path) -> None
             (NarrationTiming("request-1", 1000, 2000, 0),),
             expected_scope_id="group-1",
             timeline=NarrationTimeline.SOURCE_TIMES,
+            tempo=1.0,
         )
 
 
@@ -861,7 +933,6 @@ def _speech_task(timeline: str, script_kind: ArtifactKind) -> PlanTask:
         ("script",),
         ("manifest",),
         (),
-        "tts:edge",
         (("narration_timeline", timeline), ("script_kind", script_kind.value)),
     )
 
@@ -1050,22 +1121,16 @@ def test_the_production_speech_handler_refuses_a_voice_its_own_engine_never_offe
         tts_profile_id="edge",
         tts_max_retries=2,
         tts_group_jobs=2,
-        audio_profile_id="eac3",
         composition_profile_id="balanced",
         processing_order_policy=ProcessingOrderPolicy.READY_FIRST,
         tts_voice_id="pl-PL-SomeoneElseNeural",
         tts_allowed_voice_ids=("pl-PL-MarekNeural", "pl-PL-ZofiaNeural"),
     )
-    handler: TtsTaskHandler | None = ProductionHandlerFactory._tts_handler(
-        Settings(_env_file=None),
-        tmp_path / "run",
-        ExecutionPlan((), (), (), settings, ()),
-        frozenset({TaskKind.SYNTHESIZE_SPEECH}),
-        None,
+    handler: TtsTaskHandler = RunServices(lambda: Settings(_env_file=None), tmp_path / "run", {"group-1": 0}).tts(
+        settings
     )
     path: Path = _book_srt(tmp_path)
 
-    assert handler is not None
     with pytest.raises(ExecutionError, match="not one the chosen TTS engine offers"):
         handler.execute(
             _speech_task("continuous", ArtifactKind.FULL_PL),
@@ -1101,20 +1166,12 @@ def test_production_tts_handler_document_engine_reads_document(
         tts_voice_id=voice,
         tts_max_retries=2,
         tts_group_jobs=1,
-        audio_profile_id="eac3",
         composition_profile_id="balanced",
         processing_order_policy=ProcessingOrderPolicy.READY_FIRST,
     )
 
-    handler: TtsTaskHandler | None = ProductionHandlerFactory._tts_handler(
-        Settings(_env_file=None),
-        tmp_path / "run",
-        ExecutionPlan((), (), (), settings, ()),
-        frozenset({TaskKind.SYNTHESIZE_SPEECH}),
-        None,
-    )
+    handler: TtsTaskHandler = RunServices(lambda: Settings(_env_file=None), tmp_path / "run", {}).tts(settings)
 
-    assert handler is not None
     assert handler._reads_document is joins
 
 

@@ -59,7 +59,7 @@ from anishift.application.automation import (
     TRANSFER_CHECK_INTERVAL_S,
     AutomationOwner,
 )
-from anishift.application.cancellation import EventCancellationToken
+from anishift.application.cancellation import CancellationToken, EventCancellationToken
 from anishift.application.control import (
     AcquisitionConfirmation,
     AcquisitionState,
@@ -99,15 +99,28 @@ from anishift.application.inspection import (
     WorkspaceInspector,
 )
 from anishift.application.intents import GroupIntent, ProductIntent, ProductKind, RebuildRequest, RequestOrigin, RunMode
-from anishift.application.planning import ExecutionPlan, RunSettingsSnapshot, TaskKind
+from anishift.application.planning import ExecutionPlan, PlanTask, RunSettingsSnapshot, TaskKind
 from anishift.application.products import classify_product
 from anishift.application.ready import ReadyMove, ReadyStore, in_ready
 from anishift.application.recovery import RunJournal
-from anishift.application.results import GroupResult, GroupStatus, RunResult
+from anishift.application.results import (
+    ArtifactSnapshot,
+    GroupResult,
+    GroupStatus,
+    ProducedArtifact,
+    RunResult,
+    TaskResult,
+)
 from anishift.application.scheduler import RunHandle
-from anishift.application.scheduler_contracts import TaskHandler
-from anishift.application.service import AppService, AutoPresetDraft
+from anishift.application.scheduler_contracts import TaskHandler, TaskProgressSink
+from anishift.application.service import (
+    AppService,
+    AutoPresetDraft,
+    ExecutionHandlerFactory,
+    _run_settings_snapshot,
+)
 from anishift.application.subscription_targets import PauseReason, SubscriptionRecord
+from anishift.application.task_paths import task_staging_path
 from anishift.application.tts_handler import TtsProgressObserver
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
 from anishift.application.workflows import WorkflowTarget
@@ -119,7 +132,13 @@ from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.config.workspace import RUN_OWNER_MARKER_NAME, run_tmp_dir
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError, PlanningError
-from anishift.paths import COVER_DIRECTORY, READY_DIRECTORY, TRANSLATE_DIRECTORY, relocation_journal_dir
+from anishift.paths import (
+    AUDIOBOOK_DIRECTORY,
+    COVER_DIRECTORY,
+    READY_DIRECTORY,
+    TRANSLATE_DIRECTORY,
+    relocation_journal_dir,
+)
 from anishift.platform.binaries import Binary
 from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import (
@@ -330,8 +349,9 @@ class _Service:
         self.discover_release: threading.Event | None = None
         self.paused: list[bool] = []
         self.user_settings: UserSettings = UserSettings(subscription_polish_wait_h=0)
-        self.current: RunSettingsSnapshot = plan.settings
+        self.current: RunSettingsSnapshot = _run_settings_snapshot(self.user_settings)
         self.plans: list[ExecutionPlan] = []
+        self.paused_runs: list[str] = []
 
     def discover(self, *, changed_paths: Sequence[Path] | None = None) -> object:
         del changed_paths
@@ -360,16 +380,29 @@ class _Service:
         preset: object,
         *,
         rebuild: RebuildRequest | None = None,
-        overrides: Mapping[str, object] | None = None,
         recipes: RecipePreferences | None = None,
         targets: Mapping[str, WorkflowTarget] | None = None,
         published: frozenset[Path] | None = None,
     ) -> ExecutionPlan:
-        del group_ids, preset, rebuild, overrides
+        del group_ids, preset, rebuild
         self.recipes.append(recipes)
         self.targets.append(dict(targets or {}))
         self.published.append(frozenset(published or frozenset()))
         return self._plan
+
+    def replan(
+        self,
+        groups: Sequence[InspectedSourceGroup],
+        saved: ExecutionPlan,
+        *,
+        rebuild: RebuildRequest | None = None,
+        published: frozenset[Path] | None = None,
+    ) -> ExecutionPlan:
+        del groups, saved, rebuild, published
+        return self._plan
+
+    def pause_run(self, run_id: str) -> None:
+        self.paused_runs.append(run_id)
 
     def submit_plan(  # noqa: PLR0913
         self,
@@ -1094,7 +1127,7 @@ def test_transfer_action_survives_restart_and_receipt_replay_does_not_repeat_it(
 
 
 @pytest.mark.parametrize("manual", [False, True])
-def test_the_resident_accepts_scoped_intents_and_keeps_their_complete_settings(
+def test_the_resident_accepts_scoped_intents_and_records_them(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     manual: bool,
@@ -1132,17 +1165,7 @@ def test_the_resident_accepts_scoped_intents_and_keeps_their_complete_settings(
     server: ControlServer = ControlServer(control_endpoint(tmp_path), key, owner.handle, on_disconnect=owner.disconnect)
     client: ControlClient = ControlClient(control_endpoint(tmp_path), key, timeout_s=_TIMEOUT_S)
     products: dict[str, object] = {"requested_products": ["full_pl"]}
-    payload: dict[str, object] = {
-        "client_id": _CLIENT,
-        "group_ids": selected,
-        "overrides": {
-            "tts_voice_id": "chosen-voice",
-            "tts_postprocess_tempo": 1.2,
-            "subtitle_language_priority": ["eng", "pol"],
-            "tts_engine_options": [["normalize", True]],
-            "llm_max_output_tokens": 1234,
-        },
-    }
+    payload: dict[str, object] = {"client_id": _CLIENT, "group_ids": selected}
     if manual:
         payload.update(
             source_selection="manual",
@@ -1161,14 +1184,8 @@ def test_the_resident_accepts_scoped_intents_and_keeps_their_complete_settings(
         request = store.load().requests[0]
         assert request.request_id == started["run_id"]
         assert request.group_ids == tuple(selected)
-        assert request.settings["tts_voice_id"] == "chosen-voice"
-        assert request.settings["tts_postprocess_tempo"] == 1.2
-        assert request.settings["llm_max_output_tokens"] == 1234
-        assert request.settings["subtitle_language_priority"] == ("eng", "pol")
-        assert request.settings["tts_engine_options"] == (("normalize", True),)
         assert request.intents == tuple(group.intent for group in submitted[0].groups)
         assert (request.rebuild is None) is manual
-        assert service.plan_auto(selected, _PRESET).settings.tts_voice_id != "chosen-voice"
     finally:
         client.close()
         server.close()
@@ -1183,8 +1200,6 @@ def test_the_resident_accepts_scoped_intents_and_keeps_their_complete_settings(
     [
         {"group_ids": []},
         {"group_ids": "all"},
-        {"overrides": {"tts_group_jobs": True}},
-        {"overrides": {"typo": 3}},
         {"rebuild": {"products": ["unknown"]}},
         {"source_selection": "manual", "intents": []},
         {"preset": {"preset_id": "x", "name": "X", "products": {"requested_products": ["full_pl"], "typo": True}}},
@@ -1454,6 +1469,7 @@ def _real_service(
     *,
     acquisition: AcquisitionService | None = None,
     polish_wait_h: int = 0,
+    handler_factory: ExecutionHandlerFactory | None = None,
 ) -> AppService:
     def unused(
         run_root: Path,
@@ -1468,7 +1484,7 @@ def _real_service(
         settings=Settings(_env_file=None),
         user_settings=UserSettings(subscription_polish_wait_h=polish_wait_h),
         inspector=WorkspaceInspector(DefaultMediaProbe()),
-        handler_factory=unused,
+        handler_factory=unused if handler_factory is None else handler_factory,
         preset_loader=default_preset_file,
         preset_saver=lambda value: None,
         settings_saver=lambda value: None,
@@ -1522,7 +1538,16 @@ def _completed_library(root: Path, stems: tuple[str, ...] = ("01",)) -> tuple[Ap
 
 
 @pytest.mark.parametrize(("profile", "extension"), [("aac", "m4a"), ("mp3", "mp3"), ("flac", "flac")])
-def test_requested_results_do_not_select_another_audio_export_profile(profile: str, extension: str) -> None:
+def test_requested_results_take_only_the_audio_profile_the_plan_mixed(profile: str, extension: str) -> None:
+    mixed: Artifact = Artifact(
+        "mix",
+        "episode",
+        ArtifactKind.NARRATION_AUDIO,
+        None,
+        ArtifactState.MISSING,
+        ArtifactLifetime.INTERMEDIATE,
+        audio_codec=profile,
+    )
     artifacts: tuple[Artifact, ...] = tuple(
         Artifact(
             suffix,
@@ -1541,7 +1566,7 @@ def test_requested_results_do_not_select_another_audio_export_profile(profile: s
         ProductIntent(frozenset({ProductKind.NARRATION_AUDIO})),
         target=WorkflowTarget.AUDIOBOOK,
     )
-    assert automation_module._requested_product_paths(artifacts, intent, profile) == frozenset(
+    assert automation_module._requested_product_paths((*artifacts, mixed), intent) == frozenset(
         {Path(f"ready/01.{extension}")}
     )
 
@@ -1679,7 +1704,6 @@ def test_library_opens_owned_video_or_recorded_product_after_failed_regeneration
         RequestOrigin.USER,
         SourceSelection.MANUAL,
         None,
-        {},
         RequestState.FAILED,
         1,
         _MOMENT.isoformat(),
@@ -1865,7 +1889,6 @@ def test_deletion_preview_refuses_owned_source_blockers_before_any_change(
                     RequestOrigin.USER,
                     SourceSelection.MANUAL,
                     None,
-                    {},
                     RequestState.RUNNING,
                     1,
                     _MOMENT.isoformat(),
@@ -1994,7 +2017,6 @@ def test_legacy_library_needs_success_and_identified_product_but_never_invents_a
         RequestOrigin.USER,
         SourceSelection.MANUAL,
         None,
-        {},
         RequestState.FAILED if evidence == "failed" else RequestState.SUCCEEDED,
         1,
         _MOMENT.isoformat(),
@@ -2597,47 +2619,280 @@ def test_resuming_a_run_that_became_active_again_says_it_cannot_be_resumed(tmp_p
     assert not watcher.is_alive()
 
 
+class _FailingTranslation:
+    def __init__(self) -> None:
+        self.models: list[tuple[str, str]] = []
+
+    def __call__(
+        self, run_root: Path, plan: ExecutionPlan, source_groups: Mapping[str, InspectedSourceGroup]
+    ) -> TaskHandler:
+        del run_root, plan, source_groups
+        return self
+
+    def execute(
+        self,
+        task: PlanTask,
+        artifacts: ArtifactSnapshot,
+        settings: RunSettingsSnapshot,
+        cancel: CancellationToken,
+        progress: TaskProgressSink,
+    ) -> TaskResult:
+        del artifacts, cancel, progress
+        if task.kind is TaskKind.TRANSLATE_SUBTITLES:
+            self.models.append((settings.llm_profile_id, settings.llm_model_id))
+        raise ExecutionError("LLM_QUOTA_EXHAUSTED")
+
+
 def test_a_resumed_run_translates_with_the_engine_chosen_after_it_failed(tmp_path: Path) -> None:
     write_text_source(_library_dir(tmp_path) / "Episode.txt", "Text")
-    real: AppService = _real_service(tmp_path)
-    real.save_settings(UserSettings(translation_engine="llm", llm_provider="gemini"))
-    workspace: InspectedWorkspace = real.discover()
-    group_id: str = workspace.groups[0].group_id
-    service = _Service(tmp_path, discovered=workspace, plan=real.plan_auto((group_id,), _PRESET))
+    translation: _FailingTranslation = _FailingTranslation()
+    service: AppService = _real_service(tmp_path, handler_factory=translation)
+    service.save_settings(UserSettings(translation_engine="llm", llm_provider="gemini", llm_provider_model_id="flash"))
     store: WatchStateStore = WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME)
     owner: AutomationOwner = _owner(service, store)
     thread: threading.Thread = _serving(owner)
-    run_id: str = ""
+    group_id: str = service.discover().groups[0].group_id
     try:
-        run_id = _started(owner)
-        service.finish(run_id, GroupStatus.FAILED, group_id, ("LLM_QUOTA_EXHAUSTED",))
-        assert _await(lambda: [item.state for item in store.load().requests] == [RequestState.FAILED])
-        real.save_settings(
-            UserSettings(translation_engine="llm", llm_provider="openrouter", llm_provider_model_id="vendor/model")
-        )
-        service.current = real.run_settings()
         preview: ControlResponse = owner.handle(
-            _request("resume_preview", {"client_id": _CLIENT, "group_ids": [group_id]}, command_id="resume-1")
+            _request("preview", {"client_id": _CLIENT, "preset_id": service.default_preset_id()})
         )
         assert preview.ok, preview.message
         started: ControlResponse = owner.handle(
-            _request("start", {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]}, command_id="start-2")
+            _request("start", {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]}, command_id="s-1")
         )
         assert started.ok, started.message
+        assert _await(lambda: [item.state for item in owner.state.requests] == [RequestState.FAILED])
+        service.save_settings(
+            UserSettings(translation_engine="llm", llm_provider="openrouter", llm_provider_model_id="vendor/model")
+        )
+        resumed: ControlResponse = owner.handle(
+            _request("resume_preview", {"client_id": _CLIENT, "group_ids": [group_id]}, command_id="resume-1")
+        )
+        assert resumed.ok, resumed.message
+        restarted: ControlResponse = owner.handle(
+            _request("start", {"client_id": _CLIENT, "preview_id": resumed.result["preview_id"]}, command_id="s-2")
+        )
+        assert restarted.ok, restarted.message
+        assert _await(lambda: len(translation.models) == 2)
+    finally:
+        owner.request_shutdown()
+        thread.join(timeout=_TIMEOUT_S)
+        service.close()
+
+    assert translation.models == [("gemini", "flash"), ("openrouter", "vendor/model")]
+    assert store.load().requests[0].request_id == started.result["run_id"]
+
+
+class _RateLimitedVoice:
+    def __init__(self) -> None:
+        self.calls: list[tuple[TaskKind, str]] = []
+
+    def __call__(
+        self, run_root: Path, plan: ExecutionPlan, source_groups: Mapping[str, InspectedSourceGroup]
+    ) -> TaskHandler:
+        del plan, source_groups
+        return _MadeStep(run_root, self.calls)
+
+
+class _MadeStep:
+    def __init__(self, run_root: Path, calls: list[tuple[TaskKind, str]]) -> None:
+        self.run_root: Path = run_root
+        self.calls: list[tuple[TaskKind, str]] = calls
+
+    def execute(
+        self,
+        task: PlanTask,
+        artifacts: ArtifactSnapshot,
+        settings: RunSettingsSnapshot,
+        cancel: CancellationToken,
+        progress: TaskProgressSink,
+    ) -> TaskResult:
+        del cancel, progress
+        self.calls.append((task.kind, settings.tts_profile_id))
+        if task.kind is TaskKind.SYNTHESIZE_SPEECH and settings.tts_profile_id == "elevenbytes":
+            raise ExecutionError("ElevenBytes answered 429")
+        produced: list[ProducedArtifact] = []
+        for artifact_id in task.produces:
+            output: Artifact = artifacts.require_output(artifact_id)
+            suffix: str = output.planned_destination.suffix if output.planned_destination is not None else ".bin"
+            path: Path = task_staging_path(self.run_root, task, output, suffix)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"made")
+            produced.append(ProducedArtifact(artifact_id, path, {"validated": True}))
+        return TaskResult(task.task_id, tuple(produced))
+
+
+def test_a_rate_limited_voice_resumes_on_the_engine_chosen_after_it_without_translating_again(
+    tmp_path: Path,
+) -> None:
+    book: Path = tmp_path / AUDIOBOOK_DIRECTORY
+    book.mkdir()
+    write_text_source(book / "Book.txt", "Zdanie do przeczytania.")
+    voice: _RateLimitedVoice = _RateLimitedVoice()
+    service: AppService = _real_service(tmp_path, handler_factory=voice)
+    service.save_settings(UserSettings(tts_engine="elevenbytes"))
+    owner: AutomationOwner = _owner(service, WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME))
+    thread: threading.Thread = _serving(owner)
+    group_id: str = service.discover().groups[0].group_id
+    try:
+        preview: ControlResponse = owner.handle(
+            _request("preview", {"client_id": _CLIENT, "preset_id": service.default_preset_id()})
+        )
+        assert preview.ok, preview.message
+        started: ControlResponse = owner.handle(
+            _request("start", {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]}, command_id="s-1")
+        )
+        assert started.ok, started.message
+        assert _await(lambda: [item.state for item in owner.state.requests] == [RequestState.FAILED])
+        service.save_settings(UserSettings(tts_engine="elevenreader"))
+        resumed: ControlResponse = owner.handle(
+            _request("resume_preview", {"client_id": _CLIENT, "group_ids": [group_id]}, command_id="resume-1")
+        )
+        assert resumed.ok, resumed.message
+        restarted: ControlResponse = owner.handle(
+            _request("start", {"client_id": _CLIENT, "preview_id": resumed.result["preview_id"]}, command_id="s-2")
+        )
+        assert restarted.ok, restarted.message
+        assert _await(lambda: [item.state for item in owner.state.requests] == [RequestState.SUCCEEDED])
+    finally:
+        owner.request_shutdown()
+        thread.join(timeout=_TIMEOUT_S)
+        service.close()
+
+    assert [engine for kind, engine in voice.calls if kind is TaskKind.SYNTHESIZE_SPEECH] == [
+        "elevenbytes",
+        "elevenreader",
+    ]
+    assert [kind for kind, _ in voice.calls].count(TaskKind.TRANSLATE_SUBTITLES) == 1
+
+
+def test_a_changed_audio_profile_pauses_every_active_run_for_a_new_plan(tmp_path: Path) -> None:
+    service, store, group_id = _library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    reloaded: RunSettingsSnapshot = replace(service.current, audio_output_profile="aac")
+
+    def reload() -> None:
+        service.current = reloaded
+
+    service.reload_preferences = reload  # type: ignore[method-assign]
+    run_id: str = ""
+    try:
+        run_id = _started(owner)
+        profile_change: ControlResponse = owner.handle(_request("reload_settings", command_id="reload-0"))
+        assert profile_change.ok
+        assert service.paused_runs == [run_id]
+        service.current = replace(reloaded, tts_voice_id="another-voice")
+        voice_change: ControlResponse = owner.handle(_request("reload_settings", command_id="reload-1"))
+        assert voice_change.ok
+        assert service.paused_runs == [run_id]
     finally:
         if run_id in service.active:
             service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
         owner.request_shutdown()
         thread.join(timeout=_TIMEOUT_S)
 
-    first, retried = service.plans
-    assert (first.settings.llm_profile_id, retried.settings.llm_profile_id) == ("gemini", "openrouter")
-    assert retried.settings.llm_model_id == "vendor/model"
-    assert {task.resource_key for task in retried.tasks if task.kind is TaskKind.TRANSLATE_SUBTITLES} == {
-        "llm:openrouter"
-    }
-    assert RunJournal.load(store.run_path(run_id)).plan == retried
-    assert store.load().requests[0].settings["llm_profile_id"] == "openrouter"
+
+class _HeldVoice:
+    def __init__(self) -> None:
+        self.calls: list[tuple[TaskKind, str]] = []
+        self.speaking: threading.Event = threading.Event()
+        self.release: threading.Event = threading.Event()
+
+    def __call__(
+        self, run_root: Path, plan: ExecutionPlan, source_groups: Mapping[str, InspectedSourceGroup]
+    ) -> TaskHandler:
+        del plan, source_groups
+        return _HeldStep(run_root, self)
+
+
+class _HeldStep:
+    def __init__(self, run_root: Path, voice: _HeldVoice) -> None:
+        self.run_root: Path = run_root
+        self.voice: _HeldVoice = voice
+
+    def execute(
+        self,
+        task: PlanTask,
+        artifacts: ArtifactSnapshot,
+        settings: RunSettingsSnapshot,
+        cancel: CancellationToken,
+        progress: TaskProgressSink,
+    ) -> TaskResult:
+        self.voice.calls.append((task.kind, settings.audio_output_profile))
+        if task.kind is TaskKind.SYNTHESIZE_SPEECH:
+            self.voice.speaking.set()
+            self.voice.release.wait(_TIMEOUT_S)
+        return _MadeStep(self.run_root, []).execute(task, artifacts, settings, cancel, progress)
+
+
+def test_a_profile_changed_while_speaking_mixes_with_the_new_profile_and_speaks_once(tmp_path: Path) -> None:
+    book: Path = tmp_path / AUDIOBOOK_DIRECTORY
+    book.mkdir()
+    write_text_source(book / "Book.txt", "Zdanie do przeczytania.")
+    voice: _HeldVoice = _HeldVoice()
+    service: AppService = _real_service(tmp_path, handler_factory=voice)
+    service.save_settings(UserSettings(tts_engine="edge"))
+
+    def reload() -> None:
+        service.save_settings(UserSettings(tts_engine="edge", tts_output_profile="aac"))
+
+    service.reload_preferences = reload  # type: ignore[method-assign]
+    owner: AutomationOwner = _owner(service, WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME))
+    thread: threading.Thread = _serving(owner)
+    try:
+        preview: ControlResponse = owner.handle(
+            _request("preview", {"client_id": _CLIENT, "preset_id": service.default_preset_id()})
+        )
+        assert preview.ok, preview.message
+        started: ControlResponse = owner.handle(
+            _request("start", {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]}, command_id="s-1")
+        )
+        assert started.ok, started.message
+        assert voice.speaking.wait(_TIMEOUT_S)
+        owner.files_changed(DirectoryChange(paths=(book / "Book.txt",)))
+        assert _await(lambda: owner._library is not None)
+        reloaded: ControlResponse = owner.handle(_request("reload_settings", command_id="reload-1"))
+        assert reloaded.ok, reloaded.message
+        voice.release.set()
+        assert _await(lambda: [item.state for item in owner.state.requests] == [RequestState.SUCCEEDED])
+    finally:
+        voice.release.set()
+        owner.request_shutdown()
+        thread.join(timeout=_TIMEOUT_S)
+        service.close()
+
+    assert [kind for kind, _ in voice.calls].count(TaskKind.SYNTHESIZE_SPEECH) == 1
+    assert [profile for kind, profile in voice.calls if kind is TaskKind.MIX_NARRATION] == ["aac"]
+    assert sorted(path.suffix for path in book.glob("Book.*")) == [".m4a", ".txt"]
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"audio_output_profile": "aac"},
+        {"subtitle_language_priority": ("fra", "eng")},
+        {"audio_language_priority": ("fra",)},
+    ],
+)
+def test_a_graph_setting_changed_after_the_preview_refuses_the_start(
+    tmp_path: Path, changed: dict[str, object]
+) -> None:
+    service, store, _ = _library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        preview: ControlResponse = owner.handle(_request("preview", {"client_id": _CLIENT}))
+        assert preview.ok, preview.message
+        service.current = replace(service.current, **changed)  # type: ignore[arg-type]
+        started: ControlResponse = owner.handle(
+            _request("start", {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]}, command_id="start")
+        )
+        assert started.code is ControlErrorCode.STALE_PREVIEW
+        assert not service.submitted
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
 
 
 def _stopped_run(run_id: str, group_id: str) -> RunResult:
@@ -2675,7 +2930,6 @@ def _abandoned_run(
         RequestOrigin.USER,
         SourceSelection.AUTO,
         None,
-        {},
         state,
         1,
         _MOMENT.isoformat(),
@@ -4389,7 +4643,6 @@ def _projection_request(tmp_path: Path, state: RequestState) -> tuple[Automation
         RequestOrigin.USER,
         SourceSelection.AUTO,
         None,
-        {},
         state,
         1,
         _MOMENT.isoformat(),
@@ -5002,7 +5255,6 @@ def test_a_relocation_row_names_its_set_from_the_request_and_never_by_the_group_
         RequestOrigin.USER,
         SourceSelection.MANUAL,
         None,
-        {},
         RequestState.SUCCEEDED,
         1,
         _MOMENT.isoformat(),

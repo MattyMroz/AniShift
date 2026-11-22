@@ -25,6 +25,7 @@ from anishift.application import (
     RecipePreferences,
     SessionRecord,
     SignInOutcome,
+    SignOutOutcome,
     TranslationModelOption,
 )
 from anishift.cli.interactive.menu import with_footer
@@ -99,13 +100,16 @@ _SESSION_KEY: Final[str] = "elevenreader-session"
 """Stable key of the read-only row showing the last ElevenReader session check."""
 
 _SIGN_IN_KEY: Final[str] = "elevenreader-sign-in"
-"""Stable action key opening Chrome to sign in to ElevenReader or check the session."""
+"""Stable action key opening a plain Chrome window on ElevenReader for the owner to sign in."""
 
 _CLEANUP_KEY: Final[str] = "elevenreader-cleanup"
-"""Stable key of the row warning about account cleanup still owed; Enter runs the sign-in that finishes it."""
+"""Stable key of the read-only row warning about account cleanup still owed."""
 
-_CLEANUP_REPAIR: Final[str] = "napraw: Zaloguj / sprawdź sesję"
-"""Value of the account cleanup row naming the action that finishes the cleanup."""
+_CLEANUP_REPAIR: Final[str] = "posprząta następne nagranie"
+"""Value of the account cleanup row naming what finishes the cleanup."""
+
+_SIGN_OUT_KEY: Final[str] = "elevenreader-sign-out"
+"""Stable action key asking to sign out of ElevenReader by deleting its cookies and site data."""
 
 
 _STATUS_ROWS: Final[int] = 1
@@ -448,6 +452,7 @@ class _EditorAction(StrEnum):
     ADD_KEY = "add_key"
     REMOVE_KEY = "remove_key"
     RESET_SCOPE = "reset_scope"
+    SIGN_OUT = "sign_out"
 
 
 class _PartialResetError(OSError):
@@ -550,14 +555,32 @@ _CONNECTIONS: Final[tuple[_Connection, ...]] = (
 )
 """Environment-backed connections that already exist in the backend."""
 
+_PROFILE_BUSY: Final[_Feedback] = _Feedback(
+    "✗ Profil przeglądarki jest w użyciu — zamknij okno ElevenReadera albo poczekaj na koniec nagrywania", "error"
+)
+"""Status shown when another browser uses the ElevenReader profile, for sign-in and sign-out alike."""
+
+_NO_CHROME: Final[_Feedback] = _Feedback("✗ Nie znaleziono Google Chrome", "error")
+"""Status shown when Google Chrome is missing, for sign-in and sign-out alike."""
+
+_SIGN_IN_LABEL: Final[str] = "Zaloguj (otwórz okno Chrome)"
+"""Label of the sign-in row, also named by the status after sign-out."""
+
 _SIGN_IN_FEEDBACK: Final[dict[SignInOutcome, _Feedback]] = {
-    SignInOutcome.SIGNED_IN: _Feedback("✓ Zalogowano", "success"),
-    SignInOutcome.SIGNED_OUT: _Feedback("✗ Nie zalogowano", "error"),
-    SignInOutcome.BUSY: _Feedback("✗ Lektor właśnie nagrywa — spróbuj po zakończeniu", "error"),
-    SignInOutcome.NO_CHROME: _Feedback("✗ Nie znaleziono Google Chrome", "error"),
-    SignInOutcome.FAILED: _Feedback("✗ Nie udało się sprawdzić sesji", "error"),
+    SignInOutcome.OPENED: _Feedback("Otwarto okno ElevenReadera · zaloguj się i zamknij okno", "success"),
+    SignInOutcome.BUSY: _PROFILE_BUSY,
+    SignInOutcome.NO_CHROME: _NO_CHROME,
+    SignInOutcome.FAILED: _Feedback("✗ Nie udało się otworzyć okna Chrome", "error"),
 }
-"""Status shown after the ElevenReader sign-in window closes, for every outcome."""
+"""Status shown after the sign-in window was opened or refused, for every outcome."""
+
+_SIGN_OUT_FEEDBACK: Final[dict[SignOutOutcome, _Feedback]] = {
+    SignOutOutcome.SIGNED_OUT: _Feedback(f"✓ Wylogowano · teraz {_SIGN_IN_LABEL}", "success"),
+    SignOutOutcome.BUSY: _PROFILE_BUSY,
+    SignOutOutcome.NO_CHROME: _NO_CHROME,
+    SignOutOutcome.FAILED: _Feedback("✗ Nie udało się usunąć ciasteczek ElevenReadera", "error"),
+}
+"""Status shown after the ElevenReader sign-out, for every outcome."""
 
 
 class SettingsController:
@@ -970,8 +993,16 @@ class SettingsController:
                 editor.selected_values.add(value)
             self._schedule_editor_save(editor)
             return
-        if key in {"enter", "right"}:
+        if key in {"enter", "right"} and editor.action is _EditorAction.SIGN_OUT:
+            self._answer_sign_out(editor)
+        elif key in {"enter", "right"}:
             self._submit_editor(editor)
+
+    def _answer_sign_out(self, editor: _Editor) -> None:
+        self._editor = None
+        self._feedback = None
+        if self._editor_raw_value(editor) == "yes":
+            self._start_sign_out()
 
     def _move(self, delta: int, length: int) -> None:
         if length:
@@ -1014,7 +1045,7 @@ class SettingsController:
             "connection-remove": self._open_remove_confirmation,
             "connection-probe": self._start_probe,
             _SIGN_IN_KEY: self._start_sign_in,
-            _CLEANUP_KEY: self._start_sign_in,
+            _SIGN_OUT_KEY: self._open_sign_out_confirmation,
         }
 
     def _prefixed_actions(self) -> tuple[tuple[str, Callable[[str], None]], ...]:
@@ -1191,7 +1222,8 @@ class SettingsController:
         if record is not None and record.cleanup_pending:
             items.append(_MenuItem(_CLEANUP_KEY, _cleanup_label(record), _CLEANUP_REPAIR, _SESSION_SECTION))
         if reads:
-            items.append(_MenuItem(_SIGN_IN_KEY, "Zaloguj / sprawdź sesję", "", _SESSION_SECTION))
+            items.append(_MenuItem(_SIGN_IN_KEY, _SIGN_IN_LABEL, "", _SESSION_SECTION))
+            items.append(_MenuItem(_SIGN_OUT_KEY, "Wyloguj (usuń ciasteczka ElevenReadera)", "", _SESSION_SECTION))
         items.append(self._scoped_reset_item())
         items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
         return tuple(items)
@@ -1575,6 +1607,15 @@ class SettingsController:
             options=(_Option("no", "Nie"), _Option("yes", "Tak")),
         )
 
+    def _open_sign_out_confirmation(self) -> None:
+        self._editor = _Editor(
+            title="WYLOGOWAĆ Z ELEVENREADERA I USUNĄĆ JEGO CIASTECZKA?",
+            kind=_EditorKind.CONFIRM,
+            action=_EditorAction.SIGN_OUT,
+            setting_id=_SIGN_OUT_KEY,
+            options=(_Option("no", "Nie"), _Option("yes", "Tak")),
+        )
+
     def _submit_editor(self, editor: _Editor) -> None:
         raw_value: str = self._editor_raw_value(editor)
         if editor.action is _EditorAction.SELECT_MODEL and not editor.options[editor.selected].provider_id:
@@ -1769,7 +1810,7 @@ class SettingsController:
             self._generation += 1
             generation: int = self._generation
             self._busy = True
-            self._feedback = _Feedback("Zaloguj się w oknie Chrome albo je zamknij…", "info")
+            self._feedback = _Feedback("Otwieram okno Chrome…", "info")
         worker: threading.Thread = threading.Thread(
             target=self._run_sign_in,
             args=(generation,),
@@ -1788,6 +1829,33 @@ class SettingsController:
                 return
             self._busy = False
             self._feedback = _SIGN_IN_FEEDBACK[outcome]
+            self._refresh_menu()
+        self._invalidate()
+
+    def _start_sign_out(self) -> None:
+        with self._lock:
+            self._generation += 1
+            generation: int = self._generation
+            self._busy = True
+            self._feedback = _Feedback("Usuwam ciasteczka ElevenReadera…", "info")
+        worker: threading.Thread = threading.Thread(
+            target=self._run_sign_out,
+            args=(generation,),
+            name="anishift-elevenreader-sign-out",
+            daemon=True,
+        )
+        worker.start()
+
+    def _run_sign_out(self, generation: int) -> None:
+        try:
+            outcome: SignOutOutcome = self._service.elevenreader_sign_out()
+        except AniShiftError, OSError:
+            outcome = SignOutOutcome.FAILED
+        with self._lock:
+            if generation != self._generation:
+                return
+            self._busy = False
+            self._feedback = _SIGN_OUT_FEEDBACK[outcome]
             self._refresh_menu()
         self._invalidate()
 

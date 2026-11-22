@@ -16,7 +16,14 @@ from anishift.application.artifacts import Artifact, ArtifactKind, ArtifactLifet
 from anishift.application.cancellation import EventCancellationToken
 from anishift.application.events import RunEventEmitter, RunEventKind, WorkerNotification, sanitize_event_message
 from anishift.application.intents import RequestOrigin
-from anishift.application.planning import ExecutionPlan, PlanTask, ProcessingOrderPolicy, TaskKind, TaskState
+from anishift.application.planning import (
+    ExecutionPlan,
+    PlanTask,
+    ProcessingOrderPolicy,
+    TaskKind,
+    TaskState,
+    resource_family,
+)
 from anishift.application.results import (
     ArtifactSnapshot,
     GroupResult,
@@ -29,7 +36,6 @@ from anishift.application.scheduler_contracts import (
     NaturalOrderGate,
     RunRequest,
     TaskHandler,
-    normalize_resource_key,
 )
 from anishift.application.sessions import RunSession
 from anishift.errors import AniShiftError, ErrorCode, ErrorContext, ExecutionError
@@ -187,6 +193,7 @@ class SchedulerRuntime:
     pending_publications: dict[str, PendingPublication] = field(default_factory=dict)
     automatic: bool = False
     journal: RunJournal | None = None
+    pausing: bool = False
 
 
 class QueuedProgressSink:
@@ -306,7 +313,9 @@ class ArtifactStore:
             msg = "Produced artifact escaped its exact run group scope"
             raise ExecutionError(msg)
         if planned.lifetime is ArtifactLifetime.INTERMEDIATE:
-            artifact: Artifact = replace(planned, path=output.path, state=ArtifactState.READY)
+            artifact: Artifact = replace(
+                planned, path=output.path, state=ArtifactState.READY, font_files=output.font_files
+            )
             return artifact, output
         destination: Path | None = planned.planned_destination
         if destination is None:
@@ -327,8 +336,10 @@ class ArtifactStore:
             raise ExecutionError(msg)
         metadata: dict[str, str | int | bool] = dict(output.metadata)
         metadata["published"] = True
-        registered = ProducedArtifact(output.artifact_id, destination, metadata)
-        artifact = replace(planned, path=destination, state=ArtifactState.READY, preserved_path=None)
+        registered = ProducedArtifact(output.artifact_id, destination, metadata, output.font_files)
+        artifact = replace(
+            planned, path=destination, state=ArtifactState.READY, preserved_path=None, font_files=output.font_files
+        )
         return artifact, registered
 
 
@@ -351,10 +362,11 @@ def create_runtime(
     request: RunRequest,
     *,
     sequence: int,
+    order: ProcessingOrderPolicy,
     ready: dict[str, list[ReadyTask]],
     updates: UpdateChannel,
 ) -> SchedulerRuntime:
-    """Build one graph context bound to the coordinator's shared ready queues."""
+    """Build one graph context forwarding results in *order* and bound to the coordinator's shared ready queues."""
     plan: ExecutionPlan = request.plan
     run_cancel: EventCancellationToken = EventCancellationToken(parent=request.cancel)
     generation: int = request.session.generation
@@ -372,7 +384,7 @@ def create_runtime(
         generation=generation,
         store=ArtifactStore(plan.artifacts, group_roots),
         state=create_run_state(plan),
-        gate=natural_gate(plan),
+        gate=natural_gate(plan, order),
         ready=ready,
         held=defaultdict(list),
         updates=updates,
@@ -409,18 +421,17 @@ def _commit_gate(
     return commit_if_current
 
 
-def natural_gate(plan: ExecutionPlan) -> NaturalOrderGate | None:
+def natural_gate(plan: ExecutionPlan, order: ProcessingOrderPolicy) -> NaturalOrderGate | None:
     """Create the ordered forwarding gate only for strict-natural runs."""
-    if plan.settings.processing_order_policy is ProcessingOrderPolicy.READY_FIRST:
+    if order is ProcessingOrderPolicy.READY_FIRST:
         return None
     return NaturalOrderGate(tuple(group.group_id for group in plan.groups))
 
 
 def queue_task(task: PlanTask, runtime: SchedulerRuntime) -> None:
-    """Move one dependency-ready task into the shared queue of its resource."""
+    """Move one dependency-ready task into the shared queue of its resource family."""
     runtime.state.task_states[task.task_id] = TaskState.QUEUED
-    resource_key: str = normalize_resource_key(task.resource_key)
-    runtime.ready.setdefault(resource_key, []).append(
+    runtime.ready.setdefault(resource_family(task.kind), []).append(
         ReadyTask(
             rank=0 if runtime.origin is RequestOrigin.USER else 1,
             sequence=runtime.sequence,

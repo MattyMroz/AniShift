@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -22,8 +23,7 @@ from anishift.application.intents import (
     SubtitleSourcePolicy,
     TranslationAction,
 )
-from anishift.application.planning import ExecutionPlan, PlanTask
-from anishift.application.recovery import RunJournal
+from anishift.application.planning import ExecutionPlan, PlanTask, RunSettingsSnapshot
 from anishift.application.results import ArtifactSnapshot, TaskResult
 from anishift.application.scheduler_contracts import TaskHandler, TaskProgressSink
 from anishift.application.watch_state import WatchStateStore
@@ -36,30 +36,42 @@ from anishift.platform.local_control import ControlError
 
 
 class _HeldBoundary:
-    def __init__(self, entered: threading.Event, release: threading.Event) -> None:
+    def __init__(self, entered: threading.Event, release: threading.Event, voices: dict[str, str]) -> None:
         self.entered: threading.Event = entered
         self.release: threading.Event = release
+        self.voices: dict[str, str] = voices
 
     def execute(
-        self, task: PlanTask, artifacts: ArtifactSnapshot, cancel: CancellationToken, progress: TaskProgressSink
+        self,
+        task: PlanTask,
+        artifacts: ArtifactSnapshot,
+        settings: RunSettingsSnapshot,
+        cancel: CancellationToken,
+        progress: TaskProgressSink,
     ) -> TaskResult:
-        del task, artifacts, cancel, progress
+        del artifacts, cancel, progress
+        self.voices.setdefault(task.group_id, settings.tts_voice_id)
         self.entered.set()
         assert self.release.wait(5)
         raise ExecutionError("Isolated execution boundary")
 
 
 def _service(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entered: threading.Event, release: threading.Event
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entered: threading.Event,
+    release: threading.Event,
+    voices: dict[str, str] | None = None,
 ) -> AppService:
     monkeypatch.setattr(preferences_module, "config_path", lambda: tmp_path / ".settings.json")
     settings: UserSettings = UserSettings(tts_engine="edge", tts_voice_id="pl-PL-MarekNeural")
     save_user_settings(settings)
     presets: list[AutoPresetFile] = [default_preset_file()]
+    started: dict[str, str] = {} if voices is None else voices
 
     def handlers(run_root: Path, plan: ExecutionPlan, source_groups: Mapping[str, InspectedSourceGroup]) -> TaskHandler:
         del run_root, plan, source_groups
-        return _HeldBoundary(entered, release)
+        return _HeldBoundary(entered, release, started)
 
     return AppService(
         workspace_root=tmp_path,
@@ -128,12 +140,13 @@ def test_recipe_editors_use_owner_persistence_and_confirm_only_the_selected_scop
 
 
 @pytest.mark.parametrize("target", ["audiobook", "cover"])
-def test_accepted_video_and_audio_keep_their_settings_while_new_orders_receive_shared_voice_changes(
+def test_accepted_orders_keep_their_recipe_while_every_task_reads_the_voice_when_it_starts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
 ) -> None:
     entered: threading.Event = threading.Event()
     release: threading.Event = threading.Event()
-    service: AppService = _service(tmp_path, monkeypatch, entered, release)
+    voices: dict[str, str] = {}
+    service: AppService = _service(tmp_path, monkeypatch, entered, release, voices)
     write_media_source(tmp_path / "Video.mkv")
     directory: Path = tmp_path / target
     directory.mkdir()
@@ -167,19 +180,18 @@ def test_accepted_video_and_audio_keep_their_settings_while_new_orders_receive_s
             session.command("start", {"preview_id": after.preview_id})
             requests: dict[str, ProcessingRequest] = {item.group_ids[0]: item for item in owner.state.requests}
             assert len(requests) == 3
-            assert requests[groups["Video"]].settings["tts_voice_id"] == "pl-PL-MarekNeural"
-            assert requests[groups["Before"]].settings["tts_voice_id"] == "pl-PL-MarekNeural"
-            assert requests[groups["After"]].settings["tts_voice_id"] == "pl-PL-ZofiaNeural"
             assert requests[groups["Before"]].intents[0].narration_timeline is NarrationTimeline.CONTINUOUS
             assert requests[groups["After"]].intents[0].narration_timeline is NarrationTimeline.SOURCE_TIMES
             expected: ProductKind = ProductKind.COVER_MP4 if target == "cover" else ProductKind.NARRATION_AUDIO
             assert requests[groups["After"]].intents[0].products.requested_products == frozenset({expected})
-            for request in requests.values():
-                plan: ExecutionPlan = RunJournal.load(
-                    WatchStateStore(tmp_path / ".control" / "state.json").run_path(request.request_id)
-                ).plan
-                assert plan.settings.tts_voice_id == request.settings["tts_voice_id"]
             assert not release.is_set()
+            release.set()
+            deadline: float = time.monotonic() + 5
+            while groups["After"] not in voices:
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+            assert voices[groups["Video"]] == "pl-PL-MarekNeural"
+            assert voices[groups["After"]] == "pl-PL-ZofiaNeural"
         finally:
             release.set()
     service.close()

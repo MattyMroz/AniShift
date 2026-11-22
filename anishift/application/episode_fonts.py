@@ -17,8 +17,9 @@ if TYPE_CHECKING:
 
     from anishift.application.planning import PlanTask
     from anishift.application.results import ArtifactSnapshot
+    from anishift.services.subtitles.restyle import DialogueFont
 
-__all__ = ["MAX_LAYOUT_INPUTS", "episode_fonts"]
+__all__ = ["MAX_LAYOUT_INPUTS", "episode_fonts", "laid_out_font_files"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -27,6 +28,9 @@ MAX_LAYOUT_INPUTS: Final[int] = 2
 
 _FONTS_SUFFIX: Final[str] = ".fonts"
 """Suffix of the task staging folder receiving the container's font attachments."""
+
+_ASS_SUFFIX: Final[str] = ".ass"
+"""Suffix of the only subtitle format whose styles name a font."""
 
 logger = get_logger(__name__)
 
@@ -50,3 +54,10 @@ def episode_fonts(run_root: Path, task: PlanTask, artifacts: ArtifactSnapshot, o
             error_code=exc.context.code.value,
         )
     return FontSources(episode=episode, system=system_font_paths())
+
+
+def laid_out_font_files(font: DialogueFont | None, written: Path) -> tuple[Path, ...]:
+    """Return the dialogue font files an ASS file was just drawn with, none for SRT or without a dialogue font."""
+    if font is None or written.suffix.casefold() != _ASS_SUFFIX:
+        return ()
+    return font.files

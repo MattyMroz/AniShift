@@ -11,7 +11,7 @@ from typing import Any, Final, Literal
 
 from anishift.application.planning import SIGN_NARRATION_MODES
 from anishift.paths import config_path
-from anishift.services.audio.types import AudioCodecProfile, TimelinePolicy
+from anishift.services.audio.types import AudioCodecProfile
 from anishift.services.llm.config import API_KEY_MODES, ApiKeyMode
 from anishift.services.llm.engines import available_engine_ids as available_llm_engine_ids
 from anishift.services.translation.chunking import DEFAULT_CHAR_LIMIT
@@ -144,9 +144,6 @@ _DEFAULT_SUBTITLE_LANGUAGES: Final[tuple[str, ...]] = DEFAULT_SUBTITLE_PRIORITY
 
 _TTS_OUTPUT_PROFILES: Final[frozenset[str]] = frozenset(profile.value for profile in AudioCodecProfile)
 """Accepted final narration sidecar profiles."""
-
-_TTS_TIMELINE_POLICIES: Final[frozenset[str]] = frozenset(policy.value for policy in TimelinePolicy)
-"""Accepted narration timeline policies."""
 
 _SIGN_NARRATION_MODES: Final[frozenset[str]] = frozenset(SIGN_NARRATION_MODES)
 """Accepted ways the narrator treats on-screen signs."""
@@ -292,7 +289,6 @@ class UserSettings:
     elevenbytes_vpn_enabled: bool = False
     tts_output_profile: str = AudioCodecProfile.EAC3.value
     tts_output_bitrate: str | None = None
-    tts_timeline_policy: str = TimelinePolicy.SERIALIZE.value
     narrator_over_source_lu: float = 7.5
     original_gain_db: float = 0.0
     tts_voice_profiles: dict[str, TtsVoiceProfileSettings] = field(
@@ -899,7 +895,6 @@ def load_user_settings() -> UserSettings:  # noqa: PLR0915 - explicit tolerant f
     _clean_integer(filtered, "subscription_polish_wait_h", 0, 48)
     _clean_string(filtered, "tts_output_profile", _TTS_OUTPUT_PROFILES)
     _clean_tts_bitrate(filtered)
-    _clean_string(filtered, "tts_timeline_policy", _TTS_TIMELINE_POLICIES)
     _clean_finite_number(filtered, "narrator_over_source_lu")
     _clean_finite_number(filtered, "original_gain_db")
     filtered["tts_voice_profiles"] = _load_voice_profiles(filtered.get("tts_voice_profiles"))

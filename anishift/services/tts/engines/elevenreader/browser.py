@@ -1,4 +1,4 @@
-"""Google Chrome started on the private ElevenReader profile and attached over CDP, with its failures."""
+"""Google Chrome on the ElevenReader profile: headless and attached over CDP, or a plain window for the owner."""
 
 from __future__ import annotations
 
@@ -11,28 +11,34 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
 from anishift.errors import ErrorCode, ErrorContext
+from anishift.platform.child_processes import independent_child_flags
 from anishift.platform.private_dir import PrivateDirectoryError, restrict_directory
 from anishift.platform.process_lock import ProcessLock
 from anishift.services.tts.errors import TtsConfigError, TtsProviderUnavailableError
 from anishift.utils.logger import get_logger
 
-from .api_backend import FALLBACK_HINT, ReaderPage, speed_script, unavailable_error
-from .config import find_chrome, profile_dir
-from .constants import CONNECT_ATTEMPTS, CONNECT_INTERVAL_S, PAGE_SPEED, UNAVAILABLE_RETRY_S
+from .api_backend import FALLBACK_HINT, ReaderPage, claim_profile, speed_script, unavailable_error
+from .config import find_chrome, lock_file, profile_dir
+from .constants import (
+    CONNECT_ATTEMPTS,
+    CONNECT_INTERVAL_S,
+    LIBRARY_URL,
+    PAGE_SPEED,
+    SITE_COOKIE_DOMAIN,
+    SITE_ORIGIN,
+    UNAVAILABLE_RETRY_S,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from playwright.async_api import Browser, BrowserContext, CDPSession, Playwright
+    from playwright.async_api import Browser, BrowserContext, CDPSession, Page, Playwright
 
-__all__ = ["ChromeBusyError", "ChromeMissingError", "ChromeSession"]
+__all__ = ["ChromeBusyError", "ChromeMissingError", "ChromeSession", "open_window"]
 
 logger = get_logger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-
-_LOCK_NAME: Final[str] = "chrome.lock"
-"""Lock file guarding the profile against a second AniShift browser."""
 
 _LOOPBACK: Final[str] = "127.0.0.1"
 """Interface the remote debugging port listens on."""
@@ -42,6 +48,9 @@ _EXIT_TIMEOUT_S: Final[float] = 10.0
 
 _BLANK_URLS: Final[frozenset[str]] = frozenset({"about:blank", "chrome://newtab/", "chrome://new-tab-page/"})
 """Empty tabs Chrome opens at start, closed so each attempt works in its own tab."""
+
+_PROFILE_ARGS: Final[tuple[str, ...]] = ("--no-first-run", "--no-default-browser-check")
+"""Flags of every Chrome started on the profile, headless or as a window."""
 
 _HEADLESS_ARGS: Final[tuple[str, ...]] = (
     "--headless=new",
@@ -57,17 +66,16 @@ class ChromeMissingError(TtsConfigError):
 
 
 class ChromeBusyError(TtsProviderUnavailableError):
-    """Another AniShift browser already holds the ElevenReader profile."""
+    """Another browser already uses the ElevenReader profile."""
 
 
 class ChromeSession:
-    """One Chrome process on the private profile, owned until :meth:`close`."""
+    """One headless Chrome process on the private profile, owned until :meth:`close`."""
 
-    def __init__(self, root: Path, *, headless: bool) -> None:
+    def __init__(self, root: Path) -> None:
         """Bind the session to the ElevenReader *root*, without starting anything yet."""
         self._root: Path = root
-        self._headless: bool = headless
-        self._lock: ProcessLock = ProcessLock(root / _LOCK_NAME)
+        self._lock: ProcessLock = ProcessLock(lock_file(root))
         self._process: subprocess.Popen[bytes] | None = None
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
@@ -87,10 +95,8 @@ class ChromeSession:
         """Lock the profile, restrict it to the current account, start Chrome and attach to it."""
         if self.alive:
             return
-        chrome: Path | None = find_chrome()
-        if chrome is None:
-            raise ChromeMissingError(context=_missing_chrome_context())
-        if not self._lock.acquire():
+        chrome: Path = _chrome()
+        if not claim_profile(self._lock, self._root):
             raise ChromeBusyError(retry_after_s=UNAVAILABLE_RETRY_S, context=_busy_context())
         try:
             await self._launch(chrome)
@@ -107,6 +113,23 @@ class ChromeSession:
             return ReaderPage(await self._context.new_page())
         except PlaywrightError:
             reason: str = "ElevenReader browser could not open a tab"
+            raise unavailable_error(reason) from None
+
+    async def forget_site(self) -> None:
+        """Delete the ElevenReader cookies and site data from the profile, leaving every other site alone."""
+        if self._context is None:
+            message: str = "ElevenReader browser is not started"
+            raise unavailable_error(message)
+        try:
+            await self._context.clear_cookies(domain=SITE_COOKIE_DOMAIN)
+            tab: Page = await self._context.new_page()
+            try:
+                cdp: CDPSession = await self._context.new_cdp_session(tab)
+                await cdp.send("Storage.clearDataForOrigin", {"origin": SITE_ORIGIN, "storageTypes": "all"})
+            finally:
+                await tab.close()
+        except PlaywrightError:
+            reason: str = "ElevenReader site data could not be deleted"
             raise unavailable_error(reason) from None
 
     async def close(self) -> None:
@@ -127,16 +150,11 @@ class ChromeSession:
                 self._lock.release()
 
     async def _launch(self, chrome: Path) -> None:
-        user_data: Path = profile_dir(self._root)
-        try:
-            user_data.mkdir(parents=True, exist_ok=True)
-            restrict_directory(self._root)
-        except (OSError, PrivateDirectoryError) as error:
-            raise TtsConfigError(context=_profile_context()) from error
+        user_data: Path = _prepared_profile(self._root)
         port: int = _free_port()
         try:
             process: subprocess.Popen[bytes] = subprocess.Popen(  # noqa: S603 - installed Chrome with own argv
-                _chrome_args(chrome, user_data, port, headless=self._headless),
+                _headless_args(chrome, user_data, port),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -151,7 +169,7 @@ class ChromeSession:
         except PlaywrightError:
             reason = "ElevenReader could not drive Chrome"
             raise unavailable_error(reason) from None
-        logger.info("ElevenReader browser started", headless=self._headless)
+        logger.info("ElevenReader browser started")
 
     async def _attach(self, process: subprocess.Popen[bytes], port: int) -> None:
         playwright: Playwright = await async_playwright().start()
@@ -160,11 +178,46 @@ class ChromeSession:
         self._browser = browser
         context: BrowserContext = browser.contexts[0]
         self._context = context
-        if self._headless:
-            await context.add_init_script(speed_script(PAGE_SPEED))
+        await context.add_init_script(speed_script(PAGE_SPEED))
         for page in context.pages:
             if page.url in _BLANK_URLS:
                 await page.close()
+
+
+def open_window(root: Path) -> None:
+    """Start a plain Chrome window on the library, detached and undriven, for the owner to sign in himself."""
+    chrome: Path = _chrome()
+    user_data: Path = _prepared_profile(root)
+    try:
+        subprocess.Popen(  # noqa: S603 - installed Chrome with own argv
+            [str(chrome), f"--user-data-dir={user_data}", *_PROFILE_ARGS, LIBRARY_URL],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | independent_child_flags(),
+        )
+    except OSError:
+        reason: str = "Google Chrome could not be started"
+        raise unavailable_error(reason) from None
+    logger.info("ElevenReader sign-in window opened")
+
+
+def _chrome() -> Path:
+    chrome: Path | None = find_chrome()
+    if chrome is None:
+        raise ChromeMissingError(context=_missing_chrome_context())
+    return chrome
+
+
+def _prepared_profile(root: Path) -> Path:
+    user_data: Path = profile_dir(root)
+    try:
+        user_data.mkdir(parents=True, exist_ok=True)
+        restrict_directory(root)
+    except (OSError, PrivateDirectoryError) as error:
+        raise TtsConfigError(context=_profile_context()) from error
+    return user_data
 
 
 async def _connect(playwright: Playwright, process: subprocess.Popen[bytes], port: int) -> Browser:
@@ -179,17 +232,15 @@ async def _connect(playwright: Playwright, process: subprocess.Popen[bytes], por
     raise unavailable_error(reason)
 
 
-def _chrome_args(chrome: Path, user_data: Path, port: int, *, headless: bool) -> list[str]:
-    args: list[str] = [
+def _headless_args(chrome: Path, user_data: Path, port: int) -> list[str]:
+    return [
         str(chrome),
         f"--remote-debugging-port={port}",
         f"--user-data-dir={user_data}",
-        "--no-first-run",
-        "--no-default-browser-check",
+        *_PROFILE_ARGS,
+        *_HEADLESS_ARGS,
+        "about:blank",
     ]
-    if headless:
-        args.extend(_HEADLESS_ARGS)
-    return [*args, "about:blank"]
 
 
 def _free_port() -> int:
@@ -272,7 +323,7 @@ def _busy_context() -> ErrorContext:
     return ErrorContext(
         code=ErrorCode.TTS_ENGINE_UNAVAILABLE,
         message="ElevenReader browser profile is in use",
-        suggestion="Zamknij okno logowania ElevenReader i spróbuj ponownie.",
+        suggestion="Zamknij okno ElevenReadera w Chrome i spróbuj ponownie.",
     )
 
 

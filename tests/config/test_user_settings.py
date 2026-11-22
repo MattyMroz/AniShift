@@ -92,7 +92,6 @@ def test_load_invalid_mode_falls_back_to_default(config_file: Path) -> None:
         "llm_provider",
         "tts_engine",
         "tts_output_profile",
-        "tts_timeline_policy",
         "composition_quality_preset",
     ],
 )
@@ -173,7 +172,6 @@ def test_defaults_include_all_panel_fields() -> None:
     assert not s.elevenbytes_vpn_enabled
     assert s.tts_output_profile == "eac3"
     assert s.tts_output_bitrate is None
-    assert s.tts_timeline_policy == "serialize"
     assert s.narrator_over_source_lu == 7.5
     assert s.original_gain_db == 0.0
     assert s.output_variant == "players"

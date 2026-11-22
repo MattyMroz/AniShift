@@ -123,7 +123,6 @@ def _snapshot(tmp_path: Path) -> tuple[PlanTask, ArtifactSnapshot, Path]:
         (source.artifact_id,),
         (output.artifact_id,),
         (),
-        "composition:balanced",
         (("audio_source", "original"), ("burn_subtitles", "none")),
     )
     return task, ArtifactSnapshot({source.artifact_id: source}, {output.artifact_id: output}), destination
@@ -239,7 +238,6 @@ def _cover_snapshot(
         (image.artifact_id, audio.artifact_id),
         (output.artifact_id,),
         (),
-        "composition:balanced",
     )
     snapshot = ArtifactSnapshot({image.artifact_id: image, audio.artifact_id: audio}, {output.artifact_id: output})
     return task, snapshot, destination
@@ -448,3 +446,59 @@ def test_real_composition_emits_progress_and_keeps_destination_private(tmp_path:
         event.progress_percent is not None and event.progress_percent < 100 for event in progress.notifications[:-1]
     )
     assert progress.notifications[-1].progress_percent == 100
+
+
+def test_a_container_carries_the_font_its_subtitles_were_laid_out_with_beside_the_configured_one(
+    tmp_path: Path,
+) -> None:
+    source_path: Path = tmp_path / "Episode.mkv"
+    source_path.write_bytes(b"source")
+    subtitles_path: Path = tmp_path / "full.ass"
+    subtitles_path.write_text("[Script Info]\n", encoding="utf-8")
+    laid_out_with: Path = tmp_path / "old-font.ttf"
+    configured: Path = tmp_path / "new-font.ttf"
+    video = Artifact(
+        "video",
+        "group-1",
+        ArtifactKind.VIDEO_MKV,
+        source_path,
+        ArtifactState.READY,
+        ArtifactLifetime.SOURCE,
+        source_path,
+    )
+    full = Artifact(
+        "full",
+        "group-1",
+        ArtifactKind.FULL_PL,
+        subtitles_path,
+        ArtifactState.READY,
+        ArtifactLifetime.INTERMEDIATE,
+        subtitle_format="ass",
+        language="pol",
+        font_files=(laid_out_with,),
+    )
+    output = Artifact(
+        "mkv",
+        "group-1",
+        ArtifactKind.FINAL_MKV,
+        None,
+        ArtifactState.MISSING,
+        ArtifactLifetime.DURABLE,
+        tmp_path / "Episode.pl.mkv",
+    )
+    task = PlanTask(
+        "compose-mkv",
+        "group-1",
+        TaskKind.COMPOSE_MKV,
+        ("video", "full"),
+        ("mkv",),
+        (),
+        (("mkv_tracks", "full_pl_subtitles"),),
+    )
+    composer = _Composer()
+
+    CompositionTaskHandler(composer, run_root=tmp_path / "run", font_files=(configured,)).execute(
+        task, ArtifactSnapshot({"video": video, "full": full}, {"mkv": output}), NeverCancelledToken(), _Progress()
+    )
+
+    assert composer.requests[0].font_files == (laid_out_with, configured)
