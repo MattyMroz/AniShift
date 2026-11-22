@@ -77,6 +77,7 @@ __all__ = [
     "FALLBACK_HINT",
     "ReaderPage",
     "auth_error",
+    "claim_profile",
     "clean_account",
     "document_titles",
     "load_cleanup",
@@ -133,6 +134,9 @@ _SIGN_IN_URL: Final[re.Pattern[str]] = re.compile(r"sign-?in|sign-?up|log-?in|au
 
 _SIGN_IN_POLL_S: Final[float] = 1.0
 """Interval between checks whether the owner closed the sign-in window."""
+
+_CHROME_LOCK_FILE_NAME: Final[str] = "lockfile"
+"""File Chrome on Windows keeps open in its profile while it runs, so deleting it fails then."""
 
 _UPLOAD_TYPE: Final[str] = "text/plain"
 """Library ``original_file_type`` of an imported text file."""
@@ -843,11 +847,26 @@ async def _check_session(session: ChromeSession, cleanup: AccountCleanup) -> boo
     return state is LibraryState.READY
 
 
+def claim_profile(lock: ProcessLock, root: Path) -> bool:
+    """Take *lock* when no Chrome runs on the profile under *root*; ``False`` leaves the lock free."""
+    if not lock.acquire():
+        return False
+    try:
+        (profile_dir(root) / _CHROME_LOCK_FILE_NAME).unlink(missing_ok=True)
+    except PermissionError:
+        lock.release()
+        return False
+    except OSError:
+        lock.release()
+        raise
+    return True
+
+
 def sign_out(root: Path) -> SignOutOutcome:
-    """Delete the Chrome profile under *root* while no AniShift browser uses it, keeping the owed account cleanup."""
+    """Delete the Chrome profile under *root* while no browser uses it, keeping the owed account cleanup."""
     lock: ProcessLock = ProcessLock(lock_file(root))
     try:
-        if not lock.acquire():
+        if not claim_profile(lock, root):
             return SignOutOutcome.BUSY
         with suppress(FileNotFoundError):
             safe_rmtree(profile_dir(root))

@@ -53,11 +53,15 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
   `headless=True` na tym samym profilu (`open_library`), tam sprząta konto i zapisuje `session.json`; to
   sprawdzenie widzi tylko ciasteczka, które Chrome naprawdę zapisał. Biblioteka niedostępna → `FAILED` bez zapisu.
   Do zamknięcia okna profil trzyma `chrome.lock`, więc nagrywanie dostaje `ChromeBusyError`.
-- `sign_out` (akcja panelu „Wyloguj”) pod `chrome.lock` usuwa cały katalog profilu i zapisuje `signed_in: false`
+- `sign_out` (akcja panelu „Wyloguj”) po `claim_profile` usuwa cały katalog profilu i zapisuje `signed_in: false`
   przez `write_session`, które zachowuje zaległe `restore` i `documents`; zajęty profil → `SignOutOutcome.BUSY` bez
   zmian. Działa tylko na polecenie właściciela: kod nigdy nie czyści profilu sam, także po odmowie App Check.
-- `ProcessLock` na `chrome.lock` wyklucza drugą przeglądarkę na profilu (drugi proces, okno logowania): zajęty →
-  `ChromeBusyError` (przejściowy); w `sign_in` → `SignInOutcome.BUSY`. W procesie Chrome profilu ma tylko gospodarz.
+- `claim_profile` to jedyna droga zajęcia profilu (`ChromeSession.start`, `sign_out`): `ProcessLock` na
+  `chrome.lock` (drugi proces AniShift, okno logowania) i `chrome-profile/lockfile`, który Chrome na Windows trzyma
+  otwarty bez prawa usuwania, dopóki działa (próba 2026-11-22: `unlink` → `PermissionError` 32, po wyjściu plik
+  znika). Chrome zostaje na profilu bez `chrome.lock`, gdy proces panelu zginie przy otwartym oknie. Nieusuwalny
+  `lockfile` = zajęty; nieaktualny usuwa. Zajęty → `ChromeBusyError` (przejściowy); w `sign_in` →
+  `SignInOutcome.BUSY`, w `sign_out` → `SignOutOutcome.BUSY`. W procesie Chrome profilu ma tylko gospodarz.
   `restrict_directory` przy każdym starcie.
 - `ReaderPage` jest jedynym miejscem z selektorami i wywołaniami Playwright. Każdy błąd Playwright idzie przez
   `map_playwright_error` z `from None`, bo komunikat Playwright potrafi zawierać adres z `read_id`.

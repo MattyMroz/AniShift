@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import sys
 from pathlib import Path
 from typing import cast
 
@@ -365,6 +366,32 @@ def test_chrome_session_start_with_profile_locked_raises_busy(chrome: _Chrome) -
 
     assert error.value.retry_after_s == 60.0
     assert chrome.argv == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Chrome holds its profile lockfile only on Windows")
+def test_chrome_session_start_with_chrome_left_on_profile_raises_busy_and_starts_nothing(chrome: _Chrome) -> None:
+    profile: Path = chrome.root / "chrome-profile"
+    profile.mkdir(parents=True)
+    (profile / "lockfile").write_bytes(b"")
+
+    with (profile / "lockfile").open("rb"), pytest.raises(ChromeBusyError):
+        asyncio.run(ChromeSession(chrome.root, headless=True).start())
+
+    assert chrome.argv == []
+    assert _lock_free(chrome.root)
+
+
+def test_chrome_session_start_removes_stale_chrome_lockfile_and_starts(chrome: _Chrome) -> None:
+    profile: Path = chrome.root / "chrome-profile"
+    profile.mkdir(parents=True)
+    (profile / "lockfile").write_bytes(b"")
+    session = ChromeSession(chrome.root, headless=True)
+
+    asyncio.run(session.start())
+
+    assert not (profile / "lockfile").exists()
+    assert session.alive
+    asyncio.run(session.close())
 
 
 def test_chrome_session_start_chrome_exiting_raises_unavailable_and_cleans_up(chrome: _Chrome) -> None:

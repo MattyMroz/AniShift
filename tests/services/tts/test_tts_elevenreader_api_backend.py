@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -297,6 +298,7 @@ def _profile(root: Path) -> Path:
     profile: Path = root / "chrome-profile"
     (profile / "Default").mkdir(parents=True)
     (profile / "Default" / "Cookies").write_bytes(b"cookie")
+    (profile / "lockfile").write_bytes(b"")
     return profile
 
 
@@ -347,6 +349,22 @@ def test_sign_out_profile_held_by_a_browser_returns_busy_and_changes_nothing(tmp
     record = read_session(tmp_path)
     assert record is not None
     assert record.signed_in
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Chrome holds its profile lockfile only on Windows")
+def test_sign_out_profile_open_in_chrome_without_anishift_lock_returns_busy_and_keeps_profile(tmp_path: Path) -> None:
+    profile: Path = _profile(tmp_path)
+    write_session(tmp_path, signed_in=True)
+
+    with (profile / "lockfile").open("rb"):
+        outcome: SignOutOutcome = sign_out(tmp_path)
+
+    assert outcome is SignOutOutcome.BUSY
+    assert (profile / "Default" / "Cookies").is_file()
+    record = read_session(tmp_path)
+    assert record is not None
+    assert record.signed_in
+    assert _lock_free(tmp_path)
 
 
 def test_sign_out_profile_deletion_failing_returns_failed_and_keeps_session(

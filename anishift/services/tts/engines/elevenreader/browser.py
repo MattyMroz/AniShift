@@ -16,7 +16,7 @@ from anishift.platform.process_lock import ProcessLock
 from anishift.services.tts.errors import TtsConfigError, TtsProviderUnavailableError
 from anishift.utils.logger import get_logger
 
-from .api_backend import FALLBACK_HINT, ReaderPage, speed_script, unavailable_error
+from .api_backend import FALLBACK_HINT, ReaderPage, claim_profile, speed_script, unavailable_error
 from .config import find_chrome, lock_file, profile_dir
 from .constants import CONNECT_ATTEMPTS, CONNECT_INTERVAL_S, PAGE_SPEED, UNAVAILABLE_RETRY_S
 
@@ -96,7 +96,7 @@ class ChromeSession:
         chrome: Path | None = find_chrome()
         if chrome is None:
             raise ChromeMissingError(context=_missing_chrome_context())
-        if not self._lock.acquire():
+        if not claim_profile(self._lock, self._root):
             raise ChromeBusyError(retry_after_s=UNAVAILABLE_RETRY_S, context=_busy_context())
         try:
             await self._launch(chrome)
