@@ -19,6 +19,7 @@ __all__ = [
     "PlayerState",
     "SessionRecord",
     "SignInOutcome",
+    "SignOutOutcome",
     "UploadedRead",
 ]
 
@@ -47,6 +48,14 @@ class SignInOutcome(StrEnum):
     SIGNED_OUT = "signed_out"
     BUSY = "busy"
     NO_CHROME = "no_chrome"
+    FAILED = "failed"
+
+
+class SignOutOutcome(StrEnum):
+    """Result of the sign-out action that deletes the browser profile."""
+
+    SIGNED_OUT = "signed_out"
+    BUSY = "busy"
     FAILED = "failed"
 
 

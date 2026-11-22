@@ -72,7 +72,7 @@ from anishift.services.tts.engines import available_engine_ids as available_tts_
 from anishift.services.tts.engines import is_document_engine
 from anishift.services.tts.engines.edge.constants import MAREK_VOICE_ID, ZOFIA_VOICE_ID
 from anishift.services.tts.engines.elevenbytes.constants import DALLIN_VOICE_ID
-from anishift.services.tts.engines.elevenreader import VOICES, read_session, sign_in
+from anishift.services.tts.engines.elevenreader import VOICES, read_session, sign_in, sign_out
 from anishift.setup.doctor import CheckResult, run_doctor
 from anishift.setup.installer import ResourceResult, run_setup
 from anishift.utils.logger import get_logger
@@ -84,7 +84,7 @@ if TYPE_CHECKING:
     from anishift.application.recovery import RunJournal
     from anishift.services.llm import LlmConfig
     from anishift.services.media.probe import MediaProbe
-    from anishift.services.tts.engines.elevenreader import SessionRecord, SignInOutcome
+    from anishift.services.tts.engines.elevenreader import SessionRecord, SignInOutcome, SignOutOutcome
 
 __all__ = [
     "AppService",
@@ -737,6 +737,10 @@ class AppService:
     def elevenreader_sign_in(self) -> SignInOutcome:
         """Show the ElevenReader library in a visible Chrome until the owner closes it, then check the session."""
         return asyncio.run(sign_in(elevenreader_dir()))
+
+    def elevenreader_sign_out(self) -> SignOutOutcome:
+        """Delete the ElevenReader browser profile unless a browser uses it, keeping the owed account cleanup."""
+        return sign_out(elevenreader_dir())
 
     def settings_snapshot(self) -> SettingsDraft:
         """Return a detached mutable copy that cannot affect an active plan."""

@@ -235,7 +235,8 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `ExecutionError` z kodem, treścią i sugestią `SpeechBatchResult.failure` (panel pokazuje tylko
   `context.message`, więc sugestia jest też w treści), szyld bez klipu (pominięty albo nieudany) wypada z manifestu z ostrzeżeniem z liczbą i grupami w
   metadanych `signs_unrecorded`, w obu ścieżkach. `tts_handler.py`
-- Sesję ElevenReadera panel czyta i odświeża przez fasadę (`elevenreader_session`, `elevenreader_sign_in`);
+- Sesję ElevenReadera panel czyta, odświeża i czyści przez fasadę (`elevenreader_session`, `elevenreader_sign_in`,
+  `elevenreader_sign_out`);
   logowanie blokuje wątek wołający, aż właściciel zamknie okno Chrome, i jeszcze na sprawdzenie sesji. `service.py`
 - `GraphCoordinator` przyjmuje wiele kontekstów (`RunRequest` → `RunHandle`); wspólne są tylko kolejki gotowych
   tasków per zasób, executory i `limits_provider()`. Błąd pętli anuluje wszystkie konteksty przed joinem. Kolejka

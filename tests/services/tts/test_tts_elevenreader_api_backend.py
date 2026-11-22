@@ -32,6 +32,7 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from anishift.errors import ErrorCode, FatalError, TransientError
+from anishift.platform.process_lock import ProcessLock
 from anishift.services.tts import (
     TtsAuthError,
     TtsError,
@@ -40,7 +41,14 @@ from anishift.services.tts import (
     TtsRateLimitError,
     TtsTimeoutError,
 )
-from anishift.services.tts.engines.elevenreader import SignInOutcome, api_backend, read_session, sign_in
+from anishift.services.tts.engines.elevenreader import (
+    SignInOutcome,
+    SignOutOutcome,
+    api_backend,
+    read_session,
+    sign_in,
+    sign_out,
+)
 from anishift.services.tts.engines.elevenreader import browser as browser_module
 from anishift.services.tts.engines.elevenreader.api_backend import (
     ReaderPage,
@@ -283,6 +291,83 @@ def test_sign_in_browser_failure_returns_matching_outcome(
 
     assert asyncio.run(sign_in(tmp_path)) is expected
     assert read_session(tmp_path) is None
+
+
+def _profile(root: Path) -> Path:
+    profile: Path = root / "chrome-profile"
+    (profile / "Default").mkdir(parents=True)
+    (profile / "Default" / "Cookies").write_bytes(b"cookie")
+    return profile
+
+
+def _lock_free(root: Path) -> bool:
+    lock: ProcessLock = ProcessLock(root / "chrome.lock")
+    acquired: bool = lock.acquire()
+    lock.release()
+    return acquired
+
+
+def test_sign_out_deletes_profile_records_signed_out_and_keeps_owed_cleanup(tmp_path: Path) -> None:
+    profile: Path = _profile(tmp_path)
+    trace: DocumentTrace = document_trace(read_id=READ_ID)
+    save_cleanup(tmp_path, AccountCleanup(restore=PREVIOUS, documents=[trace]))
+
+    assert sign_out(tmp_path) is SignOutOutcome.SIGNED_OUT
+
+    assert not profile.exists()
+    record = read_session(tmp_path)
+    assert record is not None
+    assert not record.signed_in
+    assert record.restore == PREVIOUS
+    assert record.documents == (trace,)
+    assert _lock_free(tmp_path)
+
+
+def test_sign_out_without_profile_records_signed_out(tmp_path: Path) -> None:
+    assert sign_out(tmp_path) is SignOutOutcome.SIGNED_OUT
+
+    record = read_session(tmp_path)
+    assert record is not None
+    assert not record.signed_in
+
+
+def test_sign_out_profile_held_by_a_browser_returns_busy_and_changes_nothing(tmp_path: Path) -> None:
+    profile: Path = _profile(tmp_path)
+    write_session(tmp_path, signed_in=True)
+    holder: ProcessLock = ProcessLock(tmp_path / "chrome.lock")
+    assert holder.acquire()
+
+    try:
+        outcome: SignOutOutcome = sign_out(tmp_path)
+    finally:
+        holder.release()
+
+    assert outcome is SignOutOutcome.BUSY
+    assert (profile / "Default" / "Cookies").is_file()
+    record = read_session(tmp_path)
+    assert record is not None
+    assert record.signed_in
+
+
+def test_sign_out_profile_deletion_failing_returns_failed_and_keeps_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _profile(tmp_path)
+    write_session(tmp_path, signed_in=True)
+
+    def refuse(path: Path) -> None:
+        message: str = "file in use"
+        raise PermissionError(message)
+
+    monkeypatch.setattr(api_backend, "safe_rmtree", refuse)
+
+    assert sign_out(tmp_path) is SignOutOutcome.FAILED
+
+    record = read_session(tmp_path)
+    assert record is not None
+    assert record.signed_in
+    assert _lock_free(tmp_path)
 
 
 def test_session_record_round_trips_without_secrets(tmp_path: Path) -> None:

@@ -8,13 +8,14 @@ import json
 import math
 import re
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING, Final
 
 from anishift.errors import ErrorCode, ErrorContext
+from anishift.platform.process_lock import ProcessLock
 from anishift.services.tts.artifacts import atomic_json_snapshot
 from anishift.services.tts.errors import (
     TtsAuthError,
@@ -26,8 +27,9 @@ from anishift.services.tts.errors import (
     TtsVoiceError,
 )
 from anishift.utils.logger import get_logger
+from anishift.utils.safe_fs import safe_rmtree
 
-from .config import session_file
+from .config import lock_file, profile_dir, session_file
 from .constants import (
     ACTION_TIMEOUT_S,
     ADD_ENDPOINT,
@@ -56,6 +58,7 @@ from .types import (
     PlayerState,
     SessionRecord,
     SignInOutcome,
+    SignOutOutcome,
     UploadedRead,
 )
 
@@ -84,6 +87,7 @@ __all__ = [
     "require_signed_in",
     "save_cleanup",
     "sign_in",
+    "sign_out",
     "speed_script",
     "unavailable_error",
     "voice_error",
@@ -836,3 +840,21 @@ async def _check_session(session: ChromeSession, cleanup: AccountCleanup) -> boo
         reason: str = "ElevenReader library is unavailable"
         raise unavailable_error(reason)
     return state is LibraryState.READY
+
+
+def sign_out(root: Path) -> SignOutOutcome:
+    """Delete the Chrome profile under *root* while no AniShift browser uses it, keeping the owed account cleanup."""
+    lock: ProcessLock = ProcessLock(lock_file(root))
+    try:
+        if not lock.acquire():
+            return SignOutOutcome.BUSY
+        with suppress(FileNotFoundError):
+            safe_rmtree(profile_dir(root))
+        write_session(root, signed_in=False)
+    except OSError as error:
+        logger.warning("ElevenReader browser profile could not be deleted", error_class=type(error).__name__)
+        return SignOutOutcome.FAILED
+    finally:
+        lock.release()
+    logger.info("ElevenReader browser profile deleted")
+    return SignOutOutcome.SIGNED_OUT

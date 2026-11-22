@@ -51,6 +51,9 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
   `headless=True` na tym samym profilu (`open_library`), tam sprząta konto i zapisuje `session.json`; to
   sprawdzenie widzi tylko ciasteczka, które Chrome naprawdę zapisał. Biblioteka niedostępna → `FAILED` bez zapisu.
   Do zamknięcia okna profil trzyma `chrome.lock`, więc nagrywanie dostaje `ChromeBusyError`.
+- `sign_out` (akcja panelu „Wyloguj”) pod `chrome.lock` usuwa cały katalog profilu i zapisuje `signed_in: false`
+  przez `write_session`, które zachowuje zaległe `restore` i `documents`; zajęty profil → `SignOutOutcome.BUSY` bez
+  zmian. Działa tylko na polecenie właściciela: kod nigdy nie czyści profilu sam, także po odmowie App Check.
 - `ProcessLock` na `chrome.lock` wyklucza drugą przeglądarkę na profilu (drugi proces, okno logowania): zajęty →
   `ChromeBusyError` (przejściowy); w `sign_in` → `SignInOutcome.BUSY`. W procesie Chrome profilu ma tylko gospodarz.
   `restrict_directory` przy każdym starcie.

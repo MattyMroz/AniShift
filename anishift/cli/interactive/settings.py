@@ -25,6 +25,7 @@ from anishift.application import (
     RecipePreferences,
     SessionRecord,
     SignInOutcome,
+    SignOutOutcome,
     TranslationModelOption,
 )
 from anishift.cli.interactive.menu import with_footer
@@ -106,6 +107,9 @@ _CLEANUP_KEY: Final[str] = "elevenreader-cleanup"
 
 _CLEANUP_REPAIR: Final[str] = "napraw: Zaloguj / sprawdź sesję"
 """Value of the account cleanup row naming the action that finishes the cleanup."""
+
+_SIGN_OUT_KEY: Final[str] = "elevenreader-sign-out"
+"""Stable action key asking to sign out of ElevenReader by deleting the browser profile."""
 
 
 _STATUS_ROWS: Final[int] = 1
@@ -448,6 +452,7 @@ class _EditorAction(StrEnum):
     ADD_KEY = "add_key"
     REMOVE_KEY = "remove_key"
     RESET_SCOPE = "reset_scope"
+    SIGN_OUT = "sign_out"
 
 
 class _PartialResetError(OSError):
@@ -558,6 +563,15 @@ _SIGN_IN_FEEDBACK: Final[dict[SignInOutcome, _Feedback]] = {
     SignInOutcome.FAILED: _Feedback("✗ Nie udało się sprawdzić sesji", "error"),
 }
 """Status shown after the ElevenReader sign-in window closes, for every outcome."""
+
+_SIGN_OUT_FEEDBACK: Final[dict[SignOutOutcome, _Feedback]] = {
+    SignOutOutcome.SIGNED_OUT: _Feedback("✓ Wylogowano · zaloguj się przez Zaloguj / sprawdź sesję", "success"),
+    SignOutOutcome.BUSY: _Feedback(
+        "✗ Profil przeglądarki jest w użyciu — zamknij okno logowania albo poczekaj na koniec nagrywania", "error"
+    ),
+    SignOutOutcome.FAILED: _Feedback("✗ Nie udało się wyczyścić profilu przeglądarki", "error"),
+}
+"""Status shown after the ElevenReader sign-out, for every outcome."""
 
 
 class SettingsController:
@@ -970,8 +984,16 @@ class SettingsController:
                 editor.selected_values.add(value)
             self._schedule_editor_save(editor)
             return
-        if key in {"enter", "right"}:
+        if key in {"enter", "right"} and editor.action is _EditorAction.SIGN_OUT:
+            self._answer_sign_out(editor)
+        elif key in {"enter", "right"}:
             self._submit_editor(editor)
+
+    def _answer_sign_out(self, editor: _Editor) -> None:
+        self._editor = None
+        self._feedback = None
+        if self._editor_raw_value(editor) == "yes":
+            self._start_sign_out()
 
     def _move(self, delta: int, length: int) -> None:
         if length:
@@ -1015,6 +1037,7 @@ class SettingsController:
             "connection-probe": self._start_probe,
             _SIGN_IN_KEY: self._start_sign_in,
             _CLEANUP_KEY: self._start_sign_in,
+            _SIGN_OUT_KEY: self._open_sign_out_confirmation,
         }
 
     def _prefixed_actions(self) -> tuple[tuple[str, Callable[[str], None]], ...]:
@@ -1192,6 +1215,7 @@ class SettingsController:
             items.append(_MenuItem(_CLEANUP_KEY, _cleanup_label(record), _CLEANUP_REPAIR, _SESSION_SECTION))
         if reads:
             items.append(_MenuItem(_SIGN_IN_KEY, "Zaloguj / sprawdź sesję", "", _SESSION_SECTION))
+            items.append(_MenuItem(_SIGN_OUT_KEY, "Wyloguj (wyczyść profil przeglądarki)", "", _SESSION_SECTION))
         items.append(self._scoped_reset_item())
         items.append(_MenuItem(_BACK_KEY, _BACK_LABEL))
         return tuple(items)
@@ -1575,6 +1599,15 @@ class SettingsController:
             options=(_Option("no", "Nie"), _Option("yes", "Tak")),
         )
 
+    def _open_sign_out_confirmation(self) -> None:
+        self._editor = _Editor(
+            title="WYLOGOWAĆ Z ELEVENREADER I WYCZYŚCIĆ PROFIL PRZEGLĄDARKI?",
+            kind=_EditorKind.CONFIRM,
+            action=_EditorAction.SIGN_OUT,
+            setting_id=_SIGN_OUT_KEY,
+            options=(_Option("no", "Nie"), _Option("yes", "Tak")),
+        )
+
     def _submit_editor(self, editor: _Editor) -> None:
         raw_value: str = self._editor_raw_value(editor)
         if editor.action is _EditorAction.SELECT_MODEL and not editor.options[editor.selected].provider_id:
@@ -1788,6 +1821,33 @@ class SettingsController:
                 return
             self._busy = False
             self._feedback = _SIGN_IN_FEEDBACK[outcome]
+            self._refresh_menu()
+        self._invalidate()
+
+    def _start_sign_out(self) -> None:
+        with self._lock:
+            self._generation += 1
+            generation: int = self._generation
+            self._busy = True
+            self._feedback = _Feedback("Czyszczę profil przeglądarki…", "info")
+        worker: threading.Thread = threading.Thread(
+            target=self._run_sign_out,
+            args=(generation,),
+            name="anishift-elevenreader-sign-out",
+            daemon=True,
+        )
+        worker.start()
+
+    def _run_sign_out(self, generation: int) -> None:
+        try:
+            outcome: SignOutOutcome = self._service.elevenreader_sign_out()
+        except AniShiftError, OSError:
+            outcome = SignOutOutcome.FAILED
+        with self._lock:
+            if generation != self._generation:
+                return
+            self._busy = False
+            self._feedback = _SIGN_OUT_FEEDBACK[outcome]
             self._refresh_menu()
         self._invalidate()
 
