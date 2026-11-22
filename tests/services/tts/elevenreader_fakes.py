@@ -177,18 +177,11 @@ class FakePage:
     def token(self) -> str | None:
         return self._token
 
-    @property
-    def is_closed(self) -> bool:
-        return self.closed
-
     async def open_library(self) -> LibraryState:
         await self._step("open_library")
         if self.site.library is LibraryState.READY:
             self._token = TOKEN
         return self.site.library
-
-    async def library_ready(self) -> bool:
-        return self.site.library is LibraryState.READY
 
     async def upload(self, document: Path, cleanup: AccountCleanup, save: Callable[[], None]) -> UploadedRead:
         text: str = document.read_text(encoding="utf-8")

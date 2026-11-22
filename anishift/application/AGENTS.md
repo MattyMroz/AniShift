@@ -250,8 +250,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `ExecutionError` z kodem, treścią i sugestią `SpeechBatchResult.failure` (panel pokazuje tylko
   `context.message`, więc sugestia jest też w treści), szyld bez klipu (pominięty albo nieudany) wypada z manifestu z ostrzeżeniem z liczbą i grupami w
   metadanych `signs_unrecorded`, w obu ścieżkach. `tts_handler.py`
-- Sesję ElevenReadera panel czyta i odświeża przez fasadę (`elevenreader_session`, `elevenreader_sign_in`);
-  logowanie blokuje wątek wołający do zamknięcia okna Chrome. `service.py`
+- Sesję ElevenReadera panel czyta, odświeża i czyści przez fasadę (`elevenreader_session`, `elevenreader_sign_in`,
+  `elevenreader_sign_out`);
+  logowanie tylko otwiera zwykłe okno Chrome i od razu wraca, a wylogowanie blokuje wątek wołający na start
+  niewidocznego Chrome, usunięcie danych ElevenReadera i jego zamknięcie. `service.py`
 - `GraphCoordinator` przyjmuje wiele kontekstów (`RunRequest` → `RunHandle`); wspólne są tylko kolejki gotowych
   tasków per rodzina zasobu (`planning.resource_family`), executory per klucz zasobu i `settings_provider()`. Błąd
   pętli anuluje wszystkie konteksty przed joinem. Kolejka `(rank, sequence, task_index, run_id, task_id)`, USER przed

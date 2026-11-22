@@ -16,7 +16,7 @@ from .types import ElevenReaderVoice
 if TYPE_CHECKING:
     from anishift.services.tts.config import TtsConfig
 
-__all__ = ["ElevenReaderConfig", "find_chrome", "profile_dir", "resolve_voice", "session_file"]
+__all__ = ["ElevenReaderConfig", "find_chrome", "lock_file", "profile_dir", "resolve_voice", "session_file"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -25,6 +25,9 @@ _PROFILE_DIR_NAME: Final[str] = "chrome-profile"
 
 _SESSION_FILE_NAME: Final[str] = "session.json"
 """Last session check result inside the ElevenReader root."""
+
+_LOCK_FILE_NAME: Final[str] = "chrome.lock"
+"""Lock file guarding the profile against a second AniShift browser, inside the ElevenReader root."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +63,11 @@ def profile_dir(root: Path) -> Path:
 def session_file(root: Path) -> Path:
     """Return the session check record under the ElevenReader *root*."""
     return root / _SESSION_FILE_NAME
+
+
+def lock_file(root: Path) -> Path:
+    """Return the lock file AniShift holds while it uses the Chrome profile under *root*."""
+    return root / _LOCK_FILE_NAME
 
 
 def find_chrome() -> Path | None:

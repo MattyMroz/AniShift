@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from types import MappingProxyType
 from typing import Final
 
@@ -35,9 +36,10 @@ __all__ = [
     "READING_SPEED",
     "READS_URL",
     "READY_TIMEOUT_S",
-    "SIGN_IN_TIMEOUT_S",
     "SILENT_CHUNK_MIN_LETTERS",
     "SILENT_CHUNK_MS_PER_LETTER",
+    "SITE_COOKIE_DOMAIN",
+    "SITE_ORIGIN",
     "SPEED_CHECK_S",
     "SPEED_JS",
     "SPEED_STATE_JS",
@@ -79,7 +81,13 @@ LINE_SEPARATOR: Final[str] = "…"
 DOCUMENT_NAME: Final[str] = "anishift.txt"
 """Name of the uploaded file; the library titles the document by its first sentence instead."""
 
-LIBRARY_URL: Final[str] = "https://elevenreader.io/reader/library"
+SITE_ORIGIN: Final[str] = "https://elevenreader.io"
+"""Origin of the ElevenReader web app, whose stored data holds the sign-in."""
+
+SITE_COOKIE_DOMAIN: Final[re.Pattern[str]] = re.compile(r"(^|\.)elevenreader\.io$")
+"""Cookie domains of ElevenReader and its subdomains, the only cookies sign-out deletes."""
+
+LIBRARY_URL: Final[str] = f"{SITE_ORIGIN}/reader/library"
 """Library page with the Import button; a document opens under it by read id."""
 
 API_HOST: Final[str] = "api.elevenlabs.io"
@@ -165,9 +173,6 @@ CONNECT_INTERVAL_S: Final[float] = 0.5
 
 CLEANUP_STEP_TIMEOUT_S: Final[float] = 15.0
 """Deadline of one account cleanup step."""
-
-SIGN_IN_TIMEOUT_S: Final[float] = 600.0
-"""Time the sign-in window waits for the owner to sign in."""
 
 CHROME_STEM: Final[str] = "chrome"
 """Executable stem of Google Chrome looked up on ``PATH``."""

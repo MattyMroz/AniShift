@@ -327,7 +327,7 @@ def headless_session(root: Path) -> ChromeSession:
     """Return a headless Chrome session on the profile under *root*, loading Playwright only now."""
     from .browser import ChromeSession  # noqa: PLC0415 - keeps Playwright out of the package import
 
-    return ChromeSession(root, headless=True)
+    return ChromeSession(root)
 
 
 async def unless_cancelled[T](work: Awaitable[T], cancel: CancellationToken) -> T:

@@ -15,6 +15,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Final
 
 from anishift.errors import ErrorCode, ErrorContext
+from anishift.platform.process_lock import ProcessLock
 from anishift.services.tts.artifacts import atomic_json_snapshot
 from anishift.services.tts.errors import (
     TtsAuthError,
@@ -27,7 +28,7 @@ from anishift.services.tts.errors import (
 )
 from anishift.utils.logger import get_logger
 
-from .config import session_file
+from .config import lock_file, profile_dir, session_file
 from .constants import (
     ACTION_TIMEOUT_S,
     ADD_ENDPOINT,
@@ -41,7 +42,6 @@ from .constants import (
     READING_SPEED,
     READS_URL,
     READY_TIMEOUT_S,
-    SIGN_IN_TIMEOUT_S,
     SPEED_JS,
     SPEED_STATE_JS,
     SPEED_TOLERANCE,
@@ -57,6 +57,7 @@ from .types import (
     PlayerState,
     SessionRecord,
     SignInOutcome,
+    SignOutOutcome,
     UploadedRead,
 )
 
@@ -68,12 +69,14 @@ if TYPE_CHECKING:
     from playwright.async_api import Error as PlaywrightError
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
+    from .browser import ChromeSession
     from .recorder import StreamRecorder
 
 __all__ = [
     "FALLBACK_HINT",
     "ReaderPage",
     "auth_error",
+    "claim_profile",
     "clean_account",
     "document_titles",
     "load_cleanup",
@@ -84,6 +87,7 @@ __all__ = [
     "require_signed_in",
     "save_cleanup",
     "sign_in",
+    "sign_out",
     "speed_script",
     "unavailable_error",
     "voice_error",
@@ -95,9 +99,9 @@ logger = get_logger(__name__)
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 FALLBACK_HINT: Final[str] = "Albo przełącz silnik na ElevenBytes w Ustawienia → Lektor."
-"""Closing sentence of every permanent-failure suggestion."""
+"""Closing sentence of the permanent-failure suggestions, except the browser refusal."""
 
-SIGN_IN_HINT: Final[str] = f"Zaloguj się w Ustawienia → Lektor → Zaloguj / sprawdź sesję. {FALLBACK_HINT}"
+SIGN_IN_HINT: Final[str] = f"Zaloguj się w oknie z Ustawienia → Lektor → Zaloguj (otwórz okno Chrome). {FALLBACK_HINT}"
 """Suggestion for a signed-out or rejected session."""
 
 _UNAUTHORIZED: Final[int] = 401
@@ -127,8 +131,8 @@ _SIGN_IN_NAME: Final[re.Pattern[str]] = re.compile(r"sign in|sign up|log in|cont
 _SIGN_IN_URL: Final[re.Pattern[str]] = re.compile(r"sign-?in|sign-?up|log-?in|auth", re.IGNORECASE)
 """Address fragments of the sign-in and sign-up pages a signed-out visitor is sent to."""
 
-_SIGN_IN_POLL_S: Final[float] = 1.0
-"""Interval between checks of the sign-in window."""
+_CHROME_LOCK_FILE_NAME: Final[str] = "lockfile"
+"""File Chrome on Windows keeps open in its profile while it runs, so deleting it fails then."""
 
 _UPLOAD_TYPE: Final[str] = "text/plain"
 """Library ``original_file_type`` of an imported text file."""
@@ -202,10 +206,11 @@ def refused_error(console: str) -> TtsAuthError:
     """Return the permanent error for a browser the site's App Check refused; the page then blocks it for a day."""
     context: ErrorContext = ErrorContext(
         code=ErrorCode.TTS_AUTH_FAILED,
-        message="ElevenReader App Check refused this browser profile, so the page opens no audio stream",
+        message="ElevenReader odrzucił przeglądarkę AniShift",
         suggestion=(
-            "Google's bot check refused this Chrome profile and the page blocks it for a day. Sign in to "
-            "ElevenReader on a new profile or choose another TTS engine."
+            "Blokada trwa dobę. W Ustawienia → Lektor użyj Wyloguj (usuń ciasteczka ElevenReadera), potem "
+            "Zaloguj (otwórz okno Chrome) i zaloguj się w otwartym oknie; albo spróbuj ponownie po dobie, albo "
+            "wybierz inny silnik lektora."
         ),
         details={"console": console},
     )
@@ -288,11 +293,6 @@ class ReaderPage:
         """Return the newest authorization token seen on an API request of this tab."""
         return self._token
 
-    @property
-    def is_closed(self) -> bool:
-        """Whether the tab or its window is gone."""
-        return self._page.is_closed()
-
     async def open_library(self) -> LibraryState:
         """Load the library and report whether it is usable, signed out or unavailable."""
         try:
@@ -308,10 +308,9 @@ class ReaderPage:
             return LibraryState.SIGNED_OUT if _SIGN_IN_URL.search(self._page.url) else LibraryState.UNAVAILABLE
         except _playwright_error():
             return LibraryState.UNAVAILABLE
-        return LibraryState.READY if await self.library_ready() else LibraryState.SIGNED_OUT
+        return LibraryState.READY if await self._library_ready() else LibraryState.SIGNED_OUT
 
-    async def library_ready(self) -> bool:
-        """Whether the library Import button is visible now, without navigating."""
+    async def _library_ready(self) -> bool:
         try:
             return await self._button("Import").count() > 0
         except _playwright_error():
@@ -797,39 +796,57 @@ async def require_signed_in(page: ReaderPage, root: Path) -> None:
     raise unavailable_error(reason)
 
 
-async def sign_in(root: Path, *, timeout_s: float = SIGN_IN_TIMEOUT_S) -> SignInOutcome:
-    """Open a visible Chrome on the library and wait until the owner signs in or closes the window."""
-    from .browser import ChromeBusyError, ChromeMissingError, ChromeSession  # noqa: PLC0415 - keeps Playwright lazy
+def sign_in(root: Path) -> SignInOutcome:
+    """Open a plain Chrome window on the library for the owner to sign in himself, without driving or awaiting it."""
+    from .browser import ChromeMissingError, open_window  # noqa: PLC0415 - keeps Playwright lazy
 
-    session: ChromeSession = ChromeSession(root, headless=False)
-    cleanup: AccountCleanup = load_cleanup(root)
+    lock: ProcessLock = ProcessLock(lock_file(root))
     try:
-        await session.start()
-        page: ReaderPage = await session.new_page()
-        signed_in: bool = await _wait_for_library(page, timeout_s)
-        if signed_in:
-            await clean_account(page, cleanup, restore=True)
+        if not claim_profile(lock, root):
+            return SignInOutcome.BUSY
+        open_window(root)
     except ChromeMissingError:
         return SignInOutcome.NO_CHROME
-    except ChromeBusyError:
-        return SignInOutcome.BUSY
-    except TtsError as error:
-        logger.warning("ElevenReader sign-in failed", code=error.context.code.value)
+    except (TtsError, OSError) as error:
+        logger.warning("ElevenReader sign-in window failed", error_class=type(error).__name__)
         return SignInOutcome.FAILED
     finally:
+        lock.release()
+    return SignInOutcome.OPENED
+
+
+def claim_profile(lock: ProcessLock, root: Path) -> bool:
+    """Take *lock* when no Chrome runs on the profile under *root*; ``False`` leaves the lock free."""
+    if not lock.acquire():
+        return False
+    try:
+        (profile_dir(root) / _CHROME_LOCK_FILE_NAME).unlink(missing_ok=True)
+    except PermissionError:
+        lock.release()
+        return False
+    except OSError:
+        lock.release()
+        raise
+    return True
+
+
+async def sign_out(root: Path) -> SignOutOutcome:
+    """Delete only the ElevenReader cookies and site data while no browser uses the profile, keeping owed cleanup."""
+    from .browser import ChromeBusyError, ChromeMissingError, ChromeSession  # noqa: PLC0415 - keeps Playwright lazy
+
+    session: ChromeSession = ChromeSession(root)
+    try:
+        await session.start()
+        await session.forget_site()
+    except ChromeMissingError:
+        return SignOutOutcome.NO_CHROME
+    except ChromeBusyError:
+        return SignOutOutcome.BUSY
+    except (TtsError, OSError) as error:
+        logger.warning("ElevenReader sign-out failed", error_class=type(error).__name__)
+        return SignOutOutcome.FAILED
+    finally:
         await session.close()
-    write_session(root, signed_in=signed_in)
-    save_cleanup(root, cleanup)
-    logger.info("ElevenReader sign-in checked", signed_in=signed_in, cleanup=list(cleanup.pending))
-    return SignInOutcome.SIGNED_IN if signed_in else SignInOutcome.SIGNED_OUT
-
-
-async def _wait_for_library(page: ReaderPage, timeout_s: float) -> bool:
-    if await page.open_library() is LibraryState.READY:
-        return True
-    deadline: float = time.monotonic() + timeout_s
-    while time.monotonic() < deadline and not page.is_closed:
-        if await page.library_ready():
-            return True
-        await asyncio.sleep(_SIGN_IN_POLL_S)
-    return False
+    write_session(root, signed_in=False)
+    logger.info("ElevenReader cookies and site data deleted")
+    return SignOutOutcome.SIGNED_OUT

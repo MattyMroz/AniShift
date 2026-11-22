@@ -355,19 +355,29 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
 - Domyślnie: `mp3_44100_128`.
 - Silnik: tylko `elevenlabs`.
 
-### Sesja ElevenReader i „Zaloguj / sprawdź sesję”
+### Sesja ElevenReader, „Zaloguj” i „Wyloguj”
 
-- Co robi: wiersz `Sesja ElevenReader` pokazuje wynik ostatniego sprawdzenia
-  (`zalogowano · 30.10 14:03`, `nie zalogowano · …` albo `nie sprawdzono`). Akcja
-  `Zaloguj / sprawdź sesję` otwiera okno Chrome na bibliotece ElevenReadera; zaloguj
-  się w nim albo zamknij okno. Wynik: `✓ Zalogowano`, `✗ Nie zalogowano`, `✗ Lektor
-  właśnie nagrywa — spróbuj po zakończeniu`, `✗ Nie znaleziono Google Chrome` albo
-  `✗ Nie udało się sprawdzić sesji`. `Esc` zwalnia panel; okno zostaje do zamknięcia.
+- Co robi: wiersz `Sesja ElevenReader` pokazuje wynik ostatniego sprawdzenia przez
+  nagrywanie (`zalogowano · 30.10 14:03`, `nie zalogowano · …` albo `nie sprawdzono`).
+- `Zaloguj (otwórz okno Chrome)`: otwiera zwykłe okno Google Chrome na profilu
+  AniShift z biblioteką ElevenReadera i od razu kończy: `Otwarto okno ElevenReadera ·
+  zaloguj się i zamknij okno`. Logujesz się sam; AniShift okna nie steruje, nie czeka
+  na nie i nie sprawdza sesji. Stan sesji uaktualni następne nagranie.
+- `Wyloguj (usuń ciasteczka ElevenReadera)`: po potwierdzeniu usuwa z profilu
+  AniShift tylko ciasteczka i dane strony ElevenReadera; konto Google i inne strony
+  zostają. Zapisuje „nie zalogowano”. Pomaga, gdy ElevenReader odrzucił przeglądarkę
+  AniShift; potem użyj `Zaloguj` i zaloguj się w oknie.
+- Obie akcje odmawiają, gdy profil jest w użyciu (otwarte okno ElevenReadera,
+  nagrywanie): `✗ Profil przeglądarki jest w użyciu — zamknij okno ElevenReadera albo
+  poczekaj na koniec nagrywania`. Inne wyniki: `✗ Nie znaleziono Google Chrome`, `✗ Nie
+  udało się otworzyć okna Chrome`, `✗ Nie udało się usunąć ciasteczek ElevenReadera`.
+- Wiersz `Na koncie mógł zostać …` (`posprząta następne nagranie`): zaległe sprzątanie
+  konta wykonuje następne nagranie lektora ElevenReader.
 - Gdzie: sesja żyje w profilu Chrome w `config/elevenreader/chrome-profile/`, wynik
   sprawdzenia w `config/elevenreader/session.json` (bez sekretów). AniShift nie
   zapisuje e-maila ani hasła.
 - Silnik: tylko `elevenreader`. `anishift doctor` pokazuje brak Chrome jako błąd, a
-  brak profilu albo ostatnie „nie zalogowano” jako ostrzeżenie z tą akcją.
+  brak profilu albo ostatnie „nie zalogowano” jako ostrzeżenie z akcją `Zaloguj`.
 
 ### Kodek lektora (`tts_output_profile`)
 

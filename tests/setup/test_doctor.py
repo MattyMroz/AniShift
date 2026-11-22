@@ -184,7 +184,7 @@ def test_check_elevenreader_other_engine_owed_account_cleanup_warns(elevenreader
 
     assert result.status is CheckStatus.WARN
     assert "document AniShift uploaded" in result.message
-    assert result.suggestion == "Ustawienia → Lektor → Zaloguj / sprawdź sesję"
+    assert result.suggestion == "The next ElevenReader recording finishes the cleanup"
 
 
 @pytest.mark.unit
@@ -204,7 +204,7 @@ def test_check_elevenreader_without_profile_warns_with_sign_in_hint(elevenreader
     result = check_elevenreader("elevenreader")
 
     assert result.status is CheckStatus.WARN
-    assert result.suggestion == "Ustawienia → Lektor → Zaloguj / sprawdź sesję"
+    assert result.suggestion == "Ustawienia → Lektor → Zaloguj (otwórz okno Chrome)"
 
 
 @pytest.mark.unit
@@ -240,4 +240,4 @@ def test_check_elevenreader_owed_account_cleanup_warns_with_repair_hint(elevenre
 
     assert result.status is CheckStatus.WARN
     assert "document AniShift uploaded" in result.message
-    assert result.suggestion == "Ustawienia → Lektor → Zaloguj / sprawdź sesję"
+    assert result.suggestion == "The next ElevenReader recording finishes the cleanup"

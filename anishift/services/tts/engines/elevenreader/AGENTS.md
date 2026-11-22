@@ -32,20 +32,42 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
 ## Granice
 
 - Na poziomie modułu Playwright importuje tylko `browser.py`. `api_backend.py` ładuje go leniwie
-  (`_playwright_error`, `_playwright_timeout`, import `browser` w `sign_in`), a `hub.py` ładuje `browser.py`
+  (`_playwright_error`, `_playwright_timeout`, import `browser` w `sign_in` i `sign_out`), a `hub.py` ładuje `browser.py`
   w `headless_session`. Pilnuje tego test w `test_tts_contract.py` i test importu pakietu w procesie potomnym.
-- `find_chrome`, `profile_dir` i `session_file` leżą w `config.py`, żeby doctor i panel nie ładowały Playwright.
+- `find_chrome`, `profile_dir`, `session_file` i `lock_file` leżą w `config.py`, żeby doctor i panel nie ładowały
+  Playwright.
 - `ChromeSession` startuje Chrome z `--user-data-dir=config/elevenreader/chrome-profile` (Chrome 136+ ignoruje
   CDP dla domyślnego profilu) na wolnym porcie i dołącza `connect_over_cdp`. Proces jest zwykłym dzieckiem
   rezydenta (bez breakaway), więc Job Object kończy go razem z rezydentem.
 - `ChromeSession.close` najpierw prosi Chrome o wyjście przez CDP (`Browser.close`) i czeka do 10 s; `terminate`
   i `kill` są tylko zapasem. Chrome zapisuje ciasteczka na dysk z opóźnieniem do ok. 30 s, więc twarde zabicie
   zaraz po zalogowaniu gubi sesję (`signed_in: true` w `session.json`, a profil wylogowany).
-- Nagrywanie, sprzątanie i sprawdzanie sesji przez silnik działają tylko z `headless=True` (`headless_session`);
-  okno widać wyłącznie w `sign_in`. Skrypty diagnostyczne też nie otwierają okna.
-- `ProcessLock` na `chrome.lock` wyklucza drugą przeglądarkę na profilu (drugi proces, okno logowania): zajęty →
-  `ChromeBusyError` (przejściowy); w `sign_in` → `SignInOutcome.BUSY`. W procesie Chrome profilu ma tylko gospodarz.
-  `restrict_directory` przy każdym starcie.
+- `ChromeSession` jest zawsze headless (`headless_session`): nagrywanie, sprzątanie i `sign_out`. Skrypty
+  diagnostyczne też nie otwierają okna.
+- `sign_in` (panel „Zaloguj (otwórz okno Chrome)”) przy wolnym profilu (`claim_profile`) uruchamia przez
+  `open_window` zwykłe, odłączone Chrome na `chrome-profile` z adresem biblioteki: bez portu debugowania,
+  Playwright i CDP, bez czekania na zamknięcie i bez sprawdzania sesji. Blokadę AniShift zwalnia od razu; dalej
+  profil chroni `lockfile` samego Chrome. Właściciel loguje się sam; `session.json` aktualizuje następne nagranie
+  (`require_signed_in`), a zaległe sprzątanie konta robi gospodarz przy nagraniu i ostatnim `release`.
+  Wyścig między zwolnieniem blokady a utworzeniem `lockfile` działa w obie strony, bo drugie Chrome na profilu
+  przekazuje adres pierwszemu i kończy się: gdy okno wystartuje pierwsze, Chrome nagrania kończy się i próba
+  dostaje błąd przejściowy z ponowieniem; gdy pierwsze wystartuje headless Chrome nagrania, okno oddaje mu adres i
+  znika, panel mówi „Otwarto okno”, choć okna nie widać, a ponowne Zaloguj daje „profil w użyciu” do końca nagrania.
+- `sign_out` (panel „Wyloguj (usuń ciasteczka ElevenReadera)”) startuje `ChromeSession` (zajęty profil →
+  `SignOutOutcome.BUSY`), `forget_site` usuwa ciasteczka domen `SITE_COOKIE_DOMAIN` (elevenreader.io i subdomeny,
+  `BrowserContext.clear_cookies`) i dane originu `SITE_ORIGIN` (CDP `Storage.clearDataForOrigin`, `all`, przez
+  sesję CDP świeżej karty: z sesji przeglądarki Chromium odpowiada „Internal error” i nic nie czyści, próba
+  2026-11-22 na lokalnym originie z localStorage, IndexedDB i ciasteczkiem), bo
+  Firebase trzyma logowanie i stan App Check w IndexedDB strony, nie tylko w ciasteczkach. Reszta profilu (konto
+  Google, inne strony) zostaje. Potem łagodne `close` (zapis profilu) i `signed_in: false` przez `write_session`,
+  które zachowuje zaległe `restore` i `documents`. Tylko na polecenie właściciela: kod nigdy nie czyści danych sam,
+  także po odmowie App Check.
+- `claim_profile` to jedyna droga zajęcia profilu (`ChromeSession.start`, `sign_in`): `ProcessLock` na
+  `chrome.lock` (drugi proces AniShift) i `chrome-profile/lockfile`, który Chrome na Windows trzyma otwarty bez
+  prawa usuwania, dopóki działa (próba 2026-11-22: `unlink` → `PermissionError` 32, po wyjściu plik znika); tak
+  widać też okno logowania, które nie trzyma `chrome.lock`. Nieusuwalny `lockfile` = zajęty; nieaktualny usuwa.
+  Zajęty → `ChromeBusyError` (przejściowy); w `sign_in` → `SignInOutcome.BUSY`, w `sign_out` →
+  `SignOutOutcome.BUSY`. W procesie Chrome profilu ma tylko gospodarz. `restrict_directory` przy każdym starcie.
 - `ReaderPage` jest jedynym miejscem z selektorami i wywołaniami Playwright. Każdy błąd Playwright idzie przez
   `map_playwright_error` z `from None`, bo komunikat Playwright potrafi zawierać adres z `read_id`.
 
@@ -62,7 +84,7 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
   pomijają przywrócenia nawzajem. Start próby usuwa zaległe
   dokumenty bez przywracania ustawień. Każdy krok ma własny limit i `_cleanup_step` łapie każdy wyjątek; karta
   zamyka się w `finally`, a slot bramki głosu zwalnia zawsze. Zaległe kroki biegną też przy ostatnim `release` (jeśli
-  przeglądarka żyje) i w `sign_in` panelu. Trwała porażka: `logger.warning(CLEANUP_WARNING, steps=…)`, wiersz w SESJA
+  przeglądarka żyje); panel ich nie uruchamia. Trwała porażka: `logger.warning(CLEANUP_WARNING, steps=…)`, wiersz w SESJA
   i ostrzeżenie doctora.
 - `upload` dopisuje `DocumentTrace` każdego wgrania (`pressed_at` i `listed_by` jako czas zegarowy `time.time()`,
   skróty SHA-256 możliwych tytułów z `document_titles`) i zapisuje go przed „Upload”, a `read_id` z odpowiedzi
@@ -93,9 +115,13 @@ nagranie MP3 z czasami części (`PartTiming`). Cięcie na klipy robi wstrzykni�
   dźwięk) i pętla dołączania do CDP to czynności jednej próby.
 - Gdy Firebase App Check odrzuci przeglądarkę, strona pisze w konsoli `AppCheck: 403` / `appCheck/…` i nie otwiera
   strumienia, a odmowę zapamiętuje w profilu na dobę. `ReaderPage` łapie to z konsoli (`APP_CHECK_REFUSAL`) i
-  `raise_if_refused` od razu kończy próbę trwałym `TtsAuthError` (`refused_error`), bez czekania na Play.
+  `raise_if_refused` od razu kończy próbę trwałym `TtsAuthError` (`refused_error`), bez czekania na Play. Panel
+  pokazuje treść z sugestią w całości po polsku (wyjątkowo także `message` tego błędu jest po polsku), bez „App Check” i
+  kodu, z drogą Ustawienia → Lektor → Wyloguj, potem Zaloguj i logowanie w otwartym oknie, albo próbą po dobie,
+  albo innym silnikiem; bez `FALLBACK_HINT`, bo ElevenBytes bywa wyłączany. Danych strony po odmowie nic nie czyści
+  samo (Z1 specyfikacji): robi to tylko `sign_out` na kliknięcie właściciela.
 - Błąd Playwright przy starcie sterownika, dołączaniu i przygotowaniu kontekstu (`ChromeSession._attach`) staje się
-  `unavailable_error`, więc `sign_in` kończy się `FAILED`, a panel nie zostaje w stanie „zajęty”.
+  `unavailable_error`, więc `sign_out` kończy się `FAILED`, a panel nie zostaje w stanie „zajęty”.
 - Każde wywołanie strony w próbie (także `set_page_speed`, `press_play`, `check_page_speed`, `player_state`) idzie
   przez `unless_cancelled`, więc anulowanie nie czeka na limit Playwright; `evaluate` nie ma własnego limitu.
 - Blokadę startu, Chrome, kartę i nagrywanie próby ogranicza `request.deadline_s` (`within_deadline`): po jego
