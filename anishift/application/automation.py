@@ -9486,7 +9486,6 @@ def _subscription_details(record: SubscriptionRecord, row: SubscriptionRow) -> d
         "first_target": min(numbers, default=None),
         "last_target": max(numbers, default=None),
         "problem_target": None if problem is None else encode_view(problem),
-        "beyond_count": row.beyond_count,
         "last_check": None if record.last_check is None else encode_view(record.last_check),
         "specials": [] if record.mapping is None else [encode_view(item) for item in record.mapping.specials],
     }

@@ -158,16 +158,7 @@ def test_a_row_without_targets_counts_the_episodes_before_its_cut_point_as_aired
     assert subscription_row(record).aired == aired
 
 
-@pytest.mark.parametrize(("count", "beyond"), [(4, 6), (6, None), (None, None)])
-def test_a_row_names_the_last_target_beyond_the_catalogue_episode_count(count: int | None, beyond: int | None) -> None:
-    record: SubscriptionRecord = _record(episode_count=count, targets=tuple(_target(number) for number in range(3, 7)))
-
-    row: SubscriptionRow = subscription_row(record)
-
-    assert (row.episode_count, row.beyond_count) == (count, beyond)
-
-
-def test_a_stored_stale_episode_count_heals_on_the_next_read_and_clears_the_count_conflict() -> None:
+def test_a_stored_stale_episode_count_heals_on_the_next_read() -> None:
     stale: SubscriptionRecord = _record(
         episode_count=4, targets=tuple(_target(number, due=_NOW - _DAY) for number in range(1, 7))
     )
@@ -175,8 +166,62 @@ def test_a_stored_stale_episode_count_heals_on_the_next_read_and_clears_the_coun
 
     healed: SubscriptionRecord = merge_listing(stale, read, _NOW)
 
-    assert subscription_row(stale).beyond_count == 6
-    assert (healed.episode_count, subscription_row(healed).beyond_count) == (12, None)
+    assert healed.episode_count == 12
+    assert [item.number for item in healed.targets] == list(range(1, 7))
+
+
+def test_a_split_cour_schedule_keeps_targets_beyond_the_catalogue_episode_count() -> None:
+    record: SubscriptionRecord = _record(targets=tuple(_target(number, due=_NOW + _DAY) for number in range(7, 25)))
+    read: ListingRead = _read(_listing(*(_episode(number, _NOW + _DAY) for number in range(1, 25)), count=12))
+
+    merged: SubscriptionRecord = merge_listing(record, read, _NOW)
+
+    assert merged.episode_count == 12
+    assert set(range(7, 25)) <= {item.number for item in merged.targets}
+
+
+@pytest.mark.parametrize("state", [TargetState.AWAITING_AIRING, TargetState.DUE])
+def test_a_live_read_withdraws_an_untouched_target_the_catalogue_no_longer_lists(state: TargetState) -> None:
+    record: SubscriptionRecord = _record(targets=(_target(11, state), _target(12, state)))
+    read: ListingRead = _read(_listing(*(_episode(number, _NOW + _DAY) for number in range(1, 12)), count=11))
+
+    merged: SubscriptionRecord = merge_listing(record, read, _NOW)
+
+    numbers: set[int] = {item.number for item in merged.targets}
+    assert 11 in numbers
+    assert 12 not in numbers
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        replace(_target(12), attempts=1, started=1),
+        replace(_target(12), tried=("hash",)),
+        _target(12, TargetState.ATTEMPTING),
+        _target(12, TargetState.SATISFIED),
+        SubscriptionTarget(12, _NOW.isoformat(), TargetState.EXHAUSTED, MAX_ATTEMPTS, started=MAX_ATTEMPTS),
+    ],
+)
+def test_a_live_read_keeps_an_unlisted_target_with_history(target: SubscriptionTarget) -> None:
+    record: SubscriptionRecord = _record(targets=(target,))
+    read: ListingRead = _read(_listing(*(_episode(number, _NOW + _DAY) for number in range(1, 12)), count=11))
+
+    merged: SubscriptionRecord = merge_listing(record, read, _NOW)
+
+    assert 12 in {item.number for item in merged.targets}
+
+
+@pytest.mark.parametrize(
+    ("live", "warning", "listed"), [(False, None, 1), (True, "TITLE_CATALOG_FAILED", 1), (True, None, 0)]
+)
+def test_an_uncertain_read_withdraws_no_target(live: bool, warning: str | None, listed: int) -> None:
+    record: SubscriptionRecord = _record(targets=(_target(12, TargetState.AWAITING_AIRING, _NOW + _DAY),))
+    episodes: tuple[ListedEpisode, ...] = tuple(_episode(number, _NOW + _DAY) for number in range(1, listed + 1))
+    read: ListingRead = _read(_listing(*episodes, warning=warning, count=listed or None), live=live)
+
+    merged: SubscriptionRecord = merge_listing(record, read, _NOW)
+
+    assert 12 in {item.number for item in merged.targets}
 
 
 def test_a_migrated_row_waiting_for_review_names_its_pause() -> None:

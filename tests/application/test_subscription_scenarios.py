@@ -1028,7 +1028,8 @@ def test_a_target_beyond_a_shrunk_season_blocks_its_close_until_it_is_downloaded
         saved: WatchState = _stored(owner, world)
 
     row: dict[str, object] = cast("list[dict[str, object]]", listed.result["subscriptions"])[0]
-    assert (row["episode_count"], row["beyond_count"]) == (3, 4)
+    assert row["episode_count"] == 3
+    assert "beyond_count" not in row
     assert kept
     assert (saved.removed_subscription is not None) is (left == "removed")
     finished: list[str] = [
