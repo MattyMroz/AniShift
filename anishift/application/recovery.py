@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Final
 
 from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
 from anishift.application.control_views import cached_adapter
-from anishift.application.planner import rebind_translation
+from anishift.application.planner import rebind_settings
 from anishift.application.planning import ExecutionPlan
 from anishift.application.results import ProducedArtifact, TaskResult
 from anishift.errors import AniShiftError, ExecutionError
@@ -258,8 +258,8 @@ class RunJournal:
             raise
 
     def rebind(self, settings: RunSettingsSnapshot) -> None:
-        """Take the translation settings of *settings* for the remaining graph until `persist` saves them."""
-        self._checkpoint = replace(self._checkpoint, plan=rebind_translation(self.plan, settings))
+        """Take the translation and voice settings of *settings* for the remaining graph until `persist` saves them."""
+        self._checkpoint = replace(self._checkpoint, plan=rebind_settings(self.plan, settings))
 
     def persist(self) -> None:
         """Persist reconciled publication proof and rebound settings before accepting a resumed run."""

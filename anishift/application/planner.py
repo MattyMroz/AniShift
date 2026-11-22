@@ -105,6 +105,14 @@ _TRANSLATION_SETTINGS: Final[tuple[str, ...]] = (
 )  # fmt: skip
 """Run settings that choose how translation tasks run without shaping the planned graph."""
 
+_VOICE_SETTINGS: Final[tuple[str, ...]] = (
+    "tts_profile_id", "tts_max_retries", "tts_group_jobs", "tts_request_concurrency", "tts_is_network",
+    "tts_is_paid", "tts_model_id", "tts_voice_id", "tts_voice_label", "tts_allowed_voice_ids", "tts_native_rate",
+    "tts_native_volume", "tts_native_pitch", "tts_engine_options", "tts_vpn_enabled", "tts_postprocess_tempo",
+    "voice_mix_offset_db",
+)  # fmt: skip
+"""Run settings that choose the narrator voice and how its clips are recorded and mixed."""
+
 
 class _TrackKindView(Protocol):
     @property
@@ -279,26 +287,31 @@ def plan_manual(
     return _plan(ordered_groups, intents, settings, published=published, dialogue_font_unusable=dialogue_font_unusable)
 
 
-def rebind_translation(plan: ExecutionPlan, settings: RunSettingsSnapshot) -> ExecutionPlan:
-    """Return the plan whose translation settings and translation tasks follow *settings*."""
-    rebound: RunSettingsSnapshot = plan.settings.with_overrides(
-        {name: getattr(settings, name) for name in _TRANSLATION_SETTINGS}
-    )
-    return replace(
-        plan,
-        settings=rebound,
-        tasks=tuple(
-            replace(
-                task,
-                resource_key=_translation_resource_key(rebound),
-                is_network=rebound.translation_is_network,
-                is_paid=rebound.translation_is_paid,
-            )
-            if task.kind is TaskKind.TRANSLATE_SUBTITLES
-            else task
-            for task in plan.tasks
-        ),
-    )
+def rebind_settings(plan: ExecutionPlan, settings: RunSettingsSnapshot) -> ExecutionPlan:
+    """Return the remaining plan with the translation and, before any speech is recorded, voice of *settings*."""
+    names: tuple[str, ...] = _TRANSLATION_SETTINGS
+    if any(task.kind is TaskKind.SYNTHESIZE_SPEECH for task in plan.tasks):
+        names = (*names, *_VOICE_SETTINGS)
+    rebound: RunSettingsSnapshot = plan.settings.with_overrides({name: getattr(settings, name) for name in names})
+    return replace(plan, settings=rebound, tasks=tuple(_rebound_task(task, rebound) for task in plan.tasks))
+
+
+def _rebound_task(task: PlanTask, settings: RunSettingsSnapshot) -> PlanTask:
+    if task.kind is TaskKind.TRANSLATE_SUBTITLES:
+        return replace(
+            task,
+            resource_key=_translation_resource_key(settings),
+            is_network=settings.translation_is_network,
+            is_paid=settings.translation_is_paid,
+        )
+    if task.kind is TaskKind.SYNTHESIZE_SPEECH:
+        return replace(
+            task,
+            resource_key=_tts_resource_key(settings),
+            is_network=settings.tts_is_network,
+            is_paid=settings.tts_is_paid,
+        )
+    return task
 
 
 def _ordered_unique_groups(groups: Sequence[InspectedSourceGroup]) -> tuple[InspectedSourceGroup, ...]:
@@ -863,7 +876,7 @@ class _GroupPlanner:
             requires=(script,) if signs is None else (script, signs),
             produces=(manifest,),
             variant=f"narration-{timeline.value}",
-            resource_key=f"tts:{self.settings.tts_profile_id}",
+            resource_key=_tts_resource_key(self.settings),
             parameters=parameters,
             is_network=self.settings.tts_is_network,
             is_paid=self.settings.tts_is_paid,
@@ -2086,6 +2099,10 @@ def _translation_resource_key(settings: RunSettingsSnapshot) -> str:
     if settings.translation_profile_id == "llm":
         return f"llm:{settings.llm_profile_id}"
     return f"translation:{settings.translation_profile_id}"
+
+
+def _tts_resource_key(settings: RunSettingsSnapshot) -> str:
+    return f"tts:{settings.tts_profile_id}"
 
 
 def _artifact_path_key(artifact: Artifact) -> tuple[str, str, str]:

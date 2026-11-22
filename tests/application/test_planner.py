@@ -30,7 +30,7 @@ from anishift.application.intents import (
     SubtitleSourcePolicy,
     TranslationAction,
 )
-from anishift.application.planner import plan_auto, plan_manual
+from anishift.application.planner import plan_auto, plan_manual, rebind_settings
 from anishift.application.planning import (
     ExecutionPlan,
     PlanTask,
@@ -365,6 +365,63 @@ def test_narration_rebuild_reuses_full_translation_without_original_subtitles() 
     assert plan.settings.tts_voice_id == "replacement-voice"
     assert plan.settings.voice_mix_offset_db == 2.0
     assert settings == _settings()
+
+
+def _narration_plan() -> ExecutionPlan:
+    video: Artifact = _artifact(ArtifactKind.VIDEO_MKV, "1.mkv")
+    full: Artifact = _artifact(ArtifactKind.FULL_PL, "1.pl.ass", language="pol", subtitle_format="ass")
+    products: ProductIntent = ProductIntent(frozenset({ProductKind.NARRATION_AUDIO}))
+    return plan_auto((_group(video, full),), _preset(products), _settings())
+
+
+def _current_voice() -> RunSettingsSnapshot:
+    return replace(
+        _settings(),
+        tts_profile_id="elevenreader",
+        tts_voice_id="fronczewski",
+        tts_postprocess_tempo=1.35,
+        voice_mix_offset_db=2.5,
+        tts_group_jobs=2,
+    )
+
+
+def test_rebind_before_speech_takes_the_current_engine_and_voice() -> None:
+    plan: ExecutionPlan = rebind_settings(_narration_plan(), _current_voice())
+
+    synthesis: PlanTask = _task(plan, TaskKind.SYNTHESIZE_SPEECH)
+    assert synthesis.resource_key == "tts:elevenreader"
+    assert (plan.settings.tts_profile_id, plan.settings.tts_voice_id) == ("elevenreader", "fronczewski")
+    assert (plan.settings.tts_postprocess_tempo, plan.settings.voice_mix_offset_db) == (1.35, 2.5)
+    assert plan.settings.tts_group_jobs == 2
+
+
+def test_rebind_after_speech_keeps_the_voice_that_recorded_the_clips() -> None:
+    planned: ExecutionPlan = _narration_plan()
+    synthesis: PlanTask = _task(planned, TaskKind.SYNTHESIZE_SPEECH)
+    synthesis_id: str = synthesis.task_id
+    recorded: ExecutionPlan = replace(
+        planned,
+        artifacts=tuple(
+            replace(artifact, state=ArtifactState.READY, path=Path(f"{artifact.artifact_id}.json"))
+            if artifact.artifact_id in synthesis.produces
+            else artifact
+            for artifact in planned.artifacts
+        ),
+        tasks=tuple(
+            replace(task, depends_on=tuple(item for item in task.depends_on if item != synthesis_id))
+            for task in planned.tasks
+            if task.task_id != synthesis_id
+        ),
+        groups=tuple(
+            replace(group, task_ids=tuple(item for item in group.task_ids if item != synthesis_id))
+            for group in planned.groups
+        ),
+    )
+
+    plan: ExecutionPlan = rebind_settings(recorded, _current_voice())
+
+    assert (plan.settings.tts_profile_id, plan.settings.tts_voice_id) == ("edge", "default")
+    assert (plan.settings.tts_postprocess_tempo, plan.settings.voice_mix_offset_db) == (1.0, 0.0)
 
 
 def test_export_rebuild_does_not_need_deleted_translation_or_tts_inputs() -> None:
