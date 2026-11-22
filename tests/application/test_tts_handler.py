@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import wave
 from collections.abc import Callable
@@ -507,10 +508,13 @@ def test_tts_handler_app_check_refusal_tells_owner_in_polish_to_sign_out_and_in_
 
     shown: str = public_error(caught.value)
     assert caught.value.context.code is ErrorCode.TTS_AUTH_FAILED
-    assert "ElevenReader odrzucił przeglądarkę AniShift i blokuje ją przez dobę." in shown
+    assert shown.startswith("ElevenReader odrzucił przeglądarkę AniShift. Blokada trwa dobę.")
     assert "Ustawienia → Lektor → Wyloguj (wyczyść profil przeglądarki)" in shown
     assert "Zaloguj / sprawdź sesję" in shown
     assert "spróbuj ponownie po dobie" in shown
+    assert "inny silnik lektora" in shown
+    assert shown.count("odrzucił") == 1
+    assert not re.search(r"(?i)\b(the|and|or|to|of|is|refused|browser|session|sign|engine|ElevenBytes)\b", shown)
     assert not any(technical in shown for technical in ("App Check", "AppCheck", "403", "<path>"))
 
 

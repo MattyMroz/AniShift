@@ -100,7 +100,7 @@ logger = get_logger(__name__)
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 FALLBACK_HINT: Final[str] = "Albo przełącz silnik na ElevenBytes w Ustawienia → Lektor."
-"""Closing sentence of every permanent-failure suggestion."""
+"""Closing sentence of the permanent-failure suggestions, except the browser refusal."""
 
 SIGN_IN_HINT: Final[str] = f"Zaloguj się w Ustawienia → Lektor → Zaloguj / sprawdź sesję. {FALLBACK_HINT}"
 """Suggestion for a signed-out or rejected session."""
@@ -210,11 +210,11 @@ def refused_error(console: str) -> TtsAuthError:
     """Return the permanent error for a browser the site's App Check refused; the page then blocks it for a day."""
     context: ErrorContext = ErrorContext(
         code=ErrorCode.TTS_AUTH_FAILED,
-        message="ElevenReader refused the AniShift browser",
+        message="ElevenReader odrzucił przeglądarkę AniShift",
         suggestion=(
-            "ElevenReader odrzucił przeglądarkę AniShift i blokuje ją przez dobę. Wyloguj się w Ustawienia → Lektor → "
-            "Wyloguj (wyczyść profil przeglądarki), potem zaloguj przez Zaloguj / sprawdź sesję albo spróbuj ponownie "
-            f"po dobie. {FALLBACK_HINT}"
+            "Blokada trwa dobę. Wyloguj się w Ustawienia → Lektor → Wyloguj (wyczyść profil przeglądarki), potem "
+            "zaloguj przez Zaloguj / sprawdź sesję albo spróbuj ponownie po dobie. Możesz też wybrać inny silnik "
+            "lektora w Ustawienia → Lektor."
         ),
         details={"console": console},
     )

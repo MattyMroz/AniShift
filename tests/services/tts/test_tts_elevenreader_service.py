@@ -358,7 +358,7 @@ def test_synthesize_document_app_check_refusal_fails_at_once_without_play(
 ) -> None:
     site = FakeSite(texts=TEXTS, refusal="AppCheck: 403 error. Attempts allowed again after 01d:00m:00s")
 
-    with pytest.raises(TtsAuthError, match="refused the AniShift browser") as error:
+    with pytest.raises(TtsAuthError, match="odrzucił przeglądarkę AniShift") as error:
         _run(_record(engine_for(site), _request(tmp_path)))
 
     assert error.value.context.details == {"console": site.refusal}
