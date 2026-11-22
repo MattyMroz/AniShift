@@ -26,7 +26,7 @@ from anishift.utils.logger import get_logger
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-__all__ = ["legacy_reference", "migrate", "migrate_to_five"]
+__all__ = ["legacy_reference", "migrate", "migrate_from_four"]
 
 logger = get_logger(__name__)
 
@@ -92,7 +92,7 @@ def migrate(state: WatchState, legacy: Sequence[Subscription], now: datetime) ->
     )
 
 
-def migrate_to_five(state: WatchState) -> WatchState:
+def migrate_from_four(state: WatchState) -> WatchState:
     """Return schema 4 *state* as the current schema, replacing only the former transfer stall default."""
     policy: AutomationPolicy = state.policy
     if policy.transfer_stall_s == _SCHEMA_FOUR_STALL_S:

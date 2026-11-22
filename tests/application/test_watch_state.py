@@ -157,7 +157,6 @@ def _state() -> WatchState:
                 origin=RequestOrigin.BACKGROUND,
                 source_selection=SourceSelection.MANUAL,
                 rebuild=RebuildRequest(frozenset({ProductKind.NARRATION_AUDIO})),
-                settings={"llm_max_concurrency": 4, "tts_speed": 1.25, "burn": False, "voice": None},
                 state=RequestState.RUNNING,
                 attempts=1,
                 accepted_at=_TIMESTAMP,
@@ -910,14 +909,16 @@ def _saved_document(tmp_path: Path, state: WatchState) -> dict[str, object]:
     return cast("dict[str, object]", json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8")))
 
 
-def test_schema_five_roundtrip(tmp_path: Path) -> None:
+def test_the_current_schema_roundtrip(tmp_path: Path) -> None:
     store: WatchStateStore = _store(tmp_path)
     state: WatchState = _schema_five_state()
 
     store.save(state)
 
     assert store.load() == state
-    assert json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))["schema_version"] == 5
+    written: dict[str, object] = json.loads((tmp_path / WATCH_STATE_FILE_NAME).read_text(encoding="utf-8"))
+    assert written["schema_version"] == WATCH_STATE_SCHEMA_VERSION
+    assert all("settings" not in request for request in cast("list[dict[str, object]]", written["requests"]))
 
 
 @pytest.mark.parametrize("tsukihime_id", [None, 77])

@@ -59,7 +59,7 @@ from anishift.application.intents import (
     TranslationAction,
 )
 from anishift.application.release_quality import PolishClass, ResolutionClass
-from anishift.application.subscription_migration import migrate, migrate_to_five
+from anishift.application.subscription_migration import migrate, migrate_from_four
 from anishift.application.subscription_targets import (
     Blocker,
     PauseReason,
@@ -88,8 +88,6 @@ if TYPE_CHECKING:
         FileReservation,
         FileStamp,
         NotificationKey,
-        SettingsSnapshot,
-        SettingValue,
         SourceFingerprint,
     )
 
@@ -303,7 +301,6 @@ _REQUEST_KEYS: Final[frozenset[str]] = frozenset(
         "origin",
         "source_selection",
         "rebuild",
-        "settings",
         "state",
         "attempts",
         "accepted_at",
@@ -556,7 +553,7 @@ class WatchStateStore:
         legacy: tuple[Subscription, ...] = () if four else _decode_legacy(legacy_content)
         try:
             imported: WatchState = stored if four else migrate(stored, legacy, self._clock())
-            migrated: WatchState = migrate_to_five(imported)
+            migrated: WatchState = migrate_from_four(imported)
             return _decode_state(json.loads(json.dumps(_encode_state(migrated))))
         except (KeyError, TypeError, ValueError) as problem:
             raise _subscriptions_invalid() from problem
@@ -810,7 +807,6 @@ def _encode_request(request: ProcessingRequest) -> dict[str, object]:
         "origin": request.origin.value,
         "source_selection": request.source_selection.value,
         "rebuild": None if request.rebuild is None else sorted(product.value for product in request.rebuild.products),
-        "settings": dict(request.settings),
         "state": request.state.value,
         "attempts": request.attempts,
         "accepted_at": request.accepted_at,
@@ -1486,7 +1482,6 @@ def _decode_request(raw: object) -> ProcessingRequest:
         origin=RequestOrigin(_text(document, "origin")),
         source_selection=SourceSelection(_text(document, "source_selection")),
         rebuild=None if rebuild is None else RebuildRequest(_decode_products(rebuild)),
-        settings=_decode_settings(document["settings"]),
         state=RequestState(_text(document, "state")),
         attempts=_whole(document, "attempts"),
         accepted_at=_text(document, "accepted_at"),
@@ -1805,20 +1800,6 @@ def _decode_texts(raw: object, label: str) -> tuple[str, ...]:
 
 def _decode_whole_numbers(raw: object, label: str) -> tuple[int, ...]:
     return tuple(_as_whole(value, label) for value in _list(raw, label))
-
-
-def _decode_settings(raw: object) -> SettingsSnapshot:
-    document: dict[str, object] = _strict_mapping(raw, "request settings")
-    return {key: _setting_value(value) for key, value in document.items()}
-
-
-def _setting_value(value: object) -> SettingValue:
-    if isinstance(value, list):
-        return tuple(_setting_value(item) for item in value)
-    if value is None or isinstance(value, str | int | float | bool):
-        return value
-    msg = "A request setting must be a scalar or an ordered collection"
-    raise TypeError(msg)
 
 
 def _decode_outcome(raw: object) -> CommandOutcome:

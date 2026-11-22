@@ -98,7 +98,6 @@ def _request(
         origin=RequestOrigin.USER,
         source_selection=SourceSelection.AUTO,
         rebuild=None,
-        settings={"llm_max_concurrency": 4},
         state=state,
         attempts=attempts,
         accepted_at=_TIMESTAMP,
@@ -361,18 +360,6 @@ def test_an_accepted_command_identifier_is_recorded_once() -> None:
 
     assert repeated is recorded
     assert recorded.command_receipts == (receipt,)
-
-
-@pytest.mark.parametrize("secret", ["palantir_token", "deepl_api_key", "qbittorrent_password", "client_secret"])
-def test_a_request_refuses_a_settings_snapshot_carrying_a_secret(secret: str) -> None:
-    with pytest.raises(ValueError, match="secret"):
-        replace(_request(), settings={secret: "abc"})
-
-
-def test_a_request_accepts_a_setting_whose_name_only_resembles_a_secret() -> None:
-    request: ProcessingRequest = replace(_request(), settings={"llm_max_output_tokens": 32000, "keyframe_gap": 2})
-
-    assert request.settings["llm_max_output_tokens"] == 32000
 
 
 def test_a_settled_configuration_has_nothing_to_report_before_a_transition() -> None:

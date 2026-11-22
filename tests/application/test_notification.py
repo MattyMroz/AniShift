@@ -520,7 +520,6 @@ def test_notification_refuses_changed_missing_or_unidentified_results_with_a_vis
         product.origin,
         SourceSelection.MANUAL,
         None,
-        {},
         RequestState.SUCCEEDED,
         1,
         "2026-09-17T12:00:00+00:00",

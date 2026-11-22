@@ -33,6 +33,15 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `run_settings()`, liczy z niego klucz zasobu (`scheduler_contracts.resource_key`), limit i znak `inflight`
   (`is_remote`), a handler dostaje ten snapshot; task w toku kończy na swoim, każdy nierozpoczęty bierze bieżące,
   także w trwającym runie. Zmiana preferencji w `AppService` budzi koordynatora (`refresh`).
+- Ponowienie (P) i wznowienie po restarcie to jedna droga: `AppService.replan` planuje zapisane intencje
+  niedokończonych grup na bieżących ustawieniach (tylko z plików przyjętych w checkpoincie; grupa skończona zostaje z
+  checkpointu), a `RunJournal.rebase` (`recovery.rebase_plan`) zostawia z listy `done` checkpointu tylko krok, który
+  świeży plan ma identyczny (bez `depends_on`) i którego wejścia są źródłami albo wynikami zostawionych kroków. Bez
+  zmiany ustawień wynik równa się dziennikowi; zmiana profilu audio robi od nowa MIX i dalej, zmiana języka extract i
+  dalej, zmiana modelu czy silnika niczego gotowego nie unieważnia. `_admit` rebazuje dziennik ponownie z
+  `_Preview.fresh`, a `STALE_PREVIEW` porównuje tylko taski. Zmiana ustawienia kształtującego graf
+  (`audio_output_profile`, priorytety języków) przy `reload_settings` pauzuje aktywne runy (`pause_run`): taski w toku
+  kończą, run kończy się `PAUSED` i wraca przez tę samą drogę.
 - Rezerwacje należą do sesji klientów jednej instancji: owner porzuca je przy wczytaniu stanu (także gdy zapis
   sprzątania zawiedzie) i po rozłączeniu panelu, które unieważnia też podglądy.
 - Zdarzenia plików scalają się w jednym powiadomieniu; ponad 4096 ścieżek zastępuje pełne uzgodnienie. Inspekcja w
@@ -48,8 +57,8 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   przerwania zwrócił wynik, jest zatwierdzany normalnie; gotowy wynik nie przepada. Anulowanie
   użytkownika (X) anuluje token runu i zostaje `CANCELLED` (blokuje Auto); `pause_runs` niczego nie przerywa. Staging
   zatrzymanych runów jest chroniony przed cleanup. `scheduler.py`, `recovery.py`, `service.py`, `sessions.py`
-- `ProcessingRequest` zachowuje pełny `RunSettingsSnapshot`, `GroupIntent` i `RebuildRequest`; listy z JSON wracają do
-  krotek, pola z segmentem sekretu są odrzucane, stare zlecenia bez `intents` się wczytują. `ACCEPTED` może obejmować
+- `ProcessingRequest` zachowuje `GroupIntent` i `RebuildRequest`, nie ustawienia; stare zlecenia bez `intents` się
+  wczytują. Ścieżkę produktu lektora daje plan z dziennika (profil zmiksowanej narracji). `ACCEPTED` może obejmować
   wykonujące się taski; aktywność dowodzą publiczne zdarzenia postępu, `run_progress` ma też próby terminalne.
 - `recipe_update` zmienia tylko zwalidowaną różnicę i zapisuje receipt z `WatchState.recipes`. Video to `AutoPreset`,
   subs dziedziczy po video, cover po audiobook. Podgląd utrwala preferencje receptury z planem; dopuszczenie i
@@ -70,7 +79,8 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `.bak`, kopią bajtów tylko bez dowiązań, potem `replace`); hooki testów na `os.link` reagują tylko na dowiązania publikacji, nie na `state.json*`.
   Pola pydantic kodują `encode_view`/`decode_view` z buforowanym adapterem; `TypeAdapter` na wywołanie kosztuje ~1 ms.
   Uszkodzony JSON, nieznany klucz i nieobsługiwana wersja dają `ConfigError`, nigdy pusty stan; brak pliku to stan
-  domyślny. Migracja starszej wersji idzie raz z kopią `state.json.v<wersja>.bak`; przed pierwszym zapisem schematów
+  domyślny. Schematu 5 produkt nie czyta (zlecenia niosły w nim `settings`). Migracja schematów 1–4 idzie raz z kopią
+  `state.json.v<wersja>.bak`; przed pierwszym zapisem schematów
   3/4/5 kopiuje `state.json` i `subscriptions.json` do `*.e2-/e3-/a1-migration.bak` (bez nadpisywania; błąd kopii to
   `ConfigError` `IO_ERROR` bez zapisu). Walidacja jest wersjonowana — pola wymagane w nowej wersji są zakazane w
   starszej, więc nowe pole to podbicie `WATCH_STATE_SCHEMA_VERSION`, walidator i migracja. Trwałe ścieżki przechodzą

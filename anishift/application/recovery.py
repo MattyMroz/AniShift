@@ -10,12 +10,11 @@ from typing import TYPE_CHECKING, Final
 
 from anishift.application.artifacts import Artifact, ArtifactLifetime, ArtifactState
 from anishift.application.control_views import cached_adapter
-from anishift.application.planning import ExecutionPlan
+from anishift.application.planning import ExecutionPlan, PlanTask
 from anishift.application.results import ProducedArtifact, TaskResult
 from anishift.errors import AniShiftError, ExecutionError
 
 if TYPE_CHECKING:
-    from anishift.application.planning import PlanTask
     from anishift.application.ready import ReadyMove
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -47,6 +46,7 @@ class _Checkpoint:
     pending: TaskResult | None = None
     staged: _FileProof | None = None
     inflight: frozenset[str] = frozenset()
+    done: tuple[PlanTask, ...] = ()
 
 
 class RunJournal:
@@ -256,8 +256,22 @@ class RunJournal:
             self._failed = True
             raise
 
+    def rebase(self, fresh: ExecutionPlan) -> None:
+        """Take *fresh* as the graph, keeping each finished step it plans identically, until `persist` saves it."""
+        plan, done = rebase_plan(self.plan, self._checkpoint.done, fresh)
+        ready: frozenset[str] = frozenset(
+            artifact.artifact_id for artifact in plan.artifacts if artifact.state is ArtifactState.READY
+        )
+        self._checkpoint = replace(
+            self._checkpoint,
+            plan=plan,
+            done=done,
+            outputs=tuple(item for item in self._checkpoint.outputs if item.artifact_id in ready),
+            inflight=self._checkpoint.inflight & frozenset(task.task_id for task in plan.tasks),
+        )
+
     def persist(self) -> None:
-        """Persist reconciled publication proof before accepting a resumed run."""
+        """Persist reconciled publication proof and the rebased graph before accepting a resumed run."""
         self._require_writable()
         self._save(self._checkpoint)
 
@@ -333,6 +347,7 @@ def _relocated_proof(proof: _FileProof, paths: dict[Path | None, Path | None]) -
 def _completed(checkpoint: _Checkpoint, result: TaskResult) -> _Checkpoint:
     paths: frozenset[Path] = frozenset(output.path for output in result.outputs)
     outputs: tuple[_FileProof, ...] = tuple(item for item in checkpoint.outputs if item.path not in paths)
+    finished: PlanTask = next(task for task in checkpoint.plan.tasks if task.task_id == result.task_id)
     return replace(
         checkpoint,
         plan=_remaining(checkpoint.plan, result),
@@ -341,7 +356,47 @@ def _completed(checkpoint: _Checkpoint, result: TaskResult) -> _Checkpoint:
         pending=None,
         staged=None,
         inflight=checkpoint.inflight - {result.task_id},
+        done=(*checkpoint.done, replace(finished, depends_on=())),
     )
+
+
+def rebase_plan(
+    saved: ExecutionPlan, done: tuple[PlanTask, ...], fresh: ExecutionPlan
+) -> tuple[ExecutionPlan, tuple[PlanTask, ...]]:
+    """Return *fresh* without the finished steps it plans identically over sources or other kept steps."""
+    finished: dict[str, PlanTask] = {task.task_id: task for task in done}
+    results: dict[str, Artifact] = {artifact.artifact_id: artifact for artifact in saved.artifacts}
+    producers: dict[str, str] = {artifact_id: task.task_id for task in fresh.tasks for artifact_id in task.produces}
+    kept: dict[str, PlanTask] = {}
+    for task in fresh.tasks:
+        if finished.get(task.task_id) != replace(task, depends_on=()):
+            continue
+        made: bool = all(
+            artifact_id in results and results[artifact_id].state in {ArtifactState.READY, ArtifactState.ABSENT}
+            for artifact_id in task.produces
+        )
+        kept_inputs: bool = all(
+            producers.get(artifact_id) is None or producers[artifact_id] in kept for artifact_id in task.requires
+        )
+        if made and kept_inputs:
+            kept[task.task_id] = finished[task.task_id]
+    plan: ExecutionPlan = replace(
+        fresh,
+        artifacts=tuple(
+            results[artifact.artifact_id] if producers.get(artifact.artifact_id) in kept else artifact
+            for artifact in fresh.artifacts
+        ),
+        tasks=tuple(
+            replace(task, depends_on=tuple(item for item in task.depends_on if item not in kept))
+            for task in fresh.tasks
+            if task.task_id not in kept
+        ),
+        groups=tuple(
+            replace(group, task_ids=tuple(item for item in group.task_ids if item not in kept))
+            for group in fresh.groups
+        ),
+    )
+    return plan, tuple(kept.values())
 
 
 def _remaining(plan: ExecutionPlan, result: TaskResult) -> ExecutionPlan:

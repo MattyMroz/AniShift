@@ -272,6 +272,46 @@ def plan_manual(
     return _plan(ordered_groups, intents, settings, published=published, dialogue_font_unusable=dialogue_font_unusable)
 
 
+def replan(  # noqa: PLR0913 - every planning input stays an explicit call-site choice
+    groups: Sequence[InspectedSourceGroup],
+    saved: ExecutionPlan,
+    settings: RunSettingsSnapshot,
+    *,
+    rebuild: RebuildRequest | None = None,
+    published: frozenset[Path] | None = None,
+    dialogue_font_unusable: bool = False,
+) -> ExecutionPlan:
+    """Plan the unfinished groups of a saved run again under *settings*, over only the files it was accepted with."""
+    unfinished: dict[str, GroupIntent] = {group.group_id: group.intent for group in saved.groups if group.task_ids}
+    accepted: frozenset[str] = frozenset(artifact.artifact_id for artifact in saved.artifacts)
+    known: tuple[InspectedSourceGroup, ...] = tuple(
+        replace(group, artifacts=tuple(artifact for artifact in group.artifacts if artifact.artifact_id in accepted))
+        for group in groups
+        if group.group_id in unfinished
+    )
+    fresh: ExecutionPlan = _plan(
+        _ordered_unique_groups(known),
+        unfinished,
+        settings,
+        rebuild=rebuild,
+        published=published,
+        dialogue_font_unusable=dialogue_font_unusable,
+    )
+    planned: dict[str, GroupPlan] = {group.group_id: group for group in fresh.groups}
+    group_plans: tuple[GroupPlan, ...] = tuple(planned.get(group.group_id, group) for group in saved.groups)
+    return ExecutionPlan(
+        groups=group_plans,
+        artifacts=tuple(
+            artifact
+            for group in group_plans
+            for artifact in (fresh.artifacts if group.group_id in planned else saved.artifacts)
+            if artifact.group_id == group.group_id
+        ),
+        tasks=fresh.tasks,
+        problems=tuple(problem for group in group_plans for problem in group.problems),
+    )
+
+
 def _ordered_unique_groups(groups: Sequence[InspectedSourceGroup]) -> tuple[InspectedSourceGroup, ...]:
     group_ids: tuple[str, ...] = tuple(group.group_id for group in groups)
     if len(group_ids) != len(set(group_ids)):

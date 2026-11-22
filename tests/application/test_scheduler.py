@@ -1611,3 +1611,34 @@ def test_the_remote_mark_follows_the_engine_a_task_was_sent_with(tmp_path: Path)
             assert handle.result(timeout=5.0).succeeded
     finally:
         coordinator.close()
+
+
+def test_pausing_one_run_lets_its_active_task_finish_and_leaves_the_other_run_running(tmp_path: Path) -> None:
+    paused_plan: ExecutionPlan = _plan(
+        tmp_path, (_TaskSpec("paused", "active"), _TaskSpec("paused", "waiting", ("active",)))
+    )
+    other_plan: ExecutionPlan = _plan(tmp_path, (_TaskSpec("other", "other-task"),))
+    hold: threading.Barrier = threading.Barrier(2)
+    coordinator: GraphCoordinator = GraphCoordinator(_settings)
+    try:
+        with ExitStack() as stack:
+            paused, paused_handler, _ = _submit(
+                coordinator,
+                stack,
+                tmp_path,
+                "run-paused",
+                paused_plan,
+                lambda run_root: _FakeHandler(run_root, barriers={"active": hold}),
+            )
+            assert _wait_until(lambda: "active" in paused_handler.started)
+            coordinator.pause_run("run-paused")
+            other, other_handler, _ = _submit(coordinator, stack, tmp_path, "run-other", other_plan, _FakeHandler)
+            hold.wait(timeout=5)
+
+            held: RunResult = paused.result(timeout=5.0)
+            assert held.paused
+            assert paused_handler.calls == ["active"]
+            assert other.result(timeout=5.0).succeeded
+            assert other_handler.calls == ["other-task"]
+    finally:
+        coordinator.close()

@@ -253,6 +253,15 @@ class GraphCoordinator:
             self._signal += 1
             self._condition.notify_all()
 
+    def pause_run(self, run_id: str) -> None:
+        """Hold the remaining tasks of one run while its active ones finish, then end it paused."""
+        with self._condition:
+            for context in (*self._contexts.values(), *self._inbox):
+                if context.run_id == run_id:
+                    context.pausing = True
+            self._signal += 1
+            self._condition.notify_all()
+
     def resume(self) -> None:
         """Admit tasks again after a pause, staying held when the coordinator is already closing."""
         with self._condition:
@@ -485,6 +494,8 @@ class GraphCoordinator:
             if context is None:
                 entries.remove(entry)
                 continue
+            if context.pausing:
+                continue
             if background_admitted or not context.automatic:
                 admissible.append(entry)
         return min(admissible) if admissible else None
@@ -676,7 +687,7 @@ class GraphCoordinator:
 
     def _pause_context(self, context: SchedulerRuntime) -> bool:
         with self._condition:
-            if not self._draining:
+            if not self._draining and not context.pausing:
                 return False
             if self._closing:
                 self._interrupt_active(context)

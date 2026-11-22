@@ -193,6 +193,7 @@ class SchedulerRuntime:
     pending_publications: dict[str, PendingPublication] = field(default_factory=dict)
     automatic: bool = False
     journal: RunJournal | None = None
+    pausing: bool = False
 
 
 class QueuedProgressSink:

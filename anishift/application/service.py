@@ -33,6 +33,7 @@ from anishift.application.intents import (
 )
 from anishift.application.planner import plan_auto as build_auto_plan
 from anishift.application.planner import plan_manual as build_manual_plan
+from anishift.application.planner import replan as build_replan
 from anishift.application.planning import ExecutionPlan, ProcessingOrderPolicy, RunSettingsSnapshot
 from anishift.application.results import RunResult
 from anishift.application.scheduler import GraphCoordinator, RunHandle
@@ -425,6 +426,25 @@ class AppService:
             dialogue_font_unusable=_dialogue_font_error(settings.dialogue_font_file) is not None,
         )
 
+    def replan(
+        self,
+        groups: Sequence[InspectedSourceGroup],
+        saved: ExecutionPlan,
+        *,
+        rebuild: RebuildRequest | None = None,
+        published: frozenset[Path] | None = None,
+    ) -> ExecutionPlan:
+        """Plan the saved intents of an unfinished run again under the current settings."""
+        settings: RunSettingsSnapshot = self.run_settings()
+        return build_replan(
+            groups,
+            saved,
+            settings,
+            rebuild=rebuild,
+            published=published,
+            dialogue_font_unusable=_dialogue_font_error(settings.dialogue_font_file) is not None,
+        )
+
     def execute(self, plan: ExecutionPlan, sink: RunEventSink) -> RunResult:
         """Execute one accepted immutable plan and wait for its complete result."""
         handle: RunHandle = self.submit_plan(plan, sink, origin=RequestOrigin.USER)
@@ -503,6 +523,10 @@ class AppService:
     def resume_runs(self) -> None:
         """Admit graph tasks again after a pause."""
         self._graph_coordinator().resume()
+
+    def pause_run(self, run_id: str) -> None:
+        """Let the active tasks of one run finish and end it paused, so it resumes under a new plan."""
+        self._graph_coordinator().pause_run(run_id)
 
     def retain_runs(self, run_ids: Sequence[str]) -> None:
         """Protect durable unfinished requests from orphaned-tmp cleanup."""

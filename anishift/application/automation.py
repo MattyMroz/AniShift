@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import Enum, auto
 from functools import partial
@@ -267,7 +267,6 @@ if TYPE_CHECKING:
         FileStamp,
         LegacyOrder,
         NotificationKey,
-        SettingsSnapshot,
         SourceFingerprint,
     )
     from anishift.application.episode_selection import AniZipMapping, Franchise, FranchiseEntry
@@ -712,6 +711,12 @@ class _Preview:
     recovering: bool = False
     retry: bool = True
     recipe: RecipePreferences = field(default_factory=RecipePreferences)
+    fresh: ExecutionPlan | None = None
+    """Plan of a resumed run under the current settings, rebased onto its checkpoint again at admission."""
+
+
+type _Planned = tuple[ExecutionPlan, tuple[InspectedSourceGroup, ...], RebuildRequest | None, ExecutionPlan | None]
+"""Previewed plan, its groups, its rebuild and, for a resumed run, the fresh plan it was rebased from."""
 
 
 @dataclass(slots=True)
@@ -3324,14 +3329,10 @@ class AutomationOwner:
         if client_id is None or origin is None or selection is None:
             return _invalid("A preview needs a `client_id`, a known `origin` and `source_selection`")
         recipes: RecipePreferences = self._state.recipes
-        planned: tuple[ExecutionPlan, tuple[InspectedSourceGroup, ...], RebuildRequest | None] | None = self._plan(
-            request,
-            selection,
-            recipes,
-        )
+        planned: _Planned | None = self._plan(request, selection, recipes)
         if planned is None:
             return ControlResponse.refused(ControlErrorCode.INVALID_PAYLOAD, _NOT_PLANNABLE)
-        plan, groups, rebuild = planned
+        plan, groups, rebuild, fresh = planned
         preview = _Preview(
             preview_id=f"preview-{token_hex(_ID_BYTES)}",
             client_id=client_id,
@@ -3348,6 +3349,7 @@ class AutomationOwner:
             file_version=version,
             resume_run_id=_text(request.payload, "resume_run_id"),
             recipe=recipes,
+            fresh=fresh,
         )
         with self._previews_lock:
             if request.session_id is not None and request.session_id not in self._sessions:
@@ -3371,7 +3373,7 @@ class AutomationOwner:
         request: ControlRequest,
         selection: SourceSelection,
         recipes: RecipePreferences,
-    ) -> tuple[ExecutionPlan, tuple[InspectedSourceGroup, ...], RebuildRequest | None] | None:
+    ) -> _Planned | None:
         try:
             payload: Mapping[str, object] = request.payload
             workspace: InspectedWorkspace = self._service.discover()
@@ -3386,7 +3388,14 @@ class AutomationOwner:
                 rebuild: RebuildRequest | None = (
                     decode_intent(RebuildRequest, payload["rebuild"]) if payload.get("rebuild") is not None else None
                 )
-                return journal.plan, tuple(selected[group.group_id] for group in journal.plan.groups), rebuild
+                resumed: tuple[InspectedSourceGroup, ...] = tuple(
+                    selected[group.group_id] for group in journal.plan.groups
+                )
+                fresh: ExecutionPlan = self._service.replan(
+                    resumed, journal.plan, rebuild=rebuild, published=self._published_products()
+                )
+                journal.rebase(fresh)
+                return journal.plan, resumed, rebuild, fresh
             registrations: tuple[dict[str, object], ...] = _external_sources(payload)
             for entry in registrations:
                 registered: ControlResponse = self._register_external(
@@ -3402,7 +3411,7 @@ class AutomationOwner:
         except (AniShiftError, OSError, KeyError, TypeError, ValueError) as problem:
             logger.warning("A preview could not be planned", error_class=type(problem).__name__)
             return None
-        return plan, groups, rebuild
+        return plan, groups, rebuild, None
 
     def _plan_selection(
         self,
@@ -3541,16 +3550,18 @@ class AutomationOwner:
             previous is None or previous.state is RequestState.SUCCEEDED or run_id in self._service.active_run_ids()
         ):
             return _refuse(RefusalReason.NOT_RESUMABLE)
-        journal: RunJournal = (
-            RunJournal.load(self._store.run_path(run_id))
-            if previous is not None
-            else RunJournal.create(
+        journal: RunJournal
+        if previous is None:
+            journal = RunJournal.create(
                 self._store.run_path(run_id), preview.plan, run_tmp_dir(self._service.workspace_root, run_id)
             )
-        )
-        if journal.plan != preview.plan:
-            return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _STALE_PREVIEW)
-        if previous is not None:
+        else:
+            journal = RunJournal.load(self._store.run_path(run_id))
+            if preview.fresh is None:
+                return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _STALE_PREVIEW)
+            journal.rebase(preview.fresh)
+            if journal.plan.tasks != preview.plan.tasks:
+                return ControlResponse.refused(ControlErrorCode.STALE_PREVIEW, _STALE_PREVIEW)
             journal.persist()
         accepted = ProcessingRequest(
             request_id=run_id,
@@ -3560,7 +3571,6 @@ class AutomationOwner:
             origin=preview.origin,
             source_selection=preview.source_selection,
             rebuild=preview.rebuild,
-            settings=_settings_snapshot(self._service.run_settings()),
             state=RequestState.ACCEPTED,
             attempts=previous.attempts + (1 if preview.retry else 0) if previous is not None else 1,
             accepted_at=self._now(),
@@ -3606,7 +3616,7 @@ class AutomationOwner:
         submitted: bool = False
         try:
             handle: RunHandle = self._service.submit_plan(
-                preview.plan,
+                journal.plan,
                 _OwnerSink(self._publish_event),
                 origin=preview.origin,
                 run_id=run_id,
@@ -3721,9 +3731,7 @@ class AutomationOwner:
             if record.group_id not in completed or intent is None:
                 records.append(record)
                 continue
-            requested: frozenset[Path] = _requested_product_paths(
-                artifacts, intent, request.settings.get("audio_output_profile")
-            )
+            requested: frozenset[Path] = _requested_product_paths(artifacts, intent)
             selected: tuple[str, ...] = tuple(
                 item.path
                 for item in state.products
@@ -3841,10 +3849,17 @@ class AutomationOwner:
 
     def _reload_settings(self) -> ControlResponse:
         try:
+            before: tuple[object, ...] = _graph_shape(self._service.run_settings())
             self._service.reload_preferences()
-        except (AniShiftError, OSError) as problem:
+            after: tuple[object, ...] = _graph_shape(self._service.run_settings())
+        except (AniShiftError, OSError, ValueError) as problem:
             logger.warning("Preferences could not be reloaded", error_class=type(problem).__name__)
             return ControlResponse.refused(ControlErrorCode.INTERNAL, _STATE_NOT_SAVED)
+        if after != before:
+            active: tuple[str, ...] = self._service.active_run_ids()
+            for run_id in active:
+                self._service.pause_run(run_id)
+            logger.info("Active runs pause to be planned again under the changed settings", runs=len(active))
         return ControlResponse.succeeded({"reloaded": True})
 
     def _shutdown(self, request: ControlRequest) -> ControlResponse:
@@ -7542,6 +7557,14 @@ class AutomationOwner:
         if len(groups) != len(request.group_ids) or not all(_accepted_sources(group, request) for group in groups):
             self._failed_recovery(request, "The sources changed or are missing; inspect the files before resuming")
             return
+        try:
+            fresh: ExecutionPlan = self._service.replan(
+                groups, journal.plan, rebuild=request.rebuild, published=self._published_products()
+            )
+        except AniShiftError, ValueError:
+            self._failed_recovery(request, "The saved run cannot be planned again; explicitly resume it from Manual")
+            return
+        journal.rebase(fresh)
         preview: _Preview = _Preview(
             preview_id=f"recovery-{request.request_id}",
             client_id=self._instance_id,
@@ -7560,6 +7583,7 @@ class AutomationOwner:
             recovering=True,
             retry=not paused,
             recipe=request.recipe,
+            fresh=fresh,
         )
         response: ControlResponse = self._admit(
             ControlRequest(command_id=f"recovery-{request.request_id}-{request.attempts}", kind="start", payload={}),
@@ -7646,7 +7670,7 @@ class AutomationOwner:
                     None,
                 )
                 requested: frozenset[Path] = (
-                    _requested_product_paths(artifacts, intent, request.settings.get("audio_output_profile"))
+                    _requested_product_paths(artifacts, intent)
                     if intent is not None and request is not None
                     else frozenset()
                 )
@@ -9298,13 +9322,18 @@ def _product_projection(plan: ExecutionPlan) -> list[dict[str, object]]:
     ]
 
 
-def _requested_product_paths(
-    artifacts: tuple[Artifact, ...], intent: GroupIntent, audio_profile: object
-) -> frozenset[Path]:
-    audio_suffix: str | None = (
-        product_suffix(ArtifactKind.NARRATION_AUDIO, audio_profile=audio_profile)
-        if isinstance(audio_profile, str) and audio_profile in AUDIO_PRODUCT_PROFILES
-        else None
+def _graph_shape(settings: RunSettingsSnapshot) -> tuple[object, ...]:
+    return settings.audio_output_profile, settings.subtitle_language_priority, settings.audio_language_priority
+
+
+def _requested_product_paths(artifacts: tuple[Artifact, ...], intent: GroupIntent) -> frozenset[Path]:
+    narration_suffixes: frozenset[str] = frozenset(
+        product_suffix(ArtifactKind.NARRATION_AUDIO, audio_profile=artifact.audio_codec)
+        for artifact in artifacts
+        if artifact.group_id == intent.group_id
+        and artifact.kind is ArtifactKind.NARRATION_AUDIO
+        and artifact.lifetime is ArtifactLifetime.INTERMEDIATE
+        and artifact.audio_codec in AUDIO_PRODUCT_PROFILES
     )
     return frozenset(
         artifact.planned_destination
@@ -9315,7 +9344,8 @@ def _requested_product_paths(
         and artifact.planned_destination is not None
         and (
             artifact.kind is not ArtifactKind.NARRATION_AUDIO
-            or artifact.planned_destination.suffix.casefold() == audio_suffix
+            or not narration_suffixes
+            or artifact.planned_destination.suffix.casefold() in narration_suffixes
         )
         and (
             artifact.subtitle_format is None
@@ -9323,10 +9353,6 @@ def _requested_product_paths(
             or artifact.subtitle_format == intent.subtitle_output_format.value
         )
     )
-
-
-def _settings_snapshot(settings: RunSettingsSnapshot) -> SettingsSnapshot:
-    return cast("SettingsSnapshot", {field.name: getattr(settings, field.name) for field in fields(settings)})
 
 
 def _file_owners(

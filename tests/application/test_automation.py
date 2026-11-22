@@ -103,7 +103,14 @@ from anishift.application.planning import ExecutionPlan, PlanTask, RunSettingsSn
 from anishift.application.products import classify_product
 from anishift.application.ready import ReadyMove, ReadyStore, in_ready
 from anishift.application.recovery import RunJournal
-from anishift.application.results import ArtifactSnapshot, GroupResult, GroupStatus, RunResult, TaskResult
+from anishift.application.results import (
+    ArtifactSnapshot,
+    GroupResult,
+    GroupStatus,
+    ProducedArtifact,
+    RunResult,
+    TaskResult,
+)
 from anishift.application.scheduler import RunHandle
 from anishift.application.scheduler_contracts import TaskHandler, TaskProgressSink
 from anishift.application.service import (
@@ -113,6 +120,7 @@ from anishift.application.service import (
     _run_settings_snapshot,
 )
 from anishift.application.subscription_targets import PauseReason, SubscriptionRecord
+from anishift.application.task_paths import task_staging_path
 from anishift.application.tts_handler import TtsProgressObserver
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
 from anishift.application.workflows import WorkflowTarget
@@ -124,7 +132,13 @@ from anishift.config.settings import Settings
 from anishift.config.user_settings import UserSettings
 from anishift.config.workspace import RUN_OWNER_MARKER_NAME, run_tmp_dir
 from anishift.errors import ErrorCode, ErrorContext, ExecutionError, PlanningError
-from anishift.paths import COVER_DIRECTORY, READY_DIRECTORY, TRANSLATE_DIRECTORY, relocation_journal_dir
+from anishift.paths import (
+    AUDIOBOOK_DIRECTORY,
+    COVER_DIRECTORY,
+    READY_DIRECTORY,
+    TRANSLATE_DIRECTORY,
+    relocation_journal_dir,
+)
 from anishift.platform.binaries import Binary
 from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import (
@@ -337,6 +351,7 @@ class _Service:
         self.user_settings: UserSettings = UserSettings(subscription_polish_wait_h=0)
         self.current: RunSettingsSnapshot = _run_settings_snapshot(self.user_settings)
         self.plans: list[ExecutionPlan] = []
+        self.paused_runs: list[str] = []
 
     def discover(self, *, changed_paths: Sequence[Path] | None = None) -> object:
         del changed_paths
@@ -374,6 +389,20 @@ class _Service:
         self.targets.append(dict(targets or {}))
         self.published.append(frozenset(published or frozenset()))
         return self._plan
+
+    def replan(
+        self,
+        groups: Sequence[InspectedSourceGroup],
+        saved: ExecutionPlan,
+        *,
+        rebuild: RebuildRequest | None = None,
+        published: frozenset[Path] | None = None,
+    ) -> ExecutionPlan:
+        del groups, saved, rebuild, published
+        return self._plan
+
+    def pause_run(self, run_id: str) -> None:
+        self.paused_runs.append(run_id)
 
     def submit_plan(  # noqa: PLR0913
         self,
@@ -1509,7 +1538,16 @@ def _completed_library(root: Path, stems: tuple[str, ...] = ("01",)) -> tuple[Ap
 
 
 @pytest.mark.parametrize(("profile", "extension"), [("aac", "m4a"), ("mp3", "mp3"), ("flac", "flac")])
-def test_requested_results_do_not_select_another_audio_export_profile(profile: str, extension: str) -> None:
+def test_requested_results_take_only_the_audio_profile_the_plan_mixed(profile: str, extension: str) -> None:
+    mixed: Artifact = Artifact(
+        "mix",
+        "episode",
+        ArtifactKind.NARRATION_AUDIO,
+        None,
+        ArtifactState.MISSING,
+        ArtifactLifetime.INTERMEDIATE,
+        audio_codec=profile,
+    )
     artifacts: tuple[Artifact, ...] = tuple(
         Artifact(
             suffix,
@@ -1528,7 +1566,7 @@ def test_requested_results_do_not_select_another_audio_export_profile(profile: s
         ProductIntent(frozenset({ProductKind.NARRATION_AUDIO})),
         target=WorkflowTarget.AUDIOBOOK,
     )
-    assert automation_module._requested_product_paths(artifacts, intent, profile) == frozenset(
+    assert automation_module._requested_product_paths((*artifacts, mixed), intent) == frozenset(
         {Path(f"ready/01.{extension}")}
     )
 
@@ -1666,7 +1704,6 @@ def test_library_opens_owned_video_or_recorded_product_after_failed_regeneration
         RequestOrigin.USER,
         SourceSelection.MANUAL,
         None,
-        {},
         RequestState.FAILED,
         1,
         _MOMENT.isoformat(),
@@ -1852,7 +1889,6 @@ def test_deletion_preview_refuses_owned_source_blockers_before_any_change(
                     RequestOrigin.USER,
                     SourceSelection.MANUAL,
                     None,
-                    {},
                     RequestState.RUNNING,
                     1,
                     _MOMENT.isoformat(),
@@ -1981,7 +2017,6 @@ def test_legacy_library_needs_success_and_identified_product_but_never_invents_a
         RequestOrigin.USER,
         SourceSelection.MANUAL,
         None,
-        {},
         RequestState.FAILED if evidence == "failed" else RequestState.SUCCEEDED,
         1,
         _MOMENT.isoformat(),
@@ -2648,6 +2683,116 @@ def test_a_resumed_run_translates_with_the_engine_chosen_after_it_failed(tmp_pat
     assert store.load().requests[0].request_id == started.result["run_id"]
 
 
+class _RateLimitedVoice:
+    def __init__(self) -> None:
+        self.calls: list[tuple[TaskKind, str]] = []
+
+    def __call__(
+        self, run_root: Path, plan: ExecutionPlan, source_groups: Mapping[str, InspectedSourceGroup]
+    ) -> TaskHandler:
+        del plan, source_groups
+        return _MadeStep(run_root, self.calls)
+
+
+class _MadeStep:
+    def __init__(self, run_root: Path, calls: list[tuple[TaskKind, str]]) -> None:
+        self.run_root: Path = run_root
+        self.calls: list[tuple[TaskKind, str]] = calls
+
+    def execute(
+        self,
+        task: PlanTask,
+        artifacts: ArtifactSnapshot,
+        settings: RunSettingsSnapshot,
+        cancel: CancellationToken,
+        progress: TaskProgressSink,
+    ) -> TaskResult:
+        del cancel, progress
+        self.calls.append((task.kind, settings.tts_profile_id))
+        if task.kind is TaskKind.SYNTHESIZE_SPEECH and settings.tts_profile_id == "elevenbytes":
+            raise ExecutionError("ElevenBytes answered 429")
+        produced: list[ProducedArtifact] = []
+        for artifact_id in task.produces:
+            output: Artifact = artifacts.require_output(artifact_id)
+            suffix: str = output.planned_destination.suffix if output.planned_destination is not None else ".bin"
+            path: Path = task_staging_path(self.run_root, task, output, suffix)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"made")
+            produced.append(ProducedArtifact(artifact_id, path, {"validated": True}))
+        return TaskResult(task.task_id, tuple(produced))
+
+
+def test_a_rate_limited_voice_resumes_on_the_engine_chosen_after_it_without_translating_again(
+    tmp_path: Path,
+) -> None:
+    book: Path = tmp_path / AUDIOBOOK_DIRECTORY
+    book.mkdir()
+    write_text_source(book / "Book.txt", "Zdanie do przeczytania.")
+    voice: _RateLimitedVoice = _RateLimitedVoice()
+    service: AppService = _real_service(tmp_path, handler_factory=voice)
+    service.save_settings(UserSettings(tts_engine="elevenbytes"))
+    owner: AutomationOwner = _owner(service, WatchStateStore(tmp_path / WATCH_STATE_FILE_NAME))
+    thread: threading.Thread = _serving(owner)
+    group_id: str = service.discover().groups[0].group_id
+    try:
+        preview: ControlResponse = owner.handle(
+            _request("preview", {"client_id": _CLIENT, "preset_id": service.default_preset_id()})
+        )
+        assert preview.ok, preview.message
+        started: ControlResponse = owner.handle(
+            _request("start", {"client_id": _CLIENT, "preview_id": preview.result["preview_id"]}, command_id="s-1")
+        )
+        assert started.ok, started.message
+        assert _await(lambda: [item.state for item in owner.state.requests] == [RequestState.FAILED])
+        service.save_settings(UserSettings(tts_engine="elevenreader"))
+        resumed: ControlResponse = owner.handle(
+            _request("resume_preview", {"client_id": _CLIENT, "group_ids": [group_id]}, command_id="resume-1")
+        )
+        assert resumed.ok, resumed.message
+        restarted: ControlResponse = owner.handle(
+            _request("start", {"client_id": _CLIENT, "preview_id": resumed.result["preview_id"]}, command_id="s-2")
+        )
+        assert restarted.ok, restarted.message
+        assert _await(lambda: [item.state for item in owner.state.requests] == [RequestState.SUCCEEDED])
+    finally:
+        owner.request_shutdown()
+        thread.join(timeout=_TIMEOUT_S)
+        service.close()
+
+    assert [engine for kind, engine in voice.calls if kind is TaskKind.SYNTHESIZE_SPEECH] == [
+        "elevenbytes",
+        "elevenreader",
+    ]
+    assert [kind for kind, _ in voice.calls].count(TaskKind.TRANSLATE_SUBTITLES) == 1
+
+
+def test_a_changed_audio_profile_pauses_every_active_run_for_a_new_plan(tmp_path: Path) -> None:
+    service, store, group_id = _library(tmp_path)
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    reloaded: RunSettingsSnapshot = replace(service.current, audio_output_profile="aac")
+
+    def reload() -> None:
+        service.current = reloaded
+
+    service.reload_preferences = reload  # type: ignore[method-assign]
+    run_id: str = ""
+    try:
+        run_id = _started(owner)
+        profile_change: ControlResponse = owner.handle(_request("reload_settings", command_id="reload-0"))
+        assert profile_change.ok
+        assert service.paused_runs == [run_id]
+        service.current = replace(reloaded, tts_voice_id="another-voice")
+        voice_change: ControlResponse = owner.handle(_request("reload_settings", command_id="reload-1"))
+        assert voice_change.ok
+        assert service.paused_runs == [run_id]
+    finally:
+        if run_id in service.active:
+            service.finish(run_id, GroupStatus.SUCCEEDED, group_id)
+        owner.request_shutdown()
+        thread.join(timeout=_TIMEOUT_S)
+
+
 def _stopped_run(run_id: str, group_id: str) -> RunResult:
     return RunResult(run_id, (GroupResult(group_id, GroupStatus.FAILED, error_messages=("stopped",)),))
 
@@ -2683,7 +2828,6 @@ def _abandoned_run(
         RequestOrigin.USER,
         SourceSelection.AUTO,
         None,
-        {},
         state,
         1,
         _MOMENT.isoformat(),
@@ -4397,7 +4541,6 @@ def _projection_request(tmp_path: Path, state: RequestState) -> tuple[Automation
         RequestOrigin.USER,
         SourceSelection.AUTO,
         None,
-        {},
         state,
         1,
         _MOMENT.isoformat(),
@@ -5010,7 +5153,6 @@ def test_a_relocation_row_names_its_set_from_the_request_and_never_by_the_group_
         RequestOrigin.USER,
         SourceSelection.MANUAL,
         None,
-        {},
         RequestState.SUCCEEDED,
         1,
         _MOMENT.isoformat(),
