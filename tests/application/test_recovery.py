@@ -10,7 +10,14 @@ from anishift.application.inspection import InspectedSourceGroup
 from anishift.application.intents import ProductIntent, ProductKind
 from anishift.application.planner import plan_auto, replan
 from anishift.application.planning import ExecutionPlan, PlanTask, RunSettingsSnapshot, TaskKind
-from anishift.application.recovery import _remaining, rebase_plan
+from anishift.application.recovery import (
+    CHECKPOINT_VERSION,
+    RunJournal,
+    _Checkpoint,
+    _proof,
+    _remaining,
+    rebase_plan,
+)
 from anishift.application.results import ProducedArtifact, TaskResult
 
 _NARRATION: ProductIntent = ProductIntent(frozenset({ProductKind.NARRATION_AUDIO}))
@@ -97,6 +104,41 @@ def test_a_new_subtitle_language_extracts_again_and_redoes_everything_after_it()
     kinds: frozenset[TaskKind] = frozenset(task.kind for task in rebased.tasks)
     assert {TaskKind.EXTRACT_TRACKS, TaskKind.SYNTHESIZE_SPEECH, TaskKind.MIX_NARRATION} <= kinds
     assert kept == ()
+
+
+def test_rebasing_drops_a_publication_whose_step_the_new_plan_no_longer_has(tmp_path: Path) -> None:
+    saved, done = _accepted(_BEFORE_MIX)
+    publish: PlanTask = next(task for task in saved.tasks if task.kind is TaskKind.PUBLISH_ARTIFACT)
+    staged: Path = tmp_path / "run" / "staged.mka"
+    staged.parent.mkdir()
+    staged.write_bytes(b"mix")
+    pending: TaskResult = TaskResult(
+        publish.task_id, (ProducedArtifact(publish.produces[0], staged, {"validated": True}),)
+    )
+    path: Path = tmp_path / "run.json"
+    RunJournal(
+        path, _Checkpoint(CHECKPOINT_VERSION, saved, tmp_path / "run", (), (), pending, _proof(staged), done=done)
+    ).persist()
+    fresh: ExecutionPlan = replace(
+        saved,
+        artifacts=tuple(artifact for artifact in saved.artifacts if artifact.artifact_id not in publish.produces),
+        tasks=tuple(task for task in saved.tasks if task != publish),
+        groups=tuple(
+            replace(
+                group,
+                task_ids=tuple(item for item in group.task_ids if item != publish.task_id),
+                artifact_ids=tuple(item for item in group.artifact_ids if item not in publish.produces),
+            )
+            for group in saved.groups
+        ),
+    )
+    journal: RunJournal = RunJournal.load(path)
+
+    journal.rebase(fresh)
+    journal.persist()
+    staged.unlink()
+
+    assert RunJournal.load(path).plan == fresh
 
 
 def test_a_step_whose_input_is_made_again_is_made_again_too() -> None:

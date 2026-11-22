@@ -262,12 +262,17 @@ class RunJournal:
         ready: frozenset[str] = frozenset(
             artifact.artifact_id for artifact in plan.artifacts if artifact.state is ArtifactState.READY
         )
+        planned: frozenset[str] = frozenset(task.task_id for task in plan.tasks)
+        pending: TaskResult | None = self._checkpoint.pending
+        publishing: bool = pending is not None and pending.task_id in planned
         self._checkpoint = replace(
             self._checkpoint,
             plan=plan,
             done=done,
             outputs=tuple(item for item in self._checkpoint.outputs if item.artifact_id in ready),
-            inflight=self._checkpoint.inflight & frozenset(task.task_id for task in plan.tasks),
+            inflight=self._checkpoint.inflight & planned,
+            pending=pending if publishing else None,
+            staged=self._checkpoint.staged if publishing else None,
         )
 
     def persist(self) -> None:
