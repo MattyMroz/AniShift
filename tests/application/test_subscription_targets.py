@@ -180,7 +180,7 @@ def test_a_split_cour_schedule_keeps_targets_beyond_the_catalogue_episode_count(
     assert set(range(7, 25)) <= {item.number for item in merged.targets}
 
 
-@pytest.mark.parametrize(("count", "last", "shown"), [(12, 24, 24), (12, 8, 12), (None, 24, None)])
+@pytest.mark.parametrize(("count", "last", "shown"), [(12, 24, 24), (12, 8, 12), (12, 6, 12), (None, 24, None)])
 def test_a_row_counts_the_season_up_to_its_last_target(count: int | None, last: int, shown: int | None) -> None:
     record: SubscriptionRecord = _record(
         episode_count=count, targets=tuple(_target(number) for number in range(7, last + 1))

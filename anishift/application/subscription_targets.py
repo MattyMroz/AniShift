@@ -460,7 +460,7 @@ def subscription_row(record: SubscriptionRecord) -> SubscriptionRow:
         catalog_status=record.catalog_status,
         episode_count=None
         if record.episode_count is None
-        else max(record.episode_count, *(item.number for item in record.targets)),
+        else max(record.episode_count, max((item.number for item in record.targets), default=0)),
         aired=(record.cut or 0) + sum(item.state is not TargetState.AWAITING_AIRING for item in record.targets),
         due_state=None if nearest is None else _due_state(nearest),
     )
