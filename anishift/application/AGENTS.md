@@ -236,7 +236,7 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `context.message`, więc sugestia jest też w treści), szyld bez klipu (pominięty albo nieudany) wypada z manifestu z ostrzeżeniem z liczbą i grupami w
   metadanych `signs_unrecorded`, w obu ścieżkach. `tts_handler.py`
 - Sesję ElevenReadera panel czyta i odświeża przez fasadę (`elevenreader_session`, `elevenreader_sign_in`);
-  logowanie blokuje wątek wołający do zamknięcia okna Chrome. `service.py`
+  logowanie blokuje wątek wołający, aż właściciel zamknie okno Chrome, i jeszcze na sprawdzenie sesji. `service.py`
 - `GraphCoordinator` przyjmuje wiele kontekstów (`RunRequest` → `RunHandle`); wspólne są tylko kolejki gotowych
   tasków per zasób, executory i `limits_provider()`. Błąd pętli anuluje wszystkie konteksty przed joinem. Kolejka
   `(rank, sequence, task_index, run_id, task_id)`, USER przed BACKGROUND, wysłanych per zasób najwyżej `worker_limit`.

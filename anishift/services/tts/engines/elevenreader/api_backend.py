@@ -41,7 +41,6 @@ from .constants import (
     READING_SPEED,
     READS_URL,
     READY_TIMEOUT_S,
-    SIGN_IN_TIMEOUT_S,
     SPEED_JS,
     SPEED_STATE_JS,
     SPEED_TOLERANCE,
@@ -68,6 +67,7 @@ if TYPE_CHECKING:
     from playwright.async_api import Error as PlaywrightError
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
+    from .browser import ChromeSession
     from .recorder import StreamRecorder
 
 __all__ = [
@@ -128,7 +128,7 @@ _SIGN_IN_URL: Final[re.Pattern[str]] = re.compile(r"sign-?in|sign-?up|log-?in|au
 """Address fragments of the sign-in and sign-up pages a signed-out visitor is sent to."""
 
 _SIGN_IN_POLL_S: Final[float] = 1.0
-"""Interval between checks of the sign-in window."""
+"""Interval between checks whether the owner closed the sign-in window."""
 
 _UPLOAD_TYPE: Final[str] = "text/plain"
 """Library ``original_file_type`` of an imported text file."""
@@ -288,11 +288,6 @@ class ReaderPage:
         """Return the newest authorization token seen on an API request of this tab."""
         return self._token
 
-    @property
-    def is_closed(self) -> bool:
-        """Whether the tab or its window is gone."""
-        return self._page.is_closed()
-
     async def open_library(self) -> LibraryState:
         """Load the library and report whether it is usable, signed out or unavailable."""
         try:
@@ -308,10 +303,9 @@ class ReaderPage:
             return LibraryState.SIGNED_OUT if _SIGN_IN_URL.search(self._page.url) else LibraryState.UNAVAILABLE
         except _playwright_error():
             return LibraryState.UNAVAILABLE
-        return LibraryState.READY if await self.library_ready() else LibraryState.SIGNED_OUT
+        return LibraryState.READY if await self._library_ready() else LibraryState.SIGNED_OUT
 
-    async def library_ready(self) -> bool:
-        """Whether the library Import button is visible now, without navigating."""
+    async def _library_ready(self) -> bool:
         try:
             return await self._button("Import").count() > 0
         except _playwright_error():
@@ -797,18 +791,14 @@ async def require_signed_in(page: ReaderPage, root: Path) -> None:
     raise unavailable_error(reason)
 
 
-async def sign_in(root: Path, *, timeout_s: float = SIGN_IN_TIMEOUT_S) -> SignInOutcome:
-    """Open a visible Chrome on the library and wait until the owner signs in or closes the window."""
+async def sign_in(root: Path) -> SignInOutcome:
+    """Show the library in a visible Chrome until the owner closes it, then check the session and clean the account."""
     from .browser import ChromeBusyError, ChromeMissingError, ChromeSession  # noqa: PLC0415 - keeps Playwright lazy
 
-    session: ChromeSession = ChromeSession(root, headless=False)
     cleanup: AccountCleanup = load_cleanup(root)
     try:
-        await session.start()
-        page: ReaderPage = await session.new_page()
-        signed_in: bool = await _wait_for_library(page, timeout_s)
-        if signed_in:
-            await clean_account(page, cleanup, restore=True)
+        await _show_library(ChromeSession(root, headless=False))
+        signed_in: bool = await _check_session(ChromeSession(root, headless=True), cleanup)
     except ChromeMissingError:
         return SignInOutcome.NO_CHROME
     except ChromeBusyError:
@@ -816,20 +806,33 @@ async def sign_in(root: Path, *, timeout_s: float = SIGN_IN_TIMEOUT_S) -> SignIn
     except TtsError as error:
         logger.warning("ElevenReader sign-in failed", code=error.context.code.value)
         return SignInOutcome.FAILED
-    finally:
-        await session.close()
     write_session(root, signed_in=signed_in)
     save_cleanup(root, cleanup)
     logger.info("ElevenReader sign-in checked", signed_in=signed_in, cleanup=list(cleanup.pending))
     return SignInOutcome.SIGNED_IN if signed_in else SignInOutcome.SIGNED_OUT
 
 
-async def _wait_for_library(page: ReaderPage, timeout_s: float) -> bool:
-    if await page.open_library() is LibraryState.READY:
-        return True
-    deadline: float = time.monotonic() + timeout_s
-    while time.monotonic() < deadline and not page.is_closed:
-        if await page.library_ready():
-            return True
-        await asyncio.sleep(_SIGN_IN_POLL_S)
-    return False
+async def _show_library(session: ChromeSession) -> None:
+    try:
+        await session.start()
+        page: ReaderPage = await session.new_page()
+        await page.open_library()
+        while session.has_window:
+            await asyncio.sleep(_SIGN_IN_POLL_S)
+    finally:
+        await session.close()
+
+
+async def _check_session(session: ChromeSession, cleanup: AccountCleanup) -> bool:
+    try:
+        await session.start()
+        page: ReaderPage = await session.new_page()
+        state: LibraryState = await page.open_library()
+        if state is LibraryState.READY:
+            await clean_account(page, cleanup, restore=True)
+    finally:
+        await session.close()
+    if state is LibraryState.UNAVAILABLE:
+        reason: str = "ElevenReader library is unavailable"
+        raise unavailable_error(reason)
+    return state is LibraryState.READY

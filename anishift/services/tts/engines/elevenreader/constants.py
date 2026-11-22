@@ -35,7 +35,6 @@ __all__ = [
     "READING_SPEED",
     "READS_URL",
     "READY_TIMEOUT_S",
-    "SIGN_IN_TIMEOUT_S",
     "SILENT_CHUNK_MIN_LETTERS",
     "SILENT_CHUNK_MS_PER_LETTER",
     "SPEED_CHECK_S",
@@ -165,9 +164,6 @@ CONNECT_INTERVAL_S: Final[float] = 0.5
 
 CLEANUP_STEP_TIMEOUT_S: Final[float] = 15.0
 """Deadline of one account cleanup step."""
-
-SIGN_IN_TIMEOUT_S: Final[float] = 600.0
-"""Time the sign-in window waits for the owner to sign in."""
 
 CHROME_STEM: Final[str] = "chrome"
 """Executable stem of Google Chrome looked up on ``PATH``."""

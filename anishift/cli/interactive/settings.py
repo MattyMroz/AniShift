@@ -1769,7 +1769,7 @@ class SettingsController:
             self._generation += 1
             generation: int = self._generation
             self._busy = True
-            self._feedback = _Feedback("Zaloguj się w oknie Chrome albo je zamknij…", "info")
+            self._feedback = _Feedback("Zaloguj się w oknie Chrome i zamknij je, gdy skończysz…", "info")
         worker: threading.Thread = threading.Thread(
             target=self._run_sign_in,
             args=(generation,),

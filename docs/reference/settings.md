@@ -359,10 +359,13 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
 
 - Co robi: wiersz `Sesja ElevenReader` pokazuje wynik ostatniego sprawdzenia
   (`zalogowano · 30.10 14:03`, `nie zalogowano · …` albo `nie sprawdzono`). Akcja
-  `Zaloguj / sprawdź sesję` otwiera okno Chrome na bibliotece ElevenReadera; zaloguj
-  się w nim albo zamknij okno. Wynik: `✓ Zalogowano`, `✗ Nie zalogowano`, `✗ Lektor
-  właśnie nagrywa — spróbuj po zakończeniu`, `✗ Nie znaleziono Google Chrome` albo
-  `✗ Nie udało się sprawdzić sesji`. `Esc` zwalnia panel; okno zostaje do zamknięcia.
+  `Zaloguj / sprawdź sesję` otwiera okno Chrome na bibliotece ElevenReadera i zostawia
+  je otwarte, także przy ważnej sesji, dopóki go nie zamkniesz; w oknie możesz się
+  zalogować, wylogować i zalogować ponownie. Po zamknięciu okna AniShift sprawdza sesję
+  w niewidocznej przeglądarce i kończy zaległe sprzątanie konta. Wynik: `✓ Zalogowano`,
+  `✗ Nie zalogowano`, `✗ Lektor właśnie nagrywa — spróbuj po zakończeniu`, `✗ Nie
+  znaleziono Google Chrome` albo `✗ Nie udało się sprawdzić sesji`. `Esc` zwalnia
+  panel; okno zostaje do zamknięcia.
 - Gdzie: sesja żyje w profilu Chrome w `config/elevenreader/chrome-profile/`, wynik
   sprawdzenia w `config/elevenreader/session.json` (bez sekretów). AniShift nie
   zapisuje e-maila ani hasła.

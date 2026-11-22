@@ -17,7 +17,7 @@ from anishift.services.tts.errors import TtsConfigError, TtsProviderUnavailableE
 from anishift.utils.logger import get_logger
 
 from .api_backend import FALLBACK_HINT, ReaderPage, speed_script, unavailable_error
-from .config import find_chrome, profile_dir
+from .config import find_chrome, lock_file, profile_dir
 from .constants import CONNECT_ATTEMPTS, CONNECT_INTERVAL_S, PAGE_SPEED, UNAVAILABLE_RETRY_S
 
 if TYPE_CHECKING:
@@ -30,9 +30,6 @@ __all__ = ["ChromeBusyError", "ChromeMissingError", "ChromeSession"]
 logger = get_logger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-
-_LOCK_NAME: Final[str] = "chrome.lock"
-"""Lock file guarding the profile against a second AniShift browser."""
 
 _LOOPBACK: Final[str] = "127.0.0.1"
 """Interface the remote debugging port listens on."""
@@ -67,7 +64,7 @@ class ChromeSession:
         """Bind the session to the ElevenReader *root*, without starting anything yet."""
         self._root: Path = root
         self._headless: bool = headless
-        self._lock: ProcessLock = ProcessLock(root / _LOCK_NAME)
+        self._lock: ProcessLock = ProcessLock(lock_file(root))
         self._process: subprocess.Popen[bytes] | None = None
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
@@ -82,6 +79,11 @@ class ChromeSession:
             and self._process is not None
             and self._process.poll() is None
         )
+
+    @property
+    def has_window(self) -> bool:
+        """Whether the browser still runs with at least one open tab."""
+        return self.alive and self._context is not None and bool(self._context.pages)
 
     async def start(self) -> None:
         """Lock the profile, restrict it to the current account, start Chrome and attach to it."""
@@ -200,8 +202,10 @@ def _free_port() -> int:
 
 
 async def _request_exit(browser: Browser | None) -> bool:
-    if browser is None or not browser.is_connected():
+    if browser is None:
         return False
+    if not browser.is_connected():
+        return True
     try:
         cdp: CDPSession = await browser.new_browser_cdp_session()
     except PlaywrightError:

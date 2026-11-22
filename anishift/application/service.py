@@ -735,7 +735,7 @@ class AppService:
         return read_session(elevenreader_dir())
 
     def elevenreader_sign_in(self) -> SignInOutcome:
-        """Open a visible Chrome on the ElevenReader library and wait until the owner signs in or closes it."""
+        """Show the ElevenReader library in a visible Chrome until the owner closes it, then check the session."""
         return asyncio.run(sign_in(elevenreader_dir()))
 
     def settings_snapshot(self) -> SettingsDraft:

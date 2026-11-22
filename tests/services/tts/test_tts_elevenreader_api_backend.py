@@ -64,6 +64,8 @@ from anishift.services.tts.engines.elevenreader.types import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from playwright.async_api import Page
 
 pytestmark = pytest.mark.unit
@@ -139,32 +141,51 @@ def test_map_playwright_error_browser_failure_returns_unavailable_without_origin
     assert error.retry_after_s == 60.0
 
 
-class _ReadyLaterPage(FakePage):
-    async def library_ready(self) -> bool:
-        return True
+def _stays(site: FakeSite) -> None:
+    del site
+
+
+def _signs_in(site: FakeSite) -> None:
+    site.library = LibraryState.READY
+
+
+def _signs_out(site: FakeSite) -> None:
+    site.library = LibraryState.SIGNED_OUT
 
 
 class _SignInSession:
     instances: ClassVar[list[_SignInSession]] = []
     failure: ClassVar[TtsError | None] = None
     site: ClassVar[FakeSite] = FakeSite()
-    page_type: ClassVar[type[FakePage]] = FakePage
+    owner: ClassVar[list[Callable[[FakeSite], None]]] = []
+    events: ClassVar[list[str]] = []
 
     def __init__(self, root: Path, *, headless: bool) -> None:
         self.root: Path = root
         self.headless: bool = headless
+        self.mode: str = "headless" if headless else "visible"
         self.closed: bool = False
         _SignInSession.instances.append(self)
 
+    @property
+    def has_window(self) -> bool:
+        if not _SignInSession.owner:
+            return False
+        _SignInSession.owner.pop(0)(_SignInSession.site)
+        _SignInSession.events.append("window open")
+        return True
+
     async def start(self) -> None:
+        _SignInSession.events.append(f"start {self.mode}")
         if _SignInSession.failure is not None:
             raise _SignInSession.failure
 
     async def new_page(self) -> FakePage:
-        return _SignInSession.page_type(_SignInSession.site)
+        return FakePage(_SignInSession.site)
 
     async def close(self) -> None:
         self.closed = True
+        _SignInSession.events.append(f"close {self.mode}")
 
 
 @pytest.fixture
@@ -174,44 +195,74 @@ def fake_chrome(monkeypatch: pytest.MonkeyPatch) -> type[_SignInSession]:
     monkeypatch.setattr(_SignInSession, "instances", [])
     monkeypatch.setattr(_SignInSession, "failure", None)
     monkeypatch.setattr(_SignInSession, "site", FakeSite())
-    monkeypatch.setattr(_SignInSession, "page_type", FakePage)
+    monkeypatch.setattr(_SignInSession, "owner", [])
+    monkeypatch.setattr(_SignInSession, "events", [])
     return _SignInSession
 
 
-def test_sign_in_ready_library_returns_signed_in_and_records_session(
+def test_sign_in_valid_session_keeps_window_until_owner_closes_it_then_checks_headless(
     tmp_path: Path,
     fake_chrome: type[_SignInSession],
 ) -> None:
+    fake_chrome.owner = [_stays, _stays, _stays]
+
     outcome: SignInOutcome = asyncio.run(sign_in(tmp_path))
 
     assert outcome is SignInOutcome.SIGNED_IN
+    assert fake_chrome.events == [
+        "start visible",
+        "window open",
+        "window open",
+        "window open",
+        "close visible",
+        "start headless",
+        "close headless",
+    ]
     record = read_session(tmp_path)
     assert record is not None
     assert record.signed_in
-    assert not fake_chrome.instances[0].headless
-    assert fake_chrome.instances[0].closed
 
 
-def test_sign_in_library_appearing_later_returns_signed_in(tmp_path: Path, fake_chrome: type[_SignInSession]) -> None:
-    fake_chrome.site = FakeSite(library=LibraryState.SIGNED_OUT)
-    fake_chrome.page_type = _ReadyLaterPage
-
-    assert asyncio.run(sign_in(tmp_path, timeout_s=5.0)) is SignInOutcome.SIGNED_IN
-
-
-def test_sign_in_without_sign_in_before_deadline_returns_signed_out(
+def test_sign_in_owner_signing_in_while_window_is_open_returns_signed_in(
     tmp_path: Path,
     fake_chrome: type[_SignInSession],
 ) -> None:
     fake_chrome.site = FakeSite(library=LibraryState.SIGNED_OUT)
+    fake_chrome.owner = [_stays, _signs_in, _stays]
 
-    outcome: SignInOutcome = asyncio.run(sign_in(tmp_path, timeout_s=0.02))
+    assert asyncio.run(sign_in(tmp_path)) is SignInOutcome.SIGNED_IN
+
+
+def test_sign_in_owner_signing_out_in_window_returns_signed_out_and_records_it(
+    tmp_path: Path,
+    fake_chrome: type[_SignInSession],
+) -> None:
+    write_session(tmp_path, signed_in=True)
+    fake_chrome.owner = [_signs_out]
+
+    outcome: SignInOutcome = asyncio.run(sign_in(tmp_path))
 
     assert outcome is SignInOutcome.SIGNED_OUT
     record = read_session(tmp_path)
     assert record is not None
     assert not record.signed_in
-    assert fake_chrome.instances[0].closed
+    assert all(session.closed for session in fake_chrome.instances)
+
+
+def test_sign_in_library_unavailable_after_window_returns_failed_and_keeps_record(
+    tmp_path: Path,
+    fake_chrome: type[_SignInSession],
+) -> None:
+    write_session(tmp_path, signed_in=True)
+    fake_chrome.site = FakeSite(library=LibraryState.UNAVAILABLE)
+
+    outcome: SignInOutcome = asyncio.run(sign_in(tmp_path))
+
+    assert outcome is SignInOutcome.FAILED
+    record = read_session(tmp_path)
+    assert record is not None
+    assert record.signed_in
+    assert fake_chrome.events[-1] == "close headless"
 
 
 @pytest.mark.parametrize(
