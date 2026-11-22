@@ -306,7 +306,10 @@ def test_tts_items_elevenreader_saved_check_shows_local_time(
     [
         (SignInOutcome.SIGNED_IN, "✓ Zalogowano"),
         (SignInOutcome.SIGNED_OUT, "✗ Nie zalogowano"),
-        (SignInOutcome.BUSY, "✗ Lektor właśnie nagrywa — spróbuj po zakończeniu"),
+        (
+            SignInOutcome.BUSY,
+            "✗ Profil przeglądarki jest w użyciu — zamknij okno logowania albo poczekaj na koniec nagrywania",
+        ),
         (SignInOutcome.NO_CHROME, "✗ Nie znaleziono Google Chrome"),
         (SignInOutcome.FAILED, "✗ Nie udało się sprawdzić sesji"),
         (OSError("chrome"), "✗ Nie udało się sprawdzić sesji"),

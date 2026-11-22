@@ -555,10 +555,15 @@ _CONNECTIONS: Final[tuple[_Connection, ...]] = (
 )
 """Environment-backed connections that already exist in the backend."""
 
+_PROFILE_BUSY: Final[_Feedback] = _Feedback(
+    "✗ Profil przeglądarki jest w użyciu — zamknij okno logowania albo poczekaj na koniec nagrywania", "error"
+)
+"""Status shown when another browser uses the ElevenReader profile, for sign-in and sign-out alike."""
+
 _SIGN_IN_FEEDBACK: Final[dict[SignInOutcome, _Feedback]] = {
     SignInOutcome.SIGNED_IN: _Feedback("✓ Zalogowano", "success"),
     SignInOutcome.SIGNED_OUT: _Feedback("✗ Nie zalogowano", "error"),
-    SignInOutcome.BUSY: _Feedback("✗ Lektor właśnie nagrywa — spróbuj po zakończeniu", "error"),
+    SignInOutcome.BUSY: _PROFILE_BUSY,
     SignInOutcome.NO_CHROME: _Feedback("✗ Nie znaleziono Google Chrome", "error"),
     SignInOutcome.FAILED: _Feedback("✗ Nie udało się sprawdzić sesji", "error"),
 }
@@ -566,9 +571,7 @@ _SIGN_IN_FEEDBACK: Final[dict[SignInOutcome, _Feedback]] = {
 
 _SIGN_OUT_FEEDBACK: Final[dict[SignOutOutcome, _Feedback]] = {
     SignOutOutcome.SIGNED_OUT: _Feedback("✓ Wylogowano · zaloguj się przez Zaloguj / sprawdź sesję", "success"),
-    SignOutOutcome.BUSY: _Feedback(
-        "✗ Profil przeglądarki jest w użyciu — zamknij okno logowania albo poczekaj na koniec nagrywania", "error"
-    ),
+    SignOutOutcome.BUSY: _PROFILE_BUSY,
     SignOutOutcome.FAILED: _Feedback("✗ Nie udało się wyczyścić profilu przeglądarki", "error"),
 }
 """Status shown after the ElevenReader sign-out, for every outcome."""

@@ -363,15 +363,15 @@ plików i wykonaniu etapów decyduje plan następnego przebiegu.
   je otwarte, także przy ważnej sesji, dopóki go nie zamkniesz; w oknie możesz się
   zalogować, wylogować i zalogować ponownie. Po zamknięciu okna AniShift sprawdza sesję
   w niewidocznej przeglądarce i kończy zaległe sprzątanie konta. Wynik: `✓ Zalogowano`,
-  `✗ Nie zalogowano`, `✗ Lektor właśnie nagrywa — spróbuj po zakończeniu`, `✗ Nie
-  znaleziono Google Chrome` albo `✗ Nie udało się sprawdzić sesji`. `Esc` zwalnia
-  panel; okno zostaje do zamknięcia.
+  `✗ Nie zalogowano`, `✗ Profil przeglądarki jest w użyciu — zamknij okno logowania albo
+  poczekaj na koniec nagrywania`, `✗ Nie znaleziono Google Chrome` albo `✗ Nie udało
+  się sprawdzić sesji`. `Esc` zwalnia panel; okno zostaje do zamknięcia.
 - `Wyloguj (wyczyść profil przeglądarki)`: po potwierdzeniu usuwa cały profil Chrome
   AniShift (z ciasteczkami) i zapisuje „nie zalogowano”; zaległe sprzątanie konta
   zostaje i wykona się po następnym logowaniu. Potem użyj `Zaloguj / sprawdź sesję`.
-  Pomaga, gdy ElevenReader odrzucił przeglądarkę AniShift. Odmawia, gdy profil jest w
-  użyciu (otwarte okno logowania albo nagrywanie): `✗ Profil przeglądarki jest w użyciu
-  — zamknij okno logowania albo poczekaj na koniec nagrywania`.
+  Pomaga, gdy ElevenReader odrzucił przeglądarkę AniShift. Odmawia z tym samym
+  komunikatem „profil w użyciu”, gdy profil jest zajęty: otwarte okno logowania (także
+  po zamknięciu panelu), nagrywanie albo inne Chrome na tym profilu.
 - Gdzie: sesja żyje w profilu Chrome w `config/elevenreader/chrome-profile/`, wynik
   sprawdzenia w `config/elevenreader/session.json` (bez sekretów). AniShift nie
   zapisuje e-maila ani hasła.
