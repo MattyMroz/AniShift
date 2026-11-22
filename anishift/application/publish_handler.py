@@ -92,7 +92,9 @@ class PublishTaskHandler:
         if path != staging or not path.is_file():
             _raise_execution("Artifact publisher returned an invalid staging file")
         progress.emit(WorkerNotification(WorkerNotificationKind.PROGRESS, task.task_id, 100))
-        return TaskResult(task.task_id, (ProducedArtifact(output.artifact_id, path, {"validated": True}),))
+        return TaskResult(
+            task.task_id, (ProducedArtifact(output.artifact_id, path, {"validated": True}, source.font_files),)
+        )
 
 
 def _raise_execution(message: str) -> Never:

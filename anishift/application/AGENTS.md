@@ -227,6 +227,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - `RunServices` (`runtime.py`) buduje usługi runu leniwie, przy starcie taska, i dzieli je między taski o równej
   konfiguracji (z sekretami czytanymi przy starcie): `TtsConfig → TtsService`, tak samo tłumaczenie, audio i
   kompozycja; zamyka je koniec runu. Dzięki temu limit kart ElevenReadera i `tts_request_concurrency` się nie mnożą.
+- Ślad ustawień w produkcie pośrednim pochodzi z kroku, który go zrobił: manifest TTS zapisuje tempo i MIX czyta je
+  z manifestu; ASS niesie `font_files` czcionki dialogów, którą go ułożono (split i publikacja przekazują je dalej),
+  a kompozycja dołącza je obok czcionki z ustawień (serwis zostawia tylko użyte). Split ASS przy lektorze zawsze
+  pisze kandydatów szyldów; TTS czyta `sign_narration` przy starcie, więc tryb szyldów nie zmienia grafu.
 - TTS w `runtime.py`: jeden `FfmpegClipService` jest walidatorem, assemblerem i splitterem `TtsService`. Wiedza
   „silnik czyta dokumentem” pochodzi tylko z `is_document_engine` rejestru TTS: daje `reads_document` handlera
   (łączenie kwestii urwanych i wszystkie kandydaty szyldów w batchu kwestii, czyli jeden dokument na odcinek; silniki

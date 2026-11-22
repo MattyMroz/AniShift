@@ -220,10 +220,14 @@ def test_a_subtitle_without_duration_still_gets_a_placement_window(tmp_path: Pat
 class _Preparer:
     def __init__(self) -> None:
         self.roots: set[Path] = set()
+        self.tempos: set[float] = set()
 
-    def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
+    def prepare_clip(
+        self, clip: TimedClip, *, tmp_root: Path, tempo: float, cancel: threading.Event | None
+    ) -> NormalizedClip:
         del cancel
         self.roots.add(tmp_root)
+        self.tempos.add(tempo)
         return NormalizedClip(clip, tmp_root / f"{clip.request_id}.pcm", 1000, 2, 1, 500)
 
 
@@ -253,7 +257,7 @@ def _signed_synthesis(tmp_path: Path) -> tuple[PlanTask, ArtifactSnapshot]:
         ("spoken", "signs"),
         ("manifest",),
         (),
-        (*_SPOKEN_PARAMETERS, ("sign_narration", "smart")),
+        _SPOKEN_PARAMETERS,
     )
     return task, ArtifactSnapshot({"spoken": spoken, "signs": signs}, {"manifest": output})
 
@@ -262,7 +266,14 @@ def test_signs_are_read_in_free_pauses_and_rejected_signs_stay_out_of_the_manife
     task, snapshot = _signed_synthesis(tmp_path)
     service = _Tts(tmp_path)
     preparer = _Preparer()
-    handler = TtsTaskHandler(service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=preparer)
+    handler = TtsTaskHandler(
+        service,
+        run_root=tmp_path / "run",
+        group_ranks={"group-1": 0},
+        audio=preparer,
+        tempo=1.25,
+        sign_narration="smart",
+    )
 
     first: TaskResult = handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
     second: TaskResult = handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
@@ -285,6 +296,8 @@ def test_signs_are_read_in_free_pauses_and_rejected_signs_stay_out_of_the_manife
     assert second.outputs[0].metadata == first.outputs[0].metadata
     assert load_narration_manifest(second.outputs[0].path) == manifest
     assert preparer.roots == {tmp_path / "run" / "group-1" / "audio"}
+    assert preparer.tempos == {1.25}
+    assert manifest.tempo == 1.25
 
 
 class _WatchedPreparer(_Preparer):
@@ -293,9 +306,11 @@ class _WatchedPreparer(_Preparer):
         self.progress: _Progress = progress
         self.percents_seen: list[int | None] = []
 
-    def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
+    def prepare_clip(
+        self, clip: TimedClip, *, tmp_root: Path, tempo: float, cancel: threading.Event | None
+    ) -> NormalizedClip:
         self.percents_seen.extend(notification.progress_percent for notification in self.progress.notifications)
-        return super().prepare_clip(clip, tmp_root=tmp_root, cancel=cancel)
+        return super().prepare_clip(clip, tmp_root=tmp_root, tempo=tempo, cancel=cancel)
 
 
 def test_recording_reaches_100_only_after_clips_are_prepared_and_signs_recorded(tmp_path: Path) -> None:
@@ -303,7 +318,9 @@ def test_recording_reaches_100_only_after_clips_are_prepared_and_signs_recorded(
     service = _ProgressTts(tmp_path)
     progress = _Progress()
     preparer = _WatchedPreparer(progress)
-    handler = TtsTaskHandler(service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=preparer)
+    handler = TtsTaskHandler(
+        service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=preparer, sign_narration="smart"
+    )
 
     handler.execute(task, snapshot, NeverCancelledToken(), progress)
 
@@ -315,8 +332,10 @@ def test_recording_reaches_100_only_after_clips_are_prepared_and_signs_recorded(
 
 
 class _WindowPreparer:
-    def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
-        del cancel
+    def prepare_clip(
+        self, clip: TimedClip, *, tmp_root: Path, tempo: float, cancel: threading.Event | None
+    ) -> NormalizedClip:
+        del tempo, cancel
         return NormalizedClip(clip, tmp_root / f"{clip.request_id}.pcm", 1000, 2, 1, clip.end_ms - clip.start_ms)
 
 
@@ -347,7 +366,7 @@ def _hidden_sign_synthesis(tmp_path: Path) -> tuple[PlanTask, ArtifactSnapshot]:
         ("spoken", "signs"),
         ("manifest",),
         (),
-        (*_SPOKEN_PARAMETERS, ("sign_narration", "always")),
+        _SPOKEN_PARAMETERS,
     )
     return task, ArtifactSnapshot({"spoken": spoken, "signs": signs}, {"manifest": output})
 
@@ -361,6 +380,7 @@ def _signed_reading(tmp_path: Path, *, reads_document: bool) -> tuple[_Tts, Task
         group_ranks={"group-1": 0},
         audio=_WindowPreparer(),
         reads_document=reads_document,
+        sign_narration="always",
     )
     return service, handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
 
@@ -442,7 +462,12 @@ def test_tts_handler_failed_sign_is_left_out_with_warning_and_metadata(tmp_path:
     task, snapshot = _signed_synthesis(tmp_path)
     service = _FailingTts(tmp_path, frozenset({"group-1-sign-7"}))
     handler = TtsTaskHandler(
-        service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=_Preparer(), reads_document=reads_document
+        service,
+        run_root=tmp_path / "run",
+        group_ranks={"group-1": 0},
+        audio=_Preparer(),
+        reads_document=reads_document,
+        sign_narration="smart",
     )
     captured: list[Message] = []
     handler_id: int = loguru_logger.add(captured.append, format="{message} {extra}", level="WARNING")
@@ -477,7 +502,12 @@ def test_tts_handler_failed_line_fails_task_with_engine_message_and_hint(
     failure: ErrorContext = auth_error("ElevenReader session is signed out").context
     service = _FailingTts(tmp_path, frozenset({"group-1-0"}), failure)
     handler = TtsTaskHandler(
-        service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=_Preparer(), reads_document=reads_document
+        service,
+        run_root=tmp_path / "run",
+        group_ranks={"group-1": 0},
+        audio=_Preparer(),
+        reads_document=reads_document,
+        sign_narration="smart",
     )
 
     with pytest.raises(ExecutionError) as caught:
@@ -492,7 +522,9 @@ def test_tts_handler_failed_line_fails_task_with_engine_message_and_hint(
 def test_tts_handler_document_engine_without_audio_service_refuses_signs_before_synthesis(tmp_path: Path) -> None:
     task, snapshot = _signed_synthesis(tmp_path)
     service = _Tts(tmp_path)
-    handler = TtsTaskHandler(service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, reads_document=True)
+    handler = TtsTaskHandler(
+        service, run_root=tmp_path / "run", group_ranks={"group-1": 0}, reads_document=True, sign_narration="smart"
+    )
 
     with pytest.raises(ExecutionError):
         handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
@@ -506,17 +538,21 @@ class _CancellingPreparer(_Preparer):
         self.token: EventCancellationToken = token
         self.signalled: list[bool] = []
 
-    def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
+    def prepare_clip(
+        self, clip: TimedClip, *, tmp_root: Path, tempo: float, cancel: threading.Event | None
+    ) -> NormalizedClip:
         self.token.cancel()
         self.signalled.append(cancel is not None and cancel.wait(5))
-        return super().prepare_clip(clip, tmp_root=tmp_root, cancel=cancel)
+        return super().prepare_clip(clip, tmp_root=tmp_root, tempo=tempo, cancel=cancel)
 
 
 def test_cancelling_the_task_stops_the_normalization_of_its_clips(tmp_path: Path) -> None:
     task, snapshot = _signed_synthesis(tmp_path)
     token = EventCancellationToken()
     preparer = _CancellingPreparer(token)
-    handler = TtsTaskHandler(_Tts(tmp_path), run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=preparer)
+    handler = TtsTaskHandler(
+        _Tts(tmp_path), run_root=tmp_path / "run", group_ranks={"group-1": 0}, audio=preparer, sign_narration="smart"
+    )
 
     with pytest.raises(ExecutionError) as caught:
         handler.execute(task, snapshot, token, _Progress())
@@ -557,10 +593,30 @@ def test_without_sign_narration_the_manifest_holds_only_the_spoken_lines_in_thei
 
 def test_sign_narration_without_the_run_audio_service_is_refused(tmp_path: Path) -> None:
     task, snapshot = _signed_synthesis(tmp_path)
-    handler = TtsTaskHandler(_Tts(tmp_path), run_root=tmp_path / "run", group_ranks={"group-1": 0})
+    handler = TtsTaskHandler(
+        _Tts(tmp_path), run_root=tmp_path / "run", group_ranks={"group-1": 0}, sign_narration="smart"
+    )
 
     with pytest.raises(ExecutionError):
         handler.execute(task, snapshot, NeverCancelledToken(), _Progress())
+
+
+def test_signs_planned_while_sign_narration_was_off_are_read_once_it_is_on_when_the_task_starts(
+    tmp_path: Path,
+) -> None:
+    task, snapshot = _signed_synthesis(tmp_path)
+    quiet = _Tts(tmp_path)
+    reading = _Tts(tmp_path)
+
+    TtsTaskHandler(quiet, run_root=tmp_path / "off", group_ranks={"group-1": 0}, audio=_Preparer()).execute(
+        task, snapshot, NeverCancelledToken(), _Progress()
+    )
+    TtsTaskHandler(
+        reading, run_root=tmp_path / "smart", group_ranks={"group-1": 0}, audio=_Preparer(), sign_narration="smart"
+    ).execute(task, snapshot, NeverCancelledToken(), _Progress())
+
+    assert [len(batch.requests) for batch in quiet.batches] == [1]
+    assert [request.request_id for request in reading.batches[1].requests] == ["group-1-sign-3", "group-1-sign-7"]
 
 
 def test_a_stored_manifest_window_without_duration_is_repaired_on_load(tmp_path: Path) -> None:
@@ -570,6 +626,7 @@ def test_a_stored_manifest_window_without_duration_is_repaired_on_load(tmp_path:
             {
                 "scope_id": "group-1",
                 "timeline": "source_times",
+                "tempo": 1.0,
                 "clips": [
                     {
                         "request_id": "group-1-214",
@@ -720,6 +777,7 @@ def test_manifest_rejects_submitted_request_without_clip(tmp_path: Path) -> None
             (NarrationTiming("request-1", 1000, 2000, 0),),
             expected_scope_id="group-1",
             timeline=NarrationTimeline.SOURCE_TIMES,
+            tempo=1.0,
         )
 
 

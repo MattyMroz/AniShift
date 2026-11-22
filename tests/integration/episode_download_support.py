@@ -25,7 +25,7 @@ from anishift.application.handlers import ExecutionHandlers, TranslationTaskHand
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
 from anishift.application.planning import ExecutionPlan, RunSettingsSnapshot
 from anishift.application.ready import ReadyStore
-from anishift.application.runtime import ProductionHandlerFactory, _audio_config, _ConfiguredAudioService
+from anishift.application.runtime import ProductionHandlerFactory, _audio_config
 from anishift.application.service import AppService
 from anishift.application.tts_handler import ClipPreparer, TtsProgressObserver
 from anishift.application.watch_state import WatchStateStore
@@ -368,10 +368,15 @@ class Handlers(ProductionHandlerFactory):
         ranks: dict[str, int] = {group.group_id: rank for rank, group in enumerate(plan.groups)}
 
         def tts(settings: RunSettingsSnapshot) -> TtsTaskHandler:
-            audio: ClipPreparer = _ConfiguredAudioService(
-                AudioService(_audio_config(settings)), settings.tts_postprocess_tempo
+            audio: ClipPreparer = AudioService(_audio_config(settings))
+            return TtsTaskHandler(
+                Tone(run_root / "tones"),
+                run_root=run_root,
+                group_ranks=ranks,
+                audio=audio,
+                tempo=settings.tts_postprocess_tempo,
+                sign_narration=settings.sign_narration,
             )
-            return TtsTaskHandler(Tone(run_root / "tones"), run_root=run_root, group_ranks=ranks, audio=audio)
 
         return replace(
             super().__call__(run_root, plan, source_groups),

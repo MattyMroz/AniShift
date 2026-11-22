@@ -122,7 +122,11 @@ class CompositionTaskHandler:
         planned: ContainerCompositionRequest = build_composition_request(task, artifacts)
         output: Artifact = artifacts.require_output(task.produces[0])
         staging: Path = task_staging_path(self._run_root, task, output, f".{planned.target.value}")
-        request: ContainerCompositionRequest = replace(planned, destination=staging, font_files=self._font_files)
+        drawn: tuple[Path, ...] = tuple(
+            path for artifact_id in task.requires for path in artifacts.artifacts[artifact_id].font_files
+        )
+        fonts: tuple[Path, ...] = tuple(dict.fromkeys((*drawn, *self._font_files)))
+        request: ContainerCompositionRequest = replace(planned, destination=staging, font_files=fonts)
         result: ContainerCompositionResult = self._guarded(
             lambda event: self._service.compose_container(
                 request,

@@ -777,6 +777,29 @@ def test_saved_joint_split_executes_with_confirmed_absence_without_rewriting_bef
     assert reloaded.products("group-1") == ()
 
 
+def test_split_streams_keep_the_font_their_polish_subtitles_were_laid_out_with(tmp_path: Path) -> None:
+    source_path: Path = tmp_path / "episode.pl.srt"
+    _write_srt(source_path, "Cześć")
+    font: Path = tmp_path / "dialogue.ttf"
+    source: Artifact = replace(_ready("full", ArtifactKind.FULL_PL, source_path), font_files=(font,))
+    spoken: Artifact = _output("spoken", ArtifactKind.SPOKEN_PL, subtitle_format="srt")
+    split: PlanTask = _task(TaskKind.SPLIT_SUBTITLES, ("full",), ("spoken",))
+    run_root: Path = tmp_path / "run"
+    store: ArtifactStore = ArtifactStore((source, spoken), {"group-1": run_root / "group-1"})
+
+    def commit(action: Callable[[], None]) -> bool:
+        action()
+        return True
+
+    result: TaskResult = SubtitleTaskHandler(run_root=run_root).execute(
+        split, store.snapshot(split), NeverCancelledToken(), _ProgressSink()
+    )
+    store.register(split, result, commit)
+
+    assert result.outputs[0].font_files == (font,)
+    assert store.artifact("spoken").font_files == (font,)
+
+
 @pytest.mark.parametrize("kind", [ArtifactKind.SPOKEN_PL, ArtifactKind.FULL_PL, ArtifactKind.NARRATION_AUDIO])
 def test_store_rejects_absence_for_required_product_kinds(tmp_path: Path, kind: ArtifactKind) -> None:
     output: Artifact = _output("output", kind)

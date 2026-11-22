@@ -111,6 +111,7 @@ def test_audio_handler_mixes_manifest_and_source_audio(tmp_path: Path, offset: i
             {
                 "scope_id": "group-1",
                 "timeline": "source_times",
+                "tempo": 1.35,
                 "clips": [
                     {
                         "request_id": "r1",
@@ -161,6 +162,7 @@ def test_audio_handler_mixes_manifest_and_source_audio(tmp_path: Path, offset: i
     assert result.outputs[0].path.read_bytes() == b"mixed"
     assert result.outputs[0].metadata["validated"] is True
     assert mixer.requests[0].source_offset_us == (offset or 0)
+    assert mixer.requests[0].post_process_tempo == 1.35
     assert [event.progress_percent for event in progress.notifications] == [0, 40, 99, 100]
 
 
@@ -291,6 +293,7 @@ def _manifest_file(tmp_path: Path, timeline: str = "source_times") -> Path:
             {
                 "scope_id": "group-1",
                 "timeline": timeline,
+                "tempo": 1.0,
                 "clips": [
                     {
                         "request_id": "r1",

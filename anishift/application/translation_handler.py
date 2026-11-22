@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Final, Protocol
 
 from anishift.application.artifacts import Artifact, ArtifactKind
 from anishift.application.cancellation import CancellationToken
-from anishift.application.episode_fonts import MAX_LAYOUT_INPUTS, episode_fonts
+from anishift.application.episode_fonts import MAX_LAYOUT_INPUTS, episode_fonts, laid_out_font_files
 from anishift.application.events import WorkerNotification, WorkerNotificationKind
 from anishift.application.planning import PlanTask, TaskKind
 from anishift.application.results import ArtifactSnapshot, ProducedArtifact, TaskResult
@@ -219,7 +219,8 @@ class TranslationTaskHandler:
             "engine_id": result.engine_id,
             "failed_lines": result.failed_lines,
         }
-        return TaskResult(task.task_id, (ProducedArtifact(output.artifact_id, written, metadata),))
+        drawn: tuple[Path, ...] = laid_out_font_files(self._dialogue_font, written)
+        return TaskResult(task.task_id, (ProducedArtifact(output.artifact_id, written, metadata, drawn),))
 
     def _translate_document(
         self,

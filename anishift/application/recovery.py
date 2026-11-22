@@ -358,6 +358,7 @@ def _remaining(plan: ExecutionPlan, result: TaskResult) -> ExecutionPlan:
                 path=output.path,
                 state=ArtifactState.READY,
                 preserved_path=None,
+                font_files=output.font_files,
             )
             if output is not None
             else artifact

@@ -715,20 +715,8 @@ def test_auto_sidecar_translation_narration_and_mkv_share_only_needed_tasks() ->
     assert kinds.count(TaskKind.COMPOSE_MKV) == 1
 
 
-def test_sign_narration_off_plans_exactly_what_was_planned_before() -> None:
-    video: Artifact = _artifact(ArtifactKind.VIDEO_MP4, "1.mp4")
-    sidecar: Artifact = _artifact(ArtifactKind.SOURCE_SUBTITLES, "1.ass", subtitle_format="ass")
-    products: ProductIntent = ProductIntent(frozenset({ProductKind.NARRATION_AUDIO}))
-
-    plan: ExecutionPlan = plan_auto((_group(video, sidecar),), _preset(products), _settings())
-
-    assert ArtifactKind.SIGN_CANDIDATES not in {artifact.kind for artifact in plan.artifacts}
-    assert all(name != "sign_narration" for task in plan.tasks for name, _ in task.parameters)
-    assert _task(plan, TaskKind.SYNTHESIZE_SPEECH).requires == _task(plan, TaskKind.SPLIT_SUBTITLES).produces
-
-
-@pytest.mark.parametrize("mode", ["smart", "always"])
-def test_sign_narration_adds_sign_candidates_from_the_spoken_split_to_synthesis(mode: str) -> None:
+@pytest.mark.parametrize("mode", ["off", "smart", "always"])
+def test_the_spoken_ass_split_always_writes_sign_candidates_for_synthesis_whatever_the_sign_mode(mode: str) -> None:
     video: Artifact = _artifact(ArtifactKind.VIDEO_MP4, "1.mp4")
     sidecar: Artifact = _artifact(ArtifactKind.SOURCE_SUBTITLES, "1.ass", subtitle_format="ass")
     products: ProductIntent = ProductIntent(frozenset({ProductKind.NARRATION_AUDIO}))
@@ -742,8 +730,8 @@ def test_sign_narration_adds_sign_candidates_from_the_spoken_split_to_synthesis(
 
     assert [artifacts[item].kind for item in split.produces] == [ArtifactKind.SPOKEN_PL, ArtifactKind.SIGN_CANDIDATES]
     assert synthesis.requires == split.produces
-    assert ("sign_narration", mode) in split.parameters
-    assert ("sign_narration", mode) in synthesis.parameters
+    assert all(name != "sign_narration" for task in plan.tasks for name, _ in task.parameters)
+    assert plan == plan_auto((_group(video, sidecar),), _preset(products), _settings())
     assert plan.can_execute
 
 
@@ -772,7 +760,7 @@ def test_subtitle_branches_share_translation_but_not_failure_dependencies() -> N
 
     assert plan.can_execute
     assert len(splits) == 2
-    assert all(len(task.produces) == 1 for task in splits)
+    assert all(artifacts[item].kind is ArtifactKind.SIGN_CANDIDATES for task in splits for item in task.produces[1:])
     assert {artifacts[task.produces[0]].kind for task in splits} == {
         ArtifactKind.SPOKEN_PL,
         ArtifactKind.DISPLAYED_PL,
@@ -809,8 +797,10 @@ def test_manual_regeneration_keeps_requested_branches_and_reuses_full_polish() -
     assert plan.groups[0].intent.products == products
     assert TaskKind.TRANSLATE_SUBTITLES not in _task_kinds(plan)
     splits: tuple[PlanTask, ...] = tuple(task for task in plan.tasks if task.kind is TaskKind.SPLIT_SUBTITLES)
+    artifacts: dict[str, Artifact] = {artifact.artifact_id: artifact for artifact in plan.artifacts}
     assert len(splits) == 2
-    assert all(task.requires == (full.artifact_id,) and len(task.produces) == 1 for task in splits)
+    assert all(task.requires == (full.artifact_id,) for task in splits)
+    assert all(artifacts[item].kind is ArtifactKind.SIGN_CANDIDATES for task in splits for item in task.produces[1:])
     assert TaskKind.SYNTHESIZE_SPEECH in _task_kinds(plan)
 
 
@@ -1378,7 +1368,7 @@ def test_containers_from_plain_srt_omit_the_displayed_layer_without_splitting_it
     }
     assert plan.can_execute
     assert displayed.state is ArtifactState.ABSENT
-    assert split_outputs == {ArtifactKind.SPOKEN_PL}
+    assert split_outputs - {ArtifactKind.SIGN_CANDIDATES} == {ArtifactKind.SPOKEN_PL}
     assert all(displayed.artifact_id not in task.produces for task in plan.tasks)
     assert displayed.artifact_id in _task(plan, TaskKind.COMPOSE_MKV).requires
     assert displayed.artifact_id in _task(plan, TaskKind.COMPOSE_MP4).requires

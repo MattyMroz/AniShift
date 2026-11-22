@@ -177,6 +177,7 @@ class AudioTaskHandler:
                 clips,
                 self._run_root / task.group_id / "audio",
                 destination,
+                post_process_tempo=manifest.tempo,
                 paragraph_pauses=manifest.timeline is NarrationTimeline.CONTINUOUS,
                 source_offset_us=source_offset_us,
             ),

@@ -312,7 +312,9 @@ class ArtifactStore:
             msg = "Produced artifact escaped its exact run group scope"
             raise ExecutionError(msg)
         if planned.lifetime is ArtifactLifetime.INTERMEDIATE:
-            artifact: Artifact = replace(planned, path=output.path, state=ArtifactState.READY)
+            artifact: Artifact = replace(
+                planned, path=output.path, state=ArtifactState.READY, font_files=output.font_files
+            )
             return artifact, output
         destination: Path | None = planned.planned_destination
         if destination is None:
@@ -333,8 +335,10 @@ class ArtifactStore:
             raise ExecutionError(msg)
         metadata: dict[str, str | int | bool] = dict(output.metadata)
         metadata["published"] = True
-        registered = ProducedArtifact(output.artifact_id, destination, metadata)
-        artifact = replace(planned, path=destination, state=ArtifactState.READY, preserved_path=None)
+        registered = ProducedArtifact(output.artifact_id, destination, metadata, output.font_files)
+        artifact = replace(
+            planned, path=destination, state=ArtifactState.READY, preserved_path=None, font_files=output.font_files
+        )
         return artifact, registered
 
 

@@ -814,35 +814,26 @@ class _GroupPlanner:
         self, script: Artifact, timeline: NarrationTimeline, signs: Artifact | None = None
     ) -> Artifact:
         manifest: Artifact = self._intermediate(ArtifactKind.TTS_MANIFEST, f"tts-manifest-{timeline.value}")
-        parameters: tuple[tuple[str, str | int | bool], ...] = (
-            ("narration_timeline", timeline.value),
-            ("script_kind", script.kind.value),
-        )
-        if signs is not None:
-            parameters = (*parameters, ("sign_narration", self.settings.sign_narration))
         self._add_task(
             TaskKind.SYNTHESIZE_SPEECH,
             requires=(script,) if signs is None else (script, signs),
             produces=(manifest,),
             variant=f"narration-{timeline.value}",
-            parameters=parameters,
+            parameters=(("narration_timeline", timeline.value), ("script_kind", script.kind.value)),
         )
         return manifest
 
     def _sign_candidates(self, spoken: Artifact) -> Artifact | None:
-        """Make the split of the spoken ASS also write the on-screen signs the narrator may read."""
-        mode: str = self.settings.sign_narration
+        """Make the split of the spoken ASS also write the on-screen signs, which synthesis reads by its own mode."""
         task_id: str | None = self.producer_by_artifact.get(spoken.artifact_id)
-        if mode == "off" or task_id is None or self._subtitle_format(spoken) != "ass":
+        if task_id is None or self._subtitle_format(spoken) != "ass":
             return None
         index: int = next(index for index, task in enumerate(self.tasks) if task.task_id == task_id)
         split: PlanTask = self.tasks[index]
         if split.kind is not TaskKind.SPLIT_SUBTITLES:
             return None
         signs: Artifact = self._intermediate(ArtifactKind.SIGN_CANDIDATES, "sign-candidates")
-        self.tasks[index] = replace(
-            split, produces=(*split.produces, signs.artifact_id), parameters=(("sign_narration", mode),)
-        )
+        self.tasks[index] = replace(split, produces=(*split.produces, signs.artifact_id))
         self.producer_by_artifact[signs.artifact_id] = task_id
         return signs
 

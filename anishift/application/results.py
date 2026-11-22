@@ -110,6 +110,8 @@ class ProducedArtifact:
     artifact_id: str
     path: Path
     metadata: Mapping[str, str | int | bool]
+    font_files: tuple[Path, ...] = ()
+    """Dialogue font files the task drew these subtitles with, carried into every container built from them."""
 
     def __post_init__(self) -> None:
         if not self.artifact_id.strip():

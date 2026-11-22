@@ -483,10 +483,9 @@ def _validate_task_parameter_names(kind: TaskKind, names: frozenset[str]) -> Non
             frozenset({"output_format"}),
             frozenset({"output_format", "source_kind"}),
         ),
-        TaskKind.SPLIT_SUBTITLES: (frozenset(), frozenset({"sign_narration"})),
         TaskKind.SYNTHESIZE_SPEECH: (
             frozenset({"narration_timeline", "script_kind"}),
-            frozenset({"narration_timeline", "script_kind", "sign_narration"}),
+            frozenset({"narration_timeline", "script_kind"}),
         ),
         TaskKind.TRANSCODE_AUDIO: (frozenset({"output_profile"}), frozenset({"output_profile"})),
         TaskKind.MIX_NARRATION: (

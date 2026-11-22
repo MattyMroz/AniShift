@@ -31,14 +31,11 @@ from anishift.paths import config_dir, elevenreader_dir
 from anishift.platform.binaries import Binary, require_binary
 from anishift.services.audio import (
     AudioConfig,
-    AudioRenderRequest,
-    AudioRenderResult,
     AudioService,
     AudioTranscodeService,
 )
 from anishift.services.audio.commands import SubprocessRunner
-from anishift.services.audio.service import AudioProgressSink
-from anishift.services.audio.types import AudioCodecProfile, NormalizedClip, TimedClip
+from anishift.services.audio.types import AudioCodecProfile
 from anishift.services.composition import CompositionConfig, CompositionService, QualityPreset
 from anishift.services.extraction import ExtractionService, extract_tracks, identify
 from anishift.services.llm import (
@@ -216,17 +213,16 @@ class RunServices:
             group_ranks=self._group_ranks,
             voice_id=settings.tts_voice_id,
             allowed_voice_ids=frozenset(settings.tts_allowed_voice_ids),
-            audio=_ConfiguredAudioService(self._audio_service(settings), settings.tts_postprocess_tempo),
+            audio=self._audio_service(settings),
             reads_document=is_document_engine(settings.tts_profile_id),
+            tempo=settings.tts_postprocess_tempo,
+            sign_narration=settings.sign_narration,
         )
 
     def audio(self, settings: RunSettingsSnapshot) -> AudioTaskHandler:
-        """Return the mixer and transcoder of *settings*."""
-        config: AudioConfig = _audio_config(settings)
+        """Return the mixer and transcoder of *settings*; a mix takes its tempo from the clips it places."""
         return AudioTaskHandler(
-            _ConfiguredAudioService(self._audio_service(settings), settings.tts_postprocess_tempo),
-            AudioTranscodeService(config),
-            run_root=self._run_root,
+            self._audio_service(settings), AudioTranscodeService(_audio_config(settings)), run_root=self._run_root
         )
 
     def composition(self, settings: RunSettingsSnapshot) -> CompositionTaskHandler:
@@ -297,28 +293,6 @@ class _RunTtsService:
     def close(self) -> None:
         self._clip_cancel.set()
         self._service.close()
-
-
-class _ConfiguredAudioService:
-    __slots__ = ("_post_process_tempo", "_service")
-
-    def __init__(self, service: AudioService, post_process_tempo: float) -> None:
-        self._service: AudioService = service
-        self._post_process_tempo: float = post_process_tempo
-
-    def render(
-        self,
-        request: AudioRenderRequest,
-        *,
-        callbacks: AudioProgressSink | None = None,
-        on_percent: Callable[[int], None] | None = None,
-        cancel: threading.Event | None = None,
-    ) -> AudioRenderResult:
-        configured: AudioRenderRequest = replace(request, post_process_tempo=self._post_process_tempo)
-        return self._service.render(configured, callbacks=callbacks, on_percent=on_percent, cancel=cancel)
-
-    def prepare_clip(self, clip: TimedClip, *, tmp_root: Path, cancel: threading.Event | None) -> NormalizedClip:
-        return self._service.prepare_clip(clip, tmp_root=tmp_root, tempo=self._post_process_tempo, cancel=cancel)
 
 
 class _TranslationRuntime:
