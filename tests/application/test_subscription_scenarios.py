@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -48,6 +48,7 @@ from anishift.application.episode_selection import (
     AniZipMapping,
     EpisodeKey,
     FranchiseGraph,
+    LibraryGraph,
     ListedEpisode,
     StreamCandidate,
 )
@@ -172,6 +173,12 @@ class _Season:
             },
             frozenset({anilist_id}),
             True,
+        )
+
+    def library_graph(self, anilist_ids: Collection[int]) -> LibraryGraph:
+        graphs: list[FranchiseGraph] = [self.franchise(anilist_id) for anilist_id in anilist_ids]
+        return LibraryGraph(
+            {key: node for graph in graphs for key, node in graph.nodes.items()}, frozenset(anilist_ids)
         )
 
     def mapping(self, anilist_id: int) -> AniZipMapping:

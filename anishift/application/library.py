@@ -25,9 +25,10 @@ from anishift.application.control import (
     WatchState,
     require_relative_paths,
 )
-from anishift.application.control_views import LibraryFile, LibraryFileIdentity, LibrarySet
+from anishift.application.control_views import LibraryFile, LibraryFileIdentity, LibrarySet, TitleSource
 from anishift.application.discovery import ArtifactName, classify_artifact
 from anishift.application.episode_identity import TECHNICAL, VIDEO_EXTENSIONS
+from anishift.application.episode_selection import SEASON_FORMATS, JsonObject, LibraryGraph, franchise_traversal
 from anishift.application.intents import GroupIntent
 from anishift.application.products import main_product
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, WorkspacePlace
@@ -82,6 +83,8 @@ _UNRECORDED: Final[str] = "unrecorded:"
 
 SERIES_YEAR: Final[re.Pattern[str]] = re.compile(r"\s*\((?:19|20)\d{2}\)")
 """Find a parenthesised year of a catalogue title, which tells remakes apart, not seasons."""
+_UNKNOWN_DATE_PART: Final[int] = 9999
+"""Sort value of a missing start year, month or day, placing an undated entry after every dated one."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,18 +212,63 @@ def downloaded_episodes(state: WatchState) -> dict[str, DownloadedEpisode]:
     return result
 
 
-def untitled_series(state: WatchState, titles: Mapping[int, str]) -> frozenset[int]:
-    """Return the AniList entries of downloaded sets that neither a subscription nor *titles* names."""
-    followed: frozenset[int | None] = frozenset(item.anilist_id for item in state.subscriptions)
-    return frozenset(
-        item.anilist_id
-        for item in downloaded_episodes(state).values()
-        if item.anilist_id not in followed and item.anilist_id not in titles
+@dataclass(frozen=True, slots=True)
+class LibrarySeries:
+    """Catalogue series one AniList entry belongs to, with the entry's own title for its season."""
+
+    series_id: int
+    title: str
+    entry_title: str
+
+
+def library_entries(state: WatchState) -> frozenset[int]:
+    """Return the AniList entries of downloaded sets and subscriptions."""
+    followed: frozenset[int] = frozenset(item.anilist_id for item in state.subscriptions if item.anilist_id is not None)
+    return followed | frozenset(item.anilist_id for item in downloaded_episodes(state).values())
+
+
+def library_series(graph: LibraryGraph, entries: Iterable[int]) -> dict[int, LibrarySeries]:
+    """Join the PREQUEL/SEQUEL chains of *entries* sharing a node into series named after their first season."""
+    known: tuple[int, ...] = tuple(entry for entry in dict.fromkeys(entries) if entry in graph.nodes)
+    chains: list[frozenset[int]] = []
+    for entry in known:
+        chain: frozenset[int] = franchise_traversal(entry, graph.nodes, graph.queried)[0] | {entry}
+        joined: list[frozenset[int]] = [item for item in chains if item & chain]
+        chains = [item for item in chains if not item & chain]
+        chains.append(chain.union(*joined))
+    result: dict[int, LibrarySeries] = {}
+    for chain in chains:
+        first: JsonObject = min((graph.nodes[item] for item in chain if item in graph.nodes), key=_series_order)
+        title: str = series_title(_node_title(first))
+        if title:
+            result.update(
+                (entry, LibrarySeries(first["id"], title, _node_title(graph.nodes[entry])))
+                for entry in known
+                if entry in chain
+            )
+    return result
+
+
+def _series_order(node: JsonObject) -> tuple[bool, int, int, int, int]:
+    start: JsonObject = node.get("startDate") or {}
+    return (
+        node.get("format") not in SEASON_FORMATS,
+        start.get("year") or _UNKNOWN_DATE_PART,
+        start.get("month") or _UNKNOWN_DATE_PART,
+        start.get("day") or _UNKNOWN_DATE_PART,
+        node["id"],
     )
 
 
-def name_series(sets: Sequence[LibrarySet], state: WatchState, titles: Mapping[int, str]) -> tuple[LibrarySet, ...]:
-    """Name each set AniShift downloaded after its catalogue series, leaving every other set to its file name."""
+def _node_title(node: JsonObject) -> str:
+    title: JsonObject = node.get("title") or {}
+    return str(title.get("english") or title.get("romaji") or "")
+
+
+def name_series(
+    sets: Sequence[LibrarySet], state: WatchState, series: Mapping[int, LibrarySeries]
+) -> tuple[LibrarySet, ...]:
+    """Give each set AniShift downloaded its entry, series and title source, leaving other sets to their names."""
     episodes: dict[str, DownloadedEpisode] = downloaded_episodes(state)
     followed: dict[int, SubscriptionRecord] = {
         item.anilist_id: item for item in state.subscriptions if item.anilist_id is not None
@@ -228,16 +276,28 @@ def name_series(sets: Sequence[LibrarySet], state: WatchState, titles: Mapping[i
     named: list[LibrarySet] = []
     for item in sets:
         episode: DownloadedEpisode | None = episodes.get(item.set_id)
-        record: SubscriptionRecord | None = None if episode is None else followed.get(episode.anilist_id)
-        title: str | None = record.title if record is not None else None
-        if title is None and episode is not None:
-            title = titles.get(episode.anilist_id)
-        if episode is None or title is None:
+        if episode is None:
             named.append(item)
             continue
-        season: int | None = None if episode.number is None else _series_season(title, record, episode.number)
+        keyed: LibrarySet = replace(item, anilist_id=episode.anilist_id, title_source=TitleSource.KEY)
+        known: LibrarySeries | None = series.get(episode.anilist_id)
+        if known is None:
+            named.append(keyed)
+            continue
+        record: SubscriptionRecord | None = followed.get(episode.anilist_id)
+        season: int | None = None
+        if episode.number is not None:
+            season = _series_season(known.entry_title, record, episode.number)
+        if season is None and episode.number is not None and known.series_id == episode.anilist_id:
+            season = 1
         named.append(
-            replace(item, series=series_title(title), season=season, episode=None if season is None else episode.number)
+            replace(
+                keyed,
+                series=known.title,
+                series_id=known.series_id,
+                season=season,
+                episode=None if season is None else episode.number,
+            )
         )
     return tuple(named)
 

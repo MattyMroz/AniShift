@@ -15,6 +15,7 @@ if TYPE_CHECKING:
         SeasonContext,
         SeriesGroup,
         episode_read_timeout_s,
+        normalize_series,
         order_groups,
         read_episode,
     )
@@ -356,6 +357,7 @@ __all__ = [
     "legal_narration_timelines",
     "legal_products",
     "library_label",
+    "normalize_series",
     "notice_text",
     "order_groups",
     "parse_query",
@@ -428,6 +430,7 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "ReleaseChoice": ("anishift.application.acquisition", "ReleaseChoice"),
     "SeriesGroup": ("anishift.application.acquisition", "SeriesGroup"),
     "order_groups": ("anishift.application.acquisition", "order_groups"),
+    "normalize_series": ("anishift.application.acquisition", "normalize_series"),
     "EnvironmentSettingStatus": ("anishift.application.service", "EnvironmentSettingStatus"),
     "CheckResult": ("anishift.setup.doctor", "CheckResult"),
     "DiscoveryResult": ("anishift.application.discovery", "DiscoveryResult"),

@@ -72,6 +72,7 @@ if TYPE_CHECKING:
         Franchise,
         FranchiseGraph,
         JsonObject,
+        LibraryGraph,
         RankedCandidate,
         StreamCandidate,
     )
@@ -220,6 +221,10 @@ class TitleCatalog(Protocol):
 
     def franchise(self, anilist_id: int, *, cancel: CancellationToken | None = None) -> FranchiseGraph:
         """Return the anime relation graph rooted at one entry, stopping before a request after *cancel*."""
+        ...
+
+    def library_graph(self, anilist_ids: Collection[int]) -> LibraryGraph:
+        """Return the anime relation graphs of many entries read in shared requests."""
         ...
 
 
@@ -849,6 +854,10 @@ class AcquisitionService:
     def franchise(self, anilist_id: int, *, cancel: CancellationToken | None = None) -> Franchise:
         """Return the franchise view rooted at one entry, remembering its graph while fresh."""
         return franchise_view(self._franchise_graph(anilist_id, cancel), anilist_id)
+
+    def library_graph(self, anilist_ids: Collection[int]) -> LibraryGraph:
+        """Read the relation graphs of the Library entries in shared catalog requests."""
+        return self._titles().library_graph(anilist_ids)
 
     def _franchise_graph(self, anilist_id: int, cancel: CancellationToken | None = None) -> FranchiseGraph:
         now: float = self._clock()

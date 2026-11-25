@@ -161,14 +161,16 @@ from anishift.application.intents import (
     SubtitleOutputFormat,
 )
 from anishift.application.library import (
+    LibrarySeries,
     assigned_files,
     file_identity,
+    library_entries,
+    library_series,
     name_series,
     project_library,
     unrecorded_group,
     unrecorded_set,
     unrecorded_set_id,
-    untitled_series,
 )
 from anishift.application.planner import auto_group_products
 from anishift.application.planning import ExecutionPlan, TaskState
@@ -960,7 +962,7 @@ class AutomationOwner:
         self._library: InspectedWorkspace | None = None
         self._subtitles_missing: frozenset[str] = frozenset()
         self._ready_library: tuple[LibrarySet, ...] = ()
-        self._series_titles: dict[int, str] = {}
+        self._series: dict[int, LibrarySeries] = {}
         self._series_requested: set[int] = set()
         self._deletion_previews: dict[str, tuple[DeletionPreview, str | None, int]] = {}
         self._ledger: WatchLedger = WatchLedger()
@@ -1840,7 +1842,7 @@ class AutomationOwner:
         pausing: bool = self._pausing()
         incomplete: bool = not pausing and self._pause_incomplete()
         materials: list[dict[str, object]] = self._processing_materials()
-        library: tuple[LibrarySet, ...] = name_series(self._ready_library, self._state, self._series_titles)
+        library: tuple[LibrarySet, ...] = self._named(self._ready_library)
         return {
             "instance_id": self._instance_id,
             "notification_problem": self._notification_problem,
@@ -1951,6 +1953,9 @@ class AutomationOwner:
                     "series": group.series,
                     "season": group.season,
                     "episode": group.episode,
+                    "anilist_id": group.anilist_id,
+                    "series_id": group.series_id,
+                    "title_source": group.title_source.value,
                 }
                 for group in library
                 if group.available
@@ -2312,7 +2317,7 @@ class AutomationOwner:
         group: LibrarySet | None = next((item for item in self._ready_library if item.set_id == identifier), None)
         if group is None:
             return self._library_refusal("library_set_missing")
-        return ControlResponse.succeeded(encode_view(name_series((group,), self._state, self._series_titles)[0]))
+        return ControlResponse.succeeded(encode_view(self._named((group,))[0]))
 
     def _inspect_library_command(self, request: ControlRequest) -> ControlResponse:
         groups: tuple[SourceGroup, ...] = self._service.library_inventory()
@@ -2346,7 +2351,7 @@ class AutomationOwner:
         if request.kind == "deletion_undo":
             return self._start_restore(request, released)
         if request.kind == "library_refresh":
-            named: tuple[LibrarySet, ...] = name_series(self._ready_library, self._state, self._series_titles)
+            named: tuple[LibrarySet, ...] = self._named(self._ready_library)
             return ControlResponse.succeeded({"sets": [encode_view(item) for item in named]})
         if request.kind == "deletion_retry":
             return self._retry_deletion(request, released)
@@ -8515,34 +8520,42 @@ class AutomationOwner:
         )
 
     def _publish_state(self) -> None:
-        self._request_series_titles()
+        self._request_series()
         self._publish({"event": "state_changed", "payload": self._status()}, terminal=False)
 
-    def _request_series_titles(self) -> None:
+    def _named(self, sets: tuple[LibrarySet, ...]) -> tuple[LibrarySet, ...]:
+        return name_series(sets, self._state, self._series)
+
+    def _request_series(self) -> None:
         acquisition: AcquisitionService | None = self._service.acquisition
         if acquisition is None or self._shutting_down:
             return
-        wanted: frozenset[int] = untitled_series(self._state, self._series_titles) - self._series_requested
+        wanted: frozenset[int] = library_entries(self._state) - self._series.keys() - self._series_requested
         if not wanted:
             return
         self._series_requested.update(wanted)
         self._active_io += 1
-        self._pool.submit(self._read_series_titles, acquisition, tuple(sorted(wanted)))
+        self._pool.submit(self._read_series, acquisition, tuple(sorted(wanted)))
 
-    def _read_series_titles(self, acquisition: AcquisitionService, anilist_ids: tuple[int, ...]) -> None:
-        titles: dict[int, str] = {}
+    def _read_series(self, acquisition: AcquisitionService, anilist_ids: tuple[int, ...]) -> None:
+        found: dict[int, LibrarySeries] = {}
         try:
-            for anilist_id in anilist_ids:
-                title: str | None = _series_title(acquisition, anilist_id)
-                if title is not None:
-                    titles[anilist_id] = title
+            with acquisition.episode_requests():
+                found = library_series(acquisition.library_graph(anilist_ids), anilist_ids)
+        except (AniShiftError, OSError, ValueError) as error:
+            logger.warning(
+                "Library series unavailable",
+                provider="anilist",
+                entries=len(anilist_ids),
+                error_class=type(error).__name__,
+            )
         finally:
-            self._queue.put(lambda: self._record_series_titles(titles))
+            self._queue.put(lambda: self._record_series(found))
 
-    def _record_series_titles(self, titles: dict[int, str]) -> None:
+    def _record_series(self, found: dict[int, LibrarySeries]) -> None:
         self._active_io -= 1
-        self._series_titles.update(titles)
-        if titles:
+        self._series.update(found)
+        if found:
             self._publish_state()
 
     def _progress_views(self) -> list[dict[str, object]]:
@@ -9528,17 +9541,6 @@ def _subscription_details(record: SubscriptionRecord, row: SubscriptionRow) -> d
         "last_check": None if record.last_check is None else encode_view(record.last_check),
         "specials": [] if record.mapping is None else [encode_view(item) for item in record.mapping.specials],
     }
-
-
-def _series_title(acquisition: AcquisitionService, anilist_id: int) -> str | None:
-    try:
-        with acquisition.episode_requests():
-            franchise: Franchise = acquisition.franchise(anilist_id)
-    except (AniShiftError, OSError, ValueError) as error:
-        logger.warning("Library series title unavailable", provider="anilist", error_class=type(error).__name__)
-        return None
-    entry: FranchiseEntry | None = next((item for item in franchise.entries if item.anilist_id == anilist_id), None)
-    return None if entry is None else entry.english or entry.romaji
 
 
 def _subscription_draft(read: ListingRead, entry: FranchiseEntry | None, now: datetime) -> SubscriptionRecord | str:

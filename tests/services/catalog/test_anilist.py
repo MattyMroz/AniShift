@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from anishift.application.cancellation import EventCancellationToken
-from anishift.application.episode_selection import FranchiseGraph
+from anishift.application.episode_selection import FranchiseGraph, LibraryGraph, franchise_traversal
 from anishift.errors import ErrorCode, ExecutionError
 from anishift.services.catalog.anilist import ANILIST_URL, AniListCatalog
 from anishift.services.catalog.errors import TitleCatalogError
@@ -108,6 +108,98 @@ def test_franchise_invalid_body_is_catalog_failure(body: object) -> None:
         pytest.raises(TitleCatalogError),
     ):
         AniListCatalog(http).franchise(1)
+
+
+def _recorded_media(*identifiers: int) -> dict[int, dict[str, Any]]:
+    media: dict[int, dict[str, Any]] = {}
+    for identifier in identifiers:
+        fixture: Path = Path(__file__).parents[2] / f"fixtures/search/anilist__franchise__{identifier}.json"
+        recorded: dict[str, Any] = json.loads(fixture.read_text(encoding="utf-8"))
+        for saved in recorded["requests"]:
+            media.update((node["id"], node) for node in saved["body"]["data"]["Page"]["media"])
+    return media
+
+
+@pytest.mark.unit
+def test_library_graph_reads_fifty_ids_per_request() -> None:
+    calls: list[list[int]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        body: dict[str, Any] = json.loads(request.content)
+        assert "perPage: 50" in body["query"]
+        calls.append(body["variables"]["ids"])
+        media: list[dict[str, Any]] = [
+            {"id": key, "type": "ANIME", "format": "TV", "title": {"romaji": f"T{key}"}, "relations": {"edges": []}}
+            for key in body["variables"]["ids"]
+        ]
+        return httpx.Response(200, json=_page(media))
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        graph: LibraryGraph = AniListCatalog(http).library_graph(range(1, 121))
+
+    assert [len(call) for call in calls] == [50, 50, 20]
+    assert set(graph.nodes) == set(range(1, 121))
+    assert graph.queried == frozenset(range(1, 121))
+
+
+@pytest.mark.unit
+def test_library_graph_expands_missing_chain_nodes_within_the_request_bound() -> None:
+    recorded: dict[int, dict[str, Any]] = _recorded_media(101280, 106509, 387)
+    calls: list[list[int]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        ids: list[int] = json.loads(request.content)["variables"]["ids"]
+        calls.append(ids)
+        return httpx.Response(200, json=_page([recorded[key] for key in ids if key in recorded]))
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        graph: LibraryGraph = AniListCatalog(http).library_graph((387, 182205, 106509))
+
+    assert calls[0] == [387, 106509, 182205]
+    assert 1 < len(calls) <= 4
+    assert all(not franchise_traversal(key, graph.nodes, graph.queried)[2] for key in (387, 182205, 106509))
+
+
+@pytest.mark.unit
+def test_library_graph_stops_expanding_after_four_rounds() -> None:
+    calls: list[list[int]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        ids: list[int] = json.loads(request.content)["variables"]["ids"]
+        calls.append(ids)
+        media: list[dict[str, Any]] = [
+            {
+                "id": key,
+                "type": "ANIME",
+                "format": "TV",
+                "title": {"romaji": "Root"},
+                "relations": {
+                    "edges": [
+                        {
+                            "relationType": "SEQUEL",
+                            "node": {"id": key + 1, "type": "ANIME", "format": "TV", "title": {"romaji": "Next"}},
+                        }
+                    ]
+                },
+            }
+            for key in ids
+        ]
+        return httpx.Response(200, json=_page(media))
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        graph: LibraryGraph = AniListCatalog(http).library_graph((1,))
+
+    assert calls == [[1], [2], [3], [4]]
+    assert set(graph.nodes) == {1, 2, 3, 4, 5}
+
+
+@pytest.mark.unit
+def test_library_graph_failure_is_a_catalog_error() -> None:
+    with (
+        httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(429))) as http,
+        pytest.raises(TitleCatalogError),
+    ):
+        AniListCatalog(http).library_graph((1,))
 
 
 _SOLO_LEVELING: Final[dict[str, Any]] = {

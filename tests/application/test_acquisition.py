@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -55,6 +55,7 @@ from anishift.application.episode_selection import (
     EpisodeOffer,
     Franchise,
     FranchiseGraph,
+    LibraryGraph,
     ListedEpisode,
     RankedCandidate,
     SeasonDates,
@@ -124,6 +125,7 @@ class _TitleCatalog:
         self.schedules: dict[int, SeasonAiring] = dict(schedules or {})
         self.searched: list[str] = []
         self.franchised: list[int] = []
+        self.library_reads: list[list[int]] = []
         self.scheduled: list[int] = []
         self.schedule_fails: bool = False
 
@@ -145,6 +147,14 @@ class _TitleCatalog:
     def franchise(self, anilist_id: int, *, cancel: CancellationToken | None = None) -> FranchiseGraph:
         self.franchised.append(anilist_id)
         return self.graphs[anilist_id]
+
+    def library_graph(self, anilist_ids: Collection[int]) -> LibraryGraph:
+        self.library_reads.append(sorted(anilist_ids))
+        graphs: list[FranchiseGraph] = [self.graphs[key] for key in anilist_ids if key in self.graphs]
+        return LibraryGraph(
+            {key: node for graph in graphs for key, node in graph.nodes.items()},
+            frozenset(key for graph in graphs for key in graph.queried),
+        )
 
 
 class _EpisodeCatalog:

@@ -107,7 +107,7 @@ _SELF_RELATION: Final[str] = "SELF"
 _ANIME_TYPE: Final[str] = "ANIME"
 """AniList media type of every node the franchise graph keeps."""
 
-_SEASON_FORMATS: Final[frozenset[str]] = frozenset({"TV", "TV_SHORT", "ONA"})
+SEASON_FORMATS: Final[frozenset[str]] = frozenset({"TV", "TV_SHORT", "ONA"})
 """AniList formats that count as a season of the identity chain."""
 
 _EXTRA_FORMATS: Final[frozenset[str]] = frozenset({"OVA", "SPECIAL"})
@@ -280,6 +280,14 @@ class FranchiseGraph:
     nodes: Mapping[int, JsonObject]
     queried: frozenset[int]
     complete: bool
+
+
+@dataclass(frozen=True, slots=True)
+class LibraryGraph:
+    """Every fetched franchise node of several Library entries as raw AniList JSON."""
+
+    nodes: Mapping[int, JsonObject]
+    queried: frozenset[int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -761,7 +769,7 @@ def _entry(node: JsonObject, relation: str, *, in_chain: bool) -> FranchiseEntry
 def _group(media_format: str | None, *, in_chain: bool) -> EntryGroup:
     if media_format in _EXTRA_FORMATS:
         return EntryGroup.EXTRA
-    if media_format in _SEASON_FORMATS and in_chain:
+    if media_format in SEASON_FORMATS and in_chain:
         return EntryGroup.SEASON
     return EntryGroup.OTHER
 
@@ -796,7 +804,7 @@ def _first_season(chain: Sequence[int], nodes: Mapping[int, JsonObject]) -> Json
     seasons: list[JsonObject] = [
         nodes[identifier]
         for identifier in chain
-        if identifier in nodes and nodes[identifier]["format"] in _SEASON_FORMATS
+        if identifier in nodes and nodes[identifier]["format"] in SEASON_FORMATS
     ]
     return min(seasons, key=_season_order, default=None)
 

@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from copy import deepcopy
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from http import HTTPStatus
+from itertools import batched
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, Final
 
 import httpx
 
-from anishift.application.episode_selection import FranchiseGraph, JsonObject, franchise_traversal
+from anishift.application.episode_selection import FranchiseGraph, JsonObject, LibraryGraph, franchise_traversal
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.catalog.errors import TitleCatalogError
 from anishift.services.catalog.types import (
@@ -98,6 +99,9 @@ _CATALOG_SUGGESTION: Final[str] = "Search again in a minute or type the title ex
 _MAX_FRANCHISE_REQUESTS: Final[int] = 4
 """Bound entry latency under AniList's roughly thirty requests per minute limit."""
 
+_PAGE_SIZE: Final[int] = 50
+"""Largest number of entries one GraphQL page returns."""
+
 _FRANCHISE_FIELDS: Final[str] = (
     "id type format status episodes countryOfOrigin seasonYear startDate { year month day }"
     " title { romaji english native }"
@@ -109,7 +113,8 @@ def _franchise_query() -> str:
     fragment: str = _FRANCHISE_FIELDS
     for _ in range(3):
         fragment = _FRANCHISE_FIELDS + " relations { edges { relationType node { " + fragment + " } } }"
-    return "query ($ids: [Int]) { Page(perPage: 50) { media(id_in: $ids, type: ANIME) { " + fragment + " } } }"
+    page: str = f"Page(perPage: {_PAGE_SIZE}) {{ media(id_in: $ids, type: ANIME) {{ {fragment} }} }}"
+    return f"query ($ids: [Int]) {{ {page} }}"
 
 
 class _CatalogFailure(StrEnum):
@@ -181,6 +186,37 @@ class AniListCatalog:
             elapsed_s=perf_counter() - started,
         )
         return graph
+
+    def library_graph(self, anilist_ids: Collection[int]) -> LibraryGraph:
+        """Fetch the graphs of many entries fifty per request, expanding missing chain nodes at most four times."""
+        started: float = perf_counter()
+        nodes: dict[int, JsonObject] = {}
+        queried: frozenset[int] = frozenset()
+        pending: list[int] = sorted(set(anilist_ids))
+        requests: int = 0
+        try:
+            for _ in range(_MAX_FRANCHISE_REQUESTS):
+                for page in batched(pending, _PAGE_SIZE, strict=False):
+                    _merge_page(self._post(_franchise_query(), {"ids": list(page)}), nodes)
+                    requests += 1
+                queried |= frozenset(pending)
+                pending = sorted(_missing_chain_nodes(anilist_ids, nodes, queried))
+                if not pending:
+                    break
+        except TitleCatalogError:
+            logger.warning("Library graph lookup failed", provider="anilist", code=ErrorCode.TITLE_CATALOG_FAILED)
+            raise
+        logger.info(
+            "Library graph lookup completed",
+            provider="anilist",
+            operation="library_graph",
+            entries=len(set(anilist_ids)),
+            count=len(nodes),
+            requests=requests,
+            complete=not pending,
+            elapsed_s=perf_counter() - started,
+        )
+        return LibraryGraph(nodes, queried)
 
     def airing_schedule(self, anilist_id: int) -> SeasonAiring:
         """Read all available episode dates for that season without inventing missing history."""
@@ -259,18 +295,32 @@ def parse_franchise_page(
     previous: FranchiseGraph | None = None,
 ) -> FranchiseGraph:
     """Merge one GraphQL data page without reordering nodes, titles or relation edges."""
-    page: object = data.get("Page") if isinstance(data, Mapping) else None
-    media: object = page.get("media") if isinstance(page, Mapping) else None
-    if not isinstance(media, list):
-        raise _catalog_error(_CatalogFailure.MALFORMED)
     nodes: dict[int, JsonObject] = dict(previous.nodes) if previous else {}
-    for node in media:
-        _collect_franchise(deepcopy(node), nodes)
+    _merge_page(data, nodes)
     if root_id not in nodes:
         raise _catalog_error(_CatalogFailure.MALFORMED)
     all_queried: frozenset[int] = queried | (previous.queried if previous else frozenset())
     _, _, missing = franchise_traversal(root_id, nodes, all_queried)
     return FranchiseGraph(root_id, nodes, all_queried, not missing)
+
+
+def _merge_page(data: object, nodes: dict[int, JsonObject]) -> None:
+    page: object = data.get("Page") if isinstance(data, Mapping) else None
+    media: object = page.get("media") if isinstance(page, Mapping) else None
+    if not isinstance(media, list):
+        raise _catalog_error(_CatalogFailure.MALFORMED)
+    for node in media:
+        _collect_franchise(deepcopy(node), nodes)
+
+
+def _missing_chain_nodes(
+    roots: Collection[int], nodes: Mapping[int, JsonObject], queried: frozenset[int]
+) -> frozenset[int]:
+    missing: set[int] = set()
+    for root in roots:
+        if root in nodes:
+            missing |= franchise_traversal(root, nodes, queried)[2]
+    return frozenset(missing - queried)
 
 
 def _collect_franchise(raw: object, nodes: dict[int, JsonObject]) -> None:
