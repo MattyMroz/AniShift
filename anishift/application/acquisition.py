@@ -35,15 +35,18 @@ from anishift.application.episode_selection import (
     EpisodeOffer,
     ListedEpisode,
     episode_listing,
+    fill_episode_titles,
     first_season_numbering,
     franchise_traversal,
     franchise_view,
     identity_target,
+    lacks_english_title,
     numbering_gap,
     rank_candidates,
     season_dates,
     streams_releases,
     suggestion,
+    tvdb_show_id,
 )
 from anishift.application.subscription_choice import ABSENT_AFTER_H
 from anishift.application.subscription_targets import PolishState
@@ -94,6 +97,7 @@ __all__ = [
     "DownloadReceipt",
     "EpisodeCatalog",
     "EpisodeReading",
+    "EpisodeTitleCatalog",
     "IdCatalog",
     "KitsuLookup",
     "ListingRead",
@@ -173,6 +177,9 @@ _NON_ENGLISH_LANGUAGE: Final[str] = "fr"
 _FALLBACK_CACHE_S: Final[int] = 900
 """Freshness of remembered entry data when ani.zip sends no ``Cache-Control``."""
 
+_TVMAZE_CACHE_S: Final[int] = 3600
+"""Freshness of remembered TVmaze episode titles, equal to the ``Cache-Control: max-age=3600`` TVmaze sends."""
+
 _REMEMBERED_ENTRIES: Final[int] = 64
 """Entries the resident process keeps in memory before forgetting the least recently used one."""
 
@@ -244,6 +251,14 @@ class IdCatalog(Protocol):
 
     def ids(self, anilist_id: int) -> ArmIds:
         """Return the bridge IDs, ``None`` where unknown."""
+        ...
+
+
+class EpisodeTitleCatalog(Protocol):
+    """English episode titles of one TheTVDB series."""
+
+    def episode_titles(self, tvdb_show_id: int) -> Mapping[tuple[int, int], str]:
+        """Return the titles keyed by ``(season, number)``, empty for an unknown series."""
         ...
 
 
@@ -489,6 +504,9 @@ class _Remembered:
     mapping_at: float = 0.0
     schedule: SeasonAiring | None = None
     schedule_at: float = 0.0
+    titles: Mapping[tuple[int, int], str] | None = None
+    titles_at: float = 0.0
+    titles_ttl_s: float = 0.0
 
     def fresh(self, fetched_at: float, now: float) -> bool:
         age: int | None = self.mapping.max_age_s if self.mapping is not None else None
@@ -617,6 +635,7 @@ class AcquisitionService:
         id_catalog: IdCatalog | None = None,
         anidb_catalog: AnidbCatalog | None = None,
         kitsu_catalog: KitsuLookup | None = None,
+        episode_titles: EpisodeTitleCatalog | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._source: TorrentSource = source
@@ -633,6 +652,7 @@ class AcquisitionService:
         self._id_catalog: IdCatalog | None = id_catalog
         self._anidb_catalog: AnidbCatalog | None = anidb_catalog
         self._kitsu_catalog: KitsuLookup | None = kitsu_catalog
+        self._episode_titles: EpisodeTitleCatalog | None = episode_titles
         self._clock: Callable[[], float] = clock
         self._memory: OrderedDict[int, _Remembered] = OrderedDict()
         self._memory_lock: threading.Lock = threading.Lock()
@@ -866,8 +886,38 @@ class AcquisitionService:
         return graph
 
     def episodes(self, anilist_id: int) -> EpisodeListing:
-        """Return the episode list, keeping ani.zip data when the airing schedule is unavailable."""
-        return self.read_listing(anilist_id).listing
+        """Return the episode list with missing English titles from TVmaze, keeping ani.zip data on any failure."""
+        read: ListingRead = self.read_listing(anilist_id)
+        show: int | None = tvdb_show_id(read.mapping)
+        if read.movie or self._episode_titles is None or show is None:
+            return read.listing
+        if not any(
+            episode.aired and lacks_english_title(read.mapping, episode, read.tvdb_season)
+            for episode in read.listing.episodes
+        ):
+            return read.listing
+        titles: Mapping[tuple[int, int], str] = self._remembered_titles(anilist_id, show, self._episode_titles)
+        return fill_episode_titles(read.listing, read.mapping, titles, read.tvdb_season)
+
+    def _remembered_titles(
+        self, anilist_id: int, show: int, catalog: EpisodeTitleCatalog
+    ) -> Mapping[tuple[int, int], str]:
+        now: float = self._clock()
+        with self._memory_lock:
+            entry: _Remembered = self._remembered(anilist_id)
+            if entry.titles is not None and now < entry.titles_at + entry.titles_ttl_s:
+                return entry.titles
+        titles: Mapping[tuple[int, int], str]
+        ttl_s: int
+        try:
+            titles, ttl_s = catalog.episode_titles(show), _TVMAZE_CACHE_S
+        except (AniShiftError, OSError, ValueError) as error:
+            _bridge_failed("tvmaze", error)
+            titles, ttl_s = {}, _FALLBACK_CACHE_S
+        with self._memory_lock:
+            entry = self._remembered(anilist_id)
+            entry.titles, entry.titles_at, entry.titles_ttl_s = titles, now, ttl_s
+        return titles
 
     def read_listing(
         self, anilist_id: int, *, saved: AniZipMapping | None = None, targets: Collection[int] = ()

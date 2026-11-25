@@ -41,6 +41,7 @@ from anishift.application.episode_selection import (
     SeasonDates,
     StreamCandidate,
     episode_listing,
+    fill_episode_titles,
     franchise_traversal,
     franchise_view,
     identity_target,
@@ -54,6 +55,7 @@ from anishift.application.episode_selection import (
     season_dates,
     streams_releases,
     suggestion,
+    tvdb_show_id,
     visible,
 )
 from anishift.application.release_quality import Origin, ReleaseTraits
@@ -386,6 +388,68 @@ def test_numbering_gap_skips_movie() -> None:
     mapping: AniZipMapping = _mapping({"1": {"title": {"en": "Complete Movie"}}, "S1": {"title": {"en": "Making of"}}})
     assert numbering_gap(mapping, 1, None, movie=True) is None
     assert numbering_gap(mapping, 1, None, movie=False) == "none"
+
+
+@pytest.mark.parametrize(
+    ("shows", "expected"),
+    [
+        ({"1": 478752, "2": 478752, "S1": 999}, 478752),
+        ({"1": 478752, "2": None}, 478752),
+        ({"1": 478752, "2": 478753}, None),
+        ({"1": None, "S1": 478752}, None),
+        ({"1": "478752", "2": 0}, None),
+    ],
+)
+def test_tvdb_show_id_needs_exactly_one_series_among_numbered_episodes(
+    shows: dict[str, object], expected: int | None
+) -> None:
+    assert tvdb_show_id(_mapping({key: {"tvdbShowId": show} for key, show in shows.items()})) == expected
+
+
+def test_listed_episode_title_prefers_english_over_romaji() -> None:
+    assert ListedEpisode(1, title_en="English", title_romaji="Romaji").title == "English"
+    assert ListedEpisode(1, title_romaji="Romaji").title == "Romaji"
+    assert ListedEpisode(1).title is None
+
+
+def _titled_listing(*episodes: ListedEpisode) -> EpisodeListing:
+    return EpisodeListing(1, None, "TV", "RELEASING", len(episodes), episodes, (), None, None, None)
+
+
+def test_fill_episode_titles_adds_english_only_where_it_is_missing_and_the_numbering_is_certain() -> None:
+    mapping: AniZipMapping = _mapping(
+        {
+            "1": {"seasonNumber": 2, "episodeNumber": 1},
+            "2": {"seasonNumber": 2, "episodeNumber": 2},
+            "3": {"seasonNumber": 2, "episodeNumber": 3},
+            "4": {"seasonNumber": 2, "episodeNumber": 3},
+            "5": {},
+            "6": {"seasonNumber": 2, "episodeNumber": 6},
+        }
+    )
+    listing: EpisodeListing = _titled_listing(
+        ListedEpisode(1, title_en="Kept", season=2, episode=1),
+        ListedEpisode(2, title_romaji="Romaji", season=2, episode=2),
+        ListedEpisode(3, season=2, episode=3),
+        ListedEpisode(4, season=2, episode=3),
+        ListedEpisode(5),
+        ListedEpisode(6, season=2, episode=6),
+        ListedEpisode(7),
+    )
+    titles: dict[tuple[int, int], str] = {(2, number): f"TVmaze {number}" for number in range(1, 8)}
+    filled: EpisodeListing = fill_episode_titles(listing, mapping, titles, 2)
+    assert [(episode.title_en, episode.title_romaji) for episode in filled.episodes] == [
+        ("Kept", None),
+        ("TVmaze 2", "Romaji"),
+        ("TVmaze 3", None),
+        (None, None),
+        (None, None),
+        ("TVmaze 6", None),
+        (None, None),
+    ]
+    assert replace(filled, episodes=listing.episodes) == listing
+    assert all(episode.title_en is None for episode in fill_episode_titles(listing, mapping, titles, 1).episodes[1:])
+    assert fill_episode_titles(listing, mapping, {}, 2) == listing
 
 
 def test_identity_target_special_key_is_excluded_only_for_its_own_number() -> None:

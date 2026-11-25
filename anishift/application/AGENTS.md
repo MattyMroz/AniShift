@@ -131,6 +131,9 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   wyjątku programistycznego w niepewny werdykt.
 - `AcquisitionService.franchise/episodes/offer` to odczyty katalogu przez IPC ownera, bez przyjęcia i receipt; awaria
   harmonogramu zachowuje mapowanie z ostrzeżeniem. Reguły sugestii: `test_episode_selection.py`, `test_acquisition.py`.
+- Tytuł odcinka to wyłącznie `ListedEpisode.title` z `AcquisitionService.episodes()`: tylko tam `fill_episode_titles`
+  dokłada angielskie tytuły TVmaze (pamięć rezydenta, nigdy mapowanie, `raw_episodes`, `state.json` ani H1);
+  `read_listing` i automat nie pytają TVmaze.
 - `admit_episode` to synchroniczna bramka: jeden zapis `ADMITTED` z receipt, bez skutków w qB; wysyłkę przejmuje
   cykl transferów. Nowy klucz dołącza do jedynego aktywnego transferu selektywnego swojego hasha, po
   `COMPLETE`/`FAILED` dostaje nową operację. Przed ponownym dodaniem hasha zwolnij poprzedni wpis klienta.
