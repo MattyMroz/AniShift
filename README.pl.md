@@ -191,6 +191,10 @@ i wypala nimi napisy w MP4; szyldy zostają w czcionkach wydania.
   zgodnej z procesem Pythona. AniShift nie instaluje ani nie aktywuje głosów komercyjnych;
   wygasły głos może pokazać własne okno producenta.
 
+## Źródła danych
+
+Tytuły odcinków pochodzą też z [TVmaze](https://www.tvmaze.com) (CC BY-SA).
+
 ## Dokumentacja
 
 [Mapa dokumentów](docs/README.md) prowadzi do bieżącej pracy, pliku pomysłów

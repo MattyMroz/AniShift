@@ -95,7 +95,13 @@ def _acquisition_service(context: AppContext, *, managed_torrents: bool = False)
     from anishift.application.episode_search import EpisodeSearch  # noqa: PLC0415
     from anishift.paths import torrent_profile_dir  # noqa: PLC0415
     from anishift.platform.qbittorrent_process import ManagedQBittorrent  # noqa: PLC0415
-    from anishift.services.catalog import AniListCatalog, AniZipCatalog, ArmCatalog, KitsuCatalog  # noqa: PLC0415
+    from anishift.services.catalog import (  # noqa: PLC0415
+        AniListCatalog,
+        AniZipCatalog,
+        ArmCatalog,
+        KitsuCatalog,
+        TvMazeCatalog,
+    )
     from anishift.services.http_requests import RequestControl  # noqa: PLC0415
     from anishift.services.torrents import (  # noqa: PLC0415
         QBittorrentClient,
@@ -143,6 +149,7 @@ def _acquisition_service(context: AppContext, *, managed_torrents: bool = False)
         id_catalog=ArmCatalog(http),
         anidb_catalog=anizip,
         kitsu_catalog=KitsuCatalog(http),
+        episode_titles=TvMazeCatalog(http),
         stream_source=torrentio,
         episode_search=EpisodeSearch(
             torrentio=torrentio,

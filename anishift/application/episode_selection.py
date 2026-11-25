@@ -67,10 +67,12 @@ __all__ = [
     "StreamCandidate",
     "confidence_text",
     "episode_listing",
+    "fill_episode_titles",
     "first_season_numbering",
     "franchise_traversal",
     "franchise_view",
     "identity_target",
+    "lacks_english_title",
     "list_order",
     "numbering_gap",
     "premiere_order",
@@ -81,6 +83,7 @@ __all__ = [
     "season_dates",
     "streams_releases",
     "suggestion",
+    "tvdb_show_id",
     "visible",
 ]
 
@@ -287,13 +290,19 @@ class ListedEpisode:
     """One numbered episode of an entry."""
 
     number: int
-    title: str | None = None
+    title_en: str | None = None
+    title_romaji: str | None = None
     airs_at: datetime | None = None
     season: int | None = None
     episode: int | None = None
     absolute: int | None = None
     aired: bool = False
     airs_at_fallback: bool = False
+
+    @property
+    def title(self) -> str | None:
+        """Return the English title, else the romaji one."""
+        return self.title_en or self.title_romaji
 
 
 @dataclass(frozen=True, slots=True)
@@ -511,6 +520,47 @@ def numbering_gap(mapping: AniZipMapping, number: int, tvdb_season: int | None, 
     if tvdb_season is not None and pair[0] != tvdb_season:
         return "tvdb_season"
     return None
+
+
+def tvdb_show_id(mapping: AniZipMapping) -> int | None:
+    """Return the only TheTVDB series ID of the numbered ani.zip episodes, ``None`` for none or several."""
+    shows: set[int] = {
+        show
+        for key, value in mapping.raw_episodes.items()
+        if key.isascii() and key.isdecimal() and type(show := value.get("tvdbShowId")) is int and show > 0
+    }
+    return next(iter(shows)) if len(shows) == 1 else None
+
+
+def lacks_english_title(mapping: AniZipMapping, episode: ListedEpisode, tvdb_season: int | None) -> bool:
+    """Return whether *episode* has no English title but a certain ``(season, episode)`` pair to look one up."""
+    return (
+        episode.title_en is None
+        and episode.season is not None
+        and episode.episode is not None
+        and numbering_gap(mapping, episode.number, tvdb_season, movie=False) is None
+    )
+
+
+def fill_episode_titles(
+    listing: EpisodeListing,
+    mapping: AniZipMapping,
+    titles: Mapping[tuple[int, int], str],
+    tvdb_season: int | None,
+) -> EpisodeListing:
+    """Return *listing* with English titles from *titles* where an episode lacks one and its numbering is certain."""
+    return replace(
+        listing, episodes=tuple(_titled(episode, mapping, titles, tvdb_season) for episode in listing.episodes)
+    )
+
+
+def _titled(
+    episode: ListedEpisode, mapping: AniZipMapping, titles: Mapping[tuple[int, int], str], tvdb_season: int | None
+) -> ListedEpisode:
+    if episode.season is None or episode.episode is None or not lacks_english_title(mapping, episode, tvdb_season):
+        return episode
+    title: str | None = titles.get((episode.season, episode.episode))
+    return episode if title is None else replace(episode, title_en=title)
 
 
 def _season_episode(episode: JsonObject | None) -> tuple[int, int] | None:

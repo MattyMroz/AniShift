@@ -536,5 +536,16 @@
       "file": "anilist__franchise__116741.json",
       "sha256": "0e3cc949c5b38adc26009b89ceb5cc7ea2059e06db63906f0fa977d9a063d01e"
     }
+  ],
+  "tvmaze": [
+    {
+      "file": "tvmaze__episodes__92844.json",
+      "show_id": 92844,
+      "thetvdb": 478752,
+      "recorded_at": "2026-11-26",
+      "trimmed": true,
+      "source": "https://api.tvmaze.com",
+      "license": "CC BY-SA"
+    }
   ]
 }

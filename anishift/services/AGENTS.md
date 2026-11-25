@@ -5,7 +5,7 @@ Domeny usług. Każda domena z wyborem silnika ma rejestr w `engines/`; reszta t
 ## Domeny (każda ma własny AGENTS.md)
 
 - `audio/` — timeline, normalizacja, kanały, miks, codec i resume sidecara
-- `catalog/` — rozpoznanie tytułu i numeracja sezonów oraz odcinków (AniList, ani.zip, Kitsu, ARM)
+- `catalog/` — rozpoznanie tytułu i numeracja sezonów oraz odcinków (AniList, ani.zip, Kitsu, ARM, TVmaze)
 - `composition/` — składanie źródłowego kontenera i gotowych artefaktów w jeden zweryfikowany plik
 - `extraction/` — neutralna ekstrakcja pojedynczych ścieżek z MKV/MP4 oraz legacy ekstrakcja MKV
 - `fonts/` — odczyt krojów i metryki glifów do pomiaru napisów

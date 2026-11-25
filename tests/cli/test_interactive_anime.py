@@ -61,7 +61,7 @@ class _Owner:
             "TV",
             "RELEASING",
             3,
-            tuple(ListedEpisode(number, f"Odcinek {number}", aired=True) for number in range(1, 4)),
+            tuple(ListedEpisode(number, title_en=f"Odcinek {number}", aired=True) for number in range(1, 4)),
             (),
             3,
             None,
@@ -367,7 +367,7 @@ def test_unordered_episode_label_depends_on_airing_not_on_presence_of_owner_reco
     *, aired: bool, recorded: bool
 ) -> None:
     owner: _Owner = _Owner()
-    owner.listing = replace(owner.listing, episodes=(ListedEpisode(1, "First", aired=aired),))
+    owner.listing = replace(owner.listing, episodes=(ListedEpisode(1, title_en="First", aired=aired),))
     controller: AnimeController = _controller(owner)
     _open(controller)
     if recorded:

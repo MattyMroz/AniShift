@@ -23,6 +23,7 @@ from anishift.services.torrents.qbittorrent import QBittorrentClient
         ("api.tsukihime.org", "tsukihime"),
         ("api.knaben.org", "knaben"),
         ("nekobt.to", "nekobt"),
+        ("api.tvmaze.com", "tvmaze"),
     ],
 )
 def test_episode_providers_charge_their_own_budget(host: str, provider: str) -> None:
@@ -50,6 +51,7 @@ def test_episode_providers_charge_their_own_budget(host: str, provider: str) -> 
         ("api.tsukihime.org", "tsukihime"),
         ("api.knaben.org", "knaben"),
         ("nekobt.to", "nekobt"),
+        ("api.tvmaze.com", "tvmaze"),
     ],
 )
 def test_episode_providers_send_bursts_without_sleep_but_honor_429(host: str, provider: str) -> None:
