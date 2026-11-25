@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import threading
 import time
 import unicodedata
@@ -48,6 +47,7 @@ from anishift.application.episode_selection import (
     suggestion,
     tvdb_show_id,
 )
+from anishift.application.products import safe_name_part
 from anishift.application.subscription_choice import ABSENT_AFTER_H
 from anishift.application.subscription_targets import PolishState
 from anishift.errors import AniShiftError, ErrorCode
@@ -159,14 +159,6 @@ SEEDING_STOP_PREFERENCES: Final[Mapping[str, object]] = {
     "max_seeding_time": 0,
 }
 """Client preferences stopping every torrent the moment its download completes, so nothing is seeded."""
-
-_INVALID_NAME_CHARACTERS: Final[re.Pattern[str]] = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-"""Characters Windows refuses inside one path component."""
-
-_RESERVED_NAMES: Final[frozenset[str]] = frozenset(
-    {"CON", "PRN", "AUX", "NUL", *(f"COM{n}" for n in range(1, 10)), *(f"LPT{n}" for n in range(1, 10))}
-)
-"""Device names Windows refuses as a file or directory name regardless of extension."""
 
 _FALLBACK_DIRECTORY: Final[str] = "Nieznana seria"
 """Directory used when a release title leaves nothing usable for a folder name."""
@@ -606,13 +598,7 @@ def normalize_series(text: str) -> str:
 
 def series_directory_name(series: str) -> str:
     """Turn a series title into one directory name Windows accepts."""
-    cleaned: str = _INVALID_NAME_CHARACTERS.sub("", series)
-    cleaned = " ".join(cleaned.split()).rstrip(". ")
-    if not cleaned:
-        return _FALLBACK_DIRECTORY
-    if cleaned.split(".", maxsplit=1)[0].upper() in _RESERVED_NAMES:
-        return f"_{cleaned}"
-    return cleaned
+    return safe_name_part(series) or _FALLBACK_DIRECTORY
 
 
 class AcquisitionService:

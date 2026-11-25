@@ -41,6 +41,7 @@ from anishift.services.torrents.names import (
 )
 
 if TYPE_CHECKING:
+    from anishift.application.episode_selection import ListedEpisode
     from anishift.application.subscription_targets import SubscriptionRecord
     from anishift.services.torrents.types import ReleaseName
 
@@ -137,6 +138,16 @@ def series_title(title: str) -> str:
     """Return a catalogue title without its season, what follows it, its part or its year, shared by every season."""
     base: str = SERIES_PART.sub("", SERIES_YEAR.sub("", before_season(title))).removesuffix(" -").removesuffix(" :")
     return base or " ".join(title.split())
+
+
+def episode_numbering(listed: ListedEpisode, title: str, *, film: bool) -> tuple[int, int] | None:
+    """Return the season and episode one catalogue episode is named with, or ``None`` for a film."""
+    if film:
+        return None
+    if listed.season is not None and listed.episode is not None:
+        return listed.season, listed.episode
+    hint: int | None = season_hint(title)
+    return 1 if hint is None else hint, listed.number
 
 
 def _subtitled(release: ReleaseName, text: str) -> ReleaseName | None:

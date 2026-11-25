@@ -7,13 +7,17 @@ from typing import Final
 import pytest
 
 from anishift.application.artifacts import ArtifactKind
+from anishift.application.discovery import SOURCE_SUBTITLE_FORMATS, classify_artifact
 from anishift.application.products import (
     AUDIO_PRODUCT_PROFILES,
+    EPISODE_STEM_LIMIT,
     SUBTITLE_FORMATS,
     ProductName,
     classify_product,
+    episode_stem,
     product_path,
     product_suffix,
+    safe_name_part,
 )
 
 _PRODUCT_LITERAL: Final[re.Pattern[str]] = re.compile(
@@ -29,6 +33,10 @@ _SUBTITLE_KINDS: Final[tuple[ArtifactKind, ...]] = (
 )
 
 _CONTAINER_KINDS: Final[tuple[ArtifactKind, ...]] = (ArtifactKind.FINAL_MKV, ArtifactKind.FINAL_MP4)
+
+_LONG_TITLE: Final[str] = " ".join(["Cumulonimbus"] * 20)
+
+_LONG_SERIES: Final[str] = " ".join(["Stratocumulus"] * 20)
 
 
 def _package_root() -> Path:
@@ -161,3 +169,103 @@ def test_product_suffixes_live_only_in_the_products_module() -> None:
     ]
 
     assert offenders == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Re: Zero", "Re - Zero"),
+        ("Re:Zero", "Re-Zero"),
+        ("A / B / C", "A - B - C"),
+        ("Who | Why \\ How", "Who - Why - How"),
+        ('The "Final" Act', "The 'Final' Act"),
+        ("Fire Rat`s Cloak", "Fire Rat's Cloak"),
+        ("Why? <Really> *now*", "Why Really now"),
+        ("Tab\tand\x01control", "Tab andcontrol"),
+        ("  Spaced   out ...  ", "Spaced out"),
+        ("CON", "_CON"),
+        ("aux.mkv", "_aux.mkv"),
+        ("***", ""),
+    ],
+)
+def test_safe_name_part_keeps_words_readable_and_windows_safe(text: str, expected: str) -> None:
+    assert safe_name_part(text) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("series", "numbering", "title", "expected"),
+    [
+        ("Blue Box", (2, 7), "I Need to Tell You Something", "Blue Box - S02E07 - I Need to Tell You Something"),
+        ("Blue Box", (2, 7), None, "Blue Box - S02E07"),
+        ("Blue Box", (2, 7), "  ", "Blue Box - S02E07"),
+        ("One Piece", (1, 1100), "Luffy", "One Piece - S01E1100 - Luffy"),
+        ("Bocchi the Rock!", (0, 3), "Recap", "Bocchi the Rock! - S00E03 - Recap"),
+        ("Your Name.", None, "Ignored", "Your Name"),
+        ("Re:ZERO", (3, 1), "Theft: Part 1?", "Re-ZERO - S03E01 - Theft - Part 1"),
+        ("Overgeared", (1, 2), "The End.", "Overgeared - S01E02 - The End"),
+        ("Overgeared", (1, 3), "Welcome.pl", "Overgeared - S01E03"),
+        ("Overgeared", (1, 4), "Behind the.cover", "Overgeared - S01E04"),
+        ("Overgeared", (1, 5), "NUL", "Overgeared - S01E05 - _NUL"),
+        ("Galaxy.cover", None, None, "Galaxy cover"),
+    ],
+)
+def test_episode_stem_joins_series_code_and_title(
+    series: str, numbering: tuple[int, int] | None, title: str | None, expected: str
+) -> None:
+    assert episode_stem(series, numbering, title) == expected
+
+
+@pytest.mark.unit
+def test_episode_stem_shortens_the_title_at_a_word_before_the_series() -> None:
+    stem = episode_stem("The Iceblade Sorcerer Shall Rule the World", (2, 1), _LONG_TITLE)
+
+    assert len(stem) <= EPISODE_STEM_LIMIT
+    assert stem.startswith("The Iceblade Sorcerer Shall Rule the World - S02E01 - Cumulonimbus")
+    assert stem.endswith("Cumulonimbus")
+
+
+@pytest.mark.unit
+def test_episode_stem_shortens_the_series_only_when_it_alone_passes_the_limit() -> None:
+    stem = episode_stem(_LONG_SERIES, (1, 1), "Pilot")
+
+    assert len(stem) <= EPISODE_STEM_LIMIT
+    assert stem.endswith("Stratocumulus - S01E01")
+    assert len(episode_stem(_LONG_SERIES, None)) <= EPISODE_STEM_LIMIT
+
+
+@pytest.mark.unit
+def test_episode_stem_refuses_a_series_with_nothing_usable() -> None:
+    with pytest.raises(ValueError, match="series title"):
+        episode_stem("???", (1, 1), "Pilot")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("series", "numbering", "title"),
+    [
+        ("Overgeared", (1, 3), "Welcome.pl"),
+        ("Overgeared", (1, 4), "Behind the.cover"),
+        ("Overgeared", (1, 6), "Spoken.spoken.pl"),
+        ("Galaxy.cover", None, None),
+        ("Galaxy.pl", None, None),
+        ("Blue Box", (2, 7), "Mr. Smith Goes"),
+        ("The Iceblade Sorcerer Shall Rule the World", (2, 1), _LONG_TITLE),
+    ],
+)
+def test_episode_stem_names_a_primary_source_and_its_sidecars(
+    series: str, numbering: tuple[int, int] | None, title: str | None
+) -> None:
+    stem = episode_stem(series, numbering, title)
+
+    for suffix in (".mkv", ".mp4"):
+        video = classify_artifact(Path(f"{stem}{suffix}"))
+        assert video is not None
+        assert video.kind in {ArtifactKind.VIDEO_MKV, ArtifactKind.VIDEO_MP4}
+        assert video.stem == stem
+    for suffix in SOURCE_SUBTITLE_FORMATS:
+        sidecar = classify_artifact(Path(f"{stem}{suffix}"))
+        assert sidecar is not None
+        assert sidecar.kind is ArtifactKind.SOURCE_SUBTITLES
+        assert sidecar.stem == stem

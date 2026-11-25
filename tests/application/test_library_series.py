@@ -26,7 +26,7 @@ from anishift.application.control_views import LibrarySet
 from anishift.application.episode_identity import IdentityVerdict
 from anishift.application.episode_selection import AniZipMapping, ListedEpisode
 from anishift.application.intents import RequestOrigin
-from anishift.application.library import name_series, series_title, untitled_series
+from anishift.application.library import episode_numbering, name_series, series_title, untitled_series
 from anishift.application.subscription_targets import SubscriptionRecord
 from anishift.application.workflows import WorkflowTarget
 
@@ -219,6 +219,25 @@ def test_name_series_leaves_a_set_added_by_hand_to_its_file_name() -> None:
 )
 def test_series_title_keeps_the_subtitle_and_drops_the_season_part_and_year(title: str, series: str) -> None:
     assert series_title(title) == series
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("listed", "title", "film", "expected"),
+    [
+        (ListedEpisode(13, season=1, episode=13), "Blue Box", False, (1, 13)),
+        (ListedEpisode(1, season=2, episode=1), "Blue Box Season 2", False, (2, 1)),
+        (ListedEpisode(13, season=2, episode=1), "Kaiju No. 8", False, (2, 1)),
+        (ListedEpisode(2, season=0, episode=2), "Bocchi the Rock!", False, (0, 2)),
+        (ListedEpisode(4), "Ao no Hako 2nd Season", False, (2, 4)),
+        (ListedEpisode(4, season=2), "Overgeared", False, (1, 4)),
+        (ListedEpisode(1, season=1, episode=1), "Your Name.", True, None),
+    ],
+)
+def test_episode_numbering_prefers_the_catalogue_pair_then_the_title_season(
+    listed: ListedEpisode, title: str, film: bool, expected: tuple[int, int] | None
+) -> None:
+    assert episode_numbering(listed, title, film=film) == expected
 
 
 @pytest.mark.integration

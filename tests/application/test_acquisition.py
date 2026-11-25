@@ -400,7 +400,8 @@ def test_catalog_orders_fractional_episodes_stably_without_changing_season_or_pa
     ("series", "expected"),
     [
         ("Neko to Ryuu", "Neko to Ryuu"),
-        ('Re:Zero <Season 2> "Final"', "ReZero Season 2 Final"),
+        ('Re:Zero <Season 2> "Final"', "Re-Zero Season 2 'Final'"),
+        ("Mushoku Tensei: Jobless Reincarnation", "Mushoku Tensei - Jobless Reincarnation"),
         ("  Oshi   no Ko S3 ...", "Oshi no Ko S3"),
         ("CON", "_CON"),
         ("aux.mkv", "_aux.mkv"),
