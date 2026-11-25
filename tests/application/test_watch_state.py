@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from test_episode_selection import _fixture_graph, _fixture_mapping
@@ -42,7 +42,7 @@ from anishift.application.control import (
     compact_acquisition,
 )
 from anishift.application.episode_identity import IdentityVerdict
-from anishift.application.episode_selection import AniZipMapping, FranchiseGraph, identity_target
+from anishift.application.episode_selection import AniZipMapping, FranchiseGraph, ListedEpisode, identity_target
 from anishift.application.intents import ProductKind, RebuildRequest, RequestOrigin, TranslationAction
 from anishift.application.release_quality import AudioClass, PolishClass, ReleaseTraits, ResolutionClass
 from anishift.application.subscription_targets import (
@@ -290,7 +290,7 @@ def test_store_rejects_an_unknown_field(tmp_path: Path) -> None:
         store.load()
 
 
-@pytest.mark.parametrize("version", [1, 4, WATCH_STATE_SCHEMA_VERSION - 1, WATCH_STATE_SCHEMA_VERSION + 1, "6"])
+@pytest.mark.parametrize("version", [1, 4, WATCH_STATE_SCHEMA_VERSION - 1, WATCH_STATE_SCHEMA_VERSION + 1, "7"])
 def test_store_rejects_another_schema_version_and_leaves_the_file(tmp_path: Path, version: object) -> None:
     store: WatchStateStore = _store(tmp_path)
     store.save(_state())
@@ -578,6 +578,25 @@ def test_a_saved_episode_mapping_loads_equal_and_builds_the_same_identity_target
     assert [identity_target(graph, season, loaded, number) for number in range(1, 30)] == [
         identity_target(graph, season, mapping, number) for number in range(1, 30)
     ]
+
+
+def test_a_saved_mapped_episode_keeps_both_title_languages_and_rejects_a_single_title_key(tmp_path: Path) -> None:
+    episode: ListedEpisode = ListedEpisode(8, title_en="Yatan's High Priest", title_romaji="Yatan no Saishichou")
+    mapping: AniZipMapping = AniZipMapping(None, "TV", 12, (episode,), (), None, {})
+    record: SubscriptionRecord = SubscriptionRecord("s", 500, "Overgeared", _TIMESTAMP, 0, mapping=mapping)
+    store: WatchStateStore = _store(tmp_path)
+    store.save(replace(_state(), subscriptions=(record,)))
+    assert store.load().subscriptions[0].mapping == mapping
+    path: Path = tmp_path / WATCH_STATE_FILE_NAME
+    document: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    saved: dict[str, object] = document["subscriptions"][0]["mapping"]["episodes"][0]
+    assert (saved["title_en"], saved["title_romaji"]) == ("Yatan's High Priest", "Yatan no Saishichou")
+    title: object = saved.pop("title_en")
+    del saved["title_romaji"]
+    saved["title"] = title
+    _write(tmp_path, document)
+    with pytest.raises(ConfigError, match="Automation state file is invalid"):
+        store.load()
 
 
 _CHOICE_KEYS: dict[str, tuple[str, ...]] = {

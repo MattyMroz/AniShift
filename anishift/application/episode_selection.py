@@ -287,13 +287,19 @@ class ListedEpisode:
     """One numbered episode of an entry."""
 
     number: int
-    title: str | None = None
+    title_en: str | None = None
+    title_romaji: str | None = None
     airs_at: datetime | None = None
     season: int | None = None
     episode: int | None = None
     absolute: int | None = None
     aired: bool = False
     airs_at_fallback: bool = False
+
+    @property
+    def title(self) -> str | None:
+        """Return the English title, else the romaji one."""
+        return self.title_en or self.title_romaji
 
 
 @dataclass(frozen=True, slots=True)

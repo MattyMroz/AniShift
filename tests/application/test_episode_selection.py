@@ -564,8 +564,12 @@ def test_episode_listing_partial_sources_fill_gaps_without_losing_metadata() -> 
     mapping: AniZipMapping = _mapping(
         {},
         episodes=(
-            ListedEpisode(1, "First", datetime(2026, 1, 1, tzinfo=UTC), 1, 1, 1),
-            ListedEpisode(2, "Second", datetime(2026, 1, 8, tzinfo=UTC), 1, 2, 2),
+            ListedEpisode(
+                1, title_en="First", airs_at=datetime(2026, 1, 1, tzinfo=UTC), season=1, episode=1, absolute=1
+            ),
+            ListedEpisode(
+                2, title_romaji="Second", airs_at=datetime(2026, 1, 8, tzinfo=UTC), season=1, episode=2, absolute=2
+            ),
         ),
     )
     schedule: tuple[ListedEpisode, ...] = (
@@ -575,8 +579,25 @@ def test_episode_listing_partial_sources_fill_gaps_without_losing_metadata() -> 
     )
     listing = episode_listing(5, mapping, "RELEASING", 4, schedule, _NOW)
     assert listing.episodes == (
-        ListedEpisode(1, "First", datetime(2026, 1, 1, tzinfo=UTC), 1, 1, 1, aired=True, airs_at_fallback=True),
-        ListedEpisode(2, "Second", datetime(2026, 1, 9, tzinfo=UTC), 1, 2, 2, aired=True),
+        ListedEpisode(
+            1,
+            title_en="First",
+            airs_at=datetime(2026, 1, 1, tzinfo=UTC),
+            season=1,
+            episode=1,
+            absolute=1,
+            aired=True,
+            airs_at_fallback=True,
+        ),
+        ListedEpisode(
+            2,
+            title_romaji="Second",
+            airs_at=datetime(2026, 1, 9, tzinfo=UTC),
+            season=1,
+            episode=2,
+            absolute=2,
+            aired=True,
+        ),
         ListedEpisode(3, airs_at=datetime(2026, 1, 16, tzinfo=UTC), aired=True),
         ListedEpisode(4),
     )

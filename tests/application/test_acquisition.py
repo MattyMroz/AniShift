@@ -1756,7 +1756,7 @@ def test_episode_selection_views_survive_a_strict_ipc_round_trip(tmp_path: Path)
     listing: EpisodeListing = replace(
         listed,
         episodes=(
-            replace(listed.episodes[0], aired=True, airs_at_fallback=True),
+            replace(listed.episodes[0], title_en="English", title_romaji="Romaji", aired=True, airs_at_fallback=True),
             replace(listed.episodes[1], airs_at_fallback=False),
             *listed.episodes[2:],
         ),
@@ -1770,6 +1770,9 @@ def test_episode_selection_views_survive_a_strict_ipc_round_trip(tmp_path: Path)
     decoded: tuple[ListedEpisode, ...] = decode_view(EpisodeListing, encode_view(listing)).episodes
     assert {episode.aired for episode in decoded} == {True, False}
     assert {episode.airs_at_fallback for episode in decoded} == {True, False}
+    assert (decoded[0].title_en, decoded[0].title_romaji, decoded[0].title) == ("English", "Romaji", "English")
+    encoded: dict[str, Any] = encode_view(listing)
+    assert "title" not in encoded["episodes"][0]
     for field in ("aired", "airs_at_fallback"):
         mistyped: dict[str, Any] = encode_view(listing)
         mistyped["episodes"][0][field] = "yes"
