@@ -1,250 +1,401 @@
 ---
 kind: plan
-status: draft
-baseline: 4365a51 (main)
+status: accepted
+baseline: 1f76e30 (main)
 created: 2026-10-25
+updated: 2026-11-26
 ---
 
-# Plan: brakujące tytuły odcinków z TVmaze (issue #58)
+# Plan: angielskie tytuły odcinków z TVmaze (issue #58)
 
-Kontrakt wymagań: `specification.md`. Dowody: `research.md`. Plan wykonuje się dopiero po akceptacji decyzji D1-D7 przez właściciela.
+Kontrakt wymagań: `specification.md` (decyzje D1-D7 rozstrzygnięte 2026-11-25). Dowody i kształt odpowiedzi TVmaze:
+`research.md`. Plan nie ma otwartych decyzji; wykonawca zaczyna od fazy 0.
 
 ## Cel
 
-`AcquisitionService.episodes()` zwraca listę, w której odcinki bez tytułu dostają tytuł z TVmaze według wymagań 1-12 specyfikacji.
+`AcquisitionService.episodes()` zwraca listę, w której `ListedEpisode.title` daje tytuł w kolejności: angielski z
+ani.zip, angielski z TVmaze, romaji z ani.zip, brak.
+
+## Warunki końcowe
+
+- [ ] `ListedEpisode` ma pola `title_en` i `title_romaji` oraz właściwość `title`; pola danych `title` nie ma nigdzie.
+- [ ] `TvMazeCatalog` czyta tytuły po `tvdbShowId`, a `episodes()` wypełnia nimi brakujące `title_en`.
+- [ ] `state.json` ma schemat 7 z kluczami `title_en` i `title_romaji`; stan właściciela przeniesiony skryptem.
+- [ ] README (EN i PL) ma linię źródeł danych z linkiem do TVmaze.
+- [ ] Bramki repo zielone, human checkpoint zaliczony.
+
+## Nie-cel
+
+Nazwy plików z tytułem odcinka należą do workstreamu 23; ten plan daje mu tylko źródło tytułu (sekcja „Source of
+truth”).
 
 ## Stan aktualny i luka
 
-- Tytuły pochodzą tylko z ani.zip (`anizip.py` `_title`); luka to odcinki wyemitowane, które ani.zip jeszcze nie opisał (`research.md`: 6 z 93 braków dziś).
-- Jedyny punkt wspólny dla UI to `AcquisitionService.episodes()` (`acquisition.py:876`), a `ListingRead` niesie już `mapping`, `tvdb_season` i `movie`.
+- `anizip._title` skleja `en` i `x-jat` w jedno `ListedEpisode.title`, więc nikt dalej nie wie, czy tytuł jest
+  angielski; D3 tego wymaga.
+- Tytuły pochodzą tylko z ani.zip; w pomiarze z 2026-11-26 TVmaze ma prawdziwy angielski tytuł dla 16 wyemitowanych
+  odcinków z samym romaji i 10 bez tytułu (`research.md`).
+- Zapisany odcinek w `state.json` niesie klucz `title`, a `_decode_mapping` wymaga dokładnego zbioru kluczy.
+
+### Istniejące rozwiązania do reuse
+
+- `ArmCatalog` (`services/catalog/arm.py`) i jego testy: wzór adaptera, `USER_AGENT`, mapowanie błędów.
+- `numbering_gap` (`application/episode_selection.py`): ta sama reguła niepewnej numeracji co H1.
+- `_Remembered`, `_remembered`, `_memory_lock` (`application/acquisition.py`): pamięć rezydenta z LRU.
+- `_bridge_failed` (`application/acquisition.py`): log awarii dostawcy bez treści.
+- `parse_mapping` (`services/catalog/anizip.py`): jednorazowy skrypt migracji liczy nim oba tytuły z `raw_episodes`.
+- `httpx.Client(..., follow_redirects=True)` z `bootstrap.py`: lookup 301 obsługuje klient.
 
 ## Zakres
 
 ### In scope
 
-- Adapter `TvMazeCatalog` w `services/catalog/`.
-- Czysta funkcja wyboru serialu i wypełnienia tytułów w `application/episode_selection.py`.
-- Protokół, cache i wywołanie w `AcquisitionService.episodes()`; wiring w `bootstrap.py`.
-- Wpis dostawcy `tvmaze` w `http_requests._PROVIDERS`.
-- Testy, nagrane odpowiedzi, wpisy w AGENTS.md katalogu `services/catalog`, atrybucja w README (jeśli D5 tak).
+- Rozdzielenie języka tytułu w `ListedEpisode`, parserze ani.zip, zapisie `state.json` i wszystkich wywołaniach oraz
+  testach.
+- Adapter `TvMazeCatalog`, dostawca `tvmaze` w `_PROVIDERS`, czysta funkcja wypełnienia, cache i wiring.
+- Jednorazowy skrypt migracji stanu właściciela (poza gitem).
+- Linia źródeł danych w README, wpisy w `AGENTS.md` katalogów `services/catalog` i `application`.
 
-### Out of scope / Forbidden
+### Forbidden
 
-- Zmiany w `anizip.py`/`parse_mapping`, `raw_episodes`, `watch_state.py`, `subscription_targets.py`, H1 (`episode_identity.py`).
-- Zmiany UI (`cli/interactive/*`): `episode.title or "Odcinek N"` pozostaje bez zmian.
-- Nowy `ErrorCode`, nowa zależność (`uv add`), ręczna edycja `pyproject.toml`, wyszukiwanie po tytule.
-- Zapis tytułów TVmaze do `config/` lub `workspace/`.
-- Dotykanie rezydenta właściciela: testy działają na `httpx.MockTransport`, nie na jego stanie. Przed uruchomieniem zmian w żywym rezydencie właściciel zamyka AniShift (pamięć: rezydent czyta pliki z checkoutu).
+- Aliasy, druga ścieżka albo odczyt schematu 6; stare pole `title` znika w tym samym diffie.
+- Zmiany H1: `episode_identity.py`, `episode_selection._episode_title`, `identity_target`.
+- Zmiany UI w `cli/interactive/*` poza tym, co wymusza mypy (oczekiwane: żadnych, bo `title` zostaje właściwością).
+- Nowa zależność, nowy `ErrorCode`, wyszukiwanie po tytule, zapis tytułów TVmaze na dysk.
+- Zmiany plików w `config/` właściciela przed jego zgodą i zamknięciem rezydenta.
+
+### Dozwolone decyzje lokalne
+
+- Nazwy prywatnych helperów, kolejność funkcji w module, podział testów na pliki zgodny z nazwami modułów.
 
 ### Zatrzymaj się i wróć po decyzję, gdy
 
-- w testach na realnych nagraniach join po `(sezon, odcinek)` da sparowanie sprzeczne z ani.zip dla odcinka, który ma tytuł w obu źródłach (przesunięcie numeracji);
-- okaże się, że `episodes()` jest wołane z kontekstu automatu (budżet żądań `anilist`) i nowy dostawca łamie budżet;
-- właściciel zmieni D2 lub D3 (zmienia kontrakt `ListedEpisode`).
+- odczyt TVmaze w teście `network` albo przy checkpoincie pokaże tytuł innego odcinka dla tej samej pary
+  `(sezon, odcinek)` (przesunięcie numeracji);
+- inny workstream podbije `WATCH_STATE_SCHEMA_VERSION` przed scaleniem tego (konflikt numeru i skryptu migracji);
+- mypy pokaże konsumenta `ListedEpisode.title` jako pola danych spoza listy w mapie plików, którego nie da się przenieść
+  na właściwość albo `title_en`/`title_romaji` bez zmiany zachowania.
 
 ## Kontekst do przeczytania
 
-| Kolejność | Źródło | Po co |
-| --- | --- | --- |
-| 1 | `AGENTS.md` (root), `anishift/AGENTS.md`, `anishift/services/catalog/AGENTS.md`, `anishift/application/AGENTS.md`, `tests/AGENTS.md` | reguły, markery, zakaz opisowej prozy w testach |
-| 2 | `.agents/skills/simple`, `.agents/skills/coding/references/python.md`, `comments-docstrings.md`, `testing.md` | standard kodu |
-| 3 | `services/catalog/arm.py` + `tests/services/catalog/test_arm.py` | wzorzec adaptera i testów |
-| 4 | `application/acquisition.py` 242-250 (`IdCatalog`), 493-503 (`_Remembered`), 611-660 (`__init__`), 876-952 (`episodes`, `read_listing`), 1250-1285 | miejsce zmiany i cache |
-| 5 | `application/episode_selection.py` 267-315, 480-502, 505-554 | `ListedEpisode`, `numbering_gap`, `episode_listing` |
-| 6 | `services/http_requests.py` 46-58, 285 | tabela dostawców |
-| 7 | `bootstrap.py` 90-145 | wiring |
-| 8 | `docs/work/19-tvmaze-episode-titles/research.md` | próbki odpowiedzi |
+1. `AGENTS.md` (root), `anishift/AGENTS.md`, `anishift/services/catalog/AGENTS.md`, `anishift/application/AGENTS.md`
+   (sekcje o stanie rezydenta i pobieraniu odcinków), `tests/AGENTS.md`.
+2. Skille `simple`, `coding` z `references/python.md`, `comments-docstrings.md`, `testing.md`; `commit` przed commitem.
+3. `services/catalog/arm.py` i `tests/services/catalog/test_arm.py`: wzór adaptera i testów.
+4. `services/catalog/anizip.py` (`parse_mapping`, `_title`) i `tests/services/catalog/test_anizip.py`.
+5. `application/episode_selection.py`: `ListedEpisode`, `ListedSpecial`, `AniZipMapping`, `EpisodeListing`,
+   `numbering_gap`, `episode_listing`.
+6. `application/acquisition.py`: `IdCatalog`, `ListingRead`, `_Remembered`, `_bridge_failed`, `AcquisitionService.__init__`,
+   `episodes`, `read_listing`, `_mapping`, `_schedule`.
+7. `application/watch_state.py`: `_LISTED_EPISODE_KEYS`, `_encode_mapping`, `_decode_mapping`; `application/control.py`
+   `WATCH_STATE_SCHEMA_VERSION`.
+8. `services/http_requests.py` `_PROVIDERS`; `bootstrap.py` `_acquisition_service`.
+9. `research.md` w tym katalogu: kształt odpowiedzi TVmaze.
 
 ## Impact scan
 
 | Kontrakt | Ryzyko | Obowiązek regresyjny |
 | --- | --- | --- |
-| `raw_episodes`, H1 (`identity_target`) | tytuły TVmaze mogłyby zmienić anchory tytułów odcinków | wypełnienie tylko na `EpisodeListing.episodes`; test: `raw_episodes` i `listing` mapowania niezmienione |
-| `state.json` (`merge_listing` zapisuje `read.mapping`) | trwałe zapisanie tytułów TVmaze | `episodes()` wypełnia kopię listy po `read_listing`; `ListingRead.mapping` nietknięte; test na `read_listing` bez żądań TVmaze |
-| Budżet żądań (`episode_requests`, limit `anilist`) | `tvmaze` bez limitu w `scope` | `scope` liczy tylko wymienionych dostawców; test, że dodatkowe żądanie nie podnosi liczników anilist |
-| Cooldown po 429 | wspólny dla dostawcy | wpis `api.tvmaze.com` -> `tvmaze` w `_PROVIDERS`; test na mapowanie hosta |
-| IPC (`encode_view(EpisodeListing)`) | brak nowych pól | żadnych zmian w typie `ListedEpisode` |
-| Architektura warstw | `application` nie importuje `services` bezpośrednio poza protokołami | protokół `EpisodeTitleCatalog` w `acquisition.py` jak `IdCatalog`; `tests/application/test_architecture.py` zielony |
+| `ListedEpisode` (IPC `encode_view`/`decode_view`, strict) | panel i rezydent muszą mieć ten sam kształt | test round-trip `EpisodeListing` przez `encode_view`/`decode_view` z oboma polami; rezydent restartowany razem z panelem |
+| `state.json` (`_LISTED_EPISODE_KEYS`, wersja 6) | stary plik przestaje się wczytywać | test zapisu i odczytu schematu 7; test, że schemat 6 daje `ConfigError`; skrypt migracji na kopii, potem na stanie właściciela |
+| H1 (`identity_target`, `_episode_title`) | tytuły TVmaze w kotwicach tożsamości | wypełnienie tylko na `EpisodeListing`; test, że `ListingRead.mapping` i `raw_episodes` są te same przed i po `episodes()`; golden H1 bez zmian |
+| Automat (`read_listing`, `merge_listing`) | żądania TVmaze w cyklicznych kontrolach, zapis tytułów TVmaze | test: `read_listing` nie woła katalogu tytułów |
+| Budżet żądań (`episode_requests`, limit `anilist`) | TVmaze liczony do budżetu AniList | `scope` liczy tylko wymienionych dostawców; test hosta `api.tvmaze.com` -> `tvmaze` |
+| Odcinki specjalne (`ListedSpecial.title`) | zmiana `_title` psuje tytuły specjali | test parsera: special z samym `x-jat` ma ten tytuł, z `en` ma `en` |
+| Architektura warstw | `application` importuje `services` | protokół `EpisodeTitleCatalog` w `acquisition.py` jak `IdCatalog`; `tests/application/test_architecture.py` zielony |
 
 ## Target design
 
 ### Odpowiedzialności
 
-| Element | Odpowiada za | Owner stanu |
+| Element | Odpowiada za | Nie odpowiada za |
 | --- | --- | --- |
-| `TvMazeCatalog` (`services/catalog/tvmaze.py`) | lookup 301, lista odcinków, filtr `regular`, odrzucenie placeholderów, oczyszczenie tytułu, mapowanie błędów | brak (klient HTTP wstrzykiwany) |
-| `tvdb_show_id(mapping)` i `fill_episode_titles(...)` (`episode_selection.py`) | wybór jedynego `tvdbShowId`, reguły niepewności, wypełnienie tylko brakujących tytułów | brak (czyste funkcje) |
-| `AcquisitionService.episodes()` | warunek wywołania, cache, obsługa błędu | `_Remembered` (pamięć rezydenta) |
-| `bootstrap._acquisition_service` | złożenie zależności | brak |
+| `ListedEpisode` | przechowuje `title_en`, `title_romaji`; właściwość `title` wybiera `title_en or title_romaji` | pochodzenie tytułu |
+| `anizip.parse_mapping` | dzieli `en` i `x-jat` z odrzuceniem placeholdera w nawiasach; special dostaje `en or x-jat` | TVmaze |
+| `TvMazeCatalog` (`services/catalog/tvmaze.py`) | lookup, lista odcinków, filtr `regular`, odrzucenie placeholderów i dubli pary, oczyszczenie, błędy | cache, wybór serialu |
+| `tvdb_show_id`, `fill_episode_titles` (`episode_selection.py`) | jedyne `tvdbShowId`; wypełnienie `title_en` według wymagań 3-6 specyfikacji | I/O |
+| `AcquisitionService.episodes()` | warunek zapytania (D4), cache w `_Remembered`, obsługa awarii | zapis na dysk |
 
 ### Source of truth
 
-- Tytuł ani.zip: `ListedEpisode.title` z `mapping.episodes`; TVmaze tylko uzupełnia na wyjściu `episodes()`.
-- Cache tytułów TVmaze: pola `_Remembered.titles` i `_Remembered.titles_until` (klucz: `anilist_id`, wspólny LRU 64 wpisów i `_memory_lock`).
+- Autorytatywny tytuł odcinka: `ListedEpisode.title` w `EpisodeListing` z `AcquisitionService.episodes(anilist_id)`.
+  Workstream 23 bierze tytuł stąd; nie czyta `raw_episodes`, zapisanego mapowania ani `read_listing`, bo tam nie ma
+  tytułów TVmaze.
+- Stan pochodny: tytuły TVmaze w `_Remembered.titles` (pamięć rezydenta, klucz `anilist_id`, wspólny LRU 64 wpisów).
+- Zapis: `state.json` trzyma tylko tytuły ani.zip (`title_en`, `title_romaji`).
 
 ### Przepływ
 
 ```text
 episodes(anilist_id)
 -> read = read_listing(anilist_id)
--> show = tvdb_show_id(read.mapping)           ; brak lub niejednoznaczny -> return read.listing
--> brak aired-episode bez tytułu z numbering_gap None -> return read.listing
--> titles = pamięć (świeża?) lub TvMazeCatalog.episode_titles(show)   ; błąd -> log, cache 900 s, return read.listing
--> fill_episode_titles(read.listing, read.mapping, titles, read.tvdb_season, movie=read.movie)
+-> read.movie albo brak title_source -> return read.listing
+-> show = tvdb_show_id(read.mapping); None -> return read.listing
+-> potrzebne = jakikolwiek odcinek: aired, title_en None, season i episode nie None,
+   numbering_gap(read.mapping, number, read.tvdb_season, movie=False) is None
+-> nie potrzebne -> return read.listing
+-> titles = _Remembered.titles, gdy świeże (titles_at + titles_ttl_s > now),
+   inaczej title_source.episode_titles(show) poza blokadą:
+     sukces -> zapamiętaj z TTL 3600
+     AniShiftError | OSError | ValueError -> _bridge_failed("tvmaze", error), zapamiętaj {} z TTL 900
+-> return fill_episode_titles(read.listing, read.mapping, titles, read.tvdb_season)
 ```
 
 ### Publiczne kontrakty
 
 ```text
-TvMazeCatalog.episode_titles(tvdb_show_id: int) -> dict[tuple[int, int], str]
-  wejście: ID serialu TheTVDB
-  wyjście: {(season, number): name} tylko regular, bez placeholderów; 404 lookupu -> {}
-  błędy: TitleCatalogError(EPISODE_CATALOG_FAILED) dla transportu, statusu != 200/404, złej treści
-  efekty: 2 żądania GET (lookup z follow_redirects klienta, potem episodes?specials=1)
+ListedEpisode (frozen, slots)
+  number: int
+  title_en: str | None = None
+  title_romaji: str | None = None
+  airs_at, season, episode, absolute, aired, airs_at_fallback: bez zmian
+  @property title -> str | None: title_en or title_romaji
+  wywołania z tytułem podają go słowem kluczowym (title_en=..., title_romaji=...)
+
+ListedSpecial: bez zmian (title = en or x-jat)
+
+TvMazeCatalog(http: httpx.Client, *, timeout_s: float = _TIMEOUT_S)
+  episode_titles(tvdb_show_id: int) -> dict[tuple[int, int], str]
+  żądania: GET {TVMAZE_URL}/lookup/shows params={"thetvdb": id} (klient podąża za 301, ciało serialu daje int "id");
+           GET {TVMAZE_URL}/shows/{id}/episodes bez parametru specials
+  wynik: {(season, number): name} tylko type == "regular", season i number typu int, nazwa po oczyszczeniu niepusta
+         i nie placeholder; para występująca więcej niż raz jest pominięta; 404 lookupu -> {}
+  błędy: TitleCatalogError(EPISODE_CATALOG_FAILED) dla transportu, statusu innego niż 200/404, ciała, które nie jest
+         obiektem z int "id" albo listą odcinków
+  logi: info "Episode titles read" provider="tvmaze" count=...; warning przy błędzie z provider i code
 
 EpisodeTitleCatalog (Protocol, acquisition.py)
   episode_titles(tvdb_show_id: int) -> Mapping[tuple[int, int], str]
 
+AcquisitionService.__init__: nowy parametr keyword-only episode_titles: EpisodeTitleCatalog | None = None
+
 tvdb_show_id(mapping: AniZipMapping) -> int | None
-fill_episode_titles(listing, mapping, titles, tvdb_season, *, movie: bool) -> EpisodeListing
-  wypełnia tylko episode.title is None; klucz (episode.season, episode.episode) w titles;
-  wymaga numbering_gap(mapping, episode.number, tvdb_season, movie=movie) is None
+  zbiór wartości "tvdbShowId" typu int > 0 z numerowanych wpisów raw_episodes; dokładnie jeden -> on, inaczej None
+
+fill_episode_titles(listing: EpisodeListing, mapping: AniZipMapping, titles: Mapping[tuple[int, int], str],
+                    tvdb_season: int | None) -> EpisodeListing
+  replace(title_en=...) tylko gdy title_en is None, season i episode nie None, para w titles,
+  numbering_gap(mapping, number, tvdb_season, movie=False) is None; reszta listy bez zmian
 ```
 
-Stałe: `TVMAZE_URL = "https://api.tvmaze.com"` w adapterze; `_TIMEOUT_S = 10.0`; w `acquisition.py` `_TVMAZE_CACHE_S = 3600` ("odpowiada `Cache-Control: max-age=3600` TVmaze, zmierzone 2026-10-25"), błąd cache'owany `_FALLBACK_CACHE_S` (900). Placeholder: `re.compile(r"Episode \d+", re.I)` z `fullmatch`.
+Stałe: `TVMAZE_URL: Final[str] = "https://api.tvmaze.com"` i `_TIMEOUT_S: Final[float] = 10.0` w adapterze;
+`_PLACEHOLDER_TITLE = re.compile(r"Episode \d+", re.IGNORECASE)` z `fullmatch`; w `acquisition.py`
+`_TVMAZE_CACHE_S: Final[int] = 3600` z docstringiem o `Cache-Control: max-age=3600` TVmaze; awaria używa
+`_FALLBACK_CACHE_S`. Oczyszczenie nazwy: znaki kategorii Unicode `C*` zamienione na spację, potem
+`" ".join(name.split())`.
+
+Wywołanie `fill_episode_titles` nie przekazuje `movie`, bo `episodes()` kończy wcześniej dla filmu.
 
 ### Edge cases
 
 | Przypadek | Oczekiwane zachowanie | Dowód |
 | --- | --- | --- |
-| Brak `tvdbShowId` / dwa różne | bez żądania, lista bez zmian | unit `episode_selection` |
-| `tvdbShowId` obok wpisów `null` (Nia Liston) | używa jedynego niepustego | unit |
-| Lookup 404 | `{}` , cache 3600 s, bez błędu | unit adapter + service |
-| 429 / 500 / zła treść / timeout | `TitleCatalogError`, lista bez zmian, cache błędu 900 s | unit service |
-| Placeholder `Episode 6` | brak tytułu | unit adapter |
-| Tytuł ani.zip istnieje | nie nadpisany | unit fill |
+| Brak `tvdbShowId` albo dwa różne | brak zapytania, lista bez zmian | unit `episode_selection` i `acquisition` |
+| `tvdbShowId` obok `null` | używa jedynego niepustego | unit |
+| Lookup 404 | `{}`, zapamiętane 3600 s, bez logu błędu | unit adapter i service |
+| 429, 500, zły JSON, ciało bez `id`, timeout | `TitleCatalogError`; lista z tytułami ani.zip; brak drugiej próby przez 900 s | unit service (zegar wstrzyknięty) |
+| Placeholder `Episode 10`, pusta nazwa | brak tytułu | unit adapter |
+| Wpis z `number: null` albo `type` inny niż `regular` | pominięty | unit adapter |
+| Dubel pary w TVmaze | para pominięta | unit adapter |
+| `title_en` z ani.zip istnieje | nie nadpisany | unit fill |
+| Tylko `title_romaji` z ani.zip | `title_en` z TVmaze, `title` zwraca angielski | unit fill i property |
 | Odcinek bez `season/episode` (dopełniony z liczby odcinków) | bez tytułu | unit fill |
-| `numbering_gap` = `duplicate` / `tvdb_season` / `none` | bez tytułu | unit fill |
-| Film | bez żądania | unit service |
-| Tytuł z kontrolnymi / wielokrotnymi spacjami | oczyszczony | unit adapter |
-| Tytuł antologii `A / B / C` | zachowany w całości | unit adapter |
-| Brak wstrzykniętego katalogu | zachowanie jak dziś | istniejące testy bez zmian |
-| `read_listing` (automat) | zero żądań TVmaze | unit service (licznik MockTransport) |
+| `numbering_gap` = `none` / `duplicate` / `tvdb_season` | bez tytułu | unit fill |
+| Film | brak zapytania | unit service |
+| Żaden wyemitowany odcinek nie potrzebuje tytułu | brak zapytania | unit service |
+| Niewyemitowany odcinek po udanym zapytaniu | dostaje tytuł, gdy TVmaze go zna | unit fill |
+| Znaki sterujące, wielokrotne spacje, antologia `A / B / C` | oczyszczone; antologia w całości | unit adapter |
+| `read_listing` z automatu | zero wywołań katalogu tytułów | unit service |
+| Brak wstrzykniętego katalogu | zachowanie jak przed zmianą | unit service |
 
 ## Mapa plików
 
 | Ścieżka | Operacja | Rola |
 | --- | --- | --- |
-| `anishift/services/catalog/tvmaze.py` | CREATE | adapter, wzorowany na `arm.py` |
+| `anishift/application/episode_selection.py` | MODIFY | `ListedEpisode.title_en`/`title_romaji`/`title`; `tvdb_show_id`, `fill_episode_titles` |
+| `anishift/services/catalog/anizip.py` | MODIFY | `_title` zastąpione funkcją zwracającą parę `(en, romaji)`; special bierze `en or romaji` |
+| `anishift/application/watch_state.py` | MODIFY | `_LISTED_EPISODE_KEYS`, `_encode_mapping`, `_decode_mapping` na `title_en`/`title_romaji` |
+| `anishift/application/control.py` | MODIFY | `WATCH_STATE_SCHEMA_VERSION = 7` |
+| `anishift/services/catalog/tvmaze.py` | CREATE | adapter wzorowany na `arm.py` |
 | `anishift/services/catalog/__init__.py` | MODIFY | eksport `TvMazeCatalog` |
-| `anishift/services/catalog/AGENTS.md` | MODIFY | wpis pliku i inwariantów (placeholder, 404, brak zapisu) |
 | `anishift/services/http_requests.py` | MODIFY | `"api.tvmaze.com": "tvmaze"` w `_PROVIDERS` |
-| `anishift/application/episode_selection.py` | MODIFY | `tvdb_show_id`, `fill_episode_titles` |
-| `anishift/application/acquisition.py` | MODIFY | protokół, parametr konstruktora, pola `_Remembered`, `episodes()` |
-| `anishift/bootstrap.py` | MODIFY | `title_source=TvMazeCatalog(http)` |
-| `tests/services/catalog/test_tvmaze.py` | CREATE | adapter, `unit` + jeden `network` |
-| `tests/application/test_episode_selection.py` | MODIFY | funkcje czyste |
-| `tests/application/test_acquisition.py` | MODIFY | cache, błąd, brak żądań w `read_listing` |
-| `tests/services/test_http_requests.py` | MODIFY | host -> dostawca `tvmaze` |
-| `tests/config/test_bootstrap.py`, `tests/application/test_automation.py` (asercja zbioru hostów w `MockTransport`, ok. linia 444), `tests/cli/test_anime_episodes.py` | MODIFY tylko jeśli wiring lub `episodes()` zaczyna w nich wołać `api.tvmaze.com` | dopuścić host lub wstrzyknąć brak katalogu; sprawdzić uruchomieniem |
-| `tests/fixtures/search/tvmaze__lookup__<id>.json`, `tvmaze__episodes__<id>.json` i wpis w `manifest.json` | CREATE/MODIFY | nagrane wycinki |
-| `README.md` | MODIFY (jeśli D5) | linia "Data sources" z linkiem do TVmaze (EN i PL) |
+| `anishift/application/acquisition.py` | MODIFY | `EpisodeTitleCatalog`, parametr `episode_titles`, pola `_Remembered.titles`, `titles_at`, `titles_ttl_s`, `episodes()` |
+| `anishift/bootstrap.py` | MODIFY | `episode_titles=TvMazeCatalog(http)` w `_acquisition_service` |
+| `anishift/services/catalog/AGENTS.md` | MODIFY | plik `tvmaze.py` i inwarianty: 404 = `{}`, placeholder, brak zapisu |
+| `anishift/application/AGENTS.md` | MODIFY | jedno zdanie w „Pobieranie odcinków”: tytuł odcinka to `ListedEpisode.title` z `episodes()`, TVmaze tylko tam |
+| `README.md`, `README.pl.md` | MODIFY | sekcja z jedną linią źródeł danych (faza 4) |
+| `tests/services/catalog/test_tvmaze.py` | CREATE | adapter, `unit` i jeden `network` |
+| `tests/fixtures/search/tvmaze__episodes__92844.json`, `tests/fixtures/search/manifest.json` | CREATE / MODIFY | przycięte nagranie Overgeared i wpis `tvmaze` w manifeście |
+| `tests/services/catalog/test_anizip.py` | MODIFY | asercje na `title_en`/`title_romaji`, special |
+| `tests/application/test_episode_selection.py` | MODIFY | nowe pola, `tvdb_show_id`, `fill_episode_titles` |
+| `tests/application/test_acquisition.py` | MODIFY | `episodes()`: wypełnienie, cache, awaria, brak żądań w `read_listing` |
+| `tests/application/test_watch_state.py` | MODIFY | schemat 7 i odrzucenie schematu 6 |
+| `tests/services/test_http_requests.py` | MODIFY | host -> `tvmaze` |
+| `tests/cli/test_anime_episodes.py`, `tests/cli/test_interactive_anime.py` | MODIFY | tytuły słowem kluczowym `title_en=` |
+| `tests/config/test_bootstrap.py`, `tests/application/test_automation.py`, `tests/cli/test_resident.py` | MODIFY tylko gdy padną | dopuszczenie hosta albo brak katalogu tytułów |
+| `scripts/tmp/migrate_episode_titles.py` | CREATE, poza gitem | jednorazowa migracja stanu właściciela, usunięta po użyciu |
 
-READ ONLY: `anizip.py`, `watch_state.py`, `subscription_targets.py`, `episode_identity.py`, `cli/interactive/*`.
+READ ONLY: `episode_identity.py`, `subscription_targets.py`, `cli/interactive/*`.
 
 ## Plan wykonania
 
-Branch: `work/services/01-tvmaze-episode-titles` (wzór `work/<obszar>/<nn>-<opis>`; numer potwierdzić wobec istniejących gałęzi w obszarze `services`). Wykonawca i recenzent z różnych rodzin modeli (reguła krzyżowa AGENTS.md).
+Gałąź `feat/tvmaze-episode-titles` w `.worktrees/tvmaze-episode-titles`. Commity według tematu, każdy według skilla
+`commit`, scope z listy `--scopes`. Autor kodu i recenzent z różnych modeli (reguła krzyżowa `AGENTS.md`).
 
 ### Faza 0: preflight
 
-1. `git switch -c work/services/01-tvmaze-episode-titles` z aktualnego `main`.
-2. `uv run pytest tests/services/catalog tests/application/test_acquisition.py tests/application/test_episode_selection.py -q` (baseline zielony przed zmianą).
-3. Potwierdzić D1-D7 z właścicielem.
+1. `git status --short`, `git log --oneline -1` (oczekiwane: czysto, gałąź na `origin/main` albo nowszym).
+2. Raz `uv sync` w tym worktree, potem tylko `uv run --no-sync`; nigdy `--active`.
+3. Baseline: `uv run --no-sync pytest -n 6 tests/services/catalog tests/application/test_episode_selection.py
+   tests/application/test_acquisition.py tests/application/test_watch_state.py tests/cli/test_anime_episodes.py`.
+   Zapisz znane failures przed zmianą.
+4. `git grep -n "WATCH_STATE_SCHEMA_VERSION: Final\[int\]" origin/main`: gdy nie 6, warunek stopu.
 
-### Faza 1: adapter i dostawca HTTP (commit 1)
+**Gate:** baseline zapisany, schemat 6 na `main`.
 
-1. `tvmaze.py`: `TvMazeCatalog(http, *, timeout_s)`, `episode_titles`. Lookup `GET {TVMAZE_URL}/lookup/shows` z `params={"thetvdb": id}`; klient musi podążać za 301 (`follow_redirects=True` w bootstrap; test na `MockTransport` z 301 + 200). Status 404 -> `{}`. Potem `GET {TVMAZE_URL}/shows/{id}/episodes` z `params={"specials": 1}` (id z `response.url`, nie z konstrukcji ręcznej). Parsowanie: lista obiektów; pomijaj wpisy bez `season`/`number` typu `int` lub nie-`regular` lub z nazwą pustą/placeholderem; nazwa oczyszczona (`" ".join(name.split())`, bez znaków sterujących). Złe ciało -> `TitleCatalogError`.
-2. Logi: `logger.info("Episode titles read", provider="tvmaze", count=...)`; `logger.warning("Episode titles failed", provider="tvmaze", code=...)`; bez treści odpowiedzi.
-3. `_PROVIDERS` + eksport w `__init__.py` + AGENTS.md katalogu.
-4. Testy adaptera (poniżej). Commit: `feat(services): read episode titles from TVmaze`.
+### Faza 1: język tytułu w kontrakcie (commit 1)
 
-### Faza 2: wypełnienie i cache (commit 2)
+1. `ListedEpisode`: zamień pole `title` na `title_en` i `title_romaji`, dodaj właściwość `title` z jednolinijkowym
+   docstringiem kontraktu.
+2. `anizip.py`: funkcja zwraca `(en, romaji)` z tą samą regułą placeholdera w nawiasach; odcinek dostaje oba pola,
+   special `en or romaji`.
+3. `watch_state.py`: klucze `title_en`, `title_romaji` zamiast `title` w `_LISTED_EPISODE_KEYS`, kodowaniu i
+   dekodowaniu; `control.py`: `WATCH_STATE_SCHEMA_VERSION = 7`.
+4. Wszystkie konstruktory i asercje w testach przechodzą na `title_en=`/`title_romaji=` albo `.title`; mypy wskazuje
+   pozostałe.
+5. Testy: parser (odcinek z `en`, z samym `x-jat`, z `[Placeholder]`; special), `title` jako właściwość, round-trip IPC
+   `EpisodeListing`, schemat 7 zapis i odczyt, schemat 6 -> `ConfigError`.
 
-1. `episode_selection.py`: `tvdb_show_id` (zbiór dodatnich `int` z `tvdbShowId`; dokładnie jeden) i `fill_episode_titles` (reuse `numbering_gap`).
-2. `acquisition.py`: protokół `EpisodeTitleCatalog`, parametr `title_source: EpisodeTitleCatalog | None = None`, pola `_Remembered.titles: Mapping[tuple[int, int], str] | None` i `titles_until: float`, `episodes()` według przepływu; łapie `(AniShiftError, OSError, ValueError)` jak sąsiednie wywołania mostów (`_bridge_failed`-podobny log z `provider="tvmaze"`); wywołanie pod `with self._memory_lock` tylko dla odczytu/zapisu cache, nie w trakcie żądania.
-3. `bootstrap.py`: `title_source=TvMazeCatalog(http)`.
-4. Testy aplikacji. Commit: `feat(application): fill missing episode titles from TVmaze`.
+**Inwarianty:** H1 i jego golden bez zmian; UI bez zmian w kodzie.
 
-### Faza 3: dokumentacja i atrybucja (commit 3, jeśli D5 tak)
+**Kontrola:** bramki repo (niżej).
 
-1. `README.md`: linia źródeł danych z linkiem. Commit: `docs(repo): credit TVmaze for episode titles`.
+**Commit:** `refactor(repo): keep the language of episode titles` (scope `repo`, bo zmiana obejmuje `application` i
+`services`; zachowanie widoczne bez zmian).
+
+### Faza 2: adapter TVmaze (commit 2)
+
+1. `tvmaze.py` według kontraktu; `_PROVIDERS`; eksport w `__init__.py`; wpis w `services/catalog/AGENTS.md`.
+2. Nagranie: z odpowiedzi `GET https://api.tvmaze.com/shows/92844/episodes` zostaw w każdym wpisie tylko `id`, `name`,
+   `season`, `number`, `type`; zapisz jako `tests/fixtures/search/tvmaze__episodes__92844.json`; w `manifest.json` klucz
+   `tvmaze` z wpisem `{"file", "show_id": 92844, "thetvdb": 478752, "recorded_at", "trimmed": true,
+   "source": "https://api.tvmaze.com", "license": "CC BY-SA"}`. Lookup w testach jako `httpx.Response(301,
+   headers={"Location": "https://api.tvmaze.com/shows/92844"})` i ciało serialu `{"id": 92844, ...}` z kształtu w
+   `research.md`.
+3. Testy `unit` w `test_tvmaze.py` (pozycje adaptera z tabeli edge cases, `User-Agent`, brak parametru `specials`) i
+   test `network`: TVDB 478752 -> `(1, 1) == "Legendary Class"`.
+4. Test hosta w `tests/services/test_http_requests.py`.
+
+**Commit:** `feat(services): read episode titles from TVmaze`.
+
+### Faza 3: wypełnienie i cache (commit 3)
+
+1. `episode_selection.py`: `tvdb_show_id`, `fill_episode_titles` (reuse `numbering_gap`).
+2. `acquisition.py`: protokół, parametr, pola `_Remembered`, `episodes()` według przepływu; żądanie poza `_memory_lock`.
+3. `bootstrap.py`: `episode_titles=TvMazeCatalog(http)`.
+4. `application/AGENTS.md`: zdanie o źródle tytułu odcinka.
+5. Testy z fałszywym katalogiem tytułów i wstrzykniętym zegarem: wypełnienie romaji i braków, brak nadpisania
+   angielskiego, drugi odczyt z pamięci, awaria bez drugiej próby przez 900 s i ponowienie po 900 s, 404 bez ponowienia
+   przez 3600 s, film, brak potrzeby zapytania, `read_listing` bez wywołań, `ListingRead.mapping` niezmienione.
+
+**Commit:** `feat(repo): fill missing English episode titles from TVmaze` (scope `repo`, bo zmiana obejmuje
+`application` i `bootstrap.py`).
+
+### Faza 4: atrybucja (commit 4)
+
+1. `README.md`, przed `## Documentation`:
+
+   ```markdown
+   ## Data sources
+
+   Episode titles also come from [TVmaze](https://www.tvmaze.com) (CC BY-SA).
+   ```
+
+2. `README.pl.md`, przed `## Dokumentacja`:
+
+   ```markdown
+   ## Źródła danych
+
+   Tytuły odcinków pochodzą też z [TVmaze](https://www.tvmaze.com) (CC BY-SA).
+   ```
+
+**Commit:** `docs(repo): credit TVmaze for episode titles`.
+
+### Faza 5: migracja stanu właściciela i human checkpoint
+
+1. `scripts/tmp/migrate_episode_titles.py` (gitignorowany, uruchamiany w worktree gałęzi:
+   `uv run --no-sync python scripts/tmp/migrate_episode_titles.py <ścieżka state.json>`): czyta podany plik; przerywa, gdy
+   `schema_version != 6`; dla `subscriptions[*].mapping` i `removed_subscription.mapping` (gdy nie `null`) każdemu
+   wpisowi `episodes` usuwa `title` i ustawia `title_en`, `title_romaji` z
+   `parse_mapping({"episodes": {klucz: raw_episodes[klucz]}, "mappings": {}})` dla `klucz = str(number)` (brak wpisu w
+   `raw_episodes` -> oba `None`); ustawia `schema_version: 7`; zapis przez plik tymczasowy obok i `os.replace`, kopia
+   oryginału jako `state.json.v6`.
+2. Próba na kopii stanu w katalogu tymczasowym: `WatchStateStore(<kopia>/state.json).load()` z kodu gałęzi bez błędu,
+   liczba subskrypcji i odcinków równa przed i po.
+3. Właściciel zamyka rezydenta; skrypt na jego `config/watch/state.json`; wczytanie przez rezydenta z gałęzi.
+4. Checkpoint:
+
+   ```text
+   Uruchom: uv run --no-sync anishift w worktree gałęzi (stary rezydent zamknięty)
+   Zrób: Anime -> "Overgeared" -> Enter; potem "Even the Student Council Has Its Holes" -> Enter; potem szkic subskrypcji
+   Oczekiwany rezultat: Overgeared E8 "Yatan's High Priest" zamiast romaji; Student Council E1-E8 z tytułami;
+     odcinki z angielskim tytułem ani.zip jak dotąd; reszta braków "Odcinek N"
+   Zwróć uwagę na: długie tytuły antologii w szerokości tabeli; lista bez sieci otwiera się bez błędu
+   Przekaż wynik jako: krótka notatka, co się wyświetliło
+   ```
+
+5. Po zaliczeniu: usuń skrypt i `state.json.v6` dopiero po zgodzie właściciela.
+
+**Gate:** właściciel potwierdza wynik; bez tego nie ma pushu ani PR.
 
 ## Strategia dowodu
 
-Wszystkie testy bez opisowych komentarzy i docstringów (`check_test_comments.py`); opis scenariusza w nazwie testu; `pytestmark = pytest.mark.unit` jak w `test_arm.py`.
+Testy bez opisowej prozy (hook `no-test-prose`); scenariusz w nazwie testu; `pytestmark = pytest.mark.unit` jak w
+`test_arm.py`; atrapy TVmaze tylko z polami z `research.md`.
 
 | Twierdzenie | Kontrola |
 | --- | --- |
-| Adapter: lookup 301 -> lista, filtr `regular`, placeholder, oczyszczenie, antologia | `unit`, `httpx.MockTransport` na wycinkach z `tests/fixtures/search/tvmaze__*.json` |
-| Adapter: 404 -> `{}`; 429/500/zły JSON/zła treść -> `TitleCatalogError` z `EPISODE_CATALOG_FAILED` | `unit`, parametryzacja jak w `test_arm.py` |
-| Adapter: `User-Agent` = `USER_AGENT` | `unit` |
-| `tvdb_show_id`: jedno / brak / dwa / obok `null` | `unit` |
-| `fill_episode_titles`: nie nadpisuje, wymaga pary, `duplicate`/`tvdb_season`/film | `unit` |
-| `episodes()`: wypełnia z fałszywego katalogu; drugi odczyt z cache bez żądania; błąd -> lista bez zmian i bez drugiej próby w 900 s; `read_listing` nie woła katalogu; `ListingRead.mapping.raw_episodes` niezmienione | `unit` z `fakes.py` |
-| Host `api.tvmaze.com` -> dostawca `tvmaze` | `unit` |
-| Realny TVmaze (lookup 440056 -> 93848, jakiś odcinek 1 ma niepusty tytuł) | `network`, domyślnie pomijany (`-m network`) |
-| Cały UI nie zmienia się | przegląd: `git diff --stat` nie dotyka `cli/interactive/*` |
+| Kolejność tytułu i rozdzielenie języka | unit parser, property, fill |
+| Adapter: lookup 301, filtr, placeholder, dubel pary, oczyszczenie, antologia, 404, błędy | unit na nagraniu i atrapach z `httpx.MockTransport` |
+| Cache 3600 s, awaria 900 s, D4, film, `read_listing` bez TVmaze | unit service z fałszywym katalogiem i zegarem |
+| Zapis `state.json` schemat 7, odrzucenie 6 | unit `test_watch_state.py` |
+| IPC z nowym kształtem | unit round-trip `encode_view`/`decode_view` |
+| H1 bez zmian | istniejące testy tożsamości i golden zielone |
+| Prawdziwy TVmaze | `network`, domyślnie pomijany: `uv run --no-sync pytest -m network tests/services/catalog/test_tvmaze.py` |
+| Wygląd w panelu | human checkpoint |
 
-### Nagrane odpowiedzi
-
-Wycinki z `research.md` zapisane w `tests/fixtures/search/` według konwencji `tvmaze__lookup__<tvdb>.json` (nagłówek `Location` i status) oraz `tvmaze__episodes__<show>.json` (kilka odcinków: 3 z tytułem, 2 placeholdery, 1 antologia), z wpisem w `manifest.json` (`recorded_at: 2026-10-25`, `trimmed: true`, źródło: TVmaze, licencja CC BY-SA). Bez sekretów: zapytania nie niosą klucza ani nagłówków poza `User-Agent`. Nagrane pole `externals`/`url` zostają, reszta (obrazki, opisy, `_links` poza wymaganymi) jest usuwana.
-
-### Bramki repo (z roota, przed każdym commitem)
+### Bramki repo (z korzenia worktree, przed każdym commitem)
 
 ```bash
-uv run ruff check anishift/ tests/
-uv run ruff format --check anishift/ tests/
-uv run mypy anishift/ tests/
-uv run pytest
+uv run --no-sync ruff check anishift/ tests/
+uv run --no-sync ruff format --check anishift/ tests/
+uv run --no-sync mypy anishift/ tests/
+uv run --no-sync pytest -n 6
 ```
 
-Pre-push: mypy dla bieżącej platformy i `--platform linux`, pytest (hook). Commity w formacie `typ(scope): opis` ze scope z `scripts/hooks/check_commit_msg.py` (`services`, `application`, `repo` są na liście), bez śladów AI; commity według tematu, nie według rund review.
-
-## Human checkpoint
-
-Po fazie 2 (przy zamkniętym rezydencie właściciela):
-
-```text
-Uruchom: uv run anishift (panel), Anime -> wyszukaj "Magical Explorer" lub "Even the Student Council Has Its Holes" -> Enter na wpisie
-Zrób: otwórz listę odcinków, potem szkic subskrypcji
-Oczekiwany rezultat: odcinki z tytułem TVmaze zamiast "Odcinek N" (Magical Explorer E5, Student Council E1-E4); reszta bez zmian
-Zwróć uwagę na: długi tytuł antologii w szerokości tabeli, brak błędu przy wyłączonej sieci
-Przekaż wynik jako: krótka notatka co się wyświetliło
-```
+Pre-push uruchamia dodatkowo mypy `--platform linux` i `anishift setup`.
 
 ## Ryzyka
 
 | Ryzyko | Rozpoznanie | Reakcja |
 | --- | --- | --- |
-| Zły serial lub przesunięcie numeracji | w teście realnym różni się tytuł odcinka z obu źródeł dla tej samej pary | zatrzymać, nie rozluźniać reguł; D2/D3 |
-| Wolny TVmaze blokuje otwarcie listy | czas `episodes()` | timeout 10 s, cache błędu 900 s, wyłączenie przez brak wstrzyknięcia |
-| Treść CC BY-SA w repo | fixtures w git | minimalne wycinki, adnotacja w manifeście (D6) |
-| Opóźnienie ani.zip zniknie i zysk spadnie do zera | przyszłe pomiary | kod jest mały i odwracalny; nic nie zapisuje się trwale |
+| Zły serial albo przesunięcie numeracji | w checkpoincie tytuł nie pasuje do odcinka | stop; nie rozluźniać reguł (D2) |
+| Wolny TVmaze opóźnia otwarcie listy | czas `episodes()` przy pierwszym otwarciu | timeout 10 s, pamięć awarii 900 s |
+| Konflikt numeru schematu z innym workstreamem | `WATCH_STATE_SCHEMA_VERSION` na `main` inny niż 6 przed scaleniem | stop, uzgodnić kolejność i jeden skrypt |
+| Utrata stanu właściciela przy migracji | `load()` po skrypcie daje błąd | przywrócić `state.json.v6`, poprawić skrypt na kopii |
+| Treść CC BY-SA w repo | nagranie w git | tylko 5 pól odcinka jednego serialu, adnotacja w manifeście (D6) |
 
 ## Definition of Done
 
-- [ ] D1-D7 rozstrzygnięte przez właściciela
-- [ ] wymagania 1-12 specyfikacji pokryte testami, `network` pomijany domyślnie
-- [ ] `raw_episodes`, `state.json`, H1 niezmienione (test)
+- [ ] wymagania 1-10 i inwarianty specyfikacji pokryte testami; `network` pomijany domyślnie
 - [ ] bramki repo zielone, hooki bez `--no-verify`
 - [ ] przegląd innego modelu bez ustaleń blokujących
-- [ ] human checkpoint wykonany
-- [ ] raport wykonania: status, commity, dowody, odchylenia
+- [ ] stan właściciela w schemacie 7, skrypt usunięty
+- [ ] human checkpoint zaliczony
 
 ## Kontrakt wyniku wykonania
 
 ```text
-status; zmienione pliki; wyniki bramek (komenda, wynik, liczby); wynik testu network (jeśli uruchomiony);
-odchylenia od planu; decyzje D1-D7 w brzmieniu finalnym; stan repo i commity; rekomendowany następny krok
+status; commity (SHA, nagłówek); wyniki bramek (komenda, liczby); wynik testu network;
+wynik migracji (liczba subskrypcji i odcinków przed i po); odchylenia od planu; wynik checkpointu; następny krok
 ```
