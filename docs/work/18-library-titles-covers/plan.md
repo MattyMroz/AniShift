@@ -1,434 +1,529 @@
 ---
 kind: plan
-status: draft
-baseline: main @ 4365a51
-created: 2026-10-25
+status: accepted-decisions
+baseline: main @ 1f76e30
+created: 2026-11-26
 ---
 
-# Plan: Biblioteka jako widok tytułów, potem okładki w panelu
+# Plan: Biblioteka jako widok tytułów z okładkami
 
-Plan nie startuje przed akceptacją decyzji z [specification.md](specification.md), sekcja „Nierozstrzygnięte”.
-Przyjęto rekomendacje O-1…O-11; odpowiedź właściciela inna niż rekomendacja zmienia wskazane fazy (kolumna „Blokuje”).
-
-Dwie części to dwa PR-y z jednym kontraktem danych (`anilist_id` tytułu), ale z różnymi podsystemami i różnym ryzykiem:
-
-- **Część I (b):** tytuły, odcinki, zaznaczanie, usuwanie, Ctrl+Z. Rezultat akceptowalny samodzielnie.
-- **Część II (a):** okładki. Zależy od części I tylko pozycją slotu i źródłem `anilist_id`; zależy od decyzji O-2.
-
-Test granicy (planning §Granica): wynik części I może zmienić design części II (miejsce w układzie listy, wysokość
-widoku), więc część II planuje się szczegółowo dopiero po checkpoint H2, a tu daje jej kontrakt i fazy.
+Plan wykonuje całą [specyfikację](specification.md): tożsamość serii, widok tytułów i odcinków, usuwanie wielu, rozpoznanie
+plików ręcznych, okładki w Bibliotece i na liście Subskrypcji. Decyzje właściciela są zamknięte; wykonawca nie wybiera między
+architekturami. Fakty o kodzie: [current-state.md](current-state.md); pomiary: [research-covers.md](research-covers.md).
 
 ## Warunki końcowe
 
-- [ ] Część I: Biblioteka pokazuje tytuły → odcinki; zaznaczanie i usuwanie wielu; Kosz i Ctrl+Z zgodnie z O-6.
-- [ ] Część II: okładka w slocie, gdy SIXEL i miejsce; w pozostałych przypadkach ekran bez zmian.
-- [ ] Bramki repo przechodzą; scoped `AGENTS.md` zaktualizowane.
-- [ ] H1…H4 wykonane przez właściciela.
+- [ ] Biblioteka pokazuje tytuły serii, Enter otwiera odcinki z `Nr`, `Tytuł`, `Emisja`, `Stan`; filtr `/`; zasobnik trafia
+  w odcinek.
+- [ ] Zaznaczanie i usuwanie wielu z pytaniem; Kosz i Ctrl+Z po jednym.
+- [ ] Pliki ręczne: `z nazwy`, „Nie rozpoznano” albo rozpoznane według F-6.
+- [ ] Okładki w `config/covers/` i w slocie SIXEL Biblioteki i Subskrypcji; bez SIXEL ekran jak dziś.
+- [ ] Bramki repo zielone; `AGENTS.md` obszarów i `config/README.md` aktualne; checkpointy H1–H5 przyjęte przez właściciela.
 
 ## Nie-cel
 
-Zmiany Anime/Przetwarzania/Historii, odcinki jeszcze niepobrane w Bibliotece, półbloki, Linux, synchronizacja MAL/AniList,
-foldery serii na dysku, nowe pliki konfiguracyjne.
+Inne ekrany panelu, odcinki niepobrane w Bibliotece, półbloki, Linux, zmiana nazw plików (workstream 23), trwały zapis serii w
+`WatchState`, synchronizacja MAL/AniList.
 
 ## Authority i baseline
 
-| Źródło | Rola |
-|---|---|
-| `specification.md` tego katalogu | wymagania i decyzje |
-| `current-state.md` | stan kodu z liniami |
-| `research-covers.md` | dowody o terminalu i AniList |
-| `AGENTS.md`, `anishift/AGENTS.md`, `anishift/cli/AGENTS.md`, `anishift/application/AGENTS.md`, `tests/AGENTS.md` | reguły repo |
-| `.agents/skills/simple`, `coding` (+ `references/python.md`, `comments-docstrings.md`, `testing.md`) | standard pracy |
+- Wymagania: [specification.md](specification.md). Reguły: `AGENTS.md`, `anishift/AGENTS.md`, `anishift/cli/AGENTS.md`,
+  `anishift/application/AGENTS.md`, `anishift/services/catalog/AGENTS.md`, `tests/AGENTS.md`.
+- Standard pracy: skille `simple`, `coding` (z `references/python.md`, `comments-docstrings.md`, `testing.md`,
+  `markdown.md`), `commit`.
+- Baseline: `main` @ `1f76e30`, worktree `.worktrees/library-titles-covers`, gałąź `feat/library-titles-covers`, `.venv`
+  zsynchronizowane (`uv sync` wykonane 2026-11-26). Znane wcześniejsze failures: nie mierzono; faza 0 je zapisuje.
 
-**Baseline:** `main` @ `4365a51`, drzewo czyste. **Znane wcześniejsze failures:** nie zmierzono (zakaz uruchamiania w zleceniu planisty);
-faza 0 zapisuje wynik `uv run pytest` przed zmianami.
+## Zasady wykonania
 
-## Reuse (obowiązek `AGENTS.md`)
+- Zero legacy: stara nazwa, ścieżka i mechanizm znikają w tym samym commicie (`_series_titles`, `untitled_series`,
+  `_series_title`, kolumny `Nazwa`/`Odcinek`, `NativeMascotImage`, `NATIVE_MASCOT_ANCHOR`, cichy alias `X` w Bibliotece).
+  Żadnych aliasów ani podwójnych ścieżek.
+- Reuse przed nowym kodem: tabela niżej. Nowy moduł tylko tam, gdzie plan go wymienia.
+- Nie uruchamiaj `uv ... --active`; w worktree `uv run --no-sync`. Testy najwyżej `-n 6`.
+- Commit tematyczny po każdej fazie według skilla `commit`; nic nie wychodzi z komputera przed zgodą właściciela po H5.
 
-| Potrzeba | Istniejące | Ograniczenie |
+## Reuse
+
+| Potrzeba | Istniejące | Jak użyć |
 |---|---|---|
-| Układ „lista → Enter → okruszki” | `AnimeScreen`, `_table_body`, `mark_crumbs`, `CRUMB_SEPARATOR` (`anime_view.py`, `pointer.py:63`, `state.py:1397`) | Biblioteka używa `AnimeScreen.LIBRARY`; ekran odcinków reużyje `_spec` z kolumnami `Nr, Tytuł, Emisja, Stan` (`anime_view.py:371-376`) |
-| Etykieta z pliku | `library_label`, `LibraryLabel.episode_text` (`library.py:109`, `:95`) | zostaje źródłem dla zestawów bez klucza (I-3) |
-| Nazwa serii | `series_title`, `name_series`, `downloaded_episodes` (`library.py:185-250`) | rozszerzyć, nie dublować |
-| Normalizacja klucza grupy | `normalize_series` (`application/acquisition.py:590`) | sprawdzić eksport; importować z istniejącego modułu |
-| Wyszukiwarka w liście | `_history_input`, `TextInput`, `_history_input_key` (`state.py:258`, `:819-845`) | ten sam wzorzec, bez nowego edytora tekstu |
-| Pytanie przed działaniem | `_question`, `_question_key` (`state.py:390`) | użyć do usuwania > 1 zestawu |
-| Usuwanie | `preview_deletion`, `delete_set`, `_delete_hidden`, `undo_deletion` (`resident.py:145-175`) | bez równoległych sesji (F-13) |
-| Dane odcinków (tytuł, emisja) | `ListedEpisode`, ani.zip (`episode_selection.py:267`, `anizip.py`), `AnimeController._load_episodes` | symbol serwisu do potwierdzenia w fazie 4 |
-| Obraz natywny | `encode_sixel`, `native_mascot_cell`, kotwica ``, `_draw_native_mascot` (`mascot_native.py`, `prompts.py:325-389`) | jedno miejsce na obraz; uogólnić, nie powielać |
-| Zaznaczanie w liście | `AnimeViewState.toggle/select_all`, `AnimeSnapshot.selected` (`anime_state.py`) | wiersze Biblioteki mają `AnimeRow.key` = `set_id` |
-| Okruszki, klik, hover | `pointer.py` (`mark_row`, `mark_crumbs`) | testy `test_interactive_mouse.py`, `test_interactive_hover.py` |
+| Graf franczyzy wielu wpisów | `_franchise_query()`, `_collect_franchise`, `franchise_traversal` | zapytanie zbiorcze serii; bez zmiany `franchise()` pojedynczego wpisu |
+| Tytuł bez sezonu | `series_title`, `season_hint`, `strip_season` | tytuł serii i kryterium F-6 |
+| Klucz grupy z tekstu | `normalize_series` (`acquisition.py:582`) | wyeksportować w fasadzie `anishift.application`, nie kopiować |
+| Etykieta pliku | `library_label`, `LibraryLabel.episode_text` | zestawy bez klucza (I-3) |
+| Wyszukiwanie tytułu | owner `find_titles` → `AniListCatalog.search`, `TitleCandidate.aliases()` | rozpoznanie F-5 |
+| Odcinki wpisu | `ResidentSession.episodes(anilist_id)` → `ListedEpisode` | `Tytuł` i `Emisja` w widoku odcinków; bez nowej komendy ownera |
+| Format daty odcinka | `anime_rows.episode_row` (`%d.%m.%Y`) | wydzielić jedną funkcję daty i użyć w obu miejscach |
+| Tabela, okruszki, pola zaznaczenia | `render_anime`, `_spec`, `AnimeScreen.EPISODES`, `AnimeSnapshot.selected`, `mark_crumbs` | widok odcinków Biblioteki to prezentacja `EPISODES` |
+| Pole tekstowe | `TextInput`, wzorzec `_history_input` | filtr `/` |
+| Usuwanie | `preview_deletion`, `delete_set`, `_hidden`, `unsettled_deletions`, `undo_deletion` | pętla w jednym wątku |
+| Praca ownera w tle | `_pool`, `_active_io`, `_queue.put`, `_publish_state` (wzorzec `_request_series_titles`) | seria, rozpoznanie i okładki |
+| Obraz w terminalu | sonda `native_mascot_cell`, `_encode_sixel`, kotwica, `_draw_native_mascot`, `_erase_native_mascot` | uogólnić na jeden slot obrazu |
+| Zapis atomowy | wzorzec `WatchStateStore` (plik tymczasowy obok + `os.replace`) | zapis okładki |
 
 ## Impact scan
 
 | Kontrakt | Ryzyko | Obowiązek regresyjny |
 |---|---|---|
-| `LibrarySet` i jego `encode_view/decode_view` (`control_views.py:93`) | nowe pola z domyślnymi wartościami; rezydent starej wersji nie zna pól | pola opcjonalne na końcu; test dekodowania starego słownika; restart rezydenta po zmianie (reguła repo) |
-| Snapshot `library` (`automation.py:1817`) | rozszerzenie klucza | test kontraktowy snapshotu |
-| IPC: lista komend (`automation.py:559`, `:588`) | nowa komenda tylko-do-odczytu (faza 4, 7) | dopisać do właściwej listy, test odmowy bez sesji |
-| `test_panel_keys.py` | `ScreenActions` i `_DESCRIPTIONS` muszą pokrywać nowe klawisze | zaktualizować `_DESCRIPTIONS` i testy w tym samym commicie |
-| `_hidden` i `unsettled_deletions` (`state_library.py:67-76`) | wiersz tytułu składa się z wielu zestawów; ukrywanie per zestaw | grupowanie liczy się po odfiltrowaniu `_hidden` |
-| `_library_context` i `_view_generation` (`state.py:346`) | spóźnione wyniki z poziomu odcinków | kontekst obejmuje klucz tytułu |
-| Renderer: jeden slot obrazu (`prompts.py:253`) | uogólnienie dotyka maskotki | testy maskotki i Home bez zmian (`test_interactive_*`) |
-| Maskotka i Home/Auto | zmiana wyglądu zabroniona | porównanie klatek przed/po w teście |
-| Sieć ownera | dodatkowe zapytania katalogu | wspólna bramka, licznik zapytań w teście |
+| `LibrarySet` w IPC (`encode_view`, `library_details`, `library_problems`) | panel i owner muszą mieć tę samą wersję | pola z wartościami domyślnymi; restart rezydenta przed checkpointem |
+| Snapshot `library` | nowe klucze | test kontraktowy snapshotu w `test_automation.py` |
+| `name_series` i testy `test_library_series.py` | zmiana źródła tytułu (seria zamiast subskrypcji) | przepisać testy na nowy kontrakt; żaden test nie znika bez następcy |
+| H1 i `FranchiseGraph` pojedynczego wpisu | zapytanie zbiorcze mogłoby zmienić graf H1 | osobna metoda katalogu; `franchise()` i jej testy bez zmian |
+| `_library_context`, `_view_generation`, `_preserve_library_selection` | nowy poziom tytułu | kontekst obejmuje klucz tytułu; test spóźnionego wyniku |
+| `show_library` z zasobnika | wybór zestawu na płaskiej liście | otwiera tytuł zestawu; test |
+| `_hidden`, `_restoring`, `deleting_sets` | grupa składa się z wielu zestawów | grupowanie po odfiltrowaniu; „Przywracam…” w wierszu odcinka |
+| `test_panel_keys.py` | nowe klawisze i opisy | ten sam commit aktualizuje `_DESCRIPTIONS` i test |
+| Renderer i maskotka | uogólnienie slotu | testy maskotki bez zmian; nowy test klatek |
+| Sieć ownera | nowe zapytania | wspólna bramka, licznik zapytań w testach |
+| `.gitignore`, `config/README.md` | nowy katalog | linia `config/covers/` i opis |
 
 ## Target design
 
-### Odpowiedzialności
-
-| Element | Odpowiada za | Owner danych | Nie odpowiada za |
-|---|---|---|---|
-| `application/library.py` | tożsamość tytułu zestawu: `anilist_id`, `title_source` | owner | grupowanie na ekran |
-| `state_library.py` | czysta projekcja zestawów w tytuły i wiersze; zbiór kolumn | panel (stan lokalny: kursor, zaznaczenia) | usuwanie plików |
-| `StateController` | nawigacja tytuł ↔ odcinki, klawisze, workery | panel | źródło prawdy zestawów |
-| owner `library_episode_info` | tytuł odcinka, emisja | owner | render |
-| `services/catalog/posters.py` | pobranie i zapis pliku okładki | owner (katalog `config/watch/posters/`) | wybór, które tytuły |
-| `TerminalRenderer` | rysowanie obrazu w slocie | renderer | pobieranie, kodowanie |
-| `cover_native.py` | plik → ładunek SIXEL w komórkach | panel (worker) | I/O w renderze |
-
-### Model danych (część I)
+### Tożsamość serii (owner)
 
 ```text
-LibrarySet (owner, rozszerzenie; pola opcjonalne na końcu):
-  anilist_id: int | None          # z DownloadedEpisode, None dla plików ręcznych
-  title_source: str               # "key" | "name"   (+ "recognized" po fazie 3)
-  (series, season, episode pozostają jak dziś)
-
-LibraryTitle (panel, niezmienny, nietrwały):
-  key: str          # normalize_series(tytuł etykiety)
-  title: str
-  sets: tuple[mapping, ...]       # wiersze snapshotu, posortowane jak _order
-  cover_id: int | None            # anilist_id pierwszego zestawu z kluczem
-  source: str                     # "key" jeśli którykolwiek zestaw z kluczem, "name", albo "none"
-  problems: int                   # liczba zestawów z library_problems
+wpisy = anilist_id zestawów pobranych (downloaded_episodes) ∪ subskrypcji ∪ rozpoznanych
+  -> AniListCatalog.library_graph(wpisy): _franchise_query() po 50 ID na stronę,
+     dociąga brakujące węzły łańcucha, łącznie najwyżej _MAX_FRANCHISE_REQUESTS zapytań
+  -> library_series(graf, wpisy) (czysta funkcja w application/library.py):
+     łańcuch każdego wpisu z franchise_traversal; łańcuchy o wspólnym węźle łączą się w jedną serię;
+     series_id = wpis o formacie sezonowym z najwcześniejszą datą startu (remis: mniejsze ID),
+     bez wpisu sezonowego najwcześniejszy dowolny;
+     tytuł = series_title(english or romaji wpisu series_id)
+  -> owner._series: dict[int, LibrarySeries(series_id, title, entry_title)]
 ```
 
-- Grupowanie: `key` z `_label(item).title`. Zestaw bez tytułu i odcinka (`LibraryLabel(stem, None, None)` i brak
-  `series`) trafia do grupy `none` o stałym kluczu, wyświetlanej jako „Nie rozpoznano” na końcu listy (O-9).
-- Kolejność tytułów: `_TITLE_KEY` (naturalna), „Nie rozpoznano” ostatni.
-- Ukryte i usuwane zestawy (`_hidden`, `deletions`) są odfiltrowywane przed grupowaniem (`library_rows`).
-- Tytuł `z nazwy` ma oznaczenie w kolumnie `Stan` (np. `z nazwy`), tekst do ustalenia w H1; tekst tylko z `state_texts.py`.
+- `LibrarySeries` (frozen, slots) w `application/library.py`. `entry_title` (english or romaji wpisu) służy wyłącznie
+  sezonowi przez istniejące `_series_season`.
+- `_series`, `_series_requested` i jedna metoda `_request_series` zastępują `_series_titles`, `_series_requested`,
+  `_request_series_titles`, `_read_series_titles`, `_record_series_titles`, `untitled_series` i `_series_title`.
+- Błąd lub 429: wpisy zostają bez serii do końca procesu (jak dziś); log z liczbą wpisów i klasą błędu.
+- `AcquisitionService` dostaje odczyt `library_series(ids)`, który woła katalog i czystą funkcję.
 
-### Nawigacja (część I)
+### Pola zestawu (owner → panel)
 
 ```text
-LIST (tytuły) --Enter--> TITLE (odcinki)
-TITLE --Esc/Backspace/klik okruszka--> LIST (kursor zachowany po key tytułu)
-TITLE --D--> DETAILS (pliki zestawu, jak dziś) --Esc--> TITLE
-LIST --Esc--> Home (jak dziś)
+LibrarySet (widok, pola z domyślnymi wartościami):
+  anilist_id: int | None       # wpis z downloaded_episodes albo rozpoznania
+  series_id: int | None        # z _series; None, gdy seria nieznana
+  title_source: str = "name"   # "key" | "recognized" | "name"
+  series, season, episode      # jak dziś; series = tytuł serii
 ```
 
-Stan: `_library_title: str | None` (klucz otwartego tytułu), `_marks: set[str]` (set_id zaznaczonych), reset przy zmianie zakładki,
-wyjściu z tytułu i zmianie tytułu. Klawisze: `Space` zaznacz, `A` wszystkie, `Del`, `/` filtr (tylko LIST), `F`, `D`, `Enter`, `Ctrl+Z`.
-Odtwarzanie przy Enter na odcinku: ścieżka `_file_action("open")` bez zmian.
+`name_series(sets, state, series, recognized)` ustawia te pola. Snapshot `library` dodaje `anilist_id`, `series_id`,
+`title_source`; dochodzi klucz `covers` (posortowana lista ID z plikiem w cache).
 
-### Usuwanie wielu (część I)
+### Rozpoznanie plików ręcznych (owner)
+
+- Wejście: zestawy bez klucza; klucz zapytania = `(normalize_series(label.title), label.season or 1)`; zestawy
+  nierozpoznane przez `library_label` pomija.
+- Jedno `search` na klucz na uruchomienie rezydenta, sekwencyjnie przez `episode_requests()`, w puli I/O; wynik w
+  `_recognized: dict[tuple[str, int], int | None]`.
+- Kryterium: F-6 specyfikacji, w czystej funkcji `recognize(candidates, title, season) -> int | None` w
+  `application/library.py`.
+- Rozpoznane ID dołączają do wejścia tożsamości serii i okładek.
+
+### Projekcja tytułów (panel, czysta)
 
 ```text
-Del -> zbiór set_id (zaznaczone | kursor | wszystkie zestawy tytułu)
-  > 1 zestaw -> _question "Enter tak · Esc nie" (O-7)
-  -> jeden wątek roboczy, zestawy kolejno: preview_deletion -> delete_set
-  -> _hidden[set_id] per zestaw; odmowa zestawu: wraca wiersz + komunikat, pozostałe idą dalej
-  -> komunikat "Usunięto N · Ctrl+Z cofa po jednym" (O-6)
+LibraryTitle (state_library.py, frozen):
+  key: str            # "series:<id>" | "entry:<id>" | "name:<normalize_series(tytuł)>" | "none"
+  title: str          # series albo label.title; "Nie rozpoznano" dla "none"
+  sets: tuple[Mapping, ...]   # posortowane jak dziś _order
+  cover_id: int | None        # anilist_id najnowszego zestawu z kluczem lub rozpoznanego
+  source: str                 # "name", gdy żaden zestaw nie ma klucza; inaczej "key"
+  problems: int
 ```
 
-Owner (O-6, już wdrożone): kolejne `deletion_undo` cofają kolejne usunięcia w odwrotnej kolejności.
+- `library_titles(snapshot, hidden, restoring, query)` grupuje wynik dzisiejszego `library_rows` (po odfiltrowaniu ukrytych i
+  usuwanych), filtruje po `query`, sortuje `_TITLE_KEY`, „Nie rozpoznano” na końcu.
+- Wiersz tytułu: `Tytuł`, `Odcinki`, `Stan` (`Gotowe`, `<n> do sprawdzenia`, `z nazwy`; teksty w `state_texts.py`).
+- Wiersz odcinka: `Nr` (`episode_text`), `Tytuł` (tytuł odcinka albo nazwa zestawu dla `name`/`none`), `Emisja`, `Stan`
+  (`Gotowe`, tekst problemu, „Przywracam…”); `AnimeRow.key` = `set_id`.
 
-### Dane odcinka (część I)
-
-Komenda ownera tylko do odczytu `library_episode_info {anilist_id}` zwraca `[{number, title|null, airs_at|null}]` z istniejącego
-źródła odcinków (ani.zip, ten sam cache co ekran odcinków). Panel woła ją workerem przy otwarciu tytułu i wstawia wynik do
-wierszy; render czyta tylko stan. Brak odpowiedzi = `—` w obu kolumnach. Odmowa katalogu nie blokuje widoku.
-
-### Rozpoznawanie plików ręcznych (faza 3, warunkowa)
-
-Dla znormalizowanego tytułu `z nazwy` owner wywołuje `AniListCatalog.search` przez bramkę sieci. Kryterium (O-5): dokładnie jeden
-kandydat, którego `aliases()` zawiera tytuł z nazwy (casefold), i zgodny sezon (`season_hint`). Wynik tylko w pamięci ownera
-(`dict[str, int | None]`, jak `_series_titles`), jedno zapytanie na unikalny tytuł, raz na proces. Przy 429 lub błędzie: `z nazwy`.
-Faza startuje dopiero po pomiarze z fazy 0 (czas przy ~100 plikach z ≤ 30 tytułami) i po H2.
-
-### Okładki (część II)
+### Nawigacja i stan panelu
 
 ```text
-owner: ids = anilist_id(subskrypcje ∪ pobrane serie ∪ rozpoznane) − ids w cache
-  -> AniListCatalog.covers(ids)  (jedno zapytanie id_in ≤ 50, coverImage { large })
-  -> PosterStore.fetch(id, url): https + host z odpowiedzi AniList, limit rozmiaru, Pillow verify, zapis atomowy
-     config/watch/posters/<id>.jpg   (nazwa wyłącznie z liczby)
-panel: worker (debounce ~150 ms po zmianie wyboru) -> cover_native.load(path, cell, rows) -> ładunek SIXEL w pamięci (LRU)
-render: slot z gotowym ładunkiem, inaczej pusto; po zmianie ładunku w tym samym miejscu bez czyszczenia ekranu
+TYTUŁY --Enter--> ODCINKI (okruszki: Biblioteka › <tytuł>)
+ODCINKI --Esc/Backspace/klik okruszka--> TYTUŁY (kursor na tym samym key)
+ODCINKI --D--> SZCZEGÓŁY (okruszki: Biblioteka › <tytuł> › <SxxEyy>) --Esc--> ODCINKI
+TYTUŁY --/--> pole filtra --Enter--> TYTUŁY z filtrem; Esc w polu czyści filtr
+TYTUŁY --Esc--> Home (jak dziś)
+zasobnik(set_id) --> ODCINKI tytułu zestawu, kursor na zestawie
 ```
 
-- Slot: `COVER_FRAME_ROWS = 12` wierszy, szerokość `ceil(0.667 · rows · cell_h / cell_w)` komórek (okładka 2:3), zakotwiczony
-  po prawej stronie tabeli. Pokazywany, gdy `columns ≥ szerokość_tabeli + 2 + szerokość_slotu + margines` i `rows ≥ COVER_FRAME_ROWS + chrome`;
-  inaczej układ identyczny z dzisiejszym (F-18).
-- Renderer: ta sama kotwica `` i ten sam slot; źródło obrazu (maskotka albo okładka) wskazuje wywołujący. Home/Auto
-  i panel nigdy nie rysują obu naraz (`app.py:961-1000`).
-- Bezpieczeństwo pobierania: tylko `https`, host z odpowiedzi AniList (lista dozwolonych hostów z fazy 0), brak
-  przekierowań poza listę, limit 2 MB, `Image.verify`, nazwa pliku z `int`, brak logowania URL.
-- Cache: bez wygaszania (tylko tytuły z biblioteki i subskrypcji, rząd dziesiątek plików); ponowne pobranie przy zmianie URL.
+- Stan w `StateController`: `_library_title: str | None`, `_library_marks: set[str]`, `_library_query: str`,
+  `_library_input: TextInput | None`, `_library_confirm: tuple[str, ...] | None`, `_episode_info: dict[int, dict[int,
+  tuple[str | None, datetime | None]]]`. Zmiana zakładki czyści tytuł, zaznaczenia, pole i pytanie; filtr zostaje do
+  wyjścia z panelu.
+- Klawisze. Tytuły: Enter `odcinki`, Del `usuń`, `/` `szukaj`, Ctrl+Z `cofnij`. Odcinki: Enter `obejrzyj`, Space
+  `zaznacz`, `A` `wszystkie`, `D` `szczegóły`, `F` `folder`, Del `usuń`, Ctrl+Z `cofnij`. Opis `("Space", "zaznacz")`
+  staje się ogólny dla D i Del. Cichy alias `X` znika.
+- `_library_context` zwraca `(tytuł, set_id)`, więc spóźnione wyniki z innego tytułu giną.
+- Tytuły i daty odcinków: przy otwarciu tytułu worker (`_work`) woła `session.episodes(id)` dla każdego wpisu z kluczem w
+  tytule, którego nie ma w `_episode_info`; błąd zostawia `—`.
 
-## Mapa plików (oczekiwany zasięg, nie nakaz)
-
-| Ścieżka | Operacja | Rola | Uwagi |
-|---|---|---|---|
-| `anishift/application/control_views.py` | MODIFY | `LibrarySet`: `anilist_id`, `title_source` | pola opcjonalne |
-| `anishift/application/library.py` | MODIFY | `name_series` ustawia nowe pola | |
-| `anishift/application/automation.py` | MODIFY | snapshot `library`, komendy `library_episode_info`, (II) ścieżka okładek | blisko `:1817`, `:2344`, `:8105` |
-| `anishift/cli/resident.py` | MODIFY | `library_episode_info()` w sesji | |
-| `anishift/cli/interactive/state_library.py` | MODIFY | `LibraryTitle`, `library_titles`, wiersze tytułów i odcinków, akcje | czysty moduł |
-| `anishift/cli/interactive/state_texts.py` | MODIFY | teksty: „Nie rozpoznano”, `z nazwy`, pytanie usunięcia | jedyne miejsce polskich tekstów list |
-| `anishift/cli/interactive/state.py` | MODIFY | nawigacja tytuł ↔ odcinki, zaznaczenia, `/`, usuwanie wielu | |
-| `anishift/cli/interactive/actions.py` | MODIFY | `_DESCRIPTIONS` nowych klawiszy | |
-| `anishift/cli/interactive/anime_view.py` | MODIFY | kolumny listy tytułów Biblioteki; widok odcinków z `Nr, Tytuł, Emisja, Stan` | bez zmiany palety |
-| `anishift/cli/interactive/anime_state.py` | READ ONLY / MODIFY | `AnimeRow`/`AnimeSnapshot` wystarczają; dodać pole tylko, jeśli test tego wymaga | |
-| `anishift/paths.py` | MODIFY (II) | `poster_dir()` | |
-| `anishift/services/catalog/anilist.py` | MODIFY (II) | `covers(ids)` | |
-| `anishift/services/catalog/posters.py` | CREATE (II) | `PosterStore` | |
-| `anishift/cli/interactive/cover_native.py` | CREATE (II) | plik → ładunek SIXEL | używa `encode_sixel` |
-| `anishift/cli/interactive/mascot_native.py` | MODIFY (II) | uwidocznić `encode_sixel` | bez zmiany zachowania maskotki |
-| `anishift/cli/interactive/prompts.py` | MODIFY (II) | źródło obrazu w slocie | |
-| `anishift/cli/interactive/app.py` | MODIFY (II) | przekazanie okładki do renderera | |
-| `anishift/cli/AGENTS.md`, `anishift/application/AGENTS.md`, `anishift/services/catalog/AGENTS.md` | MODIFY | opis Biblioteki tytułów, usuwania wielu, okładek | w commicie danej funkcji |
-| `tests/cli/test_library_titles.py` | CREATE | grupowanie i widok tytułów | |
-| `tests/cli/test_library_actions.py`, `test_library_columns.py` | MODIFY | nowe wiersze i akcje | |
-| `tests/application/test_library_titles.py` | CREATE | tożsamość tytułu |
-| `tests/services/catalog/test_posters.py` | CREATE (II) | pobranie, walidacja, atomowość | |
-| `tests/cli/test_library_covers.py` | CREATE (II) | slot, degradacja, brak I/O w renderze | |
-| `docs/README.md`, `docs/ideas.md` | MODIFY | wiersz workstreamu 18; przeniesienie pozycji do „Zrealizowane” po scaleniu | `docs(repo)` |
-
-## Branch, commity, bramki
-
-- Branche: `work/tui/03-library-titles` (część I) i `work/tui/04-library-covers` (część II, od stanu po scaleniu I). Numer do
-  potwierdzenia względem istniejących gałęzi w chwili startu. Praca w głównym checkout, bez worktree (preferencja właściciela).
-  Nie commitować na `main`. Feature branch → PR → merge. Rezydent zamknięty przed zmianą plików, które czyta, i restart po zmianie ownera.
-- Commity tematyczne (jeden na spójny temat, poprawki z review wchodzą w commit tematu), format `typ(scope): opis`, scope z listy
-  hooka, bez śladów AI w treści; stopka zgodna z regułami sesji wykonawcy:
-  1. `feat(application): name every Library set after its catalogue series and title source`
-  2. `feat(tui): show the Library as a list of titles with an episode view`
-  3. `feat(tui): mark and delete several Library episodes at once`
-  4. `feat(application): serve episode titles and air dates for a Library title`
-  5. (II) `feat(services): read cover URLs from AniList and store posters`
-  6. (II) `feat(application): fetch title covers in the background`
-  7. (II) `feat(tui): draw a cover beside the Library and Subscriptions lists`
-  8. `docs(repo): record the Library titles and covers workstream`
-- Bramki przed każdym commitem (zawsze na `anishift/ tests/`):
+### Usuwanie wielu
 
 ```text
-uv run ruff check anishift/ tests/
-uv run ruff format --check anishift/ tests/
-uv run mypy anishift/ tests/
-uv run pytest
+Del -> cele: zaznaczone | odcinek pod kursorem | wszystkie zestawy tytułu
+  1 cel  -> jak dziś (_delete_now)
+  >1 cel -> _library_confirm = cele; stopka „Usunąć <n> odcinków? Enter tak · Esc nie”;
+            Enter: wszystkie cele do _hidden, jeden wątek „anishift-library-delete”, jedna sesja,
+            kolejno preview_deletion -> delete_set; odmowa celu zdejmuje go z _hidden z komunikatem;
+            koniec: „Usunięto <n> · Ctrl+Z cofa po jednym”
+            inny klawisz: pytanie znika bez skutku
 ```
 
-- Zero nowych issue bez prośby właściciela.
+Pytanie to prosty stan i stopka w Bibliotece, nie ogólny mechanizm (dawny `_question` nie istnieje).
+
+### Okładki w ownerze
+
+```text
+po zmianie _series lub _recognized: brakujące = wpisy (subskrypcje ∪ klucze ∪ rozpoznane) − _covers − _covers_requested
+  -> pula I/O, episode_requests():
+     AniListCatalog.cover_urls(ids) -> dict[int, str]   # coverImage { extraLarge }, 50 ID na zapytanie
+     dla każdego ID: AniListCatalog.cover(url) -> bytes # https, host s4.anilist.co, bez przekierowań, ≤ 2 MB, status 200
+                     store_cover(bytes, covers_dir() / f"{id}.jpg")  # Pillow verify, RGB, JPEG, tmp + os.replace
+  -> _queue.put(_record_covers(ids)) -> _publish_state
+start ownera: _covers = ID z istniejących plików <liczba>.jpg w covers_dir() (odczyt w puli I/O)
+```
+
+- `paths.covers_dir()` zwraca `config_dir() / "covers"`; tworzy go zapis, nie odczyt ścieżki.
+- `services/catalog/covers.py`: `store_cover` (walidacja i zapis). Brak okładki w odpowiedzi albo błąd pliku: ID pomija,
+  licznik w logu.
+- Log tylko liczby: `requested`, `stored`, `skipped`, `error_class`.
+
+### Obraz natywny w panelu
+
+- Nowy `cli/interactive/native_image.py` przejmuje z `mascot_native.py` sondę (`native_cell`), koder (`encode_sixel`),
+  odczyt konsoli i dataclass `NativeImage` (ładunki, czasy klatek, `cell_columns`, `cell_rows`, `layout_rows`) oraz kotwicę
+  `NATIVE_IMAGE_ANCHOR`. `mascot_native.py` zostaje z ładowaniem maskotki. Stare nazwy znikają.
+- `TerminalRenderer` zapamiętuje komórkę z sondy (`native_cell`, `None` bez SIXEL) i dostaje `image_provider: Callable[[],
+  NativeImage | None]`; aplikacja podaje maskotkę w Home, Auto i komunikatach, a w panelu obraz z `StateController.cover()`.
+- `_native_anchor` liczy kolumnę w komórkach (`cell_len`).
+- Rysowanie w jednym slocie:
+  - ta sama pozycja, inny obraz: kasowanie komórek poprzedniego obrazu i nowy ładunek, bez `\x1b[2J`;
+  - ta sama pozycja, brak obrazu: kasowanie komórek, bez `\x1b[2J`;
+  - ta sama pozycja i obraz, ale zmieniła się któraś linia ramki w wierszach slotu albo rozmiar terminala: ponowny
+    ładunek bez kasowania;
+  - nowa pozycja albo zniknięcie kotwicy: istniejąca ścieżka `reset` + `\x1b[2J`.
+- `cli/interactive/covers.py`: `CoverImages` z jednym wątkiem `anishift-cover`. Żądanie `(anilist_id, komórka)`, nowsze
+  wygrywa; wynik w pamięci (do 64 ładunków). Plik czyta z `covers_dir()`, skaluje LANCZOS do pudełka, centruje na
+  przezroczystym tle i koduje `encode_sixel`. Render tylko odczytuje gotowy ładunek.
+- Pudełko: `COVER_ROWS = 12` wierszy, kolumny `ceil(COVER_ROWS * cell_h * COVER_ASPECT / cell_w)`, `COVER_ASPECT = 0.72`
+  (pomiar 460 × 636). Stałe pudełko daje stałe komórki dla każdej okładki.
+
+### Slot w tabeli
+
+- `AnimeSnapshot.cover: tuple[int, int] | None` (kolumny i wiersze pudełka) ustawia `StateController`, gdy jest
+  `native_cell` i na liście jest choć jeden wiersz z ID w `covers`.
+- `render_anime` wstawia slot, gdy `columns ≥ szerokość tabeli + 2 + kolumny pudełka + _MARGIN` i gdy od wiersza nagłówka
+  tabeli do pierwszej linii stopki jest co najmniej `COVER_ROWS` wierszy. Tabela układa się wtedy w szerokości bez slotu, a
+  kotwica stoi w wierszu nagłówka, dwie kolumny za tabelą. Inaczej klatka jest identyczna z dzisiejszą (F-23).
+- Komórki pudełka w tekście ramki są puste w każdej klatce (test).
+- Ekrany ze slotem: lista tytułów i widok odcinków Biblioteki, lista Subskrypcji. Wybór obrazu: F-21.
+
+### Docelowe drzewo
+
+```text
+anishift/
+├── paths.py                                  # MODIFY covers_dir()
+├── application/
+│   ├── __init__.py                           # MODIFY eksport normalize_series
+│   ├── control_views.py                      # MODIFY LibrarySet: anilist_id, series_id, title_source
+│   ├── library.py                            # MODIFY LibrarySeries, library_series, recognize, name_series
+│   ├── acquisition.py                        # MODIFY library_series(ids), cover_urls, cover
+│   └── automation.py                         # MODIFY _series, _recognized, _covers, snapshot
+├── services/catalog/
+│   ├── anilist.py                            # MODIFY library_graph, cover_urls, cover
+│   └── covers.py                             # CREATE store_cover
+└── cli/interactive/
+    ├── native_image.py                       # CREATE sonda, koder, NativeImage, kotwica
+    ├── mascot_native.py                      # MODIFY tylko maskotka
+    ├── covers.py                             # CREATE CoverImages
+    ├── prompts.py                            # MODIFY image_provider, native_cell, reguły slotu
+    ├── app.py                                # MODIFY dostawca obrazu
+    ├── home.py                               # MODIFY nowa nazwa kotwicy
+    ├── anime_state.py                        # MODIFY AnimeSnapshot.cover
+    ├── anime_view.py                         # MODIFY kolumny tytułów, slot
+    ├── anime_rows.py                         # MODIFY wspólny format daty
+    ├── actions.py                            # MODIFY opisy klawiszy
+    ├── state_library.py                      # MODIFY LibraryTitle, wiersze, akcje
+    ├── state_texts.py                        # MODIFY teksty Biblioteki
+    └── state.py                              # MODIFY poziom tytułu, filtr, zaznaczenia, usuwanie wielu, okładka
+config/README.md                              # MODIFY opis covers/
+.gitignore                                    # MODIFY config/covers/
+```
+
+Mapa jest sygnałem zasięgu, nie nakazem; wykonawca może przenieść funkcję do sąsiedniego istniejącego modułu bez zmiany
+kontraktu.
 
 ## Plan wykonania
 
-### Faza 0 — preflight i pomiary (bez zmian w repo poza `scripts/tmp/`)
+### Faza 0: preflight
 
-**Cel:** zmierzyć niewiadome i zapisać baseline.
+1. `git status --short`, `git branch --show-current` (oczekiwane: czysto, `feat/library-titles-covers`).
+2. Baseline wąski: `uv run --no-sync pytest -n 6 tests/cli/test_library_actions.py tests/cli/test_library_columns.py
+   tests/cli/test_panel_keys.py tests/cli/test_interactive_mascot_native.py tests/application/test_library_series.py
+   tests/application/test_library_label.py tests/services/catalog/test_anilist.py`; wynik do raportu fazy.
+3. Przeczytaj w całości `state_library.py`, `state.py` (sekcje Biblioteki), `anime_view.py`, `prompts.py`,
+   `mascot_native.py`, `library.py` (linie 170–250) i powyższe testy.
 
-**Działania:**
+**Gate:** baseline zapisany; czerwony test baseline'u zgłoś przed zmianą.
 
-1. `git status`, branch, `uv run pytest`; zapisać wynik jako baseline failures.
-2. Pomiar (część I): czas `library_label` i grupowania dla 300 syntetycznych nazw (jednorazowy skrypt w `scripts/tmp/`).
-3. Pomiar (część II): pobrać 5 okładek z AniList (`coverImage.large` i `extraLarge`), zapisać wymiary, bajty, host,
-   nagłówki `X-RateLimit-*` przed i po; zmierzyć `encode_sixel` slotu 12 wierszy. Skrypt i pliki usunąć po pomiarze.
-4. Zapisać wyniki w `docs/work/18-library-titles-covers/research/measurements.md` (po polsku, liczby i komendy).
+### Faza 1: tożsamość serii w ownerze
 
-**Gate:** komplet liczb; brak rozbieżności z założeniami O-5/O-6. Rozbieżność = zatrzymaj i wróć do właściciela.
+**Cel:** F-1, F-2; zestawy z kluczem mają `anilist_id`, `series_id`, `title_source="key"` i tytuł serii.
 
-### Faza 1 — tożsamość tytułu (owner) i projekcja (panel)
+**Działania:** `AniListCatalog.library_graph`; `LibrarySeries`, `library_series`; `AcquisitionService.library_series`;
+owner `_series` zamiast `_series_titles` (usunąć stare symbole); pola `LibrarySet`; `name_series`; snapshot `library`;
+eksport `normalize_series`.
 
-**Cel:** każdy zestaw ma `anilist_id`/`title_source`; panel umie zbudować `LibraryTitle`.
+**Testy (`unit`):**
 
-**Działania:** rozszerzyć `LibrarySet` i `name_series`; snapshot `library`; `library_titles()` w `state_library.py`; teksty w `state_texts.py`.
+- `tests/application/test_library_series.py`: `test_seasons_of_one_chain_share_one_series_whatever_their_titles`,
+  `test_series_title_comes_from_the_earliest_season_entry`, `test_chains_joined_by_a_shared_node_form_one_series`,
+  `test_a_film_in_the_chain_joins_its_series`, `test_downloaded_set_carries_its_entry_series_and_key_source`,
+  `test_set_of_an_unknown_series_keeps_its_entry_and_file_label`, `test_hand_added_set_stays_with_name_source`;
+  dotychczasowe testy `name_series` przepisane na nowe źródło tytułu.
+- `tests/services/catalog/test_anilist.py`: `test_library_graph_reads_fifty_ids_per_request`,
+  `test_library_graph_expands_missing_chain_nodes_within_the_request_bound` (na zapisanych grafach
+  `tests/fixtures/search/anilist__franchise__*.json`).
+- `tests/application/test_automation.py`: `test_owner_reads_every_library_series_in_one_batch_once`,
+  `test_snapshot_library_rows_carry_entry_series_and_source`.
 
-**Inwarianty:** I-1…I-4; `library_label` bez zmian; brak I/O.
+**Kontrola:** bramki z `AGENTS.md` (ruff, format, mypy na `anishift/ tests/`, pytest `-n 6`).
 
-**Kontrola:** testy `tests/cli/test_library_titles.py`, `tests/application/test_library_titles.py` (lista niżej), bramki.
+**Commit:** `feat(repo): group Library sets by their AniList series`.
 
-**Gate:** projekcja przechodzi testy na przypadkach: Slime S4 w trzech zapisach, film bez numeru, plik bez tytułu, zestaw z problemem.
+### Faza 2: widok tytułów i odcinków
 
-### Faza 2 — widok tytułów i odcinków
+**Cel:** F-3, F-4, F-7–F-13.
 
-**Cel:** F-1…F-9, F-16 (filtr).
+**Działania:** `LibraryTitle`, `library_titles` i wiersze w `state_library.py`; kolumny `Tytuł`, `Odcinki`, `Stan` w
+`_spec(AnimeScreen.LIBRARY)`; widok odcinków jako prezentacja `EPISODES` z okruszkami; poziom tytułu, filtr, zasobnik i
+`_episode_info` w `state.py`; opisy klawiszy w `actions.py`; teksty w `state_texts.py`; wspólny format daty w
+`anime_rows.py`.
 
-**Działania:** stan nawigacji w `StateController`; tabela tytułów i odcinków w `anime_view.py`; okruszki i kliknięcia; stopka z `ScreenActions`;
-`/` jak w Historii; zachowanie kursora i `_view_generation`.
+**Testy (`unit`):**
+
+- `tests/cli/test_library_titles.py` (nowy): `test_sets_of_one_series_form_one_title`,
+  `test_unknown_series_groups_by_entry_until_the_series_arrives`, `test_hand_added_spellings_of_one_title_join_by_name`,
+  `test_hand_added_title_shows_from_name`, `test_unparsed_names_go_to_the_unrecognized_row_last`,
+  `test_hidden_and_deleting_sets_leave_their_title`, `test_problem_sets_are_counted_in_the_state_column`,
+  `test_filter_keeps_titles_containing_the_normalized_text`, `test_enter_opens_the_title_and_escape_returns_to_it`,
+  `test_crumb_click_returns_to_the_titles`, `test_tray_target_opens_the_title_of_its_set`,
+  `test_tab_switch_closes_the_title_and_its_marks`, `test_late_episode_titles_of_another_title_are_dropped`.
+- `tests/cli/test_library_columns.py`: `test_titles_fit_at_50_80_and_120_columns`,
+  `test_episode_view_has_number_title_air_and_state_columns`, `test_missing_episode_data_shows_a_dash`.
+- `tests/cli/test_library_actions.py`: dotychczasowe testy przeniesione na widok odcinków (Enter odtwarza, `F`, `D`, Del
+  pojedynczy, Ctrl+Z, odmowy).
+- `tests/cli/test_panel_keys.py`: nowe zestawy klawiszy obu poziomów, brak aliasu `X`.
+- `tests/application/test_library_label.py`: `test_label_reads_the_shared_ready_name_format` (tabela z
+  [research-covers.md](research-covers.md), sekcja 6).
 
 **Human checkpoint H1:**
 
 ```text
-Uruchom: anishift (zamknij wcześniej stary rezydent), Panel → Biblioteka
-Zrób: otwórz tytuł, wróć Esc, filtruj /, kliknij okruszek, przejdź na Subskrypcje i wróć
-Oczekiwany rezultat: lista tytułów, widok odcinków jak ekran odcinków Anime, kursor wraca na tytuł
-Zwróć uwagę na: czytelność kolumn przy 80 i 120 kolumnach, tekst „z nazwy”, wiersz „Nie rozpoznano”, zgodność stylu z resztą panelu
-Przekaż wynik jako: lista uwag co do słów i układu (styl panelu bez zmian)
+Uruchom: zamknij rezydenta i panel z głównego checkoutu; w PowerShell 7 w folderze worktree:
+  $env:ANISHIFT_CONFIG_DIR = "C:\Users\MattyMroz\Desktop\PROJECTS\AniShift\config"
+  $env:ANISHIFT_WORKSPACE_ROOT = "C:\Users\MattyMroz\Desktop\PROJECTS\AniShift\workspace"
+  uv run --no-sync anishift
+  Panel → O (automat wyłączony na czas próby: worktree nie ma .env z kluczami usług) → Biblioteka
+Zrób: otwórz kilka tytułów, wróć Esc, filtruj /, kliknij okruszek, kliknij wynik w zasobniku, przejdź na Subskrypcje i wróć
+Oczekiwany rezultat: sezony jednej serii w jednym wierszu; odcinki SxxEyy z tytułami i datami; kursor wraca na tytuł
+Zwróć uwagę na: nazwy tytułów, wiersze „z nazwy” i „Nie rozpoznano”, styl zgodny z resztą panelu
+Przekaż wynik jako: lista uwag co do słów i układu
 ```
 
-**Gate:** testy, bramki, H1.
+Po checkpoincie właściciel zamyka panel i rezydenta z worktree, uruchamia zwykłe `anishift` z głównego checkoutu i włącza
+automat z powrotem (O). Kod gałęzi nie zmienia schematu `WatchState`, więc stan zostaje czytelny dla `main`.
 
-### Faza 3 — zaznaczanie, usuwanie wielu, Ctrl+Z (O-6, O-7)
+**Commit:** `feat(tui): show the Library as titles with an episode view`.
 
-**Cel:** F-10…F-15.
+### Faza 3: zaznaczanie i usuwanie wielu
 
-**Działania:** `Space`/`A`; zbiór celów; pytanie > 1; jeden wątek roboczy sekwencyjnie; komunikaty (wielopoziomowe Ctrl+Z już działa).
+**Cel:** F-14–F-19.
 
-**Inwarianty:** odmowa jednego zestawu nie cofa reszty; wiersz wraca z odmową; Kosz bez zmian.
+**Działania:** Space, `A`, cele Del, `_library_confirm`, pętla usuwania w jednym wątku, komunikaty.
+
+**Testy (`unit`, `tests/cli/test_library_actions.py`):** `test_space_marks_and_a_marks_every_episode`,
+`test_delete_acts_on_marks_else_on_the_cursor`, `test_title_delete_covers_every_set_of_the_title`,
+`test_deleting_several_asks_first_and_any_other_key_cancels`, `test_deleting_one_asks_nothing`,
+`test_several_deletes_run_in_one_worker_and_one_session`, `test_refused_set_returns_while_the_rest_go_on`,
+`test_several_deleted_notice_says_undo_goes_one_by_one`.
 
 **Human checkpoint H2:**
 
 ```text
-Uruchom: Panel → Biblioteka na kopii kilku plików testowych (nie na jedynych kopiach)
-Zrób: zaznacz 3 odcinki, Del, potwierdź; potem Ctrl+Z trzykrotnie, za każdym razem po powrocie poprzedniego
-Oczekiwany rezultat: odcinki znikają, trafiają do Kosza Windows, wracają po jednym w odwrotnej kolejności
-Zwróć uwagę na: czy komunikat o cofaniu po jednym jest zrozumiały, czy kursor nie skacze
+Uruchom: jak H1, na kopiach kilku plików wrzuconych do workspace (nie na jedynych kopiach)
+Zrób: zaznacz 3 odcinki, Del, Enter; potem Ctrl+Z trzy razy; Del na tytule z 2 kopiami, Esc
+Oczekiwany rezultat: pytanie przy więcej niż jednym; pliki w Koszu; Ctrl+Z przywraca po jednym; Esc nic nie usuwa
+Zwróć uwagę na: zrozumiałość pytania i komunikatu, skok kursora
 Przekaż wynik jako: lista uwag
 ```
 
-**Gate:** testy, bramki, H2. Po H2 decyzja o fazie 3b (rozpoznawanie) i o starcie części II.
+**Commit:** `feat(tui): mark and delete several Library episodes at once`.
 
-### Faza 4 — tytuł odcinka i Emisja
+### Faza 4: rozpoznanie plików ręcznych
 
-**Cel:** F-6. Komenda `library_episode_info`, `ResidentSession.library_episode_info`, worker panelu przy otwarciu tytułu.
+**Cel:** F-5, F-6. Koszt zmierzony: 28 unikalnych tytułów, czyli do 28 wyszukiwań na start rezydenta (research, sekcja 5).
 
-**Kontrola:** testy komendy (odmowa bez sesji, brak katalogu, wynik z atrapą źródła), test panelu bez I/O w renderze.
+**Działania:** `recognize` w `application/library.py`; `_recognized` i praca w puli w ownerze; `title_source="recognized"`;
+rozpoznane ID w wejściu serii.
 
-**Gate:** brak nowego zapytania sieciowego poza istniejącą bramką; bramki.
+**Testy (`unit`):** `tests/application/test_library_series.py`:
+`test_one_alias_with_matching_title_and_season_is_recognized`, `test_two_matching_candidates_stay_from_name`,
+`test_matching_title_with_another_season_stays_from_name`, `test_seasonless_name_matches_only_a_first_season`;
+`tests/application/test_automation.py`: `test_owner_searches_each_hand_added_title_once_per_run`,
+`test_rate_limited_search_leaves_the_title_from_name`, `test_recognized_set_joins_its_series`.
 
-### Faza 5 — rozpoznawanie plików ręcznych (warunkowa, po H2 i pomiarze)
-
-**Cel:** O-5. Wykonać tylko po akceptacji właściciela i gdy pomiar z fazy 0 mieści się w limicie (≤ 30 zapytań przy ok. 30 tytułach).
-
-**Kontrola:** testy kryterium pewności (jednoznaczny, niejednoznaczny, zły sezon, 429), test „nigdy ciche przypisanie”.
-
-### Część II — okładki (po scaleniu części I i decyzji O-2)
-
-#### Faza 6 — katalog i magazyn
-
-`AniListCatalog.covers(ids)`, `PosterStore`, `poster_dir()`. Test kontraktowy na zapisanej odpowiedzi (z `coverImage`, bez
-`coverImage`, `null`), testy walidacji (host spoza listy, `http`, za duży plik, uszkodzony obraz, zapis atomowy).
-
-**Gate:** testy, bramki.
-
-#### Faza 7 — owner pobiera w tle
-
-Wzorzec `_request_series_titles` (`automation.py:8105`): zbiór brakujących `anilist_id`, jedno zapytanie, pobieranie sekwencyjne przez bramkę
-sieci, log tylko liczników. Test: brak ponownego pobrania, brak pobrania przy braku sieci, zatrzymanie przy `shutting_down`.
-
-**Gate:** testy, bramki, pomiar `X-RateLimit-Remaining` w fazie 0 nie przekroczony.
-
-#### Faza 8 — renderer: źródło obrazu w slocie
-
-Wspólny `encode_sixel`; `cover_native.py`; renderer przyjmuje obraz od wywołującego; maskotka bez zmian.
-
-**Gate:** testy renderera z atrapą wyjścia (kolejność: zapis kursora, kasowanie komórek, ładunek, odtworzenie kursora; brak `\x1b[2J` przy
-zmianie zawartości w tym samym miejscu), testy maskotki bez zmian.
-
-#### Faza 9 — slot w listach
-
-Geometria slotu w `anime_view.py`, wiązanie z wyborem w `StateController`, debounce i LRU ładunków, wyłączenia z F-18.
-
-**Human checkpoint H3 (SIXEL):**
+**Human checkpoint H3:**
 
 ```text
-Uruchom: Panel → Biblioteka, potem Subskrypcje, w Windows Terminal z SIXEL (ten sam, w którym działa maskotka)
-Zrób: przesuwaj kursor po 30 tytułach, zmień rozmiar okna, przełącz zakładki
-Oczekiwany rezultat: okładka zmienia się razem z wierszem, bez mignięć całego ekranu; przy wąskim oknie ekran jak dziś
-Zwróć uwagę na: położenie bloku (tabela + okładka), mignięcie przy zmianie tytułu, ślady rastra po zmianie zakładki
-Przekaż wynik jako: lista uwag; osobno „czy to nadal ten sam wygląd panelu” (O-2)
+Uruchom: jak H1
+Zrób: przejrzyj tytuły, które dotąd miały „z nazwy”
+Oczekiwany rezultat: rozpoznane pliki ręczne leżą pod właściwą serią; wątpliwe zostają „z nazwy”
+Zwróć uwagę na: każdy błędnie przypisany plik (to błąd krytyczny)
+Przekaż wynik jako: lista złych przypisań i tytułów, które powinny się rozpoznać
 ```
 
-**Gate:** testy, bramki, H3.
+**Commit:** `feat(application): recognize hand-added Library files on AniList`.
 
-#### Faza 10 — dokumentacja i zamknięcie
+### Faza 5: okładki w ownerze
 
-Aktualizacja `AGENTS.md` (cli, application, catalog), `docs/README.md`, `docs/ideas.md`. Niezależne review (inny model niż autor) przed PR.
+**Cel:** F-20; pliki w `config/covers/`.
 
-## Strategia dowodu i testy
+**Działania:** `covers_dir()`; `cover_urls`, `cover` w `AniListCatalog` i odczyty w `AcquisitionService`;
+`services/catalog/covers.py`; `_covers`, `_covers_requested`, praca w puli; klucz snapshotu `covers`; `.gitignore`;
+`config/README.md`.
 
-Zasady testów: marker `pytest.mark.unit` na poziomie modułu (wzorzec `test_anime_view.py:30`); sieć tylko z `network`; zero opisowych
-komentarzy i docstringów w testach (hook `check_test_comments.py`); opis scenariusza wyłącznie w nazwie testu; kontrakty, nie szczegóły implementacji.
+**Testy (`unit`):** `tests/services/catalog/test_anilist.py`: `test_cover_urls_read_extra_large_by_id`,
+`test_missing_or_null_cover_is_skipped`, `test_cover_refuses_another_host`, `test_cover_refuses_plain_http`,
+`test_cover_refuses_a_redirect`, `test_cover_refuses_more_than_two_megabytes` (atrapy zbudowane na kształcie z research,
+sekcja 3); `tests/services/catalog/test_covers.py`: `test_store_writes_a_jpeg_atomically`,
+`test_store_refuses_a_broken_image`, `test_store_names_the_file_only_after_the_id`;
+`tests/application/test_automation.py`: `test_owner_fetches_only_missing_covers_once`,
+`test_owner_reads_existing_covers_at_start`, `test_snapshot_lists_cached_covers`,
+`test_cover_fetch_stops_when_shutting_down`.
 
-| Plik | Marker | Testy (nazwy) |
-|---|---|---|
-| `tests/cli/test_library_titles.py` | `unit` | `test_sets_of_one_series_group_into_one_title`, `test_slime_season_four_spellings_stay_separate_without_a_key`, `test_manual_file_is_never_marked_as_key`, `test_unparsed_name_goes_to_the_unrecognized_row`, `test_hidden_and_deleting_sets_leave_the_title`, `test_title_with_problem_sets_counts_them`, `test_titles_sort_naturally_with_unrecognized_last`, `test_filter_narrows_titles_by_normalized_text` |
-| `tests/cli/test_library_titles.py` | `unit` | `test_enter_opens_the_title_and_escape_returns_with_the_cursor`, `test_crumb_click_returns_to_the_list`, `test_tab_switch_clears_marks_and_title`, `test_stale_title_result_does_not_overwrite_newer_context` |
-| `tests/cli/test_library_columns.py` | `unit` | `test_title_list_fits_at_50_80_120_columns`, `test_episode_view_keeps_number_title_air_and_state_columns`, `test_missing_episode_data_shows_a_dash` |
-| `tests/cli/test_library_actions.py` | `unit` | `test_space_marks_and_a_marks_all_episodes`, `test_delete_acts_on_marks_else_on_cursor`, `test_delete_of_several_asks_a_question`, `test_delete_of_one_asks_nothing`, `test_refused_set_returns_while_others_go_on`, `test_several_deletes_use_one_worker_session_at_a_time`, `test_title_delete_covers_every_set_of_the_row` |
-| `tests/cli/test_panel_keys.py` | `unit` | rozszerzenie istniejących testów o nowe klawisze (`Space`, `A`, `/`) i `_DESCRIPTIONS` |
-| `tests/application/test_library_titles.py` | `unit` | `test_downloaded_set_carries_the_catalogue_id_and_key_source`, `test_manual_set_carries_name_source`, `test_old_snapshot_without_new_fields_decodes`, `test_episode_info_refuses_without_a_session`, `test_episode_info_returns_dashes_when_the_catalogue_fails` |
-| `tests/application/test_library_titles.py` | `unit` | (faza 5) `test_single_exact_alias_with_matching_season_is_recognized`, `test_ambiguous_candidates_stay_by_name`, `test_wrong_season_stays_by_name`, `test_rate_limited_search_stays_by_name`, `test_each_title_is_searched_once` |
-| `tests/services/catalog/test_posters.py` | `unit` | `test_cover_query_reads_large_url`, `test_missing_cover_is_skipped`, `test_foreign_host_is_refused`, `test_plain_http_is_refused`, `test_oversized_file_is_refused`, `test_broken_image_is_refused`, `test_write_is_atomic`, `test_file_name_comes_only_from_the_id` |
-| `tests/cli/test_library_covers.py` | `unit` | `test_slot_hidden_without_sixel`, `test_slot_hidden_when_terminal_too_small`, `test_screen_equals_the_plain_layout_when_slot_is_hidden`, `test_missing_poster_leaves_slot_empty`, `test_render_does_no_io`, `test_same_position_redraw_skips_screen_clear`, `test_mascot_frames_unchanged` |
+**Human checkpoint H4 (krótki):**
 
-### Regresje obowiązkowe
+```text
+Uruchom: jak H1, poczekaj minutę po starcie
+Zrób: otwórz config\covers w Eksploratorze
+Oczekiwany rezultat: około 33 plików <liczba>.jpg z okładkami Twoich tytułów
+Przekaż wynik jako: „jest” albo opis braków
+```
 
-Całe `tests/cli` (w tym `test_interactive_mouse.py`, `test_interactive_hover.py`, `test_panel_frame.py`, `test_anime_view.py`,
-`test_subscriptions_panel.py`) oraz testy ownera dotykające `deletion_*`.
+**Commit:** `feat(repo): cache AniList covers of Library and subscription titles`.
 
-### Human acceptance
+### Faza 6: slot okładki w panelu
 
-H1 (wygląd tytułów), H2 (usuwanie i Ctrl+Z na kopiach), H3 (okładki), H4 (R: właściciel ocenia całość na własnej Bibliotece i
-potwierdza, że wygląd panelu się nie zmienił; PASS = „to nadal ten sam panel”).
+**Cel:** F-21–F-24, Q-1.
+
+**Działania:** `native_image.py` (przeniesienie z `mascot_native.py`, nowe nazwy we wszystkich wywołaniach i testach);
+`image_provider` i reguły slotu w `prompts.py`; kolumna kotwicy w komórkach; `covers.py` (`CoverImages`);
+`AnimeSnapshot.cover` i slot w `anime_view.py`; `StateController.cover()` i ustawienie slotu dla Biblioteki i Subskrypcji;
+dostawca w `app.py`.
+
+**Testy (`unit`):** `tests/cli/test_interactive_mascot_native.py` przeniesione na nowe nazwy bez zmiany oczekiwań;
+`tests/cli/test_library_covers.py` (nowy): `test_slot_absent_without_sixel`, `test_slot_absent_when_the_terminal_is_small`,
+`test_slot_absent_when_no_listed_title_has_a_cover`, `test_frame_without_slot_equals_the_plain_layout`,
+`test_slot_cells_stay_blank_in_the_frame`, `test_render_neither_reads_files_nor_encodes`,
+`test_title_cover_is_the_newest_set_entry`, `test_subscription_row_shows_its_own_cover`;
+`tests/cli/test_interactive_app.py` albo nowy `tests/cli/test_interactive_native_image.py` z atrapą wyjścia:
+`test_new_image_in_place_erases_cells_without_clearing_the_screen`,
+`test_changed_line_in_slot_rows_redraws_the_same_image`, `test_unchanged_frame_writes_no_image`,
+`test_moved_slot_clears_the_screen_once`, `test_anchor_column_counts_wide_characters_as_two_cells`,
+`test_mascot_frames_match_the_previous_output`.
+
+**Human checkpoint H5:**
+
+```text
+Uruchom: jak H1, w Windows Terminal, w którym widać maskotkę
+Zrób: przesuwaj kursor po tytułach Biblioteki i Subskrypcji, przewijaj stronami, otwórz tytuł, zmień rozmiar okna,
+      przełącz zakładki, wróć na Home
+Oczekiwany rezultat: okładka zmienia się z wierszem, bez mignięcia całego ekranu i bez urwanych fragmentów; przy
+      wąskim oknie ekran jak dziś; maskotka na Home jak dawniej
+Zwróć uwagę na: ślady rastra po przewinięciu i zmianie zakładki, opóźnienie okładki, czy to nadal ten sam panel
+Przekaż wynik jako: lista uwag
+```
+
+**Commit:** `feat(tui): draw the title cover beside the Library and Subscriptions lists`.
+
+### Faza 7: dokumentacja i zamknięcie
+
+1. `anishift/cli/AGENTS.md` (Biblioteka, renderer i obraz natywny), `anishift/application/AGENTS.md` (seria, rozpoznanie,
+   okładki), `anishift/services/catalog/AGENTS.md` (pliki i inwarianty), `docs/README.md` (status 18),
+   `docs/ideas.md` (pozycje sekcji 2 do „Zrealizowane”).
+2. Pełne bramki z `AGENTS.md`.
+3. Niezależne review całej gałęzi przez inny model niż autor, skill `review`; poprawki w commitach tematów.
+4. Pull request dopiero po zgodzie właściciela, z opisem w pełnej postaci skilla `commit`.
+
+**Commit:** `docs(repo): record the Library titles and covers workstream`.
+
+## Strategia dowodu
+
+- Testy: marker `pytest.mark.unit` na poziomie modułu; zero prozy w testach (hook `no-test-prose`); atrapy AniList tylko z
+  kształtem z research, sekcja 3; sieć wyłącznie w testach `network` (żaden nowy test jej nie wymaga).
+- Regresje obowiązkowe: całe `tests/cli`, `tests/application/test_library_*.py`, `tests/application/test_automation.py`,
+  `tests/services/catalog`.
+- Bramki przed każdym commitem: `uv run --no-sync ruff check anishift/ tests/`, `uv run --no-sync ruff format --check
+  anishift/ tests/`, `uv run --no-sync mypy anishift/ tests/`, `uv run --no-sync pytest -n 6`.
+- Human acceptance: H1–H5; PASS = właściciel przyjmuje wynik bez uwag blokujących.
 
 ## Ryzyka i reakcje
 
 | Ryzyko | Jak rozpoznać | Reakcja | Eskalacja |
 |---|---|---|---|
-| Slot obrazu nie mieści się przy typowej szerokości | H3: obraz ucięty lub tabela za wąska | podnieść próg szerokości, zmniejszyć `COVER_FRAME_ROWS` | zmiana układu → decyzja właściciela |
-| Mignięcie ekranu przy zmianie okładki | H3 | rysować bez `reset`, tylko nadpisanie komórek (jak `_draw_native_mascot`) | brak rozwiązania → okładki do O-2 „nie” |
-| CDN zwraca 429 lub blokuje | faza 0/7: statusy | sekwencyjnie, dłuższy odstęp, mniej tytułów naraz | AniList e-mail (O-10) |
-| Źle rozpoznany plik ręczny | test kryterium, H2 | zaostrzyć kryterium; domyślnie `z nazwy` | zmiana definicji pewności → właściciel |
-| Wielopoziomowe Ctrl+Z niezgodne z oczekiwaniem | H2 | wariant „paczka” (`batch_id`) | zmiana schematu `PendingDeletion` → przeplanowanie |
-| Tytuł odcinka z ani.zip pusty dla starszych serii | faza 4 | `—` | issue #58 (TVmaze) poza zakresem |
-| Stary rezydent nie zna nowych pól/komend | panel zgłasza odmowę | restart rezydenta; pola opcjonalne | |
+| Łańcuch `SEQUEL` łączy spin-off z serią | H1: obcy tytuł pod serią | ograniczyć łączenie do formatów sezonowych i filmów | zmiana definicji serii → właściciel |
+| `erase_end_of_line` lub ponowny zapis rastra migocze | H5 | rysować ponownie tylko przy zmianie linii w wierszach slotu (już w planie); wydłużyć próg | brak rozwiązania → decyzja o slocie |
+| Kodowanie okładki opóźnia obraz | H5: widoczne opóźnienie | po wybranej okładce kodować w tle sąsiednie wiersze | zmiana pudełka → właściciel |
+| Pomyłka rozpoznania pliku ręcznego | H3 | zaostrzyć kryterium F-6; domyślnie `z nazwy` | zmiana F-6 → właściciel |
+| 429 przy starcie rezydenta | log liczników | sekwencyjnie, bez ponowień w tym samym procesie | trwały zapis serii (odłożone) |
+| Stary rezydent nie zna nowych pól | panel bez tytułów serii | restart rezydenta z kodu gałęzi | — |
+| Zmiana kontraktu przez workstream 23 | konflikt w `LibrarySet` lub `name_series` | merge z `main` i ponowne bramki | sprzeczność → orkiestrator |
 
 ## Lokalna adaptacja
 
-Nazwy helperów i testów, dokładne ścieżki po niesemantycznym przeniesieniu, teksty polskie (poza „Nie rozpoznano” i słownictwem z
-`ideas.md`) po H1, stałe geometrii slotu w granicach z planu, miejsce nowych funkcji w istniejących modułach.
+Nazwy helperów i testów, plik testu renderera, dokładne polskie teksty poza „Nie rozpoznano”, `z nazwy`, pytaniem i
+komunikatem usuwania (te ustala H1/H2), miejsce funkcji w istniejących modułach, nowy `AnimeScreen` dla widoku odcinków
+Biblioteki, jeśli prezentacja `EPISODES` koliduje z jej semantyką (spinner, wiersz liczby zaznaczeń).
 
-## Materialna zmiana (zatrzymaj i przeplanuj)
+## Materialna zmiana (zatrzymaj się i wróć)
 
-Zmiana schematu trwałego stanu (`WatchState`, `PendingDeletion`), druga ścieżka renderu obrazu (półbloki), drugi slot obrazu w jednej
-ramce, nowa zależność, zmiana wyglądu poza slotem, merge zakładek (O-1 inne niż rekomendacja), przeniesienie pobierania okładek do
-panelu, rozszerzenie zakresu na ekran Anime.
+Zmiana `WatchState`, druga ścieżka renderu obrazu, drugi slot w jednej klatce, nowa zależność, zmiana wyglądu poza slotem,
+zmiana `franchise()` lub danych H1, pobieranie okładek poza ownerem, komenda IPC zmieniająca stan, rozszerzenie na inne ekrany.
 
-## Dodatkowi wykonawcy
+## Wykonawcy
 
-| Jednostka | Cel | Write scope | Wynik | Owner integracji |
-|---|---|---|---|---|
-| Autor części I (jeden, sprzężone: owner + panel) | fazy 0–4 | pliki z mapy części I | commity 1–4, raport z dowodami | orkiestrator |
-| Recenzent części I (inny model niż autor, np. Sonnet po poprawce lub inna rodzina) | review wg skilla `review` | brak (read-only) | `reviews/round-N.md` | orkiestrator |
-| Autor części II (osobna świeża instancja) | fazy 6–10 | pliki z mapy części II | commity 5–8 | orkiestrator |
-| Recenzent części II | j.w. | brak | raport | orkiestrator |
-
-Brief każdego wykonawcy zgodny z `.agents/skills/subagent/assets/SUBAGENT-BRIEF.template.md`, zaczyna się od polecenia przeczytania skilli
-`simple` i `coding` oraz `python.md`; dokumenty w `docs/work/` po polsku. Review UI jest lekkie (autor + jeden recenzent); pełna pętla tylko
-dla usuwania i danych (zgodnie z preferencją właściciela).
+Jeden autor kodu na całość (fazy 0–7, sprzężone: owner, panel i renderer), świeża instancja na fazę 6, jeśli kontekst po
+fazie 5 jest duży. Recenzent: inny model niż autor, tylko odczyt, po fazie 4 (dane i usuwanie) i przed pull requestem
+(całość). Brief według `.agents/skills/subagent/assets/SUBAGENT-BRIEF.template.md`; zaczyna się od przeczytania skilli
+`simple`, `coding` z `references/python.md` i `commit`, zawiera regułę zero legacy i zakaz `--active`.
 
 ## Definition of Done
 
-- [ ] Wymagania F-1…F-21 spełnione lub świadomie odłożone decyzją właściciela.
+- [ ] F-1–F-24 spełnione.
 - [ ] Bramki repo zielone na `anishift/ tests/`.
-- [ ] Zakazy z specyfikacji zachowane (wygląd, dysk płaski, brak cichego przypisania, brak sieci w renderze).
-- [ ] H1…H4 wykonane; wyniki w `outcomes/`.
-- [ ] `AGENTS.md` i `docs/` zaktualizowane; niezależne review bez otwartych blockerów.
+- [ ] Zakazy specyfikacji zachowane.
+- [ ] H1–H5 przyjęte; wyniki w `outcomes/01-library-titles-covers.md`.
+- [ ] `AGENTS.md` obszarów, `config/README.md`, `docs/README.md`, `docs/ideas.md` aktualne; niezależne review bez
+  otwartych blockerów.
 
 ## Kontrakt wyniku wykonania
 
 ```text
 status
 finalny rezultat
-zmienione elementy
+zmienione elementy i commity
 konkretne dowody (komendy i wyniki)
-human feedback (H1-H4)
+human feedback H1–H5
 lokalne odchylenia
 materialne odkrycia
 znane ograniczenia
-stan repo / commity
+stan repo
 rekomendowany następny krok
 ```
