@@ -48,6 +48,7 @@ from anishift.cli.interactive.progress import RichRunProgress, render_material_p
 from anishift.cli.interactive.settings import _PRODUCTS as _SETTINGS_PRODUCTS
 from anishift.cli.interactive.settings import SettingsController
 from anishift.cli.interactive.state import StateController
+from anishift.cli.interactive.state_library import UNRECOGNIZED_KEY
 from anishift.cli.resident import ResidentSession
 
 pytestmark = pytest.mark.unit
@@ -149,6 +150,7 @@ def library(monkeypatch: pytest.MonkeyPatch) -> Iterator[StateController]:
     controller: StateController = _state(monkeypatch)
     controller._tab = state_module._Tab.FILES
     controller._snapshot = {"library": [{"set_id": f"set-{index}", "name": f"Episode {index}"} for index in range(40)]}
+    controller._library_title = UNRECOGNIZED_KEY
     try:
         yield controller
     finally:
@@ -565,6 +567,10 @@ def test_library_click_on_a_tab_name_switches_to_it_and_keeps_the_library_cursor
 ) -> None:
     application, _copied = _application(monkeypatch, _Mode.STATE)
     application._state = library
+    library._library_title = None
+    library._snapshot = {
+        "library": [{"set_id": f"set-{index}", "name": f"[Grp] Show {index:02} - 01"} for index in range(5)]
+    }
     library._selected = 2
     frame: Text = application._render_frame(80, 24)
 
@@ -588,7 +594,7 @@ def test_library_drag_copies_the_painted_names(monkeypatch: pytest.MonkeyPatch, 
     application._render_frame(80, 24)
     application._handle_key("interrupt")
 
-    assert copied == ["Episode 4   —\nEpisode 5"]
+    assert copied == ["Episode 4   —       Gotowe\n—   Episode 5"]
     assert application._mode is _Mode.STATE
 
 

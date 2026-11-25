@@ -17,9 +17,11 @@ from rich.console import Console
 from rich.text import Text
 
 from anishift.application import (
+    EpisodeListing,
     HistoryEvent,
     LibraryFile,
     LibraryFileIdentity,
+    LibraryLabel,
     LibrarySet,
     PlanPreview,
     RetryProposal,
@@ -65,15 +67,21 @@ from anishift.cli.interactive.progress import ObservedProgressTimer, RichRunProg
 from anishift.cli.interactive.state_library import (
     EMPTY_LIBRARY,
     LIBRARY_DELETED,
+    NO_MATCHING_TITLES,
+    LibraryTitle,
     detail_actions,
     detail_entries,
     detail_file,
     details_label,
-    library_actions,
-    library_row,
+    episode_row,
+    episodes_actions,
     library_row_id,
     library_rows,
-    library_title,
+    library_titles,
+    set_entry,
+    title_entry,
+    title_row,
+    titles_actions,
     unsettled_deletions,
 )
 from anishift.cli.interactive.state_processing import (
@@ -233,6 +241,11 @@ class StateController:
         self._open_requested: Mapping[str, object] | None = None
         self._library_target: str | None = None
         self._library_notice: str = ""
+        self._library_title: str | None = None
+        self._library_query: str = ""
+        self._library_input: TextInput | None = None
+        self._episode_info: dict[int, dict[int, tuple[str | None, datetime | None]]] = {}
+        self._known_sets: dict[str, Mapping[str, object]] = {}
         self._hidden: dict[str, str] = {}
         self._restoring: dict[str, PendingRestore] = {}
         self._snapshot: Mapping[str, object] = {}
@@ -323,14 +336,17 @@ class StateController:
     def _select_library_target(self, payload: Mapping[str, object]) -> None:
         if self._library_target is None:
             return
-        position: int | None = next(
-            (index for index, item in enumerate(self._library(payload)) if item.get("set_id") == self._library_target),
-            None,
-        )
-        if position is not None:
-            self._selected = position
-            self._positions[_Tab.FILES] = position
+        for title in self._all_titles(payload):
+            ids: list[str] = [library_row_id(item) for item in title.sets]
+            if self._library_target not in ids:
+                continue
+            self._library_title = title.key
+            self._selected = ids.index(self._library_target)
+            self._positions[_Tab.FILES] = self._selected
+            self._follow_cursor[self._viewport()] = True
             self._library_target = None
+            self._load_episodes(title)
+            return
 
     def show_processing(self) -> None:
         """Select current processing after the user starts a run."""
@@ -358,8 +374,8 @@ class StateController:
         details: LibrarySet | None = self._details
         if details is not None:
             return details.set_id, str(self._selected)
-        listed: list[Mapping[str, object]] = self._library()
-        return (library_row_id(listed[self._selected]), "") if self._selected < len(listed) else ("", "")
+        listed: list[str] = self._library_ids()
+        return self._library_title or "", listed[self._selected] if self._selected < len(listed) else ""
 
     def handle_key(self, key: str) -> StateResult:  # noqa: PLR0911
         """Navigate the shared list or submit one explicit action."""
@@ -377,6 +393,9 @@ class StateController:
                 self._notify("")
             if self._history_input is not None:
                 self._history_input_key(key)
+                return StateResult.CONTINUE
+            if self._library_input is not None:
+                self._library_input_key(key)
                 return StateResult.CONTINUE
             if self._retry is not None:
                 return self._retry_key(key)
@@ -435,10 +454,12 @@ class StateController:
         return False
 
     def _list_key(self, key: str) -> StateResult:
-        if key in {"escape", "interrupt", "backspace"}:
+        if key in {"escape", "interrupt", "backspace"} and self._library_title is not None:
+            self._close_title()
+        elif key in {"escape", "interrupt", "backspace"}:
             self._view_generation += 1
             return StateResult.HOME
-        if key in _TAB_KEYS:
+        elif key in _TAB_KEYS:
             self._view_generation += 1
             self._details = None
             self._switch_tab(_tab_target(self._tab, key))
@@ -446,10 +467,12 @@ class StateController:
             if self._tab == _Tab.FILES:
                 self._work(lambda session: session.library())
         elif key in _MOVE_KEYS:
-            self._follow_cursor[self._tab] = True
+            self._follow_cursor[self._viewport()] = True
             self._selected = _moved(self._selected, key, max(len(self._entries(120)), 1), self._page)
         elif key in {"space", "enter", "delete", "undo"} and self._tab == _Tab.SUBSCRIPTIONS:
             self._subscription_key(key)
+        elif key == "enter" and self._tab == _Tab.FILES and self._library_title is None:
+            self._open_title()
         elif key == "enter" and self._tab == _Tab.FILES:
             self._file_action("open")
         elif key == "delete" and self._tab == _Tab.FILES:
@@ -566,7 +589,7 @@ class StateController:
                 return self._list_key(key)
         elif letter in {"o", "m", "u"}:
             return self._action_key(letter)
-        elif (key == "delete" or letter == "x") and details is not None:
+        elif key == "delete" and details is not None:
             self._details = None
             self._selected = self._detail_selection
             self._delete_now(details.set_id)
@@ -618,6 +641,8 @@ class StateController:
 
     def _switch_tab(self, tab: int) -> None:
         self._library_target = None
+        self._library_title = None
+        self._library_input = None
         self._help = False
         self._view_generation += 1
         if self._tab == _Tab.ANIME and self._anime is not None:
@@ -633,6 +658,8 @@ class StateController:
     def _viewport(self) -> int:
         if self._details is not None:
             return len(_TABS) + 1
+        if self._tab == _Tab.FILES and self._library_title is not None:
+            return len(_TABS) + 2
         return self._tab
 
     def mouse(self, event: MouseEvent) -> Click | None:
@@ -665,6 +692,8 @@ class StateController:
                 self._anime.place(index, anchor)
             elif self._history_input is not None:
                 self._history_input.place(index, anchor)
+            elif self._library_input is not None:
+                self._library_input.place(index, anchor)
         self._invalidate()
 
     def select(self, index: int) -> bool:
@@ -754,6 +783,8 @@ class StateController:
             self._subscription_key(f"text:{key}")
         elif self._tab == _Tab.PROGRESS and not self._history_open:
             self._processing_action(key)
+        elif self._tab == _Tab.FILES and key == "/" and self._library_title is None:
+            self._library_input = TextInput(self._library_query)
         elif self._tab == _Tab.FILES:
             self._file_action(key)
         self._invalidate()
@@ -878,11 +909,11 @@ class StateController:
         return StateResult.CONTINUE
 
     def _file_action(self, key: str) -> None:
-        library: list[Mapping[str, object]] = self._library()
-        if key not in {"open", "f", "d", "delete", "x"} or self._selected >= len(library):
+        episodes: list[Mapping[str, object]] = self._episodes()
+        if key not in {"open", "f", "d", "delete"} or self._selected >= len(episodes):
             return
-        set_id: str = str(library[self._selected]["set_id"])
-        if key in {"delete", "x"}:
+        set_id: str = library_row_id(episodes[self._selected])
+        if key == "delete":
             self._delete_now(set_id)
             return
         if key == "d":
@@ -894,16 +925,119 @@ class StateController:
 
     def _library(self, snapshot: Mapping[str, object] | None = None) -> list[Mapping[str, object]]:
         current: Mapping[str, object] = self._snapshot if snapshot is None else snapshot
-        return library_rows(current, self._hidden, restoring_rows(current, self._restoring, unrecorded=False))
+        return library_rows(current, self._hidden, self._restoring_sets(current))
+
+    def _restoring_sets(self, snapshot: Mapping[str, object]) -> list[Mapping[str, object]]:
+        return [
+            {**self._known_sets.get(library_row_id(item), {}), **item}
+            for item in restoring_rows(snapshot, self._restoring, unrecorded=False)
+        ]
+
+    def _all_titles(self, snapshot: Mapping[str, object] | None = None) -> list[LibraryTitle]:
+        current: Mapping[str, object] = self._snapshot if snapshot is None else snapshot
+        return library_titles(current, self._hidden, self._restoring_sets(current))
+
+    def _titles(self, snapshot: Mapping[str, object] | None = None) -> list[LibraryTitle]:
+        current: Mapping[str, object] = self._snapshot if snapshot is None else snapshot
+        query: str = self._library_query if self._library_input is None else self._library_input.text
+        return library_titles(current, self._hidden, self._restoring_sets(current), query)
+
+    def _open_title_view(self, snapshot: Mapping[str, object] | None = None) -> LibraryTitle | None:
+        if self._library_title is None:
+            return None
+        return next((item for item in self._all_titles(snapshot) if item.key == self._library_title), None)
+
+    def _episodes(self, snapshot: Mapping[str, object] | None = None) -> list[Mapping[str, object]]:
+        title: LibraryTitle | None = self._open_title_view(snapshot)
+        return [] if title is None else list(title.sets)
+
+    def _library_ids(self, snapshot: Mapping[str, object] | None = None) -> list[str]:
+        if self._library_title is not None:
+            return [library_row_id(item) for item in self._episodes(snapshot)]
+        return [item.key for item in self._titles(snapshot)]
+
+    def _open_title(self) -> None:
+        titles: list[LibraryTitle] = self._titles()
+        if self._selected >= len(titles):
+            return
+        title: LibraryTitle = titles[self._selected]
+        self._view_generation += 1
+        self._library_title = title.key
+        self._selected = 0
+        self._offsets[self._viewport()] = 0
+        self._follow_cursor[self._viewport()] = True
+        self._load_episodes(title)
+
+    def _close_title(self) -> None:
+        key: str | None = self._library_title
+        self._view_generation += 1
+        self._library_title = None
+        keys: list[str] = [item.key for item in self._titles()]
+        self._selected = keys.index(key) if key in keys else min(self._selected, max(len(keys) - 1, 0))
+        self._follow_cursor[self._viewport()] = True
+
+    def _settle_title(self) -> None:
+        if self._library_title is not None and self._details is None and self._open_title_view() is None:
+            self._close_title()
+
+    def _load_episodes(self, title: LibraryTitle) -> None:
+        wanted: list[int] = sorted(
+            {
+                identifier
+                for item in title.sets
+                if isinstance(identifier := item.get("anilist_id"), int) and identifier not in self._episode_info
+            }
+        )
+        if not wanted:
+            return
+        threading.Thread(
+            target=self._read_episodes, args=(title.key, wanted), name="anishift-library-episodes", daemon=True
+        ).start()
+
+    def _read_episodes(self, key: str, anilist_ids: list[int]) -> None:
+        session: ResidentSession | None = None
+        found: dict[int, dict[int, tuple[str | None, datetime | None]]] = {}
+        try:
+            session = self._parent.new_session()
+            for anilist_id in anilist_ids:
+                listed: dict[int, tuple[str | None, datetime | None]] | None = _listed_episodes(session, anilist_id)
+                if listed is not None:
+                    found[anilist_id] = listed
+        except AniShiftError, ControlError, OSError, ValueError, TypeError:
+            found = {}
+        finally:
+            if session is not None:
+                session.close()
+        with self._lock:
+            if self._library_title != key or self._stop.is_set():
+                return
+            self._episode_info.update(found)
+        self._invalidate()
+
+    def _library_input_key(self, key: str) -> None:
+        editor: TextInput | None = self._library_input
+        if editor is None:
+            return
+        if editor.handle(key):
+            self._selected = 0
+        elif key == "enter":
+            self._library_query = editor.text
+            self._library_input = None
+        elif key in {"escape", "interrupt"}:
+            self._library_query = ""
+            self._library_input = None
+            self._selected = 0
+        self._invalidate()
 
     def _deletable_ids(self) -> list[str]:
         if self._tab == _Tab.PROGRESS:
             return self._processing_row_ids()
-        return [library_row_id(item) for item in self._library()]
+        return self._library_ids()
 
     def _delete_now(self, set_id: str) -> None:
         self._hidden[set_id] = ""
         self._selected = min(self._selected, max(len(self._deletable_ids()) - 1, 0))
+        self._settle_title()
         self._notify("")
         threading.Thread(
             target=self._delete_hidden, args=(set_id,), name="anishift-library-delete", daemon=True
@@ -933,6 +1067,7 @@ class StateController:
             self._hidden = unsettled_deletions(self._snapshot, self._hidden)
             if listing:
                 self._selected = _kept(old, self._deletable_ids(), self._selected)
+                self._settle_title()
             if self._tab in {_Tab.FILES, _Tab.PROGRESS} and not self._stop.is_set():
                 self._notify(notice)
                 self._notice_persistent = True
@@ -1153,11 +1288,13 @@ class StateController:
                     self._state_version += 1
                 self._preserve_subscription_selection(subscriptions)
                 self._preserve_processing_selection(previous_processing, self._processing_row_ids(payload))
+                self._known_sets.update((library_row_id(item), item) for item in rows(payload.get("library")))
                 self._preserve_library_selection(payload)
                 self._hidden = unsettled_deletions(payload, self._hidden)
                 self._restoring, restore_problem = settled_restores(payload, self._restoring)
                 self._snapshot = payload
                 self._select_library_target(payload)
+                self._settle_title()
                 if self._anime is not None and self._anime is anime:
                     self._anime.refresh_provider_locks(rows(payload.get("provider_locks")))
                 if self._details is previous_details:
@@ -1266,8 +1403,9 @@ class StateController:
         self._selected = position
 
     def _preserve_library_selection(self, payload: Mapping[str, object]) -> None:
-        old: list[str] = [library_row_id(item) for item in self._library()]
-        new: list[str] = [library_row_id(item) for item in self._library(payload)]
+        old: list[str] = self._library_ids()
+        self._follow_title(payload)
+        new: list[str] = self._library_ids(payload)
         position: int = self._selected if self._details is None else self._detail_selection
         if self._tab != _Tab.FILES:
             position = self._positions.get(_Tab.FILES, 0)
@@ -1279,6 +1417,18 @@ class StateController:
             self._selected = position
         else:
             self._detail_selection = position
+
+    def _follow_title(self, payload: Mapping[str, object]) -> None:
+        current: LibraryTitle | None = self._open_title_view()
+        titles: list[LibraryTitle] = self._all_titles(payload)
+        if current is None or any(item.key == current.key for item in titles):
+            return
+        shown: set[str] = {library_row_id(item) for item in current.sets}
+        successor: LibraryTitle | None = next(
+            (item for item in titles if shown & {library_row_id(entry) for entry in item.sets}), None
+        )
+        if successor is not None:
+            self._library_title = successor.key
 
     def _restore_progress(self, session: ResidentSession, payload: Mapping[str, object]) -> None:
         entries: list[Mapping[str, object]] = rows(payload.get("run_progress"))
@@ -1416,6 +1566,8 @@ class StateController:
             if self._history_input is not None:
                 return [self._history_input.render(width), *_keys(["Enter szukaj · Esc anuluj"]), self._history_problem]
             return [*_keys(pack_footer(footer_segments(self._actions()), width)), self._history_problem, self._notice]
+        if self._library_input is not None:
+            return [self._library_input.render(width), *_keys(["Enter zastosuj · Esc anuluj"])]
         return self._footer(width)
 
     def _footer(self, width: int) -> list[str | Text]:
@@ -1459,7 +1611,9 @@ class StateController:
             return history_actions(listed=self._selected < len(self._history_items))
         if self._tab == _Tab.PROGRESS:
             return processing_actions(self._selected_material())
-        return library_actions(listed=self._selected < len(self._library()))
+        if self._library_title is not None:
+            return episodes_actions(listed=self._selected < len(self._episodes()))
+        return titles_actions(listed=self._selected < len(self._titles()))
 
     def _subscription_body(self, columns: int, rows: int) -> Text | None:
         return self._table_body(
@@ -1475,13 +1629,28 @@ class StateController:
 
     def _library_body(self, columns: int, rows: int) -> Text | None:
         notice: str = self._notice.rstrip(".") if self._notice_persistent else ""
+        shown: str = " · ".join(text for text in (notice, self._library_notice) if text)
+        title: LibraryTitle | None = self._open_title_view()
+        if title is not None:
+            info: Mapping[int, Mapping[int, tuple[str | None, datetime | None]]] = self._episode_info
+            return self._table_body(
+                columns,
+                rows,
+                AnimeScreen.EPISODES,
+                tuple(episode_row(item, info) for item in title.sets),
+                shown,
+                "",
+                crumbs=("Biblioteka", safe_text(title.title)),
+            )
+        field: TextInput | None = self._library_input
         return self._table_body(
             columns,
             rows,
             AnimeScreen.LIBRARY,
-            tuple(library_row(item) for item in self._library()),
-            " · ".join(text for text in (notice, self._library_notice) if text),
-            "",
+            tuple(title_row(item) for item in self._titles()),
+            shown,
+            f"Filtr: {safe_text(self._library_query)}" if self._library_query and field is None else "",
+            field=None if field is None else field.render(max(min(columns, 80) - 12, 1)),
         )
 
     def _table_body(  # noqa: PLR0913
@@ -1492,6 +1661,9 @@ class StateController:
         items: tuple[AnimeRow, ...],
         notice: str,
         status: str,
+        *,
+        crumbs: tuple[str, ...] = (),
+        field: Text | None = None,
     ) -> Text | None:
         self._selected = min(self._selected, max(len(items) - 1, 0))
         fill: bool = overflows(screen, len(items), max(rows - 1, 1))
@@ -1506,16 +1678,21 @@ class StateController:
             controls=footer_segments(self._actions()),
             global_status=status,
             fill=fill,
+            crumbs=crumbs,
+            editing_range=field is not None,
+            field_label="Filtr",
+            rendered_field=field,
         )
         visible: int = shown_rows(snapshot, columns, area)
-        if not visible and screen is AnimeScreen.LIBRARY:
+        if not visible and self._tab == _Tab.FILES:
             return None
         visible = max(visible, 1)
         self._page = visible
-        offset: int = min(self._offsets.get(self._tab, 0), max(len(items) - visible, 0))
-        if self._follow_cursor.get(self._tab, True):
+        viewport: int = self._viewport()
+        offset: int = min(self._offsets.get(viewport, 0), max(len(items) - visible, 0))
+        if self._follow_cursor.get(viewport, True):
             offset = max(min(offset, self._selected), self._selected - visible + 1)
-        self._offsets[self._tab] = offset
+        self._offsets[viewport] = offset
         frame: AnimeFrame = render_anime(replace(snapshot, offset=offset), columns, area, self._clock().timestamp())
         lines: list[Text] = list(frame.text.split("\n"))
         if not items and frame.visible:
@@ -1530,12 +1707,17 @@ class StateController:
         if self._tab == _Tab.SUBSCRIPTIONS:
             return NO_SUBSCRIPTIONS
         if self._tab == _Tab.FILES:
-            return _LOADING if self._snapshot.get("library_loading") else EMPTY_LIBRARY
+            return self._library_empty_text()
         if not self._history_open:
             return NO_PROCESSING
         if self._history_problem:
             return HISTORY_UNAVAILABLE
         return _LOADING if self._busy else NO_HISTORY
+
+    def _library_empty_text(self) -> str:
+        if self._library():
+            return NO_MATCHING_TITLES
+        return _LOADING if self._snapshot.get("library_loading") else EMPTY_LIBRARY
 
     def _empty_line(self, columns: int) -> Text:
         return mark_inert(_centered(Text(self._empty_text(), style="gray"), columns))
@@ -1553,8 +1735,15 @@ class StateController:
                 return self._anime.breadcrumb()
             if self._tab == _Tab.PROGRESS and self._history_open:
                 return _HISTORY_CRUMB
+            title: LibraryTitle | None = self._open_title_view() if self._tab == _Tab.FILES else None
             if self._details is not None:
-                return ("Biblioteka", safe_text(details_label(self._details).text))
+                label: LibraryLabel = details_label(self._details)
+                if title is None:
+                    return ("Biblioteka", safe_text(label.text))
+                shown: str = label.episode_text if label.episode is not None else self._details.name
+                return ("Biblioteka", safe_text(title.title), safe_text(shown))
+            if title is not None:
+                return ("Biblioteka", safe_text(title.title))
             return ()
 
     def _breadcrumb(self, columns: int) -> Text:
@@ -1599,7 +1788,12 @@ class StateController:
             return self._processing_entries(columns)
         if self._tab == _Tab.SUBSCRIPTIONS:
             return [safe_text(item.get("title", "")) for item in self._subscriptions]
-        return [library_title(item) for item in self._library()] if self._tab == _Tab.FILES else []
+        return self._library_entries() if self._tab == _Tab.FILES else []
+
+    def _library_entries(self) -> list[str]:
+        if self._library_title is not None:
+            return [set_entry(item) for item in self._episodes()]
+        return [title_entry(item) for item in self._titles()]
 
     def _processing_entries(self, columns: int) -> list[Text]:
         entries: list[Text] = []
@@ -1719,6 +1913,14 @@ def _execute_retry(session: ResidentSession, proposal: RetryProposal) -> None:
         else session.plan_manual(proposal.intents)
     )
     session.start(plan)
+
+
+def _listed_episodes(session: ResidentSession, anilist_id: int) -> dict[int, tuple[str | None, datetime | None]] | None:
+    try:
+        listing: EpisodeListing = session.episodes(anilist_id)
+    except AniShiftError, ControlError, OSError, ValueError, TypeError:
+        return None
+    return {item.number: (item.title, item.airs_at) for item in listing.episodes}
 
 
 def _open_episode(session: ResidentSession, set_id: str, *, show_folder: bool = False) -> None:

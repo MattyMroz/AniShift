@@ -12,7 +12,11 @@ from anishift.application.events import sanitize_event_message
 from anishift.platform.local_control import ControlError, ControlErrorCode
 
 __all__ = [
+    "LIBRARY_FROM_NAME",
     "LIBRARY_PROBLEMS",
+    "LIBRARY_READY",
+    "LIBRARY_TO_CHECK",
+    "LIBRARY_UNRECOGNIZED",
     "RESTORING",
     "PendingRestore",
     "deleted_sets",
@@ -139,6 +143,18 @@ LIBRARY_PROBLEMS: Final[Mapping[str, str]] = MappingProxyType(
 
 RESTORING: Final[str] = "Przywracam"
 """State of a deleted set's row from Ctrl+Z until the owner finishes bringing its files back."""
+
+LIBRARY_UNRECOGNIZED: Final[str] = "Nie rozpoznano"
+"""Library title gathering the sets whose names carry no title, season or episode."""
+
+LIBRARY_FROM_NAME: Final[str] = "z nazwy"
+"""State of a Library title known only from the names of its files."""
+
+LIBRARY_READY: Final[str] = "Gotowe"
+"""State of a Library title or episode whose results are confirmed."""
+
+LIBRARY_TO_CHECK: Final[str] = "do sprawdzenia"
+"""Words after the number of a Library title's sets with a problem."""
 
 
 @dataclass(frozen=True, slots=True)

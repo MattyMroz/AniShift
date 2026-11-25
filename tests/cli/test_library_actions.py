@@ -212,6 +212,7 @@ def _deleting_panel(monkeypatch: pytest.MonkeyPatch, owner: _DeletingOwner) -> S
     panel._tab = module._Tab.FILES
     panel._connected = True
     panel._snapshot = {"library": list(_SETS)}
+    panel._library_title = state_library.UNRECOGNIZED_KEY
     return panel
 
 
@@ -236,14 +237,13 @@ def _stop(owner: _DeletingOwner, panel: StateController) -> None:
             thread.join(5)
 
 
-@pytest.mark.parametrize("key", ["delete", "text:x"])
 def test_library_delete_hides_the_row_before_the_owner_answers_without_a_question(
-    monkeypatch: pytest.MonkeyPatch, key: str
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     owner: _DeletingOwner = _DeletingOwner()
     panel: StateController = _deleting_panel(monkeypatch, owner)
     try:
-        panel.handle_key(key)
+        panel.handle_key("delete")
         assert _shown(panel) == ["Beta", "Gamma"]
         assert panel._selected == 0
         assert "Alpha" not in panel.render(80, 24).plain
@@ -346,6 +346,7 @@ def test_del_on_a_failed_processing_row_deletes_it_like_the_library_and_ctrl_z_b
     failed: list[dict[str, object]] = [_failed_material("Alpha"), _failed_material("Beta")]
     deletion: dict[str, object] = {"operation_id": "recycle-Alpha", "set_id": "Alpha", "total": 1, "unrecorded": True}
     panel._tab = module._Tab.PROGRESS
+    panel._library_title = None
     panel._snapshot = {"materials": failed}
     try:
         panel.handle_key("delete")
@@ -390,6 +391,10 @@ def _restore_frame(panel: StateController, owner: _DeletingOwner, payload: Mappi
     return panel.render(80, 24).plain
 
 
+def _restoring_alpha(frame: str) -> bool:
+    return any("Alpha" in line and "Przywracam…" in line for line in frame.splitlines())
+
+
 def test_library_ctrl_z_shows_the_set_restoring_at_once_and_normal_when_the_owner_lists_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -400,15 +405,15 @@ def test_library_ctrl_z_shows_the_set_restoring_at_once_and_normal_when_the_owne
     try:
         panel.handle_key("undo")
         assert _shown(panel) == ["Alpha", "Beta", "Gamma"]
-        assert "Alpha · Przywracam" in panel.render(80, 24).plain
+        assert _restoring_alpha(panel.render(80, 24).plain)
         owner.answer.set()
         _until(lambda: owner.undone == ["latest"] and _answered(panel))
-        assert "Alpha · Przywracam" in panel.render(80, 24).plain
+        assert _restoring_alpha(panel.render(80, 24).plain)
         working: dict[str, object] = {
             "library": list(_SETS[1:]),
             "deletions": [{**_RECYCLED, "recycled": 1, "active": True, "restoring": True}],
         }
-        assert "Alpha · Przywracam" in _restore_frame(panel, owner, working)
+        assert _restoring_alpha(_restore_frame(panel, owner, working))
         done: dict[str, object] = {
             "library": list(_SETS),
             "deletions": [{**_RECYCLED, "recycled": 1, "restored": True}],
@@ -432,7 +437,7 @@ def test_failed_restore_drops_the_restoring_row_and_names_the_reason(monkeypatch
             "library": list(_SETS[1:]),
             "deletions": [{**_RECYCLED, "recycled": 1, "active": True, "restoring": True}],
         }
-        assert "Alpha · Przywracam" in _restore_frame(panel, owner, working)
+        assert _restoring_alpha(_restore_frame(panel, owner, working))
         failed: dict[str, object] = {
             "library": list(_SETS[1:]),
             "deletions": [{**_RECYCLED, "recycled": 1, "restore_problem": "restore_receipt_missing"}],
@@ -485,6 +490,7 @@ def test_processing_ctrl_z_shows_a_failed_set_restoring_at_once(monkeypatch: pyt
     owner: _DeletingOwner = _DeletingOwner()
     panel: StateController = _deleting_panel(monkeypatch, owner)
     panel._tab = module._Tab.PROGRESS
+    panel._library_title = None
     deletion: dict[str, object] = {**_RECYCLED, "name": "Alpha", "unrecorded": True, "recycled": 1}
     panel._snapshot = {"materials": [_failed_material("Beta")], "deletions": [deletion]}
     owner.answer.clear()
@@ -563,6 +569,7 @@ def test_p_on_a_failed_processing_row_retries_at_once_and_says_so(monkeypatch: p
     owner: _RetryingOwner = _RetryingOwner()
     panel: StateController = _deleting_panel(monkeypatch, owner)
     panel._tab = module._Tab.PROGRESS
+    panel._library_title = None
     panel._snapshot = {"materials": [_failed_material("Alpha"), _failed_material("Beta")]}
     panel._selected = 1
     try:
@@ -580,6 +587,7 @@ def test_a_failed_row_shows_again_after_an_old_finished_deletion_of_its_set(monk
     panel: StateController = _deleting_panel(monkeypatch, owner)
     finished: dict[str, object] = {"operation_id": "old", "set_id": "Alpha", "total": 1, "recycled": 1}
     panel._tab = module._Tab.PROGRESS
+    panel._library_title = None
     panel._snapshot = {"materials": [_failed_material("Alpha")], "deletions": [finished]}
     try:
         assert _processing_names(panel) == ["Alpha"]
@@ -593,6 +601,7 @@ def test_a_refused_processing_delete_returns_the_row_with_the_refusal(monkeypatc
     owner: _DeletingOwner = _DeletingOwner(refuse=True)
     panel: StateController = _deleting_panel(monkeypatch, owner)
     panel._tab = module._Tab.PROGRESS
+    panel._library_title = None
     panel._snapshot = {"materials": [_failed_material("Alpha")]}
     try:
         panel.handle_key("delete")
@@ -609,6 +618,7 @@ def test_ctrl_z_in_history_restores_nothing(monkeypatch: pytest.MonkeyPatch) -> 
     owner: _DeletingOwner = _DeletingOwner()
     panel: StateController = _deleting_panel(monkeypatch, owner)
     panel._tab = module._Tab.PROGRESS
+    panel._library_title = None
     panel._history_open = True
     monkeypatch.setattr(panel, "_work", lambda action, **kwargs: action(cast("ResidentSession", owner)))
     try:

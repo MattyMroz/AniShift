@@ -241,7 +241,7 @@ def _notice_rows(snapshot: AnimeSnapshot) -> int:
 
 
 def _footer_rows(snapshot: AnimeSnapshot) -> int:
-    return _notice_rows(snapshot) + int(snapshot.screen is AnimeScreen.EPISODES)
+    return _notice_rows(snapshot) + int(snapshot.screen is AnimeScreen.EPISODES or snapshot.editing_range)
 
 
 def _context(snapshot: AnimeSnapshot) -> str:
@@ -373,7 +373,15 @@ def _spec(screen: AnimeScreen) -> _Table:
             optional=(2, 1),
         )
     if screen is AnimeScreen.LIBRARY:
-        return _Table(("Nazwa", "Odcinek"), lambda item: (item.title, item.number), 2, 0, (0, 0))
+        return _Table(
+            ("Tytuł", "Odcinki", "Stan"),
+            lambda item: (item.title, item.number, item.status),
+            2,
+            0,
+            (0, 0, 0),
+            optional=(1,),
+            right=(1,),
+        )
     return _Table(
         ("Nr", "Tytuł", "Emisja", "Stan"),
         lambda item: (item.number, item.title, item.date, item.status),
@@ -515,7 +523,7 @@ def _footer(  # noqa: PLR0913
         style="brand_accent",
     )
     if snapshot.editing_range:
-        summary = Text("Zakres: ", style="brand_accent")
+        summary = Text(f"{snapshot.field_label}: ", style="brand_accent")
         summary.append_text(snapshot.rendered_field or Text(snapshot.field))
     summary.truncate(canvas.width - _MARGIN, overflow="ellipsis")
     notice: str = snapshot.notice

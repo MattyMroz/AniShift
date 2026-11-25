@@ -53,6 +53,7 @@ _DESCRIPTIONS: Final[dict[Action, str]] = {
     ("Enter", "sprawdź wynik"): "Sprawdza wynik ostatniej partii pobrań",
     ("Space", "zaznacz"): "Zaznacza wiersz, żeby D pobrało kilka naraz",
     ("D", "pobierz"): "Pobiera zaznaczone odcinki albo wybrane wydanie",
+    ("D", "szczegóły"): "Pokazuje pliki wybranego odcinka",
     ("B", "Blu-ray"): "Włącza albo wyłącza pierwszeństwo Blu-ray i remux",
     ("D", "dodaj"): "Przechodzi do wyszukiwarki, żeby dodać subskrypcję",
     ("D", "dodaj pierwszą"): "Przechodzi do wyszukiwarki, żeby dodać subskrypcję",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Final
 
 from rich.console import Console
@@ -28,7 +29,16 @@ from anishift.cli.interactive.anime_texts import (
 )
 from anishift.cli.interactive.subscription_texts import SubscriptionDraft
 
-__all__ = ["draft_rows", "entry_rows", "episode_row", "file_rows", "special_rows", "text_rows", "title_rows"]
+__all__ = [
+    "air_date",
+    "draft_rows",
+    "entry_rows",
+    "episode_row",
+    "file_rows",
+    "special_rows",
+    "text_rows",
+    "title_rows",
+]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -100,6 +110,11 @@ def text_rows(values: Sequence[str], width: int) -> tuple[AnimeRow, ...]:
     )
 
 
+def air_date(moment: datetime | None) -> str:
+    """Return the local air date of an episode as ``dd.mm.yyyy``, or a dash when it is unknown."""
+    return moment.astimezone().strftime("%d.%m.%Y") if moment is not None else "—"
+
+
 def episode_row(episode: ListedEpisode, status: EpisodeStatus | None, *, film: bool, eligible: bool) -> AnimeRow:
     """Return the row of one listed episode with its owner state."""
     label: str = episode_status_label(status) if status else ""
@@ -117,7 +132,7 @@ def episode_row(episode: ListedEpisode, status: EpisodeStatus | None, *, film: b
         str(episode.number),
         episode.title or ("Film" if film else f"Odcinek {episode.number}"),
         number="Film" if film else str(episode.number),
-        date=episode.airs_at.astimezone().strftime("%d.%m.%Y") if episode.airs_at else "—",
+        date=air_date(episode.airs_at),
         status=label,
         eligible=eligible,
         detail=detail,

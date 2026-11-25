@@ -1242,7 +1242,7 @@ def test_processing_excludes_saved_downloads_regardless_of_client_measurement(
         controller.handle_key("tab")
         frame = controller.render(80, 24).plain
         assert "Biblioteka" in frame
-        assert "\u276f Episode" in frame
+        assert "\u276f Nie rozpoznano" in frame
         assert "○" not in frame
         assert frame.splitlines()[0].strip() == "PANEL"
         assert not any(item.kind in {"transfer", "download", "set_auto"} for item in calls)
@@ -1372,6 +1372,7 @@ def test_library_details_refresh_preserves_selection_without_reopening_or_discon
     controller._snapshot = {
         "library": [{"set_id": "set-2", "name": "Episode 2"}, {"set_id": "set-10", "name": "Episode 10"}]
     }
+    controller._library_title = state_library.UNRECOGNIZED_KEY
     controller._detail_selection = 1
     controller._details = details
     payload: dict[str, object] = {"library": [{"set_id": "set-10", "name": "Episode 10"}]}
@@ -1389,7 +1390,7 @@ def test_library_details_refresh_preserves_selection_without_reopening_or_discon
             assert controller._details is None
             assert "Esc wróć do biblioteki" not in frame
         assert controller._selected == 0
-        assert "\u276f Episode 10" in controller.render(120, 35).plain
+        assert any("\u276f" in line and "Episode 10" in line for line in controller.render(120, 35).plain.splitlines())
     finally:
         controller.close()
         controller._thread.join(5)
@@ -1527,6 +1528,7 @@ def test_merged_library_is_naturally_ordered_and_preserves_missing_selection(
         "library": [{"set_id": "2", "name": "Episode 2"}, {"set_id": "10", "name": "Episode 10"}],
         "library_problems": [{"set_id": "3", "name": "Episode 3", "available": False}],
     }
+    controller._library_title = state_library.UNRECOGNIZED_KEY
     try:
         assert [row["set_id"] for row in state_library.library_rows(controller._snapshot)] == ["2", "3", "10"]
         controller._selected = 1
@@ -1572,11 +1574,11 @@ def test_library_deletion_snapshot_removes_ghost_and_restore_returns_material(mo
     controller._tab = state_module._Tab.FILES
     controller._connected = True
     controller._notice = ""
-    material: dict[str, object] = {"set_id": "set-B", "name": "Episode B"}
+    material: dict[str, object] = {"set_id": "set-B", "name": "[Grp] Episode B - 01"}
     deletion: dict[str, object] = {
         "operation_id": "delete-B",
         "set_id": "set-B",
-        "name": "Episode B",
+        "name": "[Grp] Episode B - 01",
         "total": 3,
         "recycled": 3,
     }
@@ -1828,7 +1830,9 @@ def test_library_return_keeps_identity_and_detached_scroll_after_an_inactive_ref
     )
     controller: StateController = StateController(session, lambda: None)
     controller._tab = state_module._Tab.FILES
-    library: list[dict[str, object]] = [{"set_id": f"set-{index}", "name": f"Episode {index}"} for index in range(40)]
+    library: list[dict[str, object]] = [
+        {"set_id": f"set-{index}", "name": f"[Grp] Episode {index:02} - 01"} for index in range(40)
+    ]
     controller._snapshot = {"library": library}
     controller._connected = True
     controller.set_notice("")
@@ -1849,7 +1853,7 @@ def test_library_return_keeps_identity_and_detached_scroll_after_an_inactive_ref
         controller._receive(session, {"event": "state_changed", "payload": {"library": library[1:]}})
         controller._switch_tab(state_module._Tab.FILES)
         assert controller._selected == 38
-        assert state_library.library_rows(controller._snapshot)[controller._selected]["set_id"] == "set-39"
+        assert controller._titles()[controller._selected].sets[0]["set_id"] == "set-39"
         controller.handle_key("up")
         assert "\u276f Episode 38" in controller.render(80, 24).plain
     finally:

@@ -37,6 +37,7 @@ from anishift.cli.interactive.pointer import (
 from anishift.cli.interactive.prompts import TerminalRenderer, _WheelControl
 from anishift.cli.interactive.settings import SettingsController
 from anishift.cli.interactive.state import StateController
+from anishift.cli.interactive.state_library import UNRECOGNIZED_KEY
 from anishift.utils.rich_console.theme import RICH_THEME
 
 pytestmark = pytest.mark.unit
@@ -84,6 +85,7 @@ def library(
     controller: StateController = _state(monkeypatch)
     controller._tab = state_module._Tab.FILES
     controller._snapshot = {"library": [{"set_id": f"set-{index}", "name": f"Episode {index}"} for index in range(5)]}
+    controller._library_title = UNRECOGNIZED_KEY
     application, _copied = _application(monkeypatch, _Mode.STATE)
     application._state = controller
     try:
@@ -184,9 +186,9 @@ def test_panel_hover_shades_a_whole_table_row_without_selecting_it(
     first: list[str] = _lit(application._render_frame(80, 24))
 
     assert len(third) == 1
-    assert third[0].strip().startswith("Episode 3")
+    assert third[0].strip().startswith("[ ] —   Episode 3")
     assert third[0].rstrip().endswith("—")
-    assert first[0].strip().startswith("Episode 1")
+    assert first[0].strip().startswith("[ ] —   Episode 1")
     assert controller._selected == 0
 
 

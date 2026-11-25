@@ -135,6 +135,7 @@ class AnimeSnapshot:
     field_selection: tuple[int, int] | None = None
     query_focused: bool = True
     editing_range: bool = False
+    field_label: str = "Zakres"
     selection: tuple[TextPoint, TextPoint] | None = None
     controls: tuple[str, ...] = ()
     global_status: str = ""

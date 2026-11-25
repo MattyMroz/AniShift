@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import cast
 
@@ -32,6 +33,7 @@ def library(monkeypatch: pytest.MonkeyPatch) -> Iterator[StateController]:
     controller._tab = state_module._Tab.FILES
     controller._connected = True
     controller._notice = ""
+    controller._episode_info = {200: {}}
     try:
         yield controller
     finally:
@@ -47,6 +49,19 @@ def _line(frame: str, text: str) -> str:
     lines: list[str] = [line for line in frame.splitlines() if text in line]
     assert len(lines) == 1, text
     return lines[0]
+
+
+def _keyed(set_id: str, name: str, episode: int, *, anilist_id: int = 200) -> dict[str, object]:
+    return {
+        "set_id": set_id,
+        "name": name,
+        "series": "Blue Box",
+        "season": 2,
+        "episode": episode,
+        "anilist_id": anilist_id,
+        "series_id": 100,
+        "title_source": "key",
+    }
 
 
 @pytest.mark.unit
@@ -82,18 +97,68 @@ def test_library_rows_sort_by_title_then_season_then_episode_with_the_film_last(
 
 @pytest.mark.unit
 @pytest.mark.parametrize("columns", [50, 80, 120])
-def test_library_draws_the_name_and_episode_columns_under_their_header(library: StateController, columns: int) -> None:
-    library._snapshot = {"library": _rows(_BLUE_BOX, _LONG, "moj_film_wakacje")}
+def test_titles_fit_at_50_80_and_120_columns(library: StateController, columns: int) -> None:
+    library._snapshot = {"library": _rows(_BLUE_BOX, _LONG, "moj_film_wakacje", _JUDAS)}
 
     frame: str = library.render(columns, 24).plain
 
-    header: str = _line(frame, "Odcinek")
-    assert header.index("Nazwa") < header.index("Odcinek")
-    for title, episode in (("Blue Box", "S02E01"), ("Magic Repo", "S01E01"), ("moj_film_wakacje", "—")):
+    header: str = _line(frame, "Stan")
+    assert header.index("Tytuł") < header.index("Stan")
+    assert all(len(line) <= columns for line in frame.splitlines())
+    for title, count in (("Blue Box", "1"), ("Magic Repo", "1"), ("Nie rozpoznano", "1"), ("Ao no Hako", "1")):
         row: str = _line(frame, title)
-        assert row.index(episode) == header.index("Odcinek")
-    assert _BLUE_BOX not in frame
+        assert "z nazwy" in row or "Gotowe" in row
+        assert count in row
+    assert (
+        frame.index("Ao no Hako") < frame.index("Blue Box") < frame.index("Magic Repo") < frame.index("Nie rozpoznano")
+    )
     assert ("…" in _line(frame, "Magic Repo")) is (columns < 120)
+
+
+@pytest.mark.unit
+def test_episode_view_has_number_title_air_and_state_columns(library: StateController) -> None:
+    library._snapshot = {"library": [_keyed("e2", _JUDAS, 2), _keyed("e1", _BLUE_BOX, 1)]}
+    library._episode_info = {200: {1: ("Deja Vu", datetime(2026, 4, 1, 12, tzinfo=UTC)), 2: ("Second", None)}}
+    library.handle_key("enter")
+
+    frame: str = library.render(100, 30).plain
+
+    header: str = _line(frame, "Emisja")
+    assert [header.index(label) for label in ("Nr", "Tytuł", "Emisja", "Stan")] == sorted(
+        header.index(label) for label in ("Nr", "Tytuł", "Emisja", "Stan")
+    )
+    first: str = _line(frame, "S02E01")
+    assert first.index("Deja Vu") == header.index("Tytuł")
+    assert first.index("01.04.2026") == header.index("Emisja")
+    assert first.index("Gotowe") == header.index("Stan")
+    assert frame.index("S02E01") < frame.index("S02E02")
+    assert f"Biblioteka{CRUMB_SEPARATOR}Blue Box" in frame
+
+
+@pytest.mark.unit
+def test_missing_episode_data_shows_a_dash(library: StateController) -> None:
+    library._snapshot = {"library": [_keyed("e1", _BLUE_BOX, 1)]}
+    library.handle_key("enter")
+
+    row: AnimeRow = state_library.episode_row(library._episodes()[0], {})
+
+    assert (row.title, row.date, row.number) == ("—", "—", "S02E01")
+
+
+@pytest.mark.unit
+def test_a_hand_added_episode_shows_its_set_name_as_the_title() -> None:
+    row: AnimeRow = state_library.episode_row({"set_id": "set", "name": _JUDAS}, {})
+
+    assert (row.number, row.title, row.date, row.status) == ("S02E02", _JUDAS, "—", "Gotowe")
+
+
+@pytest.mark.unit
+def test_a_problem_set_shows_its_reason_in_the_state_column() -> None:
+    row: AnimeRow = state_library.episode_row(
+        {"set_id": "set", "name": _JUDAS, "available": False, "problem": "library_result_missing"}, {}
+    )
+
+    assert row.status == row.detail == "Brakuje potwierdzonego głównego wyniku"
 
 
 @pytest.mark.unit
@@ -107,104 +172,69 @@ def test_library_breadcrumb_names_the_set_by_title_and_episode(library: StateCon
 
 
 @pytest.mark.unit
-def test_library_names_downloads_of_one_series_after_the_owner_series_whatever_their_files(
-    library: StateController,
-) -> None:
-    library._snapshot = {
-        "library": [
-            {"set_id": "judas", "name": _JUDAS, "series": "Blue Box", "season": 2, "episode": 2},
-            {"set_id": "toonshub", "name": _BLUE_BOX, "series": "Blue Box", "season": 2, "episode": 1},
-        ]
-    }
+def test_details_breadcrumb_names_the_open_title_and_the_episode(library: StateController) -> None:
+    library._snapshot = {"library": [_keyed("e2", _JUDAS, 2)]}
+    library.handle_key("enter")
+    library._details = LibrarySet(
+        "e2", "group", _JUDAS, None, f"ready/{_JUDAS}.mkv", (), True, series="Blue Box", season=2, episode=2
+    )
 
-    frame: str = library.render(80, 24).plain
-
-    assert [state_library.library_row(item) for item in state_library.library_rows(library._snapshot)] == [
-        AnimeRow("toonshub", "Blue Box", number="S02E01"),
-        AnimeRow("judas", "Blue Box", number="S02E02"),
-    ]
-    assert "Ao no Hako" not in frame
-    assert _line(frame, "S02E02").split()[:2] == ["Blue", "Box"]
+    assert library.breadcrumb() == ("Biblioteka", "Blue Box", "S02E02")
 
 
 @pytest.mark.unit
-def test_library_keeps_the_file_label_of_a_set_without_owner_series_fields(library: StateController) -> None:
-    library._snapshot = {"library": _rows(_JUDAS, "moj_film_wakacje")}
+def test_library_names_downloads_of_one_series_after_the_owner_series_whatever_their_files() -> None:
+    snapshot: Mapping[str, object] = {"library": [_keyed("judas", _JUDAS, 2), _keyed("toonshub", _BLUE_BOX, 1)]}
 
-    rows: list[AnimeRow] = [state_library.library_row(item) for item in state_library.library_rows(library._snapshot)]
+    titles: list[state_library.LibraryTitle] = state_library.library_titles(snapshot)
 
-    assert rows == [AnimeRow("set-0", "Ao no Hako", number="S02E02"), AnimeRow("set-1", "moj_film_wakacje", number="—")]
+    assert [state_library.title_row(item) for item in titles] == [
+        AnimeRow("series:100", "Blue Box", number="2", status="Gotowe")
+    ]
+    assert [state_library.library_row_id(item) for item in titles[0].sets] == ["toonshub", "judas"]
 
 
 @pytest.mark.unit
 def test_library_names_a_series_without_a_known_episode_and_keeps_the_file_episode() -> None:
-    row: AnimeRow = state_library.library_row(
-        {"set_id": "set", "name": "[Judas] Tensei Shitara Slime Datta Ken - S04E01", "series": "Slime", "season": None}
+    row: AnimeRow = state_library.episode_row(
+        {"set_id": "set", "name": "[Judas] Tensei Shitara Slime Datta Ken - S04E01", "series": "Slime", "season": None},
+        {},
     )
 
-    assert row == AnimeRow("set", "Slime", number="S04E01")
+    assert row.number == "S04E01"
 
 
 @pytest.mark.unit
-def test_library_sorts_owner_named_series_naturally_among_file_named_sets() -> None:
-    snapshot: Mapping[str, object] = {
-        "library": [
-            {"set_id": "e10", "name": "[Grp] Ao no Hako - 10", "series": "Blue Box", "season": 2, "episode": 10},
-            {"set_id": "file", "name": "[Grp] Abc - 01 [1080p]"},
-            {"set_id": "e2", "name": "[Other] Blue Box S02E02", "series": "Blue Box", "season": 2, "episode": 2},
-            {"set_id": "s1", "name": "Ao.no.Hako.S01E12.1080p", "series": "Blue Box", "season": 1, "episode": 12},
-            {"set_id": "zeta", "name": "[Grp] Zeta - 01 [1080p]"},
-        ]
-    }
-
-    order: list[str] = [state_library.library_row_id(item) for item in state_library.library_rows(snapshot)]
-
-    assert order == ["file", "s1", "e2", "e10", "zeta"]
-
-
-@pytest.mark.unit
-def test_library_breadcrumb_names_a_downloaded_set_after_its_series(library: StateController) -> None:
-    library._details = LibrarySet(
-        "set", "group", _JUDAS, None, f"ready/{_JUDAS}.mkv", (), True, series="Blue Box", season=2, episode=2
-    )
-
-    assert library.breadcrumb() == ("Biblioteka", "Blue Box S02E02")
-
-
-@pytest.mark.unit
-def test_library_refresh_keeps_the_selected_set_after_the_order_changes(library: StateController) -> None:
-    library._snapshot = {"library": _rows("[Grp] Show - 02 [1080p]", "[Grp] Show - 10 [1080p]")}
+def test_library_refresh_keeps_the_selected_title_after_the_order_changes(library: StateController) -> None:
+    library._snapshot = {"library": _rows("[Grp] Show - 02 [1080p]", "[Grp] Zeta - 10 [1080p]")}
     library.handle_key("down")
     payload: dict[str, object] = {
-        "library": [
-            *_rows("[Grp] Show - 02 [1080p]", "[Grp] Show - 10 [1080p]"),
-            {"set_id": "set-new", "name": "[Grp] Show - 05 [1080p]"},
-        ]
+        "library": [*_rows("[Grp] Show - 02 [1080p]", "[Grp] Zeta - 10 [1080p]"), *_rows("[Grp] Abc - 05 [1080p]")]
     }
 
     library._preserve_library_selection(payload)
     library._snapshot = payload
 
-    assert state_library.library_rows(payload)[library._selected]["set_id"] == "set-1"
-    assert _POINTER in _line(library.render(80, 24).plain, "E10")
+    assert library._titles()[library._selected].title == "Zeta"
+    assert _POINTER in _line(library.render(80, 24).plain, "Zeta")
 
 
 @pytest.mark.unit
-def test_a_narrow_library_lists_title_and_episode_in_one_line(library: StateController) -> None:
+def test_a_narrow_library_lists_titles_with_their_episode_counts(library: StateController) -> None:
     library._snapshot = {
-        "library": _rows(_BLUE_BOX),
+        "library": _rows(_BLUE_BOX, _JUDAS),
         "relocations": [{"group_id": "group-1a2b", "name": f"{_BLUE_BOX}.mkv", "problem": "failed"}],
     }
 
     frame: str = library.render(40, 12).plain
 
-    assert "Blue Box S02E01" in _line(frame, _POINTER)
+    assert "Ao no Hako · 1" in _line(frame, _POINTER)
     assert "przenoszenie" not in frame
     assert "Powiększ" not in frame
-    assert "Odcinek" not in frame
+    assert "Stan" not in frame
 
 
-def _fill(panel: StateController, tab: int, count: int) -> str:
+def _fill(panel: StateController, tab: int, count: int) -> None:
     panel._tab = tab
     panel._snapshot = {
         "auto_enabled": True,
@@ -215,12 +245,11 @@ def _fill(panel: StateController, tab: int, count: int) -> str:
         {"subscription_id": f"sub-{index}", "title": f"Show {index:02}", "episode_count": 12, "aired": 3, "ready": 1}
         for index in range(count)
     ]
-    return "Nazwa" if tab == state_module._Tab.FILES else "Tytuł"
 
 
-def _regions(lines: list[str], label: str) -> tuple[int, int, int]:
+def _regions(lines: list[str]) -> tuple[int, int, int]:
     tabs: int = next(index for index, line in enumerate(lines) if "Biblioteka" in line and "Anime" in line)
-    header: int = next(index for index, line in enumerate(lines) if line.strip().startswith(label))
+    header: int = next(index for index, line in enumerate(lines) if line.strip().startswith("Tytuł"))
     keys: int = next(index for index, line in enumerate(lines) if "Esc wróć" in line)
     return tabs, header, keys
 
@@ -231,11 +260,11 @@ def _regions(lines: list[str], label: str) -> tuple[int, int, int]:
 def test_an_overflowing_table_fills_every_row_between_the_tabs_and_the_keys(
     library: StateController, tab: int, columns: int, rows: int
 ) -> None:
-    label: str = _fill(library, tab, 40)
+    _fill(library, tab, 40)
 
     lines: list[str] = library.render(columns, rows).plain.splitlines()
 
-    tabs, header, keys = _regions(lines, label)
+    tabs, header, keys = _regions(lines)
     data: list[str] = lines[header + 1 : keys - 1]
     assert header == tabs + 2
     assert not any(line.strip() for line in lines[tabs + 1 : header])
@@ -251,11 +280,11 @@ def test_an_overflowing_table_fills_every_row_between_the_tabs_and_the_keys(
 @pytest.mark.unit
 @pytest.mark.parametrize("tab", [state_module._Tab.FILES, state_module._Tab.SUBSCRIPTIONS])
 def test_a_table_that_fits_stays_centered_between_the_tabs_and_the_keys(library: StateController, tab: int) -> None:
-    label: str = _fill(library, tab, 5)
+    _fill(library, tab, 5)
 
     lines: list[str] = library.render(100, 30).plain.splitlines()
 
-    tabs, header, keys = _regions(lines, label)
+    tabs, header, keys = _regions(lines)
     above: int = header - tabs - 1
     below: int = keys - header - 6
     assert [line for line in lines[header + 1 : header + 6] if "Show" in line] == lines[header + 1 : header + 6]
@@ -265,13 +294,13 @@ def test_a_table_that_fits_stays_centered_between_the_tabs_and_the_keys(library:
 
 
 @pytest.mark.unit
-def test_short_library_names_keep_the_table_narrow_and_centered(library: StateController) -> None:
+def test_short_library_titles_keep_the_table_narrow_and_centered(library: StateController) -> None:
     library._snapshot = {"library": _rows("[Grp] Show - 01 [1080p]", "[Grp] Other Show - 02 [1080p]")}
 
-    header: str = _line(library.render(100, 30).plain, "Odcinek")
+    header: str = _line(library.render(100, 30).plain, "Stan")
 
-    left: int = header.index("Nazwa") - 2
-    right: int = 100 - len(header.rstrip())
+    left: int = header.index("Tytuł") - 2
+    right: int = 100 - header.index("Stan") - len("z nazwy")
     assert abs(left - right) <= 1
     assert left > 20
 
@@ -285,22 +314,20 @@ def _margins(header: str, first: str, last: str, last_width: int) -> tuple[int, 
 def test_the_table_narrows_and_stays_centered_when_the_longest_name_scrolls_away(
     library: StateController, tab: int
 ) -> None:
-    label: str = _fill(library, tab, 30)
-    library._snapshot = {"library": _rows(_LONG, *(f"[Grp] Show - {index:02} [1080p]" for index in range(30)))}
+    _fill(library, tab, 30)
+    library._snapshot = {"library": _rows(_LONG, *(f"[Grp] Show {index:02} - 01 [1080p]" for index in range(30)))}
     library._subscriptions = [
         {"subscription_id": "sub-long", "title": _LONG_TITLE, "episode_count": 12, "aired": 3, "ready": 1},
         *library._subscriptions,
     ]
-    last, width = (
-        ("Odcinek", len("Odcinek")) if tab == state_module._Tab.FILES else ("Stan", _SUBSCRIPTION_STATUS_WIDTH)
-    )
+    width: int = len("z nazwy") if tab == state_module._Tab.FILES else _SUBSCRIPTION_STATUS_WIDTH
 
     first: str = library.render(100, 30).plain
     library.handle_key("end")
     scrolled: str = library.render(100, 30).plain
 
-    wide_left, wide_right = _margins(_line(first, last), label, last, width)
-    left, right = _margins(_line(scrolled, last), label, last, width)
+    wide_left, wide_right = _margins(_line(first, "Stan"), "Tytuł", "Stan", width)
+    left, right = _margins(_line(scrolled, "Stan"), "Tytuł", "Stan", width)
     assert "Magic Repo" in _line(first, _POINTER)
     assert "…" in _line(first, _POINTER)
     assert "Magic Repo" not in scrolled
@@ -308,7 +335,6 @@ def test_the_table_narrows_and_stays_centered_when_the_longest_name_scrolls_away
     assert abs(wide_left - wide_right) <= 1
     assert left > 20
     assert abs(left - right) <= 1
-    assert _line(scrolled, "Show 29" if tab == state_module._Tab.SUBSCRIPTIONS else "E29").index("S") == left + 2
 
 
 @pytest.mark.unit
