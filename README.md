@@ -194,6 +194,10 @@ whenever they fit. Spoken lines keep their exact places either way.
   and be available to the Python process architecture. AniShift does not install
   or activate commercial voices; an expired voice can display its own vendor dialog.
 
+## Data sources
+
+Episode titles also come from [TVmaze](https://www.tvmaze.com) (CC BY-SA).
+
 ## Documentation
 
 See the [documentation map](docs/README.md) for the current work, the ideas file and
