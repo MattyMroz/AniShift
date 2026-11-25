@@ -54,6 +54,7 @@ _PROVIDERS: Final[Mapping[str, str]] = MappingProxyType(
         "api.tsukihime.org": "tsukihime",
         "api.knaben.org": "knaben",
         "nekobt.to": "nekobt",
+        "api.tvmaze.com": "tvmaze",
     }
 )
 """Independent admission and cooldown identities of public metadata hosts."""
