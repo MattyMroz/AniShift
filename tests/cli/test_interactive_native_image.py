@@ -187,15 +187,21 @@ def test_unchanged_frame_writes_no_image() -> None:
     assert screen.paint() == ""
 
 
-def test_moved_slot_erases_only_the_old_cells_before_drawing_at_the_new_row() -> None:
+def test_moved_slot_leaves_the_old_cells_to_the_text_and_erases_and_draws_in_one_write() -> None:
     screen: _Screen = _Screen(_SLOT, _image("COVER"))
     screen.paint()
     screen.frame = f"\n{_SLOT}"
 
-    moved: str = screen.paint()
+    drawn: int = len(screen.writes)
+    screen.renderer._before_render(screen.renderer._application)
+    erased_first: list[str] = screen.writes[drawn:]
+    screen.renderer._after_render(screen.renderer._application)
+    moved: list[str] = screen.writes[drawn:]
 
-    assert _CLEAR not in moved
-    assert moved.index("\x1b[1;8H\x1b[m    ") < moved.index("\x1b[2;8HCOVER")
+    assert erased_first == []
+    assert len(moved) == 1
+    assert "\x1b[1;8H\x1b[m    " not in moved[0]
+    assert moved[0].index("\x1b[2;8H\x1b[m    ") < moved[0].index("\x1b[2;8HCOVER")
     assert screen.renderer._native_drawn_position == (1, 7)
 
 

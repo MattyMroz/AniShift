@@ -219,8 +219,10 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   raportów terminala z workera ani przy klawiszach. Rezerwacja i kasowanie: `cell_rows`/`cell_columns`, wordmark:
   `layout_rows`. Przesunięcie w prawo wspólne dla animacji (`_shared_right_shift`). `MascotController` nie ma
   workera ani zapisu do terminala. VS Code wymaga śledzonego `terminal.integrated.enableImages=true`.
-- Ruch rastra w tym samym rozmiarze terminala kasuje w `before_render` tylko komórki starego obrazu, buforowane przed
-  różnicą tekstu; po zmianie rozmiaru i przy zniknięciu na wyjściu `reset(leave_alternate_screen=False)` + buforowane
+- Ruch rastra w tym samym rozmiarze terminala nie kasuje nic przed różnicą tekstu: komórki starego obrazu poza nowym
+  slotem tracą `_SLOT_GUARD`, więc nadpisuje je Prompt Toolkit, a `after_render` kasuje komórki nowego slotu i rysuje
+  obraz jednym zapisem, bez klatki pustego slotu. Zniknięcie slotu kasuje w `before_render` komórki starego obrazu,
+  buforowane przed różnicą tekstu; po zmianie rozmiaru i przy zniknięciu na wyjściu `reset(leave_alternate_screen=False)` + buforowane
   `\x1b[2J`; domyślne `reset()` odsłania starą konsolę, końcowy redraw (`is_done`) nie maluje rastra. Nie używaj
   `RIS` ani `\x1b[3J` — kasują historię użytkownika. `interactive/prompts.py`
 - Renderer ma jeden slot obrazu (`NATIVE_IMAGE_ANCHOR`, kolumna liczona w komórkach); obraz klatki daje

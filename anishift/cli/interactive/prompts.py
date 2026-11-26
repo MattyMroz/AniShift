@@ -368,7 +368,8 @@ class TerminalRenderer:
         if self._terminal_size != self._native_drawn_size:
             self._erase_native_image()
             return
-        self._erase_drawn_cells()
+        if self._native_position is None:
+            self._erase_drawn_cells()
 
     def _erase_drawn_cells(self) -> None:
         position: tuple[int, int] | None = self._native_drawn_position

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
+import test_interactive_native_image as native
 import test_panel_keys as keys
 from PIL import Image, ImageOps
 
@@ -401,6 +402,41 @@ def test_processing_hover_moves_the_slot_and_the_cover(panel: tuple[StateControl
     assert anchor[0] + (_BOX[1] - 1) // 2 == _row_of(frame, "Show 10")
     assert controller.cover() is not None
     assert covers.asked == [110]
+
+
+_MOVING_LISTS: tuple[Callable[[StateController], None], ...] = (
+    lambda controller: _subscriptions(controller, 30),
+    lambda controller: _processing(controller, 30),
+)
+
+
+@pytest.mark.parametrize("arrange", _MOVING_LISTS, ids=("subscriptions", "processing"))
+def test_one_step_that_moves_the_slot_swaps_the_cover_in_one_write_after_the_text(
+    panel: tuple[StateController, _Covers], arrange: Callable[[StateController], None]
+) -> None:
+    controller, _covers = panel
+    arrange(controller)
+    screen: native._Screen = native._Screen("", None)
+    screen.size = SimpleNamespace(columns=140, rows=40)
+    screen.renderer._frame_provider = controller.render
+    screen.renderer._image_provider = controller.cover
+    for _press in range(12):
+        controller.handle_key("down")
+    screen.paint()
+    before: tuple[int, int] | None = screen.renderer._native_drawn_position
+    controller.handle_key("down")
+
+    drawn: int = len(screen.writes)
+    screen.renderer._before_render(screen.renderer._application)
+    erased_first: list[str] = screen.writes[drawn:]
+    screen.renderer._after_render(screen.renderer._application)
+    swapped: list[str] = screen.writes[drawn:]
+
+    assert before is not None
+    assert screen.renderer._native_drawn_position == (before[0] + 1, before[1])
+    assert erased_first == []
+    assert len(swapped) == 1
+    assert "cover-113" in swapped[0]
 
 
 def _long_library(controller: StateController) -> None:
