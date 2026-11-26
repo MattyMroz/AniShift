@@ -18,6 +18,7 @@ from anishift.application import (
     FranchiseEntry,
     ListedEpisode,
     TitleCandidate,
+    entry_title,
 )
 from anishift.cli.interactive.anime_state import AnimeRow
 from anishift.cli.interactive.anime_texts import (
@@ -73,7 +74,7 @@ def title_rows(candidates: Sequence[TitleCandidate]) -> tuple[AnimeRow, ...]:
     return tuple(
         AnimeRow(
             str(item.anilist_id),
-            item.english or item.romaji,
+            entry_title(item.english, item.romaji),
             date=_year_label(item.year),
             kind=_format_label(item.format),
             status=_ENTRY_STATUSES.get(item.status.value, ""),
@@ -87,7 +88,7 @@ def entry_rows(entries: Sequence[FranchiseEntry]) -> tuple[AnimeRow, ...]:
     return tuple(
         AnimeRow(
             str(item.anilist_id),
-            item.english or item.romaji,
+            entry_title(item.english, item.romaji),
             date=_year_label(item.year),
             kind=_format_label(item.format),
             status=_ENTRY_STATUSES.get(item.status, ""),
@@ -163,7 +164,7 @@ def special_rows(listing: EpisodeListing, franchise: Franchise | None) -> tuple[
         *(
             AnimeRow(
                 f"related:{item.anilist_id}",
-                safe(item.english or item.romaji),
+                safe(entry_title(item.english, item.romaji)),
                 number=item.format or "",
                 date=str(item.year or "—"),
                 status="Enter otwórz",

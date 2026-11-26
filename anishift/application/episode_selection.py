@@ -66,6 +66,7 @@ __all__ = [
     "SeasonDates",
     "StreamCandidate",
     "confidence_text",
+    "entry_title",
     "episode_listing",
     "first_season_numbering",
     "franchise_traversal",
@@ -235,6 +236,11 @@ class EntryGroup(StrEnum):
     SEASON = "season"
     EXTRA = "extra"
     OTHER = "other"
+
+
+def entry_title(english: str | None, romaji: str) -> str:
+    """Return the title every panel view shows for one AniList entry: English when known, else romaji."""
+    return (english or "").strip() or romaji
 
 
 @dataclass(frozen=True, slots=True)

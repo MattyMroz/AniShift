@@ -6,7 +6,7 @@ statusu na polski; te decyzje należą do warstwy aplikacyjnej.
 
 ## Pliki
 
-- `types.py` — `TitleCandidate` (frozen, slots) z `aliases()` i `folder_title()`, `TitleStatus`
+- `types.py` — `TitleCandidate` (frozen, slots) z `aliases()`, `TitleStatus`; wyświetlany tytuł wpisu daje jedno `application.entry_title`
 - `errors.py` — `TitleCatalogError` (transient)
 - `anilist.py` — `AniListCatalog`: title search, prequels, airing schedules, full franchise graphs, the batched
   `library_graph` of many entries, `cover_urls` (`coverImage.extraLarge`, 50 IDs per request) and `cover`

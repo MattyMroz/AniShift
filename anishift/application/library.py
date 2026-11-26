@@ -29,7 +29,13 @@ from anishift.application.control import (
 from anishift.application.control_views import LibraryFile, LibraryFileIdentity, LibrarySet, TitleSource
 from anishift.application.discovery import ArtifactName, classify_artifact
 from anishift.application.episode_identity import TECHNICAL, VIDEO_EXTENSIONS
-from anishift.application.episode_selection import SEASON_FORMATS, JsonObject, LibraryGraph, franchise_traversal
+from anishift.application.episode_selection import (
+    SEASON_FORMATS,
+    JsonObject,
+    LibraryGraph,
+    entry_title,
+    franchise_traversal,
+)
 from anishift.application.intents import GroupIntent
 from anishift.application.products import main_product
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, WorkspacePlace
@@ -264,7 +270,7 @@ def _series_order(node: JsonObject) -> tuple[bool, int, int, int, int]:
 
 def _node_title(node: JsonObject) -> str:
     title: JsonObject = node.get("title") or {}
-    return str(title.get("english") or title.get("romaji") or "")
+    return entry_title(title.get("english"), str(title.get("romaji") or ""))
 
 
 def hand_key(item: LibrarySet) -> tuple[str, int] | None:

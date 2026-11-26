@@ -9,12 +9,16 @@ import pytest
 from test_interactive_mouse import _click
 from test_panel_keys import _app, _label_point, _list_probe, _Probe
 
-from anishift.application import EpisodeListing, ListedEpisode
+from anishift.application import EpisodeListing, ListedEpisode, TitleCandidate
+from anishift.application.episode_selection import LibraryGraph
+from anishift.application.library import LibrarySeries, library_series
 from anishift.cli.interactive import state as state_module
 from anishift.cli.interactive import state_library
+from anishift.cli.interactive.anime_rows import title_rows
 from anishift.cli.interactive.pointer import CRUMB_SEPARATOR
 from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
+from anishift.services.catalog import TitleStatus
 
 pytestmark = pytest.mark.unit
 
@@ -96,6 +100,24 @@ def test_each_season_entry_is_its_own_title_with_its_cover() -> None:
         ("entry:1", "Blue Box Season 2", 2, 1),
         ("entry:2", "Blue Box Season 3", 1, 2),
     ]
+
+
+def test_one_anilist_entry_has_one_title_in_the_anime_search_and_the_library() -> None:
+    node: dict[str, object] = {
+        "id": 2,
+        "type": "ANIME",
+        "format": "TV",
+        "title": {"romaji": "Ao no Hako 2nd Season", "english": "Blue Box Season 2 "},
+    }
+    series: dict[int, LibrarySeries] = library_series(LibraryGraph({2: node}, frozenset({2})), (2,))
+    candidate: TitleCandidate = TitleCandidate(
+        2, "Ao no Hako 2nd Season", "Blue Box Season 2 ", None, (), 2026, None, "TV", 12, TitleStatus.RELEASING, ()
+    )
+    library: list[state_library.LibraryTitle] = state_library.library_titles(
+        {"library": [_keyed("a", 2, 1, entry_title=series[2].entry_title)]}
+    )
+
+    assert title_rows((candidate,))[0].title == library[0].title == "Blue Box Season 2"
 
 
 def test_entry_without_a_known_series_groups_by_entry_under_its_file_title() -> None:

@@ -94,11 +94,6 @@ class TitleCandidate:
         """Whether this entry continues the season before it instead of opening a new one."""
         return is_cour_title(self.romaji, self.english)
 
-    def folder_title(self) -> str:
-        """Return the name used for the library folder: English when known, else romaji."""
-        english: str = (self.english or "").strip()
-        return english or self.romaji
-
 
 def _is_latin(text: str) -> bool:
     """Whether every letter and digit of *text* belongs to the Latin script."""

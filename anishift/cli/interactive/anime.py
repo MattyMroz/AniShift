@@ -40,6 +40,7 @@ from anishift.application import (
     TitleCandidate,
     TitleStatus,
     decode_view,
+    entry_title,
     parse_query,
     premiere_order,
     rank_offer,
@@ -529,12 +530,12 @@ class AnimeController:
     def _draft_source(self) -> tuple[int | None, str, EpisodeListing | None]:
         if self._screen is _Screen.TITLES and self._candidates:
             candidate: TitleCandidate = self._candidates[self._highlighted]
-            return candidate.anilist_id, candidate.english or candidate.romaji, None
+            return candidate.anilist_id, entry_title(candidate.english, candidate.romaji), None
         if self._screen is _Screen.ENTRIES and self._franchise is not None and self._franchise.entries:
             entry: FranchiseEntry = self._franchise.entries[self._positions.get(_Screen.ENTRIES, 0)]
-            return entry.anilist_id, entry.english or entry.romaji, None
+            return entry.anilist_id, entry_title(entry.english, entry.romaji), None
         if self._screen is _Screen.EPISODES and self._listing is not None and self._entry is not None:
-            return self._listing.anilist_id, self._entry.english or self._entry.romaji, self._listing
+            return self._listing.anilist_id, entry_title(self._entry.english, self._entry.romaji), self._listing
         return None, "", None
 
     def _load_draft(self, anilist_id: int, generation: int) -> None:
@@ -2235,7 +2236,7 @@ class AnimeController:
     def _store_titles(self, candidates: tuple[TitleCandidate, ...], franchise: Franchise | None) -> None:
         self._candidates = tuple(
             sorted(
-                natsorted(candidates, key=lambda item: (item.english or item.romaji).casefold()),
+                natsorted(candidates, key=lambda item: entry_title(item.english, item.romaji).casefold()),
                 key=lambda item: premiere_order(item.year, item.start),
                 reverse=True,
             )
@@ -2322,7 +2323,7 @@ class AnimeController:
         entry: FranchiseEntry | None = self._shown_entry
         if entry is None:
             return ()
-        return ("Anime", f"{safe(entry.english or entry.romaji)} ({entry.year or '—'})")
+        return ("Anime", f"{safe(entry_title(entry.english, entry.romaji))} ({entry.year or '—'})")
 
 
 def _ready_set(status: EpisodeStatus | None) -> str | None:

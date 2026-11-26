@@ -144,6 +144,7 @@ from anishift.application.episode_selection import (
     EpisodeOffer,
     RankedCandidate,
     StreamCandidate,
+    entry_title,
     numbering_gap,
     rank_offer,
     suggestion,
@@ -9762,7 +9763,11 @@ def _subscription_draft(read: ListingRead, entry: FranchiseEntry | None, now: da
     if not read.live or entry is None:
         return EpisodeReason.SOURCE_FAILED
     record: SubscriptionRecord = SubscriptionRecord(
-        token_hex(_ID_BYTES), entry.anilist_id, entry.english or entry.romaji, now.astimezone(UTC).isoformat(), cut
+        token_hex(_ID_BYTES),
+        entry.anilist_id,
+        entry_title(entry.english, entry.romaji),
+        now.astimezone(UTC).isoformat(),
+        cut,
     )
     return merge_listing(record, read, now)
 

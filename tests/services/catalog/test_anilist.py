@@ -575,18 +575,6 @@ def test_aliases_keep_latin_names_without_repeats() -> None:
     )
 
 
-def test_folder_title_prefers_english_and_falls_back_to_romaji() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=_page([_SOLO_LEVELING, _MUSHOKU]))
-
-    catalog, http = _catalog(handler)
-    with http:
-        candidates = catalog.search("anything")
-
-    assert candidates[0].folder_title() == "Solo Leveling Season 2: Arise from the Shadow"
-    assert candidates[1].folder_title() == "Mushoku Tensei III"
-
-
 def test_episode_offset_sums_the_prequel_chain_and_ignores_movies_and_cycles() -> None:
     relations: dict[int, dict[str, Any]] = {
         151807: {

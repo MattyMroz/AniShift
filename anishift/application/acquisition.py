@@ -34,6 +34,7 @@ from anishift.application.episode_selection import (
     EpisodeKey,
     EpisodeOffer,
     ListedEpisode,
+    entry_title,
     episode_listing,
     first_season_numbering,
     franchise_traversal,
@@ -1540,7 +1541,7 @@ def _episode_queries(
 
 def _episode_base(candidate: TitleCandidate) -> str:
     """Return the shortest spelling of *candidate* worth putting in front of an episode number."""
-    return base_title(candidate.english or candidate.romaji)
+    return base_title(entry_title(candidate.english, candidate.romaji))
 
 
 def _episode_numbers(episodes: EpisodeRange | None) -> tuple[int, ...]:
