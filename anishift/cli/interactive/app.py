@@ -233,7 +233,9 @@ class _InteractiveApplication:
             image_provider=self._native_image,
         )
         self._show_covers: bool | None = None
-        self._covers: CoverImages = CoverImages(lambda: self._renderer.native_cell, shown=self._covers_shown)
+        self._covers: CoverImages = CoverImages(
+            lambda: self._renderer.native_cell, shown=self._covers_shown, changed=self._renderer.invalidate
+        )
         self._mascot: MascotController = MascotController(self._renderer.invalidate)
         self._frame_selection: FrameSelection = FrameSelection()
 

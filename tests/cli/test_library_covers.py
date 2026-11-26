@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from pathlib import Path
@@ -764,30 +765,83 @@ def _cover_file(directory: Path, anilist_id: int) -> None:
     Image.new("RGB", (460, 636), (200, 30, 30)).save(directory / f"{anilist_id}.jpg", "JPEG")
 
 
-def test_prepared_covers_encode_off_the_render_thread_and_hit_at_once(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    threads: list[str] = []
-    encode = covers_module.cover_image
+def _encoded(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int]]:
+    encoded: list[tuple[str, int]] = []
+    encode: Callable[[Path, tuple[int, int]], str | None] = covers_module.cover_payload
 
-    def recorded(path: Path, cell: tuple[int, int]) -> NativeImage | None:
-        threads.append(threading.current_thread().name)
+    def recorded(path: Path, cell: tuple[int, int]) -> str | None:
+        encoded.append((threading.current_thread().name, int(path.stem)))
         return encode(path, cell)
 
-    monkeypatch.setattr(covers_module, "cover_image", recorded)
-    for anilist_id in (1, 2, 3):
-        _cover_file(tmp_path, anilist_id)
-    images: CoverImages = CoverImages(lambda: (10, 20), lambda: tmp_path)
+    monkeypatch.setattr(covers_module, "cover_payload", recorded)
+    return encoded
 
-    images.prepare([1, 2, 3])
+
+def _settle(images: CoverImages) -> None:
     worker: threading.Thread | None = images._worker
     if worker is not None:
         worker.join(10)
 
-    assert threads == ["anishift-cover"] * 3
-    assert all(images.image(anilist_id) is not None for anilist_id in (1, 2, 3))
-    assert len(threads) == 3
-    assert images._worker is None
+
+def test_prepared_covers_encode_off_the_render_thread_and_the_next_start_reads_them_from_disk(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    encoded: list[tuple[str, int]] = _encoded(monkeypatch)
+    for anilist_id in (1, 2, 3, 4):
+        _cover_file(tmp_path, anilist_id)
+    first: CoverImages = CoverImages(lambda: (10, 20), lambda: tmp_path)
+    first.prepare([1, 2, 3, 4])
+    _settle(first)
+    kept: dict[int, NativeImage | None] = {anilist_id: first.image(anilist_id) for anilist_id in (1, 2, 3, 4)}
+    first_encoded: list[tuple[str, int]] = list(encoded)
+    store: Path = tmp_path / "sixel"
+    next(store.glob("2-*")).write_bytes(b"broken")
+    newer: int = next(store.glob("3-*")).stat().st_mtime_ns + 10**9
+    os.utime(tmp_path / "3.jpg", ns=(newer, newer))
+    encoded.clear()
+
+    second: CoverImages = CoverImages(lambda: (10, 20), lambda: tmp_path)
+    second.prepare([1, 2, 3, 4])
+    _settle(second)
+
+    assert first_encoded == [("anishift-cover", anilist_id) for anilist_id in (1, 2, 3, 4)]
+    assert encoded == [("anishift-cover", 2), ("anishift-cover", 3)]
+    assert second.image(1) == kept[1]
+    assert second.image(4) == kept[4]
+    assert second.image(2) == kept[2]
+    assert second.image(3) is not None
+
+
+def test_a_cover_the_frame_asks_for_comes_before_the_queue_and_redraws_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    started: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    order: list[int] = []
+    encode: Callable[[Path, tuple[int, int]], str | None] = covers_module.cover_payload
+
+    def held(path: Path, cell: tuple[int, int]) -> str | None:
+        order.append(int(path.stem))
+        started.set()
+        release.wait(10)
+        return encode(path, cell)
+
+    monkeypatch.setattr(covers_module, "cover_payload", held)
+    for anilist_id in range(1, 6):
+        _cover_file(tmp_path, anilist_id)
+    redraws: list[None] = []
+    images: CoverImages = CoverImages(lambda: (10, 20), lambda: tmp_path, changed=lambda: redraws.append(None))
+    images.prepare(range(1, 6))
+    assert started.wait(10)
+
+    asked: NativeImage | None = images.image(5)
+    release.set()
+    _settle(images)
+
+    assert asked is None
+    assert order == [1, 5, 2, 3, 4]
+    assert len(redraws) == 1
+    assert images.image(5) is not None
 
 
 def test_covers_switched_off_leave_the_table_centered_without_a_slot(
@@ -870,13 +924,13 @@ def test_cover_is_scaled_into_the_fixed_slot_and_a_bad_file_gives_none(tmp_path:
     _cover_file(tmp_path, 21)
     (tmp_path / "22.jpg").write_bytes(b"broken")
 
-    image: NativeImage | None = covers_module.cover_image(tmp_path / "21.jpg", (10, 20))
+    payload: str | None = covers_module.cover_payload(tmp_path / "21.jpg", (10, 20))
 
-    assert image is not None
-    assert (image.cell_columns, image.cell_rows) == _BOX
-    assert image.payloads[0].startswith('\x1bP9;1;0q"1;1;190;260')
-    assert covers_module.cover_image(tmp_path / "22.jpg", (10, 20)) is None
-    assert covers_module.cover_image(tmp_path / "missing.jpg", (10, 20)) is None
+    assert covers_module.cover_box((10, 20)) == _BOX
+    assert payload is not None
+    assert payload.startswith('\x1bP9;1;0q"1;1;190;260')
+    assert covers_module.cover_payload(tmp_path / "22.jpg", (10, 20)) is None
+    assert covers_module.cover_payload(tmp_path / "missing.jpg", (10, 20)) is None
 
 
 def _striped(size: tuple[int, int]) -> Image.Image:

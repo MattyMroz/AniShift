@@ -17,7 +17,9 @@ the code:
   `restore` with the previous voice and speed, `delete_document`; never a read id or token).
 - `covers/` caches the AniList cover images of Library and subscription titles,
   one `<anilist_id>.jpg` per entry, written by the resident and shown in the panel.
-  Deleting a file only makes the resident download it again.
+  Deleting a file only makes the resident download it again. `covers/sixel/` keeps the panel's encoded SIXEL
+  payloads of those images, one per cover, cell size and encoding version; deleting them only makes the panel
+  encode them again.
 
 `ANISHIFT_CONFIG_DIR` replaces this directory entirely, so a test or a second
 account can keep its own preferences and watch state elsewhere.

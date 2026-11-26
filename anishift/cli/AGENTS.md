@@ -77,8 +77,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - `TerminalRenderer` jest jedynym ownerem aplikacji Prompt Toolkit, klawiszy i alternate screen przez całą sesję;
   nie zastępuj go `console.screen()` (Rich pomija alternate screen przy części `legacy_windows`). Zachowaj
   `mouse_support=True`; redraw do 30 fps, resize i zegar co 100 ms. `interactive/prompts.py`
-- Render nie robi I/O ani sieci (klatka odświeża się cyklicznie). Wyjątek: `_offset` i `_visible_count`, bo budżet
-  wierszy znany jest dopiero w renderze. Opóźnione zapisy sprawdza `after_render`.
+- Render nie robi I/O, sieci ani kodowania obrazów (klatka odświeża się cyklicznie); okładki bierze z pamięci
+  `CoverImages`. Wyjątek: `_offset` i `_visible_count`, bo budżet wierszy znany jest dopiero w renderze. Opóźnione zapisy sprawdza `after_render`.
   `_fit_frame` obcina KAŻDY wiersz do szerokości terminala; szerszy zawinąłby się i przesunął raster maskotki.
 - Klawisze mają jedną tabelę `_NORMALISED_KEYS`. Na Windowsie klawisz specjalny ma puste `data`, więc `Keys.Any`
   zlepia je w `"any"` — nowy klawisz MUSI dostać własny binding. Paste: `Keys.BracketedPaste` → `paste:`.
@@ -198,8 +198,11 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `cover_block`; wiersz, krawędź i kotwicę `place_cover`, kolumny `beside_cover` i `cover_columns`, okładkę
   `_place_cover`.
   `StateController.cover()` zwraca obraz tego wiersza. Każdy snapshot ownera i każdy render wołają
-  `CoverImages.prepare` (wątek `anishift-cover` koduje z wyprzedzeniem), a `CoverImages.image` koduje brakującą okładkę
-  od razu, więc żadna klatka nie ma pustego slotu. Potwierdzenie Del (`_library_confirm`) nie ma slotu. Bez SIXEL,
+  `CoverImages.prepare`; jedyny wątek `anishift-cover` najpierw wczytuje zapisane ładunki SIXEL
+  (`config/covers/sixel/<id>-<komórka>-v<wersja>.six`, zapis atomowy; wpis nieczytelny albo starszy niż jpg = brak),
+  dopiero potem koduje brakujące i zapisuje je na dysk. `CoverImages.image` bierze okładkę tylko z pamięci: gdy jej
+  nie ma, zwraca `None`, a okładka dostaje pierwszeństwo w kolejce i po przygotowaniu woła `changed`
+  (`invalidate`); slot zostaje zarezerwowany, więc układ nie skacze. Potwierdzenie Del (`_library_confirm`) nie ma slotu. Bez SIXEL,
   miejsca albo okładki w snapshot `covers` klatka jest taka jak bez okładek. Testy: `test_library_covers.py` (układ),
   `test_raster.py` (rysowanie).
 

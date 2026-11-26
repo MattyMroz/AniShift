@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Iterable, Iterator
 from io import StringIO
 from pathlib import Path
@@ -18,6 +19,7 @@ from prompt_toolkit.output.vt100 import Vt100_Output
 from rich.text import Text
 
 import anishift.cli.interactive.prompts as prompts_module
+from anishift.cli.interactive import covers as covers_module
 from anishift.cli.interactive import state as state_module
 from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeSnapshot
 from anishift.cli.interactive.anime_view import render_anime
@@ -284,24 +286,39 @@ def test_mascot_animation_and_the_panel_keep_every_write_whole(
     assert terminal.screen.draws == drawn
 
 
-def test_entering_a_tab_shows_each_cover_in_its_first_frame(
-    panel: tuple[StateController, _Covers], tmp_path: Path
+def test_a_cover_not_ready_keeps_its_slot_and_appears_in_the_first_frame_after_the_thread_prepares_it(
+    panel: tuple[StateController, _Covers], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     controller, _covers = panel
     for anilist_id in range(100, 130):
         Image.new("RGB", (460, 636), (anilist_id, 30, 30)).save(tmp_path / f"{anilist_id}.jpg", "JPEG")
-    controller._covers = CoverImages(lambda: model.CELL, lambda: tmp_path)
+    threads: set[str] = set()
+    release: threading.Event = threading.Event()
+    encode: Callable[[Path, tuple[int, int]], str | None] = covers_module.cover_payload
+
+    def held(path: Path, cell: tuple[int, int]) -> str | None:
+        threads.add(threading.current_thread().name)
+        release.wait(10)
+        return encode(path, cell)
+
+    monkeypatch.setattr(covers_module, "cover_payload", held)
+    ready: threading.Event = threading.Event()
+    controller._covers = CoverImages(lambda: model.CELL, lambda: tmp_path, changed=ready.set)
     layouts._subscriptions(controller, 30)
+    terminal: model.Terminal = _terminal(controller)
+    waiting: model.Shown | None = terminal.shown
+    anchor: tuple[int, int] | None = layouts._anchor(terminal.frame.plain)
 
-    first: str = controller.render(140, 40).plain
-    shown: NativeImage | None = controller.cover()
-    controller.handle_key("down")
-    controller.render(140, 40)
+    release.set()
+    assert ready.wait(10)
+    terminal.paint()
 
-    assert layouts._anchor(first) is not None
-    assert shown is not None
-    assert (shown.cell_columns, shown.cell_rows) == cover_box(model.CELL)
-    assert controller.cover() is not None
+    assert waiting is None
+    assert anchor is not None
+    assert layouts._anchor(terminal.frame.plain) == anchor
+    assert terminal.shown is not None
+    assert (terminal.shown.image.cell_columns, terminal.shown.image.cell_rows) == cover_box(model.CELL)
+    assert threads == {"anishift-cover"}
 
 
 def test_exit_leaves_no_image_pixel_on_the_alternate_screen() -> None:
