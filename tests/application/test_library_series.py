@@ -884,6 +884,36 @@ def test_searched_titles_get_covers_from_the_search_addresses(tmp_path: Path) ->
     assert [7] not in titles.cover_reads
 
 
+class _SlowTitles(_TitleCatalog):
+    def __init__(self) -> None:
+        super().__init__(graphs=_slime_titles().graphs)
+        self.release: threading.Event = threading.Event()
+
+    def cover_urls(self, anilist_ids: Collection[int]) -> dict[int, str]:
+        assert self.release.wait(_TIMEOUT_S)
+        return super().cover_urls(anilist_ids)
+
+
+@pytest.mark.integration
+def test_covers_on_disk_show_before_anilist_answers_for_the_missing_ones(tmp_path: Path) -> None:
+    titles: _SlowTitles = _SlowTitles()
+    owner, covers = _cover_owner(tmp_path, titles)
+    covers.mkdir(parents=True)
+    (covers / f"{_S1}.jpg").write_bytes(_png())
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert owner.handle(_request("library_refresh")).ok
+        early: list[int] = _cached(owner, [_S1])
+        titles.release.set()
+        late: list[int] = _cached(owner, [_S1, _SLIME_OAD])
+    finally:
+        titles.release.set()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert early == [_S1]
+    assert late == [_S1, _SLIME_OAD]
+
+
 class _StoppingTitles(_TitleCatalog):
     def __init__(self) -> None:
         super().__init__(graphs=_slime_titles().graphs)

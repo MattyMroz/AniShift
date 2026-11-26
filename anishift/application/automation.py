@@ -8794,6 +8794,8 @@ class AutomationOwner:
         skipped: int = 0
         try:
             stored |= acquisition.stored_covers(directory) & set(anilist_ids)
+            cached: frozenset[int] = frozenset(stored)
+            self._queue.put(lambda: self._add_covers(cached))
             missing: list[int] = [anilist_id for anilist_id in anilist_ids if anilist_id not in stored]
             urls: dict[int, str] = {item: known[item] for item in missing if item in known}
             unknown: list[int] = [item for item in missing if item not in urls]
@@ -8834,8 +8836,11 @@ class AutomationOwner:
 
     def _record_covers(self, stored: set[int]) -> None:
         self._active_io -= 1
-        self._covers |= stored
-        if stored:
+        self._add_covers(frozenset(stored))
+
+    def _add_covers(self, stored: frozenset[int]) -> None:
+        if stored - self._covers:
+            self._covers |= stored
             self._publish_state()
 
     def _request_series(self) -> None:
