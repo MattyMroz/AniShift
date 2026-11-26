@@ -165,6 +165,21 @@ def test_full_repaint_by_prompt_toolkit_redraws_the_same_image() -> None:
     assert _CLEAR not in redrawn
 
 
+def test_a_frame_that_drops_its_slot_is_prepared_like_a_frame_that_never_had_one() -> None:
+    plain: str = "   Alpha\n   Beta\n   Gamma"
+    fresh: _Screen = _Screen(plain, None)
+    fresh.paint()
+    screen: _Screen = _Screen(_SLOT, _image("COVER"))
+    screen.paint()
+    screen.frame = plain
+
+    erased: str = screen.paint()
+
+    assert cast("ANSI", screen.renderer._prepared_frame).value == cast("ANSI", fresh.renderer._prepared_frame).value
+    assert "\x1b[1;8H\x1b[m    " in erased
+    assert screen.renderer._native_drawn_position is None
+
+
 def test_unchanged_frame_writes_no_image() -> None:
     screen: _Screen = _Screen(_SLOT, _image("COVER"))
     screen.paint()

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
+import test_panel_keys as keys
 from PIL import Image, ImageOps
 
 from anishift.application import AppService
@@ -424,6 +425,132 @@ def test_processing_without_a_slot_equals_the_plain_layout(
 
     assert controller.render(140, 40).plain == without
     assert _anchor(without) is None
+
+
+def _library_titles(controller: StateController) -> None:
+    controller._tab = state_module._Tab.FILES
+
+
+def _library_episodes(controller: StateController) -> None:
+    controller._tab = state_module._Tab.FILES
+    controller.handle_key("down")
+    controller.handle_key("enter")
+
+
+def _many_subscriptions(controller: StateController) -> None:
+    _subscriptions(controller, 30)
+    for _press in range(12):
+        controller.handle_key("down")
+
+
+@pytest.mark.parametrize(
+    "arrange",
+    [
+        _library_titles,
+        _library_episodes,
+        lambda controller: _subscriptions(controller, 3),
+        _many_subscriptions,
+        lambda controller: _processing(controller, 3),
+    ],
+)
+@pytest.mark.parametrize(("columns", "hovered"), [(120, None), (90, 1), (200, 2)])
+def test_covers_switched_off_and_on_give_the_frame_without_a_slot_and_back(
+    panel: tuple[StateController, _Covers],
+    monkeypatch: pytest.MonkeyPatch,
+    arrange: Callable[[StateController], None],
+    columns: int,
+    hovered: int | None,
+) -> None:
+    controller, covers = panel
+    arrange(controller)
+    with monkeypatch.context() as patched:
+        patched.setattr(controller, "_covers", None)
+        plain: str = controller.render(columns, 40, hovered=hovered).plain
+    on: str = controller.render(columns, 40, hovered=hovered).plain
+    covers.shown_box = None
+    off: str = controller.render(columns, 40, hovered=hovered).plain
+    covers.shown_box = _BOX
+    again: str = controller.render(columns, 40, hovered=hovered).plain
+
+    assert off == plain
+    assert again == on
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["titles", "entries", "episodes", "u08", "subscriptions", "processing_download", "library", "library_episodes"],
+)
+def test_every_panel_view_without_covers_equals_its_frame_without_a_slot(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    monkeypatch.setattr(StateController, "_cached_covers", lambda _self, ids: tuple(7 for _item in ids))
+    probe: keys._Probe = keys._FIXTURES[name](monkeypatch)
+    controller: StateController = probe.panel
+    covers: _Covers = _Covers()
+    try:
+        plain: str = controller.render(160, 40).plain
+        controller._covers = cast("CoverImages", covers)
+        on: str = controller.render(160, 40).plain
+        covers.shown_box = None
+        off: str = controller.render(160, 40).plain
+        covers.shown_box = _BOX
+        again: str = controller.render(160, 40).plain
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+    assert _anchor(on) is not None
+    assert off == plain
+    assert again == on
+
+
+class _CellRenderer:
+    native_mascot_size: tuple[int, int] | None = None
+    native_mascot: NativeImage | None = None
+    native_cell: tuple[int, int] | None = (10, 20)
+    animation_phase: int = 0
+
+    def __init__(self, *_arguments: object, **_options: object) -> None:
+        self.redraws: int = 0
+
+    def invalidate(self) -> None:
+        self.redraws += 1
+
+
+def test_k_in_the_panel_gives_the_frame_without_a_slot_and_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(interactive_app, "TerminalRenderer", _CellRenderer)
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    preferences: SimpleNamespace = SimpleNamespace(show_covers=True)
+    service: SimpleNamespace = SimpleNamespace(
+        settings_snapshot=lambda: preferences,
+        update_setting=lambda setting_id, value: setattr(preferences, setting_id, value),
+    )
+    application: interactive_app._InteractiveApplication = interactive_app._InteractiveApplication(
+        cast("AppService", service)
+    )
+    application._mode = interactive_app._ViewMode.STATE
+    controller: StateController = StateController(
+        cast("ResidentSession", SimpleNamespace()), lambda: None, covers=application._covers
+    )
+    application._state = controller
+    _subscriptions(controller, 3)
+    try:
+        on: str = application._render_frame(120, 40).plain
+        application._handle_key("text:k")
+        off: str = application._render_frame(120, 40).plain
+        controller._covers = None
+        plain: str = application._render_frame(120, 40).plain
+        controller._covers = application._covers
+        application._handle_key("text:k")
+        again: str = application._render_frame(120, 40).plain
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+    assert _anchor(on) is not None
+    assert off == plain
+    assert again == on
 
 
 def test_processing_history_has_no_slot(panel: tuple[StateController, _Covers]) -> None:
