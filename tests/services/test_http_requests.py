@@ -142,6 +142,24 @@ def test_actual_login_retry_and_not_modified_responses_are_counted() -> None:
     assert {row["result"] for row in control.counts()} == {"403", "200", "304"}
 
 
+@pytest.mark.unit
+def test_a_followed_redirect_is_sent_through_request_control() -> None:
+    sent: list[str] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent.append(request.url.path)
+        if request.url.path == "/lookup/shows":
+            return httpx.Response(301, headers={"Location": "https://api.tvmaze.com/shows/7"})
+        return httpx.Response(200, json={"id": 7})
+
+    control: RequestControl = RequestControl(httpx.MockTransport(respond))
+    with httpx.Client(transport=control) as http:
+        answer: httpx.Response = http.get("https://api.tvmaze.com/lookup/shows", follow_redirects=True)
+
+    assert answer.json() == {"id": 7}
+    assert sent == ["/lookup/shows", "/shows/7"]
+
+
 def test_nested_scopes_share_one_actual_request_budget() -> None:
     now: list[float] = [1000.0]
     sent: list[str] = []

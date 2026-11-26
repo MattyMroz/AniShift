@@ -320,7 +320,7 @@ def _key(request: httpx.Request) -> str:
     values: tuple[bytes, ...] = (
         request.method.encode(),
         str(request.url).encode(),
-        request.content,
+        request.read(),
         *(part for pair in request.headers.raw for part in pair),
     )
     return hashlib.sha256(b"".join(len(value).to_bytes(8) + value for value in values)).hexdigest()
