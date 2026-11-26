@@ -348,11 +348,15 @@ def test_prepared_covers_encode_off_the_render_thread_and_hit_at_once(
     )
 
     images.prepare([1, 2, 3])
+    worker: threading.Thread | None = images._worker
     done.wait(10)
+    if worker is not None:
+        worker.join(10)
 
     assert threads == ["anishift-cover"] * 3
     assert all(images.image(anilist_id) is not None for anilist_id in (1, 2, 3))
     assert len(threads) == 3
+    assert images._worker is None
 
 
 def test_covers_switched_off_leave_the_table_centered_without_a_slot(
@@ -373,6 +377,9 @@ def test_covers_switched_off_leave_the_table_centered_without_a_slot(
         monkeypatch.setattr(controller, "_covers", images)
         shown[0] = True
         on: str = controller.render(120, 40).plain
+        worker: threading.Thread | None = images._worker
+        if worker is not None:
+            worker.join(10)
     finally:
         controller.close()
         controller._thread.join(5)

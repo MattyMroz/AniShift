@@ -66,7 +66,6 @@ class CoverImages:
         self._lock: threading.Lock = threading.Lock()
         self._ready: dict[int, NativeImage | None] = {}
         self._queue: deque[int] = deque()
-        self._wake: threading.Event = threading.Event()
         self._worker: threading.Thread | None = None
 
     def box(self) -> tuple[int, int] | None:
@@ -104,19 +103,16 @@ class CoverImages:
             if self._worker is None:
                 self._worker = threading.Thread(target=self._run, name="anishift-cover", daemon=True)
                 self._worker.start()
-        self._wake.set()
 
     def _run(self) -> None:
-        while self._wake.wait():
-            self._wake.clear()
-            while (anilist_id := self._next()) is not None:
-                cell: tuple[int, int] | None = self._cell()
-                encoded: NativeImage | None = (
-                    None if cell is None else cover_image(self._directory() / cover_name(anilist_id), cell)
-                )
-                with self._lock:
-                    self._ready[anilist_id] = encoded
-                self._invalidate()
+        while (anilist_id := self._next()) is not None:
+            cell: tuple[int, int] | None = self._cell()
+            encoded: NativeImage | None = (
+                None if cell is None else cover_image(self._directory() / cover_name(anilist_id), cell)
+            )
+            with self._lock:
+                self._ready[anilist_id] = encoded
+            self._invalidate()
 
     def _next(self) -> int | None:
         with self._lock:
@@ -124,4 +120,5 @@ class CoverImages:
                 anilist_id: int = self._queue.popleft()
                 if anilist_id not in self._ready:
                     return anilist_id
+            self._worker = None
             return None
