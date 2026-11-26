@@ -6317,6 +6317,7 @@ class AutomationOwner:
         for item in self._state.acquisitions:
             names.update(_reserved_stems(item))
         for group in self._state.ready_groups:
+            names.update((group.stem.casefold(), group.source_stem.casefold()))
             names.update(reserved_stem(name) for name in group.pending_sources)
         for deletion in self._state.pending_deletions:
             names.update(reserved_stem(name) for name, _size, _stamp in deletion.files)

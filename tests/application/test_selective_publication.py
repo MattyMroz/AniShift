@@ -1006,9 +1006,30 @@ def test_a_reserved_name_survives_a_restart_and_a_later_episode_title(
     assert _root_files(setup) == set(_PUBLISHED)
 
 
-def test_only_present_ready_files_and_pending_deletions_reserve_a_name(setup: _Setup) -> None:
+def test_a_deleted_episode_downloaded_again_never_takes_the_set_id_of_its_old_record(setup: _Setup) -> None:
+    old_set: str = create_group_id(Path(), _CORE)
     gone: ReadyGroup = ReadyGroup(
-        "gone", "gone-ready", _CORE, ".", _CORE, WorkflowTarget.VIDEO, (f"ready/{_PUBLISHED[0]}",), ()
+        old_set,
+        create_group_id(Path("ready"), _CORE),
+        _CORE,
+        ".",
+        _CORE,
+        WorkflowTarget.VIDEO,
+        (f"ready/{_PUBLISHED[0]}",),
+        (),
+    )
+    setup.store.save(replace(WatchState(), ready_groups=(gone,)))
+    with _running(setup) as owner:
+        _download(setup, owner)
+        _until(lambda: _settled(owner))
+
+    assert _root_files(setup) == {f"{_CORE} [2].mkv", f"{_CORE} [2].ass"}
+    assert _stored(setup).assignments[0].group_id == create_group_id(Path(), f"{_CORE} [2]")
+
+
+def test_ready_records_present_files_and_pending_deletions_reserve_a_name(setup: _Setup) -> None:
+    gone: ReadyGroup = ReadyGroup(
+        "gone", "gone-ready", "Moved - S01E04", ".", _CORE, WorkflowTarget.VIDEO, (f"ready/{_PUBLISHED[0]}",), ()
     )
     (setup.root / "ready").mkdir()
     (setup.root / "ready" / "Present - S01E01.mkv").write_bytes(_VIDEO)
@@ -1026,5 +1047,4 @@ def test_only_present_ready_files_and_pending_deletions_reserve_a_name(setup: _S
         reserved: frozenset[str] | None = owner._on_owner(owner._reserved_names)
 
     assert reserved is not None
-    assert _CORE.casefold() not in reserved
-    assert {"present - s01e01", "deleted - s01e02"} <= reserved
+    assert {_CORE.casefold(), "moved - s01e04", "present - s01e01", "deleted - s01e02"} <= reserved

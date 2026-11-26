@@ -58,7 +58,7 @@ Zarezerwowana `EpisodePublication` zostaje w stanie, więc restart i ponowienie 
 
 ### Rezerwacja nazw (O-6)
 
-`_reserved_names` (`automation.py:6305`) liczy rekordy `ready_groups` tylko dla plików obecnych na dysku i `pending_sources`; `pending_deletions`, rezerwacje transferów i stemy w korzeniu zostają. Przed zmianą faza 0 sprawdza `git log -S "for group in self._state.ready_groups"` w `automation.py`, czy rezerwacja rekordów bez plików chroni coś więcej. Jeśli tak, zatrzymaj się i wróć z wynikiem.
+`_reserved_names` (`automation.py:6305`) rezerwuje `stem` i `source_stem` każdego rekordu `ready_groups`, jego `pending_sources`, pliki obecne w korzeniu i w `ready/`, `pending_deletions` i rezerwacje transferów. Rekord bez plików rezerwuje dalej, bo `set_id` jest deterministyczny (`create_group_id(katalog, stem)`): czysta nazwa ponownego pobrania przejęłaby `set_id` starego rekordu.
 
 ### Mapa plików
 
