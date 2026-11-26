@@ -78,7 +78,7 @@ from anishift.application.release_quality import AudioClass, Origin
 from anishift.application.scheduler_contracts import TaskHandler
 from anishift.application.watch_state import WatchStateStore
 from anishift.cli.interactive import anime as anime_module
-from anishift.cli.interactive import anime_texts, anime_view
+from anishift.cli.interactive import anime_texts
 from anishift.cli.interactive.anime import EPISODE_REASON_LABELS, AnimeController, _Screen
 from anishift.cli.interactive.anime_releases import (
     _REASON_TEXTS,
@@ -2481,12 +2481,6 @@ _UNLABELLED_REASONS: Final[frozenset[EpisodeReason]] = frozenset(
 @pytest.mark.unit
 def test_every_owner_reason_has_a_stan_label_or_an_explicit_fallback() -> None:
     assert {reason for reason in EpisodeReason if reason not in EPISODE_REASON_LABELS} == _UNLABELLED_REASONS
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("reason", [*EpisodeReason, *EPISODE_REASON_LABELS, "reason_from_a_newer_owner"])
-def test_every_refused_stan_label_fits_its_column(reason: str) -> None:
-    assert cell_len(anime_texts.refused_result(reason)[0]) <= anime_view._EPISODE_STATUS_WIDTH
 
 
 @pytest.mark.unit

@@ -11,7 +11,7 @@ from anishift.application import LibrarySet
 from anishift.cli.interactive import state as state_module
 from anishift.cli.interactive import state_library
 from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeSnapshot
-from anishift.cli.interactive.anime_view import _SUBSCRIPTION_STATUS_WIDTH, render_anime
+from anishift.cli.interactive.anime_view import render_anime
 from anishift.cli.interactive.pointer import CRUMB_SEPARATOR
 from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
@@ -309,6 +309,37 @@ def _margins(header: str, first: str, last: str, last_width: int) -> tuple[int, 
     return header.index(first) - 2, 100 - header.index(last) - last_width
 
 
+def _drawn_margins(frame: str, columns: int) -> tuple[int, int]:
+    lines: list[str] = frame.splitlines()
+    _tabs, header, keys = _regions(lines)
+    table: list[str] = [line for line in lines[header : keys - 1] if line.strip()]
+    return min(len(line) - len(line.lstrip()) for line in table), columns - max(len(line.rstrip()) for line in table)
+
+
+@pytest.mark.unit
+def test_a_subscription_table_of_long_titles_has_equal_drawn_margins(library: StateController) -> None:
+    library._tab = state_module._Tab.SUBSCRIPTIONS
+    library._snapshot = {"auto_enabled": True}
+    due: str = datetime(2026, 11, 20, tzinfo=UTC).isoformat()
+    library._subscriptions = [
+        {
+            "subscription_id": f"sub-{index}",
+            "title": f"{_LONG_TITLE} {index:02}",
+            "episode_count": 24,
+            "aired": 22,
+            "ready": 21,
+            "due_at": due,
+            "due_number": 22,
+            "due_state": "polish",
+        }
+        for index in range(23)
+    ]
+
+    left, right = _drawn_margins(library.render(151, 40).plain, 151)
+
+    assert abs(left - right) <= 1
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("tab", [state_module._Tab.FILES, state_module._Tab.SUBSCRIPTIONS])
 def test_the_table_narrows_and_stays_centered_when_the_longest_name_scrolls_away(
@@ -320,14 +351,12 @@ def test_the_table_narrows_and_stays_centered_when_the_longest_name_scrolls_away
         {"subscription_id": "sub-long", "title": _LONG_TITLE, "episode_count": 12, "aired": 3, "ready": 1},
         *library._subscriptions,
     ]
-    width: int = len("z nazwy") if tab == state_module._Tab.FILES else _SUBSCRIPTION_STATUS_WIDTH
-
     first: str = library.render(100, 30).plain
     library.handle_key("end")
     scrolled: str = library.render(100, 30).plain
 
-    wide_left, wide_right = _margins(_line(first, "Stan"), "Tytuł", "Stan", width)
-    left, right = _margins(_line(scrolled, "Stan"), "Tytuł", "Stan", width)
+    wide_left, wide_right = _drawn_margins(first, 100)
+    left, right = _drawn_margins(scrolled, 100)
     assert "Magic Repo" in _line(first, _POINTER)
     assert "…" in _line(first, _POINTER)
     assert "Magic Repo" not in scrolled

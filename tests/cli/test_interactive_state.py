@@ -40,9 +40,9 @@ from anishift.application.control_views import (
     encode_view,
 )
 from anishift.cli.exit_codes import EXIT_SUCCESS
-from anishift.cli.interactive import anime_view, state_library, state_texts
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive import state as state_module
+from anishift.cli.interactive import state_library, state_texts
 from anishift.cli.interactive.anime import _Screen
 from anishift.cli.interactive.mascot import MascotController
 from anishift.cli.interactive.progress import RichRunProgress
@@ -2529,9 +2529,6 @@ def test_every_list_tab_pins_heading_and_keys_and_centers_its_content(
         assert "Subskrypcje" in lines[2]
         assert not lines[crumb].strip()
         assert abs((crumb - 4) - (keys - content[-1] - 1)) <= 1
-        if tab == 1:
-            header: str = next(line for line in lines if "Tytuł" in line)
-            right = columns - header.index("Stan") - anime_view._SUBSCRIPTION_STATUS_WIDTH
         assert abs(left - right) <= 1
     finally:
         controller.close()

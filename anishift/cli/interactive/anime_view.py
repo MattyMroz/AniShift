@@ -74,12 +74,6 @@ _MARGIN: Final[int] = 4
 _COVER_GAP: Final[int] = 2
 """Blank cells between the cover slot and the table, and the fewest left of the slot and right of the table."""
 
-_EPISODE_STATUS_WIDTH: Final[int] = len("Czeka na wydanie")
-"""Fixed Stan column width, so a changing episode state never shifts the centered table."""
-
-_SUBSCRIPTION_STATUS_WIDTH: Final[int] = len("Sprawdzono listę odcinków")
-"""Fixed Stan column width of the subscription list, so a changing state never shifts the table."""
-
 _TITLE_FLOOR: Final[int] = 12
 """Fewest title cells kept before optional table columns are dropped."""
 
@@ -133,7 +127,7 @@ class _Table:
     prefix: int
     title: int
     minimums: tuple[int, ...] = (0, 0, 0, 0)
-    status_width: int = 0
+    whole_status: bool = False
     optional: tuple[int, ...] = ()
     right: tuple[int, ...] = ()
     floor: int = _TITLE_FLOOR
@@ -374,7 +368,7 @@ def _spec(screen: AnimeScreen) -> _Table:
             lambda item: (item.title, item.number, item.ready, item.status),
             2,
             0,
-            status_width=_SUBSCRIPTION_STATUS_WIDTH,
+            whole_status=True,
             optional=(2, 1),
         )
     if screen is AnimeScreen.LIBRARY:
@@ -392,7 +386,7 @@ def _spec(screen: AnimeScreen) -> _Table:
         lambda item: (item.number, item.title, item.date, item.status),
         6,
         1,
-        status_width=_EPISODE_STATUS_WIDTH,
+        whole_status=True,
     )
 
 
@@ -416,8 +410,8 @@ def _widths(  # noqa: PLR0913
     for item in measured:
         for position, value in enumerate(_values(snapshot, item, now)):
             widths[position] = max(widths[position], Text(value).cell_len)
-    if spec.status_width:
-        widths[-1] = spec.status_width
+    if spec.whole_status:
+        widths[-1] = max([widths[-1], *(Text(_values(snapshot, item, now)[-1]).cell_len for item in snapshot.items)])
     if releases:
         widths[-1] = min(widths[-1], limit - spec.prefix - len("Wydanie") - len("Jakość") - 4)
     shown: list[int] = list(range(len(widths)))

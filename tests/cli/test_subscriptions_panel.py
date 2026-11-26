@@ -6,16 +6,13 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import pytest
-from rich.cells import cell_len
 from rich.text import Text
 
 from anishift.application.control_views import encode_view
 from anishift.application.subscription_targets import SubscriptionRow
-from anishift.cli.interactive import anime_view
 from anishift.cli.interactive.anime_state import AnimeRow
 from anishift.cli.interactive.state import StateController
 from anishift.cli.interactive.state_subscriptions import subscription_rows
-from anishift.cli.interactive.subscription_texts import check_state
 from anishift.cli.resident import ResidentSession
 from anishift.platform.local_control import ControlError, ControlErrorCode
 
@@ -265,12 +262,8 @@ def test_the_longest_typical_states_stay_whole_in_their_rows(panel: StateControl
 
     lines: list[str] = _frame(panel, columns, 24).splitlines()
 
-    assert (
-        lines[_line(lines, " Reincarnated as")]
-        .rstrip()
-        .endswith(f"  Odcinek · {(now + week).astimezone():%d.%m %H:%M}")
-    )
-    assert lines[_line(lines, " The Apothecary")].rstrip().endswith("  E12 · czekam na PL")
+    assert lines[_line(lines, "Odcinek · ")].rstrip().endswith(f"  Odcinek · {(now + week).astimezone():%d.%m %H:%M}")
+    assert lines[_line(lines, "E12 · ")].rstrip().endswith("  E12 · czekam na PL")
 
 
 def test_episode_labels_of_different_widths_keep_the_separator_in_one_column() -> None:
@@ -291,10 +284,6 @@ def test_episode_labels_of_different_widths_keep_the_separator_in_one_column() -
     assert {row.status.index("·") for row in rows[:3]} == {5}
     assert rows[0].status.startswith("E8   · ")
     assert rows[3].status == "Wstrzymana"
-
-
-def test_the_status_column_fits_the_longest_check_text() -> None:
-    assert cell_len(check_state({"number": None, "outcome": "refreshed"})) <= anime_view._SUBSCRIPTION_STATUS_WIDTH
 
 
 def test_problem_states_share_the_style_of_every_other_state(panel: StateController) -> None:
@@ -400,9 +389,10 @@ def test_a_check_result_leads_the_text_beneath_the_table_of_a_narrow_terminal(
 
 @pytest.mark.parametrize(("columns", "rows"), _SIZES)
 @pytest.mark.parametrize("change", ["notice", "check"])
-def test_rows_keep_their_position_when_feedback_appears(
+def test_rows_keep_their_position_when_feedback_leaves_the_longest_state(
     panel: StateController, columns: int, rows: int, change: str
 ) -> None:
+    panel._subscriptions = [*panel._subscriptions, _row("c", "Gamma", problem="season_unrecognized")]
     before: list[str] = _frame(panel, columns, rows).splitlines()
     if change == "notice":
         panel._notice = "Usunięto Gamma · Ctrl+Z cofnij"
@@ -480,7 +470,7 @@ def test_the_list_fits_and_every_row_and_key_stays_reachable(panel: StateControl
     ("columns", "labels", "beneath"),
     [
         (120, 4, ""),
-        (50, 2, "odcinki 1/12 · gotowe 0 · That Time I Got Reincarnated as a Slime Season 4"),
+        (50, 3, "gotowe 0 · That Time I Got Reincarnated as a Slime Season 4"),
     ],
 )
 def test_narrow_terminals_drop_optional_columns_and_show_only_what_the_row_hides_beneath_the_table(

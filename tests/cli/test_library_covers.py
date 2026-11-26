@@ -181,6 +181,7 @@ def test_slot_and_table_are_centered_with_the_edge_margin_at_least_the_gap(
 def test_narrow_terminal_keeps_the_margin_equal_to_the_gap(panel: tuple[StateController, _Covers]) -> None:
     controller, _covers = panel
     _subscriptions(controller, 3)
+    controller._subscriptions[0] = {**controller._subscriptions[0], "title": "A Title Long Enough To Be Cut Short"}
 
     anchor: tuple[int, int] | None = _anchor(controller.render(62, 40).plain)
 
@@ -194,7 +195,7 @@ def test_title_shortens_before_the_slot_goes(panel: tuple[StateController, _Cove
     controller._subscriptions[0] = {**controller._subscriptions[0], "title": "A Title Long Enough To Be Cut Short"}
 
     kept: str = controller.render(80, 40).plain
-    dropped: str = controller.render(56, 40).plain
+    dropped: str = controller.render(50, 40).plain
 
     row: str = kept.splitlines()[_row_of(kept, "A Title")]
     assert _anchor(kept) is not None
