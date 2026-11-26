@@ -1579,9 +1579,10 @@ class StateController:
         self._covers.prepare(item for item in shown if item is not None)
         return box
 
-    def _place_cover(self, frame: Text, shown: tuple[int | None, ...], highlight: int) -> None:
-        if NATIVE_IMAGE_ANCHOR in frame.plain and highlight < len(shown):
-            self._cover_id = shown[highlight]
+    def _place_cover(self, frame: Text, shown: tuple[int | None, ...], highlight: int | None) -> None:
+        row: int = 0 if highlight is None else highlight
+        if NATIVE_IMAGE_ANCHOR in frame.plain and row < len(shown):
+            self._cover_id = shown[row]
 
     def _list_body(self, columns: int, rows: int) -> Text:
         covers: tuple[int | None, ...] = self._listed_covers()
@@ -1622,14 +1623,17 @@ class StateController:
         shown: range = range(start, end)
         if cover is not None and room is not None and entries:
             margin, left = cover_columns(columns, cover, block)
-            lines, firsts = self._list_lines(columns, rows, wrapped, shown, selected, footer, left)
-            highlight: int = highlighted_row(self._hovered, selected, shown)
-            if highlight in firsts and place_cover(lines, cover, margin, firsts[highlight], len(lines) - len(footer)):
+            lines, firsts, listed = self._list_lines(columns, rows, wrapped, shown, selected, footer, left, cover[1])
+            highlight: int | None = highlighted_row(self._hovered, selected, shown, covers)
+            band: range = range(listed.start, len(lines) - len(footer))
+            if highlight is not None and highlight in firsts:
+                listed = range(firsts[highlight], firsts[highlight] + 1)
+            if (highlight is None or highlight in firsts) and place_cover(lines, cover, margin, listed, band):
                 frame: Text = Text("\n").join(lines)
                 self._place_cover(frame, covers, highlight)
                 return frame
         centered: int = max((columns - block) // 2, 0)
-        return Text("\n").join(self._list_lines(columns, rows, wrapped, shown, selected, footer, centered)[0])
+        return Text("\n").join(self._list_lines(columns, rows, wrapped, shown, selected, footer, centered, 0)[0])
 
     def _list_lines(  # noqa: PLR0913
         self,
@@ -1640,10 +1644,12 @@ class StateController:
         selected: int,
         footer: list[Text],
         left: int,
-    ) -> tuple[list[Text], dict[int, int]]:
+        slot: int,
+    ) -> tuple[list[Text], dict[int, int], range]:
         content: Text = Text()
         remaining: int = max(rows - 2 - len(footer), 1)
         firsts: dict[int, int] = {}
+        drawn: int = 0
         for index in shown:
             if remaining <= 0:
                 break
@@ -1651,13 +1657,14 @@ class StateController:
             firsts[index] = sum(len(item) for item in wrapped[shown.start : index])
             append_wrapped_row(content, left, lines, index == selected, "", index=index)
             remaining -= len(lines)
+            drawn += len(lines)
             self._page = max(index - shown.start + 1, 1)
         if not wrapped:
             content.append("\n")
             content.append_text(self._empty_line(columns))
         body: list[Text] = [self._breadcrumb(columns), *content.split("\n")]
         area: int = rows - len(footer)
-        top: int = max((area - len(body)) // 2, 0)
+        top: int = max((area - max(len(body), 1 + slot)) // 2, 0)
         padding: list[Text] = [Text() for _ in range(max(area - top - len(body), 0))]
         lines_shown: list[Text] = [
             *(Text() for _ in range(top)),
@@ -1665,7 +1672,7 @@ class StateController:
             *padding,
             *(_centered(line, columns) for line in footer),
         ]
-        return lines_shown, {index: top + 1 + line for index, line in firsts.items()}
+        return lines_shown, {index: top + 1 + line for index, line in firsts.items()}, range(top + 1, top + 1 + drawn)
 
     def _listed_covers(self) -> tuple[int | None, ...]:
         if self._tab != _Tab.PROGRESS or self._history_open or self._retry is not None:
@@ -1843,7 +1850,7 @@ class StateController:
             offset = max(min(offset, self._selected), self._selected - visible + 1)
         self._offsets[viewport] = offset
         listed: range = range(offset, min(offset + visible, len(items)))
-        highlight: int = highlighted_row(self._hovered, self._selected, listed)
+        highlight: int | None = highlighted_row(self._hovered, self._selected, listed, covers)
         frame: AnimeFrame = render_anime(
             replace(snapshot, offset=offset, highlight=highlight), columns, area, self._clock().timestamp()
         )

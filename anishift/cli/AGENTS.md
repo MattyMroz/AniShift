@@ -186,9 +186,13 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   i jedna sesja usuwają zestaw po zestawie; odmowa jednego wraca sama. Testy: `test_library_titles.py`.
 - Okładka: slot stałego rozmiaru stoi po lewej, okładka i tabela są wyśrodkowane jako blok z odstępem
   `_COVER_GAP`, a margines od krawędzi nie spada poniżej odstępu; przy braku miejsca najpierw skraca się tytuł,
-  potem znika okładka (`anime_view._layout`). Slot jest wyśrodkowany na podświetlonym wierszu (hover z
-  `FrameSelection.hovered_row`, inaczej kursor) i dokleja się do krawędzi pustego pasa wierszy. Tabele i lista
-  Przetwarzania (`_list_body`) dzielą jedną regułę: `beside_cover`, `cover_columns`, `place_cover`.
+  potem znika okładka (`anime_view._layout`). Blok wyśrodkowuje się w pionie z wysokością slotu, a okruszki i
+  podsumowanie nad tabelą stoją na środku bloku. Pas slotu zaczyna się od nagłówka kolumn (w Przetwarzaniu od
+  pierwszego wiersza) i kończy nad stopką; slot nigdy nie wchodzi na okruszki, podsumowanie ani stopkę. Gdy
+  wszystkie wiersze mają tę samą okładkę (odcinki jednego tytułu), slot stoi nieruchomo na środku wierszy listy;
+  inaczej jest wyśrodkowany na podświetlonym wierszu (hover z `FrameSelection.hovered_row`, inaczej kursor;
+  `highlighted_row`). Przy krótkiej liście dokleja się do krawędzi pasa. Tabele i lista Przetwarzania
+  (`_list_body`) dzielą jedną regułę: `beside_cover`, `cover_columns`, `place_cover`.
   `StateController.cover()` zwraca obraz tego wiersza; render woła `CoverImages.prepare` dla całej listy, wątek
   `anishift-cover` koduje brakujące, a trafienie czyta gotowy ładunek w tej samej klatce. Bez SIXEL, miejsca albo
   okładki w snapshot `covers` klatka jest taka jak bez okładek. Testy: `test_library_covers.py`.

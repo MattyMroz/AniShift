@@ -3631,12 +3631,12 @@ def test_search_results_name_their_own_covers_and_follow_the_hover() -> None:
 
     frame: str = controller.render(120, 40, cover=(19, 13), hovered=1).plain
     anchor: tuple[int, int] | None = _cover_anchor(frame)
-    other: int = next(row for row, line in enumerate(frame.splitlines()) if "Other" in line)
+    header: int = next(row for row, line in enumerate(frame.splitlines()) if "Premiera" in line)
 
     assert controller.cover_ids() == (1, 9)
     assert controller.highlighted() == 1
     assert anchor is not None
-    assert anchor[0] + 6 == other
+    assert anchor[0] == header
     assert controller._highlighted == 0
 
 
@@ -3652,3 +3652,21 @@ def test_episodes_of_an_opened_title_show_its_cover_on_every_row() -> None:
     assert ids
     assert set(ids) == {1}
     assert _cover_anchor(controller.render(120, 40, cover=(19, 13)).plain) is not None
+
+
+@pytest.mark.unit
+def test_episodes_of_an_opened_title_keep_the_slot_still_under_the_cursor_and_hover() -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.titles = (_title(),)
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+
+    first: tuple[int, int] | None = _cover_anchor(controller.render(120, 40, cover=(19, 13)).plain)
+    _key(controller, "down")
+    _key(controller, "down")
+    moved: tuple[int, int] | None = _cover_anchor(controller.render(120, 40, cover=(19, 13)).plain)
+    hovered: tuple[int, int] | None = _cover_anchor(controller.render(120, 40, cover=(19, 13), hovered=0).plain)
+
+    assert first is not None
+    assert first == moved == hovered
+    assert controller.highlighted() is None

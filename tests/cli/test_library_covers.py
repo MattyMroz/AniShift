@@ -14,6 +14,8 @@ from anishift.application import AppService
 from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive import covers as covers_module
 from anishift.cli.interactive import state as state_module
+from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeSnapshot, NoticeKind
+from anishift.cli.interactive.anime_view import render_anime
 from anishift.cli.interactive.covers import CoverImages
 from anishift.cli.interactive.native_image import NATIVE_IMAGE_ANCHOR, NativeImage
 from anishift.cli.interactive.prompts import TerminalRenderer
@@ -243,7 +245,9 @@ def test_slot_sticks_to_the_bottom_on_the_last_row(panel: tuple[StateController,
     assert anchor[0] + _BOX[1] - 1 == _row_of(frame, "Show 39")
 
 
-def test_short_list_centers_the_slot_on_the_cursor_above_the_table(panel: tuple[StateController, _Covers]) -> None:
+def test_short_list_slot_hangs_from_the_column_header_and_never_above_it(
+    panel: tuple[StateController, _Covers],
+) -> None:
     controller, _covers = panel
     _subscriptions(controller, 3)
     controller.handle_key("down")
@@ -252,8 +256,8 @@ def test_short_list_centers_the_slot_on_the_cursor_above_the_table(panel: tuple[
     anchor: tuple[int, int] | None = _anchor(frame)
 
     assert anchor is not None
-    assert anchor[0] + (_BOX[1] - 1) // 2 == _row_of(frame, "Show 01")
-    assert anchor[0] < _row_of(frame, "Tytuł")
+    assert anchor[0] == _row_of(frame, "Tytuł")
+    assert anchor[0] + _BOX[1] <= _row_of(frame, "Esc wróć")
 
 
 def test_hovered_row_moves_the_slot_and_the_cover(panel: tuple[StateController, _Covers]) -> None:
@@ -560,6 +564,88 @@ def test_processing_history_has_no_slot(panel: tuple[StateController, _Covers]) 
     controller._history_open = True
 
     assert _anchor(controller.render(140, 40).plain) is None
+
+
+def _one_title(controller: StateController, episodes: int, title: str = "Alpha") -> None:
+    controller._snapshot = {
+        "library": [{**_keyed(f"x{number}", 12, title, 1), "episode": number} for number in range(1, episodes + 1)],
+        "covers": [12],
+    }
+    controller.handle_key("enter")
+
+
+def test_one_title_slot_stands_still_while_the_cursor_and_hover_move(panel: tuple[StateController, _Covers]) -> None:
+    controller, covers = panel
+    _one_title(controller, 20)
+
+    first: tuple[int, int] | None = _anchor(controller.render(120, 40).plain)
+    for _press in range(15):
+        controller.handle_key("down")
+    moved: tuple[int, int] | None = _anchor(controller.render(120, 40).plain)
+    hovered: str = controller.render(120, 40, hovered=2).plain
+    rows: list[int] = [_row_of(hovered, f"S01E{number:02}") for number in range(1, 21)]
+
+    assert first is not None
+    assert first == moved == _anchor(hovered)
+    assert abs(first[0] + (_BOX[1] - 1) / 2 - (rows[0] + rows[-1]) / 2) <= 1
+    assert controller.cover() is not None
+    assert covers.asked[-1] == 12
+
+
+def test_one_title_with_one_episode_and_a_long_name_keeps_its_slot(panel: tuple[StateController, _Covers]) -> None:
+    controller, _covers = panel
+    _one_title(controller, 1, "The Exiled Heavy Knight Knows How to Game the System")
+
+    frame: str = controller.render(120, 30).plain
+    anchor: tuple[int, int] | None = _anchor(frame)
+
+    assert anchor is not None
+    assert anchor[0] == _row_of(frame, "Tytuł")
+    assert anchor[0] + _BOX[1] <= _row_of(frame, "Esc wróć")
+    assert controller.cover() is not None
+
+
+_LONG_EPISODE: str = "A Much Longer Episode Title Than Usual"
+
+
+def _subscription_episodes(cursor: int, columns: int) -> list[str]:
+    items: tuple[AnimeRow, ...] = tuple(
+        AnimeRow(f"e{index}", f"{_LONG_EPISODE} {index}", number=str(index), date="29.11.2026", status="Gotowe")
+        for index in (1, 2, 3)
+    )
+    snapshot: AnimeSnapshot = AnimeSnapshot(
+        AnimeScreen.EPISODES,
+        "",
+        items,
+        cursor=cursor,
+        crumbs=("Subskrypcje", "Show"),
+        global_status="E9 · 29.11 13:30 · odcinki 8/13 · gotowe 0",
+        status_kind=NoticeKind.INFO,
+        cover=_BOX,
+    )
+    return render_anime(snapshot, columns, 40, 0.0).text.plain.splitlines()
+
+
+@pytest.mark.parametrize("columns", [140, 200])
+def test_subscription_episodes_keep_crumbs_and_summary_out_of_the_slot_and_centered_on_the_block(
+    columns: int,
+) -> None:
+    lines: list[str] = _subscription_episodes(0, columns)
+    frame: str = "\n".join(lines)
+    anchor: tuple[int, int] | None = _anchor(frame)
+    crumbs: int = _row_of(frame, "Subskrypcje")
+    summary: int = _row_of(frame, "gotowe 0")
+    header: int = _row_of(frame, "Tytuł")
+
+    assert anchor is not None
+    assert anchor[0] == header
+    assert crumbs < summary < anchor[0]
+    assert _anchor("\n".join(_subscription_episodes(2, columns))) == anchor
+    right: int = max(len(line.rstrip()) for line in lines[header : header + 4])
+    for row in (crumbs, summary):
+        text: str = lines[row].strip()
+        middle: float = lines[row].index(text) + len(text) / 2
+        assert abs(middle - (anchor[1] + right) / 2) <= 1
 
 
 def _cover_file(directory: Path, anilist_id: int) -> None:

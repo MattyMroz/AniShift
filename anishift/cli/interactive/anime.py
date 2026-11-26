@@ -860,7 +860,7 @@ class AnimeController:
             if not self._details_open:
                 self._offsets[self._screen] = offset
             shown: range = range(offset, min(offset + self._visible_count, len(self._view.items)))
-            self._view.highlight = highlighted_row(hovered, self._view.cursor, shown)
+            self._view.highlight = highlighted_row(hovered, self._view.cursor, shown, self.cover_ids())
             return self._panel.frame(columns, rows)
 
     def cover_ids(self) -> tuple[int | None, ...]:
@@ -879,10 +879,10 @@ class AnimeController:
             )
             return (opened if isinstance(opened, int) else None,) * len(items)
 
-    def highlighted(self) -> int:
-        """Return the row the last frame centered the cover slot on."""
+    def highlighted(self) -> int | None:
+        """Return the row the last frame centered the cover slot on, None when it centered on the whole list."""
         with self._lock:
-            return self._view.cursor if self._view.highlight is None else self._view.highlight
+            return self._view.highlight
 
     def mouse(self, event: MouseEvent) -> Click:
         """Delegate text selection and row clicks to the shared Anime panel and name what the click asks for."""
