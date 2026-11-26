@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import threading
 import time
 import unicodedata
@@ -48,6 +47,8 @@ from anishift.application.episode_selection import (
     suggestion,
     tvdb_show_id,
 )
+from anishift.application.library import EpisodeName
+from anishift.application.products import safe_name_part
 from anishift.application.subscription_choice import ABSENT_AFTER_H
 from anishift.application.subscription_targets import PolishState
 from anishift.errors import AniShiftError, ErrorCode
@@ -73,6 +74,7 @@ if TYPE_CHECKING:
     from anishift.application.episode_selection import (
         EpisodeListing,
         Franchise,
+        FranchiseEntry,
         FranchiseGraph,
         JsonObject,
         RankedCandidate,
@@ -118,6 +120,7 @@ __all__ = [
     "read_episode",
     "series_directory_name",
     "series_forms",
+    "target_episode_name",
 ]
 
 logger = get_logger(__name__)
@@ -159,14 +162,6 @@ SEEDING_STOP_PREFERENCES: Final[Mapping[str, object]] = {
     "max_seeding_time": 0,
 }
 """Client preferences stopping every torrent the moment its download completes, so nothing is seeded."""
-
-_INVALID_NAME_CHARACTERS: Final[re.Pattern[str]] = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-"""Characters Windows refuses inside one path component."""
-
-_RESERVED_NAMES: Final[frozenset[str]] = frozenset(
-    {"CON", "PRN", "AUX", "NUL", *(f"COM{n}" for n in range(1, 10)), *(f"LPT{n}" for n in range(1, 10))}
-)
-"""Device names Windows refuses as a file or directory name regardless of extension."""
 
 _FALLBACK_DIRECTORY: Final[str] = "Nieznana seria"
 """Directory used when a release title leaves nothing usable for a folder name."""
@@ -513,6 +508,22 @@ class _Remembered:
         return now - fetched_at < (age if age is not None else _FALLBACK_CACHE_S)
 
 
+def target_episode_name(title: str, number: int, target: Mapping[str, object]) -> EpisodeName:
+    """Return the name facts the H1 target of one chosen episode holds, which never include an episode title."""
+    season: object = target.get("season")
+    episode: object = target.get("episode")
+    listed: ListedEpisode = (
+        ListedEpisode(number, season=season, episode=episode)
+        if isinstance(season, int) and isinstance(episode, int)
+        else ListedEpisode(number)
+    )
+    return EpisodeName(title, listed, film=target.get("type") == _MOVIE_FORMAT)
+
+
+def _entry_title(entry: FranchiseEntry) -> str:
+    return entry.english or entry.romaji
+
+
 def _movie(graph_movie: bool | None, mapping: AniZipMapping) -> bool:
     return graph_movie if graph_movie is not None else mapping.catalog_type == _MOVIE_FORMAT
 
@@ -606,13 +617,7 @@ def normalize_series(text: str) -> str:
 
 def series_directory_name(series: str) -> str:
     """Turn a series title into one directory name Windows accepts."""
-    cleaned: str = _INVALID_NAME_CHARACTERS.sub("", series)
-    cleaned = " ".join(cleaned.split()).rstrip(". ")
-    if not cleaned:
-        return _FALLBACK_DIRECTORY
-    if cleaned.split(".", maxsplit=1)[0].upper() in _RESERVED_NAMES:
-        return f"_{cleaned}"
-    return cleaned
+    return safe_name_part(series) or _FALLBACK_DIRECTORY
 
 
 class AcquisitionService:
@@ -869,6 +874,48 @@ class AcquisitionService:
     def franchise(self, anilist_id: int, *, cancel: CancellationToken | None = None) -> Franchise:
         """Return the franchise view rooted at one entry, remembering its graph while fresh."""
         return franchise_view(self._franchise_graph(anilist_id, cancel), anilist_id)
+
+    def catalogue_title(self, anilist_id: int) -> str:
+        """Return the English AniList title of one entry, else its romaji one, remembered when AniList fails."""
+        return _entry_title(self._catalogue_entry(anilist_id))
+
+    def episode_name(self, anilist_id: int, number: int) -> EpisodeName:
+        """Return the catalogue facts one downloaded episode is named after, without numbering when ani.zip fails."""
+        entry: FranchiseEntry = self._catalogue_entry(anilist_id)
+        episode: ListedEpisode = ListedEpisode(number)
+        try:
+            listing: EpisodeListing = self.episodes(anilist_id)
+        except (AniShiftError, OSError, ValueError) as error:
+            logger.warning("Episode name listing unavailable", provider="anizip", error_class=type(error).__name__)
+        else:
+            episode = next((item for item in listing.episodes if item.number == number), episode)
+        return EpisodeName(_entry_title(entry), episode, film=entry.format == _MOVIE_FORMAT)
+
+    def _catalogue_entry(self, anilist_id: int) -> FranchiseEntry:
+        graph: FranchiseGraph
+        try:
+            graph = self._franchise_graph(anilist_id)
+        except AniShiftError, OSError, ValueError:
+            with self._memory_lock:
+                remembered: FranchiseGraph | None = next(
+                    (
+                        item.graph
+                        for item in self._memory.values()
+                        if item.graph is not None and anilist_id in item.graph.nodes
+                    ),
+                    None,
+                )
+            if remembered is None:
+                raise
+            logger.info("Remembered catalogue entry used", provider="anilist")
+            graph = remembered
+        entry: FranchiseEntry | None = next(
+            (item for item in franchise_view(graph, anilist_id).entries if item.anilist_id == anilist_id), None
+        )
+        if entry is None:
+            msg = "The entry is absent from its own franchise"
+            raise ValueError(msg)
+        return entry
 
     def _franchise_graph(self, anilist_id: int, cancel: CancellationToken | None = None) -> FranchiseGraph:
         now: float = self._clock()

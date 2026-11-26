@@ -38,6 +38,7 @@ EPISODE_REASON_LABELS: Final[dict[str, str]] = {
     EpisodeReason.EPISODE_FILE_UNRESOLVED: "Wskaż plik",
     EpisodeReason.TRANSFER_FAILED: "Błąd pobierania",
     EpisodeReason.PUBLICATION_FAILED: "Błąd eksportu",
+    EpisodeReason.EPISODE_NAME_WAITING: "Czeka na AniList",
     EpisodeReason.WAITING_PREVIOUS_TRANSFER: "Czeka w kolejce",
     EpisodeReason.PUBLICATION_MISSING: "Brak pliku",
     EpisodeReason.RESULT_MISSING: "Do pobrania",

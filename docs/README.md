@@ -42,6 +42,7 @@ Historyczne plany i wyniki opisują swoje baseline'y, nie gwarantują dzisiejsze
 | [20-style-boundaries/](work/20-style-boundaries/) | Granice stylów po tłumaczeniu | niezaczęte: plan czeka na decyzje właściciela D1–D5; zgłoszenie [#34](https://github.com/MattyMroz/AniShift/issues/34) | — |
 | [22-live-settings/](work/22-live-settings/plan.md) | Ustawienia na żywo: każdy krok bierze ustawienia z chwili startu, ponowienie powtarza tylko to, co nie wyszło | aktywne: plan przyjęty, przebudowa w toku | — |
 | [21-playshift/](work/21-playshift/) | PlayShift (nazwa robocza): przenośny odtwarzacz na mpv, research, specyfikacja, masterplan, pomiary etapu 01 | aktywne: dokumenty scalone, pomiary etapu 01 wykonane; czeka ocena właściciela (K1) | [#85](https://github.com/MattyMroz/AniShift/pull/85), [#98](https://github.com/MattyMroz/AniShift/pull/98) |
+| [23-episode-file-names/](work/23-episode-file-names/plan.md) | Wspólne nazwy gotowych odcinków `<seria> - SxxEyy - <tytuł odcinka>` i jednorazowa zmiana nazw w `ready/` | niezaczęte: plan czeka na decyzje właściciela O-1…O-12 i na workstream 19 | — |
 
 ## Dalsza praca i wznowienie
 
