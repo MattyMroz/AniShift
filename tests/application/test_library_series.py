@@ -52,6 +52,7 @@ from anishift.application.library import (
 from anishift.application.subscription_targets import SubscriptionRecord
 from anishift.application.workflows import WorkflowTarget
 from anishift.errors import ErrorCode, ErrorContext
+from anishift.platform.local_control import ControlResponse
 from anishift.services.catalog import TitleCandidate, TitleCatalogError, TitleStatus
 from anishift.services.http_requests import RequestControl
 
@@ -440,6 +441,16 @@ def test_a_remake_with_a_year_keeps_a_yearless_name_from_name() -> None:
 
 
 @pytest.mark.unit
+def test_a_name_with_the_remake_year_recognizes_the_remake() -> None:
+    candidates: tuple[TitleCandidate, ...] = (
+        _candidate(136, "HUNTER×HUNTER", "Hunter x Hunter"),
+        _candidate(11061, "HUNTER×HUNTER (2011)", "Hunter x Hunter (2011)"),
+    )
+
+    assert recognize(candidates, "Hunter x Hunter (2011)", 1, 5) == 11061
+
+
+@pytest.mark.unit
 def test_an_episode_beyond_the_entry_count_stays_from_name() -> None:
     candidates: tuple[TitleCandidate, ...] = (
         _candidate(113415, "Jujutsu Kaisen", episodes=24),
@@ -586,6 +597,25 @@ def test_recognition_runs_on_its_own_thread_after_the_anilist_cooldown(tmp_path:
         thread.join(_TIMEOUT_S)
     assert set(titles.threads) == {"anishift-owner-recognition"}
     assert titles.cooling_seen[0] > 3
+
+
+@pytest.mark.integration
+def test_recognition_waiting_for_anilist_never_shows_the_automation_pausing(tmp_path: Path) -> None:
+    control: _CoolingControl = _CoolingControl(cooling=10**9)
+    owner: AutomationOwner = _hand_owner(tmp_path, _ThreadSearching(control), cast("RequestControl", control))
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert owner.handle(_request("library_refresh")).ok
+        deadline: float = time.monotonic() + _TIMEOUT_S
+        while control.asked < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        status: ControlResponse = owner.handle(_request("status"))
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert control.asked >= 2
+    assert status.result["pausing"] is False
+    assert not thread.is_alive()
 
 
 @pytest.mark.integration

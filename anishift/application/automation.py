@@ -948,6 +948,7 @@ class AutomationOwner:
         self._shutting_down: bool = False
         self._serving: bool = False
         self._active_io: int = 0
+        self._recognizing: int = 0
         self._transfers: TransferInspector | None = (
             TransferInspector(service.acquisition, service.workspace_root) if service.acquisition is not None else None
         )
@@ -1279,7 +1280,13 @@ class AutomationOwner:
     def _drained(self) -> bool:
         if not self._shutting_down:
             return False
-        return not self._pending and not self._service.active_run_ids() and not self._inspecting and not self._active_io
+        return (
+            not self._pending
+            and not self._service.active_run_ids()
+            and not self._inspecting
+            and not self._active_io
+            and not self._recognizing
+        )
 
     def _record_inspection(
         self, workspace: InspectedWorkspace | None, journals: tuple[tuple[ProcessingRequest, RunJournal], ...] = ()
@@ -8564,7 +8571,7 @@ class AutomationOwner:
         if not wanted:
             return
         self._recognition_requested.update(wanted)
-        self._active_io += 1
+        self._recognizing += 1
         threading.Thread(
             target=self._read_recognition, args=(acquisition, wanted), name=_RECOGNITION_THREAD, daemon=True
         ).start()
@@ -8635,7 +8642,7 @@ class AutomationOwner:
             return None, True
 
     def _record_recognition(self, found: dict[tuple[str, int], int | None]) -> None:
-        self._active_io -= 1
+        self._recognizing -= 1
         self._recognized.update(found)
         if any(value is not None for value in found.values()):
             self._publish_state()
