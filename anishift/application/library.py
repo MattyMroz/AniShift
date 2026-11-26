@@ -28,6 +28,7 @@ from anishift.application.control import (
 from anishift.application.control_views import LibraryFile, LibraryFileIdentity, LibrarySet
 from anishift.application.discovery import ArtifactName, classify_artifact
 from anishift.application.episode_identity import TECHNICAL, VIDEO_EXTENSIONS
+from anishift.application.episode_selection import ListedEpisode
 from anishift.application.intents import GroupIntent
 from anishift.application.products import episode_stem, main_product
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, WorkspacePlace
@@ -41,7 +42,6 @@ from anishift.services.torrents.names import (
 )
 
 if TYPE_CHECKING:
-    from anishift.application.episode_selection import ListedEpisode
     from anishift.application.subscription_targets import SubscriptionRecord
     from anishift.services.torrents.types import ReleaseName
 
@@ -264,18 +264,26 @@ def name_series(sets: Sequence[LibrarySet], state: WatchState, titles: Mapping[i
         if episode is None or title is None:
             named.append(item)
             continue
-        season: int | None = None if episode.number is None else _series_season(title, record, episode.number)
+        numbering: tuple[int, int] | None = (
+            None if episode.number is None else _numbering(title, record, episode.number)
+        )
         named.append(
-            replace(item, series=series_title(title), season=season, episode=None if season is None else episode.number)
+            replace(
+                item,
+                series=series_title(title),
+                season=None if numbering is None else numbering[0],
+                episode=None if numbering is None else numbering[1],
+            )
         )
     return tuple(named)
 
 
-def _series_season(title: str, record: SubscriptionRecord | None, number: int) -> int | None:
-    hint: int | None = season_hint(title)
-    if hint is not None or record is None or record.mapping is None:
-        return hint
-    return next((item.season for item in record.mapping.episodes if item.number == number), None)
+def _numbering(title: str, record: SubscriptionRecord | None, number: int) -> tuple[int, int] | None:
+    mapped: tuple[ListedEpisode, ...] = () if record is None or record.mapping is None else record.mapping.episodes
+    listed: ListedEpisode = next((item for item in mapped if item.number == number), ListedEpisode(number))
+    if listed.season is None and season_hint(title) is None:
+        return None
+    return episode_numbering(listed, title, film=False)
 
 
 def file_identity(root: Path, name: str) -> LibraryFileIdentity | None:

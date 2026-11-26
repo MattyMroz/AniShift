@@ -166,6 +166,18 @@ def test_name_series_gives_seasons_of_one_franchise_one_base_name() -> None:
 
 
 @pytest.mark.unit
+def test_name_series_numbers_a_split_cour_episode_like_its_file_name() -> None:
+    mapping: AniZipMapping = AniZipMapping(1, "TV", 24, (ListedEpisode(13, season=2, episode=1),), (), None, {})
+    state: WatchState = WatchState(
+        acquisitions=(_downloaded("kaiju", 178754, 13),),
+        ready_groups=(_ready("kaiju", "Kaiju No. 8 - S02E01 - Fear"),),
+        subscriptions=(_followed(178754, "Kaiju No. 8", mapping),),
+    )
+
+    assert _named(state) == {"Kaiju No. 8 - S02E01 - Fear": ("Kaiju No. 8", 2, 1)}
+
+
+@pytest.mark.unit
 def test_name_series_takes_the_season_from_the_subscription_mapping_when_the_title_names_none() -> None:
     mapping: AniZipMapping = AniZipMapping(1, "TV", 4, (ListedEpisode(3, season=1, episode=3),), (), None, {})
     state: WatchState = WatchState(
