@@ -8,7 +8,9 @@ the code:
 - `settings.json` stores workflow and engine preferences;
 - `presets.json` stores reusable run presets and the default preset;
 - `watch/` stores resident control state, including subscriptions in
-  `watch/state.json`, and its local endpoint credentials;
+  `watch/state.json`, and its local endpoint credentials. `watch/recognition.json`
+  caches the AniList entry found (or not found) for each hand-added Library title;
+  deleting it only makes the resident search those titles again;
 - `qbittorrent/` stores the resident's private client profile, process
   receipt and credentials. The executable is in `external/bin/qbittorrent/`;
 - `elevenreader/` stores the ElevenReader browser profile in `chrome-profile/`

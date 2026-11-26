@@ -140,6 +140,9 @@ class _TitleCatalog:
         self.searched.append(text)
         return self.candidates[:limit]
 
+    def search_many(self, texts: Collection[str], *, limit: int = 7) -> dict[str, tuple[TitleCandidate, ...]]:
+        return {text: self.search(text, limit=limit) for text in texts}
+
     def prequel_episodes(self, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
         return self.prequels
 

@@ -514,6 +514,35 @@ def test_search_does_not_retry_when_no_word_can_be_shortened() -> None:
     assert searched == ["one"]
 
 
+def test_search_many_asks_for_up_to_twenty_titles_in_one_aliased_request_and_shortens_misses_once() -> None:
+    bodies: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body: dict[str, Any] = json.loads(request.content)
+        bodies.append(body)
+        searched: dict[str, str] = {key: value for key, value in body["variables"].items() if key != "limit"}
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    f"t{key.removeprefix('s')}": {"media": [_SOLO_LEVELING] if text == "sol level" else []}
+                    for key, text in searched.items()
+                }
+            },
+        )
+
+    catalog, http = _catalog(handler)
+    texts: list[str] = [f"x{index}" for index in range(20)] + ["solo levelling", "one"]
+    with http:
+        found: dict[str, tuple[TitleCandidate, ...]] = catalog.search_many(texts)
+
+    assert [len(body["variables"]) - 1 for body in bodies] == [20, 2, 1]
+    assert bodies[2]["variables"]["s0"] == "sol level"
+    assert all("t0: Page(perPage: $limit)" in body["query"] for body in bodies)
+    assert bodies[0]["variables"]["limit"] == 7
+    assert [len(found[text]) for text in texts] == [0] * 20 + [1, 0]
+
+
 def test_search_rejects_a_rate_limited_answer() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(429, json={"errors": [{"message": "Too Many Requests"}]})

@@ -107,11 +107,14 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   i czystego `library_series`; daje nazwę serii i numer sezonu, a `entry_title` to tytuł wpisu (sezonu), pod którym
   Biblioteka grupuje zestawy. Wiersze Przetwarzania (`_download_materials`, zlecenie grupy z `ready_groups`) niosą
   `anilist_id/series/entry_title/season/episode` z tego samego `episode_entry`; `library_entries` obejmuje każde
-  zamówione pobranie, także w toku, więc seria i okładka są znane przed gotowym wynikiem. Zestaw ręczny (`hand_key`) owner szuka raz na
-  uruchomienie (`recognize`: dokładnie jeden kandydat z aliasem równym tytułowi z nazwy w tym samym sezonie, żaden
-  remake z rokiem ani wpis o mniejszej liczbie odcinków); inaczej zostaje `name`. Wyszukiwania biegną na własnym wątku
-  `anishift-owner-recognition` (nie w puli I/O, na której czeka usuwanie i Ctrl+Z), co `RECOGNITION_INTERVAL_S`, i
-  czekają na koniec przerwy AniList (`RequestControl.cooling`). Serie, rozpoznania i okładki żyją tylko w pamięci ownera. Okładki (`_request_covers`) pobiera owner w
+  zamówione pobranie, także w toku, więc seria i okładka są znane przed gotowym wynikiem. Zestaw ręczny (`hand_key`) owner szuka raz
+  (`recognize`: dokładnie jeden kandydat z aliasem równym tytułowi z nazwy w tym samym sezonie, żaden
+  remake z rokiem ani wpis o mniejszej liczbie odcinków); inaczej zostaje `name`. Wynik (wpis albo brak dopasowania)
+  trafia do `recognition.json` obok `state.json` (`load_recognized`/`save_recognized`, zły plik = pusta pamięć), który
+  owner czyta w konstruktorze. Nowe tytuły idą jednym aliasowanym zapytaniem (`search_many`, po `SEARCH_BATCH`, bo
+  każdy alias kosztuje punkt limitu AniList) na własnym wątku `anishift-owner-recognition` (nie w puli I/O, na której
+  czeka usuwanie i Ctrl+Z) po końcu przerwy AniList (`RequestControl.cooling`). Nieudane wyszukiwanie niczego nie
+  zapisuje; owner ponawia je po `RECOGNITION_RETRY_S`. Serie i okładki żyją tylko w pamięci ownera. Okładki (`_request_covers`) pobiera owner w
   puli I/O do katalogu podanego przez `run_resident(cover_dir=...)`; bez katalogu (testy) okładek nie ma. Snapshot
   `covers` to ID z plikiem w cache. Testy: `test_library_series.py`.
 - Usuwanie z Biblioteki pomija pobranie tylko w `COMPLETE` z receipt managera dowodzącym zwolnienia (odczyt w puli

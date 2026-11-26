@@ -253,6 +253,7 @@ from anishift.application.transfers import (
     video_sidecars,
 )
 from anishift.application.watch import SCAN_INTERVAL_S, WatchLedger, snapshot_sources, source_fingerprint
+from anishift.application.watch_state import load_recognized, save_recognized
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, resolve_route
 from anishift.config.workspace import cleanup_orphaned_tmp, run_tmp_dir
 from anishift.errors import AniShiftError, ErrorCode, ExecutionError, MediaProbeError, UnsupportedMediaError
@@ -315,14 +316,14 @@ IO_WORKERS: Final[int] = 2
 _RECOGNITION_THREAD: Final[str] = "anishift-owner-recognition"
 """Thread searching hand-added Library titles, kept off the I/O pool that deletion and Ctrl+Z wait on."""
 
-RECOGNITION_INTERVAL_S: Final[float] = 2.0
-"""Pause before each hand-added title search, keeping them within the measured 30 AniList requests a minute."""
+RECOGNITION_RETRY_S: Final[float] = 60.0
+"""Wait after a failed search of hand-added titles before the owner searches them again."""
 
 _RECOGNITION_COOLDOWN_POLL_S: Final[float] = 0.5
 """Interval at which a waiting hand-added search checks whether the AniList cooldown ended."""
 
 _RECOGNITION_ATTEMPTS: Final[int] = 3
-"""Searches of one hand-added title while AniList answers with a cooldown."""
+"""Searches of the same hand-added titles while AniList answers with a cooldown."""
 
 TRANSFER_CHECK_INTERVAL_S: Final[float] = 10.0
 """Delay between shared client reads while accepted transfers need completion proof."""
@@ -992,9 +993,10 @@ class AutomationOwner:
         self._ready_groups: tuple[SourceGroup, ...] = ()
         self._series: dict[int, LibrarySeries] = {}
         self._series_requested: set[int] = set()
-        self._recognized: dict[tuple[str, int], int | None] = {}
-        self._recognition_requested: set[tuple[str, int]] = set()
-        self._recognition_interval_s: float = RECOGNITION_INTERVAL_S
+        self._recognized: dict[tuple[str, int], int | None] = load_recognized(store.recognition_path())
+        self._recognition_requested: set[tuple[str, int]] = set(self._recognized)
+        self._recognition_retry_s: float = RECOGNITION_RETRY_S
+        self._recognition_retry_at: float | None = None
         self._stopping: threading.Event = threading.Event()
         self._covers: set[int] = set()
         self._covers_requested: set[int] = set()
@@ -1251,6 +1253,7 @@ class AutomationOwner:
                         self._inspection_at,
                         self._subscriptions_at,
                         self._ready_retry_at,
+                        self._recognition_retry_at,
                     )
                     if deadline is not None
                 )
@@ -1262,6 +1265,7 @@ class AutomationOwner:
                 self._poll_transfers()
                 self._poll_subscriptions()
                 self._poll_ready()
+                self._poll_recognition()
                 continue
             except KeyboardInterrupt:
                 item = None
@@ -1285,6 +1289,7 @@ class AutomationOwner:
             self._poll_transfers()
             self._poll_subscriptions()
             self._poll_ready()
+            self._poll_recognition()
             if self._drained():
                 return
 
@@ -8684,7 +8689,7 @@ class AutomationOwner:
 
     def _request_recognition(self) -> None:
         acquisition: AcquisitionService | None = self._service.acquisition
-        if acquisition is None or self._shutting_down:
+        if acquisition is None or self._shutting_down or self._recognition_retry_at is not None:
             return
         titles: dict[tuple[str, int], tuple[str, int | None]] = hand_titles(self._ready_library, self._state)
         wanted: dict[tuple[str, int], tuple[str, int | None]] = {
@@ -8698,6 +8703,12 @@ class AutomationOwner:
             target=self._read_recognition, args=(acquisition, wanted), name=_RECOGNITION_THREAD, daemon=True
         ).start()
 
+    def _poll_recognition(self) -> None:
+        if self._recognition_retry_at is None or time.monotonic() < self._recognition_retry_at:
+            return
+        self._recognition_retry_at = None
+        self._request_recognition()
+
     def _read_recognition(
         self, acquisition: AcquisitionService, wanted: dict[tuple[str, int], tuple[str, int | None]]
     ) -> None:
@@ -8705,12 +8716,14 @@ class AutomationOwner:
         failures: dict[str, int] = {}
         try:
             with acquisition.episode_requests():
-                for key, title in wanted.items():
-                    answered: bool
-                    answered, found[key] = self._recognize_paced(acquisition, key, title, failures)
-                    if not answered:
-                        del found[key]
-                        break
+                candidates: dict[str, tuple[TitleCandidate, ...]] | None = self._search_hand_titles(
+                    acquisition, tuple(title for title, _highest in wanted.values()), failures
+                )
+            if candidates is not None:
+                found = {
+                    key: recognize(candidates.get(title, ()), key[0], key[1], highest)
+                    for key, (title, highest) in wanted.items()
+                }
         finally:
             logger.info(
                 "Hand-added Library titles searched",
@@ -8721,26 +8734,23 @@ class AutomationOwner:
                 failed=sum(failures.values()),
                 error_classes=sorted(failures),
             )
-            self._queue.put(lambda: self._record_recognition(found))
+            self._queue.put(lambda: self._record_recognition(tuple(wanted), found))
 
-    def _recognize_paced(
-        self,
-        acquisition: AcquisitionService,
-        key: tuple[str, int],
-        title: tuple[str, int | None],
-        failures: dict[str, int],
-    ) -> tuple[bool, int | None]:
+    def _search_hand_titles(
+        self, acquisition: AcquisitionService, texts: tuple[str, ...], failures: dict[str, int]
+    ) -> dict[str, tuple[TitleCandidate, ...]] | None:
         for _attempt in range(_RECOGNITION_ATTEMPTS):
             if not self._anilist_free(acquisition):
-                return False, None
-            result, failed = self._recognize_title(acquisition, key, title, failures)
-            if not failed or not _cooling(acquisition):
-                return True, result
-        return True, None
+                return None
+            try:
+                return acquisition.find_many_titles(texts)
+            except (AniShiftError, OSError, ValueError) as error:
+                failures[type(error).__name__] = failures.get(type(error).__name__, 0) + 1
+                if not _cooling(acquisition):
+                    return None
+        return None
 
     def _anilist_free(self, acquisition: AcquisitionService) -> bool:
-        if self._stopping.wait(self._recognition_interval_s):
-            return False
         waited: bool = False
         while _cooling(acquisition):
             if not waited:
@@ -8750,22 +8760,21 @@ class AutomationOwner:
                 return False
         return not self._shutting_down
 
-    @staticmethod
-    def _recognize_title(
-        acquisition: AcquisitionService,
-        key: tuple[str, int],
-        title: tuple[str, int | None],
-        failures: dict[str, int],
-    ) -> tuple[int | None, bool]:
-        try:
-            return recognize(acquisition.find_titles(title[0]), key[0], key[1], title[1]), False
-        except (AniShiftError, OSError, ValueError) as error:
-            failures[type(error).__name__] = failures.get(type(error).__name__, 0) + 1
-            return None, True
-
-    def _record_recognition(self, found: dict[tuple[str, int], int | None]) -> None:
+    def _record_recognition(
+        self, wanted: tuple[tuple[str, int], ...], found: dict[tuple[str, int], int | None]
+    ) -> None:
         self._recognizing -= 1
+        unanswered: set[tuple[str, int]] = set(wanted) - found.keys()
+        if unanswered:
+            self._recognition_requested -= unanswered
+            self._recognition_retry_at = time.monotonic() + self._recognition_retry_s
+        if not found:
+            return
         self._recognized.update(found)
+        try:
+            save_recognized(self._store.recognition_path(), self._recognized)
+        except OSError as problem:
+            logger.warning("The hand-added Library title cache was not saved", error_class=type(problem).__name__)
         if any(value is not None for value in found.values()):
             self._publish_state()
 

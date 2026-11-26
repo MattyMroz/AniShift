@@ -567,14 +567,15 @@ class _Searching(_TitleCatalog):
             graphs=_slime_titles().graphs,
         )
         self.refuse: bool = refuse
+        self.batches: list[tuple[str, ...]] = []
 
-    def search(self, text: str, *, limit: int = 7) -> tuple[TitleCandidate, ...]:
-        self.searched.append(text)
+    def search_many(self, texts: Collection[str], *, limit: int = 7) -> dict[str, tuple[TitleCandidate, ...]]:
+        self.batches.append(tuple(texts))
         if self.refuse:
             raise TitleCatalogError(
                 context=ErrorContext(code=ErrorCode.TITLE_CATALOG_FAILED, message="AniList rejected the request")
             )
-        return self.candidates[:limit]
+        return super().search_many(texts, limit=limit)
 
 
 _HAND: Final[tuple[str, ...]] = (
@@ -589,7 +590,7 @@ def _hand_owner(tmp_path: Path, titles: _Searching, control: RequestControl | No
     owner: AutomationOwner = _owner(
         _real_service(tmp_path, acquisition=_episode_service(tmp_path, titles, request_control=control)), store
     )
-    owner._recognition_interval_s = 0.0
+    owner._recognition_retry_s = 0.0
     return owner
 
 
@@ -627,14 +628,14 @@ class _ThreadSearching(_Searching):
         self.threads: list[str] = []
         self.cooling_seen: list[int] = []
 
-    def search(self, text: str, *, limit: int = 7) -> tuple[TitleCandidate, ...]:
+    def search_many(self, texts: Collection[str], *, limit: int = 7) -> dict[str, tuple[TitleCandidate, ...]]:
         self.threads.append(threading.current_thread().name)
         self.cooling_seen.append(self.control.asked)
         if self.refuse_first:
             self.refuse_first = False
             self.control.cooling_answers = self.control.asked + 1
             raise TitleCatalogError(context=ErrorContext(code=ErrorCode.TITLE_CATALOG_FAILED, message="429"))
-        return super().search(text, limit=limit)
+        return super().search_many(texts, limit=limit)
 
 
 @pytest.mark.integration
@@ -684,7 +685,7 @@ def test_search_refused_in_a_cooldown_is_retried_after_it(tmp_path: Path) -> Non
     finally:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
-    assert len(titles.threads) == 3
+    assert len(titles.threads) == 2
     assert owner._recognized[("tensei shitara slime datta ken", 1)] == _S1
 
 
@@ -697,7 +698,7 @@ def _until_recognized(owner: AutomationOwner, count: int) -> None:
 
 
 @pytest.mark.integration
-def test_owner_searches_each_hand_added_title_once_per_run(tmp_path: Path) -> None:
+def test_owner_searches_all_hand_added_titles_in_one_batch_once(tmp_path: Path) -> None:
     titles: _Searching = _Searching()
     owner: AutomationOwner = _hand_owner(tmp_path, titles)
     thread: threading.Thread = _serving(owner)
@@ -709,24 +710,57 @@ def test_owner_searches_each_hand_added_title_once_per_run(tmp_path: Path) -> No
     finally:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
-    assert sorted(titles.searched) == ["Tensei Shitara Slime Datta Ken", "Unknown Show"]
+    assert [sorted(batch) for batch in titles.batches] == [["Tensei Shitara Slime Datta Ken", "Unknown Show"]]
 
 
 @pytest.mark.integration
-def test_rate_limited_search_leaves_the_title_from_name(tmp_path: Path) -> None:
+def test_failed_search_leaves_the_title_from_name_and_is_searched_again(tmp_path: Path) -> None:
     titles: _Searching = _Searching(refuse=True)
     owner: AutomationOwner = _hand_owner(tmp_path, titles)
+    owner._recognition_retry_s = _TIMEOUT_S * 10
     thread: threading.Thread = _serving(owner)
     try:
         assert owner.handle(_request("library_refresh")).ok
-        _until_recognized(owner, 2)
+        deadline: float = time.monotonic() + _TIMEOUT_S
+        while not owner._on_owner(lambda: bool(titles.batches) and not owner._recognizing):
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
         rows: object = owner.handle(_request("status")).result["library"]
+        assert owner._recognized == {}
+        titles.refuse = False
+        owner._on_owner(lambda: setattr(owner, "_recognition_retry_at", 0.0))
+        _until_recognized(owner, 2)
     finally:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
     assert isinstance(rows, list)
     assert {row["title_source"] for row in rows} == {"name"}
-    assert owner._recognized == {("tensei shitara slime datta ken", 1): None, ("unknown show", 1): None}
+    assert len(titles.batches) == 2
+    assert owner._recognized[("tensei shitara slime datta ken", 1)] == _S1
+
+
+@pytest.mark.integration
+def test_recognition_survives_a_restart_without_searching_again(tmp_path: Path) -> None:
+    titles: _Searching = _Searching()
+    owner: AutomationOwner = _hand_owner(tmp_path, titles)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert owner.handle(_request("library_refresh")).ok
+        _until_recognized(owner, 2)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    restarted: AutomationOwner = _owner(owner._service, owner._store)
+    assert restarted._recognized == owner._recognized
+    thread = _serving(restarted)
+    try:
+        rows: object = restarted.handle(_request("library_refresh")).result["sets"]
+    finally:
+        restarted.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert isinstance(rows, list)
+    assert sorted(str(row["title_source"]) for row in rows) == ["name", "recognized", "recognized"]
+    assert len(titles.batches) == 1
 
 
 @pytest.mark.integration

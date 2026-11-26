@@ -214,6 +214,12 @@ class TitleCatalog(Protocol):
         """Return the candidates the catalog proposes for *text*, in its own order."""
         ...
 
+    def search_many(
+        self, texts: Collection[str], *, limit: int = TITLE_SEARCH_LIMIT
+    ) -> dict[str, tuple[TitleCandidate, ...]]:
+        """Return the candidates of each text, read in shared requests."""
+        ...
+
     def prequel_episodes(self, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
         """Return every entry airing before *candidate*, direct prequel first."""
         ...
@@ -728,6 +734,12 @@ class AcquisitionService:
         if self._title_catalog is None:
             return ()
         return self._title_catalog.search(text)
+
+    def find_many_titles(self, texts: Collection[str]) -> dict[str, tuple[TitleCandidate, ...]]:
+        """Return the title candidates of each text read in shared requests, or none without a catalog."""
+        if self._title_catalog is None:
+            return {}
+        return self._title_catalog.search_many(texts)
 
     def season_context(self, candidate: TitleCandidate) -> SeasonContext:
         """Return which season *candidate* is and how many episodes aired before it."""
