@@ -413,8 +413,6 @@ class TerminalRenderer:
         if application.is_done:
             return
         self._draw_native_image(application)
-        # The loop refreshes on its own interval, so this is the only place a
-        # deferred write can run without doing I/O inside frame construction.
         if self._idle_handler is not None:
             self._idle_handler()
 
@@ -454,7 +452,6 @@ class TerminalRenderer:
         if self._native_drawn_position is None:
             return
         self._application.renderer.reset(leave_alternate_screen=False)
-        # Flush the raster clear together with the next text frame.
         self._application.output.write_raw(_CLEAR_SCREEN)
         self._native_drawn_position = None
         self._native_drawn_payload = None

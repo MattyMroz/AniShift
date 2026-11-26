@@ -1206,8 +1206,6 @@ def _fit_frame(content: Text, version: str, directory: str, columns: int, rows: 
     body_rows: int = max(rows - 1, 0)
     lines: list[Text] = list(content.split("\n"))[:body_rows]
     for line in lines:
-        # A line wider than the terminal would wrap, push every later row down and
-        # move the screen row the native mascot is anchored to.
         line.truncate(max(columns, 1), overflow="crop")
     lines.extend(Text() for _ in range(body_rows - len(lines)))
     lines.append(mark_keys(mark_inert(Text(status_line(version, directory, columns), style="gray"))))
