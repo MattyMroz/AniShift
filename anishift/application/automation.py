@@ -9130,6 +9130,7 @@ class AutomationOwner:
             if item.restore is not None and item.restore.unsettled and item.operation_id != restoring
         }
         groups: set[str] = {item.group_id for item in self._state.ready_groups if item.set_id in protected}
+        groups.update(item.group_id for item in self._ready_library if item.set_id in protected)
         groups.update(group for set_id in protected if (group := unrecorded_group(set_id)) is not None)
         return protected | groups
 

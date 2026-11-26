@@ -40,6 +40,7 @@ from anishift.application.control import (
     latest_deletion,
 )
 from anishift.application.control_views import DeletionPreview, LibraryFileIdentity, decode_view, encode_view
+from anishift.application.discovery import discover_groups
 from anishift.application.inspection import InspectedSourceGroup, InspectedWorkspace
 from anishift.application.intents import RequestOrigin
 from anishift.application.library import file_identity, unrecorded_set_id
@@ -1180,3 +1181,23 @@ def test_a_recorded_set_moved_into_a_ready_subfolder_opens_and_deletes_at_its_ne
         owner.request_shutdown()
         thread.join(5)
         service.close()
+
+
+@pytest.mark.integration
+def test_a_moved_set_being_deleted_protects_the_group_at_its_new_place(tmp_path: Path) -> None:
+    service, store, state = _completed_library(tmp_path)
+    moved: Path = tmp_path / "ready/Nowy folder"
+    moved.mkdir()
+    for name in ("01.txt", "01.pl.txt"):
+        (tmp_path / "ready" / name).rename(moved / name)
+    owner: AutomationOwner = _owner(service, store)
+    try:
+        owner._project_ready(discover_groups(tmp_path).groups)
+        owner._deleting["delete-1"] = "set-01"
+        deleting: set[str] = owner._deleting_groups()
+    finally:
+        service.close()
+    assert [(item.set_id, item.group_id) for item in owner._ready_library] == [
+        ("set-01", create_group_id(Path("ready/Nowy folder"), "01"))
+    ]
+    assert {state.ready_groups[0].group_id, create_group_id(Path("ready/Nowy folder"), "01")} <= deleting
