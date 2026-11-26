@@ -19,7 +19,7 @@ from anishift.cli.resident import ResidentSession
 pytestmark = pytest.mark.unit
 
 _BOX: tuple[int, int] = (19, 13)
-_GAP: int = 3
+_GAP: int = 2
 
 
 class _Covers:
@@ -178,7 +178,7 @@ def test_narrow_terminal_keeps_the_margin_equal_to_the_gap(panel: tuple[StateCon
     controller, _covers = panel
     _subscriptions(controller, 3)
 
-    anchor: tuple[int, int] | None = _anchor(controller.render(64, 40).plain)
+    anchor: tuple[int, int] | None = _anchor(controller.render(62, 40).plain)
 
     assert anchor is not None
     assert anchor[1] == _GAP

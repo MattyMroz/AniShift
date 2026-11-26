@@ -71,7 +71,7 @@ MIN_ROWS: Final[int] = HEADER_ROWS + 1 + FOOTER_ROWS
 _MARGIN: Final[int] = 4
 """Cells kept free around centered blocks."""
 
-_COVER_GAP: Final[int] = 3
+_COVER_GAP: Final[int] = 2
 """Blank cells between the cover slot and the table, and the fewest left of the slot and right of the table."""
 
 _EPISODE_STATUS_WIDTH: Final[int] = len("Czeka na wydanie")
