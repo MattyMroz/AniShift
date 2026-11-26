@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageOps
 
 from anishift.application import AppService
 from anishift.cli.interactive import app as interactive_app
@@ -565,3 +565,41 @@ def test_cover_is_scaled_into_the_fixed_slot_and_a_bad_file_gives_none(tmp_path:
     assert image.payloads[0].startswith('\x1bP9;1;0q"1;1;190;260')
     assert covers_module.cover_image(tmp_path / "22.jpg", (10, 20)) is None
     assert covers_module.cover_image(tmp_path / "missing.jpg", (10, 20)) is None
+
+
+def _striped(size: tuple[int, int]) -> Image.Image:
+    picture: Image.Image = Image.new("RGB", size, (200, 30, 30))
+    picture.paste((30, 200, 30), (0, 0, size[0], 20))
+    picture.paste((30, 30, 200), (0, size[1] - 20, size[0], size[1]))
+    return picture
+
+
+def _channel(picture: Image.Image, point: tuple[int, int], index: int) -> int:
+    pixel: object = picture.getpixel(point)
+    assert isinstance(pixel, tuple)
+    return int(pixel[index])
+
+
+def test_a_typical_cover_fills_the_slot_cropping_more_of_the_bottom_than_the_top() -> None:
+    slot: tuple[int, int] = (190, 260)
+    filled: Image.Image = covers_module.filled_cover(_striped((460, 665)), slot).convert("RGBA")
+
+    assert filled.size == slot
+    assert filled.getchannel("A").getextrema() == (255, 255)
+    assert _channel(filled, (95, 0), 1) > 150
+    assert _channel(filled, (95, 259), 2) < 80
+
+
+@pytest.mark.parametrize("size", [(460, 460), (300, 650)])
+def test_a_cover_far_from_the_slot_shape_shows_whole_on_a_blurred_fill(size: tuple[int, int]) -> None:
+    slot: tuple[int, int] = (190, 260)
+    picture: Image.Image = _striped(size)
+    whole: Image.Image = ImageOps.contain(picture, slot, Image.Resampling.LANCZOS)
+    filled: Image.Image = covers_module.filled_cover(picture, slot).convert("RGBA")
+    left: int = (slot[0] - whole.width) // 2
+    top: int = (slot[1] - whole.height) // 2
+
+    assert max(size[0] / size[1], 190 / 260) / min(size[0] / size[1], 190 / 260) - 1 > covers_module.CROP_TOLERANCE
+    assert filled.getchannel("A").getextrema() == (255, 255)
+    assert filled.crop((left, top, left + whole.width, top + whole.height)).convert("RGB").tobytes() == whole.tobytes()
+    assert 0 < _channel(filled, (0, 0), 0) < 200

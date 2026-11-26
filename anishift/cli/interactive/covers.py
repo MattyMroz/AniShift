@@ -9,12 +9,12 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Final
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 from anishift.cli.interactive.native_image import NativeImage, encode_sixel
 from anishift.paths import cover_name, covers_dir
 
-__all__ = ["COVER_ASPECT", "COVER_ROWS", "CoverImages", "cover_image"]
+__all__ = ["COVER_ASPECT", "COVER_ROWS", "CROP_TOLERANCE", "CoverImages", "cover_image", "filled_cover"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -27,6 +27,18 @@ COVER_ASPECT: Final[float] = 0.72
 _STATIC_SECONDS: Final[float] = 1.0
 """Cycle of a cover, which has one frame."""
 
+CROP_TOLERANCE: Final[float] = 0.08
+"""Largest relative aspect difference between a cover and its slot that fills the slot by cropping the excess."""
+
+_CROP_CENTERING: Final[tuple[float, float]] = (0.5, 0.25)
+"""Crop anchor: even across, a quarter of the cut height from the top and the rest from the bottom."""
+
+_BACKDROP_BLUR: Final[float] = 0.06
+"""Gaussian blur radius of the backdrop behind an uncropped cover, as a share of the slot width."""
+
+_BACKDROP_BRIGHTNESS: Final[float] = 0.6
+"""Brightness factor of the blurred backdrop, dim enough for the whole cover to stand out."""
+
 
 def cover_box(cell: tuple[int, int]) -> tuple[int, int]:
     """Return the columns and rows of the cover slot for one cell size."""
@@ -34,18 +46,30 @@ def cover_box(cell: tuple[int, int]) -> tuple[int, int]:
 
 
 def cover_image(path: Path, cell: tuple[int, int]) -> NativeImage | None:
-    """Scale one cover into the slot, centered on a transparent canvas, and encode it, or None for a bad file."""
+    """Fill the slot with one cover and encode it, or return None for a bad file."""
     columns, rows = cover_box(cell)
     size: tuple[int, int] = (columns * cell[0], rows * cell[1])
     try:
         with Image.open(path) as source:
-            picture: Image.Image = ImageOps.contain(source.convert("RGBA"), size, Image.Resampling.LANCZOS)
-        canvas: Image.Image = Image.new("RGBA", size, (0, 0, 0, 0))
-        canvas.paste(picture, ((size[0] - picture.width) // 2, (size[1] - picture.height) // 2))
-        payload: str = encode_sixel(canvas)
+            payload: str = encode_sixel(filled_cover(source.convert("RGB"), size).convert("RGBA"))
     except OSError, ValueError, Image.DecompressionBombError:
         return None
     return NativeImage((payload,), (_STATIC_SECONDS,), _STATIC_SECONDS, columns, rows, rows)
+
+
+def filled_cover(picture: Image.Image, size: tuple[int, int]) -> Image.Image:
+    """Crop a cover close to the slot's shape to fill it, else show it whole on its own blurred, dimmed fill."""
+    fill: Image.Image = ImageOps.fit(picture, size, Image.Resampling.LANCZOS, centering=_CROP_CENTERING)
+    shape: float = picture.width / picture.height
+    slot: float = size[0] / size[1]
+    if max(shape, slot) / min(shape, slot) - 1 <= CROP_TOLERANCE:
+        return fill
+    backdrop: Image.Image = ImageEnhance.Brightness(
+        fill.filter(ImageFilter.GaussianBlur(size[0] * _BACKDROP_BLUR))
+    ).enhance(_BACKDROP_BRIGHTNESS)
+    whole: Image.Image = ImageOps.contain(picture, size, Image.Resampling.LANCZOS)
+    backdrop.paste(whole, ((size[0] - whole.width) // 2, (size[1] - whole.height) // 2))
+    return backdrop
 
 
 class CoverImages:
