@@ -439,6 +439,96 @@ def test_one_step_that_moves_the_slot_swaps_the_cover_in_one_write_after_the_tex
     assert "cover-113" in swapped[0]
 
 
+def _painted(controller: StateController) -> native._Screen:
+    screen: native._Screen = native._Screen("", None)
+    screen.size = SimpleNamespace(columns=140, rows=40)
+    screen.renderer._frame_provider = controller.render
+    screen.renderer._image_provider = controller.cover
+    screen.paint()
+    return screen
+
+
+def _slot_cells(screen: native._Screen) -> list[list[tuple[str, str]]]:
+    position: tuple[int, int] | None = screen.renderer._native_drawn_position
+    assert position is not None
+    return [
+        native._cells(screen.renderer._prepared_frame, row)[position[1] : position[1] + _BOX[0]]
+        for row in range(position[0], position[0] + _BOX[1])
+    ]
+
+
+def _repaint_keeps_the_cover_whole(screen: native._Screen) -> list[str]:
+    before: tuple[int, int] | None = screen.renderer._native_drawn_position
+    cells: list[list[tuple[str, str]]] = _slot_cells(screen)
+    drawn: int = len(screen.writes)
+    screen.renderer._before_render(screen.renderer._application)
+    erased_first: list[str] = screen.writes[drawn:]
+    screen.renderer._after_render(screen.renderer._application)
+    written: list[str] = screen.writes[drawn:]
+    after: tuple[int, int] | None = screen.renderer._native_drawn_position
+
+    assert erased_first == []
+    assert after is not None
+    if after == before:
+        assert _slot_cells(screen) == cells
+        assert all("cover-" in write for write in written)
+    else:
+        assert len(written) == 1
+        assert written[0].index(f"\x1b[{after[0] + 1};{after[1] + 1}H\x1b[m ") < written[0].index("cover-")
+    return written
+
+
+def _materials(controller: StateController) -> list[dict[str, object]]:
+    return cast("list[dict[str, object]]", controller._snapshot["materials"])
+
+
+@pytest.mark.parametrize(
+    ("count", "cursor", "ended", "moves"),
+    [
+        (21, 10, 3, True),
+        (21, 10, 15, True),
+        (21, 0, 20, True),
+        (22, 0, 21, False),
+        (19, 18, 0, False),
+        (5, 0, 4, False),
+        (40, 0, 39, False),
+    ],
+)
+def test_processing_row_that_ends_moves_the_cover_in_one_write_or_leaves_it_whole(
+    panel: tuple[StateController, _Covers], count: int, cursor: int, ended: int, *, moves: bool
+) -> None:
+    controller, _covers = panel
+    _processing(controller, count)
+    for _press in range(cursor):
+        controller.handle_key("down")
+    screen: native._Screen = _painted(controller)
+    before: tuple[int, int] | None = screen.renderer._native_drawn_position
+    del _materials(controller)[ended]
+
+    _repaint_keeps_the_cover_whole(screen)
+
+    assert (screen.renderer._native_drawn_position != before) is moves
+
+
+def test_processing_progress_and_timers_leave_the_standing_cover_untouched(
+    panel: tuple[StateController, _Covers],
+) -> None:
+    controller, _covers = panel
+    _processing(controller, 20)
+    for _press in range(10):
+        controller.handle_key("down")
+    screen: native._Screen = _painted(controller)
+    shown: str = controller.render(140, 40).plain
+    for index, item in enumerate(_materials(controller)):
+        item["progress"] = 0.07 * (index % 9)
+        item["series"] = item["entry_title"] = f"Wohs {index:02}"
+
+    written: list[str] = _repaint_keeps_the_cover_whole(screen)
+
+    assert controller.render(140, 40).plain != shown
+    assert written == []
+
+
 def _long_library(controller: StateController) -> None:
     controller._tab = state_module._Tab.FILES
     controller._snapshot = {
