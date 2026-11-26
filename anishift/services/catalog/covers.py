@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Final
 from PIL import Image
 
 from anishift.errors import ErrorCode, ErrorContext
+from anishift.paths import cover_name
 from anishift.services.catalog.errors import TitleCatalogError
 
 if TYPE_CHECKING:
@@ -33,7 +34,7 @@ _UNREADABLE: Final[str] = "AniList returned an unreadable cover"
 
 def cover_path(directory: Path, anilist_id: int) -> Path:
     """Return the cached cover file of one AniList entry."""
-    return directory / f"{anilist_id}.jpg"
+    return directory / cover_name(anilist_id)
 
 
 def stored_covers(directory: Path) -> frozenset[int]:

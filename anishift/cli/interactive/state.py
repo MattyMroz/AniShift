@@ -47,12 +47,14 @@ from anishift.cli.interactive.anime_view import (
     render_anime,
     shown_rows,
 )
+from anishift.cli.interactive.covers import CoverImages
 from anishift.cli.interactive.menu import (
     append_wrapped_row,
     pack_keys,
     visible_window,
     wrap_entries,
 )
+from anishift.cli.interactive.native_image import NATIVE_IMAGE_ANCHOR, NativeImage
 from anishift.cli.interactive.pointer import (
     CRUMB_SEPARATOR,
     Click,
@@ -231,8 +233,11 @@ class StateController:
         invalidate: Callable[[], None],
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        covers: CoverImages | None = None,
     ) -> None:
         self._parent: ResidentSession = session
+        self._covers: CoverImages | None = covers
+        self._cover_id: int | None = None
         self._clock: Callable[[], datetime] = clock
         self._session: ResidentSession | None = None
         self._invalidate: Callable[[], None] = invalidate
@@ -1507,9 +1512,17 @@ class StateController:
             with self._lock:
                 self._runs[run_id] = (snapshot.preview.preview_id, restored)
 
+    def cover(self) -> NativeImage | None:
+        """Return the cover of the row the last frame placed beside its table, or None without a slot."""
+        anilist_id: int | None = self._cover_id
+        if self._covers is None or anilist_id is None:
+            return None
+        return self._covers.image(anilist_id)
+
     def render(self, columns: int, rows: int) -> Text:
         """Pin heading and tabs to the top and the body's keys above the status line."""
         with self._lock:
+            self._cover_id = None
             budget: int = max(rows - 1, 1)
             spaced: bool = rows >= _MINIMUM_HEADER_ROWS
             heading: list[Text] = []
@@ -1682,6 +1695,7 @@ class StateController:
             ),
             self._notice.rstrip("."),
             subscription_warning(problem=bool(self._subscriptions_problem), shadow=self._subscriptions_shadow),
+            covers=tuple(item.get("anilist_id") for item in self._subscriptions),
         )
 
     def _library_body(self, columns: int, rows: int) -> Text | None:
@@ -1699,16 +1713,19 @@ class StateController:
                 "",
                 crumbs=("Biblioteka", safe_text(title.title)),
                 marked=frozenset(self._library_marks),
+                covers=(title.cover_id,) * len(title.sets),
             )
         field: TextInput | None = self._library_input
+        titles: list[LibraryTitle] = self._titles()
         return self._table_body(
             columns,
             rows,
             AnimeScreen.LIBRARY,
-            tuple(title_row(item) for item in self._titles()),
+            tuple(title_row(item) for item in titles),
             shown,
             f"Filtr: {safe_text(self._library_query)}" if self._library_query and field is None else "",
             field=None if field is None else field.render(max(min(columns, 80) - 12, 1)),
+            covers=tuple(item.cover_id for item in titles),
         )
 
     def _table_body(  # noqa: PLR0913
@@ -1723,12 +1740,19 @@ class StateController:
         crumbs: tuple[str, ...] = (),
         field: Text | None = None,
         marked: frozenset[str] = frozenset(),
+        covers: tuple[object, ...] = (),
     ) -> Text | None:
         self._selected = min(self._selected, max(len(items) - 1, 0))
         fill: bool = overflows(screen, len(items), max(rows - 1, 1))
         tight: bool = not fill and rows == MIN_ROWS and columns >= MIN_COLUMNS
         area: int = rows if tight else max(rows - 1, 1)
         confirm: tuple[str, ...] | None = self._library_confirm
+        listed: object = self._snapshot.get("covers")
+        cached: frozenset[object] = frozenset(listed) if isinstance(listed, list) else frozenset()
+        shown: tuple[int | None, ...] = tuple(
+            item if isinstance(item, int) and item in cached else None for item in covers
+        )
+        box: tuple[int, int] | None = self._covers.box() if self._covers is not None else None
         snapshot: AnimeSnapshot = AnimeSnapshot(
             screen if items else AnimeScreen.DETAILS,
             "",
@@ -1743,6 +1767,7 @@ class StateController:
             editing_range=field is not None,
             field_label="Filtr",
             rendered_field=field,
+            cover=box if box is not None and any(item is not None for item in shown) else None,
         )
         visible: int = shown_rows(snapshot, columns, area)
         if not visible and self._tab == _Tab.FILES:
@@ -1755,6 +1780,8 @@ class StateController:
             offset = max(min(offset, self._selected), self._selected - visible + 1)
         self._offsets[viewport] = offset
         frame: AnimeFrame = render_anime(replace(snapshot, offset=offset), columns, area, self._clock().timestamp())
+        if NATIVE_IMAGE_ANCHOR in frame.text.plain and self._selected < len(shown):
+            self._cover_id = shown[self._selected]
         lines: list[Text] = list(frame.text.split("\n"))
         if not items and frame.visible:
             lines[frame.first_row] = self._empty_line(columns)

@@ -27,11 +27,13 @@ from anishift.application.events import sanitize_event_message
 from anishift.application.results import DISPLAYED_ABSENCE_NOTE
 from anishift.cli.exit_codes import EXIT_CANCELLED, EXIT_INCOMPLETE, EXIT_REFUSED, EXIT_SUCCESS, run_exit_code
 from anishift.cli.interactive.anime import AnimeController
+from anishift.cli.interactive.covers import CoverImages
 from anishift.cli.interactive.home import HomeAction, brand_for_geometry, centered_block, working_directory_label
 from anishift.cli.interactive.manual import ManualController, ManualResult, ManualRun
 from anishift.cli.interactive.mascot import MascotController, MascotState
-from anishift.cli.interactive.mascot_native import MASCOT_REST_TOP_ROWS, NATIVE_MASCOT_ANCHOR
+from anishift.cli.interactive.mascot_native import MASCOT_REST_TOP_ROWS
 from anishift.cli.interactive.menu import with_footer
+from anishift.cli.interactive.native_image import NATIVE_IMAGE_ANCHOR, NativeImage
 from anishift.cli.interactive.pointer import (
     Click,
     ClickKind,
@@ -225,15 +227,30 @@ class _InteractiveApplication:
             self._handle_scroll,
             mouse_handler=self._handle_mouse,
             hover_handler=self._handle_hover,
+            image_provider=self._native_image,
         )
+        self._covers: CoverImages = CoverImages(self._renderer.invalidate, lambda: self._renderer.native_cell)
         self._mascot: MascotController = MascotController(self._renderer.invalidate)
         self._frame_selection: FrameSelection = FrameSelection()
+
+    def _native_image(self) -> NativeImage | None:
+        """Return the cover of the panel's chosen row in the panel and the native mascot elsewhere."""
+        with self._lock:
+            mode: _ViewMode = self._mode
+        state: StateController | None = self._state
+        if mode is _ViewMode.STATE and state is not None:
+            return state.cover()
+        return self._renderer.native_mascot
+
+    def _new_state(self, resident: ResidentSession) -> StateController:
+        state: StateController = StateController(resident, self._renderer.invalidate, covers=self._covers)
+        state.attach_anime(AnimeController(self._service, self._renderer.invalidate, resident=resident))
+        return state
 
     def run(self) -> int:
         """Run the session until Home exits, or until one batch finishes and its window closes."""
         if self._resident is not None:
-            self._state = StateController(self._resident, self._renderer.invalidate)
-            self._state.attach_anime(AnimeController(self._service, self._renderer.invalidate, resident=self._resident))
+            self._state = self._new_state(self._resident)
         if self._batch is None:
             self._start_prewarm()
         else:
@@ -919,8 +936,7 @@ class _InteractiveApplication:
     def _show_state(self, *, processing: bool = False, notice: str | None = None) -> None:
         self._close_settings()
         if self._state is None and self._resident is not None:
-            self._state = StateController(self._resident, self._renderer.invalidate)
-            self._state.attach_anime(AnimeController(self._service, self._renderer.invalidate, resident=self._resident))
+            self._state = self._new_state(self._resident)
         if processing and self._state is not None:
             self._state.show_processing()
         if notice is not None and self._state is not None:
@@ -1054,7 +1070,7 @@ def _home_content(  # noqa: PLR0913
         (
             index
             for index, line in enumerate(resting.split("\n"))
-            if line.plain.replace(NATIVE_MASCOT_ANCHOR, "").strip()
+            if line.plain.replace(NATIVE_IMAGE_ANCHOR, "").strip()
         ),
         brand_rows,
     )

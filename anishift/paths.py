@@ -134,6 +134,11 @@ def covers_dir() -> Path:
     return config_dir() / "covers"
 
 
+def cover_name(anilist_id: int) -> str:
+    """Return the file name of the cached cover of one AniList entry."""
+    return f"{anilist_id}.jpg"
+
+
 def torrent_profile_dir() -> Path:
     """Return the private torrent client's configuration and resume-data root."""
     return config_dir() / "qbittorrent"

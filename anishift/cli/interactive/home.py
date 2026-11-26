@@ -10,7 +10,8 @@ from typing import Final
 from rich.text import Text
 
 from anishift.cli.interactive.mascot import MascotState, mascot_art
-from anishift.cli.interactive.mascot_native import MASCOT_FRAME_ROWS, NATIVE_MASCOT_ANCHOR
+from anishift.cli.interactive.mascot_native import MASCOT_FRAME_ROWS
+from anishift.cli.interactive.native_image import NATIVE_IMAGE_ANCHOR
 from anishift.cli.interactive.palette import hex_color, mix, rim_color
 from anishift.cli.interactive.pointer import mark_inert
 from anishift.cli.interactive.prompts import BRAND_GAP_COLUMNS, AutoGeometry, HomeGeometry
@@ -104,7 +105,7 @@ def _native_mascot_placeholder(columns: int, rows: int) -> Text:
     """Reserve the mascot area and expose one private native-image anchor."""
     if columns < 1 or rows < 1:
         return Text()
-    first_row: str = f"{NATIVE_MASCOT_ANCHOR}{' ' * (columns - 1)}"
+    first_row: str = f"{NATIVE_IMAGE_ANCHOR}{' ' * (columns - 1)}"
     remaining_rows: tuple[str, ...] = tuple(" " * columns for _ in range(rows - 1))
     return Text("\n".join((first_row, *remaining_rows)))
 

@@ -25,8 +25,8 @@ from anishift.cli.interactive.anime_panel import AnimePanel
 from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeViewState
 from anishift.cli.interactive.manual import ManualController, ManualResult
 from anishift.cli.interactive.manual import _Screen as _ManualScreen
-from anishift.cli.interactive.mascot_native import NATIVE_MASCOT_ANCHOR
 from anishift.cli.interactive.menu import append_wrapped_row
+from anishift.cli.interactive.native_image import NATIVE_IMAGE_ANCHOR
 from anishift.cli.interactive.pointer import (
     CRUMB_SEPARATOR,
     DOUBLE_CLICK_SECONDS,
@@ -233,7 +233,7 @@ def test_auto_drag_over_the_mascot_never_copies_its_image_marker(monkeypatch: py
     application._render_frame(80, 30)
     application._handle_key("copy")
 
-    assert NATIVE_MASCOT_ANCHOR in frame.plain
+    assert NATIVE_IMAGE_ANCHOR in frame.plain
     assert copied == ["plik-00\nplik-01\nplik-02"]
 
 
@@ -953,7 +953,7 @@ def test_auto_selection_disappears_when_the_queue_follows_other_files(monkeypatc
 
 def test_copied_text_keeps_soft_hyphens_and_tag_flags_but_drops_private_markers() -> None:
     flag: str = chr(0x1F3F4) + "".join(chr(code) for code in (0xE0067, 0xE0062, 0xE0065, 0xE006E, 0xE0067, 0xE007F))
-    frame: Text = Text(f"po{chr(0xAD)}dział {flag} koniec{NATIVE_MASCOT_ANCHOR}")
+    frame: Text = Text(f"po{chr(0xAD)}dział {flag} koniec{NATIVE_IMAGE_ANCHOR}")
 
     copied: str = selected_text(painted_cells(frame), (TextPoint(0, 0), TextPoint(0, frame.cell_len)))
 

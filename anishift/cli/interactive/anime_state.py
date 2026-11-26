@@ -145,6 +145,7 @@ class AnimeSnapshot:
     crumbs: tuple[str, ...] = ()
     fill: bool = False
     bluray: bool = False
+    cover: tuple[int, int] | None = None
 
 
 @dataclass(slots=True)

@@ -19,6 +19,7 @@ from anishift.cli.interactive.anime_state import (
     query_left,
 )
 from anishift.cli.interactive.menu import append_wrapped_row
+from anishift.cli.interactive.native_image import NATIVE_IMAGE_ANCHOR
 from anishift.cli.interactive.pointer import (
     CRUMB_SEPARATOR,
     Click,
@@ -69,6 +70,9 @@ MIN_ROWS: Final[int] = HEADER_ROWS + 1 + FOOTER_ROWS
 
 _MARGIN: Final[int] = 4
 """Cells kept free around centered blocks."""
+
+_COVER_GAP: Final[int] = 2
+"""Blank cells between a table and the cover slot beside it."""
 
 _EPISODE_STATUS_WIDTH: Final[int] = len("Czeka na wydanie")
 """Fixed Stan column width, so a changing episode state never shifts the centered table."""
@@ -433,7 +437,9 @@ def _table_width(spec: _Table, widths: list[int], shown: list[int]) -> int:
 def _table(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int, now: float) -> int:
     spec: _Table = _spec(snapshot.screen)
     widths, shown = _widths(snapshot, spec, canvas.width - _MARGIN, now, visible)
-    canvas.place(_table_width(spec, widths, shown))
+    width: int = _table_width(spec, widths, shown)
+    canvas.place(width)
+    _cover_slot(canvas, snapshot, width)
     columns: list[tuple[int, int, int]] = []
     column: int = spec.prefix
     for position in shown:
@@ -444,6 +450,19 @@ def _table(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int, now: float) -
     for index, item in enumerate(snapshot.items[snapshot.offset : snapshot.offset + visible], snapshot.offset):
         _item(canvas, snapshot, item, index, now, tuple(columns))
     return widths[spec.title]
+
+
+def _cover_slot(canvas: _Canvas, snapshot: AnimeSnapshot, width: int) -> None:
+    if snapshot.cover is None:
+        return
+    columns, rows = snapshot.cover
+    block: int = width + _COVER_GAP + columns
+    header: int = canvas.top - 1
+    footer: int = len(canvas.lines) - len(_key_lines(snapshot, canvas.width - _MARGIN)) - _footer_rows(snapshot) - 1
+    if canvas.width < block + _MARGIN or header < 0 or header + rows > footer:
+        return
+    canvas.left = (canvas.width - block) // 2
+    canvas.write(header, canvas.left + width + _COVER_GAP, Text(NATIVE_IMAGE_ANCHOR), selectable=False)
 
 
 def _pointer(*, active: bool) -> str:
