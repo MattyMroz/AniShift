@@ -402,13 +402,15 @@ def _values(snapshot: AnimeSnapshot, item: AnimeRow, now: float) -> list[str]:
     return values
 
 
-def _widths(snapshot: AnimeSnapshot, spec: _Table, limit: int, now: float, visible: int) -> tuple[list[int], list[int]]:
+def _widths(  # noqa: PLR0913
+    snapshot: AnimeSnapshot, spec: _Table, limit: int, now: float, visible: int, *, whole: bool = False
+) -> tuple[list[int], list[int]]:
     widths: list[int] = [
         max(Text(label).cell_len, minimum) for label, minimum in zip(spec.labels, spec.minimums, strict=True)
     ]
     releases: bool = snapshot.screen is AnimeScreen.RELEASES
     measured: tuple[AnimeRow, ...] = (
-        snapshot.items if releases else snapshot.items[snapshot.offset : snapshot.offset + visible]
+        snapshot.items if releases or whole else snapshot.items[snapshot.offset : snapshot.offset + visible]
     )
     for item in measured:
         for position, value in enumerate(_values(snapshot, item, now)):
@@ -436,10 +438,14 @@ def _table_width(spec: _Table, widths: list[int], shown: list[int]) -> int:
 
 def _table(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int, now: float) -> int:
     spec: _Table = _spec(snapshot.screen)
-    widths, shown = _widths(snapshot, spec, canvas.width - _MARGIN, now, visible)
+    limit, cover = _table_room(canvas, snapshot)
+    widths, shown = _widths(snapshot, spec, limit, now, visible, whole=cover > 0)
     width: int = _table_width(spec, widths, shown)
     canvas.place(width)
-    _cover_slot(canvas, snapshot, width)
+    longest: int = max((Text(_values(snapshot, item, now)[spec.title]).cell_len for item in snapshot.items), default=0)
+    if cover and width <= limit and widths[spec.title] >= min(spec.floor, longest):
+        canvas.left = (canvas.width - width - _COVER_GAP - cover) // 2
+        canvas.write(canvas.top - 1, canvas.left + width + _COVER_GAP, Text(NATIVE_IMAGE_ANCHOR), selectable=False)
     columns: list[tuple[int, int, int]] = []
     column: int = spec.prefix
     for position in shown:
@@ -452,17 +458,18 @@ def _table(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int, now: float) -
     return widths[spec.title]
 
 
-def _cover_slot(canvas: _Canvas, snapshot: AnimeSnapshot, width: int) -> None:
+def _table_room(canvas: _Canvas, snapshot: AnimeSnapshot) -> tuple[int, int]:
+    """Return the cells a table may take and the cover slot columns beside it, 0 when the slot does not fit."""
+    limit: int = canvas.width - _MARGIN
     if snapshot.cover is None:
-        return
+        return limit, 0
     columns, rows = snapshot.cover
-    block: int = width + _COVER_GAP + columns
     header: int = canvas.top - 1
-    footer: int = len(canvas.lines) - len(_key_lines(snapshot, canvas.width - _MARGIN)) - _footer_rows(snapshot) - 1
-    if canvas.width < block + _MARGIN or header < 0 or header + rows > footer:
-        return
-    canvas.left = (canvas.width - block) // 2
-    canvas.write(header, canvas.left + width + _COVER_GAP, Text(NATIVE_IMAGE_ANCHOR), selectable=False)
+    footer: int = len(canvas.lines) - len(_key_lines(snapshot, limit)) - _footer_rows(snapshot) - 1
+    narrowed: int = limit - _COVER_GAP - columns
+    if narrowed < _TITLE_FLOOR or header < 0 or header + rows > footer:
+        return limit, 0
+    return narrowed, columns
 
 
 def _pointer(*, active: bool) -> str:
@@ -553,7 +560,7 @@ def _footer(  # noqa: PLR0913
         )
         notice = item.title if full_name else item.detail
         if snapshot.screen in {AnimeScreen.SUBSCRIPTIONS, AnimeScreen.RELEASES}:
-            notice = _unshown(snapshot, item, canvas.width - _MARGIN, now, visible)
+            notice = _unshown(snapshot, item, canvas, now, visible)
     color: str = _COLORS[snapshot.notice_kind]
     lines: list[str] = _notice_lines(notice, canvas.width - _MARGIN, maximum=_notice_rows(snapshot))
     bottom: int = len(canvas.lines) - len(keys)
@@ -569,9 +576,10 @@ def _footer(  # noqa: PLR0913
         canvas.center(bottom + index, hints)
 
 
-def _unshown(snapshot: AnimeSnapshot, item: AnimeRow, limit: int, now: float, visible: int) -> str:
+def _unshown(snapshot: AnimeSnapshot, item: AnimeRow, canvas: _Canvas, now: float, visible: int) -> str:
     spec: _Table = _spec(snapshot.screen)
-    widths, shown = _widths(snapshot, spec, limit, now, visible)
+    limit, cover = _table_room(canvas, snapshot)
+    widths, shown = _widths(snapshot, spec, limit, now, visible, whole=cover > 0)
     values: list[str] = _values(snapshot, item, now)
     releases: bool = snapshot.screen is AnimeScreen.RELEASES
     truncated: bool = Text(item.title).cell_len > widths[spec.title]

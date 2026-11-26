@@ -91,13 +91,14 @@ def test_slot_absent_without_sixel(panel: tuple[StateController, _Covers]) -> No
 
 
 def test_slot_absent_when_the_terminal_is_small(panel: tuple[StateController, _Covers]) -> None:
-    controller, _covers = panel
+    controller, covers = panel
+    covers.shown_box = (40, 12)
     controller._snapshot = {
         **_LIBRARY,
         "library": [_keyed("a1", 12, 10, "A Title Long Enough To Leave No Room For The Cover", 1)],
     }
 
-    assert _anchor(controller.render(80, 40).plain) is None
+    assert _anchor(controller.render(60, 40).plain) is None
     assert _anchor(controller.render(120, 18).plain) is None
     assert controller.cover() is None
 
@@ -171,6 +172,49 @@ def test_title_cover_is_the_newest_set_entry(panel: tuple[StateController, _Cove
     assert opened.payloads == ("cover-12",)
     assert controller.cover() is None
     assert covers.asked == [12, 12]
+
+
+_LONG: str = "As a Reincarnated Aristocrat, I'll Use My Appraisal Skill to Rise in the World"
+
+
+@pytest.mark.parametrize("columns", [100, 140])
+def test_scrolling_keeps_the_slot_in_one_place(panel: tuple[StateController, _Covers], columns: int) -> None:
+    controller, _covers = panel
+    controller._snapshot = {
+        "library": [
+            _keyed("long", 1, 1, _LONG, 1),
+            *(_keyed(f"s{index}", 100 + index, 100 + index, f"Show {index:02}", 1) for index in range(40)),
+        ],
+        "covers": [1, *range(100, 140)],
+    }
+
+    frame: str = controller.render(columns, 30).plain
+    first: tuple[int, int] | None = _anchor(frame)
+    controller.handle_key("end")
+    scrolled: tuple[int, int] | None = _anchor(controller.render(columns, 30).plain)
+
+    assert first is not None
+    assert scrolled == first
+    assert ("…" in next(line for line in frame.splitlines() if "As a Reincarnated" in line)) is (columns == 100)
+
+
+def test_scrolling_subscriptions_keeps_the_slot_in_one_place(panel: tuple[StateController, _Covers]) -> None:
+    controller, _covers = panel
+    controller._tab = state_module._Tab.SUBSCRIPTIONS
+    controller._snapshot = {"covers": [1, *range(100, 140)]}
+    controller._subscriptions = [
+        {"subscription_id": "long", "title": _LONG, "anilist_id": 1, "episode_count": 12, "aired": 3, "ready": 1},
+        *(
+            {"subscription_id": f"s{index}", "title": f"Show {index:02}", "anilist_id": 100 + index}
+            for index in range(40)
+        ),
+    ]
+
+    first: tuple[int, int] | None = _anchor(controller.render(140, 30).plain)
+    controller.handle_key("end")
+
+    assert first is not None
+    assert _anchor(controller.render(140, 30).plain) == first
 
 
 def test_cover_is_scaled_into_the_fixed_slot_and_a_bad_file_gives_none(tmp_path: Path) -> None:
