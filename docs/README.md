@@ -38,7 +38,7 @@ Historyczne plany i wyniki opisują swoje baseline'y, nie gwarantują dzisiejsze
 | [16-proper-names/](work/16-proper-names/) | Nazwy własne w tłumaczeniu: glosariusz serii | niezaczęte: plan czeka na decyzje właściciela D1–D8 | — |
 | [17-content-check/](work/17-content-check/) | Kontrola zawartości po pobraniu: PL, obce, brak napisów, same szyldy | częściowo: reguła roli ścieżki i odrzucanie wydania bez napisów dialogowych w subskrypcji (F1, F2); zamiana wydania przy pobraniu ręcznym (F3) odłożona | [#74](https://github.com/MattyMroz/AniShift/pull/74) |
 | [18-library-titles-covers/](work/18-library-titles-covers/) | Biblioteka jako widok tytułów i okładki w panelu | niezaczęte: plan czeka na decyzje właściciela O-1…O-11 | — |
-| [19-tvmaze-episode-titles/](work/19-tvmaze-episode-titles/) | Brakujące tytuły odcinków z TVmaze | niezaczęte: plan czeka na decyzje właściciela D1–D7; zgłoszenie [#58](https://github.com/MattyMroz/AniShift/issues/58) | — |
+| [19-tvmaze-episode-titles/](work/19-tvmaze-episode-titles/) | Angielskie tytuły odcinków z TVmaze, także zamiast romaji | niezaczęte: plan przyjęty, decyzje D1–D7 rozstrzygnięte, kod czeka na wykonanie; zgłoszenie [#58](https://github.com/MattyMroz/AniShift/issues/58) | — |
 | [20-style-boundaries/](work/20-style-boundaries/) | Granice stylów po tłumaczeniu | niezaczęte: plan czeka na decyzje właściciela D1–D5; zgłoszenie [#34](https://github.com/MattyMroz/AniShift/issues/34) | — |
 | [22-live-settings/](work/22-live-settings/plan.md) | Ustawienia na żywo: każdy krok bierze ustawienia z chwili startu, ponowienie powtarza tylko to, co nie wyszło | aktywne: plan przyjęty, przebudowa w toku | — |
 | [21-playshift/](work/21-playshift/) | PlayShift (nazwa robocza): przenośny odtwarzacz na mpv, research, specyfikacja, masterplan, pomiary etapu 01 | aktywne: dokumenty scalone, pomiary etapu 01 wykonane; czeka ocena właściciela (K1) | [#85](https://github.com/MattyMroz/AniShift/pull/85), [#98](https://github.com/MattyMroz/AniShift/pull/98) |
@@ -46,6 +46,6 @@ Historyczne plany i wyniki opisują swoje baseline'y, nie gwarantują dzisiejsze
 ## Dalsza praca i wznowienie
 
 Aktywne: [21-playshift](work/21-playshift/README.md) (etap 01 czeka na ocenę właściciela) oraz odbiór
-[11-elevenreader-tts](work/11-elevenreader-tts/README.md) na prawdziwych odcinkach. Plany 12, 14, 16, 18, 19 i 20
-czekają na decyzje właściciela. Priorytety i odłożone etapy zbiera [ideas.md](ideas.md).
+[11-elevenreader-tts](work/11-elevenreader-tts/README.md) na prawdziwych odcinkach. Plan 19 jest przyjęty i czeka na wykonanie.
+Plany 12, 14, 16, 18 i 20 czekają na decyzje właściciela. Priorytety i odłożone etapy zbiera [ideas.md](ideas.md).
 [Session logs](session-logs/) zawierają punkty wznowienia sesji używane przez `load-session`.

@@ -91,11 +91,13 @@ def parse_mapping(body: object, cache_control: str | None = None) -> AniZipMappi
         if not isinstance(key, str) or not isinstance(value, Mapping):
             raise _mapping_error()
         when: datetime | None = _air_date(value.get("airDateUtc"))
+        english, romaji = _titles(value)
         if re.fullmatch(r"[1-9][0-9]*", key):
             episodes.append(
                 ListedEpisode(
                     int(key),
-                    _title(value),
+                    english,
+                    romaji,
                     when,
                     _number(value.get("seasonNumber")),
                     _number(value.get("episodeNumber")),
@@ -103,7 +105,7 @@ def parse_mapping(body: object, cache_control: str | None = None) -> AniZipMappi
                 )
             )
         elif re.fullmatch(r"S[0-9]+", key):
-            specials.append(ListedSpecial(key, _title(value), when.date() if when else None))
+            specials.append(ListedSpecial(key, english or romaji, when.date() if when else None))
     kitsu: object = mappings.get("kitsu_id")
     if isinstance(kitsu, str) and kitsu.isascii() and kitsu.isdecimal():
         kitsu = int(kitsu)
@@ -124,12 +126,15 @@ def _number(value: object) -> int | None:
     return value if type(value) is int else None
 
 
-def _title(value: Mapping[str, Any]) -> str | None:
+def _titles(value: Mapping[str, Any]) -> tuple[str | None, str | None]:
     title: object = value.get("title")
-    names: tuple[object, ...] = (title.get("en"), title.get("x-jat")) if isinstance(title, Mapping) else (title,)
-    return next(
-        (name for name in names if isinstance(name, str) and name and not _PLACEHOLDER_TITLE.fullmatch(name)), None
-    )
+    if not isinstance(title, Mapping):
+        return _real_title(title), None
+    return _real_title(title.get("en")), _real_title(title.get("x-jat"))
+
+
+def _real_title(name: object) -> str | None:
+    return name if isinstance(name, str) and name and not _PLACEHOLDER_TITLE.fullmatch(name) else None
 
 
 def _air_date(value: object) -> datetime | None:

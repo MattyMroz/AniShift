@@ -23,6 +23,7 @@ from anishift.services.torrents.qbittorrent import QBittorrentClient
         ("api.tsukihime.org", "tsukihime"),
         ("api.knaben.org", "knaben"),
         ("nekobt.to", "nekobt"),
+        ("api.tvmaze.com", "tvmaze"),
     ],
 )
 def test_episode_providers_charge_their_own_budget(host: str, provider: str) -> None:
@@ -50,6 +51,7 @@ def test_episode_providers_charge_their_own_budget(host: str, provider: str) -> 
         ("api.tsukihime.org", "tsukihime"),
         ("api.knaben.org", "knaben"),
         ("nekobt.to", "nekobt"),
+        ("api.tvmaze.com", "tvmaze"),
     ],
 )
 def test_episode_providers_send_bursts_without_sleep_but_honor_429(host: str, provider: str) -> None:
@@ -138,6 +140,19 @@ def test_actual_login_retry_and_not_modified_responses_are_counted() -> None:
     assert paths == ["/api/v2/app/version", "/api/v2/auth/login", "/api/v2/app/version", "/"]
     assert sum(int(str(row["count"])) for row in control.counts()) == 4
     assert {row["result"] for row in control.counts()} == {"403", "200", "304"}
+
+
+@pytest.mark.unit
+def test_followed_redirect_passes_through_request_control() -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/lookup/shows":
+            return httpx.Response(301, headers={"Location": "https://api.tvmaze.com/shows/92844"})
+        return httpx.Response(200, json={"id": 92844})
+
+    control: RequestControl = RequestControl(httpx.MockTransport(respond))
+    with httpx.Client(transport=control, follow_redirects=True) as http:
+        response: httpx.Response = http.get("https://api.tvmaze.com/lookup/shows", params={"thetvdb": 478752})
+    assert response.json() == {"id": 92844}
 
 
 def test_nested_scopes_share_one_actual_request_budget() -> None:

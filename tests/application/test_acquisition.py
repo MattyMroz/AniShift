@@ -1756,7 +1756,7 @@ def test_episode_selection_views_survive_a_strict_ipc_round_trip(tmp_path: Path)
     listing: EpisodeListing = replace(
         listed,
         episodes=(
-            replace(listed.episodes[0], aired=True, airs_at_fallback=True),
+            replace(listed.episodes[0], title_en="English", title_romaji="Romaji", aired=True, airs_at_fallback=True),
             replace(listed.episodes[1], airs_at_fallback=False),
             *listed.episodes[2:],
         ),
@@ -1770,6 +1770,9 @@ def test_episode_selection_views_survive_a_strict_ipc_round_trip(tmp_path: Path)
     decoded: tuple[ListedEpisode, ...] = decode_view(EpisodeListing, encode_view(listing)).episodes
     assert {episode.aired for episode in decoded} == {True, False}
     assert {episode.airs_at_fallback for episode in decoded} == {True, False}
+    assert (decoded[0].title_en, decoded[0].title_romaji, decoded[0].title) == ("English", "Romaji", "English")
+    encoded: dict[str, Any] = encode_view(listing)
+    assert "title" not in encoded["episodes"][0]
     for field in ("aired", "airs_at_fallback"):
         mistyped: dict[str, Any] = encode_view(listing)
         mistyped["episodes"][0][field] = "yes"
@@ -1803,3 +1806,199 @@ def test_strict_ipc_decoding_refuses_a_mistyped_field(
     payload[field] = value
     with pytest.raises(ValidationError):
         decode_view(model, payload)
+
+
+_OVERGEARED_TVDB: Final[int] = 478752
+
+_TVMAZE_TITLES: Final[dict[tuple[int, int], str]] = {
+    (1, 1): "Legendary Class Again",
+    (1, 2): "Yatan's High Priest",
+    (1, 3): "Comrades in the Guild",
+    (1, 4): "Family's Trust",
+}
+
+
+class _EpisodeTitles:
+    def __init__(self, titles: Mapping[tuple[int, int], str] | None = None, *, fails: bool = False) -> None:
+        self.titles: dict[tuple[int, int], str] = dict(_TVMAZE_TITLES if titles is None else titles)
+        self.fails: bool = fails
+        self.asked: list[int] = []
+
+    def episode_titles(self, tvdb_show_id: int) -> Mapping[tuple[int, int], str]:
+        self.asked.append(tvdb_show_id)
+        if self.fails:
+            raise TitleCatalogError(context=ErrorContext(code=ErrorCode.EPISODE_CATALOG_FAILED, message="down"))
+        return self.titles
+
+
+_OVERGEARED_RAW: Final[dict[str, dict[str, object]]] = {
+    "1": {"title": {"en": "Legendary Class", "x-jat": "Densetsu"}, "seasonNumber": 1, "episodeNumber": 1},
+    "2": {"title": {"x-jat": "Yatan no Saishichou"}, "seasonNumber": 1, "episodeNumber": 2},
+    "3": {"seasonNumber": 1, "episodeNumber": 3},
+    "4": {"seasonNumber": 1, "episodeNumber": 4},
+}
+
+
+def _overgeared_mapping(
+    raw: Mapping[str, Mapping[str, object]] = _OVERGEARED_RAW, *, kind: str = "TV", show: object = _OVERGEARED_TVDB
+) -> AniZipMapping:
+    episodes: dict[str, dict[str, object]] = {key: {"tvdbShowId": show, **value} for key, value in raw.items()}
+    return parse_mapping({"episodes": episodes, "mappings": {"type": kind}})
+
+
+def _titled_service(
+    tmp_path: Path,
+    catalog: _EpisodeTitles,
+    mapping: AniZipMapping | None = None,
+    *,
+    clock: _Clock | None = None,
+    titles: _TitleCatalog | None = None,
+) -> AcquisitionService:
+    now: _Clock = clock if clock is not None else _Clock()
+    aired: datetime = datetime.fromtimestamp(now.now, UTC) - timedelta(days=1)
+    schedule: SeasonAiring = SeasonAiring(
+        _S1,
+        TitleStatus.RELEASING,
+        4,
+        (*(EpisodeAiring(number, aired) for number in (1, 2, 3)), EpisodeAiring(4, aired + timedelta(days=7))),
+    )
+    source: _TitleCatalog = titles if titles is not None else _TitleCatalog(graphs={_S1: _fixture_graph(_S1)})
+    source.schedules[_S1] = schedule
+    service: AcquisitionService = _episode_service(
+        tmp_path, source, _EpisodeCatalog({_S1: mapping if mapping is not None else _overgeared_mapping()}), clock=now
+    )
+    service._episode_titles = catalog
+    return service
+
+
+def _titles_of(listing: EpisodeListing) -> list[tuple[str | None, str | None]]:
+    return [(episode.title_en, episode.title_romaji) for episode in listing.episodes]
+
+
+def test_episodes_fill_missing_english_titles_from_tvmaze_without_touching_the_mapping(tmp_path: Path) -> None:
+    catalog: _EpisodeTitles = _EpisodeTitles()
+    service: AcquisitionService = _titled_service(tmp_path, catalog)
+    listing: EpisodeListing = service.episodes(_S1)
+    assert _titles_of(listing) == [
+        ("Legendary Class", "Densetsu"),
+        ("Yatan's High Priest", "Yatan no Saishichou"),
+        ("Comrades in the Guild", None),
+        ("Family's Trust", None),
+    ]
+    assert [episode.title for episode in listing.episodes] == [
+        "Legendary Class",
+        "Yatan's High Priest",
+        "Comrades in the Guild",
+        "Family's Trust",
+    ]
+    assert catalog.asked == [_OVERGEARED_TVDB]
+    read: ListingRead = service.read_listing(_S1)
+    assert read.mapping == _overgeared_mapping()
+    assert _titles_of(read.listing) == [
+        ("Legendary Class", "Densetsu"),
+        (None, "Yatan no Saishichou"),
+        (None, None),
+        (None, None),
+    ]
+    assert catalog.asked == [_OVERGEARED_TVDB]
+
+
+def test_episodes_remember_tvmaze_titles_for_an_hour(tmp_path: Path) -> None:
+    clock: _Clock = _Clock()
+    catalog: _EpisodeTitles = _EpisodeTitles()
+    service: AcquisitionService = _titled_service(tmp_path, catalog, clock=clock)
+    service.episodes(_S1)
+    clock.now += 3599
+    assert service.episodes(_S1).episodes[1].title_en == "Yatan's High Priest"
+    assert catalog.asked == [_OVERGEARED_TVDB]
+    clock.now += 2
+    service.episodes(_S1)
+    assert catalog.asked == [_OVERGEARED_TVDB, _OVERGEARED_TVDB]
+
+
+def test_episodes_remember_an_unknown_tvmaze_series_for_an_hour(tmp_path: Path) -> None:
+    clock: _Clock = _Clock()
+    catalog: _EpisodeTitles = _EpisodeTitles({})
+    service: AcquisitionService = _titled_service(tmp_path, catalog, clock=clock)
+    assert _titles_of(service.episodes(_S1))[1] == (None, "Yatan no Saishichou")
+    clock.now += 901
+    service.episodes(_S1)
+    assert catalog.asked == [_OVERGEARED_TVDB]
+    clock.now += 2700
+    service.episodes(_S1)
+    assert catalog.asked == [_OVERGEARED_TVDB, _OVERGEARED_TVDB]
+
+
+def test_episodes_keep_ani_zip_titles_when_tvmaze_fails_and_retry_after_fifteen_minutes(tmp_path: Path) -> None:
+    clock: _Clock = _Clock()
+    catalog: _EpisodeTitles = _EpisodeTitles(fails=True)
+    service: AcquisitionService = _titled_service(tmp_path, catalog, clock=clock)
+    assert _titles_of(service.episodes(_S1)) == [
+        ("Legendary Class", "Densetsu"),
+        (None, "Yatan no Saishichou"),
+        (None, None),
+        (None, None),
+    ]
+    clock.now += 899
+    service.episodes(_S1)
+    assert catalog.asked == [_OVERGEARED_TVDB]
+    clock.now += 2
+    catalog.fails = False
+    assert service.episodes(_S1).episodes[1].title_en == "Yatan's High Priest"
+    assert catalog.asked == [_OVERGEARED_TVDB, _OVERGEARED_TVDB]
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        _overgeared_mapping(show=None),
+        _overgeared_mapping(_OVERGEARED_RAW | {"4": {"seasonNumber": 1, "episodeNumber": 4, "tvdbShowId": 1}}),
+        _overgeared_mapping(
+            {
+                "1": {"title": {"en": "Legendary Class"}, "seasonNumber": 1, "episodeNumber": 1},
+                "2": {"title": {"en": "Second Class"}, "seasonNumber": 1, "episodeNumber": 2},
+                "3": {"title": {"en": "Third"}, "seasonNumber": 1, "episodeNumber": 3},
+                "4": {"seasonNumber": 1, "episodeNumber": 4},
+            }
+        ),
+        _overgeared_mapping(
+            {
+                "1": {"title": {"en": "Legendary Class"}, "seasonNumber": 1, "episodeNumber": 1},
+                "2": {"seasonNumber": 1, "episodeNumber": 1},
+                "3": {},
+                "4": {"seasonNumber": 1, "episodeNumber": 4},
+            }
+        ),
+    ],
+)
+def test_episodes_ask_tvmaze_only_for_an_aired_episode_without_an_english_title(
+    tmp_path: Path, mapping: AniZipMapping
+) -> None:
+    catalog: _EpisodeTitles = _EpisodeTitles()
+    service: AcquisitionService = _titled_service(tmp_path, catalog, mapping)
+    assert service.episodes(_S1) == service.read_listing(_S1).listing
+    assert catalog.asked == []
+
+
+def test_a_movie_never_asks_tvmaze(tmp_path: Path) -> None:
+    catalog: _EpisodeTitles = _EpisodeTitles()
+    service: AcquisitionService = _titled_service(
+        tmp_path, catalog, _overgeared_mapping(kind="MOVIE"), titles=_NoFranchise()
+    )
+    assert service.read_listing(_S1).movie
+    assert _titles_of(service.episodes(_S1))[1] == (None, "Yatan no Saishichou")
+    assert catalog.asked == []
+
+
+def test_reading_the_listing_for_subscriptions_never_asks_tvmaze(tmp_path: Path) -> None:
+    catalog: _EpisodeTitles = _EpisodeTitles()
+    service: AcquisitionService = _titled_service(tmp_path, catalog)
+    service.read_listing(_S1)
+    service.read_listing(_S1, saved=_overgeared_mapping(), targets=(2,))
+    assert catalog.asked == []
+
+
+def test_episodes_without_a_title_catalog_equal_the_read_listing(tmp_path: Path) -> None:
+    service: AcquisitionService = _titled_service(tmp_path, _EpisodeTitles())
+    service._episode_titles = None
+    assert service.episodes(_S1) == service.read_listing(_S1).listing

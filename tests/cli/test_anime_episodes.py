@@ -128,7 +128,7 @@ def _listing() -> EpisodeListing:
         "TV",
         "FINISHED",
         6,
-        tuple(ListedEpisode(n, f"Episode {n}", aired=True) for n in range(1, 7)),
+        tuple(ListedEpisode(n, title_en=f"Episode {n}", aired=True) for n in range(1, 7)),
         (ListedSpecial("S1", "Extra", None),),
         6,
         None,
@@ -1319,7 +1319,7 @@ def test_past_mapping_dates_do_not_make_unconfirmed_episodes_selectable(
         status=status,
         aired=aired,
         schedule_warning=warning,
-        episodes=(ListedEpisode(1, "Episode 1", datetime(2020, 1, 1, tzinfo=UTC)),),
+        episodes=(ListedEpisode(1, title_en="Episode 1", airs_at=datetime(2020, 1, 1, tzinfo=UTC)),),
     )
     controller: AnimeController = _controller(catalog)
     _open(controller)
@@ -1337,8 +1337,10 @@ def test_ani_zip_label_follows_each_episode_date_origin_without_a_schedule_warni
         catalog.listing,
         schedule_warning=None,
         episodes=(
-            ListedEpisode(1, "Episode 1", datetime(2020, 1, 1, tzinfo=UTC), aired=True, airs_at_fallback=True),
-            ListedEpisode(2, "Episode 2", datetime(2020, 1, 8, tzinfo=UTC), aired=True),
+            ListedEpisode(
+                1, title_en="Episode 1", airs_at=datetime(2020, 1, 1, tzinfo=UTC), aired=True, airs_at_fallback=True
+            ),
+            ListedEpisode(2, title_en="Episode 2", airs_at=datetime(2020, 1, 8, tzinfo=UTC), aired=True),
         ),
     )
     controller: AnimeController = _controller(catalog)
@@ -1360,7 +1362,10 @@ def test_episode_selectability_follows_only_the_domain_aired_flag_of_each_episod
         catalog.listing,
         status="HIATUS",
         aired=None,
-        episodes=(ListedEpisode(1, "Episode 1", aired=False), ListedEpisode(2, "Episode 2", aired=True)),
+        episodes=(
+            ListedEpisode(1, title_en="Episode 1", aired=False),
+            ListedEpisode(2, title_en="Episode 2", aired=True),
+        ),
     )
     controller: AnimeController = _controller(catalog)
     _open(controller)

@@ -64,6 +64,25 @@ def test_mapping_missing_dates_never_use_local_date_fields() -> None:
     assert "1.5" in result.raw_episodes
 
 
+def test_mapping_keeps_the_language_of_episode_titles_and_specials_prefer_english() -> None:
+    result: AniZipMapping = parse_mapping(
+        {
+            "mappings": {},
+            "episodes": {
+                "1": {"title": {"en": "Legendary Class", "x-jat": "Densetsu"}},
+                "2": {"title": {"x-jat": "Yatan no Saishichou"}},
+                "S1": {"title": {"en": "Extra", "x-jat": "Tokuten"}},
+                "S2": {"title": {"x-jat": "Tokuten"}},
+            },
+        }
+    )
+    assert [(episode.title_en, episode.title_romaji, episode.title) for episode in result.episodes] == [
+        ("Legendary Class", "Densetsu", "Legendary Class"),
+        (None, "Yatan no Saishichou", "Yatan no Saishichou"),
+    ]
+    assert [special.title for special in result.specials] == ["Extra", "Tokuten"]
+
+
 def test_mapping_bracketed_placeholder_titles_are_not_episode_titles() -> None:
     raw: dict[str, Any] = {
         "6": {"title": {"ja": "【呪縛】", "en": None, "x-jat": "[Jubaku]"}},
@@ -73,6 +92,12 @@ def test_mapping_bracketed_placeholder_titles_are_not_episode_titles() -> None:
         "S1": {"title": {"x-jat": "[Tokuten]"}},
     }
     result: AniZipMapping = parse_mapping({"mappings": {}, "episodes": raw})
+    assert [(episode.title_en, episode.title_romaji) for episode in result.episodes] == [
+        (None, None),
+        ("Curse", None),
+        (None, "Jubaku"),
+        ("[Oshi no Ko] Part 2", None),
+    ]
     assert [episode.title for episode in result.episodes] == [None, "Curse", "Jubaku", "[Oshi no Ko] Part 2"]
     assert result.specials[0].title is None
     assert result.raw_episodes == raw

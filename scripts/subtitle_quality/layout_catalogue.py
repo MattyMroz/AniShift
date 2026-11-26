@@ -106,9 +106,14 @@ def _case(entry: dict[str, Any]) -> CatalogueCase:
         rule=entry.get("accept_rule"),
         if_fits=entry.get("if_fits", False),
         soft=entry.get("soft", False),
-        forbid=frozenset(tuple(pair.split("|", 1)) for pair in entry.get("forbid", ())),  # type: ignore[misc]
+        forbid=frozenset(_forbidden_pair(pair) for pair in entry.get("forbid", ())),
         forbid_lines=frozenset(entry.get("forbid_lines", ())),
     )
+
+
+def _forbidden_pair(text: str) -> tuple[str, str]:
+    first, second = text.split("|", 1)
+    return first, second
 
 
 def _accepted(item: dict[str, Any]) -> Accepted:

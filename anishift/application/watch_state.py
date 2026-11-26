@@ -176,7 +176,7 @@ _MAPPING_KEYS: Final[frozenset[str]] = frozenset(
 """Keys a serialized episode mapping must carry."""
 
 _LISTED_EPISODE_KEYS: Final[frozenset[str]] = frozenset(
-    {"number", "title", "airs_at", "season", "episode", "absolute", "aired", "airs_at_fallback"}
+    {"number", "title_en", "title_romaji", "airs_at", "season", "episode", "absolute", "aired", "airs_at_fallback"}
 )
 """Keys a serialized mapped episode must carry."""
 
@@ -887,7 +887,8 @@ def _encode_mapping(mapping: AniZipMapping) -> dict[str, object]:
         "episodes": [
             {
                 "number": item.number,
-                "title": item.title,
+                "title_en": item.title_en,
+                "title_romaji": item.title_romaji,
                 "airs_at": None if item.airs_at is None else item.airs_at.isoformat(),
                 "season": item.season,
                 "episode": item.episode,
@@ -1028,7 +1029,8 @@ def _decode_mapping(raw: object) -> AniZipMapping:
         episodes.append(
             ListedEpisode(
                 number=_whole(item, "number"),
-                title=_optional_text(item, "title"),
+                title_en=_optional_text(item, "title_en"),
+                title_romaji=_optional_text(item, "title_romaji"),
                 airs_at=None if airs_at is None else datetime.fromisoformat(airs_at),
                 season=_optional_whole(item, "season"),
                 episode=_optional_whole(item, "episode"),

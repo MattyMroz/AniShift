@@ -295,7 +295,7 @@ def _episodes_airing(monkeypatch: pytest.MonkeyPatch) -> _Probe:
         status="RELEASING",
         episodes=tuple(
             ListedEpisode(
-                number, f"Episode {number}", aired=number <= 3, airs_at=now + timedelta(days=7 * (number - 3))
+                number, title_en=f"Episode {number}", aired=number <= 3, airs_at=now + timedelta(days=7 * (number - 3))
             )
             for number in range(1, 7)
         ),
