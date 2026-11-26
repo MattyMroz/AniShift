@@ -10,6 +10,7 @@ from typing import Any, Final, cast
 
 import httpx
 import pytest
+from fakes import FakeEpisodeCatalogue
 from pydantic import ValidationError
 from test_episode_search import controlled, empty_response, search_service
 from test_episode_selection import (
@@ -41,6 +42,7 @@ from anishift.application.acquisition import (
     catalog_releases,
     read_episode,
     series_directory_name,
+    target_episode_name,
 )
 from anishift.application.cancellation import CancellationToken
 from anishift.application.control_views import decode_view, encode_view
@@ -65,6 +67,7 @@ from anishift.application.episode_selection import (
     season_dates,
     suggestion,
 )
+from anishift.application.library import EpisodeName
 from anishift.errors import ErrorCode, ErrorContext, FatalError
 from anishift.services.catalog import (
     EpisodeAiring,
@@ -881,6 +884,8 @@ def test_reserving_a_name_renames_that_file_through_the_client(tmp_path: Path) -
 
 
 _S1: Final[int] = 101280
+
+_ENTRY_ID: Final[int] = 189123
 
 _S4: Final[int] = 182205
 
@@ -2003,3 +2008,87 @@ def test_episodes_without_a_title_catalog_equal_the_read_listing(tmp_path: Path)
     service: AcquisitionService = _titled_service(tmp_path, _EpisodeTitles())
     service._episode_titles = None
     assert service.episodes(_S1) == service.read_listing(_S1).listing
+
+
+def _named_service(tmp_path: Path, catalogue: FakeEpisodeCatalogue, clock: _Clock) -> AcquisitionService:
+    return AcquisitionService(
+        source=_Source(),
+        client=_Client(),
+        workspace_root=tmp_path,
+        parse_name=_parse,
+        title_catalog=catalogue,
+        episode_catalog=catalogue,
+        clock=clock,
+    )
+
+
+@pytest.mark.unit
+def test_episode_name_reads_the_english_series_and_the_listed_episode(tmp_path: Path) -> None:
+    catalogue: FakeEpisodeCatalogue = FakeEpisodeCatalogue(
+        english="Blue Box", romaji="Ao no Hako", titles={7: "Deja Vu"}
+    )
+    catalogue.season = 2
+    service: AcquisitionService = _named_service(tmp_path, catalogue, _Clock())
+
+    name: EpisodeName = service.episode_name(_ENTRY_ID, 7)
+
+    assert (name.title, name.film) == ("Blue Box", False)
+    assert (name.episode.number, name.episode.season, name.episode.episode) == (7, 2, 7)
+    assert name.episode.title == "Deja Vu"
+    assert service.catalogue_title(_ENTRY_ID) == "Blue Box"
+
+
+@pytest.mark.unit
+def test_episode_name_falls_back_to_romaji_and_marks_a_film(tmp_path: Path) -> None:
+    catalogue: FakeEpisodeCatalogue = FakeEpisodeCatalogue(english=None, romaji="Kimi no Na wa", media_format="MOVIE")
+    name: EpisodeName = _named_service(tmp_path, catalogue, _Clock()).episode_name(_ENTRY_ID, 1)
+
+    assert (name.title, name.film) == ("Kimi no Na wa", True)
+
+
+@pytest.mark.unit
+def test_episode_name_keeps_a_remembered_series_when_anilist_fails_later(tmp_path: Path) -> None:
+    catalogue: FakeEpisodeCatalogue = FakeEpisodeCatalogue(english="Blue Box")
+    clock: _Clock = _Clock()
+    service: AcquisitionService = _named_service(tmp_path, catalogue, clock)
+    service.catalogue_title(_ENTRY_ID)
+    clock.now += 100_000
+    catalogue.down = True
+
+    name: EpisodeName = service.episode_name(_ENTRY_ID, 3)
+
+    assert name.title == "Blue Box"
+    assert (name.episode.season, name.episode.episode) == (None, None)
+
+
+@pytest.mark.unit
+def test_episode_name_refuses_an_entry_anilist_never_answered(tmp_path: Path) -> None:
+    catalogue: FakeEpisodeCatalogue = FakeEpisodeCatalogue()
+    catalogue.down = True
+
+    with pytest.raises(TitleCatalogError):
+        _named_service(tmp_path, catalogue, _Clock()).episode_name(_ENTRY_ID, 3)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("target", "season", "episode", "film"),
+    [
+        ({"type": "TV", "season": 2, "episode": 5}, 2, 5, False),
+        ({"type": "MOVIE", "season": None, "episode": None}, None, None, True),
+        ({"local_episode": 5}, None, None, False),
+    ],
+)
+def test_target_episode_name_reads_the_h1_target_numbering(
+    target: dict[str, object], season: int | None, episode: int | None, *, film: bool
+) -> None:
+    name: EpisodeName = target_episode_name("Blue Box", 5, target)
+
+    assert (name.title, name.episode.number, name.episode.season, name.episode.episode, name.film) == (
+        "Blue Box",
+        5,
+        season,
+        episode,
+        film,
+    )
+    assert name.episode.title is None

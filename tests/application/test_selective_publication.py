@@ -11,6 +11,7 @@ import pytest
 from fakes import FakeMediaProbe, FakeTranslationService
 from test_automation import _request, _unlink_when_released
 from test_selective_lifecycle import (
+    _ENTRY,
     _HASH,
     _choice,
     _running,
@@ -26,7 +27,7 @@ from test_service import _service
 
 from anishift.application import automation as automation_module
 from anishift.application import watch as watch_module
-from anishift.application.acquisition import AcquisitionService, TorrentClient, TorrentManagement
+from anishift.application.acquisition import AcquisitionService
 from anishift.application.acquisition_staging import (
     SetPublication,
     clean_staging,
@@ -41,26 +42,33 @@ from anishift.application.control import (
     AcquisitionState,
     EpisodePublication,
     FileStamp,
+    PendingDeletion,
     PublishedFile,
     ReadyGroup,
     RequestState,
+    WatchState,
 )
 from anishift.application.inspection import InspectedSourceGroup, WorkspaceInspector
 from anishift.application.intents import AutoPreset, ProductIntent, ProductKind
 from anishift.application.ready import ReadyMove, ReadyStore
 from anishift.application.service import AppService
+from anishift.application.subscription_targets import SubscriptionRecord
 from anishift.application.watch_state import WATCH_STATE_FILE_NAME, WatchStateStore
 from anishift.application.workflows import WorkflowTarget
 from anishift.config.presets import AutoPresetFile
 from anishift.platform.directory_watch import DirectoryChange
 from anishift.platform.local_control import ControlResponse
-from anishift.services.torrents import TorrentFile, parse_release_name
+from anishift.services.torrents import TorrentFile
 
 _VIDEO: bytes = b"v" * 400
 
 _SUBTITLES: bytes = b"s" * 40
 
 _NAMES: list[str] = ["Neko to Ryuu - 03.mkv", "Neko to Ryuu - 03.ass"]
+
+_CORE: str = "Neko to Ryuu - S01E03"
+
+_PUBLISHED: list[str] = [f"{_CORE}.mkv", f"{_CORE}.ass"]
 
 _REAL_LINK: Callable[[str | os.PathLike[str], str | os.PathLike[str]], None] = os.link
 
@@ -343,8 +351,8 @@ def test_a_finished_episode_is_published_whole_handed_off_released_and_its_stagi
         duplicate: ControlResponse = restarted.admit_episode("duplicate-after-cleanup", _choice(3))
         assert not duplicate.ok
         assert duplicate.reason == "episode_admitted"
-    assert (setup.root / _NAMES[0]).read_bytes() == _VIDEO
-    assert (setup.root / _NAMES[1]).read_bytes() == _SUBTITLES
+    assert (setup.root / _PUBLISHED[0]).read_bytes() == _VIDEO
+    assert (setup.root / _PUBLISHED[1]).read_bytes() == _SUBTITLES
     assert frozenset({_HASH}) in setup.network.released
     assert not data.parent.exists()
     assert status["state"] in {"downloaded", "processing"}
@@ -362,17 +370,17 @@ def test_a_name_taken_before_publication_moves_the_whole_set_to_one_free_core(
         return copy_staged(source, target, size, expected=expected)
 
     monkeypatch.setattr("anishift.application.automation.copy_staged", copy)
-    (setup.root / _NAMES[0]).write_bytes(b"foreign")
+    (setup.root / _PUBLISHED[0]).write_bytes(b"foreign")
     with _running(setup) as owner:
         owners.append(owner)
         _download(setup, owner)
         _until(lambda: _settled(owner))
 
-    assert set(reserved) == {("Neko to Ryuu - 03 [2].mkv", "Neko to Ryuu - 03 [2].ass")}
-    assert _stored(setup).assignments[0].group_id == create_group_id(Path(), "Neko to Ryuu - 03 [2]")
-    assert (setup.root / _NAMES[0]).read_bytes() == b"foreign"
-    assert (setup.root / "Neko to Ryuu - 03 [2].mkv").read_bytes() == _VIDEO
-    assert (setup.root / "Neko to Ryuu - 03 [2].ass").read_bytes() == _SUBTITLES
+    assert set(reserved) == {(f"{_CORE} [2].mkv", f"{_CORE} [2].ass")}
+    assert _stored(setup).assignments[0].group_id == create_group_id(Path(), f"{_CORE} [2]")
+    assert (setup.root / _PUBLISHED[0]).read_bytes() == b"foreign"
+    assert (setup.root / f"{_CORE} [2].mkv").read_bytes() == _VIDEO
+    assert (setup.root / f"{_CORE} [2].ass").read_bytes() == _SUBTITLES
 
 
 def test_a_name_taken_after_the_first_link_moves_the_whole_set_without_replacing_the_occupant(
@@ -386,7 +394,7 @@ def test_a_name_taken_after_the_first_link_moves_the_whole_set_without_replacing
             return
         links.append(Path(destination))
         if len(links) == 1:
-            (setup.root / _NAMES[1]).write_bytes(b"foreign")
+            (setup.root / _PUBLISHED[1]).write_bytes(b"foreign")
 
     monkeypatch.setattr(os, "link", link)
     with _running(setup) as owner:
@@ -395,10 +403,10 @@ def test_a_name_taken_after_the_first_link_moves_the_whole_set_without_replacing
 
     assert _stored(setup).problem is None
     assert _stored(setup).assignments[0].group_id is not None
-    assert (setup.root / _NAMES[1]).read_bytes() == b"foreign"
-    assert not (setup.root / _NAMES[0]).exists()
-    assert (setup.root / "Neko to Ryuu - 03 [2].mkv").read_bytes() == _VIDEO
-    assert (setup.root / "Neko to Ryuu - 03 [2].ass").read_bytes() == _SUBTITLES
+    assert (setup.root / _PUBLISHED[1]).read_bytes() == b"foreign"
+    assert not (setup.root / _PUBLISHED[0]).exists()
+    assert (setup.root / f"{_CORE} [2].mkv").read_bytes() == _VIDEO
+    assert (setup.root / f"{_CORE} [2].ass").read_bytes() == _SUBTITLES
 
 
 def test_an_episode_whose_sidecar_is_not_finished_is_not_published_until_the_whole_set_is(setup: _Setup) -> None:
@@ -414,7 +422,7 @@ def test_an_episode_whose_sidecar_is_not_finished_is_not_published_until_the_who
 
     assert waiting is None
     assert blocked == set()
-    assert _root_files(setup) == set(_NAMES)
+    assert _root_files(setup) == set(_PUBLISHED)
 
 
 def test_a_publication_step_taken_on_an_older_saved_step_is_discarded(
@@ -490,7 +498,7 @@ def test_failed_cleanup_exhausts_bounded_retries_and_restarts_its_budget_after_r
 
     assert _stored(setup).problem == (None if recovered else automation_module._CLEANUP_FAILED)
     assert data.parent.exists() is not recovered
-    assert _root_files(setup) == set(_NAMES)
+    assert _root_files(setup) == set(_PUBLISHED)
 
 
 def test_a_failed_copy_is_reported_and_an_explicit_resume_publishes_the_set(
@@ -518,7 +526,7 @@ def test_a_failed_copy_is_reported_and_an_explicit_resume_publishes_the_set(
 
     assert blocked == set()
     assert resumed.ok
-    assert (setup.root / _NAMES[0]).read_bytes() == _VIDEO
+    assert (setup.root / _PUBLISHED[0]).read_bytes() == _VIDEO
 
 
 def test_auto_ignores_a_set_that_is_not_handed_off_yet(setup: _Setup, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -529,7 +537,8 @@ def test_auto_ignores_a_set_that_is_not_handed_off_yet(setup: _Setup, monkeypatc
         stored: AcquisitionConfirmation = _stored(setup)
         publication: EpisodePublication | None = stored.assignments[0].publication
         assert publication is not None
-        group: InspectedSourceGroup = cast("InspectedSourceGroup", _Group(tuple(setup.root / name for name in _NAMES)))
+        paths: tuple[Path, ...] = tuple(setup.root / name for name in _PUBLISHED)
+        group: InspectedSourceGroup = cast("InspectedSourceGroup", _Group(paths))
         handed: object = owner._on_owner(lambda: owner._file_origin(group))
         pending: AcquisitionConfirmation = replace(
             stored, assignments=(replace(stored.assignments[0], publication=replace(publication, handed_off=False)),)
@@ -543,13 +552,7 @@ def test_auto_ignores_a_set_that_is_not_handed_off_yet(setup: _Setup, monkeypatc
 
 class _ProcessingSetup(_Setup):
     def owner(self) -> AutomationOwner:
-        acquisition: AcquisitionService = AcquisitionService(
-            source=self.network,
-            client=cast("TorrentClient", self.network),
-            workspace_root=self.root,
-            parse_name=parse_release_name,
-            torrent_management=cast("TorrentManagement", self.network),
-        )
+        acquisition: AcquisitionService = self.acquisition()
         preset: AutoPreset = AutoPreset("subtitles", "Subtitles", ProductIntent(frozenset({ProductKind.FULL_PL})))
         service: AppService = _service(
             self.root,
@@ -612,11 +615,11 @@ def test_only_the_ordered_episode_enters_one_real_auto_run_across_restart(
         groups: tuple[str, ...] = tuple(group.source.stem for group in owner._service.discover().groups)
         status: dict[str, object] = _status(owner)
 
-    assert groups == ("Neko to Ryuu - 03",)
+    assert groups == (_CORE,)
     assert len(_state(setup).requests) == 1
     assert _state(setup).requests[0].attempts == 1
-    assert (tmp_path / "ready" / names[0]).read_bytes() == _VIDEO
-    assert (tmp_path / "ready" / names[1]).read_bytes() == subtitles
+    assert (tmp_path / "ready" / f"{_CORE}.mkv").read_bytes() == _VIDEO
+    assert (tmp_path / "ready" / f"{_CORE}.srt").read_bytes() == subtitles
     assert not data.parent.exists()
     assert status["state"] == "ready"
     assert setup.network.selections == [(_HASH, frozenset({0, 1}))]
@@ -664,7 +667,7 @@ def test_manual_download_reaches_library_under_pause_and_resume_deduplicates(
         assert owner.state.requests[0].state is RequestState.SUCCEEDED
         assert not owner.state.requests[0].automatic
         assert setup.network.actions == []
-        assert (tmp_path / "ready" / name).read_bytes() == subtitles
+        assert (tmp_path / "ready" / f"{_CORE}.srt").read_bytes() == subtitles
         manual_id: str = owner.state.requests[0].request_id
         assert owner.handle(_request("set_auto", {"enabled": True}, command_id="resume")).ok
         _until(lambda: len(owner.state.requests) == 2)
@@ -706,7 +709,7 @@ def test_one_episode_publishes_while_the_other_ordered_episode_is_still_download
             setup.network.tracked[_HASH], progress=0.5, amount_left=451, state="downloading"
         )
         (data / "Pack" / _NAMES[1]).write_bytes(_SUBTITLES)
-        _until(lambda: _root_files(setup) == set(_NAMES))
+        _until(lambda: _root_files(setup) == set(_PUBLISHED))
         assert _current(owner).state is AcquisitionState.ACCEPTED
         assert setup.network.released == []
         assert (data / "Pack" / _NAMES[0]).read_bytes() == _VIDEO
@@ -744,7 +747,7 @@ def test_cleanup_requires_release_and_the_preserved_copy_even_after_ready_reloca
         data: Path = _download(setup, owner)
         _until(lambda: _current(owner).state is AcquisitionState.COMPLETE)
         item: AcquisitionConfirmation = _current(owner)
-        target: Path = setup.root / _NAMES[0]
+        target: Path = setup.root / _PUBLISHED[0]
         if proof == "missing":
             target.unlink()
         elif proof == "changed":
@@ -771,7 +774,7 @@ def test_cleanup_requires_release_and_the_preserved_copy_even_after_ready_reloca
     if proof == "ready":
         assert _stored(setup).manifest == ()
         assert not data.parent.exists()
-        assert (setup.root / "ready" / _NAMES[0]).read_bytes() == _VIDEO
+        assert (setup.root / "ready" / _PUBLISHED[0]).read_bytes() == _VIDEO
     else:
         assert (data / "Pack" / _NAMES[0]).read_bytes() == _VIDEO
         assert _stored(setup).manifest == item.manifest
@@ -794,19 +797,19 @@ def test_episode_states_follow_an_episode_from_ordering_to_its_ready_set(setup: 
         _until(lambda: setup.network.tracked[_HASH].state == "downloading")
         setup.network.finish(_HASH)
         _until(lambda: _settled(owner))
-        group_id: str = create_group_id(Path(), "Neko to Ryuu - 03")
+        group_id: str = create_group_id(Path(), _CORE)
         record: ReadyGroup = ReadyGroup(
             group_id,
-            create_group_id(Path("ready"), "Neko to Ryuu - 03"),
-            "Neko to Ryuu - 03",
+            create_group_id(Path("ready"), _CORE),
+            _CORE,
             "",
-            "Neko to Ryuu - 03",
+            _CORE,
             WorkflowTarget.VIDEO,
-            (f"ready/{_NAMES[0]}",),
+            (f"ready/{_PUBLISHED[0]}",),
             (),
         )
         (setup.root / "ready").mkdir(exist_ok=True)
-        (setup.root / "ready" / _NAMES[0]).write_bytes(_VIDEO)
+        (setup.root / "ready" / _PUBLISHED[0]).write_bytes(_VIDEO)
         assert owner._on_owner(lambda: owner._save(replace(owner._state, ready_groups=(record,))))
         ready: dict[str, object] = _status(owner)
 
@@ -821,7 +824,7 @@ def test_cleanup_with_a_protected_original_finishes_once_without_rehashing_on_re
     checked: list[str] = []
 
     def release(hashes: frozenset[str]) -> frozenset[str]:
-        (setup.root / _NAMES[0]).unlink(missing_ok=True)
+        (setup.root / _PUBLISHED[0]).unlink(missing_ok=True)
         return hashes
 
     def verify(path: Path, item: PublishedFile) -> bool:
@@ -838,7 +841,7 @@ def test_cleanup_with_a_protected_original_finishes_once_without_rehashing_on_re
     with _running(setup) as owner:
         assert owner._on_owner(owner._pending_completion) == ()
 
-    assert first == _NAMES
+    assert first == _PUBLISHED
     assert checked == first
     assert _stored(setup).cleaned
     assert _stored(setup).problem is None
@@ -910,11 +913,11 @@ def test_lost_handed_off_files_report_a_problem_without_holding_the_remaining_pa
         setup.network.tracked[_HASH] = replace(
             setup.network.tracked[_HASH], state="downloading", progress=0.5, amount_left=451
         )
-        _until((setup.root / _NAMES[0]).exists)
+        _until((setup.root / _PUBLISHED[0]).exists)
         _until(
             lambda: (publication := _current(owner).assignments[1].publication) is not None and publication.handed_off
         )
-        _unlink_when_released(setup.root / _NAMES[0])
+        _unlink_when_released(setup.root / _PUBLISHED[0])
         _unlink_when_released(data / "Pack" / _NAMES[0])
         (data / "Pack" / "Neko to Ryuu - 04.mkv").write_bytes(b"v" * 410)
         (data / "Pack" / "Neko to Ryuu - 04.ass").write_bytes(b"s" * 41)
@@ -922,4 +925,106 @@ def test_lost_handed_off_files_report_a_problem_without_holding_the_remaining_pa
         _until(lambda: _settled(owner))
         assert _status(owner)["reason"] == "publication_missing"
     assert frozenset({_HASH}) in setup.network.released
-    assert (setup.root / "Neko to Ryuu - 04.mkv").read_bytes() == b"v" * 410
+    assert (setup.root / "Neko to Ryuu - S01E04.mkv").read_bytes() == b"v" * 410
+
+
+def test_a_downloaded_episode_set_is_named_after_its_catalogue_series_and_episode(setup: _Setup) -> None:
+    setup.catalogue.english = "Neko to Ryuu Season 2"
+    setup.catalogue.season = 2
+    setup.catalogue.titles = {3: "Fire Rat`s Cloak: Part 1"}
+    with _running(setup) as owner:
+        _download(setup, owner)
+        _until(lambda: _settled(owner))
+
+    assert _root_files(setup) == {
+        "Neko to Ryuu - S02E03 - Fire Rat's Cloak - Part 1.mkv",
+        "Neko to Ryuu - S02E03 - Fire Rat's Cloak - Part 1.ass",
+    }
+
+
+def test_a_film_set_is_named_after_its_series_alone(setup: _Setup) -> None:
+    setup.catalogue.english = "Neko to Ryuu: The Movie"
+    setup.catalogue.media_format = "MOVIE"
+    setup.catalogue.titles = {3: "Ignored"}
+    with _running(setup) as owner:
+        _download(setup, owner)
+        _until(lambda: _settled(owner))
+
+    assert _root_files(setup) == {"Neko to Ryuu - The Movie.mkv", "Neko to Ryuu - The Movie.ass"}
+
+
+def test_an_unavailable_catalogue_names_a_followed_series_from_its_subscription_and_target(setup: _Setup) -> None:
+    record: SubscriptionRecord = SubscriptionRecord(
+        "followed", _ENTRY, "Neko to Ryuu Season 2", "2026-11-01T00:00:00+00:00", 1
+    )
+    setup.store.save(replace(WatchState(), subscriptions=(record,)))
+    setup.catalogue.down = True
+    with _running(setup) as owner:
+        assert owner.admit_episode("admit-1", replace(_choice(3), target={"season": 2, "episode": 3})).ok
+        _until(lambda: bool(setup.network.metadata_added))
+        setup.network.deliver(_HASH)
+        _until(_starts(setup))
+        data: Path = setup.root / "tmp" / ".acquisition" / str(_view(owner)["operation_id"]) / "data" / "Pack"
+        data.mkdir(parents=True, exist_ok=True)
+        (data / _NAMES[0]).write_bytes(_VIDEO)
+        (data / _NAMES[1]).write_bytes(_SUBTITLES)
+        _until(lambda: setup.network.tracked[_HASH].state == "downloading")
+        setup.network.finish(_HASH)
+        _until(lambda: _settled(owner))
+
+    assert _root_files(setup) == {"Neko to Ryuu - S02E03.mkv", "Neko to Ryuu - S02E03.ass"}
+
+
+def test_an_unknown_series_waits_for_the_catalogue_and_publishes_once_it_answers(setup: _Setup) -> None:
+    setup.catalogue.down = True
+    with _running(setup) as owner:
+        _download(setup, owner)
+        _until(lambda: len(setup.catalogue.franchised) > 3)
+        waiting: EpisodePublication | None = _current(owner).assignments[0].publication
+        blocked: set[str] = _root_files(setup)
+        setup.catalogue.down = False
+        _until(lambda: _settled(owner))
+
+    assert waiting is None
+    assert blocked == set()
+    assert _root_files(setup) == set(_PUBLISHED)
+
+
+def test_a_reserved_name_survives_a_restart_and_a_later_episode_title(
+    setup: _Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owners: list[AutomationOwner] = []
+    crashed: list[str] = _crash_at("reserved", owners, monkeypatch)
+    with _running(setup) as owner:
+        owners.append(owner)
+        _download(setup, owner)
+        _until(lambda: bool(crashed))
+    setup.catalogue.titles = {3: "Known Later"}
+    with _running(setup) as owner:
+        _until(lambda: _settled(owner))
+
+    assert _root_files(setup) == set(_PUBLISHED)
+
+
+def test_only_present_ready_files_and_pending_deletions_reserve_a_name(setup: _Setup) -> None:
+    gone: ReadyGroup = ReadyGroup(
+        "gone", "gone-ready", _CORE, ".", _CORE, WorkflowTarget.VIDEO, (f"ready/{_PUBLISHED[0]}",), ()
+    )
+    (setup.root / "ready").mkdir()
+    (setup.root / "ready" / "Present - S01E01.mkv").write_bytes(_VIDEO)
+    with _running(setup) as owner:
+        deletion: PendingDeletion = PendingDeletion(
+            "delete-1",
+            "deleted",
+            "2026-11-26T00:00:00+00:00",
+            (("ready/Deleted - S01E02.mkv", 1, 1),),
+            instance_id=owner._instance_id,
+        )
+        assert owner._on_owner(
+            lambda: owner._save(replace(owner._state, ready_groups=(gone,), pending_deletions=(deletion,)))
+        )
+        reserved: frozenset[str] | None = owner._on_owner(owner._reserved_names)
+
+    assert reserved is not None
+    assert _CORE.casefold() not in reserved
+    assert {"present - s01e01", "deleted - s01e02"} <= reserved

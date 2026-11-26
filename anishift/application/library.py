@@ -29,7 +29,7 @@ from anishift.application.control_views import LibraryFile, LibraryFileIdentity,
 from anishift.application.discovery import ArtifactName, classify_artifact
 from anishift.application.episode_identity import TECHNICAL, VIDEO_EXTENSIONS
 from anishift.application.intents import GroupIntent
-from anishift.application.products import main_product
+from anishift.application.products import episode_stem, main_product
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, WorkspacePlace
 from anishift.paths import READY_DIRECTORY
 from anishift.services.torrents.names import (
@@ -138,6 +138,24 @@ def series_title(title: str) -> str:
     """Return a catalogue title without its season, what follows it, its part or its year, shared by every season."""
     base: str = SERIES_PART.sub("", SERIES_YEAR.sub("", before_season(title))).removesuffix(" -").removesuffix(" :")
     return base or " ".join(title.split())
+
+
+@dataclass(frozen=True, slots=True)
+class EpisodeName:
+    """Catalogue facts one downloaded episode set is named after: entry title, listed episode and film format."""
+
+    title: str
+    episode: ListedEpisode
+    film: bool = False
+
+
+def episode_file_stem(name: EpisodeName) -> str:
+    """Return the stem every file of the downloaded episode set *name* describes shares."""
+    return episode_stem(
+        series_title(name.title),
+        episode_numbering(name.episode, name.title, film=name.film),
+        None if name.film else name.episode.title,
+    )
 
 
 def episode_numbering(listed: ListedEpisode, title: str, *, film: bool) -> tuple[int, int] | None:

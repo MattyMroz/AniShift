@@ -4,11 +4,12 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import cast
 
 import pytest
+from fakes import FakeEpisodeCatalogue
 from test_automation import _TIMEOUT_S, _accepted_transfer, _owner, _real_service, _request, _serving, _TorrentNetwork
 
 from anishift.application import automation as automation_module
@@ -176,16 +177,21 @@ class _Setup:
     network: _SelectiveNetwork
     store: WatchStateStore
     root: Path
+    catalogue: FakeEpisodeCatalogue = field(default_factory=FakeEpisodeCatalogue)
 
-    def owner(self) -> AutomationOwner:
-        acquisition: AcquisitionService = AcquisitionService(
+    def acquisition(self) -> AcquisitionService:
+        return AcquisitionService(
             source=self.network,
             client=cast("TorrentClient", self.network),
             workspace_root=self.root,
             parse_name=parse_release_name,
             torrent_management=cast("TorrentManagement", self.network),
+            title_catalog=self.catalogue,
+            episode_catalog=self.catalogue,
         )
-        return _owner(_real_service(self.root, acquisition=acquisition), self.store)
+
+    def owner(self) -> AutomationOwner:
+        return _owner(_real_service(self.root, acquisition=self.acquisition()), self.store)
 
 
 @pytest.fixture

@@ -26,6 +26,7 @@ from anishift.application.acquisition import (
     ReleaseChoice,
     SeasonContext,
     SubscriptionSearch,
+    target_episode_name,
 )
 from anishift.application.acquisition_decisions import (
     admission_decision,
@@ -161,7 +162,9 @@ from anishift.application.intents import (
     SubtitleOutputFormat,
 )
 from anishift.application.library import (
+    EpisodeName,
     assigned_files,
+    episode_file_stem,
     file_identity,
     name_series,
     project_library,
@@ -268,7 +271,7 @@ if TYPE_CHECKING:
         NotificationKey,
         SourceFingerprint,
     )
-    from anishift.application.episode_selection import AniZipMapping, Franchise, FranchiseEntry
+    from anishift.application.episode_selection import AniZipMapping, Franchise, FranchiseEntry, ListedEpisode
     from anishift.application.events import RunEvent
     from anishift.application.inspection import InspectedSourceGroup
     from anishift.application.intents import ProductKind
@@ -6303,15 +6306,18 @@ class AutomationOwner:
         self._unverified -= {operation_id}
 
     def _reserved_names(self) -> frozenset[str] | None:
+        root: Path = self._service.workspace_root
         try:
-            names: set[str] = set(_present_stems(self._service.workspace_root))
+            names: set[str] = set(_present_stems(root))
+            if (root / READY_DIRECTORY).is_dir():
+                names.update(_present_stems(root / READY_DIRECTORY))
         except OSError:
             logger.warning("The download destination could not be read before reserving names")
             return None
         for item in self._state.acquisitions:
             names.update(_reserved_stems(item))
         for group in self._state.ready_groups:
-            names.update(reserved_stem(name) for name in (*group.sources, *group.products))
+            names.update(reserved_stem(name) for name in group.pending_sources)
         for deletion in self._state.pending_deletions:
             names.update(reserved_stem(name) for name, _size, _stamp in deletion.files)
         return frozenset(names)
@@ -6972,8 +6978,9 @@ class AutomationOwner:
         passed, check = self._passed_check(item, admission_id)
         if not passed:
             return
+        core: str | None = self._episode_core(item, admission_id)
         reserved: tuple[EpisodePublication, FileStamp | None] | None = self._owned(
-            partial(self._reserve_publication, item.operation_id, admission_id, check)
+            partial(self._reserve_publication, item.operation_id, admission_id, core, check)
         )
         if reserved is None:
             return
@@ -7005,10 +7012,53 @@ class AutomationOwner:
             return
         self._owned(partial(self._settle_publication, item.operation_id, admission_id, publication, outcome))
 
+    def _episode_core(self, item: AcquisitionConfirmation, admission_id: str) -> str | None:
+        """Return the catalogue stem of an unnamed episode set, or ``None`` when named or the series is unknown."""
+        assignment: EpisodeAssignment | None = next(
+            (row for row in item.active_assignments if row.admission_id == admission_id), None
+        )
+        if assignment is None or assignment.publication is not None:
+            return None
+        choice: EpisodeChoice = assignment.choice
+        acquisition: AcquisitionService | None = self._service.acquisition
+        name: EpisodeName | None = None
+        if acquisition is not None:
+            try:
+                with acquisition.episode_requests():
+                    name = acquisition.episode_name(choice.anilist_id, choice.number)
+            except (AniShiftError, OSError, ValueError) as error:
+                logger.warning(
+                    "Episode name catalogue unavailable", provider="anilist", error_class=type(error).__name__
+                )
+        if name is None:
+            title: str | None = self._owned(partial(self._followed_title, assignment))
+            if title is None:
+                logger.warning("Episode name waits for the catalogue", provider="anilist")
+                return None
+            name = target_episode_name(title, choice.number, choice.target)
+        elif name.episode.season is None or name.episode.episode is None:
+            target: ListedEpisode = target_episode_name(name.title, choice.number, choice.target).episode
+            name = replace(name, episode=replace(name.episode, season=target.season, episode=target.episode))
+        return episode_file_stem(name)
+
+    def _followed_title(self, assignment: EpisodeAssignment) -> str | None:
+        records: tuple[SubscriptionRecord, ...] = (
+            *self._state.subscriptions,
+            *_optional(self._state.removed_subscription),
+        )
+        record: SubscriptionRecord | None = next(
+            (item for item in records if item.subscription_id == assignment.subscription_id), None
+        ) or next((item for item in records if item.anilist_id == assignment.choice.anilist_id), None)
+        return None if record is None else record.title
+
     def _reserve_publication(
-        self, operation_id: str, admission_id: str, check: tuple[str, FileStamp | None] | None = None
+        self,
+        operation_id: str,
+        admission_id: str,
+        core: str | None,
+        check: tuple[str, FileStamp | None] | None = None,
     ) -> tuple[EpisodePublication, FileStamp | None] | None:
-        """Reserve the flat names of one episode set with its download check, returning the checked video stamp."""
+        """Reserve the flat names of one episode set under *core* with its download check, returning the video stamp."""
         current: AcquisitionConfirmation | None = self._confirmation(operation_id)
         assignment: EpisodeAssignment | None = (
             None
@@ -7022,12 +7072,12 @@ class AutomationOwner:
                 operation_id, admission_id, assignment.publication, assignment.publication
             )
             return None if kept is None else (kept, assignment.verified_stamp)
-        if assignment.source is AdmissionSource.SUBSCRIPTION and check is None:
+        if core is None or (assignment.source is AdmissionSource.SUBSCRIPTION and check is None):
             return None
         reserved: frozenset[str] | None = self._reserved_names()
         if reserved is None:
             return None
-        publication: EpisodePublication = EpisodePublication(_published_files(assignment.files, reserved))
+        publication: EpisodePublication = EpisodePublication(_published_files(assignment.files, reserved, core))
         updated: EpisodePublication | None = self._update_publication(
             operation_id, admission_id, None, publication, check=check
         )
@@ -7266,7 +7316,9 @@ class AutomationOwner:
             renamed: tuple[PublishedFile, ...] = tuple(
                 replace(stamps[item.index], name=item.name)
                 for item in _published_files(
-                    tuple((item.index, item.source, item.size) for item in publication.files), reserved
+                    tuple((item.index, item.source, item.size) for item in publication.files),
+                    reserved,
+                    Path(publication.files[0].name).stem,
                 )
             )
             logger.info("A taken episode name was reserved again", files=len(outcome.occupied))
@@ -9173,10 +9225,16 @@ def _cleaned_acquisition(item: AcquisitionConfirmation, problem: str | None, rem
     return compact_acquisition(updated) if removed else updated
 
 
-def _published_files(files: Sequence[FileReservation], reserved: frozenset[str]) -> tuple[PublishedFile, ...]:
+def _published_files(
+    files: Sequence[FileReservation], reserved: frozenset[str], core: str
+) -> tuple[PublishedFile, ...]:
+    ordered: list[FileReservation] = sorted(files)
+    named: tuple[FileReservation, ...] = tuple(
+        (index, f"{core}{Path(source).suffix}", size) for index, source, size in ordered
+    )
     return tuple(
         PublishedFile(index, source, name, size)
-        for (index, name, size), (_index, source, _size) in zip(flat_names(files, reserved), sorted(files), strict=True)
+        for (index, name, size), (_index, source, _size) in zip(flat_names(named, reserved), ordered, strict=True)
     )
 
 
@@ -9533,12 +9591,10 @@ def _subscription_details(record: SubscriptionRecord, row: SubscriptionRow) -> d
 def _series_title(acquisition: AcquisitionService, anilist_id: int) -> str | None:
     try:
         with acquisition.episode_requests():
-            franchise: Franchise = acquisition.franchise(anilist_id)
+            return acquisition.catalogue_title(anilist_id)
     except (AniShiftError, OSError, ValueError) as error:
         logger.warning("Library series title unavailable", provider="anilist", error_class=type(error).__name__)
         return None
-    entry: FranchiseEntry | None = next((item for item in franchise.entries if item.anilist_id == anilist_id), None)
-    return None if entry is None else entry.english or entry.romaji
 
 
 def _subscription_draft(read: ListingRead, entry: FranchiseEntry | None, now: datetime) -> SubscriptionRecord | str:

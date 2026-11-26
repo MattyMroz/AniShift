@@ -5397,6 +5397,8 @@ def test_two_transfers_of_one_file_name_reserve_separate_names_beside_ready_and_
         "10",
         _MOMENT.isoformat(),
     )
+    (tmp_path / "ready").mkdir(exist_ok=True)
+    (tmp_path / "ready" / "09.mkv").write_bytes(b"done")
     store.save(
         WatchState(
             policy=AutomationPolicy(auto_enabled=True),
