@@ -12,6 +12,9 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `TYPE_CHECKING`, poza czystymi `season_hint`/`strip_season`, adapterem referencji Nyaa i rekonstrukcją `Release`
   dla jawnego ponowienia. `library.py` importuje tylko czyste funkcje `services.torrents.names` dla `library_label`
   i `series_title`. Decyzje produktowe zostają w plannerze; staging publikuje `scheduler_runtime.py`.
+- Rdzeń nazwy pobranego odcinka składa wyłącznie `library.episode_file_stem` (`products.episode_stem`) z faktów
+  `AcquisitionService.episode_name`, raz przy rezerwacji publikacji na puli transferów; nazwy z torrenta nie nazywają
+  zestawu z kluczem odcinka, a zarezerwowana nazwa się nie zmienia.
 - Nazwy trwałych produktów pochodzą wyłącznie z `products.py`; nikt inny nie zapisuje literałów `.pl`, `.spoken.pl`,
   `.displayed.pl`, `.pl.mkv`, `.pl.mp4` ani `.m4a`.
 - CLI używa publicznej fasady `anishift.application`, nie wewnętrznych helperów I/O ani schedulera.

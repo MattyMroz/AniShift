@@ -113,7 +113,11 @@ główny i wszystkie podfoldery poza zarządzanym `tmp/` i katalogami ukrytymi. 
 automacie stabilne pliki trafiają do tego samego harmonogramu co w trybie Ręcznym, a gotowe,
 potwierdzone produkty są używane ponownie. Po udanej obróbce źródła i produkty przechodzą
 do `ready/`, a na tym samym dysku ich zawartość nie jest przepisywana. Przy kolizji nazw
-zostają oba odcinki.
+zostają oba odcinki. Odcinek pobrany z zakładki Anime albo z subskrypcji dostaje nazwę
+`<seria> - SxxEyy - <tytuł odcinka>` (na przykład
+`Blue Box - S02E07 - I Need to Tell You Something.mkv`) z angielskim tytułem serii z AniList,
+a wszystkie produkty odcinka mają tę samą nazwę; film ma sam tytuł serii. Pliki wrzucone do
+`workspace/` ręcznie zachowują swoje nazwy.
 
 W **Bibliotece** Enter otwiera wynik, **F** pokazuje go w Eksploratorze, a **Del** przenosi
 cały zestaw do Kosza bez pytania. **Ctrl+Z** przywraca ostatnio usunięty zestaw, także po
