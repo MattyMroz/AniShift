@@ -989,6 +989,7 @@ class AutomationOwner:
         self._library: InspectedWorkspace | None = None
         self._subtitles_missing: frozenset[str] = frozenset()
         self._ready_library: tuple[LibrarySet, ...] = ()
+        self._ready_groups: tuple[SourceGroup, ...] = ()
         self._series: dict[int, LibrarySeries] = {}
         self._series_requested: set[int] = set()
         self._recognized: dict[tuple[str, int], int | None] = {}
@@ -1308,9 +1309,7 @@ class AutomationOwner:
         if workspace is not None:
             self._library = workspace
             self._report_missing_subtitles(workspace)
-            self._ready_library = project_library(
-                self._state, self._service.workspace_root, tuple(group.source for group in workspace.groups)
-            )
+            self._project_ready(tuple(group.source for group in workspace.groups))
             with self._files_lock:
                 self._fresh_sources.intersection_update(
                     artifact.path for group in workspace.groups for artifact in group.artifacts
@@ -1475,7 +1474,7 @@ class AutomationOwner:
     def _record_ready_inventory(self, groups: tuple[SourceGroup, ...] | None) -> None:
         self._inspecting = False
         if groups is not None:
-            self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+            self._project_ready(groups)
             self._publish_state()
         self._inspect_changes()
 
@@ -2404,7 +2403,7 @@ class AutomationOwner:
             if scoped is None:
                 return self._library_refusal("library_set_missing")
             return self._deletion_preview(request, scoped, released)
-        self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+        self._project_ready(groups)
         self._publish_state()
         if request.kind == "deletion_undo":
             return self._start_restore(request, released)
@@ -2770,7 +2769,7 @@ class AutomationOwner:
     def _settle_restore(self, operation_id: str, groups: tuple[SourceGroup, ...] | None) -> None:
         operation: PendingDeletion | None = self._deletion_by_id(operation_id)
         if groups is not None:
-            self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+            self._project_ready(groups)
         if operation is not None and operation.restore is not None:
             complete: bool = all(item.status == "restored" for item in operation.restore.outcomes)
             self._save(
@@ -2977,7 +2976,7 @@ class AutomationOwner:
 
     def _settle_deletion(self, operation_id: str, groups: tuple[SourceGroup, ...] | None) -> None:
         if groups is not None:
-            self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+            self._project_ready(groups)
         self._deleting.pop(operation_id, None)
         self._active_io -= 1
         operation: PendingDeletion | None = self._deletion_by_id(operation_id)
@@ -3766,10 +3765,8 @@ class AutomationOwner:
         if finished.origin is RequestOrigin.USER and finished.state is not RequestState.PAUSED and products:
             candidate = _marked(candidate, finished, products, self._now())
         saved: bool = self._save(candidate)
-        if saved and self._library is not None:
-            self._ready_library = project_library(
-                candidate, self._service.workspace_root, tuple(group.source for group in self._library.groups)
-            )
+        if saved:
+            self._project_ready(self._ready_groups)
         self._ledger.mark_finished(recorded.group_ids)
         groups: tuple[InspectedSourceGroup, ...] = self._run_groups.pop(completion.request_id, ())
         if saved and completion.result is not None:
@@ -8671,6 +8668,10 @@ class AutomationOwner:
         self._request_covers()
         self._publish({"event": "state_changed", "payload": self._status()}, terminal=False)
 
+    def _project_ready(self, groups: tuple[SourceGroup, ...]) -> None:
+        self._ready_groups = groups
+        self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+
     def _named(self, sets: tuple[LibrarySet, ...]) -> tuple[LibrarySet, ...]:
         return name_series(sets, self._state, self._series, self._recognized)
 
@@ -8929,7 +8930,7 @@ class AutomationOwner:
         self._active_io -= 1
         if groups is None:
             return
-        self._ready_library = project_library(self._state, self._service.workspace_root, groups)
+        self._project_ready(groups)
         self._offer_ready_results(group_ids, request_id)
 
     def _offer_ready_results(self, group_ids: Sequence[str], request_id: str | None) -> None:

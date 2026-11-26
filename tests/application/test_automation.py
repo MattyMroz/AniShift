@@ -58,6 +58,7 @@ from anishift.application.automation import (
     TRANSFER_BACKOFF_CEILING_S,
     TRANSFER_CHECK_INTERVAL_S,
     AutomationOwner,
+    _Completion,
 )
 from anishift.application.cancellation import CancellationToken, EventCancellationToken
 from anishift.application.control import (
@@ -1637,6 +1638,41 @@ def test_library_distinguishes_missing_main_from_existing_unconfirmed_result(tmp
         assert not group.available
         assert group.problem == reason
         assert owner.handle(_request("library_open", {"set_id": group.set_id})).reason == reason
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+        service.close()
+
+
+@pytest.mark.integration
+def test_finished_run_keeps_ready_sets_inventoried_after_the_last_full_inspection(tmp_path: Path) -> None:
+    service, store, state = _completed_library(tmp_path)
+    request: ProcessingRequest = ProcessingRequest(
+        "running",
+        1,
+        (state.ready_groups[0].group_id,),
+        {},
+        RequestOrigin.USER,
+        SourceSelection.MANUAL,
+        None,
+        RequestState.RUNNING,
+        1,
+        _MOMENT.isoformat(),
+    )
+    store.save(replace(state, requests=(request,)))
+    owner: AutomationOwner = _owner(service, store)
+    thread: threading.Thread = _serving(owner)
+    try:
+        write_text_source(tmp_path / "03.txt", "Text")
+        owner.files_changed(DirectoryChange(paths=(tmp_path / "03.txt",)))
+        assert _await(lambda: owner._on_owner(lambda: owner._library is not None))
+        assert len(_read_ready_sets(owner)) == 1
+        (tmp_path / "ready/02.txt").write_text("source", encoding="utf-8")
+        (tmp_path / "ready/02.pl.txt").write_text("translated", encoding="utf-8")
+        owner.files_changed(DirectoryChange(paths=(tmp_path / "ready/02.txt", tmp_path / "ready/02.pl.txt")))
+        _await_library_count(owner, 2)
+        owner._on_owner(lambda: owner._record_completion(_Completion("running", None)))
+        assert len(cast("list[object]", owner.handle(_request("status")).result["library"])) == 2
     finally:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
