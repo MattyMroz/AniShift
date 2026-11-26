@@ -175,6 +175,8 @@ class AnimeViewState:
     crumbs: tuple[str, ...] = ()
     fill: bool = False
     bluray: bool = False
+    cover: tuple[int, int] | None = None
+    highlight: int | None = None
 
     def snapshot(self, width: int = 80) -> AnimeSnapshot:
         """Freeze local values without changing state or reading a clock."""
@@ -209,6 +211,8 @@ class AnimeViewState:
             crumbs=self.crumbs,
             fill=self.fill,
             bluray=self.bluray,
+            cover=self.cover,
+            highlight=self.highlight,
         )
 
     def toggle(self) -> None:

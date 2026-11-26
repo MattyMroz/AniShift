@@ -43,6 +43,7 @@ from anishift.cli.interactive.anime_view import (
     MIN_ROWS,
     AnimeFrame,
     fit,
+    highlighted_row,
     overflows,
     render_anime,
     shown_rows,
@@ -1551,9 +1552,28 @@ class StateController:
         return self._library_body(columns, rows) if self._tab == _Tab.FILES and self._details is None else None
 
     def _anime_body(self, anime: AnimeController, columns: int, rows: int) -> Text:
-        if rows > MIN_ROWS:
-            return self._pin_status(anime.render(columns, rows - 1), columns, rows)
-        return anime.render(columns, rows)
+        shown: tuple[int | None, ...] = self._cached_covers(anime.cover_ids())
+        cover: tuple[int, int] | None = self._cover_box(shown)
+        pinned: bool = rows > MIN_ROWS
+        body: Text = anime.render(columns, rows - 1 if pinned else rows, cover=cover, hovered=self._hovered)
+        self._place_cover(body, shown, anime.highlighted())
+        return self._pin_status(body, columns, rows) if pinned else body
+
+    def _cached_covers(self, anilist_ids: Iterable[object]) -> tuple[int | None, ...]:
+        listed: object = self._snapshot.get("covers")
+        cached: frozenset[object] = frozenset(listed) if isinstance(listed, list) else frozenset()
+        return tuple(item if isinstance(item, int) and item in cached else None for item in anilist_ids)
+
+    def _cover_box(self, shown: tuple[int | None, ...]) -> tuple[int, int] | None:
+        box: tuple[int, int] | None = self._covers.box() if self._covers is not None else None
+        if self._covers is None or box is None or all(item is None for item in shown):
+            return None
+        self._covers.prepare(item for item in shown if item is not None)
+        return box
+
+    def _place_cover(self, frame: Text, shown: tuple[int | None, ...], highlight: int) -> None:
+        if NATIVE_IMAGE_ANCHOR in frame.plain and highlight < len(shown):
+            self._cover_id = shown[highlight]
 
     def _list_body(self, columns: int, rows: int) -> Text:
         entries: Sequence[str | Text] = self._entries(max(columns - 8, 1))
@@ -1749,12 +1769,7 @@ class StateController:
         tight: bool = not fill and rows == MIN_ROWS and columns >= MIN_COLUMNS
         area: int = rows if tight else max(rows - 1, 1)
         confirm: tuple[str, ...] | None = self._library_confirm
-        listed: object = self._snapshot.get("covers")
-        cached: frozenset[object] = frozenset(listed) if isinstance(listed, list) else frozenset()
-        shown: tuple[int | None, ...] = tuple(
-            item if isinstance(item, int) and item in cached else None for item in covers
-        )
-        box: tuple[int, int] | None = self._covers.box() if self._covers is not None else None
+        shown: tuple[int | None, ...] = self._cached_covers(covers)
         snapshot: AnimeSnapshot = AnimeSnapshot(
             screen if items else AnimeScreen.DETAILS,
             "",
@@ -1769,7 +1784,7 @@ class StateController:
             editing_range=field is not None,
             field_label="Filtr",
             rendered_field=field,
-            cover=box if box is not None and any(item is not None for item in shown) else None,
+            cover=self._cover_box(shown),
         )
         visible: int = shown_rows(snapshot, columns, area)
         if not visible and self._tab == _Tab.FILES:
@@ -1781,17 +1796,12 @@ class StateController:
         if self._follow_cursor.get(viewport, True):
             offset = max(min(offset, self._selected), self._selected - visible + 1)
         self._offsets[viewport] = offset
-        hovered: int | None = self._hovered
-        highlight: int = (
-            hovered if hovered is not None and offset <= hovered < min(offset + visible, len(items)) else self._selected
-        )
+        listed: range = range(offset, min(offset + visible, len(items)))
+        highlight: int = highlighted_row(self._hovered, self._selected, listed)
         frame: AnimeFrame = render_anime(
             replace(snapshot, offset=offset, highlight=highlight), columns, area, self._clock().timestamp()
         )
-        if self._covers is not None and snapshot.cover is not None:
-            self._covers.prepare(item for item in shown if item is not None)
-        if NATIVE_IMAGE_ANCHOR in frame.text.plain and highlight < len(shown):
-            self._cover_id = shown[highlight]
+        self._place_cover(frame.text, shown, highlight)
         lines: list[Text] = list(frame.text.split("\n"))
         if not items and frame.visible:
             lines[frame.first_row] = self._empty_line(columns)

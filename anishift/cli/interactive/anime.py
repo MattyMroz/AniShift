@@ -77,7 +77,7 @@ from anishift.cli.interactive.anime_texts import (
     safe,
     stated,
 )
-from anishift.cli.interactive.anime_view import WIDE_COLUMNS, overflows, shown_rows
+from anishift.cli.interactive.anime_view import WIDE_COLUMNS, highlighted_row, overflows, shown_rows
 from anishift.cli.interactive.pointer import Click, ClickKind
 from anishift.cli.interactive.subscription_texts import (
     SubscriptionDraft,
@@ -839,11 +839,14 @@ class AnimeController:
             self._notice = ""
             self._follow_cursor = False
 
-    def render(self, columns: int, rows: int) -> Text:
-        """Render ``rows`` lines: a table overflowing its centered layout fills them."""
+    def render(
+        self, columns: int, rows: int, *, cover: tuple[int, int] | None = None, hovered: int | None = None
+    ) -> Text:
+        """Render ``rows`` lines: a table overflowing its centered layout fills them, the cover slot left of it."""
         with self._lock:
             self._columns = min(columns - 4, WIDE_COLUMNS)
             self._sync_view()
+            self._view.cover = cover
             self._view.fill = overflows(self._view.screen, len(self._view.items), rows)
             self._visible_count = max(shown_rows(self._view.snapshot(columns), columns, rows), 1)
             offset: int = min(
@@ -855,7 +858,30 @@ class AnimeController:
             self._view.offset = offset
             if not self._details_open:
                 self._offsets[self._screen] = offset
+            shown: range = range(offset, min(offset + self._visible_count, len(self._view.items)))
+            self._view.highlight = highlighted_row(hovered, self._view.cursor, shown)
             return self._panel.frame(columns, rows)
+
+    def cover_ids(self) -> tuple[int | None, ...]:
+        """Return the AniList entry of each shown row: its own on the title lists, the opened title on episodes."""
+        with self._lock:
+            self._sync_view()
+            items: tuple[AnimeRow, ...] = self._view.items
+            if self._details_open:
+                return ()
+            if self._screen in {_Screen.TITLES, _Screen.ENTRIES}:
+                return tuple(int(item.key) if item.key.isdecimal() else None for item in items)
+            if self._screen is not _Screen.EPISODES:
+                return ()
+            opened: object = (
+                self._entry.anilist_id if self._entry is not None else (self._subscription or {}).get("anilist_id")
+            )
+            return (opened if isinstance(opened, int) else None,) * len(items)
+
+    def highlighted(self) -> int:
+        """Return the row the last frame centered the cover slot on."""
+        with self._lock:
+            return self._view.cursor if self._view.highlight is None else self._view.highlight
 
     def mouse(self, event: MouseEvent) -> Click:
         """Delegate text selection and row clicks to the shared Anime panel and name what the click asks for."""

@@ -218,6 +218,11 @@ def fit(value: str, width: int) -> str:
     return "".join(result) + ("…" if width else "")
 
 
+def highlighted_row(hovered: int | None, cursor: int, shown: range) -> int:
+    """Return the row the cover follows: the hovered row when it is shown, else the cursor row."""
+    return hovered if hovered is not None and hovered in shown else cursor
+
+
 def visible_rows(rows: int) -> int:
     """Return how many data rows fit in a block of ``rows`` terminal rows."""
     return max(rows - HEADER_ROWS - FOOTER_ROWS, 1)

@@ -87,6 +87,7 @@ from anishift.cli.interactive.anime_releases import (
     release_rows,
 )
 from anishift.cli.interactive.anime_state import AnimeRow
+from anishift.cli.interactive.native_image import NATIVE_IMAGE_ANCHOR
 from anishift.cli.interactive.state import StateController
 from anishift.cli.resident import ResidentSession
 from anishift.config.presets import default_preset_file
@@ -3612,3 +3613,43 @@ def test_partial_schedule_429_keeps_episode_list_until_explicit_reentry_after_de
         _key(controller, "enter")
         assert "Brak terminów emisji" not in _frame(controller)
         assert len(sent) == reads + 1
+
+
+def _cover_anchor(frame: str) -> tuple[int, int] | None:
+    for row, line in enumerate(frame.splitlines()):
+        if NATIVE_IMAGE_ANCHOR in line:
+            return row, line.index(NATIVE_IMAGE_ANCHOR)
+    return None
+
+
+@pytest.mark.unit
+def test_search_results_name_their_own_covers_and_follow_the_hover() -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.titles = (_title(), replace(_title(), anilist_id=9, romaji="Other", english="Other", year=2010))
+    controller: AnimeController = _controller(catalog)
+    for key in ("text:/", "text:slime", "enter"):
+        _key(controller, key)
+
+    frame: str = controller.render(120, 40, cover=(19, 13), hovered=1).plain
+    anchor: tuple[int, int] | None = _cover_anchor(frame)
+    other: int = next(row for row, line in enumerate(frame.splitlines()) if "Other" in line)
+
+    assert controller.cover_ids() == (1, 9)
+    assert controller.highlighted() == 1
+    assert anchor is not None
+    assert anchor[0] + 6 == other
+    assert controller._highlighted == 0
+
+
+@pytest.mark.unit
+def test_episodes_of_an_opened_title_show_its_cover_on_every_row() -> None:
+    catalog: _Catalog = _Catalog()
+    catalog.titles = (_title(),)
+    controller: AnimeController = _controller(catalog)
+    _open(controller)
+
+    ids: tuple[int | None, ...] = controller.cover_ids()
+
+    assert ids
+    assert set(ids) == {1}
+    assert _cover_anchor(controller.render(120, 40, cover=(19, 13)).plain) is not None
