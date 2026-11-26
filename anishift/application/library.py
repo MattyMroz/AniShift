@@ -250,10 +250,45 @@ class LibrarySeries:
     entry_title: str
 
 
+@dataclass(frozen=True, slots=True)
+class EpisodeEntry:
+    """AniList entry of one downloaded episode, with its series, entry title and numbering once the series is known."""
+
+    anilist_id: int
+    series: str | None = None
+    entry_title: str | None = None
+    season: int | None = None
+    episode: int | None = None
+
+
 def library_entries(state: WatchState) -> frozenset[int]:
-    """Return the AniList entries of downloaded sets and subscriptions."""
+    """Return the AniList entries of subscriptions and of every ordered download."""
     followed: frozenset[int] = frozenset(item.anilist_id for item in state.subscriptions if item.anilist_id is not None)
-    return followed | frozenset(item.anilist_id for item in downloaded_episodes(state).values())
+    ordered: frozenset[int] = frozenset(
+        item.choice.anilist_id for acquisition in state.acquisitions for item in acquisition.assignments
+    ) | frozenset(item.legacy_scope.anilist_id for item in state.acquisitions if item.legacy_scope is not None)
+    return followed | ordered
+
+
+def episode_entry(
+    episode: DownloadedEpisode, series: Mapping[int, LibrarySeries], record: SubscriptionRecord | None
+) -> EpisodeEntry:
+    """Name one downloaded episode after its series and entry, keeping only the entry while the series is unknown."""
+    known: LibrarySeries | None = series.get(episode.anilist_id)
+    if known is None:
+        return EpisodeEntry(episode.anilist_id)
+    numbering: tuple[int, int] | None = (
+        None
+        if episode.number is None
+        else _numbering(known.entry_title, record, episode.number, first=known.series_id == episode.anilist_id)
+    )
+    return EpisodeEntry(
+        episode.anilist_id,
+        known.title,
+        known.entry_title,
+        None if numbering is None else numbering[0],
+        None if numbering is None else numbering[1],
+    )
 
 
 def library_series(graph: LibraryGraph, entries: Iterable[int]) -> dict[int, LibrarySeries]:
@@ -355,24 +390,16 @@ def name_series(
         if episode is None:
             named.append(_recognized_set(item, series, recognized))
             continue
-        keyed: LibrarySet = replace(item, anilist_id=episode.anilist_id, title_source=TitleSource.KEY)
-        known: LibrarySeries | None = series.get(episode.anilist_id)
-        if known is None:
-            named.append(keyed)
-            continue
-        record: SubscriptionRecord | None = followed.get(episode.anilist_id)
-        numbering: tuple[int, int] | None = (
-            None
-            if episode.number is None
-            else _numbering(known.entry_title, record, episode.number, first=known.series_id == episode.anilist_id)
-        )
+        entry: EpisodeEntry = episode_entry(episode, series, followed.get(episode.anilist_id))
         named.append(
             replace(
-                keyed,
-                series=known.title,
-                entry_title=known.entry_title,
-                season=None if numbering is None else numbering[0],
-                episode=None if numbering is None else numbering[1],
+                item,
+                anilist_id=entry.anilist_id,
+                title_source=TitleSource.KEY,
+                series=entry.series,
+                entry_title=entry.entry_title,
+                season=entry.season,
+                episode=entry.episode,
             )
         )
     return tuple(named)

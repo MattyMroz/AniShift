@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import Enum, auto
 from functools import partial
@@ -164,8 +164,11 @@ from anishift.application.intents import (
     SubtitleOutputFormat,
 )
 from anishift.application.library import (
+    DownloadedEpisode,
     LibrarySeries,
     assigned_files,
+    downloaded_episodes,
+    episode_entry,
     episode_file_stem,
     file_identity,
     hand_titles,
@@ -2067,6 +2070,10 @@ class AutomationOwner:
         }
         completed: dict[str, frozenset[str]] = {}
         failed: frozenset[str] = self._failed_sources()
+        episodes: dict[str, DownloadedEpisode] = downloaded_episodes(self._state)
+        ready: dict[str, DownloadedEpisode] = {
+            record.group_id: episodes[record.set_id] for record in self._state.ready_groups if record.set_id in episodes
+        }
         for group_id, request in requests.items():
             if request.request_id not in completed:
                 completed[request.request_id] = self._succeeded_groups(request)
@@ -2084,6 +2091,8 @@ class AutomationOwner:
                 problem=request.problem,
                 automatic=request.automatic,
             )
+            if "anilist_id" not in row and group_id in ready:
+                row.update(self._entry_fields(ready[group_id]))
             if group_id in failed:
                 row.update(stage="waiting", reason="processing_failed", attention=True)
                 if self._outside_library(group_id):
@@ -2230,6 +2239,7 @@ class AutomationOwner:
             "active": active and acquisition.state is AcquisitionState.ACCEPTED and not acquisition.problem,
             "problem": acquisition.problem,
             "automatic": not acquisition.manual,
+            **self._scope_fields(acquisition.legacy_scope),
         }
         release: str = (
             (transfer.name if transfer is not None and transfer.name != acquisition.info_hash else None)
@@ -2336,6 +2346,7 @@ class AutomationOwner:
             )
             rows[identity] = {
                 **common,
+                **self._entry_fields(DownloadedEpisode(assignment.choice.anilist_id, assignment.choice.number)),
                 "material_id": identity,
                 "group_id": group_id,
                 "admission_id": assignment.admission_id,
@@ -2349,6 +2360,15 @@ class AutomationOwner:
                 "problem": transfer.problem or (status.reason if status.reason in _MATERIAL_PROBLEM_REASONS else None),
             }
         return rows
+
+    def _entry_fields(self, episode: DownloadedEpisode) -> dict[str, object]:
+        record: SubscriptionRecord | None = next(
+            (item for item in self._state.subscriptions if item.anilist_id == episode.anilist_id), None
+        )
+        return asdict(episode_entry(episode, self._series, record))
+
+    def _scope_fields(self, scope: LegacyScope | None) -> dict[str, object]:
+        return {} if scope is None else self._entry_fields(DownloadedEpisode(scope.anilist_id, scope.number))
 
     def _library_details(self, request: ControlRequest) -> ControlResponse:
         identifier: str | None = _text(request.payload, "set_id")

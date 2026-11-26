@@ -70,6 +70,7 @@ from anishift.application.control import (
     EpisodeAssignment,
     EpisodeChoice,
     FileReservation,
+    LegacyScope,
     ManualHandledMarker,
     NarrationTimeline,
     PendingDeletion,
@@ -99,6 +100,7 @@ from anishift.application.inspection import (
     WorkspaceInspector,
 )
 from anishift.application.intents import GroupIntent, ProductIntent, ProductKind, RebuildRequest, RequestOrigin, RunMode
+from anishift.application.library import LibrarySeries
 from anishift.application.planning import ExecutionPlan, PlanTask, RunSettingsSnapshot, TaskKind
 from anishift.application.products import classify_product
 from anishift.application.ready import ReadyMove, ReadyStore, in_ready
@@ -4616,6 +4618,54 @@ def test_a_selective_download_names_its_episode_file_then_its_release(
     rows: list[dict[str, object]] = list(owner._download_materials(confirmation).values())
 
     assert [row["name"] for row in rows] == [expected]
+
+
+@pytest.mark.parametrize(
+    ("series", "expected"),
+    [
+        ({}, (1, None, None, None, None)),
+        ({1: LibrarySeries(1, "Neko", "Neko")}, (1, "Neko", "Neko", 1, 9)),
+    ],
+)
+def test_a_selective_download_row_carries_its_entry_and_numbering_once_the_series_is_known(
+    tmp_path: Path, series: dict[int, LibrarySeries], expected: tuple[object, ...]
+) -> None:
+    service, store, _ = _library(tmp_path)
+    choice: EpisodeChoice = EpisodeChoice(
+        anilist_id=1,
+        number=9,
+        reference=TorrentioReference("c" * 40, None, "Neko - 09.mkv", "[Group] Neko"),
+        target={"local_episode": 9},
+        verdict=IdentityVerdict.MATCH,
+        reason="Specific work title and local episode match",
+    )
+    assignment: EpisodeAssignment = EpisodeAssignment("admission", _MOMENT.isoformat(), AdmissionSource.MANUAL, choice)
+    confirmation: AcquisitionConfirmation = replace(
+        _accepted_transfer("c" * 40, origin=RequestOrigin.USER), assignments=(assignment,)
+    )
+    store.save(WatchState(acquisitions=(confirmation,)))
+    owner: AutomationOwner = _owner(service, store)
+    owner._series = series
+
+    rows: list[dict[str, object]] = list(owner._download_materials(confirmation).values())
+
+    assert [
+        tuple(row[key] for key in ("anilist_id", "series", "entry_title", "season", "episode")) for row in rows
+    ] == [expected]
+
+
+def test_a_legacy_download_row_carries_the_entry_of_its_scope(tmp_path: Path) -> None:
+    service, store, _ = _library(tmp_path)
+    confirmation: AcquisitionConfirmation = replace(
+        _accepted_transfer("a" * 40), legacy_scope=LegacyScope(7, 2), file_layout=((0, "Show - 02.mkv", 4),)
+    )
+    store.save(WatchState(acquisitions=(confirmation,)))
+    owner: AutomationOwner = _owner(service, store)
+    owner._series = {7: LibrarySeries(7, "Show", "Show")}
+
+    rows: list[dict[str, object]] = list(owner._download_materials(confirmation).values())
+
+    assert [(row["entry_title"], row["season"], row["episode"]) for row in rows] == [("Show", 1, 2)]
 
 
 def _projection_request(tmp_path: Path, state: RequestState) -> tuple[AutomationOwner, Path, tuple[str, ...]]:

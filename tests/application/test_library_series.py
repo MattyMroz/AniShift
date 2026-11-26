@@ -45,6 +45,7 @@ from anishift.application.library import (
     LibrarySeries,
     episode_numbering,
     hand_titles,
+    library_entries,
     library_series,
     name_series,
     recognize,
@@ -240,6 +241,18 @@ def test_a_film_in_the_chain_joins_its_series() -> None:
 @pytest.mark.unit
 def test_entry_missing_from_the_graph_gets_no_series() -> None:
     assert library_series(_graph(_S1), (999,)) == {}
+
+
+@pytest.mark.unit
+def test_library_entries_include_downloads_still_in_progress() -> None:
+    state: WatchState = WatchState(
+        acquisitions=(
+            replace(_downloaded("set-a", _BLUE_BOX, 2), state=AcquisitionState.ACCEPTED),
+            _legacy("Solo - 01", LegacyScope(_SOLO, 1)),
+        )
+    )
+
+    assert library_entries(state) == {_BLUE_BOX, _SOLO}
 
 
 @pytest.mark.unit
