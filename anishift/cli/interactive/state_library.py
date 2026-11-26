@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
@@ -47,6 +47,7 @@ __all__ = [
     "library_row_id",
     "library_rows",
     "library_titles",
+    "moved_notice",
     "set_entry",
     "title_entry",
     "title_row",
@@ -67,6 +68,9 @@ NO_MATCHING_TITLES: Final[str] = "Brak tytułów pasujących do filtra"
 
 LIBRARY_DELETED: Final[str] = "Usunięto · Ctrl+Z cofnij"
 """Library notice kept after a deleted set leaves the list, until the next move."""
+
+_MOVED: Final[str] = "Przeniesiono do {title}"
+"""Library notice after the sets of the open or selected title move to another title, filled with its name."""
 
 _DELETED_SEVERAL: Final[str] = "Usunięto {count} · Ctrl+Z cofa po jednym"
 """Library notice after several sets are deleted at once, filled with the number deleted."""
@@ -139,12 +143,20 @@ def library_titles(
     for item in library_rows(snapshot, hidden, restoring):
         key, title = _title_key(item)
         groups.setdefault(key, []).append(item)
-        names.setdefault(key, title)
+        if key not in names or _entry_title(item) is not None:
+            names[key] = title
     wanted: str = normalize_series(query)
     titles: list[LibraryTitle] = [
-        _grouped(key, names[key], tuple(sets)) for key, sets in groups.items() if wanted in normalize_series(names[key])
+        _grouped(key, names[key], tuple(sets))
+        for key, sets in groups.items()
+        if any(wanted in normalize_series(text) for text in _searched(names[key], sets))
     ]
     return sorted(titles, key=lambda item: (item.key == UNRECOGNIZED_KEY, _TITLE_KEY(item.title), item.key))
+
+
+def moved_notice(title: LibraryTitle) -> str:
+    """Return the notice after the open or selected title's sets move to *title*."""
+    return _MOVED.format(title=safe_text(title.title))
 
 
 def unsettled_deletions(snapshot: Mapping[str, object], hidden: Mapping[str, str]) -> dict[str, str]:
@@ -276,12 +288,26 @@ def details_label(details: LibrarySet) -> LibraryLabel:
 def _title_key(item: Mapping[str, object]) -> tuple[str, str]:
     label: LibraryLabel = _label(item)
     anilist_id: int | None = _number(item.get("anilist_id"))
-    entry_title: object = item.get("entry_title")
     if anilist_id is not None:
-        return f"entry:{anilist_id}", entry_title if isinstance(entry_title, str) and entry_title else label.title
+        return f"entry:{anilist_id}", _entry_title(item) or label.title
     if label.season is None and label.episode is None and label.title == str(item.get("name", "")):
         return UNRECOGNIZED_KEY, LIBRARY_UNRECOGNIZED
     return f"name:{normalize_series(label.title)}", label.title
+
+
+def _entry_title(item: Mapping[str, object]) -> str | None:
+    value: object = item.get("entry_title")
+    return value if isinstance(value, str) and value else None
+
+
+def _searched(title: str, sets: Sequence[Mapping[str, object]]) -> Iterator[str]:
+    yield title
+    for item in sets:
+        series: object = item.get("series")
+        if isinstance(series, str):
+            yield series
+        yield library_label(str(item.get("name", ""))).title
+        yield str(item.get("name", ""))
 
 
 def _grouped(key: str, title: str, sets: tuple[Mapping[str, object], ...]) -> LibraryTitle:
