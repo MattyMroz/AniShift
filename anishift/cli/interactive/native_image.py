@@ -45,6 +45,12 @@ _DATA_OFFSET: Final[int] = 63
 _RLE_THRESHOLD: Final[int] = 4
 """Shortest repeated character sequence encoded with SIXEL RLE."""
 
+_RUN: Final[re.Pattern[str]] = re.compile(rf"(.)\1{{{_RLE_THRESHOLD - 1},}}")
+"""Run of one SIXEL character long enough for RLE."""
+
+_SIXEL_CHARACTERS: Final[bytes] = bytes((value + _DATA_OFFSET) % 256 for value in range(256))
+"""Translation of a six-bit column mask to its SIXEL data character."""
+
 _CELL_SIZE_QUERY: Final[str] = "\x1b[16t"
 """Request for the terminal cell size in pixels."""
 
@@ -231,13 +237,12 @@ def _read_report() -> str:
 def encode_sixel(image: Image.Image, palette_source: Image.Image | None = None) -> str:
     """Encode every source pixel with a square 1:1 SIXEL aspect ratio."""
     rgba: Image.Image = image.convert("RGBA")
+    rgb: Image.Image = rgba.convert("RGB")
     if palette_source is None:
-        indexed: Image.Image = rgba.convert("RGB").quantize(
-            colors=_SIXEL_COLORS,
-            method=Image.Quantize.MEDIANCUT,
-        )
+        palette_image: Image.Image = rgb.quantize(colors=_SIXEL_COLORS, method=Image.Quantize.MEDIANCUT)
+        indexed: Image.Image = rgb.quantize(palette=palette_image, dither=Image.Dither.FLOYDSTEINBERG)
     else:
-        indexed = rgba.convert("RGB").quantize(palette=palette_source, dither=Image.Dither.NONE)
+        indexed = rgb.quantize(palette=palette_source, dither=Image.Dither.NONE)
     palette: list[int] | None = indexed.getpalette()
     if palette is None:
         message: str = "SIXEL quantization did not produce a palette"
@@ -248,14 +253,11 @@ def encode_sixel(image: Image.Image, palette_source: Image.Image | None = None) 
         width=rgba.width,
         height=rgba.height,
     )
-    colors: tuple[int, ...] = tuple(
-        sorted(
-            {color for color, opacity in zip(pixels.indices, pixels.alpha, strict=True) if opacity >= ALPHA_THRESHOLD}
-        )
-    )
+    bands: list[dict[int, bytearray]] = [_band_masks(pixels, top) for top in range(0, pixels.height, _BAND_HEIGHT)]
+    colors: list[int] = sorted({color for band in bands for color in band})
     output: list[str] = [f'\x1bP9;1;0q"1;1;{pixels.width};{pixels.height}']
     output.extend(_palette_register(color, palette) for color in colors)
-    output.extend(_bands(pixels, colors))
+    output.append("-".join("$".join(_color_row(color, band[color]) for color in sorted(band)) for band in bands))
     output.append("\x1b\\")
     return "".join(output)
 
@@ -269,72 +271,26 @@ def _palette_register(color: int, palette: list[int]) -> str:
     return f"#{color};2;{red};{green};{blue}"
 
 
-def _bands(image: _IndexedImage, colors: tuple[int, ...]) -> tuple[str, ...]:
-    """Encode every six-row image band."""
-    output: list[str] = []
-    for top in range(0, image.height, _BAND_HEIGHT):
-        rows: list[str] = []
-        for color in _band_colors(image, top, colors):
-            columns: str = _color_columns(image, top, color)
-            rows.append(f"#{color}{_run_length_encode(columns)}")
-        output.append("$".join(rows))
-        if top + _BAND_HEIGHT < image.height:
-            output.append("-")
-    return tuple(output)
+def _band_masks(image: _IndexedImage, top: int) -> dict[int, bytearray]:
+    """Return the six-bit column masks of every visible color in one band, reading each pixel once."""
+    masks: dict[int, bytearray] = {}
+    for bit in range(min(_BAND_HEIGHT, image.height - top)):
+        start: int = (top + bit) * image.width
+        value: int = 1 << bit
+        row: zip[tuple[int, int]] = zip(
+            image.indices[start : start + image.width], image.alpha[start : start + image.width], strict=True
+        )
+        for column, (color, opacity) in enumerate(row):
+            if opacity < ALPHA_THRESHOLD:
+                continue
+            mask: bytearray | None = masks.get(color)
+            if mask is None:
+                mask = masks[color] = bytearray(image.width)
+            mask[column] |= value
+    return masks
 
 
-def _band_colors(
-    image: _IndexedImage,
-    top: int,
-    colors: tuple[int, ...],
-) -> tuple[int, ...]:
-    """Return visible palette entries in one SIXEL band."""
-    present: set[int] = set()
-    bottom: int = min(top + _BAND_HEIGHT, image.height)
-    for row in range(top, bottom):
-        start: int = row * image.width
-        for offset in range(start, start + image.width):
-            if image.alpha[offset] >= ALPHA_THRESHOLD:
-                present.add(image.indices[offset])
-    return tuple(color for color in colors if color in present)
-
-
-def _color_columns(image: _IndexedImage, top: int, color: int) -> str:
-    """Return trimmed SIXEL column characters for one color."""
-    characters: list[str] = []
-    for column in range(image.width):
-        mask: int = 0
-        for bit in range(_BAND_HEIGHT):
-            row: int = top + bit
-            if row >= image.height:
-                break
-            offset: int = row * image.width + column
-            if image.alpha[offset] >= ALPHA_THRESHOLD and image.indices[offset] == color:
-                mask |= 1 << bit
-        characters.append(chr(_DATA_OFFSET + mask))
-    return "".join(characters).rstrip(chr(_DATA_OFFSET))
-
-
-def _run_length_encode(value: str) -> str:
-    """Compress repeated SIXEL characters without changing image pixels."""
-    if not value:
-        return value
-    output: list[str] = []
-    current: str = value[0]
-    count: int = 1
-    for character in value[1:]:
-        if character == current:
-            count += 1
-            continue
-        output.append(_encoded_run(current, count))
-        current = character
-        count = 1
-    output.append(_encoded_run(current, count))
-    return "".join(output)
-
-
-def _encoded_run(character: str, count: int) -> str:
-    """Encode one repeated character run."""
-    if count >= _RLE_THRESHOLD:
-        return f"!{count}{character}"
-    return character * count
+def _color_row(color: int, mask: bytearray) -> str:
+    """Encode one color of a band as trimmed, run-length compressed SIXEL characters."""
+    characters: str = mask.translate(_SIXEL_CHARACTERS).decode("ascii").rstrip(chr(_DATA_OFFSET))
+    return f"#{color}{_RUN.sub(lambda run: f'!{len(run[0])}{run[1]}', characters)}"

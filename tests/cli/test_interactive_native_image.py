@@ -5,11 +5,12 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from PIL import Image
 from prompt_toolkit import Application
 from prompt_toolkit.formatted_text import ANSI
 from rich.text import Text
 
-from anishift.cli.interactive.native_image import NATIVE_IMAGE_ANCHOR, NativeImage
+from anishift.cli.interactive.native_image import NATIVE_IMAGE_ANCHOR, NativeImage, encode_sixel
 from anishift.cli.interactive.prompts import TerminalRenderer, _native_anchor
 
 pytestmark = pytest.mark.unit
@@ -157,6 +158,24 @@ def test_moved_slot_after_a_resize_clears_the_screen_once() -> None:
 
     assert moved.count(_CLEAR) == 1
     assert "COVER" in moved
+
+
+def test_sixel_bands_skip_transparent_pixels_and_trim_empty_columns() -> None:
+    image: Image.Image = Image.new("RGBA", (2, 7), (0, 0, 0, 0))
+    image.putpixel((0, 0), (255, 0, 0, 255))
+    image.putpixel((1, 6), (255, 0, 0, 255))
+    palette: Image.Image = Image.new("P", (1, 1))
+    palette.putpalette([255, 0, 0] * 256)
+
+    assert encode_sixel(image, palette) == '\x1bP9;1;0q"1;1;2;7#0;2;100;0;0#0@-#0?@\x1b\\'
+
+
+def test_sixel_runs_of_four_use_the_repeat_introducer() -> None:
+    image: Image.Image = Image.new("RGBA", (5, 1), (0, 0, 255, 255))
+    palette: Image.Image = Image.new("P", (1, 1))
+    palette.putpalette([0, 0, 255] * 256)
+
+    assert encode_sixel(image, palette).endswith("#0!5@\x1b\\")
 
 
 def test_anchor_column_counts_wide_characters_as_two_cells() -> None:
