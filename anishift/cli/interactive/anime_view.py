@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final
 
@@ -459,10 +459,10 @@ def _table(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int, now: float) -
     if cover and snapshot.cover is not None:
         margin, left = cover_columns(canvas.width, snapshot.cover, width)
         count: int = max(len(snapshot.items[snapshot.offset : snapshot.offset + visible]), 1)
-        row: int = canvas.top + (0 if snapshot.highlight is None else snapshot.highlight - snapshot.offset)
-        rows: range = range(row, row + (count if snapshot.highlight is None else 1))
+        firsts: dict[int, int] = {snapshot.offset + line: canvas.top + line for line in range(count)}
         band: range = range(canvas.top - 1, _footer_top(canvas, snapshot))
-        if place_cover(canvas.lines, snapshot.cover, margin, rows, band):
+        rows: range = range(canvas.top, canvas.top + count)
+        if place_cover(canvas.lines, snapshot.cover, margin, band, rows, firsts, snapshot.highlight):
             canvas.left = left
     columns: list[tuple[int, int, int]] = []
     column: int = spec.prefix
@@ -528,10 +528,21 @@ def cover_columns(width: int, cover: tuple[int, int], block: int) -> tuple[int, 
     return margin, margin + cover[0] + _COVER_GAP
 
 
-def place_cover(lines: list[Text], cover: tuple[int, int], margin: int, rows: range, band: range) -> bool:
-    """Anchor the slot at cell *margin*, centered on *rows* and kept inside the *band* rows, if it fits there."""
+def place_cover(  # noqa: PLR0913
+    lines: list[Text],
+    cover: tuple[int, int],
+    margin: int,
+    band: range,
+    rows: range,
+    firsts: Mapping[int, int],
+    highlight: int | None,
+) -> bool:
+    """Anchor the slot at *margin* in *band* on the highlighted item, else *rows*, at the edge facing an undrawn one."""
     if len(band) < cover[1]:
         return False
+    if highlight is not None:
+        row: int = firsts.get(highlight, band.start - cover[1] if highlight < min(firsts, default=0) else band.stop)
+        rows = range(row, row + 1)
     top: int = max(min(rows.start - (cover[1] - len(rows)) // 2, band.stop - cover[1]), band.start)
     lines[top] = _overwrite(lines[top], margin, mark_inert(Text(NATIVE_IMAGE_ANCHOR)))
     return True
