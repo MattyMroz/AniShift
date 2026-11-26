@@ -70,7 +70,7 @@ def _renderer_with(image: NativeImage | None, writes: list[str]) -> TerminalRend
             exit=lambda: None,
             invalidate=lambda: None,
             is_done=False,
-            renderer=SimpleNamespace(reset=lambda **_kwargs: None),
+            renderer=SimpleNamespace(reset=lambda **_kwargs: None, _last_screen=object()),
         ),
     )
     renderer._native_mascot = image
@@ -78,6 +78,8 @@ def _renderer_with(image: NativeImage | None, writes: list[str]) -> TerminalRend
     renderer._native_slot = None
     renderer._native_drawn_slot = None
     renderer._native_drawn_image = None
+    renderer._native_drawn_size = None
+    renderer._terminal_size = None
     renderer._use_mascot = True
     return renderer
 
@@ -213,7 +215,7 @@ def test_leaving_home_erases_the_native_image() -> None:
             ),
             invalidate=lambda: None,
             is_done=False,
-            renderer=SimpleNamespace(reset=lambda **_kwargs: None),
+            renderer=SimpleNamespace(reset=lambda **_kwargs: None, _last_screen=object()),
         ),
     )
     renderer._render_width = 0
@@ -252,7 +254,7 @@ def test_a_moved_native_image_is_erased_instead_of_left_behind() -> None:
             ),
             invalidate=lambda: None,
             is_done=False,
-            renderer=SimpleNamespace(reset=lambda **_kwargs: None),
+            renderer=SimpleNamespace(reset=lambda **_kwargs: None, _last_screen=object()),
         ),
     )
     renderer._render_width = 0
@@ -271,8 +273,10 @@ def test_a_moved_native_image_is_erased_instead_of_left_behind() -> None:
     renderer._before_render(renderer._application)
     renderer._draw_native_image(renderer._application)
 
+    assert home_position is not None
     assert home_position != renderer._native_position
-    assert "\x1b[2J" in writes[-2]
+    assert f"\x1b[{home_position[0] + 1};{home_position[1] + 1}H\x1b[m" in writes[-2]
+    assert "\x1b[2J" not in "".join(writes)
     assert renderer._native_drawn_position == renderer._native_position
 
 
@@ -289,7 +293,7 @@ def test_a_native_image_that_stayed_in_place_is_not_erased() -> None:
             ),
             invalidate=lambda: None,
             is_done=False,
-            renderer=SimpleNamespace(reset=lambda **_kwargs: None),
+            renderer=SimpleNamespace(reset=lambda **_kwargs: None, _last_screen=object()),
         ),
     )
     renderer._render_width = 0
@@ -402,7 +406,7 @@ def test_entering_auto_keeps_the_native_image_in_the_header() -> None:
             ),
             invalidate=lambda: None,
             is_done=False,
-            renderer=SimpleNamespace(reset=lambda **_kwargs: None),
+            renderer=SimpleNamespace(reset=lambda **_kwargs: None, _last_screen=object()),
         ),
     )
     renderer._render_width = 0

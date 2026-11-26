@@ -6,6 +6,7 @@ from typing import cast
 
 import pytest
 from prompt_toolkit import Application
+from prompt_toolkit.formatted_text import ANSI
 from rich.text import Text
 
 from anishift.cli.interactive.native_image import NATIVE_IMAGE_ANCHOR, NativeImage
@@ -25,13 +26,12 @@ class _Screen:
         self.frame: str = frame
         self.image: NativeImage | None = image
         self.writes: list[str] = []
+        self.size: SimpleNamespace = SimpleNamespace(columns=40, rows=12)
+        self.screen: SimpleNamespace = SimpleNamespace(reset=lambda **_kwargs: None, _last_screen=object())
         self.renderer: TerminalRenderer = object.__new__(TerminalRenderer)
-        output = SimpleNamespace(
-            get_size=lambda: SimpleNamespace(columns=40, rows=12), write_raw=self.writes.append, flush=lambda: None
-        )
+        output = SimpleNamespace(get_size=lambda: self.size, write_raw=self.writes.append, flush=lambda: None)
         self.renderer._application = cast(
-            "Application[None]",
-            SimpleNamespace(output=output, is_done=False, renderer=SimpleNamespace(reset=lambda **_kwargs: None)),
+            "Application[None]", SimpleNamespace(output=output, is_done=False, renderer=self.screen)
         )
         self.renderer._frame_provider = lambda _columns, _rows: Text(self.frame)
         self.renderer._image_provider = lambda: self.image
@@ -47,6 +47,7 @@ class _Screen:
         self.renderer._native_drawn_payload = None
         self.renderer._native_drawn_image = None
         self.renderer._native_drawn_slot = None
+        self.renderer._native_drawn_size = None
         self.renderer._idle_handler = None
 
     def paint(self) -> str:
@@ -85,15 +86,45 @@ def test_missing_image_in_place_erases_cells_without_clearing_the_screen() -> No
     assert again == ""
 
 
-def test_changed_line_in_slot_rows_redraws_the_same_image() -> None:
+def test_changed_text_beside_the_slot_writes_no_image() -> None:
     screen: _Screen = _Screen(_SLOT, _image("COVER"))
     screen.paint()
     screen.frame = _SLOT.replace("Beta", "B")
+
+    assert screen.paint() == ""
+
+
+def test_text_inside_the_slot_cells_redraws_the_same_image() -> None:
+    screen: _Screen = _Screen(_SLOT, _image("COVER"))
+    screen.paint()
+    screen.frame = _SLOT.replace("Beta", "Beta    x")
 
     redrawn: str = screen.paint()
 
     assert "COVER" in redrawn
     assert "\x1b[m    " not in redrawn
+    assert _CLEAR not in redrawn
+
+
+def test_blank_slot_cells_are_styled_so_a_shortened_line_never_erases_the_image() -> None:
+    screen: _Screen = _Screen(_SLOT, _image("COVER"))
+    screen.paint()
+
+    prepared: object = screen.renderer._prepared_frame
+    rows: list[str] = cast("ANSI", prepared).value.split("\n")
+
+    assert all("\x1b[1m" in row for row in rows[:3])
+    assert "\x1b[1m" not in rows[3]
+
+
+def test_full_repaint_by_prompt_toolkit_redraws_the_same_image() -> None:
+    screen: _Screen = _Screen(_SLOT, _image("COVER"))
+    screen.paint()
+    screen.screen._last_screen = None
+
+    redrawn: str = screen.paint()
+
+    assert "COVER" in redrawn
     assert _CLEAR not in redrawn
 
 
@@ -104,16 +135,28 @@ def test_unchanged_frame_writes_no_image() -> None:
     assert screen.paint() == ""
 
 
-def test_moved_slot_clears_the_screen_once() -> None:
+def test_moved_slot_erases_only_the_old_cells_before_drawing_at_the_new_row() -> None:
     screen: _Screen = _Screen(_SLOT, _image("COVER"))
     screen.paint()
     screen.frame = f"\n{_SLOT}"
 
     moved: str = screen.paint()
 
+    assert _CLEAR not in moved
+    assert moved.index("\x1b[1;8H\x1b[m    ") < moved.index("\x1b[2;8HCOVER")
+    assert screen.renderer._native_drawn_position == (1, 7)
+
+
+def test_moved_slot_after_a_resize_clears_the_screen_once() -> None:
+    screen: _Screen = _Screen(_SLOT, _image("COVER"))
+    screen.paint()
+    screen.size = SimpleNamespace(columns=30, rows=10)
+    screen.frame = f"\n{_SLOT}"
+
+    moved: str = screen.paint()
+
     assert moved.count(_CLEAR) == 1
     assert "COVER" in moved
-    assert screen.renderer._native_drawn_position == (1, 7)
 
 
 def test_anchor_column_counts_wide_characters_as_two_cells() -> None:

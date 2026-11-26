@@ -377,7 +377,6 @@ class TerminalRenderer:
         image: NativeImage | None = self._native_drawn_image
         if position is not None and image is not None:
             erase: str = _native_erase_sequence(position, image.cell_columns, image.cell_rows)
-            # Buffered ahead of the text diff, so text drawn into the old cells this frame survives.
             self._application.output.write_raw(f"{_SAVE_CURSOR}{erase}{_RESTORE_CURSOR}")
         self._native_drawn_position = None
         self._native_drawn_payload = None
@@ -538,6 +537,7 @@ def _guard_slot(frame: Text, position: tuple[int, int], columns: int, rows: int)
     lines: list[Text] = list(frame.split("\n", allow_blank=True))
     cells: list[str] = []
     for line in lines[position[0] : position[0] + rows]:
+        line.pad_right(max(position[1] + columns - line.cell_len, 0))
         start: int = character_offset(line.plain, position[1])
         end: int = character_offset(line.plain, position[1] + columns)
         line.stylize(_SLOT_GUARD, start, end)
