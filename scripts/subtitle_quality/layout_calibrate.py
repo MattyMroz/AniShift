@@ -29,6 +29,8 @@ from scripts.subtitle_quality.layout_catalogue import RAGGED_HARM, CatalogueCase
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
+    from anishift.services.subtitles.layout import Measure
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 PROFESSIONAL: Final[Path] = Path("experiments") / "lb-research" / "opus55" / "dataset.json"
@@ -135,12 +137,14 @@ def _shifted(case: CatalogueCase, *, morphology: bool) -> list[dict[tuple[str, .
     return [
         {
             layout.lines: layout
-            for layout in candidates(
-                case.text, case.field, lambda line, fx, f=factor: case.measure(line, fx) * f, morphology=morphology
-            )
+            for layout in candidates(case.text, case.field, _scaled(case.measure, factor), morphology=morphology)
         }
         for factor in (1 - MEASURE_TOLERANCE, 1 + MEASURE_TOLERANCE)
     ]
+
+
+def _scaled(measure: Measure, factor: float) -> Measure:
+    return lambda line, fx: measure(line, fx) * factor
 
 
 def _robust_rows(loser: Layout, best: Layout, shifted: Sequence[dict[tuple[str, ...], Layout]]) -> list[np.ndarray]:
@@ -238,8 +242,9 @@ def solve(pairs: Pairs) -> Fit:
         builder.add({**{index: -value for index, value in enumerate(row)}, size + soft_count + offset: -1.0}, -1.0)
     for row in monotone_rows():
         builder.add({index: value for index, value in enumerate(row) if value}, 0.0)
+    open_bound: tuple[float, float | None] = (0.0, None)
     bounds: list[tuple[float, float | None]] = [(POSITIVE if name in CUT_HARMS else 0.0, None) for name in HARMS] + [
-        (0.0, None)
+        open_bound
     ] * (soft_count + pro_count)
     soft_cost: np.ndarray = np.concatenate([np.zeros(size), np.ones(soft_count), np.zeros(pro_count)])
     pro_cost: np.ndarray = np.concatenate([np.zeros(size + soft_count), np.ones(pro_count)])
