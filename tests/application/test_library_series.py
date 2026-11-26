@@ -250,7 +250,11 @@ def test_downloaded_set_carries_its_entry_series_and_key_source() -> None:
 
     named: LibrarySet = _sets(state, library_series(_graph(_S1), (_SLIME_S3,)))["[SubsPlease] Tensura S3 - 05 [1080p]"]
 
-    assert (named.anilist_id, named.series_id, named.title_source) == (_SLIME_S3, _S1, TitleSource.KEY)
+    assert (named.anilist_id, named.entry_title, named.title_source) == (
+        _SLIME_S3,
+        "That Time I Got Reincarnated as a Slime Season 3",
+        TitleSource.KEY,
+    )
     assert (named.series, named.season, named.episode) == (_SLIME, 3, 5)
 
 
@@ -263,7 +267,7 @@ def test_set_of_an_unknown_series_keeps_its_entry_and_file_label() -> None:
 
     named: LibrarySet = _sets(state)[stem]
 
-    assert (named.anilist_id, named.series_id, named.title_source) == (178789, None, TitleSource.KEY)
+    assert (named.anilist_id, named.entry_title, named.title_source) == (178789, None, TitleSource.KEY)
     assert (named.series, named.season, named.episode) == (None, None, None)
 
 
@@ -279,7 +283,7 @@ def test_hand_added_set_stays_with_name_source() -> None:
         "Some.Cartoon.1999.1080p.BluRay"
     ]
 
-    assert (named.anilist_id, named.series_id, named.title_source) == (None, None, TitleSource.NAME)
+    assert (named.anilist_id, named.entry_title, named.title_source) == (None, None, TitleSource.NAME)
     assert (named.series, named.season, named.episode) == (None, None, None)
 
 
@@ -388,7 +392,10 @@ def test_owner_reads_every_library_series_in_one_batch_once(tmp_path: Path) -> N
     finally:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
-    assert [(row["series"], row["series_id"]) for row in rows] == [(_SLIME, _S1), ("The Slime Diaries", _DIARIES)]
+    assert [(row["series"], row["entry_title"]) for row in rows] == [
+        (_SLIME, _SLIME),
+        ("The Slime Diaries", "The Slime Diaries"),
+    ]
     assert isinstance(details, dict)
     assert details["series"] == _SLIME
     assert titles.library_reads == [sorted((_S1, _DIARIES, _SLIME_OAD))]
@@ -408,8 +415,8 @@ def test_snapshot_library_rows_carry_entry_series_and_source(tmp_path: Path) -> 
     finally:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
-    assert [(row["anilist_id"], row["series_id"], row["title_source"]) for row in rows] == [
-        (_S1, _S1, "key"),
+    assert [(row["anilist_id"], row["entry_title"], row["title_source"]) for row in rows] == [
+        (_S1, _SLIME, "key"),
         (None, None, "name"),
     ]
 
@@ -501,7 +508,7 @@ def test_recognized_hand_set_takes_its_entry_and_series() -> None:
     named: LibrarySet = _sets(state, series, {("ao no hako", 2): 2})[stem]
     unknown: LibrarySet = _sets(state, series, {("ao no hako", 2): None})[stem]
 
-    assert (named.anilist_id, named.series_id, named.title_source) == (2, 1, TitleSource.RECOGNIZED)
+    assert (named.anilist_id, named.entry_title, named.title_source) == (2, "Blue Box Season 2", TitleSource.RECOGNIZED)
     assert (named.series, named.season, named.episode) == ("Blue Box", 2, 3)
     assert (unknown.anilist_id, unknown.title_source) == (None, TitleSource.NAME)
 
@@ -687,13 +694,13 @@ def test_recognized_set_joins_its_series(tmp_path: Path) -> None:
         owner.request_shutdown()
         thread.join(_TIMEOUT_S)
     named: list[tuple[object, ...]] = [
-        (row["title_source"], row["anilist_id"], row["series_id"], row["series"], row["season"], row["episode"])
+        (row["title_source"], row["anilist_id"], row["entry_title"], row["series"], row["season"], row["episode"])
         for row in rows
     ]
     assert sorted(named, key=str) == sorted(
         [
-            ("recognized", _S1, _S1, _SLIME, 1, 5),
-            ("recognized", _S1, _S1, _SLIME, 1, 6),
+            ("recognized", _S1, _SLIME, _SLIME, 1, 5),
+            ("recognized", _S1, _SLIME, _SLIME, 1, 6),
             ("name", None, None, None, None, None),
         ],
         key=str,

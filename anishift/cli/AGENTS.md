@@ -176,7 +176,7 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   Etykiety z `library_label` fasady i pól `series/season/episode` (`state_library._series_label`), inaczej z pliku.
   Brak akcji P i wiersza relokacji — owner sam ponawia relokacje. Odmowy przeżywają obce snapshoty, nie zmianę
   wyboru; spóźniony wynik nie nadpisze nowszego kontekstu. Testy: `test_library_actions.py`, `test_library_columns.py`.
-- Biblioteka ma dwa poziomy: tytuły (`library_titles`: `series:<id>`, `entry:<id>` do poznania serii, `name:<tytuł>`,
+- Biblioteka ma dwa poziomy: tytuły (`library_titles`: `entry:<id>` jeden wiersz na wpis AniList z `entry_title`, `name:<tytuł>`,
   „Nie rozpoznano” na końcu) i odcinki otwartego tytułu (`_library_title`, prezentacja `AnimeScreen.EPISODES`,
   okruszki `Biblioteka › <tytuł>`). Esc/Backspace/okruszek wracają na ten sam tytuł; zmiana zakładki zamyka tytuł,
   zaznaczenia, pole `/` i pytanie, filtr zostaje. Tytuły i daty odcinków czyta wątek `anishift-library-episodes`

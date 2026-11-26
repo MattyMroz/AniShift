@@ -95,9 +95,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - `ReadyStore` przenosi grupę do `ready/` wyłącznym dowiązaniem i usunięciem starej nazwy na tym samym woluminie; znany
   torrent musi wcześniej zwolnić pliki, blokada relokacji chroni oba ID grupy przed Auto. Nie przenoś plików z renderera.
 - Odcinek wiąże z pobranym zestawem `downloaded_episodes` (`EpisodeAssignment.group_id` = `ReadyGroup.set_id`).
-  `LibrarySet.series/season/episode/anilist_id/series_id/title_source` dokłada `name_series` przy emisji, nigdy w
+  `LibrarySet.series/season/episode/anilist_id/entry_title/title_source` dokłada `name_series` przy emisji, nigdy w
   zapisanym stanie. Seria to łańcuch `PREQUEL`/`SEQUEL` z jednego zbiorczego `library_graph` (po 50 ID, najwyżej 4 rundy)
-  i czystego `library_series`; `series_id` to najwcześniejszy wpis sezonowy. Zestaw ręczny (`hand_key`) owner szuka raz na
+  i czystego `library_series`; daje nazwę serii i numer sezonu, a `entry_title` to tytuł wpisu (sezonu), pod którym
+  Biblioteka grupuje zestawy. Zestaw ręczny (`hand_key`) owner szuka raz na
   uruchomienie (`recognize`: dokładnie jeden kandydat z aliasem równym tytułowi z nazwy w tym samym sezonie, żaden
   remake z rokiem ani wpis o mniejszej liczbie odcinków); inaczej zostaje `name`. Wyszukiwania biegną na własnym wątku
   `anishift-owner-recognition` (nie w puli I/O, na której czeka usuwanie i Ctrl+Z), co `RECOGNITION_INTERVAL_S`, i

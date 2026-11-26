@@ -39,7 +39,7 @@ class _Covers:
         self.prepared = list(anilist_ids)
 
 
-def _keyed(set_id: str, anilist_id: int, series_id: int, series: str, season: int) -> dict[str, object]:
+def _keyed(set_id: str, anilist_id: int, series: str, season: int) -> dict[str, object]:
     return {
         "set_id": set_id,
         "name": f"[Grp] {series} - 01",
@@ -47,16 +47,16 @@ def _keyed(set_id: str, anilist_id: int, series_id: int, series: str, season: in
         "season": season,
         "episode": 1,
         "anilist_id": anilist_id,
-        "series_id": series_id,
+        "entry_title": series if season == 1 else f"{series} Season {season}",
         "title_source": "key",
     }
 
 
 _LIBRARY: Mapping[str, object] = {
     "library": [
-        _keyed("a1", 11, 10, "Alpha", 1),
-        _keyed("a2", 12, 10, "Alpha", 2),
-        _keyed("b1", 21, 20, "Beta", 1),
+        _keyed("a1", 11, "Alpha", 1),
+        _keyed("a2", 12, "Alpha", 2),
+        _keyed("b1", 21, "Beta", 1),
         {"set_id": "hand", "name": "[Grp] Gamma - 01"},
     ],
     "covers": [12, 21],
@@ -114,7 +114,7 @@ def test_slot_absent_when_the_terminal_is_small(panel: tuple[StateController, _C
     covers.shown_box = (40, 13)
     controller._snapshot = {
         **_LIBRARY,
-        "library": [_keyed("a1", 12, 10, "A Title Long Enough To Leave No Room For The Cover", 1)],
+        "library": [_keyed("a1", 12, "A Title Long Enough To Leave No Room For The Cover", 1)],
     }
 
     assert _anchor(controller.render(60, 40).plain) is None
@@ -283,11 +283,14 @@ def test_render_prepares_every_listed_cover(panel: tuple[StateController, _Cover
     assert sorted(covers.prepared) == [12, 21]
 
 
-def test_title_cover_is_the_newest_set_entry(panel: tuple[StateController, _Covers]) -> None:
+def test_each_season_entry_shows_its_own_cover(panel: tuple[StateController, _Covers]) -> None:
     controller, covers = panel
 
-    controller.render(120, 40)
+    frame: str = controller.render(120, 40).plain
     first: NativeImage | None = controller.cover()
+    controller.handle_key("down")
+    controller.render(120, 40)
+    second: NativeImage | None = controller.cover()
     controller.handle_key("enter")
     controller.render(120, 40)
     opened: NativeImage | None = controller.cover()
@@ -295,8 +298,10 @@ def test_title_cover_is_the_newest_set_entry(panel: tuple[StateController, _Cove
     controller.handle_key("end")
     controller.render(120, 40)
 
-    assert first is not None
-    assert first.payloads == ("cover-12",)
+    assert "Alpha Season 2" in frame
+    assert first is None
+    assert second is not None
+    assert second.payloads == ("cover-12",)
     assert opened is not None
     assert opened.payloads == ("cover-12",)
     assert controller.cover() is None

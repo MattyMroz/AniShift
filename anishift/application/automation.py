@@ -1985,7 +1985,7 @@ class AutomationOwner:
                     "season": group.season,
                     "episode": group.episode,
                     "anilist_id": group.anilist_id,
-                    "series_id": group.series_id,
+                    "entry_title": group.entry_title,
                     "title_source": group.title_source.value,
                 }
                 for group in library

@@ -20,9 +20,9 @@ pytestmark = pytest.mark.unit
 
 
 def _keyed(
-    set_id: str, anilist_id: int, episode: int, *, series_id: int | None = 100, season: int = 2
+    set_id: str, anilist_id: int, episode: int, *, entry_title: str | None = "Blue Box Season 2", season: int = 2
 ) -> dict[str, object]:
-    known: bool = series_id is not None
+    known: bool = entry_title is not None
     return {
         "set_id": set_id,
         "name": f"[Grp] File Name {anilist_id} - {episode:02} [1080p]",
@@ -30,7 +30,7 @@ def _keyed(
         "season": season if known else None,
         "episode": episode if known else None,
         "anilist_id": anilist_id,
-        "series_id": series_id,
+        "entry_title": entry_title,
         "title_source": "key",
     }
 
@@ -81,27 +81,33 @@ def panel(monkeypatch: pytest.MonkeyPatch) -> Iterator[StateController]:
                 thread.join(5)
 
 
-def test_sets_of_one_series_form_one_title() -> None:
-    snapshot: Mapping[str, object] = {"library": [_keyed("s2", 2, 1, season=3), _keyed("s1", 1, 12)]}
+def test_each_season_entry_is_its_own_title_with_its_cover() -> None:
+    snapshot: Mapping[str, object] = {
+        "library": [
+            _keyed("s3", 2, 1, season=3, entry_title="Blue Box Season 3"),
+            _keyed("s2b", 1, 12),
+            _keyed("s2a", 1, 11),
+        ]
+    }
 
     titles: list[state_library.LibraryTitle] = state_library.library_titles(snapshot)
 
-    assert [(item.key, item.title, len(item.sets)) for item in titles] == [("series:100", "Blue Box", 2)]
-    assert titles[0].cover_id == 2
+    assert [(item.key, item.title, len(item.sets), item.cover_id) for item in titles] == [
+        ("entry:1", "Blue Box Season 2", 2, 1),
+        ("entry:2", "Blue Box Season 3", 1, 2),
+    ]
 
 
-def test_unknown_series_groups_by_entry_until_the_series_arrives() -> None:
-    unknown: Mapping[str, object] = {
+def test_entry_without_a_known_series_groups_by_entry_under_its_file_title() -> None:
+    snapshot: Mapping[str, object] = {
         "library": [
-            _keyed("a", 5, 1, series_id=None),
-            _keyed("b", 5, 2, series_id=None),
-            _keyed("c", 6, 1, series_id=None),
+            _keyed("a", 5, 1, entry_title=None),
+            _keyed("b", 5, 2, entry_title=None),
+            _keyed("c", 6, 1, entry_title=None),
         ]
     }
-    known: Mapping[str, object] = {"library": [_keyed("a", 5, 1), _keyed("b", 5, 2), _keyed("c", 6, 1)]}
 
-    assert _keys(unknown) == ["entry:5", "entry:6"]
-    assert _keys(known) == ["series:100"]
+    assert _keys(snapshot) == ["entry:5", "entry:6"]
 
 
 def test_hand_added_spellings_of_one_title_join_by_name() -> None:
@@ -189,7 +195,7 @@ def test_enter_opens_the_title_and_escape_returns_to_it(panel: StateController) 
     episodes: list[str] = [state_library.library_row_id(item) for item in panel._episodes()]
     panel.handle_key("escape")
 
-    assert opened == ("Biblioteka", "Blue Box")
+    assert opened == ("Biblioteka", "Blue Box Season 2")
     assert episodes == ["c", "b"]
     assert panel._library_title is None
     assert panel._selected == 1
@@ -215,7 +221,7 @@ def test_tray_target_opens_the_title_of_its_set(panel: StateController) -> None:
 
     panel.show_library({"set_id": "b"})
 
-    assert panel._library_title == "series:100"
+    assert panel._library_title == "entry:1"
     assert state_library.library_row_id(panel._episodes()[panel._selected]) == "b"
 
 
@@ -235,7 +241,7 @@ def test_tab_switch_closes_the_title_and_its_marks(panel: StateController) -> No
 def test_late_episode_titles_of_another_title_are_dropped(panel: StateController) -> None:
     owner: _Episodes = cast("_Episodes", panel._parent)
     panel._episode_info = {}
-    panel._snapshot = {"library": [_keyed("a", 1, 1, series_id=10), _keyed("b", 2, 1, series_id=20)]}
+    panel._snapshot = {"library": [_keyed("a", 1, 1, entry_title="Alpha"), _keyed("b", 2, 1, entry_title="Beta")]}
 
     panel.handle_key("enter")
     panel.handle_key("escape")

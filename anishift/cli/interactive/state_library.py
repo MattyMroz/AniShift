@@ -265,12 +265,10 @@ def details_label(details: LibrarySet) -> LibraryLabel:
 
 def _title_key(item: Mapping[str, object]) -> tuple[str, str]:
     label: LibraryLabel = _label(item)
-    series_id: int | None = _number(item.get("series_id"))
     anilist_id: int | None = _number(item.get("anilist_id"))
-    if series_id is not None:
-        return f"series:{series_id}", label.title
+    entry_title: object = item.get("entry_title")
     if anilist_id is not None:
-        return f"entry:{anilist_id}", label.title
+        return f"entry:{anilist_id}", entry_title if isinstance(entry_title, str) and entry_title else label.title
     if label.season is None and label.episode is None and label.title == str(item.get("name", "")):
         return UNRECOGNIZED_KEY, LIBRARY_UNRECOGNIZED
     return f"name:{normalize_series(label.title)}", label.title

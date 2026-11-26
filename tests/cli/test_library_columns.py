@@ -59,7 +59,7 @@ def _keyed(set_id: str, name: str, episode: int, *, anilist_id: int = 200) -> di
         "season": 2,
         "episode": episode,
         "anilist_id": anilist_id,
-        "series_id": 100,
+        "entry_title": "Blue Box Season 2",
         "title_source": "key",
     }
 
@@ -179,17 +179,17 @@ def test_details_breadcrumb_names_the_open_title_and_the_episode(library: StateC
         "e2", "group", _JUDAS, None, f"ready/{_JUDAS}.mkv", (), True, series="Blue Box", season=2, episode=2
     )
 
-    assert library.breadcrumb() == ("Biblioteka", "Blue Box", "S02E02")
+    assert library.breadcrumb() == ("Biblioteka", "Blue Box Season 2", "S02E02")
 
 
 @pytest.mark.unit
-def test_library_names_downloads_of_one_series_after_the_owner_series_whatever_their_files() -> None:
+def test_library_names_downloads_of_one_entry_after_the_owner_entry_whatever_their_files() -> None:
     snapshot: Mapping[str, object] = {"library": [_keyed("judas", _JUDAS, 2), _keyed("toonshub", _BLUE_BOX, 1)]}
 
     titles: list[state_library.LibraryTitle] = state_library.library_titles(snapshot)
 
     assert [state_library.title_row(item) for item in titles] == [
-        AnimeRow("series:100", "Blue Box", number="2", status="Gotowe")
+        AnimeRow("entry:200", "Blue Box Season 2", number="2", status="Gotowe")
     ]
     assert [state_library.library_row_id(item) for item in titles[0].sets] == ["toonshub", "judas"]
 

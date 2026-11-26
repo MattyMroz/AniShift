@@ -343,7 +343,7 @@ def name_series(
             replace(
                 keyed,
                 series=known.title,
-                series_id=known.series_id,
+                entry_title=known.entry_title,
                 season=season,
                 episode=None if season is None else episode.number,
             )
@@ -367,7 +367,7 @@ def _recognized_set(
     return replace(
         found,
         series=known.title,
-        series_id=known.series_id,
+        entry_title=known.entry_title,
         season=(label.season or 1) if whole else None,
         episode=int(label.episode) if whole and label.episode is not None else None,
     )

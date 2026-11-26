@@ -115,7 +115,7 @@ class LibrarySet:
     season: int | None = None
     episode: int | None = None
     anilist_id: int | None = None
-    series_id: int | None = None
+    entry_title: str | None = None
     title_source: TitleSource = TitleSource.NAME
 
 
