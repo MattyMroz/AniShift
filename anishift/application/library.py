@@ -305,6 +305,7 @@ def recognize(candidates: Sequence[TitleCandidate], title: str, season: int, epi
             base: str = strip_season(alias)
             if normalize_series(base) == wanted:
                 exact.add(candidate.anilist_id)
+                rivals.add(candidate.anilist_id)
             if normalize_series(SERIES_YEAR.sub("", base)) == wanted:
                 rivals.add(candidate.anilist_id)
     return next(iter(exact)) if len(exact) == 1 and rivals == exact else None
