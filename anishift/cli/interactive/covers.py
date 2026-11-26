@@ -54,7 +54,7 @@ def cover_image(path: Path, cell: tuple[int, int]) -> NativeImage | None:
             payload: str = encode_sixel(filled_cover(source.convert("RGB"), size).convert("RGBA"))
     except OSError, ValueError, Image.DecompressionBombError:
         return None
-    return NativeImage((payload,), (_STATIC_SECONDS,), _STATIC_SECONDS, columns, rows, rows)
+    return NativeImage((payload,), (_STATIC_SECONDS,), _STATIC_SECONDS, columns, rows, rows, opaque=True)
 
 
 def filled_cover(picture: Image.Image, size: tuple[int, int]) -> Image.Image:
@@ -73,17 +73,15 @@ def filled_cover(picture: Image.Image, size: tuple[int, int]) -> Image.Image:
 
 
 class CoverImages:
-    """Keep every listed cover encoded in memory, encoding missing ones on the thread anishift-cover."""
+    """Keep listed covers encoded in memory: prepared ones on the thread anishift-cover, a missing one on request."""
 
     def __init__(
         self,
-        invalidate: Callable[[], None],
         cell: Callable[[], tuple[int, int] | None],
         directory: Callable[[], Path] = covers_dir,
         *,
         shown: Callable[[], bool] = lambda: True,
     ) -> None:
-        self._invalidate: Callable[[], None] = invalidate
         self._cell: Callable[[], tuple[int, int] | None] = cell
         self._shown: Callable[[], bool] = shown
         self._directory: Callable[[], Path] = directory
@@ -98,45 +96,39 @@ class CoverImages:
         return None if cell is None or not self._shown() else cover_box(cell)
 
     def image(self, anilist_id: int) -> NativeImage | None:
-        """Return the encoded cover, or None while it is encoded, unreadable or without SIXEL."""
-        if self._cell() is None:
+        """Return the encoded cover, encoding it now when it is not ready, or None for a bad file or without SIXEL."""
+        cell: tuple[int, int] | None = self._cell()
+        if cell is None:
             return None
         with self._lock:
             if anilist_id in self._ready:
                 return self._ready[anilist_id]
-        self._request((anilist_id,), first=True)
-        return None
+        return self._encode(anilist_id, cell)
 
     def prepare(self, anilist_ids: Iterable[int]) -> None:
-        """Queue the covers of a shown list, so moving the highlight finds them encoded."""
-        if self._cell() is not None:
-            self._request(anilist_ids, first=False)
-
-    def _request(self, anilist_ids: Iterable[int], *, first: bool) -> None:
+        """Queue covers for encoding off the render thread, so the first frame that shows one finds it ready."""
+        if self.box() is None:
+            return
         with self._lock:
             queued: set[int] = set(self._queue)
             missing: list[int] = [
-                item for item in dict.fromkeys(anilist_ids) if item not in self._ready and (first or item not in queued)
+                item for item in dict.fromkeys(anilist_ids) if item not in self._ready and item not in queued
             ]
-            if not missing:
-                return
-            if first:
-                self._queue.extendleft(reversed(missing))
-            else:
-                self._queue.extend(missing)
-            if self._worker is None:
+            self._queue.extend(missing)
+            if missing and self._worker is None:
                 self._worker = threading.Thread(target=self._run, name="anishift-cover", daemon=True)
                 self._worker.start()
+
+    def _encode(self, anilist_id: int, cell: tuple[int, int]) -> NativeImage | None:
+        encoded: NativeImage | None = cover_image(self._directory() / cover_name(anilist_id), cell)
+        with self._lock:
+            return self._ready.setdefault(anilist_id, encoded)
 
     def _run(self) -> None:
         while (anilist_id := self._next()) is not None:
             cell: tuple[int, int] | None = self._cell()
-            encoded: NativeImage | None = (
-                None if cell is None else cover_image(self._directory() / cover_name(anilist_id), cell)
-            )
-            with self._lock:
-                self._ready[anilist_id] = encoded
-            self._invalidate()
+            if cell is not None:
+                self._encode(anilist_id, cell)
 
     def _next(self) -> int | None:
         with self._lock:

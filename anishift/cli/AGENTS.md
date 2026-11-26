@@ -197,9 +197,11 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   wiersza treści (w tabeli nagłówka kolumn), a pionowe wyśrodkowanie, pas i to, czy slot się mieści, liczy jedno
   `cover_block`; wiersz, krawędź i kotwicę `place_cover`, kolumny `beside_cover` i `cover_columns`, okładkę
   `_place_cover`.
-  `StateController.cover()` zwraca obraz tego wiersza; render woła `CoverImages.prepare` dla całej listy, wątek
-  `anishift-cover` koduje brakujące, a trafienie czyta gotowy ładunek w tej samej klatce. Bez SIXEL, miejsca albo
-  okładki w snapshot `covers` klatka jest taka jak bez okładek. Testy: `test_library_covers.py`.
+  `StateController.cover()` zwraca obraz tego wiersza. Każdy snapshot ownera i każdy render wołają
+  `CoverImages.prepare` (wątek `anishift-cover` koduje z wyprzedzeniem), a `CoverImages.image` koduje brakującą okładkę
+  od razu, więc żadna klatka nie ma pustego slotu. Potwierdzenie Del (`_library_confirm`) nie ma slotu. Bez SIXEL,
+  miejsca albo okładki w snapshot `covers` klatka jest taka jak bez okładek. Testy: `test_library_covers.py` (układ),
+  `test_raster.py` (rysowanie).
 
 ## Auto, postęp i maskotka
 
@@ -216,24 +218,26 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
 - Home: `Panel`, `Ręczny`, `Ustawienia`, `Wyjście`. Mutacje `settings.json`, `presets.json` i `.env` idą przez
   `AppService`. Manual trzyma drafty lokalnie, rejestruje pliki zewnętrzne przez `AppService`, waliduje
   `plan_manual()` i wykonuje ścieżką Auto. Wynik niepełny pokazuje się przez sanitizację w tym samym rendererze.
-- Maskotkę animuje `TerminalRenderer.after_render`; konstruktor nie koduje obrazu, `run()` sprawdza SIXEL i metryki
+- Maskotkę animuje `TerminalRenderer.before_render`; konstruktor nie koduje obrazu, `run()` sprawdza SIXEL i metryki
   przed pętlą wejścia, bez placeholdera. Rozmiar w WIERSZACH (`MASCOT_FRAME_ROWS` × wysokość komórki), nie w
   pikselach. `native_image.native_cell()` pyta terminal tylko przy `isatty`, przywraca `ConsoleMode`, ma 250 ms; nie czytaj
   raportów terminala z workera ani przy klawiszach. Rezerwacja i kasowanie: `cell_rows`/`cell_columns`, wordmark:
   `layout_rows`. Przesunięcie w prawo wspólne dla animacji (`_shared_right_shift`). `MascotController` nie ma
   workera ani zapisu do terminala. VS Code wymaga śledzonego `terminal.integrated.enableImages=true`.
-- Ruch rastra w tym samym rozmiarze terminala nie kasuje nic przed różnicą tekstu: komórki starego obrazu poza nowym
-  slotem tracą `_SLOT_GUARD`, więc nadpisuje je Prompt Toolkit, a `after_render` kasuje komórki nowego slotu i rysuje
-  obraz jednym zapisem, bez klatki pustego slotu. Zniknięcie slotu kasuje w `before_render` komórki starego obrazu,
-  buforowane przed różnicą tekstu; po zmianie rozmiaru i przy zniknięciu na wyjściu `reset(leave_alternate_screen=False)` + buforowane
-  `\x1b[2J`; domyślne `reset()` odsłania starą konsolę, końcowy redraw (`is_done`) nie maluje rastra. Nie używaj
-  `RIS` ani `\x1b[3J` — kasują historię użytkownika. `interactive/prompts.py`
 - Renderer ma jeden slot obrazu (`NATIVE_IMAGE_ANCHOR`, kolumna liczona w komórkach); obraz klatki daje
-  `image_provider` aplikacji (panel: okładka, reszta: maskotka). Komórki pod obrazem `_guard_slot` zastępuje spacjami
-  z samym stylem `_SLOT_GUARD`, niezależnie od treści i stylu wiersza: Prompt Toolkit różnicuje komórki, więc nigdy w
-  nich nie pisze i nie kasuje końca skróconej linii przez obraz. Inny obraz albo brak obrazu w tym samym miejscu
-  kasuje tylko komórki poprzedniego; ten sam obraz rysuje się ponownie tylko po pełnym przerysowaniu Prompt Toolkit
-  albo zmianie rozmiaru. Testy: `test_interactive_native_image.py`.
+  `image_provider` aplikacji (panel: okładka, reszta: maskotka). Okładkę i maskotkę rysuje i kasuje tylko
+  `interactive/raster.py`, w zapisie samego Prompt Toolkit, bez osobnego zapisu w `after_render`: komórki slotu są
+  spacjami ze stylem `class:raster-slot`, których żadna klatka nie używa, więc Prompt Toolkit nigdy w nich nie pisze;
+  SIXEL jedzie jako `[ZeroWidthEscape]` (z `\x1b7`/`\x1b8`) przy komórce tuż za ostatnim wierszem slotu, której styl
+  zmienia się z każdym nowym obrazem albo miejscem, więc Prompt Toolkit wypisuje go po tekście slotu w tej samej
+  różnicy. Spacje, które zakrywał poprzedni obraz, dostają w następnej klatce styl `class:raster-release`, więc
+  Prompt Toolkit je nadpisuje (pisanie znaku kasuje piksele komórki). Styl liczony jako treść daje tylko kolor
+  (`fg:ansidefault`): Prompt Toolkit przycina końcowe spacje ze stylem bez koloru (także `bold`) przez `\x1b[K`, a
+  `\x1b[K`, `\x1b[J` i ECH nie kasują pikseli. Zmiana rozmiaru i pełne przerysowanie Prompt Toolkit
+  (`_last_screen is None`) przy narysowanym obrazie dają `reset(leave_alternate_screen=False)` + buforowane
+  `\x1b[2J` przed pełną klatką; domyślne `reset()` odsłania starą konsolę. Nie używaj `RIS` ani `\x1b[3J` — kasują
+  historię użytkownika. Testy: `test_raster.py` z modelem ekranu `terminal_model.py` (bajty wyjścia → siatka
+  komórek tekstu i pikseli, sprawdzana po każdym zapisie).
 
 ## Ustawienia
 

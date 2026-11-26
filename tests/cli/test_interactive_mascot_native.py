@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
 from dataclasses import replace
 from importlib.resources import files
 from io import StringIO
@@ -37,6 +36,7 @@ from anishift.cli.interactive.prompts import (
     resolve_auto_geometry,
     resolve_home_geometry,
 )
+from anishift.cli.interactive.raster import Slot
 from anishift.cli.interactive.settings import SettingsController
 
 
@@ -75,8 +75,7 @@ def _renderer_with(image: NativeImage | None, writes: list[str]) -> TerminalRend
     )
     renderer._native_mascot = image
     renderer._image_provider = None
-    renderer._native_drawn_image = None
-    renderer._native_drawn_size = None
+    renderer._drawn = None
     renderer._terminal_size = None
     renderer._use_mascot = True
     return renderer
@@ -182,135 +181,6 @@ def test_a_mascot_wider_than_the_terminal_is_dropped() -> None:
     assert (geometry.mascot_columns, geometry.mascot_rows) == (0, 0)
 
 
-def test_the_native_image_is_drawn_right_of_its_anchor() -> None:
-    renderer: TerminalRenderer = _renderer_with(_image(), [])
-    renderer._frame_provider = lambda _columns, _rows: Text(f"\n  {NATIVE_IMAGE_ANCHOR}   ")
-    renderer._application = cast(
-        "Application[None]",
-        SimpleNamespace(output=SimpleNamespace(get_size=lambda: SimpleNamespace(columns=80, rows=24))),
-    )
-    renderer._render_width = 0
-    renderer._render_stream = None
-    renderer._rich_console = None
-    renderer._terminal_size = None
-    renderer._native_drawn_position = None
-
-    renderer._formatted_frame()
-
-    assert renderer._native_position == (1, 4)
-
-
-def test_leaving_home_erases_the_native_image() -> None:
-    writes: list[str] = []
-    renderer: TerminalRenderer = _renderer_with(_image(), writes)
-    renderer._application = cast(
-        "Application[None]",
-        SimpleNamespace(
-            output=SimpleNamespace(
-                get_size=lambda: SimpleNamespace(columns=80, rows=24),
-                write_raw=writes.append,
-                flush=lambda: None,
-            ),
-            invalidate=lambda: None,
-            is_done=False,
-            renderer=SimpleNamespace(reset=lambda **_kwargs: None, _last_screen=object()),
-        ),
-    )
-    renderer._render_width = 0
-    renderer._render_stream = None
-    renderer._rich_console = None
-    renderer._terminal_size = None
-    renderer._native_drawn_position = None
-    renderer._native_drawn_payload = None
-    renderer._native_animation_started_at = time.monotonic()
-    renderer._frame_provider = lambda _columns, _rows: Text(f"\n  {NATIVE_IMAGE_ANCHOR}   ")
-    renderer._before_render(renderer._application)
-    renderer._draw_native_image(renderer._application)
-    drawn: int = len(writes)
-
-    renderer._frame_provider = lambda _columns, _rows: Text("\nUstawienia")
-    renderer._before_render(renderer._application)
-    renderer._draw_native_image(renderer._application)
-
-    assert drawn == 1
-    assert len(writes) == 2
-    assert "frame" not in writes[1]
-    assert renderer._native_position is None
-    assert renderer._native_drawn_position is None
-
-
-def test_a_moved_native_image_is_erased_instead_of_left_behind() -> None:
-    writes: list[str] = []
-    renderer: TerminalRenderer = _renderer_with(_image(), writes)
-    renderer._application = cast(
-        "Application[None]",
-        SimpleNamespace(
-            output=SimpleNamespace(
-                get_size=lambda: SimpleNamespace(columns=80, rows=24),
-                write_raw=writes.append,
-                flush=lambda: None,
-            ),
-            invalidate=lambda: None,
-            is_done=False,
-            renderer=SimpleNamespace(reset=lambda **_kwargs: None, _last_screen=object()),
-        ),
-    )
-    renderer._render_width = 0
-    renderer._render_stream = None
-    renderer._rich_console = None
-    renderer._terminal_size = None
-    renderer._native_drawn_position = None
-    renderer._native_drawn_payload = None
-    renderer._native_animation_started_at = time.monotonic()
-    renderer._frame_provider = lambda _columns, _rows: Text(f"\n  {NATIVE_IMAGE_ANCHOR}   ")
-    renderer._before_render(renderer._application)
-    renderer._draw_native_image(renderer._application)
-    home_position = renderer._native_drawn_position
-
-    renderer._frame_provider = lambda _columns, _rows: Text(f"\n\n\n\n     {NATIVE_IMAGE_ANCHOR}   ")
-    renderer._before_render(renderer._application)
-    renderer._draw_native_image(renderer._application)
-
-    assert home_position is not None
-    assert home_position != renderer._native_position
-    assert f"\x1b[{home_position[0] + 1};{home_position[1] + 1}H\x1b[m" in writes[-2]
-    assert "\x1b[2J" not in "".join(writes)
-    assert renderer._native_drawn_position == renderer._native_position
-
-
-def test_a_native_image_that_stayed_in_place_is_not_erased() -> None:
-    writes: list[str] = []
-    renderer: TerminalRenderer = _renderer_with(_image(payloads=("one", "two")), writes)
-    renderer._application = cast(
-        "Application[None]",
-        SimpleNamespace(
-            output=SimpleNamespace(
-                get_size=lambda: SimpleNamespace(columns=80, rows=24),
-                write_raw=writes.append,
-                flush=lambda: None,
-            ),
-            invalidate=lambda: None,
-            is_done=False,
-            renderer=SimpleNamespace(reset=lambda **_kwargs: None, _last_screen=object()),
-        ),
-    )
-    renderer._render_width = 0
-    renderer._render_stream = None
-    renderer._rich_console = None
-    renderer._terminal_size = None
-    renderer._native_drawn_position = None
-    renderer._native_drawn_payload = None
-    renderer._native_animation_started_at = time.monotonic()
-    renderer._frame_provider = lambda _columns, _rows: Text(f"\n  {NATIVE_IMAGE_ANCHOR}   ")
-    renderer._before_render(renderer._application)
-    renderer._draw_native_image(renderer._application)
-    renderer._native_drawn_payload = "stale"
-    renderer._draw_native_image(renderer._application)
-
-    assert "\x1b[2J" not in "".join(writes)
-    assert renderer._native_drawn_position is not None
-
-
 def test_the_renderer_reports_the_cells_its_native_mascot_needs() -> None:
     renderer: TerminalRenderer = _renderer_with(_image(cell_columns=23, cell_rows=10), [])
 
@@ -391,48 +261,6 @@ def test_auto_keeps_the_mascot_when_controls_fit(columns: int, rows: int, visibl
     assert (NATIVE_IMAGE_ANCHOR in content.plain) is visible
 
 
-def test_entering_auto_keeps_the_native_image_in_the_header() -> None:
-    writes: list[str] = []
-    renderer: TerminalRenderer = _renderer_with(_image(), writes)
-    renderer._application = cast(
-        "Application[None]",
-        SimpleNamespace(
-            output=SimpleNamespace(
-                get_size=lambda: SimpleNamespace(columns=120, rows=40),
-                write_raw=writes.append,
-                flush=lambda: None,
-            ),
-            invalidate=lambda: None,
-            is_done=False,
-            renderer=SimpleNamespace(reset=lambda **_kwargs: None, _last_screen=object()),
-        ),
-    )
-    renderer._render_width = 0
-    renderer._render_stream = None
-    renderer._rich_console = None
-    renderer._terminal_size = None
-    renderer._native_drawn_position = None
-    renderer._native_drawn_payload = None
-    renderer._native_animation_started_at = time.monotonic()
-    renderer._frame_provider = lambda _columns, _rows: Text(f"\n  {NATIVE_IMAGE_ANCHOR}   ")
-    renderer._before_render(renderer._application)
-    renderer._draw_native_image(renderer._application)
-    progress = cast("RichRunProgress", _Progress())
-    renderer._frame_provider = lambda columns, rows: _auto_content(
-        (columns, rows),
-        progress,
-        MascotState.TTS,
-        _QueueView(),
-        native_size=(18, 10),
-    )
-    renderer._before_render(renderer._application)
-    renderer._draw_native_image(renderer._application)
-
-    assert renderer._native_position is not None
-    assert renderer._native_drawn_position == renderer._native_position
-    assert "frame" in writes[-1]
-
-
 def test_message_view_does_not_render_the_mascot() -> None:
     content: Text = _message_content(120, 40, Text("Problem"), MascotState.ERROR)
 
@@ -504,71 +332,15 @@ def test_terminal_construction_never_encodes_animation(monkeypatch: pytest.Monke
     assert renderer.native_mascot_size is None
 
 
-def test_native_mascot_is_redrawn_at_an_unchanged_position(monkeypatch: pytest.MonkeyPatch) -> None:
-    writes: list[str] = []
-    renderer = _renderer_with(_image(payloads=("first", "second")), writes)
-    renderer._native_animation_started_at = 10.0
-    renderer._native_position = (2, 3)
-    renderer._native_drawn_position = (2, 3)
-    renderer._native_drawn_payload = "first"
-    monkeypatch.setattr("anishift.cli.interactive.prompts.time.monotonic", lambda: 10.07)
-
-    renderer._draw_native_image(renderer._application)
-
-    erase: str = "".join(f"\x1b[{row};4H\x1b[m{' ' * 18}" for row in range(3, 13))
-    assert writes == [f"\x1b7{erase}\x1b[3;4Hsecond\x1b8"]
-
-
-def test_making_the_mascot_vanish_clears_the_screen_and_repaints() -> None:
-    writes: list[str] = []
-    repaints: list[str] = []
-    renderer = _renderer_with(_image(cell_columns=25, cell_rows=8), writes)
-    renderer._application = cast(
-        "Application[None]",
-        SimpleNamespace(
-            output=SimpleNamespace(write_raw=writes.append, flush=lambda: None),
-            invalidate=lambda: repaints.append("invalidate"),
-            is_done=False,
-            renderer=SimpleNamespace(reset=lambda **kwargs: repaints.append(str(kwargs["leave_alternate_screen"]))),
-        ),
-    )
-    renderer._native_drawn_position = (2, 3)
-    renderer._native_drawn_payload = "frame"
-
-    renderer._erase_native_image()
-
-    assert writes == ["\x1b[2J"]
-    assert repaints == ["False"]
-    assert renderer._native_drawn_position is None
-    assert renderer._native_drawn_payload is None
-
-
-def test_unchanged_animation_frame_is_not_sent_again(monkeypatch: pytest.MonkeyPatch) -> None:
-    writes: list[str] = []
-    renderer = _renderer_with(_image(), writes)
-    renderer._native_animation_started_at = 10.0
-    renderer._native_position = (2, 3)
-    renderer._native_drawn_position = (2, 3)
-    renderer._native_drawn_payload = "frame"
-    monkeypatch.setattr("anishift.cli.interactive.prompts.time.monotonic", lambda: 10.05)
-
-    renderer._draw_native_image(renderer._application)
-
-    assert writes == []
-
-
 def test_exit_erases_the_mascot_without_resetting_the_terminal() -> None:
     writes: list[str] = []
     renderer = _renderer_with(_image(), writes)
-    renderer._native_position = (2, 3)
-    renderer._native_drawn_position = (2, 3)
-    renderer._native_drawn_payload = "frame"
+    renderer._drawn = (Slot(2, 3, 18, 10), "frame")
 
     renderer.exit()
 
     assert writes == ["\x1b[2J"]
-    assert renderer._native_position is None
-    assert renderer._native_drawn_position is None
+    assert renderer._drawn is None
 
 
 def test_running_the_renderer_leaves_the_terminal_untouched() -> None:

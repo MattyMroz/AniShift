@@ -1362,6 +1362,9 @@ class StateController:
                 self._hidden = unsettled_deletions(payload, self._hidden)
                 self._restoring, restore_problem = settled_restores(payload, self._restoring)
                 self._snapshot = payload
+                cached: object = payload.get("covers")
+                if self._covers is not None and isinstance(cached, list):
+                    self._covers.prepare(item for item in cached if isinstance(item, int))
                 self._select_library_target(payload)
                 self._settle_title()
                 if self._anime is not None and self._anime is anime:
@@ -1837,7 +1840,7 @@ class StateController:
             editing_range=field is not None,
             field_label="Filtr",
             rendered_field=field,
-            cover=self._cover_box(shown),
+            cover=None if confirm is not None else self._cover_box(shown),
         )
         visible: int = shown_rows(snapshot, columns, area)
         if not visible and self._tab == _Tab.FILES:

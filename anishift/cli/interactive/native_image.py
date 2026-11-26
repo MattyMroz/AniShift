@@ -95,6 +95,7 @@ class NativeImage:
     cell_columns: int
     cell_rows: int
     layout_rows: int
+    opaque: bool = False
 
     def payload_at(self, elapsed_seconds: float) -> str:
         """Return the frame active at the given elapsed time."""
