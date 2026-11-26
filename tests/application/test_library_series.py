@@ -689,6 +689,40 @@ def test_search_refused_in_a_cooldown_is_retried_after_it(tmp_path: Path) -> Non
     assert owner._recognized[("tensei shitara slime datta ken", 1)] == _S1
 
 
+class _HeldSearching(_Searching):
+    def __init__(self) -> None:
+        super().__init__()
+        self.release: threading.Event = threading.Event()
+
+    def search_many(self, texts: Collection[str], *, limit: int = 7) -> dict[str, tuple[TitleCandidate, ...]]:
+        answers: dict[str, tuple[TitleCandidate, ...]] = super().search_many(texts, limit=limit)
+        assert self.release.wait(_TIMEOUT_S)
+        return answers
+
+
+@pytest.mark.integration
+def test_a_title_arriving_during_a_search_waits_for_it_instead_of_a_second_search(tmp_path: Path) -> None:
+    titles: _HeldSearching = _HeldSearching()
+    owner: AutomationOwner = _hand_owner(tmp_path, titles)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert owner.handle(_request("library_refresh")).ok
+        deadline: float = time.monotonic() + _TIMEOUT_S
+        while not titles.batches and time.monotonic() < deadline:
+            time.sleep(0.01)
+        owner._recognition_requested.clear()
+        assert owner.handle(_request("library_refresh")).ok
+        assert owner.handle(_request("status")).ok
+        searches: int = len(titles.batches)
+        titles.release.set()
+        _until_recognized(owner, 2)
+    finally:
+        titles.release.set()
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert searches == 1
+
+
 def _until_recognized(owner: AutomationOwner, count: int) -> None:
     deadline: float = time.monotonic() + _TIMEOUT_S
     while len(owner._recognized) < count and time.monotonic() < deadline:

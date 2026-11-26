@@ -8689,7 +8689,7 @@ class AutomationOwner:
 
     def _request_recognition(self) -> None:
         acquisition: AcquisitionService | None = self._service.acquisition
-        if acquisition is None or self._shutting_down or self._recognition_retry_at is not None:
+        if acquisition is None or self._shutting_down or self._recognizing or self._recognition_retry_at is not None:
             return
         titles: dict[tuple[str, int], tuple[str, int | None]] = hand_titles(self._ready_library, self._state)
         wanted: dict[tuple[str, int], tuple[str, int | None]] = {
