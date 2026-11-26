@@ -1,8 +1,9 @@
 # 18-library-titles-covers
 
 Biblioteka jako widok tytułów (E6 z [masterplanu acquisition](../08-acquisition/masterplan.md)) i okładki w panelu
-([ideas.md](../../ideas.md), sekcja 2). Status: **plan gotowy do wykonania**, bez kodu. Decyzje O-1…O-11 przyjął właściciel
-2026-11-25; plan odświeżony 2026-11-26 na `main` @ `1f76e30`.
+([ideas.md](../../ideas.md), sekcja 2). Status: **kod faz 0–7 na gałęzi `feat/library-titles-covers`**, czeka na checkpointy
+właściciela H1–H5, niezależne review i PR. Decyzje O-1…O-11 przyjął właściciel 2026-11-25; plan odświeżony 2026-11-26 na
+`main` @ `1f76e30`.
 
 | Plik | Zawartość |
 |---|---|
@@ -12,4 +13,4 @@ Biblioteka jako widok tytułów (E6 z [masterplanu acquisition](../08-acquisitio
 | [plan.md](plan.md) | fazy 0–7, pliki, testy, checkpointy H1–H5, commity |
 | [reviews/round-1.md](reviews/round-1.md) | samokontrola wersji z 2026-10-25 (baseline `4365a51`), historyczna |
 
-Następny krok: wykonanie planu od fazy 0 w worktree `.worktrees/library-titles-covers`.
+Następny krok: checkpointy H1–H5 według [plan.md](plan.md) na danych właściciela, potem review całej gałęzi i PR.

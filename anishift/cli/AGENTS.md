@@ -176,6 +176,16 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   Etykiety z `library_label` fasady i pól `series/season/episode` (`state_library._series_label`), inaczej z pliku.
   Brak akcji P i wiersza relokacji — owner sam ponawia relokacje. Odmowy przeżywają obce snapshoty, nie zmianę
   wyboru; spóźniony wynik nie nadpisze nowszego kontekstu. Testy: `test_library_actions.py`, `test_library_columns.py`.
+- Biblioteka ma dwa poziomy: tytuły (`library_titles`: `series:<id>`, `entry:<id>` do poznania serii, `name:<tytuł>`,
+  „Nie rozpoznano” na końcu) i odcinki otwartego tytułu (`_library_title`, prezentacja `AnimeScreen.EPISODES`,
+  okruszki `Biblioteka › <tytuł>`). Esc/Backspace/okruszek wracają na ten sam tytuł; zmiana zakładki zamyka tytuł,
+  zaznaczenia, pole `/` i pytanie, filtr zostaje. Tytuły i daty odcinków czyta wątek `anishift-library-episodes`
+  własną sesją; wynik innego tytułu ginie. Del więcej niż jednego zestawu pyta (`_library_confirm`), potem jeden wątek
+  i jedna sesja usuwają zestaw po zestawie; odmowa jednego wraca sama. Testy: `test_library_titles.py`.
+- Okładka: `StateController.cover()` zwraca obraz wiersza, przy którym ostatnia klatka postawiła slot
+  (`AnimeSnapshot.cover`, `anime_view._cover_slot`); `CoverImages` koduje ją na wątku `anishift-cover` (najnowsze
+  żądanie wygrywa, 64 w pamięci), render tylko czyta gotowy ładunek. Bez SIXEL, miejsca albo okładki w snapshot
+  `covers` klatka jest taka jak bez okładek. Testy: `test_library_covers.py`.
 
 ## Auto, postęp i maskotka
 
@@ -194,13 +204,17 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `plan_manual()` i wykonuje ścieżką Auto. Wynik niepełny pokazuje się przez sanitizację w tym samym rendererze.
 - Maskotkę animuje `TerminalRenderer.after_render`; konstruktor nie koduje obrazu, `run()` sprawdza SIXEL i metryki
   przed pętlą wejścia, bez placeholdera. Rozmiar w WIERSZACH (`MASCOT_FRAME_ROWS` × wysokość komórki), nie w
-  pikselach. `native_mascot_cell()` pyta terminal tylko przy `isatty`, przywraca `ConsoleMode`, ma 250 ms; nie czytaj
+  pikselach. `native_image.native_cell()` pyta terminal tylko przy `isatty`, przywraca `ConsoleMode`, ma 250 ms; nie czytaj
   raportów terminala z workera ani przy klawiszach. Rezerwacja i kasowanie: `cell_rows`/`cell_columns`, wordmark:
   `layout_rows`. Przesunięcie w prawo wspólne dla animacji (`_shared_right_shift`). `MascotController` nie ma
   workera ani zapisu do terminala. VS Code wymaga śledzonego `terminal.integrated.enableImages=true`.
 - Zniknięcie lub ruch rastra obsługuje `before_render`: `reset(leave_alternate_screen=False)` + buforowane `\x1b[2J`
   z nową klatką; domyślne `reset()` odsłania starą konsolę, końcowy redraw (`is_done`) nie maluje rastra. Nie używaj
   `RIS` ani `\x1b[3J` — kasują historię użytkownika. `interactive/prompts.py`
+- Renderer ma jeden slot obrazu (`NATIVE_IMAGE_ANCHOR`, kolumna liczona w komórkach); obraz klatki daje
+  `image_provider` aplikacji (panel: okładka, reszta: maskotka). Inny obraz albo brak obrazu w tym samym miejscu kasuje
+  tylko komórki poprzedniego; zmiana linii w wierszach slotu lub rozmiaru terminala rysuje ten sam obraz ponownie
+  (Prompt Toolkit kasuje koniec skróconej linii). Testy: `test_interactive_native_image.py`.
 
 ## Ustawienia
 

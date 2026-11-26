@@ -95,7 +95,13 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
 - `ReadyStore` przenosi grupę do `ready/` wyłącznym dowiązaniem i usunięciem starej nazwy na tym samym woluminie; znany
   torrent musi wcześniej zwolnić pliki, blokada relokacji chroni oba ID grupy przed Auto. Nie przenoś plików z renderera.
 - Odcinek wiąże z pobranym zestawem `downloaded_episodes` (`EpisodeAssignment.group_id` = `ReadyGroup.set_id`).
-  `LibrarySet.series/season/episode` dokłada `name_series` przy emisji, nigdy w zapisanym stanie; zestaw ręczny ich nie ma.
+  `LibrarySet.series/season/episode/anilist_id/series_id/title_source` dokłada `name_series` przy emisji, nigdy w
+  zapisanym stanie. Seria to łańcuch `PREQUEL`/`SEQUEL` z jednego zbiorczego `library_graph` (po 50 ID, najwyżej 4 rundy)
+  i czystego `library_series`; `series_id` to najwcześniejszy wpis sezonowy. Zestaw ręczny (`hand_key`) owner szuka raz na
+  uruchomienie (`recognize`: dokładnie jeden kandydat z aliasem równym tytułowi z nazwy w tym samym sezonie); inaczej
+  zostaje `name`. Serie, rozpoznania i okładki żyją tylko w pamięci ownera. Okładki (`_request_covers`) pobiera owner w
+  puli I/O do katalogu podanego przez `run_resident(cover_dir=...)`; bez katalogu (testy) okładek nie ma. Snapshot
+  `covers` to ID z plikiem w cache. Testy: `test_library_series.py`.
 - Usuwanie z Biblioteki pomija pobranie tylko w `COMPLETE` z receipt managera dowodzącym zwolnienia (odczyt w puli
   I/O, ponowne sprawdzenie przed przyjęciem). Undo zapisuje przyjęcie `PendingDeletion.restore` i start każdego
   pliku przed skutkami natywnymi; `DeletionRestore.unsettled` chroni nierozstrzygnięte skutki po restarcie.
