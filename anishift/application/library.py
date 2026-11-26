@@ -31,13 +31,15 @@ from anishift.application.discovery import ArtifactName, classify_artifact
 from anishift.application.episode_identity import TECHNICAL, VIDEO_EXTENSIONS
 from anishift.application.episode_selection import (
     SEASON_FORMATS,
+    EpisodeName,
     JsonObject,
     LibraryGraph,
+    ListedEpisode,
     entry_title,
     franchise_traversal,
 )
 from anishift.application.intents import GroupIntent
-from anishift.application.products import main_product
+from anishift.application.products import episode_stem, main_product
 from anishift.application.workflows import WorkflowRoute, WorkflowTarget, WorkspacePlace
 from anishift.paths import READY_DIRECTORY
 from anishift.services.torrents.names import (
@@ -148,6 +150,25 @@ def series_title(title: str) -> str:
     """Return a catalogue title without its season, what follows it, its part or its year, shared by every season."""
     base: str = SERIES_PART.sub("", SERIES_YEAR.sub("", before_season(title))).removesuffix(" -").removesuffix(" :")
     return base or " ".join(title.split())
+
+
+def episode_file_stem(name: EpisodeName) -> str:
+    """Return the stem every file of the downloaded episode set *name* describes shares."""
+    return episode_stem(
+        series_title(name.title),
+        episode_numbering(name.episode, name.title, film=name.film),
+        None if name.film else name.episode.title,
+    )
+
+
+def episode_numbering(listed: ListedEpisode, title: str, *, film: bool) -> tuple[int, int] | None:
+    """Return the season and episode one catalogue episode is named with, or ``None`` for a film."""
+    if film:
+        return None
+    if listed.season is not None and listed.episode is not None:
+        return listed.season, listed.episode
+    hint: int | None = season_hint(title)
+    return 1 if hint is None else hint, listed.number
 
 
 def _subtitled(release: ReleaseName, text: str) -> ReleaseName | None:
@@ -340,21 +361,29 @@ def name_series(
             named.append(keyed)
             continue
         record: SubscriptionRecord | None = followed.get(episode.anilist_id)
-        season: int | None = None
-        if episode.number is not None:
-            season = _series_season(known.entry_title, record, episode.number)
-        if season is None and episode.number is not None and known.series_id == episode.anilist_id:
-            season = 1
+        numbering: tuple[int, int] | None = (
+            None
+            if episode.number is None
+            else _numbering(known.entry_title, record, episode.number, first=known.series_id == episode.anilist_id)
+        )
         named.append(
             replace(
                 keyed,
                 series=known.title,
                 entry_title=known.entry_title,
-                season=season,
-                episode=None if season is None else episode.number,
+                season=None if numbering is None else numbering[0],
+                episode=None if numbering is None else numbering[1],
             )
         )
     return tuple(named)
+
+
+def _numbering(title: str, record: SubscriptionRecord | None, number: int, *, first: bool) -> tuple[int, int] | None:
+    mapped: tuple[ListedEpisode, ...] = () if record is None or record.mapping is None else record.mapping.episodes
+    listed: ListedEpisode = next((item for item in mapped if item.number == number), ListedEpisode(number))
+    if listed.season is None and season_hint(title) is None and not first:
+        return None
+    return episode_numbering(listed, title, film=False)
 
 
 def _recognized_set(
@@ -377,13 +406,6 @@ def _recognized_set(
         season=(label.season or 1) if whole else None,
         episode=int(label.episode) if whole and label.episode is not None else None,
     )
-
-
-def _series_season(title: str, record: SubscriptionRecord | None, number: int) -> int | None:
-    hint: int | None = season_hint(title)
-    if hint is not None or record is None or record.mapping is None:
-        return hint
-    return next((item.season for item in record.mapping.episodes if item.number == number), None)
 
 
 def file_identity(root: Path, name: str) -> LibraryFileIdentity | None:

@@ -48,6 +48,8 @@ from anishift.services.torrents import parse_release_name
 
 _VIDEO_TRACK: MediaTrack = MediaTrack(0, MediaTrackKind.VIDEO, "h264", None, None, True, False)
 
+_PUBLISHED: list[str] = ["Neko - S01E03.mkv", "Neko - S01E03.ass"]
+
 _TARGET: dict[str, object] = {"aliases": ["Neko to Ryuu"], "type": "TV", "local_episode": 3, "season": 1, "episode": 3}
 
 
@@ -236,7 +238,7 @@ def test_a_rejected_attempt_is_never_named_and_cancels_its_own_transfer_before_t
 
     assert rejected.verification == "reject:no_video_stream"
     assert rejected.publication is None
-    assert not set(_NAMES) & _root_files(setup)
+    assert not set(_PUBLISHED) & _root_files(setup)
     assert cancelled.requested_action == "cancel"
     assert (_target_of(setup).attempts, _target_of(setup).reason) == (attempts + 1, "rejected")
     assert pending == (False, None)
@@ -275,7 +277,7 @@ def test_an_attempt_without_dialogue_subtitles_is_rejected_before_naming_also_in
     assert probe.seen == [(_NAMES[0], False, EpisodeReason.SUBSCRIPTION_CHECKING)]
     assert rejected.verification == "reject:no_dialogue_subtitles"
     assert rejected.publication is None
-    assert not set(_NAMES) & _root_files(setup)
+    assert not set(_PUBLISHED) & _root_files(setup)
     assert (_target_of(setup).attempts, _target_of(setup).reason) == (1, "rejected")
     assert status.reason == EpisodeReason.SUBSCRIPTION_AWAITING_RELEASE
     assert TargetNotice("rejected", "no_dialogue_subtitles") in status.notices
@@ -296,7 +298,7 @@ def test_an_unchecked_attempt_is_never_rejected_for_subtitles(setup: _Setup) -> 
     assert assignment.verification == VERIFICATION_SKIPPED
     assert assignment.publication is not None
     assert assignment.publication.handed_off
-    assert _NAMES[0] in _root_files(setup)
+    assert _PUBLISHED[0] in _root_files(setup)
 
 
 def _target_of(setup: _Setup) -> SubscriptionTarget:
@@ -347,7 +349,7 @@ def test_a_probe_that_times_out_or_has_no_binary_admits_the_attempt_unchecked_an
     assert assignment.verification == VERIFICATION_SKIPPED
     assert assignment.publication is not None
     assert assignment.publication.handed_off
-    assert set(_NAMES) <= _root_files(setup)
+    assert set(_PUBLISHED) <= _root_files(setup)
     assert target.check_skipped
     assert [item["reason"] for item in _decisions(setup) if item.get("source") == "h2"] == [reason]
     assert [item["reason"] for item in _decisions(setup) if item["kind"] == "escalation"] == ["check_skipped"]
@@ -390,7 +392,7 @@ def test_a_video_changed_after_its_check_is_never_copied_into_the_library(
         _until(lambda: getattr(_assignment(owner).publication, "problem", None) is not None)
         target: SubscriptionTarget = _target(owner)
 
-    assert not set(_NAMES) & _root_files(setup)
+    assert not set(_PUBLISHED) & _root_files(setup)
     assert target.state is TargetState.ATTEMPTING
     assert target.attempts == 1
 

@@ -12,6 +12,9 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `TYPE_CHECKING`, poza czystymi `season_hint`/`strip_season`, adapterem referencji Nyaa i rekonstrukcją `Release`
   dla jawnego ponowienia. `library.py` importuje tylko czyste funkcje `services.torrents.names` dla `library_label`
   i `series_title`. Decyzje produktowe zostają w plannerze; staging publikuje `scheduler_runtime.py`.
+- Rdzeń nazwy pobranego odcinka składa wyłącznie `library.episode_file_stem` (`products.episode_stem`) z faktów
+  `AcquisitionService.episode_name`, raz przy rezerwacji publikacji na puli transferów; nazwy z torrenta nie nazywają
+  zestawu z kluczem odcinka, a zarezerwowana nazwa się nie zmienia.
 - Nazwy trwałych produktów pochodzą wyłącznie z `products.py`; nikt inny nie zapisuje literałów `.pl`, `.spoken.pl`,
   `.displayed.pl`, `.pl.mkv`, `.pl.mp4` ani `.m4a`.
 - CLI używa publicznej fasady `anishift.application`, nie wewnętrznych helperów I/O ani schedulera.
@@ -140,6 +143,9 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   wyjątku programistycznego w niepewny werdykt.
 - `AcquisitionService.franchise/episodes/offer` to odczyty katalogu przez IPC ownera, bez przyjęcia i receipt; awaria
   harmonogramu zachowuje mapowanie z ostrzeżeniem. Reguły sugestii: `test_episode_selection.py`, `test_acquisition.py`.
+- Tytuł odcinka to wyłącznie `ListedEpisode.title` z `AcquisitionService.episodes()`: tylko tam `fill_episode_titles`
+  dokłada angielskie tytuły TVmaze (pamięć rezydenta, nigdy mapowanie, `raw_episodes`, `state.json` ani H1);
+  `read_listing` i automat nie pytają TVmaze.
 - `admit_episode` to synchroniczna bramka: jeden zapis `ADMITTED` z receipt, bez skutków w qB; wysyłkę przejmuje
   cykl transferów. Nowy klucz dołącza do jedynego aktywnego transferu selektywnego swojego hasha, po
   `COMPLETE`/`FAILED` dostaje nową operację. Przed ponownym dodaniem hasha zwolnij poprzedni wpis klienta.

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import threading
 import time
 import unicodedata
@@ -32,20 +31,25 @@ from anishift.application.episode_search import (
 from anishift.application.episode_selection import (
     AniZipMapping,
     EpisodeKey,
+    EpisodeName,
     EpisodeOffer,
     ListedEpisode,
     entry_title,
     episode_listing,
+    fill_episode_titles,
     first_season_numbering,
     franchise_traversal,
     franchise_view,
     identity_target,
+    lacks_english_title,
     numbering_gap,
     rank_candidates,
     season_dates,
     streams_releases,
     suggestion,
+    tvdb_show_id,
 )
+from anishift.application.products import safe_name_part
 from anishift.application.subscription_choice import ABSENT_AFTER_H
 from anishift.application.subscription_targets import PolishState
 from anishift.errors import AniShiftError, ErrorCode
@@ -71,6 +75,7 @@ if TYPE_CHECKING:
     from anishift.application.episode_selection import (
         EpisodeListing,
         Franchise,
+        FranchiseEntry,
         FranchiseGraph,
         JsonObject,
         LibraryGraph,
@@ -96,6 +101,7 @@ __all__ = [
     "DownloadReceipt",
     "EpisodeCatalog",
     "EpisodeReading",
+    "EpisodeTitleCatalog",
     "IdCatalog",
     "KitsuLookup",
     "ListingRead",
@@ -116,6 +122,7 @@ __all__ = [
     "read_episode",
     "series_directory_name",
     "series_forms",
+    "target_episode_name",
 ]
 
 logger = get_logger(__name__)
@@ -158,14 +165,6 @@ SEEDING_STOP_PREFERENCES: Final[Mapping[str, object]] = {
 }
 """Client preferences stopping every torrent the moment its download completes, so nothing is seeded."""
 
-_INVALID_NAME_CHARACTERS: Final[re.Pattern[str]] = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-"""Characters Windows refuses inside one path component."""
-
-_RESERVED_NAMES: Final[frozenset[str]] = frozenset(
-    {"CON", "PRN", "AUX", "NUL", *(f"COM{n}" for n in range(1, 10)), *(f"LPT{n}" for n in range(1, 10))}
-)
-"""Device names Windows refuses as a file or directory name regardless of extension."""
-
 _FALLBACK_DIRECTORY: Final[str] = "Nieznana seria"
 """Directory used when a release title leaves nothing usable for a folder name."""
 
@@ -174,6 +173,9 @@ _NON_ENGLISH_LANGUAGE: Final[str] = "fr"
 
 _FALLBACK_CACHE_S: Final[int] = 900
 """Freshness of remembered entry data when ani.zip sends no ``Cache-Control``."""
+
+_TVMAZE_CACHE_S: Final[int] = 3600
+"""Freshness of remembered TVmaze episode titles, equal to the ``Cache-Control: max-age=3600`` TVmaze sends."""
 
 _REMEMBERED_ENTRIES: Final[int] = 64
 """Entries the resident process keeps in memory before forgetting the least recently used one."""
@@ -258,6 +260,14 @@ class IdCatalog(Protocol):
 
     def ids(self, anilist_id: int) -> ArmIds:
         """Return the bridge IDs, ``None`` where unknown."""
+        ...
+
+
+class EpisodeTitleCatalog(Protocol):
+    """English episode titles of one TheTVDB series."""
+
+    def episode_titles(self, tvdb_show_id: int) -> Mapping[tuple[int, int], str]:
+        """Return the titles keyed by ``(season, number)``, empty for an unknown series."""
         ...
 
 
@@ -503,10 +513,29 @@ class _Remembered:
     mapping_at: float = 0.0
     schedule: SeasonAiring | None = None
     schedule_at: float = 0.0
+    titles: Mapping[tuple[int, int], str] | None = None
+    titles_at: float = 0.0
+    titles_ttl_s: float = 0.0
 
     def fresh(self, fetched_at: float, now: float) -> bool:
         age: int | None = self.mapping.max_age_s if self.mapping is not None else None
         return now - fetched_at < (age if age is not None else _FALLBACK_CACHE_S)
+
+
+def target_episode_name(title: str, number: int, target: Mapping[str, object]) -> EpisodeName:
+    """Return the name facts the H1 target of one chosen episode holds, which never include an episode title."""
+    season: object = target.get("season")
+    episode: object = target.get("episode")
+    listed: ListedEpisode = (
+        ListedEpisode(number, season=season, episode=episode)
+        if isinstance(season, int) and isinstance(episode, int)
+        else ListedEpisode(number)
+    )
+    return EpisodeName(title, listed, film=target.get("type") == _MOVIE_FORMAT)
+
+
+def _entry_title(entry: FranchiseEntry) -> str:
+    return entry.english or entry.romaji
 
 
 def _movie(graph_movie: bool | None, mapping: AniZipMapping) -> bool:
@@ -602,13 +631,7 @@ def normalize_series(text: str) -> str:
 
 def series_directory_name(series: str) -> str:
     """Turn a series title into one directory name Windows accepts."""
-    cleaned: str = _INVALID_NAME_CHARACTERS.sub("", series)
-    cleaned = " ".join(cleaned.split()).rstrip(". ")
-    if not cleaned:
-        return _FALLBACK_DIRECTORY
-    if cleaned.split(".", maxsplit=1)[0].upper() in _RESERVED_NAMES:
-        return f"_{cleaned}"
-    return cleaned
+    return safe_name_part(series) or _FALLBACK_DIRECTORY
 
 
 class AcquisitionService:
@@ -631,6 +654,7 @@ class AcquisitionService:
         id_catalog: IdCatalog | None = None,
         anidb_catalog: AnidbCatalog | None = None,
         kitsu_catalog: KitsuLookup | None = None,
+        episode_titles: EpisodeTitleCatalog | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._source: TorrentSource = source
@@ -647,6 +671,7 @@ class AcquisitionService:
         self._id_catalog: IdCatalog | None = id_catalog
         self._anidb_catalog: AnidbCatalog | None = anidb_catalog
         self._kitsu_catalog: KitsuLookup | None = kitsu_catalog
+        self._episode_titles: EpisodeTitleCatalog | None = episode_titles
         self._clock: Callable[[], float] = clock
         self._memory: OrderedDict[int, _Remembered] = OrderedDict()
         self._memory_lock: threading.Lock = threading.Lock()
@@ -864,6 +889,44 @@ class AcquisitionService:
         """Return the franchise view rooted at one entry, remembering its graph while fresh."""
         return franchise_view(self._franchise_graph(anilist_id, cancel), anilist_id)
 
+    def episode_name(self, anilist_id: int, number: int) -> EpisodeName:
+        """Return the catalogue facts one downloaded episode is named after, without numbering when ani.zip fails."""
+        entry: FranchiseEntry = self._catalogue_entry(anilist_id)
+        episode: ListedEpisode = ListedEpisode(number)
+        try:
+            listing: EpisodeListing = self.episodes(anilist_id)
+        except (AniShiftError, OSError, ValueError) as error:
+            logger.warning("Episode name listing unavailable", provider="anizip", error_class=type(error).__name__)
+        else:
+            episode = next((item for item in listing.episodes if item.number == number), episode)
+        return EpisodeName(_entry_title(entry), episode, film=entry.format == _MOVIE_FORMAT)
+
+    def _catalogue_entry(self, anilist_id: int) -> FranchiseEntry:
+        graph: FranchiseGraph
+        try:
+            graph = self._franchise_graph(anilist_id)
+        except AniShiftError, OSError, ValueError:
+            with self._memory_lock:
+                remembered: FranchiseGraph | None = next(
+                    (
+                        item.graph
+                        for item in self._memory.values()
+                        if item.graph is not None and anilist_id in item.graph.nodes
+                    ),
+                    None,
+                )
+            if remembered is None:
+                raise
+            logger.info("Remembered catalogue entry used", provider="anilist")
+            graph = remembered
+        entry: FranchiseEntry | None = next(
+            (item for item in franchise_view(graph, anilist_id).entries if item.anilist_id == anilist_id), None
+        )
+        if entry is None:
+            msg = "The entry is absent from its own franchise"
+            raise ValueError(msg)
+        return entry
+
     def library_graph(self, anilist_ids: Collection[int]) -> LibraryGraph:
         """Read the relation graphs of the Library entries in shared catalog requests."""
         return self._titles().library_graph(anilist_ids)
@@ -901,8 +964,38 @@ class AcquisitionService:
         return graph
 
     def episodes(self, anilist_id: int) -> EpisodeListing:
-        """Return the episode list, keeping ani.zip data when the airing schedule is unavailable."""
-        return self.read_listing(anilist_id).listing
+        """Return the episode list with missing English titles from TVmaze, keeping ani.zip data on any failure."""
+        read: ListingRead = self.read_listing(anilist_id)
+        show: int | None = tvdb_show_id(read.mapping)
+        if read.movie or self._episode_titles is None or show is None:
+            return read.listing
+        if not any(
+            episode.aired and lacks_english_title(read.mapping, episode, read.tvdb_season)
+            for episode in read.listing.episodes
+        ):
+            return read.listing
+        titles: Mapping[tuple[int, int], str] = self._remembered_titles(anilist_id, show, self._episode_titles)
+        return fill_episode_titles(read.listing, read.mapping, titles, read.tvdb_season)
+
+    def _remembered_titles(
+        self, anilist_id: int, show: int, catalog: EpisodeTitleCatalog
+    ) -> Mapping[tuple[int, int], str]:
+        now: float = self._clock()
+        with self._memory_lock:
+            entry: _Remembered = self._remembered(anilist_id)
+            if entry.titles is not None and now < entry.titles_at + entry.titles_ttl_s:
+                return entry.titles
+        titles: Mapping[tuple[int, int], str]
+        ttl_s: int
+        try:
+            titles, ttl_s = catalog.episode_titles(show), _TVMAZE_CACHE_S
+        except (AniShiftError, OSError, ValueError) as error:
+            _bridge_failed("tvmaze", error)
+            titles, ttl_s = {}, _FALLBACK_CACHE_S
+        with self._memory_lock:
+            entry = self._remembered(anilist_id)
+            entry.titles, entry.titles_at, entry.titles_ttl_s = titles, now, ttl_s
+        return titles
 
     def read_listing(
         self, anilist_id: int, *, saved: AniZipMapping | None = None, targets: Collection[int] = ()

@@ -93,7 +93,7 @@ VERIFICATION_REJECT: Final[str] = "reject:"
 VERIFICATION_SKIPPED: Final[str] = "skipped"
 """Download check result of a check that could not be performed."""
 
-WATCH_STATE_SCHEMA_VERSION: Final[int] = 6
+WATCH_STATE_SCHEMA_VERSION: Final[int] = 7
 """Current schema of the persisted automation state."""
 
 type SourceFingerprint = tuple[tuple[str, int, int], ...]

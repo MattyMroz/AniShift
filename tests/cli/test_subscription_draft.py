@@ -71,7 +71,7 @@ def _weekly(aired: int, total: int) -> tuple[ListedEpisode, ...]:
     return tuple(
         ListedEpisode(
             number,
-            f"Odcinek {number}",
+            title_en=f"Odcinek {number}",
             airs_at=_NOW + timedelta(days=7 * (number - aired) - 1),
             aired=number <= aired,
         )

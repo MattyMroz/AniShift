@@ -112,7 +112,11 @@ files to the Recycle Bin as in Biblioteka; **Ctrl+Z** restores them.
 except the managed `tmp/` directory and hidden directories. With the automation on,
 stable inputs enter the same scheduler used by Ręczny; confirmed existing products are reused.
 After successful processing, sources and products move to `ready/` without rewriting their
-contents on the same volume. Name collisions keep both episodes.
+contents on the same volume. Name collisions keep both episodes. An episode downloaded from
+Anime or a subscription is named `<series> - SxxEyy - <episode title>` (for example
+`Blue Box - S02E07 - I Need to Tell You Something.mkv`) with the English AniList title of the
+series, and every product of the episode shares that name; a film keeps the series title alone.
+Files put into `workspace/` by hand keep their own names.
 
 In **Biblioteka**, Enter opens the result, **F** shows it in Explorer and **Del** moves the
 whole set to the Recycle Bin without confirmation. **Ctrl+Z** restores the last deleted set,
@@ -193,6 +197,10 @@ whenever they fit. Spoken lines keep their exact places either way.
 - Optional Windows SAPI voices must be installed separately with a valid license
   and be available to the Python process architecture. AniShift does not install
   or activate commercial voices; an expired voice can display its own vendor dialog.
+
+## Data sources
+
+Episode titles also come from [TVmaze](https://www.tvmaze.com) (CC BY-SA).
 
 ## Documentation
 

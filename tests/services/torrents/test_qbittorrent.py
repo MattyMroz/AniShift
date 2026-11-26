@@ -390,11 +390,11 @@ def test_priority_request_uses_actual_indexes_and_form_fields() -> None:
         "https://example.org/announce#secret",
         "file:///announce",
         "https://example.org/\nannounce",
+        "wss://tracker.openwebtorrent.com",
     ],
 )
-def test_magnet_refuses_nonpublic_or_credential_bearing_trackers(tracker: str) -> None:
-    with pytest.raises(ValueError, match="public address"):
-        magnet_url("a" * 40, (tracker,))
+def test_magnet_omits_unusable_trackers_and_keeps_the_defaults(tracker: str) -> None:
+    assert parse_qs(magnet_url("a" * 40, (tracker,)).split("?", 1)[1])["tr"] == list(DEFAULT_TRACKERS)
 
 
 @pytest.mark.unit
@@ -468,9 +468,8 @@ def test_legacy_stopped_add_keeps_both_flags_without_metadata_stop_condition() -
 
 @pytest.mark.unit
 @pytest.mark.parametrize("host", ["127.1", "0x7f.1", "0177.1", "tracker.123"])
-def test_tracker_host_rejects_noncanonical_numeric_addresses(host: str) -> None:
-    with pytest.raises(ValueError, match="public address"):
-        magnet_url("a" * 40, (f"http://{host}/announce",))
+def test_tracker_host_omits_noncanonical_numeric_addresses(host: str) -> None:
+    assert magnet_trackers((f"http://{host}/announce",)) == DEFAULT_TRACKERS
 
 
 @pytest.mark.unit

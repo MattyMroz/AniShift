@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,15 +12,18 @@ from anishift.application.artifacts import ArtifactKind
 
 __all__ = [
     "AUDIO_PRODUCT_PROFILES",
+    "EPISODE_STEM_LIMIT",
     "MAIN_PRODUCT_PRIORITY",
     "PRODUCT_SUFFIXES",
     "SUBTITLE_FORMATS",
     "ProductName",
     "ProductSuffix",
     "classify_product",
+    "episode_stem",
     "main_product",
     "product_path",
     "product_suffix",
+    "safe_name_part",
 ]
 
 
@@ -87,6 +91,34 @@ MAIN_PRODUCT_PRIORITY: Final[tuple[ArtifactKind, ...]] = (
 )
 """Order in which a finished set names its headline result, playable containers before the documents beside them."""
 
+EPISODE_STEM_LIMIT: Final[int] = 150
+"""Longest stem of a downloaded episode set, so every product path stays under the Windows path limit."""
+
+EPISODE_SEPARATOR: Final[str] = " - "
+"""Join the series, the ``SxxEyy`` code and the episode title of an episode stem."""
+
+_DASHED_CHARACTERS: Final[re.Pattern[str]] = re.compile(r"[:/\\|]")
+"""Separators Windows refuses inside a file name, written as a dash."""
+
+_QUOTE_CHARACTERS: Final[re.Pattern[str]] = re.compile(r'["`]')
+"""Quotes Windows refuses or a catalogue uses for an apostrophe, written as an apostrophe."""
+
+_DROPPED_CHARACTERS: Final[re.Pattern[str]] = re.compile(r"[<>?*\x00-\x1f]")
+"""Characters Windows refuses inside a file name with no readable stand-in."""
+
+_RESERVED_NAMES: Final[frozenset[str]] = frozenset(
+    {"CON", "PRN", "AUX", "NUL", *(f"COM{n}" for n in range(1, 10)), *(f"LPT{n}" for n in range(1, 10))}
+)
+"""Device names Windows refuses as a file or directory name regardless of extension."""
+
+_CUT_EDGE: Final[str] = " .-,;"
+"""Characters a shortened name part never ends with."""
+
+_PRODUCT_STEM_ENDINGS: Final[tuple[str, ...]] = tuple(
+    entry.suffix[: entry.suffix.rindex(".")] for entry in PRODUCT_SUFFIXES if entry.suffix.count(".") > 1
+)
+"""Stem endings that turn a source name into a product name, such as ``.pl`` before ``.mkv``."""
+
 
 def main_product(file_names: Sequence[str]) -> str | None:
     """Return the one finished file a completed set should open, or ``None`` when it produced no known product."""
@@ -138,3 +170,44 @@ def classify_product(file_name: str) -> ProductName | None:
             return None
         return ProductName(stem, entry.kind, entry.subtitle_format, entry.suffix[1:] if entry.audio_profile else None)
     return None
+
+
+def safe_name_part(text: str) -> str:
+    """Return *text* as one part of a file name Windows accepts, empty when nothing usable is left."""
+    cleaned: str = _DASHED_CHARACTERS.sub("-", " ".join(text.split()).replace(": ", EPISODE_SEPARATOR))
+    cleaned = _DROPPED_CHARACTERS.sub("", _QUOTE_CHARACTERS.sub("'", cleaned))
+    cleaned = " ".join(cleaned.split()).rstrip(". ")
+    if cleaned.split(".", maxsplit=1)[0].upper() in _RESERVED_NAMES:
+        return f"_{cleaned}"
+    return cleaned
+
+
+def episode_stem(series: str, numbering: tuple[int, int] | None, title: str | None = None) -> str:
+    """Return the stem every file of one downloaded episode set shares; a film without *numbering* is its series."""
+    show: str = safe_name_part(series)
+    if not show:
+        msg = "An episode stem needs a series title"
+        raise ValueError(msg)
+    if numbering is None:
+        film: str = _shortened(show, EPISODE_STEM_LIMIT)
+        return f"{film[: film.rindex('.')]} {film[film.rindex('.') + 1 :]}" if _names_product(film) else film
+    season, episode = numbering
+    code: str = f"S{season:02d}E{episode:02d}"
+    base: str = f"{_shortened(show, EPISODE_STEM_LIMIT - len(EPISODE_SEPARATOR) - len(code))}{EPISODE_SEPARATOR}{code}"
+    named: str = _shortened(safe_name_part(title or ""), EPISODE_STEM_LIMIT - len(base) - len(EPISODE_SEPARATOR))
+    stem: str = f"{base}{EPISODE_SEPARATOR}{named}" if named else base
+    return base if _names_product(stem) else stem
+
+
+def _shortened(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    if limit <= 0:
+        return ""
+    head: str = text[: limit + 1]
+    words: str = head.rsplit(" ", maxsplit=1)[0] if " " in head else ""
+    return (words or text[:limit]).rstrip(_CUT_EDGE)
+
+
+def _names_product(stem: str) -> bool:
+    return stem.casefold().endswith(_PRODUCT_STEM_ENDINGS)

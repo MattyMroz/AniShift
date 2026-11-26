@@ -502,7 +502,7 @@ def test_a_due_episode_is_found_downloaded_checked_and_handed_off_once(world: _W
         saved: WatchState = _stored(owner, world)
 
     assert _hashes(_attempts(saved)) == [_FIRST]
-    assert {"Neko to Ryuu - 03.mkv", "Neko to Ryuu - 03.ass"} <= _root_files(world)
+    assert {"Neko to Ryuu - S01E03.mkv", "Neko to Ryuu - S01E03.ass"} <= _root_files(world)
     assert _closures(world) == [(1, "accepted")]
 
 
@@ -888,7 +888,7 @@ def test_a_restart_at_each_check_and_publication_point_admits_checks_and_publish
     assert len(saved.acquisitions) == 1
     assert len(saved.acquisitions[0].assignments) == 1
     assert [item[0] for item in world.network.metadata_added] == [_FIRST]
-    assert _root_files(world) == {"Neko to Ryuu - 03.mkv", "Neko to Ryuu - 03.ass"}
+    assert _root_files(world) == {"Neko to Ryuu - S01E03.mkv", "Neko to Ryuu - S01E03.ass"}
     assert len(probe.seen) == (1 if boundary == "check" else 0)
     assert copies == ([] if boundary == "published" else [assignment.verified_stamp])
     assert assignment.verified_stamp is not None
@@ -1385,7 +1385,7 @@ def test_an_order_taking_over_an_attempt_in_its_check_on_the_same_release_keeps_
     assert (attempt.replaced, attempt.publication) == (True, None)
     assert (manual.source, manual.previous_admission_id) == (AdmissionSource.MANUAL, attempt.admission_id)
     assert manual.files == attempt.files
-    assert {"Neko to Ryuu - 03.mkv", "Neko to Ryuu - 03.ass"} <= _root_files(world)
+    assert {"Neko to Ryuu - S01E03.mkv", "Neko to Ryuu - S01E03.ass"} <= _root_files(world)
 
 
 def test_a_rejected_attempt_of_a_subscription_pushed_out_of_the_undo_slot_still_cancels_its_transfer(
@@ -1437,7 +1437,7 @@ def test_a_manual_order_that_succeeds_satisfies_its_target_and_finishes_normally
     assert (_FIRST, "cancel") not in world.network.actions
     assert [item.choice.number for item in transfer.active_assignments] == ([3, 5] if shared else [3])
     assert transfer.state is (AcquisitionState.ACCEPTED if shared else AcquisitionState.COMPLETE)
-    assert {"Neko to Ryuu - 03.mkv", "Neko to Ryuu - 03.ass"} <= _root_files(world)
+    assert {"Neko to Ryuu - S01E03.mkv", "Neko to Ryuu - S01E03.ass"} <= _root_files(world)
 
 
 @pytest.mark.parametrize("how", ["metadata", "stall"])

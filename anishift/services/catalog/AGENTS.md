@@ -17,6 +17,8 @@ statusu na polski; te decyzje należą do warstwy aplikacyjnej.
 - `arm.py` — `ArmCatalog.ids`: AniDB ID and `thetvdb-season` from arm-server (404 → both `None`)
 - `kitsu.py` — `KitsuCatalog.kitsu_id`: one Kitsu anime confirmed by its own mappings, at most two requests,
   any next page or ambiguity → `None`
+- `tvmaze.py` — `TvMazeCatalog.episode_titles`: English titles of regular episodes keyed by `(season, number)`,
+  series found only by `tvdbShowId` (lookup 404 → `{}`)
 
 ## Inwarianty
 
@@ -35,6 +37,9 @@ statusu na polski; te decyzje należą do warstwy aplikacyjnej.
 - ani.zip 404 means an absent mapping; transport, status and malformed data failures use
   `EPISODE_CATALOG_FAILED`. Preserve raw episode order and fields, including `S…`; these feed H1.
   Do not normalize them to fix identity errors: follow `application/AGENTS.md` regression rules.
+- TVmaze: the placeholder `Episode N`, an empty name and a `(season, number)` pair listed twice give no title;
+  transport, status and malformed data failures use `EPISODE_CATALOG_FAILED`. Titles are never written to
+  `AniZipMapping`, `raw_episodes` or disk; the repo keeps only a trimmed CC BY-SA recording (see the fixture manifest).
 - Logs contain counts, operation and timing, never search text or response bodies.
 
 ## Testy

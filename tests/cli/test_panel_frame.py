@@ -430,7 +430,9 @@ def _shows(owner: episodes._ChoiceOwner, count: int) -> tuple[str, ...]:
 def _numbered(owner: episodes._ChoiceOwner, count: int) -> tuple[str, ...]:
     owner.listing = replace(
         episodes._listing(),
-        episodes=tuple(ListedEpisode(number, f"Episode {number}", aired=True) for number in range(1, count + 1)),
+        episodes=tuple(
+            ListedEpisode(number, title_en=f"Episode {number}", aired=True) for number in range(1, count + 1)
+        ),
     )
     return ("text:/", "text:slime", "enter", "enter")
 
@@ -574,7 +576,9 @@ def _lengthened(probe: _Probe, name: str, count: int) -> _Probe:
         assert listing is not None
         probe.anime._listing = replace(
             listing,
-            episodes=tuple(ListedEpisode(number, f"Odcinek {number}", aired=True) for number in range(1, count + 1)),
+            episodes=tuple(
+                ListedEpisode(number, title_en=f"Odcinek {number}", aired=True) for number in range(1, count + 1)
+            ),
         )
     return probe
 

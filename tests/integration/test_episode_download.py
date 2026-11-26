@@ -45,7 +45,7 @@ def _record(state: WatchState, times: dict[str, float], start: float) -> None:
                 times.setdefault(f"{prefix}:handoff", elapsed)
     for group in state.ready_groups:
         for number in (1, 3):
-            if f" - {number:02}" in group.stem:
+            if group.stem.endswith(f"E{number:02}"):
                 times.setdefault(f"E{number}:ready", elapsed)
 
 
@@ -193,7 +193,7 @@ def test_selected_pack_survives_owner_and_qb_restart_to_two_library_results_with
             owner.files_changed(DirectoryChange(reconcile=True))
             owner.files_changed(DirectoryChange(paths=(data / "F7-pack/Neko to Ryuu - 02.mkv",)))
             groups: set[str] = {group.source.stem for group in service.discover().groups}
-            assert groups == {"Neko to Ryuu - 01", "Neko to Ryuu - 03"}
+            assert groups == {"Neko to Ryuu - S01E01", "Neko to Ryuu - S01E03"}
             assert {group.source.stem for group in service.discover(changed_paths=(data,)).groups} == groups
             state: WatchState = owner.state
             assert len(state.acquisitions) == 1

@@ -1,0 +1,14 @@
+[
+  {"id": 3765500, "name": "Legendary Class", "season": 1, "number": 1, "type": "regular"},
+  {"id": 3773271, "name": "First Step Towards Being a Blacksmith", "season": 1, "number": 2, "type": "regular"},
+  {"id": 3773272, "name": "Second Class", "season": 1, "number": 3, "type": "regular"},
+  {"id": 3773273, "name": "Item Crafting Face-Off", "season": 1, "number": 4, "type": "regular"},
+  {"id": 3773274, "name": "Family's Trust", "season": 1, "number": 5, "type": "regular"},
+  {"id": 3773275, "name": "First Boss Raid", "season": 1, "number": 6, "type": "regular"},
+  {"id": 3773276, "name": "Pagma's Sword Dance", "season": 1, "number": 7, "type": "regular"},
+  {"id": 3773277, "name": "Yatan's High Priest", "season": 1, "number": 8, "type": "regular"},
+  {"id": 3773278, "name": "Comrades in the Guild", "season": 1, "number": 9, "type": "regular"},
+  {"id": 3773279, "name": "Episode 10", "season": 1, "number": 10, "type": "regular"},
+  {"id": 3773280, "name": "Episode 11", "season": 1, "number": 11, "type": "regular"},
+  {"id": 3773281, "name": "Episode 12", "season": 1, "number": 12, "type": "regular"}
+]

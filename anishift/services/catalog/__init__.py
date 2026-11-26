@@ -5,6 +5,7 @@ from anishift.services.catalog.anizip import AniZipCatalog
 from anishift.services.catalog.arm import ArmCatalog, ArmIds
 from anishift.services.catalog.errors import TitleCatalogError
 from anishift.services.catalog.kitsu import KitsuCatalog
+from anishift.services.catalog.tvmaze import TvMazeCatalog
 from anishift.services.catalog.types import (
     EpisodeAiring,
     PrequelEntry,
@@ -26,5 +27,6 @@ __all__ = [
     "TitleCandidate",
     "TitleCatalogError",
     "TitleStatus",
+    "TvMazeCatalog",
     "is_cour_title",
 ]

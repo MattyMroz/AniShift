@@ -357,21 +357,17 @@ def _nonnegative_integer(value: object) -> int | None:
 
 
 def magnet_trackers(trackers: tuple[str, ...] = ()) -> tuple[str, ...]:
-    """Return source trackers followed by the defaults, each address once, in magnet order."""
-    return tuple(dict.fromkeys((*trackers, *DEFAULT_TRACKERS)))
+    """Return the usable public source trackers followed by the defaults, each address once, in magnet order."""
+    return tuple(dict.fromkeys(item for item in (*trackers, *DEFAULT_TRACKERS) if _public_tracker(item)))
 
 
 def magnet_url(info_hash: str, trackers: tuple[str, ...] = ()) -> str:
-    """Encode a v1 magnet with only public, credential-free tracker addresses."""
+    """Encode a v1 magnet that omits every nonpublic, credential-bearing or non-HTTP/UDP tracker."""
     if re.fullmatch(r"[0-9a-fA-F]{40}", info_hash) is None:
         msg = "A magnet requires a hexadecimal v1 info hash"
         raise ValueError(msg)
     fields: list[tuple[str, str]] = [("xt", f"urn:btih:{info_hash.casefold()}")]
-    for tracker in magnet_trackers(trackers):
-        if not _public_tracker(tracker):
-            msg = "A magnet tracker must be a public address without credentials or query parameters"
-            raise ValueError(msg)
-        fields.append(("tr", tracker))
+    fields.extend(("tr", tracker) for tracker in magnet_trackers(trackers))
     return "magnet:?" + urlencode(fields)
 
 

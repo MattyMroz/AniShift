@@ -63,7 +63,16 @@ class _Episodes:
         assert self.release.wait(5)
         moment: datetime = datetime(2026, 4, 1, 12, tzinfo=UTC)
         return EpisodeListing(
-            anilist_id, None, None, "FINISHED", 2, (ListedEpisode(1, "First", moment),), (), 1, None, None
+            anilist_id,
+            None,
+            None,
+            "FINISHED",
+            2,
+            (ListedEpisode(1, title_en="First", airs_at=moment),),
+            (),
+            1,
+            None,
+            None,
         )
 
 

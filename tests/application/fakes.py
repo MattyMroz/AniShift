@@ -2,23 +2,34 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Final
 
 from PIL import Image
 
 from anishift.application.cancellation import CancellationToken
+from anishift.application.episode_selection import (
+    AniZipMapping,
+    FranchiseGraph,
+    JsonObject,
+    LibraryGraph,
+    ListedEpisode,
+)
 from anishift.application.events import RunEvent
 from anishift.application.planning import PlanTask, RunSettingsSnapshot, TaskKind
 from anishift.application.results import ArtifactSnapshot, TaskResult
 from anishift.application.scheduler_contracts import TaskHandler, TaskProgressSink
-from anishift.errors import ExecutionError
+from anishift.errors import ErrorCode, ErrorContext, ExecutionError
+from anishift.services.catalog import PrequelEntry, SeasonAiring, TitleCandidate, TitleCatalogError, TitleStatus
 from anishift.services.media import ContainerKind, MediaCatalog, MediaTrack, MediaTrackKind
 from anishift.services.subtitles import DisplayedLine, SpokenLine
 from anishift.services.translation.protocols import TranslationCancellation, TranslationObserver
 from anishift.services.translation.types import FileTranslation, TranslatedLine
 
 _HOLD_LIMIT_S: Final[float] = 10.0
+
+_CATALOGUE_EPISODES: Final[int] = 12
 
 
 class FakeTranslationService:
@@ -128,6 +139,76 @@ class FakeMediaProbe:
                 MediaTrack(1, MediaTrackKind.AUDIO, "aac", "jpn", None, True, False),
             ),
         )
+
+
+class FakeEpisodeCatalogue:
+    def __init__(
+        self,
+        *,
+        english: str | None = "Neko to Ryuu",
+        romaji: str = "Neko to Ryuu",
+        titles: Mapping[int, str] | None = None,
+        season: int = 1,
+        media_format: str = "TV",
+    ) -> None:
+        self.english: str | None = english
+        self.romaji: str = romaji
+        self.titles: dict[int, str] = dict(titles or {})
+        self.season: int = season
+        self.media_format: str = media_format
+        self.down: bool = False
+        self.franchised: list[int] = []
+
+    def search(self, text: str, *, limit: int = 7) -> tuple[TitleCandidate, ...]:
+        raise AssertionError((text, limit))
+
+    def prequel_episodes(self, candidate: TitleCandidate) -> tuple[PrequelEntry, ...]:
+        return ()
+
+    def airing_schedule(self, anilist_id: int) -> SeasonAiring:
+        return SeasonAiring(anilist_id, TitleStatus.FINISHED, _CATALOGUE_EPISODES, ())
+
+    def franchise(self, anilist_id: int, *, cancel: CancellationToken | None = None) -> FranchiseGraph:
+        self.franchised.append(anilist_id)
+        if self.down:
+            raise TitleCatalogError(context=ErrorContext(code=ErrorCode.TITLE_CATALOG_FAILED, message="down"))
+        node: dict[str, object] = {
+            "id": anilist_id,
+            "title": {"romaji": self.romaji, "english": self.english},
+            "format": self.media_format,
+            "status": "FINISHED",
+            "episodes": _CATALOGUE_EPISODES,
+            "synonyms": [],
+            "relations": {"edges": []},
+            "startDate": {"year": 2020, "month": 1, "day": 1},
+        }
+        return FranchiseGraph(anilist_id, {anilist_id: node}, frozenset({anilist_id}), True)
+
+    def library_graph(self, anilist_ids: Collection[int]) -> LibraryGraph:
+        graphs: list[FranchiseGraph] = [self.franchise(anilist_id) for anilist_id in anilist_ids]
+        return LibraryGraph(
+            {key: node for graph in graphs for key, node in graph.nodes.items()}, frozenset(anilist_ids)
+        )
+
+    def cover_urls(self, anilist_ids: Collection[int]) -> dict[int, str]:
+        return {}
+
+    def cover(self, url: str) -> bytes:
+        raise AssertionError(url)
+
+    def mapping(self, anilist_id: int) -> AniZipMapping:
+        if self.down:
+            raise TitleCatalogError(context=ErrorContext(code=ErrorCode.EPISODE_CATALOG_FAILED, message="down"))
+        numbers: range = range(1, _CATALOGUE_EPISODES + 1)
+        raw: dict[str, JsonObject] = {
+            str(number): {"episode": str(number), "seasonNumber": self.season, "episodeNumber": number}
+            for number in numbers
+        }
+        episodes: tuple[ListedEpisode, ...] = tuple(
+            ListedEpisode(number, title_en=self.titles.get(number), season=self.season, episode=number)
+            for number in numbers
+        )
+        return AniZipMapping(None, self.media_format, _CATALOGUE_EPISODES, episodes, (), None, raw)
 
 
 def write_image_source(path: Path, *, width: int = 320, height: int = 240) -> None:
