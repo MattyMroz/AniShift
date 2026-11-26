@@ -95,6 +95,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   czekają na blokadę discovery fasady na wątku ownera.
 - `history.py` to nieautorytatywny JSONL ownera (30 dni); awarie nie zmieniają dopuszczenia, deduplikacji ani
   recovery. Naprawiany jest tylko urwany ogon; uszkodzony środek daje odmowę odczytu Historii.
+- `project_library` pokazuje każdy zestaw w `ready/` (z podfolderami) z produktem głównym (`main_product`): bez
+  rekordu jako zestaw o `set_id` = `group_id` grupy, a zestaw z rekordem przeniesiony lub przemianowany w `ready/`
+  (`_moved_sets`) pod `set_id` rekordu, dopasowany po rozmiarze i mtime potwierdzonego wyniku głównego. Wynik główny
+  takich zestawów stoi na końcu `files`, bo Del rzutuje zestaw przed każdym plikiem, a bez niego zestawu nie widać.
 - `ReadyStore` przenosi grupę do `ready/` wyłącznym dowiązaniem i usunięciem starej nazwy na tym samym woluminie; znany
   torrent musi wcześniej zwolnić pliki, blokada relokacji chroni oba ID grupy przed Auto. Nie przenoś plików z renderera.
 - Odcinek wiąże z pobranym zestawem `downloaded_episodes` (`EpisodeAssignment.group_id` = `ReadyGroup.set_id`).

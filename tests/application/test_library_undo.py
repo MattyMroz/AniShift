@@ -13,6 +13,7 @@ from test_automation import (
     _await,
     _completed_library,
     _owner,
+    _read_ready_sets,
     _real_service,
     _request,
     _serving,
@@ -444,7 +445,8 @@ def test_saved_state_keeps_one_resident_run_of_deletions_while_undo_and_retry_ke
         assert restored.completed
         assert (tmp_path / "ready/01.txt").is_file()
         assert latest_deletion(saved) == unsure
-        assert owner.handle(_request("deletion_undo", command_id="undo-2")).reason == "library_ownership_unknown"
+        assert owner.handle(_request("deletion_undo", command_id="undo-2")).result == {"operation_id": "unsure"}
+        assert _await(lambda: not owner._deleting)
     finally:
         owner.request_shutdown()
         thread.join(5)
@@ -1078,6 +1080,73 @@ def test_a_failed_workspace_episode_held_by_its_torrent_is_refused(tmp_path: Pat
         refused: ControlResponse = owner.handle(_request("deletion_preview", {"set_id": unrecorded_set_id(group_id)}))
         assert refused.reason == "library_source_held"
         assert source.is_file()
+    finally:
+        owner.request_shutdown()
+        thread.join(5)
+        service.close()
+
+
+def test_a_ready_set_without_a_record_opens_deletes_and_comes_back_with_ctrl_z(tmp_path: Path) -> None:
+    service, store, _state = _completed_library(tmp_path)
+    (tmp_path / "ready/02.mkv").write_text("video", encoding="utf-8")
+    (tmp_path / "ready/02.eac3").write_text("narration", encoding="utf-8")
+    set_id: str = create_group_id(Path("ready"), "02")
+    recycled: list[str] = []
+    recycle: Callable[[Path, tuple[int, int, int, int]], RecycleResult] = _parking(tmp_path / ".bin", recycled)
+    owner: AutomationOwner = AutomationOwner(
+        service,
+        store,
+        instance_id="first",
+        recycler=lambda: nullcontext(recycle),
+        restorer=lambda: nullcontext(_restore_parked),
+    )
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert set_id in {item.set_id for item in _read_ready_sets(owner)}
+        assert owner.handle(_request("library_open", {"set_id": set_id})).result == {"path": "ready/02.mkv"}
+        assert owner.handle(_request("library_open", {"set_id": set_id, "playback": False})).result == {
+            "path": "ready/02.eac3"
+        }
+        _delete(owner, set_id, "delete-1")
+        assert _await(lambda: not (tmp_path / "ready/02.mkv").exists() and not owner._deleting)
+        assert sorted(recycled) == ["02.eac3", "02.mkv"]
+        assert set_id not in {item.set_id for item in _read_ready_sets(owner)}
+        status: ControlResponse = owner.handle(_request("status", command_id="status-1"))
+        deletion: Mapping[str, object] = cast("list[Mapping[str, object]]", status.result["deletions"])[-1]
+        assert (deletion["name"], deletion["unrecorded"]) == ("02", False)
+        assert owner.handle(_request("deletion_undo", command_id="undo-1")).ok
+        assert _await(lambda: (tmp_path / "ready/02.mkv").is_file() and not owner._deleting)
+        assert set_id in {item.set_id for item in _read_ready_sets(owner)}
+    finally:
+        owner.request_shutdown()
+        thread.join(5)
+        service.close()
+
+
+def test_a_recorded_set_moved_into_a_ready_subfolder_opens_and_deletes_at_its_new_place(tmp_path: Path) -> None:
+    service, store, _state = _completed_library(tmp_path)
+    moved: Path = tmp_path / "ready/Nowy folder"
+    moved.mkdir()
+    for name in ("01.txt", "01.pl.txt"):
+        (tmp_path / "ready" / name).rename(moved / name)
+    recycled: list[str] = []
+    recycle: Callable[[Path, tuple[int, int, int, int]], RecycleResult] = _parking(tmp_path / ".bin", recycled)
+    owner: AutomationOwner = AutomationOwner(service, store, instance_id="first", recycler=lambda: nullcontext(recycle))
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert [(item.set_id, item.main_result, item.available) for item in _read_ready_sets(owner)] == [
+            ("set-01", "ready/Nowy folder/01.pl.txt", True)
+        ]
+        assert owner.handle(_request("library_open", {"set_id": "set-01"})).result == {
+            "path": "ready/Nowy folder/01.pl.txt"
+        }
+        preview: DeletionPreview = _delete(owner, "set-01", "delete-1")
+        assert sorted(item.path for item in preview.files) == [
+            "ready/Nowy folder/01.pl.txt",
+            "ready/Nowy folder/01.txt",
+        ]
+        assert _await(lambda: not (moved / "01.txt").exists() and not owner._deleting)
+        assert sorted(recycled) == ["01.pl.txt", "01.txt"]
     finally:
         owner.request_shutdown()
         thread.join(5)

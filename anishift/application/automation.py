@@ -2012,7 +2012,7 @@ class AutomationOwner:
                     "set_id": item.set_id,
                     "name": next(
                         (group.stem for group in self._state.ready_groups if group.set_id == item.set_id),
-                        item.set_id if unrecorded_group(item.set_id) is None else Path(item.files[0][0]).stem,
+                        Path(item.files[0][0]).stem,
                     ),
                     "remaining": len(item.files) - len(item.recycled),
                     "can_confirm": (item.restore is None or (not item.restore.completed and not item.restore.unsettled))
@@ -2441,22 +2441,15 @@ class AutomationOwner:
             return self._library_refusal(group.problem or "library_result_missing")
         if (
             not playback
-            or group.target is not WorkflowTarget.VIDEO
+            or group.target not in {WorkflowTarget.VIDEO, None}
             or Path(group.main_result).suffix.casefold() in {".mkv", ".mp4"}
         ):
             return ControlResponse.succeeded({"path": group.main_result})
-        record: ReadyGroup | None = next(
-            (item for item in self._state.ready_groups if item.set_id == group.set_id), None
-        )
-        sources: set[str] = (
-            {
-                name
-                for name in (*record.sources, *record.pending_sources)
-                if Path(name).suffix.casefold() in {".mkv", ".mp4"}
-            }
-            if record is not None
-            else set()
-        )
+        sources: set[str] = {
+            item.path
+            for item in group.files
+            if item.role in {"source", "pending_source"} and Path(item.path).suffix.casefold() in {".mkv", ".mp4"}
+        }
         if not sources:
             return ControlResponse.succeeded({"path": group.main_result})
         sources = {name for name in sources if Path(name).suffix.casefold() == ".mkv"} or sources
@@ -2519,8 +2512,6 @@ class AutomationOwner:
         record: ReadyGroup | None = next(
             (item for item in self._state.ready_groups if item.set_id == group.set_id), None
         )
-        if record is None and unrecorded_group(group.set_id) is None:
-            return "library_ownership_unknown"
         if (record is not None and record.pending_sources) or self._torrent_owns_set(group, released):
             return "library_source_held"
         return None
@@ -2542,25 +2533,27 @@ class AutomationOwner:
         return unrecorded_set(group.group_id, group.stem, paths, root)
 
     def _deletion_set(self, operation: PendingDeletion) -> LibrarySet | None:
-        """Return the Library set a pending deletion names, or its failed workspace group projected from its files."""
+        """Return the recorded Library set a deletion names, or project its set without a record from its files."""
         group_id: str | None = unrecorded_group(operation.set_id)
-        if group_id is None:
+        if group_id is None and any(item.set_id == operation.set_id for item in self._state.ready_groups):
             return next((item for item in self._ready_library if item.set_id == operation.set_id), None)
-        return unrecorded_set(
-            group_id,
+        projected: LibrarySet = unrecorded_set(
+            group_id or operation.set_id,
             Path(operation.files[0][0]).stem,
             (name for name, _size, _stamp in operation.files),
             self._service.workspace_root,
         )
+        return projected if group_id is not None else replace(projected, set_id=operation.set_id)
 
     def _projected_set(self, set_id: str, groups: tuple[SourceGroup, ...]) -> LibrarySet | None:
         """Project from *groups* only the Library set *set_id*, exactly as the whole Library would show it."""
         group_id: str = next((item.group_id for item in self._state.ready_groups if item.set_id == set_id), set_id)
+        shown: set[str] = {group_id, *(item.group_id for item in self._ready_library if item.set_id == set_id)}
         state: WatchState = replace(
             self._state, ready_groups=tuple(item for item in self._state.ready_groups if item.group_id == group_id)
         )
         projected: tuple[LibrarySet, ...] = project_library(
-            state, self._service.workspace_root, tuple(group for group in groups if group.group_id == group_id)
+            state, self._service.workspace_root, tuple(group for group in groups if group.group_id in shown)
         )
         return next((item for item in projected if item.set_id == set_id), None)
 

@@ -251,8 +251,6 @@ def detail_entries(details: LibrarySet) -> list[str]:
     entries: list[str] = [safe_text(details.name)]
     if details.target is None:
         entries.append("Cel nierozstrzygnięty · regeneracja wymaga wyboru")
-    if details.problem == "library_ownership_unknown":
-        entries.append(LIBRARY_PROBLEMS[details.problem])
     if details.provisional_timing:
         entries.append("Czasy robocze · skrypt lektora bez synchronizacji z nagraniem")
     entries.extend(
