@@ -281,6 +281,7 @@ if TYPE_CHECKING:
     from anishift.application.service import AppService
     from anishift.application.watch_state import WatchStateStore
     from anishift.config.user_settings import UserSettings
+    from anishift.services.http_requests import RequestControl
     from anishift.services.media.probe import MediaProbe
     from anishift.services.media.types import MediaCatalog
     from anishift.services.torrents import TorrentFile, TorrentInfo
@@ -302,6 +303,18 @@ IO_THREAD_PREFIX: Final[str] = "anishift-owner-io"
 
 IO_WORKERS: Final[int] = 2
 """Slow commands performed beside each other while the owner keeps answering."""
+
+_RECOGNITION_THREAD: Final[str] = "anishift-owner-recognition"
+"""Thread searching hand-added Library titles, kept off the I/O pool that deletion and Ctrl+Z wait on."""
+
+RECOGNITION_INTERVAL_S: Final[float] = 2.0
+"""Pause before each hand-added title search, keeping them within the measured 30 AniList requests a minute."""
+
+_RECOGNITION_COOLDOWN_POLL_S: Final[float] = 0.5
+"""Interval at which a waiting hand-added search checks whether the AniList cooldown ended."""
+
+_RECOGNITION_ATTEMPTS: Final[int] = 3
+"""Searches of one hand-added title while AniList answers with a cooldown."""
 
 TRANSFER_CHECK_INTERVAL_S: Final[float] = 10.0
 """Delay between shared client reads while accepted transfers need completion proof."""
@@ -970,6 +983,8 @@ class AutomationOwner:
         self._series_requested: set[int] = set()
         self._recognized: dict[tuple[str, int], int | None] = {}
         self._recognition_requested: set[tuple[str, int]] = set()
+        self._recognition_interval_s: float = RECOGNITION_INTERVAL_S
+        self._stopping: threading.Event = threading.Event()
         self._covers: set[int] = set()
         self._covers_requested: set[int] = set()
         self._deletion_previews: dict[str, tuple[DeletionPreview, str | None, int]] = {}
@@ -3898,6 +3913,7 @@ class AutomationOwner:
         if self._shutting_down:
             return
         self._shutting_down = True
+        self._stopping.set()
         self._settle_at = None
         self._transfers_at = None
         self._inspection_at = None
@@ -8549,7 +8565,9 @@ class AutomationOwner:
             return
         self._recognition_requested.update(wanted)
         self._active_io += 1
-        self._pool.submit(self._read_recognition, acquisition, wanted)
+        threading.Thread(
+            target=self._read_recognition, args=(acquisition, wanted), name=_RECOGNITION_THREAD, daemon=True
+        ).start()
 
     def _read_recognition(
         self, acquisition: AcquisitionService, wanted: dict[tuple[str, int], tuple[str, int | None]]
@@ -8559,9 +8577,11 @@ class AutomationOwner:
         try:
             with acquisition.episode_requests():
                 for key, title in wanted.items():
-                    if self._shutting_down:
+                    answered: bool
+                    answered, found[key] = self._recognize_paced(acquisition, key, title, failures)
+                    if not answered:
+                        del found[key]
                         break
-                    found[key] = self._recognize_title(acquisition, key, title, failures)
         finally:
             logger.info(
                 "Hand-added Library titles searched",
@@ -8574,18 +8594,45 @@ class AutomationOwner:
             )
             self._queue.put(lambda: self._record_recognition(found))
 
+    def _recognize_paced(
+        self,
+        acquisition: AcquisitionService,
+        key: tuple[str, int],
+        title: tuple[str, int | None],
+        failures: dict[str, int],
+    ) -> tuple[bool, int | None]:
+        for _attempt in range(_RECOGNITION_ATTEMPTS):
+            if not self._anilist_free(acquisition):
+                return False, None
+            result, failed = self._recognize_title(acquisition, key, title, failures)
+            if not failed or not _cooling(acquisition):
+                return True, result
+        return True, None
+
+    def _anilist_free(self, acquisition: AcquisitionService) -> bool:
+        if self._stopping.wait(self._recognition_interval_s):
+            return False
+        waited: bool = False
+        while _cooling(acquisition):
+            if not waited:
+                logger.info("Hand-added Library search waits for the AniList cooldown", provider="anilist")
+                waited = True
+            if self._stopping.wait(_RECOGNITION_COOLDOWN_POLL_S):
+                return False
+        return not self._shutting_down
+
     @staticmethod
     def _recognize_title(
         acquisition: AcquisitionService,
         key: tuple[str, int],
         title: tuple[str, int | None],
         failures: dict[str, int],
-    ) -> int | None:
+    ) -> tuple[int | None, bool]:
         try:
-            return recognize(acquisition.find_titles(title[0]), key[0], key[1], title[1])
+            return recognize(acquisition.find_titles(title[0]), key[0], key[1], title[1]), False
         except (AniShiftError, OSError, ValueError) as error:
             failures[type(error).__name__] = failures.get(type(error).__name__, 0) + 1
-            return None
+            return None, True
 
     def _record_recognition(self, found: dict[tuple[str, int], int | None]) -> None:
         self._active_io -= 1
@@ -9672,6 +9719,11 @@ def _subscription_details(record: SubscriptionRecord, row: SubscriptionRow) -> d
         "last_check": None if record.last_check is None else encode_view(record.last_check),
         "specials": [] if record.mapping is None else [encode_view(item) for item in record.mapping.specials],
     }
+
+
+def _cooling(acquisition: AcquisitionService) -> bool:
+    control: RequestControl | None = acquisition.request_control
+    return control is not None and control.cooling("anilist")
 
 
 def _subscription_draft(read: ListingRead, entry: FranchiseEntry | None, now: datetime) -> SubscriptionRecord | str:

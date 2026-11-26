@@ -98,8 +98,10 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   `LibrarySet.series/season/episode/anilist_id/series_id/title_source` dokłada `name_series` przy emisji, nigdy w
   zapisanym stanie. Seria to łańcuch `PREQUEL`/`SEQUEL` z jednego zbiorczego `library_graph` (po 50 ID, najwyżej 4 rundy)
   i czystego `library_series`; `series_id` to najwcześniejszy wpis sezonowy. Zestaw ręczny (`hand_key`) owner szuka raz na
-  uruchomienie (`recognize`: dokładnie jeden kandydat z aliasem równym tytułowi z nazwy w tym samym sezonie); inaczej
-  zostaje `name`. Serie, rozpoznania i okładki żyją tylko w pamięci ownera. Okładki (`_request_covers`) pobiera owner w
+  uruchomienie (`recognize`: dokładnie jeden kandydat z aliasem równym tytułowi z nazwy w tym samym sezonie, żaden
+  remake z rokiem ani wpis o mniejszej liczbie odcinków); inaczej zostaje `name`. Wyszukiwania biegną na własnym wątku
+  `anishift-owner-recognition` (nie w puli I/O, na której czeka usuwanie i Ctrl+Z), co `RECOGNITION_INTERVAL_S`, i
+  czekają na koniec przerwy AniList (`RequestControl.cooling`). Serie, rozpoznania i okładki żyją tylko w pamięci ownera. Okładki (`_request_covers`) pobiera owner w
   puli I/O do katalogu podanego przez `run_resident(cover_dir=...)`; bez katalogu (testy) okładek nie ma. Snapshot
   `covers` to ID z plikiem w cache. Testy: `test_library_series.py`.
 - Usuwanie z Biblioteki pomija pobranie tylko w `COMPLETE` z receipt managera dowodzącym zwolnienia (odczyt w puli

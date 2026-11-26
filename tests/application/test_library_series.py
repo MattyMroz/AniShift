@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 import pytest
 from PIL import Image
@@ -52,6 +53,7 @@ from anishift.application.subscription_targets import SubscriptionRecord
 from anishift.application.workflows import WorkflowTarget
 from anishift.errors import ErrorCode, ErrorContext
 from anishift.services.catalog import TitleCandidate, TitleCatalogError, TitleStatus
+from anishift.services.http_requests import RequestControl
 
 _MOMENT: Final[str] = "2026-10-11T09:00:00+00:00"
 _BLUE_BOX: Final[int] = 189123
@@ -517,9 +519,89 @@ _HAND: Final[tuple[str, ...]] = (
 )
 
 
-def _hand_owner(tmp_path: Path, titles: _Searching) -> AutomationOwner:
+def _hand_owner(tmp_path: Path, titles: _Searching, control: RequestControl | None = None) -> AutomationOwner:
     _, store, _state = _completed_library(tmp_path, _HAND)
-    return _owner(_real_service(tmp_path, acquisition=_episode_service(tmp_path, titles)), store)
+    owner: AutomationOwner = _owner(
+        _real_service(tmp_path, acquisition=_episode_service(tmp_path, titles, request_control=control)), store
+    )
+    owner._recognition_interval_s = 0.0
+    return owner
+
+
+class _CoolingControl:
+    def __init__(self, cooling: int) -> None:
+        self.cooling_answers: int = cooling
+        self.asked: int = 0
+
+    def scope(self, reason: str, limits: Mapping[str, int]) -> AbstractContextManager[None]:
+        return nullcontext()
+
+    def cooling(self, provider: str) -> bool:
+        assert provider == "anilist"
+        self.asked += 1
+        return self.asked <= self.cooling_answers
+
+    def blocked_until(self, providers: tuple[str, ...]) -> float:
+        return 0.0
+
+    def counts(self) -> list[dict[str, object]]:
+        return []
+
+    def restore(self, *args: object, **kwargs: object) -> None:
+        return
+
+    def close(self) -> None:
+        return
+
+
+class _ThreadSearching(_Searching):
+    def __init__(self, control: _CoolingControl, *, refuse_first: bool = False) -> None:
+        super().__init__()
+        self.control: _CoolingControl = control
+        self.refuse_first: bool = refuse_first
+        self.threads: list[str] = []
+        self.cooling_seen: list[int] = []
+
+    def search(self, text: str, *, limit: int = 7) -> tuple[TitleCandidate, ...]:
+        self.threads.append(threading.current_thread().name)
+        self.cooling_seen.append(self.control.asked)
+        if self.refuse_first:
+            self.refuse_first = False
+            self.control.cooling_answers = self.control.asked + 1
+            raise TitleCatalogError(context=ErrorContext(code=ErrorCode.TITLE_CATALOG_FAILED, message="429"))
+        return super().search(text, limit=limit)
+
+
+@pytest.mark.integration
+def test_recognition_runs_on_its_own_thread_after_the_anilist_cooldown(tmp_path: Path) -> None:
+    control: _CoolingControl = _CoolingControl(cooling=3)
+    titles: _ThreadSearching = _ThreadSearching(control)
+    owner: AutomationOwner = _hand_owner(tmp_path, titles, cast("RequestControl", control))
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert owner.handle(_request("library_refresh")).ok
+        _until_recognized(owner, 2)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert set(titles.threads) == {"anishift-owner-recognition"}
+    assert titles.cooling_seen[0] > 3
+
+
+@pytest.mark.integration
+def test_search_refused_in_a_cooldown_is_retried_after_it(tmp_path: Path) -> None:
+    control: _CoolingControl = _CoolingControl(cooling=0)
+    titles: _ThreadSearching = _ThreadSearching(control, refuse_first=True)
+    owner: AutomationOwner = _hand_owner(tmp_path, titles, cast("RequestControl", control))
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert owner.handle(_request("library_refresh")).ok
+        _until_recognized(owner, 2)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert len(titles.threads) == 3
+    assert owner._recognized[("tensei shitara slime datta ken", 1)] == _S1
 
 
 def _until_recognized(owner: AutomationOwner, count: int) -> None:
