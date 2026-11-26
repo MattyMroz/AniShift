@@ -75,8 +75,6 @@ def _renderer_with(image: NativeImage | None, writes: list[str]) -> TerminalRend
     )
     renderer._native_mascot = image
     renderer._image_provider = None
-    renderer._native_slot = None
-    renderer._native_drawn_slot = None
     renderer._native_drawn_image = None
     renderer._native_drawn_size = None
     renderer._terminal_size = None

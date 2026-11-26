@@ -219,10 +219,11 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   `\x1b[2J`; domyślne `reset()` odsłania starą konsolę, końcowy redraw (`is_done`) nie maluje rastra. Nie używaj
   `RIS` ani `\x1b[3J` — kasują historię użytkownika. `interactive/prompts.py`
 - Renderer ma jeden slot obrazu (`NATIVE_IMAGE_ANCHOR`, kolumna liczona w komórkach); obraz klatki daje
-  `image_provider` aplikacji (panel: okładka, reszta: maskotka). Puste komórki pod obrazem dostają niewidoczny styl
-  `_SLOT_GUARD`, bo Prompt Toolkit kasuje koniec skróconej linii tylko za ostatnią komórką z treścią. Inny obraz albo
-  brak obrazu w tym samym miejscu kasuje tylko komórki poprzedniego; tekst w komórkach slotu, pełne przerysowanie
-  Prompt Toolkit albo zmiana rozmiaru rysuje ten sam obraz ponownie. Testy: `test_interactive_native_image.py`.
+  `image_provider` aplikacji (panel: okładka, reszta: maskotka). Komórki pod obrazem `_guard_slot` zastępuje spacjami
+  z samym stylem `_SLOT_GUARD`, niezależnie od treści i stylu wiersza: Prompt Toolkit różnicuje komórki, więc nigdy w
+  nich nie pisze i nie kasuje końca skróconej linii przez obraz. Inny obraz albo brak obrazu w tym samym miejscu
+  kasuje tylko komórki poprzedniego; ten sam obraz rysuje się ponownie tylko po pełnym przerysowaniu Prompt Toolkit
+  albo zmianie rozmiaru. Testy: `test_interactive_native_image.py`.
 
 ## Ustawienia
 

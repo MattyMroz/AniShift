@@ -20,7 +20,7 @@ from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from prompt_toolkit.output import ColorDepth
 from rich.cells import cell_len
 from rich.console import Console
-from rich.text import Span, Text
+from rich.text import Text
 
 from anishift.cli.interactive.mascot import mascot_art
 from anishift.cli.interactive.mascot_native import load_native_mascot
@@ -159,7 +159,7 @@ _CLEAR_SCREEN: Final[str] = "\x1b[2J"
 """Alternate screen clear, the only sequence that drops the image raster."""
 
 _SLOT_GUARD: Final[str] = "bold"
-"""Invisible style on the blank cells under an image, so Prompt Toolkit never erases a line end through it."""
+"""Only style of the blank cells under an image, so Prompt Toolkit never rewrites them or erases a line end there."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,11 +267,9 @@ class TerminalRenderer:
         self._native_mascot: NativeImage | None = None
         self._native_animation_started_at: float = time.monotonic()
         self._native_position: tuple[int, int] | None = None
-        self._native_slot: tuple[object, ...] | None = None
         self._native_drawn_position: tuple[int, int] | None = None
         self._native_drawn_payload: str | None = None
         self._native_drawn_image: NativeImage | None = None
-        self._native_drawn_slot: tuple[object, ...] | None = None
         self._native_drawn_size: tuple[int, int] | None = None
         self._terminal_size: tuple[int, int] | None = None
         self._prepared_frame: AnyFormattedText = ""
@@ -364,7 +362,7 @@ class TerminalRenderer:
             return
         self._prepared_frame = self._formatted_frame()
         if application.renderer._last_screen is None:
-            self._native_drawn_slot = None
+            self._native_drawn_payload = None
         if self._native_drawn_position == self._native_position:
             return
         if self._terminal_size != self._native_drawn_size:
@@ -397,10 +395,8 @@ class TerminalRenderer:
             frame = frame.copy()
             frame.plain = frame.plain.replace(NATIVE_IMAGE_ANCHOR, " ")
         sized: NativeImage | None = image or self._native_drawn_image
-        self._native_slot = None
         if position is not None and sized is not None:
-            frame, slot = _guard_slot(frame, position, sized.cell_columns, sized.cell_rows)
-            self._native_slot = (columns, rows, slot)
+            frame = _guard_slot(frame, position, sized.cell_columns, sized.cell_rows)
         self._terminal_size = (columns, rows)
         self._native_position = position
         render_console, stream = self._render_target(columns)
@@ -433,11 +429,9 @@ class TerminalRenderer:
         row, column = position
         elapsed_seconds: float = time.monotonic() - self._native_animation_started_at
         payload: str = image.payload_at(elapsed_seconds)
-        same: bool = payload == self._native_drawn_payload and position == self._native_drawn_position
-        if same and self._native_slot == self._native_drawn_slot:
+        if payload == self._native_drawn_payload and position == self._native_drawn_position:
             return
-        cleared: str = "" if same else erase
-        output.write_raw(f"{_SAVE_CURSOR}{cleared}\x1b[{row + 1};{column + 1}H{payload}{_RESTORE_CURSOR}")
+        output.write_raw(f"{_SAVE_CURSOR}{erase}\x1b[{row + 1};{column + 1}H{payload}{_RESTORE_CURSOR}")
         output.flush()
         self._mark_drawn(position, payload, image)
 
@@ -445,7 +439,6 @@ class TerminalRenderer:
         self._native_drawn_position = position
         self._native_drawn_payload = payload
         self._native_drawn_image = image
-        self._native_drawn_slot = self._native_slot
         self._native_drawn_size = self._terminal_size
 
     def _erase_native_image(self) -> None:
@@ -529,19 +522,17 @@ def _native_anchor(frame: str) -> tuple[int, int] | None:
     return row, column
 
 
-def _guard_slot(
-    frame: Text, position: tuple[int, int], columns: int, rows: int
-) -> tuple[Text, tuple[tuple[str, tuple[Span, ...]], ...]]:
-    """Mark the blank cells under the image as content and return the text and styles of every slot row."""
+def _guard_slot(frame: Text, position: tuple[int, int], columns: int, rows: int) -> Text:
+    """Fill the cells under the image with guarded blanks that stay the same whatever their row shows."""
     lines: list[Text] = list(frame.split("\n", allow_blank=True))
-    slot: list[tuple[str, tuple[Span, ...]]] = []
-    for line in lines[position[0] : position[0] + rows]:
+    for index in range(position[0], min(position[0] + rows, len(lines))):
+        line: Text = lines[index]
         line.pad_right(max(position[1] + columns - line.cell_len, 0))
         start: int = character_offset(line.plain, position[1])
         end: int = character_offset(line.plain, position[1] + columns)
-        line.stylize(_SLOT_GUARD, start, end)
-        slot.append((line.plain, tuple(line.spans)))
-    return Text("\n").join(lines), tuple(slot)
+        blanks: Text = Text(" " * cell_len(line.plain[start:end]), style=_SLOT_GUARD)
+        lines[index] = Text.assemble(line[:start], blanks, line[end:])
+    return Text("\n").join(lines)
 
 
 def _native_erase_sequence(position: tuple[int, int], columns: int, rows: int) -> str:

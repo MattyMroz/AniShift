@@ -7,7 +7,7 @@ from typing import cast
 import pytest
 from PIL import Image
 from prompt_toolkit import Application
-from prompt_toolkit.formatted_text import ANSI
+from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from rich.text import Text
 
 from anishift.cli.interactive.native_image import NATIVE_IMAGE_ANCHOR, NativeImage, encode_sixel
@@ -43,11 +43,9 @@ class _Screen:
         self.renderer._rich_console = None
         self.renderer._terminal_size = None
         self.renderer._native_position = None
-        self.renderer._native_slot = None
         self.renderer._native_drawn_position = None
         self.renderer._native_drawn_payload = None
         self.renderer._native_drawn_image = None
-        self.renderer._native_drawn_slot = None
         self.renderer._native_drawn_size = None
         self.renderer._idle_handler = None
 
@@ -87,28 +85,43 @@ def test_missing_image_in_place_erases_cells_without_clearing_the_screen() -> No
     assert again == ""
 
 
-def test_changed_text_in_a_slot_row_redraws_the_same_image() -> None:
+def _cells(prepared: object, row: int) -> list[tuple[str, str]]:
+    fragments: list[tuple[str, str]] = [
+        (style, char) for style, text, *_rest in to_formatted_text(cast("ANSI", prepared)) for char in text
+    ]
+    rows: list[list[tuple[str, str]]] = [[]]
+    for style, char in fragments:
+        if char == "\n":
+            rows.append([])
+        else:
+            rows[-1].append((style, char))
+    return rows[row]
+
+
+def test_changed_text_in_a_slot_row_writes_no_image() -> None:
     screen: _Screen = _Screen(_SLOT, _image("COVER"))
     screen.paint()
     screen.frame = _SLOT.replace("Beta", "B")
 
-    redrawn: str = screen.paint()
-
-    assert "COVER" in redrawn
-    assert "\x1b[m    " not in redrawn
+    assert screen.paint() == ""
 
 
-def test_restyled_row_beside_the_slot_redraws_the_same_image() -> None:
-    screen: _Screen = _Screen(_SLOT, _image("COVER"))
+def test_restyled_row_across_the_slot_keeps_every_slot_cell_and_writes_no_image() -> None:
+    wide: str = f"Tytuł  {NATIVE_IMAGE_ANCHOR}\nAlpha    Alpha\nBeta     Beta\nGamma"
+    screen: _Screen = _Screen(wide, _image("COVER"))
     screen.paint()
-    styled: Text = Text(_SLOT)
-    styled.stylize("blue", _SLOT.index("Beta"), _SLOT.index("Beta") + 4)
+    before: list[tuple[str, str]] = _cells(screen.renderer._prepared_frame, 2)
+    styled: Text = Text(wide)
+    start: int = wide.index("Beta")
+    styled.stylize("reverse blue", start, start + len("Beta     Beta"))
     screen.renderer._frame_provider = lambda _columns, _rows: styled
 
     redrawn: str = screen.paint()
+    after: list[tuple[str, str]] = _cells(screen.renderer._prepared_frame, 2)
 
-    assert "COVER" in redrawn
-    assert _CLEAR not in redrawn
+    assert after[7:11] == before[7:11] == [(after[7][0], " ")] * 4
+    assert after[:4] != before[:4]
+    assert redrawn == ""
 
 
 def test_changed_row_below_the_slot_writes_no_image() -> None:
@@ -119,16 +132,15 @@ def test_changed_row_below_the_slot_writes_no_image() -> None:
     assert screen.paint() == ""
 
 
-def test_text_inside_the_slot_cells_redraws_the_same_image() -> None:
+def test_text_inside_the_slot_cells_stays_under_blanks_and_writes_no_image() -> None:
     screen: _Screen = _Screen(_SLOT, _image("COVER"))
     screen.paint()
     screen.frame = _SLOT.replace("Beta", "Beta    x")
 
     redrawn: str = screen.paint()
 
-    assert "COVER" in redrawn
-    assert "\x1b[m    " not in redrawn
-    assert _CLEAR not in redrawn
+    assert "".join(char for _style, char in _cells(screen.renderer._prepared_frame, 2)).rstrip() == "Beta"
+    assert redrawn == ""
 
 
 def test_blank_slot_cells_are_styled_so_a_shortened_line_never_erases_the_image() -> None:
