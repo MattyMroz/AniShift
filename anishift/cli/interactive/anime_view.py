@@ -71,8 +71,8 @@ MIN_ROWS: Final[int] = HEADER_ROWS + 1 + FOOTER_ROWS
 _MARGIN: Final[int] = 4
 """Cells kept free around centered blocks."""
 
-_COVER_GAP: Final[int] = 2
-"""Blank cells between a table and the cover slot beside it."""
+_COVER_GAP: Final[int] = 3
+"""Blank cells between the cover slot and the table, and the fewest left of the slot and right of the table."""
 
 _EPISODE_STATUS_WIDTH: Final[int] = len("Czeka na wydanie")
 """Fixed Stan column width, so a changing episode state never shifts the centered table."""
@@ -444,8 +444,7 @@ def _table(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int, now: float) -
     canvas.place(width)
     longest: int = max((Text(_values(snapshot, item, now)[spec.title]).cell_len for item in snapshot.items), default=0)
     if cover and width <= limit and widths[spec.title] >= min(spec.floor, longest):
-        canvas.left = (canvas.width - width - _COVER_GAP - cover) // 2
-        canvas.write(canvas.top - 1, canvas.left + width + _COVER_GAP, Text(NATIVE_IMAGE_ANCHOR), selectable=False)
+        _cover_slot(canvas, snapshot, width, cover)
     columns: list[tuple[int, int, int]] = []
     column: int = spec.prefix
     for position in shown:
@@ -459,17 +458,33 @@ def _table(canvas: _Canvas, snapshot: AnimeSnapshot, visible: int, now: float) -
 
 
 def _table_room(canvas: _Canvas, snapshot: AnimeSnapshot) -> tuple[int, int]:
-    """Return the cells a table may take and the cover slot columns beside it, 0 when the slot does not fit."""
+    """Return the cells a table may take and the cover slot columns left of it, 0 when the slot does not fit."""
     limit: int = canvas.width - _MARGIN
     if snapshot.cover is None:
         return limit, 0
     columns, rows = snapshot.cover
-    header: int = canvas.top - 1
-    footer: int = len(canvas.lines) - len(_key_lines(snapshot, limit)) - _footer_rows(snapshot) - 1
-    narrowed: int = limit - _COVER_GAP - columns
-    if narrowed < _TITLE_FLOOR or header < 0 or header + rows > footer:
+    first, end = _cover_band(canvas, snapshot)
+    narrowed: int = canvas.width - columns - 3 * _COVER_GAP
+    if narrowed < _TITLE_FLOOR or first < 0 or end - first < rows:
         return limit, 0
     return narrowed, columns
+
+
+def _cover_band(canvas: _Canvas, snapshot: AnimeSnapshot) -> tuple[int, int]:
+    """Return the first row and the end row of the cover slot: from the column labels to the footer."""
+    footer: int = len(canvas.lines) - len(_key_lines(snapshot, canvas.width - _MARGIN)) - _footer_rows(snapshot) - 1
+    return canvas.top - 1, footer
+
+
+def _cover_slot(canvas: _Canvas, snapshot: AnimeSnapshot, width: int, columns: int) -> None:
+    """Center the slot and the table as one block, the slot left and vertically centered on the cursor row."""
+    rows: int = snapshot.cover[1] if snapshot.cover is not None else 0
+    margin: int = max((canvas.width - columns - _COVER_GAP - width) // 2, _COVER_GAP)
+    canvas.left = margin + columns + _COVER_GAP
+    first, end = _cover_band(canvas, snapshot)
+    cursor: int = canvas.top + snapshot.cursor - snapshot.offset
+    top: int = max(min(cursor - (rows - 1) // 2, end - rows), first)
+    canvas.write(top, margin, Text(NATIVE_IMAGE_ANCHOR), selectable=False)
 
 
 def _pointer(*, active: bool) -> str:
