@@ -182,10 +182,13 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   zaznaczenia, pole `/` i pytanie, filtr zostaje. Tytuły i daty odcinków czyta wątek `anishift-library-episodes`
   własną sesją; wynik innego tytułu ginie. Del więcej niż jednego zestawu pyta (`_library_confirm`), potem jeden wątek
   i jedna sesja usuwają zestaw po zestawie; odmowa jednego wraca sama. Testy: `test_library_titles.py`.
-- Okładka: `StateController.cover()` zwraca obraz wiersza, przy którym ostatnia klatka postawiła slot
-  (`AnimeSnapshot.cover`, `anime_view._cover_slot`); `CoverImages` koduje ją na wątku `anishift-cover` (najnowsze
-  żądanie wygrywa, 64 w pamięci), render tylko czyta gotowy ładunek. Bez SIXEL, miejsca albo okładki w snapshot
-  `covers` klatka jest taka jak bez okładek. Testy: `test_library_covers.py`.
+- Okładka: slot stałego rozmiaru stoi po lewej, okładka i tabela są wyśrodkowane jako blok z odstępem
+  `_COVER_GAP`, a margines od krawędzi nie spada poniżej odstępu; przy braku miejsca najpierw skraca się tytuł,
+  potem znika okładka (`anime_view._layout`). Slot jest wyśrodkowany na podświetlonym wierszu (hover z
+  `FrameSelection.hovered_row`, inaczej kursor) i dokleja się do krawędzi pustego pasa wierszy (`_cover_slot`).
+  `StateController.cover()` zwraca obraz tego wiersza; render woła `CoverImages.prepare` dla całej listy, wątek
+  `anishift-cover` koduje brakujące, a trafienie czyta gotowy ładunek w tej samej klatce. Bez SIXEL, miejsca albo
+  okładki w snapshot `covers` klatka jest taka jak bez okładek. Testy: `test_library_covers.py`.
 
 ## Auto, postęp i maskotka
 
@@ -208,13 +211,15 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   raportów terminala z workera ani przy klawiszach. Rezerwacja i kasowanie: `cell_rows`/`cell_columns`, wordmark:
   `layout_rows`. Przesunięcie w prawo wspólne dla animacji (`_shared_right_shift`). `MascotController` nie ma
   workera ani zapisu do terminala. VS Code wymaga śledzonego `terminal.integrated.enableImages=true`.
-- Zniknięcie lub ruch rastra obsługuje `before_render`: `reset(leave_alternate_screen=False)` + buforowane `\x1b[2J`
-  z nową klatką; domyślne `reset()` odsłania starą konsolę, końcowy redraw (`is_done`) nie maluje rastra. Nie używaj
+- Ruch rastra w tym samym rozmiarze terminala kasuje w `before_render` tylko komórki starego obrazu, buforowane przed
+  różnicą tekstu; po zmianie rozmiaru i przy zniknięciu na wyjściu `reset(leave_alternate_screen=False)` + buforowane
+  `\x1b[2J`; domyślne `reset()` odsłania starą konsolę, końcowy redraw (`is_done`) nie maluje rastra. Nie używaj
   `RIS` ani `\x1b[3J` — kasują historię użytkownika. `interactive/prompts.py`
 - Renderer ma jeden slot obrazu (`NATIVE_IMAGE_ANCHOR`, kolumna liczona w komórkach); obraz klatki daje
-  `image_provider` aplikacji (panel: okładka, reszta: maskotka). Inny obraz albo brak obrazu w tym samym miejscu kasuje
-  tylko komórki poprzedniego; zmiana linii w wierszach slotu lub rozmiaru terminala rysuje ten sam obraz ponownie
-  (Prompt Toolkit kasuje koniec skróconej linii). Testy: `test_interactive_native_image.py`.
+  `image_provider` aplikacji (panel: okładka, reszta: maskotka). Puste komórki pod obrazem dostają niewidoczny styl
+  `_SLOT_GUARD`, bo Prompt Toolkit kasuje koniec skróconej linii tylko za ostatnią komórką z treścią. Inny obraz albo
+  brak obrazu w tym samym miejscu kasuje tylko komórki poprzedniego; tekst w komórkach slotu, pełne przerysowanie
+  Prompt Toolkit albo zmiana rozmiaru rysuje ten sam obraz ponownie. Testy: `test_interactive_native_image.py`.
 
 ## Ustawienia
 
