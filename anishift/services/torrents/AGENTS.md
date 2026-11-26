@@ -54,8 +54,8 @@ te decyzje należą do warstwy aplikacyjnej.
 - `add_metadata` uses `MetadataReceived`, `stopped=false`, `autoTMM=false`, original layout and
   no download path. Keep legacy stopped-add semantics separate. qB 5.2.3 can return successful
   add reports as JSON with HTTP 200 as well as 202; legacy `Ok.` remains accepted.
-- Magnets use encoded v1 hashes and credential-free public tracker URLs. Query-bearing trackers
-  are refused rather than retaining possible credentials. Never copy pilot SSRF preferences into runtime.
+- Magnets use encoded v1 hashes and credential-free public HTTP/UDP tracker URLs. Any other source
+  tracker (query-bearing, private, WebTorrent `wss://`) is omitted from the magnet, never the release. Never copy pilot SSRF preferences into runtime.
 - `TorrentInfo.amount_left` jest `None`, gdy brak poprawnej liczby bajtów; brak pola nie
   oznacza zera. `files()` waliduje typy i zakresy metadanych przed użyciem ich jako dowodu
   kompletności. Priorytet pliku `0` oznacza pominięcie. `qbittorrent.py`, `types.py`
