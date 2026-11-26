@@ -430,7 +430,7 @@ class _InteractiveApplication:
             self._follow_click(taken)
         else:
             self._follow_click(self._frame_selection.mouse(event))
-        if event.event_type is MouseEventType.MOUSE_UP:
+        if event.event_type in {MouseEventType.MOUSE_DOWN, MouseEventType.MOUSE_UP}:
             self._frame_selection.hover(TextPoint(event.position.y, event.position.x))
         if taken is None:
             self._renderer.invalidate()

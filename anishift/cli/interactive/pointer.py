@@ -146,6 +146,11 @@ class Gesture:
     selection: tuple[TextPoint, TextPoint] | None
     click: TextPoint | None = None
 
+    @property
+    def pressed(self) -> bool:
+        """Report a bare press, which changes nothing on screen until it becomes a click or a drag."""
+        return self.selection is None and self.click is None
+
 
 class PointerGesture:
     """Tell a drag that selects painted text from a click and a double click on one row."""
@@ -193,7 +198,7 @@ class PointerGesture:
 
     def resolve(self, frame: Text, gesture: Gesture) -> Click:
         """Name what ``gesture`` asks of the view painted as ``frame``; a quick second click on one screen row opens."""
-        if gesture.click is None and gesture.selection is None:
+        if gesture.pressed:
             pressed: Click = Click() if self._anchor is None else click_at(frame, self._anchor)
             self._field = (
                 None
@@ -265,8 +270,10 @@ class FrameSelection:
         gesture: Gesture | None = self._gesture.track(event)
         if gesture is None:
             return Click()
-        self.notice = ""
         click: Click = self._gesture.resolve(self._frame, gesture)
+        if gesture.pressed:
+            return click
+        self.notice = ""
         self._selection = None if click.anchor is not None else gesture.selection
         return click
 
