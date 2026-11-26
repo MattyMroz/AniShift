@@ -105,6 +105,7 @@ def test_catalog_contract_is_complete_and_self_consistent() -> None:
         "selected_audio_track_id",
         "selected_subtitle_artifact_id",
         "selected_subtitle_track_id",
+        "show_covers",
         "source_subtitle_language",
         "source_tsukihime",
         "source_torrentio",

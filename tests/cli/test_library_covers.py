@@ -9,6 +9,8 @@ from typing import cast
 import pytest
 from PIL import Image
 
+from anishift.application import AppService
+from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive import covers as covers_module
 from anishift.cli.interactive import state as state_module
 from anishift.cli.interactive.covers import CoverImages
@@ -351,6 +353,51 @@ def test_prepared_covers_encode_off_the_render_thread_and_hit_at_once(
     assert threads == ["anishift-cover"] * 3
     assert all(images.image(anilist_id) is not None for anilist_id in (1, 2, 3))
     assert len(threads) == 3
+
+
+def test_covers_switched_off_leave_the_table_centered_without_a_slot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(StateController, "_watch", lambda self: None)
+    shown: list[bool] = [False]
+    images: CoverImages = CoverImages(lambda: None, lambda: (10, 20), lambda: tmp_path, shown=lambda: shown[0])
+    controller: StateController = StateController(
+        cast("ResidentSession", SimpleNamespace()), lambda: None, covers=images
+    )
+    controller._tab = state_module._Tab.FILES
+    controller._snapshot = dict(_LIBRARY)
+    try:
+        off: str = controller.render(120, 40).plain
+        monkeypatch.setattr(controller, "_covers", None)
+        plain: str = controller.render(120, 40).plain
+        monkeypatch.setattr(controller, "_covers", images)
+        shown[0] = True
+        on: str = controller.render(120, 40).plain
+    finally:
+        controller.close()
+        controller._thread.join(5)
+
+    assert images.box() is not None
+    assert off == plain
+    assert _anchor(off) is None
+    assert _anchor(on) is not None
+
+
+def test_panel_reads_the_covers_setting_again_after_settings_close() -> None:
+    application: interactive_app._InteractiveApplication = object.__new__(interactive_app._InteractiveApplication)
+    preferences: SimpleNamespace = SimpleNamespace(show_covers=True)
+    application._service = cast("AppService", SimpleNamespace(settings_snapshot=lambda: preferences))
+    application._lock = threading.Lock()
+    application._settings = None
+    application._resident = None
+    application._show_covers = None
+
+    before: bool = application._covers_shown()
+    preferences.show_covers = False
+    cached: bool = application._covers_shown()
+    application._close_settings()
+
+    assert (before, cached, application._covers_shown()) == (True, True, False)
 
 
 def test_asked_cover_jumps_the_prepared_queue(tmp_path: Path) -> None:

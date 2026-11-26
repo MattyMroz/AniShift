@@ -211,6 +211,7 @@ _GENERAL_FIELDS: Final[tuple[_SettingField, ...]] = (
     ("audio_language_priority", "Priorytet języków audio", "JĘZYKI"),
     ("subtitle_language_priority", "Priorytet języków napisów", "JĘZYKI"),
     ("composition_quality_preset", "Jakość obrazu", "WYNIK"),
+    ("show_covers", "Okładki", "PANEL"),
 )
 """General persisted preferences exposed by the product."""
 

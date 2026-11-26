@@ -229,7 +229,10 @@ class _InteractiveApplication:
             hover_handler=self._handle_hover,
             image_provider=self._native_image,
         )
-        self._covers: CoverImages = CoverImages(self._renderer.invalidate, lambda: self._renderer.native_cell)
+        self._show_covers: bool | None = None
+        self._covers: CoverImages = CoverImages(
+            self._renderer.invalidate, lambda: self._renderer.native_cell, shown=self._covers_shown
+        )
         self._mascot: MascotController = MascotController(self._renderer.invalidate)
         self._frame_selection: FrameSelection = FrameSelection()
 
@@ -302,6 +305,13 @@ class _InteractiveApplication:
                 self._resident.command("reload_settings")
         with self._lock:
             self._settings = None
+            self._show_covers = None
+
+    def _covers_shown(self) -> bool:
+        shown: bool | None = self._show_covers
+        if shown is None:
+            shown = self._show_covers = self._service.settings_snapshot().show_covers
+        return shown
 
     def _start_prewarm(self) -> None:
         """Inspect the workspace while Home is idle so Auto and Manual start at once."""

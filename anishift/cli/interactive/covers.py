@@ -56,9 +56,12 @@ class CoverImages:
         invalidate: Callable[[], None],
         cell: Callable[[], tuple[int, int] | None],
         directory: Callable[[], Path] = covers_dir,
+        *,
+        shown: Callable[[], bool] = lambda: True,
     ) -> None:
         self._invalidate: Callable[[], None] = invalidate
         self._cell: Callable[[], tuple[int, int] | None] = cell
+        self._shown: Callable[[], bool] = shown
         self._directory: Callable[[], Path] = directory
         self._lock: threading.Lock = threading.Lock()
         self._ready: dict[int, NativeImage | None] = {}
@@ -67,9 +70,9 @@ class CoverImages:
         self._worker: threading.Thread | None = None
 
     def box(self) -> tuple[int, int] | None:
-        """Return the columns and rows of the cover slot, or None in a terminal without SIXEL."""
+        """Return the columns and rows of the cover slot, or None with covers off or without SIXEL."""
         cell: tuple[int, int] | None = self._cell()
-        return None if cell is None else cover_box(cell)
+        return None if cell is None or not self._shown() else cover_box(cell)
 
     def image(self, anilist_id: int) -> NativeImage | None:
         """Return the encoded cover, or None while it is encoded, unreadable or without SIXEL."""
