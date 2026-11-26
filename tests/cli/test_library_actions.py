@@ -170,13 +170,17 @@ def test_undo_refusal_is_visible_without_synthetic_operation_rows(
 class _DeletingOwner:
     def __init__(self, *, refuse: bool = False) -> None:
         self.refuse: bool = refuse
+        self.refused: set[str] = set()
         self.release: threading.Event = threading.Event()
         self.deleted: list[str] = []
         self.undone: list[str] = []
+        self.sessions: int = 0
+        self.workers: set[str] = set()
         self.answer: threading.Event = threading.Event()
         self.answer.set()
 
     def new_session(self) -> _DeletingOwner:
+        self.sessions += 1
         return self
 
     def close(self) -> None:
@@ -190,7 +194,8 @@ class _DeletingOwner:
         return DeletionPreview(f"preview-{set_id}", "instance", set_id, set_id, ())
 
     def delete_set(self, preview: DeletionPreview) -> str:
-        if self.refuse:
+        self.workers.add(threading.current_thread().name)
+        if self.refuse or preview.set_id in self.refused:
             raise ControlError("held", reason="library_source_held", answered=True)
         self.deleted.append(preview.set_id)
         return f"recycle-{preview.set_id}"
@@ -638,5 +643,155 @@ def test_delete_in_a_panel_text_field_removes_a_character_not_a_set(monkeypatch:
         assert panel._history_input.text == "b"
         assert panel._hidden == {}
         assert _shown(panel) == ["Alpha", "Beta", "Gamma"]
+    finally:
+        _stop(owner, panel)
+
+
+def test_space_marks_and_a_marks_every_episode(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    try:
+        panel.handle_key("space")
+        panel.handle_key("down")
+        panel.handle_key("space")
+        two: set[str] = set(panel._library_marks)
+        frame: str = panel.render(80, 24).plain
+        panel.handle_key("space")
+        one: set[str] = set(panel._library_marks)
+        panel.handle_key("text:a")
+        every: set[str] = set(panel._library_marks)
+        panel.handle_key("text:a")
+
+        assert two == {"Alpha", "Beta"}
+        assert "Zaznaczone: 2" in frame
+        assert frame.count("[x]") == 2
+        assert one == {"Alpha"}
+        assert every == {"Alpha", "Beta", "Gamma"}
+        assert panel._library_marks == set()
+    finally:
+        _stop(owner, panel)
+
+
+def test_delete_acts_on_marks_else_on_the_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    try:
+        panel.handle_key("down")
+        panel.handle_key("space")
+        panel.handle_key("down")
+        panel.handle_key("space")
+        panel.handle_key("delete")
+        marked: tuple[str, ...] | None = panel._library_confirm
+        panel.handle_key("escape")
+        panel._library_marks.clear()
+        panel.handle_key("delete")
+
+        assert marked == ("Beta", "Gamma")
+        assert panel._library_confirm is None
+        assert list(panel._hidden) == ["Gamma"]
+    finally:
+        _stop(owner, panel)
+
+
+def test_title_delete_covers_every_set_of_the_title(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    panel._snapshot = {"library": [*_SETS, {"set_id": "show", "name": "[Grp] Show - 01"}]}
+    panel._library_title = None
+    try:
+        panel.handle_key("down")
+        panel.handle_key("delete")
+
+        assert panel._library_confirm == ("Alpha", "Beta", "Gamma")
+        assert "Usunąć 3 odcinków? Enter tak · Esc nie" in " ".join(panel.render(80, 24).plain.split())
+    finally:
+        _stop(owner, panel)
+
+
+@pytest.mark.parametrize("key", ["escape", "down", "text:a", "delete"])
+def test_deleting_several_asks_first_and_any_other_key_cancels(monkeypatch: pytest.MonkeyPatch, key: str) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    try:
+        panel.handle_key("text:a")
+        panel.handle_key("delete")
+        asked: tuple[str, ...] | None = panel._library_confirm
+        panel.handle_key(key)
+
+        assert asked == ("Alpha", "Beta", "Gamma")
+        assert panel._library_confirm is None
+        assert panel._hidden == {}
+        assert panel._library_marks == {"Alpha", "Beta", "Gamma"}
+        assert _shown(panel) == ["Alpha", "Beta", "Gamma"]
+    finally:
+        _stop(owner, panel)
+
+
+def test_deleting_one_asks_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    try:
+        panel.handle_key("space")
+        panel.handle_key("delete")
+
+        assert panel._library_confirm is None
+        assert list(panel._hidden) == ["Alpha"]
+    finally:
+        _stop(owner, panel)
+
+
+def test_several_deletes_run_in_one_worker_and_one_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    try:
+        panel.handle_key("text:a")
+        panel.handle_key("delete")
+        panel.handle_key("enter")
+        hidden: list[str] = _shown(panel)
+        owner.release.set()
+        _until(lambda: len(owner.deleted) == 3)
+
+        assert hidden == []
+        assert owner.deleted == ["Alpha", "Beta", "Gamma"]
+        assert owner.sessions == 1
+        assert owner.workers == {"anishift-library-delete"}
+        assert panel._library_marks == set()
+    finally:
+        _stop(owner, panel)
+
+
+def test_refused_set_returns_while_the_rest_go_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    owner.refused = {"Beta"}
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    try:
+        panel.handle_key("text:a")
+        panel.handle_key("delete")
+        panel.handle_key("enter")
+        owner.release.set()
+        _until(lambda: "Źródło czeka na zwolnienie przez torrent" in " ".join(panel.render(80, 24).plain.split()))
+
+        assert owner.deleted == ["Alpha", "Gamma"]
+        assert _shown(panel) == ["Beta"]
+        assert "Usunięto 2 · Ctrl+Z cofa po jednym" in " ".join(panel.render(80, 24).plain.split())
+    finally:
+        _stop(owner, panel)
+
+
+def test_several_deleted_notice_says_undo_goes_one_by_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    owner: _DeletingOwner = _DeletingOwner()
+    panel: StateController = _deleting_panel(monkeypatch, owner)
+    panel._snapshot = {"library": [*_SETS, {"set_id": "show", "name": "[Grp] Show - 01"}]}
+    try:
+        panel.handle_key("text:a")
+        panel.handle_key("delete")
+        panel.handle_key("enter")
+        owner.release.set()
+        _until(lambda: "Usunięto 3 · Ctrl+Z cofa po jednym" in panel.render(80, 24).plain)
+        panel.handle_key("undo")
+        _until(lambda: owner.undone == ["latest"])
+
+        assert panel._library_title is None
+        assert owner.undone == ["latest"]
     finally:
         _stop(owner, panel)

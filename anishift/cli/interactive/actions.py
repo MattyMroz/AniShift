@@ -51,7 +51,7 @@ _DESCRIPTIONS: Final[dict[Action, str]] = {
     ("Enter", "szukaj"): "Szuka wpisanego tytułu",
     ("Enter", "pobierz mimo to"): "Pobiera wydanie mimo niepewności, że to właściwy odcinek",
     ("Enter", "sprawdź wynik"): "Sprawdza wynik ostatniej partii pobrań",
-    ("Space", "zaznacz"): "Zaznacza wiersz, żeby D pobrało kilka naraz",
+    ("Space", "zaznacz"): "Zaznacza wiersz, żeby D albo Del objęło kilka naraz",
     ("D", "pobierz"): "Pobiera zaznaczone odcinki albo wybrane wydanie",
     ("D", "szczegóły"): "Pokazuje pliki wybranego odcinka",
     ("B", "Blu-ray"): "Włącza albo wyłącza pierwszeństwo Blu-ray i remux",

@@ -66,9 +66,10 @@ from anishift.cli.interactive.pointer import (
 from anishift.cli.interactive.progress import ObservedProgressTimer, RichRunProgress, render_material_progress
 from anishift.cli.interactive.state_library import (
     EMPTY_LIBRARY,
-    LIBRARY_DELETED,
     NO_MATCHING_TITLES,
     LibraryTitle,
+    delete_question,
+    deleted_notice,
     detail_actions,
     detail_entries,
     detail_file,
@@ -244,6 +245,9 @@ class StateController:
         self._library_title: str | None = None
         self._library_query: str = ""
         self._library_input: TextInput | None = None
+        self._library_marks: set[str] = set()
+        self._library_confirm: tuple[str, ...] | None = None
+        self._deletion_notice: bool = False
         self._episode_info: dict[int, dict[int, tuple[str | None, datetime | None]]] = {}
         self._known_sets: dict[str, Mapping[str, object]] = {}
         self._hidden: dict[str, str] = {}
@@ -367,6 +371,7 @@ class StateController:
         self._notice = safe_text(message).rstrip(".")
         self._notice_version = self._state_version
         self._notice_persistent = False
+        self._deletion_notice = False
 
     def _library_context(self) -> tuple[str, str] | None:
         if self._tab != _Tab.FILES:
@@ -397,6 +402,8 @@ class StateController:
             if self._library_input is not None:
                 self._library_input_key(key)
                 return StateResult.CONTINUE
+            if self._library_confirm is not None:
+                return self._confirm_key(key)
             if self._retry is not None:
                 return self._retry_key(key)
             if self._tab == _Tab.ANIME and self._anime is not None:
@@ -475,8 +482,10 @@ class StateController:
             self._open_title()
         elif key == "enter" and self._tab == _Tab.FILES:
             self._file_action("open")
-        elif key == "delete" and self._tab == _Tab.FILES:
-            self._file_action("delete")
+        elif key == "delete" and self._tab == _Tab.FILES and self._library_title is None:
+            self._delete_title()
+        elif key in {"delete", "space"} and self._tab == _Tab.FILES:
+            self._file_action(key)
         elif key == "delete" and self._tab == _Tab.PROGRESS and not self._history_open:
             self._processing_action("delete")
         elif key.startswith("text:"):
@@ -592,7 +601,7 @@ class StateController:
         elif key == "delete" and details is not None:
             self._details = None
             self._selected = self._detail_selection
-            self._delete_now(details.set_id)
+            self._delete_now((details.set_id,))
         elif key == "enter" or letter == "f":
             self._open_detail_file(reveal=key != "enter")
         elif key in _MOVE_KEYS:
@@ -643,6 +652,8 @@ class StateController:
         self._library_target = None
         self._library_title = None
         self._library_input = None
+        self._library_marks.clear()
+        self._library_confirm = None
         self._help = False
         self._view_generation += 1
         if self._tab == _Tab.ANIME and self._anime is not None:
@@ -796,7 +807,7 @@ class StateController:
             return
         set_id: str | None = deletable_set(item)
         if key == "delete" and set_id is not None:
-            self._delete_now(set_id)
+            self._delete_now((set_id,))
             return
         target: tuple[str, str] | None = cancel_target(item)
         if key == "delete" and target is not None:
@@ -910,11 +921,18 @@ class StateController:
 
     def _file_action(self, key: str) -> None:
         episodes: list[Mapping[str, object]] = self._episodes()
-        if key not in {"open", "f", "d", "delete"} or self._selected >= len(episodes):
+        if key not in {"open", "f", "d", "delete", "space", "a"} or self._selected >= len(episodes):
             return
         set_id: str = library_row_id(episodes[self._selected])
+        listed: list[str] = [library_row_id(item) for item in episodes]
+        marked: tuple[str, ...] = tuple(item for item in listed if item in self._library_marks)
         if key == "delete":
-            self._delete_now(set_id)
+            self._delete_targets(marked or (set_id,))
+        elif key == "space":
+            self._library_marks.symmetric_difference_update({set_id})
+        elif key == "a":
+            self._library_marks = set() if len(marked) == len(listed) else set(listed)
+        if key in {"delete", "space", "a"}:
             return
         if key == "d":
             generation: int = self._view_generation
@@ -962,6 +980,7 @@ class StateController:
             return
         title: LibraryTitle = titles[self._selected]
         self._view_generation += 1
+        self._library_marks.clear()
         self._library_title = title.key
         self._selected = 0
         self._offsets[self._viewport()] = 0
@@ -971,6 +990,7 @@ class StateController:
     def _close_title(self) -> None:
         key: str | None = self._library_title
         self._view_generation += 1
+        self._library_marks.clear()
         self._library_title = None
         keys: list[str] = [item.key for item in self._titles()]
         self._selected = keys.index(key) if key in keys else min(self._selected, max(len(keys) - 1, 0))
@@ -1034,27 +1054,65 @@ class StateController:
             return self._processing_row_ids()
         return self._library_ids()
 
-    def _delete_now(self, set_id: str) -> None:
-        self._hidden[set_id] = ""
+    def _delete_title(self) -> None:
+        titles: list[LibraryTitle] = self._titles()
+        if self._selected < len(titles):
+            self._delete_targets(
+                tuple(library_row_id(item) for item in titles[self._selected].sets if not item.get("restoring"))
+            )
+
+    def _delete_targets(self, set_ids: tuple[str, ...]) -> None:
+        if len(set_ids) == 1:
+            self._delete_now(set_ids)
+        elif set_ids:
+            self._library_confirm = set_ids
+
+    def _confirm_key(self, key: str) -> StateResult:
+        targets: tuple[str, ...] = self._library_confirm or ()
+        self._library_confirm = None
+        if key == "enter":
+            self._delete_now(targets)
+        self._invalidate()
+        return StateResult.CONTINUE
+
+    def _delete_now(self, set_ids: tuple[str, ...]) -> None:
+        self._hidden.update(dict.fromkeys(set_ids, ""))
+        self._library_marks.clear()
         self._selected = min(self._selected, max(len(self._deletable_ids()) - 1, 0))
         self._settle_title()
         self._notify("")
         threading.Thread(
-            target=self._delete_hidden, args=(set_id,), name="anishift-library-delete", daemon=True
+            target=self._delete_hidden, args=(set_ids,), name="anishift-library-delete", daemon=True
         ).start()
 
-    def _delete_hidden(self, set_id: str) -> None:
+    def _delete_hidden(self, set_ids: tuple[str, ...]) -> None:
         session: ResidentSession | None = None
-        operation: str = ""
-        notice: str = LIBRARY_DELETED
+        pending: list[str] = list(set_ids)
+        deleted: int = 0
+        refusal: str = ""
         try:
             session = self._parent.new_session()
-            operation = session.delete_set(session.preview_deletion(set_id))
+            while pending:
+                operation, problem = _recycle(session, pending[0])
+                self._settle_deletion(pending.pop(0), operation)
+                deleted += bool(operation)
+                refusal = refusal or problem
         except (AniShiftError, ControlError, OSError, ValueError, TypeError) as error:
-            notice = refusal_text(error)
+            refusal = refusal or refusal_text(error)
         finally:
             if session is not None:
                 session.close()
+            for set_id in pending:
+                self._settle_deletion(set_id, "")
+        notice: str = deleted_notice(deleted, len(set_ids), refusal)
+        with self._lock:
+            if self._tab in {_Tab.FILES, _Tab.PROGRESS} and not self._stop.is_set():
+                self._notify(notice)
+                self._notice_persistent = True
+                self._deletion_notice = deleted > 0
+        self._invalidate()
+
+    def _settle_deletion(self, set_id: str, operation: str) -> None:
         with self._lock:
             listing: bool = (
                 self._tab in {_Tab.FILES, _Tab.PROGRESS} and self._details is None and not self._history_open
@@ -1068,9 +1126,6 @@ class StateController:
             if listing:
                 self._selected = _kept(old, self._deletable_ids(), self._selected)
                 self._settle_title()
-            if self._tab in {_Tab.FILES, _Tab.PROGRESS} and not self._stop.is_set():
-                self._notify(notice)
-                self._notice_persistent = True
         self._invalidate()
 
     def _cancel_now(self, target: tuple[str, str]) -> None:
@@ -1204,7 +1259,7 @@ class StateController:
                 if (
                     generation == self._view_generation
                     and context == self._library_context()
-                    and self._notice != LIBRARY_DELETED
+                    and not self._deletion_notice
                 ):
                     self._notify("" if self._tab == _Tab.FILES else success)
                     self._notice_persistent = persistent
@@ -1306,7 +1361,7 @@ class StateController:
                 self._observe_downloads()
                 if self._notice_version < self._state_version and not self._notice_persistent:
                     self._notice = ""
-                if context != self._library_context() and self._notice_persistent and self._notice != LIBRARY_DELETED:
+                if context != self._library_context() and self._notice_persistent and not self._deletion_notice:
                     self._notify("")
                 if restore_problem and self._tab in {_Tab.FILES, _Tab.PROGRESS}:
                     self._notify(restore_problem)
@@ -1568,6 +1623,8 @@ class StateController:
             return [*_keys(pack_footer(footer_segments(self._actions()), width)), self._history_problem, self._notice]
         if self._library_input is not None:
             return [self._library_input.render(width), *_keys(["Enter zastosuj · Esc anuluj"])]
+        if self._library_confirm is not None:
+            return [*_keys([" · ".join(delete_question(len(self._library_confirm)))])]
         return self._footer(width)
 
     def _footer(self, width: int) -> list[str | Text]:
@@ -1641,6 +1698,7 @@ class StateController:
                 shown,
                 "",
                 crumbs=("Biblioteka", safe_text(title.title)),
+                marked=frozenset(self._library_marks),
             )
         field: TextInput | None = self._library_input
         return self._table_body(
@@ -1664,18 +1722,21 @@ class StateController:
         *,
         crumbs: tuple[str, ...] = (),
         field: Text | None = None,
+        marked: frozenset[str] = frozenset(),
     ) -> Text | None:
         self._selected = min(self._selected, max(len(items) - 1, 0))
         fill: bool = overflows(screen, len(items), max(rows - 1, 1))
         tight: bool = not fill and rows == MIN_ROWS and columns >= MIN_COLUMNS
         area: int = rows if tight else max(rows - 1, 1)
+        confirm: tuple[str, ...] | None = self._library_confirm
         snapshot: AnimeSnapshot = AnimeSnapshot(
             screen if items else AnimeScreen.DETAILS,
             "",
             items or (AnimeRow("empty", self._empty_text(), navigable=False),),
             cursor=self._selected,
+            selected=marked,
             notice=notice,
-            controls=footer_segments(self._actions()),
+            controls=footer_segments(self._actions()) if confirm is None else delete_question(len(confirm)),
             global_status=status,
             fill=fill,
             crumbs=crumbs,
@@ -1913,6 +1974,13 @@ def _execute_retry(session: ResidentSession, proposal: RetryProposal) -> None:
         else session.plan_manual(proposal.intents)
     )
     session.start(plan)
+
+
+def _recycle(session: ResidentSession, set_id: str) -> tuple[str, str]:
+    try:
+        return session.delete_set(session.preview_deletion(set_id)), ""
+    except (AniShiftError, ControlError, OSError, ValueError, TypeError) as error:
+        return "", refusal_text(error)
 
 
 def _listed_episodes(session: ResidentSession, anilist_id: int) -> dict[int, tuple[str | None, datetime | None]] | None:

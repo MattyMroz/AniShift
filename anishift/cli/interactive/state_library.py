@@ -35,6 +35,8 @@ __all__ = [
     "UNRECOGNIZED_KEY",
     "EpisodeInfo",
     "LibraryTitle",
+    "delete_question",
+    "deleted_notice",
     "detail_actions",
     "detail_entries",
     "detail_file",
@@ -64,6 +66,15 @@ NO_MATCHING_TITLES: Final[str] = "Brak tytułów pasujących do filtra"
 
 LIBRARY_DELETED: Final[str] = "Usunięto · Ctrl+Z cofnij"
 """Library notice kept after a deleted set leaves the list, until the next move."""
+
+_DELETED_SEVERAL: Final[str] = "Usunięto {count} · Ctrl+Z cofa po jednym"
+"""Library notice after several sets are deleted at once, filled with the number deleted."""
+
+_DELETE_QUESTION: Final[str] = "Usunąć {count} odcinków? Enter tak"
+"""Question asked before several sets are deleted at once, filled with their number."""
+
+_DELETE_ANSWER: Final[str] = "Esc nie"
+"""Key hint that leaves the deletion question without deleting anything."""
 
 UNRECOGNIZED_KEY: Final[str] = "none"
 """Key of the one Library title gathering the sets whose names carry no title, season or episode."""
@@ -195,17 +206,32 @@ def detail_actions(*, openable: bool) -> ScreenActions:
 
 
 def titles_actions(*, listed: bool) -> ScreenActions:
-    """Return the actions of the Library titles, opening only on a listed title."""
-    opening: tuple[Action, ...] = (("Enter", "odcinki"),) if listed else ()
-    return ScreenActions((*opening, ("/", "szukaj")), (("Ctrl+Z", "cofnij"), *PANEL_ACTIONS))
+    """Return the actions of the Library titles, opening and deleting only on a listed title."""
+    title: tuple[Action, ...] = (("Enter", "odcinki"), ("Del", "usuń")) if listed else ()
+    return ScreenActions((*title, ("/", "szukaj")), (("Ctrl+Z", "cofnij"), *PANEL_ACTIONS))
 
 
 def episodes_actions(*, listed: bool) -> ScreenActions:
     """Return the actions of the episodes of one Library title, file actions only on a listed episode."""
     return ScreenActions(
-        (("Enter", "obejrzyj"), ("D", "szczegóły"), ("F", "folder"), ("Del", "usuń")) if listed else (),
-        (("Ctrl+Z", "cofnij"), *PANEL_ACTIONS),
+        (("Enter", "obejrzyj"), ("Space", "zaznacz"), ("D", "szczegóły"), ("F", "folder"), ("Del", "usuń"))
+        if listed
+        else (),
+        ((("A", "wszystkie"),) if listed else ()) + (("Ctrl+Z", "cofnij"), *PANEL_ACTIONS),
     )
+
+
+def delete_question(count: int) -> tuple[str, ...]:
+    """Return the footer asking whether to delete *count* sets at once."""
+    return _DELETE_QUESTION.format(count=count), _DELETE_ANSWER
+
+
+def deleted_notice(deleted: int, total: int, refusal: str) -> str:
+    """Return the notice after deleting *total* sets: the deleted count, Ctrl+Z and the first refusal."""
+    if total == 1:
+        return LIBRARY_DELETED if deleted else refusal
+    done: str = _DELETED_SEVERAL.format(count=deleted) if deleted else ""
+    return " · ".join(part for part in (done, refusal) if part)
 
 
 def detail_entries(details: LibrarySet) -> list[str]:
