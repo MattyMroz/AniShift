@@ -222,11 +222,14 @@ def deleting_sets(snapshot: Mapping[str, object], hidden: Collection[str] = ()) 
 
 
 def deleted_sets(snapshot: Mapping[str, object], hidden: Collection[str] = ()) -> set[str]:
-    """Return the sets being deleted and those whose files the owner recycled and has not restored."""
+    """Return the sets being deleted and those whose recycled files have neither come back nor been replaced."""
     return deleting_sets(snapshot, hidden) | {
         str(item["set_id"])
         for item in _deletions(snapshot)
-        if item.get("total") and item.get("recycled") == item.get("total") and not item.get("gone")
+        if item.get("total")
+        and item.get("recycled") == item.get("total")
+        and not item.get("gone")
+        and not item.get("returned")
     }
 
 

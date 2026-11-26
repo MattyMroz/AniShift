@@ -2032,6 +2032,13 @@ class AutomationOwner:
                     "retryable": self._deletion_retry_current(item),
                     "restoring": item.operation_id in self._restoring,
                     "unrecorded": unrecorded_group(item.set_id) is not None,
+                    "returned": any(
+                        file.identity is not None
+                        and (file.path, file.identity.size, file.identity.modified_ns) not in item.files
+                        for group in self._ready_library
+                        if group.set_id == item.set_id
+                        for file in group.files
+                    ),
                     "restored": item.restore is not None and item.restore.completed,
                     "gone": restore_gone(item),
                     "restore_problem": next(

@@ -1086,6 +1086,35 @@ def test_a_failed_workspace_episode_held_by_its_torrent_is_refused(tmp_path: Pat
         service.close()
 
 
+@pytest.mark.parametrize("again", [False, True])
+def test_a_recycled_deletion_reports_a_set_whose_files_came_back_changed(tmp_path: Path, again: bool) -> None:
+    service, store, state = _completed_library(tmp_path)
+    identity: LibraryFileIdentity | None = file_identity(tmp_path, "ready/01.txt")
+    assert identity is not None
+    old: PendingDeletion = PendingDeletion(
+        "old",
+        "set-01",
+        "then",
+        (("ready/01.txt", identity.size, identity.modified_ns - int(again)),),
+        recycled=("ready/01.txt",),
+        identities=(("ready/01.txt", identity.device, identity.inode),),
+        outcomes=(DeletionOutcome("ready/01.txt", DeletionStatus.RECYCLED, "recycle_completed", "receipt"),),
+    )
+    (tmp_path / "ready/01.pl.txt").unlink()
+    store.save(replace(state, pending_deletions=(old,)))
+    owner: AutomationOwner = AutomationOwner(service, store, instance_id="first")
+    thread: threading.Thread = _serving(owner)
+    try:
+        owner.handle(_request("library_refresh"))
+        status: ControlResponse = owner.handle(_request("status", command_id="status-1"))
+        deletion: Mapping[str, object] = cast("list[Mapping[str, object]]", status.result["deletions"])[0]
+        assert deletion["returned"] is again
+    finally:
+        owner.request_shutdown()
+        thread.join(5)
+        service.close()
+
+
 def test_a_ready_set_without_a_record_opens_deletes_and_comes_back_with_ctrl_z(tmp_path: Path) -> None:
     service, store, _state = _completed_library(tmp_path)
     (tmp_path / "ready/02.mkv").write_text("video", encoding="utf-8")
