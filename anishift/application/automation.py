@@ -317,7 +317,7 @@ _RECOGNITION_THREAD: Final[str] = "anishift-owner-recognition"
 """Thread searching hand-added Library titles, kept off the I/O pool that deletion and Ctrl+Z wait on."""
 
 RECOGNITION_RETRY_S: Final[float] = 60.0
-"""Wait after a failed search of hand-added titles before the owner searches them again."""
+"""Wait after each search of hand-added titles before the next one, so it spends one AniList minute at most."""
 
 _RECOGNITION_COOLDOWN_POLL_S: Final[float] = 0.5
 """Interval at which a waiting hand-added search checks whether the AniList cooldown ended."""
@@ -8721,8 +8721,9 @@ class AutomationOwner:
                 )
             if candidates is not None:
                 found = {
-                    key: recognize(candidates.get(title, ()), key[0], key[1], highest)
+                    key: recognize(candidates[title], key[0], key[1], highest)
                     for key, (title, highest) in wanted.items()
+                    if title in candidates
                 }
         finally:
             logger.info(
@@ -8764,10 +8765,8 @@ class AutomationOwner:
         self, wanted: tuple[tuple[str, int], ...], found: dict[tuple[str, int], int | None]
     ) -> None:
         self._recognizing -= 1
-        unanswered: set[tuple[str, int]] = set(wanted) - found.keys()
-        if unanswered:
-            self._recognition_requested -= unanswered
-            self._recognition_retry_at = time.monotonic() + self._recognition_retry_s
+        self._recognition_requested -= set(wanted) - found.keys()
+        self._recognition_retry_at = time.monotonic() + self._recognition_retry_s
         if not found:
             return
         self._recognized.update(found)

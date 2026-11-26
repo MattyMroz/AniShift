@@ -111,10 +111,11 @@ Czysta warstwa produktu i use case'ów współdzielona przez CLI i testy.
   (`recognize`: dokładnie jeden kandydat z aliasem równym tytułowi z nazwy w tym samym sezonie, żaden
   remake z rokiem ani wpis o mniejszej liczbie odcinków); inaczej zostaje `name`. Wynik (wpis albo brak dopasowania)
   trafia do `recognition.json` obok `state.json` (`load_recognized`/`save_recognized`, zły plik = pusta pamięć), który
-  owner czyta w konstruktorze. Nowe tytuły idą jednym aliasowanym zapytaniem (`search_many`, po `SEARCH_BATCH`, bo
-  każdy alias kosztuje punkt limitu AniList) na własnym wątku `anishift-owner-recognition` (nie w puli I/O, na której
-  czeka usuwanie i Ctrl+Z) po końcu przerwy AniList (`RequestControl.cooling`). Nieudane wyszukiwanie niczego nie
-  zapisuje; owner ponawia je po `RECOGNITION_RETRY_S`. Serie i okładki żyją tylko w pamięci ownera. Okładki (`_request_covers`) pobiera owner w
+  owner czyta w konstruktorze. Nowe tytuły idą aliasowanym zapytaniem (`search_many`, najwyżej `SEARCH_BUDGET` aliasów
+  razem ze skróconymi powtórkami, bo każdy alias kosztuje punkt limitu AniList 30/min) na własnym wątku
+  `anishift-owner-recognition` (nie w puli I/O, na której czeka usuwanie i Ctrl+Z) po końcu przerwy AniList
+  (`RequestControl.cooling`). Tytuł spoza budżetu albo z nieudanego zapytania nie wraca w wyniku i niczego nie
+  zapisuje; owner szuka go w następnym wyszukiwaniu, najwcześniej `RECOGNITION_RETRY_S` po poprzednim. Serie i okładki żyją tylko w pamięci ownera. Okładki (`_request_covers`) pobiera owner w
   puli I/O do katalogu podanego przez `run_resident(cover_dir=...)`; bez katalogu (testy) okładek nie ma. Snapshot
   `covers` to ID z plikiem w cache. Testy: `test_library_series.py`.
 - Usuwanie z Biblioteki pomija pobranie tylko w `COMPLETE` z receipt managera dowodzącym zwolnienia (odczyt w puli

@@ -713,6 +713,27 @@ def test_owner_searches_all_hand_added_titles_in_one_batch_once(tmp_path: Path) 
     assert [sorted(batch) for batch in titles.batches] == [["Tensei Shitara Slime Datta Ken", "Unknown Show"]]
 
 
+class _OneAtATime(_Searching):
+    def search_many(self, texts: Collection[str], *, limit: int = 7) -> dict[str, tuple[TitleCandidate, ...]]:
+        first: str = next(iter(texts))
+        return {first: super().search_many((first,), limit=limit)[first]}
+
+
+@pytest.mark.integration
+def test_title_left_out_of_a_search_is_not_recorded_and_is_searched_in_the_next_one(tmp_path: Path) -> None:
+    titles: _OneAtATime = _OneAtATime()
+    owner: AutomationOwner = _hand_owner(tmp_path, titles)
+    thread: threading.Thread = _serving(owner)
+    try:
+        assert owner.handle(_request("library_refresh")).ok
+        _until_recognized(owner, 2)
+    finally:
+        owner.request_shutdown()
+        thread.join(_TIMEOUT_S)
+    assert sorted(titles.batches) == [("Tensei Shitara Slime Datta Ken",), ("Unknown Show",)]
+    assert owner._recognized == {("tensei shitara slime datta ken", 1): _S1, ("unknown show", 1): None}
+
+
 @pytest.mark.integration
 def test_failed_search_leaves_the_title_from_name_and_is_searched_again(tmp_path: Path) -> None:
     titles: _Searching = _Searching(refuse=True)

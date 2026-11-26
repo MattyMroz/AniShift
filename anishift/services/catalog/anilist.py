@@ -69,8 +69,8 @@ SEARCH_QUERY: Final[str] = (
 )
 """Search request of one title."""
 
-SEARCH_BATCH: Final[int] = 20
-"""Most titles searched in one aliased request; AniList charges each search one point of its thirty a minute."""
+SEARCH_BUDGET: Final[int] = 15
+"""Most aliased searches, shortened retries included, of one ``search_many`` call; AniList allows thirty a minute."""
 
 RELATIONS_QUERY: Final[str] = """
 query ($id: Int) { Media(id: $id) { id episodes format title { romaji english }
@@ -174,18 +174,26 @@ class AniListCatalog:
     def search_many(
         self, texts: Collection[str], *, limit: int = DEFAULT_SEARCH_LIMIT
     ) -> dict[str, tuple[TitleCandidate, ...]]:
-        """Return the candidates of each text, searching many titles per aliased request and shortening misses once."""
-        found: dict[str, tuple[TitleCandidate, ...]] = self._search_batches(texts, limit)
+        """Return the candidates of the leading texts within ``SEARCH_BUDGET``; a text not fully searched is absent."""
+        chosen: dict[str, str | None] = _budgeted(texts)
+        found: dict[str, tuple[TitleCandidate, ...]] = self._search_aliased(tuple(chosen), limit)
         shortened: dict[str, str] = {
-            text: short for text in found if not found[text] and (short := _shorten_words(text)) is not None
+            text: short for text, short in chosen.items() if not found[text] and short is not None
         }
-        retried: dict[str, tuple[TitleCandidate, ...]] = self._search_batches(shortened.values(), limit)
-        found.update((text, retried[short]) for text, short in shortened.items())
+        try:
+            retried: dict[str, tuple[TitleCandidate, ...]] = self._search_aliased(tuple(shortened.values()), limit)
+        except TitleCatalogError as error:
+            logger.warning("Shortened title search failed", provider="anilist", code=error.context.code)
+            for text in shortened:
+                del found[text]
+        else:
+            found.update((text, retried[short]) for text, short in shortened.items())
         logger.info(
             "Searched AniList for many titles",
             titles=len(found),
             found=sum(bool(candidates) for candidates in found.values()),
             retried=len(shortened),
+            deferred=len(dict.fromkeys(texts)) - len(chosen),
         )
         return found
 
@@ -307,13 +315,13 @@ class AniListCatalog:
         """Send one search request and read its media list."""
         return _search_page(self._post(SEARCH_QUERY, {"search": text, "limit": limit}).get("Page"))
 
-    def _search_batches(self, texts: Collection[str], limit: int) -> dict[str, tuple[TitleCandidate, ...]]:
-        found: dict[str, tuple[TitleCandidate, ...]] = {}
-        for batch in batched(dict.fromkeys(texts), SEARCH_BATCH, strict=False):
-            variables: dict[str, object] = {"limit": limit, **{f"s{index}": text for index, text in enumerate(batch)}}
-            data: Mapping[str, Any] = self._post(_batch_search_query(len(batch)), variables)
-            found.update((text, _search_page(data.get(f"t{index}"))) for index, text in enumerate(batch))
-        return found
+    def _search_aliased(self, texts: tuple[str, ...], limit: int) -> dict[str, tuple[TitleCandidate, ...]]:
+        unique: tuple[str, ...] = tuple(dict.fromkeys(texts))
+        if not unique:
+            return {}
+        variables: dict[str, object] = {"limit": limit, **{f"s{index}": text for index, text in enumerate(unique)}}
+        data: Mapping[str, Any] = self._post(_batch_search_query(len(unique)), variables)
+        return {text: _search_page(data.get(f"t{index}")) for index, text in enumerate(unique)}
 
     def _media(self, anilist_id: int) -> Mapping[str, Any] | None:
         """Return one title with its relation edges, or ``None`` when AniList knows no such id."""
@@ -641,6 +649,20 @@ def _number(raw: object) -> int | None:
     if isinstance(raw, bool) or not isinstance(raw, int):
         return None
     return raw
+
+
+def _budgeted(texts: Collection[str]) -> dict[str, str | None]:
+    """Map the leading texts whose searches and shortened retries fit ``SEARCH_BUDGET`` to their shortened form."""
+    chosen: dict[str, str | None] = {}
+    spent: int = 0
+    for text in dict.fromkeys(texts):
+        short: str | None = _shorten_words(text)
+        cost: int = 1 if short is None else 2
+        if spent + cost > SEARCH_BUDGET:
+            break
+        chosen[text] = short
+        spent += cost
+    return chosen
 
 
 def _shorten_words(text: str) -> str | None:
