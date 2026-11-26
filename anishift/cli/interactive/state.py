@@ -1626,9 +1626,10 @@ class StateController:
             lines, firsts, listed = self._list_lines(columns, rows, wrapped, shown, selected, footer, left, cover[1])
             highlight: int | None = highlighted_row(self._hovered, selected, shown, covers)
             band: range = range(listed.start, len(lines) - len(footer))
-            if highlight is not None and highlight in firsts:
-                listed = range(firsts[highlight], firsts[highlight] + 1)
-            if (highlight is None or highlight in firsts) and place_cover(lines, cover, margin, listed, band):
+            if highlight is not None:
+                row: int = firsts.get(highlight, band.start - cover[1] if highlight < shown.start else band.stop)
+                listed = range(row, row + 1)
+            if place_cover(lines, cover, margin, listed, band):
                 frame: Text = Text("\n").join(lines)
                 self._place_cover(frame, covers, highlight)
                 return frame

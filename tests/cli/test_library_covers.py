@@ -15,7 +15,7 @@ from anishift.cli.interactive import app as interactive_app
 from anishift.cli.interactive import covers as covers_module
 from anishift.cli.interactive import state as state_module
 from anishift.cli.interactive.anime_state import AnimeRow, AnimeScreen, AnimeSnapshot, NoticeKind
-from anishift.cli.interactive.anime_view import render_anime
+from anishift.cli.interactive.anime_view import render_anime, shown_rows
 from anishift.cli.interactive.covers import CoverImages
 from anishift.cli.interactive.native_image import NATIVE_IMAGE_ANCHOR, NativeImage
 from anishift.cli.interactive.prompts import TerminalRenderer
@@ -401,6 +401,114 @@ def test_processing_hover_moves_the_slot_and_the_cover(panel: tuple[StateControl
     assert anchor[0] + (_BOX[1] - 1) // 2 == _row_of(frame, "Show 10")
     assert controller.cover() is not None
     assert covers.asked == [110]
+
+
+def _long_library(controller: StateController) -> None:
+    controller._tab = state_module._Tab.FILES
+    controller._snapshot = {
+        "library": [_keyed(f"s{index}", 100 + index, f"Show {index:02}", 1) for index in range(60)],
+        "covers": list(range(100, 160)),
+    }
+    controller._episode_info = {100 + index: {} for index in range(60)}
+
+
+def _column(frame: str, title: str) -> int:
+    return frame.splitlines()[_row_of(frame, title)].index(title)
+
+
+_LONG_LISTS: tuple[Callable[[StateController], None], ...] = (
+    _long_library,
+    lambda controller: _subscriptions(controller, 60),
+    lambda controller: _processing(controller, 60),
+)
+_LONG_LIST_IDS: tuple[str, ...] = ("library", "subscriptions", "processing")
+
+
+@pytest.mark.parametrize("arrange", _LONG_LISTS, ids=_LONG_LIST_IDS)
+def test_cursor_scrolled_above_the_view_keeps_the_slot_at_the_top_with_its_cover(
+    panel: tuple[StateController, _Covers], arrange: Callable[[StateController], None]
+) -> None:
+    controller, covers = panel
+    arrange(controller)
+    top: str = controller.render(120, 40).plain
+    for _press in range(4):
+        controller.handle_key("down")
+    for _step in range(6):
+        controller.scroll(1)
+
+    frame: str = controller.render(120, 40).plain
+    controller.cover()
+
+    assert "Show 04" not in frame
+    assert _anchor(frame) is not None
+    assert _anchor(frame) == _anchor(top)
+    assert _column(frame, "Show 20") == _column(top, "Show 20")
+    assert covers.asked == [104]
+
+
+@pytest.mark.parametrize("arrange", _LONG_LISTS, ids=_LONG_LIST_IDS)
+def test_cursor_scrolled_below_the_view_keeps_the_slot_at_the_bottom_with_its_cover(
+    panel: tuple[StateController, _Covers], arrange: Callable[[StateController], None]
+) -> None:
+    controller, covers = panel
+    arrange(controller)
+    controller.handle_key("end")
+    bottom: str = controller.render(120, 40).plain
+    for _step in range(3):
+        controller.scroll(-1)
+
+    frame: str = controller.render(120, 40).plain
+    controller.cover()
+
+    assert "Show 59" not in frame
+    assert _anchor(frame) is not None
+    assert _anchor(frame) == _anchor(bottom)
+    assert _column(frame, "Show 50") == _column(bottom, "Show 50")
+    assert covers.asked == [159]
+
+
+@pytest.mark.parametrize("arrange", _LONG_LISTS, ids=_LONG_LIST_IDS)
+def test_hover_after_scrolling_the_cursor_out_of_view_moves_the_slot_and_the_cover(
+    panel: tuple[StateController, _Covers], arrange: Callable[[StateController], None]
+) -> None:
+    controller, covers = panel
+    arrange(controller)
+    for _step in range(6):
+        controller.scroll(1)
+
+    frame: str = controller.render(120, 40, hovered=25).plain
+    anchor: tuple[int, int] | None = _anchor(frame)
+    controller.cover()
+
+    assert anchor is not None
+    assert anchor[0] + (_BOX[1] - 1) // 2 == _row_of(frame, "Show 25")
+    assert covers.asked == [125]
+
+
+def _anime_titles(cursor: int, offset: int) -> AnimeSnapshot:
+    items: tuple[AnimeRow, ...] = tuple(AnimeRow(str(100 + index), f"Show {index:02}") for index in range(60))
+    return AnimeSnapshot(
+        AnimeScreen.TITLES, "", items, cursor=cursor, offset=offset, fill=True, highlight=cursor, cover=_BOX
+    )
+
+
+def _anime_frame(cursor: int, offset: int) -> str:
+    return render_anime(_anime_titles(cursor, offset), 120, 40, 0.0).text.plain
+
+
+def test_anime_results_with_the_cursor_out_of_view_keep_the_slot_at_the_cursor_edge() -> None:
+    last: int = 60 - shown_rows(_anime_titles(0, 0), 120, 40)
+    top: str = _anime_frame(0, 0)
+    above: str = _anime_frame(4, 18)
+    bottom: str = _anime_frame(59, last)
+    below: str = _anime_frame(59, last - 9)
+
+    assert _anchor(above) is not None
+    assert _anchor(above) == _anchor(top)
+    assert _column(above, "Show 20") == _column(top, "Show 20")
+    assert _anchor(below) is not None
+    assert _anchor(below) == _anchor(bottom)
+    assert _column(below, "Show 50") == _column(bottom, "Show 50")
 
 
 def test_processing_slot_and_rows_are_centered_as_one_block(panel: tuple[StateController, _Covers]) -> None:

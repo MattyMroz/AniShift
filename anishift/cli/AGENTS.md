@@ -191,7 +191,8 @@ Jedyna granica procesu: Typer entry point `anishift`. Bez subkomendy uruchamia I
   pierwszego wiersza) i kończy nad stopką; slot nigdy nie wchodzi na okruszki, podsumowanie ani stopkę. Gdy
   wszystkie wiersze mają tę samą okładkę (odcinki jednego tytułu), slot stoi nieruchomo na środku wierszy listy;
   inaczej jest wyśrodkowany na podświetlonym wierszu (hover z `FrameSelection.hovered_row`, inaczej kursor;
-  `highlighted_row`). Przy krótkiej liście dokleja się do krawędzi pasa. Tabele i lista Przetwarzania
+  `highlighted_row`). Przy krótkiej liście dokleja się do krawędzi pasa; kursor przewinięty poza widok trzyma
+  swoją okładkę przy krawędzi pasa od swojej strony, więc slot nie znika, a blok nie skacze. Tabele i lista Przetwarzania
   (`_list_body`) dzielą jedną regułę: `beside_cover`, `cover_columns`, `place_cover`.
   `StateController.cover()` zwraca obraz tego wiersza; render woła `CoverImages.prepare` dla całej listy, wątek
   `anishift-cover` koduje brakujące, a trafienie czyta gotowy ładunek w tej samej klatce. Bez SIXEL, miejsca albo
